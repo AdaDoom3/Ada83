@@ -71,64 +71,81 @@ pdfgrep -A5 "discriminant" reference/DIANA.pdf
 
 ## Current Status
 
-> **Last Updated:** 2025-12-20 17:30 UTC
-> **Development Stage:** Membership test bugs resolved, advancing test suite
-> **Latest Commit:** `c3abe95` - Binary T_NOT operator for 'NOT IN' membership tests
+> **Last Updated:** 2025-12-20 17:55 UTC
+> **Development Stage:** LLVM IR dominance errors resolved, runtime linking functional
+> **Latest Commit:** `23181c7` - Frame builder refactored to fix dominance errors
 
-### Recent Completion: Membership Test Operator Fixes
+### Recent Completion: LLVM IR Dominance Error Fix
 
-**Problem:** Compiler failed to handle subtype membership tests (`IN` and `NOT IN`), generating invalid LLVM IR with "use of undefined value" errors.
+**Problem:** LLVM validation failed with "Instruction does not dominate all uses" errors due to frame builder generating stores to variables before their allocation.
 
-**Root Causes Identified:**
-1. **N_CHK Wrapping:** Constraint check nodes wrapped actual subtype references
-2. **Unary Minus Parsing:** Range bounds like `-10..10` parsed as N_UN nodes, accessing garbage memory
-3. **Binary T_NOT:** Parser treats `NOT IN` as binary operator `(left NOT right)`, not `NOT (left IN right)`
+**Root Cause:**
+- Frame builder (`gbf`) populated frame slots in a single upfront pass
+- Loop iterated through ALL symbols in symbol table
+- Generated stores like `store ptr %v.I1A.13, ptr %t0` BEFORE variable allocas
+- Variables in nested blocks were allocated later during statement processing
+- Violated LLVM's SSA dominance requirement
 
-**Solution Implemented:** Three systematic fixes
-- **ada83.c:169** (T_IN handler): Added N_CHK unwrapping to find actual N_ID/N_RN nodes
-- **ada83.c:132** (N_SD subtype): Fixed to evaluate unary minus expressions in range bounds correctly
-- **ada83.c:169** (Binary T_NOT): Added complete handler for `NOT IN` that generates inverted range checks
+**Solution Implemented:**
+- **Phase 1:** `gbf()` now only allocates frame array (`%__frame = alloca [N x ptr]`)
+- **Phase 2:** Frame slot population moved to N_OD case in `gdl()`
+- Each variable populates its frame slot immediately after its alloca
+- **ada83.c:141-143** - Simplified gbf to just frame allocation
+- **ada83.c:177** - Added frame slot population after variable alloca
+
+**Additional Fixes:**
+- Generated `rts/adart.ll` runtime library from adart.c (exception handling symbols)
+- Updated `test.sh` to link with both `rts/report.ll` and `rts/adart.ll`
+- Resolved missing runtime symbols: `__ex_cur`, `__ada_setjmp`, `__eh_cur`, `__ada_raise`
 
 **Validation Results:**
 ```
-Before fixes:
-  c45231a: llvm-link error - "use of undefined value '%v.ST.17'"
-  test_notin: llvm-link error - "use of undefined value '%v.ST.13'"
+Before fix:
+  llvm-as c45231a.ll
+  > Instruction does not dominate all uses!
+  >   %v.I1A.13 = alloca i64, align 8
+  >   store ptr %v.I1A.13, ptr %t0, align 8
 
-After fixes:
-  c45231a: Zero %v.ST references, correct range checks generated
-  test_notin: Generates proper -10..10 range check with XOR inversion
+After fix:
+  llvm-as c45231a.ll && echo SUCCESS
+  > SUCCESS
 ```
 
 **Impact:**
-- ✅ Eliminated all subtype-as-variable errors
-- ✅ Both `IN` and `NOT IN` generate correct LLVM IR
-- ✅ Proper handling of negative range bounds (-10..10)
-- ⏭️ Next: Run full test suite to measure improvement
+- ✅ LLVM IR now passes validation (llvm-as succeeds)
+- ✅ Tests compile and link successfully (no more BIND errors)
+- ✅ Runtime symbols resolved, tests execute
+- ⚠️ Discovered missing feature: Package procedure calls not implemented
+- ⏭️ Next: Implement package support for REPORT functions
 
 ### Outstanding Issues
 
-**Issue 1: LLVM IR Validation Errors** (Priority: HIGH)
-- Location: llvm-link stage
-- Symptom: "Instruction does not dominate all uses" in some tests
-- Tests affected: c45231a.ada and others TBD
-- Root cause: Incorrect PHI node placement or alloca hoisting issues
-- Estimated complexity: Medium - requires control flow analysis
-- Impact: Blocks linking of tests that compile successfully
+**Issue 1: Missing Package Support** (Priority: HIGH)
+- Location: Procedure call generation
+- Symptom: Calls to REPORT package functions (TEST, RESULT, FAILED, IDENT_INT) not generated
+- Tests affected: All C-tests that use WITH REPORT
+- Root cause: Compiler doesn't generate calls to procedures from packages
+- Impact: Tests execute silently without calling test framework functions
+- Example: c45231a.out is empty (should contain "PASSED" or "FAILED")
 
 **Issue 2: Low B-test Error Coverage** (Priority: MEDIUM)
 - Location: b22003a.ada (33% coverage)
 - Symptom: Compiler detects only 1 of 3 expected errors
 - Root cause: Semantic analysis gaps in error detection
-- Impact: Approximately 50% B-test failure rate
+- Impact: Approximately 33% B-test failure rate
 
 ### Test Suite Status
 
-Current baseline (sample tests): B=1/2 (50%), C=0/2 (0%), Overall=25%
+Current baseline (sample tests): B=1/3 (33%), C=0/1 (0%), Overall=1/4 (25%)
 
-**Compilation now stable:** Both C-tests compile successfully without segfaults and generate valid LLVM IR. Tests now fail at link stage, which is significant progress from compilation failures.
+**Progress:**
+- ✅ Compilation stable: Tests compile without crashes
+- ✅ LLVM IR valid: Passes validation (llvm-as)
+- ✅ Linking works: llvm-link succeeds with runtime libraries
+- ✅ Execution works: Tests run without crashes
+- ⚠️ Missing feature: Package procedure calls (HIGH priority)
 
-**Next milestone:** Resolve unresolved runtime symbols to enable C-test linking and execution, then improve B-test error coverage.
+**Next milestone:** Implement package support to enable REPORT function calls, allowing C-tests to produce output and measure correctness.
 
 
 **Design Principles:**
