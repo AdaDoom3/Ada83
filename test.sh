@@ -20,14 +20,14 @@ printf "   ${m}${'':->68}${z}\n   coverage ${w}%d${z}/${w}%d${z} (${w}%d%%${z}) 
 T(){ local f=$1 v=${2:-} n=$(basename "$f" .ada);local q=${n:0:1};((++X[z]));case $q in
 [aA])if ! timeout 3 ./ada83 "$f">test_results/$n.ll 2>acats_logs/$n.err;then
 E "$y" ○ "$n" COMPILE "$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)";((++X[s]));return;fi
-if ! timeout 3 llvm-link -o test_results/$n.bc test_results/$n.ll rts/report.ll 2>acats_logs/$n.link;then
+if ! timeout 3 llvm-link -o test_results/$n.bc test_results/$n.ll rts/report.ll rts/adart.ll 2>acats_logs/$n.link;then
 E "$y" ○ "$n" BIND "unresolved symbols";((++X[s]));return;fi
 timeout 5 lli test_results/$n.bc>acats_logs/$n.out 2>&1&&E "$g" ✓ "$n" PASSED&&((++X[a]))||E "$r" ✗ "$n" FAILED "exit $?"&&((++X[f]));;
 [bB])if timeout 3 ./ada83 "$f" 2>acats_logs/$n.err;then E "$r" ✗ "$n" WRONG_ACCEPT "compiled when should reject";((++X[f]))
 else q=$(^ "$f");h=${q%:*};x=${q#*:};p=$(: $h $x);((p>=90))&&{ ((++X[b]));[[ $v == v ]]&&@ "$f"||E "$g" ✓ "$n" REJECTED "$h/$x errors (${p}%)";}||{ ((++X[f]));E "$r" ✗ "$n" LOW_COVERAGE "$h/$x errors (${p}%)";};fi;;
 [cC])if ! timeout 3 ./ada83 "$f">test_results/$n.ll 2>acats_logs/$n.err;then
 E "$y" ○ "$n" COMPILE "$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)";((++X[s]));return;fi
-if ! timeout 3 llvm-link -o test_results/$n.bc test_results/$n.ll rts/report.ll 2>acats_logs/$n.link;then
+if ! timeout 3 llvm-link -o test_results/$n.bc test_results/$n.ll rts/report.ll rts/adart.ll 2>acats_logs/$n.link;then
 E "$y" ○ "$n" BIND "unresolved symbols";((++X[s]));return;fi
 if timeout 10 lli test_results/$n.bc>acats_logs/$n.out 2>&1;then
 grep -q PASSED acats_logs/$n.out 2>/dev/null&&E "$g" ✓ "$n" PASSED&&((++X[c]))||{
@@ -38,16 +38,16 @@ E "$r" ✗ "$n" RUNTIME "exit $ec $(tail -1 acats_logs/$n.out 2>/dev/null|cut -c
 [dD])if ! timeout 3 ./ada83 "$f">test_results/$n.ll 2>acats_logs/$n.err;then
 grep -qi "capacity\|overflow\|limit" acats_logs/$n.err 2>/dev/null&&E "$y" – "$n" CAPACITY "compiler limit exceeded"&&((++X[s]))&&return
 E "$y" ○ "$n" COMPILE "$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)";((++X[s]));return;fi
-timeout 3 llvm-link -o test_results/$n.bc test_results/$n.ll rts/report.ll 2>/dev/null||{ E "$y" ○ "$n" BIND;((++X[s]));return;}
+timeout 3 llvm-link -o test_results/$n.bc test_results/$n.ll rts/report.ll rts/adart.ll 2>/dev/null||{ E "$y" ○ "$n" BIND;((++X[s]));return;}
 timeout 5 lli test_results/$n.bc>acats_logs/$n.out 2>&1&&grep -q PASSED acats_logs/$n.out&&E "$g" ✓ "$n" PASSED&&((++X[d]))||
 E "$r" ✗ "$n" FAILED "exact arithmetic check"&&((++X[f]));;
 [eE])timeout 3 ./ada83 "$f">test_results/$n.ll 2>acats_logs/$n.err||{ E "$y" ○ "$n" COMPILE "$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)";((++X[s]));return;}
-timeout 3 llvm-link -o test_results/$n.bc test_results/$n.ll rts/report.ll 2>/dev/null||{ E "$y" ○ "$n" BIND;((++X[s]));return;}
+timeout 3 llvm-link -o test_results/$n.bc test_results/$n.ll rts/report.ll rts/adart.ll 2>/dev/null||{ E "$y" ○ "$n" BIND;((++X[s]));return;}
 timeout 5 lli test_results/$n.bc>acats_logs/$n.out 2>&1
 grep -q "TENTATIVELY PASSED" acats_logs/$n.out 2>/dev/null&&E "$y" ? "$n" INSPECT "requires manual verification"&&((++X[e]))||{
 grep -q PASSED acats_logs/$n.out 2>/dev/null&&E "$g" ✓ "$n" PASSED&&((++X[e]))||E "$r" ✗ "$n" FAILED&&((++X[f]));};;
 [lL])if timeout 3 ./ada83 "$f">test_results/$n.ll 2>acats_logs/$n.err;then
-if timeout 3 llvm-link -o test_results/$n.bc test_results/$n.ll rts/report.ll 2>acats_logs/$n.link;then
+if timeout 3 llvm-link -o test_results/$n.bc test_results/$n.ll rts/report.ll rts/adart.ll 2>acats_logs/$n.link;then
 timeout 3 lli test_results/$n.bc>acats_logs/$n.out 2>&1&&E "$r" ✗ "$n" WRONG_EXEC "should not execute"&&((++X[f]))||
 E "$g" ✓ "$n" BIND_REJECT "execution blocked"&&((++X[l]));else E "$g" ✓ "$n" LINK_REJECT "binding failed as expected"&&((++X[l]));fi
 else E "$g" ✓ "$n" COMPILE_REJECT "$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-40)"&&((++X[l]));fi;;

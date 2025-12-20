@@ -6,7 +6,7 @@
 
 ```
 Ada83/
-├── ada83.c         (160 lines) - lexer→parser→sem→codegen
+├── ada83.c         (180 lines) - lexer→parser→sem→codegen
 ├── test.sh         (93 lines)  - f|s|g|b (oracle-validated B-test framework)
 ├── acats/          (4,050)     - a(144)|b(1515)|c(2119)|d(50)|e(54)|l(168)
 ├── rts/            (runtime)   - adart.c|report.ll
@@ -69,67 +69,25 @@ pdfgrep -A5 "discriminant" reference/DIANA.pdf
 
 ---
 
-## Current Status
-
-> **Last Updated:** 2025-12-20 16:18 UTC  
-> **Development Stage:** Core compiler functional, addressing remaining semantic issues  
-> **Latest Commit:** `7b15851` - Nested procedure static link implementation
-
-### Recent Completion: Nested Procedure Variable Access
-
-**Problem:** Nested procedures could not access variables from enclosing scopes due to separate LLVM stack frames.
-
-**Solution Implemented:** Frame-based static links with pointer indirection
-- Parent procedures construct frame arrays containing pointers to local variables
-- Frame pointer passed via `__slnk` parameter to nested procedures
-- Variable access implemented through double indirection: `getelementptr ptr, ptr -> load ptr -> load/store value`
-- Achieves proper variable aliasing without value copying
-
-**Validation Results:**
-```
-Test case: Parent X=42, Y=100; Nested modifies: X+=1, Y+=7
-Expected: X=43, Y=107
-Actual: X=43, Y=107 (Correct)
-```
-
-**Implementation Details:**
-- `gbf()`: Frame builder - allocates pointer array, stores variable addresses
-- `gex()`: Expression generator - double-indirect load for parent variables
-- `gss()`: Statement generator - indirect store for parent variable modification
-- Modified `N_PB` case to invoke frame construction before procedure body
-- Modified `N_CLT` case to pass frame pointer instead of null
-
 ### Outstanding Issues
 
-**Issue 1: Named Parameter Operator Calls** (Priority: Medium)
-- Location: `c45231a.ada:74`
-- Symptom: Parse error when calling operators with named parameter notation
-- Example: `IF ">" (LEFT => CI2, RIGHT => I1A) THEN`
-- Root cause: `ppr()` parser does not handle `T_STR` followed by `T_LP`
-- Estimated complexity: Low - single function extension
-- Impact: Approximately 10 C-group tests
+**Issue 1: Missing Package Support** (Priority: HIGH)
+- Location: Procedure call generation
+- Symptom: Calls to REPORT package functions (TEST, RESULT, FAILED, IDENT_INT) not generated
+- Tests affected: All C-tests that use WITH REPORT
+- Root cause: Compiler doesn't generate calls to procedures from packages
+- Impact: Tests execute silently without calling test framework functions
+- Example: c45231a.out is empty (should contain "PASSED" or "FAILED")
 
-**Issue 2: Aggregate Initialization Code Generation** (Priority: High)
-- Location: `c37310a.ada:70+`
-- Symptom: `llvm-link` error - undefined value reference in discriminated record aggregate
-- Example: `(DISC => 'L')` generates reference to undefined `%t16`
-- Root cause: Missing instruction emission in aggregate generator
-- Estimated complexity: Medium - requires IR trace analysis
-- Impact: Approximately 30 tests using discriminated records
-
-**Issue 3: Nested Procedure Variable Access** (Status: Complete)
-- Implemented frame-based static links with double indirection
-- Full validation completed
+**Issue 2: Low B-test Error Coverage** (Priority: MEDIUM)
+- Location: b22003a.ada (33% coverage)
+- Symptom: Compiler detects only 1 of 3 expected errors
+- Root cause: Semantic analysis gaps in error detection
+- Impact: Approximately 33% B-test failure rate
 
 ### Test Suite Status
 
-Current baseline: A=0 B=1 C=0 D=0 E=0 (Sample: 1/4 passing)
-
-**Rationale for focused development:**  
-The compiler is being developed iteratively with focus on architectural correctness before scale testing. Issues 1 and 2 represent systematic blockers that would affect multiple test categories. Resolution of these issues expected to enable 15-20% C-group pass rate.
-
-**Next milestone:** Address named parameter calls, then aggregate code generation.
-
+Current baseline (sample tests): B=1/3 (33%), C=0/1 (0%), Overall=1/4 (25%)
 
 **Design Principles:**
 1. **Arena allocation**: Single 16MB bump allocator, O(1) per allocation, no free() calls
