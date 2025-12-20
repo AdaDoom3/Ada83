@@ -1,0 +1,4 @@
+V 1.0
+U TEXT_IO
+X TEXT_IO__PUT_LINE void ptr
+X TEXT_IO__NEW_LINE void
