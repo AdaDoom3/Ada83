@@ -1,0 +1,13 @@
+# Compiled binary
+ada83
+
+# Backup files
+*.backup
+
+# Test output
+test_results/
+acats_logs/
+test_summary.txt
+*.ll
+*.bc
+T*.ll
