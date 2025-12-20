@@ -6,7 +6,7 @@
 
 ```
 Ada83/
-├── ada83.c         (160 lines) - lexer→parser→sem→codegen
+├── ada83.c         (180 lines) - lexer→parser→sem→codegen
 ├── test.sh         (93 lines)  - f|s|g|b (oracle-validated B-test framework)
 ├── acats/          (4,050)     - a(144)|b(1515)|c(2119)|d(50)|e(54)|l(168)
 ├── rts/            (runtime)   - adart.c|report.ll
@@ -69,55 +69,6 @@ pdfgrep -A5 "discriminant" reference/DIANA.pdf
 
 ---
 
-## Current Status
-
-> **Last Updated:** 2025-12-20 17:55 UTC
-> **Development Stage:** LLVM IR dominance errors resolved, runtime linking functional
-> **Latest Commit:** `23181c7` - Frame builder refactored to fix dominance errors
-
-### Recent Completion: LLVM IR Dominance Error Fix
-
-**Problem:** LLVM validation failed with "Instruction does not dominate all uses" errors due to frame builder generating stores to variables before their allocation.
-
-**Root Cause:**
-- Frame builder (`gbf`) populated frame slots in a single upfront pass
-- Loop iterated through ALL symbols in symbol table
-- Generated stores like `store ptr %v.I1A.13, ptr %t0` BEFORE variable allocas
-- Variables in nested blocks were allocated later during statement processing
-- Violated LLVM's SSA dominance requirement
-
-**Solution Implemented:**
-- **Phase 1:** `gbf()` now only allocates frame array (`%__frame = alloca [N x ptr]`)
-- **Phase 2:** Frame slot population moved to N_OD case in `gdl()`
-- Each variable populates its frame slot immediately after its alloca
-- **ada83.c:141-143** - Simplified gbf to just frame allocation
-- **ada83.c:177** - Added frame slot population after variable alloca
-
-**Additional Fixes:**
-- Generated `rts/adart.ll` runtime library from adart.c (exception handling symbols)
-- Updated `test.sh` to link with both `rts/report.ll` and `rts/adart.ll`
-- Resolved missing runtime symbols: `__ex_cur`, `__ada_setjmp`, `__eh_cur`, `__ada_raise`
-
-**Validation Results:**
-```
-Before fix:
-  llvm-as c45231a.ll
-  > Instruction does not dominate all uses!
-  >   %v.I1A.13 = alloca i64, align 8
-  >   store ptr %v.I1A.13, ptr %t0, align 8
-
-After fix:
-  llvm-as c45231a.ll && echo SUCCESS
-  > SUCCESS
-```
-
-**Impact:**
-- ✅ LLVM IR now passes validation (llvm-as succeeds)
-- ✅ Tests compile and link successfully (no more BIND errors)
-- ✅ Runtime symbols resolved, tests execute
-- ⚠️ Discovered missing feature: Package procedure calls not implemented
-- ⏭️ Next: Implement package support for REPORT functions
-
 ### Outstanding Issues
 
 **Issue 1: Missing Package Support** (Priority: HIGH)
@@ -137,16 +88,6 @@ After fix:
 ### Test Suite Status
 
 Current baseline (sample tests): B=1/3 (33%), C=0/1 (0%), Overall=1/4 (25%)
-
-**Progress:**
-- ✅ Compilation stable: Tests compile without crashes
-- ✅ LLVM IR valid: Passes validation (llvm-as)
-- ✅ Linking works: llvm-link succeeds with runtime libraries
-- ✅ Execution works: Tests run without crashes
-- ⚠️ Missing feature: Package procedure calls (HIGH priority)
-
-**Next milestone:** Implement package support to enable REPORT function calls, allowing C-tests to produce output and measure correctness.
-
 
 **Design Principles:**
 1. **Arena allocation**: Single 16MB bump allocator, O(1) per allocation, no free() calls
