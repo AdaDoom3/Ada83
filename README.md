@@ -71,87 +71,59 @@ pdfgrep -A5 "discriminant" reference/DIANA.pdf
 
 ## Current Status
 
-> **Last Updated:** 2025-12-20 16:44 UTC
-> **Development Stage:** Critical LLVM IR generation bugs under investigation
-> **Latest Commit:** `5c278cb` - Merge pull request #1 (nested procedures)
+> **Last Updated:** 2025-12-20 16:49 UTC
+> **Development Stage:** Core LLVM IR bugs resolved, advancing to linking stage
+> **Latest Commit:** `804a7a3` - LLVM IR generation fixes
 
-### Critical Compiler Bugs (Investigation Phase)
+### Recent Completion: LLVM IR Generation Bug Fixes
 
-The compiler is currently experiencing segmentation faults during compilation of ACATS C-tests. Deep analysis of LLVM IR generation revealed fundamental issues in the code generator that must be resolved before proceeding with feature development.
+**Problem:** Compiler generated invalid LLVM IR causing segmentation faults and preventing C-test compilation.
 
-**Current Test Results:** Sample suite shows 25% pass rate (1/4), with both C-tests failing due to compiler segfaults during compilation.
+**Solution Implemented:** Three systematic fixes to LLVM IR code generation
+- **Bug #3** (ada83.c:177): Added `%ej = alloca ptr` at function entry in N_PB case
+- **Bug #1** (ada83.c:176): Removed duplicate %ej allocation in N_BL case (blocks now store to existing %ej)
+- **Bug #2** (ada83.c:163): Added static link parameter (`ptr %__frame`) to nested function calls in N_CL case
 
-### LLVM IR Code Generation Bugs
+**Validation Results:**
+```
+Before fixes:
+  c95009a: COMPILE (segfault) → unable to generate LLVM IR
+  c45231a: COMPILE (segfault) → unable to generate LLVM IR
 
-**Bug #1: Duplicate %ej Allocation in Block Statements** (Priority: CRITICAL)
-- Location: `ada83.c:176` (gss function, N_BL case)
-- Symptom: Multiple `%ej = alloca ptr` instructions in same LLVM function scope
-- Root cause: Block statements allocate new %ej even though one already exists at function entry
-- LLVM error: "multiple definition of local value named 'ej'"
-- Current code pattern:
-  ```c
-  fprintf(g->o,"  %%ej = alloca ptr\n  store ptr %%t%d, ptr %%ej\n",sj);
-  ```
-- Required fix: Blocks should only store to existing %ej, not allocate new one
-- Impact: Prevents compilation of any code with nested block statements
+After fixes:
+  c95009a: Compiles successfully → BIND (unresolved symbols)
+  c45231a: Compiles successfully → BIND (unresolved symbols)
+```
 
-**Bug #2: Missing Static Link Parameter in Function Calls** (Priority: CRITICAL)
-- Location: `ada83.c:163-169` (gex function, N_CL case)
-- Symptom: Unresolved symbol errors during llvm-link (e.g., `@__adart_setjmp_...`)
-- Root cause: Function calls to nested procedures missing `ptr %__frame` static link parameter
-- Current code generates: `call void @proc(i64 %t1, i64 %t2)`
-- Required: `call void @proc(i64 %t1, i64 %t2, ptr %__frame)` when `s->lv > 0`
-- Impact: Any test using nested procedures fails at link stage
+**Impact:**
+- ✅ Eliminated all compilation segfaults
+- ✅ C-tests now generate valid LLVM IR
+- ✅ Tests advance from COMPILE stage to BIND (link) stage
+- ⏭️ Next blocker: Runtime symbol resolution at link time
 
-**Bug #3: Missing %ej Allocation at Function Entry** (Priority: CRITICAL)
-- Location: `ada83.c:177-178` (gdl function, N_PB/N_FB cases)
-- Symptom: Store to undeclared %ej variable in nested blocks
-- Root cause: Exception jump buffer not allocated at procedure entry
-- Current: Blocks try to store to %ej before it exists
-- Required: Add `fprintf(g->o,"  %%ej = alloca ptr\n");` immediately after function prologue
-- Impact: All procedures with exception handling or block statements fail
+### Outstanding Issues
 
-**Bug #4: Compiler Segmentation Faults** (Priority: CRITICAL)
-- Location: Unknown (requires GDB analysis)
-- Symptom: Compiler crashes during compilation of c45231a.ada, c95009a.ada
-- Observation: No LLVM IR output generated before crash
-- Hypothesis: Crash occurs during parsing or semantic analysis phase
-- Impact: Prevents any compilation of affected ACATS tests
+**Issue 1: Unresolved Runtime Symbols** (Priority: HIGH)
+- Location: Link stage (llvm-link)
+- Symptom: C-tests fail at BIND with "unresolved symbols"
+- Tests affected: c95009a.ada, c45231a.ada
+- Root cause: Missing runtime library declarations or incorrect symbol names
+- Estimated complexity: Medium - requires runtime library investigation
+- Impact: Blocks execution of all C-tests that compile successfully
 
-### Analysis Artifacts
-
-**Test Case c45231a.ada:**
-- Relational and membership operations test
-- Contains redefined relational operators in nested scope (lines 173-191)
-- Three separate DECLARE blocks with identical variable names (I1, I5, CI2, CI10)
-- Compiler segfaults immediately without generating any LLVM IR
-
-**Test Case c95009a.ada:**
-- Task entry call test
-- Uses task types, entry families, and nested rendezvous
-- Compiler segfaults during compilation
-- Expected to generate complex static link code for nested task operations
-
-### Previous Investigation Summary
-
-An earlier attempt was made to fix Bugs #1-3 simultaneously:
-1. Removed duplicate %ej allocation from N_BL case (changed to store-only)
-2. Added %ej allocation at N_PB function entry
-3. Added static link parameter to function calls in N_CL case
-
-This approach successfully addressed the LLVM IR generation errors but exposed Bug #4 (segfaults), suggesting deeper structural issues in the compiler's handling of complex nested scopes or symbol table management.
-
-A subsequent attempt to fix duplicate variable allocations by adding unique counters to variable names introduced additional segfaults, and all changes were reverted to establish a clean baseline for systematic debugging.
+**Issue 2: Low B-test Error Coverage** (Priority: MEDIUM)
+- Location: b22003a.ada (33% coverage)
+- Symptom: Compiler detects only 1 of 3 expected errors
+- Root cause: Semantic analysis gaps in error detection
+- Impact: Approximately 50% B-test failure rate
 
 ### Test Suite Status
 
 Current baseline (sample tests): B=1/2 (50%), C=0/2 (0%), Overall=25%
 
-**Segmentation faults block progress:** C-tests cannot complete compilation, preventing validation of LLVM IR generation fixes. B-tests show low error coverage (33% on b22003a), indicating semantic analysis gaps in error detection.
+**Compilation now stable:** Both C-tests compile successfully without segfaults and generate valid LLVM IR. Tests now fail at link stage, which is significant progress from compilation failures.
 
-**Immediate priority:** Resolve segmentation faults using GDB to enable compilation of c45231a.ada and c95009a.ada, then systematically apply LLVM IR generation fixes in order: Bug #3, Bug #1, Bug #2.
-
-**Next milestone:** Achieve stable compilation (no segfaults) on sample test suite, then address LLVM IR bugs to enable linking and execution.
+**Next milestone:** Resolve unresolved runtime symbols to enable C-test linking and execution, then improve B-test error coverage.
 
 
 **Design Principles:**
