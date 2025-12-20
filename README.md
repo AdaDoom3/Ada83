@@ -6,32 +6,51 @@
 
 ```
 Ada83/
-├── ada83.c              (95KB, 159 lines) - Complete compiler: lexer→parser→semantics→codegen
-├── README.md            (this file)       - Comprehensive documentation and roadmap
-├── test.sh              (unified harness) - All testing modes: full/sample/group/b-errors
-├── run_acats.sh         (4.3KB)           - Legacy full suite runner (use test.sh instead)
-├── acats/               (3,251 files)     - Ada Conformity Assessment Test Suite
-│   ├── a*.ada           (144 tests)       - Language fundamentals, declarations
-│   ├── b*.ada           (1,515 tests)     - NEGATIVE tests (invalid code, should be rejected)
-│   ├── c*.ada           (2,119 tests)     - Core language features (largest test set)
-│   ├── d*.ada           (72 tests)        - Representation clauses, pragmas
-│   ├── e*.ada           (98 tests)        - Distributed systems, annexes
-│   └── l*.ada           (199 tests)       - Generic instantiation, elaboration
-├── rts/                 - Runtime system
-│   ├── adart.c          - Ada runtime in C (exception handling, I/O, math)
-│   └── report.ll        - ACATS test harness (LLVM IR)
-├── test_results/        (2,040 files)     - Generated LLVM IR (.ll) and bytecode (.bc)
-├── acats_logs/          - Compilation errors (.err), runtime output (.out)
-└── reference/           - Ada 83 LRM, GNAT sources, algorithm references
+├── ada83.c         (159 lines) - lexer→parser→sem→codegen
+├── test.sh         (harness)   - full|sample|group|b-errors
+├── acats/          (4,050)     - a(144)|b(1515)|c(2119)|d(50)|e(54)|l(168)
+├── rts/            (runtime)   - adart.c|report.ll
+├── test_results/   (output)    - *.ll|*.bc
+├── acats_logs/     (logs)      - *.err|*.out
+└── reference/      (oracle)    - LRM|GNAT|DIANA
+    ├── DIANA.pdf               - Descriptive Intermediate Attributed Notation for Ada
+    ├── manual/                 - Ada 83 LRM (lrm-01..lrm-14, appendices a-f)
+    └── gnat/ (2404 files)      - Reference implementation source
+        ├── par-ch*.adb         - Parser (by LRM chapter)
+        ├── sem-ch*.adb         - Semantics (by LRM chapter)
+        ├── exp-ch*.adb         - Expansion/codegen (by LRM chapter)
+        ├── sinfo.ads           - AST node definitions
+        ├── einfo.ads           - Entity information
+        ├── atree.ads           - Abstract tree operations
+        ├── nlists.ads          - Node list operations
+        └── ...                 - 2396 more files
 ```
 
-**Navigation Guide:**
-- **Build compiler**: `gcc -O3 -o ada83 ada83.c`
-- **Run single test**: `./ada83 program.ada > program.ll`
-- **Run full suite**: `./test.sh` or `./test.sh full` (~2-3 minutes)
-- **Quick verification**: `./test.sh sample` (B-test + C-test check)
-- **Group-specific**: `./test.sh group c` (run C-group only)
-- **Error analysis**: `./test.sh b-errors` (analyze B-test error detection)
+**Quick start**: `gcc -O3 -o ada83 ada83.c && ./test.sh sample`
+
+**Reference navigation** (implementation oracle):
+```bash
+# LRM chapter lookup
+cat reference/manual/lrm-03          # Ch 3: Types, Objects
+cat reference/manual/lrm-06          # Ch 6: Subprograms
+cat reference/manual/lrm-12          # Ch 12: Generics
+
+# GNAT parser reference (how GNAT does it)
+grep -A20 "P_Discriminant" reference/gnat/par-ch3.adb
+grep -A30 "P_Variant_Part" reference/gnat/par-ch3.adb
+grep -A15 "P_Entry_Declaration" reference/gnat/par-ch9.adb
+
+# AST node structures
+grep "N_.*_Specification :=" reference/gnat/sinfo.ads
+grep "N_Discriminant" reference/gnat/sinfo.ads
+
+# Semantic analysis patterns
+grep -A10 "Analyze_Discriminant" reference/gnat/sem_ch3.adb
+grep -A20 "Analyze_Entry_Declaration" reference/gnat/sem_ch9.adb
+
+# DIANA tree structure (official Ada AST design)
+pdfgrep -A5 "discriminant" reference/DIANA.pdf
+```
 
 ---
 
@@ -833,29 +852,239 @@ diff baseline.txt results.txt  # Check for improvements/regressions
 
 ---
 
-## References
+## Reference Materials (Implementation Oracle)
 
-**Ada 83 Language Reference Manual**
-- Section 3.7: Discriminants and variant records
-- Section 6: Subprograms
-- Section 12: Generic units
-- Appendix E: Complete syntax reference
+### DIANA - Descriptive Intermediate Attributed Notation for Ada
 
-**GNAT Compiler Sources** (reference implementation)
-- `par-ch3.adb`: Parser for declarations
-- `sinfo.ads`: AST node definitions
-- `sem_ch3.adb`: Semantic analysis
-- `exp_ch3.adb`: Code generation expansion
+**reference/DIANA.pdf** (11MB) - Official Ada AST specification
 
-**ACATS Conformance**
-- Official suite: https://www.adaic.org/resources/add_content/standards/05rat/html/Rat-3-4.html
-- 4,050 tests validate Ada 83 LRM compliance
-- Industry standard for compiler certification
+DIANA defines the canonical intermediate representation for Ada compilers. Key concepts:
+- Attributed tree structure (each node has syntactic + semantic info)
+- Lexical nodes (LEX_*): identifiers, literals, operators
+- Syntactic nodes (AS_*): declarations, statements, expressions
+- Semantic annotations (SM_*): types, scopes, entity references
 
-**Algorithm References**
-- FNV Hash: http://www.isthe.com/chongo/tech/comp/fnv/
-- SSA Form: Cytron et al., "Efficiently Computing Static Single Assignment Form" (1991)
-- Operator Precedence: Dijkstra, "Making a Translator for ALGOL 60" (1961)
+**Navigation patterns**:
+```bash
+# Find DIANA node for discriminants
+pdfgrep "DISCRIMINANT" reference/DIANA.pdf | head -20
+
+# Entry family structure
+pdfgrep -C3 "entry family" reference/DIANA.pdf
+
+# Generic instantiation model
+pdfgrep -C5 "generic instantiation" reference/DIANA.pdf
+```
+
+### Ada 83 Language Reference Manual (LRM)
+
+**reference/manual/lrm-NN** - Official language specification
+
+Chapter map (implement in order of chapters):
+```
+lrm-01  Introduction, scope
+lrm-02  Lexical elements          → Lexer (tokens, literals, identifiers)
+lrm-03  Types and declarations    → Parser (discriminants, records, arrays)
+lrm-04  Names and expressions     → Parser (operators, aggregates, attributes)
+lrm-05  Statements                → Parser (loops, conditionals, assignments)
+lrm-06  Subprograms               → Parser+Sem (procedures, functions, parameters)
+lrm-07  Packages                  → Sem (visibility, scopes)
+lrm-08  Visibility rules          → Sem (USE clauses, overloading)
+lrm-09  Tasks                     → Parser+Codegen (entries, rendezvous)
+lrm-10  Program structure         → Sem (compilation units, WITH)
+lrm-11  Exceptions                → Codegen (raise, handlers, propagation)
+lrm-12  Generics                  → Sem (templates, instantiation)
+lrm-13  Representation clauses    → Sem+Codegen (layout, alignment)
+lrm-14  Input-output              → Runtime library
+
+lrm-a   Predefined language env   → Runtime (Standard package)
+lrm-b   Predefined I/O packages   → Runtime (Text_IO, etc.)
+lrm-c   Predefined attributes     → Sem ('FIRST, 'LAST, 'SIZE, etc.)
+lrm-d   Predefined pragmas        → Parser (INLINE, PACK, etc.)
+lrm-e   Syntax summary            → Complete grammar reference
+lrm-f   Implementation deps       → Numeric types, ranges
+```
+
+**Usage examples**:
+```bash
+# Lookup discriminant syntax (Ch 3.7.1)
+grep -A50 "3.7.1" reference/manual/lrm-03
+
+# Entry families (Ch 9.5)
+grep -A30 "9.5" reference/manual/lrm-09
+
+# Generic formal parameters (Ch 12.1)
+grep -A40 "12.1" reference/manual/lrm-12
+
+# Complete syntax (Appendix E)
+cat reference/manual/lrm-e
+```
+
+### GNAT Reference Implementation (2,404 files)
+
+**reference/gnat/** - Production Ada compiler source (AdaCore)
+
+Architecture mirrors ada83.c but at industrial scale:
+```
+Parser    (par-*.adb)   → Recursive descent, error recovery
+Semantics (sem-*.adb)   → Name resolution, type checking, overload resolution
+Expansion (exp-*.adb)   → High-level → low-level transformations
+Codegen   (gigi/)       → GNAT → GCC bridge (not included, use our LLVM backend)
+```
+
+**Key files for ada83.c implementation**:
+
+**AST Definitions**:
+```bash
+reference/gnat/sinfo.ads       # Node types: N_Package_Declaration, N_If_Statement, etc.
+reference/gnat/einfo.ads       # Entity info: E_Variable, E_Function, etc.
+reference/gnat/atree.ads       # Tree operations: New_Node, Set_Field, etc.
+reference/gnat/nlists.ads      # List operations: Append, First, Next
+reference/gnat/types.ads       # Basic types: Node_Id, Entity_Id, Name_Id
+```
+
+**Parser** (organized by LRM chapter):
+```bash
+reference/gnat/par-ch2.adb     # Pragmas, identifiers
+reference/gnat/par-ch3.adb     # Types, discriminants, records (↓ study this)
+reference/gnat/par-ch4.adb     # Expressions, operators
+reference/gnat/par-ch5.adb     # Statements
+reference/gnat/par-ch6.adb     # Subprograms
+reference/gnat/par-ch7.adb     # Packages
+reference/gnat/par-ch9.adb     # Tasks, entries (↓ study this)
+reference/gnat/par-ch10.adb    # Compilation units
+reference/gnat/par-ch12.adb    # Generics (↓ study this)
+reference/gnat/par-ch13.adb    # Representation clauses
+```
+
+**Semantics** (organized by LRM chapter):
+```bash
+reference/gnat/sem_ch3.adb     # Type semantics, discriminants (↓ critical)
+reference/gnat/sem_ch4.adb     # Expression analysis
+reference/gnat/sem_ch5.adb     # Statement analysis
+reference/gnat/sem_ch6.adb     # Subprogram analysis
+reference/gnat/sem_ch8.adb     # Visibility, USE clauses
+reference/gnat/sem_ch9.adb     # Task semantics
+reference/gnat/sem_ch12.adb    # Generic instantiation (↓ complex)
+reference/gnat/sem_type.adb    # Type checking, overloading
+reference/gnat/sem_res.adb     # Name resolution
+```
+
+**Expansion** (high-level → low-level transformations):
+```bash
+reference/gnat/exp_ch3.adb     # Record operations, discriminant checks
+reference/gnat/exp_ch4.adb     # Expression expansion
+reference/gnat/exp_ch5.adb     # Statement expansion
+reference/gnat/exp_ch6.adb     # Call expansion
+reference/gnat/exp_ch9.adb     # Task expansion
+reference/gnat/exp_aggr.adb    # Aggregate expansion (complex!)
+```
+
+**Implementation patterns** (grep cheat sheet):
+```bash
+# How to parse discriminants
+grep -A40 "function P_Discriminant_Specification" reference/gnat/par-ch3.adb
+
+# How to parse entry families
+grep -A30 "function P_Entry_Declaration" reference/gnat/par-ch9.adb
+
+# How to handle identifier lists (A, B, C : INTEGER)
+grep -A20 "Ident_Sloc.*More_Ids" reference/gnat/par-ch3.adb
+
+# Discriminant semantic checks
+grep -A50 "procedure Analyze_Discriminant" reference/gnat/sem_ch3.adb
+
+# Variant record validation
+grep -A100 "Analyze_Variant_Part" reference/gnat/sem_ch3.adb
+
+# Generic instantiation algorithm
+grep -A200 "Analyze_Package_Instantiation" reference/gnat/sem_ch12.adb
+
+# Symbol table structure
+grep -A30 "procedure Enter_Name" reference/gnat/sem_ch8.adb
+```
+
+**Code archaeology** (find patterns in production code):
+```bash
+# Find all parser entry points
+grep "^   function P_" reference/gnat/par-*.adb | cut -d: -f1,2 | sort -u
+
+# Find all semantic analysis procedures
+grep "procedure Analyze_" reference/gnat/sem-*.adb | grep "(" | head -50
+
+# Find node type definitions
+grep "N_.*:=" reference/gnat/sinfo.ads | cut -d: -f2 | sort
+
+# Find entity type definitions
+grep "E_.*," reference/gnat/einfo.ads | head -50
+```
+
+### Cross-referencing: LRM ↔ GNAT ↔ ada83.c
+
+**Example: Implementing entry families**
+
+1. **Read LRM**: `grep -A50 "9.5" reference/manual/lrm-09`
+   - Syntax: `ENTRY E (discrete_range) (parameters);`
+   - Semantics: Each value in discrete_range creates a distinct entry
+
+2. **Study GNAT parser**: `grep -A30 "P_Entry_Declaration" reference/gnat/par-ch9.adb`
+   - Lookahead to distinguish entry family `(TYPE)` from parameters `(X : T)`
+   - Uses `Token = Tok_Left_Paren` to detect start
+   - Calls `P_Discrete_Range` if family detected
+
+3. **Study GNAT AST**: `grep "N_Entry_Declaration" reference/gnat/sinfo.ads`
+   - Fields: `Discrete_Subtype_Definition`, `Parameter_Specifications`
+   - Discrete_Subtype_Definition is optional (None = simple entry)
+
+4. **Implement in ada83.c**:
+   ```c
+   // Current (simplified):
+   if(pm(p,T_ENT)){No*e=ND(ENT,lc);e->ent.nm=pi(p);
+     if(pa(p,T_LP)){pe(p,T_LP);nv(&e->ent.ixy,pnm(p));pe(p,T_RP);}
+     e->ent.pmy=ppm(p);pe(p,T_SC);nv(&n->ts.en,e);}
+   ```
+
+5. **Test with ACATS**: `./test.sh group c | grep "c950"`
+   - c95009a.ada tests entry families
+   - Compare error messages with GNAT's behavior
+
+**Example: Implementing discriminants with identifier lists**
+
+1. **LRM**: `grep -A30 "3.7.1" reference/manual/lrm-03`
+   - `identifier_list : type_mark [:= expression]`
+   - Equivalent to multiple single specifications
+
+2. **GNAT parser**: `grep -A40 "P_Discriminant_Specification" reference/gnat/par-ch3.adb`
+   - Parse identifier list first
+   - Set `More_Ids` flag for all but last
+   - Set `Prev_Ids` flag for all but first
+
+3. **ada83.c implementation**: Already fixed! (commit 29579a2)
+   ```c
+   // Parse comma-separated identifiers before colon
+   NV nms={0};do nv(&nms,pnm(p));while(pm(p,T_CM));pe(p,T_COLON);
+   // Create separate discriminant nodes
+   for(uint32_t i=0;i<nms.n;i++){...}
+   ```
+
+### Algorithm References
+
+**Hashing**:
+- FNV-1a: http://www.isthe.com/chongo/tech/comp/fnv/
+- GNAT uses: `reference/gnat/namet.ads` (name table implementation)
+
+**SSA Construction**:
+- Cytron et al., "Efficiently Computing Static Single Assignment Form" (1991)
+- GNAT doesn't use SSA (generates GCC GENERIC trees)
+- We emit alloca/load/store, let LLVM's mem2reg create SSA
+
+**Parsing**:
+- Dijkstra, "Making a Translator for ALGOL 60" (1961) - operator precedence
+- GNAT uses table-driven precedence: `reference/gnat/par-ch4.adb`
+
+**ACATS**:
+- https://www.adaic.org/resources/add_content/standards/05rat/html/Rat-3-4.html
+- 4,050 tests = compiler certification benchmark
 
 ---
 
