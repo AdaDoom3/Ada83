@@ -1,6 +1,6 @@
 #!/bin/bash
 set -euo pipefail
-declare -A X=([a]=0[b]=0[c]=0[d]=0[e]=0[l]=0[f]=0[s]=0[z]=0[ec]=0[ee]=0[t]=$(date +%s%3N))
+declare -A X=([a]=0 [b]=0 [c]=0 [d]=0 [e]=0 [l]=0 [f]=0 [s]=0 [z]=0 [ec]=0 [ee]=0 [t]=$(date +%s%3N))
 z=$'\e[0m' d=$'\e[2m' k=$'\e[90m' w=$'\e[97m' g=$'\e[32m' r=$'\e[31m' y=$'\e[33m' c=$'\e[36m' m=$'\e[35m' b=$'\e[94m'
 
 :()(((${2:-1}>0))&&printf %d $((100*$1/$2))||printf 0)
@@ -40,8 +40,9 @@ E(){
   printf "   coverage ${w}%d${z}/${w}%d${z} (${w}%d%%${z})  %b\n\n" $h ${#x[@]} $p "$v"
 }
 
-%(){
-  local f=$1 v=${2:-} n=$(basename "$f" .ada) q=${n:0:1};((++X[z]))
+T(){
+  local f=$1 v=${2:-} n=$(basename "$f" .ada)
+  local q=${n:0:1};((++X[z]))
   case $q in
     [aA])
       local out err
@@ -147,7 +148,7 @@ E(){
   esac
 }
 
-~(){
+R(){
   local tot=${X[z]} pass=$((X[a]+X[b]+X[c]+X[d]+X[e]+X[l]))
   printf "\n"
   printf "${c}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${z}\n"
@@ -157,7 +158,7 @@ E(){
   printf " ${d}%-22s${z}  ${g}%6s${z}  ${r}%6s${z}  ${y}%6s${z}  %6s  %6s\n" "CLASS" "pass" "fail" "skip" "total" "rate"
   printf " ${k}──────────────────────  ──────  ──────  ──────  ──────  ──────${z}\n"
   ((X[a]>0))&&printf " A  Acceptance            %6d                  %6d\n" ${X[a]} ${X[a]}
-  local bf=$((X[f])) bt=$((X[b]+bf))
+  local bf=$((X[f]));local bt=$((X[b]+bf))
   ((bt>0))&&printf " B  Illegality             %6d  %6d          %6d  %5d%%\n" ${X[b]} $bf $bt $(: ${X[b]} $bt)
   local ct=$((X[c]+X[s]))
   ((ct>0))&&printf " C  Executable             %6d          %6d  %6d  %5d%%\n" ${X[c]} ${X[s]} $ct $(: ${X[c]} $ct)
@@ -191,7 +192,7 @@ E(){
   printf "\n"
 }
 
-G(){ + "Class ${1^^} Tests";for f in acats/${1}*.ada;do [[ -f $f ]]&&% "$f" "${2:-}";done;~;}
+G(){ + "Class ${1^^} Tests";for f in acats/${1}*.ada;do [[ -f $f ]]&&T "$f" "${2:-}";done;R;}
 
 O(){
   + "B-Test Error Detection Analysis";for f in acats/b*.ada;do [[ -f $f ]]||continue;n=$(basename "$f" .ada);((++X[z]))
@@ -204,11 +205,11 @@ O(){
     E "$r" "✗" "$n" "FAIL" "$h/$x errors (${p}%)"
     ((++X[f]))
   fi
-  done;~
+  done;R
 }
 
-Q(){ + "Sample Tests";for f in acats/b22003a.ada acats/b22001h.ada acats/c95009a.ada acats/c45231a.ada;do [[ -f $f ]]&&% "$f";done;~;}
-A(){ + "Full Suite";for f in acats/*.ada;do [[ -f $f ]]&&% "$f";done;~;}
+Q(){ + "Sample Tests";for f in acats/b22003a.ada acats/b22001h.ada acats/c95009a.ada acats/c45231a.ada;do [[ -f $f ]]&&T "$f";done;R;}
+A(){ + "Full Suite";for f in acats/*.ada;do [[ -f $f ]]&&T "$f";done;R;}
 
 U(){
   echo "Usage: $0 <mode> [options]"
