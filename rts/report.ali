@@ -1,0 +1,7 @@
+V 1.0
+U REPORT
+X TEXT_IO__PUT_LINE void ptr
+X TEXT_IO__NEW_LINE void
+X TEXT_IO__PUT void i64
+X TEXT_IO__PUT void ptr
+X TEXT_IO__PUT void i64
