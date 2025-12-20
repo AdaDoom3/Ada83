@@ -71,64 +71,87 @@ pdfgrep -A5 "discriminant" reference/DIANA.pdf
 
 ## Current Status
 
-> **Last Updated:** 2025-12-20 16:18 UTC  
-> **Development Stage:** Core compiler functional, addressing remaining semantic issues  
-> **Latest Commit:** `7b15851` - Nested procedure static link implementation
+> **Last Updated:** 2025-12-20 16:44 UTC
+> **Development Stage:** Critical LLVM IR generation bugs under investigation
+> **Latest Commit:** `5c278cb` - Merge pull request #1 (nested procedures)
 
-### Recent Completion: Nested Procedure Variable Access
+### Critical Compiler Bugs (Investigation Phase)
 
-**Problem:** Nested procedures could not access variables from enclosing scopes due to separate LLVM stack frames.
+The compiler is currently experiencing segmentation faults during compilation of ACATS C-tests. Deep analysis of LLVM IR generation revealed fundamental issues in the code generator that must be resolved before proceeding with feature development.
 
-**Solution Implemented:** Frame-based static links with pointer indirection
-- Parent procedures construct frame arrays containing pointers to local variables
-- Frame pointer passed via `__slnk` parameter to nested procedures
-- Variable access implemented through double indirection: `getelementptr ptr, ptr -> load ptr -> load/store value`
-- Achieves proper variable aliasing without value copying
+**Current Test Results:** Sample suite shows 25% pass rate (1/4), with both C-tests failing due to compiler segfaults during compilation.
 
-**Validation Results:**
-```
-Test case: Parent X=42, Y=100; Nested modifies: X+=1, Y+=7
-Expected: X=43, Y=107
-Actual: X=43, Y=107 (Correct)
-```
+### LLVM IR Code Generation Bugs
 
-**Implementation Details:**
-- `gbf()`: Frame builder - allocates pointer array, stores variable addresses
-- `gex()`: Expression generator - double-indirect load for parent variables
-- `gss()`: Statement generator - indirect store for parent variable modification
-- Modified `N_PB` case to invoke frame construction before procedure body
-- Modified `N_CLT` case to pass frame pointer instead of null
+**Bug #1: Duplicate %ej Allocation in Block Statements** (Priority: CRITICAL)
+- Location: `ada83.c:176` (gss function, N_BL case)
+- Symptom: Multiple `%ej = alloca ptr` instructions in same LLVM function scope
+- Root cause: Block statements allocate new %ej even though one already exists at function entry
+- LLVM error: "multiple definition of local value named 'ej'"
+- Current code pattern:
+  ```c
+  fprintf(g->o,"  %%ej = alloca ptr\n  store ptr %%t%d, ptr %%ej\n",sj);
+  ```
+- Required fix: Blocks should only store to existing %ej, not allocate new one
+- Impact: Prevents compilation of any code with nested block statements
 
-### Outstanding Issues
+**Bug #2: Missing Static Link Parameter in Function Calls** (Priority: CRITICAL)
+- Location: `ada83.c:163-169` (gex function, N_CL case)
+- Symptom: Unresolved symbol errors during llvm-link (e.g., `@__adart_setjmp_...`)
+- Root cause: Function calls to nested procedures missing `ptr %__frame` static link parameter
+- Current code generates: `call void @proc(i64 %t1, i64 %t2)`
+- Required: `call void @proc(i64 %t1, i64 %t2, ptr %__frame)` when `s->lv > 0`
+- Impact: Any test using nested procedures fails at link stage
 
-**Issue 1: Named Parameter Operator Calls** (Priority: Medium)
-- Location: `c45231a.ada:74`
-- Symptom: Parse error when calling operators with named parameter notation
-- Example: `IF ">" (LEFT => CI2, RIGHT => I1A) THEN`
-- Root cause: `ppr()` parser does not handle `T_STR` followed by `T_LP`
-- Estimated complexity: Low - single function extension
-- Impact: Approximately 10 C-group tests
+**Bug #3: Missing %ej Allocation at Function Entry** (Priority: CRITICAL)
+- Location: `ada83.c:177-178` (gdl function, N_PB/N_FB cases)
+- Symptom: Store to undeclared %ej variable in nested blocks
+- Root cause: Exception jump buffer not allocated at procedure entry
+- Current: Blocks try to store to %ej before it exists
+- Required: Add `fprintf(g->o,"  %%ej = alloca ptr\n");` immediately after function prologue
+- Impact: All procedures with exception handling or block statements fail
 
-**Issue 2: Aggregate Initialization Code Generation** (Priority: High)
-- Location: `c37310a.ada:70+`
-- Symptom: `llvm-link` error - undefined value reference in discriminated record aggregate
-- Example: `(DISC => 'L')` generates reference to undefined `%t16`
-- Root cause: Missing instruction emission in aggregate generator
-- Estimated complexity: Medium - requires IR trace analysis
-- Impact: Approximately 30 tests using discriminated records
+**Bug #4: Compiler Segmentation Faults** (Priority: CRITICAL)
+- Location: Unknown (requires GDB analysis)
+- Symptom: Compiler crashes during compilation of c45231a.ada, c95009a.ada
+- Observation: No LLVM IR output generated before crash
+- Hypothesis: Crash occurs during parsing or semantic analysis phase
+- Impact: Prevents any compilation of affected ACATS tests
 
-**Issue 3: Nested Procedure Variable Access** (Status: Complete)
-- Implemented frame-based static links with double indirection
-- Full validation completed
+### Analysis Artifacts
+
+**Test Case c45231a.ada:**
+- Relational and membership operations test
+- Contains redefined relational operators in nested scope (lines 173-191)
+- Three separate DECLARE blocks with identical variable names (I1, I5, CI2, CI10)
+- Compiler segfaults immediately without generating any LLVM IR
+
+**Test Case c95009a.ada:**
+- Task entry call test
+- Uses task types, entry families, and nested rendezvous
+- Compiler segfaults during compilation
+- Expected to generate complex static link code for nested task operations
+
+### Previous Investigation Summary
+
+An earlier attempt was made to fix Bugs #1-3 simultaneously:
+1. Removed duplicate %ej allocation from N_BL case (changed to store-only)
+2. Added %ej allocation at N_PB function entry
+3. Added static link parameter to function calls in N_CL case
+
+This approach successfully addressed the LLVM IR generation errors but exposed Bug #4 (segfaults), suggesting deeper structural issues in the compiler's handling of complex nested scopes or symbol table management.
+
+A subsequent attempt to fix duplicate variable allocations by adding unique counters to variable names introduced additional segfaults, and all changes were reverted to establish a clean baseline for systematic debugging.
 
 ### Test Suite Status
 
-Current baseline: A=0 B=1 C=0 D=0 E=0 (Sample: 1/4 passing)
+Current baseline (sample tests): B=1/2 (50%), C=0/2 (0%), Overall=25%
 
-**Rationale for focused development:**  
-The compiler is being developed iteratively with focus on architectural correctness before scale testing. Issues 1 and 2 represent systematic blockers that would affect multiple test categories. Resolution of these issues expected to enable 15-20% C-group pass rate.
+**Segmentation faults block progress:** C-tests cannot complete compilation, preventing validation of LLVM IR generation fixes. B-tests show low error coverage (33% on b22003a), indicating semantic analysis gaps in error detection.
 
-**Next milestone:** Address named parameter calls, then aggregate code generation.
+**Immediate priority:** Resolve segmentation faults using GDB to enable compilation of c45231a.ada and c95009a.ada, then systematically apply LLVM IR generation fixes in order: Bug #3, Bug #1, Bug #2.
+
+**Next milestone:** Achieve stable compilation (no segfaults) on sample test suite, then address LLVM IR bugs to enable linking and execution.
 
 
 **Design Principles:**
