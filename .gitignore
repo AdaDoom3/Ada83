@@ -9,3 +9,4 @@ test_results/
 acats_logs/
 *.ll
 *.bc
+T*.ll
