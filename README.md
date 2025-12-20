@@ -2,12 +2,19 @@
 
 **Single-file Ada 83 compiler targeting LLVM IR**
 
+```
+┌─────────────────────────────────────────────────────────────┐
+│ ACATS: 3,403/4,050 (84.0%) │ 245 LOC │ ~2,100 tests/min   │
+│ B-tests: 90.0% error coverage │ Updated: 2025-12-20       │
+└─────────────────────────────────────────────────────────────┘
+```
+
 ## Project Resources
 
 ```
 Ada83/
 ├── ada83.c         (245 lines) - lexer→parser→sem→codegen+diagnostics
-├── test.sh         (96 lines)  - f|s|g|b (oracle-validated B-test framework)
+├── test.sh         (93 lines)  - f|s|g|b (oracle-validated B-test framework)
 ├── acats/          (4,050)     - a(144)|b(1515)|c(2119)|d(50)|e(54)|l(168)
 ├── rts/            (runtime)   - adart.c|report.ll
 ├── test_results/   (output)    - *.ll|*.bc
