@@ -1,9 +1,12 @@
 #!/bin/bash
 set -euo pipefail;declare -A X=([a]=0 [b]=0 [c]=0 [d]=0 [e]=0 [l]=0 [f]=0 [s]=0 [z]=0 [ec]=0 [ee]=0 [t]=$(date +%s%3N))
-z=$'\e[0m' d=$'\e[2m' k=$'\e[90m' w=$'\e[97m' g=$'\e[32m' r=$'\e[31m' y=$'\e[33m' c=$'\e[36m' m=$'\e[35m' b=$'\e[94m'
+if [[ ${NO_COLOR:-} == 1 ]];then z='' d='' k='' w='' g='' r='' y='' c='' m='' b='';else
+z=$'\e[0m' d=$'\e[2m' k=$'\e[90m' w=$'\e[97m' g=$'\e[32m' r=$'\e[31m' y=$'\e[33m' c=$'\e[36m' m=$'\e[35m' b=$'\e[94m';fi
 :()(((${2:-1}>0))&&printf %d $((100*$1/$2))||printf 0)
 .(){ printf %.3f "$(bc<<<"scale=4;($(date +%s%3N)-${X[t]})/1000")";}
-E(){ printf "  ${b}%-18s${z} ${1}${2}${z} ${w}%-14s${z}" "$3" "$4";[[ -n ${5:-} ]]&&printf " ${k}%s${z}" "$5";printf "\n";}
+E(){ if [[ ${NO_COLOR:-} == 1 ]];then local s="$2";[[ "$s" == "✓" ]]&&s="[PASS]";[[ "$s" == "✗" ]]&&s="[FAIL]";[[ "$s" == "○" ]]&&s="[SKIP]";[[ "$s" == "–" ]]&&s="[ -- ]";[[ "$s" == "·" ]]&&s="[ .. ]";[[ "$s" == "?" ]]&&s="[????]"
+printf "  %-18s %-6s %-14s" "$3" "$s" "$4";[[ -n ${5:-} ]]&&printf " %s" "$5";printf "\n";
+else printf "  ${b}%-18s${z} ${1}${2}${z} ${w}%-14s${z}" "$3" "$4";[[ -n ${5:-} ]]&&printf " ${k}%s${z}" "$5";printf "\n";fi;}
 ^(){ local f=$1;local -a x a;local i=0 h=0;while IFS= read -r l;do((++i));[[ $l =~ --\ ERROR ]]&&x+=($i);done<"$f"
 while IFS=: read -r _ n _;do a+=($n);done< <(./ada83 "$f" 2>&1|grep "^[^:]*:[0-9]")
 for e in ${x[@]+"${x[@]}"};do for v in ${a[@]+"${a[@]}"};do((v>=e-1&&v<=e+1))&&{ ((++h));break;};done;done
@@ -53,6 +56,22 @@ E "$g" ✓ "$n" BIND_REJECT "execution blocked"&&((++X[l]));else E "$g" ✓ "$n"
 else E "$g" ✓ "$n" COMPILE_REJECT "$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-40)"&&((++X[l]));fi;;
 [fF])E "$k" · "$n" FOUNDATION "support code";;*)E "$y" ○ "$n" UNKNOWN "unrecognized test class '$q'"&&((++X[s]));;esac;}
 R(){ local tot=${X[z]} pass=$((X[a]+X[b]+X[c]+X[d]+X[e]+X[l])) bf=${X[f]};local bt=$((X[b]+bf)) ct=$((X[c]+X[s]))
+if [[ ${NO_COLOR:-} == 1 ]];then printf "\n========================================\nRESULTS\n========================================\n\n"
+printf " %-22s  %6s  %6s  %6s  %6s  %6s\n" CLASS pass fail skip total rate
+printf " ----------------------  ------  ------  ------  ------  ------\n"
+((X[a]>0))&&printf " A  Acceptance            %6d                  %6d\n" ${X[a]} ${X[a]}
+((bt>0))&&printf " B  Illegality             %6d  %6d          %6d  %5d%%\n" ${X[b]} $bf $bt $(: ${X[b]} $bt)
+((ct>0))&&printf " C  Executable             %6d          %6d  %6d  %5d%%\n" ${X[c]} ${X[s]} $ct $(: ${X[c]} $ct)
+((X[d]>0))&&printf " D  Numerics               %6d                  %6d\n" ${X[d]} ${X[d]}
+((X[e]>0))&&printf " E  Inspection             %6d                  %6d\n" ${X[e]} ${X[e]}
+((X[l]>0))&&printf " L  Post-compilation       %6d                  %6d\n" ${X[l]} ${X[l]}
+printf " ----------------------  ------  ------  ------  ------  ------\n"
+printf " TOTAL                    %6d  %6d  %6d  %6d  %5d%%\n" $pass ${X[f]} ${X[s]} $tot $(: $pass $tot)
+((X[ee]>0))&&{ printf "\n========================================\nB-TEST ERROR COVERAGE\n========================================\n\n"
+printf " errors detected   %5d / %d\n coverage rate     %d%%\n" ${X[ec]} ${X[ee]} $(: ${X[ec]} ${X[ee]});}
+printf "\n========================================\n"
+printf " elapsed $(.)s    processed ${X[z]} tests    $(date "+%Y-%m-%d %H:%M:%S")\n"
+printf "========================================\n";else
 printf "\n${c}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${z}\n ${w}RESULTS${z}\n"
 printf "${c}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${z}\n\n"
 printf " ${d}%-22s${z}  ${g}%6s${z}  ${r}%6s${z}  ${y}%6s${z}  %6s  %6s\n" CLASS pass fail skip total rate
@@ -70,11 +89,12 @@ printf " ${w}B-TEST ERROR COVERAGE${z}\n${m}━━━━━━━━━━━━
 printf " errors detected   ${w}%5d${z} / ${w}%d${z}\n coverage rate     ${w}%d%%${z}\n" ${X[ec]} ${X[ee]} $(: ${X[ec]} ${X[ee]});}
 printf "\n${k}────────────────────────────────────────────────────────────────────────${z}\n"
 printf " elapsed ${w}$(.)s${z}    processed ${w}${X[z]}${z} tests    $(date "+%Y-%m-%d %H:%M:%S")\n"
-printf "${k}────────────────────────────────────────────────────────────────────────${z}\n"
+printf "${k}────────────────────────────────────────────────────────────────────────${z}\n";fi
 printf "A=%d B=%d C=%d D=%d E=%d L=%d F=%d S=%d T=%d/%d (%d%%) ERR=%d/%d\n" \
 ${X[a]} ${X[b]} ${X[c]} ${X[d]} ${X[e]} ${X[l]} ${X[f]} ${X[s]} $pass $tot $(: $pass $tot) ${X[ec]} ${X[ee]}>test_summary.txt;}
-+(){ printf "\n${c}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${z}\n ${w}%s${z}\n" "$1"
-printf "${c}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${z}\n\n";}
++(){ if [[ ${NO_COLOR:-} == 1 ]];then printf "\n%s\n%s\n\n" "========================================" "$1";
+else printf "\n${c}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${z}\n ${w}%s${z}\n" "$1"
+printf "${c}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${z}\n\n";fi;}
 G(){ + "Class ${1^^} Tests";for f in acats/${1}*.ada;do [[ -f $f ]]&&T "$f" "${2:-}";done;R;}
 O(){ + "B-Test Error Detection Analysis";for f in acats/b*.ada;do [[ -f $f ]]||continue;n=$(basename "$f" .ada);((++X[z]))
 [[ ${1:-} == v ]]&&{ @ "$f";q=$(^ "$f");((100*${q%:*}/${q#*:}>=90))&&((++X[b]))||((++X[f]));continue;}
