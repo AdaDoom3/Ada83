@@ -2,13 +2,6 @@
 
 **Single-file Ada 83 compiler targeting LLVM IR**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│ ACATS: 3,403/4,050 (84.0%) │ 245 LOC │ ~2,100 tests/min   │
-│ B-tests: 90.0% error coverage │ Updated: 2025-12-20       │
-└─────────────────────────────────────────────────────────────┘
-```
-
 ## Project Resources
 
 ```
