@@ -7,12 +7,11 @@
 ```
 Ada83/
 ├── ada83.c         (245 lines) - lexer→parser→sem→codegen+diagnostics
-├── test.sh         (82 lines)  - f|s|g|b (oracle-validated B-test framework)
-├── btest.c         (oracle)    - B-test error coverage validator
+├── test.sh         (96 lines)  - f|s|g|b (oracle-validated B-test framework)
 ├── acats/          (4,050)     - a(144)|b(1515)|c(2119)|d(50)|e(54)|l(168)
 ├── rts/            (runtime)   - adart.c|report.ll
 ├── test_results/   (output)    - *.ll|*.bc
-├── acats_logs/     (logs)      - *.err|*.out|*.oracle
+├── acats_logs/     (logs)      - *.err|*.out
 └── reference/      (oracle)    - LRM|GNAT|DIANA
     ├── DIANA.pdf               - Descriptive Intermediate Attributed Notation for Ada
     ├── manual/                 - Ada 83 LRM (lrm-01..lrm-14, appendices a-f)
@@ -27,7 +26,7 @@ Ada83/
         └── ...                 - 2396 more files
 ```
 
-**Quick start**: `cc -o ada83 ada83.c -lm && cc -o btest btest.c && ./test.sh s`
+**Quick start**: `cc -o ada83 ada83.c -lm && ./test.sh s`
 
 **Reference navigation** (implementation oracle):
 ```bash
@@ -248,11 +247,10 @@ test_results/
 ├── *.bc          # Linked bytecode (test + runtime)
 └── acats_logs/
     ├── *.err     # Compilation errors
-    ├── *.out     # Runtime output
-    └── *.oracle  # B-test error coverage validation results
+    └── *.out     # Runtime output
 ```
 
-**Note**: B-group tests generate `.err` and `.oracle` files (no `.ll` - they fail compilation by design).
+**Note**: B-group tests generate `.err` files only (no `.ll` - they fail compilation by design).
 
 ### Understanding Test Names
 
@@ -451,27 +449,131 @@ pdfgrep -C5 "generic instantiation" reference/DIANA.pdf
 
 Chapter map (implement in order of chapters):
 ```
-lrm-01  Introduction, scope
-lrm-02  Lexical elements          → Lexer (tokens, literals, identifiers)
-lrm-03  Types and declarations    → Parser (discriminants, records, arrays)
-lrm-04  Names and expressions     → Parser (operators, aggregates, attributes)
-lrm-05  Statements                → Parser (loops, conditionals, assignments)
-lrm-06  Subprograms               → Parser+Sem (procedures, functions, parameters)
-lrm-07  Packages                  → Sem (visibility, scopes)
-lrm-08  Visibility rules          → Sem (USE clauses, overloading)
-lrm-09  Tasks                     → Parser+Codegen (entries, rendezvous)
-lrm-10  Program structure         → Sem (compilation units, WITH)
-lrm-11  Exceptions                → Codegen (raise, handlers, propagation)
-lrm-12  Generics                  → Sem (templates, instantiation)
-lrm-13  Representation clauses    → Sem+Codegen (layout, alignment)
-lrm-14  Input-output              → Runtime library
+lrm-01  Introduction, scope                      → Goals, terminology, scope
+lrm-02  Lexical elements                         → Identifiers, literals, delimiters, comments
+        • 2.1: Character set                     → Basic/graphic/control chars, case-insensitive
+        • 2.2: Lexical elements                  → Token classes: delimiter, identifier, literal, comment
+        • 2.3: Identifiers                       → Letter[{letter|digit}[_]]*
+        • 2.4: Numeric literals                  → Integer: decimal, based (2#1010#, 16#FF#)
+        • 2.4: Numeric literals (cont'd)         → Real: 3.14159, 1.0E-6, 16#F.F#E+2
+        • 2.5: Character literals                → 'A', 'z', '''
+        • 2.6: String literals                   → "Hello", "" (null string)
+        • 2.7: Comments                          → -- to end of line
+        • 2.8: Pragmas                           → PRAGMA identifier[(argument{,argument})]
 
-lrm-a   Predefined language env   → Runtime (Standard package)
-lrm-b   Predefined I/O packages   → Runtime (Text_IO, etc.)
-lrm-c   Predefined attributes     → Sem ('FIRST, 'LAST, 'SIZE, etc.)
-lrm-d   Predefined pragmas        → Parser (INLINE, PACK, etc.)
-lrm-e   Syntax summary            → Complete grammar reference
-lrm-f   Implementation deps       → Numeric types, ranges
+lrm-03  Types and declarations                   → Type system, objects, discriminants, aggregates
+        • 3.1: Declarations                      → Basic declarations vs bodies
+        • 3.2: Objects/numbers                   → Variables, constants, number declarations
+        • 3.3: Types and subtypes                → Type definitions, subtype constraints
+        • 3.4: Derived types                     → Inheritance, type derivation
+        • 3.5: Scalar types                      → Discrete (enum, integer, char) + real (float, fixed)
+        • 3.6: Array types                       → Constrained/unconstrained, multidimensional
+        • 3.7: Record types                      → Components, discriminants, variant records
+        • 3.8: Access types                      → Pointers, allocators, null
+        • 3.9: Declarative parts                 → Declaration ordering, completion rules
+
+lrm-04  Names and expressions                    → Operators, aggregates, allocators, attributes
+        • 4.1: Names                             → Simple, indexed, selected, slice, attribute
+        • 4.2: Literals                          → Enumeration, character, numeric, string, null
+        • 4.3: Aggregates                        → Positional/named, (X=>1,Y=>2), (1..10=>0)
+        • 4.4: Expressions                       → Relations, boolean, membership (IN)
+        • 4.5: Operators/expression_evaluation   → Precedence, short-circuit AND/OR, accuracy
+        • 4.6: Type conversions                  → Explicit conversion, qualification T'(expr)
+        • 4.7: Qualified expressions             → Type'(expression) for disambiguation
+        • 4.8: Allocators                        → NEW type_mark, NEW type_mark'aggregate
+        • 4.9: Static expressions                → Compile-time evaluable (literals, operators, attributes)
+
+lrm-05  Statements                               → Control flow, assignment, procedure calls
+        • 5.1: Simple/compound statements        → Assignment, procedure call, null
+        • 5.2: Assignment statement              → :=, array/record aggregates on right
+        • 5.3: IF statement                      → IF..THEN..ELSIF..ELSE..END IF
+        • 5.4: CASE statement                    → CASE expr IS WHEN choice=>stmts END CASE
+        • 5.5: LOOP statement                    → Simple, WHILE, FOR loops
+        • 5.6: Block statement                   → DECLARE..BEGIN..END with exception handlers
+        • 5.7: EXIT statement                    → Exit loop, optional WHEN condition
+        • 5.8: RETURN statement                  → Return from subprogram, optional expression
+        • 5.9: GOTO statement                    → <<label>> and GOTO label (discouraged)
+
+lrm-06  Subprograms                              → Procedures, functions, parameters, overloading
+        • 6.1: Subprogram declarations           → PROCEDURE/FUNCTION specs
+        • 6.2: Formal parameters                 → IN, OUT, IN OUT modes
+        • 6.3: Subprogram bodies                 → IS..BEGIN..END implementation
+        • 6.4: Subprogram calls                  → Positional/named association, default params
+        • 6.5: Function calls                    → As primary expressions, no side effects
+        • 6.6: Parameter modes                   → Copy-in (IN), copy-out (OUT), copy-in-out
+        • 6.7: Overloading                       → Same name, different signatures
+
+lrm-07  Packages                                 → Modularity, encapsulation, separate compilation
+        • 7.1: Package structure                 → PACKAGE spec, PACKAGE BODY implementation
+        • 7.2: Package specifications/declarations → Visible part, private part
+        • 7.3: Package bodies                    → Implementation of spec
+        • 7.4: Private types                     → Abstract data types, deferred representation
+        • 7.5: Limited types                     → No assignment/equality, ADT enforcement
+        • 7.6: Deferred constants                → Constant declared in spec, value in body
+
+lrm-08  Visibility rules                         → Scopes, USE clauses, renaming, overloading
+        • 8.1: Declarative region/scope          → Nested scopes, hiding, overriding
+        • 8.2: Visibility                        → Direct visibility, visibility by selection
+        • 8.3: USE clause                        → Make package visible without prefix
+        • 8.4: Renaming declarations             → Alias objects, types, packages, subprograms
+        • 8.5: Overload resolution               → Signature-based disambiguation
+        • 8.6: Overloading operators             → User-defined "+", "/=", etc.
+
+lrm-09  Tasks and synchronization                → Concurrency, rendezvous, protected objects
+        • 9.1: Task specifications/types         → TASK TYPE, task objects
+        • 9.2: Task bodies                       → BEGIN..END, accept statements
+        • 9.3: Task execution                    → Activation, termination, master
+        • 9.4: Task dependence                   → Master/dependent relationship
+        • 9.5: Entries/accept statements         → Rendezvous synchronization
+        • 9.6: Delay statements                  → DELAY duration, absolute time
+        • 9.7: SELECT statements                 → Selective wait, conditional/timed entry call
+        • 9.8: Abort statements                  → Asynchronous task termination
+        • 9.9: Task priorities                   → PRAGMA PRIORITY
+
+lrm-10  Program structure                        → Compilation units, WITH, separate compilation
+        • 10.1: Compilation units                → Library units, subunits
+        • 10.2: Context clauses                  → WITH, USE for dependencies
+        • 10.3: Library units                    → Root library, parent/child
+        • 10.4: Subunits                         → SEPARATE bodies
+        • 10.5: Compilation order                → Elaboration order, dependencies
+
+lrm-11  Exceptions                               → Error handling, propagation, handlers
+        • 11.1: Exception declarations           → Exception names
+        • 11.2: Exception handlers               → WHEN exception_name=>stmts
+        • 11.3: RAISE statement                  → Explicit exception raising
+        • 11.4: Exception handling               → Dynamic propagation, handler search
+        • 11.5: Predefined exceptions            → CONSTRAINT_ERROR, NUMERIC_ERROR, PROGRAM_ERROR
+        • 11.6: Suppressing checks               → PRAGMA SUPPRESS
+
+lrm-12  Generic units                            → Templates, instantiation, formal parameters
+        • 12.1: Generic declarations             → GENERIC formal_part package/subprogram
+        • 12.2: Generic formal parameters        → Types, objects, subprograms, packages
+        • 12.3: Generic instantiation            → PACKAGE/PROCEDURE IS NEW generic(actuals)
+        • 12.4: Formal types                     → (<>), RANGE <>, DIGITS <>, DELTA <>
+        • 12.5: Formal subprograms               → WITH FUNCTION/PROCEDURE signatures
+
+lrm-13  Representation clauses                   → Low-level control: layout, alignment, import
+        • 13.1: Representation clauses           → Type representation, address clauses
+        • 13.2: Length clauses                   → T'SIZE, T'STORAGE_SIZE
+        • 13.3: Enumeration clauses              → FOR type USE (name=>value,...)
+        • 13.4: Record representation            → FOR type USE RECORD component AT offset RANGE bits
+        • 13.5: Address clauses                  → FOR object USE AT address
+        • 13.6: Change of representation         → UNCHECKED_CONVERSION
+        • 13.7: Machine code insertions          → Inline assembly
+        • 13.8: Interface to other languages     → PRAGMA INTERFACE(language, entity)
+
+lrm-14  Input-output                             → File operations, text I/O, sequential/direct
+        • 14.1: External files                   → CREATE, OPEN, CLOSE, DELETE, RESET
+        • 14.2: Sequential I/O                   → Generic package, READ/WRITE
+        • 14.3: Direct I/O                       → Random access by index
+        • 14.4: Text I/O                         → GET, PUT, GET_LINE, line/page termination
+
+lrm-a   Predefined language environment          → Standard package, types, exceptions
+lrm-b   Predefined I/O packages                  → Text_IO, Sequential_IO, Direct_IO
+lrm-c   Predefined attributes                    → T'FIRST, T'LAST, T'SIZE, T'ADDRESS, etc.
+lrm-d   Predefined pragmas                       → INLINE, PACK, OPTIMIZE, SUPPRESS, etc.
+lrm-e   Syntax summary                           → Complete BNF grammar
+lrm-f   Implementation-dependent characteristics → Numeric limits, storage, tasking
 ```
 
 **Usage examples**:
@@ -547,6 +649,45 @@ reference/gnat/exp_ch5.adb     # Statement expansion
 reference/gnat/exp_ch6.adb     # Call expansion
 reference/gnat/exp_ch9.adb     # Task expansion
 reference/gnat/exp_aggr.adb    # Aggregate expansion (complex!)
+```
+
+**Codegen** (LLVM IR emission - ada83.c equivalent):
+```bash
+# GNAT uses GCC backend (gigi/). For LLVM IR generation, study these patterns:
+
+# Expression code generation
+reference/gnat/exp_ch4.adb     # Operator expansion, type conversions
+reference/gnat/exp_ch6.adb     # Function/procedure call sequences
+reference/gnat/exp_util.adb    # Utility: Remove_Side_Effects, Make_Literal_Range
+
+# Statement code generation
+reference/gnat/exp_ch5.adb     # Assignment, IF, CASE, LOOP expansion
+reference/gnat/exp_ch11.adb    # Exception handler expansion (landingpad for LLVM)
+
+# Declaration code generation
+reference/gnat/exp_ch3.adb     # Type declarations, object initialization
+reference/gnat/freeze.adb      # Freeze points, finalize type layout
+
+# SSA and optimization hints
+reference/gnat/exp_unst.adb    # Unnesting (closure conversion for nested subprograms)
+reference/gnat/inline.adb      # Inlining decisions, alwaysinline attribute
+
+# Low-level transformations (study for LLVM IR patterns)
+reference/gnat/exp_code.adb    # Code statement expansion (inline assembly)
+reference/gnat/exp_fixd.adb    # Fixed-point arithmetic (scaled integer math)
+reference/gnat/exp_pakd.adb    # Packed array/record bit manipulation
+reference/gnat/exp_atag.adb    # Accessibility tags (for dynamic dispatch)
+
+# Runtime interface (maps to our rts/)
+reference/gnat/rtsfind.ads     # Runtime entity names (RE_*, RTE_* constants)
+reference/gnat/exp_util.adb    # Build_Task_*, Make_* helpers for runtime calls
+
+# LLVM-specific techniques (not in GNAT, but useful patterns):
+# - PHI nodes: Insert at join points (end of IF branches, LOOP exits)
+# - alloca hoisting: All allocas in entry block, use load/store for mutable vars
+# - getelementptr: Array/record field access with offset calculation
+# - invoke/landingpad: Exception handling (GNAT uses setjmp/longjmp)
+# - tail call: Mark RETURN in tail position with "tail" attribute
 ```
 
 **Implementation patterns** (grep cheat sheet):
