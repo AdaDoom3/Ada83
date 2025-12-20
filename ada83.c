@@ -15,87 +15,13 @@ typedef struct{char*b,*p,*e;}A;typedef struct{const char*s;uint32_t n;}S;typedef
 #define Z(x)((S){x,sizeof(x)-1})
 #define N ((S){0,0})
 static A M={0};static int E=0;
-#define C_R "\x1b[91m"
-#define C_G "\x1b[92m"
-#define C_Y "\x1b[93m"
-#define C_B "\x1b[94m"
-#define C_M "\x1b[95m"
-#define C_C "\x1b[96m"
-#define C_W "\x1b[97m"
-#define C_D "\x1b[90m"
-#define C_0 "\x1b[0m"
-#define C_BD "\x1b[1m"
-typedef struct{char*f;int ln,cl;char*got,*exp,*ctx,*ada,*lay,*fix,*lrm;}Er;
-typedef struct{Er*e;int n,c;char**lb;int nl;}Ex;static Ex EX={0};
-static void exi(){if(!EX.e){EX.e=calloc(9999,sizeof(Er));EX.c=9999;EX.lb=calloc(9999,sizeof(char*));}}
-static void exld(char*f){exi();FILE*p=fopen(f,"r");if(!p)return;char b[9999];
-while(fgets(b,9999,p)&&EX.nl<9999)EX.lb[EX.nl++]=strdup(b);fclose(p);}
-static char*inf(char*g,char*e){static char b[999];if(!g||!e)return"";
-if(strstr(g,"int")&&strstr(e,"id"))sprintf(b,"Did you mean a type name instead of '%s'?",g);
-else if(strstr(g,"id")&&strstr(e,"int"))sprintf(b,"Expected a number, not identifier '%s'",g);
-else if(strstr(e,"';'"))sprintf(b,"Missing semicolon - Ada statements must end with ';'");
-else if(strstr(e,"'IS'"))sprintf(b,"Use 'IS' not ';' to begin a body");
-else if(strstr(g,"';'")&&strstr(e,"'IS'"))sprintf(b,"';' ends declaration, but body needs 'IS'");
-else if(strstr(e,"')'"))sprintf(b,"Unbalanced parentheses - check your nesting");
-else if(strstr(e,"'('"))sprintf(b,"Missing opening parenthesis");
-else if(strstr(e,"'THEN'"))sprintf(b,"IF statement requires THEN after condition");
-else if(strstr(e,"'LOOP'"))sprintf(b,"Loop statement incomplete - needs LOOP keyword");
-else if(strstr(e,"'END'"))sprintf(b,"Missing END to close block");
-else if(strstr(e,"':'"))sprintf(b,"Type annotation requires ':'");
-else if(strstr(e,"'RANGE'"))sprintf(b,"Entry family syntax: ENTRY E (TYPE RANGE lo..hi)");
-else sprintf(b,"Check Ada syntax");return b;}
-static char*lrm(char*c){if(strstr(c,"ENTRY")||strstr(c,"ACCEPT"))return"LRM 9.5 (Entries)";
-if(strstr(c,"FUNCTION")||strstr(c,"PROCEDURE"))return"LRM 6.1 (Subprograms)";
-if(strstr(c,"PACKAGE"))return"LRM 7.1 (Packages)";if(strstr(c,"TYPE"))return"LRM 3.3 (Types)";
-if(strstr(c,"TASK"))return"LRM 9.1 (Tasks)";return"LRM (Ada 83)";}
-static void er(char*f,int l,int c,char*g,char*e){exi();if(EX.n>=EX.c){EX.c+=9999;
-EX.e=realloc(EX.e,EX.c*sizeof(Er));}Er*r=&EX.e[EX.n++];r->f=f;r->ln=l;r->cl=c;
-r->got=g?strdup(g):"";r->exp=e?strdup(e):"";r->ctx=l<=EX.nl?EX.lb[l-1]:"";
-static char ada[999];if(strstr(e,"';'")&&strstr(r->ctx,"FUNCTION")){
-sprintf(ada,"Subprogram body requires 'IS', not ';' - declarations end with ';', bodies begin with 'IS'");}
-else if(strstr(e,"'RANGE'")&&strstr(r->ctx,"ENTRY")){
-sprintf(ada,"Entry family discrete range: ENTRY name (discrete_subtype_indication)");}
-else if(strstr(e,"')'")&&strstr(g,"':'")&&strstr(r->ctx,"ACCEPT")){
-sprintf(ada,"Entry family indices precede parameters: ACCEPT E (index) (params)");}
-else sprintf(ada,"Syntax error: expected %s but got %s",e,g);r->ada=strdup(ada);
-static char lay[999];if(strstr(e,"';'")&&strstr(r->ctx,"FUNCTION")){
-sprintf(lay,"You're declaring a function body, which needs 'IS' to start the implementation, not ';' which ends declarations");}
-else if(strstr(e,"'RANGE'")&&strstr(r->ctx,"ENTRY")){
-sprintf(lay,"Entry families let you have multiple entry 'slots' - like ENTRY E (1..10) for 10 slots. Add RANGE keyword");}
-else if(strstr(e,"')'")&&strstr(g,"':'")){
-sprintf(lay,"When accepting entry family calls, the index comes first in parentheses, then parameters");}
-else sprintf(lay,"The compiler expected %s at this position but found %s instead",e,g);r->lay=strdup(lay);
-r->fix=strdup(inf(g,e));r->lrm=strdup(lrm(r->ctx));}
-static void exsh(){for(int i=0;i<EX.n;i++){Er*r=&EX.e[i];
-fprintf(stderr,"\n"C_R"╔═══════════════════════════════════════════════════════════════════════╗\n");
-fprintf(stderr,C_R"║ "C_W"ERROR"C_R" at "C_C"%s:%d:%d"C_R" ═══════════════════════════════════════════════║\n"C_0,r->f,r->ln,r->cl);
-fprintf(stderr,C_R"╠═══════════════════════════════════════════════════════════════════════╣\n"C_0);
-if(r->ctx&&*r->ctx){fprintf(stderr,C_R"║ "C_D"Source"C_R":"C_0"\n"C_R"║ "C_0);int p=0,cl=r->cl-1;
-for(char*c=r->ctx;*c&&*c!='\n';c++){if(p==cl){fprintf(stderr,C_Y C_BD);int w=0;
-while(c[w]&&c[w]!=' '&&c[w]!='\n'&&c[w]!=';'&&c[w]!='('&&c[w]!=')')w++;
-for(int j=0;j<w&&c[j]&&c[j]!='\n';j++)fputc(c[j],stderr);fprintf(stderr,C_0);c+=w-1;p+=w;}
-else{fputc(*c,stderr);p++;}}fprintf(stderr,"\n"C_R"║ "C_0);
-for(int j=0;j<cl;j++)fputc(' ',stderr);fprintf(stderr,C_Y"╰─▶ "C_0"Here\n");}
-fprintf(stderr,C_R"║\n"C_R"║ "C_C"┌─["C_W"Ada Semantics"C_C"]───────────────────────────────────────────────\n");
-fprintf(stderr,C_R"║ "C_C"│ "C_0"%s\n",r->ada);
-fprintf(stderr,C_R"║ "C_M"┌─["C_W"Plain English"C_M"]───────────────────────────────────────────────\n");
-fprintf(stderr,C_R"║ "C_M"│ "C_0"%s\n",r->lay);
-if(r->fix&&*r->fix){fprintf(stderr,C_R"║ "C_G"┌─["C_W"Suggested Fix"C_G"]───────────────────────────────────────────\n");
-fprintf(stderr,C_R"║ "C_G"│ "C_0"%s\n",r->fix);}
-fprintf(stderr,C_R"║ "C_B"└─["C_W"Reference"C_B"]─▶ "C_0"%s\n",r->lrm);
-fprintf(stderr,C_R"╚═══════════════════════════════════════════════════════════════════════╝\n"C_0);}}
-static void exc(){for(int i=0;i<EX.n;i++){free(EX.e[i].got);free(EX.e[i].exp);free(EX.e[i].ada);
-free(EX.e[i].lay);free(EX.e[i].fix);free(EX.e[i].lrm);}free(EX.e);
-for(int i=0;i<EX.nl;i++)free(EX.lb[i]);free(EX.lb);memset(&EX,0,sizeof(EX));}
 static void*al(size_t n){n=(n+7)&~7;if(!M.b||M.p+n>M.e){size_t z=1<<24;M.b=M.p=malloc(z);M.e=M.b+z;}void*r=M.p;M.p+=n;return memset(r,0,n);}
 static void ar(){if(M.b)M.p=M.b;}
 static S sd(S s){char*p=al(s.n+1);memcpy(p,s.s,s.n);return(S){p,s.n};}
 static bool se(S a,S b){return a.n==b.n&&!memcmp(a.s,b.s,a.n);}
 static bool si(S a,S b){if(a.n!=b.n)return 0;for(uint32_t i=0;i<a.n;i++)if(tolower(a.s[i])!=tolower(b.s[i]))return 0;return 1;}
 static uint64_t sh(S s){uint64_t h=14695981039346656037ULL;for(uint32_t i=0;i<s.n;i++)h=(h^(uint8_t)tolower(s.s[i]))*1099511628211ULL;return h;}
-static jmp_buf JB;static void die(L l,const char*f,...){static char m[999];va_list v;va_start(v,f);
-vsnprintf(m,999,f,v);va_end(v);char*g=strstr(m,"got '"),*x=strstr(m,"exp '");
-er((char*)l.f,l.l,l.c,g?g+5:"?",x?x+5:"?");E++;if(E>50)longjmp(JB,1);}
+static _Noreturn void die(L l,const char*f,...){va_list v;va_start(v,f);fprintf(stderr,"%s:%u:%u: ",l.f,l.l,l.c);vfprintf(stderr,f,v);fputc('\n',stderr);va_end(v);E++;exit(1);}
 typedef enum{T_EOF=0,T_ERR,T_ID,T_INT,T_REAL,T_CHAR,T_STR,T_LP,T_RP,T_LB,T_RB,T_CM,T_DT,T_SC,T_CL,T_TK,T_AS,T_AR,T_DD,T_LL,T_GG,T_BX,T_BR,T_EQ,T_NE,T_LT,T_LE,T_GT,T_GE,T_PL,T_MN,T_ST,T_SL,T_AM,T_EX,T_AB,T_ABS,T_ACC,T_ACCS,T_ALITK,T_ALL,T_AND,T_ATHN,T_ARR,T_AT,T_BEG,T_BOD,T_CSE,T_CONST,T_DEC,T_DEL,T_DELTA,T_DIG,T_DO,T_ELSE,T_ELSIF,T_END,T_ENT,T_EXCP,T_EXIT,T_FOR,T_FUN,T_GEN,T_GOTO,T_IF,T_IN,T_IS,T_LIM,T_LOOP,T_MOD,T_NEW,T_NOT,T_NULL,T_OF,T_OR,T_OREL,T_OTH,T_OUT,T_PKG,T_PGM,T_PRV,T_PROC,T_RAS,T_RNG,T_REC,T_REM,T_REN,T_RET,T_REV,T_SEL,T_SEP,T_SUB,T_TSK,T_TER,T_THEN,T_TYP,T_USE,T_WHN,T_WHI,T_WITH,T_XOR,T_CNT}Tk;
 static const char*TN[T_CNT]={[T_EOF]="eof",[T_ID]="id",[T_INT]="int",[T_REAL]="real",[T_CHAR]="char",[T_STR]="str",[T_LP]="(",[T_RP]=")",[T_LB]="[",[T_RB]="]",[T_CM]=",",[T_DT]=".",[T_SC]=";",[T_CL]=":",[T_TK]="'",[T_AS]=":=",[T_AR]="=>",[T_DD]="..",[T_LL]="<<",[T_GG]=">>",[T_BX]="<>",[T_BR]="|",[T_EQ]="=",[T_NE]="/=",[T_LT]="<",[T_LE]="<=",[T_GT]=">",[T_GE]=">=",[T_PL]="+",[T_MN]="-",[T_ST]="*",[T_SL]="/",[T_AM]="&",[T_EX]="**",[T_AB]="ABORT",[T_ABS]="ABS",[T_ACC]="ACCEPT",[T_ACCS]="ACCESS",[T_ALITK]="ALIASED",[T_ALL]="ALL",[T_AND]="AND",[T_ATHN]="AND THEN",[T_ARR]="ARRAY",[T_AT]="AT",[T_BEG]="BEGIN",[T_BOD]="BODY",[T_CSE]="CASE",[T_CONST]="CONSTANT",[T_DEC]="DECLARE",[T_DEL]="DELAY",[T_DELTA]="DELTA",[T_DIG]="DIGITS",[T_DO]="DO",[T_ELSE]="ELSE",[T_ELSIF]="ELSIF",[T_END]="END",[T_ENT]="ENTRY",[T_EXCP]="EXCEPTION",[T_EXIT]="EXIT",[T_FOR]="FOR",[T_FUN]="FUNCTION",[T_GEN]="GENERIC",[T_GOTO]="GOTO",[T_IF]="IF",[T_IN]="IN",[T_IS]="IS",[T_LIM]="LIMITED",[T_LOOP]="LOOP",[T_MOD]="MOD",[T_NEW]="NEW",[T_NOT]="NOT",[T_NULL]="NULL",[T_OF]="OF",[T_OR]="OR",[T_OREL]="OR ELSE",[T_OTH]="OTHERS",[T_OUT]="OUT",[T_PKG]="PACKAGE",[T_PGM]="PRAGMA",[T_PRV]="PRIVATE",[T_PROC]="PROCEDURE",[T_RAS]="RAISE",[T_RNG]="RANGE",[T_REC]="RECORD",[T_REM]="REM",[T_REN]="RENAMES",[T_RET]="RETURN",[T_REV]="REVERSE",[T_SEL]="SELECT",[T_SEP]="SEPARATE",[T_SUB]="SUBTYPE",[T_TSK]="TASK",[T_TER]="TERMINATE",[T_THEN]="THEN",[T_TYP]="TYPE",[T_USE]="USE",[T_WHN]="WHEN",[T_WHI]="WHILE",[T_WITH]="WITH",[T_XOR]="XOR"};
 typedef struct{Tk t;L l;S lit;int64_t iv;double fv;}Tn;typedef struct{const char*s,*c,*e;uint32_t ln,cl;const char*f;}Lx;
@@ -231,15 +157,4 @@ static void wf(const char*p,const char*d){FILE*f=fopen(p,"wb");if(!f)return;fput
 static LU*lfnd(Sm*SM,S nm){for(uint32_t i=0;i<SM->lu.n;i++){LU*l=SM->lu.d[i];if(si(l->nm,nm))return l;}return 0;}
 static uint64_t fts(const char*p){struct stat s;if(stat(p,&s))return 0;return s.st_mtime;}
 static bool lcmp(Sm*SM,S nm,S pth){LU*ex=lfnd(SM,nm);if(ex&&ex->cmpl)return true;char fp[512];snprintf(fp,512,"%.*s.adb",(int)pth.n,pth.s);char*src=rf(fp);if(!src){snprintf(fp,512,"%.*s.ads",(int)pth.n,pth.s);src=rf(fp);}if(!src)return false;Ps p=pnw(src,strlen(src),fp);No*cu=pcu(&p);if(!cu)return false;Sm sm;smi(&sm);sm.lu=SM->lu;sm.gt=SM->gt;smu(&sm,cu);char op[512];snprintf(op,512,"%.*s.ll",(int)pth.n,pth.s);FILE*o=fopen(op,"w");Gn g={o,0,0,&sm,{0},0,{0},0,{0},0,{0},0,{0}};grt(&g);for(uint32_t i=0;i<sm.eo;i++){for(uint32_t j=0;j<4096;j++){for(Sy*s=sm.sy[j];s;s=s->nx){if(s->el==i){for(uint32_t k=0;k<s->ol.n;k++)gdl(&g,s->ol.d[k]);}}}}if(cu->cu.un){if(cu->cu.un->k==N_PKB)gel(&g,cu->cu.un);}fclose(o);LU*l=lu(cu->cu.un?cu->cu.un->k:0,nm,pth);l->cmpl=true;l->ts=fts(fp);lv(&SM->lu,l);return true;}
-int main(int ac,char**av){if(ac<2){fprintf(stderr,"Usage: %s <file.ada> [-o output.ll]\n",av[0]);return 1;}
-const char*inf=av[1];const char*ouf=ac>3?av[3]:"out.ll";exld((char*)inf);
-if(setjmp(JB)){exsh();exc();return 1;}char*src=rf(inf);if(!src){fprintf(stderr,"Error: cannot read %s\n",inf);return 1;}
-Ps p=pnw(src,strlen(src),inf);No*cu=pcu(&p);if(p.er||!cu||E){exsh();exc();return 1;}
-Sm sm;smi(&sm);smu(&sm,cu);FILE*o=fopen(ouf,"w");if(!o){fprintf(stderr,"Error: cannot write %s\n",ouf);return 1;}
-Gn g={o,0,0,&sm,{0},0,{0},0,{0},0,{0},0,{0}};grt(&g);for(uint32_t i=0;i<sm.eo;i++){
-for(uint32_t j=0;j<4096;j++){for(Sy*s=sm.sy[j];s;s=s->nx){if(s->el==i){
-for(uint32_t k=0;k<s->ol.n;k++)gdl(&g,s->ol.d[k]);}}}}if(cu->cu.un){
-if(cu->cu.un->k==N_PKB)gel(&g,cu->cu.un);else if(cu->cu.un->k==N_PB){
-No*sp=cu->cu.un->bd.sp;fprintf(o,"define i32 @main(){\n  call void @%.*s.%d(ptr null)\n  ret i32 0\n}\n",
-(int)sp->sp.nm.n,sp->sp.nm.s,cu->cu.un->bd.el);}}fclose(o);
-if(E){exsh();exc();return 1;}printf("Compiled %s -> %s\n",inf,ouf);return 0;}
+int main(int ac,char**av){if(ac>1&&!strcmp(av[1],"--test")){printf("═══════════════════════════════════════════════════════════════════\n  ADA83 COMPILER (15 tests)\n═══════════════════════════════════════════════════════════════════\n\n");char*T[]={"procedure T001 is\nbegin\n  null;\nend T001;","procedure T002 is\n  X: Integer := 42;\nbegin\n  X := X + 1;\nend T002;","procedure T003 is\n  function Add(A,B: Integer) return Integer is\n  begin\n    return A + B;\n  end Add;\n  R: Integer;\nbegin\n  R := Add(10, 20);\nend T003;","procedure T004 is\nbegin\n  begin\n    raise Constraint_Error;\n  exception\n    when Constraint_Error =>\n      null;\n  end;\nend T004;","procedure T005 is\n  task T is\n    entry Start;\n  end T;\n  task body T is\n  begin\n    accept Start;\n  end T;\nbegin\n  T.Start;\nend T005;","procedure T006 is\n  type Color is (Red, Green, Blue);\n  C: Color := Red;\nbegin\n  null;\nend T006;","procedure T007 is\n  type Arr is array(1..10) of Integer;\n  A: Arr;\nbegin\n  A(5) := 100;\nend T007;","procedure T008 is\n  type Rec is record\n    X: Integer;\n    Y: Integer;\n  end record;\n  R: Rec;\nbegin\n  R.X := 1;\n  R.Y := 2;\nend T008;","generic\n  type T is private;\npackage T009 is\n  procedure Set(V: T);\n  function Get return T;\nend T009;","procedure T010 is\n  package Integer_Box is new T009(Integer);\nbegin\n  Integer_Box.Set(42);\nend T010;","procedure T011 is\n  X: Integer;\nbegin\n  X := 2 ** 10;\nend T011;","procedure T012 is\n  type Status is (Ready, Waiting, Done);\n  S: Status := Ready;\nbegin\n  case S is\n    when Ready => null;\n    when Waiting => null;\n    when Done => null;\n  end case;\nend T012;","procedure T013 is\n  A: array(1..5) of Integer := (1,2,3,4,5);\n  B: array(1..3) of Integer;\nbegin\n  B := A(2..4);\nend T013;","procedure T014 is\n  procedure P(X: in out Integer) is\n  begin\n    X := X + 1;\n  end P;\n  Y: Integer := 5;\nbegin\n  P(Y);\nend T014;","procedure T015 is\n  X: Integer;\nbegin\n  loop\n    X := X + 1;\n    exit when X > 10;\n  end loop;\nend T015;"};for(int i=0;i<15;i++){printf("T%03d         ",i+1);fflush(stdout);Ps p=pnw(T[i],strlen(T[i]),"test");No*cu=pcu(&p);if(p.er||!cu){printf("\033[31mFAIL\033[0m\n");continue;}Sm sm;smi(&sm);smu(&sm,cu);char fn[64];snprintf(fn,64,"T%03d.ll",i+1);FILE*o=fopen(fn,"w");Gn g={o,0,0,&sm,{0},0,{0},0,{0},0,{0},0,{0}};grt(&g);for(uint32_t j=0;j<sm.eo;j++){for(uint32_t k=0;k<4096;k++){for(Sy*s=sm.sy[k];s;s=s->nx){if(s->el==j){for(uint32_t m=0;m<s->ol.n;m++)gdl(&g,s->ol.d[m]);}}}}if(cu->cu.un){if(cu->cu.un->k==N_PKB)gel(&g,cu->cu.un);}fclose(o);printf("\033[32mPASS\033[0m\n");}printf("\n");return 0;}if(ac<2){fprintf(stderr,"Usage: %s [--test | <file.adb> -o <output.ll>]\n",av[0]);return 1;}const char*inf=av[1];const char*ouf=ac>3?av[3]:"out.ll";char*src=rf(inf);if(!src){fprintf(stderr,"Error: cannot read %s\n",inf);return 1;}Ps p=pnw(src,strlen(src),inf);No*cu=pcu(&p);if(p.er||!cu){fprintf(stderr,"Parse error\n");return 1;}Sm sm;smi(&sm);smu(&sm,cu);FILE*o=fopen(ouf,"w");if(!o){fprintf(stderr,"Error: cannot write %s\n",ouf);return 1;}Gn g={o,0,0,&sm,{0},0,{0},0,{0},0,{0},0,{0}};grt(&g);for(uint32_t i=0;i<sm.eo;i++){for(uint32_t j=0;j<4096;j++){for(Sy*s=sm.sy[j];s;s=s->nx){if(s->el==i){for(uint32_t k=0;k<s->ol.n;k++)gdl(&g,s->ol.d[k]);}}}}if(cu->cu.un){if(cu->cu.un->k==N_PKB)gel(&g,cu->cu.un);else if(cu->cu.un->k==N_PB){No*sp=cu->cu.un->bd.sp;fprintf(o,"define i32 @main(){\n  call void @%.*s.%d(ptr null)\n  ret i32 0\n}\n",(int)sp->sp.nm.n,sp->sp.nm.s,cu->cu.un->bd.el);}}fclose(o);printf("Compiled %s -> %s\n",inf,ouf);return 0;}
