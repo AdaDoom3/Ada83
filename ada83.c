@@ -58,7 +58,7 @@ static LU*lu(uint8_t k,S nm,S pth){LU*l=al(sizeof(LU));l->k=k;l->nm=nm;l->pth=pt
 static GT*gt(S nm){GT*g=al(sizeof(GT));g->nm=nm;return g;}
 #define ND(k,l)nd(N_##k,l)
 typedef struct{Lx lx;Tn cr,pk;int er;SLV lb;}Ps;
-static void pn(Ps*p){p->cr=p->pk;p->pk=lnx(&p->lx);if(p->cr.t==T_AND&&p->pk.t==T_THEN){p->cr.t=T_ATHN;pn(p);}if(p->cr.t==T_OR&&p->pk.t==T_ELSE){p->cr.t=T_OREL;pn(p);}}
+static void pn(Ps*p){p->cr=p->pk;p->pk=lnx(&p->lx);if(p->cr.t==T_AND&&p->pk.t==T_THEN){p->cr.t=T_ATHN;p->pk=lnx(&p->lx);}if(p->cr.t==T_OR&&p->pk.t==T_ELSE){p->cr.t=T_OREL;p->pk=lnx(&p->lx);}}
 static bool pa(Ps*p,Tk t){return p->cr.t==t;}
 static bool pm(Ps*p,Tk t){if(pa(p,t)){pn(p);return 1;}return 0;}
 static void pe(Ps*p,Tk t){if(!pm(p,t))die(p->cr.l,"exp '%s' got '%s'",TN[t],TN[p->cr.t]);}
