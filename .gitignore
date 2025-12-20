@@ -1,0 +1,8 @@
+# Compiled binary
+ada83
+
+# Backup files
+*.backup
+
+# Test output
+test_results/
