@@ -28,27 +28,20 @@ Ada83/
 
 **Quick start**: `cc -o ada83 ada83.c -lm && ./test.sh s`
 
-## Why This Project Exists
+## Project Goals
 
-**Goals:**
-1. **Minimal implementation** - Entire Ada 83 compiler in ~160 lines of dense C99
-2. **Educational value** - Study compiler construction through extreme code density
+**Primary Objectives:**
+1. **Full Ada 83 conformance** - Production-ready compiler targeting complete language specification
+2. **Extremely clever error messages** - Context-aware diagnostics that understand what the programmer intended
 3. **Oracle-validated testing** - B-test validation measures error detection quality, not just rejection
-4. **Single-pass O(N)** - No AST rewrite, no backtracking, arena allocation
-5. **Reference-driven** - GNAT source + LRM + DIANA specs guide implementation
+4. **Single-pass O(N) performance** - No AST rewrite, no backtracking, arena allocation
+5. **Dense implementation** - Maximal functionality in minimal code (currently ~160 LOC C99)
+6. **Reference-driven development** - GNAT source + LRM + DIANA specs guide implementation
 
 **Not Goals:**
-- Production compiler (use GNAT)
-- Full Ada 83 conformance
-- Optimized code generation
-- Pretty error messages
-
-**Technical Challenges:**
-- Ada 83 syntax complexity (e.g., `type T(D: Integer) is record...end record;`)
-- Type system: discriminants, variants, derived types, generics
-- Semantic analysis in single pass (forward references, overloading)
-- LLVM IR generation without intermediate lowering
-- Fitting meaningful compiler functionality into 160 LOC
+- Educational toy compiler
+- Slow compilation
+- Generic error messages
 
 **Reference navigation** (implementation oracle):
 ```bash
