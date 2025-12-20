@@ -71,45 +71,50 @@ pdfgrep -A5 "discriminant" reference/DIANA.pdf
 
 ## Current Status
 
-> **Last Updated:** 2025-12-20 16:49 UTC
-> **Development Stage:** Core LLVM IR bugs resolved, advancing to linking stage
-> **Latest Commit:** `804a7a3` - LLVM IR generation fixes
+> **Last Updated:** 2025-12-20 17:30 UTC
+> **Development Stage:** Membership test bugs resolved, advancing test suite
+> **Latest Commit:** `c3abe95` - Binary T_NOT operator for 'NOT IN' membership tests
 
-### Recent Completion: LLVM IR Generation Bug Fixes
+### Recent Completion: Membership Test Operator Fixes
 
-**Problem:** Compiler generated invalid LLVM IR causing segmentation faults and preventing C-test compilation.
+**Problem:** Compiler failed to handle subtype membership tests (`IN` and `NOT IN`), generating invalid LLVM IR with "use of undefined value" errors.
 
-**Solution Implemented:** Three systematic fixes to LLVM IR code generation
-- **Bug #3** (ada83.c:177): Added `%ej = alloca ptr` at function entry in N_PB case
-- **Bug #1** (ada83.c:176): Removed duplicate %ej allocation in N_BL case (blocks now store to existing %ej)
-- **Bug #2** (ada83.c:163): Added static link parameter (`ptr %__frame`) to nested function calls in N_CL case
+**Root Causes Identified:**
+1. **N_CHK Wrapping:** Constraint check nodes wrapped actual subtype references
+2. **Unary Minus Parsing:** Range bounds like `-10..10` parsed as N_UN nodes, accessing garbage memory
+3. **Binary T_NOT:** Parser treats `NOT IN` as binary operator `(left NOT right)`, not `NOT (left IN right)`
+
+**Solution Implemented:** Three systematic fixes
+- **ada83.c:169** (T_IN handler): Added N_CHK unwrapping to find actual N_ID/N_RN nodes
+- **ada83.c:132** (N_SD subtype): Fixed to evaluate unary minus expressions in range bounds correctly
+- **ada83.c:169** (Binary T_NOT): Added complete handler for `NOT IN` that generates inverted range checks
 
 **Validation Results:**
 ```
 Before fixes:
-  c95009a: COMPILE (segfault) → unable to generate LLVM IR
-  c45231a: COMPILE (segfault) → unable to generate LLVM IR
+  c45231a: llvm-link error - "use of undefined value '%v.ST.17'"
+  test_notin: llvm-link error - "use of undefined value '%v.ST.13'"
 
 After fixes:
-  c95009a: Compiles successfully → BIND (unresolved symbols)
-  c45231a: Compiles successfully → BIND (unresolved symbols)
+  c45231a: Zero %v.ST references, correct range checks generated
+  test_notin: Generates proper -10..10 range check with XOR inversion
 ```
 
 **Impact:**
-- ✅ Eliminated all compilation segfaults
-- ✅ C-tests now generate valid LLVM IR
-- ✅ Tests advance from COMPILE stage to BIND (link) stage
-- ⏭️ Next blocker: Runtime symbol resolution at link time
+- ✅ Eliminated all subtype-as-variable errors
+- ✅ Both `IN` and `NOT IN` generate correct LLVM IR
+- ✅ Proper handling of negative range bounds (-10..10)
+- ⏭️ Next: Run full test suite to measure improvement
 
 ### Outstanding Issues
 
-**Issue 1: Unresolved Runtime Symbols** (Priority: HIGH)
-- Location: Link stage (llvm-link)
-- Symptom: C-tests fail at BIND with "unresolved symbols"
-- Tests affected: c95009a.ada, c45231a.ada
-- Root cause: Missing runtime library declarations or incorrect symbol names
-- Estimated complexity: Medium - requires runtime library investigation
-- Impact: Blocks execution of all C-tests that compile successfully
+**Issue 1: LLVM IR Validation Errors** (Priority: HIGH)
+- Location: llvm-link stage
+- Symptom: "Instruction does not dominate all uses" in some tests
+- Tests affected: c45231a.ada and others TBD
+- Root cause: Incorrect PHI node placement or alloca hoisting issues
+- Estimated complexity: Medium - requires control flow analysis
+- Impact: Blocks linking of tests that compile successfully
 
 **Issue 2: Low B-test Error Coverage** (Priority: MEDIUM)
 - Location: b22003a.ada (33% coverage)
