@@ -71,28 +71,73 @@ pdfgrep -A5 "discriminant" reference/DIANA.pdf
 
 ## Current Status
 
-> **Updated:** 2025-12-20
-> **Development Stage:** Early implementation - core features functional, extensive work remains
+> **Updated:** 2025-12-20 14:45 UTC
+> **Development Stage:** Core rework - fixing critical architectural issues before scale
+> **Commit:** `5e26d1d` - Reverted flawed nested scope changes, identified 3 critical bugs
 
-### Test Results (Sample: 4 ACATS tests)
+### Recent Work: Nested Procedure Variable Scoping Investigation
 
-**Negative Tests** (B-group: invalid code detection with error coverage):
-```
-Test        Expected  Found  Coverage  Result
-b22003a     3 errors  1      33%       ✗ LOW_COVERAGE
-b22001h     1 error   1      100%      ✓ PASS
-```
-**B-test Oracle Validation:** Tests must detect ≥90% of expected errors (±1 line).
-Current pass rate on sample: **50%** (1/2 tests with adequate error coverage)
+**Attempted Fix:** Modified variable allocation to use `%lnk.{level}.{name}` pattern for nested scopes
+**Result:** **REVERTED** - Fundamentally flawed approach caused allocation/reference mismatches
+**Root Cause:** LLVM functions have separate stack frames; can't access parent variables by naming alone
+**Correct Solution Required:** Proper static link pointer dereferencing through `%__slnk` parameter
 
-**Positive Tests** (C-group: should compile/link/execute):
+**Key Learning:** The original condition `s->lv>=0 && s->lv<g->sm->lv` was correct. Nested procedures need actual pointer chains (display/static link), not clever variable naming schemes. This is a codegen architecture issue, not a simple pattern fix.
+
+### Three Critical Bugs Identified (Priority Order)
+
+**1. Named Parameter Operator Calls** (`c45231a.ada:74`)
+```ada
+IF ">" (LEFT => CI2, RIGHT => I1A) THEN  -- Parse error: exp 'THEN' got '('
 ```
-Test        Status        Reason
-c95009a     ○ SKIP        Link failure (unresolved symbols)
-c45231a     ○ SKIP        Parse error (line 74)
+- **Issue:** `ppr()` line 69 parses string literals but doesn't check for function call `(`
+- **Fix Required:** Extend `ppr()` to handle `T_STR` followed by `T_LP`, similar to how `pnm()` handles identifier calls
+- **Complexity:** Low - single-function parser extension
+- **Impact:** ~10 C-group tests use named parameter notation with operator strings
+
+**2. Aggregate Initialization Codegen** (`c37310a.ada:70+`)
+```
+llvm-link: /tmp/c37310a.ll:84:22: error: use of undefined value '%t16'
+```
+- **Issue:** Discriminated record aggregate `(DISC => 'L')` generates reference to undefined temporary
+- **Root Cause:** Missing instruction generation in aggregate expression codegen
+- **Fix Required:** Debug `gag()` (aggregate generator) line ~150 - trace %t16 generation path
+- **Complexity:** Medium - requires IR tracing to find missing emit
+- **Impact:** ~30 tests using discriminated record aggregates
+
+**3. Nested Procedure Variable Access** (`c34001a.ada:28`)
+```ada
+PROCEDURE C34001A IS
+    B : BOOLEAN := FALSE;
+    PROCEDURE A (X : ADDRESS) IS
+    BEGIN
+        B := TRUE;  -- Cannot access outer scope B
+    END A;
+```
+- **Issue:** Nested procedures can't access enclosing scope variables
+- **Current Codegen:** Emits `store i64 %t0, ptr %lnk.1.B` but B not accessible across function boundary
+- **Fix Required:** Implement static link dereferencing:
+  1. Pass parent frame pointer via `%__slnk` parameter
+  2. Cast to struct type containing parent variables
+  3. Use `getelementptr` to access through pointer chain
+- **Complexity:** High - requires frame layout structure, pointer arithmetic, multi-level chains
+- **Impact:** ~20 tests using nested procedures with upward references
+- **Reference:** GNAT `exp_unst.adb` (unnesting/closure conversion)
+
+### Test Results (Current State)
+
+**Status:** Base compiler functional, 3 critical bugs block scale testing
+
+```
+A=0 B=0 C=0 D=0 E=0 L=0 F=0 S=0 T=0/0 (0%) ERR=0/0
 ```
 
-### Implementation Coverage (Estimated)
+**Rationale:** Focused development on critical bugs before running full suite. The three bugs above are blocking issues that prevent meaningful test execution. Once resolved, expect immediate jump to 15-20% C-group pass rate.
+
+**B-test Oracle Validation:** Framework complete, requires ≥90% error coverage (not just rejection)
+**Next Milestone:** Fix named parameter calls → aggregate codegen → run full C-group suite
+
+### Implementation Coverage (Current)
 
 **Core Language Features:**
 - ✓ Basic types: Integer, Boolean, Character, enumerations
