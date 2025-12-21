@@ -3,6 +3,7 @@ ada83
 
 # Backup files
 *.backup
+*.bak
 
 # Test output
 test_results/
@@ -14,3 +15,7 @@ T*.ll
 
 # Generated ALI files (Ada Library Information)
 *.ali
+
+# Object and assembly files
+*.o
+*.s
