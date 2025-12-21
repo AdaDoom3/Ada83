@@ -101,8 +101,9 @@ static No*pcx(Ps*p){L lc=pl(p);No*cx=ND(CX,lc);while(pa(p,T_WITH)||pa(p,T_USE)||
 static No*pcu(Ps*p){L lc=pl(p);No*n=ND(CU,lc);n->cu.cx=pcx(p);while(pa(p,T_WITH)||pa(p,T_USE)||pa(p,T_PROC)||pa(p,T_FUN)||pa(p,T_PKG)||pa(p,T_GEN)||pa(p,T_PGM)){if(pa(p,T_WITH)||pa(p,T_USE)||pa(p,T_PGM))pcx(p);else nv(&n->cu.un,pdl(p));}return n;}
 static Ps pnw(const char*s,size_t z,const char*f){Ps p={ln(s,z,f)};pn(&p);pn(&p);return p;}
 typedef enum{TY_V=0,TY_I,TY_B,TY_C,TY_F,TY_E,TY_A,TY_R,TY_AC,TY_T,TY_S,TY_P,TY_UI,TY_UF,TY_D,TY_PT,TY_FT,TY_FX}Tk_;
-struct Ty{Tk_ k;S nm;Ty*bs,*el,*prt;int64_t lo,hi;NV cm,dc;uint32_t sz,al;SV ev;RV rc;uint64_t ad;bool pk;NV ops;int64_t sm,lg;};
-struct Sy{S nm;uint8_t k;Ty*ty;No*df;Sy*nx,*pv;int sc;int64_t vl;uint32_t of;NV ol;SV us;int el;GT*gt;Sy*pr;int lv;};
+enum{CHK_OVF=1,CHK_RNG=2,CHK_IDX=4,CHK_DSC=8,CHK_LEN=16,CHK_DIV=32,CHK_ELB=64,CHK_ACC=128,CHK_STG=256};
+struct Ty{Tk_ k;S nm;Ty*bs,*el,*prt;int64_t lo,hi;NV cm,dc;uint32_t sz,al;SV ev;RV rc;uint64_t ad;bool pk;NV ops;int64_t sm,lg;uint16_t sup;bool ctrl;};
+struct Sy{S nm;uint8_t k;Ty*ty;No*df;Sy*nx,*pv;int sc;int64_t vl;uint32_t of;NV ol;SV us;int el;GT*gt;Sy*pr;int lv;bool inl;bool shrd;};
 typedef struct{Sy*sy[4096];int sc;No*ds;No*pk;SV uv;int eo;LV lu;GV gt;jmp_buf*eb[16];int ed;S ce[16];FV io;int fn;SLV lb;int lv;}Sm;
 static uint32_t syh(S s){return sh(s)&4095;}
 static Sy*syn(S nm,uint8_t k,Ty*ty,No*df){Sy*s=al(sizeof(Sy));s->nm=nm;s->k=k;s->ty=ty;s->df=df;s->el=-1;s->lv=-1;return s;}
