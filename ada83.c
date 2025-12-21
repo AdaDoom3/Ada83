@@ -11,6 +11,7 @@
 #include<sys/stat.h>
 #include<fcntl.h>
 #include<unistd.h>
+#include<math.h>
 typedef struct{char*b,*p,*e;}A;typedef struct{const char*s;uint32_t n;}S;typedef struct{uint32_t l,c;const char*f;}L;
 #define Z(x)((S){x,sizeof(x)-1})
 #define N ((S){0,0})
