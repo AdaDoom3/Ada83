@@ -9,7 +9,6 @@ test_results/
 acats_logs/
 test_summary.txt
 *.ll
-!rts_support.ll
 *.bc
 T*.ll
 
