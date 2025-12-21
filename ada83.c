@@ -108,7 +108,7 @@ typedef struct{Sy*sy[4096];int sc;No*ds;No*pk;SV uv;int eo;LV lu;GV gt;jmp_buf*e
 static uint32_t syh(S s){return sh(s)&4095;}
 static Sy*syn(S nm,uint8_t k,Ty*ty,No*df){Sy*s=al(sizeof(Sy));s->nm=nm;s->k=k;s->ty=ty;s->df=df;s->el=-1;s->lv=-1;return s;}
 static Sy*sya(Sm*SM,Sy*s){uint32_t h=syh(s->nm);s->nx=SM->sy[h];s->sc=SM->sc;s->el=SM->eo++;s->lv=SM->lv;SM->sy[h]=s;return s;}
-static Sy*syf(Sm*SM,S nm){for(Sy*s=SM->sy[syh(nm)];s;s=s->nx)if(si(s->nm,nm))return s;for(uint32_t i=0;i<SM->uv.n;i++)for(Sy*u=SM->uv.d[i];u;u=u->nx)if(si(u->nm,nm))return u;return 0;}
+static Sy*syf(Sm*SM,S nm){Sy*best=0;for(Sy*s=SM->sy[syh(nm)];s;s=s->nx)if(si(s->nm,nm)&&(!best||s->sc>best->sc))best=s;if(!best)for(uint32_t i=0;i<SM->uv.n;i++)for(Sy*u=SM->uv.d[i];u;u=u->nx)if(si(u->nm,nm)&&(!best||u->sc>best->sc))best=u;return best;}
 static void sfu(Sm*SM,Sy*s,S nm){for(Sy*p=s;p;p=p->nx)if(si(p->nm,nm)&&p->k==6&&p->df&&p->df->k==N_PKS){No*pk=p->df;for(uint32_t i=0;i<pk->ps.dc.n;i++){No*d=pk->ps.dc.d[i];if(d->sy)sv(&s->us,d->sy);}}}
 static GT*gfnd(Sm*SM,S nm){for(uint32_t i=0;i<SM->gt.n;i++){GT*g=SM->gt.d[i];if(si(g->nm,nm))return g;}return 0;}
 static int tysc(Ty*a,Ty*b,Ty*tx){if(!a||!b)return 0;if(a==b)return 1000;if(a->prt==b||b->prt==a)return 900;if(a->bs==b||b->bs==a)return 800;if((a->k==TY_I||a->k==TY_UI)&&(b->k==TY_I||b->k==TY_UI))return 700;if((a->k==TY_F||a->k==TY_UF)&&(b->k==TY_F||b->k==TY_UF))return 700;if(a->k==TY_AC&&b->k==TY_AC&&a->el&&b->el)return 500+tysc(a->el,b->el,0);if(tx&&a->el&&b==tx)return 400;return 0;}
