@@ -1,6 +1,6 @@
 # Ada83 Compiler
 
-**Single-file Ada 83 compiler targeting LLVM IR** - A production-quality implementation demonstrating that compiler complexity is a choice, not a requirement.
+**Single-file Ada 83 compiler targeting LLVM IR**
 
 ## Quick Start
 
