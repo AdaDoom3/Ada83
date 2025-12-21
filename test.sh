@@ -26,7 +26,7 @@ timeout 1 lli test_results/$n.bc>acats_logs/$n.out 2>&1&&E PASS "$n" PASSED&&((+
 else q=$(^ "$f");h=${q%:*};x=${q#*:};p=$(: $h $x);((p>=90))&&{ ((++X[b]));[[ $v == v ]]&&@ "$f"||E PASS "$n" REJECTED "$h/$x errors (${p}%)";}||{ ((++X[f]));E FAIL "$n" LOW_COVERAGE "$h/$x errors (${p}%)";};fi;;
 [cC])if ! timeout 0.2 ./ada83 "$f">test_results/$n.ll 2>acats_logs/$n.err;then
 E SKIP "$n" COMPILE "$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)";((++X[s]));return;fi
-if ! timeout 0.2 llvm-link -o test_results/$n.bc test_results/$n.ll rts/report.ll 2>acats_logs/$n.link;then
+if ! timeout 0.2 llvm-link -o test_results/$n.bc test_results/$n.ll acats/report.ll 2>acats_logs/$n.link;then
 E SKIP "$n" BIND "unresolved symbols";((++X[s]));return;fi
 if timeout 1 lli test_results/$n.bc>acats_logs/$n.out 2>&1;then
 grep -q PASSED acats_logs/$n.out 2>/dev/null&&E PASS "$n" PASSED&&((++X[c]))||{
