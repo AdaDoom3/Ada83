@@ -28,5 +28,3 @@ static const char*vt(Vk k){return k==VK_I?"i64":k==VK_F?"double":"ptr";}
 static Vk tk2v(Ty*t){if(!t)return VK_I;t=tcc(t);switch(t->k){case TY_F:case TY_UF:return VK_F;case TY_FT:case TY_A:case TY_R:return VK_P;case TY_AC:return VK_I;default:return VK_I;}}
 static int esn(char*b,int sz,Sy*s,S nm){int n=0;if(s&&s->pr&&s->pr->nm.s){for(uint32_t i=0;i<s->pr->nm.n;i++){char c=s->pr->nm.s[i];if((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9'))b[n++]=toupper(c);else n+=snprintf(b+n,sz-n,"_%02X",(unsigned char)c);}b[n++]='_';b[n++]='_';for(uint32_t i=0;i<nm.n;i++){char c=nm.s[i];if((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9'))b[n++]=toupper(c);else n+=snprintf(b+n,sz-n,"_%02X",(unsigned char)c);}b[n]=0;return n;}for(uint32_t i=0;i<nm.n;i++){char c=nm.s[i];if((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='_')b[n++]=c;else n+=snprintf(b+n,sz-n,"_%02X",(unsigned char)c);}n+=snprintf(b+n,sz-n,".%d",s?s->el:0);return n;}
 static V gex(Gn*g,No*n);static void gss(Gn*g,No*n);static void gbf(Gn*g){
-int mx=g->sm->eo;
-if(mx>0)fprintf(g->o,"  %%__frame = alloca [%d x ptr]\n",mx);
