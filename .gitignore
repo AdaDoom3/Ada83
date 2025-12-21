@@ -19,3 +19,4 @@ T*.ll
 # Object and assembly files
 *.o
 *.s
+vgcore.*
