@@ -1,0 +1,659 @@
+declare i32 @setjmp(ptr)
+declare void @longjmp(ptr,i32)
+declare i32 @pthread_create(ptr,ptr,ptr,ptr)
+declare i32 @pthread_join(i64,ptr)
+declare i32 @pthread_mutex_init(ptr,ptr)
+declare i32 @pthread_mutex_lock(ptr)
+declare i32 @pthread_mutex_unlock(ptr)
+declare i32 @pthread_cond_init(ptr,ptr)
+declare i32 @pthread_cond_wait(ptr,ptr)
+declare i32 @pthread_cond_signal(ptr)
+declare i32 @pthread_cond_broadcast(ptr)
+declare i32 @usleep(i32)
+declare ptr @malloc(i64)
+declare ptr @realloc(ptr,i64)
+declare void @free(ptr)
+declare i32 @printf(ptr,...)
+declare i32 @puts(ptr)
+declare i32 @sprintf(ptr,ptr,...)
+declare i32 @snprintf(ptr,i64,ptr,...)
+declare i32 @strcmp(ptr,ptr)
+declare ptr @strcpy(ptr,ptr)
+declare i64 @strlen(ptr)
+declare ptr @memcpy(ptr,ptr,i64)
+declare ptr @memset(ptr,i32,i64)
+declare double @pow(double,double)
+declare double @sqrt(double)
+declare double @sin(double)
+declare double @cos(double)
+declare double @exp(double)
+declare double @log(double)
+declare void @llvm.memcpy.p0.p0.i64(ptr,ptr,i64,i1)
+@stdin=external global ptr
+@stdout=external global ptr
+@stderr=external global ptr
+@__ss_ptr=linkonce_odr global i64 0
+@__ss_base=linkonce_odr global ptr null
+@__ss_size=linkonce_odr global i64 0
+@__eh_cur=linkonce_odr global ptr null
+@__ex_cur=linkonce_odr global ptr null
+@__fin_list=linkonce_odr global ptr null
+@.ex.CONSTRAINT_ERROR=linkonce_odr constant[17 x i8]c"CONSTRAINT_ERROR\00"
+@.ex.PROGRAM_ERROR=linkonce_odr constant[14 x i8]c"PROGRAM_ERROR\00"
+@.ex.STORAGE_ERROR=linkonce_odr constant[14 x i8]c"STORAGE_ERROR\00"
+@.ex.TASKING_ERROR=linkonce_odr constant[14 x i8]c"TASKING_ERROR\00"
+@.ex.USE_ERROR=linkonce_odr constant[10 x i8]c"USE_ERROR\00"
+@.ex.NAME_ERROR=linkonce_odr constant[11 x i8]c"NAME_ERROR\00"
+@.ex.STATUS_ERROR=linkonce_odr constant[13 x i8]c"STATUS_ERROR\00"
+@.ex.MODE_ERROR=linkonce_odr constant[11 x i8]c"MODE_ERROR\00"
+@.ex.END_ERROR=linkonce_odr constant[10 x i8]c"END_ERROR\00"
+@.ex.DATA_ERROR=linkonce_odr constant[11 x i8]c"DATA_ERROR\00"
+@.ex.DEVICE_ERROR=linkonce_odr constant[13 x i8]c"DEVICE_ERROR\00"
+@.ex.LAYOUT_ERROR=linkonce_odr constant[13 x i8]c"LAYOUT_ERROR\00"
+define linkonce_odr void @__ada_ss_init(){%p=call ptr @malloc(i64 1048576)
+store ptr %p,ptr @__ss_base
+store i64 1048576,ptr @__ss_size
+store i64 0,ptr @__ss_ptr
+ret void}
+define linkonce_odr i64 @__ada_ss_mark(){%m=load i64,ptr @__ss_ptr
+ret i64 %m}
+define linkonce_odr void @__ada_ss_release(i64 %m){store i64 %m,ptr @__ss_ptr
+ret void}
+define linkonce_odr ptr @__ada_ss_allocate(i64 %sz){%1=load ptr,ptr @__ss_base
+%2=icmp eq ptr %1,null
+br i1 %2,label %init,label %alloc
+init:
+call void @__ada_ss_init()
+%3=load ptr,ptr @__ss_base
+br label %alloc
+alloc:
+%p=phi ptr[%1,%0],[%3,%init]
+%4=load i64,ptr @__ss_ptr
+%5=add i64 %sz,7
+%6=and i64 %5,-8
+%7=add i64 %4,%6
+%8=load i64,ptr @__ss_size
+%9=icmp ult i64 %7,%8
+br i1 %9,label %ok,label %grow
+grow:
+%10=mul i64 %8,2
+store i64 %10,ptr @__ss_size
+%11=call ptr @realloc(ptr %p,i64 %10)
+store ptr %11,ptr @__ss_base
+br label %ok
+ok:
+%12=phi ptr[%p,%alloc],[%11,%grow]
+%13=getelementptr i8,ptr %12,i64 %4
+store i64 %7,ptr @__ss_ptr
+ret ptr %13}
+define linkonce_odr ptr @__ada_setjmp(){%p=call ptr @malloc(i64 200)
+ret ptr %p}
+define linkonce_odr void @__ada_raise(ptr %msg){store ptr %msg,ptr @__ex_cur
+call void @longjmp(ptr @__eh_cur,i32 1)
+ret void}
+define linkonce_odr void @__ada_delay(i64 %us){%t=trunc i64 %us to i32
+%r=call i32 @usleep(i32 %t)
+ret void}
+define linkonce_odr i64 @__ada_powi(i64 %b,i64 %e){%1=icmp eq i64 %e,0
+br i1 %1,label %ret1,label %loop
+ret1:
+ret i64 1
+loop:
+%2=phi i64[1,%0],[%7,%loop]
+%3=phi i64[%e,%0],[%6,%loop]
+%4=and i64 %3,1
+%5=icmp ne i64 %4,0
+%6=ashr i64 %3,1
+%7=select i1 %5,i64 %2,i64 1
+%8=mul i64 %7,%b
+%9=icmp eq i64 %6,0
+br i1 %9,label %done,label %loop
+done:
+ret i64 %8}
+define linkonce_odr ptr @__ada_image_int(i64 %v){%p=call ptr @malloc(i64 32)
+%n=call i32(ptr,i64,ptr,...)@snprintf(ptr %p,i64 32,ptr @.fmt_d,i64 %v)
+ret ptr %p}
+define linkonce_odr ptr @__ada_image_enum(i64 %v,i64 %lo,i64 %hi){%p=call ptr @malloc(i64 32)
+%n=call i32(ptr,i64,ptr,...)@snprintf(ptr %p,i64 32,ptr @.fmt_d,i64 %v)
+ret ptr %p}
+define linkonce_odr i64 @__ada_value_int(ptr %s){ret i64 0}
+define linkonce_odr void @__ada_finalize(ptr %obj,ptr %fn){%1=call ptr @malloc(i64 16)
+%2=getelementptr ptr,ptr %1,i64 0
+store ptr %obj,ptr %2
+%3=getelementptr ptr,ptr %1,i64 1
+store ptr %fn,ptr %3
+%4=load ptr,ptr @__fin_list
+%5=getelementptr ptr,ptr %1,i64 2
+store ptr %4,ptr %5
+store ptr %1,ptr @__fin_list
+ret void}
+define linkonce_odr void @__ada_finalize_all(){entry:
+%1=load ptr,ptr @__fin_list
+br label %loop
+loop:
+%p=phi ptr[%1,%entry],[%9,%fin]
+%2=icmp eq ptr %p,null
+br i1 %2,label %done,label %fin
+fin:
+%3=getelementptr ptr,ptr %p,i64 0
+%4=load ptr,ptr %3
+%5=getelementptr ptr,ptr %p,i64 1
+%6=load ptr,ptr %5
+%7=bitcast ptr %6 to ptr
+call void %7(ptr %4)
+%8=getelementptr ptr,ptr %p,i64 2
+%9=load ptr,ptr %8
+call void @free(ptr %p)
+br label %loop
+done:
+ret void}
+@.fmt_d=linkonce_odr constant[5 x i8]c"%lld\00"
+@.fmt_s=linkonce_odr constant[3 x i8]c"%s\00"
+define linkonce_odr void @__text_io_put_line(ptr %f,ptr %s){call i32 @puts(ptr %s)
+ret void}
+define linkonce_odr void @__text_io_put(ptr %f,i64 %v){call i32(ptr,...)@printf(ptr @.fmt_d,i64 %v)
+ret void}
+define linkonce_odr i64 @__text_io_get(ptr %f){ret i64 0}
+define linkonce_odr ptr @__text_io_create(i64 %m,ptr %n){%f=call ptr @malloc(i64 8)
+ret ptr %f}
+define linkonce_odr ptr @__text_io_open(i64 %m,ptr %n){%f=call ptr @malloc(i64 8)
+ret ptr %f}
+define linkonce_odr void @__text_io_close(ptr %f){call void @free(ptr %f)
+ret void}
+define linkonce_odr void @__text_io_delete(ptr %f){call void @free(ptr %f)
+ret void}
+declare i64 @"p_E7_E8_14_A5_7E_00_00_E5_07_A6_11_DE_7E_00_00_F87_81_10_DE_7E_00_00A_ED_E8_14.13"(i64)
+declare i64 @"p_E7_E8_14_A5_7E_00_00_E5_07_A6_11_DE_7E_00_00_F87_81_10_DE_7E_00_00A_ED_E8.15"(i64)
+declare void @"p_E7_E8_14_A5_7E_00_00_E5_07_A6_11_DE_7E_00_00_F8.17"()
+declare i64 @"p_E7_E8_14_A5_7E_00_00_E5_07_A6_11_DE_7E_00_00_F87_81_10_DE_7E_00_00A_ED_E8_14.19"(i64)
+declare void @"p_E7_E8_14_A5_7E_00_00_E5_07_A6_11_DE_7E.21"()
+declare i64 @"p_E7_E8_14_A5_7E_00_00_E5_07_A6_11_DE_7E_00_00_F87_81_10_DE_7E_00_00A_ED_E8.23"(i64)
+declare void @"p_E7_E8_14_A5_7E_00_00_E5_07_A6_11_DE_7E_00_00_F87_81_10.25"(i64)
+declare void @"REPORT__TEST"(ptr,ptr)
+declare void @"REPORT__FAILED"(ptr)
+declare void @"REPORT__RESULT"()
+declare i64 @"REPORT__IDENT_5FINT"(i64)
+declare i64 @"REPORT__IDENT_5FBOOL"(i64)
+declare i64 @"REPORT__IDENT_5FCHAR"(i64)
+declare ptr @"REPORT__IDENT_5FSTR"(ptr)
+define i64 @"F.36"(i64 %p.i, ptr %__slnk) {
+  %ej = alloca ptr
+  %__frame = alloca [62 x ptr]
+  %v.i.sc2.37 = alloca i64
+  store i64 %p.i, ptr %v.i.sc2.37
+  %t3 = getelementptr ptr, ptr %__slnk, i64 35
+  %t4 = load ptr, ptr %t3
+  %t2 = load ptr, ptr %t4
+  %t5 = load i64, ptr %v.i.sc2.37
+  %t6 = getelementptr i64, ptr %t2, i64 %t5
+  %t1 = load i64, ptr %t6
+  %t7 = add i64 0, 1
+  %t0 = add i64 %t1, %t7
+  %t9 = getelementptr ptr, ptr %__slnk, i64 35
+  %t10 = load ptr, ptr %t9
+  %t8 = load ptr, ptr %t10
+  %t11 = load i64, ptr %v.i.sc2.37
+  %t12 = getelementptr i64, ptr %t8, i64 %t11
+  store i64 %t0, ptr %t12
+  %t15 = getelementptr ptr, ptr %__slnk, i64 35
+  %t16 = load ptr, ptr %t15
+  %t14 = load ptr, ptr %t16
+  %t17 = load i64, ptr %v.i.sc2.37
+  %t18 = getelementptr i64, ptr %t14, i64 %t17
+  %t13 = load i64, ptr %t18
+  ret i64 %t13
+  ret i64 0
+}
+define void @"C32001A.34"() {
+  %ej = alloca ptr
+  %__frame = alloca [62 x ptr]
+  %v.i1.sc2.48 = alloca i64
+  %t19 = getelementptr [62 x ptr], ptr %__frame, i64 0, i64 48
+  store ptr %v.i1.sc2.48, ptr %t19
+  %v.fi1.sc2.58 = alloca i64
+  %t20 = getelementptr [62 x ptr], ptr %__frame, i64 0, i64 58
+  store ptr %v.fi1.sc2.58, ptr %t20
+  %v.i2.sc2.49 = alloca i64
+  %t21 = getelementptr [62 x ptr], ptr %__frame, i64 0, i64 49
+  store ptr %v.i2.sc2.49, ptr %t21
+  %v.d2.sc2.45 = alloca i64
+  %t22 = getelementptr [62 x ptr], ptr %__frame, i64 0, i64 45
+  store ptr %v.d2.sc2.45, ptr %t22
+  %v.fl2.sc2.54 = alloca double
+  %t23 = getelementptr [62 x ptr], ptr %__frame, i64 0, i64 54
+  store ptr %v.fl2.sc2.54, ptr %t23
+  %v.bump.sc1.35 = alloca [8 x i64]
+  %t24 = getelementptr [62 x ptr], ptr %__frame, i64 0, i64 35
+  store ptr %v.bump.sc1.35, ptr %t24
+  %v.fi2.sc2.59 = alloca i64
+  %t25 = getelementptr [62 x ptr], ptr %__frame, i64 0, i64 59
+  store ptr %v.fi2.sc2.59, ptr %t25
+  %v.d1.sc2.44 = alloca i64
+  %t26 = getelementptr [62 x ptr], ptr %__frame, i64 0, i64 44
+  store ptr %v.d1.sc2.44, ptr %t26
+  %v.fl1.sc2.53 = alloca double
+  %t27 = getelementptr [62 x ptr], ptr %__frame, i64 0, i64 53
+  store ptr %v.fl1.sc2.53, ptr %t27
+  %v.i.sc2.37 = alloca i64
+  %t28 = getelementptr [62 x ptr], ptr %__frame, i64 0, i64 37
+  store ptr %v.i.sc2.37, ptr %t28
+  %t31 = alloca [1 x i64]
+  %t32 = add i64 0, 0
+  %t33 = getelementptr [1 x i64], ptr %t31, i64 0, i64 0
+  store i64 %t32, ptr %t33
+  %t30 = getelementptr [1 x i64], ptr %t31, i64 0, i64 0
+  store ptr %t30, ptr %v.bump.sc1.35
+  %t35 = alloca [8 x i8]
+  store [8 x i8] c"C32001A\00", ptr %t35
+  %t34 = getelementptr [8 x i8], ptr %t35, i64 0, i64 0
+  %t36 = ptrtoint ptr %t34 to i64
+  %t45 = alloca [43 x i8]
+  store [43 x i8] c"CHECK THAT IN MULTIPLE OBJECT DECLARATION \00", ptr %t45
+  %t44 = getelementptr [43 x i8], ptr %t45, i64 0, i64 0
+  %t47 = alloca [42 x i8]
+  store [42 x i8] c"FOR SCALAR TYPES, THE SUBTYPE INDICATION \00", ptr %t47
+  %t46 = getelementptr [42 x i8], ptr %t47, i64 0, i64 0
+  %t48 = call i64 @strlen(ptr %t44)
+  %t49 = call i64 @strlen(ptr %t46)
+  %t50 = add i64 %t48, %t49
+  %t51 = add i64 %t50, 1
+  %t52 = call ptr @malloc(i64 %t51)
+  call void @llvm.memcpy.p0.p0.i64(ptr %t52, ptr %t44, i64 %t48, i1 false)
+  %t53 = getelementptr i8, ptr %t52, i64 %t48
+  call void @llvm.memcpy.p0.p0.i64(ptr %t53, ptr %t46, i64 %t49, i1 false)
+  %t54 = getelementptr i8, ptr %t52, i64 %t50
+  store i8 0, ptr %t54
+  %t56 = alloca [40 x i8]
+  store [40 x i8] c"AND THE INITIALIZATION EXPRESSIONS ARE \00", ptr %t56
+  %t55 = getelementptr [40 x i8], ptr %t56, i64 0, i64 0
+  %t57 = call i64 @strlen(ptr %t52)
+  %t58 = call i64 @strlen(ptr %t55)
+  %t59 = add i64 %t57, %t58
+  %t60 = add i64 %t59, 1
+  %t61 = call ptr @malloc(i64 %t60)
+  call void @llvm.memcpy.p0.p0.i64(ptr %t61, ptr %t52, i64 %t57, i1 false)
+  %t62 = getelementptr i8, ptr %t61, i64 %t57
+  call void @llvm.memcpy.p0.p0.i64(ptr %t62, ptr %t55, i64 %t58, i1 false)
+  %t63 = getelementptr i8, ptr %t61, i64 %t59
+  store i8 0, ptr %t63
+  %t65 = alloca [43 x i8]
+  store [43 x i8] c"EVALUATED ONCE FOR EACH NAMED OBJECT THAT \00", ptr %t65
+  %t64 = getelementptr [43 x i8], ptr %t65, i64 0, i64 0
+  %t66 = call i64 @strlen(ptr %t61)
+  %t67 = call i64 @strlen(ptr %t64)
+  %t68 = add i64 %t66, %t67
+  %t69 = add i64 %t68, 1
+  %t70 = call ptr @malloc(i64 %t69)
+  call void @llvm.memcpy.p0.p0.i64(ptr %t70, ptr %t61, i64 %t66, i1 false)
+  %t71 = getelementptr i8, ptr %t70, i64 %t66
+  call void @llvm.memcpy.p0.p0.i64(ptr %t71, ptr %t64, i64 %t67, i1 false)
+  %t72 = getelementptr i8, ptr %t70, i64 %t68
+  store i8 0, ptr %t72
+  %t74 = alloca [43 x i8]
+  store [43 x i8] c"IS DECLARED AND THE SUBTYPE INDICATION IS \00", ptr %t74
+  %t73 = getelementptr [43 x i8], ptr %t74, i64 0, i64 0
+  %t75 = call i64 @strlen(ptr %t70)
+  %t76 = call i64 @strlen(ptr %t73)
+  %t77 = add i64 %t75, %t76
+  %t78 = add i64 %t77, 1
+  %t79 = call ptr @malloc(i64 %t78)
+  call void @llvm.memcpy.p0.p0.i64(ptr %t79, ptr %t70, i64 %t75, i1 false)
+  %t80 = getelementptr i8, ptr %t79, i64 %t75
+  call void @llvm.memcpy.p0.p0.i64(ptr %t80, ptr %t73, i64 %t76, i1 false)
+  %t81 = getelementptr i8, ptr %t79, i64 %t77
+  store i8 0, ptr %t81
+  %t83 = alloca [40 x i8]
+  store [40 x i8] c"EVALUATED FIRST.  ALSO, CHECK THAT THE \00", ptr %t83
+  %t82 = getelementptr [40 x i8], ptr %t83, i64 0, i64 0
+  %t84 = call i64 @strlen(ptr %t79)
+  %t85 = call i64 @strlen(ptr %t82)
+  %t86 = add i64 %t84, %t85
+  %t87 = add i64 %t86, 1
+  %t88 = call ptr @malloc(i64 %t87)
+  call void @llvm.memcpy.p0.p0.i64(ptr %t88, ptr %t79, i64 %t84, i1 false)
+  %t89 = getelementptr i8, ptr %t88, i64 %t84
+  call void @llvm.memcpy.p0.p0.i64(ptr %t89, ptr %t82, i64 %t85, i1 false)
+  %t90 = getelementptr i8, ptr %t88, i64 %t86
+  store i8 0, ptr %t90
+  %t92 = alloca [40 x i8]
+  store [40 x i8] c"EVALUATIONS YIELD THE SAME RESULT AS A \00", ptr %t92
+  %t91 = getelementptr [40 x i8], ptr %t92, i64 0, i64 0
+  %t93 = call i64 @strlen(ptr %t88)
+  %t94 = call i64 @strlen(ptr %t91)
+  %t95 = add i64 %t93, %t94
+  %t96 = add i64 %t95, 1
+  %t97 = call ptr @malloc(i64 %t96)
+  call void @llvm.memcpy.p0.p0.i64(ptr %t97, ptr %t88, i64 %t93, i1 false)
+  %t98 = getelementptr i8, ptr %t97, i64 %t93
+  call void @llvm.memcpy.p0.p0.i64(ptr %t98, ptr %t91, i64 %t94, i1 false)
+  %t99 = getelementptr i8, ptr %t97, i64 %t95
+  store i8 0, ptr %t99
+  %t101 = alloca [39 x i8]
+  store [39 x i8] c"SEQUENCE OF SINGLE OBJECT DECLARATIONS\00", ptr %t101
+  %t100 = getelementptr [39 x i8], ptr %t101, i64 0, i64 0
+  %t102 = call i64 @strlen(ptr %t97)
+  %t103 = call i64 @strlen(ptr %t100)
+  %t104 = add i64 %t102, %t103
+  %t105 = add i64 %t104, 1
+  %t106 = call ptr @malloc(i64 %t105)
+  call void @llvm.memcpy.p0.p0.i64(ptr %t106, ptr %t97, i64 %t102, i1 false)
+  %t107 = getelementptr i8, ptr %t106, i64 %t102
+  call void @llvm.memcpy.p0.p0.i64(ptr %t107, ptr %t100, i64 %t103, i1 false)
+  %t108 = getelementptr i8, ptr %t106, i64 %t104
+  store i8 0, ptr %t108
+  %t109 = ptrtoint ptr %t106 to i64
+  call void @"REPORT__TEST"(i64 %t36, i64 %t109)
+  %t110 = call ptr @__ada_setjmp()
+  store ptr %t110, ptr %ej
+  store ptr %t110, ptr @__eh_cur
+  %t111 = call i32 @setjmp(ptr %t110)
+  %t112 = icmp eq i32 %t111, 0
+  br i1 %t112, label %L0, label %L1
+L0:
+  %t114 = load i64, ptr %v.d1.sc2.44
+  %t115 = add i64 0, 1
+  %t116 = icmp ne i64 %t114, %t115
+  %t117 = zext i1 %t116 to i64
+  %t118 = icmp ne i64 %t117, 0
+  %t119 = zext i1 %t118 to i64
+  %t120 = icmp ne i64 %t119, 0
+  br i1 %t120, label %L2, label %L3
+L2:
+  %t122 = alloca [36 x i8]
+  store [36 x i8] c"D1 NOT INITIALIZED TO CORRECT VALUE\00", ptr %t122
+  %t121 = getelementptr [36 x i8], ptr %t122, i64 0, i64 0
+  %t123 = ptrtoint ptr %t121 to i64
+  call void @"REPORT__FAILED"(i64 %t123)
+  br label %L4
+L3:
+  br label %L4
+L4:
+  %t125 = load i64, ptr %v.d2.sc2.45
+  %t126 = add i64 0, 3
+  %t127 = icmp ne i64 %t125, %t126
+  %t128 = zext i1 %t127 to i64
+  %t129 = icmp ne i64 %t128, 0
+  %t130 = zext i1 %t129 to i64
+  %t131 = icmp ne i64 %t130, 0
+  br i1 %t131, label %L5, label %L6
+L5:
+  %t133 = alloca [36 x i8]
+  store [36 x i8] c"D2 NOT INITIALIZED TO CORRECT VALUE\00", ptr %t133
+  %t132 = getelementptr [36 x i8], ptr %t133, i64 0, i64 0
+  %t134 = ptrtoint ptr %t132 to i64
+  call void @"REPORT__FAILED"(i64 %t134)
+  br label %L7
+L6:
+  br label %L7
+L7:
+  %t136 = add i64 0, 0
+  %t137 = add i64 0, 1
+  %t138 = icmp ne i64 %t136, %t137
+  %t139 = zext i1 %t138 to i64
+  %t140 = icmp ne i64 %t139, 0
+  %t141 = zext i1 %t140 to i64
+  %t142 = icmp ne i64 %t141, 0
+  br i1 %t142, label %L8, label %L9
+L8:
+  %t144 = alloca [37 x i8]
+  store [37 x i8] c"CD1 NOT INITIALIZED TO CORRECT VALUE\00", ptr %t144
+  %t143 = getelementptr [37 x i8], ptr %t144, i64 0, i64 0
+  %t145 = ptrtoint ptr %t143 to i64
+  call void @"REPORT__FAILED"(i64 %t145)
+  br label %L10
+L9:
+  br label %L10
+L10:
+  %t147 = add i64 0, 0
+  %t148 = add i64 0, 3
+  %t149 = icmp ne i64 %t147, %t148
+  %t150 = zext i1 %t149 to i64
+  %t151 = icmp ne i64 %t150, 0
+  %t152 = zext i1 %t151 to i64
+  %t153 = icmp ne i64 %t152, 0
+  br i1 %t153, label %L11, label %L12
+L11:
+  %t155 = alloca [37 x i8]
+  store [37 x i8] c"CD2 NOT INITIALIZED TO CORRECT VALUE\00", ptr %t155
+  %t154 = getelementptr [37 x i8], ptr %t155, i64 0, i64 0
+  %t156 = ptrtoint ptr %t154 to i64
+  call void @"REPORT__FAILED"(i64 %t156)
+  br label %L13
+L12:
+  br label %L13
+L13:
+  %t158 = load i64, ptr %v.i1.sc2.48
+  %t159 = add i64 0, 1
+  %t160 = icmp ne i64 %t158, %t159
+  %t161 = zext i1 %t160 to i64
+  %t162 = icmp ne i64 %t161, 0
+  %t163 = zext i1 %t162 to i64
+  %t164 = icmp ne i64 %t163, 0
+  br i1 %t164, label %L14, label %L15
+L14:
+  %t166 = alloca [36 x i8]
+  store [36 x i8] c"I1 NOT INITIALIZED TO CORRECT VALUE\00", ptr %t166
+  %t165 = getelementptr [36 x i8], ptr %t166, i64 0, i64 0
+  %t167 = ptrtoint ptr %t165 to i64
+  call void @"REPORT__FAILED"(i64 %t167)
+  br label %L16
+L15:
+  br label %L16
+L16:
+  %t169 = load i64, ptr %v.i2.sc2.49
+  %t170 = add i64 0, 3
+  %t171 = icmp ne i64 %t169, %t170
+  %t172 = zext i1 %t171 to i64
+  %t173 = icmp ne i64 %t172, 0
+  %t174 = zext i1 %t173 to i64
+  %t175 = icmp ne i64 %t174, 0
+  br i1 %t175, label %L17, label %L18
+L17:
+  %t177 = alloca [36 x i8]
+  store [36 x i8] c"I2 NOT INITIALIZED TO CORRECT VALUE\00", ptr %t177
+  %t176 = getelementptr [36 x i8], ptr %t177, i64 0, i64 0
+  %t178 = ptrtoint ptr %t176 to i64
+  call void @"REPORT__FAILED"(i64 %t178)
+  br label %L19
+L18:
+  br label %L19
+L19:
+  %t180 = add i64 0, 0
+  %t181 = add i64 0, 1
+  %t182 = icmp ne i64 %t180, %t181
+  %t183 = zext i1 %t182 to i64
+  %t184 = icmp ne i64 %t183, 0
+  %t185 = zext i1 %t184 to i64
+  %t186 = icmp ne i64 %t185, 0
+  br i1 %t186, label %L20, label %L21
+L20:
+  %t188 = alloca [37 x i8]
+  store [37 x i8] c"CI1 NOT INITIALIZED TO CORRECT VALUE\00", ptr %t188
+  %t187 = getelementptr [37 x i8], ptr %t188, i64 0, i64 0
+  %t189 = ptrtoint ptr %t187 to i64
+  call void @"REPORT__FAILED"(i64 %t189)
+  br label %L22
+L21:
+  br label %L22
+L22:
+  %t191 = add i64 0, 0
+  %t192 = add i64 0, 3
+  %t193 = icmp ne i64 %t191, %t192
+  %t194 = zext i1 %t193 to i64
+  %t195 = icmp ne i64 %t194, 0
+  %t196 = zext i1 %t195 to i64
+  %t197 = icmp ne i64 %t196, 0
+  br i1 %t197, label %L23, label %L24
+L23:
+  %t199 = alloca [37 x i8]
+  store [37 x i8] c"CI2 NOT INITIALIZED TO CORRECT VALUE\00", ptr %t199
+  %t198 = getelementptr [37 x i8], ptr %t199, i64 0, i64 0
+  %t200 = ptrtoint ptr %t198 to i64
+  call void @"REPORT__FAILED"(i64 %t200)
+  br label %L25
+L24:
+  br label %L25
+L25:
+  %t202 = load double, ptr %v.fl1.sc2.53
+  %t203 = fadd double 0.0, 1.000000e+00
+  %t204 = fcmp one double %t202, %t203
+  %t205 = zext i1 %t204 to i64
+  %t206 = icmp ne i64 %t205, 0
+  %t207 = zext i1 %t206 to i64
+  %t208 = icmp ne i64 %t207, 0
+  br i1 %t208, label %L26, label %L27
+L26:
+  %t210 = alloca [37 x i8]
+  store [37 x i8] c"FL1 NOT INITIALIZED TO CORRECT VALUE\00", ptr %t210
+  %t209 = getelementptr [37 x i8], ptr %t210, i64 0, i64 0
+  %t211 = ptrtoint ptr %t209 to i64
+  call void @"REPORT__FAILED"(i64 %t211)
+  br label %L28
+L27:
+  br label %L28
+L28:
+  %t213 = load double, ptr %v.fl2.sc2.54
+  %t214 = fadd double 0.0, 3.000000e+00
+  %t215 = fcmp one double %t213, %t214
+  %t216 = zext i1 %t215 to i64
+  %t217 = icmp ne i64 %t216, 0
+  %t218 = zext i1 %t217 to i64
+  %t219 = icmp ne i64 %t218, 0
+  br i1 %t219, label %L29, label %L30
+L29:
+  %t221 = alloca [37 x i8]
+  store [37 x i8] c"FL2 NOT INITIALIZED TO CORRECT VALUE\00", ptr %t221
+  %t220 = getelementptr [37 x i8], ptr %t221, i64 0, i64 0
+  %t222 = ptrtoint ptr %t220 to i64
+  call void @"REPORT__FAILED"(i64 %t222)
+  br label %L31
+L30:
+  br label %L31
+L31:
+  %t224 = add i64 0, 0
+  %t225 = fadd double 0.0, 1.000000e+00
+  %t226 = sitofp i64 %t224 to double
+  %t227 = fcmp one double %t226, %t225
+  %t228 = zext i1 %t227 to i64
+  %t229 = icmp ne i64 %t228, 0
+  %t230 = zext i1 %t229 to i64
+  %t231 = icmp ne i64 %t230, 0
+  br i1 %t231, label %L32, label %L33
+L32:
+  %t233 = alloca [38 x i8]
+  store [38 x i8] c"CFL1 NOT INITIALIZED TO CORRECT VALUE\00", ptr %t233
+  %t232 = getelementptr [38 x i8], ptr %t233, i64 0, i64 0
+  %t234 = ptrtoint ptr %t232 to i64
+  call void @"REPORT__FAILED"(i64 %t234)
+  br label %L34
+L33:
+  br label %L34
+L34:
+  %t236 = add i64 0, 0
+  %t237 = fadd double 0.0, 3.000000e+00
+  %t238 = sitofp i64 %t236 to double
+  %t239 = fcmp one double %t238, %t237
+  %t240 = zext i1 %t239 to i64
+  %t241 = icmp ne i64 %t240, 0
+  %t242 = zext i1 %t241 to i64
+  %t243 = icmp ne i64 %t242, 0
+  br i1 %t243, label %L35, label %L36
+L35:
+  %t245 = alloca [38 x i8]
+  store [38 x i8] c"CFL2 NOT INITIALIZED TO CORRECT VALUE\00", ptr %t245
+  %t244 = getelementptr [38 x i8], ptr %t245, i64 0, i64 0
+  %t246 = ptrtoint ptr %t244 to i64
+  call void @"REPORT__FAILED"(i64 %t246)
+  br label %L37
+L36:
+  br label %L37
+L37:
+  %t248 = load i64, ptr %v.fi1.sc2.58
+  %t249 = fadd double 0.0, 1.000000e+00
+  %t250 = sitofp i64 %t248 to double
+  %t251 = fcmp one double %t250, %t249
+  %t252 = zext i1 %t251 to i64
+  %t253 = icmp ne i64 %t252, 0
+  %t254 = zext i1 %t253 to i64
+  %t255 = icmp ne i64 %t254, 0
+  br i1 %t255, label %L38, label %L39
+L38:
+  %t257 = alloca [37 x i8]
+  store [37 x i8] c"FI1 NOT INITIALIZED TO CORRECT VALUE\00", ptr %t257
+  %t256 = getelementptr [37 x i8], ptr %t257, i64 0, i64 0
+  %t258 = ptrtoint ptr %t256 to i64
+  call void @"REPORT__FAILED"(i64 %t258)
+  br label %L40
+L39:
+  br label %L40
+L40:
+  %t260 = load i64, ptr %v.fi2.sc2.59
+  %t261 = fadd double 0.0, 3.000000e+00
+  %t262 = sitofp i64 %t260 to double
+  %t263 = fcmp one double %t262, %t261
+  %t264 = zext i1 %t263 to i64
+  %t265 = icmp ne i64 %t264, 0
+  %t266 = zext i1 %t265 to i64
+  %t267 = icmp ne i64 %t266, 0
+  br i1 %t267, label %L41, label %L42
+L41:
+  %t269 = alloca [37 x i8]
+  store [37 x i8] c"FI2 NOT INITIALIZED TO CORRECT VALUE\00", ptr %t269
+  %t268 = getelementptr [37 x i8], ptr %t269, i64 0, i64 0
+  %t270 = ptrtoint ptr %t268 to i64
+  call void @"REPORT__FAILED"(i64 %t270)
+  br label %L43
+L42:
+  br label %L43
+L43:
+  %t272 = add i64 0, 0
+  %t273 = fadd double 0.0, 1.000000e+00
+  %t274 = sitofp i64 %t272 to double
+  %t275 = fcmp one double %t274, %t273
+  %t276 = zext i1 %t275 to i64
+  %t277 = icmp ne i64 %t276, 0
+  %t278 = zext i1 %t277 to i64
+  %t279 = icmp ne i64 %t278, 0
+  br i1 %t279, label %L44, label %L45
+L44:
+  %t281 = alloca [38 x i8]
+  store [38 x i8] c"CFI1 NOT INITIALIZED TO CORRECT VALUE\00", ptr %t281
+  %t280 = getelementptr [38 x i8], ptr %t281, i64 0, i64 0
+  %t282 = ptrtoint ptr %t280 to i64
+  call void @"REPORT__FAILED"(i64 %t282)
+  br label %L46
+L45:
+  br label %L46
+L46:
+  %t284 = add i64 0, 0
+  %t285 = fadd double 0.0, 3.000000e+00
+  %t286 = sitofp i64 %t284 to double
+  %t287 = fcmp one double %t286, %t285
+  %t288 = zext i1 %t287 to i64
+  %t289 = icmp ne i64 %t288, 0
+  %t290 = zext i1 %t289 to i64
+  %t291 = icmp ne i64 %t290, 0
+  br i1 %t291, label %L47, label %L48
+L47:
+  %t293 = alloca [38 x i8]
+  store [38 x i8] c"CFI2 NOT INITIALIZED TO CORRECT VALUE\00", ptr %t293
+  %t292 = getelementptr [38 x i8], ptr %t293, i64 0, i64 0
+  %t294 = ptrtoint ptr %t292 to i64
+  call void @"REPORT__FAILED"(i64 %t294)
+  br label %L49
+L48:
+  br label %L49
+L49:
+  br label %L50
+L1:
+  %t295 = load ptr, ptr @__ex_cur
+  call void @__ada_raise(ptr %t295)
+  unreachable
+L50:
+  call void @"REPORT__RESULT"()
+  ret void
+}
+define i32 @main(){
+  call void @"C32001A.34"(ptr null)
+  ret i32 0
+}
