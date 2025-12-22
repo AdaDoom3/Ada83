@@ -70,6 +70,19 @@
 **Impact**: Fixed 9+ tests using POSITIVE'IMAGE and similar constructs
 **Example**: `POSITIVE'IMAGE(MAX_MANTISSA)` now compiles
 
+### 11. Generic Attribute Substitution (ada83.c:164) **[PARTIAL]**
+**Issue**: Generic formal types in attribute references not substituted during instantiation
+**Example**: `T'PRED(x)` in generic body causes "undef 'T'" after instantiation
+**Fix**: Added `case N_AT:r->at.p=gsub(SM,n->at.p,fp,ap);break;` to gsub() function
+**Result**: Correct but insufficient - generics need architectural changes
+**Investigation**:
+- gsub() now handles attribute prefix substitution (N_AT nodes)
+- However, generic instantiation has deeper issues:
+  - Instantiated procedures not registered with correct names
+  - Generic formal parameters not visible in bodies during template processing
+- Attempted fix with parameter injection caused 154 test regression
+**Status**: Partial fix committed, full generic support requires redesign
+
 ## Remaining Issues
 
 ### Common Failure Patterns (from 891 failing tests)
@@ -94,9 +107,10 @@
 
 ## Files Modified
 
-1. **ada83.c** - Main compiler (10 fixes total)
+1. **ada83.c** - Main compiler (11 fixes total)
    - Line 145-146: Added POSITIVE/NATURAL predefined subtypes
    - Line 148: Package variable scope fix
+   - Line 164: Added N_AT case to gsub() for generic attribute substitution
    - Line 165: Deferred constant completion, Package body visibility
 2. **rts/report.ads** - Added EQUAL, COMMENT
 3. **rts/report.adb** - Implemented new functions
