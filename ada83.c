@@ -182,9 +182,9 @@ int mx=g->sm->eo;
 if(mx>0)fprintf(g->o,"  %%__frame = alloca [%d x ptr]\n",mx);
 }
 static void gdl(Gn*g,No*n);
-static inline void lbl(Gn*g,int l){lbl(g,l);}
-static inline void br(Gn*g,int l){br(g,l);}
-static inline void cbr(Gn*g,int c,int lt,int lf){cbr(g,c,lt,lf);}
+static inline void lbl(Gn*g,int l){fprintf(g->o,"L%d:\n",l);}
+static inline void br(Gn*g,int l){fprintf(g->o,"  br label %%L%d\n",l);}
+static inline void cbr(Gn*g,int c,int lt,int lf){fprintf(g->o,"  br i1 %%t%d, label %%L%d, label %%L%d\n",c,lt,lf);}
 static V vcast(Gn*g,V v,Vk k){if(v.k==k)return v;V r={nt(g),k};if(v.k==VK_I&&k==VK_F)fprintf(g->o,"  %%t%d = sitofp i64 %%t%d to double\n",r.id,v.id);else if(v.k==VK_F&&k==VK_I)fprintf(g->o,"  %%t%d = fptosi double %%t%d to i64\n",r.id,v.id);else if(v.k==VK_P&&k==VK_I)fprintf(g->o,"  %%t%d = ptrtoint ptr %%t%d to i64\n",r.id,v.id);else if(v.k==VK_I&&k==VK_P)fprintf(g->o,"  %%t%d = inttoptr i64 %%t%d to ptr\n",r.id,v.id);else fprintf(g->o,"  %%t%d = bitcast %s %%t%d to %s\n",r.id,vt(v.k),v.id,vt(k));return r;}
 static V vbool(Gn*g,V v){if(v.k!=VK_I)v=vcast(g,v,VK_I);int t=nt(g);V c={nt(g),VK_I};fprintf(g->o,"  %%t%d = icmp ne i64 %%t%d, 0\n",t,v.id);fprintf(g->o,"  %%t%d = zext i1 %%t%d to i64\n",c.id,t);return c;}
 static V vcmpi(Gn*g,const char*op,V a,V b){a=vcast(g,a,VK_I);b=vcast(g,b,VK_I);int c=nt(g);V r={nt(g),VK_I};fprintf(g->o,"  %%t%d = icmp %s i64 %%t%d, %%t%d\n",c,op,a.id,b.id);fprintf(g->o,"  %%t%d = zext i1 %%t%d to i64\n",r.id,c);return r;}
