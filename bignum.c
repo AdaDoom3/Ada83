@@ -1,0 +1,34 @@
+#include<stdio.h>
+#include<stdlib.h>
+#include<string.h>
+#include<stdint.h>
+#include<stdbool.h>
+typedef struct{uint64_t*d;uint32_t n,c;bool s;}U;typedef struct{U*n,*d;}R;
+static U*un(uint32_t c){U*u=malloc(sizeof(U));u->d=calloc(c,8);u->n=0;u->c=c;u->s=0;return u;}
+static void uf(U*u){if(u){free(u->d);free(u);}}
+static void ug(U*u,uint32_t c){if(c>u->c){u->d=realloc(u->d,c*8);memset(u->d+u->c,0,(c-u->c)*8);u->c=c;}}
+static void uz(U*u){while(u->n>0&&!u->d[u->n-1])u->n--;if(!u->n)u->s=0;}
+static int uca(const U*a,const U*b){if(a->n!=b->n)return a->n>b->n?1:-1;for(int i=a->n-1;i>=0;i--)if(a->d[i]!=b->d[i])return a->d[i]>b->d[i]?1:-1;return 0;}
+static int uc(const U*a,const U*b){if(a->s!=b->s)return a->s?-1:1;int c=uca(a,b);return a->s?-c:c;}
+static inline uint64_t adc(uint64_t a,uint64_t b,uint64_t c,uint64_t*r){__uint128_t s=(__uint128_t)a+b+c;*r=s;return s>>64;}
+static inline uint64_t sbb(uint64_t a,uint64_t b,uint64_t c,uint64_t*r){__uint128_t d=(__uint128_t)a-b-c;*r=d;return-(d>>64);}
+static void uaa(U*r,const U*a,const U*b){uint32_t m=(a->n>b->n?a->n:b->n)+1;ug(r,m);uint64_t c=0;uint32_t i;for(i=0;i<a->n||i<b->n||c;i++){uint64_t ai=i<a->n?a->d[i]:0,bi=i<b->n?b->d[i]:0;c=adc(ai,bi,c,&r->d[i]);}r->n=i;uz(r);}
+static void usa(U*r,const U*a,const U*b){ug(r,a->n);uint64_t c=0;for(uint32_t i=0;i<a->n;i++){uint64_t ai=a->d[i],bi=i<b->n?b->d[i]:0;c=sbb(ai,bi,c,&r->d[i]);}r->n=a->n;uz(r);}
+static void ua(U*r,const U*a,const U*b){if(a->s==b->s){uaa(r,a,b);r->s=a->s;}else{int c=uca(a,b);if(c>=0){usa(r,a,b);r->s=a->s;}else{usa(r,b,a);r->s=b->s;}}}
+static void us(U*r,const U*a,const U*b){U t=*b;t.s=!b->s;ua(r,a,&t);}
+static void umb(U*r,const U*a,const U*b){ug(r,a->n+b->n);memset(r->d,0,(a->n+b->n)*8);for(uint32_t i=0;i<a->n;i++){uint64_t c=0;for(uint32_t j=0;j<b->n;j++){__uint128_t p=(__uint128_t)a->d[i]*b->d[j]+r->d[i+j]+c;r->d[i+j]=p;c=p>>64;}r->d[i+b->n]=c;}r->n=a->n+b->n;r->s=a->s!=b->s;uz(r);}
+static void umk(U*r,const U*a,const U*b){uint32_t n=a->n>b->n?a->n:b->n;if(n<20){umb(r,a,b);return;}uint32_t m=n/2;U a0={a->d,a->n>m?m:a->n,a->c,0},a1={a->n>m?a->d+m:0,a->n>m?a->n-m:0,0,0};U b0={b->d,b->n>m?m:b->n,b->c,0},b1={b->n>m?b->d+m:0,b->n>m?b->n-m:0,0,0};U*z0=un(a0.n+b0.n),*z2=un(a1.n+b1.n),*z1=un(n*2);umk(z0,&a0,&b0);umk(z2,&a1,&b1);U*as=un(m+1),*bs=un(m+1);ua(as,&a0,&a1);ua(bs,&b0,&b1);umk(z1,as,bs);us(z1,z1,z0);us(z1,z1,z2);ug(r,2*n);memset(r->d,0,2*n*8);for(uint32_t i=0;i<z0->n;i++)r->d[i]=z0->d[i];uint64_t c=0;for(uint32_t i=0;i<z1->n||c;i++){uint64_t v=r->d[m+i]+(i<z1->n?z1->d[i]:0)+c;r->d[m+i]=v;c=v<r->d[m+i];}c=0;for(uint32_t i=0;i<z2->n||c;i++){uint64_t v=r->d[2*m+i]+(i<z2->n?z2->d[i]:0)+c;r->d[2*m+i]=v;c=v<r->d[2*m+i];}r->n=2*n;r->s=a->s!=b->s;uz(r);uf(z0);uf(z1);uf(z2);uf(as);uf(bs);}
+static void um(U*r,const U*a,const U*b){umk(r,a,b);}
+static void udm(U*q,U*r,const U*a,const U*b){int c=uca(a,b);if(c<0){if(q){q->n=0;q->s=0;}if(r){memcpy(r->d,a->d,a->n*8);r->n=a->n;r->s=a->s;}return;}if(b->n==1){uint64_t dv=b->d[0];if(q)ug(q,a->n);uint64_t rm=0;for(int i=a->n-1;i>=0;i--){__uint128_t dd=((__uint128_t)rm<<64)|a->d[i];if(q)q->d[i]=dd/dv;rm=dd%dv;}if(q){q->n=a->n;q->s=a->s!=b->s;uz(q);}if(r){r->d[0]=rm;r->n=rm?1:0;r->s=a->s&&rm;}return;}U*dv=un(a->n);memcpy(dv->d,a->d,a->n*8);dv->n=a->n;if(q){ug(q,a->n);memset(q->d,0,a->n*8);q->n=0;}U*o=un(1);o->d[0]=1;o->n=1;while(uca(dv,b)>=0){usa(dv,dv,b);if(q)ua(q,q,o);}if(q)q->s=a->s!=b->s;if(r){memcpy(r->d,dv->d,dv->n*8);r->n=dv->n;r->s=a->s&&dv->n;}uf(dv);uf(o);}
+static void ush(U*r,const U*a,uint32_t b){ug(r,a->n+(b+63)/64);uint32_t wsh=b/64,bsh=b%64;if(!bsh){for(uint32_t i=0;i<wsh;i++)r->d[i]=0;for(uint32_t i=0;i<a->n;i++)r->d[i+wsh]=a->d[i];}else{r->d[0]=0;for(uint32_t i=0;i<a->n;i++){r->d[i+wsh]|=a->d[i]<<bsh;r->d[i+wsh+1]=a->d[i]>>(64-bsh);}if(!r->d[a->n+wsh])r->n=a->n+wsh;else r->n=a->n+wsh+1;}r->s=a->s;uz(r);}
+static void upw(U*r,const U*a,uint64_t e){if(!e){r->d[0]=1;r->n=1;r->s=0;return;}U*t=un(8),*p=un(8);memcpy(p->d,a->d,a->n*8);p->n=a->n;p->s=a->s;t->d[0]=1;t->n=1;while(e){if(e&1){U*m=un(t->n+p->n);um(m,t,p);uf(t);t=m;}if(e>1){U*sq=un(p->n*2);um(sq,p,p);uf(p);p=sq;}e>>=1;}memcpy(r->d,t->d,t->n*8);r->n=t->n;r->s=t->s;uf(t);uf(p);}
+static U*ufd(const char*s){U*r=un(4),*ten=un(1);ten->d[0]=10;ten->n=1;bool neg=*s=='-';if(neg||*s=='+')s++;while(*s){if(*s>='0'&&*s<='9'){U*d=un(1);d->d[0]=*s-'0';d->n=1;U*t=un(r->n*2);um(t,r,ten);uf(r);r=t;t=un(r->n+1);ua(t,r,d);uf(r);uf(d);r=t;}s++;}r->s=neg;uf(ten);return r;}
+static char*utd(const U*u){if(!u->n){char*s=malloc(2);strcpy(s,"0");return s;}char*res=malloc(u->n*20+2);int p=0;U*t=un(u->n);memcpy(t->d,u->d,u->n*8);t->n=u->n;U*ten=un(1);ten->d[0]=10;ten->n=1;U*rm=un(1);while(t->n){udm(t,rm,t,ten);res[p++]='0'+(rm->n?rm->d[0]:0);}if(u->s)res[p++]='-';res[p]=0;for(int i=0;i<p/2;i++){char c=res[i];res[i]=res[p-1-i];res[p-1-i]=c;}uf(t);uf(ten);uf(rm);return res;}
+static void ugcd(U*r,const U*a,const U*b){U*x=un(a->n>b->n?a->n:b->n),*y=un(a->n>b->n?a->n:b->n);memcpy(x->d,a->d,a->n*8);x->n=a->n;x->s=0;memcpy(y->d,b->d,b->n*8);y->n=b->n;y->s=0;uint32_t sh=0;while(x->n&&y->n&&!(x->d[0]&1)&&!(y->d[0]&1)){for(uint32_t i=0;i<x->n-1;i++)x->d[i]=(x->d[i]>>1)|(x->d[i+1]<<63);x->d[x->n-1]>>=1;uz(x);for(uint32_t i=0;i<y->n-1;i++)y->d[i]=(y->d[i]>>1)|(y->d[i+1]<<63);y->d[y->n-1]>>=1;uz(y);sh++;}while(x->n){while(x->n&&!(x->d[0]&1)){for(uint32_t i=0;i<x->n-1;i++)x->d[i]=(x->d[i]>>1)|(x->d[i+1]<<63);x->d[x->n-1]>>=1;uz(x);}while(y->n&&!(y->d[0]&1)){for(uint32_t i=0;i<y->n-1;i++)y->d[i]=(y->d[i]>>1)|(y->d[i+1]<<63);y->d[y->n-1]>>=1;uz(y);}if(uca(x,y)>=0)usa(x,x,y);else usa(y,y,x);}memcpy(r->d,y->d,y->n*8);r->n=y->n;r->s=0;U*t=un(r->n+sh/64+1);ush(t,r,sh);memcpy(r->d,t->d,t->n*8);r->n=t->n;uf(x);uf(y);uf(t);}
+static void rn(R*r){U*g=un(8);ugcd(g,r->n,r->d);if(g->n&&!(g->n==1&&g->d[0]==1)){U*nn=un(r->n->n),*nd=un(r->d->n);udm(nn,0,r->n,g);udm(nd,0,r->d,g);uf(r->n);uf(r->d);r->n=nn;r->d=nd;}if(r->d->s){r->n->s=!r->n->s;r->d->s=0;}uf(g);}
+static void ra(R*r,const R*a,const R*b){U*ad=un(16),*bd=un(16),*nn=un(16),*nd=un(16);um(ad,a->n,b->d);um(bd,b->n,a->d);ua(nn,ad,bd);um(nd,a->d,b->d);r->n=nn;r->d=nd;rn(r);uf(ad);uf(bd);}
+static void rm(R*r,const R*a,const R*b){r->n=un(a->n->n+b->n->n);r->d=un(a->d->n+b->d->n);um(r->n,a->n,b->n);um(r->d,a->d,b->d);rn(r);}
+static double rtd(const R*u){char*ns=utd(u->n),*ds=utd(u->d);double n=strtod(ns,0),d=strtod(ds,0);free(ns);free(ds);return n/d;}
+#ifdef T
+int main(){U*a=ufd("123456789012345678901234567890"),*b=ufd("987654321098765432109876543210"),*s=un(32);ua(s,a,b);char*r=utd(s);printf("%s\n",r);uf(a);uf(b);uf(s);free(r);U*x=ufd("999999999999999999999"),*y=ufd("123"),*q=un(32),*m=un(32);udm(q,m,x,y);char*qs=utd(q),*ms=utd(m);printf("%s / %s = %s rem %s\n",utd(x),utd(y),qs,ms);uf(x);uf(y);uf(q);uf(m);free(qs);free(ms);U*p=un(32);upw(p,ufd("2"),100);printf("2^100 = %s\n",utd(p));uf(p);return 0;}
+#endif
