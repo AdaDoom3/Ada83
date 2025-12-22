@@ -26,7 +26,7 @@ timeout 1 lli test_results/$n.bc>acats_logs/$n.out 2>&1&&E PASS "$n" PASSED&&((+
 else q=$(^ "$f");h=${q%:*};x=${q#*:};p=$(: $h $x);((p>=90))&&{ ((++X[b]));[[ $v == v ]]&&@ "$f"||E PASS "$n" REJECTED "$h/$x errors (${p}%)";}||{ ((++X[f]));E FAIL "$n" LOW_COVERAGE "$h/$x errors (${p}%)";};fi;;
 [cC])if ! timeout 0.2 ./ada83 "$f">test_results/$n.ll 2>acats_logs/$n.err;then
 E SKIP "$n" COMPILE "$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)";((++X[s]));return;fi
-if ! timeout 0.2 llvm-link -o test_results/$n.bc test_results/$n.ll rts/report.ll 2>acats_logs/$n.link;then
+if ! timeout 0.2 llvm-link -o test_results/$n.bc test_results/$n.ll rts/report_stub.ll 2>acats_logs/$n.link;then
 E SKIP "$n" BIND "unresolved symbols";((++X[s]));return;fi
 if timeout 1 lli test_results/$n.bc>acats_logs/$n.out 2>&1;then
 grep -q PASSED acats_logs/$n.out 2>/dev/null&&E PASS "$n" PASSED&&((++X[c]))||{
@@ -77,12 +77,14 @@ O(){ + "B-Test Error Detection Analysis";for f in acats/b*.ada;do [[ -f $f ]]||c
 q=$(^ "$f");h=${q%:*};x=${q#*:};p=$(: $h $x);((p>=90))&&E PASS "$n" PASS "$h/$x errors (${p}%)"&&((++X[b]))||
 E FAIL "$n" FAIL "$h/$x errors (${p}%)"&&((++X[f]));done;R;}
 A(){ + "Full Suite";for f in acats/*.ada;do [[ -f $f ]]&&T "$f";done;R;}
+Q(){ + "Group ${1^^} Tests";for f in acats/${1}*.ada;do [[ -f $f ]]&&T "$f" "${2:-}";done;R;}
 U(){ cat<<E
 Usage: $0 <mode> [options]
-Modes:  f  full suite  g <X> [v]  group  b [v]  B-test oracle  h  help
-Classes: A acceptance B illegality C executable D numerics E inspection L post-compilation
-Options: v  verbose B-test oracle detail
+Modes:  f  full  g <X> [v]  class  q <XX> [v]  group  b [v]  B-oracle  h  help
+Classes: A accept B illegal C exec D numeric E inspect L post-compile
+Groups: a21 b22 b23 b24 c32 etc (run specific ACATS group)
+Options: v  verbose detail for B-tests
 Output: test_results/*.{ll,bc} acats_logs/*.{err,out} test_summary.txt
 E
 }
-mkdir -p test_results acats_logs;case ${1:-h} in f)A;;g)G "${2:-c}" "${3:-}";;b)O "${2:-}";;*)U;;esac
+mkdir -p test_results acats_logs;case ${1:-h} in f)A;;g)G "${2:-c}" "${3:-}";;q)Q "${2:-b22}" "${3:-}";;b)O "${2:-}";;*)U;;esac
