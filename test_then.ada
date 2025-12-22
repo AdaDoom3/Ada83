@@ -1,0 +1,7 @@
+PROCEDURE TEST IS
+X:INTEGER:=1;
+BEGIN
+  if X=1 ThEn
+    X:=2;
+  END IF;
+END TEST;
