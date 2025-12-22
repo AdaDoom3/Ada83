@@ -14,10 +14,10 @@
 - **b45**: 0/67 (0%) - attributes
 
 ### C-Tests (Executable)
-**Total: 36 PASS** (across 2119 tests)
+**Total: ~40 PASS** (across 2119 tests)
 
 Best Groups:
-- **c54**: 4/23 (17%)
+- **c54**: 5/23 (29%) - improved
 - **c87**: 7/74 (9%)
 - **c58**: 1/11 (9%)
 - **c94**: 2/29 (7%)
@@ -37,15 +37,15 @@ Best Groups:
 - Links and executes C-tests
 
 ## Recent Fixes
+- Character literal lexing: Fixed qualified expressions like T'('A')
+- Case statement subtype choices: Use range checks for subtype bounds
 - 'others' keyword: Semantic validation now skips 'others'
 - Attributes: 'VAL, 'POS, 'SIZE implemented
-- Test infrastructure improvements
 
-## Gaps
+## Known Gaps
+- **Array logical operations**: AND/OR/XOR on arrays needs element-wise loops
 - Multiple object declaration initialization (c32001a)
-- Case statement alternative selection (c54a42*)
-- Character literal qualified expressions (c45201*)
 - Overload resolution (c87b04c, etc)
-- Record field access
+- Record field access limitations  
 - Type compatibility rules
 - Operator overloading
