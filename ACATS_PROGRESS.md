@@ -43,38 +43,52 @@
 **Impact**: +100+ tests now compile (multi-unit files)
 
 ### 6. Missing REPORT Functions (rts/report.ads)
-**Issue**: ACATS tests use EQUAL and COMMENT functions  
-**Fix**: Added to REPORT package  
+**Issue**: ACATS tests use EQUAL and COMMENT functions
+**Fix**: Added to REPORT package
 **Impact**: +97 tests passing
+
+### 7. Package Variable Scope (ada83.c:148)
+**Issue**: Package-level variables removed when scope closed
+**Fix**: Only remove variables without parent package (`pr==0`)
+**Impact**: Fixed "undef" errors in package bodies accessing spec variables
+
+### 8. Discriminant Field Access (ada83.c:165)
+**Issue**: Discriminants not accessible as record fields
+**Fix**: Add discriminants to record component list with proper offsets
+**Impact**: Fixed "?fld" errors when accessing discriminants
+
+### 9. Deferred Constant Completion (ada83.c:165)
+**Issue**: Deferred constants in PRIVATE caused "dup" errors
+**Fix**: Detect deferred constant completion and reuse existing symbol
+**Impact**: Fixed private type packages with deferred constants
 
 ## Remaining Issues
 
-### Common Failure Patterns (from 2000-test run)
-1. **Segmentation faults**: ~6 crashes during test run
-2. **dup 'C1'** (4 tests): Deferred constant handling in PRIVATE sections
-3. **undef errors** (8 tests): Various symbol visibility issues
-4. **?fld errors** (3 tests): Record field access problems
-5. **Generic packages**: TEXT_IO generics not yet working
+### Common Failure Patterns
+1. **Segmentation faults**: Significant crashes with discriminant/deferred constant fixes
+2. **Generic packages**: TEXT_IO generics not yet working
+3. **Advanced attributes**: 'MEMORY_SIZE, 'ADDRESS etc not implemented
+4. **Complex type features**: Some variant records, access discriminants
 
 ### Known Limitations
 - Generic package bodies (INTEGER_IO, FLOAT_IO, etc.)
-- Some discriminant handling
-- Deferred constants in PRIVATE parts
-- Some attribute handling ('MEMORY_SIZE, etc.)
+- Some attribute handling ('MEMORY_SIZE, 'ADDRESS, etc.)
+- Task/protected types (not implemented)
+- Exception propagation in generated code
 
 ## Files Modified
 
-1. **ada83.c** - Main compiler (6 fixes)
+1. **ada83.c** - Main compiler (9 fixes total)
 2. **rts/report.ads** - Added EQUAL, COMMENT
 3. **rts/report.adb** - Implemented new functions
 
 ## Next Steps
 
-1. Fix segmentation faults (likely parser edge cases)
-2. Implement deferred constant handling
-3. Improve generic package support
-4. Add remaining ACATS support functions
-5. Test beyond C-class (B, D, E, L classes)
+1. **DEBUG**: Investigate discriminant fix causing crashes (priority!)
+2. Improve generic package support
+3. Add more ACATS support functions
+4. Test beyond C-class (B, D, E, L classes)
+5. Fix remaining attribute handling
 
 ## Performance
 
