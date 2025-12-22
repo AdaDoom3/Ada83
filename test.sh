@@ -77,12 +77,14 @@ O(){ + "B-Test Error Detection Analysis";for f in acats/b*.ada;do [[ -f $f ]]||c
 q=$(^ "$f");h=${q%:*};x=${q#*:};p=$(: $h $x);((p>=90))&&E PASS "$n" PASS "$h/$x errors (${p}%)"&&((++X[b]))||
 E FAIL "$n" FAIL "$h/$x errors (${p}%)"&&((++X[f]));done;R;}
 A(){ + "Full Suite";for f in acats/*.ada;do [[ -f $f ]]&&T "$f";done;R;}
+Q(){ + "Group ${1^^} Tests";for f in acats/${1}*.ada;do [[ -f $f ]]&&T "$f" "${2:-}";done;R;}
 U(){ cat<<E
 Usage: $0 <mode> [options]
-Modes:  f  full suite  g <X> [v]  group  b [v]  B-test oracle  h  help
-Classes: A acceptance B illegality C executable D numerics E inspection L post-compilation
-Options: v  verbose B-test oracle detail
+Modes:  f  full  g <X> [v]  class  q <XX> [v]  group  b [v]  B-oracle  h  help
+Classes: A accept B illegal C exec D numeric E inspect L post-compile
+Groups: a21 b22 b23 b24 c32 etc (run specific ACATS group)
+Options: v  verbose detail for B-tests
 Output: test_results/*.{ll,bc} acats_logs/*.{err,out} test_summary.txt
 E
 }
-mkdir -p test_results acats_logs;case ${1:-h} in f)A;;g)G "${2:-c}" "${3:-}";;b)O "${2:-}";;*)U;;esac
+mkdir -p test_results acats_logs;case ${1:-h} in f)A;;g)G "${2:-c}" "${3:-}";;q)Q "${2:-b22}" "${3:-}";;b)O "${2:-}";;*)U;;esac
