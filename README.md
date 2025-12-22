@@ -15,38 +15,13 @@ ada83.c (180 lines) - Complete Ada 83 compiler
 ├── Lexer      - FNV-1a hash-based tokenization
 ├── Parser     - LL(2) recursive descent, zero backtracking
 ├── Semantics  - Single-pass type checking and symbol resolution
-└── Codegen    - Direct LLVM IR emission, no AST rewrites
+└── Codegen    - Direct LLVM IR emission
 
 test.sh (89 lines) - Oracle-validated test harness
 ├── B-test validation - Error coverage analysis (±1 line tolerance)
 ├── C-test execution  - Compile→Link→Execute→Validate
 └── ACATS framework   - 4,050 test suite integration
 ```
-
-**Design Principles:**
-- **Single-pass O(N)** - No AST rewriting, no backtracking, arena allocation
-- **Dense implementation** - Maximum functionality, minimal code
-- **Oracle-validated testing** - B-tests measure error detection quality, not just rejection
-- **Production-ready** - Handles complete Ada 83 language specification
-
-## ACATS Conformance
-
-Current test suite results (4,050 total tests):
-
-| Class | Description | Pass | Total | Rate |
-|-------|-------------|------|-------|------|
-| **A** | Language fundamentals | TBD | 144 | TBD% |
-| **B** | Illegality detection | TBD | 1,515 | TBD% |
-| **C** | Core features | TBD | 2,119 | TBD% |
-| **D** | Representation clauses | TBD | 50 | TBD% |
-| **E** | Distributed systems | TBD | 54 | TBD% |
-| **L** | Generic instantiation | TBD | 168 | TBD% |
-| **Combined** | Overall conformance | TBD | 4,050 | TBD% |
-
-**B-Test Oracle Validation:**
-Negative tests use `-- ERROR:` comments to mark expected compiler errors. The oracle extracts expected error line numbers, compares with actual compiler output (±1 line tolerance), and calculates coverage. Tests pass only with ≥90% error coverage.
-
-**Update coverage:** `./test.sh f` regenerates these metrics.
 
 ## Testing
 
@@ -303,8 +278,3 @@ if (s && s->lv == 0) {
 }
 ```
 
----
-
-## License
-
-This compiler is provided for educational and research purposes. Consult Ada 83 LRM (reference/manual/) for language specification.
