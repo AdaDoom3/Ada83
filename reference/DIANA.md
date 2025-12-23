@@ -1,193 +1,186 @@
-ji AD-A272 792
--J
-I'0
-DIANA REFERENCE MANUAL
-Draft Revision 4
-DTIC "May1986
-S ELECTE i
-"S"NOV 16 1993 '
-AKathryn L. McKinley
--• : Carl F. Schaefer
-Intermetrics, Inc.
-"IR-MD-078
-Prepared For:
-Naval Research Laboratory
-Washington, D.C. 20375
-Contract N00014-84-C-2445
-Prepared By:
-Intermetrics, Inc. v U
-4733 Bethesda Ave. • I
-Bethesda, MD 20814
-'-o
-99
--' 93 1.••! 5 076
-Best
-Available
-Copy
-TABLE OF CONTENTS
-CHAPTER 1 INTRODUCTION ............ ....................... .. 1-1
-1.1 THE DESIGN OF DIANA ......... ................... .. 1-2
+# DIANA REFERENCE MANUAL
+
+**Draft Revision 4 - May 1986**
+
+**Authors:**
+- Kathryn L. McKinley
+- Carl F. Schaefer
+
+**Organization:** Intermetrics, Inc.
+
+**Prepared For:** Naval Research Laboratory, Washington, D.C. 20375
+
+**Contract:** N00014_84-C_2445
+
+---
+
+## TABLE OF CONTENTS
+
+## CHAPTER 1 INTRODUCTION
+
+1.1 THE DESIGN OF DIANA ............ ................... ............ 1-2
 1.2 THE DEFINITION OF THE DIANA OPERATIONS .I.............. 1-4
-1.3 THE DEFINITION OF A DIANA USER ..... .............. .. 1-5
-1.4 THE STRUCTURE OF THIS DOCUMENT ..... .............. . 1-7
-1.4.1 NOTATION ............... ......................... 1-7
-CHAPTER 2 IDL SPECIFICATION ........... .................... ... 2-1
-CHAPTER 3 SEMANTIC SPECIFICATION ........ .................. ... 3-1
-* 3.1 ALL DECL ............... ......................... 3-3
-3.1.1 ITEM ............ ........................ .. 3-3
-3.1.1.1 DSCRMTPARAM DECL ......... ................. ... 3-4
-3.1.1.1.1 PARAM ............ ....................... .. 3-4
-3.1.1.2 SUBUNITBODY .......... .................... .. 3-4
-3.1.1.3 DECL ............. ....................... ... 3-5
-3.1.1.3.1 USEPRAGMA ............. ..................... 3-5
-3.1.1.3.2 REP ............. ........................ ... 3-5
-3.1.1.3.2.1 NAMEDREP .............. ..................... 3-5
-3.1.1.3.3 ID OECL....................... . ......... .. 3-6
-3.1.1.3.3.1 SIMPLE RENAMEDECL .... ..................... .3-7
-3.1.1.3.3.2 UNIT DECL .. .............. ................... 3-8
-3.1.1.3.3.2.1 NON GENERIC DECL ........ .................. ... 3-8
-3.1.1.3.4 ID SDECL ........ . ...................... 3-9
-3.1.1.3.4.1 EXP DECL .............. ...................... 3-9
-3.1.1.3.4.1.1 OBJECTDECL ........... .................... .3-10
-3.2 DEFNAME ............ ......................... .. 3-13
-3.2.1 PREDEF NAME ........... .................... 3-14
-3.2.2 SOURCE NAME ........... .................... .3-14
-3.2.2.1 LABEL NAME .......... ..................... .. 3-14
-3.2.2.2 TYPE NAME .............. ..................... 3-15
-3.2.2.3 OBJECT NAME ........... .................... .. 3-16
-3.2.2.3.1 ENUM LITERAL .......... .................... .. 3-16
-3.2.2.3.2 INIT-OBJECTNAME ........ .................. .. 3-17
-3.2.2.3.2.1 VC NAME .. ............ .................... .. 3-17
-3.2.2.3.2.2 COMPNAME .............. ..................... 3-18
+1.3 THE DEFINITION OF A DIANA USER ............ .............. ............ 1-5
+1.4 THE STRUCTURE OF THIS DOCUMENT ............ .............. ............ 1-7
+1.4.1 NOTATION ............ ......................... 1-7
+## CHAPTER 2 IDL SPECIFICATION
+
+## CHAPTER 3 SEMANTIC SPECIFICATION
+
+* 3.1 ALL DECL ............ ......................... 3-3
+3.1.1 ITEM ............ ........................ ............ 3-3
+3.1.1.1 DSCRMTPARAM DECL ............ ................. ............ 3-4
+3.1.1.1.1 PARAM ............ ....................... ............ 3-4
+3.1.1.2 SUBUNITBODY ............ .................... ............ 3-4
+3.1.1.3 DECL ............ ....................... ............ 3-5
+3.1.1.3.1 USEPRAGMA ............ ..................... 3-5
+3.1.1.3.2 REP ............ ........................ ............ 3-5
+3.1.1.3.2.1 NAMEDREP ............ ..................... 3-5
+3.1.1.3.3 ID OECL....................... ............ ............ ............ 3-6
+3.1.1.3.3.1 SIMPLE RENAMEDECL ............ ..................... .3-7
+3.1.1.3.3.2 UNIT DECL ............ ............ ............ 3-8
+3.1.1.3.3.2.1 NON GENERIC DECL ............ .................. ............ 3-8
+3.1.1.3.4 ID SDECL ............ ............ ............ 3-9
+3.1.1.3.4.1 EXP DECL ............ ...................... 3-9
+3.1.1.3.4.1.1 OBJECTDECL ............ .................... .3-10
+3.2 DEFNAME ............ ......................... ............ 3-13
+3.2.1 PREDEF NAME ............ .................... 3-14
+3.2.2 SOURCE NAME ............ .................... .3-14
+3.2.2.1 LABEL NAME ............ ..................... ............ 3-14
+3.2.2.2 TYPE NAME ............ ..................... 3-15
+3.2.2.3 OBJECT NAME ............ .................... ............ 3-16
+3.2.2.3.1 ENUM_LITERAL ............ .................... ............ 3-16
+3.2.2.3.2 INIT_OBJECTNAME ............ .................. ............ 3-17
+3.2.2.3.2.1 VC NAME ............ ............ ............ .. 3-17
+3.2.2.3.2.2 COMPNAME ............ ..................... 3-18
 3.2.2.3.2.3 PARAM NAME . . . . . . . . . . . . . . . . . . . . . 3-18
-3.2.2.4 UNIT NAME .............. ..................... 3-19
-3.2.2.4.1 NON TASK NAME ........... ................... .3-19
-3.2.2.4.1.1 SUBPROG PACKNAME ........... ................. 3-20
-3.2.2.4.1.1.1 SUBPROGNAME .......... .................... 3-20
-3.3 TYPESPEC .............. ........................ .. 3-25
-3.3.1 DERIVABLE-SPEC ........ ................... .3-25
-3.3.1.1 PRIVATE SPEC .......... .................... .. 3-26
--- ii1l i im m H Nl l li iaini iin
-Page ii
-3.3.1.2 FULL TYPE SPEC ........ ................... .. 3-27
-3.3.1.2.1 NON TASK ... ....... ..................... .. 3-27
-3.3.1.2.1.1 SCALAR .......... ....................... .. 3-28
-3.3.1.2.1.1.1 REAL ......................... 3-28
-3.3.1.2.1.2 UNCONSTRAINED. ................... 3-29
-3.3.1.2.1.2.1 UNCONSTRAINED COMPOSITE. .............. 3-29
-3.3.1.2.1.3 CONSTRAINED .......... .................... .. 3-30
-3.4 TYPE DEF .... ......................... 3-33
-3.4.1 CONSTRAINED DEF. ................... 3-33
-3.4.2 ARRACCDER-DEF .................... 3-34
-3.5 CONSTRAINT ... ........................ 3-36
-3.5.1 DISCRETE RANGE .................... 3-36
-3.5.1.1 RANGE .............. ........................ .. 3-36
-3.5.2 REALCONSTRAINT ......... ................... .. 3-37
-3.6 UNIT OESC ................ ........................ 3-39
-3.6.1 UNIT KIND ............ ...................... .. 3-39
-3.6.1.1 RENAME INSTANT ........... .................... 3-40
+3.2.2.4 UNIT NAME ............ ..................... 3-19
+3.2.2.4.1 NON TASK NAME ............ ................... .3-19
+3.2.2.4.1.1 SUBPROG PACKNAME ............ ................. 3-20
+3.2.2.4.1.1.1 SUBPROGNAME ............ .................... 3-20
+3.3 TYPESPEC ............ ........................ ............ 3-25
+3.3.1 DERIVABLE_SPEC ............ ................... .3-25
+3.3.1.1 PRIVATE SPEC ............ .................... ............ 3-26
+3.3.1.2 FULL TYPE SPEC ............ ................... ............ 3-27
+3.3.1.2.1 NON TASK ............ ....... ............ .. 3-27
+3.3.1.2.1.1 SCALAR ............ ....................... ............ 3-28
+3.3.1.2.1.1.1 REAL
+3.3.1.2.1.2 UNCONSTRAINED. ............ 3-29
+3.3.1.2.1.2.1 UNCONSTRAINED COMPOSITE. ............ 3-29
+3.3.1.2.1.3 CONSTRAINED ............ .................... ............ 3-30
+3.4 TYPE DEF ............ ......................... 3-33
+3.4.1 CONSTRAINED DEF. ............ 3-33
+3.4.2 ARRACCDER_DEF ............ 3-34
+3.5 CONSTRAINT ............ ........................ 3-36
+3.5.1 DISCRETE RANGE
+3.5.1.1 RANGE ............ ........................ ............ 3-36
+3.5.2 REALCONSTRAINT ............ ................... ............ 3-37
+3.6 UNIT OESC ............ ........................ 3-39
+3.6.1 UNIT KIND ............ ...................... ............ 3-39
+3.6.1.1 RENAME INSTANT ............ .................... 3-40
 3.6.1.2 GENERICPARAM ............ .................... 3-42
-3.6.2 BODY ............... ......................... 3-42
-3.7 HEADER ............. .......................... .. 3-44
-3.7.1 SUBP ENTRYHEADER ....... ................... .. 3-44
-3.8- GENERAL ASSOC ............ ...................... .. 3-46
+3.6.2 BODY ............ ......................... 3-42
+3.7 HEADER ............ .......................... ............ 3-44
+3.7.1 SUBP ENTRYHEADER ............ ................... ............ 3-44
+3.8- GENERAL ASSOC ............ ...................... ............ 3-46
 3.8.1 NAMEDASSOC ............ .................... 3-46
-3.8.2 EXP ................ ........................ 3-47
-3.8.2.1 NAME ........... ........................ .. 3-47
-3.8.2.1.1 DESIGNATOR . ............ ................... 3-47
-3.8.2.1.1.1 USED OBJECT ................ ..... ........... 3-47
-3.8.2.1.1.2 USED NAME .............. ..................... 3-48
-3.8.2.1.2 NAME EXP ........... ...................... .. 3-49
-3.8.2.1.2.1 NAME VAL ........... ...................... .. 3-49
-3.8.2.2 EXP EXP ............ ...................... .. 3-50
-3.8.2.2.1 AGG-EXP ............ ...................... .. 3-51
-3.8.2.2.2 EXP VAL ............ ..................... .. 3-52
-3.8.2.2.2.1 EXP-VAL EXP ............ .................... 3-53
-3.8.2.2.2.1.1 MEMBERSHIP .......... ..................... .. 3-53
-3.8.2.2.2.1.2 QUAL_CONV .......... ..................... .. 3-53
-3.9 STM ELEM ........... ......................... .. 3-56
-3.9.1 STM ................ ........................ 3-56
-3.9.1.1 BLOCK LOOP .......... ..................... .. 3-57
-3.9.1.2 ENTRY-STM .......... ..................... .. 3-57
+3.8.2 EXP ............ ........................ 3-47
+3.8.2.1 NAME ............ ........................ ............ 3-47
+3.8.2.1.1 DESIGNATOR ............ ............ ............ 3-47
+3.8.2.1.1.1 USED OBJECT ............ ..... ............ 3-47
+3.8.2.1.1.2 USED NAME ............ ..................... 3-48
+3.8.2.1.2 NAME EXP ............ ...................... ............ 3-49
+3.8.2.1.2.1 NAME VAL ............ ...................... ............ 3-49
+3.8.2.2 EXP EXP ............ ...................... ............ 3-50
+3.8.2.2.1 AGG_EXP ............ ...................... ............ 3-51
+3.8.2.2.2 EXP VAL ............ ..................... ............ 3-52
+3.8.2.2.2.1 EXP_VAL EXP ............ .................... 3-53
+3.8.2.2.2.1.1 MEMBERSHIP ............ ..................... ............ 3-53
+3.8.2.2.2.1.2 QUAL_CONV ............ ..................... ............ 3-53
+3.9 STM ELEM ............ ......................... ............ 3-56
+3.9.1 STM ............ ........................ 3-56
+3.9.1.1 BLOCK LOOP ............ ..................... ............ 3-57
+3.9.1.2 ENTRY_STM ............ ..................... ............ 3-57
 3.9.1.3 CLAUSES STM ............ .................... 3-57
-3.9.1.4 STM WITH EXP ........... .................... 3-58
-3.9.1.4.1 STM WITH EXP NAME ....... ................. .. 3-58
-3.9.1.5 STM WITHNAME ......... ................... .. 3-58
-3.9.1.5.1 CALLSTM.. ........... ..................... 3-59
-3.10 MISCELLANEOUS NODES AND CLASSES ..... ............. .. 3-61
-3.10.1 CHOICE ........... ....................... .. 3-61
-3.10.2 ITERATION .......... ..................... .. 3-61
+3.9.1.4 STM WITH EXP ............ .................... 3-58
+3.9.1.4.1 STM WITH EXP NAME ............ ................. ............ 3-58
+3.9.1.5 STM WITHNAME ............ ................... ............ 3-58
+3.9.1.5.1 CALLSTM.. ............ ..................... 3-59
+3.10 MISCELLANEOUS NODES AND CLASSES ............ ............. ............ 3-61
+3.10.1 CHOICE ............ ....................... ............ 3-61
+3.10.2 ITERATION ............ ..................... ............ 3-61
 I
 I
-Page iii
-- 3.10.2.1 FOR REV ............. ...................... .. 3-62
-3.10.3 MEMBERSHIP OP ......... ................... .. 3-62
-3.10.4 SHORT CIRCUIT OP ........ .................. .. 3-62
-3.10.5 ALIGNMENT CLAUSE ........ .................. .. 3-62
-3.10.6 VARIANT PART .......... .................... .. 3-62
-3.10,7 TEST CLAUSE ELEM ........ .................. .. 3-63
-3.10.7.1 TEST CLAUSE ........... .................... .. 3-63
-3.10.8 ALTERNATIVE ELEM ........ .................. .. 3-63
-3.10.9 COMP REP ELEM ................................ 3-64
-3.10.10 CONTEXT ELEM .......... .................... .. 3-64
-3.10.11 VARIANT-ELEM .......... .................... .. 3-64
-3.10.12 compilation ........... .................... .. 3-64
-3.10.13 compilationunit ........ .................. .. 3-65
-3.10.14 comp list . . . . . . . . . . . . . . . . . . . . . 3-65
-3.10.15 index ............. ....................... .3-65
-CHAPTER 4 RATIONALE ............. ........................ ... 4-I
-4.1 DESIGN DECISIONS ......................... 1-2
-* 4.1.1 INDEPENDENCE OF REPRESENTATION .... ........... .. 4-2
-4.1.1.1 SEPARATE COMPILATION .......................... .. 4-3
+- 3.10.2.1 FOR REV ............ ...................... ............ 3-62
+3.10.3 MEMBERSHIP OP ............ ................... ............ 3-62
+3.10.4 SHORT CIRCUIT OP ............ .................. ............ 3-62
+3.10.5 ALIGNMENT CLAUSE ............ .................. ............ 3-62
+3.10.6 VARIANT PART ............ .................... ............ 3-62
+3.10,7 TEST CLAUSE ELEM ............ .................. ............ 3-63
+3.10.7.1 TEST CLAUSE ............ .................... ............ 3-63
+3.10.8 ALTERNATIVE ELEM ............ .................. ............ 3-63
+3.10.9 COMP REP ELEM
+3.10.10 CONTEXT ELEM ............ .................... ............ 3-64
+3.10.11 VARIANT_ELEM ............ .................... ............ 3-64
+3.10.12 compilation ............ .................... ............ 3-64
+3.10.13 compilationunit ............ .................. ............ 3-65
+3.10.14 comp_list . . . . . . . . . . . . . . . . . . . . . 3-65
+3.10.15 index ............ ....................... .3-65
+## CHAPTER 4 RATIONALE
+
+### 4.1 DESIGN DECISIONS
+* 4.1.1 INDEPENDENCE OF REPRESENTATION ............ ........... ............ 4-2
+4.1.1.1 SEPARATE COMPILATION ............ .. 4-3
 4.1.2 EFFICIENT IMPLEMENTATION AND SUITABLITY FOR
-VARIOUS KINDS OF PROCESSING ...... ............. 4-3
-4.1.2.1 STATIC SEMANTIC INFORMATION ...... ............. 4-4
-4.1.2.2 WHAT IS 'EASY TO RECOMPUTE'? ....... ............ 4-5
-4.1.3 REGULARITY OF DESCRIPTION ..... .............. .4-5
-4.2 DECLARATIONS ....................................... 4-7
-4.2-1 MULTIPLE ENTITY DECLARATION ...................... 47
+VARIOUS KINDS OF PROCESSING ............ ............. 4-3
+4.1.2.1 STATIC SEMANTIC INFORMATION ............ ............. 4-4
+4.1.2.2 WHAT IS 'EASY TO RECOMPUTE'? ............ ............ 4-5
+4.1.3 REGULARITY OF DESCRIPTION ............ .............. .4-5
+### 4.2 DECLARATIONS
+4.2-1 MULTIPLE ENTITY DECLARATION ............ 47
 4.2.1.1 OBJECT DECLARATIONS AND COMPONENT DECLARATIONS . . 4-7
-4.2.2 SINGLE ENTITY DECLARATIONS ..... .............. ..4-8
-4.2.2.1 PROGRAM UNIT DECLARATIONS AND ENTRY DECLARATIONS . 4-9
+4.2.2 SINGLE ENTITY DECLARATIONS ............ .............. ..4-8
+4.2.2.1 PROGRAM UNIT DECLARATIONS AND ENTRY DECLARATIONS
 4.2.3 REPRESENTATION CLAUSES, USE CLAUSES, AND PRAGMAS . 4-11
-4.2.4 GENERIC FORMAL PARAMETER DECLARATIONS ......... .. 4-11
-4.2.5 IMPLICIT DECLARATIONS ..... ............... .. 4-12
+4.2.4 GENERIC FORMAL PARAMETER DECLARATIONS ............ .. 4-11
+4.2.5 IMPLICIT DECLARATIONS ............ ............... ............ 4-12
 4.3 SIMPLE NAMES ............ ....................... .4-13
 4.3.1 DEFININ' OCCURRENCES OF PREDE7INED ENTITIES 4-1.'
-4.3.2 MULTIPLE DEFINING OCCURRENCES ........... 4-15
+4.3.2 MULTIPLE DEFINING OCCURRENCES
 4.3.2.1 MULTIPLE DEFINING OCCURRENCES OF TYPE NAMES 4-16
-4.3.2.2 MULTIPLE DEFINING OCCURRENCES OF TASK NAMES .... 4-17
-4.3.3 USED OCCURRENCES ........... .................. .. 4-17
-4.4 TYPES AND SUBTYPES .. .................... 4-19
+4.3.2.2 MULTIPLE DEFINING OCCURRENCES OF TASK NAMES
+4.3.3 USED OCCURRENCES ............ .................. ............ 4-17
+4.4 TYPES AND SUBTYPES ............ ............ 4-19
 4.4.1 CONSTRAINED AND UNCONSTRAINED TYPES AND SUBTYPES 4-22
-4.4.2 UNIVERSAL TYPES ........... .................. ... 4-23
-4.4.3 DERIVED TYPES ......... ................... ... 4-23
-4.4.4 PRIVATE, LIMITED PRIVATE, AND LIMITED TYPES . ... 4-24
-4.4.5 INCOMPLETE TYPES ........... .................. .. 4-27
-4.4.6 GENERIC FORMAL TYPES ......... ................ .. 4-28
-4.4.7 REPRESENTATION INFORMATION ..... ............. .. 4-29
-4.5 CONSTRAINTS ............... ....................... .. 4-31
-Page iv
-4.6 EXPRESSIONS ..... ... ....................... 4-35
+4.4.2 UNIVERSAL TYPES ............ .................. ............ 4-23
+4.4.3 DERIVED TYPES ............ ................... ............ 4-23
+4.4.4 PRIVATE, LIMITED PRIVATE, AND LIMITED TYPES ............ ............ 4-24
+4.4.5 INCOMPLETE TYPES ............ .................. ............ 4-27
+4.4.6 GENERIC FORMAL TYPES ............ ................ ............ 4-28
+4.4.7 REPRESENTATION INFORMATION ............ ............. ............ 4-29
+4.5 CONSTRAINTS ............ ....................... ............ 4-31
+4.6 EXPRESSIONS ............ ... ............ 4-35
 4.6.1 EXPRESSIONS WHICH INTRODUCE ANONYMOUS SUBTYPES . . 4-36
-4.6.2 FUNCTION CALLS AND OPERATORS ...... ............ 4-37
-4.6.3 IMPLICIT CONVERSIONS ........ ................ 4-37
-4.6.4 PARENTHESIZED EXPRESSIONS ..... ............. .. 4-39
-4.6.5 ALLOCATORS ............................ 4-40
-4.6.6 AGGREGATES AND STRING LITERALS ............ 4-41
-4.7 PROGRAM UNITS. . . . . . . . . . . . . . . . . . . . .. 4-43
+4.6.2 FUNCTION CALLS AND OPERATORS ............ ............ 4-37
+4.6.3 IMPLICIT CONVERSIONS ............ ................ 4-37
+4.6.4 PARENTHESIZED EXPRESSIONS ............ ............. ............ 4-39
+4.6.5 ALLOCATORS
+4.6.6 AGGREGATES AND STRING LITERALS
+4.7 PROGRAM UNITS. ............ ............ ............ ............ ............ ............ ............ ............ ............ ............ ............ ............ ............ ............ ............ ............ ............ ............ ............ .. 4-43
 4.7.1 RENAMED UNITS . . . . . . . . . . . . . . . . . . . 4-43
-4.7.2 GENERIC INSTANTIATIONS ...... ............... .4-45
-4.7.3 TASKS .... ....................... 4-48
-4.7.4 USER-DEFINED OPERATORS. ..... ............... .4-49
-4.7.5 DERIVED SUBPROGRAMS ........... ................ 4-50
-4.8 PRAGMAS ................ ......................... 4-52
-CHAPTER 5 EXAMPLES ............... ......................... 5-1
-CHAPTER 6 EXTERNAL REPRESENTATION OF DIANA ........ ............. 6-1
-CHAPTER 7 THE DIANA PACKAGE IN ADA .......... ................. 7-1
-APPENDIX A DIANA CROSS-REFERENCE GUIDE ....... ............... .. A-I
-APPENDIX 8 REFERENCES ..... ........................ ....... B-I
-Page v
+4.7.2 GENERIC INSTANTIATIONS ............ ............... .4-45
+4.7.3 TASKS ............ ....................... 4-48
+4.7.4 USER_DEFINED OPERATORS. ............ ............... .4-49
+4.7.5 DERIVED SUBPROGRAMS ............ ................ 4-50
+4.8 PRAGMAS ............ ......................... 4-52
+## CHAPTER 5 EXAMPLES
+
+## CHAPTER 6 EXTERNAL REPRESENTATION OF DIANA
+
+## CHAPTER 7 THE DIANA PACKAGE IN ADA
+
+APPENDIX A DIANA CROSS_REFERENCE GUIDE ............ ............... ............ A_I
+APPENDIX 8 REFERENCES ............ ........................ ............ B_I
 Acknowledgements for the First Edition
 DIANA is based on two earlier proposals for intermediate forms for Ada
 programs: TCOL and AIDA. It could not have been designed without the efforts
@@ -218,11 +211,10 @@ Gerhard Goos
 Wm. A. Wulf
 Editors, First Edition
 -J
-Page vi
 Acknowledgements For The Second Edition
 Subsequent to DIANA's original design, the Ada Joint Program Office of the
 United States Department of Defense has supported at Tartan Laboratories,
-Incorporated a continuing effort at revision. This revision has been perfcrmed
+Incorporated a continuing effort at revision. This revision has been performed
 by Arthur Evans, Jr., and Kenneth J. Butler, with considerable assistance from
 John R. Nestor and Wm. A. Wulf, all of Tartan.
 We are grateful to the following for their many useful comments and
@@ -241,9 +233,8 @@ provided first by Lt. Commander Jack Kramer and later by Lt. Commander Brian
 Schaar; we are pleased to acknowledge them.
 DIANA is being maintained and revised by Tartan Laboratories Inc. for the
 Ada Joint Program Office of the Department of Defense under contract number
-MOAg03-82-C-0148 (expiration date: 28 February 1983). The Project Director of
+MOAg03-82-C_0148 (expiration date: 28 February 1983). The Project Director of
 DIANA Maintenance for Tartan is Arthur Evans, Jr.
-Page vii
 Acknowledgements For This Edition
 The United States Department of Defense has continued to support DIANA
 through a DIANA maintenance program and revision effort at Intermetrics, Inc.
@@ -257,14 +248,9 @@ valuable suggestions. Kellye Sheehan (MCC) contributed to the early stages of
 the maintenance effort.
 DIANA is being maintained and revised by Intermetrics, Inc. for the Ada
 Joint Program Office of the Department of Defense under contract number
-N00014-84-C-2455, administered by the Naval Research Laboratory. Tne contract
+N00014_84-C_2455, administered by the Naval Research Laboratory. The contract
 expires 30 September 1986. The Project Director of DIANA Maintenance for
 Intermetrics is Carl Schaefer.
-D'YUC Q••AL LVSPECTED 5
-7- 7 i.' Z
-' " " , L?
-hU
-Page viii
 Preface to the First Edition
 This document defines DIANA, an intermediate form of Ada [7] programs that
 is especially suitable for communication between the Front and Back Ends of Ada
@@ -278,7 +264,7 @@ that is formally defined in a separate document [9]. The present document is,
 however, completely self-contained; those aspects of IDL that are needed for the
 DIANA definition are informally described before they are used. Interested
 readers should consult the IDL formal description either if they are concerned
-with either a more precise definition of the notati-onor if they need to define
+with either a more precise definition of the notation or if they need to define
 other data structures in an Ada support environment. In particular, implemen-
 tors may need to extend DIANA in various ways for use with the tools in a
 specific environment and the IDL document provides information on how this may
@@ -287,7 +273,6 @@ This version of DIANA has been "frozen" to meet the needs of several groups
 who require a stable definition in a very short timeframe. We invite comments
 and criticisms for a longer-term review. We expect to re-evaluate DIANA after
 some practical experience with using it has been accumulated.
-Page ix
 Preface To The Second Edition
 Since first publication of the DIANA Reference Manual in March, 1981,
 further developments in connection with Ada and DIANA have required revision of
@@ -298,12 +283,12 @@ present revision is based on Ada as defined in the July 1982 Ada LRM
 [81, referred to hereafter as Ada-82.
 o Experience with use of DIANA has revealed errors and flaws in the
 original design; these have been corrected.
-This publication reflects our best efforts to cope with the conflictirg
+This publication reflects our best efforts to cope with the conflicting
 pressures on us both to impact minimally on existing implementations and to
 create a logically defensible design.
 Tartan Laboratories Inc. invites any further comments and criticisms c-
-DIANA in general, and this version of the reference manuaý in part~cula. Ar,
-correspondence may be sent via ARPANet mail to Diana-Query@USC-ECLB. Pape, mail
+DIANA in general, and this version of the reference manual in particular. Ar,
+correspondence may be sent via ARPANet mail to Diana-Query@USC_ECLB. Pape, mail
 may be sent to
 DIANA Manual
 Tartan Laboratories Inc.
@@ -312,7 +297,6 @@ Pittsburgh PA 15213
 We believe the changes made to DIANA make no undue constraint on any OIANý
 users or potential DIANA users, and we wish to hear from those who perceive any
 of these changes to be a problem.
-Page x
 Preface To This Edition
 This is a draft rcvision of the DIANA Reference Manual.
 Experienco .ch DIANA has revealed weaknesses both in the definition of
@@ -337,19 +321,16 @@ Chapter 7, External Representation of DIANA, and Chapter 8, The DTNI.
 Package in Ada, are incomplete in this draft.
 Intermetrics, Inc. invites any further comments and criticisms on DIANA in
 general, and this draft version of the reference manual in particular. Any
-correspondence may be sent via ARPANet mail to DIANA-QUERY@USC-ISIF. Paper mail
+correspondence may be sent via ARPANet mail to DIANA_QUERY@USC_ISIF. Paper mail
 may be sent to
 DIANA Maintenance
 Intermetrics, Inc.
 4733 Bethesda Ave.
 Bethesda, MD 20814
 CHAPTER I
-INTRODUCTION
 The purpose of standardization is
 to aid the creative craftsman, not .o
 enforce the common mediocrity [11].
-DIANA Reference Manual Draft Revision 4 Page 1-2
-INTRODUCTION
 1.1 THE DESIGN OF DIANA
 In a programming environmer such as that envisioned for Ada(1), there will
 be a number of tools -- formatters (pretty printers), language-oriented editors,
@@ -394,8 +375,6 @@ processing speed.
 o The DIANA description and notation should be regular. Consistency in
 these areas is essential to both understanding and processing.
 (1) Ada is a registered trademark of the U.S. Department of Defense.
-DIANA Reference Manual Draft Revision 4 Page 1-3
-INTRODUCTION
 Although DIANA is representation-independent, there must be at least one
 form of the DIANA representation that can be communicated between computing
 systems. Chapter 6 defines an externally visible ASCII form of the DIANA
@@ -405,8 +384,6 @@ computing systems. The form may also be useful during the development of the
 tools themselves.
 I -
 I-.
-DIANA Reference Manual Draft Revision 4 Page 1-4
-INTRODUCTION
 1.2 THE DEFINITION OF THE DIANA OPERATIONS
 Every object of type DIANA is the representation of some specific Ada
 program (or portion of an Ada program). A minimum set of operations on the
@@ -432,8 +409,6 @@ o add an element to a sequence
 o remove an element from a sequence
 o compare two sequences to see if they are the same sequence
 o assign a sequence to a variable of a sequence type
-DIANA Reference Manual Draft Revision 4 Page 1-5
-INTRODUCTION
 1.3 THE DEFINITION OF A DIANA USER
 Inasmuch as DIANA is an abstract data type, there is no need that it be
 implemented in any particular way. Additionally, because DIANA is extendable, a
@@ -480,8 +455,6 @@ for a program to expect attributes defined herein to have values that
 are not here specified. For example, it is wrong for a program to
 expect the attribute sm value to contain values of expressions that are
 not static.
-DIANA Reference Manual Draft Revision 4 Page 1-6
-INTRODUCTION
 There are twc attributes that are defined herein that are NOT required to
 be supported by a DIANA user: Ix comments and lx srcpos. These attributes are
 too implementation-specific to be required for all DIANA users.
@@ -500,8 +473,6 @@ section.
 OR it meets this criterion:
 o The implementation provides a package equivalent to that described in
 Chapter 7.
-DIANA Reference Manual Draft Revision 4 Page 1-7
-INTRODUCTION
 1.4 THE STRUCTURE OF THIS DOCUMENT
 As previously stated, DIANA is an abstract data type that can be modeled as
 an attributed tree. This document defines both the domain and the operations of
@@ -539,8 +510,6 @@ Appendix B is a list of references.
 To assist the reader in understanding 'his material, certain typographic
 and notational conventions are followed consistently throughout this document,
 as illustrated in Figure 1-1.
-DIANA Reference Manual Draft Revision 4 Page 1-8
-INTRODUCTION
 DECL IDL class name
 constant Id IDL.node name
 sm__exp type IDL attribute
@@ -580,22 +549,20 @@ comes before the ' ' (if the prefix is extremely long it may be
 slightly shortened in the sequence name). Thus the reader can be sure
 on seeing exps that the definition
 I
-DIANA Reference Manual Draft Revision 4 Page 1-9
-INTRODUCTION
-exps => as-list: Seq Of EXP;
+exps => as_list: Seq Of EXP;
 appears somewhere.
 o A class name ending in '-ELEM' contains both the node or class denoted
 by the prefix of the class name and a node representing a pragma. The
 name of the node representing the pragma consists of the prefix of the
 class name and the suffix '_pragma'. Hence the reader knows that for
 "the class name. STMELEM the following definition exists
+
 STMELEM ::= STM I stmpragma;
+
 Throughout the remainder of this document all references to the Ada
-Reference Manual (ANSI/MIL-STO-1815A-1983) will have the following form: [ARM,
+Reference Manual (ANSI/MIL_STO-1815A-1983) will have the following form: [ARM,
 section number].
-CHAPTER 2
-IDL SPECIFICATION
-DIANA Reference Manual Draft Revision 4 Page 2-2
+## CHAPTER 2
 IOL SPECIFICATION
 This chapter contains the IOL description of DIANA. It is organized in a
 manner that parallels the Ada Reference Manual -- each section contains the
@@ -607,8 +574,6 @@ pertaining to the other construct. For example, the section covering operators
 (section 4.5) does not contain IDL definitions because operators in DIANA are
 represented as function calls, and the related IDL definitions are included in
 the section on subprogram calls (section 6.4).
-DIANA Reference Manual Draft Revision 4 Page 2-3
-IDL SPECIFICATION
 Structure Diana
 Root compilation Is
 -- Private Type Definitions
@@ -626,23 +591,25 @@ void =>
 -- Syntax 2.3
 -- not of interest for Diana
 DEF NAME SOURCE NAME I PREDEF NAME;
+
 DEFNAME => lx_symrep : symbol_rep;
+
 SOURCENAME OBJECTNAME I TYPENAME I UNITNAME I LABELNAME;
-OBJECT-NAME => sm_obj_type : TYPESPEC;
-UNITNAME => sm first : DEF NAME;
+OBJECT_NAME => sm_obj_type : TYPESPEC;
+
+UNITNAME => sm_first : DEF NAME;
 -- 2.8 Pragmas
 -- Syntax 2.8.A
--- pragma ::=
+-- pragma ::= 
 -- pragma identifier ((argumentassociation f, argumentassociationl)];
-pragma => as used name id : used name id,
+
+pragma => as_used_name_id : used_name_id,
 as general_assocs : generaT_assocs;
 -- seq of EXP and/or assoc
-generalassocs => aslist : Seq Of GENERAL-ASSOC;
+generalassocs => aslist : Seq Of GENERAL_ASSOC;
 -- Syntax 2.8.B
 -- argument association
 -- [argument-identifier =>] name
-DIANA Reference Manual Draft Revision 4 Page 2-4
-IDL SPECIFICATION
 I [argument-identifier =>] expression
 -- 3. Declarations and Types
 -- 3.1 Declarations
@@ -654,40 +621,50 @@ I [argument-identifier =>] expression
 -- I task declaration I generic declaration
 -- I exception declaration generic-instantiation
 -- I renamingdeclaration I deferred constantdeclaration
-DECL ::=ID SDECL I IDDECL;
+
+DECL ::= ID SDECL I IDDECL;
+
 IDDECL type_decl
 I subtypedecl
 I task decl
 I UNITOECL;
-IDDECL => as source name SOURCE NAME;
+
+IDDECL => as_source name SOURCE NAME;
+
 ID S DECL EXPDECL
 - exception decl
 I deferredconstant decl;
-IDSDECL => as source-name s : source name s;
+
+IDSDECL => as_source_name s : source name s;
+
 EXPDECL OBJECTDECL
 - number-decl;
-EXPDECL => as-exp : EXP;
+
+EXPDECL => as_exp : EXP;
 -- 3.2 Objects and Named Numbers
 -- Syntax 3.2.A
 -- object declaration
 -- identifier list [constant] subtype indication [:= expression];
 -- I identifier-list [constant] constraTned array definition [:= expression
 EXP ::= void;
+
 CONSTRAINEDDEF subtypeindication;
+
 OBJECT DECL ::= constant decl I variable decl;
 OBJECT DECL => astype_def : TYPEDEF;
-constant decl =>
+
+constant decl => 
 variable decl =>
-DIANA Reference Manual Draft Revision 4 Page 2-5
-IDL SPECIFICATION
-OBJECT-NAME ::= INITOBJECTNAME;
+OBJECT_NAME ::= INITOBJECTNAME;
 INIT OBJECT NAME VC NAME;
-INIT OBJECTNAME => sm init_exp : EXP;
+
+INIT OBJECTNAME => sm_init_exp : EXP;
+
 VC NAME variable id I constant id;
-VC-NAME -> sm renamesobj : Boolean,
+VC_NAME -> sm renamesobj : Boolean,
 sm address : EXP; -- EXP or void
-variable id => sm is shdred : Boolean;
-constantid => sm first : DEF NAME;
+variable id => sm_is shdred : Boolean;
+constantid => sm_first : DEF NAME;
 -- Syntax 3.2.8
 -- number declaration
 -- identifierlist constant := universal static expression;
@@ -696,7 +673,7 @@ INITOBJECT NAME number id;
 number id 2)
 -- Syntax 3.2.C
 -- identifier list identifier {, identifieri
-source name s => as-list : Seq Of SOURCE NAME;
+source name s => as_list : Seq Of SOURCE NAME;
 -- 3.3 Types and Subtypes
 -- 3.3.1 Type Declarations
 -- Syntax 3.3.1.A
@@ -704,15 +681,13 @@ source name s => as-list : Seq Of SOURCE NAME;
 -- I incomplete_type_declaration I private_typedeclaration
 -- full_typedeclaration
 -- type identifier (discriminant_part] is type-definition;
-typedecl => as dscrmt decl s : dscrmt decl-s,
-as-typedef : TYPEDEF;
+typedecl => as_dscrmt decl s : dscrmt decl_s,
+as_typedef : TYPEDEF;
 TYPE NAME type_id;
-TYPE-NAME => smtypespec : TYPE-SPEC;
-type_id => sm first : DEFNAME;
+TYPE_NAME => sm_type_spec : TYPE_SPEC;
+type_id => sm_first : DEFNAME;
 -- Syntax 3.3.1.8
 -- type_definition
-DIANA Reference Manual Draft Revision 4 Page 2-6
-IDL SPECIFICATION
 -- enumeration_type_definition I integer typedefinition
 -- I real type definition I arraytype_aefinition
 -- I record typedefinition I accesstypedefinition
@@ -724,16 +699,19 @@ I record def;
 CONSTRAINEDDEF integerdef
 float def
 I fixed-def;
-ARR_ACCDERDEF constrained-array_def
+ARR_ACCDERDEF constrained_array_def
 unconstrained_arraydef
 access def
 derived_def;
+
 ARRACCDERDEF => as_subtypeindication : subtypeindication;
-TYPESPEC :- DERIVABLE~SPEC;
+
+TYPESPEC :- DERIVABLE_SPEC;
 DERIVABLE SPEC FULL TYPE SPEC I PRIVATESPEC;
-DERIVABLE-SPEC => smiderived : TYPE_SPEC,
+DERIVABLE_SPEC => smiderived : TYPE_SPEC,
 smiisanonymous : Boolean;
 FULLTYPESPEC taskspec I NONTASK;
+
 NON TASK ::= SCALAR I UNCONSTRAINED I CONSTRAINED;
 NONTASK => sm_base_type :TYPESPEC;
 SCALAR ::= enumeration I integer I REAL;
@@ -741,37 +719,45 @@ SCALAR => sm_range : RANGE;
 SCALAR => cd_impl_size : Integer;
 REAL ::= float I fixed;
 REAL => smiaccuracy : value;
+
 UNCONSTRAINED UNCONSTRAINED COMPOSITE access;
-UNCONSTRAINED => sm size : EXP; -- EXP or void
+
+UNCONSTRAINED => sm_size : EXP; -- EXP or void
 UNCONSTRAINED COMPOSITE ::= array I record;
-UNCONSTRAINED-COMPOSITE => sm is limited Boolean,
+
+UNCONSTRAINED_COMPOSITE => sm_is limited Boolean,
 smis_packed Boolean;
 CONSTRAINED constrainedarray
 I constrained record
 I constrained-access;
+
 CONSTRAINED => smidepends_on_dscrmt : Boolean;
 -- 3.3.2 Subtype Declarations
+
 SDIANAReference Manual Draft Revision 4 Page 2-7
-IDL SPECIFICATION
 -- Syntax 3.3.2.A
 -- subtypedeclaration subtype identifier is subtypeindication;
-subtypedecl => as_subtype indication : subtype-indication;
+subtypedecl => as_subtype indication : subtype_indication;
+
 TYPE NAME ::= subtype_id;
-subtype id =>
+
+subtype id => 
 -- Syntax 3.3.2.8
 -- subtype indication type-mark (constraint]
 -- type-mark type-name I subtypename
 CONSTRAINT void;
-CONSTRAINEDDEF => as-constraint : CONSTRAINT;
-subtypeindication => as-name : NAME;
+
+CONSTRAINEDDEF => as_constraint : CONSTRAINT;
+
+subtypeindication => as_name : NAME;
 -- Syntax 3.3.2.C
 -- constraint
 -- range constraint I floatingpointconstraint I fixed_ppintconstraint
-*- I index-constraint I discriminant constraint
+*- I index_constraint I discriminant_constraint
 CONSTRAINT DISCRETE RANGE
 REAL CONSTRAINT
-I index constraint
-I dscrmt constraint;
+I index_constraint
+I dscrmt_constraint;
 -- 3.4 Derived Type Definitions
 -- Syntax 3.4
 -- derived_typedefinition ::= new subtypeindication
@@ -780,55 +766,55 @@ derived def =>
 -- Syntax 3.5
 . .- -- rangeconstraint ::= range range
 -- range ::= range attribute
-S-- I simpleexpression .. simple expression
+S-- I simpleexpression ............ simple expression
 DISCRETERANGE RANGE
-DIANA Reference Manual Draft Revision 4 Page 2-8
-IDL SPECIFICATION
 I discrete_subtype;
 RANGE range I rangeattribute I void;
-RANGE => smtypespec : TYPE-SPEC;
-range => as_expl : EXP,
-as-exp2 : EXP;
-rangeattribute => as name : NAME,
-as used name id : used name id,
-asexp : EXP; -- EXP or void
+
+RANGE => sm_type_spec : TYPE_SPEC;
+
+range => as_exp1 : EXP,
+as_exp2 : EXP;
+rangeattribute => as_name : NAME,
+as_used_name_id : used_name_id,
+as_exp : EXP; -- EXP or void
 -- 3.5.1 Enumeration Types
 -- Syntax 3.5.1.A
 -- enumerationtypedefinition
 -- (enumerationliteralspecification {, enumerationliteral specification}
-enumeration def => as enum literal s : enum literal s;
-enum literals => as-list : Seq Of ENUM LITERAL;
-enumeration => smliterals : enumliteral s;
+enumeration def => as_enum_literal_s : enum_literal_s;
+enum literals => as_list : Seq Of ENUM_LITERAL;
+enumeration => sm_literals : enumliteral s;
 -- Syntax 3.5.1.8
 -- enumeration literalspecification ::= enumerationliteral
 -- enumeration literal ::= identifier I character literal
-OBJECT-NAME ENUMLITERAL;
-ENUMLITERAL enumerationid I character id;
-ENUMLITERAL => sm-oos : Integer,
+OBJECT_NAME ENUMLITERAL;
+ENUMLITERAL enumeration_id I character id;
+
+ENUMLITERAL => sm_oos : Integer,
+
 sm rep Integer;
 enumeration id => •
-characterid => ;
+character_id => ;
 -- 3.5.4 Integer Types
 -- Syntax 3.5.4
 -- integertypedefinition ::= rangeconstraint
-integer-def =>
+integer_def =>
 integer => ;
 -- 3.5.6 Real Types
-DIANA Reference Manual Draft Revision 4 Page 2-9
-IDL SPECIFICATION
 -- Syntax 3.5.6
 -- real type definition
 S--fToating_pointconstraint I fixedpoint constraint
 REAL CONSTRAINT float constraint
-I fixed-constraint;
-REAL-CONSTRAINT => sm_type_spec : TYPE_SPEC;
+I fixed_constraint;
+REAL_CONSTRAINT => sm_type_spec : TYPE_SPEC;
 ,* -- 3.5.7 Floating Point Types
 -- Syntax 3.5.7
 -- floatingpoint constraint
 -- floatingaccuracy_definition [range_constraint]
 -- floating accuracy definition ::= digits static simple expression
 float def =>
-REAL-CONSTRAINT = as_exp : EXP,
+REAL_CONSTRAINT = as_exp : EXP,
 as_range RANGE;
 float constraint =>
 float =>
@@ -839,49 +825,47 @@ float =>
 -- fixed accuracy definition ::= delta static simpleexpression
 fixed def => ;
 fixed constraint =>
-fixed => cdimpl-small : value;
+fixed => cd_impl_small : value;
 -- 3.6 Array Types
 -- Syntax 3.6.A
 -- arraytype definition ::=
 S-- unconstrainedarray_definition I constrained_array_definition
--- unconstrained-array_definition :-n
+-- unconstrained_array_definition :-n
 -- array(indexsubtype definition {, index_subtype_definition}) of
 S--component_subtypeindication
-DIANA Reference Manual Draft Revision 4 Page 2-10
-IDL SPECIFICATION
--- constrained-array definition
--- array index constraint of component_subtype indication
-constrained-array_def => as-constraint :CONSTRAINT;
-index-constraint => as-discrete-range~s :discrete range s;
-discrete range~s => as-list :Seq Of DISCRETERANGE;
-unconstrained-array-def => as index-s :index 5;
-scalar-s => as-list :Seq Of SCALAR;
-array => sm -indexs : index-s,
-sm-comp_type :TYPESPEC;
-constrained-array => sni-index_subtype-s :scalar s;
+-- constrained_array definition
+-- array index_constraint of component_subtype indication
+constrained_array_def => as_constraint :CONSTRAINT;
+index_constraint => as_discrete_range_s :discrete_range_s;
+discrete range_s => as_list :Seq Of DISCRETERANGE;
+unconstrained_array_def => as_index_s :index_s;
+scalar_s => as_list :Seq Of SCALAR;
+array => sm_indexs : index_s,
+sm_comp_type :TYPESPEC;
+constrained_array => sm_index_subtype_s :scalar_s;
 -- Syntax 3.6.8
 -- index-subtype definition :=type_mark range <>
-index => as -name :NAME,
-sm-type_spec :TYPESPEC;
-index-s => as-list :.Seq Of index;
+index => as_name :NAME,
+sm_type_spec :TYPESPEC;
+index_s => as_list :.Seq Of index;
 -- Syntax 3.6.C
--- index-constraint :=(discrete range [, discrete-rangel)
+-- index_constraint :=(discrete range [, discrete_rangel)
 -- discrete range :=discrete subtype indication Irange
-discrete_subtype => as-subtype_indication subtype_indication;
+discrete_subtype => as_subtype_indication subtype_indication;
 -- 3.7 Record Types
 -- Syntax 3.7.A
 -- record -type definition
 -- record
 -- component_list
 -- end record
+
 REP ::= void;
-record-def => as-comp_list :comp list;
-record => sm -discriminant -s :dscrmt-deci~s,
-sni comp-list comp list,
-DIANA Reference Manual Draft Revision 4 Page 2-11
-IDL SPECIFICATION
+
+record_def => as_comp_list :comp_list;
+record => sm_discriminant_s :dscrmt_decl_s,
+sm_comp_list comp_list,
 sm_representation : REP; -- REP or void
-constrained-record => sm normalized dscrmts : exp~s;
+constrained_record => sm_normalized dscrmts : exp_s;
 -- Syntax 3.7.B
 -- component list::
 -- component-declaration (component declarationi
@@ -890,11 +874,13 @@ constrained-record => sm normalized dscrmts : exp~s;
 -- component declaration
 -- identifier-list :component subtype definition [:= expression];
 -- component subtype_definition :=subtype_indication
-DECL null _comp-decl;
-INIT -OBJECT -NAME COMP NAME;
-COMPNAME component id I discriminant id;
-COMP NAME => sm comp_rep :COMP_REP_ELEM;
-component id =>
+DECL null_comp_decl;
+INIT_OBJECT_NAME COMP_NAME;
+COMPNAME component_id I discriminant_id;
+
+COMP_NAME => sm_comp_rep :COMP_REP_ELEM;
+
+component_id => 
 -- 3.7.1 Discriminants
 -- Syntax 3.7.1
 -- discriminant part
@@ -902,22 +888,22 @@ component id =>
 -- discrimtinant -specification:=
 -- identifier-list type-mark [:= expression]
 ITEM DSCRMTPARAMJECL;
-DSCRMTPARAMOECL dscrmt-deci;
-DSCRMT-PARAM-DECL => as source -name -s :source-name-s.,
-as name :NAME,
-as-exp :EXP;
-dscrmt deci s => as-list :Seq Of dscrmt~decl;
-dscrmt-decl =>
-discriminant id = sm first DEFNAME;
+DSCRMTPARAMOECL dscrmt_decl;
+DSCRMT_PARAM_DECL => as_source -name -s :source-name_s.,
+as_name :NAME,
+as_exp :EXP;
+dscrmt deci s => as_list :Seq Of dscrmt_decl;
+dscrmt_decl =>
+discriminant_id = sm first DEFNAME;
 -- 3.7.2 Discriminant Constraints
 DIANA Reference ainual Draft Revision 4 Page 2-12
 IOL SPECIFICATION
 -- Syntax 3.7.2
--- discriminant constraint
+-- discriminant_constraint
 -- (discriminant association f, discriminant-association})
 -- discriminant association ::=
 -- [discriminantsimplename [idiscriminantsimplenamel =>1 expression
-dscrmt constraint => asgeneralassoc-s : general assoc s;
+dscrmt_constraint => asgeneralassoc_s : general assoc s;
 -- 3.7.3 Variant Parts
 -- Syntax 3.7.3.A
 -- variant_part
@@ -928,69 +914,76 @@ dscrmt constraint => asgeneralassoc-s : general assoc s;
 -- variant ::=
 -- when choice {1 choicel =>
 -- component_list
+
 VARIANTPART ::= variant_part I void;
-variant-part => as-name : NAME,
-as-variants : variant_s;
-variant s => as-list : Seq Of VARIANTELEM;
+
+variant_part => as_name : NAME,
+as_variants : variant_s;
+variant s => as_list : Seq Of VARIANTELEM;
 VARIANTELEM variant I variantpragma;
-variant => as choice s choices,
-as-complist comp list;
-choice s => as-list : Seq Of CHOICE;
-comp list => as decl s : decl s,
-asvariant_part : VARIANT-PART,
+variant => as_choice s choices,
+as_complist comp_list;
+choice s => as_list : Seq Of CHOICE;
+comp_list => as_decl s : decl s,
+asvariant_part : VARIANT_PART,
 aspragmas : pragma s;
 variant pragma => aspragma : pragma;
 -- Syntax 3.7.3.8
 -- choice ::= simple expression
 -- I discreterange I others I component_simple_name
+
 CHOICE ::= choice exp I choice_range I choiceothers;
+
 choice exp => as_exp : EXP;
 "DIANA Reference Manual Draft Revision 4 Page 2-13
 IOL SPECIFICATION
-choice-range => as-discreterange DISCRETE-RANGE;
+choice_range => as_discreterange DISCRETE_RANGE;
 choice others =>
 "--3.8 Access Types
 -- Syntax 3.8
 -- accesstype definition ::= access subtypeindication
 access def => ;
-access => sm storage size : EXP, -- EXP or void
+access => sm_storage size : EXP, -- EXP or void
 sm is controlled : Boolean,
 sm_desig_type : TYPESPEC,
 sm master : ALLDECL;
-* constrainedaccess => sm-desig_type : TYPE_SPEC;
+* constrainedaccess => sm_desig_type : TYPE_SPEC;
 -- 3.8.1 Incomplete Type Declarations
 -- Syntax 3.8.1
 -- incompletetypedeclaration ::= type identifier (discriminant part];
 TYPEDEF void;
 TYPESPEC incomplete;
-incomplete => sm discriminant s dscrmt decls;
-TYPE-SPEC void;
+incomplete => sm_discriminant s dscrmt decls;
+TYPE_SPEC void;
 -- 3.9 Declarative Parts
 -- Syntax 3.9.A
 -- declarativepart
 -- {basic declarativeitem) flaterdeclarativeiteml
 -- basic declarative item ::= basic declaration
 -- I representation-clause I use-clause
+
 DECL ::= REP;
 DECL ::= USEPRAGMA;
 USEPRAGMA ::= use I pragma;
 -- Syntax 3.9.B
 -- later declarative item ::= body
 -- I subprogramdeclaration I packagedeclaration
-DIANA Reference Manual Draft Revision 4 Page 2-14
-IDL SPECIFICATION
 -- i task declaration i generic declaration
--- I use-clause I generic~instantiation
+-- I use-clause I generic_instantiation
 -- body ::= properbody I stub
 -- properbody ::= subprogrambody I packagebody I taskbody
 ITEM ::= DECL I SUBUNIT BODY;
-item s => as list : Seq Of ITEM;
+
+item s => as_list : Seq Of ITEM;
 UNITDECL generic decl
 I NONGENERICDECL;
-UNITDECL => as-header : HEADER;
+
+UNITDECL => as_header : HEADER;
+
 NONGENERICDECL subprogentrydecl
 I packagedecl;
-NONGENERICDECL => as unit kind : UNIT-KIND;
+
+NONGENERICDECL => as_unit kind : UNIT_KIND;
 -- 4. Names and Expressions
 -- 4.1 Names
 -- Syntax 4.1.A
@@ -999,43 +992,48 @@ NONGENERICDECL => as unit kind : UNIT-KIND;
 -- I indexed component I slice
 -- I selected_component I attribute
 -- simple name ::= identifier
+
 NAME DESIGNATOR
 I NAMEEXP;
 NAMEEXP NAME VAL
 indexed
 slice
 all;
-NAME EXP => as name : NAME;
+
+NAME EXP => as_name : NAME;
 NAMEEXP => smexp_type : TYPE_SPEC;
+
 NAME VAL attribute
 I selected;
-NAME VAL => sm value : value;
+
+NAME VAL => sm_value : value;
 DESIGNATOR ::= USED OBJECT I USEDNAME;
-DESIGNATOR => sm defn : DEFNAME,
+DESIGNATOR => sm_defn : DEFNAME,
+
 lx_symrep : symbol_rep;
 USEDNAME used op I used_nameid;
-DIANA Reference Manual Draft Revision 4 Page 2-15
-IDL SPECIFICATION
 A used op =>
-used name id
+used_name_id
 USED OBJECT used char I used object id;
-USED-OBJECT => sm_exp_type : TYPE_SPEC,
+USED_OBJECT => sm_exp_type : TYPE_SPEC,
 sm value : value;
 used char ->
 used-object_id -;
 a
 -- Syntax 4.1.B
 -- prefix ::= name I function call
-NAME VAL ::= function-call;
+
+NAME VAL ::= function_call;
 -- 4.1.1 Indexed Components
 -- Syntax 4.1.1
 -- indexedcomponent prefix(expression {, expression))
+
 exps => aslist Seq Of EXP;
 indexed => as_exp_s exps;
 -- 4.1.2 Slices
 -- Syntax 4.1.2
 -- slice ::= prefix(discreterange)
-slice => as-discreterange DISCRETE-RANGE;
+slice => as_discreterange DISCRETE_RANGE;
 -- 4.1.3 Selected Components
 -- Syntax 4.1.3
 -- selected component ::= prefix.selector
@@ -1047,10 +1045,8 @@ all => ;
 -- Syntax 4.1.4
 -- attribute ::= prefix'attribute designator
 -- attribute designator ::= simplename [(universal static expression)]
-DIANA Reference Manual Draft Revision 4 Page 2-16
-IDL SPECIFICATION
-attribute => asusednameid : used name id,
-as-exp EXP;
+attribute => asusednameid : used_name_id,
+as_exp EXP;
 -- 4.2 Literals
 -- 4.3 Aggregates
 -- Syntax 4.3.A
@@ -1061,9 +1057,11 @@ aggregate => smnormalized_comp_s : generalassocs;
 -- Syntax 4.3.B
 -- component association
 -- (choice Hi choice) => I expression
-GENERALASSOC NAMED-ASSOC I EXP;
+GENERALASSOC NAMED_ASSOC I EXP;
+
 NAMED ASSOC ::= named;
 NAMEDASSOC => as_exp : EXP;
+
 named => aschoices choices;
 -- 4.4 Expressions
 -- Syntax 4.4.A
@@ -1071,7 +1069,9 @@ named => aschoices choices;
 -- relation land relation} I relation land then relationi
 -- I relation for relationi I relation for else relation)
 -- I relation fxor relation}
+
 EXPVAL ::= short-circuit;
+
 shortcircuit => asexpl : EXP,
 as short-circuitop : SHORT CIRCUITOP,
 asexp2 : EXP;
@@ -1081,15 +1081,16 @@ or else =>
 -- Syntax 4.4.B
 -- relation ::=
 -- simple expression [relational-operator simple_expression]
-DIANA Reference Manual Draft Revision 4 Page 2-17
 IL SPECIFICATION
 -- I simpleexpression (not] in range
 -- I simpleexpression (not] in type-mark
 EXP VALEXP MEMBERSHIP;
 MEMBERSHIP rangemembership I typemembership;
-MEMBERSHIP => as membership_op : MEMBERSHIPOP;
-range-membership => asrange RANGE;
-type-membership => as name NAME;
+
+MEMBERSHIP => as_membership_op : MEMBERSHIPOP;
+
+range_membership => asrange RANGE;
+type_membership => as_name NAME;
 MEMBERSHIPOP in_op I not-in;
 inop =>
 not in =>
@@ -1108,22 +1109,27 @@ EXP EXP EXP VAL
 I AGG EXP
 I quaTifiedallocator
 I subtype_allocator;
-EXPEXP => sm_exp_type : TYPE-SPEC;
+
+EXPEXP => sm_exp_type : TYPE_SPEC;
+
 EXP VAL numeric literdl
 I null access
 I EXP VAL EXP;
-EXP VAL => sm value : value;
+
+EXP VAL => sm_value : value;
 EXP VAL EXP ::= QUALCONV
+
 I parenthesized;
-EXP VALEXP => asexp : EXP;
+
+EXP VALEXP => as_exp : EXP;
+
 AGG EXP aggregate
 I stringliteral;
-DIANA Reference Manual Draft Revision 4 Page 2-18
 IOL SPECIFICATION
-AGGEXP -> smdiscrete_range : DISCRETE-RANGE;
+AGGEXP -> smdiscrete_range : DISCRETE_RANGE;
 parenthesized -> ;
 numeric-literal => Ix numrep : number_rep;
-string-literal => lx-symrep : symbolrep;
+string-literal => lx_symrep : symbolrep;
 null access -> ;
 -- 4.5 Operators and Expression Evaluation
 -- Syntax 4.5
@@ -1136,10 +1142,14 @@ null access -> ;
 -- 4.6 Type Conversions
 -- Syntax 4.6
 -- typeconversion-::= type_mark(expression)
+
 QUALCONV ::= conversion
+
 I qualified;
-QUALCONV => as name : NAME;
-conversion =>;
+
+QUALCONV => as_name : NAME;
+
+conversion => ;
 -- 4.7 Qualified Expressions
 -- Syntax 4.7
 -- qualified expression
@@ -1150,8 +1160,6 @@ aualified => ;
 -- allocator
 -- new subtype_indication I new qualifiedexpression
 qualified allocator => asqualified : qualified;
-DIANA Reference Manual Draft Revision 4 Page 2-19
-IDL SPECIFICATION
 subtype_allocator => assubtypeindication : subtype_indication,
 sm_desigtype : TYPESPEC;
 -- 5. Statements
@@ -1159,12 +1167,14 @@ sm_desigtype : TYPESPEC;
 -- Syntax 5.1.A
 -- sequence of statements ::= statement [statement}
 STMELEM STM I stmpragma;
-stm-s => aslist : Seq Of STM_ELEM;
+stm_s => aslist : Seq Of STM_ELEM;
 stm-pragma => aspragma : pragma;
 -- Syntax 5.1.B
 -- statement ::=
 -- flabel} simple_statement I flabel} compound statement
+
 STM ::= labeled;
+
 labeled => a.ssource name s : source_names,
 as_pragma_s : pragma_s,
 as stm : STM;
@@ -1181,25 +1191,30 @@ STM STMWITHEXP;
 STM WITH EXP return
 I delay;
 STMWITHEXP STMWITHEXPNAME;
+
 STMWITHEXP => as_exp EXP;
+
 STMWITHEXP NAME assign
-DIANA Reference Manual Draft Revision 4 Page 2-20
 IOL SPECIFICATION
 exit
 I code;
-STM WITH EXP NAME => as name : NAME;
+
+STM WITH EXP NAME => as_name : NAME;
 STM ::= STMWITHNAME;
+
 STM WITH NAME goto
 I raise;
 STM WITH NAME CALL STM;
 CALLSTM-::= entrycall
 I procedure-call;
-STMWITHNAME => as-name : NAME;
+
+STMWITHNAME => as_name : NAME;
 -- Syntax 5.1.D
 -- compoundstatement
 -- if statement I case statement
 -- I loop_statement I block statement
 -- accept_statement I selectstatement
+
 STM accept
 I BLOCK LOOP
 I ENTRY STM;
@@ -1207,19 +1222,21 @@ STMWITHEXP case;
 STM CLAUSESSTM;
 CLAUSESSTM if
 I selective wait;
+
 CLAUSESSTM => astestclauseelems test clauseelems,
+
 as_stm_s stm s;
 -- Syntax 5.1.E
 -- laoel ::= <<«abel simplename-
+
 LABEL NAME ::= label id;
-LABEL-NAME => sm-stm : STM;
+
+LABEL_NAME => sm_stm : STM;
 label id =>
 -- Syntax 5.1.F
 -- null statement ::= null
 null stm => ;
 -- 5.2 Assignment Statement
-DIANA Reference Manual Draft Revision 4 Page 2-21
-IDL SPECIFICATION
 -- Syntax 5.2
 -- assignment statement
 -- variable name := expression;
@@ -1236,7 +1253,7 @@ assign =>
 -- end if;
 if => ;
 TEST CLAUSE cond clause;
-TEST-CLAUSE => as_exp : EXP,
+TEST_CLAUSE => as_exp : EXP,
 as stm s : stm_s;
 cond clause =>
 -- Syntax 5.3.B
@@ -1253,11 +1270,10 @@ cond clause =>
 -- sequenceofstatementsl
 ALTERNATIVE ELEM alternative I alternative pragma;
 case => asalternatives : alternatives;
-alternative s => as-list : Seq Of ALTERNATIVEELEM;
+alternative s => as_list : Seq Of ALTERNATIVEELEM;
 alternative => aschoice s : choices,
 as stm s stm s;
 !-
-DIANA Reference Manual Draft Revision 4 Page 2-22
 IOl SPECIFICATION
 alternativepragma => aspragma : pragma;
 -- 5.5 Loop Statements
@@ -1267,29 +1283,39 @@ alternativepragma => aspragma : pragma;
 riteratTon -scheme) loop
 -- sequence of statements
 -- end loop [loopsimple name];
+
 BLOCKLOOP ::= loop;
-BLOCK LOOP => as source name : SOURCENAME;
+BLOCK LOOP => as_source name : SOURCENAME;
 SOURCE NAME ::= void;
 LABELNAME ::= blockloopid;
-blockloop id =>
+
+blockloop id => 
+
 ITERATION ::= void;
-loop => as iteration : ITERATION,
+
+loop => as_iteration : ITERATION,
 as stms : stm-s;
 -- Syntax 5.5.B
 -- iteration scheme ::= while condition
 -- I for Toop parameter_specification
 -- loopparameter specification
-identifier in [reverse] discrete-range
+identifier in [reverse] discrete_range
+
 ITERATION ::= FOR REV:
 FOR REV ::= for I reverse;
-FOR-REV => as source name : SOURCE NAME,
-as discreterange : DISCRETE-RANGE;
+
+FOR_REV => as_source name : SOURCE NAME,
+as discreterange : DISCRETE_RANGE;
 for => ;
 reverse =>
+
 OBJECT NAME ::= iterationid;
-iteration id =>
+
+iteration id => 
+
 ITERATION ::= while;
-while => asexp : EXP;
+
+while => as_exp : EXP;
 -- 5.6 Block Statements
 SDIANAReference Manual Draft Revision 4 Page 2-23
 IOL SPECIFICATION
@@ -1304,9 +1330,11 @@ S-- declarativepart]
 -- exception handler
 -- [exceptionhandler)]
 -- end (block simplename];
+
 BLOCK LOOP ::= block;
+
 ,4 block - as block body : blockbody;
-blockbody => as item s : items,
+blockbody => as_item s : items,
 as stm s: stm_5,
 as alternative s : alternative_s;
 -- 5.7 Exit Statements
@@ -1314,52 +1342,60 @@ as alternative s : alternative_s;
 -- exit statement
 -- exit [loopname] (when condition];
 NAME void;-
-exit => sm stm : STM;
+exit => sm_stm : STM;
 -- 5.8 Return Statements
 -- Syntax 5.8
 -- return-statement ::= return [expression];
 return =>
 -- 5.9 Goto Statemelits
 -- Syntax 5.9
--- goto statement ::= goto label-name;
+-- goto statement ::= goto label_name;
 goto =>
 -- 6. Subprograms
 -- 6.1 Subprogram Declarations
 I-
 I-
-DIANA Reference Manual Draft Revision 4 Page 2-24
-IDL SPECIFICATION
 -- Syntax 6.1.A
 -- subprogramdeclaration : subprogramspecification;
 subprogentrydecl =>
+
 UNIT NAME ::= NON TASK NAME;
+
 NON TASK NAME SUBPROG PACK NAME;
+
 NON TASK NAME => smspec-: HEADER;
 SUBPROG PACK NAME ::= SUBPROG NAME;
-SUBPROG-PACK-NAME => sm unit-desc : UNITDESC,
-sm-address : EXP;
+
+SUBPROG_PACK_NAME => sm_unit_desc : UNITDESC,
+sm_address : EXP;
 SUBPROG NAME procedure id I function id I operatorid;
-SUBPROG NAME => sm is iniTne : Boolean,-
+
+SUBPROG NAME => sm_is iniTne : Boolean,-
+
 sminterface : PREDEFNAME;
 UNITDESC UNIT KIND I BODY
 I implicitnot_eq I derived subprog;
 UNIT KIND void;
-derivedsubprog => sm derivable : SOURCENAME;
-implicit_not_eq => sm equal : SOURCE-NAME;
+derivedsubprog => sm_derivable : SOURCENAME;
+implicit_not_eq => sm_equal : SOURCE_NAME;
 procedure fd =>
 functionTd =>
-operator~id =>
+operator_id =>
 -- Syntax 6.1.B
 -- subprogramspecification
 -- procedure identifier [formal _part]
 -- I function designator (formal-_part] return typemark
 -- designator ::= identifier I operator_symbol
 -- operatorsymbol ::= string_literal
+
 HEADER ::= SUBP ENTRY HEADER;
+
 SUBPENTRYHEADER procedure_spec I functionspec;
-SUBPENTRYHEADER => asparams : param-s;
-procedurespec =>
-function-spec => as-name : NAME;
+
+SUBPENTRYHEADER => asparams : param_s;
+
+procedurespec => 
+function_spec => as_name : NAME;
 DJIANA Reference Manual Draft Revision 4 Page 2-25
 IOL SPECIFICATION
 -- Syntax 6.1.C
@@ -1368,16 +1404,18 @@ IOL SPECIFICATION
 -- parameterspecification ::=
 -- identifier-list mode typemark [:= expression]
 -- mode ::= (in] I in out I out
-param_s => as-list : Seq Of PARAM;
+param_s => as_list : Seq Of PARAM;
 OSCRMTPARAMDECL PARAM;
 PARAM in I out I in-out;
 in -> Ix default : Boolean;
 in out =>
 out =>
 INITOBJECTNAME PARAM NAME;
-PARAM NAME ::= in id I in out id I out-id;
-PARAMNAME => sm-first :DEFNAME;
-in id =>
+
+PARAM NAME ::= in id I in out id I out_id;
+PARAMNAME => sm_first :DEFNAME;
+
+in id => 
 in out id =>
 out id-=>
 -- 6.3 Subprogram Bodies
@@ -1391,13 +1429,13 @@ out id-=>
 -- exceptionhandler
 -- [exception-handler)]
 -- end (designator];
+
 BODY ::= block-body I stub I void;
-subprogram-body => as-header HEADER;
+
+subprogram-body => as_header HEADER;
 -- 6.4 Subprogram Calls
 -- Syntax 6.4
 -- procedurecallstatement
-DIANA Reference Manual 0r'.ft Revision 4 Page 2-26
-IDL SPECIFICATION
 -- procedure-name [actual_parameter part);
 -- function call ::=
 - - functTon-name (actualparameterpart]
@@ -1408,9 +1446,11 @@ IDL SPECIFICATION
 -- formal-parameter ::= parametersimplename
 -- actual _parameter ( a m
 -- expression I variable-name I type-mark(variable name)
+
 CALL STM => asgeneral assoc s : general _assoc_s;
 CALL STM => smnormalized param_s :exp_s;
-procedure call =>
+
+procedure call => 
 function call => asgeneral assoc s : general _assocs;
 function call => smnormalized params : exp_s;
 function-call 2> lx_prefix : Boolean;
@@ -1421,8 +1461,10 @@ assoc => asusedname : USEDNAME;
 -- Syntax 7.1.A
 -- package_declaration ::= packagespecification;
 package_decl => ;
+
 SUBPROGPACKNAME ::= packageid;
-packageid =>
+
+packageid => 
 -- Syntax 7.1.8
 -- packagespecification
 -- package identifier is
@@ -1430,11 +1472,9 @@ packageid =>
 -- [private
 -- (basic declarative iteml]
 -- end [packagesimplename]
-DIANA Reference Manual Draft Revision 4 Page 2-27
-IDL SPECIFICATION
-package spec => as decl sl : decl!s,
-as-decls2 : declis;
-decl -s as-list : Seq Of DECL;
+package spec => as_decl sl : decl!s,
+as_decls2 : declis;
+decl -s as_list : Seq Of DECL;
 -- Syntax 7.1.C
 -- packagebody
 -- package body package simple name is
@@ -1453,20 +1493,22 @@ packagebody =>
 TYPEDEF private_def I 1_privatedef;
 private def => ;
 lprivate_def =>
+
 TYPENAME ::= private_type_id I 1_privatetypeid;
-S.- privatetypeid =>
+
+S.- privatetypeid => 
 l_private_type_id =>
+
 PRIVATE SPEC ::= private I 1_private;
-PRIVATE-SPEC => sm discriminant s : dscrmt decls,
-sm~typespec : TYPE-SPEC;
+
+PRIVATE_SPEC => sm_discriminant s : dscrmt decls,
+sm_typespec : TYPE_SPEC;
 private => ;
 l_private =>
 -- Syntax 7.4.8
 -- deferred constant declaration
 -- identTfierlist : constant type_mark;
-deferred constant decl => as name : NAME;
-DIANA Reference Manual Oraft Reviston 4 Page 2-28
-IDL SPECIFICATION
+deferred constant decl => as_name : NAME;
 -- 8. Visibility Rules
 -- 8.4 Use Clauses
 -- Syntax 8.4
@@ -1479,15 +1521,19 @@ use => asname s name s;
 -- I identifier : exception renames exceptionname;
 -- I package identifier renames packagename;
 -- I subprogramspecification renames subprogramorentry name;
+
 IDDECL ::= SIMPLERENAMEDECL;
+
 SIMPLERENAMEDECL renamesobj_decl
 I renames-exc decl;
-SIMPLERENAMEDECL => as name : NAME;
+
+SIMPLERENAMEDECL => as_name : NAME;
+
 renames objdecl => astypemark name NAME;
 renames exc decl =>
 UNITKIND RENAMEINSTANT;
 RENAME INSTANT renamesunit;
-RENAME-INSTANT => as name : NAME;
+RENAME_INSTANT => as_name : NAME;
 renames unit =>
 -- 9. Tasks
 -- 9.1 Task Specifications and Task Bodies
@@ -1498,9 +1544,8 @@ renames unit =>
 -- fentrydeclaration)
 -- {representation clause}
 -- end (task_simplename]]
-DIANA Reference Manual Draft Revision 4 Page 2-29
 I1L SPECIFICATION
-task decl - as-decl-s : dec1_s;
+task decl - as_decl-s : dec1_s;
 task-spec = sm decl s : declis,
 smbody-: BODY,
 msm address : EXP,
@@ -1526,14 +1571,15 @@ block-master => smnstm : STM;
 -- 9.5 Entries, Entry Calls and Accept Statements
 *... Syntax 9.5.A
 -- entry_declaration
--j -- entry identifier ((discrete-range)] [formal_part];
+-j -- entry identifier ((discrete_range)] [formal_part];
 SUBP ENTRY HEADER entry;
-entry => as discreterange DISCRETERANGE;
+entry => as_discreterange DISCRETERANGE;
+
 SOURCENAME ::= entryid;
+
 entry-id = sm_spec : HEADER,
 sm address : EXP;
 -- Syntax 9.5.B
-DIANA Reference Manual Draft Revision 4 Page 2-30
 [DL SPECIFICATION
 -- entrycall statement ::= entry name [actual-_parameter_part];
 entry-call =>
@@ -1545,7 +1591,7 @@ entry-call =>
 -- entryindex ::= expression
 accept > as_name : NAME,
 as param s : param s,
-as-stm-s : stms;
+as_stm-s : stms;
 -- 9.6 Delay Statements, Duration and Time
 -- Syntax 9.6
 -- delaystatement ::= delay simpleexpression;
@@ -1569,16 +1615,16 @@ selective wait =>
 -- selective alternative
 -- [when condition =>]
 -- selective wait alternative
-DIANA Reference Manual Oraft Revision 4 Page 2-31
-IDL SPECIFICATION
 -- selective wait alternative ::= acceptalternative
 -- I delay_alternative I terminate alternative
 -- acceptalternative accept_statement (sequenceofstatements]
 -- delayalternative delay-statement [sequenceofstatements]
 -- terminate alternative ::= terminate;
 TESTCLAUSEELEM TESTCLAUSE I select_altpragma;
+
 TEST CLAUSE ::= select-alternative;
-test clause elem s => as-list : Seq Of TESTCLAUSEELEM;
+
+test clause elem s => as_list : Seq Of TESTCLAUSEELEM;
 select-alternative => ;
 selectaltpragma => aspragma pragma;
 STM terminate;
@@ -1593,7 +1639,7 @@ terminate => ;
 -- sequenceofstatements
 -- end select;
 ENTRY STM .- condentry 1 timed entry;
-ENTRY-STM => as stm sl : stms,
+ENTRY_STM => as_stm sl : stms,
 -asstms2 : stms;
 cond_entry =>
 -- 9.7.3 Timed Entry Calls
@@ -1604,20 +1650,18 @@ cond_entry =>
 -- [sequence_of_s'-tements]
 -- or
 -- delay_alternative
-DIANA Reference Manual Draft Revision 4 Page 2-32
-IDL SPECIFICATION
 -- end select;
 timed-entry => ;
 -- 9.10 Abort Statements
 -- Syntax 9.10
 -- abort statement ::= abort task name 1, task name);
-name s => as list : Seq Of NAME;
-abort -> as name s : names;
+name s => as_list : Seq Of NAME;
+abort -> as_name s : names;
 10. Program Structure and Compilation Issues
 -- 10.1 Compilation Units - Library Units
 -- Syntax 10.1.A
 -- compilation ::= {compilationuniti
-compilation => as-compltn-unit-s : compltnunits;
+compilation => as_compltn-unit_s : compltnunits;
 compltnunits => aslist : Seq Of compilation unit;
 -- Syntax 10.1.8
 -- compilation unit
@@ -1628,14 +1672,14 @@ compltnunits => aslist : Seq Of compilation unit;
 -- I subprogrambody
 -- secondaryunit ::= libraryunit body I subunit
 -- libraryunitbody ::= subprogrambody I packagebody
+
 ALL DECL ::= void;
-pragmas => as-list : Seq Of pragma;
-compilation-unit => as context elem s : context-elems,
-as-all decT : ALL DECL,
-as-pragmas : pragma s;
+
+pragmas => as_list : Seq Of pragma;
+compilation-unit => as_context elem s : context-elems,
+as_all decT : ALL DECL,
+as_pragmas : pragma s;
 CONTEXTELEM contextpragma;
-DIANA Reference Manual Draft Revision 4 Page 2-33
-IDL SPECIFICATION
 context_pragma =) aspragma : pragma;
 -- Context Clauses - With Clauses
 -- Syntax IO.1.1.A
@@ -1644,17 +1688,17 @@ context elems > as list : Seq Of CONTEXTELEM;
 -- Syntax 10.1.1.8
 -- withclause ::= with unitsimplename {, unitsimple_namel;
 CONTEXT ELEM ::- with;
-with => as name s : names,
+with => as_name s : names,
 as_use_pragmas : usepragmas;
 usepragmas => aslist : Seq Of USE_PRAGMA;
 -- 10.2 Subunits of Compilation Units
 -- Syntax 10.2.A
 -- subunit ::=
 -- separate (parent_unitname) proper body
-subunit => as name : NAME,
-as-subunitbody SUBUNIT-BODY;
+subunit => as_name : NAME,
+as_subunitbody SUBUNIT_BODY;
 SUBUNIT BODY subprogram body I packagebody I task_body;
-SUBUNIT-BODY => as source name SOURCENAME,
+SUBUNIT_BODY => as_source name SOURCENAME,
 asbody :-BODY;
 -- Syntax 10.2.B
 -- bodystub ::=
@@ -1666,10 +1710,10 @@ stub => ;
 -- 11.1 Exception Declarations
 -- Syntax 11.1
 -- exceptionjdeclaration ::= identifier.list : exception;
-DIANA Reference Manual Draft Revision 4 Page 2-34
-IDL SPECIFICATION
 exception decl ->
+
 SOURCE NAME ::= exception id;
+
 exceptionid => smrenamesexc : NAME;
 -- 11.2 Exception Handlers
 -- Syntax 11.2
@@ -1688,7 +1732,9 @@ raise => ;
 -- generic_specification ::=
 -- generic formal part subprogramspecification
 -- ( generic formal part package specification
+
 HEADER ::= package spec;
+
 genericdecl => asitem s : items;
 NONTASKNAME genericId;
 generic id => smgeneric_param_s : items,
@@ -1697,7 +1743,6 @@ sm is inline : Boolean;
 -- Syntax 12.1.B
 -- generic formalpart generic {generic_parameter_declarationi
 I
-DIANA Reference Manual Draft Revision 4 Page 2-35
 "IDL SPECIFICATION
 -- Syntax 12.1.C
 -- genericparameter declaration
@@ -1707,10 +1752,12 @@ S-- I privatetypedeclaration
 -- I with subprogramspecification [is name];
 S-- I with subprogramspecification [is <>];
 UNIT KIND :: GENERICPARAM;
-GENERICPARAM ::= name-default
+
+GENERICPARAM ::= name_default
+
 I box default
 I no default;
-name default => as-name : NAME;
+name default => as_name : NAME;
 "box default =>
 no-default =>
 -- Syntax 12.1.0
@@ -1737,11 +1784,11 @@ formal integerdef =>
 -- generic actual part ::=
 -- (generic-association f, generic-association})
 0
-DIANA Reference Manual Draft Revision 4 Page 2-36
-IDL SPECIFICATION
+
 RENAME INSTANT ::= instantiation;
+
 instantiation => as_general assoc s : generalassocs;
-instantiation sm-decl-s : declIs;
+instantiation sm_decl-s : declIs;
 -- Syntax 12.3.8
 -- generic association ::=
 -- [generic formalparameter =>] genericactualparameter
@@ -1757,8 +1804,9 @@ instantiation sm-decl-s : declIs;
 -- typerepresentation clause I addressclause
 -- typejrepresentation clause ::z length clause
 -- f enumerationrepresentationclauseI recordrepresentationclause
+
 REP ::= NAMEDREP I recordrep;
-REP => as name NAME;
+REP => as_name NAME;
 NAMEDREP => as_exp EXP;
 -- 13.2 Length Clause
 -- 13.3 Enumeration Representation Clauses
@@ -1768,10 +1816,9 @@ NAMEDREP => as_exp EXP;
 -- enumeration representationclause
 -- for typesimple_name use aggregate;
 NAMED REP ::= lengthenum_rep;
+
 length enumrep => ;
 -- 13.4 Record Representation Clauses
-DIANA Reference Manual Draft Revision 4 Page 2-37
-IDL SPECIFICATION
 -- Syntax 13.4.A
 record representation clause
 for type simple name use
@@ -1779,10 +1826,10 @@ for type simple name use
 -- {component clause}
 -- end record;
 -- alignmentclause ::= at mod static simple_expression;
-ALIGNMENT-CLAUSE alignment I void;
+ALIGNMENT_CLAUSE alignment I void;
 alignment => aspragmas pragmas,
-asexp : EXP;
-record-rep => asalignment clause : ALIGNMENT-CLAUSE,
+as_exp : EXP;
+record_rep => asalignment clause : ALIGNMENT_CLAUSE,
 as_comp_rep_s : compreps;
 -- Syntax 13.4.B
 -- component clause
@@ -1804,50 +1851,50 @@ address =>
 -- code-statement type mark'record aggregate;
 code =>
 -J
-DIANA Reference Manual Draft Revision 4 Page 2-38
 [OL SPECIFICATION
 -- 14.0 Input-Output
 -- I/O procedure calls are not specially handled. They are
 -- represented by procedure or function calls (see 6.4).
 -- Predefined Diana Environment
+
 PREDEF NAME ::= attribute id
+
 I pragma id
 I argument id
 I bltn operatorid
 I void;
 attribute id => ;
-TYPE-SPEC ::= universalinteger I universal-fixed I universal-real;
+TYPE_SPEC ::= universalinteger I universal-fixed I universal-real;
 universal integer =>
 universal fixed =>
 universal-real =>
-argument-id => ;
+argument_id => ;
 bltnoperator id => smoperator : operator;
-pragma-id => sm-argument_id_s : argumentids;
+pragma_id => sm_argument_id_s : argumentids;
 argumentids => asltst : Seq Of argumentid;
 ALL SOURCE DEFNAME I ALL DECL I TYP" DEF I SEQUENCES
 I STM ELEM I GENERAL ASSOC i-CONSTRAINT I CHOICE
-I HEADER I UNIT DESC-I TEST CLAUSE ELEM
-I MEMBERSHIP OP-I SHORT CIRCUIT OP-I ITERATION
+I HEADER I UNIT DESC_I TEST CLAUSE ELEM
+I MEMBERSHIP OP_I SHORT CIRCUIT OP_I ITERATION
 I ALTERNATIVE ELEM I COMP REP ELEM I CONTEX T ELEM
-I VARIANT ELEM I ALIGNMENT-CLAUSE I VARIANT PART
+I VARIANT ELEM I ALIGNMENT_CLAUSE I VARIANT PART
 comp_list I compilation T compilation unit I index;
 SEQUENCES alternative s I argument id s I choice s
 comp_rep_s I compltn unit s I context elem s
 I decls I dscrmt decl s I general assoc-s
-discrete ranges I enum literal s I exps I item s
-index s T name s I params I pragmas I scalar s-
+discrete ranges I enum_literal_s I exps I item s
+index s T name s I params I pragmas I scalar_s-
 source name s T stm-s I test clause elem s
 usepragmas I variant_s;
+
 ALL SOURCE => lx_srcpos : sourceposition,
+
 Ix comments : comments;
 ALL DECL ITEM I subunit;
 End
 '-I
-CHAPTER 3
-SEMANTIC SPECIFICATION
+## CHAPTER 3
 -d
-DIANA Reference Manual Draft Revision 4 Page 3-2
-SEMANTIC SPECIFICATION
 This chapter describes the semantics of DIANA. The structure of this
 chapter parallels the DIANA class hierarchy. Each section corresponds to a
 class in the DIANA class hierarchy, and each subsection corresponds to a
@@ -1898,7 +1945,7 @@ ALL DECL
 The four immediate offspring of class ALL OECL are void, subunit,
 "block-master, and ITEM.
 The subunit node represents a subunit, and has two non-lexical attributes
--- as name and as subunit body. The attribute as name denotes the name of the
+-- as_name and as subunit body. The attribute as_name denotes the name of the
 parent unit (a selected, used name Id, or used op node); as subunit body
 designates the node corresponding to the proper body.
 The block master node represents a block statement that may be a master
@@ -1930,13 +1977,11 @@ identifier(s) or symbol(s) used to name the newly defined entity (or entities).
 These nodes, members of class SOURCE NAME, are termed the "defining occurrence"
 of their respective identifiers; they carry all of the information that
 I-
-DIANA Reference Manual Draft Revision 4 Page 3-4
-SEMANTIC SPECIFICATION
 describes the associated entity.
-The classes DSCRMT PARAM-DECL, SUBUNIT BODY, and DECL comprise ITEM.
+The classes DSCRMT PARAM_DECL, SUBUNIT BODY, and DECL comprise ITEM.
 3.1.1.1 DSCRMT PARAI4DECL
 The DSCRNT PARAM DECL class is composed of nodes representing either a
-discriminant specifiCation or a formal parameter specification. The as name
+discriminant specifiCation or a formal parameter specification. The as_name
 attribute defined on this class denotes a selected or used name i- node
 corresponding to the type mark given in the specification.
 The dscrmt dec node represents a discriminant specification. The
@@ -1968,8 +2013,6 @@ as source name attribute refers to a packageId node. If the package body is
 empty (i.e. it contains no declarative part, no sequence of statements, and no
 exception handlers) then as body still denotes a blockbody node; however, all
 of the sequences in the bloc--l body node are empty.
-DIANA Reference Manual Draft Revision 4 Page 3-5
-SEMANTIC SPECIFICATION
 The task body node represents the declaration of a task body; its
 as source name attribute denotes a task-bodyId.
 3.1.1.3 DECL
@@ -1982,21 +2025,21 @@ node; the only kind of node which can succeed it in the sequence is a pragma
 node.
 3.1.1.3.1 USE PRAGMA
 The class USE PRAGMA contains the nodes pragma and use.
-The pragma node represents a pragma. The as used name id attribute denotes
+The pragma node represents a pragma. The as_used_name_id attribute denotes
 the name of the pragma, and the asgeneral assocs attribute references a
 possibly empty sequence of argument associations (the sequence may contain a
 mixture of assoc and EXP nodes).
-The use node represents a use clause. The as name s attribute represents
+The use node represents a use clause. The as_name s attribute represents
 the list of package names given in the use clause. If the use clause appears as
-, a basic declarative item, the sequence can contain both used name id and
+, a basic declarative item, the sequence can contain both used_name_id and
 selected nodes; if it is a part of a context clause, it will-contain
-used name id nodes only.
+used_name_id nodes only.
 3.1.1.3.2 REP
 The nodes in class REP correspond to representation clauses which may
 appear as declarative items (i.e. address clauses, length clauses, record
 representation clauses, and enumeration representation clauses).
 The node record_rep represents a record representation clause. The
-attribute as name references a used name Id corresponding to the record type
+attribute as_name references a used name Id corresponding to the record type
 name; as ali ment clause and as comp reps -denote the alignment clause and
 component clauses, respectively. The attribute as alinment clause is void if
 the representation clause does not contain an alignment clause, and
@@ -2005,15 +2048,13 @@ as comp rep s may be empty if no component clauses or pragmas are present.
 The nodes length enum rep and address comprise the class NAMED REP, a group
 of representation clauses which consist of a name and an expression.
 -,J
-DIANA Reference Manual Draft Revision 4 Page 3-6
-SEMANTIC SPECIFICATION
 The length enum rep node may represent either a length clause or an
-enumeration representation clause. In the former case the as name attribute
+enumeration representation clause. In the former case the as_name attribute
 denotes an attribute node and the as exp attribute corresponds to the simple
-expression. In the case of an enumeration representation clause the as name
-attribute denotes a used name id corresponding to the enumeration type, and
+expression. In the case of an enumeration representation clause the as_name
+attribute denotes a used_name_id corresponding to the enumeration type, and
 as exp references an aggregate node.
-The address node represents an address clause. Its as name attribute
+The address node represents an address clause. Its as_name attribute
 references a node from the class USED SOURCE NAME correspondTngto the name of
 the entity for which the address is being specified. The as exp attribute
 records the address expression.
@@ -2052,8 +2093,6 @@ may not be void for any other kind of type declaration. The permitted values of
 the as type def attribute for the remainder of the type declarations are as
 follows: for a (limited) privdte type declaration -- a private def or
 iprivatedef node; for a generic type declaration -- a TYPE DEF node having the
-DIANA Reference Manual Draft Revision 4 Page 3-7
-SEMANTIC SPECIFICATION
 prefix "formal-", an unconstrained array def node, a constrained array def node,
 or an access def-node; for a derivid type declaration -- a derTved node; and
 finally, foý a full type declaration -- an enumeration def, integer def,
@@ -2089,19 +2128,17 @@ depending on the kind of object renamed. A constant object is -eoresented b) a
 constant id; constant objects include constants, discriminants, parameters of
 mode in, loop parameters, and components of constant objects. An object that
 does not belong to any of the previous categories is represented by a
-variable id (this includes objects of a limited type). The as name attribute of
+variable id (this includes objects of a limited type). The as_name attribute of
 a renamesobj_decl node denotes a node of type NAME which represents the object
 being renamed. The as type mark name attribute references a selected or
-used name id node corresponding to the type mark appearing in the renaming
+used_name_id node corresponding to the type mark appearing in the renaming
 declaration.
 The renames objdecl node may also appear in a normalized parameter list
 for a generic instantiation. This case does not correspond to source code, and
 is discussed in detail in section 3.6.1.1.
-DIANA Reference Manual Draft Revision 4 Page 3-8
-SEMANTIC SPECIFICATION
 The renaming of an exception is represented by a renames exc decl node, for
 which the as source name attribute always designates an-exception Id. The
-as name attribute can be either a selected node or a used name Id node
+as_name attribute can be either a selected node or a used name Id node
 corresponding to the exception being renamed.
 3.1.1.3.3.2 UNIT DECL
 The class UNIT DECL represents the declaration of a subprogram, package,
@@ -2138,8 +2175,6 @@ procedure spec or a function spec. In addition to the three values of
 as unit kTnd described in the previous paragraph, the as unit kind attribute of
 a subprog entry decl node may designate a node from class GENERIC PARAM if the
 subprogram in tee declaration is a generic formal parameter..
-DIANA Reference Manual Draft Revision 4 Page 3-9
-SEMANTIC SPECIFICATION
 The as source name attribute for a subprogram declaration is a node from
 class SUBPOG NE, with one exception. A declaration renaming an enumeration
 literal as a function will have an ENUN LITERAL node as its as source name
@@ -2164,8 +2199,8 @@ as source name s attribute designates a sequence of exception id nodes.
 A deferred constant decl node denotes a deferred constant declaration. The
 as source name s attribute refers to a sequence of constant id nodes; each
 constant id node represents the first defining occurrence of the associated
-identifier. The as name attribute of the deferred constant decl node is a
-used name id or selected node representing the type mark given in tne
+identifier. The as_name attribute of the deferred constant decl node is a
+used_name_id or selected node representing the type mark given in tne
 declaration. The subsequent full declaration of the deferred constant(s) will
 be represented by a constant decl node.
 3.1.1.3.4.1 EXP DECL
@@ -2176,14 +2211,12 @@ A number declaration is denoted by a number decl node for which the
 as source name s attribute is a sequence of number id nodes, and the as exp
 attribute references a node corresponding to the static expression given in the
 declaration.
-DIANA Reference Manual Draft Revision 4 Page 3-10
-SEMANTIC SPECIFICATION
 3.1.1.3.4.1.1 OBJECT DECL
 Class OBJECT DECL represents variable, constant, and component
 declarations.
 A variable decl node represents either a variable declaration in a
 declarative part or a component declaration in a record type definition;
-as source name s is a sequence of variable id nodes or component id nodes,
+as source name s is a sequence of variable id nodes or component_id nodes,
 respectively. - The as ex attribute denotes-the (default) initial vaTue, and is
 void if none is given. oFr a variable declaration, as type def may denote
 either a subtype indication node or a constrained array def node; for a
@@ -2216,8 +2249,6 @@ constraint, even if the constrainf is non-static; the OBJECT DECL node is
 allowed to share the CONSTRAINT node with one of the TYPE SPEC nodes.
 I
 I
-DIANA Reference Manual Draft Revision 4 Page 3-11
-SEMANTIC SPECIFICATION
 V
 a-
 II II•l
@@ -2225,7 +2256,7 @@ II II•l
 6. IwoV
 SI i I.a US
 W - - - -
-~~IV
+~_IV
 • IU.1;I I L
 CVlI -I-- - - - -0
 • i Z 4 I
@@ -2244,8 +2275,6 @@ I L II . "
 0. II6
 V i I 1i.
 oU I- -"
-DIANA Reference Manual Draft Revision 4 Page 3-12
-SEMANTIC SPECIFICATION
 U1 Ia ,
 I I
 I I I
@@ -2296,8 +2325,6 @@ definition; in particular, those corresponding to:
 S(e) non-generic formal parameters
 (f) program units
 I-.-
-DIANA Reference Manual Draft Revision 4 Page 3-14
-SEMANTIC SPECIFICATION
 For these names, the first defining occurrence (which is indicated by the
 sm first attribute) is treated as THE definition. In general, all references to
 the entity refer to the first defining occurrence, and the multiple defining
@@ -2321,9 +2348,9 @@ by the sm operator attribute.
 The SOURCE NAME class is composed of those nodes corresponding to defining
 occurrences of intities which may be declared by the user.
 The exception id node represents an exception name. If the exception id is
-a renaming then the sm renames attribute is a used name id or a selected node
+a renaming then the sm renames attribute is a used_name_id or a selected node
 denoting the original exception name (the node which is designated by the
-as name attribute of the renames exc decl node). If the exception name is not
+as_name attribute of the renames exc decl node). If the exception name is not
 introduced by a renaming declaration then sm renames is void.
 An entry (family) name is denoted by an entry id node which has two
 non-lexical attributes : sm spec and sm address. The sm spec attribute
@@ -2337,7 +2364,6 @@ statements; the sm str attribute defined on this class denotes the statement to
 which the name corresponds. A label id node represents the name of a statement
 label and is introduced by a labeled node; sm stm can reference any node in
 class STM. A block loop_id represents the name of a block or a loop; sm stm
-DIANA Reference Manual Draft Revision 4 Page 3-15
 A SEMANTIC SPECIFICATION
 denotes the block or loop node which introduces the block loop Id.
 3.2.2.2 TYPE MANE
@@ -2382,12 +2408,10 @@ prlvate type Id or 1 private typeId node.
 A subtype id node represents the defining occurrence of a subtype name; its
 only non-lexical attribute is sm type spec, which references the appropriate
 subtype specification. If the subtypeid is introduced by a subtype declaration
-DIANA Reference Manual Draft Revision 4 Page 3-16
-SEMANTIC SPECIFICATION
 In which the subtype indication contains a constraint then a new TYPE SPEC node
 is created to represent the subtype specification. If the subtype declaration
 does not impose a new constraint then the sm type spec attribute references the
-TYPE-SPEC node associated with the type mark appearing in the declaration.
+TYPE_SPEC node associated with the type mark appearing in the declaration.
 A subtypeid may also be introduced by a declarative node in a normalized
 parameter list for a generic instantiation, in which case the subtype id does
 not correspond to source code. The correct values for its attributes Tn this
@@ -2395,18 +2419,18 @@ instance are defined in section 3.6.1.1.
 3.2.2.3 OBJECT NAME
 The class OBJECT NAME contains nodes representing defining occurrences of
 entities having a value and a type; it is composed of iteration id,
-ENUM LITERAL, and INIT OBJECT NAME. The smob_ y attribute which is defTred
+ENUM_LITERAL, and INIT OBJECT NAME. The smob_ y attribute which is defTred
 on the class denotes the subtype of the object or literal.
 An iteration id represents the defining occurrence of a loop parameter, and
 is introduced by an iteration node. The sm obj type attribute references tne
 enumeration or integer node denoted by the sm base type attribute of tne
 DISCRETE RANGE node associated with the iteration scheme.
-3.2.2.3.1 ENUM LITERAL
-The class ENUM LITERAL is composed of nodes representing the defining
+3.2.2.3.1 ENUM_LITERAL
+The class ENUM_LITERAL is composed of nodes representing the defining
 occurrences of literals associated with an enumeration type. The nodes
 enumeration id and character Id comprise this class -- enumeration id
 corresponds to an identifier, character id to a character literal.
-ENUM LITERAL defines the attributes sm pos and sm rep, both of which are of
+ENUM_LITERAL defines the attributes sm pos and sm rep, both of which are of
 type Integer. The attribute sm pos contains the value of the predefined Ada
 attribute POS, i.e. the universal integer corresponding to the actual position
 number of the enumeration literal. The sm rep attribute contains the value of
@@ -2415,17 +2439,15 @@ enumeration representation clause. If no such clause is in effect, the value of
 sm rep will be the same as that of sm pos. The sm ooj type attribute references
 the enumeration node corresponding to the enumeration type to which the literal
 belongs.
-An ENUM LITERAL node may be introduced by either an enumeration def node or
+An ENUM_LITERAL node may be introduced by either an enumeration def node or
 a subprogentrydecl node. The latter corresponds to the renaming of an
 enumeration literal as a function, in which case the semantic attributes of the
-ENUM LITERAL node will have the same values as those of the node corresponding
-to t~e original literal.
-An ENUM LITERAL node may be introduced by a declarative node in a special
+ENUM_LITERAL node will have the same values as those of the node corresponding
+to t_e original literal.
+An ENUM_LITERAL node may be introduced by a declarative node in a special
 normalized parameter list for a generic instantiation; in this instance the
-ENUM LITERAL node does not correspond to source code. This case is discussed in
+ENUM_LITERAL node does not correspond to source code. This case is discussed in
 detaTil in section 3.6.1.1.
-DIANA Reference Manual Draft Revision 4 Page 3-17
-SEMANTIC SPECIFICATION
 3.2.2.3.2 INIT OBJECT NAME
 The class INIT OBJECT NAME contains nodes corresponding to defining
 occurrences of objects whict may have an initial value; it defines an attribute
@@ -2447,7 +2469,7 @@ The sm renames obj attribute is of type Boolean, and indicates whether or
 not the name of the object is a renaming; the value of this attribute determines
 the meaning of the sm init exp attribute for nodes in this class. If the name
 is introduced by a renaming declaration then sm init exp denotes the NAME node
-referenced by the as name attribute of the renames objdecl node. Otherwise,
+referenced by the as_name attribute of the renames objdecl node. Otherwise,
 sm init exp is the XP node designated by the as exp attribute of the associated
 iBJECTDEC[ node, and consequently may be void.
 The sm address attribute denotes the expression for the address of the
@@ -2461,7 +2483,7 @@ sm obj type attribute denotes either the TYPE SPEC node corresoonding to the
 contains a constrained array definition or a constraint in the subtype
 indication. If the variable id or constant id is introduced by a
 renames obj decl node, then sm obj ty e is the TYPE SPEC node corresponding to
-the subtype of the original object (hence this TYPE-SPEC node does not
+the subtype of the original object (hence this TYPE_SPEC node does not
 necessarily correspond to the type mark in the renaming declaration, although it
 will have the same base type).
 A constant id represents the name of a constant object. A constant object
@@ -2472,7 +2494,6 @@ attribute references the constant id node corresponding to the first defining
 occurrence of the associated name. For a constant id node associated with the
 i
 OIANA Reference Manual Draft Revision 4 Page 3-18
-SEMANTIC SPECIFICATION
 full declaration of a deferred constant this attribute will reference the
 constant id corresponding to the deferred declaration; for all other constant id
 nodes the sm first attribute will contain a self-reference.
@@ -2492,8 +2513,8 @@ Both the constant id and the variable i% nodes nmay be introduced by
 declarative nodes in a normalized parameter lTst for a generic instantiation, in
 which case they do not represent source code. The appropriate values for the
 attributes of each are discussed in section 3.6.1.1.
-3.2.2.3.2.2 COMP NAME
-The nodes component id and discriminant id comprise the class COMP NAME,
+3.2.2.3.2.2 COMP_NAME
+The nodes component_id and discriminant_id comprise the class COMP_NAME,
 which represents the defining occurrences ol identifiers associated with record
 components and record discriminarts. The attribute sm comp rep is defined for
 the nodes in this class; it references the node corresponding to the applicable
@@ -2503,21 +2524,19 @@ The sm init exp attribute represents the default initial value, referencing
 the EXP node designated by the as exp attribute of the variable decl or
 dscrmt decl node (hence sm init exp can be void).
 Unlike component names, discriminant names may have multiple defining
-occurrences, therefore an sm first attribute is defined for the discriminant id
+occurrences, therefore an sm first attribute is defined for the discriminant_id
 node (the instance of a component name in a component representation clause is
 considered to be a used occurrence rather than a defining occurrence). If an
 incomplete or non-generic (limited) private declaration contains a discriminant
 part, the discriminants will have a second definition point at the full type
-declaration; the sm first attribute of both discriminant id nodes will reference
-the discriminant id node corresponding to the earlier-incomplete or (limited)
+declaration; the sm first attribute of both discriminant_id nodes will reference
+the discriminant_id node corresponding to the earlier-incomplete or (limited)
 private declaration.
 3.2.2.3.2.3 PARAM NAME
 The class PARAM NAME contains nodes corresponding to the names of formal
 parameters declared in the formal parts of subprograms, entries, accept
-DIANA Reference Manual Draft Revision 4 Page 3-19
-SEMANTIC SPECIFICATION
 -' statements, and generic units. The nodes in Id, in out id, and out id comprise
-PARAN NAME," representing parameters of mo~e in, Tn out, and out,-respectively
+PARAN NAME," representing parameters of mo_e in, Tn out, and out,-respectively
 "- (an otid node can never be used to represent a generic formal object).
 The attribute sm initexp records the initial value; it denotes the EXP
 node referenced by the as e p attribute of the corresponding in, in out, or out
@@ -2545,11 +2564,11 @@ body is in another compTlation unit, but the stub is not, then sm body denotes
 the stub (a stub node). Otherwise sm body is void.
 3.2.2.4.1 NON TASK NAME
 The nodes in class NON TASK NAME correspond to the names of program units
-which are not tasks. T~e nude generic_id and the class SUBPROG PACK NAME
+which are not tasks. T_e nude generic_id and the class SUBPROG PACK NAME
 comprise this class.
 The generic Id node corresponds to the defining occurrence of the name of a
 generic unit (the name of an instantiated unit is represented by a member cf
-class SUBPROG PACK-NAME). The sm first attribute of a generic id always
+class SUBPROG PACK_NAME). The sm first attribute of a generic id always
 I references the generic id of the generic specification. The sm spec attribute
 denotes the procedurespec, function spec, or packagespec associated with the
 subprogram or package specification. The attribute sm generic param s
@@ -2557,8 +2576,6 @@ represents the formal part of the generic specification, and references the same
 sequence as the as item s attribute of the corresponding generic decl node. The
 sm is inline attribute indicates whether or not an INLINE pragma-has been given
 for the generic unit. The value of the sm body attribute is determined in the
-DIANA Reference Manual Draft Revision 4 Page 3-20
-SEMANTIC SPECIFICATION
 same manner as the sm body attribute of the task bodyid node (discussed in the
 previous section).
 3.2.2.4.1.1 SUBPROG PACK NAME
@@ -2590,7 +2607,7 @@ self-reference; the value of sm address is determined by the existence of an
 address clause for the instantiated package, consequently it may be void. The
 sm spec attribute references a new packagespec node that is created by copying
 the specification of the generic unit and replacing every occurrence of a formal
-parameter by a re~erence to a an entity in the normalized parameter !is*. The
+parameter by a re_erence to a an entity in the normalized parameter !is*. The
 construction of the new specification is discussed in further detail in section
 3.6.1.1.
 3.2.2.4.1.1.1 SUBPROG NAME
@@ -2601,8 +2618,6 @@ sm is inline attribute has a boolean value which indicates whether or not an
 INLINE pragma has been given for the subprogram. If an INTERFACE pragma is
 given for the subprogram then sm interface denotes the pragma, otherwise it is
 void.
-DIANA Reference Manual Draft Revision 4 Page 3-21
-SEMANTIC SPECIFICATION
 The procedure id node corresponds to a defining occurrence of a procedure
 or an entry renamed as a procedure; its sm spec attribute references a
 procedurespec node. In addition to representing a function, a function id may
@@ -2649,8 +2664,6 @@ sm interface has the same value as the sm interface attribute of the
 corresponding equality operator, and the value of sm is inline is determined by
 whether or not an INLINE pragma is given for the implicitly declared inequality
 operator.
-DIANA Reference Manual Draft Revision 4 Page 3-22
-SEMANTIC SPECIFICATION
 The sm unit desc attribute of a SUBPROG NAME node may reference a
 derived subprog node, in which case the procedure or function is a derived
 subprogram. The specification of the derived subprogram is obtained by copying
@@ -2673,7 +2686,6 @@ they do not correspond to source code. A more detailed discussion may be found
 in section 3.6.1.1.
 I
 I
-DIANA Reference Manual Draft Revision 4 Page 3-23
 SENANTIC SPECIFICATION
 0 C
 -cc,
@@ -2695,12 +2707,10 @@ a 10
 2k,
 II- I I J I
 n II t o
-I.I I hS I~S
+I.I I hS I_S
 F a
-DIANA Reference Manual Draft Revision 4 Page 3-24
-SEMANTIC SPECIFICATION
 C I 0 "" -
--- 6 I I-I UccI 2
+-- 6 I I_I UccI 2
 6 • Eli d
 I~~ z 411 i
 61 -. - :
@@ -2715,17 +2725,17 @@ III -
 '00I to t
 I
 I 0 I Uw- l •
-• m m~mm m n mni I I•mm '
+• m m_mm m n mni I I•mm '
 K
 Section 3.3
 TYPESPEC
-3.3 TYPE-SPEC
+3.3 TYPE_SPEC
 The classes TYPE SPEC and TYPE DEF are complementary -- the former
 represents the semantic concept of an Aja type or subtype, the latter represents
 the syntax of the declaration of an Ada type or subtype. A TYPE SPEC noae does
 not represent source code; it has no lexical or structural attributes, only
 semantic attributes and code attributes. A TYPE DEF node has no other purpose
-than to record source rode, containing only le~ical and structural attributes.
+than to record source rode, containing only le_ical and structural attributes.
 A node from class TYPE SPfC will NEVER be designated by a structural attribute,
 a node from class TYPEDEF node will NEVER be designated by a semantic
 attribute.
@@ -2754,8 +2764,6 @@ parent type if the type is derived; otherwise it is void. The sm aerived
 attribute is void for a subtype of a derived type. The nodes in this -asEs also
 have a boolean attribute, sm is anonymous, which indicates whether or not the
 type or subtype has a name.
-DIANA Reference Manual Draft Revision 4 Page 3-26
-SEMANTIC SPECIFICATION
 A derived type is always represented by a new node corresponding to a new
 base type (the node is the same kind as that of the parent type). If the
 constraints on the parent type are not identical to those on the parent subtype
@@ -2782,7 +2790,7 @@ that derived type, then a sequence of new discriminants and a sequence of new
 record components are created for the derived type. If a representation clause
 is not given for the derived record type then construction of the new sequences
 is optional. Excluding sm comp rep, the values of all of the attributes in each
-new COMP NAME node will be the same as those in the corresponding node from the
+new COMP_NAME node will be the same as those in the corresponding node from the
 parent type; sm comp rep will be the same only if no representation clause is
 given for the derived type.
 Certain members of class DERIVABLE SPEC may represent generic formal types.
@@ -2800,12 +2808,10 @@ formal type is always void, and sm is anonymous is always false.
 The nodes in class PRIVATE SPEC -- private and I private -- represent
 private and limited private types, respectiveTy. The attributes
 sm discriminant s and sm type spec are defined for these nodes. The
-sm-discriminant s attribute references the sequence of discriminant declarations
-DIANA Reference Manual Draft Revision 4 Page 3-27
-SEMANTIC SPECIFICATION
+sm_discriminant s attribute references the sequence of discriminant declarations
 introduced by the (limited) private type declaration; hence it may be empty.
-The smtypespec attribute designates the full type specification (a node from
-class FUL•T-MEPEC) unless the node corresponds to a generic formal private
+The sm_type_spec attribute designates the full type specification (a node from
+class FUL•T_MEPEC) unless the node corresponds to a generic formal private
 type, in which case the value of sm type spec is undefined.
 A subtype or derived type declaration which imposes a new constraint on a
 (limited) private type results in the creation of a constrained record node if
@@ -2815,11 +2821,11 @@ class CONSTRAINED or class SCALAR is created. The sm base type attribute of the
 new node references the private or 1-private node associated with the type mark.
 An attribute of type TYPE SPEC that denotes a (limited) private type always
 references the private or 1-private node. Access to the associated full type
-specification is provided by the sm type spec attribute of the PRIVATE-SPEC
+specification is provided by the sm type spec attribute of the PRIVATE_SPEC
 node.
 3.3.1.2 FULL TYPE SPEC
 The class FULL TYPE SPEC represents types which are fully specified. The
-node task_spec and the cTass NON-TASK comprise FULLTYPESPEC.
+node task_spec and the cTass NON_TASK comprise FULLTYPESPEC.
 The task spec node represents a task type. A task type may be anonymous if
 the reserved word "type" is omitted from the task specification, in which case
 the task spec node will be introduced by the sm obj type attribute of a
@@ -2841,9 +2847,7 @@ sm base type which is defined on this class references the base type -- a node
 containing all of the representation information. The sm base type attribute of
 a NON TASK node representing a generic formal type always contains a
 self-reference. The classes SCALAR, UNCONSTRAINED, and CONSTRAINED comprise
-NON-TASK.
-DIANA Reference Manual Draft Revision 4 Page 3-28
-SEMANTIC SPECIFICATION
+NON_TASK.
 3.3.1.2.1.1 SCALAR
 The nodes in class SCALAR represent scalar types and subtypes. A scalar
 subtype is denoted by the same kind of node as the type from which it is
@@ -2875,7 +2879,7 @@ node a formal fixed point type. The sm range attribute for a generic formal
 scalar type is undefined.
 The node enumeration represents an enumeration type. If the type is not a
 generic formal type then the sm literal s attribute references the sequence of
-enumeration literals -- either the sequence denoted by the as enum literal s
+enumeration literals -- either the sequence denoted by the as enum_literal_s
 attribute of the enumeration def node or a new sequence of literals createc for
 a derived type. If the enumeration node represents a generic forma' type then
 sm literal s denotes an empty sequence.
@@ -2887,7 +2891,6 @@ types and fixed point types, respectively. If the type is Dt a generic formal
 type the sm_accuracy attribute contains the value of the accuracy definition:
 digits for the float node, and delta for the fixed node. The value of
 sm accuracy for a generic formal type is undefined. The fixed node defines an
-DIANA Reference Manual Draft Revision 4 Page 3-29
 "SEMANTIC SPECIFICATION
 additional attribute, cd impl small, which has the value of the Ada attribute
 SMALL.
@@ -2908,7 +2911,7 @@ The sm desig type attribute denotes the TYPE SPEC node corresponding to the
 designated type -- an incomplete node, or a node from class UNCONSTRAINED or
 class PRIVATE SPEC (if sm desig type denotes an access node, then the
 sm desig type attribute of that access node cannot refer to another access
-node). The TYPE-SPEC node referenced by the sm desig type attribute of an
+node). The TYPE_SPEC node referenced by the sm desig type attribute of an
 access node is never anonymous.
 The access node also defines the attributes sm storage size,
 sm is controlled, and sm master. The sm storage size attribute denotes the EXP
@@ -2925,13 +2928,12 @@ statement containing the acEess type definition.
 The array and access nodes may represent generic formal types, in which
 case the sm size attribute is void, sm storage size is void, sm is controlled is
 false, and sm is packed is false.
-3.3.1.2.1.2.1 UNCONSTRAINED-COMPOSITE
+3.3.1.2.1.2.1 UNCONSTRAINED_COMPOSITE
 The class UNCONSTRAINED COMPOSITE represents unconstrained composite types;
 it is composed of the nodes array and record. Two Boolean attributes are
 defined on this class: sm is limited and sm is packed. The attribute
 sm is limited indicates whether or not the type has any subcomponents which are
 DIAKA Reference Manual Draft Revision 4 Page 3-30
-SEMANTIC SPECIFICATION
 of a limited type; sm is packed records the presence or absence of a PACK pragma
 for that type.
 The array node defines two attributes of its own: sm index s and
@@ -2940,23 +2942,23 @@ ranges) of the array. The attribute sm comp type references a TYPE SPEC node
 corresponding to the component subtype; if the subtype indication representing
 the component subtype imposes a new constraint then this TYPE SPEC node is an
 anonymous subtype.
-The node record defines the attributes sm discriminant s, sm comp list, and
-sm-reeresentation. The sm discriminant s attribute denotes the sequence of
+The node record defines the attributes sm discriminant s, sm comp_list, and
+sm_reeresentation. The sm discriminant s attribute denotes the sequence of
 discriminant declarations referenced by the as dscrmt decl s attribute of the
 typedecl node introducing the record type; this sequence may be empty. The
-sm comp list attribute represents the component list, and the attribute
-sm-representation designates the representation clause for that record type; if
+sm comp_list attribute represents the component list, and the attribute
+sm_representation designates the representation clause for that record type; if
 none is applicable then sm representation is void.
 3.3.1.2.1.3 CONSTRAINED
 A constrained array, record, or access type is represented by a node from
 class CONSTRAINED. The class CONSTRAINED defines the boolean attribute
 sm depends on dscrmt, which is true for a record component subtype which depends
 on a discriinnant, and false in all other cases. The sm derived attribute for a
-constrained-array or constrained-record node is always void.
+constrained_array or constrained_record node is always void.
 The constrained array node defines an sm index subtypes attribute which
 denotes a sequence that does not correspond to source code. This sequence is a
-semantic representation of the index constraint, and is derived from the
-as discrete range s sequence of the index constraint node. The
+semantic representation of the index_constraint, and is derived from the
+as discrete_range_s sequence of the index_constraint node. The
 sm index subtype s sequence consists of integer and/oF enumeration nodes, some
 of which may be created solely for this sequence. If a particular discrete
 range is given by a type mark then a new node is not created to represent that
@@ -2975,10 +2977,8 @@ sequence of undefined ranges which also are not derived from source code. The
 array node incorporates the information in the constrained array type definition
 pertaining to the component subtype, and the constrainedarray node retains the
 constraint information.
-DIANA Reference Manual Draft Revision 4 Page 3-31
-SEMANTIC SPECIFICATION
 A constrained record node has an sm normalized dscrmt s attribute which is
-a normalized sequence of the expressions given in the discriminant constraint.
+a normalized sequence of the expressions given in the discriminant_constraint.
 "No new nodes must be created in order to construct this sequence. The
 sm base type attribute of a constrained record node may denote a node of type
 record,Tprivate, of l_private.
@@ -2992,7 +2992,6 @@ access, private, or 1_private node.
 The constrained array and constrained access nodes may represent generic
 formal types, in whiEh case the sm depends-on dscrmt attribute is false.
 I-
-DIANA Reference Manual Draft Revision 4 Page 3-32
 SEMA:ITIC SPECIFICATION
 * C Oil-
 a U
@@ -3035,7 +3034,7 @@ formal scalar type definitTons. -- -
 Th? node enumeration def corresponds to an enumeration type definition; the
 attribute as enum literaT s denotes a sequence corresponding to the enumeration
 literals given in the definition.
-The node record def corresponds to a record type definition; as comp list
+The node record def corresponds to a record type definition; as comp_list
 is the component list given in the definition.
 3.4.1 CONSTRAINED DEF
 The class CONSTRAINED DEF consists of nodes representing source code
@@ -3045,15 +3044,13 @@ The nodes integer def, float def, and fixed def correspond to numeric type
 definitions; the as constraint attribute references a node representing the
 range constraint, floating point constraint, or fixed point constraint given in
 the definition.
-DIANA Reference Manual Draft Revision 4 Page 3-34
-SEMANTIC SPECIFICATION
 The subtypeindication node records the occurrence of a subtype indication
 in the source code. It is never designated by the as type def attribute of a
 type decl node; however, it may be referenced by the the as type def attribute
 of in OBJECT DECL node; or by the as subtype indication attribute of a
 subtypedecl, Uiscretesubtype, subtype allocator, or ARR ACC DER OEF node. The
 as constraint attribute denotes the constraint given in the subtype indication
-(if there is no constraint then this attribute is void), and as name represents
+(if there is no constraint then this attribute is void), and as_name represents
 the type mark.
 3.4.2 ARR ACCOPER DEF
 The class ARR ACC DER DEF is composed of those nodes associated with type
@@ -3067,17 +3064,16 @@ The nodes corresponding to array definitions each have an additional
 attribute. The unconstrained arraydef node has an as index s attribute which
 denotes a sequence representing the undefined ranges given in the unconstrained
 array definition. A constrained array definition is represented by the
-constrained-arraydef node, which has an as constraint attribute corresponding
-to the sequence of discrete ranges given in the definition (an index constraint
+constrained_arraydef node, which has an as constraint attribute corresponding
+to the sequence of discrete ranges given in the definition (an index_constraint
 node).
 | i N II
-DIANA Reference Manual Draft Revision 4 Page 3-35
-• ~SEMANT IC SPECIFICATION
+• _SEMANT IC SPECIFICATION
 -. I
 "I -I U
 I -- U
 I 0 II'
-i~I I.i • I =
+i_I I.i • I =
 I &Ii I I
 - .I -,, I, -I - - - - I
 I U ..JI
@@ -3089,16 +3085,16 @@ CONSTRAINT
 The members of class CONSTRAINT represent discrete ranges and the various
 "kinds of constraints defined by the Ada programming language (this class is the
 union of the Ada syntactic categories "discrete range" and "constraint"). This
-class consists of the nodes index constraint and dscrmt constraint, as well as
-the classes DISCRETE RANGE and REAL-CONSTRAINT.
-The node index constraint represents an array index constraint. The
-attribute as discrete range s denotes a sequence of nodes representing the
+class consists of the nodes index_constraint and dscrmt_constraint, as well as
+the classes DISCRETE RANGE and REAL_CONSTRAINT.
+The node index_constraint represents an array index_constraint. The
+attribute as discrete_range_s denotes a sequence of nodes representing the
 "discrete ranges.
-A discriminant constraint is represented by a dscrmt constraint node. The
+A discriminant_constraint is represented by a dscrmt_constraint node. The
 as general assoc s attribute corresponds to the sequence of discriminant
 associations (a sequence of nodes of type named and/or EXP).
 3.5.1 DISCRETE RANGE
-The class DISCRETE-RANGE contains the node discrete-subtype and the class
+The class DISCRETE_RANGE contains the node discrete-subtype and the class
 RANGE.
 A discrete subtype indication is represented by a discrete subtype node.
 The as subtype indication attribute references a node representing the Subtype
@@ -3115,18 +3111,16 @@ node associated with the type mark. If the RAN node is introduced by a typE
 definition or a derived type definition creating a new scalar type then
 sm type spec denotes the specification ýf the new base type. Otherwise
 sm type spec designates the node correspcnding to the appropriatE base , aS
-DIANA Reference Manual Draft Revision 4 Page 3-37
-SEMANTIC SPECIFICATION
 specified by the Ada Reference Manual. For instance, sm base t pe of a RANGE
 node corresponding to a slice denotes the specification f the index type.
 The range node corresponds to a range given by two simple expressions,
 which are denoted by the attributes as expl (the lower bound) and as exp2 (the
 upper bound).
-The rangeattribute node represents a range attribute. The as name
+The rangeattribute node represents a range attribute. The as_name
 attribute references the NAME node corresponding to the prefix, the attribute
-as used name id designates the attribute Id node for RANGE, and as exp denotes
+as_used_name_id designates the attribute Id node for RANGE, and as exp denotes
 the argument specifying the desired -dimension (if no argL -2nf is given then
-as-exp is void).
+as_exp is void).
 3.5.2 REAL CONSTRAINT
 The class REAL CONSTRAINT contains the nodes float constraint and
 fixed constraint, representing floating point constraints and fixed point
@@ -3156,26 +3150,24 @@ ino
 o 0
 -- I .
 4 i
-DIANA Reference Manual Draft Revision 4 Page 3-40
-SEMANTIC SPECIFICATION
 3.6.1.1 RENAME INSTANT
 The nodes in class RENAME INSTANT indicate that a subprogram or a package
-has been renamed or instantiated. The meaning of the as name attribute which is
+has been renamed or instantiated. The meaning of the as_name attribute which is
 defined on this class depends on whether the node is a renames unit node or an
 instantiation node.
 The node renames unit represents the renaming of an entity as a subprogram
-or a package. The attribute as name denotes the name of the original entity as
-given in the renaming declaration.T-he valia values of as name are determinec
+or a package. The attribute as_name denotes the name of the original entity as
+given in the renaming declaration.T-he valia values of as_name are determinec
 by the kind of entity being renamed; they are as follows:
-(a) package selected or used name id
-(b) procedure selected or used name id
-(c) function selected or used name id
+(a) package selected or used_name_id
+(b) procedure selected or used_name_id
+(c) function selected or used_name_id
 (d) operator selected or usedop
-(e) entry selected or used name id or indexed
+(e) entry selected or used_name_id or indexed
 (f) enumeration literal - selected or used-char or used objectid
 (g) attribute - attribute
 The instantiation node signifies the instantiation of a generic subprogram
-or package. The as name attribute designates a used name id or selected node
+or package. The as_name attribute designates a used_name_id or selected node
 corresponding to the name of the generic unit, and the as general assoc s
 attribute denotes a possibly empty sequence of parameter associations (nodes of
 type EXP and assoc). The sm decl s attribute of the instantiation rcce Is
@@ -3195,8 +3187,6 @@ contains a single constant id node. The as type def attribute is
 undefined, and the as exp attribute designates either the actual
 expression or the default expression of the generic parameter
 declaration.
-DIANA Reference Manual Draft Revision 4 Page 3-41
-SEMANTIC SPECIFICATION
 The sm first attribute of the constant id node contains a
 self-reference (it does not refer to the in id of the generic formal
 object declaration), sm renames obj is false, and sm obj type denotes
@@ -3206,7 +3196,7 @@ attribute of the constant decl node.
 (b) For every generic formal in out parameter, a renaming declaration is
 created. The as source name attribute of the renames obj decl node
 "denotes a new variable id nod, and the as type mark name attribute is
-undefined. The as name attribute designates the name of the actual
+undefined. The as_name attribute designates the name of the actual
 parameter as given in the generic actual part.
 The attribute values of the variable id are determined exactly as
 if the declaration were a genuine renaming of the actual parameter as
@@ -3216,7 +3206,7 @@ as source name attribute of the subtypedecl node designates a new
 subtype id node which has an sm type spec attribute denoting the
 TYPE SPEC node associated with the actual subtype. The
 subtype indication node designated by the as subtype indication
-attribute has a void as constraint attribute and an as name attribute
+attribute has a void as constraint attribute and an as_name attribute
 which represents the type mark of the actual subtype.
 (d) For every generic formal subprogram, a new subprogram declaration is
 created. The subprogentrydecl node is a renaming declaration,
@@ -3225,7 +3215,7 @@ references either the actual parameter or the appropriate default. The
 as header attribute denotes the HEADER node of the generic actual
 parameter.
 The as source name attribute designates a new SUBPROG NAME or
-ENUM LITERAL node, depending on the actual (or deiault) parameter. The
+ENUM_LITERAL node, depending on the actual (or deiault) parameter. The
 kind of node and the values of its attributes (except for sm spec) are
 determined precisely as if the declaration were an explicit renaming of
 the actual entity as the formal subprogram (see sections 3.1.1.3.3.2.1
@@ -3241,19 +3231,17 @@ discriminants of the newly created subtype (i.e. the discriminants of the
 actual type). All references to the formal parameters of a formal subprogram
 are changed to denote the corresponding parameters of the newly created
 subprogram (i.e. the formal parameters of the actual subprogram). The value of
-the as name attribute of a DSCRMT PARAM DECL node is undefined in this copy of
+the as_name attribute of a DSCRMT PARAM DECL node is undefined in this copy of
 the specification, as is the vaue of the as type def attribute of an
 OBJECTDECL node.
 IJ
-DIANA Reference Manual Draft Revision 4 Page 3-42
-SEMANTIC SPECIFICATION
 The sm spec attribute of the procedure id, function id, or package_id
 corresponding to the instantiated unit designates this new specification.
 3.6.1.2 GENERIC PARAM
 The nodes in class GENERIC PARAM are used to indicate that a subprogram is Ia generic formal parameter. The nodes name-default, box-default, and no-default
 comprise GENERIC PARAM.
 The name default node signifies that a generic formal subprogram has an
-explicitly gTven default. The as name attribute represents the name of the
+explicitly gTven default. The as_name attribute represents the name of the
 default as given -- a node from class- DOIGNATOR or an indexed node.
 The node box default indicates that a box rather than a name is given for
 the default; it defines no attributes of its own.
@@ -3300,15 +3288,13 @@ formal part of a subprogram or entry declaration. This class defines an
 attribute as param s which denotes a possibly empty sequence of paramete-
 specifications. The nodes procedurespec, functionspec, and entry comprise
 SUBP ENTRY HEADER.
-The node functionspec has an additional attribute, as name, representing
+The node functionspec has an additional attribute, as_name, representing
 the type mark given in the function specification. If the functionspec
-corresponds to the instantiation of a generic function then as name is void;
-otherwise 't designates a used name id or a selected rode.
+corresponds to the instantiation of a generic function then as_name is void;
+otherwise 't designates a used_name_id or a selected rode.
 The entry node has the attribute as discrete range, denoting the discrete
 range given in the entry declaration. If the declaration introduces a single
 entry rather than an entry family then as discrete range is void.
-DIANA Reference Manual Draft Revision 4 Page 3-45
-SEMANTIC SPECIFICATION
 u 0
 Joi
 I.
@@ -3328,7 +3314,7 @@ I-
 /--.
 Section 3.8
 GENERALASSOC
-3.8 GENERAL-ASSOC
+3.8 GENERAL_ASSOC
 The class GENERAL ASSOC represents the following kinds of associations:
 (a) parameter
 (b) argument
@@ -3336,7 +3322,7 @@ The class GENERAL ASSOC represents the following kinds of associations:
 "(d) component
 (e) discriminant
 The classes NAMED ASSOC and EXP comprise GENERAL ASSOC. If the association
-is given in named fori then it is represented by a nude from class NAMED-ASSOC;
+is given in named fori then it is represented by a nude from class NAMED_ASSOC;
 otherwise it is denoted by a node from class EXP.
 3.8.1 NAMED ASSOC
 The NAMED ASSOC class contains two nodes -- named and assoc. It defines an
@@ -3347,19 +3333,17 @@ represents the argument identifier or (generic) formal parameter given in toe
 association.
 The node named represents associations that may contain more than one
 "choice -- component associations (of an aggregate) and discriminant associations
-(of a discriminant constraint). It defines an as choice s attribute which
+(of a discriminant_constraint). It defines an as choice s attribute which
 references a sequence of nodes representing the choices or discriminant names
 given in the association. The simple names of components or discriminants that
-occur within associations are represented by used name id nodes rather than
+occur within associations are represented by used_name_id nodes rather than
 used object_id nodes.
-DIANA Reference Manual Draft Revision 4 Page 3-47
-SEMANTIC SPECIFICATION
 3.8.2 EXP
 The EXP class represents names and expressions; its three components are
 NAME, EXP, and void.
 Certain names and expressions may introduce anonymous subtypes; i.e.
 slices, aggregates, string literals, and allocators. The anonymous subtype is
-represented by a constrained-array or a constrained record node, and is
+represented by a constrained_array or a constrained record node, and is
 designated by the sm exp type attribute of the expression introducing it.
 Anonymous index subtypes (for an anonymous array subtype) are introduced by
 discrete ranges which are ,t given by type marks. Subsequent sections will
@@ -3393,7 +3377,6 @@ designated by the sm obj type attribute of the defining occurrence of the
 entity. The sm value attribute records the static value of a constarn szala-
 object; if the entity does not satisfy these conditions then sm value has a
 , DIANA Reference Manual Draft Revision 4 Page 3-48
-SEMANTIC SPECIFICATION
 ,, distinguished value indicating that it is not evaluated.
 The nodes used char and used object id constitute this class; together they
 represent the useU occurrences 3f all !he entities having defining occurrences
@@ -3406,7 +3389,7 @@ character id.
 *• Although the names of objects most often occur in expressions, the names of
 certain objects -- those of record components (including discriminants) and
 parameters -- may also occur on the left-hand side of named associations; these
-instances are represented by used name id nodes rather than usedobjectid
+instances are represented by used_name_id nodes rather than usedobjectid
 nodes.
 The use of the new name of an enumeration literal renamed as a function is
 represented by a used-char or usedobject_id node rather than a function-call
@@ -3425,36 +3408,34 @@ corresponding to entities which do not have a value and a type. It contains the
 *• node usedop and usedname id.
 The roce used op -eoresents the use of an operator symbol, he-ce 4ts
 sm dean aztr'bute denotes either an operator-id o, a bltnoperatorid.
-A used name id node represents a use of the name of any of the remaining
+A used_name_id node represents a use of the name of any of the remaining
 kinds of entitTes. It may also record the occurrence of the simple name of a
 discriminant, a component, or a parameter on the left-hand side of a named
 association (however, it does not denote a used occurrence of such an object in
-any other context). Excluding th4s special case, sm defn may re~e-ence ar.,
+any other context). Excluding th4s special case, sm defn may re_e-ence ar.,
 member of class DEF NAME except for an operatorTd, a bltn operator id, or a
 member of class OBJECT NAME.
 I-
-DIANA Reference Manual Draft Revision 4 Page 3-49
-SEMANTIC SPECIFICATION
 3.8.2.1.2 NAME EXP
 The nodes in class NAME EXP represent names which are not simple
 identifiers or character symbols; i.e. function calls and names having a
-prefix. The attributes as name and sm exp type are defined for the nodes in
-this class. The as name attribute represents either the name of the function or
+prefix. The attributes as_name and sm exp type are defined for the nodes in
+this class. The as_name attribute represents either the name of the function or
 the prefix.
 If the NAME EXP node corresponds to an expression then sm exp type
-corresponds to t~e subtype of the entity, otherwise it is void. The o- 1 )
+corresponds to t_e subtype of the entity, otherwise it is void. The o- 1 )
 NAME EXP nodes which can possibly have a void sm exp type attribute are the
 Indexed, attribute, and selected nodes.
 The node all represents a dereferencing; i.e. a selected component formed
-with the selector "all". The as name attribute corresponds to the access
+with the selector "all". The as_name attribute corresponds to the access
 object, and sm exp type is the designated subtype.
 The indexed node represents either an indexed component or a reference tc a
 member of an entry family. For an indexed component the as exo s attribute
-denotes a sequence of index expressions, as name is the array prefix, and
+denotes a sequence of index expressions, as_name is the array prefix, and
 sm exp type is the component subtype. The as exp s attribute of an entry family
-member is a one-element sequence containing the entry index; as name is t-e
+member is a one-element sequence containing the entry index; as_name is t-e
 entry name, and sm exp type is void.
-A slice is represented by a slice node. The as name attribute denotes the
+A slice is represented by a slice node. The as_name attribute denotes the
 array prefix and the as discrete range attribute is the discrete range.
 The sm exp type attribute denotes the subtype of the slice. The subtype of
 a slice is anonymous unless it can be determined statically that the bounds of
@@ -3473,10 +3454,9 @@ expression is not evaluated. NAME VAL comprises the nodes attribute, selected.
 and function call.
 The node attribute corresponds to an Ada attribute other than a RANGE
 attribute (which is represented by a rangeattribute node). The DIANA attribute
-as name denotes the prefix, as used name references the attribute id
+as_name denotes the prefix, as used name references the attribute id
 corresponding to the given attribute name, and as exp is the universal static
 expression. If no universal expression is present then as exp is void.
-DIANA Reference Manual Draft Revision 4 Page 3-50
 "SEMANTIC SPECIFICATION
 The value of the sm exp type attribute of an attribute node depends on the
 kind of Ada attribute it represents, as well as the context in which it occurs.
@@ -3488,14 +3468,14 @@ TPESPEC node corresponding to the type of the attribute as specified in the
 Ada Reference Manual.
 The node selected represents a selected component formed with any selector
 other than the reserved word "all" (this includes an expanded name). The
-as name attribute denotes the prefix, and as designator corresponds to the
+as_name attribute denotes the prefix, and as designator corresponds to the
 selector. If the selected node represents an object (i.e. an entity having a
 value and a type, for instance a record component) then sm exp type is the
 subtype of the object; otherwise it is void.
 All function calls and operators are represented by function call nodes,
 with the exception of the short circuit operators and the membershTp operators.
-The as name attribute denotes the name of the function or operator -- a
-used name id, used op, or selected node. The lx prefix attribute records
+The as_name attribute denotes the name of the function or operator -- a
+used_name_id, used op, or selected node. The lx prefix attribute records
 whether the function call is given using infix or prjfix notation. The
 as general assoc s attribute is a possibly empty sequence of paramete,
 associations (nodes of type EXP and assoc); sm normalized param s is a
@@ -3523,8 +3503,7 @@ to the subtype of the access value to be returned, as determlnet from :he
 context. The subtype allocator defines an additional attribute, sm desig type,
 which denotes a TYPE SPEC node corresponding to the subtype of the object
 created by the alTocatcr. If the subtype ind;cation cct'rs ar e':'4cit
-constraint then sm desig type denotes a new TYPE-SPEC node corresponding to the
-DIANA Reference Manual Draft Revision 4 Page 3-51
+constraint then sm desig type denotes a new TYPE_SPEC node corresponding to the
 SEMANTIC 2?ECIFICATION
 anonymous subtype of the object created by the allocator.
 3.8.2.2.1 AGG EXP
@@ -3551,7 +3530,7 @@ type of the context type and the bounds as determined by the rules in the Ada
 Reference Manual. If the bounds on the subaggregates for a particular dimension
 of a multidimensional aggregate are not the same (a situation which V-ill result
 in a CONSTRAINT ERROR during execution) DIANA does not specify the .dagg9re;3e
-from which the bounds for the index constraint are taken.
+from which the bounds for the index_constraint are taken.
 The string literal node defines only one additional attribute, 'x symre2,
 which contains the string itself.
 The aggregate node has two different representations of the secuence of
@@ -3568,8 +3547,6 @@ requirements being that the resulting associations be equivalent, and
 that each association be either the component expression itself or a
 named association with only one choice. Consider the array aggregate
 ( 1 2 I 3 => 0 )
-DIANA Reference Manual Draft Revision 4 Page 3-52
-SEMANTIC SPECIFICATION
 The named association could be broken down in such a way that the
 sm normalized comp s sequence appeared as if it came from any of the
 following aggregates:
@@ -3610,8 +3587,6 @@ _- attributes oT its own. Although a distinct null access node may be created fo
 each occurrence of the access value NULL, UIANA also permits a single
 null access node to represent ail occurrences of the literal NULL for tnat
 partTcular access type.
-DIANA Reference Manual Draft Revision 4 Page 3-53
-SEMANTIC SPECIFICATION
 The node short circuit represents the use of a short circuit operator. The
 as short circuit op attribute denotes the operator (andthen or or else);
 as expl and as exp2 represent the expressions to the left and right of the
@@ -3628,7 +3603,7 @@ exclusively for a semantic attribute (such as a normalized sequence); the node
 representing the actual expression is referenced instead.
 3.8.2.2.2.1.1 MEMBERSHIP I
 The class MEMBERSHIP represents the use of a membership operator. The
-attribute as-ex records the simple expression, and the as membership attribute
+attribute as_ex records the simple expression, and the as membership attribute
 denotes the applicable membership operator (in op or notin). MEMBERSHIP I
 contains two nodes: rangemembership and type membership. Each contains the
 appropriate structural attribute to retain the type or range given in the
@@ -3636,17 +3611,15 @@ expression. j
 3.8.2.2.2.1.2 QUALCONV I
 The nodes in class QUALCONV -- qualified and conversion -- correspond to
 qualified expressions and explicit conversions, respectively. The as exp
-attribute denotes the given expression or aggregate, and as name references the
+attribute denotes the given expression or aggregate, and as_name references the
 node associated with the type mark. The sm exp type attribute denotes tne
-TYPE-SPEC node corresponding to the type mark. I
+TYPE_SPEC node corresponding to the type mark. I
 I
 I
 I
 1
 I
 I
-DIANA Reference Manual Draft Revision 4 Page 3-54
-SEMANTIC SPECIFICATION
 *L L
 -,C 642
 gI US
@@ -3655,7 +3628,7 @@ SI. 50V 0 U -- J
 CL 6
 1A.
 06 1 ur CC'
-•I ~CO -- OQ
+•I _CO -- OQ
 0. E I r - ! I
 ,. i 6 V
 E,E
@@ -3672,8 +3645,6 @@ I -I
 41 "
 -
 I I I2I IIV 6 I"
-DIANA Reference Manual Draft Revision 4 Page 3-55
-SEMANTIC SPECIFICATION
 aI
 *6 N
 - aaa
@@ -3718,21 +3689,19 @@ occurring between the label(s) and the statement itself; it designates a
 - possibly empty sequence of pragma nodes. The as stm attribute denotes the
 actual statement, it may reference any type of STM node other than another
 labeled node.
-The accept node represents an accept statement. The as name attribute
-records the entry simple name; it may denote either a used name id or an indexed
+The accept node represents an accept statement. The as_name attribute
+records the entry simple name; it may denote either a used_name_id or an indexed
 node, depending on whether or not the entry is a member of-an e7itry family. The
 attr" .te as param s denotes a possibly empty sequence of nodes from class PARAM
 corresponding to the formal part. The as stm s attribute is a possibly empty
 sequence representing the statements to be executed during a rendezvous.
-The abort node represents an abort statement. The as name s attribute is a
+The abort node represents an abort statement. The as_name s attribute is a
 sequence of nodes corresponding to the task names given in the abort statement.
 The node terminate corresponds to a terminate statement; it defines no
 attributes of its own.
-DIANA Reference Manual Draft Revision 4 Page 3-59
-SEMANTIC SPECIFICATION
-The node goto represents a goto statement. The as name attribute
+The node goto represents a goto statement. The as_name attribute
 corresponds to the label name given in the statement.
-The raise node represents a raise statement. The attribute as name denotes
+The raise node represents a raise statement. The attribute as_name denotes
 the exception name, if specified; otherwise it is void.
 3.9.1.5.1 CALL STM
 The class CALL ST represents procedure calls and entry calls; it comprises
@@ -3752,11 +3721,10 @@ I
 I
 I
 DIANA Reference lanual Draft Revision 4 Page 3-60
-SEMANTIC SPECIFICATION
 )a
 SE
 I II I IU
-I I-I
+I I_I
 I- ;
 1- -
 - 3I3--
@@ -3794,7 +3762,7 @@ CHOICE comprises the nodes choiceexp, choicerange, and choiceothers.
 The node choice-exp represents a choice that is a simple name or an
 expression; it has a single structural attribute -- as exp. If the choiceexp
 node corresponds to a simple name (that of a discriminant, a component, or an
-exception) then as exp references a used name id node. Otherwise, choice exp
+exception) then as exp references a used_name_id node. Otherwise, choice exp
 must represent a choice consisting of a simple expression, which is represented
 by a node from class EXP.
 A choice which is a discrete range is represented by a choice-range node.
@@ -3807,9 +3775,7 @@ iteration schemes of a loop (void corresponds-to the absence of an iteration
 scheme). These nodes are introduced by the as iteration attribute of a loop
 node.
 I-
-I-I
-DIANA Reference Manual Draft Revision 4 Page 3-62
-SEMANTIC SPECIFICATION
+I_I
 The while node represents a "while" iteration scheme. The as exp attribute
 denotes a node representing the given condition.
 3.10.2.1 FOR REV
@@ -3840,21 +3806,19 @@ expression.
 The VARIANT PART class represents the variant part of a record type
 definition; it contains the nodes variant part and void (void corresponds to tne
 absence of a variant part).
-DIANA Reference Manual Draft Revision 4 Page 3-63
-SEMANTIC SPECIFICATION
-The variant part node defines the attributes as name and as variant s. The
-as name attribute references a used object id corresponding to the discriminant
+The variant part node defines the attributes as_name and as variant s. The
+as_name attribute references a used object id corresponding to the discriminant
 "simple name; as variant s is a sequence containing at least one variant node and
 possibly variantpragma nodes.
 3.10.7 TESTCLAUSEELEM
 The class TEST CLAUSE ELEM represents alternatives for an if statement or a
 selective wait statement.- It contains the node select altpragma and the class
-TEST-CLAUSE. These nodes may appear only in a test clause elem-s sequence.
+TEST_CLAUSE. These nodes may appear only in a test clause elem-s sequence.
 The node selectaltpragma represents a pragma which occurs at a place
 where a select alternative is allowed. It may appear only in a
 test clause elem s sequence of a selective wait node. The as pragma attribute
 denotes the-pragma itself.
-3.10.7.1 TEST-CLAUSE
+3.10.7.1 TEST_CLAUSE
 A TEST CLAUSE node (condclause or select alternative) represents a
 condition and sequence of statements occurring in an if statement or a selective
 wait statement. The as exp attribute corresponds to the condition, and the
@@ -3876,14 +3840,12 @@ any of the nodes belonging to class CHOICE: however, for an exception handler
 the sequence is restricted to containing choice exp and choice others nodes.
 The as stm s attribute represents the sequence of statements given in the
 alternative or handler.
-DIANA Reference Manual Draft Reviiion 4 Page 3-64
-SEMANTIC SPECIFICATION
 3.10.9 COMP REP ELEM
 The class COMP REP ELEM consists of the nodes comp_rep and comp_reppragma,
 which may appear onTy in the as comp rep s sequence of a record-rep node.
 The comp rep node represents a component representation clause. The
-as name attribute references a used object id corresponding to the component
-simple name, asexp represents the static simple expression, and as range
+as_name attribute references a used object id corresponding to the component
+simple name, as_exp represents the static simple expression, and as range
 denotes the static range.
 A pragma that occurs at the place of a component clause is represented by a
 comp_rep pragma node; as pragma denotes the pragma.
@@ -3892,7 +3854,7 @@ The nodes in class CONTEXT ELEM represent items which may appear at a place
 where a context clause is allowed. They may occur only as members of the
 context elem s sequence of a compilation unit node.
 The with node represents a with clause and any subsequent use clauses and
-pragmas. The as name s attribute is a sequence of used name id nodes Icorresponding to the library unit names given in the with- claUse. The
+pragmas. The as_name s attribute is a sequence of used_name_id nodes Icorresponding to the library unit names given in the with- claUse. The
 as use pragma s attribute is a possibly empty sequence which can contain nodes
 of type use and pragma.
 The context pragma node has a single non-lexical attribute, as pragma,
@@ -3902,16 +3864,14 @@ The nodes in class VARIANT ELEM correspond to items which may apcear at a
 spot where a variant is alTowed. These nodes are contained in the seauence
 denoted by the as variant s attribute of the variantpart node.
 The variant node has two structural attributes: as chch-e s ard
-as comp list. The as choice s attribute is a sequence reoresenting the choices
-applicable to that particular variant; as comp list corresponas ýo zne comporent
+as comp_list. The as choice s attribute is a sequence reoresenting the choices
+applicable to that particular variant; as comp_list corresponas ýo zne comporent
 list.
 The sole non-lexical attribute of the variantpragma node is as pragma,
 denoting the pragma.
 3.10.12 compilation
 The node compilation corresponds to a compilation; it defines the attribute
 as compltn unit s, a possibly empty sequence of compilation-unit nodes.
-DIANA Reference Manual Draft Revision 4 Page 3-65
-SEMANTIC SPECIFICATION
 3.10.13 compilation-unit
 A compilation unit node represents an item or items which may appear at a
 place where a compilation unit is allowed; i.e. it may represent a compilatir
@@ -3943,7 +3903,7 @@ and the end of the record declaration (i.e. pragmas appearing between 'end
 case" and "end record").
 If the record is a null record then as variant part is void, anc the
 sequence denoted by as zragmas 4s empty. The as dec! s attribute is a sequence
-I, having a nullcomp-decl noce as Its first elemenc, and any number of pragma
+I, having a nullcomp_decl noce as Its first elemenc, and any number of pragma
 nodes after it.
 If the record is not a null record then as decl s is a possibly empty
 sequence which can contain nodes of type variable decl and pragma. If the
@@ -3953,27 +3913,23 @@ as variant part to be void in the same ( nplist node.
 3.10.15 index
 The index node represents an undefined range, and appears only in sequences
 associated with unconstrained array types and unconstrained array definitions
-DIANA Reference Manual Draft Revision 4 Page 3-66
-SEMANTIC SPECIFICATION
 (such sequences are denoted by the as index s attribute of the the array and the
-unconstrained array def nodes). The as name attribute refers to the
-used name id or selected node corresponding to the type mark given in the index
-subtjpe Uefinition. The sm type spec attribute references the TYPE-SPEC node
+unconstrained array def nodes). The as_name attribute refers to the
+used_name_id or selected node corresponding to the type mark given in the index
+subtjpe Uefinition. The sm type spec attribute references the TYPE_SPEC node
 associated with the type mark.
 _ DIANA Reference Manual Draft Revision 4 Page 3-67
-SEMANTIC SPECIFICATION
 I..
 0
 SI V1
 U(
 C
 C II
-hi I-I 41 10V• C
+hi I_I 41 10V• C
 I I 1.1 I I hI- - C I
 I 1 -,- -.
 m mi i C i i i i m m I- min C m mmmm 4mmm mi mmmm-I,, m - -
 CIANA Reference Manual Draft Revision 4 Page 3-68
-SEMANTIC SPECIFICATION
 I i
 I06
 C m
@@ -3985,7 +3941,7 @@ wu I I- U~ Ui I I
 6 wI a, :I
 w. I•q U1• I. I- l m •
 I U: t . . I I
-4~0 ! x.
+4_0 ! x.
 uj *011
 €z
 61S -: 0 C m
@@ -4002,7 +3958,7 @@ I0
 ,I € -- - Q
 CE
 .II'*:
-CHAPTER 4
+## CHAPTER 4
 RATIONALE
 Section 4.1
 DESIGN DECISIONS
@@ -4038,7 +3994,6 @@ implicitly reference entities defined in this environment, and the DIANA
 "representation of the program must reflect this. The entities that may be
 referenced include the predefined attributes and types. The DIANA definition of
 these entities is not given in this document but is assumed to be available.
-DIANA Reference Manual Draft Revision 4 Page 4-3
 RATIONALE
 4.1.1.1 SEPARATE COMPILATION
 It would not be appropriate for DIANA to provide the library management
@@ -4080,7 +4035,6 @@ decided that DIANA should retain the structure of the original source program.
 In order to do this, structural attributes were defined. These attributes
 define a tree representing the original source. It is always pcssible tc
 regenerate the source text from its DIANA form (except for purely lexical
-DIANA Reference Manual Draft Revision 4 Page 4-4
 RATIONALE
 issues, such as the placement of comments) by merely traversing the nodes
 denoted by structural attributes.
@@ -4117,12 +4071,11 @@ expressions. Similarly, exceptions are part of the execution (i.e. dynamic)
 semantics of Ada and should not be represented in DIANA. Thus the attribute
 sm value is not used to represent an exception to be raised.
 Of course, an implementation that does compute these additional values may
-S~record the information by defining additional attributes. However, any DIANA
+S_record the information by defining additional attributes. However, any DIANA
 consumer that relies on these attributes cannot be considered a correct DIANA
 Ifuser", as defined in this document.
 I-
 I
-DIANA Reference Manual Draft Revision 4 Page 4-5
 RATIONALE
 4.1.2.2 WHAT IS 'EASY TO RECOMPUTE'? 4
 Part of the criteria for including an attribute in DIANA is that it should
@@ -4161,7 +4114,6 @@ denotes a node that already belongs to another class. These intermediate nodes
 do not convey any structural or semantic information beyond the value of the
 non-lexical attribute. DIANA contains the following intermediate nodes:
 block master
-DIANA Reference Manual Draft Revision 4 Page 4-6
 r- RATIONALE
 discrete subtype
 integerBef
@@ -4177,9 +4129,9 @@ context pragma
 variant pragma
 It should be noted that not all nodes containing a single non-lexical
 attribute are intermediate nodes. For instance, the renames unit node has a
-single non-lexical attribute as name; however, the renames unit node is not an
+single non-lexical attribute as_name; however, the renames unit node is not an
 intermediate node because it is used to convey the fact that a unit has been
-* renamed, in addition to recording the name of the original unit via the as name
+* renamed, in addition to recording the name of the original unit via the as_name
 attribute. On the other hand, the choiceexp node was introduced merely because
 "the class EXP could not be included in both ASSOC and CHOICE. It contains no
 more information than the EXP node denoted by its as exp attribute.
@@ -4244,7 +4196,6 @@ defines an as exp attribute to record that value.
 4.2.1.1 OBJECT DECLARATIONS AND COMPONENT DECLARATIONS
 The type portion of object declarations may be given in two different ways:
 either by a subtype indication or a constrained array definition. The node
-DIANA Reference Manual Draft Revision 4 Page 4-8
 RATIONALE
 constrained arrayjdef is already a member of class TYPEDEF, which represents
 the syntax of type definitions. Rather than include constrained arraydef in
@@ -4253,7 +4204,7 @@ to class TYPE DEF. Thus the class OBJECT DECL, which comprises the nodes
 constant decl and variable decl, defines the attribute as type def to represent
 the type specification gTven in the object declaration. Obviously as type def
 cannot denote any kind of TYPE DEF node other than subtypeindication and
-constrained-array-def in this particular context.
+constrained_array-def in this particular context.
 The only other kind of declaration which introduces objects and does not
 require the type specification to be a type mark is a component declaration, the
 type portion of which is given by a subtype indication. Rather than define a
@@ -4274,7 +4225,7 @@ node in class DECL. It is convenient for the null comp decl node to be part of
 a sequence because it may be followed by pragmas (a pragma can appear after a
 semicolon delimiter). Although nullcomp_decl belongs to DECL, the ONLY place
 that it can appear in a DIANA structure is as the first node in the as decl s
-sequence of the comp list node (this restriction is given in the semantic
+sequence of the comp_list node (this restriction is given in the semantic
 specification of DIANA).
 4.2.2 SINGLE ENTITY DECLARATIONS
 The remaining kinds of declarations introduce single entities. They are
@@ -4327,7 +4278,6 @@ declaration, a variable decl node rather than a task decl node de-.ztes the
 declaration in this Ease. This kind of declaration-does not introduce a new
 task type, thus a new task type specification is not created for the task
 object(s).
-DIANA Reference Manual Draft Revision 4 Page 4-12
 RATIONALE
 declaration, at which point the context indicates whether or not the declaration
 and its defining occurrence(s) are generic.
@@ -4379,7 +4329,7 @@ occurrence via the sm defn attribute.
 Defining occurrences are represented by different kinds of nodes rather
 than a single construct, thereby allowing the dppropriate semantic attributes to
 be attached to each. For instance, the defining occurrence of a discriminant is
-represented by a discriminant id, which has an attribute to record the
+represented by a discriminant_id, which has an attribute to record the
 applicable component clause (if there is one); the definii.g occurrence of a
 constant is represented by a constant id, which has an attribute that references
 the applicable address clause (if theFe is one).
@@ -4409,7 +4359,7 @@ in-out id
 laBei lid
 lprivate typeid
 number id
-operat~r-id
+operat_r-id
 out id
 pacdage Id
 pragmaTd
@@ -4435,7 +4385,6 @@ user-defined. Such an entity is represented by the same kind of node in either
 case -- a node from class SOURCE NAME, which represents the defining occurrences
 of all entities which can by declared by the user. If, however, a SOURCE NAME
 node corresponds to a predefined entity then the lx jrcpos and lx comments
-DIANA Reference Manual Draft Revision 4 Page 4-15
 RATIONALE
 attributes will be undefined since it does not correspond to source text.
 Other entities can never be declared by the user; i.e. pragmas, pragma
@@ -4471,12 +4420,11 @@ that occurs first. Nevertheless, the attributes for all defining occurrences of
 an entity must still be set with the appropriate values.
 An entry declaration and its corresponding accept statement are not treated
 as different definition points of the same entity. Thus the entry_id is the
-unique defining occurrence; a used name id appears in an accept statement, the
+unique defining occurrence; a used_name_id appears in an accept statement, the
 sm defn attribute of which refers to the associated entry id. Hoc"', the
 formal parts of the entry declaration and the accept statement- multiply define
 the entry formal parameters.
 I-.l lim.I i l lili H a l
-DIANA Reference Manual Draft Revision 4 Page 4-16
 RATIONALE
 Any names appearing in a record representation clause or 4n enumeration
 representation clause are considered used occurrences; this includes the names
@@ -4524,7 +4472,6 @@ types are treated in the same manner, except that their defining occurrence is a
 1 private type id. In the case of (limited) private types the sm first
 attribute- of the type id node refers to the private type id or
 1_private type_id. The privatetypeid and 1_privatetypeId nodes do ;ot have
-DIANA Reference Manual Draft Revision 4 Page 4-17
 RATIONALE
 an sm first attribute because they always represent the first defining
 occurrence of the type name.
@@ -4555,8 +4502,8 @@ character are distinguished from character literals). To allow the nodes
 representing expressions to be treated in a consistent manner, the attributes
 sm value and sm exp type were added to the used objectid and used-char nodes.
 The remainina kinds of used occurrences are represented by the used op and
-used name id nodes. The occurrence of an operator is represented by a usedop,
-and that of any other entity by a used name id.
+used_name_id nodes. The occurrence of an operator is represented by a usedop,
+and that of any other entity by a used_name_id.
 The names of objects and literals may appear in contexts other than
 expressions; in particular, in places where the Ada syntax requires a name.
 Should those used occurrences be represented by usedobject id nodes or
@@ -4568,7 +4515,6 @@ On the other hand, a name appearing in the left-hand part of a named association
 is not evaluated, and since the association is not designed for semantic
 processing (a normalized list of expressions is created for that purpose), it
 would be wasteful to record additional semantic attributes.
-DIANA Reference Manual Draft Revision 4 Page 4-18
 RATIONALE
 It was decided that the name of an object or literal appearing in the I
 left-hand part of a named association should be represented by a used name Id
@@ -4583,7 +4529,6 @@ I
 I
 I
 1
-DIANA Reference Manual Draft Revision 4 Page 4-21
 RATIONALE
 (b) anonymous base types created by constrained array definitions [ARM,
 3.6]
@@ -4631,8 +4576,7 @@ occasional unneeded attribute than to cause confusion by defining common
 attributes in several different places (i.e. moving the constrained array and
 constrained record nodes outside of class DERIVABLE SPEC and duplicating the
 attributes sm is anonymous, sm base type, and sm depends on dscrmt for them).
-I-mm ••, • ~m
-DIANA Reference Manual Draft Revision 4 Page 4-22
+I-mm ••, • _m
 RATIONALE
 4.4.1 CONSTRAINED AND UNCONSTRAINED TYPES AND SUBTYPES
 A TYPE SPEC node provides no indication as to whether the entity it
@@ -4656,7 +4600,7 @@ represent constrained types.
 This distinction proves to be very useful when performing certain semantic
 checks involving array, record, or access types. For instance, the types in
 these classes may have index or discriminant constraints imposed upon them;
-however, an index or discriminant constraint cannot be imposed on the type if it
+however, an index or discriminant_constraint cannot be imposed on the type if it
 is already constrained.
 The fact that an object is of an unconstrained type rather than a
 constrained type may also affect certain implementation decisions. For example,
@@ -4685,8 +4629,8 @@ TYPES AND SUBTYPES
 In the Ada language certain types and subtypes may be declared in more than
 one way. For instance, the following sets of declarations produce equivalent
 subtypes:
-type CONSTRAINEDAR is array (INTEGER range 1 .. 10) of BOOLEAN;
-type INDEX is INTEGER range I .. 10;
+type CONSTRAINEDAR is array (INTEGER range 1 ............ 10) of BOOLEAN;
+type INDEX is INTEGER range I ............ 10;
 type UNCONSTRAINED AR is array (INDEX range <>) of BOOLEAN;
 subtype CONSTRAINED_AR is UNCONSTRAINEDAR (INDEX);
 the only difference being that the base type and index subtype corresponding to
@@ -4712,7 +4656,6 @@ Unfortunately, the nodes representing these constraints are already members of
 class CONSTRAINT -- to include them in TYPE DEF as well would have introduced
 multiple class memberships. Instead, three new nodes were introduced into
 I-
-DIANA Reference Manual Draft Revision 4 Page 4-20
 RATIONALE
 TYPEDEF; each has a single structural attribute denoting the actual constraint.
 Class TYPE SPEC is the complement of TYPE DEF; it represents the Ada
@@ -4755,7 +4698,6 @@ All anonymous types described in the Ada Reference Manual are represented
 in DIANA; i.e.
 (a) anonymous derived types created by numeric type definitions [ARM,
 sections 3.5.4, 3.5.7, and 3.5.91
-DIANA Reference Manual Draft Revision 4 Page 4-23
 RATIONALE
 The nodes representing constrained types have an additional attribute,
 sm depends on dscrmt, which indicates whether or not the component subtype
@@ -4767,7 +4709,7 @@ discriminant constraints. Since the only nodes for which this attribute could
 ever be true are the constrained array, constrained record, and
 constrained access nodes, it was not necessary to define an sm depends on dscrmt
 attribute Tor any other TYPE SPEC nodes (although a component subtype may be a
-private type with a discrimina~t constraint, such a subtype is represented by a
+private type with a discrimina_t constraint, such a subtype is represented by a
 constrained record node rather than a PRIVATE SPEC node, as discussed in section
 4.4.4).
 rq
@@ -4801,7 +4743,6 @@ specification. Hence the attribute sm derived is defined for class
 DERIVABLE SPEC. If a type is derived then sm derived references the TYPE SPEC
 node of the parent type (not the parent subtype); otherwise the attribute is
 void.
-DIANA Reference Manual Draft Revision 4 Page 4-24
 RATIONALE
 A derived type definition creates a new base type whose properties are
 derived from the parent type. In addition, it defines a subtype of the derived
@@ -4844,7 +4785,6 @@ A private type declaration separates the properties of the type that may be
 used outside of the package from those which are hidden from the user. A
 private type has two points of declaration -- the first declaration is the
 private one, occurring in the visible part of the package specification; the
-DIANA Reference Manual Draft Revision 4 Page 4-25
 RATIONALE
 second is a full type declaration that appears in the private part of the
 package. Private and limited private types are represented by nodes from
@@ -4895,7 +4835,6 @@ same type. As a consequence, this solution was rejected.
 The private and 1 private nodes always represent base types. Although a
 subtype of a (limited)-private type may be introduced, it will be represented by
 a node from class FULLTYPESPEC rather than one from PRIVATE SPEC. Due to the
-DIANA Reference Manual Draft Revision 4 Page 4-26
 RATIONALE
 restrictions placed on the creation of new TYPE SPEC nodes, a new node may be
 created for such a subtype only-if a new constraint is imposed upon it (in other
@@ -4906,7 +4845,7 @@ The structure (and therefore the class) of a private or limited private type
 without discriminants is not visible outside of the package or in the visible
 part of the package, therefore no new constraints may be imposed on such types
 in these regions. If a private type has discriminants then its full type must
-be a record type, and a discriminant constraint is permitted even in the
+be a record type, and a discriminant_constraint is permitted even in the
 locations where the structure of the rest of the record is unknown. That
 subtype is represented by a constrained record node. If the declaration occurs
 within the private part of the package or the package body then the structure of
@@ -4946,7 +4885,6 @@ restricted; for instance, a selected component involving a component of the
 private component is not allowed. Since the type of the private comn;ýnent is
 determined during type resolution of the sub-expression, no lengthy searches are
 mm I
-DIANA Reference Manual Draft Revision 4 Page 4-27
 "RATIONALE
 required to determine that the component is private. Certain operations that
 are e'lowed for arrays of non-composite objects, such as the relational
@@ -4993,7 +4931,6 @@ incomplete type in this special case, hence the incomplete node was introduced.
 It has a single attribute, sm discriminant s, to represent any discriminants
 belonging to the incomplete type. If the full type specification is not in a
 different compilation unit the incomplete node is not used to represent the
-DIANA Reference Manual Draft Revision 4 Page 4-28
 RATIONALE
 incomplete type.
 This problem does not arise for private types. The Ada language requires
@@ -5037,7 +4974,6 @@ is represented by an enumeration node; the attributes sm literal s and sT -r__e
 are not defined because they depend on the actual subtype. The informat'on
 recorded by such attributes is not necessary for the semantic processing of the
 generic type within the generic unit.
-DIANA Reference Manual Draft Revision 4 Page 4-29
 RATIONALE
 The TYPE SPEC nodes corresponding to generic formal types cotitain no
 indication that they are indeed generic formal types. This information can be
@@ -5048,7 +4984,7 @@ Representation specifications can be given for certain types and first
 * named subtypes through pragmas and representation clauses. Although occurrences
 of these pragmas and representation clauses remain in the DIANA tree to enable
 the source to be reconstructed, they are additionally recorded with the
-"TYPE-SPEC nodes corresponding to the type structures that they affect.
+"TYPE_SPEC nodes corresponding to the type structures that they affect.
 The occurrences of the language pragmas PACK and CONTROLLED are recorded
 with the attributes sm is packed (for array and record types) and
 sm is controlled (for access types).
@@ -5084,7 +5020,6 @@ for the size of objects of that type, hence it is possible for the value of
 "cd impl size Lo be smaller than that given in a length clause. Because the Ada
 programming language restricts static types to the scalar types, this
 implementation dependent attribute is not necessary for the nodes representing
-DIANA Reference Manual Draft Revision 4 Page 4-30
 RATIONALE
 non-scalar types.
 The other implementation dependent attribute defined in DIANA is the
@@ -5134,22 +5069,21 @@ To facilitate the process of constraint checking, an effort was made to
 represent the constraints in DIANA in as consistent a manner as possible. The
 CONSTRAINT node is not always suitable for the following kinds of constraints:
 discriminant, floating point, fixed point, and index.
-A discriminant constraint is a series of discriminant associations. The
+A discriminant_constraint is a series of discriminant associations. The
 sequence of associations may contain a mixture of EXP and assoc nodes (i.e.
 expressions and named associations); if named associations are used then the
 associations do not even have to appear in the order in which the discriminants
 are declared. Thus an additional sequence, designated by the
 sm normalized dscrmt s attribute of the constrained record node, is created for
-a discriminant constraint. This sequence is a normalized version of the
+a discriminant_constraint. This sequence is a normalized version of the
 syntactic sequence -- all named associations are replaced by the associated
 expressions, in the order in which the corresponding discriminants are declared.
-In the interest of economy, if the discriminant constraint appears in the source
+In the interest of economy, if the discriminant_constraint appears in the source
 text in the normalized form, then the record subtype specification may reference
-the same sequence of expressions that the discriminant constraint denotes.
+the same sequence of expressions that the discriminant_constraint denotes.
 A different problem arises for fixed or floating point constraints in
 TYPE SPEC nodes. A type specification in DIANA records the applicable
 constraint. Because a fixed or floating point constraint contains twc parts,
-DIANA Reference Manual Draft Revision 4 Page 4-32
 RATIONALE
 either of which is optional in a subtype declaration, it is possible for the
 accuracy definition and the range constraint to be given in two different
@@ -5159,7 +5093,7 @@ are Fecorded by separate attributes (sm accuracy and smran e) in the REAL node.
 Though the type specification does not reference a REAL COSTRAINT node, it may
 possibly reference one or both of the constituents of a REALCONSTRAINT node.
 The final kind of constraint to have an additional semantic representation
-is the index constraint. DIANA adheres to the semantics of the Ada language in
+is the index_constraint. DIANA adheres to the semantics of the Ada language in
 its representation of arrays created by constrained array definitions. An index
 constraint for a constrained array node introduced by a constrained array
 definition is a sequence of disErete type specifications; if an index subtype is
@@ -5179,7 +5113,7 @@ subtype of each object is unique. In either case, a new TYPE SPEC node is Icreat
 then each type specification has a unique constraint. Because the const- nt
 designated by the as type def attribute of the object declaration is not
 designed to be used for semantic processing, that constraint may be "shared"
-with one of the TYPE-SPEC nodes.
+with one of the TYPE_SPEC nodes.
 Due to structural similarities, the class RANGE represents both an Ada
 range and an Ada range constraint. The difference can always be determined from
 the context. If the RANGE node is introduced by an as constraint attribute, as
@@ -5187,7 +5121,7 @@ in the case of a numeric type definition or a subtype indication, then it
 represents a range constraint. Otherwise, it is a simple range (i.e. it is
 introduced by a loop iteration scheme, a membership operato-, an ent-,
 declaration, a choice, or a slice). A RANGE node appearina DIPECTLY in a
-sequence of DISCRETE-RANGE nodes (corresponding to an index constraint) is also
+sequence of DISCRETE_RANGE nodes (corresponding to an index_constraint) is also
 a simple range.
 In order to avoid a multiple class membership for the class RANGE, which
 when representing a range constraint should belong to class CONSTRAINT, and when
@@ -5198,7 +5132,6 @@ By including DISCRETE RANGE in class CONSTRAINT, the discrete subtype node was
 introduced into the class representing constraints. It was therefore necessa'j
 to add a restriction in the semantic specification of DIANA prohibiting an
 attribute having the type CONSTRAINT from referencing a discrete-subtype node.
-DIANA Reference Manual Draft Revision 4 Page 4-33
 RATIONALE
 Discrete subtype indications are represented by the node discrete subtype.
 Although discrete subtype indications are syntactically identical to any other
@@ -5249,7 +5182,6 @@ Ada attributes. Unlike the others (except for BASE, which is another special
 case), the RANGE attribute does not return an expression; thus the attributes
 sm value and sm exp type (defined for the other kinds of Ada attributes) do not
 apply. In addition, the RANGE attribute does not appear in the same contexts as
-DIANA Reference Manual Draft Revision 4 Page 4-34
 RATIONALE
 other Ada attributes. Consequently it is represented by a special
 range attr bute node.
@@ -5338,7 +5270,6 @@ it cannot be denoted by sm exp type. The sm desig type attribute was defined
 for allocators containing subtype indications; it denotes the type specification
 corresponding to the subtype indication (if an explicit constraint is not given
 then sm desig type references the type specification of the type mark).
-DIANA Reference Manual Draft Revision 4 Page 4-37
 RATIONALE
 "4.6.2 FUNCTION CALLS AND OPERATORS
 The Ada programming language allows operators (both predefined and
@@ -5385,7 +5316,6 @@ attribute. Although this implicit conversion is not recorded by the
 introduction of a distinct node, it is in a sense recorded by the value of the
 sm exp type attribute. If the context requires an implicit conversion of an
 operand of a universal type, then the sm exp type attribute of the
-DIANA Reference Manual Draft Revision 4 Page 4-38
 RATIONALE
 numeric literal, used object id, or attribute node denotes the target type
 rather than the univeFsal type.
@@ -5434,7 +5364,6 @@ performed: the actual parameters c'responding to parameters of mode "in" and
 parameters of mode "in out" and "out" are converted to the derived type after
 the call takes place. If the result of a derived function is of the parent type
 then the result is converted to the derived type.
-DIANA Reference Manual Draft Revision 4 Page 4-39
 RATIONALE
 The conversion of parameters described above cannot be represented in the
 sequence of actual parameter associations corresponding to the source code
@@ -5479,7 +5408,6 @@ indication, or default discriminant values. The subtype of any other kind of
 object is "the subtype defined by the subtype indication of the access type
 definition" [ARM, 4.8]; i.e. it is the subtype determined by the context (the
 Ada language requires this type to be determinable from the context alone).
-DIANA Reference Manual Draft Revision 4 Page 4-40
 RATIONALE
 As a result of these requirements, the sm exp type attribute of an
 allocator creating an object that is not an array or a discriminated object
@@ -5525,7 +5453,6 @@ collection of the context type. For instance, if the variable FIVE had the
 value 10 rather than 5, then it would be inconsistent to construct an anonymous
 base type for the allocator, since the object it creates belongs to the
 collection associated with AR.
-DIANA Reference Manual Draft Revision 4 Page 4-41
 RATIONALE
 It was decided that in the case of an allocator creating an array or a
 discriminated object the sm exp type attribute would denote the context subtype,
@@ -5558,7 +5485,7 @@ containing more than one choice is decomposed into two or more associations.
 The normalized sequence does not correspond to source code, hence the only
 requirements imposed on the decomposition process are that the resulting
 associations be semantically equivalent to the original ones, and that each
-association be either the component expression itself or a named associat~o-
+association be either the component expression itself or a named associat_o-
 having a single choice.
 An "others" choice does not necessarily denote consecutive components,
 therefore it is treated as if it were an association with multiple choices.
@@ -5571,7 +5498,6 @@ index subtype then that association may be replaced by the component expression.
 A subaggregate is syntactically identical to an aggregate, therefore it is
 represented in a DIANA structure by the same kind of node. The only problem
 arising from this representation is caused by the sm exp type attribute. A
-DIANA Reference Manual Draft Revlslun 4 Page 4-42
 RATIONALE
 subaggregate is an aggregate corresponding to a sub-dimension of a
 multidimensional array aggregate. An aggregate corresponding to an array
@@ -5644,7 +5570,6 @@ represent the new name without conveying any incorrect semantic informatTon, and
 used occurrences of this name can refer to the function id without introducing
 any inconsistencies in the DIANA tree.
 I
-DIANA Reference Manual Draft Revision 4 Page 4-44
 RATIONALE
 In such cases the new name is represented by the same kind of DEF NAME node
 as the original entity, the sm unit kind attribute of which denotes a
@@ -5653,7 +5578,7 @@ than a new entity, the remainder of the semantic attributes, except for sm spec
 for a subprogram name, have the same values as those of the original entity.
 Since a new formal part is given in the renaming of a subprogram, the sm spec
 attribute must denote the formal part corresponding to the new name. Access to
-the defining occurrence of the original unit is provided through the as name
+the defining occurrence of the original unit is provided through the as_name
 attribute of the renames unit node.
 Entities which are renamed as other kinds of entities present special
 cases. Consider a function renamed as an operator. Although a used occurrence
@@ -5691,7 +5616,6 @@ denoted by used object id nodes which reference That enumeration id (rather thar
 a function id)- as the defining occurrence. The values oT the semantic
 attributes of the new enumeration id are copies of those of the origiral
 enumeration-id.
-DIANA Reference Manual Draft Revision 4 Page 4-45
 RATIONALE
 4.7.2 GENERIC INSTANTIATIONS
 The Ada language defines a set of rules for an instantiation, specifying
@@ -5741,7 +5665,6 @@ consicered to be an additional defining occurrence of the generic formal
 parameter; should a defining occurrence that is introduced by such a declarative
 node have an sm first attribute, it will reference itself, not the node for the
 formal parameter.
-DIANA Reference Manual Draft Revision 4 Page 4-46
 RATIONALE
 Since this list of declarative nodes is a normalized list, all of the
 object declarations which appear in it are SINGLE declarations, even though the
@@ -5779,7 +5702,7 @@ generic actual parameter (the actual subtype)" [ARM, 12.31. A gene-ic forma-
 type is represented in the normalized list by a subtype declaration. The name
 in the subtype indication corresponds to the generic actual parameter, and the Isubtype indication does not have a constraint, hence the declaration effectively
 renames the actual subtype as the formal type. The sm type spec attribute of
-the subtypeId references the TYPE-SPEC node associated with the actual
+the subtypeId references the TYPE_SPEC node associated with the actual
 parameter. I
 The name of a formal subprogram denotes "the subprogram, enumeration
 literal, or entry named by the associated generic actual parameter (the actual
@@ -5791,7 +5714,6 @@ exception of the HEADER node, which is discussed in one of the subsequent
 I
 I
 • I
-DIANA Reference Manual Draft Revision 4 Page 4-47
 RATIONALE
 paragraphs.
 References to generic formal parameters are not the only kind of references
@@ -5828,12 +5750,13 @@ package GENERICPACK is
 PACKOBJECT : BOOLEAN := FORMALFUNC ( X => FORMALOBJ );
 end GENERICPACK;
 package body GENERICPACK is separate;
-package NEWPACK is new GENERIC-PACK ( FORMALOBJ => OBJECT,
+package NEWPACK is new GENERIC_PACK ( FORMALOBJ => OBJECT,
+
 FORMALFUNC => FUNC );
+
 begin
 null;
 end EXAMPLE;
-DIANA Reference Manual Draft Revision 4 Page 4-48
 RATIONALE
 If a DIANA structure were created for package EXAMPLE, then the normalized
 parameter list for package NEW PACK would contain two declarative nodes. The
@@ -5874,14 +5797,13 @@ DIANA that includes all of these constructs. The class ALL DECL contains
 declarative nodes for tasks, subprograms, and packages; therefore it seemed
 appropriate to add a "dummy" node representing a block statem-et to this class.
 The block master node, which contains a reference to the actual block statement,
-DIANA Reference Manual Draft Revision 4 Page 4-49
 RATIONALE
 was added to ALL DECL at the highest possible level, so that it would not be
 possible to have black master nodes appearing in declarative parts, etc. Only
 one attribute (as alT decl) other than sm master has the class ALL DECL as its
-type; restrictions on the value of this attribute were added to t~e semantic
+type; restrictions on the value of this attribute were added to t_e semantic
 specification.
-4.7.4 USER-DEFINED OPERATORS
+4.7.4 USER_DEFINED OPERATORS
 The Ada programming language allows the user to overload certain operators
 ,* by declaring a function with an operator symbol as the designator. Because
 these user-declared operators have user-declared bodies, etc., they are
@@ -5906,8 +5828,8 @@ expressions, it will not work for occurrences in other contexts. For instance,
 this representation would not b2 appropriate for a renaming of the implicitly
 declared inequality operator, or for an implicitly declared operator that is
 used as a generic actual parameter.
-In order for used occurrences (used name id nodes) to have a defining
-occurrence to reference, the implic 4 tly declared inequality operato~r is
+In order for used occurrences (used_name_id nodes) to have a defining
+occurrence to reference, the implic 4 tly declared inequality operato_r is
 represented by an operatorid. Unfortunately, this operator does not have a
 header or a body to be referenced by the attributes of the operator id; some
 indication that this operator is a special case is needed. Thus the
@@ -5917,7 +5839,6 @@ inequality operator denotes an imp icitnoteq node, which provides access to
 the body of the corresponding equality operator. The as header attribute of the
 operator Id designates either the header of the corresponding equality operator,
 or a copy of it.
-DIANA Reference Manual Draft Revision 4 Page 4-50
 RATIONALE
 4.7.5 DERIVED SUBPROGRAMS
 A derived type definition introduces a derived subprogram for each
@@ -5968,7 +5889,6 @@ the derived type in the specification of the derived subprogram. Because
 semantic checking requires only the base type, this representation provides all
 of the information needed to perform the checks. A call to a derived subprogram
 is equivalent to a call to the corresponding derivable subprogram, with
-DIANA Reference Manual Draft Revision 4 Page 4-51
 RATIONALE
 appropriate conversions to the parent type for actual parameters and return
 values of the derived type. Though the derived subprogram has its own
@@ -6021,7 +5941,6 @@ Sequences of.the following constructs may contain pragmas:
 (b) statements (stm-s)
 (c) variants (variants)
 (d) select alternatives (testclauseelem s)
-DIANA Reference Manual Draft Revision 4 Page 4-53
 RATIONALE
 (e) case statement alternatives (alternatives)
 (f) component clauses (comuprep s)
@@ -6031,7 +5950,7 @@ Unfortunately pragmas do not ALWAYS appear in sequences. In a few cases it
 was necessary to add an as pragma s attribute to nodes representing portions of
 source code which can contain pragmas. These cases are discussed in the
 following paragraphs.
-The comp list node (which corresponds to a component list in a record type
+The comp_list node (which corresponds to a component list in a record type
 definition) has an as pragma s attribute to represent the pragmas occurring
 between the variant part and the end of the record type definition (i.e.
 between the "end case" and the "end record").
@@ -6066,7 +5985,6 @@ of these pragmas must be recorded as they occur in the source (to enable the
 source to be constructed), it would be convenient if the information that they
 conveyed were readily available during semantic processing of the associated
 entity. Hence DI4NA defines additional attributes to record pertinent DragrrA
-DIANA Reference Manual Draft Revision 4 Page 4-54
 RATIONALE
 information in the nodes representing defining occurrences of certain entities
 to which pragmas may be applied. The following pragmas have corresponding
@@ -6078,7 +5996,7 @@ sm is inline in the generic_id and SUBPROGNAME nodes
 (c) INTERFACE
 sm interface in the SUBPROG NAME nodes
 (d) PACK
-sm is packed in the UNCONSTRAINED-COMPOSITE nodes
+sm is packed in the UNCONSTRAINED_COMPOSITE nodes
 (e) SHARED
 sm is shared in the variable id node
 Although it may seem that the pragmas OPTIMIZE, PRIORITY, and SUPPRESS
@@ -6090,9 +6008,8 @@ constraint check specified, but the name of a particular entity may be given as
 well. SUPPRESS is too dependent upon the constraint checking mechanism of an
 implementation to be completely specified by DIANA; in fact, the omission of the
 constraint checks is optional.
-CHAPTER 5
+## CHAPTER 5
 EXAMPLES
-DIANA Reference Manual Draft Revision 4 Page 6-2
 EXAMPLES
 This chapter consists of exampies of OIANA structures. Each example
 contains a segment of Ada source code and an illustration of the resulting DIANA
@@ -6142,7 +6059,7 @@ II,• i ,l I *i
 Ii - i ,. IU i I l ,i l ] 1 I CIli
 WI - I Cl 00 " -- ' ' i'N"-
 * 0 I I 13 I II), l , IS I I, t~.
-i 01 -- ,SI C-I hi* A I C l • I CI• AI --*i
+i 01 -- ,SI C_I hi* A I C l • I CI• AI --*i
 - - l l-~, , -i o,Ii oo, I>,-
 ,.1 •0. 1' U,0. €3 -- .*
 .~ ~~~~~~ E• E":EEEE ''
@@ -6152,7 +6069,7 @@ I I
 -- E EIE E -- i
 I 41- -
 41 r
-.. :~E E'E'_
+.. :_E E'E'_
 1 IZ• l • - I.-, - i I I = I , I -- ?
 S.l I I I ) I i I I * ^ ' I n IU, I Ii1- - - - - - - -I IS I .4 C
 "I I I
@@ -6164,7 +6081,7 @@ Iis
 H1 L. I. I-- C
 ila
 * L I ' I -MI .Il
-e-*W~I ' 41 -
+e-*W_I ' 41 -
 I I IIC WI II
 II 1U I N W
 LA 4 feIIH
@@ -6200,7 +6117,7 @@ jIl
 AI
 Vr -- ---
 I 0I I A1 0I
-I~~ ~141 I -Q
+I~~ _141 I -Q
 I InI 6"S
 - '- ,I 41 I.. SI 0. I
 . 1 I• l iJI i
@@ -6218,7 +6135,7 @@ I S
 iP-P I
 PUo )•
 ol!I I l
-,COL,me ..0 . .0'00
+,COL,me ..0 ............ .0'00
 -i. I.I 1I t
 * I., III -l
 P-it I El *i
@@ -6227,11 +6144,10 @@ ia z
 'II
 0 to
 -, 6, I.• ,
-. .. . . . . . . . .
-0 ) i
+. ............ ............ ............ ............ ............ ............ ............ ............ ............ 0 ) i
 0 - C
 tN AA)
-| | ~inl11 •
+| | _inl11 •
 I III I i-- 4141NlI
 -- is- ii IIiI UI -- SC-•-
 I ,,' '0 0 --S*.ll ilia I i.' -
@@ -6242,7 +6158,7 @@ Il "6. . -I CL 2 ,
 (5• 1 - (a -- I 1 - 6
 SI IM 6I
 6 2- - - > -6E Z
-III a • . .. III -
+III a • ............ .. III -
 3 ..1 E E IS E 'Z
 1.-i X E. d-CI', U-• rE ) , ,,, -
 - - - - - - - - -jul SI
@@ -6256,7 +6172,7 @@ SI 2' V,.... o ,-_ t
 - -C 0 , ll -o-
 I-- I I 'II o - o - I a ,o-
 iI II" Nt
-* - -.. . .- -I-
+* - -.. ............ .- -I-
 Io Al A
 - I I ' II A -
 - - - - - - - - - - - - -
@@ -6268,7 +6184,7 @@ I 'i ' I 1
 - I U '
 1
 I.-:
-I-I i:. I
+I_I i:. I
 I I MI Z
 l .2I
 SI MI I 0
@@ -6301,15 +6217,15 @@ I
 - - II I I
 I I I L
 I I I '-I 21 I S
-I I U' I U1 .. >O I C' 05 I -
+I I U' I U1 ............ >O I C' 05 I -
 A SI I 211 A ) 'S 21.S I U
-I-I - . !I . !' Il C - 'I S
+I_I - . !I . !' Il C - 'I S
 I ' AI
 - 1
 I 43 1' I 1
-I UI V III Iii ,.- C0-I S
+I UI V III Iii ,.- C0_I S
 3 101 I I I I I II I , 0U I 0.
-IJ I II-E->IIAI Al I I Al 'SISEEUI -
+IJ I II_E->IIAI Al I I Al 'SISEEUI -
 I WI L. , I l I 21 I II '*- AAAWI
 - I I U 1 1 21' I 0
 Z el c-. . I -U- - A I - 0.------I
@@ -6321,7 +6237,7 @@ U I II A I UI IA I I 0. -
 - I I 43 'A I I q
 I '1 11 41
 0.
-21 I I-I N
+21 I I_I N
 I I aJ.
 - I--- I I'AI I
 21
@@ -6365,15 +6281,15 @@ In'--; VI .-
 17 -- A
 - - - -- - - - - - - - -
 6 ' I I )I 1 1 W
-o I d .. - 1 1I II ,6 A 0 -
-l1~~ ~rl 4 I I I1CL - a.- ,6 .-
+o I d ............ - 1 1I II ,6 A 0 -
+l1~~ _rl 4 I I I1CL - a.- ,6 .-
 Is II, UL- 1 C I•I l Iq I -- I, I.I [i,
 * IS II 1•1 * S I 00 4
 I 1I 0 Ifl l. G.--1 I -= -
 I I •~ . :1•
 I I -- II 1 1 1 L I-t 0
 I I IL 41) L
-1 6- I I 3 3 3 L-I
+1 6- I I 3 3 3 L_I
 •I Al I 411. . . .
 Cl I I 41•I
 >> 0 II II 0 -
@@ -6389,10 +6305,10 @@ A ' ' I0c.I IC
 I ~ ~ I.I
 >.UI 41 41 U,0) 4"
 CL101 I AlL'I10
-AC.~~1 10 c'IIS
+AC.~_1 10 c'IIS
 o.1 1C 6i CL 6 1,
 'a CL 9 Q I% to
-I-I 110 V
+I_I 110 V
 - ---- - - - - -
 i A
 - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -6400,25 +6316,24 @@ i A
 I - ,: g l I. I.I
 II- -1 -,.- - - -I. I >P '>!
 I ; 1 I I I IJ I I 1 0
-SI 14 Si I I 1Z' z~0
+SI 14 Si I I 1Z' z_0
 "-l- I " . . . . . I I I I I I I' >4
 -- +II I I, 1 I . , '' 2
-- 11 I .I I/I •ll I IIIA' ' ' i .. 0. .
-a I A.•+III>1 :, '
+- 11 I .I I/I •ll I IIIA' ' ' i ............ 0. ............ a I A.•+III>1 :, '
 S~ ~ ~ 7II ILc'II I I - 0
 ,,S,' 1 0.1 I I I V I. I
 RI a uI a A II 0 I.
 6. ;01! C-
-I-I - ° 1 1 ' '': I IL'
+I_I - ° 1 1 ' '': I IL'
 41 I IHIS 11 I I 1I 0- il I 1 0
 "I1"I I 'Al i i n A
 ,i 0. I 10 0 A'I A
-I 0 . l)- - - I . ... l I
+I 0 ............ l)- - - I ............ ............ l I
 601, toL I-
 I- JIL I .lI lei I ' IIr -1
 -,. '0 ' 1.-. * I- z .CL I
 C04 Cl.0.0 A A A
-01' t UJI. I 0 I 1 I I 'l . -g~l -[l
+01' t UJI. I 0 I 1 I I 'l . -g_l -[l
 I llI I '• a- A > I .1 0 11(--' ,0! 1
 I I, 0' 41 lII SI 0 .-- I ' U
 - I'0"P .' 0A I II1) III V i.I I'
@@ -6427,7 +6342,7 @@ I 1- 1I' ' .'0
 I I CIEIE 1 1.. I II ' '-i I Ia I
 1 1I I I A I 1>1 4); A 0
 I0 ;U z I I '1'' II I '- -
-I~C 'a IiA~I - IC
+I_C 'a IiA_I - IC
 I' ' ''o
 c c 0 la•
 I I•. Iu w 0 3-- 1 EE
@@ -6459,9 +6374,9 @@ IIL t, V>
 - 313l 1 I -- .
 CL ' ZI I'I I'I cA
 I 3 IUI0. 0 I --- 6 IA
-I-I ~ ~~~~~~ II1.1 I 1 C 0
+I_I ~ ~~~~~~ II1.1 I 1 C 0
 17 1 : I - Zf I i
-IIA .'~~~A A 3 1 ~ - 3 ~ C
+IIA .'~~_A A 3 1 ~ - 3 ~ C
 . '3 0 '0 c w ' 6CA -
 a0 0 C A'o 0 I- )
 0l 101 In- - 7 COL 4U0: -
@@ -6477,7 +6392,7 @@ A -I I
 II I 0 ) I-
 IC" I I I, -
 Al f • ' 2-
---: . ..
+--: ............ ..
 I S
 S'' , ' I,•,,,
 --- ' •-1-----)0'
@@ -6505,7 +6420,7 @@ LIlI- 'I,. ' - 3. I I v
 'Al
 '-r-I CII
 Si II i - -I- --i I
-C- i I O r I-I I l l I I 13 I l IG
+C- i I O r I_I I l l I I 13 I l IG
 "CIl I 1 A IIIIIl' i I t I' -~
 * I I I L ' I IlI --
 141 'is i l I 1 lt i II AS il l I I C
@@ -6517,12 +6432,12 @@ i . 1 1-0 -61
 Is 4 -c -
 6 CU
 I ' I I •. 01A , al -
-C_ ,L ... .in'Aa s
+C_ ,L ............ .in'Aa s
 7"" ° "s Css E
 Al A0:: I A',, >•, >•, • EE - "
 , ' , E E , I IE 6" --- -
 I A, ' Il : I, I- o - , ÷ I I- o > -
-0 -, , I rIU-" ' .. A
+0 -, , I rIU-" ' ............ A
 '-' l iE,' ^~ IE 0 IU,--, -I j --
 a2I IG 1; * II W A6 t W 61
 "I 6' I l l 0 U I I - Go
@@ -6532,18 +6447,18 @@ I I.6.*
 S IA7 ---- - - - - - - - - C c M
 - - -I--- - -0 -
 I toZ
-o~~~C . 0 C
+o~~_C . 0 C
 A A I A
 .l)0. 61 In -
 - - - - - - - - - - - - - - - - - - - - -
-CHAPTER 6
+## CHAPTER 6
 EXTERNAL REPRESENTATION OF DIANA
 The contents of this chapter will be included at a later date.
-CHAPTER 7
+## CHAPTER 7
 THE DIANA PACKAGE IN ADA
 The contents of this chapter will be included at a later date.
 APPENDIX A
-f4 DIANA CROSS-REFERENCE GUIDE
+f4 DIANA CROSS_REFERENCE GUIDE
 I.
 i
 I
@@ -6552,8 +6467,8 @@ I.
 I.
 I--
 I - m n I
-DIANA Reference Manual Draft Revision 4 Page A-2
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_2
+DIANA CROSS_REFERENCE GUIDE
 PARTITIONS 2
 STRICT CLASSES 94
 STRICT CLASSES NOT DEFINING ATTRIBUTES 35
@@ -6563,8 +6478,8 @@ AND DO NOT DEFINE ATTRIBUTES : 3
 LEAF NODES : 207
 LEAF NODES NOT DEFINING ATTRIBUTES 92
 ATTRIBUTES 135
-DIANA Reference Manual Draft Revision 4 Page A-3
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_3
+DIANA CROSS_REFERENCE GUIDE
 PARTITIONS (UNINCLUDED CLASSES)
 ALL SOURCE
 TYPE SPEC
@@ -6572,8 +6487,8 @@ STRICT CLASSES THAT DO NOT SERVE AS TYPES AND D0 NOT DEFINE ATTRIBUTES
 FULL TYPE SPEC
 GENERIC PARAM
 SEQUENCES
-DIANA Reference Manual Draft Revision 4 Page A-4
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_4
+DIANA CROSS_REFERENCE GUIDE
 STRICT CLASSES THAT DO NOT DEFINE ATTRIBUTES
 ALIGNMENT CLAUSE
 ALL DECL
@@ -6584,7 +6499,7 @@ COMP REP ELEM
 CONSTRAIRT
 CONTEXTELEM
 DECL
-DISCRETE-RANGE
+DISCRETE_RANGE
 EXP
 FULL TYPE SPEC
 GENERAL ASSOC
@@ -6610,26 +6525,26 @@ USE PRAGMA
 USED NAME
 VARIANTELEM
 VARIANTPART
-DIANA Reference Manual Draft Revision 4 Page A-5
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_5
+DIANA CROSS_REFERENCE GUIDE
 STRICT CLASSES THAT DO NOT SERVE AS TYPES
 AGGEXP UNCONSTRAINED
 ALL -SOURCE UNCONSTRAINEDCOMPOSITE
 ARR ACC DER DEF UNIT DECL
-BLOCKLOOP UNIT-NAME
-CALL STM USED-OBJECT
+BLOCKLOOP UNIT_NAME
+CALL STM USED_OBJECT
 CLAUSES STM VC NAME
-COMP NAME
+COMP_NAME
 CONSTRAINED
 CONSTRAINED DEF
 DERIVABLE SPEC
 OSCRMT PARAM DECL
 ENTRY STM -
 EXP DECL
-EXP-EXP
-EXP-VAL
-EXP-VAL EXP
-FOR-REV
+EXP_EXP
+EXP_VAL
+EXP_VAL EXP
+FOR_REV
 FULL TYPE SPEC
 GENERIC PARAM
 ID DECL
@@ -6640,10 +6555,10 @@ MEMBERSHIP
 NAMEEXP
 NAME VAL
 NAMED ASSOC
-NAMED-REP
+NAMED_REP
 NONGENERICDECL
 NONTASK
-NON-TASK NAME
+NON_TASK NAME
 OBJECT DECL
 OBJECT NAME
 PARAM NAME
@@ -6655,15 +6570,15 @@ RENAME INSTANT
 SEQUENCES
 SIMPLE RENAME DECL
 STMWITH EXP
-STM-WITH-EXP NAME
-STM-WITH-NAME
+STM_WITH-EXP NAME
+STM_WITH-NAME
 SUBP ENTRY HEADER
 SUBPROG NAME
 SUBPROG PACK NAME
 TESTCLAUSE
-TYPE-NAME
-DIANA Reference Manual Draft Revision 4 Page A-6
-DIANA CROSS-REFERENCE GUIDE
+TYPE_NAME
+DIANA Reference Manual Draft Revision 4 Page A_6
+DIANA CROSS_REFERENCE GUIDE
 LEAF NODES (CLASSES WITHOUT MEMBERS)
 abort decl s
 accept deferredconstantdecl
@@ -6672,8 +6587,8 @@ access def deriveddef
 address derived subprog
 aggregate discrete range_s
 alignment discrete subtype
-all discriminant id
-alternative dscrmt constraint
+all discriminant_id
+alternative dscrmt_constraint
 alternativepragma dscrmt decl
 alternative s dscrmt decl s
 and then entry
@@ -6691,7 +6606,7 @@ block-master fixed
 bltn operator_id fixed constraint
 box default fixed-def
 case float
-character id float-constraint
+character id float_constraint
 choice exp float def
 choice others for
 choice range formal dscrt def
@@ -6704,7 +6619,7 @@ comp rep s functionspec
 compilation general assoc s
 compilation unit genericdecl
 compltn unit_s genericid
-component id goto
+component_id goto
 cond clause if
 cond entry implicitnoteq
 constant decl in
@@ -6714,14 +6629,14 @@ constrainedarray inout
 constrained_arraydef in out id
 constrained record incomplete
 context elem s index
-context pragma index-constraint
+context pragma index_constraint
 conversion index-s
-DIANA Reference Manual Draft Revision 4 Page A-7
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_7
+DIANA CROSS_REFERENCE GUIDE
 indexed renames unit
 instantiation return
 integer reverse
-integer def scalar s
+integer def scalar_s
 item s select-alt_pragma
 iteration id select-alternative
 ]_private selected
@@ -6772,8 +6687,8 @@ record def with
 record-rep
 renames exc decl
 renamesobjdecl
-DIANA Reference Manual Draft Revision 4 Page A-8
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_8
+DIANA CROSS_REFERENCE GUIDE
 LEAF NODES THAT DO NOT DEFINE ATTRIBUTES
 access def null_comp_decl
 address null stm
@@ -6787,7 +6702,7 @@ box default package_body
 character id package_decl
 choice others package_id
 code parenthesized
-component id private
+component_id private
 cond clause private def
 cond-entry privatetype_id
 constant decl procedure_call
@@ -6811,7 +6726,7 @@ formal integer def universal _fixed
 function id universal integer
 0oto universal real
 if L,•ed char
-in id used name id
+in id used_name_id
 inmop usea object id
 in out usedop
 in-out id variable decl
@@ -6826,9 +6741,9 @@ lengthenum_rep
 no default
 not in
 nuIT access
-DIANA Reference 94nuaT Draft Revision 4 Page A-9
-DIANA CROSS-REFERENCE GUIDE
-PREDEFINED AND USER-DEFINED TYPES
+DIANA Reference 94nuaT Draft Revision 4 Page A_9
+DIANA CROSS_REFERENCE GUIDE
+PREDEFINED AND USER_DEFINED TYPES
 sourceposition IS THE DECLARED TYPE OF:
 ALLSOURCE.lx_srcpos
 comments IS THE DECLARED TYPE OF:
@@ -6848,8 +6763,8 @@ Ditn ouerator ia.smroperator
 number_rep IS THE DECLARED TYPE OF:
 numeric literal.lx_numrep
 I
-DIANA Reference Manu al Draft Revision 4 Page A-1O
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manu al Draft Revision 4 Page A_1O
+DIANA CROSS_REFERENCE GUIDE
 Boolean IS THE DECLARED TYPE OF:
 in.lx default
 funcfiv,;i call. lx pref ix
@@ -6857,26 +6772,26 @@ C.,1iSTRAINED.sm_depends-on-dscrmt
 DERIVABLE SPEC.smTIi s anonymous
 access.sm is controlled
 generic id.sm_ is_ inline
-SUBPROG-NAME.sm is inline
+SUBPROG_NAME.sm is inline
 UNCONSTRAINEDCOMPOSITE.smis-limited
 UNCONSTRAINEDCOMPOSITE.Sm_ is_packed
 variable_ id.sm is shared
 VC NAME.sm rendrres _obj
 Integer 15 THE DECLARED TYPE OF:
-SCALAR.cd-inpl size
+SCALAR.cd_inpl size
 ENUM '.ITERAL.Srn-pos
 .NUY LITERAL.srn rep
-DIANA Reference Manual Draft Revision 4 Page A-11
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_11
+DIANA CROSS_REFERENCE GUIDE
 ATTRIBUTES
-as~aligriment-clause :ALIGNMENTCLAUSE
+as_aligriment-clause :ALIGNMENTCLAUSE
 -record rep
-as-all _deci ALL DECL
+as_all _deci ALL DECL
 <= compilation-unit
-as-alternative s :alternative s
+as_alternative s :alternative s
 -block-body
 <= case
-as-block _body :block-body
+as_block _body :block-body
 <= block
 as_body :BODY
 <= SUBUNITBOCC
@@ -6884,39 +6799,39 @@ as choice s :choice s
 -alternative
 -named
 <=variant
-as-comp_ list con ls
+as_comp_ list con ls
 <= record-def
 <= variant
 as_:omp_ '-rp -S -omo 'ep-s
 <= record rep
-as _c~mcitr -unit s ::mzltn unit_s
+as _c_mcitr -unit s ::mzltn unit_s
 <= compilation
-as-constraint :CONSTRAINT
+as_constraint :CONSTRAINT
 <= constrained array_def
 <= CONSTRAINEDDEF
 as context elem-s :context elem s
 <=ompiiation-unit
-as-decl _s :decl _s
-<= comp list
+as_decl _s :decl _s
+<= comp_list
 <= task-decl
-as-decl _si deci-s
+as_decl _si deci-s
 -package spec
-as-decl _s2 :decl-s
+as_decl _s2 :decl-s
 <= package spec
 as designator :DESIGNATOR
 <= selected
-DMANA Reference Manual Draft Revision 4 Page A-12
-DIANA CROSS-REFERENCE GUIDE
-as discreterange DISCRETE-RANGE
+DMANA Reference Manual Draft Revision 4 Page A_12
+DIANA CROSS_REFERENCE GUIDE
+as discreterange DISCRETE_RANGE
 <= choice range
 "<= entry
 <= FOR REV
 "4= slice
 asddiscreteranges discreterange_s
-<= index constraint
+<= index_constraint
 as dscrmt -declis : dscrmt decl s
 <= typedecl
-as enum literal s : enum-literal s
+as enum_literal_s : enum-literal s
 <=-enumeration def
 as_exp : EXP
 <= alignment
@@ -6927,7 +6842,7 @@ as_exp : EXP
 <= EXP DECL
 <= EXP VAL EXP
 <= NAMED ASSOC
-<= NAMED-REP
+<= NAMED_REP
 <= range attribute
 <= REAL CONSTRAINT
 4= STM WITH EXP
@@ -6944,15 +6859,15 @@ asexps :exp-s
 asgeneralassoc s general assoc s
 4= aggregate
 <= CALL STM
-<= dscrmt constraint
+<= dscrmt_constraint
 <= function call
 4= instantiation
 <= pragma
 as header HEADER
 <= subprogrambody
 <= UNITDECL
-DIANA Reference Manual Draft Revision 4 Page A-13
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_13
+DIANA CROSS_REFERENCE GUIDE
 as index s .index s
 <= unconstrainedarraydef
 as item s : item s
@@ -6960,23 +6875,23 @@ as item s : item s
 <= genericdecl
 as iteration : ITERATION
 <= loop
-as list : Seq Of GENERAL-ASSOC
+as list : Seq Of GENERAL_ASSOC
 <= generalassoc-s
 as list : Seq Of SOURCENAME
 <= sourcename s
 as list : Seq Of ENUM_LITERAL
 <= enumliterals
-as-list : Seq Of DISCRETE-RANGE
+as_list : Seq Of DISCRETE_RANGE
 - discrete range_s
 as list : Seq Of SCALAR
-<= scalar s
-as-list : Seq Of index
+<= scalar_s
+as_list : Seq Of index
 <= index s
-as-list : Seq Of dscrmtdecl
+as_list : Seq Of dscrmtdecl
 - dscrmt decl s
-as-list : Seq Of VARIANTELEM
+as_list : Seq Of VARIANTELEM
 <= variant s
-as-list : Seq Of CHOICE
+as_list : Seq Of CHOICE
 <= choice s
 as list : Seq Of ITEM
 <= item s
@@ -6984,15 +6899,15 @@ as list : Seq Of EXP
 <= exp-S
 as list : Seq Of STM_ELEM
 <= stmrs
-as-list : Seq Of ALTERNATIVE ELEM
+as_list : Seq Of ALTERNATIVE ELEM
 <= alternative s
-as-list : Seq Of PARAM
+as_list : Seq Of PARAM
 <= param_s
 as list : Seq Of DECL
 <= decl s
-DIANA Reference Manual Draft Revision 4 Page A-14
-DIANA CROSS-REFERENCE GUIDE
-as-list Seq Of TESTCLAUSEELEM
+DIANA Reference Manual Draft Revision 4 Page A_14
+DIANA CROSS_REFERENCE GUIDE
+as_list Seq Of TESTCLAUSEELEM
 <= test clauseelem_s
 as list : Seq Of NAME
 <= name-s
@@ -7000,9 +6915,9 @@ as list : Seq Of compilation-unit
 <= compltnunit-s
 as list : Seq Of pragma
 <= pragma_s
-as-list : Seq Of CONTEXTELEM
+as_list : Seq Of CONTEXTELEM
 <= context elem s
-as-list : Seq Of USEPRAGMA
+as_list : Seq Of USEPRAGMA
 <= usepragmas
 as list : Seq Of COMPREPELEM
 <= como reD s
@@ -7010,7 +6925,7 @@ as list : Seq Of argumentid
 <= argument id s
 as membership op : MEMBERSHIPOP
 <= MEMBERSHIP
-as name : NAME
+as_name : NAME
 <= accept
 <= comp_rep
 <= deferred constant decl
@@ -7025,50 +6940,50 @@ as name : NAME
 <= REP
 <= SIMPLE RENAME DECL
 <= STM WITH EXP NAME
-<= STM-WITH-NAME
+<= STM_WITH-NAME
 <= subtypeindication
 <= subunit
 <= type membership
 <= variant part
-as name s name s
+as_name s name s
 <- abort
 <= use
 <= with
-DIANA Reference Manual Draft Revision 4 Page A-15
-DIANA CROSS-REFERENCE GUIDE
-as~param 5 param-s
+DIANA Reference Manual Draft Revision 4 Page A_15
+DIANA CROSS_REFERENCE GUIDE
+as_param 5 param-s
 <=accept
 <=SUBP ENTRY HEADER
-as~pragnia :pragmd
-<= al ternat ive~pragma
+as_pragnia :pragmd
+<= al ternat ive_pragma
 <=comp rep pragma
 <=context pragma
 se 1elect al tpragma
 -stm-pragma
 <-variant pragma
-as~pragma s :pragna~s
+as_pragma s :pragna_s
 <=lignment
 <= coup-list
 <=. compilation-unit
 <= labeled
 as qualified qualified
 <=qualif ied allocator
-as-range RANGE
+as_range RANGE
 <=comp_rep
 <=range membership
 <=REAL CONSTRAINT
-as-short -circuit -op SHORTCIRCUITOP
+as_short -circuit -op SHORTCIRCUITOP
 <=short-circuit
 as source name SOURCENAME.
 <= BLOCK LOOP
 <=FOR REV
 <-ID DECL
 <= SUBUNITBODY
-as-source name s source name s
+as_source name s source name s
 <=DSCRMT PARAMDEOL
 -1TOSDECL
 <=labeled
-as-stm STM
+as_stm STM
 <= labeled
 as stm s stm-s
 -accept
@@ -7076,11 +6991,11 @@ as stm s stm-s
 < = block-body
 <= CLAUSES STM
 <= loop
-< = TEST-CLAUSE
-as-stm-si stm s
+< = TEST_CLAUSE
+as_stm-si stm s
 <= ENTRY STM
-DIANA Reference Manual Draft Revision 4 Page A-16
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_16
+DIANA CROSS_REFERENCE GUIDE
 as stm s2 : stms
 <= ENTRYSTM
 assubtype indication : subtype_indication
@@ -7101,9 +7016,9 @@ as unit kind : UNITKIND
 - <= NON GENERICDECL
 as_use_pragmas : usepragma_s
 <= with
-as-used name : USEDNAME
+as_used name : USEDNAME
 <=-assoc
-as-used name id : used name id
+as_used name id : used_name_id
 <=-attrTbute
 <= pragma
 <= range-attribute
@@ -7119,15 +7034,15 @@ Ix comments : comments
 <= ALLSOURCE
 lx default : Boolean
 <= in
-DIANA Reference Manual Draft Revision 4 Page A-17
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_17
+DIANA CROSS_REFERENCE GUIDE
 Ix-numrep :number rep
 <- numeric-literal
 lx prefix :Boolean
 <= function-call
-lx~srcpos :source position
-<= ALL-SOURCE
-lx~syinrep :symbol_rep
+lx_srcpos :source position
+<= ALL_SOURCE
+lx_syinrep :symbol_rep
 <=DEF NAME
 <= DESIGNATOR
 <= string-literal
@@ -7142,11 +7057,11 @@ sin argument_id -s :argument id s
 <=pragma-id
 sin-base_type :TYPESPEC
 <= NONTASK
-sm~body :BODY
+sm_body :BODY
 <= generic-id
 <= task _body -id
 -= task_ spec
-sin-comp-list :comp_ list
+sin-comp_list :comp_ list
 <= record
 smnrcomo-reQ COMP _REP ELEM
 <= COMPNAME
@@ -7155,35 +7070,35 @@ sin_comp_t,ýP,ý TYPESPEC
 sin decl -s :deci _s
 <= instantiation
 -~ task-spec
-sm-defn :DEF NAMIE
+sm_defn :DEF NAMIE
 <= DESIGNATOR
-sni depends on dscrint :Boolean
+sm_depends on dscrint :Boolean
 <=CORSTýAINEO
 sin derivable :SOURCENAME
-OIANUA Reference Manual Draft Revision 4 Page A-18
-DIANA CROSS-REFERENCE GUIDE
+OIANUA Reference Manual Draft Revision 4 Page A_18
+DIANA CROSS_REFERENCE GUIDE
 <= derivedsubprog
-sm.derived : TYPE-SPEC
+sm.derived : TYPE_SPEC
 <= DERIVABLE SPEC
-smdesigtype : TYPE-SPEC
+smdesigtype : TYPE_SPEC
 <= access
 <= constrained access
 <= subtypeallocator
 sm discrete range : DISCRETERANGE
 <= AGG EXP
-sm-discriminant s : dscrmt decls
+sm_discriminant s : dscrmt decls
 <= incomplete
 <= PRIVATESPEC
 <= record
-sm_equal : SOURCE-NAME
+sm_equal : SOURCE_NAME
 <= implicit_not eq
 sm_exp_type : TYPESPEC
 <= EXP EXP
 <= NAME EXP
-<= USED-OBJECT
+<= USED_OBJECT
 sm first : DEF_NAME
 <= constant id
-<= discriminant id
+<= discriminant_id
 <= PARAM NAME
 <= typeid
 <= UNITNAME
@@ -7193,7 +7108,7 @@ sm index s : index s
 <= array
 sm_indexsubtypes : scalar_s
 <= constrainedarray
-sm-init exp : EXP
+sm_init exp : EXP
 <=-INIT OBJECTkNAME
 smninterface : PREDEFNAME
 <= SUBPROGNAME
@@ -7201,11 +7116,11 @@ smnisanonymous : Boolean
 <: DERIVABLESPEC
 sm is controlled : Boolean
 <= access
-DIANA Reference Manual Draft Revision 4 Page A-19
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_19
+DIANA CROSS_REFERENCE GUIDE
 sm is inline : Boolean
 <= generic id
-<= SUBPROG-NAME
+<= SUBPROG_NAME
 sm is limited : Boolean
 <= UNCONSTRAINED COMPOSITE
 smis_packed : Boolean
@@ -7216,10 +7131,10 @@ sm literal s : enum-literal s
 <- enumeration
 sm master : ALL DECL
 <= access
-sm-normalized comp_s : general assoc s
+sm_normalized comp_s : general assoc s
 - aggregate
 sm normalized dscrmt s : exp s",
-<= constrained-record -
+<= constrained_record -
 smnormalizedparamns : exps
 <= CALL STM
 <= function call
@@ -7228,8 +7143,8 @@ sm_objtype : TYPESPEC
 sm_operator : operator
 <= bltnoperatorid
 smpos : Integer
-<= ENUM LITERAL
-sm-range : RANGE
+<= ENUM_LITERAL
+sm_range : RANGE
 <= SCALAR
 sm renames exc : NAME
 <= exceptionid
@@ -7240,8 +7155,8 @@ sm_rep : Integer
 sm_representation : REP
 <= record
 smisize : EXP
-DIANA Reference Manual Draft Revision 4 Page A-20
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_20
+DIANA CROSS_REFERENCE GUIDE
 <= task spec
 <. UNCONSTRAINED
 sm_spec : HEADER
@@ -7254,21 +7169,21 @@ sm stm : STM
 sm_storage -size : EXP
 "<=access
 <= taskspec
-sm_typespec : TYPE-SPEC
+sm_typespec : TYPE_SPEC
 <= index
 <= PRIVATESPEC
 <= RANGE
 <= REAL CONSTRAINT
 <= task-bocy_id
-<= TYPE-NAME
+<= TYPE_NAME
 sm unit desc UNITDESC
 - <=-SUBPROGPACKNAME
 sm value" value
 <= EXP VAL
 <= NAME VAL
-<= USED-OBJECT
-DIANA Reference Manual Draft Revision 4 Page A-21
-DIANA CROSS-REFERENCE GUIDE
+<= USED_OBJECT
+DIANA Reference Manual Draft Revision 4 Page A_21
+DIANA CROSS_REFERENCE GUIDE
 NODES AND CLASSES
 ** abort
 IS INCLUDED IN:
@@ -7277,8 +7192,8 @@ STM ELEM
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-as name s : name s
-(INHERITED-FROM-ALLSOURCE):
+as_name s : name s
+(INHERITED_FROM-ALLSOURCE):
 lxsrcpos : source position
 Ix comments : comments
 ** accept
@@ -7288,10 +7203,10 @@ STM ELEM
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-as name : NAME
-as-stms : stm s
+as_name : NAME
+as_stms : stm s
 as param s : param s
-(INHERITED-FROM ALL SOURCE):
+(INHERITED_FROM ALL SOURCE):
 lx srcpos : sourceposition
 Ix comments : comments
 ** access
@@ -7307,17 +7222,17 @@ smstorage_size : EXP
 sm master : ALL DECL
 sm desigtype : TYPE SPEC
 sm is controlled : Boolean
-(INHERITED-FROM UNCONSTRAINED):
+(INHERITED_FROM UNCONSTRAINED):
 sm size : EXP
-(INHERITED-FROM NONTASK):
+(INHERITED_FROM NONTASK):
 sm base type : TYPE SPEC
-(INHERITED-FROM DERIVABLE_SPEC):
+(INHERITED_FROM DERIVABLE_SPEC):
 sm derived : TYPE SPEC
-sm-is_anonymous : Boolean
+sm_is_anonymous : Boolean
 ** access def
 S.... m mmmnmllm llll ll l I
-DIANA Reference Manual Draft Revision 4 Page A-22
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_22
+DIANA CROSS_REFERENCE GUIDE
 IS INCLUDED IN:
 ARR ACC DER DEF
 TYP[_DEF
@@ -7335,13 +7250,13 @@ REP
 DECL
 ITEM
 ALL DECL
-ALL-SOURCE
+ALL_SOURCE
 NODE ATTRIBUTES:
 (INHERITED FROM NAMEDREP):
-asexp : EXP
+as_exp : EXP
 (INHERITED FROM REP):
-as name : NAME
-(INHERITED-FROM ALLSOURCE):
+as_name : NAME
+(INHERITED_FROM ALLSOURCE):
 lx_srcpos : source_position
 Ix comments : comments
 ** AGG EXP
@@ -7357,17 +7272,17 @@ NODE ATTRIBUTES:
 (NODE SPECIFIC):
 sm discrete range : DISCRETERANGE
 (INHERITED FROM EXPEXP):
-sm exp type : TYPE-SPEC
+sm exp type : TYPE_SPEC
 (INHERITED FROM ALL SOURCE):
 lx_srcpos : sourceposition
 lx comments : comments
 ** aggregate
 IS INCLUDED IN:
 AGG EXP
-EXP-EXP
+EXP_EXP
 EXP
-DIANA Reference Manual Draft Revision 4 Page A-23
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_23
+DIANA CROSS_REFERENCE GUIDE
 GENERAL ASSOC
 ALL SOU4CE
 NODE ATTRIBUTES:
@@ -7413,28 +7328,28 @@ GENERAL ASSOC
 ALL SOURCE
 NODE ATTRIBUTES:
 (INHERITED FROM NAME EXP):
-as name : NAME
-sm-exptype TYPE-SPEC
-(INHERITED-FROM ALLSOURCE):
+as_name : NAME
+sm_exptype TYPE_SPEC
+(INHERITED_FROM ALLSOURCE):
 S. . . . , , m iI l l I l lI
-DIANA Reference Manual Draft Revision 4 Page A-24
-DIANA CROSS-REFERENCE GUIDE
-lx~srcpos: source position
-Ix-conunents :commIen~ts
+DIANA Reference Manual Draft Revision 4 Page A_24
+DIANA CROSS_REFERENCE GUIDE
+lx_srcpos: source position
+Ix-conunents :commIen_ts
 **ALL DECL
 CLASS MEMBERS:
 block master
 void
 ITEM
 subunit
-DSCRMT_-PARANDECL
+DSCRMT__PARANDECL
 DECL
 SUBUNITTBODY
 dscrmtd5ec 1
 PARAM
 IDSOECL
 ID DECL
-nu~ll_comp_decl
+nu_ll_comp_decl
 REP
 USE PRAGMA
 subprogram body
@@ -7456,7 +7371,7 @@ record rep
 use
 'OBJECTDECL
 numoer aeci
-gener~c deci
+gener_c deci
 NON GENERIC DECL
 renamies-objdec 1
 renames exc-dec]
@@ -7464,14 +7379,14 @@ length enum-rep
 address
 constant dec1
 variable deci
-subprog~ent ry dec 1
+subprog_ent ry dec 1
 package-dec 1
 IS INCLUDED IN:
 ALLSOURCE
 NODE ATTRIBUTES:
-(INHERITED FROM ALL-SOURCE):
-DIANA Reference Manual Draft Revision 4 Page A-25
-DIANA CROSS-REFERENCE GUIDE
+(INHERITED FROM ALL_SOURCE):
+DIANA Reference Manual Draft Revision 4 Page A_25
+DIANA CROSS_REFERENCE GUIDE
 lx srcpos : source position
 Ix comments : comments
 IS THE DECLARED TYPE OF:
@@ -7483,7 +7398,7 @@ DEF NAME
 index
 compilationunit
 compilation
-comp list
+comp_list
 VARIANT PART
 ALIGNMENT CLAUSE
 VARIANT EZEM
@@ -7504,7 +7419,7 @@ SEQUENCES
 TYPE CEF
 ALL DECL
 SOURCE NAME
-PREDEF-NAME
+PREDEF_NAME
 variant part
 void
 variant
@@ -7523,8 +7438,8 @@ inmop
 not in
 TEST CLAUSE
 select alt_pragma
-DIANA Reference ganual Draft Revision 4 Page A-26
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference ganual Draft Revision 4 Page A_26
+DIANA CROSS_REFERENCE GUIDE
 UNIT KIND
 derived subprog
 implicit noteq
@@ -7535,8 +7450,8 @@ choice exp
 choice others
 choice range
 DISCRETE RANGE
-dscrmt constraint
-index constraint
+dscrmt_constraint
+index_constraint
 REAL CONSTRAINT
 "NAMED ASSOC
 EXP
@@ -7548,15 +7463,15 @@ usepragmfla_s
 test clause elem s
 stm s
 source name s
-scalar s
+scalar_s
 pragmas
 param s
 name s
 index s
 item s
 exps
-enum literal s
-discrete-range_s
+enum_literal_s
+discrete_range_s
 general assoc s
 dscrmt dec _s
 decl s
@@ -7579,8 +7494,8 @@ block master
 ITEM
 subunit
 OBJECTNAME
-DIANA Reference Manual Draft Revision 4 Page A-27
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_27
+DIANA CROSS_REFERENCE GUIDE
 LABEL NAME
 UNIT NAME
 TYPE NAME
@@ -7613,7 +7528,7 @@ labeled
 null stm
 abort
 STM WITH EXP
-STM-WITH-NAME
+STM_WITH-NAME
 accept
 ENTRY STM
 BLOCKLOOP
@@ -7635,8 +7550,8 @@ ENUMLITERAL
 iteration id
 label id
 block loopid
-DIANA Reference Manual Draft Revision 4 Page A-28
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_28
+DIANA CROSS_REFERENCE GUIDE
 NON TASK NAME
 task body_id
 type id
@@ -7680,7 +7595,7 @@ task body
 packagebody
 VC NAME
 number id
-COMP NAME
+COMP_NAME
 PARAR NAME
 enumeration id
 character id
@@ -7690,13 +7605,13 @@ USED OBJECT
 USED NAME
 NAMEVAL
 all
-DIANA Reference Manual Draft Revision 4 Page A-29
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_29
+DIANA CROSS_REFERENCE GUIDE
 slice
 indexed
 short circuit
 numeric literal
-EXP VAL-EXP
+EXP VAL_EXP
 nulT access
 aggregate
 string-literal
@@ -7723,7 +7638,7 @@ pragma
 variable id
 constant id
 componentid
-discriminant id
+discriminant_id
 in id
 out id
 in out id
@@ -7732,7 +7647,7 @@ package id
 used char
 used objectid
 usedop
-used name id
+used_name_id
 attribute
 selected
 function call
@@ -7746,8 +7661,8 @@ NON GENERIC DECL
 renames_objdecl
 renames exc decl
 length_enum rep
-DIANA Reference Manual Oraft Revision 4 Page A-30
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Oraft Revision 4 Page A_30
+DIANA CROSS_REFERENCE GUIDE
 address
 procedure id
 operatorid
@@ -7795,18 +7710,18 @@ NODE ATTRIBUTES:
 (NODE SPECIFIC):
 aspragma : pragma
 (INHERITED FROM ALLSOURCE):
-lx-srcpos : sourceposition
-DIANA Reference Manual Draft Revision 4 Page A-31
-DIANA CROSS-REFERENCE GUIDE
-lxcomments comm~fents
+lx_srcpos : sourceposition
+DIANA Reference Manual Draft Revision 4 Page A_31
+DIANA CROSS_REFERENCE GUIDE
+lxcomments comm_fents
 **alternative s
 IS INCLUDED IN:
 SEQUENCES
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-as list Seq Of ALTERNAT1VE-ELEM
-(INHERITED FROM ALL-SOURCE):
+as list Seq Of ALTERNAT1VE_ELEM
+(INHERITED FROM ALL_SOURCE):
 Ix srcpos isource_position
 IXconmients commnents
 IS THE DECLARED TYPE OF:
@@ -7818,7 +7733,7 @@ SHORT CIRCUIT OP
 ALL SOURCE-
 NODE ATTRIBUTES:
 (INHERITED FROM ALLSOURCE):
-lx~srcpos :source-position
+lx_srcpos :source-position
 lx comments :comments
 **argument-id
 IS INCLUDEC IN:
@@ -7829,7 +7744,7 @@ NODE ATTRIBUTES:
 (INHERITED FROM DEFNAME):
 lx symrep : symbol rep
 (INHERITED FROM ALL SOURCE):
-lx _srcp~s : source _position
+lx _srcp_s : source _position
 Ix comments :c'omments
 IS THE DECLARED TYPE OF:
 argument-id-s. asjist (Seq Of]
@@ -7839,20 +7754,20 @@ SEQUENCES
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-as -list : Seq Of argument id
-(INHERITED FROM ALL_-SOURCE):
-lx-srcpos : source position
+as_list : Seq Of argument id
+(INHERITED FROM ALL__SOURCE):
+lx_srcpos : source position
 lx comments : comments
 IS THE DECLARED TYPE OF:
-DIANA Reference Manual Draft Revision 4 Page A-32
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_32
+DIANA CROSS_REFERENCE GUIDE
 pragma id.sm_argument id s
 * ARRACCDERDEF
 CLASS MEMBERS:
-constrained-array_def
+constrained_array_def
 derived def
 access def
-unconstrained-array-def
+unconstrained_array-def
 IS INCLUDED IN:
 TYPE DEF
 ALL 3OURCE
@@ -7868,7 +7783,7 @@ UNCONSTRAINED COMPOSITE
 UNCONSTRAINED
 NON TASK
 FULL TYPE SPEC
-DERIVABLE-SPEC
+DERIVABLE_SPEC
 TYPE SPEC
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
@@ -7893,11 +7808,11 @@ STM ELEM
 ALL SOURCE
 NODE ATTRIBUTES:
 (INHERITED FROM STM WITH EXPNAME):
-as name : NAME
-DIANA Reference Manual Draft Revision 4 Page A-33
-DIANA CROSS-REFERENCE GUIDE
+as_name : NAME
+DIANA Reference Manual Draft Revision 4 Page A_33
+DIANA CROSS_REFERENCE GUIDE
 (INHERITED FROM STM WITH EXP):
-asexp : EXP
+as_exp : EXP
 (INHERITED FROM ALL SOURCE):
 lx_srcpos : sourceposition
 Ix commeents : comiments
@@ -7909,7 +7824,7 @@ ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
 as used name : USED NAME
-(INHERITED-FROM-NAMEDASSOC):
+(INHERITED_FROM-NAMEDASSOC):
 as exp : EXP
 (INHERITED FROM ALLSOURCE):
 Ix srcpos : sourceposition
@@ -7924,12 +7839,12 @@ GENERAL ASSOC
 ALL SOURCE
 NODE ATTRIBUTES:
 (NOCE SPECIFIC):
-as used name id : used name id
-asexp : EXP
+as_used_name_id : used_name_id
+as_exp : EXP
 (INHERITED FROM NAMEVAL):
 sm value : value
 (INHERITED FROM NAMEEXP):
-as -name NAME
+as_name NAME
 sm exo type : TYPE .EC
 (INHERITED FROM ALLSOURCE):
 ix srcpos source Dositior
@@ -7944,8 +7859,8 @@ NODE ATTRIBUTES:
 lx symrep : symbol_rep
 (INHERITED FROM ALL SOURCE):
 lx_srcpos : sourceposition
-DIANA Reference Manual Draft Revision 4 Page A-34
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_34
+DIANA CROSS_REFERENCE GUIDE
 Ix comments comments
 ** block
 IS INCLUDED IN:
@@ -7991,8 +7906,8 @@ lx srcpos : sourceposition
 Ix comments : comments
 ** block_loop_id
 IS INCLUDED IN:
-DIANA Reference Manual Draft Revision 4 Page A-35
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_35
+DIANA CROSS_REFERENCE GUIDE
 LABEL NAME
 SOURCE NAME
 DEF NAME
@@ -8000,7 +7915,7 @@ ALL SOURCE
 NODE ATTRIBUTES:
 (INHERITED FROM LABELNAME):
 sm stm : STM
-(INHERITED-FROM DEF NAME):
+(INHERITED_FROM DEF NAME):
 lx symrep : symbolrep
 (INHERITED FROM ALL SOURCE):
 lx srcpos : source position
@@ -8041,8 +7956,8 @@ NODE ATTRIBUTES:
 lxsrcpos : sourceposition
 Ix comments : comments
 IS THE DECLARED TYPE OF:
-DIANA Reference Manual Draft Revision 4 Page A-36
-OIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_36
+OIANA CROSS_REFERENCE GUIDE
 generic_id.smbody
 SUBUNITBODY.ds_body
 task_body_id.sm body
@@ -8062,7 +7977,7 @@ CLASS MEMBERS:
 entry call
 procedure_call
 IS INCLUDED IN:
-STM WITH-NAME
+STM WITH_NAME
 STM
 STM ELEM
 ALL SOURCE
@@ -8071,7 +7986,7 @@ NODE ATTRIBUTES:
 asgeneral _assoc s : generaldssoc_S
 sm normalizedparams : exp s
 (INHERITED FROM STMWITHNAME):
-as name : NAME
+as_name : NAME
 (INHERITED FROM ALLSOURCE):
 lxsrcpos : source position
 lx comments : comments
@@ -8085,15 +8000,15 @@ NODE ATTRIBUTES:
 (NODE SPECIFIC):
 as alternative s : alternative s
 (INHERITED FROM STMWITHEXP):
-asexp : EXP
+as_exp : EXP
 (INHERITED FROM ALL SOURCE):
 lx_srcpos : source position
 Ix comments : comments
 * character id
-DIANA Reference Manual Draft Revision 4 Page A-37
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_37
+DIANA CROSS_REFERENCE GUIDE
 IS INCLUDED IN:
-ENUM LITERAL
+ENUM_LITERAL
 OBJECT NAME
 SOURCE NAME
 DEF NAME
@@ -8103,7 +8018,7 @@ NODE ATTRIBUTES:
 smPos Integer
 smrep : Integer
 (INHERITED FROM OBJECTNAME):
-sm objtype TYPE-SPEC
+sm objtype TYPE_SPEC
 (INHERITED FROM DEF NAME):
 1x symrep : symbol_rep
 (INHERITED FROM ALL SOURCE):
@@ -8139,8 +8054,8 @@ ALL SOURCE
 NODE ATTRIBUTES:
 (INHERITED FROM ALLSOURCE):
 lxsrcpos : source_position
-DIANA Reference Manual Draft Revision 4 Page A-38
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_38
+DIANA CROSS_REFERENCE GUIDE
 Ix comments connents
 ** choice range
 IS INCLUDED IN:
@@ -8177,28 +8092,28 @@ ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
 as test clauseelems ; testclause_elem s
-as-stm s : stm s
+as_stm s : stm s
 (INHERITED FROM ALL SOURCE):
 1x_srcpos : sourceposition
 Ix comments : comments
 ** code
 IS INCLUDED IN:
 STM WITH EXP NAME
-STM- WITH-EXP
+STM- WITH_EXP
 STM
 STMELEM
-DIANA Reference Manual Draft Revision 4 Page A-39
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_39
+DIANA CROSS_REFERENCE GUIDE
 ALL SOURCE
 NODE ATTRIBUTES:
 (INHERITED FROM STMWITHEXPNAME):
-as name NAME
+as_name NAME
 (INHERITED FROM STMWITHEXP):
-asexp EXP
+as_exp EXP
 (INHERITED FROM ALL SOURCE):
 Ix srcpos : source_position
 lx comments : comments
-** comp list
+** comp_list
 IS INCLUDED IN:
 ALL SOURCE
 NODE ATTRIBUTES:
@@ -8211,12 +8126,12 @@ lx srcpos : source positicn
 Ix comments : comments
 IS THE DECLARED TYPE OF:
 variant.as_comp_list
-record.sm comp list
+record.sm comp_list
 record def.as_complist
-** COMP NAME
+** COMP_NAME
 CLASS MEMBERS:
-component id
-discriminant id
+component_id
+discriminant_id
 IS INCLUDED IN:
 INIT OBJECT NAME
 OBJECT NAME
@@ -8229,7 +8144,7 @@ smcomp rep : COMPREPELEM
 (INHERITED FROM INIT OBJECT_NAME):
 sm init exp : EXP
 (INHERITED FROM OBJECTNAME):
-sm _objtype : TYPE-SPEC
+sm _objtype : TYPE_SPEC
 (INHERITED FROM DEFNAME):
 lx_symrep : symbolrep
 (INHERITED FROM ALLSOURCE):
@@ -8237,16 +8152,16 @@ lx_srcpos : source position
 Ix comments : comments
 ** comp_rep
 IS INCLUDED IN:
-DIANA Reference Manual Draft Revision 4 Page A-40
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_40
+DIANA CROSS_REFERENCE GUIDE
 COMP REP ELEM
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-as name : NAME
-as-range : RANGE
+as_name : NAME
+as_range : RANGE
 "as exp : EXP
-(INHERITED FROM ALL-SOURCE):
+(INHERITED FROM ALL_SOURCE):
 Ix srcpos : sourceposition
 Ix comments : comments
 •* COMPREPELEM
@@ -8262,7 +8177,7 @@ NODE ATTRIBUTES:
 Ix comments : comments
 IS THE DECLARED TYPE OF:
 comp rep_s.aslist (Seq Of]
-COMP NAME.smcomprep
+COMP_NAME.smcomprep
 ** comp_rep_pragma
 IS INCLUDED IN:
 COMP REP ELEM
@@ -8276,7 +8191,7 @@ lx comments : comments
 • * comp_rep_s
 IS INCLUDED IN:
 SEQUENCES
-ALL-SOURCE
+ALL_SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
 as list : Seq Of COMP_REP_ELEM
@@ -8286,8 +8201,8 @@ Ix comments : comments
 IS THE DECLARED TYPE OF:
 recordrep.ascomp_rep_s
 •* compilation
-DIANA Reference Manual Draft Revision 4 Page A-41
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_41
+DIANA CROSS_REFERENCE GUIDE
 IS INCLUDED IN:
 ALL SOURCE
 NODE ATTRIBUTES:
@@ -8302,7 +8217,7 @@ ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
 ascontextelems : context elem-s
-as-pragma s : pragma_s
+as_pragma s : pragma_s
 as all decl : ALL DECL
 (INHERITED FROM ALLSOURCE):
 lx_srcpos : sourceposition
@@ -8320,23 +8235,23 @@ as list : Seq Of compilationunit
 Ix_srcpos : source_position
 Ix comments : comments
 IS THE DECLARED TYPE OF:
-compilation.as-compltn_unit_s
-** component id
+compilation.as_compltn_unit_s
+** component_id
 IS INCLUDED IN:
-COMP NAME
+COMP_NAME
 INIT OBJECT NAME
 OBJECT NAME
-SOURCE-NAME
+SOURCE_NAME
 DEF NAME
 ALL SOURCE
 NODE ATTRIBUTES:
-(INHERITED FROM COMP NAME):
+(INHERITED FROM COMP_NAME):
 smcomprep : COMPREPELEM
 (INHERITED FROM INIT OBJECTNAME):
 sm init exp : EXP
 (INHERITED FROM OBJECTNAME):
-DIANA Reference Manual Draft Revision 4 Page A-42
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_42
+DIANA CROSS_REFERENCE GUIDE
 "sm obj type TYPE SPEC
 (INHERITED FROM DEF_NAME):
 Slx_symrep : symbolrep
@@ -8346,13 +8261,13 @@ Ix-comments : comments
 ** cond clause
 IS INCLUDED IN:
 TEaT CLAUSE
-TEST-CLAUSE ELEM
+TEST_CLAUSE ELEM
 ALL SOURCE
 NODE ATTRIBUTES:
 (INHERITED FROM TESTCLAUSE):
 as exp : EXP
 as stm s : stm s
-(INHERITED-FROM ALL SOURCE):
+(INHERITED_FROM ALL SOURCE):
 1x srcpos : sourceposition
 lx comments : comments
 ** condentry
@@ -8381,12 +8296,12 @@ NODE ATTRIBUTES:
 (INHERITED FROM OBJECTDECL):
 astype def : TYPE DEF
 (INHERITED FROM EXPDECL):
-asexp : EXP
+as_exp : EXP
 (INHERITED FROM IDSDECL):
 as source name s : source name s
-(INHERITED-FROM AEL_SOURCE):
-DIANA Reference Manual Draft Revision 4 Page A-43
-DIANA CROSS-REFERENCE GUIDE
+(INHERITED_FROM AEL_SOURCE):
+DIANA Reference Manual Draft Revision 4 Page A_43
+DIANA CROSS_REFERENCE GUIDE
 Ix_srcpos : sourceposition
 ix comments : comnments
 ** constant Id
@@ -8394,7 +8309,7 @@ IS INCLUDED IN:
 VC NAME
 INTT OBJECT NAME
 OBJECT NAME-
-SOURCE-NAME
+SOURCE_NAME
 QEF NAME
 ALL SOURCE
 NODE ATTRIBUTES:
@@ -8420,7 +8335,7 @@ constrainedrecord
 IS INCLUDED IN:
 NON TASK
 FULL TYPE SPEC
-DERIVABLE-SPEC
+DERIVABLE_SPEC
 TYPE SPEC
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
@@ -8435,17 +8350,17 @@ IS INCLUDED IN:
 CONSTRAINED
 NON TASK
 FULLTYPESPEC
-DIANA Reference Manual Draft Revision 4 Page A-44
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_44
+DIANA CROSS_REFERENCE GUIDE
 DERIVABLE SPEC
 TYPE SPEC
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-sm desig type : TYPE-SPEC
+sm desig type : TYPE_SPEC
 (INHERITED FROM CONSTRAINED):
 sm depends on dscrmt : Boolean
 ,-. (INHERITED FROM NONTASK):
-sm base type : TYPE-SPEC
+sm base type : TYPE_SPEC
 (INHERITED FROM DERIVABLESPEC):
 sm derived : TYPE SPEC
 sm1is_anonymous : Boolean
@@ -8454,19 +8369,19 @@ IS INCLUDED IN:
 CONSTRAINED
 NON TASK
 FULL TYPE SPEC
-DERIVABLE-SPEC
+DERIVABLE_SPEC
 TYPE SPEC
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-sm indexsubtype s : scalar s
+sm indexsubtype s : scalar_s
 (INHERITED FROM CONSTRAINED.):
 sm depends on dscrmt : Boolean
 (INHERITED FROM NON TASK):
 sm base type : TYPESPEC
-(INHERITED-FROM DERIVABLESPEC):
+(INHERITED_FROM DERIVABLESPEC):
 sm derived : TYPE SPEC
-sm-isanonymous : Boolean
-** constrained-arraydef
+sm_isanonymous : Boolean
+** constrained_arraydef
 IS INCLUDED IN:
 ARR ACC DER DEF
 TYPE DETF
@@ -8485,15 +8400,15 @@ subtypeindication
 integer_def
 fixed def
 float def
-DIANA Reference Manual Draft Revision 4 Page A-45
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_45
+DIANA CROSS_REFERENCE GUIDE
 IS INCLUDED IN:
 TYPE DEF
 ALL 3OURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
 as constraint : CONSTRAINT
-(INHERITED-FROM ALLSOURCE):
+(INHERITED_FROM ALLSOURCE):
 Ix srcpos : source position
 Ix comments : comments
 ** constrained record
@@ -8501,7 +8416,7 @@ IS INCLUDED IN:
 CONSTRAINED
 NON TASK
 FULL TYPE SPEC
-DERIVABLE-SPEC
+DERIVABLE_SPEC
 TYPE SPEC
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
@@ -8509,16 +8424,16 @@ sm normalized dscrmt s : exp_s
 (INHERITED FROM CONSTRAINED):
 smdepends_ondscrmt : Boolean
 (INHERITED FROM NON TASK):
-smbase type : TYPE-SPEC
+smbase type : TYPE_SPEC
 (INHERITED FROM DERIVABLE_SPEC):
 sm derived : TYPE SPEC
-sm-is anonymous : Boolean
+sm_is anonymous : Boolean
 ** CONSTRAINT
 CLASS MEMBERS:
 void
 DISCRETE RANGE
-dscrmt constraint
-index constraint
+dscrmt_constraint
+index_constraint
 REAL CONSTRAINT
 PANGE
 discrete subtype
@@ -8536,8 +8451,8 @@ IS THE DECLARED TYPE OF:
 constrainedarraydef.as constraint
 CONSTRAINEDDEF.as constraint
 ** CONTEXTELEM
-DIANA Reference Manual Draft Revision 4 Page A-46
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_46
+DIANA CROSS_REFERENCE GUIDE
 CLASS MEMBERS:
 contextpragma
 with
@@ -8575,23 +8490,23 @@ Ix comments : comments
 IS INCLUDED IN:
 QUAL CONV
 EXP VAL EXP
-EXP-VAL
-EXP-EXP
+EXP_VAL
+EXP_EXP
 EXP
 GENERAL ASSOC
 ALL SOURCE
 NODE ATTRIBUTES:
 (INHERITED FROM QUALCONV):
-as name : NAME
-(INHERITED-FROM EXPVALEXP):
-as-exp : EXP
-DIANA Reference Manual Draft Revision 4 Page A-47
-DIANA CROSS-REFERENCE GUIDE
+as_name : NAME
+(INHERITED_FROM EXPVALEXP):
+as_exp : EXP
+DIANA Reference Manual Draft Revision 4 Page A_47
+DIANA CROSS_REFERENCE GUIDE
 (INHERITED FROM EXPVAL):
 sm value : value
 (INHERITED FROM EXPEXP):
 smexp_type : TYPE SPEC
-(INHERITED FROM ALL-SOURCE):
+(INHERITED FROM ALL_SOURCE):
 lx_srcpos : source_position
 Ix_comments : comments
 ** DECL
@@ -8601,7 +8516,7 @@ ID DECL
 nuTl compdecl
 REP
 USE PRAGMA
-EXP-OECL
+EXP_OECL
 deferred constant decl
 exceptiondecl
 type decl
@@ -8629,7 +8544,7 @@ package decl
 IS INCLUDED IN:
 ITEM
 ALL DECL
-ALL-SOURCE
+ALL_SOURCE
 NODE ATTRIBUTES:
 (INHERITED FROM ALL SOURCE):
 lx srcpos : sourceposition
@@ -8638,15 +8553,15 @@ IS THE DECLARED TYPE OF:
 decls.as list [Seq Of)
 ** declis
 I
-DIANA Reference Manual Draft Revision 4 Page A-48
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_48
+DIANA CROSS_REFERENCE GUIDE
 IS INCLUDED IN:
 SEQUENCES
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
 as list : Seq Of DECL
-(INHERITED-FROM ALLSOURCE):
+(INHERITED_FROM ALLSOURCE):
 Ix srcpos : sourceposition
 lx comments : comments
 IS THE DECLARED TYPE OF:
@@ -8654,13 +8569,13 @@ instartiation.sm dec1 s
 task spec.sm decT s
 task decl.as decl-s
 "packagespec.as decl sl
-,as-decls2
+,as_decls2
 comp_list.as decl-s
 ** DEF NAME
 CLASS MEMBERS:
 SOURCE NAME
 PREDEF NAME
-OBJECT-NAME
+OBJECT_NAME
 LABELNAME
 UNIT NAME
 TYPE NAME
@@ -8672,7 +8587,7 @@ bltn_operator_ id
 "argument_id
 pragmdaid
 INIT OBJECT NAME
-ENUM-LITERAE
+ENUM_LITERAE
 iteration id
 label id
 block loon id
@@ -8684,18 +8599,18 @@ private type id
 1_private_type_id
 VC NAME
 number id
-COMP NAME
+COMP_NAME
 PARAM NAME
 enumeration id
 character id
 SUBPROGPACK NAME
-generic~id
+generic_id
 variable id
 constant id
-DIANA Reference Manual Draft Revision 4 Page A-49
-DIANA CROSS-REFERENCE GUIDE
-component id
-discriminant id
+DIANA Reference Manual Draft Revision 4 Page A_49
+DIANA CROSS_REFERENCE GUIDE
+component_id
+discriminant_id
 in id
 out id
 in out id
@@ -8714,8 +8629,8 @@ Ix srcpos : sourceposition
 Ix comments : comments
 IS THE DECLARED TYPE OF:
 PARAM NAME.sm first
-DESIGNATOR.sm-defn
-discriminant id.sm first
+DESIGNATOR.sm_defn
+discriminant_id.sm first
 typeid.sm first
 constant id.sm first
 UNIT NAME.sm first
@@ -8728,7 +8643,7 @@ ALL DECL
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-as name : NAME
+as_name : NAME
 (INHERITED FROM IDS DECL):
 as source name s : source name s
 (INHERITED FROM ALL SOURCE):
@@ -8742,10 +8657,10 @@ STM ELEM
 ALL SOURCE
 NODE ATTRIBUTES:
 (INHERITED FROM STMWITH_EXP):
-asexp : EXP
+as_exp : EXP
 (INHERITED FROM ALLSOURCE):
-DIANA Reference Manual Draft Revision 4 Page A-50
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_50
+DIANA CROSS_REFERENCE GUIDE
 lxsrcpos : source position
 lx comments : comments
 ** DERIVABLE SPEC
@@ -8776,7 +8691,7 @@ TYPE SPEC
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
 sm "arived : TYPE SPEC
-sm-is anonymous : Boolean
+sm_is anonymous : Boolean
 ** derived def
 IS INCLUDED IN:
 APP ACC DER DEF
@@ -8784,7 +8699,7 @@ TYPE DEF -
 ALL SOURCE
 "NODE ATTRIBUTES:
 (INHERITED FROM ARR ACC DER DEF):
-as-subtypeTndication : subtypeindication
+as_subtypeTndication : subtypeindication
 (INHERITED FROM ALLSOURCE):
 lx_srcpos : source-position
 Ix comments : comments
@@ -8794,8 +8709,8 @@ UNIT DESC
 ALI SOURCE
 NODE ATTR 'JTES:
 (NODE SPECIFIC):
-DIANA Reference Manual Draft Revision 4 Page A-51
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_51
+DIANA CROSS_REFERENCE GUIDE
 sm derivable : SOURCE NAME
 (INHERITED FROM ALL SOURCE):
 Ix srcpos : source position
@@ -8807,7 +8722,7 @@ USED NAME
 used char
 used-object_id
 usedop
-used name id
+used_name_id
 IS INCLUDED TN: -
 NAME
 EXP
@@ -8837,15 +8752,15 @@ NODE ATTRIBUTES:
 lx_srcpos : source_position
 lx comments : comments
 IS THE DECLARED TYPE OF:
-entry.as-discrete-range
+entry.as_discrete_range
 FOR REV.as discreterange
 AGG EXP.sm discreterange
 slile.as dTscrete range
 choice range.asdiscrete range
 discreteranges.aslist [Seq Of]
-** discrete range s
-DIANA Reference Manual Draft Revision 4 Page A-52
-DIANA CROSS-REFERENCE GUIDE
+** discrete_range_s
+DIANA Reference Manual Draft Revision 4 Page A_52
+DIANA CROSS_REFERENCE GUIDE
 IS INCLUDED IN:
 SEQUENCES
 ALL SOURCE
@@ -8868,18 +8783,18 @@ as subtypeindication : subtype indication
 (INHERITEO FROM ALL SOURCE):
 1x_srcpos : source_position
 lx comments : comments
-** discriminant id
+** discriminant_id
 IS INCLUDED IN:
-COMP NAME
+COMP_NAME
 TNIT OBJECT NAME
 OBJECT NAME
 SOUPCE NAME
 DEF NAME
-ALL-SOURCE
+ALL_SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
 sm first : DEFNAME
-(INHERITED FROM COMP NAME):
+(INHERITED FROM COMP_NAME):
 sm :omprep : COMPREPELEM
 (iNHEP17ED PROM INI T OBJECTNAME):
 sm init exp : EXP
@@ -8890,12 +8805,12 @@ lx_symrep : symbol-rep
 (INHERITED FROM ALL SOURCE):
 1x_srcpos : sourceposition
 Ix comments : comments
-** dscrmt constraint
+** dscrmt_constraint
 IS INCLUDED IN:
 CONSTRAINT
 ALL SOURCE
-DIANA Reference Manual Draft Revision 4 Page A-53
-DIANA CROSS-REFERENCE GUIUE
+DIANA Reference Manual Draft Revision 4 Page A_53
+DIANA CROSS_REFERENCE GUIUE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
 as generalassocs : general_assocs
@@ -8912,7 +8827,7 @@ NODE ATTRIBUTES:
 (INHERITED FROM OSCRMTPARAMDECL):
 as source name s source name s
 as exp : EXP
-as name : NAME
+as_name : NAME
 (INHERITED FROM ALL SOURCE):
 Ix_srcoos : source position
 lx comments : comments
@@ -8943,14 +8858,14 @@ ouJ
 IS INCLUDED IN:
 ITEM
 ALL DECL
-ALL-SOURCE
-DIANA Reference Manual Draft Revision 4 Page A-54
-DIANA CROSS-REFERENCE GUIDE
+ALL_SOURCE
+DIANA Reference Manual Draft Revision 4 Page A_54
+DIANA CROSS_REFERENCE GUIDE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
 - as sourcename s source name s
 as exp EXP
-as name NAME
+as_name NAME
 (INHERITED FROM ALLSOURCE):
 Ix srcpos : sourceposition
 Ix-comments : comments
@@ -8961,7 +8876,7 @@ HEADER
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-as discrete range : DISCRETE-RANGE
+as discrete range : DISCRETE_RANGE
 (INHERITED FROM SUBP ENTRYHEADER):
 asparam s : paramns
 (INHERITED FROM ALL SOURCE):
@@ -8979,7 +8894,7 @@ NODE ATTRIBUTES:
 asgeneral assoc s : generalassoc s
 sm normalizedparam s : exp_s
 (INHERITED FROM STMWITHNAME):
-as name : NAME
+as_name : NAME
 (INHERITED FROM ALLSOURCE):
 1x_srcpos : sourceposition
 Ix comments : comments
@@ -8994,8 +8909,8 @@ sm_spec : HEADER
 sm address : EXP
 (INHERITED FROM DEFNAME):
 lx_symrep : symbol_rep
-DIANA Reference Manual Draft Revision 4 Page A-55
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_55
+DIANA CROSS_REFERENCE GUIDE
 (INHERITED FROM ALLSOURCE):
 1x srcpos : source_position
 1x comments : comments
@@ -9009,7 +8924,7 @@ STM ELEM
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-as-stm-sl : stm-s
+as_stm-sl : stm-s
 as stm s2 : stms
 (INHERITED FROM ALL SOURCE):
 1x_srcpos : sourceposition
@@ -9020,22 +8935,22 @@ enumeration id
 character id
 IS INCLUDED IN:
 OBJECT NAME
-SOURCE-NAME
+SOURCE_NAME
 DEF NAME
-ALL-SOURCE
+ALL_SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
 smpos : Integer
 sm rep : Integer
 (INHERITED FROM OBJECT_NAME):
-smobj_type : TYPE-SPEC
+smobj_type : TYPE_SPEC
 (INHERITED FROM DEFNAME):
 lxsymrep : symbol_rep
 (INHERITED FROM ALLSOURCE):
 Ixsrcpos : source-position
 Ix comments : comments
 IS THE DECLARED TYPE OF:
-enum literal s.as list [Seq Of]
+enum_literal_s.as list [Seq Of]
 ** enum literal_s
 IS INCLUDED IN:
 SEQUENCES
@@ -9045,28 +8960,28 @@ NODE ATTRIBUTES:
 as list : Seq Of ENUMLITERAL
 (INHERITED FROM ALLSOURCE):
 S... " •' II III II
-DIANA Reference Manual Draft Revision 4 Page A-56
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_56
+DIANA CROSS_REFERENCE GUIDE
 lx srcpos : sourceposition
 1x comments : comments
 IS THE DECLARED TYPE OF:
 enumeration.sm literal s
-enumeration def.as enum literal s
+enumeration def.as enum_literal_s
 ** enumeration
 IS INCLUDED IN:
 SCALAR
 NON TASK
 FULL TYPE SPEC
-DERIVABLE-SPEC
+DERIVABLE_SPEC
 TYPE SPEC
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
 sm literal s : enum_literals
-(INHERITED-FROM SCALAR):
+(INHERITED_FROM SCALAR):
 sm range : RANGE
 cdiimpl size : Integer
 (INHERITED FROM NONTASK):
-sm base type : TYPE-SPEC
+sm base type : TYPE_SPEC
 (INHERITED FROM DERIVABLESPEC):
 sm derived : TYPE SPEC
 smiisanonymous Boolean
@@ -9076,27 +8991,27 @@ TYPE DEF
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-as enum literal s : enum-literal s
+as enum_literal_s : enum-literal s
 (INHERITED FROM ALL SOURCE):
 lx srcpos : sourceposition
-.lx-comments : comments
+.lx_comments : comments
 ** enumeration id
 IS INCLUDED IN:
-ENUM LITERAL
+ENUM_LITERAL
 OBJECT NAME
-SOURCE-NAME
+SOURCE_NAME
 DEF NAME
-ALL-SOURCE
+ALL_SOURCE
 NODE ATTRIBUTES:
 (INHERITED FROM ENUMLITERAL):
 smpos : Integer
 sm rep : Integer
-(INHERITED-FROM OBJECT NAME):
-sm obj_type : TYPE-SPEC
-(INHERITED-FROM DEF NAME):
+(INHERITED_FROM OBJECT NAME):
+sm obj_type : TYPE_SPEC
+(INHERITED_FROM DEF NAME):
 lx_symrep : symbolrep
-DIANA Reference Manual Draft Revision 4 Page A-57
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_57
+DIANA CROSS_REFERENCE GUIDE
 (INHERITED FROH ALLSOURCE):
 lx srcpos : sourceposition
 Ix comments : comments
@@ -9110,7 +9025,7 @@ ALL SOURCE
 NODE ATTRIBUTES:
 (INHERITED FROM I1_SDECL):
 as source name s : source name s
-(INHERITED-FROM A:LSOURCE):
+(INHERITED_FROM A:LSOURCE):
 Ix srcpos : sourcejposition
 lx comments : comments
 ** exception id
@@ -9129,23 +9044,23 @@ Ix comments : comments
 ** exit
 .IS INCLUDED IN:
 STM WITH EXP NAME
-STM-WITH-EXP
+STM_WITH-EXP
 STM
 STM ELEM
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
 sm stm : STM
-(INHERITED-FROM STMWITHEXPNAME):
-as name : NAME
-(INHERITED-FROM STMWITHEXP):
-asexp : EXP
+(INHERITED_FROM STMWITHEXPNAME):
+as_name : NAME
+(INHERITED_FROM STMWITHEXP):
+as_exp : EXP
 (INHERITED FROM ALLSOURCE):
 lx srcpos : sourceposition
 Ix comments : comments
 ** EXP
-DIANA Reference Manual Draft Revision 4 Page A-58
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_58
+DIANA CROSS_REFERENCE GUIDE
 CLASS MEMBERS:
 void
 NAME
@@ -9157,7 +9072,7 @@ subtype-allocator
 -. qualified allocator
 AGG EXP
 USED OBJECT
-USED-NAME
+USED_NAME
 NAME VAL
 all
 slice
@@ -9169,9 +9084,9 @@ nulT access
 aggregate
 string_literal
 used char
-used~object-id
+used_object-id
 usedop
-used name id
+used_name_id
 attribute-
 selected
 function call
@@ -9190,36 +9105,36 @@ ALL SOURCE
 Ix_srcpos : sourceposition
 lx comments : comments
 IS THE DECLARED TYPE OF:
-comp_rep.asexp
+comp_rep.as_exp
 alignment.as exp
 NAMED REP.as exp
 entryid.smaddress
 taskspec.smstorage size
 .sm size
-.sm-address
+.sm_address
 SUBPROG PACK NAME.sm address
-while.as-exp
-DIANA Reference Manual Draft Revision 4 Page A-59
-DIANA CROSS-REFERENCE GUIDE
+while.as_exp
+DIANA Reference Manual Draft Revision 4 Page A_59
+DIANA CROSS_REFERENCE GUIDE
 TEST CLAUSE.as_exp
 ST?4 WITH EXP.as exp
 EXPVAL T XP. aseixp
-short circuit. as -expl.
-.as-exp2
-NAMED ASSOC. as-exp
+short circuit. as_exp1.
+.as_exp2
+NAMED ASSOC. as_exp
 attribute as exp
 exp s.as list (Seq Of)
 access. im storage size
 choice exp.as exp
-DSCRMT PARAM DECL .as~exp
-REAL -CUNSTRATNT as~exp
-range -attribut e.as~exp
+DSCRMT PARAM DECL .as_exp
+REAL -CUNSTRATNT as_exp
+range -attribut e.as_exp
 range as expi.
-.as-exp2
+.as_exp2
 UNCONSTRAINED. sm size
 VC NAME. sm addre-ss
-INIT OBJECTNAME.sm mint~exp
-EXPDUECL.as-exp
+INIT OBJECTNAME.sm mint_exp
+EXPDUECL.as_exp
 **EXP_DECL
 CLASS MEMBERS:
 OBJECTDECL
@@ -9240,7 +9155,7 @@ as souece -na-me s : source name-s
 (INHERITED FROM ALLSOURCE):
 hx_srcpos : source_position
 lx comments : comments
-**EXP-EXP
+**EXP_EXP
 CLASS MEMBERS:
 EXPVAL
 subtype allocator
@@ -9251,8 +9166,8 @@ numeric literal
 EXP VALEXP
 null ac-cess
 aggregate
-DIANA Reference Manual Draft Revision 4 Page A-60
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_60
+DIANA CROSS_REFERENCE GUIDE
 string literal
 MEMBERSHIP
 QUALCONV
@@ -9303,14 +9218,14 @@ IS INCLUDED IN:
 EXPEXP
 EXP
 GENERALASSOC
-DIANA Reference Manual Draft Revision 4 Page A-61
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_61
+DIANA CROSS_REFERENCE GUIDE
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
 sm value : value
 (INHERITED FROM EXPEXP):
-smexptype : TYPE-SPEC
+smexptype : TYPE_SPEC
 (INHERITED FROM ALLSOURCE):
 lx srcpos : source position
 1x comments : comments
@@ -9325,17 +9240,17 @@ conversion
 qualified
 IS INCLUDED IN:
 EXP VAL
-EXP-EXP
+EXP_EXP
 EXP
 GENERAL ASSOC
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-asexp : EXP
+as_exp : EXP
 (INHERITED FROM EXPVAL):
 sm value :.value
 (INHERITED FROM EXP EXP):
-smnexp type : TYPE-SPEC
+smnexp type : TYPE_SPEC
 (INHERITED FROM ALLSOURCE):
 lxsrcpos : source_position
 lx comments : comments
@@ -9345,7 +9260,7 @@ REAL
 SCALAR
 NON TASK
 FULL TYPE SPEC
-DERIVABLE-SPEC
+DERIVABLE_SPEC
 TYPE SPEC
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
@@ -9355,22 +9270,22 @@ sm accuracy : value
 (INHERITED FROM SCALAR):
 sm range : RANGE
 cd implsize : Integer
-DIANA Reference Manual Draft Revision 4 Page A-62
-DIANA CROSS-REFERENCE GUIDE
-(INHERITED FROM NON-TASK):
+DIANA Reference Manual Draft Revision 4 Page A_62
+DIANA CROSS_REFERENCE GUIDE
+(INHERITED FROM NON_TASK):
 sm base type : TYPE SPEC
-(INHERITED-FROM-DERIVABLESPEC):
+(INHERITED_FROM-DERIVABLESPEC):
 sm derived : TYPE SPEC
-sm-is anonymous : Boolean
-** fixed-constraint
+sm_is anonymous : Boolean
+** fixed_constraint
 IS INCLUDED IN:
 "REAL CONSTRAINT
 CONSTRAINT
 ALL SOURCE
 NODE ATTRIBUTES:
 (INHERITED FROM REAL CONSTRAINT):
-smtype spec : TYPE-SPEC
-asexp : EXP
+smtype spec : TYPE_SPEC
+as_exp : EXP
 as range : RANGE
 (INHERITED FROM ALL SOURCE):
 Ix_srcpos : sourceposition
@@ -9392,7 +9307,7 @@ PEAL
 SCALAR
 NON TASK
 FULL TYPE SPEC
-DERIVABLE-SPEC
+DERIVABLE_SPEC
 "TYPE SPEC
 NODE ATTRIBUTES:
 (INHERITED FROM REAL):
@@ -9401,12 +9316,12 @@ sm accuracy : value
 sm range : RANGE
 cdimpl size : Integer
 (INHERITED FROM NON TASK):
-sm basetype : TYPE-SPEC
+sm basetype : TYPE_SPEC
 (INHERITED FROM DERIVABLESPEC):
 sm derived : TYPE SPEC
-sm-isanonymous : Boolean
-DIANA Reference Manual Draft Revision 4 Page A-63
-DIANA CROSS-REFERENCE GUIDE
+sm_isanonymous : Boolean
+DIANA Reference Manual Draft Revision 4 Page A_63
+DIANA CROSS_REFERENCE GUIDE
 ** float constraint
 IS INCLUDED IN:
 REAL CONSTRAINT
@@ -9417,7 +9332,7 @@ NODE ATTRIBUTES:
 sm typespec : TYPE SPEC
 as exp : EXP
 as range : RANGE
-(INHERITED-FROM ALLSOURCE):
+(INHERITED_FROM ALLSOURCE):
 lx srcpos : source position
 Ix comments : comments
 ** float def
@@ -9453,9 +9368,9 @@ ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
 as source name : SOURCENAME
-DIANA Reference Manual Draft Revision 4 Page A-64
-DIANA CROSS-REFERENCE GUIDE
-as discreterange : DISCRETE-RANGE
+DIANA Reference Manual Draft Revision 4 Page A_64
+DIANA CROSS_REFERENCE GUIDE
+as discreterange : DISCRETE_RANGE
 (INHERITED FROM ALLSOURCE):
 1x srcpos : source position
 Ix comments : comments
@@ -9499,11 +9414,11 @@ SCATAR
 CONSTRAINED
 UNCONSTRAINED
 enumeration
-DIANA Reference Manual Draft Revision 4 Page A-65
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_65
+DIANA CROSS_REFERENCE GUIDE
 REAL
 integer
-constrained-array
+constrained_array
 constrained-access
 constrained record
 UNCONSTRAINED COMPOSITE
@@ -9532,10 +9447,10 @@ NODE ATTRIBUTES:
 as general_assoc s : general_assoc_s
 sm normalized param_s : exps
 lx prefix : Boolean
-(INHERITED-FROM NAMEVAL):
+(INHERITED_FROM NAMEVAL):
 sm value : value
-(INHERITED-FROM NAMEEXP):
-as name : NAME
+(INHERITED_FROM NAMEEXP):
+as_name : NAME
 sm exp type TYPE_SPEC
 (INHERITED FROM ALLSOURCE):
 Ix_srcpos : source_pcsition
@@ -9552,8 +9467,8 @@ ALL SOURCE
 NODE ATTRIBUTES:
 (INHERITED FROM SUBPROGNAME):
 i
-DIANA Reference Manual Draft Revision 4 Page A-66
-* DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_66
+* DIANA CROSS_REFERENCE GUIDE
 sm is inline : Boolean
 sm interface : PREDEF NAME
 (INHERITED FROM SUBPROG PACKNAME):
@@ -9574,10 +9489,10 @@ HEADER
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-as name : NAME
+as_name : NAME
 (TNHERITED FROM SURPENTRY HEADER):
 asparam s : param-s
-(INHERITED FROM ALL-SOURCE):
+(INHERITED FROM ALL_SOURCE):
 lx_srcpos :.source position
 lx comments : comments
 ** GENERALASSOC
@@ -9604,8 +9519,8 @@ indexed
 short circuit
 numeric-literal
 I-..
-DIANA Reference Manual Draft Revision 4 Page A-67
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_67
+DIANA CROSS_REFERENCE GUIDE
 EXP VAL EXP
 nulT access
 aggregate
@@ -9613,7 +9528,7 @@ stringliteral
 used char
 used objectid
 used op
-used name id
+used_name_id
 attribute
 selected
 function call
@@ -9648,7 +9563,7 @@ function call.as general_assoc_s
 CALLSTM.asgeneral-assocs
 aggregate.asgeneral-assoc-s
 .sm normalized_comp_s
-dscrmt constraint.asgeneralassoc s
+dscrmt_constraint.asgeneralassoc s
 pragma.asgeneralassoc-s
 ** generic deci
 IS INCLUDED IN:
@@ -9656,8 +9571,8 @@ UNIT DECL
 ID DECL
 DECL
 ITEM
-DIANA Reference Manual Draft Revision 4 Page A-68
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_68
+DIANA CROSS_REFERENCE GUIDE
 ALL DECL
 ALL SOURCE
 NODE ATTRIBUTES:
@@ -9676,7 +9591,7 @@ NON TASK NAME
 UNIT NAME
 SOURCE NAME
 DEF NARE
-ALL-SOURCE
+ALL_SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
 smgeneric_param_s : item s
@@ -9706,16 +9621,16 @@ lx srcpos : source position
 Ix comments : comments
 •* goto
 IS INCLUDED IN:
-DIANA Reference Manual Draft Revision 4 Page A-69
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_69
+DIANA CROSS_REFERENCE GUIDE
 STM WITH NAME
 STM
 STM ELEM
 ALL SOURCE
 NODE ATTRIBUTES:
 (INHERITED FROM STMWITHNAME):
-as name : NAME
-(INHERITED-FROM ALLSOURCE):
+as_name : NAME
+(INHERITED_FROM ALLSOURCE):
 Ix srcpos : sourcejposition
 lx comments : comments
 ** HEADER
@@ -9757,8 +9672,8 @@ ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
 as source name : SOURCE NAME
-(INHERITED-FROM ATLSOURCE):
-DIANA Reference Manual Draft Revisio. 4 Page A-70DIANA CROSS-REFERENCE GUIDE
+(INHERITED_FROM ATLSOURCE):
+DIANA Reference Manual Draft Revisio. 4 Page A_70DIANA CROSS_REFERENCE GUIDE
 1xsrcpos : sourceposition
 Ix comments : comments
 ** IDSDECL
@@ -9791,7 +9706,7 @@ NODE ATTRIBUTES:
 (INHERITED FROM CLAUSES STM):
 as test clause elem-s : test clause elem s
 as stm s : stms
-(INHERITED-FROM ALLSOURCE):
+(INHERITED_FROM ALLSOURCE):
 lx_srcpos : source position
 lx comments : comments
 ** implicit noteq
@@ -9805,8 +9720,8 @@ sm_equal : SOURCENAME
 Ix_srcpos : sourceposition
 lx comments : comments
 ** in
-DIANA Reference Manual Draft Revision 4 Page A-71
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_71
+DIANA CROSS_REFERENCE GUIDE
 IS INCLUDED IN:
 PARAM
 DSCRMTPARAMDECL
@@ -9818,8 +9733,8 @@ NODE ATTRIBUTES:
 lx default : Boolean
 (INHERITED FROM DSCRMTPARAMDECL):
 assourcename s : source name s
-asexp : EXP
-as name : NAME
+as_exp : EXP
+as_name : NAME
 (INHERITED FROM ALL SOURCE):
 Ix_srcpos : source position
 1x comments : comments
@@ -9828,7 +9743,7 @@ IS INCLUDED IN:
 PARAM NAME
 INIT OBJECT NAME
 OBJECT NAME-
-SOURCE-NAME
+SOURCE_NAME
 DEF NAME
 ALL SOURCE
 NODE ATTRIBUTES:
@@ -9855,8 +9770,8 @@ Ix comments : comments
 IS INCLUDED IN:
 PARAM
 DSCRMTPARAMDECL
-DIANA Reference Manual Draft Revision 4 Page A-72
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_72
+DIANA CROSS_REFERENCE GUIDE
 ITEM
 ALL DECL
 ALL SOURCE
@@ -9864,8 +9779,8 @@ NODE ATTRIBUTES:
 (INHERITED FROM DSCRMTPARAMDECL):
 as source name s : source name s
 as exp : EXP
-as name : NAME
-(INHERITED-FROM ALL SOURCE):
+as_name : NAME
+(INHERITED_FROM ALL SOURCE):
 Ix_srcpos : sourceposition
 1x comments : comments
 •* in out id
@@ -9873,7 +9788,7 @@ IS INCLUDED IN:
 PARAM NAME
 INIT OBJECT NAME
 OBJECT NAME-
-SOURCE-NAME
+SOURCE_NAME
 DEF NAME
 ALL SOURCE
 NODE ATTRIBUTES:
@@ -9882,7 +9797,7 @@ sm first : DEF NAME
 (INHERITED FROM INITOBJECTNAME):
 sm initexp : EXP
 (INHERITED FROM OBJECTNAME):
-smobj type : TYPE-SPEC
+smobj type : TYPE_SPEC
 (INHERITED FROM DEFNAME):
 lx symrep : symbolrep
 (INHERITED FROM ALLSOURCE):
@@ -9899,23 +9814,23 @@ IS INCLUDED IN:
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-as name : NAME
-sm type spec TYPE-SPEC
+as_name : NAME
+sm type spec TYPE_SPEC
 (INHERITED FROM ALL SOURCE):
 -xx_srcpos : sourceposition
 Ix comments : comments
 IS THE DECLARED TYPE OF:
-DIANA Reference Manual Draft Revision 4 Page A-73
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_73
+DIANA CROSS_REFERENCE GUIDE
 index s.as list [Seq Of]
-** index constraint
+** index_constraint
 IS INCLUDED IN:
 CONSTRAINT
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-as discrete range s : discrete range_s
-(INHERITED-FROM ALL-SOURCE):
+as discrete_range_s : discrete range_s
+(INHERITED_FROM ALL_SOURCE):
 lx srcpos : sourceposition
 lx comments : comments
 ** index s
@@ -9942,7 +9857,7 @@ NODE ATTRIBUTES:
 (NODE SPECIFIC):
 asexps : exp_s
 (INHERITED FROM NAMEEXP):
-as name : NAME
+as_name : NAME
 smexptype : TYPESPEC
 (INHERITED FROM ALLSOURCE):
 lx_srcpos : source position
@@ -9951,15 +9866,15 @@ Ix comments : comments
 CLASS MEMBERS:
 VC NAME
 number id
-COMP NAME
+COMP_NAME
 PARAM NAME
-DIANA Reference Manual Draft Revision 4 Page A-74
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_74
+DIANA CROSS_REFERENCE GUIDE
 variable id
 constant-id
 component_id
-discriminant id
-in id• O~t id
+discriminant_id
+in id• O_t id
 out id
 in out id
 IS INCLUDED INT
@@ -9971,7 +9886,7 @@ NODE ATTRIBUTES:
 "* (NODE SPECIFIC):
 smninit exp : EXP
 (INHERITED FROM OBJECTNAME):
-sm objtype : TYPE-SPEC
+sm objtype : TYPE_SPEC
 (INHERITED FROM DEF NAME):
 lx_symrep : symbol rep
 (INHERITED FROM ALLSOURCE):
@@ -9981,14 +9896,14 @@ Ix comments : comments
 IS INCLUDED IN:
 RENAME INSTANT
 UNIT KTND
-UNIT-DESC
+UNIT_DESC
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
 asgeneralassoc s : generalassoc s
 sm decl s : decl s
 (INHERITED FROM RENAMEINSTANT):
-as name : NAME
+as_name : NAME
 (INHERITED FROM ALLSOURCE):
 Ix_srcpos : source oosition
 Ix comments : comments
@@ -9997,7 +9912,7 @@ IS INCLUDED IN:
 SCALAR
 NON TASK
 FULL TYPE SPEC
-DERIVABLE-SPEC
+DERIVABLE_SPEC
 TYPE SPEC
 NODE ATTRIBUTES:
 (INHERITED FROM SCALAR):
@@ -10005,10 +9920,10 @@ sm range : RANGE
 "cd implsize : Integer
 (INHERITED FROM NON TASK):
 smbase_type : TYPESPEC
-DIANA Reference Manual Draft Revision 4 Page A-75
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_75
+DIANA CROSS_REFERENCE GUIDE
 (INHERITED FROM DERIVABLE_SPEC):
-sm derived : TYPE-SPEC
+sm derived : TYPE_SPEC
 sm is anonymous : Boolean
 Sinteger def
 IS INCLUDED IN:
@@ -10025,7 +9940,7 @@ lx conunents : comments
 CLASS MEMBERS:
 DSCRMTPARAMDEOL
 DECL
-SUBUN IT-BODY
+SUBUN IT_BODY
 dscrmt-dec 1
 PARAM
 1D0SDECL
@@ -10057,8 +9972,8 @@ number dec
 generic deci
 NONGENERICDECL
 renames_obj-deci
-DIANA Reference 1Manual Draft Revision 4 Page A-76
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference 1Manual Draft Revision 4 Page A_76
+DIANA CROSS_REFERENCE GUIDE
 renames exc decl
 length enumjrep
 address
@@ -10107,8 +10022,8 @@ loop.asiteration
 ** iteration id
 IS INCLUDED IN:
 OBJECTNAME
-DIANA Reference Manual Draft. Revision 4 Page A-77
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft. Revision 4 Page A_77
+DIANA CROSS_REFERENCE GUIDE
 SOURCE NAME
 DEF NAME
 ALL SOURCE
@@ -10117,7 +10032,7 @@ NODE ATTRIBUTES:
 sm obj type : TYPE SPEC
 (INHERITED FROM DEF NAME):
 1x symrep : symbolrep
-(INHERITED-FROM ALLSOURCE):
+(INHERITED_FROM ALLSOURCE):
 lx_srcpos : sourceposition
 Ix comments : comments
 1_private
@@ -10128,10 +10043,10 @@ TYPE SPEC
 NODE ATTRIBUTES:
 (INHERITED FROM PRIVATE_SPEC):
 sm discriminant s : dscrmt decl s
-smitypespec : TYPE-SPEC
+smitypespec : TYPE_SPEC
 (INHERITED FROM DERIVABLESPEC):
 sm derived : TYPE SPEC
-sm-isanonymous : Boclean
+sm_isanonymous : Boclean
 ** 1_privatedef
 IS INCLUDED IN:
 TYPE DEF
@@ -10148,15 +10063,15 @@ DEF NAME
 ALL SOURCE
 NODE ATTRIBUTES:
 (INHERITED FROM TYPENAME):
-smtypespec : TYPE-SPEC
+sm_type_spec : TYPE_SPEC
 (INHERITED FROM DEFNAME):
 lxsymrep : symbolrep
 (INHERITED FROM ALL SOURCE):
 lx_srcpos : source position
 Ix comments : comments
 * label id
-DIANA Reference Manual Draft Revision 4 Page A-78
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_78
+DIANA CROSS_REFERENCE GUIDE
 IS INCLUDED IN:
 LABEL NAME
 SOURCr NAME
@@ -10194,7 +10109,7 @@ ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
 as source name s : source name s
-as-stm : STM
+as_stm : STM
 as pragma s : pragma_s
 (INHERITED FROM ALL_SOURCE):
 Ix srcpos : sourceposition
@@ -10205,16 +10120,16 @@ NAMED REP
 REP
 DECL
 ITEM
-DIANA Reference Manual Draft Revision 4 Page A-79
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_79
+DIANA CROSS_REFERENCE GUIDE
 ALL DECL
 ALL SOURCE
 NODE ATTRIBUTES:
 (INHERITED FROM NAMED REP):
-asexp : EXP
+as_exp : EXP
 (INHERITED FROM REP):
-as name : NAME
-(INHERITED-FROM ALL SOURCE):
+as_name : NAME
+(INHERITED_FROM ALL SOURCE):
 lx_srcpos : sourceposition
 Ix comments : comments
 ** loop
@@ -10227,9 +10142,9 @@ NODE ATTRIBUTES:
 (NODE SPECIFIC):
 as iteration : ITERATION
 as stm s : stm s
-(INHERITED-FROM BLOCK LOOP):
+(INHERITED_FROM BLOCK LOOP):
 as source name : SOURCENAME
-(INHERITED-FROM ALL SOURCE):
+(INHERITED_FROM ALL SOURCE):
 lx_srcpos : sourceposition
 Ix comments : comments
 ** MEMBERSHIP
@@ -10238,7 +10153,7 @@ rangemembership
 typemembership
 IS :NCLUDEDO IN:
 EXP VAL EXP
-EXP-VAL
+EXP_VAL
 EXP EXP
 EXP
 GENERAL ASSOC
@@ -10246,18 +10161,18 @@ ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
 as membership op : MEMBERSHIPOP
-(INHERITED-FROM EXPVAL_EXP):
-asexp : EXP
+(INHERITED_FROM EXPVAL_EXP):
+as_exp : EXP
 (INHERITED FROM EXPVAL):
 sm value : value
-(INHERITED-FROM EXPEXP):
-smexptype : TYPE-SPEC
+(INHERITED_FROM EXPEXP):
+smexptype : TYPE_SPEC
 (INHERITED FROM ALLSOURCE):
 lx_srcpos : source_position
 lx comments : comments
 ** MEMBERSHIPOP
-DIANA Reference Manual Draft Revision 4 Page A-80
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_80
+DIANA CROSS_REFERENCE GUIDE
 CLASS MEMBERS:
 In_op
 not in
@@ -10283,7 +10198,7 @@ indexed
 used-char
 used object id
 usedop
-used name id
+used_name_id
 attribute
 selected
 function call
@@ -10297,29 +10212,29 @@ lx srcpos : source-position
 lx7comments : comments
 "* -IS THE DECLARED TYPE OF:
 comprep.asname
-REP.as name
+REP.as_name
 name default.asname
 exception id.smrenames exc
-subunit.as name
+subunit.as_name
 name s.as Tist [Seq Of]
-accept.as name
-RENAME INSTANT.as name
+accept.as_name
+RENAME INSTANT.as_name
 renames objdec .astype mark name
-SIMPLE RENAME DECL.as name
-deferredconstantdecl.as name
+SIMPLE RENAME DECL.as_name
+deferredconstantdecl.as_name
 function spec.asname
-STM WITH NAME.as name
-DIANA Reference Manual Draft Revision 4 Page A-81
-DIANA CROSS-REFERENCE GUIDE
-STM WITH EXP NAME.as name
-QUAL CONV.as name -
-type -membership.as name
-NAME EXP.as name
-variant part.as name
-DSCRMT PARAM DECL.as name
-index.as name
+STM WITH NAME.as_name
+DIANA Reference Manual Draft Revision 4 Page A_81
+DIANA CROSS_REFERENCE GUIDE
+STM WITH EXP NAME.as_name
+QUAL CONV.as_name -
+type -membership.as_name
+NAME EXP.as_name
+variant part.as_name
+DSCRMT PARAM DECL.as_name
+index.as_name
 range attribute.asname
-subtype-indication.as name
+subtype-indication.as_name
 ** name-default
 IS INCLUDED IN:
 GENERIC PARAM
@@ -10328,7 +10243,7 @@ UNIT DESC
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-as name : NAME
+as_name : NAME
 (INHERITED FROM ALLSOURCE):
 lx_srcpos : source_position
 Ix comments : comments
@@ -10349,8 +10264,8 @@ GENERAL ASSOC
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-as-name : NAME
-smexptype : TYPE-SPEC
+as_name : NAME
+smexptype : TYPE_SPEC
 (INHERITED FROM ALL SOURCE):
 lx srcpos : source_position
 Ix comments : comments
@@ -10360,16 +10275,16 @@ SEQUENCES
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-DIANA Reference Manual Draft Revision 4 Page A-82
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_82
+DIANA CROSS_REFERENCE GUIDE
 as list : Seq Of NAME
 (INHERITED FROM ALLSOURCE):
 lx_srcpos : sourceposition
 Ix comments : cumments
 "IS THE DECLARED TYPE OF:
-with.as name s
-abort.as name s
-use.as name s
+with.as_name s
+abort.as_name s
+use.as_name s
 ** NAMEVAL
 CLASS MEMBERS:
 attribute
@@ -10385,8 +10300,8 @@ NODE ATTRIBUTES:
 (NODE SPECIFIC):
 sm value : value
 (INHERITED FROM NAMEEXP):
-as name : NAME
-sm -exp type : TYPESPEC
+as_name : NAME
+sm_exp type : TYPESPEC
 (INHERITED FROM ALLSOURCE):
 Ixsrcpos : source position
 Ix comments .: comments
@@ -10399,7 +10314,7 @@ NODE ATTRIBUTES:
 (NODE SPECIFIC):
 as choice s : choice s
 (INHERITED FROM NAMEDASSOC):
-asexp : EXP
+as_exp : EXP
 (INHERITED FROM ALLSOURCE):
 lx_srcpos : sourceposition
 lx comments : comments
@@ -10410,11 +10325,11 @@ assoc
 IS INCLUDED IN:
 GENERAL ASSOC
 ALLSOURCE
-DIANA Reference Manual Draft Revision 4 Page A-83
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_83
+DIANA CROSS_REFERENCE GUIDE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-asexp : EXP
+as_exp : EXP
 (INHERITED FROM ALLSOURCE):
 1x_srcpos : source_position
 Ix comments : comments
@@ -10432,8 +10347,8 @@ NODE ATTRIBUTES:
 (NODE SPECIFIC):
 as exp : EXP
 (INHERITED FROM REP):
-as name : NAME
-(INHERITED-FROM ALL SOURCE):
+as_name : NAME
+(INHERITED_FROM ALL SOURCE):
 lx_srcpos : sourceposition
 lx comments : comments
 ** no-default
@@ -10460,13 +10375,13 @@ ALL SOURCE
 NOCE ATTRIBUTES:
 (NODE SPECIFIC):
 as unit kind : UNIT KIND
-DIANA Reference Manual Draft Revision 4 Page A-84
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_84
+DIANA CROSS_REFERENCE GUIDE
 (INHERITED FROM UNITDECL):
 as header : HEADER
 (INHERITED FROM IDDECL):
-as source name : SOURCE-NAME
-(INHERITED-FROM ALL SOURCE):
+as source name : SOURCE_NAME
+(INHERITED_FROM ALL SOURCE):
 Ix srcpos : sourcepositior,
 lx comments : comments
 ,- ** NON TASK
@@ -10477,7 +10392,7 @@ UNCONSTRAINED
 enumeration
 REAL
 integer
-constrained-array
+constrained_array
 constrainedaccess
 constrained record
 UNCONSTRAINEDCOMPOSITE
@@ -10488,7 +10403,7 @@ array
 record
 IS INCLUDED IN:
 FULL TYPE SPEC
-DERIVABLE-SPEC
+DERIVABLE_SPEC
 TYPE SPEC
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
@@ -10499,7 +10414,7 @@ sm isanonymous : Boolean
 • ** NONTASKNAME
 CLASS MEMBERS:
 SUBPROG PACK NAME
-generic~id
+generic_id
 SUBPROG NAME
 package id
 procedure id
@@ -10512,8 +10427,8 @@ DEF NAME
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-DIANA Reference Manual Draft Revision 4 Page A-85
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_85
+DIANA CROSS_REFERENCE GUIDE
 smspec : HEADER
 (INHERITED FROM UNITNAME):
 sm first : DEF NAME
@@ -10541,7 +10456,7 @@ NODE ATTRIBUTES:
 (INHERITED FROM EXPVAL):
 sm value : value
 (INHERITED FROM EXPEXP):
-sm_exp_type : TYPE-SPEC
+sm_exp_type : TYPE_SPEC
 (INHERITED FROM ALLSOURCE):
 lx_srcpos : source position
 lx comments : comments
@@ -10561,8 +10476,8 @@ STM
 STMELEM
 ALLSOURCE
 I
-I. DIANA Reference Manual Draft Revision 4 Page A-86
-DIANA CROSS-REFERENCE GUIDE
+I. DIANA Reference Manual Draft Revision 4 Page A_86
+DIANA CROSS_REFERENCE GUIDE
 NODE ATTRIBUTES:
 (INHERITED FROM ALLSOURCE):
 Ix srcpos : sourceposition
@@ -10577,7 +10492,7 @@ ALL DECL
 "ALL SOURCE
 NODE ATTRIBUTES:
 (INHERITED FROM EXPDECL):
-asexp : EXP
+as_exp : EXP
 (INHERITED FROM ID_SDECL):
 as source name s : sourcename_s
 (INHERITED FROM AEL_SOURCE):
@@ -10611,11 +10526,11 @@ NODE ATTRIBUTES:
 (NODE SPECIFIC):
 lx numrep : numberrep
 (INHERITED FROM EXP_VAL):
-DIANA Reference Manual Draft Revision 4 Page A-87
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_87
+DIANA CROSS_REFERENCE GUIDE
 sm value : value
-(INHERITED-FROM EXPEXP):
-sm exp type : TYPE-SPEC
+(INHERITED_FROM EXPEXP):
+sm exp type : TYPE_SPEC
 (INHERITED FROM ALL SOURCE):
 lx srcpos : sourceposition
 lx comments : comments
@@ -10634,7 +10549,7 @@ NODE ATTRIBUTES:
 (NODE SPECIFIC):
 as typedef : TYPEDEF
 (INHERITED FROM EXPDECL):
-asexp : EXP
+as_exp : EXP
 (INHERITED FROM IDSDECL):
 as source name s : sourcename s
 (INHERITED FROM ALL SOURCE):
@@ -10647,14 +10562,14 @@ ENUMLITERAL
 iteration id
 VC NAME
 number id
-COMP NAME
+COMP_NAME
 PARAM NAME
 enumeration id
 character id
 variable id
 constant id
-component id
-discriminant id
+component_id
+discriminant_id
 in id
 out id
 in out id
@@ -10663,8 +10578,8 @@ SOURCE NAME
 DEF NAME
 ALL SOURCE
 NODE ATTRIBUTES:
-DIANA Reference Manual Draft Revision 4 Page A-88
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_88
+DIANA CROSS_REFERENCE GUIDE
 (NODE SPECIFIC):
 sm obj type : TYPE SPEC
 (INHERITED FROM DEFNAME):
@@ -10675,7 +10590,7 @@ Ixxcomments : comments
 ** operator_id
 "IS INCLUDED IN:
 SUBPROG NAME
-"SUBPROG-PACK NAME
+"SUBPROG_PACK NAME
 NON TASK NAME
 UNIT NAME
 SOURCE NAME
@@ -10688,11 +10603,11 @@ sm is inline : Boolean
 ., (INHERITED FROM SUBPROGPACK_NAME):
 sm unit desc : UNIT DESC
 sm address : EXP
-(INHERITED-FROM NONTASKNAME):
+(INHERITED_FROM NONTASKNAME):
 smspec : HEADER
 (INHERITED FROM UNITNAME):
 sm first : DEF _NAME
-(INHERITED FROM OEF_-NAME):
+(INHERITED FROM OEF__NAME):
 lx symrep : symbol_rep
 (INHERITED FROM ALLSOURCE):
 lxsrcpos : sourceposition
@@ -10711,14 +10626,14 @@ IS INCLUDED IN:
 DSCRMT PARAMDECL
 ITEM
 ALL DECL
-ALL-SOURCE
+ALL_SOURCE
 NODE ATTRIBUTES:
-DIANA Reference Manual Draft Revision 4 Page A-89
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_89
+DIANA CROSS_REFERENCE GUIDE
 (INHERITED FROM DSCRMTPARAMDECL):
 assource_names sourcenames
 as exp EXP
-as name NAME
+as_name NAME
 (INHERITED FROM ALL SOURCE):
 lx_srcpos : source position
 Ix comments : comments
@@ -10763,17 +10678,17 @@ ID DECL
 DECL
 ITEM
 ALLDECL
-DIANA Reference Manual Draft Revision 4 Page A-90
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_90
+DIANA CROSS_REFERENCE GUIDE
 ALL SOURCE
 NODE ATTRIBUTES:
 (INHERITED FROM NON GENERICDECL):
-as unit kind : UNIT-KIND
+as unit kind : UNIT_KIND
 (INHERITED FROM UNITDECL):
 as header : HEADER
-(INHERITED-FROM ID_DECL):
+(INHERITED_FROM ID_DECL):
 as source name : SOURCE NAME
-(INHERITED-FROM ALL SOURCE):
+(INHERITED_FROM ALL SOURCE):
 lx srcpos : sourceposition
 Ix comments : comments
 ** packageid
@@ -10805,7 +10720,7 @@ NODE ATTRIBUTES:
 (NODE SPECIFIC):
 as decl sl : decl s
 as decl s2 : decl-s
-(INHERITED-FROM-ALLSOURCE):
+(INHERITED_FROM-ALLSOURCE):
 1x srcpos : sourceposition
 Ix comments : comments
 ** PARAM
@@ -10813,8 +10728,8 @@ CLASS MEMBERS:
 in
 in out
 out
-DIANA Reference Manual Draft Revision 4 Page A-91
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_91
+DIANA CROSS_REFERENCE GUIDE
 IS INCLUDED IN:
 DSCRMT PARAMDECL
 ITE4
@@ -10824,12 +10739,12 @@ NODE ATTRIBUTES:
 (INHERITED FROM DSCRMTPARAMDECL):
 as source name s source name s
 as exp EXP
-as name : NAME
-(INHERITED-FROM ALL SOURCE):
+as_name : NAME
+(INHERITED_FROM ALL SOURCE):
 lx_srcpos : sourceposition
 Ix comments : comments
 IS THE DECLARED TYPE OF:
-param s.as-list [Seq Of]
+param s.as_list [Seq Of]
 ** PARAM NAME
 CLASS MEMBERS:
 in id
@@ -10838,7 +10753,7 @@ in out id
 IS INCLUDED IN:
 INIT OBJECT NAME
 OBJECT NAME-
-SOURCE-NAME
+SOURCE_NAME
 DEF NAME
 ALL SOURCE
 NODE ATTRIBUTES:
@@ -10865,20 +10780,20 @@ lx_srcpos : source_position
 lx comments : comments
 IS THE DECLARED TYPE OF:
 accept.asparam_s
-DIANA Reference Manual Draft Revision 4 Page A-92
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_92
+DIANA CROSS_REFERENCE GUIDE
 SUBPENTRYHEADER.as_param_s
 ** parenthesized
 IS INCLUDED IN:
 EXP VAL EXP
-EXP-VAL
-EXP-EXP
+EXP_VAL
+EXP_EXP
 EXP
 "GENERAL ASSOC
 ALL SOURCE
 NODE ATTRIBUTES:
 (INHERITED FROM EXPVALEXP):
-asexp : EXP
+as_exp : EXP
 (INHERITED FROM EXPVAL):
 sm value : value
 (INHERITED FROM EXPEXP):
@@ -10892,10 +10807,10 @@ USE PRAGMA
 DECL
 ITEM
 ALL DECL
-ALL-SOURCE
+ALL_SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-as used name id : used name id
+as_used_name_id : used_name_id
 as general assoc s : generalassocS
 (INHERITED FROM ALL_SOURCE):
 lx_srcpos : sourceposition
@@ -10912,37 +10827,37 @@ variantpragma.aspragma
 IS INCLUDED IN:
 PREDEF NAME
 DEF NAME
-ALL-SOURCE
+ALL_SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-DIANA Reference Manual Draft Revision 4 Page A-93
-DIANA CROSS-REFERENCE GUIDE
-sm -argument-ids :argument-id S
-(INHERITED FROM DEF-NARE):
+DIANA Reference Manual Draft Revision 4 Page A_93
+DIANA CROSS_REFERENCE GUIDE
+sm_argument-ids :argument-id S
+(INHERITED FROM DEF_NARE):
 lx symrep :symbol rep
-(INHERITED FROM ALL-SOURCE):
-lx~srcpos :source_position
+(INHERITED FROM ALL_SOURCE):
+lx_srcpos :source_position
 lx comments :comments
 **pragia-s
 IS INCLUDED IN:
 SEQUENCES
-ALL-SOURCE
-M~ODE ATTRIBUTES:
+ALL_SOURCE
+M_ODE ATTRIBUTES:
 (NODE SPECIFIC):
 as list : Seq Of pragma
 (INHERITED FROM ALLSOURCE):
-lx~srcpos : source position
+lx_srcpos : source position
 Ix comments : comments
 IS THE DECLARED TYPE OF:
-al ignment.as~pragna~S
-compilation_unit.as~pragmaS
+al ignment.as_pragna_S
+compilation_unit.as_pragmaS
 labeied.as_pragma-s
-compli1St. aspragna~s
+compli1St. aspragna_s
 **PREDEF NAME
 CLASS MEMBERS:
 attribute-id
 void
-bi tn -operator~id
+bi tn -operator_id
 argument id
 pragmd id
 IS INCLUDED IN:
@@ -10952,10 +10867,10 @@ NODE ATTRIBUTES:
 (INHERITED FROM DEF NAME):
 lx symrep :symbol ret3
 (INHERITEO FROM ALLSOURCE):
-ix_srcpos : sourCe_posit~nn
+ix_srcpos : sourCe_posit_nn
 Ix comments : comments
 IS THE DECLARED TYPE OF:
-SUBPROG NAME. sm-interf ace
+SUBPROG NAME. sm_interf ace
 **private
 IS INCLUDED IN:
 PRIVATE SPEC
@@ -10963,13 +10878,13 @@ DERIVABLE SPEC
 TYPESPEC
 NODE ATTRIBUTES:
 (INHERITED FROM PRIVATE_SPEC):
-sm -discriminants : dscrmt deci s
+sm_discriminants : dscrmt deci s
 SM-type_spec : TYPE SPEC
-DIANA Reference Manual Draft Revision 4 Page A-94
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_94
+DIANA CROSS_REFERENCE GUIDE
 (INHERITED FROM DERIVABLESPEC):
 sm derived : TYPE SPEC
-sm-is anonymous : Boolean
+sm_is anonymous : Boolean
 ** private_def
 IS INCLUDED IN:
 TYPE DEF
@@ -11012,22 +10927,22 @@ CALL STM
 STMIITHNAME
 STM
 STM ELEM
-ALL-SOURCE
-DIANA Reference Manual Draft Revision 4 Page A-95
-DIANA CROSS-REFERENCE GUIDE
+ALL_SOURCE
+DIANA Reference Manual Draft Revision 4 Page A_95
+DIANA CROSS_REFERENCE GUIDE
 NODE ATTRIBUTES:
 (INHERITED FROM CALLSTM):
-as-general _assocs : generalassoc s
+as_general _assocs : generalassoc s
 sm normalized param s : exp_s
-(INHERITED-FROM STM_WITH_NAME):
-as name : NAME
+(INHERITED_FROM STM_WITH_NAME):
+as_name : NAME
 (INHERITED FROM ALL SOURCE):
 1x_srcpos : sourceposition
 Ix comments : comments
 ** procedure id
 IS INCLUDED IN:
 SUBPROG NAME
-SUBPROG-PACKNAME
+SUBPROG_PACKNAME
 NON TASK NAME
 UNIT NAME
 SOURCE NAME
@@ -11036,7 +10951,7 @@ ALL SOURCE
 NODE ATTRIBUTES:
 (INHERITED FROM SUBPROGNAME):
 sm is inline : Boolean
-sm-interface : PREDEFNAME
+sm_interface : PREDEFNAME
 (INHERITED FROM SUBPROG PACK NAME):
 sm unit desc : UNIT DESC
 sm address : EXP
@@ -11063,25 +10978,25 @@ lx comments : comments
 ** QUAL_CONV
 CLASS MEMBERS:
 conversion
-DIANA Reference Marual Draft Revision 4 Page A-96
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Marual Draft Revision 4 Page A_96
+DIANA CROSS_REFERENCE GUIDE
 qualified
 IS INCLUDED IN:
 EXP VAL EXP
-EXP-VAL
+EXP_VAL
 EXP EXP
 EXP
 GENERAL ASSOC
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-as name : NAME
+as_name : NAME
 (INHERITED FROM EXPVALEXP):
-asexp : EXP
+as_exp : EXP
 (INHERITED FROM EXPVAL):
 sm value : value
 (INHERITED FROM EXP_EXP):
-smexp_type : TYPE-SPEC
+smexp_type : TYPE_SPEC
 (INHERITED FROM ALLSOURCE):
 Ixsrcpos : sourceposition
 Ix comments : comments
@@ -11089,16 +11004,16 @@ Ix comments : comments
 IS INCLUDED IN:
 QUAL CONV
 EXP VAL EXP
-EXP-VAL
+EXP_VAL
 EXP EXP
 EXP
 GENERAL ASSOC
 ALL SOURCE
 NODE ATTRIBUTES:
 (INHERITED FROM QUALCONV):
-as name : NAME
+as_name : NAME
 (INHERITED FROM EXPVALEXP):
-asexp : EXP
+as_exp : EXP
 (INHERITED FROM EXP_VAL):
 sm value : value
 (INHERITED FROM EXPEXP):
@@ -11115,13 +11030,13 @@ EXP
 GENERAL ASSOC
 ALL SOURCE
 NODE ATTRIBUTES:
-DIANA Reference Manual Draft Revision 4 Page A-97
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_97
+DIANA CROSS_REFERENCE GUIDE
 (NODE SPECIFIC):
 asqualified : qualified
 (INHERITED FROM EXPEXP):
 sm exp type : TYPE SPEC
-(INHERITED-FROM ALLSOURCE): I
+(INHERITED_FROM ALLSOURCE): I
 lx_srcpos : source_position
 Ix comments : comments
 ** raise
@@ -11132,7 +11047,7 @@ STM ELEM
 ALL SOURCE
 NODE ATTRIBUTES:
 (INHERITED FROM STMWITH_NAME):
-as name : NAME
+as_name : NAME
 (INHERITED FROM ALLSOURCE):
 lx_srcpos : sourceposition
 Ix comments comments
@@ -11147,7 +11062,7 @@ CONSTRAINT
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-smtypespec : TYPESPEC
+sm_type_spec : TYPESPEC
 (INHERITED FROM ALLSOURCE):
 lx_srcpos source_position
 lx comments . comments
@@ -11164,13 +11079,13 @@ CONSTRAINT
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-as_expl . EXP
-DIANA Reference Manual Draft Revision 4 Page A-98
-DIANA CROSS-REFERENCE GUIDE
+as_exp1 . EXP
+DIANA Reference Manual Draft Revision 4 Page A_98
+DIANA CROSS_REFERENCE GUIDE
 asexp2 : EXP
 (INHERITED FROM RANGE):
 "sm type spec : TYPESPEC
-(INHERITED FROM-ALLSOURCE):
+(INHERITED FROM_ALLSOURCE):
 lx srcpos : sourceposition
 Ix comments : comments
 ** range-attribute
@@ -11181,9 +11096,9 @@ CONSTRAINT
 "ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-as name : NAME
-as-exp : EXP
-as -used name id : used name id
+as_name : NAME
+as_exp : EXP
+as_used name id : used_name_id
 (INHERITED FROM RANGE):
 sm type spec : TYPESPEC
 (INHERITED FROM ALLSOURCE):
@@ -11193,7 +11108,7 @@ Ix comments : comments
 IS INCLUDED IN:
 MEMBERSHIP
 EXP VAL EXP
-EXP-VAL
+EXP_VAL
 EXP EXP
 EXP
 GENERAL ASSOC
@@ -11203,12 +11118,12 @@ NODE ATTRIBUTES:
 as range : RANGE
 (INHERITED FROM MEMBERSHIP):
 as membership_op : MEMBERSHIPOP
-(INHERITED-FROM EXPVALEXP):
+(INHERITED_FROM EXPVALEXP):
 as exp : EXP
 (INHERITED FROM EXPVAL):
 sm value : value
 (INHERITED FROM EXPEXP):
-smexptype : TYPE-SPEC
+smexptype : TYPE_SPEC
 (INHERITED FROM ALLSOURCE):
 Ix_srcpos : source position
 lx comments : comments
@@ -11216,23 +11131,23 @@ lx comments : comments
 CLASS MEMBERS:
 float
 __ __ _
-DIANA Reference Manual Draft Revision 4 Page A-99
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_99
+DIANA CROSS_REFERENCE GUIDE
 fixed
 IS INCLUDED IN:
 SCALAR
 NON TASK
 FULL TYPE SPEC
-DERIVABLE-SPEC
+DERIVABLE_SPEC
 TYPE SPEC
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
 sm accuracy : value
-(INHERITED-FROM SCALAR):
+(INHERITED_FROM SCALAR):
 sm range : RANGE
 cd impl size : Integer
-(INHERITED-FROM-NONTASK):
-smbase_type : TYPE-SPEC
+(INHERITED_FROM-NONTASK):
+smbase_type : TYPE_SPEC
 (INHERITED FROM DERIVABLESPEC):
 sm derived : TYPE SPEC
 smnis anonymous : Boolean
@@ -11246,7 +11161,7 @@ ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
 smtype_spec : TYPESPEC
-asexp : EXP
+as_exp : EXP
 as range : RANGE
 (INHERITED FROM ALLSOURCE):
 Ix_srcpos : source_position
@@ -11257,22 +11172,22 @@ UNCONSTRAINEDCOMPOSITE
 UNCONSTRAINED
 NON TASK
 FULT TYPE SPEC
-DERIVABLE-SPEC
+DERIVABLE_SPEC
 TYPE SPEC
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
 sm discriminant s : dscrmt declis
 sm representation : REP
-sm comp-list : comp list
-(INHERITED-FROM UNCONSTRAINEDCOMPOSITE):
+sm comp_list : comp_list
+(INHERITED_FROM UNCONSTRAINEDCOMPOSITE):
 sm is limited : Boolean
 sm is packed : Boolean
-(INHERITED-FROM UNCONSTRAINED):
-DIANA Reference Manual Draft Revision 4 Page A-100
-DIANA CROSS-REFERENCE GUIDE
+(INHERITED_FROM UNCONSTRAINED):
+DIANA Reference Manual Draft Revision 4 Page A_100
+DIANA CROSS_REFERENCE GUIDE
 sm size : EXP
 (INHERITED FROM NON_TASK):
-sm basetype : TYPE-SPEC
+sm basetype : TYPE_SPEC
 (INHERITED FROM DERIVABLE SPEC):
 sm derived : TYPE SPEC
 sm isanonymous : Boolean
@@ -11298,7 +11213,7 @@ NODE ATTRIBUTES:
 asalignmentclause : ALIGNMENTCLAUSE
 ascomp_rep_s : comp_rep_s
 (INHERITED FROM REP):
-as name : NAME
+as_name : NAME
 (INHERITED FROM ALLSOURCE):
 lx_srcpos : source position
 lx comments : comments
@@ -11312,13 +11227,13 @@ UNIT DESC
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-as name : NAME
+as_name : NAME
 (INHERITED FROM ALLSOURCE):
 Ixsrcpos : sourceposition
 lx comments : comments
 ** renames exc decl
-DIANA Reference Nanual Draft Revision 4 Page A-1O1
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Nanual Draft Revision 4 Page A_1O1
+DIANA CROSS_REFERENCE GUIDE
 IS INCLUOED IN:
 SIMPLE RENAMEDECL
 ID DECE
@@ -11328,10 +11243,10 @@ ALL DECL
 ALL SOURCE
 NODE ATTRIBUTES:
 (INHERITED FROM SIMPLERENAMEDECL):
-as name : NAME
+as_name : NAME
 (INHERITED FROM ID DECL):
 as source name : SOURCE NAME
-(INHERITED-FROM AELLSOURCE):
+(INHERITED_FROM AELLSOURCE):
 1x_srcpos : sourceposition
 lx comments : comments
 ** renamesobj_decl
@@ -11346,7 +11261,7 @@ NODE ATTRIBUTES:
 (NODE SPECIFIC):
 astype mark name : NAME
 (INHERITED FROM SIMPLE_RENAMEDECL):
-as name : NAME
+as_name : NAME
 (INHERITED FROM ID DECL):
 as source name : SOURCE NAME
 (INHERITED FROM AEL_SOURCE):
@@ -11360,15 +11275,15 @@ UNIT DESC
 ALL SOURCE
 NODE ATTRIBUTES:
 (INHERITED FROM RENAMEINSTANT):
-as name : NAME
+as_name : NAME
 (INHERITED FROM ALL SOURCE):
 lx_srcpos : source_positionlx comments : comments
 ** REP
 CLASS MEMBERS:
 I
 !
-DIANA Reference Manual Draft Revision 4 Page A-I02
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_I02
+DIANA CROSS_REFERENCE GUIDE
 void
 NAMED REP
 record rep
@@ -11381,8 +11296,8 @@ ALL DECL
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-as name : NAME
-(INHERITED-FROM ALLSOURCE):
+as_name : NAME
+(INHERITED_FROM ALLSOURCE):
 lx srcpos : sourceposition
 lx comments : comments
 IS THE DECLARED TYPE OF:
@@ -11407,7 +11322,7 @@ ALL SOURCE
 NODE ATTRIBUTES:
 (INHERITED FROM FOR_REV):
 as source name : SOURCE NAME
-as discrete_range : DISCRETE-RANGE
+as discrete_range : DISCRETE_RANGE
 (INHERITED FROM ALLSOURCE):
 lx srcpos : source position
 Ix comments : comments
@@ -11417,24 +11332,24 @@ enumeration
 REAL
 integer
 float
-DIANA Reference Ianual Draft Revision 4 Page A-103
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Ianual Draft Revision 4 Page A_103
+DIANA CROSS_REFERENCE GUIDE
 fixed
 IS INCLUDED IN:
 NON TASK
 FULT TYPE SPEC
-DERIVABLE-SPEC
+DERIVABLE_SPEC
 TYPE SPEC
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-sm-range : RANGE
+sm_range : RANGE
 cd impl_size : Integer
-(INHERITED-FROM NONTASK):
+(INHERITED_FROM NONTASK):
 smbasetype : TYPE SPEC
 (INHERITED FROM DERIVABLE_SPEC):
 sm derived : TYPE SPEC
-sm-is anonymous : Boolean
-IS THE DECLARED TYPE OF:scalar s.as list [Seq Of)
+sm_is anonymous : Boolean
+IS THE DECLARED TYPE OF:scalar_s.as list [Seq Of)
 * scalar_s
 IS INCLUDED IN:
 SEQUENCES
@@ -11442,7 +11357,7 @@ ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
 as list : Seq Of SCALAR |
-(INHERITED-FROM ALLSOURCE):
+(INHERITED_FROM ALLSOURCE):
 lx_srcpos : source position
 lx comments : comments
 IS THE DECLARED TYPE OF: _
@@ -11467,15 +11382,15 @@ NODE ATTRIBUTES:
 as_exp : EXP
 as stms : stms
 I
-DIANA Reference Manual Draft Revision 4 Page A-104
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_104
+DIANA CROSS_REFERENCE GUIDE
 (INHERITED FROM ALLSOURCE):
 lx srcpos sourcejposition
 1x comments : comments
 ** selected
 IS INCLUDED IN:
 NAME VAL
-NAME-EXP
+NAME_EXP
 NAME
 EXP
 GENERAL ASSOC
@@ -11486,7 +11401,7 @@ as designator : DESIGNATOR
 (INHERITED FROM NAMEVAL):
 sm value : value
 (INHERITED FROM NAMEEXP):
-as name : NAME
+as_name : NAME
 sm exp-type : TYPESPEC
 (INHERITED FROM ALLSOURCE):
 Ix_srcpos : sourceposition
@@ -11518,11 +11433,11 @@ param_s
 name s
 index s
 I.-
-DIANA Reference Manual Draft Revision 4 Page A-105
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_105
+DIANA CROSS_REFERENCE GUIDE
 item s
 exp sI
-enum literal s
+enum_literal_s
 discre:e_range_s
 general _assocs
 dscrmt -decl s
@@ -11541,7 +11456,7 @@ lx comments : comments
 ** short-circuit
 IS INCLUDED IN:
 EXP VAL
-EXP-EXP
+EXP_EXP
 EXP
 GENERAL ASSOC
 ALL SOURCE
@@ -11550,11 +11465,11 @@ NODE ATTRIBUTES:
 asexpl : EXP
 as exp2 : EXP
 as short circuit op : SHORTCIRCUITOP
-(INHERITED-FROM EXPVAL)-:
+(INHERITED_FROM EXPVAL)-:
 sm value : value
-(INHERITED-FROM EXPEXP):
+(INHERITED_FROM EXPEXP):
 sm exp type : TYPESPEC
-(INHERITED-FROM ALL SOURCE):
+(INHERITED_FROM ALL SOURCE):
 lxsrcpos : sourceposition
 ix comments : comments
 ** SHORTCIRCUIT OP
@@ -11569,8 +11484,8 @@ lxsrcpos : sourceposition
 Ix comments : comments
 IS THE DECLARED TYPE OF:
 short circuit.asshortcircuitop
-DIANA Reference Manual Draft Revision 4 Page A-106
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_106
+DIANA CROSS_REFERENCE GUIDE
 ** SIMPLERENAME DECL
 CLASS MEMBERS:
 renamesobjdecl
@@ -11583,7 +11498,7 @@ ALL DECL
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-as name : NAME
+as_name : NAME
 (INHERITED FROM ID_DECL):
 as source name : SOURCENAME
 (INHERITED FROM ALL SOURCE):
@@ -11600,7 +11515,7 @@ NODE ATTRIBUTES:
 (NODE SPECIFIC):
 as discreterange : DISCRETERANGE
 (INHERITED FROM NAMEEXP):
-as name : NAME
+as_name : NAME
 sm exptype : TYPESPEC
 (INHERITED FROM A!-LLSCURCE):
 lxsrcpos : source position
@@ -11615,12 +11530,12 @@ void
 entry_id
 exception id
 INIT OBJECT NAME
-ENUM-LTERAL
+ENUM_LTERAL
 iteration id
 label id
 block loopid
 NONTASKNAME
-DIANA Reference Manual Draft Revision 4 Page A-1O1
+DIANA Reference Manual Draft Revision 4 Page A_1O1
 DIANA CiOSS-REFERENCE GUIDE
 task body_id
 typeid
@@ -11629,7 +11544,7 @@ private-type_id
 1_private_type_id
 VC NAME
 number id
-COMP NAME
+COMP_NAME
 PARAR NAME
 enumeration id
 character id
@@ -11638,7 +11553,7 @@ generic-id -
 variable id
 constant id
 component_id
-discriminant id
+discriminant_id
 in id
 out id
 in out id
@@ -11674,8 +11589,8 @@ as list : Seq Of SOURCENAME
 (INHERITED FROM ALLSOURCE):
 Ix_srcpos : sourceposition
 lx comments : comments
-DIANA Reference Manual Draft Revision 4 Page A-108
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_108
+DIANA CROSS_REFERENCE GUIDE
 IS THE DECLARED TYPE OF:
 labeled.as source name s
 DSCRMT PARAMDECL.as source name s
@@ -11686,7 +11601,7 @@ labeled
 null stm
 abort
 STM WITH EXP
-STM- WITH-NAME
+STM- WITH_NAME
 accept
 ENTRY STM
 BLOCK LOOP
@@ -11726,8 +11641,8 @@ labeled.as stm
 CLASS MEMBERS:
 STM
 stmpragma
-DIANA Reference Manual Draft Revision 4 Page A-109
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_109
+DIANA CROSS_REFERENCE GUIDE
 labeled
 null stm.
 abort
@@ -11762,7 +11677,7 @@ NODE ATTRIBUTES:
 (INHERITED FROM ALLSOURCE):
 lx srcoos : sourceposition
 Ix comments : comments
-IS-THE DECLARED TYPE OF:
+IS_THE DECLARED TYPE OF:
 stm s.as list [Seq Of]
 ** stm-pragma
 IS INCLUDED IN:
@@ -11778,8 +11693,8 @@ lx comments : comments
 IS INCLUDED IN:
 SEQUENCES
 ALLSOURCE
-DIANA Reference Manual Draft Revision 4 Page A-110
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_110
+DIANA CROSS_REFERENCE GUIDE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
 as list : Seq Of STM_ELEM
@@ -11788,13 +11703,13 @@ Ix_srcpos : source position
 lx comments : comments
 IS THE DECLARED TYPE OF:
 ENTRY STM.as stm sl
-*.as-stm-s2
+*.as_stm-s2
 accept.as stm s
-blockbody.as-stm-s
+blockbody.as_stm-s
 loop.as stm s
 alternative.as stms
-TEST CLAUSE.as-stm s
-CLAUSESSTM.as-stm-s
+TEST CLAUSE.as_stm s
+CLAUSESSTM.as_stm-s
 ** STM WITHEXP
 CLASS MEMBERS:
 return
@@ -11826,12 +11741,12 @@ STM ELEM
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-as name : NAME
+as_name : NAME
 (INHERITED FROM STMWITHEXP):
-asexp : EXP
+as_exp : EXP
 (INHERITED FROM ALLSOURCE):
-DIANA Reference Manual Draft Revision 4 Page A-111
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_111
+DIANA CROSS_REFERENCE GUIDE
 lxsrcpos : sourceposition
 lx comments : comments
 ** STM WITH NAME
@@ -11847,14 +11762,14 @@ STM ELEM
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-as name : NAME
-(INHERITED-FROM ALLSOURCE):
+as_name : NAME
+(INHERITED_FROM ALLSOURCE):
 lx_srcpos : source_position
 ]x comments : comments
 ** string-literal
 IS INCLUDED IN:
 AGG EXP
-EXP-EXP
+EXP_EXP
 EXP
 GENERAL ASSOC
 ALL SOURCE
@@ -11863,7 +11778,7 @@ NODE ATTRIBUTES:
 lx_symrep : symbolrep
 (INHERITED FROM AGG EXP):
 sm discrete range : DISCRETERANGE
-(INHERITED-FROM EXPEXP):
+(INHERITED_FROM EXPEXP):
 smexptype : TYPESPEC
 (INHERITED FROM ALLSOURCE):
 lx_srcpos : sourceposition
@@ -11878,8 +11793,8 @@ NODE ATTRIBUTES:
 lx_srcpos : sourceposition
 Ix comments : comments
 ** SUBPENTRYHEADER
-DIANA Reference Manual Draft Revision 4 Page A-112
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_112
+DIANA CROSS_REFERENCE GUIDE
 CLASS MEMBERS:
 procedurespec
 functior spec
@@ -11910,7 +11825,7 @@ as header : HEADER
 (INHERITED FROM IDOECL):
 as source name : SOURCENAME
 (INHERITED FROM ALL_SOURCE):
-lx-srcpos : sourceposition
+lx_srcpos : sourceposition
 lx comments : comments
 ** SUBPROG NAME
 CLASS MEMBERS:
@@ -11930,14 +11845,14 @@ sm is inline : Boolean
 sm interface : PREDEF NAME
 (INHERITED FROM SUBPROGPACK_NAME):
 sm unit desc : UNITDESC
-DIANA Reference Manual Draft Revision 4 Page A-113
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_113
+DIANA CROSS_REFERENCE GUIDE
 sm address : EXP
 (INHERITED FROM NONTASKNAME):
 sm spec : HEADER
-(INHERITED-FROM UNITNAME):
+(INHERITED_FROM UNITNAME):
 sm first : DEF NAME
-(INHERITED-FROM DEFNAME):
+(INHERITED_FROM DEFNAME):
 Ix symrep : symbolrep
 (INHERITED FROM ALLSOURCE):
 lx srcpos : source position
@@ -11960,7 +11875,7 @@ NODE ATTRIBUTES:
 sm unit desc : UNIT DESC
 sm address : EXP
 (INHERITED FROM NONTASK_NAME):
-sm-spec : HEADER
+sm_spec : HEADER
 (INHERITED FROM UNITNAME):
 sm first : DEF NAME
 (INHERITED FROM DEFNAME):
@@ -11982,8 +11897,8 @@ as source name : SOURCE NAME
 as body : BODY
 (INHERITED FROM ALLSOURCE):
 lx_srcpos : sourcejosition
-DIANA Reference Manual Draft Revision 4 Page A-114
-DIANA CROSS-REFEPENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_114
+DIANA CROSS_REFEPENCE GUIDE
 Ix comments comments
 ** subtypeallocator
 IS INCLUDED IN:
@@ -11994,9 +11909,9 @@ ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
 as subtype indication : subtype indication
-smndesig type : TYPE-SPEC
+smndesig type : TYPE_SPEC
 (INHERITED FROM EXPEXP):
-sm exp_type : TYPE-SPEC
+sm exp_type : TYPE_SPEC
 (INHERITED FROM ALL SOURCE):
 Ix srcpos : source position
 "lx comments : comments
@@ -12023,22 +11938,22 @@ DEF NAME
 ALL SOURCE
 NODE ATTRIBUTES:
 (INHERITED FROM TYPENAME):
-sm_type_spec : TYPE-SPEC
+sm_type_spec : TYPE_SPEC
 (INHERITED FROM DEFNAME):
 lx_symrep : symbolrep
 (INHERITED FROM ALLSOURCE):
 Ix_srcpos : sourceposition
 lx comments : comments
 ** subtypeindication
-DIANA Reference Manual Draft Revision 4 Page A-115
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_115
+DIANA CROSS_REFERENCE GUIDE
 IS INCLUDED IN:
 CONSTRAINEDDEF
 TYPE DEF
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-as name : NAME
+as_name : NAME
 (INHERITED FROM CONSTRAINEDDEF):
 as constraint : CONSTRAINT
 (INHERITED FROM ALL SOURCE):
@@ -12055,8 +11970,8 @@ ALL DECL
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-as name : NAME
-as -subunit body : SUBUNIT-BODY
+as_name : NAME
+as_subunit body : SUBUNIT_BODY
 (INHERITED FROM ALL_SOURCE).:
 Ix_srcpos : source position
 Ix_comments : comments
@@ -12068,10 +11983,10 @@ packagebody
 IS INCLUDED IN:
 ITEM
 ALL DECL
-ALL-SOURCE
+ALL_SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-as sourcename : SOURCE NAMEas~body : BODY-
+as sourcename : SOURCE NAMEas_body : BODY-
 (INHERITED FROM ALLSOURCE):
 lx_srcpos : sourceposition
 1x comments : comments
@@ -12081,17 +11996,17 @@ subunit.as subunit body
 IS INCLUDED IN:
 I
 I
-DIANA Reference Manual Draft Revision 4 Page A-116
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_116
+DIANA CROSS_REFERENCE GUIDE
 SUBUNIT BODY
 ITEM
 ALL DECL
-ALL-SOURCE
+ALL_SOURCE
 NODE ATTRIBUTES:
 (INHERITED FROM SUBUNITBODY):
 as source name : SOURCE NAME
 as body : BODY
-(INHERITED-FROM ALL SOURCE):
+(INHERITED_FROM ALL SOURCE):
 lx srcpos : source position
 Ix comments : comments
 ** task-body-id
@@ -12129,20 +12044,20 @@ Ix comments : comments
 ** taskspec
 IS INCLUDED IN:
 FULL TYPE SPEC
-DERIVABLE-SPEC
+DERIVABLE_SPEC
 TYPESPEC
-DIANA Reference Manual Draft Revision 4 Page A-117
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_117
+DIANA CROSS_REFERENCE GUIDE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
 sm decl s : decl s
 sm storagesize : EXP
 sm siie : EXP
 sm address : EXP
-sm-body : BODY
-(INHERITED-FROM DERIVABLE_SPEC):
+sm_body : BODY
+(INHERITED_FROM DERIVABLE_SPEC):
 sm derived : TYPE SPEC
-sm-isanonymous : Boolean
+sm_isanonymous : Boolean
 ** terminate
 IS INCLUDED IN:
 STM
@@ -12151,7 +12066,7 @@ ALL SOURCE
 NODE ATTRIBUTES:
 (INHERITED FROM ALL SOURCE):
 lx_srcpos : sourcepositionIx comments : comments
-** TEST-CLAUSE
+** TEST_CLAUSE
 CLASS MEMBERS:
 cond clause
 select alternative
@@ -12160,9 +12075,9 @@ TEST CLAUSE ELEM
 - ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-asexp : EXP
+as_exp : EXP
 as stms : stms
-(INHERITED-FROR ALLSOURCE):
+(INHERITED_FROR ALLSOURCE):
 Ix_srcpos : source_position
 lx comments : comments
 ** TESTCLAUSEELEM
@@ -12179,8 +12094,8 @@ lx srcpos : sourceposition
 lx comments : comments
 IS THE DECLARED TYPE OF:
 testclauseelems.aslist [Seq Of)
-DIANA Reference Manual Draft Revision 4 Page A-118
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_118
+DIANA CROSS_REFERENCE GUIDE
 ** test clause elem s
 "IS INCLUDED IN:
 SEQUENCES
@@ -12202,8 +12117,8 @@ ALL SOURCE
 NODE ATTRIBUTES:
 (INHERITED FROM ENTRYSTM):
 as stm s1 : stm s
-as-stm-s2 : stm-s
-(INHERITED-FROM ALLSOURCE):
+as_stm-s2 : stm-s
+(INHERITED_FROM ALLSOURCE):
 Ix_srcpos : sourceposition
 lx comments : comments
 ** type_deci
@@ -12218,7 +12133,7 @@ NODE ATTRIBUTES:
 as dscrmt decl s : dscrmt decl s
 as typedef - : TYPE DEF -
 (INHERITED FROM ID_OECL):
-as source name : SOURCE-NAME
+as source name : SOURCE_NAME
 (INHERITED FROM ALL SOURCE):
 lx_srcpos : sourceposition
 lx comments : comments
@@ -12227,9 +12142,9 @@ CLASS MEMBERS:
 enumerationdef
 record def
 ARR ACC DER DEF
-CONSTRATNED-DEF
-DIANA Reference Manual Draft Revision 4 Page A-119
-DIANA CROSS-REFERENCE GUIDE
+CONSTRATNED_DEF
+DIANA Reference Manual Draft Revision 4 Page A_119
+DIANA CROSS_REFERENCE GUIDE
 void
 private def
 lIprivate def
@@ -12237,7 +12152,7 @@ formal dscrt def
 formal float def
 formal fixed def
 formal integerdef
-constrained-arraydef
+constrained_arraydef
 derived def
 access def
 unconstrained arraydef
@@ -12274,16 +12189,16 @@ Ix comments : comments
 IS INCLUDED IN:
 MEMBERSHIP
 EXP VAL EXP
-EXP-VAL
-EXP-EXP
+EXP_VAL
+EXP_EXP
 EXP
 GENERAL ASSOC
 ALL SOURCE
 NODE ATTRIBUTES:
-DIANA Reference Manual Draft Revision 4 Page A-120
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_120
+DIANA CROSS_REFERENCE GUIDE
 (NODE SPECIFIC):
-as name NAME
+as_name NAME
 (INHERITED FROM MEMBERSHIP):
 as membershipop : MEMBERSHIPOP
 (INHERITED FROM EXPVALEXP):
@@ -12291,7 +12206,7 @@ as exp : EXP
 (INHERITED FROM EXPVAL):
 sm value : value
 -' (INHERITED FROM EXPEXP):
-sm exp type : TYPE-SPEC
+sm exp type : TYPE_SPEC
 (INHERITED FROM ALLSOURCE):
 lx srcpos : sourceposition
 Ix comments : comments
@@ -12332,10 +12247,10 @@ CONSTRAINED
 UNCONSTRAINED
 enumeration
 REAL
-DIANA Reference Manual Draft Revision 4 Page A-121
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_121
+DIANA CROSS_REFERENCE GUIDE
 integer
-constrained-array
+constrained_array
 constrained access
 constrained record
 UNCONSTRAINEDCOMPOSITE
@@ -12370,7 +12285,7 @@ record
 IS INCLUDED IN:
 NON TASK
 FULL TYPE SPEC
-DERIVABLE-SPEC
+DERIVABLE_SPEC
 TYPE SPEC
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
@@ -12384,8 +12299,8 @@ smiisanonymous : Boolean
 IS INCLUDED IN:
 ARR ACC DER DEF
 TYPEDEF
-DIANA Reference Manual Draft Revision 4 Page A-122
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_122
+DIANA CROSS_REFERENCE GUIDE
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
@@ -12395,7 +12310,7 @@ assubtype indication : subtypeindication
 (INHERITED FROM ALLSOURCE):
 Ix_srcpos : sourceposition
 Ix comments : comments
-** UNCONSTRAINED-COMPOSITE
+** UNCONSTRAINED_COMPOSITE
 CLASS MEMBERS:
 array
 record
@@ -12403,7 +12318,7 @@ IS INCLUDED IN:
 UNCONSTRAINED
 NON TASK
 FULL TYPE SPEC
-DERIVABLE-SPEC
+DERIVABLE_SPEC
 TYPE SPEC
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
@@ -12415,7 +12330,7 @@ sm size : EXP
 sm basetype : TYPESPEC
 (INHERITEO FROM DERIVABLE SPEC):
 sm derived : TYPE SPEC
-sm-is anonymous : Boolean
+sm_is anonymous : Boolean
 ** UNITDECL
 CLASS MEMBERS:
 generic decl
@@ -12432,12 +12347,12 @@ NODE ATTRIBUTES:
 (NODE SPECIFIC):
 as header : HEADER
 (INHERITED FROM IDDECL):
-as source name : SOURCE-NAME
+as source name : SOURCE_NAME
 (INHERITED FROM ALL SOURCE):
 lxsrcpos : source position
 lx comments : comments
-DIANA Reference Manual Draft Revision 4 Page A-123
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_123
+DIANA CROSS_REFERENCE GUIDE
 * UNIT DESC
 CLASS MEMBERS:
 UNIT KIND
@@ -12486,8 +12401,8 @@ CLASS MEMBERS:
 NON TASK NAME
 tasW bodyid
 SUBPROGPACKNAME
-DIANA Reference Manual Draft Revision 4 Page A-124
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_124
+DIANA CROSS_REFERENCE GUIDE
 genericId
 SUBPROG NAME
 package id
@@ -12527,13 +12442,13 @@ ALL DECL
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-as name s : name s
+as_name s : name s
 (INHERITED FROM ALLSOURCE):
 lx srcpos : sourceposition
 1x comments : comments
 ** USE PRAGMA
-DIANA Reference Manual Draft Revision 4 Page A-125
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_125
+DIANA CROSS_REFERENCE GUIDE
 CLASS MEMBERS:
 use
 pragma
@@ -12581,9 +12496,9 @@ Ix comments : comments
 ** USED NAME
 CLASS MEMBERS:
 ised op
-used name id
-DIANA Reference Manual Draft Revision 4 Page A-126
-DIANA CROSS-REFERENCE GUIDE
+used_name_id
+DIANA Reference Manual Draft Revision 4 Page A_126
+DIANA CROSS_REFERENCE GUIDE
 IS INCLUDED IN:
 DESIGNATOR
 NAME
@@ -12599,7 +12514,7 @@ lx srcpos : sourceposition
 lx comments : comments
 IS THE DECLARED TYPE OF:
 assoc.as used name
-** used name id
+** used_name_id
 IS INCLUDED IN:
 USED NAME
 DESIGNATOR
@@ -12615,7 +12530,7 @@ Ix symrep : symbol-rep
 1x_srcpos : sourceposition
 1x comments : comments
 IS THE DECLARED TYPE OF:
-attribute.as used name id
+attribute.as_used_name_id
 rangeattribute.asusedname id
 E O pragma.asusedname id
 ** USEDOBJECT
@@ -12634,8 +12549,8 @@ smexp_type : TYPE SPEC
 sm value : value
 (INHERITED FROM DESIGNATOR):
 sm defn : DEFNAME
-DIANA Reference Manual Draft Revision 4 Page A-127
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_127
+DIANA CROSS_REFERENCE GUIDE
 lx_symrep : synbol_rep
 (INHERITED FROM ALLSOURCE):
 lx_srcpos : source position
@@ -12684,11 +12599,11 @@ ALL DECL
 ALL SOURCE
 NODE ATTRIBUTES:
 (INHERITED FROM OBJECTDECL):
-DIANA Reference Manual Draft Revision 4 Page A-128
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_128
+DIANA CROSS_REFERENCE GUIDE
 astypedef : TYPEDEF
 (INHERITED FROM EXPDECL):
-asexp : EXP
+as_exp : EXP
 (INHERITED FROM 10DSDECL):
 as source name s : sourcename_s
 (INHERITED FROM ALLSOURCE):
@@ -12724,7 +12639,7 @@ ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
 as choice s : choice s
-as comp list : comp list
+as comp_list : comp_list
 (INHERITED FROM ALL SOURCE):
 lx srcpos : sourceposition
 Ix comments : comments
@@ -12734,10 +12649,10 @@ variant
 variantpragma
 IS INCLUDED IN:
 ALL SOURCE
-DIANA Reference Nanual Craft Revision 4 Page A-129
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Nanual Craft Revision 4 Page A_129
+DIANA CROSS_REFERENCE GUIDE
 NODE ATTRIBUTES:
-(INHERITED FROM ALL-SOURCE):
+(INHERITED FROM ALL_SOURCE):
 lx srcpos : sourceposition
 lx comments : comments
 IS THE DECLARED TYPE OF:
@@ -12760,8 +12675,8 @@ VARIANT PART
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-as name : NAME
-as-variant s : variant s
+as_name : NAME
+as_variant s : variant s
 (INHERITED FROM ALLSOURCE):
 lx_srcpos : source_position
 lx comments : comments
@@ -12782,8 +12697,8 @@ ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
 as list : Seq Of VARIANT ELEM
-DIANA Reference Manual Draft Revision 4 Page A-130
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_130
+DIANA CROSS_REFERENCE GUIDE
 (INHERITED FROM ALLSOURCE):
 lx_srcpos : sourceposition
 lx comments : comments
@@ -12796,7 +12711,7 @@ constant id
 IS INCLUDED IN:
 INIT OBJECT NAME
 OBJECT NAME
-SOURCE-NAME
+SOURCE_NAME
 DEF NAME
 ALL SOURCE
 NODE ATTRIBUTES:
@@ -12805,7 +12720,7 @@ sm renamesobj : Boolean
 sm address EXP
 (INHERITED FROM TNITOBJECTNAME):
 sm initexp : EXP
-(INHERITED-FROM OBJECT NAME):
+(INHERITED_FROM OBJECT NAME):
 smobj_type : TYPESPEC
 (INHERITED FROM DEFNAME):
 lx_symrep : symbolrep
@@ -12834,17 +12749,17 @@ DEF NAME
 ALLSOURCE
 UNIT DESC
 DECL
-DIANA Reference Manual Draft Revision 4 Page A-131
-DIANA CROSS-REFERENCE GUIDE
+DIANA Reference Manual Draft Revision 4 Page A_131
+DIANA CROSS_REFERENCE GUIDE
 DISCRETE RANGE
-GENERAL-ASSOC
+GENERAL_ASSOC
 ITEM
 NODE ATTRIBUTES:
 (INHERITED FROM REP):
-as name : NAME
+as_name : NAME
 (INHERITED FROM RANGE):
 sm type spec : TYPE SPEC
-(INHERITED-FROM-DEFNAME):
+(INHERITED_FROM-DEFNAME):
 lx symrep : symbolrep
 (INHERITED FROM ALL SOURCE):
 Ix_srcpos : source_position
@@ -12865,14 +12780,14 @@ CONTEXT ELEM.
 ALL SOURCE
 NODE ATTRIBUTES:
 (NODE SPECIFIC):
-as name s : name s
+as_name s : name s
 asuse_pragma s : use_pragmas
 (INHERITED FROM ALL_SOURCE):
 lxsrcpos : source_position
 Ix comments : comments
 APPENDIX B
 REFERENCES
-DIANA Reference Manual Draft Revision 4 Page B-2
+DIANA Reference Manual Draft Revision 4 Page B_2
 REFERENCES
 (1) P.F. Albrecht, P.E. Garrison, S.L. Graham, R.H. Hyerle, P. Ip, and
 B. Krieg-Bruckner. "Source-to-Source Translation: Ada to Pascal and
@@ -12881,7 +12796,7 @@ Pascal to Ada." In Symposium on the Ada Programming Language, pages
 [2] B. M. Brosgol, J.M. Newcomer, D.A. Lamb, D. Levine, M. S. Van
 Deusen, and W.A. Wulf. TCOLada : Revised Report on An Intermediate
 Representation for the Premi'minary- AT Language. -Te-nical Report
-CMU-CS-80-105, Ca-rniege-Mellon University, Computer Science Department,
+CMU_CS-80-105, Ca-rniege-Mellon University, Computer Science Department,
 February, 1980.
 (3] J.N. Buxton. Stoneman: Requirements for Ada Programming Support
 Environments. Technical Report, DARPA, Februar'y 1980.
@@ -12901,10 +12816,10 @@ Inc., and Cii-Honeywell Bull, 1980.
 [8] J.D. Ichbiah, B. Krieg-Brueckner, B.A. Wichmann, H.F. Ledgard, J.C.
 Heliard, J.R. Abrial, J.G.P. Barnes, M. Woodger, 0. Roubine, P.N.
 Hilfinger, R. Firth. Reference Manual for the Ada Programming
-Language Draft revised MIL-STD 181"S-,•uly--T987-edit--on, Honeywell,
+Language Draft revised MIL_STD 181"S-,•uly--T987-edit--on, Honeywell,
 Inc., and Cii-Honeywell Bull, 1982.
 [9] J.R. Nestor, W.A. Wulf, D.A. Lamb. IDL - Interface Description
-Language: Formal Description. TecFniTcaT Report CMU-CS-8-3TT9,
+Language: Formal Description. TecFniTcaT Report CMU_CS-8-3TT9,
 Carnegie-Mellon University, Computer Science Department, August, 1981.
 [10] G. Persch, G. Winterstein, M. Dausmann, S. Drossopoulou, G. Goos.
 AIDA Reference Manual. Technical Report Nr. 39/80, Institut fuer
