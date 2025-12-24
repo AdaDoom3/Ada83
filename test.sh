@@ -16,17 +16,18 @@ for v in ${a[@]+"${a[@]}"};do((v>=e-1&&v<=e+1))&&{ q=1;break;};done
 ((q))&&printf "   [✓] %4d  %s\n" $e "$s"||printf "   [ ] %4d  %s\n" $e "$s";done
 local p=$(: $h $xe) v;((p>=90))&&v="pass"||v="fail"
 printf "   %s\n   coverage %d/%d (%d%%)  %s\n\n" "${'':->68}" $h $xe $p "$v";}
-T(){ local f=$1 v=${2:-} n=$(basename "$f" .ada);local q=${n:0:1};((++X[z]));case $q in
+R(){ [[ ! -f rts/report.ll || rts/report.adb -nt rts/report.ll ]]&&./ada83 rts/report.adb>rts/report.ll 2>/dev/null||true;}
+T(){ local f=$1 v=${2:-} n=$(basename "$f" .ada);local q=${n:0:1};((++X[z]));R;case $q in
 [aA])if ! timeout 0.2 ./ada83 "$f">test_results/$n.ll 2>acats_logs/$n.err;then
 E SKIP "$n" COMPILE "$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)";((++X[s]));return;fi
-if ! timeout 0.2 llvm-link -o test_results/$n.bc test_results/$n.ll rts/rt.ll rts/rt_wrappers.ll 2>acats_logs/$n.link;then
+if ! timeout 0.2 llvm-link -o test_results/$n.bc test_results/$n.ll rts/report.ll 2>acats_logs/$n.link;then
 E SKIP "$n" BIND "unresolved symbols";((++X[s]));return;fi
 timeout 1 lli test_results/$n.bc>acats_logs/$n.out 2>&1&&E PASS "$n" PASSED&&((++X[a]))||E FAIL "$n" FAILED "exit $?"&&((++X[f]));;
 [bB])if timeout 0.2 ./ada83 "$f" >acats_logs/$n.ll 2>acats_logs/$n.err;then E FAIL "$n" WRONG_ACCEPT "compiled when should reject";((++X[f]))
 else q=$(^ "$f");h=${q%:*};x=${q#*:};p=$(: $h $x);((p>=90))&&{ ((++X[b]));[[ $v == v ]]&&@ "$f"||E PASS "$n" REJECTED "$h/$x errors (${p}%)";}||{ ((++X[f]));E FAIL "$n" LOW_COVERAGE "$h/$x errors (${p}%)";};fi;;
 [cC])if ! timeout 0.2 ./ada83 "$f">test_results/$n.ll 2>acats_logs/$n.err;then
 E SKIP "$n" COMPILE "$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)";((++X[s]));return;fi
-if ! timeout 0.2 llvm-link -o test_results/$n.bc test_results/$n.ll rts/rt.ll rts/rt_wrappers.ll 2>acats_logs/$n.link;then
+if ! timeout 0.2 llvm-link -o test_results/$n.bc test_results/$n.ll rts/report.ll 2>acats_logs/$n.link;then
 E SKIP "$n" BIND "unresolved symbols";((++X[s]));return;fi
 if timeout 1 lli test_results/$n.bc>acats_logs/$n.out 2>&1;then
 grep -q PASSED acats_logs/$n.out 2>/dev/null&&E PASS "$n" PASSED&&((++X[c]))||{
@@ -37,21 +38,21 @@ E FAIL "$n" RUNTIME "exit $ec $(tail -1 acats_logs/$n.out 2>/dev/null|cut -c1-40
 [dD])if ! timeout 0.2 ./ada83 "$f">test_results/$n.ll 2>acats_logs/$n.err;then
 grep -qi "capacity\|overflow\|limit" acats_logs/$n.err 2>/dev/null&&E N/A "$n" CAPACITY "compiler limit exceeded"&&((++X[s]))&&return
 E SKIP "$n" COMPILE "$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)";((++X[s]));return;fi
-timeout 0.2 llvm-link -o test_results/$n.bc test_results/$n.ll rts/rt.ll rts/rt_wrappers.ll 2>/dev/null||{ E SKIP "$n" BIND;((++X[s]));return;}
+timeout 0.2 llvm-link -o test_results/$n.bc test_results/$n.ll rts/report.ll 2>/dev/null||{ E SKIP "$n" BIND;((++X[s]));return;}
 timeout 1 lli test_results/$n.bc>acats_logs/$n.out 2>&1&&grep -q PASSED acats_logs/$n.out&&E PASS "$n" PASSED&&((++X[d]))||
 E FAIL "$n" FAILED "exact arithmetic check"&&((++X[f]));;
 [eE])timeout 0.2 ./ada83 "$f">test_results/$n.ll 2>acats_logs/$n.err||{ E SKIP "$n" COMPILE "$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)";((++X[s]));return;}
-timeout 0.2 llvm-link -o test_results/$n.bc test_results/$n.ll rts/rt.ll rts/rt_wrappers.ll 2>/dev/null||{ E SKIP "$n" BIND;((++X[s]));return;}
+timeout 0.2 llvm-link -o test_results/$n.bc test_results/$n.ll rts/report.ll 2>/dev/null||{ E SKIP "$n" BIND;((++X[s]));return;}
 timeout 1 lli test_results/$n.bc>acats_logs/$n.out 2>&1
 grep -q "TENTATIVELY PASSED" acats_logs/$n.out 2>/dev/null&&E INSP "$n" INSPECT "requires manual verification"&&((++X[e]))||{
 grep -q PASSED acats_logs/$n.out 2>/dev/null&&E PASS "$n" PASSED&&((++X[e]))||E FAIL "$n" FAILED&&((++X[f]));};;
 [lL])if timeout 0.2 ./ada83 "$f">test_results/$n.ll 2>acats_logs/$n.err;then
-if timeout 0.2 llvm-link -o test_results/$n.bc test_results/$n.ll rts/rt.ll rts/rt_wrappers.ll 2>acats_logs/$n.link;then
+if timeout 0.2 llvm-link -o test_results/$n.bc test_results/$n.ll rts/rt.ll rts/report.ll 2>acats_logs/$n.link;then
 timeout 0.5 lli test_results/$n.bc>acats_logs/$n.out 2>&1&&E FAIL "$n" WRONG_EXEC "should not execute"&&((++X[f]))||
 E PASS "$n" BIND_REJECT "execution blocked"&&((++X[l]));else E PASS "$n" LINK_REJECT "binding failed as expected"&&((++X[l]));fi
 else E PASS "$n" COMPILE_REJECT "$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-40)"&&((++X[l]));fi;;
 [fF])E SUPP "$n" FOUNDATION "support code";;*)E SKIP "$n" UNKNOWN "unrecognized test class '$q'"&&((++X[s]));;esac;}
-R(){ local tot=${X[z]} pass=$((X[a]+X[b]+X[c]+X[d]+X[e]+X[l])) bf=${X[f]};local bt=$((X[b]+bf)) ct=$((X[c]+X[s]))
+RR(){ local tot=${X[z]} pass=$((X[a]+X[b]+X[c]+X[d]+X[e]+X[l])) bf=${X[f]};local bt=$((X[b]+bf)) ct=$((X[c]+X[s]))
 printf "\n========================================\nRESULTS\n========================================\n\n"
 printf " %-22s  %6s  %6s  %6s  %6s  %6s\n" CLASS pass fail skip total rate
 printf " ----------------------  ------  ------  ------  ------  ------\n"
@@ -71,13 +72,13 @@ printf "========================================\n"
 printf "A=%d B=%d C=%d D=%d E=%d L=%d F=%d S=%d T=%d/%d (%d%%) ERR=%d/%d\n" \
 ${X[a]} ${X[b]} ${X[c]} ${X[d]} ${X[e]} ${X[l]} ${X[f]} ${X[s]} $pass $tot $(: $pass $tot) ${X[ec]} ${X[ee]}>test_summary.txt;}
 +(){ printf "\n========================================\n%s\n========================================\n\n" "$1";}
-G(){ + "Class ${1^^} Tests";for f in acats/${1}*.ada;do [[ -f $f ]]&&T "$f" "${2:-}";done;R;}
+G(){ + "Class ${1^^} Tests";for f in acats/${1}*.ada;do [[ -f $f ]]&&T "$f" "${2:-}";done;RR;}
 O(){ + "B-Test Error Detection Analysis";for f in acats/b*.ada;do [[ -f $f ]]||continue;n=$(basename "$f" .ada);((++X[z]))
 [[ ${1:-} == v ]]&&{ @ "$f";q=$(^ "$f");((100*${q%:*}/${q#*:}>=90))&&((++X[b]))||((++X[f]));continue;}
 q=$(^ "$f");h=${q%:*};x=${q#*:};p=$(: $h $x);((p>=90))&&E PASS "$n" PASS "$h/$x errors (${p}%)"&&((++X[b]))||
-E FAIL "$n" FAIL "$h/$x errors (${p}%)"&&((++X[f]));done;R;}
-A(){ + "Full Suite";for f in acats/*.ada;do [[ -f $f ]]&&T "$f";done;R;}
-Q(){ + "Group ${1^^} Tests";for f in acats/${1}*.ada;do [[ -f $f ]]&&T "$f" "${2:-}";done;R;}
+E FAIL "$n" FAIL "$h/$x errors (${p}%)"&&((++X[f]));done;RR;}
+A(){ + "Full Suite";for f in acats/*.ada;do [[ -f $f ]]&&T "$f";done;RR;}
+Q(){ + "Group ${1^^} Tests";for f in acats/${1}*.ada;do [[ -f $f ]]&&T "$f" "${2:-}";done;RR;}
 U(){ cat<<E
 Usage: $0 <mode> [options]
 Modes:  f  full  g <X> [v]  class  q <XX> [v]  group  b [v]  B-oracle  h  help
