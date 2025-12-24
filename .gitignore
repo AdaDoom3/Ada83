@@ -1,6 +1,7 @@
 # Compiled binary
 ada83
 a83
+ada83_debug
 
 # Backup files
 *.backup
