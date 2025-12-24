@@ -193,8 +193,25 @@ The `chk()` function is called during expression resolution (`rex`) to wrap valu
 
 During LLVM codegen (`gex`), CHK nodes generate bounds-checking code that calls `__ada_raise` on violation.
 
+### Phase 1 Runtime Constraint Checking - Summary
+
+**Completed Enhancements**:
+- ✓ CHK_RNG: Enhanced range checking for derived and enumeration types
+- ✓ CHK_IDX: Array index bounds checking (already implemented)
+- ✓ CHK_DIV: Division-by-zero checking for /, mod, rem operations
+- ✓ CHK_ACC: Access value null checking before dereference
+
+**Remaining Phase 1**:
+- CHK_DSC: Discriminant checking for variant records (complex, low priority)
+
+**Impact**: Core runtime safety dramatically improved. CONSTRAINT_ERROR now raised for:
+- Integer division/modulo by zero
+- Array indexing out of bounds
+- Dereferencing null pointers
+- Type constraint violations (range, derived, enum)
+
 ### Future Enhancements (See ENHANCEMENTS.md)
 1. Attribute constant folding (FIRST/LAST/LENGTH in resolver)
-2. Access value null checking before dereference
-3. Discriminant checking for variant records
-4. Array aggregate bounds validation
+2. Discriminant checking for variant records (CHK_DSC)
+3. Array aggregate bounds validation
+4. Fixed-point arithmetic codegen
