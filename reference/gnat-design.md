@@ -1405,9 +1405,9 @@ Let us examine the format of the high-level specification of the nodes by means
 of an example. The Ada syntax rule for a package body is:
  
 PACKAGE BODY : : =
-package body DEFINING PROGRAM UNIT NAME i s
+package body DEFINING PROGRAM UNIT NAME is
 DECLARATIVE PART
-[ b e g i n
+[ begin
 HANDLED SEQUENCE OF STATEMENTS]
 end [ [ PARENT UNIT NAME . ] IDENTIFIER ] ; 
 2.2. THE PARSER 23
@@ -1424,11 +1424,11 @@ The corresponding high-level node is specified in the package Sinfo as follows:
 
 
  N Package Body
- S l o c p o i n t s t o PACKAGE
+ S l o c points to PACKAGE
  D e f i n i n g U n i t N a m e ( Node1 )
- D e c l a r a t i o n s ( L i s t 2 )
- H a n d l e d S t a t e m e n t S e q u e n c e ( Node4 ) ( s e t t o Empty
- i f n o t p r e s e n t )
+ D e c l a r a t i o n s ( L is t 2 )
+ H a n d l e d S t a t e m e n t S e q u e n c e ( Node4 ) ( s e t to Empty
+ i f n o t present )
  C o r r e s p o n d i n g S p e c ( Node5 Sem )
  W a s O r i g i n a l l y S t u b ( F l a g 1 3 Sem ) 
 The first line specifies the node kind (N Package Body), which is an enumer-
@@ -1705,11 +1705,11 @@ use of the upper/lower case rule for identifiers to treat the word exception as 
 indented identifier rather than the beginning of an exception handler (cf. subpro-
 gram scan reserved identifier).
  
-procedure Wrong1 i s
+procedure Wrong1 is
 E x c e p t i o n : I n t e g e r ;
-r e s e r v e d word ” e x c e p t i o n ” c a n n o t be u s e d a s i d e n t i f i e r
-b e g i n
-n u l l ;
+reserved word ” exception ” cannot be used as identifier
+begin
+null ;
 end Wrong1 ; 
 
 ### 3.2 Parser Error Recovery
@@ -1757,11 +1757,11 @@ thus simplify the semantics.
 The next example combines the use of the scope-stack plus the indentation to
 match the statement:
  
-procedure Wrong2 i s
+procedure Wrong2 is
 A , B : I n t e g e r ;
-b e g i n
+begin
 i f A B then
-n u l l ;
+null ;
 end Wrong2 ;
 ” end i f ; ” e x p e c t e d f o r ” i f ” a t l i n e 4 
 Note that a more conventional approach to error recovery would have pro-
@@ -1779,7 +1779,7 @@ sponds to the following example:
  Case 1 : At t h e o u t e r l e v e l
 procedure X ( Y : I n t e g e r ) ;
 Q : I n t e g e r ;
-b e g i n
+begin
 . . .
 end ; 
 In this case the GNAT parser knows that something is wrong as soon as it
@@ -1791,13 +1791,13 @@ region is more complex, and corresponds to the following example:
 
 
  Case 2 : W i t h i n a d e c l a r a t i v e r e g i o n
-d e c l a r e
+declare
 procedure X ( Y : I n t e g e r ) ;   1
 Q : I n t e g e r ;
-b e g i n    2
+begin    2
 . . .
 end ;
-b e g i n
+begin
 . . .
 end ; 
 In this case, the syntax error (line <1>) has the syntax of a subprogram decla-
@@ -1842,16 +1842,16 @@ it in all cases, it does its best to detect common situations resulting from a �
 paste” operation which forgets to change the ’is’ to semicolon. Let us consider
 the following example:
  
-package body X i s
+package body X is
 procedure A;
-procedure B i s   1
+procedure B is   1
 procedure C ;
 . . .
-procedure D i s
-b e g i n
+procedure D is
+begin
 . . .
 end ;
-b e g i n
+begin
 . . .
 end ;   2 
 The trouble is that the section of text from line <1> to line <2> syntactically
@@ -2444,10 +2444,10 @@ type, (3) the number of parameters, (4) the type of each parameter. These prop-
 erties are collectively called the subprogram’s parameter-and-result-type profile.
 For example, the following operations can be visible at the same point:
  
-f u n c t i o n Op ( x : I n t e g e r ) r e t u r n I n t e g e r ;   (Op1 )
-f u n c t i o n Op ( x : I n t e g e r ; y : I n t e g e r ) r e t u r n I n t e g e r ;   (Op2 )
-f u n c t i o n Op ( x : F l o a t ) r e t u r n I n t e g e r ;   (Op3 )
-f u n c t i o n Op ( x : I n t e g e r ) r e t u r n F l o a t ;   (Op4 )
+function Op ( x : I n t e g e r ) r e t u r n I n t e g e r ;   (Op1 )
+function Op ( x : I n t e g e r ; y : I n t e g e r ) r e t u r n I n t e g e r ;   (Op2 )
+function Op ( x : F l o a t ) r e t u r n I n t e g e r ;   (Op3 )
+function Op ( x : I n t e g e r ) r e t u r n F l o a t ;   (Op4 )
 procedure Op ( x : I n t e g e r ) ;   (Op5 )
 Note that operations that only differ in the names of the formal parameters,
 but not their types, cannot be visible at the same point: either one hides the other
@@ -2501,12 +2501,12 @@ The problem of overload resolution is best explained by a simple example
 algorithm can be found in [vK87, Section 4.5]). Let us assume the following
 functions:
  
-d e c l a r e
-f u n c t i o n F ( A , B : T1 ) r e t u r n T i s . . .   (F1 )
-f u n c t i o n F ( A , B : T2 ) r e t u r n T1 i s . . .   (F2 )
-f u n c t i o n F ( A , B : T2 ) r e t u r n T2 i s . . .   (F3 )
+declare
+function F ( A , B : T1 ) r e t u r n T is . . .   (F1 )
+function F ( A , B : T2 ) r e t u r n T1 is . . .   (F2 )
+function F ( A , B : T2 ) r e t u r n T2 is . . .   (F3 )
 Var1 , Var2 , Res : T2 ;
-b e g i n
+begin
 Res : = F ( Var1 , Var2 ) ;
 end ; 
 The type of the expression F(Var1,Var2) cannot be deduced from the function
@@ -2526,8 +2526,8 @@ applicable functions to the F from the third definition.
 The first pass can also select candidate interpretations on the basis of named pa-
 rameter associations. Consider the two declarations:
  
-f u n c t i o n F ( A : I n t e g e r ; B : I n t e g e r : = 0 ) r e t u r n I n t e g e r ;   (F1 )
-f u n c t i o n F ( C : I n t e g e r ) r e t u r n I n t e g e r ;   (F2 ) 
+function F ( A : I n t e g e r ; B : I n t e g e r : = 0 ) r e t u r n I n t e g e r ;   (F1 )
+function F ( C : I n t e g e r ) r e t u r n I n t e g e r ;   (F2 ) 
 These two functions have different parameter profiles, but the call F(5) is am-
 biguous, regardless of the context: it can mean F(5,0) or F(5). However, it is
 possible to write F(C= 5) to resolve the ambiguity because the named notation
@@ -2610,13 +2610,13 @@ The second pass of type resolution traverses the AST from root to leaves, and
 propagates the type information imposed by the context to each subcomponent of
 the context. For example, given the following:
  
-d e c l a r e
+declare
 procedure P ( X : F l o a t ; Y : I n t e g e r ) ;   P1
 procedure P ( X : F l o a t ; Y : F l o a t ) ;   P2
-f u n c t i o n F ( X : F l o a t ) r e t u r n I n t e g e r ;   F1
-f u n c t i o n F ( X : F l o a t ) r e t u r n F l o a t ;   F2
+function F ( X : F l o a t ) r e t u r n I n t e g e r ;   F1
+function F ( X : F l o a t ) r e t u r n F l o a t ;   F2
 . . .
-b e g i n
+begin
 P ( F ( 5 . 0 ) , 2 . 2 ) ;
 end ; 
 The bottom-up pass determines that the call to F has the set of possible inter-
@@ -2636,8 +2636,8 @@ component type of its return type is used to resolve H(y).
 The language displays a syntactic ambiguity which requires special process-
 ing. Consider the following declarations:
  
-t y p e V e c t o r i s array ( I n t e g e r range ) o f I n t e g e r ;
-f u n c t i o n F ( X : I n t e g e r : = 1 0 ) r e t u r n V e c t o r ; 
+t y p e V e c to r is array ( I n t e g e r range ) o f I n t e g e r ;
+function F ( X : I n t e g e r : = 1 0 ) r e t u r n V e c to r ; 
 The expression F(5) has two possible interpretations: a function call with pa-
 rameter 5 that returns a vector, i.e. F(X=¿5), or the indexing of a parameterless
 5.2. SUMMARY 61
@@ -2675,7 +2675,7 @@ sufficient information to build an object of the type; a declaration of an objec
 such a type must supply values for the discriminants, by means of a discriminant
 constraint. For example:
  
-t y p e My Record ( Max Length : P o s i t i v e ) i s
+t y p e My Record ( Max Length : P o s i t i v e ) is
 r e c o r d
 Name : S t r i n g ( 1 . . Max Length ) ;
 end r e c o r d ;
@@ -2752,21 +2752,21 @@ values, and verify that a value is given for all the components in that variant.
 example, let us consider the following example:
 
 
-1 : d e c l a r e
-2 : t y p e T Company i s ( S m a l l , Big ) ;
+1 : declare
+2 : t y p e T Company is ( S m a l l , Big ) ;
 3 : t y p e T R e c o r d ( Company Kind : T Company ;
-4 : Num Departments : N a t u r a l ) i s
+4 : Num Departments : N a t u r a l ) is
 5 : r e c o r d
 6 : Num Workers : P o s i t i v e ;
-7 : c a s e Company i s
+7 : c a s e Company is
 8 : when S m a l l =
 9 : H a s B e n e f i t s : B o o l e a n ;
 1 0 : when Big =
-1 1 : c a s e Num Departments i s
+1 1 : c a s e Num Departments is
 1 2 : when 1 . . 1 0 =
 1 3 : Value : I n t e g e r ;
 1 4 : when o t h e r s =
-1 5 : n u l l ;
+1 5 : null ;
 1 6 : end c a s e ;
 1 7 : end c a s e ;
 1 8 : end r e c o r d ;
@@ -2774,7 +2774,7 @@ example, let us consider the following example:
 2 0 : O b j 1 : T R e c o r d ( S m a l l , 1 ) ;
 2 1 : O b j 2 : T R e c o r d ( Big , 7 ) ;
 2 2 : O b j 3 : T R e c o r d ( Big , 1 5 ) ;
-2 3 : b e g i n
+2 3 : begin
 2 4 : O b j 1 : = ( Num Workers = 2 , H a s B e n e f i t s = F a l s e ) ;
 2 5 : O b j 2 : = ( Num Workers = 1 0 0 , Value = 1 0 0 0 0 ) ;
 2 6 : O b j 3 : = ( Num Workers = 1 5 0 , Value = 1 5 0 0 0 ) ;   ERROR
@@ -2853,15 +2853,15 @@ procedures are discussed in a separate chapter. For example, let us consider the
 following type declaration:
 
 
-t y p e Rec ( D : I n t e g e r ) i s r e c o r d
+t y p e Rec ( D : I n t e g e r ) is r e c o r d
 Value : I n t e g e r : = D;
 Name : S t r i n g ( 1 . . D ) = ( 1 . . D = ’ ! ’ ) ;
 end r e c o r d ; 
 The corresponding initialization procedure is as follows:
 
 
-procedure I n i t P r o c ( Obj : i n o u t r e c ; D : I n t e g e r ) i s
-b e g i n
+procedure I n i t P r o c ( Obj : i n o u t r e c ; D : I n t e g e r ) is
+begin
 Obj . Value : = D;
 Obj . Name : = ( 1 . . D = ’ ! ’ ) ;
 end ; 
@@ -3062,57 +3062,57 @@ parameters are visible and denote their corresponding actuals. For example:
 g e n e r i c
 I n V a r : i n I n t e g e r ;
 I n O u t V a r : i n o u t I n t e g e r ;
-t y p e T D a t a i s p r i v a t e ;
-package Example i s
-t y p e T L o c a l i s . . .
+t y p e T D a t a is p r i v a t e ;
+package Example is
+t y p e T L o c a l is . . .
 procedure Dummy ;
 end Example ; 
 
 
-package body Example i s
-procedure Dummy i s
+package body Example is
+procedure Dummy is
 Aux : Example . T L o c a l ;
-b e g i n
-n u l l ;
+begin
+null ;
 end Dummy ;
 end Example ; 
 7.1. GENERIC UNITS 77
 
 
 with Example ;
-procedure Use Example i s
+procedure Use Example is
 My Var 1 : I n t e g e r : = 1 ;
 My Var 2 : I n t e g e r : = 2 ;
-package M y I n s t a n c e i s new Example
+package M y I n s t a n c e is new Example
 ( I n V a r = My Var 1 ,
 I n O u t V a r = My Var 2 ,
 T D a t a = I n t e g e r ) ;
-b e g i n
-n u l l ;
+begin
+null ;
 end Use Example ; 
 The GNAT front-end generates the AST equivalent of the following code
 for the instantiation:
  
-procedure u s e e x a m p l e i s   F r o n t  end T r a n s l a t i o n
+procedure u s e e x a m p l e is   F r o n t  end T r a n s l a t i o n
 m y v a r 1 : i n t e g e r : = . . . ;
 m y v a r 2 : i n t e g e r : = . . . ;
-package m y i n s t a n c e i s
+package m y i n s t a n c e is
 i n v a r : c o n s t a n t i n t e g e r : = m y v a r 1 ;   ( 1 )
 i n o u t v a r : i n t e g e r renames m y v a r 2 ;   ( 2 )
-s u b t y p e t d a t a i s i n t e g e r ;   ( 3 )
-t y p e T L o c a l i s . . .
+s u b t y p e t d a t a is i n t e g e r ;   ( 3 )
+t y p e T L o c a l is . . .
 package example renames m y i n s t a n c e ;   ( 4 )
 procedure dummy ;
 end m y i n s t a n c e ;
-package body m y i n s t a n c e i s
-procedure dummy i s
+package body m y i n s t a n c e is
+procedure dummy is
 Aux : Example . T L o c a l ;   ( 5 )
-b e g i n
-n u l l ;
+begin
+null ;
 end dummy ;
 end m y i n s t a n c e ;
-b e g i n
-n u l l ;
+begin
+null ;
 end u s e e x a m p l e ; 
 Line (1) is the constant declaration corresponding to the in parameter; line
 (2) is the renaming of the in out parameter; line (3) is the subtype dec-
@@ -3135,53 +3135,53 @@ the wrapper package). For example:
 g e n e r i c
 I n V a r : i n I n t e g e r ;
 I n O u t V a r : i n o u t I n t e g e r ;
-t y p e T D a t a i s p r i v a t e ;
-f u n c t i o n Example ( A : T D a t a ) r e t u r n I n t e g e r ; 
+t y p e T D a t a is p r i v a t e ;
+function Example ( A : T D a t a ) r e t u r n I n t e g e r ; 
 
 
-f u n c t i o n Example ( A : T D a t a ) r e t u r n I n t e g e r i s
-b e g i n
+function Example ( A : T D a t a ) r e t u r n I n t e g e r is
+begin
 r e t u r n 1 ;
 end Example ; 
 
 
 with Example ;
-procedure Use Example i s
+procedure Use Example is
 My Var 1 : I n t e g e r : = . . . ;
 My Var 2 : I n t e g e r : = . . . ;
-f u n c t i o n M y I n s t a n c e i s
+function M y I n s t a n c e is
 new Example ( I n V a r = My Var 1 ,
 I n O u t V a r = My Var 2 ,
 T D a t a = I n t e g e r ) ;
-b e g i n
-n u l l ;
+begin
+null ;
 end Use Example ; 
 In this case the GNAT front-end carries out the following transformation:
 7.1. GENERIC UNITS 79
 
 
-procedure u s e e x a m p l e i s   F r o n t end T r a n s l a t i o n
+procedure u s e e x a m p l e is   F r o n t end T r a n s l a t i o n
 m y v a r 1 : i n t e g e r : = . . . ;
 m y v a r 2 : i n t e g e r : = . . . ;
-package m y i n s t a n c e G P 1 1 0 i s
+package m y i n s t a n c e G P 1 1 0 is
 i n v a r : c o n s t a n t i n t e g e r : = m y v a r 1 ;   ( 1 )
 i n o u t v a r : i n t e g e r renames m y v a r 2 ;   ( 2 )
-s u b t y p e t d a t a i s i n t e g e r ;   ( 3 )
-f u n c t i o n m y i n s t a n c e ( a : t d a t a ) r e t u r n i n t e g e r ;
+s u b t y p e t d a t a is i n t e g e r ;   ( 3 )
+function m y i n s t a n c e ( a : t d a t a ) r e t u r n i n t e g e r ;
 end m y i n s t a n c e G P 1 1 0 ;
-package body m y i n s t a n c e G P 1 1 0 i s
-f u n c t i o n example ( a : t d a t a )
+package body m y i n s t a n c e G P 1 1 0 is
+function example ( a : t d a t a )
 r e t u r n i n t e g e r renames m y i n s t a n c e ;   ( 4 )
-f u n c t i o n m y i n s t a n c e ( a : t d a t a ) r e t u r n i n t e g e r i s
-b e g i n
+function m y i n s t a n c e ( a : t d a t a ) r e t u r n i n t e g e r is
+begin
 r e t u r n 1 ;
 end m y i n s t a n c e ;
 end m y i n s t a n c e G P 1 1 0 ;
-f u n c t i o n m y i n s t a n c e   ( 5 )
+function m y i n s t a n c e   ( 5 )
 ( a : my exampleGP110 . t d a t a )
 renames m y i n s t a n c e G P 1 1 0 . m y i n s t a n c e ;
-b e g i n
-n u l l ;
+begin
+null ;
 end u s e e x a m p l e ; 
 Line (5) is the subprogram renaming which makes the subprogram visible in
 the current scope. The reader should note that this renaming declaration can
@@ -3305,12 +3305,12 @@ end Gen_Pkg_1;
 of our generic packages Gen Pkg 1 and Gen Pkg 2:
  
 with Example ;
-procedure I n s t a n c e s i s
-package My Pkg 1 i s
+procedure I n s t a n c e s is
+package My Pkg 1 is
 new Example . Gen Pkg 1 ( . . . ) ;   1
-package My Pkg 2 i s
+package My Pkg 2 is
 new My Pkg 1 . Gen Pkg 2 ( . . . ) ;   2
-b e g i n
+begin
 . . .
 end I n s t a n c e s ; 
 At point 1 (instantiation of Gen Pkg 1), the analysis of this instantiation in-
@@ -3483,12 +3483,12 @@ common scope. Let us consider the following generic units in each case:
  
 g e n e r i c
 . . .
-package P a r e n t i s
+package P a r e n t is
 . . .
 end P a r e n t ;
 g e n e r i c
 . . .
-package P a r e n t . C h i l d i s
+package P a r e n t . C h i l d is
 . . .
 end P a r e n t . C h i l d ; 
 1. Local Instantiation. In the first case the instantiation of the generic hierar-
@@ -3496,10 +3496,10 @@ chy is done within the same declarative part. For example:
 
 
 1 : with P a r e n t . C h i l d ;
-2 : procedure Example i s
-3 : package P a r e n t I n s t a n c e i s
+2 : procedure Example is
+3 : package P a r e n t I n s t a n c e is
 4 : new P a r e n t ( . . . ) ;
-5 : package C h i l d I n s t a n c e i s
+5 : package C h i l d I n s t a n c e is
 6 : new P a r e n t I n s t a n c e . C h i l d ( . . . ) ;
 7 : . . .
 8 : end Example ; 
@@ -3521,14 +3521,14 @@ the rest of the declarative part.
 instantiation. Let us assume the following instantiation of the parent:
  
 with P a r e n t ;
-package P a r e n t I n s t a n c e i s new P a r e n t ( . . . ) ; 
+package P a r e n t I n s t a n c e is new P a r e n t ( . . . ) ; 
 The RM rule requires that the parent instance be visible at the point of in-
 stantiation of the child, so it must appear in a with clause of the current unit,
 together with a with clause for the generic child unit itself.
  
 1 : with P a r e n t . C h i l d ;
 2 : with P a r e n t I n s t a n c e ;
-3 : package C h i l d I n s t a n c e i s new P a r e n t I n s t a n c e . C h i l d ( . . . ) ;
+3 : package C h i l d I n s t a n c e is new P a r e n t I n s t a n c e . C h i l d ( . . . ) ;
 The with clause for the child (line 1) makes the implicit child visible within
 the instantiation of the parent [Bar95, Section 10.1.3]. The instantiation at
 line 3 names this implicit child.
@@ -3614,23 +3614,23 @@ Ada code:
 
 
  S p e c i f i c a t i o n s
-package A i s
+package A is
 g e n e r i c . . .
-package G A i s . . .
+package G A is . . .
 end A;
-package B i s
+package B is
 g e n e r i c . . .
-package G B i s . . .
+package G B is . . .
 end B ;
 
  B o d i e s
 with B ;
-package body A i s
-package N B i s new B . GB ( . . . ) ;
+package body A is
+package N B is new B . GB ( . . . ) ;
 end A;
 with A;
-package body B i s
-package N A i s new A . G A ( . . . ) ;
+package body B is
+package N A is new A . G A ( . . . ) ;
 end B ; 
 Conventional compilation schemes either reject these instantiations as circular
 (even though they are not) or are forced to use an indirect linking approach to the
@@ -3748,15 +3748,15 @@ type definition plus a derived type definition:
 8.2. FREEZING EXPRESSIONS 95
 
 
-t y p e T i s new I n t e g e r ;
- I n t e r n a l l y t r a n s f o r m e d by t h e c o m p i l e r i n t o :
- t y p e TB i s new I n t e g e r ;
- s u b t y p e T i s TB ;
-t y p e T i s array ( 1 . . 1 0 ) o f . . . ;
- I n t e r n a l l y t r a n s f o r m e d by t h e c o m p i l e r i n t o :
- s u b t y p e TD i s I n t e g e r ;
- t y p e TB i s a r r a y ( TD r a n g e ) o f . . . ;
- s u b t y p e T i s TB ( 1 . . 1 0 ) ; 
+t y p e T is new I n t e g e r ;
+ I n t e r n a l l y t r a n s f o r m e d by t h e c o m p i l e r i n to :
+ t y p e TB is new I n t e g e r ;
+ s u b t y p e T is TB ;
+t y p e T is array ( 1 . . 1 0 ) o f . . . ;
+ I n t e r n a l l y t r a n s f o r m e d by t h e c o m p i l e r i n to :
+ s u b t y p e TD is I n t e g e r ;
+ t y p e TB is a r r a y ( TD r a n g e ) o f . . . ;
+ s u b t y p e T is TB ( 1 . . 1 0 ) ; 
 In this example TB and TD are implicit types which will be frozen when their
 derived type T is frozen. Freezing of implicit types introduced by component
 declarations (i.e. component constraints) do not need to be delayed because the
@@ -3771,9 +3771,9 @@ with default expressions used in discriminants and constraints of record compo-
 nents; they must be frozen at the point of the corresponding object declarations
 (not at the point of the type definition). For example:
  
-t y p e T I n t i s new I n t e g e r ;
-t y p e T Name i s array ( T I n t range ) o f C h a r a c t e r ;
-t y p e T ( Max : T I n t ) i s   Do n o t f r e e z e T I n t h e r e
+t y p e T I n t is new I n t e g e r ;
+t y p e T Name is array ( T I n t range ) o f C h a r a c t e r ;
+t y p e T ( Max : T I n t ) is   Do n o t f r e e z e T I n t h e r e
 r e c o r d
 Name : T Name ( 1 . . Max ) ;   Do n o t f r e e z e T I n t h e r e
 L e n g t h : T I n t : = Max ;   Do n o t f r e e z e T I n t h e r e
@@ -3795,16 +3795,16 @@ present).
 Protected types must be handled with special care because the protected-type
 definition is expanded into a record-type definition. For example:
  
-p r o t e c t e d t y p e PO ( D i s c r i m i n a n t s ) i s
+p r o t e c t e d t y p e PO ( D is c r i m i n a n t s ) is
 . . .
 p r i v a t e
 P r i v a t e D a t a ;   1
 end PO ;
 
- I n t e r n a l l y t r a n s f o r m e d by t h e GNAT c o m p i l e r i n t o :
+ I n t e r n a l l y t r a n s f o r m e d by t h e GNAT c o m p i l e r i n to :
 
 
- t y p e poV ( D i s c r i m i n a n t s ) i s new L i m i t e d C o n t r o l l e d w i t h
+ t y p e poV ( D is c r i m i n a n t s ) is new L i m i t e d C o n t r o l l e d w i t h
  r e c o r d
  P r i v a t e D a t a   2
  o b j e c t : R u n T i m e D a t a T y p e ( N u m E n t r i e s ) ;
@@ -3851,22 +3851,22 @@ declarative part. This behavior avoids a premature freezing of global types used
 in the generic. In addition, the compiler must have special care with early instan-
 tiation of local packages. For example:
  
-procedure Example i s
+procedure Example is
 g e n e r i c
 . . .
-package G i s
+package G is
 . . .
 end G;
-procedure L o c a l i s
-package I ( . . . ) i s new G ;   E a r l y i n s t a n t i a t i o n
+procedure L o c a l is
+package I ( . . . ) is new G ;   E a r l y i n s t a n t i a t i o n
  F r e e z i n g p o i n t ( f r e e z e i )
-b e g i n
+begin
 . . .
 end ;
-package body G i s
+package body G is
 . . .
 end G ;
-b e g i n
+begin
 . . .
 end Example ; 
 At the point of the early instantiation, the Semantic Analyzer generates an
@@ -3999,7 +3999,7 @@ until Abort Undefer is invoked.
 A task type declaration is expanded by the front-end into a limited record type
 declaration. For example, let us consider the following task specification:
  
-t a s k t y p e T Task ( D i s c r i m i n a n t : DType ) i s
+t a s k t y p e T Task ( D is c r i m i n a n t : DType ) is
 . . .
 end T Task ; 
 It is expanded by the front-end into the following code:
@@ -4007,7 +4007,7 @@ It is expanded by the front-end into the following code:
 T TaskE : a l i a s e d B o o l e a n : = F a l s e ;
 T TaskZ : S i z e T y p e : = GNARL. U n s p e c i f i e d S i z e ; 
 S i z e T y p e ( S i z e E x p r e s s i o n ) ;
-t y p e T TaskV [ ( D i s c r i m i n a n t : DType ) ] i s l i m i t e d r e c o r d
+t y p e T TaskV [ ( D is c r i m i n a n t : DType ) ] is l i m i t e d r e c o r d
 T a s k I d : System . T a s k i n g . T a s k I d ;
 [ E n t r y F a m i l y N a m e : array ( Bounds ) o f Void ; ]
 [ P r i o r i t y : I n t e g e r : = P r i o r i t y E x p r e s s i o n ; ]
@@ -4039,24 +4039,24 @@ pragmas Storage Size, Task Info, and Task Name.
 The task body is expanded into a procedure. For example, let us consider the
 following task body:
  
-t a s k body T Task i s
+t a s k body T Task is
 D e c l a r a t i o n s
-b e g i n
+begin
 S t a t e m e n t s
 end T Task ; 
 It is expanded by the front-end into the following code:
  
-1 : procedure T TaskB ( T a s k : a c c e s s T TaskV ) i s
-2 : D i s c r i m i n a n t : Dtype renames T a s k . D i s c r i m i n a n t ;
+1 : procedure T TaskB ( T a s k : a c c e s s T TaskV ) is
+2 : D is c r i m i n a n t : Dtype renames T a s k . D is c r i m i n a n t ;
 3 :
-4 : procedure C l e a n i s
-5 : b e g i n
+4 : procedure C l e a n is
+5 : begin
 6 : GNARL. A b o r t D e f e r ;
 7 : GNARL. C o m p l e t e T a s k ;
 8 : GNARL. A b o r t U n d e f e r ;
 9 : end C l e a n ;
 1 0 :
-1 1 : b e g i n
+1 1 : begin
 1 2 : GNARL. A b o r t U n d e f e r ;
 1 3 : D e c l a r a t i o n s
 1 4 : GNARL. C o m p l e t e A c t i v a t i o n ;
@@ -4102,32 +4102,32 @@ Ada code:
 9.6. EXAMPLE OF TASK EXPANSION 107
 
 
-procedure A c t i v a t o r i s
+procedure A c t i v a to r is
 t a s k My Task ;
-t a s k body My Task i s
+t a s k body My Task is
 L o c a l D e c l a r a t i o n s
-b e g i n
+begin
 Task body s t a t e m e n t s
 end My Task ;
-b e g i n
+begin
 A d d i t i o n a l S t a t e m e n t s
-end A c t i v a t o r ; 
+end A c t i v a to r ; 
 This code is expanded by the GNAT front-end as follows:
 
 
-procedure A c t i v a t o r i s
+procedure A c t i v a to r is
 My TaskE : a l i a s e d B o o l e a n : = F a l s e ;
 My TaskZ : S i z e T y p e : = GNARL. U n s p e c i f i e d S i z e ;
-t y p e My TaskV i s l i m i t e d r e c o r d
+t y p e My TaskV is l i m i t e d r e c o r d
 T a s k I d : System . T a s k i n g . T a s k I d ;
 end r e c o r d ;
-procedure My TaskB ( T a s k : a c c e s s T TaskV ) i s
-procedure C l e a n i s
-b e g i n
+procedure My TaskB ( T a s k : a c c e s s T TaskV ) is
+procedure C l e a n is
+begin
 GNARL. C o m p l e t e T a s k ;   ( 6 )
 end C l e a n ;
-b e g i n
- Expanded c o d e t o e l a b o r a t e l o c a l d e c l a r a t i o n s 
+begin
+ Expanded c o d e to e l a b o r a t e l o c a l d e c l a r a t i o n s 
 GNARL. C o m p l e t e A c t i v a t i o n ;   ( 4 )
 Task body s t a t e m e n t s   ( 5 ’ )
 a t end
@@ -4135,7 +4135,7 @@ C l e a n ;
 end My TaskB ;
 My Task : My TaskV ;
 C h a i n : GNARL. A c t i v a t i o n C h a i n ;
-b e g i n
+begin
 GNARL. E n t e r M a s t e r ;   ( 1 )
 GNARL. C r e a t e T a s k   ( 2 )
 ( My Task , My TaskZ , My TaskB ’ A c c e s s , C h a i n , . . . ) ;
@@ -4143,7 +4143,7 @@ GNARL. A c t i v a t e T a s k ( C h a i n ) ;   ( 3 )
 A d d i t i o n a l S t a t e m e n t s   ( 5 ’ )
 a t end
 GNARL. C o m p l e t e M a s t e r ;   ( 7 )
-end A c t i v a t o r ; 
+end A c t i v a to r ; 
 The numbers in the comments to the right of the code present the execution
 sequence. First, because the main procedure has a task object declaration, it no-
 tifies the run-time that it is executing a master scope (step 1). It then creates the
@@ -4216,7 +4216,7 @@ associates each entry an numeric id, which a positive number which corresponds
 with the position of the entry in the task type specification. The following example
 shows this mapping.
  
-t a s k T i s
+t a s k T is
 
  a s i m p l e e n t r y
 e n t r y I n i t ( x : i n t e g e r ) ;
@@ -4247,7 +4247,7 @@ to the parameters block into the Uninterpreted Data component of the entry-call
 record (See Expand Identifier in Sem Ch2). Figure 10.1 displays the data struc-
 tures involved in a call to the following entry:
  
-t a s k T i s
+t a s k T is
 e n t r y E ( Number : i n I n t e g e r ; T e x t : i n S t r i n g ) ;
 end T ; 
 Expanded-Code
@@ -4280,15 +4280,15 @@ ple, conditional, timed, and asynchronous.
 
 The front-end expands a simple mode entry call as follows:
  
-d e c l a r e
-t y p e P a r a m s B l o c k i s
+declare
+t y p e P a r a m s B l o c k is
 r e c o r d
 Parm1 : A c c e s s P a r a m 1 T y p e ;
 . . .
 ParmN : Access ParamN Type ;
 end r e c o r d ;
 P : P a r a m s B l o c k : = ( Parm1 ’ A c c e s s , . . . , ParmN ’ A c c e s s ) ;
-b e g i n
+begin
 GNARL. C a l l S i m p l e ( T a s k I D , E n t r y I D , P ’ A d d r e s s ) ;
 [ Parm1 : = P . Parm1 ; ]
 [ Parm2 : = P . Parm2 ; ]
@@ -4319,15 +4319,15 @@ are only executed if the call was accepted. The alternative branch can also in-
 clude statements that are executed only if the caller is not ready to accept. The
 conditional entry-call is expanded as follows:
  
-d e c l a r e
-t y p e P a r a m s B l o c k i s r e c o r d
+declare
+t y p e P a r a m s B l o c k is r e c o r d
 Parm1 : A c c e s s P a r a m 1 T y p e ;
 . . .
 ParmN : Access ParamN Type ;
 end r e c o r d ;
 P : P a r m s B l o c k : = ( Parm1 ’ A c c e s s , . . . , ParmN ’ A c c e s s ) ;
 S u c c e s s f u l : B o o l e a n ;
-b e g i n
+begin
 GNARL. T a s k E n t r y C a l l ( T a s k I D ,
 E n t r y I D ,
 P ’ A d d r e s s ,
@@ -4422,21 +4422,21 @@ of the one-thread model, the GNAT compiler implements the one-thread model.
 
 The Following describes the expansion of an ATC statement:
  
-1 : d e c l a r e
+1 : declare
 2 : P : a l i a s e d Parms : = ( Parm1 ’ A c c e s s , . . . , ParmN ’ A c c e s s ) ;
 3 : S u c c e s s f u l : B o o l e a n ;
-4 : b e g i n
+4 : begin
 5 : GNARL. D e f e r A b o r t i o n ;
 6 : GNARL. T a s k E n t r y C a l l ( T a s k I D , E n t r y I D ,
 P ’ A c c e s s , S u c c e s s f u l ) ;
-7 : b e g i n   A b o r t a b l e P a r t Scope
-8 : b e g i n
+7 : begin   A b o r t a b l e P a r t Scope
+8 : begin
 9 : GNARL. U n d e f e r A b o r t i o n ;
 1 0 :  A b o r t a b l e P a r t 
 1 1 : a t end
 1 2 : GNARL. E n t r y C a l l C a n c e l l a t i o n ( S u c c e s s f u l ) ;
 1 3 : end ;
-1 4 : e x c e p t i o n
+1 4 : exception
 1 5 : when A b o r t S i g n a l =
 1 6 : GNARL. U n d e f e r A b o r t i o n ;
 1 7 : end ;
@@ -4489,15 +4489,15 @@ a c c e p t E ( . . . ) do
 end E ; 
 A simple accept is expanded as follows:
  
-d e c l a r e
+declare
 P a r a m s B l o c k A d d r e s s : A d d r e s s ;
-b e g i n
+begin
 GNARL. A c c e p t C a l l ( E n t r y I D , P a r a m s B l o c k A d d r e s s ) ;
  Entry Body S t a t e m e n t s 
-GNARL. C o m p l e t e R e n d e z v o u s ;
-e x c e p t i o n
+GNARL. C o m p l e t e R end e z v o u s ;
+exception
 when o t h e r s =
-GNARL. E x c e p t i o n a l C o m p l e t e R e n d e z v o u s ;
+GNARL. E x c e p t i o n a l C o m p l e t e R end e z v o u s ;
 end ; 
 The acceptor task calls the run-time, specifying the identifier of the accepted
 entry, and receives the address of the parameters block to be used in the entry body
@@ -4517,19 +4517,19 @@ accept alternatives of the select statement; If the entry guard of a given alter
 is closed, the corresponding entry identifier is set to 0. Consider the following
 example:
  
-t a s k T i s
+t a s k T is
 e n t r y P ;   E n t r y I d = 1
 e n t r y Q ;   E n t r y I d = 2
 end T ;
-t a s k body T i s
-b e g i n
+t a s k body T is
+begin
 s e l e c t
 a c c e p t Q do   OAV ( 1 ) . E n t r y I d : = 2
  U s e r Code    OAV ( 1 ) . N u l l B o d y : = F a l s e ;
 end Q;
 or
 when  U s e r Guard  =
- I f t h e g u a r d i s open OAV ( 2 ) . E n t r y I d : = 1
+ I f t h e g u a r d is open OAV ( 2 ) . E n t r y I d : = 1
 a c c e p t P ;   e l s e OAV ( 2 ) . E n t r y I d : = 0 ;
  OAV ( 2 ) . N u l l B o d y : = T r u e ;
 e l s e
@@ -4544,24 +4544,24 @@ used by the run-time to indicate that the else alternative has been selected. Le
 see a simplified version of the expansion of the previous example:
 
 
-1 : d e c l a r e
-2 : f u n c t i o n P Guard r e t u r n N a t u r a l i s
-3 : b e g i n
+1 : declare
+2 : function P Guard r e t u r n N a t u r a l is
+3 : begin
 4 : i f  U s e r Guard  then
 5 : r e t u r n 1 ;   r e t u r n s t h e E n t r y I d
 6 : e l s e
-7 : r e t u r n 0 ;   r e t u r n 0 ( i t i s c l o s e d )
+7 : r e t u r n 0 ;   r e t u r n 0 ( i t is c l o s e d )
 8 : end i f ;
 9 : end P Guard ;
 1 0 :
-1 1 : procedure Q Body i s
-1 2 : b e g i n
+1 1 : procedure Q Body is
+1 2 : begin
 1 3 : GNARL. U n d e f e r A b o r t i o n ;
 1 4 : . . . U s e r Code 
-1 5 : GNARL. C o m p l e t e R e n d e z v o u s ;
-1 6 : e x c e p t i o n
+1 5 : GNARL. C o m p l e t e R end e z v o u s ;
+1 6 : exception
 1 7 : when o t h e r s =
-1 8 : GNARL. E x c e p t i o n a l C o m p l e t e R e n d e z v o u s ;
+1 8 : GNARL. E x c e p t i o n a l C o m p l e t e R end e z v o u s ;
 1 9 : end Q Body ;
 2 0 :
 2 1 : OAV : GNARL. O p e n A c c e p t s T a b l e
@@ -4569,16 +4569,16 @@ see a simplified version of the expansion of the previous example:
 2 3 : I n d e x : N a t u r a l ;
 2 4 : P a r a m s B l o c k A d d r e s s : System . A d d r e s s ;
 2 5 :
-2 6 : b e g i n
+2 6 : begin
 2 7 : GNARL. S e l e c t i v e W a i t
 2 8 : (OAV , P a r a m s B l o c k A d d r e s s , I n d e x ) ;
-2 9 : c a s e I n d e x i s
+2 9 : c a s e I n d e x is
 3 0 : when 0 =
 3 1 :  e l s e s t a t e m e n t s 
 3 2 : when 1 =
 3 3 : Q Body ;
 3 4 : when 2 =
-3 5 : n u l l ;
+3 5 : null ;
 3 6 : end c a s e ;
 3 7 : end ; 
 For each user-defined guard, the expander generates a function which evalu-
@@ -4811,9 +4811,9 @@ which the operation is performed at run-time.
 Consider the following protected type declaration:
 
 
-p r o t e c t e d t y p e PO ( D i s c : I n t e g e r ) i s
+p r o t e c t e d t y p e PO ( D is c : I n t e g e r ) is
 procedure P ( C : C h a r a c t e r ) ;
-f u n c t i o n F ( X : I n t e g e r ) r e t u r n I n t e g e r ;
+function F ( X : I n t e g e r ) r e t u r n I n t e g e r ;
 e n t r y E1 ;
 e n t r y E2 ( 1 . . 1 0 ) ( X : I n t e g e r ) ;
 p r i v a t e
@@ -4821,16 +4821,16 @@ Value : I n t e g e r ;
 end PO ; 
 The front-end expands it as follows:
  
-1 : t y p e poV ( D i s c : I n t e g e r ) i s new L i m i t e d C o n t r o l l e d with
+1 : t y p e poV ( D is c : I n t e g e r ) is new L i m i t e d C o n t r o l l e d with
 2 : r e c o r d
 3 : Value : I n t e g e r ;
 4 : o b j e c t : a l i a s e d GNARL. P r o t e c t i o n E n t r i e s
 5 : ( N u m E n t r i e s ) ;
 6 : end r e c o r d ;
 7 :
-8 : procedure F i n a l i z e ( o b j e c t : poV ) i s
-9 : b e g i n
-1 0 :   R a i s e P r o g r a m E r r o r t o t h e queued t a s k s .
+8 : procedure F i n a l i z e ( o b j e c t : poV ) is
+9 : begin
+1 0 :   R a is e P r o g r a m E r r o r to t h e queued t a s k s .
 1 1 : . . .
 1 2 : end F i n a l i z e ; 
 The protected type specification is expanded into a record type declaration
@@ -4875,27 +4875,27 @@ thoughtout the bodies of protected operations. Let us see the expansion of sub-
 program procP in detail.
 
 
-1 : procedure p r o c P ( o b j e c t : i n o u t poV ; . . . ) i s
-2 : procedure C l e a n i s
-3 : b e g i n
+1 : procedure p r o c P ( o b j e c t : i n o u t poV ; . . . ) is
+2 : procedure C l e a n is
+3 : begin
 4 : GNARL. S e r v i c e E n t r i e s ( o b j e c t . o b j e c t ’ a c c e s s ) ;
 5 : GNARL. Unlock ( o b j e c t . o b j e c t ’ a c c e s s ) ;
 6 : GNARL. A b o r t U n d e f e r ;
 7 : end C l e a n ;
-8 : b e g i n
+8 : begin
 9 : GNARL. A b o r t D e f e r ;
 1 0 : GNARL. L o c k W r i t e ( o b j e c t . o b j e c t ’ a c c e s s ) ;
-1 1 : b e g i n
+1 1 : begin
 1 2 : procN ( o b j e c t ; . . . ) ;
-1 3 : e x c e p t i o n
+1 3 : exception
 1 4 : when o t h e r s =
-1 5 : d e c l a r e
+1 5 : declare
 1 6 : E : E x c e p t i o n O c c u r r e n c e ;
-1 7 : b e g i n
+1 7 : begin
 1 8 : GNARL. S a v e O c c u r r e n c e
 1 9 : ( E , GNARL. G e t C u r r e n t E x c e p t i o n ) ;
 2 0 : C l e a n ;
-2 1 : GNARL. R e r a i s e ( E ) ;
+2 1 : GNARL. R e r a is e ( E ) ;
 2 2 : end ;
 2 3 : a t end
 2 4 : C l e a n ;
@@ -4925,14 +4925,14 @@ includes the same object renamings as other protected operations. The front-end
 builds an array of pointers to the barrier functions, and the run-time invokes them
 indirectly. The expansion of the barriers is as follows:
  
-f u n c t i o n E n t r y B a r r i e r
+function E n t r y B a r r i e r
 ( O b j e c t : A d d r e s s ;
 E n t r y I n d e x : P r o t e c t e d E n t r y I n d e x )
 r e t u r n B o o l e a n
-i s
-D i s c r i m i n a n t R e n a m i n g s
+is
+D is c r i m i n a n t R e n a m i n g s
 P r i v a t e O b j e c t R e n a m i n g s
-b e g i n
+begin
 r e t u r n B a r r i e r E x p r e s s i o n ;
 end E n t r y B a r r i e r ; 
 
@@ -4945,15 +4945,15 @@ same profile. They are expanded as follows:
 2 : ( O b j e c t : A d d r e s s ;
 3 : P a r a m e t e r s : A d d r e s s ;
 4 : E n t r y I n d e x : P r o t e c t e d E n t r y I n d e x )
-5 : i s
-6 : D i s c r i m i n a n t R e n a m i n g s and P r i v a t e O b j e c t R e n a m i n g s
-7 : t y p e poVP i s a c c e s s poV ;
-8 : f u n c t i o n To PoVP i s new U n c h e c k e d C o n v e r s i o n ( A d d r e s s , PoVP ) ;
+5 : is
+6 : D is c r i m i n a n t R e n a m i n g s and P r i v a t e O b j e c t R e n a m i n g s
+7 : t y p e poVP is a c c e s s poV ;
+8 : function To PoVP is new U n c h e c k e d C o n v e r s i o n ( A d d r e s s , PoVP ) ;
 9 : o b j e c t : PoVP : = To PoVP ( O b j e c t ) ;
-1 0 : b e g i n
+1 0 : begin
 1 1 :  Entry body s t a t e m e n t s 
 1 2 : GNARL. C o m p l e t e E n t r y B o d y ( o b j e c t . o b j e c t ) ;
-1 3 : e x c e p t i o n
+1 3 : exception
 1 4 : when o t h e r s =
 1 5 : GNARL. E x c e p t i o n a l C o m p l e t e E n t r y B o d y
 1 6 : ( o b j e c t . o b j e c t , GNARL. Get GNAT Exception ) ;
@@ -4982,7 +4982,7 @@ field saves the bounds of the entry-family specification. The element-type of th
 arrays is set to void because the contents of the array are not used. The protected
 type is then expanded as follows:
  
-t y p e poV ( D i s c r i m i n a n t s ) i s new L i m i t e d C o n t r o l l e d with
+t y p e poV ( D is c r i m i n a n t s ) is new L i m i t e d C o n t r o l l e d with
 r e c o r d
 P r i v a t e D a t a
 o b j e c t : a l i a s e d GNARL. P r o t e c t i o n E n t r i e s ( N u m E n t r i e s ) ;
@@ -4998,7 +4998,7 @@ simpler, as indicated in the following example:
 11.4. SUMMARY 131
 
 
-t y p e poV ( D i s c r i m i n a n t s ) i s l i m i t e d r e c o r d
+t y p e poV ( D is c r i m i n a n t s ) is l i m i t e d r e c o r d
 p r i v a t e  d a t a  f i e l d s
 o b j e c t : a l i a s e d P r o t e c t i o n ;
 end r e c o r d ; 
@@ -5118,13 +5118,13 @@ been created and received proper initialization. For this objects, Finalize must
 be called. For instance in the folowing code:
 
 
-d e c l a r e
+declare
 S1 : S o m e C o n t r o l l e d T y p e ;
-X : Pos : = Random ( 0 , 1 ) ;   C o n s t r a i n t E r r o r i s
- r a n d o m l y r a i s e d .
+X : Pos : = Random ( 0 , 1 ) ;   C o n s t r a i n t E r r o r is
+ r a n d o m l y r a is e d .
 S2 ; S o m e C o n t r o l l e d T y p e ;
-b e g i n
-n u l l ;
+begin
+null ;
 end ; 
 S1 is initialized, but S2 might not be. Consequently finalization should al-
 ways occur for S1 whereas S2 should be finalized only if it has been initialized.
@@ -5144,19 +5144,19 @@ that takes such an object as a parameter. The call to Empty creates an anonymous
 object that must be finalized when the enclosing call to Exists returns:
 
 
-d e c l a r e
-X : B o o l e a n : = E x i s t s ( 1 , Empty ) ;
- The r e s u l t o f t h e c a l l t o Empty i s k e p t i n an
- anonymous o b j e c t d u r i n g t h e e x e c u t i o n o f E x i s t s ,
+declare
+X : B o o l e a n : = E x is t s ( 1 , Empty ) ;
+ The r e s u l to f t h e c a l l to Empty is k e p t i n an
+ anonymous o b j e c t d u r i n g t h e e x e c u t i o n o f E x is t s ,
  and F i n a l i z e must be i n v o k e d no l a t t e r t h a n
  t h e s e m i c o l o n .
-b e g i n
-i f E x i s t s ( 2 , Empty ) then
+begin
+i f E x is t s ( 2 , Empty ) then
 . . .
 e l s e
 . . .
 end i f ;
- Here t h e anonymous o b j e c t h a s t o be f i n a l i z e d b e f o r e
+ Here t h e anonymous o b j e c t h a s to be f i n a l i z e d b e f o r e
  t h e e x e c u t i o n o f e i t h e r b r a n c h o f t h e i f s t a t e m e n t .
 end ; 
 
@@ -5180,15 +5180,15 @@ troduces an asymmetry between elaboration and finalization. In the following
 example no controlled components are present at the beginning of the execution,
 but after the assignment, X will contain three such components:
  
-d e c l a r e
-t y p e T T a b l e i s array ( N a t u r a l range )
+declare
+t y p e T T a b l e is array ( N a t u r a l range )
 o f S o m e C o n t r o l l e d T y p e ;
-s u b t y p e I n d e x i s N a t u r a l range 0 . . 1 0 ;
-t y p e Rec ( N : I n d e x : = 0 ) i s r e c o r d
+s u b t y p e I n d e x is N a t u r a l range 0 . . 1 0 ;
+t y p e Rec ( N : I n d e x : = 0 ) is r e c o r d
 T : T T a b l e ( 1 . . N ) ;
 end r e c o r d ;
 X : Rec ;
-b e g i n
+begin
 X : = ( 3 , ( 1 . . 3 = Empty ) ) ;   3 C o n t r o l l e d c o m p o n e n t s .
 end ; 
 This example makes it clear that objects with controlled components must
@@ -5208,15 +5208,15 @@ not. This forces the compiler to make a worst-case assumption for class-wide
 objects and parameters. Consider the following case:
 
 
-package T e s t i s
-t y p e T i s t a g g e d n u l l r e c o r d ;
-f u n c t i o n F r e t u r n s T ’ C l a s s ;
+package T e s t is
+t y p e T is t a g g e d null r e c o r d ;
+function F r e t u r n s T ’ C l a s s ;
 end T e s t ;
 with T e s t ; u s e T e s t ;
-procedure Try i s
+procedure Try is
 V : T ’ C l a s s : = F ;
  Does F y i e l d a v a l u e c o n t a i n i n g c o n t r o l l e d c o m p o n e n t s ?
-b e g i n
+begin
 . . .
 end Try ; 
 The expanded code must assume that Try is a scope that needs finalization.
@@ -5231,27 +5231,27 @@ When a controlled object is elaborated, it is first Initialized or Adjusted (dep
 on whether an initial value was present or not), then attached at the beginning of
 this chain. For example, let us assume the following declarations:
  
-d e c l a r e
+declare
 X : S o m e C o n t r o l l e d T y p e ;
 Y : S o m e C o n t r o l l e d T y p e : = X;
-b e g i n
+begin
  A d d i t i o n a l u s e r c o d e 
 end ; 
 This fragment is expanded as follows:
  
-d e c l a r e
+declare
 F : GNARL. F i n a l i z a b l e P t r ;
-b e g i n
+begin
 X : S o m e C o n t r o l l e d T y p e ;
 I n i t i a l i z e ( X ) ;
-GNARL. A t t a c h T o F i n a l L i s t ( F , F i n a l i z a b l e ( X ) ) ;
+GNARL. A t t a c h T o F i n a l L is t ( F , F i n a l i z a b l e ( X ) ) ;
 Y : S o m e C o n t r o l l e d T y p e : = X;
 12.2. EXPANSION ACTIVITIES FOR CONTROLLED-TYPES 139
 A d j u s t ( Y ) ;
-GNARL. A t t a c h T o F i n a l L i s t ( F , F i n a l i z a b l e ( Y ) ) ;
+GNARL. A t t a c h T o F i n a l L is t ( F , F i n a l i z a b l e ( Y ) ) ;
  A d d i t i o n a l u s e r c o d e 
 a t end
-GNARL. F i n a l i z e L i s t ( F ) ;
+GNARL. F i n a l i z e L is t ( F ) ;
 end ; 
 Finalizable Ptr is an access to the class representing all controlled objects.
 Since objects are inserted at the beginning of the list, the ordering of the chain
@@ -5269,7 +5269,7 @@ derived from Controlled can be attached to this list.
 At a first sight, the expansion of the the assignment statement Obj1 := Obj2 might
 be:
  
-F i n a l i z e ( Obj1 ) ;   d i s c a r d o l d v a l u e
+F i n a l i z e ( Obj1 ) ;   d is c a r d o l d v a l u e
 Obj1 : = Obj2 ;
 A d j u s t ( Obj1 ) ;   remove a c c i d e n t a l s h a r i n g on new v a l u e
 However, various problems make such an implementation unworkable. First,
@@ -5288,7 +5288,7 @@ Anon1 : S o m e C o n t r o l l e d T y p e renames Obj1 ;
 Anon2 : A d d r e s s : = Obj2 ’ A d d r e s s ;
 i f Anon1 ’ A d d r e s s / = Anon2 then   P r o t e c t a g a i n s t X : = X
 F i n a l i z e ( Anon1 ) ;
-GNARL. C o p y E x p l i c i t P a r t ( Anon2 . a l l , t o = Anon1 ) ;
+GNARL. C o p y E x p l i c i t P a r t ( Anon2 . a l l , to = Anon1 ) ;
 A d j u s t ( Anon1 ) ;
 end i f ; 
 Note that the target object, even though it has been finalized, remains in the
@@ -5307,13 +5307,13 @@ declaration of a finalization list, and will cause the generation of finalizatio
 as for user-declared constructs. Consider the previous example: function Empty
 yields a controlled value that is only used during the execution of Exists:
  
-X : = E x i s t s ( 1 , I n s i d e = Empty ) ; 
+X : = E x is t s ( 1 , I n s i d e = Empty ) ; 
 GNAT expands this code as follows:
  
-d e c l a r e
+declare
 Anon : S o m e C o n t r o l l e d T y p e : = Empty ;
-b e g i n
-X : = E x i s t s ( 1 , I n s i d e = Anon ) ;
+begin
+X : = E x is t s ( 1 , I n s i d e = Anon ) ;
 end ; 
 An intermediate block can be introduced without changing the semantics of
 the program in order to make the anonymous object and the corresponding final-
@@ -5327,22 +5327,22 @@ in a declaration, since blocks are not allowed in such a context. To handle this
 case, the anonymous object is attached to an intermediate finalization list which
 is finalized right after the declaration. For example:
  
-d e c l a r e
-B : B o o l e a n : = E x i s t s ( 1 , Empty ) ;
-b e g i n
+declare
+B : B o o l e a n : = E x is t s ( 1 , Empty ) ;
+begin
 . . .
 end ; 
 It is expanded into:
  
-d e c l a r e
-Aux L : GNARL. L i s t C o n t r o l l e r ;
+declare
+Aux L : GNARL. L is t C o n t r o l l e r ;
 Anon : S o m e C o n t r o l l e d T y p e ;
 B : B o o l e a n ;
-b e g i n
+begin
 Anon : = Empty ;
 A d j u s t ( Anon ) ;
-GNARL. A t t a c h T o F i n a l L i s t ( Aux L , Anon ) ;
-B : = E x i s t s ( 1 , Anon ) ;
+GNARL. A t t a c h T o F i n a l L is t ( Aux L , Anon ) ;
+B : = E x is t s ( 1 , Anon ) ;
 GNARL. F i n a l i z e ( Aux L ) ;     F i n a l i z e h e r e , n o t a t t h e
  end o f t h e b l o c k
 . . .
@@ -5366,13 +5366,13 @@ Here is the body of Deep Adjust for a type T that is a one-dimensional array of
 controlled objects:
  
 procedure D e e p A d j u s t ( V : i n o u t T ;
-C : F i n a l L i s t ;
-B : B o o l e a n ) i s
-b e g i n
+C : F i n a l L is t ;
+B : B o o l e a n ) is
+begin
 f o r J i n V’ range l o o p
 D e e p A d j u s t ( V( J ) ) ;
 i f B then
-A t t a c h T o F i n a l L i s t ( C , V ( J ) ) ;
+A t t a c h T o F i n a l L is t ( C , V ( J ) ) ;
 end i f ;
 end l o o p ;
 end D e e p A d j u s t ; 
@@ -5401,7 +5401,7 @@ example:
 12.3. SUMMARY 143
 
 
-t y p e Rec ( N : I n d e x : = 0 ) i s r e c o r d
+t y p e Rec ( N : I n d e x : = 0 ) is r e c o r d
 C o n t r o l l e r : GNARL. R e c o r d C o n t r o l l e r ;
 T : S e t s ( 1 . . N ) ;
 end r e c o r d ; 
@@ -5460,14 +5460,14 @@ and to the operations that apply to it. This tag allows the simple implementatio
 of run-time type-specific actions, such as dynamic dispatching and membership
 testing. Let us consider the following declaration of a root tagged-type:
  
-t y p e My Tagged i s a b s t r a c t t a g g e d
+t y p e My Tagged is a b s t r a c t t a g g e d
 r e c o r d
 . . .
 end r e c o r d ; 
 It is transformed by the GNAT front-end by the addition of a new component,
 whose predefined type appears in Ada.Tags:
  
-t y p e My Tagged i s a b s t r a c t t a g g e d
+t y p e My Tagged is a b s t r a c t t a g g e d
 r e c o r d
 Tag : Tags . Tag ;
 . . .
@@ -5486,14 +5486,14 @@ rations of the parent and appending the components in the extension. It turns ou
 to be simpler to describe all the inherited components as being part of a single
 inherited collective component, called Parent. The following type extension:
  
-t y p e My Ext Tagged i s new My Tagged with
+t y p e My Ext Tagged is new My Tagged with
 r e c o r d
 . . .
 end r e c o r d ; 
 13.2. THE DISPATCH TABLE 147
 It is expanded as follows:
  
-t y p e My Ext Tagged i s
+t y p e My Ext Tagged is
 r e c o r d
 Tag : Tags . Tag ;
 P a r e n t : My Tagged ;
@@ -5612,7 +5612,7 @@ nents that require finalization actions (the deep in the name refers to the fact
 the action applies recursively to controlled components, cf. Chapter 12).
 For example, let us assume the following tagged-type declaration:
  
-t y p e My Record i s t a g g e d
+t y p e My Record is t a g g e d
 r e c o r d
 My Data : I n t e g e r ;
 end r e c o r d ; 
@@ -5621,28 +5621,28 @@ from it:
  
 
  D e c l a r a t i o n o f t h e t y p e  s p e c i f i c d a t a
-t y p e My Record Data i s r e c o r d
-DT : array ( 1 . . 1 1 ) o f A d d r e s s ;   D i s p a t c h t a b l e
-TSD : array ( 1 . . 3 ) o f a d d r e s s ;   A n c e s t o r i n f o
+t y p e My Record Data is r e c o r d
+DT : array ( 1 . . 1 1 ) o f A d d r e s s ;   D is p a t c h t a b l e
+TSD : array ( 1 . . 3 ) o f a d d r e s s ;   A n c e s to r i n f o
 P a r e n t : Tags . Tag : = DT’ A d d r e s s ;   Tag o f t h e t y p e
 F : B o o l e a n : = T r u e ;
 E : c o n s t a n t S t r i n g : = ” My Object ” ;   Debug i n f o
 end r e c o r d ; 
 
 
-f u n c t i o n A l i g n m e n t
+function A l i g n m e n t
 (X : M y r e c o r d ) r e t u r n I n t e g e r ;
-f u n c t i o n S i z e
+function S i z e
 ( S : My Record ) r e t u r n I n t e g e r ;
 procedure Read
 ( S : R o o t S t r e a m T y p e ; V : o u t My Record ) ;
 procedure W r i t e
 ( S : R o o t S t r e a m T y p e ; V : My Record ) ;
-f u n c t i o n I n p u t
+function I n p u t
 ( S : a c c e s s R o o t S t r e a m T y p e ) r e t u r n My Record ;
 procedure O u t p u t
 ( S : a c c e s s R o o t S t r e a m T y p e ; V : My Record ) ;
-f u n c t i o n ”=”
+function ”=”
 (X : My Record ; Y : My Record ) r e t u r n B o o l e a n ;
 procedure A s s i g n
 (X : o u t My Record ; Y : My Record ) ;
@@ -5653,7 +5653,7 @@ B : I n t e g e r ) ;
 procedure D e e p F i n a l i z e
 (V : i n o u t My Record ; B : B o o l e a n ) ;
 . . .
- The i n i t i a l i z a t i o n c o d e f o r t h e d i s p a t c h t a b l e i n c l u d e s
+ The i n i t i a l i z a t i o n c o d e f o r t h e d is p a t c h t a b l e i n c l u d e s
  t h e f o l l o w i n g f o r a l l p r i m i t i v e o p e r a t i o n s
 My Record Data . DT ( 1 ) : = A l i g n m e n t ’ A d d r e s s ;
 My Record Data . DT ( 2 ) : = S i z e ’ A d d r e s s ;
@@ -5673,43 +5673,43 @@ Deep Finalize are empty. The other subprograms are expanded as follows:
 13.3. PRIMITIVE OPERATIONS 151
 
 
-f u n c t i o n A l i g n m e n t ( X : My Record ) r e t u r n I n t e g e r i s
-b e g i n
+function A l i g n m e n t ( X : My Record ) r e t u r n I n t e g e r is
+begin
 r e t u r n X’ A l i g n m e n t ;
 end A l i g n m e n t ;
-f u n c t i o n S i z e ( X : My Record ) r e t u r n I n t e g e r i s
-b e g i n
+function S i z e ( X : My Record ) r e t u r n I n t e g e r is
+begin
 r e t u r n X’ S i z e ;
 end S i z e ;
-f u n c t i o n I n p u t ( S : R o o t S t r e a m T y p e ) r e t u r n My Record i s
+function I n p u t ( S : R o o t S t r e a m T y p e ) r e t u r n My Record is
 V : My Record ;
-b e g i n
+begin
 Read ( S , V ) ;
 r e t u r n V;
 end I n p u t ;
 procedure O u t p u t ( S : a c c e s s R o o t S t r e a m T y p e ;
-V : My Record ) i s
-b e g i n
+V : My Record ) is
+begin
 W r i t e ( S , V ) ;
 end O u t p u t ;
-f u n c t i o n ”=” (X : My Record ; Y : My Record ) r e t u r n B o o l e a n i s
-b e g i n
+function ”=” (X : My Record ; Y : My Record ) r e t u r n B o o l e a n is
+begin
 r e t u r n X . My Data = X . My Data ;
 end ”=” ;
-procedure A s s i g n ( X : o u t My Record ; Y : My Record ) i s
-b e g i n
+procedure A s s i g n ( X : o u t My Record ; Y : My Record ) is
+begin
 i f n o t ( X’ A d d r e s s = Y’ A d d r e s s ) then
-d e c l a r e
+declare
 Aux : Tags . Tag : = X . Tag ;
-b e g i n
+begin
 X : = Y;
 X . Tag : = Aux ;
 end ;
 end i f ;
-e x c e p t i o n
+exception
 when o t h e r s =
 GNARL. U n d e f e r . a l l ;
-r a i s e P r o g r a m E r r o r ;
+r a is e P r o g r a m E r r o r ;
 end A s s i g n ; 
 Alignment and Size return the value of the corresponding attribute applied
 t to the object; Input and Ouput call the corresponding Read and Write prim-
@@ -5723,18 +5723,18 @@ correctly an assignment whose right-hand side is a conversion, the assignment
 must first preserve the tag of the target, perform the assignment, and finally reset
 the tag. Let us examine the following example:
  
-d e c l a r e
-t y p e My Record i s t a g g e d
+declare
+t y p e My Record is t a g g e d
 r e c o r d
 Some Data : I n t e g e r ;
 end r e c o r d ;
-t y p e M y E x t e n s i o n i s My Record with
+t y p e M y E x t e n s i o n is My Record with
 r e c o r d
 More Data : C h a r a c t e r ;
 end r e c o r d ;
 Obj1 : My Record ;
 Obj2 : M y E x t e n s i o n ;
-b e g i n
+begin
 Obj1 : = My Record ( Obj2 ) ;   E x p l i c i t c o n v e r s i o n
 end ; 
 After the elaboration of the two objects, the tag of Obj1 points to the dis-
@@ -5930,7 +5930,7 @@ ter Of Task is initialized with the current value of its Parent Master Within).
 This value remains unmodified during the new task life and is used to ensure
 the Ada semantics for tasks finalization.
  
-New Task . M a s t e r O f T a s k : = A c t i v a t o r . M a s t e r W i t h i n 
+New Task . M a s t e r O f T a s k : = A c t i v a to r . M a s t e r W i t h i n 
 14.3. TASK CREATION AND TERMINATION 161
 
 Master Within is set to the initial Master Of Task value plus one. When
@@ -5956,48 +5956,48 @@ Example
 In order to understand these concepts better, let’s apply them to the following
 example:
  
-procedure P i s
+procedure P is
  P : P a r e n t = E n v i r o n m e n t Task ;
- A c t i v a t o r = E n v i r o n m e n t
+ A c t i v a to r = E n v i r o n m e n t
  M a s t e r O f T a s k = 1 ; M a s t e r W i t h i n = 2 ;
 t a s k T1 ;
- T1 : P a r e n t = P ; A c t i v a t o r = P
+ T1 : P a r e n t = P ; A c t i v a to r = P
  M a s t e r O f T a s k = 2 ; M a s t e r W i t h i n = 3 ;
-t a s k body T1 i s
+t a s k body T1 is
 t a s k t y p e TT ;
-t a s k body TT i s
-b e g i n
-n u l l ;
+t a s k body TT is
+begin
+null ;
 end TT ;
-t y p e TTA i s a c c e s s TT ;
+t y p e TTA is a c c e s s TT ;
 T2 : TT ;
- T2 : P a r e n t = T1 ; A c t i v a t o r = T1
+ T2 : P a r e n t = T1 ; A c t i v a to r = T1
  M a s t e r O f T a s k = 3 ; M a s t e r W i t h i n = 4 ;
 t a s k T3 ;
- T3 : P a r e n t = T1 ; A c t i v a t o r = T1
+ T3 : P a r e n t = T1 ; A c t i v a to r = T1
  M a s t e r O f T a s k = 3 ; M a s t e r W i t h i n = 4 ;
-t a s k body T3 i s
+t a s k body T3 is
 t a s k T4 ;
- T4 : P a r e n t = T3 ; A c t i v a t o r = T3
+ T4 : P a r e n t = T3 ; A c t i v a to r = T3
  M a s t e r O f T a s k = 4 ; M a s t e r W i t h i n = 5 ;
-t a s k body T4 i s
-b e g i n
-n u l l ;
+t a s k body T4 is
+begin
+null ;
 end T4 ;
 T5 : TT ;
- T5 : P a r e n t = T3 ; A c t i v a t o r = T3
+ T5 : P a r e n t = T3 ; A c t i v a to r = T3
  M a s t e r O f T a s k = 4 ; M a s t e r W i t h i n = 5 ;
 T6 : TTA : = new TT ;
- T6 : P a r e n t = T1 ; A c t i v a t o r = T3
+ T6 : P a r e n t = T1 ; A c t i v a to r = T3
  M a s t e r O f T a s k = 2 ; M a s t e r W i t h i n = 3 ;
-b e g i n
-n u l l ;
+begin
+null ;
 end T3 ;
-b e g i n
-n u l l ;
+begin
+null ;
 end T1 ;
-b e g i n
-n u l l ;
+begin
+null ;
 end P ; 
 Parent and activator do not coincide for T6 because the task is created by
 means of an allocator, and in this case the parent of the new task is the task where
@@ -6320,7 +6320,7 @@ the run-time saves the base address of this block in the Uninterpreted Data fiel
 of the Entry Call Record. Figure 15.1 presents the GNAT run-time data structures
 used to handle an entry call to the entry E of the following task specification:
  
-t a s k T i s
+t a s k T is
 e n t r y E ( Number : i n I n t e g e r ; T e x t : i n S t r i n g ) ;
 end T ; 
 An entry-call can be in one of the following states:
@@ -6741,13 +6741,13 @@ corresponding body when the barrier is open.
 The basic algorithm of the GNARL Service Entries procedure is as follows:
  
 1 w h i l e T h e r e I s S o m e O p e n B a r r i e r W i t h Q u e u e d E n t r y C a l l s l o o p
-2 Update o b j e c t r e f e r e n c e t o t h e E n t r y C a l l R e c o r d
-3 b e g i n
+2 Update o b j e c t r e f e r e n c e to t h e E n t r y C a l l R e c o r d
+3 begin
 4 C a l l t h e E n t r y B o d y
-5 e x c e p t i o n
+5 exception
 6 when o t h e r s = B r o a d c a s t P r o g r a m E r r o r
 7 end
-8 Remove t h e R e f e r e n c e t o t h e E n t r y C a l l R e c o r d
+8 Remove t h e R e f e r e n c e to t h e E n t r y C a l l R e c o r d
 9 GNARL. W a k e U p E n t r y C a l l e r
 1 0 end l o o p ; 
 Line 1 is evaluated by the GNARL procedure Select Protected Entry Call
@@ -7915,7 +7915,7 @@ Name Group : c o n s t a n t Name Id : = N + 4 7 6 ;
 N a m e I n t r a g r o u p : c o n s t a n t Name Id : = N + 4 7 7 ;
 N a m e R e p l i c a t e d : c o n s t a n t Name Id : = N + 4 7 8 ;
 L a s t D r a g o R e s e r v e d W o r d : c o n s t a n t Name Id : = N + 4 7 8 ;
-s u b t y p e D r a g o R e s e r v e d W o r d s i s
+s u b t y p e D r a g o R e s e r v e d W o r d s is
 Name Id range F i r s t D r a g o R e s e r v e d W o r d
 . . L a s t D r a g o R e s e r v e d W o r d ; 
 We also updated the value of the constant Preset Names, declared in the body
@@ -7932,7 +7932,7 @@ and Cunit is the class of tokens which can begin a compilation unit. Members of
 each class are alphabetically ordered. We have introduced the new tokens in the
 following way:
  
-t y p e Token Type i s (
+t y p e Token Type is (
  Token name C l a s s ( e s )
 . . .
 T o k I n t r a g r o u p ,   Eterm , Sterm , After SM
@@ -8021,13 +8021,13 @@ APPENDIX A. HOW TO ADD NEW KEYWORDS, PRAGMAS AND ATTRIBUTES
 
 GROUP DECLARATION : : = GROUP SPECIFICATION
 GROUP SPECIFICATION : : =
-[ r e p l i c a t e d ] g r o u p d e f i n i n g i d e n t i f i e r i s"
+[ r e p l i c a t e d ] g r o u p d e f i n i n g identifier is"
 b a s i c d e c l a r a t i v e i t e m #
 [ i n t r a g r o u p"
 b a s i c d e c l a r a t i v e i t e m # ]
 [ p r i v a t e"
 b a s i c d e c l a r a t i v e i t e m ]
-end [ g r o u p i d e n t i f i e r ] ; 
+end [ g r o u p identifier ] ; 
 Replicated groups are denoted by the reserved keyword replicated at the head-
 ing of the group specification. Cooperative groups do not require any reserved
 word because they are considered the default group specification. The first list of
@@ -8068,17 +8068,17 @@ N Group Declaration and N Group Specification are:
  
 
  N G r o u p D e c l a r a t i o n
- S l o c p o i n t s t o GROUP
+ S l o c points to GROUP
  S p e c i f i c a t i o n ( Node1 )
 
  N G r o u p S p e c i f i c a t i o n
- S l o c p o i n t s t o GROUP
+ S l o c points to GROUP
  D e f i n i n g I d e n t i f i e r ( Node1 )
- V i s i b l e D e c l a r a t i o n s ( L i s t 2 )
- I n t r a g r o u p D e c l a r a t i o n s ( L i s t 3 ) ( s e t t o N o L i s t i f
- no i n t r a g r o u p p a r t p r e s e n t )
- P r i v a t e D e c l a r a t i o n s ( L i s t 4 ) ( s e t t o No$ L i s t i f
- no p r i v a t e p a r t p r e s e n t ) 
+ V is i b l e D e c l a r a t i o n s ( L is t 2 )
+ I n t r a g r o u p D e c l a r a t i o n s ( L is t 3 ) ( s e t to N o L is t i f
+ no i n t r a g r o u p p a r t present )
+ P r i v a t e D e c l a r a t i o n s ( L is t 4 ) ( s e t to No$ L is t i f
+ no p r i v a t e p a r t present ) 
 This means that the value of Sloc in a N Group Declaration node points to the
 source code word group, and the first field of the node (Field1) points to a specifi-
 cation node. On the other hand, the value of Sloc in a N Group Specification node
