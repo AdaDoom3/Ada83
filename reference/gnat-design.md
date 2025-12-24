@@ -2677,9 +2677,9 @@ constraint. For example:
  
 type My_Record ( Max_Length : Positive ) is
 record
-Name : String ( 1 . . Max_Length ) ;
+Name : String ( 1 .. Max_Length ) ;
 end record ;
-Obj : My_Record ( 3 0 ) ; 
+Obj : My_Record (30) ; 
 Because of the properties of components depend on the values of the discrimi-
 nants, a discriminated object is self-consistent: the value of a discriminant implies
 the truth of some invariant for the object, for example the size of an array compo-
@@ -2855,7 +2855,7 @@ following type declaration:
 
 type Rec ( D : Integer ) is record
 Value : Integer := D;
-Name : String ( 1 . . D ) = ( 1 . . D = ’ ! ’ ) ;
+Name : String ( 1 .. D ) = ( 1 .. D = ’ ! ’ ) ;
 end record ; 
 The corresponding initialization procedure is as follows:
 
@@ -2863,7 +2863,7 @@ The corresponding initialization procedure is as follows:
 procedure I ni t Proc ( Obj : i n o u t r e c ; D : Integer ) is
 begin
 Obj . Value := D;
-Obj . Name := ( 1 . . D = ’ ! ’ ) ;
+Obj . Name := ( 1 .. D = ’ ! ’ ) ;
 end ; 
 The declaration Obj1 : rec (17) results in the generation of the call:
 Init Proc (Obj1, 17).
@@ -3775,10 +3775,10 @@ type T I n t is new Integer ;
 type T Name is array ( T I n t range ) of Character ;
 type T ( Max : T I n t ) is   Do not f r e e z e T I n t h e r e
 record
-Name : T Name ( 1 . . Max ) ;   Do not f r e e z e T I n t h e r e
+Name : T Name ( 1 .. Max ) ;   Do not f r e e z e T I n t h e r e
 Length : T I n t := Max ;   Do not f r e e z e T I n t h e r e
 end record ;
-My Object : T ( 3 0 ) ;   F r e e z e T I n t , T Name , T
+My Object : T (30) ;   F r e e z e T I n t , T Name , T
  and My Object 
 Similarly, default expressions used in subprogram parameters must be de-
 ferred until the subprogram is frozen. In case of procedures this occurs when
@@ -5185,7 +5185,7 @@ type T T a b l e is array ( Natural range )
 of S o m e C o n t r o l l e d T y p e ;
 s u b type I n d e x is Natural range 0 .. 1 0 ;
 type Rec ( N : I n d e x := 0 ) is record
-T : T T a b l e ( 1 . . N ) ;
+T : T T a b l e ( 1 .. N ) ;
 end record ;
 X : Rec ;
 begin
@@ -5403,7 +5403,7 @@ example:
 
 type Rec ( N : I n d e x := 0 ) is record
 C on tr ol le r : GNARL. Record C o n t r o l l e r ;
-T : S e t s ( 1 . . N ) ;
+T : S e t s ( 1 .. N ) ;
 end record ; 
 Record Controller plays a role equivalent to List Controller: it introduces an
 indirection in the enclosing finalization list. The finalization list of controlled
