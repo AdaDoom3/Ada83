@@ -13,6 +13,7 @@ acats_logs/
 test_summary.txt
 test_output.txt
 *.ll
+!rts/*.ll
 *.bc
 T*.ll
 
