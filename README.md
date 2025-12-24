@@ -8,4 +8,4 @@
 cc -o ada83 ada83.c && ./test.sh g c    # Compile and run C-group tests
 ```
 
-Reference material is in the reference/ directory including diana.md and gnat.md as well as the entire gnat sources.
+Reference material is in the reference/ directory including Ada83_LRM.md, DIANA.md (an AST guide), and gnat-design.md - as well as the entire gnat sources themselves.
