@@ -1,5 +1,61 @@
 # Ada83 Compiler Enhancement Log
 
+## 2025-12-24 - Access Value Null Checking Enhancement
+
+### Changes Made (Ultra-Compressed, LRM-Guided)
+
+**Code Generator - Runtime Null Checking (ada83.c:231)**
+- Added null pointer checking for N_DRF (dereference) operations in `gex()` function
+- Generates runtime check before dereferencing access values (pointers)
+- Check pattern: `if (pointer == null) call __ada_raise(CONSTRAINT_ERROR); else proceed`
+- Uses conditional branch with error label and unreachable terminator
+
+**Impact**:
+- LRM 4.8 compliance: Dereferencing null access values raises CONSTRAINT_ERROR
+- Prevents segmentation faults from null pointer dereferences
+- Foundation for improved ACATS C4x (expression/pointer) test pass rates
+
+### Code Metrics
+- **Lines**: 251 (unchanged - ultra-compressed maintained)
+- **Style**: Knuth-style, code-golfed, no comments
+- **Paradigm**: Haskell-like functional, C99
+
+### Technical Details
+
+**Code Generation Pattern (gex function, N_DRF case)**:
+```c
+// For access value dereference (X.all)
+V p=gex(g,n->drf.x);
+// Convert to pointer if needed
+if(p.k==VK_I){...}
+// Add null check
+V pc=vcast(g,p,VK_I);
+int nc=nt(g);
+fprintf(o,"  %%t%d = icmp eq i64 %%t%d, 0\n",nc,pc.id);
+int ne=nl(g),nd=nl(g);
+cbr(g,nc,ne,nd);
+lbl(g,ne);
+fprintf(o,"  call void @__ada_raise(ptr @.ex.CONSTRAINT_ERROR)\n  unreachable\n");
+lbl(g,nd);
+// Safe dereference
+fprintf(o,"  %%t%d = load %s, ptr %%t%d\n",r.id,vt(r.k),p.id);
+```
+
+**Generated LLVM IR**:
+```llvm
+%pc = ptrtoint ptr %p to i64    ; Convert to integer for null check
+%nc = icmp eq i64 %pc, 0        ; Check if null (0)
+br i1 %nc, label %L0, label %L1 ; Branch to error or continue
+L0:
+  call void @__ada_raise(ptr @.ex.CONSTRAINT_ERROR)
+  unreachable
+L1:
+  %result = load i64, ptr %p    ; Safe dereference
+```
+
+- Null check happens in codegen for all access dereferences
+- Protects against undefined behavior from null pointer access
+
 ## 2025-12-24 - Division-by-Zero Checking Enhancement
 
 ### Changes Made (Ultra-Compressed, LRM-Guided)
