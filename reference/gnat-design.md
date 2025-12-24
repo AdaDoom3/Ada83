@@ -18,7 +18,7 @@ with the Invariant Sections being “GNU General Public Documentation
 License”, the Front-Cover text being “GNAT: The GNU Ada Compiler”,
 and the Back-Cover text being “Copies published by the Free Software
 Foundation raise funds for GNU development.”
-I First Part: Introduction 7
+IFirst Part: Introduction 7
 1 The GNAT Project 9
 
 ### 1.1 GCC 10
@@ -82,7 +82,7 @@ I First Part: Introduction 7
 
 ### 3.3 Summary 37
 
-II Second Part: Semantic Analysis 39
+IISecond Part: Semantic Analysis 39
 4 Scopes and Visibility 41
 
 ### 4.1 Flags and Data Structures 41
@@ -367,7 +367,7 @@ IV Fourth Part: Run-Time 155
 ### 14.3 Task Creation and Termination 159
 
 
-### 14.4 Run-Time Subprograms for Task Creation and Termination . . . . 163
+### 14.4 Run-Time Subprograms for Task Creation and Termination .... 163
 
 
 #### 14.4.1 GNARL.Enter Master 165
@@ -556,7 +556,7 @@ A.5 Addition of Pragmas an Attributes 225
 A.6 Addition of New Syntax Rules 225
 A.6.1 First step: Addition of New Node Kinds 226
 A.6.2 Second Step: High-level specification of the new nodes . . 227
-A.6.3 Third Step: Automatic modification of the frontend . . . . 228
+A.6.3 Third Step: Automatic modification of the frontend .... 228
 A.6.4 Fourth Step: Update of the Parser 228
 A.7 Verification of the Semantics 229
 A.8 Tree expansion 230
@@ -597,7 +597,7 @@ List of Figures
 ### 2.4 Abstract Syntax Tree Packages 23
 
 
-### 2.5 Abstract Syntax Subtree associated with the package body rule. . . 24
+### 2.5 Abstract Syntax Subtree associated with the package body rule... 24
 
 
 ### 2.6 Abstract Syntax Tree Decoration 24
@@ -847,7 +847,7 @@ fragments to illustrate specific translation techniques. Many of these fragments
 present not just a source program, but its rewriting and expansion into a simpler
 form that is more amenable to translation into machine language.
 Use of this Book
-In order to facilitate the use of the book, it is distributed in several formats: Hyper-
+In order tofacilitate the use of the book, it is distributed in several formats: Hyper-
 Text Markup Language (HTML), PostScript (PS), and Portable Document Format
 (PDF). The HyperText version is the recommended format because it is linked
 with the GNAT sources, what allows the reader to analyze additional details not
@@ -1159,7 +1159,7 @@ the conventional library mechanism, and has the following advantages over it:
 1. The compilation of an Ada unit is identical to the compilation of a module
 or file in another language: the result of the compilation of one source is
 one object file.
-2. Given that inlining is always done from the source, there is no requirement
+2. Given that inlining is always done from the source, there is norequirement
 that the entities to be inlined should be compiled first. It is even possible
 for two bodies to inline functions defined in each other, without fear of cir-
 cularities. Thus inlining works in a much more flexible way than in normal
@@ -1180,7 +1180,7 @@ than the conventional library structure (tools ranging from the simple UNIX
 make program to sophisticated compilation management environments).
 In the GNAT model, a source file contains a single compilation unit, and a
 compilation is represented as a series of source files, each of which contains one
-compilation unit. Furthermore there is a direct mapping from unit names to file
+compilation unit. Furthermore there is a direct mapping from unit names tofile
 names, so that from a unit name one can always determine the name of the file
 that contains the source for that unit. The default file naming convention is as
 follows: (1) The file name is the expanded name of the unit, with dots replaced by
@@ -1206,7 +1206,7 @@ other compilations are similarly reinterpreted. For example, a rule that says: T
 body of package cannot be compiled until its specification has been compiled, is
 re-interpreted to mean: The body of package cannot be compiled unless the source
 of its specification is available. One interesting consequence of this approach is
-that if all the sources of a program are available, there are in fact no restrictions on
+that if all the sources of a program are available, there are in fact norestrictions on
 the order of compilation. This feature facilitates the parallel compilation of Ada
 programs.
 The main argument against the GNAT model is that the compiler is constantly
@@ -1237,7 +1237,7 @@ of three modes:
 3. From ALI files and all corresponding sources, which must be available.
 1.4. SUMMARY 17
 Despite the clear advantages of operating in “source file” mode (second and
-third alternative), it is more useful for the GNAT binder to operate in “ali files
+third alternative), it is more useful for the GNAT binder to operate in “alifiles
 only” mode. Not only is this mode faster, since no source files need to be accessed,
 but more importantly, it means that GNAT programs can be linked from objects
 even if the sources are not available. This is indispensable when linking libraries
@@ -1274,7 +1274,7 @@ pact Abstract Syntax Tree (AST): lexical analysis, syntax analysis, semantic ana
 ysis, and expansion. This chapter provides an overview of the architecture of these
 phases. It is structured as follows: Section 2.1 presents the scanner architecture;
 Section 2.2 gives an overview of the parser, describes the high-level specification
-of the AST nodes and presents the mechanisms used to resynchronize it in case of
+of the AST nodes and presents the mechanisms used toresynchronize it in case of
 syntax errors; Section 2.3 describes the architecture of the semantic analyzer, and
 finally Section 2.4 discusses the architecture of the expander.
 
@@ -1361,7 +1361,7 @@ Ch3 Ch13
 
 The GNAT Parser also has several additional sub-units: Package Endh, con-
 tains subprograms to analyze the finalization of the syntax scopes; package Sync,
-contains subprograms to resynchronize the parser after syntax errors (cf. Chap-
+contains subprograms toresynchronize the parser after syntax errors (cf. Chap-
 ter 3); package Tchk, contains subprograms that simplify the verification of to-
 kens; procedure Labl handles implicit label declarations; procedure Load controls
 the loading into main memory of successive compilation units; function Prag an-
@@ -1386,7 +1386,7 @@ The GNAT Abstract Syntax Tree (AST) has two kind of nodes: internal (struc-
 tural) nodes that represent the syntactic structure of the progam, and extended
 nodes that store information about Ada entities (identifiers, operator symbols and
 character literal declarations). Internal nodes have 5 general purpose fields which
-can be used to reference other nodes, lists of nodes (i.e. the list of statements in an
+can be used toreference other nodes, lists of nodes (i.e. the list of statements in an
 Ada block), names, literals, universal integers, floats, or character codes. Entity
 nodes have 23 general purpose fields, and a large number of boolean flags, that
 are used to store in the tree all relevant semantic attributes of each entity. In other
@@ -1394,17 +1394,17 @@ compilers this information is commonly stored in a separate symbol table.
 Figure 2.4 describes the GNAT packages involved in the AST handling. Low
 level package Atree implements and abstract data type that contains the definitions
 related with structure nodes and entities, as well as subprograms to create, copy,
-and delete nodes, and subprograms to read and modify the general purpose fields.
+and delete nodes, and subprograms toread and modify the general purpose fields.
 Low level package Nlists provides the support for handling lists of nodes. Pack-
 ages Sinfo and Einfo contain the high-level specification of the nodes, that is, the
 high-level names associated with the low-level general purpose node fields, and
-subprograms to read and modify these fields with their high-level names. Pack-
+subprograms toread and modify these fields with their high-level names. Pack-
 age Nmake has subprograms to create high level nodes with syntax and semantic
 information.
 Let us examine the format of the high-level specification of the nodes by means
 of an example. The Ada syntax rule for a package body is:
  
-PACKAGE BODY : : =
+PACKAGE BODY : :=
 package body DEFINING PROGRAM UNIT NAME is
 DECLARATIVE PART
 [ begin
@@ -1427,10 +1427,10 @@ The corresponding high-level node is specified in the package Sinfo as follows:
  S l o c points to PACKAGE
  D e f i n i n g U n i t N a m e ( Node1 )
  D e c l a r a t i o n s ( L is t 2 )
- H a n d l e d S t a t e m e n t S e q u e n c e ( Node4 ) ( s e t to Empty
- i f n o t present )
- C o r r e s p o n d i n g S p e c ( Node5 Sem )
- W a s O r i g i n a l l y S t u b ( F l a g 1 3 Sem ) 
+ H and l e d S t a t e m e n t S e q u e n c e ( Node4 ) ( s e t to Empty
+ if not present )
+ C or r e s p o n d i n g S p e c ( Node5 Sem )
+ W a s O r i g i n all y S t u b ( F l a g 1 3 Sem ) 
 The first line specifies the node kind (N Package Body), which is an enumer-
 ated literal of type Sinfo.Node Kind; the second line indicates that the source co-
 ordinate (Sloc) for the node is the source coordinate of the keyword that is the first
@@ -1504,7 +1504,7 @@ mechanism for the compiler.
 Sem_Ch3Sem_Ch2
 Sem
 Sem_Attr
-. . .
+...
 Sem_Case
 Sem_Disp Sem_Elab Sem_Eval Sem_Intr
 Sem_Maps Sem_Mech
@@ -1552,17 +1552,17 @@ Sem
 
 **Figure 2.8: Abstract Syntax Tree Nodes Dispatching.**
 
-The resolution routines are called by the analysis routines to resolve ambigu-
+The resolution routines are called by the analysis routines toresolve ambigu-
 ous nodes or overloaded entities. For example, the Ada syntax of a procedure-call
 statement is exactly the same as that of an entry-call statement. Given this ambigu-
 ous syntactic specification, the GNAT parser generates the same N Procedure Call
 node for both cases, and the Semantic Analyzer must analyze the context, deter-
 mine the nature of the entity being called, and, when needed replace the original
 node by an entry-call statement node (which will be subject to completely dif-
-ferent expansion that a procedure call). To resolve overloaded entities GNAT
+ferent expansion that a procedure call). Toresolve overloaded entities GNAT
 implements a well-known two-pass algorithm. During the first (bottom-up) pass,
 it collects the set of possible meanings of a name. In the second pass, the type
-imposed by the context is used to resolve ambiguities and chose a unique mean-
+imposed by the context is used toresolve ambiguities and chose a unique mean-
 ing for each overloaded identifier in the expression. This is described in detail in
 Chapter 5.
 2.4. THE EXPANDER 27
@@ -1612,7 +1612,7 @@ rule of the language (ie. Expand Compilation Unit). Similar to the Semantic An-
 alyzer, the package Expander implements a dispatcher which receives one node
 and calls the corresponding expander subprogram.
 Expander
-. . .
+...
 Exp_Code Exp_Dbug
 Exp_TSSExp_Intr
 Exp_Util
@@ -1647,7 +1647,7 @@ mation of Ada entities. Therefore GNAT has no separate symbol table; all the
 information traditionally stored in this table is kept in the AST entities.
 The Semantic Analysis phase carries out a top-down traversal of the AST to
 do the static analysis of the program and decorate the AST. This phase implements
-a well-known two pass algorithm to resolve overloaded entities. The Expansion
+a well-known two pass algorithm toresolve overloaded entities. The Expansion
 phase replaces high-level nodes by sub-trees with low-level nodes which provide
 the equivalent semantics and can be handled by the GCC code generator.
 To help reading the sources the architecture of the parser, semantics and ex-
@@ -1664,7 +1664,7 @@ plify the implementation of the parser. The GNAT parser has what is considered
 to be the best set of error recovery strategies of any Ada compiler in use. In this
 chapter we briefly present these strategies. It is structured as follows: Section 3.1
 introduces the error recovery techniques implemented in the scanner, and Sec-
-tion 3.2 presents the mechanisms used to resynchronize the parser. Section 3.2.1
+tion 3.2 presents the mechanisms used toresynchronize the parser. Section 3.2.1
 presents the parser scope-stack which is used to handle nested scopes parsing;
 Section 3.1.1 discusses the use of the programmer casing convention to distin-
 guish keywords from user-defined identifiers, and finally Sections 3.2.3 and 3.2.4
@@ -1692,7 +1692,7 @@ then” token to the Parser. The scanner has many error messages specific for
 C programmers.
 In most cases this simple but powerful mechanism helps masking lexical errors
 to the parser. This simplifies the implementation of the parser, which does not
-need to repeatedly handle them in many contexts. For additional details, read the
+need torepeatedly handle them in many contexts. For additional details, read the
 Scan, Nlit, and Slit subprograms in package Scn.
 
 #### 3.1.1 Use of the Casing of Identifiers
@@ -1706,7 +1706,7 @@ indented identifier rather than the beginning of an exception handler (cf. subpr
 gram scan reserved identifier).
  
 procedure Wrong1 is
-E x c e p t i o n : I n t e g e r ;
+E xc ep ti on : Integer ;
 reserved word ” exception ” cannot be used as identifier
 begin
 null ;
@@ -1716,14 +1716,14 @@ end Wrong1 ; 
 
 The GNAT parser includes a sophisticated error recovery system which, among
 other things, takes indentation into account when attempting to correct scope er-
-rors. When an error is encountered, a call is made to one parser routine to record
+rors. When an error is encountered, a call is made to one parser routine torecord
 the error (cf. Package Errout). If the parser can recover locally, it masks the
 failure to the next stages of the front-end by generating the AST nodes as if the
 syntax were right, and the parsing continues unimpeded. On the other hand, if
 3.2. PARSER ERROR RECOVERY 33
 the error represents a situation from which the parser cannot recover locally, the
 exception Error Resync) is raised after the call to the routine that records the er-
-ror. Exception handlers are located at strategic points to resynchronize the parser.
+ror. Exception handlers are located at strategic points toresynchronize the parser.
 For example, when an error occurs in a statement, the handler skips to the next
 semicolon and continues the scan from there.
 In the GNAT sources, each parsing routine has a note with the heading “Error
@@ -1736,7 +1736,7 @@ routines which propagate the exception.
 
 Many rules of the language define a syntax scope (rules ended with ’end’). For
 example, the syntax rules of packages, subprograms and all the flow-of-control
-statements. The GNAT parser uses a scope-stack to record the scope context. An
+statements. The GNAT parser uses a scope-stack torecord the scope context. An
 entry is made when the parser encounters the opening of a nested construct, and
 then package Endh uses this stack to deal with ’end’ lines (including properly
 dealing with ’end’ nesting errors).
@@ -1758,12 +1758,12 @@ The next example combines the use of the scope-stack plus the indentation to
 match the statement:
  
 procedure Wrong2 is
-A , B : I n t e g e r ;
+A , B : Integer ;
 begin
-i f A B then
+if A B then
 null ;
 end Wrong2 ;
-” end i f ; ” e x p e c t e d f o r ” i f ” a t l i n e 4 
+” end if ; ” e x p e c t e d for ” if ” a t l i n e 4 
 Note that a more conventional approach to error recovery would have pro-
 duced two errors: it would have identified the end with the if-statement, com-
 plained about a missing “if”, and then complained about the missing end for the
@@ -1777,10 +1777,10 @@ sponds to the following example:
  
 
  Case 1 : At t h e o u t e r l e v e l
-procedure X ( Y : I n t e g e r ) ;
-Q : I n t e g e r ;
+procedure X ( Y : Integer ) ;
+Q : Integer ;
 begin
-. . .
+...
 end ; 
 In this case the GNAT parser knows that something is wrong as soon as it
 encounters Q (or ’begin’, if there are no declarations), and it can immediately
@@ -1792,13 +1792,13 @@ region is more complex, and corresponds to the following example:
 
  Case 2 : W i t h i n a d e c l a r a t i v e r e g i o n
 declare
-procedure X ( Y : I n t e g e r ) ;   1
-Q : I n t e g e r ;
+procedure X ( Y : Integer ) ;   1
+Q : Integer ;
 begin    2
-. . .
+...
 end ;
 begin
-. . .
+...
 end ; 
 In this case, the syntax error (line <1>) has the syntax of a subprogram decla-
 ration [AAR95, Section 6-1]. Therefore, the declaration of Q is read as belonging
@@ -1846,13 +1846,13 @@ package body X is
 procedure A;
 procedure B is   1
 procedure C ;
-. . .
+...
 procedure D is
 begin
-. . .
+...
 end ;
 begin
-. . .
+...
 end ;   2 
 The trouble is that the section of text from line <1> to line <2> syntactically
 constitutes a valid procedure body, and the danger is that the parser finds out far
@@ -1862,7 +1862,7 @@ To control this situation the GNAT parser avoids swallowing the last ’end’ i
 it can be sure that some error will result from doing so. In particular, the parser
 will not accept the ’end’ it if it is immediately followed by end of file, ’with’ or
 ’separate’ (all tokens that signal the start of a compilation unit, and which there-
-fore allow us to reserve the ’end’ for the outer level). For more details on this
+fore allow us toreserve the ’end’ for the outer level). For more details on this
 aspect of the handling, see package Endh. Similarly, if the enclosing package has
 no ’begin’, then the result is a missing ’begin’ message, which refers back to the
 subprogram header. Such an error message is not too bad (it’s already a big im-
@@ -1880,7 +1880,7 @@ colon, and the subprogram body node is marked (by setting the Bad Is Detected
 flag to true). This is not done for library level procedures since they must have a
 body.
 The processing for a declarative part checks to see if the last declaration
-scanned is marked in this way, and if it is, the tree is modified to reflect the ’is’
+scanned is marked in this way, and if it is, the tree is modified toreflect the ’is’
 being interpreted as a semicolon.
 
 ### 3.3 Summary
@@ -1900,7 +1900,7 @@ implements a resynchronization mechanism based on exception handlers.
 ## Chapter 4: Scopes and Visibility
 
 Modern high-level programming languages allow us to define names with a lim-
-ited scope of visibility, to reuse them in different contexts and also to overload
+ited scope of visibility, toreuse them in different contexts and also to overload
 them; It is responsibility of the compiler to keep track of scope and binding in-
 formation about names. For this purpose the compilers generally use a separate
 Symbol Table structure. In the case of GNAT, there is no separate symbol table.
@@ -1911,7 +1911,7 @@ This chapter is structured as follows: Section 4.1 presents the entity flags and
 data structures used by the front-end to handle scopes and visibility; Section 4.2
 describes the sequence of steps followed to analyze records, tasks, protected ob-
 jects, context clauses, child units and subunits, and finally Section 4.5 describes
-the sequence of steps followed to resolve names of records, tasks, protected ob-
+the sequence of steps followed toresolve names of records, tasks, protected ob-
 jects, simple names and expanded names.
 
 ### 4.1 Flags and Data Structures
@@ -1933,22 +1933,22 @@ one stack (Scope Stack). Defining entities corresponding to declaration scopes
 processed, and removed at the end. The first element in the Scope Stack references
 the defining entity of package Standard. Figure 4.1 presents one example. On the
 left side we have a procedure (Example) which has a local procedure (My Proc)
-with a local record type declaration (My Record). The right side of this figure
+with a local record type declaration (My_Record). The right side of this figure
 represents the contents of the Scope Stack at the point of analysis of the record
 type declaration. For simplicity, figures in the rest of this chapter do not have the
 reference to the standard package.
 procedure Example is
-. . .
+...
 procedure My_Proc is
 type My_Record is
 record
-. . .
+...
 end record;
 begin
-. . .
+...
 end My_Proc;
 begin
-. . .
+...
 end Example;
 Scopes Stack
 Standard
@@ -1976,10 +1976,10 @@ procedure Local_Proc is
 Total : Natural;
 Flag : Boolean;
 begin
-. . .
+...
 end Local_Proc;
 begin
-. . .
+...
 end Example_2;
 AST Entities
 Total
@@ -1998,7 +1998,7 @@ Local_Proc
 Two entity definitions are homonyms if they have the same defining name and,
 if both are over-loadable, their profiles are type conformant. For example, an in-
 ner declaration hides any outer homonym declaration from direct visibility. The
-Ada Reference Manual uses the term homograph to refer to this concept [AAR95,
+Ada Reference Manual uses the term homograph torefer to this concept [AAR95,
 Section 8.3(8)]; we have preferred to use the term homonym because it is the
 term used in the GNAT implementation. For example, the GNAT semantic an-
 alyzer keeps track of homonym entities by means of the Homonym linked lists.
@@ -2025,10 +2025,10 @@ procedure Local_Proc is
 Total : Float;
 Flag : Boolean;
 begin
-. . .
+...
 end Local_Proc;
 begin
-. . .
+...
 end Example_2;
 AST Entities
 Total
@@ -2057,7 +2057,7 @@ In their homonym list. As a consequence, the entities name space can be view
 as a sparse matrix where each row corresponds to a scope, and each column to
 a name. Open scopes, that is to say scopes currently being compiled, have their
 corresponding rows of entities in order, innermost scope first (cf. Figure 4.4).
-In the rest of this chapter we will use the following expressions to refer to
+In the rest of this chapter we will use the following expressions torefer to
 handling these flags and data structures: “To make Immediately/Potentially-Use
 Visible” an entity means to mark the entity as Immediately-Visible or Potentially-
 Use-Visible; the expression “To open the scope” of an entity will mean to push
@@ -2095,9 +2095,9 @@ record
 Count : Natural;
 Name : String (1 .. 30);
 end record;
-. . .
+...
 begin
-. . .
+...
 end Example;
 Scope Stack
 Names Table
@@ -2119,7 +2119,7 @@ in the package specification, and (4) insert them in the matrix of entities. On 
 the scope must be closed but, instead of removing all these entities from their
 homonym lists, the GNAT semantic analyzer just un-marks them as immediately
 visible. As a consequence, the analysis of the package body as well as subsequent
-with and use clauses do not need to re-chain the visible entities but only to re-open
+with and use clauses do not need tore-chain the visible entities but only tore-open
 the scope and re-establish their direct visibility. Entities defined in the scope of
 the package body are just made immediately visible and added to the matrix of
 entities. Because the body is semantically an extension of the specification, these
@@ -2131,12 +2131,12 @@ in the defining entity of the package body because they are needed to generate t
 object code.
 At a first sight, the analysis of use clauses only needs to make Potentially-
 Use-Visible all the entities defined in the visible part of the named package speci-
-fications and, on exit from the scope of the use clause, to reset the flag. However,
+fications and, on exit from the scope of the use clause, toreset the flag. However,
 this simple approach is not enough because it is legal to name the same package
 in nested contexts. To properly handle the general case, the defining entity of the
 4.4. ANALYSIS OF PRIVATE TYPES 47
 procedure Example is
-type T_Buffer is . . .
+type T_Buffer is ...
 Count : Natural := 0;
 protected type T_Stack is
 entry Push (X : in Item);
@@ -2146,11 +2146,11 @@ Count : Natural := 0;
 Buffer : T_Buffer;
 end T_Stack;
 protected body T_Stack is
-. . .
+...
 end T_Stack;
-. . .
+...
 begin
-. . .
+...
 end Example;
 Scope Stack
 Names Table
@@ -2229,17 +2229,17 @@ of child units.
 Source Ada Program
 package Example is
 Max : constant := ... ;
-procedure Proc_1 ( . . . );
-. . .
+procedure Proc_1 ( ... );
+...
 private
-Max_2 : constant . . . ;
-type T_Private_1 is . . . ;
+Max_2 : constant ... ;
+type T_Private_1 is ... ;
 end Example;
 AST Entities
 Max
 Example_2
 Proc_1
-//. . .
+//...
 Max_2 T_Private_1
 First_Private
 First_Entity
@@ -2247,7 +2247,7 @@ First_Entity
 **Figure 4.7: Visible and Private Entities**
 
 Similar to the package specification, the defining entity of the task type and
-the protected-object type also have the First Private Entity attribute to reference
+the protected-object type also have the First Private Entity attribute toreference
 the first private entry (if any).
 
 #### 4.4.2 Private Type Declarations
@@ -2271,22 +2271,22 @@ to indicate that they have full definitions.
 Source Ada Program
 package Example is
 type T_Data is private; -- (1) Private Type Decl.
-. . .
+...
 private
 type T_Data is -- (2) Full Type Decl.
 record
-. . .
+...
 end record;
-. . .
+...
 end Example;
 AST Entities
 T_Data
 Example
-. . .
+...
 T_Data
 First_Private
 First_Entity
-. . .
+...
 Full_View
 
 **Figure 4.8: Reference to the Full-View Entity**
@@ -2294,22 +2294,22 @@ Full_View
 Source Ada Program
 package Example is
 type T_Data is private; -- (1) Private Type Decl.
-. . .
+...
 private
 type T_Data is -- (2) Full Type Decl.
 record
-. . .
+...
 end record;
-. . .
+...
 end Example;
 AST Entities
 T_Data
 Example
-. . .
+...
 T_Data
 First_Private
 First_Entity
-. . .
+...
 Full_View
 
 **Figure 4.9: Swapping of the Private Declaration and the Full View**
@@ -2341,24 +2341,24 @@ Source Ada Program
 package Example is
 type T_Data is private;
 Empty : constant T_Data; -- (1) Deferred Decl.
-. . .
+...
 private
 type T_Data is
 record
-. . .
+...
 end record;
-Empty : T_Data := . . . ; -- (2) Full Declaration
+Empty : T_Data := ... ; -- (2) Full Declaration
 end Example;
 AST Entities
 T_Data
 Example
-. . .
+...
 T_Data
 First_Private
 First_Entity
 Full_View
 Empty Empty
-. . .
+...
 Full_View
 
 **Figure 4.10: Deferred Constants Handling**
@@ -2418,7 +2418,7 @@ The GNAT front-end stores all the semantic information concerning program en-
 tities directly in defining entity nodes in the AST. Thus the AST contains not only
 the full syntactic representation of the program, but also the results of the seman-
 tic analysis. To handle the analysis of scope and visibility rules, all the entities
-have two flags which indicate if the entity is immediately or potentially-use visi-
+have twoflags which indicate if the entity is immediately or potentially-use visi-
 ble. In addition, all the entities in the same scope are inserted in two lists: the list
 of entities in the scope, and the list of homonym entities. As a consequence, the
 entities name space can be view as a sparse matrix where each row corresponds
@@ -2444,11 +2444,11 @@ type, (3) the number of parameters, (4) the type of each parameter. These prop-
 erties are collectively called the subprogram’s parameter-and-result-type profile.
 For example, the following operations can be visible at the same point:
  
-function Op ( x : I n t e g e r ) r e t u r n I n t e g e r ;   (Op1 )
-function Op ( x : I n t e g e r ; y : I n t e g e r ) r e t u r n I n t e g e r ;   (Op2 )
-function Op ( x : F l o a t ) r e t u r n I n t e g e r ;   (Op3 )
-function Op ( x : I n t e g e r ) r e t u r n F l o a t ;   (Op4 )
-procedure Op ( x : I n t e g e r ) ;   (Op5 )
+function Op ( x : Integer ) return Integer ;   (Op1 )
+function Op ( x : Integer ; y : Integer ) return Integer ;   (Op2 )
+function Op ( x : F l o a t ) return Integer ;   (Op3 )
+function Op ( x : Integer ) return F l o a t ;   (Op4 )
+procedure Op ( x : Integer ) ;   (Op5 )
 Note that operations that only differ in the names of the formal parameters,
 but not their types, cannot be visible at the same point: either one hides the other
 through of scope and visibility rules, or else the declarations are illegal.
@@ -2462,13 +2462,13 @@ pending on the types of A and B. This simple rule applies to subprograms as well
 where a candidate interpretation is retained if the types of the actuals in the call
 are compatible with the formals of the subprogram.
 Ada, unlike many other programming languages, also uses the context of the
-call to resolve an overloaded name [AAR95, Section 8.6]. For example, a pro-
+call toresolve an overloaded name [AAR95, Section 8.6]. For example, a pro-
 gram may declare several functions whose signature differs only in their return
 type (cases (1) and (4) above). A consequence of the use of context is that type
 checking of expressions and the identification of operators cannot be performed
 in a single bottom-up traversal of the expression, as is the case for most other im-
 perative languages. Instead, a two-pass algorithm is required (Algol68 had similar
-resolution rules, and also required a multi-pass resolution algorithm).
+resolution rules, and alsorequired a multi-pass resolution algorithm).
 In the rest of this chapter we present the two-pass resolution algorithm imple-
 mented in GNAT. We first give a general description of the algorithm. Later we
 complete this description with additional details, and the data structures used to
@@ -2493,7 +2493,7 @@ select a single interpretation for each component of the construct. For ex-
 ample, the right-hand side of an assignment may be an overloaded function
 call, but if the type of the left-hand side is unique, it will identify uniquely
 the function being called. Once the function is known, the types of its for-
-mal parameters are used to resolve the possibly overloaded actuals in the
+mal parameters are used toresolve the possibly overloaded actuals in the
 call, and so on.
 5.1. RESOLUTION ALGORITHM 57
 The problem of overload resolution is best explained by a simple example
@@ -2502,12 +2502,12 @@ algorithm can be found in [vK87, Section 4.5]). Let us assume the following
 functions:
  
 declare
-function F ( A , B : T1 ) r e t u r n T is . . .   (F1 )
-function F ( A , B : T2 ) r e t u r n T1 is . . .   (F2 )
-function F ( A , B : T2 ) r e t u r n T2 is . . .   (F3 )
+function F ( A , B : T1 ) return T is ...   (F1 )
+function F ( A , B : T2 ) return T1 is ...   (F2 )
+function F ( A , B : T2 ) return T2 is ...   (F3 )
 Var1 , Var2 , Res : T2 ;
 begin
-Res : = F ( Var1 , Var2 ) ;
+Res := F ( Var1 , Var2 ) ;
 end ; 
 The type of the expression F(Var1,Var2) cannot be deduced from the function
 call itself; the context in which it appears must be taken into account. In the first
@@ -2526,11 +2526,11 @@ applicable functions to the F from the third definition.
 The first pass can also select candidate interpretations on the basis of named pa-
 rameter associations. Consider the two declarations:
  
-function F ( A : I n t e g e r ; B : I n t e g e r : = 0 ) r e t u r n I n t e g e r ;   (F1 )
-function F ( C : I n t e g e r ) r e t u r n I n t e g e r ;   (F2 ) 
-These two functions have different parameter profiles, but the call F(5) is am-
+function F ( A : Integer ; B : Integer := 0 ) return Integer ;   (F1 )
+function F ( C : Integer ) return Integer ;   (F2 ) 
+These twofunctions have different parameter profiles, but the call F(5) is am-
 biguous, regardless of the context: it can mean F(5,0) or F(5). However, it is
-possible to write F(C= 5) to resolve the ambiguity because the named notation
+possible to write F(C= 5) toresolve the ambiguity because the named notation
 indicates that only F2 is a candidate interpretation.
 The details of overload resolution are complicated by construct-specific rules
 that apply to different complete contexts and also to constituents of a context, and
@@ -2567,7 +2567,7 @@ tion of Ada, each type declaration creates some implicit operators that apply
 to the type. For example, every non-limited type has its own equality oper-
 ator, each arithmetic type has its own arithmetic operators, etc. Given that
 type declarations are extremely common in Ada programs, it seems appro-
-priate to find some compact or implicit description of these operators, rather
+priate tofind some compact or implicit description of these operators, rather
 than making explicit entities for all of them. This will be discussed in detail
 in the following paragraphs.
 5.1. RESOLUTION ALGORITHM 59
@@ -2611,11 +2611,11 @@ propagates the type information imposed by the context to each subcomponent of
 the context. For example, given the following:
  
 declare
-procedure P ( X : F l o a t ; Y : I n t e g e r ) ;   P1
+procedure P ( X : F l o a t ; Y : Integer ) ;   P1
 procedure P ( X : F l o a t ; Y : F l o a t ) ;   P2
-function F ( X : F l o a t ) r e t u r n I n t e g e r ;   F1
-function F ( X : F l o a t ) r e t u r n F l o a t ;   F2
-. . .
+function F ( X : F l o a t ) return Integer ;   F1
+function F ( X : F l o a t ) return F l o a t ;   F2
+...
 begin
 P ( F ( 5 . 0 ) , 2 . 2 ) ;
 end ; 
@@ -2628,16 +2628,16 @@ Each language construct has a corresponding subprogram in the front-end
 package Sem Res, that applies the context information to the constituents of the
 construct. For example, consider an overloaded indexed expression:
 F(G(x))(H(y))
-. . . where F, G and H are overloaded function calls. Once the context type CT
+... where F, G and H are overloaded function calls. Once the context type CT
 is known, we iterate over the interpretations of F and retain the one that returns
 an array type whose component type is CT. Once a unique interpretation of F is
-known, its formal parameter provides the unique type to resolve G(x), and the
-component type of its return type is used to resolve H(y).
+known, its formal parameter provides the unique type toresolve G(x), and the
+component type of its return type is used toresolve H(y).
 The language displays a syntactic ambiguity which requires special process-
 ing. Consider the following declarations:
  
-t y p e V e c to r is array ( I n t e g e r range ) o f I n t e g e r ;
-function F ( X : I n t e g e r : = 1 0 ) r e t u r n V e c to r ; 
+type V e c tor is array ( Integer range ) of Integer ;
+function F ( X : Integer := 1 0 ) return V e c tor ; 
 The expression F(5) has two possible interpretations: a function call with pa-
 rameter 5 that returns a vector, i.e. F(X=¿5), or the indexing of a parameterless
 5.2. SUMMARY 61
@@ -2675,11 +2675,11 @@ sufficient information to build an object of the type; a declaration of an objec
 such a type must supply values for the discriminants, by means of a discriminant
 constraint. For example:
  
-t y p e My Record ( Max Length : P o s i t i v e ) is
-r e c o r d
-Name : S t r i n g ( 1 . . Max Length ) ;
-end r e c o r d ;
-Obj : My Record ( 3 0 ) ; 
+type My_Record ( Max_Length : Positive ) is
+record
+Name : String ( 1 . . Max_Length ) ;
+end record ;
+Obj : My_Record ( 3 0 ) ; 
 Because of the properties of components depend on the values of the discrimi-
 nants, a discriminated object is self-consistent: the value of a discriminant implies
 the truth of some invariant for the object, for example the size of an array compo-
@@ -2753,31 +2753,31 @@ example, let us consider the following example:
 
 
 1 : declare
-2 : t y p e T Company is ( S m a l l , Big ) ;
-3 : t y p e T R e c o r d ( Company Kind : T Company ;
-4 : Num Departments : N a t u r a l ) is
-5 : r e c o r d
-6 : Num Workers : P o s i t i v e ;
-7 : c a s e Company is
-8 : when S m a l l =
-9 : H a s B e n e f i t s : B o o l e a n ;
+2 : type T_Company is ( Small , Big ) ;
+3 : type T_Record ( Company_Kind : T_Company ;
+4 : Num_Departments : Natural ) is
+5 : record
+6 : Num_Workers : Positive ;
+7 : case Company is
+8 : when Small =
+9 : H a s B e n e f i t s : Boolean ;
 1 0 : when Big =
-1 1 : c a s e Num Departments is
-1 2 : when 1 . . 1 0 =
-1 3 : Value : I n t e g e r ;
-1 4 : when o t h e r s =
+1 1 : case Num_Departments is
+1 2 : when 1 .. 1 0 =
+1 3 : Value : Integer ;
+1 4 : whenot h e r s =
 1 5 : null ;
-1 6 : end c a s e ;
-1 7 : end c a s e ;
-1 8 : end r e c o r d ;
+1 6 : end case ;
+1 7 : end case ;
+1 8 : end record ;
 1 9 :
-2 0 : O b j 1 : T R e c o r d ( S m a l l , 1 ) ;
-2 1 : O b j 2 : T R e c o r d ( Big , 7 ) ;
-2 2 : O b j 3 : T R e c o r d ( Big , 1 5 ) ;
+2 0 : O b j 1 : T_Record ( Small , 1 ) ;
+2 1 : O b j 2 : T_Record ( Big , 7 ) ;
+2 2 : O b j 3 : T_Record ( Big , 1 5 ) ;
 2 3 : begin
-2 4 : O b j 1 : = ( Num Workers = 2 , H a s B e n e f i t s = F a l s e ) ;
-2 5 : O b j 2 : = ( Num Workers = 1 0 0 , Value = 1 0 0 0 0 ) ;
-2 6 : O b j 3 : = ( Num Workers = 1 5 0 , Value = 1 5 0 0 0 ) ;   ERROR
+2 4 : O b j 1 := ( Num_Workers = 2 , H a s B e n e f i t s = F a l s e ) ;
+2 5 : O b j 2 := ( Num_Workers = 1 0 0 , Value = 1 0 0 0 0 ) ;
+2 6 : O b j 3 := ( Num_Workers = 1 5 0 , Value = 1 5 0 0 0 ) ;   ERROR
 2 7 : end ; 
 The example presents a record-type declaration with nested variant parts (lines
 7 to 17), three object declarations (lines 20 to 22), and three statements which
@@ -2817,10 +2817,10 @@ each discriminant of the derived type shall be used in the constraint defining
 a parent subtype.
 The last rule guarantees that in the absence of representation clauses, the lay-
 out of an untagged derived type is identical to that of its parent. The code gener-
-ator only needs to refer to the physical layout of the original type. To handle the
+ator only needs torefer to the physical layout of the original type. To handle the
 renamings that may be introduced by the derivation, the defining entity of the dis-
 criminant in the derived type includes an attribute Corresponding Discriminant
-that allows the Semantic Analyzer to find the original discriminant in the parent
+that allows the Semantic Analyzer tofind the original discriminant in the parent
 type (cf. Comment in Build Derived Record Type implementation).
 In the presence of representation clauses, this simple model is not viable. be-
 cause Ada allows the use of representation clauses in a derived untagged type D
@@ -2853,17 +2853,17 @@ procedures are discussed in a separate chapter. For example, let us consider the
 following type declaration:
 
 
-t y p e Rec ( D : I n t e g e r ) is r e c o r d
-Value : I n t e g e r : = D;
-Name : S t r i n g ( 1 . . D ) = ( 1 . . D = ’ ! ’ ) ;
-end r e c o r d ; 
+type Rec ( D : Integer ) is record
+Value : Integer := D;
+Name : String ( 1 . . D ) = ( 1 . . D = ’ ! ’ ) ;
+end record ; 
 The corresponding initialization procedure is as follows:
 
 
-procedure I n i t P r o c ( Obj : i n o u t r e c ; D : I n t e g e r ) is
+procedure I ni t Proc ( Obj : i n o u t r e c ; D : Integer ) is
 begin
-Obj . Value : = D;
-Obj . Name : = ( 1 . . D = ’ ! ’ ) ;
+Obj . Value := D;
+Obj . Name := ( 1 . . D = ’ ! ’ ) ;
 end ; 
 The declaration Obj1 : rec (17) results in the generation of the call:
 Init Proc (Obj1, 17).
@@ -2924,7 +2924,7 @@ are inextricably linked in GNAT, we must perform full semantic analysis of the
 instance, even though the contract model would indicate that some of it is super-
 fluous.
 The requirements of global name capture determine the architecture described
-in this chapter. This architecture is complicated by two related aspects of Ada:
+in this chapter. This architecture is complicated by tworelated aspects of Ada:
 nested generic units (and instantiations within generic units) and generic child
 units. In addition, private types complicate visibility analysis and require some
 special machinery to insure that name resolution is consistent between the point
@@ -3027,7 +3027,7 @@ Instance #1
 
 #### 7.1.3 Parameter Matching
 
-The conventional model of instantiation is to replace each reference to a formal
+The conventional model of instantiation is toreplace each reference to a formal
 parameter by a reference to the matching actual. This is usually carried out by
 establishing a mapping from one set to the other, and applying this mapping to a
 copy of the generic template. This mapping approach is complex and expensive
@@ -3039,7 +3039,7 @@ the corresponding actual. The nature of the renaming declaration depends on the
 generic parameter: object, type, formal subprogram or formal package. Thanks
 to this mechanism, the analysis of the instance can proceed as if the copy had
 been inserted literally at the point of instantiation, even though the visibility en-
-vironment at this point bears no relation to the visibility at the point of generic
+vironment at this point bears norelation to the visibility at the point of generic
 declaration.
 1. Objects. For each generic in parameter the GNAT front-end generates a
 constant declaration; for each generic in out parameter generates an object
@@ -3059,19 +3059,19 @@ visible at the right place. Furthermore, outside of the instance, the generic
 parameters are visible and denote their corresponding actuals. For example:
 
 
-g e n e r i c
-I n V a r : i n I n t e g e r ;
-I n O u t V a r : i n o u t I n t e g e r ;
-t y p e T D a t a is p r i v a t e ;
+generic
+I n Var : i n Integer ;
+I n O ut Var : i n o u t Integer ;
+type T_Data is private ;
 package Example is
-t y p e T L o c a l is . . .
+type T_Local is ...
 procedure Dummy ;
 end Example ; 
 
 
 package body Example is
 procedure Dummy is
-Aux : Example . T L o c a l ;
+Aux : Example . T_Local ;
 begin
 null ;
 end Dummy ;
@@ -3081,42 +3081,42 @@ end Example ; 
 
 with Example ;
 procedure Use Example is
-My Var 1 : I n t e g e r : = 1 ;
-My Var 2 : I n t e g e r : = 2 ;
-package M y I n s t a n c e is new Example
-( I n V a r = My Var 1 ,
-I n O u t V a r = My Var 2 ,
-T D a t a = I n t e g e r ) ;
+My_Var 1 : Integer := 1 ;
+My_Var 2 : Integer := 2 ;
+package My I n s t a n c e is new Example
+( I n Var = My_Var 1 ,
+I n O u t Var = My_Var 2 ,
+T_Data = Integer ) ;
 begin
 null ;
 end Use Example ; 
 The GNAT front-end generates the AST equivalent of the following code
 for the instantiation:
  
-procedure u s e e x a m p l e is   F r o n t  end T r a n s l a t i o n
-m y v a r 1 : i n t e g e r : = . . . ;
-m y v a r 2 : i n t e g e r : = . . . ;
-package m y i n s t a n c e is
-i n v a r : c o n s t a n t i n t e g e r : = m y v a r 1 ;   ( 1 )
-i n o u t v a r : i n t e g e r renames m y v a r 2 ;   ( 2 )
-s u b t y p e t d a t a is i n t e g e r ;   ( 3 )
-t y p e T L o c a l is . . .
-package example renames m y i n s t a n c e ;   ( 4 )
+procedure use e x a m p l e is   F r o n t  end T r a n s l a t i o n
+my var 1 : integer := ... ;
+my var 2 : integer := ... ;
+package my i n s t a n c e is
+in var : constant integer := my var 1 ;   ( 1 )
+in ou t var : integer renames my var 2 ;   ( 2 )
+s u b type t data is integer ;   ( 3 )
+type T_Local is ...
+package example renames my i n s t a n c e ;   ( 4 )
 procedure dummy ;
-end m y i n s t a n c e ;
-package body m y i n s t a n c e is
+end my i n s t a n c e ;
+package body my i n s t a n c e is
 procedure dummy is
-Aux : Example . T L o c a l ;   ( 5 )
+Aux : Example . T_Local ;   ( 5 )
 begin
 null ;
 end dummy ;
-end m y i n s t a n c e ;
+end my i n s t a n c e ;
 begin
 null ;
-end u s e e x a m p l e ; 
+end use e x a m p l e ; 
 Line (1) is the constant declaration corresponding to the in parameter; line
 (2) is the renaming of the in out parameter; line (3) is the subtype dec-
-laration used to rename the generic formal type T Data. Finally, line (4)
+laration used torename the generic formal type T_Data. Finally, line (4)
 introduces a renaming for the generic unit itself. This corresponds to the
 fact that within the generic, the name of the generic denotes the name of
 the current instance. The need for this last renaming is made evident by the
@@ -3132,27 +3132,27 @@ a subprogram renaming outside the wrapper package to give it the proper
 visibility (thus the callable subprogram instance appears declared outside
 the wrapper package). For example:
  
-g e n e r i c
-I n V a r : i n I n t e g e r ;
-I n O u t V a r : i n o u t I n t e g e r ;
-t y p e T D a t a is p r i v a t e ;
-function Example ( A : T D a t a ) r e t u r n I n t e g e r ; 
+generic
+I n Var : i n Integer ;
+I n O ut Var : i n o u t Integer ;
+type T_Data is private ;
+function Example ( A : T_Data ) return Integer ; 
 
 
-function Example ( A : T D a t a ) r e t u r n I n t e g e r is
+function Example ( A : T_Data ) return Integer is
 begin
-r e t u r n 1 ;
+return 1 ;
 end Example ; 
 
 
 with Example ;
 procedure Use Example is
-My Var 1 : I n t e g e r : = . . . ;
-My Var 2 : I n t e g e r : = . . . ;
-function M y I n s t a n c e is
-new Example ( I n V a r = My Var 1 ,
-I n O u t V a r = My Var 2 ,
-T D a t a = I n t e g e r ) ;
+My_Var 1 : Integer := ... ;
+My_Var 2 : Integer := ... ;
+function My I n s t a n c e is
+new Example ( I n Var = My_Var 1 ,
+I n O u t Var = My_Var 2 ,
+T_Data = Integer ) ;
 begin
 null ;
 end Use Example ; 
@@ -3160,29 +3160,29 @@ In this case the GNAT front-end carries out the following transformation:
 7.1. GENERIC UNITS 79
 
 
-procedure u s e e x a m p l e is   F r o n t end T r a n s l a t i o n
-m y v a r 1 : i n t e g e r : = . . . ;
-m y v a r 2 : i n t e g e r : = . . . ;
-package m y i n s t a n c e G P 1 1 0 is
-i n v a r : c o n s t a n t i n t e g e r : = m y v a r 1 ;   ( 1 )
-i n o u t v a r : i n t e g e r renames m y v a r 2 ;   ( 2 )
-s u b t y p e t d a t a is i n t e g e r ;   ( 3 )
-function m y i n s t a n c e ( a : t d a t a ) r e t u r n i n t e g e r ;
-end m y i n s t a n c e G P 1 1 0 ;
-package body m y i n s t a n c e G P 1 1 0 is
-function example ( a : t d a t a )
-r e t u r n i n t e g e r renames m y i n s t a n c e ;   ( 4 )
-function m y i n s t a n c e ( a : t d a t a ) r e t u r n i n t e g e r is
+procedure use e x a m p l e is   F r o n t end T r a n s l a t i o n
+my var 1 : integer := ... ;
+my var 2 : integer := ... ;
+package my i n s t a n c e G P 1 1 0 is
+in var : constant integer := my var 1 ;   ( 1 )
+in ou t var : integer renames my var 2 ;   ( 2 )
+s u b type t data is integer ;   ( 3 )
+function my in st an ce ( a : t data ) return integer ;
+end my i n s t a n c e G P 1 1 0 ;
+package body my i n s t a n c e G P 1 1 0 is
+function example ( a : t data )
+return integer renames my i n s t a n c e ;   ( 4 )
+function my in st an ce ( a : t data ) return integer is
 begin
-r e t u r n 1 ;
-end m y i n s t a n c e ;
-end m y i n s t a n c e G P 1 1 0 ;
-function m y i n s t a n c e   ( 5 )
-( a : my exampleGP110 . t d a t a )
-renames m y i n s t a n c e G P 1 1 0 . m y i n s t a n c e ;
+return 1 ;
+end my i n s t a n c e ;
+end my i n s t a n c e G P 1 1 0 ;
+function my i n s t a n c e   ( 5 )
+( a : my exampleGP110 . t data )
+renames my i n s t a n c e G P 1 1 0 . my i n s t a n c e ;
 begin
 null ;
-end u s e e x a m p l e ; 
+end use e x a m p l e ; 
 Line (5) is the subprogram renaming which makes the subprogram visible in
 the current scope. The reader should note that this renaming declaration can
 not be replaced by an Ada use clause on the wrapper package, because this
@@ -3201,7 +3201,7 @@ However, for private types this by itself does not insure that the proper View o
 entity is used (the full type may be visible at the point of generic definition, but not
 at instantiation time, or vice-versa). To solve this problem the semantic analyzer
 saves both views. At time of instantiation, the front-end checks which view is
-required, and exchanges declarations, if necessary, to restore the correct visibility.
+required, and exchanges declarations, if necessary, torestore the correct visibility.
 (cf. Chapter 4). After completing the instantiation, the front-end restores the
 current visibility.
 
@@ -3219,30 +3219,30 @@ collected in CG2. To see this in detail, consider the scheme in Figure 7.5 (Ada
 elements which reference entities in the AST have been emphasized in Figure 7.5
 with bold letters).
 This example shows a non-generic package (Example) with two nested generic
-packages (Gen Pkg 1 and Gen Pkg 2). Data type T Global is external (global) to
-the generic packages; data type T Semi Global is local to Gen Pkg 1 but external
+packages (Gen Pkg 1 and Gen Pkg 2). Data type T_Global is external (global) to
+the generic packages; data type T_Semi_Global is local to Gen Pkg 1 but external
 to Gen Pkg 2. In addition, some objects of these data types are created in each
 generic package (A 1, B 1, A 2, B 2 and C 2).
 To do the semantic analysis of Gen Pkg 1 the GNAT front-end makes a copy
 of its AST and links the nodes which reference entities with their copy (cf. Fig-
 ure 7.6). The semantic analysis of Gen Pkg 1 captures all occurrences of local
-and non-local entities (see the arrows from A 1 to T Global, and from B 1 to
-T Semi Global).
+and non-local entities (see the arrows from A 1 to T_Global, and from B 1 to
+T_Semi_Global).
 To analyze Gen Pkg 2 the front-end repeats the process: makes a new copy of
 Gent Pkg 2 AST and links the nodes which reference entities with their new copy
 7.2. NESTED GENERIC UNITS 81
 package Example is
-type T_Global is . . .
+type T_Global is ...
 generic
-. . .
+...
 package Gen_Pkg_1 is
-type T_Semi_Global is . . .
+type T_Semi_Global is ...
 A_1 : T_Global;
 B_1 : T_Semi_Global;
 generic
-. . .
+...
 package Gen_Pkg_2 is
-type T_Local is . . ..
+type T_Local is ....
 A_2 : T_Global;
 B_2 : T_Semi_Global;
 C_2 : T_Local;
@@ -3256,7 +3256,7 @@ end Example;
 and non-local entities.
 After the analysis of the nested generic units the front-end removes all the
 local references in the original copy of the nested generic units (cf. Left side
-in Figure 7.8). References to T Semi Global are not preserved because, in the
+in Figure 7.8). References to T_Semi_Global are not preserved because, in the
 general case, they may depend on generic formal parameters of G1.
 
 #### 7.2.2 Instantiation of Nested Generic Units
@@ -3269,13 +3269,13 @@ Continuing with our previous example, let us consider the following instances
 package Example is
 type T_Global is ...
 generic
-. . .
+...
 package Gen_Pkg_1 is
 type T_Semi_Global is ...
 A_1 : T_Global;
 B_1 : T_Semi_Global;
 generic
-. . .
+...
 package Gen_Pkg_2 is
 type T_Local is ....
 A_2 : T_Global;
@@ -3285,13 +3285,13 @@ end Gen_Pkg_2;
 end Gen_Pkg_1;
 end Example;
 generic
-. . .
+...
 package Gen_Pkg_1 is
 type T_Semi_Global is ...
 A_1 : T_Global;
 B_1 : T_Semi_Global;
 generic
-. . .
+...
 package Gen_Pkg_2 is
 type T_Local is ....
 A_2 : T_Global;
@@ -3307,11 +3307,11 @@ of our generic packages Gen Pkg 1 and Gen Pkg 2:
 with Example ;
 procedure I n s t a n c e s is
 package My Pkg 1 is
-new Example . Gen Pkg 1 ( . . . ) ;   1
+new Example . Gen Pkg 1 ( ... ) ;   1
 package My Pkg 2 is
-new My Pkg 1 . Gen Pkg 2 ( . . . ) ;   2
+new My Pkg 1 . Gen Pkg 2 ( ... ) ;   2
 begin
-. . .
+...
 end I n s t a n c e s ; 
 At point 1 (instantiation of Gen Pkg 1), the analysis of this instantiation in-
 cludes the analysis of the nested generic, which produces a generic copy of Gen-
@@ -3326,13 +3326,13 @@ help the reader see the corresponding instantiation (inside dotted rectangles). 
 package Example is
 type T_Global is ...
 generic
-. . .
+...
 package Gen_Pkg_1 is
 type T_Semi_Global is ...
 A_1 : T_Global;
 B_1 : T_Semi_Global;
 generic
-. . .
+...
 package Gen_Pkg_2 is
 type T_Local is ....
 A_2 : T_Global;
@@ -3342,13 +3342,13 @@ end Gen_Pkg_2;
 end Gen_Pkg_1;
 end Example;
 generic
-. . .
+...
 package Gen_Pkg_1 is
 type T_Semi_Global is ...
 A_1 : T_Global;
 B_1 : T_Semi_Global;
 generic
-. . .
+...
 package Gen_Pkg_2 is
 type T_Local is ....
 A_2 : T_Global;
@@ -3357,7 +3357,7 @@ C_2 : T_Local;
 end Gen_Pkg_2;
 end Gen_Pkg_1;
 generic
-. . .
+...
 package Gen_Pkg_2 is
 type T_Local is ....
 A_2 : T_Global;
@@ -3370,13 +3370,13 @@ end Gen_Pkg_2;
 package Example is
 type T_Global is ...
 generic
-. . .
+...
 package Gen_Pkg_1 is
 type T_Semi_Global is ...
 A_1 : T_Global;
 B_1 : T_Semi_Global;
 generic
-. . .
+...
 package Gen_Pkg_2 is
 type T_Local is ....
 A_2 : T_Global;
@@ -3386,13 +3386,13 @@ end Gen_Pkg_2;
 end Gen_Pkg_1;
 end Example;
 generic
-. . .
+...
 package Gen_Pkg_1 is
 type T_Semi_Global is ...
 A_1 : T_Global;
 B_1 : T_Semi_Global;
 generic
-. . .
+...
 package Gen_Pkg_2 is
 type T_Local is ....
 A_2 : T_Global;
@@ -3401,7 +3401,7 @@ C_2 : T_Local;
 end Gen_Pkg_2;
 end Gen_Pkg_1;
 generic
-. . .
+...
 package Gen_Pkg_2 is
 type T_Local is ....
 A_2 : T_Global;
@@ -3415,14 +3415,14 @@ first dotted rectangle is the instantiation of My Pkg 1; the second dotted recta
 is the instantiation of the generic unit in the instance My Pkg 1.
 with Example;
 procedure Instances is
-- - package My_Pkg_1 is new Example.Gen_Pkg_1 ( . . . ); -- 1
+- - package My_Pkg_1 is new Example.Gen_Pkg_1 ( ... ); -- 1
 package My_Pkg_1 is
 << Renamings of formal parameters >>
 type T_Semi_Global is ...
 A_1 : T_Global;
 B_1 : T_Semi_Global;
 generic
-. . .
+...
 package Gen_Pkg_2 is
 type T_Local is ....
 A_2 : T_Global;
@@ -3430,7 +3430,7 @@ B_2 : T_Semi_Global;
 C_2 : T_Local;
 end Gen_Pkg_2;
 end My_Pkg_1;
-- - package My_Pkg_2 is new My_Pkg_1.Gen_Pkg_2 ( . . . ); -- 2
+- - package My_Pkg_2 is new My_Pkg_1.Gen_Pkg_2 ( ... ); -- 2
 package My_Pkg_2 is
 << Renamings of formal parameters >>
 type T_Local is ....
@@ -3439,7 +3439,7 @@ B_2 : T_Semi_Global;
 C_2 : T_Local;
 end My_Pkg_2;
 begin
-. . .
+...
 end Instances;
 
 **Figure 7.9: Instantiation of nested generic units.**
@@ -3473,7 +3473,7 @@ implicitly declared within the instantiation of the parent. Nevertheless, given 
 library packages are in general written in separate source files (this is mandatory
 in the GNAT compilation model [Dew94]), the compilation of P does not really
 contain information concerning I.C, and the front-end must handle generic child
-units with care to find the proper sources. Let us examine this mechanism in detail,
+units with care tofind the proper sources. Let us examine this mechanism in detail,
 and indicate how the proper visibility is established at the point of instantiation.
 The RM paragraph just quoted allows generic child units to be instantiated
 both as local packages and as independent compilation units. A common idiom
@@ -3481,15 +3481,15 @@ is to have an instantiation hierarchy that duplicates the generic hierarchy, but
 is also possible to instantiate several members of a generic hierarchy within a
 common scope. Let us consider the following generic units in each case:
  
-g e n e r i c
-. . .
+generic
+...
 package P a r e n t is
-. . .
+...
 end P a r e n t ;
-g e n e r i c
-. . .
+generic
+...
 package P a r e n t . C h i l d is
-. . .
+...
 end P a r e n t . C h i l d ; 
 1. Local Instantiation. In the first case the instantiation of the generic hierar-
 chy is done within the same declarative part. For example:
@@ -3498,15 +3498,15 @@ chy is done within the same declarative part. For example:
 1 : with P a r e n t . C h i l d ;
 2 : procedure Example is
 3 : package P a r e n t I n s t a n c e is
-4 : new P a r e n t ( . . . ) ;
+4 : new P a r e n t ( ... ) ;
 5 : package C h i l d I n s t a n c e is
-6 : new P a r e n t I n s t a n c e . C h i l d ( . . . ) ;
-7 : . . .
+6 : new P a r e n t I n s t a n c e . C h i l d ( ... ) ;
+7 : ...
 8 : end Example ; 
 First note that the name of the generic unit in the second instance (line
 5) is that of the implicit child in the instance of the parent, and not that of
 generic child unit that was actually analyzed. The first step in processing the
-instantiation is to retrieve the name of the generic parent, and from there to
+instantiation is toretrieve the name of the generic parent, and from there to
 recognize that the child unit that we are about to instantiate is Parent.Child.
 To analyze the instantiation of Parent.Child, we must place the tree for this
 unit in the context of the instantiation of the Parent. This is so that a name
@@ -3515,20 +3515,20 @@ entity in the instance of the parent. As a result, after producing the re-
 quired copy of the analyzed generic unit for Parent.Child, the front-end
 places Parent Instance on the scope stack. The analysis of the child in-
 stance will now resolve correctly. After analysis, the front-end removes
-Parent Instance from the scope stack, to restore the proper environment for
+Parent Instance from the scope stack, torestore the proper environment for
 the rest of the declarative part.
 2. Library Level Instantiation. This case is more complex than that of a local
 instantiation. Let us assume the following instantiation of the parent:
  
 with P a r e n t ;
-package P a r e n t I n s t a n c e is new P a r e n t ( . . . ) ; 
+package P a r e n t I n s t a n c e is new P a r e n t ( ... ) ; 
 The RM rule requires that the parent instance be visible at the point of in-
 stantiation of the child, so it must appear in a with clause of the current unit,
 together with a with clause for the generic child unit itself.
  
 1 : with P a r e n t . C h i l d ;
 2 : with P a r e n t I n s t a n c e ;
-3 : package C h i l d I n s t a n c e is new P a r e n t I n s t a n c e . C h i l d ( . . . ) ;
+3 : package C h i l d I n s t a n c e is new P a r e n t I n s t a n c e . C h i l d ( ... ) ;
 The with clause for the child (line 1) makes the implicit child visible within
 the instantiation of the parent [Bar95, Section 10.1.3]. The instantiation at
 line 3 names this implicit child.
@@ -3546,7 +3546,7 @@ be placed on the scope stack in the proper order before analyzing the child
 instance.
 Figure 7.10 represents the sequence followed by the GNAT front-end to in-
 stantiate Child Instance (according to our previous example):
-1. The upper two figures correspond to the analysis of line 1 (with Parent.Child).
+1. The upper twofigures correspond to the analysis of line 1 (with Parent.Child).
 First, the GNAT front-end loads and analyzes Parent (Step 1.1). During this
 analysis the Scope Stack of the front-end provides visibility to all the enti-
 ties in package Standard, plus the entities declared in Parent (see the Scope
@@ -3613,24 +3613,24 @@ Ada code:
 
 
 
- S p e c i f i c a t i o n s
+ S p e c if i c a t i o n s
 package A is
-g e n e r i c . . .
-package G A is . . .
+generic ...
+package G A is ...
 end A;
 package B is
-g e n e r i c . . .
-package G B is . . .
+generic ...
+package G B is ...
 end B ;
 
  B o d i e s
 with B ;
 package body A is
-package N B is new B . GB ( . . . ) ;
+package N B is new B . GB ( ... ) ;
 end A;
 with A;
 package body B is
-package N A is new A . G A ( . . . ) ;
+package N A is new A . G A ( ... ) ;
 end B ; 
 Conventional compilation schemes either reject these instantiations as circular
 (even though they are not) or are forced to use an indirect linking approach to the
@@ -3667,7 +3667,7 @@ lists, for each generic unit, the instances that it declares.
 
 ### 7.6 Summary
 
-A generic unit is essentially a macro for a subprogram or package, whose param-
+A generic unit is essentially a macrofor a subprogram or package, whose param-
 eters can be types, variables, subprograms and packages. Generic units must be
 instantiated, by suppling specific actuals for the parameters. This conceptually
 creates a copy of the specification and body which are appropriately customized.
@@ -3690,7 +3690,7 @@ units.
 
 Ada allows programmers to provide explicit information on the final representa-
 tion of an entity [AAR95, Section 13]. The point at which the final representation
-is fully determined is called a Freezing Point. Obviously, if no representation is
+is fully determined is called a Freezing Point. Obviously, if norepresentation is
 explicitly given the compiler has to take some default decision. When an entity
 is frozen it causes freezing of all depending entities. Following table summarizes
 the list of dependent entities to be frozen when a construct is frozen.
@@ -3732,7 +3732,7 @@ the anonymous type. An obvious exception to this rule are access types, because
 freezing an access type does not freeze its designated subtype. In addition, all
 first subtypes have freeze nodes. Other subtypes only need freeze nodes if the
 corresponding base type has not yet been frozen; if the base type has been frozen
-there is no need for a freeze node because no representation clauses can appear
+there is no need for a freeze node because norepresentation clauses can appear
 for the subtype in any case.
 Types and subtypes are frozen by 1) object declarations, 2) bodies found in
 the same declarative region (for example, a subprogram body), and 3) the end of
@@ -3741,22 +3741,22 @@ forces freezing of all the entities on which it depends (default expressions hav
 an special treatment, and will be described later). For example freezing a subtype
 definition forces freezing of all the derivations found from this derived type to the
 root type. Implicit types, types and subtypes created else by the semantic analyzer
-or by the expander to reflect the underlying Ada semantics, are frozen when the
+or by the expander toreflect the underlying Ada semantics, are frozen when the
 corresponding derived type is frozen. For example, constrained type definitions
 are internally converted by the GNAT compiler into an implicit anonymous base
 type definition plus a derived type definition:
 8.2. FREEZING EXPRESSIONS 95
 
 
-t y p e T is new I n t e g e r ;
- I n t e r n a l l y t r a n s f o r m e d by t h e c o m p i l e r i n to :
- t y p e TB is new I n t e g e r ;
- s u b t y p e T is TB ;
-t y p e T is array ( 1 . . 1 0 ) o f . . . ;
- I n t e r n a l l y t r a n s f o r m e d by t h e c o m p i l e r i n to :
- s u b t y p e TD is I n t e g e r ;
- t y p e TB is a r r a y ( TD r a n g e ) o f . . . ;
- s u b t y p e T is TB ( 1 . . 1 0 ) ; 
+type T is new Integer ;
+ I nt er n all yt ra ns for me d by th ec om pi le ri n to :
+ type TB is new Integer ;
+ s u b type T is TB ;
+type T is array ( 1 .. 1 0 ) of ... ;
+ I nt er n all yt ra ns for me d by th ec om pi le ri n to :
+ s u b type TD is Integer ;
+ type TB is array ( TD range ) of ... ;
+ s u b type T is TB ( 1 .. 1 0 ) ; 
 In this example TB and TD are implicit types which will be frozen when their
 derived type T is frozen. Freezing of implicit types introduced by component
 declarations (i.e. component constraints) do not need to be delayed because the
@@ -3771,13 +3771,13 @@ with default expressions used in discriminants and constraints of record compo-
 nents; they must be frozen at the point of the corresponding object declarations
 (not at the point of the type definition). For example:
  
-t y p e T I n t is new I n t e g e r ;
-t y p e T Name is array ( T I n t range ) o f C h a r a c t e r ;
-t y p e T ( Max : T I n t ) is   Do n o t f r e e z e T I n t h e r e
-r e c o r d
-Name : T Name ( 1 . . Max ) ;   Do n o t f r e e z e T I n t h e r e
-L e n g t h : T I n t : = Max ;   Do n o t f r e e z e T I n t h e r e
-end r e c o r d ;
+type T I n t is new Integer ;
+type T Name is array ( T I n t range ) of Character ;
+type T ( Max : T I n t ) is   Do not f r e e z e T I n t h e r e
+record
+Name : T Name ( 1 . . Max ) ;   Do not f r e e z e T I n t h e r e
+Length : T I n t := Max ;   Do not f r e e z e T I n t h e r e
+end record ;
 My Object : T ( 3 0 ) ;   F r e e z e T I n t , T Name , T
  and My Object 
 Similarly, default expressions used in subprogram parameters must be de-
@@ -3795,21 +3795,21 @@ present).
 Protected types must be handled with special care because the protected-type
 definition is expanded into a record-type definition. For example:
  
-p r o t e c t e d t y p e PO ( D is c r i m i n a n t s ) is
-. . .
-p r i v a t e
-P r i v a t e D a t a ;   1
+protected type PO ( D is c r i m i n a n t s ) is
+...
+private
+Private Data ;   1
 end PO ;
 
- I n t e r n a l l y t r a n s f o r m e d by t h e GNAT c o m p i l e r i n to :
+ I nt er n all yt ra ns for me d by th e GNAT co mp il er in to :
 
 
- t y p e poV ( D is c r i m i n a n t s ) is new L i m i t e d C o n t r o l l e d w i t h
- r e c o r d
- P r i v a t e D a t a   2
- o b j e c t : R u n T i m e D a t a T y p e ( N u m E n t r i e s ) ;
- end r e c o r d ;
- . . . 
+ type poV ( D is c r i m i n a n t s ) is new L i m i t e d C o n t r o l l e d with
+ record
+ Private Data   2
+ ob je ct : R u n T i m e Data T y p e ( N u m E n t r i e s ) ;
+ end record ;
+ ... 
 As a consequence, the subtypes of components of protected-type definitions
 (line 1) do not need freezing. Freezing actions correspond to the equivalent com-
 ponents in the record-type definition (line 2) and, according to the Ada freezing
@@ -3852,22 +3852,22 @@ in the generic. In addition, the compiler must have special care with early inst
 tiation of local packages. For example:
  
 procedure Example is
-g e n e r i c
-. . .
+generic
+...
 package G is
-. . .
+...
 end G;
-procedure L o c a l is
-package I ( . . . ) is new G ;   E a r l y i n s t a n t i a t i o n
+procedure Local is
+package I ( ... ) is new G ;   E a r l y i n s t a n t i a t i o n
  F r e e z i n g p o i n t ( f r e e z e i )
 begin
-. . .
+...
 end ;
 package body G is
-. . .
+...
 end G ;
 begin
-. . .
+...
 end Example ; 
 At the point of the early instantiation, the Semantic Analyzer generates an
 instance of the specification (required to continue the analysis of the subprogram
@@ -3895,10 +3895,10 @@ generic units. These details have been discussed in this chapter.
 A task type is a template from which actual task objects are created. A task object
 can be created either as part of the elaboration of an object declaration occurring
 immediately within some declarative region, or as part of the evaluation of an
-allocator (an expression in the form “new. . . ”). The Parent is the task on which a
+allocator (an expression in the form “new... ”). The Parent is the task on which a
 task depends. If the task has been declared by means of an object declaration, its
 parent is the task which declared the task object; if the task has been declared by
-means of an allocator (an Ada expression in the form ’new . . . ’), its parent is the
+means of an allocator (an Ada expression in the form ’new ... ’), its parent is the
 task which has the corresponding access declaration. When a parent creates a new
 task, the parent’s execution is suspended while it waits for the child to complete
 its activation (either immediately, if the child is created by an allocator, or after
@@ -3923,7 +3923,7 @@ execution, execution of the statements visible within the body of the task; and 
 Finalization, execution of any finalization code associated with the objects in its
 declarative part.
 In order to provide this run-time semantics, the front-end performs substan-
-tial transformations on the AST, and adds numerous calls to run-time routines.
+tial transformations on the AST, and adds numerous calls torun-time routines.
 Each tasking primitive (rendez-vous, selective wait, delay statement, abort, etc.)
 is expanded into generally target-independent code. The run-time information
 concerning each Ada task (task state, parent, activator, etc. [AAR95, Chapter 9])
@@ -3999,22 +3999,22 @@ until Abort Undefer is invoked.
 A task type declaration is expanded by the front-end into a limited record type
 declaration. For example, let us consider the following task specification:
  
-t a s k t y p e T Task ( D is c r i m i n a n t : DType ) is
-. . .
+task type T Task ( D is cr im in an t : DType ) is
+...
 end T Task ; 
 It is expanded by the front-end into the following code:
  
-T TaskE : a l i a s e d B o o l e a n : = F a l s e ;
-T TaskZ : S i z e T y p e : = GNARL. U n s p e c i f i e d S i z e ; 
+T TaskE : a l i a s e d Boolean := F a l s e ;
+T TaskZ : S i z e T y p e := GNARL. U n s p e c if i e d S i z e ; 
 S i z e T y p e ( S i z e E x p r e s s i o n ) ;
-t y p e T TaskV [ ( D is c r i m i n a n t : DType ) ] is l i m i t e d r e c o r d
-T a s k I d : System . T a s k i n g . T a s k I d ;
-[ E n t r y F a m i l y N a m e : array ( Bounds ) o f Void ; ]
-[ P r i o r i t y : I n t e g e r : = P r i o r i t y E x p r e s s i o n ; ]
-[ S i z e : S i z e T y p e : = S i z e E x p r e s s i o n ; ]
-[ T a s k I n f o : T a s k I n f o T y p e : = T a s k I n f o E x p r e s s i o n ; ]
-[ Task Name : T a s k I m a g e T y p e : new S t r i n g ’ ( Task Name ) ; ]
-end r e c o r d ; 
+type T TaskV [ ( D is cr im in an t : DType ) ] is limited record
+Task I d : System . Task i n g . Task I d ;
+[ Entry F am il y N am e : array ( Bounds ) of Void ; ]
+[ P ri or it y : Integer := P r i or i t y E x p r e s s i o n ; ]
+[ S iz e : S i z e T y p e := S i z e E x p r e s s i o n ; ]
+[ Task I nf o : Task I n f o T y p e := Task I n f o E x p r e s s i o n ; ]
+[ Task Name : Task I m a g e T y p e : new String ’ ( Task Name ) ; ]
+end record ; 
 The code between brackets is optional; its expansion depends on the Ada fea-
 tures appearing in the source code. The rest is needed at run-time for all tasks:
 let us examine this expansion in detail. First we find two variable declarations:
@@ -4039,25 +4039,25 @@ pragmas Storage Size, Task Info, and Task Name.
 The task body is expanded into a procedure. For example, let us consider the
 following task body:
  
-t a s k body T Task is
+task body T Task is
 D e c l a r a t i o n s
 begin
 S t a t e m e n t s
 end T Task ; 
 It is expanded by the front-end into the following code:
  
-1 : procedure T TaskB ( T a s k : a c c e s s T TaskV ) is
-2 : D is c r i m i n a n t : Dtype renames T a s k . D is c r i m i n a n t ;
+1 : procedure T TaskB ( Task : access T TaskV ) is
+2 : D is c r i m i n a n t : Dtype renames Task . D is c r i m i n a n t ;
 3 :
 4 : procedure C l e a n is
 5 : begin
-6 : GNARL. A b o r t D e f e r ;
-7 : GNARL. C o m p l e t e T a s k ;
-8 : GNARL. A b o r t U n d e f e r ;
+6 : GNARL. A b or t D e f e r ;
+7 : GNARL. C o m p l e t e Task ;
+8 : GNARL. A b or t U n d e f e r ;
 9 : end C l e a n ;
 1 0 :
 1 1 : begin
-1 2 : GNARL. A b o r t U n d e f e r ;
+1 2 : GNARL. A b or t U n d e f e r ;
 1 3 : D e c l a r a t i o n s
 1 4 : GNARL. C o m p l e t e A c t i v a t i o n ;
 1 5 : S t a t e m e n t s
@@ -4089,7 +4089,7 @@ this reason, the resources are not deallocated until the master associated with 
 task completes. In general this is the earliest point at which it is completely safe to
 discard all storage associated with dependent tasks, because it is at this point that
 execution leaves the scope of the task’s type declaration, and there is no longer
-any way to refer to the task. Any references to the task that may have been passed
+any way torefer to the task. Any references to the task that may have been passed
 far from its point of creation, as via access variables or functions returning task
 values [BR85, Section 4] are themselves dead at this point.
 
@@ -4102,53 +4102,53 @@ Ada code:
 9.6. EXAMPLE OF TASK EXPANSION 107
 
 
-procedure A c t i v a to r is
-t a s k My Task ;
-t a s k body My Task is
-L o c a l D e c l a r a t i o n s
+procedure A c t i v a tor is
+task My Task ;
+task body My Task is
+Local D e c l a r a t i o n s
 begin
 Task body s t a t e m e n t s
 end My Task ;
 begin
 A d d i t i o n a l S t a t e m e n t s
-end A c t i v a to r ; 
+end A c t i v a tor ; 
 This code is expanded by the GNAT front-end as follows:
 
 
-procedure A c t i v a to r is
-My TaskE : a l i a s e d B o o l e a n : = F a l s e ;
-My TaskZ : S i z e T y p e : = GNARL. U n s p e c i f i e d S i z e ;
-t y p e My TaskV is l i m i t e d r e c o r d
-T a s k I d : System . T a s k i n g . T a s k I d ;
-end r e c o r d ;
-procedure My TaskB ( T a s k : a c c e s s T TaskV ) is
+procedure A c t i v a tor is
+My TaskE : a l i a s e d Boolean := F a l s e ;
+My TaskZ : S i z e T y p e := GNARL. U n s p e c if i e d S i z e ;
+type My TaskV is limited record
+Task I d : System . Task i n g . Task I d ;
+end record ;
+procedure My TaskB ( Task : access T TaskV ) is
 procedure C l e a n is
 begin
-GNARL. C o m p l e t e T a s k ;   ( 6 )
+GNARL. C o m p l e t e Task ;   ( 6 )
 end C l e a n ;
 begin
- Expanded c o d e to e l a b o r a t e l o c a l d e c l a r a t i o n s 
+ Expanded c o d e to e l a b or a t e local d e c l a r a t i o n s 
 GNARL. C o m p l e t e A c t i v a t i o n ;   ( 4 )
 Task body s t a t e m e n t s   ( 5 ’ )
 a t end
 C l e a n ;
 end My TaskB ;
 My Task : My TaskV ;
-C h a i n : GNARL. A c t i v a t i o n C h a i n ;
+C ha in : GNARL. A c t i v a t i o n C h a i n ;
 begin
 GNARL. E n t e r M a s t e r ;   ( 1 )
-GNARL. C r e a t e T a s k   ( 2 )
-( My Task , My TaskZ , My TaskB ’ A c c e s s , C h a i n , . . . ) ;
-GNARL. A c t i v a t e T a s k ( C h a i n ) ;   ( 3 )
+GNARL. C r e a t e Task   ( 2 )
+( My Task , My TaskZ , My TaskB ’ A c c e s s , C h a i n , ... ) ;
+GNARL. A c t i v a t e Task ( C h a i n ) ;   ( 3 )
 A d d i t i o n a l S t a t e m e n t s   ( 5 ’ )
 a t end
 GNARL. C o m p l e t e M a s t e r ;   ( 7 )
-end A c t i v a to r ; 
+end A c t i v a tor ; 
 The numbers in the comments to the right of the code present the execution
 sequence. First, because the main procedure has a task object declaration, it no-
 tifies the run-time that it is executing a master scope (step 1). It then creates the
 task ATCB (step 2), and activates the corresponding thread (step 3). After the
-task completes the elaboration of its local objects, it calls the run-time to report
+task completes the elaboration of its local objects, it calls the run-time toreport
 that it has completed its activation (step 4). From here on the execution of the
 task body and the main subprogram proceed in parallel (steps 5’). When the task
 terminates it notifies the run-time of its termination (step 6). When the body of
@@ -4216,19 +4216,19 @@ associates each entry an numeric id, which a positive number which corresponds
 with the position of the entry in the task type specification. The following example
 shows this mapping.
  
-t a s k T is
+task T is
 
- a s i m p l e e n t r y
-e n t r y I n i t ( x : i n t e g e r ) ;
+ a s i m p l e entry
+entry I ni t ( x : integer ) ;
 
- An e n t r y f a m i l y w i t h 3 e n t r i e s h a s t h r e e d i f f e r e n t q u e u e s .
-e n t r y Lock ( 1 . . 3 ) ( Reason : i n . . . ) ;
+ An entry f a m i l y with 3 e n t r i e s h a s t h r e e d if f e r e n t q u e u e s .
+entry Lock ( 1 .. 3 ) ( Reason : i n ... ) ;
  Do Work ( 1 ) : I d = 2
  Do Work ( 2 ) : I d = 3
  Do Work ( 3 ) : I d = 4
 
- A s i m p l e e n t r y d e c l a r a t i o n
-e n t r y Unlock ;   I d = 5
+ A s i m p l e entry d e c l a r a t i o n
+entry Unlock ;   I d = 5
 end T ; 
 
 ### 10.2 Entry-Call Expansion
@@ -4247,8 +4247,8 @@ to the parameters block into the Uninterpreted Data component of the entry-call
 record (See Expand Identifier in Sem Ch2). Figure 10.1 displays the data struc-
 tures involved in a call to the following entry:
  
-t a s k T is
-e n t r y E ( Number : i n I n t e g e r ; T e x t : i n S t r i n g ) ;
+task T is
+entry E ( Number : i n Integer ; T e x t : i n String ) ;
 end T ; 
 Expanded-Code
 Level
@@ -4261,9 +4261,9 @@ Entry_Call
 :
 :
 Run-Time
-Level . . .
+Level ...
 Uninterpreted_Data
-. . .
+...
 entry-call
 Number
 Text
@@ -4281,18 +4281,18 @@ ple, conditional, timed, and asynchronous.
 The front-end expands a simple mode entry call as follows:
  
 declare
-t y p e P a r a m s B l o c k is
-r e c o r d
+type P a r a m s B l o c k is
+record
 Parm1 : A c c e s s P a r a m 1 T y p e ;
-. . .
+...
 ParmN : Access ParamN Type ;
-end r e c o r d ;
-P : P a r a m s B l o c k : = ( Parm1 ’ A c c e s s , . . . , ParmN ’ A c c e s s ) ;
+end record ;
+P : P a r a m s B l o c k := ( Parm1 ’ A c c e s s , ... , ParmN ’ A c c e s s ) ;
 begin
-GNARL. C a l l S i m p l e ( T a s k I D , E n t r y I D , P ’ A d d r e s s ) ;
-[ Parm1 : = P . Parm1 ; ]
-[ Parm2 : = P . Parm2 ; ]
-[ . . . ]
+GNARL. C all S i m p l e ( Task I D , Entry I D , P ’ A d d r e s s ) ;
+[ Parm1 := P . Parm1 ; ]
+[ Parm2 := P . Parm2 ; ]
+[ ... ]
 end ; 
 The address of the parameters record P is passed to the GNAT run-time along
 with the identifiers of the called task and entry. The assignments after the run-time
@@ -4307,12 +4307,12 @@ accept, execution proceeds as for a simple mode call. Otherwise, the calling tas
 resumes execution without completion of a rendezvous. Recall the syntax for a
 conditional entry-call:
  
-s e l e c t
-e n t r y  c a l l
+select
+entry  c all
 s t a t e m e n t s  1
-e l s e
+else
 s t a t e m e n t s  2
-end s e l e c t ; 
+end select ; 
 As the reader can see, other statements can appear after the entry-call, which
 are only executed if the call was accepted. The alternative branch can also in-
 10.3. ASYNCHRONOUS TRANSFER OF CONTROL 113
@@ -4320,26 +4320,26 @@ clude statements that are executed only if the caller is not ready to accept. Th
 conditional entry-call is expanded as follows:
  
 declare
-t y p e P a r a m s B l o c k is r e c o r d
+type P a r a m s B l o c k is record
 Parm1 : A c c e s s P a r a m 1 T y p e ;
-. . .
+...
 ParmN : Access ParamN Type ;
-end r e c o r d ;
-P : P a r m s B l o c k : = ( Parm1 ’ A c c e s s , . . . , ParmN ’ A c c e s s ) ;
-S u c c e s s f u l : B o o l e a n ;
+end record ;
+P : P a r m s B l o c k := ( Parm1 ’ A c c e s s , ... , ParmN ’ A c c e s s ) ;
+S uc ce ss fu l : Boolean ;
 begin
-GNARL. T a s k E n t r y C a l l ( T a s k I D ,
-E n t r y I D ,
+GNARL. Task Entry C all ( Task I D ,
+Entry I D ,
 P ’ A d d r e s s ,
 S u c c e s s f u l ) ;
-i f S u c c e s s f u l then
-[ Parm1 : = P . Parm1 ; ]
-[ Parm2 : = P . Parm2 ; ]
-[ . . . ]
-s t a t e m e n t s  1 ;   S t a t e m e n t s a f t e r t h e e n t r y c a l l
-e l s e
-s t a t e m e n t s  2 ;   S t a t e m e n t s i n t h e ” e l s e ” p a r t
-end i f ;
+if S u c c e s s f u l then
+[ Parm1 := P . Parm1 ; ]
+[ Parm2 := P . Parm2 ; ]
+[ ... ]
+s t a t e m e n t s  1 ;   S t a t e m e n t s a f t e r t h e entry c all
+else
+s t a t e m e n t s  2 ;   S t a t e m e n t s i n t h e ” else ” p a r t
+end if ;
 end ; 
 In this case, the call to the run-time has an additional parameter (Successful)
 which indicates to the caller whether the entry-call was immediately accepted or
@@ -4357,11 +4357,11 @@ The Asynchronous Transfer of Control (ATC) allows the caller to continue exe-
 cuting some code while the entry call is waiting to be attended. Its Ada syntax is
 [AAR95, Section 9.7.4]:
  
-s e l e c t
+select
 t r i g g e r i n g a l t e r n a t i v e
-then a b o r t
-a b o r t a b l e p a r t
-end s e l e c t ; 
+then a b or t
+a b or t a b l e p a r t
+end select ; 
 The triggering statement can be an entry-call or a delay-statement. If the trig-
 gering statement is queued the abortable part starts its concurrent execution. When
 one of the parts finishes its execution it aborts the execution of the other part. Thus
@@ -4400,14 +4400,14 @@ one-to-one correspondence between tasks and threads of control. This assumption
 pervades the semantics, and is the foundation of existing Ada tasking implemen-
 tations. Loss of this invariant has many ramifications. Among these, data that
 previously could only be accessed by one thread of control becomes susceptible
-to race conditions. Thus, there are new requirements for synchronization, and new
+torace conditions. Thus, there are new requirements for synchronization, and new
 potential for deadlock within a single task. Also, just killing the agent thread is
 not as simple a solution as it might seem. There remains the problem of how to ex-
 ecute the agent’s finalization code (if required due to the use of controlled types).
 If the operation that kills a thread does not support finalization, some other thread
 must perform the finalization. To do so, it must wait for the killed thread to be ter-
 minated to be able to obtain access to the run-time stack of the terminated thread.
-The latter may not be possible in systems where killing a thread also releases its
+The latter may not be possible in systems where killing a thread alsoreleases its
 stack space [GB94, Section 3.1].
 By contrast, proponents of the one-thread model argue that it can be imple-
 mented with a signal and longjmp(). The triggering entry-call is just left queued
@@ -4423,29 +4423,29 @@ of the one-thread model, the GNAT compiler implements the one-thread model.
 The Following describes the expansion of an ATC statement:
  
 1 : declare
-2 : P : a l i a s e d Parms : = ( Parm1 ’ A c c e s s , . . . , ParmN ’ A c c e s s ) ;
-3 : S u c c e s s f u l : B o o l e a n ;
+2 : P : a l i a s e d Parms := ( Parm1 ’ A c c e s s , ... , ParmN ’ A c c e s s ) ;
+3 : S u c c e s s f u l : Boolean ;
 4 : begin
-5 : GNARL. D e f e r A b o r t i o n ;
-6 : GNARL. T a s k E n t r y C a l l ( T a s k I D , E n t r y I D ,
+5 : GNARL. D e f e r A b or t i o n ;
+6 : GNARL. Task Entry C all ( Task I D , Entry I D ,
 P ’ A c c e s s , S u c c e s s f u l ) ;
-7 : begin   A b o r t a b l e P a r t Scope
+7 : begin   A b or t a b l e P a r t Scope
 8 : begin
-9 : GNARL. U n d e f e r A b o r t i o n ;
-1 0 :  A b o r t a b l e P a r t 
+9 : GNARL. U n d e f e r A b or t i o n ;
+1 0 :  A b or t a b l e P a r t 
 1 1 : a t end
-1 2 : GNARL. E n t r y C a l l C a n c e l l a t i o n ( S u c c e s s f u l ) ;
+1 2 : GNARL. Entry C all C a n c e l l a t i o n ( S u c c e s s f u l ) ;
 1 3 : end ;
 1 4 : exception
-1 5 : when A b o r t S i g n a l =
-1 6 : GNARL. U n d e f e r A b o r t i o n ;
+1 5 : when A b or t S i g n a l =
+1 6 : GNARL. U n d e f e r A b or t i o n ;
 1 7 : end ;
-1 8 : i f n o t S u c c e s s f u l then
-1 9 : [ Parm1 : = P . Parm1 ; ]
-2 0 : [ Parm2 : = P . Parm2 ; ]
-2 1 : [ . . . ]
+1 8 : if not S u c c e s s f u l then
+1 9 : [ Parm1 := P . Parm1 ; ]
+2 0 : [ Parm2 := P . Parm2 ; ]
+2 1 : [ ... ]
 2 2 :  T r i g g e r e d S t a t e m e n t s 
-2 3 : end i f ;
+2 3 : end if ;
 2 4 : end ; 
 The first action issued in the scope associated with the ATC is to protect the
 entry call from abortion (line 5). From here two scenarios must be analyzed:
@@ -4464,7 +4464,7 @@ the out-mode parameters, and executes the triggered statements (lines 18 to
 (line 9) and executes the abortable part (line 10). Again here we have two
 possible scenarios:
 (a) If the execution of the abortable part completes, the entry call is can-
-celled (line 12). The run-time sets Successful to false, to force the
+celled (line 12). The run-time sets Successful tofalse, toforce the
 caller to skip lines 18 to 24.
 (b) If the entry-call is completed before the abortable part completes, then
 the run-time sends the abort signal to the caller (which was execut-
@@ -4484,19 +4484,19 @@ ments.
 
 Recall the syntax of simple accept statements:
  
-a c c e p t E ( . . . ) do
+accept E ( ... ) do
  Entry Body S t a t e m e n t s 
 end E ; 
 A simple accept is expanded as follows:
  
 declare
-P a r a m s B l o c k A d d r e s s : A d d r e s s ;
+P ar am s B lo ck A dd re ss : A d d r e s s ;
 begin
-GNARL. A c c e p t C a l l ( E n t r y I D , P a r a m s B l o c k A d d r e s s ) ;
+GNARL. Accept C all ( Entry I D , P a r a m s B l o c k A d d r e s s ) ;
  Entry Body S t a t e m e n t s 
 GNARL. C o m p l e t e R end e z v o u s ;
 exception
-when o t h e r s =
+whenot h e r s =
 GNARL. E x c e p t i o n a l C o m p l e t e R end e z v o u s ;
 end ; 
 The acceptor task calls the run-time, specifying the identifier of the accepted
@@ -4511,30 +4511,30 @@ The scheme used for expansion of the Ada timed calls and selective accept state-
 ments is similar. The only difference is the run-time subprogram that is invoked.
 In both cases the run-time receives from the caller a vector that indicates which
 entries are currently open: the open-accept vector. Each element of this vector has
-two fields: the entry identifier, and a boolean which indicates if the accept state-
+twofields: the entry identifier, and a boolean which indicates if the accept state-
 ment has a null body. Each element of the open-accept vector corresponds to the
 accept alternatives of the select statement; If the entry guard of a given alternative
 is closed, the corresponding entry identifier is set to 0. Consider the following
 example:
  
-t a s k T is
-e n t r y P ;   E n t r y I d = 1
-e n t r y Q ;   E n t r y I d = 2
+task T is
+entry P ;   Entry I d = 1
+entry Q ;   Entry I d = 2
 end T ;
-t a s k body T is
+task body T is
 begin
-s e l e c t
-a c c e p t Q do   OAV ( 1 ) . E n t r y I d : = 2
- U s e r Code    OAV ( 1 ) . N u l l B o d y : = F a l s e ;
+select
+accept Q do   OAV ( 1 ) . Entry I d := 2
+ U se r Code    OAV ( 1 ) . N ul l B od y := F a l s e ;
 end Q;
 or
 when  U s e r Guard  =
- I f t h e g u a r d is open OAV ( 2 ) . E n t r y I d : = 1
-a c c e p t P ;   e l s e OAV ( 2 ) . E n t r y I d : = 0 ;
- OAV ( 2 ) . N u l l B o d y : = T r u e ;
-e l s e
- e l s e s t a t e m e n t s 
-end s e l e c t ;
+ I ft he gu ar d is open OAV ( 2 ) . Entry I d := 1
+accept P ;   else OAV ( 2 ) . Entry I d := 0 ;
+ OAV ( 2 ) . N ul l B od y := T r u e ;
+else
+ else s t a t e m e n t s 
+end select ;
 end T ; 
 10.4. EXPANSION OF ACCEPT STATEMENTS 119
 The GNAT front-end expands the selective accept into a block containing three
@@ -4545,41 +4545,41 @@ see a simplified version of the expansion of the previous example:
 
 
 1 : declare
-2 : function P Guard r e t u r n N a t u r a l is
+2 : function P Guard return Natural is
 3 : begin
-4 : i f  U s e r Guard  then
-5 : r e t u r n 1 ;   r e t u r n s t h e E n t r y I d
-6 : e l s e
-7 : r e t u r n 0 ;   r e t u r n 0 ( i t is c l o s e d )
-8 : end i f ;
+4 : if  U s e r Guard  then
+5 : return 1 ;   return s t h e Entry I d
+6 : else
+7 : return 0 ;   return 0 ( i t is c l o s e d )
+8 : end if ;
 9 : end P Guard ;
 1 0 :
 1 1 : procedure Q Body is
 1 2 : begin
-1 3 : GNARL. U n d e f e r A b o r t i o n ;
-1 4 : . . . U s e r Code 
+1 3 : GNARL. U n d e f e r A b or t i o n ;
+1 4 : ... U s e r Code 
 1 5 : GNARL. C o m p l e t e R end e z v o u s ;
 1 6 : exception
-1 7 : when o t h e r s =
+1 7 : whenot h e r s =
 1 8 : GNARL. E x c e p t i o n a l C o m p l e t e R end e z v o u s ;
 1 9 : end Q Body ;
 2 0 :
-2 1 : OAV : GNARL. O p e n A c c e p t s T a b l e
-2 2 : : = ( ( 2 , T r u e ) , ( P Guard , F a l s e ) , ( 0 , F a l s e ) ) ;
-2 3 : I n d e x : N a t u r a l ;
+2 1 : OAV : GNARL. O p e n Accept s T a b l e
+2 2 : := ( ( 2 , T r u e ) , ( P Guard , F a l s e ) , ( 0 , F a l s e ) ) ;
+2 3 : I n d e x : Natural ;
 2 4 : P a r a m s B l o c k A d d r e s s : System . A d d r e s s ;
 2 5 :
 2 6 : begin
-2 7 : GNARL. S e l e c t i v e W a i t
+2 7 : GNARL. Select i v e W a i t
 2 8 : (OAV , P a r a m s B l o c k A d d r e s s , I n d e x ) ;
-2 9 : c a s e I n d e x is
+2 9 : case I n d e x is
 3 0 : when 0 =
-3 1 :  e l s e s t a t e m e n t s 
+3 1 :  else s t a t e m e n t s 
 3 2 : when 1 =
 3 3 : Q Body ;
 3 4 : when 2 =
 3 5 : null ;
-3 6 : end c a s e ;
+3 6 : end case ;
 3 7 : end ; 
 For each user-defined guard, the expander generates a function which evalu-
 ates the guard (lines 2 to 9): if the guard is open, this function returns the iden-
@@ -4606,7 +4606,7 @@ rameters into a block with collects their addresses. After the call, the expande
 generates statements to copy the value of the out-mode parameters into the cor-
 responding variables. In case of conditional and timed entry calls, the run-time
 returns one value which indicates the alternative to be executed; therefore it is
-also responsibility of the front-end to generate an if-statement to execute the right
+alsoresponsibility of the front-end to generate an if-statement to execute the right
 code. The expansion scheme followed in the implementation of ATC is similar to
 the conditional entry-call, although additional scopes must be generated to handle
 the abortion of the call.
@@ -4656,7 +4656,7 @@ the desired operation; in the second case, the caller task executes the operatio
 because the protected object is a passive structure with no thread of control.
 After a protected operation is executed, the state of the object may have been
 affected, and the values of the barriers may have changed. It is therefore neces-
-sary to re-evaluate the barriers to determine whether some queued task can now
+sary tore-evaluate the barriers to determine whether some queued task can now
 have access to the object. This re-evaluation must be performed by the task that
 currently holds the lock on the object, that is to say the task that just completed
 executing a protected call. This means that if there are tasks queued on entries
@@ -4699,7 +4699,7 @@ Chapter 10).
 
 As mentioned above, conceptually each protected operation is executed by a call-
 ing task. However, the functioning of a protected object includes house-keeping
-activities that also require execution, in particular the evaluation of barriers, and
+activities that alsorequire execution, in particular the evaluation of barriers, and
 the language does not specify what thread is to compute them. The semantics
 specify that upon completion of a protected operation that may affect the state of
 the object, the barriers are evaluated at once to determine whether some queued
@@ -4811,27 +4811,27 @@ which the operation is performed at run-time.
 Consider the following protected type declaration:
 
 
-p r o t e c t e d t y p e PO ( D is c : I n t e g e r ) is
-procedure P ( C : C h a r a c t e r ) ;
-function F ( X : I n t e g e r ) r e t u r n I n t e g e r ;
-e n t r y E1 ;
-e n t r y E2 ( 1 . . 1 0 ) ( X : I n t e g e r ) ;
-p r i v a t e
-Value : I n t e g e r ;
+protected type PO ( D is c : Integer ) is
+procedure P ( C : Character ) ;
+function F ( X : Integer ) return Integer ;
+entry E1 ;
+entry E2 ( 1 .. 1 0 ) ( X : Integer ) ;
+private
+Value : Integer ;
 end PO ; 
 The front-end expands it as follows:
  
-1 : t y p e poV ( D is c : I n t e g e r ) is new L i m i t e d C o n t r o l l e d with
-2 : r e c o r d
-3 : Value : I n t e g e r ;
+1 : type poV ( D is c : Integer ) is new L i m i t e d C o n t r o l l e d with
+2 : record
+3 : Value : Integer ;
 4 : o b j e c t : a l i a s e d GNARL. P r o t e c t i o n E n t r i e s
 5 : ( N u m E n t r i e s ) ;
-6 : end r e c o r d ;
+6 : end record ;
 7 :
 8 : procedure F i n a l i z e ( o b j e c t : poV ) is
 9 : begin
-1 0 :   R a is e P r o g r a m E r r o r to t h e queued t a s k s .
-1 1 : . . .
+1 0 :   R a is e P r o g r a m E r r or to t h e queued task s .
+1 1 : ...
 1 2 : end F i n a l i z e ; 
 The protected type specification is expanded into a record type declaration
 (lines 1 to 6). If the protected type has discriminants, the record type has the
@@ -4860,35 +4860,35 @@ procedures can modify the object’s state, they receive the object as in out mo
 parameter. Protected functions receive the object as an in mode parameter. For
 example:
  
-procedure p r o c P ( o b j e c t : i n o u t poV ; . . . ) ;
-procedure procN ( o b j e c t : i n o u t poV ; . . . ) ; 
+procedure proc P ( ob je ct : i n o u t poV ; ... ) ;
+procedure procN ( ob je ct : i n o u t poV ; ... ) ; 
 A reference to a component of the object in the body of an operation, must be
 transformed into a reference to the component of the run-time object on which the
 operation is applied. This is implemented by introducing renaming declarations
 in the expanded subprograms. For example, the component Value in the definition
 above, leads to the following local declaration in all expanded subprograms:
  
-Value : I n t e g e r renames o b j e c t . Value ; 
+Value : Integer renames o b j e c t . Value ; 
 The local variables introduced in this fashion are called Privals in the GNAT
 sources. References to private components are replaced by references to Privals
 thoughtout the bodies of protected operations. Let us see the expansion of sub-
 program procP in detail.
 
 
-1 : procedure p r o c P ( o b j e c t : i n o u t poV ; . . . ) is
+1 : procedure proc P ( o b j e c t : i n o u t poV ; ... ) is
 2 : procedure C l e a n is
 3 : begin
-4 : GNARL. S e r v i c e E n t r i e s ( o b j e c t . o b j e c t ’ a c c e s s ) ;
-5 : GNARL. Unlock ( o b j e c t . o b j e c t ’ a c c e s s ) ;
-6 : GNARL. A b o r t U n d e f e r ;
+4 : GNARL. S e r v i c e E n t r i e s ( o b j e c t . o b j e c t ’ access ) ;
+5 : GNARL. Unlock ( o b j e c t . o b j e c t ’ access ) ;
+6 : GNARL. A b or t U n d e f e r ;
 7 : end C l e a n ;
 8 : begin
-9 : GNARL. A b o r t D e f e r ;
-1 0 : GNARL. L o c k W r i t e ( o b j e c t . o b j e c t ’ a c c e s s ) ;
+9 : GNARL. A b or t D e f e r ;
+1 0 : GNARL. L o c k W r i t e ( o b j e c t . o b j e c t ’ access ) ;
 1 1 : begin
-1 2 : procN ( o b j e c t ; . . . ) ;
+1 2 : procN ( o b j e c t ; ... ) ;
 1 3 : exception
-1 4 : when o t h e r s =
+1 4 : whenot h e r s =
 1 5 : declare
 1 6 : E : E x c e p t i o n O c c u r r e n c e ;
 1 7 : begin
@@ -4900,14 +4900,14 @@ program procP in detail.
 2 3 : a t end
 2 4 : C l e a n ;
 2 5 : end ;
-2 6 : end p r o c P ; 
+2 6 : end proc P ; 
 Protected operations are abort-deferred operations [AAR95, Section 9.8(5-6)].
 Therefore, the P subprogram calls the run-time to defer the abortion (line 9) and to
 obtain the read/write access of the PO (line 10), and finally calls the N subprogram
 (line 12). On return from N we have two possible scenarios: No exception was
 raised by the user code. In this case the at-end statement (line 24), an internal
 statement of the GNAT compiler which is executed whether the code was executed
-successfully or not, calls the local subprogram Clean to reevaluate the barriers
+successfully or not, calls the local subprogram Clean toreevaluate the barriers
 and service queued entry-calls (line 4), unlock the protected object (line 5), and
 undefer the abortion (line 6). Otherwise, if the execution of the N subprogram
 propagates an exception, the barrier must be reevaluated and the queued entry-
@@ -4918,23 +4918,23 @@ the local subprogram Clean, and finally re-raises the exception (line 21).
 
 #### 11.2.3 Expansion of Entry Barriers
 
-Entry barriers are expanded into functions that return a boolean type. As for
+Entry barriers are expanded intofunctions that return a boolean type. As for
 other operations, the expansion adds one parameter to designate the object itself.
 Barriers can access all components of the object, and therefore the expansion
 includes the same object renamings as other protected operations. The front-end
 builds an array of pointers to the barrier functions, and the run-time invokes them
 indirectly. The expansion of the barriers is as follows:
  
-function E n t r y B a r r i e r
-( O b j e c t : A d d r e s s ;
-E n t r y I n d e x : P r o t e c t e d E n t r y I n d e x )
-r e t u r n B o o l e a n
+function Entry B a r r i e r
+( O bj ec t : A d d r e s s ;
+Entry I nd ex : Protected Entry I n d e x )
+return Boolean
 is
 D is c r i m i n a n t R e n a m i n g s
-P r i v a t e O b j e c t R e n a m i n g s
+Private O b j e c t R e n a m i n g s
 begin
-r e t u r n B a r r i e r E x p r e s s i o n ;
-end E n t r y B a r r i e r ; 
+return B a r r i e r E x p r e s s i o n ;
+end Entry B a r r i e r ; 
 
 #### 11.2.4 Expansion of Entry bodies
 
@@ -4944,22 +4944,22 @@ same profile. They are expanded as follows:
 1 : procedure EntryName
 2 : ( O b j e c t : A d d r e s s ;
 3 : P a r a m e t e r s : A d d r e s s ;
-4 : E n t r y I n d e x : P r o t e c t e d E n t r y I n d e x )
+4 : Entry I n d e x : Protected Entry I n d e x )
 5 : is
-6 : D is c r i m i n a n t R e n a m i n g s and P r i v a t e O b j e c t R e n a m i n g s
-7 : t y p e poVP is a c c e s s poV ;
+6 : D is c r i m i n a n t R e n a m i n g s and Private O b j e c t R e n a m i n g s
+7 : type poVP is access poV ;
 8 : function To PoVP is new U n c h e c k e d C o n v e r s i o n ( A d d r e s s , PoVP ) ;
-9 : o b j e c t : PoVP : = To PoVP ( O b j e c t ) ;
+9 : o b j e c t : PoVP := To PoVP ( O b j e c t ) ;
 1 0 : begin
 1 1 :  Entry body s t a t e m e n t s 
-1 2 : GNARL. C o m p l e t e E n t r y B o d y ( o b j e c t . o b j e c t ) ;
+1 2 : GNARL. C o m p l e t e Entry B o d y ( o b j e c t . o b j e c t ) ;
 1 3 : exception
-1 4 : when o t h e r s =
-1 5 : GNARL. E x c e p t i o n a l C o m p l e t e E n t r y B o d y
+1 4 : whenot h e r s =
+1 5 : GNARL. E x c e p t i o n a l C o m p l e t e Entry B o d y
 1 6 : ( o b j e c t . o b j e c t , GNARL. Get GNAT Exception ) ;
 1 7 : end EntryName ; 
 Similar to the N subprograms (cf. Section 11.2.2), the compiler adds some
-renamings to facilitate the access to the discriminants and private state (line 6).
+renamings tofacilitate the access to the discriminants and private state (line 6).
 Because the procedure receives as parameter the address of the object (not the ob-
 ject itself), the front-end also generates the unchecked conversion of this address
 to the corresponding access to the object (lines 7 to 9). In addition, the front-end
@@ -4982,35 +4982,35 @@ field saves the bounds of the entry-family specification. The element-type of th
 arrays is set to void because the contents of the array are not used. The protected
 type is then expanded as follows:
  
-t y p e poV ( D is c r i m i n a n t s ) is new L i m i t e d C o n t r o l l e d with
-r e c o r d
-P r i v a t e D a t a
-o b j e c t : a l i a s e d GNARL. P r o t e c t i o n E n t r i e s ( N u m E n t r i e s ) ;
-E n t r y F a m i l y N a m e : array ( Bounds ) o f Void ;
-end r e c o r d ; 
+type poV ( D is c r i m i n a n t s ) is new L i m i t e d C o n t r o l l e d with
+record
+Private Data
+ob je ct : a l i a s e d GNARL. P r o t e c t i o n E n t r i e s ( N u m E n t r i e s ) ;
+Entry F am il y N am e : array ( Bounds ) of Void ;
+end record ; 
 
 ### 11.3 Optimizations
 
-To realize simple and efficient synchronization regimes, a protected object with-
+Torealize simple and efficient synchronization regimes, a protected object with-
 out entries is sometimes sufficient. Such an object can be implemented more
 efficiently, and is recognized by the GNAT front-end. The resulting expansion is
 simpler, as indicated in the following example:
 11.4. SUMMARY 131
 
 
-t y p e poV ( D is c r i m i n a n t s ) is l i m i t e d r e c o r d
-p r i v a t e  d a t a  f i e l d s
-o b j e c t : a l i a s e d P r o t e c t i o n ;
-end r e c o r d ; 
+type poV ( D is c r i m i n a n t s ) is limited record
+private  data  f i e l d s
+ob je ct : a l i a s e d P r o t e c t i o n ;
+end record ; 
 Because now the protected object has no queues, the expanded type is sim-
-plified as follows 1) It is not a controlled type, because there is no need to raise
+plified as follows 1) It is not a controlled type, because there is no need toraise
 Program Error on queued entries, and 2) The object component is smaller (Pro-
 tection type only has the object lock and the PO ceiling).
 In the absence of entries the run-time is also able to provide a faster imple-
 mentation for protected objects. For this purpose, the GNAT run-time provides a
 second set of subprograms which are called by the expanded code in case of pro-
 tected objects without entries (see package System.Tasking.Protected Objects). In
-addition, the expander does not generate the call to re-evaluate the barriers after
+addition, the expander does not generate the call tore-evaluate the barriers after
 the execution of the body of a protected procedure.
 
 ### 11.4 Summary
@@ -5061,7 +5061,7 @@ When a scope contains several controlled-type objects, each object is initial-
 ized in the order of its declaration within the scope. Upon scope exit the objects
 are finalized in the reverse order. This reverse order is important, since later ob-
 jects may contain references to earlier objects. If an exception occurs during ini-
-tialization, then only those controlled objects that have been initialized so far will
+tialization, then only those controlled objects that have been initialized sofar will
 be finalized.
 The primitive operations of controlled types apply not only to stand-alone de-
 clared objects, but also to dynamically-allocated objects and controlled compo-
@@ -5099,7 +5099,7 @@ The finalization of objects with controlled components requires additional ma-
 12.1. IMPLEMENTATION OVERVIEW 135
 chinery within the object itself. Consider a variant record, some of whose com-
 ponents may be controlled. It is necessary to locate those components from the
-enclosing object itself to finalize them when the enclosing object is finalized. As
+enclosing object itself tofinalize them when the enclosing object is finalized. As
 a result, such records include an additional component, called Controller, that an-
 chors the local list of controlled components. The finalization code must traverse
 this local list as well.
@@ -5120,8 +5120,8 @@ be called. For instance in the folowing code:
 
 declare
 S1 : S o m e C o n t r o l l e d T y p e ;
-X : Pos : = Random ( 0 , 1 ) ;   C o n s t r a i n t E r r o r is
- r a n d o m l y r a is e d .
+X : Pos := Random ( 0 , 1 ) ;   C o n s t r a i n t E r r or is
+ r and o m l y r a is e d .
 S2 ; S o m e C o n t r o l l e d T y p e ;
 begin
 null ;
@@ -5145,19 +5145,19 @@ object that must be finalized when the enclosing call to Exists returns:
 
 
 declare
-X : B o o l e a n : = E x is t s ( 1 , Empty ) ;
- The r e s u l to f t h e c a l l to Empty is k e p t i n an
- anonymous o b j e c t d u r i n g t h e e x e c u t i o n o f E x is t s ,
+X : Boolean := E x is t s ( 1 , Empty ) ;
+ The r e s u l tof t h e c all to Empty is k e p t i n an
+ anonymous o b j e c t d u r i n g t h e e x e c u t i o n of E x is t s ,
  and F i n a l i z e must be i n v o k e d no l a t t e r t h a n
- t h e s e m i c o l o n .
+ t h e semi c o l o n .
 begin
-i f E x is t s ( 2 , Empty ) then
-. . .
-e l s e
-. . .
-end i f ;
- Here t h e anonymous o b j e c t h a s to be f i n a l i z e d b e f o r e
- t h e e x e c u t i o n o f e i t h e r b r a n c h o f t h e i f s t a t e m e n t .
+if E x is t s ( 2 , Empty ) then
+...
+else
+...
+end if ;
+ Here t h e anonymous o b j e c t h a s to be f i n a l i z e d b e for e
+ t h e e x e c u t i o n of e i t h e r b r a n c h of t h e if s t a t e m e n t .
 end ; 
 
 #### 12.1.3 Finalization of Dynamically Allocated Objects
@@ -5181,15 +5181,15 @@ example no controlled components are present at the beginning of the execution,
 but after the assignment, X will contain three such components:
  
 declare
-t y p e T T a b l e is array ( N a t u r a l range )
-o f S o m e C o n t r o l l e d T y p e ;
-s u b t y p e I n d e x is N a t u r a l range 0 . . 1 0 ;
-t y p e Rec ( N : I n d e x : = 0 ) is r e c o r d
+type T T a b l e is array ( Natural range )
+of S o m e C o n t r o l l e d T y p e ;
+s u b type I n d e x is Natural range 0 .. 1 0 ;
+type Rec ( N : I n d e x := 0 ) is record
 T : T T a b l e ( 1 . . N ) ;
-end r e c o r d ;
+end record ;
 X : Rec ;
 begin
-X : = ( 3 , ( 1 . . 3 = Empty ) ) ;   3 C o n t r o l l e d c o m p o n e n t s .
+X := ( 3 , ( 1 .. 3 = Empty ) ) ;   3 C o n t r o l l e d c o m p o n e n t s .
 end ; 
 This example makes it clear that objects with controlled components must
 include some additional data-structures to keep track of their changeable control-
@@ -5209,15 +5209,15 @@ objects and parameters. Consider the following case:
 
 
 package T e s t is
-t y p e T is t a g g e d null r e c o r d ;
-function F r e t u r n s T ’ C l a s s ;
+type T is tagged null record ;
+function F return s T ’ C l a s s ;
 end T e s t ;
-with T e s t ; u s e T e s t ;
+with T e s t ; use T e s t ;
 procedure Try is
-V : T ’ C l a s s : = F ;
+V : T ’ C l a s s := F ;
  Does F y i e l d a v a l u e c o n t a i n i n g c o n t r o l l e d c o m p o n e n t s ?
 begin
-. . .
+...
 end Try ; 
 The expanded code must assume that Try is a scope that needs finalization.
 Therefore it must create a finalization list, and generate code to attach the anony-
@@ -5233,9 +5233,9 @@ this chain. For example, let us assume the following declarations:
  
 declare
 X : S o m e C o n t r o l l e d T y p e ;
-Y : S o m e C o n t r o l l e d T y p e : = X;
+Y : S o m e C o n t r o l l e d T y p e := X;
 begin
- A d d i t i o n a l u s e r c o d e 
+ A d d i t i o n a l use r c o d e 
 end ; 
 This fragment is expanded as follows:
  
@@ -5245,11 +5245,11 @@ begin
 X : S o m e C o n t r o l l e d T y p e ;
 I n i t i a l i z e ( X ) ;
 GNARL. A t t a c h T o F i n a l L is t ( F , F i n a l i z a b l e ( X ) ) ;
-Y : S o m e C o n t r o l l e d T y p e : = X;
+Y : S o m e C o n t r o l l e d T y p e := X;
 12.2. EXPANSION ACTIVITIES FOR CONTROLLED-TYPES 139
 A d j u s t ( Y ) ;
 GNARL. A t t a c h T o F i n a l L is t ( F , F i n a l i z a b l e ( Y ) ) ;
- A d d i t i o n a l u s e r c o d e 
+ A d d i t i o n a l use r c o d e 
 a t end
 GNARL. F i n a l i z e L is t ( F ) ;
 end ; 
@@ -5270,12 +5270,12 @@ At a first sight, the expansion of the the assignment statement Obj1 := Obj2 mig
 be:
  
 F i n a l i z e ( Obj1 ) ;   d is c a r d o l d v a l u e
-Obj1 : = Obj2 ;
+Obj1 := Obj2 ;
 A d j u s t ( Obj1 ) ;   remove a c c i d e n t a l s h a r i n g on new v a l u e
 However, various problems make such an implementation unworkable. First,
 Obj1 may refer to objects present in Obj2 and thus cannot be finalized before
 Obj2 is evaluated. Second, the assignment itself must be specialized since copying
-the hidden pointers that attach objects to finalization lists is clearly nonsensical.
+the hidden pointers that attach objects tofinalization lists is clearly nonsensical.
 Third, the self-assignment (X := X), although not a particularly useful construct,
 does not work, because it would finalize the target of the assignment as well. This
 case must be addressed specially, either by introducing a temporary object or by
@@ -5285,12 +5285,12 @@ mized:
 
 
 Anon1 : S o m e C o n t r o l l e d T y p e renames Obj1 ;
-Anon2 : A d d r e s s : = Obj2 ’ A d d r e s s ;
-i f Anon1 ’ A d d r e s s / = Anon2 then   P r o t e c t a g a i n s t X : = X
+Anon2 : A d d r e s s := Obj2 ’ A d d r e s s ;
+if Anon1 ’ A dd re ss / = Anon2 then   P ro te ct ag ai ns t X := X
 F i n a l i z e ( Anon1 ) ;
-GNARL. C o p y E x p l i c i t P a r t ( Anon2 . a l l , to = Anon1 ) ;
+GNARL. C o p y E x p l i c i t P a r t ( Anon2 . all , to = Anon1 ) ;
 A d j u s t ( Anon1 ) ;
-end i f ; 
+end if ; 
 Note that the target object, even though it has been finalized, remains in the
 finalization list because it still need to be finalized upon scope exit. In general
 finalization is idempotent, i.e. finalizing an object twice is a no-op.
@@ -5307,13 +5307,13 @@ declaration of a finalization list, and will cause the generation of finalizatio
 as for user-declared constructs. Consider the previous example: function Empty
 yields a controlled value that is only used during the execution of Exists:
  
-X : = E x is t s ( 1 , I n s i d e = Empty ) ; 
+X := E x is t s ( 1 , I n s i d e = Empty ) ; 
 GNAT expands this code as follows:
  
 declare
-Anon : S o m e C o n t r o l l e d T y p e : = Empty ;
+Anon : S o m e C o n t r o l l e d T y p e := Empty ;
 begin
-X : = E x is t s ( 1 , I n s i d e = Anon ) ;
+X := E x is t s ( 1 , I n s i d e = Anon ) ;
 end ; 
 An intermediate block can be introduced without changing the semantics of
 the program in order to make the anonymous object and the corresponding final-
@@ -5328,24 +5328,24 @@ case, the anonymous object is attached to an intermediate finalization list whic
 is finalized right after the declaration. For example:
  
 declare
-B : B o o l e a n : = E x is t s ( 1 , Empty ) ;
+B : Boolean := E x is t s ( 1 , Empty ) ;
 begin
-. . .
+...
 end ; 
 It is expanded into:
  
 declare
 Aux L : GNARL. L is t C o n t r o l l e r ;
 Anon : S o m e C o n t r o l l e d T y p e ;
-B : B o o l e a n ;
+B : Boolean ;
 begin
-Anon : = Empty ;
+Anon := Empty ;
 A d j u s t ( Anon ) ;
 GNARL. A t t a c h T o F i n a l L is t ( Aux L , Anon ) ;
-B : = E x is t s ( 1 , Anon ) ;
-GNARL. F i n a l i z e ( Aux L ) ;     F i n a l i z e h e r e , n o t a t t h e
- end o f t h e b l o c k
-. . .
+B := E x is t s ( 1 , Anon ) ;
+GNARL. F i n a l i z e ( Aux L ) ;     F i n a l i z e h e r e , not a t t h e
+ end of t h e b l o c k
+...
 end ; 
 List Controller is itself a controlled type. Thus, an object of that type is at-
 tached to the enclosing scope’s finalization chain, ensuring that the anonymous
@@ -5365,16 +5365,16 @@ cedures are specialized according as to whether they handle records or arrays.
 Here is the body of Deep Adjust for a type T that is a one-dimensional array of
 controlled objects:
  
-procedure D e e p A d j u s t ( V : i n o u t T ;
+procedure D ee p A dj us t ( V : i n o u t T ;
 C : F i n a l L is t ;
-B : B o o l e a n ) is
+B : Boolean ) is
 begin
-f o r J i n V’ range l o o p
+for J i n V’ range loop
 D e e p A d j u s t ( V( J ) ) ;
-i f B then
+if B then
 A t t a c h T o F i n a l L is t ( C , V ( J ) ) ;
-end i f ;
-end l o o p ;
+end if ;
+end loop ;
 end D e e p A d j u s t ; 
 Note that the deep procedures have a conditional mechanism to attach objects
 to the finalization chain so that the same procedure can be used in a context where
@@ -5401,10 +5401,10 @@ example:
 12.3. SUMMARY 143
 
 
-t y p e Rec ( N : I n d e x : = 0 ) is r e c o r d
-C o n t r o l l e r : GNARL. R e c o r d C o n t r o l l e r ;
+type Rec ( N : I n d e x := 0 ) is record
+C on tr ol le r : GNARL. Record C o n t r o l l e r ;
 T : S e t s ( 1 . . N ) ;
-end r e c o r d ; 
+end record ; 
 Record Controller plays a role equivalent to List Controller: it introduces an
 indirection in the enclosing finalization list. The finalization list of controlled
 components is local to the object. So, upon assignment the number of controlled
@@ -5455,23 +5455,23 @@ model.
 ### 13.1 Tagged and Polymorphic Objects
 
 The intuitive idea behind tagged-types is that values of such a type carry a tag
-which is used, among other things, to relate the run-time value to its original type
+which is used, among other things, torelate the run-time value to its original type
 and to the operations that apply to it. This tag allows the simple implementation
 of run-time type-specific actions, such as dynamic dispatching and membership
 testing. Let us consider the following declaration of a root tagged-type:
  
-t y p e My Tagged is a b s t r a c t t a g g e d
-r e c o r d
-. . .
-end r e c o r d ; 
+type My_Tagged is abstract tagged
+record
+...
+end record ; 
 It is transformed by the GNAT front-end by the addition of a new component,
 whose predefined type appears in Ada.Tags:
  
-t y p e My Tagged is a b s t r a c t t a g g e d
-r e c o r d
-Tag : Tags . Tag ;
-. . .
-end r e c o r d ; 
+type My_Tagged is abstract tagged
+record
+Tag : Tags.Tag ;
+...
+end record ; 
 Each tagged-type has its own tag. A copy of the tag is inserted into every
 object of the type. The value of the tag is a pointer to a type-specific data area,
 that includes first and foremost a table of primitive operations of the tagged-type.
@@ -5486,21 +5486,21 @@ rations of the parent and appending the components in the extension. It turns ou
 to be simpler to describe all the inherited components as being part of a single
 inherited collective component, called Parent. The following type extension:
  
-t y p e My Ext Tagged is new My Tagged with
-r e c o r d
-. . .
-end r e c o r d ; 
+type My_Ext_Tagged is new My_Tagged with
+record
+...
+end record ; 
 13.2. THE DISPATCH TABLE 147
 It is expanded as follows:
  
-t y p e My Ext Tagged is
-r e c o r d
-Tag : Tags . Tag ;
-P a r e n t : My Tagged ;
-. . .
-end r e c o r d ; 
+type My_Ext_Tagged is
+record
+Tag : Tags.Tag ;
+Parent : My_Tagged ;
+...
+end record ; 
 The main advantage of this technique is that it transforms record extensions
-into regular records.
+intoregular records.
 For many reasons, it turns out to be mandatory that any field in a tagged type
 keep the same location within the record in any descendant type. To start with,
 dynamic dispatching depends on the value of the tag, and thus the tag must appear
@@ -5530,15 +5530,15 @@ defined primitive subprograms for it (My Primitive OpN), one non-primitive dis-
 patching subprogram (My Class Op1), one object declaration of the type (Obj),
 type My_Tagged (D : Integer) is tagged
 record
-. . .
+...
 end record;
 procedure Primitive_Op1 (O: My_Object; ... ) is
-. . .
+...
 end Primitive_Op1;
 function Primitive_Op2 (O: My_Object; ... ) is
-. . .
+...
 end Primitive_Op2;
-. . .
+...
 procedure My_Class_Op1 (O : My_Object’Class) is
 begin
 O.Tag.all.Prim_Op (1)(O, ... ); -- Dispatching call
@@ -5548,15 +5548,15 @@ Primitive_Op1 (Obj); -- Non-dispatching call
 end;
 type My_Tagged (D : Integer) is tagged
 record
-. . .
+...
 end record;
 procedure Primitive_Op1 (O: My_Object; ... ) is
-. . .
+...
 end Primitive_Op1;
 function Primitive_Op2 (O: My_Object; ... ) is
-. . .
+...
 end Primitive_Op2;
-. . .
+...
 procedure My_Class_Op1 (O : My_Object’Class) is
 begin
 Primitive_Op1 (O); -- Dispatching call
@@ -5612,52 +5612,52 @@ nents that require finalization actions (the deep in the name refers to the fact
 the action applies recursively to controlled components, cf. Chapter 12).
 For example, let us assume the following tagged-type declaration:
  
-t y p e My Record is t a g g e d
-r e c o r d
-My Data : I n t e g e r ;
-end r e c o r d ; 
+type My_Record is tagged
+record
+My Data : Integer ;
+end record ; 
 The GNAT front-end generates the equivalent of the following expanded code
 from it:
  
 
- D e c l a r a t i o n o f t h e t y p e  s p e c i f i c d a t a
-t y p e My Record Data is r e c o r d
-DT : array ( 1 . . 1 1 ) o f A d d r e s s ;   D is p a t c h t a b l e
-TSD : array ( 1 . . 3 ) o f a d d r e s s ;   A n c e s to r i n f o
-P a r e n t : Tags . Tag : = DT’ A d d r e s s ;   Tag o f t h e t y p e
-F : B o o l e a n : = T r u e ;
-E : c o n s t a n t S t r i n g : = ” My Object ” ;   Debug i n f o
-end r e c o r d ; 
+ D e c l a r a t i o n of t h e type  s p e c if i c data
+type My_Record Data is record
+DT : array ( 1 .. 1 1 ) of A d d r e s s ;   D is p a t c h t a b l e
+TSD : array ( 1 .. 3 ) of a d d r e s s ;   A n c e s tor i n f o
+Parent : Tags.Tag := DT’ A d d r e s s ;   Tag of t h e type
+F : Boolean := T r u e ;
+E : constant String := ” My Object ” ;   Debug i n f o
+end record ; 
 
 
 function A l i g n m e n t
-(X : M y r e c o r d ) r e t u r n I n t e g e r ;
+(X : My record ) return Integer ;
 function S i z e
-( S : My Record ) r e t u r n I n t e g e r ;
+( S : My_Record ) return Integer ;
 procedure Read
-( S : R o o t S t r e a m T y p e ; V : o u t My Record ) ;
+( S : R o o t S t r e a m T y p e ; V : o u t My_Record ) ;
 procedure W r i t e
-( S : R o o t S t r e a m T y p e ; V : My Record ) ;
+( S : R o o t S t r e a m T y p e ; V : My_Record ) ;
 function I n p u t
-( S : a c c e s s R o o t S t r e a m T y p e ) r e t u r n My Record ;
+( S : access R o o t S t r e a m T y p e ) return My_Record ;
 procedure O u t p u t
-( S : a c c e s s R o o t S t r e a m T y p e ; V : My Record ) ;
+( S : access R o o t S t r e a m T y p e ; V : My_Record ) ;
 function ”=”
-(X : My Record ; Y : My Record ) r e t u r n B o o l e a n ;
+(X : My_Record ; Y : My_Record ) return Boolean ;
 procedure A s s i g n
-(X : o u t My Record ; Y : My Record ) ;
+(X : o u t My_Record ; Y : My_Record ) ;
 procedure D e e p A d j u s t
 ( L : i n o u t F i n a l i z a b l e p t r ;
-V : i n o u t My Record ;
-B : I n t e g e r ) ;
+V : i n o u t My_Record ;
+B : Integer ) ;
 procedure D e e p F i n a l i z e
-(V : i n o u t My Record ; B : B o o l e a n ) ;
-. . .
- The i n i t i a l i z a t i o n c o d e f o r t h e d is p a t c h t a b l e i n c l u d e s
- t h e f o l l o w i n g f o r a l l p r i m i t i v e o p e r a t i o n s
-My Record Data . DT ( 1 ) : = A l i g n m e n t ’ A d d r e s s ;
-My Record Data . DT ( 2 ) : = S i z e ’ A d d r e s s ;
-. . . 
+(V : i n o u t My_Record ; B : Boolean ) ;
+...
+ The i n i t i a l i z a t i o n c o d e for t h e d is p a t c h t a b l e i n c l u d e s
+ t h e f o l l o w i n g for all p r i m i t i v e o p e r a t i o n s
+My_Record Data . DT ( 1 ) := A l i g n m e n t ’ A d d r e s s ;
+My_Record Data . DT ( 2 ) := S i z e ’ A d d r e s s ;
+... 
 The format of GNAT’s dispatch table is customizable in order to match the
 format used by other object-oriented languages. GNAT supports programs that
 use two different dispatch table formats at the same time: the native format, that
@@ -5673,43 +5673,43 @@ Deep Finalize are empty. The other subprograms are expanded as follows:
 13.3. PRIMITIVE OPERATIONS 151
 
 
-function A l i g n m e n t ( X : My Record ) r e t u r n I n t e g e r is
+function A li gn me nt ( X : My_Record ) return Integer is
 begin
-r e t u r n X’ A l i g n m e n t ;
+return X’ A l i g n m e n t ;
 end A l i g n m e n t ;
-function S i z e ( X : My Record ) r e t u r n I n t e g e r is
+function S iz e ( X : My_Record ) return Integer is
 begin
-r e t u r n X’ S i z e ;
+return X’ S i z e ;
 end S i z e ;
-function I n p u t ( S : R o o t S t r e a m T y p e ) r e t u r n My Record is
-V : My Record ;
+function I np ut ( S : R o o t S t r e a m T y p e ) return My_Record is
+V : My_Record ;
 begin
 Read ( S , V ) ;
-r e t u r n V;
+return V;
 end I n p u t ;
-procedure O u t p u t ( S : a c c e s s R o o t S t r e a m T y p e ;
-V : My Record ) is
+procedure O ut pu t ( S : access R o o t S t r e a m T y p e ;
+V : My_Record ) is
 begin
 W r i t e ( S , V ) ;
 end O u t p u t ;
-function ”=” (X : My Record ; Y : My Record ) r e t u r n B o o l e a n is
+function ”=” (X : My_Record ; Y : My_Record ) return Boolean is
 begin
-r e t u r n X . My Data = X . My Data ;
+return X . My Data = X . My Data ;
 end ”=” ;
-procedure A s s i g n ( X : o u t My Record ; Y : My Record ) is
+procedure A ss ig n ( X : o u t My_Record ; Y : My_Record ) is
 begin
-i f n o t ( X’ A d d r e s s = Y’ A d d r e s s ) then
+if not ( X’ A d d r e s s = Y’ A d d r e s s ) then
 declare
-Aux : Tags . Tag : = X . Tag ;
+Aux : Tags.Tag := X . Tag ;
 begin
-X : = Y;
-X . Tag : = Aux ;
+X := Y;
+X . Tag := Aux ;
 end ;
-end i f ;
+end if ;
 exception
-when o t h e r s =
-GNARL. U n d e f e r . a l l ;
-r a is e P r o g r a m E r r o r ;
+whenot h e r s =
+GNARL. U n d e f e r . all ;
+r a is e P r o g r a m E r r or ;
 end A s s i g n ; 
 Alignment and Size return the value of the corresponding attribute applied
 t to the object; Input and Ouput call the corresponding Read and Write prim-
@@ -5724,21 +5724,21 @@ must first preserve the tag of the target, perform the assignment, and finally r
 the tag. Let us examine the following example:
  
 declare
-t y p e My Record is t a g g e d
-r e c o r d
-Some Data : I n t e g e r ;
-end r e c o r d ;
-t y p e M y E x t e n s i o n is My Record with
-r e c o r d
-More Data : C h a r a c t e r ;
-end r e c o r d ;
-Obj1 : My Record ;
-Obj2 : M y E x t e n s i o n ;
+type My_Record is tagged
+record
+Some Data : Integer ;
+end record ;
+type My E x t e n s i o n is My_Record with
+record
+More Data : Character ;
+end record ;
+Obj1 : My_Record ;
+Obj2 : My E x t e n s i o n ;
 begin
-Obj1 : = My Record ( Obj2 ) ;   E x p l i c i t c o n v e r s i o n
+Obj1 := My_Record ( Obj2 ) ;   E x p l i c i t c o n v e r s i o n
 end ; 
 After the elaboration of the two objects, the tag of Obj1 points to the dis-
-patching table of My Record and the tag of Obj2 points to the dispatching table
+patching table of My_Record and the tag of Obj2 points to the dispatching table
 of My Extension. The conversion does not change the tag of Obj2, but simply
 indicates that Obj2 is to be regarded as having the ancestor type in the context
 of the assignment. If the compiler were to implement the assignment as a copy
@@ -5749,7 +5749,7 @@ My Extension which would be clearly incorrect.
 
 Objects of a tagged-type include a tag which is used at run-time to implement
 object-oriented notions of polymorphism and dynamic dispatching. The GNAT
-expander translates tagged-types into record types with a dispatch table; the tag in
+expander translates tagged-types intorecord types with a dispatch table; the tag in
 an object is a pointer to the dispatch table of the type. Objects of a type extension
 include a collective component that corresponds to all the components inherited
 13.4. SUMMARY 153
@@ -5879,7 +5879,7 @@ phase the task, having completed a master within itself, waits for the tasks
 dependent on that master to become terminated or wait on a terminate phase.
 
 Master Phase 2 Sleep: In phase 2 the task sleeps in Complete Master, wait-
-ing for tasks on terminate alternatives to finish terminating.
+ing for tasks on terminate alternatives tofinish terminating.
 
 ### 14.3 Task Creation and Termination
 
@@ -5930,7 +5930,7 @@ ter Of Task is initialized with the current value of its Parent Master Within).
 This value remains unmodified during the new task life and is used to ensure
 the Ada semantics for tasks finalization.
  
-New Task . M a s t e r O f T a s k : = A c t i v a to r . M a s t e r W i t h i n 
+New Task . M as te r O f Task := A c t i v a tor . M a s t e r W i t h i n 
 14.3. TASK CREATION AND TERMINATION 161
 
 Master Within is set to the initial Master Of Task value plus one. When
@@ -5958,38 +5958,38 @@ example:
  
 procedure P is
  P : P a r e n t = E n v i r o n m e n t Task ;
- A c t i v a to r = E n v i r o n m e n t
- M a s t e r O f T a s k = 1 ; M a s t e r W i t h i n = 2 ;
-t a s k T1 ;
- T1 : P a r e n t = P ; A c t i v a to r = P
- M a s t e r O f T a s k = 2 ; M a s t e r W i t h i n = 3 ;
-t a s k body T1 is
-t a s k t y p e TT ;
-t a s k body TT is
+ A c t i v a tor = E n v i r o n m e n t
+ M a s t e r O f Task = 1 ; M a s t e r W i t h i n = 2 ;
+task T1 ;
+ T1 : P a r e n t = P ; A c t i v a tor = P
+ M a s t e r O f Task = 2 ; M a s t e r W i t h i n = 3 ;
+task body T1 is
+task type TT ;
+task body TT is
 begin
 null ;
 end TT ;
-t y p e TTA is a c c e s s TT ;
+type TTA is access TT ;
 T2 : TT ;
- T2 : P a r e n t = T1 ; A c t i v a to r = T1
- M a s t e r O f T a s k = 3 ; M a s t e r W i t h i n = 4 ;
-t a s k T3 ;
- T3 : P a r e n t = T1 ; A c t i v a to r = T1
- M a s t e r O f T a s k = 3 ; M a s t e r W i t h i n = 4 ;
-t a s k body T3 is
-t a s k T4 ;
- T4 : P a r e n t = T3 ; A c t i v a to r = T3
- M a s t e r O f T a s k = 4 ; M a s t e r W i t h i n = 5 ;
-t a s k body T4 is
+ T2 : P a r e n t = T1 ; A c t i v a tor = T1
+ M a s t e r O f Task = 3 ; M a s t e r W i t h i n = 4 ;
+task T3 ;
+ T3 : P a r e n t = T1 ; A c t i v a tor = T1
+ M a s t e r O f Task = 3 ; M a s t e r W i t h i n = 4 ;
+task body T3 is
+task T4 ;
+ T4 : P a r e n t = T3 ; A c t i v a tor = T3
+ M a s t e r O f Task = 4 ; M a s t e r W i t h i n = 5 ;
+task body T4 is
 begin
 null ;
 end T4 ;
 T5 : TT ;
- T5 : P a r e n t = T3 ; A c t i v a to r = T3
- M a s t e r O f T a s k = 4 ; M a s t e r W i t h i n = 5 ;
-T6 : TTA : = new TT ;
- T6 : P a r e n t = T1 ; A c t i v a to r = T3
- M a s t e r O f T a s k = 2 ; M a s t e r W i t h i n = 3 ;
+ T5 : P a r e n t = T3 ; A c t i v a tor = T3
+ M a s t e r O f Task = 4 ; M a s t e r W i t h i n = 5 ;
+T6 : TTA := new TT ;
+ T6 : P a r e n t = T1 ; A c t i v a tor = T3
+ M a s t e r O f Task = 2 ; M a s t e r W i t h i n = 3 ;
 begin
 null ;
 end T3 ;
@@ -6065,7 +6065,7 @@ all dependent tasks complete their own activation.
 4. Complete Activation is called when the new thread completes the elabora-
 tion of all the task declarations, but before executing the first statetement
 in the task body. This call is used to signal to the activator that it need no
-longer wait for this task to finish activation. If this is the last task on the
+longer wait for this task tofinish activation. If this is the last task on the
 activation list to complete its activation, the activator becomes unblocked.
 From here on the activator and the new tasks proceed concurrently and their
 execution is controlled by the POSIX scheduler. Afterward, any of them can
@@ -6198,7 +6198,7 @@ tasks has failed (typically due to the propagation of an exception), Task-
 ing Error is raised in the activator, at the place at which it initiated the acti-
 vations. Otherwise, the activator proceeds with its execution normally. Any
 tasks aborted prior to completing their activation are ignored when deter-
-mining whether to raise Tasking Error [AAR95, Section 9.2(5)].
+mining whether toraise Tasking Error [AAR95, Section 9.2(5)].
 10. Set the activator state to Runnable.
 11. Unlock the caller ATCB.
 12. Remove the Activation Chain.
@@ -6293,7 +6293,7 @@ A conditional entry call differs from an unconditional entry call in that the ca
 ing task need not wait unless the call can be accepted immediately. If the called
 task is ready to accept, execution proceeds as for an unconditional call. Other-
 wise, the calling task resumes execution without completion of a rendezvous. The
-syntax provides for execution to resume at different places, depending on whether
+syntax provides for execution toresume at different places, depending on whether
 any rendezvous took place. The efficient implementation of the conditional entry-
 call requires a simple test for whether the called task is ready to accept. This can
 be done in constant time if the run-time maintains an accept vector for each task,
@@ -6320,8 +6320,8 @@ the run-time saves the base address of this block in the Uninterpreted Data fiel
 of the Entry Call Record. Figure 15.1 presents the GNAT run-time data structures
 used to handle an entry call to the entry E of the following task specification:
  
-t a s k T is
-e n t r y E ( Number : i n I n t e g e r ; T e x t : i n S t r i n g ) ;
+task T is
+entry E ( Number : i n Integer ; T e x t : i n String ) ;
 end T ; 
 An entry-call can be in one of the following states:
 
@@ -6350,9 +6350,9 @@ Entry_Call
 :
 :
 Run-Time
-Level . . .
+Level ...
 Uninterpreted_Data
-. . .
+...
 entry-call
 Number
 Text
@@ -6381,7 +6381,7 @@ run-time uses circular doubly linked lists so that checking, insertion and delet
 are all constant-time operations.
 The ATCB field Entry Queues is an array indexed by the entry identifier (the
 front-end associates an unique identifier to each entry queue, cf. Section 10.1).
-Each element of this array has two fields: the Head and the Tail of the queue (cf.
+Each element of this array has twofields: the Head and the Tail of the queue (cf.
 Figure 15.2).
 Head
 Tail
@@ -6509,7 +6509,7 @@ The subprogram Task Do Or Queue carries out the following actions:
 1. Try to serve the call immediately. If the acceptor is accepting some entry
 call and the current call can be accepted the following actions are carried
 out:
-(a) Commit the acceptor to rendezvous with the caller.
+(a) Commit the acceptor torendezvous with the caller.
 (b) If the acceptor is in a terminate alternative then cancel the terminate
 alternative. If the acceptor has no dependent tasks notify its parent that
 the acceptor is again awake.
@@ -6519,7 +6519,7 @@ TURN.
 (d) If the accept statement has some body then call a run-time procedure
 (Setup For Rendezvous With Body) to insert the Entry Call Record in
 the accepted entry-calls stack of the acceptor task (cf. Section 15.3),
-and to raise the priority of the acceptor (if the caller priority is higher
+and toraise the priority of the acceptor (if the caller priority is higher
 than the priority of the acceptor). Then wake up the acceptor and
 RETURN.
 
@@ -6667,7 +6667,7 @@ implementation of the proxy model. One of the main reasons (from the view-
 point of the run-time) is that using Pthreads to implement the self-service model
 introduces one important problem: The task attempting to exit an eggshell must
 be able to transfer ownership to a task waiting on an Open entry. However, there
-is no good way to solve it with Pthreads because, though it is possible to force a
+is no good way to solve it with Pthreads because, though it is possible toforce a
 thread to be given a mutex by raising its priority over that of the other contenders,
 this may lead to unnecessary context switches and degrades the implementation
 of Ada priority over Pthreads.
@@ -6734,28 +6734,28 @@ only on the state of the protected object. In the self-service model, only when 
 barriers of all entries with queued calls are False the thread can leave the eggshell.
 This assures that all entry calls made eligible by a state change are executed be-
 fore any further operations are initiated. For this purpose, the front-end expands
-the entry barriers and bodies into functions and procedures, and generates a ta-
+the entry barriers and bodies intofunctions and procedures, and generates a ta-
 ble initialized with their addresses. The run-time receives this table and uses the
 pointers to call the functions which evaluate the entry barriers, and to call the
 corresponding body when the barrier is open.
 The basic algorithm of the GNARL Service Entries procedure is as follows:
  
-1 w h i l e T h e r e I s S o m e O p e n B a r r i e r W i t h Q u e u e d E n t r y C a l l s l o o p
-2 Update o b j e c t r e f e r e n c e to t h e E n t r y C a l l R e c o r d
+1 while T h e r e I s S o m e O p e n B a r r i e r W i t h Q u e u e d Entry C all s loop
+2 Update o b j e c t r e f e r e n c e to t h e Entry C all Record
 3 begin
-4 C a l l t h e E n t r y B o d y
+4 C all t h e Entry B o d y
 5 exception
-6 when o t h e r s = B r o a d c a s t P r o g r a m E r r o r
+6 whenot h e r s = B r o a d c a s t P r o g r a m E r r or
 7 end
-8 Remove t h e R e f e r e n c e to t h e E n t r y C a l l R e c o r d
-9 GNARL. W a k e U p E n t r y C a l l e r
-1 0 end l o o p ; 
+8 Remove t h e R e f e r e n c e to t h e Entry C all Record
+9 GNARL. W a k e U p Entry C all e r
+1 0 end loop ; 
 Line 1 is evaluated by the GNARL procedure Select Protected Entry Call
 which traverses all the entry queues and reevaluates the barrier of those entries
 with queued entry calls. As soon as some barrier is open (it evaluates to true),
 GNARL selects it to be serviced. In line 2, the Call In Progress field of the object
 (see the Protection Entries type definition) is set to the selected entry call record
-to remember that this is the entry call being attended. Lines 3 to 7 open a new
+toremember that this is the entry call being attended. Lines 3 to 7 open a new
 scope to issue the call to the entry body and to handle the exceptions in the user
 code. In this case the predefined exception Program Error is broadcasted to all
 tasks currently queued in any entry of the protected object. In line 8 the reference
@@ -6966,7 +6966,7 @@ run-time to call the appropriate subprogram.
 A timed entry call allows the task that executes it to make an entry call with
 the provision that it be awakened and the call canceled, if the call is not accepted
 before the expiration of a specified delay. As with the conditional entry call, pro-
-vision is made for execution to resume in different places, depending on whether
+vision is made for execution toresume in different places, depending on whether
 a rendezvous takes place. In addition to the processing required for a normal entry
 call, the timed entry call requires scheduling of a wake-up event if the call cannot
 be accepted immediately. If the call is accepted before this delay expires, the call-
@@ -6983,7 +6983,7 @@ situation (at run-time) is called an Exception Occurrence. When an exception oc-
 currence is raised by the execution of a given construct, the rest of the execution of
 that construct is abandoned and the corresponding exception-handler is executed.
 If the construct had no exception-handler, then the exception ocurrence is propa-
-gated. To propagate an exception occurrence is to raise it again in the innermost
+gated. To propagate an exception occurrence is toraise it again in the innermost
 dynamically enclosing execution context [AAR95, Section 11-4]. If an exception
 occurrence is unhanded in a task body, the exception does not propagate further
 (because there is no dynamically enclosing execution). If the exception occurred
@@ -7007,7 +7007,7 @@ record (Exception Data Ptr). Figure 18.1 presents the fields of this record. The
 field Not Handled By Others is used to differentiate the user-defined exception
 from the run-time internal exceptions (i.e. task abortion) which can not be han-
 dled by the user-defined exception handlers. The field Lang defines the language
-where the exception is declared (by default “Ada”). The next two fields are used
+where the exception is declared (by default “Ada”). The next twofields are used
 to store the full name of the exception. This name is composed of a prefix (the
 full path of the scope where the exception is declared) and the exception name.
 The last field is used to create linked lists of exception identifiers (described in
@@ -7027,7 +7027,7 @@ this field is a record; the Current Excep field of this record saves the excepti
 occurrence.
 The Exception Raised field is set to True to indicate that this exception oc-
 currence has actually been raised. When an exception occurrence is first cre-
-ated, it is set to false; then, when it is later processed by the GNARL subprogram
+ated, it is set tofalse; then, when it is later processed by the GNARL subprogram
 Raise Current Exception, it is set to True. This allows the run-time to distinguish
 if it is dealing with an exception re-raise.
 
@@ -7077,7 +7077,7 @@ raise statement and (2) by means of the procedure Ada.Exceptions.Raise Exception
 which allows the programmer to associate a message to the exception. In both
 cases, the compiler generates a call to a GNARL function which carries out the
 following actions:
-1. To fill the ATCB exception occurrence.
+1. Tofill the ATCB exception occurrence.
 Tasking_Error
 Compiler_Data
 Pri_Stack_Info
@@ -7148,7 +7148,7 @@ by pragma Interrupt Handler. This pragma imposes a restriction on the object:
 it must be dynamically created [Coh96, Section 19.6.1]. Non-nested installa-
 tion and removal of interrupt handlers relies on additional facilities of package
 Ada.Interrupts [AAR95, Section C.3(2)].
-To foster a simple, efficient and multi-platform implementation, GNAT reuses
+Tofoster a simple, efficient and multi-platform implementation, GNAT reuses
 the POSIX support for signals and adds the minimum set of run-time subprograms
 required to achieve the Ada semantics. This work is simplified because POSIX
 signals are delivered to individual threads in a multi-threaded process using much
@@ -7221,7 +7221,7 @@ Signal Segmentation Violation
 
 Signal Bus Error
 If the implementation supports any signals besides those defined by this
-standard, the implementation may also reserve some of those.
+standard, the implementation may alsoreserve some of those.
 The signals defined by POSIX.5b/5c that are not specified as being reserved
 are SIGHUP, SIGINT, SIGPIPE, SIGQUIT, SIGTERM, SIGUSR1, SIGUSR2,
 SIGCHLD, SIGCONT, SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU, SIGIO, SIG-
@@ -7266,7 +7266,7 @@ Finally, SIGPROF can not be masked to avoid confusing the profiler.
 No matter the association style used, GNARL always uses the following tables
 indexed by the Interrupt ID to handle interrupts.
 
-Table of Reserved Signals: Booleans constant table1 used to register re-
+Table of Reserved Signals: Booleans constant table1 used toregister re-
 served interrupts.
 SIGUSR1
 System.Interrupt_Management.Reserve
@@ -7280,9 +7280,9 @@ SIGINT
 **Figure 19.1: Reserved Interrupts Table.**
 
 
-User-defined Interrupt Handlers Table: Table used to register and unregister
+User-defined Interrupt Handlers Table: Table used toregister and unregister
 the reference to User-Defined Interrupt-Procedures (UDIP) during the life
-of the program. Each element of this table is a record with two fields: the
+of the program. Each element of this table is a record with twofields: the
 access to the UDIP and a flag which remembers the association style (nested
 or non-nested).
 Figure 19.2 represents one protected procedure attached to signal SIGUSR1
@@ -7290,7 +7290,7 @@ in nested style (static style). The GNAT compiler associates two subprograms P
 and N to each protected subprogram (described in section 11.2.2). As the reader
 can see, the run-time links the signal with the P subprogram: the reference to the
 P subprogram is stored in the corresponding field of the table, and the Static field
-is set to True to remember that it is a nested style association.
+is set to True toremember that it is a nested style association.
 1In the GNARL sources it is declared as variable just to be able to initialize it in the package
 body to aid portability.
 Static = True
@@ -7453,10 +7453,10 @@ State 1: The Server Task provides the POSIX default behavior of the signal.
 
 State 2: The Server Task has been programmed to call one UDIP.
 In order to notify the automaton that it must jump from State 1 to State 2
-GNARL uses one POSIX Condition Variable; in order to force the automaton to
+GNARL uses one POSIX Condition Variable; in order toforce the automaton to
 jump from State 2 (waiting in the POSIX sigwait operation) to State 1 the POSIX
 signal SIGABORT is used (this signal is used to kill the POSIX thread, and thus
-forces the Server Task to return from the POSIX sigwait operation). Figure 19.7
+forces the Server Task toreturn from the POSIX sigwait operation). Figure 19.7
 presents this automaton.
 Default
 POSIX
@@ -7532,9 +7532,9 @@ Manager while the automaton was waiting for the signal. Then it calls the UDIP
 (state 7) and again jumps to state 4.
 While the Server Task is in state 5 waiting for the signal occurrence, it may
 happen that all UDIPs have been removed the Interrupt Manager. In this case
-the Interrupt Manager sends the SIGABRT signal to the Server Task to force it to
+the Interrupt Manager sends the SIGABRT signal to the Server Task toforce it to
 jump to state 9. This signal wakes up the Server Task Automaton, which jumps to
-state 8 to reply to the Interrupt Manager with the same signal to inform it is not
+state 8 toreply to the Interrupt Manager with the same signal to inform it is not
 in state 5 (waiting for the signal). After this notification the automaton jumps to
 state 4 and, because no UDIP is found, it jumps to state 9.
 
@@ -7556,7 +7556,7 @@ finalization.
 In order to verify at run-time that all the non-nested style interrupt procedures
 have been annotated with pragma Interrupt Handler ([AAR95, Section C.3.2] re-
 quirement) the compiler adds calls to the GNARL subprogram Register Interrupt Handler
-to register these interrupt procedures in a GNARL single-linked list. The Head
+toregister these interrupt procedures in a GNARL single-linked list. The Head
 and Tail of this list are stored in two GNARL variables (Registered Handler Head
 and System.Interrupts.Registered Handler Tail, cf. Figure 19.8). Every node
 keeps the address of one protected procedure associated with an interrupt in non-
@@ -7611,7 +7611,7 @@ style (by means of the pragma Interrupt Handler).
 – When the nested style is used, GNARL adds one field to the run-time
 information of the protected object to save and restore the previous
 handler.
-– When the non-nested style is used, a dynamic link list is used to reg-
+– When the non-nested style is used, a dynamic link list is used toreg-
 ister non-nested style UDIPs. This list allows GNARL to verify that
 only non-nested UDIPs have been marked with the right pragma.
 
@@ -7669,7 +7669,7 @@ abort is processed on exit from the abort-deferred region, one overwrites the sa
 return address of the outermost abort-deferred call frame with the address of the
 abort-processing routine (saving the old return address elsewhere). The test for
 abort deferral may take time proportional to the depth of subprogram call nesting,
-but that occurs only if an ATC is attempted. Until that occurs, no runtime overhead
+but that occurs only if an ATC is attempted. Until that occurs, noruntime overhead
 is incurred for abort deferral. A restriction of this method is that abort-deferred
 regions must correspond to callable units of code. Another restriction is that the
 subprogram calling convention is constrained to (1) ensure the return addresses
@@ -7706,7 +7706,7 @@ or no distributed overhead for the existence of this language feature. In princi
 ple, some efficiency might be gained by avoiding detailed unwinding of the stack,
 executing the finalization routines from the top of the stack or from a different
 stack, then poping the entire stack down to the context where control is to be
-transferred. However, this presumes there is some way to recover that context
+transferred. However, this presumes there is some way torecover that context
 without full unwinding. If the compiler uses a callee-save register spilling con-
 vention, there may be values of live registers spilled at unpredictable locations
 on the stack. In this case, it seems one must create a register save area for each
@@ -7717,7 +7717,7 @@ piler), and controlled objects are also expected to be common. Thus, the overhea
 of creating a jump-buffer for every potential asynchronous transfer point is objec-
 tionable [GB94, Section 3.4].
 Some means must be provided for locating finalization routines, and the point
-at which execution is to resume after an ATC. This problem is very similar to
+at which execution is toresume after an ATC. This problem is very similar to
 that of finding an exception handler, and the same solutions apply. The main
 approaches are saving a pointer in the stack frame for each scope, PC-mapping,
 and various hybrids of the two. The PC-mapping approach is generally preferable,
@@ -7793,7 +7793,7 @@ GNARL.Undefer Abort subprogram is the universal polling point for deferred pro-
 cessing. It gives support to base priority changes, exception handling, and asyn-
 chronous transfer of control (ATC). In case of base-priority change, after the new
 priority is set, it yields the processor so that the scheduler chooses the next tasks
-to execute. In the other cases, it verifies if there is some pending exception to raise
+to execute. In the other cases, it verifies if there is some pending exception toraise
 (ATC abortion raises the internal exception Abort Signal).
 
 #### 20.1.3 GNARL.Locked Abort To Level
@@ -7814,7 +7814,7 @@ Level
 ATCB
 Task_Arg
 State
-. . .
+...
 Entry_Call
 ATC_Nesting_Level
 Pending_ATC_Level
@@ -7824,9 +7824,9 @@ Cond_Var
 Lock
 Run-Time
 Level
-. . .
+...
 Uninterpreted_Data
-. . .
+...
 Entry Call Record
 Number
 Text
@@ -7909,15 +7909,15 @@ In order to introduce Drago keywords we added a third GNAT mode, Drago
 mode, and one new group with Drago exclusive keywords. The result was as
 follows:
  
-F i r s t D r a g o R e s e r v e d W o r d : c o n s t a n t Name Id : = N + 4 7 5 ;
-Name Agent : c o n s t a n t Name Id : = N + 4 7 5 ;
-Name Group : c o n s t a n t Name Id : = N + 4 7 6 ;
-N a m e I n t r a g r o u p : c o n s t a n t Name Id : = N + 4 7 7 ;
-N a m e R e p l i c a t e d : c o n s t a n t Name Id : = N + 4 7 8 ;
-L a s t D r a g o R e s e r v e d W o r d : c o n s t a n t Name Id : = N + 4 7 8 ;
-s u b t y p e D r a g o R e s e r v e d W o r d s is
-Name Id range F i r s t D r a g o R e s e r v e d W o r d
-. . L a s t D r a g o R e s e r v e d W o r d ; 
+F ir st D ra go R es er ve d W or d : constant Name Id := N + 4 7 5 ;
+Name Agent : constant Name Id := N + 4 7 5 ;
+Name Group : constant Name Id := N + 4 7 6 ;
+N am e I nt ra gr ou p : constant Name Id := N + 4 7 7 ;
+N am e R ep li ca te d : constant Name Id := N + 4 7 8 ;
+L as t D ra go R es er ve d W or d : constant Name Id := N + 4 7 8 ;
+s u b type D r a g o R e s e r v e d W or d s is
+Name Id range F i r s t D r a g o R e s e r v e d W or d
+. . L a s t D r a g o R e s e r v e d W or d ; 
 We also updated the value of the constant Preset Names, declared in the body
 of Snames, keeping the order specified in the previous declarations. This constant
 contains the literals of all the predefined identifiers.
@@ -7932,17 +7932,17 @@ and Cunit is the class of tokens which can begin a compilation unit. Members of
 each class are alphabetically ordered. We have introduced the new tokens in the
 following way:
  
-t y p e Token Type is (
+type Token Type is (
  Token name C l a s s ( e s )
-. . .
+...
 T o k I n t r a g r o u p ,   Eterm , Sterm , After SM
-. . .
+...
 Tok Agent ,   Eterm , Sterm , C u n i t , Declk , After SM
-. . .
+...
 Tok Group ,   Eterm , Sterm , C u n i t , Declk , After SM
-. . .
+...
 T o k R e p l i c a t e d ,   Eterm , Sterm , C u n i t , After SM
-. . .
+...
 No Token ) ; 
 Classes associated with tokens are specified in the third column. Our choices
 were based on the following guidelines:
@@ -7972,7 +7972,7 @@ to the procedure Set Name Table Byte passing the keyword and its correspond-
 ing token byte as parameters. Therefore we added the following sentences to the
 scanner initialization:
  
-. . .
+...
 S e t N a m e T a b l e B y t e ( Name Agent ,
 Token Type ’ Pos ( Tok Agent ) ) ;
 S e t N a m e T a b l e B y t e ( Name Group ,
@@ -7981,7 +7981,7 @@ S e t N a m e T a b l e B y t e ( N a m e I n t r a g r o u p ,
 Token Type ’ Pos ( T o k I n t r a g r o u p ) ) ;
 S e t N a m e T a b l e B y t e ( N a m e R e p l i c a t e d ,
 Token Type ’ Pos ( T o k R e p l i c a t e d ) ) ; 
-We also modified the scanner (subprogram Scn.Scan) in order to recognize the
+We also modified the scanner (subprogram Scn.Scan) in order torecognize the
 new keywords only when compiling a Drago program. This allows us to preserve
 its original behaviour when analyzing Ada source code. This was the last modifi-
 cation required to integrate the new keywords into GNAT. In the following section
@@ -8019,13 +8019,13 @@ Drago group, whose syntax is similar to the one of an Ada package specification:
 APPENDIX A. HOW TO ADD NEW KEYWORDS, PRAGMAS AND ATTRIBUTES
 
 
-GROUP DECLARATION : : = GROUP SPECIFICATION
-GROUP SPECIFICATION : : =
+GROUP DECLARATION : := GROUP SPECIFICATION
+GROUP SPECIFICATION : :=
 [ r e p l i c a t e d ] g r o u p d e f i n i n g identifier is"
 b a s i c d e c l a r a t i v e i t e m #
 [ i n t r a g r o u p"
 b a s i c d e c l a r a t i v e i t e m # ]
-[ p r i v a t e"
+[ private"
 b a s i c d e c l a r a t i v e i t e m ]
 end [ g r o u p identifier ] ; 
 Replicated groups are denoted by the reserved keyword replicated at the head-
@@ -8043,7 +8043,7 @@ GNAT parser.
 A.6.1 First step: Addition of New Node Kinds
 GNAT node kinds are declared in the enumerated Sinfo.Node Kind. Similar to
 Token Type elements, all its elements are grouped into classes (i.e. nodes that
-correspond to sentences, nodes which correspond to operators, . . . ), and elements
+correspond to sentences, nodes which correspond to operators, ... ), and elements
 of each class are alphabetically ordered.
 The addition of the rules of a Drago group required two additional kinds of
 nodes: N Group Declaration and N Group Specification. Due to the similarity
@@ -8057,7 +8057,7 @@ have the same state.
 A.6.2 Second Step: High-level specification of the new nodes
 The specification of package Sinfo contains the high level specification of the AST
 nodes (cf. Section 2.2.1). When we define a new node we have two possibilities:
-to reuse the AST field-names used in the current high-level specification of Ada, or
+toreuse the AST field-names used in the current high-level specification of Ada, or
 to define new names. In the first case we must keep all its features: field-number
 and associated data. In the second case we must carefully analyze the field to
 which we associate the new names because once it is stated it must be kept fixed
@@ -8069,16 +8069,16 @@ N Group Declaration and N Group Specification are:
 
  N G r o u p D e c l a r a t i o n
  S l o c points to GROUP
- S p e c i f i c a t i o n ( Node1 )
+ S p e c if i c a t i o n ( Node1 )
 
- N G r o u p S p e c i f i c a t i o n
+ N G r o u p S p e c if i c a t i o n
  S l o c points to GROUP
- D e f i n i n g I d e n t i f i e r ( Node1 )
+ D e f i n i n g I d e n t if i e r ( Node1 )
  V is i b l e D e c l a r a t i o n s ( L is t 2 )
- I n t r a g r o u p D e c l a r a t i o n s ( L is t 3 ) ( s e t to N o L is t i f
+ I n t r a g r o u p D e c l a r a t i o n s ( L is t 3 ) ( s e t to N o L is t if
  no i n t r a g r o u p p a r t present )
- P r i v a t e D e c l a r a t i o n s ( L is t 4 ) ( s e t to No$ L is t i f
- no p r i v a t e p a r t present ) 
+ Private D e c l a r a t i o n s ( L is t 4 ) ( s e t to No$ L is t if
+ no private p a r t present ) 
 This means that the value of Sloc in a N Group Declaration node points to the
 source code word group, and the first field of the node (Field1) points to a specifi-
 cation node. On the other hand, the value of Sloc in a N Group Specification node
@@ -8110,7 +8110,7 @@ The GNAT parser is implemented by means of the well known recursive descent
 technique. All its code is inside the function Par which is composed of several
 subunits (one subunit for each Ada Reference Manual Chapter [AAR95]). Ac-
 cording to this philosophy we decided to add the subunit Par.Drag to group all
-the parser code that syntactically analyzes Drago rules (figure A.2). We gave the
+the parser code that syntactically analyzes Dragorules (figure A.2). We gave the
 name P Group to the function associated with the parsing of a group specifica-
 tion. We used the fragment of the parser that analyzes a package specification as
 a reference for its development. Finally we modified the parsing of a compilation
@@ -8137,7 +8137,7 @@ subprograms that make the semantic verifications.
 of the identifiers, operators and character literals found in the source pro-
 gram declarations. Therefore, the identifier of a group specification must
 have its corresponding entity. We added the element E Group to the enu-
-merated Entity Info (inside the Einfo package) to represent the new group
+merated Entity Info (inside the Einfo package) torepresent the new group
 name entity.
 3. Update the C file a-einfo.h. This work is automatically done by means of
 the GNAT utility program names xeinfo (figure A.3).
@@ -8365,7 +8365,7 @@ ument or a portion of it, either copied verbatim, or with modifications and/or
 translated into another language.
 A ”Secondary Section” is a named appendix or a front-matter section of the
 Document that deals exclusively with the relationship of the publishers or authors
-of the Document to the Document’s overall subject (or to related matters) and con-
+of the Document to the Document’s overall subject (or torelated matters) and con-
 tains nothing that could fall directly within that overall subject. (Thus, if the Doc-
 ument is in part a textbook of mathematics, a Secondary Section may not explain
 any mathematics.) The relationship could be a matter of historical connection
@@ -8427,7 +8427,7 @@ all copies, and that you add no other conditions whatsoever to those of this Li-
 cense. You may not use technical measures to obstruct or control the reading or
 further copying of the copies you make or distribute. However, you may accept
 compensation in exchange for copies. If you distribute a large enough number of
-copies you must also follow the conditions in section 3.
+copies you must alsofollow the conditions in section 3.
 You may also lend copies, under the same conditions stated above, and you
 may publicly display copies.
 3. COPYING IN QUANTITY
@@ -8441,7 +8441,7 @@ title with all words of the title equally prominent and visible. You may add oth
 material on the covers in addition. Copying with changes limited to the covers, as
 long as they preserve the title of the Document and satisfy these conditions, can
 be treated as verbatim copying in other respects.
-If the required texts for either cover are too voluminous to fit legibly, you
+If the required texts for either cover are too voluminous tofit legibly, you
 should put the first ones listed (as many as fit reasonably) on the actual cover, and
 continue the rest onto adjacent pages.
 If you publish or distribute Opaque copies of the Document numbering more
@@ -8519,7 +8519,7 @@ You may add a section Entitled ”Endorsements”, provided it contains nothing
 but endorsements of your Modified Version by various parties–for example, state-
 ments of peer review or that the text has been approved by an organization as the
 authoritative definition of a standard.
-You may add a passage of up to five words as a Front-Cover Text, and a pas-
+You may add a passage of up tofive words as a Front-Cover Text, and a pas-
 sage of up to 25 words as a Back-Cover Text, to the end of the list of Cover Texts
 in the Modified Version. Only one passage of Front-Cover Text and one of Back-
 Cover Text may be added by (or through arrangements made by) any one entity. If
@@ -8593,7 +8593,7 @@ You may not copy, modify, sublicense, or distribute the Document except as
 expressly provided for under this License. Any other attempt to copy, modify,
 sublicense or distribute the Document is void, and will automatically terminate
 your rights under this License. However, parties who have received copies, or
-rights, from you under this License will not have their licenses terminated so long
+rights, fromyou under this License will not have their licenses terminated so long
 as such parties remain in full compliance.
 10. FUTURE REVISIONS OF THIS LICENSE
 The Free Software Foundation may publish new, revised versions of the GNU
