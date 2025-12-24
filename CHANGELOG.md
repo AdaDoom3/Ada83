@@ -1,5 +1,59 @@
 # Ada83 Compiler Enhancement Log
 
+## 2025-12-24 - Division-by-Zero Checking Enhancement
+
+### Changes Made (Ultra-Compressed, LRM-Guided)
+
+**Code Generator - Runtime Zero Checking (ada83.c:231)**
+- Added division-by-zero checking for T_SL (division), T_MOD, T_REM operations in `gex()` function
+- Generates runtime check before sdiv/srem LLVM instructions
+- Check pattern: `if (divisor == 0) call __ada_raise(CONSTRAINT_ERROR); else proceed`
+- Uses conditional branch with error label and unreachable terminator
+
+**Impact**:
+- LRM 4.5.5 compliance: Division and modulo operations raise CONSTRAINT_ERROR when divisor is zero
+- Prevents undefined behavior from LLVM sdiv/srem with zero divisor
+- Foundation for improved ACATS C4x (expression) test pass rates
+
+### Code Metrics
+- **Lines**: 251 (unchanged - ultra-compressed maintained)
+- **Style**: Knuth-style, code-golfed, no comments
+- **Paradigm**: Haskell-like functional, C99
+
+### Technical Details
+
+**Code Generation Pattern (gex function, N_BIN case)**:
+```c
+// For integer division (T_SL)
+a=vcast(g,a,VK_I);b=vcast(g,b,VK_I);
+if(op==T_SL){
+  int zc=nt(g);
+  fprintf(o,"  %%t%d = icmp eq i64 %%t%d, 0\n",zc,b.id);
+  int ze=nl(g),zd=nl(g);
+  cbr(g,zc,ze,zd);
+  lbl(g,ze);
+  fprintf(o,"  call void @__ada_raise(ptr @.ex.CONSTRAINT_ERROR)\n  unreachable\n");
+  lbl(g,zd);
+}
+r.k=VK_I;
+fprintf(o,"  %%t%d = %s i64 %%t%d, %%t%d\n",r.id,"sdiv",a.id,b.id);
+```
+
+**Generated LLVM IR**:
+```llvm
+%t5 = icmp eq i64 %divisor, 0
+br i1 %t5, label %L0, label %L1
+L0:
+  call void @__ada_raise(ptr @.ex.CONSTRAINT_ERROR)
+  unreachable
+L1:
+  %result = sdiv i64 %dividend, %divisor
+```
+
+- Same pattern applied to T_MOD and T_REM (srem instruction)
+- Zero-check happens in codegen, not semantic analysis
+- Preserves constant folding optimizations in semantic resolver
+
 ## 2025-12-24 - Array Logical Operations Enhancement
 
 ### Changes Made (Ultra-Compressed, LRM-Guided)
@@ -85,7 +139,6 @@ During LLVM codegen (`gex`), CHK nodes generate bounds-checking code that calls 
 
 ### Future Enhancements (See ENHANCEMENTS.md)
 1. Attribute constant folding (FIRST/LAST/LENGTH in resolver)
-2. Division-by-zero checking in BIN operator resolution
-3. Access value null checking before dereference
-4. Discriminant checking for variant records
-5. Array aggregate bounds validation
+2. Access value null checking before dereference
+3. Discriminant checking for variant records
+4. Array aggregate bounds validation
