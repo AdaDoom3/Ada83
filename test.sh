@@ -16,7 +16,7 @@ for v in ${a[@]+"${a[@]}"};do((v>=e-1&&v<=e+1))&&{ q=1;break;};done
 ((q))&&printf "   [✓] %4d  %s\n" $e "$s"||printf "   [ ] %4d  %s\n" $e "$s";done
 local p=$(: $h $xe) v;((p>=90))&&v="pass"||v="fail"
 printf "   %s\n   coverage %d/%d (%d%%)  %s\n\n" "${'':->68}" $h $xe $p "$v";}
-R(){ [[ ! -f rts/report.ll || rts/report.adb -nt rts/report.ll ]]&&./ada83 rts/report.adb>rts/report.ll 2>/dev/null||true;}
+R(){ [[ ! -f rts/report.ll || rts/report.adb -nt rts/report.ll ]]&&./ada83 rts/report.adb>rts/report.ll 2>/dev/null&&llvm-link -o rts/report.bc rts/report.ll rts/text_io.ll 2>/dev/null||true;}
 T(){ local f=$1 v=${2:-} n=$(basename "$f" .ada);local q=${n:0:1};((++X[z]));R;case $q in
 [aA])if ! timeout 0.2 ./ada83 "$f">test_results/$n.ll 2>acats_logs/$n.err;then
 E SKIP "$n" COMPILE "$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)";((++X[s]));return;fi
