@@ -10,7 +10,7 @@
 
 **Prepared For:** Naval Research Laboratory, Washington, D.C. 20375
 
-**Contract:** N00014_84-C_2445
+**Contract:** N00014-84-C-2445
 
 ---
 
@@ -18,169 +18,169 @@
 
 ## CHAPTER 1 INTRODUCTION
 
-1.1 THE DESIGN OF DIANA ............ ................... ............ 1-2
-1.2 THE DEFINITION OF THE DIANA OPERATIONS .I.............. 1-4
-1.3 THE DEFINITION OF A DIANA USER ............ .............. ............ 1-5
-1.4 THE STRUCTURE OF THIS DOCUMENT ............ .............. ............ 1-7
-1.4.1 NOTATION ............ ......................... 1-7
+1.1 THE DESIGN OF DIANA 1-2
+1.2 THE DEFINITION OF THE DIANA OPERATIONS .I 1-4
+1.3 THE DEFINITION OF A DIANA USER 1-5
+1.4 THE STRUCTURE OF THIS DOCUMENT 1-7
+1.4.1 NOTATION 1-7
 ## CHAPTER 2 IDL SPECIFICATION
 
 ## CHAPTER 3 SEMANTIC SPECIFICATION
 
-* 3.1 ALL DECL ............ ......................... 3-3
-3.1.1 ITEM ............ ........................ ............ 3-3
-3.1.1.1 DSCRMTPARAM DECL ............ ................. ............ 3-4
-3.1.1.1.1 PARAM ............ ....................... ............ 3-4
-3.1.1.2 SUBUNITBODY ............ .................... ............ 3-4
-3.1.1.3 DECL ............ ....................... ............ 3-5
-3.1.1.3.1 USEPRAGMA ............ ..................... 3-5
-3.1.1.3.2 REP ............ ........................ ............ 3-5
-3.1.1.3.2.1 NAMEDREP ............ ..................... 3-5
-3.1.1.3.3 ID OECL....................... ............ ............ ............ 3-6
-3.1.1.3.3.1 SIMPLE RENAMEDECL ............ ..................... .3-7
-3.1.1.3.3.2 UNIT DECL ............ ............ ............ 3-8
-3.1.1.3.3.2.1 NON GENERIC DECL ............ .................. ............ 3-8
-3.1.1.3.4 ID SDECL ............ ............ ............ 3-9
-3.1.1.3.4.1 EXP DECL ............ ...................... 3-9
-3.1.1.3.4.1.1 OBJECTDECL ............ .................... .3-10
-3.2 DEFNAME ............ ......................... ............ 3-13
-3.2.1 PREDEF NAME ............ .................... 3-14
-3.2.2 SOURCE NAME ............ .................... .3-14
-3.2.2.1 LABEL NAME ............ ..................... ............ 3-14
-3.2.2.2 TYPE NAME ............ ..................... 3-15
-3.2.2.3 OBJECT NAME ............ .................... ............ 3-16
-3.2.2.3.1 ENUM_LITERAL ............ .................... ............ 3-16
-3.2.2.3.2 INIT_OBJECTNAME ............ .................. ............ 3-17
-3.2.2.3.2.1 VC NAME ............ ............ ............ .. 3-17
-3.2.2.3.2.2 COMPNAME ............ ..................... 3-18
-3.2.2.3.2.3 PARAM NAME . . . . . . . . . . . . . . . . . . . . . 3-18
-3.2.2.4 UNIT NAME ............ ..................... 3-19
-3.2.2.4.1 NON TASK NAME ............ ................... .3-19
-3.2.2.4.1.1 SUBPROG PACKNAME ............ ................. 3-20
-3.2.2.4.1.1.1 SUBPROGNAME ............ .................... 3-20
-3.3 TYPESPEC ............ ........................ ............ 3-25
-3.3.1 DERIVABLE_SPEC ............ ................... .3-25
-3.3.1.1 PRIVATE SPEC ............ .................... ............ 3-26
-3.3.1.2 FULL TYPE SPEC ............ ................... ............ 3-27
-3.3.1.2.1 NON TASK ............ ....... ............ .. 3-27
-3.3.1.2.1.1 SCALAR ............ ....................... ............ 3-28
+* 3.1 ALL DECL 3-3
+3.1.1 ITEM 3-3
+3.1.1.1 DSCRMTPARAM DECL 3-4
+3.1.1.1.1 PARAM 3-4
+3.1.1.2 SUBUNITBODY 3-4
+3.1.1.3 DECL 3-5
+3.1.1.3.1 USEPRAGMA 3-5
+3.1.1.3.2 REP 3-5
+3.1.1.3.2.1 NAMEDREP 3-5
+3.1.1.3.3 ID OECL 3-6
+3.1.1.3.3.1 SIMPLE RENAMEDECL 3-7
+3.1.1.3.3.2 UNIT DECL 3-8
+3.1.1.3.3.2.1 NON GENERIC DECL 3-8
+3.1.1.3.4 ID SDECL 3-9
+3.1.1.3.4.1 EXP DECL 3-9
+3.1.1.3.4.1.1 OBJECTDECL 3-10
+3.2 DEFNAME 3-13
+3.2.1 PREDEF NAME 3-14
+3.2.2 SOURCE NAME 3-14
+3.2.2.1 LABEL NAME 3-14
+3.2.2.2 TYPE NAME 3-15
+3.2.2.3 OBJECT NAME 3-16
+3.2.2.3.1 ENUM_LITERAL 3-16
+3.2.2.3.2 INIT_OBJECTNAME 3-17
+3.2.2.3.2.1 VC NAME 3-17
+3.2.2.3.2.2 COMPNAME 3-18
+3.2.2.3.2.3 PARAM NAME 3-18
+3.2.2.4 UNIT NAME 3-19
+3.2.2.4.1 NON TASK NAME 3-19
+3.2.2.4.1.1 SUBPROG PACKNAME 3-20
+3.2.2.4.1.1.1 SUBPROGNAME 3-20
+3.3 TYPESPEC 3-25
+3.3.1 DERIVABLE_SPEC 3-25
+3.3.1.1 PRIVATE SPEC 3-26
+3.3.1.2 FULL TYPE SPEC 3-27
+3.3.1.2.1 NON TASK 3-27
+3.3.1.2.1.1 SCALAR 3-28
 3.3.1.2.1.1.1 REAL
-3.3.1.2.1.2 UNCONSTRAINED. ............ 3-29
-3.3.1.2.1.2.1 UNCONSTRAINED COMPOSITE. ............ 3-29
-3.3.1.2.1.3 CONSTRAINED ............ .................... ............ 3-30
-3.4 TYPE DEF ............ ......................... 3-33
-3.4.1 CONSTRAINED DEF. ............ 3-33
-3.4.2 ARRACCDER_DEF ............ 3-34
-3.5 CONSTRAINT ............ ........................ 3-36
+3.3.1.2.1.2 UNCONSTRAINED 3-29
+3.3.1.2.1.2.1 UNCONSTRAINED COMPOSITE 3-29
+3.3.1.2.1.3 CONSTRAINED 3-30
+3.4 TYPE DEF 3-33
+3.4.1 CONSTRAINED DEF 3-33
+3.4.2 ARRACCDER_DEF 3-34
+3.5 CONSTRAINT 3-36
 3.5.1 DISCRETE RANGE
-3.5.1.1 RANGE ............ ........................ ............ 3-36
-3.5.2 REALCONSTRAINT ............ ................... ............ 3-37
-3.6 UNIT OESC ............ ........................ 3-39
-3.6.1 UNIT KIND ............ ...................... ............ 3-39
-3.6.1.1 RENAME INSTANT ............ .................... 3-40
-3.6.1.2 GENERICPARAM ............ .................... 3-42
-3.6.2 BODY ............ ......................... 3-42
-3.7 HEADER ............ .......................... ............ 3-44
-3.7.1 SUBP ENTRYHEADER ............ ................... ............ 3-44
-3.8- GENERAL ASSOC ............ ...................... ............ 3-46
-3.8.1 NAMEDASSOC ............ .................... 3-46
-3.8.2 EXP ............ ........................ 3-47
-3.8.2.1 NAME ............ ........................ ............ 3-47
-3.8.2.1.1 DESIGNATOR ............ ............ ............ 3-47
-3.8.2.1.1.1 USED OBJECT ............ ..... ............ 3-47
-3.8.2.1.1.2 USED NAME ............ ..................... 3-48
-3.8.2.1.2 NAME EXP ............ ...................... ............ 3-49
-3.8.2.1.2.1 NAME VAL ............ ...................... ............ 3-49
-3.8.2.2 EXP EXP ............ ...................... ............ 3-50
-3.8.2.2.1 AGG_EXP ............ ...................... ............ 3-51
-3.8.2.2.2 EXP VAL ............ ..................... ............ 3-52
-3.8.2.2.2.1 EXP_VAL EXP ............ .................... 3-53
-3.8.2.2.2.1.1 MEMBERSHIP ............ ..................... ............ 3-53
-3.8.2.2.2.1.2 QUAL_CONV ............ ..................... ............ 3-53
-3.9 STM ELEM ............ ......................... ............ 3-56
-3.9.1 STM ............ ........................ 3-56
-3.9.1.1 BLOCK LOOP ............ ..................... ............ 3-57
-3.9.1.2 ENTRY_STM ............ ..................... ............ 3-57
-3.9.1.3 CLAUSES STM ............ .................... 3-57
-3.9.1.4 STM WITH EXP ............ .................... 3-58
-3.9.1.4.1 STM WITH EXP NAME ............ ................. ............ 3-58
-3.9.1.5 STM WITHNAME ............ ................... ............ 3-58
-3.9.1.5.1 CALLSTM.. ............ ..................... 3-59
-3.10 MISCELLANEOUS NODES AND CLASSES ............ ............. ............ 3-61
-3.10.1 CHOICE ............ ....................... ............ 3-61
-3.10.2 ITERATION ............ ..................... ............ 3-61
+3.5.1.1 RANGE 3-36
+3.5.2 REALCONSTRAINT 3-37
+3.6 UNIT OESC 3-39
+3.6.1 UNIT KIND 3-39
+3.6.1.1 RENAME INSTANT 3-40
+3.6.1.2 GENERICPARAM 3-42
+3.6.2 BODY 3-42
+3.7 HEADER 3-44
+3.7.1 SUBP ENTRYHEADER 3-44
+3.8- GENERAL ASSOC 3-46
+3.8.1 NAMEDASSOC 3-46
+3.8.2 EXP 3-47
+3.8.2.1 NAME 3-47
+3.8.2.1.1 DESIGNATOR 3-47
+3.8.2.1.1.1 USED OBJECT 3-47
+3.8.2.1.1.2 USED NAME 3-48
+3.8.2.1.2 NAME EXP 3-49
+3.8.2.1.2.1 NAME VAL 3-49
+3.8.2.2 EXP EXP 3-50
+3.8.2.2.1 AGG_EXP 3-51
+3.8.2.2.2 EXP VAL 3-52
+3.8.2.2.2.1 EXP_VAL EXP 3-53
+3.8.2.2.2.1.1 MEMBERSHIP 3-53
+3.8.2.2.2.1.2 QUAL_CONV 3-53
+3.9 STM ELEM 3-56
+3.9.1 STM 3-56
+3.9.1.1 BLOCK LOOP 3-57
+3.9.1.2 ENTRY_STM 3-57
+3.9.1.3 CLAUSES STM 3-57
+3.9.1.4 STM WITH EXP 3-58
+3.9.1.4.1 STM WITH EXP NAME 3-58
+3.9.1.5 STM WITHNAME 3-58
+3.9.1.5.1 CALLSTM 3-59
+3.10 MISCELLANEOUS NODES AND CLASSES 3-61
+3.10.1 CHOICE 3-61
+3.10.2 ITERATION 3-61
 I
 I
-- 3.10.2.1 FOR REV ............ ...................... ............ 3-62
-3.10.3 MEMBERSHIP OP ............ ................... ............ 3-62
-3.10.4 SHORT CIRCUIT OP ............ .................. ............ 3-62
-3.10.5 ALIGNMENT CLAUSE ............ .................. ............ 3-62
-3.10.6 VARIANT PART ............ .................... ............ 3-62
-3.10,7 TEST CLAUSE ELEM ............ .................. ............ 3-63
-3.10.7.1 TEST CLAUSE ............ .................... ............ 3-63
-3.10.8 ALTERNATIVE ELEM ............ .................. ............ 3-63
+- 3.10.2.1 FOR REV 3-62
+3.10.3 MEMBERSHIP OP 3-62
+3.10.4 SHORT CIRCUIT OP 3-62
+3.10.5 ALIGNMENT CLAUSE 3-62
+3.10.6 VARIANT PART 3-62
+3.10,7 TEST CLAUSE ELEM 3-63
+3.10.7.1 TEST CLAUSE 3-63
+3.10.8 ALTERNATIVE ELEM 3-63
 3.10.9 COMP REP ELEM
-3.10.10 CONTEXT ELEM ............ .................... ............ 3-64
-3.10.11 VARIANT_ELEM ............ .................... ............ 3-64
-3.10.12 compilation ............ .................... ............ 3-64
-3.10.13 compilationunit ............ .................. ............ 3-65
-3.10.14 comp_list . . . . . . . . . . . . . . . . . . . . . 3-65
-3.10.15 index ............ ....................... .3-65
+3.10.10 CONTEXT ELEM 3-64
+3.10.11 VARIANT_ELEM 3-64
+3.10.12 compilation 3-64
+3.10.13 compilationunit 3-65
+3.10.14 comp_list 3-65
+3.10.15 index 3-65
 ## CHAPTER 4 RATIONALE
 
 ### 4.1 DESIGN DECISIONS
-* 4.1.1 INDEPENDENCE OF REPRESENTATION ............ ........... ............ 4-2
-4.1.1.1 SEPARATE COMPILATION ............ .. 4-3
+* 4.1.1 INDEPENDENCE OF REPRESENTATION 4-2
+4.1.1.1 SEPARATE COMPILATION 4-3
 4.1.2 EFFICIENT IMPLEMENTATION AND SUITABLITY FOR
-VARIOUS KINDS OF PROCESSING ............ ............. 4-3
-4.1.2.1 STATIC SEMANTIC INFORMATION ............ ............. 4-4
-4.1.2.2 WHAT IS 'EASY TO RECOMPUTE'? ............ ............ 4-5
-4.1.3 REGULARITY OF DESCRIPTION ............ .............. .4-5
+VARIOUS KINDS OF PROCESSING 4-3
+4.1.2.1 STATIC SEMANTIC INFORMATION 4-4
+4.1.2.2 WHAT IS 'EASY TO RECOMPUTE'? 4-5
+4.1.3 REGULARITY OF DESCRIPTION 4-5
 ### 4.2 DECLARATIONS
-4.2-1 MULTIPLE ENTITY DECLARATION ............ 47
+4.2-1 MULTIPLE ENTITY DECLARATION 47
 4.2.1.1 OBJECT DECLARATIONS AND COMPONENT DECLARATIONS . . 4-7
-4.2.2 SINGLE ENTITY DECLARATIONS ............ .............. ..4-8
+4.2.2 SINGLE ENTITY DECLARATIONS 4-8
 4.2.2.1 PROGRAM UNIT DECLARATIONS AND ENTRY DECLARATIONS
 4.2.3 REPRESENTATION CLAUSES, USE CLAUSES, AND PRAGMAS . 4-11
-4.2.4 GENERIC FORMAL PARAMETER DECLARATIONS ............ .. 4-11
-4.2.5 IMPLICIT DECLARATIONS ............ ............... ............ 4-12
-4.3 SIMPLE NAMES ............ ....................... .4-13
+4.2.4 GENERIC FORMAL PARAMETER DECLARATIONS 4-11
+4.2.5 IMPLICIT DECLARATIONS 4-12
+4.3 SIMPLE NAMES 4-13
 4.3.1 DEFININ' OCCURRENCES OF PREDE7INED ENTITIES 4-1.'
 4.3.2 MULTIPLE DEFINING OCCURRENCES
 4.3.2.1 MULTIPLE DEFINING OCCURRENCES OF TYPE NAMES 4-16
 4.3.2.2 MULTIPLE DEFINING OCCURRENCES OF TASK NAMES
-4.3.3 USED OCCURRENCES ............ .................. ............ 4-17
-4.4 TYPES AND SUBTYPES ............ ............ 4-19
+4.3.3 USED OCCURRENCES 4-17
+4.4 TYPES AND SUBTYPES 4-19
 4.4.1 CONSTRAINED AND UNCONSTRAINED TYPES AND SUBTYPES 4-22
-4.4.2 UNIVERSAL TYPES ............ .................. ............ 4-23
-4.4.3 DERIVED TYPES ............ ................... ............ 4-23
-4.4.4 PRIVATE, LIMITED PRIVATE, AND LIMITED TYPES ............ ............ 4-24
-4.4.5 INCOMPLETE TYPES ............ .................. ............ 4-27
-4.4.6 GENERIC FORMAL TYPES ............ ................ ............ 4-28
-4.4.7 REPRESENTATION INFORMATION ............ ............. ............ 4-29
-4.5 CONSTRAINTS ............ ....................... ............ 4-31
-4.6 EXPRESSIONS ............ ... ............ 4-35
+4.4.2 UNIVERSAL TYPES 4-23
+4.4.3 DERIVED TYPES 4-23
+4.4.4 PRIVATE, LIMITED PRIVATE, AND LIMITED TYPES 4-24
+4.4.5 INCOMPLETE TYPES 4-27
+4.4.6 GENERIC FORMAL TYPES 4-28
+4.4.7 REPRESENTATION INFORMATION 4-29
+4.5 CONSTRAINTS 4-31
+4.6 EXPRESSIONS 4-35
 4.6.1 EXPRESSIONS WHICH INTRODUCE ANONYMOUS SUBTYPES . . 4-36
-4.6.2 FUNCTION CALLS AND OPERATORS ............ ............ 4-37
-4.6.3 IMPLICIT CONVERSIONS ............ ................ 4-37
-4.6.4 PARENTHESIZED EXPRESSIONS ............ ............. ............ 4-39
+4.6.2 FUNCTION CALLS AND OPERATORS 4-37
+4.6.3 IMPLICIT CONVERSIONS 4-37
+4.6.4 PARENTHESIZED EXPRESSIONS 4-39
 4.6.5 ALLOCATORS
 4.6.6 AGGREGATES AND STRING LITERALS
-4.7 PROGRAM UNITS. ............ ............ ............ ............ ............ ............ ............ ............ ............ ............ ............ ............ ............ ............ ............ ............ ............ ............ ............ .. 4-43
-4.7.1 RENAMED UNITS . . . . . . . . . . . . . . . . . . . 4-43
-4.7.2 GENERIC INSTANTIATIONS ............ ............... .4-45
-4.7.3 TASKS ............ ....................... 4-48
-4.7.4 USER_DEFINED OPERATORS. ............ ............... .4-49
-4.7.5 DERIVED SUBPROGRAMS ............ ................ 4-50
-4.8 PRAGMAS ............ ......................... 4-52
+4.7 PROGRAM UNITS 4-43
+4.7.1 RENAMED UNITS 4-43
+4.7.2 GENERIC INSTANTIATIONS 4-45
+4.7.3 TASKS 4-48
+4.7.4 USER_DEFINED OPERATORS 4-49
+4.7.5 DERIVED SUBPROGRAMS 4-50
+4.8 PRAGMAS 4-52
 ## CHAPTER 5 EXAMPLES
 
 ## CHAPTER 6 EXTERNAL REPRESENTATION OF DIANA
 
 ## CHAPTER 7 THE DIANA PACKAGE IN ADA
 
-APPENDIX A DIANA CROSS_REFERENCE GUIDE ............ ............... ............ A_I
-APPENDIX 8 REFERENCES ............ ........................ ............ B_I
+APPENDIX A DIANA CROSS_REFERENCE GUIDE A_I
+APPENDIX 8 REFERENCES B_I
 Acknowledgements for the First Edition
 DIANA is based on two earlier proposals for intermediate forms for Ada
 programs: TCOL and AIDA. It could not have been designed without the efforts
@@ -560,14 +560,14 @@ class name and the suffix '_pragma'. Hence the reader knows that for
 STMELEM ::= STM I stmpragma;
 
 Throughout the remainder of this document all references to the Ada
-Reference Manual (ANSI/MIL_STO-1815A-1983) will have the following form: [ARM,
+Reference Manual (ANSI/MIL-STD-1815A-1983) will have the following form: [ARM,
 section number].
 ## CHAPTER 2
 IOL SPECIFICATION
 This chapter contains the IOL description of DIANA. It is organized in a
 manner that parallels the Ada Reference Manual -- each section contains the
 corresponding segment of Ada syntax along with the related IDL definitions. In
-some cases a ¢etion does not contain any IDL definitions because that
+some cases a setion does not contain any IDL definitions because that
 particular construct is represented by a node or class which also represents
 another construct, and the IOL definitions were included in the section
 pertaining to the other construct. For example, the section covering operators
@@ -600,7 +600,7 @@ OBJECT_NAME => sm_obj_type : TYPESPEC;
 UNITNAME => sm_first : DEF NAME;
 -- 2.8 Pragmas
 -- Syntax 2.8.A
--- pragma ::= 
+-- pragma ::=
 -- pragma identifier ((argumentassociation f, argumentassociationl)];
 
 pragma => as_used_name_id : used_name_id,
@@ -653,7 +653,7 @@ CONSTRAINEDDEF subtypeindication;
 OBJECT DECL ::= constant decl I variable decl;
 OBJECT DECL => astype_def : TYPEDEF;
 
-constant decl => 
+constant decl =>
 variable decl =>
 OBJECT_NAME ::= INITOBJECTNAME;
 INIT OBJECT NAME VC NAME;
@@ -741,7 +741,7 @@ subtypedecl => as_subtype indication : subtype_indication;
 
 TYPE NAME ::= subtype_id;
 
-subtype id => 
+subtype id =>
 -- Syntax 3.3.2.8
 -- subtype indication type-mark (constraint]
 -- type-mark type-name I subtypename
@@ -766,7 +766,7 @@ derived def =>
 -- Syntax 3.5
 . .- -- rangeconstraint ::= range range
 -- range ::= range attribute
-S-- I simpleexpression ............ simple expression
+S-- I simpleexpression simple expression
 DISCRETERANGE RANGE
 I discrete_subtype;
 RANGE range I rangeattribute I void;
@@ -880,7 +880,7 @@ COMPNAME component_id I discriminant_id;
 
 COMP_NAME => sm_comp_rep :COMP_REP_ELEM;
 
-component_id => 
+component_id =>
 -- 3.7.1 Discriminants
 -- Syntax 3.7.1
 -- discriminant part
@@ -1289,7 +1289,7 @@ BLOCK LOOP => as_source name : SOURCENAME;
 SOURCE NAME ::= void;
 LABELNAME ::= blockloopid;
 
-blockloop id => 
+blockloop id =>
 
 ITERATION ::= void;
 
@@ -1311,7 +1311,7 @@ reverse =>
 
 OBJECT NAME ::= iterationid;
 
-iteration id => 
+iteration id =>
 
 ITERATION ::= while;
 
@@ -1394,7 +1394,7 @@ SUBPENTRYHEADER procedure_spec I functionspec;
 
 SUBPENTRYHEADER => asparams : param_s;
 
-procedurespec => 
+procedurespec =>
 function_spec => as_name : NAME;
 DJIANA Reference Manual Draft Revision 4 Page 2-25
 IOL SPECIFICATION
@@ -1415,7 +1415,7 @@ INITOBJECTNAME PARAM NAME;
 PARAM NAME ::= in id I in out id I out_id;
 PARAMNAME => sm_first :DEFNAME;
 
-in id => 
+in id =>
 in out id =>
 out id-=>
 -- 6.3 Subprogram Bodies
@@ -1450,7 +1450,7 @@ subprogram-body => as_header HEADER;
 CALL STM => asgeneral assoc s : general _assoc_s;
 CALL STM => smnormalized param_s :exp_s;
 
-procedure call => 
+procedure call =>
 function call => asgeneral assoc s : general _assocs;
 function call => smnormalized params : exp_s;
 function-call 2> lx_prefix : Boolean;
@@ -1464,7 +1464,7 @@ package_decl => ;
 
 SUBPROGPACKNAME ::= packageid;
 
-packageid => 
+packageid =>
 -- Syntax 7.1.8
 -- packagespecification
 -- package identifier is
@@ -1496,7 +1496,7 @@ lprivate_def =>
 
 TYPENAME ::= private_type_id I 1_privatetypeid;
 
-S.- privatetypeid => 
+S.- privatetypeid =>
 l_private_type_id =>
 
 PRIVATE SPEC ::= private I 1_private;
@@ -4629,8 +4629,8 @@ TYPES AND SUBTYPES
 In the Ada language certain types and subtypes may be declared in more than
 one way. For instance, the following sets of declarations produce equivalent
 subtypes:
-type CONSTRAINEDAR is array (INTEGER range 1 ............ 10) of BOOLEAN;
-type INDEX is INTEGER range I ............ 10;
+type CONSTRAINEDAR is array (INTEGER range 1 10) of BOOLEAN;
+type INDEX is INTEGER range I 10;
 type UNCONSTRAINED AR is array (INDEX range <>) of BOOLEAN;
 subtype CONSTRAINED_AR is UNCONSTRAINEDAR (INDEX);
 the only difference being that the base type and index subtype corresponding to
@@ -6135,7 +6135,7 @@ I S
 iP-P I
 PUo )•
 ol!I I l
-,COL,me ..0 ............ .0'00
+,COL,me 0 0'00
 -i. I.I 1I t
 * I., III -l
 P-it I El *i
@@ -6144,7 +6144,7 @@ ia z
 'II
 0 to
 -, 6, I.• ,
-. ............ ............ ............ ............ ............ ............ ............ ............ ............ 0 ) i
+ 0 ) i
 0 - C
 tN AA)
 | | _inl11 •
@@ -6158,7 +6158,7 @@ Il "6. . -I CL 2 ,
 (5• 1 - (a -- I 1 - 6
 SI IM 6I
 6 2- - - > -6E Z
-III a • ............ .. III -
+III a • III -
 3 ..1 E E IS E 'Z
 1.-i X E. d-CI', U-• rE ) , ,,, -
 - - - - - - - - -jul SI
@@ -6172,7 +6172,7 @@ SI 2' V,.... o ,-_ t
 - -C 0 , ll -o-
 I-- I I 'II o - o - I a ,o-
 iI II" Nt
-* - -.. ............ .- -I-
+* - - - -I-
 Io Al A
 - I I ' II A -
 - - - - - - - - - - - - -
@@ -6217,7 +6217,7 @@ I
 - - II I I
 I I I L
 I I I '-I 21 I S
-I I U' I U1 ............ >O I C' 05 I -
+I I U' I U1 >O I C' 05 I -
 A SI I 211 A ) 'S 21.S I U
 I_I - . !I . !' Il C - 'I S
 I ' AI
@@ -6281,7 +6281,7 @@ In'--; VI .-
 17 -- A
 - - - -- - - - - - - - -
 6 ' I I )I 1 1 W
-o I d ............ - 1 1I II ,6 A 0 -
+o I d - 1 1I II ,6 A 0 -
 l1~~ _rl 4 I I I1CL - a.- ,6 .-
 Is II, UL- 1 C I•I l Iq I -- I, I.I [i,
 * IS II 1•1 * S I 00 4
@@ -6317,9 +6317,9 @@ I - ,: g l I. I.I
 II- -1 -,.- - - -I. I >P '>!
 I ; 1 I I I IJ I I 1 0
 SI 14 Si I I 1Z' z_0
-"-l- I " . . . . . I I I I I I I' >4
+"-l- I " I I I I I I I' >4
 -- +II I I, 1 I . , '' 2
-- 11 I .I I/I •ll I IIIA' ' ' i ............ 0. ............ a I A.•+III>1 :, '
+- 11 I .I I/I •ll I IIIA' ' ' i 0 a I A.•+III>1 :, '
 S~ ~ ~ 7II ILc'II I I - 0
 ,,S,' 1 0.1 I I I V I. I
 RI a uI a A II 0 I.
@@ -6328,7 +6328,7 @@ I_I - ° 1 1 ' '': I IL'
 41 I IHIS 11 I I 1I 0- il I 1 0
 "I1"I I 'Al i i n A
 ,i 0. I 10 0 A'I A
-I 0 ............ l)- - - I ............ ............ l I
+I 0 l)- - - I l I
 601, toL I-
 I- JIL I .lI lei I ' IIr -1
 -,. '0 ' 1.-. * I- z .CL I
@@ -6392,7 +6392,7 @@ A -I I
 II I 0 ) I-
 IC" I I I, -
 Al f • ' 2-
---: ............ ..
+--:
 I S
 S'' , ' I,•,,,
 --- ' •-1-----)0'
@@ -6432,12 +6432,12 @@ i . 1 1-0 -61
 Is 4 -c -
 6 CU
 I ' I I •. 01A , al -
-C_ ,L ............ .in'Aa s
+C_ ,L in'Aa s
 7"" ° "s Css E
 Al A0:: I A',, >•, >•, • EE - "
 , ' , E E , I IE 6" --- -
 I A, ' Il : I, I- o - , ÷ I I- o > -
-0 -, , I rIU-" ' ............ A
+0 -, , I rIU-" ' A
 '-' l iE,' ^~ IE 0 IU,--, -I j --
 a2I IG 1; * II W A6 t W 61
 "I 6' I l l 0 U I I - Go

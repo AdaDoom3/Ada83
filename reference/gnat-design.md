@@ -20,313 +20,313 @@ ii
 Contents
 I First Part: Introduction 7
 1 The GNAT Project 9
-1.1 GCC . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 10
-1.2 The GNAT Compiler . . . . . . . . . . . . . . . . . . . . . . . . 10
-1.3 Compilation Model . . . . . . . . . . . . . . . . . . . . . . . . . 12
-1.3.1 Traditional Compilation Model . . . . . . . . . . . . . . 13
-1.3.2 GNAT Compilation Model . . . . . . . . . . . . . . . . . 13
-1.4 Summary . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 17
+1.1 GCC 10
+1.2 The GNAT Compiler 10
+1.3 Compilation Model 12
+1.3.1 Traditional Compilation Model 13
+1.3.2 GNAT Compilation Model 13
+1.4 Summary 17
 2 Overview of the Front-end Architecture 19
-2.1 The Scanner . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 19
-2.2 The Parser . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 20
-2.2.1 The Abstract Syntax Tree . . . . . . . . . . . . . . . . . 22
-2.3 The Semantic Analyzer . . . . . . . . . . . . . . . . . . . . . . . 24
-2.4 The Expander . . . . . . . . . . . . . . . . . . . . . . . . . . . . 27
-2.5 Summary . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 28
+2.1 The Scanner 19
+2.2 The Parser 20
+2.2.1 The Abstract Syntax Tree 22
+2.3 The Semantic Analyzer 24
+2.4 The Expander 27
+2.5 Summary 28
 3 Error Recovery 31
-3.1 Scanner Error Recovery . . . . . . . . . . . . . . . . . . . . . . . 31
-3.1.1 Use of the Casing of Identifiers . . . . . . . . . . . . . . 32
+3.1 Scanner Error Recovery 31
+3.1.1 Use of the Casing of Identifiers 32
 iii
 iv
 CONTENTS
-3.2 Parser Error Recovery . . . . . . . . . . . . . . . . . . . . . . . . 32
-3.2.1 The Parser Scope-Stack . . . . . . . . . . . . . . . . . . 33
-3.2.2 Example 1: Use of indentation . . . . . . . . . . . . . . . 34
+3.2 Parser Error Recovery 32
+3.2.1 The Parser Scope-Stack 33
+3.2.2 Example 1: Use of indentation 34
 3.2.3 Example 2: Handling Semicolon Used in Place of ’is’ . . 34
 3.2.4 Example 3: Handling ’is’ Used in Place of Semicolon . . 36
-3.3 Summary . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 37
+3.3 Summary 37
 II Second Part: Semantic Analysis 39
 4 Scopes and Visibility 41
-4.1 Flags and Data Structures . . . . . . . . . . . . . . . . . . . . . . 41
-4.2 Analysis of Records, Tasks and Protected Types. . . . . . . . . . . 45
-4.3 Analysis of Packages . . . . . . . . . . . . . . . . . . . . . . . . 46
-4.4 Analysis of Private Types . . . . . . . . . . . . . . . . . . . . . . 47
-4.4.1 Private Entities Visibility . . . . . . . . . . . . . . . . . . 48
-4.4.2 Private Type Declarations . . . . . . . . . . . . . . . . . 49
-4.4.3 Deferred Constants and Incomplete Types . . . . . . . . . 51
-4.4.4 Limited Types . . . . . . . . . . . . . . . . . . . . . . . 51
-4.4.5 Analysis of Child Units . . . . . . . . . . . . . . . . . . . 51
-4.4.6 Analysis of Subunits . . . . . . . . . . . . . . . . . . . . 52
-4.5 Name Resolution . . . . . . . . . . . . . . . . . . . . . . . . . . 52
-4.6 Summary . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 53
+4.1 Flags and Data Structures 41
+4.2 Analysis of Records, Tasks and Protected Types 45
+4.3 Analysis of Packages 46
+4.4 Analysis of Private Types 47
+4.4.1 Private Entities Visibility 48
+4.4.2 Private Type Declarations 49
+4.4.3 Deferred Constants and Incomplete Types 51
+4.4.4 Limited Types 51
+4.4.5 Analysis of Child Units 51
+4.4.6 Analysis of Subunits 52
+4.5 Name Resolution 52
+4.6 Summary 53
 5 Overload Resolution 55
-5.1 Resolution Algorithm . . . . . . . . . . . . . . . . . . . . . . . . 56
-5.1.1 Additional Details for the Bottom-Up Pass . . . . . . . . 57
+5.1 Resolution Algorithm 56
+5.1.1 Additional Details for the Bottom-Up Pass 57
 CONTENTS v
-5.1.2 Data Structures . . . . . . . . . . . . . . . . . . . . . . . 59
-5.1.3 Additional Details for the Top-Down Pass . . . . . . . . . 60
-5.2 Summary . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 61
+5.1.2 Data Structures 59
+5.1.3 Additional Details for the Top-Down Pass 60
+5.2 Summary 61
 6 Analysis of Discriminants 63
-6.1 Analysis of Discriminants . . . . . . . . . . . . . . . . . . . . . . 64
-6.2 Analysis of Discriminants in Derived Types . . . . . . . . . . . . 67
-6.3 Discriminals . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 68
-6.4 Summary . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 69
+6.1 Analysis of Discriminants 64
+6.2 Analysis of Discriminants in Derived Types 67
+6.3 Discriminals 68
+6.4 Summary 69
 7 Generic Units 71
-7.1 Generic Units . . . . . . . . . . . . . . . . . . . . . . . . . . . . 72
-7.1.1 Analysis of Generic Units . . . . . . . . . . . . . . . . . 72
-7.1.2 Instantiation of Generic Units . . . . . . . . . . . . . . . 75
-7.1.3 Parameter Matching . . . . . . . . . . . . . . . . . . . . 75
-7.1.4 Private Types . . . . . . . . . . . . . . . . . . . . . . . . 80
-7.2 Nested Generic Units . . . . . . . . . . . . . . . . . . . . . . . . 80
-7.2.1 Analysis of Nested Generic Units . . . . . . . . . . . . . 80
-7.2.2 Instantiation of Nested Generic Units . . . . . . . . . . . 81
-7.3 Generic Child Units . . . . . . . . . . . . . . . . . . . . . . . . . 84
-7.3.1 Analysis of Generic Child Units . . . . . . . . . . . . . . 84
-7.3.2 Instantiation of Child Generic Units . . . . . . . . . . . . 85
-7.4 Delayed Instantiation of Bodies . . . . . . . . . . . . . . . . . . . 89
-7.5 Detection of Instantiation Circularities . . . . . . . . . . . . . . . 90
-7.6 Summary . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 90
+7.1 Generic Units 72
+7.1.1 Analysis of Generic Units 72
+7.1.2 Instantiation of Generic Units 75
+7.1.3 Parameter Matching 75
+7.1.4 Private Types 80
+7.2 Nested Generic Units 80
+7.2.1 Analysis of Nested Generic Units 80
+7.2.2 Instantiation of Nested Generic Units 81
+7.3 Generic Child Units 84
+7.3.1 Analysis of Generic Child Units 84
+7.3.2 Instantiation of Child Generic Units 85
+7.4 Delayed Instantiation of Bodies 89
+7.5 Detection of Instantiation Circularities 90
+7.6 Summary 90
 8 Freezing Analysis 93
 vi
 CONTENTS
-8.1 Freezing Types and Subtypes . . . . . . . . . . . . . . . . . . . . 94
-8.2 Freezing Expressions . . . . . . . . . . . . . . . . . . . . . . . . 95
-8.3 Freezing Objects . . . . . . . . . . . . . . . . . . . . . . . . . . 96
-8.4 Freezing Subprograms . . . . . . . . . . . . . . . . . . . . . . . 96
-8.5 Freezing Packages . . . . . . . . . . . . . . . . . . . . . . . . . 97
-8.6 Freezing Generic Units . . . . . . . . . . . . . . . . . . . . . . . 97
-8.7 Summary . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 98
+8.1 Freezing Types and Subtypes 94
+8.2 Freezing Expressions 95
+8.3 Freezing Objects 96
+8.4 Freezing Subprograms 96
+8.5 Freezing Packages 97
+8.6 Freezing Generic Units 97
+8.7 Summary 98
 III Third Part: Expansion 99
 9 Expansion of Tasks 101
-9.1 Task Creation . . . . . . . . . . . . . . . . . . . . . . . . . . . . 102
-9.2 Task Termination . . . . . . . . . . . . . . . . . . . . . . . . . . 103
-9.3 Task Abortion . . . . . . . . . . . . . . . . . . . . . . . . . . . . 103
-9.4 Expansion of Task Type Declarations . . . . . . . . . . . . . . . . 104
-9.5 Task Body Expansion . . . . . . . . . . . . . . . . . . . . . . . . 105
-9.6 Example of Task Expansion . . . . . . . . . . . . . . . . . . . . 106
-9.7 Summary . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 108
+9.1 Task Creation 102
+9.2 Task Termination 103
+9.3 Task Abortion 103
+9.4 Expansion of Task Type Declarations 104
+9.5 Task Body Expansion 105
+9.6 Example of Task Expansion 106
+9.7 Summary 108
 10 Expansion of Rendezvous and related Constructs 109
-10.1 Entry Identification . . . . . . . . . . . . . . . . . . . . . . . . . 110
-10.2 Entry-Call Expansion . . . . . . . . . . . . . . . . . . . . . . . . 110
-10.2.1 Expansion of Simple Entry-Calls . . . . . . . . . . . . . 112
-10.2.2 Expansion of Conditional and Timed Entry-Calls . . . . . 112
-10.3 Asynchronous Transfer of Control . . . . . . . . . . . . . . . . . 113
-10.3.1 ATC Implementation Models . . . . . . . . . . . . . . . . 114
+10.1 Entry Identification 110
+10.2 Entry-Call Expansion 110
+10.2.1 Expansion of Simple Entry-Calls 112
+10.2.2 Expansion of Conditional and Timed Entry-Calls 112
+10.3 Asynchronous Transfer of Control 113
+10.3.1 ATC Implementation Models 114
 CONTENTS vii
-10.3.2 Expansion of ATC . . . . . . . . . . . . . . . . . . . . . 116
-10.4 Expansion of Accept Statements . . . . . . . . . . . . . . . . . . 117
-10.4.1 Simple Accept Expansion . . . . . . . . . . . . . . . . . 117
-10.4.2 Timed and Selective Accept . . . . . . . . . . . . . . . . 118
-10.4.3 Count Attribute Expansion . . . . . . . . . . . . . . . . . 120
-10.5 Summary . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 120
+10.3.2 Expansion of ATC 116
+10.4 Expansion of Accept Statements 117
+10.4.1 Simple Accept Expansion 117
+10.4.2 Timed and Selective Accept 118
+10.4.3 Count Attribute Expansion 120
+10.5 Summary 120
 11 Expansion of Protected Objects 121
-11.1 The Proxy Model . . . . . . . . . . . . . . . . . . . . . . . . . . 123
-11.1.1 Implementation . . . . . . . . . . . . . . . . . . . . . . . 124
-11.2 Expansion of Protected Types . . . . . . . . . . . . . . . . . . . . 125
-11.2.1 Expansion of Protected-Type Specification . . . . . . . . 125
-11.2.2 Expansion of Protected Subprograms . . . . . . . . . . . 127
-11.2.3 Expansion of Entry Barriers . . . . . . . . . . . . . . . . 129
-11.2.4 Expansion of Entry bodies . . . . . . . . . . . . . . . . . 129
-11.2.5 Table to Barriers and Entry-Bodies . . . . . . . . . . . . . 130
-11.2.6 Expansion of Entry Families . . . . . . . . . . . . . . . . 130
-11.3 Optimizations . . . . . . . . . . . . . . . . . . . . . . . . . . . . 130
-11.4 Summary . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 131
+11.1 The Proxy Model 123
+11.1.1 Implementation 124
+11.2 Expansion of Protected Types 125
+11.2.1 Expansion of Protected-Type Specification 125
+11.2.2 Expansion of Protected Subprograms 127
+11.2.3 Expansion of Entry Barriers 129
+11.2.4 Expansion of Entry bodies 129
+11.2.5 Table to Barriers and Entry-Bodies 130
+11.2.6 Expansion of Entry Families 130
+11.3 Optimizations 130
+11.4 Summary 131
 12 Expansion of Controlled-Types 133
-12.1 Implementation Overview . . . . . . . . . . . . . . . . . . . . . 134
-12.1.1 Exceptional Block Exit . . . . . . . . . . . . . . . . . . . 135
-12.1.2 Finalization of Anonymous Objects . . . . . . . . . . . . 136
-12.1.3 Finalization of Dynamically Allocated Objects . . . . . . 136
-12.1.4 Problems Related to Mutable Objects . . . . . . . . . . . 137
-12.1.5 Controlled Class-Wide Objects . . . . . . . . . . . . . . . 137
+12.1 Implementation Overview 134
+12.1.1 Exceptional Block Exit 135
+12.1.2 Finalization of Anonymous Objects 136
+12.1.3 Finalization of Dynamically Allocated Objects 136
+12.1.4 Problems Related to Mutable Objects 137
+12.1.5 Controlled Class-Wide Objects 137
 viii
 CONTENTS
-12.2 Expansion Activities for Controlled-Types . . . . . . . . . . . . . 138
-12.2.1 Expansion of Assignment . . . . . . . . . . . . . . . . . 139
-12.2.2 Expansion of Anonymous Controlled Objects . . . . . . . 140
-12.2.3 Objects with Controlled Components . . . . . . . . . . . 141
-12.3 Summary . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 143
+12.2 Expansion Activities for Controlled-Types 138
+12.2.1 Expansion of Assignment 139
+12.2.2 Expansion of Anonymous Controlled Objects 140
+12.2.3 Objects with Controlled Components 141
+12.3 Summary 143
 13 Expansion of Tagged-Types 145
-13.1 Tagged and Polymorphic Objects . . . . . . . . . . . . . . . . . . 146
-13.2 The Dispatch Table . . . . . . . . . . . . . . . . . . . . . . . . . 147
-13.3 Primitive Operations . . . . . . . . . . . . . . . . . . . . . . . . 149
-13.4 Summary . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 152
+13.1 Tagged and Polymorphic Objects 146
+13.2 The Dispatch Table 147
+13.3 Primitive Operations 149
+13.4 Summary 152
 IV Fourth Part: Run-Time 155
 14 Tasking 157
-14.1 The Ada Task Control Block . . . . . . . . . . . . . . . . . . . . 157
-14.2 Task States . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 158
-14.3 Task Creation and Termination . . . . . . . . . . . . . . . . . . . 159
+14.1 The Ada Task Control Block 157
+14.2 Task States 158
+14.3 Task Creation and Termination 159
 14.4 Run-Time Subprograms for Task Creation and Termination . . . . 163
-14.4.1 GNARL.Enter Master . . . . . . . . . . . . . . . . . . . 165
-14.4.2 GNARL.Create Task . . . . . . . . . . . . . . . . . . . . 165
-14.4.3 GNARL.Activate Tasks . . . . . . . . . . . . . . . . . . 166
-14.4.4 GNARL.Tasks Wrapper . . . . . . . . . . . . . . . . . . 168
-14.4.5 GNARL.Complete Activation . . . . . . . . . . . . . . . 168
-14.4.6 GNARL.Complete Task . . . . . . . . . . . . . . . . . . 169
-14.4.7 GNARL.Complete Master . . . . . . . . . . . . . . . . . 169
+14.4.1 GNARL.Enter Master 165
+14.4.2 GNARL.Create Task 165
+14.4.3 GNARL.Activate Tasks 166
+14.4.4 GNARL.Tasks Wrapper 168
+14.4.5 GNARL.Complete Activation 168
+14.4.6 GNARL.Complete Task 169
+14.4.7 GNARL.Complete Master 169
 CONTENTS ix
-14.5 Summary . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 170
+14.5 Summary 170
 15 The Rendezvous 171
-15.1 The Entry-Call Record . . . . . . . . . . . . . . . . . . . . . . . 172
-15.2 Entries and Queues . . . . . . . . . . . . . . . . . . . . . . . . . 173
-15.3 Accepted-Calls Stack . . . . . . . . . . . . . . . . . . . . . . . . 174
-15.4 Selective Accept . . . . . . . . . . . . . . . . . . . . . . . . . . 174
-15.5 Run-Time Rendezvous Subprograms . . . . . . . . . . . . . . . . 176
-15.5.1 GNARL.Call Simple . . . . . . . . . . . . . . . . . . . . 176
-15.5.2 GNARL.Call Synchronous . . . . . . . . . . . . . . . . . 176
-15.5.3 GNARL.Task Do Or Queue . . . . . . . . . . . . . . . . 177
-15.5.4 GNARL.Task Entry Call . . . . . . . . . . . . . . . . . . 177
-15.5.5 GNARL.Accept Trivial . . . . . . . . . . . . . . . . . . 177
-15.5.6 GNARL.Accept Call . . . . . . . . . . . . . . . . . . . . 178
-15.5.7 GNARL.Complete Rendezvous . . . . . . . . . . . . . . 178
-15.5.8 GNARL.Exceptional Complete Rendezvous . . . . . . . 178
-15.5.9 GNARL.Selective Wait . . . . . . . . . . . . . . . . . . 179
-15.5.10 GNARL.Task Count . . . . . . . . . . . . . . . . . . . . 180
-15.6 Summary . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 180
+15.1 The Entry-Call Record 172
+15.2 Entries and Queues 173
+15.3 Accepted-Calls Stack 174
+15.4 Selective Accept 174
+15.5 Run-Time Rendezvous Subprograms 176
+15.5.1 GNARL.Call Simple 176
+15.5.2 GNARL.Call Synchronous 176
+15.5.3 GNARL.Task Do Or Queue 177
+15.5.4 GNARL.Task Entry Call 177
+15.5.5 GNARL.Accept Trivial 177
+15.5.6 GNARL.Accept Call 178
+15.5.7 GNARL.Complete Rendezvous 178
+15.5.8 GNARL.Exceptional Complete Rendezvous 178
+15.5.9 GNARL.Selective Wait 179
+15.5.10 GNARL.Task Count 180
+15.6 Summary 180
 16 Protected Objects 181
-16.1 The Lock . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 182
-16.2 Run-Time Subprograms . . . . . . . . . . . . . . . . . . . . . . . 182
-16.2.1 GNARL.Protected Entry Call . . . . . . . . . . . . . . . 182
-16.2.2 GNARL.PO Do Or Queue . . . . . . . . . . . . . . . . . 183
-16.2.3 GNARL.Service Entries . . . . . . . . . . . . . . . . . . 184
-16.3 Summary . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 185
+16.1 The Lock 182
+16.2 Run-Time Subprograms 182
+16.2.1 GNARL.Protected Entry Call 182
+16.2.2 GNARL.PO Do Or Queue 183
+16.2.3 GNARL.Service Entries 184
+16.3 Summary 185
 x
 CONTENTS
 17 Time and Clocks 187
-17.1 Delay and Delay Until Statements . . . . . . . . . . . . . . . . . 187
-17.2 Timed Entry Call . . . . . . . . . . . . . . . . . . . . . . . . . . 189
-17.3 Timed Selective Accept . . . . . . . . . . . . . . . . . . . . . . . 190
-17.4 Run-Time Subprograms . . . . . . . . . . . . . . . . . . . . . . . 190
-17.4.1 GNARL.Timed Delay . . . . . . . . . . . . . . . . . . . 190
-17.5 Summary . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 192
+17.1 Delay and Delay Until Statements 187
+17.2 Timed Entry Call 189
+17.3 Timed Selective Accept 190
+17.4 Run-Time Subprograms 190
+17.4.1 GNARL.Timed Delay 190
+17.5 Summary 192
 18 Exceptions 193
-18.1 Data Structures . . . . . . . . . . . . . . . . . . . . . . . . . . . 193
-18.1.1 Exception Id . . . . . . . . . . . . . . . . . . . . . . . . 193
-18.1.2 The Exceptions Table . . . . . . . . . . . . . . . . . . . . 194
-18.2 Run-Time Subprograms . . . . . . . . . . . . . . . . . . . . . . . 195
-18.2.1 GNARL.Raise . . . . . . . . . . . . . . . . . . . . . . . 195
-18.3 Summary . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 196
+18.1 Data Structures 193
+18.1.1 Exception Id 193
+18.1.2 The Exceptions Table 194
+18.2 Run-Time Subprograms 195
+18.2.1 GNARL.Raise 195
+18.3 Summary 196
 19 Interrupts 197
-19.1 POSIX Signals . . . . . . . . . . . . . . . . . . . . . . . . . . . 198
-19.1.1 Reserved Signals . . . . . . . . . . . . . . . . . . . . . . 199
-19.2 Data Structures . . . . . . . . . . . . . . . . . . . . . . . . . . . 201
-19.2.1 Interrupts Manager: Basic Approach . . . . . . . . . . . . 202
-19.2.2 Server Tasks: Basic Approach . . . . . . . . . . . . . . . 203
-19.2.3 Interrupt-Manager and Server-Tasks Integration . . . . . . 203
-19.3 Run-Time Subprograms . . . . . . . . . . . . . . . . . . . . . . . 207
-19.3.1 GNARL.Install Handlers . . . . . . . . . . . . . . . . . . 207
-19.3.2 GNARL.Attach Handlers . . . . . . . . . . . . . . . . . 207
-19.4 Summary . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 208
+19.1 POSIX Signals 198
+19.1.1 Reserved Signals 199
+19.2 Data Structures 201
+19.2.1 Interrupts Manager: Basic Approach 202
+19.2.2 Server Tasks: Basic Approach 203
+19.2.3 Interrupt-Manager and Server-Tasks Integration 203
+19.3 Run-Time Subprograms 207
+19.3.1 GNARL.Install Handlers 207
+19.3.2 GNARL.Attach Handlers 207
+19.4 Summary 208
 CONTENTS xi
 20 Abortion 211
-20.1 Run-Time Subprograms . . . . . . . . . . . . . . . . . . . . . . . 214
-20.1.1 GNARL.Task Entry Call . . . . . . . . . . . . . . . . . . 215
-20.1.2 GNARL.Locked Abort To Level . . . . . . . . . . . . . 215
-20.1.3 GNARL.Locked Abort To Level . . . . . . . . . . . . . 215
-20.2 Summary . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 216
+20.1 Run-Time Subprograms 214
+20.1.1 GNARL.Task Entry Call 215
+20.1.2 GNARL.Locked Abort To Level 215
+20.1.3 GNARL.Locked Abort To Level 215
+20.2 Summary 216
 V Fifth Part: Appendix 219
 A How to add new Keywords, Pragmas and Attributes 221
-A.1 Drago . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 221
-A.2 First Step: Addition of new Keywords . . . . . . . . . . . . . . . 222
-A.3 Second step: Addition of new tokens . . . . . . . . . . . . . . . . 223
-A.4 Third Step: Update the Scanner Initialization . . . . . . . . . . . 224
-A.5 Addition of Pragmas an Attributes . . . . . . . . . . . . . . . . . 225
-A.6 Addition of New Syntax Rules . . . . . . . . . . . . . . . . . . . 225
-A.6.1 First step: Addition of New Node Kinds . . . . . . . . . . 226
+A.1 Drago 221
+A.2 First Step: Addition of new Keywords 222
+A.3 Second step: Addition of new tokens 223
+A.4 Third Step: Update the Scanner Initialization 224
+A.5 Addition of Pragmas an Attributes 225
+A.6 Addition of New Syntax Rules 225
+A.6.1 First step: Addition of New Node Kinds 226
 A.6.2 Second Step: High-level specification of the new nodes . . 227
 A.6.3 Third Step: Automatic modification of the frontend . . . . 228
-A.6.4 Fourth Step: Update of the Parser . . . . . . . . . . . . . 228
-A.7 Verification of the Semantics . . . . . . . . . . . . . . . . . . . . 229
-A.8 Tree expansion . . . . . . . . . . . . . . . . . . . . . . . . . . . 230
-A.9 Summary . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 230
+A.6.4 Fourth Step: Update of the Parser 228
+A.7 Verification of the Semantics 229
+A.8 Tree expansion 230
+A.9 Summary 230
 B Glossary 231
 C GNU Free Documentation License 237
 xii
 CONTENTS
-1. APPLICABILITY AND DEFINITIONS . . . . . . . . . . . . . . . 238
-2. VERBATIM COPYING . . . . . . . . . . . . . . . . . . . . . . . . 239
-3. COPYING IN QUANTITY . . . . . . . . . . . . . . . . . . . . . . 240
-4. MODIFICATIONS . . . . . . . . . . . . . . . . . . . . . . . . . . . 241
-5. COMBINING DOCUMENTS . . . . . . . . . . . . . . . . . . . . . 243
-6. COLLECTIONS OF DOCUMENTS . . . . . . . . . . . . . . . . . 243
-7. AGGREGATION WITH INDEPENDENT WORKS . . . . . . . . . 244
-8. TRANSLATION . . . . . . . . . . . . . . . . . . . . . . . . . . . . 244
-9. TERMINATION . . . . . . . . . . . . . . . . . . . . . . . . . . . . 244
-10. FUTURE REVISIONS OF THIS LICENSE . . . . . . . . . . . . . 245
-ADDENDUM: How to use this License for your documents . . . . . . 245
+1. APPLICABILITY AND DEFINITIONS 238
+2. VERBATIM COPYING 239
+3. COPYING IN QUANTITY 240
+4. MODIFICATIONS 241
+5. COMBINING DOCUMENTS 243
+6. COLLECTIONS OF DOCUMENTS 243
+7. AGGREGATION WITH INDEPENDENT WORKS 244
+8. TRANSLATION 244
+9. TERMINATION 244
+10. FUTURE REVISIONS OF THIS LICENSE 245
+ADDENDUM: How to use this License for your documents 245
 List of Figures
-1.1 GNAT Compiler. . . . . . . . . . . . . . . . . . . . . . . . . . . 11
-1.2 GNAT Front-End Phases. . . . . . . . . . . . . . . . . . . . . . . 12
-1.3 GNAT Overall Structure. . . . . . . . . . . . . . . . . . . . . . . 14
-2.1 Architecture of the GNAT Scanner . . . . . . . . . . . . . . . . . 20
-2.2 Structure of the GNAT Parser . . . . . . . . . . . . . . . . . . . . 21
-2.3 Abstract Syntax Tree Construction. . . . . . . . . . . . . . . . . . 22
-2.4 Abstract Syntax Tree Packages. . . . . . . . . . . . . . . . . . . . 23
+1.1 GNAT Compiler 11
+1.2 GNAT Front-End Phases 12
+1.3 GNAT Overall Structure 14
+2.1 Architecture of the GNAT Scanner 20
+2.2 Structure of the GNAT Parser 21
+2.3 Abstract Syntax Tree Construction 22
+2.4 Abstract Syntax Tree Packages 23
 2.5 Abstract Syntax Subtree associated with the package body rule. . . 24
-2.6 Abstract Syntax Tree Decoration. . . . . . . . . . . . . . . . . . . 24
-2.7 Structure of the Semantic Analyzer. . . . . . . . . . . . . . . . . 25
-2.8 Abstract Syntax Tree Nodes Dispatching. . . . . . . . . . . . . . 26
-2.9 Abstract Syntax Tree Expansion. . . . . . . . . . . . . . . . . . . 27
-2.10 Architecture of the GNAT Expander . . . . . . . . . . . . . . . . 28
-4.1 The Scope Stack . . . . . . . . . . . . . . . . . . . . . . . . . . 42
-4.2 List of entities in the same scope. . . . . . . . . . . . . . . . . . . 43
-4.3 Lists of homonym entities. . . . . . . . . . . . . . . . . . . . . . 44
-4.4 The matrix of entities. . . . . . . . . . . . . . . . . . . . . . . . . 45
-4.5 Analysis of a record. . . . . . . . . . . . . . . . . . . . . . . . . 46
+2.6 Abstract Syntax Tree Decoration 24
+2.7 Structure of the Semantic Analyzer 25
+2.8 Abstract Syntax Tree Nodes Dispatching 26
+2.9 Abstract Syntax Tree Expansion 27
+2.10 Architecture of the GNAT Expander 28
+4.1 The Scope Stack 42
+4.2 List of entities in the same scope 43
+4.3 Lists of homonym entities 44
+4.4 The matrix of entities 45
+4.5 Analysis of a record 46
 xiii
 xiv
 LIST OF FIGURES
-4.6 Analysis of a protected type. . . . . . . . . . . . . . . . . . . . . 47
-4.7 Visible and Private Entities . . . . . . . . . . . . . . . . . . . . . 49
-4.8 Reference to the Full-View Entity . . . . . . . . . . . . . . . . . 50
-4.9 Swapping of the Private Declaration and the Full View . . . . . . 50
-4.10 Deferred Constants Handling . . . . . . . . . . . . . . . . . . . . 51
-7.1 Step 1: Copy the original generic AST. . . . . . . . . . . . . . . . 73
-7.2 Step 2: Analyze and decorate the copy. . . . . . . . . . . . . . . . 74
-7.3 Step 3: Remove local references in the original AST. . . . . . . . 74
-7.4 Instantiation of generic units. . . . . . . . . . . . . . . . . . . . . 75
-7.5 Nested generic packages. . . . . . . . . . . . . . . . . . . . . . . 81
-7.6 Analysis of generic package Gen Pkg 1. . . . . . . . . . . . . . . 82
-7.7 Analysis of nested generic package Gen Pkg 2. . . . . . . . . . . 83
-7.8 Saving global references. . . . . . . . . . . . . . . . . . . . . . . 83
-7.9 Instantiation of nested generic units. . . . . . . . . . . . . . . . . 84
-7.10 Sequence of steps to instantiate Child Instance. . . . . . . . . . . 88
-10.1 Data structures associated to an entry-call. . . . . . . . . . . . . . 111
-11.1 Proxy Model: Call-Back Implementation. . . . . . . . . . . . . . 125
-11.2 Proxy Model: In-Line Implementation. . . . . . . . . . . . . . . . 125
-13.1 Dispatch Table Example. . . . . . . . . . . . . . . . . . . . . . . 148
-14.1 Run-Time Information Associated with Each Task. . . . . . . . . 158
+4.6 Analysis of a protected type 47
+4.7 Visible and Private Entities 49
+4.8 Reference to the Full-View Entity 50
+4.9 Swapping of the Private Declaration and the Full View 50
+4.10 Deferred Constants Handling 51
+7.1 Step 1: Copy the original generic AST 73
+7.2 Step 2: Analyze and decorate the copy 74
+7.3 Step 3: Remove local references in the original AST 74
+7.4 Instantiation of generic units 75
+7.5 Nested generic packages 81
+7.6 Analysis of generic package Gen Pkg 1 82
+7.7 Analysis of nested generic package Gen Pkg 2 83
+7.8 Saving global references 83
+7.9 Instantiation of nested generic units 84
+7.10 Sequence of steps to instantiate Child Instance 88
+10.1 Data structures associated to an entry-call 111
+11.1 Proxy Model: Call-Back Implementation 125
+11.2 Proxy Model: In-Line Implementation 125
+13.1 Dispatch Table Example 148
+14.1 Run-Time Information Associated with Each Task 158
 14.2 Definition of Parent, Activator, Master of Task and Master Within. 161
-14.3 GNARL Subprograms Called During the Task Life-Cycle . . . . . 163
-15.1 Data structures associated to an entry-call. . . . . . . . . . . . . . 172
+14.3 GNARL Subprograms Called During the Task Life-Cycle 163
+15.1 Data structures associated to an entry-call 172
 LIST OF FIGURES xv
-15.2 Entry Queues. . . . . . . . . . . . . . . . . . . . . . . . . . . . . 174
-15.3 Simple Accept. . . . . . . . . . . . . . . . . . . . . . . . . . . . 175
-16.1 Graphical Representation of the Protected Object. . . . . . . . . . 183
-17.1 GNARL Subprograms for the Delay Statement. . . . . . . . . . . 188
+15.2 Entry Queues 174
+15.3 Simple Accept 175
+16.1 Graphical Representation of the Protected Object 183
+17.1 GNARL Subprograms for the Delay Statement 188
 17.2 GNARL Subprograms for the Delay Statement in an Ada Program
-without Tasks. . . . . . . . . . . . . . . . . . . . . . . . . . . . . 188
+without Tasks 188
 17.3 GNARL Subprograms for the Delay Statement in an Ada Program
-with Tasks. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 189
-17.4 GNARL Subprograms for Timed Entry Call. . . . . . . . . . . . . 190
-17.5 GNARL Subprograms for Timed Selective Accept. . . . . . . . . 191
-18.1 Exception Identifier Record . . . . . . . . . . . . . . . . . . . . . 194
-18.2 Occurrence Identifier. . . . . . . . . . . . . . . . . . . . . . . . . 195
-18.3 Hash Table. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 196
-19.1 Reserved Interrupts Table. . . . . . . . . . . . . . . . . . . . . . 201
-19.2 Table of User-Defined Interrupt-Handlers. . . . . . . . . . . . . . 202
-19.3 Basic Automaton Implemented by the Interrupts Manager. . . . . 203
-19.4 Server Tasks Signal Handling. . . . . . . . . . . . . . . . . . . . 204
-19.5 Basic Automaton Implemented by the Server Tasks. . . . . . . . . 205
-19.6 Simplified Server Tasks Automaton. . . . . . . . . . . . . . . . . 206
-19.7 Server Tasks Automaton. . . . . . . . . . . . . . . . . . . . . . . 206
-19.8 List of Interrupt Handlers in Non-Nested Style. . . . . . . . . . . 208
-20.1 GNARL Subprograms for the Abort Statement. . . . . . . . . . . 214
-20.2 Entry Calls Stack. . . . . . . . . . . . . . . . . . . . . . . . . . . 216
-A.1 GNAT utility programs. . . . . . . . . . . . . . . . . . . . . . . . 228
+with Tasks 189
+17.4 GNARL Subprograms for Timed Entry Call 190
+17.5 GNARL Subprograms for Timed Selective Accept 191
+18.1 Exception Identifier Record 194
+18.2 Occurrence Identifier 195
+18.3 Hash Table 196
+19.1 Reserved Interrupts Table 201
+19.2 Table of User-Defined Interrupt-Handlers 202
+19.3 Basic Automaton Implemented by the Interrupts Manager 203
+19.4 Server Tasks Signal Handling 204
+19.5 Basic Automaton Implemented by the Server Tasks 205
+19.6 Simplified Server Tasks Automaton 206
+19.7 Server Tasks Automaton 206
+19.8 List of Interrupt Handlers in Non-Nested Style 208
+20.1 GNARL Subprograms for the Abort Statement 214
+20.2 Entry Calls Stack 216
+A.1 GNAT utility programs 228
 xvi
 LIST OF FIGURES
-A.2 New parser structure. . . . . . . . . . . . . . . . . . . . . . . . . 229
-A.3 GNAT semantic utility program . . . . . . . . . . . . . . . . . . 229
+A.2 New parser structure 229
+A.3 GNAT semantic utility program 229
 Preface
 The GNAT compilation system is a full implementation of Ada95 for a variety of
 machines and operating systems. GNAT is part of the GCC suite of compilers, and
@@ -888,7 +888,7 @@ Prefix “P ” followed by the name of the corresponding Ada syntax rule (for e
 ample, P Compilation Unit).
 Ch2
 Par
-. . . . .
+
 Endh Sync Tchk Labl Load Util
 Ch3 Ch13
 Figure 2.2: Structure of the GNAT Parser
@@ -6438,7 +6438,7 @@ Msg_Length
 Exception_Raised
 ATCB
 Storage_Error
-. . . . .
+
 Program_Error
 Constraint_Error
 Figure 18.3: Hash Table.
@@ -6617,7 +6617,7 @@ Level False
 SIGHUP
 True True
 SIGINT
-. . . . . .
+
 Figure 19.1: Reserved Interrupts Table.
 
 User-defined Interrupt Handlers Table: Table used to register and unregister
@@ -6739,7 +6739,7 @@ False
 SIGHUP
 True True
 SIGINT
-. . . . . .
+
 Figure 19.4: Server Tasks Signal Handling.
 1. Ada nested style of interrupts implies that UDIPs are dynamically attached
 and detached to signals in the elaboration and finalization of protected ob-
