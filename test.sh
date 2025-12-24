@@ -47,7 +47,7 @@ timeout 1 lli test_results/$n.bc>acats_logs/$n.out 2>&1
 grep -q "TENTATIVELY PASSED" acats_logs/$n.out 2>/dev/null&&E INSP "$n" INSPECT "requires manual verification"&&((++X[e]))||{
 grep -q PASSED acats_logs/$n.out 2>/dev/null&&E PASS "$n" PASSED&&((++X[e]))||E FAIL "$n" FAILED&&((++X[f]));};;
 [lL])if timeout 0.2 ./ada83 "$f">test_results/$n.ll 2>acats_logs/$n.err;then
-if timeout 0.2 llvm-link -o test_results/$n.bc test_results/$n.ll rts/rt.ll rts/report.ll 2>acats_logs/$n.link;then
+if timeout 0.2 llvm-link -o test_results/$n.bc test_results/$n.ll rts/report.ll 2>acats_logs/$n.link;then
 timeout 0.5 lli test_results/$n.bc>acats_logs/$n.out 2>&1&&E FAIL "$n" WRONG_EXEC "should not execute"&&((++X[f]))||
 E PASS "$n" BIND_REJECT "execution blocked"&&((++X[l]));else E PASS "$n" LINK_REJECT "binding failed as expected"&&((++X[l]));fi
 else E PASS "$n" COMPILE_REJECT "$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-40)"&&((++X[l]));fi;;
