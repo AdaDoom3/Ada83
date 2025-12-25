@@ -26,3 +26,4 @@ T*.ll
 *.s
 vgcore.*
 ada83.c.pre-propagation
+test_derived_runtime
