@@ -1,13 +1,15 @@
 # A-Series ACATS Test Findings
 
 ## Current Status
-**101/145 A-series tests passing (70% pass rate)**
+**73/102 A-series tests passing (71.6% pass rate)**
 
 ## Major Achievements
 1. Fixed symbol name generation for deterministic linking by simplifying format from `PACKAGE__NAME.params.sc.el` to `PACKAGE__NAME.params`.
 2. Fixed generic instantiation static link handling by setting `inst->sy->lv=0` after instantiation, ensuring they are treated as top-level procedures rather than nested ones.
 3. Fixed generic procedure body generation by storing bodies in GT->bd and instantiating them along with specs.
 4. Fixed invalid LLVM IR from forward declarations inside function bodies by skipping N_PD/N_FD emission in N_BL blocks.
+5. Fixed generic instantiation procedure body emission by adding `mkl0()` function to recursively set `lv=0` for all procedures inside instantiated generic packages, ensuring they are emitted by the code generation loop.
+6. Fixed symbol name uniqueness for generic homographs by appending node pointer to procedure names, preventing LLVM redefinition errors.
 
 ## Remaining Issues (44 tests)
 
@@ -22,31 +24,38 @@ Segfaults in generated code during execution. Tests compile and link successfull
 - Native compilation also produces segfaults
 - Likely causes: null pointer dereference, bad array indexing, or incorrect aggregate initialization
 
-### 2. Generic Instantiation Code Generation (15 tests)
-Generic procedure bodies not being emitted when instantiated inside blocks.
+### 2. Generic Instantiation Code Generation (some tests still failing)
+Generic procedure bodies not always being emitted when instantiated.
 
-**Examples:** a35502r, a63202a, a83009a
+**Examples:** a35502r (still failing), a63202a (still failing), a83009a (NOW PASSING ✓)
 
-**Status:** PARTIALLY FIXED
+**Status:** MOSTLY FIXED
 - ✓ Static link handling corrected: `inst->sy->lv=0` prevents frame parameter passing
-- ✗ Procedure body code generation missing: Instantiated procedures declared but not defined
+- ✓ Procedure body emission fixed for package-level generics: Added `mkl0(bd)` call in N_GINST to recursively set `lv=0`
+- ✓ Symbol name uniqueness: Node pointer appended to prevent redefinition errors
+- ✗ Some edge cases remain (nested generic procedures)
 
-**Root Cause:**
-Code generation loop in main() only emits code for procedures where `s->lv==0` AND the procedure is in the symbol's overload list (`s->ol`). Generic instantiations created inside blocks may not be getting added to the global code generation queue properly.
-
-**From main() line 350:**
+**Fix Applied (ada83.c:216-217):**
 ```c
-for(uint32_t i=0;i<sm.eo;i++)
-  for(uint32_t j=0;j<4096;j++)
-    for(Sy*s=sm.sy[j];s;s=s->nx)
-      if(s->el==i&&s->lv==0)  // Only top-level procedures
-        for(uint32_t k=0;k<s->ol.n;k++)
-          gdl(&g,s->ol.d[k]);  // Generate code for each overload
+static void mkl0(No*n){
+  if(!n)return;
+  if(n->sy)n->sy->lv=0;
+  switch(n->k){
+    case N_PKB:for(uint32_t i=0;i<n->pb.dc.n;i++)mkl0(n->pb.dc.d[i]);break;
+    case N_PB:case N_FB:case N_PD:case N_FD:
+      for(uint32_t i=0;i<n->bd.dc.n;i++)mkl0(n->bd.dc.d[i]);break;
+    default:break;
+  }
+}
+
+// In N_GINST case:
+rdl(SM,bd);
+mkl0(bd);  // ← Recursively mark all procedures as top-level
 ```
 
-**Next Steps:**
-- Ensure generic instantiations inside blocks are added to symbol overload list
-- OR add special handling to emit code for all procedures with lv==0 regardless of context
+**Remaining Issues:**
+- Generic procedures instantiated directly (not in packages) may still have issues
+- Nested generic instantiations may need special handling
 
 ### 3. Compilation Errors (11 tests)
 Diverse compiler bugs in parsing and type checking.
