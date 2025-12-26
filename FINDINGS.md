@@ -1,10 +1,11 @@
 # A-Series ACATS Test Findings
 
 ## Current Status
-**100/144 A-series tests passing (69% pass rate)**
+**100/145 A-series tests passing (69% pass rate)**
 
-## Major Achievement
-Fixed symbol name generation for deterministic linking by simplifying format from `PACKAGE__NAME.params.sc.el` to `PACKAGE__NAME.params`.
+## Major Achievements
+1. Fixed symbol name generation for deterministic linking by simplifying format from `PACKAGE__NAME.params.sc.el` to `PACKAGE__NAME.params`.
+2. Fixed generic instantiation static link handling by setting `inst->sy->lv=0` after instantiation, ensuring they are treated as top-level procedures rather than nested ones.
 
 ## Remaining Issues (44 tests)
 
@@ -19,25 +20,31 @@ Segfaults in generated code during execution. Tests compile and link successfull
 - Native compilation also produces segfaults
 - Likely causes: null pointer dereference, bad array indexing, or incorrect aggregate initialization
 
-### 2. Linking Failures (15 tests)
-Unresolved symbol errors, primarily related to nested procedure handling.
+### 2. Generic Instantiation Code Generation (15 tests)
+Generic procedure bodies not being emitted when instantiated inside blocks.
 
 **Examples:** a35502r, a63202a, a83009a
 
-**Root Causes:**
-- `%__frame` undefined: Generic instantiations treated as nested procedures but calling context lacks frame
-- Malformed LLVM IR: declare statements in wrong locations
-- Duplicate function definitions
+**Status:** PARTIALLY FIXED
+- ✓ Static link handling corrected: `inst->sy->lv=0` prevents frame parameter passing
+- ✗ Procedure body code generation missing: Instantiated procedures declared but not defined
 
-**From GNAT Study:**
-GNAT uses "Activation Records" for nested procedures:
-- Creates activation record type for procedures with nested subprograms
-- Passes static link (ptr to activation record) as extra hidden parameter
-- Stores captured variables in activation record
-- Generic instantiations should NOT receive static links
+**Root Cause:**
+Code generation loop in main() only emits code for procedures where `s->lv==0` AND the procedure is in the symbol's overload list (`s->ol`). Generic instantiations created inside blocks may not be getting added to the global code generation queue properly.
 
-**Problem in ada83.c:**
-Generic instantiations like `PROCEDURE NP IS NEW P(COLOR);` get assigned lv > 0 (nested level), causing code gen to expect/pass static links they don't need.
+**From main() line 350:**
+```c
+for(uint32_t i=0;i<sm.eo;i++)
+  for(uint32_t j=0;j<4096;j++)
+    for(Sy*s=sm.sy[j];s;s=s->nx)
+      if(s->el==i&&s->lv==0)  // Only top-level procedures
+        for(uint32_t k=0;k<s->ol.n;k++)
+          gdl(&g,s->ol.d[k]);  // Generate code for each overload
+```
+
+**Next Steps:**
+- Ensure generic instantiations inside blocks are added to symbol overload list
+- OR add special handling to emit code for all procedures with lv==0 regardless of context
 
 ### 3. Compilation Errors (11 tests)
 Diverse compiler bugs in parsing and type checking.
