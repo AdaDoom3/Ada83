@@ -1,0 +1,163 @@
+
+========================================
+Class A Tests
+========================================
+
+  a21001a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a22002a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a22006b            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a22006c            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a22006d            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a22006e            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a22006f            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a26004a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a27003a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a27004a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a28002c            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a28004a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a29002a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a29002b            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a29002c            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a29002d            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a29002e            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a29002f            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a29002g            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a29002h            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a29002i            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a29002j            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a29003a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a2a031a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a32203b            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a32203c            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a32203d            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a33003a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a34017c            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a35101b            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a35402a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a35502q            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a35502r            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a35710a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a35801a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a35801b            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a35801e            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a35801f            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a35902c            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a38106d            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a38106e            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a38199a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a38199b            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a38199c0           SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a38199c1m          SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a38199c2           SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a39005b            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a39005c            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a39005e            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a39005f            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a54b01a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a54b02a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a55b12a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a55b13a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a55b14a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a62006d            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a63202a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a71002a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a71004a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a72001a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a73001i            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a73001j            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a74006a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a74105b            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a74106a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a74106b            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a74106c            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a74205e            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a74205f            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a83009a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a83009b            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a83041b            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a83041c            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a83041d            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a83a02a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a83a02b            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a83a06a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a83a08a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a83c01c            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a83c01d            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a83c01e            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a83c01f            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a83c01g            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a83c01h            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a83c01i            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a83c01j            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a85007d            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a85013b            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a87b59a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a91001i            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a91002m            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a95001c            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a95005a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a95074d            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a97106a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a98001a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a98002a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a99006a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a99007a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a9b001a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a9b002a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  a9b002b            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  aa2010a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  aa2012a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  aa5008x            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ab7006a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ac1015b            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ac3106a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ac3206a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ac3207a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ad1a01a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ad1a01b            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ad1d01e            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ad7001b            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ad7001c0m          SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ad7001c1           SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ad7001d0m          SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ad7001d1           SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ad7005a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ad7006a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ad7101a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ad7101c            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ad7102a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ad7103a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ad7103c            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ad7104a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ad7201a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ad7201e            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ad7203b            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ad7205b            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ad7206a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ada101a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ae2101a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ae2101b            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ae2101d            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ae2101f            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ae2101g            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ae2101i            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ae2113a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ae2113b            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ae3002g            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ae3101a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ae3702a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+  ae3709a            SKIP   COMPILE        timeout: failed to run command './ada83': No such 
+
+========================================
+RESULTS
+========================================
+
+ CLASS                     pass    fail    skip   total    rate
+ ----------------------  ------  ------  ------  ------  ------
+ C  Executable                  0             144     144      0%
+ ----------------------  ------  ------  ------  ------  ------
+ TOTAL                         0       0     144     144      0%
+
+========================================
+ elapsed 4.029s    processed 144 tests    2025-12-26 17:16:57
+========================================
