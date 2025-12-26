@@ -1,0 +1,165 @@
+
+========================================
+Class A Tests
+========================================
+
+  a21001a            FAIL   FAILED         exit 1
+  a22002a            FAIL   FAILED         exit 1
+  a22006b            FAIL   FAILED         exit 1
+  a22006c            FAIL   FAILED         exit 1
+  a22006d            FAIL   FAILED         exit 1
+  a22006e            FAIL   FAILED         exit 1
+  a22006f            FAIL   FAILED         exit 1
+  a26004a            FAIL   FAILED         exit 1
+  a27003a            FAIL   FAILED         exit 1
+  a27004a            FAIL   FAILED         exit 1
+  a28002c            FAIL   FAILED         exit 1
+  a28004a            FAIL   FAILED         exit 1
+  a29002a            FAIL   FAILED         exit 1
+  a29002b            FAIL   FAILED         exit 1
+  a29002c            FAIL   FAILED         exit 1
+  a29002d            FAIL   FAILED         exit 1
+  a29002e            FAIL   FAILED         exit 1
+  a29002f            FAIL   FAILED         exit 1
+  a29002g            FAIL   FAILED         exit 1
+  a29002h            FAIL   FAILED         exit 1
+  a29002i            FAIL   FAILED         exit 1
+  a29002j            FAIL   FAILED         exit 1
+  a29003a            FAIL   FAILED         exit 1
+  a2a031a            FAIL   FAILED         exit 1
+  a32203b            FAIL   FAILED         exit 1
+  a32203c            FAIL   FAILED         exit 1
+  a32203d            FAIL   FAILED         exit 1
+  a33003a            FAIL   FAILED         exit 1
+  a34017c            FAIL   FAILED         exit 1
+  a35101b            FAIL   FAILED         exit 1
+  a35402a            FAIL   FAILED         exit 1
+  a35502q            FAIL   FAILED         exit 1
+  a35502r            SKIP   BIND           unresolved symbols
+  a35710a            FAIL   FAILED         exit 1
+  a35801a            FAIL   FAILED         exit 1
+  a35801b            SKIP   BIND           unresolved symbols
+  a35801e            FAIL   FAILED         exit 1
+  a35801f            FAIL   FAILED         exit 1
+  a35902c            FAIL   FAILED         exit 1
+  a38106d            FAIL   FAILED         exit 1
+  a38106e            FAIL   FAILED         exit 1
+  a38199a            FAIL   FAILED         exit 1
+  a38199b            FAIL   FAILED         exit 1
+  a38199c0           FAIL   FAILED         exit 1
+  a38199c1m          FAIL   FAILED         exit 1
+  a38199c2           FAIL   FAILED         exit 1
+  a39005b            FAIL   FAILED         exit 1
+  a39005c            FAIL   FAILED         exit 1
+  a39005e            FAIL   FAILED         exit 1
+  a39005f            FAIL   FAILED         exit 1
+  a54b01a            FAIL   FAILED         exit 1
+  a54b02a            FAIL   FAILED         exit 1
+  a55b12a            FAIL   FAILED         exit 1
+  a55b13a            FAIL   FAILED         exit 1
+  a55b14a            FAIL   FAILED         exit 1
+  a62006d            FAIL   FAILED         exit 1
+  a63202a            SKIP   BIND           unresolved symbols
+  a71002a            FAIL   FAILED         exit 1
+  a71004a            FAIL   FAILED         exit 1
+  a72001a            FAIL   FAILED         exit 1
+  a73001i            FAIL   FAILED         exit 1
+  a73001j            FAIL   FAILED         exit 1
+  a74006a            FAIL   FAILED         exit 1
+  a74105b            FAIL   FAILED         exit 1
+  a74106a            FAIL   FAILED         exit 1
+  a74106b            FAIL   FAILED         exit 1
+  a74106c            FAIL   FAILED         exit 1
+  a74205e            SKIP   COMPILE        acats/a74205e.ada:111:30: ag gap 0
+  a74205f            FAIL   FAILED         exit 1
+  a83009a            FAIL   FAILED         exit 1
+  a83009b            FAIL   FAILED         exit 1
+  a83041b            SKIP   COMPILE        acats/a83041b.ada:81:16: typ mis
+  a83041c            SKIP   COMPILE        acats/a83041c.ada:67:21: typ mis
+  a83041d            FAIL   FAILED         exit 1
+  a83a02a            FAIL   FAILED         exit 1
+  a83a02b            FAIL   FAILED         exit 1
+  a83a06a            FAIL   FAILED         exit 1
+  a83a08a            SKIP   BIND           unresolved symbols
+  a83c01c            FAIL   FAILED         exit 1
+  a83c01d            SKIP   BIND           unresolved symbols
+  a83c01e            FAIL   FAILED         exit 1
+  a83c01f            SKIP   BIND           unresolved symbols
+  a83c01g            SKIP   BIND           unresolved symbols
+  a83c01h            FAIL   FAILED         exit 1
+  a83c01i            FAIL   FAILED         exit 1
+  a83c01j            FAIL   FAILED         exit 1
+  a85007d            FAIL   FAILED         exit 1
+  a85013b            SKIP   BIND           unresolved symbols
+  a87b59a            SKIP   COMPILE        acats/a87b59a.ada:118:11: typ mis
+  a91001i            FAIL   FAILED         exit 1
+  a91002m            FAIL   FAILED         exit 1
+  a95001c            FAIL   FAILED         exit 1
+  a95005a            FAIL   FAILED         exit 1
+  a95074d            FAIL   FAILED         exit 1
+  a97106a            FAIL   FAILED         exit 1
+  a98001a            FAIL   FAILED         exit 1
+  a98002a            SKIP   COMPILE        acats/a98002a.ada:183:26: exp 'END' got 'id'
+  a99006a            FAIL   FAILED         exit 1
+  a99007a            FAIL   FAILED         exit 1
+  a9b001a            FAIL   FAILED         exit 1
+  a9b002a            FAIL   FAILED         exit 1
+  a9b002b            FAIL   FAILED         exit 1
+  aa2010a            FAIL   FAILED         exit 1
+  aa2012a            SKIP   COMPILE        acats/aa2012a.ada:19:6: typ mis
+  aa5008x            FAIL   FAILED         exit 1
+  ab7006a            FAIL   FAILED         exit 1
+  ac1015b            FAIL   FAILED         exit 1
+  ac3106a            FAIL   FAILED         exit 1
+  ac3206a            FAIL   FAILED         exit 1
+  ac3207a            SKIP   COMPILE        acats/ac3207a.ada:65:6: ?'T1' in pkg
+  ad1a01a            FAIL   FAILED         exit 1
+  ad1a01b            FAIL   FAILED         exit 1
+  ad1d01e            FAIL   FAILED         exit 1
+  ad7001b            SKIP   COMPILE        acats/ad7001b.ada:39:6: typ mis
+  ad7001c0m          FAIL   FAILED         exit 1
+  ad7001c1           SKIP   COMPILE        acats/ad7001c1.ada:20:38: undef 'SYSTEM'
+  ad7001d0m          FAIL   FAILED         exit 1
+  ad7001d1           FAIL   FAILED         exit 1
+  ad7005a            FAIL   FAILED         exit 1
+  ad7006a            FAIL   FAILED         exit 1
+  ad7101a            FAIL   FAILED         exit 1
+  ad7101c            FAIL   FAILED         exit 1
+  ad7102a            FAIL   FAILED         exit 1
+  ad7103a            FAIL   FAILED         exit 1
+  ad7103c            FAIL   FAILED         exit 1
+  ad7104a            FAIL   FAILED         exit 1
+  ad7201a            SKIP   COMPILE        acats/ad7201a.ada:92:18: undef 'G'
+./test.sh: line 20:  4712 Segmentation fault      timeout 0.2 ./ada83 "$f" > test_results/$n.ll 2> acats_logs/$n.err
+  ad7201e            SKIP   COMPILE       
+  ad7203b            FAIL   FAILED         exit 1
+  ad7205b            FAIL   FAILED         exit 1
+  ad7206a            FAIL   FAILED         exit 1
+  ada101a            FAIL   FAILED         exit 1
+  ae2101a            FAIL   FAILED         exit 1
+  ae2101b            FAIL   FAILED         exit 1
+  ae2101d            FAIL   FAILED         exit 1
+  ae2101f            FAIL   FAILED         exit 1
+  ae2101g            FAIL   FAILED         exit 1
+  ae2101i            FAIL   FAILED         exit 1
+  ae2113a            SKIP   BIND           unresolved symbols
+  ae2113b            SKIP   BIND           unresolved symbols
+  ae3002g            FAIL   FAILED         exit 1
+  ae3101a            SKIP   BIND           unresolved symbols
+  ae3702a            FAIL   FAILED         exit 1
+  ae3709a            SKIP   BIND           unresolved symbols
+
+========================================
+RESULTS
+========================================
+
+ CLASS                     pass    fail    skip   total    rate
+ ----------------------  ------  ------  ------  ------  ------
+ B  Illegality                  0     121             121      0%
+ C  Executable                  0              23      23      0%
+ ----------------------  ------  ------  ------  ------  ------
+ TOTAL                         0     121      23     144      0%
+
+========================================
+ elapsed 14.474s    processed 144 tests    2025-12-26 19:03:05
+========================================
