@@ -1,11 +1,13 @@
 # A-Series ACATS Test Findings
 
 ## Current Status
-**100/145 A-series tests passing (69% pass rate)**
+**101/145 A-series tests passing (70% pass rate)**
 
 ## Major Achievements
 1. Fixed symbol name generation for deterministic linking by simplifying format from `PACKAGE__NAME.params.sc.el` to `PACKAGE__NAME.params`.
 2. Fixed generic instantiation static link handling by setting `inst->sy->lv=0` after instantiation, ensuring they are treated as top-level procedures rather than nested ones.
+3. Fixed generic procedure body generation by storing bodies in GT->bd and instantiating them along with specs.
+4. Fixed invalid LLVM IR from forward declarations inside function bodies by skipping N_PD/N_FD emission in N_BL blocks.
 
 ## Remaining Issues (44 tests)
 
