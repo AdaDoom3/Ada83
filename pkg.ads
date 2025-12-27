@@ -1,0 +1,3 @@
+PACKAGE PKG IS
+   C : CONSTANT := 1.5;
+END PKG;
