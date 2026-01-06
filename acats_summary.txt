@@ -1,0 +1,2 @@
+A-series ACATS test status: 108/144 passing (75%)
+A=108 B=0 C=0 D=0 E=0 L=0 F=118 S=26 T=108/144 (75%) ERR=0/0
