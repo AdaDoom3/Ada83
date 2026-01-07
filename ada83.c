@@ -125,11 +125,140 @@ typedef struct{Sy*sy[4096];int sc;int ss;No*ds;No*pk;SV uv;int eo;LV lu;GV gt;jm
 static uint32_t syh(S s){return sh(s)&4095;}
 static Sy*syn(S nm,uint8_t k,Ty*ty,No*df){Sy*s=al(sizeof(Sy));s->nm=sd(nm);s->k=k;s->ty=ty;s->df=df;s->el=-1;s->lv=-1;return s;}
 static Sy*sya(Sm*SM,Sy*s){uint32_t h=syh(s->nm);s->hm=SM->sy[h];s->nx=SM->sy[h];s->sc=SM->sc;s->ss=SM->ss;s->el=SM->eo++;s->lv=SM->lv;s->vis=1;uint64_t u=sh(s->nm);if(s->pr)u=u*31+sh(s->pr->nm);s->uid=(uint32_t)(u&0xFFFFFFFF);SM->sy[h]=s;if(SM->ssd<256)SM->sst[SM->ssd++]=s;return s;}
-static Sy*syf(Sm*SM,S nm){Sy*imm=0,*pot=0;uint32_t h=syh(nm);for(Sy*s=SM->sy[h];s;s=s->nx)if(si(s->nm,nm)){if(s->vis&1&&(!imm||s->sc>imm->sc))imm=s;if(s->vis&2&&(!pot||s->sc>pot->sc))pot=s;}for(uint32_t i=0;i<SM->uv.n;i++)for(Sy*u=SM->uv.d[i];u;u=u->nx)if(si(u->nm,nm)&&(u->vis&2)&&(!pot||u->sc>pot->sc))pot=u;if(imm)return imm;for(Sy*s=SM->sy[h];s;s=s->nx)if(si(s->nm,nm)&&(!imm||s->sc>imm->sc))imm=s;if(!imm)for(uint32_t i=0;i<SM->uv.n;i++)for(Sy*u=SM->uv.d[i];u;u=u->nx)if(si(u->nm,nm)&&(!imm||u->sc>imm->sc))imm=u;return imm?:pot;}
-static void sfu(Sm*SM,Sy*s,S nm){uint32_t h=syh(nm)&63,b=1ULL<<(syh(nm)&63);if(SM->uv_vis[h]&b)return;SM->uv_vis[h]|=b;for(Sy*p=s;p;p=p->nx)if(si(p->nm,nm)&&p->k==6&&p->df&&p->df->k==N_PKS){No*pk=p->df;for(uint32_t i=0;i<pk->ps.dc.n;i++){No*d=pk->ps.dc.d[i];if(d->sy){sv(&s->us,d->sy);d->sy->vis|=2;sv(&SM->uv,d->sy);}else if(d->k==N_ED){for(uint32_t j=0;j<d->ed.id.n;j++){No*e=d->ed.id.d[j];if(e->sy){sv(&s->us,e->sy);e->sy->vis|=2;sv(&SM->uv,e->sy);sv(&SM->ex,e->sy);}}}else if(d->k==N_OD){for(uint32_t j=0;j<d->od.id.n;j++){No*oid=d->od.id.d[j];if(oid->sy){sv(&s->us,oid->sy);oid->sy->vis|=2;sv(&SM->uv,oid->sy);}}}}if(SM->dpn<256){bool f=0;for(int i=0;i<SM->dpn;i++)if(SM->dps[i].n&&si(SM->dps[i].d[0]->nm,p->nm)){f=1;break;}if(!f){sv(&SM->dps[SM->dpn],p);SM->dpn++;}}}SM->uv_vis[h]&=~b;}
+static Sy*syf(Sm*SM,S nm){
+    // GNAT principle: Check visibility flags, symbols stay in single hash table
+    Sy*imm=0,*pot=0;
+    uint32_t h=syh(nm);
+
+    // First pass: find immediately visible (vis&1) and potentially USE-visible (vis&2)
+    for(Sy*s=SM->sy[h];s;s=s->nx){
+        if(si(s->nm,nm)){
+            // Immediate visibility: prefer innermost scope (higher sc)
+            if(s->vis&1&&(!imm||s->sc>imm->sc))imm=s;
+            // USE visibility: any symbol with vis&2 is visible, no scope filtering
+            if(s->vis&2&&!pot)pot=s;
+        }
+    }
+
+    // Immediately visible wins
+    if(imm)return imm;
+
+    // USE-visible next
+    if(pot)return pot;
+
+    // Third pass: if no visible symbol, find any match for better error messages
+    for(Sy*s=SM->sy[h];s;s=s->nx)
+        if(si(s->nm,nm)&&(!imm||s->sc>imm->sc))imm=s;
+
+    return imm;
+}
+static void sfu(Sm*SM,Sy*s,S nm){
+    // GNAT principle: Set visibility flags on entities, don't copy to separate list
+    uint32_t h=syh(nm)&63,b=1ULL<<(syh(nm)&63);
+    if(SM->uv_vis[h]&b)return;
+    SM->uv_vis[h]|=b;
+    for(Sy*p=s;p;p=p->nx)if(si(p->nm,nm)&&p->k==6&&p->df&&p->df->k==N_PKS){
+        No*pk=p->df;
+        for(uint32_t i=0;i<pk->ps.dc.n;i++){
+            No*d=pk->ps.dc.d[i];
+            if(d->sy){
+                sv(&s->us,d->sy);
+                d->sy->vis|=2;  // Set USE-visible flag on entity itself
+                // REMOVED: sv(&SM->uv,d->sy); - Don't add to separate list
+            }else if(d->k==N_ED){
+                for(uint32_t j=0;j<d->ed.id.n;j++){
+                    No*e=d->ed.id.d[j];
+                    if(e->sy){
+                        sv(&s->us,e->sy);
+                        e->sy->vis|=2;
+                        // REMOVED: sv(&SM->uv,e->sy);
+                        sv(&SM->ex,e->sy);
+                    }
+                }
+            }else if(d->k==N_OD){
+                for(uint32_t j=0;j<d->od.id.n;j++){
+                    No*oid=d->od.id.d[j];
+                    if(oid->sy){
+                        sv(&s->us,oid->sy);
+                        oid->sy->vis|=2;
+                        // REMOVED: sv(&SM->uv,oid->sy);
+                    }
+                }
+            }
+        }
+        if(SM->dpn<256){
+            bool f=0;
+            for(int i=0;i<SM->dpn;i++)
+                if(SM->dps[i].n&&si(SM->dps[i].d[0]->nm,p->nm)){f=1;break;}
+            if(!f){sv(&SM->dps[SM->dpn],p);SM->dpn++;}
+        }
+    }
+    SM->uv_vis[h]&=~b;
+}
 static GT*gfnd(Sm*SM,S nm){for(uint32_t i=0;i<SM->gt.n;i++){GT*g=SM->gt.d[i];if(si(g->nm,nm))return g;}return 0;}
 static int tysc(Ty*,Ty*,Ty*);
-static Sy*syfa(Sm*SM,S nm,int na,Ty*tx){SV cv={0};int msc=-1;for(Sy*s=SM->sy[syh(nm)];s;s=s->nx)if(si(s->nm,nm)&&(s->vis&1)){if(s->sc>msc){cv.n=0;msc=s->sc;}if(s->sc==msc)sv(&cv,s);}for(uint32_t i=0;i<SM->uv.n;i++)for(Sy*u=SM->uv.d[i];u;u=u->nx)if(si(u->nm,nm)&&(u->vis&2)){if(u->sc>msc){cv.n=0;msc=u->sc;}if(u->sc==msc)sv(&cv,u);}if(!cv.n)return 0;if(cv.n==1)return cv.d[0];Sy*br=0;int bs=-1;for(uint32_t i=0;i<cv.n;i++){Sy*c=cv.d[i];int sc=0;if((c->k==4||c->k==5)&&na>=0){if(c->ol.n>0){for(uint32_t j=0;j<c->ol.n;j++){No*b=c->ol.d[j];if(b->k==N_PB||b->k==N_FB){int np=b->bd.sp->sp.pmm.n;if(np==na){sc+=1000;if(tx&&c->ty&&c->ty->el){int ts=tysc(c->ty->el,tx,0);sc+=ts;}for(uint32_t k=0;k<b->bd.sp->sp.pmm.n&&k<(uint32_t)na;k++){No*p=b->bd.sp->sp.pmm.d[k];if(p->sy&&p->sy->ty&&tx){int ps=tysc(p->sy->ty,tx,0);sc+=ps;}}if(sc>bs){bs=sc;br=c;}}}}}else if(c->k==1){if(na==1){sc=500;if(tx){int ts=tysc(c->ty,tx,0);sc+=ts;}if(sc>bs){bs=sc;br=c;}}}}else if(c->k==1&&na<0){sc=100;if(sc>bs){bs=sc;br=c;}}}return br?:cv.d[0];}
+static Sy*syfa(Sm*SM,S nm,int na,Ty*tx){
+    // GNAT principle: Check visibility flags in hash table only
+    SV cv={0};
+    int msc=-1;
+
+    // Collect all visible symbols (immediate or USE-visible)
+    for(Sy*s=SM->sy[syh(nm)];s;s=s->nx){
+        if(si(s->nm,nm)&&(s->vis&3)){  // vis&1 or vis&2
+            if(s->sc>msc){cv.n=0;msc=s->sc;}
+            if(s->sc==msc)sv(&cv,s);
+        }
+    }
+
+    if(!cv.n)return 0;
+    if(cv.n==1)return cv.d[0];
+
+    // Resolve overloading
+    Sy*br=0;
+    int bs=-1;
+    for(uint32_t i=0;i<cv.n;i++){
+        Sy*c=cv.d[i];
+        int sc=0;
+        if((c->k==4||c->k==5)&&na>=0){
+            if(c->ol.n>0){
+                for(uint32_t j=0;j<c->ol.n;j++){
+                    No*b=c->ol.d[j];
+                    if(b->k==N_PB||b->k==N_FB){
+                        int np=b->bd.sp->sp.pmm.n;
+                        if(np==na){
+                            sc+=1000;
+                            if(tx&&c->ty&&c->ty->el){
+                                int ts=tysc(c->ty->el,tx,0);
+                                sc+=ts;
+                            }
+                            for(uint32_t k=0;k<b->bd.sp->sp.pmm.n&&k<(uint32_t)na;k++){
+                                No*p=b->bd.sp->sp.pmm.d[k];
+                                if(p->sy&&p->sy->ty&&tx){
+                                    int ps=tysc(p->sy->ty,tx,0);
+                                    sc+=ps;
+                                }
+                            }
+                            if(sc>bs){bs=sc;br=c;}
+                        }
+                    }
+                }
+            }else if(c->k==1){
+                if(na==1){
+                    sc=500;
+                    if(tx){
+                        int ts=tysc(c->ty,tx,0);
+                        sc+=ts;
+                    }
+                    if(sc>bs){bs=sc;br=c;}
+                }
+            }
+        }else if(c->k==1&&na<0){
+            sc=100;
+            if(sc>bs){bs=sc;br=c;}
+        }
+    }
+    return br?:cv.d[0];
+}
 static Ty*tyn(Tk_ k,S nm){Ty*t=al(sizeof(Ty));t->k=k;t->nm=sd(nm);t->sz=8;t->al=8;return t;}
 static Ty*TY_INT,*TY_BOOL,*TY_CHAR,*TY_STR,*TY_FLT,*TY_UINT,*TY_UFLT,*TY_FILE,*TY_NAT,*TY_POS;
 static void smi(Sm*SM){memset(SM,0,sizeof(*SM));TY_INT=tyn(TY_I,Z("INTEGER"));TY_INT->lo=-2147483648LL;TY_INT->hi=2147483647LL;TY_NAT=tyn(TY_I,Z("NATURAL"));TY_NAT->lo=0;TY_NAT->hi=2147483647LL;TY_POS=tyn(TY_I,Z("POSITIVE"));TY_POS->lo=1;TY_POS->hi=2147483647LL;TY_BOOL=tyn(TY_B,Z("BOOLEAN"));TY_CHAR=tyn(TY_C,Z("CHARACTER"));TY_CHAR->sz=1;TY_STR=tyn(TY_A,Z("STRING"));TY_STR->el=TY_CHAR;TY_STR->lo=0;TY_STR->hi=-1;TY_STR->ix=TY_POS;TY_FLT=tyn(TY_F,Z("FLOAT"));TY_UINT=tyn(TY_UI,Z("universal_integer"));TY_UFLT=tyn(TY_UF,Z("universal_real"));TY_FILE=tyn(TY_FT,Z("FILE_TYPE"));sya(SM,syn(Z("INTEGER"),1,TY_INT,0));sya(SM,syn(Z("NATURAL"),1,TY_NAT,0));sya(SM,syn(Z("POSITIVE"),1,TY_POS,0));sya(SM,syn(Z("BOOLEAN"),1,TY_BOOL,0));Sy*st=sya(SM,syn(Z("TRUE"),2,TY_BOOL,0));st->vl=1;sv(&TY_BOOL->ev,st);Sy*sf=sya(SM,syn(Z("FALSE"),2,TY_BOOL,0));sf->vl=0;sv(&TY_BOOL->ev,sf);sya(SM,syn(Z("CHARACTER"),1,TY_CHAR,0));sya(SM,syn(Z("STRING"),1,TY_STR,0));sya(SM,syn(Z("FLOAT"),1,TY_FLT,0));sya(SM,syn(Z("FILE_TYPE"),1,TY_FILE,0));sya(SM,syn(Z("CONSTRAINT_ERROR"),3,0,0));sya(SM,syn(Z("PROGRAM_ERROR"),3,0,0));sya(SM,syn(Z("STORAGE_ERROR"),3,0,0));sya(SM,syn(Z("TASKING_ERROR"),3,0,0));fv(&SM->io,stdin);fv(&SM->io,stdout);fv(&SM->io,stderr);SM->fn=3;}
@@ -140,17 +269,25 @@ static void fty(Sm*SM,Ty*t,L l){if(!t||t->frz)return;if(t->k==TY_PT&&t->prt&&!t-
 static void fsy(Sm*SM,Sy*s,L l){if(!s||s->frz)return;s->frz=1;s->fzn=ND(ERR,l);if(s->ty&&!s->ty->frz)fty(SM,s->ty,l);}
 static void fal(Sm*SM,L l){for(int i=0;i<4096;i++)for(Sy*s=SM->sy[i];s;s=s->nx)if(s->sc==SM->sc&&!s->frz){if(s->ty&&s->ty->k==TY_PT&&s->ty->prt&&!s->ty->prt->frz)continue;if(s->ty)fty(SM,s->ty,l);fsy(SM,s,l);}}
 static void scp(Sm*SM){SM->sc++;SM->ss++;if(SM->ssd<256){int m=SM->ssd;SM->ssd++;SM->sst[m]=0;}}
-static bool in_uv(Sm*SM,Sy*s){for(uint32_t i=0;i<SM->uv.n;i++)for(Sy*u=SM->uv.d[i];u;u=u->nx)if(u==s)return 1;return 0;}
 static void sco(Sm*SM){
     // GNAT LLVM principle: Symbols NEVER removed, only visibility changed
     fal(SM,(L){0,0,""});
     for(int i=0;i<4096;i++){
         for(Sy*s=SM->sy[i];s;s=s->nx){
             if(s->sc==SM->sc){
-                // Mark as not immediately visible instead of removing
+                // Clear immediate visibility (vis&1)
                 s->vis&=~1;
                 // Packages keep full visibility
                 if(s->k==6)s->vis=3;
+            }
+            // Clear USE-visible flag (vis&2) for symbols from closing scope
+            // USE visibility is scope-dependent
+            if(s->vis&2){
+                // Check if this symbol was USE'd from a package in this scope
+                // If we're closing the scope, clear the USE-visible flag
+                bool from_closing_scope=0;
+                if(s->pr&&s->pr->sc>=SM->sc)from_closing_scope=1;
+                if(from_closing_scope)s->vis&=~2;
             }
         }
     }
