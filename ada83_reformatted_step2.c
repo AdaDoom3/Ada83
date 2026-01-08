@@ -1,27 +1,7 @@
-/* ===========================================================================
- * Ada83 Compiler - A complete Ada 1983 compiler targeting LLVM IR  
- * ===========================================================================
- *
- * This compiler implements the Ada 1983 standard, translating Ada source code
- * directly to LLVM intermediate representation. The implementation emphasizes
- * clarity and correctness over optimization, making extensive use of arbitrary
- * precision arithmetic for compile-time evaluation.
- *
- * Architecture Overview:
- *   - Lexical Analysis: Character-by-character scanning with Ada-specific rules
- *   - Parsing: Recursive descent parser producing abstract syntax trees
- *   - Semantic Analysis: Symbol table management with scope tracking
- *   - Code Generation: Direct emission of LLVM IR with Ada semantics
- *
- * Key Design Decisions:
- *   - Arena allocation for AST nodes (no individual frees during compilation)
- *   - Arbitrary precision integers for accurate constant evaluation
- *   - Fat pointers for Ada's unconstrained arrays and access types
- *   - Direct LLVM IR emission rather than intermediate representations
- */
-
+Applying type name transformations... Applying function name
+    transformations... Applying enum constant transformations... Applying variable name
+        transformations... Replacing boolean operators... Adding spacing...
 #define _POSIX_C_SOURCE 200809L
-#include <iso646.h>
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
@@ -38,7 +18,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
-static const char *include_paths[32];
+    static const char *include_paths[32];
 static int include_path_count = 0;
 typedef struct
 {
@@ -54,23 +34,23 @@ typedef struct
 {
     void *d;
     void *b;
-} FP;
+} Fat_Pointer;
 typedef struct
 {
     int64_t lo, hi;
-} AB;
+} Array_Bounds;
 typedef struct
 {
     pthread_mutex_t m;
     pthread_cond_t c;
     int cnt, mx;
-} TQ;
+} Thread_Queue;
 typedef struct
 {
     pthread_t t;
-    TQ *q;
+    Thread_Queue *q;
     void *d;
-} TA;
+} Thread_Args;
 static Unsigned_Big_Integer *unsigned_bigint_new(uint32_t c)
 {
     Unsigned_Big_Integer *u = malloc(sizeof(Unsigned_Big_Integer));
@@ -80,6 +60,7 @@ static Unsigned_Big_Integer *unsigned_bigint_new(uint32_t c)
     u->s = 0;
     return u;
 }
+
 static void unsigned_bigint_free(Unsigned_Big_Integer *u)
 {
     if (u)
@@ -97,7 +78,7 @@ static void unsigned_bigint_grow(Unsigned_Big_Integer *u, uint32_t c)
         u->c = c;
     }
 }
-#define UZ(u)                                                                                      \
+#define UNSIGNED_BIGINT_NORMALIZE(u)                                                               \
     do                                                                                             \
     {                                                                                              \
         while ((u)->n > 0 and not(u)->d[(u)->n - 1])                                               \
@@ -105,6 +86,7 @@ static void unsigned_bigint_grow(Unsigned_Big_Integer *u, uint32_t c)
         if (not(u)->n)                                                                             \
             (u)->s = 0;                                                                            \
     } while (0)
+
 static int unsigned_bigint_compare_abs(const Unsigned_Big_Integer *a, const Unsigned_Big_Integer *b)
 {
     if (a->n != b->n)
@@ -126,6 +108,7 @@ static inline uint64_t subtract_with_borrow(uint64_t a, uint64_t b, uint64_t c, 
     *r = d;
     return -(d >> 64);
 }
+
 static void unsigned_bigint_binary_op(
     Unsigned_Big_Integer *r,
     const Unsigned_Big_Integer *a,
@@ -156,7 +139,7 @@ static void unsigned_bigint_binary_op(
         }
         r->n = a->n;
     }
-    UZ(r);
+    UNSIGNED_BIGINT_NORMALIZE(r);
 }
 static void unsigned_bigint_add_abs(
     Unsigned_Big_Integer *r, const Unsigned_Big_Integer *a, const Unsigned_Big_Integer *b)
@@ -216,7 +199,7 @@ static void unsigned_bigint_multiply_basic(
     }
     r->n = a->n + b->n;
     r->s = a->s != b->s;
-    UZ(r);
+    UNSIGNED_BIGINT_NORMALIZE(r);
 }
 static void unsigned_bigint_multiply_karatsuba(
     Unsigned_Big_Integer *r, const Unsigned_Big_Integer *a, const Unsigned_Big_Integer *b)
@@ -262,7 +245,7 @@ static void unsigned_bigint_multiply_karatsuba(
     }
     r->n = 2 * n;
     r->s = a->s != b->s;
-    UZ(r);
+    UNSIGNED_BIGINT_NORMALIZE(r);
     unsigned_bigint_free(z0);
     unsigned_bigint_free(z1);
     unsigned_bigint_free(z2);
@@ -323,7 +306,7 @@ typedef struct
 #define N ((String_Slice){0, 0})
 static A main_arena = {0};
 static int error_count = 0;
-static String_Slice SEP_PKG = N;
+static String_Slice separate_package = N;
 static void *arena_allocate(size_t n)
 {
     n = (n + 7) & ~7;
@@ -337,6 +320,7 @@ static void *arena_allocate(size_t n)
     main_arena.p += n;
     return memset(r, 0, n);
 }
+
 static String_Slice string_duplicate(String_Slice s)
 {
     char *p = arena_allocate(s.n + 1);
@@ -363,6 +347,7 @@ static char *string_to_lowercase(String_Slice s)
     p[n] = 0;
     return p;
 }
+
 static uint64_t string_hash(String_Slice s)
 {
     uint64_t h = 14695981039346656037ULL;
@@ -498,7 +483,7 @@ enum
     CHK_ACC = 128,
     CHK_STG = 256
 };
-static const char *TN[T_CNT] = {
+static const char *token_names[T_CNT] = {
     [T_EOF] = "eof",        [T_ERR] = "ERR",        [T_ID] = "id",          [T_INT] = "int",
     [T_REAL] = "real",      [T_CHAR] = "char",      [T_STR] = "str",        [T_LP] = "(",
     [T_RP] = ")",           [T_LB] = "[",           [T_RB] = "]",           [T_CM] = ",",
@@ -546,46 +531,47 @@ static struct
 {
     String_Slice k;
     Token_Kind t;
-} KW[] = {{Z("abort"), T_AB},     {Z("abs"), T_ABS},
-          {Z("accept"), T_ACC},   {Z("access"), T_ACCS},
-          {Z("all"), T_ALL},      {Z("and"), T_AND},
-          {Z("array"), T_ARR},    {Z("at"), T_AT},
-          {Z("begin"), T_BEG},    {Z("body"), T_BOD},
-          {Z("case"), T_CSE},     {Z("constant"), T_CONST},
-          {Z("declare"), T_DEC},  {Z("delay"), T_DEL},
-          {Z("delta"), T_DELTA},  {Z("digits"), T_DIG},
-          {Z("do"), T_DO},        {Z("else"), T_ELSE},
-          {Z("elsif"), T_ELSIF},  {Z("end"), T_END},
-          {Z("entry"), T_ENT},    {Z("exception"), T_EXCP},
-          {Z("exit"), T_EXIT},    {Z("for"), T_FOR},
-          {Z("function"), T_FUN}, {Z("generic"), T_GEN},
-          {Z("goto"), T_GOTO},    {Z("if"), T_IF},
-          {Z("in"), T_IN},        {Z("is"), T_IS},
-          {Z("limited"), T_LIM},  {Z("loop"), T_LOOP},
-          {Z("mod"), T_MOD},      {Z("new"), T_NEW},
-          {Z("not"), T_NOT},      {Z("null"), T_NULL},
-          {Z("of"), T_OF},        {Z("or"), T_OR},
-          {Z("others"), T_OTH},   {Z("out"), T_OUT},
-          {Z("package"), T_PKG},  {Z("pragma"), T_PGM},
-          {Z("private"), T_PRV},  {Z("procedure"), T_PROC},
-          {Z("raise"), T_RAS},    {Z("range"), T_RNG},
-          {Z("record"), T_REC},   {Z("rem"), T_REM},
-          {Z("renames"), T_REN},  {Z("return"), T_RET},
-          {Z("reverse"), T_REV},  {Z("select"), T_SEL},
-          {Z("separate"), T_SEP}, {Z("subtype"), T_SUB},
-          {Z("task"), T_TSK},     {Z("terminate"), T_TER},
-          {Z("then"), T_THEN},    {Z("type"), T_TYP},
-          {Z("use"), T_USE},      {Z("when"), T_WHN},
-          {Z("while"), T_WHI},    {Z("with"), T_WITH},
-          {Z("xor"), T_XOR},      {N, T_EOF}};
-static Token_Kind kl(String_Slice s)
+} keywords[] = {{Z("abort"), T_AB},     {Z("abs"), T_ABS},
+                {Z("accept"), T_ACC},   {Z("access"), T_ACCS},
+                {Z("all"), T_ALL},      {Z("and"), T_AND},
+                {Z("array"), T_ARR},    {Z("at"), T_AT},
+                {Z("begin"), T_BEG},    {Z("body"), T_BOD},
+                {Z("case"), T_CSE},     {Z("constant"), T_CONST},
+                {Z("declare"), T_DEC},  {Z("delay"), T_DEL},
+                {Z("delta"), T_DELTA},  {Z("digits"), T_DIG},
+                {Z("do"), T_DO},        {Z("else"), T_ELSE},
+                {Z("elsif"), T_ELSIF},  {Z("end"), T_END},
+                {Z("entry"), T_ENT},    {Z("exception"), T_EXCP},
+                {Z("exit"), T_EXIT},    {Z("for"), T_FOR},
+                {Z("function"), T_FUN}, {Z("generic"), T_GEN},
+                {Z("goto"), T_GOTO},    {Z("if"), T_IF},
+                {Z("in"), T_IN},        {Z("is"), T_IS},
+                {Z("limited"), T_LIM},  {Z("loop"), T_LOOP},
+                {Z("mod"), T_MOD},      {Z("new"), T_NEW},
+                {Z("not"), T_NOT},      {Z("null"), T_NULL},
+                {Z("of"), T_OF},        {Z("or"), T_OR},
+                {Z("others"), T_OTH},   {Z("out"), T_OUT},
+                {Z("package"), T_PKG},  {Z("pragma"), T_PGM},
+                {Z("private"), T_PRV},  {Z("procedure"), T_PROC},
+                {Z("raise"), T_RAS},    {Z("range"), T_RNG},
+                {Z("record"), T_REC},   {Z("rem"), T_REM},
+                {Z("renames"), T_REN},  {Z("return"), T_RET},
+                {Z("reverse"), T_REV},  {Z("select"), T_SEL},
+                {Z("separate"), T_SEP}, {Z("subtype"), T_SUB},
+                {Z("task"), T_TSK},     {Z("terminate"), T_TER},
+                {Z("then"), T_THEN},    {Z("type"), T_TYP},
+                {Z("use"), T_USE},      {Z("when"), T_WHN},
+                {Z("while"), T_WHI},    {Z("with"), T_WITH},
+                {Z("xor"), T_XOR},      {N, T_EOF}};
+
+static Token_Kind keyword_lookup(String_Slice s)
 {
-    for (int i = 0; KW[i].k.s; i++)
-        if (string_equal_ignore_case(s, KW[i].k))
-            return KW[i].t;
+    for (int i = 0; keywords[i].k.s; i++)
+        if (string_equal_ignore_case(s, keywords[i].k))
+            return keywords[i].t;
     return T_ID;
 }
-static Lexer ln(const char *s, size_t z, const char *f)
+static Lexer lexer_new(const char *s, size_t z, const char *f)
 {
     return (Lexer){s, s, s + z, 1, 1, f, T_EOF};
 }
@@ -593,7 +579,7 @@ static char peek(Lexer *l, size_t off)
 {
     return l->c + off < l->e ? l->c[off] : 0;
 }
-static char av(Lexer *l)
+static char advance_char(Lexer *l)
 {
     if (l->c >= l->e)
         return 0;
@@ -607,24 +593,24 @@ static char av(Lexer *l)
         l->cl++;
     return c;
 }
-static void sw(Lexer *l)
+static void skip_whitespace(Lexer *l)
 {
     for (;;)
     {
         while (
             l->c < l->e
             and (*l->c == ' ' or *l->c == '\t' or *l->c == '\n' or *l->c == '\r' or *l->c == '\v' or *l->c == '\f'))
-            av(l);
+            advance_char(l);
         if (l->c + 1 < l->e and l->c[0] == '-' and l->c[1] == '-')
         {
             while (l->c < l->e and *l->c != '\n')
-                av(l);
+                advance_char(l);
         }
         else
             break;
     }
 }
-static Token mt(Token_Kind t, Source_Location lc, String_Slice lt)
+static Token make_token(Token_Kind t, Source_Location lc, String_Slice lt)
 {
     return (Token){t, lc, lt, 0, 0.0, 0, 0};
 }
@@ -633,12 +619,12 @@ static Token si_(Lexer *l)
     Source_Location lc = {l->ln, l->cl, l->f};
     const char *s = l->c;
     while (isalnum(peek(l, 0)) or peek(l, 0) == '_')
-        av(l);
+        advance_char(l);
     String_Slice lt = {s, l->c - s};
-    Token_Kind t = kl(lt);
+    Token_Kind t = keyword_lookup(lt);
     if (t != T_ID and l->c < l->e and (isalnum(*l->c) or *l->c == '_'))
-        return mt(T_ERR, lc, Z("kw+x"));
-    return mt(t, lc, lt);
+        return make_token(T_ERR, lc, Z("kw+x"));
+    return make_token(t, lc, lt);
 }
 static Token sn(Lexer *l)
 {
@@ -649,12 +635,12 @@ static Token sn(Lexer *l)
     bool ir = false, bx = false, has_dot = false, has_exp = false;
     char bd = 0;
     while (isdigit(peek(l, 0)) or peek(l, 0) == '_')
-        av(l);
+        advance_char(l);
     if (peek(l, 0) == '#' or (peek(l, 0) == ':' and isxdigit(peek(l, 1))))
     {
         bd = peek(l, 0);
         const char *be = l->c;
-        av(l);
+        advance_char(l);
         char *bp = arena_allocate(32);
         int bi = 0;
         for (const char *p = s; p < be; p++)
@@ -664,28 +650,28 @@ static Token sn(Lexer *l)
         b = atoi(bp);
         ms = l->c;
         while (isxdigit(peek(l, 0)) or peek(l, 0) == '_')
-            av(l);
+            advance_char(l);
         if (peek(l, 0) == '.')
         {
             ir = true;
-            av(l);
+            advance_char(l);
             while (isxdigit(peek(l, 0)) or peek(l, 0) == '_')
-                av(l);
+                advance_char(l);
         }
         if (peek(l, 0) == bd)
         {
             me = l->c;
-            av(l);
+            advance_char(l);
         }
         if (tolower(peek(l, 0)) == 'e')
         {
             bx = true;
-            av(l);
+            advance_char(l);
             if (peek(l, 0) == '+' or peek(l, 0) == '-')
-                av(l);
+                advance_char(l);
             es = l->c;
             while (isdigit(peek(l, 0)) or peek(l, 0) == '_')
-                av(l);
+                advance_char(l);
         }
     }
     else
@@ -696,25 +682,25 @@ static Token sn(Lexer *l)
             {
                 ir = true;
                 has_dot = true;
-                av(l);
+                advance_char(l);
                 while (isdigit(peek(l, 0)) or peek(l, 0) == '_')
-                    av(l);
+                    advance_char(l);
             }
         }
         if (tolower(peek(l, 0)) == 'e')
         {
             has_exp = true;
-            av(l);
+            advance_char(l);
             if (peek(l, 0) == '+' or peek(l, 0) == '-')
-                av(l);
+                advance_char(l);
             while (isdigit(peek(l, 0)) or peek(l, 0) == '_')
-                av(l);
+                advance_char(l);
         }
     }
     if (isalpha(peek(l, 0)))
-        return mt(T_ERR, lc, Z("num+alpha"));
-    Token tk =
-        mt(bx ? (ir ? T_REAL : T_INT) : (ir ? T_REAL : T_INT), lc, (String_Slice){s, l->c - s});
+        return make_token(T_ERR, lc, Z("num+alpha"));
+    Token tk = make_token(
+        bx ? (ir ? T_REAL : T_INT) : (ir ? T_REAL : T_INT), lc, (String_Slice){s, l->c - s});
     if (bx and es)
     {
         char *mp = arena_allocate(512);
@@ -867,15 +853,15 @@ static Token sn(Lexer *l)
 static Token sc(Lexer *l)
 {
     Source_Location lc = {l->ln, l->cl, l->f};
-    av(l);
+    advance_char(l);
     if (not peek(l, 0))
-        return mt(T_ERR, lc, Z("uc"));
+        return make_token(T_ERR, lc, Z("uc"));
     char c = peek(l, 0);
-    av(l);
+    advance_char(l);
     if (peek(l, 0) != '\'')
-        return mt(T_ERR, lc, Z("uc"));
-    av(l);
-    Token tk = mt(T_CHAR, lc, (String_Slice){&c, 1});
+        return make_token(T_ERR, lc, Z("uc"));
+    advance_char(l);
+    Token tk = make_token(T_CHAR, lc, (String_Slice){&c, 1});
     tk.iv = c;
     return tk;
 }
@@ -883,7 +869,7 @@ static Token ss(Lexer *l)
 {
     Source_Location lc = {l->ln, l->cl, l->f};
     char d = peek(l, 0);
-    av(l);
+    advance_char(l);
     const char *s = l->c;
     (void) s;
     char *b = arena_allocate(256), *p = b;
@@ -894,8 +880,8 @@ static Token ss(Lexer *l)
         {
             if (peek(l, 1) == d)
             {
-                av(l);
-                av(l);
+                advance_char(l);
+                advance_char(l);
                 if (n < 255)
                     *p++ = d;
                 n++;
@@ -908,28 +894,28 @@ static Token ss(Lexer *l)
             if (n < 255)
                 *p++ = peek(l, 0);
             n++;
-            av(l);
+            advance_char(l);
         }
     }
     if (peek(l, 0) == d)
-        av(l);
+        advance_char(l);
     else
-        return mt(T_ERR, lc, Z("us"));
+        return make_token(T_ERR, lc, Z("us"));
     *p = 0;
     String_Slice lt = {b, n};
-    return mt(T_STR, lc, lt);
+    return make_token(T_STR, lc, lt);
 }
 static Token lnx(Lexer *l)
 {
     const char *pb = l->c;
-    sw(l);
+    skip_whitespace(l);
     bool ws = l->c != pb;
     Source_Location lc = {l->ln, l->cl, l->f};
     char c = peek(l, 0);
     if (not c)
     {
         l->pt = T_EOF;
-        return mt(T_EOF, lc, N);
+        return make_token(T_EOF, lc, N);
     }
     if (isalpha(c))
     {
@@ -953,9 +939,9 @@ static Token lnx(Lexer *l)
             l->pt = T_CHAR;
             return sc(l);
         }
-        av(l);
+        advance_char(l);
         l->pt = T_TK;
-        return mt(T_TK, lc, Z("'"));
+        return make_token(T_TK, lc, Z("'"));
     }
     if (c == '"' or c == '%')
     {
@@ -963,7 +949,7 @@ static Token lnx(Lexer *l)
         l->pt = tk.t;
         return tk;
     }
-    av(l);
+    advance_char(l);
     Token_Kind tt;
     switch (c)
     {
@@ -1001,7 +987,7 @@ static Token lnx(Lexer *l)
     case '/':
         if (peek(l, 0) == '=')
         {
-            av(l);
+            advance_char(l);
             tt = T_NE;
         }
         else
@@ -1010,7 +996,7 @@ static Token lnx(Lexer *l)
     case '*':
         if (peek(l, 0) == '*')
         {
-            av(l);
+            advance_char(l);
             tt = T_EX;
         }
         else
@@ -1019,7 +1005,7 @@ static Token lnx(Lexer *l)
     case '=':
         if (peek(l, 0) == '>')
         {
-            av(l);
+            advance_char(l);
             tt = T_AR;
         }
         else
@@ -1028,7 +1014,7 @@ static Token lnx(Lexer *l)
     case ':':
         if (peek(l, 0) == '=')
         {
-            av(l);
+            advance_char(l);
             tt = T_AS;
         }
         else
@@ -1037,7 +1023,7 @@ static Token lnx(Lexer *l)
     case '.':
         if (peek(l, 0) == '.')
         {
-            av(l);
+            advance_char(l);
             tt = T_DD;
         }
         else
@@ -1046,17 +1032,17 @@ static Token lnx(Lexer *l)
     case '<':
         if (peek(l, 0) == '=')
         {
-            av(l);
+            advance_char(l);
             tt = T_LE;
         }
         else if (peek(l, 0) == '<')
         {
-            av(l);
+            advance_char(l);
             tt = T_LL;
         }
         else if (peek(l, 0) == '>')
         {
-            av(l);
+            advance_char(l);
             tt = T_BX;
         }
         else
@@ -1065,12 +1051,12 @@ static Token lnx(Lexer *l)
     case '>':
         if (peek(l, 0) == '=')
         {
-            av(l);
+            advance_char(l);
             tt = T_GE;
         }
         else if (peek(l, 0) == '>')
         {
-            av(l);
+            advance_char(l);
             tt = T_GG;
         }
         else
@@ -1081,19 +1067,19 @@ static Token lnx(Lexer *l)
         break;
     }
     l->pt = tt;
-    return mt(tt, lc, tt == T_ERR ? Z("ux") : N);
+    return make_token(tt, lc, tt == T_ERR ? Z("ux") : N);
 }
 typedef enum
 {
     N_ERR = 0,
-    N_ID,
-    N_INT,
-    N_REAL,
-    N_CHAR,
-    N_STR,
-    N_NULL,
-    N_AG,
-    N_BIN,
+    NODE_IDENTIFIER,
+    NODE_INTEGER,
+    NODE_REAL,
+    NODE_CHARACTER,
+    NODE_STRING,
+    NODE_NULL,
+    NODE_AGGREGATE,
+    NODE_BINARY_OP,
     N_UN,
     N_AT,
     N_QL,
@@ -1111,19 +1097,19 @@ typedef enum
     N_TAC,
     N_TP,
     N_ST,
-    N_RN,
+    NODE_RANGE,
     N_CN,
-    N_CM,
+    NODE_COMPONENT,
     N_VR,
     N_VP,
     N_DS,
     N_PM,
     N_PS,
     N_FS,
-    N_PB,
-    N_FB,
-    N_PD,
-    N_FD,
+    NODE_PROCEDURE_BODY,
+    NODE_FUNCTION_BODY,
+    NODE_PROCEDURE_DECL,
+    NODE_FUNCTION_DECL,
     N_PKS,
     N_PKB,
     N_PKD,
@@ -1134,10 +1120,10 @@ typedef enum
     N_ED,
     N_RE,
     N_AS,
-    N_IF,
-    N_CS,
-    N_LP,
-    N_BL,
+    NODE_IF,
+    NODE_CASE,
+    NODE_LOOP,
+    NODE_BLOCK,
     N_EX,
     N_RT,
     N_GT,
@@ -1158,7 +1144,7 @@ typedef enum
     N_EI,
     N_HD,
     N_CH,
-    N_ASC,
+    NODE_ASSOCIATION,
     N_WH,
     N_EL,
     N_WI,
@@ -1173,7 +1159,7 @@ typedef enum
     N_LST,
     N_DRF,
     N_CVT,
-    N_CHK,
+    NODE_CHECK,
     N_RRC,
     N_ERC,
     N_LNC,
@@ -1193,11 +1179,11 @@ typedef enum
 typedef struct Type_Info Type_Info;
 typedef struct Syntax_Node Syntax_Node;
 typedef struct Symbol Symbol;
-typedef struct RC RC;
-typedef struct LU LU;
-typedef struct GT GT;
-typedef struct LE LE;
-struct LE
+typedef struct Reference_Counter Reference_Counter;
+typedef struct Label_Use Label_Use;
+typedef struct Generic_Type Generic_Type;
+typedef struct Label_Entry Label_Entry;
+struct Label_Entry
 {
     String_Slice nm;
     int bb;
@@ -1214,34 +1200,34 @@ typedef struct
 } Symbol_Vector;
 typedef struct
 {
-    RC **d;
+    Reference_Counter **d;
     uint32_t n, c;
-} RV;
+} Reference_Vector;
 typedef struct
 {
-    LU **d;
+    Label_Use **d;
     uint32_t n, c;
-} LV;
+} Label_Vector;
 typedef struct
 {
-    GT **d;
+    Generic_Type **d;
     uint32_t n, c;
-} GV;
+} Generic_Vector;
 typedef struct
 {
     FILE **d;
     uint32_t n, c;
-} FV;
+} File_Vector;
 typedef struct
 {
     String_Slice *d;
     uint32_t n, c;
-} SLV;
+} String_List_Vector;
 typedef struct
 {
-    LE **d;
+    Label_Entry **d;
     uint32_t n, c;
-} LEV;
+} Label_Entry_Vector;
 #define VECPUSH(vtype, etype, fname)                                                               \
     static void fname(vtype *v, etype e)                                                           \
     {                                                                                              \
@@ -1254,11 +1240,11 @@ typedef struct
     }
 VECPUSH(Node_Vector, Syntax_Node *, nv)
 VECPUSH(Symbol_Vector, Symbol *, sv)
-VECPUSH(LV, LU *, lv)
-VECPUSH(GV, GT *, gv)
-VECPUSH(LEV, LE *, lev)
-VECPUSH(FV, FILE *, fv)
-VECPUSH(SLV, String_Slice, slv)
+VECPUSH(Label_Vector, Label_Use *, lv)
+VECPUSH(Generic_Vector, Generic_Type *, gv)
+VECPUSH(Label_Entry_Vector, Label_Entry *, lev)
+VECPUSH(File_Vector, FILE *, fv)
+VECPUSH(String_List_Vector, String_Slice, slv)
 struct Syntax_Node
 {
     Nk k;
@@ -1591,7 +1577,7 @@ struct Syntax_Node
         } ag;
     };
 };
-struct RC
+struct Reference_Counter
 {
     uint8_t k;
     Type_Info *ty;
@@ -1620,19 +1606,19 @@ struct RC
         } im;
     };
 };
-struct LU
+struct Label_Use
 {
     uint8_t k;
     String_Slice nm;
     String_Slice pth;
     Syntax_Node *sp;
     Syntax_Node *bd;
-    LV wth;
-    LV elb;
+    Label_Vector wth;
+    Label_Vector elb;
     uint64_t ts;
     bool cmpl;
 };
-struct GT
+struct Generic_Type
 {
     String_Slice nm;
     Node_Vector fp;
@@ -1647,24 +1633,24 @@ static Syntax_Node *nd(Nk k, Source_Location l)
     n->l = l;
     return n;
 }
-static RC *rc(uint8_t k, Type_Info *t)
+static Reference_Counter *rc(uint8_t k, Type_Info *t)
 {
-    RC *r = arena_allocate(sizeof(RC));
+    Reference_Counter *r = arena_allocate(sizeof(Reference_Counter));
     r->k = k;
     r->ty = t;
     return r;
 }
-static LU *lu(uint8_t k, String_Slice nm, String_Slice pth)
+static Label_Use *lu(uint8_t k, String_Slice nm, String_Slice pth)
 {
-    LU *l = arena_allocate(sizeof(LU));
+    Label_Use *l = arena_allocate(sizeof(Label_Use));
     l->k = k;
     l->nm = nm;
     l->pth = pth;
     return l;
 }
-static GT *gt(String_Slice nm)
+static Generic_Type *gt(String_Slice nm)
 {
-    GT *g = arena_allocate(sizeof(GT));
+    Generic_Type *g = arena_allocate(sizeof(Generic_Type));
     g->nm = nm;
     return g;
 }
@@ -1674,8 +1660,9 @@ typedef struct
     Lexer lx;
     Token cr, pk;
     int er;
-    SLV lb;
+    String_List_Vector lb;
 } Parser;
+
 static void pn(Parser *p)
 {
     p->cr = p->pk;
@@ -1707,7 +1694,7 @@ static bool pm(Parser *p, Token_Kind t)
 static void pe(Parser *p, Token_Kind t)
 {
     if (not pm(p, t))
-        fatal_error(p->cr.l, "exp '%s' got '%s'", TN[t], TN[p->cr.t]);
+        fatal_error(p->cr.l, "exp '%s' got '%s'", token_names[t], token_names[p->cr.t]);
 }
 static Source_Location pl(Parser *p)
 {
@@ -1852,7 +1839,7 @@ static Node_Vector pdc(Parser *p);
 static Node_Vector phd(Parser *p);
 static Syntax_Node *ps(Parser *p);
 static Syntax_Node *pgf(Parser *p);
-static RC *prc(Parser *p);
+static Reference_Counter *prc(Parser *p);
 static Syntax_Node *ppr(Parser *p)
 {
     Source_Location lc = pl(p);
@@ -1878,7 +1865,7 @@ static Syntax_Node *ppr(Parser *p)
                     nv(&v, a);
                 }
             }
-            else if (ch.n == 1 and ch.d[0]->k == N_ID and pm(p, T_RNG))
+            else if (ch.n == 1 and ch.d[0]->k == NODE_IDENTIFIER and pm(p, T_RNG))
             {
                 Syntax_Node *rng = prn(p);
                 pe(p, T_AR);
@@ -1902,7 +1889,7 @@ static Syntax_Node *ppr(Parser *p)
             }
         } while (pm(p, T_CM));
         pe(p, T_RP);
-        if (v.n == 1 and v.d[0]->k != N_ASC)
+        if (v.n == 1 and v.d[0]->k != NODE_ASSOCIATION)
             return v.d[0];
         Syntax_Node *n = ND(AG, lc);
         n->ag.it = v;
@@ -1964,7 +1951,7 @@ static Syntax_Node *ppr(Parser *p)
                 {
                     Node_Vector ch = {0};
                     Syntax_Node *e = pex(p);
-                    if (e->k == N_ID and pa(p, T_AR))
+                    if (e->k == NODE_IDENTIFIER and pa(p, T_AR))
                     {
                         pn(p);
                         Syntax_Node *a = ND(ASC, lc);
@@ -2106,7 +2093,7 @@ static Syntax_Node *pnm(Parser *p)
                     }
                 } while (pm(p, T_CM));
                 pe(p, T_RP);
-                if (v.n == 1 and v.d[0]->k != N_ASC)
+                if (v.n == 1 and v.d[0]->k != NODE_ASSOCIATION)
                     m->ql.ag = v.d[0];
                 else
                 {
@@ -2149,7 +2136,7 @@ static Syntax_Node *pnm(Parser *p)
                 {
                     Node_Vector ch = {0};
                     Syntax_Node *e = pex(p);
-                    if (e->k == N_ID and pa(p, T_AR))
+                    if (e->k == NODE_IDENTIFIER and pa(p, T_AR))
                     {
                         pn(p);
                         Syntax_Node *a = ND(ASC, lc);
@@ -2412,7 +2399,7 @@ static Syntax_Node *psi(Parser *p)
             nv(&ch, r);
             while (pm(p, T_BR))
                 nv(&ch, prn(p));
-            if (ch.n > 0 and ch.d[0]->k == N_ID and pm(p, T_RNG))
+            if (ch.n > 0 and ch.d[0]->k == NODE_IDENTIFIER and pm(p, T_RNG))
             {
                 Syntax_Node *tn = ND(ID, lc2);
                 tn->s = ch.d[0]->s;
@@ -2424,7 +2411,7 @@ static Syntax_Node *psi(Parser *p)
                 si->sd.cn = cn;
                 nv(&c->cn.cs, si);
             }
-            else if (ch.n > 0 and ch.d[0]->k == N_ID and pm(p, T_AR))
+            else if (ch.n > 0 and ch.d[0]->k == NODE_IDENTIFIER and pm(p, T_AR))
             {
                 Syntax_Node *vl = pex(p);
                 for (uint32_t i = 0; i < ch.n; i++)
@@ -2449,6 +2436,7 @@ static Syntax_Node *psi(Parser *p)
     }
     return n;
 }
+
 static Node_Vector ppm(Parser *p)
 {
     Node_Vector v = {0};
@@ -2523,6 +2511,7 @@ static Syntax_Node *pfs(Parser *p)
     return n;
 }
 static Syntax_Node *ptd(Parser *p);
+
 static Node_Vector pgfp(Parser *p)
 {
     Node_Vector v = {0};
@@ -2744,7 +2733,7 @@ static Syntax_Node *pcs(Parser *p)
         do
         {
             Syntax_Node *e = pex(p);
-            if (e->k == N_ID and pm(p, T_RNG))
+            if (e->k == NODE_IDENTIFIER and pm(p, T_RNG))
             {
                 Syntax_Node *r = prn(p);
                 nv(&a->ch.it, r);
@@ -3022,13 +3011,13 @@ static Syntax_Node *ps(Parser *p)
         pn(p);
         lb = pi(p);
         pe(p, T_GG);
-        slv(&p->lb, lb);
+        string_list_vector_append(&p->lb, lb);
     }
     if (not lb.s and pa(p, T_ID) and p->pk.t == T_CL)
     {
         lb = pi(p);
         pe(p, T_CL);
-        slv(&p->lb, lb);
+        string_list_vector_append(&p->lb, lb);
     }
     if (pa(p, T_IF))
         return pif(p);
@@ -3115,7 +3104,7 @@ static Syntax_Node *ps(Parser *p)
     }
     if (pm(p, T_AB))
     {
-        Syntax_Node *n = ND(AB, lc);
+        Syntax_Node *n = ND(Array_Bounds, lc);
         if (not pa(p, T_SC))
             n->rs.ec = pnm(p);
         pe(p, T_SC);
@@ -3141,7 +3130,7 @@ static Syntax_Node *ps(Parser *p)
     }
     if (pm(p, T_GOTO))
     {
-        Syntax_Node *n = ND(GT, lc);
+        Syntax_Node *n = ND(Generic_Type, lc);
         n->go.lb = pi(p);
         pe(p, T_SC);
         return n;
@@ -3206,6 +3195,7 @@ static Syntax_Node *ps(Parser *p)
     pe(p, T_SC);
     return n;
 }
+
 static Node_Vector pst(Parser *p)
 {
     Node_Vector v = {0};
@@ -3325,11 +3315,11 @@ static Syntax_Node *ptd(Parser *p)
     if (pm(p, T_ARR))
     {
         pe(p, T_LP);
-        Syntax_Node *n = ND(TA, lc);
+        Syntax_Node *n = ND(Thread_Args, lc);
         do
         {
             Syntax_Node *ix = prn(p);
-            if (ix->k == N_ID and pm(p, T_RNG))
+            if (ix->k == NODE_IDENTIFIER and pm(p, T_RNG))
             {
                 Syntax_Node *st = ND(ST, lc);
                 st->sd.in = ix;
@@ -3499,7 +3489,7 @@ static Syntax_Node *ptd(Parser *p)
     }
     return psi(p);
 }
-static RC *prc(Parser *p)
+static Reference_Counter *prc(Parser *p)
 {
     Source_Location lc = pl(p);
     (void) lc;
@@ -3509,7 +3499,7 @@ static RC *prc(Parser *p)
         pe(p, T_USE);
         if (pm(p, T_AT))
         {
-            RC *r = rc(2, 0);
+            Reference_Counter *r = rc(2, 0);
             pex(p);
             pe(p, T_SC);
             return r;
@@ -3537,7 +3527,7 @@ static RC *prc(Parser *p)
     if (pm(p, T_PGM))
     {
         String_Slice nm = pi(p);
-        RC *r = 0;
+        Reference_Counter *r = 0;
         if (string_equal_ignore_case(nm, Z("SUPPRESS")))
         {
             if (pa(p, T_LP))
@@ -3582,7 +3572,7 @@ static RC *prc(Parser *p)
                     pnm(p);
                 pe(p, T_RP);
                 r = rc(5, 0);
-                r->er.nm = tn and tn->k == N_ID ? tn->s : N;
+                r->er.nm = tn and tn->k == NODE_IDENTIFIER ? tn->s : N;
             }
             pe(p, T_SC);
             return r;
@@ -3807,7 +3797,7 @@ static Syntax_Node *pdl(Parser *p)
                     do
                     {
                         Syntax_Node *e = pex(p);
-                        if (e->k == N_ID and pa(p, T_AR))
+                        if (e->k == NODE_IDENTIFIER and pa(p, T_AR))
                         {
                             pn(p);
                             Syntax_Node *a = ND(ASC, lc);
@@ -3866,7 +3856,7 @@ static Syntax_Node *pdl(Parser *p)
                 do
                 {
                     Syntax_Node *e = pex(p);
-                    if (e->k == N_ID and pa(p, T_AR))
+                    if (e->k == NODE_IDENTIFIER and pa(p, T_AR))
                     {
                         pn(p);
                         Syntax_Node *a = ND(ASC, lc);
@@ -3976,7 +3966,7 @@ static Syntax_Node *pdl(Parser *p)
                 do
                 {
                     Syntax_Node *e = pex(p);
-                    if (e->k == N_ID and pa(p, T_AR))
+                    if (e->k == NODE_IDENTIFIER and pa(p, T_AR))
                     {
                         pn(p);
                         Syntax_Node *a = ND(ASC, lc);
@@ -4070,7 +4060,7 @@ static Syntax_Node *pdl(Parser *p)
                                 p->lx = slx;
                                 pe(p, T_LP);
                                 Syntax_Node *ix = prn(p);
-                                if (ix->k != N_RN and pm(p, T_RNG))
+                                if (ix->k != NODE_RANGE and pm(p, T_RNG))
                                 {
                                     Syntax_Node *rng = prn(p);
                                     Syntax_Node *si = ND(ST, lc);
@@ -4092,7 +4082,7 @@ static Syntax_Node *pdl(Parser *p)
                         {
                             pe(p, T_LP);
                             Syntax_Node *ix = prn(p);
-                            if (ix->k != N_RN and pm(p, T_RNG))
+                            if (ix->k != NODE_RANGE and pm(p, T_RNG))
                             {
                                 Syntax_Node *rng = prn(p);
                                 Syntax_Node *si = ND(ST, lc);
@@ -4215,6 +4205,7 @@ static Syntax_Node *pdl(Parser *p)
         return n;
     }
 }
+
 static Node_Vector pdc(Parser *p)
 {
     Node_Vector v = {0};
@@ -4223,22 +4214,22 @@ static Node_Vector pdc(Parser *p)
     {
         if (pa(p, T_FOR))
         {
-            RC *r = prc(p);
+            Reference_Counter *r = prc(p);
             if (r)
             {
                 Syntax_Node *n = ND(RRC, pl(p));
-                memcpy(&n->ag.it.d, &r, sizeof(RC *));
+                memcpy(&n->ag.it.d, &r, sizeof(Reference_Counter *));
                 nv(&v, n);
             }
             continue;
         }
         if (pa(p, T_PGM))
         {
-            RC *r = prc(p);
+            Reference_Counter *r = prc(p);
             if (r)
             {
                 Syntax_Node *n = ND(RRC, pl(p));
-                memcpy(&n->ag.it.d, &r, sizeof(RC *));
+                memcpy(&n->ag.it.d, &r, sizeof(Reference_Counter *));
                 nv(&v, n);
             }
             continue;
@@ -4304,8 +4295,10 @@ static Syntax_Node *pcu(Parser *p)
             pe(p, T_LP);
             Syntax_Node *pnm_ = pnm(p);
             pe(p, T_RP);
-            String_Slice ppkg = pnm_->k == N_ID ? pnm_->s : pnm_->k == N_SEL ? pnm_->se.p->s : N;
-            SEP_PKG = ppkg.s ? string_duplicate(ppkg) : N;
+            String_Slice ppkg = pnm_->k == NODE_IDENTIFIER ? pnm_->s
+                                : pnm_->k == N_SEL         ? pnm_->se.p->s
+                                                           : N;
+            separate_package = ppkg.s ? string_duplicate(ppkg) : N;
             if (ppkg.s)
             {
                 FILE *pf = 0;
@@ -4339,7 +4332,7 @@ static Syntax_Node *pcu(Parser *p)
                     fread(psrc, 1, sz, pf);
                     psrc[sz] = 0;
                     fclose(pf);
-                    Parser pp = {ln(psrc, sz, fn), {0}, {0}, 0, {0}};
+                    Parser pp = {lexer_new(psrc, sz, fn), {0}, {0}, 0, {0}};
                     pn(&pp);
                     pn(&pp);
                     Syntax_Node *pcu_ = pcu(&pp);
@@ -4359,9 +4352,10 @@ static Syntax_Node *pcu(Parser *p)
     }
     return n;
 }
+
 static Parser pnw(const char *s, size_t z, const char *f)
 {
-    Parser p = {ln(s, z, f), {0}, {0}, 0, {0}};
+    Parser p = {lexer_new(s, z, f), {0}, {0}, 0, {0}};
     pn(&p);
     pn(&p);
     return p;
@@ -4369,23 +4363,23 @@ static Parser pnw(const char *s, size_t z, const char *f)
 typedef enum
 {
     TY_V = 0,
-    TY_I,
-    TY_B,
-    TY_C,
-    TY_F,
-    TY_E,
-    TY_A,
-    TY_R,
-    TY_AC,
+    TYPE_INTEGER,
+    TYPE_BOOLEAN,
+    TYPE_CHARACTER,
+    TYPE_FLOAT,
+    TYPE_ENUMERATION,
+    TYPE_ARRAY,
+    TYPE_RECORD,
+    TYPE_ACCESS,
     TY_T,
-    TY_S,
+    TYPE_STRING,
     TY_P,
-    TY_UI,
-    TY_UF,
-    TY_D,
+    TYPE_UNSIGNED_INTEGER,
+    TYPE_UNIVERSAL_FLOAT,
+    TYPE_DERIVED,
     TY_PT,
-    TY_FT,
-    TY_FX
+    TYPE_FAT,
+    TYPE_FIXED_POINT
 } Tk_;
 struct Type_Info
 {
@@ -4397,7 +4391,7 @@ struct Type_Info
     Node_Vector cm, dc;
     uint32_t sz, al;
     Symbol_Vector ev;
-    RV rc;
+    Reference_Vector rc;
     uint64_t ad;
     bool pk;
     Node_Vector ops;
@@ -4421,7 +4415,7 @@ struct Symbol
     Node_Vector ol;
     Symbol_Vector us;
     int el;
-    GT *gt;
+    Generic_Type *gt;
     Symbol *pr;
     int lv;
     bool inl;
@@ -4445,14 +4439,14 @@ typedef struct
     Syntax_Node *pk;
     Symbol_Vector uv;
     int eo;
-    LV lu;
-    GV gt;
+    Label_Vector lu;
+    Generic_Vector gt;
     jmp_buf *eb[16];
     int ed;
     String_Slice ce[16];
-    FV io;
+    File_Vector io;
     int fn;
-    SLV lb;
+    String_List_Vector lb;
     int lv;
     Node_Vector ib;
     Symbol *sst[256];
@@ -4461,10 +4455,11 @@ typedef struct
     int dpn;
     Symbol_Vector ex;
     uint64_t uv_vis[64];
-    SLV eh;
-    SLV ap;
+    String_List_Vector eh;
+    String_List_Vector ap;
     uint32_t uid_ctr;
 } Symbol_Manager;
+
 static uint32_t syh(String_Slice s)
 {
     return string_hash(s) & 4095;
@@ -4480,7 +4475,7 @@ static Symbol *syn(String_Slice nm, uint8_t k, Type_Info *ty, Syntax_Node *df)
     s->lv = -1;
     return s;
 }
-static Symbol *sya(Symbol_Manager *SM, Symbol *s)
+static Symbol *symbol_add_overload(Symbol_Manager *SM, Symbol *s)
 {
     uint32_t h = syh(s->nm);
     s->hm = SM->sy[h];
@@ -4506,7 +4501,7 @@ static Symbol *sya(Symbol_Manager *SM, Symbol *s)
         SM->sst[SM->ssd++] = s;
     return s;
 }
-static Symbol *syf(Symbol_Manager *SM, String_Slice nm)
+static Symbol *symbol_find(Symbol_Manager *SM, String_Slice nm)
 {
     Symbol *imm = 0, *pot = 0;
     uint32_t h = syh(nm);
@@ -4527,6 +4522,7 @@ static Symbol *syf(Symbol_Manager *SM, String_Slice nm)
             imm = s;
     return imm;
 }
+
 static void sfu(Symbol_Manager *SM, Symbol *s, String_Slice nm)
 {
     uint32_t h = syh(nm) & 63, b = 1ULL << (syh(nm) & 63);
@@ -4589,18 +4585,18 @@ static void sfu(Symbol_Manager *SM, Symbol *s, String_Slice nm)
         }
     SM->uv_vis[h] &= ~b;
 }
-static GT *gfnd(Symbol_Manager *SM, String_Slice nm)
+static Generic_Type *gfnd(Symbol_Manager *SM, String_Slice nm)
 {
     for (uint32_t i = 0; i < SM->gt.n; i++)
     {
-        GT *g = SM->gt.d[i];
+        Generic_Type *g = SM->gt.d[i];
         if (string_equal_ignore_case(g->nm, nm))
             return g;
     }
     return 0;
 }
 static int tysc(Type_Info *, Type_Info *, Type_Info *);
-static Symbol *syfa(Symbol_Manager *SM, String_Slice nm, int na, Type_Info *tx)
+static Symbol *symbol_find_arity(Symbol_Manager *SM, String_Slice nm, int na, Type_Info *tx)
 {
     Symbol_Vector cv = {0};
     int msc = -1;
@@ -4632,7 +4628,7 @@ static Symbol *syfa(Symbol_Manager *SM, String_Slice nm, int na, Type_Info *tx)
                 for (uint32_t j = 0; j < c->ol.n; j++)
                 {
                     Syntax_Node *b = c->ol.d[j];
-                    if (b->k == N_PB or b->k == N_FB)
+                    if (b->k == NODE_PROCEDURE_BODY or b->k == NODE_FUNCTION_BODY)
                     {
                         int np = b->bd.sp->sp.pmm.n;
                         if (np == na)
@@ -4702,48 +4698,49 @@ static Type_Info *tyn(Tk_ k, String_Slice nm)
 }
 static Type_Info *TY_INT, *TY_BOOL, *TY_CHAR, *TY_STR, *TY_FLT, *TY_UINT, *TY_UFLT, *TY_FILE,
     *TY_NAT, *TY_POS;
+
 static void smi(Symbol_Manager *SM)
 {
     memset(SM, 0, sizeof(*SM));
-    TY_INT = tyn(TY_I, Z("INTEGER"));
+    TY_INT = tyn(TYPE_INTEGER, Z("INTEGER"));
     TY_INT->lo = -2147483648LL;
     TY_INT->hi = 2147483647LL;
-    TY_NAT = tyn(TY_I, Z("NATURAL"));
+    TY_NAT = tyn(TYPE_INTEGER, Z("NATURAL"));
     TY_NAT->lo = 0;
     TY_NAT->hi = 2147483647LL;
-    TY_POS = tyn(TY_I, Z("POSITIVE"));
+    TY_POS = tyn(TYPE_INTEGER, Z("POSITIVE"));
     TY_POS->lo = 1;
     TY_POS->hi = 2147483647LL;
-    TY_BOOL = tyn(TY_B, Z("BOOLEAN"));
-    TY_CHAR = tyn(TY_C, Z("CHARACTER"));
+    TY_BOOL = tyn(TYPE_BOOLEAN, Z("BOOLEAN"));
+    TY_CHAR = tyn(TYPE_CHARACTER, Z("CHARACTER"));
     TY_CHAR->sz = 1;
-    TY_STR = tyn(TY_A, Z("STRING"));
+    TY_STR = tyn(TYPE_ARRAY, Z("STRING"));
     TY_STR->el = TY_CHAR;
     TY_STR->lo = 0;
     TY_STR->hi = -1;
     TY_STR->ix = TY_POS;
-    TY_FLT = tyn(TY_F, Z("FLOAT"));
-    TY_UINT = tyn(TY_UI, Z("universal_integer"));
-    TY_UFLT = tyn(TY_UF, Z("universal_real"));
-    TY_FILE = tyn(TY_FT, Z("FILE_TYPE"));
-    sya(SM, syn(Z("INTEGER"), 1, TY_INT, 0));
-    sya(SM, syn(Z("NATURAL"), 1, TY_NAT, 0));
-    sya(SM, syn(Z("POSITIVE"), 1, TY_POS, 0));
-    sya(SM, syn(Z("BOOLEAN"), 1, TY_BOOL, 0));
-    Symbol *st = sya(SM, syn(Z("TRUE"), 2, TY_BOOL, 0));
+    TY_FLT = tyn(TYPE_FLOAT, Z("FLOAT"));
+    TY_UINT = tyn(TYPE_UNSIGNED_INTEGER, Z("universal_integer"));
+    TY_UFLT = tyn(TYPE_UNIVERSAL_FLOAT, Z("universal_real"));
+    TY_FILE = tyn(TYPE_FAT, Z("FILE_TYPE"));
+    symbol_add_overload(SM, syn(Z("INTEGER"), 1, TY_INT, 0));
+    symbol_add_overload(SM, syn(Z("NATURAL"), 1, TY_NAT, 0));
+    symbol_add_overload(SM, syn(Z("POSITIVE"), 1, TY_POS, 0));
+    symbol_add_overload(SM, syn(Z("BOOLEAN"), 1, TY_BOOL, 0));
+    Symbol *st = symbol_add_overload(SM, syn(Z("TRUE"), 2, TY_BOOL, 0));
     st->vl = 1;
     sv(&TY_BOOL->ev, st);
-    Symbol *sf = sya(SM, syn(Z("FALSE"), 2, TY_BOOL, 0));
+    Symbol *sf = symbol_add_overload(SM, syn(Z("FALSE"), 2, TY_BOOL, 0));
     sf->vl = 0;
     sv(&TY_BOOL->ev, sf);
-    sya(SM, syn(Z("CHARACTER"), 1, TY_CHAR, 0));
-    sya(SM, syn(Z("STRING"), 1, TY_STR, 0));
-    sya(SM, syn(Z("FLOAT"), 1, TY_FLT, 0));
-    sya(SM, syn(Z("FILE_TYPE"), 1, TY_FILE, 0));
-    sya(SM, syn(Z("CONSTRAINT_ERROR"), 3, 0, 0));
-    sya(SM, syn(Z("PROGRAM_ERROR"), 3, 0, 0));
-    sya(SM, syn(Z("STORAGE_ERROR"), 3, 0, 0));
-    sya(SM, syn(Z("TASKING_ERROR"), 3, 0, 0));
+    symbol_add_overload(SM, syn(Z("CHARACTER"), 1, TY_CHAR, 0));
+    symbol_add_overload(SM, syn(Z("STRING"), 1, TY_STR, 0));
+    symbol_add_overload(SM, syn(Z("FLOAT"), 1, TY_FLT, 0));
+    symbol_add_overload(SM, syn(Z("FILE_TYPE"), 1, TY_FILE, 0));
+    symbol_add_overload(SM, syn(Z("CONSTRAINT_ERROR"), 3, 0, 0));
+    symbol_add_overload(SM, syn(Z("PROGRAM_ERROR"), 3, 0, 0));
+    symbol_add_overload(SM, syn(Z("STORAGE_ERROR"), 3, 0, 0));
+    symbol_add_overload(SM, syn(Z("TASKING_ERROR"), 3, 0, 0));
     fv(&SM->io, stdin);
     fv(&SM->io, stdout);
     fv(&SM->io, stderr);
@@ -4774,14 +4771,14 @@ static Syntax_Node *geq(Type_Info *t, Source_Location l)
     Syntax_Node *s = ND(RT, l);
     s->rt.vl = ND(BIN, l);
     s->rt.vl->bn.op = T_EQ;
-    if (t->k == TY_R)
+    if (t->k == TYPE_RECORD)
     {
         s->rt.vl->bn.l = ND(BIN, l);
         s->rt.vl->bn.l->bn.op = T_AND;
         for (uint32_t i = 0; i < t->cm.n; i++)
         {
             Syntax_Node *c = t->cm.d[i];
-            if (c->k != N_CM)
+            if (c->k != NODE_COMPONENT)
                 continue;
             Syntax_Node *cmp = ND(BIN, l);
             cmp->bn.op = T_EQ;
@@ -4807,7 +4804,7 @@ static Syntax_Node *geq(Type_Info *t, Source_Location l)
             }
         }
     }
-    else if (t->k == TY_A)
+    else if (t->k == TYPE_ARRAY)
     {
         Syntax_Node *lp = ND(LP, l);
         lp->lp.it = ND(BIN, l);
@@ -4866,12 +4863,12 @@ static Syntax_Node *gas(Type_Info *t, Source_Location l)
     p2->pm.md = 0;
     nv(&p->bd.sp->sp.pmm, p1);
     nv(&p->bd.sp->sp.pmm, p2);
-    if (t->k == TY_R)
+    if (t->k == TYPE_RECORD)
     {
         for (uint32_t i = 0; i < t->cm.n; i++)
         {
             Syntax_Node *c = t->cm.d[i];
-            if (c->k != N_CM)
+            if (c->k != NODE_COMPONENT)
                 continue;
             Syntax_Node *as = ND(AS, l);
             Syntax_Node *lt = ND(SEL, l);
@@ -4887,7 +4884,7 @@ static Syntax_Node *gas(Type_Info *t, Source_Location l)
             nv(&p->bd.st, as);
         }
     }
-    else if (t->k == TY_A)
+    else if (t->k == TYPE_ARRAY)
     {
         Syntax_Node *lp = ND(LP, l);
         lp->lp.it = ND(BIN, l);
@@ -4926,12 +4923,12 @@ static Syntax_Node *gin(Type_Info *t, Source_Location l)
     f->bd.sp->sp.rt = ND(ID, l);
     f->bd.sp->sp.rt->s = t->nm;
     Syntax_Node *ag = ND(AG, l);
-    if (t->k == TY_R)
+    if (t->k == TYPE_RECORD)
     {
         for (uint32_t i = 0; i < t->cm.n; i++)
         {
             Syntax_Node *c = t->cm.d[i];
-            if (c->k != N_CM or not c->cm.in)
+            if (c->k != NODE_COMPONENT or not c->cm.in)
                 continue;
             Syntax_Node *a = ND(ASC, l);
             nv(&a->asc.ch, ND(ID, l));
@@ -4945,6 +4942,7 @@ static Syntax_Node *gin(Type_Info *t, Source_Location l)
     nv(&f->bd.st, rt);
     return ag->ag.it.n > 0 ? f : 0;
 }
+
 static void fty(Symbol_Manager *SM, Type_Info *t, Source_Location l)
 {
     if (not t or t->frz)
@@ -4959,7 +4957,7 @@ static void fty(Symbol_Manager *SM, Type_Info *t, Source_Location l)
         fty(SM, t->prt, l);
     if (t->el and not t->el->frz)
         fty(SM, t->el, l);
-    if (t->k == TY_R)
+    if (t->k == TYPE_RECORD)
     {
         for (uint32_t i = 0; i < t->cm.n; i++)
             if (t->cm.d[i]->sy and t->cm.d[i]->sy->ty)
@@ -4968,7 +4966,7 @@ static void fty(Symbol_Manager *SM, Type_Info *t, Source_Location l)
         for (uint32_t i = 0; i < t->cm.n; i++)
         {
             Syntax_Node *c = t->cm.d[i];
-            if (c->k != N_CM)
+            if (c->k != NODE_COMPONENT)
                 continue;
             Type_Info *ct = c->cm.ty ? c->cm.ty->ty : 0;
             uint32_t ca = ct and ct->al ? ct->al : 8, cs = ct and ct->sz ? ct->sz : 8;
@@ -4981,7 +4979,7 @@ static void fty(Symbol_Manager *SM, Type_Info *t, Source_Location l)
         t->sz = (of + mx - 1) & ~(mx - 1);
         t->al = mx;
     }
-    if (t->k == TY_A and t->el)
+    if (t->k == TYPE_ARRAY and t->el)
     {
         Type_Info *et = t->el;
         uint32_t ea = et->al ? et->al : 8, es = et->sz ? et->sz : 8;
@@ -4989,7 +4987,7 @@ static void fty(Symbol_Manager *SM, Type_Info *t, Source_Location l)
         t->sz = n > 0 ? n * es : 0;
         t->al = ea;
     }
-    if ((t->k == TY_R or t->k == TY_A) and t->nm.s and t->nm.n)
+    if ((t->k == TYPE_RECORD or t->k == TYPE_ARRAY) and t->nm.s and t->nm.n)
     {
         Syntax_Node *eq = geq(t, l);
         if (eq)
@@ -5054,31 +5052,31 @@ static void sco(Symbol_Manager *SM)
         SM->ssd--;
     SM->sc--;
 }
-static Type_Info *rst(Symbol_Manager *SM, Syntax_Node *n);
+static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *n);
 static void rex(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx);
 static void rss(Symbol_Manager *SM, Syntax_Node *n);
 static void rdl(Symbol_Manager *SM, Syntax_Node *n);
-static void rrc_(Symbol_Manager *SM, RC *r);
+static void rrc_(Symbol_Manager *SM, Reference_Counter *r);
 static Syntax_Node *gcl(Symbol_Manager *SM, Syntax_Node *n);
-static Type_Info *tcc(Type_Info *t)
+static Type_Info *type_concrete(Type_Info *t)
 {
     if (not t)
         return TY_INT;
-    if (t->k == TY_UI)
+    if (t->k == TYPE_UNSIGNED_INTEGER)
         return TY_INT;
-    if (t->k == TY_UF)
+    if (t->k == TYPE_UNIVERSAL_FLOAT)
         return TY_FLT;
-    if (t->k == TY_FX)
+    if (t->k == TYPE_FIXED_POINT)
         return TY_FLT;
-    if ((t->k == TY_D or t->k == TY_PT) and t->prt)
-        return tcc(t->prt);
+    if ((t->k == TYPE_DERIVED or t->k == TY_PT) and t->prt)
+        return type_concrete(t->prt);
     return t;
 }
 typedef enum
 {
     RC_INT,
-    RC_FLOAT,
-    RC_PTR,
+    REPR_CAT_FLOAT,
+    REPR_CAT_POINTER,
     RC_STRUCT
 } ReprCat;
 typedef enum
@@ -5090,22 +5088,23 @@ typedef enum
     COMP_ARRAY_ELEMENT,
     COMP_ACCESS_DESIGNATED
 } CompatKind;
-static ReprCat repr_cat(Type_Info *t)
+
+static ReprCat representation_category(Type_Info *t)
 {
     if (not t)
         return RC_INT;
     switch (t->k)
     {
-    case TY_F:
-    case TY_UF:
-    case TY_FX:
-        return RC_FLOAT;
-    case TY_FT:
-    case TY_A:
-    case TY_R:
-    case TY_S:
-    case TY_AC:
-        return RC_PTR;
+    case TYPE_FLOAT:
+    case TYPE_UNIVERSAL_FLOAT:
+    case TYPE_FIXED_POINT:
+        return REPR_CAT_FLOAT;
+    case TYPE_FAT:
+    case TYPE_ARRAY:
+    case TYPE_RECORD:
+    case TYPE_STRING:
+    case TYPE_ACCESS:
+        return REPR_CAT_POINTER;
     default:
         return RC_INT;
     }
@@ -5118,11 +5117,11 @@ static Type_Info *semantic_base(Type_Info *t)
     {
         if (not p->bs and not p->prt)
             return p;
-        if (p->k == TY_D and p->prt)
+        if (p->k == TYPE_DERIVED and p->prt)
             return semantic_base(p->prt);
-        if (p->k == TY_UI)
+        if (p->k == TYPE_UNSIGNED_INTEGER)
             return TY_INT;
-        if (p->k == TY_UF or p->k == TY_FX)
+        if (p->k == TYPE_UNIVERSAL_FLOAT or p->k == TYPE_FIXED_POINT)
             return TY_FLT;
     }
     return t;
@@ -5130,29 +5129,30 @@ static Type_Info *semantic_base(Type_Info *t)
 static inline bool is_integer_type(Type_Info *t)
 {
     t = semantic_base(t);
-    return t->k == TY_I;
+    return t->k == TYPE_INTEGER;
 }
 static inline bool is_real_type(Type_Info *t)
 {
     t = semantic_base(t);
-    return t->k == TY_F;
+    return t->k == TYPE_FLOAT;
 }
 static inline bool is_discrete(Type_Info *t)
 {
-    return is_integer_type(t) or t->k == TY_E or t->k == TY_C;
+    return is_integer_type(t) or t->k == TYPE_ENUMERATION or t->k == TYPE_CHARACTER;
 }
 static inline bool is_array(Type_Info *t)
 {
-    return t and tcc(t)->k == TY_A;
+    return t and type_concrete(t)->k == TYPE_ARRAY;
 }
 static inline bool is_record(Type_Info *t)
 {
-    return t and tcc(t)->k == TY_R;
+    return t and type_concrete(t)->k == TYPE_RECORD;
 }
 static inline bool is_access(Type_Info *t)
 {
-    return t and tcc(t)->k == TY_AC;
+    return t and type_concrete(t)->k == TYPE_ACCESS;
 }
+
 static bool is_check_suppressed(Type_Info *t, unsigned kind)
 {
     for (Type_Info *p = t; p; p = p->bs)
@@ -5168,25 +5168,27 @@ static CompatKind type_compat_kind(Type_Info *a, Type_Info *b)
         return COMP_NONE;
     if (a == b)
         return COMP_SAME;
-    if (a == TY_STR and b->k == TY_A and b->el and b->el->k == TY_C)
+    if (a == TY_STR and b->k == TYPE_ARRAY and b->el and b->el->k == TYPE_CHARACTER)
         return COMP_ARRAY_ELEMENT;
-    if (b == TY_STR and a->k == TY_A and a->el and a->el->k == TY_C)
+    if (b == TY_STR and a->k == TYPE_ARRAY and a->el and a->el->k == TYPE_CHARACTER)
         return COMP_ARRAY_ELEMENT;
     if (a->prt == b or b->prt == a)
         return COMP_DERIVED;
     if (a->bs == b or b->bs == a)
         return COMP_BASED_ON;
-    if ((a->k == TY_I or a->k == TY_UI) and (b->k == TY_I or b->k == TY_UI))
+    if ((a->k == TYPE_INTEGER or a->k == TYPE_UNSIGNED_INTEGER)
+        and (b->k == TYPE_INTEGER or b->k == TYPE_UNSIGNED_INTEGER))
         return COMP_SAME;
-    if ((a->k == TY_F or a->k == TY_UF) and (b->k == TY_F or b->k == TY_UF))
+    if ((a->k == TYPE_FLOAT or a->k == TYPE_UNIVERSAL_FLOAT)
+        and (b->k == TYPE_FLOAT or b->k == TYPE_UNIVERSAL_FLOAT))
         return COMP_SAME;
-    if (a->k == TY_A and b->k == TY_A and type_compat_kind(a->el, b->el) != COMP_NONE)
+    if (a->k == TYPE_ARRAY and b->k == TYPE_ARRAY and type_compat_kind(a->el, b->el) != COMP_NONE)
         return COMP_ARRAY_ELEMENT;
-    if (a->k == TY_AC and b->k == TY_AC)
+    if (a->k == TYPE_ACCESS and b->k == TYPE_ACCESS)
         return type_compat_kind(a->el, b->el) != COMP_NONE ? COMP_ACCESS_DESIGNATED : COMP_NONE;
-    if (a->k == TY_D)
+    if (a->k == TYPE_DERIVED)
         return type_compat_kind(a->prt, b);
-    if (b->k == TY_D)
+    if (b->k == TYPE_DERIVED)
         return type_compat_kind(a, b->prt);
     return COMP_NONE;
 }
@@ -5219,7 +5221,7 @@ static bool tco(Type_Info *a, Type_Info *b)
     if (type_compat_kind(a, b) != COMP_NONE)
         return 1;
     Type_Info *ab = semantic_base(a), *bb = semantic_base(b);
-    if ((ab == TY_BOOL or ab->k == TY_B) and (bb == TY_BOOL or bb->k == TY_B))
+    if ((ab == TY_BOOL or ab->k == TYPE_BOOLEAN) and (bb == TY_BOOL or bb->k == TYPE_BOOLEAN))
         return 1;
     if (is_discrete(a) and is_discrete(b))
         return 1;
@@ -5227,13 +5229,13 @@ static bool tco(Type_Info *a, Type_Info *b)
         return 1;
     return 0;
 }
-static Type_Info *rst(Symbol_Manager *SM, Syntax_Node *n)
+static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *n)
 {
     if (not n)
         return TY_INT;
-    if (n->k == N_ID)
+    if (n->k == NODE_IDENTIFIER)
     {
-        Symbol *s = syf(SM, n->s);
+        Symbol *s = symbol_find(SM, n->s);
         if (s and s->ty)
             return s->ty;
         return TY_INT;
@@ -5241,9 +5243,9 @@ static Type_Info *rst(Symbol_Manager *SM, Syntax_Node *n)
     if (n->k == N_SEL)
     {
         Syntax_Node *p = n->se.p;
-        if (p->k == N_ID)
+        if (p->k == NODE_IDENTIFIER)
         {
-            Symbol *ps = syf(SM, p->s);
+            Symbol *ps = symbol_find(SM, p->s);
             if (ps and ps->k == 6 and ps->df and ps->df->k == N_PKS)
             {
                 Syntax_Node *pk = ps->df;
@@ -5253,7 +5255,7 @@ static Type_Info *rst(Symbol_Manager *SM, Syntax_Node *n)
                     if (d->sy and string_equal_ignore_case(d->sy->nm, n->se.se) and d->sy->ty)
                         return d->sy->ty;
                     if (d->k == N_TD and string_equal_ignore_case(d->td.nm, n->se.se))
-                        return rst(SM, d->td.df);
+                        return resolve_subtype(SM, d->td.df);
                 }
                 for (uint32_t i = 0; i < pk->ps.dc.n; i++)
                 {
@@ -5261,16 +5263,16 @@ static Type_Info *rst(Symbol_Manager *SM, Syntax_Node *n)
                     if (d->sy and string_equal_ignore_case(d->sy->nm, n->se.se) and d->sy->ty)
                         return d->sy->ty;
                     if (d->k == N_TD and string_equal_ignore_case(d->td.nm, n->se.se))
-                        return rst(SM, d->td.df);
+                        return resolve_subtype(SM, d->td.df);
                 }
             }
-            return rst(SM, p);
+            return resolve_subtype(SM, p);
         }
         return TY_INT;
     }
     if (n->k == N_ST)
     {
-        Type_Info *bt = rst(SM, n->sd.in);
+        Type_Info *bt = resolve_subtype(SM, n->sd.in);
         Syntax_Node *cn = n->sd.cn ? n->sd.cn : n->sd.rn;
         if (cn and bt)
         {
@@ -5291,36 +5293,36 @@ static Type_Info *rst(Symbol_Manager *SM, Syntax_Node *n)
                 rex(SM, rn->rn.hi, 0);
                 Syntax_Node *lo = rn->rn.lo;
                 Syntax_Node *hi = rn->rn.hi;
-                int64_t lov = lo->k == N_UN and lo->un.op == T_MN and lo->un.x->k == N_INT
+                int64_t lov = lo->k == N_UN and lo->un.op == T_MN and lo->un.x->k == NODE_INTEGER
                                   ? -lo->un.x->i
-                              : lo->k == N_UN and lo->un.op == T_MN and lo->un.x->k == N_REAL
+                              : lo->k == N_UN and lo->un.op == T_MN and lo->un.x->k == NODE_REAL
                                   ? ((union {
                                         double d;
                                         int64_t i;
                                     }){.d = -lo->un.x->f})
                                         .i
-                              : lo->k == N_REAL ? ((union {
-                                                      double d;
-                                                      int64_t i;
-                                                  }){.d = lo->f})
-                                                      .i
-                              : lo->k == N_ID and lo->sy and lo->sy->k == 2 ? lo->sy->vl
-                                                                            : lo->i;
-                int64_t hiv = hi->k == N_UN and hi->un.op == T_MN and hi->un.x->k == N_INT
+                              : lo->k == NODE_REAL ? ((union {
+                                                         double d;
+                                                         int64_t i;
+                                                     }){.d = lo->f})
+                                                         .i
+                              : lo->k == NODE_IDENTIFIER and lo->sy and lo->sy->k == 2 ? lo->sy->vl
+                                                                                       : lo->i;
+                int64_t hiv = hi->k == N_UN and hi->un.op == T_MN and hi->un.x->k == NODE_INTEGER
                                   ? -hi->un.x->i
-                              : hi->k == N_UN and hi->un.op == T_MN and hi->un.x->k == N_REAL
+                              : hi->k == N_UN and hi->un.op == T_MN and hi->un.x->k == NODE_REAL
                                   ? ((union {
                                         double d;
                                         int64_t i;
                                     }){.d = -hi->un.x->f})
                                         .i
-                              : hi->k == N_REAL ? ((union {
-                                                      double d;
-                                                      int64_t i;
-                                                  }){.d = hi->f})
-                                                      .i
-                              : hi->k == N_ID and hi->sy and hi->sy->k == 2 ? hi->sy->vl
-                                                                            : hi->i;
+                              : hi->k == NODE_REAL ? ((union {
+                                                         double d;
+                                                         int64_t i;
+                                                     }){.d = hi->f})
+                                                         .i
+                              : hi->k == NODE_IDENTIFIER and hi->sy and hi->sy->k == 2 ? hi->sy->vl
+                                                                                       : hi->i;
                 t->lo = lov;
                 t->hi = hiv;
                 return t;
@@ -5331,76 +5333,76 @@ static Type_Info *rst(Symbol_Manager *SM, Syntax_Node *n)
                 rex(SM, cn->cn.rn->rn.hi, 0);
                 Syntax_Node *lo = cn->cn.rn->rn.lo;
                 Syntax_Node *hi = cn->cn.rn->rn.hi;
-                int64_t lov = lo->k == N_UN and lo->un.op == T_MN and lo->un.x->k == N_INT
+                int64_t lov = lo->k == N_UN and lo->un.op == T_MN and lo->un.x->k == NODE_INTEGER
                                   ? -lo->un.x->i
-                              : lo->k == N_UN and lo->un.op == T_MN and lo->un.x->k == N_REAL
+                              : lo->k == N_UN and lo->un.op == T_MN and lo->un.x->k == NODE_REAL
                                   ? ((union {
                                         double d;
                                         int64_t i;
                                     }){.d = -lo->un.x->f})
                                         .i
-                              : lo->k == N_REAL ? ((union {
-                                                      double d;
-                                                      int64_t i;
-                                                  }){.d = lo->f})
-                                                      .i
-                              : lo->k == N_ID and lo->sy and lo->sy->k == 2 ? lo->sy->vl
-                                                                            : lo->i;
-                int64_t hiv = hi->k == N_UN and hi->un.op == T_MN and hi->un.x->k == N_INT
+                              : lo->k == NODE_REAL ? ((union {
+                                                         double d;
+                                                         int64_t i;
+                                                     }){.d = lo->f})
+                                                         .i
+                              : lo->k == NODE_IDENTIFIER and lo->sy and lo->sy->k == 2 ? lo->sy->vl
+                                                                                       : lo->i;
+                int64_t hiv = hi->k == N_UN and hi->un.op == T_MN and hi->un.x->k == NODE_INTEGER
                                   ? -hi->un.x->i
-                              : hi->k == N_UN and hi->un.op == T_MN and hi->un.x->k == N_REAL
+                              : hi->k == N_UN and hi->un.op == T_MN and hi->un.x->k == NODE_REAL
                                   ? ((union {
                                         double d;
                                         int64_t i;
                                     }){.d = -hi->un.x->f})
                                         .i
-                              : hi->k == N_REAL ? ((union {
-                                                      double d;
-                                                      int64_t i;
-                                                  }){.d = hi->f})
-                                                      .i
-                              : hi->k == N_ID and hi->sy and hi->sy->k == 2 ? hi->sy->vl
-                                                                            : hi->i;
+                              : hi->k == NODE_REAL ? ((union {
+                                                         double d;
+                                                         int64_t i;
+                                                     }){.d = hi->f})
+                                                         .i
+                              : hi->k == NODE_IDENTIFIER and hi->sy and hi->sy->k == 2 ? hi->sy->vl
+                                                                                       : hi->i;
                 t->lo = lov;
                 t->hi = hiv;
                 return t;
             }
-            else if (cn->k == N_RN)
+            else if (cn->k == NODE_RANGE)
             {
                 rex(SM, cn->rn.lo, 0);
                 rex(SM, cn->rn.hi, 0);
                 Syntax_Node *lo = cn->rn.lo;
                 Syntax_Node *hi = cn->rn.hi;
-                int64_t lov = lo->k == N_UN and lo->un.op == T_MN and lo->un.x->k == N_INT
+                int64_t lov = lo->k == N_UN and lo->un.op == T_MN and lo->un.x->k == NODE_INTEGER
                                   ? -lo->un.x->i
-                              : lo->k == N_UN and lo->un.op == T_MN and lo->un.x->k == N_REAL
+                              : lo->k == N_UN and lo->un.op == T_MN and lo->un.x->k == NODE_REAL
                                   ? ((union {
                                         double d;
                                         int64_t i;
                                     }){.d = -lo->un.x->f})
                                         .i
-                              : lo->k == N_REAL ? ((union {
-                                                      double d;
-                                                      int64_t i;
-                                                  }){.d = lo->f})
-                                                      .i
-                              : lo->k == N_ID and lo->sy and lo->sy->k == 2 ? lo->sy->vl
-                                                                            : lo->i;
-                int64_t hiv = hi->k == N_UN and hi->un.op == T_MN and hi->un.x->k == N_INT
+                              : lo->k == NODE_REAL ? ((union {
+                                                         double d;
+                                                         int64_t i;
+                                                     }){.d = lo->f})
+                                                         .i
+                              : lo->k == NODE_IDENTIFIER and lo->sy and lo->sy->k == 2 ? lo->sy->vl
+                                                                                       : lo->i;
+                int64_t hiv = hi->k == N_UN and hi->un.op == T_MN and hi->un.x->k == NODE_INTEGER
                                   ? -hi->un.x->i
-                              : hi->k == N_UN and hi->un.op == T_MN and hi->un.x->k == N_REAL
+                              : hi->k == N_UN and hi->un.op == T_MN and hi->un.x->k == NODE_REAL
                                   ? ((union {
                                         double d;
                                         int64_t i;
                                     }){.d = -hi->un.x->f})
                                         .i
-                              : hi->k == N_REAL ? ((union {
-                                                      double d;
-                                                      int64_t i;
-                                                  }){.d = hi->f})
-                                                      .i
-                              : hi->k == N_ID and hi->sy and hi->sy->k == 2 ? hi->sy->vl
-                                                                            : hi->i;
+                              : hi->k == NODE_REAL ? ((union {
+                                                         double d;
+                                                         int64_t i;
+                                                     }){.d = hi->f})
+                                                         .i
+                              : hi->k == NODE_IDENTIFIER and hi->sy and hi->sy->k == 2 ? hi->sy->vl
+                                                                                       : hi->i;
                 t->lo = lov;
                 t->hi = hiv;
                 return t;
@@ -5412,159 +5414,159 @@ static Type_Info *rst(Symbol_Manager *SM, Syntax_Node *n)
     {
         rex(SM, n->rn.lo, 0);
         rex(SM, n->rn.hi, 0);
-        Type_Info *t = tyn(TY_I, N);
-        if (n->rn.lo and n->rn.lo->k == N_INT)
+        Type_Info *t = tyn(TYPE_INTEGER, N);
+        if (n->rn.lo and n->rn.lo->k == NODE_INTEGER)
             t->lo = n->rn.lo->i;
         else if (
             n->rn.lo and n->rn.lo->k == N_UN and n->rn.lo->un.op == T_MN
-            and n->rn.lo->un.x->k == N_INT)
+            and n->rn.lo->un.x->k == NODE_INTEGER)
             t->lo = -n->rn.lo->un.x->i;
-        if (n->rn.hi and n->rn.hi->k == N_INT)
+        if (n->rn.hi and n->rn.hi->k == NODE_INTEGER)
             t->hi = n->rn.hi->i;
         else if (
             n->rn.hi and n->rn.hi->k == N_UN and n->rn.hi->un.op == T_MN
-            and n->rn.hi->un.x->k == N_INT)
+            and n->rn.hi->un.x->k == NODE_INTEGER)
             t->hi = -n->rn.hi->un.x->i;
         return t;
     }
     if (n->k == N_TX)
     {
-        Type_Info *t = tyn(TY_FX, N);
+        Type_Info *t = tyn(TYPE_FIXED_POINT, N);
         double d = 1.0;
-        if (n->rn.lo and n->rn.lo->k == N_REAL)
+        if (n->rn.lo and n->rn.lo->k == NODE_REAL)
             d = n->rn.lo->f;
-        else if (n->rn.lo and n->rn.lo->k == N_INT)
+        else if (n->rn.lo and n->rn.lo->k == NODE_INTEGER)
             d = n->rn.lo->i;
         t->sm = (int64_t) (1.0 / d);
-        if (n->rn.hi and n->rn.hi->k == N_INT)
+        if (n->rn.hi and n->rn.hi->k == NODE_INTEGER)
             t->lo = n->rn.hi->i;
-        if (n->bn.r and n->bn.r->k == N_INT)
+        if (n->bn.r and n->bn.r->k == NODE_INTEGER)
             t->hi = n->bn.r->i;
         return t;
     }
     if (n->k == N_TE)
-        return tyn(TY_I, N);
+        return tyn(TYPE_INTEGER, N);
     if (n->k == N_TF)
     {
-        Type_Info *t = tyn(TY_F, N);
+        Type_Info *t = tyn(TYPE_FLOAT, N);
         if (n->un.x)
         {
             rex(SM, n->un.x, 0);
-            if (n->un.x->k == N_INT)
+            if (n->un.x->k == NODE_INTEGER)
                 t->sm = n->un.x->i;
         }
         return t;
     }
     if (n->k == N_TA)
     {
-        Type_Info *t = tyn(TY_A, N);
-        t->el = rst(SM, n->ix.p);
+        Type_Info *t = tyn(TYPE_ARRAY, N);
+        t->el = resolve_subtype(SM, n->ix.p);
         if (n->ix.ix.n == 1)
         {
             Syntax_Node *r = n->ix.ix.d[0];
-            if (r and r->k == N_RN)
+            if (r and r->k == NODE_RANGE)
             {
                 rex(SM, r->rn.lo, 0);
                 rex(SM, r->rn.hi, 0);
                 Syntax_Node *lo = r->rn.lo;
                 Syntax_Node *hi = r->rn.hi;
-                if (lo and lo->k == N_INT)
+                if (lo and lo->k == NODE_INTEGER)
                     t->lo = lo->i;
-                else if (lo and lo->k == N_UN and lo->un.op == T_MN and lo->un.x->k == N_INT)
+                else if (lo and lo->k == N_UN and lo->un.op == T_MN and lo->un.x->k == NODE_INTEGER)
                     t->lo = -lo->un.x->i;
-                if (hi and hi->k == N_INT)
+                if (hi and hi->k == NODE_INTEGER)
                     t->hi = hi->i;
-                else if (hi and hi->k == N_UN and hi->un.op == T_MN and hi->un.x->k == N_INT)
+                else if (hi and hi->k == N_UN and hi->un.op == T_MN and hi->un.x->k == NODE_INTEGER)
                     t->hi = -hi->un.x->i;
             }
         }
         return t;
     }
     if (n->k == N_TR)
-        return tyn(TY_R, N);
+        return tyn(TYPE_RECORD, N);
     if (n->k == N_TP)
         return tyn(TY_PT, N);
     if (n->k == N_TAC)
     {
-        Type_Info *t = tyn(TY_AC, N);
-        t->el = rst(SM, n->un.x);
+        Type_Info *t = tyn(TYPE_ACCESS, N);
+        t->el = resolve_subtype(SM, n->un.x);
         return t;
     }
     if (n->k == N_IX)
     {
-        Type_Info *bt = rst(SM, n->ix.p);
-        if (bt and bt->k == TY_A and bt->lo == 0 and bt->hi == -1 and n->ix.ix.n == 1)
+        Type_Info *bt = resolve_subtype(SM, n->ix.p);
+        if (bt and bt->k == TYPE_ARRAY and bt->lo == 0 and bt->hi == -1 and n->ix.ix.n == 1)
         {
             Syntax_Node *r = n->ix.ix.d[0];
-            if (r and r->k == N_RN)
+            if (r and r->k == NODE_RANGE)
             {
                 rex(SM, r->rn.lo, 0);
                 rex(SM, r->rn.hi, 0);
-                Type_Info *t = tyn(TY_A, N);
+                Type_Info *t = tyn(TYPE_ARRAY, N);
                 t->el = bt->el;
                 t->ix = bt->ix;
                 t->bs = bt;
-                if (r->rn.lo and r->rn.lo->k == N_INT)
+                if (r->rn.lo and r->rn.lo->k == NODE_INTEGER)
                     t->lo = r->rn.lo->i;
                 else if (
                     r->rn.lo and r->rn.lo->k == N_UN and r->rn.lo->un.op == T_MN
-                    and r->rn.lo->un.x->k == N_INT)
+                    and r->rn.lo->un.x->k == NODE_INTEGER)
                     t->lo = -r->rn.lo->un.x->i;
-                if (r->rn.hi and r->rn.hi->k == N_INT)
+                if (r->rn.hi and r->rn.hi->k == NODE_INTEGER)
                     t->hi = r->rn.hi->i;
                 else if (
                     r->rn.hi and r->rn.hi->k == N_UN and r->rn.hi->un.op == T_MN
-                    and r->rn.hi->un.x->k == N_INT)
+                    and r->rn.hi->un.x->k == NODE_INTEGER)
                     t->hi = -r->rn.hi->un.x->i;
                 return t;
             }
         }
         return bt;
     }
-    if (n->k == N_RN)
+    if (n->k == NODE_RANGE)
     {
         rex(SM, n->rn.lo, 0);
         rex(SM, n->rn.hi, 0);
-        Type_Info *t = tyn(TY_I, N);
-        if (n->rn.lo and n->rn.lo->k == N_INT)
+        Type_Info *t = tyn(TYPE_INTEGER, N);
+        if (n->rn.lo and n->rn.lo->k == NODE_INTEGER)
             t->lo = n->rn.lo->i;
         else if (
             n->rn.lo and n->rn.lo->k == N_UN and n->rn.lo->un.op == T_MN
-            and n->rn.lo->un.x->k == N_INT)
+            and n->rn.lo->un.x->k == NODE_INTEGER)
             t->lo = -n->rn.lo->un.x->i;
-        if (n->rn.hi and n->rn.hi->k == N_INT)
+        if (n->rn.hi and n->rn.hi->k == NODE_INTEGER)
             t->hi = n->rn.hi->i;
         else if (
             n->rn.hi and n->rn.hi->k == N_UN and n->rn.hi->un.op == T_MN
-            and n->rn.hi->un.x->k == N_INT)
+            and n->rn.hi->un.x->k == NODE_INTEGER)
             t->hi = -n->rn.hi->un.x->i;
         return t;
     }
     if (n->k == N_CL)
     {
-        Type_Info *bt = rst(SM, n->cl.fn);
-        if (bt and bt->k == TY_A and bt->lo == 0 and bt->hi == -1 and n->cl.ar.n == 1)
+        Type_Info *bt = resolve_subtype(SM, n->cl.fn);
+        if (bt and bt->k == TYPE_ARRAY and bt->lo == 0 and bt->hi == -1 and n->cl.ar.n == 1)
         {
             Syntax_Node *r = n->cl.ar.d[0];
-            if (r and r->k == N_RN)
+            if (r and r->k == NODE_RANGE)
             {
                 rex(SM, r->rn.lo, 0);
                 rex(SM, r->rn.hi, 0);
-                Type_Info *t = tyn(TY_A, N);
+                Type_Info *t = tyn(TYPE_ARRAY, N);
                 t->el = bt->el;
                 t->ix = bt->ix;
                 t->bs = bt;
-                if (r->rn.lo and r->rn.lo->k == N_INT)
+                if (r->rn.lo and r->rn.lo->k == NODE_INTEGER)
                     t->lo = r->rn.lo->i;
                 else if (
                     r->rn.lo and r->rn.lo->k == N_UN and r->rn.lo->un.op == T_MN
-                    and r->rn.lo->un.x->k == N_INT)
+                    and r->rn.lo->un.x->k == NODE_INTEGER)
                     t->lo = -r->rn.lo->un.x->i;
-                if (r->rn.hi and r->rn.hi->k == N_INT)
+                if (r->rn.hi and r->rn.hi->k == NODE_INTEGER)
                     t->hi = r->rn.hi->i;
                 else if (
                     r->rn.hi and r->rn.hi->k == N_UN and r->rn.hi->un.op == T_MN
-                    and r->rn.hi->un.x->k == N_INT)
+                    and r->rn.hi->un.x->k == NODE_INTEGER)
                     t->hi = -r->rn.hi->un.x->i;
                 return t;
             }
@@ -5575,7 +5577,7 @@ static Type_Info *rst(Symbol_Manager *SM, Syntax_Node *n)
 }
 static Symbol *scl(Symbol_Manager *SM, char c, Type_Info *tx)
 {
-    if (tx and tx->k == TY_E)
+    if (tx and tx->k == TYPE_ENUMERATION)
     {
         for (uint32_t i = 0; i < tx->ev.n; i++)
         {
@@ -5584,11 +5586,10 @@ static Symbol *scl(Symbol_Manager *SM, char c, Type_Info *tx)
                 return e;
         }
     }
-    if (tx and tx->k == TY_D and tx->prt)
+    if (tx and tx->k == TYPE_DERIVED and tx->prt)
         return scl(SM, c, tx->prt);
     for (Symbol *s = SM->sy[syh((String_Slice){&c, 1})]; s; s = s->nx)
-        if (s->nm.n == 1 and tolower(s->nm.s[0]) == tolower(c) and s->k == 2 and s->ty
-            and (s->ty->k == TY_E or (s->ty->k == TY_D and s->ty->prt and s->ty->prt->k == TY_E)))
+        if(s->nm.n==1 and tolower(s->nm.s[0])==tolower(c) and s->k==2 and s->ty and (s->ty->k==TYPE_ENUMERATION or (s->ty->k==TYPE_DERIVED and s->ty->prt and s->ty->prt->k==TYPE_ENUMERATION)))
             return s;
     return 0;
 }
@@ -5602,7 +5603,7 @@ static inline Syntax_Node *mk_chk(Syntax_Node *ex, String_Slice ec, Source_Locat
 }
 static inline bool is_unc_arr(Type_Info *t)
 {
-    return t and t->k == TY_A and t->lo == 0 and t->hi == -1;
+    return t and t->k == TYPE_ARRAY and t->lo == 0 and t->hi == -1;
 }
 static Type_Info *base_scalar(Type_Info *t)
 {
@@ -5610,7 +5611,8 @@ static Type_Info *base_scalar(Type_Info *t)
         return TY_INT;
     for (Type_Info *p = t; p; p = p->bs)
         if (not p->bs
-            or (p->k != TY_I and p->k != TY_E and p->k != TY_D and p->k != TY_C and p->k != TY_F))
+            or (p->k != TYPE_INTEGER and p->k != TYPE_ENUMERATION and p->k != TYPE_DERIVED
+                and p->k != TYPE_CHARACTER and p->k != TYPE_FLOAT))
             return p;
     return t;
 }
@@ -5631,6 +5633,7 @@ static inline double ty_bd_d(int64_t b)
     u.i = b;
     return u.d;
 }
+
 static bool dsc_cf(Type_Info *t, Type_Info *s)
 {
     if (not t or not s or t->dc.n == 0 or s->dc.n == 0)
@@ -5640,7 +5643,7 @@ static bool dsc_cf(Type_Info *t, Type_Info *s)
     {
         Syntax_Node *ad = t->dc.d[i], *bd = s->dc.d[i];
         if (not(ad and bd and ad->k == N_DS and bd->k == N_DS and ad->pm.df and bd->pm.df
-                and ad->pm.df->k == N_INT and bd->pm.df->k == N_INT))
+                and ad->pm.df->k == NODE_INTEGER and bd->pm.df->k == NODE_INTEGER))
             continue;
         if (ad->pm.df->i != bd->pm.df->i)
             return 1;
@@ -5652,16 +5655,16 @@ static Syntax_Node *chk(Symbol_Manager *SM, Syntax_Node *n, Source_Location l)
     (void) SM;
     if (not n or not n->ty)
         return n;
-    Type_Info *t = tcc(n->ty);
+    Type_Info *t = type_concrete(n->ty);
     if ((is_discrete(t) or is_real_type(t)) and (n->ty->lo != TY_INT->lo or n->ty->hi != TY_INT->hi)
         and not is_check_suppressed(n->ty, CHK_RNG))
         return mk_chk(n, Z("CONSTRAINT_ERROR"), l);
-    if (t->k == TY_R and dsc_cf(t, n->ty) and not is_check_suppressed(t, CHK_DSC))
+    if (t->k == TYPE_RECORD and dsc_cf(t, n->ty) and not is_check_suppressed(t, CHK_DSC))
         return mk_chk(n, Z("CONSTRAINT_ERROR"), l);
-    if (t->k == TY_A and n->ty and n->ty->k == TY_A and n->ty->ix
+    if (t->k == TYPE_ARRAY and n->ty and n->ty->k == TYPE_ARRAY and n->ty->ix
         and (n->ty->lo < n->ty->ix->lo or n->ty->hi > n->ty->ix->hi))
         return mk_chk(n, Z("CONSTRAINT_ERROR"), l);
-    if (t->k == TY_A and n->ty and n->ty->k == TY_A and not is_unc_arr(t)
+    if (t->k == TYPE_ARRAY and n->ty and n->ty->k == TYPE_ARRAY and not is_unc_arr(t)
         and not is_check_suppressed(t, CHK_IDX) and (t->lo != n->ty->lo or t->hi != n->ty->hi))
         return mk_chk(n, Z("CONSTRAINT_ERROR"), l);
     return n;
@@ -5673,16 +5676,17 @@ static inline int64_t rng_sz(int64_t lo, int64_t hi)
 static inline bool is_static(Syntax_Node *n)
 {
     return n
-           and (n->k == N_INT or (n->k == N_UN and n->un.op == T_MN and n->un.x and n->un.x->k == N_INT));
+           and (n->k == NODE_INTEGER or (n->k == N_UN and n->un.op == T_MN and n->un.x and n->un.x->k == NODE_INTEGER));
 }
+
 static int foth(Syntax_Node *ag)
 {
-    if (not ag or ag->k != N_AG)
+    if (not ag or ag->k != NODE_AGGREGATE)
         return -1;
     for (uint32_t i = 0; i < ag->ag.it.n; i++)
     {
         Syntax_Node *e = ag->ag.it.d[i];
-        if (e->k == N_ASC and e->asc.ch.n == 1 and e->asc.ch.d[0]->k == N_ID
+        if (e->k == NODE_ASSOCIATION and e->asc.ch.n == 1 and e->asc.ch.d[0]->k == NODE_IDENTIFIER
             and string_equal_ignore_case(e->asc.ch.d[0]->s, Z("others")))
             return i;
     }
@@ -5691,7 +5695,7 @@ static int foth(Syntax_Node *ag)
 static void naag(Symbol_Manager *SM, Type_Info *at, Syntax_Node *ag)
 {
     (void) SM;
-    if (not ag or not at or at->k != TY_A)
+    if (not ag or not at or at->k != TYPE_ARRAY)
         return;
     int64_t asz = rng_sz(at->lo, at->hi);
     if (asz > 4096)
@@ -5705,15 +5709,15 @@ static void naag(Symbol_Manager *SM, Type_Info *at, Syntax_Node *ag)
         if ((int) i == oi)
             continue;
         Syntax_Node *e = ag->ag.it.d[i];
-        if (e->k == N_ASC)
+        if (e->k == NODE_ASSOCIATION)
         {
             for (uint32_t j = 0; j < e->asc.ch.n; j++)
             {
                 Syntax_Node *ch = e->asc.ch.d[j];
                 int64_t idx = -1;
-                if (ch->k == N_INT)
+                if (ch->k == NODE_INTEGER)
                     idx = ch->i - at->lo;
-                else if (ch->k == N_RN)
+                else if (ch->k == NODE_RANGE)
                 {
                     for (int64_t k = ch->rn.lo->i; k <= ch->rn.hi->i; k++)
                     {
@@ -5776,18 +5780,18 @@ static void naag(Symbol_Manager *SM, Type_Info *at, Syntax_Node *ag)
 static void nrag(Symbol_Manager *SM, Type_Info *rt, Syntax_Node *ag)
 {
     (void) SM;
-    if (not ag or not rt or rt->k != TY_R)
+    if (not ag or not rt or rt->k != TYPE_RECORD)
         return;
     bool cov[256] = {0};
     for (uint32_t i = 0; i < ag->ag.it.n; i++)
     {
         Syntax_Node *e = ag->ag.it.d[i];
-        if (e->k != N_ASC)
+        if (e->k != NODE_ASSOCIATION)
             continue;
         for (uint32_t j = 0; j < e->asc.ch.n; j++)
         {
             Syntax_Node *ch = e->asc.ch.d[j];
-            if (ch->k == N_ID)
+            if (ch->k == NODE_IDENTIFIER)
             {
                 if (string_equal_ignore_case(ch->s, Z("others")))
                 {
@@ -5799,7 +5803,7 @@ static void nrag(Symbol_Manager *SM, Type_Info *rt, Syntax_Node *ag)
                 for (uint32_t k = 0; k < rt->cm.n; k++)
                 {
                     Syntax_Node *c = rt->cm.d[k];
-                    if (c->k == N_CM and string_equal_ignore_case(c->cm.nm, ch->s))
+                    if (c->k == NODE_COMPONENT and string_equal_ignore_case(c->cm.nm, ch->s))
                     {
                         if (cov[c->cm.of] and error_count < 99)
                             fatal_error(ag->l, "dup cm");
@@ -5813,18 +5817,19 @@ static void nrag(Symbol_Manager *SM, Type_Info *rt, Syntax_Node *ag)
 }
 static Type_Info *ucag(Type_Info *at, Syntax_Node *ag)
 {
-    if (not at or not ag or at->k != TY_A or ag->k != N_AG)
+    if (not at or not ag or at->k != TYPE_ARRAY or ag->k != NODE_AGGREGATE)
         return at;
     if (at->lo != 0 or at->hi != -1)
         return at;
     int asz = ag->ag.it.n;
-    Type_Info *nt = tyn(TY_A, N);
+    Type_Info *nt = tyn(TYPE_ARRAY, N);
     nt->el = at->el;
     nt->ix = at->ix;
     nt->lo = 1;
     nt->hi = asz;
     return nt;
 }
+
 static void icv(Type_Info *t, Syntax_Node *n)
 {
     if (not t or not n)
@@ -5834,13 +5839,13 @@ static void icv(Type_Info *t, Syntax_Node *n)
         for (uint32_t i = 0; i < n->cl.ar.n; i++)
             rex(0, n->cl.ar.d[i], 0);
     }
-    else if (n->k == N_AG and t->k == TY_A)
+    else if (n->k == NODE_AGGREGATE and t->k == TYPE_ARRAY)
     {
-        naag(0, tcc(t), n);
+        naag(0, type_concrete(t), n);
     }
-    else if (n->k == N_AG and t->k == TY_R)
+    else if (n->k == NODE_AGGREGATE and t->k == TYPE_RECORD)
     {
-        nrag(0, tcc(t), n);
+        nrag(0, type_concrete(t), n);
     }
 }
 static bool hrs(Node_Vector *v)
@@ -5856,10 +5861,10 @@ static void rex(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx)
         return;
     switch (n->k)
     {
-    case N_ID:
+    case NODE_IDENTIFIER:
     {
-        Type_Info *_tx = tx and tx->k == TY_D ? tcc(tx) : tx;
-        if (_tx and _tx->k == TY_E)
+        Type_Info *_tx = tx and tx->k == TYPE_DERIVED ? type_concrete(tx) : tx;
+        if (_tx and _tx->k == TYPE_ENUMERATION)
         {
             for (uint32_t i = 0; i < tx->ev.n; i++)
             {
@@ -5872,15 +5877,15 @@ static void rex(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx)
                 }
             }
         }
-        Symbol *s = syf(SM, n->s);
+        Symbol *s = symbol_find(SM, n->s);
         if (s)
         {
             n->ty = s->ty;
             n->sy = s;
             if (s->k == 5)
             {
-                Symbol *s0 = syfa(SM, n->s, 0, tx);
-                if (s0 and s0->ty and s0->ty->k == TY_S and s0->ty->el)
+                Symbol *s0 = symbol_find_arity(SM, n->s, 0, tx);
+                if (s0 and s0->ty and s0->ty->k == TYPE_STRING and s0->ty->el)
                 {
                     n->ty = s0->ty->el;
                     n->sy = s0;
@@ -5888,15 +5893,15 @@ static void rex(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx)
             }
             if (s->k == 2 and s->df)
             {
-                if (s->df->k == N_INT)
+                if (s->df->k == NODE_INTEGER)
                 {
-                    n->k = N_INT;
+                    n->k = NODE_INTEGER;
                     n->i = s->df->i;
                     n->ty = TY_UINT;
                 }
-                else if (s->df->k == N_REAL)
+                else if (s->df->k == NODE_REAL)
                 {
-                    n->k = N_REAL;
+                    n->k = NODE_REAL;
                     n->f = s->df->f;
                     n->ty = TY_UFLT;
                 }
@@ -5910,33 +5915,33 @@ static void rex(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx)
         }
     }
     break;
-    case N_INT:
+    case NODE_INTEGER:
         n->ty = TY_UINT;
         break;
-    case N_REAL:
+    case NODE_REAL:
         n->ty = TY_UFLT;
         break;
-    case N_CHAR:
+    case NODE_CHARACTER:
     {
         Symbol *s = scl(SM, n->i, tx);
         if (s)
         {
             n->ty = s->ty;
             n->sy = s;
-            n->k = N_ID;
+            n->k = NODE_IDENTIFIER;
             n->s = s->nm;
         }
         else
             n->ty = TY_CHAR;
     }
     break;
-    case N_STR:
-        n->ty = tx and (tx->k == TY_A or tcc(tx)->k == TY_A) ? tx : TY_STR;
+    case NODE_STRING:
+        n->ty = tx and (tx->k == TYPE_ARRAY or type_concrete(tx)->k == TYPE_ARRAY) ? tx : TY_STR;
         break;
-    case N_NULL:
-        n->ty = tx and tx->k == TY_AC ? tx : TY_INT;
+    case NODE_NULL:
+        n->ty = tx and tx->k == TYPE_ACCESS ? tx : TY_INT;
         break;
-    case N_BIN:
+    case NODE_BINARY_OP:
         rex(SM, n->bn.l, tx);
         rex(SM, n->bn.r, tx);
         if (n->bn.op == T_ATHN or n->bn.op == T_OREL)
@@ -5948,8 +5953,8 @@ static void rex(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx)
         {
             n->bn.l = chk(SM, n->bn.l, n->l);
             n->bn.r = chk(SM, n->bn.r, n->l);
-            Type_Info *lt = n->bn.l->ty ? tcc(n->bn.l->ty) : 0;
-            n->ty = lt and lt->k == TY_A ? lt : TY_BOOL;
+            Type_Info *lt = n->bn.l->ty ? type_concrete(n->bn.l->ty) : 0;
+            n->ty = lt and lt->k == TYPE_ARRAY ? lt : TY_BOOL;
             break;
         }
         if (n->bn.op == T_IN)
@@ -5959,7 +5964,7 @@ static void rex(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx)
             n->ty = TY_BOOL;
             break;
         }
-        if (n->bn.l->k == N_INT and n->bn.r->k == N_INT
+        if (n->bn.l->k == NODE_INTEGER and n->bn.r->k == NODE_INTEGER
             and (n->bn.op == T_PL or n->bn.op == T_MN or n->bn.op == T_ST or n->bn.op == T_SL or n->bn.op == T_MOD or n->bn.op == T_REM))
         {
             int64_t a = n->bn.l->i, b = n->bn.r->i, r = 0;
@@ -5973,16 +5978,16 @@ static void rex(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx)
                 r = a / b;
             else if ((n->bn.op == T_MOD or n->bn.op == T_REM) and b != 0)
                 r = a % b;
-            n->k = N_INT;
+            n->k = NODE_INTEGER;
             n->i = r;
             n->ty = TY_UINT;
         }
         else if (
-            (n->bn.l->k == N_REAL or n->bn.r->k == N_REAL)
+            (n->bn.l->k == NODE_REAL or n->bn.r->k == NODE_REAL)
             and (n->bn.op == T_PL or n->bn.op == T_MN or n->bn.op == T_ST or n->bn.op == T_SL or n->bn.op == T_EX))
         {
-            double a = n->bn.l->k == N_INT ? (double) n->bn.l->i : n->bn.l->f,
-                   b = n->bn.r->k == N_INT ? (double) n->bn.r->i : n->bn.r->f, r = 0;
+            double a = n->bn.l->k == NODE_INTEGER ? (double) n->bn.l->i : n->bn.l->f,
+                   b = n->bn.r->k == NODE_INTEGER ? (double) n->bn.r->i : n->bn.r->f, r = 0;
             if (n->bn.op == T_PL)
                 r = a + b;
             else if (n->bn.op == T_MN)
@@ -5993,35 +5998,35 @@ static void rex(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx)
                 r = a / b;
             else if (n->bn.op == T_EX)
                 r = pow(a, b);
-            n->k = N_REAL;
+            n->k = NODE_REAL;
             n->f = r;
             n->ty = TY_UFLT;
         }
         else
         {
-            n->ty = tcc(n->bn.l->ty);
+            n->ty = type_concrete(n->bn.l->ty);
         }
         if (n->bn.op >= T_EQ and n->bn.op <= T_GE)
             n->ty = TY_BOOL;
         break;
     case N_UN:
         rex(SM, n->un.x, tx);
-        if (n->un.op == T_MN and n->un.x->k == N_INT)
+        if (n->un.op == T_MN and n->un.x->k == NODE_INTEGER)
         {
-            n->k = N_INT;
+            n->k = NODE_INTEGER;
             n->i = -n->un.x->i;
             n->ty = TY_UINT;
         }
-        else if (n->un.op == T_MN and n->un.x->k == N_REAL)
+        else if (n->un.op == T_MN and n->un.x->k == NODE_REAL)
         {
-            n->k = N_REAL;
+            n->k = NODE_REAL;
             n->f = -n->un.x->f;
             n->ty = TY_UFLT;
         }
-        else if (n->un.op == T_PL and (n->un.x->k == N_INT or n->un.x->k == N_REAL))
+        else if (n->un.op == T_PL and (n->un.x->k == NODE_INTEGER or n->un.x->k == NODE_REAL))
         {
             n->k = n->un.x->k;
-            if (n->k == N_INT)
+            if (n->k == NODE_INTEGER)
             {
                 n->i = n->un.x->i;
                 n->ty = TY_UINT;
@@ -6034,12 +6039,12 @@ static void rex(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx)
         }
         else
         {
-            n->ty = tcc(n->un.x->ty);
+            n->ty = type_concrete(n->un.x->ty);
         }
         if (n->un.op == T_NOT)
         {
-            Type_Info *xt = n->un.x->ty ? tcc(n->un.x->ty) : 0;
-            n->ty = xt and xt->k == TY_A ? xt : TY_BOOL;
+            Type_Info *xt = n->un.x->ty ? type_concrete(n->un.x->ty) : 0;
+            n->ty = xt and xt->k == TYPE_ARRAY ? xt : TY_BOOL;
         }
         break;
     case N_IX:
@@ -6049,8 +6054,8 @@ static void rex(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx)
             rex(SM, n->ix.ix.d[i], 0);
             n->ix.ix.d[i] = chk(SM, n->ix.ix.d[i], n->l);
         }
-        if (n->ix.p->ty and n->ix.p->ty->k == TY_A)
-            n->ty = tcc(n->ix.p->ty->el);
+        if (n->ix.p->ty and n->ix.p->ty->k == TYPE_ARRAY)
+            n->ty = type_concrete(n->ix.p->ty->el);
         else
             n->ty = TY_INT;
         break;
@@ -6058,7 +6063,7 @@ static void rex(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx)
         rex(SM, n->sl.p, 0);
         rex(SM, n->sl.lo, 0);
         rex(SM, n->sl.hi, 0);
-        if (n->sl.p->ty and n->sl.p->ty->k == TY_A)
+        if (n->sl.p->ty and n->sl.p->ty->k == TYPE_ARRAY)
             n->ty = n->sl.p->ty;
         else
             n->ty = TY_INT;
@@ -6067,9 +6072,9 @@ static void rex(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx)
     {
         rex(SM, n->se.p, 0);
         Syntax_Node *p = n->se.p;
-        if (p->k == N_ID)
+        if (p->k == NODE_IDENTIFIER)
         {
-            Symbol *ps = syf(SM, p->s);
+            Symbol *ps = symbol_find(SM, p->s);
             if (ps and ps->k == 6 and ps->df and ps->df->k == N_PKS)
             {
                 Syntax_Node *pk = ps->df;
@@ -6080,24 +6085,25 @@ static void rex(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx)
                     {
                         n->ty = d->sy->ty ? d->sy->ty : TY_INT;
                         n->sy = d->sy;
-                        if (d->sy->k == 5 and d->sy->ty and d->sy->ty->k == TY_S and d->sy->ty->el)
+                        if (d->sy->k == 5 and d->sy->ty and d->sy->ty->k == TYPE_STRING
+                            and d->sy->ty->el)
                         {
                             n->ty = d->sy->ty->el;
                         }
                         if (d->sy->k == 2 and d->sy->df)
                         {
                             Syntax_Node *df = d->sy->df;
-                            if (df->k == N_CHK)
+                            if (df->k == NODE_CHECK)
                                 df = df->chk.ex;
-                            if (df->k == N_INT)
+                            if (df->k == NODE_INTEGER)
                             {
-                                n->k = N_INT;
+                                n->k = NODE_INTEGER;
                                 n->i = df->i;
                                 n->ty = TY_UINT;
                             }
-                            else if (df->k == N_REAL)
+                            else if (df->k == NODE_REAL)
                             {
-                                n->k = N_REAL;
+                                n->k = NODE_REAL;
                                 n->f = df->f;
                                 n->ty = TY_UFLT;
                             }
@@ -6129,17 +6135,17 @@ static void rex(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx)
                                 if (oid->sy->k == 2 and oid->sy->df)
                                 {
                                     Syntax_Node *df = oid->sy->df;
-                                    if (df->k == N_CHK)
+                                    if (df->k == NODE_CHECK)
                                         df = df->chk.ex;
-                                    if (df->k == N_INT)
+                                    if (df->k == NODE_INTEGER)
                                     {
-                                        n->k = N_INT;
+                                        n->k = NODE_INTEGER;
                                         n->i = df->i;
                                         n->ty = TY_UINT;
                                     }
-                                    else if (df->k == N_REAL)
+                                    else if (df->k == NODE_REAL)
                                     {
-                                        n->k = N_REAL;
+                                        n->k = NODE_REAL;
                                         n->f = df->f;
                                         n->ty = TY_UFLT;
                                     }
@@ -6155,7 +6161,7 @@ static void rex(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx)
                     if (d->k == N_TD and d->sy and d->sy->ty)
                     {
                         Type_Info *et = d->sy->ty;
-                        if (et->k == TY_E)
+                        if (et->k == TYPE_ENUMERATION)
                         {
                             for (uint32_t j = 0; j < et->ev.n; j++)
                             {
@@ -6182,24 +6188,24 @@ static void rex(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx)
                         {
                             n->ty = s->ty;
                             n->sy = s;
-                            if (s->k == 5 and s->ty and s->ty->k == TY_S and s->ty->el)
+                            if (s->k == 5 and s->ty and s->ty->k == TYPE_STRING and s->ty->el)
                             {
                                 n->ty = s->ty->el;
                             }
                             if (s->k == 2 and s->df)
                             {
                                 Syntax_Node *df = s->df;
-                                if (df->k == N_CHK)
+                                if (df->k == NODE_CHECK)
                                     df = df->chk.ex;
-                                if (df->k == N_INT)
+                                if (df->k == NODE_INTEGER)
                                 {
-                                    n->k = N_INT;
+                                    n->k = NODE_INTEGER;
                                     n->i = df->i;
                                     n->ty = TY_UINT;
                                 }
-                                else if (df->k == N_REAL)
+                                else if (df->k == NODE_REAL)
                                 {
-                                    n->k = N_REAL;
+                                    n->k = NODE_REAL;
                                     n->f = df->f;
                                     n->ty = TY_UFLT;
                                 }
@@ -6212,15 +6218,15 @@ static void rex(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx)
         }
         if (p->ty)
         {
-            Type_Info *pt = tcc(p->ty);
-            if (pt->k == TY_R)
+            Type_Info *pt = type_concrete(p->ty);
+            if (pt->k == TYPE_RECORD)
             {
                 for (uint32_t i = 0; i < pt->cm.n; i++)
                 {
                     Syntax_Node *c = pt->cm.d[i];
-                    if (c->k == N_CM and string_equal_ignore_case(c->cm.nm, n->se.se))
+                    if (c->k == NODE_COMPONENT and string_equal_ignore_case(c->cm.nm, n->se.se))
                     {
-                        n->ty = rst(SM, c->cm.ty);
+                        n->ty = resolve_subtype(SM, c->cm.ty);
                         return;
                     }
                 }
@@ -6229,7 +6235,7 @@ static void rex(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx)
                     Syntax_Node *d = pt->dc.d[i];
                     if (d->k == N_DS and string_equal_ignore_case(d->pm.nm, n->se.se))
                     {
-                        n->ty = rst(SM, d->pm.ty);
+                        n->ty = resolve_subtype(SM, d->pm.ty);
                         return;
                     }
                 }
@@ -6246,7 +6252,7 @@ static void rex(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx)
                                 Syntax_Node *vc = v->vr.cmm.d[k];
                                 if (string_equal_ignore_case(vc->cm.nm, n->se.se))
                                 {
-                                    n->ty = rst(SM, vc->cm.ty);
+                                    n->ty = resolve_subtype(SM, vc->cm.ty);
                                     return;
                                 }
                             }
@@ -6266,7 +6272,7 @@ static void rex(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx)
             rex(SM, n->at.ar.d[i], 0);
         {
             Type_Info *pt = n->at.p ? n->at.p->ty : 0;
-            Type_Info *ptc = pt ? tcc(pt) : 0;
+            Type_Info *ptc = pt ? type_concrete(pt) : 0;
             String_Slice a = n->at.at;
             if (string_equal_ignore_case(a, Z("FIRST")) or string_equal_ignore_case(a, Z("LAST")))
                 n->ty = ptc and ptc->el                                     ? ptc->el
@@ -6278,7 +6284,7 @@ static void rex(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx)
                 sel->se.p = ND(ID, n->l);
                 sel->se.p->s = Z("SYSTEM");
                 sel->se.se = Z("ADDRESS");
-                n->ty = rst(SM, sel);
+                n->ty = resolve_subtype(SM, sel);
             }
             else if (
                 string_equal_ignore_case(a, Z("LENGTH")) or string_equal_ignore_case(a, Z("SIZE"))
@@ -6313,7 +6319,7 @@ static void rex(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx)
                 or string_equal_ignore_case(a, Z("MACHINE_ROUNDS")))
                 n->ty = TY_BOOL;
             else if (string_equal_ignore_case(a, Z("ACCESS")))
-                n->ty = tyn(TY_AC, N);
+                n->ty = tyn(TYPE_ACCESS, N);
             else if (string_equal_ignore_case(a, Z("IMAGE")))
                 n->ty = TY_STR;
             else if (
@@ -6327,31 +6333,31 @@ static void rex(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx)
             else
                 n->ty = TY_INT;
             if (string_equal_ignore_case(a, Z("POS")) and n->at.ar.n > 0
-                and n->at.ar.d[0]->k == N_INT)
+                and n->at.ar.d[0]->k == NODE_INTEGER)
             {
                 if (ptc and is_integer_type(ptc))
                 {
-                    n->k = N_INT;
+                    n->k = NODE_INTEGER;
                     n->i = n->at.ar.d[0]->i;
                     n->ty = TY_UINT;
                 }
             }
             if (string_equal_ignore_case(a, Z("VAL")) and n->at.ar.n > 0
-                and n->at.ar.d[0]->k == N_INT)
+                and n->at.ar.d[0]->k == NODE_INTEGER)
             {
                 int64_t pos = n->at.ar.d[0]->i;
                 if (ptc == TY_CHAR and pos >= 0 and pos <= 127)
                 {
-                    n->k = N_CHAR;
+                    n->k = NODE_CHARACTER;
                     n->i = pos;
                     n->ty = TY_CHAR;
                 }
                 else if (
-                    ptc and ptc->k == TY_E and pos >= ptc->lo and pos <= ptc->hi
+                    ptc and ptc->k == TYPE_ENUMERATION and pos >= ptc->lo and pos <= ptc->hi
                     and (uint32_t) pos < ptc->ev.n)
                 {
                     Symbol *e = ptc->ev.d[pos];
-                    n->k = N_ID;
+                    n->k = NODE_IDENTIFIER;
                     n->s = e->nm;
                     n->ty = pt;
                     n->sy = e;
@@ -6361,7 +6367,7 @@ static void rex(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx)
         break;
     case N_QL:
     {
-        Type_Info *qt = rst(SM, n->ql.nm);
+        Type_Info *qt = resolve_subtype(SM, n->ql.nm);
         rex(SM, n->ql.ag, qt);
         n->ty = qt;
         if (n->ql.ag->ty and qt)
@@ -6377,7 +6383,7 @@ static void rex(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx)
         for (uint32_t i = 0; i < n->cl.ar.n; i++)
             rex(SM, n->cl.ar.d[i], 0);
         Type_Info *ft = n->cl.fn ? n->cl.fn->ty : 0;
-        if (ft and ft->k == TY_A)
+        if (ft and ft->k == TYPE_ARRAY)
         {
             Syntax_Node *fn = n->cl.fn;
             Node_Vector ar = n->cl.ar;
@@ -6387,16 +6393,16 @@ static void rex(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx)
             rex(SM, n, tx);
             break;
         }
-        if (n->cl.fn->k == N_ID or n->cl.fn->k == N_STR)
+        if (n->cl.fn->k == NODE_IDENTIFIER or n->cl.fn->k == NODE_STRING)
         {
-            String_Slice fnm = n->cl.fn->k == N_ID ? n->cl.fn->s : n->cl.fn->s;
+            String_Slice fnm = n->cl.fn->k == NODE_IDENTIFIER ? n->cl.fn->s : n->cl.fn->s;
             Symbol *s = n->cl.fn->sy;
             if (not s)
-                s = syfa(SM, fnm, n->cl.ar.n, tx);
+                s = symbol_find_arity(SM, fnm, n->cl.ar.n, tx);
             if (s)
             {
                 n->cl.fn->sy = s;
-                if (s->ty and s->ty->k == TY_S and s->ty->el)
+                if (s->ty and s->ty->k == TYPE_STRING and s->ty->el)
                 {
                     n->ty = s->ty->el;
                     n->sy = s;
@@ -6420,34 +6426,34 @@ static void rex(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx)
             n->ty = TY_INT;
     }
     break;
-    case N_AG:
+    case NODE_AGGREGATE:
         for (uint32_t i = 0; i < n->ag.it.n; i++)
             rex(SM, n->ag.it.d[i], tx);
         n->ty = tx ?: TY_INT;
         icv(tx, n);
         break;
     case N_ALC:
-        n->ty = tyn(TY_AC, N);
-        n->ty->el = rst(SM, n->alc.st);
+        n->ty = tyn(TYPE_ACCESS, N);
+        n->ty->el = resolve_subtype(SM, n->alc.st);
         if (n->alc.in)
         {
-            Type_Info *et = n->ty->el ? tcc(n->ty->el) : 0;
-            if (et and et->k == TY_R and et->dc.n > 0)
+            Type_Info *et = n->ty->el ? type_concrete(n->ty->el) : 0;
+            if (et and et->k == TYPE_RECORD and et->dc.n > 0)
             {
                 for (uint32_t i = 0; i < et->dc.n; i++)
                 {
                     Syntax_Node *d = et->dc.d[i];
                     if (d->k == N_DS and d->pm.df)
                     {
-                        rex(SM, d->pm.df, rst(SM, d->pm.ty));
+                        rex(SM, d->pm.df, resolve_subtype(SM, d->pm.ty));
                     }
                 }
             }
             rex(SM, n->alc.in, n->ty->el);
-            if (tx and tx->k == TY_AC and tx->el)
+            if (tx and tx->k == TYPE_ACCESS and tx->el)
             {
-                Type_Info *ct = tcc(tx->el);
-                if (ct and ct->k == TY_R and ct->dc.n > 0)
+                Type_Info *ct = type_concrete(tx->el);
+                if (ct and ct->k == TYPE_RECORD and ct->dc.n > 0)
                 {
                     bool hcd = 0;
                     for (uint32_t i = 0; i < ct->dc.n; i++)
@@ -6460,8 +6466,8 @@ static void rex(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx)
                             Syntax_Node *cd = ct->dc.d[i], *ed = et->dc.d[i];
                             if (cd->k == N_DS and cd->pm.df and ed->k == N_DS)
                             {
-                                bool mtch = cd->pm.df->k == N_INT and ed->pm.df
-                                            and ed->pm.df->k == N_INT
+                                bool mtch = cd->pm.df->k == NODE_INTEGER and ed->pm.df
+                                            and ed->pm.df->k == NODE_INTEGER
                                             and cd->pm.df->i == ed->pm.df->i;
                                 if (not mtch)
                                 {
@@ -6475,25 +6481,25 @@ static void rex(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx)
             }
         }
         break;
-    case N_RN:
+    case NODE_RANGE:
         rex(SM, n->rn.lo, tx);
         rex(SM, n->rn.hi, tx);
         n->rn.lo = chk(SM, n->rn.lo, n->l);
         n->rn.hi = chk(SM, n->rn.hi, n->l);
-        n->ty = tcc(n->rn.lo->ty);
+        n->ty = type_concrete(n->rn.lo->ty);
         break;
-    case N_ASC:
+    case NODE_ASSOCIATION:
         if (n->asc.vl)
         {
-            Type_Info *vt = tx and tx->k == TY_A ? tx->el : tx;
+            Type_Info *vt = tx and tx->k == TYPE_ARRAY ? tx->el : tx;
             rex(SM, n->asc.vl, vt);
         }
         break;
     case N_DRF:
         rex(SM, n->drf.x, 0);
         {
-            Type_Info *dty = n->drf.x->ty ? tcc(n->drf.x->ty) : 0;
-            if (dty and dty->k == TY_AC)
+            Type_Info *dty = n->drf.x->ty ? type_concrete(n->drf.x->ty) : 0;
+            if (dty and dty->k == TYPE_ACCESS)
                 n->ty = dty->el;
             else
             {
@@ -6505,9 +6511,9 @@ static void rex(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx)
         break;
     case N_CVT:
         rex(SM, n->cvt.ex, 0);
-        n->ty = rst(SM, n->cvt.ty);
+        n->ty = resolve_subtype(SM, n->cvt.ty);
         break;
-    case N_CHK:
+    case NODE_CHECK:
         rex(SM, n->chk.ex, tx);
         n->ty = n->chk.ex->ty;
         break;
@@ -6525,13 +6531,13 @@ static void rss(Symbol_Manager *SM, Syntax_Node *n)
         rex(SM, n->as.tg, 0);
         rex(SM, n->as.vl, n->as.tg->ty);
         {
-            Type_Info *tgt = n->as.tg->ty ? tcc(n->as.tg->ty) : 0;
-            Type_Info *vlt = n->as.vl->ty ? tcc(n->as.vl->ty) : 0;
+            Type_Info *tgt = n->as.tg->ty ? type_concrete(n->as.tg->ty) : 0;
+            Type_Info *vlt = n->as.vl->ty ? type_concrete(n->as.vl->ty) : 0;
             if (error_count < 99 and tgt and vlt and not tco(tgt, vlt))
             {
                 Type_Info *tgb = semantic_base(tgt);
                 Type_Info *vlb = semantic_base(vlt);
-                if (not tco(tgb, vlb) and not(tgt->k == TY_B and is_discrete(vlt))
+                if (not tco(tgb, vlb) and not(tgt->k == TYPE_BOOLEAN and is_discrete(vlt))
                     and not(is_discrete(tgt) and is_discrete(vlt)))
                     fatal_error(n->l, "typ mis");
             }
@@ -6541,7 +6547,7 @@ static void rss(Symbol_Manager *SM, Syntax_Node *n)
             n->as.vl->ty = n->as.tg->ty;
         n->as.vl = chk(SM, n->as.vl, n->l);
         break;
-    case N_IF:
+    case NODE_IF:
         rex(SM, n->if_.cd, TY_BOOL);
         if (n->if_.th.n > 0 and not hrs(&n->if_.th))
             fatal_error(n->l, "seq needs stmt");
@@ -6561,7 +6567,7 @@ static void rss(Symbol_Manager *SM, Syntax_Node *n)
         for (uint32_t i = 0; i < n->if_.el.n; i++)
             rss(SM, n->if_.el.d[i]);
         break;
-    case N_CS:
+    case NODE_CASE:
         rex(SM, n->cs.ex, 0);
         for (uint32_t i = 0; i < n->cs.al.n; i++)
         {
@@ -6574,22 +6580,22 @@ static void rss(Symbol_Manager *SM, Syntax_Node *n)
                 rss(SM, a->hnd.stz.d[j]);
         }
         break;
-    case N_LP:
+    case NODE_LOOP:
         if (n->lp.lb.s)
         {
-            Symbol *lbs = sya(SM, syn(n->lp.lb, 10, 0, n));
+            Symbol *lbs = symbol_add_overload(SM, syn(n->lp.lb, 10, 0, n));
             (void) lbs;
         }
         if (n->lp.it)
         {
-            if (n->lp.it->k == N_BIN and n->lp.it->bn.op == T_IN)
+            if (n->lp.it->k == NODE_BINARY_OP and n->lp.it->bn.op == T_IN)
             {
                 Syntax_Node *v = n->lp.it->bn.l;
-                if (v->k == N_ID)
+                if (v->k == NODE_IDENTIFIER)
                 {
                     Type_Info *rt = n->lp.it->bn.r->ty;
                     Symbol *lvs = syn(v->s, 0, rt ?: TY_INT, 0);
-                    sya(SM, lvs);
+                    symbol_add_overload(SM, lvs);
                     lvs->lv = -1;
                     v->sy = lvs;
                 }
@@ -6601,10 +6607,10 @@ static void rss(Symbol_Manager *SM, Syntax_Node *n)
         for (uint32_t i = 0; i < n->lp.st.n; i++)
             rss(SM, n->lp.st.d[i]);
         break;
-    case N_BL:
+    case NODE_BLOCK:
         if (n->bk.lb.s)
         {
-            Symbol *lbs = sya(SM, syn(n->bk.lb, 10, 0, n));
+            Symbol *lbs = symbol_add_overload(SM, syn(n->bk.lb, 10, 0, n));
             (void) lbs;
         }
         scp(SM);
@@ -6620,8 +6626,8 @@ static void rss(Symbol_Manager *SM, Syntax_Node *n)
                 for (uint32_t j = 0; j < h->hnd.ec.n; j++)
                 {
                     Syntax_Node *e = h->hnd.ec.d[j];
-                    if (e->k == N_ID and not string_equal_ignore_case(e->s, Z("others")))
-                        slv(&SM->eh, e->s);
+                    if (e->k == NODE_IDENTIFIER and not string_equal_ignore_case(e->s, Z("others")))
+                        string_list_vector_append(&SM->eh, e->s);
                 }
                 for (uint32_t j = 0; j < h->hnd.stz.n; j++)
                     rss(SM, h->hnd.stz.d[j]);
@@ -6638,10 +6644,10 @@ static void rss(Symbol_Manager *SM, Syntax_Node *n)
             rex(SM, n->ex.cd, TY_BOOL);
         break;
     case N_RS:
-        if (n->rs.ec and n->rs.ec->k == N_ID)
-            slv(&SM->eh, n->rs.ec->s);
+        if (n->rs.ec and n->rs.ec->k == NODE_IDENTIFIER)
+            string_list_vector_append(&SM->eh, n->rs.ec->s);
         else
-            slv(&SM->eh, Z("PROGRAM_ERROR"));
+            string_list_vector_append(&SM->eh, Z("PROGRAM_ERROR"));
         if (n->rs.ec)
             rex(SM, n->rs.ec, 0);
         break;
@@ -6653,13 +6659,13 @@ static void rss(Symbol_Manager *SM, Syntax_Node *n)
     case N_ACC:
         scp(SM);
         {
-            Symbol *ens = sya(SM, syn(n->acc.nm, 9, 0, n));
+            Symbol *ens = symbol_add_overload(SM, syn(n->acc.nm, 9, 0, n));
             (void) ens;
             for (uint32_t i = 0; i < n->acc.pmx.n; i++)
             {
                 Syntax_Node *p = n->acc.pmx.d[i];
-                Type_Info *pt = rst(SM, p->pm.ty);
-                Symbol *ps = sya(SM, syn(p->pm.nm, 0, pt, p));
+                Type_Info *pt = resolve_subtype(SM, p->pm.ty);
+                Symbol *ps = symbol_add_overload(SM, syn(p->pm.nm, 0, pt, p));
                 p->sy = ps;
             }
             if (n->acc.stx.n > 0 and not hrs(&n->acc.stx))
@@ -6692,17 +6698,17 @@ static void rss(Symbol_Manager *SM, Syntax_Node *n)
         rex(SM, n->ex.cd, 0);
         break;
     case N_AB:
-        if (n->rs.ec and n->rs.ec->k == N_ID)
-            slv(&SM->eh, n->rs.ec->s);
+        if (n->rs.ec and n->rs.ec->k == NODE_IDENTIFIER)
+            string_list_vector_append(&SM->eh, n->rs.ec->s);
         else
-            slv(&SM->eh, Z("TASKING_ERROR"));
+            string_list_vector_append(&SM->eh, Z("TASKING_ERROR"));
         if (n->rs.ec)
             rex(SM, n->rs.ec, 0);
         break;
     case N_US:
-        if (n->us.nm->k == N_ID)
+        if (n->us.nm->k == NODE_IDENTIFIER)
         {
-            Symbol *s = syf(SM, n->us.nm->s);
+            Symbol *s = symbol_find(SM, n->us.nm->s);
             if (s)
                 sfu(SM, s, n->us.nm->s);
         }
@@ -6711,7 +6717,7 @@ static void rss(Symbol_Manager *SM, Syntax_Node *n)
         break;
     }
 }
-static void rrc_(Symbol_Manager *SM, RC *r)
+static void rrc_(Symbol_Manager *SM, Reference_Counter *r)
 {
     if (not r)
         return;
@@ -6719,10 +6725,10 @@ static void rrc_(Symbol_Manager *SM, RC *r)
     {
     case 1:
     {
-        Symbol *ts = syf(SM, r->er.nm);
+        Symbol *ts = symbol_find(SM, r->er.nm);
         if (ts and ts->ty)
         {
-            Type_Info *t = tcc(ts->ty);
+            Type_Info *t = type_concrete(ts->ty);
             for (uint32_t i = 0; i < r->rr.cp.n; i++)
             {
                 Syntax_Node *e = r->rr.cp.d[i];
@@ -6741,20 +6747,20 @@ static void rrc_(Symbol_Manager *SM, RC *r)
     break;
     case 2:
     {
-        Symbol *s = syf(SM, r->ad.nm);
+        Symbol *s = symbol_find(SM, r->ad.nm);
         if (s and s->ty)
         {
-            Type_Info *t = tcc(s->ty);
+            Type_Info *t = type_concrete(s->ty);
             t->ad = r->ad.ad;
         }
     }
     break;
     case 3:
     {
-        Symbol *s = syf(SM, r->rr.nm);
+        Symbol *s = symbol_find(SM, r->rr.nm);
         if (s and s->ty)
         {
-            Type_Info *t = tcc(s->ty);
+            Type_Info *t = type_concrete(s->ty);
             uint32_t bt = 0;
             for (uint32_t i = 0; i < r->rr.cp.n; i++)
             {
@@ -6762,7 +6768,7 @@ static void rrc_(Symbol_Manager *SM, RC *r)
                 for (uint32_t j = 0; j < t->cm.n; j++)
                 {
                     Syntax_Node *c = t->cm.d[j];
-                    if (c->k == N_CM and string_equal_ignore_case(c->cm.nm, cp->cm.nm))
+                    if (c->k == NODE_COMPONENT and string_equal_ignore_case(c->cm.nm, cp->cm.nm))
                     {
                         c->cm.of = cp->cm.of;
                         c->cm.bt = cp->cm.bt;
@@ -6778,44 +6784,44 @@ static void rrc_(Symbol_Manager *SM, RC *r)
     break;
     case 4:
     {
-        Symbol *s = r->ad.nm.n > 0 ? syf(SM, r->ad.nm) : 0;
+        Symbol *s = r->ad.nm.n > 0 ? symbol_find(SM, r->ad.nm) : 0;
         if (s and s->ty)
         {
-            Type_Info *t = tcc(s->ty);
+            Type_Info *t = type_concrete(s->ty);
             t->sup |= r->ad.ad;
         }
     }
     break;
     case 5:
     {
-        Symbol *s = syf(SM, r->er.nm);
+        Symbol *s = symbol_find(SM, r->er.nm);
         if (s and s->ty)
         {
-            Type_Info *t = tcc(s->ty);
+            Type_Info *t = type_concrete(s->ty);
             t->pk = true;
         }
     }
     break;
     case 6:
     {
-        Symbol *s = syf(SM, r->er.nm);
+        Symbol *s = symbol_find(SM, r->er.nm);
         if (s)
             s->inl = true;
     }
     break;
     case 7:
     {
-        Symbol *s = syf(SM, r->er.nm);
+        Symbol *s = symbol_find(SM, r->er.nm);
         if (s and s->ty)
         {
-            Type_Info *t = tcc(s->ty);
+            Type_Info *t = type_concrete(s->ty);
             t->ctrl = true;
         }
     }
     break;
     case 8:
     {
-        Symbol *s = syf(SM, r->im.nm);
+        Symbol *s = symbol_find(SM, r->im.nm);
         if (s)
         {
             s->ext = true;
@@ -6833,7 +6839,7 @@ static void ihop(Type_Info *dt, Type_Info *pt)
     for (uint32_t i = 0; i < pt->ops.n; i++)
     {
         Syntax_Node *op = pt->ops.d[i];
-        if (op->k == N_FB or op->k == N_PB)
+        if (op->k == NODE_FUNCTION_BODY or op->k == NODE_PROCEDURE_BODY)
         {
             Syntax_Node *nop = nd(op->k, op->l);
             nop->bd = op->bd;
@@ -6841,7 +6847,7 @@ static void ihop(Type_Info *dt, Type_Info *pt)
             nsp->sp = op->bd.sp->sp;
             nsp->sp.nm = string_duplicate(op->bd.sp->sp.nm);
             nsp->sp.pmm = op->bd.sp->sp.pmm;
-            if (op->k == N_FB)
+            if (op->k == NODE_FUNCTION_BODY)
                 nsp->sp.rt = op->bd.sp->sp.rt;
             nop->bd.sp = nsp;
             nop->bd.el = -1;
@@ -6856,6 +6862,7 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap);
 static const char *lkp(Symbol_Manager *SM, String_Slice nm);
 static Syntax_Node *pks2(Symbol_Manager *SM, String_Slice nm, const char *src);
 static void pks(Symbol_Manager *SM, String_Slice nm, const char *src);
+
 static void rap(Symbol_Manager *SM, Node_Vector *fp, Node_Vector *ap)
 {
     if (not fp or not ap)
@@ -6864,13 +6871,13 @@ static void rap(Symbol_Manager *SM, Node_Vector *fp, Node_Vector *ap)
     {
         Syntax_Node *f = fp->d[i];
         Syntax_Node *a = ap->d[i];
-        if (f->k == N_GSP and a->k == N_STR)
+        if (f->k == N_GSP and a->k == NODE_STRING)
         {
             int pc = f->sp.pmm.n;
             Type_Info *rt = 0;
             if (f->sp.rt)
             {
-                if (f->sp.rt->k == N_ID)
+                if (f->sp.rt->k == NODE_IDENTIFIER)
                 {
                     String_Slice tn = f->sp.rt->s;
                     for (uint32_t j = 0; j < fp->n; j++)
@@ -6880,9 +6887,9 @@ static void rap(Symbol_Manager *SM, Node_Vector *fp, Node_Vector *ap)
                             and j < ap->n)
                         {
                             Syntax_Node *ta = ap->d[j];
-                            if (ta->k == N_ID)
+                            if (ta->k == NODE_IDENTIFIER)
                             {
-                                Symbol *ts = syf(SM, ta->s);
+                                Symbol *ts = symbol_find(SM, ta->s);
                                 if (ts and ts->ty)
                                     rt = ts->ty;
                             }
@@ -6891,10 +6898,10 @@ static void rap(Symbol_Manager *SM, Node_Vector *fp, Node_Vector *ap)
                     }
                 }
             }
-            Symbol *s = syfa(SM, a->s, pc, rt);
+            Symbol *s = symbol_find_arity(SM, a->s, pc, rt);
             if (s)
             {
-                a->k = N_ID;
+                a->k = NODE_IDENTIFIER;
                 a->sy = s;
             }
         }
@@ -6955,7 +6962,7 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
         ncp_depth--;
         return n;
     }
-    if (fp and n->k == N_ID)
+    if (fp and n->k == NODE_IDENTIFIER)
     {
         for (uint32_t i = 0; i < fp->n; i++)
             if (mfp(fp->d[i], n->s))
@@ -6963,8 +6970,8 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
                 if (i < ap->n)
                 {
                     Syntax_Node *a = ap->d[i];
-                    Syntax_Node *r =
-                        a->k == N_ASC and a->asc.vl ? ncs(a->asc.vl, 0, 0) : ncs(a, 0, 0);
+                    Syntax_Node *r = a->k == NODE_ASSOCIATION and a->asc.vl ? ncs(a->asc.vl, 0, 0)
+                                                                            : ncs(a, 0, 0);
                     ncp_depth--;
                     return r;
                 }
@@ -6973,7 +6980,7 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
                 return r;
             }
     }
-    if (fp and n->k == N_STR)
+    if (fp and n->k == NODE_STRING)
     {
         for (uint32_t i = 0; i < fp->n; i++)
             if (mfp(fp->d[i], n->s))
@@ -6981,8 +6988,8 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
                 if (i < ap->n)
                 {
                     Syntax_Node *a = ap->d[i];
-                    Syntax_Node *r =
-                        a->k == N_ASC and a->asc.vl ? ncs(a->asc.vl, 0, 0) : ncs(a, 0, 0);
+                    Syntax_Node *r = a->k == NODE_ASSOCIATION and a->asc.vl ? ncs(a->asc.vl, 0, 0)
+                                                                            : ncs(a, 0, 0);
                     ncp_depth--;
                     return r;
                 }
@@ -6993,27 +7000,27 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
     }
     Syntax_Node *c = nd(n->k, n->l);
     c->ty = 0;
-    c->sy = (n->k == N_ID and n->sy) ? n->sy : 0;
+    c->sy = (n->k == NODE_IDENTIFIER and n->sy) ? n->sy : 0;
     switch (n->k)
     {
-    case N_ID:
+    case NODE_IDENTIFIER:
         c->s = n->s.s ? string_duplicate(n->s) : n->s;
         break;
-    case N_INT:
+    case NODE_INTEGER:
         c->i = n->i;
         break;
-    case N_REAL:
+    case NODE_REAL:
         c->f = n->f;
         break;
-    case N_CHAR:
+    case NODE_CHARACTER:
         c->i = n->i;
         break;
-    case N_STR:
+    case NODE_STRING:
         c->s = n->s.s ? string_duplicate(n->s) : n->s;
         break;
-    case N_NULL:
+    case NODE_NULL:
         break;
-    case N_BIN:
+    case NODE_BINARY_OP:
         c->bn.op = n->bn.op;
         c->bn.l = ncs(n->bn.l, fp, ap);
         c->bn.r = ncs(n->bn.r, fp, ap);
@@ -7052,7 +7059,7 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
         c->alc.st = ncs(n->alc.st, fp, ap);
         c->alc.in = ncs(n->alc.in, fp, ap);
         break;
-    case N_RN:
+    case NODE_RANGE:
         c->rn.lo = ncs(n->rn.lo, fp, ap);
         c->rn.hi = ncs(n->rn.hi, fp, ap);
         break;
@@ -7060,7 +7067,7 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
         c->cn.rn = ncs(n->cn.rn, fp, ap);
         ncsv(&c->cn.cs, &n->cn.cs, fp, ap);
         break;
-    case N_CM:
+    case NODE_COMPONENT:
         c->cm.nm = n->cm.nm;
         c->cm.ty = ncs(n->cm.ty, fp, ap);
         c->cm.in = ncs(n->cm.in, fp, ap);
@@ -7094,10 +7101,10 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
         c->sp.rt = ncs(n->sp.rt, fp, ap);
         c->sp.op = n->sp.op;
         break;
-    case N_PD:
-    case N_PB:
-    case N_FD:
-    case N_FB:
+    case NODE_PROCEDURE_DECL:
+    case NODE_PROCEDURE_BODY:
+    case NODE_FUNCTION_DECL:
+    case NODE_FUNCTION_BODY:
         c->bd.sp = ncs(n->bd.sp, fp, ap);
         ncsv(&c->bd.dc, &n->bd.dc, fp, ap);
         ncsv(&c->bd.st, &n->bd.st, fp, ap);
@@ -7154,25 +7161,25 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
         c->as.tg = ncs(n->as.tg, fp, ap);
         c->as.vl = ncs(n->as.vl, fp, ap);
         break;
-    case N_IF:
+    case NODE_IF:
     case N_EL:
         c->if_.cd = ncs(n->if_.cd, fp, ap);
         ncsv(&c->if_.th, &n->if_.th, fp, ap);
         ncsv(&c->if_.ei, &n->if_.ei, fp, ap);
         ncsv(&c->if_.el, &n->if_.el, fp, ap);
         break;
-    case N_CS:
+    case NODE_CASE:
         c->cs.ex = ncs(n->cs.ex, fp, ap);
         ncsv(&c->cs.al, &n->cs.al, fp, ap);
         break;
-    case N_LP:
+    case NODE_LOOP:
         c->lp.lb = n->lp.lb;
         c->lp.it = ncs(n->lp.it, fp, ap);
         c->lp.rv = n->lp.rv;
         ncsv(&c->lp.st, &n->lp.st, fp, ap);
         ncsv(&c->lp.lk, &n->lp.lk, fp, ap);
         break;
-    case N_BL:
+    case NODE_BLOCK:
         c->bk.lb = n->bk.lb;
         ncsv(&c->bk.dc, &n->bk.dc, fp, ap);
         ncsv(&c->bk.st, &n->bk.st, fp, ap);
@@ -7242,7 +7249,7 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
     case N_CH:
         ncsv(&c->ch.it, &n->ch.it, fp, ap);
         break;
-    case N_ASC:
+    case NODE_ASSOCIATION:
         ncsv(&c->asc.ch, &n->asc.ch, fp, ap);
         c->asc.vl = ncs(n->asc.vl, fp, ap);
         break;
@@ -7271,7 +7278,7 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
         c->cvt.ty = ncs(n->cvt.ty, fp, ap);
         c->cvt.ex = ncs(n->cvt.ex, fp, ap);
         break;
-    case N_CHK:
+    case NODE_CHECK:
         c->chk.ex = ncs(n->chk.ex, fp, ap);
         c->chk.ec = n->chk.ec;
         break;
@@ -7289,7 +7296,7 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
         c->gi.gn = n->gi.gn.s ? string_duplicate(n->gi.gn) : n->gi.gn;
         ncsv(&c->gi.ap, &n->gi.ap, fp, ap);
         break;
-    case N_AG:
+    case NODE_AGGREGATE:
         ncsv(&c->ag.it, &n->ag.it, fp, ap);
         c->ag.lo = ncs(n->ag.lo, fp, ap);
         c->ag.hi = ncs(n->ag.hi, fp, ap);
@@ -7316,6 +7323,7 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
     ncp_depth--;
     return c;
 }
+
 static bool mfp(Syntax_Node *f, String_Slice nm)
 {
     if (f->k == N_GTP)
@@ -7338,7 +7346,7 @@ static Syntax_Node *gcl(Symbol_Manager *SM, Syntax_Node *n)
                                        : n->gen.un->bd.sp    ? n->gen.un->bd.sp->sp.nm
                                                              : N)
                                     : N;
-        GT *g = gfnd(SM, nm);
+        Generic_Type *g = gfnd(SM, nm);
         if (not g)
         {
             g = gt(nm);
@@ -7352,20 +7360,21 @@ static Syntax_Node *gcl(Symbol_Manager *SM, Syntax_Node *n)
                 gs->gt = g;
                 if (g->un and g->un->k == N_PKS)
                     gs->df = g->un;
-                sya(SM, gs);
+                symbol_add_overload(SM, gs);
             }
         }
     }
     else if (n->k == N_GINST)
     {
-        GT *g = gfnd(SM, n->gi.gn);
+        Generic_Type *g = gfnd(SM, n->gi.gn);
         if (g)
         {
             rap(SM, &g->fp, &n->gi.ap);
             Syntax_Node *inst = ncs(g->un, &g->fp, &n->gi.ap);
             if (inst)
             {
-                if (inst->k == N_PB or inst->k == N_FB or inst->k == N_PD or inst->k == N_FD)
+                if (inst->k == NODE_PROCEDURE_BODY or inst->k == NODE_FUNCTION_BODY
+                    or inst->k == NODE_PROCEDURE_DECL or inst->k == NODE_FUNCTION_DECL)
                 {
                     inst->bd.sp->sp.nm = n->gi.nm;
                 }
@@ -7392,6 +7401,7 @@ static Symbol *get_pkg_sym(Symbol_Manager *SM, Syntax_Node *pk)
             return s;
     return pk->sy;
 }
+
 static void rdl(Symbol_Manager *SM, Syntax_Node *n)
 {
     if (not n)
@@ -7406,7 +7416,7 @@ static void rdl(Symbol_Manager *SM, Syntax_Node *n)
             rdl(SM, inst);
             if (inst->k == N_PKS)
             {
-                GT *g = gfnd(SM, n->gi.gn);
+                Generic_Type *g = gfnd(SM, n->gi.gn);
                 if (g and g->bd)
                 {
                     Syntax_Node *bd = ncs(g->bd, &g->fp, &n->gi.ap);
@@ -7423,19 +7433,19 @@ static void rdl(Symbol_Manager *SM, Syntax_Node *n)
     break;
     case N_RRC:
     {
-        RC *r = *(RC **) &n->ag.it.d;
+        Reference_Counter *r = *(Reference_Counter **) &n->ag.it.d;
         rrc_(SM, r);
     }
     break;
     case N_GVL:
     case N_OD:
     {
-        Type_Info *t = rst(SM, n->od.ty);
+        Type_Info *t = resolve_subtype(SM, n->od.ty);
         for (uint32_t i = 0; i < n->od.id.n; i++)
         {
             Syntax_Node *id = n->od.id.d[i];
             Type_Info *ct = ucag(t, n->od.in);
-            Symbol *x = syf(SM, id->s);
+            Symbol *x = symbol_find(SM, id->s);
             Symbol *s = 0;
             if (x and x->sc == SM->sc and x->ss == SM->ss and x->k != 11)
             {
@@ -7449,8 +7459,10 @@ static void rdl(Symbol_Manager *SM, Syntax_Node *n)
             }
             if (not s)
             {
-                s = sya(SM, syn(id->s, n->od.co ? 2 : 0, ct, n));
-                s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEP_PKG.s ? syf(SM, SEP_PKG) : 0;
+                s = symbol_add_overload(SM, syn(id->s, n->od.co ? 2 : 0, ct, n));
+                s->pr = SM->pk               ? get_pkg_sym(SM, SM->pk)
+                        : separate_package.s ? symbol_find(SM, separate_package)
+                                             : 0;
             }
             id->sy = s;
             if (n->od.in)
@@ -7460,7 +7472,7 @@ static void rdl(Symbol_Manager *SM, Syntax_Node *n)
                 n->od.in = chk(SM, n->od.in, n->l);
                 if (t and t->dc.n > 0 and n->od.in and n->od.in->ty)
                 {
-                    Type_Info *it = tcc(n->od.in->ty);
+                    Type_Info *it = type_concrete(n->od.in->ty);
                     if (it and it->dc.n > 0)
                     {
                         for (uint32_t di = 0; di < t->dc.n and di < it->dc.n; di++)
@@ -7469,7 +7481,7 @@ static void rdl(Symbol_Manager *SM, Syntax_Node *n)
                             Syntax_Node *id = it->dc.d[di];
                             if (td->k == N_DS and id->k == N_DS and td->pm.df and id->pm.df)
                             {
-                                if (td->pm.df->k == N_INT and id->pm.df->k == N_INT
+                                if (td->pm.df->k == NODE_INTEGER and id->pm.df->k == NODE_INTEGER
                                     and td->pm.df->i != id->pm.df->i)
                                 {
                                     Syntax_Node *dc = ND(CHK, n->l);
@@ -7483,13 +7495,15 @@ static void rdl(Symbol_Manager *SM, Syntax_Node *n)
                     }
                 }
                 s->df = n->od.in;
-                if (n->od.co and n->od.in->k == N_INT)
+                if (n->od.co and n->od.in->k == NODE_INTEGER)
                     s->vl = n->od.in->i;
-                else if (n->od.co and n->od.in->k == N_ID and n->od.in->sy and n->od.in->sy->k == 2)
+                else if (
+                    n->od.co and n->od.in->k == NODE_IDENTIFIER and n->od.in->sy
+                    and n->od.in->sy->k == 2)
                     s->vl = n->od.in->sy->vl;
                 else if (n->od.co and n->od.in->k == N_AT)
                 {
-                    Type_Info *pt = n->od.in->at.p ? tcc(n->od.in->at.p->ty) : 0;
+                    Type_Info *pt = n->od.in->at.p ? type_concrete(n->od.in->at.p->ty) : 0;
                     String_Slice a = n->od.in->at.at;
                     if (pt and string_equal_ignore_case(a, Z("FIRST")))
                         s->vl = pt->lo;
@@ -7499,9 +7513,9 @@ static void rdl(Symbol_Manager *SM, Syntax_Node *n)
                 else if (n->od.co and n->od.in->k == N_QL and n->od.in->ql.ag)
                 {
                     Syntax_Node *ag = n->od.in->ql.ag;
-                    if (ag->k == N_ID and ag->sy and ag->sy->k == 2)
+                    if (ag->k == NODE_IDENTIFIER and ag->sy and ag->sy->k == 2)
                         s->vl = ag->sy->vl;
-                    else if (ag->k == N_INT)
+                    else if (ag->k == NODE_INTEGER)
                         s->vl = ag->i;
                 }
             }
@@ -7515,10 +7529,10 @@ static void rdl(Symbol_Manager *SM, Syntax_Node *n)
         Type_Info *t = 0;
         if (n->td.drv and n->td.prt)
         {
-            Type_Info *pt = rst(SM, n->td.prt);
+            Type_Info *pt = resolve_subtype(SM, n->td.prt);
             if (n->td.prt->k == N_TAC and error_count < 99)
                 fatal_error(n->l, "der acc ty");
-            t = tyn(TY_D, n->td.nm);
+            t = tyn(TYPE_DERIVED, n->td.nm);
             t->prt = pt;
             if (pt)
             {
@@ -7538,14 +7552,14 @@ static void rdl(Symbol_Manager *SM, Syntax_Node *n)
                         for (uint32_t _i = 0; _i < _ept->ev.n; _i++)
                         {
                             Symbol *_pe = _ept->ev.d[_i];
-                            Symbol *_ne = sya(SM, syn(_pe->nm, 2, t, n));
+                            Symbol *_ne = symbol_add_overload(SM, syn(_pe->nm, 2, t, n));
                             _ne->vl = _pe->vl;
                             sv(&t->ev, _ne);
                         }
                 }
                 ihop(t, pt);
             }
-            if (n->td.df and n->td.df->k == N_RN)
+            if (n->td.df and n->td.df->k == NODE_RANGE)
             {
                 rex(SM, n->td.df->rn.lo, 0);
                 rex(SM, n->td.df->rn.hi, 0);
@@ -7555,28 +7569,28 @@ static void rdl(Symbol_Manager *SM, Syntax_Node *n)
         }
         else
         {
-            Symbol *px = syf(SM, n->td.nm);
-            if (px and px->k == 1 and px->ty and (px->ty->k == TY_I or px->ty->k == TY_PT)
+            Symbol *px = symbol_find(SM, n->td.nm);
+            if (px and px->k == 1 and px->ty and (px->ty->k == TYPE_INTEGER or px->ty->k == TY_PT)
                 and n->td.df)
             {
                 if (px->ty->k == TY_PT)
                 {
                     t = px->ty;
-                    t->prt = rst(SM, n->td.df);
+                    t->prt = resolve_subtype(SM, n->td.df);
                 }
                 else
                     t = px->ty;
             }
             else if (n->td.df)
             {
-                t = rst(SM, n->td.df);
+                t = resolve_subtype(SM, n->td.df);
             }
             else
             {
-                t = tyn(n->td.df or n->td.drv ? TY_I : TY_PT, n->td.nm);
+                t = tyn(n->td.df or n->td.drv ? TYPE_INTEGER : TY_PT, n->td.nm);
                 if (t and n->td.nm.s)
                 {
-                    Symbol *s = sya(SM, syn(n->td.nm, 1, t, n));
+                    Symbol *s = symbol_add_overload(SM, syn(n->td.nm, 1, t, n));
                     n->sy = s;
                 }
                 break;
@@ -7591,7 +7605,8 @@ static void rdl(Symbol_Manager *SM, Syntax_Node *n)
                 Syntax_Node *d = n->td.dsc.d[i];
                 if (d->k == N_DS)
                 {
-                    Symbol *ds = sya(SM, syn(d->pm.nm, 8, rst(SM, d->pm.ty), d));
+                    Symbol *ds =
+                        symbol_add_overload(SM, syn(d->pm.nm, 8, resolve_subtype(SM, d->pm.ty), d));
                     if (d->pm.df)
                         rex(SM, d->pm.df, ds->ty);
                 }
@@ -7600,7 +7615,7 @@ static void rdl(Symbol_Manager *SM, Syntax_Node *n)
         }
         if (n->td.nm.s and n->td.nm.n > 0)
         {
-            Symbol *px2 = syf(SM, n->td.nm);
+            Symbol *px2 = symbol_find(SM, n->td.nm);
             if (px2 and px2->k == 1 and px2->ty == t)
             {
                 n->sy = px2;
@@ -7609,23 +7624,23 @@ static void rdl(Symbol_Manager *SM, Syntax_Node *n)
             }
             else
             {
-                Symbol *s = sya(SM, syn(n->td.nm, 1, t, n));
+                Symbol *s = symbol_add_overload(SM, syn(n->td.nm, 1, t, n));
                 n->sy = s;
             }
         }
         if (n->td.df and n->td.df->k == N_TE)
         {
-            t->k = TY_E;
+            t->k = TYPE_ENUMERATION;
             int vl = 0;
             for (uint32_t i = 0; i < n->td.df->lst.it.n; i++)
             {
                 Syntax_Node *it = n->td.df->lst.it.d[i];
-                Symbol *es =
-                    sya(SM,
-                        syn(it->k == N_CHAR ? (String_Slice){(const char *) &it->i, 1} : it->s,
-                            2,
-                            t,
-                            n));
+                Symbol *es = symbol_add_overload(
+                    SM,
+                    syn(it->k == NODE_CHARACTER ? (String_Slice){(const char *) &it->i, 1} : it->s,
+                        2,
+                        t,
+                        n));
                 es->vl = vl++;
                 sv(&t->ev, es);
             }
@@ -7634,15 +7649,15 @@ static void rdl(Symbol_Manager *SM, Syntax_Node *n)
         }
         if (n->td.df and n->td.df->k == N_TR)
         {
-            t->k = TY_R;
+            t->k = TYPE_RECORD;
             of = 0;
             for (uint32_t i = 0; i < n->td.df->lst.it.n; i++)
             {
                 Syntax_Node *c = n->td.df->lst.it.d[i];
-                if (c->k == N_CM)
+                if (c->k == NODE_COMPONENT)
                 {
                     c->cm.of = of++;
-                    Type_Info *ct = rst(SM, c->cm.ty);
+                    Type_Info *ct = resolve_subtype(SM, c->cm.ty);
                     if (ct)
                         c->cm.ty->ty = ct;
                     if (c->cm.dc)
@@ -7651,7 +7666,7 @@ static void rdl(Symbol_Manager *SM, Syntax_Node *n)
                         {
                             Syntax_Node *dc = c->cm.dc->lst.it.d[j];
                             if (dc->k == N_DS and dc->pm.df)
-                                rex(SM, dc->pm.df, rst(SM, dc->pm.ty));
+                                rex(SM, dc->pm.df, resolve_subtype(SM, dc->pm.ty));
                         }
                     }
                     if (c->cm.dsc)
@@ -7661,7 +7676,8 @@ static void rdl(Symbol_Manager *SM, Syntax_Node *n)
                             Syntax_Node *dc = c->cm.dsc->lst.it.d[j];
                             if (dc->k == N_DS)
                             {
-                                Symbol *ds = sya(SM, syn(dc->pm.nm, 8, rst(SM, dc->pm.ty), dc));
+                                Symbol *ds = symbol_add_overload(
+                                    SM, syn(dc->pm.nm, 8, resolve_subtype(SM, dc->pm.ty), dc));
                                 if (dc->pm.df)
                                     rex(SM, dc->pm.df, ds->ty);
                             }
@@ -7678,7 +7694,7 @@ static void rdl(Symbol_Manager *SM, Syntax_Node *n)
                         {
                             Syntax_Node *vc = v->vr.cmm.d[k];
                             vc->cm.of = of++;
-                            Type_Info *vct = rst(SM, vc->cm.ty);
+                            Type_Info *vct = resolve_subtype(SM, vc->cm.ty);
                             if (vct)
                                 vc->cm.ty->ty = vct;
                             if (vc->cm.dc)
@@ -7687,7 +7703,7 @@ static void rdl(Symbol_Manager *SM, Syntax_Node *n)
                                 {
                                     Syntax_Node *dc = vc->cm.dc->lst.it.d[m];
                                     if (dc->k == N_DS and dc->pm.df)
-                                        rex(SM, dc->pm.df, rst(SM, dc->pm.ty));
+                                        rex(SM, dc->pm.df, resolve_subtype(SM, dc->pm.ty));
                                 }
                             }
                             if (vc->cm.dsc)
@@ -7697,8 +7713,9 @@ static void rdl(Symbol_Manager *SM, Syntax_Node *n)
                                     Syntax_Node *dc = vc->cm.dsc->lst.it.d[m];
                                     if (dc->k == N_DS)
                                     {
-                                        Symbol *ds =
-                                            sya(SM, syn(dc->pm.nm, 8, rst(SM, dc->pm.ty), dc));
+                                        Symbol *ds = symbol_add_overload(
+                                            SM,
+                                            syn(dc->pm.nm, 8, resolve_subtype(SM, dc->pm.ty), dc));
                                         if (dc->pm.df)
                                             rex(SM, dc->pm.df, ds->ty);
                                     }
@@ -7716,8 +7733,8 @@ static void rdl(Symbol_Manager *SM, Syntax_Node *n)
     break;
     case N_SD:
     {
-        Type_Info *b = rst(SM, n->sd.in);
-        Type_Info *t = tyn(b ? b->k : TY_I, n->sd.nm);
+        Type_Info *b = resolve_subtype(SM, n->sd.in);
+        Type_Info *t = tyn(b ? b->k : TYPE_INTEGER, n->sd.nm);
         if (b)
         {
             t->bs = b;
@@ -7738,18 +7755,18 @@ static void rdl(Symbol_Manager *SM, Syntax_Node *n)
             rex(SM, n->sd.rn->rn.hi, 0);
             Syntax_Node *lo = n->sd.rn->rn.lo;
             Syntax_Node *hi = n->sd.rn->rn.hi;
-            int64_t lov = lo->k == N_UN and lo->un.op == T_MN and lo->un.x->k == N_INT
+            int64_t lov = lo->k == N_UN and lo->un.op == T_MN and lo->un.x->k == NODE_INTEGER
                               ? -lo->un.x->i
-                          : lo->k == N_ID and lo->sy and lo->sy->k == 2 ? lo->sy->vl
-                                                                        : lo->i;
-            int64_t hiv = hi->k == N_UN and hi->un.op == T_MN and hi->un.x->k == N_INT
+                          : lo->k == NODE_IDENTIFIER and lo->sy and lo->sy->k == 2 ? lo->sy->vl
+                                                                                   : lo->i;
+            int64_t hiv = hi->k == N_UN and hi->un.op == T_MN and hi->un.x->k == NODE_INTEGER
                               ? -hi->un.x->i
-                          : hi->k == N_ID and hi->sy and hi->sy->k == 2 ? hi->sy->vl
-                                                                        : hi->i;
+                          : hi->k == NODE_IDENTIFIER and hi->sy and hi->sy->k == 2 ? hi->sy->vl
+                                                                                   : hi->i;
             t->lo = lov;
             t->hi = hiv;
         }
-        sya(SM, syn(n->sd.nm, 1, t, n));
+        symbol_add_overload(SM, syn(n->sd.nm, 1, t, n));
     }
     break;
     case N_ED:
@@ -7762,7 +7779,7 @@ static void rdl(Symbol_Manager *SM, Syntax_Node *n)
                 Symbol *tgt = n->ed.rn->sy;
                 if (tgt and tgt->k == 3)
                 {
-                    Symbol *al = sya(SM, syn(id->s, 3, 0, n));
+                    Symbol *al = symbol_add_overload(SM, syn(id->s, 3, 0, n));
                     al->df = n->ed.rn;
                     id->sy = al;
                 }
@@ -7771,58 +7788,64 @@ static void rdl(Symbol_Manager *SM, Syntax_Node *n)
             }
             else
             {
-                id->sy = sya(SM, syn(id->s, 3, 0, n));
+                id->sy = symbol_add_overload(SM, syn(id->s, 3, 0, n));
             }
         }
         break;
     case N_GSP:
     {
-        Type_Info *ft = tyn(TY_S, n->sp.nm);
+        Type_Info *ft = tyn(TYPE_STRING, n->sp.nm);
         if (n->sp.rt)
         {
-            Type_Info *rt = rst(SM, n->sp.rt);
+            Type_Info *rt = resolve_subtype(SM, n->sp.rt);
             ft->el = rt;
-            Symbol *s = sya(SM, syn(n->sp.nm, 5, ft, n));
+            Symbol *s = symbol_add_overload(SM, syn(n->sp.nm, 5, ft, n));
             nv(&s->ol, n);
             n->sy = s;
-            s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEP_PKG.s ? syf(SM, SEP_PKG) : 0;
+            s->pr = SM->pk               ? get_pkg_sym(SM, SM->pk)
+                    : separate_package.s ? symbol_find(SM, separate_package)
+                                         : 0;
             nv(&ft->ops, n);
         }
         else
         {
-            Symbol *s = sya(SM, syn(n->sp.nm, 4, ft, n));
+            Symbol *s = symbol_add_overload(SM, syn(n->sp.nm, 4, ft, n));
             nv(&s->ol, n);
             n->sy = s;
-            s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEP_PKG.s ? syf(SM, SEP_PKG) : 0;
+            s->pr = SM->pk               ? get_pkg_sym(SM, SM->pk)
+                    : separate_package.s ? symbol_find(SM, separate_package)
+                                         : 0;
             nv(&ft->ops, n);
         }
     }
     break;
-    case N_PD:
-    case N_PB:
+    case NODE_PROCEDURE_DECL:
+    case NODE_PROCEDURE_BODY:
     {
         Syntax_Node *sp = n->bd.sp;
-        Type_Info *ft = tyn(TY_S, sp->sp.nm);
-        Symbol *s = sya(SM, syn(sp->sp.nm, 4, ft, n));
+        Type_Info *ft = tyn(TYPE_STRING, sp->sp.nm);
+        Symbol *s = symbol_add_overload(SM, syn(sp->sp.nm, 4, ft, n));
         nv(&s->ol, n);
         n->sy = s;
         n->bd.el = s->el;
-        s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEP_PKG.s ? syf(SM, SEP_PKG) : 0;
+        s->pr = SM->pk               ? get_pkg_sym(SM, SM->pk)
+                : separate_package.s ? symbol_find(SM, separate_package)
+                                     : 0;
         nv(&ft->ops, n);
-        if (n->k == N_PB)
+        if (n->k == NODE_PROCEDURE_BODY)
         {
             SM->lv++;
             scp(SM);
             n->bd.pr = s;
-            GT *gt = gfnd(SM, sp->sp.nm);
+            Generic_Type *gt = gfnd(SM, sp->sp.nm);
             if (gt)
                 for (uint32_t i = 0; i < gt->fp.n; i++)
                     rdl(SM, gt->fp.d[i]);
             for (uint32_t i = 0; i < sp->sp.pmm.n; i++)
             {
                 Syntax_Node *p = sp->sp.pmm.d[i];
-                Type_Info *pt = rst(SM, p->pm.ty);
-                Symbol *ps = sya(SM, syn(p->pm.nm, 0, pt, p));
+                Type_Info *pt = resolve_subtype(SM, p->pm.ty);
+                Symbol *ps = symbol_add_overload(SM, syn(p->pm.nm, 0, pt, p));
                 p->sy = ps;
             }
             for (uint32_t i = 0; i < n->bd.dc.n; i++)
@@ -7834,32 +7857,34 @@ static void rdl(Symbol_Manager *SM, Syntax_Node *n)
         }
     }
     break;
-    case N_FB:
+    case NODE_FUNCTION_BODY:
     {
         Syntax_Node *sp = n->bd.sp;
-        Type_Info *rt = rst(SM, sp->sp.rt);
-        Type_Info *ft = tyn(TY_S, sp->sp.nm);
+        Type_Info *rt = resolve_subtype(SM, sp->sp.rt);
+        Type_Info *ft = tyn(TYPE_STRING, sp->sp.nm);
         ft->el = rt;
-        Symbol *s = sya(SM, syn(sp->sp.nm, 5, ft, n));
+        Symbol *s = symbol_add_overload(SM, syn(sp->sp.nm, 5, ft, n));
         nv(&s->ol, n);
         n->sy = s;
         n->bd.el = s->el;
-        s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEP_PKG.s ? syf(SM, SEP_PKG) : 0;
+        s->pr = SM->pk               ? get_pkg_sym(SM, SM->pk)
+                : separate_package.s ? symbol_find(SM, separate_package)
+                                     : 0;
         nv(&ft->ops, n);
-        if (n->k == N_FB)
+        if (n->k == NODE_FUNCTION_BODY)
         {
             SM->lv++;
             scp(SM);
             n->bd.pr = s;
-            GT *gt = gfnd(SM, sp->sp.nm);
+            Generic_Type *gt = gfnd(SM, sp->sp.nm);
             if (gt)
                 for (uint32_t i = 0; i < gt->fp.n; i++)
                     rdl(SM, gt->fp.d[i]);
             for (uint32_t i = 0; i < sp->sp.pmm.n; i++)
             {
                 Syntax_Node *p = sp->sp.pmm.d[i];
-                Type_Info *pt = rst(SM, p->pm.ty);
-                Symbol *ps = sya(SM, syn(p->pm.nm, 0, pt, p));
+                Type_Info *pt = resolve_subtype(SM, p->pm.ty);
+                Symbol *ps = symbol_add_overload(SM, syn(p->pm.nm, 0, pt, p));
                 p->sy = ps;
             }
             for (uint32_t i = 0; i < n->bd.dc.n; i++)
@@ -7871,24 +7896,26 @@ static void rdl(Symbol_Manager *SM, Syntax_Node *n)
         }
     }
     break;
-    case N_FD:
+    case NODE_FUNCTION_DECL:
     {
         Syntax_Node *sp = n->bd.sp;
-        Type_Info *rt = rst(SM, sp->sp.rt);
-        Type_Info *ft = tyn(TY_S, sp->sp.nm);
+        Type_Info *rt = resolve_subtype(SM, sp->sp.rt);
+        Type_Info *ft = tyn(TYPE_STRING, sp->sp.nm);
         ft->el = rt;
-        Symbol *s = sya(SM, syn(sp->sp.nm, 5, ft, n));
+        Symbol *s = symbol_add_overload(SM, syn(sp->sp.nm, 5, ft, n));
         nv(&s->ol, n);
         n->sy = s;
         n->bd.el = s->el;
-        s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEP_PKG.s ? syf(SM, SEP_PKG) : 0;
+        s->pr = SM->pk               ? get_pkg_sym(SM, SM->pk)
+                : separate_package.s ? symbol_find(SM, separate_package)
+                                     : 0;
         nv(&ft->ops, n);
     }
     break;
     case N_PKS:
     {
         Type_Info *t = tyn(TY_P, n->ps.nm);
-        Symbol *s = sya(SM, syn(n->ps.nm, 6, t, n));
+        Symbol *s = symbol_add_overload(SM, syn(n->ps.nm, 6, t, n));
         n->sy = s;
         n->ps.el = s->el;
         SM->pk = n;
@@ -7903,8 +7930,8 @@ static void rdl(Symbol_Manager *SM, Syntax_Node *n)
     break;
     case N_PKB:
     {
-        Symbol *ps = syf(SM, n->pb.nm);
-        GT *gt = 0;
+        Symbol *ps = symbol_find(SM, n->pb.nm);
+        Generic_Type *gt = 0;
         if (ps and ps->k == 11)
         {
             gt = ps->gt ? ps->gt : gfnd(SM, n->pb.nm);
@@ -7962,11 +7989,11 @@ static void rdl(Symbol_Manager *SM, Syntax_Node *n)
                     }
             }
         }
-        ps = syf(SM, n->pb.nm);
+        ps = symbol_find(SM, n->pb.nm);
         if (not ps or not ps->df)
         {
             Type_Info *t = tyn(TY_P, n->pb.nm);
-            ps = sya(SM, syn(n->pb.nm, 6, t, 0));
+            ps = symbol_add_overload(SM, syn(n->pb.nm, 6, t, 0));
             ps->el = SM->eo++;
             Syntax_Node *pk = ND(PKS, n->l);
             pk->ps.nm = n->pb.nm;
@@ -8052,14 +8079,16 @@ static void rdl(Symbol_Manager *SM, Syntax_Node *n)
     {
         Type_Info *t = tyn(TY_T, n->ts.nm);
         t->cm = n->ts.en;
-        Symbol *s = sya(SM, syn(n->ts.nm, 7, t, n));
+        Symbol *s = symbol_add_overload(SM, syn(n->ts.nm, 7, t, n));
         n->sy = s;
-        s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEP_PKG.s ? syf(SM, SEP_PKG) : 0;
+        s->pr = SM->pk               ? get_pkg_sym(SM, SM->pk)
+                : separate_package.s ? symbol_find(SM, separate_package)
+                                     : 0;
     }
     break;
     case N_TKB:
     {
-        Symbol *ts = syf(SM, n->tb.nm);
+        Symbol *ts = symbol_find(SM, n->tb.nm);
         scp(SM);
         if (ts and ts->ty and ts->ty->cm.n > 0)
         {
@@ -8068,7 +8097,7 @@ static void rdl(Symbol_Manager *SM, Syntax_Node *n)
                 Syntax_Node *en = ts->ty->cm.d[i];
                 if (en and en->k == N_ENT)
                 {
-                    Symbol *ens = sya(SM, syn(en->ent.nm, 9, 0, en));
+                    Symbol *ens = symbol_add_overload(SM, syn(en->ent.nm, 9, 0, en));
                     (void) ens;
                 }
             }
@@ -8099,10 +8128,10 @@ static int elc(Symbol_Manager *SM, Symbol_Vector *ev, Syntax_Node *n)
     {
     case N_PKS:
     case N_PKB:
-    case N_PD:
-    case N_PB:
-    case N_FD:
-    case N_FB:
+    case NODE_PROCEDURE_DECL:
+    case NODE_PROCEDURE_BODY:
+    case NODE_FUNCTION_DECL:
+    case NODE_FUNCTION_BODY:
     {
         Symbol *s = n->sy;
         if (s and s->el < 0)
@@ -8146,6 +8175,7 @@ static char *rdf(const char *p)
     fclose(f);
     return b;
 }
+
 static void rali(Symbol_Manager *SM, const char *pth)
 {
     char a[512];
@@ -8154,7 +8184,7 @@ static void rali(Symbol_Manager *SM, const char *pth)
     if (not ali)
         return;
     Source_Location ll = {0, 0, pth};
-    SLV ws = {0}, ds = {0};
+    String_List_Vector ws = {0}, ds = {0};
     for (char *l = ali; *l;)
     {
         if (*l == 'W' and l[1] == ' ')
@@ -8166,7 +8196,7 @@ static void rali(Symbol_Manager *SM, const char *pth)
             char *c = arena_allocate(wn.n + 1);
             memcpy(c, wn.s, wn.n);
             c[wn.n] = 0;
-            slv(&ws, (String_Slice){c, wn.n});
+            string_list_vector_append(&ws, (String_Slice){c, wn.n});
         }
         else if (*l == 'D' and l[1] == ' ')
         {
@@ -8177,7 +8207,7 @@ static void rali(Symbol_Manager *SM, const char *pth)
             char *c = arena_allocate(dn.n + 1);
             memcpy(c, dn.s, dn.n);
             c[dn.n] = 0;
-            slv(&ds, (String_Slice){c, dn.n});
+            string_list_vector_append(&ds, (String_Slice){c, dn.n});
         }
         else if (*l == 'X' and l[1] == ' ')
         {
@@ -8231,7 +8261,7 @@ static void rali(Symbol_Manager *SM, const char *pth)
                 else
                     vt = TY_INT;
                 Syntax_Node *n = nd(N_OD, ll);
-                Symbol *s = sya(SM, syn(sn, 0, vt, n));
+                Symbol *s = symbol_add_overload(SM, syn(sn, 0, vt, n));
                 s->ext = 1;
                 s->lv = 0;
                 s->ext_nm = string_duplicate(msn);
@@ -8240,7 +8270,8 @@ static void rali(Symbol_Manager *SM, const char *pth)
             }
             else
             {
-                Syntax_Node *n = nd(isp ? N_PD : N_FD, ll), *sp = nd(N_FS, ll);
+                Syntax_Node *n = nd(isp ? NODE_PROCEDURE_DECL : NODE_FUNCTION_DECL, ll),
+                            *sp = nd(N_FS, ll);
                 sp->sp.nm = string_duplicate(msn);
                 for (int i = 1; i < pc; i++)
                 {
@@ -8250,7 +8281,8 @@ static void rali(Symbol_Manager *SM, const char *pth)
                 }
                 sp->sp.rt = 0;
                 n->bd.sp = sp;
-                Symbol *s = sya(SM, syn(msn, isp ? 4 : 5, tyn(TY_S, msn), n));
+                Symbol *s =
+                    symbol_add_overload(SM, syn(msn, isp ? 4 : 5, tyn(TYPE_STRING, msn), n));
                 s->el = SM->eo++;
                 nv(&s->ol, n);
                 n->sy = s;
@@ -8307,7 +8339,7 @@ static Syntax_Node *pks2(Symbol_Manager *SM, String_Slice nm, const char *src)
         if (u->k == N_PKS)
         {
             Type_Info *t = tyn(TY_P, nm);
-            Symbol *ps = sya(SM, syn(nm, 6, t, u));
+            Symbol *ps = symbol_add_overload(SM, syn(nm, 6, t, u));
             ps->lv = 0;
             u->sy = ps;
             u->ps.el = ps->el;
@@ -8327,9 +8359,10 @@ static Syntax_Node *pks2(Symbol_Manager *SM, String_Slice nm, const char *src)
     }
     return cu;
 }
+
 static void pks(Symbol_Manager *SM, String_Slice nm, const char *src)
 {
-    Symbol *ps = syf(SM, nm);
+    Symbol *ps = symbol_find(SM, nm);
     if (ps and ps->k == 6)
         return;
     pks2(SM, nm, src);
@@ -8343,9 +8376,9 @@ static void smu(Symbol_Manager *SM, Syntax_Node *n)
     for (uint32_t i = 0; i < n->cu.cx->cx.us.n; i++)
     {
         Syntax_Node *u = n->cu.cx->cx.us.d[i];
-        if (u and u->k == N_US and u->us.nm and u->us.nm->k == N_ID)
+        if (u and u->k == N_US and u->us.nm and u->us.nm->k == NODE_IDENTIFIER)
         {
-            Symbol *ps = syf(SM, u->us.nm->s);
+            Symbol *ps = symbol_find(SM, u->us.nm->s);
             if (ps and ps->k == 6 and ps->df and ps->df->k == N_PKS)
             {
                 Syntax_Node *pk = ps->df;
@@ -8404,9 +8437,9 @@ static void smu(Symbol_Manager *SM, Syntax_Node *n)
 }
 typedef enum
 {
-    VK_I = 0,
-    VK_F = 1,
-    VK_P = 2
+    VALUE_KIND_INTEGER = 0,
+    VALUE_KIND_FLOAT = 1,
+    VALUE_KIND_POINTER = 2
 } Value_Kind;
 typedef struct
 {
@@ -8451,17 +8484,18 @@ typedef struct
     int tn;
     PT *pt[64];
     int pn;
-    SLV lbs;
-    SLV exs;
-    SLV dcl;
-    LEV ltb;
+    String_List_Vector lbs;
+    String_List_Vector exs;
+    String_List_Vector dcl;
+    Label_Entry_Vector ltb;
     uint8_t lopt[64];
 } Code_Generator;
-static int nt(Code_Generator *g)
+
+static int new_temporary(Code_Generator *g)
 {
     return g->tm++;
 }
-static int nl(Code_Generator *g)
+static int new_label(Code_Generator *g)
 {
     return g->lb++;
 }
@@ -8493,38 +8527,39 @@ static void emd(Code_Generator *g)
         fprintf(g->o, "!%d = !{!\"llvm.loop.distribute.enable\"}\n", g->md + 3);
     }
 }
-static int flbl(Code_Generator *g, String_Slice lb)
+static int find_label(Code_Generator *g, String_Slice lb)
 {
     for (uint32_t i = 0; i < g->lbs.n; i++)
         if (string_equal_ignore_case(g->lbs.d[i], lb))
             return i;
     return -1;
 }
-static void eex(Code_Generator *g, String_Slice ex)
+static void emit_exception(Code_Generator *g, String_Slice ex)
 {
     for (uint32_t i = 0; i < g->exs.n; i++)
         if (string_equal_ignore_case(g->exs.d[i], ex))
             return;
-    slv(&g->exs, ex);
+    string_list_vector_append(&g->exs, ex);
 }
-static inline void lbl(Code_Generator *g, int l);
-static int glbl_bb(Code_Generator *g, String_Slice nm)
+static inline void emit_label(Code_Generator *g, int l);
+
+static int get_or_create_label_basic_block(Code_Generator *g, String_Slice nm)
 {
     for (uint32_t i = 0; i < g->ltb.n; i++)
         if (string_equal_ignore_case(g->ltb.d[i]->nm, nm))
             return g->ltb.d[i]->bb;
-    LE *e = malloc(sizeof(LE));
+    Label_Entry *e = malloc(sizeof(Label_Entry));
     e->nm = nm;
-    e->bb = nl(g);
-    lev(&g->ltb, e);
+    e->bb = new_label(g);
+    label_entry_vector_append(&g->ltb, e);
     return e->bb;
 }
-static void elbl(Code_Generator *g, String_Slice nm)
+static void emit_label_definition(Code_Generator *g, String_Slice nm)
 {
-    int bb = glbl_bb(g, nm);
-    lbl(g, bb);
+    int bb = get_or_create_label_basic_block(g, nm);
+    emit_label(g, bb);
 }
-static bool adcl(Code_Generator *g, const char *fn)
+static bool add_declaration(Code_Generator *g, const char *fn)
 {
     String_Slice fns = {fn, strlen(fn)};
     for (uint32_t i = 0; i < g->dcl.n; i++)
@@ -8533,28 +8568,28 @@ static bool adcl(Code_Generator *g, const char *fn)
     char *cp = malloc(fns.n + 1);
     memcpy(cp, fn, fns.n);
     cp[fns.n] = 0;
-    slv(&g->dcl, (String_Slice){cp, fns.n});
+    string_list_vector_append(&g->dcl, (String_Slice){cp, fns.n});
     return true;
 }
-static const char *vt(Value_Kind k)
+static const char *value_type_string(Value_Kind k)
 {
-    return k == VK_I ? "i64" : k == VK_F ? "double" : "ptr";
+    return k == VALUE_KIND_INTEGER ? "i64" : k == VALUE_KIND_FLOAT ? "double" : "ptr";
 }
-static const char *act(Type_Info *t)
+static const char *ada_c_type(Type_Info *t)
 {
     if (not t)
         return "i32";
-    Type_Info *tc = tcc(t);
+    Type_Info *tc = type_concrete(t);
     if (not tc)
         return "i32";
     switch (tc->k)
     {
-    case TY_B:
-    case TY_C:
-    case TY_I:
-    case TY_UI:
-    case TY_E:
-    case TY_D:
+    case TYPE_BOOLEAN:
+    case TYPE_CHARACTER:
+    case TYPE_INTEGER:
+    case TYPE_UNSIGNED_INTEGER:
+    case TYPE_ENUMERATION:
+    case TYPE_DERIVED:
     {
         int64_t lo = tc->lo, hi = tc->hi;
         if (lo == 0 and hi == 0)
@@ -8575,44 +8610,45 @@ static const char *act(Type_Info *t)
         }
         return "i32";
     }
-    case TY_F:
-    case TY_UF:
-    case TY_FX:
+    case TYPE_FLOAT:
+    case TYPE_UNIVERSAL_FLOAT:
+    case TYPE_FIXED_POINT:
         return tc->sz == 32 ? "float" : "double";
-    case TY_AC:
-    case TY_FT:
-    case TY_S:
+    case TYPE_ACCESS:
+    case TYPE_FAT:
+    case TYPE_STRING:
         return "ptr";
     default:
         return "i32";
     }
 }
-static Value_Kind tk2v(Type_Info *t)
+
+static Value_Kind token_kind_to_value_kind(Type_Info *t)
 {
     if (not t)
-        return VK_I;
-    switch (repr_cat(t))
+        return VALUE_KIND_INTEGER;
+    switch (representation_category(t))
     {
-    case RC_FLOAT:
-        return VK_F;
-    case RC_PTR:
-        return VK_P;
+    case REPR_CAT_FLOAT:
+        return VALUE_KIND_FLOAT;
+    case REPR_CAT_POINTER:
+        return VALUE_KIND_POINTER;
     default:
-        return VK_I;
+        return VALUE_KIND_INTEGER;
     }
 }
-static unsigned long th(Type_Info *t)
+static unsigned long type_hash(Type_Info *t)
 {
     if (not t)
         return 0;
     unsigned long h = t->k;
-    if (t->k == TY_A)
+    if (t->k == TYPE_ARRAY)
     {
         h = h * 31 + (unsigned long) t->lo;
         h = h * 31 + (unsigned long) t->hi;
-        h = h * 31 + th(t->el);
+        h = h * 31 + type_hash(t->el);
     }
-    else if (t->k == TY_R)
+    else if (t->k == TYPE_RECORD)
     {
         for (uint32_t i = 0; i < t->dc.n and i < 8; i++)
             if (t->dc.d[i])
@@ -8625,7 +8661,8 @@ static unsigned long th(Type_Info *t)
     }
     return h;
 }
-static int esn(char *b, int sz, Symbol *s, String_Slice nm, int pc, Syntax_Node *sp)
+
+static int encode_symbol_name(char *b, int sz, Symbol *s, String_Slice nm, int pc, Syntax_Node *sp)
 {
     if (s and s->ext and s->ext_nm.s)
     {
@@ -8671,7 +8708,7 @@ static int esn(char *b, int sz, Symbol *s, String_Slice nm, int pc, Syntax_Node 
             {
                 Syntax_Node *p = sp->sp.pmm.d[i];
                 if (p and p->pm.ty)
-                    h = h * 31 + th(p->pm.ty->ty ? p->pm.ty->ty : 0);
+                    h = h * 31 + type_hash(p->pm.ty->ty ? p->pm.ty->ty : 0);
                 if (p and p->pm.nm.s)
                     pnh = pnh * 31 + string_hash(p->pm.nm);
             }
@@ -8705,7 +8742,7 @@ static int esn(char *b, int sz, Symbol *s, String_Slice nm, int pc, Syntax_Node 
         {
             Syntax_Node *p = sp->sp.pmm.d[i];
             if (p and p->pm.ty)
-                h = h * 31 + th(p->pm.ty->ty ? p->pm.ty->ty : 0);
+                h = h * 31 + type_hash(p->pm.ty->ty ? p->pm.ty->ty : 0);
             if (p and p->pm.nm.s)
                 pnh = pnh * 31 + string_hash(p->pm.nm);
         }
@@ -8718,45 +8755,46 @@ static int esn(char *b, int sz, Symbol *s, String_Slice nm, int pc, Syntax_Node 
     b[n] = 0;
     return n;
 }
-static bool hnf(Node_Vector *dc, Node_Vector *st);
-static bool hnfs(Node_Vector *st)
+static bool has_nested_function(Node_Vector *dc, Node_Vector *st);
+static bool has_nested_function_in_statements(Node_Vector *st)
 {
     for (uint32_t i = 0; i < st->n; i++)
     {
         Syntax_Node *n = st->d[i];
         if (not n)
             continue;
-        if (n->k == N_BL and hnf(&n->bk.dc, &n->bk.st))
+        if (n->k == NODE_BLOCK and has_nested_function(&n->bk.dc, &n->bk.st))
             return 1;
-        if (n->k == N_IF)
+        if (n->k == NODE_IF)
         {
-            if (hnfs(&n->if_.th) or hnfs(&n->if_.el))
+            if (has_nested_function_in_statements(&n->if_.th)
+                or has_nested_function_in_statements(&n->if_.el))
                 return 1;
             for (uint32_t j = 0; j < n->if_.ei.n; j++)
-                if (n->if_.ei.d[j] and hnfs(&n->if_.ei.d[j]->if_.th))
+                if (n->if_.ei.d[j] and has_nested_function_in_statements(&n->if_.ei.d[j]->if_.th))
                     return 1;
         }
-        if (n->k == N_CS)
+        if (n->k == NODE_CASE)
         {
             for (uint32_t j = 0; j < n->cs.al.n; j++)
-                if (n->cs.al.d[j] and hnfs(&n->cs.al.d[j]->hnd.stz))
+                if (n->cs.al.d[j] and has_nested_function_in_statements(&n->cs.al.d[j]->hnd.stz))
                     return 1;
         }
-        if (n->k == N_LP and hnfs(&n->lp.st))
+        if (n->k == NODE_LOOP and has_nested_function_in_statements(&n->lp.st))
             return 1;
     }
     return 0;
 }
-static bool hnf(Node_Vector *dc, Node_Vector *st)
+static bool has_nested_function(Node_Vector *dc, Node_Vector *st)
 {
     for (uint32_t i = 0; i < dc->n; i++)
-        if (dc->d[i] and (dc->d[i]->k == N_PB or dc->d[i]->k == N_FB))
+        if (dc->d[i] and (dc->d[i]->k == NODE_PROCEDURE_BODY or dc->d[i]->k == NODE_FUNCTION_BODY))
             return 1;
-    return hnfs(st);
+    return has_nested_function_in_statements(st);
 }
-static V gex(Code_Generator *g, Syntax_Node *n);
-static void gss(Code_Generator *g, Syntax_Node *n);
-static void gbf(Code_Generator *g)
+static V generate_expression(Code_Generator *g, Syntax_Node *n);
+static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n);
+static void generate_block_frame(Code_Generator *g)
 {
     int mx = 0;
     for (int h = 0; h < 4096; h++)
@@ -8766,71 +8804,79 @@ static void gbf(Code_Generator *g)
     if (mx > 0)
         fprintf(g->o, "  %%__frame = alloca [%d x ptr]\n", mx + 1);
 }
-static void gdl(Code_Generator *g, Syntax_Node *n);
-static inline void lbl(Code_Generator *g, int l)
+static void generate_declaration(Code_Generator *g, Syntax_Node *n);
+static inline void emit_label(Code_Generator *g, int l)
 {
     fprintf(g->o, "Source_Location%d:\n", l);
 }
-static inline void br(Code_Generator *g, int l)
+static inline void emit_branch(Code_Generator *g, int l)
 {
     fprintf(g->o, "  br label %%Source_Location%d\n", l);
 }
-static inline void cbr(Code_Generator *g, int c, int lt, int lf)
+static inline void emit_conditional_branch(Code_Generator *g, int c, int lt, int lf)
 {
     fprintf(
         g->o, "  br i1 %%t%d, label %%Source_Location%d, label %%Source_Location%d\n", c, lt, lf);
 }
+
 static void gen_index_check(Code_Generator *g, int idx, const char *lo_s, const char *hi_s)
 {
     FILE *o = g->o;
-    int lok = nl(g), hik = nl(g), erl = nl(g), dn = nl(g), lc = nt(g);
+    int lok = new_label(g), hik = new_label(g), erl = new_label(g), dn = new_label(g),
+        lc = new_temporary(g);
     fprintf(o, "  %%t%d = icmp sge i64 %%t%d, %s\n", lc, idx, lo_s);
-    cbr(g, lc, lok, erl);
-    lbl(g, lok);
-    int hc = nt(g);
+    emit_conditional_branch(g, lc, lok, erl);
+    emit_label(g, lok);
+    int hc = new_temporary(g);
     fprintf(o, "  %%t%d = icmp sle i64 %%t%d, %s\n", hc, idx, hi_s);
-    cbr(g, hc, hik, erl);
-    lbl(g, hik);
-    br(g, dn);
-    lbl(g, erl);
+    emit_conditional_branch(g, hc, hik, erl);
+    emit_label(g, hik);
+    emit_branch(g, dn);
+    emit_label(g, erl);
     fprintf(o, "  call void @__ada_raise(ptr @.ex.CONSTRAINT_ERROR)\n  unreachable\n");
-    lbl(g, dn);
+    emit_label(g, dn);
 }
-static V vcast(Code_Generator *g, V v, Value_Kind k)
+static V value_cast(Code_Generator *g, V v, Value_Kind k)
 {
     if (v.k == k)
         return v;
-    V r = {nt(g), k};
-    if (v.k == VK_I and k == VK_F)
+    V r = {new_temporary(g), k};
+    if (v.k == VALUE_KIND_INTEGER and k == VALUE_KIND_FLOAT)
         fprintf(g->o, "  %%t%d = sitofp i64 %%t%d to double\n", r.id, v.id);
-    else if (v.k == VK_F and k == VK_I)
+    else if (v.k == VALUE_KIND_FLOAT and k == VALUE_KIND_INTEGER)
         fprintf(g->o, "  %%t%d = fptosi double %%t%d to i64\n", r.id, v.id);
-    else if (v.k == VK_P and k == VK_I)
+    else if (v.k == VALUE_KIND_POINTER and k == VALUE_KIND_INTEGER)
         fprintf(g->o, "  %%t%d = ptrtoint ptr %%t%d to i64\n", r.id, v.id);
-    else if (v.k == VK_I and k == VK_P)
+    else if (v.k == VALUE_KIND_INTEGER and k == VALUE_KIND_POINTER)
         fprintf(g->o, "  %%t%d = inttoptr i64 %%t%d to ptr\n", r.id, v.id);
-    else if (v.k == VK_P and k == VK_F)
+    else if (v.k == VALUE_KIND_POINTER and k == VALUE_KIND_FLOAT)
     {
-        int tmp = nt(g);
+        int tmp = new_temporary(g);
         fprintf(g->o, "  %%t%d = ptrtoint ptr %%t%d to i64\n", tmp, v.id);
         fprintf(g->o, "  %%t%d = sitofp i64 %%t%d to double\n", r.id, tmp);
     }
-    else if (v.k == VK_F and k == VK_P)
+    else if (v.k == VALUE_KIND_FLOAT and k == VALUE_KIND_POINTER)
     {
-        int tmp = nt(g);
+        int tmp = new_temporary(g);
         fprintf(g->o, "  %%t%d = fptosi double %%t%d to i64\n", tmp, v.id);
         fprintf(g->o, "  %%t%d = inttoptr i64 %%t%d to ptr\n", r.id, tmp);
     }
     else
-        fprintf(g->o, "  %%t%d = bitcast %s %%t%d to %s\n", r.id, vt(v.k), v.id, vt(k));
+        fprintf(
+            g->o,
+            "  %%t%d = bitcast %s %%t%d to %s\n",
+            r.id,
+            value_type_string(v.k),
+            v.id,
+            value_type_string(k));
     return r;
 }
 static V gen_float_chk(Code_Generator *g, V e, Type_Info *t, String_Slice ec, Value_Kind rk)
 {
     if (not t or (t->lo == 0 and t->hi == 0))
-        return vcast(g, e, rk);
+        return value_cast(g, e, rk);
     FILE *o = g->o;
-    V ef = vcast(g, e, VK_F);
+    V ef = value_cast(g, e, VALUE_KIND_FLOAT);
     union
     {
         int64_t i;
@@ -8838,213 +8884,216 @@ static V gen_float_chk(Code_Generator *g, V e, Type_Info *t, String_Slice ec, Va
     } ulo, uhi;
     ulo.i = t->lo;
     uhi.i = t->hi;
-    int lok = nl(g), hik = nl(g), erl = nl(g), dn = nl(g), lc = nt(g);
+    int lok = new_label(g), hik = new_label(g), erl = new_label(g), dn = new_label(g),
+        lc = new_temporary(g);
     fprintf(o, "  %%t%d = fcmp oge double %%t%d, %e\n", lc, ef.id, ulo.d);
-    cbr(g, lc, lok, erl);
-    lbl(g, lok);
-    int hc = nt(g);
+    emit_conditional_branch(g, lc, lok, erl);
+    emit_label(g, lok);
+    int hc = new_temporary(g);
     fprintf(o, "  %%t%d = fcmp ole double %%t%d, %e\n", hc, ef.id, uhi.d);
-    cbr(g, hc, hik, erl);
-    lbl(g, hik);
-    br(g, dn);
-    lbl(g, erl);
+    emit_conditional_branch(g, hc, hik, erl);
+    emit_label(g, hik);
+    emit_branch(g, dn);
+    emit_label(g, erl);
     fprintf(o, "  call void @__ada_raise(ptr @.ex.%.*s)\n", (int) ec.n, ec.s);
     fprintf(o, "  unreachable\n");
-    lbl(g, dn);
-    return vcast(g, e, rk);
+    emit_label(g, dn);
+    return value_cast(g, e, rk);
 }
 static V gen_array_bounds_chk(
     Code_Generator *g, V e, Type_Info *t, Type_Info *et, String_Slice ec, Value_Kind rk)
 {
     FILE *o = g->o;
-    int lok = nl(g), hik = nl(g), erl = nl(g), dn = nl(g), tlo = nt(g);
+    int lok = new_label(g), hik = new_label(g), erl = new_label(g), dn = new_label(g),
+        tlo = new_temporary(g);
     fprintf(o, "  %%t%d = add i64 0, %lld\n", tlo, (long long) t->lo);
-    int thi = nt(g);
+    int thi = new_temporary(g);
     fprintf(o, "  %%t%d = add i64 0, %lld\n", thi, (long long) t->hi);
-    int elo = nt(g);
+    int elo = new_temporary(g);
     fprintf(o, "  %%t%d = add i64 0, %lld\n", elo, et ? (long long) et->lo : 0LL);
-    int ehi = nt(g);
+    int ehi = new_temporary(g);
     fprintf(o, "  %%t%d = add i64 0, %lld\n", ehi, et ? (long long) et->hi : -1LL);
-    int lc = nt(g);
+    int lc = new_temporary(g);
     fprintf(o, "  %%t%d = icmp eq i64 %%t%d, %%t%d\n", lc, elo, tlo);
-    cbr(g, lc, lok, erl);
-    lbl(g, lok);
-    int hc = nt(g);
+    emit_conditional_branch(g, lc, lok, erl);
+    emit_label(g, lok);
+    int hc = new_temporary(g);
     fprintf(o, "  %%t%d = icmp eq i64 %%t%d, %%t%d\n", hc, ehi, thi);
-    cbr(g, hc, hik, erl);
-    lbl(g, hik);
-    br(g, dn);
-    lbl(g, erl);
+    emit_conditional_branch(g, hc, hik, erl);
+    emit_label(g, hik);
+    emit_branch(g, dn);
+    emit_label(g, erl);
     fprintf(o, "  call void @__ada_raise(ptr @.ex.%.*s)\n", (int) ec.n, ec.s);
     fprintf(o, "  unreachable\n");
-    lbl(g, dn);
-    return vcast(g, e, rk);
+    emit_label(g, dn);
+    return value_cast(g, e, rk);
 }
 static V gen_discrete_chk(Code_Generator *g, V e, Type_Info *t, String_Slice ec, Value_Kind rk)
 {
     FILE *o = g->o;
-    int lok = nl(g), hik = nl(g), erl = nl(g), dn = nl(g), lc = nt(g);
+    int lok = new_label(g), hik = new_label(g), erl = new_label(g), dn = new_label(g),
+        lc = new_temporary(g);
     fprintf(o, "  %%t%d = icmp sge i64 %%t%d, %lld\n", lc, e.id, (long long) t->lo);
-    cbr(g, lc, lok, erl);
-    lbl(g, lok);
-    int hc = nt(g);
+    emit_conditional_branch(g, lc, lok, erl);
+    emit_label(g, lok);
+    int hc = new_temporary(g);
     fprintf(o, "  %%t%d = icmp sle i64 %%t%d, %lld\n", hc, e.id, (long long) t->hi);
-    cbr(g, hc, hik, erl);
-    lbl(g, hik);
-    br(g, dn);
-    lbl(g, erl);
+    emit_conditional_branch(g, hc, hik, erl);
+    emit_label(g, hik);
+    emit_branch(g, dn);
+    emit_label(g, erl);
     fprintf(o, "  call void @__ada_raise(ptr @.ex.%.*s)\n", (int) ec.n, ec.s);
     fprintf(o, "  unreachable\n");
-    lbl(g, dn);
-    return vcast(g, e, rk);
+    emit_label(g, dn);
+    return value_cast(g, e, rk);
 }
-static V vbool(Code_Generator *g, V v)
+static V value_to_boolean(Code_Generator *g, V v)
 {
-    if (v.k != VK_I)
-        v = vcast(g, v, VK_I);
-    int t = nt(g);
-    V c = {nt(g), VK_I};
+    if (v.k != VALUE_KIND_INTEGER)
+        v = value_cast(g, v, VALUE_KIND_INTEGER);
+    int t = new_temporary(g);
+    V c = {new_temporary(g), VALUE_KIND_INTEGER};
     fprintf(g->o, "  %%t%d = icmp ne i64 %%t%d, 0\n", t, v.id);
     fprintf(g->o, "  %%t%d = zext i1 %%t%d to i64\n", c.id, t);
     return c;
 }
-static V vcmp(Code_Generator *g, const char *op, V a, V b, Value_Kind k)
+static V value_compare(Code_Generator *g, const char *op, V a, V b, Value_Kind k)
 {
-    a = vcast(g, a, k);
-    b = vcast(g, b, k);
-    int c = nt(g);
-    V r = {nt(g), VK_I};
-    if (k == VK_I)
+    a = value_cast(g, a, k);
+    b = value_cast(g, b, k);
+    int c = new_temporary(g);
+    V r = {new_temporary(g), VALUE_KIND_INTEGER};
+    if (k == VALUE_KIND_INTEGER)
         fprintf(g->o, "  %%t%d = icmp %s i64 %%t%d, %%t%d\n", c, op, a.id, b.id);
     else
         fprintf(g->o, "  %%t%d = fcmp %s double %%t%d, %%t%d\n", c, op, a.id, b.id);
     fprintf(g->o, "  %%t%d = zext i1 %%t%d to i64\n", r.id, c);
     return r;
 }
-static V vcmpi(Code_Generator *g, const char *op, V a, V b)
+static V value_compare_integer(Code_Generator *g, const char *op, V a, V b)
 {
-    return vcmp(g, op, a, b, VK_I);
+    return value_compare(g, op, a, b, VALUE_KIND_INTEGER);
 }
-static V vcmpf(Code_Generator *g, const char *op, V a, V b)
+static V value_compare_float(Code_Generator *g, const char *op, V a, V b)
 {
-    return vcmp(g, op, a, b, VK_F);
+    return value_compare(g, op, a, b, VALUE_KIND_FLOAT);
 }
-static void gfp(Code_Generator *g, int fp, int d, int lo, int hi)
+static void generate_fat_pointer(Code_Generator *g, int fp, int d, int lo, int hi)
 {
     FILE *o = g->o;
     fprintf(o, "  %%t%d = alloca {ptr,ptr}\n", fp);
-    int bd = nt(g);
+    int bd = new_temporary(g);
     fprintf(o, "  %%t%d = alloca {i64,i64}\n", bd);
     fprintf(o, "  %%_lo%d = getelementptr {i64,i64}, ptr %%t%d, i32 0, i32 0\n", fp, bd);
     fprintf(o, "  store i64 %%t%d, ptr %%_lo%d\n", lo, fp);
     fprintf(o, "  %%_hi%d = getelementptr {i64,i64}, ptr %%t%d, i32 0, i32 1\n", fp, bd);
     fprintf(o, "  store i64 %%t%d, ptr %%_hi%d\n", hi, fp);
-    int dp = nt(g);
+    int dp = new_temporary(g);
     fprintf(o, "  %%t%d = getelementptr {ptr,ptr}, ptr %%t%d, i32 0, i32 0\n", dp, fp);
     fprintf(o, "  store ptr %%t%d, ptr %%t%d\n", d, dp);
-    int bp = nt(g);
+    int bp = new_temporary(g);
     fprintf(o, "  %%t%d = getelementptr {ptr,ptr}, ptr %%t%d, i32 0, i32 1\n", bp, fp);
     fprintf(o, "  store ptr %%t%d, ptr %%t%d\n", bd, bp);
 }
-static V gfpd(Code_Generator *g, int fp)
+static V get_fat_pointer_data(Code_Generator *g, int fp)
 {
-    V r = {nt(g), VK_P};
+    V r = {new_temporary(g), VALUE_KIND_POINTER};
     FILE *o = g->o;
-    int dp = nt(g);
+    int dp = new_temporary(g);
     fprintf(o, "  %%t%d = getelementptr {ptr,ptr}, ptr %%t%d, i32 0, i32 0\n", dp, fp);
     fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", r.id, dp);
     return r;
 }
-static void gfpb(Code_Generator *g, int fp, int *lo, int *hi)
+static void get_fat_pointer_bounds(Code_Generator *g, int fp, int *lo, int *hi)
 {
     FILE *o = g->o;
-    int bp = nt(g);
+    int bp = new_temporary(g);
     fprintf(o, "  %%t%d = getelementptr {ptr,ptr}, ptr %%t%d, i32 0, i32 1\n", bp, fp);
-    int bv = nt(g);
+    int bv = new_temporary(g);
     fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", bv, bp);
-    *lo = nt(g);
+    *lo = new_temporary(g);
     fprintf(o, "  %%t%d = getelementptr {i64,i64}, ptr %%t%d, i32 0, i32 0\n", *lo, bv);
-    int lov = nt(g);
+    int lov = new_temporary(g);
     fprintf(o, "  %%t%d = load i64, ptr %%t%d\n", lov, *lo);
     *lo = lov;
-    *hi = nt(g);
+    *hi = new_temporary(g);
     fprintf(o, "  %%t%d = getelementptr {i64,i64}, ptr %%t%d, i32 0, i32 1\n", *hi, bv);
-    int hiv = nt(g);
+    int hiv = new_temporary(g);
     fprintf(o, "  %%t%d = load i64, ptr %%t%d\n", hiv, *hi);
     *hi = hiv;
 }
-static V vpow(Code_Generator *g, V a, V b, Value_Kind k)
+static V value_power(Code_Generator *g, V a, V b, Value_Kind k)
 {
-    a = vcast(g, a, k);
-    b = vcast(g, b, k);
-    V r = {nt(g), k};
-    if (k == VK_I)
+    a = value_cast(g, a, k);
+    b = value_cast(g, b, k);
+    V r = {new_temporary(g), k};
+    if (k == VALUE_KIND_INTEGER)
         fprintf(g->o, "  %%t%d = call i64 @__ada_powi(i64 %%t%d, i64 %%t%d)\n", r.id, a.id, b.id);
     else
         fprintf(g->o, "  %%t%d = call double @pow(double %%t%d, double %%t%d)\n", r.id, a.id, b.id);
     return r;
 }
-static V vpowi(Code_Generator *g, V a, V b)
+static V value_power_integer(Code_Generator *g, V a, V b)
 {
-    return vpow(g, a, b, VK_I);
+    return value_power(g, a, b, VALUE_KIND_INTEGER);
 }
-static V vpows(Code_Generator *g, V a, V b)
+static V value_power_float(Code_Generator *g, V a, V b)
 {
-    return vpow(g, a, b, VK_F);
+    return value_power(g, a, b, VALUE_KIND_FLOAT);
 }
-static V gag(Code_Generator *g, Syntax_Node *n, Type_Info *ty)
+static V generate_aggregate(Code_Generator *g, Syntax_Node *n, Type_Info *ty)
 {
     FILE *o = g->o;
-    V r = {nt(g), VK_P};
-    Type_Info *t = ty ? tcc(ty) : 0;
-    if (t and t->k == TY_A and n->k == N_AG)
+    V r = {new_temporary(g), VALUE_KIND_POINTER};
+    Type_Info *t = ty ? type_concrete(ty) : 0;
+    if (t and t->k == TYPE_ARRAY and n->k == NODE_AGGREGATE)
         naag(g->sm, t, n);
-    if (t and t->k == TY_R and n->k == N_AG)
+    if (t and t->k == TYPE_RECORD and n->k == NODE_AGGREGATE)
         nrag(g->sm, t, n);
-    if (not t or t->k != TY_R or t->pk)
+    if (not t or t->k != TYPE_RECORD or t->pk)
     {
         int sz = n->ag.it.n ? n->ag.it.n : 1;
-        int p = nt(g);
-        int by = nt(g);
+        int p = new_temporary(g);
+        int by = new_temporary(g);
         fprintf(o, "  %%t%d = add i64 0, %d\n", by, sz * 8);
         fprintf(o, "  %%t%d = call ptr @__ada_ss_allocate(i64 %%t%d)\n", p, by);
         uint32_t ix = 0;
         for (uint32_t i = 0; i < n->ag.it.n; i++)
         {
             Syntax_Node *el = n->ag.it.d[i];
-            if (el->k == N_ASC)
+            if (el->k == NODE_ASSOCIATION)
             {
-                if (el->asc.ch.d[0]->k == N_ID
+                if (el->asc.ch.d[0]->k == NODE_IDENTIFIER
                     and string_equal_ignore_case(el->asc.ch.d[0]->s, Z("others")))
                 {
                     for (; ix < (uint32_t) sz; ix++)
                     {
-                        V v = vcast(g, gex(g, el->asc.vl), VK_I);
-                        int ep = nt(g);
+                        V v = value_cast(g, generate_expression(g, el->asc.vl), VALUE_KIND_INTEGER);
+                        int ep = new_temporary(g);
                         fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p, ix);
                         fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
                     }
                 }
                 else
                 {
-                    V v = vcast(g, gex(g, el->asc.vl), VK_I);
+                    V v = value_cast(g, generate_expression(g, el->asc.vl), VALUE_KIND_INTEGER);
                     for (uint32_t j = 0; j < el->asc.ch.n; j++)
                     {
                         Syntax_Node *ch = el->asc.ch.d[j];
-                        if (ch->k == N_ID and ch->sy and ch->sy->k == 1 and ch->sy->ty)
+                        if (ch->k == NODE_IDENTIFIER and ch->sy and ch->sy->k == 1 and ch->sy->ty)
                         {
-                            Type_Info *cht = tcc(ch->sy->ty);
-                            if (cht->k == TY_E)
+                            Type_Info *cht = type_concrete(ch->sy->ty);
+                            if (cht->k == TYPE_ENUMERATION)
                             {
                                 for (uint32_t ei = 0; ei < cht->ev.n; ei++)
                                 {
-                                    V cv = {nt(g), VK_I};
+                                    V cv = {new_temporary(g), VALUE_KIND_INTEGER};
                                     fprintf(
                                         o,
                                         "  %%t%d = add i64 0, %ld\n",
                                         cv.id,
                                         (long) cht->ev.d[ei]->vl);
-                                    int ep = nt(g);
+                                    int ep = new_temporary(g);
                                     fprintf(
                                         o,
                                         "  %%t%d = getelementptr i64, ptr %%t%d, i64 %%t%d\n",
@@ -9054,13 +9103,13 @@ static V gag(Code_Generator *g, Syntax_Node *n, Type_Info *ty)
                                     fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
                                 }
                             }
-                            else if ((cht->lo != 0 or cht->hi != 0) and cht->k == TY_I)
+                            else if ((cht->lo != 0 or cht->hi != 0) and cht->k == TYPE_INTEGER)
                             {
                                 for (int64_t ri = cht->lo; ri <= cht->hi; ri++)
                                 {
-                                    V cv = {nt(g), VK_I};
+                                    V cv = {new_temporary(g), VALUE_KIND_INTEGER};
                                     fprintf(o, "  %%t%d = add i64 0, %ld\n", cv.id, (long) ri);
-                                    int ep = nt(g);
+                                    int ep = new_temporary(g);
                                     fprintf(
                                         o,
                                         "  %%t%d = getelementptr i64, ptr %%t%d, i64 %%t%d\n",
@@ -9073,8 +9122,8 @@ static V gag(Code_Generator *g, Syntax_Node *n, Type_Info *ty)
                         }
                         else
                         {
-                            V ci = vcast(g, gex(g, ch), VK_I);
-                            int ep = nt(g);
+                            V ci = value_cast(g, generate_expression(g, ch), VALUE_KIND_INTEGER);
+                            int ep = new_temporary(g);
                             fprintf(
                                 o,
                                 "  %%t%d = getelementptr i64, ptr %%t%d, i64 %%t%d\n",
@@ -9089,8 +9138,8 @@ static V gag(Code_Generator *g, Syntax_Node *n, Type_Info *ty)
             }
             else
             {
-                V v = vcast(g, gex(g, el), VK_I);
-                int ep = nt(g);
+                V v = value_cast(g, generate_expression(g, el), VALUE_KIND_INTEGER);
+                int ep = new_temporary(g);
                 fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p, ix);
                 fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
                 ix++;
@@ -9101,28 +9150,30 @@ static V gag(Code_Generator *g, Syntax_Node *n, Type_Info *ty)
     else
     {
         uint32_t sz = t->sz / 8;
-        int p = nt(g);
-        int by = nt(g);
+        int p = new_temporary(g);
+        int by = new_temporary(g);
         fprintf(o, "  %%t%d = add i64 0, %u\n", by, sz * 8);
         fprintf(o, "  %%t%d = call ptr @__ada_ss_allocate(i64 %%t%d)\n", p, by);
         uint32_t ix = 0;
         for (uint32_t i = 0; i < n->ag.it.n; i++)
         {
             Syntax_Node *el = n->ag.it.d[i];
-            if (el->k == N_ASC)
+            if (el->k == NODE_ASSOCIATION)
             {
                 for (uint32_t j = 0; j < el->asc.ch.n; j++)
                 {
                     Syntax_Node *ch = el->asc.ch.d[j];
-                    if (ch->k == N_ID)
+                    if (ch->k == NODE_IDENTIFIER)
                     {
                         for (uint32_t k = 0; k < t->cm.n; k++)
                         {
                             Syntax_Node *c = t->cm.d[k];
-                            if (c->k == N_CM and string_equal_ignore_case(c->cm.nm, ch->s))
+                            if (c->k == NODE_COMPONENT
+                                and string_equal_ignore_case(c->cm.nm, ch->s))
                             {
-                                V v = vcast(g, gex(g, el->asc.vl), VK_I);
-                                int ep = nt(g);
+                                V v = value_cast(
+                                    g, generate_expression(g, el->asc.vl), VALUE_KIND_INTEGER);
+                                int ep = new_temporary(g);
                                 fprintf(
                                     o,
                                     "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n",
@@ -9139,8 +9190,8 @@ static V gag(Code_Generator *g, Syntax_Node *n, Type_Info *ty)
             }
             else
             {
-                V v = vcast(g, gex(g, el), VK_I);
-                int ep = nt(g);
+                V v = value_cast(g, generate_expression(g, el), VALUE_KIND_INTEGER);
+                int ep = new_temporary(g);
                 fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p, ix);
                 fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
                 ix++;
@@ -9150,34 +9201,34 @@ static V gag(Code_Generator *g, Syntax_Node *n, Type_Info *ty)
     }
     return r;
 }
-static Syntax_Node *sbody(Symbol *s, int el)
+static Syntax_Node *symbol_body(Symbol *s, int el)
 {
     if (not s or s->ol.n == 0)
         return 0;
     for (uint32_t i = 0; i < s->ol.n; i++)
     {
         Syntax_Node *b = s->ol.d[i];
-        if ((b->k == N_PB or b->k == N_FB) and b->bd.el == el)
+        if ((b->k == NODE_PROCEDURE_BODY or b->k == NODE_FUNCTION_BODY) and b->bd.el == el)
             return b;
     }
     return 0;
 }
-static Syntax_Node *sspec(Symbol *s)
+static Syntax_Node *symbol_spec(Symbol *s)
 {
     if (not s or s->ol.n == 0)
         return 0;
-    Syntax_Node *b = sbody(s, s->el);
+    Syntax_Node *b = symbol_body(s, s->el);
     if (b and b->bd.sp)
         return b->bd.sp;
     for (uint32_t i = 0; i < s->ol.n; i++)
     {
         Syntax_Node *d = s->ol.d[i];
-        if (d->k == N_PD or d->k == N_FD)
+        if (d->k == NODE_PROCEDURE_DECL or d->k == NODE_FUNCTION_DECL)
             return d->bd.sp;
     }
     return 0;
 }
-static const char *gattr(String_Slice attr, String_Slice tnm)
+static const char *get_attribute_name(String_Slice attr, String_Slice tnm)
 {
     static char fnm[256];
     int pos = 0;
@@ -9190,35 +9241,36 @@ static const char *gattr(String_Slice attr, String_Slice tnm)
     fnm[pos] = 0;
     return fnm;
 }
-static V gex(Code_Generator *g, Syntax_Node *n)
+
+static V generate_expression(Code_Generator *g, Syntax_Node *n)
 {
     FILE *o = g->o;
     if (not n)
-        return (V){0, VK_I};
-    V r = {nt(g), tk2v(n->ty)};
+        return (V){0, VALUE_KIND_INTEGER};
+    V r = {new_temporary(g), token_kind_to_value_kind(n->ty)};
     switch (n->k)
     {
-    case N_INT:
-        r.k = VK_I;
+    case NODE_INTEGER:
+        r.k = VALUE_KIND_INTEGER;
         fprintf(o, "  %%t%d = add i64 0, %lld\n", r.id, (long long) n->i);
         break;
-    case N_REAL:
-        r.k = VK_F;
+    case NODE_REAL:
+        r.k = VALUE_KIND_FLOAT;
         fprintf(o, "  %%t%d = fadd double 0.0, %e\n", r.id, n->f);
         break;
-    case N_CHAR:
-        r.k = VK_I;
+    case NODE_CHARACTER:
+        r.k = VALUE_KIND_INTEGER;
         fprintf(o, "  %%t%d = add i64 0, %d\n", r.id, (int) n->i);
         break;
-    case N_STR:
-        r.k = VK_P;
+    case NODE_STRING:
+        r.k = VALUE_KIND_POINTER;
         {
-            int p = nt(g);
+            int p = new_temporary(g);
             uint32_t sz = n->s.n + 1;
             fprintf(o, "  %%t%d = alloca [%u x i8]\n", p, sz);
             for (uint32_t i = 0; i < n->s.n; i++)
             {
-                int ep = nt(g);
+                int ep = new_temporary(g);
                 fprintf(
                     o,
                     "  %%t%d = getelementptr [%u x i8], ptr %%t%d, i64 0, i64 %u\n",
@@ -9228,7 +9280,7 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                     i);
                 fprintf(o, "  store i8 %d, ptr %%t%d\n", (int) (unsigned char) n->s.s[i], ep);
             }
-            int zp = nt(g);
+            int zp = new_temporary(g);
             fprintf(
                 o,
                 "  %%t%d = getelementptr [%u x i8], ptr %%t%d, i64 0, i64 %u\n",
@@ -9237,23 +9289,23 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                 p,
                 n->s.n);
             fprintf(o, "  store i8 0, ptr %%t%d\n", zp);
-            int dp = nt(g);
+            int dp = new_temporary(g);
             fprintf(o, "  %%t%d = getelementptr [%u x i8], ptr %%t%d, i64 0, i64 0\n", dp, sz, p);
-            int lo_id = nt(g);
+            int lo_id = new_temporary(g);
             fprintf(o, "  %%t%d = add i64 0, 1\n", lo_id);
-            int hi_id = nt(g);
+            int hi_id = new_temporary(g);
             fprintf(o, "  %%t%d = add i64 0, %u\n", hi_id, n->s.n);
-            r.id = nt(g);
-            gfp(g, r.id, dp, lo_id, hi_id);
+            r.id = new_temporary(g);
+            generate_fat_pointer(g, r.id, dp, lo_id, hi_id);
         }
         break;
-    case N_NULL:
-        r.k = VK_P;
+    case NODE_NULL:
+        r.k = VALUE_KIND_POINTER;
         fprintf(o, "  %%t%d = inttoptr i64 0 to ptr\n", r.id);
         break;
-    case N_ID:
+    case NODE_IDENTIFIER:
     {
-        Symbol *s = n->sy ? n->sy : syf(g->sm, n->s);
+        Symbol *s = n->sy ? n->sy : symbol_find(g->sm, n->s);
         if (not s and n->sy)
         {
             s = n->sy;
@@ -9262,18 +9314,18 @@ static V gex(Code_Generator *g, Syntax_Node *n)
         Value_Kind fn_ret_type = r.k;
         if (s and s->k == 5)
         {
-            Symbol *s0 = syfa(g->sm, n->s, 0, n->ty);
+            Symbol *s0 = symbol_find_arity(g->sm, n->s, 0, n->ty);
             if (s0)
             {
                 s = s0;
                 gen_0p_call = 1;
             }
         }
-        if (s and s->k == 2 and not(s->ty and is_unc_arr(tcc(s->ty)) and s->lv > 0))
+        if (s and s->k == 2 and not(s->ty and is_unc_arr(type_concrete(s->ty)) and s->lv > 0))
         {
-            if (s->df and s->df->k == N_STR)
+            if (s->df and s->df->k == NODE_STRING)
             {
-                r.k = VK_P;
+                r.k = VALUE_KIND_POINTER;
                 char nb[256];
                 if (s->pr and (uintptr_t) s->pr > 4096 and s->pr->nm.s)
                 {
@@ -9291,15 +9343,15 @@ static V gex(Code_Generator *g, Syntax_Node *n)
             }
             else
             {
-                r.k = VK_I;
+                r.k = VALUE_KIND_INTEGER;
                 fprintf(o, "  %%t%d = add i64 0, %lld\n", r.id, (long long) s->vl);
             }
         }
         else
         {
-            Value_Kind k = VK_I;
+            Value_Kind k = VALUE_KIND_INTEGER;
             if (s and s->ty)
-                k = tk2v(s->ty);
+                k = token_kind_to_value_kind(s->ty);
             r.k = k;
             if (s and s->lv == 0)
             {
@@ -9325,40 +9377,59 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                     if (gen_0p_call)
                     {
                         char fnb[256];
-                        esn(fnb, 256, s, n->s, 0, 0);
-                        fprintf(o, "  %%t%d = call %s @\"%s\"()\n", r.id, vt(fn_ret_type), fnb);
+                        encode_symbol_name(fnb, 256, s, n->s, 0, 0);
+                        fprintf(
+                            o,
+                            "  %%t%d = call %s @\"%s\"()\n",
+                            r.id,
+                            value_type_string(fn_ret_type),
+                            fnb);
                         r.k = fn_ret_type;
                     }
                     else
                     {
-                        Syntax_Node *b = sbody(s, s->el);
-                        Syntax_Node *sp = sspec(s);
+                        Syntax_Node *b = symbol_body(s, s->el);
+                        Syntax_Node *sp = symbol_spec(s);
                         if ((sp and sp->sp.pmm.n == 0) or (not b))
                         {
                             char fnb[256];
-                            esn(fnb, 256, s, n->s, 0, sp);
-                            fprintf(o, "  %%t%d = call %s @\"%s\"()\n", r.id, vt(fn_ret_type), fnb);
+                            encode_symbol_name(fnb, 256, s, n->s, 0, sp);
+                            fprintf(
+                                o,
+                                "  %%t%d = call %s @\"%s\"()\n",
+                                r.id,
+                                value_type_string(fn_ret_type),
+                                fnb);
                             r.k = fn_ret_type;
                         }
                         else
-                            fprintf(o, "  %%t%d = load %s, ptr @%s\n", r.id, vt(k), nb);
+                            fprintf(
+                                o, "  %%t%d = load %s, ptr @%s\n", r.id, value_type_string(k), nb);
                     }
                 }
                 else
-                    fprintf(o, "  %%t%d = load %s, ptr @%s\n", r.id, vt(k), nb);
+                    fprintf(o, "  %%t%d = load %s, ptr @%s\n", r.id, value_type_string(k), nb);
             }
             else if (s and s->lv >= 0 and s->lv < g->sm->lv)
             {
                 if (s->k == 5)
                 {
-                    Syntax_Node *b = sbody(s, s->el);
-                    Syntax_Node *sp = sspec(s);
+                    Syntax_Node *b = symbol_body(s, s->el);
+                    Syntax_Node *sp = symbol_spec(s);
                     if (sp and sp->sp.pmm.n == 0)
                     {
-                        Value_Kind rk = sp and sp->sp.rt ? tk2v(rst(g->sm, sp->sp.rt)) : VK_I;
+                        Value_Kind rk =
+                            sp and sp->sp.rt
+                                ? token_kind_to_value_kind(resolve_subtype(g->sm, sp->sp.rt))
+                                : VALUE_KIND_INTEGER;
                         char fnb[256];
-                        esn(fnb, 256, s, n->s, 0, sp);
-                        fprintf(o, "  %%t%d = call %s @\"%s\"(ptr %%__slnk)\n", r.id, vt(rk), fnb);
+                        encode_symbol_name(fnb, 256, s, n->s, 0, sp);
+                        fprintf(
+                            o,
+                            "  %%t%d = call %s @\"%s\"(ptr %%__slnk)\n",
+                            r.id,
+                            value_type_string(rk),
+                            fnb);
                         r.k = rk;
                     }
                     else
@@ -9367,79 +9438,79 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                         int slnk_ptr;
                         if (level_diff == 0)
                         {
-                            slnk_ptr = nt(g);
+                            slnk_ptr = new_temporary(g);
                             fprintf(o, "  %%t%d = bitcast ptr %%__slnk to ptr\n", slnk_ptr);
                         }
                         else
                         {
-                            slnk_ptr = nt(g);
+                            slnk_ptr = new_temporary(g);
                             fprintf(o, "  %%t%d = bitcast ptr %%__slnk to ptr\n", slnk_ptr);
                             for (int hop = 0; hop < level_diff; hop++)
                             {
-                                int next_slnk = nt(g);
+                                int next_slnk = new_temporary(g);
                                 fprintf(
                                     o,
                                     "  %%t%d = getelementptr ptr, ptr %%t%d, i64 0\n",
                                     next_slnk,
                                     slnk_ptr);
-                                int loaded_slnk = nt(g);
+                                int loaded_slnk = new_temporary(g);
                                 fprintf(
                                     o, "  %%t%d = load ptr, ptr %%t%d\n", loaded_slnk, next_slnk);
                                 slnk_ptr = loaded_slnk;
                             }
                         }
-                        int p = nt(g);
+                        int p = new_temporary(g);
                         fprintf(
                             o,
                             "  %%t%d = getelementptr ptr, ptr %%t%d, i64 %u\n",
                             p,
                             slnk_ptr,
                             s->el);
-                        int a = nt(g);
+                        int a = new_temporary(g);
                         fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", a, p);
-                        fprintf(o, "  %%t%d = load %s, ptr %%t%d\n", r.id, vt(k), a);
+                        fprintf(o, "  %%t%d = load %s, ptr %%t%d\n", r.id, value_type_string(k), a);
                     }
                 }
                 else
                 {
-                    Type_Info *vat = s and s->ty ? tcc(s->ty) : 0;
-                    int p = nt(g);
+                    Type_Info *vat = s and s->ty ? type_concrete(s->ty) : 0;
+                    int p = new_temporary(g);
                     int level_diff = g->sm->lv - s->lv - 1;
                     int slnk_ptr;
                     if (level_diff == 0)
                     {
-                        slnk_ptr = nt(g);
+                        slnk_ptr = new_temporary(g);
                         fprintf(o, "  %%t%d = bitcast ptr %%__slnk to ptr\n", slnk_ptr);
                     }
                     else
                     {
-                        slnk_ptr = nt(g);
+                        slnk_ptr = new_temporary(g);
                         fprintf(o, "  %%t%d = bitcast ptr %%__slnk to ptr\n", slnk_ptr);
                         for (int hop = 0; hop < level_diff; hop++)
                         {
-                            int next_slnk = nt(g);
+                            int next_slnk = new_temporary(g);
                             fprintf(
                                 o,
                                 "  %%t%d = getelementptr ptr, ptr %%t%d, i64 0\n",
                                 next_slnk,
                                 slnk_ptr);
-                            int loaded_slnk = nt(g);
+                            int loaded_slnk = new_temporary(g);
                             fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", loaded_slnk, next_slnk);
                             slnk_ptr = loaded_slnk;
                         }
                     }
                     fprintf(
                         o, "  %%t%d = getelementptr ptr, ptr %%t%d, i64 %u\n", p, slnk_ptr, s->el);
-                    int a = nt(g);
+                    int a = new_temporary(g);
                     fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", a, p);
-                    if (vat and vat->k == TY_A)
+                    if (vat and vat->k == TYPE_ARRAY)
                     {
                         r.id = a;
-                        r.k = VK_P;
+                        r.k = VALUE_KIND_POINTER;
                     }
                     else
                     {
-                        fprintf(o, "  %%t%d = load %s, ptr %%t%d\n", r.id, vt(k), a);
+                        fprintf(o, "  %%t%d = load %s, ptr %%t%d\n", r.id, value_type_string(k), a);
                     }
                 }
             }
@@ -9447,25 +9518,36 @@ static V gex(Code_Generator *g, Syntax_Node *n)
             {
                 if (s and s->k == 5)
                 {
-                    Syntax_Node *b = sbody(s, s->el);
-                    Syntax_Node *sp = sspec(s);
+                    Syntax_Node *b = symbol_body(s, s->el);
+                    Syntax_Node *sp = symbol_spec(s);
                     if (sp and sp->sp.pmm.n == 0)
                     {
-                        Value_Kind rk = sp and sp->sp.rt ? tk2v(rst(g->sm, sp->sp.rt)) : VK_I;
+                        Value_Kind rk =
+                            sp and sp->sp.rt
+                                ? token_kind_to_value_kind(resolve_subtype(g->sm, sp->sp.rt))
+                                : VALUE_KIND_INTEGER;
                         char fnb[256];
-                        esn(fnb, 256, s, n->s, 0, sp);
+                        encode_symbol_name(fnb, 256, s, n->s, 0, sp);
                         if (s->lv >= g->sm->lv)
                             fprintf(
-                                o, "  %%t%d = call %s @\"%s\"(ptr %%__frame)\n", r.id, vt(rk), fnb);
+                                o,
+                                "  %%t%d = call %s @\"%s\"(ptr %%__frame)\n",
+                                r.id,
+                                value_type_string(rk),
+                                fnb);
                         else
                             fprintf(
-                                o, "  %%t%d = call %s @\"%s\"(ptr %%__slnk)\n", r.id, vt(rk), fnb);
+                                o,
+                                "  %%t%d = call %s @\"%s\"(ptr %%__slnk)\n",
+                                r.id,
+                                value_type_string(rk),
+                                fnb);
                         r.k = rk;
                     }
                     else
                     {
-                        Type_Info *vat = s and s->ty ? tcc(s->ty) : 0;
-                        if (vat and vat->k == TY_A)
+                        Type_Info *vat = s and s->ty ? type_concrete(s->ty) : 0;
+                        if (vat and vat->k == TYPE_ARRAY)
                         {
                             if (vat->lo == 0 and vat->hi == -1)
                             {
@@ -9494,7 +9576,7 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                                 o,
                                 "  %%t%d = load %s, ptr %%v.%s.sc%u.%u\n",
                                 r.id,
-                                vt(k),
+                                value_type_string(k),
                                 string_to_lowercase(n->s),
                                 s ? s->sc : 0,
                                 s ? s->el : 0);
@@ -9503,8 +9585,8 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                 }
                 else
                 {
-                    Type_Info *vat = s and s->ty ? tcc(s->ty) : 0;
-                    if (vat and vat->k == TY_A)
+                    Type_Info *vat = s and s->ty ? type_concrete(s->ty) : 0;
+                    if (vat and vat->k == TYPE_ARRAY)
                     {
                         if (vat->lo == 0 and vat->hi == -1)
                         {
@@ -9533,7 +9615,7 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                             o,
                             "  %%t%d = load %s, ptr %%v.%s.sc%u.%u\n",
                             r.id,
-                            vt(k),
+                            value_type_string(k),
                             string_to_lowercase(n->s),
                             s ? s->sc : 0,
                             s ? s->el : 0);
@@ -9543,26 +9625,26 @@ static V gex(Code_Generator *g, Syntax_Node *n)
         }
     }
     break;
-    case N_BIN:
+    case NODE_BINARY_OP:
     {
         Token_Kind op = n->bn.op;
         if (op == T_ATHN or op == T_OREL)
         {
-            V lv = vbool(g, gex(g, n->bn.l));
-            int c = nt(g);
+            V lv = value_to_boolean(g, generate_expression(g, n->bn.l));
+            int c = new_temporary(g);
             fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", c, lv.id);
-            int lt = nl(g), lf = nl(g), ld = nl(g);
+            int lt = new_label(g), lf = new_label(g), ld = new_label(g);
             if (op == T_ATHN)
-                cbr(g, c, lt, lf);
+                emit_conditional_branch(g, c, lt, lf);
             else
-                cbr(g, c, lf, lt);
-            lbl(g, lt);
-            V rv = vbool(g, gex(g, n->bn.r));
-            br(g, ld);
-            lbl(g, lf);
-            br(g, ld);
-            lbl(g, ld);
-            r.k = VK_I;
+                emit_conditional_branch(g, c, lf, lt);
+            emit_label(g, lt);
+            V rv = value_to_boolean(g, generate_expression(g, n->bn.r));
+            emit_branch(g, ld);
+            emit_label(g, lf);
+            emit_branch(g, ld);
+            emit_label(g, ld);
+            r.k = VALUE_KIND_INTEGER;
             fprintf(
                 o,
                 "  %%t%d = phi i64 [%s,%%Source_Location%d],[%%t%d,%%Source_Location%d]\n",
@@ -9575,26 +9657,26 @@ static V gex(Code_Generator *g, Syntax_Node *n)
         }
         if (op == T_AND or op == T_OR or op == T_XOR)
         {
-            Type_Info *lt = n->bn.l->ty ? tcc(n->bn.l->ty) : 0;
-            Type_Info *rt = n->bn.r->ty ? tcc(n->bn.r->ty) : 0;
-            if (lt and rt and lt->k == TY_A and rt->k == TY_A)
+            Type_Info *lt = n->bn.l->ty ? type_concrete(n->bn.l->ty) : 0;
+            Type_Info *rt = n->bn.r->ty ? type_concrete(n->bn.r->ty) : 0;
+            if (lt and rt and lt->k == TYPE_ARRAY and rt->k == TYPE_ARRAY)
             {
                 int sz = lt->hi >= lt->lo ? lt->hi - lt->lo + 1 : 1;
-                int p = nt(g);
+                int p = new_temporary(g);
                 fprintf(o, "  %%t%d = alloca [%d x i64]\n", p, sz);
-                V la = gex(g, n->bn.l);
-                V ra = gex(g, n->bn.r);
+                V la = generate_expression(g, n->bn.l);
+                V ra = generate_expression(g, n->bn.r);
                 for (int i = 0; i < sz; i++)
                 {
-                    int ep1 = nt(g);
+                    int ep1 = new_temporary(g);
                     fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %d\n", ep1, la.id, i);
-                    int lv = nt(g);
+                    int lv = new_temporary(g);
                     fprintf(o, "  %%t%d = load i64, ptr %%t%d\n", lv, ep1);
-                    int ep2 = nt(g);
+                    int ep2 = new_temporary(g);
                     fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %d\n", ep2, ra.id, i);
-                    int rv = nt(g);
+                    int rv = new_temporary(g);
                     fprintf(o, "  %%t%d = load i64, ptr %%t%d\n", rv, ep2);
-                    int res = nt(g);
+                    int res = new_temporary(g);
                     fprintf(
                         o,
                         "  %%t%d = %s i64 %%t%d, %%t%d\n",
@@ -9604,7 +9686,7 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                                      : "xor",
                         lv,
                         rv);
-                    int ep3 = nt(g);
+                    int ep3 = new_temporary(g);
                     fprintf(
                         o,
                         "  %%t%d = getelementptr [%d x i64], ptr %%t%d, i64 0, i64 %d\n",
@@ -9614,7 +9696,7 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                         i);
                     fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", res, ep3);
                 }
-                r.k = VK_P;
+                r.k = VALUE_KIND_POINTER;
                 fprintf(
                     o,
                     "  %%t%d = getelementptr [%d x i64], ptr %%t%d, i64 0, i64 0\n",
@@ -9623,9 +9705,9 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                     p);
                 break;
             }
-            V a = vbool(g, gex(g, n->bn.l));
-            V b = vbool(g, gex(g, n->bn.r));
-            r.k = VK_I;
+            V a = value_to_boolean(g, generate_expression(g, n->bn.l));
+            V b = value_to_boolean(g, generate_expression(g, n->bn.r));
+            r.k = VALUE_KIND_INTEGER;
             if (op == T_AND)
                 fprintf(o, "  %%t%d = and i64 %%t%d, %%t%d\n", r.id, a.id, b.id);
             else if (op == T_OR)
@@ -9636,168 +9718,170 @@ static V gex(Code_Generator *g, Syntax_Node *n)
         }
         if (op == T_NOT)
         {
-            V x = vcast(g, gex(g, n->bn.l), VK_I);
+            V x = value_cast(g, generate_expression(g, n->bn.l), VALUE_KIND_INTEGER);
             Syntax_Node *rr = n->bn.r;
-            while (rr and rr->k == N_CHK)
+            while (rr and rr->k == NODE_CHECK)
                 rr = rr->chk.ex;
-            if (rr and rr->k == N_RN)
+            if (rr and rr->k == NODE_RANGE)
             {
-                V lo = vcast(g, gex(g, rr->rn.lo), VK_I), hi = vcast(g, gex(g, rr->rn.hi), VK_I);
-                V ge = vcmpi(g, "sge", x, lo);
-                V le = vcmpi(g, "sle", x, hi);
-                V b1 = vbool(g, ge), b2 = vbool(g, le);
-                int c1 = nt(g);
+                V lo = value_cast(g, generate_expression(g, rr->rn.lo), VALUE_KIND_INTEGER),
+                  hi = value_cast(g, generate_expression(g, rr->rn.hi), VALUE_KIND_INTEGER);
+                V ge = value_compare_integer(g, "sge", x, lo);
+                V le = value_compare_integer(g, "sle", x, hi);
+                V b1 = value_to_boolean(g, ge), b2 = value_to_boolean(g, le);
+                int c1 = new_temporary(g);
                 fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", c1, b1.id);
-                int c2 = nt(g);
+                int c2 = new_temporary(g);
                 fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", c2, b2.id);
-                int a1 = nt(g);
+                int a1 = new_temporary(g);
                 fprintf(o, "  %%t%d = and i1 %%t%d, %%t%d\n", a1, c1, c2);
-                int xr = nt(g);
+                int xr = new_temporary(g);
                 fprintf(o, "  %%t%d = zext i1 %%t%d to i64\n", xr, a1);
-                r.k = VK_I;
+                r.k = VALUE_KIND_INTEGER;
                 fprintf(o, "  %%t%d = xor i64 %%t%d, 1\n", r.id, xr);
             }
-            else if (rr and rr->k == N_ID)
+            else if (rr and rr->k == NODE_IDENTIFIER)
             {
-                Symbol *s = rr->sy ? rr->sy : syf(g->sm, rr->s);
+                Symbol *s = rr->sy ? rr->sy : symbol_find(g->sm, rr->s);
                 if (s and s->ty)
                 {
-                    Type_Info *t = tcc(s->ty);
+                    Type_Info *t = type_concrete(s->ty);
                     if (t)
                     {
-                        int tlo = nt(g);
+                        int tlo = new_temporary(g);
                         fprintf(o, "  %%t%d = add i64 0, %lld\n", tlo, (long long) t->lo);
-                        int thi = nt(g);
+                        int thi = new_temporary(g);
                         fprintf(o, "  %%t%d = add i64 0, %lld\n", thi, (long long) t->hi);
-                        V lo = {tlo, VK_I}, hi = {thi, VK_I};
-                        V ge = vcmpi(g, "sge", x, lo);
-                        V le = vcmpi(g, "sle", x, hi);
-                        V b1 = vbool(g, ge), b2 = vbool(g, le);
-                        int c1 = nt(g);
+                        V lo = {tlo, VALUE_KIND_INTEGER}, hi = {thi, VALUE_KIND_INTEGER};
+                        V ge = value_compare_integer(g, "sge", x, lo);
+                        V le = value_compare_integer(g, "sle", x, hi);
+                        V b1 = value_to_boolean(g, ge), b2 = value_to_boolean(g, le);
+                        int c1 = new_temporary(g);
                         fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", c1, b1.id);
-                        int c2 = nt(g);
+                        int c2 = new_temporary(g);
                         fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", c2, b2.id);
-                        int a1 = nt(g);
+                        int a1 = new_temporary(g);
                         fprintf(o, "  %%t%d = and i1 %%t%d, %%t%d\n", a1, c1, c2);
-                        int xr = nt(g);
+                        int xr = new_temporary(g);
                         fprintf(o, "  %%t%d = zext i1 %%t%d to i64\n", xr, a1);
-                        r.k = VK_I;
+                        r.k = VALUE_KIND_INTEGER;
                         fprintf(o, "  %%t%d = xor i64 %%t%d, 1\n", r.id, xr);
                     }
                     else
                     {
-                        r.k = VK_I;
+                        r.k = VALUE_KIND_INTEGER;
                         fprintf(o, "  %%t%d = add i64 0, 0\n", r.id);
                     }
                 }
                 else
                 {
-                    r.k = VK_I;
+                    r.k = VALUE_KIND_INTEGER;
                     fprintf(o, "  %%t%d = add i64 0, 0\n", r.id);
                 }
             }
             else
             {
-                r.k = VK_I;
+                r.k = VALUE_KIND_INTEGER;
                 fprintf(o, "  %%t%d = add i64 0, 1\n", r.id);
             }
             break;
         }
         if (op == T_IN)
         {
-            V x = vcast(g, gex(g, n->bn.l), VK_I);
+            V x = value_cast(g, generate_expression(g, n->bn.l), VALUE_KIND_INTEGER);
             Syntax_Node *rr = n->bn.r;
-            while (rr and rr->k == N_CHK)
+            while (rr and rr->k == NODE_CHECK)
                 rr = rr->chk.ex;
-            if (rr and rr->k == N_RN)
+            if (rr and rr->k == NODE_RANGE)
             {
-                V lo = vcast(g, gex(g, rr->rn.lo), VK_I), hi = vcast(g, gex(g, rr->rn.hi), VK_I);
-                V ge = vcmpi(g, "sge", x, lo);
-                V le = vcmpi(g, "sle", x, hi);
-                V b1 = vbool(g, ge), b2 = vbool(g, le);
-                int c1 = nt(g);
+                V lo = value_cast(g, generate_expression(g, rr->rn.lo), VALUE_KIND_INTEGER),
+                  hi = value_cast(g, generate_expression(g, rr->rn.hi), VALUE_KIND_INTEGER);
+                V ge = value_compare_integer(g, "sge", x, lo);
+                V le = value_compare_integer(g, "sle", x, hi);
+                V b1 = value_to_boolean(g, ge), b2 = value_to_boolean(g, le);
+                int c1 = new_temporary(g);
                 fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", c1, b1.id);
-                int c2 = nt(g);
+                int c2 = new_temporary(g);
                 fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", c2, b2.id);
-                int a1 = nt(g);
+                int a1 = new_temporary(g);
                 fprintf(o, "  %%t%d = and i1 %%t%d, %%t%d\n", a1, c1, c2);
-                r.k = VK_I;
+                r.k = VALUE_KIND_INTEGER;
                 fprintf(o, "  %%t%d = zext i1 %%t%d to i64\n", r.id, a1);
             }
-            else if (rr and rr->k == N_ID)
+            else if (rr and rr->k == NODE_IDENTIFIER)
             {
-                Symbol *s = rr->sy ? rr->sy : syf(g->sm, rr->s);
+                Symbol *s = rr->sy ? rr->sy : symbol_find(g->sm, rr->s);
                 if (s and s->ty)
                 {
-                    Type_Info *t = tcc(s->ty);
+                    Type_Info *t = type_concrete(s->ty);
                     if (t)
                     {
-                        int tlo = nt(g);
+                        int tlo = new_temporary(g);
                         fprintf(o, "  %%t%d = add i64 0, %lld\n", tlo, (long long) t->lo);
-                        int thi = nt(g);
+                        int thi = new_temporary(g);
                         fprintf(o, "  %%t%d = add i64 0, %lld\n", thi, (long long) t->hi);
-                        V lo = {tlo, VK_I}, hi = {thi, VK_I};
-                        V ge = vcmpi(g, "sge", x, lo);
-                        V le = vcmpi(g, "sle", x, hi);
-                        V b1 = vbool(g, ge), b2 = vbool(g, le);
-                        int c1 = nt(g);
+                        V lo = {tlo, VALUE_KIND_INTEGER}, hi = {thi, VALUE_KIND_INTEGER};
+                        V ge = value_compare_integer(g, "sge", x, lo);
+                        V le = value_compare_integer(g, "sle", x, hi);
+                        V b1 = value_to_boolean(g, ge), b2 = value_to_boolean(g, le);
+                        int c1 = new_temporary(g);
                         fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", c1, b1.id);
-                        int c2 = nt(g);
+                        int c2 = new_temporary(g);
                         fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", c2, b2.id);
-                        int a1 = nt(g);
+                        int a1 = new_temporary(g);
                         fprintf(o, "  %%t%d = and i1 %%t%d, %%t%d\n", a1, c1, c2);
-                        r.k = VK_I;
+                        r.k = VALUE_KIND_INTEGER;
                         fprintf(o, "  %%t%d = zext i1 %%t%d to i64\n", r.id, a1);
                     }
                     else
                     {
-                        r.k = VK_I;
+                        r.k = VALUE_KIND_INTEGER;
                         fprintf(o, "  %%t%d = add i64 0, 0\n", r.id);
                     }
                 }
                 else
                 {
-                    r.k = VK_I;
+                    r.k = VALUE_KIND_INTEGER;
                     fprintf(o, "  %%t%d = add i64 0, 0\n", r.id);
                 }
             }
             else
             {
-                r.k = VK_I;
+                r.k = VALUE_KIND_INTEGER;
                 fprintf(o, "  %%t%d = add i64 0, 0\n", r.id);
             }
             break;
         }
-        V a = gex(g, n->bn.l), b = gex(g, n->bn.r);
+        V a = generate_expression(g, n->bn.l), b = generate_expression(g, n->bn.r);
         if (op == T_EQ or op == T_NE)
         {
-            Type_Info *lt = n->bn.l->ty ? tcc(n->bn.l->ty) : 0;
-            Type_Info *rt = n->bn.r->ty ? tcc(n->bn.r->ty) : 0;
-            if (lt and rt and lt->k == TY_A and rt->k == TY_A)
+            Type_Info *lt = n->bn.l->ty ? type_concrete(n->bn.l->ty) : 0;
+            Type_Info *rt = n->bn.r->ty ? type_concrete(n->bn.r->ty) : 0;
+            if (lt and rt and lt->k == TYPE_ARRAY and rt->k == TYPE_ARRAY)
             {
                 int sz = lt->hi >= lt->lo ? lt->hi - lt->lo + 1 : 1;
-                r.k = VK_I;
-                int res = nt(g);
+                r.k = VALUE_KIND_INTEGER;
+                int res = new_temporary(g);
                 fprintf(o, "  %%t%d = add i64 0, 1\n", res);
                 for (int i = 0; i < sz; i++)
                 {
-                    int ep1 = nt(g);
+                    int ep1 = new_temporary(g);
                     fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %d\n", ep1, a.id, i);
-                    int lv = nt(g);
+                    int lv = new_temporary(g);
                     fprintf(o, "  %%t%d = load i64, ptr %%t%d\n", lv, ep1);
-                    int ep2 = nt(g);
+                    int ep2 = new_temporary(g);
                     fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %d\n", ep2, b.id, i);
-                    int rv = nt(g);
+                    int rv = new_temporary(g);
                     fprintf(o, "  %%t%d = load i64, ptr %%t%d\n", rv, ep2);
-                    int cmp = nt(g);
+                    int cmp = new_temporary(g);
                     fprintf(o, "  %%t%d = icmp eq i64 %%t%d, %%t%d\n", cmp, lv, rv);
-                    int ec = nt(g);
+                    int ec = new_temporary(g);
                     fprintf(o, "  %%t%d = zext i1 %%t%d to i64\n", ec, cmp);
-                    int nres = nt(g);
+                    int nres = new_temporary(g);
                     fprintf(o, "  %%t%d = and i64 %%t%d, %%t%d\n", nres, res, ec);
                     res = nres;
                 }
-                int cmp_tmp = nt(g);
+                int cmp_tmp = new_temporary(g);
                 fprintf(
                     o,
                     "  %%t%d = %s i64 %%t%d, 1\n",
@@ -9810,40 +9894,40 @@ static V gex(Code_Generator *g, Syntax_Node *n)
         }
         if (op == T_EX)
         {
-            if (b.k == VK_F)
+            if (b.k == VALUE_KIND_FLOAT)
             {
-                int bc = nt(g);
+                int bc = new_temporary(g);
                 fprintf(o, "  %%t%d = fptosi double %%t%d to i64\n", bc, b.id);
                 b.id = bc;
-                b.k = VK_I;
+                b.k = VALUE_KIND_INTEGER;
             }
-            V bi = vcast(g, b, VK_I);
-            int cf = nt(g);
+            V bi = value_cast(g, b, VALUE_KIND_INTEGER);
+            int cf = new_temporary(g);
             fprintf(o, "  %%t%d = icmp slt i64 %%t%d, 0\n", cf, bi.id);
-            int lt = nl(g), lf = nl(g);
-            cbr(g, cf, lt, lf);
-            lbl(g, lt);
+            int lt = new_label(g), lf = new_label(g);
+            emit_conditional_branch(g, cf, lt, lf);
+            emit_label(g, lt);
             fprintf(
                 o,
                 "  call void @__ada_raise(ptr @.ex.CONSTRAINT_ERROR)\n  unreachable\nL%d:\n",
                 lf);
-            if (tk2v(n->ty) == VK_F)
+            if (token_kind_to_value_kind(n->ty) == VALUE_KIND_FLOAT)
             {
-                r = vpows(g, a, b);
+                r = value_power_float(g, a, b);
             }
             else
             {
-                r = vpowi(g, a, bi);
+                r = value_power_integer(g, a, bi);
             }
             break;
         }
         if (op == T_PL or op == T_MN or op == T_ST or op == T_SL)
         {
-            if (a.k == VK_F or b.k == VK_F)
+            if (a.k == VALUE_KIND_FLOAT or b.k == VALUE_KIND_FLOAT)
             {
-                a = vcast(g, a, VK_F);
-                b = vcast(g, b, VK_F);
-                r.k = VK_F;
+                a = value_cast(g, a, VALUE_KIND_FLOAT);
+                b = value_cast(g, b, VALUE_KIND_FLOAT);
+                r.k = VALUE_KIND_FLOAT;
                 fprintf(
                     o,
                     "  %%t%d = %s double %%t%d, %%t%d\n",
@@ -9857,20 +9941,20 @@ static V gex(Code_Generator *g, Syntax_Node *n)
             }
             else
             {
-                a = vcast(g, a, VK_I);
-                b = vcast(g, b, VK_I);
+                a = value_cast(g, a, VALUE_KIND_INTEGER);
+                b = value_cast(g, b, VALUE_KIND_INTEGER);
                 if (op == T_SL)
                 {
-                    int zc = nt(g);
+                    int zc = new_temporary(g);
                     fprintf(o, "  %%t%d = icmp eq i64 %%t%d, 0\n", zc, b.id);
-                    int ze = nl(g), zd = nl(g);
-                    cbr(g, zc, ze, zd);
-                    lbl(g, ze);
+                    int ze = new_label(g), zd = new_label(g);
+                    emit_conditional_branch(g, zc, ze, zd);
+                    emit_label(g, ze);
                     fprintf(
                         o, "  call void @__ada_raise(ptr @.ex.CONSTRAINT_ERROR)\n  unreachable\n");
-                    lbl(g, zd);
+                    emit_label(g, zd);
                 }
-                r.k = VK_I;
+                r.k = VALUE_KIND_INTEGER;
                 fprintf(
                     o,
                     "  %%t%d = %s i64 %%t%d, %%t%d\n",
@@ -9886,47 +9970,47 @@ static V gex(Code_Generator *g, Syntax_Node *n)
         }
         if (op == T_MOD or op == T_REM)
         {
-            a = vcast(g, a, VK_I);
-            b = vcast(g, b, VK_I);
-            int zc = nt(g);
+            a = value_cast(g, a, VALUE_KIND_INTEGER);
+            b = value_cast(g, b, VALUE_KIND_INTEGER);
+            int zc = new_temporary(g);
             fprintf(o, "  %%t%d = icmp eq i64 %%t%d, 0\n", zc, b.id);
-            int ze = nl(g), zd = nl(g);
-            cbr(g, zc, ze, zd);
-            lbl(g, ze);
+            int ze = new_label(g), zd = new_label(g);
+            emit_conditional_branch(g, zc, ze, zd);
+            emit_label(g, ze);
             fprintf(o, "  call void @__ada_raise(ptr @.ex.CONSTRAINT_ERROR)\n  unreachable\n");
-            lbl(g, zd);
-            r.k = VK_I;
+            emit_label(g, zd);
+            r.k = VALUE_KIND_INTEGER;
             fprintf(o, "  %%t%d = srem i64 %%t%d, %%t%d\n", r.id, a.id, b.id);
             break;
         }
         if (op == T_EQ or op == T_NE or op == T_LT or op == T_LE or op == T_GT or op == T_GE)
         {
-            if((op==T_EQ or op==T_NE) and (n->bn.l->k==N_STR or n->bn.r->k==N_STR or (n->bn.l->ty and tcc(n->bn.l->ty)->el and tcc(n->bn.l->ty)->el->k==TY_C) or (n->bn.r->ty and tcc(n->bn.r->ty)->el and tcc(n->bn.r->ty)->el->k==TY_C)))
+            if((op==T_EQ or op==T_NE) and (n->bn.l->k==NODE_STRING or n->bn.r->k==NODE_STRING or (n->bn.l->ty and type_concrete(n->bn.l->ty)->el and type_concrete(n->bn.l->ty)->el->k==TYPE_CHARACTER) or (n->bn.r->ty and type_concrete(n->bn.r->ty)->el and type_concrete(n->bn.r->ty)->el->k==TYPE_CHARACTER)))
             {
                 V ap = a, bp = b;
-                if (ap.k == VK_I)
+                if (ap.k == VALUE_KIND_INTEGER)
                 {
-                    int p1 = nt(g);
+                    int p1 = new_temporary(g);
                     fprintf(o, "  %%t%d = inttoptr i64 %%t%d to ptr\n", p1, ap.id);
                     ap.id = p1;
-                    ap.k = VK_P;
+                    ap.k = VALUE_KIND_POINTER;
                 }
-                if (bp.k == VK_I)
+                if (bp.k == VALUE_KIND_INTEGER)
                 {
-                    int p2 = nt(g);
+                    int p2 = new_temporary(g);
                     fprintf(o, "  %%t%d = inttoptr i64 %%t%d to ptr\n", p2, bp.id);
                     bp.id = p2;
-                    bp.k = VK_P;
+                    bp.k = VALUE_KIND_POINTER;
                 }
-                int cmp = nt(g);
+                int cmp = new_temporary(g);
                 fprintf(o, "  %%t%d = call i32 @strcmp(ptr %%t%d, ptr %%t%d)\n", cmp, ap.id, bp.id);
-                int eq = nt(g);
+                int eq = new_temporary(g);
                 fprintf(o, "  %%t%d = icmp %s i32 %%t%d, 0\n", eq, op == T_EQ ? "eq" : "ne", cmp);
-                r.k = VK_I;
+                r.k = VALUE_KIND_INTEGER;
                 fprintf(o, "  %%t%d = zext i1 %%t%d to i64\n", r.id, eq);
                 break;
             }
-            if (a.k == VK_F or b.k == VK_F)
+            if (a.k == VALUE_KIND_FLOAT or b.k == VALUE_KIND_FLOAT)
             {
                 const char *cc = op == T_EQ   ? "oeq"
                                  : op == T_NE ? "one"
@@ -9934,7 +10018,7 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                                  : op == T_LE ? "ole"
                                  : op == T_GT ? "ogt"
                                               : "oge";
-                r = vcmpf(g, cc, a, b);
+                r = value_compare_float(g, cc, a, b);
             }
             else
             {
@@ -9944,73 +10028,73 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                                  : op == T_LE ? "sle"
                                  : op == T_GT ? "sgt"
                                               : "sge";
-                r = vcmpi(g, cc, a, b);
+                r = value_compare_integer(g, cc, a, b);
             }
             break;
         }
-        if (op == T_AM and (a.k == VK_P or b.k == VK_P))
+        if (op == T_AM and (a.k == VALUE_KIND_POINTER or b.k == VALUE_KIND_POINTER))
         {
-            Type_Info *lt = n->bn.l->ty ? tcc(n->bn.l->ty) : 0;
-            Type_Info *rt = n->bn.r->ty ? tcc(n->bn.r->ty) : 0;
+            Type_Info *lt = n->bn.l->ty ? type_concrete(n->bn.l->ty) : 0;
+            Type_Info *rt = n->bn.r->ty ? type_concrete(n->bn.r->ty) : 0;
             int alo, ahi, blo, bhi;
             V ad, bd;
-            bool la_fp = lt and lt->k == TY_A and lt->lo == 0 and lt->hi == -1;
-            bool lb_fp = rt and rt->k == TY_A and rt->lo == 0 and rt->hi == -1;
+            bool la_fp = lt and lt->k == TYPE_ARRAY and lt->lo == 0 and lt->hi == -1;
+            bool lb_fp = rt and rt->k == TYPE_ARRAY and rt->lo == 0 and rt->hi == -1;
             if (la_fp)
             {
-                ad = gfpd(g, a.id);
-                gfpb(g, a.id, &alo, &ahi);
+                ad = get_fat_pointer_data(g, a.id);
+                get_fat_pointer_bounds(g, a.id, &alo, &ahi);
             }
             else
             {
-                ad = vcast(g, a, VK_P);
-                alo = nt(g);
+                ad = value_cast(g, a, VALUE_KIND_POINTER);
+                alo = new_temporary(g);
                 fprintf(
                     o,
                     "  %%t%d = add i64 0, %lld\n",
                     alo,
-                    lt and lt->k == TY_A ? (long long) lt->lo : 1LL);
-                ahi = nt(g);
+                    lt and lt->k == TYPE_ARRAY ? (long long) lt->lo : 1LL);
+                ahi = new_temporary(g);
                 fprintf(
                     o,
                     "  %%t%d = add i64 0, %lld\n",
                     ahi,
-                    lt and lt->k == TY_A ? (long long) lt->hi : 0LL);
+                    lt and lt->k == TYPE_ARRAY ? (long long) lt->hi : 0LL);
             }
             if (lb_fp)
             {
-                bd = gfpd(g, b.id);
-                gfpb(g, b.id, &blo, &bhi);
+                bd = get_fat_pointer_data(g, b.id);
+                get_fat_pointer_bounds(g, b.id, &blo, &bhi);
             }
             else
             {
-                bd = vcast(g, b, VK_P);
-                blo = nt(g);
+                bd = value_cast(g, b, VALUE_KIND_POINTER);
+                blo = new_temporary(g);
                 fprintf(
                     o,
                     "  %%t%d = add i64 0, %lld\n",
                     blo,
-                    rt and rt->k == TY_A ? (long long) rt->lo : 1LL);
-                bhi = nt(g);
+                    rt and rt->k == TYPE_ARRAY ? (long long) rt->lo : 1LL);
+                bhi = new_temporary(g);
                 fprintf(
                     o,
                     "  %%t%d = add i64 0, %lld\n",
                     bhi,
-                    rt and rt->k == TY_A ? (long long) rt->hi : 0LL);
+                    rt and rt->k == TYPE_ARRAY ? (long long) rt->hi : 0LL);
             }
-            int alen = nt(g);
+            int alen = new_temporary(g);
             fprintf(o, "  %%t%d = sub i64 %%t%d, %%t%d\n", alen, ahi, alo);
-            int alen1 = nt(g);
+            int alen1 = new_temporary(g);
             fprintf(o, "  %%t%d = add i64 %%t%d, 1\n", alen1, alen);
-            int blen = nt(g);
+            int blen = new_temporary(g);
             fprintf(o, "  %%t%d = sub i64 %%t%d, %%t%d\n", blen, bhi, blo);
-            int blen1 = nt(g);
+            int blen1 = new_temporary(g);
             fprintf(o, "  %%t%d = add i64 %%t%d, 1\n", blen1, blen);
-            int tlen = nt(g);
+            int tlen = new_temporary(g);
             fprintf(o, "  %%t%d = add i64 %%t%d, %%t%d\n", tlen, alen1, blen1);
-            int tlen1 = nt(g);
+            int tlen1 = new_temporary(g);
             fprintf(o, "  %%t%d = add i64 %%t%d, 1\n", tlen1, tlen);
-            int np = nt(g);
+            int np = new_temporary(g);
             fprintf(o, "  %%t%d = call ptr @malloc(i64 %%t%d)\n", np, tlen1);
             fprintf(
                 o,
@@ -10018,7 +10102,7 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                 np,
                 ad.id,
                 alen1);
-            int dp = nt(g);
+            int dp = new_temporary(g);
             fprintf(o, "  %%t%d = getelementptr i8, ptr %%t%d, i64 %%t%d\n", dp, np, alen1);
             fprintf(
                 o,
@@ -10026,21 +10110,21 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                 dp,
                 bd.id,
                 blen1);
-            int zp = nt(g);
+            int zp = new_temporary(g);
             fprintf(o, "  %%t%d = getelementptr i8, ptr %%t%d, i64 %%t%d\n", zp, np, tlen);
             fprintf(o, "  store i8 0, ptr %%t%d\n", zp);
-            int nlo = nt(g);
+            int nlo = new_temporary(g);
             fprintf(o, "  %%t%d = add i64 0, 1\n", nlo);
-            int nhi = nt(g);
+            int nhi = new_temporary(g);
             fprintf(o, "  %%t%d = sub i64 %%t%d, 1\n", nhi, tlen);
-            r.k = VK_P;
-            r.id = nt(g);
-            gfp(g, r.id, np, nlo, nhi);
+            r.k = VALUE_KIND_POINTER;
+            r.id = new_temporary(g);
+            generate_fat_pointer(g, r.id, np, nlo, nhi);
             break;
         }
-        r.k = VK_I;
+        r.k = VALUE_KIND_INTEGER;
         {
-            V ai = vcast(g, a, VK_I), bi = vcast(g, b, VK_I);
+            V ai = value_cast(g, a, VALUE_KIND_INTEGER), bi = value_cast(g, b, VALUE_KIND_INTEGER);
             fprintf(o, "  %%t%d = add i64 %%t%d, %%t%d\n", r.id, ai.id, bi.id);
         }
         break;
@@ -10048,39 +10132,39 @@ static V gex(Code_Generator *g, Syntax_Node *n)
     break;
     case N_UN:
     {
-        V x = gex(g, n->un.x);
+        V x = generate_expression(g, n->un.x);
         if (n->un.op == T_MN)
         {
-            if (x.k == VK_F)
+            if (x.k == VALUE_KIND_FLOAT)
             {
-                r.k = VK_F;
+                r.k = VALUE_KIND_FLOAT;
                 fprintf(o, "  %%t%d = fsub double 0.0, %%t%d\n", r.id, x.id);
             }
             else
             {
-                x = vcast(g, x, VK_I);
-                r.k = VK_I;
+                x = value_cast(g, x, VALUE_KIND_INTEGER);
+                r.k = VALUE_KIND_INTEGER;
                 fprintf(o, "  %%t%d = sub i64 0, %%t%d\n", r.id, x.id);
             }
             break;
         }
         if (n->un.op == T_NOT)
         {
-            Type_Info *xt = n->un.x->ty ? tcc(n->un.x->ty) : 0;
-            if (xt and xt->k == TY_A)
+            Type_Info *xt = n->un.x->ty ? type_concrete(n->un.x->ty) : 0;
+            if (xt and xt->k == TYPE_ARRAY)
             {
                 int sz = xt->hi >= xt->lo ? xt->hi - xt->lo + 1 : 1;
-                int p = nt(g);
+                int p = new_temporary(g);
                 fprintf(o, "  %%t%d = alloca [%d x i64]\n", p, sz);
                 for (int i = 0; i < sz; i++)
                 {
-                    int ep1 = nt(g);
+                    int ep1 = new_temporary(g);
                     fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %d\n", ep1, x.id, i);
-                    int lv = nt(g);
+                    int lv = new_temporary(g);
                     fprintf(o, "  %%t%d = load i64, ptr %%t%d\n", lv, ep1);
-                    int res = nt(g);
+                    int res = new_temporary(g);
                     fprintf(o, "  %%t%d = xor i64 %%t%d, 1\n", res, lv);
-                    int ep2 = nt(g);
+                    int ep2 = new_temporary(g);
                     fprintf(
                         o,
                         "  %%t%d = getelementptr [%d x i64], ptr %%t%d, i64 0, i64 %d\n",
@@ -10090,7 +10174,7 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                         i);
                     fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", res, ep2);
                 }
-                r.k = VK_P;
+                r.k = VALUE_KIND_POINTER;
                 fprintf(
                     o,
                     "  %%t%d = getelementptr [%d x i64], ptr %%t%d, i64 0, i64 0\n",
@@ -10100,22 +10184,22 @@ static V gex(Code_Generator *g, Syntax_Node *n)
             }
             else
             {
-                V b = vbool(g, x);
-                r.k = VK_I;
+                V b = value_to_boolean(g, x);
+                r.k = VALUE_KIND_INTEGER;
                 fprintf(o, "  %%t%d = xor i64 %%t%d, 1\n", r.id, b.id);
             }
             break;
         }
         if (n->un.op == T_ABS)
         {
-            if (x.k == VK_F)
+            if (x.k == VALUE_KIND_FLOAT)
             {
-                V z = vcast(g, x, VK_F);
-                int c = nt(g);
+                V z = value_cast(g, x, VALUE_KIND_FLOAT);
+                int c = new_temporary(g);
                 fprintf(o, "  %%t%d = fcmp olt double %%t%d, 0.0\n", c, z.id);
-                V ng = {nt(g), VK_F};
+                V ng = {new_temporary(g), VALUE_KIND_FLOAT};
                 fprintf(o, "  %%t%d = fsub double 0.0, %%t%d\n", ng.id, z.id);
-                r.k = VK_F;
+                r.k = VALUE_KIND_FLOAT;
                 fprintf(
                     o,
                     "  %%t%d = select i1 %%t%d, double %%t%d, double %%t%d\n",
@@ -10126,41 +10210,41 @@ static V gex(Code_Generator *g, Syntax_Node *n)
             }
             else
             {
-                V z = vcast(g, x, VK_I);
-                int c = nt(g);
+                V z = value_cast(g, x, VALUE_KIND_INTEGER);
+                int c = new_temporary(g);
                 fprintf(o, "  %%t%d = icmp slt i64 %%t%d, 0\n", c, z.id);
-                V ng = {nt(g), VK_I};
+                V ng = {new_temporary(g), VALUE_KIND_INTEGER};
                 fprintf(o, "  %%t%d = sub i64 0, %%t%d\n", ng.id, z.id);
-                r.k = VK_I;
+                r.k = VALUE_KIND_INTEGER;
                 fprintf(
                     o, "  %%t%d = select i1 %%t%d, i64 %%t%d, i64 %%t%d\n", r.id, c, ng.id, z.id);
             }
             break;
         }
-        r = vcast(g, x, r.k);
+        r = value_cast(g, x, r.k);
         break;
     }
     break;
     case N_IX:
     {
-        V p = gex(g, n->ix.p);
-        Type_Info *pt = n->ix.p->ty ? tcc(n->ix.p->ty) : 0;
-        Type_Info *et = n->ty ? tcc(n->ty) : 0;
-        bool is_char = et and et->k == TY_C;
+        V p = generate_expression(g, n->ix.p);
+        Type_Info *pt = n->ix.p->ty ? type_concrete(n->ix.p->ty) : 0;
+        Type_Info *et = n->ty ? type_concrete(n->ty) : 0;
+        bool is_char = et and et->k == TYPE_CHARACTER;
         int dp = p.id;
-        if (pt and pt->k == TY_A and pt->lo == 0 and pt->hi == -1)
+        if (pt and pt->k == TYPE_ARRAY and pt->lo == 0 and pt->hi == -1)
         {
-            dp = gfpd(g, p.id).id;
+            dp = get_fat_pointer_data(g, p.id).id;
             int blo, bhi;
-            gfpb(g, p.id, &blo, &bhi);
-            V i0 = vcast(g, gex(g, n->ix.ix.d[0]), VK_I);
-            int adj = nt(g);
+            get_fat_pointer_bounds(g, p.id, &blo, &bhi);
+            V i0 = value_cast(g, generate_expression(g, n->ix.ix.d[0]), VALUE_KIND_INTEGER);
+            int adj = new_temporary(g);
             fprintf(o, "  %%t%d = sub i64 %%t%d, %%t%d\n", adj, i0.id, blo);
             char lb[32], hb[32];
             snprintf(lb, 32, "%%t%d", blo);
             snprintf(hb, 32, "%%t%d", bhi);
             gen_index_check(g, i0.id, lb, hb);
-            int ep = nt(g);
+            int ep = new_temporary(g);
             fprintf(
                 o,
                 "  %%t%d = getelementptr %s, ptr %%t%d, i64 %%t%d\n",
@@ -10168,17 +10252,17 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                 is_char ? "i8" : "i64",
                 dp,
                 adj);
-            if (et and (et->k == TY_A or et->k == TY_R))
+            if (et and (et->k == TYPE_ARRAY or et->k == TYPE_RECORD))
             {
-                r.k = VK_P;
+                r.k = VALUE_KIND_POINTER;
                 r.id = ep;
             }
             else
             {
-                r.k = VK_I;
+                r.k = VALUE_KIND_INTEGER;
                 if (is_char)
                 {
-                    int lv = nt(g);
+                    int lv = new_temporary(g);
                     fprintf(o, "  %%t%d = load i8, ptr %%t%d\n", lv, ep);
                     fprintf(o, "  %%t%d = zext i8 %%t%d to i64\n", r.id, lv);
                 }
@@ -10190,30 +10274,31 @@ static V gex(Code_Generator *g, Syntax_Node *n)
         }
         else
         {
-            if (p.k == VK_I)
+            if (p.k == VALUE_KIND_INTEGER)
             {
-                int pp = nt(g);
+                int pp = new_temporary(g);
                 fprintf(o, "  %%t%d = inttoptr i64 %%t%d to ptr\n", pp, p.id);
                 dp = pp;
             }
-            V i0 = vcast(g, gex(g, n->ix.ix.d[0]), VK_I);
+            V i0 = value_cast(g, generate_expression(g, n->ix.ix.d[0]), VALUE_KIND_INTEGER);
             Type_Info *at = pt;
             int adj_idx = i0.id;
-            if (at and at->k == TY_A and at->lo != 0)
+            if (at and at->k == TYPE_ARRAY and at->lo != 0)
             {
-                int adj = nt(g);
+                int adj = new_temporary(g);
                 fprintf(o, "  %%t%d = sub i64 %%t%d, %lld\n", adj, i0.id, (long long) at->lo);
                 adj_idx = adj;
             }
-            if (at and at->k == TY_A and not(at->sup & CHK_IDX) and (at->lo != 0 or at->hi != -1))
+            if (at and at->k == TYPE_ARRAY and not(at->sup & CHK_IDX)
+                and (at->lo != 0 or at->hi != -1))
             {
                 char lb[32], hb[32];
                 snprintf(lb, 32, "%lld", (long long) at->lo);
                 snprintf(hb, 32, "%lld", (long long) at->hi);
                 gen_index_check(g, i0.id, lb, hb);
             }
-            int ep = nt(g);
-            if (at and at->k == TY_A and at->hi >= at->lo)
+            int ep = new_temporary(g);
+            if (at and at->k == TYPE_ARRAY and at->hi >= at->lo)
             {
                 int asz = (int) (at->hi - at->lo + 1);
                 fprintf(
@@ -10235,17 +10320,17 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                     dp,
                     i0.id);
             }
-            if (et and (et->k == TY_A or et->k == TY_R))
+            if (et and (et->k == TYPE_ARRAY or et->k == TYPE_RECORD))
             {
-                r.k = VK_P;
+                r.k = VALUE_KIND_POINTER;
                 r.id = ep;
             }
             else
             {
-                r.k = VK_I;
+                r.k = VALUE_KIND_INTEGER;
                 if (is_char)
                 {
-                    int lv = nt(g);
+                    int lv = new_temporary(g);
                     fprintf(o, "  %%t%d = load i8, ptr %%t%d\n", lv, ep);
                     fprintf(o, "  %%t%d = zext i8 %%t%d to i64\n", r.id, lv);
                 }
@@ -10259,18 +10344,18 @@ static V gex(Code_Generator *g, Syntax_Node *n)
     break;
     case N_SL:
     {
-        V p = gex(g, n->sl.p);
-        V lo = vcast(g, gex(g, n->sl.lo), VK_I);
-        V hi = vcast(g, gex(g, n->sl.hi), VK_I);
-        int ln = nt(g);
+        V p = generate_expression(g, n->sl.p);
+        V lo = value_cast(g, generate_expression(g, n->sl.lo), VALUE_KIND_INTEGER);
+        V hi = value_cast(g, generate_expression(g, n->sl.hi), VALUE_KIND_INTEGER);
+        int ln = new_temporary(g);
         fprintf(o, "  %%t%d = sub i64 %%t%d, %%t%d\n", ln, hi.id, lo.id);
-        int sz = nt(g);
+        int sz = new_temporary(g);
         fprintf(o, "  %%t%d = add i64 %%t%d, 1\n", sz, ln);
-        int sl = nt(g);
+        int sl = new_temporary(g);
         fprintf(o, "  %%t%d = mul i64 %%t%d, 8\n", sl, sz);
-        int ap = nt(g);
+        int ap = new_temporary(g);
         fprintf(o, "  %%t%d = alloca i8, i64 %%t%d\n", ap, sl);
-        int sp = nt(g);
+        int sp = new_temporary(g);
         fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %%t%d\n", sp, p.id, lo.id);
         fprintf(
             o,
@@ -10278,30 +10363,31 @@ static V gex(Code_Generator *g, Syntax_Node *n)
             ap,
             sp,
             sl);
-        r.k = VK_P;
-        r.id = nt(g);
-        gfp(g, r.id, ap, lo.id, hi.id);
+        r.k = VALUE_KIND_POINTER;
+        r.id = new_temporary(g);
+        generate_fat_pointer(g, r.id, ap, lo.id, hi.id);
     }
     break;
     case N_SEL:
     {
-        Type_Info *pt = n->se.p->ty ? tcc(n->se.p->ty) : 0;
-        V p = {nt(g), VK_P};
-        if (n->se.p->k == N_ID)
+        Type_Info *pt = n->se.p->ty ? type_concrete(n->se.p->ty) : 0;
+        V p = {new_temporary(g), VALUE_KIND_POINTER};
+        if (n->se.p->k == NODE_IDENTIFIER)
         {
-            Symbol *s = n->se.p->sy ? n->se.p->sy : syf(g->sm, n->se.p->s);
+            Symbol *s = n->se.p->sy ? n->se.p->sy : symbol_find(g->sm, n->se.p->s);
             if (s and s->k != 6)
             {
-                Type_Info *vty = s and s->ty ? tcc(s->ty) : 0;
+                Type_Info *vty = s and s->ty ? type_concrete(s->ty) : 0;
                 bool has_nested = false;
-                if (vty and vty->k == TY_R)
+                if (vty and vty->k == TYPE_RECORD)
                 {
                     for (uint32_t ci = 0; ci < vty->dc.n; ci++)
                     {
                         Syntax_Node *fd = vty->dc.d[ci];
-                        Type_Info *fty =
-                            fd and fd->k == N_DS and fd->pm.ty ? rst(g->sm, fd->pm.ty) : 0;
-                        if (fty and (fty->k == TY_R or fty->k == TY_A))
+                        Type_Info *fty = fd and fd->k == N_DS and fd->pm.ty
+                                             ? resolve_subtype(g->sm, fd->pm.ty)
+                                             : 0;
+                        if (fty and (fty->k == TYPE_RECORD or fty->k == TYPE_ARRAY))
                         {
                             has_nested = true;
                             break;
@@ -10312,9 +10398,10 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                         for (uint32_t ci = 0; ci < vty->cm.n; ci++)
                         {
                             Syntax_Node *fc = vty->cm.d[ci];
-                            Type_Info *fty =
-                                fc and fc->k == N_CM and fc->cm.ty ? rst(g->sm, fc->cm.ty) : 0;
-                            if (fty and (fty->k == TY_R or fty->k == TY_A))
+                            Type_Info *fty = fc and fc->k == NODE_COMPONENT and fc->cm.ty
+                                                 ? resolve_subtype(g->sm, fc->cm.ty)
+                                                 : 0;
+                            if (fty and (fty->k == TYPE_RECORD or fty->k == TYPE_ARRAY))
                             {
                                 has_nested = true;
                                 break;
@@ -10326,7 +10413,7 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                 {
                     if (has_nested)
                     {
-                        int tp = nt(g);
+                        int tp = new_temporary(g);
                         fprintf(
                             o, "  %%t%d = getelementptr ptr, ptr %%__slnk, i64 %u\n", tp, s->el);
                         fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", p.id, tp);
@@ -10363,9 +10450,9 @@ static V gex(Code_Generator *g, Syntax_Node *n)
         }
         else
         {
-            p = gex(g, n->se.p);
+            p = generate_expression(g, n->se.p);
         }
-        if (pt and pt->k == TY_R)
+        if (pt and pt->k == TYPE_RECORD)
         {
             for (uint32_t i = 0; i < pt->dc.n; i++)
             {
@@ -10373,17 +10460,17 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                 String_Slice dn = d->k == N_DS ? d->pm.nm : d->cm.nm;
                 if (string_equal_ignore_case(dn, n->se.se))
                 {
-                    int ep = nt(g);
+                    int ep = new_temporary(g);
                     fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p.id, i);
-                    Type_Info *fty = d->k == N_DS ? rst(g->sm, d->pm.ty) : 0;
-                    if (fty and (fty->k == TY_R or fty->k == TY_A))
+                    Type_Info *fty = d->k == N_DS ? resolve_subtype(g->sm, d->pm.ty) : 0;
+                    if (fty and (fty->k == TYPE_RECORD or fty->k == TYPE_ARRAY))
                     {
-                        r.k = VK_P;
+                        r.k = VALUE_KIND_POINTER;
                         fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", r.id, ep);
                     }
                     else
                     {
-                        r.k = VK_I;
+                        r.k = VALUE_KIND_INTEGER;
                         fprintf(o, "  %%t%d = load i64, ptr %%t%d\n", r.id, ep);
                     }
                     goto sel_done;
@@ -10394,20 +10481,20 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                 for (uint32_t i = 0; i < pt->cm.n; i++)
                 {
                     Syntax_Node *c = pt->cm.d[i];
-                    if (c->k == N_CM and string_equal_ignore_case(c->cm.nm, n->se.se))
+                    if (c->k == NODE_COMPONENT and string_equal_ignore_case(c->cm.nm, n->se.se))
                     {
-                        int bp = nt(g);
+                        int bp = new_temporary(g);
                         fprintf(o, "  %%t%d = ptrtoint ptr %%t%d to i64\n", bp, p.id);
-                        int bo = nt(g);
+                        int bo = new_temporary(g);
                         fprintf(o, "  %%t%d = add i64 %%t%d, %u\n", bo, bp, c->cm.of / 8);
-                        int pp = nt(g);
+                        int pp = new_temporary(g);
                         fprintf(o, "  %%t%d = inttoptr i64 %%t%d to ptr\n", pp, bo);
-                        int vp = nt(g);
+                        int vp = new_temporary(g);
                         fprintf(o, "  %%t%d = load i64, ptr %%t%d\n", vp, pp);
-                        int sh = nt(g);
+                        int sh = new_temporary(g);
                         fprintf(o, "  %%t%d = lshr i64 %%t%d, %u\n", sh, vp, c->cm.of % 8);
                         uint64_t mk = (1ULL << c->cm.bt) - 1;
-                        r.k = VK_I;
+                        r.k = VALUE_KIND_INTEGER;
                         fprintf(
                             o,
                             "  %%t%d = and i64 %%t%d, %llu\n",
@@ -10423,24 +10510,24 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                 for (uint32_t i = 0; i < pt->cm.n; i++)
                 {
                     Syntax_Node *c = pt->cm.d[i];
-                    if (c->k == N_CM and string_equal_ignore_case(c->cm.nm, n->se.se))
+                    if (c->k == NODE_COMPONENT and string_equal_ignore_case(c->cm.nm, n->se.se))
                     {
-                        int ep = nt(g);
+                        int ep = new_temporary(g);
                         fprintf(
                             o,
                             "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n",
                             ep,
                             p.id,
                             c->cm.of);
-                        Type_Info *fty = rst(g->sm, c->cm.ty);
-                        if (fty and (fty->k == TY_R or fty->k == TY_A))
+                        Type_Info *fty = resolve_subtype(g->sm, c->cm.ty);
+                        if (fty and (fty->k == TYPE_RECORD or fty->k == TYPE_ARRAY))
                         {
-                            r.k = VK_P;
+                            r.k = VALUE_KIND_POINTER;
                             fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", r.id, ep);
                         }
                         else
                         {
-                            r.k = VK_I;
+                            r.k = VALUE_KIND_INTEGER;
                             fprintf(o, "  %%t%d = load i64, ptr %%t%d\n", r.id, ep);
                         }
                         break;
@@ -10460,14 +10547,14 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                             Syntax_Node *vc = v->vr.cmm.d[k];
                             if (string_equal_ignore_case(vc->cm.nm, n->se.se))
                             {
-                                int ep = nt(g);
+                                int ep = new_temporary(g);
                                 fprintf(
                                     o,
                                     "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n",
                                     ep,
                                     p.id,
                                     vc->cm.of);
-                                r.k = VK_I;
+                                r.k = VALUE_KIND_INTEGER;
                                 fprintf(o, "  %%t%d = load i64, ptr %%t%d\n", r.id, ep);
                                 goto sel_done;
                             }
@@ -10479,39 +10566,41 @@ static V gex(Code_Generator *g, Syntax_Node *n)
         }
         else if (n->sy and n->sy->k == 5)
         {
-            Syntax_Node *sp = sspec(n->sy);
+            Syntax_Node *sp = symbol_spec(n->sy);
             if (sp and sp->sp.pmm.n == 0)
             {
-                Value_Kind rk = sp and sp->sp.rt ? tk2v(rst(g->sm, sp->sp.rt)) : VK_I;
+                Value_Kind rk = sp and sp->sp.rt
+                                    ? token_kind_to_value_kind(resolve_subtype(g->sm, sp->sp.rt))
+                                    : VALUE_KIND_INTEGER;
                 char fnb[256];
-                esn(fnb, 256, n->sy, n->se.se, 0, sp);
-                fprintf(o, "  %%t%d = call %s @\"%s\"()\n", r.id, vt(rk), fnb);
+                encode_symbol_name(fnb, 256, n->sy, n->se.se, 0, sp);
+                fprintf(o, "  %%t%d = call %s @\"%s\"()\n", r.id, value_type_string(rk), fnb);
                 r.k = rk;
             }
         }
         else if (n->sy and n->sy->k == 2)
         {
-            r.k = VK_I;
+            r.k = VALUE_KIND_INTEGER;
             fprintf(o, "  %%t%d = add i64 0, %lld\n", r.id, (long long) n->sy->vl);
         }
         else
         {
-            r = vcast(g, p, r.k);
+            r = value_cast(g, p, r.k);
         }
     }
     break;
     case N_AT:
     {
         String_Slice a = n->at.at;
-        Type_Info *t = (n->at.p and n->at.p->ty) ? tcc(n->at.p->ty) : 0;
+        Type_Info *t = (n->at.p and n->at.p->ty) ? type_concrete(n->at.p->ty) : 0;
         if (string_equal_ignore_case(a, Z("ADDRESS")))
         {
-            if (n->at.p and n->at.p->k == N_ID)
+            if (n->at.p and n->at.p->k == NODE_IDENTIFIER)
             {
-                Symbol *s = n->at.p->sy ? n->at.p->sy : syf(g->sm, n->at.p->s);
+                Symbol *s = n->at.p->sy ? n->at.p->sy : symbol_find(g->sm, n->at.p->s);
                 if (s)
                 {
-                    r.k = VK_I;
+                    r.k = VALUE_KIND_INTEGER;
                     if (s->lv == 0)
                     {
                         char nb[256];
@@ -10527,29 +10616,33 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                         }
                         else
                             snprintf(nb, 256, "%.*s", (int) s->nm.n, s->nm.s);
-                        int p = nt(g);
+                        int p = new_temporary(g);
                         fprintf(o, "  %%t%d = ptrtoint ptr @%s to i64\n", p, nb);
                         r.id = p;
                     }
                     else if (s->lv >= 0 and s->lv < g->sm->lv)
                     {
-                        int p = nt(g);
+                        int p = new_temporary(g);
                         fprintf(o, "  %%t%d = getelementptr ptr, ptr %%__slnk, i64 %u\n", p, s->el);
-                        int a = nt(g);
+                        int a = new_temporary(g);
                         fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", a, p);
                         fprintf(o, "  %%t%d = ptrtoint ptr %%t%d to i64\n", r.id, a);
                     }
                     else
                     {
-                        int p = nt(g);
+                        int p = new_temporary(g);
                         fprintf(o, "  %%t%d = add i64 0, 1\n", p);
                         r.id = p;
                     }
                 }
                 else
                 {
-                    V p = gex(g, n->at.p);
-                    fprintf(o, "  %%t%d = ptrtoint ptr %%t%d to i64\n", r.id, vcast(g, p, VK_P).id);
+                    V p = generate_expression(g, n->at.p);
+                    fprintf(
+                        o,
+                        "  %%t%d = ptrtoint ptr %%t%d to i64\n",
+                        r.id,
+                        value_cast(g, p, VALUE_KIND_POINTER).id);
                 }
             }
             else if (n->at.p and n->at.p->k == N_AT)
@@ -10563,51 +10656,61 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                     or string_equal_ignore_case(ia, Z("IMAGE"))
                     or string_equal_ignore_case(ia, Z("VALUE")))
                 {
-                    Type_Info *pt = ap->at.p ? tcc(ap->at.p->ty) : 0;
-                    String_Slice pnm = ap->at.p and ap->at.p->k == N_ID ? ap->at.p->s : Z("TYPE");
-                    const char *afn = gattr(ia, pnm);
-                    r.k = VK_I;
-                    int p = nt(g);
+                    Type_Info *pt = ap->at.p ? type_concrete(ap->at.p->ty) : 0;
+                    String_Slice pnm =
+                        ap->at.p and ap->at.p->k == NODE_IDENTIFIER ? ap->at.p->s : Z("TYPE");
+                    const char *afn = get_attribute_name(ia, pnm);
+                    r.k = VALUE_KIND_INTEGER;
+                    int p = new_temporary(g);
                     fprintf(o, "  %%t%d = ptrtoint ptr %s to i64\n", p, afn);
                     r.id = p;
                 }
                 else
                 {
-                    V p = gex(g, n->at.p);
-                    r.k = VK_I;
-                    fprintf(o, "  %%t%d = ptrtoint ptr %%t%d to i64\n", r.id, vcast(g, p, VK_P).id);
+                    V p = generate_expression(g, n->at.p);
+                    r.k = VALUE_KIND_INTEGER;
+                    fprintf(
+                        o,
+                        "  %%t%d = ptrtoint ptr %%t%d to i64\n",
+                        r.id,
+                        value_cast(g, p, VALUE_KIND_POINTER).id);
                 }
             }
             else
             {
-                V p = gex(g, n->at.p);
-                r.k = VK_I;
-                fprintf(o, "  %%t%d = ptrtoint ptr %%t%d to i64\n", r.id, vcast(g, p, VK_P).id);
+                V p = generate_expression(g, n->at.p);
+                r.k = VALUE_KIND_INTEGER;
+                fprintf(
+                    o,
+                    "  %%t%d = ptrtoint ptr %%t%d to i64\n",
+                    r.id,
+                    value_cast(g, p, VALUE_KIND_POINTER).id);
             }
         }
         else if (string_equal_ignore_case(a, Z("SIZE")))
         {
-            r.k = VK_I;
+            r.k = VALUE_KIND_INTEGER;
             fprintf(o, "  %%t%d = add i64 0, %lld\n", r.id, t ? (long long) (t->sz * 8) : 64LL);
         }
         else if (
             string_equal_ignore_case(a, Z("FIRST")) or string_equal_ignore_case(a, Z("LAST"))
             or string_equal_ignore_case(a, Z("LENGTH")))
         {
-            V pv = {0, VK_I};
-            bool is_typ = n->at.p and n->at.p->k == N_ID and n->at.p->sy and n->at.p->sy->k == 1;
+            V pv = {0, VALUE_KIND_INTEGER};
+            bool is_typ =
+                n->at.p and n->at.p->k == NODE_IDENTIFIER and n->at.p->sy and n->at.p->sy->k == 1;
             if (n->at.p and not is_typ)
-                pv = gex(g, n->at.p);
+                pv = generate_expression(g, n->at.p);
             if (n->at.ar.n > 0)
-                gex(g, n->at.ar.d[0]);
+                generate_expression(g, n->at.ar.d[0]);
             int64_t lo = 0, hi = -1;
-            if (t and t->k == TY_A)
+            if (t and t->k == TYPE_ARRAY)
             {
                 if (t->lo == 0 and t->hi == -1 and n->at.p and not is_typ)
                 {
                     int blo, bhi;
-                    gfpb(g, pv.id, &blo, &bhi);
-                    r.k = VK_I;
+                    get_fat_pointer_bounds(g, pv.id, &blo, &bhi);
+                    r.k = VALUE_KIND_INTEGER;
                     if (string_equal_ignore_case(a, Z("FIRST")))
                     {
                         r.id = blo;
@@ -10618,9 +10721,9 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                     }
                     else
                     {
-                        r.id = nt(g);
+                        r.id = new_temporary(g);
                         fprintf(o, "  %%t%d = sub i64 %%t%d, %%t%d\n", r.id, bhi, blo);
-                        int tmp = nt(g);
+                        int tmp = new_temporary(g);
                         fprintf(o, "  %%t%d = add i64 %%t%d, 1\n", tmp, r.id);
                         r.id = tmp;
                     }
@@ -10629,7 +10732,7 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                 lo = t->lo;
                 hi = t->hi;
             }
-            else if (t and (is_integer_type(t) or t->k == TY_E))
+            else if (t and (is_integer_type(t) or t->k == TYPE_ENUMERATION))
             {
                 lo = t->lo;
                 hi = t->hi;
@@ -10637,54 +10740,65 @@ static V gex(Code_Generator *g, Syntax_Node *n)
             int64_t v = string_equal_ignore_case(a, Z("FIRST"))  ? lo
                         : string_equal_ignore_case(a, Z("LAST")) ? hi
                                                                  : (hi >= lo ? hi - lo + 1 : 0);
-            r.k = VK_I;
+            r.k = VALUE_KIND_INTEGER;
             fprintf(o, "  %%t%d = add i64 0, %lld\n", r.id, (long long) v);
         }
         else if (string_equal_ignore_case(a, Z("POS")))
         {
-            V x = gex(g, n->at.ar.d[0]);
-            if (t and (t->k == TY_E or t->k == TY_I or t->k == TY_UI or t->k == TY_D))
+            V x = generate_expression(g, n->at.ar.d[0]);
+            if (t
+                and (t->k == TYPE_ENUMERATION or t->k == TYPE_INTEGER or t->k == TYPE_UNSIGNED_INTEGER or t->k == TYPE_DERIVED))
             {
-                r = vcast(g, x, VK_I);
+                r = value_cast(g, x, VALUE_KIND_INTEGER);
             }
             else
             {
-                r.k = VK_I;
-                int tlo = nt(g);
+                r.k = VALUE_KIND_INTEGER;
+                int tlo = new_temporary(g);
                 fprintf(o, "  %%t%d = add i64 0, %lld\n", tlo, t ? (long long) t->lo : 0LL);
-                fprintf(o, "  %%t%d = sub i64 %%t%d, %%t%d\n", r.id, vcast(g, x, VK_I).id, tlo);
+                fprintf(
+                    o,
+                    "  %%t%d = sub i64 %%t%d, %%t%d\n",
+                    r.id,
+                    value_cast(g, x, VALUE_KIND_INTEGER).id,
+                    tlo);
             }
         }
         else if (string_equal_ignore_case(a, Z("VAL")))
         {
-            V x = gex(g, n->at.ar.d[0]);
-            r.k = VK_I;
-            int tlo = nt(g);
+            V x = generate_expression(g, n->at.ar.d[0]);
+            r.k = VALUE_KIND_INTEGER;
+            int tlo = new_temporary(g);
             fprintf(o, "  %%t%d = add i64 0, %lld\n", tlo, t ? (long long) t->lo : 0LL);
-            fprintf(o, "  %%t%d = add i64 %%t%d, %%t%d\n", r.id, vcast(g, x, VK_I).id, tlo);
+            fprintf(
+                o,
+                "  %%t%d = add i64 %%t%d, %%t%d\n",
+                r.id,
+                value_cast(g, x, VALUE_KIND_INTEGER).id,
+                tlo);
         }
         else if (string_equal_ignore_case(a, Z("SUCC")) or string_equal_ignore_case(a, Z("PRED")))
         {
-            V x = gex(g, n->at.ar.d[0]);
-            r.k = VK_I;
+            V x = generate_expression(g, n->at.ar.d[0]);
+            r.k = VALUE_KIND_INTEGER;
             fprintf(
                 o,
                 "  %%t%d = %s i64 %%t%d, 1\n",
                 r.id,
                 string_equal_ignore_case(a, Z("SUCC")) ? "add" : "sub",
-                vcast(g, x, VK_I).id);
+                value_cast(g, x, VALUE_KIND_INTEGER).id);
         }
         else if (string_equal_ignore_case(a, Z("IMAGE")))
         {
-            V x = gex(g, n->at.ar.d[0]);
-            r.k = VK_P;
-            if (t and t->k == TY_E)
+            V x = generate_expression(g, n->at.ar.d[0]);
+            r.k = VALUE_KIND_POINTER;
+            if (t and t->k == TYPE_ENUMERATION)
             {
                 fprintf(
                     o,
                     "  %%t%d = call ptr @__ada_image_enum(i64 %%t%d, i64 %lld, i64 %lld)\n",
                     r.id,
-                    vcast(g, x, VK_I).id,
+                    value_cast(g, x, VALUE_KIND_INTEGER).id,
                     t ? (long long) t->lo : 0LL,
                     t ? (long long) t->hi : 127LL);
             }
@@ -10694,27 +10808,27 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                     o,
                     "  %%t%d = call ptr @__ada_image_int(i64 %%t%d)\n",
                     r.id,
-                    vcast(g, x, VK_I).id);
+                    value_cast(g, x, VALUE_KIND_INTEGER).id);
             }
         }
         else if (string_equal_ignore_case(a, Z("VALUE")))
         {
-            V x = gex(g, n->at.ar.d[0]);
-            r.k = VK_I;
-            if (t and t->k == TY_E)
+            V x = generate_expression(g, n->at.ar.d[0]);
+            r.k = VALUE_KIND_INTEGER;
+            if (t and t->k == TYPE_ENUMERATION)
             {
-                V buf = gfpd(g, x.id);
-                int fnd = nt(g);
+                V buf = get_fat_pointer_data(g, x.id);
+                int fnd = new_temporary(g);
                 fprintf(o, "  %%t%d = add i64 0, -1\n", fnd);
                 for (uint32_t i = 0; i < t->ev.n; i++)
                 {
                     Symbol *e = t->ev.d[i];
                     int sz = e->nm.n + 1;
-                    int p = nt(g);
+                    int p = new_temporary(g);
                     fprintf(o, "  %%t%d = alloca [%d x i8]\n", p, sz);
                     for (uint32_t j = 0; j < e->nm.n; j++)
                     {
-                        int ep = nt(g);
+                        int ep = new_temporary(g);
                         fprintf(
                             o,
                             "  %%t%d = getelementptr [%d x i8], ptr %%t%d, i64 0, i64 %u\n",
@@ -10725,7 +10839,7 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                         fprintf(
                             o, "  store i8 %d, ptr %%t%d\n", (int) (unsigned char) e->nm.s[j], ep);
                     }
-                    int zp = nt(g);
+                    int zp = new_temporary(g);
                     fprintf(
                         o,
                         "  %%t%d = getelementptr [%d x i8], ptr %%t%d, i64 0, i64 %u\n",
@@ -10734,19 +10848,19 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                         p,
                         (unsigned int) e->nm.n);
                     fprintf(o, "  store i8 0, ptr %%t%d\n", zp);
-                    int sp = nt(g);
+                    int sp = new_temporary(g);
                     fprintf(
                         o,
                         "  %%t%d = getelementptr [%d x i8], ptr %%t%d, i64 0, i64 0\n",
                         sp,
                         sz,
                         p);
-                    int cmp = nt(g);
+                    int cmp = new_temporary(g);
                     fprintf(
                         o, "  %%t%d = call i32 @strcmp(ptr %%t%d, ptr %%t%d)\n", cmp, buf.id, sp);
-                    int eq = nt(g);
+                    int eq = new_temporary(g);
                     fprintf(o, "  %%t%d = icmp eq i32 %%t%d, 0\n", eq, cmp);
-                    int nfnd = nt(g);
+                    int nfnd = new_temporary(g);
                     fprintf(
                         o,
                         "  %%t%d = select i1 %%t%d, i64 %lld, i64 %%t%d\n",
@@ -10756,13 +10870,13 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                         fnd);
                     fnd = nfnd;
                 }
-                int chk = nt(g);
+                int chk = new_temporary(g);
                 fprintf(o, "  %%t%d = icmp slt i64 %%t%d, 0\n", chk, fnd);
-                int le = nl(g), ld = nl(g);
-                cbr(g, chk, le, ld);
-                lbl(g, le);
+                int le = new_label(g), ld = new_label(g);
+                emit_conditional_branch(g, chk, le, ld);
+                emit_label(g, le);
                 fprintf(o, "  call void @__ada_raise(ptr @.ex.CONSTRAINT_ERROR)\n  unreachable\n");
-                lbl(g, ld);
+                emit_label(g, ld);
                 fprintf(
                     o, "  %%t%d = add i64 %%t%d, %lld\n", r.id, fnd, t ? (long long) t->lo : 0LL);
             }
@@ -10772,17 +10886,17 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                     o,
                     "  %%t%d = call i64 @__ada_value_int(ptr %%t%d)\n",
                     r.id,
-                    vcast(g, x, VK_P).id);
+                    value_cast(g, x, VALUE_KIND_POINTER).id);
             }
         }
         else if (string_equal_ignore_case(a, Z("DIGITS")))
         {
-            r.k = VK_I;
+            r.k = VALUE_KIND_INTEGER;
             fprintf(o, "  %%t%d = add i64 0, %lld\n", r.id, t ? (long long) t->sm : 15LL);
         }
         else if (string_equal_ignore_case(a, Z("DELTA")))
         {
-            r.k = VK_F;
+            r.k = VALUE_KIND_FLOAT;
             fprintf(
                 o,
                 "  %%t%d = fadd double 0.0, %e\n",
@@ -10793,7 +10907,7 @@ static V gex(Code_Generator *g, Syntax_Node *n)
             string_equal_ignore_case(a, Z("SMALL")) or string_equal_ignore_case(a, Z("LARGE"))
             or string_equal_ignore_case(a, Z("EPSILON")))
         {
-            r.k = VK_F;
+            r.k = VALUE_KIND_FLOAT;
             double v =
                 string_equal_ignore_case(a, Z("SMALL")) ? pow(2.0, -126.0)
                 : string_equal_ignore_case(a, Z("LARGE"))
@@ -10807,36 +10921,36 @@ static V gex(Code_Generator *g, Syntax_Node *n)
             string_equal_ignore_case(a, Z("MANTISSA"))
             or string_equal_ignore_case(a, Z("MACHINE_MANTISSA")))
         {
-            r.k = VK_I;
+            r.k = VALUE_KIND_INTEGER;
             fprintf(o, "  %%t%d = add i64 0, %lld\n", r.id, t ? (long long) t->sm : 53LL);
         }
         else if (string_equal_ignore_case(a, Z("MACHINE_RADIX")))
         {
-            r.k = VK_I;
+            r.k = VALUE_KIND_INTEGER;
             fprintf(o, "  %%t%d = add i64 0, 2\n", r.id);
         }
         else if (
             string_equal_ignore_case(a, Z("EMAX")) or string_equal_ignore_case(a, Z("MACHINE_EMAX"))
             or string_equal_ignore_case(a, Z("SAFE_EMAX")))
         {
-            r.k = VK_I;
+            r.k = VALUE_KIND_INTEGER;
             fprintf(o, "  %%t%d = add i64 0, 1024\n", r.id);
         }
         else if (string_equal_ignore_case(a, Z("MACHINE_EMIN")))
         {
-            r.k = VK_I;
+            r.k = VALUE_KIND_INTEGER;
             fprintf(o, "  %%t%d = add i64 0, -1021\n", r.id);
         }
         else if (
             string_equal_ignore_case(a, Z("MACHINE_OVERFLOWS"))
             or string_equal_ignore_case(a, Z("MACHINE_ROUNDS")))
         {
-            r.k = VK_I;
+            r.k = VALUE_KIND_INTEGER;
             fprintf(o, "  %%t%d = add i64 0, 1\n", r.id);
         }
         else if (string_equal_ignore_case(a, Z("AFT")))
         {
-            r.k = VK_I;
+            r.k = VALUE_KIND_INTEGER;
             int64_t dg = 1;
             if (t and t->sm > 0)
             {
@@ -10847,7 +10961,7 @@ static V gex(Code_Generator *g, Syntax_Node *n)
         }
         else if (string_equal_ignore_case(a, Z("FORE")))
         {
-            r.k = VK_I;
+            r.k = VALUE_KIND_INTEGER;
             int64_t fw = 2;
             if (t and t->hi > 0)
             {
@@ -10862,11 +10976,11 @@ static V gex(Code_Generator *g, Syntax_Node *n)
         }
         else if (string_equal_ignore_case(a, Z("WIDTH")))
         {
-            r.k = VK_I;
+            r.k = VALUE_KIND_INTEGER;
             int64_t wd = 1;
             if (t)
             {
-                if (t->k == TY_E)
+                if (t->k == TYPE_ENUMERATION)
                 {
                     for (uint32_t i = 0; i < t->ev.n; i++)
                     {
@@ -10892,7 +11006,7 @@ static V gex(Code_Generator *g, Syntax_Node *n)
         }
         else if (string_equal_ignore_case(a, Z("STORAGE_SIZE")))
         {
-            r.k = VK_I;
+            r.k = VALUE_KIND_INTEGER;
             fprintf(o, "  %%t%d = add i64 0, %lld\n", r.id, t ? (long long) (t->sz * 8) : 0LL);
         }
         else if (
@@ -10900,17 +11014,18 @@ static V gex(Code_Generator *g, Syntax_Node *n)
             or string_equal_ignore_case(a, Z("FIRST_BIT"))
             or string_equal_ignore_case(a, Z("LAST_BIT")))
         {
-            r.k = VK_I;
+            r.k = VALUE_KIND_INTEGER;
             int64_t v = 0;
             if (n->at.p and n->at.p->k == N_SEL)
             {
-                Type_Info *pt = n->at.p->se.p->ty ? tcc(n->at.p->se.p->ty) : 0;
-                if (pt and pt->k == TY_R)
+                Type_Info *pt = n->at.p->se.p->ty ? type_concrete(n->at.p->se.p->ty) : 0;
+                if (pt and pt->k == TYPE_RECORD)
                 {
                     for (uint32_t i = 0; i < pt->cm.n; i++)
                     {
                         Syntax_Node *c = pt->cm.d[i];
-                        if (c->k == N_CM and string_equal_ignore_case(c->cm.nm, n->at.p->se.se))
+                        if (c->k == NODE_COMPONENT
+                            and string_equal_ignore_case(c->cm.nm, n->at.p->se.se))
                         {
                             if (pt->pk)
                             {
@@ -10939,32 +11054,32 @@ static V gex(Code_Generator *g, Syntax_Node *n)
         }
         else if (string_equal_ignore_case(a, Z("CONSTRAINED")))
         {
-            r.k = VK_I;
+            r.k = VALUE_KIND_INTEGER;
             fprintf(o, "  %%t%d = add i64 0, 1\n", r.id);
         }
         else if (
             string_equal_ignore_case(a, Z("COUNT")) or string_equal_ignore_case(a, Z("CALLABLE"))
             or string_equal_ignore_case(a, Z("TERMINATED")))
         {
-            r.k = VK_I;
+            r.k = VALUE_KIND_INTEGER;
             fprintf(o, "  %%t%d = add i64 0, 0\n", r.id);
         }
         else if (string_equal_ignore_case(a, Z("ACCESS")))
         {
-            V p = gex(g, n->at.p);
-            r = vcast(g, p, VK_P);
+            V p = generate_expression(g, n->at.p);
+            r = value_cast(g, p, VALUE_KIND_POINTER);
         }
         else if (
             string_equal_ignore_case(a, Z("SAFE_LARGE"))
             or string_equal_ignore_case(a, Z("SAFE_SMALL")))
         {
-            r.k = VK_F;
+            r.k = VALUE_KIND_FLOAT;
             double v = string_equal_ignore_case(a, Z("SAFE_LARGE")) ? 1.0e307 : 1.0e-307;
             fprintf(o, "  %%t%d = fadd double 0.0, %e\n", r.id, v);
         }
         else
         {
-            r.k = VK_I;
+            r.k = VALUE_KIND_INTEGER;
             fprintf(o, "  %%t%d = add i64 0, 0\n", r.id);
         }
         break;
@@ -10972,35 +11087,35 @@ static V gex(Code_Generator *g, Syntax_Node *n)
     break;
     case N_QL:
     {
-        V q = gex(g, n->ql.ag);
-        r = vcast(g, q, r.k);
+        V q = generate_expression(g, n->ql.ag);
+        r = value_cast(g, q, r.k);
     }
     break;
     case N_CL:
     {
         if (not n->cl.fn or (uintptr_t) n->cl.fn < 4096)
         {
-            r.k = VK_I;
+            r.k = VALUE_KIND_INTEGER;
             fprintf(o, "  %%t%d = add i64 0, 0\n", r.id);
             break;
         }
-        if (n->cl.fn->k == N_ID)
+        if (n->cl.fn->k == NODE_IDENTIFIER)
         {
-            Symbol *s = syfa(g->sm, n->cl.fn->s, n->cl.ar.n, n->ty);
+            Symbol *s = symbol_find_arity(g->sm, n->cl.fn->s, n->cl.ar.n, n->ty);
             if (s)
             {
                 if (s->pr and string_equal_ignore_case(s->pr->nm, Z("TEXT_IO"))
                     and (string_equal_ignore_case(s->nm, Z("CREATE")) or string_equal_ignore_case(s->nm, Z("OPEN"))))
                 {
-                    r.k = VK_P;
-                    int md = n->cl.ar.n > 1 ? gex(g, n->cl.ar.d[1]).id : 0;
+                    r.k = VALUE_KIND_POINTER;
+                    int md = n->cl.ar.n > 1 ? generate_expression(g, n->cl.ar.d[1]).id : 0;
                     fprintf(
                         o,
                         "  %%t%d = call ptr @__text_io_%s(i64 %d, ptr %%t%d)\n",
                         r.id,
                         string_equal_ignore_case(s->nm, Z("CREATE")) ? "create" : "open",
                         md,
-                        n->cl.ar.n > 2 ? gex(g, n->cl.ar.d[2]).id : 0);
+                        n->cl.ar.n > 2 ? generate_expression(g, n->cl.ar.d[2]).id : 0);
                     break;
                 }
                 if (s->pr and string_equal_ignore_case(s->pr->nm, Z("TEXT_IO"))
@@ -11008,7 +11123,7 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                 {
                     if (n->cl.ar.n > 0)
                     {
-                        V f = gex(g, n->cl.ar.d[0]);
+                        V f = generate_expression(g, n->cl.ar.d[0]);
                         fprintf(
                             o,
                             "  call void @__text_io_%s(ptr %%t%d)\n",
@@ -11022,13 +11137,13 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                 {
                     if (n->cl.ar.n > 1)
                     {
-                        V f = gex(g, n->cl.ar.d[0]);
-                        r.k = VK_I;
+                        V f = generate_expression(g, n->cl.ar.d[0]);
+                        r.k = VALUE_KIND_INTEGER;
                         fprintf(o, "  %%t%d = call i64 @__text_io_get(ptr %%t%d)\n", r.id, f.id);
                     }
                     else
                     {
-                        r.k = VK_I;
+                        r.k = VALUE_KIND_INTEGER;
                         fprintf(o, "  %%t%d = call i64 @__text_io_get(ptr @stdin)\n", r.id);
                     }
                     break;
@@ -11038,42 +11153,42 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                 {
                     if (n->cl.ar.n > 1)
                     {
-                        V f = gex(g, n->cl.ar.d[0]);
-                        V v = gex(g, n->cl.ar.d[1]);
+                        V f = generate_expression(g, n->cl.ar.d[0]);
+                        V v = generate_expression(g, n->cl.ar.d[1]);
                         fprintf(
                             o,
                             "  call void @__text_io_%s(ptr %%t%d, ",
                             string_equal_ignore_case(s->nm, Z("PUT")) ? "put" : "put_line",
                             f.id);
-                        if (v.k == VK_I)
+                        if (v.k == VALUE_KIND_INTEGER)
                             fprintf(o, "i64 %%t%d)\n", v.id);
-                        else if (v.k == VK_F)
+                        else if (v.k == VALUE_KIND_FLOAT)
                             fprintf(o, "double %%t%d)\n", v.id);
                         else
                             fprintf(o, "ptr %%t%d)\n", v.id);
                     }
                     else
                     {
-                        V v = gex(g, n->cl.ar.d[0]);
+                        V v = generate_expression(g, n->cl.ar.d[0]);
                         fprintf(
                             o,
                             "  call void @__text_io_%s(ptr @stdout, ",
                             string_equal_ignore_case(s->nm, Z("PUT")) ? "put" : "put_line");
-                        if (v.k == VK_I)
+                        if (v.k == VALUE_KIND_INTEGER)
                             fprintf(o, "i64 %%t%d)\n", v.id);
-                        else if (v.k == VK_F)
+                        else if (v.k == VALUE_KIND_FLOAT)
                             fprintf(o, "double %%t%d)\n", v.id);
                         else
                             fprintf(o, "ptr %%t%d)\n", v.id);
                     }
                     break;
                 }
-                if (s->ty and s->ty->k == TY_S)
+                if (s->ty and s->ty->k == TYPE_STRING)
                 {
-                    Value_Kind rk = tk2v(s->ty->el);
+                    Value_Kind rk = token_kind_to_value_kind(s->ty->el);
                     r.k = rk;
-                    Syntax_Node *b = sbody(s, s->el);
-                    Syntax_Node *sp = sspec(s);
+                    Syntax_Node *b = symbol_body(s, s->el);
+                    Syntax_Node *sp = symbol_spec(s);
                     int arid[64];
                     Value_Kind ark[64];
                     int arp[64];
@@ -11081,22 +11196,22 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                     {
                         Syntax_Node *pm = sp and i < sp->sp.pmm.n ? sp->sp.pmm.d[i] : 0;
                         Syntax_Node *arg = n->cl.ar.d[i];
-                        V av = {0, VK_I};
-                        Value_Kind ek = VK_I;
+                        V av = {0, VALUE_KIND_INTEGER};
+                        Value_Kind ek = VALUE_KIND_INTEGER;
                         bool rf = false;
                         if (pm)
                         {
                             if (pm->sy and pm->sy->ty)
-                                ek = tk2v(pm->sy->ty);
+                                ek = token_kind_to_value_kind(pm->sy->ty);
                             else if (pm->pm.ty)
                             {
-                                Type_Info *pt = rst(g->sm, pm->pm.ty);
-                                ek = tk2v(pt);
+                                Type_Info *pt = resolve_subtype(g->sm, pm->pm.ty);
+                                ek = token_kind_to_value_kind(pt);
                             }
-                            if (pm->pm.md & 2 and arg->k == N_ID)
+                            if (pm->pm.md & 2 and arg->k == NODE_IDENTIFIER)
                             {
                                 rf = true;
-                                Symbol *as = arg->sy ? arg->sy : syf(g->sm, arg->s);
+                                Symbol *as = arg->sy ? arg->sy : symbol_find(g->sm, arg->s);
                                 if (as and as->lv == 0)
                                 {
                                     char nb[256];
@@ -11113,27 +11228,27 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                                     }
                                     else
                                         snprintf(nb, 256, "%.*s", (int) as->nm.n, as->nm.s);
-                                    av.id = nt(g);
-                                    av.k = VK_P;
+                                    av.id = new_temporary(g);
+                                    av.k = VALUE_KIND_POINTER;
                                     fprintf(o, "  %%t%d = bitcast ptr @%s to ptr\n", av.id, nb);
                                 }
                                 else if (as and as->lv >= 0 and as->lv < g->sm->lv)
                                 {
-                                    av.id = nt(g);
-                                    av.k = VK_P;
+                                    av.id = new_temporary(g);
+                                    av.k = VALUE_KIND_POINTER;
                                     fprintf(
                                         o,
                                         "  %%t%d = getelementptr ptr, ptr %%__slnk, i64 %u\n",
                                         av.id,
                                         as->el);
-                                    int a2 = nt(g);
+                                    int a2 = new_temporary(g);
                                     fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", a2, av.id);
                                     av.id = a2;
                                 }
                                 else
                                 {
-                                    av.id = nt(g);
-                                    av.k = VK_P;
+                                    av.id = new_temporary(g);
+                                    av.k = VALUE_KIND_POINTER;
                                     fprintf(
                                         o,
                                         "  %%t%d = bitcast ptr %%v.%s.sc%u.%u to ptr\n",
@@ -11142,45 +11257,50 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                                         as ? as->sc : 0,
                                         as ? as->el : 0);
                                 }
-                                ek = VK_P;
+                                ek = VALUE_KIND_POINTER;
                             }
                             else if (pm->pm.md & 2)
                             {
                                 rf = true;
-                                av = gex(g, arg);
-                                int ap = nt(g);
-                                fprintf(o, "  %%t%d = alloca %s\n", ap, vt(av.k));
-                                fprintf(o, "  store %s %%t%d, ptr %%t%d\n", vt(av.k), av.id, ap);
+                                av = generate_expression(g, arg);
+                                int ap = new_temporary(g);
+                                fprintf(o, "  %%t%d = alloca %s\n", ap, value_type_string(av.k));
+                                fprintf(
+                                    o,
+                                    "  store %s %%t%d, ptr %%t%d\n",
+                                    value_type_string(av.k),
+                                    av.id,
+                                    ap);
                                 av.id = ap;
-                                av.k = VK_P;
-                                ek = VK_P;
+                                av.k = VALUE_KIND_POINTER;
+                                ek = VALUE_KIND_POINTER;
                             }
                             else
                             {
-                                av = gex(g, arg);
+                                av = generate_expression(g, arg);
                             }
                         }
                         else
                         {
-                            av = gex(g, arg);
+                            av = generate_expression(g, arg);
                         }
-                        if (not rf and ek != VK_I)
+                        if (not rf and ek != VALUE_KIND_INTEGER)
                         {
-                            V cv = vcast(g, av, ek);
+                            V cv = value_cast(g, av, ek);
                             av = cv;
                         }
                         arid[i] = av.id;
-                        ark[i] = ek != VK_I ? ek : av.k;
+                        ark[i] = ek != VALUE_KIND_INTEGER ? ek : av.k;
                         arp[i] = i < sp->sp.pmm.n and sp->sp.pmm.d[i]->pm.md & 2 ? 1 : 0;
                     }
                     char nb[256];
-                    esn(nb, 256, s, n->cl.fn->s, n->cl.ar.n, sp);
-                    fprintf(o, "  %%t%d = call %s @\"%s\"(", r.id, vt(rk), nb);
+                    encode_symbol_name(nb, 256, s, n->cl.fn->s, n->cl.ar.n, sp);
+                    fprintf(o, "  %%t%d = call %s @\"%s\"(", r.id, value_type_string(rk), nb);
                     for (uint32_t i = 0; i < n->cl.ar.n; i++)
                     {
                         if (i)
                             fprintf(o, ", ");
-                        fprintf(o, "%s %%t%d", vt(ark[i]), arid[i]);
+                        fprintf(o, "%s %%t%d", value_type_string(ark[i]), arid[i]);
                     }
                     if (s->lv > 0)
                     {
@@ -11196,26 +11316,27 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                     {
                         if (arp[i])
                         {
-                            int lv = nt(g);
+                            int lv = new_temporary(g);
                             fprintf(
                                 o,
                                 "  %%t%d = load %s, ptr %%t%d\n",
                                 lv,
-                                vt(ark[i] == VK_P ? VK_I : ark[i]),
+                                value_type_string(
+                                    ark[i] == VALUE_KIND_POINTER ? VALUE_KIND_INTEGER : ark[i]),
                                 arid[i]);
-                            V rv = {lv, ark[i] == VK_P ? VK_I : ark[i]};
-                            V cv = vcast(g, rv, tk2v(n->cl.ar.d[i]->ty));
+                            V rv = {lv, ark[i] == VALUE_KIND_POINTER ? VALUE_KIND_INTEGER : ark[i]};
+                            V cv = value_cast(g, rv, token_kind_to_value_kind(n->cl.ar.d[i]->ty));
                             Syntax_Node *tg = n->cl.ar.d[i];
-                            if (tg->k == N_ID)
+                            if (tg->k == NODE_IDENTIFIER)
                             {
-                                Symbol *ts = tg->sy ? tg->sy : syf(g->sm, tg->s);
+                                Symbol *ts = tg->sy ? tg->sy : symbol_find(g->sm, tg->s);
                                 if (ts)
                                 {
                                     if (ts->lv >= 0 and ts->lv < g->sm->lv)
                                         fprintf(
                                             o,
                                             "  store %s %%t%d, ptr %%lnk.%d.%s\n",
-                                            vt(cv.k),
+                                            value_type_string(cv.k),
                                             cv.id,
                                             ts->lv,
                                             string_to_lowercase(tg->s));
@@ -11223,7 +11344,7 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                                         fprintf(
                                             o,
                                             "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
-                                            vt(cv.k),
+                                            value_type_string(cv.k),
                                             cv.id,
                                             string_to_lowercase(tg->s),
                                             ts->sc,
@@ -11236,39 +11357,39 @@ static V gex(Code_Generator *g, Syntax_Node *n)
                 }
                 else
                 {
-                    r.k = VK_I;
+                    r.k = VALUE_KIND_INTEGER;
                     fprintf(o, "  %%t%d = add i64 0, 0\n", r.id);
                 }
             }
             else
             {
-                r.k = VK_I;
+                r.k = VALUE_KIND_INTEGER;
                 fprintf(o, "  %%t%d = add i64 0, 0\n", r.id);
             }
         }
         else
         {
-            r.k = VK_I;
+            r.k = VALUE_KIND_INTEGER;
             fprintf(o, "  %%t%d = add i64 0, 0\n", r.id);
         }
         break;
     }
     break;
-    case N_AG:
-        return gag(g, n, n->ty);
+    case NODE_AGGREGATE:
+        return generate_aggregate(g, n, n->ty);
     case N_ALC:
     {
-        r.k = VK_P;
-        Type_Info *et = n->ty and n->ty->el ? tcc(n->ty->el) : 0;
+        r.k = VALUE_KIND_POINTER;
+        Type_Info *et = n->ty and n->ty->el ? type_concrete(n->ty->el) : 0;
         uint32_t asz = 64;
         if (et and et->dc.n > 0)
             asz += et->dc.n * 8;
         fprintf(o, "  %%t%d = call ptr @malloc(i64 %u)\n", r.id, asz);
         if (n->alc.in)
         {
-            V v = gex(g, n->alc.in);
-            v = vcast(g, v, VK_I);
-            int op = nt(g);
+            V v = generate_expression(g, n->alc.in);
+            v = value_cast(g, v, VALUE_KIND_INTEGER);
+            int op = new_temporary(g);
             fprintf(
                 o,
                 "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n",
@@ -11281,66 +11402,67 @@ static V gex(Code_Generator *g, Syntax_Node *n)
     break;
     case N_DRF:
     {
-        V p = gex(g, n->drf.x);
-        if (p.k == VK_I)
+        V p = generate_expression(g, n->drf.x);
+        if (p.k == VALUE_KIND_INTEGER)
         {
-            int pp = nt(g);
+            int pp = new_temporary(g);
             fprintf(o, "  %%t%d = inttoptr i64 %%t%d to ptr\n", pp, p.id);
             p.id = pp;
-            p.k = VK_P;
+            p.k = VALUE_KIND_POINTER;
         }
-        Type_Info *dt = n->drf.x->ty ? tcc(n->drf.x->ty) : 0;
-        dt = dt and dt->el ? tcc(dt->el) : 0;
-        r.k = dt ? tk2v(dt) : VK_I;
-        V pc = vcast(g, p, VK_I);
-        int nc = nt(g);
+        Type_Info *dt = n->drf.x->ty ? type_concrete(n->drf.x->ty) : 0;
+        dt = dt and dt->el ? type_concrete(dt->el) : 0;
+        r.k = dt ? token_kind_to_value_kind(dt) : VALUE_KIND_INTEGER;
+        V pc = value_cast(g, p, VALUE_KIND_INTEGER);
+        int nc = new_temporary(g);
         fprintf(o, "  %%t%d = icmp eq i64 %%t%d, 0\n", nc, pc.id);
-        int ne = nl(g), nd = nl(g);
-        cbr(g, nc, ne, nd);
-        lbl(g, ne);
+        int ne = new_label(g), nd = new_label(g);
+        emit_conditional_branch(g, nc, ne, nd);
+        emit_label(g, ne);
         fprintf(o, "  call void @__ada_raise(ptr @.ex.CONSTRAINT_ERROR)\n  unreachable\n");
-        lbl(g, nd);
-        fprintf(o, "  %%t%d = load %s, ptr %%t%d\n", r.id, vt(r.k), p.id);
+        emit_label(g, nd);
+        fprintf(o, "  %%t%d = load %s, ptr %%t%d\n", r.id, value_type_string(r.k), p.id);
     }
     break;
     case N_CVT:
     {
-        V e = gex(g, n->cvt.ex);
-        r = vcast(g, e, r.k);
+        V e = generate_expression(g, n->cvt.ex);
+        r = value_cast(g, e, r.k);
     }
     break;
-    case N_CHK:
+    case NODE_CHECK:
     {
-        V e = gex(g, n->chk.ex);
-        Type_Info *t = n->chk.ex->ty ? tcc(n->chk.ex->ty) : 0;
-        if (t and t->k == TY_F and (t->lo != TY_INT->lo or t->hi != TY_INT->hi))
+        V e = generate_expression(g, n->chk.ex);
+        Type_Info *t = n->chk.ex->ty ? type_concrete(n->chk.ex->ty) : 0;
+        if (t and t->k == TYPE_FLOAT and (t->lo != TY_INT->lo or t->hi != TY_INT->hi))
             r = gen_float_chk(g, e, t, n->chk.ec, r.k);
-        else if (t and t->k == TY_A and (t->lo != 0 or t->hi != -1))
+        else if (t and t->k == TYPE_ARRAY and (t->lo != 0 or t->hi != -1))
         {
             Type_Info *et = n->chk.ex->ty;
             r = gen_array_bounds_chk(g, e, t, et, n->chk.ec, r.k);
         }
         else if (
-            t and (t->k == TY_I or t->k == TY_E or t->k == TY_D or t->k == TY_C)
+            t
+            and (t->k == TYPE_INTEGER or t->k == TYPE_ENUMERATION or t->k == TYPE_DERIVED or t->k == TYPE_CHARACTER)
             and (t->lo != TY_INT->lo or t->hi != TY_INT->hi))
             r = gen_discrete_chk(g, e, t, n->chk.ec, r.k);
         else
-            r = vcast(g, e, r.k);
+            r = value_cast(g, e, r.k);
     }
     break;
-    case N_RN:
+    case NODE_RANGE:
     {
-        V lo = gex(g, n->rn.lo);
-        r = vcast(g, lo, r.k);
+        V lo = generate_expression(g, n->rn.lo);
+        r = value_cast(g, lo, r.k);
     }
     break;
     default:
-        r.k = VK_I;
+        r.k = VALUE_KIND_INTEGER;
         fprintf(o, "  %%t%d = add i64 0, 0\n", r.id);
     }
     return r;
 }
-static void gss(Code_Generator *g, Syntax_Node *n)
+static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
 {
     FILE *o = g->o;
     if (not n)
@@ -11352,12 +11474,12 @@ static void gss(Code_Generator *g, Syntax_Node *n)
         break;
     case N_AS:
     {
-        V v = gex(g, n->as.vl);
-        if (n->as.tg->k == N_ID)
+        V v = generate_expression(g, n->as.vl);
+        if (n->as.tg->k == NODE_IDENTIFIER)
         {
             Symbol *s = n->as.tg->sy;
-            Value_Kind k = s and s->ty ? tk2v(s->ty) : VK_I;
-            v = vcast(g, v, k);
+            Value_Kind k = s and s->ty ? token_kind_to_value_kind(s->ty) : VALUE_KIND_INTEGER;
+            v = value_cast(g, v, k);
             if (s and s->lv == 0)
             {
                 char nb[256];
@@ -11373,45 +11495,45 @@ static void gss(Code_Generator *g, Syntax_Node *n)
                 }
                 else
                     snprintf(nb, 256, "%.*s", (int) s->nm.n, s->nm.s);
-                fprintf(o, "  store %s %%t%d, ptr @%s\n", vt(k), v.id, nb);
+                fprintf(o, "  store %s %%t%d, ptr @%s\n", value_type_string(k), v.id, nb);
             }
             else if (s and s->lv >= 0 and s->lv < g->sm->lv)
             {
-                int p = nt(g);
+                int p = new_temporary(g);
                 int level_diff = g->sm->lv - s->lv - 1;
                 int slnk_ptr;
                 if (level_diff == 0)
                 {
-                    slnk_ptr = nt(g);
+                    slnk_ptr = new_temporary(g);
                     fprintf(o, "  %%t%d = bitcast ptr %%__slnk to ptr\n", slnk_ptr);
                 }
                 else
                 {
-                    slnk_ptr = nt(g);
+                    slnk_ptr = new_temporary(g);
                     fprintf(o, "  %%t%d = bitcast ptr %%__slnk to ptr\n", slnk_ptr);
                     for (int hop = 0; hop < level_diff; hop++)
                     {
-                        int next_slnk = nt(g);
+                        int next_slnk = new_temporary(g);
                         fprintf(
                             o,
                             "  %%t%d = getelementptr ptr, ptr %%t%d, i64 0\n",
                             next_slnk,
                             slnk_ptr);
-                        int loaded_slnk = nt(g);
+                        int loaded_slnk = new_temporary(g);
                         fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", loaded_slnk, next_slnk);
                         slnk_ptr = loaded_slnk;
                     }
                 }
                 fprintf(o, "  %%t%d = getelementptr ptr, ptr %%t%d, i64 %u\n", p, slnk_ptr, s->el);
-                int a = nt(g);
+                int a = new_temporary(g);
                 fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", a, p);
-                fprintf(o, "  store %s %%t%d, ptr %%t%d\n", vt(k), v.id, a);
+                fprintf(o, "  store %s %%t%d, ptr %%t%d\n", value_type_string(k), v.id, a);
             }
             else
                 fprintf(
                     o,
                     "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
-                    vt(k),
+                    value_type_string(k),
                     v.id,
                     string_to_lowercase(n->as.tg->s),
                     s ? s->sc : 0,
@@ -11419,25 +11541,25 @@ static void gss(Code_Generator *g, Syntax_Node *n)
         }
         else if (n->as.tg->k == N_IX)
         {
-            V p = gex(g, n->as.tg->ix.p);
-            if (p.k == VK_I)
+            V p = generate_expression(g, n->as.tg->ix.p);
+            if (p.k == VALUE_KIND_INTEGER)
             {
-                int pp = nt(g);
+                int pp = new_temporary(g);
                 fprintf(o, "  %%t%d = inttoptr i64 %%t%d to ptr\n", pp, p.id);
                 p.id = pp;
-                p.k = VK_P;
+                p.k = VALUE_KIND_POINTER;
             }
-            V i0 = vcast(g, gex(g, n->as.tg->ix.ix.d[0]), VK_I);
-            Type_Info *at = n->as.tg->ix.p->ty ? tcc(n->as.tg->ix.p->ty) : 0;
+            V i0 = value_cast(g, generate_expression(g, n->as.tg->ix.ix.d[0]), VALUE_KIND_INTEGER);
+            Type_Info *at = n->as.tg->ix.p->ty ? type_concrete(n->as.tg->ix.p->ty) : 0;
             int adj_idx = i0.id;
-            if (at and at->k == TY_A and at->lo != 0)
+            if (at and at->k == TYPE_ARRAY and at->lo != 0)
             {
-                int adj = nt(g);
+                int adj = new_temporary(g);
                 fprintf(o, "  %%t%d = sub i64 %%t%d, %lld\n", adj, i0.id, (long long) at->lo);
                 adj_idx = adj;
             }
-            int ep = nt(g);
-            if (at and at->k == TY_A and at->hi >= at->lo)
+            int ep = new_temporary(g);
+            if (at and at->k == TYPE_ARRAY and at->hi >= at->lo)
             {
                 int asz = (int) (at->hi - at->lo + 1);
                 fprintf(
@@ -11453,16 +11575,17 @@ static void gss(Code_Generator *g, Syntax_Node *n)
                 fprintf(
                     o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %%t%d\n", ep, p.id, adj_idx);
             }
-            v = vcast(g, v, VK_I);
+            v = value_cast(g, v, VALUE_KIND_INTEGER);
             fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
         }
         else if (n->as.tg->k == N_SEL)
         {
-            Type_Info *pt = n->as.tg->se.p->ty ? tcc(n->as.tg->se.p->ty) : 0;
-            V p = {nt(g), VK_P};
-            if (n->as.tg->se.p->k == N_ID)
+            Type_Info *pt = n->as.tg->se.p->ty ? type_concrete(n->as.tg->se.p->ty) : 0;
+            V p = {new_temporary(g), VALUE_KIND_POINTER};
+            if (n->as.tg->se.p->k == NODE_IDENTIFIER)
             {
-                Symbol *s = n->as.tg->se.p->sy ? n->as.tg->se.p->sy : syf(g->sm, n->as.tg->se.p->s);
+                Symbol *s =
+                    n->as.tg->se.p->sy ? n->as.tg->se.p->sy : symbol_find(g->sm, n->as.tg->se.p->s);
                 if (s and s->lv >= 0 and s->lv < g->sm->lv)
                     fprintf(
                         o,
@@ -11482,30 +11605,31 @@ static void gss(Code_Generator *g, Syntax_Node *n)
             }
             else
             {
-                p = gex(g, n->as.tg->se.p);
+                p = generate_expression(g, n->as.tg->se.p);
             }
-            if (pt and pt->k == TY_R)
+            if (pt and pt->k == TYPE_RECORD)
             {
                 if (pt->pk)
                 {
                     for (uint32_t i = 0; i < pt->cm.n; i++)
                     {
                         Syntax_Node *c = pt->cm.d[i];
-                        if (c->k == N_CM and string_equal_ignore_case(c->cm.nm, n->as.tg->se.se))
+                        if (c->k == NODE_COMPONENT
+                            and string_equal_ignore_case(c->cm.nm, n->as.tg->se.se))
                         {
-                            v = vcast(g, v, VK_I);
-                            int bp = nt(g);
+                            v = value_cast(g, v, VALUE_KIND_INTEGER);
+                            int bp = new_temporary(g);
                             fprintf(o, "  %%t%d = ptrtoint ptr %%t%d to i64\n", bp, p.id);
-                            int bo = nt(g);
+                            int bo = new_temporary(g);
                             fprintf(o, "  %%t%d = add i64 %%t%d, %u\n", bo, bp, c->cm.of / 8);
-                            int pp = nt(g);
+                            int pp = new_temporary(g);
                             fprintf(o, "  %%t%d = inttoptr i64 %%t%d to ptr\n", pp, bo);
-                            int ov = nt(g);
+                            int ov = new_temporary(g);
                             fprintf(o, "  %%t%d = load i64, ptr %%t%d\n", ov, pp);
                             uint64_t mk = (1ULL << c->cm.bt) - 1;
-                            int sh = nt(g);
+                            int sh = new_temporary(g);
                             fprintf(o, "  %%t%d = shl i64 %%t%d, %u\n", sh, v.id, c->cm.of % 8);
-                            int ms = nt(g);
+                            int ms = new_temporary(g);
                             fprintf(
                                 o,
                                 "  %%t%d = and i64 %%t%d, %llu\n",
@@ -11513,14 +11637,14 @@ static void gss(Code_Generator *g, Syntax_Node *n)
                                 sh,
                                 (unsigned long long) (mk << (c->cm.of % 8)));
                             uint64_t cmk = ~(mk << (c->cm.of % 8));
-                            int cl = nt(g);
+                            int cl = new_temporary(g);
                             fprintf(
                                 o,
                                 "  %%t%d = and i64 %%t%d, %llu\n",
                                 cl,
                                 ov,
                                 (unsigned long long) cmk);
-                            int nv_ = nt(g);
+                            int nv_ = new_temporary(g);
                             fprintf(o, "  %%t%d = or i64 %%t%d, %%t%d\n", nv_, cl, ms);
                             fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", nv_, pp);
                             break;
@@ -11532,16 +11656,17 @@ static void gss(Code_Generator *g, Syntax_Node *n)
                     for (uint32_t i = 0; i < pt->cm.n; i++)
                     {
                         Syntax_Node *c = pt->cm.d[i];
-                        if (c->k == N_CM and string_equal_ignore_case(c->cm.nm, n->as.tg->se.se))
+                        if (c->k == NODE_COMPONENT
+                            and string_equal_ignore_case(c->cm.nm, n->as.tg->se.se))
                         {
-                            int ep = nt(g);
+                            int ep = new_temporary(g);
                             fprintf(
                                 o,
                                 "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n",
                                 ep,
                                 p.id,
                                 c->cm.of);
-                            v = vcast(g, v, VK_I);
+                            v = value_cast(g, v, VALUE_KIND_INTEGER);
                             fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
                             break;
                         }
@@ -11551,58 +11676,58 @@ static void gss(Code_Generator *g, Syntax_Node *n)
         }
         else
         {
-            v = vcast(g, v, VK_I);
+            v = value_cast(g, v, VALUE_KIND_INTEGER);
             fprintf(o, "  ; store to complex lvalue\n");
         }
     }
     break;
-    case N_IF:
+    case NODE_IF:
     {
-        V c = vbool(g, gex(g, n->if_.cd));
-        int ct = nt(g);
+        V c = value_to_boolean(g, generate_expression(g, n->if_.cd));
+        int ct = new_temporary(g);
         fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", ct, c.id);
-        int lt = nl(g), lf = nl(g), ld = nl(g);
-        cbr(g, ct, lt, lf);
-        lbl(g, lt);
+        int lt = new_label(g), lf = new_label(g), ld = new_label(g);
+        emit_conditional_branch(g, ct, lt, lf);
+        emit_label(g, lt);
         for (uint32_t i = 0; i < n->if_.th.n; i++)
-            gss(g, n->if_.th.d[i]);
-        br(g, ld);
-        lbl(g, lf);
+            generate_statement_sequence(g, n->if_.th.d[i]);
+        emit_branch(g, ld);
+        emit_label(g, lf);
         if (n->if_.ei.n > 0)
         {
             for (uint32_t i = 0; i < n->if_.ei.n; i++)
             {
                 Syntax_Node *e = n->if_.ei.d[i];
-                V ec = vbool(g, gex(g, e->if_.cd));
-                int ect = nt(g);
+                V ec = value_to_boolean(g, generate_expression(g, e->if_.cd));
+                int ect = new_temporary(g);
                 fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", ect, ec.id);
-                int let = nl(g), lef = nl(g);
-                cbr(g, ect, let, lef);
-                lbl(g, let);
+                int let = new_label(g), lef = new_label(g);
+                emit_conditional_branch(g, ect, let, lef);
+                emit_label(g, let);
                 for (uint32_t j = 0; j < e->if_.th.n; j++)
-                    gss(g, e->if_.th.d[j]);
-                br(g, ld);
-                lbl(g, lef);
+                    generate_statement_sequence(g, e->if_.th.d[j]);
+                emit_branch(g, ld);
+                emit_label(g, lef);
             }
         }
         if (n->if_.el.n > 0)
         {
             for (uint32_t i = 0; i < n->if_.el.n; i++)
-                gss(g, n->if_.el.d[i]);
+                generate_statement_sequence(g, n->if_.el.d[i]);
         }
-        br(g, ld);
-        lbl(g, ld);
+        emit_branch(g, ld);
+        emit_label(g, ld);
     }
     break;
-    case N_CS:
+    case NODE_CASE:
     {
-        V ex = gex(g, n->cs.ex);
-        int ld = nl(g);
+        V ex = generate_expression(g, n->cs.ex);
+        int ld = new_label(g);
         Node_Vector lb = {0};
         for (uint32_t i = 0; i < n->cs.al.n; i++)
         {
             Syntax_Node *a = n->cs.al.d[i];
-            int la = nl(g);
+            int la = new_label(g);
             nv(&lb, ND(INT, n->l));
             lb.d[i]->i = la;
         }
@@ -11613,51 +11738,51 @@ static void gss(Code_Generator *g, Syntax_Node *n)
             for (uint32_t j = 0; j < a->ch.it.n; j++)
             {
                 Syntax_Node *ch = a->ch.it.d[j];
-                if (ch->k == N_ID and string_equal_ignore_case(ch->s, Z("others")))
+                if (ch->k == NODE_IDENTIFIER and string_equal_ignore_case(ch->s, Z("others")))
                 {
-                    br(g, la);
+                    emit_branch(g, la);
                     goto cs_sw_done;
                 }
-                Type_Info *cht = ch->ty ? tcc(ch->ty) : 0;
-                if (ch->k == N_ID and cht and (cht->lo != 0 or cht->hi != 0))
+                Type_Info *cht = ch->ty ? type_concrete(ch->ty) : 0;
+                if (ch->k == NODE_IDENTIFIER and cht and (cht->lo != 0 or cht->hi != 0))
                 {
-                    int lo_id = nt(g);
+                    int lo_id = new_temporary(g);
                     fprintf(o, "  %%t%d = add i64 0, %lld\n", lo_id, (long long) cht->lo);
-                    int hi_id = nt(g);
+                    int hi_id = new_temporary(g);
                     fprintf(o, "  %%t%d = add i64 0, %lld\n", hi_id, (long long) cht->hi);
-                    int cge = nt(g);
+                    int cge = new_temporary(g);
                     fprintf(o, "  %%t%d = icmp sge i64 %%t%d, %%t%d\n", cge, ex.id, lo_id);
-                    int cle = nt(g);
+                    int cle = new_temporary(g);
                     fprintf(o, "  %%t%d = icmp sle i64 %%t%d, %%t%d\n", cle, ex.id, hi_id);
-                    int ca = nt(g);
+                    int ca = new_temporary(g);
                     fprintf(o, "  %%t%d = and i1 %%t%d, %%t%d\n", ca, cge, cle);
                     int lnx = i + 1 < n->cs.al.n ? lb.d[i + 1]->i : ld;
-                    cbr(g, ca, la, lnx);
+                    emit_conditional_branch(g, ca, la, lnx);
                     continue;
                 }
-                V cv = gex(g, ch);
-                cv = vcast(g, cv, ex.k);
-                if (ch->k == N_RN)
+                V cv = generate_expression(g, ch);
+                cv = value_cast(g, cv, ex.k);
+                if (ch->k == NODE_RANGE)
                 {
-                    V lo = gex(g, ch->rn.lo);
-                    lo = vcast(g, lo, ex.k);
-                    V hi = gex(g, ch->rn.hi);
-                    hi = vcast(g, hi, ex.k);
-                    int cge = nt(g);
+                    V lo = generate_expression(g, ch->rn.lo);
+                    lo = value_cast(g, lo, ex.k);
+                    V hi = generate_expression(g, ch->rn.hi);
+                    hi = value_cast(g, hi, ex.k);
+                    int cge = new_temporary(g);
                     fprintf(o, "  %%t%d = icmp sge i64 %%t%d, %%t%d\n", cge, ex.id, lo.id);
-                    int cle = nt(g);
+                    int cle = new_temporary(g);
                     fprintf(o, "  %%t%d = icmp sle i64 %%t%d, %%t%d\n", cle, ex.id, hi.id);
-                    int ca = nt(g);
+                    int ca = new_temporary(g);
                     fprintf(o, "  %%t%d = and i1 %%t%d, %%t%d\n", ca, cge, cle);
                     int lnx = i + 1 < n->cs.al.n ? lb.d[i + 1]->i : ld;
-                    cbr(g, ca, la, lnx);
+                    emit_conditional_branch(g, ca, la, lnx);
                 }
                 else
                 {
-                    int ceq = nt(g);
+                    int ceq = new_temporary(g);
                     fprintf(o, "  %%t%d = icmp eq i64 %%t%d, %%t%d\n", ceq, ex.id, cv.id);
                     int lnx = i + 1 < n->cs.al.n ? lb.d[i + 1]->i : ld;
-                    cbr(g, ceq, la, lnx);
+                    emit_conditional_branch(g, ceq, la, lnx);
                 }
             }
         }
@@ -11666,30 +11791,30 @@ static void gss(Code_Generator *g, Syntax_Node *n)
         {
             Syntax_Node *a = n->cs.al.d[i];
             int la = lb.d[i]->i;
-            lbl(g, la);
+            emit_label(g, la);
             for (uint32_t j = 0; j < a->hnd.stz.n; j++)
-                gss(g, a->hnd.stz.d[j]);
-            br(g, ld);
+                generate_statement_sequence(g, a->hnd.stz.d[j]);
+            emit_branch(g, ld);
         }
-        lbl(g, ld);
+        emit_label(g, ld);
     }
     break;
-    case N_LP:
+    case NODE_LOOP:
     {
-        int lb = nl(g), lc = nl(g), le = nl(g);
+        int lb = new_label(g), lc = new_label(g), le = new_label(g);
         if (g->ls < 64)
             g->ll[g->ls++] = le;
         if (n->lp.lb.s)
         {
-            slv(&g->lbs, n->lp.lb);
+            string_list_vector_append(&g->lbs, n->lp.lb);
             nv(&n->lp.lk, ND(INT, n->l));
             n->lp.lk.d[n->lp.lk.n - 1]->i = le;
         }
         Syntax_Node *fv = 0;
         Type_Info *ft = 0;
         int hi_var = -1;
-        if (n->lp.it and n->lp.it->k == N_BIN and n->lp.it->bn.op == T_IN
-            and n->lp.it->bn.l->k == N_ID)
+        if (n->lp.it and n->lp.it->k == NODE_BINARY_OP and n->lp.it->bn.op == T_IN
+            and n->lp.it->bn.l->k == NODE_IDENTIFIER)
         {
             fv = n->lp.it->bn.l;
             ft = n->lp.it->bn.r->ty;
@@ -11705,27 +11830,29 @@ static void gss(Code_Generator *g, Syntax_Node *n)
                         vs->sc,
                         vs->el);
                     Syntax_Node *rng = n->lp.it->bn.r;
-                    hi_var = nt(g);
+                    hi_var = new_temporary(g);
                     fprintf(o, "  %%v.__for_hi_%d = alloca i64\n", hi_var);
-                    int ti = nt(g);
-                    if (rng and rng->k == N_RN)
+                    int ti = new_temporary(g);
+                    if (rng and rng->k == NODE_RANGE)
                     {
-                        V lo = vcast(g, gex(g, rng->rn.lo), VK_I);
+                        V lo =
+                            value_cast(g, generate_expression(g, rng->rn.lo), VALUE_KIND_INTEGER);
                         fprintf(o, "  %%t%d = add i64 %%t%d, 0\n", ti, lo.id);
-                        V hi = vcast(g, gex(g, rng->rn.hi), VK_I);
+                        V hi =
+                            value_cast(g, generate_expression(g, rng->rn.hi), VALUE_KIND_INTEGER);
                         fprintf(o, "  store i64 %%t%d, ptr %%v.__for_hi_%d\n", hi.id, hi_var);
                     }
                     else if (
                         rng and rng->k == N_AT and string_equal_ignore_case(rng->at.at, Z("RANGE")))
                     {
-                        Type_Info *at = rng->at.p ? tcc(rng->at.p->ty) : 0;
-                        if (at and at->k == TY_A)
+                        Type_Info *at = rng->at.p ? type_concrete(rng->at.p->ty) : 0;
+                        if (at and at->k == TYPE_ARRAY)
                         {
                             if (at->lo == 0 and at->hi == -1 and rng->at.p)
                             {
-                                V pv = gex(g, rng->at.p);
+                                V pv = generate_expression(g, rng->at.p);
                                 int blo, bhi;
-                                gfpb(g, pv.id, &blo, &bhi);
+                                get_fat_pointer_bounds(g, pv.id, &blo, &bhi);
                                 fprintf(o, "  %%t%d = add i64 0, 0\n", ti);
                                 fprintf(
                                     o,
@@ -11740,7 +11867,7 @@ static void gss(Code_Generator *g, Syntax_Node *n)
                             else
                             {
                                 fprintf(o, "  %%t%d = add i64 0, %lld\n", ti, (long long) at->lo);
-                                int hi_t = nt(g);
+                                int hi_t = new_temporary(g);
                                 fprintf(o, "  %%t%d = add i64 0, %lld\n", hi_t, (long long) at->hi);
                                 fprintf(
                                     o, "  store i64 %%t%d, ptr %%v.__for_hi_%d\n", hi_t, hi_var);
@@ -11749,7 +11876,7 @@ static void gss(Code_Generator *g, Syntax_Node *n)
                         else
                         {
                             fprintf(o, "  %%t%d = add i64 0, %lld\n", ti, (long long) ft->lo);
-                            int hi_t = nt(g);
+                            int hi_t = new_temporary(g);
                             fprintf(o, "  %%t%d = add i64 0, %lld\n", hi_t, (long long) ft->hi);
                             fprintf(o, "  store i64 %%t%d, ptr %%v.__for_hi_%d\n", hi_t, hi_var);
                         }
@@ -11757,7 +11884,7 @@ static void gss(Code_Generator *g, Syntax_Node *n)
                     else
                     {
                         fprintf(o, "  %%t%d = add i64 0, %lld\n", ti, (long long) ft->lo);
-                        int hi_t = nt(g);
+                        int hi_t = new_temporary(g);
                         fprintf(o, "  %%t%d = add i64 0, %lld\n", hi_t, (long long) ft->hi);
                         fprintf(o, "  store i64 %%t%d, ptr %%v.__for_hi_%d\n", hi_t, hi_var);
                     }
@@ -11789,14 +11916,14 @@ static void gss(Code_Generator *g, Syntax_Node *n)
                 }
             }
         }
-        br(g, lb);
-        lbl(g, lb);
+        emit_branch(g, lb);
+        emit_label(g, lb);
         if (n->lp.it)
         {
             if (fv and ft and hi_var >= 0)
             {
                 Symbol *vs = fv->sy;
-                int cv = nt(g);
+                int cv = new_temporary(g);
                 if (vs->lv == 0)
                 {
                     char nb[256];
@@ -11824,31 +11951,31 @@ static void gss(Code_Generator *g, Syntax_Node *n)
                         vs->sc,
                         vs->el);
                 }
-                int hv = nt(g);
+                int hv = new_temporary(g);
                 fprintf(o, "  %%t%d = load i64, ptr %%v.__for_hi_%d\n", hv, hi_var);
-                int cmp = nt(g);
+                int cmp = new_temporary(g);
                 fprintf(o, "  %%t%d = icmp sle i64 %%t%d, %%t%d\n", cmp, cv, hv);
-                cbr(g, cmp, lc, le);
+                emit_conditional_branch(g, cmp, lc, le);
             }
             else
             {
-                V c = vbool(g, gex(g, n->lp.it));
-                int ct = nt(g);
+                V c = value_to_boolean(g, generate_expression(g, n->lp.it));
+                int ct = new_temporary(g);
                 fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", ct, c.id);
-                cbr(g, ct, lc, le);
+                emit_conditional_branch(g, ct, lc, le);
             }
         }
         else
-            br(g, lc);
-        lbl(g, lc);
+            emit_branch(g, lc);
+        emit_label(g, lc);
         for (uint32_t i = 0; i < n->lp.st.n; i++)
-            gss(g, n->lp.st.d[i]);
+            generate_statement_sequence(g, n->lp.st.d[i]);
         if (fv and ft)
         {
             Symbol *vs = fv->sy;
             if (vs)
             {
-                int cv = nt(g);
+                int cv = new_temporary(g);
                 if (vs->lv == 0)
                 {
                     char nb[256];
@@ -11865,7 +11992,7 @@ static void gss(Code_Generator *g, Syntax_Node *n)
                     else
                         snprintf(nb, 256, "%.*s", (int) vs->nm.n, vs->nm.s);
                     fprintf(o, "  %%t%d = load i64, ptr @%s\n", cv, nb);
-                    int nv = nt(g);
+                    int nv = new_temporary(g);
                     fprintf(o, "  %%t%d = add i64 %%t%d, 1\n", nv, cv);
                     fprintf(o, "  store i64 %%t%d, ptr @%s\n", nv, nb);
                 }
@@ -11878,7 +12005,7 @@ static void gss(Code_Generator *g, Syntax_Node *n)
                         string_to_lowercase(fv->s),
                         vs->sc,
                         vs->el);
-                    int nv = nt(g);
+                    int nv = new_temporary(g);
                     fprintf(o, "  %%t%d = add i64 %%t%d, 1\n", nv, cv);
                     fprintf(
                         o,
@@ -11903,8 +12030,8 @@ static void gss(Code_Generator *g, Syntax_Node *n)
             fprintf(o, "\n");
         }
         else
-            br(g, lb);
-        lbl(g, le);
+            emit_branch(g, lb);
+        emit_label(g, le);
         if (g->ls > 0)
             g->ls--;
     }
@@ -11913,37 +12040,37 @@ static void gss(Code_Generator *g, Syntax_Node *n)
     {
         if (n->ex.lb.s)
         {
-            int li = flbl(g, n->ex.lb);
+            int li = find_label(g, n->ex.lb);
             if (li >= 0)
             {
                 int le = g->ll[li];
                 if (n->ex.cd)
                 {
-                    V c = vbool(g, gex(g, n->ex.cd));
-                    int ct = nt(g);
+                    V c = value_to_boolean(g, generate_expression(g, n->ex.cd));
+                    int ct = new_temporary(g);
                     fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", ct, c.id);
-                    int lc = nl(g);
-                    cbr(g, ct, le, lc);
-                    lbl(g, lc);
+                    int lc = new_label(g);
+                    emit_conditional_branch(g, ct, le, lc);
+                    emit_label(g, lc);
                 }
                 else
-                    br(g, le);
+                    emit_branch(g, le);
             }
             else
             {
                 if (n->ex.cd)
                 {
-                    V c = vbool(g, gex(g, n->ex.cd));
-                    int ct = nt(g);
+                    V c = value_to_boolean(g, generate_expression(g, n->ex.cd));
+                    int ct = new_temporary(g);
                     fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", ct, c.id);
-                    int le = g->ls > 0 ? g->ll[g->ls - 1] : nl(g), lc = nl(g);
-                    cbr(g, ct, le, lc);
-                    lbl(g, lc);
+                    int le = g->ls > 0 ? g->ll[g->ls - 1] : new_label(g), lc = new_label(g);
+                    emit_conditional_branch(g, ct, le, lc);
+                    emit_label(g, lc);
                 }
                 else
                 {
-                    int le = g->ls > 0 ? g->ll[g->ls - 1] : nl(g);
-                    br(g, le);
+                    int le = g->ls > 0 ? g->ll[g->ls - 1] : new_label(g);
+                    emit_branch(g, le);
                 }
             }
         }
@@ -11951,27 +12078,27 @@ static void gss(Code_Generator *g, Syntax_Node *n)
         {
             if (n->ex.cd)
             {
-                V c = vbool(g, gex(g, n->ex.cd));
-                int ct = nt(g);
+                V c = value_to_boolean(g, generate_expression(g, n->ex.cd));
+                int ct = new_temporary(g);
                 fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", ct, c.id);
-                int le = g->ls > 0 ? g->ll[g->ls - 1] : nl(g), lc = nl(g);
-                cbr(g, ct, le, lc);
-                lbl(g, lc);
+                int le = g->ls > 0 ? g->ll[g->ls - 1] : new_label(g), lc = new_label(g);
+                emit_conditional_branch(g, ct, le, lc);
+                emit_label(g, lc);
             }
             else
             {
-                int le = g->ls > 0 ? g->ll[g->ls - 1] : nl(g);
-                br(g, le);
+                int le = g->ls > 0 ? g->ll[g->ls - 1] : new_label(g);
+                emit_branch(g, le);
             }
         }
     }
     break;
     case N_GT:
     {
-        int bb = glbl_bb(g, n->go.lb);
+        int bb = get_or_create_label_basic_block(g, n->go.lb);
         fprintf(o, "  br label %%Source_Location%d\n", bb);
-        int ul = nl(g);
-        lbl(g, ul);
+        int ul = new_label(g);
+        emit_label(g, ul);
         fprintf(o, "  unreachable\n");
     }
     break;
@@ -11979,8 +12106,8 @@ static void gss(Code_Generator *g, Syntax_Node *n)
     {
         if (n->rt.vl)
         {
-            V v = gex(g, n->rt.vl);
-            fprintf(o, "  ret %s %%t%d\n", vt(v.k), v.id);
+            V v = generate_expression(g, n->rt.vl);
+            fprintf(o, "  ret %s %%t%d\n", value_type_string(v.k), v.id);
         }
         else
             fprintf(o, "  ret void\n");
@@ -11988,9 +12115,10 @@ static void gss(Code_Generator *g, Syntax_Node *n)
     break;
     case N_RS:
     {
-        String_Slice ec = n->rs.ec and n->rs.ec->k == N_ID ? n->rs.ec->s : Z("PROGRAM_ERROR");
-        eex(g, ec);
-        int exh = nt(g);
+        String_Slice ec =
+            n->rs.ec and n->rs.ec->k == NODE_IDENTIFIER ? n->rs.ec->s : Z("PROGRAM_ERROR");
+        emit_exception(g, ec);
+        int exh = new_temporary(g);
         fprintf(o, "  %%t%d = load ptr, ptr %%ej\n", exh);
         fprintf(o, "  store ptr @.ex.%.*s, ptr @__ex_cur\n", (int) ec.n, ec.s);
         fprintf(o, "  call void @longjmp(ptr %%t%d, i32 1)\n", exh);
@@ -11999,38 +12127,38 @@ static void gss(Code_Generator *g, Syntax_Node *n)
     break;
     case N_CLT:
     {
-        if (n->ct.nm->k == N_ID)
+        if (n->ct.nm->k == NODE_IDENTIFIER)
         {
-            Symbol *s = syfa(g->sm, n->ct.nm->s, n->ct.arr.n, 0);
+            Symbol *s = symbol_find_arity(g->sm, n->ct.nm->s, n->ct.arr.n, 0);
             if (s)
             {
-                Syntax_Node *b = sbody(s, s->el);
+                Syntax_Node *b = symbol_body(s, s->el);
                 if (b)
                 {
                     int arid[64];
                     Value_Kind ark[64];
                     int arp[64];
-                    Syntax_Node *sp = sspec(s);
+                    Syntax_Node *sp = symbol_spec(s);
                     for (uint32_t i = 0; i < n->ct.arr.n and i < 64; i++)
                     {
                         Syntax_Node *pm = sp and i < sp->sp.pmm.n ? sp->sp.pmm.d[i] : 0;
                         Syntax_Node *arg = n->ct.arr.d[i];
-                        V av = {0, VK_I};
-                        Value_Kind ek = VK_I;
+                        V av = {0, VALUE_KIND_INTEGER};
+                        Value_Kind ek = VALUE_KIND_INTEGER;
                         bool rf = false;
                         if (pm)
                         {
                             if (pm->sy and pm->sy->ty)
-                                ek = tk2v(pm->sy->ty);
+                                ek = token_kind_to_value_kind(pm->sy->ty);
                             else if (pm->pm.ty)
                             {
-                                Type_Info *pt = rst(g->sm, pm->pm.ty);
-                                ek = tk2v(pt);
+                                Type_Info *pt = resolve_subtype(g->sm, pm->pm.ty);
+                                ek = token_kind_to_value_kind(pt);
                             }
-                            if (pm->pm.md & 2 and arg->k == N_ID)
+                            if (pm->pm.md & 2 and arg->k == NODE_IDENTIFIER)
                             {
                                 rf = true;
-                                Symbol *as = arg->sy ? arg->sy : syf(g->sm, arg->s);
+                                Symbol *as = arg->sy ? arg->sy : symbol_find(g->sm, arg->s);
                                 if (as and as->lv == 0)
                                 {
                                     char nb[256];
@@ -12047,27 +12175,27 @@ static void gss(Code_Generator *g, Syntax_Node *n)
                                     }
                                     else
                                         snprintf(nb, 256, "%.*s", (int) as->nm.n, as->nm.s);
-                                    av.id = nt(g);
-                                    av.k = VK_P;
+                                    av.id = new_temporary(g);
+                                    av.k = VALUE_KIND_POINTER;
                                     fprintf(o, "  %%t%d = bitcast ptr @%s to ptr\n", av.id, nb);
                                 }
                                 else if (as and as->lv >= 0 and as->lv < g->sm->lv)
                                 {
-                                    av.id = nt(g);
-                                    av.k = VK_P;
+                                    av.id = new_temporary(g);
+                                    av.k = VALUE_KIND_POINTER;
                                     fprintf(
                                         o,
                                         "  %%t%d = getelementptr ptr, ptr %%__slnk, i64 %u\n",
                                         av.id,
                                         as->el);
-                                    int a2 = nt(g);
+                                    int a2 = new_temporary(g);
                                     fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", a2, av.id);
                                     av.id = a2;
                                 }
                                 else
                                 {
-                                    av.id = nt(g);
-                                    av.k = VK_P;
+                                    av.id = new_temporary(g);
+                                    av.k = VALUE_KIND_POINTER;
                                     fprintf(
                                         o,
                                         "  %%t%d = bitcast ptr %%v.%s.sc%u.%u to ptr\n",
@@ -12076,48 +12204,53 @@ static void gss(Code_Generator *g, Syntax_Node *n)
                                         as ? as->sc : 0,
                                         as ? as->el : 0);
                                 }
-                                ek = VK_P;
+                                ek = VALUE_KIND_POINTER;
                             }
                             else if (pm->pm.md & 2)
                             {
                                 rf = true;
-                                av = gex(g, arg);
-                                int ap = nt(g);
-                                fprintf(o, "  %%t%d = alloca %s\n", ap, vt(av.k));
-                                fprintf(o, "  store %s %%t%d, ptr %%t%d\n", vt(av.k), av.id, ap);
+                                av = generate_expression(g, arg);
+                                int ap = new_temporary(g);
+                                fprintf(o, "  %%t%d = alloca %s\n", ap, value_type_string(av.k));
+                                fprintf(
+                                    o,
+                                    "  store %s %%t%d, ptr %%t%d\n",
+                                    value_type_string(av.k),
+                                    av.id,
+                                    ap);
                                 av.id = ap;
-                                av.k = VK_P;
-                                ek = VK_P;
+                                av.k = VALUE_KIND_POINTER;
+                                ek = VALUE_KIND_POINTER;
                             }
                             else
                             {
-                                av = gex(g, arg);
+                                av = generate_expression(g, arg);
                             }
                         }
                         else
                         {
-                            av = gex(g, arg);
+                            av = generate_expression(g, arg);
                         }
-                        if (not rf and ek != VK_I)
+                        if (not rf and ek != VALUE_KIND_INTEGER)
                         {
-                            V cv = vcast(g, av, ek);
+                            V cv = value_cast(g, av, ek);
                             av = cv;
                         }
                         arid[i] = av.id;
-                        ark[i] = ek != VK_I ? ek : av.k;
+                        ark[i] = ek != VALUE_KIND_INTEGER ? ek : av.k;
                         arp[i] = rf ? 1 : 0;
                     }
                     char nb[256];
                     if (s->ext)
                         snprintf(nb, 256, "%.*s", (int) s->ext_nm.n, s->ext_nm.s);
                     else
-                        esn(nb, 256, s, n->ct.nm->s, n->ct.arr.n, sp);
+                        encode_symbol_name(nb, 256, s, n->ct.nm->s, n->ct.arr.n, sp);
                     fprintf(o, "  call void @\"%s\"(", nb);
                     for (uint32_t i = 0; i < n->ct.arr.n; i++)
                     {
                         if (i)
                             fprintf(o, ", ");
-                        fprintf(o, "%s %%t%d", vt(ark[i]), arid[i]);
+                        fprintf(o, "%s %%t%d", value_type_string(ark[i]), arid[i]);
                     }
                     if (s->lv > 0 and not s->ext)
                     {
@@ -12133,26 +12266,27 @@ static void gss(Code_Generator *g, Syntax_Node *n)
                     {
                         if (arp[i])
                         {
-                            int lv = nt(g);
+                            int lv = new_temporary(g);
                             fprintf(
                                 o,
                                 "  %%t%d = load %s, ptr %%t%d\n",
                                 lv,
-                                vt(ark[i] == VK_P ? VK_I : ark[i]),
+                                value_type_string(
+                                    ark[i] == VALUE_KIND_POINTER ? VALUE_KIND_INTEGER : ark[i]),
                                 arid[i]);
-                            V rv = {lv, ark[i] == VK_P ? VK_I : ark[i]};
-                            V cv = vcast(g, rv, tk2v(n->ct.arr.d[i]->ty));
+                            V rv = {lv, ark[i] == VALUE_KIND_POINTER ? VALUE_KIND_INTEGER : ark[i]};
+                            V cv = value_cast(g, rv, token_kind_to_value_kind(n->ct.arr.d[i]->ty));
                             Syntax_Node *tg = n->ct.arr.d[i];
-                            if (tg->k == N_ID)
+                            if (tg->k == NODE_IDENTIFIER)
                             {
-                                Symbol *ts = tg->sy ? tg->sy : syf(g->sm, tg->s);
+                                Symbol *ts = tg->sy ? tg->sy : symbol_find(g->sm, tg->s);
                                 if (ts)
                                 {
                                     if (ts->lv >= 0 and ts->lv < g->sm->lv)
                                         fprintf(
                                             o,
                                             "  store %s %%t%d, ptr %%lnk.%d.%s\n",
-                                            vt(cv.k),
+                                            value_type_string(cv.k),
                                             cv.id,
                                             ts->lv,
                                             string_to_lowercase(tg->s));
@@ -12160,7 +12294,7 @@ static void gss(Code_Generator *g, Syntax_Node *n)
                                         fprintf(
                                             o,
                                             "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
-                                            vt(cv.k),
+                                            value_type_string(cv.k),
                                             cv.id,
                                             string_to_lowercase(tg->s),
                                             ts->sc,
@@ -12179,14 +12313,14 @@ static void gss(Code_Generator *g, Syntax_Node *n)
                     {
                         if (i)
                             fprintf(o, ", ");
-                        V av = gex(g, n->ct.arr.d[i]);
+                        V av = generate_expression(g, n->ct.arr.d[i]);
                         fprintf(o, "i64 %%t%d", av.id);
                     }
                     fprintf(o, ")\n");
                 }
                 else if (s->k == 4 or s->k == 5)
                 {
-                    Syntax_Node *sp = sspec(s);
+                    Syntax_Node *sp = symbol_spec(s);
                     if (not sp and s->ty and s->ty->ops.n > 0)
                     {
                         sp = s->ty->ops.d[0]->bd.sp;
@@ -12203,24 +12337,24 @@ static void gss(Code_Generator *g, Syntax_Node *n)
                     {
                         Syntax_Node *pm = sp and i < sp->sp.pmm.n ? sp->sp.pmm.d[i] : 0;
                         Syntax_Node *arg = n->ct.arr.d[i];
-                        V av = {0, VK_I};
-                        Value_Kind ek = VK_I;
+                        V av = {0, VALUE_KIND_INTEGER};
+                        Value_Kind ek = VALUE_KIND_INTEGER;
                         if (pm)
                         {
                             if (pm->sy and pm->sy->ty)
-                                ek = tk2v(pm->sy->ty);
+                                ek = token_kind_to_value_kind(pm->sy->ty);
                             else if (pm->pm.ty)
                             {
-                                Type_Info *pt = rst(g->sm, pm->pm.ty);
-                                ek = tk2v(pt);
+                                Type_Info *pt = resolve_subtype(g->sm, pm->pm.ty);
+                                ek = token_kind_to_value_kind(pt);
                             }
                         }
-                        if (arpt[i] and arg->k == N_ID)
+                        if (arpt[i] and arg->k == NODE_IDENTIFIER)
                         {
-                            ek = VK_P;
-                            Symbol *as = arg->sy ? arg->sy : syf(g->sm, arg->s);
-                            av.id = nt(g);
-                            av.k = VK_P;
+                            ek = VALUE_KIND_POINTER;
+                            Symbol *as = arg->sy ? arg->sy : symbol_find(g->sm, arg->s);
+                            av.id = new_temporary(g);
+                            av.k = VALUE_KIND_POINTER;
                             if (as and as->lv >= 0 and as->lv < g->sm->lv)
                                 fprintf(
                                     o,
@@ -12239,8 +12373,8 @@ static void gss(Code_Generator *g, Syntax_Node *n)
                         }
                         else
                         {
-                            av = gex(g, arg);
-                            V cv = vcast(g, av, ek);
+                            av = generate_expression(g, arg);
+                            V cv = value_cast(g, av, ek);
                             av = cv;
                         }
                         arid[i] = av.id;
@@ -12250,13 +12384,13 @@ static void gss(Code_Generator *g, Syntax_Node *n)
                     if (s->ext)
                         snprintf(nb, 256, "%.*s", (int) s->ext_nm.n, s->ext_nm.s);
                     else
-                        esn(nb, 256, s, n->ct.nm->s, n->ct.arr.n, sp);
+                        encode_symbol_name(nb, 256, s, n->ct.nm->s, n->ct.arr.n, sp);
                     if (s->k == 5 and sp and sp->sp.rt)
                     {
-                        Type_Info *rt = rst(g->sm, sp->sp.rt);
-                        Value_Kind rk = tk2v(rt);
-                        int rid = nt(g);
-                        fprintf(o, "  %%t%d = call %s @\"%s\"(", rid, vt(rk), nb);
+                        Type_Info *rt = resolve_subtype(g->sm, sp->sp.rt);
+                        Value_Kind rk = token_kind_to_value_kind(rt);
+                        int rid = new_temporary(g);
+                        fprintf(o, "  %%t%d = call %s @\"%s\"(", rid, value_type_string(rk), nb);
                     }
                     else
                         fprintf(o, "  call void @\"%s\"(", nb);
@@ -12264,43 +12398,43 @@ static void gss(Code_Generator *g, Syntax_Node *n)
                     {
                         if (i)
                             fprintf(o, ", ");
-                        fprintf(o, "%s %%t%d", vt(ark[i]), arid[i]);
+                        fprintf(o, "%s %%t%d", value_type_string(ark[i]), arid[i]);
                     }
                     fprintf(o, ")\n");
                 }
             }
         }
         break;
-    case N_BL:
+    case NODE_BLOCK:
     {
         int lblbb = -1;
         if (n->bk.lb.s)
         {
-            lblbb = glbl_bb(g, n->bk.lb);
-            br(g, lblbb);
-            lbl(g, lblbb);
+            lblbb = get_or_create_label_basic_block(g, n->bk.lb);
+            emit_branch(g, lblbb);
+            emit_label(g, lblbb);
         }
-        int sj = nt(g);
-        int prev_eh = nt(g);
+        int sj = new_temporary(g);
+        int prev_eh = new_temporary(g);
         fprintf(o, "  %%t%d = load ptr, ptr @__eh_cur\n", prev_eh);
         fprintf(o, "  %%t%d = call ptr @__ada_setjmp()\n", sj);
         fprintf(o, "  store ptr %%t%d, ptr %%ej\n", sj);
-        int sjb = nt(g);
+        int sjb = new_temporary(g);
         fprintf(o, "  %%t%d = load ptr, ptr %%ej\n", sjb);
-        int sv = nt(g);
+        int sv = new_temporary(g);
         fprintf(o, "  %%t%d = call i32 @setjmp(ptr %%t%d)\n", sv, sjb);
         fprintf(o, "  store ptr %%t%d, ptr @__eh_cur\n", sjb);
-        int ze = nt(g);
+        int ze = new_temporary(g);
         fprintf(o, "  %%t%d = icmp eq i32 %%t%d, 0\n", ze, sv);
-        int ln = nl(g), lh = nl(g);
-        cbr(g, ze, ln, lh);
-        lbl(g, ln);
+        int ln = new_label(g), lh = new_label(g);
+        emit_conditional_branch(g, ze, ln, lh);
+        emit_label(g, ln);
         for (uint32_t i = 0; i < n->bk.dc.n; i++)
         {
             Syntax_Node *d = n->bk.dc.d[i];
-            if (d and d->k != N_PB and d->k != N_FB and d->k != N_PKB and d->k != N_PD
-                and d->k != N_FD)
-                gdl(g, d);
+            if (d and d->k != NODE_PROCEDURE_BODY and d->k != NODE_FUNCTION_BODY and d->k != N_PKB
+                and d->k != NODE_PROCEDURE_DECL and d->k != NODE_FUNCTION_DECL)
+                generate_declaration(g, d);
         }
         for (uint32_t i = 0; i < n->bk.dc.n; i++)
         {
@@ -12312,64 +12446,67 @@ static void gss(Code_Generator *g, Syntax_Node *n)
                     Syntax_Node *id = d->od.id.d[j];
                     if (id->sy)
                     {
-                        Value_Kind k = d->od.ty ? tk2v(rst(g->sm, d->od.ty)) : VK_I;
+                        Value_Kind k =
+                            d->od.ty ? token_kind_to_value_kind(resolve_subtype(g->sm, d->od.ty))
+                                     : VALUE_KIND_INTEGER;
                         Symbol *s = id->sy;
-                        Type_Info *at = d->od.ty ? rst(g->sm, d->od.ty) : 0;
-                        if (at and at->k == TY_R and at->dc.n > 0 and d->od.in and d->od.in->ty)
+                        Type_Info *at = d->od.ty ? resolve_subtype(g->sm, d->od.ty) : 0;
+                        if (at and at->k == TYPE_RECORD and at->dc.n > 0 and d->od.in
+                            and d->od.in->ty)
                         {
-                            Type_Info *it = tcc(d->od.in->ty);
-                            if (it and it->k == TY_R and it->dc.n > 0)
+                            Type_Info *it = type_concrete(d->od.in->ty);
+                            if (it and it->k == TYPE_RECORD and it->dc.n > 0)
                             {
                                 for (uint32_t di = 0; di < at->dc.n and di < it->dc.n; di++)
                                 {
                                     Syntax_Node *td = at->dc.d[di];
                                     Syntax_Node *id_d = it->dc.d[di];
                                     if (td->k == N_DS and id_d->k == N_DS and td->pm.df
-                                        and td->pm.df->k == N_INT)
+                                        and td->pm.df->k == NODE_INTEGER)
                                     {
-                                        int tdi = nt(g);
+                                        int tdi = new_temporary(g);
                                         fprintf(
                                             o,
                                             "  %%t%d = add i64 0, %lld\n",
                                             tdi,
                                             (long long) td->pm.df->i);
-                                        V iv = gex(g, d->od.in);
-                                        int ivd = nt(g);
+                                        V iv = generate_expression(g, d->od.in);
+                                        int ivd = new_temporary(g);
                                         fprintf(
                                             o,
                                             "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n",
                                             ivd,
                                             iv.id,
                                             di);
-                                        int dvl = nt(g);
+                                        int dvl = new_temporary(g);
                                         fprintf(o, "  %%t%d = load i64, ptr %%t%d\n", dvl, ivd);
-                                        int cmp = nt(g);
+                                        int cmp = new_temporary(g);
                                         fprintf(
                                             o,
                                             "  %%t%d = icmp ne i64 %%t%d, %%t%d\n",
                                             cmp,
                                             dvl,
                                             tdi);
-                                        int lok = nl(g), lf = nl(g);
-                                        cbr(g, cmp, lok, lf);
-                                        lbl(g, lok);
+                                        int lok = new_label(g), lf = new_label(g);
+                                        emit_conditional_branch(g, cmp, lok, lf);
+                                        emit_label(g, lok);
                                         fprintf(
                                             o,
                                             "  call void @__ada_raise(ptr @.ex.CONSTRAINT_ERROR)\n "
                                             " unreachable\n");
-                                        lbl(g, lf);
+                                        emit_label(g, lf);
                                     }
                                 }
                             }
                         }
                         {
-                            V v = gex(g, d->od.in);
-                            v = vcast(g, v, k);
+                            V v = generate_expression(g, d->od.in);
+                            v = value_cast(g, v, k);
                             if (s and s->lv >= 0 and s->lv < g->sm->lv)
                                 fprintf(
                                     o,
                                     "  store %s %%t%d, ptr %%lnk.%d.%s\n",
-                                    vt(k),
+                                    value_type_string(k),
                                     v.id,
                                     s->lv,
                                     string_to_lowercase(id->s));
@@ -12377,7 +12514,7 @@ static void gss(Code_Generator *g, Syntax_Node *n)
                                 fprintf(
                                     o,
                                     "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
-                                    vt(k),
+                                    value_type_string(k),
                                     v.id,
                                     string_to_lowercase(id->s),
                                     s ? s->sc : 0,
@@ -12397,8 +12534,8 @@ static void gss(Code_Generator *g, Syntax_Node *n)
                     Symbol *s = id->sy;
                     if (not s)
                         continue;
-                    Type_Info *at = d->od.ty ? rst(g->sm, d->od.ty) : 0;
-                    if (not at or at->k != TY_R or not at->dc.n)
+                    Type_Info *at = d->od.ty ? resolve_subtype(g->sm, d->od.ty) : 0;
+                    if (not at or at->k != TYPE_RECORD or not at->dc.n)
                         continue;
                     uint32_t di;
                     for (di = 0; di < at->dc.n; di++)
@@ -12407,15 +12544,15 @@ static void gss(Code_Generator *g, Syntax_Node *n)
                     for (uint32_t ci = 0; ci < at->cm.n; ci++)
                     {
                         Syntax_Node *cm = at->cm.d[ci];
-                        if (cm->k != N_CM or not cm->cm.ty)
+                        if (cm->k != NODE_COMPONENT or not cm->cm.ty)
                             continue;
                         Type_Info *cty = cm->cm.ty->ty;
-                        if (not cty or cty->k != TY_A or not cty->ix)
+                        if (not cty or cty->k != TYPE_ARRAY or not cty->ix)
                             continue;
                         for (di = 0; di < at->dc.n; di++)
                         {
                             Syntax_Node *dc = at->dc.d[di];
-                            if (dc->k == N_DS and dc->pm.df and dc->pm.df->k == N_INT)
+                            if (dc->k == N_DS and dc->pm.df and dc->pm.df->k == NODE_INTEGER)
                             {
                                 int64_t dv = dc->pm.df->i;
                                 if (dv < cty->ix->lo or dv > cty->ix->hi)
@@ -12432,9 +12569,9 @@ static void gss(Code_Generator *g, Syntax_Node *n)
                     for (di = 0; di < at->dc.n; di++)
                     {
                         Syntax_Node *dc = at->dc.d[di];
-                        int dv = nt(g);
+                        int dv = new_temporary(g);
                         fprintf(o, "  %%t%d = add i64 0, %lld\n", dv, (long long) dc->pm.df->i);
-                        int dp = nt(g);
+                        int dp = new_temporary(g);
                         if (s->lv >= 0 and s->lv < g->sm->lv)
                             fprintf(
                                 o,
@@ -12458,65 +12595,65 @@ static void gss(Code_Generator *g, Syntax_Node *n)
                 }
         }
         for (uint32_t i = 0; i < n->bk.st.n; i++)
-            gss(g, n->bk.st.d[i]);
-        int ld = nl(g);
-        br(g, ld);
-        lbl(g, lh);
+            generate_statement_sequence(g, n->bk.st.d[i]);
+        int ld = new_label(g);
+        emit_branch(g, ld);
+        emit_label(g, lh);
         if (n->bk.hd.n > 0)
         {
             for (uint32_t i = 0; i < n->bk.hd.n; i++)
             {
                 Syntax_Node *h = n->bk.hd.d[i];
-                int lhm = nl(g), lhn = nl(g);
+                int lhm = new_label(g), lhn = new_label(g);
                 for (uint32_t j = 0; j < h->hnd.ec.n; j++)
                 {
                     Syntax_Node *e = h->hnd.ec.d[j];
-                    if (e->k == N_ID and string_equal_ignore_case(e->s, Z("others")))
+                    if (e->k == NODE_IDENTIFIER and string_equal_ignore_case(e->s, Z("others")))
                     {
-                        br(g, lhm);
+                        emit_branch(g, lhm);
                         break;
                     }
-                    int ec = nt(g);
+                    int ec = new_temporary(g);
                     fprintf(o, "  %%t%d = load ptr, ptr @__ex_cur\n", ec);
-                    int cm = nt(g);
+                    int cm = new_temporary(g);
                     char eb[256];
                     for (uint32_t ei = 0; ei < e->s.n and ei < 255; ei++)
                         eb[ei] = toupper(e->s.s[ei]);
                     eb[e->s.n < 255 ? e->s.n : 255] = 0;
                     fprintf(o, "  %%t%d = call i32 @strcmp(ptr %%t%d, ptr @.ex.%s)\n", cm, ec, eb);
-                    int eq = nt(g);
+                    int eq = new_temporary(g);
                     fprintf(o, "  %%t%d = icmp eq i32 %%t%d, 0\n", eq, cm);
-                    cbr(g, eq, lhm, lhn);
-                    lbl(g, lhn);
+                    emit_conditional_branch(g, eq, lhm, lhn);
+                    emit_label(g, lhn);
                 }
-                br(g, ld);
-                lbl(g, lhm);
+                emit_branch(g, ld);
+                emit_label(g, lhm);
                 for (uint32_t j = 0; j < h->hnd.stz.n; j++)
-                    gss(g, h->hnd.stz.d[j]);
-                br(g, ld);
+                    generate_statement_sequence(g, h->hnd.stz.d[j]);
+                emit_branch(g, ld);
             }
         }
         else
         {
-            int nc = nt(g);
+            int nc = new_temporary(g);
             fprintf(o, "  %%t%d = icmp eq ptr %%t%d, null\n", nc, prev_eh);
-            int ex = nl(g), lj = nl(g);
-            cbr(g, nc, ex, lj);
-            lbl(g, ex);
-            br(g, ld);
-            lbl(g, lj);
+            int ex = new_label(g), lj = new_label(g);
+            emit_conditional_branch(g, nc, ex, lj);
+            emit_label(g, ex);
+            emit_branch(g, ld);
+            emit_label(g, lj);
             fprintf(o, "  call void @longjmp(ptr %%t%d, i32 1)\n", prev_eh);
             fprintf(o, "  unreachable\n");
         }
-        lbl(g, ld);
+        emit_label(g, ld);
         fprintf(o, "  store ptr %%t%d, ptr @__eh_cur\n", prev_eh);
         ;
     }
     break;
     case N_DL:
     {
-        V d = gex(g, n->ex.cd);
-        d = vcast(g, d, VK_I);
+        V d = generate_expression(g, n->ex.cd);
+        d = value_cast(g, d, VALUE_KIND_INTEGER);
         fprintf(o, "  call void @__ada_delay(i64 %%t%d)\n", d.id);
     }
     break;
@@ -12524,40 +12661,40 @@ static void gss(Code_Generator *g, Syntax_Node *n)
     {
         if (n->sa.kn == 1 or n->sa.kn == 3)
         {
-            V gd = gex(g, n->sa.gd);
-            int ld = nl(g);
+            V gd = generate_expression(g, n->sa.gd);
+            int ld = new_label(g);
             fprintf(o, "  call void @__ada_delay(i64 %%t%d)\n", gd.id);
             if (n->sa.kn == 3)
                 fprintf(o, "  call void @__ada_raise(ptr @.ex.TASKING_ERROR)\n  unreachable\n");
             for (uint32_t i = 0; i < n->sa.sts.n; i++)
-                gss(g, n->sa.sts.d[i]);
-            br(g, ld);
-            lbl(g, ld);
+                generate_statement_sequence(g, n->sa.sts.d[i]);
+            emit_branch(g, ld);
+            emit_label(g, ld);
         }
         else
         {
-            int ld = nl(g);
+            int ld = new_label(g);
             for (uint32_t i = 0; i < n->sa.sts.n; i++)
             {
                 Syntax_Node *st = n->sa.sts.d[i];
                 if (st->k == N_ACC)
                 {
                     for (uint32_t j = 0; j < st->acc.stx.n; j++)
-                        gss(g, st->acc.stx.d[j]);
+                        generate_statement_sequence(g, st->acc.stx.d[j]);
                 }
                 else if (st->k == N_DL)
                 {
-                    V d = gex(g, st->ex.cd);
+                    V d = generate_expression(g, st->ex.cd);
                     fprintf(o, "  call void @__ada_delay(i64 %%t%d)\n", d.id);
                     for (uint32_t j = 0; j < st->hnd.stz.n; j++)
-                        gss(g, st->hnd.stz.d[j]);
+                        generate_statement_sequence(g, st->hnd.stz.d[j]);
                 }
             }
             if (n->ss.el.n > 0)
                 for (uint32_t i = 0; i < n->ss.el.n; i++)
-                    gss(g, n->ss.el.d[i]);
-            br(g, ld);
-            lbl(g, ld);
+                    generate_statement_sequence(g, n->ss.el.d[i]);
+            emit_branch(g, ld);
+            emit_label(g, ld);
         }
     }
     break;
@@ -12586,24 +12723,24 @@ static bool hlb(Node_Vector *sl)
         Syntax_Node *s = sl->d[i];
         if (not s)
             continue;
-        if (s->k == N_BL and s->bk.lb.s)
+        if (s->k == NODE_BLOCK and s->bk.lb.s)
             return 1;
         if (s->k == N_GT)
             return 1;
-        if (s->k == N_BL and hlb(&s->bk.st))
+        if (s->k == NODE_BLOCK and hlb(&s->bk.st))
             return 1;
-        if (s->k == N_IF and (hlb(&s->if_.th) or hlb(&s->if_.el)))
+        if (s->k == NODE_IF and (hlb(&s->if_.th) or hlb(&s->if_.el)))
             return 1;
-        for (uint32_t j = 0; s->k == N_IF and j < s->if_.ei.n; j++)
+        for (uint32_t j = 0; s->k == NODE_IF and j < s->if_.ei.n; j++)
             if (s->if_.ei.d[j] and hlb(&s->if_.ei.d[j]->if_.th))
                 return 1;
-        if (s->k == N_CS)
+        if (s->k == NODE_CASE)
         {
             for (uint32_t j = 0; j < s->cs.al.n; j++)
                 if (s->cs.al.d[j] and hlb(&s->cs.al.d[j]->hnd.stz))
                     return 1;
         }
-        if (s->k == N_LP and hlb(&s->lp.st))
+        if (s->k == NODE_LOOP and hlb(&s->lp.st))
             return 1;
     }
     return 0;
@@ -12645,7 +12782,7 @@ static void elb_r(Code_Generator *g, Syntax_Node *s, Node_Vector *lbs)
             nv(lbs, (Syntax_Node *) lb);
         }
     }
-    if (s->k == N_IF)
+    if (s->k == NODE_IF)
     {
         for (uint32_t i = 0; i < s->if_.th.n; i++)
             elb_r(g, s->if_.th.d[i], lbs);
@@ -12656,7 +12793,7 @@ static void elb_r(Code_Generator *g, Syntax_Node *s, Node_Vector *lbs)
                 for (uint32_t j = 0; j < s->if_.ei.d[i]->if_.th.n; j++)
                     elb_r(g, s->if_.ei.d[i]->if_.th.d[j], lbs);
     }
-    if (s->k == N_BL)
+    if (s->k == NODE_BLOCK)
     {
         if (s->bk.lb.s)
         {
@@ -12680,7 +12817,7 @@ static void elb_r(Code_Generator *g, Syntax_Node *s, Node_Vector *lbs)
         for (uint32_t i = 0; i < s->bk.st.n; i++)
             elb_r(g, s->bk.st.d[i], lbs);
     }
-    if (s->k == N_LP)
+    if (s->k == NODE_LOOP)
     {
         if (s->lp.lb.s)
         {
@@ -12704,13 +12841,13 @@ static void elb_r(Code_Generator *g, Syntax_Node *s, Node_Vector *lbs)
         for (uint32_t i = 0; i < s->lp.st.n; i++)
             elb_r(g, s->lp.st.d[i], lbs);
     }
-    if (s->k == N_CS)
+    if (s->k == NODE_CASE)
         for (uint32_t i = 0; i < s->cs.al.n; i++)
             if (s->cs.al.d[i])
                 for (uint32_t j = 0; j < s->cs.al.d[i]->hnd.stz.n; j++)
                     elb_r(g, s->cs.al.d[i]->hnd.stz.d[j], lbs);
 }
-static void gdl(Code_Generator *g, Syntax_Node *n);
+static void generate_declaration(Code_Generator *g, Syntax_Node *n);
 static void hbl(Code_Generator *g, Node_Vector *sl)
 {
     for (uint32_t i = 0; i < sl->n; i++)
@@ -12718,17 +12855,17 @@ static void hbl(Code_Generator *g, Node_Vector *sl)
         Syntax_Node *s = sl->d[i];
         if (not s)
             continue;
-        if (s->k == N_BL)
+        if (s->k == NODE_BLOCK)
         {
             for (uint32_t j = 0; j < s->bk.dc.n; j++)
             {
                 Syntax_Node *d = s->bk.dc.d[j];
-                if (d and (d->k == N_PB or d->k == N_FB))
-                    gdl(g, d);
+                if (d and (d->k == NODE_PROCEDURE_BODY or d->k == NODE_FUNCTION_BODY))
+                    generate_declaration(g, d);
             }
             hbl(g, &s->bk.st);
         }
-        else if (s->k == N_IF)
+        else if (s->k == NODE_IF)
         {
             hbl(g, &s->if_.th);
             hbl(g, &s->if_.el);
@@ -12736,17 +12873,18 @@ static void hbl(Code_Generator *g, Node_Vector *sl)
                 if (s->if_.ei.d[j])
                     hbl(g, &s->if_.ei.d[j]->if_.th);
         }
-        else if (s->k == N_CS)
+        else if (s->k == NODE_CASE)
         {
             for (uint32_t j = 0; j < s->cs.al.n; j++)
                 if (s->cs.al.d[j])
                     hbl(g, &s->cs.al.d[j]->hnd.stz);
         }
-        else if (s->k == N_LP)
+        else if (s->k == NODE_LOOP)
             hbl(g, &s->lp.st);
     }
 }
-static void gdl(Code_Generator *g, Syntax_Node *n)
+
+static void generate_declaration(Code_Generator *g, Syntax_Node *n)
 {
     FILE *o = g->o;
     if (not n)
@@ -12764,17 +12902,22 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
                 if (s->k == 0 or s->k == 2)
                 {
                     Value_Kind k =
-                        s->ty ? tk2v(s->ty) : (n->od.ty ? tk2v(rst(g->sm, n->od.ty)) : VK_I);
-                    Type_Info *at = s->ty ? tcc(s->ty) : (n->od.ty ? rst(g->sm, n->od.ty) : 0);
+                        s->ty
+                            ? token_kind_to_value_kind(s->ty)
+                            : (n->od.ty ? token_kind_to_value_kind(resolve_subtype(g->sm, n->od.ty))
+                                        : VALUE_KIND_INTEGER);
+                    Type_Info *at = s->ty ? type_concrete(s->ty)
+                                          : (n->od.ty ? resolve_subtype(g->sm, n->od.ty) : 0);
                     if (s->k == 0 or s->k == 2)
                     {
                         Type_Info *bt = at;
-                        while (bt and bt->k == TY_A and bt->el)
-                            bt = tcc(bt->el);
+                        while (bt and bt->k == TYPE_ARRAY and bt->el)
+                            bt = type_concrete(bt->el);
                         int asz = -1;
-                        if (n->od.in and n->od.in->k == N_AG and at and at->k == TY_A)
+                        if (n->od.in and n->od.in->k == NODE_AGGREGATE and at
+                            and at->k == TYPE_ARRAY)
                             asz = (int) n->od.in->ag.it.n;
-                        if (at and at->k == TY_A and at->lo == 0 and at->hi == -1 and asz < 0)
+                        if (at and at->k == TYPE_ARRAY and at->lo == 0 and at->hi == -1 and asz < 0)
                         {
                             fprintf(
                                 o,
@@ -12783,7 +12926,7 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
                                 s->sc,
                                 s->el);
                         }
-                        else if (at and at->k == TY_A and asz > 0)
+                        else if (at and at->k == TYPE_ARRAY and asz > 0)
                         {
                             fprintf(
                                 o,
@@ -12792,9 +12935,9 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
                                 s->sc,
                                 s->el,
                                 asz,
-                                act(bt));
+                                ada_c_type(bt));
                         }
-                        else if (at and at->k == TY_A and at->hi >= at->lo)
+                        else if (at and at->k == TYPE_ARRAY and at->hi >= at->lo)
                         {
                             asz = (int) (at->hi - at->lo + 1);
                             fprintf(
@@ -12804,7 +12947,7 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
                                 s->sc,
                                 s->el,
                                 asz,
-                                act(bt));
+                                ada_c_type(bt));
                         }
                         else
                         {
@@ -12814,7 +12957,7 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
                                 string_to_lowercase(id->s),
                                 s->sc,
                                 s->el,
-                                vt(k));
+                                value_type_string(k));
                         }
                     }
                 }
@@ -12822,7 +12965,7 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
         }
         break;
     }
-    case N_PD:
+    case NODE_PROCEDURE_DECL:
     {
         Syntax_Node *sp = n->bd.sp;
         char nb[256];
@@ -12830,16 +12973,16 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
             snprintf(nb, 256, "%.*s", (int) n->sy->ext_nm.n, n->sy->ext_nm.s);
         else
         {
-            esn(nb, 256, n->sy, sp->sp.nm, sp->sp.pmm.n, sp);
+            encode_symbol_name(nb, 256, n->sy, sp->sp.nm, sp->sp.pmm.n, sp);
         }
-        if (not adcl(g, nb))
+        if (not add_declaration(g, nb))
             break;
         if (isrt(nb))
             break;
         bool has_body = false;
         if (n->sy)
             for (uint32_t i = 0; i < n->sy->ol.n; i++)
-                if (n->sy->ol.d[i]->k == N_PB)
+                if (n->sy->ol.d[i]->k == NODE_PROCEDURE_BODY)
                 {
                     has_body = true;
                     break;
@@ -12852,25 +12995,25 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
             if (i)
                 fprintf(o, ",");
             Syntax_Node *p = sp->sp.pmm.d[i];
-            Type_Info *pt = p->pm.ty ? rst(g->sm, p->pm.ty) : 0;
-            Value_Kind k = VK_I;
+            Type_Info *pt = p->pm.ty ? resolve_subtype(g->sm, p->pm.ty) : 0;
+            Value_Kind k = VALUE_KIND_INTEGER;
             if (pt)
             {
-                Type_Info *ptc = tcc(pt);
-                if (n->sy and n->sy->ext and ptc and ptc->k == TY_A and not(p->pm.md & 2))
-                    k = VK_I;
+                Type_Info *ptc = type_concrete(pt);
+                if (n->sy and n->sy->ext and ptc and ptc->k == TYPE_ARRAY and not(p->pm.md & 2))
+                    k = VALUE_KIND_INTEGER;
                 else
-                    k = tk2v(pt);
+                    k = token_kind_to_value_kind(pt);
             }
             if (p->pm.md & 2)
                 fprintf(o, "ptr");
             else
-                fprintf(o, "%s", vt(k));
+                fprintf(o, "%s", value_type_string(k));
         }
         fprintf(o, ")\n");
     }
     break;
-    case N_FD:
+    case NODE_FUNCTION_DECL:
     {
         Syntax_Node *sp = n->bd.sp;
         char nb[256];
@@ -12878,78 +13021,80 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
             snprintf(nb, 256, "%.*s", (int) n->sy->ext_nm.n, n->sy->ext_nm.s);
         else
         {
-            esn(nb, 256, n->sy, sp->sp.nm, sp->sp.pmm.n, sp);
+            encode_symbol_name(nb, 256, n->sy, sp->sp.nm, sp->sp.pmm.n, sp);
         }
-        if (not adcl(g, nb))
+        if (not add_declaration(g, nb))
             break;
         if (isrt(nb))
             break;
         bool has_body = false;
         if (n->sy)
             for (uint32_t i = 0; i < n->sy->ol.n; i++)
-                if (n->sy->ol.d[i]->k == N_FB)
+                if (n->sy->ol.d[i]->k == NODE_FUNCTION_BODY)
                 {
                     has_body = true;
                     break;
                 }
         if (has_body)
             break;
-        Value_Kind rk = sp->sp.rt ? tk2v(rst(g->sm, sp->sp.rt)) : VK_I;
-        fprintf(o, "declare %s @\"%s\"(", vt(rk), nb);
+        Value_Kind rk = sp->sp.rt ? token_kind_to_value_kind(resolve_subtype(g->sm, sp->sp.rt))
+                                  : VALUE_KIND_INTEGER;
+        fprintf(o, "declare %s @\"%s\"(", value_type_string(rk), nb);
         for (uint32_t i = 0; i < sp->sp.pmm.n; i++)
         {
             if (i)
                 fprintf(o, ",");
             Syntax_Node *p = sp->sp.pmm.d[i];
-            Type_Info *pt = p->pm.ty ? rst(g->sm, p->pm.ty) : 0;
-            Value_Kind k = VK_I;
+            Type_Info *pt = p->pm.ty ? resolve_subtype(g->sm, p->pm.ty) : 0;
+            Value_Kind k = VALUE_KIND_INTEGER;
             if (pt)
             {
-                Type_Info *ptc = tcc(pt);
-                if (n->sy and n->sy->ext and ptc and ptc->k == TY_A and not(p->pm.md & 2))
-                    k = VK_I;
+                Type_Info *ptc = type_concrete(pt);
+                if (n->sy and n->sy->ext and ptc and ptc->k == TYPE_ARRAY and not(p->pm.md & 2))
+                    k = VALUE_KIND_INTEGER;
                 else
-                    k = tk2v(pt);
+                    k = token_kind_to_value_kind(pt);
             }
             if (p->pm.md & 2)
                 fprintf(o, "ptr");
             else
-                fprintf(o, "%s", vt(k));
+                fprintf(o, "%s", value_type_string(k));
         }
         fprintf(o, ")\n");
     }
     break;
-    case N_BL:
+    case NODE_BLOCK:
         for (uint32_t i = 0; i < n->bk.dc.n; i++)
         {
             Syntax_Node *d = n->bk.dc.d[i];
-            if (d and d->k != N_PB and d->k != N_FB and d->k != N_PD and d->k != N_FD)
-                gdl(g, d);
+            if (d and d->k != NODE_PROCEDURE_BODY and d->k != NODE_FUNCTION_BODY
+                and d->k != NODE_PROCEDURE_DECL and d->k != NODE_FUNCTION_DECL)
+                generate_declaration(g, d);
         }
         for (uint32_t i = 0; i < n->bk.dc.n; i++)
         {
             Syntax_Node *d = n->bk.dc.d[i];
-            if (d and (d->k == N_PB or d->k == N_FB))
-                gdl(g, d);
+            if (d and (d->k == NODE_PROCEDURE_BODY or d->k == NODE_FUNCTION_BODY))
+                generate_declaration(g, d);
         }
         break;
-    case N_PB:
+    case NODE_PROCEDURE_BODY:
     {
         Syntax_Node *sp = n->bd.sp;
-        GT *gt = gfnd(g->sm, sp->sp.nm);
+        Generic_Type *gt = gfnd(g->sm, sp->sp.nm);
         if (gt)
             break;
         for (uint32_t i = 0; i < n->bd.dc.n; i++)
         {
             Syntax_Node *d = n->bd.dc.d[i];
             if (d and d->k == N_PKB)
-                gdl(g, d);
+                generate_declaration(g, d);
         }
         for (uint32_t i = 0; i < n->bd.dc.n; i++)
         {
             Syntax_Node *d = n->bd.dc.d[i];
-            if (d and (d->k == N_PB or d->k == N_FB))
-                gdl(g, d);
+            if (d and (d->k == NODE_PROCEDURE_BODY or d->k == NODE_FUNCTION_BODY))
+                generate_declaration(g, d);
         }
         hbl(g, &n->bd.st);
         char nb[256];
@@ -12959,7 +13104,7 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
         }
         else
         {
-            esn(nb, 256, n->sy, sp->sp.nm, sp->sp.pmm.n, sp);
+            encode_symbol_name(nb, 256, n->sy, sp->sp.nm, sp->sp.pmm.n, sp);
             if (n->sy)
             {
                 n->sy->mangled_nm.s = arena_allocate(strlen(nb) + 1);
@@ -12978,11 +13123,12 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
             if (i < (int) sp->sp.pmm.n)
             {
                 Syntax_Node *p = sp->sp.pmm.d[i];
-                Value_Kind k = p->pm.ty ? tk2v(rst(g->sm, p->pm.ty)) : VK_I;
+                Value_Kind k = p->pm.ty ? token_kind_to_value_kind(resolve_subtype(g->sm, p->pm.ty))
+                                        : VALUE_KIND_INTEGER;
                 if (p->pm.md & 2)
                     fprintf(o, "ptr %%p.%s", string_to_lowercase(p->pm.nm));
                 else
-                    fprintf(o, "%s %%p.%s", vt(k), string_to_lowercase(p->pm.nm));
+                    fprintf(o, "%s %%p.%s", value_type_string(k), string_to_lowercase(p->pm.nm));
             }
             else
                 fprintf(o, "ptr %%__slnk");
@@ -12993,7 +13139,7 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
         g->sm->lv = n->sy ? n->sy->lv + 1 : 0;
         if (n->sy and n->sy->lv > 0)
         {
-            gbf(g);
+            generate_block_frame(g);
             int mx = 0;
             for (int h = 0; h < 4096; h++)
                 for (Symbol *s = g->sm->sy[h]; s; s = s->nx)
@@ -13004,18 +13150,23 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
         }
         if (n->sy and n->sy->lv > 0)
         {
-            int fp0 = nt(g);
+            int fp0 = new_temporary(g);
             fprintf(o, "  %%t%d = getelementptr ptr, ptr %%__frame, i64 0\n", fp0);
             fprintf(o, "  store ptr %%__slnk, ptr %%t%d\n", fp0);
         }
         for (uint32_t i = 0; i < sp->sp.pmm.n; i++)
         {
             Syntax_Node *p = sp->sp.pmm.d[i];
-            Value_Kind k = p->pm.ty ? tk2v(rst(g->sm, p->pm.ty)) : VK_I;
+            Value_Kind k = p->pm.ty ? token_kind_to_value_kind(resolve_subtype(g->sm, p->pm.ty))
+                                    : VALUE_KIND_INTEGER;
             Symbol *ps = p->sy;
             if (ps and ps->lv >= 0 and ps->lv < g->sm->lv)
                 fprintf(
-                    o, "  %%lnk.%d.%s = alloca %s\n", ps->lv, string_to_lowercase(p->pm.nm), vt(k));
+                    o,
+                    "  %%lnk.%d.%s = alloca %s\n",
+                    ps->lv,
+                    string_to_lowercase(p->pm.nm),
+                    value_type_string(k));
             else
                 fprintf(
                     o,
@@ -13023,17 +13174,21 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
                     string_to_lowercase(p->pm.nm),
                     ps ? ps->sc : 0,
                     ps ? ps->el : 0,
-                    vt(k));
+                    value_type_string(k));
             if (p->pm.md & 2)
             {
-                int lv = nt(g);
+                int lv = new_temporary(g);
                 fprintf(
-                    o, "  %%t%d = load %s, ptr %%p.%s\n", lv, vt(k), string_to_lowercase(p->pm.nm));
+                    o,
+                    "  %%t%d = load %s, ptr %%p.%s\n",
+                    lv,
+                    value_type_string(k),
+                    string_to_lowercase(p->pm.nm));
                 if (ps and ps->lv >= 0 and ps->lv < g->sm->lv)
                     fprintf(
                         o,
                         "  store %s %%t%d, ptr %%lnk.%d.%s\n",
-                        vt(k),
+                        value_type_string(k),
                         lv,
                         ps->lv,
                         string_to_lowercase(p->pm.nm));
@@ -13041,7 +13196,7 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
                     fprintf(
                         o,
                         "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
-                        vt(k),
+                        value_type_string(k),
                         lv,
                         string_to_lowercase(p->pm.nm),
                         ps ? ps->sc : 0,
@@ -13053,7 +13208,7 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
                     fprintf(
                         o,
                         "  store %s %%p.%s, ptr %%lnk.%d.%s\n",
-                        vt(k),
+                        value_type_string(k),
                         string_to_lowercase(p->pm.nm),
                         ps->lv,
                         string_to_lowercase(p->pm.nm));
@@ -13061,7 +13216,7 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
                     fprintf(
                         o,
                         "  store %s %%p.%s, ptr %%v.%s.sc%u.%u\n",
-                        vt(k),
+                        value_type_string(k),
                         string_to_lowercase(p->pm.nm),
                         string_to_lowercase(p->pm.nm),
                         ps ? ps->sc : 0,
@@ -13077,9 +13232,9 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
                     if (s->k == 0 and s->lv >= 0 and s->lv < g->sm->lv
                         and not(s->df and s->df->k == N_GVL))
                     {
-                        Value_Kind k = s->ty ? tk2v(s->ty) : VK_I;
-                        Type_Info *at = s->ty ? tcc(s->ty) : 0;
-                        if (at and at->k == TY_A and at->hi >= at->lo)
+                        Value_Kind k = s->ty ? token_kind_to_value_kind(s->ty) : VALUE_KIND_INTEGER;
+                        Type_Info *at = s->ty ? type_concrete(s->ty) : 0;
+                        if (at and at->k == TYPE_ARRAY and at->hi >= at->lo)
                         {
                             int asz = (int) (at->hi - at->lo + 1);
                             fprintf(
@@ -13089,7 +13244,7 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
                                 s->sc,
                                 s->el,
                                 asz,
-                                act(at->el));
+                                ada_c_type(at->el));
                         }
                         else
                         {
@@ -13099,48 +13254,49 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
                                 string_to_lowercase(s->nm),
                                 s->sc,
                                 s->el,
-                                vt(k));
+                                value_type_string(k));
                         }
                         int level_diff = g->sm->lv - s->lv - 1;
                         int slnk_ptr;
                         if (level_diff == 0)
                         {
-                            slnk_ptr = nt(g);
+                            slnk_ptr = new_temporary(g);
                             fprintf(o, "  %%t%d = bitcast ptr %%__slnk to ptr\n", slnk_ptr);
                         }
                         else
                         {
-                            slnk_ptr = nt(g);
+                            slnk_ptr = new_temporary(g);
                             fprintf(o, "  %%t%d = bitcast ptr %%__slnk to ptr\n", slnk_ptr);
                             for (int hop = 0; hop < level_diff; hop++)
                             {
-                                int next_slnk = nt(g);
+                                int next_slnk = new_temporary(g);
                                 fprintf(
                                     o,
                                     "  %%t%d = getelementptr ptr, ptr %%t%d, i64 0\n",
                                     next_slnk,
                                     slnk_ptr);
-                                int loaded_slnk = nt(g);
+                                int loaded_slnk = new_temporary(g);
                                 fprintf(
                                     o, "  %%t%d = load ptr, ptr %%t%d\n", loaded_slnk, next_slnk);
                                 slnk_ptr = loaded_slnk;
                             }
                         }
-                        int p = nt(g);
+                        int p = new_temporary(g);
                         fprintf(
                             o,
                             "  %%t%d = getelementptr ptr, ptr %%t%d, i64 %u\n",
                             p,
                             slnk_ptr,
                             s->el);
-                        int ptr_id = nt(g);
+                        int ptr_id = new_temporary(g);
                         fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", ptr_id, p);
-                        int v = nt(g);
-                        fprintf(o, "  %%t%d = load %s, ptr %%t%d\n", v, vt(k), ptr_id);
+                        int v = new_temporary(g);
+                        fprintf(
+                            o, "  %%t%d = load %s, ptr %%t%d\n", v, value_type_string(k), ptr_id);
                         fprintf(
                             o,
                             "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
-                            vt(k),
+                            value_type_string(k),
                             v,
                             string_to_lowercase(s->nm),
                             s->sc,
@@ -13152,9 +13308,9 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
         for (uint32_t i = 0; i < n->bd.dc.n; i++)
         {
             Syntax_Node *d = n->bd.dc.d[i];
-            if (d and d->k != N_PB and d->k != N_FB and d->k != N_PKB and d->k != N_PD
-                and d->k != N_FD)
-                gdl(g, d);
+            if (d and d->k != NODE_PROCEDURE_BODY and d->k != NODE_FUNCTION_BODY and d->k != N_PKB
+                and d->k != NODE_PROCEDURE_DECL and d->k != NODE_FUNCTION_DECL)
+                generate_declaration(g, d);
         }
         if (n->sy and n->sy->lv > 0)
         {
@@ -13177,7 +13333,7 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
                         }
                         if (not is_pm)
                         {
-                            int fp = nt(g);
+                            int fp = new_temporary(g);
                             int mx = g->sm->eo;
                             fprintf(
                                 o,
@@ -13208,64 +13364,67 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
                     Syntax_Node *id = d->od.id.d[j];
                     if (id->sy)
                     {
-                        Value_Kind k = d->od.ty ? tk2v(rst(g->sm, d->od.ty)) : VK_I;
+                        Value_Kind k =
+                            d->od.ty ? token_kind_to_value_kind(resolve_subtype(g->sm, d->od.ty))
+                                     : VALUE_KIND_INTEGER;
                         Symbol *s = id->sy;
-                        Type_Info *at = d->od.ty ? rst(g->sm, d->od.ty) : 0;
-                        if (at and at->k == TY_R and at->dc.n > 0 and d->od.in and d->od.in->ty)
+                        Type_Info *at = d->od.ty ? resolve_subtype(g->sm, d->od.ty) : 0;
+                        if (at and at->k == TYPE_RECORD and at->dc.n > 0 and d->od.in
+                            and d->od.in->ty)
                         {
-                            Type_Info *it = tcc(d->od.in->ty);
-                            if (it and it->k == TY_R and it->dc.n > 0)
+                            Type_Info *it = type_concrete(d->od.in->ty);
+                            if (it and it->k == TYPE_RECORD and it->dc.n > 0)
                             {
                                 for (uint32_t di = 0; di < at->dc.n and di < it->dc.n; di++)
                                 {
                                     Syntax_Node *td = at->dc.d[di];
                                     Syntax_Node *id_d = it->dc.d[di];
                                     if (td->k == N_DS and id_d->k == N_DS and td->pm.df
-                                        and td->pm.df->k == N_INT)
+                                        and td->pm.df->k == NODE_INTEGER)
                                     {
-                                        int tdi = nt(g);
+                                        int tdi = new_temporary(g);
                                         fprintf(
                                             o,
                                             "  %%t%d = add i64 0, %lld\n",
                                             tdi,
                                             (long long) td->pm.df->i);
-                                        V iv = gex(g, d->od.in);
-                                        int ivd = nt(g);
+                                        V iv = generate_expression(g, d->od.in);
+                                        int ivd = new_temporary(g);
                                         fprintf(
                                             o,
                                             "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n",
                                             ivd,
                                             iv.id,
                                             di);
-                                        int dvl = nt(g);
+                                        int dvl = new_temporary(g);
                                         fprintf(o, "  %%t%d = load i64, ptr %%t%d\n", dvl, ivd);
-                                        int cmp = nt(g);
+                                        int cmp = new_temporary(g);
                                         fprintf(
                                             o,
                                             "  %%t%d = icmp ne i64 %%t%d, %%t%d\n",
                                             cmp,
                                             dvl,
                                             tdi);
-                                        int lok = nl(g), lf = nl(g);
-                                        cbr(g, cmp, lok, lf);
-                                        lbl(g, lok);
+                                        int lok = new_label(g), lf = new_label(g);
+                                        emit_conditional_branch(g, cmp, lok, lf);
+                                        emit_label(g, lok);
                                         fprintf(
                                             o,
                                             "  call void @__ada_raise(ptr @.ex.CONSTRAINT_ERROR)\n "
                                             " unreachable\n");
-                                        lbl(g, lf);
+                                        emit_label(g, lf);
                                     }
                                 }
                             }
                         }
                         {
-                            V v = gex(g, d->od.in);
-                            v = vcast(g, v, k);
+                            V v = generate_expression(g, d->od.in);
+                            v = value_cast(g, v, k);
                             if (s and s->lv >= 0 and s->lv < g->sm->lv)
                                 fprintf(
                                     o,
                                     "  store %s %%t%d, ptr %%lnk.%d.%s\n",
-                                    vt(k),
+                                    value_type_string(k),
                                     v.id,
                                     s->lv,
                                     string_to_lowercase(id->s));
@@ -13273,7 +13432,7 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
                                 fprintf(
                                     o,
                                     "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
-                                    vt(k),
+                                    value_type_string(k),
                                     v.id,
                                     string_to_lowercase(id->s),
                                     s ? s->sc : 0,
@@ -13285,67 +13444,68 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
         }
         if (hlb(&n->bd.st))
         {
-            int sj = nt(g);
-            int peh = nt(g);
+            int sj = new_temporary(g);
+            int peh = new_temporary(g);
             fprintf(o, "  %%t%d = load ptr, ptr @__eh_cur\n", peh);
             fprintf(o, "  %%t%d = call ptr @__ada_setjmp()\n", sj);
             fprintf(o, "  store ptr %%t%d, ptr %%ej\n", sj);
-            int sjb = nt(g);
+            int sjb = new_temporary(g);
             fprintf(o, "  %%t%d = load ptr, ptr %%ej\n", sjb);
-            int sv = nt(g);
+            int sv = new_temporary(g);
             fprintf(o, "  %%t%d = call i32 @setjmp(ptr %%t%d)\n", sv, sjb);
             fprintf(o, "  store ptr %%t%d, ptr @__eh_cur\n", sjb);
-            int ze = nt(g);
+            int ze = new_temporary(g);
             fprintf(o, "  %%t%d = icmp eq i32 %%t%d, 0\n", ze, sv);
-            int ln = nl(g), lh = nl(g);
-            cbr(g, ze, ln, lh);
-            lbl(g, ln);
+            int ln = new_label(g), lh = new_label(g);
+            emit_conditional_branch(g, ze, ln, lh);
+            emit_label(g, ln);
             for (uint32_t i = 0; i < n->bd.st.n; i++)
-                gss(g, n->bd.st.d[i]);
-            int ld = nl(g);
-            br(g, ld);
-            lbl(g, lh);
-            int nc = nt(g);
+                generate_statement_sequence(g, n->bd.st.d[i]);
+            int ld = new_label(g);
+            emit_branch(g, ld);
+            emit_label(g, lh);
+            int nc = new_temporary(g);
             fprintf(o, "  %%t%d = icmp eq ptr %%t%d, null\n", nc, peh);
-            int ex = nl(g), lj = nl(g);
-            cbr(g, nc, ex, lj);
-            lbl(g, ex);
-            br(g, ld);
-            lbl(g, lj);
+            int ex = new_label(g), lj = new_label(g);
+            emit_conditional_branch(g, nc, ex, lj);
+            emit_label(g, ex);
+            emit_branch(g, ld);
+            emit_label(g, lj);
             fprintf(o, "  call void @longjmp(ptr %%t%d, i32 1)\n", peh);
             fprintf(o, "  unreachable\n");
-            lbl(g, ld);
+            emit_label(g, ld);
             fprintf(o, "  store ptr %%t%d, ptr @__eh_cur\n", peh);
         }
         else
         {
             for (uint32_t i = 0; i < n->bd.st.n; i++)
-                gss(g, n->bd.st.d[i]);
+                generate_statement_sequence(g, n->bd.st.d[i]);
         }
         g->sm->lv = sv;
         fprintf(o, "  ret void\n}\n");
     }
     break;
-    case N_FB:
+    case NODE_FUNCTION_BODY:
     {
         Syntax_Node *sp = n->bd.sp;
-        GT *gt = gfnd(g->sm, sp->sp.nm);
+        Generic_Type *gt = gfnd(g->sm, sp->sp.nm);
         if (gt)
             break;
         for (uint32_t i = 0; i < n->bd.dc.n; i++)
         {
             Syntax_Node *d = n->bd.dc.d[i];
             if (d and d->k == N_PKB)
-                gdl(g, d);
+                generate_declaration(g, d);
         }
         for (uint32_t i = 0; i < n->bd.dc.n; i++)
         {
             Syntax_Node *d = n->bd.dc.d[i];
-            if (d and (d->k == N_PB or d->k == N_FB))
-                gdl(g, d);
+            if (d and (d->k == NODE_PROCEDURE_BODY or d->k == NODE_FUNCTION_BODY))
+                generate_declaration(g, d);
         }
         hbl(g, &n->bd.st);
-        Value_Kind rk = sp->sp.rt ? tk2v(rst(g->sm, sp->sp.rt)) : VK_I;
+        Value_Kind rk = sp->sp.rt ? token_kind_to_value_kind(resolve_subtype(g->sm, sp->sp.rt))
+                                  : VALUE_KIND_INTEGER;
         char nb[256];
         if (n->sy and n->sy->mangled_nm.s)
         {
@@ -13353,7 +13513,7 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
         }
         else
         {
-            esn(nb, 256, n->sy, sp->sp.nm, sp->sp.pmm.n, sp);
+            encode_symbol_name(nb, 256, n->sy, sp->sp.nm, sp->sp.pmm.n, sp);
             if (n->sy)
             {
                 n->sy->mangled_nm.s = arena_allocate(strlen(nb) + 1);
@@ -13361,7 +13521,7 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
                 n->sy->mangled_nm.n = strlen(nb);
             }
         }
-        fprintf(o, "define linkonce_odr %s @\"%s\"(", vt(rk), nb);
+        fprintf(o, "define linkonce_odr %s @\"%s\"(", value_type_string(rk), nb);
         int np = sp->sp.pmm.n;
         if (n->sy and n->sy->lv > 0)
             np++;
@@ -13372,11 +13532,12 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
             if (i < (int) sp->sp.pmm.n)
             {
                 Syntax_Node *p = sp->sp.pmm.d[i];
-                Value_Kind k = p->pm.ty ? tk2v(rst(g->sm, p->pm.ty)) : VK_I;
+                Value_Kind k = p->pm.ty ? token_kind_to_value_kind(resolve_subtype(g->sm, p->pm.ty))
+                                        : VALUE_KIND_INTEGER;
                 if (p->pm.md & 2)
                     fprintf(o, "ptr %%p.%s", string_to_lowercase(p->pm.nm));
                 else
-                    fprintf(o, "%s %%p.%s", vt(k), string_to_lowercase(p->pm.nm));
+                    fprintf(o, "%s %%p.%s", value_type_string(k), string_to_lowercase(p->pm.nm));
             }
             else
                 fprintf(o, "ptr %%__slnk");
@@ -13387,7 +13548,7 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
         g->sm->lv = n->sy ? n->sy->lv + 1 : 0;
         if (n->sy and n->sy->lv > 0)
         {
-            gbf(g);
+            generate_block_frame(g);
             int mx = 0;
             for (int h = 0; h < 4096; h++)
                 for (Symbol *s = g->sm->sy[h]; s; s = s->nx)
@@ -13398,18 +13559,23 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
         }
         if (n->sy and n->sy->lv > 0)
         {
-            int fp0 = nt(g);
+            int fp0 = new_temporary(g);
             fprintf(o, "  %%t%d = getelementptr ptr, ptr %%__frame, i64 0\n", fp0);
             fprintf(o, "  store ptr %%__slnk, ptr %%t%d\n", fp0);
         }
         for (uint32_t i = 0; i < sp->sp.pmm.n; i++)
         {
             Syntax_Node *p = sp->sp.pmm.d[i];
-            Value_Kind k = p->pm.ty ? tk2v(rst(g->sm, p->pm.ty)) : VK_I;
+            Value_Kind k = p->pm.ty ? token_kind_to_value_kind(resolve_subtype(g->sm, p->pm.ty))
+                                    : VALUE_KIND_INTEGER;
             Symbol *ps = p->sy;
             if (ps and ps->lv >= 0 and ps->lv < g->sm->lv)
                 fprintf(
-                    o, "  %%lnk.%d.%s = alloca %s\n", ps->lv, string_to_lowercase(p->pm.nm), vt(k));
+                    o,
+                    "  %%lnk.%d.%s = alloca %s\n",
+                    ps->lv,
+                    string_to_lowercase(p->pm.nm),
+                    value_type_string(k));
             else
                 fprintf(
                     o,
@@ -13417,17 +13583,21 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
                     string_to_lowercase(p->pm.nm),
                     ps ? ps->sc : 0,
                     ps ? ps->el : 0,
-                    vt(k));
+                    value_type_string(k));
             if (p->pm.md & 2)
             {
-                int lv = nt(g);
+                int lv = new_temporary(g);
                 fprintf(
-                    o, "  %%t%d = load %s, ptr %%p.%s\n", lv, vt(k), string_to_lowercase(p->pm.nm));
+                    o,
+                    "  %%t%d = load %s, ptr %%p.%s\n",
+                    lv,
+                    value_type_string(k),
+                    string_to_lowercase(p->pm.nm));
                 if (ps and ps->lv >= 0 and ps->lv < g->sm->lv)
                     fprintf(
                         o,
                         "  store %s %%t%d, ptr %%lnk.%d.%s\n",
-                        vt(k),
+                        value_type_string(k),
                         lv,
                         ps->lv,
                         string_to_lowercase(p->pm.nm));
@@ -13435,7 +13605,7 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
                     fprintf(
                         o,
                         "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
-                        vt(k),
+                        value_type_string(k),
                         lv,
                         string_to_lowercase(p->pm.nm),
                         ps ? ps->sc : 0,
@@ -13447,7 +13617,7 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
                     fprintf(
                         o,
                         "  store %s %%p.%s, ptr %%lnk.%d.%s\n",
-                        vt(k),
+                        value_type_string(k),
                         string_to_lowercase(p->pm.nm),
                         ps->lv,
                         string_to_lowercase(p->pm.nm));
@@ -13455,7 +13625,7 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
                     fprintf(
                         o,
                         "  store %s %%p.%s, ptr %%v.%s.sc%u.%u\n",
-                        vt(k),
+                        value_type_string(k),
                         string_to_lowercase(p->pm.nm),
                         string_to_lowercase(p->pm.nm),
                         ps ? ps->sc : 0,
@@ -13471,9 +13641,9 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
                     if (s->k == 0 and s->lv >= 0 and s->lv < g->sm->lv
                         and not(s->df and s->df->k == N_GVL))
                     {
-                        Value_Kind k = s->ty ? tk2v(s->ty) : VK_I;
-                        Type_Info *at = s->ty ? tcc(s->ty) : 0;
-                        if (at and at->k == TY_A and at->hi >= at->lo)
+                        Value_Kind k = s->ty ? token_kind_to_value_kind(s->ty) : VALUE_KIND_INTEGER;
+                        Type_Info *at = s->ty ? type_concrete(s->ty) : 0;
+                        if (at and at->k == TYPE_ARRAY and at->hi >= at->lo)
                         {
                             int asz = (int) (at->hi - at->lo + 1);
                             fprintf(
@@ -13483,7 +13653,7 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
                                 s->sc,
                                 s->el,
                                 asz,
-                                act(at->el));
+                                ada_c_type(at->el));
                         }
                         else
                         {
@@ -13493,48 +13663,49 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
                                 string_to_lowercase(s->nm),
                                 s->sc,
                                 s->el,
-                                vt(k));
+                                value_type_string(k));
                         }
                         int level_diff = g->sm->lv - s->lv - 1;
                         int slnk_ptr;
                         if (level_diff == 0)
                         {
-                            slnk_ptr = nt(g);
+                            slnk_ptr = new_temporary(g);
                             fprintf(o, "  %%t%d = bitcast ptr %%__slnk to ptr\n", slnk_ptr);
                         }
                         else
                         {
-                            slnk_ptr = nt(g);
+                            slnk_ptr = new_temporary(g);
                             fprintf(o, "  %%t%d = bitcast ptr %%__slnk to ptr\n", slnk_ptr);
                             for (int hop = 0; hop < level_diff; hop++)
                             {
-                                int next_slnk = nt(g);
+                                int next_slnk = new_temporary(g);
                                 fprintf(
                                     o,
                                     "  %%t%d = getelementptr ptr, ptr %%t%d, i64 0\n",
                                     next_slnk,
                                     slnk_ptr);
-                                int loaded_slnk = nt(g);
+                                int loaded_slnk = new_temporary(g);
                                 fprintf(
                                     o, "  %%t%d = load ptr, ptr %%t%d\n", loaded_slnk, next_slnk);
                                 slnk_ptr = loaded_slnk;
                             }
                         }
-                        int p = nt(g);
+                        int p = new_temporary(g);
                         fprintf(
                             o,
                             "  %%t%d = getelementptr ptr, ptr %%t%d, i64 %u\n",
                             p,
                             slnk_ptr,
                             s->el);
-                        int ptr_id = nt(g);
+                        int ptr_id = new_temporary(g);
                         fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", ptr_id, p);
-                        int v = nt(g);
-                        fprintf(o, "  %%t%d = load %s, ptr %%t%d\n", v, vt(k), ptr_id);
+                        int v = new_temporary(g);
+                        fprintf(
+                            o, "  %%t%d = load %s, ptr %%t%d\n", v, value_type_string(k), ptr_id);
                         fprintf(
                             o,
                             "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
-                            vt(k),
+                            value_type_string(k),
                             v,
                             string_to_lowercase(s->nm),
                             s->sc,
@@ -13546,9 +13717,9 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
         for (uint32_t i = 0; i < n->bd.dc.n; i++)
         {
             Syntax_Node *d = n->bd.dc.d[i];
-            if (d and d->k != N_PB and d->k != N_FB and d->k != N_PKB and d->k != N_PD
-                and d->k != N_FD)
-                gdl(g, d);
+            if (d and d->k != NODE_PROCEDURE_BODY and d->k != NODE_FUNCTION_BODY and d->k != N_PKB
+                and d->k != NODE_PROCEDURE_DECL and d->k != NODE_FUNCTION_DECL)
+                generate_declaration(g, d);
         }
         for (int h = 0; h < 4096; h++)
         {
@@ -13569,7 +13740,7 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
                     }
                     if (not is_pm)
                     {
-                        int fp = nt(g);
+                        int fp = new_temporary(g);
                         int mx = g->sm->eo;
                         fprintf(
                             o,
@@ -13598,64 +13769,67 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
                     Syntax_Node *id = d->od.id.d[j];
                     if (id->sy)
                     {
-                        Value_Kind k = d->od.ty ? tk2v(rst(g->sm, d->od.ty)) : VK_I;
+                        Value_Kind k =
+                            d->od.ty ? token_kind_to_value_kind(resolve_subtype(g->sm, d->od.ty))
+                                     : VALUE_KIND_INTEGER;
                         Symbol *s = id->sy;
-                        Type_Info *at = d->od.ty ? rst(g->sm, d->od.ty) : 0;
-                        if (at and at->k == TY_R and at->dc.n > 0 and d->od.in and d->od.in->ty)
+                        Type_Info *at = d->od.ty ? resolve_subtype(g->sm, d->od.ty) : 0;
+                        if (at and at->k == TYPE_RECORD and at->dc.n > 0 and d->od.in
+                            and d->od.in->ty)
                         {
-                            Type_Info *it = tcc(d->od.in->ty);
-                            if (it and it->k == TY_R and it->dc.n > 0)
+                            Type_Info *it = type_concrete(d->od.in->ty);
+                            if (it and it->k == TYPE_RECORD and it->dc.n > 0)
                             {
                                 for (uint32_t di = 0; di < at->dc.n and di < it->dc.n; di++)
                                 {
                                     Syntax_Node *td = at->dc.d[di];
                                     Syntax_Node *id_d = it->dc.d[di];
                                     if (td->k == N_DS and id_d->k == N_DS and td->pm.df
-                                        and td->pm.df->k == N_INT)
+                                        and td->pm.df->k == NODE_INTEGER)
                                     {
-                                        int tdi = nt(g);
+                                        int tdi = new_temporary(g);
                                         fprintf(
                                             o,
                                             "  %%t%d = add i64 0, %lld\n",
                                             tdi,
                                             (long long) td->pm.df->i);
-                                        V iv = gex(g, d->od.in);
-                                        int ivd = nt(g);
+                                        V iv = generate_expression(g, d->od.in);
+                                        int ivd = new_temporary(g);
                                         fprintf(
                                             o,
                                             "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n",
                                             ivd,
                                             iv.id,
                                             di);
-                                        int dvl = nt(g);
+                                        int dvl = new_temporary(g);
                                         fprintf(o, "  %%t%d = load i64, ptr %%t%d\n", dvl, ivd);
-                                        int cmp = nt(g);
+                                        int cmp = new_temporary(g);
                                         fprintf(
                                             o,
                                             "  %%t%d = icmp ne i64 %%t%d, %%t%d\n",
                                             cmp,
                                             dvl,
                                             tdi);
-                                        int lok = nl(g), lf = nl(g);
-                                        cbr(g, cmp, lok, lf);
-                                        lbl(g, lok);
+                                        int lok = new_label(g), lf = new_label(g);
+                                        emit_conditional_branch(g, cmp, lok, lf);
+                                        emit_label(g, lok);
                                         fprintf(
                                             o,
                                             "  call void @__ada_raise(ptr @.ex.CONSTRAINT_ERROR)\n "
                                             " unreachable\n");
-                                        lbl(g, lf);
+                                        emit_label(g, lf);
                                     }
                                 }
                             }
                         }
                         {
-                            V v = gex(g, d->od.in);
-                            v = vcast(g, v, k);
+                            V v = generate_expression(g, d->od.in);
+                            v = value_cast(g, v, k);
                             if (s and s->lv >= 0 and s->lv < g->sm->lv)
                                 fprintf(
                                     o,
                                     "  store %s %%t%d, ptr %%lnk.%d.%s\n",
-                                    vt(k),
+                                    value_type_string(k),
                                     v.id,
                                     s->lv,
                                     string_to_lowercase(id->s));
@@ -13663,7 +13837,7 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
                                 fprintf(
                                     o,
                                     "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
-                                    vt(k),
+                                    value_type_string(k),
                                     v.id,
                                     string_to_lowercase(id->s),
                                     s ? s->sc : 0,
@@ -13676,58 +13850,59 @@ static void gdl(Code_Generator *g, Syntax_Node *n)
         hbl(g, &n->bd.st);
         if (hlb(&n->bd.st))
         {
-            int sj = nt(g);
-            int peh = nt(g);
+            int sj = new_temporary(g);
+            int peh = new_temporary(g);
             fprintf(o, "  %%t%d = load ptr, ptr @__eh_cur\n", peh);
             fprintf(o, "  %%t%d = call ptr @__ada_setjmp()\n", sj);
             fprintf(o, "  store ptr %%t%d, ptr %%ej\n", sj);
-            int sjb = nt(g);
+            int sjb = new_temporary(g);
             fprintf(o, "  %%t%d = load ptr, ptr %%ej\n", sjb);
-            int sv = nt(g);
+            int sv = new_temporary(g);
             fprintf(o, "  %%t%d = call i32 @setjmp(ptr %%t%d)\n", sv, sjb);
             fprintf(o, "  store ptr %%t%d, ptr @__eh_cur\n", sjb);
-            int ze = nt(g);
+            int ze = new_temporary(g);
             fprintf(o, "  %%t%d = icmp eq i32 %%t%d, 0\n", ze, sv);
-            int ln = nl(g), lh = nl(g);
-            cbr(g, ze, ln, lh);
-            lbl(g, ln);
+            int ln = new_label(g), lh = new_label(g);
+            emit_conditional_branch(g, ze, ln, lh);
+            emit_label(g, ln);
             for (uint32_t i = 0; i < n->bd.st.n; i++)
-                gss(g, n->bd.st.d[i]);
-            int ld = nl(g);
-            br(g, ld);
-            lbl(g, lh);
-            int nc = nt(g);
+                generate_statement_sequence(g, n->bd.st.d[i]);
+            int ld = new_label(g);
+            emit_branch(g, ld);
+            emit_label(g, lh);
+            int nc = new_temporary(g);
             fprintf(o, "  %%t%d = icmp eq ptr %%t%d, null\n", nc, peh);
-            int ex = nl(g), lj = nl(g);
-            cbr(g, nc, ex, lj);
-            lbl(g, ex);
-            br(g, ld);
-            lbl(g, lj);
+            int ex = new_label(g), lj = new_label(g);
+            emit_conditional_branch(g, nc, ex, lj);
+            emit_label(g, ex);
+            emit_branch(g, ld);
+            emit_label(g, lj);
             fprintf(o, "  call void @longjmp(ptr %%t%d, i32 1)\n", peh);
             fprintf(o, "  unreachable\n");
-            lbl(g, ld);
+            emit_label(g, ld);
             fprintf(o, "  store ptr %%t%d, ptr @__eh_cur\n", peh);
         }
         else
         {
             for (uint32_t i = 0; i < n->bd.st.n; i++)
-                gss(g, n->bd.st.d[i]);
+                generate_statement_sequence(g, n->bd.st.d[i]);
         }
         g->sm->lv = sv;
-        if (rk == VK_P)
+        if (rk == VALUE_KIND_POINTER)
         {
             fprintf(o, "  ret ptr null\n}\n");
         }
         else
         {
-            fprintf(o, "  ret %s 0\n}\n", vt(rk));
+            fprintf(o, "  ret %s 0\n}\n", value_type_string(rk));
         }
     }
     break;
     case N_PKB:
         for (uint32_t i = 0; i < n->pb.dc.n; i++)
-            if (n->pb.dc.d[i] and (n->pb.dc.d[i]->k == N_PB or n->pb.dc.d[i]->k == N_FB))
-                gdl(g, n->pb.dc.d[i]);
+            if (n->pb.dc.d[i]
+                and (n->pb.dc.d[i]->k == NODE_PROCEDURE_BODY or n->pb.dc.d[i]->k == NODE_FUNCTION_BODY))
+                generate_declaration(g, n->pb.dc.d[i]);
         break;
     default:
         break;
@@ -13737,14 +13912,14 @@ static void gel(Code_Generator *g, Syntax_Node *n)
 {
     if (n and n->k == N_PKB and n->pb.st.n > 0)
     {
-        Symbol *ps = syf(g->sm, n->pb.nm);
+        Symbol *ps = symbol_find(g->sm, n->pb.nm);
         if (ps and ps->k == 11)
             return;
         char nb[256];
         snprintf(nb, 256, "%.*s__elab", (int) n->pb.nm.n, n->pb.nm.s);
         fprintf(g->o, "define void @\"%s\"() {\n", nb);
         for (uint32_t i = 0; i < n->pb.st.n; i++)
-            gss(g, n->pb.st.d[i]);
+            generate_statement_sequence(g, n->pb.st.d[i]);
         fprintf(g->o, "  ret void\n}\n");
         fprintf(
             g->o,
@@ -13992,6 +14167,7 @@ static char *rf(const char *p)
     fclose(f);
     return b;
 }
+
 static void prf(Code_Generator *g, Symbol_Manager *sm)
 {
     for (int h = 0; h < 4096; h++)
@@ -14000,25 +14176,26 @@ static void prf(Code_Generator *g, Symbol_Manager *sm)
                 for (uint32_t k = 0; k < s->ol.n; k++)
                 {
                     Syntax_Node *n = s->ol.d[k];
-                    if (n and (n->k == N_PB or n->k == N_FB))
+                    if (n and (n->k == NODE_PROCEDURE_BODY or n->k == NODE_FUNCTION_BODY))
                     {
                         Syntax_Node *sp = n->bd.sp;
                         char nb[256];
-                        esn(nb, 256, n->sy, sp->sp.nm, sp->sp.pmm.n, sp);
-                        adcl(g, nb);
+                        encode_symbol_name(nb, 256, n->sy, sp->sp.nm, sp->sp.pmm.n, sp);
+                        add_declaration(g, nb);
                     }
                 }
 }
-static LU *lfnd(Symbol_Manager *SM, String_Slice nm)
+static Label_Use *lfnd(Symbol_Manager *SM, String_Slice nm)
 {
     for (uint32_t i = 0; i < SM->lu.n; i++)
     {
-        LU *l = SM->lu.d[i];
+        Label_Use *l = SM->lu.d[i];
         if (string_equal_ignore_case(l->nm, nm))
             return l;
     }
     return 0;
 }
+
 static uint64_t fts(const char *p)
 {
     struct stat s;
@@ -14085,7 +14262,7 @@ static void wali(Symbol_Manager *SM, const char *fn, Syntax_Node *cu)
                 }
                 else
                 {
-                    esn(nb, 256, s, s->nm, sp ? sp->sp.pmm.n : 0, sp);
+                    encode_symbol_name(nb, 256, s, s->nm, sp ? sp->sp.pmm.n : 0, sp);
                     if (s)
                     {
                         s->mangled_nm.s = arena_allocate(strlen(nb) + 1);
@@ -14101,21 +14278,25 @@ static void wali(Symbol_Manager *SM, const char *fn, Syntax_Node *cu)
                         for (uint32_t i = 0; i < sp->sp.pmm.n; i++)
                         {
                             Syntax_Node *p = sp->sp.pmm.d[i];
-                            Value_Kind k = p->pm.ty ? tk2v(rst(SM, p->pm.ty)) : VK_I;
-                            fprintf(f, " %s", vt(k));
+                            Value_Kind k =
+                                p->pm.ty ? token_kind_to_value_kind(resolve_subtype(SM, p->pm.ty))
+                                         : VALUE_KIND_INTEGER;
+                            fprintf(f, " %s", value_type_string(k));
                         }
                 }
                 else
                 {
-                    Type_Info *rt = sp and sp->sp.rt ? rst(SM, sp->sp.rt) : 0;
-                    Value_Kind rk = tk2v(rt);
-                    fprintf(f, " %s", vt(rk));
+                    Type_Info *rt = sp and sp->sp.rt ? resolve_subtype(SM, sp->sp.rt) : 0;
+                    Value_Kind rk = token_kind_to_value_kind(rt);
+                    fprintf(f, " %s", value_type_string(rk));
                     if (sp)
                         for (uint32_t i = 0; i < sp->sp.pmm.n; i++)
                         {
                             Syntax_Node *p = sp->sp.pmm.d[i];
-                            Value_Kind k = p->pm.ty ? tk2v(rst(SM, p->pm.ty)) : VK_I;
-                            fprintf(f, " %s", vt(k));
+                            Value_Kind k =
+                                p->pm.ty ? token_kind_to_value_kind(resolve_subtype(SM, p->pm.ty))
+                                         : VALUE_KIND_INTEGER;
+                            fprintf(f, " %s", value_type_string(k));
                         }
                 }
                 fprintf(f, "\n");
@@ -14137,8 +14318,8 @@ static void wali(Symbol_Manager *SM, const char *fn, Syntax_Node *cu)
                 }
                 else
                     snprintf(nb, 256, "%.*s", (int) s->nm.n, s->nm.s);
-                Value_Kind k = s->ty ? tk2v(s->ty) : VK_I;
-                fprintf(f, "X %s %s\n", nb, vt(k));
+                Value_Kind k = s->ty ? token_kind_to_value_kind(s->ty) : VALUE_KIND_INTEGER;
+                fprintf(f, "X %s %s\n", nb, value_type_string(k));
             }
         }
     }
@@ -14155,12 +14336,12 @@ static void wali(Symbol_Manager *SM, const char *fn, Syntax_Node *cu)
             fprintf(f, "H %.*s\n", (int) SM->eh.d[i].n, SM->eh.d[i].s);
     }
     if (SM->eo > 0)
-        fprintf(f, "E %d\n", SM->eo);
+        fprintf(f, "error_count %d\n", SM->eo);
     fclose(f);
 }
 static bool lcmp(Symbol_Manager *SM, String_Slice nm, String_Slice pth)
 {
-    LU *ex = lfnd(SM, nm);
+    Label_Use *ex = lfnd(SM, nm);
     if (ex and ex->cmpl)
         return true;
     char fp[512];
@@ -14192,7 +14373,7 @@ static bool lcmp(Symbol_Manager *SM, String_Slice nm, String_Slice pth)
         for (Symbol *s = sm.sy[h]; s; s = s->nx)
             if ((s->k == 0 or s->k == 2) and s->lv == 0 and s->pr and not s->ext and s->ol.n == 0)
             {
-                Value_Kind k = s->ty ? tk2v(s->ty) : VK_I;
+                Value_Kind k = s->ty ? token_kind_to_value_kind(s->ty) : VALUE_KIND_INTEGER;
                 char nb[256];
                 int n = 0;
                 for (uint32_t j = 0; j < s->pr->nm.n; j++)
@@ -14201,7 +14382,7 @@ static bool lcmp(Symbol_Manager *SM, String_Slice nm, String_Slice pth)
                 for (uint32_t j = 0; j < s->nm.n; j++)
                     nb[n++] = toupper(s->nm.s[j]);
                 nb[n] = 0;
-                if (s->k == 2 and s->df and s->df->k == N_STR)
+                if (s->k == 2 and s->df and s->df->k == NODE_STRING)
                 {
                     uint32_t len = s->df->s.n;
                     fprintf(o, "@%s=linkonce_odr constant [%u x i8]c\"", nb, len + 1);
@@ -14222,20 +14403,26 @@ static bool lcmp(Symbol_Manager *SM, String_Slice nm, String_Slice pth)
                 else
                 {
                     char iv[64];
-                    if (k == VK_I and s->df and s->df->k == N_INT)
+                    if (k == VALUE_KIND_INTEGER and s->df and s->df->k == NODE_INTEGER)
                     {
                         snprintf(iv, 64, "%ld", s->df->i);
                     }
-                    else if (k == VK_I and s->vl != 0)
+                    else if (k == VALUE_KIND_INTEGER and s->vl != 0)
                     {
                         snprintf(iv, 64, "%ld", s->vl);
                     }
                     else
                     {
-                        snprintf(iv, 64, "%s", k == VK_P ? "null" : k == VK_F ? "0.0" : "0");
+                        snprintf(
+                            iv,
+                            64,
+                            "%s",
+                            k == VALUE_KIND_POINTER ? "null"
+                            : k == VALUE_KIND_FLOAT ? "0.0"
+                                                    : "0");
                     }
-                    Type_Info *at = s->ty ? tcc(s->ty) : 0;
-                    if (at and at->k == TY_A and at->lo <= at->hi)
+                    Type_Info *at = s->ty ? type_concrete(s->ty) : 0;
+                    if (at and at->k == TYPE_ARRAY and at->lo <= at->hi)
                     {
                         int asz = (int) (at->hi - at->lo + 1);
                         fprintf(
@@ -14244,9 +14431,9 @@ static bool lcmp(Symbol_Manager *SM, String_Slice nm, String_Slice pth)
                             nb,
                             s->k == 2 ? "constant" : "global",
                             asz,
-                            act(at->el));
+                            ada_c_type(at->el));
                     }
-                    else if (at and at->k == TY_A)
+                    else if (at and at->k == TYPE_ARRAY)
                     {
                         fprintf(
                             o,
@@ -14261,7 +14448,7 @@ static bool lcmp(Symbol_Manager *SM, String_Slice nm, String_Slice pth)
                             "@%s=linkonce_odr %s %s %s\n",
                             nb,
                             s->k == 2 ? "constant" : "global",
-                            vt(k),
+                            value_type_string(k),
                             iv);
                     }
                 }
@@ -14275,7 +14462,7 @@ static bool lcmp(Symbol_Manager *SM, String_Slice nm, String_Slice pth)
                 if (s->el == i)
                 {
                     for (uint32_t k = 0; k < s->ol.n; k++)
-                        gdl(&g, s->ol.d[k]);
+                        generate_declaration(&g, s->ol.d[k]);
                 }
             }
         }
@@ -14290,7 +14477,7 @@ static bool lcmp(Symbol_Manager *SM, String_Slice nm, String_Slice pth)
         gel(&g, sm.ib.d[i]);
     emd(&g);
     fclose(o);
-    LU *l = lu(cu->cu.un.n > 0 ? cu->cu.un.d[0]->k : 0, nm, pth);
+    Label_Use *l = lu(cu->cu.un.n > 0 ? cu->cu.un.d[0]->k : 0, nm, pth);
     l->cmpl = true;
     l->ts = fts(fp);
     lv(&SM->lu, l);
@@ -14394,7 +14581,7 @@ int main(int ac, char **av)
             if ((s->k == 0 or s->k == 2) and (s->lv == 0 or s->pr)
                 and not(s->pr and lfnd(&sm, s->pr->nm)) and not s->ext)
             {
-                Value_Kind k = s->ty ? tk2v(s->ty) : VK_I;
+                Value_Kind k = s->ty ? token_kind_to_value_kind(s->ty) : VALUE_KIND_INTEGER;
                 char nb[256];
                 if (s->pr and (uintptr_t) s->pr > 4096 and s->pr->nm.s)
                 {
@@ -14408,7 +14595,7 @@ int main(int ac, char **av)
                 }
                 else
                     snprintf(nb, 256, "%.*s", (int) s->nm.n, s->nm.s);
-                if (s->k == 2 and s->df and s->df->k == N_STR)
+                if (s->k == 2 and s->df and s->df->k == NODE_STRING)
                 {
                     uint32_t len = s->df->s.n;
                     fprintf(o, "@%s=linkonce_odr constant [%u x i8]c\"", nb, len + 1);
@@ -14429,20 +14616,26 @@ int main(int ac, char **av)
                 else
                 {
                     char iv[64];
-                    if (k == VK_I and s->df and s->df->k == N_INT)
+                    if (k == VALUE_KIND_INTEGER and s->df and s->df->k == NODE_INTEGER)
                     {
                         snprintf(iv, 64, "%ld", s->df->i);
                     }
-                    else if (k == VK_I and s->vl != 0)
+                    else if (k == VALUE_KIND_INTEGER and s->vl != 0)
                     {
                         snprintf(iv, 64, "%ld", s->vl);
                     }
                     else
                     {
-                        snprintf(iv, 64, "%s", k == VK_P ? "null" : k == VK_F ? "0.0" : "0");
+                        snprintf(
+                            iv,
+                            64,
+                            "%s",
+                            k == VALUE_KIND_POINTER ? "null"
+                            : k == VALUE_KIND_FLOAT ? "0.0"
+                                                    : "0");
                     }
-                    Type_Info *at = s->ty ? tcc(s->ty) : 0;
-                    if (at and at->k == TY_A and at->lo <= at->hi)
+                    Type_Info *at = s->ty ? type_concrete(s->ty) : 0;
+                    if (at and at->k == TYPE_ARRAY and at->lo <= at->hi)
                     {
                         int asz = (int) (at->hi - at->lo + 1);
                         fprintf(
@@ -14451,9 +14644,9 @@ int main(int ac, char **av)
                             nb,
                             s->k == 2 ? "constant" : "global",
                             asz,
-                            act(at->el));
+                            ada_c_type(at->el));
                     }
-                    else if (at and at->k == TY_A)
+                    else if (at and at->k == TYPE_ARRAY)
                     {
                         fprintf(
                             o,
@@ -14468,7 +14661,7 @@ int main(int ac, char **av)
                             "@%s=linkonce_odr %s %s %s\n",
                             nb,
                             s->k == 2 ? "constant" : "global",
-                            vt(k),
+                            value_type_string(k),
                             iv);
                     }
                 }
@@ -14479,7 +14672,7 @@ int main(int ac, char **av)
             for (Symbol *s = sm.sy[j]; s; s = s->nx)
                 if (s->el == i and s->lv == 0)
                     for (uint32_t k = 0; k < s->ol.n; k++)
-                        gdl(&g, s->ol.d[k]);
+                        generate_declaration(&g, s->ol.d[k]);
     for (uint32_t ui = 0; ui < cu->cu.un.n; ui++)
     {
         Syntax_Node *u = cu->cu.un.d[ui];
@@ -14489,7 +14682,7 @@ int main(int ac, char **av)
     for (uint32_t ui = 0; ui < cu->cu.un.n; ui++)
     {
         Syntax_Node *u = cu->cu.un.d[ui];
-        if (u->k == N_PB or u->k == N_FB)
+        if (u->k == NODE_PROCEDURE_BODY or u->k == NODE_FUNCTION_BODY)
             gel(&g, u);
     }
     for (uint32_t i = 0; i < sm.ib.n; i++)
@@ -14497,7 +14690,7 @@ int main(int ac, char **av)
     for (uint32_t ui = cu->cu.un.n; ui > 0; ui--)
     {
         Syntax_Node *u = cu->cu.un.d[ui - 1];
-        if (u->k == N_PB)
+        if (u->k == NODE_PROCEDURE_BODY)
         {
             Syntax_Node *sp = u->bd.sp;
             Symbol *ms = 0;
@@ -14509,7 +14702,7 @@ int main(int ac, char **av)
                         break;
                     }
             char nb[256];
-            esn(nb, 256, ms, sp->sp.nm, sp->sp.pmm.n, sp);
+            encode_symbol_name(nb, 256, ms, sp->sp.nm, sp->sp.pmm.n, sp);
             fprintf(
                 o,
                 "define i32 @main(){\n  call void @__ada_ss_init()\n  call void @\"%s\"()\n  ret "
