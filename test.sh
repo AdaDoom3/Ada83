@@ -9,15 +9,15 @@ for e in ${x[@]+"${x[@]}"};do for v in ${a[@]+"${a[@]}"};do((v>=e-1&&v<=e+1))&&{
 local xe=${#x[@]};X[ec]=$((X[ec]+h)) X[ee]=$((X[ee]+xe));printf %d:%d $h $xe;}
 @(){ local f=$1 n=$(basename "$f" .ada);local -a x=() t=() a=();local i=0 h=0
 while IFS= read -r l;do((++i));[[ $l =~ --\ ERROR:?\ *(.*) ]]&&{ x+=($i);t+=("${BASH_REMATCH[1]:-?}");};done<"$f"
-while IFS=: read -r _ m _;do a+=($m);done< <(./ada83 -Iacats -Irts "$f" 2>&1|grep "^[^:]*:[0-9]");local xe=${#x[@]} ae=${#a[@]};printf "\n   %s\n" "${'':->68}"
+while IFS=: read -r _ m _;do a+=($m);done< <(./ada83 -Iacats -Irts "$f" 2>&1|grep "^[^:]*:[0-9]");local xe=${#x[@]} ae=${#a[@]};printf "\n   %s\n" "${'':-<68>}"
 printf "   %s  expect %d  reported %d  tolerance ±1\n" "$n" $xe $ae
-printf "   %s\n" "${'':->68}";for j in ${!x[@]};do local e=${x[$j]} s=${t[$j]} q=0
-for v in ${a[@]+"${a[@]}"};do((v>=e-1&&v<=e+1))&&{ q=1;break;};done
+printf "   %s\n" "${'':-<68>}";for j in ${!x[@]};do local e=${x[$j]} s=${t[$j]} q=0
+for v in ${a[@]+"${a[@]}"};do((v>=e-1&&v<=e+1))&&{ q=1;((++h));break;};done
 ((q))&&printf "   [✓] %4d  %s\n" $e "$s"||printf "   [ ] %4d  %s\n" $e "$s";done
 local p=$(: $h $xe) v;((p>=90))&&v="pass"||v="fail"
-printf "   %s\n   coverage %d/%d (%d%%)  %s\n\n" "${'':->68}" $h $xe $p "$v";}
+printf "   %s\n   coverage %d/%d (%d%%)  %s\n\n" "${'':-<68>}" $h $xe $p "$v";}
 R(){ [[ ! -f rts/report.ll || rts/report.adb -nt rts/report.ll ]]&&./ada83 -Iacats -Irts rts/report.adb>rts/report.ll 2>/dev/null||true;}
-T(){ local f=$1 v=${2:-} n=$(basename "$f" .ada);local q=${n:0:1};((++X[z]));R;case $q in
+T(){ local f=$1 v=${2:-} n=$(basename "$f" .ada);local q=${n:0:1};if [[ $n =~ [0-9]$ && ! $n =~ m$ ]];then return;fi;((++X[z]));R;case $q in
 [aA])if ! timeout 0.2 ./ada83 -Iacats -Irts "$f">test_results/$n.ll 2>acats_logs/$n.err;then
 E SKIP "$n" COMPILE "$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)";((++X[s]));return;fi
 if ! timeout 0.2 llvm-link -o test_results/$n.bc test_results/$n.ll rts/report.ll 2>acats_logs/$n.link;then
@@ -52,28 +52,29 @@ timeout 0.5 lli test_results/$n.bc>acats_logs/$n.out 2>&1&&E FAIL "$n" WRONG_EXE
 E PASS "$n" BIND_REJECT "execution blocked"&&((++X[l]));else E PASS "$n" LINK_REJECT "binding failed as expected"&&((++X[l]));fi
 else E PASS "$n" COMPILE_REJECT "$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-40)"&&((++X[l]));fi;;
 [fF])E SUPP "$n" FOUNDATION "support code";;*)E SKIP "$n" UNKNOWN "unrecognized test class '$q'"&&((++X[s]));;esac;}
-RR(){ local tot=${X[z]} pass=$((X[a]+X[b]+X[c]+X[d]+X[e]+X[l])) bf=${X[f]};local bt=$((X[b]+bf)) ct=$((X[c]+X[s]))
+RR(){ local tot=${X[z]} pass=$((X[a]+X[b]+X[c]+X[d]+X[e]+X[l]));local af=${X[f]} as=${X[s]}
 printf "\n========================================\nRESULTS\n========================================\n\n"
-printf " %-22s  %6s  %6s  %6s  %6s  %6s\n" CLASS pass fail skip total rate
-printf " ----------------------  ------  ------  ------  ------  ------\n"
-((X[a]>0))&&printf " A  Acceptance            %6d                  %6d\n" ${X[a]} ${X[a]}
-((bt>0))&&printf " B  Illegality             %6d  %6d          %6d  %5d%%\n" ${X[b]} $bf $bt $(: ${X[b]} $bt)
-((ct>0))&&printf " C  Executable             %6d          %6d  %6d  %5d%%\n" ${X[c]} ${X[s]} $ct $(: ${X[c]} $ct)
-((X[d]>0))&&printf " D  Numerics               %6d                  %6d\n" ${X[d]} ${X[d]}
-((X[e]>0))&&printf " E  Inspection             %6d                  %6d\n" ${X[e]} ${X[e]}
-((X[l]>0))&&printf " L  Post-compilation       %6d                  %6d\n" ${X[l]} ${X[l]}
-printf " ----------------------  ------  ------  ------  ------  ------\n"
-printf " TOTAL                    %6d  %6d  %6d  %6d  %5d%%\n" $pass ${X[f]} ${X[s]} $tot $(: $pass $tot)
+printf " %-22s %6s %6s %6s %6s %7s\n" "CLASS" "pass" "fail" "skip" "total" "rate"
+printf " %-22s %6s %6s %6s %6s %7s\n" "----------------------" "------" "------" "------" "------" "-------"
+((X[a]>0))&&printf " %-22s %6d %6s %6s %6d %7s\n" "A  Acceptance" ${X[a]} "-" "-" ${X[a]} "-"
+((X[b]>0||af>0))&&printf " %-22s %6d %6d %6s %6d %6d%%\n" "B  Illegality" ${X[b]} $af "-" $((X[b]+af)) $(: ${X[b]} $((X[b]+af)))
+((X[c]>0||as>0))&&printf " %-22s %6d %6s %6d %6d %6d%%\n" "C  Executable" ${X[c]} "-" $as $((X[c]+as)) $(: ${X[c]} $((X[c]+as)))
+((X[d]>0))&&printf " %-22s %6d %6s %6s %6d %7s\n" "D  Numerics" ${X[d]} "-" "-" ${X[d]} "-"
+((X[e]>0))&&printf " %-22s %6d %6s %6s %6d %7s\n" "E  Inspection" ${X[e]} "-" "-" ${X[e]} "-"
+((X[l]>0))&&printf " %-22s %6d %6s %6s %6d %7s\n" "L  Post-compilation" ${X[l]} "-" "-" ${X[l]} "-"
+printf " %-22s %6s %6s %6s %6s %7s\n" "----------------------" "------" "------" "------" "------" "-------"
+printf " %-22s %6d %6d %6d %6d %6d%%\n" "TOTAL" $pass ${X[f]} ${X[s]} $tot $(: $pass $tot)
 ((X[ee]>0))&&{ printf "\n========================================\nB-TEST ERROR COVERAGE\n========================================\n\n"
-printf " errors detected   %5d / %d\n coverage rate     %d%%\n" ${X[ec]} ${X[ee]} $(: ${X[ec]} ${X[ee]});}
+printf " errors detected    %d / %d\n" ${X[ec]} ${X[ee]}
+printf " coverage rate      %d%%\n" $(: ${X[ec]} ${X[ee]});}
 printf "\n========================================\n"
-printf " elapsed $(.)s    processed ${X[z]} tests    $(date "+%Y-%m-%d %H:%M:%S")\n"
+printf " elapsed $(.)s  |  processed %d tests  |  %s\n" ${X[z]} "$(date '+%Y-%m-%d %H:%M:%S')"
 printf "========================================\n"
 printf "A=%d B=%d C=%d D=%d E=%d L=%d F=%d S=%d T=%d/%d (%d%%) ERR=%d/%d\n" \
 ${X[a]} ${X[b]} ${X[c]} ${X[d]} ${X[e]} ${X[l]} ${X[f]} ${X[s]} $pass $tot $(: $pass $tot) ${X[ec]} ${X[ee]}>test_summary.txt;}
 +(){ printf "\n========================================\n%s\n========================================\n\n" "$1";}
 G(){ + "Class ${1^^} Tests";for f in acats/${1}*.ada;do [[ -f $f ]]&&T "$f" "${2:-}";done;RR;}
-O(){ + "B-Test Error Detection Analysis";for f in acats/b*.ada;do [[ -f $f ]]||continue;n=$(basename "$f" .ada);((++X[z]))
+O(){ + "B-Test Error Coverage Analysis";for f in acats/b*.ada;do [[ -f $f ]]||continue;n=$(basename "$f" .ada);((++X[z]))
 [[ ${1:-} == v ]]&&{ @ "$f";q=$(^ "$f");((100*${q%:*}/${q#*:}>=90))&&((++X[b]))||((++X[f]));continue;}
 q=$(^ "$f");h=${q%:*};x=${q#*:};p=$(: $h $x);((p>=90))&&E PASS "$n" PASS "$h/$x errors (${p}%)"&&((++X[b]))||
 E FAIL "$n" FAIL "$h/$x errors (${p}%)"&&((++X[f]));done;RR;}
@@ -81,11 +82,29 @@ A(){ + "Full Suite";for f in acats/*.ada;do [[ -f $f ]]&&T "$f";done;RR;}
 Q(){ + "Group ${1^^} Tests";for f in acats/${1}*.ada;do [[ -f $f ]]&&T "$f" "${2:-}";done;RR;}
 U(){ cat<<E
 Usage: $0 <mode> [options]
-Modes:  f  full  g <X> [v]  class  q <XX> [v]  group  b [v]  B-oracle  h  help
-Classes: A accept B illegal C exec D numeric E inspect L post-compile
-Groups: a21 b22 b23 b24 c32 etc (run specific ACATS group)
-Options: v  verbose detail for B-tests
-Output: test_results/*.{ll,bc} acats_logs/*.{err,out} test_summary.txt
+
+Modes:
+  f, full         Run complete ACATS test suite
+  g <X> [v]       Run all tests for class X (A/B/C/D/E/L)
+  q <XX> [v]      Run tests for group XX (e.g., a21, b22, c32)
+  b [v]           Run B-test error coverage analysis
+  h, help         Show this help message
+
+Classes:
+  A  Acceptance tests      - basic compiler validation
+  B  Illegality tests      - rejection of invalid code
+  C  Executable tests      - runtime behavior verification
+  D  Numeric tests         - arithmetic precision checks
+  E  Inspection tests      - manual verification required
+  L  Post-compilation      - linker/binder rejection tests
+
+Options:
+  v               Verbose mode (detailed B-test diagnostics)
+
+Output:
+  test_results/*.{ll,bc}   Compiled test artifacts
+  acats_logs/*.{err,out}   Compiler and runtime logs
+  test_summary.txt         Final pass/fail summary
 E
 }
-mkdir -p test_results acats_logs;case ${1:-h} in f)A;;g)G "${2:-c}" "${3:-}";;q)Q "${2:-b22}" "${3:-}";;b)O "${2:-}";;*)U;;esac
+mkdir -p test_results acats_logs;case ${1:-h} in f|full)A;;g)G "${2:-c}" "${3:-}";;q)Q "${2:-b22}" "${3:-}";;b)O "${2:-}";;h|help|*)U;;esac
