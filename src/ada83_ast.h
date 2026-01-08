@@ -376,6 +376,45 @@ struct AST_Node {
         } constraint;
 
         //---------------------------------------------------------------------
+        // Subtype indication: type_mark [constraint]
+        //---------------------------------------------------------------------
+        struct {
+            AST_Node    *type_mark;         /// Type name
+            AST_Node    *constraint;        /// Optional constraint
+        } subtype;
+
+        //---------------------------------------------------------------------
+        // Index constraint: (ranges)
+        //---------------------------------------------------------------------
+        struct {
+            Node_Vector  ranges;            /// Index ranges/types
+        } index_constraint;
+
+        //---------------------------------------------------------------------
+        // Enumeration type definition: (literals)
+        //---------------------------------------------------------------------
+        struct {
+            Node_Vector  literals;          /// Enumeration literals
+        } enumeration;
+
+        //---------------------------------------------------------------------
+        // Array type definition
+        //---------------------------------------------------------------------
+        struct {
+            Node_Vector  indices;           /// Index types/constraints
+            AST_Node    *element_type;      /// Component type
+            bool         is_constrained;    /// True if constrained
+        } array_type;
+
+        //---------------------------------------------------------------------
+        // Record type definition
+        //---------------------------------------------------------------------
+        struct {
+            Node_Vector  components;        /// Component declarations
+            AST_Node    *variant;           /// Variant part (if any)
+        } record_type;
+
+        //---------------------------------------------------------------------
         // Component declaration
         //---------------------------------------------------------------------
         struct {
@@ -786,6 +825,19 @@ AST_Node *AST_New(AST_Node_Kind kind, Source_Location location);
 ///-----------------------------------------------------------------------------
 ///                   V E C T O R   O P E R A T I O N S
 ///-----------------------------------------------------------------------------
+
+/// @brief Initialize a node vector to empty state
+/// @param vec  The vector to initialize
+///
+/// Sets count and capacity to 0, data to NULL.
+///
+static inline void Node_Vector_Init(Node_Vector *vec)
+{
+    vec->data = NULL;
+    vec->count = 0;
+    vec->capacity = 0;
+}
+
 
 /// @brief Push a node onto a node vector
 /// @param vec  The vector to modify

@@ -14,6 +14,7 @@
 #include "ada83_types.h"
 #include "ada83_arena.h"
 #include "ada83_string.h"
+#include "ada83_symbols.h"
 
 
 ///-----------------------------------------------------------------------------
@@ -50,6 +51,87 @@ Type_Descriptor *Type_New(Type_Kind kind, String_Slice name)
     return type;
 
 } // Type_New
+
+
+///-----------------------------------------------------------------------------
+///                   P R E D E F I N E D   T Y P E   I N I T I A L I Z A T I O N
+///-----------------------------------------------------------------------------
+
+void Types_Initialize(void *sm)
+{
+    Semantic_Context *sem = (Semantic_Context *)sm;
+
+    /// Initialize INTEGER type
+    Type_Integer = Type_New(TY_INTEGER, STR("INTEGER"));
+    Type_Integer->low_bound = -2147483648LL;
+    Type_Integer->high_bound = 2147483647LL;
+
+    /// Initialize NATURAL (subtype of INTEGER)
+    Type_Natural = Type_New(TY_INTEGER, STR("NATURAL"));
+    Type_Natural->low_bound = 0;
+    Type_Natural->high_bound = 2147483647LL;
+    Type_Natural->base_type = Type_Integer;
+
+    /// Initialize POSITIVE (subtype of INTEGER)
+    Type_Positive = Type_New(TY_INTEGER, STR("POSITIVE"));
+    Type_Positive->low_bound = 1;
+    Type_Positive->high_bound = 2147483647LL;
+    Type_Positive->base_type = Type_Integer;
+
+    /// Initialize BOOLEAN type
+    Type_Boolean = Type_New(TY_BOOLEAN, STR("BOOLEAN"));
+    Type_Boolean->low_bound = 0;
+    Type_Boolean->high_bound = 1;
+
+    /// Initialize CHARACTER type
+    Type_Character = Type_New(TY_CHARACTER, STR("CHARACTER"));
+    Type_Character->low_bound = 0;
+    Type_Character->high_bound = 255;
+    Type_Character->size = 1;
+
+    /// Initialize STRING type (array of CHARACTER)
+    Type_String = Type_New(TY_ARRAY, STR("STRING"));
+    Type_String->element_type = Type_Character;
+    Type_String->index_type = Type_Positive;
+    Type_String->low_bound = 0;
+    Type_String->high_bound = -1;  // Unconstrained
+
+    /// Initialize FLOAT type
+    Type_Float = Type_New(TY_FLOAT, STR("FLOAT"));
+
+    /// Initialize universal types
+    Type_Universal_Int = Type_New(TY_UNIVERSAL_INT, STR("universal_integer"));
+    Type_Universal_Real = Type_New(TY_UNIVERSAL_REAL, STR("universal_real"));
+
+    /// Initialize FILE type
+    Type_File = Type_New(TY_FILE, STR("FILE_TYPE"));
+
+    /// Add predefined types to symbol table
+    if (sem) {
+        Symbol_Add(sem, Symbol_New(STR("INTEGER"), SK_TYPE, Type_Integer, NULL));
+        Symbol_Add(sem, Symbol_New(STR("NATURAL"), SK_TYPE, Type_Natural, NULL));
+        Symbol_Add(sem, Symbol_New(STR("POSITIVE"), SK_TYPE, Type_Positive, NULL));
+        Symbol_Add(sem, Symbol_New(STR("BOOLEAN"), SK_TYPE, Type_Boolean, NULL));
+        Symbol_Add(sem, Symbol_New(STR("CHARACTER"), SK_TYPE, Type_Character, NULL));
+        Symbol_Add(sem, Symbol_New(STR("STRING"), SK_TYPE, Type_String, NULL));
+        Symbol_Add(sem, Symbol_New(STR("FLOAT"), SK_TYPE, Type_Float, NULL));
+
+        /// Add Boolean literals
+        Symbol_Entry *true_sym = Symbol_New(STR("TRUE"), SK_ENUMERATION_LITERAL, Type_Boolean, NULL);
+        true_sym->value = 1;
+        Symbol_Add(sem, true_sym);
+
+        Symbol_Entry *false_sym = Symbol_New(STR("FALSE"), SK_ENUMERATION_LITERAL, Type_Boolean, NULL);
+        false_sym->value = 0;
+        Symbol_Add(sem, false_sym);
+
+        /// Add predefined exceptions
+        Symbol_Add(sem, Symbol_New(STR("CONSTRAINT_ERROR"), SK_EXCEPTION, NULL, NULL));
+        Symbol_Add(sem, Symbol_New(STR("PROGRAM_ERROR"), SK_EXCEPTION, NULL, NULL));
+        Symbol_Add(sem, Symbol_New(STR("STORAGE_ERROR"), SK_EXCEPTION, NULL, NULL));
+        Symbol_Add(sem, Symbol_New(STR("TASKING_ERROR"), SK_EXCEPTION, NULL, NULL));
+    }
+}
 
 
 ///-----------------------------------------------------------------------------

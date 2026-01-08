@@ -35,7 +35,9 @@ HEADERS := \
     ada83_lexer.h \
     ada83_ast.h \
     ada83_types.h \
-    ada83_symbols.h
+    ada83_symbols.h \
+    ada83_parser.h \
+    ada83_eval.h
 
 SOURCES := \
     ada83_bignum.c \
@@ -44,7 +46,9 @@ SOURCES := \
     ada83_lexer.c \
     ada83_ast.c \
     ada83_types.c \
-    ada83_symbols.c
+    ada83_symbols.c \
+    ada83_parser.c \
+    ada83_eval.c
 
 OBJECTS := $(SOURCES:.c=.o)
 
@@ -54,16 +58,19 @@ OBJECTS := $(SOURCES:.c=.o)
 
 .PHONY: all clean test
 
-all: libada83.a
+all: libada83.a ada83
 
 libada83.a: $(OBJECTS)
 	ar rcs $@ $^
+
+ada83: ada83_main.o libada83.a
+	$(CC) $(CFLAGS) -o $@ $< -L. -lada83 $(LDFLAGS)
 
 %.o: %.c $(HEADERS)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -f $(OBJECTS) libada83.a
+	rm -f $(OBJECTS) ada83_main.o libada83.a ada83
 
 #------------------------------------------------------------------------------
 # Testing
@@ -95,11 +102,8 @@ docs:
 # ada83_ast        - Abstract Syntax Tree node definitions
 # ada83_types      - Ada83 type system implementation
 # ada83_symbols    - Symbol table and scope management
-#
-# Future modules:
-# ada83_parser     - Recursive descent parser
-# ada83_semantic   - Semantic analysis and type checking
-# ada83_eval       - Evaluation/interpretation engine
+# ada83_parser     - Recursive descent parser per LRM Annex E
+# ada83_eval       - Semantic analysis and evaluation/interpretation engine
 # ada83_main       - Main program entry point
 #
 ###############################################################################
