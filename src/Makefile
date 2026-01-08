@@ -37,7 +37,8 @@ HEADERS := \
     ada83_types.h \
     ada83_symbols.h \
     ada83_parser.h \
-    ada83_eval.h
+    ada83_eval.h \
+    ada83_codegen.h
 
 SOURCES := \
     ada83_bignum.c \
@@ -48,7 +49,8 @@ SOURCES := \
     ada83_types.c \
     ada83_symbols.c \
     ada83_parser.c \
-    ada83_eval.c
+    ada83_eval.c \
+    ada83_codegen.c
 
 OBJECTS := $(SOURCES:.c=.o)
 

@@ -1,24 +1,26 @@
 ///-----------------------------------------------------------------------------
 ///                                                                           --
-///                        A D A 8 3   I N T E R P R E T E R                  --
+///                        A D A 8 3   C O M P I L E R                        --
 ///                                                                           --
 ///                     M A I N   P R O G R A M   E N T R Y                   --
 ///                                                                           --
-///  This is the main entry point for the Ada83 interpreter. It handles:      --
+///  This is the main entry point for the Ada83 compiler. It handles:         --
 ///                                                                           --
 ///    - Command line argument parsing                                        --
 ///    - Source file loading                                                  --
 ///    - Include path management                                              --
 ///    - Compilation unit processing                                          --
-///    - Main procedure invocation                                            --
+///    - LLVM IR code generation (default) or interpretation                  --
 ///                                                                           --
 ///  Usage: ada83 [options] source_file [arguments...]                        --
 ///                                                                           --
 ///  Options:                                                                 --
 ///    -I path    Add include path for library units                          --
-///    -c         Compile only (syntax/semantic check, no execution)          --
+///    -i         Interpret mode (direct execution instead of LLVM IR)        --
 ///    -v         Verbose output                                              --
 ///    --help     Show usage information                                      --
+///                                                                           --
+///  By default, outputs LLVM IR to stdout (like the original ada83.c).       --
 ///                                                                           --
 ///-----------------------------------------------------------------------------
 
@@ -30,6 +32,7 @@
 #include "ada83_types.h"
 #include "ada83_symbols.h"
 #include "ada83_eval.h"
+#include "ada83_codegen.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,7 +49,7 @@
 static const char *include_paths[MAX_INCLUDE_PATHS];
 static int include_path_count = 0;
 
-static bool compile_only = false;
+static bool interpret_mode = false;   ///< If true, interpret instead of codegen
 static bool verbose = false;
 
 
@@ -57,33 +60,35 @@ static bool verbose = false;
 static void Print_Usage(const char *program_name)
 {
     fprintf(stderr,
-        "Ada83 Interpreter - Literate Implementation\n"
+        "Ada83 Compiler - Literate Implementation\n"
         "\n"
         "Usage: %s [options] source_file [arguments...]\n"
         "\n"
         "Options:\n"
         "  -I path    Add include path for WITH'ed library units\n"
-        "  -c         Compile only (check syntax and semantics, no execution)\n"
+        "  -i         Interpret mode (execute directly instead of generating LLVM IR)\n"
         "  -v         Verbose output (show compilation phases)\n"
         "  --help     Show this usage information\n"
         "  --version  Show version information\n"
         "\n"
+        "By default, outputs LLVM IR to stdout.\n"
         "The source file should be a valid Ada83 compilation unit.\n"
-        "If it contains a main procedure, it will be executed.\n"
         "\n"
         "Example:\n"
-        "  %s hello.ada\n"
-        "  %s -I ./libs -v main.ada\n"
+        "  %s hello.ada > hello.ll     # Generate LLVM IR\n"
+        "  %s -i hello.ada             # Interpret directly\n"
+        "  %s -I ./libs main.ada       # Compile with library path\n"
         "\n",
-        program_name, program_name, program_name);
+        program_name, program_name, program_name, program_name);
 }
 
 
 static void Print_Version(void)
 {
-    printf("Ada83 Interpreter v1.0\n"
+    fprintf(stderr, "Ada83 Compiler v1.0\n"
            "Literate-style implementation based on Ada83 LRM\n"
-           "Modular architecture with GNAT-style naming conventions\n");
+           "Modular architecture with GNAT-style naming conventions\n"
+           "Outputs LLVM IR for execution via llvm-link and lli\n");
 }
 
 
@@ -124,10 +129,10 @@ static char *Load_Source_File(const char *filename, size_t *out_size)
     }
 
     /// Read file
-    size_t read = fread(buffer, 1, size, file);
+    size_t bytes_read = fread(buffer, 1, size, file);
     fclose(file);
 
-    if (read != (size_t)size) {
+    if (bytes_read != (size_t)size) {
         fprintf(stderr, "Error: Failed to read '%s'\n", filename);
         free(buffer);
         return NULL;
@@ -208,20 +213,11 @@ static char *Find_Library_Unit(String_Slice unit_name, size_t *out_size,
 static AST_Node *Parse_Source(const char *source, size_t length,
                              const char *filename)
 {
-    if (verbose) {
-        printf("Parsing %s...\n", filename);
-    }
-
     Parser_State parser = Parser_Init(source, length, filename);
     AST_Node *unit = Parse_Compilation_Unit(&parser);
 
     if (parser.error_count > 0) {
-        fprintf(stderr, "Parsing failed with %d error(s)\n", parser.error_count);
         return NULL;
-    }
-
-    if (verbose) {
-        printf("  Parsing complete.\n");
     }
 
     return unit;
@@ -236,9 +232,7 @@ static AST_Node *Parse_Source(const char *source, size_t length,
 static bool Analyze_Source(Semantic_Context *sem, AST_Node *unit,
                           const char *filename)
 {
-    if (verbose) {
-        printf("Analyzing %s...\n", filename);
-    }
+    (void)filename;  // Used in verbose mode comments below
 
     /// Process WITH clauses - load library units
     if (unit->kind == N_CU && unit->comp_unit.context) {
@@ -260,30 +254,17 @@ static bool Analyze_Source(Semantic_Context *sem, AST_Node *unit,
             char *lib_source = Find_Library_Unit(unit_name, &lib_size, &lib_filename);
 
             if (lib_source) {
-                if (verbose) {
-                    printf("  Loading library unit: %.*s (%s)\n",
-                          (int)unit_name.length, unit_name.data, lib_filename);
-                }
-
                 AST_Node *lib_unit = Parse_Source(lib_source, lib_size, lib_filename);
                 if (lib_unit) {
                     Analyze_Compilation_Unit(sem, lib_unit);
                 }
                 free(lib_source);
             }
-            else if (verbose) {
-                printf("  Warning: Library unit '%.*s' not found\n",
-                      (int)unit_name.length, unit_name.data);
-            }
         }
     }
 
     /// Analyze the main unit
     Analyze_Compilation_Unit(sem, unit);
-
-    if (verbose) {
-        printf("  Analysis complete.\n");
-    }
 
     return true;
 }
@@ -303,7 +284,7 @@ static AST_Node *Find_Main_Procedure(AST_Node *unit)
         if (u->kind == N_PB) {
             /// A parameterless library-level procedure is a potential main
             AST_Node *spec = u->subprog_body.spec;
-            if (spec->subprog_spec.params.count == 0) {
+            if (spec && spec->subprog_spec.params.count == 0) {
                 return u;
             }
         }
@@ -313,22 +294,15 @@ static AST_Node *Find_Main_Procedure(AST_Node *unit)
 }
 
 
-/// @brief Execute the main procedure
+/// @brief Execute the main procedure (interpret mode)
 /// @param ctx Evaluation context
 /// @param main_proc Main procedure AST node
 ///
 static void Execute_Main(Eval_Context *ctx, AST_Node *main_proc,
                         const char *filename)
 {
-    if (verbose) {
-        printf("Executing %s...\n", filename);
-    }
-
+    (void)filename;
     Exec_Call(ctx, main_proc, NULL);
-
-    if (verbose) {
-        printf("  Execution complete.\n");
-    }
 }
 
 
@@ -356,8 +330,8 @@ int main(int argc, char *argv[])
         else if (strcmp(argv[i], "-v") == 0) {
             verbose = true;
         }
-        else if (strcmp(argv[i], "-c") == 0) {
-            compile_only = true;
+        else if (strcmp(argv[i], "-i") == 0) {
+            interpret_mode = true;
         }
         else if (strcmp(argv[i], "-I") == 0) {
             if (i + 1 < argc) {
@@ -415,9 +389,8 @@ int main(int argc, char *argv[])
     Semantic_Context sem;
     Semantic_Init(&sem);
 
-    /// Initialize evaluation context (also sets up predefined types)
-    Eval_Context eval;
-    Eval_Init(&eval, &sem);
+    /// Initialize types
+    Types_Initialize(&sem);
 
     /// Analyze source
     if (!Analyze_Source(&sem, unit, source_file)) {
@@ -425,26 +398,34 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    /// Execute if not compile-only
-    if (!compile_only) {
+    if (interpret_mode) {
+        /// Interpretation mode - execute directly
+        Eval_Context eval;
+        Eval_Init(&eval, &sem);
+
         AST_Node *main_proc = Find_Main_Procedure(unit);
 
         if (main_proc) {
             Execute_Main(&eval, main_proc, source_file);
         }
-        else if (verbose) {
-            printf("No main procedure found. Elaboration only.\n");
-
-            /// Still elaborate package bodies
+        else {
+            /// Elaborate package bodies
             Elaborate_Compilation_Unit(&eval, unit);
         }
+
+        Eval_Cleanup(&eval);
     }
-    else if (verbose) {
-        printf("Compile-only mode: syntax and semantic check passed.\n");
+    else {
+        /// Default: Code generation mode - output LLVM IR to stdout
+        Codegen_Context codegen;
+        Codegen_Init(&codegen, stdout, &sem);
+
+        Codegen_Compilation_Unit(&codegen, unit);
+
+        Codegen_Cleanup(&codegen);
     }
 
     /// Cleanup
-    Eval_Cleanup(&eval);
     free(source);
 
     return 0;
