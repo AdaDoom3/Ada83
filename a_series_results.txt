@@ -1,0 +1,162 @@
+
+========================================
+Class A Tests
+========================================
+
+  a21001a            PASS   PASSED        
+  a22002a            PASS   PASSED        
+  a22006b            PASS   PASSED        
+  a22006c            PASS   PASSED        
+  a22006d            PASS   PASSED        
+  a22006e            PASS   PASSED        
+  a22006f            PASS   PASSED        
+  a26004a            PASS   PASSED        
+  a27003a            PASS   PASSED        
+  a27004a            PASS   PASSED        
+  a28002c            PASS   PASSED        
+  a28004a            PASS   PASSED        
+  a29002a            PASS   PASSED        
+  a29002b            PASS   PASSED        
+  a29002c            PASS   PASSED        
+  a29002d            PASS   PASSED        
+  a29002e            PASS   PASSED        
+  a29002f            PASS   PASSED        
+  a29002g            PASS   PASSED        
+  a29002h            PASS   PASSED        
+  a29002i            PASS   PASSED        
+  a29002j            PASS   PASSED        
+  a29003a            PASS   PASSED        
+  a2a031a            PASS   PASSED        
+  a32203b            PASS   PASSED        
+  a32203c            PASS   PASSED        
+  a32203d            PASS   PASSED        
+  a33003a            PASS   PASSED        
+  a34017c            PASS   PASSED        
+  a35101b            PASS   PASSED        
+  a35402a            PASS   PASSED        
+  a35502q            PASS   PASSED        
+  a35502r            PASS   PASSED        
+  a35710a            PASS   PASSED        
+  a35801a            PASS   PASSED        
+  a35801b            PASS   PASSED        
+  a35801e            PASS   PASSED        
+  a35801f            PASS   PASSED        
+  a35902c            PASS   PASSED        
+  a38106d            PASS   PASSED        
+  a38106e            PASS   PASSED        
+  a38199a            PASS   PASSED        
+  a38199b            PASS   PASSED        
+  a38199c1m          PASS   PASSED        
+  a39005b            PASS   PASSED        
+  a39005c            PASS   PASSED        
+  a39005e            PASS   PASSED        
+  a39005f            PASS   PASSED        
+  a54b01a            PASS   PASSED        
+  a54b02a            PASS   PASSED        
+  a55b12a            PASS   PASSED        
+  a55b13a            PASS   PASSED        
+  a55b14a            PASS   PASSED        
+  a62006d            PASS   PASSED        
+  a63202a            PASS   PASSED        
+  a71002a            PASS   PASSED        
+  a71004a            PASS   PASSED        
+  a72001a            PASS   PASSED        
+  a73001i            PASS   PASSED        
+  a73001j            PASS   PASSED        
+  a74006a            PASS   PASSED        
+  a74105b            PASS   PASSED        
+  a74106a            PASS   PASSED        
+  a74106b            PASS   PASSED        
+  a74106c            PASS   PASSED        
+  a74205e            PASS   PASSED        
+  a74205f            PASS   PASSED        
+  a83009a            PASS   PASSED        
+  a83009b            PASS   PASSED        
+  a83041b            FAIL   FAILED         exit 124
+  a83041c            SKIP   BIND           unresolved symbols
+./test.sh: line 20:  2756 Segmentation fault      timeout 1 lli test_results/$n.bc > acats_logs/$n.out 2>&1
+  a83041d            FAIL   FAILED         exit 139
+  a83a02a            PASS   PASSED        
+  a83a02b            PASS   PASSED        
+  a83a06a            PASS   PASSED        
+  a83a08a            SKIP   BIND           unresolved symbols
+  a83c01c            PASS   PASSED        
+  a83c01d            FAIL   FAILED         exit 124
+  a83c01e            PASS   PASSED        
+  a83c01f            FAIL   FAILED         exit 124
+  a83c01g            SKIP   BIND           unresolved symbols
+  a83c01h            FAIL   FAILED         exit 124
+  a83c01i            FAIL   FAILED         exit 124
+  a83c01j            FAIL   FAILED         exit 124
+  a85007d            PASS   PASSED        
+  a85013b            SKIP   BIND           unresolved symbols
+  a87b59a            SKIP   COMPILE        acats/a87b59a.ada:188:16: typ mis
+  a91001i            PASS   PASSED        
+  a91002m            PASS   PASSED        
+  a95001c            PASS   PASSED        
+  a95005a            PASS   PASSED        
+  a95074d            PASS   PASSED        
+  a97106a            PASS   PASSED        
+  a98001a            PASS   PASSED        
+  a98002a            PASS   PASSED        
+  a99006a            PASS   PASSED        
+  a99007a            PASS   PASSED        
+  a9b001a            PASS   PASSED        
+  a9b002a            PASS   PASSED        
+  a9b002b            PASS   PASSED        
+  aa2010a            PASS   PASSED        
+  aa2012a            SKIP   BIND           unresolved symbols
+  aa5008x            PASS   PASSED        
+  ab7006a            PASS   PASSED        
+  ac1015b            PASS   PASSED        
+  ac3106a            PASS   PASSED        
+  ac3206a            PASS   PASSED        
+  ac3207a            PASS   PASSED        
+  ad1a01a            PASS   PASSED        
+  ad1a01b            PASS   PASSED        
+  ad1d01e            FAIL   FAILED         exit 124
+  ad7001b            PASS   PASSED        
+  ad7001c0m          PASS   PASSED        
+  ad7001d0m          PASS   PASSED        
+  ad7005a            PASS   PASSED        
+  ad7006a            PASS   PASSED        
+  ad7101a            PASS   PASSED        
+  ad7101c            PASS   PASSED        
+  ad7102a            PASS   PASSED        
+  ad7103a            PASS   PASSED        
+  ad7103c            PASS   PASSED        
+  ad7104a            PASS   PASSED        
+  ad7201a            PASS   PASSED        
+  ad7201e            PASS   PASSED        
+  ad7203b            PASS   PASSED        
+  ad7205b            PASS   PASSED        
+  ad7206a            PASS   PASSED        
+  ada101a            PASS   PASSED        
+  ae2101a            PASS   PASSED        
+  ae2101b            PASS   PASSED        
+  ae2101d            PASS   PASSED        
+  ae2101f            PASS   PASSED        
+  ae2101g            PASS   PASSED        
+  ae2101i            PASS   PASSED        
+  ae2113a            SKIP   BIND           unresolved symbols
+  ae2113b            SKIP   BIND           unresolved symbols
+  ae3002g            PASS   PASSED        
+  ae3101a            SKIP   BIND           unresolved symbols
+  ae3702a            PASS   PASSED        
+  ae3709a            SKIP   BIND           unresolved symbols
+
+========================================
+RESULTS
+========================================
+
+ CLASS                    pass   fail   skip  total    rate
+ ---------------------- ------ ------ ------ ------ -------
+ A  Acceptance             122      -      -    122       -
+ B  Illegality               0    130      -    130      0%
+ C  Executable               0      -     10     10      0%
+ ---------------------- ------ ------ ------ ------ -------
+ TOTAL                     122    130     10    140     87%
+
+========================================
+ elapsed 22.694s  |  processed 140 tests  |  2026-01-08 08:42:31
+========================================
