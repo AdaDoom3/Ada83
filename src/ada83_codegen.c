@@ -511,6 +511,14 @@ void Codegen_Emit_Prelude(Codegen_Context *ctx)
 
 void Codegen_Emit_Epilogue(Codegen_Context *ctx, const char *main_name)
 {
+    /// Emit deferred string constants (must be at module scope)
+    if (ctx->string_pool.count > 0) {
+        emit(ctx, "\n; String constants\n");
+        for (uint32_t i = 0; i < ctx->string_pool.count; i++) {
+            emit(ctx, "%s\n", ctx->string_pool.data[i]);
+        }
+    }
+
     if (main_name) {
         emit(ctx, "define i32 @main(){\n");
         emit(ctx, "  call void @__ada_ss_init()\n");
@@ -787,6 +795,19 @@ static Gen_Value gen_real(Codegen_Context *ctx, AST_Node *expr)
 }
 
 
+/// @brief Add a string to the deferred pool
+///
+static void add_string_to_pool(Codegen_Context *ctx, const char *str_def)
+{
+    if (ctx->string_pool.count >= ctx->string_pool.capacity) {
+        uint32_t new_cap = ctx->string_pool.capacity ? ctx->string_pool.capacity * 2 : 64;
+        ctx->string_pool.data = realloc(ctx->string_pool.data, new_cap * sizeof(char *));
+        ctx->string_pool.capacity = new_cap;
+    }
+    ctx->string_pool.data[ctx->string_pool.count++] = strdup(str_def);
+}
+
+
 /// @brief Generate code for a string literal
 ///
 static Gen_Value gen_string(Codegen_Context *ctx, AST_Node *expr)
@@ -794,18 +815,20 @@ static Gen_Value gen_string(Codegen_Context *ctx, AST_Node *expr)
     String_Slice str = expr->string_val;
     int str_id = ctx->string_counter++;
 
-    /// Emit string constant
-    emit(ctx, "@.str.%d = private constant [%u x i8] c\"",
-         str_id, (unsigned)(str.length + 1));
-    for (size_t i = 0; i < str.length; i++) {
+    /// Build string constant definition (defer to module scope)
+    char str_def[4096];
+    int pos = snprintf(str_def, sizeof(str_def), "@.str.%d = private constant [%u x i8] c\"",
+                       str_id, (unsigned)(str.length + 1));
+    for (size_t i = 0; i < str.length && pos < (int)sizeof(str_def) - 10; i++) {
         unsigned char c = str.data[i];
         if (c >= 32 && c < 127 && c != '"' && c != '\\') {
-            emit(ctx, "%c", c);
+            str_def[pos++] = c;
         } else {
-            emit(ctx, "\\%02X", c);
+            pos += snprintf(str_def + pos, sizeof(str_def) - pos, "\\%02X", c);
         }
     }
-    emit(ctx, "\\00\"\n");
+    snprintf(str_def + pos, sizeof(str_def) - pos, "\\00\"");
+    add_string_to_pool(ctx, str_def);
 
     /// Return pointer to string
     Gen_Value result = { Codegen_New_Temp(ctx), CG_VK_POINTER };
@@ -860,11 +883,10 @@ static Gen_Value gen_call(Codegen_Context *ctx, AST_Node *expr)
         func_name = callee->string_val;
     }
 
-    /// Generate argument values
-    int arg_temps[32] = {0};
+    /// Generate argument values and track their types
+    Gen_Value arg_vals[32] = {{0}};
     for (uint32_t i = 0; i < args->count && i < 32; i++) {
-        Gen_Value arg = gen_expr(ctx, args->data[i]);
-        arg_temps[i] = arg.id;
+        arg_vals[i] = gen_expr(ctx, args->data[i]);
     }
 
     /// Emit call
@@ -873,7 +895,10 @@ static Gen_Value gen_call(Codegen_Context *ctx, AST_Node *expr)
 
     for (uint32_t i = 0; i < args->count && i < 32; i++) {
         if (i > 0) emit(ctx, ", ");
-        emit(ctx, "i64 %%t%d", arg_temps[i]);
+        const char *type_str = "i64";
+        if (arg_vals[i].kind == CG_VK_POINTER) type_str = "ptr";
+        else if (arg_vals[i].kind == CG_VK_FLOAT) type_str = "double";
+        emit(ctx, "%s %%t%d", type_str, arg_vals[i].id);
     }
 
     emit(ctx, ")\n");
@@ -1092,11 +1117,10 @@ static void gen_proc_call(Codegen_Context *ctx, AST_Node *stmt)
         proc_name = callee->string_val;
     }
 
-    /// Generate argument values
-    int arg_temps[32] = {0};
+    /// Generate argument values and track their types
+    Gen_Value arg_vals[32] = {{0}};
     for (uint32_t i = 0; i < args->count && i < 32; i++) {
-        Gen_Value arg = gen_expr(ctx, args->data[i]);
-        arg_temps[i] = arg.id;
+        arg_vals[i] = gen_expr(ctx, args->data[i]);
     }
 
     /// Emit call (void return)
@@ -1104,7 +1128,10 @@ static void gen_proc_call(Codegen_Context *ctx, AST_Node *stmt)
 
     for (uint32_t i = 0; i < args->count && i < 32; i++) {
         if (i > 0) emit(ctx, ", ");
-        emit(ctx, "i64 %%t%d", arg_temps[i]);
+        const char *type_str = "i64";
+        if (arg_vals[i].kind == CG_VK_POINTER) type_str = "ptr";
+        else if (arg_vals[i].kind == CG_VK_FLOAT) type_str = "double";
+        emit(ctx, "%s %%t%d", type_str, arg_vals[i].id);
     }
 
     emit(ctx, ")\n");
@@ -1174,7 +1201,7 @@ static void gen_statement(Codegen_Context *ctx, AST_Node *stmt)
             gen_expr(ctx, stmt);
             break;
 
-        case N_NULL:
+        case N_NS:   /// Null statement
             gen_null(ctx);
             break;
 

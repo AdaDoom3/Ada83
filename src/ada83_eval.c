@@ -1158,11 +1158,22 @@ void Analyze_Declaration(Semantic_Context *sem, AST_Node *decl)
         Analyze_Statement(sem, decl);
         break;
 
-    case N_PG:
+    case N_PG: {
+        /// PRAGMA IMPORT and INTERFACE have special convention identifiers
+        /// (C, Ada, Intrinsic, etc.) that shouldn't be looked up
+        String_Slice pname = decl->pragma_node.name;
+        bool is_import = String_Equal_CI(pname, STR("IMPORT")) ||
+                        String_Equal_CI(pname, STR("INTERFACE")) ||
+                        String_Equal_CI(pname, STR("EXPORT")) ||
+                        String_Equal_CI(pname, STR("CONVENTION"));
+
         for (uint32_t i = 0; i < decl->pragma_node.args.count; i++) {
+            /// Skip first arg for IMPORT/INTERFACE (convention specifier)
+            if (is_import && i == 0) continue;
             Analyze_Expression(sem, decl->pragma_node.args.data[i], NULL);
         }
         break;
+    }
 
     case N_GEN:
         /// Generic declarations are stored but not elaborated until instantiation
