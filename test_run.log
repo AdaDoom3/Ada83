@@ -1,0 +1,24 @@
+Usage: ./test.sh <mode> [options]
+
+Modes:
+  f, full         Run complete ACATS test suite
+  g <X> [v]       Run all tests for class X (A/B/C/D/E/L)
+  q <XX> [v]      Run tests for group XX (e.g., a21, b22, c32)
+  b [v]           Run B-test error coverage analysis
+  h, help         Show this help message
+
+Classes:
+  A  Acceptance tests      - basic compiler validation
+  B  Illegality tests      - rejection of invalid code
+  C  Executable tests      - runtime behavior verification
+  D  Numeric tests         - arithmetic precision checks
+  E  Inspection tests      - manual verification required
+  L  Post-compilation      - linker/binder rejection tests
+
+Options:
+  v               Verbose mode (detailed B-test diagnostics)
+
+Output:
+  test_results/*.{ll,bc}   Compiled test artifacts
+  acats_logs/*.{err,out}   Compiler and runtime logs
+  test_summary.txt         Final pass/fail summary
