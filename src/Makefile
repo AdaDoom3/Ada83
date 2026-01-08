@@ -14,7 +14,7 @@
 #------------------------------------------------------------------------------
 
 CC       := gcc
-CFLAGS   := -std=c11 -Wall -Wextra -Wpedantic -O2
+CFLAGS   := -std=gnu11 -Wall -Wextra -O2
 CFLAGS   += -D_POSIX_C_SOURCE=200809L
 LDFLAGS  := -lm -lpthread
 
