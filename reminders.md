@@ -1,8 +1,14 @@
 # Reminders for Ada83.c Reformatting
 
-## Current Prompt (2026-01-08)
+## Reformatting Prompts
+
+### Initial Prompt (2026-01-08)
 
 Without dropping anything on the floor or leaving TODO turds - reformat ada83.c so that it would be more conducive for you to fit in your context (e.g. edit and iterate on) - all names must be fully expanded, the code's style must abide by Knuth's "Literate Programming" style with minimal, but sharp and tasteful comments (informed by GNAT LLVM sources in the /reference directory). Use "and" instead of "&&", "not" instead of "!", and "or" instead of "||".
+
+### Second Iteration (2026-01-08)
+
+Two space indentation - there are also many identifiers in need of expanding. Note also that the goal of the compiler is *both* correctness and the generation of highly optimal code.
 
 ## Key Requirements
 
@@ -15,8 +21,10 @@ Without dropping anything on the floor or leaving TODO turds - reformat ada83.c 
    - `!` → `not`
 5. **Context-friendly**: Make the code easier to fit in AI context windows
 6. **No TODOs or dropped features**: Complete refactoring only
+7. **2-space indentation**: For better density while maintaining readability
+8. **Dual goals**: Both correctness AND highly optimized code generation
 
-## Name Mappings Identified
+## Name Mappings - First Iteration
 
 ### Type Names
 - `U` → `Unsigned_Big_Integer`
@@ -70,7 +78,7 @@ Without dropping anything on the floor or leaving TODO turds - reformat ada83.c 
 - `sh` → `string_hash`
 - `die` → `fatal_error`
 
-### Function Names (Lexer/Parser)
+### Function Names (Lexer/Parser - Initial)
 - `kl` → `keyword_lookup`
 - `ln` → `lexer_new`
 - `av` → `advance_char`
@@ -80,7 +88,7 @@ Without dropping anything on the floor or leaving TODO turds - reformat ada83.c 
 - `pk` → `peek_token`
 - `ex` → `expect_token`
 
-### Function Names (Code Generation)
+### Function Names (Code Generation - Initial)
 - `nt` → `new_temporary`
 - `nl` → `new_label`
 - `gex` → `generate_expression`
@@ -99,19 +107,124 @@ Without dropping anything on the floor or leaving TODO turds - reformat ada83.c 
 - `vpowi` → `value_power_integer`
 - `vpows` → `value_power_float`
 
-### Variable Name Patterns
-- `d` → `data` or `digit`
-- `n` → `count` or `numerator`
-- `c` → `capacity` or `carry` or `current` (context-dependent)
-- `s` → `sign` or `string` or `symbol` (context-dependent)
-- `p` → `pointer`
-- `b` → `buffer` or `base` (context-dependent)
-- `e` → `end` or `error` (context-dependent)
-- `t` → `type` or `temporary` (context-dependent)
-- `i`, `j`, `k` → `index`, `inner_index`, etc. (loop variables)
-- `lo`, `hi` → `low_bound`, `high_bound`
-- `sz` → `size`
-- `mx` → `maximum`
+## Additional Transformations - Second Iteration
+
+### More Lexer/Parser Functions
+- `lnx` → `lexer_next_token`
+- `sn` → `scan_number_literal`
+- `sc` → `scan_character_literal`
+- `ss` → `scan_string_literal`
+- `si_` → `scan_identifier`
+- `pn` → `parser_next`
+- `pa` → `parser_at`
+- `pm` → `parser_match`
+- `pe` → `parser_expect`
+- `pl` → `parser_location`
+- `pi` → `parser_identifier`
+- `pat` → `parser_attribute`
+- `pex` → `parse_expression`
+- `pnm` → `parse_name`
+- `ppr` → `parse_primary`
+- `prn` → `parse_range`
+- `pst` → `parse_statement`
+- `pbr` → `parse_binary`
+
+### Node & Object Constructors
+- `nd` → `node_new`
+- `rc` → `reference_counter_new`
+- `lu` → `label_use_new`
+- `gt` → `generic_type_new`
+
+### Type System Functions
+- `tcc` → `type_canonical_concrete`
+- `rst` → `resolve_subtype`
+- `rng_sz` → `range_size`
+- `tco` → `type_covers`
+- `is_unc_arr` → `is_unconstrained_array`
+- `repr_cat` → `representation_category`
+- `th` → `type_hash`
+
+### Symbol Table Functions
+- `syf` → `symbol_find`
+- `syfa` → `symbol_find_with_arity`
+- `syi` → `symbol_insert`
+- `syd` → `symbol_define`
+- `sya` → `symbol_add_overload`
+- `sbody` → `symbol_body`
+- `sspec` → `symbol_spec`
+
+### Code Generation - Registers & Labels
+- `nt` → `new_temporary_register`
+- `nl` → `new_label_block`
+- `br` → `emit_branch`
+- `cbr` → `emit_conditional_branch`
+
+### Code Generation - Runtime Checks
+- `gen_index_check` → `generate_index_constraint_check`
+- `gen_float_chk` → `generate_float_range_check`
+- `gen_array_bounds_chk` → `generate_array_bounds_check`
+- `gen_discrete_chk` → `generate_discrete_range_check`
+
+### Semantic Analysis
+- `naag` → `normalize_array_aggregate`
+- `nrag` → `normalize_record_aggregate`
+- `rex` → `resolve_expression`
+- `rss` → `resolve_statement_sequence`
+- `rdl` → `resolve_declaration`
+
+### Code Generation - Main Functions
+- `gdl` → `generate_declaration`
+- `gss` → `generate_statement_sequence`
+- `gbf` → `generate_block_frame`
+- `gex` → `generate_expression`
+- `gag` → `generate_aggregate`
+- `gfp` → `generate_fat_pointer`
+- `gfpd` → `get_fat_pointer_data`
+- `gfpb` → `get_fat_pointer_bounds`
+
+### Utility Functions
+- `esn` → `encode_symbol_name`
+- `hnf` → `has_nested_function`
+- `hnfs` → `has_nested_function_in_stmts`
+- `gattr` → `get_attribute_name`
+- `flbl` → `find_label`
+- `eex` → `emit_exception`
+- `elbl` → `emit_label_definition`
+- `adcl` → `add_declaration`
+- `vt` → `value_llvm_type_string`
+- `act` → `ada_to_c_type_string`
+- `tk2v` → `token_kind_to_value_kind`
+- `glbl_bb` → `get_or_create_label_basic_block`
+
+### Enum Constants
+- `VK_I` → `VALUE_KIND_INTEGER`
+- `VK_F` → `VALUE_KIND_FLOAT`
+- `VK_P` → `VALUE_KIND_POINTER`
+- `TY_B` → `TYPE_BOOLEAN`
+- `TY_C` → `TYPE_CHARACTER`
+- `TY_I` → `TYPE_INTEGER`
+- `TY_UI` → `TYPE_UNSIGNED_INTEGER`
+- `TY_E` → `TYPE_ENUMERATION`
+- `TY_D` → `TYPE_DERIVED`
+- `TY_F` → `TYPE_FLOAT`
+- `TY_UF` → `TYPE_UNIVERSAL_FLOAT`
+- `TY_FX` → `TYPE_FIXED_POINT`
+- `TY_AC` → `TYPE_ACCESS`
+- `TY_FT` → `TYPE_FAT_POINTER`
+- `TY_S` → `TYPE_STRING`
+- `TY_A` → `TYPE_ARRAY`
+- `TY_R` → `TYPE_RECORD`
+- `RC_FLOAT` → `REPR_CAT_FLOAT`
+- `RC_PTR` → `REPR_CAT_POINTER`
+
+### Macros
+- `UZ` → `UNSIGNED_BIGINT_NORMALIZE`
+- `Z` → `STRING_LITERAL`
+
+### Note on Vector Functions
+The vector append functions (nv, sv, lv, gv, lev, fev, slv) remain short
+because they're used so frequently that full names would bloat the code.
+They're defined via the VECPUSH macro which shows their full purpose.
 
 ## Style Guidelines from GNAT LLVM
 
@@ -121,6 +234,15 @@ Based on /reference/gnat examples:
 - Use precise terminology from Ada/LLVM domains
 - Comments describe invariants, preconditions, and postconditions
 - Avoid redundant comments that just restate the code
+
+## Current State
+
+**Lines of code**: ~14,400 (expanded from 265 dense lines)
+**Indentation**: 2 spaces
+**Boolean operators**: Ada-style (and/or/not)
+**Identifier expansion**: Comprehensive
+**Compilation**: ✓ Successful
+**Documentation**: Updated to reflect dual goals of correctness + optimization
 
 ## Future Prompts
 
