@@ -5806,7 +5806,7 @@ static void icv(Type_Info *t, Syntax_Node *n)
     normalize_record_aggregate(0, type_canonical_concrete(t), n);
   }
 }
-static bool hrs(Node_Vector *v)
+static bool has_return_statement(Node_Vector *v)
 {
   for (uint32_t i = 0; i < v->count; i++)
     if (v->data[i]->k != N_PG)
@@ -6513,7 +6513,7 @@ static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *n)
     break;
   case N_IF:
     resolve_expression(SM, n->if_.cd, TY_BOOL);
-    if (n->if_.th.count > 0 and not hrs(&n->if_.th))
+    if (n->if_.th.count > 0 and not has_return_statement(&n->if_.th))
       fatal_error(n->l, "seq needs stmt");
     for (uint32_t i = 0; i < n->if_.th.count; i++)
       resolve_statement_sequence(SM, n->if_.th.data[i]);
@@ -6521,12 +6521,12 @@ static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *n)
     {
       Syntax_Node *e = n->if_.ei.data[i];
       resolve_expression(SM, e->if_.cd, TY_BOOL);
-      if (e->if_.th.count > 0 and not hrs(&e->if_.th))
+      if (e->if_.th.count > 0 and not has_return_statement(&e->if_.th))
         fatal_error(e->l, "seq needs stmt");
       for (uint32_t j = 0; j < e->if_.th.count; j++)
         resolve_statement_sequence(SM, e->if_.th.data[j]);
     }
-    if (n->if_.el.count > 0 and not hrs(&n->if_.el))
+    if (n->if_.el.count > 0 and not has_return_statement(&n->if_.el))
       fatal_error(n->l, "seq needs stmt");
     for (uint32_t i = 0; i < n->if_.el.count; i++)
       resolve_statement_sequence(SM, n->if_.el.data[i]);
@@ -6538,7 +6538,7 @@ static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *n)
       Syntax_Node *a = n->cs.al.data[i];
       for (uint32_t j = 0; j < a->ch.it.count; j++)
         resolve_expression(SM, a->ch.it.data[j], n->cs.ex->ty);
-      if (a->hnd.stz.count > 0 and not hrs(&a->hnd.stz))
+      if (a->hnd.stz.count > 0 and not has_return_statement(&a->hnd.stz))
         fatal_error(a->l, "seq needs stmt");
       for (uint32_t j = 0; j < a->hnd.stz.count; j++)
         resolve_statement_sequence(SM, a->hnd.stz.data[j]);
@@ -6566,7 +6566,7 @@ static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *n)
       }
       resolve_expression(SM, n->lp.it, TY_BOOL);
     }
-    if (n->lp.st.count > 0 and not hrs(&n->lp.st))
+    if (n->lp.st.count > 0 and not has_return_statement(&n->lp.st))
       fatal_error(n->l, "seq needs stmt");
     for (uint32_t i = 0; i < n->lp.st.count; i++)
       resolve_statement_sequence(SM, n->lp.st.data[i]);
@@ -6632,7 +6632,7 @@ static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *n)
         Symbol *ps = symbol_add_overload(SM, syn(p->pm.nm, 0, pt, p));
         p->sy = ps;
       }
-      if (n->acc.stx.count > 0 and not hrs(&n->acc.stx))
+      if (n->acc.stx.count > 0 and not has_return_statement(&n->acc.stx))
         fatal_error(n->l, "seq needs stmt");
       for (uint32_t i = 0; i < n->acc.stx.count; i++)
         resolve_statement_sequence(SM, n->acc.stx.data[i]);
@@ -6649,7 +6649,7 @@ static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *n)
       {
         for (uint32_t j = 0; j < s->acc.pmx.count; j++)
           resolve_expression(SM, s->acc.pmx.data[j], 0);
-        if (s->acc.stx.count > 0 and not hrs(&s->acc.stx))
+        if (s->acc.stx.count > 0 and not has_return_statement(&s->acc.stx))
           fatal_error(s->l, "seq needs stmt");
         for (uint32_t j = 0; j < s->acc.stx.count; j++)
           resolve_statement_sequence(SM, s->acc.stx.data[j]);
@@ -8052,7 +8052,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
     break;
   }
 }
-static int elc(Symbol_Manager *SM, Symbol_Vector *ev, Syntax_Node *n)
+static int elaborate_compilation(Symbol_Manager *SM, Symbol_Vector *ev, Syntax_Node *n)
 {
   if (not n)
     return 0;
@@ -8347,13 +8347,13 @@ static void symbol_manager_use_clauses(Symbol_Manager *SM, Syntax_Node *n)
     if (n->cu.un.data[i]->k == N_PKS)
       for (uint32_t j = 0; j < n->cu.un.data[i]->ps.dc.count; j++)
       {
-        int e = elc(SM, &eo, n->cu.un.data[i]->ps.dc.data[j]);
+        int e = elaborate_compilation(SM, &eo, n->cu.un.data[i]->ps.dc.data[j]);
         mx = e > mx ? e : mx;
       }
     else if (n->cu.un.data[i]->k == N_PKB)
       for (uint32_t j = 0; j < n->cu.un.data[i]->pb.dc.count; j++)
       {
-        int e = elc(SM, &eo, n->cu.un.data[i]->pb.dc.data[j]);
+        int e = elaborate_compilation(SM, &eo, n->cu.un.data[i]->pb.dc.data[j]);
         mx = e > mx ? e : mx;
       }
     for (uint32_t j = 0; j < eo.count; j++)
@@ -12446,7 +12446,7 @@ static bool isrt(const char *n)
          or not strcmp(n, "__ada_image_enum") or not strcmp(n, "__ada_value_int")
          or not strcmp(n, "__ada_image_int");
 }
-static bool hlb(Node_Vector *sl)
+static bool has_label_block(Node_Vector *sl)
 {
   for (uint32_t i = 0; i < sl->count; i++)
   {
@@ -12457,31 +12457,31 @@ static bool hlb(Node_Vector *sl)
       return 1;
     if (s->k == N_GT)
       return 1;
-    if (s->k == N_BL and hlb(&s->bk.st))
+    if (s->k == N_BL and has_label_block(&s->bk.st))
       return 1;
-    if (s->k == N_IF and (hlb(&s->if_.th) or hlb(&s->if_.el)))
+    if (s->k == N_IF and (has_label_block(&s->if_.th) or has_label_block(&s->if_.el)))
       return 1;
     for (uint32_t j = 0; s->k == N_IF and j < s->if_.ei.count; j++)
-      if (s->if_.ei.data[j] and hlb(&s->if_.ei.data[j]->if_.th))
+      if (s->if_.ei.data[j] and has_label_block(&s->if_.ei.data[j]->if_.th))
         return 1;
     if (s->k == N_CS)
     {
       for (uint32_t j = 0; j < s->cs.al.count; j++)
-        if (s->cs.al.data[j] and hlb(&s->cs.al.data[j]->hnd.stz))
+        if (s->cs.al.data[j] and has_label_block(&s->cs.al.data[j]->hnd.stz))
           return 1;
     }
-    if (s->k == N_LP and hlb(&s->lp.st))
+    if (s->k == N_LP and has_label_block(&s->lp.st))
       return 1;
   }
   return 0;
 }
-static void elb_r(Code_Generator *g, Syntax_Node *s, Node_Vector *lbs);
-static void elb(Code_Generator *g, Node_Vector *sl)
+static void emit_labels_block_recursive(Code_Generator *g, Syntax_Node *s, Node_Vector *lbs);
+static void emit_labels_block(Code_Generator *g, Node_Vector *sl)
 {
   Node_Vector lbs = {0};
   for (uint32_t i = 0; i < sl->count; i++)
     if (sl->data[i])
-      elb_r(g, sl->data[i], &lbs);
+      emit_labels_block_recursive(g, sl->data[i], &lbs);
   FILE *o = g->o;
   for (uint32_t i = 0; i < lbs.count; i++)
   {
@@ -12489,7 +12489,7 @@ static void elb(Code_Generator *g, Node_Vector *sl)
     fprintf(o, "lbl.%.*s:\n", (int) lb->length, lb->string);
   }
 }
-static void elb_r(Code_Generator *g, Syntax_Node *s, Node_Vector *lbs)
+static void emit_labels_block_recursive(Code_Generator *g, Syntax_Node *s, Node_Vector *lbs)
 {
   if (not s)
     return;
@@ -12515,13 +12515,13 @@ static void elb_r(Code_Generator *g, Syntax_Node *s, Node_Vector *lbs)
   if (s->k == N_IF)
   {
     for (uint32_t i = 0; i < s->if_.th.count; i++)
-      elb_r(g, s->if_.th.data[i], lbs);
+      emit_labels_block_recursive(g, s->if_.th.data[i], lbs);
     for (uint32_t i = 0; i < s->if_.el.count; i++)
-      elb_r(g, s->if_.el.data[i], lbs);
+      emit_labels_block_recursive(g, s->if_.el.data[i], lbs);
     for (uint32_t i = 0; i < s->if_.ei.count; i++)
       if (s->if_.ei.data[i])
         for (uint32_t j = 0; j < s->if_.ei.data[i]->if_.th.count; j++)
-          elb_r(g, s->if_.ei.data[i]->if_.th.data[j], lbs);
+          emit_labels_block_recursive(g, s->if_.ei.data[i]->if_.th.data[j], lbs);
   }
   if (s->k == N_BL)
   {
@@ -12545,7 +12545,7 @@ static void elb_r(Code_Generator *g, Syntax_Node *s, Node_Vector *lbs)
       }
     }
     for (uint32_t i = 0; i < s->bk.st.count; i++)
-      elb_r(g, s->bk.st.data[i], lbs);
+      emit_labels_block_recursive(g, s->bk.st.data[i], lbs);
   }
   if (s->k == N_LP)
   {
@@ -12569,16 +12569,16 @@ static void elb_r(Code_Generator *g, Syntax_Node *s, Node_Vector *lbs)
       }
     }
     for (uint32_t i = 0; i < s->lp.st.count; i++)
-      elb_r(g, s->lp.st.data[i], lbs);
+      emit_labels_block_recursive(g, s->lp.st.data[i], lbs);
   }
   if (s->k == N_CS)
     for (uint32_t i = 0; i < s->cs.al.count; i++)
       if (s->cs.al.data[i])
         for (uint32_t j = 0; j < s->cs.al.data[i]->hnd.stz.count; j++)
-          elb_r(g, s->cs.al.data[i]->hnd.stz.data[j], lbs);
+          emit_labels_block_recursive(g, s->cs.al.data[i]->hnd.stz.data[j], lbs);
 }
 static void generate_declaration(Code_Generator *g, Syntax_Node *n);
-static void hbl(Code_Generator *g, Node_Vector *sl)
+static void has_basic_label(Code_Generator *g, Node_Vector *sl)
 {
   for (uint32_t i = 0; i < sl->count; i++)
   {
@@ -12593,24 +12593,24 @@ static void hbl(Code_Generator *g, Node_Vector *sl)
         if (d and (d->k == N_PB or d->k == N_FB))
           generate_declaration(g, d);
       }
-      hbl(g, &s->bk.st);
+      has_basic_label(g, &s->bk.st);
     }
     else if (s->k == N_IF)
     {
-      hbl(g, &s->if_.th);
-      hbl(g, &s->if_.el);
+      has_basic_label(g, &s->if_.th);
+      has_basic_label(g, &s->if_.el);
       for (uint32_t j = 0; j < s->if_.ei.count; j++)
         if (s->if_.ei.data[j])
-          hbl(g, &s->if_.ei.data[j]->if_.th);
+          has_basic_label(g, &s->if_.ei.data[j]->if_.th);
     }
     else if (s->k == N_CS)
     {
       for (uint32_t j = 0; j < s->cs.al.count; j++)
         if (s->cs.al.data[j])
-          hbl(g, &s->cs.al.data[j]->hnd.stz);
+          has_basic_label(g, &s->cs.al.data[j]->hnd.stz);
     }
     else if (s->k == N_LP)
-      hbl(g, &s->lp.st);
+      has_basic_label(g, &s->lp.st);
   }
 }
 static void generate_declaration(Code_Generator *g, Syntax_Node *n)
@@ -12822,7 +12822,7 @@ static void generate_declaration(Code_Generator *g, Syntax_Node *n)
       if (d and (d->k == N_PB or d->k == N_FB))
         generate_declaration(g, d);
     }
-    hbl(g, &n->bd.st);
+    has_basic_label(g, &n->bd.st);
     char nb[256];
     if (n->sy and n->sy->mangled_nm.string)
     {
@@ -13137,7 +13137,7 @@ static void generate_declaration(Code_Generator *g, Syntax_Node *n)
         }
       }
     }
-    if (hlb(&n->bd.st))
+    if (has_label_block(&n->bd.st))
     {
       int sj = new_temporary_register(g);
       int peh = new_temporary_register(g);
@@ -13198,7 +13198,7 @@ static void generate_declaration(Code_Generator *g, Syntax_Node *n)
       if (d and (d->k == N_PB or d->k == N_FB))
         generate_declaration(g, d);
     }
-    hbl(g, &n->bd.st);
+    has_basic_label(g, &n->bd.st);
     Value_Kind rk = sp->sp.rt ? token_kind_to_value_kind(resolve_subtype(g->sm, sp->sp.rt))
                               : VALUE_KIND_INTEGER;
     char nb[256];
@@ -13511,8 +13511,8 @@ static void generate_declaration(Code_Generator *g, Syntax_Node *n)
         }
       }
     }
-    hbl(g, &n->bd.st);
-    if (hlb(&n->bd.st))
+    has_basic_label(g, &n->bd.st);
+    if (has_label_block(&n->bd.st))
     {
       int sj = new_temporary_register(g);
       int peh = new_temporary_register(g);
@@ -13571,7 +13571,7 @@ static void generate_declaration(Code_Generator *g, Syntax_Node *n)
     break;
   }
 }
-static void gel(Code_Generator *g, Syntax_Node *n)
+static void generate_expression_llvm(Code_Generator *g, Syntax_Node *n)
 {
   if (n and n->k == N_PKB and n->pb.st.count > 0)
   {
@@ -13591,7 +13591,7 @@ static void gel(Code_Generator *g, Syntax_Node *n)
         nb);
   }
 }
-static void grt(Code_Generator *g)
+static void generate_runtime_type(Code_Generator *g)
 {
   FILE *o = g->o;
   fprintf(
@@ -14025,7 +14025,7 @@ static bool lcmp(Symbol_Manager *SM, String_Slice nm, String_Slice pth)
   snprintf(op, 512, "%.*s.ll", (int) pth.length, pth.string);
   FILE *o = fopen(op, "w");
   Code_Generator g = {o, 0, 0, 0, &sm, {0}, 0, {0}, 0, {0}, 0, {0}, 0, {0}, {0}, {0}};
-  grt(&g);
+  generate_runtime_type(&g);
   prf(&g, &sm);
   for (int h = 0; h < 4096; h++)
     for (Symbol *s = sm.sy[h]; s; s = s->nx)
@@ -14129,10 +14129,10 @@ static bool lcmp(Symbol_Manager *SM, String_Slice nm, String_Slice pth)
   {
     Syntax_Node *u = cu->cu.un.data[ui];
     if (u->k == N_PKB)
-      gel(&g, u);
+      generate_expression_llvm(&g, u);
   }
   for (uint32_t i = 0; i < sm.ib.count; i++)
-    gel(&g, sm.ib.data[i]);
+    generate_expression_llvm(&g, sm.ib.data[i]);
   emd(&g);
   fclose(o);
   LU *l = label_use_new(cu->cu.un.count > 0 ? cu->cu.un.data[0]->k : 0, nm, pth);
@@ -14232,7 +14232,7 @@ int main(int ac, char **av)
   snprintf(of + strlen(of), 520 - strlen(of), ".ll");
   FILE *o = stdout;
   Code_Generator g = {o, 0, 0, 0, &sm, {0}, 0, {0}, 0, {0}, 0, {0}, 13, {0}, {0}, {0}};
-  grt(&g);
+  generate_runtime_type(&g);
   for (int h = 0; h < 4096; h++)
     for (Symbol *s = sm.sy[h]; s; s = s->nx)
       if ((s->k == 0 or s->k == 2) and (s->lv == 0 or s->pr) and not(s->pr and lfnd(&sm, s->pr->nm))
@@ -14334,16 +14334,16 @@ int main(int ac, char **av)
   {
     Syntax_Node *u = cu->cu.un.data[ui];
     if (u->k == N_PKB)
-      gel(&g, u);
+      generate_expression_llvm(&g, u);
   }
   for (uint32_t ui = 0; ui < cu->cu.un.count; ui++)
   {
     Syntax_Node *u = cu->cu.un.data[ui];
     if (u->k == N_PB or u->k == N_FB)
-      gel(&g, u);
+      generate_expression_llvm(&g, u);
   }
   for (uint32_t i = 0; i < sm.ib.count; i++)
-    gel(&g, sm.ib.data[i]);
+    generate_expression_llvm(&g, sm.ib.data[i]);
   for (uint32_t ui = cu->cu.un.count; ui > 0; ui--)
   {
     Syntax_Node *u = cu->cu.un.data[ui - 1];
