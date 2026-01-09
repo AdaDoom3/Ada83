@@ -619,219 +619,219 @@ static Token scan_identifier(Lexer *lexer)
     return make_token(T_ERR, location, STRING_LITERAL("kw+x"));
   return make_token(token_kind, location, literal_text);
 }
-static Token scan_number_literal(Lexer *l)
+static Token scan_number_literal(Lexer *lexer)
 {
-  Source_Location lc = {l->line_number, l->column, l->filename};
-  const char *s = l->current;
-  const char *ms = 0, *me = 0, *es = 0;
-  int b = 10;
-  bool ir = false, bx = false, has_dot = false, has_exp = false;
-  char bd = 0;
-  while (isdigit(peek(l, 0)) or peek(l, 0) == '_')
-    advance_character(l);
-  if (peek(l, 0) == '#' or (peek(l, 0) == ':' and isxdigit(peek(l, 1))))
+  Source_Location location = {lexer->line_number, lexer->column, lexer->filename};
+  const char *start = lexer->current;
+  const char *mantissa_start = 0, *mantissa_end = 0, *exponent_start = 0;
+  int base = 10;
+  bool is_real = false, based_exponent = false, has_dot = false, has_exp = false;
+  char base_delimiter = 0;
+  while (isdigit(peek(lexer, 0)) or peek(lexer, 0) == '_')
+    advance_character(lexer);
+  if (peek(lexer, 0) == '#' or (peek(lexer, 0) == ':' and isxdigit(peek(lexer, 1))))
   {
-    bd = peek(l, 0);
-    const char *be = l->current;
-    advance_character(l);
-    char *bp = arena_allocate(32);
-    int bi = 0;
-    for (const char *p = s; p < be; p++)
+    base_delimiter = peek(lexer, 0);
+    const char *base_end = lexer->current;
+    advance_character(lexer);
+    char *base_pointer = arena_allocate(32);
+    int base_index = 0;
+    for (const char *p = start; p < base_end; p++)
       if (*p != '_')
-        bp[bi++] = *p;
-    bp[bi] = 0;
-    b = atoi(bp);
-    ms = l->current;
-    while (isxdigit(peek(l, 0)) or peek(l, 0) == '_')
-      advance_character(l);
-    if (peek(l, 0) == '.')
+        base_pointer[base_index++] = *p;
+    base_pointer[base_index] = 0;
+    base = atoi(base_pointer);
+    mantissa_start = lexer->current;
+    while (isxdigit(peek(lexer, 0)) or peek(lexer, 0) == '_')
+      advance_character(lexer);
+    if (peek(lexer, 0) == '.')
     {
-      ir = true;
-      advance_character(l);
-      while (isxdigit(peek(l, 0)) or peek(l, 0) == '_')
-        advance_character(l);
+      is_real = true;
+      advance_character(lexer);
+      while (isxdigit(peek(lexer, 0)) or peek(lexer, 0) == '_')
+        advance_character(lexer);
     }
-    if (peek(l, 0) == bd)
+    if (peek(lexer, 0) == base_delimiter)
     {
-      me = l->current;
-      advance_character(l);
+      mantissa_end = lexer->current;
+      advance_character(lexer);
     }
-    if (tolower(peek(l, 0)) == 'e')
+    if (tolower(peek(lexer, 0)) == 'e')
     {
-      bx = true;
-      advance_character(l);
-      if (peek(l, 0) == '+' or peek(l, 0) == '-')
-        advance_character(l);
-      es = l->current;
-      while (isdigit(peek(l, 0)) or peek(l, 0) == '_')
-        advance_character(l);
+      based_exponent = true;
+      advance_character(lexer);
+      if (peek(lexer, 0) == '+' or peek(lexer, 0) == '-')
+        advance_character(lexer);
+      exponent_start = lexer->current;
+      while (isdigit(peek(lexer, 0)) or peek(lexer, 0) == '_')
+        advance_character(lexer);
     }
   }
   else
   {
-    if (peek(l, 0) == '.')
+    if (peek(lexer, 0) == '.')
     {
-      if (peek(l, 1) != '.' and not isalpha(peek(l, 1)))
+      if (peek(lexer, 1) != '.' and not isalpha(peek(lexer, 1)))
       {
-        ir = true;
+        is_real = true;
         has_dot = true;
-        advance_character(l);
-        while (isdigit(peek(l, 0)) or peek(l, 0) == '_')
-          advance_character(l);
+        advance_character(lexer);
+        while (isdigit(peek(lexer, 0)) or peek(lexer, 0) == '_')
+          advance_character(lexer);
       }
     }
-    if (tolower(peek(l, 0)) == 'e')
+    if (tolower(peek(lexer, 0)) == 'e')
     {
       has_exp = true;
-      advance_character(l);
-      if (peek(l, 0) == '+' or peek(l, 0) == '-')
-        advance_character(l);
-      while (isdigit(peek(l, 0)) or peek(l, 0) == '_')
-        advance_character(l);
+      advance_character(lexer);
+      if (peek(lexer, 0) == '+' or peek(lexer, 0) == '-')
+        advance_character(lexer);
+      while (isdigit(peek(lexer, 0)) or peek(lexer, 0) == '_')
+        advance_character(lexer);
     }
   }
-  if (isalpha(peek(l, 0)))
-    return make_token(T_ERR, lc, STRING_LITERAL("num+alpha"));
-  Token tk =
-      make_token(bx ? (ir ? T_REAL : T_INT) : (ir ? T_REAL : T_INT), lc, (String_Slice){s, l->current - s});
-  if (bx and es)
+  if (isalpha(peek(lexer, 0)))
+    return make_token(T_ERR, location, STRING_LITERAL("num+alpha"));
+  Token token =
+      make_token(based_exponent ? (is_real ? T_REAL : T_INT) : (is_real ? T_REAL : T_INT), location, (String_Slice){start, lexer->current - start});
+  if (based_exponent and exponent_start)
   {
-    char *mp = arena_allocate(512);
-    char *ep = arena_allocate(512);
-    int mi = 0, ei = 0;
-    for (const char *p = ms; p < me; p++)
-      if (*p != '_' and *p != bd)
-        mp[mi++] = *p;
-    mp[mi] = 0;
-    for (const char *p = es; p < l->current; p++)
+    char *mantissa_pointer = arena_allocate(512);
+    char *exponent_pointer = arena_allocate(512);
+    int mantissa_index = 0, exponent_index = 0;
+    for (const char *p = mantissa_start; p < mantissa_end; p++)
+      if (*p != '_' and *p != base_delimiter)
+        mantissa_pointer[mantissa_index++] = *p;
+    mantissa_pointer[mantissa_index] = 0;
+    for (const char *p = exponent_start; p < lexer->current; p++)
       if (*p != '_')
-        ep[ei++] = *p;
-    ep[ei] = 0;
-    double m = 0;
-    int dp = -1;
-    for (int i = 0; i < mi; i++)
+        exponent_pointer[exponent_index++] = *p;
+    exponent_pointer[exponent_index] = 0;
+    double mantissa = 0;
+    int decimal_point = -1;
+    for (int i = 0; i < mantissa_index; i++)
     {
-      if (mp[i] == '.')
+      if (mantissa_pointer[i] == '.')
       {
-        dp = i;
+        decimal_point = i;
         break;
       }
     }
-    int fp = 0;
-    for (int i = 0; i < mi; i++)
+    int fractional_position = 0;
+    for (int i = 0; i < mantissa_index; i++)
     {
-      if (mp[i] == '.')
+      if (mantissa_pointer[i] == '.')
         continue;
-      int dv = mp[i] >= 'A' and mp[i] <= 'F'   ? mp[i] - 'A' + 10
-               : mp[i] >= 'a' and mp[i] <= 'f' ? mp[i] - 'a' + 10
-                                               : mp[i] - '0';
-      if (dp < 0 or i < dp)
-        m = m * b + dv;
+      int digit_value = mantissa_pointer[i] >= 'A' and mantissa_pointer[i] <= 'F'   ? mantissa_pointer[i] - 'A' + 10
+               : mantissa_pointer[i] >= 'a' and mantissa_pointer[i] <= 'f' ? mantissa_pointer[i] - 'a' + 10
+                                               : mantissa_pointer[i] - '0';
+      if (decimal_point < 0 or i < decimal_point)
+        mantissa = mantissa * base + digit_value;
       else
       {
-        fp++;
-        m += dv / pow(b, fp);
+        fractional_position++;
+        mantissa += digit_value / pow(base, fractional_position);
       }
     }
-    int ex = atoi(ep);
-    double rv = m * pow(b, ex);
-    if (ir)
-      tk.float_value = rv;
+    int exponent = atoi(exponent_pointer);
+    double result_value = mantissa * pow(base, exponent);
+    if (is_real)
+      token.float_value = result_value;
     else
     {
-      if (rv > LLONG_MAX or rv < LLONG_MIN)
+      if (result_value > LLONG_MAX or result_value < LLONG_MIN)
       {
         fprintf(
             stderr,
             "Error %d:%d: based integer constant out of range: %.*s\n",
-            lc.line,
-            lc.column,
-            (int) (l->current - s),
-            s);
+            location.line,
+            location.column,
+            (int) (lexer->current - start),
+            start);
         exit(1);
       }
-      tk.integer_value = (int64_t) rv;
+      token.integer_value = (int64_t) result_value;
     }
   }
   else
   {
-    char *tp = arena_allocate(512);
-    int j = 0;
-    const char *start = (bd and ms) ? ms : s;
-    const char *end = (bd and me) ? me : l->current;
+    char *text_pointer = arena_allocate(512);
+    int text_index = 0;
+    const char *start = (base_delimiter and mantissa_start) ? mantissa_start : start;
+    const char *end = (base_delimiter and mantissa_end) ? mantissa_end : lexer->current;
     for (const char *p = start; p < end; p++)
       if (*p != '_' and *p != '#' and *p != ':')
-        tp[j++] = *p;
-    tp[j] = 0;
-    if (bd and not ir)
+        text_pointer[text_index++] = *p;
+    text_pointer[text_index] = 0;
+    if (base_delimiter and not is_real)
     {
-      int64_t v = 0;
-      for (int i = 0; i < j; i++)
+      int64_t value = 0;
+      for (int i = 0; i < text_index; i++)
       {
-        int dv = tp[i] >= 'A' and tp[i] <= 'F'   ? tp[i] - 'A' + 10
-                 : tp[i] >= 'a' and tp[i] <= 'f' ? tp[i] - 'a' + 10
-                                                 : tp[i] - '0';
-        v = v * b + dv;
+        int digit_value = text_pointer[i] >= 'A' and text_pointer[i] <= 'F'   ? text_pointer[i] - 'A' + 10
+                 : text_pointer[i] >= 'a' and text_pointer[i] <= 'f' ? text_pointer[i] - 'a' + 10
+                                                 : text_pointer[i] - '0';
+        value = value * base + digit_value;
       }
-      tk.integer_value = v;
+      token.integer_value = value;
     }
-    else if (bd and ir)
+    else if (base_delimiter and is_real)
     {
-      double m = 0;
-      int dp = -1;
-      for (int i = 0; i < j; i++)
+      double mantissa = 0;
+      int decimal_point = -1;
+      for (int i = 0; i < text_index; i++)
       {
-        if (tp[i] == '.')
+        if (text_pointer[i] == '.')
         {
-          dp = i;
+          decimal_point = i;
           break;
         }
       }
-      int fp = 0;
-      for (int i = 0; i < j; i++)
+      int fractional_position = 0;
+      for (int i = 0; i < text_index; i++)
       {
-        if (tp[i] == '.')
+        if (text_pointer[i] == '.')
           continue;
-        int dv = tp[i] >= 'A' and tp[i] <= 'F'   ? tp[i] - 'A' + 10
-                 : tp[i] >= 'a' and tp[i] <= 'f' ? tp[i] - 'a' + 10
-                                                 : tp[i] - '0';
-        if (dp < 0 or i < dp)
-          m = m * b + dv;
+        int digit_value = text_pointer[i] >= 'A' and text_pointer[i] <= 'F'   ? text_pointer[i] - 'A' + 10
+                 : text_pointer[i] >= 'a' and text_pointer[i] <= 'f' ? text_pointer[i] - 'a' + 10
+                                                 : text_pointer[i] - '0';
+        if (decimal_point < 0 or i < decimal_point)
+          mantissa = mantissa * base + digit_value;
         else
         {
-          fp++;
-          m += dv / pow(b, fp);
+          fractional_position++;
+          mantissa += digit_value / pow(base, fractional_position);
         }
       }
-      tk.float_value = m;
+      token.float_value = mantissa;
     }
     else
     {
       errno = 0;
-      tk.float_value = strtod(tp, 0);
-      if (errno == ERANGE and (tk.float_value == HUGE_VAL or tk.float_value == -HUGE_VAL))
+      token.float_value = strtod(text_pointer, 0);
+      if (errno == ERANGE and (token.float_value == HUGE_VAL or token.float_value == -HUGE_VAL))
       {
-        fprintf(stderr, "Warning %d:%d: float constant overflow to infinity: %s\n", lc.line, lc.column, tp);
+        fprintf(stderr, "Warning %d:%d: float constant overflow to infinity: %s\n", location.line, location.column, text_pointer);
       }
-      tk.unsigned_integer = unsigned_bigint_from_decimal(tp);
-      tk.integer_value = (tk.unsigned_integer->count == 1) ? tk.unsigned_integer->digits[0] : 0;
-      if (has_exp and not has_dot and tk.float_value >= LLONG_MIN and tk.float_value <= LLONG_MAX
-          and tk.float_value == (double) (int64_t) tk.float_value)
+      token.unsigned_integer = unsigned_bigint_from_decimal(text_pointer);
+      token.integer_value = (token.unsigned_integer->count == 1) ? token.unsigned_integer->digits[0] : 0;
+      if (has_exp and not has_dot and token.float_value >= LLONG_MIN and token.float_value <= LLONG_MAX
+          and token.float_value == (double) (int64_t) token.float_value)
       {
-        tk.integer_value = (int64_t) tk.float_value;
-        tk.kind = T_INT;
+        token.integer_value = (int64_t) token.float_value;
+        token.kind = T_INT;
       }
-      else if (ir or has_dot)
+      else if (is_real or has_dot)
       {
-        tk.kind = T_REAL;
+        token.kind = T_REAL;
       }
-      else if (tk.unsigned_integer and tk.unsigned_integer->count > 1)
+      else if (token.unsigned_integer and token.unsigned_integer->count > 1)
       {
-        fprintf(stderr, "Error %d:%d: integer constant too large for i64: %s\n", lc.line, lc.column, tp);
+        fprintf(stderr, "Error %d:%d: integer constant too large for i64: %s\n", location.line, location.column, text_pointer);
       }
     }
   }
-  return tk;
+  return token;
 }
 static Token scan_character_literal(Lexer *lexer)
 {
