@@ -6748,7 +6748,7 @@ static void rrc_(Symbol_Manager *SM, RC *r)
   break;
   case 4:
   {
-    Symbol *s = r->ad.nm.n > 0 ? symbol_find(SM, r->ad.nm) : 0;
+    Symbol *s = r->ad.nm.length > 0 ? symbol_find(SM, r->ad.nm) : 0;
     if (s and s->ty)
     {
       Type_Info *t = type_canonical_concrete(s->ty);
@@ -7252,7 +7252,7 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
     c->gen.un = ncs(n->gen.un, fp, ap);
     break;
   case N_GINST:
-    c->gi.nm = n->gi.nm.s ? string_duplicate(n->gi.nm) : n->gi.nm;
+    c->gi.nm = n->gi.nm.string ? string_duplicate(n->gi.nm) : n->gi.nm;
     c->gi.gn = n->gi.gn.string ? string_duplicate(n->gi.gn) : n->gi.gn;
     ncsv(&c->gi.ap, &n->gi.ap, fp, ap);
     break;
@@ -7351,7 +7351,7 @@ static Symbol *get_pkg_sym(Symbol_Manager *SM, Syntax_Node *pk)
   if (not pk or not pk->sy)
     return 0;
   String_Slice nm = pk->k == N_PKS ? pk->ps.nm : pk->sy->nm;
-  if (not nm.s or nm.n == 0)
+  if (not nm.string or nm.length == 0)
     return 0;
   uint32_t h = syh(nm);
   for (Symbol *s = SM->sy[h]; s; s = s->nx)
@@ -7417,7 +7417,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
       if (not s)
       {
         s = symbol_add_overload(SM, syn(id->s, n->od.co ? 2 : 0, ct, n));
-        s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEP_PKG.s ? symbol_find(SM, SEP_PKG) : 0;
+        s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEP_PKG.string ? symbol_find(SM, SEP_PKG) : 0;
       }
       id->sy = s;
       if (n->od.in)
@@ -7541,7 +7541,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
       else
       {
         t = tyn(n->td.df or n->td.drv ? TYPE_INTEGER : TY_PT, n->td.nm);
-        if (t and n->td.nm.s)
+        if (t and n->td.nm.string)
         {
           Symbol *s = symbol_add_overload(SM, syn(n->td.nm, 1, t, n));
           n->sy = s;
@@ -7549,7 +7549,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
         break;
       }
     }
-    if (t and n->td.nm.s and n->td.nm.n > 0 and not t->nm.string)
+    if (t and n->td.nm.string and n->td.nm.length > 0 and not t->nm.string)
       t->nm = n->td.nm;
     if (n->td.dsc.count > 0)
     {
@@ -7565,7 +7565,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
       }
       t->dc = n->td.dsc;
     }
-    if (n->td.nm.s and n->td.nm.n > 0)
+    if (n->td.nm.string and n->td.nm.length > 0)
     {
       Symbol *px2 = symbol_find(SM, n->td.nm);
       if (px2 and px2->k == 1 and px2->ty == t)
@@ -7747,7 +7747,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
       Symbol *s = symbol_add_overload(SM, syn(n->sp.nm, 5, ft, n));
       nv(&s->ol, n);
       n->sy = s;
-      s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEP_PKG.s ? symbol_find(SM, SEP_PKG) : 0;
+      s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEP_PKG.string ? symbol_find(SM, SEP_PKG) : 0;
       nv(&ft->ops, n);
     }
     else
@@ -7755,7 +7755,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
       Symbol *s = symbol_add_overload(SM, syn(n->sp.nm, 4, ft, n));
       nv(&s->ol, n);
       n->sy = s;
-      s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEP_PKG.s ? symbol_find(SM, SEP_PKG) : 0;
+      s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEP_PKG.string ? symbol_find(SM, SEP_PKG) : 0;
       nv(&ft->ops, n);
     }
   }
@@ -7769,7 +7769,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
     nv(&s->ol, n);
     n->sy = s;
     n->bd.el = s->el;
-    s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEP_PKG.s ? symbol_find(SM, SEP_PKG) : 0;
+    s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEP_PKG.string ? symbol_find(SM, SEP_PKG) : 0;
     nv(&ft->ops, n);
     if (n->k == N_PB)
     {
@@ -7806,7 +7806,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
     nv(&s->ol, n);
     n->sy = s;
     n->bd.el = s->el;
-    s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEP_PKG.s ? symbol_find(SM, SEP_PKG) : 0;
+    s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEP_PKG.string ? symbol_find(SM, SEP_PKG) : 0;
     nv(&ft->ops, n);
     if (n->k == N_FB)
     {
@@ -7843,7 +7843,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
     nv(&s->ol, n);
     n->sy = s;
     n->bd.el = s->el;
-    s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEP_PKG.s ? symbol_find(SM, SEP_PKG) : 0;
+    s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEP_PKG.string ? symbol_find(SM, SEP_PKG) : 0;
     nv(&ft->ops, n);
   }
   break;
@@ -7900,7 +7900,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
       if (_src)
       {
         char _af[512];
-        snprintf(_af, 512, "%.*s.ads", (int) n->pb.nm.n, n->pb.nm.s);
+        snprintf(_af, 512, "%.*s.ads", (int) n->pb.nm.length, n->pb.nm.string);
         Parser _p = pnw(_src, strlen(_src), _af);
         Syntax_Node *_cu = pcu(&_p);
         if (_cu)
@@ -8016,7 +8016,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
     t->cm = n->ts.en;
     Symbol *s = symbol_add_overload(SM, syn(n->ts.nm, 7, t, n));
     n->sy = s;
-    s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEP_PKG.s ? symbol_find(SM, SEP_PKG) : 0;
+    s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEP_PKG.string ? symbol_find(SM, SEP_PKG) : 0;
   }
   break;
   case N_TKB:
@@ -8125,10 +8125,10 @@ static void rali(Symbol_Manager *SM, const char *pth)
       while (*e and *e != ' ' and *e != '\n')
         e++;
       String_Slice wn = {l + 2, e - (l + 2)};
-      char *c = arena_allocate(wn.n + 1);
-      memcpy(c, wn.s, wn.n);
-      c[wn.n] = 0;
-      slv(&ws, (String_Slice){c, wn.n});
+      char *c = arena_allocate(wn.length + 1);
+      memcpy(c, wn.string, wn.length);
+      c[wn.length] = 0;
+      slv(&ws, (String_Slice){c, wn.length});
     }
     else if (*l == 'D' and l[1] == ' ')
     {
@@ -8237,8 +8237,8 @@ static const char *lkp(Symbol_Manager *SM, String_Slice nm)
         "%s%s%.*s",
         include_paths[i],
         include_paths[i][0] and include_paths[i][strlen(include_paths[i]) - 1] != '/' ? "/" : "",
-        (int) nm.n,
-        nm.s);
+        (int) nm.length,
+        nm.string);
     for (char *p = pf + strlen(include_paths[i]); *p; p++)
       *p = tolower(*p);
     rali(SM, pf);
@@ -8254,7 +8254,7 @@ static Syntax_Node *pks2(Symbol_Manager *SM, String_Slice nm, const char *src)
   if (not src)
     return 0;
   char af[512];
-  snprintf(af, 512, "%.*s.ads", (int) nm.n, nm.s);
+  snprintf(af, 512, "%.*s.ads", (int) nm.length, nm.string);
   Parser p = pnw(src, strlen(src), af);
   Syntax_Node *cu = pcu(&p);
   if (cu and cu->cu.cx)
@@ -8612,11 +8612,11 @@ static int encode_symbol_name(char *b, int sz, Symbol *s, String_Slice nm, int p
     }
     b[n++] = '_';
     b[n++] = '_';
-    if (nm.s and (uintptr_t) nm.s > 4096)
+    if (nm.string and (uintptr_t) nm.string > 4096)
     {
-      for (uint32_t i = 0; i < nm.n and i < 256; i++)
+      for (uint32_t i = 0; i < nm.length and i < 256; i++)
       {
-        char c = nm.s[i];
+        char c = nm.string[i];
         if (not c)
           break;
         if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9'))
@@ -8633,7 +8633,7 @@ static int encode_symbol_name(char *b, int sz, Symbol *s, String_Slice nm, int p
         Syntax_Node *p = sp->sp.pmm.data[i];
         if (p and p->pm.ty)
           h = h * 31 + type_hash(p->pm.ty->ty ? p->pm.ty->ty : 0);
-        if (p and p->pm.nm.s)
+        if (p and p->pm.nm.string)
           pnh = pnh * 31 + string_hash(p->pm.nm);
       }
       n += snprintf(b + n, sz - n, ".%d.%lx.%lu.%lx", pc, h % 0x10000, uid, pnh % 0x10000);
@@ -8645,11 +8645,11 @@ static int encode_symbol_name(char *b, int sz, Symbol *s, String_Slice nm, int p
     b[n] = 0;
     return n;
   }
-  if (nm.s and (uintptr_t) nm.s > 4096)
+  if (nm.string and (uintptr_t) nm.string > 4096)
   {
-    for (uint32_t i = 0; i < nm.n and i < 256; i++)
+    for (uint32_t i = 0; i < nm.length and i < 256; i++)
     {
-      char c = nm.s[i];
+      char c = nm.string[i];
       if (not c)
         break;
       if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '_')
@@ -8666,7 +8666,7 @@ static int encode_symbol_name(char *b, int sz, Symbol *s, String_Slice nm, int p
       Syntax_Node *p = sp->sp.pmm.data[i];
       if (p and p->pm.ty)
         h = h * 31 + type_hash(p->pm.ty->ty ? p->pm.ty->ty : 0);
-      if (p and p->pm.nm.s)
+      if (p and p->pm.nm.string)
         pnh = pnh * 31 + string_hash(p->pm.nm);
     }
     n += snprintf(b + n, sz - n, ".%d.%lx.%lu.%lx", pc, h % 0x10000, uid, pnh % 0x10000);
@@ -13579,7 +13579,7 @@ static void gel(Code_Generator *g, Syntax_Node *n)
     if (ps and ps->k == 11)
       return;
     char nb[256];
-    snprintf(nb, 256, "%.*s__elab", (int) n->pb.nm.n, n->pb.nm.s);
+    snprintf(nb, 256, "%.*s__elab", (int) n->pb.nm.length, n->pb.nm.string);
     fprintf(g->o, "define void @\"%s\"() {\n", nb);
     for (uint32_t i = 0; i < n->pb.st.count; i++)
       generate_statement_sequence(g, n->pb.st.data[i]);
@@ -13870,7 +13870,7 @@ static void wali(Symbol_Manager *SM, const char *fn, Syntax_Node *cu)
   Syntax_Node *u0 = cu->cu.un.d[0];
   String_Slice nm = u0->k == N_PKS ? u0->ps.nm : u0->k == N_PKB ? u0->pb.nm : N;
   char alp[520];
-  if (nm.s and nm.n > 0)
+  if (nm.string and nm.length > 0)
   {
     const char *sl = strrchr(fn, '/');
     int pos = 0;
@@ -13880,8 +13880,8 @@ static void wali(Symbol_Manager *SM, const char *fn, Syntax_Node *cu)
       for (int i = 0; i < dl and pos < 519; i++)
         alp[pos++] = fn[i];
     }
-    for (uint32_t i = 0; i < nm.n and pos < 519; i++)
-      alp[pos++] = tolower(nm.s[i]);
+    for (uint32_t i = 0; i < nm.length and pos < 519; i++)
+      alp[pos++] = tolower(nm.string[i]);
     alp[pos] = 0;
     strcat(alp, ".ali");
   }
@@ -13893,17 +13893,17 @@ static void wali(Symbol_Manager *SM, const char *fn, Syntax_Node *cu)
   if (not f)
     return;
   fprintf(f, "V 1.0\n");
-  fprintf(f, "Unsigned_Big_Integer %.*s\n", (int) nm.n, nm.s);
+  fprintf(f, "Unsigned_Big_Integer %.*s\n", (int) nm.length, nm.string);
   if (cu->cu.cx)
     for (uint32_t i = 0; i < cu->cu.cx->cx.wt.count; i++)
     {
       Syntax_Node *w = cu->cu.cx->cx.wt.data[i];
       char pf[256];
-      int n = snprintf(pf, 256, "%.*s", (int) w->wt.nm.n, w->wt.nm.s);
+      int n = snprintf(pf, 256, "%.*s", (int) w->wt.nm.length, w->wt.nm.string);
       for (int j = 0; j < n; j++)
         pf[j] = tolower(pf[j]);
       uint64_t ts = fts(pf);
-      fprintf(f, "W %.*s %lu\n", (int) w->wt.nm.n, w->wt.nm.s, (unsigned long) ts);
+      fprintf(f, "W %.*s %lu\n", (int) w->wt.nm.length, w->wt.nm.string, (unsigned long) ts);
     }
   for (int i = 0; i < SM->dpn; i++)
     if (SM->dps[i].length and SM->dps[i].data[0])
