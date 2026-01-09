@@ -557,67 +557,67 @@ static struct
           {STRING_LITERAL("use"), T_USE},      {STRING_LITERAL("when"), T_WHN},
           {STRING_LITERAL("while"), T_WHI},    {STRING_LITERAL("with"), T_WITH},
           {STRING_LITERAL("xor"), T_XOR},      {N, T_EOF}};
-static Token_Kind keyword_lookup(String_Slice s)
+static Token_Kind keyword_lookup(String_Slice slice)
 {
-  for (int i = 0; KW[i].keyword.string; i++)
-    if (string_equal_ignore_case(s, KW[i].keyword))
-      return KW[i].token_kind;
+  for (int index = 0; KW[index].keyword.string; index++)
+    if (string_equal_ignore_case(slice, KW[index].keyword))
+      return KW[index].token_kind;
   return T_ID;
 }
-static Lexer lexer_new(const char *s, size_t z, const char *f)
+static Lexer lexer_new(const char *source, size_t size, const char *filename)
 {
-  return (Lexer){s, s, s + z, 1, 1, f, T_EOF};
+  return (Lexer){source, source, source + size, 1, 1, filename, T_EOF};
 }
-static char peek(Lexer *l, size_t off)
+static char peek(Lexer *lexer, size_t offset)
 {
-  return l->current + off < l->end ? l->current[off] : 0;
+  return lexer->current + offset < lexer->end ? lexer->current[offset] : 0;
 }
-static char advance_character(Lexer *l)
+static char advance_character(Lexer *lexer)
 {
-  if (l->current >= l->end)
+  if (lexer->current >= lexer->end)
     return 0;
-  char c = *l->current++;
-  if (c == '\n')
+  char character = *lexer->current++;
+  if (character == '\n')
   {
-    l->line_number++;
-    l->column = 1;
+    lexer->line_number++;
+    lexer->column = 1;
   }
   else
-    l->column++;
-  return c;
+    lexer->column++;
+  return character;
 }
-static void skip_whitespace(Lexer *l)
+static void skip_whitespace(Lexer *lexer)
 {
   for (;;)
   {
     while (
-        l->current < l->end
-        and (*l->current == ' ' or *l->current == '\t' or *l->current == '\n' or *l->current == '\r' or *l->current == '\v' or *l->current == '\f'))
-      advance_character(l);
-    if (l->current + 1 < l->end and l->current[0] == '-' and l->current[1] == '-')
+        lexer->current < lexer->end
+        and (*lexer->current == ' ' or *lexer->current == '\t' or *lexer->current == '\n' or *lexer->current == '\r' or *lexer->current == '\v' or *lexer->current == '\f'))
+      advance_character(lexer);
+    if (lexer->current + 1 < lexer->end and lexer->current[0] == '-' and lexer->current[1] == '-')
     {
-      while (l->current < l->end and *l->current != '\n')
-        advance_character(l);
+      while (lexer->current < lexer->end and *lexer->current != '\n')
+        advance_character(lexer);
     }
     else
       break;
   }
 }
-static Token make_token(Token_Kind t, Source_Location lc, String_Slice lt)
+static Token make_token(Token_Kind token_kind, Source_Location location, String_Slice literal_text)
 {
-  return (Token){t, lc, lt, 0, 0.0, 0, 0};
+  return (Token){token_kind, location, literal_text, 0, 0.0, 0, 0};
 }
-static Token scan_identifier(Lexer *l)
+static Token scan_identifier(Lexer *lexer)
 {
-  Source_Location lc = {l->line_number, l->column, l->filename};
-  const char *s = l->current;
-  while (isalnum(peek(l, 0)) or peek(l, 0) == '_')
-    advance_character(l);
-  String_Slice lt = {s, l->current - s};
-  Token_Kind t = keyword_lookup(lt);
-  if (t != T_ID and l->current < l->end and (isalnum(*l->current) or *l->current == '_'))
-    return make_token(T_ERR, lc, STRING_LITERAL("kw+x"));
-  return make_token(t, lc, lt);
+  Source_Location location = {lexer->line_number, lexer->column, lexer->filename};
+  const char *start = lexer->current;
+  while (isalnum(peek(lexer, 0)) or peek(lexer, 0) == '_')
+    advance_character(lexer);
+  String_Slice literal_text = {start, lexer->current - start};
+  Token_Kind token_kind = keyword_lookup(literal_text);
+  if (token_kind != T_ID and lexer->current < lexer->end and (isalnum(*lexer->current) or *lexer->current == '_'))
+    return make_token(T_ERR, location, STRING_LITERAL("kw+x"));
+  return make_token(token_kind, location, literal_text);
 }
 static Token scan_number_literal(Lexer *l)
 {
