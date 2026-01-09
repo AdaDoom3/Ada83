@@ -4384,7 +4384,7 @@ struct Symbol
   Type_Info *ty;
   Syntax_Node *definition;
   Symbol *next, *previous;
-  int sc;
+  int scope;
   int ss;
   int64_t value;
   uint32_t offset;
@@ -4455,7 +4455,7 @@ static Symbol *symbol_add_overload(Symbol_Manager *symbol_manager, Symbol *s)
   uint32_t h = symbol_hash(s->name);
   s->homonym = symbol_manager->sy[h];
   s->next = symbol_manager->sy[h];
-  s->sc = symbol_manager->sc;
+  s->scope = symbol_manager->sc;
   s->ss = symbol_manager->ss;
   s->el = symbol_manager->eo++;
   s->lv = symbol_manager->lv;
@@ -4466,7 +4466,7 @@ static Symbol *symbol_add_overload(Symbol_Manager *symbol_manager, Symbol *s)
     u = u * 31 + string_hash(s->parent->name);
     if (s->lv > 0)
     {
-      u = u * 31 + s->sc;
+      u = u * 31 + s->scope;
       u = u * 31 + s->el;
     }
   }
@@ -4483,7 +4483,7 @@ static Symbol *symbol_find(Symbol_Manager *symbol_manager, String_Slice nm)
   for (Symbol *s = symbol_manager->sy[h]; s; s = s->next)
     if (string_equal_ignore_case(s->name, nm))
     {
-      if (s->visibility & 1 and (not imm or s->sc > imm->sc))
+      if (s->visibility & 1 and (not imm or s->scope > imm->scope))
         imm = s;
       if (s->visibility & 2 and not pot)
         pot = s;
@@ -4493,7 +4493,7 @@ static Symbol *symbol_find(Symbol_Manager *symbol_manager, String_Slice nm)
   if (pot)
     return pot;
   for (Symbol *s = symbol_manager->sy[h]; s; s = s->next)
-    if (string_equal_ignore_case(s->name, nm) and (not imm or s->sc > imm->sc))
+    if (string_equal_ignore_case(s->name, nm) and (not imm or s->scope > imm->scope))
       imm = s;
   return imm;
 }
@@ -4577,12 +4577,12 @@ static Symbol *symbol_find_with_arity(Symbol_Manager *symbol_manager, String_Sli
   for (Symbol *s = symbol_manager->sy[symbol_hash(nm)]; s; s = s->next)
     if (string_equal_ignore_case(s->name, nm) and (s->visibility & 3))
     {
-      if (s->sc > msc)
+      if (s->scope > msc)
       {
         cv.count = 0;
-        msc = s->sc;
+        msc = s->scope;
       }
-      if (s->sc == msc)
+      if (s->scope == msc)
         sv(&cv, s);
     }
   if (not cv.count)
@@ -4985,7 +4985,7 @@ static void find_ada_library(Symbol_Manager *symbol_manager, Source_Location l)
 {
   for (int i = 0; i < 4096; i++)
     for (Symbol *s = symbol_manager->sy[i]; s; s = s->next)
-      if (s->sc == symbol_manager->sc and not s->frozen)
+      if (s->scope == symbol_manager->sc and not s->frozen)
       {
         if (s->ty and s->ty->k == TY_PT and s->ty->prt and not s->ty->prt->frz)
           continue;
@@ -5011,13 +5011,13 @@ static void symbol_compare_overload(Symbol_Manager *symbol_manager)
   for (int i = 0; i < 4096; i++)
     for (Symbol *s = symbol_manager->sy[i]; s; s = s->next)
     {
-      if (s->sc == symbol_manager->sc)
+      if (s->scope == symbol_manager->sc)
       {
         s->visibility &= ~1;
         if (s->k == 6)
           s->visibility = 3;
       }
-      if (s->visibility & 2 and s->parent and s->parent->sc >= symbol_manager->sc)
+      if (s->visibility & 2 and s->parent and s->parent->scope >= symbol_manager->sc)
         s->visibility &= ~2;
     }
   if (symbol_manager->ssd > 0)
@@ -7404,7 +7404,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       Type_Info *ct = universal_composite_aggregate(t, n->object_decl.in);
       Symbol *x = symbol_find(symbol_manager, id->s);
       Symbol *s = 0;
-      if (x and x->sc == symbol_manager->sc and x->ss == symbol_manager->ss and x->k != 11)
+      if (x and x->scope == symbol_manager->sc and x->ss == symbol_manager->ss and x->k != 11)
       {
         if (x->k == 2 and x->definition and x->definition->k == N_OD and not((Syntax_Node *) x->definition)->object_decl.in
             and n->object_decl.is_constant and n->object_decl.in)
@@ -9218,7 +9218,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           int n = 0;
           for (uint32_t j = 0; j < s->parent->name.length; j++)
             nb[n++] = toupper(s->parent->name.string[j]);
-          n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->sc, s->parent->el);
+          n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->el);
           for (uint32_t j = 0; j < s->name.length; j++)
             nb[n++] = toupper(s->name.string[j]);
           nb[n] = 0;
@@ -9251,7 +9251,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           int n = 0;
           for (uint32_t i = 0; i < s->parent->name.length; i++)
             nb[n++] = toupper(s->parent->name.string[i]);
-          n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->sc, s->parent->el);
+          n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->el);
           for (uint32_t i = 0; i < s->name.length; i++)
             nb[n++] = toupper(s->name.string[i]);
           nb[n] = 0;
@@ -9420,7 +9420,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                     "  %%t%d = load ptr, ptr %%v.%s.sc%u.%u\n",
                     r.id,
                     string_to_lowercase(n->s),
-                    s ? s->sc : 0,
+                    s ? s->scope : 0,
                     s ? s->el : 0);
               }
               else
@@ -9430,7 +9430,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                     "  %%t%d = bitcast ptr %%v.%s.sc%u.%u to ptr\n",
                     r.id,
                     string_to_lowercase(n->s),
-                    s ? s->sc : 0,
+                    s ? s->scope : 0,
                     s ? s->el : 0);
               }
             }
@@ -9442,7 +9442,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                   r.id,
                   value_llvm_type_string(k),
                   string_to_lowercase(n->s),
-                  s ? s->sc : 0,
+                  s ? s->scope : 0,
                   s ? s->el : 0);
             }
           }
@@ -9459,7 +9459,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                   "  %%t%d = load ptr, ptr %%v.%s.sc%u.%u\n",
                   r.id,
                   string_to_lowercase(n->s),
-                  s ? s->sc : 0,
+                  s ? s->scope : 0,
                   s ? s->el : 0);
             }
             else
@@ -9469,7 +9469,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                   "  %%t%d = bitcast ptr %%v.%s.sc%u.%u to ptr\n",
                   r.id,
                   string_to_lowercase(n->s),
-                  s ? s->sc : 0,
+                  s ? s->scope : 0,
                   s ? s->el : 0);
             }
           }
@@ -9481,7 +9481,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                 r.id,
                 value_llvm_type_string(k),
                 string_to_lowercase(n->s),
-                s ? s->sc : 0,
+                s ? s->scope : 0,
                 s ? s->el : 0);
           }
         }
@@ -10259,7 +10259,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                 "  %%t%d = load ptr, ptr %%v.%s.sc%u.%u\n",
                 p.id,
                 string_to_lowercase(n->selected_component.prefix->s),
-                s ? s->sc : 0,
+                s ? s->scope : 0,
                 s ? s->el : 0);
           else
             fprintf(
@@ -10267,7 +10267,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                 "  %%t%d = bitcast ptr %%v.%s.sc%u.%u to ptr\n",
                 p.id,
                 string_to_lowercase(n->selected_component.prefix->s),
-                s ? s->sc : 0,
+                s ? s->scope : 0,
                 s ? s->el : 0);
         }
       }
@@ -10418,7 +10418,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
               int n = 0;
               for (uint32_t j = 0; j < s->parent->name.length; j++)
                 nb[n++] = toupper(s->parent->name.string[j]);
-              n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->sc, s->parent->el);
+              n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->el);
               for (uint32_t j = 0; j < s->name.length; j++)
                 nb[n++] = toupper(s->name.string[j]);
               nb[n] = 0;
@@ -11012,7 +11012,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                     int n = 0;
                     for (uint32_t j = 0; j < as->parent->name.length; j++)
                       nb[n++] = toupper(as->parent->name.string[j]);
-                    n += snprintf(nb + n, 256 - n, "_S%dE%d__", as->parent->sc, as->parent->el);
+                    n += snprintf(nb + n, 256 - n, "_S%dE%d__", as->parent->scope, as->parent->el);
                     for (uint32_t j = 0; j < as->name.length; j++)
                       nb[n++] = toupper(as->name.string[j]);
                     nb[n] = 0;
@@ -11041,7 +11041,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                       "  %%t%d = bitcast ptr %%v.%s.sc%u.%u to ptr\n",
                       av.id,
                       string_to_lowercase(arg->s),
-                      as ? as->sc : 0,
+                      as ? as->scope : 0,
                       as ? as->el : 0);
                 }
                 ek = VALUE_KIND_POINTER;
@@ -11130,7 +11130,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                         value_llvm_type_string(cv.k),
                         cv.id,
                         string_to_lowercase(tg->s),
-                        ts->sc,
+                        ts->scope,
                         ts->el);
                 }
               }
@@ -11271,7 +11271,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           int n = 0;
           for (uint32_t i = 0; i < s->parent->name.length; i++)
             nb[n++] = toupper(s->parent->name.string[i]);
-          n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->sc, s->parent->el);
+          n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->el);
           for (uint32_t i = 0; i < s->name.length; i++)
             nb[n++] = toupper(s->name.string[i]);
           nb[n] = 0;
@@ -11315,7 +11315,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             value_llvm_type_string(k),
             v.id,
             string_to_lowercase(n->assignment.target->s),
-            s ? s->sc : 0,
+            s ? s->scope : 0,
             s ? s->el : 0);
     }
     else if (n->assignment.target->k == N_IX)
@@ -11377,7 +11377,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               "  %%t%d = bitcast ptr %%v.%s.sc%u.%u to ptr\n",
               p.id,
               string_to_lowercase(n->assignment.target->selected_component.prefix->s),
-              s ? s->sc : 0,
+              s ? s->scope : 0,
               s ? s->el : 0);
       }
       else
@@ -11587,7 +11587,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
         Symbol *vs = fv->sy;
         if (vs)
         {
-          fprintf(o, "  %%v.%s.sc%u.%u = alloca i64\n", string_to_lowercase(fv->s), vs->sc, vs->el);
+          fprintf(o, "  %%v.%s.sc%u.%u = alloca i64\n", string_to_lowercase(fv->s), vs->scope, vs->el);
           Syntax_Node *rng = n->loop_stmt.iterator->binary_node.r;
           hi_var = new_temporary_register(generator);
           fprintf(o, "  %%v.__for_hi_%d = alloca i64\n", hi_var);
@@ -11617,7 +11617,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                     "  store i64 %%t%d, ptr %%v.%s.sc%u.%u\n",
                     blo,
                     string_to_lowercase(fv->s),
-                    vs->sc,
+                    vs->scope,
                     vs->el);
                 fprintf(o, "  store i64 %%t%d, ptr %%v.__for_hi_%d\n", bhi, hi_var);
                 ti = blo;
@@ -11653,7 +11653,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               int n = 0;
               for (uint32_t i = 0; i < vs->parent->name.length; i++)
                 nb[n++] = toupper(vs->parent->name.string[i]);
-              n += snprintf(nb + n, 256 - n, "_S%dE%d__", vs->parent->sc, vs->parent->el);
+              n += snprintf(nb + n, 256 - n, "_S%dE%d__", vs->parent->scope, vs->parent->el);
               for (uint32_t i = 0; i < vs->name.length; i++)
                 nb[n++] = toupper(vs->name.string[i]);
               nb[n] = 0;
@@ -11668,7 +11668,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                 "  store i64 %%t%d, ptr %%v.%s.sc%u.%u\n",
                 ti,
                 string_to_lowercase(fv->s),
-                vs->sc,
+                vs->scope,
                 vs->el);
         }
       }
@@ -11689,7 +11689,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             int n = 0;
             for (uint32_t i = 0; i < vs->parent->name.length; i++)
               nb[n++] = toupper(vs->parent->name.string[i]);
-            n += snprintf(nb + n, 256 - n, "_S%dE%d__", vs->parent->sc, vs->parent->el);
+            n += snprintf(nb + n, 256 - n, "_S%dE%d__", vs->parent->scope, vs->parent->el);
             for (uint32_t i = 0; i < vs->name.length; i++)
               nb[n++] = toupper(vs->name.string[i]);
             nb[n] = 0;
@@ -11705,7 +11705,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               "  %%t%d = load i64, ptr %%v.%s.sc%u.%u\n",
               cv,
               string_to_lowercase(fv->s),
-              vs->sc,
+              vs->scope,
               vs->el);
         }
         int hv = new_temporary_register(generator);
@@ -11741,7 +11741,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             int n = 0;
             for (uint32_t i = 0; i < vs->parent->name.length; i++)
               nb[n++] = toupper(vs->parent->name.string[i]);
-            n += snprintf(nb + n, 256 - n, "_S%dE%d__", vs->parent->sc, vs->parent->el);
+            n += snprintf(nb + n, 256 - n, "_S%dE%d__", vs->parent->scope, vs->parent->el);
             for (uint32_t i = 0; i < vs->name.length; i++)
               nb[n++] = toupper(vs->name.string[i]);
             nb[n] = 0;
@@ -11760,7 +11760,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               "  %%t%d = load i64, ptr %%v.%s.sc%u.%u\n",
               cv,
               string_to_lowercase(fv->s),
-              vs->sc,
+              vs->scope,
               vs->el);
           int nv = new_temporary_register(generator);
           fprintf(o, "  %%t%d = add i64 %%t%d, 1\n", nv, cv);
@@ -11769,7 +11769,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               "  store i64 %%t%d, ptr %%v.%s.sc%u.%u\n",
               nv,
               string_to_lowercase(fv->s),
-              vs->sc,
+              vs->scope,
               vs->el);
         }
       }
@@ -11924,7 +11924,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                     int n = 0;
                     for (uint32_t j = 0; j < as->parent->name.length; j++)
                       nb[n++] = toupper(as->parent->name.string[j]);
-                    n += snprintf(nb + n, 256 - n, "_S%dE%d__", as->parent->sc, as->parent->el);
+                    n += snprintf(nb + n, 256 - n, "_S%dE%d__", as->parent->scope, as->parent->el);
                     for (uint32_t j = 0; j < as->name.length; j++)
                       nb[n++] = toupper(as->name.string[j]);
                     nb[n] = 0;
@@ -11953,7 +11953,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                       "  %%t%d = bitcast ptr %%v.%s.sc%u.%u to ptr\n",
                       av.id,
                       string_to_lowercase(arg->s),
-                      as ? as->sc : 0,
+                      as ? as->scope : 0,
                       as ? as->el : 0);
                 }
                 ek = VALUE_KIND_POINTER;
@@ -12045,7 +12045,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                         value_llvm_type_string(cv.k),
                         cv.id,
                         string_to_lowercase(tg->s),
-                        ts->sc,
+                        ts->scope,
                         ts->el);
                 }
               }
@@ -12116,7 +12116,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                     "  %%t%d = bitcast ptr %%v.%s.sc%u.%u to ptr\n",
                     av.id,
                     string_to_lowercase(arg->s),
-                    as ? as->sc : 0,
+                    as ? as->scope : 0,
                     as ? as->el : 0);
             }
             else
@@ -12247,7 +12247,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                     value_llvm_type_string(k),
                     v.id,
                     string_to_lowercase(id->s),
-                    s ? s->sc : 0,
+                    s ? s->scope : 0,
                     s ? s->el : 0);
             }
           }
@@ -12316,7 +12316,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                   "  %%t%d = getelementptr i64, ptr %%v.%s.sc%u.%u, i64 %u\n",
                   dp,
                   string_to_lowercase(id->s),
-                  s->sc,
+                  s->scope,
                   s->el,
                   di);
             fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", dv, dp);
@@ -12650,7 +12650,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   o,
                   "  %%v.%s.sc%u.%u = alloca {ptr,ptr}\n",
                   string_to_lowercase(id->s),
-                  s->sc,
+                  s->scope,
                   s->el);
             }
             else if (at and at->k == TYPE_ARRAY and asz > 0)
@@ -12659,7 +12659,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   o,
                   "  %%v.%s.sc%u.%u = alloca [%d x %s]\n",
                   string_to_lowercase(id->s),
-                  s->sc,
+                  s->scope,
                   s->el,
                   asz,
                   ada_to_c_type_string(bt));
@@ -12671,7 +12671,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   o,
                   "  %%v.%s.sc%u.%u = alloca [%d x %s]\n",
                   string_to_lowercase(id->s),
-                  s->sc,
+                  s->scope,
                   s->el,
                   asz,
                   ada_to_c_type_string(bt));
@@ -12682,7 +12682,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   o,
                   "  %%v.%s.sc%u.%u = alloca %s\n",
                   string_to_lowercase(id->s),
-                  s->sc,
+                  s->scope,
                   s->el,
                   value_llvm_type_string(k));
             }
@@ -12898,7 +12898,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
             o,
             "  %%v.%s.sc%u.%u = alloca %s\n",
             string_to_lowercase(p->parameter.nm),
-            ps ? ps->sc : 0,
+            ps ? ps->scope : 0,
             ps ? ps->el : 0,
             value_llvm_type_string(k));
       if (p->parameter.mode & 2)
@@ -12925,7 +12925,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
               value_llvm_type_string(k),
               lv,
               string_to_lowercase(p->parameter.nm),
-              ps ? ps->sc : 0,
+              ps ? ps->scope : 0,
               ps ? ps->el : 0);
       }
       else
@@ -12945,7 +12945,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
               value_llvm_type_string(k),
               string_to_lowercase(p->parameter.nm),
               string_to_lowercase(p->parameter.nm),
-              ps ? ps->sc : 0,
+              ps ? ps->scope : 0,
               ps ? ps->el : 0);
       }
     }
@@ -12966,7 +12966,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   o,
                   "  %%v.%s.sc%u.%u = alloca [%d x %s]\n",
                   string_to_lowercase(s->name),
-                  s->sc,
+                  s->scope,
                   s->el,
                   asz,
                   ada_to_c_type_string(at->el));
@@ -12977,7 +12977,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   o,
                   "  %%v.%s.sc%u.%u = alloca %s\n",
                   string_to_lowercase(s->name),
-                  s->sc,
+                  s->scope,
                   s->el,
                   value_llvm_type_string(k));
             }
@@ -13013,7 +13013,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                 value_llvm_type_string(k),
                 v,
                 string_to_lowercase(s->name),
-                s->sc,
+                s->scope,
                 s->el);
           }
         }
@@ -13031,7 +13031,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       {
         for (Symbol *s = generator->sm->sy[h]; s; s = s->next)
         {
-          if (s->k == 0 and s->el >= 0 and n->sy->sc >= 0 and s->sc == (uint32_t) (n->sy->sc + 1)
+          if (s->k == 0 and s->el >= 0 and n->sy->scope >= 0 and s->scope == (uint32_t) (n->sy->scope + 1)
               and s->lv == generator->sm->lv and s->parent == n->sy)
           {
             bool is_pm = false;
@@ -13058,7 +13058,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   o,
                   "  store ptr %%v.%s.sc%u.%u, ptr %%t%d\n",
                   string_to_lowercase(s->name),
-                  s->sc,
+                  s->scope,
                   s->el,
                   fp);
             }
@@ -13130,7 +13130,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                     value_llvm_type_string(k),
                     v.id,
                     string_to_lowercase(id->s),
-                    s ? s->sc : 0,
+                    s ? s->scope : 0,
                     s ? s->el : 0);
             }
           }
@@ -13276,7 +13276,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
             o,
             "  %%v.%s.sc%u.%u = alloca %s\n",
             string_to_lowercase(p->parameter.nm),
-            ps ? ps->sc : 0,
+            ps ? ps->scope : 0,
             ps ? ps->el : 0,
             value_llvm_type_string(k));
       if (p->parameter.mode & 2)
@@ -13303,7 +13303,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
               value_llvm_type_string(k),
               lv,
               string_to_lowercase(p->parameter.nm),
-              ps ? ps->sc : 0,
+              ps ? ps->scope : 0,
               ps ? ps->el : 0);
       }
       else
@@ -13323,7 +13323,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
               value_llvm_type_string(k),
               string_to_lowercase(p->parameter.nm),
               string_to_lowercase(p->parameter.nm),
-              ps ? ps->sc : 0,
+              ps ? ps->scope : 0,
               ps ? ps->el : 0);
       }
     }
@@ -13344,7 +13344,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   o,
                   "  %%v.%s.sc%u.%u = alloca [%d x %s]\n",
                   string_to_lowercase(s->name),
-                  s->sc,
+                  s->scope,
                   s->el,
                   asz,
                   ada_to_c_type_string(at->el));
@@ -13355,7 +13355,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   o,
                   "  %%v.%s.sc%u.%u = alloca %s\n",
                   string_to_lowercase(s->name),
-                  s->sc,
+                  s->scope,
                   s->el,
                   value_llvm_type_string(k));
             }
@@ -13391,7 +13391,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                 value_llvm_type_string(k),
                 v,
                 string_to_lowercase(s->name),
-                s->sc,
+                s->scope,
                 s->el);
           }
         }
@@ -13407,7 +13407,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     {
       for (Symbol *s = generator->sm->sy[h]; s; s = s->next)
       {
-        if (s->k == 0 and s->el >= 0 and n->sy->sc >= 0 and s->sc == (uint32_t) (n->sy->sc + 1)
+        if (s->k == 0 and s->el >= 0 and n->sy->scope >= 0 and s->scope == (uint32_t) (n->sy->scope + 1)
             and s->lv == generator->sm->lv and s->parent == n->sy)
         {
           bool is_pm = false;
@@ -13433,7 +13433,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                 o,
                 "  store ptr %%v.%s.sc%u.%u, ptr %%t%d\n",
                 string_to_lowercase(s->name),
-                s->sc,
+                s->scope,
                 s->el,
                 fp);
           }
@@ -13504,7 +13504,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                     value_llvm_type_string(k),
                     v.id,
                     string_to_lowercase(id->s),
-                    s ? s->sc : 0,
+                    s ? s->scope : 0,
                     s ? s->el : 0);
             }
           }
@@ -13969,7 +13969,7 @@ static void write_ada_library_interface(Symbol_Manager *symbol_manager, const ch
           int n = 0;
           for (uint32_t j = 0; j < s->parent->name.length; j++)
             nb[n++] = toupper(s->parent->name.string[j]);
-          n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->sc, s->parent->el);
+          n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->el);
           for (uint32_t j = 0; j < s->name.length; j++)
             nb[n++] = toupper(s->name.string[j]);
           nb[n] = 0;
@@ -14036,7 +14036,7 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
         int n = 0;
         for (uint32_t j = 0; j < s->parent->name.length; j++)
           nb[n++] = toupper(s->parent->name.string[j]);
-        n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->sc, s->parent->el);
+        n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->el);
         for (uint32_t j = 0; j < s->name.length; j++)
           nb[n++] = toupper(s->name.string[j]);
         nb[n] = 0;
@@ -14245,7 +14245,7 @@ int main(int ac, char **av)
           int n = 0;
           for (uint32_t j = 0; j < s->parent->name.length; j++)
             nb[n++] = toupper(s->parent->name.string[j]);
-          n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->sc, s->parent->el);
+          n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->el);
           for (uint32_t j = 0; j < s->name.length; j++)
             nb[n++] = toupper(s->name.string[j]);
           nb[n] = 0;
