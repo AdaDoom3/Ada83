@@ -557,14 +557,14 @@ static struct
           {STRING_LITERAL("use"), T_USE},      {STRING_LITERAL("when"), T_WHN},
           {STRING_LITERAL("while"), T_WHI},    {STRING_LITERAL("with"), T_WITH},
           {STRING_LITERAL("xor"), T_XOR},      {N, T_EOF}};
-static Token_Kind kl(String_Slice s)
+static Token_Kind keyword_lookup(String_Slice s)
 {
   for (int i = 0; KW[i].keyword.string; i++)
     if (string_equal_ignore_case(s, KW[i].keyword))
       return KW[i].token_kind;
   return T_ID;
 }
-static Lexer ln(const char *s, size_t z, const char *f)
+static Lexer lexer_new(const char *s, size_t z, const char *f)
 {
   return (Lexer){s, s, s + z, 1, 1, f, T_EOF};
 }
@@ -572,7 +572,7 @@ static char peek(Lexer *l, size_t off)
 {
   return l->current + off < l->end ? l->current[off] : 0;
 }
-static char av(Lexer *l)
+static char advance_character(Lexer *l)
 {
   if (l->current >= l->end)
     return 0;
@@ -586,24 +586,24 @@ static char av(Lexer *l)
     l->column++;
   return c;
 }
-static void sw(Lexer *l)
+static void skip_whitespace(Lexer *l)
 {
   for (;;)
   {
     while (
         l->current < l->end
         and (*l->current == ' ' or *l->current == '\t' or *l->current == '\n' or *l->current == '\r' or *l->current == '\v' or *l->current == '\f'))
-      av(l);
+      advance_character(l);
     if (l->current + 1 < l->end and l->current[0] == '-' and l->current[1] == '-')
     {
       while (l->current < l->end and *l->current != '\n')
-        av(l);
+        advance_character(l);
     }
     else
       break;
   }
 }
-static Token mt(Token_Kind t, Source_Location lc, String_Slice lt)
+static Token make_token(Token_Kind t, Source_Location lc, String_Slice lt)
 {
   return (Token){t, lc, lt, 0, 0.0, 0, 0};
 }
@@ -612,12 +612,12 @@ static Token scan_identifier(Lexer *l)
   Source_Location lc = {l->line_number, l->column, l->filename};
   const char *s = l->current;
   while (isalnum(peek(l, 0)) or peek(l, 0) == '_')
-    av(l);
+    advance_character(l);
   String_Slice lt = {s, l->current - s};
-  Token_Kind t = kl(lt);
+  Token_Kind t = keyword_lookup(lt);
   if (t != T_ID and l->current < l->end and (isalnum(*l->current) or *l->current == '_'))
-    return mt(T_ERR, lc, STRING_LITERAL("kw+x"));
-  return mt(t, lc, lt);
+    return make_token(T_ERR, lc, STRING_LITERAL("kw+x"));
+  return make_token(t, lc, lt);
 }
 static Token scan_number_literal(Lexer *l)
 {
@@ -628,12 +628,12 @@ static Token scan_number_literal(Lexer *l)
   bool ir = false, bx = false, has_dot = false, has_exp = false;
   char bd = 0;
   while (isdigit(peek(l, 0)) or peek(l, 0) == '_')
-    av(l);
+    advance_character(l);
   if (peek(l, 0) == '#' or (peek(l, 0) == ':' and isxdigit(peek(l, 1))))
   {
     bd = peek(l, 0);
     const char *be = l->current;
-    av(l);
+    advance_character(l);
     char *bp = arena_allocate(32);
     int bi = 0;
     for (const char *p = s; p < be; p++)
@@ -643,28 +643,28 @@ static Token scan_number_literal(Lexer *l)
     b = atoi(bp);
     ms = l->current;
     while (isxdigit(peek(l, 0)) or peek(l, 0) == '_')
-      av(l);
+      advance_character(l);
     if (peek(l, 0) == '.')
     {
       ir = true;
-      av(l);
+      advance_character(l);
       while (isxdigit(peek(l, 0)) or peek(l, 0) == '_')
-        av(l);
+        advance_character(l);
     }
     if (peek(l, 0) == bd)
     {
       me = l->current;
-      av(l);
+      advance_character(l);
     }
     if (tolower(peek(l, 0)) == 'e')
     {
       bx = true;
-      av(l);
+      advance_character(l);
       if (peek(l, 0) == '+' or peek(l, 0) == '-')
-        av(l);
+        advance_character(l);
       es = l->current;
       while (isdigit(peek(l, 0)) or peek(l, 0) == '_')
-        av(l);
+        advance_character(l);
     }
   }
   else
@@ -675,25 +675,25 @@ static Token scan_number_literal(Lexer *l)
       {
         ir = true;
         has_dot = true;
-        av(l);
+        advance_character(l);
         while (isdigit(peek(l, 0)) or peek(l, 0) == '_')
-          av(l);
+          advance_character(l);
       }
     }
     if (tolower(peek(l, 0)) == 'e')
     {
       has_exp = true;
-      av(l);
+      advance_character(l);
       if (peek(l, 0) == '+' or peek(l, 0) == '-')
-        av(l);
+        advance_character(l);
       while (isdigit(peek(l, 0)) or peek(l, 0) == '_')
-        av(l);
+        advance_character(l);
     }
   }
   if (isalpha(peek(l, 0)))
-    return mt(T_ERR, lc, STRING_LITERAL("num+alpha"));
+    return make_token(T_ERR, lc, STRING_LITERAL("num+alpha"));
   Token tk =
-      mt(bx ? (ir ? T_REAL : T_INT) : (ir ? T_REAL : T_INT), lc, (String_Slice){s, l->current - s});
+      make_token(bx ? (ir ? T_REAL : T_INT) : (ir ? T_REAL : T_INT), lc, (String_Slice){s, l->current - s});
   if (bx and es)
   {
     char *mp = arena_allocate(512);
@@ -836,15 +836,15 @@ static Token scan_number_literal(Lexer *l)
 static Token scan_character_literal(Lexer *l)
 {
   Source_Location lc = {l->line_number, l->column, l->filename};
-  av(l);
+  advance_character(l);
   if (not peek(l, 0))
-    return mt(T_ERR, lc, STRING_LITERAL("uc"));
+    return make_token(T_ERR, lc, STRING_LITERAL("uc"));
   char c = peek(l, 0);
-  av(l);
+  advance_character(l);
   if (peek(l, 0) != '\'')
-    return mt(T_ERR, lc, STRING_LITERAL("uc"));
-  av(l);
-  Token tk = mt(T_CHAR, lc, (String_Slice){&c, 1});
+    return make_token(T_ERR, lc, STRING_LITERAL("uc"));
+  advance_character(l);
+  Token tk = make_token(T_CHAR, lc, (String_Slice){&c, 1});
   tk.integer_value = c;
   return tk;
 }
@@ -852,7 +852,7 @@ static Token scan_string_literal(Lexer *l)
 {
   Source_Location lc = {l->line_number, l->column, l->filename};
   char d = peek(l, 0);
-  av(l);
+  advance_character(l);
   const char *s = l->current;
   (void) s;
   char *b = arena_allocate(256), *p = b;
@@ -863,8 +863,8 @@ static Token scan_string_literal(Lexer *l)
     {
       if (peek(l, 1) == d)
       {
-        av(l);
-        av(l);
+        advance_character(l);
+        advance_character(l);
         if (n < 255)
           *p++ = d;
         n++;
@@ -877,28 +877,28 @@ static Token scan_string_literal(Lexer *l)
       if (n < 255)
         *p++ = peek(l, 0);
       n++;
-      av(l);
+      advance_character(l);
     }
   }
   if (peek(l, 0) == d)
-    av(l);
+    advance_character(l);
   else
-    return mt(T_ERR, lc, STRING_LITERAL("us"));
+    return make_token(T_ERR, lc, STRING_LITERAL("us"));
   *p = 0;
   String_Slice lt = {b, n};
-  return mt(T_STR, lc, lt);
+  return make_token(T_STR, lc, lt);
 }
 static Token lexer_next_token(Lexer *l)
 {
   const char *pb = l->current;
-  sw(l);
+  skip_whitespace(l);
   bool ws = l->current != pb;
   Source_Location lc = {l->line_number, l->column, l->filename};
   char c = peek(l, 0);
   if (not c)
   {
     l->previous_token = T_EOF;
-    return mt(T_EOF, lc, N);
+    return make_token(T_EOF, lc, N);
   }
   if (isalpha(c))
   {
@@ -922,9 +922,9 @@ static Token lexer_next_token(Lexer *l)
       l->previous_token = T_CHAR;
       return scan_character_literal(l);
     }
-    av(l);
+    advance_character(l);
     l->previous_token = T_TK;
-    return mt(T_TK, lc, STRING_LITERAL("'"));
+    return make_token(T_TK, lc, STRING_LITERAL("'"));
   }
   if (c == '"' or c == '%')
   {
@@ -932,7 +932,7 @@ static Token lexer_next_token(Lexer *l)
     l->previous_token = tk.kind;
     return tk;
   }
-  av(l);
+  advance_character(l);
   Token_Kind tt;
   switch (c)
   {
@@ -970,7 +970,7 @@ static Token lexer_next_token(Lexer *l)
   case '/':
     if (peek(l, 0) == '=')
     {
-      av(l);
+      advance_character(l);
       tt = T_NE;
     }
     else
@@ -979,7 +979,7 @@ static Token lexer_next_token(Lexer *l)
   case '*':
     if (peek(l, 0) == '*')
     {
-      av(l);
+      advance_character(l);
       tt = T_EX;
     }
     else
@@ -988,7 +988,7 @@ static Token lexer_next_token(Lexer *l)
   case '=':
     if (peek(l, 0) == '>')
     {
-      av(l);
+      advance_character(l);
       tt = T_AR;
     }
     else
@@ -997,7 +997,7 @@ static Token lexer_next_token(Lexer *l)
   case ':':
     if (peek(l, 0) == '=')
     {
-      av(l);
+      advance_character(l);
       tt = T_AS;
     }
     else
@@ -1006,7 +1006,7 @@ static Token lexer_next_token(Lexer *l)
   case '.':
     if (peek(l, 0) == '.')
     {
-      av(l);
+      advance_character(l);
       tt = T_DD;
     }
     else
@@ -1015,17 +1015,17 @@ static Token lexer_next_token(Lexer *l)
   case '<':
     if (peek(l, 0) == '=')
     {
-      av(l);
+      advance_character(l);
       tt = T_LE;
     }
     else if (peek(l, 0) == '<')
     {
-      av(l);
+      advance_character(l);
       tt = T_LL;
     }
     else if (peek(l, 0) == '>')
     {
-      av(l);
+      advance_character(l);
       tt = T_BX;
     }
     else
@@ -1034,12 +1034,12 @@ static Token lexer_next_token(Lexer *l)
   case '>':
     if (peek(l, 0) == '=')
     {
-      av(l);
+      advance_character(l);
       tt = T_GE;
     }
     else if (peek(l, 0) == '>')
     {
-      av(l);
+      advance_character(l);
       tt = T_GG;
     }
     else
@@ -1050,7 +1050,7 @@ static Token lexer_next_token(Lexer *l)
     break;
   }
   l->previous_token = tt;
-  return mt(tt, lc, tt == T_ERR ? STRING_LITERAL("ux") : N);
+  return make_token(tt, lc, tt == T_ERR ? STRING_LITERAL("ux") : N);
 }
 typedef enum
 {
@@ -4309,7 +4309,7 @@ static Syntax_Node *pcu(Parser *p)
           fread(psrc, 1, sz, pf);
           psrc[sz] = 0;
           fclose(pf);
-          Parser pp = {ln(psrc, sz, fn), {0}, {0}, 0, {0}};
+          Parser pp = {lexer_new(psrc, sz, fn), {0}, {0}, 0, {0}};
           parser_next(&pp);
           parser_next(&pp);
           Syntax_Node *pcu_ = pcu(&pp);
@@ -4331,7 +4331,7 @@ static Syntax_Node *pcu(Parser *p)
 }
 static Parser pnw(const char *s, size_t z, const char *f)
 {
-  Parser p = {ln(s, z, f), {0}, {0}, 0, {0}};
+  Parser p = {lexer_new(s, z, f), {0}, {0}, 0, {0}};
   parser_next(&p);
   parser_next(&p);
   return p;
