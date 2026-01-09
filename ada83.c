@@ -4360,7 +4360,7 @@ typedef enum
 struct Type_Info
 {
   Type_Kind k;
-  String_Slice nm;
+  String_Slice name;
   Type_Info *base_type, *element_type, *parent_type;
   Type_Info *index_type;
   int64_t low_bound, high_bound;
@@ -4665,7 +4665,7 @@ static Type_Info *type_new(Type_Kind k, String_Slice nm)
 {
   Type_Info *t = arena_allocate(sizeof(Type_Info));
   t->k = k;
-  t->nm = string_duplicate(nm);
+  t->name = string_duplicate(nm);
   t->size = 8;
   t->alignment = 8;
   return t;
@@ -4724,18 +4724,18 @@ static Syntax_Node *generate_equality_operator(Type_Info *t, Source_Location l)
   Syntax_Node *f = ND(FB, l);
   f->body.subprogram_spec = ND(FS, l);
   char b[256];
-  snprintf(b, 256, "Oeq%.*s", (int) t->nm.length, t->nm.string);
+  snprintf(b, 256, "Oeq%.*s", (int) t->name.length, t->name.string);
   f->body.subprogram_spec->subprogram.name = string_duplicate((String_Slice){b, strlen(b)});
   f->body.subprogram_spec->subprogram.operator_symbol = STRING_LITERAL("=");
   Syntax_Node *p1 = ND(PM, l);
   p1->parameter.name = STRING_LITERAL("Source_Location");
   p1->parameter.ty = ND(ID, l);
-  p1->parameter.ty->string_value = t->nm;
+  p1->parameter.ty->string_value = t->name;
   p1->parameter.mode = 0;
   Syntax_Node *p2 = ND(PM, l);
   p2->parameter.name = STRING_LITERAL("Rational_Number");
   p2->parameter.ty = ND(ID, l);
-  p2->parameter.ty->string_value = t->nm;
+  p2->parameter.ty->string_value = t->name;
   p2->parameter.mode = 0;
   nv(&f->body.subprogram_spec->subprogram.parameters, p1);
   nv(&f->body.subprogram_spec->subprogram.parameters, p2);
@@ -4821,18 +4821,18 @@ static Syntax_Node *generate_assignment_operator(Type_Info *t, Source_Location l
   Syntax_Node *parser = ND(PB, l);
   parser->body.subprogram_spec = ND(PS, l);
   char b[256];
-  snprintf(b, 256, "Oas%.*s", (int) t->nm.length, t->nm.string);
+  snprintf(b, 256, "Oas%.*s", (int) t->name.length, t->name.string);
   parser->body.subprogram_spec->subprogram.name = string_duplicate((String_Slice){b, strlen(b)});
   parser->body.subprogram_spec->subprogram.operator_symbol = STRING_LITERAL(":=");
   Syntax_Node *p1 = ND(PM, l);
   p1->parameter.name = STRING_LITERAL("T");
   p1->parameter.ty = ND(ID, l);
-  p1->parameter.ty->string_value = t->nm;
+  p1->parameter.ty->string_value = t->name;
   p1->parameter.mode = 3;
   Syntax_Node *p2 = ND(PM, l);
   p2->parameter.name = STRING_LITERAL("String_Slice");
   p2->parameter.ty = ND(ID, l);
-  p2->parameter.ty->string_value = t->nm;
+  p2->parameter.ty->string_value = t->name;
   p2->parameter.mode = 0;
   nv(&parser->body.subprogram_spec->subprogram.parameters, p1);
   nv(&parser->body.subprogram_spec->subprogram.parameters, p2);
@@ -4891,10 +4891,10 @@ static Syntax_Node *generate_input_operator(Type_Info *t, Source_Location l)
   Syntax_Node *f = ND(FB, l);
   f->body.subprogram_spec = ND(FS, l);
   char b[256];
-  snprintf(b, 256, "Oin%.*s", (int) t->nm.length, t->nm.string);
+  snprintf(b, 256, "Oin%.*s", (int) t->name.length, t->name.string);
   f->body.subprogram_spec->subprogram.name = string_duplicate((String_Slice){b, strlen(b)});
   f->body.subprogram_spec->subprogram.return_type = ND(ID, l);
-  f->body.subprogram_spec->subprogram.return_type->string_value = t->nm;
+  f->body.subprogram_spec->subprogram.return_type->string_value = t->name;
   Syntax_Node *ag = ND(AG, l);
   if (t->k == TYPE_RECORD)
   {
@@ -4959,7 +4959,7 @@ static void find_type(Symbol_Manager *symbol_manager, Type_Info *t, Source_Locat
     t->size = n > 0 ? n * es : 0;
     t->alignment = ea;
   }
-  if ((t->k == TYPE_RECORD or t->k == TYPE_ARRAY) and t->nm.string and t->nm.length)
+  if ((t->k == TYPE_RECORD or t->k == TYPE_ARRAY) and t->name.string and t->name.length)
   {
     Syntax_Node *eq = generate_equality_operator(t, l);
     if (eq)
@@ -7549,8 +7549,8 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
         break;
       }
     }
-    if (t and n->type_decl.name.string and n->type_decl.name.length > 0 and not t->nm.string)
-      t->nm = n->type_decl.name;
+    if (t and n->type_decl.name.string and n->type_decl.name.length > 0 and not t->name.string)
+      t->name = n->type_decl.name;
     if (n->type_decl.discriminants.count > 0)
     {
       for (uint32_t i = 0; i < n->type_decl.discriminants.count; i++)
