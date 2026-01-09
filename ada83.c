@@ -4368,7 +4368,7 @@ struct Type_Info
   uint32_t size, alignment;
   Symbol_Vector enum_values;
   Representation_Clause_Vector rc;
-  uint64_t ad;
+  uint64_t address;
   bool pk;
   Node_Vector ops;
   int64_t sm, large_value;
@@ -5253,7 +5253,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
       t->dc = bt->dc;
       t->size = bt->size;
       t->alignment = bt->alignment;
-      t->ad = bt->ad;
+      t->address = bt->address;
       t->pk = bt->pk;
       t->index_type = bt->index_type;
       if (cn->k == 27 and cn->constraint.constraints.count > 0 and cn->constraint.constraints.data[0] and cn->constraint.constraints.data[0]->k == 26)
@@ -6715,7 +6715,7 @@ static void runtime_register_compare(Symbol_Manager *symbol_manager, Representat
     if (s and s->ty)
     {
       Type_Info *t = type_canonical_concrete(s->ty);
-      t->ad = r->ad.ad;
+      t->address = r->ad.ad;
     }
   }
   break;
@@ -7690,7 +7690,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       t->dc = b->dc;
       t->size = b->size;
       t->alignment = b->alignment;
-      t->ad = b->ad;
+      t->address = b->address;
       t->pk = b->pk;
       t->low_bound = b->low_bound;
       t->high_bound = b->high_bound;
