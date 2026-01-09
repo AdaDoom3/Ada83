@@ -1528,7 +1528,7 @@ struct Syntax_Node
     } dereference;
     struct
     {
-      Syntax_Node *ty, *ex;
+      Syntax_Node *ty, *expression;
     } conversion;
     struct
     {
@@ -6376,7 +6376,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
         {
           Syntax_Node *cv = ND(CVT, node->location);
           cv->conversion.ty = node->call.function_name;
-          cv->conversion.ex = node->call.arguments.count > 0 ? node->call.arguments.data[0] : 0;
+          cv->conversion.expression = node->call.arguments.count > 0 ? node->call.arguments.data[0] : 0;
           node->k = N_CVT;
           node->conversion = cv->conversion;
           node->ty = s->ty ? s->ty : TY_INT;
@@ -6474,7 +6474,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     }
     break;
   case N_CVT:
-    resolve_expression(symbol_manager, node->conversion.ex, 0);
+    resolve_expression(symbol_manager, node->conversion.expression, 0);
     node->ty = resolve_subtype(symbol_manager, node->conversion.ty);
     break;
   case N_CHK:
@@ -7236,7 +7236,7 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
     break;
   case N_CVT:
     c->conversion.ty = node_clone_substitute(n->conversion.ty, fp, ap);
-    c->conversion.ex = node_clone_substitute(n->conversion.ex, fp, ap);
+    c->conversion.expression = node_clone_substitute(n->conversion.expression, fp, ap);
     break;
   case N_CHK:
     c->check.expression = node_clone_substitute(n->check.expression, fp, ap);
@@ -11209,7 +11209,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
   break;
   case N_CVT:
   {
-    Value e = generate_expression(generator, n->conversion.ex);
+    Value e = generate_expression(generator, n->conversion.expression);
     r = value_cast(generator, e, r.k);
   }
   break;
