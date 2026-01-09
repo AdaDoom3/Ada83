@@ -1574,7 +1574,7 @@ struct Representation_Clause
     struct
     {
       String_Slice nm;
-      uint64_t ad;
+      uint64_t address;
     } ad;
     struct
     {
@@ -3530,7 +3530,7 @@ static Representation_Clause *parse_representation_clause(Parser *parser)
           r->ad.nm = parser_match(parser, T_CM) ? parser_identifier(parser) : N;
           while (parser_match(parser, T_CM))
             parser_identifier(parser);
-          r->ad.ad = cm;
+          r->ad.address = cm;
         }
         else
         {
@@ -6715,7 +6715,7 @@ static void runtime_register_compare(Symbol_Manager *symbol_manager, Representat
     if (s and s->ty)
     {
       Type_Info *t = type_canonical_concrete(s->ty);
-      t->address = r->ad.ad;
+      t->address = r->ad.address;
     }
   }
   break;
@@ -6752,7 +6752,7 @@ static void runtime_register_compare(Symbol_Manager *symbol_manager, Representat
     if (s and s->ty)
     {
       Type_Info *t = type_canonical_concrete(s->ty);
-      t->suppressed_checks |= r->ad.ad;
+      t->suppressed_checks |= r->ad.address;
     }
   }
   break;
