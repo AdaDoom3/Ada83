@@ -4981,7 +4981,7 @@ static void find_symbol(Symbol_Manager *SM, Symbol *s, Source_Location l)
   if (s->ty and not s->ty->frz)
     find_type(SM, s->ty, l);
 }
-static void fal(Symbol_Manager *SM, Source_Location l)
+static void find_ada_library(Symbol_Manager *SM, Source_Location l)
 {
   for (int i = 0; i < 4096; i++)
     for (Symbol *s = SM->sy[i]; s; s = s->nx)
@@ -5007,7 +5007,7 @@ static void symbol_compare_parameter(Symbol_Manager *SM)
 }
 static void symbol_compare_overload(Symbol_Manager *SM)
 {
-  fal(SM, (Source_Location){0, 0, ""});
+  find_ada_library(SM, (Source_Location){0, 0, ""});
   for (int i = 0; i < 4096; i++)
     for (Symbol *s = SM->sy[i]; s; s = s->nx)
     {
@@ -5028,7 +5028,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *n);
 static void resolve_expression(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx);
 static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *n);
 static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n);
-static void rrc_(Symbol_Manager *SM, RC *r);
+static void runtime_register_compare(Symbol_Manager *SM, RC *r);
 static Syntax_Node *gcl(Symbol_Manager *SM, Syntax_Node *n);
 static Type_Info *type_canonical_concrete(Type_Info *t)
 {
@@ -5638,7 +5638,7 @@ static inline bool is_static(Syntax_Node *n)
   return n
          and (n->k == N_INT or (n->k == N_UN and n->un.op == T_MN and n->un.x and n->un.x->k == N_INT));
 }
-static int foth(Syntax_Node *ag)
+static int find_or_throw(Syntax_Node *ag)
 {
   if (not ag or ag->k != N_AG)
     return -1;
@@ -5661,7 +5661,7 @@ static void normalize_array_aggregate(Symbol_Manager *SM, Type_Info *at, Syntax_
     return;
   Node_Vector xv = {0};
   bool *cov = calloc(asz, 1);
-  int oi = foth(ag);
+  int oi = find_or_throw(ag);
   uint32_t px = 0;
   for (uint32_t i = 0; i < ag->ag.it.count; i++)
   {
@@ -5788,7 +5788,7 @@ static Type_Info *ucag(Type_Info *at, Syntax_Node *ag)
   nt->hi = asz;
   return nt;
 }
-static void icv(Type_Info *t, Syntax_Node *n)
+static void is_compile_valid(Type_Info *t, Syntax_Node *n)
 {
   if (not t or not n)
     return;
@@ -6337,7 +6337,7 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx
     n->ty = qt;
     if (n->ql.ag->ty and qt)
     {
-      icv(qt, n->ql.ag);
+      is_compile_valid(qt, n->ql.ag);
       n->ql.ag->ty = qt;
     }
   }
@@ -6395,7 +6395,7 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx
     for (uint32_t i = 0; i < n->ag.it.count; i++)
       resolve_expression(SM, n->ag.it.data[i], tx);
     n->ty = tx ?: TY_INT;
-    icv(tx, n);
+    is_compile_valid(tx, n);
     break;
   case N_ALC:
     n->ty = tyn(TYPE_ACCESS, N);
@@ -6681,7 +6681,7 @@ static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *n)
     break;
   }
 }
-static void rrc_(Symbol_Manager *SM, RC *r)
+static void runtime_register_compare(Symbol_Manager *SM, RC *r)
 {
   if (not r)
     return;
@@ -6796,7 +6796,7 @@ static void rrc_(Symbol_Manager *SM, RC *r)
   break;
   }
 }
-static void ihop(Type_Info *dt, Type_Info *pt)
+static void is_higher_order_parameter(Type_Info *dt, Type_Info *pt)
 {
   if (not dt or not pt)
     return;
@@ -6869,7 +6869,7 @@ static void resolve_array_parameter(Symbol_Manager *SM, Node_Vector *fp, Node_Ve
     }
   }
 }
-static void ncsv(Node_Vector *d, Node_Vector *s, Node_Vector *fp, Node_Vector *ap)
+static void normalize_compile_symbol_vector(Node_Vector *d, Node_Vector *s, Node_Vector *fp, Node_Vector *ap)
 {
   if (not s)
   {
@@ -6992,7 +6992,7 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
   case N_AT:
     c->at.p = ncs(n->at.p, fp, ap);
     c->at.at = n->at.at;
-    ncsv(&c->at.ar, &n->at.ar, fp, ap);
+    normalize_compile_symbol_vector(&c->at.ar, &n->at.ar, fp, ap);
     break;
   case N_QL:
     c->ql.nm = ncs(n->ql.nm, fp, ap);
@@ -7000,11 +7000,11 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
     break;
   case N_CL:
     c->cl.fn = ncs(n->cl.fn, fp, ap);
-    ncsv(&c->cl.ar, &n->cl.ar, fp, ap);
+    normalize_compile_symbol_vector(&c->cl.ar, &n->cl.ar, fp, ap);
     break;
   case N_IX:
     c->ix.p = ncs(n->ix.p, fp, ap);
-    ncsv(&c->ix.ix, &n->ix.ix, fp, ap);
+    normalize_compile_symbol_vector(&c->ix.ix, &n->ix.ix, fp, ap);
     break;
   case N_SL:
     c->sl.p = ncs(n->sl.p, fp, ap);
@@ -7025,7 +7025,7 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
     break;
   case N_CN:
     c->cn.rn = ncs(n->cn.rn, fp, ap);
-    ncsv(&c->cn.cs, &n->cn.cs, fp, ap);
+    normalize_compile_symbol_vector(&c->cn.cs, &n->cn.cs, fp, ap);
     break;
   case N_CM:
     c->cm.nm = n->cm.nm;
@@ -7038,12 +7038,12 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
     c->cm.dsc = ncs(n->cm.dsc, fp, ap);
     break;
   case N_VR:
-    ncsv(&c->vr.ch, &n->vr.ch, fp, ap);
-    ncsv(&c->vr.cmm, &n->vr.cmm, fp, ap);
+    normalize_compile_symbol_vector(&c->vr.ch, &n->vr.ch, fp, ap);
+    normalize_compile_symbol_vector(&c->vr.cmm, &n->vr.cmm, fp, ap);
     break;
   case N_VP:
     c->vp.ds = ncs(n->vp.ds, fp, ap);
-    ncsv(&c->vp.vrr, &n->vp.vrr, fp, ap);
+    normalize_compile_symbol_vector(&c->vp.vrr, &n->vp.vrr, fp, ap);
     c->vp.sz = n->vp.sz;
     break;
   case N_DS:
@@ -7057,7 +7057,7 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
   case N_FS:
   case N_GSP:
     c->sp.nm = n->sp.nm;
-    ncsv(&c->sp.pmm, &n->sp.pmm, fp, ap);
+    normalize_compile_symbol_vector(&c->sp.pmm, &n->sp.pmm, fp, ap);
     c->sp.rt = ncs(n->sp.rt, fp, ap);
     c->sp.op = n->sp.op;
     break;
@@ -7066,29 +7066,29 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
   case N_FD:
   case N_FB:
     c->bd.sp = ncs(n->bd.sp, fp, ap);
-    ncsv(&c->bd.dc, &n->bd.dc, fp, ap);
-    ncsv(&c->bd.st, &n->bd.st, fp, ap);
-    ncsv(&c->bd.hdd, &n->bd.hdd, fp, ap);
+    normalize_compile_symbol_vector(&c->bd.dc, &n->bd.dc, fp, ap);
+    normalize_compile_symbol_vector(&c->bd.st, &n->bd.st, fp, ap);
+    normalize_compile_symbol_vector(&c->bd.hdd, &n->bd.hdd, fp, ap);
     c->bd.el = n->bd.el;
     c->bd.pr = 0;
-    ncsv(&c->bd.lk, &n->bd.lk, fp, ap);
+    normalize_compile_symbol_vector(&c->bd.lk, &n->bd.lk, fp, ap);
     break;
   case N_PKS:
     c->ps.nm = n->ps.nm;
-    ncsv(&c->ps.dc, &n->ps.dc, fp, ap);
-    ncsv(&c->ps.pr, &n->ps.pr, fp, ap);
+    normalize_compile_symbol_vector(&c->ps.dc, &n->ps.dc, fp, ap);
+    normalize_compile_symbol_vector(&c->ps.pr, &n->ps.pr, fp, ap);
     c->ps.el = n->ps.el;
     break;
   case N_PKB:
     c->pb.nm = n->pb.nm;
-    ncsv(&c->pb.dc, &n->pb.dc, fp, ap);
-    ncsv(&c->pb.st, &n->pb.st, fp, ap);
-    ncsv(&c->pb.hddd, &n->pb.hddd, fp, ap);
+    normalize_compile_symbol_vector(&c->pb.dc, &n->pb.dc, fp, ap);
+    normalize_compile_symbol_vector(&c->pb.st, &n->pb.st, fp, ap);
+    normalize_compile_symbol_vector(&c->pb.hddd, &n->pb.hddd, fp, ap);
     c->pb.el = n->pb.el;
     break;
   case N_OD:
   case N_GVL:
-    ncsv(&c->od.id, &n->od.id, fp, ap);
+    normalize_compile_symbol_vector(&c->od.id, &n->od.id, fp, ap);
     c->od.ty = ncs(n->od.ty, fp, ap);
     c->od.in = ncs(n->od.in, fp, ap);
     c->od.co = n->od.co;
@@ -7101,7 +7101,7 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
     c->td.nw = n->td.nw;
     c->td.drv = n->td.drv;
     c->td.prt = ncs(n->td.prt, fp, ap);
-    ncsv(&c->td.dsc, &n->td.dsc, fp, ap);
+    normalize_compile_symbol_vector(&c->td.dsc, &n->td.dsc, fp, ap);
     break;
   case N_SD:
     c->sd.nm = n->sd.nm;
@@ -7110,7 +7110,7 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
     c->sd.rn = ncs(n->sd.rn, fp, ap);
     break;
   case N_ED:
-    ncsv(&c->ed.id, &n->ed.id, fp, ap);
+    normalize_compile_symbol_vector(&c->ed.id, &n->ed.id, fp, ap);
     c->ed.rn = ncs(n->ed.rn, fp, ap);
     break;
   case N_RE:
@@ -7124,26 +7124,26 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
   case N_IF:
   case N_EL:
     c->if_.cd = ncs(n->if_.cd, fp, ap);
-    ncsv(&c->if_.th, &n->if_.th, fp, ap);
-    ncsv(&c->if_.ei, &n->if_.ei, fp, ap);
-    ncsv(&c->if_.el, &n->if_.el, fp, ap);
+    normalize_compile_symbol_vector(&c->if_.th, &n->if_.th, fp, ap);
+    normalize_compile_symbol_vector(&c->if_.ei, &n->if_.ei, fp, ap);
+    normalize_compile_symbol_vector(&c->if_.el, &n->if_.el, fp, ap);
     break;
   case N_CS:
     c->cs.ex = ncs(n->cs.ex, fp, ap);
-    ncsv(&c->cs.al, &n->cs.al, fp, ap);
+    normalize_compile_symbol_vector(&c->cs.al, &n->cs.al, fp, ap);
     break;
   case N_LP:
     c->lp.lb = n->lp.lb;
     c->lp.it = ncs(n->lp.it, fp, ap);
     c->lp.rv = n->lp.rv;
-    ncsv(&c->lp.st, &n->lp.st, fp, ap);
-    ncsv(&c->lp.lk, &n->lp.lk, fp, ap);
+    normalize_compile_symbol_vector(&c->lp.st, &n->lp.st, fp, ap);
+    normalize_compile_symbol_vector(&c->lp.lk, &n->lp.lk, fp, ap);
     break;
   case N_BL:
     c->bk.lb = n->bk.lb;
-    ncsv(&c->bk.dc, &n->bk.dc, fp, ap);
-    ncsv(&c->bk.st, &n->bk.st, fp, ap);
-    ncsv(&c->bk.hd, &n->bk.hd, fp, ap);
+    normalize_compile_symbol_vector(&c->bk.dc, &n->bk.dc, fp, ap);
+    normalize_compile_symbol_vector(&c->bk.st, &n->bk.st, fp, ap);
+    normalize_compile_symbol_vector(&c->bk.hd, &n->bk.hd, fp, ap);
     break;
   case N_EX:
     c->ex.lb = n->ex.lb;
@@ -7163,59 +7163,59 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
     break;
   case N_CLT:
     c->ct.nm = ncs(n->ct.nm, fp, ap);
-    ncsv(&c->ct.arr, &n->ct.arr, fp, ap);
+    normalize_compile_symbol_vector(&c->ct.arr, &n->ct.arr, fp, ap);
     break;
   case N_ACC:
     c->acc.nm = n->acc.nm;
-    ncsv(&c->acc.ixx, &n->acc.ixx, fp, ap);
-    ncsv(&c->acc.pmx, &n->acc.pmx, fp, ap);
-    ncsv(&c->acc.stx, &n->acc.stx, fp, ap);
-    ncsv(&c->acc.hdx, &n->acc.hdx, fp, ap);
+    normalize_compile_symbol_vector(&c->acc.ixx, &n->acc.ixx, fp, ap);
+    normalize_compile_symbol_vector(&c->acc.pmx, &n->acc.pmx, fp, ap);
+    normalize_compile_symbol_vector(&c->acc.stx, &n->acc.stx, fp, ap);
+    normalize_compile_symbol_vector(&c->acc.hdx, &n->acc.hdx, fp, ap);
     c->acc.gd = ncs(n->acc.gd, fp, ap);
     break;
   case N_SLS:
-    ncsv(&c->ss.al, &n->ss.al, fp, ap);
-    ncsv(&c->ss.el, &n->ss.el, fp, ap);
+    normalize_compile_symbol_vector(&c->ss.al, &n->ss.al, fp, ap);
+    normalize_compile_symbol_vector(&c->ss.el, &n->ss.el, fp, ap);
     break;
   case N_SA:
     c->sa.kn = n->sa.kn;
     c->sa.gd = ncs(n->sa.gd, fp, ap);
-    ncsv(&c->sa.sts, &n->sa.sts, fp, ap);
+    normalize_compile_symbol_vector(&c->sa.sts, &n->sa.sts, fp, ap);
     break;
   case N_TKS:
     c->ts.nm = n->ts.nm;
-    ncsv(&c->ts.en, &n->ts.en, fp, ap);
+    normalize_compile_symbol_vector(&c->ts.en, &n->ts.en, fp, ap);
     c->ts.it = n->ts.it;
     break;
   case N_TKB:
     c->tb.nm = n->tb.nm;
-    ncsv(&c->tb.dc, &n->tb.dc, fp, ap);
-    ncsv(&c->tb.st, &n->tb.st, fp, ap);
-    ncsv(&c->tb.hdz, &n->tb.hdz, fp, ap);
+    normalize_compile_symbol_vector(&c->tb.dc, &n->tb.dc, fp, ap);
+    normalize_compile_symbol_vector(&c->tb.st, &n->tb.st, fp, ap);
+    normalize_compile_symbol_vector(&c->tb.hdz, &n->tb.hdz, fp, ap);
     break;
   case N_ENT:
     c->ent.nm = n->ent.nm;
-    ncsv(&c->ent.ixy, &n->ent.ixy, fp, ap);
-    ncsv(&c->ent.pmy, &n->ent.pmy, fp, ap);
+    normalize_compile_symbol_vector(&c->ent.ixy, &n->ent.ixy, fp, ap);
+    normalize_compile_symbol_vector(&c->ent.pmy, &n->ent.pmy, fp, ap);
     c->ent.gd = ncs(n->ent.gd, fp, ap);
     break;
   case N_HD:
   case N_WH:
   case N_DL:
   case N_TRM:
-    ncsv(&c->hnd.ec, &n->hnd.ec, fp, ap);
-    ncsv(&c->hnd.stz, &n->hnd.stz, fp, ap);
+    normalize_compile_symbol_vector(&c->hnd.ec, &n->hnd.ec, fp, ap);
+    normalize_compile_symbol_vector(&c->hnd.stz, &n->hnd.stz, fp, ap);
     break;
   case N_CH:
-    ncsv(&c->ch.it, &n->ch.it, fp, ap);
+    normalize_compile_symbol_vector(&c->ch.it, &n->ch.it, fp, ap);
     break;
   case N_ASC:
-    ncsv(&c->asc.ch, &n->asc.ch, fp, ap);
+    normalize_compile_symbol_vector(&c->asc.ch, &n->asc.ch, fp, ap);
     c->asc.vl = ncs(n->asc.vl, fp, ap);
     break;
   case N_CX:
-    ncsv(&c->cx.wt, &n->cx.wt, fp, ap);
-    ncsv(&c->cx.us, &n->cx.us, fp, ap);
+    normalize_compile_symbol_vector(&c->cx.wt, &n->cx.wt, fp, ap);
+    normalize_compile_symbol_vector(&c->cx.us, &n->cx.us, fp, ap);
     break;
   case N_WI:
     c->wt.nm = n->wt.nm;
@@ -7225,11 +7225,11 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
     break;
   case N_PG:
     c->pg.nm = n->pg.nm;
-    ncsv(&c->pg.ar, &n->pg.ar, fp, ap);
+    normalize_compile_symbol_vector(&c->pg.ar, &n->pg.ar, fp, ap);
     break;
   case N_CU:
     c->cu.cx = ncs(n->cu.cx, fp, ap);
-    ncsv(&c->cu.un, &n->cu.un, fp, ap);
+    normalize_compile_symbol_vector(&c->cu.un, &n->cu.un, fp, ap);
     break;
   case N_DRF:
     c->drf.x = ncs(n->drf.x, fp, ap);
@@ -7244,26 +7244,26 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
     break;
   case N_DRV:
     c->drv.bs = ncs(n->drv.bs, fp, ap);
-    ncsv(&c->drv.ops, &n->drv.ops, fp, ap);
+    normalize_compile_symbol_vector(&c->drv.ops, &n->drv.ops, fp, ap);
     break;
   case N_GEN:
-    ncsv(&c->gen.fp, &n->gen.fp, fp, ap);
-    ncsv(&c->gen.dc, &n->gen.dc, fp, ap);
+    normalize_compile_symbol_vector(&c->gen.fp, &n->gen.fp, fp, ap);
+    normalize_compile_symbol_vector(&c->gen.dc, &n->gen.dc, fp, ap);
     c->gen.un = ncs(n->gen.un, fp, ap);
     break;
   case N_GINST:
     c->gi.nm = n->gi.nm.string ? string_duplicate(n->gi.nm) : n->gi.nm;
     c->gi.gn = n->gi.gn.string ? string_duplicate(n->gi.gn) : n->gi.gn;
-    ncsv(&c->gi.ap, &n->gi.ap, fp, ap);
+    normalize_compile_symbol_vector(&c->gi.ap, &n->gi.ap, fp, ap);
     break;
   case N_AG:
-    ncsv(&c->ag.it, &n->ag.it, fp, ap);
+    normalize_compile_symbol_vector(&c->ag.it, &n->ag.it, fp, ap);
     c->ag.lo = ncs(n->ag.lo, fp, ap);
     c->ag.hi = ncs(n->ag.hi, fp, ap);
     c->ag.dim = n->ag.dim;
     break;
   case N_TA:
-    ncsv(&c->ix.ix, &n->ix.ix, fp, ap);
+    normalize_compile_symbol_vector(&c->ix.ix, &n->ix.ix, fp, ap);
     c->ix.p = ncs(n->ix.p, fp, ap);
     break;
   case N_TI:
@@ -7275,7 +7275,7 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
   case N_TP:
   case N_ST:
   case N_LST:
-    ncsv(&c->lst.it, &n->lst.it, fp, ap);
+    normalize_compile_symbol_vector(&c->lst.it, &n->lst.it, fp, ap);
     break;
   default:
     break;
@@ -7391,7 +7391,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
   case N_RRC:
   {
     RC *r = *(RC **) &n->ag.it.data;
-    rrc_(SM, r);
+    runtime_register_compare(SM, r);
   }
   break;
   case N_GVL:
@@ -7510,7 +7510,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
               sv(&t->ev, _ne);
             }
         }
-        ihop(t, pt);
+        is_higher_order_parameter(t, pt);
       }
       if (n->td.df and n->td.df->k == N_RN)
       {
@@ -8108,7 +8108,7 @@ static char *rdf(const char *p)
   fclose(f);
   return b;
 }
-static void rali(Symbol_Manager *SM, const char *pth)
+static void read_ada_library_interface(Symbol_Manager *SM, const char *pth)
 {
   char a[512];
   snprintf(a, 512, "%s.ali", pth);
@@ -8241,7 +8241,7 @@ static const char *lkp(Symbol_Manager *SM, String_Slice nm)
         nm.string);
     for (char *p = pf + strlen(include_paths[i]); *p; p++)
       *p = tolower(*p);
-    rali(SM, pf);
+    read_ada_library_interface(SM, pf);
     snprintf(af, 512, "%s.ads", pf);
     const char *s = rdf(af);
     if (s)
@@ -12433,7 +12433,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
   }
   }
 }
-static bool isrt(const char *n)
+static bool is_runtime_type(const char *n)
 {
   return not strcmp(n, "__text_io_new_line") or not strcmp(n, "__text_io_put_char")
          or not strcmp(n, "__text_io_put") or not strcmp(n, "__text_io_put_line")
@@ -12704,7 +12704,7 @@ static void generate_declaration(Code_Generator *g, Syntax_Node *n)
     }
     if (not add_declaration(g, nb))
       break;
-    if (isrt(nb))
+    if (is_runtime_type(nb))
       break;
     bool has_body = false;
     if (n->sy)
@@ -12752,7 +12752,7 @@ static void generate_declaration(Code_Generator *g, Syntax_Node *n)
     }
     if (not add_declaration(g, nb))
       break;
-    if (isrt(nb))
+    if (is_runtime_type(nb))
       break;
     bool has_body = false;
     if (n->sy)
@@ -13863,7 +13863,7 @@ static uint64_t find_type_symbol(const char *p)
     return 0;
   return s.st_mtime;
 }
-static void wali(Symbol_Manager *SM, const char *fn, Syntax_Node *cu)
+static void write_ada_library_interface(Symbol_Manager *SM, const char *fn, Syntax_Node *cu)
 {
   if (not cu or cu->cu.un.count == 0)
     return;
@@ -13997,7 +13997,7 @@ static void wali(Symbol_Manager *SM, const char *fn, Syntax_Node *cu)
     fprintf(f, "E %d\n", SM->eo);
   fclose(f);
 }
-static bool lcmp(Symbol_Manager *SM, String_Slice nm, String_Slice pth)
+static bool label_compare(Symbol_Manager *SM, String_Slice nm, String_Slice pth)
 {
   LU *ex = lfnd(SM, nm);
   if (ex and ex->cmpl)
@@ -14197,7 +14197,7 @@ int main(int ac, char **av)
       {
         char pb[520];
         snprintf(pb, 520, "%s%s", sd, ln);
-        if (lcmp(&sm, w->wt.nm, (String_Slice){pb, strlen(pb)}))
+        if (label_compare(&sm, w->wt.nm, (String_Slice){pb, strlen(pb)}))
           ld = 1;
       }
       for (int j = 0; j < include_path_count and not ld; j++)
@@ -14211,7 +14211,7 @@ int main(int ac, char **av)
             include_paths[j][0] and include_paths[j][strlen(include_paths[j]) - 1] != '/' ? "/"
                                                                                           : "",
             ln);
-        if (lcmp(&sm, w->wt.nm, (String_Slice){pb, strlen(pb)}))
+        if (label_compare(&sm, w->wt.nm, (String_Slice){pb, strlen(pb)}))
           ld = 1;
       }
     }
@@ -14222,7 +14222,7 @@ int main(int ac, char **av)
     char *dot = strrchr(pth, '.');
     if (dot)
       *dot = 0;
-    rali(&sm, pth);
+    read_ada_library_interface(&sm, pth);
   }
   char of[520];
   strncpy(of, inf, 512);
@@ -14372,6 +14372,6 @@ int main(int ac, char **av)
   if (o != stdout)
     fclose(o);
   of[strlen(of) - 3] = 0;
-  wali(&sm, of, cu);
+  write_ada_library_interface(&sm, of, cu);
   return 0;
 }
