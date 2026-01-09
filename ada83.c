@@ -1251,57 +1251,57 @@ struct Syntax_Node
     } unary_node;
     struct
     {
-      Syntax_Node *p;
-      String_Slice at;
-      Node_Vector ar;
+      Syntax_Node *prefix;
+      String_Slice attribute_name;
+      Node_Vector arguments;
     } attribute;
     struct
     {
-      Syntax_Node *nm, *ag;
+      Syntax_Node *name, *aggregate;
     } qualified;
     struct
     {
-      Syntax_Node *fn;
-      Node_Vector ar;
+      Syntax_Node *function_name;
+      Node_Vector arguments;
     } call;
     struct
     {
-      Syntax_Node *p;
+      Syntax_Node *prefix;
       Node_Vector indices;
     } index;
     struct
     {
-      Syntax_Node *p;
-      Syntax_Node *lo, *hi;
+      Syntax_Node *prefix;
+      Syntax_Node *low, *high;
     } slice;
     struct
     {
-      Syntax_Node *p;
+      Syntax_Node *prefix;
       String_Slice selector;
     } selected_component;
     struct
     {
-      Syntax_Node *st;
-      Syntax_Node *in;
+      Syntax_Node *subtype;
+      Syntax_Node *initializer;
     } allocator;
     struct
     {
-      Syntax_Node *lo, *hi;
+      Syntax_Node *low, *high;
     } range;
     struct
     {
-      Syntax_Node *rn;
-      Node_Vector cs;
+      Syntax_Node *range_spec;
+      Node_Vector constraints;
     } constraint;
     struct
     {
       String_Slice nm;
       Syntax_Node *ty;
       Syntax_Node *in;
-      bool al;
-      uint32_t of, bt;
-      Syntax_Node *dc;
-      Syntax_Node *dsc;
+      bool is_aliased;
+      uint32_t offset, bit_offset;
+      Syntax_Node *discriminant_constraint;
+      Syntax_Node *discriminant_spec;
     } component_decl;
     struct
     {
@@ -1854,7 +1854,7 @@ static Syntax_Node *parse_primary(Parser *parser)
         Syntax_Node *value = parse_expression(parser);
         Syntax_Node *slice_iterator = ND(ST, location);
         Syntax_Node *constraint = ND(CN, location);
-        constraint->constraint.rn = range;
+        constraint->constraint.range_spec = range;
         slice_iterator->subtype_decl.in = choices.data[0];
         slice_iterator->subtype_decl.cn = constraint;
         Syntax_Node *association = ND(ASC, location);
@@ -1880,11 +1880,11 @@ static Syntax_Node *parse_primary(Parser *parser)
   if (parser_match(parser, T_NEW))
   {
     Syntax_Node *node = ND(ALC, location);
-    node->allocator.st = parse_name(parser);
+    node->allocator.subtype = parse_name(parser);
     if (parser_match(parser, T_TK))
     {
       parser_expect(parser, T_LP);
-      node->allocator.in = parse_expression(parser);
+      node->allocator.initializer = parse_expression(parser);
       parser_expect(parser, T_RP);
     }
     return node;
@@ -1969,8 +1969,8 @@ static Syntax_Node *parse_primary(Parser *parser)
         } while (parser_match(parser, T_CM));
         parser_expect(parser, T_RP);
         Syntax_Node *m = ND(CL, location);
-        m->call.fn = node;
-        m->call.ar = aggregate_vector;
+        m->call.function_name = node;
+        m->call.arguments = aggregate_vector;
         node = m;
       }
       else
@@ -2020,7 +2020,7 @@ static Syntax_Node *parse_name(Parser *parser)
       else
       {
         Syntax_Node *modified_node = ND(SEL, location);
-        modified_node->selected_component.p = node;
+        modified_node->selected_component.prefix = node;
         if (parser_at(parser, T_STR))
         {
           modified_node->selected_component.selector = string_duplicate(parser->current_token.literal);
@@ -2045,7 +2045,7 @@ static Syntax_Node *parse_name(Parser *parser)
       {
         parser_next(parser);
         Syntax_Node *modified_node = ND(QL, location);
-        modified_node->qualified.nm = node;
+        modified_node->qualified.name = node;
         Node_Vector v = {0};
         do
         {
@@ -2076,12 +2076,12 @@ static Syntax_Node *parse_name(Parser *parser)
         } while (parser_match(parser, T_CM));
         parser_expect(parser, T_RP);
         if (v.count == 1 and v.data[0]->k != N_ASC)
-          modified_node->qualified.ag = v.data[0];
+          modified_node->qualified.aggregate = v.data[0];
         else
         {
           Syntax_Node *ag = ND(AG, location);
           ag->aggregate.items = v;
-          modified_node->qualified.ag = ag;
+          modified_node->qualified.aggregate = ag;
         }
         node = modified_node;
       }
@@ -2089,12 +2089,12 @@ static Syntax_Node *parse_name(Parser *parser)
       {
         String_Slice at = parser_attribute(parser);
         Syntax_Node *modified_node = ND(AT, location);
-        modified_node->attribute.p = node;
-        modified_node->attribute.at = at;
+        modified_node->attribute.prefix = node;
+        modified_node->attribute.attribute_name = at;
         if (parser_match(parser, T_LP))
         {
           do
-            nv(&modified_node->attribute.ar, parse_expression(parser));
+            nv(&modified_node->attribute.arguments, parse_expression(parser));
           while (parser_match(parser, T_CM));
           parser_expect(parser, T_RP);
         }
@@ -2108,7 +2108,7 @@ static Syntax_Node *parse_name(Parser *parser)
       {
         parser_expect(parser, T_RP);
         Syntax_Node *modified_node = ND(CL, location);
-        modified_node->call.fn = node;
+        modified_node->call.function_name = node;
         node = modified_node;
       }
       else
@@ -2154,8 +2154,8 @@ static Syntax_Node *parse_name(Parser *parser)
         } while (parser_match(parser, T_CM));
         parser_expect(parser, T_RP);
         Syntax_Node *modified_node = ND(CL, location);
-        modified_node->call.fn = node;
-        modified_node->call.ar = v;
+        modified_node->call.function_name = node;
+        modified_node->call.arguments = v;
         node = modified_node;
       }
     }
@@ -2230,8 +2230,8 @@ static Syntax_Node *parse_relational(Parser *parser)
   {
     Source_Location location = parser_location(parser);
     Syntax_Node *binary_node = ND(RN, location);
-    binary_node->range.lo = node;
-    binary_node->range.hi = parse_signed_term(parser);
+    binary_node->range.low = node;
+    binary_node->range.high = parse_signed_term(parser);
     return binary_node;
   }
   if (parser_at(parser, T_EQ) or parser_at(parser, T_NE) or parser_at(parser, T_LT) or parser_at(parser, T_LE)
@@ -2295,16 +2295,16 @@ static Syntax_Node *parse_range(Parser *parser)
   if (parser_match(parser, T_BX))
   {
     Syntax_Node *node = ND(RN, location);
-    node->range.lo = 0;
-    node->range.hi = 0;
+    node->range.low = 0;
+    node->range.high = 0;
     return node;
   }
   Syntax_Node *low_bound = parse_signed_term(parser);
   if (parser_match(parser, T_DD))
   {
     Syntax_Node *range_node = ND(RN, location);
-    range_node->range.lo = low_bound;
-    range_node->range.hi = parse_signed_term(parser);
+    range_node->range.low = low_bound;
+    range_node->range.high = parse_signed_term(parser);
     return range_node;
   }
   return low_bound;
@@ -2327,7 +2327,7 @@ static Syntax_Node *parse_simple_expression(Parser *parser)
       else
       {
         Syntax_Node *modified_node = ND(SEL, location);
-        modified_node->selected_component.p = node;
+        modified_node->selected_component.prefix = node;
         modified_node->selected_component.selector = parser_identifier(parser);
         node = modified_node;
       }
@@ -2336,12 +2336,12 @@ static Syntax_Node *parse_simple_expression(Parser *parser)
     {
       String_Slice attribute = parser_attribute(parser);
       Syntax_Node *modified_node = ND(AT, location);
-      modified_node->attribute.p = node;
-      modified_node->attribute.at = attribute;
+      modified_node->attribute.prefix = node;
+      modified_node->attribute.attribute_name = attribute;
       if (parser_match(parser, T_LP))
       {
         do
-          nv(&modified_node->attribute.ar, parse_expression(parser));
+          nv(&modified_node->attribute.arguments, parse_expression(parser));
         while (parser_match(parser, T_CM));
         parser_expect(parser, T_RP);
       }
@@ -2362,7 +2362,7 @@ static Syntax_Node *parse_simple_expression(Parser *parser)
   {
     Source_Location location = parser_location(parser);
     Syntax_Node *c = ND(CN, location);
-    c->constraint.rn = parse_range(parser);
+    c->constraint.range_spec = parse_range(parser);
     Syntax_Node *modified_node = ND(ST, location);
     modified_node->subtype_decl.in = node;
     modified_node->subtype_decl.cn = c;
@@ -2388,10 +2388,10 @@ static Syntax_Node *parse_simple_expression(Parser *parser)
         Syntax_Node *rng = parse_range(parser);
         Syntax_Node *si = ND(ST, lc2);
         Syntax_Node *cn = ND(CN, lc2);
-        cn->constraint.rn = rng;
+        cn->constraint.range_spec = rng;
         si->subtype_decl.in = tn;
         si->subtype_decl.cn = cn;
-        nv(&c->constraint.cs, si);
+        nv(&c->constraint.constraints, si);
       }
       else if (ch.count > 0 and ch.data[0]->k == N_ID and parser_match(parser, T_AR))
       {
@@ -2401,13 +2401,13 @@ static Syntax_Node *parse_simple_expression(Parser *parser)
           Syntax_Node *a = ND(ASC, lc2);
           nv(&a->association.choices, ch.data[i]);
           a->association.value = vl;
-          nv(&c->constraint.cs, a);
+          nv(&c->constraint.constraints, a);
         }
       }
       else
       {
         if (ch.count > 0)
-          nv(&c->constraint.cs, ch.data[0]);
+          nv(&c->constraint.constraints, ch.data[0]);
       }
     } while (parser_match(parser, T_CM));
     parser_expect(parser, T_RP);
@@ -2722,8 +2722,8 @@ static Syntax_Node *parse_case(Parser *parser)
       else if (parser_match(parser, T_DD))
       {
         Syntax_Node *r = ND(RN, location);
-        r->range.lo = elsif_node;
-        r->range.hi = parse_expression(parser);
+        r->range.low = elsif_node;
+        r->range.high = parse_expression(parser);
         nv(&a->choices.it, r);
       }
       else
@@ -2755,9 +2755,9 @@ static Syntax_Node *parse_loop(Parser *parser, String_Slice label)
     if (parser_match(parser, T_RNG))
     {
       Syntax_Node *r = ND(RN, location);
-      r->range.lo = parse_signed_term(parser);
+      r->range.low = parse_signed_term(parser);
       parser_expect(parser, T_DD);
-      r->range.hi = parse_signed_term(parser);
+      r->range.high = parse_signed_term(parser);
       rng = r;
     }
     Syntax_Node *it = ND(BIN, location);
@@ -3149,10 +3149,10 @@ static Syntax_Node *parse_statement_or_label(Parser *parser)
     Syntax_Node *node = ND(AS, location);
     if (expression and expression->k == N_CL)
     {
-      Syntax_Node *function_name = expression->call.fn;
-      Node_Vector arguments = expression->call.ar;
+      Syntax_Node *function_name = expression->call.function_name;
+      Node_Vector arguments = expression->call.arguments;
       expression->k = N_IX;
-      expression->index.p = function_name;
+      expression->index.prefix = function_name;
       expression->index.indices = arguments;
     }
     node->assignment.target = expression;
@@ -3163,13 +3163,13 @@ static Syntax_Node *parse_statement_or_label(Parser *parser)
   Syntax_Node *node = ND(CLT, location);
   if (expression->k == N_IX)
   {
-    node->code_stmt.nm = expression->index.p;
+    node->code_stmt.nm = expression->index.prefix;
     node->code_stmt.arr = expression->index.indices;
   }
   else if (expression->k == N_CL)
   {
-    node->code_stmt.nm = expression->call.fn;
-    node->code_stmt.arr = expression->call.ar;
+    node->code_stmt.nm = expression->call.function_name;
+    node->code_stmt.arr = expression->call.arguments;
   }
   else
     node->code_stmt.nm = expression;
@@ -3240,14 +3240,14 @@ static Syntax_Node *parse_type_definition(Parser *parser)
     Syntax_Node *node = ND(TI, location);
     if (parser_match(parser, T_BX))
     {
-      node->range.lo = 0;
-      node->range.hi = 0;
+      node->range.low = 0;
+      node->range.high = 0;
     }
     else
     {
-      node->range.lo = parse_signed_term(parser);
+      node->range.low = parse_signed_term(parser);
       parser_expect(parser, T_DD);
-      node->range.hi = parse_signed_term(parser);
+      node->range.high = parse_signed_term(parser);
     }
     return node;
   }
@@ -3267,9 +3267,9 @@ static Syntax_Node *parse_type_definition(Parser *parser)
       node->unary_node.x = parse_expression(parser);
     if (parser_match(parser, T_RNG))
     {
-      node->range.lo = parse_signed_term(parser);
+      node->range.low = parse_signed_term(parser);
       parser_expect(parser, T_DD);
-      node->range.hi = parse_signed_term(parser);
+      node->range.high = parse_signed_term(parser);
     }
     return node;
   }
@@ -3278,15 +3278,15 @@ static Syntax_Node *parse_type_definition(Parser *parser)
     Syntax_Node *node = ND(TX, location);
     if (parser_match(parser, T_BX))
     {
-      node->range.lo = 0;
-      node->range.hi = 0;
+      node->range.low = 0;
+      node->range.high = 0;
       node->binary_node.r = 0;
     }
     else
     {
-      node->range.lo = parse_expression(parser);
+      node->range.low = parse_expression(parser);
       parser_expect(parser, T_RNG);
-      node->range.hi = parse_signed_term(parser);
+      node->range.high = parse_signed_term(parser);
       parser_expect(parser, T_DD);
       node->binary_node.r = parse_signed_term(parser);
     }
@@ -3304,7 +3304,7 @@ static Syntax_Node *parse_type_definition(Parser *parser)
         Syntax_Node *st = ND(ST, location);
         st->subtype_decl.in = ix;
         Syntax_Node *cn = ND(CN, location);
-        cn->constraint.rn = parse_range(parser);
+        cn->constraint.range_spec = parse_range(parser);
         st->subtype_decl.cn = cn;
         nv(&node->index.indices, st);
       }
@@ -3313,7 +3313,7 @@ static Syntax_Node *parse_type_definition(Parser *parser)
     } while (parser_match(parser, T_CM));
     parser_expect(parser, T_RP);
     parser_expect(parser, T_OF);
-    node->index.p = parse_simple_expression(parser);
+    node->index.prefix = parse_simple_expression(parser);
     return node;
   }
   if (parser_match(parser, T_REC))
@@ -3367,13 +3367,13 @@ static Syntax_Node *parse_type_definition(Parser *parser)
         c->component_decl.nm = id.data[i]->s;
         c->component_decl.ty = ty;
         c->component_decl.in = in;
-        c->component_decl.of = of++;
-        c->component_decl.dc = 0;
-        c->component_decl.dsc = 0;
+        c->component_decl.offset = of++;
+        c->component_decl.discriminant_constraint = 0;
+        c->component_decl.discriminant_spec = 0;
         if (dc.count > 0)
         {
-          c->component_decl.dc = ND(LST, location);
-          c->component_decl.dc->list.items = dc;
+          c->component_decl.discriminant_constraint = ND(LST, location);
+          c->component_decl.discriminant_constraint->list.items = dc;
         }
         nv(&node->list.items, c);
       }
@@ -3396,8 +3396,8 @@ static Syntax_Node *parse_type_definition(Parser *parser)
           if (parser_match(parser, T_DD))
           {
             Syntax_Node *r = ND(RN, location);
-            r->range.lo = e;
-            r->range.hi = parse_expression(parser);
+            r->range.low = e;
+            r->range.high = parse_expression(parser);
             e = r;
           }
           nv(&v->variant.choices, e);
@@ -3425,13 +3425,13 @@ static Syntax_Node *parse_type_definition(Parser *parser)
             c->component_decl.nm = id.data[i]->s;
             c->component_decl.ty = ty;
             c->component_decl.in = in;
-            c->component_decl.of = of++;
-            c->component_decl.dc = 0;
-            c->component_decl.dsc = 0;
+            c->component_decl.offset = of++;
+            c->component_decl.discriminant_constraint = 0;
+            c->component_decl.discriminant_spec = 0;
             if (dc.count > 0)
             {
-              c->component_decl.dc = ND(LST, location);
-              c->component_decl.dc->list.items = dc;
+              c->component_decl.discriminant_constraint = ND(LST, location);
+              c->component_decl.discriminant_constraint->list.items = dc;
             }
             nv(&v->variant.components, c);
           }
@@ -3725,9 +3725,9 @@ static Syntax_Node *parse_declaration(Parser *parser)
         else if (parser_match(parser, T_RNG))
         {
           Syntax_Node *rn = ND(RN, location);
-          rn->range.lo = parse_signed_term(parser);
+          rn->range.low = parse_signed_term(parser);
           parser_expect(parser, T_DD);
-          rn->range.hi = parse_signed_term(parser);
+          rn->range.high = parse_signed_term(parser);
           node->type_decl.df = rn;
         }
       }
@@ -3745,7 +3745,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
     node->subtype_decl.nm = nm;
     node->subtype_decl.in = parse_simple_expression(parser);
     if (node->subtype_decl.in->k == N_ST)
-      node->subtype_decl.rn = node->subtype_decl.in->subtype_decl.cn->constraint.rn;
+      node->subtype_decl.rn = node->subtype_decl.in->subtype_decl.cn->constraint.range_spec;
     parser_expect(parser, T_SC);
     return node;
   }
@@ -4046,7 +4046,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
                   Syntax_Node *rng = parse_range(parser);
                   Syntax_Node *si = ND(ST, location);
                   Syntax_Node *cn = ND(CN, location);
-                  cn->constraint.rn = rng;
+                  cn->constraint.range_spec = rng;
                   si->subtype_decl.in = ix;
                   si->subtype_decl.cn = cn;
                   nv(&e->entry_decl.ixy, si);
@@ -4068,7 +4068,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
                 Syntax_Node *rng = parse_range(parser);
                 Syntax_Node *si = ND(ST, location);
                 Syntax_Node *cn = ND(CN, location);
-                cn->constraint.rn = rng;
+                cn->constraint.range_spec = rng;
                 si->subtype_decl.in = ix;
                 si->subtype_decl.cn = cn;
                 nv(&e->entry_decl.ixy, si);
@@ -4276,7 +4276,7 @@ static Syntax_Node *parse_compilation_unit(Parser *parser)
       parser_expect(parser, T_LP);
       Syntax_Node *pnm_ = parse_name(parser);
       parser_expect(parser, T_RP);
-      String_Slice ppkg = pnm_->k == N_ID ? pnm_->s : pnm_->k == N_SEL ? pnm_->selected_component.p->s : N;
+      String_Slice ppkg = pnm_->k == N_ID ? pnm_->s : pnm_->k == N_SEL ? pnm_->selected_component.prefix->s : N;
       SEPARATE_PACKAGE = ppkg.string ? string_duplicate(ppkg) : N;
       if (ppkg.string)
       {
@@ -4756,12 +4756,12 @@ static Syntax_Node *generate_equality_operator(Type_Info *t, Source_Location l)
       Syntax_Node *cmp = ND(BIN, l);
       cmp->binary_node.op = T_EQ;
       Syntax_Node *lf = ND(SEL, l);
-      lf->selected_component.p = ND(ID, l);
-      lf->selected_component.p->s = STRING_LITERAL("Source_Location");
+      lf->selected_component.prefix = ND(ID, l);
+      lf->selected_component.prefix->s = STRING_LITERAL("Source_Location");
       lf->selected_component.selector = c->component_decl.nm;
       Syntax_Node *rf = ND(SEL, l);
-      rf->selected_component.p = ND(ID, l);
-      rf->selected_component.p->s = STRING_LITERAL("Rational_Number");
+      rf->selected_component.prefix = ND(ID, l);
+      rf->selected_component.prefix->s = STRING_LITERAL("Rational_Number");
       rf->selected_component.selector = c->component_decl.nm;
       cmp->binary_node.l = lf;
       cmp->binary_node.r = rf;
@@ -4785,19 +4785,19 @@ static Syntax_Node *generate_equality_operator(Type_Info *t, Source_Location l)
     lp->loop_stmt.iterator->binary_node.l = ND(ID, l);
     lp->loop_stmt.iterator->binary_node.l->s = STRING_LITERAL("I");
     lp->loop_stmt.iterator->binary_node.r = ND(AT, l);
-    lp->loop_stmt.iterator->binary_node.r->attribute.p = ND(ID, l);
-    lp->loop_stmt.iterator->binary_node.r->attribute.p->s = STRING_LITERAL("Source_Location");
-    lp->loop_stmt.iterator->binary_node.r->attribute.at = STRING_LITERAL("RANGE");
+    lp->loop_stmt.iterator->binary_node.r->attribute.prefix = ND(ID, l);
+    lp->loop_stmt.iterator->binary_node.r->attribute.prefix->s = STRING_LITERAL("Source_Location");
+    lp->loop_stmt.iterator->binary_node.r->attribute.attribute_name = STRING_LITERAL("RANGE");
     Syntax_Node *cmp = ND(BIN, l);
     cmp->binary_node.op = T_NE;
     Syntax_Node *li = ND(IX, l);
-    li->index.p = ND(ID, l);
-    li->index.p->s = STRING_LITERAL("Source_Location");
+    li->index.prefix = ND(ID, l);
+    li->index.prefix->s = STRING_LITERAL("Source_Location");
     nv(&li->index.indices, ND(ID, l));
     li->index.indices.data[0]->s = STRING_LITERAL("I");
     Syntax_Node *ri = ND(IX, l);
-    ri->index.p = ND(ID, l);
-    ri->index.p->s = STRING_LITERAL("Rational_Number");
+    ri->index.prefix = ND(ID, l);
+    ri->index.prefix->s = STRING_LITERAL("Rational_Number");
     nv(&ri->index.indices, ND(ID, l));
     ri->index.indices.data[0]->s = STRING_LITERAL("I");
     cmp->binary_node.l = li;
@@ -4845,12 +4845,12 @@ static Syntax_Node *generate_assignment_operator(Type_Info *t, Source_Location l
         continue;
       Syntax_Node *as = ND(AS, l);
       Syntax_Node *lt = ND(SEL, l);
-      lt->selected_component.p = ND(ID, l);
-      lt->selected_component.p->s = STRING_LITERAL("T");
+      lt->selected_component.prefix = ND(ID, l);
+      lt->selected_component.prefix->s = STRING_LITERAL("T");
       lt->selected_component.selector = c->component_decl.nm;
       Syntax_Node *rs = ND(SEL, l);
-      rs->selected_component.p = ND(ID, l);
-      rs->selected_component.p->s = STRING_LITERAL("String_Slice");
+      rs->selected_component.prefix = ND(ID, l);
+      rs->selected_component.prefix->s = STRING_LITERAL("String_Slice");
       rs->selected_component.selector = c->component_decl.nm;
       as->assignment.target = lt;
       as->assignment.value = rs;
@@ -4865,18 +4865,18 @@ static Syntax_Node *generate_assignment_operator(Type_Info *t, Source_Location l
     lp->loop_stmt.iterator->binary_node.l = ND(ID, l);
     lp->loop_stmt.iterator->binary_node.l->s = STRING_LITERAL("I");
     lp->loop_stmt.iterator->binary_node.r = ND(AT, l);
-    lp->loop_stmt.iterator->binary_node.r->attribute.p = ND(ID, l);
-    lp->loop_stmt.iterator->binary_node.r->attribute.p->s = STRING_LITERAL("T");
-    lp->loop_stmt.iterator->binary_node.r->attribute.at = STRING_LITERAL("RANGE");
+    lp->loop_stmt.iterator->binary_node.r->attribute.prefix = ND(ID, l);
+    lp->loop_stmt.iterator->binary_node.r->attribute.prefix->s = STRING_LITERAL("T");
+    lp->loop_stmt.iterator->binary_node.r->attribute.attribute_name = STRING_LITERAL("RANGE");
     Syntax_Node *as = ND(AS, l);
     Syntax_Node *ti = ND(IX, l);
-    ti->index.p = ND(ID, l);
-    ti->index.p->s = STRING_LITERAL("T");
+    ti->index.prefix = ND(ID, l);
+    ti->index.prefix->s = STRING_LITERAL("T");
     nv(&ti->index.indices, ND(ID, l));
     ti->index.indices.data[0]->s = STRING_LITERAL("I");
     Syntax_Node *si = ND(IX, l);
-    si->index.p = ND(ID, l);
-    si->index.p->s = STRING_LITERAL("String_Slice");
+    si->index.prefix = ND(ID, l);
+    si->index.prefix->s = STRING_LITERAL("String_Slice");
     nv(&si->index.indices, ND(ID, l));
     si->index.indices.data[0]->s = STRING_LITERAL("I");
     as->assignment.target = ti;
@@ -4945,7 +4945,7 @@ static void find_type(Symbol_Manager *symbol_manager, Type_Info *t, Source_Locat
       if (ca > mx)
         mx = ca;
       of = (of + ca - 1) & ~(ca - 1);
-      c->component_decl.of = of;
+      c->component_decl.offset = of;
       of += cs;
     }
     t->sz = (of + mx - 1) & ~(mx - 1);
@@ -5212,7 +5212,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
   }
   if (node->k == N_SEL)
   {
-    Syntax_Node *parser = node->selected_component.p;
+    Syntax_Node *parser = node->selected_component.prefix;
     if (parser->k == N_ID)
     {
       Symbol *ps = symbol_find(symbol_manager, parser->s);
@@ -5256,13 +5256,13 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
       t->ad = bt->ad;
       t->pk = bt->pk;
       t->ix = bt->ix;
-      if (cn->k == 27 and cn->constraint.cs.count > 0 and cn->constraint.cs.data[0] and cn->constraint.cs.data[0]->k == 26)
+      if (cn->k == 27 and cn->constraint.constraints.count > 0 and cn->constraint.constraints.data[0] and cn->constraint.constraints.data[0]->k == 26)
       {
-        Syntax_Node *rn = cn->constraint.cs.data[0];
-        resolve_expression(symbol_manager, rn->range.lo, 0);
-        resolve_expression(symbol_manager, rn->range.hi, 0);
-        Syntax_Node *lo = rn->range.lo;
-        Syntax_Node *hi = rn->range.hi;
+        Syntax_Node *rn = cn->constraint.constraints.data[0];
+        resolve_expression(symbol_manager, rn->range.low, 0);
+        resolve_expression(symbol_manager, rn->range.high, 0);
+        Syntax_Node *lo = rn->range.low;
+        Syntax_Node *hi = rn->range.high;
         int64_t lov = lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.x->k == N_INT ? -lo->unary_node.x->i
                       : lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.x->k == N_REAL
                           ? ((union {
@@ -5295,12 +5295,12 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
         t->hi = hiv;
         return t;
       }
-      else if (cn->k == 27 and cn->constraint.rn)
+      else if (cn->k == 27 and cn->constraint.range_spec)
       {
-        resolve_expression(symbol_manager, cn->constraint.rn->range.lo, 0);
-        resolve_expression(symbol_manager, cn->constraint.rn->range.hi, 0);
-        Syntax_Node *lo = cn->constraint.rn->range.lo;
-        Syntax_Node *hi = cn->constraint.rn->range.hi;
+        resolve_expression(symbol_manager, cn->constraint.range_spec->range.low, 0);
+        resolve_expression(symbol_manager, cn->constraint.range_spec->range.high, 0);
+        Syntax_Node *lo = cn->constraint.range_spec->range.low;
+        Syntax_Node *hi = cn->constraint.range_spec->range.high;
         int64_t lov = lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.x->k == N_INT ? -lo->unary_node.x->i
                       : lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.x->k == N_REAL
                           ? ((union {
@@ -5335,10 +5335,10 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
       }
       else if (cn->k == N_RN)
       {
-        resolve_expression(symbol_manager, cn->range.lo, 0);
-        resolve_expression(symbol_manager, cn->range.hi, 0);
-        Syntax_Node *lo = cn->range.lo;
-        Syntax_Node *hi = cn->range.hi;
+        resolve_expression(symbol_manager, cn->range.low, 0);
+        resolve_expression(symbol_manager, cn->range.high, 0);
+        Syntax_Node *lo = cn->range.low;
+        Syntax_Node *hi = cn->range.high;
         int64_t lov = lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.x->k == N_INT ? -lo->unary_node.x->i
                       : lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.x->k == N_REAL
                           ? ((union {
@@ -5376,32 +5376,32 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
   }
   if (node->k == N_TI)
   {
-    resolve_expression(symbol_manager, node->range.lo, 0);
-    resolve_expression(symbol_manager, node->range.hi, 0);
+    resolve_expression(symbol_manager, node->range.low, 0);
+    resolve_expression(symbol_manager, node->range.high, 0);
     Type_Info *t = type_new(TYPE_INTEGER, N);
-    if (node->range.lo and node->range.lo->k == N_INT)
-      t->lo = node->range.lo->i;
+    if (node->range.low and node->range.low->k == N_INT)
+      t->lo = node->range.low->i;
     else if (
-        node->range.lo and node->range.lo->k == N_UN and node->range.lo->unary_node.op == T_MN and node->range.lo->unary_node.x->k == N_INT)
-      t->lo = -node->range.lo->unary_node.x->i;
-    if (node->range.hi and node->range.hi->k == N_INT)
-      t->hi = node->range.hi->i;
+        node->range.low and node->range.low->k == N_UN and node->range.low->unary_node.op == T_MN and node->range.low->unary_node.x->k == N_INT)
+      t->lo = -node->range.low->unary_node.x->i;
+    if (node->range.high and node->range.high->k == N_INT)
+      t->hi = node->range.high->i;
     else if (
-        node->range.hi and node->range.hi->k == N_UN and node->range.hi->unary_node.op == T_MN and node->range.hi->unary_node.x->k == N_INT)
-      t->hi = -node->range.hi->unary_node.x->i;
+        node->range.high and node->range.high->k == N_UN and node->range.high->unary_node.op == T_MN and node->range.high->unary_node.x->k == N_INT)
+      t->hi = -node->range.high->unary_node.x->i;
     return t;
   }
   if (node->k == N_TX)
   {
     Type_Info *t = type_new(TYPE_FIXED_POINT, N);
     double d = 1.0;
-    if (node->range.lo and node->range.lo->k == N_REAL)
-      d = node->range.lo->f;
-    else if (node->range.lo and node->range.lo->k == N_INT)
-      d = node->range.lo->i;
+    if (node->range.low and node->range.low->k == N_REAL)
+      d = node->range.low->f;
+    else if (node->range.low and node->range.low->k == N_INT)
+      d = node->range.low->i;
     t->sm = (int64_t) (1.0 / d);
-    if (node->range.hi and node->range.hi->k == N_INT)
-      t->lo = node->range.hi->i;
+    if (node->range.high and node->range.high->k == N_INT)
+      t->lo = node->range.high->i;
     if (node->binary_node.r and node->binary_node.r->k == N_INT)
       t->hi = node->binary_node.r->i;
     return t;
@@ -5422,16 +5422,16 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
   if (node->k == N_TA)
   {
     Type_Info *t = type_new(TYPE_ARRAY, N);
-    t->el = resolve_subtype(symbol_manager, node->index.p);
+    t->el = resolve_subtype(symbol_manager, node->index.prefix);
     if (node->index.indices.count == 1)
     {
       Syntax_Node *r = node->index.indices.data[0];
       if (r and r->k == N_RN)
       {
-        resolve_expression(symbol_manager, r->range.lo, 0);
-        resolve_expression(symbol_manager, r->range.hi, 0);
-        Syntax_Node *lo = r->range.lo;
-        Syntax_Node *hi = r->range.hi;
+        resolve_expression(symbol_manager, r->range.low, 0);
+        resolve_expression(symbol_manager, r->range.high, 0);
+        Syntax_Node *lo = r->range.low;
+        Syntax_Node *hi = r->range.high;
         if (lo and lo->k == N_INT)
           t->lo = lo->i;
         else if (lo and lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.x->k == N_INT)
@@ -5456,30 +5456,30 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
   }
   if (node->k == N_IX)
   {
-    Type_Info *bt = resolve_subtype(symbol_manager, node->index.p);
+    Type_Info *bt = resolve_subtype(symbol_manager, node->index.prefix);
     if (bt and bt->k == TYPE_ARRAY and bt->lo == 0 and bt->hi == -1 and node->index.indices.count == 1)
     {
       Syntax_Node *r = node->index.indices.data[0];
       if (r and r->k == N_RN)
       {
-        resolve_expression(symbol_manager, r->range.lo, 0);
-        resolve_expression(symbol_manager, r->range.hi, 0);
+        resolve_expression(symbol_manager, r->range.low, 0);
+        resolve_expression(symbol_manager, r->range.high, 0);
         Type_Info *t = type_new(TYPE_ARRAY, N);
         t->el = bt->el;
         t->ix = bt->ix;
         t->bs = bt;
-        if (r->range.lo and r->range.lo->k == N_INT)
-          t->lo = r->range.lo->i;
+        if (r->range.low and r->range.low->k == N_INT)
+          t->lo = r->range.low->i;
         else if (
-            r->range.lo and r->range.lo->k == N_UN and r->range.lo->unary_node.op == T_MN
-            and r->range.lo->unary_node.x->k == N_INT)
-          t->lo = -r->range.lo->unary_node.x->i;
-        if (r->range.hi and r->range.hi->k == N_INT)
-          t->hi = r->range.hi->i;
+            r->range.low and r->range.low->k == N_UN and r->range.low->unary_node.op == T_MN
+            and r->range.low->unary_node.x->k == N_INT)
+          t->lo = -r->range.low->unary_node.x->i;
+        if (r->range.high and r->range.high->k == N_INT)
+          t->hi = r->range.high->i;
         else if (
-            r->range.hi and r->range.hi->k == N_UN and r->range.hi->unary_node.op == T_MN
-            and r->range.hi->unary_node.x->k == N_INT)
-          t->hi = -r->range.hi->unary_node.x->i;
+            r->range.high and r->range.high->k == N_UN and r->range.high->unary_node.op == T_MN
+            and r->range.high->unary_node.x->k == N_INT)
+          t->hi = -r->range.high->unary_node.x->i;
         return t;
       }
     }
@@ -5487,47 +5487,47 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
   }
   if (node->k == N_RN)
   {
-    resolve_expression(symbol_manager, node->range.lo, 0);
-    resolve_expression(symbol_manager, node->range.hi, 0);
+    resolve_expression(symbol_manager, node->range.low, 0);
+    resolve_expression(symbol_manager, node->range.high, 0);
     Type_Info *t = type_new(TYPE_INTEGER, N);
-    if (node->range.lo and node->range.lo->k == N_INT)
-      t->lo = node->range.lo->i;
+    if (node->range.low and node->range.low->k == N_INT)
+      t->lo = node->range.low->i;
     else if (
-        node->range.lo and node->range.lo->k == N_UN and node->range.lo->unary_node.op == T_MN and node->range.lo->unary_node.x->k == N_INT)
-      t->lo = -node->range.lo->unary_node.x->i;
-    if (node->range.hi and node->range.hi->k == N_INT)
-      t->hi = node->range.hi->i;
+        node->range.low and node->range.low->k == N_UN and node->range.low->unary_node.op == T_MN and node->range.low->unary_node.x->k == N_INT)
+      t->lo = -node->range.low->unary_node.x->i;
+    if (node->range.high and node->range.high->k == N_INT)
+      t->hi = node->range.high->i;
     else if (
-        node->range.hi and node->range.hi->k == N_UN and node->range.hi->unary_node.op == T_MN and node->range.hi->unary_node.x->k == N_INT)
-      t->hi = -node->range.hi->unary_node.x->i;
+        node->range.high and node->range.high->k == N_UN and node->range.high->unary_node.op == T_MN and node->range.high->unary_node.x->k == N_INT)
+      t->hi = -node->range.high->unary_node.x->i;
     return t;
   }
   if (node->k == N_CL)
   {
-    Type_Info *bt = resolve_subtype(symbol_manager, node->call.fn);
-    if (bt and bt->k == TYPE_ARRAY and bt->lo == 0 and bt->hi == -1 and node->call.ar.count == 1)
+    Type_Info *bt = resolve_subtype(symbol_manager, node->call.function_name);
+    if (bt and bt->k == TYPE_ARRAY and bt->lo == 0 and bt->hi == -1 and node->call.arguments.count == 1)
     {
-      Syntax_Node *r = node->call.ar.data[0];
+      Syntax_Node *r = node->call.arguments.data[0];
       if (r and r->k == N_RN)
       {
-        resolve_expression(symbol_manager, r->range.lo, 0);
-        resolve_expression(symbol_manager, r->range.hi, 0);
+        resolve_expression(symbol_manager, r->range.low, 0);
+        resolve_expression(symbol_manager, r->range.high, 0);
         Type_Info *t = type_new(TYPE_ARRAY, N);
         t->el = bt->el;
         t->ix = bt->ix;
         t->bs = bt;
-        if (r->range.lo and r->range.lo->k == N_INT)
-          t->lo = r->range.lo->i;
+        if (r->range.low and r->range.low->k == N_INT)
+          t->lo = r->range.low->i;
         else if (
-            r->range.lo and r->range.lo->k == N_UN and r->range.lo->unary_node.op == T_MN
-            and r->range.lo->unary_node.x->k == N_INT)
-          t->lo = -r->range.lo->unary_node.x->i;
-        if (r->range.hi and r->range.hi->k == N_INT)
-          t->hi = r->range.hi->i;
+            r->range.low and r->range.low->k == N_UN and r->range.low->unary_node.op == T_MN
+            and r->range.low->unary_node.x->k == N_INT)
+          t->lo = -r->range.low->unary_node.x->i;
+        if (r->range.high and r->range.high->k == N_INT)
+          t->hi = r->range.high->i;
         else if (
-            r->range.hi and r->range.hi->k == N_UN and r->range.hi->unary_node.op == T_MN
-            and r->range.hi->unary_node.x->k == N_INT)
-          t->hi = -r->range.hi->unary_node.x->i;
+            r->range.high and r->range.high->k == N_UN and r->range.high->unary_node.op == T_MN
+            and r->range.high->unary_node.x->k == N_INT)
+          t->hi = -r->range.high->unary_node.x->i;
         return t;
       }
     }
@@ -5678,7 +5678,7 @@ static void normalize_array_aggregate(Symbol_Manager *symbol_manager, Type_Info 
           idx = ch->i - at->lo;
         else if (ch->k == N_RN)
         {
-          for (int64_t k = ch->range.lo->i; k <= ch->range.hi->i; k++)
+          for (int64_t k = ch->range.low->i; k <= ch->range.high->i; k++)
           {
             int64_t ridx = k - at->lo;
             if (ridx >= 0 and ridx < asz)
@@ -5764,9 +5764,9 @@ static void normalize_record_aggregate(Symbol_Manager *symbol_manager, Type_Info
           Syntax_Node *c = rt->components.data[k];
           if (c->k == N_CM and string_equal_ignore_case(c->component_decl.nm, ch->s))
           {
-            if (cov[c->component_decl.of] and error_count < 99)
+            if (cov[c->component_decl.offset] and error_count < 99)
               fatal_error(ag->l, "dup cm");
-            cov[c->component_decl.of] = 1;
+            cov[c->component_decl.offset] = 1;
             break;
           }
         }
@@ -5794,8 +5794,8 @@ static void is_compile_valid(Type_Info *t, Syntax_Node *node)
     return;
   if (node->k == N_CL)
   {
-    for (uint32_t i = 0; i < node->call.ar.count; i++)
-      resolve_expression(0, node->call.ar.data[i], 0);
+    for (uint32_t i = 0; i < node->call.arguments.count; i++)
+      resolve_expression(0, node->call.arguments.data[i], 0);
   }
   else if (node->k == N_AG and t->k == TYPE_ARRAY)
   {
@@ -6007,30 +6007,30 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     }
     break;
   case N_IX:
-    resolve_expression(symbol_manager, node->index.p, 0);
+    resolve_expression(symbol_manager, node->index.prefix, 0);
     for (uint32_t i = 0; i < node->index.indices.count; i++)
     {
       resolve_expression(symbol_manager, node->index.indices.data[i], 0);
       node->index.indices.data[i] = chk(symbol_manager, node->index.indices.data[i], node->l);
     }
-    if (node->index.p->ty and node->index.p->ty->k == TYPE_ARRAY)
-      node->ty = type_canonical_concrete(node->index.p->ty->el);
+    if (node->index.prefix->ty and node->index.prefix->ty->k == TYPE_ARRAY)
+      node->ty = type_canonical_concrete(node->index.prefix->ty->el);
     else
       node->ty = TY_INT;
     break;
   case N_SL:
-    resolve_expression(symbol_manager, node->slice.p, 0);
-    resolve_expression(symbol_manager, node->slice.lo, 0);
-    resolve_expression(symbol_manager, node->slice.hi, 0);
-    if (node->slice.p->ty and node->slice.p->ty->k == TYPE_ARRAY)
-      node->ty = node->slice.p->ty;
+    resolve_expression(symbol_manager, node->slice.prefix, 0);
+    resolve_expression(symbol_manager, node->slice.low, 0);
+    resolve_expression(symbol_manager, node->slice.high, 0);
+    if (node->slice.prefix->ty and node->slice.prefix->ty->k == TYPE_ARRAY)
+      node->ty = node->slice.prefix->ty;
     else
       node->ty = TY_INT;
     break;
   case N_SEL:
   {
-    resolve_expression(symbol_manager, node->selected_component.p, 0);
-    Syntax_Node *parser = node->selected_component.p;
+    resolve_expression(symbol_manager, node->selected_component.prefix, 0);
+    Syntax_Node *parser = node->selected_component.prefix;
     if (parser->k == N_ID)
     {
       Symbol *ps = symbol_find(symbol_manager, parser->s);
@@ -6225,13 +6225,13 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
   }
   break;
   case N_AT:
-    resolve_expression(symbol_manager, node->attribute.p, 0);
-    for (uint32_t i = 0; i < node->attribute.ar.count; i++)
-      resolve_expression(symbol_manager, node->attribute.ar.data[i], 0);
+    resolve_expression(symbol_manager, node->attribute.prefix, 0);
+    for (uint32_t i = 0; i < node->attribute.arguments.count; i++)
+      resolve_expression(symbol_manager, node->attribute.arguments.data[i], 0);
     {
-      Type_Info *pt = node->attribute.p ? node->attribute.p->ty : 0;
+      Type_Info *pt = node->attribute.prefix ? node->attribute.prefix->ty : 0;
       Type_Info *ptc = pt ? type_canonical_concrete(pt) : 0;
-      String_Slice a = node->attribute.at;
+      String_Slice a = node->attribute.attribute_name;
       if (string_equal_ignore_case(a, STRING_LITERAL("FIRST"))
           or string_equal_ignore_case(a, STRING_LITERAL("LAST")))
         node->ty = ptc and ptc->el                                     ? ptc->el
@@ -6240,8 +6240,8 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
       else if (string_equal_ignore_case(a, STRING_LITERAL("ADDRESS")))
       {
         Syntax_Node *sel = ND(SEL, node->l);
-        sel->selected_component.p = ND(ID, node->l);
-        sel->selected_component.p->s = STRING_LITERAL("SYSTEM");
+        sel->selected_component.prefix = ND(ID, node->l);
+        sel->selected_component.prefix->s = STRING_LITERAL("SYSTEM");
         sel->selected_component.selector = STRING_LITERAL("ADDRESS");
         node->ty = resolve_subtype(symbol_manager, sel);
       }
@@ -6297,20 +6297,20 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
         node->ty = pt and pt->bs ? pt->bs : pt;
       else
         node->ty = TY_INT;
-      if (string_equal_ignore_case(a, STRING_LITERAL("POS")) and node->attribute.ar.count > 0
-          and node->attribute.ar.data[0]->k == N_INT)
+      if (string_equal_ignore_case(a, STRING_LITERAL("POS")) and node->attribute.arguments.count > 0
+          and node->attribute.arguments.data[0]->k == N_INT)
       {
         if (ptc and is_integer_type(ptc))
         {
           node->k = N_INT;
-          node->i = node->attribute.ar.data[0]->i;
+          node->i = node->attribute.arguments.data[0]->i;
           node->ty = TY_UINT;
         }
       }
-      if (string_equal_ignore_case(a, STRING_LITERAL("VAL")) and node->attribute.ar.count > 0
-          and node->attribute.ar.data[0]->k == N_INT)
+      if (string_equal_ignore_case(a, STRING_LITERAL("VAL")) and node->attribute.arguments.count > 0
+          and node->attribute.arguments.data[0]->k == N_INT)
       {
-        int64_t pos = node->attribute.ar.data[0]->i;
+        int64_t pos = node->attribute.arguments.data[0]->i;
         if (ptc == TY_CHAR and pos >= 0 and pos <= 127)
         {
           node->k = N_CHAR;
@@ -6332,41 +6332,41 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     break;
   case N_QL:
   {
-    Type_Info *qt = resolve_subtype(symbol_manager, node->qualified.nm);
-    resolve_expression(symbol_manager, node->qualified.ag, qt);
+    Type_Info *qt = resolve_subtype(symbol_manager, node->qualified.name);
+    resolve_expression(symbol_manager, node->qualified.aggregate, qt);
     node->ty = qt;
-    if (node->qualified.ag->ty and qt)
+    if (node->qualified.aggregate->ty and qt)
     {
-      is_compile_valid(qt, node->qualified.ag);
-      node->qualified.ag->ty = qt;
+      is_compile_valid(qt, node->qualified.aggregate);
+      node->qualified.aggregate->ty = qt;
     }
   }
   break;
   case N_CL:
   {
-    resolve_expression(symbol_manager, node->call.fn, 0);
-    for (uint32_t i = 0; i < node->call.ar.count; i++)
-      resolve_expression(symbol_manager, node->call.ar.data[i], 0);
-    Type_Info *ft = node->call.fn ? node->call.fn->ty : 0;
+    resolve_expression(symbol_manager, node->call.function_name, 0);
+    for (uint32_t i = 0; i < node->call.arguments.count; i++)
+      resolve_expression(symbol_manager, node->call.arguments.data[i], 0);
+    Type_Info *ft = node->call.function_name ? node->call.function_name->ty : 0;
     if (ft and ft->k == TYPE_ARRAY)
     {
-      Syntax_Node *fn = node->call.fn;
-      Node_Vector ar = node->call.ar;
+      Syntax_Node *fn = node->call.function_name;
+      Node_Vector ar = node->call.arguments;
       node->k = N_IX;
-      node->index.p = fn;
+      node->index.prefix = fn;
       node->index.indices = ar;
       resolve_expression(symbol_manager, node, tx);
       break;
     }
-    if (node->call.fn->k == N_ID or node->call.fn->k == N_STR)
+    if (node->call.function_name->k == N_ID or node->call.function_name->k == N_STR)
     {
-      String_Slice fnm = node->call.fn->k == N_ID ? node->call.fn->s : node->call.fn->s;
-      Symbol *s = node->call.fn->sy;
+      String_Slice fnm = node->call.function_name->k == N_ID ? node->call.function_name->s : node->call.function_name->s;
+      Symbol *s = node->call.function_name->sy;
       if (not s)
-        s = symbol_find_with_arity(symbol_manager, fnm, node->call.ar.count, tx);
+        s = symbol_find_with_arity(symbol_manager, fnm, node->call.arguments.count, tx);
       if (s)
       {
-        node->call.fn->sy = s;
+        node->call.function_name->sy = s;
         if (s->ty and s->ty->k == TYPE_STRING and s->ty->el)
         {
           node->ty = s->ty->el;
@@ -6375,8 +6375,8 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
         else if (s->k == 1)
         {
           Syntax_Node *cv = ND(CVT, node->l);
-          cv->conversion.ty = node->call.fn;
-          cv->conversion.ex = node->call.ar.count > 0 ? node->call.ar.data[0] : 0;
+          cv->conversion.ty = node->call.function_name;
+          cv->conversion.ex = node->call.arguments.count > 0 ? node->call.arguments.data[0] : 0;
           node->k = N_CVT;
           node->conversion = cv->conversion;
           node->ty = s->ty ? s->ty : TY_INT;
@@ -6399,8 +6399,8 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     break;
   case N_ALC:
     node->ty = type_new(TYPE_ACCESS, N);
-    node->ty->el = resolve_subtype(symbol_manager, node->allocator.st);
-    if (node->allocator.in)
+    node->ty->el = resolve_subtype(symbol_manager, node->allocator.subtype);
+    if (node->allocator.initializer)
     {
       Type_Info *et = node->ty->el ? type_canonical_concrete(node->ty->el) : 0;
       if (et and et->k == TYPE_RECORD and et->dc.count > 0)
@@ -6414,7 +6414,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
           }
         }
       }
-      resolve_expression(symbol_manager, node->allocator.in, node->ty->el);
+      resolve_expression(symbol_manager, node->allocator.initializer, node->ty->el);
       if (tx and tx->k == TYPE_ACCESS and tx->el)
       {
         Type_Info *ct = type_canonical_concrete(tx->el);
@@ -6435,7 +6435,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
                             and cd->parameter.df->i == ed->parameter.df->i;
                 if (not mtch)
                 {
-                  node->allocator.in = chk(symbol_manager, node->allocator.in, node->l);
+                  node->allocator.initializer = chk(symbol_manager, node->allocator.initializer, node->l);
                   break;
                 }
               }
@@ -6446,11 +6446,11 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     }
     break;
   case N_RN:
-    resolve_expression(symbol_manager, node->range.lo, tx);
-    resolve_expression(symbol_manager, node->range.hi, tx);
-    node->range.lo = chk(symbol_manager, node->range.lo, node->l);
-    node->range.hi = chk(symbol_manager, node->range.hi, node->l);
-    node->ty = type_canonical_concrete(node->range.lo->ty);
+    resolve_expression(symbol_manager, node->range.low, tx);
+    resolve_expression(symbol_manager, node->range.high, tx);
+    node->range.low = chk(symbol_manager, node->range.low, node->l);
+    node->range.high = chk(symbol_manager, node->range.high, node->l);
+    node->ty = type_canonical_concrete(node->range.low->ty);
     break;
   case N_ASC:
     if (node->association.value)
@@ -6734,9 +6734,9 @@ static void runtime_register_compare(Symbol_Manager *symbol_manager, Representat
           Syntax_Node *c = t->components.data[j];
           if (c->k == N_CM and string_equal_ignore_case(c->component_decl.nm, cp->component_decl.nm))
           {
-            c->component_decl.of = cp->component_decl.of;
-            c->component_decl.bt = cp->component_decl.bt;
-            bt += cp->component_decl.bt;
+            c->component_decl.offset = cp->component_decl.offset;
+            c->component_decl.bit_offset = cp->component_decl.bit_offset;
+            bt += cp->component_decl.bit_offset;
             break;
           }
         }
@@ -6990,52 +6990,52 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
     c->unary_node.x = node_clone_substitute(n->unary_node.x, fp, ap);
     break;
   case N_AT:
-    c->attribute.p = node_clone_substitute(n->attribute.p, fp, ap);
-    c->attribute.at = n->attribute.at;
-    normalize_compile_symbol_vector(&c->attribute.ar, &n->attribute.ar, fp, ap);
+    c->attribute.prefix = node_clone_substitute(n->attribute.prefix, fp, ap);
+    c->attribute.attribute_name = n->attribute.attribute_name;
+    normalize_compile_symbol_vector(&c->attribute.arguments, &n->attribute.arguments, fp, ap);
     break;
   case N_QL:
-    c->qualified.nm = node_clone_substitute(n->qualified.nm, fp, ap);
-    c->qualified.ag = node_clone_substitute(n->qualified.ag, fp, ap);
+    c->qualified.name = node_clone_substitute(n->qualified.name, fp, ap);
+    c->qualified.aggregate = node_clone_substitute(n->qualified.aggregate, fp, ap);
     break;
   case N_CL:
-    c->call.fn = node_clone_substitute(n->call.fn, fp, ap);
-    normalize_compile_symbol_vector(&c->call.ar, &n->call.ar, fp, ap);
+    c->call.function_name = node_clone_substitute(n->call.function_name, fp, ap);
+    normalize_compile_symbol_vector(&c->call.arguments, &n->call.arguments, fp, ap);
     break;
   case N_IX:
-    c->index.p = node_clone_substitute(n->index.p, fp, ap);
+    c->index.prefix = node_clone_substitute(n->index.prefix, fp, ap);
     normalize_compile_symbol_vector(&c->index.indices, &n->index.indices, fp, ap);
     break;
   case N_SL:
-    c->slice.p = node_clone_substitute(n->slice.p, fp, ap);
-    c->slice.lo = node_clone_substitute(n->slice.lo, fp, ap);
-    c->slice.hi = node_clone_substitute(n->slice.hi, fp, ap);
+    c->slice.prefix = node_clone_substitute(n->slice.prefix, fp, ap);
+    c->slice.low = node_clone_substitute(n->slice.low, fp, ap);
+    c->slice.high = node_clone_substitute(n->slice.high, fp, ap);
     break;
   case N_SEL:
-    c->selected_component.p = node_clone_substitute(n->selected_component.p, fp, ap);
+    c->selected_component.prefix = node_clone_substitute(n->selected_component.prefix, fp, ap);
     c->selected_component.selector = n->selected_component.selector;
     break;
   case N_ALC:
-    c->allocator.st = node_clone_substitute(n->allocator.st, fp, ap);
-    c->allocator.in = node_clone_substitute(n->allocator.in, fp, ap);
+    c->allocator.subtype = node_clone_substitute(n->allocator.subtype, fp, ap);
+    c->allocator.initializer = node_clone_substitute(n->allocator.initializer, fp, ap);
     break;
   case N_RN:
-    c->range.lo = node_clone_substitute(n->range.lo, fp, ap);
-    c->range.hi = node_clone_substitute(n->range.hi, fp, ap);
+    c->range.low = node_clone_substitute(n->range.low, fp, ap);
+    c->range.high = node_clone_substitute(n->range.high, fp, ap);
     break;
   case N_CN:
-    c->constraint.rn = node_clone_substitute(n->constraint.rn, fp, ap);
-    normalize_compile_symbol_vector(&c->constraint.cs, &n->constraint.cs, fp, ap);
+    c->constraint.range_spec = node_clone_substitute(n->constraint.range_spec, fp, ap);
+    normalize_compile_symbol_vector(&c->constraint.constraints, &n->constraint.constraints, fp, ap);
     break;
   case N_CM:
     c->component_decl.nm = n->component_decl.nm;
     c->component_decl.ty = node_clone_substitute(n->component_decl.ty, fp, ap);
     c->component_decl.in = node_clone_substitute(n->component_decl.in, fp, ap);
-    c->component_decl.al = n->component_decl.al;
-    c->component_decl.of = n->component_decl.of;
-    c->component_decl.bt = n->component_decl.bt;
-    c->component_decl.dc = node_clone_substitute(n->component_decl.dc, fp, ap);
-    c->component_decl.dsc = node_clone_substitute(n->component_decl.dsc, fp, ap);
+    c->component_decl.is_aliased = n->component_decl.is_aliased;
+    c->component_decl.offset = n->component_decl.offset;
+    c->component_decl.bit_offset = n->component_decl.bit_offset;
+    c->component_decl.discriminant_constraint = node_clone_substitute(n->component_decl.discriminant_constraint, fp, ap);
+    c->component_decl.discriminant_spec = node_clone_substitute(n->component_decl.discriminant_spec, fp, ap);
     break;
   case N_VR:
     normalize_compile_symbol_vector(&c->variant.choices, &n->variant.choices, fp, ap);
@@ -7264,7 +7264,7 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
     break;
   case N_TA:
     normalize_compile_symbol_vector(&c->index.indices, &n->index.indices, fp, ap);
-    c->index.p = node_clone_substitute(n->index.p, fp, ap);
+    c->index.prefix = node_clone_substitute(n->index.prefix, fp, ap);
     break;
   case N_TI:
   case N_TE:
@@ -7456,16 +7456,16 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
           s->vl = n->object_decl.in->sy->vl;
         else if (n->object_decl.is_constant and n->object_decl.in->k == N_AT)
         {
-          Type_Info *pt = n->object_decl.in->attribute.p ? type_canonical_concrete(n->object_decl.in->attribute.p->ty) : 0;
-          String_Slice a = n->object_decl.in->attribute.at;
+          Type_Info *pt = n->object_decl.in->attribute.prefix ? type_canonical_concrete(n->object_decl.in->attribute.prefix->ty) : 0;
+          String_Slice a = n->object_decl.in->attribute.attribute_name;
           if (pt and string_equal_ignore_case(a, STRING_LITERAL("FIRST")))
             s->vl = pt->lo;
           else if (pt and string_equal_ignore_case(a, STRING_LITERAL("LAST")))
             s->vl = pt->hi;
         }
-        else if (n->object_decl.is_constant and n->object_decl.in->k == N_QL and n->object_decl.in->qualified.ag)
+        else if (n->object_decl.is_constant and n->object_decl.in->k == N_QL and n->object_decl.in->qualified.aggregate)
         {
-          Syntax_Node *ag = n->object_decl.in->qualified.ag;
+          Syntax_Node *ag = n->object_decl.in->qualified.aggregate;
           if (ag->k == N_ID and ag->sy and ag->sy->k == 2)
             s->vl = ag->sy->vl;
           else if (ag->k == N_INT)
@@ -7514,10 +7514,10 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       }
       if (n->type_decl.df and n->type_decl.df->k == N_RN)
       {
-        resolve_expression(symbol_manager, n->type_decl.df->range.lo, 0);
-        resolve_expression(symbol_manager, n->type_decl.df->range.hi, 0);
-        t->lo = n->type_decl.df->range.lo->i;
-        t->hi = n->type_decl.df->range.hi->i;
+        resolve_expression(symbol_manager, n->type_decl.df->range.low, 0);
+        resolve_expression(symbol_manager, n->type_decl.df->range.high, 0);
+        t->lo = n->type_decl.df->range.low->i;
+        t->hi = n->type_decl.df->range.high->i;
       }
     }
     else
@@ -7604,24 +7604,24 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
         Syntax_Node *c = n->type_decl.df->list.items.data[i];
         if (c->k == N_CM)
         {
-          c->component_decl.of = of++;
+          c->component_decl.offset = of++;
           Type_Info *ct = resolve_subtype(symbol_manager, c->component_decl.ty);
           if (ct)
             c->component_decl.ty->ty = ct;
-          if (c->component_decl.dc)
+          if (c->component_decl.discriminant_constraint)
           {
-            for (uint32_t j = 0; j < c->component_decl.dc->list.items.count; j++)
+            for (uint32_t j = 0; j < c->component_decl.discriminant_constraint->list.items.count; j++)
             {
-              Syntax_Node *dc = c->component_decl.dc->list.items.data[j];
+              Syntax_Node *dc = c->component_decl.discriminant_constraint->list.items.data[j];
               if (dc->k == N_DS and dc->parameter.df)
                 resolve_expression(symbol_manager, dc->parameter.df, resolve_subtype(symbol_manager, dc->parameter.ty));
             }
           }
-          if (c->component_decl.dsc)
+          if (c->component_decl.discriminant_spec)
           {
-            for (uint32_t j = 0; j < c->component_decl.dsc->list.items.count; j++)
+            for (uint32_t j = 0; j < c->component_decl.discriminant_spec->list.items.count; j++)
             {
-              Syntax_Node *dc = c->component_decl.dsc->list.items.data[j];
+              Syntax_Node *dc = c->component_decl.discriminant_spec->list.items.data[j];
               if (dc->k == N_DS)
               {
                 Symbol *ds =
@@ -7630,7 +7630,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
                   resolve_expression(symbol_manager, dc->parameter.df, ds->ty);
               }
             }
-            c->component_decl.dc = c->component_decl.dsc;
+            c->component_decl.discriminant_constraint = c->component_decl.discriminant_spec;
           }
         }
         else if (c->k == N_VP)
@@ -7641,24 +7641,24 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
             for (uint32_t k = 0; k < v->variant.components.count; k++)
             {
               Syntax_Node *vc = v->variant.components.data[k];
-              vc->component_decl.of = of++;
+              vc->component_decl.offset = of++;
               Type_Info *vct = resolve_subtype(symbol_manager, vc->component_decl.ty);
               if (vct)
                 vc->component_decl.ty->ty = vct;
-              if (vc->component_decl.dc)
+              if (vc->component_decl.discriminant_constraint)
               {
-                for (uint32_t m = 0; m < vc->component_decl.dc->list.items.count; m++)
+                for (uint32_t m = 0; m < vc->component_decl.discriminant_constraint->list.items.count; m++)
                 {
-                  Syntax_Node *dc = vc->component_decl.dc->list.items.data[m];
+                  Syntax_Node *dc = vc->component_decl.discriminant_constraint->list.items.data[m];
                   if (dc->k == N_DS and dc->parameter.df)
                     resolve_expression(symbol_manager, dc->parameter.df, resolve_subtype(symbol_manager, dc->parameter.ty));
                 }
               }
-              if (vc->component_decl.dsc)
+              if (vc->component_decl.discriminant_spec)
               {
-                for (uint32_t m = 0; m < vc->component_decl.dsc->list.items.count; m++)
+                for (uint32_t m = 0; m < vc->component_decl.discriminant_spec->list.items.count; m++)
                 {
-                  Syntax_Node *dc = vc->component_decl.dsc->list.items.data[m];
+                  Syntax_Node *dc = vc->component_decl.discriminant_spec->list.items.data[m];
                   if (dc->k == N_DS)
                   {
                     Symbol *ds = symbol_add_overload(
@@ -7667,7 +7667,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
                       resolve_expression(symbol_manager, dc->parameter.df, ds->ty);
                   }
                 }
-                vc->component_decl.dc = vc->component_decl.dsc;
+                vc->component_decl.discriminant_constraint = vc->component_decl.discriminant_spec;
               }
             }
           }
@@ -7698,10 +7698,10 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     }
     if (n->subtype_decl.rn)
     {
-      resolve_expression(symbol_manager, n->subtype_decl.rn->range.lo, 0);
-      resolve_expression(symbol_manager, n->subtype_decl.rn->range.hi, 0);
-      Syntax_Node *lo = n->subtype_decl.rn->range.lo;
-      Syntax_Node *hi = n->subtype_decl.rn->range.hi;
+      resolve_expression(symbol_manager, n->subtype_decl.rn->range.low, 0);
+      resolve_expression(symbol_manager, n->subtype_decl.rn->range.high, 0);
+      Syntax_Node *lo = n->subtype_decl.rn->range.low;
+      Syntax_Node *hi = n->subtype_decl.rn->range.high;
       int64_t lov = lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.x->k == N_INT ? -lo->unary_node.x->i
                     : lo->k == N_ID and lo->sy and lo->sy->k == 2                ? lo->sy->vl
                                                                                  : lo->i;
@@ -9076,7 +9076,7 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
               {
                 Value v = value_cast(generator, generate_expression(generator, el->association.value), VALUE_KIND_INTEGER);
                 int ep = new_temporary_register(generator);
-                fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p, c->component_decl.of);
+                fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p, c->component_decl.offset);
                 fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
                 break;
               }
@@ -9578,8 +9578,8 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         rr = rr->check.expression;
       if (rr and rr->k == N_RN)
       {
-        Value lo = value_cast(generator, generate_expression(generator, rr->range.lo), VALUE_KIND_INTEGER),
-          hi = value_cast(generator, generate_expression(generator, rr->range.hi), VALUE_KIND_INTEGER);
+        Value lo = value_cast(generator, generate_expression(generator, rr->range.low), VALUE_KIND_INTEGER),
+          hi = value_cast(generator, generate_expression(generator, rr->range.high), VALUE_KIND_INTEGER);
         Value ge = value_compare_integer(generator, "sge", x, lo);
         Value le = value_compare_integer(generator, "sle", x, hi);
         Value b1 = value_to_boolean(generator, ge), b2 = value_to_boolean(generator, le);
@@ -9648,8 +9648,8 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         rr = rr->check.expression;
       if (rr and rr->k == N_RN)
       {
-        Value lo = value_cast(generator, generate_expression(generator, rr->range.lo), VALUE_KIND_INTEGER),
-          hi = value_cast(generator, generate_expression(generator, rr->range.hi), VALUE_KIND_INTEGER);
+        Value lo = value_cast(generator, generate_expression(generator, rr->range.low), VALUE_KIND_INTEGER),
+          hi = value_cast(generator, generate_expression(generator, rr->range.high), VALUE_KIND_INTEGER);
         Value ge = value_compare_integer(generator, "sge", x, lo);
         Value le = value_compare_integer(generator, "sle", x, hi);
         Value b1 = value_to_boolean(generator, ge), b2 = value_to_boolean(generator, le);
@@ -10055,8 +10055,8 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
   break;
   case N_IX:
   {
-    Value p = generate_expression(generator, n->index.p);
-    Type_Info *pt = n->index.p->ty ? type_canonical_concrete(n->index.p->ty) : 0;
+    Value p = generate_expression(generator, n->index.prefix);
+    Type_Info *pt = n->index.prefix->ty ? type_canonical_concrete(n->index.prefix->ty) : 0;
     Type_Info *et = n->ty ? type_canonical_concrete(n->ty) : 0;
     bool is_char = et and et->k == TYPE_CHARACTER;
     int dp = p.id;
@@ -10171,9 +10171,9 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
   break;
   case N_SL:
   {
-    Value p = generate_expression(generator, n->slice.p);
-    Value lo = value_cast(generator, generate_expression(generator, n->slice.lo), VALUE_KIND_INTEGER);
-    Value hi = value_cast(generator, generate_expression(generator, n->slice.hi), VALUE_KIND_INTEGER);
+    Value p = generate_expression(generator, n->slice.prefix);
+    Value lo = value_cast(generator, generate_expression(generator, n->slice.low), VALUE_KIND_INTEGER);
+    Value hi = value_cast(generator, generate_expression(generator, n->slice.high), VALUE_KIND_INTEGER);
     int ln = new_temporary_register(generator);
     fprintf(o, "  %%t%d = sub i64 %%t%d, %%t%d\n", ln, hi.id, lo.id);
     int sz = new_temporary_register(generator);
@@ -10197,11 +10197,11 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
   break;
   case N_SEL:
   {
-    Type_Info *pt = n->selected_component.p->ty ? type_canonical_concrete(n->selected_component.p->ty) : 0;
+    Type_Info *pt = n->selected_component.prefix->ty ? type_canonical_concrete(n->selected_component.prefix->ty) : 0;
     Value p = {new_temporary_register(generator), VALUE_KIND_POINTER};
-    if (n->selected_component.p->k == N_ID)
+    if (n->selected_component.prefix->k == N_ID)
     {
-      Symbol *s = n->selected_component.p->sy ? n->selected_component.p->sy : symbol_find(generator->sm, n->selected_component.p->s);
+      Symbol *s = n->selected_component.prefix->sy ? n->selected_component.prefix->sy : symbol_find(generator->sm, n->selected_component.prefix->s);
       if (s and s->k != 6)
       {
         Type_Info *vty = s and s->ty ? type_canonical_concrete(s->ty) : 0;
@@ -10248,8 +10248,8 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                 "  %%t%d = bitcast ptr %%lnk.%d.%.*s to ptr\n",
                 p.id,
                 s->lv,
-                (int) n->selected_component.p->s.length,
-                n->selected_component.p->s.string);
+                (int) n->selected_component.prefix->s.length,
+                n->selected_component.prefix->s.string);
         }
         else
         {
@@ -10258,7 +10258,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                 o,
                 "  %%t%d = load ptr, ptr %%v.%s.sc%u.%u\n",
                 p.id,
-                string_to_lowercase(n->selected_component.p->s),
+                string_to_lowercase(n->selected_component.prefix->s),
                 s ? s->sc : 0,
                 s ? s->el : 0);
           else
@@ -10266,7 +10266,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                 o,
                 "  %%t%d = bitcast ptr %%v.%s.sc%u.%u to ptr\n",
                 p.id,
-                string_to_lowercase(n->selected_component.p->s),
+                string_to_lowercase(n->selected_component.prefix->s),
                 s ? s->sc : 0,
                 s ? s->el : 0);
         }
@@ -10274,7 +10274,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     else
     {
-      p = generate_expression(generator, n->selected_component.p);
+      p = generate_expression(generator, n->selected_component.prefix);
     }
     if (pt and pt->k == TYPE_RECORD)
     {
@@ -10310,14 +10310,14 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             int bp = new_temporary_register(generator);
             fprintf(o, "  %%t%d = ptrtoint ptr %%t%d to i64\n", bp, p.id);
             int bo = new_temporary_register(generator);
-            fprintf(o, "  %%t%d = add i64 %%t%d, %u\n", bo, bp, c->component_decl.of / 8);
+            fprintf(o, "  %%t%d = add i64 %%t%d, %u\n", bo, bp, c->component_decl.offset / 8);
             int pp = new_temporary_register(generator);
             fprintf(o, "  %%t%d = inttoptr i64 %%t%d to ptr\n", pp, bo);
             int vp = new_temporary_register(generator);
             fprintf(o, "  %%t%d = load i64, ptr %%t%d\n", vp, pp);
             int sh = new_temporary_register(generator);
-            fprintf(o, "  %%t%d = lshr i64 %%t%d, %u\n", sh, vp, c->component_decl.of % 8);
-            uint64_t mk = (1ULL << c->component_decl.bt) - 1;
+            fprintf(o, "  %%t%d = lshr i64 %%t%d, %u\n", sh, vp, c->component_decl.offset % 8);
+            uint64_t mk = (1ULL << c->component_decl.bit_offset) - 1;
             r.k = VALUE_KIND_INTEGER;
             fprintf(o, "  %%t%d = and i64 %%t%d, %llu\n", r.id, sh, (unsigned long long) mk);
             break;
@@ -10332,7 +10332,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           if (c->k == N_CM and string_equal_ignore_case(c->component_decl.nm, n->selected_component.selector))
           {
             int ep = new_temporary_register(generator);
-            fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p.id, c->component_decl.of);
+            fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p.id, c->component_decl.offset);
             Type_Info *fty = resolve_subtype(generator->sm, c->component_decl.ty);
             if (fty and (fty->k == TYPE_RECORD or fty->k == TYPE_ARRAY))
             {
@@ -10362,7 +10362,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
               if (string_equal_ignore_case(vc->component_decl.nm, n->selected_component.selector))
               {
                 int ep = new_temporary_register(generator);
-                fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p.id, vc->component_decl.of);
+                fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p.id, vc->component_decl.offset);
                 r.k = VALUE_KIND_INTEGER;
                 fprintf(o, "  %%t%d = load i64, ptr %%t%d\n", r.id, ep);
                 goto sel_done;
@@ -10400,13 +10400,13 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
   break;
   case N_AT:
   {
-    String_Slice a = n->attribute.at;
-    Type_Info *t = (n->attribute.p and n->attribute.p->ty) ? type_canonical_concrete(n->attribute.p->ty) : 0;
+    String_Slice a = n->attribute.attribute_name;
+    Type_Info *t = (n->attribute.prefix and n->attribute.prefix->ty) ? type_canonical_concrete(n->attribute.prefix->ty) : 0;
     if (string_equal_ignore_case(a, STRING_LITERAL("ADDRESS")))
     {
-      if (n->attribute.p and n->attribute.p->k == N_ID)
+      if (n->attribute.prefix and n->attribute.prefix->k == N_ID)
       {
-        Symbol *s = n->attribute.p->sy ? n->attribute.p->sy : symbol_find(generator->sm, n->attribute.p->s);
+        Symbol *s = n->attribute.prefix->sy ? n->attribute.prefix->sy : symbol_find(generator->sm, n->attribute.prefix->s);
         if (s)
         {
           r.k = VALUE_KIND_INTEGER;
@@ -10446,7 +10446,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         }
         else
         {
-          Value p = generate_expression(generator, n->attribute.p);
+          Value p = generate_expression(generator, n->attribute.prefix);
           fprintf(
               o,
               "  %%t%d = ptrtoint ptr %%t%d to i64\n",
@@ -10454,10 +10454,10 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
               value_cast(generator, p, VALUE_KIND_POINTER).id);
         }
       }
-      else if (n->attribute.p and n->attribute.p->k == N_AT)
+      else if (n->attribute.prefix and n->attribute.prefix->k == N_AT)
       {
-        Syntax_Node *ap = n->attribute.p;
-        String_Slice ia = ap->attribute.at;
+        Syntax_Node *ap = n->attribute.prefix;
+        String_Slice ia = ap->attribute.attribute_name;
         if (string_equal_ignore_case(ia, STRING_LITERAL("PRED"))
             or string_equal_ignore_case(ia, STRING_LITERAL("SUCC"))
             or string_equal_ignore_case(ia, STRING_LITERAL("POS"))
@@ -10465,9 +10465,9 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             or string_equal_ignore_case(ia, STRING_LITERAL("IMAGE"))
             or string_equal_ignore_case(ia, STRING_LITERAL("VALUE")))
         {
-          Type_Info *pt = ap->attribute.p ? type_canonical_concrete(ap->attribute.p->ty) : 0;
+          Type_Info *pt = ap->attribute.prefix ? type_canonical_concrete(ap->attribute.prefix->ty) : 0;
           String_Slice pnm =
-              ap->attribute.p and ap->attribute.p->k == N_ID ? ap->attribute.p->s : STRING_LITERAL("TYPE");
+              ap->attribute.prefix and ap->attribute.prefix->k == N_ID ? ap->attribute.prefix->s : STRING_LITERAL("TYPE");
           const char *afn = get_attribute_name(ia, pnm);
           r.k = VALUE_KIND_INTEGER;
           int p = new_temporary_register(generator);
@@ -10476,7 +10476,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         }
         else
         {
-          Value p = generate_expression(generator, n->attribute.p);
+          Value p = generate_expression(generator, n->attribute.prefix);
           r.k = VALUE_KIND_INTEGER;
           fprintf(
               o,
@@ -10487,7 +10487,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       }
       else
       {
-        Value p = generate_expression(generator, n->attribute.p);
+        Value p = generate_expression(generator, n->attribute.prefix);
         r.k = VALUE_KIND_INTEGER;
         fprintf(
             o,
@@ -10507,15 +10507,15 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         or string_equal_ignore_case(a, STRING_LITERAL("LENGTH")))
     {
       Value pv = {0, VALUE_KIND_INTEGER};
-      bool is_typ = n->attribute.p and n->attribute.p->k == N_ID and n->attribute.p->sy and n->attribute.p->sy->k == 1;
-      if (n->attribute.p and not is_typ)
-        pv = generate_expression(generator, n->attribute.p);
-      if (n->attribute.ar.count > 0)
-        generate_expression(generator, n->attribute.ar.data[0]);
+      bool is_typ = n->attribute.prefix and n->attribute.prefix->k == N_ID and n->attribute.prefix->sy and n->attribute.prefix->sy->k == 1;
+      if (n->attribute.prefix and not is_typ)
+        pv = generate_expression(generator, n->attribute.prefix);
+      if (n->attribute.arguments.count > 0)
+        generate_expression(generator, n->attribute.arguments.data[0]);
       int64_t lo = 0, hi = -1;
       if (t and t->k == TYPE_ARRAY)
       {
-        if (t->lo == 0 and t->hi == -1 and n->attribute.p and not is_typ)
+        if (t->lo == 0 and t->hi == -1 and n->attribute.prefix and not is_typ)
         {
           int blo, bhi;
           get_fat_pointer_bounds(generator, pv.id, &blo, &bhi);
@@ -10555,7 +10555,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     else if (string_equal_ignore_case(a, STRING_LITERAL("POS")))
     {
-      Value x = generate_expression(generator, n->attribute.ar.data[0]);
+      Value x = generate_expression(generator, n->attribute.arguments.data[0]);
       if (t
           and (t->k == TYPE_ENUMERATION or t->k == TYPE_INTEGER or t->k == TYPE_UNSIGNED_INTEGER or t->k == TYPE_DERIVED))
       {
@@ -10576,7 +10576,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     else if (string_equal_ignore_case(a, STRING_LITERAL("VAL")))
     {
-      Value x = generate_expression(generator, n->attribute.ar.data[0]);
+      Value x = generate_expression(generator, n->attribute.arguments.data[0]);
       r.k = VALUE_KIND_INTEGER;
       int tlo = new_temporary_register(generator);
       fprintf(o, "  %%t%d = add i64 0, %lld\n", tlo, t ? (long long) t->lo : 0LL);
@@ -10591,7 +10591,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         string_equal_ignore_case(a, STRING_LITERAL("SUCC"))
         or string_equal_ignore_case(a, STRING_LITERAL("PRED")))
     {
-      Value x = generate_expression(generator, n->attribute.ar.data[0]);
+      Value x = generate_expression(generator, n->attribute.arguments.data[0]);
       r.k = VALUE_KIND_INTEGER;
       fprintf(
           o,
@@ -10602,7 +10602,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     else if (string_equal_ignore_case(a, STRING_LITERAL("IMAGE")))
     {
-      Value x = generate_expression(generator, n->attribute.ar.data[0]);
+      Value x = generate_expression(generator, n->attribute.arguments.data[0]);
       r.k = VALUE_KIND_POINTER;
       if (t and t->k == TYPE_ENUMERATION)
       {
@@ -10625,7 +10625,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     else if (string_equal_ignore_case(a, STRING_LITERAL("VALUE")))
     {
-      Value x = generate_expression(generator, n->attribute.ar.data[0]);
+      Value x = generate_expression(generator, n->attribute.arguments.data[0]);
       r.k = VALUE_KIND_INTEGER;
       if (t and t->k == TYPE_ENUMERATION)
       {
@@ -10808,24 +10808,24 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     {
       r.k = VALUE_KIND_INTEGER;
       int64_t v = 0;
-      if (n->attribute.p and n->attribute.p->k == N_SEL)
+      if (n->attribute.prefix and n->attribute.prefix->k == N_SEL)
       {
-        Type_Info *pt = n->attribute.p->selected_component.p->ty ? type_canonical_concrete(n->attribute.p->selected_component.p->ty) : 0;
+        Type_Info *pt = n->attribute.prefix->selected_component.prefix->ty ? type_canonical_concrete(n->attribute.prefix->selected_component.prefix->ty) : 0;
         if (pt and pt->k == TYPE_RECORD)
         {
           for (uint32_t i = 0; i < pt->components.count; i++)
           {
             Syntax_Node *c = pt->components.data[i];
-            if (c->k == N_CM and string_equal_ignore_case(c->component_decl.nm, n->attribute.p->selected_component.selector))
+            if (c->k == N_CM and string_equal_ignore_case(c->component_decl.nm, n->attribute.prefix->selected_component.selector))
             {
               if (pt->pk)
               {
                 if (string_equal_ignore_case(a, STRING_LITERAL("POSITION")))
-                  v = c->component_decl.of / 8;
+                  v = c->component_decl.offset / 8;
                 else if (string_equal_ignore_case(a, STRING_LITERAL("FIRST_BIT")))
-                  v = c->component_decl.of % 8;
+                  v = c->component_decl.offset % 8;
                 else if (string_equal_ignore_case(a, STRING_LITERAL("LAST_BIT")))
-                  v = (c->component_decl.of % 8) + c->component_decl.bt - 1;
+                  v = (c->component_decl.offset % 8) + c->component_decl.bit_offset - 1;
               }
               else
               {
@@ -10858,7 +10858,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     else if (string_equal_ignore_case(a, STRING_LITERAL("ACCESS")))
     {
-      Value p = generate_expression(generator, n->attribute.p);
+      Value p = generate_expression(generator, n->attribute.prefix);
       r = value_cast(generator, p, VALUE_KIND_POINTER);
     }
     else if (
@@ -10879,43 +10879,43 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
   break;
   case N_QL:
   {
-    Value q = generate_expression(generator, n->qualified.ag);
+    Value q = generate_expression(generator, n->qualified.aggregate);
     r = value_cast(generator, q, r.k);
   }
   break;
   case N_CL:
   {
-    if (not n->call.fn or (uintptr_t) n->call.fn < 4096)
+    if (not n->call.function_name or (uintptr_t) n->call.function_name < 4096)
     {
       r.k = VALUE_KIND_INTEGER;
       fprintf(o, "  %%t%d = add i64 0, 0\n", r.id);
       break;
     }
-    if (n->call.fn->k == N_ID)
+    if (n->call.function_name->k == N_ID)
     {
-      Symbol *s = symbol_find_with_arity(generator->sm, n->call.fn->s, n->call.ar.count, n->ty);
+      Symbol *s = symbol_find_with_arity(generator->sm, n->call.function_name->s, n->call.arguments.count, n->ty);
       if (s)
       {
         if (s->pr and string_equal_ignore_case(s->pr->nm, STRING_LITERAL("TEXT_IO"))
             and (string_equal_ignore_case(s->nm, STRING_LITERAL("CREATE")) or string_equal_ignore_case(s->nm, STRING_LITERAL("OPEN"))))
         {
           r.k = VALUE_KIND_POINTER;
-          int md = n->call.ar.count > 1 ? generate_expression(generator, n->call.ar.data[1]).id : 0;
+          int md = n->call.arguments.count > 1 ? generate_expression(generator, n->call.arguments.data[1]).id : 0;
           fprintf(
               o,
               "  %%t%d = call ptr @__text_io_%s(i64 %d, ptr %%t%d)\n",
               r.id,
               string_equal_ignore_case(s->nm, STRING_LITERAL("CREATE")) ? "create" : "open",
               md,
-              n->call.ar.count > 2 ? generate_expression(generator, n->call.ar.data[2]).id : 0);
+              n->call.arguments.count > 2 ? generate_expression(generator, n->call.arguments.data[2]).id : 0);
           break;
         }
         if (s->pr and string_equal_ignore_case(s->pr->nm, STRING_LITERAL("TEXT_IO"))
             and (string_equal_ignore_case(s->nm, STRING_LITERAL("CLOSE")) or string_equal_ignore_case(s->nm, STRING_LITERAL("DELETE"))))
         {
-          if (n->call.ar.count > 0)
+          if (n->call.arguments.count > 0)
           {
-            Value f = generate_expression(generator, n->call.ar.data[0]);
+            Value f = generate_expression(generator, n->call.arguments.data[0]);
             fprintf(
                 o,
                 "  call void @__text_io_%s(ptr %%t%d)\n",
@@ -10927,9 +10927,9 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         if (s->pr and string_equal_ignore_case(s->pr->nm, STRING_LITERAL("TEXT_IO"))
             and (string_equal_ignore_case(s->nm, STRING_LITERAL("GET")) or string_equal_ignore_case(s->nm, STRING_LITERAL("GET_LINE"))))
         {
-          if (n->call.ar.count > 1)
+          if (n->call.arguments.count > 1)
           {
-            Value f = generate_expression(generator, n->call.ar.data[0]);
+            Value f = generate_expression(generator, n->call.arguments.data[0]);
             r.k = VALUE_KIND_INTEGER;
             fprintf(o, "  %%t%d = call i64 @__text_io_get(ptr %%t%d)\n", r.id, f.id);
           }
@@ -10943,10 +10943,10 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         if (s->pr and string_equal_ignore_case(s->pr->nm, STRING_LITERAL("TEXT_IO"))
             and (string_equal_ignore_case(s->nm, STRING_LITERAL("PUT")) or string_equal_ignore_case(s->nm, STRING_LITERAL("PUT_LINE"))))
         {
-          if (n->call.ar.count > 1)
+          if (n->call.arguments.count > 1)
           {
-            Value f = generate_expression(generator, n->call.ar.data[0]);
-            Value v = generate_expression(generator, n->call.ar.data[1]);
+            Value f = generate_expression(generator, n->call.arguments.data[0]);
+            Value v = generate_expression(generator, n->call.arguments.data[1]);
             fprintf(
                 o,
                 "  call void @__text_io_%s(ptr %%t%d, ",
@@ -10961,7 +10961,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           }
           else
           {
-            Value v = generate_expression(generator, n->call.ar.data[0]);
+            Value v = generate_expression(generator, n->call.arguments.data[0]);
             fprintf(
                 o,
                 "  call void @__text_io_%s(ptr @stdout, ",
@@ -10984,10 +10984,10 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           int arid[64];
           Value_Kind ark[64];
           int arp[64];
-          for (uint32_t i = 0; i < n->call.ar.count and i < 64; i++)
+          for (uint32_t i = 0; i < n->call.arguments.count and i < 64; i++)
           {
             Syntax_Node *pm = sp and i < sp->subprogram.parameters.count ? sp->subprogram.parameters.data[i] : 0;
-            Syntax_Node *arg = n->call.ar.data[i];
+            Syntax_Node *arg = n->call.arguments.data[i];
             Value av = {0, VALUE_KIND_INTEGER};
             Value_Kind ek = VALUE_KIND_INTEGER;
             bool rf = false;
@@ -11077,9 +11077,9 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             arp[i] = i < sp->subprogram.parameters.count and sp->subprogram.parameters.data[i]->parameter.md & 2 ? 1 : 0;
           }
           char nb[256];
-          encode_symbol_name(nb, 256, s, n->call.fn->s, n->call.ar.count, sp);
+          encode_symbol_name(nb, 256, s, n->call.function_name->s, n->call.arguments.count, sp);
           fprintf(o, "  %%t%d = call %s @\"%s\"(", r.id, value_llvm_type_string(rk), nb);
-          for (uint32_t i = 0; i < n->call.ar.count; i++)
+          for (uint32_t i = 0; i < n->call.arguments.count; i++)
           {
             if (i)
               fprintf(o, ", ");
@@ -11087,7 +11087,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           }
           if (s->lv > 0)
           {
-            if (n->call.ar.count > 0)
+            if (n->call.arguments.count > 0)
               fprintf(o, ", ");
             if (s->lv >= generator->sm->lv)
               fprintf(o, "ptr %%__frame");
@@ -11095,7 +11095,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
               fprintf(o, "ptr %%__slnk");
           }
           fprintf(o, ")\n");
-          for (uint32_t i = 0; i < n->call.ar.count and i < 64; i++)
+          for (uint32_t i = 0; i < n->call.arguments.count and i < 64; i++)
           {
             if (arp[i])
             {
@@ -11108,8 +11108,8 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                       ark[i] == VALUE_KIND_POINTER ? VALUE_KIND_INTEGER : ark[i]),
                   arid[i]);
               Value rv = {lv, ark[i] == VALUE_KIND_POINTER ? VALUE_KIND_INTEGER : ark[i]};
-              Value cv = value_cast(generator, rv, token_kind_to_value_kind(n->call.ar.data[i]->ty));
-              Syntax_Node *tg = n->call.ar.data[i];
+              Value cv = value_cast(generator, rv, token_kind_to_value_kind(n->call.arguments.data[i]->ty));
+              Syntax_Node *tg = n->call.arguments.data[i];
               if (tg->k == N_ID)
               {
                 Symbol *ts = tg->sy ? tg->sy : symbol_find(generator->sm, tg->s);
@@ -11168,9 +11168,9 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     if (et and et->dc.count > 0)
       asz += et->dc.count * 8;
     fprintf(o, "  %%t%d = call ptr @malloc(i64 %u)\n", r.id, asz);
-    if (n->allocator.in)
+    if (n->allocator.initializer)
     {
-      Value v = generate_expression(generator, n->allocator.in);
+      Value v = generate_expression(generator, n->allocator.initializer);
       v = value_cast(generator, v, VALUE_KIND_INTEGER);
       int op = new_temporary_register(generator);
       fprintf(
@@ -11235,7 +11235,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
   break;
   case N_RN:
   {
-    Value lo = generate_expression(generator, n->range.lo);
+    Value lo = generate_expression(generator, n->range.low);
     r = value_cast(generator, lo, r.k);
   }
   break;
@@ -11320,7 +11320,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
     }
     else if (n->assignment.target->k == N_IX)
     {
-      Value p = generate_expression(generator, n->assignment.target->index.p);
+      Value p = generate_expression(generator, n->assignment.target->index.prefix);
       if (p.k == VALUE_KIND_INTEGER)
       {
         int pp = new_temporary_register(generator);
@@ -11329,7 +11329,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
         p.k = VALUE_KIND_POINTER;
       }
       Value i0 = value_cast(generator, generate_expression(generator, n->assignment.target->index.indices.data[0]), VALUE_KIND_INTEGER);
-      Type_Info *at = n->assignment.target->index.p->ty ? type_canonical_concrete(n->assignment.target->index.p->ty) : 0;
+      Type_Info *at = n->assignment.target->index.prefix->ty ? type_canonical_concrete(n->assignment.target->index.prefix->ty) : 0;
       int adj_idx = i0.id;
       if (at and at->k == TYPE_ARRAY and at->lo != 0)
       {
@@ -11358,31 +11358,31 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
     }
     else if (n->assignment.target->k == N_SEL)
     {
-      Type_Info *pt = n->assignment.target->selected_component.p->ty ? type_canonical_concrete(n->assignment.target->selected_component.p->ty) : 0;
+      Type_Info *pt = n->assignment.target->selected_component.prefix->ty ? type_canonical_concrete(n->assignment.target->selected_component.prefix->ty) : 0;
       Value p = {new_temporary_register(generator), VALUE_KIND_POINTER};
-      if (n->assignment.target->selected_component.p->k == N_ID)
+      if (n->assignment.target->selected_component.prefix->k == N_ID)
       {
-        Symbol *s = n->assignment.target->selected_component.p->sy ? n->assignment.target->selected_component.p->sy : symbol_find(generator->sm, n->assignment.target->selected_component.p->s);
+        Symbol *s = n->assignment.target->selected_component.prefix->sy ? n->assignment.target->selected_component.prefix->sy : symbol_find(generator->sm, n->assignment.target->selected_component.prefix->s);
         if (s and s->lv >= 0 and s->lv < generator->sm->lv)
           fprintf(
               o,
               "  %%t%d = bitcast ptr %%lnk.%d.%.*s to ptr\n",
               p.id,
               s->lv,
-              (int) n->assignment.target->selected_component.p->s.length,
-              n->assignment.target->selected_component.p->s.string);
+              (int) n->assignment.target->selected_component.prefix->s.length,
+              n->assignment.target->selected_component.prefix->s.string);
         else
           fprintf(
               o,
               "  %%t%d = bitcast ptr %%v.%s.sc%u.%u to ptr\n",
               p.id,
-              string_to_lowercase(n->assignment.target->selected_component.p->s),
+              string_to_lowercase(n->assignment.target->selected_component.prefix->s),
               s ? s->sc : 0,
               s ? s->el : 0);
       }
       else
       {
-        p = generate_expression(generator, n->assignment.target->selected_component.p);
+        p = generate_expression(generator, n->assignment.target->selected_component.prefix);
       }
       if (pt and pt->k == TYPE_RECORD)
       {
@@ -11397,22 +11397,22 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               int bp = new_temporary_register(generator);
               fprintf(o, "  %%t%d = ptrtoint ptr %%t%d to i64\n", bp, p.id);
               int bo = new_temporary_register(generator);
-              fprintf(o, "  %%t%d = add i64 %%t%d, %u\n", bo, bp, c->component_decl.of / 8);
+              fprintf(o, "  %%t%d = add i64 %%t%d, %u\n", bo, bp, c->component_decl.offset / 8);
               int pp = new_temporary_register(generator);
               fprintf(o, "  %%t%d = inttoptr i64 %%t%d to ptr\n", pp, bo);
               int ov = new_temporary_register(generator);
               fprintf(o, "  %%t%d = load i64, ptr %%t%d\n", ov, pp);
-              uint64_t mk = (1ULL << c->component_decl.bt) - 1;
+              uint64_t mk = (1ULL << c->component_decl.bit_offset) - 1;
               int sh = new_temporary_register(generator);
-              fprintf(o, "  %%t%d = shl i64 %%t%d, %u\n", sh, v.id, c->component_decl.of % 8);
+              fprintf(o, "  %%t%d = shl i64 %%t%d, %u\n", sh, v.id, c->component_decl.offset % 8);
               int ms = new_temporary_register(generator);
               fprintf(
                   o,
                   "  %%t%d = and i64 %%t%d, %llu\n",
                   ms,
                   sh,
-                  (unsigned long long) (mk << (c->component_decl.of % 8)));
-              uint64_t cmk = ~(mk << (c->component_decl.of % 8));
+                  (unsigned long long) (mk << (c->component_decl.offset % 8)));
+              uint64_t cmk = ~(mk << (c->component_decl.offset % 8));
               int cl = new_temporary_register(generator);
               fprintf(o, "  %%t%d = and i64 %%t%d, %llu\n", cl, ov, (unsigned long long) cmk);
               int nv_ = new_temporary_register(generator);
@@ -11430,7 +11430,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             if (c->k == N_CM and string_equal_ignore_case(c->component_decl.nm, n->assignment.target->selected_component.selector))
             {
               int ep = new_temporary_register(generator);
-              fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p.id, c->component_decl.of);
+              fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p.id, c->component_decl.offset);
               v = value_cast(generator, v, VALUE_KIND_INTEGER);
               fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
               break;
@@ -11529,9 +11529,9 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
         cv = value_cast(generator, cv, ex.k);
         if (ch->k == N_RN)
         {
-          Value lo = generate_expression(generator, ch->range.lo);
+          Value lo = generate_expression(generator, ch->range.low);
           lo = value_cast(generator, lo, ex.k);
-          Value hi = generate_expression(generator, ch->range.hi);
+          Value hi = generate_expression(generator, ch->range.high);
           hi = value_cast(generator, hi, ex.k);
           int cge = new_temporary_register(generator);
           fprintf(o, "  %%t%d = icmp sge i64 %%t%d, %%t%d\n", cge, ex.id, lo.id);
@@ -11594,21 +11594,21 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           int ti = new_temporary_register(generator);
           if (rng and rng->k == N_RN)
           {
-            Value lo = value_cast(generator, generate_expression(generator, rng->range.lo), VALUE_KIND_INTEGER);
+            Value lo = value_cast(generator, generate_expression(generator, rng->range.low), VALUE_KIND_INTEGER);
             fprintf(o, "  %%t%d = add i64 %%t%d, 0\n", ti, lo.id);
-            Value hi = value_cast(generator, generate_expression(generator, rng->range.hi), VALUE_KIND_INTEGER);
+            Value hi = value_cast(generator, generate_expression(generator, rng->range.high), VALUE_KIND_INTEGER);
             fprintf(o, "  store i64 %%t%d, ptr %%v.__for_hi_%d\n", hi.id, hi_var);
           }
           else if (
               rng and rng->k == N_AT
-              and string_equal_ignore_case(rng->attribute.at, STRING_LITERAL("RANGE")))
+              and string_equal_ignore_case(rng->attribute.attribute_name, STRING_LITERAL("RANGE")))
           {
-            Type_Info *at = rng->attribute.p ? type_canonical_concrete(rng->attribute.p->ty) : 0;
+            Type_Info *at = rng->attribute.prefix ? type_canonical_concrete(rng->attribute.prefix->ty) : 0;
             if (at and at->k == TYPE_ARRAY)
             {
-              if (at->lo == 0 and at->hi == -1 and rng->attribute.p)
+              if (at->lo == 0 and at->hi == -1 and rng->attribute.prefix)
               {
-                Value pv = generate_expression(generator, rng->attribute.p);
+                Value pv = generate_expression(generator, rng->attribute.prefix);
                 int blo, bhi;
                 get_fat_pointer_bounds(generator, pv.id, &blo, &bhi);
                 fprintf(o, "  %%t%d = add i64 0, 0\n", ti);
