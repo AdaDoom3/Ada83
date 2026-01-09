@@ -1817,8 +1817,8 @@ static Syntax_Node *parse_expression(Parser *p);
 static Syntax_Node *parse_primary(Parser *p);
 static Syntax_Node *parse_range(Parser *p);
 static Node_Vector parse_statement(Parser *p);
-static Node_Vector pdc(Parser *p);
-static Node_Vector phd(Parser *p);
+static Node_Vector parse_declarative_part(Parser *p);
+static Node_Vector parse_handle_declaration(Parser *p);
 static Syntax_Node *ps(Parser *p);
 static Syntax_Node *pgf(Parser *p);
 static RC *prc(Parser *p);
@@ -2418,7 +2418,7 @@ static Syntax_Node *psi(Parser *p)
   }
   return n;
 }
-static Node_Vector ppm(Parser *p)
+static Node_Vector parse_parameter_mode(Parser *p)
 {
   Node_Vector v = {0};
   if (not parser_match(p, T_LP))
@@ -2471,7 +2471,7 @@ static Syntax_Node *pps_(Parser *p)
   }
   else
     n->sp.nm = parser_identifier(p);
-  n->sp.pmm = ppm(p);
+  n->sp.pmm = parse_parameter_mode(p);
   return n;
 }
 static Syntax_Node *pfs(Parser *p)
@@ -2486,7 +2486,7 @@ static Syntax_Node *pfs(Parser *p)
   }
   else
     n->sp.nm = parser_identifier(p);
-  n->sp.pmm = ppm(p);
+  n->sp.pmm = parse_parameter_mode(p);
   parser_expect(p, T_RET);
   n->sp.rt = parse_name(p);
   return n;
@@ -2653,10 +2653,10 @@ static Syntax_Node *pgf(Parser *p)
   {
     String_Slice nm = parser_identifier(p);
     parser_expect(p, T_IS);
-    Node_Vector dc = pdc(p);
+    Node_Vector dc = parse_declarative_part(p);
     if (parser_match(p, T_PRV))
     {
-      Node_Vector pr = pdc(p);
+      Node_Vector pr = parse_declarative_part(p);
       for (uint32_t i = 0; i < pr.count; i++)
         nv(&dc, pr.data[i]);
     }
@@ -2783,12 +2783,12 @@ static Syntax_Node *pbk(Parser *p, String_Slice lb)
   Syntax_Node *n = ND(BL, lc);
   n->bk.lb = lb;
   if (parser_match(p, T_DEC))
-    n->bk.dc = pdc(p);
+    n->bk.dc = parse_declarative_part(p);
   parser_expect(p, T_BEG);
   while (not parser_at(p, T_EXCP) and not parser_at(p, T_END))
     nv(&n->bk.st, ps(p));
   if (parser_match(p, T_EXCP))
-    n->bk.hd = phd(p);
+    n->bk.hd = parse_handle_declaration(p);
   parser_expect(p, T_END);
   if (parser_at(p, T_ID))
     parser_next(p);
@@ -2837,7 +2837,7 @@ static Syntax_Node *psl(Parser *p)
               p->current_token = scr;
               p->peek_token = spk;
               p->lexer = slx;
-              g->acc.pmx = ppm(p);
+              g->acc.pmx = parse_parameter_mode(p);
             }
             else
             {
@@ -2849,7 +2849,7 @@ static Syntax_Node *psl(Parser *p)
                 nv(&g->acc.ixx, parse_expression(p));
               while (parser_match(p, T_CM));
               parser_expect(p, T_RP);
-              g->acc.pmx = ppm(p);
+              g->acc.pmx = parse_parameter_mode(p);
             }
           }
           else
@@ -2859,12 +2859,12 @@ static Syntax_Node *psl(Parser *p)
               nv(&g->acc.ixx, parse_expression(p));
             while (parser_match(p, T_CM));
             parser_expect(p, T_RP);
-            g->acc.pmx = ppm(p);
+            g->acc.pmx = parse_parameter_mode(p);
           }
         }
         else
         {
-          g->acc.pmx = ppm(p);
+          g->acc.pmx = parse_parameter_mode(p);
         }
         if (parser_match(p, T_DO))
         {
@@ -2915,7 +2915,7 @@ static Syntax_Node *psl(Parser *p)
               p->current_token = scr;
               p->peek_token = spk;
               p->lexer = slx;
-              g->acc.pmx = ppm(p);
+              g->acc.pmx = parse_parameter_mode(p);
             }
             else
             {
@@ -2927,7 +2927,7 @@ static Syntax_Node *psl(Parser *p)
                 nv(&g->acc.ixx, parse_expression(p));
               while (parser_match(p, T_CM));
               parser_expect(p, T_RP);
-              g->acc.pmx = ppm(p);
+              g->acc.pmx = parse_parameter_mode(p);
             }
           }
           else
@@ -2937,12 +2937,12 @@ static Syntax_Node *psl(Parser *p)
               nv(&g->acc.ixx, parse_expression(p));
             while (parser_match(p, T_CM));
             parser_expect(p, T_RP);
-            g->acc.pmx = ppm(p);
+            g->acc.pmx = parse_parameter_mode(p);
           }
         }
         else
         {
-          g->acc.pmx = ppm(p);
+          g->acc.pmx = parse_parameter_mode(p);
         }
         if (parser_match(p, T_DO))
         {
@@ -3036,7 +3036,7 @@ static Syntax_Node *ps(Parser *p)
           p->current_token = scr;
           p->peek_token = spk;
           p->lexer = slx;
-          n->acc.pmx = ppm(p);
+          n->acc.pmx = parse_parameter_mode(p);
         }
         else
         {
@@ -3048,7 +3048,7 @@ static Syntax_Node *ps(Parser *p)
             nv(&n->acc.ixx, parse_expression(p));
           while (parser_match(p, T_CM));
           parser_expect(p, T_RP);
-          n->acc.pmx = ppm(p);
+          n->acc.pmx = parse_parameter_mode(p);
         }
       }
       else
@@ -3058,12 +3058,12 @@ static Syntax_Node *ps(Parser *p)
           nv(&n->acc.ixx, parse_expression(p));
         while (parser_match(p, T_CM));
         parser_expect(p, T_RP);
-        n->acc.pmx = ppm(p);
+        n->acc.pmx = parse_parameter_mode(p);
       }
     }
     else
     {
-      n->acc.pmx = ppm(p);
+      n->acc.pmx = parse_parameter_mode(p);
     }
     if (parser_match(p, T_DO))
     {
@@ -3184,7 +3184,7 @@ static Node_Vector parse_statement(Parser *p)
     nv(&v, ps(p));
   return v;
 }
-static Node_Vector phd(Parser *p)
+static Node_Vector parse_handle_declaration(Parser *p)
 {
   Node_Vector v = {0};
   while (parser_match(p, T_WHN))
@@ -3802,11 +3802,11 @@ static Syntax_Node *pdl(Parser *p)
       }
       Syntax_Node *n = ND(PB, lc);
       n->bd.sp = sp;
-      n->bd.dc = pdc(p);
+      n->bd.dc = parse_declarative_part(p);
       parser_expect(p, T_BEG);
       n->bd.st = parse_statement(p);
       if (parser_match(p, T_EXCP))
-        n->bd.hdd = phd(p);
+        n->bd.hdd = parse_handle_declaration(p);
       parser_expect(p, T_END);
       if (parser_at(p, T_ID) or parser_at(p, T_STR))
         parser_next(p);
@@ -3861,7 +3861,7 @@ static Syntax_Node *pdl(Parser *p)
     }
     Syntax_Node *sp = ND(FS, lc);
     sp->sp.nm = nm;
-    sp->sp.pmm = ppm(p);
+    sp->sp.pmm = parse_parameter_mode(p);
     parser_expect(p, T_RET);
     sp->sp.rt = parse_name(p);
     if (parser_match(p, T_REN))
@@ -3883,11 +3883,11 @@ static Syntax_Node *pdl(Parser *p)
       }
       Syntax_Node *n = ND(FB, lc);
       n->bd.sp = sp;
-      n->bd.dc = pdc(p);
+      n->bd.dc = parse_declarative_part(p);
       parser_expect(p, T_BEG);
       n->bd.st = parse_statement(p);
       if (parser_match(p, T_EXCP))
-        n->bd.hdd = phd(p);
+        n->bd.hdd = parse_handle_declaration(p);
       parser_expect(p, T_END);
       if (parser_at(p, T_ID) or parser_at(p, T_STR))
         parser_next(p);
@@ -3914,12 +3914,12 @@ static Syntax_Node *pdl(Parser *p)
       }
       Syntax_Node *n = ND(PKB, lc);
       n->pb.nm = nm;
-      n->pb.dc = pdc(p);
+      n->pb.dc = parse_declarative_part(p);
       if (parser_match(p, T_BEG))
       {
         n->pb.st = parse_statement(p);
         if (parser_match(p, T_EXCP))
-          n->pb.hddd = phd(p);
+          n->pb.hddd = parse_handle_declaration(p);
       }
       parser_expect(p, T_END);
       if (parser_at(p, T_ID))
@@ -3971,9 +3971,9 @@ static Syntax_Node *pdl(Parser *p)
     }
     Syntax_Node *n = ND(PKS, lc);
     n->ps.nm = nm;
-    n->ps.dc = pdc(p);
+    n->ps.dc = parse_declarative_part(p);
     if (parser_match(p, T_PRV))
-      n->ps.pr = pdc(p);
+      n->ps.pr = parse_declarative_part(p);
     parser_expect(p, T_END);
     if (parser_at(p, T_ID))
       parser_next(p);
@@ -3995,11 +3995,11 @@ static Syntax_Node *pdl(Parser *p)
       }
       Syntax_Node *n = ND(TKB, lc);
       n->tb.nm = nm;
-      n->tb.dc = pdc(p);
+      n->tb.dc = parse_declarative_part(p);
       parser_expect(p, T_BEG);
       n->tb.st = parse_statement(p);
       if (parser_match(p, T_EXCP))
-        n->tb.hdz = phd(p);
+        n->tb.hdz = parse_handle_declaration(p);
       parser_expect(p, T_END);
       if (parser_at(p, T_ID))
         parser_next(p);
@@ -4032,7 +4032,7 @@ static Syntax_Node *pdl(Parser *p)
                 p->current_token = scr;
                 p->peek_token = spk;
                 p->lexer = slx;
-                e->ent.pmy = ppm(p);
+                e->ent.pmy = parse_parameter_mode(p);
               }
               else
               {
@@ -4056,7 +4056,7 @@ static Syntax_Node *pdl(Parser *p)
                   nv(&e->ent.ixy, ix);
                 }
                 parser_expect(p, T_RP);
-                e->ent.pmy = ppm(p);
+                e->ent.pmy = parse_parameter_mode(p);
               }
             }
             else
@@ -4078,12 +4078,12 @@ static Syntax_Node *pdl(Parser *p)
                 nv(&e->ent.ixy, ix);
               }
               parser_expect(p, T_RP);
-              e->ent.pmy = ppm(p);
+              e->ent.pmy = parse_parameter_mode(p);
             }
           }
           else
           {
-            e->ent.pmy = ppm(p);
+            e->ent.pmy = parse_parameter_mode(p);
           }
           parser_expect(p, T_SC);
           nv(&n->ts.en, e);
@@ -4186,7 +4186,7 @@ static Syntax_Node *pdl(Parser *p)
     return n;
   }
 }
-static Node_Vector pdc(Parser *p)
+static Node_Vector parse_declarative_part(Parser *p)
 {
   Node_Vector v = {0};
   while (not parser_at(p, T_BEG) and not parser_at(p, T_END) and not parser_at(p, T_PRV)
@@ -4253,7 +4253,7 @@ static Syntax_Node *pcx(Parser *p)
   }
   return cx;
 }
-static Syntax_Node *pcu(Parser *p)
+static Syntax_Node *parse_compilation_unit(Parser *p)
 {
   Source_Location lc = parser_location(p);
   Syntax_Node *n = ND(CU, lc);
@@ -4312,7 +4312,7 @@ static Syntax_Node *pcu(Parser *p)
           Parser pp = {lexer_new(psrc, sz, fn), {0}, {0}, 0, {0}};
           parser_next(&pp);
           parser_next(&pp);
-          Syntax_Node *pcu_ = pcu(&pp);
+          Syntax_Node *pcu_ = parse_compilation_unit(&pp);
           if (pcu_ and pcu_->cu.cx)
           {
             for (uint32_t i = 0; i < pcu_->cu.cx->cx.wt.count; i++)
@@ -4329,7 +4329,7 @@ static Syntax_Node *pcu(Parser *p)
   }
   return n;
 }
-static Parser pnw(const char *s, size_t z, const char *f)
+static Parser parser_new(const char *s, size_t z, const char *f)
 {
   Parser p = {lexer_new(s, z, f), {0}, {0}, 0, {0}};
   parser_next(&p);
@@ -6825,7 +6825,7 @@ static bool mfp(Syntax_Node *f, String_Slice nm);
 static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap);
 static const char *lkp(Symbol_Manager *SM, String_Slice nm);
 static Syntax_Node *pks2(Symbol_Manager *SM, String_Slice nm, const char *src);
-static void pks(Symbol_Manager *SM, String_Slice nm, const char *src);
+static void parse_package_specification(Symbol_Manager *SM, String_Slice nm, const char *src);
 static void rap(Symbol_Manager *SM, Node_Vector *fp, Node_Vector *ap)
 {
   if (not fp or not ap)
@@ -7901,8 +7901,8 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
       {
         char _af[512];
         snprintf(_af, 512, "%.*s.ads", (int) n->pb.nm.length, n->pb.nm.string);
-        Parser _p = pnw(_src, strlen(_src), _af);
-        Syntax_Node *_cu = pcu(&_p);
+        Parser _p = parser_new(_src, strlen(_src), _af);
+        Syntax_Node *_cu = parse_compilation_unit(&_p);
         if (_cu)
           for (uint32_t _i = 0; _i < _cu->cu.un.count; _i++)
           {
@@ -8255,8 +8255,8 @@ static Syntax_Node *pks2(Symbol_Manager *SM, String_Slice nm, const char *src)
     return 0;
   char af[512];
   snprintf(af, 512, "%.*s.ads", (int) nm.length, nm.string);
-  Parser p = pnw(src, strlen(src), af);
-  Syntax_Node *cu = pcu(&p);
+  Parser p = parser_new(src, strlen(src), af);
+  Syntax_Node *cu = parse_compilation_unit(&p);
   if (cu and cu->cu.cx)
   {
     for (uint32_t i = 0; i < cu->cu.cx->cx.wt.count; i++)
@@ -8288,7 +8288,7 @@ static Syntax_Node *pks2(Symbol_Manager *SM, String_Slice nm, const char *src)
   }
   return cu;
 }
-static void pks(Symbol_Manager *SM, String_Slice nm, const char *src)
+static void parse_package_specification(Symbol_Manager *SM, String_Slice nm, const char *src)
 {
   Symbol *ps = symbol_find(SM, nm);
   if (ps and ps->k == 6)
@@ -8300,7 +8300,7 @@ static void smu(Symbol_Manager *SM, Syntax_Node *n)
   if (n->k != N_CU)
     return;
   for (uint32_t i = 0; i < n->cu.cx->cx.wt.count; i++)
-    pks(SM, n->cu.cx->cx.wt.data[i]->wt.nm, lkp(SM, n->cu.cx->cx.wt.data[i]->wt.nm));
+    parse_package_specification(SM, n->cu.cx->cx.wt.data[i]->wt.nm, lkp(SM, n->cu.cx->cx.wt.data[i]->wt.nm));
   for (uint32_t i = 0; i < n->cu.cx->cx.us.count; i++)
   {
     Syntax_Node *u = n->cu.cx->cx.us.data[i];
@@ -14012,8 +14012,8 @@ static bool lcmp(Symbol_Manager *SM, String_Slice nm, String_Slice pth)
   }
   if (not src)
     return false;
-  Parser p = pnw(src, strlen(src), fp);
-  Syntax_Node *cu = pcu(&p);
+  Parser p = parser_new(src, strlen(src), fp);
+  Syntax_Node *cu = parse_compilation_unit(&p);
   if (not cu)
     return false;
   Symbol_Manager sm;
@@ -14165,8 +14165,8 @@ int main(int ac, char **av)
     fprintf(stderr, "e: %s\n", inf);
     return 1;
   }
-  Parser p = pnw(src, strlen(src), inf);
-  Syntax_Node *cu = pcu(&p);
+  Parser p = parser_new(src, strlen(src), inf);
+  Syntax_Node *cu = parse_compilation_unit(&p);
   if (p.error_count or not cu)
     return 1;
   Symbol_Manager sm;
@@ -14174,7 +14174,7 @@ int main(int ac, char **av)
   {
     const char *asrc = lkp(&sm, STRING_LITERAL("ascii"));
     if (asrc)
-      pks(&sm, STRING_LITERAL("ascii"), asrc);
+      parse_package_specification(&sm, STRING_LITERAL("ascii"), asrc);
   }
   char sd[520] = {0};
   const char *sl = strrchr(inf, '/');
