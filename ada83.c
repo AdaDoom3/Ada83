@@ -4497,7 +4497,7 @@ static Symbol *symbol_find(Symbol_Manager *SM, String_Slice nm)
       imm = s;
   return imm;
 }
-static void sfu(Symbol_Manager *SM, Symbol *s, String_Slice nm)
+static void symbol_find_use(Symbol_Manager *SM, Symbol *s, String_Slice nm)
 {
   uint32_t h = symbol_hash(nm) & 63, b = 1ULL << (symbol_hash(nm) & 63);
   if (SM->uv_vis[h] & b)
@@ -4994,7 +4994,7 @@ static void fal(Symbol_Manager *SM, Source_Location l)
         find_symbol(SM, s, l);
       }
 }
-static void scp(Symbol_Manager *SM)
+static void symbol_compare_parameter(Symbol_Manager *SM)
 {
   SM->sc++;
   SM->ss++;
@@ -5005,7 +5005,7 @@ static void scp(Symbol_Manager *SM)
     SM->sst[m] = 0;
   }
 }
-static void sco(Symbol_Manager *SM)
+static void symbol_compare_overload(Symbol_Manager *SM)
 {
   fal(SM, (Source_Location){0, 0, ""});
   for (int i = 0; i < 4096; i++)
@@ -6577,7 +6577,7 @@ static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *n)
       Symbol *lbs = symbol_add_overload(SM, syn(n->bk.lb, 10, 0, n));
       (void) lbs;
     }
-    scp(SM);
+    symbol_compare_parameter(SM);
     for (uint32_t i = 0; i < n->bk.dc.count; i++)
       resolve_declaration(SM, n->bk.dc.data[i]);
     for (uint32_t i = 0; i < n->bk.st.count; i++)
@@ -6597,7 +6597,7 @@ static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *n)
           resolve_statement_sequence(SM, h->hnd.stz.data[j]);
       }
     }
-    sco(SM);
+    symbol_compare_overload(SM);
     break;
   case N_RT:
     if (n->rt.vl)
@@ -6621,7 +6621,7 @@ static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *n)
       resolve_expression(SM, n->ct.arr.data[i], 0);
     break;
   case N_ACC:
-    scp(SM);
+    symbol_compare_parameter(SM);
     {
       Symbol *ens = symbol_add_overload(SM, syn(n->acc.nm, 9, 0, n));
       (void) ens;
@@ -6637,7 +6637,7 @@ static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *n)
       for (uint32_t i = 0; i < n->acc.stx.count; i++)
         resolve_statement_sequence(SM, n->acc.stx.data[i]);
     }
-    sco(SM);
+    symbol_compare_overload(SM);
     break;
   case N_SA:
     if (n->sa.gd)
@@ -6674,7 +6674,7 @@ static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *n)
     {
       Symbol *s = symbol_find(SM, n->us.nm->s);
       if (s)
-        sfu(SM, s, n->us.nm->s);
+        symbol_find_use(SM, s, n->us.nm->s);
     }
     break;
   default:
@@ -6821,12 +6821,12 @@ static void ihop(Type_Info *dt, Type_Info *pt)
 }
 static int ncp_depth = 0;
 #define MAX_NCP_DEPTH 1000
-static bool mfp(Syntax_Node *f, String_Slice nm);
+static bool match_formal_parameter(Syntax_Node *f, String_Slice nm);
 static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap);
 static const char *lkp(Symbol_Manager *SM, String_Slice nm);
 static Syntax_Node *pks2(Symbol_Manager *SM, String_Slice nm, const char *src);
 static void parse_package_specification(Symbol_Manager *SM, String_Slice nm, const char *src);
-static void rap(Symbol_Manager *SM, Node_Vector *fp, Node_Vector *ap)
+static void resolve_array_parameter(Symbol_Manager *SM, Node_Vector *fp, Node_Vector *ap)
 {
   if (not fp or not ap)
     return;
@@ -6927,7 +6927,7 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
   if (fp and n->k == N_ID)
   {
     for (uint32_t i = 0; i < fp->count; i++)
-      if (mfp(fp->data[i], n->s))
+      if (match_formal_parameter(fp->data[i], n->s))
       {
         if (i < ap->count)
         {
@@ -6944,7 +6944,7 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
   if (fp and n->k == N_STR)
   {
     for (uint32_t i = 0; i < fp->count; i++)
-      if (mfp(fp->data[i], n->s))
+      if (match_formal_parameter(fp->data[i], n->s))
       {
         if (i < ap->count)
         {
@@ -7283,7 +7283,7 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
   ncp_depth--;
   return c;
 }
-static bool mfp(Syntax_Node *f, String_Slice nm)
+static bool match_formal_parameter(Syntax_Node *f, String_Slice nm)
 {
   if (f->k == N_GTP)
     return string_equal_ignore_case(f->td.nm, nm);
@@ -7328,7 +7328,7 @@ static Syntax_Node *gcl(Symbol_Manager *SM, Syntax_Node *n)
     GT *g = gfnd(SM, n->gi.gn);
     if (g)
     {
-      rap(SM, &g->fp, &n->gi.ap);
+      resolve_array_parameter(SM, &g->fp, &n->gi.ap);
       Syntax_Node *inst = ncs(g->un, &g->fp, &n->gi.ap);
       if (inst)
       {
@@ -7774,7 +7774,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
     if (n->k == N_PB)
     {
       SM->lv++;
-      scp(SM);
+      symbol_compare_parameter(SM);
       n->bd.pr = s;
       GT *gt = gfnd(SM, sp->sp.nm);
       if (gt)
@@ -7791,7 +7791,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
         resolve_declaration(SM, n->bd.dc.data[i]);
       for (uint32_t i = 0; i < n->bd.st.count; i++)
         resolve_statement_sequence(SM, n->bd.st.data[i]);
-      sco(SM);
+      symbol_compare_overload(SM);
       SM->lv--;
     }
   }
@@ -7811,7 +7811,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
     if (n->k == N_FB)
     {
       SM->lv++;
-      scp(SM);
+      symbol_compare_parameter(SM);
       n->bd.pr = s;
       GT *gt = gfnd(SM, sp->sp.nm);
       if (gt)
@@ -7828,7 +7828,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
         resolve_declaration(SM, n->bd.dc.data[i]);
       for (uint32_t i = 0; i < n->bd.st.count; i++)
         resolve_statement_sequence(SM, n->bd.st.data[i]);
-      sco(SM);
+      symbol_compare_overload(SM);
       SM->lv--;
     }
   }
@@ -7854,12 +7854,12 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
     n->sy = s;
     n->ps.el = s->el;
     SM->pk = n;
-    scp(SM);
+    symbol_compare_parameter(SM);
     for (uint32_t i = 0; i < n->ps.dc.count; i++)
       resolve_declaration(SM, n->ps.dc.data[i]);
     for (uint32_t i = 0; i < n->ps.pr.count; i++)
       resolve_declaration(SM, n->ps.pr.data[i]);
-    sco(SM);
+    symbol_compare_overload(SM);
     SM->pk = 0;
   }
   break;
@@ -7879,7 +7879,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
         pk = ps->df;
       if (pk)
       {
-        scp(SM);
+        symbol_compare_parameter(SM);
         SM->pk = pk;
         for (uint32_t i = 0; i < pk->ps.dc.count; i++)
           resolve_declaration(SM, pk->ps.dc.data[i]);
@@ -7889,12 +7889,12 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
           resolve_declaration(SM, n->pb.dc.data[i]);
         for (uint32_t i = 0; i < n->pb.st.count; i++)
           resolve_statement_sequence(SM, n->pb.st.data[i]);
-        sco(SM);
+        symbol_compare_overload(SM);
         SM->pk = 0;
       }
       break;
     }
-    scp(SM);
+    symbol_compare_parameter(SM);
     {
       const char *_src = lkp(SM, n->pb.nm);
       if (_src)
@@ -8006,7 +8006,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
       resolve_declaration(SM, n->pb.dc.data[i]);
     for (uint32_t i = 0; i < n->pb.st.count; i++)
       resolve_statement_sequence(SM, n->pb.st.data[i]);
-    sco(SM);
+    symbol_compare_overload(SM);
     SM->pk = 0;
   }
   break;
@@ -8022,7 +8022,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
   case N_TKB:
   {
     Symbol *ts = symbol_find(SM, n->tb.nm);
-    scp(SM);
+    symbol_compare_parameter(SM);
     if (ts and ts->ty and ts->ty->cm.count > 0)
     {
       for (uint32_t i = 0; i < ts->ty->cm.count; i++)
@@ -8039,7 +8039,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
       resolve_declaration(SM, n->tb.dc.data[i]);
     for (uint32_t i = 0; i < n->tb.st.count; i++)
       resolve_statement_sequence(SM, n->tb.st.data[i]);
-    sco(SM);
+    symbol_compare_overload(SM);
   }
   break;
   case N_GEN:
@@ -8426,7 +8426,7 @@ static int new_label_block(Code_Generator *g)
 {
   return g->lb++;
 }
-static int nm(Code_Generator *g)
+static int normalize_name(Code_Generator *g)
 {
   return ++g->md;
 }
@@ -11777,7 +11777,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
     int lmd_id = 0;
     if (g->ls <= 64)
     {
-      lmd_id = nm(g);
+      lmd_id = normalize_name(g);
       g->lopt[lmd_id] = n->lp.rv ? 7 : 0;
     }
     if (lmd_id)
