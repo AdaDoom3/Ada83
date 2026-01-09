@@ -4382,7 +4382,7 @@ struct Symbol
   String_Slice name;
   uint8_t k;
   Type_Info *ty;
-  Syntax_Node *df;
+  Syntax_Node *definition;
   Symbol *nx, *pv;
   int sc;
   int ss;
@@ -4445,7 +4445,7 @@ static Symbol *symbol_new(String_Slice nm, uint8_t k, Type_Info *ty, Syntax_Node
   s->name = string_duplicate(nm);
   s->k = k;
   s->ty = ty;
-  s->df = df;
+  s->definition = df;
   s->el = -1;
   s->lv = -1;
   return s;
@@ -4504,9 +4504,9 @@ static void symbol_find_use(Symbol_Manager *symbol_manager, Symbol *s, String_Sl
     return;
   symbol_manager->uv_vis[h] |= b;
   for (Symbol *parser = s; parser; parser = parser->nx)
-    if (string_equal_ignore_case(parser->name, nm) and parser->k == 6 and parser->df and parser->df->k == N_PKS)
+    if (string_equal_ignore_case(parser->name, nm) and parser->k == 6 and parser->definition and parser->definition->k == N_PKS)
     {
-      Syntax_Node *pk = parser->df;
+      Syntax_Node *pk = parser->definition;
       for (uint32_t i = 0; i < pk->package_spec.dc.count; i++)
       {
         Syntax_Node *d = pk->package_spec.dc.data[i];
@@ -5216,9 +5216,9 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
     if (parser->k == N_ID)
     {
       Symbol *ps = symbol_find(symbol_manager, parser->s);
-      if (ps and ps->k == 6 and ps->df and ps->df->k == N_PKS)
+      if (ps and ps->k == 6 and ps->definition and ps->definition->k == N_PKS)
       {
-        Syntax_Node *pk = ps->df;
+        Syntax_Node *pk = ps->definition;
         for (uint32_t i = 0; i < pk->package_spec.private_declarations.count; i++)
         {
           Syntax_Node *d = pk->package_spec.private_declarations.data[i];
@@ -5849,18 +5849,18 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
           node->sy = s0;
         }
       }
-      if (s->k == 2 and s->df)
+      if (s->k == 2 and s->definition)
       {
-        if (s->df->k == N_INT)
+        if (s->definition->k == N_INT)
         {
           node->k = N_INT;
-          node->i = s->df->i;
+          node->i = s->definition->i;
           node->ty = TY_UINT;
         }
-        else if (s->df->k == N_REAL)
+        else if (s->definition->k == N_REAL)
         {
           node->k = N_REAL;
-          node->f = s->df->f;
+          node->f = s->definition->f;
           node->ty = TY_UFLT;
         }
       }
@@ -6034,9 +6034,9 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     if (parser->k == N_ID)
     {
       Symbol *ps = symbol_find(symbol_manager, parser->s);
-      if (ps and ps->k == 6 and ps->df and ps->df->k == N_PKS)
+      if (ps and ps->k == 6 and ps->definition and ps->definition->k == N_PKS)
       {
-        Syntax_Node *pk = ps->df;
+        Syntax_Node *pk = ps->definition;
         for (uint32_t i = 0; i < pk->package_spec.dc.count; i++)
         {
           Syntax_Node *d = pk->package_spec.dc.data[i];
@@ -6048,9 +6048,9 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
             {
               node->ty = d->sy->ty->el;
             }
-            if (d->sy->k == 2 and d->sy->df)
+            if (d->sy->k == 2 and d->sy->definition)
             {
-              Syntax_Node *df = d->sy->df;
+              Syntax_Node *df = d->sy->definition;
               if (df->k == N_CHK)
                 df = df->check.expression;
               if (df->k == N_INT)
@@ -6090,9 +6090,9 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
               {
                 node->ty = oid->sy->ty ? oid->sy->ty : TY_INT;
                 node->sy = oid->sy;
-                if (oid->sy->k == 2 and oid->sy->df)
+                if (oid->sy->k == 2 and oid->sy->definition)
                 {
-                  Syntax_Node *df = oid->sy->df;
+                  Syntax_Node *df = oid->sy->definition;
                   if (df->k == N_CHK)
                     df = df->check.expression;
                   if (df->k == N_INT)
@@ -6150,9 +6150,9 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
               {
                 node->ty = s->ty->el;
               }
-              if (s->k == 2 and s->df)
+              if (s->k == 2 and s->definition)
               {
-                Syntax_Node *df = s->df;
+                Syntax_Node *df = s->definition;
                 if (df->k == N_CHK)
                   df = df->check.expression;
                 if (df->k == N_INT)
@@ -7318,7 +7318,7 @@ static Syntax_Node *generate_clone(Symbol_Manager *symbol_manager, Syntax_Node *
         Symbol *gs = symbol_new(g->nm, 11, 0, n);
         gs->gt = g;
         if (g->un and g->un->k == N_PKS)
-          gs->df = g->un;
+          gs->definition = g->un;
         symbol_add_overload(symbol_manager, gs);
       }
     }
@@ -7406,7 +7406,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       Symbol *s = 0;
       if (x and x->sc == symbol_manager->sc and x->ss == symbol_manager->ss and x->k != 11)
       {
-        if (x->k == 2 and x->df and x->df->k == N_OD and not((Syntax_Node *) x->df)->object_decl.in
+        if (x->k == 2 and x->definition and x->definition->k == N_OD and not((Syntax_Node *) x->definition)->object_decl.in
             and n->object_decl.is_constant and n->object_decl.in)
         {
           s = x;
@@ -7449,7 +7449,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
             }
           }
         }
-        s->df = n->object_decl.in;
+        s->definition = n->object_decl.in;
         if (n->object_decl.is_constant and n->object_decl.in->k == N_INT)
           s->vl = n->object_decl.in->i;
         else if (n->object_decl.is_constant and n->object_decl.in->k == N_ID and n->object_decl.in->sy and n->object_decl.in->sy->k == 2)
@@ -7572,7 +7572,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       {
         n->sy = px2;
         if (n->type_decl.definition)
-          px2->df = n;
+          px2->definition = n;
       }
       else
       {
@@ -7725,7 +7725,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
         if (tgt and tgt->k == 3)
         {
           Symbol *al = symbol_add_overload(symbol_manager, symbol_new(id->s, 3, 0, n));
-          al->df = n->exception_decl.renamed_entity;
+          al->definition = n->exception_decl.renamed_entity;
           id->sy = al;
         }
         else if (error_count < 99)
@@ -7875,8 +7875,8 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     {
       gt->bd = n;
       Syntax_Node *pk = gt->un and gt->un->k == N_PKS ? gt->un : 0;
-      if (not pk and ps and ps->df and ps->df->k == N_PKS)
-        pk = ps->df;
+      if (not pk and ps and ps->definition and ps->definition->k == N_PKS)
+        pk = ps->definition;
       if (pk)
       {
         symbol_compare_parameter(symbol_manager);
@@ -7925,7 +7925,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       }
     }
     ps = symbol_find(symbol_manager, n->package_body.nm);
-    if (not ps or not ps->df)
+    if (not ps or not ps->definition)
     {
       Type_Info *t = type_new(TY_P, n->package_body.nm);
       ps = symbol_add_overload(symbol_manager, symbol_new(n->package_body.nm, 6, t, 0));
@@ -7933,17 +7933,17 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       Syntax_Node *pk = ND(PKS, n->l);
       pk->package_spec.nm = n->package_body.nm;
       pk->sy = ps;
-      ps->df = pk;
+      ps->definition = pk;
       n->sy = ps;
     }
     if (ps)
     {
       sv(&symbol_manager->uv, ps);
       n->package_body.elaboration_level = ps->el;
-      symbol_manager->pk = ps->df;
-      if (ps->df and ps->df->k == N_PKS)
+      symbol_manager->pk = ps->definition;
+      if (ps->definition and ps->definition->k == N_PKS)
       {
-        Syntax_Node *pk = ps->df;
+        Syntax_Node *pk = ps->definition;
         for (uint32_t i = 0; i < pk->package_spec.dc.count; i++)
         {
           Syntax_Node *d = pk->package_spec.dc.data[i];
@@ -8307,9 +8307,9 @@ static void symbol_manager_use_clauses(Symbol_Manager *symbol_manager, Syntax_No
     if (u and u->k == N_US and u->use_clause.nm and u->use_clause.nm->k == N_ID)
     {
       Symbol *ps = symbol_find(symbol_manager, u->use_clause.nm->s);
-      if (ps and ps->k == 6 and ps->df and ps->df->k == N_PKS)
+      if (ps and ps->k == 6 and ps->definition and ps->definition->k == N_PKS)
       {
-        Syntax_Node *pk = ps->df;
+        Syntax_Node *pk = ps->definition;
         for (uint32_t j = 0; j < pk->package_spec.dc.count; j++)
         {
           Syntax_Node *d = pk->package_spec.dc.data[j];
@@ -8357,9 +8357,9 @@ static void symbol_manager_use_clauses(Symbol_Manager *symbol_manager, Syntax_No
         mx = e > mx ? e : mx;
       }
     for (uint32_t j = 0; j < eo.count; j++)
-      if (eo.data[j]->k == 6 and eo.data[j]->df and eo.data[j]->df->k == N_PKS)
-        for (uint32_t k = 0; k < ((Syntax_Node *) eo.data[j]->df)->package_spec.dc.count; k++)
-          resolve_declaration(symbol_manager, ((Syntax_Node *) eo.data[j]->df)->package_spec.dc.data[k]);
+      if (eo.data[j]->k == 6 and eo.data[j]->definition and eo.data[j]->definition->k == N_PKS)
+        for (uint32_t k = 0; k < ((Syntax_Node *) eo.data[j]->definition)->package_spec.dc.count; k++)
+          resolve_declaration(symbol_manager, ((Syntax_Node *) eo.data[j]->definition)->package_spec.dc.data[k]);
     resolve_declaration(symbol_manager, n->compilation_unit.units.data[i]);
   }
 }
@@ -9209,7 +9209,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     if (s and s->k == 2
         and not(s->ty and is_unconstrained_array(type_canonical_concrete(s->ty)) and s->lv > 0))
     {
-      if (s->df and s->df->k == N_STR)
+      if (s->definition and s->definition->k == N_STR)
       {
         r.k = VALUE_KIND_POINTER;
         char nb[256];
@@ -12955,7 +12955,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       {
         for (Symbol *s = generator->sm->sy[h]; s; s = s->nx)
         {
-          if (s->k == 0 and s->lv >= 0 and s->lv < generator->sm->lv and not(s->df and s->df->k == N_GVL))
+          if (s->k == 0 and s->lv >= 0 and s->lv < generator->sm->lv and not(s->definition and s->definition->k == N_GVL))
           {
             Value_Kind k = s->ty ? token_kind_to_value_kind(s->ty) : VALUE_KIND_INTEGER;
             Type_Info *at = s->ty ? type_canonical_concrete(s->ty) : 0;
@@ -13333,7 +13333,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       {
         for (Symbol *s = generator->sm->sy[h]; s; s = s->nx)
         {
-          if (s->k == 0 and s->lv >= 0 and s->lv < generator->sm->lv and not(s->df and s->df->k == N_GVL))
+          if (s->k == 0 and s->lv >= 0 and s->lv < generator->sm->lv and not(s->definition and s->definition->k == N_GVL))
           {
             Value_Kind k = s->ty ? token_kind_to_value_kind(s->ty) : VALUE_KIND_INTEGER;
             Type_Info *at = s->ty ? type_canonical_concrete(s->ty) : 0;
@@ -14040,13 +14040,13 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
         for (uint32_t j = 0; j < s->name.length; j++)
           nb[n++] = toupper(s->name.string[j]);
         nb[n] = 0;
-        if (s->k == 2 and s->df and s->df->k == N_STR)
+        if (s->k == 2 and s->definition and s->definition->k == N_STR)
         {
-          uint32_t len = s->df->s.length;
+          uint32_t len = s->definition->s.length;
           fprintf(o, "@%s=linkonce_odr constant [%u x i8]c\"", nb, len + 1);
           for (uint32_t i = 0; i < len; i++)
           {
-            char c = s->df->s.string[i];
+            char c = s->definition->s.string[i];
             if (c == '"')
               fprintf(o, "\\22");
             else if (c == '\\')
@@ -14061,9 +14061,9 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
         else
         {
           char iv[64];
-          if (k == VALUE_KIND_INTEGER and s->df and s->df->k == N_INT)
+          if (k == VALUE_KIND_INTEGER and s->definition and s->definition->k == N_INT)
           {
-            snprintf(iv, 64, "%ld", s->df->i);
+            snprintf(iv, 64, "%ld", s->definition->i);
           }
           else if (k == VALUE_KIND_INTEGER and s->vl != 0)
           {
@@ -14252,13 +14252,13 @@ int main(int ac, char **av)
         }
         else
           snprintf(nb, 256, "%.*s", (int) s->name.length, s->name.string);
-        if (s->k == 2 and s->df and s->df->k == N_STR)
+        if (s->k == 2 and s->definition and s->definition->k == N_STR)
         {
-          uint32_t len = s->df->s.length;
+          uint32_t len = s->definition->s.length;
           fprintf(o, "@%s=linkonce_odr constant [%u x i8]c\"", nb, len + 1);
           for (uint32_t i = 0; i < len; i++)
           {
-            char c = s->df->s.string[i];
+            char c = s->definition->s.string[i];
             if (c == '"')
               fprintf(o, "\\22");
             else if (c == '\\')
@@ -14273,9 +14273,9 @@ int main(int ac, char **av)
         else
         {
           char iv[64];
-          if (k == VALUE_KIND_INTEGER and s->df and s->df->k == N_INT)
+          if (k == VALUE_KIND_INTEGER and s->definition and s->definition->k == N_INT)
           {
-            snprintf(iv, 64, "%ld", s->df->i);
+            snprintf(iv, 64, "%ld", s->definition->i);
           }
           else if (k == VALUE_KIND_INTEGER and s->vl != 0)
           {
