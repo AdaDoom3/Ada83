@@ -4366,7 +4366,7 @@ struct Type_Info
   int64_t low_bound, high_bound;
   Node_Vector components, dc;
   uint32_t size, alignment;
-  Symbol_Vector ev;
+  Symbol_Vector enum_values;
   Representation_Clause_Vector rc;
   uint64_t ad;
   bool pk;
@@ -4702,10 +4702,10 @@ static void symbol_manager_init(Symbol_Manager *symbol_manager)
   symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("BOOLEAN"), 1, TY_BOOL, 0));
   Symbol *st = symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("TRUE"), 2, TY_BOOL, 0));
   st->value = 1;
-  sv(&TY_BOOL->ev, st);
+  sv(&TY_BOOL->enum_values, st);
   Symbol *sf = symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("FALSE"), 2, TY_BOOL, 0));
   sf->value = 0;
-  sv(&TY_BOOL->ev, sf);
+  sv(&TY_BOOL->enum_values, sf);
   symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("CHARACTER"), 1, TY_CHAR, 0));
   symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("STRING"), 1, TY_STR, 0));
   symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("FLOAT"), 1, TY_FLT, 0));
@@ -5539,9 +5539,9 @@ static Symbol *symbol_character_literal(Symbol_Manager *symbol_manager, char c, 
 {
   if (tx and tx->k == TYPE_ENUMERATION)
   {
-    for (uint32_t i = 0; i < tx->ev.count; i++)
+    for (uint32_t i = 0; i < tx->enum_values.count; i++)
     {
-      Symbol *e = tx->ev.data[i];
+      Symbol *e = tx->enum_values.data[i];
       if (e->name.length == 1 and tolower(e->name.string[0]) == tolower(c))
         return e;
     }
@@ -5824,9 +5824,9 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     Type_Info *_tx = tx and tx->k == TYPE_DERIVED ? type_canonical_concrete(tx) : tx;
     if (_tx and _tx->k == TYPE_ENUMERATION)
     {
-      for (uint32_t i = 0; i < tx->ev.count; i++)
+      for (uint32_t i = 0; i < tx->enum_values.count; i++)
       {
-        Symbol *e = tx->ev.data[i];
+        Symbol *e = tx->enum_values.data[i];
         if (string_equal_ignore_case(e->name, node->s))
         {
           node->ty = tx;
@@ -6121,9 +6121,9 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
             Type_Info *et = d->sy->ty;
             if (et->k == TYPE_ENUMERATION)
             {
-              for (uint32_t j = 0; j < et->ev.count; j++)
+              for (uint32_t j = 0; j < et->enum_values.count; j++)
               {
-                Symbol *e = et->ev.data[j];
+                Symbol *e = et->enum_values.data[j];
                 if (string_equal_ignore_case(e->name, node->selected_component.selector))
                 {
                   node->ty = et;
@@ -6319,9 +6319,9 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
         }
         else if (
             ptc and ptc->k == TYPE_ENUMERATION and pos >= ptc->low_bound and pos <= ptc->high_bound
-            and (uint32_t) pos < ptc->ev.count)
+            and (uint32_t) pos < ptc->enum_values.count)
         {
-          Symbol *e = ptc->ev.data[pos];
+          Symbol *e = ptc->enum_values.data[pos];
           node->k = N_ID;
           node->s = e->name;
           node->ty = pt;
@@ -6696,9 +6696,9 @@ static void runtime_register_compare(Symbol_Manager *symbol_manager, Representat
       for (uint32_t i = 0; i < r->rr.cp.count; i++)
       {
         Syntax_Node *e = r->rr.cp.data[i];
-        for (uint32_t j = 0; j < t->ev.count; j++)
+        for (uint32_t j = 0; j < t->enum_values.count; j++)
         {
-          Symbol *ev = t->ev.data[j];
+          Symbol *ev = t->enum_values.data[j];
           if (string_equal_ignore_case(ev->name, e->s))
           {
             ev->value = e->i;
@@ -7497,17 +7497,17 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
         t->alignment = pt->alignment;
         {
           Type_Info *_ept = pt;
-          while (_ept and _ept->ev.count == 0 and (_ept->base_type or _ept->parent_type))
+          while (_ept and _ept->enum_values.count == 0 and (_ept->base_type or _ept->parent_type))
             _ept = _ept->base_type ? _ept->base_type : _ept->parent_type;
-          t->ev.count = 0;
-          t->ev.data = 0;
+          t->enum_values.count = 0;
+          t->enum_values.data = 0;
           if (_ept)
-            for (uint32_t _i = 0; _i < _ept->ev.count; _i++)
+            for (uint32_t _i = 0; _i < _ept->enum_values.count; _i++)
             {
-              Symbol *_pe = _ept->ev.data[_i];
+              Symbol *_pe = _ept->enum_values.data[_i];
               Symbol *_ne = symbol_add_overload(symbol_manager, symbol_new(_pe->name, 2, t, n));
               _ne->value = _pe->value;
-              sv(&t->ev, _ne);
+              sv(&t->enum_values, _ne);
             }
         }
         is_higher_order_parameter(t, pt);
@@ -7590,7 +7590,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
         Symbol *es = symbol_add_overload(
             symbol_manager, symbol_new(it->k == N_CHAR ? (String_Slice){(const char *) &it->i, 1} : it->s, 2, t, n));
         es->value = vl++;
-        sv(&t->ev, es);
+        sv(&t->enum_values, es);
       }
       t->low_bound = 0;
       t->high_bound = vl - 1;
@@ -9008,10 +9008,10 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
               Type_Info *cht = type_canonical_concrete(ch->sy->ty);
               if (cht->k == TYPE_ENUMERATION)
               {
-                for (uint32_t ei = 0; ei < cht->ev.count; ei++)
+                for (uint32_t ei = 0; ei < cht->enum_values.count; ei++)
                 {
                   Value cv = {new_temporary_register(generator), VALUE_KIND_INTEGER};
-                  fprintf(o, "  %%t%d = add i64 0, %ld\n", cv.id, (long) cht->ev.data[ei]->value);
+                  fprintf(o, "  %%t%d = add i64 0, %ld\n", cv.id, (long) cht->enum_values.data[ei]->value);
                   int ep = new_temporary_register(generator);
                   fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %%t%d\n", ep, p, cv.id);
                   fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
@@ -10632,9 +10632,9 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         Value buf = get_fat_pointer_data(generator, x.id);
         int fnd = new_temporary_register(generator);
         fprintf(o, "  %%t%d = add i64 0, -1\n", fnd);
-        for (uint32_t i = 0; i < t->ev.count; i++)
+        for (uint32_t i = 0; i < t->enum_values.count; i++)
         {
-          Symbol *e = t->ev.data[i];
+          Symbol *e = t->enum_values.data[i];
           int sz = e->name.length + 1;
           int p = new_temporary_register(generator);
           fprintf(o, "  %%t%d = alloca [%d x i8]\n", p, sz);
@@ -10774,9 +10774,9 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       {
         if (t->k == TYPE_ENUMERATION)
         {
-          for (uint32_t i = 0; i < t->ev.count; i++)
+          for (uint32_t i = 0; i < t->enum_values.count; i++)
           {
-            Symbol *e = t->ev.data[i];
+            Symbol *e = t->enum_values.data[i];
             int64_t ln = e->name.length;
             if (ln > wd)
               wd = ln;
