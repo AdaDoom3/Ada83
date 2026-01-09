@@ -4362,7 +4362,7 @@ struct Type_Info
   Type_Kind k;
   String_Slice nm;
   Type_Info *base_type, *element_type, *parent_type;
-  Type_Info *ix;
+  Type_Info *index_type;
   int64_t lo, hi;
   Node_Vector components, dc;
   uint32_t sz, al;
@@ -4691,7 +4691,7 @@ static void symbol_manager_init(Symbol_Manager *symbol_manager)
   TY_STR->element_type = TY_CHAR;
   TY_STR->lo = 0;
   TY_STR->hi = -1;
-  TY_STR->ix = TY_POS;
+  TY_STR->index_type = TY_POS;
   TY_FLT = type_new(TYPE_FLOAT, STRING_LITERAL("FLOAT"));
   TY_UINT = type_new(TYPE_UNSIGNED_INTEGER, STRING_LITERAL("universal_integer"));
   TY_UFLT = type_new(TYPE_UNIVERSAL_FLOAT, STRING_LITERAL("universal_real"));
@@ -5255,7 +5255,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
       t->al = bt->al;
       t->ad = bt->ad;
       t->pk = bt->pk;
-      t->ix = bt->ix;
+      t->index_type = bt->index_type;
       if (cn->k == 27 and cn->constraint.constraints.count > 0 and cn->constraint.constraints.data[0] and cn->constraint.constraints.data[0]->k == 26)
       {
         Syntax_Node *rn = cn->constraint.constraints.data[0];
@@ -5466,7 +5466,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
         resolve_expression(symbol_manager, r->range.high, 0);
         Type_Info *t = type_new(TYPE_ARRAY, N);
         t->element_type = bt->element_type;
-        t->ix = bt->ix;
+        t->index_type = bt->index_type;
         t->base_type = bt;
         if (r->range.low and r->range.low->k == N_INT)
           t->lo = r->range.low->i;
@@ -5514,7 +5514,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
         resolve_expression(symbol_manager, r->range.high, 0);
         Type_Info *t = type_new(TYPE_ARRAY, N);
         t->element_type = bt->element_type;
-        t->ix = bt->ix;
+        t->index_type = bt->index_type;
         t->base_type = bt;
         if (r->range.low and r->range.low->k == N_INT)
           t->lo = r->range.low->i;
@@ -5621,8 +5621,8 @@ static Syntax_Node *chk(Symbol_Manager *symbol_manager, Syntax_Node *node, Sourc
     return make_check(node, STRING_LITERAL("CONSTRAINT_ERROR"), l);
   if (t->k == TYPE_RECORD and descendant_conformant(t, node->ty) and not is_check_suppressed(t, CHK_DSC))
     return make_check(node, STRING_LITERAL("CONSTRAINT_ERROR"), l);
-  if (t->k == TYPE_ARRAY and node->ty and node->ty->k == TYPE_ARRAY and node->ty->ix
-      and (node->ty->lo < node->ty->ix->lo or node->ty->hi > node->ty->ix->hi))
+  if (t->k == TYPE_ARRAY and node->ty and node->ty->k == TYPE_ARRAY and node->ty->index_type
+      and (node->ty->lo < node->ty->index_type->lo or node->ty->hi > node->ty->index_type->hi))
     return make_check(node, STRING_LITERAL("CONSTRAINT_ERROR"), l);
   if (t->k == TYPE_ARRAY and node->ty and node->ty->k == TYPE_ARRAY and not is_unconstrained_array(t)
       and not is_check_suppressed(t, CHK_IDX) and (t->lo != node->ty->lo or t->hi != node->ty->hi))
@@ -5783,7 +5783,7 @@ static Type_Info *universal_composite_aggregate(Type_Info *at, Syntax_Node *ag)
   int asz = ag->aggregate.items.count;
   Type_Info *nt = type_new(TYPE_ARRAY, N);
   nt->element_type = at->element_type;
-  nt->ix = at->ix;
+  nt->index_type = at->index_type;
   nt->lo = 1;
   nt->hi = asz;
   return nt;
@@ -12277,7 +12277,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             if (cm->k != N_CM or not cm->component_decl.ty)
               continue;
             Type_Info *cty = cm->component_decl.ty->ty;
-            if (not cty or cty->k != TYPE_ARRAY or not cty->ix)
+            if (not cty or cty->k != TYPE_ARRAY or not cty->index_type)
               continue;
             for (di = 0; di < at->dc.count; di++)
             {
@@ -12285,7 +12285,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               if (dc->k == N_DS and dc->parameter.default_value and dc->parameter.default_value->k == N_INT)
               {
                 int64_t dv = dc->parameter.default_value->i;
-                if (dv < cty->ix->lo or dv > cty->ix->hi)
+                if (dv < cty->index_type->lo or dv > cty->index_type->hi)
                 {
                   fprintf(
                       o,
