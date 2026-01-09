@@ -2418,78 +2418,78 @@ static Syntax_Node *parse_simple_expression(Parser *parser)
   }
   return node;
 }
-static Node_Vector parse_parameter_mode(Parser *p)
+static Node_Vector parse_parameter_mode(Parser *parser)
 {
-  Node_Vector v = {0};
-  if (not parser_match(p, T_LP))
-    return v;
+  Node_Vector params = {0};
+  if (not parser_match(parser, T_LP))
+    return params;
   do
   {
-    Source_Location lc = parser_location(p);
+    Source_Location location = parser_location(parser);
     Node_Vector id = {0};
     do
     {
-      String_Slice nm = parser_identifier(p);
-      Syntax_Node *i = ND(ID, lc);
+      String_Slice nm = parser_identifier(parser);
+      Syntax_Node *i = ND(ID, location);
       i->s = nm;
       nv(&id, i);
-    } while (parser_match(p, T_CM));
-    parser_expect(p, T_CL);
+    } while (parser_match(parser, T_CM));
+    parser_expect(parser, T_CL);
     uint8_t md = 0;
-    if (parser_match(p, T_IN))
+    if (parser_match(parser, T_IN))
       md |= 1;
-    if (parser_match(p, T_OUT))
+    if (parser_match(parser, T_OUT))
       md |= 2;
     if (not md)
       md = 1;
-    Syntax_Node *ty = parse_name(p);
+    Syntax_Node *ty = parse_name(parser);
     Syntax_Node *df = 0;
-    if (parser_match(p, T_AS))
-      df = parse_expression(p);
+    if (parser_match(parser, T_AS))
+      df = parse_expression(parser);
     for (uint32_t i = 0; i < id.count; i++)
     {
-      Syntax_Node *n = ND(PM, lc);
-      n->pm.nm = id.data[i]->s;
-      n->pm.ty = ty;
-      n->pm.df = df;
-      n->pm.md = md;
-      nv(&v, n);
+      Syntax_Node *node = ND(PM, location);
+      node->pm.nm = id.data[i]->s;
+      node->pm.ty = ty;
+      node->pm.df = df;
+      node->pm.md = md;
+      nv(&params, node);
     }
-  } while (parser_match(p, T_SC));
-  parser_expect(p, T_RP);
-  return v;
+  } while (parser_match(parser, T_SC));
+  parser_expect(parser, T_RP);
+  return params;
 }
-static Syntax_Node *pps_(Parser *p)
+static Syntax_Node *parse_procedure_specification(Parser *parser)
 {
-  Source_Location lc = parser_location(p);
-  parser_expect(p, T_PROC);
-  Syntax_Node *n = ND(PS, lc);
-  if (parser_at(p, T_STR))
+  Source_Location location = parser_location(parser);
+  parser_expect(parser, T_PROC);
+  Syntax_Node *node = ND(PS, location);
+  if (parser_at(parser, T_STR))
   {
-    n->sp.nm = string_duplicate(p->current_token.literal);
-    parser_next(p);
+    node->sp.nm = string_duplicate(parser->current_token.literal);
+    parser_next(parser);
   }
   else
-    n->sp.nm = parser_identifier(p);
-  n->sp.pmm = parse_parameter_mode(p);
-  return n;
+    node->sp.nm = parser_identifier(parser);
+  node->sp.pmm = parse_parameter_mode(parser);
+  return node;
 }
-static Syntax_Node *pfs(Parser *p)
+static Syntax_Node *parse_function_specification(Parser *parser)
 {
-  Source_Location lc = parser_location(p);
-  parser_expect(p, T_FUN);
-  Syntax_Node *n = ND(FS, lc);
-  if (parser_at(p, T_STR))
+  Source_Location location = parser_location(parser);
+  parser_expect(parser, T_FUN);
+  Syntax_Node *node = ND(FS, location);
+  if (parser_at(parser, T_STR))
   {
-    n->sp.nm = string_duplicate(p->current_token.literal);
-    parser_next(p);
+    node->sp.nm = string_duplicate(parser->current_token.literal);
+    parser_next(parser);
   }
   else
-    n->sp.nm = parser_identifier(p);
-  n->sp.pmm = parse_parameter_mode(p);
-  parser_expect(p, T_RET);
-  n->sp.rt = parse_name(p);
-  return n;
+    node->sp.nm = parser_identifier(parser);
+  node->sp.pmm = parse_parameter_mode(parser);
+  parser_expect(parser, T_RET);
+  node->sp.rt = parse_name(parser);
+  return node;
 }
 static Syntax_Node *parse_type_definition(Parser *p);
 static Node_Vector parse_generic_formal_part(Parser *p)
@@ -2539,7 +2539,7 @@ static Node_Vector parse_generic_formal_part(Parser *p)
     {
       if (parser_at(p, T_PROC))
       {
-        Syntax_Node *sp = pps_(p);
+        Syntax_Node *sp = parse_procedure_specification(p);
         sp->k = N_GSP;
         if (parser_match(p, T_IS))
         {
@@ -2553,7 +2553,7 @@ static Node_Vector parse_generic_formal_part(Parser *p)
       }
       else if (parser_at(p, T_FUN))
       {
-        Syntax_Node *sp = pfs(p);
+        Syntax_Node *sp = parse_function_specification(p);
         sp->k = N_GSP;
         if (parser_match(p, T_IS))
         {
@@ -2635,7 +2635,7 @@ static Syntax_Node *parse_generic_formal(Parser *p)
   n->gen.fp = parse_generic_formal_part(p);
   if (parser_at(p, T_PROC))
   {
-    Syntax_Node *sp = pps_(p);
+    Syntax_Node *sp = parse_procedure_specification(p);
     parser_expect(p, T_SC);
     n->gen.un = ND(PD, lc);
     n->gen.un->bd.sp = sp;
@@ -2643,7 +2643,7 @@ static Syntax_Node *parse_generic_formal(Parser *p)
   }
   if (parser_at(p, T_FUN))
   {
-    Syntax_Node *sp = pfs(p);
+    Syntax_Node *sp = parse_function_specification(p);
     parser_expect(p, T_SC);
     n->gen.un = ND(FD, lc);
     n->gen.un->bd.sp = sp;
@@ -3751,7 +3751,7 @@ static Syntax_Node *pdl(Parser *p)
   }
   if (parser_at(p, T_PROC))
   {
-    Syntax_Node *sp = pps_(p);
+    Syntax_Node *sp = parse_procedure_specification(p);
     if (parser_match(p, T_REN))
     {
       parse_expression(p);
