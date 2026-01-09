@@ -1453,7 +1453,7 @@ struct Syntax_Node
     struct
     {
       Node_Vector alternatives;
-      Node_Vector el;
+      Node_Vector else_statements;
     } select_stmt;
     struct
     {
@@ -2977,7 +2977,7 @@ static Syntax_Node *parse_statement_list(Parser *parser)
   }
   if (parser_match(parser, T_ELSE))
     while (not parser_at(parser, T_END))
-      nv(&node->select_stmt.el, parse_statement_or_label(parser));
+      nv(&node->select_stmt.else_statements, parse_statement_or_label(parser));
   parser_expect(parser, T_END);
   parser_expect(parser, T_SEL);
   parser_expect(parser, T_SC);
@@ -7175,7 +7175,7 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
     break;
   case N_SLS:
     normalize_compile_symbol_vector(&c->select_stmt.alternatives, &n->select_stmt.alternatives, fp, ap);
-    normalize_compile_symbol_vector(&c->select_stmt.el, &n->select_stmt.el, fp, ap);
+    normalize_compile_symbol_vector(&c->select_stmt.else_statements, &n->select_stmt.else_statements, fp, ap);
     break;
   case N_SA:
     c->abort_stmt.kind = n->abort_stmt.kind;
@@ -12420,9 +12420,9 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             generate_statement_sequence(generator, st->exception_handler.statements.data[j]);
         }
       }
-      if (n->select_stmt.el.count > 0)
-        for (uint32_t i = 0; i < n->select_stmt.el.count; i++)
-          generate_statement_sequence(generator, n->select_stmt.el.data[i]);
+      if (n->select_stmt.else_statements.count > 0)
+        for (uint32_t i = 0; i < n->select_stmt.else_statements.count; i++)
+          generate_statement_sequence(generator, n->select_stmt.else_statements.data[i]);
       emit_branch(generator, ld);
       emit_label(generator, ld);
     }
