@@ -4389,7 +4389,7 @@ struct Symbol
   int64_t vl;
   uint32_t of;
   Node_Vector overloads;
-  Symbol_Vector us;
+  Symbol_Vector use_clauses;
   int el;
   Generic_Template *gt;
   Symbol *parent;
@@ -4512,7 +4512,7 @@ static void symbol_find_use(Symbol_Manager *symbol_manager, Symbol *s, String_Sl
         Syntax_Node *d = pk->package_spec.dc.data[i];
         if (d->sy)
         {
-          sv(&s->us, d->sy);
+          sv(&s->use_clauses, d->sy);
           d->sy->visibility |= 2;
         }
         else if (d->k == N_ED)
@@ -4522,7 +4522,7 @@ static void symbol_find_use(Symbol_Manager *symbol_manager, Symbol *s, String_Sl
             Syntax_Node *e = d->exception_decl.identifiers.data[j];
             if (e->sy)
             {
-              sv(&s->us, e->sy);
+              sv(&s->use_clauses, e->sy);
               e->sy->visibility |= 2;
               sv(&symbol_manager->ex, e->sy);
             }
@@ -4535,7 +4535,7 @@ static void symbol_find_use(Symbol_Manager *symbol_manager, Symbol *s, String_Sl
             Syntax_Node *oid = d->object_decl.identifiers.data[j];
             if (oid->sy)
             {
-              sv(&s->us, oid->sy);
+              sv(&s->use_clauses, oid->sy);
               oid->sy->visibility |= 2;
             }
           }
