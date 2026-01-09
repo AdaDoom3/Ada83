@@ -1238,7 +1238,7 @@ struct Syntax_Node
   {
     String_Slice string_value;
     int64_t integer_value;
-    double f;
+    double float_value;
     struct
     {
       Token_Kind op;
@@ -1907,7 +1907,7 @@ static Syntax_Node *parse_primary(Parser *parser)
   if (parser_at(parser, T_REAL))
   {
     Syntax_Node *node = ND(REAL, location);
-    node->f = parser->current_token.float_value;
+    node->float_value = parser->current_token.float_value;
     parser_next(parser);
     return node;
   }
@@ -5268,12 +5268,12 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
                           ? ((union {
                               double d;
                               int64_t i;
-                            }){.d = -lo->unary_node.x->f})
+                            }){.d = -lo->unary_node.x->float_value})
                                 .i
                       : lo->k == N_REAL ? ((union {
                                             double d;
                                             int64_t i;
-                                          }){.d = lo->f})
+                                          }){.d = lo->float_value})
                                               .i
                       : lo->k == N_ID and lo->symbol and lo->symbol->k == 2 ? lo->symbol->value
                                                                     : lo->integer_value;
@@ -5282,12 +5282,12 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
                           ? ((union {
                               double d;
                               int64_t i;
-                            }){.d = -hi->unary_node.x->f})
+                            }){.d = -hi->unary_node.x->float_value})
                                 .i
                       : hi->k == N_REAL ? ((union {
                                             double d;
                                             int64_t i;
-                                          }){.d = hi->f})
+                                          }){.d = hi->float_value})
                                               .i
                       : hi->k == N_ID and hi->symbol and hi->symbol->k == 2 ? hi->symbol->value
                                                                     : hi->integer_value;
@@ -5306,12 +5306,12 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
                           ? ((union {
                               double d;
                               int64_t i;
-                            }){.d = -lo->unary_node.x->f})
+                            }){.d = -lo->unary_node.x->float_value})
                                 .i
                       : lo->k == N_REAL ? ((union {
                                             double d;
                                             int64_t i;
-                                          }){.d = lo->f})
+                                          }){.d = lo->float_value})
                                               .i
                       : lo->k == N_ID and lo->symbol and lo->symbol->k == 2 ? lo->symbol->value
                                                                     : lo->integer_value;
@@ -5320,12 +5320,12 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
                           ? ((union {
                               double d;
                               int64_t i;
-                            }){.d = -hi->unary_node.x->f})
+                            }){.d = -hi->unary_node.x->float_value})
                                 .i
                       : hi->k == N_REAL ? ((union {
                                             double d;
                                             int64_t i;
-                                          }){.d = hi->f})
+                                          }){.d = hi->float_value})
                                               .i
                       : hi->k == N_ID and hi->symbol and hi->symbol->k == 2 ? hi->symbol->value
                                                                     : hi->integer_value;
@@ -5344,12 +5344,12 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
                           ? ((union {
                               double d;
                               int64_t i;
-                            }){.d = -lo->unary_node.x->f})
+                            }){.d = -lo->unary_node.x->float_value})
                                 .i
                       : lo->k == N_REAL ? ((union {
                                             double d;
                                             int64_t i;
-                                          }){.d = lo->f})
+                                          }){.d = lo->float_value})
                                               .i
                       : lo->k == N_ID and lo->symbol and lo->symbol->k == 2 ? lo->symbol->value
                                                                     : lo->integer_value;
@@ -5358,12 +5358,12 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
                           ? ((union {
                               double d;
                               int64_t i;
-                            }){.d = -hi->unary_node.x->f})
+                            }){.d = -hi->unary_node.x->float_value})
                                 .i
                       : hi->k == N_REAL ? ((union {
                                             double d;
                                             int64_t i;
-                                          }){.d = hi->f})
+                                          }){.d = hi->float_value})
                                               .i
                       : hi->k == N_ID and hi->symbol and hi->symbol->k == 2 ? hi->symbol->value
                                                                     : hi->integer_value;
@@ -5396,7 +5396,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
     Type_Info *t = type_new(TYPE_FIXED_POINT, N);
     double d = 1.0;
     if (node->range.low and node->range.low->k == N_REAL)
-      d = node->range.low->f;
+      d = node->range.low->float_value;
     else if (node->range.low and node->range.low->k == N_INT)
       d = node->range.low->integer_value;
     t->sm = (int64_t) (1.0 / d);
@@ -5860,7 +5860,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
         else if (s->definition->k == N_REAL)
         {
           node->k = N_REAL;
-          node->f = s->definition->f;
+          node->float_value = s->definition->float_value;
           node->ty = TY_UFLT;
         }
       }
@@ -5945,8 +5945,8 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
         (node->binary_node.l->k == N_REAL or node->binary_node.r->k == N_REAL)
         and (node->binary_node.op == T_PL or node->binary_node.op == T_MN or node->binary_node.op == T_ST or node->binary_node.op == T_SL or node->binary_node.op == T_EX))
     {
-      double a = node->binary_node.l->k == N_INT ? (double) node->binary_node.l->integer_value : node->binary_node.l->f,
-             b = node->binary_node.r->k == N_INT ? (double) node->binary_node.r->integer_value : node->binary_node.r->f, r = 0;
+      double a = node->binary_node.l->k == N_INT ? (double) node->binary_node.l->integer_value : node->binary_node.l->float_value,
+             b = node->binary_node.r->k == N_INT ? (double) node->binary_node.r->integer_value : node->binary_node.r->float_value, r = 0;
       if (node->binary_node.op == T_PL)
         r = a + b;
       else if (node->binary_node.op == T_MN)
@@ -5958,7 +5958,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
       else if (node->binary_node.op == T_EX)
         r = pow(a, b);
       node->k = N_REAL;
-      node->f = r;
+      node->float_value = r;
       node->ty = TY_UFLT;
     }
     else
@@ -5979,7 +5979,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     else if (node->unary_node.op == T_MN and node->unary_node.x->k == N_REAL)
     {
       node->k = N_REAL;
-      node->f = -node->unary_node.x->f;
+      node->float_value = -node->unary_node.x->float_value;
       node->ty = TY_UFLT;
     }
     else if (node->unary_node.op == T_PL and (node->unary_node.x->k == N_INT or node->unary_node.x->k == N_REAL))
@@ -5992,7 +5992,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
       }
       else
       {
-        node->f = node->unary_node.x->f;
+        node->float_value = node->unary_node.x->float_value;
         node->ty = TY_UFLT;
       }
     }
@@ -6062,7 +6062,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
               else if (df->k == N_REAL)
               {
                 node->k = N_REAL;
-                node->f = df->f;
+                node->float_value = df->float_value;
                 node->ty = TY_UFLT;
               }
             }
@@ -6104,7 +6104,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
                   else if (df->k == N_REAL)
                   {
                     node->k = N_REAL;
-                    node->f = df->f;
+                    node->float_value = df->float_value;
                     node->ty = TY_UFLT;
                   }
                 }
@@ -6164,7 +6164,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
                 else if (df->k == N_REAL)
                 {
                   node->k = N_REAL;
-                  node->f = df->f;
+                  node->float_value = df->float_value;
                   node->ty = TY_UFLT;
                 }
               }
@@ -6970,7 +6970,7 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
     c->integer_value = n->integer_value;
     break;
   case N_REAL:
-    c->f = n->f;
+    c->float_value = n->float_value;
     break;
   case N_CHAR:
     c->integer_value = n->integer_value;
@@ -9152,7 +9152,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     break;
   case N_REAL:
     r.k = VALUE_KIND_FLOAT;
-    fprintf(o, "  %%t%d = fadd double 0.0, %e\n", r.id, n->f);
+    fprintf(o, "  %%t%d = fadd double 0.0, %e\n", r.id, n->float_value);
     break;
   case N_CHAR:
     r.k = VALUE_KIND_INTEGER;
