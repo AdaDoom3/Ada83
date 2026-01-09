@@ -1237,7 +1237,7 @@ struct Syntax_Node
   union
   {
     String_Slice string_value;
-    int64_t i;
+    int64_t integer_value;
     double f;
     struct
     {
@@ -1900,7 +1900,7 @@ static Syntax_Node *parse_primary(Parser *parser)
   if (parser_at(parser, T_INT))
   {
     Syntax_Node *node = ND(INT, location);
-    node->i = parser->current_token.integer_value;
+    node->integer_value = parser->current_token.integer_value;
     parser_next(parser);
     return node;
   }
@@ -1914,7 +1914,7 @@ static Syntax_Node *parse_primary(Parser *parser)
   if (parser_at(parser, T_CHAR))
   {
     Syntax_Node *node = ND(CHAR, location);
-    node->i = parser->current_token.integer_value;
+    node->integer_value = parser->current_token.integer_value;
     parser_next(parser);
     return node;
   }
@@ -3220,7 +3220,7 @@ static Syntax_Node *parse_type_definition(Parser *parser)
       if (parser_at(parser, T_CHAR))
       {
         Syntax_Node *c = ND(CHAR, location);
-        c->i = parser->current_token.integer_value;
+        c->integer_value = parser->current_token.integer_value;
         parser_next(parser);
         nv(&node->list.items, c);
       }
@@ -5263,7 +5263,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
         resolve_expression(symbol_manager, rn->range.high, 0);
         Syntax_Node *lo = rn->range.low;
         Syntax_Node *hi = rn->range.high;
-        int64_t lov = lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.x->k == N_INT ? -lo->unary_node.x->i
+        int64_t lov = lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.x->k == N_INT ? -lo->unary_node.x->integer_value
                       : lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.x->k == N_REAL
                           ? ((union {
                               double d;
@@ -5276,8 +5276,8 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
                                           }){.d = lo->f})
                                               .i
                       : lo->k == N_ID and lo->symbol and lo->symbol->k == 2 ? lo->symbol->value
-                                                                    : lo->i;
-        int64_t hiv = hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.x->k == N_INT ? -hi->unary_node.x->i
+                                                                    : lo->integer_value;
+        int64_t hiv = hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.x->k == N_INT ? -hi->unary_node.x->integer_value
                       : hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.x->k == N_REAL
                           ? ((union {
                               double d;
@@ -5290,7 +5290,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
                                           }){.d = hi->f})
                                               .i
                       : hi->k == N_ID and hi->symbol and hi->symbol->k == 2 ? hi->symbol->value
-                                                                    : hi->i;
+                                                                    : hi->integer_value;
         t->low_bound = lov;
         t->high_bound = hiv;
         return t;
@@ -5301,7 +5301,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
         resolve_expression(symbol_manager, cn->constraint.range_spec->range.high, 0);
         Syntax_Node *lo = cn->constraint.range_spec->range.low;
         Syntax_Node *hi = cn->constraint.range_spec->range.high;
-        int64_t lov = lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.x->k == N_INT ? -lo->unary_node.x->i
+        int64_t lov = lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.x->k == N_INT ? -lo->unary_node.x->integer_value
                       : lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.x->k == N_REAL
                           ? ((union {
                               double d;
@@ -5314,8 +5314,8 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
                                           }){.d = lo->f})
                                               .i
                       : lo->k == N_ID and lo->symbol and lo->symbol->k == 2 ? lo->symbol->value
-                                                                    : lo->i;
-        int64_t hiv = hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.x->k == N_INT ? -hi->unary_node.x->i
+                                                                    : lo->integer_value;
+        int64_t hiv = hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.x->k == N_INT ? -hi->unary_node.x->integer_value
                       : hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.x->k == N_REAL
                           ? ((union {
                               double d;
@@ -5328,7 +5328,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
                                           }){.d = hi->f})
                                               .i
                       : hi->k == N_ID and hi->symbol and hi->symbol->k == 2 ? hi->symbol->value
-                                                                    : hi->i;
+                                                                    : hi->integer_value;
         t->low_bound = lov;
         t->high_bound = hiv;
         return t;
@@ -5339,7 +5339,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
         resolve_expression(symbol_manager, cn->range.high, 0);
         Syntax_Node *lo = cn->range.low;
         Syntax_Node *hi = cn->range.high;
-        int64_t lov = lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.x->k == N_INT ? -lo->unary_node.x->i
+        int64_t lov = lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.x->k == N_INT ? -lo->unary_node.x->integer_value
                       : lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.x->k == N_REAL
                           ? ((union {
                               double d;
@@ -5352,8 +5352,8 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
                                           }){.d = lo->f})
                                               .i
                       : lo->k == N_ID and lo->symbol and lo->symbol->k == 2 ? lo->symbol->value
-                                                                    : lo->i;
-        int64_t hiv = hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.x->k == N_INT ? -hi->unary_node.x->i
+                                                                    : lo->integer_value;
+        int64_t hiv = hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.x->k == N_INT ? -hi->unary_node.x->integer_value
                       : hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.x->k == N_REAL
                           ? ((union {
                               double d;
@@ -5366,7 +5366,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
                                           }){.d = hi->f})
                                               .i
                       : hi->k == N_ID and hi->symbol and hi->symbol->k == 2 ? hi->symbol->value
-                                                                    : hi->i;
+                                                                    : hi->integer_value;
         t->low_bound = lov;
         t->high_bound = hiv;
         return t;
@@ -5380,15 +5380,15 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
     resolve_expression(symbol_manager, node->range.high, 0);
     Type_Info *t = type_new(TYPE_INTEGER, N);
     if (node->range.low and node->range.low->k == N_INT)
-      t->low_bound = node->range.low->i;
+      t->low_bound = node->range.low->integer_value;
     else if (
         node->range.low and node->range.low->k == N_UN and node->range.low->unary_node.op == T_MN and node->range.low->unary_node.x->k == N_INT)
-      t->low_bound = -node->range.low->unary_node.x->i;
+      t->low_bound = -node->range.low->unary_node.x->integer_value;
     if (node->range.high and node->range.high->k == N_INT)
-      t->high_bound = node->range.high->i;
+      t->high_bound = node->range.high->integer_value;
     else if (
         node->range.high and node->range.high->k == N_UN and node->range.high->unary_node.op == T_MN and node->range.high->unary_node.x->k == N_INT)
-      t->high_bound = -node->range.high->unary_node.x->i;
+      t->high_bound = -node->range.high->unary_node.x->integer_value;
     return t;
   }
   if (node->k == N_TX)
@@ -5398,12 +5398,12 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
     if (node->range.low and node->range.low->k == N_REAL)
       d = node->range.low->f;
     else if (node->range.low and node->range.low->k == N_INT)
-      d = node->range.low->i;
+      d = node->range.low->integer_value;
     t->sm = (int64_t) (1.0 / d);
     if (node->range.high and node->range.high->k == N_INT)
-      t->low_bound = node->range.high->i;
+      t->low_bound = node->range.high->integer_value;
     if (node->binary_node.r and node->binary_node.r->k == N_INT)
-      t->high_bound = node->binary_node.r->i;
+      t->high_bound = node->binary_node.r->integer_value;
     return t;
   }
   if (node->k == N_TE)
@@ -5415,7 +5415,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
     {
       resolve_expression(symbol_manager, node->unary_node.x, 0);
       if (node->unary_node.x->k == N_INT)
-        t->sm = node->unary_node.x->i;
+        t->sm = node->unary_node.x->integer_value;
     }
     return t;
   }
@@ -5433,13 +5433,13 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
         Syntax_Node *lo = r->range.low;
         Syntax_Node *hi = r->range.high;
         if (lo and lo->k == N_INT)
-          t->low_bound = lo->i;
+          t->low_bound = lo->integer_value;
         else if (lo and lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.x->k == N_INT)
-          t->low_bound = -lo->unary_node.x->i;
+          t->low_bound = -lo->unary_node.x->integer_value;
         if (hi and hi->k == N_INT)
-          t->high_bound = hi->i;
+          t->high_bound = hi->integer_value;
         else if (hi and hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.x->k == N_INT)
-          t->high_bound = -hi->unary_node.x->i;
+          t->high_bound = -hi->unary_node.x->integer_value;
       }
     }
     return t;
@@ -5469,17 +5469,17 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
         t->index_type = bt->index_type;
         t->base_type = bt;
         if (r->range.low and r->range.low->k == N_INT)
-          t->low_bound = r->range.low->i;
+          t->low_bound = r->range.low->integer_value;
         else if (
             r->range.low and r->range.low->k == N_UN and r->range.low->unary_node.op == T_MN
             and r->range.low->unary_node.x->k == N_INT)
-          t->low_bound = -r->range.low->unary_node.x->i;
+          t->low_bound = -r->range.low->unary_node.x->integer_value;
         if (r->range.high and r->range.high->k == N_INT)
-          t->high_bound = r->range.high->i;
+          t->high_bound = r->range.high->integer_value;
         else if (
             r->range.high and r->range.high->k == N_UN and r->range.high->unary_node.op == T_MN
             and r->range.high->unary_node.x->k == N_INT)
-          t->high_bound = -r->range.high->unary_node.x->i;
+          t->high_bound = -r->range.high->unary_node.x->integer_value;
         return t;
       }
     }
@@ -5491,15 +5491,15 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
     resolve_expression(symbol_manager, node->range.high, 0);
     Type_Info *t = type_new(TYPE_INTEGER, N);
     if (node->range.low and node->range.low->k == N_INT)
-      t->low_bound = node->range.low->i;
+      t->low_bound = node->range.low->integer_value;
     else if (
         node->range.low and node->range.low->k == N_UN and node->range.low->unary_node.op == T_MN and node->range.low->unary_node.x->k == N_INT)
-      t->low_bound = -node->range.low->unary_node.x->i;
+      t->low_bound = -node->range.low->unary_node.x->integer_value;
     if (node->range.high and node->range.high->k == N_INT)
-      t->high_bound = node->range.high->i;
+      t->high_bound = node->range.high->integer_value;
     else if (
         node->range.high and node->range.high->k == N_UN and node->range.high->unary_node.op == T_MN and node->range.high->unary_node.x->k == N_INT)
-      t->high_bound = -node->range.high->unary_node.x->i;
+      t->high_bound = -node->range.high->unary_node.x->integer_value;
     return t;
   }
   if (node->k == N_CL)
@@ -5517,17 +5517,17 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
         t->index_type = bt->index_type;
         t->base_type = bt;
         if (r->range.low and r->range.low->k == N_INT)
-          t->low_bound = r->range.low->i;
+          t->low_bound = r->range.low->integer_value;
         else if (
             r->range.low and r->range.low->k == N_UN and r->range.low->unary_node.op == T_MN
             and r->range.low->unary_node.x->k == N_INT)
-          t->low_bound = -r->range.low->unary_node.x->i;
+          t->low_bound = -r->range.low->unary_node.x->integer_value;
         if (r->range.high and r->range.high->k == N_INT)
-          t->high_bound = r->range.high->i;
+          t->high_bound = r->range.high->integer_value;
         else if (
             r->range.high and r->range.high->k == N_UN and r->range.high->unary_node.op == T_MN
             and r->range.high->unary_node.x->k == N_INT)
-          t->high_bound = -r->range.high->unary_node.x->i;
+          t->high_bound = -r->range.high->unary_node.x->integer_value;
         return t;
       }
     }
@@ -5605,7 +5605,7 @@ static bool descendant_conformant(Type_Info *t, Type_Info *s)
     if (not(ad and bd and ad->k == N_DS and bd->k == N_DS and ad->parameter.default_value and bd->parameter.default_value
             and ad->parameter.default_value->k == N_INT and bd->parameter.default_value->k == N_INT))
       continue;
-    if (ad->parameter.default_value->i != bd->parameter.default_value->i)
+    if (ad->parameter.default_value->integer_value != bd->parameter.default_value->integer_value)
       return 1;
   }
   return 0;
@@ -5675,10 +5675,10 @@ static void normalize_array_aggregate(Symbol_Manager *symbol_manager, Type_Info 
         Syntax_Node *ch = e->association.choices.data[j];
         int64_t idx = -1;
         if (ch->k == N_INT)
-          idx = ch->i - at->low_bound;
+          idx = ch->integer_value - at->low_bound;
         else if (ch->k == N_RN)
         {
-          for (int64_t k = ch->range.low->i; k <= ch->range.high->i; k++)
+          for (int64_t k = ch->range.low->integer_value; k <= ch->range.high->integer_value; k++)
           {
             int64_t ridx = k - at->low_bound;
             if (ridx >= 0 and ridx < asz)
@@ -5854,7 +5854,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
         if (s->definition->k == N_INT)
         {
           node->k = N_INT;
-          node->i = s->definition->i;
+          node->integer_value = s->definition->integer_value;
           node->ty = TY_UINT;
         }
         else if (s->definition->k == N_REAL)
@@ -5881,7 +5881,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     break;
   case N_CHAR:
   {
-    Symbol *s = symbol_character_literal(symbol_manager, node->i, tx);
+    Symbol *s = symbol_character_literal(symbol_manager, node->integer_value, tx);
     if (s)
     {
       node->ty = s->ty;
@@ -5926,7 +5926,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     if (node->binary_node.l->k == N_INT and node->binary_node.r->k == N_INT
         and (node->binary_node.op == T_PL or node->binary_node.op == T_MN or node->binary_node.op == T_ST or node->binary_node.op == T_SL or node->binary_node.op == T_MOD or node->binary_node.op == T_REM))
     {
-      int64_t a = node->binary_node.l->i, b = node->binary_node.r->i, r = 0;
+      int64_t a = node->binary_node.l->integer_value, b = node->binary_node.r->integer_value, r = 0;
       if (node->binary_node.op == T_PL)
         r = a + b;
       else if (node->binary_node.op == T_MN)
@@ -5938,15 +5938,15 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
       else if ((node->binary_node.op == T_MOD or node->binary_node.op == T_REM) and b != 0)
         r = a % b;
       node->k = N_INT;
-      node->i = r;
+      node->integer_value = r;
       node->ty = TY_UINT;
     }
     else if (
         (node->binary_node.l->k == N_REAL or node->binary_node.r->k == N_REAL)
         and (node->binary_node.op == T_PL or node->binary_node.op == T_MN or node->binary_node.op == T_ST or node->binary_node.op == T_SL or node->binary_node.op == T_EX))
     {
-      double a = node->binary_node.l->k == N_INT ? (double) node->binary_node.l->i : node->binary_node.l->f,
-             b = node->binary_node.r->k == N_INT ? (double) node->binary_node.r->i : node->binary_node.r->f, r = 0;
+      double a = node->binary_node.l->k == N_INT ? (double) node->binary_node.l->integer_value : node->binary_node.l->f,
+             b = node->binary_node.r->k == N_INT ? (double) node->binary_node.r->integer_value : node->binary_node.r->f, r = 0;
       if (node->binary_node.op == T_PL)
         r = a + b;
       else if (node->binary_node.op == T_MN)
@@ -5973,7 +5973,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     if (node->unary_node.op == T_MN and node->unary_node.x->k == N_INT)
     {
       node->k = N_INT;
-      node->i = -node->unary_node.x->i;
+      node->integer_value = -node->unary_node.x->integer_value;
       node->ty = TY_UINT;
     }
     else if (node->unary_node.op == T_MN and node->unary_node.x->k == N_REAL)
@@ -5987,7 +5987,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
       node->k = node->unary_node.x->k;
       if (node->k == N_INT)
       {
-        node->i = node->unary_node.x->i;
+        node->integer_value = node->unary_node.x->integer_value;
         node->ty = TY_UINT;
       }
       else
@@ -6056,7 +6056,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
               if (df->k == N_INT)
               {
                 node->k = N_INT;
-                node->i = df->i;
+                node->integer_value = df->integer_value;
                 node->ty = TY_UINT;
               }
               else if (df->k == N_REAL)
@@ -6098,7 +6098,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
                   if (df->k == N_INT)
                   {
                     node->k = N_INT;
-                    node->i = df->i;
+                    node->integer_value = df->integer_value;
                     node->ty = TY_UINT;
                   }
                   else if (df->k == N_REAL)
@@ -6158,7 +6158,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
                 if (df->k == N_INT)
                 {
                   node->k = N_INT;
-                  node->i = df->i;
+                  node->integer_value = df->integer_value;
                   node->ty = TY_UINT;
                 }
                 else if (df->k == N_REAL)
@@ -6303,18 +6303,18 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
         if (ptc and is_integer_type(ptc))
         {
           node->k = N_INT;
-          node->i = node->attribute.arguments.data[0]->i;
+          node->integer_value = node->attribute.arguments.data[0]->integer_value;
           node->ty = TY_UINT;
         }
       }
       if (string_equal_ignore_case(a, STRING_LITERAL("VAL")) and node->attribute.arguments.count > 0
           and node->attribute.arguments.data[0]->k == N_INT)
       {
-        int64_t pos = node->attribute.arguments.data[0]->i;
+        int64_t pos = node->attribute.arguments.data[0]->integer_value;
         if (ptc == TY_CHAR and pos >= 0 and pos <= 127)
         {
           node->k = N_CHAR;
-          node->i = pos;
+          node->integer_value = pos;
           node->ty = TY_CHAR;
         }
         else if (
@@ -6432,7 +6432,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
               if (cd->k == N_DS and cd->parameter.default_value and ed->k == N_DS)
               {
                 bool mtch = cd->parameter.default_value->k == N_INT and ed->parameter.default_value and ed->parameter.default_value->k == N_INT
-                            and cd->parameter.default_value->i == ed->parameter.default_value->i;
+                            and cd->parameter.default_value->integer_value == ed->parameter.default_value->integer_value;
                 if (not mtch)
                 {
                   node->allocator.initializer = chk(symbol_manager, node->allocator.initializer, node->location);
@@ -6701,7 +6701,7 @@ static void runtime_register_compare(Symbol_Manager *symbol_manager, Representat
           Symbol *ev = t->enum_values.data[j];
           if (string_equal_ignore_case(ev->name, e->string_value))
           {
-            ev->value = e->i;
+            ev->value = e->integer_value;
             break;
           }
         }
@@ -6967,13 +6967,13 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
     c->string_value = n->string_value.string ? string_duplicate(n->string_value) : n->string_value;
     break;
   case N_INT:
-    c->i = n->i;
+    c->integer_value = n->integer_value;
     break;
   case N_REAL:
     c->f = n->f;
     break;
   case N_CHAR:
-    c->i = n->i;
+    c->integer_value = n->integer_value;
     break;
   case N_STR:
     c->string_value = n->string_value.string ? string_duplicate(n->string_value) : n->string_value;
@@ -7437,7 +7437,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
               if (td->k == N_DS and id->k == N_DS and td->parameter.default_value and id->parameter.default_value)
               {
                 if (td->parameter.default_value->k == N_INT and id->parameter.default_value->k == N_INT
-                    and td->parameter.default_value->i != id->parameter.default_value->i)
+                    and td->parameter.default_value->integer_value != id->parameter.default_value->integer_value)
                 {
                   Syntax_Node *dc = ND(CHK, n->location);
                   dc->check.expression = n->object_decl.in;
@@ -7451,7 +7451,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
         }
         s->definition = n->object_decl.in;
         if (n->object_decl.is_constant and n->object_decl.in->k == N_INT)
-          s->value = n->object_decl.in->i;
+          s->value = n->object_decl.in->integer_value;
         else if (n->object_decl.is_constant and n->object_decl.in->k == N_ID and n->object_decl.in->symbol and n->object_decl.in->symbol->k == 2)
           s->value = n->object_decl.in->symbol->value;
         else if (n->object_decl.is_constant and n->object_decl.in->k == N_AT)
@@ -7469,7 +7469,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
           if (ag->k == N_ID and ag->symbol and ag->symbol->k == 2)
             s->value = ag->symbol->value;
           else if (ag->k == N_INT)
-            s->value = ag->i;
+            s->value = ag->integer_value;
         }
       }
     }
@@ -7516,8 +7516,8 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       {
         resolve_expression(symbol_manager, n->type_decl.definition->range.low, 0);
         resolve_expression(symbol_manager, n->type_decl.definition->range.high, 0);
-        t->low_bound = n->type_decl.definition->range.low->i;
-        t->high_bound = n->type_decl.definition->range.high->i;
+        t->low_bound = n->type_decl.definition->range.low->integer_value;
+        t->high_bound = n->type_decl.definition->range.high->integer_value;
       }
     }
     else
@@ -7588,7 +7588,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       {
         Syntax_Node *it = n->type_decl.definition->list.items.data[i];
         Symbol *es = symbol_add_overload(
-            symbol_manager, symbol_new(it->k == N_CHAR ? (String_Slice){(const char *) &it->i, 1} : it->string_value, 2, t, n));
+            symbol_manager, symbol_new(it->k == N_CHAR ? (String_Slice){(const char *) &it->integer_value, 1} : it->string_value, 2, t, n));
         es->value = vl++;
         sv(&t->enum_values, es);
       }
@@ -7702,12 +7702,12 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       resolve_expression(symbol_manager, n->subtype_decl.range_constraint->range.high, 0);
       Syntax_Node *lo = n->subtype_decl.range_constraint->range.low;
       Syntax_Node *hi = n->subtype_decl.range_constraint->range.high;
-      int64_t lov = lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.x->k == N_INT ? -lo->unary_node.x->i
+      int64_t lov = lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.x->k == N_INT ? -lo->unary_node.x->integer_value
                     : lo->k == N_ID and lo->symbol and lo->symbol->k == 2                ? lo->symbol->value
-                                                                                 : lo->i;
-      int64_t hiv = hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.x->k == N_INT ? -hi->unary_node.x->i
+                                                                                 : lo->integer_value;
+      int64_t hiv = hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.x->k == N_INT ? -hi->unary_node.x->integer_value
                     : hi->k == N_ID and hi->symbol and hi->symbol->k == 2                ? hi->symbol->value
-                                                                                 : hi->i;
+                                                                                 : hi->integer_value;
       t->low_bound = lov;
       t->high_bound = hiv;
     }
@@ -9148,7 +9148,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
   {
   case N_INT:
     r.k = VALUE_KIND_INTEGER;
-    fprintf(o, "  %%t%d = add i64 0, %lld\n", r.id, (long long) n->i);
+    fprintf(o, "  %%t%d = add i64 0, %lld\n", r.id, (long long) n->integer_value);
     break;
   case N_REAL:
     r.k = VALUE_KIND_FLOAT;
@@ -9156,7 +9156,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     break;
   case N_CHAR:
     r.k = VALUE_KIND_INTEGER;
-    fprintf(o, "  %%t%d = add i64 0, %d\n", r.id, (int) n->i);
+    fprintf(o, "  %%t%d = add i64 0, %d\n", r.id, (int) n->integer_value);
     break;
   case N_STR:
     r.k = VALUE_KIND_POINTER;
@@ -11494,12 +11494,12 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
       Syntax_Node *a = n->case_stmt.alternatives.data[i];
       int la = new_label_block(generator);
       nv(&lb, ND(INT, n->location));
-      lb.data[i]->i = la;
+      lb.data[i]->integer_value = la;
     }
     for (uint32_t i = 0; i < n->case_stmt.alternatives.count; i++)
     {
       Syntax_Node *a = n->case_stmt.alternatives.data[i];
-      int la = lb.data[i]->i;
+      int la = lb.data[i]->integer_value;
       for (uint32_t j = 0; j < a->choices.items.count; j++)
       {
         Syntax_Node *ch = a->choices.items.data[j];
@@ -11521,7 +11521,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           fprintf(o, "  %%t%d = icmp sle i64 %%t%d, %%t%d\n", cle, ex.id, hi_id);
           int ca = new_temporary_register(generator);
           fprintf(o, "  %%t%d = and i1 %%t%d, %%t%d\n", ca, cge, cle);
-          int lnx = i + 1 < n->case_stmt.alternatives.count ? lb.data[i + 1]->i : ld;
+          int lnx = i + 1 < n->case_stmt.alternatives.count ? lb.data[i + 1]->integer_value : ld;
           emit_conditional_branch(generator, ca, la, lnx);
           continue;
         }
@@ -11539,14 +11539,14 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           fprintf(o, "  %%t%d = icmp sle i64 %%t%d, %%t%d\n", cle, ex.id, hi.id);
           int ca = new_temporary_register(generator);
           fprintf(o, "  %%t%d = and i1 %%t%d, %%t%d\n", ca, cge, cle);
-          int lnx = i + 1 < n->case_stmt.alternatives.count ? lb.data[i + 1]->i : ld;
+          int lnx = i + 1 < n->case_stmt.alternatives.count ? lb.data[i + 1]->integer_value : ld;
           emit_conditional_branch(generator, ca, la, lnx);
         }
         else
         {
           int ceq = new_temporary_register(generator);
           fprintf(o, "  %%t%d = icmp eq i64 %%t%d, %%t%d\n", ceq, ex.id, cv.id);
-          int lnx = i + 1 < n->case_stmt.alternatives.count ? lb.data[i + 1]->i : ld;
+          int lnx = i + 1 < n->case_stmt.alternatives.count ? lb.data[i + 1]->integer_value : ld;
           emit_conditional_branch(generator, ceq, la, lnx);
         }
       }
@@ -11555,7 +11555,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
     for (uint32_t i = 0; i < n->case_stmt.alternatives.count; i++)
     {
       Syntax_Node *a = n->case_stmt.alternatives.data[i];
-      int la = lb.data[i]->i;
+      int la = lb.data[i]->integer_value;
       emit_label(generator, la);
       for (uint32_t j = 0; j < a->exception_handler.statements.count; j++)
         generate_statement_sequence(generator, a->exception_handler.statements.data[j]);
@@ -11573,7 +11573,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
     {
       slv(&generator->lbs, n->loop_stmt.label);
       nv(&n->loop_stmt.locks, ND(INT, n->location));
-      n->loop_stmt.locks.data[n->loop_stmt.locks.count - 1]->i = le;
+      n->loop_stmt.locks.data[n->loop_stmt.locks.count - 1]->integer_value = le;
     }
     Syntax_Node *fv = 0;
     Type_Info *ft = 0;
@@ -12209,7 +12209,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                   if (td->k == N_DS and id_d->k == N_DS and td->parameter.default_value and td->parameter.default_value->k == N_INT)
                   {
                     int tdi = new_temporary_register(generator);
-                    fprintf(o, "  %%t%d = add i64 0, %lld\n", tdi, (long long) td->parameter.default_value->i);
+                    fprintf(o, "  %%t%d = add i64 0, %lld\n", tdi, (long long) td->parameter.default_value->integer_value);
                     Value iv = generate_expression(generator, d->object_decl.in);
                     int ivd = new_temporary_register(generator);
                     fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ivd, iv.id, di);
@@ -12284,7 +12284,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               Syntax_Node *dc = at->dc.data[di];
               if (dc->k == N_DS and dc->parameter.default_value and dc->parameter.default_value->k == N_INT)
               {
-                int64_t dv = dc->parameter.default_value->i;
+                int64_t dv = dc->parameter.default_value->integer_value;
                 if (dv < cty->index_type->low_bound or dv > cty->index_type->high_bound)
                 {
                   fprintf(
@@ -12300,7 +12300,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           {
             Syntax_Node *dc = at->dc.data[di];
             int dv = new_temporary_register(generator);
-            fprintf(o, "  %%t%d = add i64 0, %lld\n", dv, (long long) dc->parameter.default_value->i);
+            fprintf(o, "  %%t%d = add i64 0, %lld\n", dv, (long long) dc->parameter.default_value->integer_value);
             int dp = new_temporary_register(generator);
             if (s->level >= 0 and s->level < generator->sm->lv)
               fprintf(
@@ -13092,7 +13092,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   if (td->k == N_DS and id_d->k == N_DS and td->parameter.default_value and td->parameter.default_value->k == N_INT)
                   {
                     int tdi = new_temporary_register(generator);
-                    fprintf(o, "  %%t%d = add i64 0, %lld\n", tdi, (long long) td->parameter.default_value->i);
+                    fprintf(o, "  %%t%d = add i64 0, %lld\n", tdi, (long long) td->parameter.default_value->integer_value);
                     Value iv = generate_expression(generator, d->object_decl.in);
                     int ivd = new_temporary_register(generator);
                     fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ivd, iv.id, di);
@@ -13466,7 +13466,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   if (td->k == N_DS and id_d->k == N_DS and td->parameter.default_value and td->parameter.default_value->k == N_INT)
                   {
                     int tdi = new_temporary_register(generator);
-                    fprintf(o, "  %%t%d = add i64 0, %lld\n", tdi, (long long) td->parameter.default_value->i);
+                    fprintf(o, "  %%t%d = add i64 0, %lld\n", tdi, (long long) td->parameter.default_value->integer_value);
                     Value iv = generate_expression(generator, d->object_decl.in);
                     int ivd = new_temporary_register(generator);
                     fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ivd, iv.id, di);
@@ -14063,7 +14063,7 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
           char iv[64];
           if (k == VALUE_KIND_INTEGER and s->definition and s->definition->k == N_INT)
           {
-            snprintf(iv, 64, "%ld", s->definition->i);
+            snprintf(iv, 64, "%ld", s->definition->integer_value);
           }
           else if (k == VALUE_KIND_INTEGER and s->value != 0)
           {
@@ -14275,7 +14275,7 @@ int main(int ac, char **av)
           char iv[64];
           if (k == VALUE_KIND_INTEGER and s->definition and s->definition->k == N_INT)
           {
-            snprintf(iv, 64, "%ld", s->definition->i);
+            snprintf(iv, 64, "%ld", s->definition->integer_value);
           }
           else if (k == VALUE_KIND_INTEGER and s->value != 0)
           {
