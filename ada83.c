@@ -1236,7 +1236,7 @@ struct Syntax_Node
   Symbol *symbol;
   union
   {
-    String_Slice s;
+    String_Slice string_value;
     int64_t i;
     double f;
     struct
@@ -1894,7 +1894,7 @@ static Syntax_Node *parse_primary(Parser *parser)
   if (parser_match(parser, T_OTH))
   {
     Syntax_Node *node = ND(ID, location);
-    node->s = STRING_LITERAL("others");
+    node->string_value = STRING_LITERAL("others");
     return node;
   }
   if (parser_at(parser, T_INT))
@@ -1921,7 +1921,7 @@ static Syntax_Node *parse_primary(Parser *parser)
   if (parser_at(parser, T_STR))
   {
     Syntax_Node *node = ND(STR, location);
-    node->s = string_duplicate(parser->current_token.literal);
+    node->string_value = string_duplicate(parser->current_token.literal);
     parser_next(parser);
     for (;;)
     {
@@ -2006,7 +2006,7 @@ static Syntax_Node *parse_name(Parser *parser)
 {
   Source_Location location = parser_location(parser);
   Syntax_Node *node = ND(ID, location);
-  node->s = parser_identifier(parser);
+  node->string_value = parser_identifier(parser);
   for (;;)
   {
     if (parser_match(parser, T_DT))
@@ -2313,7 +2313,7 @@ static Syntax_Node *parse_simple_expression(Parser *parser)
 {
   Source_Location location = parser_location(parser);
   Syntax_Node *node = ND(ID, location);
-  node->s = parser_identifier(parser);
+  node->string_value = parser_identifier(parser);
   for (;;)
   {
     if (parser_match(parser, T_DT))
@@ -2384,7 +2384,7 @@ static Syntax_Node *parse_simple_expression(Parser *parser)
       if (ch.count > 0 and ch.data[0]->k == N_ID and parser_match(parser, T_RNG))
       {
         Syntax_Node *tn = ND(ID, lc2);
-        tn->s = ch.data[0]->s;
+        tn->string_value = ch.data[0]->string_value;
         Syntax_Node *rng = parse_range(parser);
         Syntax_Node *si = ND(ST, lc2);
         Syntax_Node *cn = ND(CN, lc2);
@@ -2431,7 +2431,7 @@ static Node_Vector parse_parameter_mode(Parser *parser)
     {
       String_Slice nm = parser_identifier(parser);
       Syntax_Node *i = ND(ID, location);
-      i->s = nm;
+      i->string_value = nm;
       nv(&id, i);
     } while (parser_match(parser, T_CM));
     parser_expect(parser, T_CL);
@@ -2449,7 +2449,7 @@ static Node_Vector parse_parameter_mode(Parser *parser)
     for (uint32_t i = 0; i < id.count; i++)
     {
       Syntax_Node *node = ND(PM, location);
-      node->parameter.nm = id.data[i]->s;
+      node->parameter.nm = id.data[i]->string_value;
       node->parameter.ty = ty;
       node->parameter.default_value = df;
       node->parameter.mode = md;
@@ -2573,7 +2573,7 @@ static Node_Vector parse_generic_formal_part(Parser *parser)
         {
           String_Slice nm = parser_identifier(parser);
           Syntax_Node *i = ND(ID, location);
-          i->s = nm;
+          i->string_value = nm;
           nv(&id, i);
         } while (parser_match(parser, T_CM));
         parser_expect(parser, T_CL);
@@ -2603,7 +2603,7 @@ static Node_Vector parse_generic_formal_part(Parser *parser)
       {
         String_Slice nm = parser_identifier(parser);
         Syntax_Node *i = ND(ID, location);
-        i->s = nm;
+        i->string_value = nm;
         nv(&id, i);
       } while (parser_match(parser, T_CM));
       parser_expect(parser, T_CL);
@@ -2763,7 +2763,7 @@ static Syntax_Node *parse_loop(Parser *parser, String_Slice label)
     Syntax_Node *it = ND(BIN, location);
     it->binary_node.op = T_IN;
     it->binary_node.l = ND(ID, location);
-    it->binary_node.l->s = vr;
+    it->binary_node.l->string_value = vr;
     it->binary_node.r = rng;
     node->loop_stmt.iterator = it;
   }
@@ -3196,7 +3196,7 @@ static Node_Vector parse_handle_declaration(Parser *parser)
       if (parser_match(parser, T_OTH))
       {
         Syntax_Node *node = ND(ID, location);
-        node->s = STRING_LITERAL("others");
+        node->string_value = STRING_LITERAL("others");
         nv(&handler->exception_handler.exception_choices, node);
       }
       else
@@ -3228,7 +3228,7 @@ static Syntax_Node *parse_type_definition(Parser *parser)
       {
         String_Slice nm = parser_identifier(parser);
         Syntax_Node *i = ND(ID, location);
-        i->s = nm;
+        i->string_value = nm;
         nv(&node->list.items, i);
       }
     } while (parser_match(parser, T_CM));
@@ -3352,7 +3352,7 @@ static Syntax_Node *parse_type_definition(Parser *parser)
       {
         String_Slice nm = parser_identifier(parser);
         Syntax_Node *i = ND(ID, location);
-        i->s = nm;
+        i->string_value = nm;
         nv(&id, i);
       } while (parser_match(parser, T_CM));
       parser_expect(parser, T_CL);
@@ -3364,7 +3364,7 @@ static Syntax_Node *parse_type_definition(Parser *parser)
       for (uint32_t i = 0; i < id.count; i++)
       {
         Syntax_Node *c = ND(CM, location);
-        c->component_decl.nm = id.data[i]->s;
+        c->component_decl.nm = id.data[i]->string_value;
         c->component_decl.ty = ty;
         c->component_decl.in = in;
         c->component_decl.offset = of++;
@@ -3410,7 +3410,7 @@ static Syntax_Node *parse_type_definition(Parser *parser)
           {
             String_Slice nm = parser_identifier(parser);
             Syntax_Node *i = ND(ID, location);
-            i->s = nm;
+            i->string_value = nm;
             nv(&id, i);
           } while (parser_match(parser, T_CM));
           parser_expect(parser, T_CL);
@@ -3422,7 +3422,7 @@ static Syntax_Node *parse_type_definition(Parser *parser)
           for (uint32_t i = 0; i < id.count; i++)
           {
             Syntax_Node *c = ND(CM, location);
-            c->component_decl.nm = id.data[i]->s;
+            c->component_decl.nm = id.data[i]->string_value;
             c->component_decl.ty = ty;
             c->component_decl.in = in;
             c->component_decl.offset = of++;
@@ -3552,7 +3552,7 @@ static Representation_Clause *parse_representation_clause(Parser *parser)
           parse_name(parser);
         parser_expect(parser, T_RP);
         r = reference_counter_new(5, 0);
-        r->er.nm = tn and tn->k == N_ID ? tn->s : N;
+        r->er.nm = tn and tn->k == N_ID ? tn->string_value : N;
       }
       parser_expect(parser, T_SC);
       return r;
@@ -3676,7 +3676,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
         {
           String_Slice dnm = parser_identifier(parser);
           Syntax_Node *di = ND(ID, location);
-          di->s = dnm;
+          di->string_value = dnm;
           nv(&dn, di);
         } while (parser_match(parser, T_CM));
         parser_expect(parser, T_CL);
@@ -3687,7 +3687,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
         for (uint32_t i = 0; i < dn.count; i++)
         {
           Syntax_Node *dp = ND(DS, location);
-          dp->parameter.nm = dn.data[i]->s;
+          dp->parameter.nm = dn.data[i]->string_value;
           dp->parameter.ty = dt;
           dp->parameter.default_value = dd;
           nv(&ds->list.items, dp);
@@ -4150,7 +4150,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
     {
       String_Slice nm = parser_identifier(parser);
       Syntax_Node *i = ND(ID, location);
-      i->s = nm;
+      i->string_value = nm;
       nv(&id, i);
     } while (parser_match(parser, T_CM));
     parser_expect(parser, T_CL);
@@ -4276,7 +4276,7 @@ static Syntax_Node *parse_compilation_unit(Parser *parser)
       parser_expect(parser, T_LP);
       Syntax_Node *pnm_ = parse_name(parser);
       parser_expect(parser, T_RP);
-      String_Slice ppkg = pnm_->k == N_ID ? pnm_->s : pnm_->k == N_SEL ? pnm_->selected_component.prefix->s : N;
+      String_Slice ppkg = pnm_->k == N_ID ? pnm_->string_value : pnm_->k == N_SEL ? pnm_->selected_component.prefix->string_value : N;
       SEPARATE_PACKAGE = ppkg.string ? string_duplicate(ppkg) : N;
       if (ppkg.string)
       {
@@ -4730,17 +4730,17 @@ static Syntax_Node *generate_equality_operator(Type_Info *t, Source_Location l)
   Syntax_Node *p1 = ND(PM, l);
   p1->parameter.nm = STRING_LITERAL("Source_Location");
   p1->parameter.ty = ND(ID, l);
-  p1->parameter.ty->s = t->nm;
+  p1->parameter.ty->string_value = t->nm;
   p1->parameter.mode = 0;
   Syntax_Node *p2 = ND(PM, l);
   p2->parameter.nm = STRING_LITERAL("Rational_Number");
   p2->parameter.ty = ND(ID, l);
-  p2->parameter.ty->s = t->nm;
+  p2->parameter.ty->string_value = t->nm;
   p2->parameter.mode = 0;
   nv(&f->body.subprogram_spec->subprogram.parameters, p1);
   nv(&f->body.subprogram_spec->subprogram.parameters, p2);
   f->body.subprogram_spec->subprogram.return_type = ND(ID, l);
-  f->body.subprogram_spec->subprogram.return_type->s = STRING_LITERAL("BOOLEAN");
+  f->body.subprogram_spec->subprogram.return_type->string_value = STRING_LITERAL("BOOLEAN");
   Syntax_Node *s = ND(RT, l);
   s->return_stmt.value = ND(BIN, l);
   s->return_stmt.value->binary_node.op = T_EQ;
@@ -4757,11 +4757,11 @@ static Syntax_Node *generate_equality_operator(Type_Info *t, Source_Location l)
       cmp->binary_node.op = T_EQ;
       Syntax_Node *lf = ND(SEL, l);
       lf->selected_component.prefix = ND(ID, l);
-      lf->selected_component.prefix->s = STRING_LITERAL("Source_Location");
+      lf->selected_component.prefix->string_value = STRING_LITERAL("Source_Location");
       lf->selected_component.selector = c->component_decl.nm;
       Syntax_Node *rf = ND(SEL, l);
       rf->selected_component.prefix = ND(ID, l);
-      rf->selected_component.prefix->s = STRING_LITERAL("Rational_Number");
+      rf->selected_component.prefix->string_value = STRING_LITERAL("Rational_Number");
       rf->selected_component.selector = c->component_decl.nm;
       cmp->binary_node.l = lf;
       cmp->binary_node.r = rf;
@@ -4783,35 +4783,35 @@ static Syntax_Node *generate_equality_operator(Type_Info *t, Source_Location l)
     lp->loop_stmt.iterator = ND(BIN, l);
     lp->loop_stmt.iterator->binary_node.op = T_IN;
     lp->loop_stmt.iterator->binary_node.l = ND(ID, l);
-    lp->loop_stmt.iterator->binary_node.l->s = STRING_LITERAL("I");
+    lp->loop_stmt.iterator->binary_node.l->string_value = STRING_LITERAL("I");
     lp->loop_stmt.iterator->binary_node.r = ND(AT, l);
     lp->loop_stmt.iterator->binary_node.r->attribute.prefix = ND(ID, l);
-    lp->loop_stmt.iterator->binary_node.r->attribute.prefix->s = STRING_LITERAL("Source_Location");
+    lp->loop_stmt.iterator->binary_node.r->attribute.prefix->string_value = STRING_LITERAL("Source_Location");
     lp->loop_stmt.iterator->binary_node.r->attribute.attribute_name = STRING_LITERAL("RANGE");
     Syntax_Node *cmp = ND(BIN, l);
     cmp->binary_node.op = T_NE;
     Syntax_Node *li = ND(IX, l);
     li->index.prefix = ND(ID, l);
-    li->index.prefix->s = STRING_LITERAL("Source_Location");
+    li->index.prefix->string_value = STRING_LITERAL("Source_Location");
     nv(&li->index.indices, ND(ID, l));
-    li->index.indices.data[0]->s = STRING_LITERAL("I");
+    li->index.indices.data[0]->string_value = STRING_LITERAL("I");
     Syntax_Node *ri = ND(IX, l);
     ri->index.prefix = ND(ID, l);
-    ri->index.prefix->s = STRING_LITERAL("Rational_Number");
+    ri->index.prefix->string_value = STRING_LITERAL("Rational_Number");
     nv(&ri->index.indices, ND(ID, l));
-    ri->index.indices.data[0]->s = STRING_LITERAL("I");
+    ri->index.indices.data[0]->string_value = STRING_LITERAL("I");
     cmp->binary_node.l = li;
     cmp->binary_node.r = ri;
     Syntax_Node *rt = ND(RT, l);
     rt->return_stmt.value = ND(ID, l);
-    rt->return_stmt.value->s = STRING_LITERAL("FALSE");
+    rt->return_stmt.value->string_value = STRING_LITERAL("FALSE");
     Syntax_Node *ifs = ND(IF, l);
     ifs->if_stmt.condition = cmp;
     nv(&ifs->if_stmt.th, rt);
     nv(&lp->loop_stmt.statements, ifs);
     nv(&f->body.statements, lp);
     s->return_stmt.value = ND(ID, l);
-    s->return_stmt.value->s = STRING_LITERAL("TRUE");
+    s->return_stmt.value->string_value = STRING_LITERAL("TRUE");
   }
   nv(&f->body.statements, s);
   return f;
@@ -4827,12 +4827,12 @@ static Syntax_Node *generate_assignment_operator(Type_Info *t, Source_Location l
   Syntax_Node *p1 = ND(PM, l);
   p1->parameter.nm = STRING_LITERAL("T");
   p1->parameter.ty = ND(ID, l);
-  p1->parameter.ty->s = t->nm;
+  p1->parameter.ty->string_value = t->nm;
   p1->parameter.mode = 3;
   Syntax_Node *p2 = ND(PM, l);
   p2->parameter.nm = STRING_LITERAL("String_Slice");
   p2->parameter.ty = ND(ID, l);
-  p2->parameter.ty->s = t->nm;
+  p2->parameter.ty->string_value = t->nm;
   p2->parameter.mode = 0;
   nv(&parser->body.subprogram_spec->subprogram.parameters, p1);
   nv(&parser->body.subprogram_spec->subprogram.parameters, p2);
@@ -4846,11 +4846,11 @@ static Syntax_Node *generate_assignment_operator(Type_Info *t, Source_Location l
       Syntax_Node *as = ND(AS, l);
       Syntax_Node *lt = ND(SEL, l);
       lt->selected_component.prefix = ND(ID, l);
-      lt->selected_component.prefix->s = STRING_LITERAL("T");
+      lt->selected_component.prefix->string_value = STRING_LITERAL("T");
       lt->selected_component.selector = c->component_decl.nm;
       Syntax_Node *rs = ND(SEL, l);
       rs->selected_component.prefix = ND(ID, l);
-      rs->selected_component.prefix->s = STRING_LITERAL("String_Slice");
+      rs->selected_component.prefix->string_value = STRING_LITERAL("String_Slice");
       rs->selected_component.selector = c->component_decl.nm;
       as->assignment.target = lt;
       as->assignment.value = rs;
@@ -4863,22 +4863,22 @@ static Syntax_Node *generate_assignment_operator(Type_Info *t, Source_Location l
     lp->loop_stmt.iterator = ND(BIN, l);
     lp->loop_stmt.iterator->binary_node.op = T_IN;
     lp->loop_stmt.iterator->binary_node.l = ND(ID, l);
-    lp->loop_stmt.iterator->binary_node.l->s = STRING_LITERAL("I");
+    lp->loop_stmt.iterator->binary_node.l->string_value = STRING_LITERAL("I");
     lp->loop_stmt.iterator->binary_node.r = ND(AT, l);
     lp->loop_stmt.iterator->binary_node.r->attribute.prefix = ND(ID, l);
-    lp->loop_stmt.iterator->binary_node.r->attribute.prefix->s = STRING_LITERAL("T");
+    lp->loop_stmt.iterator->binary_node.r->attribute.prefix->string_value = STRING_LITERAL("T");
     lp->loop_stmt.iterator->binary_node.r->attribute.attribute_name = STRING_LITERAL("RANGE");
     Syntax_Node *as = ND(AS, l);
     Syntax_Node *ti = ND(IX, l);
     ti->index.prefix = ND(ID, l);
-    ti->index.prefix->s = STRING_LITERAL("T");
+    ti->index.prefix->string_value = STRING_LITERAL("T");
     nv(&ti->index.indices, ND(ID, l));
-    ti->index.indices.data[0]->s = STRING_LITERAL("I");
+    ti->index.indices.data[0]->string_value = STRING_LITERAL("I");
     Syntax_Node *si = ND(IX, l);
     si->index.prefix = ND(ID, l);
-    si->index.prefix->s = STRING_LITERAL("String_Slice");
+    si->index.prefix->string_value = STRING_LITERAL("String_Slice");
     nv(&si->index.indices, ND(ID, l));
-    si->index.indices.data[0]->s = STRING_LITERAL("I");
+    si->index.indices.data[0]->string_value = STRING_LITERAL("I");
     as->assignment.target = ti;
     as->assignment.value = si;
     nv(&lp->loop_stmt.statements, as);
@@ -4894,7 +4894,7 @@ static Syntax_Node *generate_input_operator(Type_Info *t, Source_Location l)
   snprintf(b, 256, "Oin%.*s", (int) t->nm.length, t->nm.string);
   f->body.subprogram_spec->subprogram.nm = string_duplicate((String_Slice){b, strlen(b)});
   f->body.subprogram_spec->subprogram.return_type = ND(ID, l);
-  f->body.subprogram_spec->subprogram.return_type->s = t->nm;
+  f->body.subprogram_spec->subprogram.return_type->string_value = t->nm;
   Syntax_Node *ag = ND(AG, l);
   if (t->k == TYPE_RECORD)
   {
@@ -4905,7 +4905,7 @@ static Syntax_Node *generate_input_operator(Type_Info *t, Source_Location l)
         continue;
       Syntax_Node *a = ND(ASC, l);
       nv(&a->association.choices, ND(ID, l));
-      a->association.choices.data[0]->s = c->component_decl.nm;
+      a->association.choices.data[0]->string_value = c->component_decl.nm;
       a->association.value = c->component_decl.in;
       nv(&ag->aggregate.items, a);
     }
@@ -5205,7 +5205,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
     return TY_INT;
   if (node->k == N_ID)
   {
-    Symbol *s = symbol_find(symbol_manager, node->s);
+    Symbol *s = symbol_find(symbol_manager, node->string_value);
     if (s and s->ty)
       return s->ty;
     return TY_INT;
@@ -5215,7 +5215,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
     Syntax_Node *parser = node->selected_component.prefix;
     if (parser->k == N_ID)
     {
-      Symbol *ps = symbol_find(symbol_manager, parser->s);
+      Symbol *ps = symbol_find(symbol_manager, parser->string_value);
       if (ps and ps->k == 6 and ps->definition and ps->definition->k == N_PKS)
       {
         Syntax_Node *pk = ps->definition;
@@ -5646,7 +5646,7 @@ static int find_or_throw(Syntax_Node *ag)
   {
     Syntax_Node *e = ag->aggregate.items.data[i];
     if (e->k == N_ASC and e->association.choices.count == 1 and e->association.choices.data[0]->k == N_ID
-        and string_equal_ignore_case(e->association.choices.data[0]->s, STRING_LITERAL("others")))
+        and string_equal_ignore_case(e->association.choices.data[0]->string_value, STRING_LITERAL("others")))
       return i;
   }
   return -1;
@@ -5752,7 +5752,7 @@ static void normalize_record_aggregate(Symbol_Manager *symbol_manager, Type_Info
       Syntax_Node *ch = e->association.choices.data[j];
       if (ch->k == N_ID)
       {
-        if (string_equal_ignore_case(ch->s, STRING_LITERAL("others")))
+        if (string_equal_ignore_case(ch->string_value, STRING_LITERAL("others")))
         {
           for (uint32_t k = 0; k < rt->components.count; k++)
             if (not cov[k])
@@ -5762,7 +5762,7 @@ static void normalize_record_aggregate(Symbol_Manager *symbol_manager, Type_Info
         for (uint32_t k = 0; k < rt->components.count; k++)
         {
           Syntax_Node *c = rt->components.data[k];
-          if (c->k == N_CM and string_equal_ignore_case(c->component_decl.nm, ch->s))
+          if (c->k == N_CM and string_equal_ignore_case(c->component_decl.nm, ch->string_value))
           {
             if (cov[c->component_decl.offset] and error_count < 99)
               fatal_error(ag->location, "dup cm");
@@ -5827,7 +5827,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
       for (uint32_t i = 0; i < tx->enum_values.count; i++)
       {
         Symbol *e = tx->enum_values.data[i];
-        if (string_equal_ignore_case(e->name, node->s))
+        if (string_equal_ignore_case(e->name, node->string_value))
         {
           node->ty = tx;
           node->symbol = e;
@@ -5835,14 +5835,14 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
         }
       }
     }
-    Symbol *s = symbol_find(symbol_manager, node->s);
+    Symbol *s = symbol_find(symbol_manager, node->string_value);
     if (s)
     {
       node->ty = s->ty;
       node->symbol = s;
       if (s->k == 5)
       {
-        Symbol *s0 = symbol_find_with_arity(symbol_manager, node->s, 0, tx);
+        Symbol *s0 = symbol_find_with_arity(symbol_manager, node->string_value, 0, tx);
         if (s0 and s0->ty and s0->ty->k == TYPE_STRING and s0->ty->element_type)
         {
           node->ty = s0->ty->element_type;
@@ -5867,8 +5867,8 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     }
     else
     {
-      if (error_count < 99 and not string_equal_ignore_case(node->s, STRING_LITERAL("others")))
-        fatal_error(node->location, "undef '%.*s'", (int) node->s.length, node->s.string);
+      if (error_count < 99 and not string_equal_ignore_case(node->string_value, STRING_LITERAL("others")))
+        fatal_error(node->location, "undef '%.*s'", (int) node->string_value.length, node->string_value.string);
       node->ty = TY_INT;
     }
   }
@@ -5887,7 +5887,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
       node->ty = s->ty;
       node->symbol = s;
       node->k = N_ID;
-      node->s = s->name;
+      node->string_value = s->name;
     }
     else
       node->ty = TY_CHAR;
@@ -6033,7 +6033,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     Syntax_Node *parser = node->selected_component.prefix;
     if (parser->k == N_ID)
     {
-      Symbol *ps = symbol_find(symbol_manager, parser->s);
+      Symbol *ps = symbol_find(symbol_manager, parser->string_value);
       if (ps and ps->k == 6 and ps->definition and ps->definition->k == N_PKS)
       {
         Syntax_Node *pk = ps->definition;
@@ -6241,7 +6241,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
       {
         Syntax_Node *sel = ND(SEL, node->location);
         sel->selected_component.prefix = ND(ID, node->location);
-        sel->selected_component.prefix->s = STRING_LITERAL("SYSTEM");
+        sel->selected_component.prefix->string_value = STRING_LITERAL("SYSTEM");
         sel->selected_component.selector = STRING_LITERAL("ADDRESS");
         node->ty = resolve_subtype(symbol_manager, sel);
       }
@@ -6323,7 +6323,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
         {
           Symbol *e = ptc->enum_values.data[pos];
           node->k = N_ID;
-          node->s = e->name;
+          node->string_value = e->name;
           node->ty = pt;
           node->symbol = e;
         }
@@ -6360,7 +6360,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     }
     if (node->call.function_name->k == N_ID or node->call.function_name->k == N_STR)
     {
-      String_Slice fnm = node->call.function_name->k == N_ID ? node->call.function_name->s : node->call.function_name->s;
+      String_Slice fnm = node->call.function_name->k == N_ID ? node->call.function_name->string_value : node->call.function_name->string_value;
       Symbol *s = node->call.function_name->symbol;
       if (not s)
         s = symbol_find_with_arity(symbol_manager, fnm, node->call.arguments.count, tx);
@@ -6558,7 +6558,7 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
         if (v->k == N_ID)
         {
           Type_Info *rt = node->loop_stmt.iterator->binary_node.r->ty;
-          Symbol *lvs = symbol_new(v->s, 0, rt ?: TY_INT, 0);
+          Symbol *lvs = symbol_new(v->string_value, 0, rt ?: TY_INT, 0);
           symbol_add_overload(symbol_manager, lvs);
           lvs->level = -1;
           v->symbol = lvs;
@@ -6590,8 +6590,8 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
         for (uint32_t j = 0; j < h->exception_handler.exception_choices.count; j++)
         {
           Syntax_Node *e = h->exception_handler.exception_choices.data[j];
-          if (e->k == N_ID and not string_equal_ignore_case(e->s, STRING_LITERAL("others")))
-            slv(&symbol_manager->eh, e->s);
+          if (e->k == N_ID and not string_equal_ignore_case(e->string_value, STRING_LITERAL("others")))
+            slv(&symbol_manager->eh, e->string_value);
         }
         for (uint32_t j = 0; j < h->exception_handler.statements.count; j++)
           resolve_statement_sequence(symbol_manager, h->exception_handler.statements.data[j]);
@@ -6609,7 +6609,7 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
     break;
   case N_RS:
     if (node->raise_stmt.exception_choice and node->raise_stmt.exception_choice->k == N_ID)
-      slv(&symbol_manager->eh, node->raise_stmt.exception_choice->s);
+      slv(&symbol_manager->eh, node->raise_stmt.exception_choice->string_value);
     else
       slv(&symbol_manager->eh, STRING_LITERAL("PROGRAM_ERROR"));
     if (node->raise_stmt.exception_choice)
@@ -6663,7 +6663,7 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
     break;
   case N_AB:
     if (node->raise_stmt.exception_choice and node->raise_stmt.exception_choice->k == N_ID)
-      slv(&symbol_manager->eh, node->raise_stmt.exception_choice->s);
+      slv(&symbol_manager->eh, node->raise_stmt.exception_choice->string_value);
     else
       slv(&symbol_manager->eh, STRING_LITERAL("TASKING_ERROR"));
     if (node->raise_stmt.exception_choice)
@@ -6672,9 +6672,9 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
   case N_US:
     if (node->use_clause.nm->k == N_ID)
     {
-      Symbol *s = symbol_find(symbol_manager, node->use_clause.nm->s);
+      Symbol *s = symbol_find(symbol_manager, node->use_clause.nm->string_value);
       if (s)
-        symbol_find_use(symbol_manager, s, node->use_clause.nm->s);
+        symbol_find_use(symbol_manager, s, node->use_clause.nm->string_value);
     }
     break;
   default:
@@ -6699,7 +6699,7 @@ static void runtime_register_compare(Symbol_Manager *symbol_manager, Representat
         for (uint32_t j = 0; j < t->enum_values.count; j++)
         {
           Symbol *ev = t->enum_values.data[j];
-          if (string_equal_ignore_case(ev->name, e->s))
+          if (string_equal_ignore_case(ev->name, e->string_value))
           {
             ev->value = e->i;
             break;
@@ -6842,7 +6842,7 @@ static void resolve_array_parameter(Symbol_Manager *symbol_manager, Node_Vector 
       {
         if (f->subprogram.return_type->k == N_ID)
         {
-          String_Slice tn = f->subprogram.return_type->s;
+          String_Slice tn = f->subprogram.return_type->string_value;
           for (uint32_t j = 0; j < fp->count; j++)
           {
             Syntax_Node *tf = fp->data[j];
@@ -6851,7 +6851,7 @@ static void resolve_array_parameter(Symbol_Manager *symbol_manager, Node_Vector 
               Syntax_Node *ta = ap->data[j];
               if (ta->k == N_ID)
               {
-                Symbol *ts = symbol_find(symbol_manager, ta->s);
+                Symbol *ts = symbol_find(symbol_manager, ta->string_value);
                 if (ts and ts->ty)
                   rt = ts->ty;
               }
@@ -6860,7 +6860,7 @@ static void resolve_array_parameter(Symbol_Manager *symbol_manager, Node_Vector 
           }
         }
       }
-      Symbol *s = symbol_find_with_arity(symbol_manager, a->s, pc, rt);
+      Symbol *s = symbol_find_with_arity(symbol_manager, a->string_value, pc, rt);
       if (s)
       {
         a->k = N_ID;
@@ -6927,7 +6927,7 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
   if (fp and n->k == N_ID)
   {
     for (uint32_t i = 0; i < fp->count; i++)
-      if (match_formal_parameter(fp->data[i], n->s))
+      if (match_formal_parameter(fp->data[i], n->string_value))
       {
         if (i < ap->count)
         {
@@ -6944,7 +6944,7 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
   if (fp and n->k == N_STR)
   {
     for (uint32_t i = 0; i < fp->count; i++)
-      if (match_formal_parameter(fp->data[i], n->s))
+      if (match_formal_parameter(fp->data[i], n->string_value))
       {
         if (i < ap->count)
         {
@@ -6964,7 +6964,7 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
   switch (n->k)
   {
   case N_ID:
-    c->s = n->s.string ? string_duplicate(n->s) : n->s;
+    c->string_value = n->string_value.string ? string_duplicate(n->string_value) : n->string_value;
     break;
   case N_INT:
     c->i = n->i;
@@ -6976,7 +6976,7 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
     c->i = n->i;
     break;
   case N_STR:
-    c->s = n->s.string ? string_duplicate(n->s) : n->s;
+    c->string_value = n->string_value.string ? string_duplicate(n->string_value) : n->string_value;
     break;
   case N_NULL:
     break;
@@ -7291,7 +7291,7 @@ static bool match_formal_parameter(Syntax_Node *f, String_Slice nm)
     return string_equal_ignore_case(f->subprogram.nm, nm);
   if (f->k == N_GVL)
     for (uint32_t j = 0; j < f->object_decl.identifiers.count; j++)
-      if (string_equal_ignore_case(f->object_decl.identifiers.data[j]->s, nm))
+      if (string_equal_ignore_case(f->object_decl.identifiers.data[j]->string_value, nm))
         return 1;
   return 0;
 }
@@ -7402,7 +7402,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     {
       Syntax_Node *id = n->object_decl.identifiers.data[i];
       Type_Info *ct = universal_composite_aggregate(t, n->object_decl.in);
-      Symbol *x = symbol_find(symbol_manager, id->s);
+      Symbol *x = symbol_find(symbol_manager, id->string_value);
       Symbol *s = 0;
       if (x and x->scope == symbol_manager->sc and x->storage_size == symbol_manager->ss and x->k != 11)
       {
@@ -7412,11 +7412,11 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
           s = x;
         }
         else if (error_count < 99)
-          fatal_error(n->location, "dup '%.*s'", (int) id->s.length, id->s.string);
+          fatal_error(n->location, "dup '%.*s'", (int) id->string_value.length, id->string_value.string);
       }
       if (not s)
       {
-        s = symbol_add_overload(symbol_manager, symbol_new(id->s, n->object_decl.is_constant ? 2 : 0, ct, n));
+        s = symbol_add_overload(symbol_manager, symbol_new(id->string_value, n->object_decl.is_constant ? 2 : 0, ct, n));
         s->parent = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
       }
       id->symbol = s;
@@ -7588,7 +7588,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       {
         Syntax_Node *it = n->type_decl.definition->list.items.data[i];
         Symbol *es = symbol_add_overload(
-            symbol_manager, symbol_new(it->k == N_CHAR ? (String_Slice){(const char *) &it->i, 1} : it->s, 2, t, n));
+            symbol_manager, symbol_new(it->k == N_CHAR ? (String_Slice){(const char *) &it->i, 1} : it->string_value, 2, t, n));
         es->value = vl++;
         sv(&t->enum_values, es);
       }
@@ -7724,7 +7724,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
         Symbol *tgt = n->exception_decl.renamed_entity->symbol;
         if (tgt and tgt->k == 3)
         {
-          Symbol *al = symbol_add_overload(symbol_manager, symbol_new(id->s, 3, 0, n));
+          Symbol *al = symbol_add_overload(symbol_manager, symbol_new(id->string_value, 3, 0, n));
           al->definition = n->exception_decl.renamed_entity;
           id->symbol = al;
         }
@@ -7733,7 +7733,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       }
       else
       {
-        id->symbol = symbol_add_overload(symbol_manager, symbol_new(id->s, 3, 0, n));
+        id->symbol = symbol_add_overload(symbol_manager, symbol_new(id->string_value, 3, 0, n));
       }
     }
     break;
@@ -8306,7 +8306,7 @@ static void symbol_manager_use_clauses(Symbol_Manager *symbol_manager, Syntax_No
     Syntax_Node *u = n->compilation_unit.context->context.use_clauses.data[i];
     if (u and u->k == N_US and u->use_clause.nm and u->use_clause.nm->k == N_ID)
     {
-      Symbol *ps = symbol_find(symbol_manager, u->use_clause.nm->s);
+      Symbol *ps = symbol_find(symbol_manager, u->use_clause.nm->string_value);
       if (ps and ps->k == 6 and ps->definition and ps->definition->k == N_PKS)
       {
         Syntax_Node *pk = ps->definition;
@@ -8987,7 +8987,7 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
       if (el->k == N_ASC)
       {
         if (el->association.choices.data[0]->k == N_ID
-            and string_equal_ignore_case(el->association.choices.data[0]->s, STRING_LITERAL("others")))
+            and string_equal_ignore_case(el->association.choices.data[0]->string_value, STRING_LITERAL("others")))
         {
           for (; ix < (uint32_t) sz; ix++)
           {
@@ -9072,7 +9072,7 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
             for (uint32_t k = 0; k < t->components.count; k++)
             {
               Syntax_Node *c = t->components.data[k];
-              if (c->k == N_CM and string_equal_ignore_case(c->component_decl.nm, ch->s))
+              if (c->k == N_CM and string_equal_ignore_case(c->component_decl.nm, ch->string_value))
               {
                 Value v = value_cast(generator, generate_expression(generator, el->association.value), VALUE_KIND_INTEGER);
                 int ep = new_temporary_register(generator);
@@ -9162,24 +9162,24 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     r.k = VALUE_KIND_POINTER;
     {
       int p = new_temporary_register(generator);
-      uint32_t sz = n->s.length + 1;
+      uint32_t sz = n->string_value.length + 1;
       fprintf(o, "  %%t%d = alloca [%u x i8]\n", p, sz);
-      for (uint32_t i = 0; i < n->s.length; i++)
+      for (uint32_t i = 0; i < n->string_value.length; i++)
       {
         int ep = new_temporary_register(generator);
         fprintf(o, "  %%t%d = getelementptr [%u x i8], ptr %%t%d, i64 0, i64 %u\n", ep, sz, p, i);
-        fprintf(o, "  store i8 %d, ptr %%t%d\n", (int) (unsigned char) n->s.string[i], ep);
+        fprintf(o, "  store i8 %d, ptr %%t%d\n", (int) (unsigned char) n->string_value.string[i], ep);
       }
       int zp = new_temporary_register(generator);
       fprintf(
-          o, "  %%t%d = getelementptr [%u x i8], ptr %%t%d, i64 0, i64 %u\n", zp, sz, p, n->s.length);
+          o, "  %%t%d = getelementptr [%u x i8], ptr %%t%d, i64 0, i64 %u\n", zp, sz, p, n->string_value.length);
       fprintf(o, "  store i8 0, ptr %%t%d\n", zp);
       int dp = new_temporary_register(generator);
       fprintf(o, "  %%t%d = getelementptr [%u x i8], ptr %%t%d, i64 0, i64 0\n", dp, sz, p);
       int lo_id = new_temporary_register(generator);
       fprintf(o, "  %%t%d = add i64 0, 1\n", lo_id);
       int hi_id = new_temporary_register(generator);
-      fprintf(o, "  %%t%d = add i64 0, %u\n", hi_id, n->s.length);
+      fprintf(o, "  %%t%d = add i64 0, %u\n", hi_id, n->string_value.length);
       r.id = new_temporary_register(generator);
       generate_fat_pointer(generator, r.id, dp, lo_id, hi_id);
     }
@@ -9190,7 +9190,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     break;
   case N_ID:
   {
-    Symbol *s = n->symbol ? n->symbol : symbol_find(generator->sm, n->s);
+    Symbol *s = n->symbol ? n->symbol : symbol_find(generator->sm, n->string_value);
     if (not s and n->symbol)
     {
       s = n->symbol;
@@ -9199,7 +9199,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     Value_Kind fn_ret_type = r.k;
     if (s and s->k == 5)
     {
-      Symbol *s0 = symbol_find_with_arity(generator->sm, n->s, 0, n->ty);
+      Symbol *s0 = symbol_find_with_arity(generator->sm, n->string_value, 0, n->ty);
       if (s0)
       {
         s = s0;
@@ -9263,7 +9263,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           if (gen_0p_call)
           {
             char fnb[256];
-            encode_symbol_name(fnb, 256, s, n->s, 0, 0);
+            encode_symbol_name(fnb, 256, s, n->string_value, 0, 0);
             fprintf(
                 o, "  %%t%d = call %s @\"%s\"()\n", r.id, value_llvm_type_string(fn_ret_type), fnb);
             r.k = fn_ret_type;
@@ -9275,7 +9275,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             if ((sp and sp->subprogram.parameters.count == 0) or (not b))
             {
               char fnb[256];
-              encode_symbol_name(fnb, 256, s, n->s, 0, sp);
+              encode_symbol_name(fnb, 256, s, n->string_value, 0, sp);
               fprintf(
                   o,
                   "  %%t%d = call %s @\"%s\"()\n",
@@ -9303,7 +9303,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                                 ? token_kind_to_value_kind(resolve_subtype(generator->sm, sp->subprogram.return_type))
                                 : VALUE_KIND_INTEGER;
             char fnb[256];
-            encode_symbol_name(fnb, 256, s, n->s, 0, sp);
+            encode_symbol_name(fnb, 256, s, n->string_value, 0, sp);
             fprintf(
                 o,
                 "  %%t%d = call %s @\"%s\"(ptr %%__slnk)\n",
@@ -9391,7 +9391,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                                 ? token_kind_to_value_kind(resolve_subtype(generator->sm, sp->subprogram.return_type))
                                 : VALUE_KIND_INTEGER;
             char fnb[256];
-            encode_symbol_name(fnb, 256, s, n->s, 0, sp);
+            encode_symbol_name(fnb, 256, s, n->string_value, 0, sp);
             if (s->level >= generator->sm->lv)
               fprintf(
                   o,
@@ -9419,7 +9419,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                     o,
                     "  %%t%d = load ptr, ptr %%v.%s.sc%u.%u\n",
                     r.id,
-                    string_to_lowercase(n->s),
+                    string_to_lowercase(n->string_value),
                     s ? s->scope : 0,
                     s ? s->elaboration_level : 0);
               }
@@ -9429,7 +9429,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                     o,
                     "  %%t%d = bitcast ptr %%v.%s.sc%u.%u to ptr\n",
                     r.id,
-                    string_to_lowercase(n->s),
+                    string_to_lowercase(n->string_value),
                     s ? s->scope : 0,
                     s ? s->elaboration_level : 0);
               }
@@ -9441,7 +9441,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                   "  %%t%d = load %s, ptr %%v.%s.sc%u.%u\n",
                   r.id,
                   value_llvm_type_string(k),
-                  string_to_lowercase(n->s),
+                  string_to_lowercase(n->string_value),
                   s ? s->scope : 0,
                   s ? s->elaboration_level : 0);
             }
@@ -9458,7 +9458,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                   o,
                   "  %%t%d = load ptr, ptr %%v.%s.sc%u.%u\n",
                   r.id,
-                  string_to_lowercase(n->s),
+                  string_to_lowercase(n->string_value),
                   s ? s->scope : 0,
                   s ? s->elaboration_level : 0);
             }
@@ -9468,7 +9468,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                   o,
                   "  %%t%d = bitcast ptr %%v.%s.sc%u.%u to ptr\n",
                   r.id,
-                  string_to_lowercase(n->s),
+                  string_to_lowercase(n->string_value),
                   s ? s->scope : 0,
                   s ? s->elaboration_level : 0);
             }
@@ -9480,7 +9480,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                 "  %%t%d = load %s, ptr %%v.%s.sc%u.%u\n",
                 r.id,
                 value_llvm_type_string(k),
-                string_to_lowercase(n->s),
+                string_to_lowercase(n->string_value),
                 s ? s->scope : 0,
                 s ? s->elaboration_level : 0);
           }
@@ -9596,7 +9596,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       }
       else if (rr and rr->k == N_ID)
       {
-        Symbol *s = rr->symbol ? rr->symbol : symbol_find(generator->sm, rr->s);
+        Symbol *s = rr->symbol ? rr->symbol : symbol_find(generator->sm, rr->string_value);
         if (s and s->ty)
         {
           Type_Info *t = type_canonical_concrete(s->ty);
@@ -9664,7 +9664,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       }
       else if (rr and rr->k == N_ID)
       {
-        Symbol *s = rr->symbol ? rr->symbol : symbol_find(generator->sm, rr->s);
+        Symbol *s = rr->symbol ? rr->symbol : symbol_find(generator->sm, rr->string_value);
         if (s and s->ty)
         {
           Type_Info *t = type_canonical_concrete(s->ty);
@@ -10201,7 +10201,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     Value p = {new_temporary_register(generator), VALUE_KIND_POINTER};
     if (n->selected_component.prefix->k == N_ID)
     {
-      Symbol *s = n->selected_component.prefix->symbol ? n->selected_component.prefix->symbol : symbol_find(generator->sm, n->selected_component.prefix->s);
+      Symbol *s = n->selected_component.prefix->symbol ? n->selected_component.prefix->symbol : symbol_find(generator->sm, n->selected_component.prefix->string_value);
       if (s and s->k != 6)
       {
         Type_Info *vty = s and s->ty ? type_canonical_concrete(s->ty) : 0;
@@ -10248,8 +10248,8 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                 "  %%t%d = bitcast ptr %%lnk.%d.%.*s to ptr\n",
                 p.id,
                 s->level,
-                (int) n->selected_component.prefix->s.length,
-                n->selected_component.prefix->s.string);
+                (int) n->selected_component.prefix->string_value.length,
+                n->selected_component.prefix->string_value.string);
         }
         else
         {
@@ -10258,7 +10258,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                 o,
                 "  %%t%d = load ptr, ptr %%v.%s.sc%u.%u\n",
                 p.id,
-                string_to_lowercase(n->selected_component.prefix->s),
+                string_to_lowercase(n->selected_component.prefix->string_value),
                 s ? s->scope : 0,
                 s ? s->elaboration_level : 0);
           else
@@ -10266,7 +10266,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                 o,
                 "  %%t%d = bitcast ptr %%v.%s.sc%u.%u to ptr\n",
                 p.id,
-                string_to_lowercase(n->selected_component.prefix->s),
+                string_to_lowercase(n->selected_component.prefix->string_value),
                 s ? s->scope : 0,
                 s ? s->elaboration_level : 0);
         }
@@ -10406,7 +10406,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     {
       if (n->attribute.prefix and n->attribute.prefix->k == N_ID)
       {
-        Symbol *s = n->attribute.prefix->symbol ? n->attribute.prefix->symbol : symbol_find(generator->sm, n->attribute.prefix->s);
+        Symbol *s = n->attribute.prefix->symbol ? n->attribute.prefix->symbol : symbol_find(generator->sm, n->attribute.prefix->string_value);
         if (s)
         {
           r.k = VALUE_KIND_INTEGER;
@@ -10467,7 +10467,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         {
           Type_Info *pt = ap->attribute.prefix ? type_canonical_concrete(ap->attribute.prefix->ty) : 0;
           String_Slice pnm =
-              ap->attribute.prefix and ap->attribute.prefix->k == N_ID ? ap->attribute.prefix->s : STRING_LITERAL("TYPE");
+              ap->attribute.prefix and ap->attribute.prefix->k == N_ID ? ap->attribute.prefix->string_value : STRING_LITERAL("TYPE");
           const char *afn = get_attribute_name(ia, pnm);
           r.k = VALUE_KIND_INTEGER;
           int p = new_temporary_register(generator);
@@ -10893,7 +10893,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     if (n->call.function_name->k == N_ID)
     {
-      Symbol *s = symbol_find_with_arity(generator->sm, n->call.function_name->s, n->call.arguments.count, n->ty);
+      Symbol *s = symbol_find_with_arity(generator->sm, n->call.function_name->string_value, n->call.arguments.count, n->ty);
       if (s)
       {
         if (s->parent and string_equal_ignore_case(s->parent->name, STRING_LITERAL("TEXT_IO"))
@@ -11003,7 +11003,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
               if (pm->parameter.mode & 2 and arg->k == N_ID)
               {
                 rf = true;
-                Symbol *as = arg->symbol ? arg->symbol : symbol_find(generator->sm, arg->s);
+                Symbol *as = arg->symbol ? arg->symbol : symbol_find(generator->sm, arg->string_value);
                 if (as and as->level == 0)
                 {
                   char nb[256];
@@ -11040,7 +11040,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                       o,
                       "  %%t%d = bitcast ptr %%v.%s.sc%u.%u to ptr\n",
                       av.id,
-                      string_to_lowercase(arg->s),
+                      string_to_lowercase(arg->string_value),
                       as ? as->scope : 0,
                       as ? as->elaboration_level : 0);
                 }
@@ -11077,7 +11077,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             arp[i] = i < sp->subprogram.parameters.count and sp->subprogram.parameters.data[i]->parameter.mode & 2 ? 1 : 0;
           }
           char nb[256];
-          encode_symbol_name(nb, 256, s, n->call.function_name->s, n->call.arguments.count, sp);
+          encode_symbol_name(nb, 256, s, n->call.function_name->string_value, n->call.arguments.count, sp);
           fprintf(o, "  %%t%d = call %s @\"%s\"(", r.id, value_llvm_type_string(rk), nb);
           for (uint32_t i = 0; i < n->call.arguments.count; i++)
           {
@@ -11112,7 +11112,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
               Syntax_Node *tg = n->call.arguments.data[i];
               if (tg->k == N_ID)
               {
-                Symbol *ts = tg->symbol ? tg->symbol : symbol_find(generator->sm, tg->s);
+                Symbol *ts = tg->symbol ? tg->symbol : symbol_find(generator->sm, tg->string_value);
                 if (ts)
                 {
                   if (ts->level >= 0 and ts->level < generator->sm->lv)
@@ -11122,14 +11122,14 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                         value_llvm_type_string(cv.k),
                         cv.id,
                         ts->level,
-                        string_to_lowercase(tg->s));
+                        string_to_lowercase(tg->string_value));
                   else
                     fprintf(
                         o,
                         "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
                         value_llvm_type_string(cv.k),
                         cv.id,
-                        string_to_lowercase(tg->s),
+                        string_to_lowercase(tg->string_value),
                         ts->scope,
                         ts->elaboration_level);
                 }
@@ -11314,7 +11314,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
             value_llvm_type_string(k),
             v.id,
-            string_to_lowercase(n->assignment.target->s),
+            string_to_lowercase(n->assignment.target->string_value),
             s ? s->scope : 0,
             s ? s->elaboration_level : 0);
     }
@@ -11362,21 +11362,21 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
       Value p = {new_temporary_register(generator), VALUE_KIND_POINTER};
       if (n->assignment.target->selected_component.prefix->k == N_ID)
       {
-        Symbol *s = n->assignment.target->selected_component.prefix->symbol ? n->assignment.target->selected_component.prefix->symbol : symbol_find(generator->sm, n->assignment.target->selected_component.prefix->s);
+        Symbol *s = n->assignment.target->selected_component.prefix->symbol ? n->assignment.target->selected_component.prefix->symbol : symbol_find(generator->sm, n->assignment.target->selected_component.prefix->string_value);
         if (s and s->level >= 0 and s->level < generator->sm->lv)
           fprintf(
               o,
               "  %%t%d = bitcast ptr %%lnk.%d.%.*s to ptr\n",
               p.id,
               s->level,
-              (int) n->assignment.target->selected_component.prefix->s.length,
-              n->assignment.target->selected_component.prefix->s.string);
+              (int) n->assignment.target->selected_component.prefix->string_value.length,
+              n->assignment.target->selected_component.prefix->string_value.string);
         else
           fprintf(
               o,
               "  %%t%d = bitcast ptr %%v.%s.sc%u.%u to ptr\n",
               p.id,
-              string_to_lowercase(n->assignment.target->selected_component.prefix->s),
+              string_to_lowercase(n->assignment.target->selected_component.prefix->string_value),
               s ? s->scope : 0,
               s ? s->elaboration_level : 0);
       }
@@ -11503,7 +11503,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
       for (uint32_t j = 0; j < a->choices.items.count; j++)
       {
         Syntax_Node *ch = a->choices.items.data[j];
-        if (ch->k == N_ID and string_equal_ignore_case(ch->s, STRING_LITERAL("others")))
+        if (ch->k == N_ID and string_equal_ignore_case(ch->string_value, STRING_LITERAL("others")))
         {
           emit_branch(generator, la);
           goto cs_sw_done;
@@ -11587,7 +11587,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
         Symbol *vs = fv->symbol;
         if (vs)
         {
-          fprintf(o, "  %%v.%s.sc%u.%u = alloca i64\n", string_to_lowercase(fv->s), vs->scope, vs->elaboration_level);
+          fprintf(o, "  %%v.%s.sc%u.%u = alloca i64\n", string_to_lowercase(fv->string_value), vs->scope, vs->elaboration_level);
           Syntax_Node *rng = n->loop_stmt.iterator->binary_node.r;
           hi_var = new_temporary_register(generator);
           fprintf(o, "  %%v.__for_hi_%d = alloca i64\n", hi_var);
@@ -11616,7 +11616,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                     o,
                     "  store i64 %%t%d, ptr %%v.%s.sc%u.%u\n",
                     blo,
-                    string_to_lowercase(fv->s),
+                    string_to_lowercase(fv->string_value),
                     vs->scope,
                     vs->elaboration_level);
                 fprintf(o, "  store i64 %%t%d, ptr %%v.__for_hi_%d\n", bhi, hi_var);
@@ -11667,7 +11667,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                 o,
                 "  store i64 %%t%d, ptr %%v.%s.sc%u.%u\n",
                 ti,
-                string_to_lowercase(fv->s),
+                string_to_lowercase(fv->string_value),
                 vs->scope,
                 vs->elaboration_level);
         }
@@ -11704,7 +11704,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               o,
               "  %%t%d = load i64, ptr %%v.%s.sc%u.%u\n",
               cv,
-              string_to_lowercase(fv->s),
+              string_to_lowercase(fv->string_value),
               vs->scope,
               vs->elaboration_level);
         }
@@ -11759,7 +11759,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               o,
               "  %%t%d = load i64, ptr %%v.%s.sc%u.%u\n",
               cv,
-              string_to_lowercase(fv->s),
+              string_to_lowercase(fv->string_value),
               vs->scope,
               vs->elaboration_level);
           int nv = new_temporary_register(generator);
@@ -11768,7 +11768,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               o,
               "  store i64 %%t%d, ptr %%v.%s.sc%u.%u\n",
               nv,
-              string_to_lowercase(fv->s),
+              string_to_lowercase(fv->string_value),
               vs->scope,
               vs->elaboration_level);
         }
@@ -11873,7 +11873,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
   case N_RS:
   {
     String_Slice ec =
-        n->raise_stmt.exception_choice and n->raise_stmt.exception_choice->k == N_ID ? n->raise_stmt.exception_choice->s : STRING_LITERAL("PROGRAM_ERROR");
+        n->raise_stmt.exception_choice and n->raise_stmt.exception_choice->k == N_ID ? n->raise_stmt.exception_choice->string_value : STRING_LITERAL("PROGRAM_ERROR");
     emit_exception(generator, ec);
     int exh = new_temporary_register(generator);
     fprintf(o, "  %%t%d = load ptr, ptr %%ej\n", exh);
@@ -11886,7 +11886,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
   {
     if (n->code_stmt.name->k == N_ID)
     {
-      Symbol *s = symbol_find_with_arity(generator->sm, n->code_stmt.name->s, n->code_stmt.arguments.count, 0);
+      Symbol *s = symbol_find_with_arity(generator->sm, n->code_stmt.name->string_value, n->code_stmt.arguments.count, 0);
       if (s)
       {
         Syntax_Node *b = symbol_body(s, s->elaboration_level);
@@ -11915,7 +11915,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               if (pm->parameter.mode & 2 and arg->k == N_ID)
               {
                 rf = true;
-                Symbol *as = arg->symbol ? arg->symbol : symbol_find(generator->sm, arg->s);
+                Symbol *as = arg->symbol ? arg->symbol : symbol_find(generator->sm, arg->string_value);
                 if (as and as->level == 0)
                 {
                   char nb[256];
@@ -11952,7 +11952,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                       o,
                       "  %%t%d = bitcast ptr %%v.%s.sc%u.%u to ptr\n",
                       av.id,
-                      string_to_lowercase(arg->s),
+                      string_to_lowercase(arg->string_value),
                       as ? as->scope : 0,
                       as ? as->elaboration_level : 0);
                 }
@@ -11992,7 +11992,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           if (s->is_external)
             snprintf(nb, 256, "%.*s", (int) s->external_name.length, s->external_name.string);
           else
-            encode_symbol_name(nb, 256, s, n->code_stmt.name->s, n->code_stmt.arguments.count, sp);
+            encode_symbol_name(nb, 256, s, n->code_stmt.name->string_value, n->code_stmt.arguments.count, sp);
           fprintf(o, "  call void @\"%s\"(", nb);
           for (uint32_t i = 0; i < n->code_stmt.arguments.count; i++)
           {
@@ -12027,7 +12027,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               Syntax_Node *tg = n->code_stmt.arguments.data[i];
               if (tg->k == N_ID)
               {
-                Symbol *ts = tg->symbol ? tg->symbol : symbol_find(generator->sm, tg->s);
+                Symbol *ts = tg->symbol ? tg->symbol : symbol_find(generator->sm, tg->string_value);
                 if (ts)
                 {
                   if (ts->level >= 0 and ts->level < generator->sm->lv)
@@ -12037,14 +12037,14 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                         value_llvm_type_string(cv.k),
                         cv.id,
                         ts->level,
-                        string_to_lowercase(tg->s));
+                        string_to_lowercase(tg->string_value));
                   else
                     fprintf(
                         o,
                         "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
                         value_llvm_type_string(cv.k),
                         cv.id,
-                        string_to_lowercase(tg->s),
+                        string_to_lowercase(tg->string_value),
                         ts->scope,
                         ts->elaboration_level);
                 }
@@ -12100,7 +12100,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             if (arpt[i] and arg->k == N_ID)
             {
               ek = VALUE_KIND_POINTER;
-              Symbol *as = arg->symbol ? arg->symbol : symbol_find(generator->sm, arg->s);
+              Symbol *as = arg->symbol ? arg->symbol : symbol_find(generator->sm, arg->string_value);
               av.id = new_temporary_register(generator);
               av.k = VALUE_KIND_POINTER;
               if (as and as->level >= 0 and as->level < generator->sm->lv)
@@ -12109,13 +12109,13 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                     "  %%t%d = bitcast ptr %%lnk.%d.%s to ptr\n",
                     av.id,
                     as->level,
-                    string_to_lowercase(arg->s));
+                    string_to_lowercase(arg->string_value));
               else
                 fprintf(
                     o,
                     "  %%t%d = bitcast ptr %%v.%s.sc%u.%u to ptr\n",
                     av.id,
-                    string_to_lowercase(arg->s),
+                    string_to_lowercase(arg->string_value),
                     as ? as->scope : 0,
                     as ? as->elaboration_level : 0);
             }
@@ -12132,7 +12132,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           if (s->is_external)
             snprintf(nb, 256, "%.*s", (int) s->external_name.length, s->external_name.string);
           else
-            encode_symbol_name(nb, 256, s, n->code_stmt.name->s, n->code_stmt.arguments.count, sp);
+            encode_symbol_name(nb, 256, s, n->code_stmt.name->string_value, n->code_stmt.arguments.count, sp);
           if (s->k == 5 and sp and sp->subprogram.return_type)
           {
             Type_Info *rt = resolve_subtype(generator->sm, sp->subprogram.return_type);
@@ -12239,14 +12239,14 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                     value_llvm_type_string(k),
                     v.id,
                     s->level,
-                    string_to_lowercase(id->s));
+                    string_to_lowercase(id->string_value));
               else
                 fprintf(
                     o,
                     "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
                     value_llvm_type_string(k),
                     v.id,
-                    string_to_lowercase(id->s),
+                    string_to_lowercase(id->string_value),
                     s ? s->scope : 0,
                     s ? s->elaboration_level : 0);
             }
@@ -12308,14 +12308,14 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                   "  %%t%d = getelementptr i64, ptr %%lnk.%d.%s, i64 %u\n",
                   dp,
                   s->level,
-                  string_to_lowercase(id->s),
+                  string_to_lowercase(id->string_value),
                   di);
             else
               fprintf(
                   o,
                   "  %%t%d = getelementptr i64, ptr %%v.%s.sc%u.%u, i64 %u\n",
                   dp,
-                  string_to_lowercase(id->s),
+                  string_to_lowercase(id->string_value),
                   s->scope,
                   s->elaboration_level,
                   di);
@@ -12338,7 +12338,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
         for (uint32_t j = 0; j < h->exception_handler.exception_choices.count; j++)
         {
           Syntax_Node *e = h->exception_handler.exception_choices.data[j];
-          if (e->k == N_ID and string_equal_ignore_case(e->s, STRING_LITERAL("others")))
+          if (e->k == N_ID and string_equal_ignore_case(e->string_value, STRING_LITERAL("others")))
           {
             emit_branch(generator, lhm);
             break;
@@ -12347,9 +12347,9 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           fprintf(o, "  %%t%d = load ptr, ptr @__ex_cur\n", ec);
           int cm = new_temporary_register(generator);
           char eb[256];
-          for (uint32_t ei = 0; ei < e->s.length and ei < 255; ei++)
-            eb[ei] = toupper(e->s.string[ei]);
-          eb[e->s.length < 255 ? e->s.length : 255] = 0;
+          for (uint32_t ei = 0; ei < e->string_value.length and ei < 255; ei++)
+            eb[ei] = toupper(e->string_value.string[ei]);
+          eb[e->string_value.length < 255 ? e->string_value.length : 255] = 0;
           fprintf(o, "  %%t%d = call i32 @strcmp(ptr %%t%d, ptr @.ex.%s)\n", cm, ec, eb);
           int eq = new_temporary_register(generator);
           fprintf(o, "  %%t%d = icmp eq i32 %%t%d, 0\n", eq, cm);
@@ -12649,7 +12649,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
               fprintf(
                   o,
                   "  %%v.%s.sc%u.%u = alloca {ptr,ptr}\n",
-                  string_to_lowercase(id->s),
+                  string_to_lowercase(id->string_value),
                   s->scope,
                   s->elaboration_level);
             }
@@ -12658,7 +12658,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
               fprintf(
                   o,
                   "  %%v.%s.sc%u.%u = alloca [%d x %s]\n",
-                  string_to_lowercase(id->s),
+                  string_to_lowercase(id->string_value),
                   s->scope,
                   s->elaboration_level,
                   asz,
@@ -12670,7 +12670,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
               fprintf(
                   o,
                   "  %%v.%s.sc%u.%u = alloca [%d x %s]\n",
-                  string_to_lowercase(id->s),
+                  string_to_lowercase(id->string_value),
                   s->scope,
                   s->elaboration_level,
                   asz,
@@ -12681,7 +12681,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
               fprintf(
                   o,
                   "  %%v.%s.sc%u.%u = alloca %s\n",
-                  string_to_lowercase(id->s),
+                  string_to_lowercase(id->string_value),
                   s->scope,
                   s->elaboration_level,
                   value_llvm_type_string(k));
@@ -13122,14 +13122,14 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                     value_llvm_type_string(k),
                     v.id,
                     s->level,
-                    string_to_lowercase(id->s));
+                    string_to_lowercase(id->string_value));
               else
                 fprintf(
                     o,
                     "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
                     value_llvm_type_string(k),
                     v.id,
-                    string_to_lowercase(id->s),
+                    string_to_lowercase(id->string_value),
                     s ? s->scope : 0,
                     s ? s->elaboration_level : 0);
             }
@@ -13496,14 +13496,14 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                     value_llvm_type_string(k),
                     v.id,
                     s->level,
-                    string_to_lowercase(id->s));
+                    string_to_lowercase(id->string_value));
               else
                 fprintf(
                     o,
                     "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
                     value_llvm_type_string(k),
                     v.id,
-                    string_to_lowercase(id->s),
+                    string_to_lowercase(id->string_value),
                     s ? s->scope : 0,
                     s ? s->elaboration_level : 0);
             }
@@ -14042,11 +14042,11 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
         nb[n] = 0;
         if (s->k == 2 and s->definition and s->definition->k == N_STR)
         {
-          uint32_t len = s->definition->s.length;
+          uint32_t len = s->definition->string_value.length;
           fprintf(o, "@%s=linkonce_odr constant [%u x i8]c\"", nb, len + 1);
           for (uint32_t i = 0; i < len; i++)
           {
-            char c = s->definition->s.string[i];
+            char c = s->definition->string_value.string[i];
             if (c == '"')
               fprintf(o, "\\22");
             else if (c == '\\')
@@ -14254,11 +14254,11 @@ int main(int ac, char **av)
           snprintf(nb, 256, "%.*s", (int) s->name.length, s->name.string);
         if (s->k == 2 and s->definition and s->definition->k == N_STR)
         {
-          uint32_t len = s->definition->s.length;
+          uint32_t len = s->definition->string_value.length;
           fprintf(o, "@%s=linkonce_odr constant [%u x i8]c\"", nb, len + 1);
           for (uint32_t i = 0; i < len; i++)
           {
-            char c = s->definition->s.string[i];
+            char c = s->definition->string_value.string[i];
             if (c == '"')
               fprintf(o, "\\22");
             else if (c == '\\')
