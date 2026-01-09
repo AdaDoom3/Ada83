@@ -6822,8 +6822,8 @@ static void is_higher_order_parameter(Type_Info *dt, Type_Info *pt)
 static int ncp_depth = 0;
 #define MAX_NCP_DEPTH 1000
 static bool match_formal_parameter(Syntax_Node *f, String_Slice nm);
-static Syntax_Node *ncs(Syntax_Node *node, Node_Vector *fp, Node_Vector *ap);
-static const char *lkp(Symbol_Manager *SM, String_Slice nm);
+static Syntax_Node *node_clone_substitute(Syntax_Node *node, Node_Vector *fp, Node_Vector *ap);
+static const char *lookup_path(Symbol_Manager *SM, String_Slice nm);
 static Syntax_Node *pks2(Symbol_Manager *SM, String_Slice nm, const char *src);
 static void parse_package_specification(Symbol_Manager *SM, String_Slice nm, const char *src);
 static void resolve_array_parameter(Symbol_Manager *SM, Node_Vector *fp, Node_Vector *ap)
@@ -6911,11 +6911,11 @@ static void normalize_compile_symbol_vector(Node_Vector *d, Node_Vector *s, Node
   {
     Syntax_Node *node = sd[i];
     if (node)
-      nv(d, ncs(node, fp, ap));
+      nv(d, node_clone_substitute(node, fp, ap));
   }
   free(sd);
 }
-static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
+static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
 {
   if (not n)
     return 0;
@@ -6932,11 +6932,11 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
         if (i < ap->count)
         {
           Syntax_Node *a = ap->data[i];
-          Syntax_Node *r = a->k == N_ASC and a->asc.vl ? ncs(a->asc.vl, 0, 0) : ncs(a, 0, 0);
+          Syntax_Node *r = a->k == N_ASC and a->asc.vl ? node_clone_substitute(a->asc.vl, 0, 0) : node_clone_substitute(a, 0, 0);
           ncp_depth--;
           return r;
         }
-        Syntax_Node *r = ncs(n, 0, 0);
+        Syntax_Node *r = node_clone_substitute(n, 0, 0);
         ncp_depth--;
         return r;
       }
@@ -6949,11 +6949,11 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
         if (i < ap->count)
         {
           Syntax_Node *a = ap->data[i];
-          Syntax_Node *r = a->k == N_ASC and a->asc.vl ? ncs(a->asc.vl, 0, 0) : ncs(a, 0, 0);
+          Syntax_Node *r = a->k == N_ASC and a->asc.vl ? node_clone_substitute(a->asc.vl, 0, 0) : node_clone_substitute(a, 0, 0);
           ncp_depth--;
           return r;
         }
-        Syntax_Node *r = ncs(n, 0, 0);
+        Syntax_Node *r = node_clone_substitute(n, 0, 0);
         ncp_depth--;
         return r;
       }
@@ -6982,75 +6982,75 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
     break;
   case N_BIN:
     c->bn.op = n->bn.op;
-    c->bn.l = ncs(n->bn.l, fp, ap);
-    c->bn.r = ncs(n->bn.r, fp, ap);
+    c->bn.l = node_clone_substitute(n->bn.l, fp, ap);
+    c->bn.r = node_clone_substitute(n->bn.r, fp, ap);
     break;
   case N_UN:
     c->un.op = n->un.op;
-    c->un.x = ncs(n->un.x, fp, ap);
+    c->un.x = node_clone_substitute(n->un.x, fp, ap);
     break;
   case N_AT:
-    c->at.p = ncs(n->at.p, fp, ap);
+    c->at.p = node_clone_substitute(n->at.p, fp, ap);
     c->at.at = n->at.at;
     normalize_compile_symbol_vector(&c->at.ar, &n->at.ar, fp, ap);
     break;
   case N_QL:
-    c->ql.nm = ncs(n->ql.nm, fp, ap);
-    c->ql.ag = ncs(n->ql.ag, fp, ap);
+    c->ql.nm = node_clone_substitute(n->ql.nm, fp, ap);
+    c->ql.ag = node_clone_substitute(n->ql.ag, fp, ap);
     break;
   case N_CL:
-    c->cl.fn = ncs(n->cl.fn, fp, ap);
+    c->cl.fn = node_clone_substitute(n->cl.fn, fp, ap);
     normalize_compile_symbol_vector(&c->cl.ar, &n->cl.ar, fp, ap);
     break;
   case N_IX:
-    c->ix.p = ncs(n->ix.p, fp, ap);
+    c->ix.p = node_clone_substitute(n->ix.p, fp, ap);
     normalize_compile_symbol_vector(&c->ix.ix, &n->ix.ix, fp, ap);
     break;
   case N_SL:
-    c->sl.p = ncs(n->sl.p, fp, ap);
-    c->sl.lo = ncs(n->sl.lo, fp, ap);
-    c->sl.hi = ncs(n->sl.hi, fp, ap);
+    c->sl.p = node_clone_substitute(n->sl.p, fp, ap);
+    c->sl.lo = node_clone_substitute(n->sl.lo, fp, ap);
+    c->sl.hi = node_clone_substitute(n->sl.hi, fp, ap);
     break;
   case N_SEL:
-    c->se.p = ncs(n->se.p, fp, ap);
+    c->se.p = node_clone_substitute(n->se.p, fp, ap);
     c->se.se = n->se.se;
     break;
   case N_ALC:
-    c->alc.st = ncs(n->alc.st, fp, ap);
-    c->alc.in = ncs(n->alc.in, fp, ap);
+    c->alc.st = node_clone_substitute(n->alc.st, fp, ap);
+    c->alc.in = node_clone_substitute(n->alc.in, fp, ap);
     break;
   case N_RN:
-    c->rn.lo = ncs(n->rn.lo, fp, ap);
-    c->rn.hi = ncs(n->rn.hi, fp, ap);
+    c->rn.lo = node_clone_substitute(n->rn.lo, fp, ap);
+    c->rn.hi = node_clone_substitute(n->rn.hi, fp, ap);
     break;
   case N_CN:
-    c->cn.rn = ncs(n->cn.rn, fp, ap);
+    c->cn.rn = node_clone_substitute(n->cn.rn, fp, ap);
     normalize_compile_symbol_vector(&c->cn.cs, &n->cn.cs, fp, ap);
     break;
   case N_CM:
     c->cm.nm = n->cm.nm;
-    c->cm.ty = ncs(n->cm.ty, fp, ap);
-    c->cm.in = ncs(n->cm.in, fp, ap);
+    c->cm.ty = node_clone_substitute(n->cm.ty, fp, ap);
+    c->cm.in = node_clone_substitute(n->cm.in, fp, ap);
     c->cm.al = n->cm.al;
     c->cm.of = n->cm.of;
     c->cm.bt = n->cm.bt;
-    c->cm.dc = ncs(n->cm.dc, fp, ap);
-    c->cm.dsc = ncs(n->cm.dsc, fp, ap);
+    c->cm.dc = node_clone_substitute(n->cm.dc, fp, ap);
+    c->cm.dsc = node_clone_substitute(n->cm.dsc, fp, ap);
     break;
   case N_VR:
     normalize_compile_symbol_vector(&c->vr.ch, &n->vr.ch, fp, ap);
     normalize_compile_symbol_vector(&c->vr.cmm, &n->vr.cmm, fp, ap);
     break;
   case N_VP:
-    c->vp.ds = ncs(n->vp.ds, fp, ap);
+    c->vp.ds = node_clone_substitute(n->vp.ds, fp, ap);
     normalize_compile_symbol_vector(&c->vp.vrr, &n->vp.vrr, fp, ap);
     c->vp.sz = n->vp.sz;
     break;
   case N_DS:
   case N_PM:
     c->pm.nm = n->pm.nm;
-    c->pm.ty = ncs(n->pm.ty, fp, ap);
-    c->pm.df = ncs(n->pm.df, fp, ap);
+    c->pm.ty = node_clone_substitute(n->pm.ty, fp, ap);
+    c->pm.df = node_clone_substitute(n->pm.df, fp, ap);
     c->pm.md = n->pm.md;
     break;
   case N_PS:
@@ -7058,14 +7058,14 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
   case N_GSP:
     c->sp.nm = n->sp.nm;
     normalize_compile_symbol_vector(&c->sp.pmm, &n->sp.pmm, fp, ap);
-    c->sp.rt = ncs(n->sp.rt, fp, ap);
+    c->sp.rt = node_clone_substitute(n->sp.rt, fp, ap);
     c->sp.op = n->sp.op;
     break;
   case N_PD:
   case N_PB:
   case N_FD:
   case N_FB:
-    c->bd.sp = ncs(n->bd.sp, fp, ap);
+    c->bd.sp = node_clone_substitute(n->bd.sp, fp, ap);
     normalize_compile_symbol_vector(&c->bd.dc, &n->bd.dc, fp, ap);
     normalize_compile_symbol_vector(&c->bd.st, &n->bd.st, fp, ap);
     normalize_compile_symbol_vector(&c->bd.hdd, &n->bd.hdd, fp, ap);
@@ -7089,52 +7089,52 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
   case N_OD:
   case N_GVL:
     normalize_compile_symbol_vector(&c->od.id, &n->od.id, fp, ap);
-    c->od.ty = ncs(n->od.ty, fp, ap);
-    c->od.in = ncs(n->od.in, fp, ap);
+    c->od.ty = node_clone_substitute(n->od.ty, fp, ap);
+    c->od.in = node_clone_substitute(n->od.in, fp, ap);
     c->od.co = n->od.co;
     break;
   case N_TD:
   case N_GTP:
     c->td.nm = n->td.nm;
-    c->td.df = ncs(n->td.df, fp, ap);
-    c->td.ds = ncs(n->td.ds, fp, ap);
+    c->td.df = node_clone_substitute(n->td.df, fp, ap);
+    c->td.ds = node_clone_substitute(n->td.ds, fp, ap);
     c->td.nw = n->td.nw;
     c->td.drv = n->td.drv;
-    c->td.prt = ncs(n->td.prt, fp, ap);
+    c->td.prt = node_clone_substitute(n->td.prt, fp, ap);
     normalize_compile_symbol_vector(&c->td.dsc, &n->td.dsc, fp, ap);
     break;
   case N_SD:
     c->sd.nm = n->sd.nm;
-    c->sd.in = ncs(n->sd.in, fp, ap);
-    c->sd.cn = ncs(n->sd.cn, fp, ap);
-    c->sd.rn = ncs(n->sd.rn, fp, ap);
+    c->sd.in = node_clone_substitute(n->sd.in, fp, ap);
+    c->sd.cn = node_clone_substitute(n->sd.cn, fp, ap);
+    c->sd.rn = node_clone_substitute(n->sd.rn, fp, ap);
     break;
   case N_ED:
     normalize_compile_symbol_vector(&c->ed.id, &n->ed.id, fp, ap);
-    c->ed.rn = ncs(n->ed.rn, fp, ap);
+    c->ed.rn = node_clone_substitute(n->ed.rn, fp, ap);
     break;
   case N_RE:
     c->re.nm = n->re.nm;
-    c->re.rn = ncs(n->re.rn, fp, ap);
+    c->re.rn = node_clone_substitute(n->re.rn, fp, ap);
     break;
   case N_AS:
-    c->as.tg = ncs(n->as.tg, fp, ap);
-    c->as.vl = ncs(n->as.vl, fp, ap);
+    c->as.tg = node_clone_substitute(n->as.tg, fp, ap);
+    c->as.vl = node_clone_substitute(n->as.vl, fp, ap);
     break;
   case N_IF:
   case N_EL:
-    c->if_.cd = ncs(n->if_.cd, fp, ap);
+    c->if_.cd = node_clone_substitute(n->if_.cd, fp, ap);
     normalize_compile_symbol_vector(&c->if_.th, &n->if_.th, fp, ap);
     normalize_compile_symbol_vector(&c->if_.ei, &n->if_.ei, fp, ap);
     normalize_compile_symbol_vector(&c->if_.el, &n->if_.el, fp, ap);
     break;
   case N_CS:
-    c->cs.ex = ncs(n->cs.ex, fp, ap);
+    c->cs.ex = node_clone_substitute(n->cs.ex, fp, ap);
     normalize_compile_symbol_vector(&c->cs.al, &n->cs.al, fp, ap);
     break;
   case N_LP:
     c->lp.lb = n->lp.lb;
-    c->lp.it = ncs(n->lp.it, fp, ap);
+    c->lp.it = node_clone_substitute(n->lp.it, fp, ap);
     c->lp.rv = n->lp.rv;
     normalize_compile_symbol_vector(&c->lp.st, &n->lp.st, fp, ap);
     normalize_compile_symbol_vector(&c->lp.lk, &n->lp.lk, fp, ap);
@@ -7147,22 +7147,22 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
     break;
   case N_EX:
     c->ex.lb = n->ex.lb;
-    c->ex.cd = ncs(n->ex.cd, fp, ap);
+    c->ex.cd = node_clone_substitute(n->ex.cd, fp, ap);
     break;
   case N_RT:
-    c->rt.vl = ncs(n->rt.vl, fp, ap);
+    c->rt.vl = node_clone_substitute(n->rt.vl, fp, ap);
     break;
   case N_GT:
     c->go.lb = n->go.lb;
     break;
   case N_RS:
   case N_AB:
-    c->rs.ec = ncs(n->rs.ec, fp, ap);
+    c->rs.ec = node_clone_substitute(n->rs.ec, fp, ap);
     break;
   case N_NS:
     break;
   case N_CLT:
-    c->ct.nm = ncs(n->ct.nm, fp, ap);
+    c->ct.nm = node_clone_substitute(n->ct.nm, fp, ap);
     normalize_compile_symbol_vector(&c->ct.arr, &n->ct.arr, fp, ap);
     break;
   case N_ACC:
@@ -7171,7 +7171,7 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
     normalize_compile_symbol_vector(&c->acc.pmx, &n->acc.pmx, fp, ap);
     normalize_compile_symbol_vector(&c->acc.stx, &n->acc.stx, fp, ap);
     normalize_compile_symbol_vector(&c->acc.hdx, &n->acc.hdx, fp, ap);
-    c->acc.gd = ncs(n->acc.gd, fp, ap);
+    c->acc.gd = node_clone_substitute(n->acc.gd, fp, ap);
     break;
   case N_SLS:
     normalize_compile_symbol_vector(&c->ss.al, &n->ss.al, fp, ap);
@@ -7179,7 +7179,7 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
     break;
   case N_SA:
     c->sa.kn = n->sa.kn;
-    c->sa.gd = ncs(n->sa.gd, fp, ap);
+    c->sa.gd = node_clone_substitute(n->sa.gd, fp, ap);
     normalize_compile_symbol_vector(&c->sa.sts, &n->sa.sts, fp, ap);
     break;
   case N_TKS:
@@ -7197,7 +7197,7 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
     c->ent.nm = n->ent.nm;
     normalize_compile_symbol_vector(&c->ent.ixy, &n->ent.ixy, fp, ap);
     normalize_compile_symbol_vector(&c->ent.pmy, &n->ent.pmy, fp, ap);
-    c->ent.gd = ncs(n->ent.gd, fp, ap);
+    c->ent.gd = node_clone_substitute(n->ent.gd, fp, ap);
     break;
   case N_HD:
   case N_WH:
@@ -7211,7 +7211,7 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
     break;
   case N_ASC:
     normalize_compile_symbol_vector(&c->asc.ch, &n->asc.ch, fp, ap);
-    c->asc.vl = ncs(n->asc.vl, fp, ap);
+    c->asc.vl = node_clone_substitute(n->asc.vl, fp, ap);
     break;
   case N_CX:
     normalize_compile_symbol_vector(&c->cx.wt, &n->cx.wt, fp, ap);
@@ -7221,35 +7221,35 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
     c->wt.nm = n->wt.nm;
     break;
   case N_US:
-    c->us.nm = ncs(n->us.nm, fp, ap);
+    c->us.nm = node_clone_substitute(n->us.nm, fp, ap);
     break;
   case N_PG:
     c->pg.nm = n->pg.nm;
     normalize_compile_symbol_vector(&c->pg.ar, &n->pg.ar, fp, ap);
     break;
   case N_CU:
-    c->cu.cx = ncs(n->cu.cx, fp, ap);
+    c->cu.cx = node_clone_substitute(n->cu.cx, fp, ap);
     normalize_compile_symbol_vector(&c->cu.un, &n->cu.un, fp, ap);
     break;
   case N_DRF:
-    c->drf.x = ncs(n->drf.x, fp, ap);
+    c->drf.x = node_clone_substitute(n->drf.x, fp, ap);
     break;
   case N_CVT:
-    c->cvt.ty = ncs(n->cvt.ty, fp, ap);
-    c->cvt.ex = ncs(n->cvt.ex, fp, ap);
+    c->cvt.ty = node_clone_substitute(n->cvt.ty, fp, ap);
+    c->cvt.ex = node_clone_substitute(n->cvt.ex, fp, ap);
     break;
   case N_CHK:
-    c->chk.ex = ncs(n->chk.ex, fp, ap);
+    c->chk.ex = node_clone_substitute(n->chk.ex, fp, ap);
     c->chk.ec = n->chk.ec;
     break;
   case N_DRV:
-    c->drv.bs = ncs(n->drv.bs, fp, ap);
+    c->drv.bs = node_clone_substitute(n->drv.bs, fp, ap);
     normalize_compile_symbol_vector(&c->drv.ops, &n->drv.ops, fp, ap);
     break;
   case N_GEN:
     normalize_compile_symbol_vector(&c->gen.fp, &n->gen.fp, fp, ap);
     normalize_compile_symbol_vector(&c->gen.dc, &n->gen.dc, fp, ap);
-    c->gen.un = ncs(n->gen.un, fp, ap);
+    c->gen.un = node_clone_substitute(n->gen.un, fp, ap);
     break;
   case N_GINST:
     c->gi.nm = n->gi.nm.string ? string_duplicate(n->gi.nm) : n->gi.nm;
@@ -7258,13 +7258,13 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
     break;
   case N_AG:
     normalize_compile_symbol_vector(&c->ag.it, &n->ag.it, fp, ap);
-    c->ag.lo = ncs(n->ag.lo, fp, ap);
-    c->ag.hi = ncs(n->ag.hi, fp, ap);
+    c->ag.lo = node_clone_substitute(n->ag.lo, fp, ap);
+    c->ag.hi = node_clone_substitute(n->ag.hi, fp, ap);
     c->ag.dim = n->ag.dim;
     break;
   case N_TA:
     normalize_compile_symbol_vector(&c->ix.ix, &n->ix.ix, fp, ap);
-    c->ix.p = ncs(n->ix.p, fp, ap);
+    c->ix.p = node_clone_substitute(n->ix.p, fp, ap);
     break;
   case N_TI:
   case N_TE:
@@ -7329,7 +7329,7 @@ static Syntax_Node *generate_clone(Symbol_Manager *SM, Syntax_Node *n)
     if (g)
     {
       resolve_array_parameter(SM, &g->fp, &n->gi.ap);
-      Syntax_Node *inst = ncs(g->un, &g->fp, &n->gi.ap);
+      Syntax_Node *inst = node_clone_substitute(g->un, &g->fp, &n->gi.ap);
       if (inst)
       {
         if (inst->k == N_PB or inst->k == N_FB or inst->k == N_PD or inst->k == N_FD)
@@ -7376,7 +7376,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
         GT *g = generic_find(SM, n->gi.gn);
         if (g and g->bd)
         {
-          Syntax_Node *bd = ncs(g->bd, &g->fp, &n->gi.ap);
+          Syntax_Node *bd = node_clone_substitute(g->bd, &g->fp, &n->gi.ap);
           if (bd)
           {
             bd->pb.nm = n->gi.nm;
@@ -7896,7 +7896,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
     }
     symbol_compare_parameter(SM);
     {
-      const char *_src = lkp(SM, n->pb.nm);
+      const char *_src = lookup_path(SM, n->pb.nm);
       if (_src)
       {
         char _af[512];
@@ -8226,7 +8226,7 @@ static void read_ada_library_interface(Symbol_Manager *SM, const char *pth)
   }
   free(ali);
 }
-static const char *lkp(Symbol_Manager *SM, String_Slice nm)
+static const char *lookup_path(Symbol_Manager *SM, String_Slice nm)
 {
   char pf[256], af[512];
   for (int i = 0; i < include_path_count; i++)
@@ -8260,7 +8260,7 @@ static Syntax_Node *pks2(Symbol_Manager *SM, String_Slice nm, const char *src)
   if (cu and cu->cu.cx)
   {
     for (uint32_t i = 0; i < cu->cu.cx->cx.wt.count; i++)
-      pks2(SM, cu->cu.cx->cx.wt.data[i]->wt.nm, lkp(SM, cu->cu.cx->cx.wt.data[i]->wt.nm));
+      pks2(SM, cu->cu.cx->cx.wt.data[i]->wt.nm, lookup_path(SM, cu->cu.cx->cx.wt.data[i]->wt.nm));
   }
   for (uint32_t i = 0; cu and i < cu->cu.un.count; i++)
   {
@@ -8300,7 +8300,7 @@ static void symbol_manager_use_clauses(Symbol_Manager *SM, Syntax_Node *n)
   if (n->k != N_CU)
     return;
   for (uint32_t i = 0; i < n->cu.cx->cx.wt.count; i++)
-    parse_package_specification(SM, n->cu.cx->cx.wt.data[i]->wt.nm, lkp(SM, n->cu.cx->cx.wt.data[i]->wt.nm));
+    parse_package_specification(SM, n->cu.cx->cx.wt.data[i]->wt.nm, lookup_path(SM, n->cu.cx->cx.wt.data[i]->wt.nm));
   for (uint32_t i = 0; i < n->cu.cx->cx.us.count; i++)
   {
     Syntax_Node *u = n->cu.cx->cx.us.data[i];
@@ -8468,7 +8468,7 @@ static void emit_exception(Code_Generator *g, String_Slice ex)
       return;
   slv(&g->exs, ex);
 }
-static inline void lbl(Code_Generator *g, int l);
+static inline void emit_label(Code_Generator *g, int l);
 static int get_or_create_label_basic_block(Code_Generator *g, String_Slice nm)
 {
   for (uint32_t i = 0; i < g->ltb.count; i++)
@@ -8483,7 +8483,7 @@ static int get_or_create_label_basic_block(Code_Generator *g, String_Slice nm)
 static void emit_label_definition(Code_Generator *g, String_Slice nm)
 {
   int bb = get_or_create_label_basic_block(g, nm);
-  lbl(g, bb);
+  emit_label(g, bb);
 }
 static bool add_declaration(Code_Generator *g, const char *fn)
 {
@@ -8727,7 +8727,7 @@ static void generate_block_frame(Code_Generator *g)
     fprintf(g->o, "  %%__frame = alloca [%d x ptr]\n", mx + 1);
 }
 static void generate_declaration(Code_Generator *g, Syntax_Node *n);
-static inline void lbl(Code_Generator *g, int l)
+static inline void emit_label(Code_Generator *g, int l)
 {
   fprintf(g->o, "Source_Location%d:\n", l);
 }
@@ -8747,15 +8747,15 @@ generate_index_constraint_check(Code_Generator *g, int idx, const char *lo_s, co
       dn = new_label_block(g), lc = new_temporary_register(g);
   fprintf(o, "  %%t%d = icmp sge i64 %%t%d, %s\n", lc, idx, lo_s);
   emit_conditional_branch(g, lc, lok, erl);
-  lbl(g, lok);
+  emit_label(g, lok);
   int hc = new_temporary_register(g);
   fprintf(o, "  %%t%d = icmp sle i64 %%t%d, %s\n", hc, idx, hi_s);
   emit_conditional_branch(g, hc, hik, erl);
-  lbl(g, hik);
+  emit_label(g, hik);
   emit_branch(g, dn);
-  lbl(g, erl);
+  emit_label(g, erl);
   fprintf(o, "  call void @__ada_raise(ptr @.ex.CONSTRAINT_ERROR)\n  unreachable\n");
-  lbl(g, dn);
+  emit_label(g, dn);
 }
 static V value_cast(Code_Generator *g, V v, Value_Kind k)
 {
@@ -8810,16 +8810,16 @@ generate_float_range_check(Code_Generator *g, V e, Type_Info *t, String_Slice ec
       dn = new_label_block(g), lc = new_temporary_register(g);
   fprintf(o, "  %%t%d = fcmp oge double %%t%d, %e\n", lc, ef.id, ulo.d);
   emit_conditional_branch(g, lc, lok, erl);
-  lbl(g, lok);
+  emit_label(g, lok);
   int hc = new_temporary_register(g);
   fprintf(o, "  %%t%d = fcmp ole double %%t%d, %e\n", hc, ef.id, uhi.d);
   emit_conditional_branch(g, hc, hik, erl);
-  lbl(g, hik);
+  emit_label(g, hik);
   emit_branch(g, dn);
-  lbl(g, erl);
+  emit_label(g, erl);
   fprintf(o, "  call void @__ada_raise(ptr @.ex.%.*s)\n", (int) ec.length, ec.string);
   fprintf(o, "  unreachable\n");
-  lbl(g, dn);
+  emit_label(g, dn);
   return value_cast(g, e, rk);
 }
 static V generate_array_bounds_check(
@@ -8838,16 +8838,16 @@ static V generate_array_bounds_check(
   int lc = new_temporary_register(g);
   fprintf(o, "  %%t%d = icmp eq i64 %%t%d, %%t%d\n", lc, elo, tlo);
   emit_conditional_branch(g, lc, lok, erl);
-  lbl(g, lok);
+  emit_label(g, lok);
   int hc = new_temporary_register(g);
   fprintf(o, "  %%t%d = icmp eq i64 %%t%d, %%t%d\n", hc, ehi, thi);
   emit_conditional_branch(g, hc, hik, erl);
-  lbl(g, hik);
+  emit_label(g, hik);
   emit_branch(g, dn);
-  lbl(g, erl);
+  emit_label(g, erl);
   fprintf(o, "  call void @__ada_raise(ptr @.ex.%.*s)\n", (int) ec.length, ec.string);
   fprintf(o, "  unreachable\n");
-  lbl(g, dn);
+  emit_label(g, dn);
   return value_cast(g, e, rk);
 }
 static V
@@ -8858,16 +8858,16 @@ generate_discrete_range_check(Code_Generator *g, V e, Type_Info *t, String_Slice
       dn = new_label_block(g), lc = new_temporary_register(g);
   fprintf(o, "  %%t%d = icmp sge i64 %%t%d, %lld\n", lc, e.id, (long long) t->lo);
   emit_conditional_branch(g, lc, lok, erl);
-  lbl(g, lok);
+  emit_label(g, lok);
   int hc = new_temporary_register(g);
   fprintf(o, "  %%t%d = icmp sle i64 %%t%d, %lld\n", hc, e.id, (long long) t->hi);
   emit_conditional_branch(g, hc, hik, erl);
-  lbl(g, hik);
+  emit_label(g, hik);
   emit_branch(g, dn);
-  lbl(g, erl);
+  emit_label(g, erl);
   fprintf(o, "  call void @__ada_raise(ptr @.ex.%.*s)\n", (int) ec.length, ec.string);
   fprintf(o, "  unreachable\n");
-  lbl(g, dn);
+  emit_label(g, dn);
   return value_cast(g, e, rk);
 }
 static V value_to_boolean(Code_Generator *g, V v)
@@ -9502,12 +9502,12 @@ static V generate_expression(Code_Generator *g, Syntax_Node *n)
         emit_conditional_branch(g, c, lt, lf);
       else
         emit_conditional_branch(g, c, lf, lt);
-      lbl(g, lt);
+      emit_label(g, lt);
       V rv = value_to_boolean(g, generate_expression(g, n->bn.r));
       emit_branch(g, ld);
-      lbl(g, lf);
+      emit_label(g, lf);
       emit_branch(g, ld);
-      lbl(g, ld);
+      emit_label(g, ld);
       r.k = VALUE_KIND_INTEGER;
       fprintf(
           o,
@@ -9755,7 +9755,7 @@ static V generate_expression(Code_Generator *g, Syntax_Node *n)
       fprintf(o, "  %%t%d = icmp slt i64 %%t%d, 0\n", cf, bi.id);
       int lt = new_label_block(g), lf = new_label_block(g);
       emit_conditional_branch(g, cf, lt, lf);
-      lbl(g, lt);
+      emit_label(g, lt);
       fprintf(o, "  call void @__ada_raise(ptr @.ex.CONSTRAINT_ERROR)\n  unreachable\nL%d:\n", lf);
       if (token_kind_to_value_kind(n->ty) == VALUE_KIND_FLOAT)
       {
@@ -9795,9 +9795,9 @@ static V generate_expression(Code_Generator *g, Syntax_Node *n)
           fprintf(o, "  %%t%d = icmp eq i64 %%t%d, 0\n", zc, b.id);
           int ze = new_label_block(g), zd = new_label_block(g);
           emit_conditional_branch(g, zc, ze, zd);
-          lbl(g, ze);
+          emit_label(g, ze);
           fprintf(o, "  call void @__ada_raise(ptr @.ex.CONSTRAINT_ERROR)\n  unreachable\n");
-          lbl(g, zd);
+          emit_label(g, zd);
         }
         r.k = VALUE_KIND_INTEGER;
         fprintf(
@@ -9821,9 +9821,9 @@ static V generate_expression(Code_Generator *g, Syntax_Node *n)
       fprintf(o, "  %%t%d = icmp eq i64 %%t%d, 0\n", zc, b.id);
       int ze = new_label_block(g), zd = new_label_block(g);
       emit_conditional_branch(g, zc, ze, zd);
-      lbl(g, ze);
+      emit_label(g, ze);
       fprintf(o, "  call void @__ada_raise(ptr @.ex.CONSTRAINT_ERROR)\n  unreachable\n");
-      lbl(g, zd);
+      emit_label(g, zd);
       r.k = VALUE_KIND_INTEGER;
       fprintf(o, "  %%t%d = srem i64 %%t%d, %%t%d\n", r.id, a.id, b.id);
       break;
@@ -10669,9 +10669,9 @@ static V generate_expression(Code_Generator *g, Syntax_Node *n)
         fprintf(o, "  %%t%d = icmp slt i64 %%t%d, 0\n", chk, fnd);
         int le = new_label_block(g), ld = new_label_block(g);
         emit_conditional_branch(g, chk, le, ld);
-        lbl(g, le);
+        emit_label(g, le);
         fprintf(o, "  call void @__ada_raise(ptr @.ex.CONSTRAINT_ERROR)\n  unreachable\n");
-        lbl(g, ld);
+        emit_label(g, ld);
         fprintf(o, "  %%t%d = add i64 %%t%d, %lld\n", r.id, fnd, t ? (long long) t->lo : 0LL);
       }
       else
@@ -11201,9 +11201,9 @@ static V generate_expression(Code_Generator *g, Syntax_Node *n)
     fprintf(o, "  %%t%d = icmp eq i64 %%t%d, 0\n", nc, pc.id);
     int ne = new_label_block(g), nd = new_label_block(g);
     emit_conditional_branch(g, nc, ne, nd);
-    lbl(g, ne);
+    emit_label(g, ne);
     fprintf(o, "  call void @__ada_raise(ptr @.ex.CONSTRAINT_ERROR)\n  unreachable\n");
-    lbl(g, nd);
+    emit_label(g, nd);
     fprintf(o, "  %%t%d = load %s, ptr %%t%d\n", r.id, value_llvm_type_string(r.k), p.id);
   }
   break;
@@ -11453,11 +11453,11 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
     fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", ct, c.id);
     int lt = new_label_block(g), lf = new_label_block(g), ld = new_label_block(g);
     emit_conditional_branch(g, ct, lt, lf);
-    lbl(g, lt);
+    emit_label(g, lt);
     for (uint32_t i = 0; i < n->if_.th.count; i++)
       generate_statement_sequence(g, n->if_.th.data[i]);
     emit_branch(g, ld);
-    lbl(g, lf);
+    emit_label(g, lf);
     if (n->if_.ei.count > 0)
     {
       for (uint32_t i = 0; i < n->if_.ei.count; i++)
@@ -11468,11 +11468,11 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
         fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", ect, ec.id);
         int let = new_label_block(g), lef = new_label_block(g);
         emit_conditional_branch(g, ect, let, lef);
-        lbl(g, let);
+        emit_label(g, let);
         for (uint32_t j = 0; j < e->if_.th.count; j++)
           generate_statement_sequence(g, e->if_.th.data[j]);
         emit_branch(g, ld);
-        lbl(g, lef);
+        emit_label(g, lef);
       }
     }
     if (n->if_.el.count > 0)
@@ -11481,7 +11481,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
         generate_statement_sequence(g, n->if_.el.data[i]);
     }
     emit_branch(g, ld);
-    lbl(g, ld);
+    emit_label(g, ld);
   }
   break;
   case N_CS:
@@ -11556,12 +11556,12 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
     {
       Syntax_Node *a = n->cs.al.data[i];
       int la = lb.data[i]->i;
-      lbl(g, la);
+      emit_label(g, la);
       for (uint32_t j = 0; j < a->hnd.stz.count; j++)
         generate_statement_sequence(g, a->hnd.stz.data[j]);
       emit_branch(g, ld);
     }
-    lbl(g, ld);
+    emit_label(g, ld);
   }
   break;
   case N_LP:
@@ -11674,7 +11674,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
       }
     }
     emit_branch(g, lb);
-    lbl(g, lb);
+    emit_label(g, lb);
     if (n->lp.it)
     {
       if (fv and ft and hi_var >= 0)
@@ -11724,7 +11724,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
     }
     else
       emit_branch(g, lc);
-    lbl(g, lc);
+    emit_label(g, lc);
     for (uint32_t i = 0; i < n->lp.st.count; i++)
       generate_statement_sequence(g, n->lp.st.data[i]);
     if (fv and ft)
@@ -11788,7 +11788,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
     }
     else
       emit_branch(g, lb);
-    lbl(g, le);
+    emit_label(g, le);
     if (g->ls > 0)
       g->ls--;
   }
@@ -11808,7 +11808,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
           fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", ct, c.id);
           int lc = new_label_block(g);
           emit_conditional_branch(g, ct, le, lc);
-          lbl(g, lc);
+          emit_label(g, lc);
         }
         else
           emit_branch(g, le);
@@ -11822,7 +11822,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
           fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", ct, c.id);
           int le = g->ls > 0 ? g->ll[g->ls - 1] : new_label_block(g), lc = new_label_block(g);
           emit_conditional_branch(g, ct, le, lc);
-          lbl(g, lc);
+          emit_label(g, lc);
         }
         else
         {
@@ -11840,7 +11840,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
         fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", ct, c.id);
         int le = g->ls > 0 ? g->ll[g->ls - 1] : new_label_block(g), lc = new_label_block(g);
         emit_conditional_branch(g, ct, le, lc);
-        lbl(g, lc);
+        emit_label(g, lc);
       }
       else
       {
@@ -11855,7 +11855,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
     int bb = get_or_create_label_basic_block(g, n->go.lb);
     fprintf(o, "  br label %%Source_Location%d\n", bb);
     int ul = new_label_block(g);
-    lbl(g, ul);
+    emit_label(g, ul);
     fprintf(o, "  unreachable\n");
   }
   break;
@@ -12160,7 +12160,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
     {
       lblbb = get_or_create_label_basic_block(g, n->bk.lb);
       emit_branch(g, lblbb);
-      lbl(g, lblbb);
+      emit_label(g, lblbb);
     }
     int sj = new_temporary_register(g);
     int prev_eh = new_temporary_register(g);
@@ -12176,7 +12176,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
     fprintf(o, "  %%t%d = icmp eq i32 %%t%d, 0\n", ze, sv);
     int ln = new_label_block(g), lh = new_label_block(g);
     emit_conditional_branch(g, ze, ln, lh);
-    lbl(g, ln);
+    emit_label(g, ln);
     for (uint32_t i = 0; i < n->bk.dc.count; i++)
     {
       Syntax_Node *d = n->bk.dc.data[i];
@@ -12219,12 +12219,12 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
                     fprintf(o, "  %%t%d = icmp ne i64 %%t%d, %%t%d\n", cmp, dvl, tdi);
                     int lok = new_label_block(g), lf = new_label_block(g);
                     emit_conditional_branch(g, cmp, lok, lf);
-                    lbl(g, lok);
+                    emit_label(g, lok);
                     fprintf(
                         o,
                         "  call void @__ada_raise(ptr @.ex.CONSTRAINT_ERROR)\n "
                         " unreachable\n");
-                    lbl(g, lf);
+                    emit_label(g, lf);
                   }
                 }
               }
@@ -12328,7 +12328,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
       generate_statement_sequence(g, n->bk.st.data[i]);
     int ld = new_label_block(g);
     emit_branch(g, ld);
-    lbl(g, lh);
+    emit_label(g, lh);
     if (n->bk.hd.count > 0)
     {
       for (uint32_t i = 0; i < n->bk.hd.count; i++)
@@ -12354,10 +12354,10 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
           int eq = new_temporary_register(g);
           fprintf(o, "  %%t%d = icmp eq i32 %%t%d, 0\n", eq, cm);
           emit_conditional_branch(g, eq, lhm, lhn);
-          lbl(g, lhn);
+          emit_label(g, lhn);
         }
         emit_branch(g, ld);
-        lbl(g, lhm);
+        emit_label(g, lhm);
         for (uint32_t j = 0; j < h->hnd.stz.count; j++)
           generate_statement_sequence(g, h->hnd.stz.data[j]);
         emit_branch(g, ld);
@@ -12369,13 +12369,13 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
       fprintf(o, "  %%t%d = icmp eq ptr %%t%d, null\n", nc, prev_eh);
       int ex = new_label_block(g), lj = new_label_block(g);
       emit_conditional_branch(g, nc, ex, lj);
-      lbl(g, ex);
+      emit_label(g, ex);
       emit_branch(g, ld);
-      lbl(g, lj);
+      emit_label(g, lj);
       fprintf(o, "  call void @longjmp(ptr %%t%d, i32 1)\n", prev_eh);
       fprintf(o, "  unreachable\n");
     }
-    lbl(g, ld);
+    emit_label(g, ld);
     fprintf(o, "  store ptr %%t%d, ptr @__eh_cur\n", prev_eh);
     ;
   }
@@ -12399,7 +12399,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
       for (uint32_t i = 0; i < n->sa.sts.count; i++)
         generate_statement_sequence(g, n->sa.sts.data[i]);
       emit_branch(g, ld);
-      lbl(g, ld);
+      emit_label(g, ld);
     }
     else
     {
@@ -12424,7 +12424,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
         for (uint32_t i = 0; i < n->ss.el.count; i++)
           generate_statement_sequence(g, n->ss.el.data[i]);
       emit_branch(g, ld);
-      lbl(g, ld);
+      emit_label(g, ld);
     }
   }
   break;
@@ -13102,12 +13102,12 @@ static void generate_declaration(Code_Generator *g, Syntax_Node *n)
                     fprintf(o, "  %%t%d = icmp ne i64 %%t%d, %%t%d\n", cmp, dvl, tdi);
                     int lok = new_label_block(g), lf = new_label_block(g);
                     emit_conditional_branch(g, cmp, lok, lf);
-                    lbl(g, lok);
+                    emit_label(g, lok);
                     fprintf(
                         o,
                         "  call void @__ada_raise(ptr @.ex.CONSTRAINT_ERROR)\n "
                         " unreachable\n");
-                    lbl(g, lf);
+                    emit_label(g, lf);
                   }
                 }
               }
@@ -13153,22 +13153,22 @@ static void generate_declaration(Code_Generator *g, Syntax_Node *n)
       fprintf(o, "  %%t%d = icmp eq i32 %%t%d, 0\n", ze, sv);
       int ln = new_label_block(g), lh = new_label_block(g);
       emit_conditional_branch(g, ze, ln, lh);
-      lbl(g, ln);
+      emit_label(g, ln);
       for (uint32_t i = 0; i < n->bd.st.count; i++)
         generate_statement_sequence(g, n->bd.st.data[i]);
       int ld = new_label_block(g);
       emit_branch(g, ld);
-      lbl(g, lh);
+      emit_label(g, lh);
       int nc = new_temporary_register(g);
       fprintf(o, "  %%t%d = icmp eq ptr %%t%d, null\n", nc, peh);
       int ex = new_label_block(g), lj = new_label_block(g);
       emit_conditional_branch(g, nc, ex, lj);
-      lbl(g, ex);
+      emit_label(g, ex);
       emit_branch(g, ld);
-      lbl(g, lj);
+      emit_label(g, lj);
       fprintf(o, "  call void @longjmp(ptr %%t%d, i32 1)\n", peh);
       fprintf(o, "  unreachable\n");
-      lbl(g, ld);
+      emit_label(g, ld);
       fprintf(o, "  store ptr %%t%d, ptr @__eh_cur\n", peh);
     }
     else
@@ -13476,12 +13476,12 @@ static void generate_declaration(Code_Generator *g, Syntax_Node *n)
                     fprintf(o, "  %%t%d = icmp ne i64 %%t%d, %%t%d\n", cmp, dvl, tdi);
                     int lok = new_label_block(g), lf = new_label_block(g);
                     emit_conditional_branch(g, cmp, lok, lf);
-                    lbl(g, lok);
+                    emit_label(g, lok);
                     fprintf(
                         o,
                         "  call void @__ada_raise(ptr @.ex.CONSTRAINT_ERROR)\n "
                         " unreachable\n");
-                    lbl(g, lf);
+                    emit_label(g, lf);
                   }
                 }
               }
@@ -13528,22 +13528,22 @@ static void generate_declaration(Code_Generator *g, Syntax_Node *n)
       fprintf(o, "  %%t%d = icmp eq i32 %%t%d, 0\n", ze, sv);
       int ln = new_label_block(g), lh = new_label_block(g);
       emit_conditional_branch(g, ze, ln, lh);
-      lbl(g, ln);
+      emit_label(g, ln);
       for (uint32_t i = 0; i < n->bd.st.count; i++)
         generate_statement_sequence(g, n->bd.st.data[i]);
       int ld = new_label_block(g);
       emit_branch(g, ld);
-      lbl(g, lh);
+      emit_label(g, lh);
       int nc = new_temporary_register(g);
       fprintf(o, "  %%t%d = icmp eq ptr %%t%d, null\n", nc, peh);
       int ex = new_label_block(g), lj = new_label_block(g);
       emit_conditional_branch(g, nc, ex, lj);
-      lbl(g, ex);
+      emit_label(g, ex);
       emit_branch(g, ld);
-      lbl(g, lj);
+      emit_label(g, lj);
       fprintf(o, "  call void @longjmp(ptr %%t%d, i32 1)\n", peh);
       fprintf(o, "  unreachable\n");
-      lbl(g, ld);
+      emit_label(g, ld);
       fprintf(o, "  store ptr %%t%d, ptr @__eh_cur\n", peh);
     }
     else
@@ -13814,7 +13814,7 @@ static void generate_runtime_type(Code_Generator *g)
       "define linkonce_odr i64 @__attr_VALUE_INTEGER(ptr %%x){\n  %%t0 = call i64 "
       "@__ada_value_int(ptr %%x)\n  ret i64 %%t0\n}\n");
 }
-static char *rf(const char *p)
+static char *read_file_contents(const char *p)
 {
   FILE *f = fopen(p, "rb");
   if (not f)
@@ -14004,11 +14004,11 @@ static bool label_compare(Symbol_Manager *SM, String_Slice nm, String_Slice pth)
     return true;
   char fp[512];
   snprintf(fp, 512, "%.*s.adb", (int) pth.length, pth.string);
-  char *src = rf(fp);
+  char *src = read_file_contents(fp);
   if (not src)
   {
     snprintf(fp, 512, "%.*s.ads", (int) pth.length, pth.string);
-    src = rf(fp);
+    src = read_file_contents(fp);
   }
   if (not src)
     return false;
@@ -14159,7 +14159,7 @@ int main(int ac, char **av)
     return 1;
   }
   const char *inf = av[ai];
-  char *src = rf(inf);
+  char *src = read_file_contents(inf);
   if (not src)
   {
     fprintf(stderr, "e: %s\n", inf);
@@ -14172,7 +14172,7 @@ int main(int ac, char **av)
   Symbol_Manager sm;
   symbol_manager_init(&sm);
   {
-    const char *asrc = lkp(&sm, STRING_LITERAL("ascii"));
+    const char *asrc = lookup_path(&sm, STRING_LITERAL("ascii"));
     if (asrc)
       parse_package_specification(&sm, STRING_LITERAL("ascii"), asrc);
   }
