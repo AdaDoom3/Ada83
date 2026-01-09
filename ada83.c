@@ -833,60 +833,60 @@ static Token scan_number_literal(Lexer *l)
   }
   return tk;
 }
-static Token scan_character_literal(Lexer *l)
+static Token scan_character_literal(Lexer *lexer)
 {
-  Source_Location lc = {l->line_number, l->column, l->filename};
-  advance_character(l);
-  if (not peek(l, 0))
-    return make_token(T_ERR, lc, STRING_LITERAL("uc"));
-  char c = peek(l, 0);
-  advance_character(l);
-  if (peek(l, 0) != '\'')
-    return make_token(T_ERR, lc, STRING_LITERAL("uc"));
-  advance_character(l);
-  Token tk = make_token(T_CHAR, lc, (String_Slice){&c, 1});
-  tk.integer_value = c;
-  return tk;
+  Source_Location location = {lexer->line_number, lexer->column, lexer->filename};
+  advance_character(lexer);
+  if (not peek(lexer, 0))
+    return make_token(T_ERR, location, STRING_LITERAL("uc"));
+  char character = peek(lexer, 0);
+  advance_character(lexer);
+  if (peek(lexer, 0) != '\'')
+    return make_token(T_ERR, location, STRING_LITERAL("uc"));
+  advance_character(lexer);
+  Token token = make_token(T_CHAR, location, (String_Slice){&character, 1});
+  token.integer_value = character;
+  return token;
 }
-static Token scan_string_literal(Lexer *l)
+static Token scan_string_literal(Lexer *lexer)
 {
-  Source_Location lc = {l->line_number, l->column, l->filename};
-  char d = peek(l, 0);
-  advance_character(l);
-  const char *s = l->current;
-  (void) s;
-  char *b = arena_allocate(256), *p = b;
-  int n = 0;
-  while (peek(l, 0))
+  Source_Location location = {lexer->line_number, lexer->column, lexer->filename};
+  char delimiter = peek(lexer, 0);
+  advance_character(lexer);
+  const char *start = lexer->current;
+  (void) start;
+  char *buffer = arena_allocate(256), *buffer_pointer = buffer;
+  int length = 0;
+  while (peek(lexer, 0))
   {
-    if (peek(l, 0) == d)
+    if (peek(lexer, 0) == delimiter)
     {
-      if (peek(l, 1) == d)
+      if (peek(lexer, 1) == delimiter)
       {
-        advance_character(l);
-        advance_character(l);
-        if (n < 255)
-          *p++ = d;
-        n++;
+        advance_character(lexer);
+        advance_character(lexer);
+        if (length < 255)
+          *buffer_pointer++ = delimiter;
+        length++;
       }
       else
         break;
     }
     else
     {
-      if (n < 255)
-        *p++ = peek(l, 0);
-      n++;
-      advance_character(l);
+      if (length < 255)
+        *buffer_pointer++ = peek(lexer, 0);
+      length++;
+      advance_character(lexer);
     }
   }
-  if (peek(l, 0) == d)
-    advance_character(l);
+  if (peek(lexer, 0) == delimiter)
+    advance_character(lexer);
   else
-    return make_token(T_ERR, lc, STRING_LITERAL("us"));
-  *p = 0;
-  String_Slice lt = {b, n};
-  return make_token(T_STR, lc, lt);
+    return make_token(T_ERR, location, STRING_LITERAL("us"));
+  *buffer_pointer = 0;
+  String_Slice literal_text = {buffer, length};
+  return make_token(T_STR, location, literal_text);
 }
 static Token lexer_next_token(Lexer *l)
 {
