@@ -1295,7 +1295,7 @@ struct Syntax_Node
     } constraint;
     struct
     {
-      String_Slice nm;
+      String_Slice name;
       Syntax_Node *ty;
       Syntax_Node *in;
       bool is_aliased;
@@ -1316,14 +1316,14 @@ struct Syntax_Node
     } variant_part;
     struct
     {
-      String_Slice nm;
+      String_Slice name;
       Syntax_Node *ty;
       Syntax_Node *default_value;
       uint8_t mode;
     } parameter;
     struct
     {
-      String_Slice nm;
+      String_Slice name;
       Node_Vector parameters;
       Syntax_Node *return_type;
       String_Slice operator_symbol;
@@ -1340,14 +1340,14 @@ struct Syntax_Node
     } body;
     struct
     {
-      String_Slice nm;
+      String_Slice name;
       Node_Vector dc;
       Node_Vector private_declarations;
       int elaboration_level;
     } package_spec;
     struct
     {
-      String_Slice nm;
+      String_Slice name;
       Node_Vector dc;
       Node_Vector statements;
       Node_Vector handlers;
@@ -1362,7 +1362,7 @@ struct Syntax_Node
     } object_decl;
     struct
     {
-      String_Slice nm;
+      String_Slice name;
       Syntax_Node *definition;
       Syntax_Node *discriminant;
       bool is_new;
@@ -1372,7 +1372,7 @@ struct Syntax_Node
     } type_decl;
     struct
     {
-      String_Slice nm;
+      String_Slice name;
       Syntax_Node *index_constraint;
       Syntax_Node *constraint;
       Syntax_Node *range_constraint;
@@ -1384,7 +1384,7 @@ struct Syntax_Node
     } exception_decl;
     struct
     {
-      String_Slice nm;
+      String_Slice name;
       Syntax_Node *renamed_entity;
     } renaming;
     struct
@@ -1443,7 +1443,7 @@ struct Syntax_Node
     } code_stmt;
     struct
     {
-      String_Slice nm;
+      String_Slice name;
       Node_Vector index_constraints;
       Node_Vector parameters;
       Node_Vector statements;
@@ -1463,20 +1463,20 @@ struct Syntax_Node
     } abort_stmt;
     struct
     {
-      String_Slice nm;
+      String_Slice name;
       Node_Vector entries;
       bool it;
     } task_spec;
     struct
     {
-      String_Slice nm;
+      String_Slice name;
       Node_Vector dc;
       Node_Vector statements;
       Node_Vector handlers;
     } task_body;
     struct
     {
-      String_Slice nm;
+      String_Slice name;
       Node_Vector index_constraints;
       Node_Vector parameters;
       Syntax_Node *guard;
@@ -1506,7 +1506,7 @@ struct Syntax_Node
     } context;
     struct
     {
-      String_Slice nm;
+      String_Slice name;
     } with_clause;
     struct
     {
@@ -1514,7 +1514,7 @@ struct Syntax_Node
     } use_clause;
     struct
     {
-      String_Slice nm;
+      String_Slice name;
       Node_Vector arguments;
     } pragma;
     struct
@@ -1548,7 +1548,7 @@ struct Syntax_Node
     } generic_decl;
     struct
     {
-      String_Slice nm;
+      String_Slice name;
       String_Slice generic_name;
       Node_Vector actual_parameters;
     } generic_inst;
@@ -1568,23 +1568,23 @@ struct Representation_Clause
   {
     struct
     {
-      String_Slice nm;
+      String_Slice name;
       uint32_t po;
     } er;
     struct
     {
-      String_Slice nm;
+      String_Slice name;
       uint64_t address;
     } ad;
     struct
     {
-      String_Slice nm;
+      String_Slice name;
       Node_Vector cp;
     } rr;
     struct
     {
       String_Slice lang;
-      String_Slice nm;
+      String_Slice name;
       String_Slice ext;
     } im;
   };
@@ -2449,7 +2449,7 @@ static Node_Vector parse_parameter_mode(Parser *parser)
     for (uint32_t i = 0; i < id.count; i++)
     {
       Syntax_Node *node = ND(PM, location);
-      node->parameter.nm = id.data[i]->string_value;
+      node->parameter.name = id.data[i]->string_value;
       node->parameter.ty = ty;
       node->parameter.default_value = df;
       node->parameter.mode = md;
@@ -2466,11 +2466,11 @@ static Syntax_Node *parse_procedure_specification(Parser *parser)
   Syntax_Node *node = ND(PS, location);
   if (parser_at(parser, T_STR))
   {
-    node->subprogram.nm = string_duplicate(parser->current_token.literal);
+    node->subprogram.name = string_duplicate(parser->current_token.literal);
     parser_next(parser);
   }
   else
-    node->subprogram.nm = parser_identifier(parser);
+    node->subprogram.name = parser_identifier(parser);
   node->subprogram.parameters = parse_parameter_mode(parser);
   return node;
 }
@@ -2481,11 +2481,11 @@ static Syntax_Node *parse_function_specification(Parser *parser)
   Syntax_Node *node = ND(FS, location);
   if (parser_at(parser, T_STR))
   {
-    node->subprogram.nm = string_duplicate(parser->current_token.literal);
+    node->subprogram.name = string_duplicate(parser->current_token.literal);
     parser_next(parser);
   }
   else
-    node->subprogram.nm = parser_identifier(parser);
+    node->subprogram.name = parser_identifier(parser);
   node->subprogram.parameters = parse_parameter_mode(parser);
   parser_expect(parser, T_RET);
   node->subprogram.return_type = parse_name(parser);
@@ -2531,7 +2531,7 @@ static Node_Vector parse_generic_formal_part(Parser *parser)
           parse_expression(parser);
       }
       Syntax_Node *node = ND(GTP, location);
-      node->type_decl.nm = nm;
+      node->type_decl.name = nm;
       nv(&generics, node);
       parser_expect(parser, T_SC);
     }
@@ -2666,7 +2666,7 @@ static Syntax_Node *parse_generic_formal(Parser *parser)
       parser_next(parser);
     parser_expect(parser, T_SC);
     Syntax_Node *pk = ND(PKS, location);
-    pk->package_spec.nm = nm;
+    pk->package_spec.name = nm;
     pk->package_spec.dc = node->generic_decl.dc;
     node->generic_decl.unit = pk;
     return node;
@@ -2823,7 +2823,7 @@ static Syntax_Node *parse_statement_list(Parser *parser)
       if (parser_match(parser, T_ACC))
       {
         alternative->k = N_ACC;
-        alternative->accept_stmt.nm = parser_identifier(parser);
+        alternative->accept_stmt.name = parser_identifier(parser);
         if (parser_at(parser, T_LP))
         {
           if (parser->peek_token.kind == T_ID)
@@ -2901,7 +2901,7 @@ static Syntax_Node *parse_statement_list(Parser *parser)
       if (parser_match(parser, T_ACC))
       {
         alternative->k = N_ACC;
-        alternative->accept_stmt.nm = parser_identifier(parser);
+        alternative->accept_stmt.name = parser_identifier(parser);
         if (parser_at(parser, T_LP))
         {
           if (parser->peek_token.kind == T_ID)
@@ -3022,7 +3022,7 @@ static Syntax_Node *parse_statement_or_label(Parser *parser)
   if (parser_match(parser, T_ACC))
   {
     Syntax_Node *node = ND(ACC, location);
-    node->accept_stmt.nm = parser_identifier(parser);
+    node->accept_stmt.name = parser_identifier(parser);
     if (parser_at(parser, T_LP))
     {
       if (parser->peek_token.kind == T_ID)
@@ -3132,7 +3132,7 @@ static Syntax_Node *parse_statement_or_label(Parser *parser)
   if (parser_match(parser, T_PGM))
   {
     Syntax_Node *node = ND(PG, location);
-    node->pragma.nm = parser_identifier(parser);
+    node->pragma.name = parser_identifier(parser);
     if (parser_match(parser, T_LP))
     {
       do
@@ -3332,7 +3332,7 @@ static Syntax_Node *parse_type_definition(Parser *parser)
         if (parser_match(parser, T_AS))
           dd = parse_expression(parser);
         Syntax_Node *dp = ND(DS, location);
-        dp->parameter.nm = dn;
+        dp->parameter.name = dn;
         dp->parameter.ty = dt;
         dp->parameter.default_value = dd;
         nv(&dc, dp);
@@ -3364,7 +3364,7 @@ static Syntax_Node *parse_type_definition(Parser *parser)
       for (uint32_t i = 0; i < id.count; i++)
       {
         Syntax_Node *c = ND(CM, location);
-        c->component_decl.nm = id.data[i]->string_value;
+        c->component_decl.name = id.data[i]->string_value;
         c->component_decl.ty = ty;
         c->component_decl.in = in;
         c->component_decl.offset = of++;
@@ -3422,7 +3422,7 @@ static Syntax_Node *parse_type_definition(Parser *parser)
           for (uint32_t i = 0; i < id.count; i++)
           {
             Syntax_Node *c = ND(CM, location);
-            c->component_decl.nm = id.data[i]->string_value;
+            c->component_decl.name = id.data[i]->string_value;
             c->component_decl.ty = ty;
             c->component_decl.in = in;
             c->component_decl.offset = of++;
@@ -3527,7 +3527,7 @@ static Representation_Clause *parse_representation_clause(Parser *parser)
         if (cm)
         {
           r = reference_counter_new(4, 0);
-          r->ad.nm = parser_match(parser, T_CM) ? parser_identifier(parser) : N;
+          r->ad.name = parser_match(parser, T_CM) ? parser_identifier(parser) : N;
           while (parser_match(parser, T_CM))
             parser_identifier(parser);
           r->ad.address = cm;
@@ -3552,7 +3552,7 @@ static Representation_Clause *parse_representation_clause(Parser *parser)
           parse_name(parser);
         parser_expect(parser, T_RP);
         r = reference_counter_new(5, 0);
-        r->er.nm = tn and tn->k == N_ID ? tn->string_value : N;
+        r->er.name = tn and tn->k == N_ID ? tn->string_value : N;
       }
       parser_expect(parser, T_SC);
       return r;
@@ -3563,7 +3563,7 @@ static Representation_Clause *parse_representation_clause(Parser *parser)
       {
         parser_expect(parser, T_LP);
         r = reference_counter_new(6, 0);
-        r->er.nm = parser_identifier(parser);
+        r->er.name = parser_identifier(parser);
         while (parser_match(parser, T_CM))
           parser_identifier(parser);
         parser_expect(parser, T_RP);
@@ -3577,7 +3577,7 @@ static Representation_Clause *parse_representation_clause(Parser *parser)
       {
         parser_expect(parser, T_LP);
         r = reference_counter_new(7, 0);
-        r->er.nm = parser_identifier(parser);
+        r->er.name = parser_identifier(parser);
         while (parser_match(parser, T_CM))
           parser_identifier(parser);
         parser_expect(parser, T_RP);
@@ -3596,7 +3596,7 @@ static Representation_Clause *parse_representation_clause(Parser *parser)
         r->im.lang = parser_identifier(parser);
         if (parser_match(parser, T_CM))
         {
-          r->im.nm = parser_identifier(parser);
+          r->im.name = parser_identifier(parser);
           if (parser_match(parser, T_CM))
           {
             if (parser_at(parser, T_STR))
@@ -3608,7 +3608,7 @@ static Representation_Clause *parse_representation_clause(Parser *parser)
               r->im.ext = parser_identifier(parser);
           }
           else
-            r->im.ext = r->im.nm;
+            r->im.ext = r->im.name;
         }
         parser_expect(parser, T_RP);
       }
@@ -3665,7 +3665,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
   {
     String_Slice nm = parser_identifier(parser);
     Syntax_Node *node = ND(TD, location);
-    node->type_decl.nm = nm;
+    node->type_decl.name = nm;
     if (parser_match(parser, T_LP))
     {
       Syntax_Node *ds = ND(LST, location);
@@ -3687,7 +3687,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
         for (uint32_t i = 0; i < dn.count; i++)
         {
           Syntax_Node *dp = ND(DS, location);
-          dp->parameter.nm = dn.data[i]->string_value;
+          dp->parameter.name = dn.data[i]->string_value;
           dp->parameter.ty = dt;
           dp->parameter.default_value = dd;
           nv(&ds->list.items, dp);
@@ -3742,7 +3742,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
     String_Slice nm = parser_identifier(parser);
     parser_expect(parser, T_IS);
     Syntax_Node *node = ND(SD, location);
-    node->subtype_decl.nm = nm;
+    node->subtype_decl.name = nm;
     node->subtype_decl.index_constraint = parse_simple_expression(parser);
     if (node->subtype_decl.index_constraint->k == N_ST)
       node->subtype_decl.range_constraint = node->subtype_decl.index_constraint->subtype_decl.constraint->constraint.range_spec;
@@ -3795,7 +3795,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
         }
         parser_expect(parser, T_SC);
         Syntax_Node *node = ND(GINST, location);
-        node->generic_inst.nm = sp->subprogram.nm;
+        node->generic_inst.name = sp->subprogram.name;
         node->generic_inst.generic_name = gn;
         node->generic_inst.actual_parameters = ap;
         return node;
@@ -3854,13 +3854,13 @@ static Syntax_Node *parse_declaration(Parser *parser)
       }
       parser_expect(parser, T_SC);
       Syntax_Node *node = ND(GINST, location);
-      node->generic_inst.nm = nm;
+      node->generic_inst.name = nm;
       node->generic_inst.generic_name = gn;
       node->generic_inst.actual_parameters = ap;
       return node;
     }
     Syntax_Node *sp = ND(FS, location);
-    sp->subprogram.nm = nm;
+    sp->subprogram.name = nm;
     sp->subprogram.parameters = parse_parameter_mode(parser);
     parser_expect(parser, T_RET);
     sp->subprogram.return_type = parse_name(parser);
@@ -3909,11 +3909,11 @@ static Syntax_Node *parse_declaration(Parser *parser)
       {
         parser_expect(parser, T_SC);
         Syntax_Node *node = ND(PKB, location);
-        node->package_body.nm = nm;
+        node->package_body.name = nm;
         return node;
       }
       Syntax_Node *node = ND(PKB, location);
-      node->package_body.nm = nm;
+      node->package_body.name = nm;
       node->package_body.dc = parse_declarative_part(parser);
       if (parser_match(parser, T_BEG))
       {
@@ -3933,7 +3933,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
       Syntax_Node *rn = parse_expression(parser);
       parser_expect(parser, T_SC);
       Syntax_Node *node = ND(RE, location);
-      node->renaming.nm = nm;
+      node->renaming.name = nm;
       node->renaming.renamed_entity = rn;
       return node;
     }
@@ -3964,13 +3964,13 @@ static Syntax_Node *parse_declaration(Parser *parser)
       }
       parser_expect(parser, T_SC);
       Syntax_Node *node = ND(GINST, location);
-      node->generic_inst.nm = nm;
+      node->generic_inst.name = nm;
       node->generic_inst.generic_name = gn;
       node->generic_inst.actual_parameters = ap;
       return node;
     }
     Syntax_Node *node = ND(PKS, location);
-    node->package_spec.nm = nm;
+    node->package_spec.name = nm;
     node->package_spec.dc = parse_declarative_part(parser);
     if (parser_match(parser, T_PRV))
       node->package_spec.private_declarations = parse_declarative_part(parser);
@@ -3990,11 +3990,11 @@ static Syntax_Node *parse_declaration(Parser *parser)
       {
         parser_expect(parser, T_SC);
         Syntax_Node *node = ND(TKB, location);
-        node->task_body.nm = nm;
+        node->task_body.name = nm;
         return node;
       }
       Syntax_Node *node = ND(TKB, location);
-      node->task_body.nm = nm;
+      node->task_body.name = nm;
       node->task_body.dc = parse_declarative_part(parser);
       parser_expect(parser, T_BEG);
       node->task_body.statements = parse_statement(parser);
@@ -4009,7 +4009,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
     bool it = parser_match(parser, T_TYP);
     String_Slice nm = parser_identifier(parser);
     Syntax_Node *node = ND(TKS, location);
-    node->task_spec.nm = nm;
+    node->task_spec.name = nm;
     node->task_spec.it = it;
     if (parser_match(parser, T_IS))
     {
@@ -4018,7 +4018,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
         if (parser_match(parser, T_ENT))
         {
           Syntax_Node *e = ND(ENT, location);
-          e->entry_decl.nm = parser_identifier(parser);
+          e->entry_decl.name = parser_identifier(parser);
           if (parser_at(parser, T_LP))
           {
             if (parser->peek_token.kind == T_ID or parser->peek_token.kind == T_INT or parser->peek_token.kind == T_CHAR)
@@ -4133,7 +4133,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
   if (parser_match(parser, T_PGM))
   {
     Syntax_Node *node = ND(PG, location);
-    node->pragma.nm = parser_identifier(parser);
+    node->pragma.name = parser_identifier(parser);
     if (parser_match(parser, T_LP))
     {
       do
@@ -4229,7 +4229,7 @@ static Syntax_Node *parse_context(Parser *parser)
       do
       {
         Syntax_Node *w = ND(WI, lc);
-        w->with_clause.nm = parser_identifier(parser);
+        w->with_clause.name = parser_identifier(parser);
         nv(&cx->context.with_clauses, w);
       } while (parser_match(parser, T_CM));
       parser_expect(parser, T_SC);
@@ -4725,15 +4725,15 @@ static Syntax_Node *generate_equality_operator(Type_Info *t, Source_Location l)
   f->body.subprogram_spec = ND(FS, l);
   char b[256];
   snprintf(b, 256, "Oeq%.*s", (int) t->nm.length, t->nm.string);
-  f->body.subprogram_spec->subprogram.nm = string_duplicate((String_Slice){b, strlen(b)});
+  f->body.subprogram_spec->subprogram.name = string_duplicate((String_Slice){b, strlen(b)});
   f->body.subprogram_spec->subprogram.operator_symbol = STRING_LITERAL("=");
   Syntax_Node *p1 = ND(PM, l);
-  p1->parameter.nm = STRING_LITERAL("Source_Location");
+  p1->parameter.name = STRING_LITERAL("Source_Location");
   p1->parameter.ty = ND(ID, l);
   p1->parameter.ty->string_value = t->nm;
   p1->parameter.mode = 0;
   Syntax_Node *p2 = ND(PM, l);
-  p2->parameter.nm = STRING_LITERAL("Rational_Number");
+  p2->parameter.name = STRING_LITERAL("Rational_Number");
   p2->parameter.ty = ND(ID, l);
   p2->parameter.ty->string_value = t->nm;
   p2->parameter.mode = 0;
@@ -4758,11 +4758,11 @@ static Syntax_Node *generate_equality_operator(Type_Info *t, Source_Location l)
       Syntax_Node *lf = ND(SEL, l);
       lf->selected_component.prefix = ND(ID, l);
       lf->selected_component.prefix->string_value = STRING_LITERAL("Source_Location");
-      lf->selected_component.selector = c->component_decl.nm;
+      lf->selected_component.selector = c->component_decl.name;
       Syntax_Node *rf = ND(SEL, l);
       rf->selected_component.prefix = ND(ID, l);
       rf->selected_component.prefix->string_value = STRING_LITERAL("Rational_Number");
-      rf->selected_component.selector = c->component_decl.nm;
+      rf->selected_component.selector = c->component_decl.name;
       cmp->binary_node.left = lf;
       cmp->binary_node.right = rf;
       if (not i)
@@ -4822,15 +4822,15 @@ static Syntax_Node *generate_assignment_operator(Type_Info *t, Source_Location l
   parser->body.subprogram_spec = ND(PS, l);
   char b[256];
   snprintf(b, 256, "Oas%.*s", (int) t->nm.length, t->nm.string);
-  parser->body.subprogram_spec->subprogram.nm = string_duplicate((String_Slice){b, strlen(b)});
+  parser->body.subprogram_spec->subprogram.name = string_duplicate((String_Slice){b, strlen(b)});
   parser->body.subprogram_spec->subprogram.operator_symbol = STRING_LITERAL(":=");
   Syntax_Node *p1 = ND(PM, l);
-  p1->parameter.nm = STRING_LITERAL("T");
+  p1->parameter.name = STRING_LITERAL("T");
   p1->parameter.ty = ND(ID, l);
   p1->parameter.ty->string_value = t->nm;
   p1->parameter.mode = 3;
   Syntax_Node *p2 = ND(PM, l);
-  p2->parameter.nm = STRING_LITERAL("String_Slice");
+  p2->parameter.name = STRING_LITERAL("String_Slice");
   p2->parameter.ty = ND(ID, l);
   p2->parameter.ty->string_value = t->nm;
   p2->parameter.mode = 0;
@@ -4847,11 +4847,11 @@ static Syntax_Node *generate_assignment_operator(Type_Info *t, Source_Location l
       Syntax_Node *lt = ND(SEL, l);
       lt->selected_component.prefix = ND(ID, l);
       lt->selected_component.prefix->string_value = STRING_LITERAL("T");
-      lt->selected_component.selector = c->component_decl.nm;
+      lt->selected_component.selector = c->component_decl.name;
       Syntax_Node *rs = ND(SEL, l);
       rs->selected_component.prefix = ND(ID, l);
       rs->selected_component.prefix->string_value = STRING_LITERAL("String_Slice");
-      rs->selected_component.selector = c->component_decl.nm;
+      rs->selected_component.selector = c->component_decl.name;
       as->assignment.target = lt;
       as->assignment.value = rs;
       nv(&parser->body.statements, as);
@@ -4892,7 +4892,7 @@ static Syntax_Node *generate_input_operator(Type_Info *t, Source_Location l)
   f->body.subprogram_spec = ND(FS, l);
   char b[256];
   snprintf(b, 256, "Oin%.*s", (int) t->nm.length, t->nm.string);
-  f->body.subprogram_spec->subprogram.nm = string_duplicate((String_Slice){b, strlen(b)});
+  f->body.subprogram_spec->subprogram.name = string_duplicate((String_Slice){b, strlen(b)});
   f->body.subprogram_spec->subprogram.return_type = ND(ID, l);
   f->body.subprogram_spec->subprogram.return_type->string_value = t->nm;
   Syntax_Node *ag = ND(AG, l);
@@ -4905,7 +4905,7 @@ static Syntax_Node *generate_input_operator(Type_Info *t, Source_Location l)
         continue;
       Syntax_Node *a = ND(ASC, l);
       nv(&a->association.choices, ND(ID, l));
-      a->association.choices.data[0]->string_value = c->component_decl.nm;
+      a->association.choices.data[0]->string_value = c->component_decl.name;
       a->association.value = c->component_decl.in;
       nv(&ag->aggregate.items, a);
     }
@@ -5224,7 +5224,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
           Syntax_Node *d = pk->package_spec.private_declarations.data[i];
           if (d->symbol and string_equal_ignore_case(d->symbol->name, node->selected_component.selector) and d->symbol->ty)
             return d->symbol->ty;
-          if (d->k == N_TD and string_equal_ignore_case(d->type_decl.nm, node->selected_component.selector))
+          if (d->k == N_TD and string_equal_ignore_case(d->type_decl.name, node->selected_component.selector))
             return resolve_subtype(symbol_manager, d->type_decl.definition);
         }
         for (uint32_t i = 0; i < pk->package_spec.dc.count; i++)
@@ -5232,7 +5232,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
           Syntax_Node *d = pk->package_spec.dc.data[i];
           if (d->symbol and string_equal_ignore_case(d->symbol->name, node->selected_component.selector) and d->symbol->ty)
             return d->symbol->ty;
-          if (d->k == N_TD and string_equal_ignore_case(d->type_decl.nm, node->selected_component.selector))
+          if (d->k == N_TD and string_equal_ignore_case(d->type_decl.name, node->selected_component.selector))
             return resolve_subtype(symbol_manager, d->type_decl.definition);
         }
       }
@@ -5762,7 +5762,7 @@ static void normalize_record_aggregate(Symbol_Manager *symbol_manager, Type_Info
         for (uint32_t k = 0; k < rt->components.count; k++)
         {
           Syntax_Node *c = rt->components.data[k];
-          if (c->k == N_CM and string_equal_ignore_case(c->component_decl.nm, ch->string_value))
+          if (c->k == N_CM and string_equal_ignore_case(c->component_decl.name, ch->string_value))
           {
             if (cov[c->component_decl.offset] and error_count < 99)
               fatal_error(ag->location, "dup cm");
@@ -6182,7 +6182,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
         for (uint32_t i = 0; i < pt->components.count; i++)
         {
           Syntax_Node *c = pt->components.data[i];
-          if (c->k == N_CM and string_equal_ignore_case(c->component_decl.nm, node->selected_component.selector))
+          if (c->k == N_CM and string_equal_ignore_case(c->component_decl.name, node->selected_component.selector))
           {
             node->ty = resolve_subtype(symbol_manager, c->component_decl.ty);
             return;
@@ -6191,7 +6191,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
         for (uint32_t i = 0; i < pt->dc.count; i++)
         {
           Syntax_Node *d = pt->dc.data[i];
-          if (d->k == N_DS and string_equal_ignore_case(d->parameter.nm, node->selected_component.selector))
+          if (d->k == N_DS and string_equal_ignore_case(d->parameter.name, node->selected_component.selector))
           {
             node->ty = resolve_subtype(symbol_manager, d->parameter.ty);
             return;
@@ -6208,7 +6208,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
               for (uint32_t k = 0; k < v->variant.components.count; k++)
               {
                 Syntax_Node *vc = v->variant.components.data[k];
-                if (string_equal_ignore_case(vc->component_decl.nm, node->selected_component.selector))
+                if (string_equal_ignore_case(vc->component_decl.name, node->selected_component.selector))
                 {
                   node->ty = resolve_subtype(symbol_manager, vc->component_decl.ty);
                   return;
@@ -6623,13 +6623,13 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
   case N_ACC:
     symbol_compare_parameter(symbol_manager);
     {
-      Symbol *ens = symbol_add_overload(symbol_manager, symbol_new(node->accept_stmt.nm, 9, 0, node));
+      Symbol *ens = symbol_add_overload(symbol_manager, symbol_new(node->accept_stmt.name, 9, 0, node));
       (void) ens;
       for (uint32_t i = 0; i < node->accept_stmt.parameters.count; i++)
       {
         Syntax_Node *parser = node->accept_stmt.parameters.data[i];
         Type_Info *pt = resolve_subtype(symbol_manager, parser->parameter.ty);
-        Symbol *ps = symbol_add_overload(symbol_manager, symbol_new(parser->parameter.nm, 0, pt, parser));
+        Symbol *ps = symbol_add_overload(symbol_manager, symbol_new(parser->parameter.name, 0, pt, parser));
         parser->symbol = ps;
       }
       if (node->accept_stmt.statements.count > 0 and not has_return_statement(&node->accept_stmt.statements))
@@ -6689,7 +6689,7 @@ static void runtime_register_compare(Symbol_Manager *symbol_manager, Representat
   {
   case 1:
   {
-    Symbol *ts = symbol_find(symbol_manager, r->er.nm);
+    Symbol *ts = symbol_find(symbol_manager, r->er.name);
     if (ts and ts->ty)
     {
       Type_Info *t = type_canonical_concrete(ts->ty);
@@ -6711,7 +6711,7 @@ static void runtime_register_compare(Symbol_Manager *symbol_manager, Representat
   break;
   case 2:
   {
-    Symbol *s = symbol_find(symbol_manager, r->ad.nm);
+    Symbol *s = symbol_find(symbol_manager, r->ad.name);
     if (s and s->ty)
     {
       Type_Info *t = type_canonical_concrete(s->ty);
@@ -6721,7 +6721,7 @@ static void runtime_register_compare(Symbol_Manager *symbol_manager, Representat
   break;
   case 3:
   {
-    Symbol *s = symbol_find(symbol_manager, r->rr.nm);
+    Symbol *s = symbol_find(symbol_manager, r->rr.name);
     if (s and s->ty)
     {
       Type_Info *t = type_canonical_concrete(s->ty);
@@ -6732,7 +6732,7 @@ static void runtime_register_compare(Symbol_Manager *symbol_manager, Representat
         for (uint32_t j = 0; j < t->components.count; j++)
         {
           Syntax_Node *c = t->components.data[j];
-          if (c->k == N_CM and string_equal_ignore_case(c->component_decl.nm, cp->component_decl.nm))
+          if (c->k == N_CM and string_equal_ignore_case(c->component_decl.name, cp->component_decl.name))
           {
             c->component_decl.offset = cp->component_decl.offset;
             c->component_decl.bit_offset = cp->component_decl.bit_offset;
@@ -6748,7 +6748,7 @@ static void runtime_register_compare(Symbol_Manager *symbol_manager, Representat
   break;
   case 4:
   {
-    Symbol *s = r->ad.nm.length > 0 ? symbol_find(symbol_manager, r->ad.nm) : 0;
+    Symbol *s = r->ad.name.length > 0 ? symbol_find(symbol_manager, r->ad.name) : 0;
     if (s and s->ty)
     {
       Type_Info *t = type_canonical_concrete(s->ty);
@@ -6758,7 +6758,7 @@ static void runtime_register_compare(Symbol_Manager *symbol_manager, Representat
   break;
   case 5:
   {
-    Symbol *s = symbol_find(symbol_manager, r->er.nm);
+    Symbol *s = symbol_find(symbol_manager, r->er.name);
     if (s and s->ty)
     {
       Type_Info *t = type_canonical_concrete(s->ty);
@@ -6768,14 +6768,14 @@ static void runtime_register_compare(Symbol_Manager *symbol_manager, Representat
   break;
   case 6:
   {
-    Symbol *s = symbol_find(symbol_manager, r->er.nm);
+    Symbol *s = symbol_find(symbol_manager, r->er.name);
     if (s)
       s->is_inline = true;
   }
   break;
   case 7:
   {
-    Symbol *s = symbol_find(symbol_manager, r->er.nm);
+    Symbol *s = symbol_find(symbol_manager, r->er.name);
     if (s and s->ty)
     {
       Type_Info *t = type_canonical_concrete(s->ty);
@@ -6785,11 +6785,11 @@ static void runtime_register_compare(Symbol_Manager *symbol_manager, Representat
   break;
   case 8:
   {
-    Symbol *s = symbol_find(symbol_manager, r->im.nm);
+    Symbol *s = symbol_find(symbol_manager, r->im.name);
     if (s)
     {
       s->is_external = true;
-      s->external_name = r->im.ext.length > 0 ? string_duplicate(r->im.ext) : string_duplicate(r->im.nm);
+      s->external_name = r->im.ext.length > 0 ? string_duplicate(r->im.ext) : string_duplicate(r->im.name);
       s->external_language = string_duplicate(r->im.lang);
     }
   }
@@ -6809,7 +6809,7 @@ static void is_higher_order_parameter(Type_Info *dt, Type_Info *pt)
       nop->body = op->body;
       Syntax_Node *nsp = node_new(N_FS, op->location);
       nsp->subprogram = op->body.subprogram_spec->subprogram;
-      nsp->subprogram.nm = string_duplicate(op->body.subprogram_spec->subprogram.nm);
+      nsp->subprogram.name = string_duplicate(op->body.subprogram_spec->subprogram.name);
       nsp->subprogram.parameters = op->body.subprogram_spec->subprogram.parameters;
       if (op->k == N_FB)
         nsp->subprogram.return_type = op->body.subprogram_spec->subprogram.return_type;
@@ -6846,7 +6846,7 @@ static void resolve_array_parameter(Symbol_Manager *symbol_manager, Node_Vector 
           for (uint32_t j = 0; j < fp->count; j++)
           {
             Syntax_Node *tf = fp->data[j];
-            if (tf->k == N_GTP and string_equal_ignore_case(tf->type_decl.nm, tn) and j < ap->count)
+            if (tf->k == N_GTP and string_equal_ignore_case(tf->type_decl.name, tn) and j < ap->count)
             {
               Syntax_Node *ta = ap->data[j];
               if (ta->k == N_ID)
@@ -7028,7 +7028,7 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
     normalize_compile_symbol_vector(&c->constraint.constraints, &n->constraint.constraints, fp, ap);
     break;
   case N_CM:
-    c->component_decl.nm = n->component_decl.nm;
+    c->component_decl.name = n->component_decl.name;
     c->component_decl.ty = node_clone_substitute(n->component_decl.ty, fp, ap);
     c->component_decl.in = node_clone_substitute(n->component_decl.in, fp, ap);
     c->component_decl.is_aliased = n->component_decl.is_aliased;
@@ -7048,7 +7048,7 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
     break;
   case N_DS:
   case N_PM:
-    c->parameter.nm = n->parameter.nm;
+    c->parameter.name = n->parameter.name;
     c->parameter.ty = node_clone_substitute(n->parameter.ty, fp, ap);
     c->parameter.default_value = node_clone_substitute(n->parameter.default_value, fp, ap);
     c->parameter.mode = n->parameter.mode;
@@ -7056,7 +7056,7 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
   case N_PS:
   case N_FS:
   case N_GSP:
-    c->subprogram.nm = n->subprogram.nm;
+    c->subprogram.name = n->subprogram.name;
     normalize_compile_symbol_vector(&c->subprogram.parameters, &n->subprogram.parameters, fp, ap);
     c->subprogram.return_type = node_clone_substitute(n->subprogram.return_type, fp, ap);
     c->subprogram.operator_symbol = n->subprogram.operator_symbol;
@@ -7074,13 +7074,13 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
     normalize_compile_symbol_vector(&c->body.locks, &n->body.locks, fp, ap);
     break;
   case N_PKS:
-    c->package_spec.nm = n->package_spec.nm;
+    c->package_spec.name = n->package_spec.name;
     normalize_compile_symbol_vector(&c->package_spec.dc, &n->package_spec.dc, fp, ap);
     normalize_compile_symbol_vector(&c->package_spec.private_declarations, &n->package_spec.private_declarations, fp, ap);
     c->package_spec.elaboration_level = n->package_spec.elaboration_level;
     break;
   case N_PKB:
-    c->package_body.nm = n->package_body.nm;
+    c->package_body.name = n->package_body.name;
     normalize_compile_symbol_vector(&c->package_body.dc, &n->package_body.dc, fp, ap);
     normalize_compile_symbol_vector(&c->package_body.statements, &n->package_body.statements, fp, ap);
     normalize_compile_symbol_vector(&c->package_body.handlers, &n->package_body.handlers, fp, ap);
@@ -7095,7 +7095,7 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
     break;
   case N_TD:
   case N_GTP:
-    c->type_decl.nm = n->type_decl.nm;
+    c->type_decl.name = n->type_decl.name;
     c->type_decl.definition = node_clone_substitute(n->type_decl.definition, fp, ap);
     c->type_decl.discriminant = node_clone_substitute(n->type_decl.discriminant, fp, ap);
     c->type_decl.is_new = n->type_decl.is_new;
@@ -7104,7 +7104,7 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
     normalize_compile_symbol_vector(&c->type_decl.discriminants, &n->type_decl.discriminants, fp, ap);
     break;
   case N_SD:
-    c->subtype_decl.nm = n->subtype_decl.nm;
+    c->subtype_decl.name = n->subtype_decl.name;
     c->subtype_decl.index_constraint = node_clone_substitute(n->subtype_decl.index_constraint, fp, ap);
     c->subtype_decl.constraint = node_clone_substitute(n->subtype_decl.constraint, fp, ap);
     c->subtype_decl.range_constraint = node_clone_substitute(n->subtype_decl.range_constraint, fp, ap);
@@ -7114,7 +7114,7 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
     c->exception_decl.renamed_entity = node_clone_substitute(n->exception_decl.renamed_entity, fp, ap);
     break;
   case N_RE:
-    c->renaming.nm = n->renaming.nm;
+    c->renaming.name = n->renaming.name;
     c->renaming.renamed_entity = node_clone_substitute(n->renaming.renamed_entity, fp, ap);
     break;
   case N_AS:
@@ -7166,7 +7166,7 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
     normalize_compile_symbol_vector(&c->code_stmt.arguments, &n->code_stmt.arguments, fp, ap);
     break;
   case N_ACC:
-    c->accept_stmt.nm = n->accept_stmt.nm;
+    c->accept_stmt.name = n->accept_stmt.name;
     normalize_compile_symbol_vector(&c->accept_stmt.index_constraints, &n->accept_stmt.index_constraints, fp, ap);
     normalize_compile_symbol_vector(&c->accept_stmt.parameters, &n->accept_stmt.parameters, fp, ap);
     normalize_compile_symbol_vector(&c->accept_stmt.statements, &n->accept_stmt.statements, fp, ap);
@@ -7183,18 +7183,18 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
     normalize_compile_symbol_vector(&c->abort_stmt.statements, &n->abort_stmt.statements, fp, ap);
     break;
   case N_TKS:
-    c->task_spec.nm = n->task_spec.nm;
+    c->task_spec.name = n->task_spec.name;
     normalize_compile_symbol_vector(&c->task_spec.entries, &n->task_spec.entries, fp, ap);
     c->task_spec.it = n->task_spec.it;
     break;
   case N_TKB:
-    c->task_body.nm = n->task_body.nm;
+    c->task_body.name = n->task_body.name;
     normalize_compile_symbol_vector(&c->task_body.dc, &n->task_body.dc, fp, ap);
     normalize_compile_symbol_vector(&c->task_body.statements, &n->task_body.statements, fp, ap);
     normalize_compile_symbol_vector(&c->task_body.handlers, &n->task_body.handlers, fp, ap);
     break;
   case N_ENT:
-    c->entry_decl.nm = n->entry_decl.nm;
+    c->entry_decl.name = n->entry_decl.name;
     normalize_compile_symbol_vector(&c->entry_decl.index_constraints, &n->entry_decl.index_constraints, fp, ap);
     normalize_compile_symbol_vector(&c->entry_decl.parameters, &n->entry_decl.parameters, fp, ap);
     c->entry_decl.guard = node_clone_substitute(n->entry_decl.guard, fp, ap);
@@ -7218,13 +7218,13 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
     normalize_compile_symbol_vector(&c->context.use_clauses, &n->context.use_clauses, fp, ap);
     break;
   case N_WI:
-    c->with_clause.nm = n->with_clause.nm;
+    c->with_clause.name = n->with_clause.name;
     break;
   case N_US:
     c->use_clause.nm = node_clone_substitute(n->use_clause.nm, fp, ap);
     break;
   case N_PG:
-    c->pragma.nm = n->pragma.nm;
+    c->pragma.name = n->pragma.name;
     normalize_compile_symbol_vector(&c->pragma.arguments, &n->pragma.arguments, fp, ap);
     break;
   case N_CU:
@@ -7252,7 +7252,7 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
     c->generic_decl.unit = node_clone_substitute(n->generic_decl.unit, fp, ap);
     break;
   case N_GINST:
-    c->generic_inst.nm = n->generic_inst.nm.string ? string_duplicate(n->generic_inst.nm) : n->generic_inst.nm;
+    c->generic_inst.name = n->generic_inst.name.string ? string_duplicate(n->generic_inst.name) : n->generic_inst.name;
     c->generic_inst.generic_name = n->generic_inst.generic_name.string ? string_duplicate(n->generic_inst.generic_name) : n->generic_inst.generic_name;
     normalize_compile_symbol_vector(&c->generic_inst.actual_parameters, &n->generic_inst.actual_parameters, fp, ap);
     break;
@@ -7286,9 +7286,9 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
 static bool match_formal_parameter(Syntax_Node *f, String_Slice nm)
 {
   if (f->k == N_GTP)
-    return string_equal_ignore_case(f->type_decl.nm, nm);
+    return string_equal_ignore_case(f->type_decl.name, nm);
   if (f->k == N_GSP)
-    return string_equal_ignore_case(f->subprogram.nm, nm);
+    return string_equal_ignore_case(f->subprogram.name, nm);
   if (f->k == N_GVL)
     for (uint32_t j = 0; j < f->object_decl.identifiers.count; j++)
       if (string_equal_ignore_case(f->object_decl.identifiers.data[j]->string_value, nm))
@@ -7301,8 +7301,8 @@ static Syntax_Node *generate_clone(Symbol_Manager *symbol_manager, Syntax_Node *
     return 0;
   if (n->k == N_GEN)
   {
-    String_Slice nm = n->generic_decl.unit ? (n->generic_decl.unit->k == N_PKS ? n->generic_decl.unit->package_spec.nm
-                                   : n->generic_decl.unit->body.subprogram_spec    ? n->generic_decl.unit->body.subprogram_spec->subprogram.nm
+    String_Slice nm = n->generic_decl.unit ? (n->generic_decl.unit->k == N_PKS ? n->generic_decl.unit->package_spec.name
+                                   : n->generic_decl.unit->body.subprogram_spec    ? n->generic_decl.unit->body.subprogram_spec->subprogram.name
                                                          : N)
                                 : N;
     Generic_Template *g = generic_find(symbol_manager, nm);
@@ -7334,11 +7334,11 @@ static Syntax_Node *generate_clone(Symbol_Manager *symbol_manager, Syntax_Node *
       {
         if (inst->k == N_PB or inst->k == N_FB or inst->k == N_PD or inst->k == N_FD)
         {
-          inst->body.subprogram_spec->subprogram.nm = n->generic_inst.nm;
+          inst->body.subprogram_spec->subprogram.name = n->generic_inst.name;
         }
         else if (inst->k == N_PKS)
         {
-          inst->package_spec.nm = n->generic_inst.nm;
+          inst->package_spec.name = n->generic_inst.name;
         }
         return inst;
       }
@@ -7350,7 +7350,7 @@ static Symbol *get_pkg_sym(Symbol_Manager *symbol_manager, Syntax_Node *pk)
 {
   if (not pk or not pk->symbol)
     return 0;
-  String_Slice nm = pk->k == N_PKS ? pk->package_spec.nm : pk->symbol->name;
+  String_Slice nm = pk->k == N_PKS ? pk->package_spec.name : pk->symbol->name;
   if (not nm.string or nm.length == 0)
     return 0;
   uint32_t h = symbol_hash(nm);
@@ -7379,7 +7379,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
           Syntax_Node *bd = node_clone_substitute(g->body, &g->formal_parameters, &n->generic_inst.actual_parameters);
           if (bd)
           {
-            bd->package_body.nm = n->generic_inst.nm;
+            bd->package_body.name = n->generic_inst.name;
             resolve_declaration(symbol_manager, bd);
             nv(&symbol_manager->ib, bd);
           }
@@ -7485,7 +7485,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       Type_Info *pt = resolve_subtype(symbol_manager, n->type_decl.parent_type);
       if (n->type_decl.parent_type->k == N_TAC and error_count < 99)
         fatal_error(n->location, "der acc ty");
-      t = type_new(TYPE_DERIVED, n->type_decl.nm);
+      t = type_new(TYPE_DERIVED, n->type_decl.name);
       t->parent_type = pt;
       if (pt)
       {
@@ -7522,7 +7522,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     }
     else
     {
-      Symbol *px = symbol_find(symbol_manager, n->type_decl.nm);
+      Symbol *px = symbol_find(symbol_manager, n->type_decl.name);
       if (px and px->k == 1 and px->ty and (px->ty->k == TYPE_INTEGER or px->ty->k == TY_PT)
           and n->type_decl.definition)
       {
@@ -7540,17 +7540,17 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       }
       else
       {
-        t = type_new(n->type_decl.definition or n->type_decl.is_derived ? TYPE_INTEGER : TY_PT, n->type_decl.nm);
-        if (t and n->type_decl.nm.string)
+        t = type_new(n->type_decl.definition or n->type_decl.is_derived ? TYPE_INTEGER : TY_PT, n->type_decl.name);
+        if (t and n->type_decl.name.string)
         {
-          Symbol *s = symbol_add_overload(symbol_manager, symbol_new(n->type_decl.nm, 1, t, n));
+          Symbol *s = symbol_add_overload(symbol_manager, symbol_new(n->type_decl.name, 1, t, n));
           n->symbol = s;
         }
         break;
       }
     }
-    if (t and n->type_decl.nm.string and n->type_decl.nm.length > 0 and not t->nm.string)
-      t->nm = n->type_decl.nm;
+    if (t and n->type_decl.name.string and n->type_decl.name.length > 0 and not t->nm.string)
+      t->nm = n->type_decl.name;
     if (n->type_decl.discriminants.count > 0)
     {
       for (uint32_t i = 0; i < n->type_decl.discriminants.count; i++)
@@ -7558,16 +7558,16 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
         Syntax_Node *d = n->type_decl.discriminants.data[i];
         if (d->k == N_DS)
         {
-          Symbol *ds = symbol_add_overload(symbol_manager, symbol_new(d->parameter.nm, 8, resolve_subtype(symbol_manager, d->parameter.ty), d));
+          Symbol *ds = symbol_add_overload(symbol_manager, symbol_new(d->parameter.name, 8, resolve_subtype(symbol_manager, d->parameter.ty), d));
           if (d->parameter.default_value)
             resolve_expression(symbol_manager, d->parameter.default_value, ds->ty);
         }
       }
       t->dc = n->type_decl.discriminants;
     }
-    if (n->type_decl.nm.string and n->type_decl.nm.length > 0)
+    if (n->type_decl.name.string and n->type_decl.name.length > 0)
     {
-      Symbol *px2 = symbol_find(symbol_manager, n->type_decl.nm);
+      Symbol *px2 = symbol_find(symbol_manager, n->type_decl.name);
       if (px2 and px2->k == 1 and px2->ty == t)
       {
         n->symbol = px2;
@@ -7576,7 +7576,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       }
       else
       {
-        Symbol *s = symbol_add_overload(symbol_manager, symbol_new(n->type_decl.nm, 1, t, n));
+        Symbol *s = symbol_add_overload(symbol_manager, symbol_new(n->type_decl.name, 1, t, n));
         n->symbol = s;
       }
     }
@@ -7625,7 +7625,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
               if (dc->k == N_DS)
               {
                 Symbol *ds =
-                    symbol_add_overload(symbol_manager, symbol_new(dc->parameter.nm, 8, resolve_subtype(symbol_manager, dc->parameter.ty), dc));
+                    symbol_add_overload(symbol_manager, symbol_new(dc->parameter.name, 8, resolve_subtype(symbol_manager, dc->parameter.ty), dc));
                 if (dc->parameter.default_value)
                   resolve_expression(symbol_manager, dc->parameter.default_value, ds->ty);
               }
@@ -7662,7 +7662,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
                   if (dc->k == N_DS)
                   {
                     Symbol *ds = symbol_add_overload(
-                        symbol_manager, symbol_new(dc->parameter.nm, 8, resolve_subtype(symbol_manager, dc->parameter.ty), dc));
+                        symbol_manager, symbol_new(dc->parameter.name, 8, resolve_subtype(symbol_manager, dc->parameter.ty), dc));
                     if (dc->parameter.default_value)
                       resolve_expression(symbol_manager, dc->parameter.default_value, ds->ty);
                   }
@@ -7681,7 +7681,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
   case N_SD:
   {
     Type_Info *b = resolve_subtype(symbol_manager, n->subtype_decl.index_constraint);
-    Type_Info *t = type_new(b ? b->k : TYPE_INTEGER, n->subtype_decl.nm);
+    Type_Info *t = type_new(b ? b->k : TYPE_INTEGER, n->subtype_decl.name);
     if (b)
     {
       t->base_type = b;
@@ -7711,7 +7711,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       t->low_bound = lov;
       t->high_bound = hiv;
     }
-    symbol_add_overload(symbol_manager, symbol_new(n->subtype_decl.nm, 1, t, n));
+    symbol_add_overload(symbol_manager, symbol_new(n->subtype_decl.name, 1, t, n));
   }
   break;
   case N_ED:
@@ -7739,12 +7739,12 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     break;
   case N_GSP:
   {
-    Type_Info *ft = type_new(TYPE_STRING, n->subprogram.nm);
+    Type_Info *ft = type_new(TYPE_STRING, n->subprogram.name);
     if (n->subprogram.return_type)
     {
       Type_Info *rt = resolve_subtype(symbol_manager, n->subprogram.return_type);
       ft->element_type = rt;
-      Symbol *s = symbol_add_overload(symbol_manager, symbol_new(n->subprogram.nm, 5, ft, n));
+      Symbol *s = symbol_add_overload(symbol_manager, symbol_new(n->subprogram.name, 5, ft, n));
       nv(&s->overloads, n);
       n->symbol = s;
       s->parent = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
@@ -7752,7 +7752,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     }
     else
     {
-      Symbol *s = symbol_add_overload(symbol_manager, symbol_new(n->subprogram.nm, 4, ft, n));
+      Symbol *s = symbol_add_overload(symbol_manager, symbol_new(n->subprogram.name, 4, ft, n));
       nv(&s->overloads, n);
       n->symbol = s;
       s->parent = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
@@ -7764,8 +7764,8 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
   case N_PB:
   {
     Syntax_Node *sp = n->body.subprogram_spec;
-    Type_Info *ft = type_new(TYPE_STRING, sp->subprogram.nm);
-    Symbol *s = symbol_add_overload(symbol_manager, symbol_new(sp->subprogram.nm, 4, ft, n));
+    Type_Info *ft = type_new(TYPE_STRING, sp->subprogram.name);
+    Symbol *s = symbol_add_overload(symbol_manager, symbol_new(sp->subprogram.name, 4, ft, n));
     nv(&s->overloads, n);
     n->symbol = s;
     n->body.elaboration_level = s->elaboration_level;
@@ -7776,7 +7776,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       symbol_manager->lv++;
       symbol_compare_parameter(symbol_manager);
       n->body.parent = s;
-      Generic_Template *gt = generic_find(symbol_manager, sp->subprogram.nm);
+      Generic_Template *gt = generic_find(symbol_manager, sp->subprogram.name);
       if (gt)
         for (uint32_t i = 0; i < gt->formal_parameters.count; i++)
           resolve_declaration(symbol_manager, gt->formal_parameters.data[i]);
@@ -7784,7 +7784,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       {
         Syntax_Node *p = sp->subprogram.parameters.data[i];
         Type_Info *pt = resolve_subtype(symbol_manager, p->parameter.ty);
-        Symbol *ps = symbol_add_overload(symbol_manager, symbol_new(p->parameter.nm, 0, pt, p));
+        Symbol *ps = symbol_add_overload(symbol_manager, symbol_new(p->parameter.name, 0, pt, p));
         p->symbol = ps;
       }
       for (uint32_t i = 0; i < n->body.dc.count; i++)
@@ -7800,9 +7800,9 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
   {
     Syntax_Node *sp = n->body.subprogram_spec;
     Type_Info *rt = resolve_subtype(symbol_manager, sp->subprogram.return_type);
-    Type_Info *ft = type_new(TYPE_STRING, sp->subprogram.nm);
+    Type_Info *ft = type_new(TYPE_STRING, sp->subprogram.name);
     ft->element_type = rt;
-    Symbol *s = symbol_add_overload(symbol_manager, symbol_new(sp->subprogram.nm, 5, ft, n));
+    Symbol *s = symbol_add_overload(symbol_manager, symbol_new(sp->subprogram.name, 5, ft, n));
     nv(&s->overloads, n);
     n->symbol = s;
     n->body.elaboration_level = s->elaboration_level;
@@ -7813,7 +7813,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       symbol_manager->lv++;
       symbol_compare_parameter(symbol_manager);
       n->body.parent = s;
-      Generic_Template *gt = generic_find(symbol_manager, sp->subprogram.nm);
+      Generic_Template *gt = generic_find(symbol_manager, sp->subprogram.name);
       if (gt)
         for (uint32_t i = 0; i < gt->formal_parameters.count; i++)
           resolve_declaration(symbol_manager, gt->formal_parameters.data[i]);
@@ -7821,7 +7821,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       {
         Syntax_Node *p = sp->subprogram.parameters.data[i];
         Type_Info *pt = resolve_subtype(symbol_manager, p->parameter.ty);
-        Symbol *ps = symbol_add_overload(symbol_manager, symbol_new(p->parameter.nm, 0, pt, p));
+        Symbol *ps = symbol_add_overload(symbol_manager, symbol_new(p->parameter.name, 0, pt, p));
         p->symbol = ps;
       }
       for (uint32_t i = 0; i < n->body.dc.count; i++)
@@ -7837,9 +7837,9 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
   {
     Syntax_Node *sp = n->body.subprogram_spec;
     Type_Info *rt = resolve_subtype(symbol_manager, sp->subprogram.return_type);
-    Type_Info *ft = type_new(TYPE_STRING, sp->subprogram.nm);
+    Type_Info *ft = type_new(TYPE_STRING, sp->subprogram.name);
     ft->element_type = rt;
-    Symbol *s = symbol_add_overload(symbol_manager, symbol_new(sp->subprogram.nm, 5, ft, n));
+    Symbol *s = symbol_add_overload(symbol_manager, symbol_new(sp->subprogram.name, 5, ft, n));
     nv(&s->overloads, n);
     n->symbol = s;
     n->body.elaboration_level = s->elaboration_level;
@@ -7849,8 +7849,8 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
   break;
   case N_PKS:
   {
-    Type_Info *t = type_new(TY_P, n->package_spec.nm);
-    Symbol *s = symbol_add_overload(symbol_manager, symbol_new(n->package_spec.nm, 6, t, n));
+    Type_Info *t = type_new(TY_P, n->package_spec.name);
+    Symbol *s = symbol_add_overload(symbol_manager, symbol_new(n->package_spec.name, 6, t, n));
     n->symbol = s;
     n->package_spec.elaboration_level = s->elaboration_level;
     symbol_manager->pk = n;
@@ -7865,11 +7865,11 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
   break;
   case N_PKB:
   {
-    Symbol *ps = symbol_find(symbol_manager, n->package_body.nm);
+    Symbol *ps = symbol_find(symbol_manager, n->package_body.name);
     Generic_Template *gt = 0;
     if (ps and ps->k == 11)
     {
-      gt = ps->generic_template ? ps->generic_template : generic_find(symbol_manager, n->package_body.nm);
+      gt = ps->generic_template ? ps->generic_template : generic_find(symbol_manager, n->package_body.name);
     }
     if (gt)
     {
@@ -7896,11 +7896,11 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     }
     symbol_compare_parameter(symbol_manager);
     {
-      const char *_src = lookup_path(symbol_manager, n->package_body.nm);
+      const char *_src = lookup_path(symbol_manager, n->package_body.name);
       if (_src)
       {
         char _af[512];
-        snprintf(_af, 512, "%.*s.ads", (int) n->package_body.nm.length, n->package_body.nm.string);
+        snprintf(_af, 512, "%.*s.ads", (int) n->package_body.name.length, n->package_body.name.string);
         Parser _p = parser_new(_src, strlen(_src), _af);
         Syntax_Node *_cu = parse_compilation_unit(&_p);
         if (_cu)
@@ -7911,7 +7911,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
                                : _u->k == N_GEN and _u->generic_decl.unit and _u->generic_decl.unit->k == N_PKS
                                    ? _u->generic_decl.unit
                                    : 0;
-            if (_pk and string_equal_ignore_case(_pk->package_spec.nm, n->package_body.nm))
+            if (_pk and string_equal_ignore_case(_pk->package_spec.name, n->package_body.name))
             {
               symbol_manager->pk = _pk;
               for (uint32_t _j = 0; _j < _pk->package_spec.dc.count; _j++)
@@ -7924,14 +7924,14 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
           }
       }
     }
-    ps = symbol_find(symbol_manager, n->package_body.nm);
+    ps = symbol_find(symbol_manager, n->package_body.name);
     if (not ps or not ps->definition)
     {
-      Type_Info *t = type_new(TY_P, n->package_body.nm);
-      ps = symbol_add_overload(symbol_manager, symbol_new(n->package_body.nm, 6, t, 0));
+      Type_Info *t = type_new(TY_P, n->package_body.name);
+      ps = symbol_add_overload(symbol_manager, symbol_new(n->package_body.name, 6, t, 0));
       ps->elaboration_level = symbol_manager->eo++;
       Syntax_Node *pk = ND(PKS, n->location);
-      pk->package_spec.nm = n->package_body.nm;
+      pk->package_spec.name = n->package_body.name;
       pk->symbol = ps;
       ps->definition = pk;
       n->symbol = ps;
@@ -8012,16 +8012,16 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
   break;
   case N_TKS:
   {
-    Type_Info *t = type_new(TY_T, n->task_spec.nm);
+    Type_Info *t = type_new(TY_T, n->task_spec.name);
     t->components = n->task_spec.entries;
-    Symbol *s = symbol_add_overload(symbol_manager, symbol_new(n->task_spec.nm, 7, t, n));
+    Symbol *s = symbol_add_overload(symbol_manager, symbol_new(n->task_spec.name, 7, t, n));
     n->symbol = s;
     s->parent = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
   }
   break;
   case N_TKB:
   {
-    Symbol *ts = symbol_find(symbol_manager, n->task_body.nm);
+    Symbol *ts = symbol_find(symbol_manager, n->task_body.name);
     symbol_compare_parameter(symbol_manager);
     if (ts and ts->ty and ts->ty->components.count > 0)
     {
@@ -8030,7 +8030,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
         Syntax_Node *en = ts->ty->components.data[i];
         if (en and en->k == N_ENT)
         {
-          Symbol *ens = symbol_add_overload(symbol_manager, symbol_new(en->entry_decl.nm, 9, 0, en));
+          Symbol *ens = symbol_add_overload(symbol_manager, symbol_new(en->entry_decl.name, 9, 0, en));
           (void) ens;
         }
       }
@@ -8203,11 +8203,11 @@ static void read_ada_library_interface(Symbol_Manager *symbol_manager, const cha
       else
       {
         Syntax_Node *n = node_new(isp ? N_PD : N_FD, ll), *sp = node_new(N_FS, ll);
-        sp->subprogram.nm = string_duplicate(msn);
+        sp->subprogram.name = string_duplicate(msn);
         for (int i = 1; i < pc; i++)
         {
           Syntax_Node *p = node_new(N_PM, ll);
-          p->parameter.nm = STRING_LITERAL("p");
+          p->parameter.name = STRING_LITERAL("p");
           nv(&sp->subprogram.parameters, p);
         }
         sp->subprogram.return_type = 0;
@@ -8260,7 +8260,7 @@ static Syntax_Node *pks2(Symbol_Manager *symbol_manager, String_Slice nm, const 
   if (cu and cu->compilation_unit.context)
   {
     for (uint32_t i = 0; i < cu->compilation_unit.context->context.with_clauses.count; i++)
-      pks2(symbol_manager, cu->compilation_unit.context->context.with_clauses.data[i]->with_clause.nm, lookup_path(symbol_manager, cu->compilation_unit.context->context.with_clauses.data[i]->with_clause.nm));
+      pks2(symbol_manager, cu->compilation_unit.context->context.with_clauses.data[i]->with_clause.name, lookup_path(symbol_manager, cu->compilation_unit.context->context.with_clauses.data[i]->with_clause.name));
   }
   for (uint32_t i = 0; cu and i < cu->compilation_unit.units.count; i++)
   {
@@ -8300,7 +8300,7 @@ static void symbol_manager_use_clauses(Symbol_Manager *symbol_manager, Syntax_No
   if (n->k != N_CU)
     return;
   for (uint32_t i = 0; i < n->compilation_unit.context->context.with_clauses.count; i++)
-    parse_package_specification(symbol_manager, n->compilation_unit.context->context.with_clauses.data[i]->with_clause.nm, lookup_path(symbol_manager, n->compilation_unit.context->context.with_clauses.data[i]->with_clause.nm));
+    parse_package_specification(symbol_manager, n->compilation_unit.context->context.with_clauses.data[i]->with_clause.name, lookup_path(symbol_manager, n->compilation_unit.context->context.with_clauses.data[i]->with_clause.name));
   for (uint32_t i = 0; i < n->compilation_unit.context->context.use_clauses.count; i++)
   {
     Syntax_Node *u = n->compilation_unit.context->context.use_clauses.data[i];
@@ -8633,8 +8633,8 @@ static int encode_symbol_name(char *b, int sz, Symbol *s, String_Slice nm, int p
         Syntax_Node *p = sp->subprogram.parameters.data[i];
         if (p and p->parameter.ty)
           h = h * 31 + type_hash(p->parameter.ty->ty ? p->parameter.ty->ty : 0);
-        if (p and p->parameter.nm.string)
-          pnh = pnh * 31 + string_hash(p->parameter.nm);
+        if (p and p->parameter.name.string)
+          pnh = pnh * 31 + string_hash(p->parameter.name);
       }
       n += snprintf(b + n, sz - n, ".%d.%lx.%lu.%lx", pc, h % 0x10000, uid, pnh % 0x10000);
     }
@@ -8666,8 +8666,8 @@ static int encode_symbol_name(char *b, int sz, Symbol *s, String_Slice nm, int p
       Syntax_Node *p = sp->subprogram.parameters.data[i];
       if (p and p->parameter.ty)
         h = h * 31 + type_hash(p->parameter.ty->ty ? p->parameter.ty->ty : 0);
-      if (p and p->parameter.nm.string)
-        pnh = pnh * 31 + string_hash(p->parameter.nm);
+      if (p and p->parameter.name.string)
+        pnh = pnh * 31 + string_hash(p->parameter.name);
     }
     n += snprintf(b + n, sz - n, ".%d.%lx.%lu.%lx", pc, h % 0x10000, uid, pnh % 0x10000);
   }
@@ -9072,7 +9072,7 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
             for (uint32_t k = 0; k < t->components.count; k++)
             {
               Syntax_Node *c = t->components.data[k];
-              if (c->k == N_CM and string_equal_ignore_case(c->component_decl.nm, ch->string_value))
+              if (c->k == N_CM and string_equal_ignore_case(c->component_decl.name, ch->string_value))
               {
                 Value v = value_cast(generator, generate_expression(generator, el->association.value), VALUE_KIND_INTEGER);
                 int ep = new_temporary_register(generator);
@@ -10281,7 +10281,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       for (uint32_t i = 0; i < pt->dc.count; i++)
       {
         Syntax_Node *d = pt->dc.data[i];
-        String_Slice dn = d->k == N_DS ? d->parameter.nm : d->component_decl.nm;
+        String_Slice dn = d->k == N_DS ? d->parameter.name : d->component_decl.name;
         if (string_equal_ignore_case(dn, n->selected_component.selector))
         {
           int ep = new_temporary_register(generator);
@@ -10305,7 +10305,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         for (uint32_t i = 0; i < pt->components.count; i++)
         {
           Syntax_Node *c = pt->components.data[i];
-          if (c->k == N_CM and string_equal_ignore_case(c->component_decl.nm, n->selected_component.selector))
+          if (c->k == N_CM and string_equal_ignore_case(c->component_decl.name, n->selected_component.selector))
           {
             int bp = new_temporary_register(generator);
             fprintf(o, "  %%t%d = ptrtoint ptr %%t%d to i64\n", bp, p.id);
@@ -10329,7 +10329,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         for (uint32_t i = 0; i < pt->components.count; i++)
         {
           Syntax_Node *c = pt->components.data[i];
-          if (c->k == N_CM and string_equal_ignore_case(c->component_decl.nm, n->selected_component.selector))
+          if (c->k == N_CM and string_equal_ignore_case(c->component_decl.name, n->selected_component.selector))
           {
             int ep = new_temporary_register(generator);
             fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p.id, c->component_decl.offset);
@@ -10359,7 +10359,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             for (uint32_t k = 0; k < v->variant.components.count; k++)
             {
               Syntax_Node *vc = v->variant.components.data[k];
-              if (string_equal_ignore_case(vc->component_decl.nm, n->selected_component.selector))
+              if (string_equal_ignore_case(vc->component_decl.name, n->selected_component.selector))
               {
                 int ep = new_temporary_register(generator);
                 fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p.id, vc->component_decl.offset);
@@ -10816,7 +10816,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           for (uint32_t i = 0; i < pt->components.count; i++)
           {
             Syntax_Node *c = pt->components.data[i];
-            if (c->k == N_CM and string_equal_ignore_case(c->component_decl.nm, n->attribute.prefix->selected_component.selector))
+            if (c->k == N_CM and string_equal_ignore_case(c->component_decl.name, n->attribute.prefix->selected_component.selector))
             {
               if (pt->pk)
               {
@@ -11391,7 +11391,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           for (uint32_t i = 0; i < pt->components.count; i++)
           {
             Syntax_Node *c = pt->components.data[i];
-            if (c->k == N_CM and string_equal_ignore_case(c->component_decl.nm, n->assignment.target->selected_component.selector))
+            if (c->k == N_CM and string_equal_ignore_case(c->component_decl.name, n->assignment.target->selected_component.selector))
             {
               v = value_cast(generator, v, VALUE_KIND_INTEGER);
               int bp = new_temporary_register(generator);
@@ -11427,7 +11427,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           for (uint32_t i = 0; i < pt->components.count; i++)
           {
             Syntax_Node *c = pt->components.data[i];
-            if (c->k == N_CM and string_equal_ignore_case(c->component_decl.nm, n->assignment.target->selected_component.selector))
+            if (c->k == N_CM and string_equal_ignore_case(c->component_decl.name, n->assignment.target->selected_component.selector))
             {
               int ep = new_temporary_register(generator);
               fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p.id, c->component_decl.offset);
@@ -12700,7 +12700,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       snprintf(nb, 256, "%.*s", (int) n->symbol->external_name.length, n->symbol->external_name.string);
     else
     {
-      encode_symbol_name(nb, 256, n->symbol, sp->subprogram.nm, sp->subprogram.parameters.count, sp);
+      encode_symbol_name(nb, 256, n->symbol, sp->subprogram.name, sp->subprogram.parameters.count, sp);
     }
     if (not add_declaration(generator, nb))
       break;
@@ -12748,7 +12748,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       snprintf(nb, 256, "%.*s", (int) n->symbol->external_name.length, n->symbol->external_name.string);
     else
     {
-      encode_symbol_name(nb, 256, n->symbol, sp->subprogram.nm, sp->subprogram.parameters.count, sp);
+      encode_symbol_name(nb, 256, n->symbol, sp->subprogram.name, sp->subprogram.parameters.count, sp);
     }
     if (not add_declaration(generator, nb))
       break;
@@ -12807,7 +12807,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
   case N_PB:
   {
     Syntax_Node *sp = n->body.subprogram_spec;
-    Generic_Template *gt = generic_find(generator->sm, sp->subprogram.nm);
+    Generic_Template *gt = generic_find(generator->sm, sp->subprogram.name);
     if (gt)
       break;
     for (uint32_t i = 0; i < n->body.dc.count; i++)
@@ -12830,7 +12830,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     }
     else
     {
-      encode_symbol_name(nb, 256, n->symbol, sp->subprogram.nm, sp->subprogram.parameters.count, sp);
+      encode_symbol_name(nb, 256, n->symbol, sp->subprogram.name, sp->subprogram.parameters.count, sp);
       if (n->symbol)
       {
         n->symbol->mangled_name.string = arena_allocate(strlen(nb) + 1);
@@ -12852,9 +12852,9 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
         Value_Kind k = p->parameter.ty ? token_kind_to_value_kind(resolve_subtype(generator->sm, p->parameter.ty))
                                 : VALUE_KIND_INTEGER;
         if (p->parameter.mode & 2)
-          fprintf(o, "ptr %%p.%s", string_to_lowercase(p->parameter.nm));
+          fprintf(o, "ptr %%p.%s", string_to_lowercase(p->parameter.name));
         else
-          fprintf(o, "%s %%p.%s", value_llvm_type_string(k), string_to_lowercase(p->parameter.nm));
+          fprintf(o, "%s %%p.%s", value_llvm_type_string(k), string_to_lowercase(p->parameter.name));
       }
       else
         fprintf(o, "ptr %%__slnk");
@@ -12891,13 +12891,13 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
             o,
             "  %%lnk.%d.%s = alloca %s\n",
             ps->level,
-            string_to_lowercase(p->parameter.nm),
+            string_to_lowercase(p->parameter.name),
             value_llvm_type_string(k));
       else
         fprintf(
             o,
             "  %%v.%s.sc%u.%u = alloca %s\n",
-            string_to_lowercase(p->parameter.nm),
+            string_to_lowercase(p->parameter.name),
             ps ? ps->scope : 0,
             ps ? ps->elaboration_level : 0,
             value_llvm_type_string(k));
@@ -12909,7 +12909,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
             "  %%t%d = load %s, ptr %%p.%s\n",
             lv,
             value_llvm_type_string(k),
-            string_to_lowercase(p->parameter.nm));
+            string_to_lowercase(p->parameter.name));
         if (ps and ps->level >= 0 and ps->level < generator->sm->lv)
           fprintf(
               o,
@@ -12917,14 +12917,14 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
               value_llvm_type_string(k),
               lv,
               ps->level,
-              string_to_lowercase(p->parameter.nm));
+              string_to_lowercase(p->parameter.name));
         else
           fprintf(
               o,
               "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
               value_llvm_type_string(k),
               lv,
-              string_to_lowercase(p->parameter.nm),
+              string_to_lowercase(p->parameter.name),
               ps ? ps->scope : 0,
               ps ? ps->elaboration_level : 0);
       }
@@ -12935,16 +12935,16 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
               o,
               "  store %s %%p.%s, ptr %%lnk.%d.%s\n",
               value_llvm_type_string(k),
-              string_to_lowercase(p->parameter.nm),
+              string_to_lowercase(p->parameter.name),
               ps->level,
-              string_to_lowercase(p->parameter.nm));
+              string_to_lowercase(p->parameter.name));
         else
           fprintf(
               o,
               "  store %s %%p.%s, ptr %%v.%s.sc%u.%u\n",
               value_llvm_type_string(k),
-              string_to_lowercase(p->parameter.nm),
-              string_to_lowercase(p->parameter.nm),
+              string_to_lowercase(p->parameter.name),
+              string_to_lowercase(p->parameter.name),
               ps ? ps->scope : 0,
               ps ? ps->elaboration_level : 0);
       }
@@ -13183,7 +13183,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
   case N_FB:
   {
     Syntax_Node *sp = n->body.subprogram_spec;
-    Generic_Template *gt = generic_find(generator->sm, sp->subprogram.nm);
+    Generic_Template *gt = generic_find(generator->sm, sp->subprogram.name);
     if (gt)
       break;
     for (uint32_t i = 0; i < n->body.dc.count; i++)
@@ -13208,7 +13208,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     }
     else
     {
-      encode_symbol_name(nb, 256, n->symbol, sp->subprogram.nm, sp->subprogram.parameters.count, sp);
+      encode_symbol_name(nb, 256, n->symbol, sp->subprogram.name, sp->subprogram.parameters.count, sp);
       if (n->symbol)
       {
         n->symbol->mangled_name.string = arena_allocate(strlen(nb) + 1);
@@ -13230,9 +13230,9 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
         Value_Kind k = p->parameter.ty ? token_kind_to_value_kind(resolve_subtype(generator->sm, p->parameter.ty))
                                 : VALUE_KIND_INTEGER;
         if (p->parameter.mode & 2)
-          fprintf(o, "ptr %%p.%s", string_to_lowercase(p->parameter.nm));
+          fprintf(o, "ptr %%p.%s", string_to_lowercase(p->parameter.name));
         else
-          fprintf(o, "%s %%p.%s", value_llvm_type_string(k), string_to_lowercase(p->parameter.nm));
+          fprintf(o, "%s %%p.%s", value_llvm_type_string(k), string_to_lowercase(p->parameter.name));
       }
       else
         fprintf(o, "ptr %%__slnk");
@@ -13269,13 +13269,13 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
             o,
             "  %%lnk.%d.%s = alloca %s\n",
             ps->level,
-            string_to_lowercase(p->parameter.nm),
+            string_to_lowercase(p->parameter.name),
             value_llvm_type_string(k));
       else
         fprintf(
             o,
             "  %%v.%s.sc%u.%u = alloca %s\n",
-            string_to_lowercase(p->parameter.nm),
+            string_to_lowercase(p->parameter.name),
             ps ? ps->scope : 0,
             ps ? ps->elaboration_level : 0,
             value_llvm_type_string(k));
@@ -13287,7 +13287,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
             "  %%t%d = load %s, ptr %%p.%s\n",
             lv,
             value_llvm_type_string(k),
-            string_to_lowercase(p->parameter.nm));
+            string_to_lowercase(p->parameter.name));
         if (ps and ps->level >= 0 and ps->level < generator->sm->lv)
           fprintf(
               o,
@@ -13295,14 +13295,14 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
               value_llvm_type_string(k),
               lv,
               ps->level,
-              string_to_lowercase(p->parameter.nm));
+              string_to_lowercase(p->parameter.name));
         else
           fprintf(
               o,
               "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
               value_llvm_type_string(k),
               lv,
-              string_to_lowercase(p->parameter.nm),
+              string_to_lowercase(p->parameter.name),
               ps ? ps->scope : 0,
               ps ? ps->elaboration_level : 0);
       }
@@ -13313,16 +13313,16 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
               o,
               "  store %s %%p.%s, ptr %%lnk.%d.%s\n",
               value_llvm_type_string(k),
-              string_to_lowercase(p->parameter.nm),
+              string_to_lowercase(p->parameter.name),
               ps->level,
-              string_to_lowercase(p->parameter.nm));
+              string_to_lowercase(p->parameter.name));
         else
           fprintf(
               o,
               "  store %s %%p.%s, ptr %%v.%s.sc%u.%u\n",
               value_llvm_type_string(k),
-              string_to_lowercase(p->parameter.nm),
-              string_to_lowercase(p->parameter.nm),
+              string_to_lowercase(p->parameter.name),
+              string_to_lowercase(p->parameter.name),
               ps ? ps->scope : 0,
               ps ? ps->elaboration_level : 0);
       }
@@ -13575,11 +13575,11 @@ static void generate_expression_llvm(Code_Generator *generator, Syntax_Node *n)
 {
   if (n and n->k == N_PKB and n->package_body.statements.count > 0)
   {
-    Symbol *ps = symbol_find(generator->sm, n->package_body.nm);
+    Symbol *ps = symbol_find(generator->sm, n->package_body.name);
     if (ps and ps->k == 11)
       return;
     char nb[256];
-    snprintf(nb, 256, "%.*s__elab", (int) n->package_body.nm.length, n->package_body.nm.string);
+    snprintf(nb, 256, "%.*s__elab", (int) n->package_body.name.length, n->package_body.name.string);
     fprintf(generator->o, "define void @\"%s\"() {\n", nb);
     for (uint32_t i = 0; i < n->package_body.statements.count; i++)
       generate_statement_sequence(generator, n->package_body.statements.data[i]);
@@ -13841,7 +13841,7 @@ static void print_forward_declarations(Code_Generator *generator, Symbol_Manager
           {
             Syntax_Node *sp = n->body.subprogram_spec;
             char nb[256];
-            encode_symbol_name(nb, 256, n->symbol, sp->subprogram.nm, sp->subprogram.parameters.count, sp);
+            encode_symbol_name(nb, 256, n->symbol, sp->subprogram.name, sp->subprogram.parameters.count, sp);
             add_declaration(generator, nb);
           }
         }
@@ -13868,7 +13868,7 @@ static void write_ada_library_interface(Symbol_Manager *symbol_manager, const ch
   if (not cu or cu->compilation_unit.units.count == 0)
     return;
   Syntax_Node *u0 = cu->compilation_unit.units.data[0];
-  String_Slice nm = u0->k == N_PKS ? u0->package_spec.nm : u0->k == N_PKB ? u0->package_body.nm : N;
+  String_Slice nm = u0->k == N_PKS ? u0->package_spec.name : u0->k == N_PKB ? u0->package_body.name : N;
   char alp[520];
   if (nm.string and nm.length > 0)
   {
@@ -13899,11 +13899,11 @@ static void write_ada_library_interface(Symbol_Manager *symbol_manager, const ch
     {
       Syntax_Node *w = cu->compilation_unit.context->context.with_clauses.data[i];
       char pf[256];
-      int n = snprintf(pf, 256, "%.*s", (int) w->with_clause.nm.length, w->with_clause.nm.string);
+      int n = snprintf(pf, 256, "%.*s", (int) w->with_clause.name.length, w->with_clause.name.string);
       for (int j = 0; j < n; j++)
         pf[j] = tolower(pf[j]);
       uint64_t ts = find_type_symbol(pf);
-      fprintf(f, "W %.*s %lu\n", (int) w->with_clause.nm.length, w->with_clause.nm.string, (unsigned long) ts);
+      fprintf(f, "W %.*s %lu\n", (int) w->with_clause.name.length, w->with_clause.name.string, (unsigned long) ts);
     }
   for (int i = 0; i < symbol_manager->dpn; i++)
     if (symbol_manager->dps[i].count and symbol_manager->dps[i].data[0])
@@ -14191,13 +14191,13 @@ int main(int ac, char **av)
     for (uint32_t i = 0; i < cu->compilation_unit.context->context.with_clauses.count; i++)
     {
       Syntax_Node *w = cu->compilation_unit.context->context.with_clauses.data[i];
-      char *ln = string_to_lowercase(w->with_clause.nm);
+      char *ln = string_to_lowercase(w->with_clause.name);
       bool ld = 0;
       if (sd[0])
       {
         char pb[520];
         snprintf(pb, 520, "%s%s", sd, ln);
-        if (label_compare(&sm, w->with_clause.nm, (String_Slice){pb, strlen(pb)}))
+        if (label_compare(&sm, w->with_clause.name, (String_Slice){pb, strlen(pb)}))
           ld = 1;
       }
       for (int j = 0; j < include_path_count and not ld; j++)
@@ -14211,7 +14211,7 @@ int main(int ac, char **av)
             include_paths[j][0] and include_paths[j][strlen(include_paths[j]) - 1] != '/' ? "/"
                                                                                           : "",
             ln);
-        if (label_compare(&sm, w->with_clause.nm, (String_Slice){pb, strlen(pb)}))
+        if (label_compare(&sm, w->with_clause.name, (String_Slice){pb, strlen(pb)}))
           ld = 1;
       }
     }
@@ -14353,13 +14353,13 @@ int main(int ac, char **av)
       Symbol *ms = 0;
       for (int h = 0; h < 4096 and not ms; h++)
         for (Symbol *s = sm.sy[h]; s; s = s->next)
-          if (s->level == 0 and string_equal_ignore_case(s->name, sp->subprogram.nm))
+          if (s->level == 0 and string_equal_ignore_case(s->name, sp->subprogram.name))
           {
             ms = s;
             break;
           }
       char nb[256];
-      encode_symbol_name(nb, 256, ms, sp->subprogram.nm, sp->subprogram.parameters.count, sp);
+      encode_symbol_name(nb, 256, ms, sp->subprogram.name, sp->subprogram.parameters.count, sp);
       fprintf(
           o,
           "define i32 @main(){\n  call void @__ada_ss_init()\n  call void @\"%s\"()\n  ret "
