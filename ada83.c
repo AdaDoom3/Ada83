@@ -4373,7 +4373,7 @@ struct Type_Info
   Node_Vector ops;
   int64_t sm, lg;
   uint16_t sup;
-  bool ctrl;
+  bool is_controlled;
   uint8_t frozen;
   Syntax_Node *frozen_node;
 };
@@ -6779,7 +6779,7 @@ static void runtime_register_compare(Symbol_Manager *symbol_manager, Representat
     if (s and s->ty)
     {
       Type_Info *t = type_canonical_concrete(s->ty);
-      t->ctrl = true;
+      t->is_controlled = true;
     }
   }
   break;
