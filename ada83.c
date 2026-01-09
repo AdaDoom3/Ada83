@@ -4372,7 +4372,7 @@ struct Type_Info
   bool pk;
   Node_Vector operations;
   int64_t sm, large_value;
-  uint16_t sup;
+  uint16_t suppressed_checks;
   bool is_controlled;
   uint8_t frozen;
   Syntax_Node *frozen_node;
@@ -5127,7 +5127,7 @@ static bool is_check_suppressed(Type_Info *t, unsigned kind)
 {
   for (Type_Info *parser = t; parser; parser = parser->base_type)
   {
-    if (parser->sup & kind)
+    if (parser->suppressed_checks & kind)
       return true;
   }
   return false;
@@ -6752,7 +6752,7 @@ static void runtime_register_compare(Symbol_Manager *symbol_manager, Representat
     if (s and s->ty)
     {
       Type_Info *t = type_canonical_concrete(s->ty);
-      t->sup |= r->ad.ad;
+      t->suppressed_checks |= r->ad.ad;
     }
   }
   break;
@@ -10117,7 +10117,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         fprintf(o, "  %%t%d = sub i64 %%t%d, %lld\n", adj, i0.id, (long long) at->low_bound);
         adj_idx = adj;
       }
-      if (at and at->k == TYPE_ARRAY and not(at->sup & CHK_IDX) and (at->low_bound != 0 or at->high_bound != -1))
+      if (at and at->k == TYPE_ARRAY and not(at->suppressed_checks & CHK_IDX) and (at->low_bound != 0 or at->high_bound != -1))
       {
         char lb[32], hb[32];
         snprintf(lb, 32, "%lld", (long long) at->low_bound);
