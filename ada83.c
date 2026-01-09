@@ -1598,7 +1598,7 @@ struct Library_Unit
   Syntax_Node *body;
   Library_Unit_Vector wth;
   Library_Unit_Vector elb;
-  uint64_t ts;
+  uint64_t timestamp;
   bool is_compiled;
 };
 struct Generic_Template
@@ -14137,7 +14137,7 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
   fclose(o);
   Library_Unit *l = label_use_new(cu->compilation_unit.units.count > 0 ? cu->compilation_unit.units.data[0]->k : 0, nm, pth);
   l->is_compiled = true;
-  l->ts = find_type_symbol(fp);
+  l->timestamp = find_type_symbol(fp);
   lv(&symbol_manager->lu, l);
   return true;
 }
