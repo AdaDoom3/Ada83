@@ -4391,7 +4391,7 @@ struct Symbol
   Node_Vector overloads;
   Symbol_Vector use_clauses;
   int el;
-  Generic_Template *gt;
+  Generic_Template *generic_template;
   Symbol *parent;
   int lv;
   bool is_inline;
@@ -7316,7 +7316,7 @@ static Syntax_Node *generate_clone(Symbol_Manager *symbol_manager, Syntax_Node *
       if (g->nm.string and g->nm.length)
       {
         Symbol *gs = symbol_new(g->nm, 11, 0, n);
-        gs->gt = g;
+        gs->generic_template = g;
         if (g->un and g->un->k == N_PKS)
           gs->definition = g->un;
         symbol_add_overload(symbol_manager, gs);
@@ -7869,7 +7869,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     Generic_Template *gt = 0;
     if (ps and ps->k == 11)
     {
-      gt = ps->gt ? ps->gt : generic_find(symbol_manager, n->package_body.nm);
+      gt = ps->generic_template ? ps->generic_template : generic_find(symbol_manager, n->package_body.nm);
     }
     if (gt)
     {
