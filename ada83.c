@@ -4365,7 +4365,7 @@ struct Type_Info
   Type_Info *index_type;
   int64_t low_bound, high_bound;
   Node_Vector components, dc;
-  uint32_t sz, al;
+  uint32_t size, alignment;
   Symbol_Vector ev;
   Representation_Clause_Vector rc;
   uint64_t ad;
@@ -4666,8 +4666,8 @@ static Type_Info *type_new(Type_Kind k, String_Slice nm)
   Type_Info *t = arena_allocate(sizeof(Type_Info));
   t->k = k;
   t->nm = string_duplicate(nm);
-  t->sz = 8;
-  t->al = 8;
+  t->size = 8;
+  t->alignment = 8;
   return t;
 }
 static Type_Info *TY_INT, *TY_BOOL, *TY_CHAR, *TY_STR, *TY_FLT, *TY_UINT, *TY_UFLT, *TY_FILE,
@@ -4686,7 +4686,7 @@ static void symbol_manager_init(Symbol_Manager *symbol_manager)
   TY_POS->high_bound = 2147483647LL;
   TY_BOOL = type_new(TYPE_BOOLEAN, STRING_LITERAL("BOOLEAN"));
   TY_CHAR = type_new(TYPE_CHARACTER, STRING_LITERAL("CHARACTER"));
-  TY_CHAR->sz = 1;
+  TY_CHAR->size = 1;
   TY_STR = type_new(TYPE_ARRAY, STRING_LITERAL("STRING"));
   TY_STR->element_type = TY_CHAR;
   TY_STR->low_bound = 0;
@@ -4941,23 +4941,23 @@ static void find_type(Symbol_Manager *symbol_manager, Type_Info *t, Source_Locat
       if (c->k != N_CM)
         continue;
       Type_Info *ct = c->component_decl.ty ? c->component_decl.ty->ty : 0;
-      uint32_t ca = ct and ct->al ? ct->al : 8, cs = ct and ct->sz ? ct->sz : 8;
+      uint32_t ca = ct and ct->alignment ? ct->alignment : 8, cs = ct and ct->size ? ct->size : 8;
       if (ca > mx)
         mx = ca;
       of = (of + ca - 1) & ~(ca - 1);
       c->component_decl.offset = of;
       of += cs;
     }
-    t->sz = (of + mx - 1) & ~(mx - 1);
-    t->al = mx;
+    t->size = (of + mx - 1) & ~(mx - 1);
+    t->alignment = mx;
   }
   if (t->k == TYPE_ARRAY and t->element_type)
   {
     Type_Info *et = t->element_type;
-    uint32_t ea = et->al ? et->al : 8, es = et->sz ? et->sz : 8;
+    uint32_t ea = et->alignment ? et->alignment : 8, es = et->size ? et->size : 8;
     int64_t n = (t->high_bound - t->low_bound + 1);
-    t->sz = n > 0 ? n * es : 0;
-    t->al = ea;
+    t->size = n > 0 ? n * es : 0;
+    t->alignment = ea;
   }
   if ((t->k == TYPE_RECORD or t->k == TYPE_ARRAY) and t->nm.string and t->nm.length)
   {
@@ -5251,8 +5251,8 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
       t->element_type = bt->element_type;
       t->components = bt->components;
       t->dc = bt->dc;
-      t->sz = bt->sz;
-      t->al = bt->al;
+      t->size = bt->size;
+      t->alignment = bt->alignment;
       t->ad = bt->ad;
       t->pk = bt->pk;
       t->index_type = bt->index_type;
@@ -6741,7 +6741,7 @@ static void runtime_register_compare(Symbol_Manager *symbol_manager, Representat
           }
         }
       }
-      t->sz = (bt + 7) / 8;
+      t->size = (bt + 7) / 8;
       t->pk = true;
     }
   }
@@ -7493,8 +7493,8 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
         t->high_bound = pt->high_bound;
         t->element_type = pt->element_type;
         t->dc = pt->dc;
-        t->sz = pt->sz;
-        t->al = pt->al;
+        t->size = pt->size;
+        t->alignment = pt->alignment;
         {
           Type_Info *_ept = pt;
           while (_ept and _ept->ev.count == 0 and (_ept->base_type or _ept->parent_type))
@@ -7675,7 +7675,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       }
     }
     t->components = n->type_decl.definition->list.items;
-    t->sz = of * 8;
+    t->size = of * 8;
   }
   break;
   case N_SD:
@@ -7688,8 +7688,8 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       t->element_type = b->element_type;
       t->components = b->components;
       t->dc = b->dc;
-      t->sz = b->sz;
-      t->al = b->al;
+      t->size = b->size;
+      t->alignment = b->alignment;
       t->ad = b->ad;
       t->pk = b->pk;
       t->low_bound = b->low_bound;
@@ -8539,7 +8539,7 @@ static const char *ada_to_c_type_string(Type_Info *t)
   case TYPE_FLOAT:
   case TYPE_UNIVERSAL_FLOAT:
   case TYPE_FIXED_POINT:
-    return tc->sz == 32 ? "float" : "double";
+    return tc->size == 32 ? "float" : "double";
   case TYPE_ACCESS:
   case TYPE_FAT_POINTER:
   case TYPE_STRING:
@@ -9053,7 +9053,7 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
   }
   else
   {
-    uint32_t sz = t->sz / 8;
+    uint32_t sz = t->size / 8;
     int p = new_temporary_register(generator);
     int by = new_temporary_register(generator);
     fprintf(o, "  %%t%d = add i64 0, %u\n", by, sz * 8);
@@ -10499,7 +10499,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     else if (string_equal_ignore_case(a, STRING_LITERAL("SIZE")))
     {
       r.k = VALUE_KIND_INTEGER;
-      fprintf(o, "  %%t%d = add i64 0, %lld\n", r.id, t ? (long long) (t->sz * 8) : 64LL);
+      fprintf(o, "  %%t%d = add i64 0, %lld\n", r.id, t ? (long long) (t->size * 8) : 64LL);
     }
     else if (
         string_equal_ignore_case(a, STRING_LITERAL("FIRST"))
@@ -10799,7 +10799,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     else if (string_equal_ignore_case(a, STRING_LITERAL("STORAGE_SIZE")))
     {
       r.k = VALUE_KIND_INTEGER;
-      fprintf(o, "  %%t%d = add i64 0, %lld\n", r.id, t ? (long long) (t->sz * 8) : 0LL);
+      fprintf(o, "  %%t%d = add i64 0, %lld\n", r.id, t ? (long long) (t->size * 8) : 0LL);
     }
     else if (
         string_equal_ignore_case(a, STRING_LITERAL("POSITION"))
