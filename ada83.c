@@ -4397,9 +4397,9 @@ struct Symbol
   bool is_inline;
   bool is_shared;
   bool is_external;
-  String_Slice ext_nm;
-  String_Slice ext_lang;
-  String_Slice mangled_nm;
+  String_Slice external_name;
+  String_Slice external_language;
+  String_Slice mangled_name;
   uint8_t frz;
   Syntax_Node *fzn;
   uint8_t visibility;
@@ -6789,8 +6789,8 @@ static void runtime_register_compare(Symbol_Manager *symbol_manager, Representat
     if (s)
     {
       s->is_external = true;
-      s->ext_nm = r->im.ext.length > 0 ? string_duplicate(r->im.ext) : string_duplicate(r->im.nm);
-      s->ext_lang = string_duplicate(r->im.lang);
+      s->external_name = r->im.ext.length > 0 ? string_duplicate(r->im.ext) : string_duplicate(r->im.nm);
+      s->external_language = string_duplicate(r->im.lang);
     }
   }
   break;
@@ -8196,8 +8196,8 @@ static void read_ada_library_interface(Symbol_Manager *symbol_manager, const cha
         Symbol *s = symbol_add_overload(symbol_manager, symbol_new(sn, 0, vt, n));
         s->is_external = 1;
         s->lv = 0;
-        s->ext_nm = string_duplicate(msn);
-        s->mangled_nm = string_duplicate(sn);
+        s->external_name = string_duplicate(msn);
+        s->mangled_name = string_duplicate(sn);
         n->sy = s;
       }
       else
@@ -8216,7 +8216,7 @@ static void read_ada_library_interface(Symbol_Manager *symbol_manager, const cha
         s->el = symbol_manager->eo++;
         nv(&s->overloads, n);
         n->sy = s;
-        s->mangled_nm = string_duplicate(sn);
+        s->mangled_name = string_duplicate(sn);
       }
     }
     while (*l and *l != '\n')
@@ -8588,11 +8588,11 @@ static unsigned long type_hash(Type_Info *t)
 }
 static int encode_symbol_name(char *b, int sz, Symbol *s, String_Slice nm, int pc, Syntax_Node *sp)
 {
-  if (s and s->is_external and s->ext_nm.string)
+  if (s and s->is_external and s->external_name.string)
   {
     int n = 0;
-    for (uint32_t i = 0; i < s->ext_nm.length and i < sz - 1; i++)
-      b[n++] = s->ext_nm.string[i];
+    for (uint32_t i = 0; i < s->external_name.length and i < sz - 1; i++)
+      b[n++] = s->external_name.string[i];
     b[n] = 0;
     return n;
   }
@@ -9242,9 +9242,9 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       if (s and s->lv == 0)
       {
         char nb[256];
-        if (s->is_external and s->ext_nm.string)
+        if (s->is_external and s->external_name.string)
         {
-          snprintf(nb, 256, "%s", s->ext_nm.string);
+          snprintf(nb, 256, "%s", s->external_name.string);
         }
         else if (s->parent and (uintptr_t) s->parent > 4096 and s->parent->name.string)
         {
@@ -11990,7 +11990,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           }
           char nb[256];
           if (s->is_external)
-            snprintf(nb, 256, "%.*s", (int) s->ext_nm.length, s->ext_nm.string);
+            snprintf(nb, 256, "%.*s", (int) s->external_name.length, s->external_name.string);
           else
             encode_symbol_name(nb, 256, s, n->code_stmt.name->s, n->code_stmt.arguments.count, sp);
           fprintf(o, "  call void @\"%s\"(", nb);
@@ -12055,7 +12055,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
         else if (s->is_external)
         {
           char nb[256];
-          snprintf(nb, 256, "%.*s", (int) s->ext_nm.length, s->ext_nm.string);
+          snprintf(nb, 256, "%.*s", (int) s->external_name.length, s->external_name.string);
           fprintf(o, "  call void @\"%s\"(", nb);
           for (uint32_t i = 0; i < n->code_stmt.arguments.count; i++)
           {
@@ -12130,7 +12130,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           }
           char nb[256];
           if (s->is_external)
-            snprintf(nb, 256, "%.*s", (int) s->ext_nm.length, s->ext_nm.string);
+            snprintf(nb, 256, "%.*s", (int) s->external_name.length, s->external_name.string);
           else
             encode_symbol_name(nb, 256, s, n->code_stmt.name->s, n->code_stmt.arguments.count, sp);
           if (s->k == 5 and sp and sp->subprogram.return_type)
@@ -12697,7 +12697,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     Syntax_Node *sp = n->body.subprogram_spec;
     char nb[256];
     if (n->sy and n->sy->is_external)
-      snprintf(nb, 256, "%.*s", (int) n->sy->ext_nm.length, n->sy->ext_nm.string);
+      snprintf(nb, 256, "%.*s", (int) n->sy->external_name.length, n->sy->external_name.string);
     else
     {
       encode_symbol_name(nb, 256, n->sy, sp->subprogram.nm, sp->subprogram.parameters.count, sp);
@@ -12745,7 +12745,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     Syntax_Node *sp = n->body.subprogram_spec;
     char nb[256];
     if (n->sy and n->sy->is_external)
-      snprintf(nb, 256, "%.*s", (int) n->sy->ext_nm.length, n->sy->ext_nm.string);
+      snprintf(nb, 256, "%.*s", (int) n->sy->external_name.length, n->sy->external_name.string);
     else
     {
       encode_symbol_name(nb, 256, n->sy, sp->subprogram.nm, sp->subprogram.parameters.count, sp);
@@ -12824,18 +12824,18 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     }
     has_basic_label(generator, &n->body.statements);
     char nb[256];
-    if (n->sy and n->sy->mangled_nm.string)
+    if (n->sy and n->sy->mangled_name.string)
     {
-      snprintf(nb, 256, "%.*s", (int) n->sy->mangled_nm.length, n->sy->mangled_nm.string);
+      snprintf(nb, 256, "%.*s", (int) n->sy->mangled_name.length, n->sy->mangled_name.string);
     }
     else
     {
       encode_symbol_name(nb, 256, n->sy, sp->subprogram.nm, sp->subprogram.parameters.count, sp);
       if (n->sy)
       {
-        n->sy->mangled_nm.string = arena_allocate(strlen(nb) + 1);
-        memcpy((char *) n->sy->mangled_nm.string, nb, strlen(nb) + 1);
-        n->sy->mangled_nm.length = strlen(nb);
+        n->sy->mangled_name.string = arena_allocate(strlen(nb) + 1);
+        memcpy((char *) n->sy->mangled_name.string, nb, strlen(nb) + 1);
+        n->sy->mangled_name.length = strlen(nb);
       }
     }
     fprintf(o, "define linkonce_odr void @\"%s\"(", nb);
@@ -13202,18 +13202,18 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     Value_Kind rk = sp->subprogram.return_type ? token_kind_to_value_kind(resolve_subtype(generator->sm, sp->subprogram.return_type))
                               : VALUE_KIND_INTEGER;
     char nb[256];
-    if (n->sy and n->sy->mangled_nm.string)
+    if (n->sy and n->sy->mangled_name.string)
     {
-      snprintf(nb, 256, "%.*s", (int) n->sy->mangled_nm.length, n->sy->mangled_nm.string);
+      snprintf(nb, 256, "%.*s", (int) n->sy->mangled_name.length, n->sy->mangled_name.string);
     }
     else
     {
       encode_symbol_name(nb, 256, n->sy, sp->subprogram.nm, sp->subprogram.parameters.count, sp);
       if (n->sy)
       {
-        n->sy->mangled_nm.string = arena_allocate(strlen(nb) + 1);
-        memcpy((char *) n->sy->mangled_nm.string, nb, strlen(nb) + 1);
-        n->sy->mangled_nm.length = strlen(nb);
+        n->sy->mangled_name.string = arena_allocate(strlen(nb) + 1);
+        memcpy((char *) n->sy->mangled_name.string, nb, strlen(nb) + 1);
+        n->sy->mangled_name.length = strlen(nb);
       }
     }
     fprintf(o, "define linkonce_odr %s @\"%s\"(", value_llvm_type_string(rk), nb);
@@ -13916,18 +13916,18 @@ static void write_ada_library_interface(Symbol_Manager *symbol_manager, const ch
       {
         Syntax_Node *sp = s->overloads.count > 0 and s->overloads.data[0]->body.subprogram_spec ? s->overloads.data[0]->body.subprogram_spec : 0;
         char nb[256];
-        if (s->mangled_nm.string)
+        if (s->mangled_name.string)
         {
-          snprintf(nb, 256, "%.*s", (int) s->mangled_nm.length, s->mangled_nm.string);
+          snprintf(nb, 256, "%.*s", (int) s->mangled_name.length, s->mangled_name.string);
         }
         else
         {
           encode_symbol_name(nb, 256, s, s->name, sp ? sp->subprogram.parameters.count : 0, sp);
           if (s)
           {
-            s->mangled_nm.string = arena_allocate(strlen(nb) + 1);
-            memcpy((char *) s->mangled_nm.string, nb, strlen(nb) + 1);
-            s->mangled_nm.length = strlen(nb);
+            s->mangled_name.string = arena_allocate(strlen(nb) + 1);
+            memcpy((char *) s->mangled_name.string, nb, strlen(nb) + 1);
+            s->mangled_name.length = strlen(nb);
           }
         }
         fprintf(f, "X %s", nb);
