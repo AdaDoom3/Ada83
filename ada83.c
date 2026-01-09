@@ -4390,7 +4390,7 @@ struct Symbol
   uint32_t offset;
   Node_Vector overloads;
   Symbol_Vector use_clauses;
-  int el;
+  int elaboration_level;
   Generic_Template *generic_template;
   Symbol *parent;
   int lv;
@@ -4446,7 +4446,7 @@ static Symbol *symbol_new(String_Slice nm, uint8_t k, Type_Info *ty, Syntax_Node
   s->k = k;
   s->ty = ty;
   s->definition = df;
-  s->el = -1;
+  s->elaboration_level = -1;
   s->lv = -1;
   return s;
 }
@@ -4457,7 +4457,7 @@ static Symbol *symbol_add_overload(Symbol_Manager *symbol_manager, Symbol *s)
   s->next = symbol_manager->sy[h];
   s->scope = symbol_manager->sc;
   s->storage_size = symbol_manager->ss;
-  s->el = symbol_manager->eo++;
+  s->elaboration_level = symbol_manager->eo++;
   s->lv = symbol_manager->lv;
   s->visibility = 1;
   uint64_t u = string_hash(s->name);
@@ -4467,7 +4467,7 @@ static Symbol *symbol_add_overload(Symbol_Manager *symbol_manager, Symbol *s)
     if (s->lv > 0)
     {
       u = u * 31 + s->scope;
-      u = u * 31 + s->el;
+      u = u * 31 + s->elaboration_level;
     }
   }
   s->uid = (uint32_t) (u & 0xFFFFFFFF);
@@ -7768,7 +7768,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     Symbol *s = symbol_add_overload(symbol_manager, symbol_new(sp->subprogram.nm, 4, ft, n));
     nv(&s->overloads, n);
     n->sy = s;
-    n->body.elaboration_level = s->el;
+    n->body.elaboration_level = s->elaboration_level;
     s->parent = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
     nv(&ft->ops, n);
     if (n->k == N_PB)
@@ -7805,7 +7805,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     Symbol *s = symbol_add_overload(symbol_manager, symbol_new(sp->subprogram.nm, 5, ft, n));
     nv(&s->overloads, n);
     n->sy = s;
-    n->body.elaboration_level = s->el;
+    n->body.elaboration_level = s->elaboration_level;
     s->parent = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
     nv(&ft->ops, n);
     if (n->k == N_FB)
@@ -7842,7 +7842,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     Symbol *s = symbol_add_overload(symbol_manager, symbol_new(sp->subprogram.nm, 5, ft, n));
     nv(&s->overloads, n);
     n->sy = s;
-    n->body.elaboration_level = s->el;
+    n->body.elaboration_level = s->elaboration_level;
     s->parent = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
     nv(&ft->ops, n);
   }
@@ -7852,7 +7852,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     Type_Info *t = type_new(TY_P, n->package_spec.nm);
     Symbol *s = symbol_add_overload(symbol_manager, symbol_new(n->package_spec.nm, 6, t, n));
     n->sy = s;
-    n->package_spec.elaboration_level = s->el;
+    n->package_spec.elaboration_level = s->elaboration_level;
     symbol_manager->pk = n;
     symbol_compare_parameter(symbol_manager);
     for (uint32_t i = 0; i < n->package_spec.dc.count; i++)
@@ -7929,7 +7929,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     {
       Type_Info *t = type_new(TY_P, n->package_body.nm);
       ps = symbol_add_overload(symbol_manager, symbol_new(n->package_body.nm, 6, t, 0));
-      ps->el = symbol_manager->eo++;
+      ps->elaboration_level = symbol_manager->eo++;
       Syntax_Node *pk = ND(PKS, n->l);
       pk->package_spec.nm = n->package_body.nm;
       pk->sy = ps;
@@ -7939,7 +7939,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     if (ps)
     {
       sv(&symbol_manager->uv, ps);
-      n->package_body.elaboration_level = ps->el;
+      n->package_body.elaboration_level = ps->elaboration_level;
       symbol_manager->pk = ps->definition;
       if (ps->definition and ps->definition->k == N_PKS)
       {
@@ -8067,13 +8067,13 @@ static int elaborate_compilation(Symbol_Manager *symbol_manager, Symbol_Vector *
   case N_FB:
   {
     Symbol *s = n->sy;
-    if (s and s->el < 0)
-      s->el = symbol_manager->eo;
+    if (s and s->elaboration_level < 0)
+      s->elaboration_level = symbol_manager->eo;
     if (s)
     {
       sv(ev, s);
-      if (s->el > mx)
-        mx = s->el;
+      if (s->elaboration_level > mx)
+        mx = s->elaboration_level;
     }
   }
   break;
@@ -8084,8 +8084,8 @@ static int elaborate_compilation(Symbol_Manager *symbol_manager, Symbol_Vector *
       if (id->sy)
       {
         sv(ev, id->sy);
-        if (id->sy->el > mx)
-          mx = id->sy->el;
+        if (id->sy->elaboration_level > mx)
+          mx = id->sy->elaboration_level;
       }
     }
     break;
@@ -8213,7 +8213,7 @@ static void read_ada_library_interface(Symbol_Manager *symbol_manager, const cha
         sp->subprogram.return_type = 0;
         n->body.subprogram_spec = sp;
         Symbol *s = symbol_add_overload(symbol_manager, symbol_new(msn, isp ? 4 : 5, type_new(TYPE_STRING, msn), n));
-        s->el = symbol_manager->eo++;
+        s->elaboration_level = symbol_manager->eo++;
         nv(&s->overloads, n);
         n->sy = s;
         s->mangled_name = string_duplicate(sn);
@@ -8271,7 +8271,7 @@ static Syntax_Node *pks2(Symbol_Manager *symbol_manager, String_Slice nm, const 
       Symbol *ps = symbol_add_overload(symbol_manager, symbol_new(nm, 6, t, u));
       ps->lv = 0;
       u->sy = ps;
-      u->package_spec.elaboration_level = ps->el;
+      u->package_spec.elaboration_level = ps->elaboration_level;
       Syntax_Node *oldpk = symbol_manager->pk;
       int oldlv = symbol_manager->lv;
       symbol_manager->pk = u;
@@ -8721,8 +8721,8 @@ static void generate_block_frame(Code_Generator *generator)
   int mx = 0;
   for (int h = 0; h < 4096; h++)
     for (Symbol *s = generator->sm->sy[h]; s; s = s->next)
-      if (s->k == 0 and s->el >= 0 and s->el > mx)
-        mx = s->el;
+      if (s->k == 0 and s->elaboration_level >= 0 and s->elaboration_level > mx)
+        mx = s->elaboration_level;
   if (mx > 0)
     fprintf(generator->o, "  %%__frame = alloca [%d x ptr]\n", mx + 1);
 }
@@ -9114,7 +9114,7 @@ static Syntax_Node *symbol_spec(Symbol *s)
 {
   if (not s or s->overloads.count == 0)
     return 0;
-  Syntax_Node *b = symbol_body(s, s->el);
+  Syntax_Node *b = symbol_body(s, s->elaboration_level);
   if (b and b->body.subprogram_spec)
     return b->body.subprogram_spec;
   for (uint32_t i = 0; i < s->overloads.count; i++)
@@ -9218,7 +9218,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           int n = 0;
           for (uint32_t j = 0; j < s->parent->name.length; j++)
             nb[n++] = toupper(s->parent->name.string[j]);
-          n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->el);
+          n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->elaboration_level);
           for (uint32_t j = 0; j < s->name.length; j++)
             nb[n++] = toupper(s->name.string[j]);
           nb[n] = 0;
@@ -9251,7 +9251,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           int n = 0;
           for (uint32_t i = 0; i < s->parent->name.length; i++)
             nb[n++] = toupper(s->parent->name.string[i]);
-          n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->el);
+          n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->elaboration_level);
           for (uint32_t i = 0; i < s->name.length; i++)
             nb[n++] = toupper(s->name.string[i]);
           nb[n] = 0;
@@ -9270,7 +9270,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           }
           else
           {
-            Syntax_Node *b = symbol_body(s, s->el);
+            Syntax_Node *b = symbol_body(s, s->elaboration_level);
             Syntax_Node *sp = symbol_spec(s);
             if ((sp and sp->subprogram.parameters.count == 0) or (not b))
             {
@@ -9295,7 +9295,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       {
         if (s->k == 5)
         {
-          Syntax_Node *b = symbol_body(s, s->el);
+          Syntax_Node *b = symbol_body(s, s->elaboration_level);
           Syntax_Node *sp = symbol_spec(s);
           if (sp and sp->subprogram.parameters.count == 0)
           {
@@ -9335,7 +9335,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
               }
             }
             int p = new_temporary_register(generator);
-            fprintf(o, "  %%t%d = getelementptr ptr, ptr %%t%d, i64 %u\n", p, slnk_ptr, s->el);
+            fprintf(o, "  %%t%d = getelementptr ptr, ptr %%t%d, i64 %u\n", p, slnk_ptr, s->elaboration_level);
             int a = new_temporary_register(generator);
             fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", a, p);
             fprintf(o, "  %%t%d = load %s, ptr %%t%d\n", r.id, value_llvm_type_string(k), a);
@@ -9365,7 +9365,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
               slnk_ptr = loaded_slnk;
             }
           }
-          fprintf(o, "  %%t%d = getelementptr ptr, ptr %%t%d, i64 %u\n", p, slnk_ptr, s->el);
+          fprintf(o, "  %%t%d = getelementptr ptr, ptr %%t%d, i64 %u\n", p, slnk_ptr, s->elaboration_level);
           int a = new_temporary_register(generator);
           fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", a, p);
           if (vat and vat->k == TYPE_ARRAY)
@@ -9383,7 +9383,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       {
         if (s and s->k == 5)
         {
-          Syntax_Node *b = symbol_body(s, s->el);
+          Syntax_Node *b = symbol_body(s, s->elaboration_level);
           Syntax_Node *sp = symbol_spec(s);
           if (sp and sp->subprogram.parameters.count == 0)
           {
@@ -9421,7 +9421,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                     r.id,
                     string_to_lowercase(n->s),
                     s ? s->scope : 0,
-                    s ? s->el : 0);
+                    s ? s->elaboration_level : 0);
               }
               else
               {
@@ -9431,7 +9431,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                     r.id,
                     string_to_lowercase(n->s),
                     s ? s->scope : 0,
-                    s ? s->el : 0);
+                    s ? s->elaboration_level : 0);
               }
             }
             else
@@ -9443,7 +9443,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                   value_llvm_type_string(k),
                   string_to_lowercase(n->s),
                   s ? s->scope : 0,
-                  s ? s->el : 0);
+                  s ? s->elaboration_level : 0);
             }
           }
         }
@@ -9460,7 +9460,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                   r.id,
                   string_to_lowercase(n->s),
                   s ? s->scope : 0,
-                  s ? s->el : 0);
+                  s ? s->elaboration_level : 0);
             }
             else
             {
@@ -9470,7 +9470,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                   r.id,
                   string_to_lowercase(n->s),
                   s ? s->scope : 0,
-                  s ? s->el : 0);
+                  s ? s->elaboration_level : 0);
             }
           }
           else
@@ -9482,7 +9482,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                 value_llvm_type_string(k),
                 string_to_lowercase(n->s),
                 s ? s->scope : 0,
-                s ? s->el : 0);
+                s ? s->elaboration_level : 0);
           }
         }
       }
@@ -10239,7 +10239,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           if (has_nested)
           {
             int tp = new_temporary_register(generator);
-            fprintf(o, "  %%t%d = getelementptr ptr, ptr %%__slnk, i64 %u\n", tp, s->el);
+            fprintf(o, "  %%t%d = getelementptr ptr, ptr %%__slnk, i64 %u\n", tp, s->elaboration_level);
             fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", p.id, tp);
           }
           else
@@ -10260,7 +10260,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                 p.id,
                 string_to_lowercase(n->selected_component.prefix->s),
                 s ? s->scope : 0,
-                s ? s->el : 0);
+                s ? s->elaboration_level : 0);
           else
             fprintf(
                 o,
@@ -10268,7 +10268,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                 p.id,
                 string_to_lowercase(n->selected_component.prefix->s),
                 s ? s->scope : 0,
-                s ? s->el : 0);
+                s ? s->elaboration_level : 0);
         }
       }
     }
@@ -10418,7 +10418,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
               int n = 0;
               for (uint32_t j = 0; j < s->parent->name.length; j++)
                 nb[n++] = toupper(s->parent->name.string[j]);
-              n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->el);
+              n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->elaboration_level);
               for (uint32_t j = 0; j < s->name.length; j++)
                 nb[n++] = toupper(s->name.string[j]);
               nb[n] = 0;
@@ -10432,7 +10432,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           else if (s->lv >= 0 and s->lv < generator->sm->lv)
           {
             int p = new_temporary_register(generator);
-            fprintf(o, "  %%t%d = getelementptr ptr, ptr %%__slnk, i64 %u\n", p, s->el);
+            fprintf(o, "  %%t%d = getelementptr ptr, ptr %%__slnk, i64 %u\n", p, s->elaboration_level);
             int a = new_temporary_register(generator);
             fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", a, p);
             fprintf(o, "  %%t%d = ptrtoint ptr %%t%d to i64\n", r.id, a);
@@ -10979,7 +10979,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         {
           Value_Kind rk = token_kind_to_value_kind(s->ty->el);
           r.k = rk;
-          Syntax_Node *b = symbol_body(s, s->el);
+          Syntax_Node *b = symbol_body(s, s->elaboration_level);
           Syntax_Node *sp = symbol_spec(s);
           int arid[64];
           Value_Kind ark[64];
@@ -11012,7 +11012,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                     int n = 0;
                     for (uint32_t j = 0; j < as->parent->name.length; j++)
                       nb[n++] = toupper(as->parent->name.string[j]);
-                    n += snprintf(nb + n, 256 - n, "_S%dE%d__", as->parent->scope, as->parent->el);
+                    n += snprintf(nb + n, 256 - n, "_S%dE%d__", as->parent->scope, as->parent->elaboration_level);
                     for (uint32_t j = 0; j < as->name.length; j++)
                       nb[n++] = toupper(as->name.string[j]);
                     nb[n] = 0;
@@ -11027,7 +11027,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                 {
                   av.id = new_temporary_register(generator);
                   av.k = VALUE_KIND_POINTER;
-                  fprintf(o, "  %%t%d = getelementptr ptr, ptr %%__slnk, i64 %u\n", av.id, as->el);
+                  fprintf(o, "  %%t%d = getelementptr ptr, ptr %%__slnk, i64 %u\n", av.id, as->elaboration_level);
                   int a2 = new_temporary_register(generator);
                   fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", a2, av.id);
                   av.id = a2;
@@ -11042,7 +11042,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                       av.id,
                       string_to_lowercase(arg->s),
                       as ? as->scope : 0,
-                      as ? as->el : 0);
+                      as ? as->elaboration_level : 0);
                 }
                 ek = VALUE_KIND_POINTER;
               }
@@ -11131,7 +11131,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                         cv.id,
                         string_to_lowercase(tg->s),
                         ts->scope,
-                        ts->el);
+                        ts->elaboration_level);
                 }
               }
             }
@@ -11271,7 +11271,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           int n = 0;
           for (uint32_t i = 0; i < s->parent->name.length; i++)
             nb[n++] = toupper(s->parent->name.string[i]);
-          n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->el);
+          n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->elaboration_level);
           for (uint32_t i = 0; i < s->name.length; i++)
             nb[n++] = toupper(s->name.string[i]);
           nb[n] = 0;
@@ -11303,7 +11303,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             slnk_ptr = loaded_slnk;
           }
         }
-        fprintf(o, "  %%t%d = getelementptr ptr, ptr %%t%d, i64 %u\n", p, slnk_ptr, s->el);
+        fprintf(o, "  %%t%d = getelementptr ptr, ptr %%t%d, i64 %u\n", p, slnk_ptr, s->elaboration_level);
         int a = new_temporary_register(generator);
         fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", a, p);
         fprintf(o, "  store %s %%t%d, ptr %%t%d\n", value_llvm_type_string(k), v.id, a);
@@ -11316,7 +11316,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             v.id,
             string_to_lowercase(n->assignment.target->s),
             s ? s->scope : 0,
-            s ? s->el : 0);
+            s ? s->elaboration_level : 0);
     }
     else if (n->assignment.target->k == N_IX)
     {
@@ -11378,7 +11378,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               p.id,
               string_to_lowercase(n->assignment.target->selected_component.prefix->s),
               s ? s->scope : 0,
-              s ? s->el : 0);
+              s ? s->elaboration_level : 0);
       }
       else
       {
@@ -11587,7 +11587,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
         Symbol *vs = fv->sy;
         if (vs)
         {
-          fprintf(o, "  %%v.%s.sc%u.%u = alloca i64\n", string_to_lowercase(fv->s), vs->scope, vs->el);
+          fprintf(o, "  %%v.%s.sc%u.%u = alloca i64\n", string_to_lowercase(fv->s), vs->scope, vs->elaboration_level);
           Syntax_Node *rng = n->loop_stmt.iterator->binary_node.r;
           hi_var = new_temporary_register(generator);
           fprintf(o, "  %%v.__for_hi_%d = alloca i64\n", hi_var);
@@ -11618,7 +11618,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                     blo,
                     string_to_lowercase(fv->s),
                     vs->scope,
-                    vs->el);
+                    vs->elaboration_level);
                 fprintf(o, "  store i64 %%t%d, ptr %%v.__for_hi_%d\n", bhi, hi_var);
                 ti = blo;
               }
@@ -11653,7 +11653,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               int n = 0;
               for (uint32_t i = 0; i < vs->parent->name.length; i++)
                 nb[n++] = toupper(vs->parent->name.string[i]);
-              n += snprintf(nb + n, 256 - n, "_S%dE%d__", vs->parent->scope, vs->parent->el);
+              n += snprintf(nb + n, 256 - n, "_S%dE%d__", vs->parent->scope, vs->parent->elaboration_level);
               for (uint32_t i = 0; i < vs->name.length; i++)
                 nb[n++] = toupper(vs->name.string[i]);
               nb[n] = 0;
@@ -11669,7 +11669,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                 ti,
                 string_to_lowercase(fv->s),
                 vs->scope,
-                vs->el);
+                vs->elaboration_level);
         }
       }
     }
@@ -11689,7 +11689,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             int n = 0;
             for (uint32_t i = 0; i < vs->parent->name.length; i++)
               nb[n++] = toupper(vs->parent->name.string[i]);
-            n += snprintf(nb + n, 256 - n, "_S%dE%d__", vs->parent->scope, vs->parent->el);
+            n += snprintf(nb + n, 256 - n, "_S%dE%d__", vs->parent->scope, vs->parent->elaboration_level);
             for (uint32_t i = 0; i < vs->name.length; i++)
               nb[n++] = toupper(vs->name.string[i]);
             nb[n] = 0;
@@ -11706,7 +11706,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               cv,
               string_to_lowercase(fv->s),
               vs->scope,
-              vs->el);
+              vs->elaboration_level);
         }
         int hv = new_temporary_register(generator);
         fprintf(o, "  %%t%d = load i64, ptr %%v.__for_hi_%d\n", hv, hi_var);
@@ -11741,7 +11741,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             int n = 0;
             for (uint32_t i = 0; i < vs->parent->name.length; i++)
               nb[n++] = toupper(vs->parent->name.string[i]);
-            n += snprintf(nb + n, 256 - n, "_S%dE%d__", vs->parent->scope, vs->parent->el);
+            n += snprintf(nb + n, 256 - n, "_S%dE%d__", vs->parent->scope, vs->parent->elaboration_level);
             for (uint32_t i = 0; i < vs->name.length; i++)
               nb[n++] = toupper(vs->name.string[i]);
             nb[n] = 0;
@@ -11761,7 +11761,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               cv,
               string_to_lowercase(fv->s),
               vs->scope,
-              vs->el);
+              vs->elaboration_level);
           int nv = new_temporary_register(generator);
           fprintf(o, "  %%t%d = add i64 %%t%d, 1\n", nv, cv);
           fprintf(
@@ -11770,7 +11770,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               nv,
               string_to_lowercase(fv->s),
               vs->scope,
-              vs->el);
+              vs->elaboration_level);
         }
       }
     }
@@ -11889,7 +11889,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
       Symbol *s = symbol_find_with_arity(generator->sm, n->code_stmt.name->s, n->code_stmt.arguments.count, 0);
       if (s)
       {
-        Syntax_Node *b = symbol_body(s, s->el);
+        Syntax_Node *b = symbol_body(s, s->elaboration_level);
         if (b)
         {
           int arid[64];
@@ -11924,7 +11924,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                     int n = 0;
                     for (uint32_t j = 0; j < as->parent->name.length; j++)
                       nb[n++] = toupper(as->parent->name.string[j]);
-                    n += snprintf(nb + n, 256 - n, "_S%dE%d__", as->parent->scope, as->parent->el);
+                    n += snprintf(nb + n, 256 - n, "_S%dE%d__", as->parent->scope, as->parent->elaboration_level);
                     for (uint32_t j = 0; j < as->name.length; j++)
                       nb[n++] = toupper(as->name.string[j]);
                     nb[n] = 0;
@@ -11939,7 +11939,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                 {
                   av.id = new_temporary_register(generator);
                   av.k = VALUE_KIND_POINTER;
-                  fprintf(o, "  %%t%d = getelementptr ptr, ptr %%__slnk, i64 %u\n", av.id, as->el);
+                  fprintf(o, "  %%t%d = getelementptr ptr, ptr %%__slnk, i64 %u\n", av.id, as->elaboration_level);
                   int a2 = new_temporary_register(generator);
                   fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", a2, av.id);
                   av.id = a2;
@@ -11954,7 +11954,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                       av.id,
                       string_to_lowercase(arg->s),
                       as ? as->scope : 0,
-                      as ? as->el : 0);
+                      as ? as->elaboration_level : 0);
                 }
                 ek = VALUE_KIND_POINTER;
               }
@@ -12046,7 +12046,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                         cv.id,
                         string_to_lowercase(tg->s),
                         ts->scope,
-                        ts->el);
+                        ts->elaboration_level);
                 }
               }
             }
@@ -12117,7 +12117,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                     av.id,
                     string_to_lowercase(arg->s),
                     as ? as->scope : 0,
-                    as ? as->el : 0);
+                    as ? as->elaboration_level : 0);
             }
             else
             {
@@ -12248,7 +12248,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                     v.id,
                     string_to_lowercase(id->s),
                     s ? s->scope : 0,
-                    s ? s->el : 0);
+                    s ? s->elaboration_level : 0);
             }
           }
         }
@@ -12317,7 +12317,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                   dp,
                   string_to_lowercase(id->s),
                   s->scope,
-                  s->el,
+                  s->elaboration_level,
                   di);
             fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", dv, dp);
           }
@@ -12651,7 +12651,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   "  %%v.%s.sc%u.%u = alloca {ptr,ptr}\n",
                   string_to_lowercase(id->s),
                   s->scope,
-                  s->el);
+                  s->elaboration_level);
             }
             else if (at and at->k == TYPE_ARRAY and asz > 0)
             {
@@ -12660,7 +12660,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   "  %%v.%s.sc%u.%u = alloca [%d x %s]\n",
                   string_to_lowercase(id->s),
                   s->scope,
-                  s->el,
+                  s->elaboration_level,
                   asz,
                   ada_to_c_type_string(bt));
             }
@@ -12672,7 +12672,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   "  %%v.%s.sc%u.%u = alloca [%d x %s]\n",
                   string_to_lowercase(id->s),
                   s->scope,
-                  s->el,
+                  s->elaboration_level,
                   asz,
                   ada_to_c_type_string(bt));
             }
@@ -12683,7 +12683,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   "  %%v.%s.sc%u.%u = alloca %s\n",
                   string_to_lowercase(id->s),
                   s->scope,
-                  s->el,
+                  s->elaboration_level,
                   value_llvm_type_string(k));
             }
           }
@@ -12869,8 +12869,8 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       int mx = 0;
       for (int h = 0; h < 4096; h++)
         for (Symbol *s = generator->sm->sy[h]; s; s = s->next)
-          if (s->k == 0 and s->el >= 0 and s->el > mx)
-            mx = s->el;
+          if (s->k == 0 and s->elaboration_level >= 0 and s->elaboration_level > mx)
+            mx = s->elaboration_level;
       if (mx == 0)
         fprintf(o, "  %%__frame = bitcast ptr %%__slnk to ptr\n");
     }
@@ -12899,7 +12899,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
             "  %%v.%s.sc%u.%u = alloca %s\n",
             string_to_lowercase(p->parameter.nm),
             ps ? ps->scope : 0,
-            ps ? ps->el : 0,
+            ps ? ps->elaboration_level : 0,
             value_llvm_type_string(k));
       if (p->parameter.mode & 2)
       {
@@ -12926,7 +12926,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
               lv,
               string_to_lowercase(p->parameter.nm),
               ps ? ps->scope : 0,
-              ps ? ps->el : 0);
+              ps ? ps->elaboration_level : 0);
       }
       else
       {
@@ -12946,7 +12946,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
               string_to_lowercase(p->parameter.nm),
               string_to_lowercase(p->parameter.nm),
               ps ? ps->scope : 0,
-              ps ? ps->el : 0);
+              ps ? ps->elaboration_level : 0);
       }
     }
     if (n->sy and n->sy->lv > 0)
@@ -12967,7 +12967,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   "  %%v.%s.sc%u.%u = alloca [%d x %s]\n",
                   string_to_lowercase(s->name),
                   s->scope,
-                  s->el,
+                  s->elaboration_level,
                   asz,
                   ada_to_c_type_string(at->el));
             }
@@ -12978,7 +12978,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   "  %%v.%s.sc%u.%u = alloca %s\n",
                   string_to_lowercase(s->name),
                   s->scope,
-                  s->el,
+                  s->elaboration_level,
                   value_llvm_type_string(k));
             }
             int level_diff = generator->sm->lv - s->lv - 1;
@@ -13002,7 +13002,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
               }
             }
             int p = new_temporary_register(generator);
-            fprintf(o, "  %%t%d = getelementptr ptr, ptr %%t%d, i64 %u\n", p, slnk_ptr, s->el);
+            fprintf(o, "  %%t%d = getelementptr ptr, ptr %%t%d, i64 %u\n", p, slnk_ptr, s->elaboration_level);
             int ptr_id = new_temporary_register(generator);
             fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", ptr_id, p);
             int v = new_temporary_register(generator);
@@ -13014,7 +13014,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                 v,
                 string_to_lowercase(s->name),
                 s->scope,
-                s->el);
+                s->elaboration_level);
           }
         }
       }
@@ -13031,7 +13031,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       {
         for (Symbol *s = generator->sm->sy[h]; s; s = s->next)
         {
-          if (s->k == 0 and s->el >= 0 and n->sy->scope >= 0 and s->scope == (uint32_t) (n->sy->scope + 1)
+          if (s->k == 0 and s->elaboration_level >= 0 and n->sy->scope >= 0 and s->scope == (uint32_t) (n->sy->scope + 1)
               and s->lv == generator->sm->lv and s->parent == n->sy)
           {
             bool is_pm = false;
@@ -13053,13 +13053,13 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   "%u\n",
                   fp,
                   mx,
-                  s->el);
+                  s->elaboration_level);
               fprintf(
                   o,
                   "  store ptr %%v.%s.sc%u.%u, ptr %%t%d\n",
                   string_to_lowercase(s->name),
                   s->scope,
-                  s->el,
+                  s->elaboration_level,
                   fp);
             }
           }
@@ -13131,7 +13131,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                     v.id,
                     string_to_lowercase(id->s),
                     s ? s->scope : 0,
-                    s ? s->el : 0);
+                    s ? s->elaboration_level : 0);
             }
           }
         }
@@ -13247,8 +13247,8 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       int mx = 0;
       for (int h = 0; h < 4096; h++)
         for (Symbol *s = generator->sm->sy[h]; s; s = s->next)
-          if (s->k == 0 and s->el >= 0 and s->el > mx)
-            mx = s->el;
+          if (s->k == 0 and s->elaboration_level >= 0 and s->elaboration_level > mx)
+            mx = s->elaboration_level;
       if (mx == 0)
         fprintf(o, "  %%__frame = bitcast ptr %%__slnk to ptr\n");
     }
@@ -13277,7 +13277,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
             "  %%v.%s.sc%u.%u = alloca %s\n",
             string_to_lowercase(p->parameter.nm),
             ps ? ps->scope : 0,
-            ps ? ps->el : 0,
+            ps ? ps->elaboration_level : 0,
             value_llvm_type_string(k));
       if (p->parameter.mode & 2)
       {
@@ -13304,7 +13304,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
               lv,
               string_to_lowercase(p->parameter.nm),
               ps ? ps->scope : 0,
-              ps ? ps->el : 0);
+              ps ? ps->elaboration_level : 0);
       }
       else
       {
@@ -13324,7 +13324,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
               string_to_lowercase(p->parameter.nm),
               string_to_lowercase(p->parameter.nm),
               ps ? ps->scope : 0,
-              ps ? ps->el : 0);
+              ps ? ps->elaboration_level : 0);
       }
     }
     if (n->sy and n->sy->lv > 0)
@@ -13345,7 +13345,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   "  %%v.%s.sc%u.%u = alloca [%d x %s]\n",
                   string_to_lowercase(s->name),
                   s->scope,
-                  s->el,
+                  s->elaboration_level,
                   asz,
                   ada_to_c_type_string(at->el));
             }
@@ -13356,7 +13356,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   "  %%v.%s.sc%u.%u = alloca %s\n",
                   string_to_lowercase(s->name),
                   s->scope,
-                  s->el,
+                  s->elaboration_level,
                   value_llvm_type_string(k));
             }
             int level_diff = generator->sm->lv - s->lv - 1;
@@ -13380,7 +13380,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
               }
             }
             int p = new_temporary_register(generator);
-            fprintf(o, "  %%t%d = getelementptr ptr, ptr %%t%d, i64 %u\n", p, slnk_ptr, s->el);
+            fprintf(o, "  %%t%d = getelementptr ptr, ptr %%t%d, i64 %u\n", p, slnk_ptr, s->elaboration_level);
             int ptr_id = new_temporary_register(generator);
             fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", ptr_id, p);
             int v = new_temporary_register(generator);
@@ -13392,7 +13392,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                 v,
                 string_to_lowercase(s->name),
                 s->scope,
-                s->el);
+                s->elaboration_level);
           }
         }
       }
@@ -13407,7 +13407,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     {
       for (Symbol *s = generator->sm->sy[h]; s; s = s->next)
       {
-        if (s->k == 0 and s->el >= 0 and n->sy->scope >= 0 and s->scope == (uint32_t) (n->sy->scope + 1)
+        if (s->k == 0 and s->elaboration_level >= 0 and n->sy->scope >= 0 and s->scope == (uint32_t) (n->sy->scope + 1)
             and s->lv == generator->sm->lv and s->parent == n->sy)
         {
           bool is_pm = false;
@@ -13428,13 +13428,13 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                 "  %%t%d = getelementptr [%d x ptr], ptr %%__frame, i64 0, i64 %u\n",
                 fp,
                 mx,
-                s->el);
+                s->elaboration_level);
             fprintf(
                 o,
                 "  store ptr %%v.%s.sc%u.%u, ptr %%t%d\n",
                 string_to_lowercase(s->name),
                 s->scope,
-                s->el,
+                s->elaboration_level,
                 fp);
           }
         }
@@ -13505,7 +13505,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                     v.id,
                     string_to_lowercase(id->s),
                     s ? s->scope : 0,
-                    s ? s->el : 0);
+                    s ? s->elaboration_level : 0);
             }
           }
         }
@@ -13969,7 +13969,7 @@ static void write_ada_library_interface(Symbol_Manager *symbol_manager, const ch
           int n = 0;
           for (uint32_t j = 0; j < s->parent->name.length; j++)
             nb[n++] = toupper(s->parent->name.string[j]);
-          n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->el);
+          n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->elaboration_level);
           for (uint32_t j = 0; j < s->name.length; j++)
             nb[n++] = toupper(s->name.string[j]);
           nb[n] = 0;
@@ -14036,7 +14036,7 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
         int n = 0;
         for (uint32_t j = 0; j < s->parent->name.length; j++)
           nb[n++] = toupper(s->parent->name.string[j]);
-        n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->el);
+        n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->elaboration_level);
         for (uint32_t j = 0; j < s->name.length; j++)
           nb[n++] = toupper(s->name.string[j]);
         nb[n] = 0;
@@ -14117,7 +14117,7 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
     {
       for (Symbol *s = sm.sy[j]; s; s = s->next)
       {
-        if (s->el == i)
+        if (s->elaboration_level == i)
         {
           for (uint32_t k = 0; k < s->overloads.count; k++)
             generate_declaration(&g, s->overloads.data[k]);
@@ -14245,7 +14245,7 @@ int main(int ac, char **av)
           int n = 0;
           for (uint32_t j = 0; j < s->parent->name.length; j++)
             nb[n++] = toupper(s->parent->name.string[j]);
-          n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->el);
+          n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->elaboration_level);
           for (uint32_t j = 0; j < s->name.length; j++)
             nb[n++] = toupper(s->name.string[j]);
           nb[n] = 0;
@@ -14327,7 +14327,7 @@ int main(int ac, char **av)
   for (uint32_t i = 0; i < sm.eo; i++)
     for (uint32_t j = 0; j < 4096; j++)
       for (Symbol *s = sm.sy[j]; s; s = s->next)
-        if (s->el == i and s->lv == 0)
+        if (s->elaboration_level == i and s->lv == 0)
           for (uint32_t k = 0; k < s->overloads.count; k++)
             generate_declaration(&g, s->overloads.data[k]);
   for (uint32_t ui = 0; ui < cu->compilation_unit.units.count; ui++)
