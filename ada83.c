@@ -4402,7 +4402,7 @@ struct Symbol
   String_Slice mangled_nm;
   uint8_t frz;
   Syntax_Node *fzn;
-  uint8_t vis;
+  uint8_t visibility;
   Symbol *hm;
   uint32_t uid;
 };
@@ -4459,7 +4459,7 @@ static Symbol *symbol_add_overload(Symbol_Manager *symbol_manager, Symbol *s)
   s->ss = symbol_manager->ss;
   s->el = symbol_manager->eo++;
   s->lv = symbol_manager->lv;
-  s->vis = 1;
+  s->visibility = 1;
   uint64_t u = string_hash(s->name);
   if (s->parent)
   {
@@ -4483,9 +4483,9 @@ static Symbol *symbol_find(Symbol_Manager *symbol_manager, String_Slice nm)
   for (Symbol *s = symbol_manager->sy[h]; s; s = s->next)
     if (string_equal_ignore_case(s->name, nm))
     {
-      if (s->vis & 1 and (not imm or s->sc > imm->sc))
+      if (s->visibility & 1 and (not imm or s->sc > imm->sc))
         imm = s;
-      if (s->vis & 2 and not pot)
+      if (s->visibility & 2 and not pot)
         pot = s;
     }
   if (imm)
@@ -4513,7 +4513,7 @@ static void symbol_find_use(Symbol_Manager *symbol_manager, Symbol *s, String_Sl
         if (d->sy)
         {
           sv(&s->us, d->sy);
-          d->sy->vis |= 2;
+          d->sy->visibility |= 2;
         }
         else if (d->k == N_ED)
         {
@@ -4523,7 +4523,7 @@ static void symbol_find_use(Symbol_Manager *symbol_manager, Symbol *s, String_Sl
             if (e->sy)
             {
               sv(&s->us, e->sy);
-              e->sy->vis |= 2;
+              e->sy->visibility |= 2;
               sv(&symbol_manager->ex, e->sy);
             }
           }
@@ -4536,7 +4536,7 @@ static void symbol_find_use(Symbol_Manager *symbol_manager, Symbol *s, String_Sl
             if (oid->sy)
             {
               sv(&s->us, oid->sy);
-              oid->sy->vis |= 2;
+              oid->sy->visibility |= 2;
             }
           }
         }
@@ -4575,7 +4575,7 @@ static Symbol *symbol_find_with_arity(Symbol_Manager *symbol_manager, String_Sli
   Symbol_Vector cv = {0};
   int msc = -1;
   for (Symbol *s = symbol_manager->sy[symbol_hash(nm)]; s; s = s->next)
-    if (string_equal_ignore_case(s->name, nm) and (s->vis & 3))
+    if (string_equal_ignore_case(s->name, nm) and (s->visibility & 3))
     {
       if (s->sc > msc)
       {
@@ -5013,12 +5013,12 @@ static void symbol_compare_overload(Symbol_Manager *symbol_manager)
     {
       if (s->sc == symbol_manager->sc)
       {
-        s->vis &= ~1;
+        s->visibility &= ~1;
         if (s->k == 6)
-          s->vis = 3;
+          s->visibility = 3;
       }
-      if (s->vis & 2 and s->parent and s->parent->sc >= symbol_manager->sc)
-        s->vis &= ~2;
+      if (s->visibility & 2 and s->parent and s->parent->sc >= symbol_manager->sc)
+        s->visibility &= ~2;
     }
   if (symbol_manager->ssd > 0)
     symbol_manager->ssd--;
@@ -7949,14 +7949,14 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
           Syntax_Node *d = pk->package_spec.dc.data[i];
           if (d->sy)
           {
-            d->sy->vis |= 2;
+            d->sy->visibility |= 2;
             sv(&symbol_manager->uv, d->sy);
           }
           if (d->k == N_ED)
             for (uint32_t j = 0; j < d->exception_decl.identifiers.count; j++)
               if (d->exception_decl.identifiers.data[j]->sy)
               {
-                d->exception_decl.identifiers.data[j]->sy->vis |= 2;
+                d->exception_decl.identifiers.data[j]->sy->visibility |= 2;
                 sv(&symbol_manager->uv, d->exception_decl.identifiers.data[j]->sy);
               }
         }
@@ -7965,14 +7965,14 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
           Syntax_Node *d = pk->package_spec.private_declarations.data[i];
           if (d->sy)
           {
-            d->sy->vis |= 2;
+            d->sy->visibility |= 2;
             sv(&symbol_manager->uv, d->sy);
           }
           if (d->k == N_ED)
             for (uint32_t j = 0; j < d->exception_decl.identifiers.count; j++)
               if (d->exception_decl.identifiers.data[j]->sy)
               {
-                d->exception_decl.identifiers.data[j]->sy->vis |= 2;
+                d->exception_decl.identifiers.data[j]->sy->visibility |= 2;
                 sv(&symbol_manager->uv, d->exception_decl.identifiers.data[j]->sy);
               }
         }
@@ -8318,7 +8318,7 @@ static void symbol_manager_use_clauses(Symbol_Manager *symbol_manager, Syntax_No
             for (uint32_t k = 0; k < d->exception_decl.identifiers.count; k++)
               if (d->exception_decl.identifiers.data[k]->sy)
               {
-                d->exception_decl.identifiers.data[k]->sy->vis |= 2;
+                d->exception_decl.identifiers.data[k]->sy->visibility |= 2;
                 sv(&symbol_manager->uv, d->exception_decl.identifiers.data[k]->sy);
               }
           }
@@ -8327,13 +8327,13 @@ static void symbol_manager_use_clauses(Symbol_Manager *symbol_manager, Syntax_No
             for (uint32_t k = 0; k < d->object_decl.identifiers.count; k++)
               if (d->object_decl.identifiers.data[k]->sy)
               {
-                d->object_decl.identifiers.data[k]->sy->vis |= 2;
+                d->object_decl.identifiers.data[k]->sy->visibility |= 2;
                 sv(&symbol_manager->uv, d->object_decl.identifiers.data[k]->sy);
               }
           }
           else if (d->sy)
           {
-            d->sy->vis |= 2;
+            d->sy->visibility |= 2;
             sv(&symbol_manager->uv, d->sy);
           }
         }
