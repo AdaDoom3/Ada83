@@ -4386,7 +4386,7 @@ struct Symbol
   Symbol *next, *previous;
   int sc;
   int ss;
-  int64_t vl;
+  int64_t value;
   uint32_t offset;
   Node_Vector overloads;
   Symbol_Vector use_clauses;
@@ -4701,10 +4701,10 @@ static void symbol_manager_init(Symbol_Manager *symbol_manager)
   symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("POSITIVE"), 1, TY_POS, 0));
   symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("BOOLEAN"), 1, TY_BOOL, 0));
   Symbol *st = symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("TRUE"), 2, TY_BOOL, 0));
-  st->vl = 1;
+  st->value = 1;
   sv(&TY_BOOL->ev, st);
   Symbol *sf = symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("FALSE"), 2, TY_BOOL, 0));
-  sf->vl = 0;
+  sf->value = 0;
   sv(&TY_BOOL->ev, sf);
   symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("CHARACTER"), 1, TY_CHAR, 0));
   symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("STRING"), 1, TY_STR, 0));
@@ -5275,7 +5275,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
                                             int64_t i;
                                           }){.d = lo->f})
                                               .i
-                      : lo->k == N_ID and lo->sy and lo->sy->k == 2 ? lo->sy->vl
+                      : lo->k == N_ID and lo->sy and lo->sy->k == 2 ? lo->sy->value
                                                                     : lo->i;
         int64_t hiv = hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.x->k == N_INT ? -hi->unary_node.x->i
                       : hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.x->k == N_REAL
@@ -5289,7 +5289,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
                                             int64_t i;
                                           }){.d = hi->f})
                                               .i
-                      : hi->k == N_ID and hi->sy and hi->sy->k == 2 ? hi->sy->vl
+                      : hi->k == N_ID and hi->sy and hi->sy->k == 2 ? hi->sy->value
                                                                     : hi->i;
         t->lo = lov;
         t->hi = hiv;
@@ -5313,7 +5313,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
                                             int64_t i;
                                           }){.d = lo->f})
                                               .i
-                      : lo->k == N_ID and lo->sy and lo->sy->k == 2 ? lo->sy->vl
+                      : lo->k == N_ID and lo->sy and lo->sy->k == 2 ? lo->sy->value
                                                                     : lo->i;
         int64_t hiv = hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.x->k == N_INT ? -hi->unary_node.x->i
                       : hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.x->k == N_REAL
@@ -5327,7 +5327,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
                                             int64_t i;
                                           }){.d = hi->f})
                                               .i
-                      : hi->k == N_ID and hi->sy and hi->sy->k == 2 ? hi->sy->vl
+                      : hi->k == N_ID and hi->sy and hi->sy->k == 2 ? hi->sy->value
                                                                     : hi->i;
         t->lo = lov;
         t->hi = hiv;
@@ -5351,7 +5351,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
                                             int64_t i;
                                           }){.d = lo->f})
                                               .i
-                      : lo->k == N_ID and lo->sy and lo->sy->k == 2 ? lo->sy->vl
+                      : lo->k == N_ID and lo->sy and lo->sy->k == 2 ? lo->sy->value
                                                                     : lo->i;
         int64_t hiv = hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.x->k == N_INT ? -hi->unary_node.x->i
                       : hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.x->k == N_REAL
@@ -5365,7 +5365,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
                                             int64_t i;
                                           }){.d = hi->f})
                                               .i
-                      : hi->k == N_ID and hi->sy and hi->sy->k == 2 ? hi->sy->vl
+                      : hi->k == N_ID and hi->sy and hi->sy->k == 2 ? hi->sy->value
                                                                     : hi->i;
         t->lo = lov;
         t->hi = hiv;
@@ -6701,7 +6701,7 @@ static void runtime_register_compare(Symbol_Manager *symbol_manager, Representat
           Symbol *ev = t->ev.data[j];
           if (string_equal_ignore_case(ev->name, e->s))
           {
-            ev->vl = e->i;
+            ev->value = e->i;
             break;
           }
         }
@@ -7451,25 +7451,25 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
         }
         s->definition = n->object_decl.in;
         if (n->object_decl.is_constant and n->object_decl.in->k == N_INT)
-          s->vl = n->object_decl.in->i;
+          s->value = n->object_decl.in->i;
         else if (n->object_decl.is_constant and n->object_decl.in->k == N_ID and n->object_decl.in->sy and n->object_decl.in->sy->k == 2)
-          s->vl = n->object_decl.in->sy->vl;
+          s->value = n->object_decl.in->sy->value;
         else if (n->object_decl.is_constant and n->object_decl.in->k == N_AT)
         {
           Type_Info *pt = n->object_decl.in->attribute.prefix ? type_canonical_concrete(n->object_decl.in->attribute.prefix->ty) : 0;
           String_Slice a = n->object_decl.in->attribute.attribute_name;
           if (pt and string_equal_ignore_case(a, STRING_LITERAL("FIRST")))
-            s->vl = pt->lo;
+            s->value = pt->lo;
           else if (pt and string_equal_ignore_case(a, STRING_LITERAL("LAST")))
-            s->vl = pt->hi;
+            s->value = pt->hi;
         }
         else if (n->object_decl.is_constant and n->object_decl.in->k == N_QL and n->object_decl.in->qualified.aggregate)
         {
           Syntax_Node *ag = n->object_decl.in->qualified.aggregate;
           if (ag->k == N_ID and ag->sy and ag->sy->k == 2)
-            s->vl = ag->sy->vl;
+            s->value = ag->sy->value;
           else if (ag->k == N_INT)
-            s->vl = ag->i;
+            s->value = ag->i;
         }
       }
     }
@@ -7506,7 +7506,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
             {
               Symbol *_pe = _ept->ev.data[_i];
               Symbol *_ne = symbol_add_overload(symbol_manager, symbol_new(_pe->name, 2, t, n));
-              _ne->vl = _pe->vl;
+              _ne->value = _pe->value;
               sv(&t->ev, _ne);
             }
         }
@@ -7589,7 +7589,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
         Syntax_Node *it = n->type_decl.definition->list.items.data[i];
         Symbol *es = symbol_add_overload(
             symbol_manager, symbol_new(it->k == N_CHAR ? (String_Slice){(const char *) &it->i, 1} : it->s, 2, t, n));
-        es->vl = vl++;
+        es->value = vl++;
         sv(&t->ev, es);
       }
       t->lo = 0;
@@ -7703,10 +7703,10 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       Syntax_Node *lo = n->subtype_decl.range_constraint->range.low;
       Syntax_Node *hi = n->subtype_decl.range_constraint->range.high;
       int64_t lov = lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.x->k == N_INT ? -lo->unary_node.x->i
-                    : lo->k == N_ID and lo->sy and lo->sy->k == 2                ? lo->sy->vl
+                    : lo->k == N_ID and lo->sy and lo->sy->k == 2                ? lo->sy->value
                                                                                  : lo->i;
       int64_t hiv = hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.x->k == N_INT ? -hi->unary_node.x->i
-                    : hi->k == N_ID and hi->sy and hi->sy->k == 2                ? hi->sy->vl
+                    : hi->k == N_ID and hi->sy and hi->sy->k == 2                ? hi->sy->value
                                                                                  : hi->i;
       t->lo = lov;
       t->hi = hiv;
@@ -9011,7 +9011,7 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
                 for (uint32_t ei = 0; ei < cht->ev.count; ei++)
                 {
                   Value cv = {new_temporary_register(generator), VALUE_KIND_INTEGER};
-                  fprintf(o, "  %%t%d = add i64 0, %ld\n", cv.id, (long) cht->ev.data[ei]->vl);
+                  fprintf(o, "  %%t%d = add i64 0, %ld\n", cv.id, (long) cht->ev.data[ei]->value);
                   int ep = new_temporary_register(generator);
                   fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %%t%d\n", ep, p, cv.id);
                   fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
@@ -9230,7 +9230,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       else
       {
         r.k = VALUE_KIND_INTEGER;
-        fprintf(o, "  %%t%d = add i64 0, %lld\n", r.id, (long long) s->vl);
+        fprintf(o, "  %%t%d = add i64 0, %lld\n", r.id, (long long) s->value);
       }
     }
     else
@@ -10390,7 +10390,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     else if (n->sy and n->sy->k == 2)
     {
       r.k = VALUE_KIND_INTEGER;
-      fprintf(o, "  %%t%d = add i64 0, %lld\n", r.id, (long long) n->sy->vl);
+      fprintf(o, "  %%t%d = add i64 0, %lld\n", r.id, (long long) n->sy->value);
     }
     else
     {
@@ -14065,9 +14065,9 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
           {
             snprintf(iv, 64, "%ld", s->definition->i);
           }
-          else if (k == VALUE_KIND_INTEGER and s->vl != 0)
+          else if (k == VALUE_KIND_INTEGER and s->value != 0)
           {
-            snprintf(iv, 64, "%ld", s->vl);
+            snprintf(iv, 64, "%ld", s->value);
           }
           else
           {
@@ -14277,9 +14277,9 @@ int main(int ac, char **av)
           {
             snprintf(iv, 64, "%ld", s->definition->i);
           }
-          else if (k == VALUE_KIND_INTEGER and s->vl != 0)
+          else if (k == VALUE_KIND_INTEGER and s->value != 0)
           {
-            snprintf(iv, 64, "%ld", s->vl);
+            snprintf(iv, 64, "%ld", s->value);
           }
           else
           {
