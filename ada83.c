@@ -2795,419 +2795,419 @@ static Syntax_Node *pbk(Parser *p, String_Slice lb)
   parser_expect(p, T_SC);
   return n;
 }
-static Syntax_Node *parse_statement_list(Parser *p)
+static Syntax_Node *parse_statement_list(Parser *parser)
 {
-  Source_Location lc = parser_location(p);
-  parser_expect(p, T_SEL);
-  Syntax_Node *n = ND(SA, lc);
-  n->sa.kn = 0;
-  if (parser_match(p, T_DEL))
+  Source_Location location = parser_location(parser);
+  parser_expect(parser, T_SEL);
+  Syntax_Node *node = ND(SA, location);
+  node->sa.kn = 0;
+  if (parser_match(parser, T_DEL))
   {
-    n->sa.kn = 1;
-    n->sa.gd = parse_expression(p);
-    parser_expect(p, T_THEN);
-    if (parser_match(p, T_AB))
-      n->sa.kn = 3;
-    while (not parser_at(p, T_OR) and not parser_at(p, T_ELSE) and not parser_at(p, T_END))
-      nv(&n->sa.sts, parse_statement_or_label(p));
+    node->sa.kn = 1;
+    node->sa.gd = parse_expression(parser);
+    parser_expect(parser, T_THEN);
+    if (parser_match(parser, T_AB))
+      node->sa.kn = 3;
+    while (not parser_at(parser, T_OR) and not parser_at(parser, T_ELSE) and not parser_at(parser, T_END))
+      nv(&node->sa.sts, parse_statement_or_label(parser));
   }
-  else if (parser_at(p, T_WHN))
+  else if (parser_at(parser, T_WHN))
   {
-    while (parser_match(p, T_WHN))
+    while (parser_match(parser, T_WHN))
     {
-      Syntax_Node *g = ND(WH, lc);
+      Syntax_Node *alternative = ND(WH, location);
       do
-        nv(&g->ch.it, parse_expression(p));
-      while (parser_match(p, T_BR));
-      parser_expect(p, T_AR);
-      if (parser_match(p, T_ACC))
+        nv(&alternative->ch.it, parse_expression(parser));
+      while (parser_match(parser, T_BR));
+      parser_expect(parser, T_AR);
+      if (parser_match(parser, T_ACC))
       {
-        g->k = N_ACC;
-        g->acc.nm = parser_identifier(p);
-        if (parser_at(p, T_LP))
+        alternative->k = N_ACC;
+        alternative->acc.nm = parser_identifier(parser);
+        if (parser_at(parser, T_LP))
         {
-          if (p->peek_token.kind == T_ID)
+          if (parser->peek_token.kind == T_ID)
           {
-            Token scr = p->current_token, spk = p->peek_token;
-            Lexer slx = p->lexer;
-            parser_next(p);
-            parser_next(p);
-            if (p->current_token.kind == T_CM or p->current_token.kind == T_CL)
+            Token saved_current_token = parser->current_token, saved_peek_token = parser->peek_token;
+            Lexer saved_lexer = parser->lexer;
+            parser_next(parser);
+            parser_next(parser);
+            if (parser->current_token.kind == T_CM or parser->current_token.kind == T_CL)
             {
-              p->current_token = scr;
-              p->peek_token = spk;
-              p->lexer = slx;
-              g->acc.pmx = parse_parameter_mode(p);
+              parser->current_token = saved_current_token;
+              parser->peek_token = saved_peek_token;
+              parser->lexer = saved_lexer;
+              alternative->acc.pmx = parse_parameter_mode(parser);
             }
             else
             {
-              p->current_token = scr;
-              p->peek_token = spk;
-              p->lexer = slx;
-              parser_expect(p, T_LP);
+              parser->current_token = saved_current_token;
+              parser->peek_token = saved_peek_token;
+              parser->lexer = saved_lexer;
+              parser_expect(parser, T_LP);
               do
-                nv(&g->acc.ixx, parse_expression(p));
-              while (parser_match(p, T_CM));
-              parser_expect(p, T_RP);
-              g->acc.pmx = parse_parameter_mode(p);
+                nv(&alternative->acc.ixx, parse_expression(parser));
+              while (parser_match(parser, T_CM));
+              parser_expect(parser, T_RP);
+              alternative->acc.pmx = parse_parameter_mode(parser);
             }
           }
           else
           {
-            parser_expect(p, T_LP);
+            parser_expect(parser, T_LP);
             do
-              nv(&g->acc.ixx, parse_expression(p));
-            while (parser_match(p, T_CM));
-            parser_expect(p, T_RP);
-            g->acc.pmx = parse_parameter_mode(p);
+              nv(&alternative->acc.ixx, parse_expression(parser));
+            while (parser_match(parser, T_CM));
+            parser_expect(parser, T_RP);
+            alternative->acc.pmx = parse_parameter_mode(parser);
           }
         }
         else
         {
-          g->acc.pmx = parse_parameter_mode(p);
+          alternative->acc.pmx = parse_parameter_mode(parser);
         }
-        if (parser_match(p, T_DO))
+        if (parser_match(parser, T_DO))
         {
-          while (not parser_at(p, T_END) and not parser_at(p, T_OR) and not parser_at(p, T_ELSE))
-            nv(&g->acc.stx, parse_statement_or_label(p));
-          parser_expect(p, T_END);
-          if (parser_at(p, T_ID))
-            parser_next(p);
+          while (not parser_at(parser, T_END) and not parser_at(parser, T_OR) and not parser_at(parser, T_ELSE))
+            nv(&alternative->acc.stx, parse_statement_or_label(parser));
+          parser_expect(parser, T_END);
+          if (parser_at(parser, T_ID))
+            parser_next(parser);
         }
-        while (not parser_at(p, T_OR) and not parser_at(p, T_ELSE) and not parser_at(p, T_END)
-               and not parser_at(p, T_WHN))
-          nv(&g->hnd.stz, parse_statement_or_label(p));
+        while (not parser_at(parser, T_OR) and not parser_at(parser, T_ELSE) and not parser_at(parser, T_END)
+               and not parser_at(parser, T_WHN))
+          nv(&alternative->hnd.stz, parse_statement_or_label(parser));
       }
-      else if (parser_match(p, T_TER))
+      else if (parser_match(parser, T_TER))
       {
-        g->k = N_TRM;
+        alternative->k = N_TRM;
       }
-      else if (parser_match(p, T_DEL))
+      else if (parser_match(parser, T_DEL))
       {
-        g->k = N_DL;
-        g->ex.cd = parse_expression(p);
-        parser_expect(p, T_THEN);
-        while (not parser_at(p, T_OR) and not parser_at(p, T_ELSE) and not parser_at(p, T_END))
-          nv(&g->hnd.stz, parse_statement_or_label(p));
+        alternative->k = N_DL;
+        alternative->ex.cd = parse_expression(parser);
+        parser_expect(parser, T_THEN);
+        while (not parser_at(parser, T_OR) and not parser_at(parser, T_ELSE) and not parser_at(parser, T_END))
+          nv(&alternative->hnd.stz, parse_statement_or_label(parser));
       }
-      nv(&n->sa.sts, g);
+      nv(&node->sa.sts, alternative);
     }
   }
   else
   {
     do
     {
-      Syntax_Node *g = ND(WH, lc);
-      if (parser_match(p, T_ACC))
+      Syntax_Node *alternative = ND(WH, location);
+      if (parser_match(parser, T_ACC))
       {
-        g->k = N_ACC;
-        g->acc.nm = parser_identifier(p);
-        if (parser_at(p, T_LP))
+        alternative->k = N_ACC;
+        alternative->acc.nm = parser_identifier(parser);
+        if (parser_at(parser, T_LP))
         {
-          if (p->peek_token.kind == T_ID)
+          if (parser->peek_token.kind == T_ID)
           {
-            Token scr = p->current_token, spk = p->peek_token;
-            Lexer slx = p->lexer;
-            parser_next(p);
-            parser_next(p);
-            if (p->current_token.kind == T_CM or p->current_token.kind == T_CL)
+            Token saved_current_token = parser->current_token, saved_peek_token = parser->peek_token;
+            Lexer saved_lexer = parser->lexer;
+            parser_next(parser);
+            parser_next(parser);
+            if (parser->current_token.kind == T_CM or parser->current_token.kind == T_CL)
             {
-              p->current_token = scr;
-              p->peek_token = spk;
-              p->lexer = slx;
-              g->acc.pmx = parse_parameter_mode(p);
+              parser->current_token = saved_current_token;
+              parser->peek_token = saved_peek_token;
+              parser->lexer = saved_lexer;
+              alternative->acc.pmx = parse_parameter_mode(parser);
             }
             else
             {
-              p->current_token = scr;
-              p->peek_token = spk;
-              p->lexer = slx;
-              parser_expect(p, T_LP);
+              parser->current_token = saved_current_token;
+              parser->peek_token = saved_peek_token;
+              parser->lexer = saved_lexer;
+              parser_expect(parser, T_LP);
               do
-                nv(&g->acc.ixx, parse_expression(p));
-              while (parser_match(p, T_CM));
-              parser_expect(p, T_RP);
-              g->acc.pmx = parse_parameter_mode(p);
+                nv(&alternative->acc.ixx, parse_expression(parser));
+              while (parser_match(parser, T_CM));
+              parser_expect(parser, T_RP);
+              alternative->acc.pmx = parse_parameter_mode(parser);
             }
           }
           else
           {
-            parser_expect(p, T_LP);
+            parser_expect(parser, T_LP);
             do
-              nv(&g->acc.ixx, parse_expression(p));
-            while (parser_match(p, T_CM));
-            parser_expect(p, T_RP);
-            g->acc.pmx = parse_parameter_mode(p);
+              nv(&alternative->acc.ixx, parse_expression(parser));
+            while (parser_match(parser, T_CM));
+            parser_expect(parser, T_RP);
+            alternative->acc.pmx = parse_parameter_mode(parser);
           }
         }
         else
         {
-          g->acc.pmx = parse_parameter_mode(p);
+          alternative->acc.pmx = parse_parameter_mode(parser);
         }
-        if (parser_match(p, T_DO))
+        if (parser_match(parser, T_DO))
         {
-          while (not parser_at(p, T_END) and not parser_at(p, T_OR) and not parser_at(p, T_ELSE))
-            nv(&g->acc.stx, parse_statement_or_label(p));
-          parser_expect(p, T_END);
-          if (parser_at(p, T_ID))
-            parser_next(p);
+          while (not parser_at(parser, T_END) and not parser_at(parser, T_OR) and not parser_at(parser, T_ELSE))
+            nv(&alternative->acc.stx, parse_statement_or_label(parser));
+          parser_expect(parser, T_END);
+          if (parser_at(parser, T_ID))
+            parser_next(parser);
         }
-        parser_expect(p, T_SC);
-        while (not parser_at(p, T_OR) and not parser_at(p, T_ELSE) and not parser_at(p, T_END))
-          nv(&g->hnd.stz, parse_statement_or_label(p));
+        parser_expect(parser, T_SC);
+        while (not parser_at(parser, T_OR) and not parser_at(parser, T_ELSE) and not parser_at(parser, T_END))
+          nv(&alternative->hnd.stz, parse_statement_or_label(parser));
       }
-      else if (parser_match(p, T_DEL))
+      else if (parser_match(parser, T_DEL))
       {
-        g->k = N_DL;
-        g->ex.cd = parse_expression(p);
-        parser_expect(p, T_SC);
+        alternative->k = N_DL;
+        alternative->ex.cd = parse_expression(parser);
+        parser_expect(parser, T_SC);
       }
-      else if (parser_match(p, T_TER))
+      else if (parser_match(parser, T_TER))
       {
-        g->k = N_TRM;
-        parser_expect(p, T_SC);
+        alternative->k = N_TRM;
+        parser_expect(parser, T_SC);
       }
       else
       {
-        while (not parser_at(p, T_OR) and not parser_at(p, T_ELSE) and not parser_at(p, T_END))
-          nv(&g->hnd.stz, parse_statement_or_label(p));
+        while (not parser_at(parser, T_OR) and not parser_at(parser, T_ELSE) and not parser_at(parser, T_END))
+          nv(&alternative->hnd.stz, parse_statement_or_label(parser));
       }
-      nv(&n->sa.sts, g);
-    } while (parser_match(p, T_OR));
+      nv(&node->sa.sts, alternative);
+    } while (parser_match(parser, T_OR));
   }
-  if (parser_match(p, T_ELSE))
-    while (not parser_at(p, T_END))
-      nv(&n->ss.el, parse_statement_or_label(p));
-  parser_expect(p, T_END);
-  parser_expect(p, T_SEL);
-  parser_expect(p, T_SC);
-  return n;
+  if (parser_match(parser, T_ELSE))
+    while (not parser_at(parser, T_END))
+      nv(&node->ss.el, parse_statement_or_label(parser));
+  parser_expect(parser, T_END);
+  parser_expect(parser, T_SEL);
+  parser_expect(parser, T_SC);
+  return node;
 }
-static Syntax_Node *parse_statement_or_label(Parser *p)
+static Syntax_Node *parse_statement_or_label(Parser *parser)
 {
-  Source_Location lc = parser_location(p);
-  String_Slice lb = N;
-  while (parser_at(p, T_LL))
+  Source_Location location = parser_location(parser);
+  String_Slice label = N;
+  while (parser_at(parser, T_LL))
   {
-    parser_next(p);
-    lb = parser_identifier(p);
-    parser_expect(p, T_GG);
-    slv(&p->label_stack, lb);
+    parser_next(parser);
+    label = parser_identifier(parser);
+    parser_expect(parser, T_GG);
+    slv(&parser->label_stack, label);
   }
-  if (not lb.string and parser_at(p, T_ID) and p->peek_token.kind == T_CL)
+  if (not label.string and parser_at(parser, T_ID) and parser->peek_token.kind == T_CL)
   {
-    lb = parser_identifier(p);
-    parser_expect(p, T_CL);
-    slv(&p->label_stack, lb);
+    label = parser_identifier(parser);
+    parser_expect(parser, T_CL);
+    slv(&parser->label_stack, label);
   }
-  if (parser_at(p, T_IF))
-    return pif(p);
-  if (parser_at(p, T_CSE))
-    return pcs(p);
-  if (parser_at(p, T_SEL))
-    return parse_statement_list(p);
-  if (parser_at(p, T_LOOP) or parser_at(p, T_WHI) or parser_at(p, T_FOR))
-    return plp(p, lb);
-  if (parser_at(p, T_DEC) or parser_at(p, T_BEG))
-    return pbk(p, lb);
-  if (lb.string)
+  if (parser_at(parser, T_IF))
+    return pif(parser);
+  if (parser_at(parser, T_CSE))
+    return pcs(parser);
+  if (parser_at(parser, T_SEL))
+    return parse_statement_list(parser);
+  if (parser_at(parser, T_LOOP) or parser_at(parser, T_WHI) or parser_at(parser, T_FOR))
+    return plp(parser, label);
+  if (parser_at(parser, T_DEC) or parser_at(parser, T_BEG))
+    return pbk(parser, label);
+  if (label.string)
   {
-    Syntax_Node *bl = ND(BL, lc);
-    bl->bk.lb = lb;
-    Node_Vector st = {0};
-    nv(&st, parse_statement_or_label(p));
-    bl->bk.st = st;
-    return bl;
+    Syntax_Node *block = ND(BL, location);
+    block->bk.lb = label;
+    Node_Vector statements = {0};
+    nv(&statements, parse_statement_or_label(parser));
+    block->bk.st = statements;
+    return block;
   }
-  if (parser_match(p, T_ACC))
+  if (parser_match(parser, T_ACC))
   {
-    Syntax_Node *n = ND(ACC, lc);
-    n->acc.nm = parser_identifier(p);
-    if (parser_at(p, T_LP))
+    Syntax_Node *node = ND(ACC, location);
+    node->acc.nm = parser_identifier(parser);
+    if (parser_at(parser, T_LP))
     {
-      if (p->peek_token.kind == T_ID)
+      if (parser->peek_token.kind == T_ID)
       {
-        Token scr = p->current_token, spk = p->peek_token;
-        Lexer slx = p->lexer;
-        parser_next(p);
-        parser_next(p);
-        if (p->current_token.kind == T_CM or p->current_token.kind == T_CL)
+        Token saved_current_token = parser->current_token, saved_peek_token = parser->peek_token;
+        Lexer saved_lexer = parser->lexer;
+        parser_next(parser);
+        parser_next(parser);
+        if (parser->current_token.kind == T_CM or parser->current_token.kind == T_CL)
         {
-          p->current_token = scr;
-          p->peek_token = spk;
-          p->lexer = slx;
-          n->acc.pmx = parse_parameter_mode(p);
+          parser->current_token = saved_current_token;
+          parser->peek_token = saved_peek_token;
+          parser->lexer = saved_lexer;
+          node->acc.pmx = parse_parameter_mode(parser);
         }
         else
         {
-          p->current_token = scr;
-          p->peek_token = spk;
-          p->lexer = slx;
-          parser_expect(p, T_LP);
+          parser->current_token = saved_current_token;
+          parser->peek_token = saved_peek_token;
+          parser->lexer = saved_lexer;
+          parser_expect(parser, T_LP);
           do
-            nv(&n->acc.ixx, parse_expression(p));
-          while (parser_match(p, T_CM));
-          parser_expect(p, T_RP);
-          n->acc.pmx = parse_parameter_mode(p);
+            nv(&node->acc.ixx, parse_expression(parser));
+          while (parser_match(parser, T_CM));
+          parser_expect(parser, T_RP);
+          node->acc.pmx = parse_parameter_mode(parser);
         }
       }
       else
       {
-        parser_expect(p, T_LP);
+        parser_expect(parser, T_LP);
         do
-          nv(&n->acc.ixx, parse_expression(p));
-        while (parser_match(p, T_CM));
-        parser_expect(p, T_RP);
-        n->acc.pmx = parse_parameter_mode(p);
+          nv(&node->acc.ixx, parse_expression(parser));
+        while (parser_match(parser, T_CM));
+        parser_expect(parser, T_RP);
+        node->acc.pmx = parse_parameter_mode(parser);
       }
     }
     else
     {
-      n->acc.pmx = parse_parameter_mode(p);
+      node->acc.pmx = parse_parameter_mode(parser);
     }
-    if (parser_match(p, T_DO))
+    if (parser_match(parser, T_DO))
     {
-      while (not parser_at(p, T_END))
-        nv(&n->acc.stx, parse_statement_or_label(p));
-      parser_expect(p, T_END);
-      if (parser_at(p, T_ID))
-        parser_next(p);
+      while (not parser_at(parser, T_END))
+        nv(&node->acc.stx, parse_statement_or_label(parser));
+      parser_expect(parser, T_END);
+      if (parser_at(parser, T_ID))
+        parser_next(parser);
     }
-    parser_expect(p, T_SC);
-    return n;
+    parser_expect(parser, T_SC);
+    return node;
   }
-  if (parser_match(p, T_DEL))
+  if (parser_match(parser, T_DEL))
   {
-    Syntax_Node *n = ND(DL, lc);
-    n->ex.cd = parse_expression(p);
-    parser_expect(p, T_SC);
-    return n;
+    Syntax_Node *node = ND(DL, location);
+    node->ex.cd = parse_expression(parser);
+    parser_expect(parser, T_SC);
+    return node;
   }
-  if (parser_match(p, T_AB))
+  if (parser_match(parser, T_AB))
   {
-    Syntax_Node *n = ND(AB, lc);
-    if (not parser_at(p, T_SC))
-      n->rs.ec = parse_name(p);
-    parser_expect(p, T_SC);
-    return n;
+    Syntax_Node *node = ND(AB, location);
+    if (not parser_at(parser, T_SC))
+      node->rs.ec = parse_name(parser);
+    parser_expect(parser, T_SC);
+    return node;
   }
-  if (parser_match(p, T_RET))
+  if (parser_match(parser, T_RET))
   {
-    Syntax_Node *n = ND(RT, lc);
-    if (not parser_at(p, T_SC))
-      n->rt.vl = parse_expression(p);
-    parser_expect(p, T_SC);
-    return n;
+    Syntax_Node *node = ND(RT, location);
+    if (not parser_at(parser, T_SC))
+      node->rt.vl = parse_expression(parser);
+    parser_expect(parser, T_SC);
+    return node;
   }
-  if (parser_match(p, T_EXIT))
+  if (parser_match(parser, T_EXIT))
   {
-    Syntax_Node *n = ND(EX, lc);
-    if (parser_at(p, T_ID))
-      n->ex.lb = parser_identifier(p);
-    if (parser_match(p, T_WHN))
-      n->ex.cd = parse_expression(p);
-    parser_expect(p, T_SC);
-    return n;
+    Syntax_Node *node = ND(EX, location);
+    if (parser_at(parser, T_ID))
+      node->ex.lb = parser_identifier(parser);
+    if (parser_match(parser, T_WHN))
+      node->ex.cd = parse_expression(parser);
+    parser_expect(parser, T_SC);
+    return node;
   }
-  if (parser_match(p, T_GOTO))
+  if (parser_match(parser, T_GOTO))
   {
-    Syntax_Node *n = ND(GT, lc);
-    n->go.lb = parser_identifier(p);
-    parser_expect(p, T_SC);
-    return n;
+    Syntax_Node *node = ND(GT, location);
+    node->go.lb = parser_identifier(parser);
+    parser_expect(parser, T_SC);
+    return node;
   }
-  if (parser_match(p, T_RAS))
+  if (parser_match(parser, T_RAS))
   {
-    Syntax_Node *n = ND(RS, lc);
-    if (not parser_at(p, T_SC))
-      n->rs.ec = parse_name(p);
-    parser_expect(p, T_SC);
-    return n;
+    Syntax_Node *node = ND(RS, location);
+    if (not parser_at(parser, T_SC))
+      node->rs.ec = parse_name(parser);
+    parser_expect(parser, T_SC);
+    return node;
   }
-  if (parser_match(p, T_NULL))
+  if (parser_match(parser, T_NULL))
   {
-    parser_expect(p, T_SC);
-    return ND(NS, lc);
+    parser_expect(parser, T_SC);
+    return ND(NS, location);
   }
-  if (parser_match(p, T_PGM))
+  if (parser_match(parser, T_PGM))
   {
-    Syntax_Node *n = ND(PG, lc);
-    n->pg.nm = parser_identifier(p);
-    if (parser_match(p, T_LP))
+    Syntax_Node *node = ND(PG, location);
+    node->pg.nm = parser_identifier(parser);
+    if (parser_match(parser, T_LP))
     {
       do
-        nv(&n->pg.ar, parse_expression(p));
-      while (parser_match(p, T_CM));
-      parser_expect(p, T_RP);
+        nv(&node->pg.ar, parse_expression(parser));
+      while (parser_match(parser, T_CM));
+      parser_expect(parser, T_RP);
     }
-    parser_expect(p, T_SC);
-    return n;
+    parser_expect(parser, T_SC);
+    return node;
   }
-  Syntax_Node *e = parse_name(p);
-  if (parser_match(p, T_AS))
+  Syntax_Node *expression = parse_name(parser);
+  if (parser_match(parser, T_AS))
   {
-    Syntax_Node *n = ND(AS, lc);
-    if (e and e->k == N_CL)
+    Syntax_Node *node = ND(AS, location);
+    if (expression and expression->k == N_CL)
     {
-      Syntax_Node *fn = e->cl.fn;
-      Node_Vector ar = e->cl.ar;
-      e->k = N_IX;
-      e->ix.p = fn;
-      e->ix.ix = ar;
+      Syntax_Node *function_name = expression->cl.fn;
+      Node_Vector arguments = expression->cl.ar;
+      expression->k = N_IX;
+      expression->ix.p = function_name;
+      expression->ix.ix = arguments;
     }
-    n->as.tg = e;
-    n->as.vl = parse_expression(p);
-    parser_expect(p, T_SC);
-    return n;
+    node->as.tg = expression;
+    node->as.vl = parse_expression(parser);
+    parser_expect(parser, T_SC);
+    return node;
   }
-  Syntax_Node *n = ND(CLT, lc);
-  if (e->k == N_IX)
+  Syntax_Node *node = ND(CLT, location);
+  if (expression->k == N_IX)
   {
-    n->ct.nm = e->ix.p;
-    n->ct.arr = e->ix.ix;
+    node->ct.nm = expression->ix.p;
+    node->ct.arr = expression->ix.ix;
   }
-  else if (e->k == N_CL)
+  else if (expression->k == N_CL)
   {
-    n->ct.nm = e->cl.fn;
-    n->ct.arr = e->cl.ar;
+    node->ct.nm = expression->cl.fn;
+    node->ct.arr = expression->cl.ar;
   }
   else
-    n->ct.nm = e;
-  parser_expect(p, T_SC);
-  return n;
+    node->ct.nm = expression;
+  parser_expect(parser, T_SC);
+  return node;
 }
-static Node_Vector parse_statement(Parser *p)
+static Node_Vector parse_statement(Parser *parser)
 {
-  Node_Vector v = {0};
-  while (not parser_at(p, T_END) and not parser_at(p, T_EXCP) and not parser_at(p, T_ELSIF)
-         and not parser_at(p, T_ELSE) and not parser_at(p, T_WHN) and not parser_at(p, T_OR))
-    nv(&v, parse_statement_or_label(p));
-  return v;
+  Node_Vector statements = {0};
+  while (not parser_at(parser, T_END) and not parser_at(parser, T_EXCP) and not parser_at(parser, T_ELSIF)
+         and not parser_at(parser, T_ELSE) and not parser_at(parser, T_WHN) and not parser_at(parser, T_OR))
+    nv(&statements, parse_statement_or_label(parser));
+  return statements;
 }
-static Node_Vector parse_handle_declaration(Parser *p)
+static Node_Vector parse_handle_declaration(Parser *parser)
 {
-  Node_Vector v = {0};
-  while (parser_match(p, T_WHN))
+  Node_Vector handlers = {0};
+  while (parser_match(parser, T_WHN))
   {
-    Source_Location lc = parser_location(p);
-    Syntax_Node *h = ND(HD, lc);
+    Source_Location location = parser_location(parser);
+    Syntax_Node *handler = ND(HD, location);
     do
     {
-      if (parser_match(p, T_OTH))
+      if (parser_match(parser, T_OTH))
       {
-        Syntax_Node *n = ND(ID, lc);
-        n->s = STRING_LITERAL("others");
-        nv(&h->hnd.ec, n);
+        Syntax_Node *node = ND(ID, location);
+        node->s = STRING_LITERAL("others");
+        nv(&handler->hnd.ec, node);
       }
       else
-        nv(&h->hnd.ec, parse_name(p));
-    } while (parser_match(p, T_BR));
-    parser_expect(p, T_AR);
-    while (not parser_at(p, T_WHN) and not parser_at(p, T_END))
-      nv(&h->hnd.stz, parse_statement_or_label(p));
-    nv(&v, h);
+        nv(&handler->hnd.ec, parse_name(parser));
+    } while (parser_match(parser, T_BR));
+    parser_expect(parser, T_AR);
+    while (not parser_at(parser, T_WHN) and not parser_at(parser, T_END))
+      nv(&handler->hnd.stz, parse_statement_or_label(parser));
+    nv(&handlers, handler);
   }
-  return v;
+  return handlers;
 }
 static Syntax_Node *parse_type_definition(Parser *p)
 {
