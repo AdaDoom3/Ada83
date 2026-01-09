@@ -3209,161 +3209,161 @@ static Node_Vector parse_handle_declaration(Parser *parser)
   }
   return handlers;
 }
-static Syntax_Node *parse_type_definition(Parser *p)
+static Syntax_Node *parse_type_definition(Parser *parser)
 {
-  Source_Location lc = parser_location(p);
-  if (parser_match(p, T_LP))
+  Source_Location location = parser_location(parser);
+  if (parser_match(parser, T_LP))
   {
-    Syntax_Node *n = ND(TE, lc);
+    Syntax_Node *node = ND(TE, location);
     do
     {
-      if (parser_at(p, T_CHAR))
+      if (parser_at(parser, T_CHAR))
       {
-        Syntax_Node *c = ND(CHAR, lc);
-        c->i = p->current_token.integer_value;
-        parser_next(p);
-        nv(&n->lst.it, c);
+        Syntax_Node *c = ND(CHAR, location);
+        c->i = parser->current_token.integer_value;
+        parser_next(parser);
+        nv(&node->lst.it, c);
       }
       else
       {
-        String_Slice nm = parser_identifier(p);
-        Syntax_Node *i = ND(ID, lc);
+        String_Slice nm = parser_identifier(parser);
+        Syntax_Node *i = ND(ID, location);
         i->s = nm;
-        nv(&n->lst.it, i);
+        nv(&node->lst.it, i);
       }
-    } while (parser_match(p, T_CM));
-    parser_expect(p, T_RP);
-    return n;
+    } while (parser_match(parser, T_CM));
+    parser_expect(parser, T_RP);
+    return node;
   }
-  if (parser_match(p, T_RNG))
+  if (parser_match(parser, T_RNG))
   {
-    Syntax_Node *n = ND(TI, lc);
-    if (parser_match(p, T_BX))
+    Syntax_Node *node = ND(TI, location);
+    if (parser_match(parser, T_BX))
     {
-      n->rn.lo = 0;
-      n->rn.hi = 0;
+      node->rn.lo = 0;
+      node->rn.hi = 0;
     }
     else
     {
-      n->rn.lo = parse_signed_term(p);
-      parser_expect(p, T_DD);
-      n->rn.hi = parse_signed_term(p);
+      node->rn.lo = parse_signed_term(parser);
+      parser_expect(parser, T_DD);
+      node->rn.hi = parse_signed_term(parser);
     }
-    return n;
+    return node;
   }
-  if (parser_match(p, T_MOD))
+  if (parser_match(parser, T_MOD))
   {
-    Syntax_Node *n = ND(TI, lc);
-    n->un.op = T_MOD;
-    n->un.x = parse_expression(p);
-    return n;
+    Syntax_Node *node = ND(TI, location);
+    node->un.op = T_MOD;
+    node->un.x = parse_expression(parser);
+    return node;
   }
-  if (parser_match(p, T_DIG))
+  if (parser_match(parser, T_DIG))
   {
-    Syntax_Node *n = ND(TF, lc);
-    if (parser_match(p, T_BX))
-      n->un.x = 0;
+    Syntax_Node *node = ND(TF, location);
+    if (parser_match(parser, T_BX))
+      node->un.x = 0;
     else
-      n->un.x = parse_expression(p);
-    if (parser_match(p, T_RNG))
+      node->un.x = parse_expression(parser);
+    if (parser_match(parser, T_RNG))
     {
-      n->rn.lo = parse_signed_term(p);
-      parser_expect(p, T_DD);
-      n->rn.hi = parse_signed_term(p);
+      node->rn.lo = parse_signed_term(parser);
+      parser_expect(parser, T_DD);
+      node->rn.hi = parse_signed_term(parser);
     }
-    return n;
+    return node;
   }
-  if (parser_match(p, T_DELTA))
+  if (parser_match(parser, T_DELTA))
   {
-    Syntax_Node *n = ND(TX, lc);
-    if (parser_match(p, T_BX))
+    Syntax_Node *node = ND(TX, location);
+    if (parser_match(parser, T_BX))
     {
-      n->rn.lo = 0;
-      n->rn.hi = 0;
-      n->bn.r = 0;
+      node->rn.lo = 0;
+      node->rn.hi = 0;
+      node->bn.r = 0;
     }
     else
     {
-      n->rn.lo = parse_expression(p);
-      parser_expect(p, T_RNG);
-      n->rn.hi = parse_signed_term(p);
-      parser_expect(p, T_DD);
-      n->bn.r = parse_signed_term(p);
+      node->rn.lo = parse_expression(parser);
+      parser_expect(parser, T_RNG);
+      node->rn.hi = parse_signed_term(parser);
+      parser_expect(parser, T_DD);
+      node->bn.r = parse_signed_term(parser);
     }
-    return n;
+    return node;
   }
-  if (parser_match(p, T_ARR))
+  if (parser_match(parser, T_ARR))
   {
-    parser_expect(p, T_LP);
-    Syntax_Node *n = ND(TA, lc);
+    parser_expect(parser, T_LP);
+    Syntax_Node *node = ND(TA, location);
     do
     {
-      Syntax_Node *ix = parse_range(p);
-      if (ix->k == N_ID and parser_match(p, T_RNG))
+      Syntax_Node *ix = parse_range(parser);
+      if (ix->k == N_ID and parser_match(parser, T_RNG))
       {
-        Syntax_Node *st = ND(ST, lc);
+        Syntax_Node *st = ND(ST, location);
         st->sd.in = ix;
-        Syntax_Node *cn = ND(CN, lc);
-        cn->cn.rn = parse_range(p);
+        Syntax_Node *cn = ND(CN, location);
+        cn->cn.rn = parse_range(parser);
         st->sd.cn = cn;
-        nv(&n->ix.ix, st);
+        nv(&node->ix.ix, st);
       }
       else
-        nv(&n->ix.ix, ix);
-    } while (parser_match(p, T_CM));
-    parser_expect(p, T_RP);
-    parser_expect(p, T_OF);
-    n->ix.p = parse_simple_expression(p);
-    return n;
+        nv(&node->ix.ix, ix);
+    } while (parser_match(parser, T_CM));
+    parser_expect(parser, T_RP);
+    parser_expect(parser, T_OF);
+    node->ix.p = parse_simple_expression(parser);
+    return node;
   }
-  if (parser_match(p, T_REC))
+  if (parser_match(parser, T_REC))
   {
-    Syntax_Node *n = ND(TR, lc);
+    Syntax_Node *node = ND(TR, location);
     uint32_t of = 0;
     Node_Vector dc = {0};
-    if (parser_match(p, T_LP))
+    if (parser_match(parser, T_LP))
     {
       do
       {
-        String_Slice dn = parser_identifier(p);
-        parser_expect(p, T_CL);
-        Syntax_Node *dt = parse_name(p);
+        String_Slice dn = parser_identifier(parser);
+        parser_expect(parser, T_CL);
+        Syntax_Node *dt = parse_name(parser);
         Syntax_Node *dd = 0;
-        if (parser_match(p, T_AS))
-          dd = parse_expression(p);
-        Syntax_Node *dp = ND(DS, lc);
+        if (parser_match(parser, T_AS))
+          dd = parse_expression(parser);
+        Syntax_Node *dp = ND(DS, location);
         dp->pm.nm = dn;
         dp->pm.ty = dt;
         dp->pm.df = dd;
         nv(&dc, dp);
-      } while (parser_match(p, T_SC));
-      parser_expect(p, T_RP);
-      if (not parser_at(p, T_IS))
-        parser_expect(p, T_SC);
+      } while (parser_match(parser, T_SC));
+      parser_expect(parser, T_RP);
+      if (not parser_at(parser, T_IS))
+        parser_expect(parser, T_SC);
     }
-    if (parser_match(p, T_IS))
+    if (parser_match(parser, T_IS))
     {
-      parser_expect(p, T_REC);
+      parser_expect(parser, T_REC);
     }
-    while (not parser_at(p, T_END) and not parser_at(p, T_CSE) and not parser_at(p, T_NULL))
+    while (not parser_at(parser, T_END) and not parser_at(parser, T_CSE) and not parser_at(parser, T_NULL))
     {
       Node_Vector id = {0};
       do
       {
-        String_Slice nm = parser_identifier(p);
-        Syntax_Node *i = ND(ID, lc);
+        String_Slice nm = parser_identifier(parser);
+        Syntax_Node *i = ND(ID, location);
         i->s = nm;
         nv(&id, i);
-      } while (parser_match(p, T_CM));
-      parser_expect(p, T_CL);
-      Syntax_Node *ty = parse_simple_expression(p);
+      } while (parser_match(parser, T_CM));
+      parser_expect(parser, T_CL);
+      Syntax_Node *ty = parse_simple_expression(parser);
       Syntax_Node *in = 0;
-      if (parser_match(p, T_AS))
-        in = parse_expression(p);
-      parser_expect(p, T_SC);
+      if (parser_match(parser, T_AS))
+        in = parse_expression(parser);
+      parser_expect(parser, T_SC);
       for (uint32_t i = 0; i < id.count; i++)
       {
-        Syntax_Node *c = ND(CM, lc);
+        Syntax_Node *c = ND(CM, location);
         c->cm.nm = id.data[i]->s;
         c->cm.ty = ty;
         c->cm.in = in;
@@ -3372,56 +3372,56 @@ static Syntax_Node *parse_type_definition(Parser *p)
         c->cm.dsc = 0;
         if (dc.count > 0)
         {
-          c->cm.dc = ND(LST, lc);
+          c->cm.dc = ND(LST, location);
           c->cm.dc->lst.it = dc;
         }
-        nv(&n->lst.it, c);
+        nv(&node->lst.it, c);
       }
     }
-    if (parser_match(p, T_NULL))
+    if (parser_match(parser, T_NULL))
     {
-      parser_expect(p, T_SC);
+      parser_expect(parser, T_SC);
     }
-    if (parser_match(p, T_CSE))
+    if (parser_match(parser, T_CSE))
     {
-      Syntax_Node *vp = ND(VP, lc);
-      vp->vp.ds = parse_name(p);
-      parser_expect(p, T_IS);
-      while (parser_match(p, T_WHN))
+      Syntax_Node *vp = ND(VP, location);
+      vp->vp.ds = parse_name(parser);
+      parser_expect(parser, T_IS);
+      while (parser_match(parser, T_WHN))
       {
-        Syntax_Node *v = ND(VR, lc);
+        Syntax_Node *v = ND(VR, location);
         do
         {
-          Syntax_Node *e = parse_expression(p);
-          if (parser_match(p, T_DD))
+          Syntax_Node *e = parse_expression(parser);
+          if (parser_match(parser, T_DD))
           {
-            Syntax_Node *r = ND(RN, lc);
+            Syntax_Node *r = ND(RN, location);
             r->rn.lo = e;
-            r->rn.hi = parse_expression(p);
+            r->rn.hi = parse_expression(parser);
             e = r;
           }
           nv(&v->vr.ch, e);
-        } while (parser_match(p, T_BR));
-        parser_expect(p, T_AR);
-        while (not parser_at(p, T_WHN) and not parser_at(p, T_END) and not parser_at(p, T_NULL))
+        } while (parser_match(parser, T_BR));
+        parser_expect(parser, T_AR);
+        while (not parser_at(parser, T_WHN) and not parser_at(parser, T_END) and not parser_at(parser, T_NULL))
         {
           Node_Vector id = {0};
           do
           {
-            String_Slice nm = parser_identifier(p);
-            Syntax_Node *i = ND(ID, lc);
+            String_Slice nm = parser_identifier(parser);
+            Syntax_Node *i = ND(ID, location);
             i->s = nm;
             nv(&id, i);
-          } while (parser_match(p, T_CM));
-          parser_expect(p, T_CL);
-          Syntax_Node *ty = parse_simple_expression(p);
+          } while (parser_match(parser, T_CM));
+          parser_expect(parser, T_CL);
+          Syntax_Node *ty = parse_simple_expression(parser);
           Syntax_Node *in = 0;
-          if (parser_match(p, T_AS))
-            in = parse_expression(p);
-          parser_expect(p, T_SC);
+          if (parser_match(parser, T_AS))
+            in = parse_expression(parser);
+          parser_expect(parser, T_SC);
           for (uint32_t i = 0; i < id.count; i++)
           {
-            Syntax_Node *c = ND(CM, lc);
+            Syntax_Node *c = ND(CM, location);
             c->cm.nm = id.data[i]->s;
             c->cm.ty = ty;
             c->cm.in = in;
@@ -3430,44 +3430,44 @@ static Syntax_Node *parse_type_definition(Parser *p)
             c->cm.dsc = 0;
             if (dc.count > 0)
             {
-              c->cm.dc = ND(LST, lc);
+              c->cm.dc = ND(LST, location);
               c->cm.dc->lst.it = dc;
             }
             nv(&v->vr.cmm, c);
           }
         }
-        if (parser_match(p, T_NULL))
-          parser_expect(p, T_SC);
+        if (parser_match(parser, T_NULL))
+          parser_expect(parser, T_SC);
         nv(&vp->vp.vrr, v);
       }
       vp->vp.sz = of;
-      if (parser_match(p, T_NULL))
+      if (parser_match(parser, T_NULL))
       {
-        parser_expect(p, T_REC);
+        parser_expect(parser, T_REC);
       }
-      parser_expect(p, T_END);
-      parser_expect(p, T_CSE);
-      parser_expect(p, T_SC);
-      nv(&n->lst.it, vp);
+      parser_expect(parser, T_END);
+      parser_expect(parser, T_CSE);
+      parser_expect(parser, T_SC);
+      nv(&node->lst.it, vp);
     }
-    parser_expect(p, T_END);
-    parser_expect(p, T_REC);
-    return n;
+    parser_expect(parser, T_END);
+    parser_expect(parser, T_REC);
+    return node;
   }
-  if (parser_match(p, T_ACCS))
+  if (parser_match(parser, T_ACCS))
   {
-    Syntax_Node *n = ND(TAC, lc);
-    n->un.x = parse_simple_expression(p);
-    return n;
+    Syntax_Node *node = ND(TAC, location);
+    node->un.x = parse_simple_expression(parser);
+    return node;
   }
-  if (parser_match(p, T_PRV))
-    return ND(TP, lc);
-  if (parser_match(p, T_LIM))
+  if (parser_match(parser, T_PRV))
+    return ND(TP, location);
+  if (parser_match(parser, T_LIM))
   {
-    parser_match(p, T_PRV);
-    return ND(TP, lc);
+    parser_match(parser, T_PRV);
+    return ND(TP, location);
   }
-  return parse_simple_expression(p);
+  return parse_simple_expression(parser);
 }
 static RC *parse_representation_clause(Parser *p)
 {
