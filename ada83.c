@@ -1242,7 +1242,7 @@ struct Syntax_Node
     struct
     {
       Token_Kind op;
-      Syntax_Node *l, *r;
+      Syntax_Node *left, *right;
     } binary_node;
     struct
     {
@@ -2172,8 +2172,8 @@ static Syntax_Node *parse_power_expression(Parser *parser)
     Source_Location location = parser_location(parser);
     Syntax_Node *binary_node = ND(BIN, location);
     binary_node->binary_node.op = T_EX;
-    binary_node->binary_node.l = node;
-    binary_node->binary_node.r = parse_power_expression(parser);
+    binary_node->binary_node.left = node;
+    binary_node->binary_node.right = parse_power_expression(parser);
     return binary_node;
   }
   return node;
@@ -2188,8 +2188,8 @@ static Syntax_Node *parse_term(Parser *parser)
     Source_Location location = parser_location(parser);
     Syntax_Node *binary_node = ND(BIN, location);
     binary_node->binary_node.op = operator;
-    binary_node->binary_node.l = node;
-    binary_node->binary_node.r = parse_power_expression(parser);
+    binary_node->binary_node.left = node;
+    binary_node->binary_node.right = parse_power_expression(parser);
     node = binary_node;
   }
   return node;
@@ -2217,8 +2217,8 @@ static Syntax_Node *parse_signed_term(Parser *parser)
     location = parser_location(parser);
     Syntax_Node *binary_node = ND(BIN, location);
     binary_node->binary_node.op = operator;
-    binary_node->binary_node.l = node;
-    binary_node->binary_node.r = parse_term(parser);
+    binary_node->binary_node.left = node;
+    binary_node->binary_node.right = parse_term(parser);
     node = binary_node;
   }
   return node;
@@ -2244,11 +2244,11 @@ static Syntax_Node *parse_relational(Parser *parser)
     Source_Location location = parser_location(parser);
     Syntax_Node *binary_node = ND(BIN, location);
     binary_node->binary_node.op = operator;
-    binary_node->binary_node.l = node;
+    binary_node->binary_node.left = node;
     if (operator == T_IN or operator == T_NOT)
-      binary_node->binary_node.r = parse_range(parser);
+      binary_node->binary_node.right = parse_range(parser);
     else
-      binary_node->binary_node.r = parse_signed_term(parser);
+      binary_node->binary_node.right = parse_signed_term(parser);
     return binary_node;
   }
   return node;
@@ -2263,8 +2263,8 @@ static Syntax_Node *parse_and_expression(Parser *parser)
     Source_Location location = parser_location(parser);
     Syntax_Node *binary_node = ND(BIN, location);
     binary_node->binary_node.op = operator;
-    binary_node->binary_node.l = node;
-    binary_node->binary_node.r = parse_relational(parser);
+    binary_node->binary_node.left = node;
+    binary_node->binary_node.right = parse_relational(parser);
     node = binary_node;
   }
   return node;
@@ -2279,8 +2279,8 @@ static Syntax_Node *parse_or_expression(Parser *parser)
     Source_Location location = parser_location(parser);
     Syntax_Node *binary_node = ND(BIN, location);
     binary_node->binary_node.op = operator;
-    binary_node->binary_node.l = node;
-    binary_node->binary_node.r = parse_and_expression(parser);
+    binary_node->binary_node.left = node;
+    binary_node->binary_node.right = parse_and_expression(parser);
     node = binary_node;
   }
   return node;
@@ -2762,9 +2762,9 @@ static Syntax_Node *parse_loop(Parser *parser, String_Slice label)
     }
     Syntax_Node *it = ND(BIN, location);
     it->binary_node.op = T_IN;
-    it->binary_node.l = ND(ID, location);
-    it->binary_node.l->string_value = vr;
-    it->binary_node.r = rng;
+    it->binary_node.left = ND(ID, location);
+    it->binary_node.left->string_value = vr;
+    it->binary_node.right = rng;
     node->loop_stmt.iterator = it;
   }
   parser_expect(parser, T_LOOP);
@@ -3280,7 +3280,7 @@ static Syntax_Node *parse_type_definition(Parser *parser)
     {
       node->range.low = 0;
       node->range.high = 0;
-      node->binary_node.r = 0;
+      node->binary_node.right = 0;
     }
     else
     {
@@ -3288,7 +3288,7 @@ static Syntax_Node *parse_type_definition(Parser *parser)
       parser_expect(parser, T_RNG);
       node->range.high = parse_signed_term(parser);
       parser_expect(parser, T_DD);
-      node->binary_node.r = parse_signed_term(parser);
+      node->binary_node.right = parse_signed_term(parser);
     }
     return node;
   }
@@ -4746,8 +4746,8 @@ static Syntax_Node *generate_equality_operator(Type_Info *t, Source_Location l)
   s->return_stmt.value->binary_node.op = T_EQ;
   if (t->k == TYPE_RECORD)
   {
-    s->return_stmt.value->binary_node.l = ND(BIN, l);
-    s->return_stmt.value->binary_node.l->binary_node.op = T_AND;
+    s->return_stmt.value->binary_node.left = ND(BIN, l);
+    s->return_stmt.value->binary_node.left->binary_node.op = T_AND;
     for (uint32_t i = 0; i < t->components.count; i++)
     {
       Syntax_Node *c = t->components.data[i];
@@ -4763,17 +4763,17 @@ static Syntax_Node *generate_equality_operator(Type_Info *t, Source_Location l)
       rf->selected_component.prefix = ND(ID, l);
       rf->selected_component.prefix->string_value = STRING_LITERAL("Rational_Number");
       rf->selected_component.selector = c->component_decl.nm;
-      cmp->binary_node.l = lf;
-      cmp->binary_node.r = rf;
+      cmp->binary_node.left = lf;
+      cmp->binary_node.right = rf;
       if (not i)
-        s->return_stmt.value->binary_node.l = cmp;
+        s->return_stmt.value->binary_node.left = cmp;
       else
       {
         Syntax_Node *a = ND(BIN, l);
         a->binary_node.op = T_AND;
-        a->binary_node.l = s->return_stmt.value->binary_node.l;
-        a->binary_node.r = cmp;
-        s->return_stmt.value->binary_node.l = a;
+        a->binary_node.left = s->return_stmt.value->binary_node.left;
+        a->binary_node.right = cmp;
+        s->return_stmt.value->binary_node.left = a;
       }
     }
   }
@@ -4782,12 +4782,12 @@ static Syntax_Node *generate_equality_operator(Type_Info *t, Source_Location l)
     Syntax_Node *lp = ND(LP, l);
     lp->loop_stmt.iterator = ND(BIN, l);
     lp->loop_stmt.iterator->binary_node.op = T_IN;
-    lp->loop_stmt.iterator->binary_node.l = ND(ID, l);
-    lp->loop_stmt.iterator->binary_node.l->string_value = STRING_LITERAL("I");
-    lp->loop_stmt.iterator->binary_node.r = ND(AT, l);
-    lp->loop_stmt.iterator->binary_node.r->attribute.prefix = ND(ID, l);
-    lp->loop_stmt.iterator->binary_node.r->attribute.prefix->string_value = STRING_LITERAL("Source_Location");
-    lp->loop_stmt.iterator->binary_node.r->attribute.attribute_name = STRING_LITERAL("RANGE");
+    lp->loop_stmt.iterator->binary_node.left = ND(ID, l);
+    lp->loop_stmt.iterator->binary_node.left->string_value = STRING_LITERAL("I");
+    lp->loop_stmt.iterator->binary_node.right = ND(AT, l);
+    lp->loop_stmt.iterator->binary_node.right->attribute.prefix = ND(ID, l);
+    lp->loop_stmt.iterator->binary_node.right->attribute.prefix->string_value = STRING_LITERAL("Source_Location");
+    lp->loop_stmt.iterator->binary_node.right->attribute.attribute_name = STRING_LITERAL("RANGE");
     Syntax_Node *cmp = ND(BIN, l);
     cmp->binary_node.op = T_NE;
     Syntax_Node *li = ND(IX, l);
@@ -4800,8 +4800,8 @@ static Syntax_Node *generate_equality_operator(Type_Info *t, Source_Location l)
     ri->index.prefix->string_value = STRING_LITERAL("Rational_Number");
     nv(&ri->index.indices, ND(ID, l));
     ri->index.indices.data[0]->string_value = STRING_LITERAL("I");
-    cmp->binary_node.l = li;
-    cmp->binary_node.r = ri;
+    cmp->binary_node.left = li;
+    cmp->binary_node.right = ri;
     Syntax_Node *rt = ND(RT, l);
     rt->return_stmt.value = ND(ID, l);
     rt->return_stmt.value->string_value = STRING_LITERAL("FALSE");
@@ -4862,12 +4862,12 @@ static Syntax_Node *generate_assignment_operator(Type_Info *t, Source_Location l
     Syntax_Node *lp = ND(LP, l);
     lp->loop_stmt.iterator = ND(BIN, l);
     lp->loop_stmt.iterator->binary_node.op = T_IN;
-    lp->loop_stmt.iterator->binary_node.l = ND(ID, l);
-    lp->loop_stmt.iterator->binary_node.l->string_value = STRING_LITERAL("I");
-    lp->loop_stmt.iterator->binary_node.r = ND(AT, l);
-    lp->loop_stmt.iterator->binary_node.r->attribute.prefix = ND(ID, l);
-    lp->loop_stmt.iterator->binary_node.r->attribute.prefix->string_value = STRING_LITERAL("T");
-    lp->loop_stmt.iterator->binary_node.r->attribute.attribute_name = STRING_LITERAL("RANGE");
+    lp->loop_stmt.iterator->binary_node.left = ND(ID, l);
+    lp->loop_stmt.iterator->binary_node.left->string_value = STRING_LITERAL("I");
+    lp->loop_stmt.iterator->binary_node.right = ND(AT, l);
+    lp->loop_stmt.iterator->binary_node.right->attribute.prefix = ND(ID, l);
+    lp->loop_stmt.iterator->binary_node.right->attribute.prefix->string_value = STRING_LITERAL("T");
+    lp->loop_stmt.iterator->binary_node.right->attribute.attribute_name = STRING_LITERAL("RANGE");
     Syntax_Node *as = ND(AS, l);
     Syntax_Node *ti = ND(IX, l);
     ti->index.prefix = ND(ID, l);
@@ -5402,8 +5402,8 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
     t->sm = (int64_t) (1.0 / d);
     if (node->range.high and node->range.high->k == N_INT)
       t->low_bound = node->range.high->integer_value;
-    if (node->binary_node.r and node->binary_node.r->k == N_INT)
-      t->high_bound = node->binary_node.r->integer_value;
+    if (node->binary_node.right and node->binary_node.right->k == N_INT)
+      t->high_bound = node->binary_node.right->integer_value;
     return t;
   }
   if (node->k == N_TE)
@@ -5901,8 +5901,8 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     node->ty = tx and tx->k == TYPE_ACCESS ? tx : TY_INT;
     break;
   case N_BIN:
-    resolve_expression(symbol_manager, node->binary_node.l, tx);
-    resolve_expression(symbol_manager, node->binary_node.r, tx);
+    resolve_expression(symbol_manager, node->binary_node.left, tx);
+    resolve_expression(symbol_manager, node->binary_node.right, tx);
     if (node->binary_node.op == T_ATHN or node->binary_node.op == T_OREL)
     {
       node->ty = TY_BOOL;
@@ -5910,23 +5910,23 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     }
     if (node->binary_node.op == T_AND or node->binary_node.op == T_OR or node->binary_node.op == T_XOR)
     {
-      node->binary_node.l = chk(symbol_manager, node->binary_node.l, node->location);
-      node->binary_node.r = chk(symbol_manager, node->binary_node.r, node->location);
-      Type_Info *lt = node->binary_node.l->ty ? type_canonical_concrete(node->binary_node.l->ty) : 0;
+      node->binary_node.left = chk(symbol_manager, node->binary_node.left, node->location);
+      node->binary_node.right = chk(symbol_manager, node->binary_node.right, node->location);
+      Type_Info *lt = node->binary_node.left->ty ? type_canonical_concrete(node->binary_node.left->ty) : 0;
       node->ty = lt and lt->k == TYPE_ARRAY ? lt : TY_BOOL;
       break;
     }
     if (node->binary_node.op == T_IN)
     {
-      node->binary_node.l = chk(symbol_manager, node->binary_node.l, node->location);
-      node->binary_node.r = chk(symbol_manager, node->binary_node.r, node->location);
+      node->binary_node.left = chk(symbol_manager, node->binary_node.left, node->location);
+      node->binary_node.right = chk(symbol_manager, node->binary_node.right, node->location);
       node->ty = TY_BOOL;
       break;
     }
-    if (node->binary_node.l->k == N_INT and node->binary_node.r->k == N_INT
+    if (node->binary_node.left->k == N_INT and node->binary_node.right->k == N_INT
         and (node->binary_node.op == T_PL or node->binary_node.op == T_MN or node->binary_node.op == T_ST or node->binary_node.op == T_SL or node->binary_node.op == T_MOD or node->binary_node.op == T_REM))
     {
-      int64_t a = node->binary_node.l->integer_value, b = node->binary_node.r->integer_value, r = 0;
+      int64_t a = node->binary_node.left->integer_value, b = node->binary_node.right->integer_value, r = 0;
       if (node->binary_node.op == T_PL)
         r = a + b;
       else if (node->binary_node.op == T_MN)
@@ -5942,11 +5942,11 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
       node->ty = TY_UINT;
     }
     else if (
-        (node->binary_node.l->k == N_REAL or node->binary_node.r->k == N_REAL)
+        (node->binary_node.left->k == N_REAL or node->binary_node.right->k == N_REAL)
         and (node->binary_node.op == T_PL or node->binary_node.op == T_MN or node->binary_node.op == T_ST or node->binary_node.op == T_SL or node->binary_node.op == T_EX))
     {
-      double a = node->binary_node.l->k == N_INT ? (double) node->binary_node.l->integer_value : node->binary_node.l->float_value,
-             b = node->binary_node.r->k == N_INT ? (double) node->binary_node.r->integer_value : node->binary_node.r->float_value, r = 0;
+      double a = node->binary_node.left->k == N_INT ? (double) node->binary_node.left->integer_value : node->binary_node.left->float_value,
+             b = node->binary_node.right->k == N_INT ? (double) node->binary_node.right->integer_value : node->binary_node.right->float_value, r = 0;
       if (node->binary_node.op == T_PL)
         r = a + b;
       else if (node->binary_node.op == T_MN)
@@ -5963,7 +5963,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     }
     else
     {
-      node->ty = type_canonical_concrete(node->binary_node.l->ty);
+      node->ty = type_canonical_concrete(node->binary_node.left->ty);
     }
     if (node->binary_node.op >= T_EQ and node->binary_node.op <= T_GE)
       node->ty = TY_BOOL;
@@ -6554,10 +6554,10 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
     {
       if (node->loop_stmt.iterator->k == N_BIN and node->loop_stmt.iterator->binary_node.op == T_IN)
       {
-        Syntax_Node *v = node->loop_stmt.iterator->binary_node.l;
+        Syntax_Node *v = node->loop_stmt.iterator->binary_node.left;
         if (v->k == N_ID)
         {
-          Type_Info *rt = node->loop_stmt.iterator->binary_node.r->ty;
+          Type_Info *rt = node->loop_stmt.iterator->binary_node.right->ty;
           Symbol *lvs = symbol_new(v->string_value, 0, rt ?: TY_INT, 0);
           symbol_add_overload(symbol_manager, lvs);
           lvs->level = -1;
@@ -6982,8 +6982,8 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
     break;
   case N_BIN:
     c->binary_node.op = n->binary_node.op;
-    c->binary_node.l = node_clone_substitute(n->binary_node.l, fp, ap);
-    c->binary_node.r = node_clone_substitute(n->binary_node.r, fp, ap);
+    c->binary_node.left = node_clone_substitute(n->binary_node.left, fp, ap);
+    c->binary_node.right = node_clone_substitute(n->binary_node.right, fp, ap);
     break;
   case N_UN:
     c->unary_node.op = n->unary_node.op;
@@ -9494,7 +9494,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     Token_Kind op = n->binary_node.op;
     if (op == T_ATHN or op == T_OREL)
     {
-      Value lv = value_to_boolean(generator, generate_expression(generator, n->binary_node.l));
+      Value lv = value_to_boolean(generator, generate_expression(generator, n->binary_node.left));
       int c = new_temporary_register(generator);
       fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", c, lv.id);
       int lt = new_label_block(generator), lf = new_label_block(generator), ld = new_label_block(generator);
@@ -9503,7 +9503,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       else
         emit_conditional_branch(generator, c, lf, lt);
       emit_label(generator, lt);
-      Value rv = value_to_boolean(generator, generate_expression(generator, n->binary_node.r));
+      Value rv = value_to_boolean(generator, generate_expression(generator, n->binary_node.right));
       emit_branch(generator, ld);
       emit_label(generator, lf);
       emit_branch(generator, ld);
@@ -9521,15 +9521,15 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     if (op == T_AND or op == T_OR or op == T_XOR)
     {
-      Type_Info *lt = n->binary_node.l->ty ? type_canonical_concrete(n->binary_node.l->ty) : 0;
-      Type_Info *rt = n->binary_node.r->ty ? type_canonical_concrete(n->binary_node.r->ty) : 0;
+      Type_Info *lt = n->binary_node.left->ty ? type_canonical_concrete(n->binary_node.left->ty) : 0;
+      Type_Info *rt = n->binary_node.right->ty ? type_canonical_concrete(n->binary_node.right->ty) : 0;
       if (lt and rt and lt->k == TYPE_ARRAY and rt->k == TYPE_ARRAY)
       {
         int sz = lt->high_bound >= lt->low_bound ? lt->high_bound - lt->low_bound + 1 : 1;
         int p = new_temporary_register(generator);
         fprintf(o, "  %%t%d = alloca [%d x i64]\n", p, sz);
-        Value la = generate_expression(generator, n->binary_node.l);
-        Value ra = generate_expression(generator, n->binary_node.r);
+        Value la = generate_expression(generator, n->binary_node.left);
+        Value ra = generate_expression(generator, n->binary_node.right);
         for (int i = 0; i < sz; i++)
         {
           int ep1 = new_temporary_register(generator);
@@ -9559,8 +9559,8 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         fprintf(o, "  %%t%d = getelementptr [%d x i64], ptr %%t%d, i64 0, i64 0\n", r.id, sz, p);
         break;
       }
-      Value a = value_to_boolean(generator, generate_expression(generator, n->binary_node.l));
-      Value b = value_to_boolean(generator, generate_expression(generator, n->binary_node.r));
+      Value a = value_to_boolean(generator, generate_expression(generator, n->binary_node.left));
+      Value b = value_to_boolean(generator, generate_expression(generator, n->binary_node.right));
       r.k = VALUE_KIND_INTEGER;
       if (op == T_AND)
         fprintf(o, "  %%t%d = and i64 %%t%d, %%t%d\n", r.id, a.id, b.id);
@@ -9572,8 +9572,8 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     if (op == T_NOT)
     {
-      Value x = value_cast(generator, generate_expression(generator, n->binary_node.l), VALUE_KIND_INTEGER);
-      Syntax_Node *rr = n->binary_node.r;
+      Value x = value_cast(generator, generate_expression(generator, n->binary_node.left), VALUE_KIND_INTEGER);
+      Syntax_Node *rr = n->binary_node.right;
       while (rr and rr->k == N_CHK)
         rr = rr->check.expression;
       if (rr and rr->k == N_RN)
@@ -9642,8 +9642,8 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     if (op == T_IN)
     {
-      Value x = value_cast(generator, generate_expression(generator, n->binary_node.l), VALUE_KIND_INTEGER);
-      Syntax_Node *rr = n->binary_node.r;
+      Value x = value_cast(generator, generate_expression(generator, n->binary_node.left), VALUE_KIND_INTEGER);
+      Syntax_Node *rr = n->binary_node.right;
       while (rr and rr->k == N_CHK)
         rr = rr->check.expression;
       if (rr and rr->k == N_RN)
@@ -9706,11 +9706,11 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       }
       break;
     }
-    Value a = generate_expression(generator, n->binary_node.l), b = generate_expression(generator, n->binary_node.r);
+    Value a = generate_expression(generator, n->binary_node.left), b = generate_expression(generator, n->binary_node.right);
     if (op == T_EQ or op == T_NE)
     {
-      Type_Info *lt = n->binary_node.l->ty ? type_canonical_concrete(n->binary_node.l->ty) : 0;
-      Type_Info *rt = n->binary_node.r->ty ? type_canonical_concrete(n->binary_node.r->ty) : 0;
+      Type_Info *lt = n->binary_node.left->ty ? type_canonical_concrete(n->binary_node.left->ty) : 0;
+      Type_Info *rt = n->binary_node.right->ty ? type_canonical_concrete(n->binary_node.right->ty) : 0;
       if (lt and rt and lt->k == TYPE_ARRAY and rt->k == TYPE_ARRAY)
       {
         int sz = lt->high_bound >= lt->low_bound ? lt->high_bound - lt->low_bound + 1 : 1;
@@ -9830,7 +9830,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     if (op == T_EQ or op == T_NE or op == T_LT or op == T_LE or op == T_GT or op == T_GE)
     {
-      if((op==T_EQ or op==T_NE) and (n->binary_node.l->k==N_STR or n->binary_node.r->k==N_STR or (n->binary_node.l->ty and type_canonical_concrete(n->binary_node.l->ty)->element_type and type_canonical_concrete(n->binary_node.l->ty)->element_type->k==TYPE_CHARACTER) or (n->binary_node.r->ty and type_canonical_concrete(n->binary_node.r->ty)->element_type and type_canonical_concrete(n->binary_node.r->ty)->element_type->k==TYPE_CHARACTER)))
+      if((op==T_EQ or op==T_NE) and (n->binary_node.left->k==N_STR or n->binary_node.right->k==N_STR or (n->binary_node.left->ty and type_canonical_concrete(n->binary_node.left->ty)->element_type and type_canonical_concrete(n->binary_node.left->ty)->element_type->k==TYPE_CHARACTER) or (n->binary_node.right->ty and type_canonical_concrete(n->binary_node.right->ty)->element_type and type_canonical_concrete(n->binary_node.right->ty)->element_type->k==TYPE_CHARACTER)))
       {
         Value ap = a, bp = b;
         if (ap.k == VALUE_KIND_INTEGER)
@@ -9879,8 +9879,8 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     if (op == T_AM and (a.k == VALUE_KIND_POINTER or b.k == VALUE_KIND_POINTER))
     {
-      Type_Info *lt = n->binary_node.l->ty ? type_canonical_concrete(n->binary_node.l->ty) : 0;
-      Type_Info *rt = n->binary_node.r->ty ? type_canonical_concrete(n->binary_node.r->ty) : 0;
+      Type_Info *lt = n->binary_node.left->ty ? type_canonical_concrete(n->binary_node.left->ty) : 0;
+      Type_Info *rt = n->binary_node.right->ty ? type_canonical_concrete(n->binary_node.right->ty) : 0;
       int alo, ahi, blo, bhi;
       Value ad, bd;
       bool la_fp = lt and lt->k == TYPE_ARRAY and lt->low_bound == 0 and lt->high_bound == -1;
@@ -11578,17 +11578,17 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
     Syntax_Node *fv = 0;
     Type_Info *ft = 0;
     int hi_var = -1;
-    if (n->loop_stmt.iterator and n->loop_stmt.iterator->k == N_BIN and n->loop_stmt.iterator->binary_node.op == T_IN and n->loop_stmt.iterator->binary_node.l->k == N_ID)
+    if (n->loop_stmt.iterator and n->loop_stmt.iterator->k == N_BIN and n->loop_stmt.iterator->binary_node.op == T_IN and n->loop_stmt.iterator->binary_node.left->k == N_ID)
     {
-      fv = n->loop_stmt.iterator->binary_node.l;
-      ft = n->loop_stmt.iterator->binary_node.r->ty;
+      fv = n->loop_stmt.iterator->binary_node.left;
+      ft = n->loop_stmt.iterator->binary_node.right->ty;
       if (ft)
       {
         Symbol *vs = fv->symbol;
         if (vs)
         {
           fprintf(o, "  %%v.%s.sc%u.%u = alloca i64\n", string_to_lowercase(fv->string_value), vs->scope, vs->elaboration_level);
-          Syntax_Node *rng = n->loop_stmt.iterator->binary_node.r;
+          Syntax_Node *rng = n->loop_stmt.iterator->binary_node.right;
           hi_var = new_temporary_register(generator);
           fprintf(o, "  %%v.__for_hi_%d = alloca i64\n", hi_var);
           int ti = new_temporary_register(generator);
