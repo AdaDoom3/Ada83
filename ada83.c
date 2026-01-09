@@ -302,7 +302,7 @@ typedef struct
 #define N ((String_Slice){0, 0})
 static Arena_Allocator main_arena = {0};
 static int error_count = 0;
-static String_Slice SEP_PKG = N;
+static String_Slice SEPARATE_PACKAGE = N;
 static void *arena_allocate(size_t n)
 {
   n = (n + 7) & ~7;
@@ -4277,7 +4277,7 @@ static Syntax_Node *parse_compilation_unit(Parser *parser)
       Syntax_Node *pnm_ = parse_name(parser);
       parser_expect(parser, T_RP);
       String_Slice ppkg = pnm_->k == N_ID ? pnm_->s : pnm_->k == N_SEL ? pnm_->se.p->s : N;
-      SEP_PKG = ppkg.string ? string_duplicate(ppkg) : N;
+      SEPARATE_PACKAGE = ppkg.string ? string_duplicate(ppkg) : N;
       if (ppkg.string)
       {
         FILE *pf = 0;
@@ -6819,8 +6819,8 @@ static void is_higher_order_parameter(Type_Info *dt, Type_Info *pt)
     }
   }
 }
-static int ncp_depth = 0;
-#define MAX_NCP_DEPTH 1000
+static int node_clone_depth = 0;
+#define MAX_NODE_CLONE_DEPTH 1000
 static bool match_formal_parameter(Syntax_Node *f, String_Slice nm);
 static Syntax_Node *node_clone_substitute(Syntax_Node *node, Node_Vector *fp, Node_Vector *ap);
 static const char *lookup_path(Symbol_Manager *SM, String_Slice nm);
@@ -6919,9 +6919,9 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
 {
   if (not n)
     return 0;
-  if (ncp_depth++ > MAX_NCP_DEPTH)
+  if (node_clone_depth++ > MAX_NODE_CLONE_DEPTH)
   {
-    ncp_depth--;
+    node_clone_depth--;
     return n;
   }
   if (fp and n->k == N_ID)
@@ -6933,11 +6933,11 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
         {
           Syntax_Node *a = ap->data[i];
           Syntax_Node *r = a->k == N_ASC and a->asc.vl ? node_clone_substitute(a->asc.vl, 0, 0) : node_clone_substitute(a, 0, 0);
-          ncp_depth--;
+          node_clone_depth--;
           return r;
         }
         Syntax_Node *r = node_clone_substitute(n, 0, 0);
-        ncp_depth--;
+        node_clone_depth--;
         return r;
       }
   }
@@ -6950,11 +6950,11 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
         {
           Syntax_Node *a = ap->data[i];
           Syntax_Node *r = a->k == N_ASC and a->asc.vl ? node_clone_substitute(a->asc.vl, 0, 0) : node_clone_substitute(a, 0, 0);
-          ncp_depth--;
+          node_clone_depth--;
           return r;
         }
         Syntax_Node *r = node_clone_substitute(n, 0, 0);
-        ncp_depth--;
+        node_clone_depth--;
         return r;
       }
   }
@@ -7280,7 +7280,7 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
   default:
     break;
   }
-  ncp_depth--;
+  node_clone_depth--;
   return c;
 }
 static bool match_formal_parameter(Syntax_Node *f, String_Slice nm)
@@ -7417,7 +7417,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
       if (not s)
       {
         s = symbol_add_overload(SM, symbol_new(id->s, n->od.co ? 2 : 0, ct, n));
-        s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEP_PKG.string ? symbol_find(SM, SEP_PKG) : 0;
+        s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEPARATE_PACKAGE.string ? symbol_find(SM, SEPARATE_PACKAGE) : 0;
       }
       id->sy = s;
       if (n->od.in)
@@ -7747,7 +7747,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
       Symbol *s = symbol_add_overload(SM, symbol_new(n->sp.nm, 5, ft, n));
       nv(&s->ol, n);
       n->sy = s;
-      s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEP_PKG.string ? symbol_find(SM, SEP_PKG) : 0;
+      s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEPARATE_PACKAGE.string ? symbol_find(SM, SEPARATE_PACKAGE) : 0;
       nv(&ft->ops, n);
     }
     else
@@ -7755,7 +7755,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
       Symbol *s = symbol_add_overload(SM, symbol_new(n->sp.nm, 4, ft, n));
       nv(&s->ol, n);
       n->sy = s;
-      s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEP_PKG.string ? symbol_find(SM, SEP_PKG) : 0;
+      s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEPARATE_PACKAGE.string ? symbol_find(SM, SEPARATE_PACKAGE) : 0;
       nv(&ft->ops, n);
     }
   }
@@ -7769,7 +7769,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
     nv(&s->ol, n);
     n->sy = s;
     n->bd.el = s->el;
-    s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEP_PKG.string ? symbol_find(SM, SEP_PKG) : 0;
+    s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEPARATE_PACKAGE.string ? symbol_find(SM, SEPARATE_PACKAGE) : 0;
     nv(&ft->ops, n);
     if (n->k == N_PB)
     {
@@ -7806,7 +7806,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
     nv(&s->ol, n);
     n->sy = s;
     n->bd.el = s->el;
-    s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEP_PKG.string ? symbol_find(SM, SEP_PKG) : 0;
+    s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEPARATE_PACKAGE.string ? symbol_find(SM, SEPARATE_PACKAGE) : 0;
     nv(&ft->ops, n);
     if (n->k == N_FB)
     {
@@ -7843,7 +7843,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
     nv(&s->ol, n);
     n->sy = s;
     n->bd.el = s->el;
-    s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEP_PKG.string ? symbol_find(SM, SEP_PKG) : 0;
+    s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEPARATE_PACKAGE.string ? symbol_find(SM, SEPARATE_PACKAGE) : 0;
     nv(&ft->ops, n);
   }
   break;
@@ -8016,7 +8016,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
     t->cm = n->ts.en;
     Symbol *s = symbol_add_overload(SM, symbol_new(n->ts.nm, 7, t, n));
     n->sy = s;
-    s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEP_PKG.string ? symbol_find(SM, SEP_PKG) : 0;
+    s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEPARATE_PACKAGE.string ? symbol_find(SM, SEPARATE_PACKAGE) : 0;
   }
   break;
   case N_TKB:
