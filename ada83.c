@@ -1231,7 +1231,7 @@ VECPUSH(String_List_Vector, String_Slice, slv)
 struct Syntax_Node
 {
   Node_Kind k;
-  Source_Location l;
+  Source_Location location;
   Type_Info *ty;
   Symbol *symbol;
   union
@@ -1613,7 +1613,7 @@ static Syntax_Node *node_new(Node_Kind k, Source_Location l)
 {
   Syntax_Node *n = arena_allocate(sizeof(Syntax_Node));
   n->k = k;
-  n->l = l;
+  n->location = l;
   return n;
 }
 static Representation_Clause *reference_counter_new(uint8_t k, Type_Info *t)
@@ -5684,10 +5684,10 @@ static void normalize_array_aggregate(Symbol_Manager *symbol_manager, Type_Info 
             if (ridx >= 0 and ridx < asz)
             {
               if (cov[ridx] and error_count < 99)
-                fatal_error(ag->l, "dup ag");
+                fatal_error(ag->location, "dup ag");
               cov[ridx] = 1;
               while (xv.count <= (uint32_t) ridx)
-                nv(&xv, ND(INT, ag->l));
+                nv(&xv, ND(INT, ag->location));
               xv.data[ridx] = e->association.value;
             }
           }
@@ -5696,10 +5696,10 @@ static void normalize_array_aggregate(Symbol_Manager *symbol_manager, Type_Info 
         if (idx >= 0 and idx < asz)
         {
           if (cov[idx] and error_count < 99)
-            fatal_error(ag->l, "dup ag");
+            fatal_error(ag->location, "dup ag");
           cov[idx] = 1;
           while (xv.count <= (uint32_t) idx)
-            nv(&xv, ND(INT, ag->l));
+            nv(&xv, ND(INT, ag->location));
           xv.data[idx] = e->association.value;
         }
       }
@@ -5709,10 +5709,10 @@ static void normalize_array_aggregate(Symbol_Manager *symbol_manager, Type_Info 
       if (px < (uint32_t) asz)
       {
         if (cov[px] and error_count < 99)
-          fatal_error(ag->l, "dup ag");
+          fatal_error(ag->location, "dup ag");
         cov[px] = 1;
         while (xv.count <= px)
-          nv(&xv, ND(INT, ag->l));
+          nv(&xv, ND(INT, ag->location));
         xv.data[px] = e;
       }
       px++;
@@ -5725,14 +5725,14 @@ static void normalize_array_aggregate(Symbol_Manager *symbol_manager, Type_Info 
       if (not cov[i])
       {
         while (xv.count <= (uint32_t) i)
-          nv(&xv, ND(INT, ag->l));
+          nv(&xv, ND(INT, ag->location));
         xv.data[i] = oe->association.value;
         cov[i] = 1;
       }
   }
   for (int64_t i = 0; i < asz; i++)
     if (not cov[i] and error_count < 99)
-      fatal_error(ag->l, "ag gap %lld", i);
+      fatal_error(ag->location, "ag gap %lld", i);
   ag->aggregate.items = xv;
   free(cov);
 }
@@ -5765,7 +5765,7 @@ static void normalize_record_aggregate(Symbol_Manager *symbol_manager, Type_Info
           if (c->k == N_CM and string_equal_ignore_case(c->component_decl.nm, ch->s))
           {
             if (cov[c->component_decl.offset] and error_count < 99)
-              fatal_error(ag->l, "dup cm");
+              fatal_error(ag->location, "dup cm");
             cov[c->component_decl.offset] = 1;
             break;
           }
@@ -5868,7 +5868,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     else
     {
       if (error_count < 99 and not string_equal_ignore_case(node->s, STRING_LITERAL("others")))
-        fatal_error(node->l, "undef '%.*s'", (int) node->s.length, node->s.string);
+        fatal_error(node->location, "undef '%.*s'", (int) node->s.length, node->s.string);
       node->ty = TY_INT;
     }
   }
@@ -5910,16 +5910,16 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     }
     if (node->binary_node.op == T_AND or node->binary_node.op == T_OR or node->binary_node.op == T_XOR)
     {
-      node->binary_node.l = chk(symbol_manager, node->binary_node.l, node->l);
-      node->binary_node.r = chk(symbol_manager, node->binary_node.r, node->l);
+      node->binary_node.l = chk(symbol_manager, node->binary_node.l, node->location);
+      node->binary_node.r = chk(symbol_manager, node->binary_node.r, node->location);
       Type_Info *lt = node->binary_node.l->ty ? type_canonical_concrete(node->binary_node.l->ty) : 0;
       node->ty = lt and lt->k == TYPE_ARRAY ? lt : TY_BOOL;
       break;
     }
     if (node->binary_node.op == T_IN)
     {
-      node->binary_node.l = chk(symbol_manager, node->binary_node.l, node->l);
-      node->binary_node.r = chk(symbol_manager, node->binary_node.r, node->l);
+      node->binary_node.l = chk(symbol_manager, node->binary_node.l, node->location);
+      node->binary_node.r = chk(symbol_manager, node->binary_node.r, node->location);
       node->ty = TY_BOOL;
       break;
     }
@@ -6011,7 +6011,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     for (uint32_t i = 0; i < node->index.indices.count; i++)
     {
       resolve_expression(symbol_manager, node->index.indices.data[i], 0);
-      node->index.indices.data[i] = chk(symbol_manager, node->index.indices.data[i], node->l);
+      node->index.indices.data[i] = chk(symbol_manager, node->index.indices.data[i], node->location);
     }
     if (node->index.prefix->ty and node->index.prefix->ty->k == TYPE_ARRAY)
       node->ty = type_canonical_concrete(node->index.prefix->ty->element_type);
@@ -6171,7 +6171,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
               return;
             }
         if (error_count < 99)
-          fatal_error(node->l, "?'%.*s' in pkg", (int) node->selected_component.selector.length, node->selected_component.selector.string);
+          fatal_error(node->location, "?'%.*s' in pkg", (int) node->selected_component.selector.length, node->selected_component.selector.string);
       }
     }
     if (parser->ty)
@@ -6218,7 +6218,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
           }
         }
         if (error_count < 99)
-          fatal_error(node->l, "?fld '%.*s'", (int) node->selected_component.selector.length, node->selected_component.selector.string);
+          fatal_error(node->location, "?fld '%.*s'", (int) node->selected_component.selector.length, node->selected_component.selector.string);
       }
     }
     node->ty = TY_INT;
@@ -6239,8 +6239,8 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
                                                                     : TY_INT;
       else if (string_equal_ignore_case(a, STRING_LITERAL("ADDRESS")))
       {
-        Syntax_Node *sel = ND(SEL, node->l);
-        sel->selected_component.prefix = ND(ID, node->l);
+        Syntax_Node *sel = ND(SEL, node->location);
+        sel->selected_component.prefix = ND(ID, node->location);
         sel->selected_component.prefix->s = STRING_LITERAL("SYSTEM");
         sel->selected_component.selector = STRING_LITERAL("ADDRESS");
         node->ty = resolve_subtype(symbol_manager, sel);
@@ -6374,7 +6374,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
         }
         else if (s->k == 1)
         {
-          Syntax_Node *cv = ND(CVT, node->l);
+          Syntax_Node *cv = ND(CVT, node->location);
           cv->conversion.ty = node->call.function_name;
           cv->conversion.ex = node->call.arguments.count > 0 ? node->call.arguments.data[0] : 0;
           node->k = N_CVT;
@@ -6435,7 +6435,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
                             and cd->parameter.default_value->i == ed->parameter.default_value->i;
                 if (not mtch)
                 {
-                  node->allocator.initializer = chk(symbol_manager, node->allocator.initializer, node->l);
+                  node->allocator.initializer = chk(symbol_manager, node->allocator.initializer, node->location);
                   break;
                 }
               }
@@ -6448,8 +6448,8 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
   case N_RN:
     resolve_expression(symbol_manager, node->range.low, tx);
     resolve_expression(symbol_manager, node->range.high, tx);
-    node->range.low = chk(symbol_manager, node->range.low, node->l);
-    node->range.high = chk(symbol_manager, node->range.high, node->l);
+    node->range.low = chk(symbol_manager, node->range.low, node->location);
+    node->range.high = chk(symbol_manager, node->range.high, node->location);
     node->ty = type_canonical_concrete(node->range.low->ty);
     break;
   case N_ASC:
@@ -6468,7 +6468,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
       else
       {
         if (error_count < 99 and node->dereference.expression->ty)
-          fatal_error(node->l, ".all non-ac");
+          fatal_error(node->location, ".all non-ac");
         node->ty = TY_INT;
       }
     }
@@ -6503,18 +6503,18 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
         Type_Info *vlb = semantic_base(vlt);
         if (not type_covers(tgb, vlb) and not(tgt->k == TYPE_BOOLEAN and is_discrete(vlt))
             and not(is_discrete(tgt) and is_discrete(vlt)))
-          fatal_error(node->l, "typ mis");
+          fatal_error(node->location, "typ mis");
       }
     }
     break;
     if (node->assignment.target->ty)
       node->assignment.value->ty = node->assignment.target->ty;
-    node->assignment.value = chk(symbol_manager, node->assignment.value, node->l);
+    node->assignment.value = chk(symbol_manager, node->assignment.value, node->location);
     break;
   case N_IF:
     resolve_expression(symbol_manager, node->if_stmt.condition, TY_BOOL);
     if (node->if_stmt.th.count > 0 and not has_return_statement(&node->if_stmt.th))
-      fatal_error(node->l, "seq needs stmt");
+      fatal_error(node->location, "seq needs stmt");
     for (uint32_t i = 0; i < node->if_stmt.th.count; i++)
       resolve_statement_sequence(symbol_manager, node->if_stmt.th.data[i]);
     for (uint32_t i = 0; i < node->if_stmt.ei.count; i++)
@@ -6522,12 +6522,12 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
       Syntax_Node *e = node->if_stmt.ei.data[i];
       resolve_expression(symbol_manager, e->if_stmt.condition, TY_BOOL);
       if (e->if_stmt.th.count > 0 and not has_return_statement(&e->if_stmt.th))
-        fatal_error(e->l, "seq needs stmt");
+        fatal_error(e->location, "seq needs stmt");
       for (uint32_t j = 0; j < e->if_stmt.th.count; j++)
         resolve_statement_sequence(symbol_manager, e->if_stmt.th.data[j]);
     }
     if (node->if_stmt.el.count > 0 and not has_return_statement(&node->if_stmt.el))
-      fatal_error(node->l, "seq needs stmt");
+      fatal_error(node->location, "seq needs stmt");
     for (uint32_t i = 0; i < node->if_stmt.el.count; i++)
       resolve_statement_sequence(symbol_manager, node->if_stmt.el.data[i]);
     break;
@@ -6539,7 +6539,7 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
       for (uint32_t j = 0; j < a->choices.items.count; j++)
         resolve_expression(symbol_manager, a->choices.items.data[j], node->case_stmt.expression->ty);
       if (a->exception_handler.statements.count > 0 and not has_return_statement(&a->exception_handler.statements))
-        fatal_error(a->l, "seq needs stmt");
+        fatal_error(a->location, "seq needs stmt");
       for (uint32_t j = 0; j < a->exception_handler.statements.count; j++)
         resolve_statement_sequence(symbol_manager, a->exception_handler.statements.data[j]);
     }
@@ -6567,7 +6567,7 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
       resolve_expression(symbol_manager, node->loop_stmt.iterator, TY_BOOL);
     }
     if (node->loop_stmt.statements.count > 0 and not has_return_statement(&node->loop_stmt.statements))
-      fatal_error(node->l, "seq needs stmt");
+      fatal_error(node->location, "seq needs stmt");
     for (uint32_t i = 0; i < node->loop_stmt.statements.count; i++)
       resolve_statement_sequence(symbol_manager, node->loop_stmt.statements.data[i]);
     break;
@@ -6633,7 +6633,7 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
         parser->symbol = ps;
       }
       if (node->accept_stmt.statements.count > 0 and not has_return_statement(&node->accept_stmt.statements))
-        fatal_error(node->l, "seq needs stmt");
+        fatal_error(node->location, "seq needs stmt");
       for (uint32_t i = 0; i < node->accept_stmt.statements.count; i++)
         resolve_statement_sequence(symbol_manager, node->accept_stmt.statements.data[i]);
     }
@@ -6650,7 +6650,7 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
         for (uint32_t j = 0; j < s->accept_stmt.parameters.count; j++)
           resolve_expression(symbol_manager, s->accept_stmt.parameters.data[j], 0);
         if (s->accept_stmt.statements.count > 0 and not has_return_statement(&s->accept_stmt.statements))
-          fatal_error(s->l, "seq needs stmt");
+          fatal_error(s->location, "seq needs stmt");
         for (uint32_t j = 0; j < s->accept_stmt.statements.count; j++)
           resolve_statement_sequence(symbol_manager, s->accept_stmt.statements.data[j]);
       }
@@ -6805,9 +6805,9 @@ static void is_higher_order_parameter(Type_Info *dt, Type_Info *pt)
     Syntax_Node *op = pt->operations.data[i];
     if (op->k == N_FB or op->k == N_PB)
     {
-      Syntax_Node *nop = node_new(op->k, op->l);
+      Syntax_Node *nop = node_new(op->k, op->location);
       nop->body = op->body;
-      Syntax_Node *nsp = node_new(N_FS, op->l);
+      Syntax_Node *nsp = node_new(N_FS, op->location);
       nsp->subprogram = op->body.subprogram_spec->subprogram;
       nsp->subprogram.nm = string_duplicate(op->body.subprogram_spec->subprogram.nm);
       nsp->subprogram.parameters = op->body.subprogram_spec->subprogram.parameters;
@@ -6958,7 +6958,7 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
         return r;
       }
   }
-  Syntax_Node *c = node_new(n->k, n->l);
+  Syntax_Node *c = node_new(n->k, n->location);
   c->ty = 0;
   c->symbol = (n->k == N_ID and n->symbol) ? n->symbol : 0;
   switch (n->k)
@@ -7412,7 +7412,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
           s = x;
         }
         else if (error_count < 99)
-          fatal_error(n->l, "dup '%.*s'", (int) id->s.length, id->s.string);
+          fatal_error(n->location, "dup '%.*s'", (int) id->s.length, id->s.string);
       }
       if (not s)
       {
@@ -7424,7 +7424,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       {
         resolve_expression(symbol_manager, n->object_decl.in, t);
         n->object_decl.in->ty = t;
-        n->object_decl.in = chk(symbol_manager, n->object_decl.in, n->l);
+        n->object_decl.in = chk(symbol_manager, n->object_decl.in, n->location);
         if (t and t->dc.count > 0 and n->object_decl.in and n->object_decl.in->ty)
         {
           Type_Info *it = type_canonical_concrete(n->object_decl.in->ty);
@@ -7439,7 +7439,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
                 if (td->parameter.default_value->k == N_INT and id->parameter.default_value->k == N_INT
                     and td->parameter.default_value->i != id->parameter.default_value->i)
                 {
-                  Syntax_Node *dc = ND(CHK, n->l);
+                  Syntax_Node *dc = ND(CHK, n->location);
                   dc->check.expression = n->object_decl.in;
                   dc->check.exception_name = STRING_LITERAL("CONSTRAINT_ERROR");
                   n->object_decl.in = dc;
@@ -7484,7 +7484,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     {
       Type_Info *pt = resolve_subtype(symbol_manager, n->type_decl.parent_type);
       if (n->type_decl.parent_type->k == N_TAC and error_count < 99)
-        fatal_error(n->l, "der acc ty");
+        fatal_error(n->location, "der acc ty");
       t = type_new(TYPE_DERIVED, n->type_decl.nm);
       t->parent_type = pt;
       if (pt)
@@ -7729,7 +7729,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
           id->symbol = al;
         }
         else if (error_count < 99)
-          fatal_error(n->l, "renames must be exception");
+          fatal_error(n->location, "renames must be exception");
       }
       else
       {
@@ -7930,7 +7930,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       Type_Info *t = type_new(TY_P, n->package_body.nm);
       ps = symbol_add_overload(symbol_manager, symbol_new(n->package_body.nm, 6, t, 0));
       ps->elaboration_level = symbol_manager->eo++;
-      Syntax_Node *pk = ND(PKS, n->l);
+      Syntax_Node *pk = ND(PKS, n->location);
       pk->package_spec.nm = n->package_body.nm;
       pk->symbol = ps;
       ps->definition = pk;
@@ -11493,7 +11493,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
     {
       Syntax_Node *a = n->case_stmt.alternatives.data[i];
       int la = new_label_block(generator);
-      nv(&lb, ND(INT, n->l));
+      nv(&lb, ND(INT, n->location));
       lb.data[i]->i = la;
     }
     for (uint32_t i = 0; i < n->case_stmt.alternatives.count; i++)
@@ -11572,7 +11572,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
     if (n->loop_stmt.label.string)
     {
       slv(&generator->lbs, n->loop_stmt.label);
-      nv(&n->loop_stmt.locks, ND(INT, n->l));
+      nv(&n->loop_stmt.locks, ND(INT, n->location));
       n->loop_stmt.locks.data[n->loop_stmt.locks.count - 1]->i = le;
     }
     Syntax_Node *fv = 0;
