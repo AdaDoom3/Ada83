@@ -3469,51 +3469,51 @@ static Syntax_Node *parse_type_definition(Parser *parser)
   }
   return parse_simple_expression(parser);
 }
-static RC *parse_representation_clause(Parser *p)
+static RC *parse_representation_clause(Parser *parser)
 {
-  Source_Location lc = parser_location(p);
-  (void) lc;
-  if (parser_match(p, T_FOR))
+  Source_Location location = parser_location(parser);
+  (void) location;
+  if (parser_match(parser, T_FOR))
   {
-    parse_name(p);
-    parser_expect(p, T_USE);
-    if (parser_match(p, T_AT))
+    parse_name(parser);
+    parser_expect(parser, T_USE);
+    if (parser_match(parser, T_AT))
     {
       RC *r = reference_counter_new(2, 0);
-      parse_expression(p);
-      parser_expect(p, T_SC);
+      parse_expression(parser);
+      parser_expect(parser, T_SC);
       return r;
     }
-    if (parser_match(p, T_REC))
+    if (parser_match(parser, T_REC))
     {
-      while (not parser_at(p, T_END))
+      while (not parser_at(parser, T_END))
       {
-        parser_identifier(p);
-        parser_expect(p, T_AT);
-        parse_expression(p);
-        parser_expect(p, T_RNG);
-        parse_range(p);
-        parser_expect(p, T_SC);
+        parser_identifier(parser);
+        parser_expect(parser, T_AT);
+        parse_expression(parser);
+        parser_expect(parser, T_RNG);
+        parse_range(parser);
+        parser_expect(parser, T_SC);
       }
-      parser_expect(p, T_END);
-      parser_expect(p, T_REC);
-      parser_expect(p, T_SC);
+      parser_expect(parser, T_END);
+      parser_expect(parser, T_REC);
+      parser_expect(parser, T_SC);
       return 0;
     }
-    parse_expression(p);
-    parser_expect(p, T_SC);
+    parse_expression(parser);
+    parser_expect(parser, T_SC);
     return 0;
   }
-  if (parser_match(p, T_PGM))
+  if (parser_match(parser, T_PGM))
   {
-    String_Slice nm = parser_identifier(p);
+    String_Slice nm = parser_identifier(parser);
     RC *r = 0;
     if (string_equal_ignore_case(nm, STRING_LITERAL("SUPPRESS")))
     {
-      if (parser_at(p, T_LP))
+      if (parser_at(parser, T_LP))
       {
-        parser_expect(p, T_LP);
-        String_Slice ck = parser_identifier(p);
+        parser_expect(parser, T_LP);
+        String_Slice ck = parser_identifier(parser);
         uint16_t cm = string_equal_ignore_case(ck, STRING_LITERAL("OVERFLOW_CHECK"))       ? CHK_OVF
                       : string_equal_ignore_case(ck, STRING_LITERAL("RANGE_CHECK"))        ? CHK_RNG
                       : string_equal_ignore_case(ck, STRING_LITERAL("INDEX_CHECK"))        ? CHK_IDX
@@ -3527,92 +3527,92 @@ static RC *parse_representation_clause(Parser *p)
         if (cm)
         {
           r = reference_counter_new(4, 0);
-          r->ad.nm = parser_match(p, T_CM) ? parser_identifier(p) : N;
-          while (parser_match(p, T_CM))
-            parser_identifier(p);
+          r->ad.nm = parser_match(parser, T_CM) ? parser_identifier(parser) : N;
+          while (parser_match(parser, T_CM))
+            parser_identifier(parser);
           r->ad.ad = cm;
         }
         else
         {
-          while (parser_match(p, T_CM))
-            parser_identifier(p);
+          while (parser_match(parser, T_CM))
+            parser_identifier(parser);
         }
-        parser_expect(p, T_RP);
+        parser_expect(parser, T_RP);
       }
-      parser_expect(p, T_SC);
+      parser_expect(parser, T_SC);
       return r;
     }
     else if (string_equal_ignore_case(nm, STRING_LITERAL("PACK")))
     {
-      if (parser_at(p, T_LP))
+      if (parser_at(parser, T_LP))
       {
-        parser_expect(p, T_LP);
-        Syntax_Node *tn = parse_name(p);
-        while (parser_match(p, T_CM))
-          parse_name(p);
-        parser_expect(p, T_RP);
+        parser_expect(parser, T_LP);
+        Syntax_Node *tn = parse_name(parser);
+        while (parser_match(parser, T_CM))
+          parse_name(parser);
+        parser_expect(parser, T_RP);
         r = reference_counter_new(5, 0);
         r->er.nm = tn and tn->k == N_ID ? tn->s : N;
       }
-      parser_expect(p, T_SC);
+      parser_expect(parser, T_SC);
       return r;
     }
     else if (string_equal_ignore_case(nm, STRING_LITERAL("INLINE")))
     {
-      if (parser_at(p, T_LP))
+      if (parser_at(parser, T_LP))
       {
-        parser_expect(p, T_LP);
+        parser_expect(parser, T_LP);
         r = reference_counter_new(6, 0);
-        r->er.nm = parser_identifier(p);
-        while (parser_match(p, T_CM))
-          parser_identifier(p);
-        parser_expect(p, T_RP);
+        r->er.nm = parser_identifier(parser);
+        while (parser_match(parser, T_CM))
+          parser_identifier(parser);
+        parser_expect(parser, T_RP);
       }
-      parser_expect(p, T_SC);
+      parser_expect(parser, T_SC);
       return r;
     }
     else if (string_equal_ignore_case(nm, STRING_LITERAL("CONTROLLED")))
     {
-      if (parser_at(p, T_LP))
+      if (parser_at(parser, T_LP))
       {
-        parser_expect(p, T_LP);
+        parser_expect(parser, T_LP);
         r = reference_counter_new(7, 0);
-        r->er.nm = parser_identifier(p);
-        while (parser_match(p, T_CM))
-          parser_identifier(p);
-        parser_expect(p, T_RP);
+        r->er.nm = parser_identifier(parser);
+        while (parser_match(parser, T_CM))
+          parser_identifier(parser);
+        parser_expect(parser, T_RP);
       }
-      parser_expect(p, T_SC);
+      parser_expect(parser, T_SC);
       return r;
     }
     else if (
         string_equal_ignore_case(nm, STRING_LITERAL("INTERFACE"))
         or string_equal_ignore_case(nm, STRING_LITERAL("IMPORT")))
     {
-      if (parser_at(p, T_LP))
+      if (parser_at(parser, T_LP))
       {
-        parser_expect(p, T_LP);
+        parser_expect(parser, T_LP);
         r = reference_counter_new(8, 0);
-        r->im.lang = parser_identifier(p);
-        if (parser_match(p, T_CM))
+        r->im.lang = parser_identifier(parser);
+        if (parser_match(parser, T_CM))
         {
-          r->im.nm = parser_identifier(p);
-          if (parser_match(p, T_CM))
+          r->im.nm = parser_identifier(parser);
+          if (parser_match(parser, T_CM))
           {
-            if (parser_at(p, T_STR))
+            if (parser_at(parser, T_STR))
             {
-              r->im.ext = p->current_token.literal;
-              parser_next(p);
+              r->im.ext = parser->current_token.literal;
+              parser_next(parser);
             }
             else
-              r->im.ext = parser_identifier(p);
+              r->im.ext = parser_identifier(parser);
           }
           else
             r->im.ext = r->im.nm;
         }
-        parser_expect(p, T_RP);
+        parser_expect(parser, T_RP);
       }
-      parser_expect(p, T_SC);
+      parser_expect(parser, T_SC);
       return r;
     }
     else if (
@@ -3623,14 +3623,14 @@ static RC *parse_representation_clause(Parser *p)
         or string_equal_ignore_case(nm, STRING_LITERAL("LIST"))
         or string_equal_ignore_case(nm, STRING_LITERAL("PAGE")))
     {
-      if (parser_match(p, T_LP))
+      if (parser_match(parser, T_LP))
       {
         do
-          parse_expression(p);
-        while (parser_match(p, T_CM));
-        parser_expect(p, T_RP);
+          parse_expression(parser);
+        while (parser_match(parser, T_CM));
+        parser_expect(parser, T_RP);
       }
-      parser_expect(p, T_SC);
+      parser_expect(parser, T_SC);
       return 0;
     }
     else
@@ -3638,414 +3638,414 @@ static RC *parse_representation_clause(Parser *p)
       if (string_equal_ignore_case(nm, STRING_LITERAL("ELABORATE"))
           or string_equal_ignore_case(nm, STRING_LITERAL("ELABORATE_ALL")))
       {
-        parser_expect(p, T_LP);
+        parser_expect(parser, T_LP);
         do
-          parser_identifier(p);
-        while (parser_match(p, T_CM));
-        parser_expect(p, T_RP);
+          parser_identifier(parser);
+        while (parser_match(parser, T_CM));
+        parser_expect(parser, T_RP);
       }
-      else if (parser_match(p, T_LP))
+      else if (parser_match(parser, T_LP))
       {
         do
-          parser_identifier(p);
-        while (parser_match(p, T_CM));
-        parser_expect(p, T_RP);
+          parser_identifier(parser);
+        while (parser_match(parser, T_CM));
+        parser_expect(parser, T_RP);
       }
-      parser_expect(p, T_SC);
+      parser_expect(parser, T_SC);
     }
   }
   return 0;
 }
-static Syntax_Node *pdl(Parser *p)
+static Syntax_Node *parse_declaration(Parser *parser)
 {
-  Source_Location lc = parser_location(p);
-  if (parser_at(p, T_GEN))
-    return parse_generic_formal(p);
-  if (parser_match(p, T_TYP))
+  Source_Location location = parser_location(parser);
+  if (parser_at(parser, T_GEN))
+    return parse_generic_formal(parser);
+  if (parser_match(parser, T_TYP))
   {
-    String_Slice nm = parser_identifier(p);
-    Syntax_Node *n = ND(TD, lc);
-    n->td.nm = nm;
-    if (parser_match(p, T_LP))
+    String_Slice nm = parser_identifier(parser);
+    Syntax_Node *node = ND(TD, location);
+    node->td.nm = nm;
+    if (parser_match(parser, T_LP))
     {
-      Syntax_Node *ds = ND(LST, lc);
+      Syntax_Node *ds = ND(LST, location);
       do
       {
         Node_Vector dn = {0};
         do
         {
-          String_Slice dnm = parser_identifier(p);
-          Syntax_Node *di = ND(ID, lc);
+          String_Slice dnm = parser_identifier(parser);
+          Syntax_Node *di = ND(ID, location);
           di->s = dnm;
           nv(&dn, di);
-        } while (parser_match(p, T_CM));
-        parser_expect(p, T_CL);
-        Syntax_Node *dt = parse_name(p);
+        } while (parser_match(parser, T_CM));
+        parser_expect(parser, T_CL);
+        Syntax_Node *dt = parse_name(parser);
         Syntax_Node *dd = 0;
-        if (parser_match(p, T_AS))
-          dd = parse_expression(p);
+        if (parser_match(parser, T_AS))
+          dd = parse_expression(parser);
         for (uint32_t i = 0; i < dn.count; i++)
         {
-          Syntax_Node *dp = ND(DS, lc);
+          Syntax_Node *dp = ND(DS, location);
           dp->pm.nm = dn.data[i]->s;
           dp->pm.ty = dt;
           dp->pm.df = dd;
           nv(&ds->lst.it, dp);
         }
-      } while (parser_match(p, T_SC));
-      parser_expect(p, T_RP);
-      n->td.dsc = ds->lst.it;
+      } while (parser_match(parser, T_SC));
+      parser_expect(parser, T_RP);
+      node->td.dsc = ds->lst.it;
     }
-    if (parser_match(p, T_IS))
+    if (parser_match(parser, T_IS))
     {
-      n->td.nw = parser_match(p, T_NEW);
-      n->td.drv = n->td.nw;
-      if (n->td.drv)
+      node->td.nw = parser_match(parser, T_NEW);
+      node->td.drv = node->td.nw;
+      if (node->td.drv)
       {
-        n->td.prt = parse_name(p);
-        n->td.df = n->td.prt;
-        if (parser_match(p, T_DIG))
+        node->td.prt = parse_name(parser);
+        node->td.df = node->td.prt;
+        if (parser_match(parser, T_DIG))
         {
-          parse_expression(p);
-          if (parser_match(p, T_RNG))
+          parse_expression(parser);
+          if (parser_match(parser, T_RNG))
           {
-            parse_signed_term(p);
-            parser_expect(p, T_DD);
-            parse_signed_term(p);
+            parse_signed_term(parser);
+            parser_expect(parser, T_DD);
+            parse_signed_term(parser);
           }
         }
-        else if (parser_match(p, T_DELTA))
+        else if (parser_match(parser, T_DELTA))
         {
-          parse_expression(p);
-          parser_expect(p, T_RNG);
-          parse_signed_term(p);
-          parser_expect(p, T_DD);
-          parse_signed_term(p);
+          parse_expression(parser);
+          parser_expect(parser, T_RNG);
+          parse_signed_term(parser);
+          parser_expect(parser, T_DD);
+          parse_signed_term(parser);
         }
-        else if (parser_match(p, T_RNG))
+        else if (parser_match(parser, T_RNG))
         {
-          Syntax_Node *rn = ND(RN, lc);
-          rn->rn.lo = parse_signed_term(p);
-          parser_expect(p, T_DD);
-          rn->rn.hi = parse_signed_term(p);
-          n->td.df = rn;
+          Syntax_Node *rn = ND(RN, location);
+          rn->rn.lo = parse_signed_term(parser);
+          parser_expect(parser, T_DD);
+          rn->rn.hi = parse_signed_term(parser);
+          node->td.df = rn;
         }
       }
       else
-        n->td.df = parse_type_definition(p);
+        node->td.df = parse_type_definition(parser);
     }
-    parser_expect(p, T_SC);
-    return n;
+    parser_expect(parser, T_SC);
+    return node;
   }
-  if (parser_match(p, T_SUB))
+  if (parser_match(parser, T_SUB))
   {
-    String_Slice nm = parser_identifier(p);
-    parser_expect(p, T_IS);
-    Syntax_Node *n = ND(SD, lc);
-    n->sd.nm = nm;
-    n->sd.in = parse_simple_expression(p);
-    if (n->sd.in->k == N_ST)
-      n->sd.rn = n->sd.in->sd.cn->cn.rn;
-    parser_expect(p, T_SC);
-    return n;
+    String_Slice nm = parser_identifier(parser);
+    parser_expect(parser, T_IS);
+    Syntax_Node *node = ND(SD, location);
+    node->sd.nm = nm;
+    node->sd.in = parse_simple_expression(parser);
+    if (node->sd.in->k == N_ST)
+      node->sd.rn = node->sd.in->sd.cn->cn.rn;
+    parser_expect(parser, T_SC);
+    return node;
   }
-  if (parser_at(p, T_PROC))
+  if (parser_at(parser, T_PROC))
   {
-    Syntax_Node *sp = parse_procedure_specification(p);
-    if (parser_match(p, T_REN))
+    Syntax_Node *sp = parse_procedure_specification(parser);
+    if (parser_match(parser, T_REN))
     {
-      parse_expression(p);
-      parser_expect(p, T_SC);
-      Syntax_Node *n = ND(PD, lc);
-      n->bd.sp = sp;
-      return n;
+      parse_expression(parser);
+      parser_expect(parser, T_SC);
+      Syntax_Node *node = ND(PD, location);
+      node->bd.sp = sp;
+      return node;
     }
-    if (parser_match(p, T_IS))
+    if (parser_match(parser, T_IS))
     {
-      if (parser_match(p, T_SEP))
+      if (parser_match(parser, T_SEP))
       {
-        parser_expect(p, T_SC);
-        Syntax_Node *n = ND(PD, lc);
-        n->bd.sp = sp;
-        return n;
+        parser_expect(parser, T_SC);
+        Syntax_Node *node = ND(PD, location);
+        node->bd.sp = sp;
+        return node;
       }
-      if (parser_match(p, T_NEW))
+      if (parser_match(parser, T_NEW))
       {
-        String_Slice gn = parser_identifier(p);
+        String_Slice gn = parser_identifier(parser);
         Node_Vector ap = {0};
-        if (parser_match(p, T_LP))
+        if (parser_match(parser, T_LP))
         {
           do
           {
-            Syntax_Node *e = parse_expression(p);
-            if (e->k == N_ID and parser_at(p, T_AR))
+            Syntax_Node *e = parse_expression(parser);
+            if (e->k == N_ID and parser_at(parser, T_AR))
             {
-              parser_next(p);
-              Syntax_Node *a = ND(ASC, lc);
+              parser_next(parser);
+              Syntax_Node *a = ND(ASC, location);
               nv(&a->asc.ch, e);
-              a->asc.vl = parse_expression(p);
+              a->asc.vl = parse_expression(parser);
               nv(&ap, a);
             }
             else
             {
               nv(&ap, e);
             }
-          } while (parser_match(p, T_CM));
-          parser_expect(p, T_RP);
+          } while (parser_match(parser, T_CM));
+          parser_expect(parser, T_RP);
         }
-        parser_expect(p, T_SC);
-        Syntax_Node *n = ND(GINST, lc);
-        n->gi.nm = sp->sp.nm;
-        n->gi.gn = gn;
-        n->gi.ap = ap;
-        return n;
+        parser_expect(parser, T_SC);
+        Syntax_Node *node = ND(GINST, location);
+        node->gi.nm = sp->sp.nm;
+        node->gi.gn = gn;
+        node->gi.ap = ap;
+        return node;
       }
-      Syntax_Node *n = ND(PB, lc);
-      n->bd.sp = sp;
-      n->bd.dc = parse_declarative_part(p);
-      parser_expect(p, T_BEG);
-      n->bd.st = parse_statement(p);
-      if (parser_match(p, T_EXCP))
-        n->bd.hdd = parse_handle_declaration(p);
-      parser_expect(p, T_END);
-      if (parser_at(p, T_ID) or parser_at(p, T_STR))
-        parser_next(p);
-      parser_expect(p, T_SC);
-      return n;
+      Syntax_Node *node = ND(PB, location);
+      node->bd.sp = sp;
+      node->bd.dc = parse_declarative_part(parser);
+      parser_expect(parser, T_BEG);
+      node->bd.st = parse_statement(parser);
+      if (parser_match(parser, T_EXCP))
+        node->bd.hdd = parse_handle_declaration(parser);
+      parser_expect(parser, T_END);
+      if (parser_at(parser, T_ID) or parser_at(parser, T_STR))
+        parser_next(parser);
+      parser_expect(parser, T_SC);
+      return node;
     }
-    parser_expect(p, T_SC);
-    Syntax_Node *n = ND(PD, lc);
-    n->bd.sp = sp;
-    return n;
+    parser_expect(parser, T_SC);
+    Syntax_Node *node = ND(PD, location);
+    node->bd.sp = sp;
+    return node;
   }
-  if (parser_match(p, T_FUN))
+  if (parser_match(parser, T_FUN))
   {
     String_Slice nm;
-    if (parser_at(p, T_STR))
+    if (parser_at(parser, T_STR))
     {
-      nm = p->current_token.literal;
-      parser_next(p);
+      nm = parser->current_token.literal;
+      parser_next(parser);
     }
     else
-      nm = parser_identifier(p);
-    if (parser_match(p, T_IS) and parser_match(p, T_NEW))
+      nm = parser_identifier(parser);
+    if (parser_match(parser, T_IS) and parser_match(parser, T_NEW))
     {
-      String_Slice gn = parser_identifier(p);
+      String_Slice gn = parser_identifier(parser);
       Node_Vector ap = {0};
-      if (parser_match(p, T_LP))
+      if (parser_match(parser, T_LP))
       {
         do
         {
-          Syntax_Node *e = parse_expression(p);
-          if (e->k == N_ID and parser_at(p, T_AR))
+          Syntax_Node *e = parse_expression(parser);
+          if (e->k == N_ID and parser_at(parser, T_AR))
           {
-            parser_next(p);
-            Syntax_Node *a = ND(ASC, lc);
+            parser_next(parser);
+            Syntax_Node *a = ND(ASC, location);
             nv(&a->asc.ch, e);
-            a->asc.vl = parse_expression(p);
+            a->asc.vl = parse_expression(parser);
             nv(&ap, a);
           }
           else
           {
             nv(&ap, e);
           }
-        } while (parser_match(p, T_CM));
-        parser_expect(p, T_RP);
+        } while (parser_match(parser, T_CM));
+        parser_expect(parser, T_RP);
       }
-      parser_expect(p, T_SC);
-      Syntax_Node *n = ND(GINST, lc);
-      n->gi.nm = nm;
-      n->gi.gn = gn;
-      n->gi.ap = ap;
-      return n;
+      parser_expect(parser, T_SC);
+      Syntax_Node *node = ND(GINST, location);
+      node->gi.nm = nm;
+      node->gi.gn = gn;
+      node->gi.ap = ap;
+      return node;
     }
-    Syntax_Node *sp = ND(FS, lc);
+    Syntax_Node *sp = ND(FS, location);
     sp->sp.nm = nm;
-    sp->sp.pmm = parse_parameter_mode(p);
-    parser_expect(p, T_RET);
-    sp->sp.rt = parse_name(p);
-    if (parser_match(p, T_REN))
+    sp->sp.pmm = parse_parameter_mode(parser);
+    parser_expect(parser, T_RET);
+    sp->sp.rt = parse_name(parser);
+    if (parser_match(parser, T_REN))
     {
-      parse_expression(p);
-      parser_expect(p, T_SC);
-      Syntax_Node *n = ND(FD, lc);
-      n->bd.sp = sp;
-      return n;
+      parse_expression(parser);
+      parser_expect(parser, T_SC);
+      Syntax_Node *node = ND(FD, location);
+      node->bd.sp = sp;
+      return node;
     }
-    if (parser_match(p, T_IS))
+    if (parser_match(parser, T_IS))
     {
-      if (parser_match(p, T_SEP))
+      if (parser_match(parser, T_SEP))
       {
-        parser_expect(p, T_SC);
-        Syntax_Node *n = ND(FD, lc);
-        n->bd.sp = sp;
-        return n;
+        parser_expect(parser, T_SC);
+        Syntax_Node *node = ND(FD, location);
+        node->bd.sp = sp;
+        return node;
       }
-      Syntax_Node *n = ND(FB, lc);
-      n->bd.sp = sp;
-      n->bd.dc = parse_declarative_part(p);
-      parser_expect(p, T_BEG);
-      n->bd.st = parse_statement(p);
-      if (parser_match(p, T_EXCP))
-        n->bd.hdd = parse_handle_declaration(p);
-      parser_expect(p, T_END);
-      if (parser_at(p, T_ID) or parser_at(p, T_STR))
-        parser_next(p);
-      parser_expect(p, T_SC);
-      return n;
+      Syntax_Node *node = ND(FB, location);
+      node->bd.sp = sp;
+      node->bd.dc = parse_declarative_part(parser);
+      parser_expect(parser, T_BEG);
+      node->bd.st = parse_statement(parser);
+      if (parser_match(parser, T_EXCP))
+        node->bd.hdd = parse_handle_declaration(parser);
+      parser_expect(parser, T_END);
+      if (parser_at(parser, T_ID) or parser_at(parser, T_STR))
+        parser_next(parser);
+      parser_expect(parser, T_SC);
+      return node;
     }
-    parser_expect(p, T_SC);
-    Syntax_Node *n = ND(FD, lc);
-    n->bd.sp = sp;
-    return n;
+    parser_expect(parser, T_SC);
+    Syntax_Node *node = ND(FD, location);
+    node->bd.sp = sp;
+    return node;
   }
-  if (parser_match(p, T_PKG))
+  if (parser_match(parser, T_PKG))
   {
-    if (parser_match(p, T_BOD))
+    if (parser_match(parser, T_BOD))
     {
-      String_Slice nm = parser_identifier(p);
-      parser_expect(p, T_IS);
-      if (parser_match(p, T_SEP))
+      String_Slice nm = parser_identifier(parser);
+      parser_expect(parser, T_IS);
+      if (parser_match(parser, T_SEP))
       {
-        parser_expect(p, T_SC);
-        Syntax_Node *n = ND(PKB, lc);
-        n->pb.nm = nm;
-        return n;
+        parser_expect(parser, T_SC);
+        Syntax_Node *node = ND(PKB, location);
+        node->pb.nm = nm;
+        return node;
       }
-      Syntax_Node *n = ND(PKB, lc);
-      n->pb.nm = nm;
-      n->pb.dc = parse_declarative_part(p);
-      if (parser_match(p, T_BEG))
+      Syntax_Node *node = ND(PKB, location);
+      node->pb.nm = nm;
+      node->pb.dc = parse_declarative_part(parser);
+      if (parser_match(parser, T_BEG))
       {
-        n->pb.st = parse_statement(p);
-        if (parser_match(p, T_EXCP))
-          n->pb.hddd = parse_handle_declaration(p);
+        node->pb.st = parse_statement(parser);
+        if (parser_match(parser, T_EXCP))
+          node->pb.hddd = parse_handle_declaration(parser);
       }
-      parser_expect(p, T_END);
-      if (parser_at(p, T_ID))
-        parser_next(p);
-      parser_expect(p, T_SC);
-      return n;
+      parser_expect(parser, T_END);
+      if (parser_at(parser, T_ID))
+        parser_next(parser);
+      parser_expect(parser, T_SC);
+      return node;
     }
-    String_Slice nm = parser_identifier(p);
-    if (parser_match(p, T_REN))
+    String_Slice nm = parser_identifier(parser);
+    if (parser_match(parser, T_REN))
     {
-      Syntax_Node *rn = parse_expression(p);
-      parser_expect(p, T_SC);
-      Syntax_Node *n = ND(RE, lc);
-      n->re.nm = nm;
-      n->re.rn = rn;
-      return n;
+      Syntax_Node *rn = parse_expression(parser);
+      parser_expect(parser, T_SC);
+      Syntax_Node *node = ND(RE, location);
+      node->re.nm = nm;
+      node->re.rn = rn;
+      return node;
     }
-    parser_expect(p, T_IS);
-    if (parser_match(p, T_NEW))
+    parser_expect(parser, T_IS);
+    if (parser_match(parser, T_NEW))
     {
-      String_Slice gn = parser_identifier(p);
+      String_Slice gn = parser_identifier(parser);
       Node_Vector ap = {0};
-      if (parser_match(p, T_LP))
+      if (parser_match(parser, T_LP))
       {
         do
         {
-          Syntax_Node *e = parse_expression(p);
-          if (e->k == N_ID and parser_at(p, T_AR))
+          Syntax_Node *e = parse_expression(parser);
+          if (e->k == N_ID and parser_at(parser, T_AR))
           {
-            parser_next(p);
-            Syntax_Node *a = ND(ASC, lc);
+            parser_next(parser);
+            Syntax_Node *a = ND(ASC, location);
             nv(&a->asc.ch, e);
-            a->asc.vl = parse_expression(p);
+            a->asc.vl = parse_expression(parser);
             nv(&ap, a);
           }
           else
           {
             nv(&ap, e);
           }
-        } while (parser_match(p, T_CM));
-        parser_expect(p, T_RP);
+        } while (parser_match(parser, T_CM));
+        parser_expect(parser, T_RP);
       }
-      parser_expect(p, T_SC);
-      Syntax_Node *n = ND(GINST, lc);
-      n->gi.nm = nm;
-      n->gi.gn = gn;
-      n->gi.ap = ap;
-      return n;
+      parser_expect(parser, T_SC);
+      Syntax_Node *node = ND(GINST, location);
+      node->gi.nm = nm;
+      node->gi.gn = gn;
+      node->gi.ap = ap;
+      return node;
     }
-    Syntax_Node *n = ND(PKS, lc);
-    n->ps.nm = nm;
-    n->ps.dc = parse_declarative_part(p);
-    if (parser_match(p, T_PRV))
-      n->ps.pr = parse_declarative_part(p);
-    parser_expect(p, T_END);
-    if (parser_at(p, T_ID))
-      parser_next(p);
-    parser_expect(p, T_SC);
-    return n;
+    Syntax_Node *node = ND(PKS, location);
+    node->ps.nm = nm;
+    node->ps.dc = parse_declarative_part(parser);
+    if (parser_match(parser, T_PRV))
+      node->ps.pr = parse_declarative_part(parser);
+    parser_expect(parser, T_END);
+    if (parser_at(parser, T_ID))
+      parser_next(parser);
+    parser_expect(parser, T_SC);
+    return node;
   }
-  if (parser_match(p, T_TSK))
+  if (parser_match(parser, T_TSK))
   {
-    if (parser_match(p, T_BOD))
+    if (parser_match(parser, T_BOD))
     {
-      String_Slice nm = parser_identifier(p);
-      parser_expect(p, T_IS);
-      if (parser_match(p, T_SEP))
+      String_Slice nm = parser_identifier(parser);
+      parser_expect(parser, T_IS);
+      if (parser_match(parser, T_SEP))
       {
-        parser_expect(p, T_SC);
-        Syntax_Node *n = ND(TKB, lc);
-        n->tb.nm = nm;
-        return n;
+        parser_expect(parser, T_SC);
+        Syntax_Node *node = ND(TKB, location);
+        node->tb.nm = nm;
+        return node;
       }
-      Syntax_Node *n = ND(TKB, lc);
-      n->tb.nm = nm;
-      n->tb.dc = parse_declarative_part(p);
-      parser_expect(p, T_BEG);
-      n->tb.st = parse_statement(p);
-      if (parser_match(p, T_EXCP))
-        n->tb.hdz = parse_handle_declaration(p);
-      parser_expect(p, T_END);
-      if (parser_at(p, T_ID))
-        parser_next(p);
-      parser_expect(p, T_SC);
-      return n;
+      Syntax_Node *node = ND(TKB, location);
+      node->tb.nm = nm;
+      node->tb.dc = parse_declarative_part(parser);
+      parser_expect(parser, T_BEG);
+      node->tb.st = parse_statement(parser);
+      if (parser_match(parser, T_EXCP))
+        node->tb.hdz = parse_handle_declaration(parser);
+      parser_expect(parser, T_END);
+      if (parser_at(parser, T_ID))
+        parser_next(parser);
+      parser_expect(parser, T_SC);
+      return node;
     }
-    bool it = parser_match(p, T_TYP);
-    String_Slice nm = parser_identifier(p);
-    Syntax_Node *n = ND(TKS, lc);
-    n->ts.nm = nm;
-    n->ts.it = it;
-    if (parser_match(p, T_IS))
+    bool it = parser_match(parser, T_TYP);
+    String_Slice nm = parser_identifier(parser);
+    Syntax_Node *node = ND(TKS, location);
+    node->ts.nm = nm;
+    node->ts.it = it;
+    if (parser_match(parser, T_IS))
     {
-      while (not parser_at(p, T_END))
+      while (not parser_at(parser, T_END))
       {
-        if (parser_match(p, T_ENT))
+        if (parser_match(parser, T_ENT))
         {
-          Syntax_Node *e = ND(ENT, lc);
-          e->ent.nm = parser_identifier(p);
-          if (parser_at(p, T_LP))
+          Syntax_Node *e = ND(ENT, location);
+          e->ent.nm = parser_identifier(parser);
+          if (parser_at(parser, T_LP))
           {
-            if (p->peek_token.kind == T_ID or p->peek_token.kind == T_INT or p->peek_token.kind == T_CHAR)
+            if (parser->peek_token.kind == T_ID or parser->peek_token.kind == T_INT or parser->peek_token.kind == T_CHAR)
             {
-              Token scr = p->current_token, spk = p->peek_token;
-              Lexer slx = p->lexer;
-              parser_next(p);
-              parser_next(p);
-              if (p->current_token.kind == T_CM or p->current_token.kind == T_CL)
+              Token scr = parser->current_token, spk = parser->peek_token;
+              Lexer slx = parser->lexer;
+              parser_next(parser);
+              parser_next(parser);
+              if (parser->current_token.kind == T_CM or parser->current_token.kind == T_CL)
               {
-                p->current_token = scr;
-                p->peek_token = spk;
-                p->lexer = slx;
-                e->ent.pmy = parse_parameter_mode(p);
+                parser->current_token = scr;
+                parser->peek_token = spk;
+                parser->lexer = slx;
+                e->ent.pmy = parse_parameter_mode(parser);
               }
               else
               {
-                p->current_token = scr;
-                p->peek_token = spk;
-                p->lexer = slx;
-                parser_expect(p, T_LP);
-                Syntax_Node *ix = parse_range(p);
-                if (ix->k != N_RN and parser_match(p, T_RNG))
+                parser->current_token = scr;
+                parser->peek_token = spk;
+                parser->lexer = slx;
+                parser_expect(parser, T_LP);
+                Syntax_Node *ix = parse_range(parser);
+                if (ix->k != N_RN and parser_match(parser, T_RNG))
                 {
-                  Syntax_Node *rng = parse_range(p);
-                  Syntax_Node *si = ND(ST, lc);
-                  Syntax_Node *cn = ND(CN, lc);
+                  Syntax_Node *rng = parse_range(parser);
+                  Syntax_Node *si = ND(ST, location);
+                  Syntax_Node *cn = ND(CN, location);
                   cn->cn.rn = rng;
                   si->sd.in = ix;
                   si->sd.cn = cn;
@@ -4055,19 +4055,19 @@ static Syntax_Node *pdl(Parser *p)
                 {
                   nv(&e->ent.ixy, ix);
                 }
-                parser_expect(p, T_RP);
-                e->ent.pmy = parse_parameter_mode(p);
+                parser_expect(parser, T_RP);
+                e->ent.pmy = parse_parameter_mode(parser);
               }
             }
             else
             {
-              parser_expect(p, T_LP);
-              Syntax_Node *ix = parse_range(p);
-              if (ix->k != N_RN and parser_match(p, T_RNG))
+              parser_expect(parser, T_LP);
+              Syntax_Node *ix = parse_range(parser);
+              if (ix->k != N_RN and parser_match(parser, T_RNG))
               {
-                Syntax_Node *rng = parse_range(p);
-                Syntax_Node *si = ND(ST, lc);
-                Syntax_Node *cn = ND(CN, lc);
+                Syntax_Node *rng = parse_range(parser);
+                Syntax_Node *si = ND(ST, location);
+                Syntax_Node *cn = ND(CN, location);
                 cn->cn.rn = rng;
                 si->sd.in = ix;
                 si->sd.cn = cn;
@@ -4077,205 +4077,205 @@ static Syntax_Node *pdl(Parser *p)
               {
                 nv(&e->ent.ixy, ix);
               }
-              parser_expect(p, T_RP);
-              e->ent.pmy = parse_parameter_mode(p);
+              parser_expect(parser, T_RP);
+              e->ent.pmy = parse_parameter_mode(parser);
             }
           }
           else
           {
-            e->ent.pmy = parse_parameter_mode(p);
+            e->ent.pmy = parse_parameter_mode(parser);
           }
-          parser_expect(p, T_SC);
-          nv(&n->ts.en, e);
+          parser_expect(parser, T_SC);
+          nv(&node->ts.en, e);
         }
-        else if (parser_match(p, T_PGM))
+        else if (parser_match(parser, T_PGM))
         {
-          parser_identifier(p);
-          if (parser_match(p, T_LP))
+          parser_identifier(parser);
+          if (parser_match(parser, T_LP))
           {
             do
-              parse_expression(p);
-            while (parser_match(p, T_CM));
-            parser_expect(p, T_RP);
+              parse_expression(parser);
+            while (parser_match(parser, T_CM));
+            parser_expect(parser, T_RP);
           }
-          parser_expect(p, T_SC);
+          parser_expect(parser, T_SC);
         }
       }
-      parser_expect(p, T_END);
-      if (parser_at(p, T_ID))
-        parser_next(p);
+      parser_expect(parser, T_END);
+      if (parser_at(parser, T_ID))
+        parser_next(parser);
     }
-    parser_expect(p, T_SC);
-    return n;
+    parser_expect(parser, T_SC);
+    return node;
   }
-  if (parser_match(p, T_USE))
+  if (parser_match(parser, T_USE))
   {
     Node_Vector nms = {0};
     do
-      nv(&nms, parse_name(p));
-    while (parser_match(p, T_CM));
-    parser_expect(p, T_SC);
+      nv(&nms, parse_name(parser));
+    while (parser_match(parser, T_CM));
+    parser_expect(parser, T_SC);
     if (nms.count == 1)
     {
-      Syntax_Node *n = ND(US, lc);
-      n->us.nm = nms.data[0];
-      return n;
+      Syntax_Node *node = ND(US, location);
+      node->us.nm = nms.data[0];
+      return node;
     }
-    Syntax_Node *lst = ND(LST, lc);
+    Syntax_Node *lst = ND(LST, location);
     for (uint32_t i = 0; i < nms.count; i++)
     {
-      Syntax_Node *u = ND(US, lc);
+      Syntax_Node *u = ND(US, location);
       u->us.nm = nms.data[i];
       nv(&lst->lst.it, u);
     }
     return lst;
   }
-  if (parser_match(p, T_PGM))
+  if (parser_match(parser, T_PGM))
   {
-    Syntax_Node *n = ND(PG, lc);
-    n->pg.nm = parser_identifier(p);
-    if (parser_match(p, T_LP))
+    Syntax_Node *node = ND(PG, location);
+    node->pg.nm = parser_identifier(parser);
+    if (parser_match(parser, T_LP))
     {
       do
-        nv(&n->pg.ar, parse_expression(p));
-      while (parser_match(p, T_CM));
-      parser_expect(p, T_RP);
+        nv(&node->pg.ar, parse_expression(parser));
+      while (parser_match(parser, T_CM));
+      parser_expect(parser, T_RP);
     }
-    parser_expect(p, T_SC);
-    return n;
+    parser_expect(parser, T_SC);
+    return node;
   }
   {
     Node_Vector id = {0};
     do
     {
-      String_Slice nm = parser_identifier(p);
-      Syntax_Node *i = ND(ID, lc);
+      String_Slice nm = parser_identifier(parser);
+      Syntax_Node *i = ND(ID, location);
       i->s = nm;
       nv(&id, i);
-    } while (parser_match(p, T_CM));
-    parser_expect(p, T_CL);
-    bool co = parser_match(p, T_CONST);
-    if (parser_match(p, T_EXCP))
+    } while (parser_match(parser, T_CM));
+    parser_expect(parser, T_CL);
+    bool co = parser_match(parser, T_CONST);
+    if (parser_match(parser, T_EXCP))
     {
-      Syntax_Node *n = ND(ED, lc);
-      n->ed.id = id;
-      if (parser_match(p, T_REN))
-        n->ed.rn = parse_expression(p);
-      parser_expect(p, T_SC);
-      return n;
+      Syntax_Node *node = ND(ED, location);
+      node->ed.id = id;
+      if (parser_match(parser, T_REN))
+        node->ed.rn = parse_expression(parser);
+      parser_expect(parser, T_SC);
+      return node;
     }
     Syntax_Node *ty = 0;
-    if (not parser_at(p, T_AS))
+    if (not parser_at(parser, T_AS))
     {
-      if (parser_at(p, T_ARR) or parser_at(p, T_ACCS))
-        ty = parse_type_definition(p);
+      if (parser_at(parser, T_ARR) or parser_at(parser, T_ACCS))
+        ty = parse_type_definition(parser);
       else
-        ty = parse_simple_expression(p);
+        ty = parse_simple_expression(parser);
     }
     Syntax_Node *in = 0;
-    if (parser_match(p, T_REN))
-      in = parse_expression(p);
-    else if (parser_match(p, T_AS))
-      in = parse_expression(p);
-    parser_expect(p, T_SC);
-    Syntax_Node *n = ND(OD, lc);
-    n->od.id = id;
-    n->od.ty = ty;
-    n->od.in = in;
-    n->od.co = co;
-    return n;
+    if (parser_match(parser, T_REN))
+      in = parse_expression(parser);
+    else if (parser_match(parser, T_AS))
+      in = parse_expression(parser);
+    parser_expect(parser, T_SC);
+    Syntax_Node *node = ND(OD, location);
+    node->od.id = id;
+    node->od.ty = ty;
+    node->od.in = in;
+    node->od.co = co;
+    return node;
   }
 }
-static Node_Vector parse_declarative_part(Parser *p)
+static Node_Vector parse_declarative_part(Parser *parser)
 {
-  Node_Vector v = {0};
-  while (not parser_at(p, T_BEG) and not parser_at(p, T_END) and not parser_at(p, T_PRV)
-         and not parser_at(p, T_EOF) and not parser_at(p, T_ENT))
+  Node_Vector declarations = {0};
+  while (not parser_at(parser, T_BEG) and not parser_at(parser, T_END) and not parser_at(parser, T_PRV)
+         and not parser_at(parser, T_EOF) and not parser_at(parser, T_ENT))
   {
-    if (parser_at(p, T_FOR))
+    if (parser_at(parser, T_FOR))
     {
-      RC *r = parse_representation_clause(p);
+      RC *r = parse_representation_clause(parser);
       if (r)
       {
-        Syntax_Node *n = ND(RRC, parser_location(p));
+        Syntax_Node *n = ND(RRC, parser_location(parser));
         memcpy(&n->ag.it.data, &r, sizeof(RC *));
-        nv(&v, n);
+        nv(&declarations, n);
       }
       continue;
     }
-    if (parser_at(p, T_PGM))
+    if (parser_at(parser, T_PGM))
     {
-      RC *r = parse_representation_clause(p);
+      RC *r = parse_representation_clause(parser);
       if (r)
       {
-        Syntax_Node *n = ND(RRC, parser_location(p));
+        Syntax_Node *n = ND(RRC, parser_location(parser));
         memcpy(&n->ag.it.data, &r, sizeof(RC *));
-        nv(&v, n);
+        nv(&declarations, n);
       }
       continue;
     }
-    nv(&v, pdl(p));
+    nv(&declarations, parse_declaration(parser));
   }
-  return v;
+  return declarations;
 }
-static Syntax_Node *pcx(Parser *p)
+static Syntax_Node *pcx(Parser *parser)
 {
-  Source_Location lc = parser_location(p);
+  Source_Location lc = parser_location(parser);
   Syntax_Node *cx = ND(CX, lc);
-  while (parser_at(p, T_WITH) or parser_at(p, T_USE) or parser_at(p, T_PGM))
+  while (parser_at(parser, T_WITH) or parser_at(parser, T_USE) or parser_at(parser, T_PGM))
   {
-    if (parser_match(p, T_WITH))
+    if (parser_match(parser, T_WITH))
     {
       do
       {
         Syntax_Node *w = ND(WI, lc);
-        w->wt.nm = parser_identifier(p);
+        w->wt.nm = parser_identifier(parser);
         nv(&cx->cx.wt, w);
-      } while (parser_match(p, T_CM));
-      parser_expect(p, T_SC);
+      } while (parser_match(parser, T_CM));
+      parser_expect(parser, T_SC);
     }
-    else if (parser_match(p, T_USE))
+    else if (parser_match(parser, T_USE))
     {
       do
       {
         Syntax_Node *u = ND(US, lc);
-        u->us.nm = parse_name(p);
+        u->us.nm = parse_name(parser);
         nv(&cx->cx.us, u);
-      } while (parser_match(p, T_CM));
-      parser_expect(p, T_SC);
+      } while (parser_match(parser, T_CM));
+      parser_expect(parser, T_SC);
     }
     else
     {
-      Syntax_Node *pg = pdl(p);
+      Syntax_Node *pg = parse_declaration(parser);
       if (pg)
         nv(&cx->cx.us, pg);
     }
   }
   return cx;
 }
-static Syntax_Node *parse_compilation_unit(Parser *p)
+static Syntax_Node *parse_compilation_unit(Parser *parser)
 {
-  Source_Location lc = parser_location(p);
-  Syntax_Node *n = ND(CU, lc);
-  n->cu.cx = pcx(p);
-  while (parser_at(p, T_WITH) or parser_at(p, T_USE) or parser_at(p, T_PROC) or parser_at(p, T_FUN)
-         or parser_at(p, T_PKG) or parser_at(p, T_GEN) or parser_at(p, T_PGM)
-         or parser_at(p, T_SEP))
+  Source_Location location = parser_location(parser);
+  Syntax_Node *node = ND(CU, location);
+  node->cu.cx = pcx(parser);
+  while (parser_at(parser, T_WITH) or parser_at(parser, T_USE) or parser_at(parser, T_PROC) or parser_at(parser, T_FUN)
+         or parser_at(parser, T_PKG) or parser_at(parser, T_GEN) or parser_at(parser, T_PGM)
+         or parser_at(parser, T_SEP))
   {
-    if (parser_at(p, T_WITH) or parser_at(p, T_USE) or parser_at(p, T_PGM))
+    if (parser_at(parser, T_WITH) or parser_at(parser, T_USE) or parser_at(parser, T_PGM))
     {
-      Syntax_Node *cx = pcx(p);
+      Syntax_Node *cx = pcx(parser);
       for (uint32_t i = 0; i < cx->cx.wt.count; i++)
-        nv(&n->cu.cx->cx.wt, cx->cx.wt.data[i]);
+        nv(&node->cu.cx->cx.wt, cx->cx.wt.data[i]);
       for (uint32_t i = 0; i < cx->cx.us.count; i++)
-        nv(&n->cu.cx->cx.us, cx->cx.us.data[i]);
+        nv(&node->cu.cx->cx.us, cx->cx.us.data[i]);
     }
-    else if (parser_at(p, T_SEP))
+    else if (parser_at(parser, T_SEP))
     {
-      parser_expect(p, T_SEP);
-      parser_expect(p, T_LP);
-      Syntax_Node *pnm_ = parse_name(p);
-      parser_expect(p, T_RP);
+      parser_expect(parser, T_SEP);
+      parser_expect(parser, T_LP);
+      Syntax_Node *pnm_ = parse_name(parser);
+      parser_expect(parser, T_RP);
       String_Slice ppkg = pnm_->k == N_ID ? pnm_->s : pnm_->k == N_SEL ? pnm_->se.p->s : N;
       SEP_PKG = ppkg.string ? string_duplicate(ppkg) : N;
       if (ppkg.string)
@@ -4316,25 +4316,25 @@ static Syntax_Node *parse_compilation_unit(Parser *p)
           if (pcu_ and pcu_->cu.cx)
           {
             for (uint32_t i = 0; i < pcu_->cu.cx->cx.wt.count; i++)
-              nv(&n->cu.cx->cx.wt, pcu_->cu.cx->cx.wt.data[i]);
+              nv(&node->cu.cx->cx.wt, pcu_->cu.cx->cx.wt.data[i]);
             for (uint32_t i = 0; i < pcu_->cu.cx->cx.us.count; i++)
-              nv(&n->cu.cx->cx.us, pcu_->cu.cx->cx.us.data[i]);
+              nv(&node->cu.cx->cx.us, pcu_->cu.cx->cx.us.data[i]);
           }
         }
       }
-      nv(&n->cu.un, pdl(p));
+      nv(&node->cu.un, parse_declaration(parser));
     }
     else
-      nv(&n->cu.un, pdl(p));
+      nv(&node->cu.un, parse_declaration(parser));
   }
-  return n;
+  return node;
 }
 static Parser parser_new(const char *s, size_t z, const char *f)
 {
-  Parser p = {lexer_new(s, z, f), {0}, {0}, 0, {0}};
-  parser_next(&p);
-  parser_next(&p);
-  return p;
+  Parser parser = {lexer_new(s, z, f), {0}, {0}, 0, {0}};
+  parser_next(&parser);
+  parser_next(&parser);
+  return parser;
 }
 typedef enum
 {
@@ -4503,10 +4503,10 @@ static void symbol_find_use(Symbol_Manager *SM, Symbol *s, String_Slice nm)
   if (SM->uv_vis[h] & b)
     return;
   SM->uv_vis[h] |= b;
-  for (Symbol *p = s; p; p = p->nx)
-    if (string_equal_ignore_case(p->nm, nm) and p->k == 6 and p->df and p->df->k == N_PKS)
+  for (Symbol *parser = s; parser; parser = parser->nx)
+    if (string_equal_ignore_case(parser->nm, nm) and parser->k == 6 and parser->df and parser->df->k == N_PKS)
     {
-      Syntax_Node *pk = p->df;
+      Syntax_Node *pk = parser->df;
       for (uint32_t i = 0; i < pk->ps.dc.count; i++)
       {
         Syntax_Node *d = pk->ps.dc.data[i];
@@ -4545,14 +4545,14 @@ static void symbol_find_use(Symbol_Manager *SM, Symbol *s, String_Slice nm)
       {
         bool f = 0;
         for (int i = 0; i < SM->dpn; i++)
-          if (SM->dps[i].count and string_equal_ignore_case(SM->dps[i].data[0]->nm, p->nm))
+          if (SM->dps[i].count and string_equal_ignore_case(SM->dps[i].data[0]->nm, parser->nm))
           {
             f = 1;
             break;
           }
         if (not f)
         {
-          sv(&SM->dps[SM->dpn], p);
+          sv(&SM->dps[SM->dpn], parser);
           SM->dpn++;
         }
       }
@@ -4615,10 +4615,10 @@ static Symbol *symbol_find_with_arity(Symbol_Manager *SM, String_Slice nm, int n
               }
               for (uint32_t k = 0; k < b->bd.sp->sp.pmm.count and k < (uint32_t) na; k++)
               {
-                Syntax_Node *p = b->bd.sp->sp.pmm.data[k];
-                if (p->sy and p->sy->ty and tx)
+                Syntax_Node *parser = b->bd.sp->sp.pmm.data[k];
+                if (parser->sy and parser->sy->ty and tx)
                 {
-                  int ps = type_scope(p->sy->ty, tx, 0);
+                  int ps = type_scope(parser->sy->ty, tx, 0);
                   sc += ps;
                 }
               }
@@ -4818,12 +4818,12 @@ static Syntax_Node *geq(Type_Info *t, Source_Location l)
 }
 static Syntax_Node *gas(Type_Info *t, Source_Location l)
 {
-  Syntax_Node *p = ND(PB, l);
-  p->bd.sp = ND(PS, l);
+  Syntax_Node *parser = ND(PB, l);
+  parser->bd.sp = ND(PS, l);
   char b[256];
   snprintf(b, 256, "Oas%.*s", (int) t->nm.length, t->nm.string);
-  p->bd.sp->sp.nm = string_duplicate((String_Slice){b, strlen(b)});
-  p->bd.sp->sp.op = STRING_LITERAL(":=");
+  parser->bd.sp->sp.nm = string_duplicate((String_Slice){b, strlen(b)});
+  parser->bd.sp->sp.op = STRING_LITERAL(":=");
   Syntax_Node *p1 = ND(PM, l);
   p1->pm.nm = STRING_LITERAL("T");
   p1->pm.ty = ND(ID, l);
@@ -4834,8 +4834,8 @@ static Syntax_Node *gas(Type_Info *t, Source_Location l)
   p2->pm.ty = ND(ID, l);
   p2->pm.ty->s = t->nm;
   p2->pm.md = 0;
-  nv(&p->bd.sp->sp.pmm, p1);
-  nv(&p->bd.sp->sp.pmm, p2);
+  nv(&parser->bd.sp->sp.pmm, p1);
+  nv(&parser->bd.sp->sp.pmm, p2);
   if (t->k == TYPE_RECORD)
   {
     for (uint32_t i = 0; i < t->cm.count; i++)
@@ -4854,7 +4854,7 @@ static Syntax_Node *gas(Type_Info *t, Source_Location l)
       rs->se.se = c->cm.nm;
       as->as.tg = lt;
       as->as.vl = rs;
-      nv(&p->bd.st, as);
+      nv(&parser->bd.st, as);
     }
   }
   else if (t->k == TYPE_ARRAY)
@@ -4882,9 +4882,9 @@ static Syntax_Node *gas(Type_Info *t, Source_Location l)
     as->as.tg = ti;
     as->as.vl = si;
     nv(&lp->lp.st, as);
-    nv(&p->bd.st, lp);
+    nv(&parser->bd.st, lp);
   }
-  return p;
+  return parser;
 }
 static Syntax_Node *gin(Type_Info *t, Source_Location l)
 {
@@ -5024,9 +5024,9 @@ static void symbol_compare_overload(Symbol_Manager *SM)
     SM->ssd--;
   SM->sc--;
 }
-static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *n);
-static void resolve_expression(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx);
-static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *n);
+static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *node);
+static void resolve_expression(Symbol_Manager *SM, Syntax_Node *node, Type_Info *tx);
+static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *node);
 static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n);
 static void runtime_register_compare(Symbol_Manager *SM, RC *r);
 static Syntax_Node *gcl(Symbol_Manager *SM, Syntax_Node *n);
@@ -5084,15 +5084,15 @@ static Type_Info *semantic_base(Type_Info *t)
 {
   if (not t)
     return TY_INT;
-  for (Type_Info *p = t; p; p = p->bs ? p->bs : p->prt)
+  for (Type_Info *parser = t; parser; parser = parser->bs ? parser->bs : parser->prt)
   {
-    if (not p->bs and not p->prt)
-      return p;
-    if (p->k == TYPE_DERIVED and p->prt)
-      return semantic_base(p->prt);
-    if (p->k == TYPE_UNSIGNED_INTEGER)
+    if (not parser->bs and not parser->prt)
+      return parser;
+    if (parser->k == TYPE_DERIVED and parser->prt)
+      return semantic_base(parser->prt);
+    if (parser->k == TYPE_UNSIGNED_INTEGER)
       return TY_INT;
-    if (p->k == TYPE_UNIVERSAL_FLOAT or p->k == TYPE_FIXED_POINT)
+    if (parser->k == TYPE_UNIVERSAL_FLOAT or parser->k == TYPE_FIXED_POINT)
       return TY_FLT;
   }
   return t;
@@ -5125,9 +5125,9 @@ static inline bool is_access(Type_Info *t)
 }
 static bool is_check_suppressed(Type_Info *t, unsigned kind)
 {
-  for (Type_Info *p = t; p; p = p->bs)
+  for (Type_Info *parser = t; parser; parser = parser->bs)
   {
-    if (p->sup & kind)
+    if (parser->sup & kind)
       return true;
   }
   return false;
@@ -5199,51 +5199,51 @@ static bool type_covers(Type_Info *a, Type_Info *b)
     return 1;
   return 0;
 }
-static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *n)
+static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *node)
 {
-  if (not n)
+  if (not node)
     return TY_INT;
-  if (n->k == N_ID)
+  if (node->k == N_ID)
   {
-    Symbol *s = symbol_find(SM, n->s);
+    Symbol *s = symbol_find(SM, node->s);
     if (s and s->ty)
       return s->ty;
     return TY_INT;
   }
-  if (n->k == N_SEL)
+  if (node->k == N_SEL)
   {
-    Syntax_Node *p = n->se.p;
-    if (p->k == N_ID)
+    Syntax_Node *parser = node->se.p;
+    if (parser->k == N_ID)
     {
-      Symbol *ps = symbol_find(SM, p->s);
+      Symbol *ps = symbol_find(SM, parser->s);
       if (ps and ps->k == 6 and ps->df and ps->df->k == N_PKS)
       {
         Syntax_Node *pk = ps->df;
         for (uint32_t i = 0; i < pk->ps.pr.count; i++)
         {
           Syntax_Node *d = pk->ps.pr.data[i];
-          if (d->sy and string_equal_ignore_case(d->sy->nm, n->se.se) and d->sy->ty)
+          if (d->sy and string_equal_ignore_case(d->sy->nm, node->se.se) and d->sy->ty)
             return d->sy->ty;
-          if (d->k == N_TD and string_equal_ignore_case(d->td.nm, n->se.se))
+          if (d->k == N_TD and string_equal_ignore_case(d->td.nm, node->se.se))
             return resolve_subtype(SM, d->td.df);
         }
         for (uint32_t i = 0; i < pk->ps.dc.count; i++)
         {
           Syntax_Node *d = pk->ps.dc.data[i];
-          if (d->sy and string_equal_ignore_case(d->sy->nm, n->se.se) and d->sy->ty)
+          if (d->sy and string_equal_ignore_case(d->sy->nm, node->se.se) and d->sy->ty)
             return d->sy->ty;
-          if (d->k == N_TD and string_equal_ignore_case(d->td.nm, n->se.se))
+          if (d->k == N_TD and string_equal_ignore_case(d->td.nm, node->se.se))
             return resolve_subtype(SM, d->td.df);
         }
       }
-      return resolve_subtype(SM, p);
+      return resolve_subtype(SM, parser);
     }
     return TY_INT;
   }
-  if (n->k == N_ST)
+  if (node->k == N_ST)
   {
-    Type_Info *bt = resolve_subtype(SM, n->sd.in);
-    Syntax_Node *cn = n->sd.cn ? n->sd.cn : n->sd.rn;
+    Type_Info *bt = resolve_subtype(SM, node->sd.in);
+    Syntax_Node *cn = node->sd.cn ? node->sd.cn : node->sd.rn;
     if (cn and bt)
     {
       Type_Info *t = tyn(bt->k, N);
@@ -5374,58 +5374,58 @@ static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *n)
     }
     return bt;
   }
-  if (n->k == N_TI)
+  if (node->k == N_TI)
   {
-    resolve_expression(SM, n->rn.lo, 0);
-    resolve_expression(SM, n->rn.hi, 0);
+    resolve_expression(SM, node->rn.lo, 0);
+    resolve_expression(SM, node->rn.hi, 0);
     Type_Info *t = tyn(TYPE_INTEGER, N);
-    if (n->rn.lo and n->rn.lo->k == N_INT)
-      t->lo = n->rn.lo->i;
+    if (node->rn.lo and node->rn.lo->k == N_INT)
+      t->lo = node->rn.lo->i;
     else if (
-        n->rn.lo and n->rn.lo->k == N_UN and n->rn.lo->un.op == T_MN and n->rn.lo->un.x->k == N_INT)
-      t->lo = -n->rn.lo->un.x->i;
-    if (n->rn.hi and n->rn.hi->k == N_INT)
-      t->hi = n->rn.hi->i;
+        node->rn.lo and node->rn.lo->k == N_UN and node->rn.lo->un.op == T_MN and node->rn.lo->un.x->k == N_INT)
+      t->lo = -node->rn.lo->un.x->i;
+    if (node->rn.hi and node->rn.hi->k == N_INT)
+      t->hi = node->rn.hi->i;
     else if (
-        n->rn.hi and n->rn.hi->k == N_UN and n->rn.hi->un.op == T_MN and n->rn.hi->un.x->k == N_INT)
-      t->hi = -n->rn.hi->un.x->i;
+        node->rn.hi and node->rn.hi->k == N_UN and node->rn.hi->un.op == T_MN and node->rn.hi->un.x->k == N_INT)
+      t->hi = -node->rn.hi->un.x->i;
     return t;
   }
-  if (n->k == N_TX)
+  if (node->k == N_TX)
   {
     Type_Info *t = tyn(TYPE_FIXED_POINT, N);
     double d = 1.0;
-    if (n->rn.lo and n->rn.lo->k == N_REAL)
-      d = n->rn.lo->f;
-    else if (n->rn.lo and n->rn.lo->k == N_INT)
-      d = n->rn.lo->i;
+    if (node->rn.lo and node->rn.lo->k == N_REAL)
+      d = node->rn.lo->f;
+    else if (node->rn.lo and node->rn.lo->k == N_INT)
+      d = node->rn.lo->i;
     t->sm = (int64_t) (1.0 / d);
-    if (n->rn.hi and n->rn.hi->k == N_INT)
-      t->lo = n->rn.hi->i;
-    if (n->bn.r and n->bn.r->k == N_INT)
-      t->hi = n->bn.r->i;
+    if (node->rn.hi and node->rn.hi->k == N_INT)
+      t->lo = node->rn.hi->i;
+    if (node->bn.r and node->bn.r->k == N_INT)
+      t->hi = node->bn.r->i;
     return t;
   }
-  if (n->k == N_TE)
+  if (node->k == N_TE)
     return tyn(TYPE_INTEGER, N);
-  if (n->k == N_TF)
+  if (node->k == N_TF)
   {
     Type_Info *t = tyn(TYPE_FLOAT, N);
-    if (n->un.x)
+    if (node->un.x)
     {
-      resolve_expression(SM, n->un.x, 0);
-      if (n->un.x->k == N_INT)
-        t->sm = n->un.x->i;
+      resolve_expression(SM, node->un.x, 0);
+      if (node->un.x->k == N_INT)
+        t->sm = node->un.x->i;
     }
     return t;
   }
-  if (n->k == N_TA)
+  if (node->k == N_TA)
   {
     Type_Info *t = tyn(TYPE_ARRAY, N);
-    t->el = resolve_subtype(SM, n->ix.p);
-    if (n->ix.ix.count == 1)
+    t->el = resolve_subtype(SM, node->ix.p);
+    if (node->ix.ix.count == 1)
     {
-      Syntax_Node *r = n->ix.ix.data[0];
+      Syntax_Node *r = node->ix.ix.data[0];
       if (r and r->k == N_RN)
       {
         resolve_expression(SM, r->rn.lo, 0);
@@ -5444,22 +5444,22 @@ static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *n)
     }
     return t;
   }
-  if (n->k == N_TR)
+  if (node->k == N_TR)
     return tyn(TYPE_RECORD, N);
-  if (n->k == N_TP)
+  if (node->k == N_TP)
     return tyn(TY_PT, N);
-  if (n->k == N_TAC)
+  if (node->k == N_TAC)
   {
     Type_Info *t = tyn(TYPE_ACCESS, N);
-    t->el = resolve_subtype(SM, n->un.x);
+    t->el = resolve_subtype(SM, node->un.x);
     return t;
   }
-  if (n->k == N_IX)
+  if (node->k == N_IX)
   {
-    Type_Info *bt = resolve_subtype(SM, n->ix.p);
-    if (bt and bt->k == TYPE_ARRAY and bt->lo == 0 and bt->hi == -1 and n->ix.ix.count == 1)
+    Type_Info *bt = resolve_subtype(SM, node->ix.p);
+    if (bt and bt->k == TYPE_ARRAY and bt->lo == 0 and bt->hi == -1 and node->ix.ix.count == 1)
     {
-      Syntax_Node *r = n->ix.ix.data[0];
+      Syntax_Node *r = node->ix.ix.data[0];
       if (r and r->k == N_RN)
       {
         resolve_expression(SM, r->rn.lo, 0);
@@ -5485,29 +5485,29 @@ static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *n)
     }
     return bt;
   }
-  if (n->k == N_RN)
+  if (node->k == N_RN)
   {
-    resolve_expression(SM, n->rn.lo, 0);
-    resolve_expression(SM, n->rn.hi, 0);
+    resolve_expression(SM, node->rn.lo, 0);
+    resolve_expression(SM, node->rn.hi, 0);
     Type_Info *t = tyn(TYPE_INTEGER, N);
-    if (n->rn.lo and n->rn.lo->k == N_INT)
-      t->lo = n->rn.lo->i;
+    if (node->rn.lo and node->rn.lo->k == N_INT)
+      t->lo = node->rn.lo->i;
     else if (
-        n->rn.lo and n->rn.lo->k == N_UN and n->rn.lo->un.op == T_MN and n->rn.lo->un.x->k == N_INT)
-      t->lo = -n->rn.lo->un.x->i;
-    if (n->rn.hi and n->rn.hi->k == N_INT)
-      t->hi = n->rn.hi->i;
+        node->rn.lo and node->rn.lo->k == N_UN and node->rn.lo->un.op == T_MN and node->rn.lo->un.x->k == N_INT)
+      t->lo = -node->rn.lo->un.x->i;
+    if (node->rn.hi and node->rn.hi->k == N_INT)
+      t->hi = node->rn.hi->i;
     else if (
-        n->rn.hi and n->rn.hi->k == N_UN and n->rn.hi->un.op == T_MN and n->rn.hi->un.x->k == N_INT)
-      t->hi = -n->rn.hi->un.x->i;
+        node->rn.hi and node->rn.hi->k == N_UN and node->rn.hi->un.op == T_MN and node->rn.hi->un.x->k == N_INT)
+      t->hi = -node->rn.hi->un.x->i;
     return t;
   }
-  if (n->k == N_CL)
+  if (node->k == N_CL)
   {
-    Type_Info *bt = resolve_subtype(SM, n->cl.fn);
-    if (bt and bt->k == TYPE_ARRAY and bt->lo == 0 and bt->hi == -1 and n->cl.ar.count == 1)
+    Type_Info *bt = resolve_subtype(SM, node->cl.fn);
+    if (bt and bt->k == TYPE_ARRAY and bt->lo == 0 and bt->hi == -1 and node->cl.ar.count == 1)
     {
-      Syntax_Node *r = n->cl.ar.data[0];
+      Syntax_Node *r = node->cl.ar.data[0];
       if (r and r->k == N_RN)
       {
         resolve_expression(SM, r->rn.lo, 0);
@@ -5570,11 +5570,11 @@ static Type_Info *base_scalar(Type_Info *t)
 {
   if (not t)
     return TY_INT;
-  for (Type_Info *p = t; p; p = p->bs)
-    if (not p->bs
-        or (p->k != TYPE_INTEGER and p->k != TYPE_ENUMERATION and p->k != TYPE_DERIVED
-            and p->k != TYPE_CHARACTER and p->k != TYPE_FLOAT))
-      return p;
+  for (Type_Info *parser = t; parser; parser = parser->bs)
+    if (not parser->bs
+        or (parser->k != TYPE_INTEGER and parser->k != TYPE_ENUMERATION and parser->k != TYPE_DERIVED
+            and parser->k != TYPE_CHARACTER and parser->k != TYPE_FLOAT))
+      return parser;
   return t;
 }
 static inline bool is_unc_scl(Type_Info *t)
@@ -5598,8 +5598,8 @@ static bool dsc_cf(Type_Info *t, Type_Info *s)
 {
   if (not t or not s or t->dc.count == 0 or s->dc.count == 0)
     return 0;
-  uint32_t n = t->dc.count < s->dc.count ? t->dc.count : s->dc.count;
-  for (uint32_t i = 0; i < n; i++)
+  uint32_t node = t->dc.count < s->dc.count ? t->dc.count : s->dc.count;
+  for (uint32_t i = 0; i < node; i++)
   {
     Syntax_Node *ad = t->dc.data[i], *bd = s->dc.data[i];
     if (not(ad and bd and ad->k == N_DS and bd->k == N_DS and ad->pm.df and bd->pm.df
@@ -5610,33 +5610,33 @@ static bool dsc_cf(Type_Info *t, Type_Info *s)
   }
   return 0;
 }
-static Syntax_Node *chk(Symbol_Manager *SM, Syntax_Node *n, Source_Location l)
+static Syntax_Node *chk(Symbol_Manager *SM, Syntax_Node *node, Source_Location l)
 {
   (void) SM;
-  if (not n or not n->ty)
-    return n;
-  Type_Info *t = type_canonical_concrete(n->ty);
-  if ((is_discrete(t) or is_real_type(t)) and (n->ty->lo != TY_INT->lo or n->ty->hi != TY_INT->hi)
-      and not is_check_suppressed(n->ty, CHK_RNG))
-    return mk_chk(n, STRING_LITERAL("CONSTRAINT_ERROR"), l);
-  if (t->k == TYPE_RECORD and dsc_cf(t, n->ty) and not is_check_suppressed(t, CHK_DSC))
-    return mk_chk(n, STRING_LITERAL("CONSTRAINT_ERROR"), l);
-  if (t->k == TYPE_ARRAY and n->ty and n->ty->k == TYPE_ARRAY and n->ty->ix
-      and (n->ty->lo < n->ty->ix->lo or n->ty->hi > n->ty->ix->hi))
-    return mk_chk(n, STRING_LITERAL("CONSTRAINT_ERROR"), l);
-  if (t->k == TYPE_ARRAY and n->ty and n->ty->k == TYPE_ARRAY and not is_unconstrained_array(t)
-      and not is_check_suppressed(t, CHK_IDX) and (t->lo != n->ty->lo or t->hi != n->ty->hi))
-    return mk_chk(n, STRING_LITERAL("CONSTRAINT_ERROR"), l);
-  return n;
+  if (not node or not node->ty)
+    return node;
+  Type_Info *t = type_canonical_concrete(node->ty);
+  if ((is_discrete(t) or is_real_type(t)) and (node->ty->lo != TY_INT->lo or node->ty->hi != TY_INT->hi)
+      and not is_check_suppressed(node->ty, CHK_RNG))
+    return mk_chk(node, STRING_LITERAL("CONSTRAINT_ERROR"), l);
+  if (t->k == TYPE_RECORD and dsc_cf(t, node->ty) and not is_check_suppressed(t, CHK_DSC))
+    return mk_chk(node, STRING_LITERAL("CONSTRAINT_ERROR"), l);
+  if (t->k == TYPE_ARRAY and node->ty and node->ty->k == TYPE_ARRAY and node->ty->ix
+      and (node->ty->lo < node->ty->ix->lo or node->ty->hi > node->ty->ix->hi))
+    return mk_chk(node, STRING_LITERAL("CONSTRAINT_ERROR"), l);
+  if (t->k == TYPE_ARRAY and node->ty and node->ty->k == TYPE_ARRAY and not is_unconstrained_array(t)
+      and not is_check_suppressed(t, CHK_IDX) and (t->lo != node->ty->lo or t->hi != node->ty->hi))
+    return mk_chk(node, STRING_LITERAL("CONSTRAINT_ERROR"), l);
+  return node;
 }
 static inline int64_t range_size(int64_t lo, int64_t hi)
 {
   return hi >= lo ? hi - lo + 1 : 0;
 }
-static inline bool is_static(Syntax_Node *n)
+static inline bool is_static(Syntax_Node *node)
 {
-  return n
-         and (n->k == N_INT or (n->k == N_UN and n->un.op == T_MN and n->un.x and n->un.x->k == N_INT));
+  return node
+         and (node->k == N_INT or (node->k == N_UN and node->un.op == T_MN and node->un.x and node->un.x->k == N_INT));
 }
 static int find_or_throw(Syntax_Node *ag)
 {
@@ -5788,22 +5788,22 @@ static Type_Info *ucag(Type_Info *at, Syntax_Node *ag)
   nt->hi = asz;
   return nt;
 }
-static void is_compile_valid(Type_Info *t, Syntax_Node *n)
+static void is_compile_valid(Type_Info *t, Syntax_Node *node)
 {
-  if (not t or not n)
+  if (not t or not node)
     return;
-  if (n->k == N_CL)
+  if (node->k == N_CL)
   {
-    for (uint32_t i = 0; i < n->cl.ar.count; i++)
-      resolve_expression(0, n->cl.ar.data[i], 0);
+    for (uint32_t i = 0; i < node->cl.ar.count; i++)
+      resolve_expression(0, node->cl.ar.data[i], 0);
   }
-  else if (n->k == N_AG and t->k == TYPE_ARRAY)
+  else if (node->k == N_AG and t->k == TYPE_ARRAY)
   {
-    normalize_array_aggregate(0, type_canonical_concrete(t), n);
+    normalize_array_aggregate(0, type_canonical_concrete(t), node);
   }
-  else if (n->k == N_AG and t->k == TYPE_RECORD)
+  else if (node->k == N_AG and t->k == TYPE_RECORD)
   {
-    normalize_record_aggregate(0, type_canonical_concrete(t), n);
+    normalize_record_aggregate(0, type_canonical_concrete(t), node);
   }
 }
 static bool has_return_statement(Node_Vector *v)
@@ -5813,11 +5813,11 @@ static bool has_return_statement(Node_Vector *v)
       return 1;
   return 0;
 }
-static void resolve_expression(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx)
+static void resolve_expression(Symbol_Manager *SM, Syntax_Node *node, Type_Info *tx)
 {
-  if (not n)
+  if (not node)
     return;
-  switch (n->k)
+  switch (node->k)
   {
   case N_ID:
   {
@@ -5827,226 +5827,226 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx
       for (uint32_t i = 0; i < tx->ev.count; i++)
       {
         Symbol *e = tx->ev.data[i];
-        if (string_equal_ignore_case(e->nm, n->s))
+        if (string_equal_ignore_case(e->nm, node->s))
         {
-          n->ty = tx;
-          n->sy = e;
+          node->ty = tx;
+          node->sy = e;
           return;
         }
       }
     }
-    Symbol *s = symbol_find(SM, n->s);
+    Symbol *s = symbol_find(SM, node->s);
     if (s)
     {
-      n->ty = s->ty;
-      n->sy = s;
+      node->ty = s->ty;
+      node->sy = s;
       if (s->k == 5)
       {
-        Symbol *s0 = symbol_find_with_arity(SM, n->s, 0, tx);
+        Symbol *s0 = symbol_find_with_arity(SM, node->s, 0, tx);
         if (s0 and s0->ty and s0->ty->k == TYPE_STRING and s0->ty->el)
         {
-          n->ty = s0->ty->el;
-          n->sy = s0;
+          node->ty = s0->ty->el;
+          node->sy = s0;
         }
       }
       if (s->k == 2 and s->df)
       {
         if (s->df->k == N_INT)
         {
-          n->k = N_INT;
-          n->i = s->df->i;
-          n->ty = TY_UINT;
+          node->k = N_INT;
+          node->i = s->df->i;
+          node->ty = TY_UINT;
         }
         else if (s->df->k == N_REAL)
         {
-          n->k = N_REAL;
-          n->f = s->df->f;
-          n->ty = TY_UFLT;
+          node->k = N_REAL;
+          node->f = s->df->f;
+          node->ty = TY_UFLT;
         }
       }
     }
     else
     {
-      if (error_count < 99 and not string_equal_ignore_case(n->s, STRING_LITERAL("others")))
-        fatal_error(n->l, "undef '%.*s'", (int) n->s.length, n->s.string);
-      n->ty = TY_INT;
+      if (error_count < 99 and not string_equal_ignore_case(node->s, STRING_LITERAL("others")))
+        fatal_error(node->l, "undef '%.*s'", (int) node->s.length, node->s.string);
+      node->ty = TY_INT;
     }
   }
   break;
   case N_INT:
-    n->ty = TY_UINT;
+    node->ty = TY_UINT;
     break;
   case N_REAL:
-    n->ty = TY_UFLT;
+    node->ty = TY_UFLT;
     break;
   case N_CHAR:
   {
-    Symbol *s = scl(SM, n->i, tx);
+    Symbol *s = scl(SM, node->i, tx);
     if (s)
     {
-      n->ty = s->ty;
-      n->sy = s;
-      n->k = N_ID;
-      n->s = s->nm;
+      node->ty = s->ty;
+      node->sy = s;
+      node->k = N_ID;
+      node->s = s->nm;
     }
     else
-      n->ty = TY_CHAR;
+      node->ty = TY_CHAR;
   }
   break;
   case N_STR:
-    n->ty =
+    node->ty =
         tx and (tx->k == TYPE_ARRAY or type_canonical_concrete(tx)->k == TYPE_ARRAY) ? tx : TY_STR;
     break;
   case N_NULL:
-    n->ty = tx and tx->k == TYPE_ACCESS ? tx : TY_INT;
+    node->ty = tx and tx->k == TYPE_ACCESS ? tx : TY_INT;
     break;
   case N_BIN:
-    resolve_expression(SM, n->bn.l, tx);
-    resolve_expression(SM, n->bn.r, tx);
-    if (n->bn.op == T_ATHN or n->bn.op == T_OREL)
+    resolve_expression(SM, node->bn.l, tx);
+    resolve_expression(SM, node->bn.r, tx);
+    if (node->bn.op == T_ATHN or node->bn.op == T_OREL)
     {
-      n->ty = TY_BOOL;
+      node->ty = TY_BOOL;
       break;
     }
-    if (n->bn.op == T_AND or n->bn.op == T_OR or n->bn.op == T_XOR)
+    if (node->bn.op == T_AND or node->bn.op == T_OR or node->bn.op == T_XOR)
     {
-      n->bn.l = chk(SM, n->bn.l, n->l);
-      n->bn.r = chk(SM, n->bn.r, n->l);
-      Type_Info *lt = n->bn.l->ty ? type_canonical_concrete(n->bn.l->ty) : 0;
-      n->ty = lt and lt->k == TYPE_ARRAY ? lt : TY_BOOL;
+      node->bn.l = chk(SM, node->bn.l, node->l);
+      node->bn.r = chk(SM, node->bn.r, node->l);
+      Type_Info *lt = node->bn.l->ty ? type_canonical_concrete(node->bn.l->ty) : 0;
+      node->ty = lt and lt->k == TYPE_ARRAY ? lt : TY_BOOL;
       break;
     }
-    if (n->bn.op == T_IN)
+    if (node->bn.op == T_IN)
     {
-      n->bn.l = chk(SM, n->bn.l, n->l);
-      n->bn.r = chk(SM, n->bn.r, n->l);
-      n->ty = TY_BOOL;
+      node->bn.l = chk(SM, node->bn.l, node->l);
+      node->bn.r = chk(SM, node->bn.r, node->l);
+      node->ty = TY_BOOL;
       break;
     }
-    if (n->bn.l->k == N_INT and n->bn.r->k == N_INT
-        and (n->bn.op == T_PL or n->bn.op == T_MN or n->bn.op == T_ST or n->bn.op == T_SL or n->bn.op == T_MOD or n->bn.op == T_REM))
+    if (node->bn.l->k == N_INT and node->bn.r->k == N_INT
+        and (node->bn.op == T_PL or node->bn.op == T_MN or node->bn.op == T_ST or node->bn.op == T_SL or node->bn.op == T_MOD or node->bn.op == T_REM))
     {
-      int64_t a = n->bn.l->i, b = n->bn.r->i, r = 0;
-      if (n->bn.op == T_PL)
+      int64_t a = node->bn.l->i, b = node->bn.r->i, r = 0;
+      if (node->bn.op == T_PL)
         r = a + b;
-      else if (n->bn.op == T_MN)
+      else if (node->bn.op == T_MN)
         r = a - b;
-      else if (n->bn.op == T_ST)
+      else if (node->bn.op == T_ST)
         r = a * b;
-      else if (n->bn.op == T_SL and b != 0)
+      else if (node->bn.op == T_SL and b != 0)
         r = a / b;
-      else if ((n->bn.op == T_MOD or n->bn.op == T_REM) and b != 0)
+      else if ((node->bn.op == T_MOD or node->bn.op == T_REM) and b != 0)
         r = a % b;
-      n->k = N_INT;
-      n->i = r;
-      n->ty = TY_UINT;
+      node->k = N_INT;
+      node->i = r;
+      node->ty = TY_UINT;
     }
     else if (
-        (n->bn.l->k == N_REAL or n->bn.r->k == N_REAL)
-        and (n->bn.op == T_PL or n->bn.op == T_MN or n->bn.op == T_ST or n->bn.op == T_SL or n->bn.op == T_EX))
+        (node->bn.l->k == N_REAL or node->bn.r->k == N_REAL)
+        and (node->bn.op == T_PL or node->bn.op == T_MN or node->bn.op == T_ST or node->bn.op == T_SL or node->bn.op == T_EX))
     {
-      double a = n->bn.l->k == N_INT ? (double) n->bn.l->i : n->bn.l->f,
-             b = n->bn.r->k == N_INT ? (double) n->bn.r->i : n->bn.r->f, r = 0;
-      if (n->bn.op == T_PL)
+      double a = node->bn.l->k == N_INT ? (double) node->bn.l->i : node->bn.l->f,
+             b = node->bn.r->k == N_INT ? (double) node->bn.r->i : node->bn.r->f, r = 0;
+      if (node->bn.op == T_PL)
         r = a + b;
-      else if (n->bn.op == T_MN)
+      else if (node->bn.op == T_MN)
         r = a - b;
-      else if (n->bn.op == T_ST)
+      else if (node->bn.op == T_ST)
         r = a * b;
-      else if (n->bn.op == T_SL and b != 0)
+      else if (node->bn.op == T_SL and b != 0)
         r = a / b;
-      else if (n->bn.op == T_EX)
+      else if (node->bn.op == T_EX)
         r = pow(a, b);
-      n->k = N_REAL;
-      n->f = r;
-      n->ty = TY_UFLT;
+      node->k = N_REAL;
+      node->f = r;
+      node->ty = TY_UFLT;
     }
     else
     {
-      n->ty = type_canonical_concrete(n->bn.l->ty);
+      node->ty = type_canonical_concrete(node->bn.l->ty);
     }
-    if (n->bn.op >= T_EQ and n->bn.op <= T_GE)
-      n->ty = TY_BOOL;
+    if (node->bn.op >= T_EQ and node->bn.op <= T_GE)
+      node->ty = TY_BOOL;
     break;
   case N_UN:
-    resolve_expression(SM, n->un.x, tx);
-    if (n->un.op == T_MN and n->un.x->k == N_INT)
+    resolve_expression(SM, node->un.x, tx);
+    if (node->un.op == T_MN and node->un.x->k == N_INT)
     {
-      n->k = N_INT;
-      n->i = -n->un.x->i;
-      n->ty = TY_UINT;
+      node->k = N_INT;
+      node->i = -node->un.x->i;
+      node->ty = TY_UINT;
     }
-    else if (n->un.op == T_MN and n->un.x->k == N_REAL)
+    else if (node->un.op == T_MN and node->un.x->k == N_REAL)
     {
-      n->k = N_REAL;
-      n->f = -n->un.x->f;
-      n->ty = TY_UFLT;
+      node->k = N_REAL;
+      node->f = -node->un.x->f;
+      node->ty = TY_UFLT;
     }
-    else if (n->un.op == T_PL and (n->un.x->k == N_INT or n->un.x->k == N_REAL))
+    else if (node->un.op == T_PL and (node->un.x->k == N_INT or node->un.x->k == N_REAL))
     {
-      n->k = n->un.x->k;
-      if (n->k == N_INT)
+      node->k = node->un.x->k;
+      if (node->k == N_INT)
       {
-        n->i = n->un.x->i;
-        n->ty = TY_UINT;
+        node->i = node->un.x->i;
+        node->ty = TY_UINT;
       }
       else
       {
-        n->f = n->un.x->f;
-        n->ty = TY_UFLT;
+        node->f = node->un.x->f;
+        node->ty = TY_UFLT;
       }
     }
     else
     {
-      n->ty = type_canonical_concrete(n->un.x->ty);
+      node->ty = type_canonical_concrete(node->un.x->ty);
     }
-    if (n->un.op == T_NOT)
+    if (node->un.op == T_NOT)
     {
-      Type_Info *xt = n->un.x->ty ? type_canonical_concrete(n->un.x->ty) : 0;
-      n->ty = xt and xt->k == TYPE_ARRAY ? xt : TY_BOOL;
+      Type_Info *xt = node->un.x->ty ? type_canonical_concrete(node->un.x->ty) : 0;
+      node->ty = xt and xt->k == TYPE_ARRAY ? xt : TY_BOOL;
     }
     break;
   case N_IX:
-    resolve_expression(SM, n->ix.p, 0);
-    for (uint32_t i = 0; i < n->ix.ix.count; i++)
+    resolve_expression(SM, node->ix.p, 0);
+    for (uint32_t i = 0; i < node->ix.ix.count; i++)
     {
-      resolve_expression(SM, n->ix.ix.data[i], 0);
-      n->ix.ix.data[i] = chk(SM, n->ix.ix.data[i], n->l);
+      resolve_expression(SM, node->ix.ix.data[i], 0);
+      node->ix.ix.data[i] = chk(SM, node->ix.ix.data[i], node->l);
     }
-    if (n->ix.p->ty and n->ix.p->ty->k == TYPE_ARRAY)
-      n->ty = type_canonical_concrete(n->ix.p->ty->el);
+    if (node->ix.p->ty and node->ix.p->ty->k == TYPE_ARRAY)
+      node->ty = type_canonical_concrete(node->ix.p->ty->el);
     else
-      n->ty = TY_INT;
+      node->ty = TY_INT;
     break;
   case N_SL:
-    resolve_expression(SM, n->sl.p, 0);
-    resolve_expression(SM, n->sl.lo, 0);
-    resolve_expression(SM, n->sl.hi, 0);
-    if (n->sl.p->ty and n->sl.p->ty->k == TYPE_ARRAY)
-      n->ty = n->sl.p->ty;
+    resolve_expression(SM, node->sl.p, 0);
+    resolve_expression(SM, node->sl.lo, 0);
+    resolve_expression(SM, node->sl.hi, 0);
+    if (node->sl.p->ty and node->sl.p->ty->k == TYPE_ARRAY)
+      node->ty = node->sl.p->ty;
     else
-      n->ty = TY_INT;
+      node->ty = TY_INT;
     break;
   case N_SEL:
   {
-    resolve_expression(SM, n->se.p, 0);
-    Syntax_Node *p = n->se.p;
-    if (p->k == N_ID)
+    resolve_expression(SM, node->se.p, 0);
+    Syntax_Node *parser = node->se.p;
+    if (parser->k == N_ID)
     {
-      Symbol *ps = symbol_find(SM, p->s);
+      Symbol *ps = symbol_find(SM, parser->s);
       if (ps and ps->k == 6 and ps->df and ps->df->k == N_PKS)
       {
         Syntax_Node *pk = ps->df;
         for (uint32_t i = 0; i < pk->ps.dc.count; i++)
         {
           Syntax_Node *d = pk->ps.dc.data[i];
-          if (d->sy and string_equal_ignore_case(d->sy->nm, n->se.se))
+          if (d->sy and string_equal_ignore_case(d->sy->nm, node->se.se))
           {
-            n->ty = d->sy->ty ? d->sy->ty : TY_INT;
-            n->sy = d->sy;
+            node->ty = d->sy->ty ? d->sy->ty : TY_INT;
+            node->sy = d->sy;
             if (d->sy->k == 5 and d->sy->ty and d->sy->ty->k == TYPE_STRING and d->sy->ty->el)
             {
-              n->ty = d->sy->ty->el;
+              node->ty = d->sy->ty->el;
             }
             if (d->sy->k == 2 and d->sy->df)
             {
@@ -6055,15 +6055,15 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx
                 df = df->chk.ex;
               if (df->k == N_INT)
               {
-                n->k = N_INT;
-                n->i = df->i;
-                n->ty = TY_UINT;
+                node->k = N_INT;
+                node->i = df->i;
+                node->ty = TY_UINT;
               }
               else if (df->k == N_REAL)
               {
-                n->k = N_REAL;
-                n->f = df->f;
-                n->ty = TY_UFLT;
+                node->k = N_REAL;
+                node->f = df->f;
+                node->ty = TY_UFLT;
               }
             }
             return;
@@ -6073,10 +6073,10 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx
             for (uint32_t j = 0; j < d->ed.id.count; j++)
             {
               Syntax_Node *eid = d->ed.id.data[j];
-              if (eid->sy and string_equal_ignore_case(eid->sy->nm, n->se.se))
+              if (eid->sy and string_equal_ignore_case(eid->sy->nm, node->se.se))
               {
-                n->ty = eid->sy->ty ? eid->sy->ty : TY_INT;
-                n->sy = eid->sy;
+                node->ty = eid->sy->ty ? eid->sy->ty : TY_INT;
+                node->sy = eid->sy;
                 return;
               }
             }
@@ -6086,10 +6086,10 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx
             for (uint32_t j = 0; j < d->od.id.count; j++)
             {
               Syntax_Node *oid = d->od.id.data[j];
-              if (oid->sy and string_equal_ignore_case(oid->sy->nm, n->se.se))
+              if (oid->sy and string_equal_ignore_case(oid->sy->nm, node->se.se))
               {
-                n->ty = oid->sy->ty ? oid->sy->ty : TY_INT;
-                n->sy = oid->sy;
+                node->ty = oid->sy->ty ? oid->sy->ty : TY_INT;
+                node->sy = oid->sy;
                 if (oid->sy->k == 2 and oid->sy->df)
                 {
                   Syntax_Node *df = oid->sy->df;
@@ -6097,15 +6097,15 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx
                     df = df->chk.ex;
                   if (df->k == N_INT)
                   {
-                    n->k = N_INT;
-                    n->i = df->i;
-                    n->ty = TY_UINT;
+                    node->k = N_INT;
+                    node->i = df->i;
+                    node->ty = TY_UINT;
                   }
                   else if (df->k == N_REAL)
                   {
-                    n->k = N_REAL;
-                    n->f = df->f;
-                    n->ty = TY_UFLT;
+                    node->k = N_REAL;
+                    node->f = df->f;
+                    node->ty = TY_UFLT;
                   }
                 }
                 return;
@@ -6124,31 +6124,31 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx
               for (uint32_t j = 0; j < et->ev.count; j++)
               {
                 Symbol *e = et->ev.data[j];
-                if (string_equal_ignore_case(e->nm, n->se.se))
+                if (string_equal_ignore_case(e->nm, node->se.se))
                 {
-                  n->ty = et;
-                  n->sy = e;
+                  node->ty = et;
+                  node->sy = e;
                   return;
                 }
               }
             }
           }
-          if (d->sy and string_equal_ignore_case(d->sy->nm, n->se.se))
+          if (d->sy and string_equal_ignore_case(d->sy->nm, node->se.se))
           {
-            n->ty = d->sy->ty;
-            n->sy = d->sy;
+            node->ty = d->sy->ty;
+            node->sy = d->sy;
             return;
           }
         }
         for (int h = 0; h < 4096; h++)
           for (Symbol *s = SM->sy[h]; s; s = s->nx)
-            if (s->pr == ps and string_equal_ignore_case(s->nm, n->se.se))
+            if (s->pr == ps and string_equal_ignore_case(s->nm, node->se.se))
             {
-              n->ty = s->ty;
-              n->sy = s;
+              node->ty = s->ty;
+              node->sy = s;
               if (s->k == 5 and s->ty and s->ty->k == TYPE_STRING and s->ty->el)
               {
-                n->ty = s->ty->el;
+                node->ty = s->ty->el;
               }
               if (s->k == 2 and s->df)
               {
@@ -6157,43 +6157,43 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx
                   df = df->chk.ex;
                 if (df->k == N_INT)
                 {
-                  n->k = N_INT;
-                  n->i = df->i;
-                  n->ty = TY_UINT;
+                  node->k = N_INT;
+                  node->i = df->i;
+                  node->ty = TY_UINT;
                 }
                 else if (df->k == N_REAL)
                 {
-                  n->k = N_REAL;
-                  n->f = df->f;
-                  n->ty = TY_UFLT;
+                  node->k = N_REAL;
+                  node->f = df->f;
+                  node->ty = TY_UFLT;
                 }
               }
               return;
             }
         if (error_count < 99)
-          fatal_error(n->l, "?'%.*s' in pkg", (int) n->se.se.length, n->se.se.string);
+          fatal_error(node->l, "?'%.*s' in pkg", (int) node->se.se.length, node->se.se.string);
       }
     }
-    if (p->ty)
+    if (parser->ty)
     {
-      Type_Info *pt = type_canonical_concrete(p->ty);
+      Type_Info *pt = type_canonical_concrete(parser->ty);
       if (pt->k == TYPE_RECORD)
       {
         for (uint32_t i = 0; i < pt->cm.count; i++)
         {
           Syntax_Node *c = pt->cm.data[i];
-          if (c->k == N_CM and string_equal_ignore_case(c->cm.nm, n->se.se))
+          if (c->k == N_CM and string_equal_ignore_case(c->cm.nm, node->se.se))
           {
-            n->ty = resolve_subtype(SM, c->cm.ty);
+            node->ty = resolve_subtype(SM, c->cm.ty);
             return;
           }
         }
         for (uint32_t i = 0; i < pt->dc.count; i++)
         {
           Syntax_Node *d = pt->dc.data[i];
-          if (d->k == N_DS and string_equal_ignore_case(d->pm.nm, n->se.se))
+          if (d->k == N_DS and string_equal_ignore_case(d->pm.nm, node->se.se))
           {
-            n->ty = resolve_subtype(SM, d->pm.ty);
+            node->ty = resolve_subtype(SM, d->pm.ty);
             return;
           }
         }
@@ -6208,9 +6208,9 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx
               for (uint32_t k = 0; k < v->vr.cmm.count; k++)
               {
                 Syntax_Node *vc = v->vr.cmm.data[k];
-                if (string_equal_ignore_case(vc->cm.nm, n->se.se))
+                if (string_equal_ignore_case(vc->cm.nm, node->se.se))
                 {
-                  n->ty = resolve_subtype(SM, vc->cm.ty);
+                  node->ty = resolve_subtype(SM, vc->cm.ty);
                   return;
                 }
               }
@@ -6218,32 +6218,32 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx
           }
         }
         if (error_count < 99)
-          fatal_error(n->l, "?fld '%.*s'", (int) n->se.se.length, n->se.se.string);
+          fatal_error(node->l, "?fld '%.*s'", (int) node->se.se.length, node->se.se.string);
       }
     }
-    n->ty = TY_INT;
+    node->ty = TY_INT;
   }
   break;
   case N_AT:
-    resolve_expression(SM, n->at.p, 0);
-    for (uint32_t i = 0; i < n->at.ar.count; i++)
-      resolve_expression(SM, n->at.ar.data[i], 0);
+    resolve_expression(SM, node->at.p, 0);
+    for (uint32_t i = 0; i < node->at.ar.count; i++)
+      resolve_expression(SM, node->at.ar.data[i], 0);
     {
-      Type_Info *pt = n->at.p ? n->at.p->ty : 0;
+      Type_Info *pt = node->at.p ? node->at.p->ty : 0;
       Type_Info *ptc = pt ? type_canonical_concrete(pt) : 0;
-      String_Slice a = n->at.at;
+      String_Slice a = node->at.at;
       if (string_equal_ignore_case(a, STRING_LITERAL("FIRST"))
           or string_equal_ignore_case(a, STRING_LITERAL("LAST")))
-        n->ty = ptc and ptc->el                                     ? ptc->el
+        node->ty = ptc and ptc->el                                     ? ptc->el
                 : (ptc and (is_discrete(ptc) or is_real_type(ptc))) ? pt
                                                                     : TY_INT;
       else if (string_equal_ignore_case(a, STRING_LITERAL("ADDRESS")))
       {
-        Syntax_Node *sel = ND(SEL, n->l);
-        sel->se.p = ND(ID, n->l);
+        Syntax_Node *sel = ND(SEL, node->l);
+        sel->se.p = ND(ID, node->l);
         sel->se.p->s = STRING_LITERAL("SYSTEM");
         sel->se.se = STRING_LITERAL("ADDRESS");
-        n->ty = resolve_subtype(SM, sel);
+        node->ty = resolve_subtype(SM, sel);
       }
       else if (
           string_equal_ignore_case(a, STRING_LITERAL("LENGTH"))
@@ -6265,7 +6265,7 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx
           or string_equal_ignore_case(a, STRING_LITERAL("MACHINE_RADIX"))
           or string_equal_ignore_case(a, STRING_LITERAL("SAFE_EMAX"))
           or string_equal_ignore_case(a, STRING_LITERAL("EMAX")))
-        n->ty = TY_INT;
+        node->ty = TY_INT;
       else if (
           string_equal_ignore_case(a, STRING_LITERAL("DELTA"))
           or string_equal_ignore_case(a, STRING_LITERAL("EPSILON"))
@@ -6273,136 +6273,136 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx
           or string_equal_ignore_case(a, STRING_LITERAL("LARGE"))
           or string_equal_ignore_case(a, STRING_LITERAL("SAFE_LARGE"))
           or string_equal_ignore_case(a, STRING_LITERAL("SAFE_SMALL")))
-        n->ty = TY_FLT;
+        node->ty = TY_FLT;
       else if (
           string_equal_ignore_case(a, STRING_LITERAL("CALLABLE"))
           or string_equal_ignore_case(a, STRING_LITERAL("TERMINATED"))
           or string_equal_ignore_case(a, STRING_LITERAL("CONSTRAINED"))
           or string_equal_ignore_case(a, STRING_LITERAL("MACHINE_OVERFLOWS"))
           or string_equal_ignore_case(a, STRING_LITERAL("MACHINE_ROUNDS")))
-        n->ty = TY_BOOL;
+        node->ty = TY_BOOL;
       else if (string_equal_ignore_case(a, STRING_LITERAL("ACCESS")))
-        n->ty = tyn(TYPE_ACCESS, N);
+        node->ty = tyn(TYPE_ACCESS, N);
       else if (string_equal_ignore_case(a, STRING_LITERAL("IMAGE")))
-        n->ty = TY_STR;
+        node->ty = TY_STR;
       else if (
           string_equal_ignore_case(a, STRING_LITERAL("VALUE"))
           or string_equal_ignore_case(a, STRING_LITERAL("SUCC"))
           or string_equal_ignore_case(a, STRING_LITERAL("PRED"))
           or string_equal_ignore_case(a, STRING_LITERAL("VAL")))
-        n->ty = pt ?: TY_INT;
+        node->ty = pt ?: TY_INT;
       else if (string_equal_ignore_case(a, STRING_LITERAL("RANGE")))
-        n->ty = TY_INT;
+        node->ty = TY_INT;
       else if (string_equal_ignore_case(a, STRING_LITERAL("BASE")))
-        n->ty = pt and pt->bs ? pt->bs : pt;
+        node->ty = pt and pt->bs ? pt->bs : pt;
       else
-        n->ty = TY_INT;
-      if (string_equal_ignore_case(a, STRING_LITERAL("POS")) and n->at.ar.count > 0
-          and n->at.ar.data[0]->k == N_INT)
+        node->ty = TY_INT;
+      if (string_equal_ignore_case(a, STRING_LITERAL("POS")) and node->at.ar.count > 0
+          and node->at.ar.data[0]->k == N_INT)
       {
         if (ptc and is_integer_type(ptc))
         {
-          n->k = N_INT;
-          n->i = n->at.ar.data[0]->i;
-          n->ty = TY_UINT;
+          node->k = N_INT;
+          node->i = node->at.ar.data[0]->i;
+          node->ty = TY_UINT;
         }
       }
-      if (string_equal_ignore_case(a, STRING_LITERAL("VAL")) and n->at.ar.count > 0
-          and n->at.ar.data[0]->k == N_INT)
+      if (string_equal_ignore_case(a, STRING_LITERAL("VAL")) and node->at.ar.count > 0
+          and node->at.ar.data[0]->k == N_INT)
       {
-        int64_t pos = n->at.ar.data[0]->i;
+        int64_t pos = node->at.ar.data[0]->i;
         if (ptc == TY_CHAR and pos >= 0 and pos <= 127)
         {
-          n->k = N_CHAR;
-          n->i = pos;
-          n->ty = TY_CHAR;
+          node->k = N_CHAR;
+          node->i = pos;
+          node->ty = TY_CHAR;
         }
         else if (
             ptc and ptc->k == TYPE_ENUMERATION and pos >= ptc->lo and pos <= ptc->hi
             and (uint32_t) pos < ptc->ev.count)
         {
           Symbol *e = ptc->ev.data[pos];
-          n->k = N_ID;
-          n->s = e->nm;
-          n->ty = pt;
-          n->sy = e;
+          node->k = N_ID;
+          node->s = e->nm;
+          node->ty = pt;
+          node->sy = e;
         }
       }
     }
     break;
   case N_QL:
   {
-    Type_Info *qt = resolve_subtype(SM, n->ql.nm);
-    resolve_expression(SM, n->ql.ag, qt);
-    n->ty = qt;
-    if (n->ql.ag->ty and qt)
+    Type_Info *qt = resolve_subtype(SM, node->ql.nm);
+    resolve_expression(SM, node->ql.ag, qt);
+    node->ty = qt;
+    if (node->ql.ag->ty and qt)
     {
-      is_compile_valid(qt, n->ql.ag);
-      n->ql.ag->ty = qt;
+      is_compile_valid(qt, node->ql.ag);
+      node->ql.ag->ty = qt;
     }
   }
   break;
   case N_CL:
   {
-    resolve_expression(SM, n->cl.fn, 0);
-    for (uint32_t i = 0; i < n->cl.ar.count; i++)
-      resolve_expression(SM, n->cl.ar.data[i], 0);
-    Type_Info *ft = n->cl.fn ? n->cl.fn->ty : 0;
+    resolve_expression(SM, node->cl.fn, 0);
+    for (uint32_t i = 0; i < node->cl.ar.count; i++)
+      resolve_expression(SM, node->cl.ar.data[i], 0);
+    Type_Info *ft = node->cl.fn ? node->cl.fn->ty : 0;
     if (ft and ft->k == TYPE_ARRAY)
     {
-      Syntax_Node *fn = n->cl.fn;
-      Node_Vector ar = n->cl.ar;
-      n->k = N_IX;
-      n->ix.p = fn;
-      n->ix.ix = ar;
-      resolve_expression(SM, n, tx);
+      Syntax_Node *fn = node->cl.fn;
+      Node_Vector ar = node->cl.ar;
+      node->k = N_IX;
+      node->ix.p = fn;
+      node->ix.ix = ar;
+      resolve_expression(SM, node, tx);
       break;
     }
-    if (n->cl.fn->k == N_ID or n->cl.fn->k == N_STR)
+    if (node->cl.fn->k == N_ID or node->cl.fn->k == N_STR)
     {
-      String_Slice fnm = n->cl.fn->k == N_ID ? n->cl.fn->s : n->cl.fn->s;
-      Symbol *s = n->cl.fn->sy;
+      String_Slice fnm = node->cl.fn->k == N_ID ? node->cl.fn->s : node->cl.fn->s;
+      Symbol *s = node->cl.fn->sy;
       if (not s)
-        s = symbol_find_with_arity(SM, fnm, n->cl.ar.count, tx);
+        s = symbol_find_with_arity(SM, fnm, node->cl.ar.count, tx);
       if (s)
       {
-        n->cl.fn->sy = s;
+        node->cl.fn->sy = s;
         if (s->ty and s->ty->k == TYPE_STRING and s->ty->el)
         {
-          n->ty = s->ty->el;
-          n->sy = s;
+          node->ty = s->ty->el;
+          node->sy = s;
         }
         else if (s->k == 1)
         {
-          Syntax_Node *cv = ND(CVT, n->l);
-          cv->cvt.ty = n->cl.fn;
-          cv->cvt.ex = n->cl.ar.count > 0 ? n->cl.ar.data[0] : 0;
-          n->k = N_CVT;
-          n->cvt = cv->cvt;
-          n->ty = s->ty ? s->ty : TY_INT;
+          Syntax_Node *cv = ND(CVT, node->l);
+          cv->cvt.ty = node->cl.fn;
+          cv->cvt.ex = node->cl.ar.count > 0 ? node->cl.ar.data[0] : 0;
+          node->k = N_CVT;
+          node->cvt = cv->cvt;
+          node->ty = s->ty ? s->ty : TY_INT;
         }
         else
-          n->ty = TY_INT;
+          node->ty = TY_INT;
       }
       else
-        n->ty = TY_INT;
+        node->ty = TY_INT;
     }
     else
-      n->ty = TY_INT;
+      node->ty = TY_INT;
   }
   break;
   case N_AG:
-    for (uint32_t i = 0; i < n->ag.it.count; i++)
-      resolve_expression(SM, n->ag.it.data[i], tx);
-    n->ty = tx ?: TY_INT;
-    is_compile_valid(tx, n);
+    for (uint32_t i = 0; i < node->ag.it.count; i++)
+      resolve_expression(SM, node->ag.it.data[i], tx);
+    node->ty = tx ?: TY_INT;
+    is_compile_valid(tx, node);
     break;
   case N_ALC:
-    n->ty = tyn(TYPE_ACCESS, N);
-    n->ty->el = resolve_subtype(SM, n->alc.st);
-    if (n->alc.in)
+    node->ty = tyn(TYPE_ACCESS, N);
+    node->ty->el = resolve_subtype(SM, node->alc.st);
+    if (node->alc.in)
     {
-      Type_Info *et = n->ty->el ? type_canonical_concrete(n->ty->el) : 0;
+      Type_Info *et = node->ty->el ? type_canonical_concrete(node->ty->el) : 0;
       if (et and et->k == TYPE_RECORD and et->dc.count > 0)
       {
         for (uint32_t i = 0; i < et->dc.count; i++)
@@ -6414,7 +6414,7 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx
           }
         }
       }
-      resolve_expression(SM, n->alc.in, n->ty->el);
+      resolve_expression(SM, node->alc.in, node->ty->el);
       if (tx and tx->k == TYPE_ACCESS and tx->el)
       {
         Type_Info *ct = type_canonical_concrete(tx->el);
@@ -6435,7 +6435,7 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx
                             and cd->pm.df->i == ed->pm.df->i;
                 if (not mtch)
                 {
-                  n->alc.in = chk(SM, n->alc.in, n->l);
+                  node->alc.in = chk(SM, node->alc.in, node->l);
                   break;
                 }
               }
@@ -6446,98 +6446,98 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx
     }
     break;
   case N_RN:
-    resolve_expression(SM, n->rn.lo, tx);
-    resolve_expression(SM, n->rn.hi, tx);
-    n->rn.lo = chk(SM, n->rn.lo, n->l);
-    n->rn.hi = chk(SM, n->rn.hi, n->l);
-    n->ty = type_canonical_concrete(n->rn.lo->ty);
+    resolve_expression(SM, node->rn.lo, tx);
+    resolve_expression(SM, node->rn.hi, tx);
+    node->rn.lo = chk(SM, node->rn.lo, node->l);
+    node->rn.hi = chk(SM, node->rn.hi, node->l);
+    node->ty = type_canonical_concrete(node->rn.lo->ty);
     break;
   case N_ASC:
-    if (n->asc.vl)
+    if (node->asc.vl)
     {
       Type_Info *vt = tx and tx->k == TYPE_ARRAY ? tx->el : tx;
-      resolve_expression(SM, n->asc.vl, vt);
+      resolve_expression(SM, node->asc.vl, vt);
     }
     break;
   case N_DRF:
-    resolve_expression(SM, n->drf.x, 0);
+    resolve_expression(SM, node->drf.x, 0);
     {
-      Type_Info *dty = n->drf.x->ty ? type_canonical_concrete(n->drf.x->ty) : 0;
+      Type_Info *dty = node->drf.x->ty ? type_canonical_concrete(node->drf.x->ty) : 0;
       if (dty and dty->k == TYPE_ACCESS)
-        n->ty = dty->el;
+        node->ty = dty->el;
       else
       {
-        if (error_count < 99 and n->drf.x->ty)
-          fatal_error(n->l, ".all non-ac");
-        n->ty = TY_INT;
+        if (error_count < 99 and node->drf.x->ty)
+          fatal_error(node->l, ".all non-ac");
+        node->ty = TY_INT;
       }
     }
     break;
   case N_CVT:
-    resolve_expression(SM, n->cvt.ex, 0);
-    n->ty = resolve_subtype(SM, n->cvt.ty);
+    resolve_expression(SM, node->cvt.ex, 0);
+    node->ty = resolve_subtype(SM, node->cvt.ty);
     break;
   case N_CHK:
-    resolve_expression(SM, n->chk.ex, tx);
-    n->ty = n->chk.ex->ty;
+    resolve_expression(SM, node->chk.ex, tx);
+    node->ty = node->chk.ex->ty;
     break;
   default:
     break;
   }
 }
-static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *n)
+static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *node)
 {
-  if (not n)
+  if (not node)
     return;
-  switch (n->k)
+  switch (node->k)
   {
   case N_AS:
-    resolve_expression(SM, n->as.tg, 0);
-    resolve_expression(SM, n->as.vl, n->as.tg->ty);
+    resolve_expression(SM, node->as.tg, 0);
+    resolve_expression(SM, node->as.vl, node->as.tg->ty);
     {
-      Type_Info *tgt = n->as.tg->ty ? type_canonical_concrete(n->as.tg->ty) : 0;
-      Type_Info *vlt = n->as.vl->ty ? type_canonical_concrete(n->as.vl->ty) : 0;
+      Type_Info *tgt = node->as.tg->ty ? type_canonical_concrete(node->as.tg->ty) : 0;
+      Type_Info *vlt = node->as.vl->ty ? type_canonical_concrete(node->as.vl->ty) : 0;
       if (error_count < 99 and tgt and vlt and not type_covers(tgt, vlt))
       {
         Type_Info *tgb = semantic_base(tgt);
         Type_Info *vlb = semantic_base(vlt);
         if (not type_covers(tgb, vlb) and not(tgt->k == TYPE_BOOLEAN and is_discrete(vlt))
             and not(is_discrete(tgt) and is_discrete(vlt)))
-          fatal_error(n->l, "typ mis");
+          fatal_error(node->l, "typ mis");
       }
     }
     break;
-    if (n->as.tg->ty)
-      n->as.vl->ty = n->as.tg->ty;
-    n->as.vl = chk(SM, n->as.vl, n->l);
+    if (node->as.tg->ty)
+      node->as.vl->ty = node->as.tg->ty;
+    node->as.vl = chk(SM, node->as.vl, node->l);
     break;
   case N_IF:
-    resolve_expression(SM, n->if_.cd, TY_BOOL);
-    if (n->if_.th.count > 0 and not has_return_statement(&n->if_.th))
-      fatal_error(n->l, "seq needs stmt");
-    for (uint32_t i = 0; i < n->if_.th.count; i++)
-      resolve_statement_sequence(SM, n->if_.th.data[i]);
-    for (uint32_t i = 0; i < n->if_.ei.count; i++)
+    resolve_expression(SM, node->if_.cd, TY_BOOL);
+    if (node->if_.th.count > 0 and not has_return_statement(&node->if_.th))
+      fatal_error(node->l, "seq needs stmt");
+    for (uint32_t i = 0; i < node->if_.th.count; i++)
+      resolve_statement_sequence(SM, node->if_.th.data[i]);
+    for (uint32_t i = 0; i < node->if_.ei.count; i++)
     {
-      Syntax_Node *e = n->if_.ei.data[i];
+      Syntax_Node *e = node->if_.ei.data[i];
       resolve_expression(SM, e->if_.cd, TY_BOOL);
       if (e->if_.th.count > 0 and not has_return_statement(&e->if_.th))
         fatal_error(e->l, "seq needs stmt");
       for (uint32_t j = 0; j < e->if_.th.count; j++)
         resolve_statement_sequence(SM, e->if_.th.data[j]);
     }
-    if (n->if_.el.count > 0 and not has_return_statement(&n->if_.el))
-      fatal_error(n->l, "seq needs stmt");
-    for (uint32_t i = 0; i < n->if_.el.count; i++)
-      resolve_statement_sequence(SM, n->if_.el.data[i]);
+    if (node->if_.el.count > 0 and not has_return_statement(&node->if_.el))
+      fatal_error(node->l, "seq needs stmt");
+    for (uint32_t i = 0; i < node->if_.el.count; i++)
+      resolve_statement_sequence(SM, node->if_.el.data[i]);
     break;
   case N_CS:
-    resolve_expression(SM, n->cs.ex, 0);
-    for (uint32_t i = 0; i < n->cs.al.count; i++)
+    resolve_expression(SM, node->cs.ex, 0);
+    for (uint32_t i = 0; i < node->cs.al.count; i++)
     {
-      Syntax_Node *a = n->cs.al.data[i];
+      Syntax_Node *a = node->cs.al.data[i];
       for (uint32_t j = 0; j < a->ch.it.count; j++)
-        resolve_expression(SM, a->ch.it.data[j], n->cs.ex->ty);
+        resolve_expression(SM, a->ch.it.data[j], node->cs.ex->ty);
       if (a->hnd.stz.count > 0 and not has_return_statement(&a->hnd.stz))
         fatal_error(a->l, "seq needs stmt");
       for (uint32_t j = 0; j < a->hnd.stz.count; j++)
@@ -6545,48 +6545,48 @@ static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *n)
     }
     break;
   case N_LP:
-    if (n->lp.lb.string)
+    if (node->lp.lb.string)
     {
-      Symbol *lbs = symbol_add_overload(SM, syn(n->lp.lb, 10, 0, n));
+      Symbol *lbs = symbol_add_overload(SM, syn(node->lp.lb, 10, 0, node));
       (void) lbs;
     }
-    if (n->lp.it)
+    if (node->lp.it)
     {
-      if (n->lp.it->k == N_BIN and n->lp.it->bn.op == T_IN)
+      if (node->lp.it->k == N_BIN and node->lp.it->bn.op == T_IN)
       {
-        Syntax_Node *v = n->lp.it->bn.l;
+        Syntax_Node *v = node->lp.it->bn.l;
         if (v->k == N_ID)
         {
-          Type_Info *rt = n->lp.it->bn.r->ty;
+          Type_Info *rt = node->lp.it->bn.r->ty;
           Symbol *lvs = syn(v->s, 0, rt ?: TY_INT, 0);
           symbol_add_overload(SM, lvs);
           lvs->lv = -1;
           v->sy = lvs;
         }
       }
-      resolve_expression(SM, n->lp.it, TY_BOOL);
+      resolve_expression(SM, node->lp.it, TY_BOOL);
     }
-    if (n->lp.st.count > 0 and not has_return_statement(&n->lp.st))
-      fatal_error(n->l, "seq needs stmt");
-    for (uint32_t i = 0; i < n->lp.st.count; i++)
-      resolve_statement_sequence(SM, n->lp.st.data[i]);
+    if (node->lp.st.count > 0 and not has_return_statement(&node->lp.st))
+      fatal_error(node->l, "seq needs stmt");
+    for (uint32_t i = 0; i < node->lp.st.count; i++)
+      resolve_statement_sequence(SM, node->lp.st.data[i]);
     break;
   case N_BL:
-    if (n->bk.lb.string)
+    if (node->bk.lb.string)
     {
-      Symbol *lbs = symbol_add_overload(SM, syn(n->bk.lb, 10, 0, n));
+      Symbol *lbs = symbol_add_overload(SM, syn(node->bk.lb, 10, 0, node));
       (void) lbs;
     }
     symbol_compare_parameter(SM);
-    for (uint32_t i = 0; i < n->bk.dc.count; i++)
-      resolve_declaration(SM, n->bk.dc.data[i]);
-    for (uint32_t i = 0; i < n->bk.st.count; i++)
-      resolve_statement_sequence(SM, n->bk.st.data[i]);
-    if (n->bk.hd.count > 0)
+    for (uint32_t i = 0; i < node->bk.dc.count; i++)
+      resolve_declaration(SM, node->bk.dc.data[i]);
+    for (uint32_t i = 0; i < node->bk.st.count; i++)
+      resolve_statement_sequence(SM, node->bk.st.data[i]);
+    if (node->bk.hd.count > 0)
     {
-      for (uint32_t i = 0; i < n->bk.hd.count; i++)
+      for (uint32_t i = 0; i < node->bk.hd.count; i++)
       {
-        Syntax_Node *h = n->bk.hd.data[i];
+        Syntax_Node *h = node->bk.hd.data[i];
         for (uint32_t j = 0; j < h->hnd.ec.count; j++)
         {
           Syntax_Node *e = h->hnd.ec.data[j];
@@ -6600,51 +6600,51 @@ static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *n)
     symbol_compare_overload(SM);
     break;
   case N_RT:
-    if (n->rt.vl)
-      resolve_expression(SM, n->rt.vl, 0);
+    if (node->rt.vl)
+      resolve_expression(SM, node->rt.vl, 0);
     break;
   case N_EX:
-    if (n->ex.cd)
-      resolve_expression(SM, n->ex.cd, TY_BOOL);
+    if (node->ex.cd)
+      resolve_expression(SM, node->ex.cd, TY_BOOL);
     break;
   case N_RS:
-    if (n->rs.ec and n->rs.ec->k == N_ID)
-      slv(&SM->eh, n->rs.ec->s);
+    if (node->rs.ec and node->rs.ec->k == N_ID)
+      slv(&SM->eh, node->rs.ec->s);
     else
       slv(&SM->eh, STRING_LITERAL("PROGRAM_ERROR"));
-    if (n->rs.ec)
-      resolve_expression(SM, n->rs.ec, 0);
+    if (node->rs.ec)
+      resolve_expression(SM, node->rs.ec, 0);
     break;
   case N_CLT:
-    resolve_expression(SM, n->ct.nm, 0);
-    for (uint32_t i = 0; i < n->ct.arr.count; i++)
-      resolve_expression(SM, n->ct.arr.data[i], 0);
+    resolve_expression(SM, node->ct.nm, 0);
+    for (uint32_t i = 0; i < node->ct.arr.count; i++)
+      resolve_expression(SM, node->ct.arr.data[i], 0);
     break;
   case N_ACC:
     symbol_compare_parameter(SM);
     {
-      Symbol *ens = symbol_add_overload(SM, syn(n->acc.nm, 9, 0, n));
+      Symbol *ens = symbol_add_overload(SM, syn(node->acc.nm, 9, 0, node));
       (void) ens;
-      for (uint32_t i = 0; i < n->acc.pmx.count; i++)
+      for (uint32_t i = 0; i < node->acc.pmx.count; i++)
       {
-        Syntax_Node *p = n->acc.pmx.data[i];
-        Type_Info *pt = resolve_subtype(SM, p->pm.ty);
-        Symbol *ps = symbol_add_overload(SM, syn(p->pm.nm, 0, pt, p));
-        p->sy = ps;
+        Syntax_Node *parser = node->acc.pmx.data[i];
+        Type_Info *pt = resolve_subtype(SM, parser->pm.ty);
+        Symbol *ps = symbol_add_overload(SM, syn(parser->pm.nm, 0, pt, parser));
+        parser->sy = ps;
       }
-      if (n->acc.stx.count > 0 and not has_return_statement(&n->acc.stx))
-        fatal_error(n->l, "seq needs stmt");
-      for (uint32_t i = 0; i < n->acc.stx.count; i++)
-        resolve_statement_sequence(SM, n->acc.stx.data[i]);
+      if (node->acc.stx.count > 0 and not has_return_statement(&node->acc.stx))
+        fatal_error(node->l, "seq needs stmt");
+      for (uint32_t i = 0; i < node->acc.stx.count; i++)
+        resolve_statement_sequence(SM, node->acc.stx.data[i]);
     }
     symbol_compare_overload(SM);
     break;
   case N_SA:
-    if (n->sa.gd)
-      resolve_expression(SM, n->sa.gd, 0);
-    for (uint32_t i = 0; i < n->sa.sts.count; i++)
+    if (node->sa.gd)
+      resolve_expression(SM, node->sa.gd, 0);
+    for (uint32_t i = 0; i < node->sa.sts.count; i++)
     {
-      Syntax_Node *s = n->sa.sts.data[i];
+      Syntax_Node *s = node->sa.sts.data[i];
       if (s->k == N_ACC)
       {
         for (uint32_t j = 0; j < s->acc.pmx.count; j++)
@@ -6659,22 +6659,22 @@ static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *n)
     }
     break;
   case N_DL:
-    resolve_expression(SM, n->ex.cd, 0);
+    resolve_expression(SM, node->ex.cd, 0);
     break;
   case N_AB:
-    if (n->rs.ec and n->rs.ec->k == N_ID)
-      slv(&SM->eh, n->rs.ec->s);
+    if (node->rs.ec and node->rs.ec->k == N_ID)
+      slv(&SM->eh, node->rs.ec->s);
     else
       slv(&SM->eh, STRING_LITERAL("TASKING_ERROR"));
-    if (n->rs.ec)
-      resolve_expression(SM, n->rs.ec, 0);
+    if (node->rs.ec)
+      resolve_expression(SM, node->rs.ec, 0);
     break;
   case N_US:
-    if (n->us.nm->k == N_ID)
+    if (node->us.nm->k == N_ID)
     {
-      Symbol *s = symbol_find(SM, n->us.nm->s);
+      Symbol *s = symbol_find(SM, node->us.nm->s);
       if (s)
-        symbol_find_use(SM, s, n->us.nm->s);
+        symbol_find_use(SM, s, node->us.nm->s);
     }
     break;
   default:
@@ -6822,7 +6822,7 @@ static void is_higher_order_parameter(Type_Info *dt, Type_Info *pt)
 static int ncp_depth = 0;
 #define MAX_NCP_DEPTH 1000
 static bool match_formal_parameter(Syntax_Node *f, String_Slice nm);
-static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap);
+static Syntax_Node *ncs(Syntax_Node *node, Node_Vector *fp, Node_Vector *ap);
 static const char *lkp(Symbol_Manager *SM, String_Slice nm);
 static Syntax_Node *pks2(Symbol_Manager *SM, String_Slice nm, const char *src);
 static void parse_package_specification(Symbol_Manager *SM, String_Slice nm, const char *src);
