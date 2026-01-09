@@ -1812,16 +1812,16 @@ static String_Slice parser_attribute(Parser *p)
     fatal_error(parser_location(p), "exp attr");
   return s;
 }
-static Syntax_Node *parse_name(Parser *p);
-static Syntax_Node *parse_expression(Parser *p);
-static Syntax_Node *parse_primary(Parser *p);
-static Syntax_Node *parse_range(Parser *p);
-static Node_Vector parse_statement(Parser *p);
-static Node_Vector parse_declarative_part(Parser *p);
-static Node_Vector parse_handle_declaration(Parser *p);
-static Syntax_Node *parse_statement_or_label(Parser *p);
-static Syntax_Node *parse_generic_formal(Parser *p);
-static RC *parse_representation_clause(Parser *p);
+static Syntax_Node *parse_name(Parser *parser);
+static Syntax_Node *parse_expression(Parser *parser);
+static Syntax_Node *parse_primary(Parser *parser);
+static Syntax_Node *parse_range(Parser *parser);
+static Node_Vector parse_statement(Parser *parser);
+static Node_Vector parse_declarative_part(Parser *parser);
+static Node_Vector parse_handle_declaration(Parser *parser);
+static Syntax_Node *parse_statement_or_label(Parser *parser);
+static Syntax_Node *parse_generic_formal(Parser *parser);
+static RC *parse_representation_clause(Parser *parser);
 static Syntax_Node *parse_primary(Parser *parser)
 {
   Source_Location location = parser_location(parser);
@@ -2491,7 +2491,7 @@ static Syntax_Node *parse_function_specification(Parser *parser)
   node->sp.rt = parse_name(parser);
   return node;
 }
-static Syntax_Node *parse_type_definition(Parser *p);
+static Syntax_Node *parse_type_definition(Parser *parser);
 static Node_Vector parse_generic_formal_part(Parser *parser)
 {
   Node_Vector generics = {0};
