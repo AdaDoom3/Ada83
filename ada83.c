@@ -1604,7 +1604,7 @@ struct Library_Unit
 struct Generic_Template
 {
   String_Slice nm;
-  Node_Vector fp;
+  Node_Vector formal_parameters;
   Node_Vector dc;
   Syntax_Node *un;
   Syntax_Node *bd;
@@ -7309,7 +7309,7 @@ static Syntax_Node *generate_clone(Symbol_Manager *symbol_manager, Syntax_Node *
     if (not g)
     {
       g = generic_type_new(nm);
-      g->fp = n->generic_decl.formal_parameters;
+      g->formal_parameters = n->generic_decl.formal_parameters;
       g->dc = n->generic_decl.dc;
       g->un = n->generic_decl.unit;
       gv(&symbol_manager->gt, g);
@@ -7328,8 +7328,8 @@ static Syntax_Node *generate_clone(Symbol_Manager *symbol_manager, Syntax_Node *
     Generic_Template *g = generic_find(symbol_manager, n->generic_inst.generic_name);
     if (g)
     {
-      resolve_array_parameter(symbol_manager, &g->fp, &n->generic_inst.actual_parameters);
-      Syntax_Node *inst = node_clone_substitute(g->un, &g->fp, &n->generic_inst.actual_parameters);
+      resolve_array_parameter(symbol_manager, &g->formal_parameters, &n->generic_inst.actual_parameters);
+      Syntax_Node *inst = node_clone_substitute(g->un, &g->formal_parameters, &n->generic_inst.actual_parameters);
       if (inst)
       {
         if (inst->k == N_PB or inst->k == N_FB or inst->k == N_PD or inst->k == N_FD)
@@ -7376,7 +7376,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
         Generic_Template *g = generic_find(symbol_manager, n->generic_inst.generic_name);
         if (g and g->bd)
         {
-          Syntax_Node *bd = node_clone_substitute(g->bd, &g->fp, &n->generic_inst.actual_parameters);
+          Syntax_Node *bd = node_clone_substitute(g->bd, &g->formal_parameters, &n->generic_inst.actual_parameters);
           if (bd)
           {
             bd->package_body.nm = n->generic_inst.nm;
@@ -7778,8 +7778,8 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       n->body.parent = s;
       Generic_Template *gt = generic_find(symbol_manager, sp->subprogram.nm);
       if (gt)
-        for (uint32_t i = 0; i < gt->fp.count; i++)
-          resolve_declaration(symbol_manager, gt->fp.data[i]);
+        for (uint32_t i = 0; i < gt->formal_parameters.count; i++)
+          resolve_declaration(symbol_manager, gt->formal_parameters.data[i]);
       for (uint32_t i = 0; i < sp->subprogram.parameters.count; i++)
       {
         Syntax_Node *p = sp->subprogram.parameters.data[i];
@@ -7815,8 +7815,8 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       n->body.parent = s;
       Generic_Template *gt = generic_find(symbol_manager, sp->subprogram.nm);
       if (gt)
-        for (uint32_t i = 0; i < gt->fp.count; i++)
-          resolve_declaration(symbol_manager, gt->fp.data[i]);
+        for (uint32_t i = 0; i < gt->formal_parameters.count; i++)
+          resolve_declaration(symbol_manager, gt->formal_parameters.data[i]);
       for (uint32_t i = 0; i < sp->subprogram.parameters.count; i++)
       {
         Syntax_Node *p = sp->subprogram.parameters.data[i];
@@ -7883,8 +7883,8 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
         symbol_manager->pk = pk;
         for (uint32_t i = 0; i < pk->package_spec.dc.count; i++)
           resolve_declaration(symbol_manager, pk->package_spec.dc.data[i]);
-        for (uint32_t i = 0; i < gt->fp.count; i++)
-          resolve_declaration(symbol_manager, gt->fp.data[i]);
+        for (uint32_t i = 0; i < gt->formal_parameters.count; i++)
+          resolve_declaration(symbol_manager, gt->formal_parameters.data[i]);
         for (uint32_t i = 0; i < n->package_body.dc.count; i++)
           resolve_declaration(symbol_manager, n->package_body.dc.data[i]);
         for (uint32_t i = 0; i < n->package_body.statements.count; i++)
