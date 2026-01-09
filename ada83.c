@@ -1606,7 +1606,7 @@ struct Generic_Template
   String_Slice nm;
   Node_Vector formal_parameters;
   Node_Vector dc;
-  Syntax_Node *un;
+  Syntax_Node *unit;
   Syntax_Node *bd;
 };
 static Syntax_Node *node_new(Node_Kind k, Source_Location l)
@@ -7311,14 +7311,14 @@ static Syntax_Node *generate_clone(Symbol_Manager *symbol_manager, Syntax_Node *
       g = generic_type_new(nm);
       g->formal_parameters = n->generic_decl.formal_parameters;
       g->dc = n->generic_decl.dc;
-      g->un = n->generic_decl.unit;
+      g->unit = n->generic_decl.unit;
       gv(&symbol_manager->gt, g);
       if (g->nm.string and g->nm.length)
       {
         Symbol *gs = symbol_new(g->nm, 11, 0, n);
         gs->generic_template = g;
-        if (g->un and g->un->k == N_PKS)
-          gs->definition = g->un;
+        if (g->unit and g->unit->k == N_PKS)
+          gs->definition = g->unit;
         symbol_add_overload(symbol_manager, gs);
       }
     }
@@ -7329,7 +7329,7 @@ static Syntax_Node *generate_clone(Symbol_Manager *symbol_manager, Syntax_Node *
     if (g)
     {
       resolve_array_parameter(symbol_manager, &g->formal_parameters, &n->generic_inst.actual_parameters);
-      Syntax_Node *inst = node_clone_substitute(g->un, &g->formal_parameters, &n->generic_inst.actual_parameters);
+      Syntax_Node *inst = node_clone_substitute(g->unit, &g->formal_parameters, &n->generic_inst.actual_parameters);
       if (inst)
       {
         if (inst->k == N_PB or inst->k == N_FB or inst->k == N_PD or inst->k == N_FD)
@@ -7874,7 +7874,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     if (gt)
     {
       gt->bd = n;
-      Syntax_Node *pk = gt->un and gt->un->k == N_PKS ? gt->un : 0;
+      Syntax_Node *pk = gt->unit and gt->unit->k == N_PKS ? gt->unit : 0;
       if (not pk and ps and ps->definition and ps->definition->k == N_PKS)
         pk = ps->definition;
       if (pk)
