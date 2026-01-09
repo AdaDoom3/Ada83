@@ -1408,7 +1408,7 @@ struct Syntax_Node
     {
       String_Slice label;
       Syntax_Node *iterator;
-      bool rv;
+      bool is_reverse;
       Node_Vector statements;
       Node_Vector locks;
     } loop_stmt;
@@ -2750,7 +2750,7 @@ static Syntax_Node *parse_loop(Parser *parser, String_Slice label)
   {
     String_Slice vr = parser_identifier(parser);
     parser_expect(parser, T_IN);
-    node->loop_stmt.rv = parser_match(parser, T_REV);
+    node->loop_stmt.is_reverse = parser_match(parser, T_REV);
     Syntax_Node *rng = parse_range(parser);
     if (parser_match(parser, T_RNG))
     {
@@ -7135,7 +7135,7 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
   case N_LP:
     c->loop_stmt.label = n->loop_stmt.label;
     c->loop_stmt.iterator = node_clone_substitute(n->loop_stmt.iterator, fp, ap);
-    c->loop_stmt.rv = n->loop_stmt.rv;
+    c->loop_stmt.is_reverse = n->loop_stmt.is_reverse;
     normalize_compile_symbol_vector(&c->loop_stmt.statements, &n->loop_stmt.statements, fp, ap);
     normalize_compile_symbol_vector(&c->loop_stmt.locks, &n->loop_stmt.locks, fp, ap);
     break;
@@ -11778,7 +11778,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
     if (generator->ls <= 64)
     {
       lmd_id = normalize_name(generator);
-      generator->lopt[lmd_id] = n->loop_stmt.rv ? 7 : 0;
+      generator->lopt[lmd_id] = n->loop_stmt.is_reverse ? 7 : 0;
     }
     if (lmd_id)
     {
