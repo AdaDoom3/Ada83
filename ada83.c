@@ -1247,7 +1247,7 @@ struct Syntax_Node
     struct
     {
       Token_Kind op;
-      Syntax_Node *x;
+      Syntax_Node *operand;
     } unary_node;
     struct
     {
@@ -1984,14 +1984,14 @@ static Syntax_Node *parse_primary(Parser *parser)
   {
     Syntax_Node *node = ND(UN, location);
     node->unary_node.op = T_NOT;
-    node->unary_node.x = parse_primary(parser);
+    node->unary_node.operand = parse_primary(parser);
     return node;
   }
   if (parser_match(parser, T_ABS))
   {
     Syntax_Node *node = ND(UN, location);
     node->unary_node.op = T_ABS;
-    node->unary_node.x = parse_primary(parser);
+    node->unary_node.operand = parse_primary(parser);
     return node;
   }
   if (parser_match(parser, T_ALL))
@@ -2207,7 +2207,7 @@ static Syntax_Node *parse_signed_term(Parser *parser)
   {
     Syntax_Node *unary_node = ND(UN, location);
     unary_node->unary_node.op = unary_operator;
-    unary_node->unary_node.x = node;
+    unary_node->unary_node.operand = node;
     node = unary_node;
   }
   while (parser_at(parser, T_PL) or parser_at(parser, T_MN) or parser_at(parser, T_AM))
@@ -3255,16 +3255,16 @@ static Syntax_Node *parse_type_definition(Parser *parser)
   {
     Syntax_Node *node = ND(TI, location);
     node->unary_node.op = T_MOD;
-    node->unary_node.x = parse_expression(parser);
+    node->unary_node.operand = parse_expression(parser);
     return node;
   }
   if (parser_match(parser, T_DIG))
   {
     Syntax_Node *node = ND(TF, location);
     if (parser_match(parser, T_BX))
-      node->unary_node.x = 0;
+      node->unary_node.operand = 0;
     else
-      node->unary_node.x = parse_expression(parser);
+      node->unary_node.operand = parse_expression(parser);
     if (parser_match(parser, T_RNG))
     {
       node->range.low = parse_signed_term(parser);
@@ -3457,7 +3457,7 @@ static Syntax_Node *parse_type_definition(Parser *parser)
   if (parser_match(parser, T_ACCS))
   {
     Syntax_Node *node = ND(TAC, location);
-    node->unary_node.x = parse_simple_expression(parser);
+    node->unary_node.operand = parse_simple_expression(parser);
     return node;
   }
   if (parser_match(parser, T_PRV))
@@ -5263,12 +5263,12 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
         resolve_expression(symbol_manager, rn->range.high, 0);
         Syntax_Node *lo = rn->range.low;
         Syntax_Node *hi = rn->range.high;
-        int64_t lov = lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.x->k == N_INT ? -lo->unary_node.x->integer_value
-                      : lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.x->k == N_REAL
+        int64_t lov = lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.operand->k == N_INT ? -lo->unary_node.operand->integer_value
+                      : lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.operand->k == N_REAL
                           ? ((union {
                               double d;
                               int64_t i;
-                            }){.d = -lo->unary_node.x->float_value})
+                            }){.d = -lo->unary_node.operand->float_value})
                                 .i
                       : lo->k == N_REAL ? ((union {
                                             double d;
@@ -5277,12 +5277,12 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
                                               .i
                       : lo->k == N_ID and lo->symbol and lo->symbol->k == 2 ? lo->symbol->value
                                                                     : lo->integer_value;
-        int64_t hiv = hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.x->k == N_INT ? -hi->unary_node.x->integer_value
-                      : hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.x->k == N_REAL
+        int64_t hiv = hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.operand->k == N_INT ? -hi->unary_node.operand->integer_value
+                      : hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.operand->k == N_REAL
                           ? ((union {
                               double d;
                               int64_t i;
-                            }){.d = -hi->unary_node.x->float_value})
+                            }){.d = -hi->unary_node.operand->float_value})
                                 .i
                       : hi->k == N_REAL ? ((union {
                                             double d;
@@ -5301,12 +5301,12 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
         resolve_expression(symbol_manager, cn->constraint.range_spec->range.high, 0);
         Syntax_Node *lo = cn->constraint.range_spec->range.low;
         Syntax_Node *hi = cn->constraint.range_spec->range.high;
-        int64_t lov = lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.x->k == N_INT ? -lo->unary_node.x->integer_value
-                      : lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.x->k == N_REAL
+        int64_t lov = lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.operand->k == N_INT ? -lo->unary_node.operand->integer_value
+                      : lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.operand->k == N_REAL
                           ? ((union {
                               double d;
                               int64_t i;
-                            }){.d = -lo->unary_node.x->float_value})
+                            }){.d = -lo->unary_node.operand->float_value})
                                 .i
                       : lo->k == N_REAL ? ((union {
                                             double d;
@@ -5315,12 +5315,12 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
                                               .i
                       : lo->k == N_ID and lo->symbol and lo->symbol->k == 2 ? lo->symbol->value
                                                                     : lo->integer_value;
-        int64_t hiv = hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.x->k == N_INT ? -hi->unary_node.x->integer_value
-                      : hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.x->k == N_REAL
+        int64_t hiv = hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.operand->k == N_INT ? -hi->unary_node.operand->integer_value
+                      : hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.operand->k == N_REAL
                           ? ((union {
                               double d;
                               int64_t i;
-                            }){.d = -hi->unary_node.x->float_value})
+                            }){.d = -hi->unary_node.operand->float_value})
                                 .i
                       : hi->k == N_REAL ? ((union {
                                             double d;
@@ -5339,12 +5339,12 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
         resolve_expression(symbol_manager, cn->range.high, 0);
         Syntax_Node *lo = cn->range.low;
         Syntax_Node *hi = cn->range.high;
-        int64_t lov = lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.x->k == N_INT ? -lo->unary_node.x->integer_value
-                      : lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.x->k == N_REAL
+        int64_t lov = lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.operand->k == N_INT ? -lo->unary_node.operand->integer_value
+                      : lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.operand->k == N_REAL
                           ? ((union {
                               double d;
                               int64_t i;
-                            }){.d = -lo->unary_node.x->float_value})
+                            }){.d = -lo->unary_node.operand->float_value})
                                 .i
                       : lo->k == N_REAL ? ((union {
                                             double d;
@@ -5353,12 +5353,12 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
                                               .i
                       : lo->k == N_ID and lo->symbol and lo->symbol->k == 2 ? lo->symbol->value
                                                                     : lo->integer_value;
-        int64_t hiv = hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.x->k == N_INT ? -hi->unary_node.x->integer_value
-                      : hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.x->k == N_REAL
+        int64_t hiv = hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.operand->k == N_INT ? -hi->unary_node.operand->integer_value
+                      : hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.operand->k == N_REAL
                           ? ((union {
                               double d;
                               int64_t i;
-                            }){.d = -hi->unary_node.x->float_value})
+                            }){.d = -hi->unary_node.operand->float_value})
                                 .i
                       : hi->k == N_REAL ? ((union {
                                             double d;
@@ -5382,13 +5382,13 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
     if (node->range.low and node->range.low->k == N_INT)
       t->low_bound = node->range.low->integer_value;
     else if (
-        node->range.low and node->range.low->k == N_UN and node->range.low->unary_node.op == T_MN and node->range.low->unary_node.x->k == N_INT)
-      t->low_bound = -node->range.low->unary_node.x->integer_value;
+        node->range.low and node->range.low->k == N_UN and node->range.low->unary_node.op == T_MN and node->range.low->unary_node.operand->k == N_INT)
+      t->low_bound = -node->range.low->unary_node.operand->integer_value;
     if (node->range.high and node->range.high->k == N_INT)
       t->high_bound = node->range.high->integer_value;
     else if (
-        node->range.high and node->range.high->k == N_UN and node->range.high->unary_node.op == T_MN and node->range.high->unary_node.x->k == N_INT)
-      t->high_bound = -node->range.high->unary_node.x->integer_value;
+        node->range.high and node->range.high->k == N_UN and node->range.high->unary_node.op == T_MN and node->range.high->unary_node.operand->k == N_INT)
+      t->high_bound = -node->range.high->unary_node.operand->integer_value;
     return t;
   }
   if (node->k == N_TX)
@@ -5411,11 +5411,11 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
   if (node->k == N_TF)
   {
     Type_Info *t = type_new(TYPE_FLOAT, N);
-    if (node->unary_node.x)
+    if (node->unary_node.operand)
     {
-      resolve_expression(symbol_manager, node->unary_node.x, 0);
-      if (node->unary_node.x->k == N_INT)
-        t->sm = node->unary_node.x->integer_value;
+      resolve_expression(symbol_manager, node->unary_node.operand, 0);
+      if (node->unary_node.operand->k == N_INT)
+        t->sm = node->unary_node.operand->integer_value;
     }
     return t;
   }
@@ -5434,12 +5434,12 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
         Syntax_Node *hi = r->range.high;
         if (lo and lo->k == N_INT)
           t->low_bound = lo->integer_value;
-        else if (lo and lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.x->k == N_INT)
-          t->low_bound = -lo->unary_node.x->integer_value;
+        else if (lo and lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.operand->k == N_INT)
+          t->low_bound = -lo->unary_node.operand->integer_value;
         if (hi and hi->k == N_INT)
           t->high_bound = hi->integer_value;
-        else if (hi and hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.x->k == N_INT)
-          t->high_bound = -hi->unary_node.x->integer_value;
+        else if (hi and hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.operand->k == N_INT)
+          t->high_bound = -hi->unary_node.operand->integer_value;
       }
     }
     return t;
@@ -5451,7 +5451,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
   if (node->k == N_TAC)
   {
     Type_Info *t = type_new(TYPE_ACCESS, N);
-    t->element_type = resolve_subtype(symbol_manager, node->unary_node.x);
+    t->element_type = resolve_subtype(symbol_manager, node->unary_node.operand);
     return t;
   }
   if (node->k == N_IX)
@@ -5472,14 +5472,14 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
           t->low_bound = r->range.low->integer_value;
         else if (
             r->range.low and r->range.low->k == N_UN and r->range.low->unary_node.op == T_MN
-            and r->range.low->unary_node.x->k == N_INT)
-          t->low_bound = -r->range.low->unary_node.x->integer_value;
+            and r->range.low->unary_node.operand->k == N_INT)
+          t->low_bound = -r->range.low->unary_node.operand->integer_value;
         if (r->range.high and r->range.high->k == N_INT)
           t->high_bound = r->range.high->integer_value;
         else if (
             r->range.high and r->range.high->k == N_UN and r->range.high->unary_node.op == T_MN
-            and r->range.high->unary_node.x->k == N_INT)
-          t->high_bound = -r->range.high->unary_node.x->integer_value;
+            and r->range.high->unary_node.operand->k == N_INT)
+          t->high_bound = -r->range.high->unary_node.operand->integer_value;
         return t;
       }
     }
@@ -5493,13 +5493,13 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
     if (node->range.low and node->range.low->k == N_INT)
       t->low_bound = node->range.low->integer_value;
     else if (
-        node->range.low and node->range.low->k == N_UN and node->range.low->unary_node.op == T_MN and node->range.low->unary_node.x->k == N_INT)
-      t->low_bound = -node->range.low->unary_node.x->integer_value;
+        node->range.low and node->range.low->k == N_UN and node->range.low->unary_node.op == T_MN and node->range.low->unary_node.operand->k == N_INT)
+      t->low_bound = -node->range.low->unary_node.operand->integer_value;
     if (node->range.high and node->range.high->k == N_INT)
       t->high_bound = node->range.high->integer_value;
     else if (
-        node->range.high and node->range.high->k == N_UN and node->range.high->unary_node.op == T_MN and node->range.high->unary_node.x->k == N_INT)
-      t->high_bound = -node->range.high->unary_node.x->integer_value;
+        node->range.high and node->range.high->k == N_UN and node->range.high->unary_node.op == T_MN and node->range.high->unary_node.operand->k == N_INT)
+      t->high_bound = -node->range.high->unary_node.operand->integer_value;
     return t;
   }
   if (node->k == N_CL)
@@ -5520,14 +5520,14 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
           t->low_bound = r->range.low->integer_value;
         else if (
             r->range.low and r->range.low->k == N_UN and r->range.low->unary_node.op == T_MN
-            and r->range.low->unary_node.x->k == N_INT)
-          t->low_bound = -r->range.low->unary_node.x->integer_value;
+            and r->range.low->unary_node.operand->k == N_INT)
+          t->low_bound = -r->range.low->unary_node.operand->integer_value;
         if (r->range.high and r->range.high->k == N_INT)
           t->high_bound = r->range.high->integer_value;
         else if (
             r->range.high and r->range.high->k == N_UN and r->range.high->unary_node.op == T_MN
-            and r->range.high->unary_node.x->k == N_INT)
-          t->high_bound = -r->range.high->unary_node.x->integer_value;
+            and r->range.high->unary_node.operand->k == N_INT)
+          t->high_bound = -r->range.high->unary_node.operand->integer_value;
         return t;
       }
     }
@@ -5636,7 +5636,7 @@ static inline int64_t range_size(int64_t lo, int64_t hi)
 static inline bool is_static(Syntax_Node *node)
 {
   return node
-         and (node->k == N_INT or (node->k == N_UN and node->unary_node.op == T_MN and node->unary_node.x and node->unary_node.x->k == N_INT));
+         and (node->k == N_INT or (node->k == N_UN and node->unary_node.op == T_MN and node->unary_node.operand and node->unary_node.operand->k == N_INT));
 }
 static int find_or_throw(Syntax_Node *ag)
 {
@@ -5969,40 +5969,40 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
       node->ty = TY_BOOL;
     break;
   case N_UN:
-    resolve_expression(symbol_manager, node->unary_node.x, tx);
-    if (node->unary_node.op == T_MN and node->unary_node.x->k == N_INT)
+    resolve_expression(symbol_manager, node->unary_node.operand, tx);
+    if (node->unary_node.op == T_MN and node->unary_node.operand->k == N_INT)
     {
       node->k = N_INT;
-      node->integer_value = -node->unary_node.x->integer_value;
+      node->integer_value = -node->unary_node.operand->integer_value;
       node->ty = TY_UINT;
     }
-    else if (node->unary_node.op == T_MN and node->unary_node.x->k == N_REAL)
+    else if (node->unary_node.op == T_MN and node->unary_node.operand->k == N_REAL)
     {
       node->k = N_REAL;
-      node->float_value = -node->unary_node.x->float_value;
+      node->float_value = -node->unary_node.operand->float_value;
       node->ty = TY_UFLT;
     }
-    else if (node->unary_node.op == T_PL and (node->unary_node.x->k == N_INT or node->unary_node.x->k == N_REAL))
+    else if (node->unary_node.op == T_PL and (node->unary_node.operand->k == N_INT or node->unary_node.operand->k == N_REAL))
     {
-      node->k = node->unary_node.x->k;
+      node->k = node->unary_node.operand->k;
       if (node->k == N_INT)
       {
-        node->integer_value = node->unary_node.x->integer_value;
+        node->integer_value = node->unary_node.operand->integer_value;
         node->ty = TY_UINT;
       }
       else
       {
-        node->float_value = node->unary_node.x->float_value;
+        node->float_value = node->unary_node.operand->float_value;
         node->ty = TY_UFLT;
       }
     }
     else
     {
-      node->ty = type_canonical_concrete(node->unary_node.x->ty);
+      node->ty = type_canonical_concrete(node->unary_node.operand->ty);
     }
     if (node->unary_node.op == T_NOT)
     {
-      Type_Info *xt = node->unary_node.x->ty ? type_canonical_concrete(node->unary_node.x->ty) : 0;
+      Type_Info *xt = node->unary_node.operand->ty ? type_canonical_concrete(node->unary_node.operand->ty) : 0;
       node->ty = xt and xt->k == TYPE_ARRAY ? xt : TY_BOOL;
     }
     break;
@@ -6987,7 +6987,7 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
     break;
   case N_UN:
     c->unary_node.op = n->unary_node.op;
-    c->unary_node.x = node_clone_substitute(n->unary_node.x, fp, ap);
+    c->unary_node.operand = node_clone_substitute(n->unary_node.operand, fp, ap);
     break;
   case N_AT:
     c->attribute.prefix = node_clone_substitute(n->attribute.prefix, fp, ap);
@@ -7702,10 +7702,10 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       resolve_expression(symbol_manager, n->subtype_decl.range_constraint->range.high, 0);
       Syntax_Node *lo = n->subtype_decl.range_constraint->range.low;
       Syntax_Node *hi = n->subtype_decl.range_constraint->range.high;
-      int64_t lov = lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.x->k == N_INT ? -lo->unary_node.x->integer_value
+      int64_t lov = lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.operand->k == N_INT ? -lo->unary_node.operand->integer_value
                     : lo->k == N_ID and lo->symbol and lo->symbol->k == 2                ? lo->symbol->value
                                                                                  : lo->integer_value;
-      int64_t hiv = hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.x->k == N_INT ? -hi->unary_node.x->integer_value
+      int64_t hiv = hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.operand->k == N_INT ? -hi->unary_node.operand->integer_value
                     : hi->k == N_ID and hi->symbol and hi->symbol->k == 2                ? hi->symbol->value
                                                                                  : hi->integer_value;
       t->low_bound = lov;
@@ -9977,7 +9977,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
   break;
   case N_UN:
   {
-    Value x = generate_expression(generator, n->unary_node.x);
+    Value x = generate_expression(generator, n->unary_node.operand);
     if (n->unary_node.op == T_MN)
     {
       if (x.k == VALUE_KIND_FLOAT)
@@ -9995,7 +9995,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     if (n->unary_node.op == T_NOT)
     {
-      Type_Info *xt = n->unary_node.x->ty ? type_canonical_concrete(n->unary_node.x->ty) : 0;
+      Type_Info *xt = n->unary_node.operand->ty ? type_canonical_concrete(n->unary_node.operand->ty) : 0;
       if (xt and xt->k == TYPE_ARRAY)
       {
         int sz = xt->high_bound >= xt->low_bound ? xt->high_bound - xt->low_bound + 1 : 1;
