@@ -4403,7 +4403,7 @@ struct Symbol
   uint8_t frz;
   Syntax_Node *fzn;
   uint8_t visibility;
-  Symbol *hm;
+  Symbol *homonym;
   uint32_t uid;
 };
 typedef struct
@@ -4453,7 +4453,7 @@ static Symbol *symbol_new(String_Slice nm, uint8_t k, Type_Info *ty, Syntax_Node
 static Symbol *symbol_add_overload(Symbol_Manager *symbol_manager, Symbol *s)
 {
   uint32_t h = symbol_hash(s->name);
-  s->hm = symbol_manager->sy[h];
+  s->homonym = symbol_manager->sy[h];
   s->next = symbol_manager->sy[h];
   s->sc = symbol_manager->sc;
   s->ss = symbol_manager->ss;
