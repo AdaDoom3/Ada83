@@ -4198,7 +4198,7 @@ static Node_Vector pdc(Parser *p)
       if (r)
       {
         Syntax_Node *n = ND(RRC, parser_location(p));
-        memcpy(&n->ag.it.d, &r, sizeof(RC *));
+        memcpy(&n->ag.it.data, &r, sizeof(RC *));
         nv(&v, n);
       }
       continue;
@@ -4209,7 +4209,7 @@ static Node_Vector pdc(Parser *p)
       if (r)
       {
         Syntax_Node *n = ND(RRC, parser_location(p));
-        memcpy(&n->ag.it.d, &r, sizeof(RC *));
+        memcpy(&n->ag.it.data, &r, sizeof(RC *));
         nv(&v, n);
       }
       continue;
@@ -6541,7 +6541,7 @@ static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *n)
       if (a->hnd.stz.n > 0 and not hrs(&a->hnd.stz))
         fatal_error(a->l, "seq needs stmt");
       for (uint32_t j = 0; j < a->hnd.stz.n; j++)
-        resolve_statement_sequence(SM, a->hnd.stz.d[j]);
+        resolve_statement_sequence(SM, a->hnd.stz.data[j]);
     }
     break;
   case N_LP:
@@ -6589,12 +6589,12 @@ static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *n)
         Syntax_Node *h = n->bk.hd.data[i];
         for (uint32_t j = 0; j < h->hnd.ec.length; j++)
         {
-          Syntax_Node *e = h->hnd.ec.d[j];
+          Syntax_Node *e = h->hnd.ec.data[j];
           if (e->k == N_ID and not string_equal_ignore_case(e->s, STRING_LITERAL("others")))
             slv(&SM->eh, e->s);
         }
         for (uint32_t j = 0; j < h->hnd.stz.n; j++)
-          resolve_statement_sequence(SM, h->hnd.stz.d[j]);
+          resolve_statement_sequence(SM, h->hnd.stz.data[j]);
       }
     }
     sco(SM);
@@ -6618,7 +6618,7 @@ static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *n)
   case N_CLT:
     resolve_expression(SM, n->ct.nm, 0);
     for (uint32_t i = 0; i < n->ct.arr.n; i++)
-      resolve_expression(SM, n->ct.arr.d[i], 0);
+      resolve_expression(SM, n->ct.arr.data[i], 0);
     break;
   case N_ACC:
     scp(SM);
@@ -6832,8 +6832,8 @@ static void rap(Symbol_Manager *SM, Node_Vector *fp, Node_Vector *ap)
     return;
   for (uint32_t i = 0; i < fp->n and i < ap->n; i++)
   {
-    Syntax_Node *f = fp->d[i];
-    Syntax_Node *a = ap->d[i];
+    Syntax_Node *f = fp->data[i];
+    Syntax_Node *a = ap->data[i];
     if (f->k == N_GSP and a->k == N_STR)
     {
       int pc = f->sp.pmm.count;
@@ -6845,10 +6845,10 @@ static void rap(Symbol_Manager *SM, Node_Vector *fp, Node_Vector *ap)
           String_Slice tn = f->sp.rt->s;
           for (uint32_t j = 0; j < fp->n; j++)
           {
-            Syntax_Node *tf = fp->d[j];
+            Syntax_Node *tf = fp->data[j];
             if (tf->k == N_GTP and string_equal_ignore_case(tf->td.nm, tn) and j < ap->n)
             {
-              Syntax_Node *ta = ap->d[j];
+              Syntax_Node *ta = ap->data[j];
               if (ta->k == N_ID)
               {
                 Symbol *ts = symbol_find(SM, ta->s);
@@ -6927,11 +6927,11 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
   if (fp and n->k == N_ID)
   {
     for (uint32_t i = 0; i < fp->n; i++)
-      if (mfp(fp->d[i], n->s))
+      if (mfp(fp->data[i], n->s))
       {
         if (i < ap->n)
         {
-          Syntax_Node *a = ap->d[i];
+          Syntax_Node *a = ap->data[i];
           Syntax_Node *r = a->k == N_ASC and a->asc.vl ? ncs(a->asc.vl, 0, 0) : ncs(a, 0, 0);
           ncp_depth--;
           return r;
@@ -6944,11 +6944,11 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
   if (fp and n->k == N_STR)
   {
     for (uint32_t i = 0; i < fp->n; i++)
-      if (mfp(fp->d[i], n->s))
+      if (mfp(fp->data[i], n->s))
       {
         if (i < ap->n)
         {
-          Syntax_Node *a = ap->d[i];
+          Syntax_Node *a = ap->data[i];
           Syntax_Node *r = a->k == N_ASC and a->asc.vl ? ncs(a->asc.vl, 0, 0) : ncs(a, 0, 0);
           ncp_depth--;
           return r;
@@ -7390,7 +7390,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
   break;
   case N_RRC:
   {
-    RC *r = *(RC **) &n->ag.it.d;
+    RC *r = *(RC **) &n->ag.it.data;
     rrc_(SM, r);
   }
   break;
@@ -7586,7 +7586,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
       int vl = 0;
       for (uint32_t i = 0; i < n->td.df->lst.it.n; i++)
       {
-        Syntax_Node *it = n->td.df->lst.it.d[i];
+        Syntax_Node *it = n->td.df->lst.it.data[i];
         Symbol *es = symbol_add_overload(
             SM, syn(it->k == N_CHAR ? (String_Slice){(const char *) &it->i, 1} : it->s, 2, t, n));
         es->vl = vl++;
@@ -7601,7 +7601,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
       of = 0;
       for (uint32_t i = 0; i < n->td.df->lst.it.n; i++)
       {
-        Syntax_Node *c = n->td.df->lst.it.d[i];
+        Syntax_Node *c = n->td.df->lst.it.data[i];
         if (c->k == N_CM)
         {
           c->cm.of = of++;
@@ -7612,7 +7612,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
           {
             for (uint32_t j = 0; j < c->cm.dc->lst.it.n; j++)
             {
-              Syntax_Node *dc = c->cm.dc->lst.it.d[j];
+              Syntax_Node *dc = c->cm.dc->lst.it.data[j];
               if (dc->k == N_DS and dc->pm.df)
                 resolve_expression(SM, dc->pm.df, resolve_subtype(SM, dc->pm.ty));
             }
@@ -7621,7 +7621,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
           {
             for (uint32_t j = 0; j < c->cm.dsc->lst.it.n; j++)
             {
-              Syntax_Node *dc = c->cm.dsc->lst.it.d[j];
+              Syntax_Node *dc = c->cm.dsc->lst.it.data[j];
               if (dc->k == N_DS)
               {
                 Symbol *ds =
@@ -7649,7 +7649,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
               {
                 for (uint32_t m = 0; m < vc->cm.dc->lst.it.n; m++)
                 {
-                  Syntax_Node *dc = vc->cm.dc->lst.it.d[m];
+                  Syntax_Node *dc = vc->cm.dc->lst.it.data[m];
                   if (dc->k == N_DS and dc->pm.df)
                     resolve_expression(SM, dc->pm.df, resolve_subtype(SM, dc->pm.ty));
                 }
@@ -7658,7 +7658,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
               {
                 for (uint32_t m = 0; m < vc->cm.dsc->lst.it.n; m++)
                 {
-                  Syntax_Node *dc = vc->cm.dsc->lst.it.d[m];
+                  Syntax_Node *dc = vc->cm.dsc->lst.it.data[m];
                   if (dc->k == N_DS)
                   {
                     Symbol *ds = symbol_add_overload(
@@ -11558,7 +11558,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
       int la = lb.data[i]->i;
       lbl(g, la);
       for (uint32_t j = 0; j < a->hnd.stz.n; j++)
-        generate_statement_sequence(g, a->hnd.stz.d[j]);
+        generate_statement_sequence(g, a->hnd.stz.data[j]);
       emit_branch(g, ld);
     }
     lbl(g, ld);
@@ -11899,7 +11899,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
           for (uint32_t i = 0; i < n->ct.arr.n and i < 64; i++)
           {
             Syntax_Node *pm = sp and i < sp->sp.pmm.count ? sp->sp.pmm.data[i] : 0;
-            Syntax_Node *arg = n->ct.arr.d[i];
+            Syntax_Node *arg = n->ct.arr.data[i];
             V av = {0, VALUE_KIND_INTEGER};
             Value_Kind ek = VALUE_KIND_INTEGER;
             bool rf = false;
@@ -12023,8 +12023,8 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
                       ark[i] == VALUE_KIND_POINTER ? VALUE_KIND_INTEGER : ark[i]),
                   arid[i]);
               V rv = {lv, ark[i] == VALUE_KIND_POINTER ? VALUE_KIND_INTEGER : ark[i]};
-              V cv = value_cast(g, rv, token_kind_to_value_kind(n->ct.arr.d[i]->ty));
-              Syntax_Node *tg = n->ct.arr.d[i];
+              V cv = value_cast(g, rv, token_kind_to_value_kind(n->ct.arr.data[i]->ty));
+              Syntax_Node *tg = n->ct.arr.data[i];
               if (tg->k == N_ID)
               {
                 Symbol *ts = tg->sy ? tg->sy : symbol_find(g->sm, tg->s);
@@ -12061,7 +12061,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
           {
             if (i)
               fprintf(o, ", ");
-            V av = generate_expression(g, n->ct.arr.d[i]);
+            V av = generate_expression(g, n->ct.arr.data[i]);
             fprintf(o, "i64 %%t%d", av.id);
           }
           fprintf(o, ")\n");
@@ -12084,7 +12084,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
           for (uint32_t i = 0; i < n->ct.arr.n and i < 64; i++)
           {
             Syntax_Node *pm = sp and i < sp->sp.pmm.count ? sp->sp.pmm.data[i] : 0;
-            Syntax_Node *arg = n->ct.arr.d[i];
+            Syntax_Node *arg = n->ct.arr.data[i];
             V av = {0, VALUE_KIND_INTEGER};
             Value_Kind ek = VALUE_KIND_INTEGER;
             if (pm)
@@ -12337,7 +12337,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
         int lhm = new_label_block(g), lhn = new_label_block(g);
         for (uint32_t j = 0; j < h->hnd.ec.length; j++)
         {
-          Syntax_Node *e = h->hnd.ec.d[j];
+          Syntax_Node *e = h->hnd.ec.data[j];
           if (e->k == N_ID and string_equal_ignore_case(e->s, STRING_LITERAL("others")))
           {
             emit_branch(g, lhm);
@@ -12359,7 +12359,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
         emit_branch(g, ld);
         lbl(g, lhm);
         for (uint32_t j = 0; j < h->hnd.stz.n; j++)
-          generate_statement_sequence(g, h->hnd.stz.d[j]);
+          generate_statement_sequence(g, h->hnd.stz.data[j]);
         emit_branch(g, ld);
       }
     }
@@ -12417,7 +12417,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
           V d = generate_expression(g, st->ex.cd);
           fprintf(o, "  call void @__ada_delay(i64 %%t%d)\n", d.id);
           for (uint32_t j = 0; j < st->hnd.stz.n; j++)
-            generate_statement_sequence(g, st->hnd.stz.d[j]);
+            generate_statement_sequence(g, st->hnd.stz.data[j]);
         }
       }
       if (n->ss.el.count > 0)
@@ -12575,7 +12575,7 @@ static void elb_r(Code_Generator *g, Syntax_Node *s, Node_Vector *lbs)
     for (uint32_t i = 0; i < s->cs.al.count; i++)
       if (s->cs.al.data[i])
         for (uint32_t j = 0; j < s->cs.al.data[i]->hnd.stz.n; j++)
-          elb_r(g, s->cs.al.data[i]->hnd.stz.d[j], lbs);
+          elb_r(g, s->cs.al.data[i]->hnd.stz.data[j], lbs);
 }
 static void generate_declaration(Code_Generator *g, Syntax_Node *n);
 static void hbl(Code_Generator *g, Node_Vector *sl)
