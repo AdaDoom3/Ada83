@@ -4369,7 +4369,7 @@ struct Type_Info
   Symbol_Vector enum_values;
   Representation_Clause_Vector rc;
   uint64_t address;
-  bool pk;
+  bool is_packed;
   Node_Vector operations;
   int64_t sm, large_value;
   uint16_t suppressed_checks;
@@ -5254,7 +5254,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
       t->size = bt->size;
       t->alignment = bt->alignment;
       t->address = bt->address;
-      t->pk = bt->pk;
+      t->is_packed = bt->is_packed;
       t->index_type = bt->index_type;
       if (cn->k == 27 and cn->constraint.constraints.count > 0 and cn->constraint.constraints.data[0] and cn->constraint.constraints.data[0]->k == 26)
       {
@@ -6742,7 +6742,7 @@ static void runtime_register_compare(Symbol_Manager *symbol_manager, Representat
         }
       }
       t->size = (bt + 7) / 8;
-      t->pk = true;
+      t->is_packed = true;
     }
   }
   break;
@@ -6762,7 +6762,7 @@ static void runtime_register_compare(Symbol_Manager *symbol_manager, Representat
     if (s and s->ty)
     {
       Type_Info *t = type_canonical_concrete(s->ty);
-      t->pk = true;
+      t->is_packed = true;
     }
   }
   break;
@@ -7691,7 +7691,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       t->size = b->size;
       t->alignment = b->alignment;
       t->address = b->address;
-      t->pk = b->pk;
+      t->is_packed = b->is_packed;
       t->low_bound = b->low_bound;
       t->high_bound = b->high_bound;
       t->parent_type = b->parent_type ? b->parent_type : b;
@@ -8973,7 +8973,7 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
     normalize_array_aggregate(generator->sm, t, n);
   if (t and t->k == TYPE_RECORD and n->k == N_AG)
     normalize_record_aggregate(generator->sm, t, n);
-  if (not t or t->k != TYPE_RECORD or t->pk)
+  if (not t or t->k != TYPE_RECORD or t->is_packed)
   {
     int sz = n->aggregate.items.count ? n->aggregate.items.count : 1;
     int p = new_temporary_register(generator);
@@ -10300,7 +10300,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           goto sel_done;
         }
       }
-      if (pt->pk)
+      if (pt->is_packed)
       {
         for (uint32_t i = 0; i < pt->components.count; i++)
         {
@@ -10818,7 +10818,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             Syntax_Node *c = pt->components.data[i];
             if (c->k == N_CM and string_equal_ignore_case(c->component_decl.name, n->attribute.prefix->selected_component.selector))
             {
-              if (pt->pk)
+              if (pt->is_packed)
               {
                 if (string_equal_ignore_case(a, STRING_LITERAL("POSITION")))
                   v = c->component_decl.offset / 8;
@@ -11386,7 +11386,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
       }
       if (pt and pt->k == TYPE_RECORD)
       {
-        if (pt->pk)
+        if (pt->is_packed)
         {
           for (uint32_t i = 0; i < pt->components.count; i++)
           {
