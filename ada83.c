@@ -4388,7 +4388,7 @@ struct Symbol
   int ss;
   int64_t vl;
   uint32_t of;
-  Node_Vector ol;
+  Node_Vector overloads;
   Symbol_Vector us;
   int el;
   Generic_Template *gt;
@@ -4597,11 +4597,11 @@ static Symbol *symbol_find_with_arity(Symbol_Manager *symbol_manager, String_Sli
     int sc = 0;
     if ((c->k == 4 or c->k == 5) and na >= 0)
     {
-      if (c->ol.count > 0)
+      if (c->overloads.count > 0)
       {
-        for (uint32_t j = 0; j < c->ol.count; j++)
+        for (uint32_t j = 0; j < c->overloads.count; j++)
         {
-          Syntax_Node *b = c->ol.data[j];
+          Syntax_Node *b = c->overloads.data[j];
           if (b->k == N_PB or b->k == N_FB)
           {
             int np = b->body.subprogram_spec->subprogram.parameters.count;
@@ -7745,7 +7745,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       Type_Info *rt = resolve_subtype(symbol_manager, n->subprogram.return_type);
       ft->el = rt;
       Symbol *s = symbol_add_overload(symbol_manager, symbol_new(n->subprogram.nm, 5, ft, n));
-      nv(&s->ol, n);
+      nv(&s->overloads, n);
       n->sy = s;
       s->pr = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
       nv(&ft->ops, n);
@@ -7753,7 +7753,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     else
     {
       Symbol *s = symbol_add_overload(symbol_manager, symbol_new(n->subprogram.nm, 4, ft, n));
-      nv(&s->ol, n);
+      nv(&s->overloads, n);
       n->sy = s;
       s->pr = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
       nv(&ft->ops, n);
@@ -7766,7 +7766,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     Syntax_Node *sp = n->body.subprogram_spec;
     Type_Info *ft = type_new(TYPE_STRING, sp->subprogram.nm);
     Symbol *s = symbol_add_overload(symbol_manager, symbol_new(sp->subprogram.nm, 4, ft, n));
-    nv(&s->ol, n);
+    nv(&s->overloads, n);
     n->sy = s;
     n->body.elaboration_level = s->el;
     s->pr = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
@@ -7803,7 +7803,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     Type_Info *ft = type_new(TYPE_STRING, sp->subprogram.nm);
     ft->el = rt;
     Symbol *s = symbol_add_overload(symbol_manager, symbol_new(sp->subprogram.nm, 5, ft, n));
-    nv(&s->ol, n);
+    nv(&s->overloads, n);
     n->sy = s;
     n->body.elaboration_level = s->el;
     s->pr = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
@@ -7840,7 +7840,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     Type_Info *ft = type_new(TYPE_STRING, sp->subprogram.nm);
     ft->el = rt;
     Symbol *s = symbol_add_overload(symbol_manager, symbol_new(sp->subprogram.nm, 5, ft, n));
-    nv(&s->ol, n);
+    nv(&s->overloads, n);
     n->sy = s;
     n->body.elaboration_level = s->el;
     s->pr = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
@@ -8214,7 +8214,7 @@ static void read_ada_library_interface(Symbol_Manager *symbol_manager, const cha
         n->body.subprogram_spec = sp;
         Symbol *s = symbol_add_overload(symbol_manager, symbol_new(msn, isp ? 4 : 5, type_new(TYPE_STRING, msn), n));
         s->el = symbol_manager->eo++;
-        nv(&s->ol, n);
+        nv(&s->overloads, n);
         n->sy = s;
         s->mangled_nm = string_duplicate(sn);
       }
@@ -9100,11 +9100,11 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
 }
 static Syntax_Node *symbol_body(Symbol *s, int el)
 {
-  if (not s or s->ol.count == 0)
+  if (not s or s->overloads.count == 0)
     return 0;
-  for (uint32_t i = 0; i < s->ol.count; i++)
+  for (uint32_t i = 0; i < s->overloads.count; i++)
   {
-    Syntax_Node *b = s->ol.data[i];
+    Syntax_Node *b = s->overloads.data[i];
     if ((b->k == N_PB or b->k == N_FB) and b->body.elaboration_level == el)
       return b;
   }
@@ -9112,14 +9112,14 @@ static Syntax_Node *symbol_body(Symbol *s, int el)
 }
 static Syntax_Node *symbol_spec(Symbol *s)
 {
-  if (not s or s->ol.count == 0)
+  if (not s or s->overloads.count == 0)
     return 0;
   Syntax_Node *b = symbol_body(s, s->el);
   if (b and b->body.subprogram_spec)
     return b->body.subprogram_spec;
-  for (uint32_t i = 0; i < s->ol.count; i++)
+  for (uint32_t i = 0; i < s->overloads.count; i++)
   {
-    Syntax_Node *d = s->ol.data[i];
+    Syntax_Node *d = s->overloads.data[i];
     if (d->k == N_PD or d->k == N_FD)
       return d->body.subprogram_spec;
   }
@@ -12708,8 +12708,8 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       break;
     bool has_body = false;
     if (n->sy)
-      for (uint32_t i = 0; i < n->sy->ol.count; i++)
-        if (n->sy->ol.data[i]->k == N_PB)
+      for (uint32_t i = 0; i < n->sy->overloads.count; i++)
+        if (n->sy->overloads.data[i]->k == N_PB)
         {
           has_body = true;
           break;
@@ -12756,8 +12756,8 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       break;
     bool has_body = false;
     if (n->sy)
-      for (uint32_t i = 0; i < n->sy->ol.count; i++)
-        if (n->sy->ol.data[i]->k == N_FB)
+      for (uint32_t i = 0; i < n->sy->overloads.count; i++)
+        if (n->sy->overloads.data[i]->k == N_FB)
         {
           has_body = true;
           break;
@@ -13834,9 +13834,9 @@ static void print_forward_declarations(Code_Generator *generator, Symbol_Manager
   for (int h = 0; h < 4096; h++)
     for (Symbol *s = sm->sy[h]; s; s = s->next)
       if (s->lv == 0 and not s->ext)
-        for (uint32_t k = 0; k < s->ol.count; k++)
+        for (uint32_t k = 0; k < s->overloads.count; k++)
         {
-          Syntax_Node *n = s->ol.data[k];
+          Syntax_Node *n = s->overloads.data[k];
           if (n and (n->k == N_PB or n->k == N_FB))
           {
             Syntax_Node *sp = n->body.subprogram_spec;
@@ -13914,7 +13914,7 @@ static void write_ada_library_interface(Symbol_Manager *symbol_manager, const ch
     {
       if ((s->k == 4 or s->k == 5) and s->pr and string_equal_ignore_case(s->pr->name, nm))
       {
-        Syntax_Node *sp = s->ol.count > 0 and s->ol.data[0]->body.subprogram_spec ? s->ol.data[0]->body.subprogram_spec : 0;
+        Syntax_Node *sp = s->overloads.count > 0 and s->overloads.data[0]->body.subprogram_spec ? s->overloads.data[0]->body.subprogram_spec : 0;
         char nb[256];
         if (s->mangled_nm.string)
         {
@@ -14029,7 +14029,7 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
   print_forward_declarations(&g, &sm);
   for (int h = 0; h < 4096; h++)
     for (Symbol *s = sm.sy[h]; s; s = s->next)
-      if ((s->k == 0 or s->k == 2) and s->lv == 0 and s->pr and not s->ext and s->ol.count == 0)
+      if ((s->k == 0 or s->k == 2) and s->lv == 0 and s->pr and not s->ext and s->overloads.count == 0)
       {
         Value_Kind k = s->ty ? token_kind_to_value_kind(s->ty) : VALUE_KIND_INTEGER;
         char nb[256];
@@ -14119,8 +14119,8 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
       {
         if (s->el == i)
         {
-          for (uint32_t k = 0; k < s->ol.count; k++)
-            generate_declaration(&g, s->ol.data[k]);
+          for (uint32_t k = 0; k < s->overloads.count; k++)
+            generate_declaration(&g, s->overloads.data[k]);
         }
       }
     }
@@ -14328,8 +14328,8 @@ int main(int ac, char **av)
     for (uint32_t j = 0; j < 4096; j++)
       for (Symbol *s = sm.sy[j]; s; s = s->next)
         if (s->el == i and s->lv == 0)
-          for (uint32_t k = 0; k < s->ol.count; k++)
-            generate_declaration(&g, s->ol.data[k]);
+          for (uint32_t k = 0; k < s->overloads.count; k++)
+            generate_declaration(&g, s->overloads.data[k]);
   for (uint32_t ui = 0; ui < cu->compilation_unit.units.count; ui++)
   {
     Syntax_Node *u = cu->compilation_unit.units.data[ui];
