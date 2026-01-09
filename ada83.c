@@ -1555,7 +1555,7 @@ struct Syntax_Node
     struct
     {
       Node_Vector items;
-      Syntax_Node *low, *high;
+      Syntax_Node *low_bound, *high_bound;
       uint8_t dimensions;
     } aggregate;
   };
@@ -7258,8 +7258,8 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
     break;
   case N_AG:
     normalize_compile_symbol_vector(&c->aggregate.items, &n->aggregate.items, fp, ap);
-    c->aggregate.low = node_clone_substitute(n->aggregate.low, fp, ap);
-    c->aggregate.high = node_clone_substitute(n->aggregate.high, fp, ap);
+    c->aggregate.low_bound = node_clone_substitute(n->aggregate.low_bound, fp, ap);
+    c->aggregate.high_bound = node_clone_substitute(n->aggregate.high_bound, fp, ap);
     c->aggregate.dimensions = n->aggregate.dimensions;
     break;
   case N_TA:
