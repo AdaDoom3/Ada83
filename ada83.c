@@ -3684,10 +3684,10 @@ static Syntax_Node *pdl(Parser *p)
         Syntax_Node *dd = 0;
         if (parser_match(p, T_AS))
           dd = parse_expression(p);
-        for (uint32_t i = 0; i < dn.n; i++)
+        for (uint32_t i = 0; i < dn.count; i++)
         {
           Syntax_Node *dp = ND(DS, lc);
-          dp->pm.nm = dn.d[i]->s;
+          dp->pm.nm = dn.data[i]->s;
           dp->pm.ty = dt;
           dp->pm.df = dd;
           nv(&ds->lst.it, dp);
@@ -4115,17 +4115,17 @@ static Syntax_Node *pdl(Parser *p)
       nv(&nms, parse_name(p));
     while (parser_match(p, T_CM));
     parser_expect(p, T_SC);
-    if (nms.n == 1)
+    if (nms.count == 1)
     {
       Syntax_Node *n = ND(US, lc);
-      n->us.nm = nms.d[0];
+      n->us.nm = nms.data[0];
       return n;
     }
     Syntax_Node *lst = ND(LST, lc);
-    for (uint32_t i = 0; i < nms.n; i++)
+    for (uint32_t i = 0; i < nms.count; i++)
     {
       Syntax_Node *u = ND(US, lc);
-      u->us.nm = nms.d[i];
+      u->us.nm = nms.data[i];
       nv(&lst->lst.it, u);
     }
     return lst;
@@ -4265,8 +4265,8 @@ static Syntax_Node *pcu(Parser *p)
     if (parser_at(p, T_WITH) or parser_at(p, T_USE) or parser_at(p, T_PGM))
     {
       Syntax_Node *cx = pcx(p);
-      for (uint32_t i = 0; i < cx->cx.wt.n; i++)
-        nv(&n->cu.cx->cx.wt, cx->cx.wt.d[i]);
+      for (uint32_t i = 0; i < cx->cx.wt.count; i++)
+        nv(&n->cu.cx->cx.wt, cx->cx.wt.data[i]);
       for (uint32_t i = 0; i < cx->cx.us.count; i++)
         nv(&n->cu.cx->cx.us, cx->cx.us.data[i]);
     }
@@ -4315,8 +4315,8 @@ static Syntax_Node *pcu(Parser *p)
           Syntax_Node *pcu_ = pcu(&pp);
           if (pcu_ and pcu_->cu.cx)
           {
-            for (uint32_t i = 0; i < pcu_->cu.cx->cx.wt.n; i++)
-              nv(&n->cu.cx->cx.wt, pcu_->cu.cx->cx.wt.d[i]);
+            for (uint32_t i = 0; i < pcu_->cu.cx->cx.wt.count; i++)
+              nv(&n->cu.cx->cx.wt, pcu_->cu.cx->cx.wt.data[i]);
             for (uint32_t i = 0; i < pcu_->cu.cx->cx.us.count; i++)
               nv(&n->cu.cx->cx.us, pcu_->cu.cx->cx.us.data[i]);
           }
@@ -4561,9 +4561,9 @@ static void sfu(Symbol_Manager *SM, Symbol *s, String_Slice nm)
 }
 static GT *gfnd(Symbol_Manager *SM, String_Slice nm)
 {
-  for (uint32_t i = 0; i < SM->gt.n; i++)
+  for (uint32_t i = 0; i < SM->gt.count; i++)
   {
-    GT *g = SM->gt.d[i];
+    GT *g = SM->gt.data[i];
     if (string_equal_ignore_case(g->nm, nm))
       return g;
   }
@@ -4724,7 +4724,7 @@ static Syntax_Node *geq(Type_Info *t, Source_Location l)
   Syntax_Node *f = ND(FB, l);
   f->bd.sp = ND(FS, l);
   char b[256];
-  snprintf(b, 256, "Oeq%.*s", (int) t->nm.n, t->nm.s);
+  snprintf(b, 256, "Oeq%.*s", (int) t->nm.length, t->nm.string);
   f->bd.sp->sp.nm = string_duplicate((String_Slice){b, strlen(b)});
   f->bd.sp->sp.op = STRING_LITERAL("=");
   Syntax_Node *p1 = ND(PM, l);
@@ -4821,7 +4821,7 @@ static Syntax_Node *gas(Type_Info *t, Source_Location l)
   Syntax_Node *p = ND(PB, l);
   p->bd.sp = ND(PS, l);
   char b[256];
-  snprintf(b, 256, "Oas%.*s", (int) t->nm.n, t->nm.s);
+  snprintf(b, 256, "Oas%.*s", (int) t->nm.length, t->nm.string);
   p->bd.sp->sp.nm = string_duplicate((String_Slice){b, strlen(b)});
   p->bd.sp->sp.op = STRING_LITERAL(":=");
   Syntax_Node *p1 = ND(PM, l);
@@ -4891,7 +4891,7 @@ static Syntax_Node *gin(Type_Info *t, Source_Location l)
   Syntax_Node *f = ND(FB, l);
   f->bd.sp = ND(FS, l);
   char b[256];
-  snprintf(b, 256, "Oin%.*s", (int) t->nm.n, t->nm.s);
+  snprintf(b, 256, "Oin%.*s", (int) t->nm.length, t->nm.string);
   f->bd.sp->sp.nm = string_duplicate((String_Slice){b, strlen(b)});
   f->bd.sp->sp.rt = ND(ID, l);
   f->bd.sp->sp.rt->s = t->nm;
@@ -4959,7 +4959,7 @@ static void fty(Symbol_Manager *SM, Type_Info *t, Source_Location l)
     t->sz = n > 0 ? n * es : 0;
     t->al = ea;
   }
-  if ((t->k == TYPE_RECORD or t->k == TYPE_ARRAY) and t->nm.s and t->nm.n)
+  if ((t->k == TYPE_RECORD or t->k == TYPE_ARRAY) and t->nm.string and t->nm.length)
   {
     Syntax_Node *eq = geq(t, l);
     if (eq)
@@ -5542,14 +5542,14 @@ static Symbol *scl(Symbol_Manager *SM, char c, Type_Info *tx)
     for (uint32_t i = 0; i < tx->ev.count; i++)
     {
       Symbol *e = tx->ev.data[i];
-      if (e->nm.n == 1 and tolower(e->nm.s[0]) == tolower(c))
+      if (e->nm.length == 1 and tolower(e->nm.string[0]) == tolower(c))
         return e;
     }
   }
   if (tx and tx->k == TYPE_DERIVED and tx->prt)
     return scl(SM, c, tx->prt);
   for (Symbol *s = SM->sy[syh((String_Slice){&c, 1})]; s; s = s->nx)
-    if (s->nm.n == 1 and tolower(s->nm.s[0]) == tolower(c) and s->k == 2 and s->ty
+    if (s->nm.length == 1 and tolower(s->nm.string[0]) == tolower(c) and s->k == 2 and s->ty
         and (s->ty->k == TYPE_ENUMERATION or (s->ty->k == TYPE_DERIVED and s->ty->prt and s->ty->prt->k == TYPE_ENUMERATION)))
       return s;
   return 0;
@@ -6171,7 +6171,7 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx
               return;
             }
         if (error_count < 99)
-          fatal_error(n->l, "?'%.*s' in pkg", (int) n->se.se.n, n->se.se.s);
+          fatal_error(n->l, "?'%.*s' in pkg", (int) n->se.se.length, n->se.se.string);
       }
     }
     if (p->ty)
@@ -6218,7 +6218,7 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx
           }
         }
         if (error_count < 99)
-          fatal_error(n->l, "?fld '%.*s'", (int) n->se.se.n, n->se.se.s);
+          fatal_error(n->l, "?fld '%.*s'", (int) n->se.se.length, n->se.se.string);
       }
     }
     n->ty = TY_INT;
@@ -7313,7 +7313,7 @@ static Syntax_Node *gcl(Symbol_Manager *SM, Syntax_Node *n)
       g->dc = n->gen.dc;
       g->un = n->gen.un;
       gv(&SM->gt, g);
-      if (g->nm.s and g->nm.n)
+      if (g->nm.string and g->nm.length)
       {
         Symbol *gs = syn(g->nm, 11, 0, n);
         gs->gt = g;
@@ -7549,7 +7549,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
         break;
       }
     }
-    if (t and n->td.nm.s and n->td.nm.n > 0 and not t->nm.s)
+    if (t and n->td.nm.s and n->td.nm.n > 0 and not t->nm.string)
       t->nm = n->td.nm;
     if (n->td.dsc.count > 0)
     {
@@ -8136,10 +8136,10 @@ static void rali(Symbol_Manager *SM, const char *pth)
       while (*e and *e != ' ' and *e != '\n')
         e++;
       String_Slice dn = {l + 2, e - (l + 2)};
-      char *c = arena_allocate(dn.n + 1);
-      memcpy(c, dn.s, dn.n);
-      c[dn.n] = 0;
-      slv(&ds, (String_Slice){c, dn.n});
+      char *c = arena_allocate(dn.count + 1);
+      memcpy(c, dn.s, dn.count);
+      c[dn.count] = 0;
+      slv(&ds, (String_Slice){c, dn.count});
     }
     else if (*l == 'X' and l[1] == ' ')
     {
@@ -8259,8 +8259,8 @@ static Syntax_Node *pks2(Symbol_Manager *SM, String_Slice nm, const char *src)
   Syntax_Node *cu = pcu(&p);
   if (cu and cu->cu.cx)
   {
-    for (uint32_t i = 0; i < cu->cu.cx->cx.wt.n; i++)
-      pks2(SM, cu->cu.cx->cx.wt.d[i]->wt.nm, lkp(SM, cu->cu.cx->cx.wt.d[i]->wt.nm));
+    for (uint32_t i = 0; i < cu->cu.cx->cx.wt.count; i++)
+      pks2(SM, cu->cu.cx->cx.wt.data[i]->wt.nm, lkp(SM, cu->cu.cx->cx.wt.data[i]->wt.nm));
   }
   for (uint32_t i = 0; cu and i < cu->cu.un.n; i++)
   {
@@ -8299,8 +8299,8 @@ static void smu(Symbol_Manager *SM, Syntax_Node *n)
 {
   if (n->k != N_CU)
     return;
-  for (uint32_t i = 0; i < n->cu.cx->cx.wt.n; i++)
-    pks(SM, n->cu.cx->cx.wt.d[i]->wt.nm, lkp(SM, n->cu.cx->cx.wt.d[i]->wt.nm));
+  for (uint32_t i = 0; i < n->cu.cx->cx.wt.count; i++)
+    pks(SM, n->cu.cx->cx.wt.data[i]->wt.nm, lkp(SM, n->cu.cx->cx.wt.data[i]->wt.nm));
   for (uint32_t i = 0; i < n->cu.cx->cx.us.count; i++)
   {
     Syntax_Node *u = n->cu.cx->cx.us.data[i];
@@ -8598,11 +8598,11 @@ static int encode_symbol_name(char *b, int sz, Symbol *s, String_Slice nm, int p
   }
   int n = 0;
   unsigned long uid = s ? s->uid : 0;
-  if (s and s->pr and s->pr->nm.s and (uintptr_t) s->pr->nm.s > 4096)
+  if (s and s->pr and s->pr->nm.string and (uintptr_t) s->pr->nm.string > 4096)
   {
-    for (uint32_t i = 0; i < s->pr->nm.n and i < 256; i++)
+    for (uint32_t i = 0; i < s->pr->nm.length and i < 256; i++)
     {
-      char c = s->pr->nm.s[i];
+      char c = s->pr->nm.string[i];
       if (not c)
         break;
       if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9'))
@@ -9213,18 +9213,18 @@ static V generate_expression(Code_Generator *g, Syntax_Node *n)
       {
         r.k = VALUE_KIND_POINTER;
         char nb[256];
-        if (s->pr and (uintptr_t) s->pr > 4096 and s->pr->nm.s)
+        if (s->pr and (uintptr_t) s->pr > 4096 and s->pr->nm.string)
         {
           int n = 0;
-          for (uint32_t j = 0; j < s->pr->nm.n; j++)
-            nb[n++] = toupper(s->pr->nm.s[j]);
+          for (uint32_t j = 0; j < s->pr->nm.length; j++)
+            nb[n++] = toupper(s->pr->nm.string[j]);
           n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->pr->sc, s->pr->el);
-          for (uint32_t j = 0; j < s->nm.n; j++)
-            nb[n++] = toupper(s->nm.s[j]);
+          for (uint32_t j = 0; j < s->nm.length; j++)
+            nb[n++] = toupper(s->nm.string[j]);
           nb[n] = 0;
         }
         else
-          snprintf(nb, 256, "%.*s", (int) s->nm.n, s->nm.s);
+          snprintf(nb, 256, "%.*s", (int) s->nm.length, s->nm.string);
         fprintf(o, "  %%t%d = bitcast ptr @%s to ptr\n", r.id, nb);
       }
       else
@@ -9246,18 +9246,18 @@ static V generate_expression(Code_Generator *g, Syntax_Node *n)
         {
           snprintf(nb, 256, "%s", s->ext_nm.s);
         }
-        else if (s->pr and (uintptr_t) s->pr > 4096 and s->pr->nm.s)
+        else if (s->pr and (uintptr_t) s->pr > 4096 and s->pr->nm.string)
         {
           int n = 0;
-          for (uint32_t i = 0; i < s->pr->nm.n; i++)
-            nb[n++] = toupper(s->pr->nm.s[i]);
+          for (uint32_t i = 0; i < s->pr->nm.length; i++)
+            nb[n++] = toupper(s->pr->nm.string[i]);
           n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->pr->sc, s->pr->el);
-          for (uint32_t i = 0; i < s->nm.n; i++)
-            nb[n++] = toupper(s->nm.s[i]);
+          for (uint32_t i = 0; i < s->nm.length; i++)
+            nb[n++] = toupper(s->nm.string[i]);
           nb[n] = 0;
         }
         else
-          snprintf(nb, 256, "%.*s", (int) s->nm.n, s->nm.s);
+          snprintf(nb, 256, "%.*s", (int) s->nm.length, s->nm.string);
         if (s->k == 5)
         {
           if (gen_0p_call)
@@ -10413,18 +10413,18 @@ static V generate_expression(Code_Generator *g, Syntax_Node *n)
           if (s->lv == 0)
           {
             char nb[256];
-            if (s->pr and (uintptr_t) s->pr > 4096 and s->pr->nm.s)
+            if (s->pr and (uintptr_t) s->pr > 4096 and s->pr->nm.string)
             {
               int n = 0;
-              for (uint32_t j = 0; j < s->pr->nm.n; j++)
-                nb[n++] = toupper(s->pr->nm.s[j]);
+              for (uint32_t j = 0; j < s->pr->nm.length; j++)
+                nb[n++] = toupper(s->pr->nm.string[j]);
               n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->pr->sc, s->pr->el);
-              for (uint32_t j = 0; j < s->nm.n; j++)
-                nb[n++] = toupper(s->nm.s[j]);
+              for (uint32_t j = 0; j < s->nm.length; j++)
+                nb[n++] = toupper(s->nm.string[j]);
               nb[n] = 0;
             }
             else
-              snprintf(nb, 256, "%.*s", (int) s->nm.n, s->nm.s);
+              snprintf(nb, 256, "%.*s", (int) s->nm.length, s->nm.string);
             int p = new_temporary_register(g);
             fprintf(o, "  %%t%d = ptrtoint ptr @%s to i64\n", p, nb);
             r.id = p;
@@ -10635,15 +10635,15 @@ static V generate_expression(Code_Generator *g, Syntax_Node *n)
         for (uint32_t i = 0; i < t->ev.count; i++)
         {
           Symbol *e = t->ev.data[i];
-          int sz = e->nm.n + 1;
+          int sz = e->nm.length + 1;
           int p = new_temporary_register(g);
           fprintf(o, "  %%t%d = alloca [%d x i8]\n", p, sz);
-          for (uint32_t j = 0; j < e->nm.n; j++)
+          for (uint32_t j = 0; j < e->nm.length; j++)
           {
             int ep = new_temporary_register(g);
             fprintf(
                 o, "  %%t%d = getelementptr [%d x i8], ptr %%t%d, i64 0, i64 %u\n", ep, sz, p, j);
-            fprintf(o, "  store i8 %d, ptr %%t%d\n", (int) (unsigned char) e->nm.s[j], ep);
+            fprintf(o, "  store i8 %d, ptr %%t%d\n", (int) (unsigned char) e->nm.string[j], ep);
           }
           int zp = new_temporary_register(g);
           fprintf(
@@ -10652,7 +10652,7 @@ static V generate_expression(Code_Generator *g, Syntax_Node *n)
               zp,
               sz,
               p,
-              (unsigned int) e->nm.n);
+              (unsigned int) e->nm.length);
           fprintf(o, "  store i8 0, ptr %%t%d\n", zp);
           int sp = new_temporary_register(g);
           fprintf(o, "  %%t%d = getelementptr [%d x i8], ptr %%t%d, i64 0, i64 0\n", sp, sz, p);
@@ -10777,7 +10777,7 @@ static V generate_expression(Code_Generator *g, Syntax_Node *n)
           for (uint32_t i = 0; i < t->ev.count; i++)
           {
             Symbol *e = t->ev.data[i];
-            int64_t ln = e->nm.n;
+            int64_t ln = e->nm.length;
             if (ln > wd)
               wd = ln;
           }
@@ -11007,18 +11007,18 @@ static V generate_expression(Code_Generator *g, Syntax_Node *n)
                 if (as and as->lv == 0)
                 {
                   char nb[256];
-                  if (as->pr and as->pr->nm.s)
+                  if (as->pr and as->pr->nm.string)
                   {
                     int n = 0;
-                    for (uint32_t j = 0; j < as->pr->nm.n; j++)
-                      nb[n++] = toupper(as->pr->nm.s[j]);
+                    for (uint32_t j = 0; j < as->pr->nm.length; j++)
+                      nb[n++] = toupper(as->pr->nm.string[j]);
                     n += snprintf(nb + n, 256 - n, "_S%dE%d__", as->pr->sc, as->pr->el);
-                    for (uint32_t j = 0; j < as->nm.n; j++)
-                      nb[n++] = toupper(as->nm.s[j]);
+                    for (uint32_t j = 0; j < as->nm.length; j++)
+                      nb[n++] = toupper(as->nm.string[j]);
                     nb[n] = 0;
                   }
                   else
-                    snprintf(nb, 256, "%.*s", (int) as->nm.n, as->nm.s);
+                    snprintf(nb, 256, "%.*s", (int) as->nm.length, as->nm.string);
                   av.id = new_temporary_register(g);
                   av.k = VALUE_KIND_POINTER;
                   fprintf(o, "  %%t%d = bitcast ptr @%s to ptr\n", av.id, nb);
@@ -11266,18 +11266,18 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
       if (s and s->lv == 0)
       {
         char nb[256];
-        if (s->pr and (uintptr_t) s->pr > 4096 and s->pr->nm.s)
+        if (s->pr and (uintptr_t) s->pr > 4096 and s->pr->nm.string)
         {
           int n = 0;
-          for (uint32_t i = 0; i < s->pr->nm.n; i++)
-            nb[n++] = toupper(s->pr->nm.s[i]);
+          for (uint32_t i = 0; i < s->pr->nm.length; i++)
+            nb[n++] = toupper(s->pr->nm.string[i]);
           n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->pr->sc, s->pr->el);
-          for (uint32_t i = 0; i < s->nm.n; i++)
-            nb[n++] = toupper(s->nm.s[i]);
+          for (uint32_t i = 0; i < s->nm.length; i++)
+            nb[n++] = toupper(s->nm.string[i]);
           nb[n] = 0;
         }
         else
-          snprintf(nb, 256, "%.*s", (int) s->nm.n, s->nm.s);
+          snprintf(nb, 256, "%.*s", (int) s->nm.length, s->nm.string);
         fprintf(o, "  store %s %%t%d, ptr @%s\n", value_llvm_type_string(k), v.id, nb);
       }
       else if (s and s->lv >= 0 and s->lv < g->sm->lv)
@@ -11648,18 +11648,18 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
           if (vs->lv == 0)
           {
             char nb[256];
-            if (vs->pr and vs->pr->nm.s)
+            if (vs->pr and vs->pr->nm.string)
             {
               int n = 0;
-              for (uint32_t i = 0; i < vs->pr->nm.n; i++)
-                nb[n++] = toupper(vs->pr->nm.s[i]);
+              for (uint32_t i = 0; i < vs->pr->nm.length; i++)
+                nb[n++] = toupper(vs->pr->nm.string[i]);
               n += snprintf(nb + n, 256 - n, "_S%dE%d__", vs->pr->sc, vs->pr->el);
-              for (uint32_t i = 0; i < vs->nm.n; i++)
-                nb[n++] = toupper(vs->nm.s[i]);
+              for (uint32_t i = 0; i < vs->nm.length; i++)
+                nb[n++] = toupper(vs->nm.string[i]);
               nb[n] = 0;
             }
             else
-              snprintf(nb, 256, "%.*s", (int) vs->nm.n, vs->nm.s);
+              snprintf(nb, 256, "%.*s", (int) vs->nm.length, vs->nm.string);
             fprintf(o, "  store i64 %%t%d, ptr @%s\n", ti, nb);
           }
           else
@@ -11684,18 +11684,18 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
         if (vs->lv == 0)
         {
           char nb[256];
-          if (vs->pr and vs->pr->nm.s)
+          if (vs->pr and vs->pr->nm.string)
           {
             int n = 0;
-            for (uint32_t i = 0; i < vs->pr->nm.n; i++)
-              nb[n++] = toupper(vs->pr->nm.s[i]);
+            for (uint32_t i = 0; i < vs->pr->nm.length; i++)
+              nb[n++] = toupper(vs->pr->nm.string[i]);
             n += snprintf(nb + n, 256 - n, "_S%dE%d__", vs->pr->sc, vs->pr->el);
-            for (uint32_t i = 0; i < vs->nm.n; i++)
-              nb[n++] = toupper(vs->nm.s[i]);
+            for (uint32_t i = 0; i < vs->nm.length; i++)
+              nb[n++] = toupper(vs->nm.string[i]);
             nb[n] = 0;
           }
           else
-            snprintf(nb, 256, "%.*s", (int) vs->nm.n, vs->nm.s);
+            snprintf(nb, 256, "%.*s", (int) vs->nm.length, vs->nm.string);
           fprintf(o, "  %%t%d = load i64, ptr @%s\n", cv, nb);
         }
         else
@@ -11736,18 +11736,18 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
         if (vs->lv == 0)
         {
           char nb[256];
-          if (vs->pr and vs->pr->nm.s)
+          if (vs->pr and vs->pr->nm.string)
           {
             int n = 0;
-            for (uint32_t i = 0; i < vs->pr->nm.n; i++)
-              nb[n++] = toupper(vs->pr->nm.s[i]);
+            for (uint32_t i = 0; i < vs->pr->nm.length; i++)
+              nb[n++] = toupper(vs->pr->nm.string[i]);
             n += snprintf(nb + n, 256 - n, "_S%dE%d__", vs->pr->sc, vs->pr->el);
-            for (uint32_t i = 0; i < vs->nm.n; i++)
-              nb[n++] = toupper(vs->nm.s[i]);
+            for (uint32_t i = 0; i < vs->nm.length; i++)
+              nb[n++] = toupper(vs->nm.string[i]);
             nb[n] = 0;
           }
           else
-            snprintf(nb, 256, "%.*s", (int) vs->nm.n, vs->nm.s);
+            snprintf(nb, 256, "%.*s", (int) vs->nm.length, vs->nm.string);
           fprintf(o, "  %%t%d = load i64, ptr @%s\n", cv, nb);
           int nv = new_temporary_register(g);
           fprintf(o, "  %%t%d = add i64 %%t%d, 1\n", nv, cv);
@@ -11919,18 +11919,18 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
                 if (as and as->lv == 0)
                 {
                   char nb[256];
-                  if (as->pr and as->pr->nm.s)
+                  if (as->pr and as->pr->nm.string)
                   {
                     int n = 0;
-                    for (uint32_t j = 0; j < as->pr->nm.n; j++)
-                      nb[n++] = toupper(as->pr->nm.s[j]);
+                    for (uint32_t j = 0; j < as->pr->nm.length; j++)
+                      nb[n++] = toupper(as->pr->nm.string[j]);
                     n += snprintf(nb + n, 256 - n, "_S%dE%d__", as->pr->sc, as->pr->el);
-                    for (uint32_t j = 0; j < as->nm.n; j++)
-                      nb[n++] = toupper(as->nm.s[j]);
+                    for (uint32_t j = 0; j < as->nm.length; j++)
+                      nb[n++] = toupper(as->nm.string[j]);
                     nb[n] = 0;
                   }
                   else
-                    snprintf(nb, 256, "%.*s", (int) as->nm.n, as->nm.s);
+                    snprintf(nb, 256, "%.*s", (int) as->nm.length, as->nm.string);
                   av.id = new_temporary_register(g);
                   av.k = VALUE_KIND_POINTER;
                   fprintf(o, "  %%t%d = bitcast ptr @%s to ptr\n", av.id, nb);
@@ -13848,9 +13848,9 @@ static void prf(Code_Generator *g, Symbol_Manager *sm)
 }
 static LU *lfnd(Symbol_Manager *SM, String_Slice nm)
 {
-  for (uint32_t i = 0; i < SM->lu.n; i++)
+  for (uint32_t i = 0; i < SM->lu.count; i++)
   {
-    LU *l = SM->lu.d[i];
+    LU *l = SM->lu.data[i];
     if (string_equal_ignore_case(l->nm, nm))
       return l;
   }
@@ -13895,9 +13895,9 @@ static void wali(Symbol_Manager *SM, const char *fn, Syntax_Node *cu)
   fprintf(f, "V 1.0\n");
   fprintf(f, "Unsigned_Big_Integer %.*s\n", (int) nm.n, nm.s);
   if (cu->cu.cx)
-    for (uint32_t i = 0; i < cu->cu.cx->cx.wt.n; i++)
+    for (uint32_t i = 0; i < cu->cu.cx->cx.wt.count; i++)
     {
-      Syntax_Node *w = cu->cu.cx->cx.wt.d[i];
+      Syntax_Node *w = cu->cu.cx->cx.wt.data[i];
       char pf[256];
       int n = snprintf(pf, 256, "%.*s", (int) w->wt.nm.n, w->wt.nm.s);
       for (int j = 0; j < n; j++)
@@ -13907,7 +13907,7 @@ static void wali(Symbol_Manager *SM, const char *fn, Syntax_Node *cu)
     }
   for (int i = 0; i < SM->dpn; i++)
     if (SM->dps[i].n and SM->dps[i].d[0])
-      fprintf(f, "D %.*s\n", (int) SM->dps[i].d[0]->nm.n, SM->dps[i].d[0]->nm.s);
+      fprintf(f, "D %.*s\n", (int) SM->dps[i].d[0]->nm.length, SM->dps[i].d[0]->nm.string);
   for (int h = 0; h < 4096; h++)
   {
     for (Symbol *s = SM->sy[h]; s; s = s->nx)
@@ -13964,18 +13964,18 @@ static void wali(Symbol_Manager *SM, const char *fn, Syntax_Node *cu)
           and string_equal_ignore_case(s->pr->nm, nm))
       {
         char nb[256];
-        if (s->pr and (uintptr_t) s->pr > 4096 and s->pr->nm.s)
+        if (s->pr and (uintptr_t) s->pr > 4096 and s->pr->nm.string)
         {
           int n = 0;
-          for (uint32_t j = 0; j < s->pr->nm.n; j++)
-            nb[n++] = toupper(s->pr->nm.s[j]);
+          for (uint32_t j = 0; j < s->pr->nm.length; j++)
+            nb[n++] = toupper(s->pr->nm.string[j]);
           n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->pr->sc, s->pr->el);
-          for (uint32_t j = 0; j < s->nm.n; j++)
-            nb[n++] = toupper(s->nm.s[j]);
+          for (uint32_t j = 0; j < s->nm.length; j++)
+            nb[n++] = toupper(s->nm.string[j]);
           nb[n] = 0;
         }
         else
-          snprintf(nb, 256, "%.*s", (int) s->nm.n, s->nm.s);
+          snprintf(nb, 256, "%.*s", (int) s->nm.length, s->nm.string);
         Value_Kind k = s->ty ? token_kind_to_value_kind(s->ty) : VALUE_KIND_INTEGER;
         fprintf(f, "X %s %s\n", nb, value_llvm_type_string(k));
       }
@@ -14034,11 +14034,11 @@ static bool lcmp(Symbol_Manager *SM, String_Slice nm, String_Slice pth)
         Value_Kind k = s->ty ? token_kind_to_value_kind(s->ty) : VALUE_KIND_INTEGER;
         char nb[256];
         int n = 0;
-        for (uint32_t j = 0; j < s->pr->nm.n; j++)
-          nb[n++] = toupper(s->pr->nm.s[j]);
+        for (uint32_t j = 0; j < s->pr->nm.length; j++)
+          nb[n++] = toupper(s->pr->nm.string[j]);
         n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->pr->sc, s->pr->el);
-        for (uint32_t j = 0; j < s->nm.n; j++)
-          nb[n++] = toupper(s->nm.s[j]);
+        for (uint32_t j = 0; j < s->nm.length; j++)
+          nb[n++] = toupper(s->nm.string[j]);
         nb[n] = 0;
         if (s->k == 2 and s->df and s->df->k == N_STR)
         {
@@ -14188,9 +14188,9 @@ int main(int ac, char **av)
     }
   }
   if (cu->cu.cx)
-    for (uint32_t i = 0; i < cu->cu.cx->cx.wt.n; i++)
+    for (uint32_t i = 0; i < cu->cu.cx->cx.wt.count; i++)
     {
-      Syntax_Node *w = cu->cu.cx->cx.wt.d[i];
+      Syntax_Node *w = cu->cu.cx->cx.wt.data[i];
       char *ln = string_to_lowercase(w->wt.nm);
       bool ld = 0;
       if (sd[0])
@@ -14240,18 +14240,18 @@ int main(int ac, char **av)
       {
         Value_Kind k = s->ty ? token_kind_to_value_kind(s->ty) : VALUE_KIND_INTEGER;
         char nb[256];
-        if (s->pr and (uintptr_t) s->pr > 4096 and s->pr->nm.s)
+        if (s->pr and (uintptr_t) s->pr > 4096 and s->pr->nm.string)
         {
           int n = 0;
-          for (uint32_t j = 0; j < s->pr->nm.n; j++)
-            nb[n++] = toupper(s->pr->nm.s[j]);
+          for (uint32_t j = 0; j < s->pr->nm.length; j++)
+            nb[n++] = toupper(s->pr->nm.string[j]);
           n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->pr->sc, s->pr->el);
-          for (uint32_t j = 0; j < s->nm.n; j++)
-            nb[n++] = toupper(s->nm.s[j]);
+          for (uint32_t j = 0; j < s->nm.length; j++)
+            nb[n++] = toupper(s->nm.string[j]);
           nb[n] = 0;
         }
         else
-          snprintf(nb, 256, "%.*s", (int) s->nm.n, s->nm.s);
+          snprintf(nb, 256, "%.*s", (int) s->nm.length, s->nm.string);
         if (s->k == 2 and s->df and s->df->k == N_STR)
         {
           uint32_t len = s->df->s.n;
