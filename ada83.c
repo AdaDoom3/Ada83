@@ -4383,7 +4383,7 @@ struct Symbol
   uint8_t k;
   Type_Info *ty;
   Syntax_Node *definition;
-  Symbol *nx, *pv;
+  Symbol *next, *previous;
   int sc;
   int ss;
   int64_t vl;
@@ -4454,7 +4454,7 @@ static Symbol *symbol_add_overload(Symbol_Manager *symbol_manager, Symbol *s)
 {
   uint32_t h = symbol_hash(s->name);
   s->hm = symbol_manager->sy[h];
-  s->nx = symbol_manager->sy[h];
+  s->next = symbol_manager->sy[h];
   s->sc = symbol_manager->sc;
   s->ss = symbol_manager->ss;
   s->el = symbol_manager->eo++;
@@ -4480,7 +4480,7 @@ static Symbol *symbol_find(Symbol_Manager *symbol_manager, String_Slice nm)
 {
   Symbol *imm = 0, *pot = 0;
   uint32_t h = symbol_hash(nm);
-  for (Symbol *s = symbol_manager->sy[h]; s; s = s->nx)
+  for (Symbol *s = symbol_manager->sy[h]; s; s = s->next)
     if (string_equal_ignore_case(s->name, nm))
     {
       if (s->vis & 1 and (not imm or s->sc > imm->sc))
@@ -4492,7 +4492,7 @@ static Symbol *symbol_find(Symbol_Manager *symbol_manager, String_Slice nm)
     return imm;
   if (pot)
     return pot;
-  for (Symbol *s = symbol_manager->sy[h]; s; s = s->nx)
+  for (Symbol *s = symbol_manager->sy[h]; s; s = s->next)
     if (string_equal_ignore_case(s->name, nm) and (not imm or s->sc > imm->sc))
       imm = s;
   return imm;
@@ -4503,7 +4503,7 @@ static void symbol_find_use(Symbol_Manager *symbol_manager, Symbol *s, String_Sl
   if (symbol_manager->uv_vis[h] & b)
     return;
   symbol_manager->uv_vis[h] |= b;
-  for (Symbol *parser = s; parser; parser = parser->nx)
+  for (Symbol *parser = s; parser; parser = parser->next)
     if (string_equal_ignore_case(parser->name, nm) and parser->k == 6 and parser->definition and parser->definition->k == N_PKS)
     {
       Syntax_Node *pk = parser->definition;
@@ -4574,7 +4574,7 @@ static Symbol *symbol_find_with_arity(Symbol_Manager *symbol_manager, String_Sli
 {
   Symbol_Vector cv = {0};
   int msc = -1;
-  for (Symbol *s = symbol_manager->sy[symbol_hash(nm)]; s; s = s->nx)
+  for (Symbol *s = symbol_manager->sy[symbol_hash(nm)]; s; s = s->next)
     if (string_equal_ignore_case(s->name, nm) and (s->vis & 3))
     {
       if (s->sc > msc)
@@ -4984,7 +4984,7 @@ static void find_symbol(Symbol_Manager *symbol_manager, Symbol *s, Source_Locati
 static void find_ada_library(Symbol_Manager *symbol_manager, Source_Location l)
 {
   for (int i = 0; i < 4096; i++)
-    for (Symbol *s = symbol_manager->sy[i]; s; s = s->nx)
+    for (Symbol *s = symbol_manager->sy[i]; s; s = s->next)
       if (s->sc == symbol_manager->sc and not s->frz)
       {
         if (s->ty and s->ty->k == TY_PT and s->ty->prt and not s->ty->prt->frz)
@@ -5009,7 +5009,7 @@ static void symbol_compare_overload(Symbol_Manager *symbol_manager)
 {
   find_ada_library(symbol_manager, (Source_Location){0, 0, ""});
   for (int i = 0; i < 4096; i++)
-    for (Symbol *s = symbol_manager->sy[i]; s; s = s->nx)
+    for (Symbol *s = symbol_manager->sy[i]; s; s = s->next)
     {
       if (s->sc == symbol_manager->sc)
       {
@@ -5548,7 +5548,7 @@ static Symbol *symbol_character_literal(Symbol_Manager *symbol_manager, char c, 
   }
   if (tx and tx->k == TYPE_DERIVED and tx->prt)
     return symbol_character_literal(symbol_manager, c, tx->prt);
-  for (Symbol *s = symbol_manager->sy[symbol_hash((String_Slice){&c, 1})]; s; s = s->nx)
+  for (Symbol *s = symbol_manager->sy[symbol_hash((String_Slice){&c, 1})]; s; s = s->next)
     if (s->name.length == 1 and tolower(s->name.string[0]) == tolower(c) and s->k == 2 and s->ty
         and (s->ty->k == TYPE_ENUMERATION or (s->ty->k == TYPE_DERIVED and s->ty->prt and s->ty->prt->k == TYPE_ENUMERATION)))
       return s;
@@ -6141,7 +6141,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
           }
         }
         for (int h = 0; h < 4096; h++)
-          for (Symbol *s = symbol_manager->sy[h]; s; s = s->nx)
+          for (Symbol *s = symbol_manager->sy[h]; s; s = s->next)
             if (s->pr == ps and string_equal_ignore_case(s->name, node->selected_component.selector))
             {
               node->ty = s->ty;
@@ -7354,7 +7354,7 @@ static Symbol *get_pkg_sym(Symbol_Manager *symbol_manager, Syntax_Node *pk)
   if (not nm.string or nm.length == 0)
     return 0;
   uint32_t h = symbol_hash(nm);
-  for (Symbol *s = symbol_manager->sy[h]; s; s = s->nx)
+  for (Symbol *s = symbol_manager->sy[h]; s; s = s->next)
     if (s->k == 6 and string_equal_ignore_case(s->name, nm) and s->lv == 0)
       return s;
   return pk->sy;
@@ -8720,7 +8720,7 @@ static void generate_block_frame(Code_Generator *generator)
 {
   int mx = 0;
   for (int h = 0; h < 4096; h++)
-    for (Symbol *s = generator->sm->sy[h]; s; s = s->nx)
+    for (Symbol *s = generator->sm->sy[h]; s; s = s->next)
       if (s->k == 0 and s->el >= 0 and s->el > mx)
         mx = s->el;
   if (mx > 0)
@@ -12868,7 +12868,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       generate_block_frame(generator);
       int mx = 0;
       for (int h = 0; h < 4096; h++)
-        for (Symbol *s = generator->sm->sy[h]; s; s = s->nx)
+        for (Symbol *s = generator->sm->sy[h]; s; s = s->next)
           if (s->k == 0 and s->el >= 0 and s->el > mx)
             mx = s->el;
       if (mx == 0)
@@ -12953,7 +12953,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     {
       for (int h = 0; h < 4096; h++)
       {
-        for (Symbol *s = generator->sm->sy[h]; s; s = s->nx)
+        for (Symbol *s = generator->sm->sy[h]; s; s = s->next)
         {
           if (s->k == 0 and s->lv >= 0 and s->lv < generator->sm->lv and not(s->definition and s->definition->k == N_GVL))
           {
@@ -13029,7 +13029,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     {
       for (int h = 0; h < 4096; h++)
       {
-        for (Symbol *s = generator->sm->sy[h]; s; s = s->nx)
+        for (Symbol *s = generator->sm->sy[h]; s; s = s->next)
         {
           if (s->k == 0 and s->el >= 0 and n->sy->sc >= 0 and s->sc == (uint32_t) (n->sy->sc + 1)
               and s->lv == generator->sm->lv and s->pr == n->sy)
@@ -13246,7 +13246,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       generate_block_frame(generator);
       int mx = 0;
       for (int h = 0; h < 4096; h++)
-        for (Symbol *s = generator->sm->sy[h]; s; s = s->nx)
+        for (Symbol *s = generator->sm->sy[h]; s; s = s->next)
           if (s->k == 0 and s->el >= 0 and s->el > mx)
             mx = s->el;
       if (mx == 0)
@@ -13331,7 +13331,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     {
       for (int h = 0; h < 4096; h++)
       {
-        for (Symbol *s = generator->sm->sy[h]; s; s = s->nx)
+        for (Symbol *s = generator->sm->sy[h]; s; s = s->next)
         {
           if (s->k == 0 and s->lv >= 0 and s->lv < generator->sm->lv and not(s->definition and s->definition->k == N_GVL))
           {
@@ -13405,7 +13405,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     }
     for (int h = 0; h < 4096; h++)
     {
-      for (Symbol *s = generator->sm->sy[h]; s; s = s->nx)
+      for (Symbol *s = generator->sm->sy[h]; s; s = s->next)
       {
         if (s->k == 0 and s->el >= 0 and n->sy->sc >= 0 and s->sc == (uint32_t) (n->sy->sc + 1)
             and s->lv == generator->sm->lv and s->pr == n->sy)
@@ -13832,7 +13832,7 @@ static char *read_file_contents(const char *path)
 static void print_forward_declarations(Code_Generator *generator, Symbol_Manager *sm)
 {
   for (int h = 0; h < 4096; h++)
-    for (Symbol *s = sm->sy[h]; s; s = s->nx)
+    for (Symbol *s = sm->sy[h]; s; s = s->next)
       if (s->lv == 0 and not s->ext)
         for (uint32_t k = 0; k < s->ol.count; k++)
         {
@@ -13910,7 +13910,7 @@ static void write_ada_library_interface(Symbol_Manager *symbol_manager, const ch
       fprintf(f, "D %.*s\n", (int) symbol_manager->dps[i].data[0]->name.length, symbol_manager->dps[i].data[0]->name.string);
   for (int h = 0; h < 4096; h++)
   {
-    for (Symbol *s = symbol_manager->sy[h]; s; s = s->nx)
+    for (Symbol *s = symbol_manager->sy[h]; s; s = s->next)
     {
       if ((s->k == 4 or s->k == 5) and s->pr and string_equal_ignore_case(s->pr->name, nm))
       {
@@ -14028,7 +14028,7 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
   generate_runtime_type(&g);
   print_forward_declarations(&g, &sm);
   for (int h = 0; h < 4096; h++)
-    for (Symbol *s = sm.sy[h]; s; s = s->nx)
+    for (Symbol *s = sm.sy[h]; s; s = s->next)
       if ((s->k == 0 or s->k == 2) and s->lv == 0 and s->pr and not s->ext and s->ol.count == 0)
       {
         Value_Kind k = s->ty ? token_kind_to_value_kind(s->ty) : VALUE_KIND_INTEGER;
@@ -14115,7 +14115,7 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
   {
     for (uint32_t j = 0; j < 4096; j++)
     {
-      for (Symbol *s = sm.sy[j]; s; s = s->nx)
+      for (Symbol *s = sm.sy[j]; s; s = s->next)
       {
         if (s->el == i)
         {
@@ -14234,7 +14234,7 @@ int main(int ac, char **av)
   Code_Generator g = {o, 0, 0, 0, &sm, {0}, 0, {0}, 0, {0}, 0, {0}, 13, {0}, {0}, {0}};
   generate_runtime_type(&g);
   for (int h = 0; h < 4096; h++)
-    for (Symbol *s = sm.sy[h]; s; s = s->nx)
+    for (Symbol *s = sm.sy[h]; s; s = s->next)
       if ((s->k == 0 or s->k == 2) and (s->lv == 0 or s->pr) and not(s->pr and lfnd(&sm, s->pr->name))
           and not s->ext)
       {
@@ -14326,7 +14326,7 @@ int main(int ac, char **av)
   print_forward_declarations(&g, &sm);
   for (uint32_t i = 0; i < sm.eo; i++)
     for (uint32_t j = 0; j < 4096; j++)
-      for (Symbol *s = sm.sy[j]; s; s = s->nx)
+      for (Symbol *s = sm.sy[j]; s; s = s->next)
         if (s->el == i and s->lv == 0)
           for (uint32_t k = 0; k < s->ol.count; k++)
             generate_declaration(&g, s->ol.data[k]);
@@ -14352,7 +14352,7 @@ int main(int ac, char **av)
       Syntax_Node *sp = u->body.subprogram_spec;
       Symbol *ms = 0;
       for (int h = 0; h < 4096 and not ms; h++)
-        for (Symbol *s = sm.sy[h]; s; s = s->nx)
+        for (Symbol *s = sm.sy[h]; s; s = s->next)
           if (s->lv == 0 and string_equal_ignore_case(s->name, sp->subprogram.nm))
           {
             ms = s;
