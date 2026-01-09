@@ -2289,103 +2289,103 @@ static Syntax_Node *parse_expression(Parser *parser)
 {
   return parse_or_expression(parser);
 }
-static Syntax_Node *parse_range(Parser *p)
+static Syntax_Node *parse_range(Parser *parser)
 {
-  Source_Location lc = parser_location(p);
-  if (parser_match(p, T_BX))
+  Source_Location location = parser_location(parser);
+  if (parser_match(parser, T_BX))
   {
-    Syntax_Node *n = ND(RN, lc);
-    n->rn.lo = 0;
-    n->rn.hi = 0;
-    return n;
+    Syntax_Node *node = ND(RN, location);
+    node->rn.lo = 0;
+    node->rn.hi = 0;
+    return node;
   }
-  Syntax_Node *lo = parse_signed_term(p);
-  if (parser_match(p, T_DD))
+  Syntax_Node *low_bound = parse_signed_term(parser);
+  if (parser_match(parser, T_DD))
   {
-    Syntax_Node *m = ND(RN, lc);
-    m->rn.lo = lo;
-    m->rn.hi = parse_signed_term(p);
-    return m;
+    Syntax_Node *range_node = ND(RN, location);
+    range_node->rn.lo = low_bound;
+    range_node->rn.hi = parse_signed_term(parser);
+    return range_node;
   }
-  return lo;
+  return low_bound;
 }
-static Syntax_Node *parse_simple_expression(Parser *p)
+static Syntax_Node *parse_simple_expression(Parser *parser)
 {
-  Source_Location lc = parser_location(p);
-  Syntax_Node *n = ND(ID, lc);
-  n->s = parser_identifier(p);
+  Source_Location location = parser_location(parser);
+  Syntax_Node *node = ND(ID, location);
+  node->s = parser_identifier(parser);
   for (;;)
   {
-    if (parser_match(p, T_DT))
+    if (parser_match(parser, T_DT))
     {
-      if (parser_match(p, T_ALL))
+      if (parser_match(parser, T_ALL))
       {
-        Syntax_Node *m = ND(DRF, lc);
-        m->drf.x = n;
-        n = m;
+        Syntax_Node *modified_node = ND(DRF, location);
+        modified_node->drf.x = node;
+        node = modified_node;
       }
       else
       {
-        Syntax_Node *m = ND(SEL, lc);
-        m->se.p = n;
-        m->se.se = parser_identifier(p);
-        n = m;
+        Syntax_Node *modified_node = ND(SEL, location);
+        modified_node->se.p = node;
+        modified_node->se.se = parser_identifier(parser);
+        node = modified_node;
       }
     }
-    else if (parser_match(p, T_TK))
+    else if (parser_match(parser, T_TK))
     {
-      String_Slice at = parser_attribute(p);
-      Syntax_Node *m = ND(AT, lc);
-      m->at.p = n;
-      m->at.at = at;
-      if (parser_match(p, T_LP))
+      String_Slice attribute = parser_attribute(parser);
+      Syntax_Node *modified_node = ND(AT, location);
+      modified_node->at.p = node;
+      modified_node->at.at = attribute;
+      if (parser_match(parser, T_LP))
       {
         do
-          nv(&m->at.ar, parse_expression(p));
-        while (parser_match(p, T_CM));
-        parser_expect(p, T_RP);
+          nv(&modified_node->at.ar, parse_expression(parser));
+        while (parser_match(parser, T_CM));
+        parser_expect(parser, T_RP);
       }
-      n = m;
+      node = modified_node;
     }
     else
       break;
   }
-  if (parser_match(p, T_DELTA))
+  if (parser_match(parser, T_DELTA))
   {
-    parse_signed_term(p);
+    parse_signed_term(parser);
   }
-  if (parser_match(p, T_DIG))
+  if (parser_match(parser, T_DIG))
   {
-    parse_expression(p);
+    parse_expression(parser);
   }
-  if (parser_match(p, T_RNG))
+  if (parser_match(parser, T_RNG))
   {
-    Source_Location lc = parser_location(p);
-    Syntax_Node *c = ND(CN, lc);
-    c->cn.rn = parse_range(p);
-    Syntax_Node *m = ND(ST, lc);
-    m->sd.in = n;
-    m->sd.cn = c;
-    return m;
+    Source_Location location = parser_location(parser);
+    Syntax_Node *c = ND(CN, location);
+    c->cn.rn = parse_range(parser);
+    Syntax_Node *modified_node = ND(ST, location);
+    modified_node->sd.in = node;
+    modified_node->sd.cn = c;
+    return modified_node;
   }
-  if (parser_at(p, T_LP))
+  if (parser_at(parser, T_LP))
   {
-    parser_next(p);
-    Source_Location lc = parser_location(p);
-    Syntax_Node *c = ND(CN, lc);
+    parser_next(parser);
+    Source_Location location = parser_location(parser);
+    Syntax_Node *c = ND(CN, location);
     do
     {
-      Source_Location lc2 = parser_location(p);
+      Source_Location lc2 = parser_location(parser);
       Node_Vector ch = {0};
-      Syntax_Node *r = parse_range(p);
+      Syntax_Node *r = parse_range(parser);
       nv(&ch, r);
-      while (parser_match(p, T_BR))
-        nv(&ch, parse_range(p));
-      if (ch.count > 0 and ch.data[0]->k == N_ID and parser_match(p, T_RNG))
+      while (parser_match(parser, T_BR))
+        nv(&ch, parse_range(parser));
+      if (ch.count > 0 and ch.data[0]->k == N_ID and parser_match(parser, T_RNG))
       {
         Syntax_Node *tn = ND(ID, lc2);
         tn->s = ch.data[0]->s;
-        Syntax_Node *rng = parse_range(p);
+        Syntax_Node *rng = parse_range(parser);
         Syntax_Node *si = ND(ST, lc2);
         Syntax_Node *cn = ND(CN, lc2);
         cn->cn.rn = rng;
@@ -2393,9 +2393,9 @@ static Syntax_Node *parse_simple_expression(Parser *p)
         si->sd.cn = cn;
         nv(&c->cn.cs, si);
       }
-      else if (ch.count > 0 and ch.data[0]->k == N_ID and parser_match(p, T_AR))
+      else if (ch.count > 0 and ch.data[0]->k == N_ID and parser_match(parser, T_AR))
       {
-        Syntax_Node *vl = parse_expression(p);
+        Syntax_Node *vl = parse_expression(parser);
         for (uint32_t i = 0; i < ch.count; i++)
         {
           Syntax_Node *a = ND(ASC, lc2);
@@ -2409,14 +2409,14 @@ static Syntax_Node *parse_simple_expression(Parser *p)
         if (ch.count > 0)
           nv(&c->cn.cs, ch.data[0]);
       }
-    } while (parser_match(p, T_CM));
-    parser_expect(p, T_RP);
-    Syntax_Node *m = ND(ST, lc);
-    m->sd.in = n;
-    m->sd.cn = c;
-    return m;
+    } while (parser_match(parser, T_CM));
+    parser_expect(parser, T_RP);
+    Syntax_Node *modified_node = ND(ST, location);
+    modified_node->sd.in = node;
+    modified_node->sd.cn = c;
+    return modified_node;
   }
-  return n;
+  return node;
 }
 static Node_Vector parse_parameter_mode(Parser *p)
 {
