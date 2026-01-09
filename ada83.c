@@ -4400,8 +4400,8 @@ struct Symbol
   String_Slice external_name;
   String_Slice external_language;
   String_Slice mangled_name;
-  uint8_t frz;
-  Syntax_Node *fzn;
+  uint8_t frozen;
+  Syntax_Node *frozen_node;
   uint8_t visibility;
   Symbol *homonym;
   uint32_t uid;
@@ -4917,17 +4917,17 @@ static Syntax_Node *generate_input_operator(Type_Info *t, Source_Location l)
 }
 static void find_type(Symbol_Manager *symbol_manager, Type_Info *t, Source_Location l)
 {
-  if (not t or t->frz)
+  if (not t or t->frozen)
     return;
-  if (t->k == TY_PT and t->prt and not t->prt->frz)
+  if (t->k == TY_PT and t->prt and not t->prt->frozen)
     return;
-  t->frz = 1;
-  t->fzn = ND(ERR, l);
-  if (t->bs and t->bs != t and not t->bs->frz)
+  t->frozen = 1;
+  t->frozen_node = ND(ERR, l);
+  if (t->bs and t->bs != t and not t->bs->frozen)
     find_type(symbol_manager, t->bs, l);
-  if (t->prt and not t->prt->frz)
+  if (t->prt and not t->prt->frozen)
     find_type(symbol_manager, t->prt, l);
-  if (t->el and not t->el->frz)
+  if (t->el and not t->el->frozen)
     find_type(symbol_manager, t->el, l);
   if (t->k == TYPE_RECORD)
   {
@@ -4974,20 +4974,20 @@ static void find_type(Symbol_Manager *symbol_manager, Type_Info *t, Source_Locat
 }
 static void find_symbol(Symbol_Manager *symbol_manager, Symbol *s, Source_Location l)
 {
-  if (not s or s->frz)
+  if (not s or s->frozen)
     return;
-  s->frz = 1;
-  s->fzn = ND(ERR, l);
-  if (s->ty and not s->ty->frz)
+  s->frozen = 1;
+  s->frozen_node = ND(ERR, l);
+  if (s->ty and not s->ty->frozen)
     find_type(symbol_manager, s->ty, l);
 }
 static void find_ada_library(Symbol_Manager *symbol_manager, Source_Location l)
 {
   for (int i = 0; i < 4096; i++)
     for (Symbol *s = symbol_manager->sy[i]; s; s = s->next)
-      if (s->sc == symbol_manager->sc and not s->frz)
+      if (s->sc == symbol_manager->sc and not s->frozen)
       {
-        if (s->ty and s->ty->k == TY_PT and s->ty->prt and not s->ty->prt->frz)
+        if (s->ty and s->ty->k == TY_PT and s->ty->prt and not s->ty->prt->frozen)
           continue;
         if (s->ty)
           find_type(symbol_manager, s->ty, l);
