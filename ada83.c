@@ -4392,7 +4392,7 @@ struct Symbol
   Symbol_Vector us;
   int el;
   Generic_Template *gt;
-  Symbol *pr;
+  Symbol *parent;
   int lv;
   bool inl;
   bool shrd;
@@ -4461,9 +4461,9 @@ static Symbol *symbol_add_overload(Symbol_Manager *symbol_manager, Symbol *s)
   s->lv = symbol_manager->lv;
   s->vis = 1;
   uint64_t u = string_hash(s->name);
-  if (s->pr)
+  if (s->parent)
   {
-    u = u * 31 + string_hash(s->pr->name);
+    u = u * 31 + string_hash(s->parent->name);
     if (s->lv > 0)
     {
       u = u * 31 + s->sc;
@@ -5017,7 +5017,7 @@ static void symbol_compare_overload(Symbol_Manager *symbol_manager)
         if (s->k == 6)
           s->vis = 3;
       }
-      if (s->vis & 2 and s->pr and s->pr->sc >= symbol_manager->sc)
+      if (s->vis & 2 and s->parent and s->parent->sc >= symbol_manager->sc)
         s->vis &= ~2;
     }
   if (symbol_manager->ssd > 0)
@@ -6142,7 +6142,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
         }
         for (int h = 0; h < 4096; h++)
           for (Symbol *s = symbol_manager->sy[h]; s; s = s->next)
-            if (s->pr == ps and string_equal_ignore_case(s->name, node->selected_component.selector))
+            if (s->parent == ps and string_equal_ignore_case(s->name, node->selected_component.selector))
             {
               node->ty = s->ty;
               node->sy = s;
@@ -7417,7 +7417,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       if (not s)
       {
         s = symbol_add_overload(symbol_manager, symbol_new(id->s, n->object_decl.is_constant ? 2 : 0, ct, n));
-        s->pr = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
+        s->parent = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
       }
       id->sy = s;
       if (n->object_decl.in)
@@ -7747,7 +7747,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       Symbol *s = symbol_add_overload(symbol_manager, symbol_new(n->subprogram.nm, 5, ft, n));
       nv(&s->overloads, n);
       n->sy = s;
-      s->pr = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
+      s->parent = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
       nv(&ft->ops, n);
     }
     else
@@ -7755,7 +7755,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       Symbol *s = symbol_add_overload(symbol_manager, symbol_new(n->subprogram.nm, 4, ft, n));
       nv(&s->overloads, n);
       n->sy = s;
-      s->pr = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
+      s->parent = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
       nv(&ft->ops, n);
     }
   }
@@ -7769,7 +7769,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     nv(&s->overloads, n);
     n->sy = s;
     n->body.elaboration_level = s->el;
-    s->pr = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
+    s->parent = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
     nv(&ft->ops, n);
     if (n->k == N_PB)
     {
@@ -7806,7 +7806,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     nv(&s->overloads, n);
     n->sy = s;
     n->body.elaboration_level = s->el;
-    s->pr = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
+    s->parent = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
     nv(&ft->ops, n);
     if (n->k == N_FB)
     {
@@ -7843,7 +7843,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     nv(&s->overloads, n);
     n->sy = s;
     n->body.elaboration_level = s->el;
-    s->pr = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
+    s->parent = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
     nv(&ft->ops, n);
   }
   break;
@@ -8016,7 +8016,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     t->components = n->task_spec.entries;
     Symbol *s = symbol_add_overload(symbol_manager, symbol_new(n->task_spec.nm, 7, t, n));
     n->sy = s;
-    s->pr = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
+    s->parent = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
   }
   break;
   case N_TKB:
@@ -8598,11 +8598,11 @@ static int encode_symbol_name(char *b, int sz, Symbol *s, String_Slice nm, int p
   }
   int n = 0;
   unsigned long uid = s ? s->uid : 0;
-  if (s and s->pr and s->pr->name.string and (uintptr_t) s->pr->name.string > 4096)
+  if (s and s->parent and s->parent->name.string and (uintptr_t) s->parent->name.string > 4096)
   {
-    for (uint32_t i = 0; i < s->pr->name.length and i < 256; i++)
+    for (uint32_t i = 0; i < s->parent->name.length and i < 256; i++)
     {
-      char c = s->pr->name.string[i];
+      char c = s->parent->name.string[i];
       if (not c)
         break;
       if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9'))
@@ -9213,12 +9213,12 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       {
         r.k = VALUE_KIND_POINTER;
         char nb[256];
-        if (s->pr and (uintptr_t) s->pr > 4096 and s->pr->name.string)
+        if (s->parent and (uintptr_t) s->parent > 4096 and s->parent->name.string)
         {
           int n = 0;
-          for (uint32_t j = 0; j < s->pr->name.length; j++)
-            nb[n++] = toupper(s->pr->name.string[j]);
-          n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->pr->sc, s->pr->el);
+          for (uint32_t j = 0; j < s->parent->name.length; j++)
+            nb[n++] = toupper(s->parent->name.string[j]);
+          n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->sc, s->parent->el);
           for (uint32_t j = 0; j < s->name.length; j++)
             nb[n++] = toupper(s->name.string[j]);
           nb[n] = 0;
@@ -9246,12 +9246,12 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         {
           snprintf(nb, 256, "%s", s->ext_nm.string);
         }
-        else if (s->pr and (uintptr_t) s->pr > 4096 and s->pr->name.string)
+        else if (s->parent and (uintptr_t) s->parent > 4096 and s->parent->name.string)
         {
           int n = 0;
-          for (uint32_t i = 0; i < s->pr->name.length; i++)
-            nb[n++] = toupper(s->pr->name.string[i]);
-          n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->pr->sc, s->pr->el);
+          for (uint32_t i = 0; i < s->parent->name.length; i++)
+            nb[n++] = toupper(s->parent->name.string[i]);
+          n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->sc, s->parent->el);
           for (uint32_t i = 0; i < s->name.length; i++)
             nb[n++] = toupper(s->name.string[i]);
           nb[n] = 0;
@@ -10413,12 +10413,12 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           if (s->lv == 0)
           {
             char nb[256];
-            if (s->pr and (uintptr_t) s->pr > 4096 and s->pr->name.string)
+            if (s->parent and (uintptr_t) s->parent > 4096 and s->parent->name.string)
             {
               int n = 0;
-              for (uint32_t j = 0; j < s->pr->name.length; j++)
-                nb[n++] = toupper(s->pr->name.string[j]);
-              n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->pr->sc, s->pr->el);
+              for (uint32_t j = 0; j < s->parent->name.length; j++)
+                nb[n++] = toupper(s->parent->name.string[j]);
+              n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->sc, s->parent->el);
               for (uint32_t j = 0; j < s->name.length; j++)
                 nb[n++] = toupper(s->name.string[j]);
               nb[n] = 0;
@@ -10896,7 +10896,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       Symbol *s = symbol_find_with_arity(generator->sm, n->call.function_name->s, n->call.arguments.count, n->ty);
       if (s)
       {
-        if (s->pr and string_equal_ignore_case(s->pr->name, STRING_LITERAL("TEXT_IO"))
+        if (s->parent and string_equal_ignore_case(s->parent->name, STRING_LITERAL("TEXT_IO"))
             and (string_equal_ignore_case(s->name, STRING_LITERAL("CREATE")) or string_equal_ignore_case(s->name, STRING_LITERAL("OPEN"))))
         {
           r.k = VALUE_KIND_POINTER;
@@ -10910,7 +10910,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
               n->call.arguments.count > 2 ? generate_expression(generator, n->call.arguments.data[2]).id : 0);
           break;
         }
-        if (s->pr and string_equal_ignore_case(s->pr->name, STRING_LITERAL("TEXT_IO"))
+        if (s->parent and string_equal_ignore_case(s->parent->name, STRING_LITERAL("TEXT_IO"))
             and (string_equal_ignore_case(s->name, STRING_LITERAL("CLOSE")) or string_equal_ignore_case(s->name, STRING_LITERAL("DELETE"))))
         {
           if (n->call.arguments.count > 0)
@@ -10924,7 +10924,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           }
           break;
         }
-        if (s->pr and string_equal_ignore_case(s->pr->name, STRING_LITERAL("TEXT_IO"))
+        if (s->parent and string_equal_ignore_case(s->parent->name, STRING_LITERAL("TEXT_IO"))
             and (string_equal_ignore_case(s->name, STRING_LITERAL("GET")) or string_equal_ignore_case(s->name, STRING_LITERAL("GET_LINE"))))
         {
           if (n->call.arguments.count > 1)
@@ -10940,7 +10940,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           }
           break;
         }
-        if (s->pr and string_equal_ignore_case(s->pr->name, STRING_LITERAL("TEXT_IO"))
+        if (s->parent and string_equal_ignore_case(s->parent->name, STRING_LITERAL("TEXT_IO"))
             and (string_equal_ignore_case(s->name, STRING_LITERAL("PUT")) or string_equal_ignore_case(s->name, STRING_LITERAL("PUT_LINE"))))
         {
           if (n->call.arguments.count > 1)
@@ -11007,12 +11007,12 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                 if (as and as->lv == 0)
                 {
                   char nb[256];
-                  if (as->pr and as->pr->name.string)
+                  if (as->parent and as->parent->name.string)
                   {
                     int n = 0;
-                    for (uint32_t j = 0; j < as->pr->name.length; j++)
-                      nb[n++] = toupper(as->pr->name.string[j]);
-                    n += snprintf(nb + n, 256 - n, "_S%dE%d__", as->pr->sc, as->pr->el);
+                    for (uint32_t j = 0; j < as->parent->name.length; j++)
+                      nb[n++] = toupper(as->parent->name.string[j]);
+                    n += snprintf(nb + n, 256 - n, "_S%dE%d__", as->parent->sc, as->parent->el);
                     for (uint32_t j = 0; j < as->name.length; j++)
                       nb[n++] = toupper(as->name.string[j]);
                     nb[n] = 0;
@@ -11266,12 +11266,12 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
       if (s and s->lv == 0)
       {
         char nb[256];
-        if (s->pr and (uintptr_t) s->pr > 4096 and s->pr->name.string)
+        if (s->parent and (uintptr_t) s->parent > 4096 and s->parent->name.string)
         {
           int n = 0;
-          for (uint32_t i = 0; i < s->pr->name.length; i++)
-            nb[n++] = toupper(s->pr->name.string[i]);
-          n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->pr->sc, s->pr->el);
+          for (uint32_t i = 0; i < s->parent->name.length; i++)
+            nb[n++] = toupper(s->parent->name.string[i]);
+          n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->sc, s->parent->el);
           for (uint32_t i = 0; i < s->name.length; i++)
             nb[n++] = toupper(s->name.string[i]);
           nb[n] = 0;
@@ -11648,12 +11648,12 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           if (vs->lv == 0)
           {
             char nb[256];
-            if (vs->pr and vs->pr->name.string)
+            if (vs->parent and vs->parent->name.string)
             {
               int n = 0;
-              for (uint32_t i = 0; i < vs->pr->name.length; i++)
-                nb[n++] = toupper(vs->pr->name.string[i]);
-              n += snprintf(nb + n, 256 - n, "_S%dE%d__", vs->pr->sc, vs->pr->el);
+              for (uint32_t i = 0; i < vs->parent->name.length; i++)
+                nb[n++] = toupper(vs->parent->name.string[i]);
+              n += snprintf(nb + n, 256 - n, "_S%dE%d__", vs->parent->sc, vs->parent->el);
               for (uint32_t i = 0; i < vs->name.length; i++)
                 nb[n++] = toupper(vs->name.string[i]);
               nb[n] = 0;
@@ -11684,12 +11684,12 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
         if (vs->lv == 0)
         {
           char nb[256];
-          if (vs->pr and vs->pr->name.string)
+          if (vs->parent and vs->parent->name.string)
           {
             int n = 0;
-            for (uint32_t i = 0; i < vs->pr->name.length; i++)
-              nb[n++] = toupper(vs->pr->name.string[i]);
-            n += snprintf(nb + n, 256 - n, "_S%dE%d__", vs->pr->sc, vs->pr->el);
+            for (uint32_t i = 0; i < vs->parent->name.length; i++)
+              nb[n++] = toupper(vs->parent->name.string[i]);
+            n += snprintf(nb + n, 256 - n, "_S%dE%d__", vs->parent->sc, vs->parent->el);
             for (uint32_t i = 0; i < vs->name.length; i++)
               nb[n++] = toupper(vs->name.string[i]);
             nb[n] = 0;
@@ -11736,12 +11736,12 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
         if (vs->lv == 0)
         {
           char nb[256];
-          if (vs->pr and vs->pr->name.string)
+          if (vs->parent and vs->parent->name.string)
           {
             int n = 0;
-            for (uint32_t i = 0; i < vs->pr->name.length; i++)
-              nb[n++] = toupper(vs->pr->name.string[i]);
-            n += snprintf(nb + n, 256 - n, "_S%dE%d__", vs->pr->sc, vs->pr->el);
+            for (uint32_t i = 0; i < vs->parent->name.length; i++)
+              nb[n++] = toupper(vs->parent->name.string[i]);
+            n += snprintf(nb + n, 256 - n, "_S%dE%d__", vs->parent->sc, vs->parent->el);
             for (uint32_t i = 0; i < vs->name.length; i++)
               nb[n++] = toupper(vs->name.string[i]);
             nb[n] = 0;
@@ -11919,12 +11919,12 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                 if (as and as->lv == 0)
                 {
                   char nb[256];
-                  if (as->pr and as->pr->name.string)
+                  if (as->parent and as->parent->name.string)
                   {
                     int n = 0;
-                    for (uint32_t j = 0; j < as->pr->name.length; j++)
-                      nb[n++] = toupper(as->pr->name.string[j]);
-                    n += snprintf(nb + n, 256 - n, "_S%dE%d__", as->pr->sc, as->pr->el);
+                    for (uint32_t j = 0; j < as->parent->name.length; j++)
+                      nb[n++] = toupper(as->parent->name.string[j]);
+                    n += snprintf(nb + n, 256 - n, "_S%dE%d__", as->parent->sc, as->parent->el);
                     for (uint32_t j = 0; j < as->name.length; j++)
                       nb[n++] = toupper(as->name.string[j]);
                     nb[n] = 0;
@@ -13032,7 +13032,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
         for (Symbol *s = generator->sm->sy[h]; s; s = s->next)
         {
           if (s->k == 0 and s->el >= 0 and n->sy->sc >= 0 and s->sc == (uint32_t) (n->sy->sc + 1)
-              and s->lv == generator->sm->lv and s->pr == n->sy)
+              and s->lv == generator->sm->lv and s->parent == n->sy)
           {
             bool is_pm = false;
             for (uint32_t pi = 0; pi < sp->subprogram.parameters.count; pi++)
@@ -13408,7 +13408,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       for (Symbol *s = generator->sm->sy[h]; s; s = s->next)
       {
         if (s->k == 0 and s->el >= 0 and n->sy->sc >= 0 and s->sc == (uint32_t) (n->sy->sc + 1)
-            and s->lv == generator->sm->lv and s->pr == n->sy)
+            and s->lv == generator->sm->lv and s->parent == n->sy)
         {
           bool is_pm = false;
           for (uint32_t i = 0; i < sp->subprogram.parameters.count; i++)
@@ -13912,7 +13912,7 @@ static void write_ada_library_interface(Symbol_Manager *symbol_manager, const ch
   {
     for (Symbol *s = symbol_manager->sy[h]; s; s = s->next)
     {
-      if ((s->k == 4 or s->k == 5) and s->pr and string_equal_ignore_case(s->pr->name, nm))
+      if ((s->k == 4 or s->k == 5) and s->parent and string_equal_ignore_case(s->parent->name, nm))
       {
         Syntax_Node *sp = s->overloads.count > 0 and s->overloads.data[0]->body.subprogram_spec ? s->overloads.data[0]->body.subprogram_spec : 0;
         char nb[256];
@@ -13960,16 +13960,16 @@ static void write_ada_library_interface(Symbol_Manager *symbol_manager, const ch
         fprintf(f, "\n");
       }
       else if (
-          (s->k == 0 or s->k == 2) and s->lv == 0 and s->pr
-          and string_equal_ignore_case(s->pr->name, nm))
+          (s->k == 0 or s->k == 2) and s->lv == 0 and s->parent
+          and string_equal_ignore_case(s->parent->name, nm))
       {
         char nb[256];
-        if (s->pr and (uintptr_t) s->pr > 4096 and s->pr->name.string)
+        if (s->parent and (uintptr_t) s->parent > 4096 and s->parent->name.string)
         {
           int n = 0;
-          for (uint32_t j = 0; j < s->pr->name.length; j++)
-            nb[n++] = toupper(s->pr->name.string[j]);
-          n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->pr->sc, s->pr->el);
+          for (uint32_t j = 0; j < s->parent->name.length; j++)
+            nb[n++] = toupper(s->parent->name.string[j]);
+          n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->sc, s->parent->el);
           for (uint32_t j = 0; j < s->name.length; j++)
             nb[n++] = toupper(s->name.string[j]);
           nb[n] = 0;
@@ -14029,14 +14029,14 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
   print_forward_declarations(&g, &sm);
   for (int h = 0; h < 4096; h++)
     for (Symbol *s = sm.sy[h]; s; s = s->next)
-      if ((s->k == 0 or s->k == 2) and s->lv == 0 and s->pr and not s->ext and s->overloads.count == 0)
+      if ((s->k == 0 or s->k == 2) and s->lv == 0 and s->parent and not s->ext and s->overloads.count == 0)
       {
         Value_Kind k = s->ty ? token_kind_to_value_kind(s->ty) : VALUE_KIND_INTEGER;
         char nb[256];
         int n = 0;
-        for (uint32_t j = 0; j < s->pr->name.length; j++)
-          nb[n++] = toupper(s->pr->name.string[j]);
-        n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->pr->sc, s->pr->el);
+        for (uint32_t j = 0; j < s->parent->name.length; j++)
+          nb[n++] = toupper(s->parent->name.string[j]);
+        n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->sc, s->parent->el);
         for (uint32_t j = 0; j < s->name.length; j++)
           nb[n++] = toupper(s->name.string[j]);
         nb[n] = 0;
@@ -14235,17 +14235,17 @@ int main(int ac, char **av)
   generate_runtime_type(&g);
   for (int h = 0; h < 4096; h++)
     for (Symbol *s = sm.sy[h]; s; s = s->next)
-      if ((s->k == 0 or s->k == 2) and (s->lv == 0 or s->pr) and not(s->pr and lfnd(&sm, s->pr->name))
+      if ((s->k == 0 or s->k == 2) and (s->lv == 0 or s->parent) and not(s->parent and lfnd(&sm, s->parent->name))
           and not s->ext)
       {
         Value_Kind k = s->ty ? token_kind_to_value_kind(s->ty) : VALUE_KIND_INTEGER;
         char nb[256];
-        if (s->pr and (uintptr_t) s->pr > 4096 and s->pr->name.string)
+        if (s->parent and (uintptr_t) s->parent > 4096 and s->parent->name.string)
         {
           int n = 0;
-          for (uint32_t j = 0; j < s->pr->name.length; j++)
-            nb[n++] = toupper(s->pr->name.string[j]);
-          n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->pr->sc, s->pr->el);
+          for (uint32_t j = 0; j < s->parent->name.length; j++)
+            nb[n++] = toupper(s->parent->name.string[j]);
+          n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->sc, s->parent->el);
           for (uint32_t j = 0; j < s->name.length; j++)
             nb[n++] = toupper(s->name.string[j]);
           nb[n] = 0;
