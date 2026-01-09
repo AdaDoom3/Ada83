@@ -1158,15 +1158,15 @@ typedef enum
   N_GINST,
   N_TRM,
   N_CNT
-} Nk;
+} Node_Kind;
 typedef struct Type_Info Type_Info;
 typedef struct Syntax_Node Syntax_Node;
 typedef struct Symbol Symbol;
-typedef struct RC RC;
-typedef struct LU LU;
-typedef struct GT GT;
-typedef struct LE LE;
-struct LE
+typedef struct Representation_Clause Representation_Clause;
+typedef struct Library_Unit Library_Unit;
+typedef struct Generic_Template Generic_Template;
+typedef struct Label_Entry Label_Entry;
+struct Label_Entry
 {
   String_Slice name;
   int basic_block;
@@ -1183,34 +1183,34 @@ typedef struct
 } Symbol_Vector;
 typedef struct
 {
-  RC **data;
+  Representation_Clause **data;
   uint32_t count, capacity;
-} RV;
+} Representation_Clause_Vector;
 typedef struct
 {
-  LU **data;
+  Library_Unit **data;
   uint32_t count, capacity;
-} LV;
+} Library_Unit_Vector;
 typedef struct
 {
-  GT **data;
+  Generic_Template **data;
   uint32_t count, capacity;
-} GV;
+} Generic_Template_Vector;
 typedef struct
 {
   FILE **data;
   uint32_t count, capacity;
-} FV;
+} File_Vector;
 typedef struct
 {
   String_Slice *data;
   uint32_t count, capacity;
-} SLV;
+} String_List_Vector;
 typedef struct
 {
-  LE **data;
+  Label_Entry **data;
   uint32_t count, capacity;
-} LEV;
+} Label_Entry_Vector;
 #define VECPUSH(vtype, etype, fname)                                                               \
   static void fname(vtype *v, etype e)                                                             \
   {                                                                                                \
@@ -1223,14 +1223,14 @@ typedef struct
   }
 VECPUSH(Node_Vector, Syntax_Node *, nv)
 VECPUSH(Symbol_Vector, Symbol *, sv)
-VECPUSH(LV, LU *, lv)
-VECPUSH(GV, GT *, gv)
-VECPUSH(LEV, LE *, lev)
-VECPUSH(FV, FILE *, fv)
-VECPUSH(SLV, String_Slice, slv)
+VECPUSH(Library_Unit_Vector, Library_Unit *, lv)
+VECPUSH(Generic_Template_Vector, Generic_Template *, gv)
+VECPUSH(Label_Entry_Vector, Label_Entry *, lev)
+VECPUSH(File_Vector, FILE *, fv)
+VECPUSH(String_List_Vector, String_Slice, slv)
 struct Syntax_Node
 {
-  Nk k;
+  Node_Kind k;
   Source_Location l;
   Type_Info *ty;
   Symbol *sy;
@@ -1560,7 +1560,7 @@ struct Syntax_Node
     } ag;
   };
 };
-struct RC
+struct Representation_Clause
 {
   uint8_t k;
   Type_Info *ty;
@@ -1589,19 +1589,19 @@ struct RC
     } im;
   };
 };
-struct LU
+struct Library_Unit
 {
   uint8_t k;
   String_Slice nm;
   String_Slice pth;
   Syntax_Node *sp;
   Syntax_Node *bd;
-  LV wth;
-  LV elb;
+  Library_Unit_Vector wth;
+  Library_Unit_Vector elb;
   uint64_t ts;
   bool cmpl;
 };
-struct GT
+struct Generic_Template
 {
   String_Slice nm;
   Node_Vector fp;
@@ -1609,31 +1609,31 @@ struct GT
   Syntax_Node *un;
   Syntax_Node *bd;
 };
-static Syntax_Node *node_new(Nk k, Source_Location l)
+static Syntax_Node *node_new(Node_Kind k, Source_Location l)
 {
   Syntax_Node *n = arena_allocate(sizeof(Syntax_Node));
   n->k = k;
   n->l = l;
   return n;
 }
-static RC *reference_counter_new(uint8_t k, Type_Info *t)
+static Representation_Clause *reference_counter_new(uint8_t k, Type_Info *t)
 {
-  RC *r = arena_allocate(sizeof(RC));
+  Representation_Clause *r = arena_allocate(sizeof(Representation_Clause));
   r->k = k;
   r->ty = t;
   return r;
 }
-static LU *label_use_new(uint8_t k, String_Slice nm, String_Slice pth)
+static Library_Unit *label_use_new(uint8_t k, String_Slice nm, String_Slice pth)
 {
-  LU *l = arena_allocate(sizeof(LU));
+  Library_Unit *l = arena_allocate(sizeof(Library_Unit));
   l->k = k;
   l->nm = nm;
   l->pth = pth;
   return l;
 }
-static GT *generic_type_new(String_Slice nm)
+static Generic_Template *generic_type_new(String_Slice nm)
 {
-  GT *g = arena_allocate(sizeof(GT));
+  Generic_Template *g = arena_allocate(sizeof(Generic_Template));
   g->nm = nm;
   return g;
 }
@@ -1643,7 +1643,7 @@ typedef struct
   Lexer lexer;
   Token current_token, peek_token;
   int error_count;
-  SLV label_stack;
+  String_List_Vector label_stack;
 } Parser;
 static void parser_next(Parser *parser)
 {
@@ -1821,7 +1821,7 @@ static Node_Vector parse_declarative_part(Parser *parser);
 static Node_Vector parse_handle_declaration(Parser *parser);
 static Syntax_Node *parse_statement_or_label(Parser *parser);
 static Syntax_Node *parse_generic_formal(Parser *parser);
-static RC *parse_representation_clause(Parser *parser);
+static Representation_Clause *parse_representation_clause(Parser *parser);
 static Syntax_Node *parse_primary(Parser *parser)
 {
   Source_Location location = parser_location(parser);
@@ -3469,7 +3469,7 @@ static Syntax_Node *parse_type_definition(Parser *parser)
   }
   return parse_simple_expression(parser);
 }
-static RC *parse_representation_clause(Parser *parser)
+static Representation_Clause *parse_representation_clause(Parser *parser)
 {
   Source_Location location = parser_location(parser);
   (void) location;
@@ -3479,7 +3479,7 @@ static RC *parse_representation_clause(Parser *parser)
     parser_expect(parser, T_USE);
     if (parser_match(parser, T_AT))
     {
-      RC *r = reference_counter_new(2, 0);
+      Representation_Clause *r = reference_counter_new(2, 0);
       parse_expression(parser);
       parser_expect(parser, T_SC);
       return r;
@@ -3507,7 +3507,7 @@ static RC *parse_representation_clause(Parser *parser)
   if (parser_match(parser, T_PGM))
   {
     String_Slice nm = parser_identifier(parser);
-    RC *r = 0;
+    Representation_Clause *r = 0;
     if (string_equal_ignore_case(nm, STRING_LITERAL("SUPPRESS")))
     {
       if (parser_at(parser, T_LP))
@@ -4194,22 +4194,22 @@ static Node_Vector parse_declarative_part(Parser *parser)
   {
     if (parser_at(parser, T_FOR))
     {
-      RC *r = parse_representation_clause(parser);
+      Representation_Clause *r = parse_representation_clause(parser);
       if (r)
       {
         Syntax_Node *n = ND(RRC, parser_location(parser));
-        memcpy(&n->ag.it.data, &r, sizeof(RC *));
+        memcpy(&n->ag.it.data, &r, sizeof(Representation_Clause *));
         nv(&declarations, n);
       }
       continue;
     }
     if (parser_at(parser, T_PGM))
     {
-      RC *r = parse_representation_clause(parser);
+      Representation_Clause *r = parse_representation_clause(parser);
       if (r)
       {
         Syntax_Node *n = ND(RRC, parser_location(parser));
-        memcpy(&n->ag.it.data, &r, sizeof(RC *));
+        memcpy(&n->ag.it.data, &r, sizeof(Representation_Clause *));
         nv(&declarations, n);
       }
       continue;
@@ -4356,10 +4356,10 @@ typedef enum
   TY_PT,
   TYPE_FAT_POINTER,
   TYPE_FIXED_POINT
-} Tk_;
+} Type_Kind;
 struct Type_Info
 {
-  Tk_ k;
+  Type_Kind k;
   String_Slice nm;
   Type_Info *bs, *el, *prt;
   Type_Info *ix;
@@ -4367,7 +4367,7 @@ struct Type_Info
   Node_Vector cm, dc;
   uint32_t sz, al;
   Symbol_Vector ev;
-  RV rc;
+  Representation_Clause_Vector rc;
   uint64_t ad;
   bool pk;
   Node_Vector ops;
@@ -4391,7 +4391,7 @@ struct Symbol
   Node_Vector ol;
   Symbol_Vector us;
   int el;
-  GT *gt;
+  Generic_Template *gt;
   Symbol *pr;
   int lv;
   bool inl;
@@ -4415,14 +4415,14 @@ typedef struct
   Syntax_Node *pk;
   Symbol_Vector uv;
   int eo;
-  LV lu;
-  GV gt;
+  Library_Unit_Vector lu;
+  Generic_Template_Vector gt;
   jmp_buf *eb[16];
   int ed;
   String_Slice ce[16];
-  FV io;
+  File_Vector io;
   int fn;
-  SLV lb;
+  String_List_Vector lb;
   int lv;
   Node_Vector ib;
   Symbol *sst[256];
@@ -4431,8 +4431,8 @@ typedef struct
   int dpn;
   Symbol_Vector ex;
   uint64_t uv_vis[64];
-  SLV eh;
-  SLV ap;
+  String_List_Vector eh;
+  String_List_Vector ap;
   uint32_t uid_ctr;
 } Symbol_Manager;
 static uint32_t symbol_hash(String_Slice s)
@@ -4559,11 +4559,11 @@ static void symbol_find_use(Symbol_Manager *symbol_manager, Symbol *s, String_Sl
     }
   symbol_manager->uv_vis[h] &= ~b;
 }
-static GT *generic_find(Symbol_Manager *symbol_manager, String_Slice nm)
+static Generic_Template *generic_find(Symbol_Manager *symbol_manager, String_Slice nm)
 {
   for (uint32_t i = 0; i < symbol_manager->gt.count; i++)
   {
-    GT *g = symbol_manager->gt.data[i];
+    Generic_Template *g = symbol_manager->gt.data[i];
     if (string_equal_ignore_case(g->nm, nm))
       return g;
   }
@@ -4661,7 +4661,7 @@ static Symbol *symbol_find_with_arity(Symbol_Manager *symbol_manager, String_Sli
   }
   return br ?: cv.data[0];
 }
-static Type_Info *type_new(Tk_ k, String_Slice nm)
+static Type_Info *type_new(Type_Kind k, String_Slice nm)
 {
   Type_Info *t = arena_allocate(sizeof(Type_Info));
   t->k = k;
@@ -5028,7 +5028,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
 static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node, Type_Info *tx);
 static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_Node *node);
 static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n);
-static void runtime_register_compare(Symbol_Manager *symbol_manager, RC *r);
+static void runtime_register_compare(Symbol_Manager *symbol_manager, Representation_Clause *r);
 static Syntax_Node *generate_clone(Symbol_Manager *symbol_manager, Syntax_Node *n);
 static Type_Info *type_canonical_concrete(Type_Info *t)
 {
@@ -6681,7 +6681,7 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
     break;
   }
 }
-static void runtime_register_compare(Symbol_Manager *symbol_manager, RC *r)
+static void runtime_register_compare(Symbol_Manager *symbol_manager, Representation_Clause *r)
 {
   if (not r)
     return;
@@ -7305,7 +7305,7 @@ static Syntax_Node *generate_clone(Symbol_Manager *symbol_manager, Syntax_Node *
                                    : n->gen.un->bd.sp    ? n->gen.un->bd.sp->sp.nm
                                                          : N)
                                 : N;
-    GT *g = generic_find(symbol_manager, nm);
+    Generic_Template *g = generic_find(symbol_manager, nm);
     if (not g)
     {
       g = generic_type_new(nm);
@@ -7325,7 +7325,7 @@ static Syntax_Node *generate_clone(Symbol_Manager *symbol_manager, Syntax_Node *
   }
   else if (n->k == N_GINST)
   {
-    GT *g = generic_find(symbol_manager, n->gi.gn);
+    Generic_Template *g = generic_find(symbol_manager, n->gi.gn);
     if (g)
     {
       resolve_array_parameter(symbol_manager, &g->fp, &n->gi.ap);
@@ -7373,7 +7373,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       resolve_declaration(symbol_manager, inst);
       if (inst->k == N_PKS)
       {
-        GT *g = generic_find(symbol_manager, n->gi.gn);
+        Generic_Template *g = generic_find(symbol_manager, n->gi.gn);
         if (g and g->bd)
         {
           Syntax_Node *bd = node_clone_substitute(g->bd, &g->fp, &n->gi.ap);
@@ -7390,7 +7390,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
   break;
   case N_RRC:
   {
-    RC *r = *(RC **) &n->ag.it.data;
+    Representation_Clause *r = *(Representation_Clause **) &n->ag.it.data;
     runtime_register_compare(symbol_manager, r);
   }
   break;
@@ -7776,7 +7776,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       symbol_manager->lv++;
       symbol_compare_parameter(symbol_manager);
       n->bd.pr = s;
-      GT *gt = generic_find(symbol_manager, sp->sp.nm);
+      Generic_Template *gt = generic_find(symbol_manager, sp->sp.nm);
       if (gt)
         for (uint32_t i = 0; i < gt->fp.count; i++)
           resolve_declaration(symbol_manager, gt->fp.data[i]);
@@ -7813,7 +7813,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       symbol_manager->lv++;
       symbol_compare_parameter(symbol_manager);
       n->bd.pr = s;
-      GT *gt = generic_find(symbol_manager, sp->sp.nm);
+      Generic_Template *gt = generic_find(symbol_manager, sp->sp.nm);
       if (gt)
         for (uint32_t i = 0; i < gt->fp.count; i++)
           resolve_declaration(symbol_manager, gt->fp.data[i]);
@@ -7866,7 +7866,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
   case N_PKB:
   {
     Symbol *ps = symbol_find(symbol_manager, n->pb.nm);
-    GT *gt = 0;
+    Generic_Template *gt = 0;
     if (ps and ps->k == 11)
     {
       gt = ps->gt ? ps->gt : generic_find(symbol_manager, n->pb.nm);
@@ -8116,7 +8116,7 @@ static void read_ada_library_interface(Symbol_Manager *symbol_manager, const cha
   if (not ali)
     return;
   Source_Location ll = {0, 0, pth};
-  SLV ws = {0}, ds = {0};
+  String_List_Vector ws = {0}, ds = {0};
   for (char *l = ali; *l;)
   {
     if (*l == 'W' and l[1] == ' ')
@@ -8373,26 +8373,26 @@ typedef struct
 {
   int id;
   Value_Kind k;
-} V;
-typedef struct TH TH;
-typedef struct TK TK;
-typedef struct PT PT;
-struct TH
+} Value;
+typedef struct Exception_Handler Exception_Handler;
+typedef struct Task Task;
+typedef struct Protected_Type Protected_Type;
+struct Exception_Handler
 {
   String_Slice ec;
   jmp_buf jb;
-  TH *nx;
+  Exception_Handler *nx;
 };
-struct TK
+struct Task
 {
   pthread_t th;
   int id;
   String_Slice nm;
   Node_Vector en;
-  PT *pt;
+  Protected_Type *pt;
   bool ac, tm;
 };
-struct PT
+struct Protected_Type
 {
   pthread_mutex_t mx;
   String_Slice nm;
@@ -8407,15 +8407,15 @@ typedef struct
   int ll[64];
   int ls;
   Symbol_Vector el;
-  TH *eh;
-  TK *tk[64];
+  Exception_Handler *eh;
+  Task *tk[64];
   int tn;
-  PT *pt[64];
+  Protected_Type *pt[64];
   int pn;
-  SLV lbs;
-  SLV exs;
-  SLV dcl;
-  LEV ltb;
+  String_List_Vector lbs;
+  String_List_Vector exs;
+  String_List_Vector dcl;
+  Label_Entry_Vector ltb;
   uint8_t lopt[64];
 } Code_Generator;
 static int new_temporary_register(Code_Generator *generator)
@@ -8474,7 +8474,7 @@ static int get_or_create_label_basic_block(Code_Generator *generator, String_Sli
   for (uint32_t i = 0; i < generator->ltb.count; i++)
     if (string_equal_ignore_case(generator->ltb.data[i]->name, nm))
       return generator->ltb.data[i]->basic_block;
-  LE *e = malloc(sizeof(LE));
+  Label_Entry *e = malloc(sizeof(Label_Entry));
   e->name = nm;
   e->basic_block = new_label_block(generator);
   lev(&generator->ltb, e);
@@ -8714,7 +8714,7 @@ static bool has_nested_function(Node_Vector *dc, Node_Vector *st)
       return 1;
   return has_nested_function_in_stmts(st);
 }
-static V generate_expression(Code_Generator *generator, Syntax_Node *n);
+static Value generate_expression(Code_Generator *generator, Syntax_Node *n);
 static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *n);
 static void generate_block_frame(Code_Generator *generator)
 {
@@ -8757,11 +8757,11 @@ generate_index_constraint_check(Code_Generator *generator, int idx, const char *
   fprintf(o, "  call void @__ada_raise(ptr @.ex.CONSTRAINT_ERROR)\n  unreachable\n");
   emit_label(generator, dn);
 }
-static V value_cast(Code_Generator *generator, V v, Value_Kind k)
+static Value value_cast(Code_Generator *generator, Value v, Value_Kind k)
 {
   if (v.k == k)
     return v;
-  V r = {new_temporary_register(generator), k};
+  Value r = {new_temporary_register(generator), k};
   if (v.k == VALUE_KIND_INTEGER and k == VALUE_KIND_FLOAT)
     fprintf(generator->o, "  %%t%d = sitofp i64 %%t%d to double\n", r.id, v.id);
   else if (v.k == VALUE_KIND_FLOAT and k == VALUE_KIND_INTEGER)
@@ -8792,13 +8792,13 @@ static V value_cast(Code_Generator *generator, V v, Value_Kind k)
         value_llvm_type_string(k));
   return r;
 }
-static V
-generate_float_range_check(Code_Generator *generator, V e, Type_Info *t, String_Slice ec, Value_Kind rk)
+static Value
+generate_float_range_check(Code_Generator *generator, Value e, Type_Info *t, String_Slice ec, Value_Kind rk)
 {
   if (not t or (t->lo == 0 and t->hi == 0))
     return value_cast(generator, e, rk);
   FILE *o = generator->o;
-  V ef = value_cast(generator, e, VALUE_KIND_FLOAT);
+  Value ef = value_cast(generator, e, VALUE_KIND_FLOAT);
   union
   {
     int64_t i;
@@ -8822,8 +8822,8 @@ generate_float_range_check(Code_Generator *generator, V e, Type_Info *t, String_
   emit_label(generator, dn);
   return value_cast(generator, e, rk);
 }
-static V generate_array_bounds_check(
-    Code_Generator *generator, V e, Type_Info *t, Type_Info *et, String_Slice ec, Value_Kind rk)
+static Value generate_array_bounds_check(
+    Code_Generator *generator, Value e, Type_Info *t, Type_Info *et, String_Slice ec, Value_Kind rk)
 {
   FILE *o = generator->o;
   int lok = new_label_block(generator), hik = new_label_block(generator), erl = new_label_block(generator),
@@ -8850,8 +8850,8 @@ static V generate_array_bounds_check(
   emit_label(generator, dn);
   return value_cast(generator, e, rk);
 }
-static V
-generate_discrete_range_check(Code_Generator *generator, V e, Type_Info *t, String_Slice ec, Value_Kind rk)
+static Value
+generate_discrete_range_check(Code_Generator *generator, Value e, Type_Info *t, String_Slice ec, Value_Kind rk)
 {
   FILE *o = generator->o;
   int lok = new_label_block(generator), hik = new_label_block(generator), erl = new_label_block(generator),
@@ -8870,22 +8870,22 @@ generate_discrete_range_check(Code_Generator *generator, V e, Type_Info *t, Stri
   emit_label(generator, dn);
   return value_cast(generator, e, rk);
 }
-static V value_to_boolean(Code_Generator *generator, V v)
+static Value value_to_boolean(Code_Generator *generator, Value v)
 {
   if (v.k != VALUE_KIND_INTEGER)
     v = value_cast(generator, v, VALUE_KIND_INTEGER);
   int t = new_temporary_register(generator);
-  V c = {new_temporary_register(generator), VALUE_KIND_INTEGER};
+  Value c = {new_temporary_register(generator), VALUE_KIND_INTEGER};
   fprintf(generator->o, "  %%t%d = icmp ne i64 %%t%d, 0\n", t, v.id);
   fprintf(generator->o, "  %%t%d = zext i1 %%t%d to i64\n", c.id, t);
   return c;
 }
-static V value_compare(Code_Generator *generator, const char *op, V a, V b, Value_Kind k)
+static Value value_compare(Code_Generator *generator, const char *op, Value a, Value b, Value_Kind k)
 {
   a = value_cast(generator, a, k);
   b = value_cast(generator, b, k);
   int c = new_temporary_register(generator);
-  V r = {new_temporary_register(generator), VALUE_KIND_INTEGER};
+  Value r = {new_temporary_register(generator), VALUE_KIND_INTEGER};
   if (k == VALUE_KIND_INTEGER)
     fprintf(generator->o, "  %%t%d = icmp %s i64 %%t%d, %%t%d\n", c, op, a.id, b.id);
   else
@@ -8893,11 +8893,11 @@ static V value_compare(Code_Generator *generator, const char *op, V a, V b, Valu
   fprintf(generator->o, "  %%t%d = zext i1 %%t%d to i64\n", r.id, c);
   return r;
 }
-static V value_compare_integer(Code_Generator *generator, const char *op, V a, V b)
+static Value value_compare_integer(Code_Generator *generator, const char *op, Value a, Value b)
 {
   return value_compare(generator, op, a, b, VALUE_KIND_INTEGER);
 }
-static V value_compare_float(Code_Generator *generator, const char *op, V a, V b)
+static Value value_compare_float(Code_Generator *generator, const char *op, Value a, Value b)
 {
   return value_compare(generator, op, a, b, VALUE_KIND_FLOAT);
 }
@@ -8918,9 +8918,9 @@ static void generate_fat_pointer(Code_Generator *generator, int fp, int d, int l
   fprintf(o, "  %%t%d = getelementptr {ptr,ptr}, ptr %%t%d, i32 0, i32 1\n", bp, fp);
   fprintf(o, "  store ptr %%t%d, ptr %%t%d\n", bd, bp);
 }
-static V get_fat_pointer_data(Code_Generator *generator, int fp)
+static Value get_fat_pointer_data(Code_Generator *generator, int fp)
 {
-  V r = {new_temporary_register(generator), VALUE_KIND_POINTER};
+  Value r = {new_temporary_register(generator), VALUE_KIND_POINTER};
   FILE *o = generator->o;
   int dp = new_temporary_register(generator);
   fprintf(o, "  %%t%d = getelementptr {ptr,ptr}, ptr %%t%d, i32 0, i32 0\n", dp, fp);
@@ -8945,29 +8945,29 @@ static void get_fat_pointer_bounds(Code_Generator *generator, int fp, int *lo, i
   fprintf(o, "  %%t%d = load i64, ptr %%t%d\n", hiv, *hi);
   *hi = hiv;
 }
-static V value_power(Code_Generator *generator, V a, V b, Value_Kind k)
+static Value value_power(Code_Generator *generator, Value a, Value b, Value_Kind k)
 {
   a = value_cast(generator, a, k);
   b = value_cast(generator, b, k);
-  V r = {new_temporary_register(generator), k};
+  Value r = {new_temporary_register(generator), k};
   if (k == VALUE_KIND_INTEGER)
     fprintf(generator->o, "  %%t%d = call i64 @__ada_powi(i64 %%t%d, i64 %%t%d)\n", r.id, a.id, b.id);
   else
     fprintf(generator->o, "  %%t%d = call double @pow(double %%t%d, double %%t%d)\n", r.id, a.id, b.id);
   return r;
 }
-static V value_power_integer(Code_Generator *generator, V a, V b)
+static Value value_power_integer(Code_Generator *generator, Value a, Value b)
 {
   return value_power(generator, a, b, VALUE_KIND_INTEGER);
 }
-static V value_power_float(Code_Generator *generator, V a, V b)
+static Value value_power_float(Code_Generator *generator, Value a, Value b)
 {
   return value_power(generator, a, b, VALUE_KIND_FLOAT);
 }
-static V generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_Info *ty)
+static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_Info *ty)
 {
   FILE *o = generator->o;
-  V r = {new_temporary_register(generator), VALUE_KIND_POINTER};
+  Value r = {new_temporary_register(generator), VALUE_KIND_POINTER};
   Type_Info *t = ty ? type_canonical_concrete(ty) : 0;
   if (t and t->k == TYPE_ARRAY and n->k == N_AG)
     normalize_array_aggregate(generator->sm, t, n);
@@ -8991,7 +8991,7 @@ static V generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_Info
         {
           for (; ix < (uint32_t) sz; ix++)
           {
-            V v = value_cast(generator, generate_expression(generator, el->asc.vl), VALUE_KIND_INTEGER);
+            Value v = value_cast(generator, generate_expression(generator, el->asc.vl), VALUE_KIND_INTEGER);
             int ep = new_temporary_register(generator);
             fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p, ix);
             fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
@@ -8999,7 +8999,7 @@ static V generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_Info
         }
         else
         {
-          V v = value_cast(generator, generate_expression(generator, el->asc.vl), VALUE_KIND_INTEGER);
+          Value v = value_cast(generator, generate_expression(generator, el->asc.vl), VALUE_KIND_INTEGER);
           for (uint32_t j = 0; j < el->asc.ch.count; j++)
           {
             Syntax_Node *ch = el->asc.ch.data[j];
@@ -9010,7 +9010,7 @@ static V generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_Info
               {
                 for (uint32_t ei = 0; ei < cht->ev.count; ei++)
                 {
-                  V cv = {new_temporary_register(generator), VALUE_KIND_INTEGER};
+                  Value cv = {new_temporary_register(generator), VALUE_KIND_INTEGER};
                   fprintf(o, "  %%t%d = add i64 0, %ld\n", cv.id, (long) cht->ev.data[ei]->vl);
                   int ep = new_temporary_register(generator);
                   fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %%t%d\n", ep, p, cv.id);
@@ -9021,7 +9021,7 @@ static V generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_Info
               {
                 for (int64_t ri = cht->lo; ri <= cht->hi; ri++)
                 {
-                  V cv = {new_temporary_register(generator), VALUE_KIND_INTEGER};
+                  Value cv = {new_temporary_register(generator), VALUE_KIND_INTEGER};
                   fprintf(o, "  %%t%d = add i64 0, %ld\n", cv.id, (long) ri);
                   int ep = new_temporary_register(generator);
                   fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %%t%d\n", ep, p, cv.id);
@@ -9031,7 +9031,7 @@ static V generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_Info
             }
             else
             {
-              V ci = value_cast(generator, generate_expression(generator, ch), VALUE_KIND_INTEGER);
+              Value ci = value_cast(generator, generate_expression(generator, ch), VALUE_KIND_INTEGER);
               int ep = new_temporary_register(generator);
               fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %%t%d\n", ep, p, ci.id);
               fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
@@ -9042,7 +9042,7 @@ static V generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_Info
       }
       else
       {
-        V v = value_cast(generator, generate_expression(generator, el), VALUE_KIND_INTEGER);
+        Value v = value_cast(generator, generate_expression(generator, el), VALUE_KIND_INTEGER);
         int ep = new_temporary_register(generator);
         fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p, ix);
         fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
@@ -9074,7 +9074,7 @@ static V generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_Info
               Syntax_Node *c = t->cm.data[k];
               if (c->k == N_CM and string_equal_ignore_case(c->cm.nm, ch->s))
               {
-                V v = value_cast(generator, generate_expression(generator, el->asc.vl), VALUE_KIND_INTEGER);
+                Value v = value_cast(generator, generate_expression(generator, el->asc.vl), VALUE_KIND_INTEGER);
                 int ep = new_temporary_register(generator);
                 fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p, c->cm.of);
                 fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
@@ -9087,7 +9087,7 @@ static V generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_Info
       }
       else
       {
-        V v = value_cast(generator, generate_expression(generator, el), VALUE_KIND_INTEGER);
+        Value v = value_cast(generator, generate_expression(generator, el), VALUE_KIND_INTEGER);
         int ep = new_temporary_register(generator);
         fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p, ix);
         fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
@@ -9138,12 +9138,12 @@ static const char *get_attribute_name(String_Slice attr, String_Slice tnm)
   fnm[pos] = 0;
   return fnm;
 }
-static V generate_expression(Code_Generator *generator, Syntax_Node *n)
+static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
 {
   FILE *o = generator->o;
   if (not n)
-    return (V){0, VALUE_KIND_INTEGER};
-  V r = {new_temporary_register(generator), token_kind_to_value_kind(n->ty)};
+    return (Value){0, VALUE_KIND_INTEGER};
+  Value r = {new_temporary_register(generator), token_kind_to_value_kind(n->ty)};
   switch (n->k)
   {
   case N_INT:
@@ -9494,7 +9494,7 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
     Token_Kind op = n->bn.op;
     if (op == T_ATHN or op == T_OREL)
     {
-      V lv = value_to_boolean(generator, generate_expression(generator, n->bn.l));
+      Value lv = value_to_boolean(generator, generate_expression(generator, n->bn.l));
       int c = new_temporary_register(generator);
       fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", c, lv.id);
       int lt = new_label_block(generator), lf = new_label_block(generator), ld = new_label_block(generator);
@@ -9503,7 +9503,7 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
       else
         emit_conditional_branch(generator, c, lf, lt);
       emit_label(generator, lt);
-      V rv = value_to_boolean(generator, generate_expression(generator, n->bn.r));
+      Value rv = value_to_boolean(generator, generate_expression(generator, n->bn.r));
       emit_branch(generator, ld);
       emit_label(generator, lf);
       emit_branch(generator, ld);
@@ -9528,8 +9528,8 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
         int sz = lt->hi >= lt->lo ? lt->hi - lt->lo + 1 : 1;
         int p = new_temporary_register(generator);
         fprintf(o, "  %%t%d = alloca [%d x i64]\n", p, sz);
-        V la = generate_expression(generator, n->bn.l);
-        V ra = generate_expression(generator, n->bn.r);
+        Value la = generate_expression(generator, n->bn.l);
+        Value ra = generate_expression(generator, n->bn.r);
         for (int i = 0; i < sz; i++)
         {
           int ep1 = new_temporary_register(generator);
@@ -9559,8 +9559,8 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
         fprintf(o, "  %%t%d = getelementptr [%d x i64], ptr %%t%d, i64 0, i64 0\n", r.id, sz, p);
         break;
       }
-      V a = value_to_boolean(generator, generate_expression(generator, n->bn.l));
-      V b = value_to_boolean(generator, generate_expression(generator, n->bn.r));
+      Value a = value_to_boolean(generator, generate_expression(generator, n->bn.l));
+      Value b = value_to_boolean(generator, generate_expression(generator, n->bn.r));
       r.k = VALUE_KIND_INTEGER;
       if (op == T_AND)
         fprintf(o, "  %%t%d = and i64 %%t%d, %%t%d\n", r.id, a.id, b.id);
@@ -9572,17 +9572,17 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     if (op == T_NOT)
     {
-      V x = value_cast(generator, generate_expression(generator, n->bn.l), VALUE_KIND_INTEGER);
+      Value x = value_cast(generator, generate_expression(generator, n->bn.l), VALUE_KIND_INTEGER);
       Syntax_Node *rr = n->bn.r;
       while (rr and rr->k == N_CHK)
         rr = rr->chk.ex;
       if (rr and rr->k == N_RN)
       {
-        V lo = value_cast(generator, generate_expression(generator, rr->rn.lo), VALUE_KIND_INTEGER),
+        Value lo = value_cast(generator, generate_expression(generator, rr->rn.lo), VALUE_KIND_INTEGER),
           hi = value_cast(generator, generate_expression(generator, rr->rn.hi), VALUE_KIND_INTEGER);
-        V ge = value_compare_integer(generator, "sge", x, lo);
-        V le = value_compare_integer(generator, "sle", x, hi);
-        V b1 = value_to_boolean(generator, ge), b2 = value_to_boolean(generator, le);
+        Value ge = value_compare_integer(generator, "sge", x, lo);
+        Value le = value_compare_integer(generator, "sle", x, hi);
+        Value b1 = value_to_boolean(generator, ge), b2 = value_to_boolean(generator, le);
         int c1 = new_temporary_register(generator);
         fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", c1, b1.id);
         int c2 = new_temporary_register(generator);
@@ -9606,10 +9606,10 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
             fprintf(o, "  %%t%d = add i64 0, %lld\n", tlo, (long long) t->lo);
             int thi = new_temporary_register(generator);
             fprintf(o, "  %%t%d = add i64 0, %lld\n", thi, (long long) t->hi);
-            V lo = {tlo, VALUE_KIND_INTEGER}, hi = {thi, VALUE_KIND_INTEGER};
-            V ge = value_compare_integer(generator, "sge", x, lo);
-            V le = value_compare_integer(generator, "sle", x, hi);
-            V b1 = value_to_boolean(generator, ge), b2 = value_to_boolean(generator, le);
+            Value lo = {tlo, VALUE_KIND_INTEGER}, hi = {thi, VALUE_KIND_INTEGER};
+            Value ge = value_compare_integer(generator, "sge", x, lo);
+            Value le = value_compare_integer(generator, "sle", x, hi);
+            Value b1 = value_to_boolean(generator, ge), b2 = value_to_boolean(generator, le);
             int c1 = new_temporary_register(generator);
             fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", c1, b1.id);
             int c2 = new_temporary_register(generator);
@@ -9642,17 +9642,17 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     if (op == T_IN)
     {
-      V x = value_cast(generator, generate_expression(generator, n->bn.l), VALUE_KIND_INTEGER);
+      Value x = value_cast(generator, generate_expression(generator, n->bn.l), VALUE_KIND_INTEGER);
       Syntax_Node *rr = n->bn.r;
       while (rr and rr->k == N_CHK)
         rr = rr->chk.ex;
       if (rr and rr->k == N_RN)
       {
-        V lo = value_cast(generator, generate_expression(generator, rr->rn.lo), VALUE_KIND_INTEGER),
+        Value lo = value_cast(generator, generate_expression(generator, rr->rn.lo), VALUE_KIND_INTEGER),
           hi = value_cast(generator, generate_expression(generator, rr->rn.hi), VALUE_KIND_INTEGER);
-        V ge = value_compare_integer(generator, "sge", x, lo);
-        V le = value_compare_integer(generator, "sle", x, hi);
-        V b1 = value_to_boolean(generator, ge), b2 = value_to_boolean(generator, le);
+        Value ge = value_compare_integer(generator, "sge", x, lo);
+        Value le = value_compare_integer(generator, "sle", x, hi);
+        Value b1 = value_to_boolean(generator, ge), b2 = value_to_boolean(generator, le);
         int c1 = new_temporary_register(generator);
         fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", c1, b1.id);
         int c2 = new_temporary_register(generator);
@@ -9674,10 +9674,10 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
             fprintf(o, "  %%t%d = add i64 0, %lld\n", tlo, (long long) t->lo);
             int thi = new_temporary_register(generator);
             fprintf(o, "  %%t%d = add i64 0, %lld\n", thi, (long long) t->hi);
-            V lo = {tlo, VALUE_KIND_INTEGER}, hi = {thi, VALUE_KIND_INTEGER};
-            V ge = value_compare_integer(generator, "sge", x, lo);
-            V le = value_compare_integer(generator, "sle", x, hi);
-            V b1 = value_to_boolean(generator, ge), b2 = value_to_boolean(generator, le);
+            Value lo = {tlo, VALUE_KIND_INTEGER}, hi = {thi, VALUE_KIND_INTEGER};
+            Value ge = value_compare_integer(generator, "sge", x, lo);
+            Value le = value_compare_integer(generator, "sle", x, hi);
+            Value b1 = value_to_boolean(generator, ge), b2 = value_to_boolean(generator, le);
             int c1 = new_temporary_register(generator);
             fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", c1, b1.id);
             int c2 = new_temporary_register(generator);
@@ -9706,7 +9706,7 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
       }
       break;
     }
-    V a = generate_expression(generator, n->bn.l), b = generate_expression(generator, n->bn.r);
+    Value a = generate_expression(generator, n->bn.l), b = generate_expression(generator, n->bn.r);
     if (op == T_EQ or op == T_NE)
     {
       Type_Info *lt = n->bn.l->ty ? type_canonical_concrete(n->bn.l->ty) : 0;
@@ -9750,7 +9750,7 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
         b.id = bc;
         b.k = VALUE_KIND_INTEGER;
       }
-      V bi = value_cast(generator, b, VALUE_KIND_INTEGER);
+      Value bi = value_cast(generator, b, VALUE_KIND_INTEGER);
       int cf = new_temporary_register(generator);
       fprintf(o, "  %%t%d = icmp slt i64 %%t%d, 0\n", cf, bi.id);
       int lt = new_label_block(generator), lf = new_label_block(generator);
@@ -9832,7 +9832,7 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
     {
       if((op==T_EQ or op==T_NE) and (n->bn.l->k==N_STR or n->bn.r->k==N_STR or (n->bn.l->ty and type_canonical_concrete(n->bn.l->ty)->el and type_canonical_concrete(n->bn.l->ty)->el->k==TYPE_CHARACTER) or (n->bn.r->ty and type_canonical_concrete(n->bn.r->ty)->el and type_canonical_concrete(n->bn.r->ty)->el->k==TYPE_CHARACTER)))
       {
-        V ap = a, bp = b;
+        Value ap = a, bp = b;
         if (ap.k == VALUE_KIND_INTEGER)
         {
           int p1 = new_temporary_register(generator);
@@ -9882,7 +9882,7 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
       Type_Info *lt = n->bn.l->ty ? type_canonical_concrete(n->bn.l->ty) : 0;
       Type_Info *rt = n->bn.r->ty ? type_canonical_concrete(n->bn.r->ty) : 0;
       int alo, ahi, blo, bhi;
-      V ad, bd;
+      Value ad, bd;
       bool la_fp = lt and lt->k == TYPE_ARRAY and lt->lo == 0 and lt->hi == -1;
       bool lb_fp = rt and rt->k == TYPE_ARRAY and rt->lo == 0 and rt->hi == -1;
       if (la_fp)
@@ -9969,7 +9969,7 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     r.k = VALUE_KIND_INTEGER;
     {
-      V ai = value_cast(generator, a, VALUE_KIND_INTEGER), bi = value_cast(generator, b, VALUE_KIND_INTEGER);
+      Value ai = value_cast(generator, a, VALUE_KIND_INTEGER), bi = value_cast(generator, b, VALUE_KIND_INTEGER);
       fprintf(o, "  %%t%d = add i64 %%t%d, %%t%d\n", r.id, ai.id, bi.id);
     }
     break;
@@ -9977,7 +9977,7 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
   break;
   case N_UN:
   {
-    V x = generate_expression(generator, n->un.x);
+    Value x = generate_expression(generator, n->un.x);
     if (n->un.op == T_MN)
     {
       if (x.k == VALUE_KIND_FLOAT)
@@ -10019,7 +10019,7 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
       }
       else
       {
-        V b = value_to_boolean(generator, x);
+        Value b = value_to_boolean(generator, x);
         r.k = VALUE_KIND_INTEGER;
         fprintf(o, "  %%t%d = xor i64 %%t%d, 1\n", r.id, b.id);
       }
@@ -10029,20 +10029,20 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
     {
       if (x.k == VALUE_KIND_FLOAT)
       {
-        V z = value_cast(generator, x, VALUE_KIND_FLOAT);
+        Value z = value_cast(generator, x, VALUE_KIND_FLOAT);
         int c = new_temporary_register(generator);
         fprintf(o, "  %%t%d = fcmp olt double %%t%d, 0.0\n", c, z.id);
-        V ng = {new_temporary_register(generator), VALUE_KIND_FLOAT};
+        Value ng = {new_temporary_register(generator), VALUE_KIND_FLOAT};
         fprintf(o, "  %%t%d = fsub double 0.0, %%t%d\n", ng.id, z.id);
         r.k = VALUE_KIND_FLOAT;
         fprintf(o, "  %%t%d = select i1 %%t%d, double %%t%d, double %%t%d\n", r.id, c, ng.id, z.id);
       }
       else
       {
-        V z = value_cast(generator, x, VALUE_KIND_INTEGER);
+        Value z = value_cast(generator, x, VALUE_KIND_INTEGER);
         int c = new_temporary_register(generator);
         fprintf(o, "  %%t%d = icmp slt i64 %%t%d, 0\n", c, z.id);
-        V ng = {new_temporary_register(generator), VALUE_KIND_INTEGER};
+        Value ng = {new_temporary_register(generator), VALUE_KIND_INTEGER};
         fprintf(o, "  %%t%d = sub i64 0, %%t%d\n", ng.id, z.id);
         r.k = VALUE_KIND_INTEGER;
         fprintf(o, "  %%t%d = select i1 %%t%d, i64 %%t%d, i64 %%t%d\n", r.id, c, ng.id, z.id);
@@ -10055,7 +10055,7 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
   break;
   case N_IX:
   {
-    V p = generate_expression(generator, n->ix.p);
+    Value p = generate_expression(generator, n->ix.p);
     Type_Info *pt = n->ix.p->ty ? type_canonical_concrete(n->ix.p->ty) : 0;
     Type_Info *et = n->ty ? type_canonical_concrete(n->ty) : 0;
     bool is_char = et and et->k == TYPE_CHARACTER;
@@ -10065,7 +10065,7 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
       dp = get_fat_pointer_data(generator, p.id).id;
       int blo, bhi;
       get_fat_pointer_bounds(generator, p.id, &blo, &bhi);
-      V i0 = value_cast(generator, generate_expression(generator, n->ix.ix.data[0]), VALUE_KIND_INTEGER);
+      Value i0 = value_cast(generator, generate_expression(generator, n->ix.ix.data[0]), VALUE_KIND_INTEGER);
       int adj = new_temporary_register(generator);
       fprintf(o, "  %%t%d = sub i64 %%t%d, %%t%d\n", adj, i0.id, blo);
       char lb[32], hb[32];
@@ -10108,7 +10108,7 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
         fprintf(o, "  %%t%d = inttoptr i64 %%t%d to ptr\n", pp, p.id);
         dp = pp;
       }
-      V i0 = value_cast(generator, generate_expression(generator, n->ix.ix.data[0]), VALUE_KIND_INTEGER);
+      Value i0 = value_cast(generator, generate_expression(generator, n->ix.ix.data[0]), VALUE_KIND_INTEGER);
       Type_Info *at = pt;
       int adj_idx = i0.id;
       if (at and at->k == TYPE_ARRAY and at->lo != 0)
@@ -10171,9 +10171,9 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
   break;
   case N_SL:
   {
-    V p = generate_expression(generator, n->sl.p);
-    V lo = value_cast(generator, generate_expression(generator, n->sl.lo), VALUE_KIND_INTEGER);
-    V hi = value_cast(generator, generate_expression(generator, n->sl.hi), VALUE_KIND_INTEGER);
+    Value p = generate_expression(generator, n->sl.p);
+    Value lo = value_cast(generator, generate_expression(generator, n->sl.lo), VALUE_KIND_INTEGER);
+    Value hi = value_cast(generator, generate_expression(generator, n->sl.hi), VALUE_KIND_INTEGER);
     int ln = new_temporary_register(generator);
     fprintf(o, "  %%t%d = sub i64 %%t%d, %%t%d\n", ln, hi.id, lo.id);
     int sz = new_temporary_register(generator);
@@ -10198,7 +10198,7 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
   case N_SEL:
   {
     Type_Info *pt = n->se.p->ty ? type_canonical_concrete(n->se.p->ty) : 0;
-    V p = {new_temporary_register(generator), VALUE_KIND_POINTER};
+    Value p = {new_temporary_register(generator), VALUE_KIND_POINTER};
     if (n->se.p->k == N_ID)
     {
       Symbol *s = n->se.p->sy ? n->se.p->sy : symbol_find(generator->sm, n->se.p->s);
@@ -10446,7 +10446,7 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
         }
         else
         {
-          V p = generate_expression(generator, n->at.p);
+          Value p = generate_expression(generator, n->at.p);
           fprintf(
               o,
               "  %%t%d = ptrtoint ptr %%t%d to i64\n",
@@ -10476,7 +10476,7 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
         }
         else
         {
-          V p = generate_expression(generator, n->at.p);
+          Value p = generate_expression(generator, n->at.p);
           r.k = VALUE_KIND_INTEGER;
           fprintf(
               o,
@@ -10487,7 +10487,7 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
       }
       else
       {
-        V p = generate_expression(generator, n->at.p);
+        Value p = generate_expression(generator, n->at.p);
         r.k = VALUE_KIND_INTEGER;
         fprintf(
             o,
@@ -10506,7 +10506,7 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
         or string_equal_ignore_case(a, STRING_LITERAL("LAST"))
         or string_equal_ignore_case(a, STRING_LITERAL("LENGTH")))
     {
-      V pv = {0, VALUE_KIND_INTEGER};
+      Value pv = {0, VALUE_KIND_INTEGER};
       bool is_typ = n->at.p and n->at.p->k == N_ID and n->at.p->sy and n->at.p->sy->k == 1;
       if (n->at.p and not is_typ)
         pv = generate_expression(generator, n->at.p);
@@ -10555,7 +10555,7 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     else if (string_equal_ignore_case(a, STRING_LITERAL("POS")))
     {
-      V x = generate_expression(generator, n->at.ar.data[0]);
+      Value x = generate_expression(generator, n->at.ar.data[0]);
       if (t
           and (t->k == TYPE_ENUMERATION or t->k == TYPE_INTEGER or t->k == TYPE_UNSIGNED_INTEGER or t->k == TYPE_DERIVED))
       {
@@ -10576,7 +10576,7 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     else if (string_equal_ignore_case(a, STRING_LITERAL("VAL")))
     {
-      V x = generate_expression(generator, n->at.ar.data[0]);
+      Value x = generate_expression(generator, n->at.ar.data[0]);
       r.k = VALUE_KIND_INTEGER;
       int tlo = new_temporary_register(generator);
       fprintf(o, "  %%t%d = add i64 0, %lld\n", tlo, t ? (long long) t->lo : 0LL);
@@ -10591,7 +10591,7 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
         string_equal_ignore_case(a, STRING_LITERAL("SUCC"))
         or string_equal_ignore_case(a, STRING_LITERAL("PRED")))
     {
-      V x = generate_expression(generator, n->at.ar.data[0]);
+      Value x = generate_expression(generator, n->at.ar.data[0]);
       r.k = VALUE_KIND_INTEGER;
       fprintf(
           o,
@@ -10602,7 +10602,7 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     else if (string_equal_ignore_case(a, STRING_LITERAL("IMAGE")))
     {
-      V x = generate_expression(generator, n->at.ar.data[0]);
+      Value x = generate_expression(generator, n->at.ar.data[0]);
       r.k = VALUE_KIND_POINTER;
       if (t and t->k == TYPE_ENUMERATION)
       {
@@ -10625,11 +10625,11 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     else if (string_equal_ignore_case(a, STRING_LITERAL("VALUE")))
     {
-      V x = generate_expression(generator, n->at.ar.data[0]);
+      Value x = generate_expression(generator, n->at.ar.data[0]);
       r.k = VALUE_KIND_INTEGER;
       if (t and t->k == TYPE_ENUMERATION)
       {
-        V buf = get_fat_pointer_data(generator, x.id);
+        Value buf = get_fat_pointer_data(generator, x.id);
         int fnd = new_temporary_register(generator);
         fprintf(o, "  %%t%d = add i64 0, -1\n", fnd);
         for (uint32_t i = 0; i < t->ev.count; i++)
@@ -10858,7 +10858,7 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     else if (string_equal_ignore_case(a, STRING_LITERAL("ACCESS")))
     {
-      V p = generate_expression(generator, n->at.p);
+      Value p = generate_expression(generator, n->at.p);
       r = value_cast(generator, p, VALUE_KIND_POINTER);
     }
     else if (
@@ -10879,7 +10879,7 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
   break;
   case N_QL:
   {
-    V q = generate_expression(generator, n->ql.ag);
+    Value q = generate_expression(generator, n->ql.ag);
     r = value_cast(generator, q, r.k);
   }
   break;
@@ -10915,7 +10915,7 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
         {
           if (n->cl.ar.count > 0)
           {
-            V f = generate_expression(generator, n->cl.ar.data[0]);
+            Value f = generate_expression(generator, n->cl.ar.data[0]);
             fprintf(
                 o,
                 "  call void @__text_io_%s(ptr %%t%d)\n",
@@ -10929,7 +10929,7 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
         {
           if (n->cl.ar.count > 1)
           {
-            V f = generate_expression(generator, n->cl.ar.data[0]);
+            Value f = generate_expression(generator, n->cl.ar.data[0]);
             r.k = VALUE_KIND_INTEGER;
             fprintf(o, "  %%t%d = call i64 @__text_io_get(ptr %%t%d)\n", r.id, f.id);
           }
@@ -10945,8 +10945,8 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
         {
           if (n->cl.ar.count > 1)
           {
-            V f = generate_expression(generator, n->cl.ar.data[0]);
-            V v = generate_expression(generator, n->cl.ar.data[1]);
+            Value f = generate_expression(generator, n->cl.ar.data[0]);
+            Value v = generate_expression(generator, n->cl.ar.data[1]);
             fprintf(
                 o,
                 "  call void @__text_io_%s(ptr %%t%d, ",
@@ -10961,7 +10961,7 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
           }
           else
           {
-            V v = generate_expression(generator, n->cl.ar.data[0]);
+            Value v = generate_expression(generator, n->cl.ar.data[0]);
             fprintf(
                 o,
                 "  call void @__text_io_%s(ptr @stdout, ",
@@ -10988,7 +10988,7 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
           {
             Syntax_Node *pm = sp and i < sp->sp.pmm.count ? sp->sp.pmm.data[i] : 0;
             Syntax_Node *arg = n->cl.ar.data[i];
-            V av = {0, VALUE_KIND_INTEGER};
+            Value av = {0, VALUE_KIND_INTEGER};
             Value_Kind ek = VALUE_KIND_INTEGER;
             bool rf = false;
             if (pm)
@@ -11069,7 +11069,7 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
             }
             if (not rf and ek != VALUE_KIND_INTEGER)
             {
-              V cv = value_cast(generator, av, ek);
+              Value cv = value_cast(generator, av, ek);
               av = cv;
             }
             arid[i] = av.id;
@@ -11107,8 +11107,8 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
                   value_llvm_type_string(
                       ark[i] == VALUE_KIND_POINTER ? VALUE_KIND_INTEGER : ark[i]),
                   arid[i]);
-              V rv = {lv, ark[i] == VALUE_KIND_POINTER ? VALUE_KIND_INTEGER : ark[i]};
-              V cv = value_cast(generator, rv, token_kind_to_value_kind(n->cl.ar.data[i]->ty));
+              Value rv = {lv, ark[i] == VALUE_KIND_POINTER ? VALUE_KIND_INTEGER : ark[i]};
+              Value cv = value_cast(generator, rv, token_kind_to_value_kind(n->cl.ar.data[i]->ty));
               Syntax_Node *tg = n->cl.ar.data[i];
               if (tg->k == N_ID)
               {
@@ -11170,7 +11170,7 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
     fprintf(o, "  %%t%d = call ptr @malloc(i64 %u)\n", r.id, asz);
     if (n->alc.in)
     {
-      V v = generate_expression(generator, n->alc.in);
+      Value v = generate_expression(generator, n->alc.in);
       v = value_cast(generator, v, VALUE_KIND_INTEGER);
       int op = new_temporary_register(generator);
       fprintf(
@@ -11185,7 +11185,7 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
   break;
   case N_DRF:
   {
-    V p = generate_expression(generator, n->drf.x);
+    Value p = generate_expression(generator, n->drf.x);
     if (p.k == VALUE_KIND_INTEGER)
     {
       int pp = new_temporary_register(generator);
@@ -11196,7 +11196,7 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
     Type_Info *dt = n->drf.x->ty ? type_canonical_concrete(n->drf.x->ty) : 0;
     dt = dt and dt->el ? type_canonical_concrete(dt->el) : 0;
     r.k = dt ? token_kind_to_value_kind(dt) : VALUE_KIND_INTEGER;
-    V pc = value_cast(generator, p, VALUE_KIND_INTEGER);
+    Value pc = value_cast(generator, p, VALUE_KIND_INTEGER);
     int nc = new_temporary_register(generator);
     fprintf(o, "  %%t%d = icmp eq i64 %%t%d, 0\n", nc, pc.id);
     int ne = new_label_block(generator), nd = new_label_block(generator);
@@ -11209,13 +11209,13 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
   break;
   case N_CVT:
   {
-    V e = generate_expression(generator, n->cvt.ex);
+    Value e = generate_expression(generator, n->cvt.ex);
     r = value_cast(generator, e, r.k);
   }
   break;
   case N_CHK:
   {
-    V e = generate_expression(generator, n->chk.ex);
+    Value e = generate_expression(generator, n->chk.ex);
     Type_Info *t = n->chk.ex->ty ? type_canonical_concrete(n->chk.ex->ty) : 0;
     if (t and t->k == TYPE_FLOAT and (t->lo != TY_INT->lo or t->hi != TY_INT->hi))
       r = generate_float_range_check(generator, e, t, n->chk.ec, r.k);
@@ -11235,7 +11235,7 @@ static V generate_expression(Code_Generator *generator, Syntax_Node *n)
   break;
   case N_RN:
   {
-    V lo = generate_expression(generator, n->rn.lo);
+    Value lo = generate_expression(generator, n->rn.lo);
     r = value_cast(generator, lo, r.k);
   }
   break;
@@ -11257,7 +11257,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
     break;
   case N_AS:
   {
-    V v = generate_expression(generator, n->as.vl);
+    Value v = generate_expression(generator, n->as.vl);
     if (n->as.tg->k == N_ID)
     {
       Symbol *s = n->as.tg->sy;
@@ -11320,7 +11320,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
     }
     else if (n->as.tg->k == N_IX)
     {
-      V p = generate_expression(generator, n->as.tg->ix.p);
+      Value p = generate_expression(generator, n->as.tg->ix.p);
       if (p.k == VALUE_KIND_INTEGER)
       {
         int pp = new_temporary_register(generator);
@@ -11328,7 +11328,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
         p.id = pp;
         p.k = VALUE_KIND_POINTER;
       }
-      V i0 = value_cast(generator, generate_expression(generator, n->as.tg->ix.ix.data[0]), VALUE_KIND_INTEGER);
+      Value i0 = value_cast(generator, generate_expression(generator, n->as.tg->ix.ix.data[0]), VALUE_KIND_INTEGER);
       Type_Info *at = n->as.tg->ix.p->ty ? type_canonical_concrete(n->as.tg->ix.p->ty) : 0;
       int adj_idx = i0.id;
       if (at and at->k == TYPE_ARRAY and at->lo != 0)
@@ -11359,7 +11359,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
     else if (n->as.tg->k == N_SEL)
     {
       Type_Info *pt = n->as.tg->se.p->ty ? type_canonical_concrete(n->as.tg->se.p->ty) : 0;
-      V p = {new_temporary_register(generator), VALUE_KIND_POINTER};
+      Value p = {new_temporary_register(generator), VALUE_KIND_POINTER};
       if (n->as.tg->se.p->k == N_ID)
       {
         Symbol *s = n->as.tg->se.p->sy ? n->as.tg->se.p->sy : symbol_find(generator->sm, n->as.tg->se.p->s);
@@ -11448,7 +11448,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
   break;
   case N_IF:
   {
-    V c = value_to_boolean(generator, generate_expression(generator, n->if_.cd));
+    Value c = value_to_boolean(generator, generate_expression(generator, n->if_.cd));
     int ct = new_temporary_register(generator);
     fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", ct, c.id);
     int lt = new_label_block(generator), lf = new_label_block(generator), ld = new_label_block(generator);
@@ -11463,7 +11463,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
       for (uint32_t i = 0; i < n->if_.ei.count; i++)
       {
         Syntax_Node *e = n->if_.ei.data[i];
-        V ec = value_to_boolean(generator, generate_expression(generator, e->if_.cd));
+        Value ec = value_to_boolean(generator, generate_expression(generator, e->if_.cd));
         int ect = new_temporary_register(generator);
         fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", ect, ec.id);
         int let = new_label_block(generator), lef = new_label_block(generator);
@@ -11486,7 +11486,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
   break;
   case N_CS:
   {
-    V ex = generate_expression(generator, n->cs.ex);
+    Value ex = generate_expression(generator, n->cs.ex);
     int ld = new_label_block(generator);
     Node_Vector lb = {0};
     for (uint32_t i = 0; i < n->cs.al.count; i++)
@@ -11525,13 +11525,13 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           emit_conditional_branch(generator, ca, la, lnx);
           continue;
         }
-        V cv = generate_expression(generator, ch);
+        Value cv = generate_expression(generator, ch);
         cv = value_cast(generator, cv, ex.k);
         if (ch->k == N_RN)
         {
-          V lo = generate_expression(generator, ch->rn.lo);
+          Value lo = generate_expression(generator, ch->rn.lo);
           lo = value_cast(generator, lo, ex.k);
-          V hi = generate_expression(generator, ch->rn.hi);
+          Value hi = generate_expression(generator, ch->rn.hi);
           hi = value_cast(generator, hi, ex.k);
           int cge = new_temporary_register(generator);
           fprintf(o, "  %%t%d = icmp sge i64 %%t%d, %%t%d\n", cge, ex.id, lo.id);
@@ -11594,9 +11594,9 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           int ti = new_temporary_register(generator);
           if (rng and rng->k == N_RN)
           {
-            V lo = value_cast(generator, generate_expression(generator, rng->rn.lo), VALUE_KIND_INTEGER);
+            Value lo = value_cast(generator, generate_expression(generator, rng->rn.lo), VALUE_KIND_INTEGER);
             fprintf(o, "  %%t%d = add i64 %%t%d, 0\n", ti, lo.id);
-            V hi = value_cast(generator, generate_expression(generator, rng->rn.hi), VALUE_KIND_INTEGER);
+            Value hi = value_cast(generator, generate_expression(generator, rng->rn.hi), VALUE_KIND_INTEGER);
             fprintf(o, "  store i64 %%t%d, ptr %%v.__for_hi_%d\n", hi.id, hi_var);
           }
           else if (
@@ -11608,7 +11608,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             {
               if (at->lo == 0 and at->hi == -1 and rng->at.p)
               {
-                V pv = generate_expression(generator, rng->at.p);
+                Value pv = generate_expression(generator, rng->at.p);
                 int blo, bhi;
                 get_fat_pointer_bounds(generator, pv.id, &blo, &bhi);
                 fprintf(o, "  %%t%d = add i64 0, 0\n", ti);
@@ -11716,7 +11716,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
       }
       else
       {
-        V c = value_to_boolean(generator, generate_expression(generator, n->lp.it));
+        Value c = value_to_boolean(generator, generate_expression(generator, n->lp.it));
         int ct = new_temporary_register(generator);
         fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", ct, c.id);
         emit_conditional_branch(generator, ct, lc, le);
@@ -11803,7 +11803,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
         int le = generator->ll[li];
         if (n->ex.cd)
         {
-          V c = value_to_boolean(generator, generate_expression(generator, n->ex.cd));
+          Value c = value_to_boolean(generator, generate_expression(generator, n->ex.cd));
           int ct = new_temporary_register(generator);
           fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", ct, c.id);
           int lc = new_label_block(generator);
@@ -11817,7 +11817,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
       {
         if (n->ex.cd)
         {
-          V c = value_to_boolean(generator, generate_expression(generator, n->ex.cd));
+          Value c = value_to_boolean(generator, generate_expression(generator, n->ex.cd));
           int ct = new_temporary_register(generator);
           fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", ct, c.id);
           int le = generator->ls > 0 ? generator->ll[generator->ls - 1] : new_label_block(generator), lc = new_label_block(generator);
@@ -11835,7 +11835,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
     {
       if (n->ex.cd)
       {
-        V c = value_to_boolean(generator, generate_expression(generator, n->ex.cd));
+        Value c = value_to_boolean(generator, generate_expression(generator, n->ex.cd));
         int ct = new_temporary_register(generator);
         fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", ct, c.id);
         int le = generator->ls > 0 ? generator->ll[generator->ls - 1] : new_label_block(generator), lc = new_label_block(generator);
@@ -11863,7 +11863,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
   {
     if (n->rt.vl)
     {
-      V v = generate_expression(generator, n->rt.vl);
+      Value v = generate_expression(generator, n->rt.vl);
       fprintf(o, "  ret %s %%t%d\n", value_llvm_type_string(v.k), v.id);
     }
     else
@@ -11900,7 +11900,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           {
             Syntax_Node *pm = sp and i < sp->sp.pmm.count ? sp->sp.pmm.data[i] : 0;
             Syntax_Node *arg = n->ct.arr.data[i];
-            V av = {0, VALUE_KIND_INTEGER};
+            Value av = {0, VALUE_KIND_INTEGER};
             Value_Kind ek = VALUE_KIND_INTEGER;
             bool rf = false;
             if (pm)
@@ -11981,7 +11981,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             }
             if (not rf and ek != VALUE_KIND_INTEGER)
             {
-              V cv = value_cast(generator, av, ek);
+              Value cv = value_cast(generator, av, ek);
               av = cv;
             }
             arid[i] = av.id;
@@ -12022,8 +12022,8 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                   value_llvm_type_string(
                       ark[i] == VALUE_KIND_POINTER ? VALUE_KIND_INTEGER : ark[i]),
                   arid[i]);
-              V rv = {lv, ark[i] == VALUE_KIND_POINTER ? VALUE_KIND_INTEGER : ark[i]};
-              V cv = value_cast(generator, rv, token_kind_to_value_kind(n->ct.arr.data[i]->ty));
+              Value rv = {lv, ark[i] == VALUE_KIND_POINTER ? VALUE_KIND_INTEGER : ark[i]};
+              Value cv = value_cast(generator, rv, token_kind_to_value_kind(n->ct.arr.data[i]->ty));
               Syntax_Node *tg = n->ct.arr.data[i];
               if (tg->k == N_ID)
               {
@@ -12061,7 +12061,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           {
             if (i)
               fprintf(o, ", ");
-            V av = generate_expression(generator, n->ct.arr.data[i]);
+            Value av = generate_expression(generator, n->ct.arr.data[i]);
             fprintf(o, "i64 %%t%d", av.id);
           }
           fprintf(o, ")\n");
@@ -12085,7 +12085,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           {
             Syntax_Node *pm = sp and i < sp->sp.pmm.count ? sp->sp.pmm.data[i] : 0;
             Syntax_Node *arg = n->ct.arr.data[i];
-            V av = {0, VALUE_KIND_INTEGER};
+            Value av = {0, VALUE_KIND_INTEGER};
             Value_Kind ek = VALUE_KIND_INTEGER;
             if (pm)
             {
@@ -12122,7 +12122,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             else
             {
               av = generate_expression(generator, arg);
-              V cv = value_cast(generator, av, ek);
+              Value cv = value_cast(generator, av, ek);
               av = cv;
             }
             arid[i] = av.id;
@@ -12210,7 +12210,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                   {
                     int tdi = new_temporary_register(generator);
                     fprintf(o, "  %%t%d = add i64 0, %lld\n", tdi, (long long) td->pm.df->i);
-                    V iv = generate_expression(generator, d->od.in);
+                    Value iv = generate_expression(generator, d->od.in);
                     int ivd = new_temporary_register(generator);
                     fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ivd, iv.id, di);
                     int dvl = new_temporary_register(generator);
@@ -12230,7 +12230,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               }
             }
             {
-              V v = generate_expression(generator, d->od.in);
+              Value v = generate_expression(generator, d->od.in);
               v = value_cast(generator, v, k);
               if (s and s->lv >= 0 and s->lv < generator->sm->lv)
                 fprintf(
@@ -12382,7 +12382,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
   break;
   case N_DL:
   {
-    V d = generate_expression(generator, n->ex.cd);
+    Value d = generate_expression(generator, n->ex.cd);
     d = value_cast(generator, d, VALUE_KIND_INTEGER);
     fprintf(o, "  call void @__ada_delay(i64 %%t%d)\n", d.id);
   }
@@ -12391,7 +12391,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
   {
     if (n->sa.kn == 1 or n->sa.kn == 3)
     {
-      V gd = generate_expression(generator, n->sa.gd);
+      Value gd = generate_expression(generator, n->sa.gd);
       int ld = new_label_block(generator);
       fprintf(o, "  call void @__ada_delay(i64 %%t%d)\n", gd.id);
       if (n->sa.kn == 3)
@@ -12414,7 +12414,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
         }
         else if (st->k == N_DL)
         {
-          V d = generate_expression(generator, st->ex.cd);
+          Value d = generate_expression(generator, st->ex.cd);
           fprintf(o, "  call void @__ada_delay(i64 %%t%d)\n", d.id);
           for (uint32_t j = 0; j < st->hnd.stz.count; j++)
             generate_statement_sequence(generator, st->hnd.stz.data[j]);
@@ -12807,7 +12807,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
   case N_PB:
   {
     Syntax_Node *sp = n->bd.sp;
-    GT *gt = generic_find(generator->sm, sp->sp.nm);
+    Generic_Template *gt = generic_find(generator->sm, sp->sp.nm);
     if (gt)
       break;
     for (uint32_t i = 0; i < n->bd.dc.count; i++)
@@ -13093,7 +13093,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   {
                     int tdi = new_temporary_register(generator);
                     fprintf(o, "  %%t%d = add i64 0, %lld\n", tdi, (long long) td->pm.df->i);
-                    V iv = generate_expression(generator, d->od.in);
+                    Value iv = generate_expression(generator, d->od.in);
                     int ivd = new_temporary_register(generator);
                     fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ivd, iv.id, di);
                     int dvl = new_temporary_register(generator);
@@ -13113,7 +13113,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
               }
             }
             {
-              V v = generate_expression(generator, d->od.in);
+              Value v = generate_expression(generator, d->od.in);
               v = value_cast(generator, v, k);
               if (s and s->lv >= 0 and s->lv < generator->sm->lv)
                 fprintf(
@@ -13183,7 +13183,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
   case N_FB:
   {
     Syntax_Node *sp = n->bd.sp;
-    GT *gt = generic_find(generator->sm, sp->sp.nm);
+    Generic_Template *gt = generic_find(generator->sm, sp->sp.nm);
     if (gt)
       break;
     for (uint32_t i = 0; i < n->bd.dc.count; i++)
@@ -13467,7 +13467,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   {
                     int tdi = new_temporary_register(generator);
                     fprintf(o, "  %%t%d = add i64 0, %lld\n", tdi, (long long) td->pm.df->i);
-                    V iv = generate_expression(generator, d->od.in);
+                    Value iv = generate_expression(generator, d->od.in);
                     int ivd = new_temporary_register(generator);
                     fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ivd, iv.id, di);
                     int dvl = new_temporary_register(generator);
@@ -13487,7 +13487,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
               }
             }
             {
-              V v = generate_expression(generator, d->od.in);
+              Value v = generate_expression(generator, d->od.in);
               v = value_cast(generator, v, k);
               if (s and s->lv >= 0 and s->lv < generator->sm->lv)
                 fprintf(
@@ -13846,11 +13846,11 @@ static void print_forward_declarations(Code_Generator *generator, Symbol_Manager
           }
         }
 }
-static LU *lfnd(Symbol_Manager *symbol_manager, String_Slice nm)
+static Library_Unit *lfnd(Symbol_Manager *symbol_manager, String_Slice nm)
 {
   for (uint32_t i = 0; i < symbol_manager->lu.count; i++)
   {
-    LU *l = symbol_manager->lu.data[i];
+    Library_Unit *l = symbol_manager->lu.data[i];
     if (string_equal_ignore_case(l->nm, nm))
       return l;
   }
@@ -13999,7 +13999,7 @@ static void write_ada_library_interface(Symbol_Manager *symbol_manager, const ch
 }
 static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, String_Slice pth)
 {
-  LU *ex = lfnd(symbol_manager, nm);
+  Library_Unit *ex = lfnd(symbol_manager, nm);
   if (ex and ex->cmpl)
     return true;
   char fp[512];
@@ -14135,7 +14135,7 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
     generate_expression_llvm(&g, sm.ib.data[i]);
   emit_all_metadata(&g);
   fclose(o);
-  LU *l = label_use_new(cu->cu.un.count > 0 ? cu->cu.un.data[0]->k : 0, nm, pth);
+  Library_Unit *l = label_use_new(cu->cu.un.count > 0 ? cu->cu.un.data[0]->k : 0, nm, pth);
   l->cmpl = true;
   l->ts = find_type_symbol(fp);
   lv(&symbol_manager->lu, l);
