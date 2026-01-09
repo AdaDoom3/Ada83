@@ -3552,7 +3552,7 @@ static RC *prc(Parser *p)
           parse_name(p);
         parser_expect(p, T_RP);
         r = reference_counter_new(5, 0);
-        r->error_count.nm = tn and tn->k == N_ID ? tn->s : N;
+        r->er.nm = tn and tn->k == N_ID ? tn->s : N;
       }
       parser_expect(p, T_SC);
       return r;
@@ -3563,7 +3563,7 @@ static RC *prc(Parser *p)
       {
         parser_expect(p, T_LP);
         r = reference_counter_new(6, 0);
-        r->error_count.nm = parser_identifier(p);
+        r->er.nm = parser_identifier(p);
         while (parser_match(p, T_CM))
           parser_identifier(p);
         parser_expect(p, T_RP);
@@ -3577,7 +3577,7 @@ static RC *prc(Parser *p)
       {
         parser_expect(p, T_LP);
         r = reference_counter_new(7, 0);
-        r->error_count.nm = parser_identifier(p);
+        r->er.nm = parser_identifier(p);
         while (parser_match(p, T_CM))
           parser_identifier(p);
         parser_expect(p, T_RP);
@@ -3684,7 +3684,7 @@ static Syntax_Node *pdl(Parser *p)
         Syntax_Node *dd = 0;
         if (parser_match(p, T_AS))
           dd = parse_expression(p);
-        for (uint32_t i = 0; i < dn.count; i++)
+        for (uint32_t i = 0; i < dn.length; i++)
         {
           Syntax_Node *dp = ND(DS, lc);
           dp->pm.nm = dn.data[i]->s;
@@ -4545,7 +4545,7 @@ static void sfu(Symbol_Manager *SM, Symbol *s, String_Slice nm)
       {
         bool f = 0;
         for (int i = 0; i < SM->dpn; i++)
-          if (SM->dps[i].length and string_equal_ignore_case(SM->dps[i].data[0]->nm, p->nm))
+          if (SM->dps[i].count and string_equal_ignore_case(SM->dps[i].data[0]->nm, p->nm))
           {
             f = 1;
             break;
@@ -6689,7 +6689,7 @@ static void rrc_(Symbol_Manager *SM, RC *r)
   {
   case 1:
   {
-    Symbol *ts = symbol_find(SM, r->error_count.nm);
+    Symbol *ts = symbol_find(SM, r->er.nm);
     if (ts and ts->ty)
     {
       Type_Info *t = type_canonical_concrete(ts->ty);
@@ -6758,7 +6758,7 @@ static void rrc_(Symbol_Manager *SM, RC *r)
   break;
   case 5:
   {
-    Symbol *s = symbol_find(SM, r->error_count.nm);
+    Symbol *s = symbol_find(SM, r->er.nm);
     if (s and s->ty)
     {
       Type_Info *t = type_canonical_concrete(s->ty);
@@ -6768,14 +6768,14 @@ static void rrc_(Symbol_Manager *SM, RC *r)
   break;
   case 6:
   {
-    Symbol *s = symbol_find(SM, r->error_count.nm);
+    Symbol *s = symbol_find(SM, r->er.nm);
     if (s)
       s->inl = true;
   }
   break;
   case 7:
   {
-    Symbol *s = symbol_find(SM, r->error_count.nm);
+    Symbol *s = symbol_find(SM, r->er.nm);
     if (s and s->ty)
     {
       Type_Info *t = type_canonical_concrete(s->ty);
@@ -8136,10 +8136,10 @@ static void rali(Symbol_Manager *SM, const char *pth)
       while (*e and *e != ' ' and *e != '\n')
         e++;
       String_Slice dn = {l + 2, e - (l + 2)};
-      char *c = arena_allocate(dn.count + 1);
-      memcpy(c, dn.string, dn.count);
-      c[dn.count] = 0;
-      slv(&ds, (String_Slice){c, dn.count});
+      char *c = arena_allocate(dn.length + 1);
+      memcpy(c, dn.string, dn.length);
+      c[dn.length] = 0;
+      slv(&ds, (String_Slice){c, dn.length});
     }
     else if (*l == 'X' and l[1] == ' ')
     {
@@ -13906,7 +13906,7 @@ static void wali(Symbol_Manager *SM, const char *fn, Syntax_Node *cu)
       fprintf(f, "W %.*s %lu\n", (int) w->wt.nm.length, w->wt.nm.string, (unsigned long) ts);
     }
   for (int i = 0; i < SM->dpn; i++)
-    if (SM->dps[i].length and SM->dps[i].data[0])
+    if (SM->dps[i].count and SM->dps[i].data[0])
       fprintf(f, "D %.*s\n", (int) SM->dps[i].data[0]->nm.length, SM->dps[i].data[0]->nm.string);
   for (int h = 0; h < 4096; h++)
   {
@@ -13991,7 +13991,7 @@ static void wali(Symbol_Manager *SM, const char *fn, Syntax_Node *cu)
         break;
       }
     if (not f2)
-      fprintf(f, "H %.*s\n", (int) SM->eh.data[i].length, SM->eh.data[i].string);
+      fprintf(f, "H %.*s\n", (int) SM->eh.data[i].count, SM->eh.data[i].string);
   }
   if (SM->eo > 0)
     fprintf(f, "E %d\n", SM->eo);
@@ -14167,7 +14167,7 @@ int main(int ac, char **av)
   }
   Parser p = pnw(src, strlen(src), inf);
   Syntax_Node *cu = pcu(&p);
-  if (p.er or not cu)
+  if (p.error_count or not cu)
     return 1;
   Symbol_Manager sm;
   smi(&sm);
