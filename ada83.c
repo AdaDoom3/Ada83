@@ -1822,185 +1822,185 @@ static Node_Vector parse_handle_declaration(Parser *p);
 static Syntax_Node *parse_statement_or_label(Parser *p);
 static Syntax_Node *parse_generic_formal(Parser *p);
 static RC *parse_representation_clause(Parser *p);
-static Syntax_Node *parse_primary(Parser *p)
+static Syntax_Node *parse_primary(Parser *parser)
 {
-  Source_Location lc = parser_location(p);
-  if (parser_match(p, T_LP))
+  Source_Location location = parser_location(parser);
+  if (parser_match(parser, T_LP))
   {
-    Node_Vector v = {0};
+    Node_Vector aggregate_vector = {0};
     do
     {
-      Node_Vector ch = {0};
-      Syntax_Node *e = parse_expression(p);
-      nv(&ch, e);
-      while (parser_match(p, T_BR))
-        nv(&ch, parse_expression(p));
-      if (parser_at(p, T_AR))
+      Node_Vector choices = {0};
+      Syntax_Node *expression = parse_expression(parser);
+      nv(&choices, expression);
+      while (parser_match(parser, T_BR))
+        nv(&choices, parse_expression(parser));
+      if (parser_at(parser, T_AR))
       {
-        parser_next(p);
-        Syntax_Node *vl = parse_expression(p);
-        for (uint32_t i = 0; i < ch.count; i++)
+        parser_next(parser);
+        Syntax_Node *value = parse_expression(parser);
+        for (uint32_t i = 0; i < choices.count; i++)
         {
-          Syntax_Node *a = ND(ASC, lc);
-          nv(&a->asc.ch, ch.data[i]);
-          a->asc.vl = vl;
-          nv(&v, a);
+          Syntax_Node *association = ND(ASC, location);
+          nv(&association->asc.ch, choices.data[i]);
+          association->asc.vl = value;
+          nv(&aggregate_vector, association);
         }
       }
-      else if (ch.count == 1 and ch.data[0]->k == N_ID and parser_match(p, T_RNG))
+      else if (choices.count == 1 and choices.data[0]->k == N_ID and parser_match(parser, T_RNG))
       {
-        Syntax_Node *rng = parse_range(p);
-        parser_expect(p, T_AR);
-        Syntax_Node *vl = parse_expression(p);
-        Syntax_Node *si = ND(ST, lc);
-        Syntax_Node *cn = ND(CN, lc);
-        cn->cn.rn = rng;
-        si->sd.in = ch.data[0];
-        si->sd.cn = cn;
-        Syntax_Node *a = ND(ASC, lc);
-        nv(&a->asc.ch, si);
-        a->asc.vl = vl;
-        nv(&v, a);
+        Syntax_Node *range = parse_range(parser);
+        parser_expect(parser, T_AR);
+        Syntax_Node *value = parse_expression(parser);
+        Syntax_Node *slice_iterator = ND(ST, location);
+        Syntax_Node *constraint = ND(CN, location);
+        constraint->cn.rn = range;
+        slice_iterator->sd.in = choices.data[0];
+        slice_iterator->sd.cn = constraint;
+        Syntax_Node *association = ND(ASC, location);
+        nv(&association->asc.ch, slice_iterator);
+        association->asc.vl = value;
+        nv(&aggregate_vector, association);
       }
       else
       {
-        if (ch.count == 1)
-          nv(&v, ch.data[0]);
+        if (choices.count == 1)
+          nv(&aggregate_vector, choices.data[0]);
         else
-          fatal_error(lc, "exp '=>'");
+          fatal_error(location, "exp '=>'");
       }
-    } while (parser_match(p, T_CM));
-    parser_expect(p, T_RP);
-    if (v.count == 1 and v.data[0]->k != N_ASC)
-      return v.data[0];
-    Syntax_Node *n = ND(AG, lc);
-    n->ag.it = v;
-    return n;
+    } while (parser_match(parser, T_CM));
+    parser_expect(parser, T_RP);
+    if (aggregate_vector.count == 1 and aggregate_vector.data[0]->k != N_ASC)
+      return aggregate_vector.data[0];
+    Syntax_Node *node = ND(AG, location);
+    node->ag.it = aggregate_vector;
+    return node;
   }
-  if (parser_match(p, T_NEW))
+  if (parser_match(parser, T_NEW))
   {
-    Syntax_Node *n = ND(ALC, lc);
-    n->alc.st = parse_name(p);
-    if (parser_match(p, T_TK))
+    Syntax_Node *node = ND(ALC, location);
+    node->alc.st = parse_name(parser);
+    if (parser_match(parser, T_TK))
     {
-      parser_expect(p, T_LP);
-      n->alc.in = parse_expression(p);
-      parser_expect(p, T_RP);
+      parser_expect(parser, T_LP);
+      node->alc.in = parse_expression(parser);
+      parser_expect(parser, T_RP);
     }
-    return n;
+    return node;
   }
-  if (parser_match(p, T_NULL))
-    return ND(NULL, lc);
-  if (parser_match(p, T_OTH))
+  if (parser_match(parser, T_NULL))
+    return ND(NULL, location);
+  if (parser_match(parser, T_OTH))
   {
-    Syntax_Node *n = ND(ID, lc);
-    n->s = STRING_LITERAL("others");
-    return n;
+    Syntax_Node *node = ND(ID, location);
+    node->s = STRING_LITERAL("others");
+    return node;
   }
-  if (parser_at(p, T_INT))
+  if (parser_at(parser, T_INT))
   {
-    Syntax_Node *n = ND(INT, lc);
-    n->i = p->current_token.integer_value;
-    parser_next(p);
-    return n;
+    Syntax_Node *node = ND(INT, location);
+    node->i = parser->current_token.integer_value;
+    parser_next(parser);
+    return node;
   }
-  if (parser_at(p, T_REAL))
+  if (parser_at(parser, T_REAL))
   {
-    Syntax_Node *n = ND(REAL, lc);
-    n->f = p->current_token.float_value;
-    parser_next(p);
-    return n;
+    Syntax_Node *node = ND(REAL, location);
+    node->f = parser->current_token.float_value;
+    parser_next(parser);
+    return node;
   }
-  if (parser_at(p, T_CHAR))
+  if (parser_at(parser, T_CHAR))
   {
-    Syntax_Node *n = ND(CHAR, lc);
-    n->i = p->current_token.integer_value;
-    parser_next(p);
-    return n;
+    Syntax_Node *node = ND(CHAR, location);
+    node->i = parser->current_token.integer_value;
+    parser_next(parser);
+    return node;
   }
-  if (parser_at(p, T_STR))
+  if (parser_at(parser, T_STR))
   {
-    Syntax_Node *n = ND(STR, lc);
-    n->s = string_duplicate(p->current_token.literal);
-    parser_next(p);
+    Syntax_Node *node = ND(STR, location);
+    node->s = string_duplicate(parser->current_token.literal);
+    parser_next(parser);
     for (;;)
     {
-      if (parser_at(p, T_LP))
+      if (parser_at(parser, T_LP))
       {
-        parser_next(p);
-        Node_Vector v = {0};
+        parser_next(parser);
+        Node_Vector aggregate_vector = {0};
         do
         {
-          Node_Vector ch = {0};
-          Syntax_Node *e = parse_expression(p);
-          if (e->k == N_ID and parser_at(p, T_AR))
+          Node_Vector choices = {0};
+          Syntax_Node *expression = parse_expression(parser);
+          if (expression->k == N_ID and parser_at(parser, T_AR))
           {
-            parser_next(p);
-            Syntax_Node *a = ND(ASC, lc);
-            nv(&a->asc.ch, e);
-            a->asc.vl = parse_expression(p);
-            nv(&v, a);
+            parser_next(parser);
+            Syntax_Node *association = ND(ASC, location);
+            nv(&association->asc.ch, expression);
+            association->asc.vl = parse_expression(parser);
+            nv(&aggregate_vector, association);
           }
           else
           {
-            nv(&ch, e);
-            while (parser_match(p, T_BR))
-              nv(&ch, parse_expression(p));
-            if (parser_at(p, T_AR))
+            nv(&choices, expression);
+            while (parser_match(parser, T_BR))
+              nv(&choices, parse_expression(parser));
+            if (parser_at(parser, T_AR))
             {
-              parser_next(p);
-              Syntax_Node *vl = parse_expression(p);
-              for (uint32_t i = 0; i < ch.count; i++)
+              parser_next(parser);
+              Syntax_Node *value = parse_expression(parser);
+              for (uint32_t i = 0; i < choices.count; i++)
               {
-                Syntax_Node *a = ND(ASC, lc);
-                nv(&a->asc.ch, ch.data[i]);
-                a->asc.vl = vl;
-                nv(&v, a);
+                Syntax_Node *association = ND(ASC, location);
+                nv(&association->asc.ch, choices.data[i]);
+                association->asc.vl = value;
+                nv(&aggregate_vector, association);
               }
             }
             else
             {
-              if (ch.count == 1)
-                nv(&v, ch.data[0]);
+              if (choices.count == 1)
+                nv(&aggregate_vector, choices.data[0]);
               else
-                fatal_error(lc, "exp '=>'");
+                fatal_error(location, "exp '=>'");
             }
           }
-        } while (parser_match(p, T_CM));
-        parser_expect(p, T_RP);
-        Syntax_Node *m = ND(CL, lc);
-        m->cl.fn = n;
-        m->cl.ar = v;
-        n = m;
+        } while (parser_match(parser, T_CM));
+        parser_expect(parser, T_RP);
+        Syntax_Node *m = ND(CL, location);
+        m->cl.fn = node;
+        m->cl.ar = aggregate_vector;
+        node = m;
       }
       else
         break;
     }
-    return n;
+    return node;
   }
-  if (parser_at(p, T_ID))
-    return parse_name(p);
-  if (parser_match(p, T_NOT))
+  if (parser_at(parser, T_ID))
+    return parse_name(parser);
+  if (parser_match(parser, T_NOT))
   {
-    Syntax_Node *n = ND(UN, lc);
-    n->un.op = T_NOT;
-    n->un.x = parse_primary(p);
-    return n;
+    Syntax_Node *node = ND(UN, location);
+    node->un.op = T_NOT;
+    node->un.x = parse_primary(parser);
+    return node;
   }
-  if (parser_match(p, T_ABS))
+  if (parser_match(parser, T_ABS))
   {
-    Syntax_Node *n = ND(UN, lc);
-    n->un.op = T_ABS;
-    n->un.x = parse_primary(p);
-    return n;
+    Syntax_Node *node = ND(UN, location);
+    node->un.op = T_ABS;
+    node->un.x = parse_primary(parser);
+    return node;
   }
-  if (parser_match(p, T_ALL))
+  if (parser_match(parser, T_ALL))
   {
-    Syntax_Node *n = ND(DRF, lc);
-    n->drf.x = parse_primary(p);
-    return n;
+    Syntax_Node *node = ND(DRF, location);
+    node->drf.x = parse_primary(parser);
+    return node;
   }
-  fatal_error(lc, "exp expr");
+  fatal_error(location, "exp expr");
 }
 static Syntax_Node *parse_name(Parser *p)
 {
