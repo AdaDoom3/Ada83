@@ -4435,7 +4435,7 @@ typedef struct
   SLV ap;
   uint32_t uid_ctr;
 } Symbol_Manager;
-static uint32_t syh(String_Slice s)
+static uint32_t symbol_hash(String_Slice s)
 {
   return string_hash(s) & 4095;
 }
@@ -4452,7 +4452,7 @@ static Symbol *syn(String_Slice nm, uint8_t k, Type_Info *ty, Syntax_Node *df)
 }
 static Symbol *symbol_add_overload(Symbol_Manager *SM, Symbol *s)
 {
-  uint32_t h = syh(s->nm);
+  uint32_t h = symbol_hash(s->nm);
   s->hm = SM->sy[h];
   s->nx = SM->sy[h];
   s->sc = SM->sc;
@@ -4479,7 +4479,7 @@ static Symbol *symbol_add_overload(Symbol_Manager *SM, Symbol *s)
 static Symbol *symbol_find(Symbol_Manager *SM, String_Slice nm)
 {
   Symbol *imm = 0, *pot = 0;
-  uint32_t h = syh(nm);
+  uint32_t h = symbol_hash(nm);
   for (Symbol *s = SM->sy[h]; s; s = s->nx)
     if (string_equal_ignore_case(s->nm, nm))
     {
@@ -4499,7 +4499,7 @@ static Symbol *symbol_find(Symbol_Manager *SM, String_Slice nm)
 }
 static void sfu(Symbol_Manager *SM, Symbol *s, String_Slice nm)
 {
-  uint32_t h = syh(nm) & 63, b = 1ULL << (syh(nm) & 63);
+  uint32_t h = symbol_hash(nm) & 63, b = 1ULL << (symbol_hash(nm) & 63);
   if (SM->uv_vis[h] & b)
     return;
   SM->uv_vis[h] |= b;
@@ -4569,12 +4569,12 @@ static GT *gfnd(Symbol_Manager *SM, String_Slice nm)
   }
   return 0;
 }
-static int tysc(Type_Info *, Type_Info *, Type_Info *);
+static int type_scope(Type_Info *, Type_Info *, Type_Info *);
 static Symbol *symbol_find_with_arity(Symbol_Manager *SM, String_Slice nm, int na, Type_Info *tx)
 {
   Symbol_Vector cv = {0};
   int msc = -1;
-  for (Symbol *s = SM->sy[syh(nm)]; s; s = s->nx)
+  for (Symbol *s = SM->sy[symbol_hash(nm)]; s; s = s->nx)
     if (string_equal_ignore_case(s->nm, nm) and (s->vis & 3))
     {
       if (s->sc > msc)
@@ -4610,7 +4610,7 @@ static Symbol *symbol_find_with_arity(Symbol_Manager *SM, String_Slice nm, int n
               sc += 1000;
               if (tx and c->ty and c->ty->el)
               {
-                int ts = tysc(c->ty->el, tx, 0);
+                int ts = type_scope(c->ty->el, tx, 0);
                 sc += ts;
               }
               for (uint32_t k = 0; k < b->bd.sp->sp.pmm.count and k < (uint32_t) na; k++)
@@ -4618,7 +4618,7 @@ static Symbol *symbol_find_with_arity(Symbol_Manager *SM, String_Slice nm, int n
                 Syntax_Node *p = b->bd.sp->sp.pmm.data[k];
                 if (p->sy and p->sy->ty and tx)
                 {
-                  int ps = tysc(p->sy->ty, tx, 0);
+                  int ps = type_scope(p->sy->ty, tx, 0);
                   sc += ps;
                 }
               }
@@ -4638,7 +4638,7 @@ static Symbol *symbol_find_with_arity(Symbol_Manager *SM, String_Slice nm, int n
           sc = 500;
           if (tx)
           {
-            int ts = tysc(c->ty, tx, 0);
+            int ts = type_scope(c->ty, tx, 0);
             sc += ts;
           }
           if (sc > bs)
@@ -4672,7 +4672,7 @@ static Type_Info *tyn(Tk_ k, String_Slice nm)
 }
 static Type_Info *TY_INT, *TY_BOOL, *TY_CHAR, *TY_STR, *TY_FLT, *TY_UINT, *TY_UFLT, *TY_FILE,
     *TY_NAT, *TY_POS;
-static void smi(Symbol_Manager *SM)
+static void symbol_manager_init(Symbol_Manager *SM)
 {
   memset(SM, 0, sizeof(*SM));
   TY_INT = tyn(TYPE_INTEGER, STRING_LITERAL("INTEGER"));
@@ -4915,7 +4915,7 @@ static Syntax_Node *gin(Type_Info *t, Source_Location l)
   nv(&f->bd.st, rt);
   return ag->ag.it.count > 0 ? f : 0;
 }
-static void fty(Symbol_Manager *SM, Type_Info *t, Source_Location l)
+static void find_type(Symbol_Manager *SM, Type_Info *t, Source_Location l)
 {
   if (not t or t->frz)
     return;
@@ -4924,16 +4924,16 @@ static void fty(Symbol_Manager *SM, Type_Info *t, Source_Location l)
   t->frz = 1;
   t->fzn = ND(ERR, l);
   if (t->bs and t->bs != t and not t->bs->frz)
-    fty(SM, t->bs, l);
+    find_type(SM, t->bs, l);
   if (t->prt and not t->prt->frz)
-    fty(SM, t->prt, l);
+    find_type(SM, t->prt, l);
   if (t->el and not t->el->frz)
-    fty(SM, t->el, l);
+    find_type(SM, t->el, l);
   if (t->k == TYPE_RECORD)
   {
     for (uint32_t i = 0; i < t->cm.count; i++)
       if (t->cm.data[i]->sy and t->cm.data[i]->sy->ty)
-        fty(SM, t->cm.data[i]->sy->ty, l);
+        find_type(SM, t->cm.data[i]->sy->ty, l);
     uint32_t of = 0, mx = 1;
     for (uint32_t i = 0; i < t->cm.count; i++)
     {
@@ -4972,14 +4972,14 @@ static void fty(Symbol_Manager *SM, Type_Info *t, Source_Location l)
       nv(&t->ops, in);
   }
 }
-static void fsy(Symbol_Manager *SM, Symbol *s, Source_Location l)
+static void find_symbol(Symbol_Manager *SM, Symbol *s, Source_Location l)
 {
   if (not s or s->frz)
     return;
   s->frz = 1;
   s->fzn = ND(ERR, l);
   if (s->ty and not s->ty->frz)
-    fty(SM, s->ty, l);
+    find_type(SM, s->ty, l);
 }
 static void fal(Symbol_Manager *SM, Source_Location l)
 {
@@ -4990,8 +4990,8 @@ static void fal(Symbol_Manager *SM, Source_Location l)
         if (s->ty and s->ty->k == TY_PT and s->ty->prt and not s->ty->prt->frz)
           continue;
         if (s->ty)
-          fty(SM, s->ty, l);
-        fsy(SM, s, l);
+          find_type(SM, s->ty, l);
+        find_symbol(SM, s, l);
       }
 }
 static void scp(Symbol_Manager *SM)
@@ -5162,7 +5162,7 @@ static CompatKind type_compat_kind(Type_Info *a, Type_Info *b)
     return type_compat_kind(a, b->prt);
   return COMP_NONE;
 }
-static int tysc(Type_Info *a, Type_Info *b, Type_Info *tx)
+static int type_scope(Type_Info *a, Type_Info *b, Type_Info *tx)
 {
   CompatKind k = type_compat_kind(a, b);
   switch (k)
@@ -5174,9 +5174,9 @@ static int tysc(Type_Info *a, Type_Info *b, Type_Info *tx)
   case COMP_BASED_ON:
     return 800;
   case COMP_ARRAY_ELEMENT:
-    return 600 + tysc(a->el, b->el, tx);
+    return 600 + type_scope(a->el, b->el, tx);
   case COMP_ACCESS_DESIGNATED:
-    return 500 + tysc(a->el, b->el, 0);
+    return 500 + type_scope(a->el, b->el, 0);
   default:
     break;
   }
@@ -5548,7 +5548,7 @@ static Symbol *scl(Symbol_Manager *SM, char c, Type_Info *tx)
   }
   if (tx and tx->k == TYPE_DERIVED and tx->prt)
     return scl(SM, c, tx->prt);
-  for (Symbol *s = SM->sy[syh((String_Slice){&c, 1})]; s; s = s->nx)
+  for (Symbol *s = SM->sy[symbol_hash((String_Slice){&c, 1})]; s; s = s->nx)
     if (s->nm.length == 1 and tolower(s->nm.string[0]) == tolower(c) and s->k == 2 and s->ty
         and (s->ty->k == TYPE_ENUMERATION or (s->ty->k == TYPE_DERIVED and s->ty->prt and s->ty->prt->k == TYPE_ENUMERATION)))
       return s;
@@ -7353,7 +7353,7 @@ static Symbol *get_pkg_sym(Symbol_Manager *SM, Syntax_Node *pk)
   String_Slice nm = pk->k == N_PKS ? pk->ps.nm : pk->sy->nm;
   if (not nm.string or nm.length == 0)
     return 0;
-  uint32_t h = syh(nm);
+  uint32_t h = symbol_hash(nm);
   for (Symbol *s = SM->sy[h]; s; s = s->nx)
     if (s->k == 6 and string_equal_ignore_case(s->nm, nm) and s->lv == 0)
       return s;
@@ -8295,7 +8295,7 @@ static void parse_package_specification(Symbol_Manager *SM, String_Slice nm, con
     return;
   pks2(SM, nm, src);
 }
-static void smu(Symbol_Manager *SM, Syntax_Node *n)
+static void symbol_manager_use_clauses(Symbol_Manager *SM, Syntax_Node *n)
 {
   if (n->k != N_CU)
     return;
@@ -13856,7 +13856,7 @@ static LU *lfnd(Symbol_Manager *SM, String_Slice nm)
   }
   return 0;
 }
-static uint64_t fts(const char *p)
+static uint64_t find_type_symbol(const char *p)
 {
   struct stat s;
   if (stat(p, &s))
@@ -13902,7 +13902,7 @@ static void wali(Symbol_Manager *SM, const char *fn, Syntax_Node *cu)
       int n = snprintf(pf, 256, "%.*s", (int) w->wt.nm.length, w->wt.nm.string);
       for (int j = 0; j < n; j++)
         pf[j] = tolower(pf[j]);
-      uint64_t ts = fts(pf);
+      uint64_t ts = find_type_symbol(pf);
       fprintf(f, "W %.*s %lu\n", (int) w->wt.nm.length, w->wt.nm.string, (unsigned long) ts);
     }
   for (int i = 0; i < SM->dpn; i++)
@@ -14017,10 +14017,10 @@ static bool lcmp(Symbol_Manager *SM, String_Slice nm, String_Slice pth)
   if (not cu)
     return false;
   Symbol_Manager sm;
-  smi(&sm);
+  symbol_manager_init(&sm);
   sm.lu = SM->lu;
   sm.gt = SM->gt;
-  smu(&sm, cu);
+  symbol_manager_use_clauses(&sm, cu);
   char op[512];
   snprintf(op, 512, "%.*s.ll", (int) pth.length, pth.string);
   FILE *o = fopen(op, "w");
@@ -14137,7 +14137,7 @@ static bool lcmp(Symbol_Manager *SM, String_Slice nm, String_Slice pth)
   fclose(o);
   LU *l = label_use_new(cu->cu.un.count > 0 ? cu->cu.un.data[0]->k : 0, nm, pth);
   l->cmpl = true;
-  l->ts = fts(fp);
+  l->ts = find_type_symbol(fp);
   lv(&SM->lu, l);
   return true;
 }
@@ -14170,7 +14170,7 @@ int main(int ac, char **av)
   if (p.error_count or not cu)
     return 1;
   Symbol_Manager sm;
-  smi(&sm);
+  symbol_manager_init(&sm);
   {
     const char *asrc = lkp(&sm, STRING_LITERAL("ascii"));
     if (asrc)
@@ -14215,7 +14215,7 @@ int main(int ac, char **av)
           ld = 1;
       }
     }
-  smu(&sm, cu);
+  symbol_manager_use_clauses(&sm, cu);
   {
     char pth[520];
     strncpy(pth, inf, 512);
