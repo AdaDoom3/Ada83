@@ -1579,7 +1579,7 @@ struct Representation_Clause
     struct
     {
       String_Slice name;
-      Node_Vector cp;
+      Node_Vector components;
     } rr;
     struct
     {
@@ -6693,9 +6693,9 @@ static void runtime_register_compare(Symbol_Manager *symbol_manager, Representat
     if (ts and ts->ty)
     {
       Type_Info *t = type_canonical_concrete(ts->ty);
-      for (uint32_t i = 0; i < r->rr.cp.count; i++)
+      for (uint32_t i = 0; i < r->rr.components.count; i++)
       {
-        Syntax_Node *e = r->rr.cp.data[i];
+        Syntax_Node *e = r->rr.components.data[i];
         for (uint32_t j = 0; j < t->enum_values.count; j++)
         {
           Symbol *ev = t->enum_values.data[j];
@@ -6726,9 +6726,9 @@ static void runtime_register_compare(Symbol_Manager *symbol_manager, Representat
     {
       Type_Info *t = type_canonical_concrete(s->ty);
       uint32_t bt = 0;
-      for (uint32_t i = 0; i < r->rr.cp.count; i++)
+      for (uint32_t i = 0; i < r->rr.components.count; i++)
       {
-        Syntax_Node *cp = r->rr.cp.data[i];
+        Syntax_Node *cp = r->rr.components.data[i];
         for (uint32_t j = 0; j < t->components.count; j++)
         {
           Syntax_Node *c = t->components.data[j];
