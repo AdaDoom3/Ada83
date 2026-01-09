@@ -2164,130 +2164,130 @@ static Syntax_Node *parse_name(Parser *p)
   }
   return n;
 }
-static Syntax_Node *parse_power_expression(Parser *p)
+static Syntax_Node *parse_power_expression(Parser *parser)
 {
-  Syntax_Node *n = parse_primary(p);
-  if (parser_match(p, T_EX))
+  Syntax_Node *node = parse_primary(parser);
+  if (parser_match(parser, T_EX))
   {
-    Source_Location lc = parser_location(p);
-    Syntax_Node *m = ND(BIN, lc);
-    m->bn.op = T_EX;
-    m->bn.l = n;
-    m->bn.r = parse_power_expression(p);
-    return m;
+    Source_Location location = parser_location(parser);
+    Syntax_Node *binary_node = ND(BIN, location);
+    binary_node->bn.op = T_EX;
+    binary_node->bn.l = node;
+    binary_node->bn.r = parse_power_expression(parser);
+    return binary_node;
   }
-  return n;
+  return node;
 }
-static Syntax_Node *parse_term(Parser *p)
+static Syntax_Node *parse_term(Parser *parser)
 {
-  Syntax_Node *n = parse_power_expression(p);
-  while (parser_at(p, T_ST) or parser_at(p, T_SL) or parser_at(p, T_MOD) or parser_at(p, T_REM))
+  Syntax_Node *node = parse_power_expression(parser);
+  while (parser_at(parser, T_ST) or parser_at(parser, T_SL) or parser_at(parser, T_MOD) or parser_at(parser, T_REM))
   {
-    Token_Kind op = p->current_token.kind;
-    parser_next(p);
-    Source_Location lc = parser_location(p);
-    Syntax_Node *m = ND(BIN, lc);
-    m->bn.op = op;
-    m->bn.l = n;
-    m->bn.r = parse_power_expression(p);
-    n = m;
+    Token_Kind operator = parser->current_token.kind;
+    parser_next(parser);
+    Source_Location location = parser_location(parser);
+    Syntax_Node *binary_node = ND(BIN, location);
+    binary_node->bn.op = operator;
+    binary_node->bn.l = node;
+    binary_node->bn.r = parse_power_expression(parser);
+    node = binary_node;
   }
-  return n;
+  return node;
 }
-static Syntax_Node *parse_signed_term(Parser *p)
+static Syntax_Node *parse_signed_term(Parser *parser)
 {
-  Source_Location lc = parser_location(p);
-  Token_Kind un = 0;
-  if (parser_match(p, T_MN))
-    un = T_MN;
-  else if (parser_match(p, T_PL))
-    un = T_PL;
-  Syntax_Node *n = parse_term(p);
-  if (un)
+  Source_Location location = parser_location(parser);
+  Token_Kind unary_operator = 0;
+  if (parser_match(parser, T_MN))
+    unary_operator = T_MN;
+  else if (parser_match(parser, T_PL))
+    unary_operator = T_PL;
+  Syntax_Node *node = parse_term(parser);
+  if (unary_operator)
   {
-    Syntax_Node *m = ND(UN, lc);
-    m->un.op = un;
-    m->un.x = n;
-    n = m;
+    Syntax_Node *unary_node = ND(UN, location);
+    unary_node->un.op = unary_operator;
+    unary_node->un.x = node;
+    node = unary_node;
   }
-  while (parser_at(p, T_PL) or parser_at(p, T_MN) or parser_at(p, T_AM))
+  while (parser_at(parser, T_PL) or parser_at(parser, T_MN) or parser_at(parser, T_AM))
   {
-    Token_Kind op = p->current_token.kind;
-    parser_next(p);
-    lc = parser_location(p);
-    Syntax_Node *m = ND(BIN, lc);
-    m->bn.op = op;
-    m->bn.l = n;
-    m->bn.r = parse_term(p);
-    n = m;
+    Token_Kind operator = parser->current_token.kind;
+    parser_next(parser);
+    location = parser_location(parser);
+    Syntax_Node *binary_node = ND(BIN, location);
+    binary_node->bn.op = operator;
+    binary_node->bn.l = node;
+    binary_node->bn.r = parse_term(parser);
+    node = binary_node;
   }
-  return n;
+  return node;
 }
-static Syntax_Node *parse_relational(Parser *p)
+static Syntax_Node *parse_relational(Parser *parser)
 {
-  Syntax_Node *n = parse_signed_term(p);
-  if (parser_match(p, T_DD))
+  Syntax_Node *node = parse_signed_term(parser);
+  if (parser_match(parser, T_DD))
   {
-    Source_Location lc = parser_location(p);
-    Syntax_Node *m = ND(RN, lc);
-    m->rn.lo = n;
-    m->rn.hi = parse_signed_term(p);
-    return m;
+    Source_Location location = parser_location(parser);
+    Syntax_Node *binary_node = ND(RN, location);
+    binary_node->rn.lo = node;
+    binary_node->rn.hi = parse_signed_term(parser);
+    return binary_node;
   }
-  if (parser_at(p, T_EQ) or parser_at(p, T_NE) or parser_at(p, T_LT) or parser_at(p, T_LE)
-      or parser_at(p, T_GT) or parser_at(p, T_GE) or parser_at(p, T_IN) or parser_at(p, T_NOT))
+  if (parser_at(parser, T_EQ) or parser_at(parser, T_NE) or parser_at(parser, T_LT) or parser_at(parser, T_LE)
+      or parser_at(parser, T_GT) or parser_at(parser, T_GE) or parser_at(parser, T_IN) or parser_at(parser, T_NOT))
   {
-    Token_Kind op = p->current_token.kind;
-    parser_next(p);
-    if (op == T_NOT)
-      parser_expect(p, T_IN);
-    Source_Location lc = parser_location(p);
-    Syntax_Node *m = ND(BIN, lc);
-    m->bn.op = op;
-    m->bn.l = n;
-    if (op == T_IN or op == T_NOT)
-      m->bn.r = parse_range(p);
+    Token_Kind operator = parser->current_token.kind;
+    parser_next(parser);
+    if (operator == T_NOT)
+      parser_expect(parser, T_IN);
+    Source_Location location = parser_location(parser);
+    Syntax_Node *binary_node = ND(BIN, location);
+    binary_node->bn.op = operator;
+    binary_node->bn.l = node;
+    if (operator == T_IN or operator == T_NOT)
+      binary_node->bn.r = parse_range(parser);
     else
-      m->bn.r = parse_signed_term(p);
-    return m;
+      binary_node->bn.r = parse_signed_term(parser);
+    return binary_node;
   }
-  return n;
+  return node;
 }
-static Syntax_Node *parse_and_expression(Parser *p)
+static Syntax_Node *parse_and_expression(Parser *parser)
 {
-  Syntax_Node *n = parse_relational(p);
-  while (parser_at(p, T_AND) or parser_at(p, T_ATHN))
+  Syntax_Node *node = parse_relational(parser);
+  while (parser_at(parser, T_AND) or parser_at(parser, T_ATHN))
   {
-    Token_Kind op = p->current_token.kind;
-    parser_next(p);
-    Source_Location lc = parser_location(p);
-    Syntax_Node *m = ND(BIN, lc);
-    m->bn.op = op;
-    m->bn.l = n;
-    m->bn.r = parse_relational(p);
-    n = m;
+    Token_Kind operator = parser->current_token.kind;
+    parser_next(parser);
+    Source_Location location = parser_location(parser);
+    Syntax_Node *binary_node = ND(BIN, location);
+    binary_node->bn.op = operator;
+    binary_node->bn.l = node;
+    binary_node->bn.r = parse_relational(parser);
+    node = binary_node;
   }
-  return n;
+  return node;
 }
-static Syntax_Node *parse_or_expression(Parser *p)
+static Syntax_Node *parse_or_expression(Parser *parser)
 {
-  Syntax_Node *n = parse_and_expression(p);
-  while (parser_at(p, T_OR) or parser_at(p, T_OREL) or parser_at(p, T_XOR))
+  Syntax_Node *node = parse_and_expression(parser);
+  while (parser_at(parser, T_OR) or parser_at(parser, T_OREL) or parser_at(parser, T_XOR))
   {
-    Token_Kind op = p->current_token.kind;
-    parser_next(p);
-    Source_Location lc = parser_location(p);
-    Syntax_Node *m = ND(BIN, lc);
-    m->bn.op = op;
-    m->bn.l = n;
-    m->bn.r = parse_and_expression(p);
-    n = m;
+    Token_Kind operator = parser->current_token.kind;
+    parser_next(parser);
+    Source_Location location = parser_location(parser);
+    Syntax_Node *binary_node = ND(BIN, location);
+    binary_node->bn.op = operator;
+    binary_node->bn.l = node;
+    binary_node->bn.r = parse_and_expression(parser);
+    node = binary_node;
   }
-  return n;
+  return node;
 }
-static Syntax_Node *parse_expression(Parser *p)
+static Syntax_Node *parse_expression(Parser *parser)
 {
-  return parse_or_expression(p);
+  return parse_or_expression(parser);
 }
 static Syntax_Node *parse_range(Parser *p)
 {
