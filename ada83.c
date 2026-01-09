@@ -2673,127 +2673,127 @@ static Syntax_Node *parse_generic_formal(Parser *p)
   }
   return n;
 }
-static Syntax_Node *pif(Parser *p)
+static Syntax_Node *parse_if(Parser *parser)
 {
-  Source_Location lc = parser_location(p);
-  parser_expect(p, T_IF);
-  Syntax_Node *n = ND(IF, lc);
-  n->if_.cd = parse_expression(p);
-  parser_expect(p, T_THEN);
-  while (not parser_at(p, T_ELSIF) and not parser_at(p, T_ELSE) and not parser_at(p, T_END))
-    nv(&n->if_.th, parse_statement_or_label(p));
-  while (parser_match(p, T_ELSIF))
+  Source_Location location = parser_location(parser);
+  parser_expect(parser, T_IF);
+  Syntax_Node *node = ND(IF, location);
+  node->if_.cd = parse_expression(parser);
+  parser_expect(parser, T_THEN);
+  while (not parser_at(parser, T_ELSIF) and not parser_at(parser, T_ELSE) and not parser_at(parser, T_END))
+    nv(&node->if_.th, parse_statement_or_label(parser));
+  while (parser_match(parser, T_ELSIF))
   {
-    Syntax_Node *e = ND(EL, lc);
-    e->if_.cd = parse_expression(p);
-    parser_expect(p, T_THEN);
-    while (not parser_at(p, T_ELSIF) and not parser_at(p, T_ELSE) and not parser_at(p, T_END))
-      nv(&e->if_.th, parse_statement_or_label(p));
-    nv(&n->if_.ei, e);
+    Syntax_Node *elsif_node = ND(EL, location);
+    elsif_node->if_.cd = parse_expression(parser);
+    parser_expect(parser, T_THEN);
+    while (not parser_at(parser, T_ELSIF) and not parser_at(parser, T_ELSE) and not parser_at(parser, T_END))
+      nv(&elsif_node->if_.th, parse_statement_or_label(parser));
+    nv(&node->if_.ei, elsif_node);
   }
-  if (parser_match(p, T_ELSE))
-    while (not parser_at(p, T_END))
-      nv(&n->if_.el, parse_statement_or_label(p));
-  parser_expect(p, T_END);
-  parser_expect(p, T_IF);
-  parser_expect(p, T_SC);
-  return n;
+  if (parser_match(parser, T_ELSE))
+    while (not parser_at(parser, T_END))
+      nv(&node->if_.el, parse_statement_or_label(parser));
+  parser_expect(parser, T_END);
+  parser_expect(parser, T_IF);
+  parser_expect(parser, T_SC);
+  return node;
 }
-static Syntax_Node *pcs(Parser *p)
+static Syntax_Node *parse_case(Parser *parser)
 {
-  Source_Location lc = parser_location(p);
-  parser_expect(p, T_CSE);
-  Syntax_Node *n = ND(CS, lc);
-  n->cs.ex = parse_expression(p);
-  parser_expect(p, T_IS);
-  while (parser_at(p, T_PGM))
-    parse_representation_clause(p);
-  while (parser_match(p, T_WHN))
+  Source_Location location = parser_location(parser);
+  parser_expect(parser, T_CSE);
+  Syntax_Node *node = ND(CS, location);
+  node->cs.ex = parse_expression(parser);
+  parser_expect(parser, T_IS);
+  while (parser_at(parser, T_PGM))
+    parse_representation_clause(parser);
+  while (parser_match(parser, T_WHN))
   {
-    Syntax_Node *a = ND(WH, lc);
+    Syntax_Node *a = ND(WH, location);
     do
     {
-      Syntax_Node *e = parse_expression(p);
-      if (e->k == N_ID and parser_match(p, T_RNG))
+      Syntax_Node *elsif_node = parse_expression(parser);
+      if (elsif_node->k == N_ID and parser_match(parser, T_RNG))
       {
-        Syntax_Node *r = parse_range(p);
+        Syntax_Node *r = parse_range(parser);
         nv(&a->ch.it, r);
       }
-      else if (parser_match(p, T_DD))
+      else if (parser_match(parser, T_DD))
       {
-        Syntax_Node *r = ND(RN, lc);
-        r->rn.lo = e;
-        r->rn.hi = parse_expression(p);
+        Syntax_Node *r = ND(RN, location);
+        r->rn.lo = elsif_node;
+        r->rn.hi = parse_expression(parser);
         nv(&a->ch.it, r);
       }
       else
-        nv(&a->ch.it, e);
-    } while (parser_match(p, T_BR));
-    parser_expect(p, T_AR);
-    while (not parser_at(p, T_WHN) and not parser_at(p, T_END))
-      nv(&a->hnd.stz, parse_statement_or_label(p));
-    nv(&n->cs.al, a);
+        nv(&a->ch.it, elsif_node);
+    } while (parser_match(parser, T_BR));
+    parser_expect(parser, T_AR);
+    while (not parser_at(parser, T_WHN) and not parser_at(parser, T_END))
+      nv(&a->hnd.stz, parse_statement_or_label(parser));
+    nv(&node->cs.al, a);
   }
-  parser_expect(p, T_END);
-  parser_expect(p, T_CSE);
-  parser_expect(p, T_SC);
-  return n;
+  parser_expect(parser, T_END);
+  parser_expect(parser, T_CSE);
+  parser_expect(parser, T_SC);
+  return node;
 }
-static Syntax_Node *plp(Parser *p, String_Slice lb)
+static Syntax_Node *parse_loop(Parser *parser, String_Slice label)
 {
-  Source_Location lc = parser_location(p);
-  Syntax_Node *n = ND(LP, lc);
-  n->lp.lb = lb;
-  if (parser_match(p, T_WHI))
-    n->lp.it = parse_expression(p);
-  else if (parser_match(p, T_FOR))
+  Source_Location location = parser_location(parser);
+  Syntax_Node *node = ND(LP, location);
+  node->lp.lb = label;
+  if (parser_match(parser, T_WHI))
+    node->lp.it = parse_expression(parser);
+  else if (parser_match(parser, T_FOR))
   {
-    String_Slice vr = parser_identifier(p);
-    parser_expect(p, T_IN);
-    n->lp.rv = parser_match(p, T_REV);
-    Syntax_Node *rng = parse_range(p);
-    if (parser_match(p, T_RNG))
+    String_Slice vr = parser_identifier(parser);
+    parser_expect(parser, T_IN);
+    node->lp.rv = parser_match(parser, T_REV);
+    Syntax_Node *rng = parse_range(parser);
+    if (parser_match(parser, T_RNG))
     {
-      Syntax_Node *r = ND(RN, lc);
-      r->rn.lo = parse_signed_term(p);
-      parser_expect(p, T_DD);
-      r->rn.hi = parse_signed_term(p);
+      Syntax_Node *r = ND(RN, location);
+      r->rn.lo = parse_signed_term(parser);
+      parser_expect(parser, T_DD);
+      r->rn.hi = parse_signed_term(parser);
       rng = r;
     }
-    Syntax_Node *it = ND(BIN, lc);
+    Syntax_Node *it = ND(BIN, location);
     it->bn.op = T_IN;
-    it->bn.l = ND(ID, lc);
+    it->bn.l = ND(ID, location);
     it->bn.l->s = vr;
     it->bn.r = rng;
-    n->lp.it = it;
+    node->lp.it = it;
   }
-  parser_expect(p, T_LOOP);
-  while (not parser_at(p, T_END))
-    nv(&n->lp.st, parse_statement_or_label(p));
-  parser_expect(p, T_END);
-  parser_expect(p, T_LOOP);
-  if (parser_at(p, T_ID))
-    parser_next(p);
-  parser_expect(p, T_SC);
-  return n;
+  parser_expect(parser, T_LOOP);
+  while (not parser_at(parser, T_END))
+    nv(&node->lp.st, parse_statement_or_label(parser));
+  parser_expect(parser, T_END);
+  parser_expect(parser, T_LOOP);
+  if (parser_at(parser, T_ID))
+    parser_next(parser);
+  parser_expect(parser, T_SC);
+  return node;
 }
-static Syntax_Node *pbk(Parser *p, String_Slice lb)
+static Syntax_Node *parse_block(Parser *parser, String_Slice label)
 {
-  Source_Location lc = parser_location(p);
-  Syntax_Node *n = ND(BL, lc);
-  n->bk.lb = lb;
-  if (parser_match(p, T_DEC))
-    n->bk.dc = parse_declarative_part(p);
-  parser_expect(p, T_BEG);
-  while (not parser_at(p, T_EXCP) and not parser_at(p, T_END))
-    nv(&n->bk.st, parse_statement_or_label(p));
-  if (parser_match(p, T_EXCP))
-    n->bk.hd = parse_handle_declaration(p);
-  parser_expect(p, T_END);
-  if (parser_at(p, T_ID))
-    parser_next(p);
-  parser_expect(p, T_SC);
-  return n;
+  Source_Location location = parser_location(parser);
+  Syntax_Node *node = ND(BL, location);
+  node->bk.lb = label;
+  if (parser_match(parser, T_DEC))
+    node->bk.dc = parse_declarative_part(parser);
+  parser_expect(parser, T_BEG);
+  while (not parser_at(parser, T_EXCP) and not parser_at(parser, T_END))
+    nv(&node->bk.st, parse_statement_or_label(parser));
+  if (parser_match(parser, T_EXCP))
+    node->bk.hd = parse_handle_declaration(parser);
+  parser_expect(parser, T_END);
+  if (parser_at(parser, T_ID))
+    parser_next(parser);
+  parser_expect(parser, T_SC);
+  return node;
 }
 static Syntax_Node *parse_statement_list(Parser *parser)
 {
@@ -3001,15 +3001,15 @@ static Syntax_Node *parse_statement_or_label(Parser *parser)
     slv(&parser->label_stack, label);
   }
   if (parser_at(parser, T_IF))
-    return pif(parser);
+    return parse_if(parser);
   if (parser_at(parser, T_CSE))
-    return pcs(parser);
+    return parse_case(parser);
   if (parser_at(parser, T_SEL))
     return parse_statement_list(parser);
   if (parser_at(parser, T_LOOP) or parser_at(parser, T_WHI) or parser_at(parser, T_FOR))
-    return plp(parser, label);
+    return parse_loop(parser, label);
   if (parser_at(parser, T_DEC) or parser_at(parser, T_BEG))
-    return pbk(parser, label);
+    return parse_block(parser, label);
   if (label.string)
   {
     Syntax_Node *block = ND(BL, location);
