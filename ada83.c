@@ -2492,7 +2492,7 @@ static Syntax_Node *pfs(Parser *p)
   return n;
 }
 static Syntax_Node *ptd(Parser *p);
-static Node_Vector pgfp(Parser *p)
+static Node_Vector parse_generic_formal_part(Parser *p)
 {
   Node_Vector v = {0};
   while (not parser_at(p, T_PROC) and not parser_at(p, T_FUN) and not parser_at(p, T_PKG))
@@ -2632,7 +2632,7 @@ static Syntax_Node *pgf(Parser *p)
   Source_Location lc = parser_location(p);
   parser_expect(p, T_GEN);
   Syntax_Node *n = ND(GEN, lc);
-  n->gen.fp = pgfp(p);
+  n->gen.fp = parse_generic_formal_part(p);
   if (parser_at(p, T_PROC))
   {
     Syntax_Node *sp = pps_(p);
@@ -8430,11 +8430,11 @@ static int normalize_name(Code_Generator *g)
 {
   return ++g->md;
 }
-static void lmd(FILE *o, int id)
+static void emit_loop_metadata(FILE *o, int id)
 {
   fprintf(o, ", not llvm.loop !%d", id);
 }
-static void emd(Code_Generator *g)
+static void emit_all_metadata(Code_Generator *g)
 {
   for (int i = 1; i <= g->md; i++)
   {
@@ -11783,7 +11783,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
     if (lmd_id)
     {
       fprintf(o, "  br label %%Source_Location%d", lb);
-      lmd(o, lmd_id);
+      emit_loop_metadata(o, lmd_id);
       fprintf(o, "\n");
     }
     else
@@ -13829,7 +13829,7 @@ static char *rf(const char *p)
   fclose(f);
   return b;
 }
-static void prf(Code_Generator *g, Symbol_Manager *sm)
+static void print_forward_declarations(Code_Generator *g, Symbol_Manager *sm)
 {
   for (int h = 0; h < 4096; h++)
     for (Symbol *s = sm->sy[h]; s; s = s->nx)
@@ -14026,7 +14026,7 @@ static bool label_compare(Symbol_Manager *SM, String_Slice nm, String_Slice pth)
   FILE *o = fopen(op, "w");
   Code_Generator g = {o, 0, 0, 0, &sm, {0}, 0, {0}, 0, {0}, 0, {0}, 0, {0}, {0}, {0}};
   generate_runtime_type(&g);
-  prf(&g, &sm);
+  print_forward_declarations(&g, &sm);
   for (int h = 0; h < 4096; h++)
     for (Symbol *s = sm.sy[h]; s; s = s->nx)
       if ((s->k == 0 or s->k == 2) and s->lv == 0 and s->pr and not s->ext and s->ol.count == 0)
@@ -14133,7 +14133,7 @@ static bool label_compare(Symbol_Manager *SM, String_Slice nm, String_Slice pth)
   }
   for (uint32_t i = 0; i < sm.ib.count; i++)
     generate_expression_llvm(&g, sm.ib.data[i]);
-  emd(&g);
+  emit_all_metadata(&g);
   fclose(o);
   LU *l = label_use_new(cu->cu.un.count > 0 ? cu->cu.un.data[0]->k : 0, nm, pth);
   l->cmpl = true;
@@ -14323,7 +14323,7 @@ int main(int ac, char **av)
           }
         }
       }
-  prf(&g, &sm);
+  print_forward_declarations(&g, &sm);
   for (uint32_t i = 0; i < sm.eo; i++)
     for (uint32_t j = 0; j < 4096; j++)
       for (Symbol *s = sm.sy[j]; s; s = s->nx)
@@ -14368,7 +14368,7 @@ int main(int ac, char **av)
       break;
     }
   }
-  emd(&g);
+  emit_all_metadata(&g);
   if (o != stdout)
     fclose(o);
   of[strlen(of) - 3] = 0;
