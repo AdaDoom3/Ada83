@@ -50,27 +50,6 @@ typedef struct
 {
   Unsigned_Big_Integer *numerator, *denominator;
 } Rational_Number;
-typedef struct
-{
-  void *data;
-  void *bounds;
-} Fat_Pointer;
-typedef struct
-{
-  int64_t low_bound, high_bound;
-} Array_Bounds;
-typedef struct
-{
-  pthread_mutex_t mutex;
-  pthread_cond_t condition;
-  int count, maximum;
-} Thread_Queue;
-typedef struct
-{
-  pthread_t thread;
-  Thread_Queue *queue;
-  void *data;
-} Thread_Args;
 static Unsigned_Big_Integer *unsigned_bigint_new(uint32_t c)
 {
   Unsigned_Big_Integer *u = malloc(sizeof(Unsigned_Big_Integer));
