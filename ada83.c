@@ -3684,7 +3684,7 @@ static Syntax_Node *pdl(Parser *p)
         Syntax_Node *dd = 0;
         if (parser_match(p, T_AS))
           dd = parse_expression(p);
-        for (uint32_t i = 0; i < dn.count; i++)
+        for (uint32_t i = 0; i < dn.length; i++)
         {
           Syntax_Node *dp = ND(DS, lc);
           dp->pm.nm = dn.data[i]->s;
@@ -6874,7 +6874,7 @@ static void ncsv(Node_Vector *d, Node_Vector *s, Node_Vector *fp, Node_Vector *a
   if (not s)
   {
     d->count = 0;
-    d->c = 0;
+    d->capacity = 0;
     d->data = 0;
     return;
   }
@@ -6884,14 +6884,14 @@ static void ncsv(Node_Vector *d, Node_Vector *s, Node_Vector *fp, Node_Vector *a
   if (sn == 0 or not s->data)
   {
     d->count = 0;
-    d->c = 0;
+    d->capacity = 0;
     d->data = 0;
     return;
   }
   if (sn > 100000)
   {
     d->count = 0;
-    d->c = 0;
+    d->capacity = 0;
     d->data = 0;
     return;
   }
@@ -6899,13 +6899,13 @@ static void ncsv(Node_Vector *d, Node_Vector *s, Node_Vector *fp, Node_Vector *a
   if (not sd)
   {
     d->count = 0;
-    d->c = 0;
+    d->capacity = 0;
     d->data = 0;
     return;
   }
   memcpy(sd, s->data, sn * sizeof(Syntax_Node *));
   d->count = 0;
-  d->c = 0;
+  d->capacity = 0;
   d->data = 0;
   for (uint32_t i = 0; i < sn; i++)
   {
@@ -7904,9 +7904,9 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
         Parser _p = pnw(_src, strlen(_src), _af);
         Syntax_Node *_cu = pcu(&_p);
         if (_cu)
-          for (uint32_t _i = 0; _i < _cu->cu.un.n; _i++)
+          for (uint32_t _i = 0; _i < _cu->cu.un.count; _i++)
           {
-            Syntax_Node *_u = _cu->cu.un.d[_i];
+            Syntax_Node *_u = _cu->cu.un.data[_i];
             Syntax_Node *_pk = _u->k == N_PKS ? _u
                                : _u->k == N_GEN and _u->gen.un and _u->gen.un->k == N_PKS
                                    ? _u->gen.un
@@ -8136,10 +8136,10 @@ static void rali(Symbol_Manager *SM, const char *pth)
       while (*e and *e != ' ' and *e != '\n')
         e++;
       String_Slice dn = {l + 2, e - (l + 2)};
-      char *c = arena_allocate(dn.count + 1);
-      memcpy(c, dn.string, dn.count);
-      c[dn.count] = 0;
-      slv(&ds, (String_Slice){c, dn.count});
+      char *c = arena_allocate(dn.length + 1);
+      memcpy(c, dn.string, dn.length);
+      c[dn.length] = 0;
+      slv(&ds, (String_Slice){c, dn.length});
     }
     else if (*l == 'X' and l[1] == ' ')
     {
@@ -8150,7 +8150,7 @@ static void rali(Symbol_Manager *SM, const char *pth)
       bool isp = 0;
       int pc = 0;
       char mn[256], *m = mn;
-      for (uint32_t i = 0; i < sn.count and i < 250;)
+      for (uint32_t i = 0; i < sn.length and i < 250;)
         *m++ = sn.string[i++];
       for (char *t = e; *t and *t != '\n';)
       {
@@ -8262,9 +8262,9 @@ static Syntax_Node *pks2(Symbol_Manager *SM, String_Slice nm, const char *src)
     for (uint32_t i = 0; i < cu->cu.cx->cx.wt.count; i++)
       pks2(SM, cu->cu.cx->cx.wt.data[i]->wt.nm, lkp(SM, cu->cu.cx->cx.wt.data[i]->wt.nm));
   }
-  for (uint32_t i = 0; cu and i < cu->cu.un.n; i++)
+  for (uint32_t i = 0; cu and i < cu->cu.un.count; i++)
   {
-    Syntax_Node *u = cu->cu.un.d[i];
+    Syntax_Node *u = cu->cu.un.data[i];
     if (u->k == N_PKS)
     {
       Type_Info *t = tyn(TY_P, nm);
@@ -8340,27 +8340,27 @@ static void smu(Symbol_Manager *SM, Syntax_Node *n)
       }
     }
   }
-  for (uint32_t i = 0; i < n->cu.un.n; i++)
+  for (uint32_t i = 0; i < n->cu.un.count; i++)
   {
     Symbol_Vector eo = {0};
     int mx = 0;
-    if (n->cu.un.d[i]->k == N_PKS)
-      for (uint32_t j = 0; j < n->cu.un.d[i]->ps.dc.count; j++)
+    if (n->cu.un.data[i]->k == N_PKS)
+      for (uint32_t j = 0; j < n->cu.un.data[i]->ps.dc.count; j++)
       {
-        int e = elc(SM, &eo, n->cu.un.d[i]->ps.dc.data[j]);
+        int e = elc(SM, &eo, n->cu.un.data[i]->ps.dc.data[j]);
         mx = e > mx ? e : mx;
       }
-    else if (n->cu.un.d[i]->k == N_PKB)
-      for (uint32_t j = 0; j < n->cu.un.d[i]->pb.dc.count; j++)
+    else if (n->cu.un.data[i]->k == N_PKB)
+      for (uint32_t j = 0; j < n->cu.un.data[i]->pb.dc.count; j++)
       {
-        int e = elc(SM, &eo, n->cu.un.d[i]->pb.dc.data[j]);
+        int e = elc(SM, &eo, n->cu.un.data[i]->pb.dc.data[j]);
         mx = e > mx ? e : mx;
       }
     for (uint32_t j = 0; j < eo.count; j++)
-      if (eo.d[j]->k == 6 and eo.d[j]->df and eo.d[j]->df->k == N_PKS)
-        for (uint32_t k = 0; k < ((Syntax_Node *) eo.d[j]->df)->ps.dc.count; k++)
-          resolve_declaration(SM, ((Syntax_Node *) eo.d[j]->df)->ps.dc.data[k]);
-    resolve_declaration(SM, n->cu.un.d[i]);
+      if (eo.data[j]->k == 6 and eo.data[j]->df and eo.data[j]->df->k == N_PKS)
+        for (uint32_t k = 0; k < ((Syntax_Node *) eo.data[j]->df)->ps.dc.count; k++)
+          resolve_declaration(SM, ((Syntax_Node *) eo.data[j]->df)->ps.dc.data[k]);
+    resolve_declaration(SM, n->cu.un.data[i]);
   }
 }
 typedef enum
@@ -13865,9 +13865,9 @@ static uint64_t fts(const char *p)
 }
 static void wali(Symbol_Manager *SM, const char *fn, Syntax_Node *cu)
 {
-  if (not cu or cu->cu.un.n == 0)
+  if (not cu or cu->cu.un.count == 0)
     return;
-  Syntax_Node *u0 = cu->cu.un.d[0];
+  Syntax_Node *u0 = cu->cu.un.data[0];
   String_Slice nm = u0->k == N_PKS ? u0->ps.nm : u0->k == N_PKB ? u0->pb.nm : N;
   char alp[520];
   if (nm.string and nm.length > 0)
@@ -14125,9 +14125,9 @@ static bool lcmp(Symbol_Manager *SM, String_Slice nm, String_Slice pth)
       }
     }
   }
-  for (uint32_t ui = 0; ui < cu->cu.un.n; ui++)
+  for (uint32_t ui = 0; ui < cu->cu.un.count; ui++)
   {
-    Syntax_Node *u = cu->cu.un.d[ui];
+    Syntax_Node *u = cu->cu.un.data[ui];
     if (u->k == N_PKB)
       gel(&g, u);
   }
@@ -14135,7 +14135,7 @@ static bool lcmp(Symbol_Manager *SM, String_Slice nm, String_Slice pth)
     gel(&g, sm.ib.data[i]);
   emd(&g);
   fclose(o);
-  LU *l = label_use_new(cu->cu.un.n > 0 ? cu->cu.un.d[0]->k : 0, nm, pth);
+  LU *l = label_use_new(cu->cu.un.count > 0 ? cu->cu.un.data[0]->k : 0, nm, pth);
   l->cmpl = true;
   l->ts = fts(fp);
   lv(&SM->lu, l);
@@ -14330,23 +14330,23 @@ int main(int ac, char **av)
         if (s->el == i and s->lv == 0)
           for (uint32_t k = 0; k < s->ol.count; k++)
             generate_declaration(&g, s->ol.data[k]);
-  for (uint32_t ui = 0; ui < cu->cu.un.n; ui++)
+  for (uint32_t ui = 0; ui < cu->cu.un.count; ui++)
   {
-    Syntax_Node *u = cu->cu.un.d[ui];
+    Syntax_Node *u = cu->cu.un.data[ui];
     if (u->k == N_PKB)
       gel(&g, u);
   }
-  for (uint32_t ui = 0; ui < cu->cu.un.n; ui++)
+  for (uint32_t ui = 0; ui < cu->cu.un.count; ui++)
   {
-    Syntax_Node *u = cu->cu.un.d[ui];
+    Syntax_Node *u = cu->cu.un.data[ui];
     if (u->k == N_PB or u->k == N_FB)
       gel(&g, u);
   }
   for (uint32_t i = 0; i < sm.ib.count; i++)
     gel(&g, sm.ib.data[i]);
-  for (uint32_t ui = cu->cu.un.n; ui > 0; ui--)
+  for (uint32_t ui = cu->cu.un.count; ui > 0; ui--)
   {
-    Syntax_Node *u = cu->cu.un.d[ui - 1];
+    Syntax_Node *u = cu->cu.un.data[ui - 1];
     if (u->k == N_PB)
     {
       Syntax_Node *sp = u->bd.sp;
