@@ -6538,9 +6538,9 @@ static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *n)
       Syntax_Node *a = n->cs.al.data[i];
       for (uint32_t j = 0; j < a->ch.it.count; j++)
         resolve_expression(SM, a->ch.it.data[j], n->cs.ex->ty);
-      if (a->hnd.stz.n > 0 and not hrs(&a->hnd.stz))
+      if (a->hnd.stz.count > 0 and not hrs(&a->hnd.stz))
         fatal_error(a->l, "seq needs stmt");
-      for (uint32_t j = 0; j < a->hnd.stz.n; j++)
+      for (uint32_t j = 0; j < a->hnd.stz.count; j++)
         resolve_statement_sequence(SM, a->hnd.stz.data[j]);
     }
     break;
@@ -6593,7 +6593,7 @@ static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *n)
           if (e->k == N_ID and not string_equal_ignore_case(e->s, STRING_LITERAL("others")))
             slv(&SM->eh, e->s);
         }
-        for (uint32_t j = 0; j < h->hnd.stz.n; j++)
+        for (uint32_t j = 0; j < h->hnd.stz.count; j++)
           resolve_statement_sequence(SM, h->hnd.stz.data[j]);
       }
     }
@@ -6617,7 +6617,7 @@ static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *n)
     break;
   case N_CLT:
     resolve_expression(SM, n->ct.nm, 0);
-    for (uint32_t i = 0; i < n->ct.arr.n; i++)
+    for (uint32_t i = 0; i < n->ct.arr.count; i++)
       resolve_expression(SM, n->ct.arr.data[i], 0);
     break;
   case N_ACC:
@@ -6830,7 +6830,7 @@ static void rap(Symbol_Manager *SM, Node_Vector *fp, Node_Vector *ap)
 {
   if (not fp or not ap)
     return;
-  for (uint32_t i = 0; i < fp->n and i < ap->n; i++)
+  for (uint32_t i = 0; i < fp->count and i < ap->count; i++)
   {
     Syntax_Node *f = fp->data[i];
     Syntax_Node *a = ap->data[i];
@@ -6843,10 +6843,10 @@ static void rap(Symbol_Manager *SM, Node_Vector *fp, Node_Vector *ap)
         if (f->sp.rt->k == N_ID)
         {
           String_Slice tn = f->sp.rt->s;
-          for (uint32_t j = 0; j < fp->n; j++)
+          for (uint32_t j = 0; j < fp->count; j++)
           {
             Syntax_Node *tf = fp->data[j];
-            if (tf->k == N_GTP and string_equal_ignore_case(tf->td.nm, tn) and j < ap->n)
+            if (tf->k == N_GTP and string_equal_ignore_case(tf->td.nm, tn) and j < ap->count)
             {
               Syntax_Node *ta = ap->data[j];
               if (ta->k == N_ID)
@@ -6873,7 +6873,7 @@ static void ncsv(Node_Vector *d, Node_Vector *s, Node_Vector *fp, Node_Vector *a
 {
   if (not s)
   {
-    d->n = 0;
+    d->count = 0;
     d->c = 0;
     d->data = 0;
     return;
@@ -6883,14 +6883,14 @@ static void ncsv(Node_Vector *d, Node_Vector *s, Node_Vector *fp, Node_Vector *a
   uint32_t sn = s->n;
   if (sn == 0 or not s->data)
   {
-    d->n = 0;
+    d->count = 0;
     d->c = 0;
     d->data = 0;
     return;
   }
   if (sn > 100000)
   {
-    d->n = 0;
+    d->count = 0;
     d->c = 0;
     d->data = 0;
     return;
@@ -6898,13 +6898,13 @@ static void ncsv(Node_Vector *d, Node_Vector *s, Node_Vector *fp, Node_Vector *a
   Syntax_Node **sd = malloc(sn * sizeof(Syntax_Node *));
   if (not sd)
   {
-    d->n = 0;
+    d->count = 0;
     d->c = 0;
     d->data = 0;
     return;
   }
   memcpy(sd, s->data, sn * sizeof(Syntax_Node *));
-  d->n = 0;
+  d->count = 0;
   d->c = 0;
   d->data = 0;
   for (uint32_t i = 0; i < sn; i++)
@@ -6926,10 +6926,10 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
   }
   if (fp and n->k == N_ID)
   {
-    for (uint32_t i = 0; i < fp->n; i++)
+    for (uint32_t i = 0; i < fp->count; i++)
       if (mfp(fp->data[i], n->s))
       {
-        if (i < ap->n)
+        if (i < ap->count)
         {
           Syntax_Node *a = ap->data[i];
           Syntax_Node *r = a->k == N_ASC and a->asc.vl ? ncs(a->asc.vl, 0, 0) : ncs(a, 0, 0);
@@ -6943,10 +6943,10 @@ static Syntax_Node *ncs(Syntax_Node *n, Node_Vector *fp, Node_Vector *ap)
   }
   if (fp and n->k == N_STR)
   {
-    for (uint32_t i = 0; i < fp->n; i++)
+    for (uint32_t i = 0; i < fp->count; i++)
       if (mfp(fp->data[i], n->s))
       {
-        if (i < ap->n)
+        if (i < ap->count)
         {
           Syntax_Node *a = ap->data[i];
           Syntax_Node *r = a->k == N_ASC and a->asc.vl ? ncs(a->asc.vl, 0, 0) : ncs(a, 0, 0);
@@ -7584,7 +7584,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
     {
       t->k = TYPE_ENUMERATION;
       int vl = 0;
-      for (uint32_t i = 0; i < n->td.df->lst.it.n; i++)
+      for (uint32_t i = 0; i < n->td.df->lst.it.count; i++)
       {
         Syntax_Node *it = n->td.df->lst.it.data[i];
         Symbol *es = symbol_add_overload(
@@ -7599,7 +7599,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
     {
       t->k = TYPE_RECORD;
       of = 0;
-      for (uint32_t i = 0; i < n->td.df->lst.it.n; i++)
+      for (uint32_t i = 0; i < n->td.df->lst.it.count; i++)
       {
         Syntax_Node *c = n->td.df->lst.it.data[i];
         if (c->k == N_CM)
@@ -7610,7 +7610,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
             c->cm.ty->ty = ct;
           if (c->cm.dc)
           {
-            for (uint32_t j = 0; j < c->cm.dc->lst.it.n; j++)
+            for (uint32_t j = 0; j < c->cm.dc->lst.it.count; j++)
             {
               Syntax_Node *dc = c->cm.dc->lst.it.data[j];
               if (dc->k == N_DS and dc->pm.df)
@@ -7619,7 +7619,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
           }
           if (c->cm.dsc)
           {
-            for (uint32_t j = 0; j < c->cm.dsc->lst.it.n; j++)
+            for (uint32_t j = 0; j < c->cm.dsc->lst.it.count; j++)
             {
               Syntax_Node *dc = c->cm.dsc->lst.it.data[j];
               if (dc->k == N_DS)
@@ -7647,7 +7647,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
                 vc->cm.ty->ty = vct;
               if (vc->cm.dc)
               {
-                for (uint32_t m = 0; m < vc->cm.dc->lst.it.n; m++)
+                for (uint32_t m = 0; m < vc->cm.dc->lst.it.count; m++)
                 {
                   Syntax_Node *dc = vc->cm.dc->lst.it.data[m];
                   if (dc->k == N_DS and dc->pm.df)
@@ -7656,7 +7656,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
               }
               if (vc->cm.dsc)
               {
-                for (uint32_t m = 0; m < vc->cm.dsc->lst.it.n; m++)
+                for (uint32_t m = 0; m < vc->cm.dsc->lst.it.count; m++)
                 {
                   Syntax_Node *dc = vc->cm.dsc->lst.it.data[m];
                   if (dc->k == N_DS)
@@ -11557,7 +11557,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
       Syntax_Node *a = n->cs.al.data[i];
       int la = lb.data[i]->i;
       lbl(g, la);
-      for (uint32_t j = 0; j < a->hnd.stz.n; j++)
+      for (uint32_t j = 0; j < a->hnd.stz.count; j++)
         generate_statement_sequence(g, a->hnd.stz.data[j]);
       emit_branch(g, ld);
     }
@@ -11886,7 +11886,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
   {
     if (n->ct.nm->k == N_ID)
     {
-      Symbol *s = symbol_find_with_arity(g->sm, n->ct.nm->s, n->ct.arr.n, 0);
+      Symbol *s = symbol_find_with_arity(g->sm, n->ct.nm->s, n->ct.arr.count, 0);
       if (s)
       {
         Syntax_Node *b = symbol_body(s, s->el);
@@ -11896,7 +11896,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
           Value_Kind ark[64];
           int arp[64];
           Syntax_Node *sp = symbol_spec(s);
-          for (uint32_t i = 0; i < n->ct.arr.n and i < 64; i++)
+          for (uint32_t i = 0; i < n->ct.arr.count and i < 64; i++)
           {
             Syntax_Node *pm = sp and i < sp->sp.pmm.count ? sp->sp.pmm.data[i] : 0;
             Syntax_Node *arg = n->ct.arr.data[i];
@@ -11992,9 +11992,9 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
           if (s->ext)
             snprintf(nb, 256, "%.*s", (int) s->ext_nm.length, s->ext_nm.string);
           else
-            encode_symbol_name(nb, 256, s, n->ct.nm->s, n->ct.arr.n, sp);
+            encode_symbol_name(nb, 256, s, n->ct.nm->s, n->ct.arr.count, sp);
           fprintf(o, "  call void @\"%s\"(", nb);
-          for (uint32_t i = 0; i < n->ct.arr.n; i++)
+          for (uint32_t i = 0; i < n->ct.arr.count; i++)
           {
             if (i)
               fprintf(o, ", ");
@@ -12002,7 +12002,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
           }
           if (s->lv > 0 and not s->ext)
           {
-            if (n->ct.arr.n > 0)
+            if (n->ct.arr.count > 0)
               fprintf(o, ", ");
             if (s->lv >= g->sm->lv)
               fprintf(o, "ptr %%__frame");
@@ -12010,7 +12010,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
               fprintf(o, "ptr %%__slnk");
           }
           fprintf(o, ")\n");
-          for (uint32_t i = 0; i < n->ct.arr.n and i < 64; i++)
+          for (uint32_t i = 0; i < n->ct.arr.count and i < 64; i++)
           {
             if (arp[i])
             {
@@ -12057,7 +12057,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
           char nb[256];
           snprintf(nb, 256, "%.*s", (int) s->ext_nm.length, s->ext_nm.string);
           fprintf(o, "  call void @\"%s\"(", nb);
-          for (uint32_t i = 0; i < n->ct.arr.n; i++)
+          for (uint32_t i = 0; i < n->ct.arr.count; i++)
           {
             if (i)
               fprintf(o, ", ");
@@ -12076,12 +12076,12 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
           int arid[64];
           Value_Kind ark[64];
           int arpt[64];
-          for (uint32_t i = 0; i < n->ct.arr.n and i < 64; i++)
+          for (uint32_t i = 0; i < n->ct.arr.count and i < 64; i++)
           {
             Syntax_Node *pm = sp and i < sp->sp.pmm.count ? sp->sp.pmm.data[i] : 0;
             arpt[i] = pm and (pm->pm.md & 2) ? 1 : 0;
           }
-          for (uint32_t i = 0; i < n->ct.arr.n and i < 64; i++)
+          for (uint32_t i = 0; i < n->ct.arr.count and i < 64; i++)
           {
             Syntax_Node *pm = sp and i < sp->sp.pmm.count ? sp->sp.pmm.data[i] : 0;
             Syntax_Node *arg = n->ct.arr.data[i];
@@ -12132,7 +12132,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
           if (s->ext)
             snprintf(nb, 256, "%.*s", (int) s->ext_nm.length, s->ext_nm.string);
           else
-            encode_symbol_name(nb, 256, s, n->ct.nm->s, n->ct.arr.n, sp);
+            encode_symbol_name(nb, 256, s, n->ct.nm->s, n->ct.arr.count, sp);
           if (s->k == 5 and sp and sp->sp.rt)
           {
             Type_Info *rt = resolve_subtype(g->sm, sp->sp.rt);
@@ -12142,7 +12142,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
           }
           else
             fprintf(o, "  call void @\"%s\"(", nb);
-          for (uint32_t i = 0; i < n->ct.arr.n; i++)
+          for (uint32_t i = 0; i < n->ct.arr.count; i++)
           {
             if (i)
               fprintf(o, ", ");
@@ -12358,7 +12358,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
         }
         emit_branch(g, ld);
         lbl(g, lhm);
-        for (uint32_t j = 0; j < h->hnd.stz.n; j++)
+        for (uint32_t j = 0; j < h->hnd.stz.count; j++)
           generate_statement_sequence(g, h->hnd.stz.data[j]);
         emit_branch(g, ld);
       }
@@ -12416,7 +12416,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
         {
           V d = generate_expression(g, st->ex.cd);
           fprintf(o, "  call void @__ada_delay(i64 %%t%d)\n", d.id);
-          for (uint32_t j = 0; j < st->hnd.stz.n; j++)
+          for (uint32_t j = 0; j < st->hnd.stz.count; j++)
             generate_statement_sequence(g, st->hnd.stz.data[j]);
         }
       }
@@ -12574,7 +12574,7 @@ static void elb_r(Code_Generator *g, Syntax_Node *s, Node_Vector *lbs)
   if (s->k == N_CS)
     for (uint32_t i = 0; i < s->cs.al.count; i++)
       if (s->cs.al.data[i])
-        for (uint32_t j = 0; j < s->cs.al.data[i]->hnd.stz.n; j++)
+        for (uint32_t j = 0; j < s->cs.al.data[i]->hnd.stz.count; j++)
           elb_r(g, s->cs.al.data[i]->hnd.stz.data[j], lbs);
 }
 static void generate_declaration(Code_Generator *g, Syntax_Node *n);
