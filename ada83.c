@@ -1819,9 +1819,9 @@ static Syntax_Node *parse_range(Parser *p);
 static Node_Vector parse_statement(Parser *p);
 static Node_Vector parse_declarative_part(Parser *p);
 static Node_Vector parse_handle_declaration(Parser *p);
-static Syntax_Node *ps(Parser *p);
-static Syntax_Node *pgf(Parser *p);
-static RC *prc(Parser *p);
+static Syntax_Node *parse_statement_or_label(Parser *p);
+static Syntax_Node *parse_generic_formal(Parser *p);
+static RC *parse_representation_clause(Parser *p);
 static Syntax_Node *parse_primary(Parser *p)
 {
   Source_Location lc = parser_location(p);
@@ -2164,7 +2164,7 @@ static Syntax_Node *parse_name(Parser *p)
   }
   return n;
 }
-static Syntax_Node *ppw(Parser *p)
+static Syntax_Node *parse_power_expression(Parser *p)
 {
   Syntax_Node *n = parse_primary(p);
   if (parser_match(p, T_EX))
@@ -2173,14 +2173,14 @@ static Syntax_Node *ppw(Parser *p)
     Syntax_Node *m = ND(BIN, lc);
     m->bn.op = T_EX;
     m->bn.l = n;
-    m->bn.r = ppw(p);
+    m->bn.r = parse_power_expression(p);
     return m;
   }
   return n;
 }
-static Syntax_Node *pt(Parser *p)
+static Syntax_Node *parse_term(Parser *p)
 {
-  Syntax_Node *n = ppw(p);
+  Syntax_Node *n = parse_power_expression(p);
   while (parser_at(p, T_ST) or parser_at(p, T_SL) or parser_at(p, T_MOD) or parser_at(p, T_REM))
   {
     Token_Kind op = p->current_token.kind;
@@ -2189,12 +2189,12 @@ static Syntax_Node *pt(Parser *p)
     Syntax_Node *m = ND(BIN, lc);
     m->bn.op = op;
     m->bn.l = n;
-    m->bn.r = ppw(p);
+    m->bn.r = parse_power_expression(p);
     n = m;
   }
   return n;
 }
-static Syntax_Node *psm(Parser *p)
+static Syntax_Node *parse_signed_term(Parser *p)
 {
   Source_Location lc = parser_location(p);
   Token_Kind un = 0;
@@ -2202,7 +2202,7 @@ static Syntax_Node *psm(Parser *p)
     un = T_MN;
   else if (parser_match(p, T_PL))
     un = T_PL;
-  Syntax_Node *n = pt(p);
+  Syntax_Node *n = parse_term(p);
   if (un)
   {
     Syntax_Node *m = ND(UN, lc);
@@ -2218,20 +2218,20 @@ static Syntax_Node *psm(Parser *p)
     Syntax_Node *m = ND(BIN, lc);
     m->bn.op = op;
     m->bn.l = n;
-    m->bn.r = pt(p);
+    m->bn.r = parse_term(p);
     n = m;
   }
   return n;
 }
-static Syntax_Node *prl(Parser *p)
+static Syntax_Node *parse_relational(Parser *p)
 {
-  Syntax_Node *n = psm(p);
+  Syntax_Node *n = parse_signed_term(p);
   if (parser_match(p, T_DD))
   {
     Source_Location lc = parser_location(p);
     Syntax_Node *m = ND(RN, lc);
     m->rn.lo = n;
-    m->rn.hi = psm(p);
+    m->rn.hi = parse_signed_term(p);
     return m;
   }
   if (parser_at(p, T_EQ) or parser_at(p, T_NE) or parser_at(p, T_LT) or parser_at(p, T_LE)
@@ -2248,14 +2248,14 @@ static Syntax_Node *prl(Parser *p)
     if (op == T_IN or op == T_NOT)
       m->bn.r = parse_range(p);
     else
-      m->bn.r = psm(p);
+      m->bn.r = parse_signed_term(p);
     return m;
   }
   return n;
 }
-static Syntax_Node *pan(Parser *p)
+static Syntax_Node *parse_and_expression(Parser *p)
 {
-  Syntax_Node *n = prl(p);
+  Syntax_Node *n = parse_relational(p);
   while (parser_at(p, T_AND) or parser_at(p, T_ATHN))
   {
     Token_Kind op = p->current_token.kind;
@@ -2264,14 +2264,14 @@ static Syntax_Node *pan(Parser *p)
     Syntax_Node *m = ND(BIN, lc);
     m->bn.op = op;
     m->bn.l = n;
-    m->bn.r = prl(p);
+    m->bn.r = parse_relational(p);
     n = m;
   }
   return n;
 }
-static Syntax_Node *por(Parser *p)
+static Syntax_Node *parse_or_expression(Parser *p)
 {
-  Syntax_Node *n = pan(p);
+  Syntax_Node *n = parse_and_expression(p);
   while (parser_at(p, T_OR) or parser_at(p, T_OREL) or parser_at(p, T_XOR))
   {
     Token_Kind op = p->current_token.kind;
@@ -2280,14 +2280,14 @@ static Syntax_Node *por(Parser *p)
     Syntax_Node *m = ND(BIN, lc);
     m->bn.op = op;
     m->bn.l = n;
-    m->bn.r = pan(p);
+    m->bn.r = parse_and_expression(p);
     n = m;
   }
   return n;
 }
 static Syntax_Node *parse_expression(Parser *p)
 {
-  return por(p);
+  return parse_or_expression(p);
 }
 static Syntax_Node *parse_range(Parser *p)
 {
@@ -2299,17 +2299,17 @@ static Syntax_Node *parse_range(Parser *p)
     n->rn.hi = 0;
     return n;
   }
-  Syntax_Node *lo = psm(p);
+  Syntax_Node *lo = parse_signed_term(p);
   if (parser_match(p, T_DD))
   {
     Syntax_Node *m = ND(RN, lc);
     m->rn.lo = lo;
-    m->rn.hi = psm(p);
+    m->rn.hi = parse_signed_term(p);
     return m;
   }
   return lo;
 }
-static Syntax_Node *psi(Parser *p)
+static Syntax_Node *parse_simple_expression(Parser *p)
 {
   Source_Location lc = parser_location(p);
   Syntax_Node *n = ND(ID, lc);
@@ -2352,7 +2352,7 @@ static Syntax_Node *psi(Parser *p)
   }
   if (parser_match(p, T_DELTA))
   {
-    psm(p);
+    parse_signed_term(p);
   }
   if (parser_match(p, T_DIG))
   {
@@ -2491,7 +2491,7 @@ static Syntax_Node *pfs(Parser *p)
   n->sp.rt = parse_name(p);
   return n;
 }
-static Syntax_Node *ptd(Parser *p);
+static Syntax_Node *parse_type_definition(Parser *p);
 static Node_Vector parse_generic_formal_part(Parser *p)
 {
   Node_Vector v = {0};
@@ -2525,7 +2525,7 @@ static Node_Vector parse_generic_formal_part(Parser *p)
             parser_match(p, T_LIM) or parser_at(p, T_ARR) or parser_at(p, T_REC)
             or parser_at(p, T_ACCS) or parser_at(p, T_PRV))
         {
-          ptd(p);
+          parse_type_definition(p);
         }
         else
           parse_expression(p);
@@ -2627,7 +2627,7 @@ static Node_Vector parse_generic_formal_part(Parser *p)
   }
   return v;
 }
-static Syntax_Node *pgf(Parser *p)
+static Syntax_Node *parse_generic_formal(Parser *p)
 {
   Source_Location lc = parser_location(p);
   parser_expect(p, T_GEN);
@@ -2681,19 +2681,19 @@ static Syntax_Node *pif(Parser *p)
   n->if_.cd = parse_expression(p);
   parser_expect(p, T_THEN);
   while (not parser_at(p, T_ELSIF) and not parser_at(p, T_ELSE) and not parser_at(p, T_END))
-    nv(&n->if_.th, ps(p));
+    nv(&n->if_.th, parse_statement_or_label(p));
   while (parser_match(p, T_ELSIF))
   {
     Syntax_Node *e = ND(EL, lc);
     e->if_.cd = parse_expression(p);
     parser_expect(p, T_THEN);
     while (not parser_at(p, T_ELSIF) and not parser_at(p, T_ELSE) and not parser_at(p, T_END))
-      nv(&e->if_.th, ps(p));
+      nv(&e->if_.th, parse_statement_or_label(p));
     nv(&n->if_.ei, e);
   }
   if (parser_match(p, T_ELSE))
     while (not parser_at(p, T_END))
-      nv(&n->if_.el, ps(p));
+      nv(&n->if_.el, parse_statement_or_label(p));
   parser_expect(p, T_END);
   parser_expect(p, T_IF);
   parser_expect(p, T_SC);
@@ -2707,7 +2707,7 @@ static Syntax_Node *pcs(Parser *p)
   n->cs.ex = parse_expression(p);
   parser_expect(p, T_IS);
   while (parser_at(p, T_PGM))
-    prc(p);
+    parse_representation_clause(p);
   while (parser_match(p, T_WHN))
   {
     Syntax_Node *a = ND(WH, lc);
@@ -2731,7 +2731,7 @@ static Syntax_Node *pcs(Parser *p)
     } while (parser_match(p, T_BR));
     parser_expect(p, T_AR);
     while (not parser_at(p, T_WHN) and not parser_at(p, T_END))
-      nv(&a->hnd.stz, ps(p));
+      nv(&a->hnd.stz, parse_statement_or_label(p));
     nv(&n->cs.al, a);
   }
   parser_expect(p, T_END);
@@ -2755,9 +2755,9 @@ static Syntax_Node *plp(Parser *p, String_Slice lb)
     if (parser_match(p, T_RNG))
     {
       Syntax_Node *r = ND(RN, lc);
-      r->rn.lo = psm(p);
+      r->rn.lo = parse_signed_term(p);
       parser_expect(p, T_DD);
-      r->rn.hi = psm(p);
+      r->rn.hi = parse_signed_term(p);
       rng = r;
     }
     Syntax_Node *it = ND(BIN, lc);
@@ -2769,7 +2769,7 @@ static Syntax_Node *plp(Parser *p, String_Slice lb)
   }
   parser_expect(p, T_LOOP);
   while (not parser_at(p, T_END))
-    nv(&n->lp.st, ps(p));
+    nv(&n->lp.st, parse_statement_or_label(p));
   parser_expect(p, T_END);
   parser_expect(p, T_LOOP);
   if (parser_at(p, T_ID))
@@ -2786,7 +2786,7 @@ static Syntax_Node *pbk(Parser *p, String_Slice lb)
     n->bk.dc = parse_declarative_part(p);
   parser_expect(p, T_BEG);
   while (not parser_at(p, T_EXCP) and not parser_at(p, T_END))
-    nv(&n->bk.st, ps(p));
+    nv(&n->bk.st, parse_statement_or_label(p));
   if (parser_match(p, T_EXCP))
     n->bk.hd = parse_handle_declaration(p);
   parser_expect(p, T_END);
@@ -2795,7 +2795,7 @@ static Syntax_Node *pbk(Parser *p, String_Slice lb)
   parser_expect(p, T_SC);
   return n;
 }
-static Syntax_Node *psl(Parser *p)
+static Syntax_Node *parse_statement_list(Parser *p)
 {
   Source_Location lc = parser_location(p);
   parser_expect(p, T_SEL);
@@ -2809,7 +2809,7 @@ static Syntax_Node *psl(Parser *p)
     if (parser_match(p, T_AB))
       n->sa.kn = 3;
     while (not parser_at(p, T_OR) and not parser_at(p, T_ELSE) and not parser_at(p, T_END))
-      nv(&n->sa.sts, ps(p));
+      nv(&n->sa.sts, parse_statement_or_label(p));
   }
   else if (parser_at(p, T_WHN))
   {
@@ -2869,14 +2869,14 @@ static Syntax_Node *psl(Parser *p)
         if (parser_match(p, T_DO))
         {
           while (not parser_at(p, T_END) and not parser_at(p, T_OR) and not parser_at(p, T_ELSE))
-            nv(&g->acc.stx, ps(p));
+            nv(&g->acc.stx, parse_statement_or_label(p));
           parser_expect(p, T_END);
           if (parser_at(p, T_ID))
             parser_next(p);
         }
         while (not parser_at(p, T_OR) and not parser_at(p, T_ELSE) and not parser_at(p, T_END)
                and not parser_at(p, T_WHN))
-          nv(&g->hnd.stz, ps(p));
+          nv(&g->hnd.stz, parse_statement_or_label(p));
       }
       else if (parser_match(p, T_TER))
       {
@@ -2888,7 +2888,7 @@ static Syntax_Node *psl(Parser *p)
         g->ex.cd = parse_expression(p);
         parser_expect(p, T_THEN);
         while (not parser_at(p, T_OR) and not parser_at(p, T_ELSE) and not parser_at(p, T_END))
-          nv(&g->hnd.stz, ps(p));
+          nv(&g->hnd.stz, parse_statement_or_label(p));
       }
       nv(&n->sa.sts, g);
     }
@@ -2947,14 +2947,14 @@ static Syntax_Node *psl(Parser *p)
         if (parser_match(p, T_DO))
         {
           while (not parser_at(p, T_END) and not parser_at(p, T_OR) and not parser_at(p, T_ELSE))
-            nv(&g->acc.stx, ps(p));
+            nv(&g->acc.stx, parse_statement_or_label(p));
           parser_expect(p, T_END);
           if (parser_at(p, T_ID))
             parser_next(p);
         }
         parser_expect(p, T_SC);
         while (not parser_at(p, T_OR) and not parser_at(p, T_ELSE) and not parser_at(p, T_END))
-          nv(&g->hnd.stz, ps(p));
+          nv(&g->hnd.stz, parse_statement_or_label(p));
       }
       else if (parser_match(p, T_DEL))
       {
@@ -2970,20 +2970,20 @@ static Syntax_Node *psl(Parser *p)
       else
       {
         while (not parser_at(p, T_OR) and not parser_at(p, T_ELSE) and not parser_at(p, T_END))
-          nv(&g->hnd.stz, ps(p));
+          nv(&g->hnd.stz, parse_statement_or_label(p));
       }
       nv(&n->sa.sts, g);
     } while (parser_match(p, T_OR));
   }
   if (parser_match(p, T_ELSE))
     while (not parser_at(p, T_END))
-      nv(&n->ss.el, ps(p));
+      nv(&n->ss.el, parse_statement_or_label(p));
   parser_expect(p, T_END);
   parser_expect(p, T_SEL);
   parser_expect(p, T_SC);
   return n;
 }
-static Syntax_Node *ps(Parser *p)
+static Syntax_Node *parse_statement_or_label(Parser *p)
 {
   Source_Location lc = parser_location(p);
   String_Slice lb = N;
@@ -3005,7 +3005,7 @@ static Syntax_Node *ps(Parser *p)
   if (parser_at(p, T_CSE))
     return pcs(p);
   if (parser_at(p, T_SEL))
-    return psl(p);
+    return parse_statement_list(p);
   if (parser_at(p, T_LOOP) or parser_at(p, T_WHI) or parser_at(p, T_FOR))
     return plp(p, lb);
   if (parser_at(p, T_DEC) or parser_at(p, T_BEG))
@@ -3015,7 +3015,7 @@ static Syntax_Node *ps(Parser *p)
     Syntax_Node *bl = ND(BL, lc);
     bl->bk.lb = lb;
     Node_Vector st = {0};
-    nv(&st, ps(p));
+    nv(&st, parse_statement_or_label(p));
     bl->bk.st = st;
     return bl;
   }
@@ -3068,7 +3068,7 @@ static Syntax_Node *ps(Parser *p)
     if (parser_match(p, T_DO))
     {
       while (not parser_at(p, T_END))
-        nv(&n->acc.stx, ps(p));
+        nv(&n->acc.stx, parse_statement_or_label(p));
       parser_expect(p, T_END);
       if (parser_at(p, T_ID))
         parser_next(p);
@@ -3181,7 +3181,7 @@ static Node_Vector parse_statement(Parser *p)
   Node_Vector v = {0};
   while (not parser_at(p, T_END) and not parser_at(p, T_EXCP) and not parser_at(p, T_ELSIF)
          and not parser_at(p, T_ELSE) and not parser_at(p, T_WHN) and not parser_at(p, T_OR))
-    nv(&v, ps(p));
+    nv(&v, parse_statement_or_label(p));
   return v;
 }
 static Node_Vector parse_handle_declaration(Parser *p)
@@ -3204,12 +3204,12 @@ static Node_Vector parse_handle_declaration(Parser *p)
     } while (parser_match(p, T_BR));
     parser_expect(p, T_AR);
     while (not parser_at(p, T_WHN) and not parser_at(p, T_END))
-      nv(&h->hnd.stz, ps(p));
+      nv(&h->hnd.stz, parse_statement_or_label(p));
     nv(&v, h);
   }
   return v;
 }
-static Syntax_Node *ptd(Parser *p)
+static Syntax_Node *parse_type_definition(Parser *p)
 {
   Source_Location lc = parser_location(p);
   if (parser_match(p, T_LP))
@@ -3245,9 +3245,9 @@ static Syntax_Node *ptd(Parser *p)
     }
     else
     {
-      n->rn.lo = psm(p);
+      n->rn.lo = parse_signed_term(p);
       parser_expect(p, T_DD);
-      n->rn.hi = psm(p);
+      n->rn.hi = parse_signed_term(p);
     }
     return n;
   }
@@ -3267,9 +3267,9 @@ static Syntax_Node *ptd(Parser *p)
       n->un.x = parse_expression(p);
     if (parser_match(p, T_RNG))
     {
-      n->rn.lo = psm(p);
+      n->rn.lo = parse_signed_term(p);
       parser_expect(p, T_DD);
-      n->rn.hi = psm(p);
+      n->rn.hi = parse_signed_term(p);
     }
     return n;
   }
@@ -3286,9 +3286,9 @@ static Syntax_Node *ptd(Parser *p)
     {
       n->rn.lo = parse_expression(p);
       parser_expect(p, T_RNG);
-      n->rn.hi = psm(p);
+      n->rn.hi = parse_signed_term(p);
       parser_expect(p, T_DD);
-      n->bn.r = psm(p);
+      n->bn.r = parse_signed_term(p);
     }
     return n;
   }
@@ -3313,7 +3313,7 @@ static Syntax_Node *ptd(Parser *p)
     } while (parser_match(p, T_CM));
     parser_expect(p, T_RP);
     parser_expect(p, T_OF);
-    n->ix.p = psi(p);
+    n->ix.p = parse_simple_expression(p);
     return n;
   }
   if (parser_match(p, T_REC))
@@ -3356,7 +3356,7 @@ static Syntax_Node *ptd(Parser *p)
         nv(&id, i);
       } while (parser_match(p, T_CM));
       parser_expect(p, T_CL);
-      Syntax_Node *ty = psi(p);
+      Syntax_Node *ty = parse_simple_expression(p);
       Syntax_Node *in = 0;
       if (parser_match(p, T_AS))
         in = parse_expression(p);
@@ -3414,7 +3414,7 @@ static Syntax_Node *ptd(Parser *p)
             nv(&id, i);
           } while (parser_match(p, T_CM));
           parser_expect(p, T_CL);
-          Syntax_Node *ty = psi(p);
+          Syntax_Node *ty = parse_simple_expression(p);
           Syntax_Node *in = 0;
           if (parser_match(p, T_AS))
             in = parse_expression(p);
@@ -3457,7 +3457,7 @@ static Syntax_Node *ptd(Parser *p)
   if (parser_match(p, T_ACCS))
   {
     Syntax_Node *n = ND(TAC, lc);
-    n->un.x = psi(p);
+    n->un.x = parse_simple_expression(p);
     return n;
   }
   if (parser_match(p, T_PRV))
@@ -3467,9 +3467,9 @@ static Syntax_Node *ptd(Parser *p)
     parser_match(p, T_PRV);
     return ND(TP, lc);
   }
-  return psi(p);
+  return parse_simple_expression(p);
 }
-static RC *prc(Parser *p)
+static RC *parse_representation_clause(Parser *p)
 {
   Source_Location lc = parser_location(p);
   (void) lc;
@@ -3660,7 +3660,7 @@ static Syntax_Node *pdl(Parser *p)
 {
   Source_Location lc = parser_location(p);
   if (parser_at(p, T_GEN))
-    return pgf(p);
+    return parse_generic_formal(p);
   if (parser_match(p, T_TYP))
   {
     String_Slice nm = parser_identifier(p);
@@ -3709,30 +3709,30 @@ static Syntax_Node *pdl(Parser *p)
           parse_expression(p);
           if (parser_match(p, T_RNG))
           {
-            psm(p);
+            parse_signed_term(p);
             parser_expect(p, T_DD);
-            psm(p);
+            parse_signed_term(p);
           }
         }
         else if (parser_match(p, T_DELTA))
         {
           parse_expression(p);
           parser_expect(p, T_RNG);
-          psm(p);
+          parse_signed_term(p);
           parser_expect(p, T_DD);
-          psm(p);
+          parse_signed_term(p);
         }
         else if (parser_match(p, T_RNG))
         {
           Syntax_Node *rn = ND(RN, lc);
-          rn->rn.lo = psm(p);
+          rn->rn.lo = parse_signed_term(p);
           parser_expect(p, T_DD);
-          rn->rn.hi = psm(p);
+          rn->rn.hi = parse_signed_term(p);
           n->td.df = rn;
         }
       }
       else
-        n->td.df = ptd(p);
+        n->td.df = parse_type_definition(p);
     }
     parser_expect(p, T_SC);
     return n;
@@ -3743,7 +3743,7 @@ static Syntax_Node *pdl(Parser *p)
     parser_expect(p, T_IS);
     Syntax_Node *n = ND(SD, lc);
     n->sd.nm = nm;
-    n->sd.in = psi(p);
+    n->sd.in = parse_simple_expression(p);
     if (n->sd.in->k == N_ST)
       n->sd.rn = n->sd.in->sd.cn->cn.rn;
     parser_expect(p, T_SC);
@@ -4168,9 +4168,9 @@ static Syntax_Node *pdl(Parser *p)
     if (not parser_at(p, T_AS))
     {
       if (parser_at(p, T_ARR) or parser_at(p, T_ACCS))
-        ty = ptd(p);
+        ty = parse_type_definition(p);
       else
-        ty = psi(p);
+        ty = parse_simple_expression(p);
     }
     Syntax_Node *in = 0;
     if (parser_match(p, T_REN))
@@ -4194,7 +4194,7 @@ static Node_Vector parse_declarative_part(Parser *p)
   {
     if (parser_at(p, T_FOR))
     {
-      RC *r = prc(p);
+      RC *r = parse_representation_clause(p);
       if (r)
       {
         Syntax_Node *n = ND(RRC, parser_location(p));
@@ -4205,7 +4205,7 @@ static Node_Vector parse_declarative_part(Parser *p)
     }
     if (parser_at(p, T_PGM))
     {
-      RC *r = prc(p);
+      RC *r = parse_representation_clause(p);
       if (r)
       {
         Syntax_Node *n = ND(RRC, parser_location(p));
