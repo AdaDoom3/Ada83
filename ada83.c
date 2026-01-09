@@ -4364,7 +4364,7 @@ struct Type_Info
   Type_Info *base_type, *element_type, *parent_type;
   Type_Info *index_type;
   int64_t low_bound, high_bound;
-  Node_Vector components, dc;
+  Node_Vector components, discriminants;
   uint32_t size, alignment;
   Symbol_Vector enum_values;
   Representation_Clause_Vector rc;
@@ -5250,7 +5250,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
       t->base_type = bt;
       t->element_type = bt->element_type;
       t->components = bt->components;
-      t->dc = bt->dc;
+      t->discriminants = bt->discriminants;
       t->size = bt->size;
       t->alignment = bt->alignment;
       t->address = bt->address;
@@ -5596,12 +5596,12 @@ static inline double type_bound_double(int64_t b)
 }
 static bool descendant_conformant(Type_Info *t, Type_Info *s)
 {
-  if (not t or not s or t->dc.count == 0 or s->dc.count == 0)
+  if (not t or not s or t->discriminants.count == 0 or s->discriminants.count == 0)
     return 0;
-  uint32_t node = t->dc.count < s->dc.count ? t->dc.count : s->dc.count;
+  uint32_t node = t->discriminants.count < s->discriminants.count ? t->discriminants.count : s->discriminants.count;
   for (uint32_t i = 0; i < node; i++)
   {
-    Syntax_Node *ad = t->dc.data[i], *bd = s->dc.data[i];
+    Syntax_Node *ad = t->discriminants.data[i], *bd = s->discriminants.data[i];
     if (not(ad and bd and ad->k == N_DS and bd->k == N_DS and ad->parameter.default_value and bd->parameter.default_value
             and ad->parameter.default_value->k == N_INT and bd->parameter.default_value->k == N_INT))
       continue;
@@ -6188,9 +6188,9 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
             return;
           }
         }
-        for (uint32_t i = 0; i < pt->dc.count; i++)
+        for (uint32_t i = 0; i < pt->discriminants.count; i++)
         {
-          Syntax_Node *d = pt->dc.data[i];
+          Syntax_Node *d = pt->discriminants.data[i];
           if (d->k == N_DS and string_equal_ignore_case(d->parameter.name, node->selected_component.selector))
           {
             node->ty = resolve_subtype(symbol_manager, d->parameter.ty);
@@ -6403,11 +6403,11 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     if (node->allocator.initializer)
     {
       Type_Info *et = node->ty->element_type ? type_canonical_concrete(node->ty->element_type) : 0;
-      if (et and et->k == TYPE_RECORD and et->dc.count > 0)
+      if (et and et->k == TYPE_RECORD and et->discriminants.count > 0)
       {
-        for (uint32_t i = 0; i < et->dc.count; i++)
+        for (uint32_t i = 0; i < et->discriminants.count; i++)
         {
-          Syntax_Node *d = et->dc.data[i];
+          Syntax_Node *d = et->discriminants.data[i];
           if (d->k == N_DS and d->parameter.default_value)
           {
             resolve_expression(symbol_manager, d->parameter.default_value, resolve_subtype(symbol_manager, d->parameter.ty));
@@ -6418,17 +6418,17 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
       if (tx and tx->k == TYPE_ACCESS and tx->element_type)
       {
         Type_Info *ct = type_canonical_concrete(tx->element_type);
-        if (ct and ct->k == TYPE_RECORD and ct->dc.count > 0)
+        if (ct and ct->k == TYPE_RECORD and ct->discriminants.count > 0)
         {
           bool hcd = 0;
-          for (uint32_t i = 0; i < ct->dc.count; i++)
-            if (ct->dc.data[i]->k == N_DS and ct->dc.data[i]->parameter.default_value)
+          for (uint32_t i = 0; i < ct->discriminants.count; i++)
+            if (ct->discriminants.data[i]->k == N_DS and ct->discriminants.data[i]->parameter.default_value)
               hcd = 1;
-          if (hcd and et and et->dc.count > 0)
+          if (hcd and et and et->discriminants.count > 0)
           {
-            for (uint32_t i = 0; i < ct->dc.count and i < et->dc.count; i++)
+            for (uint32_t i = 0; i < ct->discriminants.count and i < et->discriminants.count; i++)
             {
-              Syntax_Node *cd = ct->dc.data[i], *ed = et->dc.data[i];
+              Syntax_Node *cd = ct->discriminants.data[i], *ed = et->discriminants.data[i];
               if (cd->k == N_DS and cd->parameter.default_value and ed->k == N_DS)
               {
                 bool mtch = cd->parameter.default_value->k == N_INT and ed->parameter.default_value and ed->parameter.default_value->k == N_INT
@@ -7425,15 +7425,15 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
         resolve_expression(symbol_manager, n->object_decl.in, t);
         n->object_decl.in->ty = t;
         n->object_decl.in = chk(symbol_manager, n->object_decl.in, n->location);
-        if (t and t->dc.count > 0 and n->object_decl.in and n->object_decl.in->ty)
+        if (t and t->discriminants.count > 0 and n->object_decl.in and n->object_decl.in->ty)
         {
           Type_Info *it = type_canonical_concrete(n->object_decl.in->ty);
-          if (it and it->dc.count > 0)
+          if (it and it->discriminants.count > 0)
           {
-            for (uint32_t di = 0; di < t->dc.count and di < it->dc.count; di++)
+            for (uint32_t di = 0; di < t->discriminants.count and di < it->discriminants.count; di++)
             {
-              Syntax_Node *td = t->dc.data[di];
-              Syntax_Node *id = it->dc.data[di];
+              Syntax_Node *td = t->discriminants.data[di];
+              Syntax_Node *id = it->discriminants.data[di];
               if (td->k == N_DS and id->k == N_DS and td->parameter.default_value and id->parameter.default_value)
               {
                 if (td->parameter.default_value->k == N_INT and id->parameter.default_value->k == N_INT
@@ -7492,7 +7492,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
         t->low_bound = pt->low_bound;
         t->high_bound = pt->high_bound;
         t->element_type = pt->element_type;
-        t->dc = pt->dc;
+        t->discriminants = pt->discriminants;
         t->size = pt->size;
         t->alignment = pt->alignment;
         {
@@ -7563,7 +7563,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
             resolve_expression(symbol_manager, d->parameter.default_value, ds->ty);
         }
       }
-      t->dc = n->type_decl.discriminants;
+      t->discriminants = n->type_decl.discriminants;
     }
     if (n->type_decl.name.string and n->type_decl.name.length > 0)
     {
@@ -7687,7 +7687,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       t->base_type = b;
       t->element_type = b->element_type;
       t->components = b->components;
-      t->dc = b->dc;
+      t->discriminants = b->discriminants;
       t->size = b->size;
       t->alignment = b->alignment;
       t->address = b->address;
@@ -8575,8 +8575,8 @@ static unsigned long type_hash(Type_Info *t)
   }
   else if (t->k == TYPE_RECORD)
   {
-    for (uint32_t i = 0; i < t->dc.count and i < 8; i++)
-      if (t->dc.data[i])
+    for (uint32_t i = 0; i < t->discriminants.count and i < 8; i++)
+      if (t->discriminants.data[i])
         h = h * 31;
   }
   else
@@ -10208,9 +10208,9 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         bool has_nested = false;
         if (vty and vty->k == TYPE_RECORD)
         {
-          for (uint32_t ci = 0; ci < vty->dc.count; ci++)
+          for (uint32_t ci = 0; ci < vty->discriminants.count; ci++)
           {
-            Syntax_Node *fd = vty->dc.data[ci];
+            Syntax_Node *fd = vty->discriminants.data[ci];
             Type_Info *fty =
                 fd and fd->k == N_DS and fd->parameter.ty ? resolve_subtype(generator->sm, fd->parameter.ty) : 0;
             if (fty and (fty->k == TYPE_RECORD or fty->k == TYPE_ARRAY))
@@ -10278,9 +10278,9 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     if (pt and pt->k == TYPE_RECORD)
     {
-      for (uint32_t i = 0; i < pt->dc.count; i++)
+      for (uint32_t i = 0; i < pt->discriminants.count; i++)
       {
-        Syntax_Node *d = pt->dc.data[i];
+        Syntax_Node *d = pt->discriminants.data[i];
         String_Slice dn = d->k == N_DS ? d->parameter.name : d->component_decl.name;
         if (string_equal_ignore_case(dn, n->selected_component.selector))
         {
@@ -11165,8 +11165,8 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     r.k = VALUE_KIND_POINTER;
     Type_Info *et = n->ty and n->ty->element_type ? type_canonical_concrete(n->ty->element_type) : 0;
     uint32_t asz = 64;
-    if (et and et->dc.count > 0)
-      asz += et->dc.count * 8;
+    if (et and et->discriminants.count > 0)
+      asz += et->discriminants.count * 8;
     fprintf(o, "  %%t%d = call ptr @malloc(i64 %u)\n", r.id, asz);
     if (n->allocator.initializer)
     {
@@ -11178,7 +11178,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n",
           op,
           r.id,
-          et and et->dc.count > 0 ? (uint32_t) et->dc.count : 0);
+          et and et->discriminants.count > 0 ? (uint32_t) et->discriminants.count : 0);
       fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, op);
     }
   }
@@ -12197,15 +12197,15 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                                     : VALUE_KIND_INTEGER;
             Symbol *s = id->symbol;
             Type_Info *at = d->object_decl.ty ? resolve_subtype(generator->sm, d->object_decl.ty) : 0;
-            if (at and at->k == TYPE_RECORD and at->dc.count > 0 and d->object_decl.in and d->object_decl.in->ty)
+            if (at and at->k == TYPE_RECORD and at->discriminants.count > 0 and d->object_decl.in and d->object_decl.in->ty)
             {
               Type_Info *it = type_canonical_concrete(d->object_decl.in->ty);
-              if (it and it->k == TYPE_RECORD and it->dc.count > 0)
+              if (it and it->k == TYPE_RECORD and it->discriminants.count > 0)
               {
-                for (uint32_t di = 0; di < at->dc.count and di < it->dc.count; di++)
+                for (uint32_t di = 0; di < at->discriminants.count and di < it->discriminants.count; di++)
                 {
-                  Syntax_Node *td = at->dc.data[di];
-                  Syntax_Node *id_d = it->dc.data[di];
+                  Syntax_Node *td = at->discriminants.data[di];
+                  Syntax_Node *id_d = it->discriminants.data[di];
                   if (td->k == N_DS and id_d->k == N_DS and td->parameter.default_value and td->parameter.default_value->k == N_INT)
                   {
                     int tdi = new_temporary_register(generator);
@@ -12265,11 +12265,11 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           if (not s)
             continue;
           Type_Info *at = d->object_decl.ty ? resolve_subtype(generator->sm, d->object_decl.ty) : 0;
-          if (not at or at->k != TYPE_RECORD or not at->dc.count)
+          if (not at or at->k != TYPE_RECORD or not at->discriminants.count)
             continue;
           uint32_t di;
-          for (di = 0; di < at->dc.count; di++)
-            if (at->dc.data[di]->k != N_DS or not at->dc.data[di]->parameter.default_value)
+          for (di = 0; di < at->discriminants.count; di++)
+            if (at->discriminants.data[di]->k != N_DS or not at->discriminants.data[di]->parameter.default_value)
               goto nx;
           for (uint32_t ci = 0; ci < at->components.count; ci++)
           {
@@ -12279,9 +12279,9 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             Type_Info *cty = cm->component_decl.ty->ty;
             if (not cty or cty->k != TYPE_ARRAY or not cty->index_type)
               continue;
-            for (di = 0; di < at->dc.count; di++)
+            for (di = 0; di < at->discriminants.count; di++)
             {
-              Syntax_Node *dc = at->dc.data[di];
+              Syntax_Node *dc = at->discriminants.data[di];
               if (dc->k == N_DS and dc->parameter.default_value and dc->parameter.default_value->k == N_INT)
               {
                 int64_t dv = dc->parameter.default_value->integer_value;
@@ -12296,9 +12296,9 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               }
             }
           }
-          for (di = 0; di < at->dc.count; di++)
+          for (di = 0; di < at->discriminants.count; di++)
           {
-            Syntax_Node *dc = at->dc.data[di];
+            Syntax_Node *dc = at->discriminants.data[di];
             int dv = new_temporary_register(generator);
             fprintf(o, "  %%t%d = add i64 0, %lld\n", dv, (long long) dc->parameter.default_value->integer_value);
             int dp = new_temporary_register(generator);
@@ -13080,15 +13080,15 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                                     : VALUE_KIND_INTEGER;
             Symbol *s = id->symbol;
             Type_Info *at = d->object_decl.ty ? resolve_subtype(generator->sm, d->object_decl.ty) : 0;
-            if (at and at->k == TYPE_RECORD and at->dc.count > 0 and d->object_decl.in and d->object_decl.in->ty)
+            if (at and at->k == TYPE_RECORD and at->discriminants.count > 0 and d->object_decl.in and d->object_decl.in->ty)
             {
               Type_Info *it = type_canonical_concrete(d->object_decl.in->ty);
-              if (it and it->k == TYPE_RECORD and it->dc.count > 0)
+              if (it and it->k == TYPE_RECORD and it->discriminants.count > 0)
               {
-                for (uint32_t di = 0; di < at->dc.count and di < it->dc.count; di++)
+                for (uint32_t di = 0; di < at->discriminants.count and di < it->discriminants.count; di++)
                 {
-                  Syntax_Node *td = at->dc.data[di];
-                  Syntax_Node *id_d = it->dc.data[di];
+                  Syntax_Node *td = at->discriminants.data[di];
+                  Syntax_Node *id_d = it->discriminants.data[di];
                   if (td->k == N_DS and id_d->k == N_DS and td->parameter.default_value and td->parameter.default_value->k == N_INT)
                   {
                     int tdi = new_temporary_register(generator);
@@ -13454,15 +13454,15 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                                     : VALUE_KIND_INTEGER;
             Symbol *s = id->symbol;
             Type_Info *at = d->object_decl.ty ? resolve_subtype(generator->sm, d->object_decl.ty) : 0;
-            if (at and at->k == TYPE_RECORD and at->dc.count > 0 and d->object_decl.in and d->object_decl.in->ty)
+            if (at and at->k == TYPE_RECORD and at->discriminants.count > 0 and d->object_decl.in and d->object_decl.in->ty)
             {
               Type_Info *it = type_canonical_concrete(d->object_decl.in->ty);
-              if (it and it->k == TYPE_RECORD and it->dc.count > 0)
+              if (it and it->k == TYPE_RECORD and it->discriminants.count > 0)
               {
-                for (uint32_t di = 0; di < at->dc.count and di < it->dc.count; di++)
+                for (uint32_t di = 0; di < at->discriminants.count and di < it->discriminants.count; di++)
                 {
-                  Syntax_Node *td = at->dc.data[di];
-                  Syntax_Node *id_d = it->dc.data[di];
+                  Syntax_Node *td = at->discriminants.data[di];
+                  Syntax_Node *id_d = it->discriminants.data[di];
                   if (td->k == N_DS and id_d->k == N_DS and td->parameter.default_value and td->parameter.default_value->k == N_INT)
                   {
                     int tdi = new_temporary_register(generator);
