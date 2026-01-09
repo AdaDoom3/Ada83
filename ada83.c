@@ -1331,7 +1331,7 @@ struct Syntax_Node
     struct
     {
       Syntax_Node *subprogram_spec;
-      Node_Vector dc;
+      Node_Vector declarations;
       Node_Vector statements;
       Node_Vector handlers;
       int elaboration_level;
@@ -1341,14 +1341,14 @@ struct Syntax_Node
     struct
     {
       String_Slice name;
-      Node_Vector dc;
+      Node_Vector declarations;
       Node_Vector private_declarations;
       int elaboration_level;
     } package_spec;
     struct
     {
       String_Slice name;
-      Node_Vector dc;
+      Node_Vector declarations;
       Node_Vector statements;
       Node_Vector handlers;
       int elaboration_level;
@@ -1415,7 +1415,7 @@ struct Syntax_Node
     struct
     {
       String_Slice label;
-      Node_Vector dc;
+      Node_Vector declarations;
       Node_Vector statements;
       Node_Vector handlers;
     } block;
@@ -1470,7 +1470,7 @@ struct Syntax_Node
     struct
     {
       String_Slice name;
-      Node_Vector dc;
+      Node_Vector declarations;
       Node_Vector statements;
       Node_Vector handlers;
     } task_body;
@@ -1543,7 +1543,7 @@ struct Syntax_Node
     struct
     {
       Node_Vector formal_parameters;
-      Node_Vector dc;
+      Node_Vector declarations;
       Syntax_Node *unit;
     } generic_decl;
     struct
@@ -1605,7 +1605,7 @@ struct Generic_Template
 {
   String_Slice nm;
   Node_Vector formal_parameters;
-  Node_Vector dc;
+  Node_Vector declarations;
   Syntax_Node *unit;
   Syntax_Node *body;
 };
@@ -2660,14 +2660,14 @@ static Syntax_Node *parse_generic_formal(Parser *parser)
       for (uint32_t i = 0; i < pr.count; i++)
         nv(&dc, pr.data[i]);
     }
-    node->generic_decl.dc = dc;
+    node->generic_decl.declarations = dc;
     parser_expect(parser, T_END);
     if (parser_at(parser, T_ID))
       parser_next(parser);
     parser_expect(parser, T_SC);
     Syntax_Node *pk = ND(PKS, location);
     pk->package_spec.name = nm;
-    pk->package_spec.dc = node->generic_decl.dc;
+    pk->package_spec.declarations = node->generic_decl.declarations;
     node->generic_decl.unit = pk;
     return node;
   }
@@ -2783,7 +2783,7 @@ static Syntax_Node *parse_block(Parser *parser, String_Slice label)
   Syntax_Node *node = ND(BL, location);
   node->block.label = label;
   if (parser_match(parser, T_DEC))
-    node->block.dc = parse_declarative_part(parser);
+    node->block.declarations = parse_declarative_part(parser);
   parser_expect(parser, T_BEG);
   while (not parser_at(parser, T_EXCP) and not parser_at(parser, T_END))
     nv(&node->block.statements, parse_statement_or_label(parser));
@@ -3802,7 +3802,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
       }
       Syntax_Node *node = ND(PB, location);
       node->body.subprogram_spec = sp;
-      node->body.dc = parse_declarative_part(parser);
+      node->body.declarations = parse_declarative_part(parser);
       parser_expect(parser, T_BEG);
       node->body.statements = parse_statement(parser);
       if (parser_match(parser, T_EXCP))
@@ -3883,7 +3883,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
       }
       Syntax_Node *node = ND(FB, location);
       node->body.subprogram_spec = sp;
-      node->body.dc = parse_declarative_part(parser);
+      node->body.declarations = parse_declarative_part(parser);
       parser_expect(parser, T_BEG);
       node->body.statements = parse_statement(parser);
       if (parser_match(parser, T_EXCP))
@@ -3914,7 +3914,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
       }
       Syntax_Node *node = ND(PKB, location);
       node->package_body.name = nm;
-      node->package_body.dc = parse_declarative_part(parser);
+      node->package_body.declarations = parse_declarative_part(parser);
       if (parser_match(parser, T_BEG))
       {
         node->package_body.statements = parse_statement(parser);
@@ -3971,7 +3971,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
     }
     Syntax_Node *node = ND(PKS, location);
     node->package_spec.name = nm;
-    node->package_spec.dc = parse_declarative_part(parser);
+    node->package_spec.declarations = parse_declarative_part(parser);
     if (parser_match(parser, T_PRV))
       node->package_spec.private_declarations = parse_declarative_part(parser);
     parser_expect(parser, T_END);
@@ -3995,7 +3995,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
       }
       Syntax_Node *node = ND(TKB, location);
       node->task_body.name = nm;
-      node->task_body.dc = parse_declarative_part(parser);
+      node->task_body.declarations = parse_declarative_part(parser);
       parser_expect(parser, T_BEG);
       node->task_body.statements = parse_statement(parser);
       if (parser_match(parser, T_EXCP))
@@ -4507,9 +4507,9 @@ static void symbol_find_use(Symbol_Manager *symbol_manager, Symbol *s, String_Sl
     if (string_equal_ignore_case(parser->name, nm) and parser->k == 6 and parser->definition and parser->definition->k == N_PKS)
     {
       Syntax_Node *pk = parser->definition;
-      for (uint32_t i = 0; i < pk->package_spec.dc.count; i++)
+      for (uint32_t i = 0; i < pk->package_spec.declarations.count; i++)
       {
-        Syntax_Node *d = pk->package_spec.dc.data[i];
+        Syntax_Node *d = pk->package_spec.declarations.data[i];
         if (d->symbol)
         {
           sv(&s->use_clauses, d->symbol);
@@ -5227,9 +5227,9 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
           if (d->k == N_TD and string_equal_ignore_case(d->type_decl.name, node->selected_component.selector))
             return resolve_subtype(symbol_manager, d->type_decl.definition);
         }
-        for (uint32_t i = 0; i < pk->package_spec.dc.count; i++)
+        for (uint32_t i = 0; i < pk->package_spec.declarations.count; i++)
         {
-          Syntax_Node *d = pk->package_spec.dc.data[i];
+          Syntax_Node *d = pk->package_spec.declarations.data[i];
           if (d->symbol and string_equal_ignore_case(d->symbol->name, node->selected_component.selector) and d->symbol->ty)
             return d->symbol->ty;
           if (d->k == N_TD and string_equal_ignore_case(d->type_decl.name, node->selected_component.selector))
@@ -6037,9 +6037,9 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
       if (ps and ps->k == 6 and ps->definition and ps->definition->k == N_PKS)
       {
         Syntax_Node *pk = ps->definition;
-        for (uint32_t i = 0; i < pk->package_spec.dc.count; i++)
+        for (uint32_t i = 0; i < pk->package_spec.declarations.count; i++)
         {
-          Syntax_Node *d = pk->package_spec.dc.data[i];
+          Syntax_Node *d = pk->package_spec.declarations.data[i];
           if (d->symbol and string_equal_ignore_case(d->symbol->name, node->selected_component.selector))
           {
             node->ty = d->symbol->ty ? d->symbol->ty : TY_INT;
@@ -6113,9 +6113,9 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
             }
           }
         }
-        for (uint32_t i = 0; i < pk->package_spec.dc.count; i++)
+        for (uint32_t i = 0; i < pk->package_spec.declarations.count; i++)
         {
-          Syntax_Node *d = pk->package_spec.dc.data[i];
+          Syntax_Node *d = pk->package_spec.declarations.data[i];
           if (d->k == N_TD and d->symbol and d->symbol->ty)
           {
             Type_Info *et = d->symbol->ty;
@@ -6578,8 +6578,8 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
       (void) lbs;
     }
     symbol_compare_parameter(symbol_manager);
-    for (uint32_t i = 0; i < node->block.dc.count; i++)
-      resolve_declaration(symbol_manager, node->block.dc.data[i]);
+    for (uint32_t i = 0; i < node->block.declarations.count; i++)
+      resolve_declaration(symbol_manager, node->block.declarations.data[i]);
     for (uint32_t i = 0; i < node->block.statements.count; i++)
       resolve_statement_sequence(symbol_manager, node->block.statements.data[i]);
     if (node->block.handlers.count > 0)
@@ -7066,7 +7066,7 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
   case N_FD:
   case N_FB:
     c->body.subprogram_spec = node_clone_substitute(n->body.subprogram_spec, fp, ap);
-    normalize_compile_symbol_vector(&c->body.dc, &n->body.dc, fp, ap);
+    normalize_compile_symbol_vector(&c->body.declarations, &n->body.declarations, fp, ap);
     normalize_compile_symbol_vector(&c->body.statements, &n->body.statements, fp, ap);
     normalize_compile_symbol_vector(&c->body.handlers, &n->body.handlers, fp, ap);
     c->body.elaboration_level = n->body.elaboration_level;
@@ -7075,13 +7075,13 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
     break;
   case N_PKS:
     c->package_spec.name = n->package_spec.name;
-    normalize_compile_symbol_vector(&c->package_spec.dc, &n->package_spec.dc, fp, ap);
+    normalize_compile_symbol_vector(&c->package_spec.declarations, &n->package_spec.declarations, fp, ap);
     normalize_compile_symbol_vector(&c->package_spec.private_declarations, &n->package_spec.private_declarations, fp, ap);
     c->package_spec.elaboration_level = n->package_spec.elaboration_level;
     break;
   case N_PKB:
     c->package_body.name = n->package_body.name;
-    normalize_compile_symbol_vector(&c->package_body.dc, &n->package_body.dc, fp, ap);
+    normalize_compile_symbol_vector(&c->package_body.declarations, &n->package_body.declarations, fp, ap);
     normalize_compile_symbol_vector(&c->package_body.statements, &n->package_body.statements, fp, ap);
     normalize_compile_symbol_vector(&c->package_body.handlers, &n->package_body.handlers, fp, ap);
     c->package_body.elaboration_level = n->package_body.elaboration_level;
@@ -7141,7 +7141,7 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
     break;
   case N_BL:
     c->block.label = n->block.label;
-    normalize_compile_symbol_vector(&c->block.dc, &n->block.dc, fp, ap);
+    normalize_compile_symbol_vector(&c->block.declarations, &n->block.declarations, fp, ap);
     normalize_compile_symbol_vector(&c->block.statements, &n->block.statements, fp, ap);
     normalize_compile_symbol_vector(&c->block.handlers, &n->block.handlers, fp, ap);
     break;
@@ -7189,7 +7189,7 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
     break;
   case N_TKB:
     c->task_body.name = n->task_body.name;
-    normalize_compile_symbol_vector(&c->task_body.dc, &n->task_body.dc, fp, ap);
+    normalize_compile_symbol_vector(&c->task_body.declarations, &n->task_body.declarations, fp, ap);
     normalize_compile_symbol_vector(&c->task_body.statements, &n->task_body.statements, fp, ap);
     normalize_compile_symbol_vector(&c->task_body.handlers, &n->task_body.handlers, fp, ap);
     break;
@@ -7248,7 +7248,7 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
     break;
   case N_GEN:
     normalize_compile_symbol_vector(&c->generic_decl.formal_parameters, &n->generic_decl.formal_parameters, fp, ap);
-    normalize_compile_symbol_vector(&c->generic_decl.dc, &n->generic_decl.dc, fp, ap);
+    normalize_compile_symbol_vector(&c->generic_decl.declarations, &n->generic_decl.declarations, fp, ap);
     c->generic_decl.unit = node_clone_substitute(n->generic_decl.unit, fp, ap);
     break;
   case N_GINST:
@@ -7310,7 +7310,7 @@ static Syntax_Node *generate_clone(Symbol_Manager *symbol_manager, Syntax_Node *
     {
       g = generic_type_new(nm);
       g->formal_parameters = n->generic_decl.formal_parameters;
-      g->dc = n->generic_decl.dc;
+      g->declarations = n->generic_decl.declarations;
       g->unit = n->generic_decl.unit;
       gv(&symbol_manager->gt, g);
       if (g->nm.string and g->nm.length)
@@ -7787,8 +7787,8 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
         Symbol *ps = symbol_add_overload(symbol_manager, symbol_new(p->parameter.name, 0, pt, p));
         p->symbol = ps;
       }
-      for (uint32_t i = 0; i < n->body.dc.count; i++)
-        resolve_declaration(symbol_manager, n->body.dc.data[i]);
+      for (uint32_t i = 0; i < n->body.declarations.count; i++)
+        resolve_declaration(symbol_manager, n->body.declarations.data[i]);
       for (uint32_t i = 0; i < n->body.statements.count; i++)
         resolve_statement_sequence(symbol_manager, n->body.statements.data[i]);
       symbol_compare_overload(symbol_manager);
@@ -7824,8 +7824,8 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
         Symbol *ps = symbol_add_overload(symbol_manager, symbol_new(p->parameter.name, 0, pt, p));
         p->symbol = ps;
       }
-      for (uint32_t i = 0; i < n->body.dc.count; i++)
-        resolve_declaration(symbol_manager, n->body.dc.data[i]);
+      for (uint32_t i = 0; i < n->body.declarations.count; i++)
+        resolve_declaration(symbol_manager, n->body.declarations.data[i]);
       for (uint32_t i = 0; i < n->body.statements.count; i++)
         resolve_statement_sequence(symbol_manager, n->body.statements.data[i]);
       symbol_compare_overload(symbol_manager);
@@ -7855,8 +7855,8 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     n->package_spec.elaboration_level = s->elaboration_level;
     symbol_manager->pk = n;
     symbol_compare_parameter(symbol_manager);
-    for (uint32_t i = 0; i < n->package_spec.dc.count; i++)
-      resolve_declaration(symbol_manager, n->package_spec.dc.data[i]);
+    for (uint32_t i = 0; i < n->package_spec.declarations.count; i++)
+      resolve_declaration(symbol_manager, n->package_spec.declarations.data[i]);
     for (uint32_t i = 0; i < n->package_spec.private_declarations.count; i++)
       resolve_declaration(symbol_manager, n->package_spec.private_declarations.data[i]);
     symbol_compare_overload(symbol_manager);
@@ -7881,12 +7881,12 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       {
         symbol_compare_parameter(symbol_manager);
         symbol_manager->pk = pk;
-        for (uint32_t i = 0; i < pk->package_spec.dc.count; i++)
-          resolve_declaration(symbol_manager, pk->package_spec.dc.data[i]);
+        for (uint32_t i = 0; i < pk->package_spec.declarations.count; i++)
+          resolve_declaration(symbol_manager, pk->package_spec.declarations.data[i]);
         for (uint32_t i = 0; i < gt->formal_parameters.count; i++)
           resolve_declaration(symbol_manager, gt->formal_parameters.data[i]);
-        for (uint32_t i = 0; i < n->package_body.dc.count; i++)
-          resolve_declaration(symbol_manager, n->package_body.dc.data[i]);
+        for (uint32_t i = 0; i < n->package_body.declarations.count; i++)
+          resolve_declaration(symbol_manager, n->package_body.declarations.data[i]);
         for (uint32_t i = 0; i < n->package_body.statements.count; i++)
           resolve_statement_sequence(symbol_manager, n->package_body.statements.data[i]);
         symbol_compare_overload(symbol_manager);
@@ -7914,8 +7914,8 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
             if (_pk and string_equal_ignore_case(_pk->package_spec.name, n->package_body.name))
             {
               symbol_manager->pk = _pk;
-              for (uint32_t _j = 0; _j < _pk->package_spec.dc.count; _j++)
-                resolve_declaration(symbol_manager, _pk->package_spec.dc.data[_j]);
+              for (uint32_t _j = 0; _j < _pk->package_spec.declarations.count; _j++)
+                resolve_declaration(symbol_manager, _pk->package_spec.declarations.data[_j]);
               for (uint32_t _j = 0; _j < _pk->package_spec.private_declarations.count; _j++)
                 resolve_declaration(symbol_manager, _pk->package_spec.private_declarations.data[_j]);
               symbol_manager->pk = 0;
@@ -7944,9 +7944,9 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       if (ps->definition and ps->definition->k == N_PKS)
       {
         Syntax_Node *pk = ps->definition;
-        for (uint32_t i = 0; i < pk->package_spec.dc.count; i++)
+        for (uint32_t i = 0; i < pk->package_spec.declarations.count; i++)
         {
-          Syntax_Node *d = pk->package_spec.dc.data[i];
+          Syntax_Node *d = pk->package_spec.declarations.data[i];
           if (d->symbol)
           {
             d->symbol->visibility |= 2;
@@ -7976,9 +7976,9 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
                 sv(&symbol_manager->uv, d->exception_decl.identifiers.data[j]->symbol);
               }
         }
-        for (uint32_t i = 0; i < pk->package_spec.dc.count; i++)
+        for (uint32_t i = 0; i < pk->package_spec.declarations.count; i++)
         {
-          Syntax_Node *d = pk->package_spec.dc.data[i];
+          Syntax_Node *d = pk->package_spec.declarations.data[i];
           if (d->symbol)
             sv(&symbol_manager->uv, d->symbol);
           else if (d->k == N_ED)
@@ -8002,8 +8002,8 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
         }
       }
     }
-    for (uint32_t i = 0; i < n->package_body.dc.count; i++)
-      resolve_declaration(symbol_manager, n->package_body.dc.data[i]);
+    for (uint32_t i = 0; i < n->package_body.declarations.count; i++)
+      resolve_declaration(symbol_manager, n->package_body.declarations.data[i]);
     for (uint32_t i = 0; i < n->package_body.statements.count; i++)
       resolve_statement_sequence(symbol_manager, n->package_body.statements.data[i]);
     symbol_compare_overload(symbol_manager);
@@ -8035,8 +8035,8 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
         }
       }
     }
-    for (uint32_t i = 0; i < n->task_body.dc.count; i++)
-      resolve_declaration(symbol_manager, n->task_body.dc.data[i]);
+    for (uint32_t i = 0; i < n->task_body.declarations.count; i++)
+      resolve_declaration(symbol_manager, n->task_body.declarations.data[i]);
     for (uint32_t i = 0; i < n->task_body.statements.count; i++)
       resolve_statement_sequence(symbol_manager, n->task_body.statements.data[i]);
     symbol_compare_overload(symbol_manager);
@@ -8276,8 +8276,8 @@ static Syntax_Node *pks2(Symbol_Manager *symbol_manager, String_Slice nm, const 
       int oldlv = symbol_manager->lv;
       symbol_manager->pk = u;
       symbol_manager->lv = 0;
-      for (uint32_t j = 0; j < u->package_spec.dc.count; j++)
-        resolve_declaration(symbol_manager, u->package_spec.dc.data[j]);
+      for (uint32_t j = 0; j < u->package_spec.declarations.count; j++)
+        resolve_declaration(symbol_manager, u->package_spec.declarations.data[j]);
       for (uint32_t j = 0; j < u->package_spec.private_declarations.count; j++)
         resolve_declaration(symbol_manager, u->package_spec.private_declarations.data[j]);
       symbol_manager->lv = oldlv;
@@ -8310,9 +8310,9 @@ static void symbol_manager_use_clauses(Symbol_Manager *symbol_manager, Syntax_No
       if (ps and ps->k == 6 and ps->definition and ps->definition->k == N_PKS)
       {
         Syntax_Node *pk = ps->definition;
-        for (uint32_t j = 0; j < pk->package_spec.dc.count; j++)
+        for (uint32_t j = 0; j < pk->package_spec.declarations.count; j++)
         {
-          Syntax_Node *d = pk->package_spec.dc.data[j];
+          Syntax_Node *d = pk->package_spec.declarations.data[j];
           if (d->k == N_ED)
           {
             for (uint32_t k = 0; k < d->exception_decl.identifiers.count; k++)
@@ -8345,21 +8345,21 @@ static void symbol_manager_use_clauses(Symbol_Manager *symbol_manager, Syntax_No
     Symbol_Vector eo = {0};
     int mx = 0;
     if (n->compilation_unit.units.data[i]->k == N_PKS)
-      for (uint32_t j = 0; j < n->compilation_unit.units.data[i]->package_spec.dc.count; j++)
+      for (uint32_t j = 0; j < n->compilation_unit.units.data[i]->package_spec.declarations.count; j++)
       {
-        int e = elaborate_compilation(symbol_manager, &eo, n->compilation_unit.units.data[i]->package_spec.dc.data[j]);
+        int e = elaborate_compilation(symbol_manager, &eo, n->compilation_unit.units.data[i]->package_spec.declarations.data[j]);
         mx = e > mx ? e : mx;
       }
     else if (n->compilation_unit.units.data[i]->k == N_PKB)
-      for (uint32_t j = 0; j < n->compilation_unit.units.data[i]->package_body.dc.count; j++)
+      for (uint32_t j = 0; j < n->compilation_unit.units.data[i]->package_body.declarations.count; j++)
       {
-        int e = elaborate_compilation(symbol_manager, &eo, n->compilation_unit.units.data[i]->package_body.dc.data[j]);
+        int e = elaborate_compilation(symbol_manager, &eo, n->compilation_unit.units.data[i]->package_body.declarations.data[j]);
         mx = e > mx ? e : mx;
       }
     for (uint32_t j = 0; j < eo.count; j++)
       if (eo.data[j]->k == 6 and eo.data[j]->definition and eo.data[j]->definition->k == N_PKS)
-        for (uint32_t k = 0; k < ((Syntax_Node *) eo.data[j]->definition)->package_spec.dc.count; k++)
-          resolve_declaration(symbol_manager, ((Syntax_Node *) eo.data[j]->definition)->package_spec.dc.data[k]);
+        for (uint32_t k = 0; k < ((Syntax_Node *) eo.data[j]->definition)->package_spec.declarations.count; k++)
+          resolve_declaration(symbol_manager, ((Syntax_Node *) eo.data[j]->definition)->package_spec.declarations.data[k]);
     resolve_declaration(symbol_manager, n->compilation_unit.units.data[i]);
   }
 }
@@ -8686,7 +8686,7 @@ static bool has_nested_function_in_stmts(Node_Vector *st)
     Syntax_Node *n = st->data[i];
     if (not n)
       continue;
-    if (n->k == N_BL and has_nested_function(&n->block.dc, &n->block.statements))
+    if (n->k == N_BL and has_nested_function(&n->block.declarations, &n->block.statements))
       return 1;
     if (n->k == N_IF)
     {
@@ -12177,15 +12177,15 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
     int ln = new_label_block(generator), lh = new_label_block(generator);
     emit_conditional_branch(generator, ze, ln, lh);
     emit_label(generator, ln);
-    for (uint32_t i = 0; i < n->block.dc.count; i++)
+    for (uint32_t i = 0; i < n->block.declarations.count; i++)
     {
-      Syntax_Node *d = n->block.dc.data[i];
+      Syntax_Node *d = n->block.declarations.data[i];
       if (d and d->k != N_PB and d->k != N_FB and d->k != N_PKB and d->k != N_PD and d->k != N_FD)
         generate_declaration(generator, d);
     }
-    for (uint32_t i = 0; i < n->block.dc.count; i++)
+    for (uint32_t i = 0; i < n->block.declarations.count; i++)
     {
-      Syntax_Node *d = n->block.dc.data[i];
+      Syntax_Node *d = n->block.declarations.data[i];
       if (d and d->k == N_OD and d->object_decl.in)
       {
         for (uint32_t j = 0; j < d->object_decl.identifiers.count; j++)
@@ -12254,9 +12254,9 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
         }
       }
     }
-    for (uint32_t i = 0; i < n->block.dc.count; i++)
+    for (uint32_t i = 0; i < n->block.declarations.count; i++)
     {
-      Syntax_Node *d = n->block.dc.data[i];
+      Syntax_Node *d = n->block.declarations.data[i];
       if (d and d->k == N_OD and not d->object_decl.in)
         for (uint32_t j = 0; j < d->object_decl.identifiers.count; j++)
         {
@@ -12587,9 +12587,9 @@ static void has_basic_label(Code_Generator *generator, Node_Vector *sl)
       continue;
     if (s->k == N_BL)
     {
-      for (uint32_t j = 0; j < s->block.dc.count; j++)
+      for (uint32_t j = 0; j < s->block.declarations.count; j++)
       {
-        Syntax_Node *d = s->block.dc.data[j];
+        Syntax_Node *d = s->block.declarations.data[j];
         if (d and (d->k == N_PB or d->k == N_FB))
           generate_declaration(generator, d);
       }
@@ -12791,15 +12791,15 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
   }
   break;
   case N_BL:
-    for (uint32_t i = 0; i < n->block.dc.count; i++)
+    for (uint32_t i = 0; i < n->block.declarations.count; i++)
     {
-      Syntax_Node *d = n->block.dc.data[i];
+      Syntax_Node *d = n->block.declarations.data[i];
       if (d and d->k != N_PB and d->k != N_FB and d->k != N_PD and d->k != N_FD)
         generate_declaration(generator, d);
     }
-    for (uint32_t i = 0; i < n->block.dc.count; i++)
+    for (uint32_t i = 0; i < n->block.declarations.count; i++)
     {
-      Syntax_Node *d = n->block.dc.data[i];
+      Syntax_Node *d = n->block.declarations.data[i];
       if (d and (d->k == N_PB or d->k == N_FB))
         generate_declaration(generator, d);
     }
@@ -12810,15 +12810,15 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     Generic_Template *gt = generic_find(generator->sm, sp->subprogram.name);
     if (gt)
       break;
-    for (uint32_t i = 0; i < n->body.dc.count; i++)
+    for (uint32_t i = 0; i < n->body.declarations.count; i++)
     {
-      Syntax_Node *d = n->body.dc.data[i];
+      Syntax_Node *d = n->body.declarations.data[i];
       if (d and d->k == N_PKB)
         generate_declaration(generator, d);
     }
-    for (uint32_t i = 0; i < n->body.dc.count; i++)
+    for (uint32_t i = 0; i < n->body.declarations.count; i++)
     {
-      Syntax_Node *d = n->body.dc.data[i];
+      Syntax_Node *d = n->body.declarations.data[i];
       if (d and (d->k == N_PB or d->k == N_FB))
         generate_declaration(generator, d);
     }
@@ -13019,9 +13019,9 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
         }
       }
     }
-    for (uint32_t i = 0; i < n->body.dc.count; i++)
+    for (uint32_t i = 0; i < n->body.declarations.count; i++)
     {
-      Syntax_Node *d = n->body.dc.data[i];
+      Syntax_Node *d = n->body.declarations.data[i];
       if (d and d->k != N_PB and d->k != N_FB and d->k != N_PKB and d->k != N_PD and d->k != N_FD)
         generate_declaration(generator, d);
     }
@@ -13066,9 +13066,9 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
         }
       }
     }
-    for (uint32_t i = 0; i < n->body.dc.count; i++)
+    for (uint32_t i = 0; i < n->body.declarations.count; i++)
     {
-      Syntax_Node *d = n->body.dc.data[i];
+      Syntax_Node *d = n->body.declarations.data[i];
       if (d and d->k == N_OD and d->object_decl.in)
       {
         for (uint32_t j = 0; j < d->object_decl.identifiers.count; j++)
@@ -13186,15 +13186,15 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     Generic_Template *gt = generic_find(generator->sm, sp->subprogram.name);
     if (gt)
       break;
-    for (uint32_t i = 0; i < n->body.dc.count; i++)
+    for (uint32_t i = 0; i < n->body.declarations.count; i++)
     {
-      Syntax_Node *d = n->body.dc.data[i];
+      Syntax_Node *d = n->body.declarations.data[i];
       if (d and d->k == N_PKB)
         generate_declaration(generator, d);
     }
-    for (uint32_t i = 0; i < n->body.dc.count; i++)
+    for (uint32_t i = 0; i < n->body.declarations.count; i++)
     {
-      Syntax_Node *d = n->body.dc.data[i];
+      Syntax_Node *d = n->body.declarations.data[i];
       if (d and (d->k == N_PB or d->k == N_FB))
         generate_declaration(generator, d);
     }
@@ -13397,9 +13397,9 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
         }
       }
     }
-    for (uint32_t i = 0; i < n->body.dc.count; i++)
+    for (uint32_t i = 0; i < n->body.declarations.count; i++)
     {
-      Syntax_Node *d = n->body.dc.data[i];
+      Syntax_Node *d = n->body.declarations.data[i];
       if (d and d->k != N_PB and d->k != N_FB and d->k != N_PKB and d->k != N_PD and d->k != N_FD)
         generate_declaration(generator, d);
     }
@@ -13440,9 +13440,9 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
         }
       }
     }
-    for (uint32_t i = 0; i < n->body.dc.count; i++)
+    for (uint32_t i = 0; i < n->body.declarations.count; i++)
     {
-      Syntax_Node *d = n->body.dc.data[i];
+      Syntax_Node *d = n->body.declarations.data[i];
       if (d and d->k == N_OD and d->object_decl.in)
       {
         for (uint32_t j = 0; j < d->object_decl.identifiers.count; j++)
@@ -13563,9 +13563,9 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
   }
   break;
   case N_PKB:
-    for (uint32_t i = 0; i < n->package_body.dc.count; i++)
-      if (n->package_body.dc.data[i] and (n->package_body.dc.data[i]->k == N_PB or n->package_body.dc.data[i]->k == N_FB))
-        generate_declaration(generator, n->package_body.dc.data[i]);
+    for (uint32_t i = 0; i < n->package_body.declarations.count; i++)
+      if (n->package_body.declarations.data[i] and (n->package_body.declarations.data[i]->k == N_PB or n->package_body.declarations.data[i]->k == N_FB))
+        generate_declaration(generator, n->package_body.declarations.data[i]);
     break;
   default:
     break;
