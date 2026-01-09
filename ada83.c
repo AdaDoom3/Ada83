@@ -1603,7 +1603,7 @@ struct Library_Unit
 };
 struct Generic_Template
 {
-  String_Slice nm;
+  String_Slice name;
   Node_Vector formal_parameters;
   Node_Vector declarations;
   Syntax_Node *unit;
@@ -1634,7 +1634,7 @@ static Library_Unit *label_use_new(uint8_t k, String_Slice nm, String_Slice pth)
 static Generic_Template *generic_type_new(String_Slice nm)
 {
   Generic_Template *g = arena_allocate(sizeof(Generic_Template));
-  g->nm = nm;
+  g->name = nm;
   return g;
 }
 #define ND(k, l) node_new(N_##k, l)
@@ -4564,7 +4564,7 @@ static Generic_Template *generic_find(Symbol_Manager *symbol_manager, String_Sli
   for (uint32_t i = 0; i < symbol_manager->gt.count; i++)
   {
     Generic_Template *g = symbol_manager->gt.data[i];
-    if (string_equal_ignore_case(g->nm, nm))
+    if (string_equal_ignore_case(g->name, nm))
       return g;
   }
   return 0;
@@ -7313,9 +7313,9 @@ static Syntax_Node *generate_clone(Symbol_Manager *symbol_manager, Syntax_Node *
       g->declarations = n->generic_decl.declarations;
       g->unit = n->generic_decl.unit;
       gv(&symbol_manager->gt, g);
-      if (g->nm.string and g->nm.length)
+      if (g->name.string and g->name.length)
       {
-        Symbol *gs = symbol_new(g->nm, 11, 0, n);
+        Symbol *gs = symbol_new(g->name, 11, 0, n);
         gs->generic_template = g;
         if (g->unit and g->unit->k == N_PKS)
           gs->definition = g->unit;
