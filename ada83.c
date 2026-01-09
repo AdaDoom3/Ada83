@@ -4393,7 +4393,7 @@ struct Symbol
   int elaboration_level;
   Generic_Template *generic_template;
   Symbol *parent;
-  int lv;
+  int level;
   bool is_inline;
   bool is_shared;
   bool is_external;
@@ -4447,7 +4447,7 @@ static Symbol *symbol_new(String_Slice nm, uint8_t k, Type_Info *ty, Syntax_Node
   s->ty = ty;
   s->definition = df;
   s->elaboration_level = -1;
-  s->lv = -1;
+  s->level = -1;
   return s;
 }
 static Symbol *symbol_add_overload(Symbol_Manager *symbol_manager, Symbol *s)
@@ -4458,13 +4458,13 @@ static Symbol *symbol_add_overload(Symbol_Manager *symbol_manager, Symbol *s)
   s->scope = symbol_manager->sc;
   s->storage_size = symbol_manager->ss;
   s->elaboration_level = symbol_manager->eo++;
-  s->lv = symbol_manager->lv;
+  s->level = symbol_manager->lv;
   s->visibility = 1;
   uint64_t u = string_hash(s->name);
   if (s->parent)
   {
     u = u * 31 + string_hash(s->parent->name);
-    if (s->lv > 0)
+    if (s->level > 0)
     {
       u = u * 31 + s->scope;
       u = u * 31 + s->elaboration_level;
@@ -6560,7 +6560,7 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
           Type_Info *rt = node->loop_stmt.iterator->binary_node.r->ty;
           Symbol *lvs = symbol_new(v->s, 0, rt ?: TY_INT, 0);
           symbol_add_overload(symbol_manager, lvs);
-          lvs->lv = -1;
+          lvs->level = -1;
           v->sy = lvs;
         }
       }
@@ -7355,7 +7355,7 @@ static Symbol *get_pkg_sym(Symbol_Manager *symbol_manager, Syntax_Node *pk)
     return 0;
   uint32_t h = symbol_hash(nm);
   for (Symbol *s = symbol_manager->sy[h]; s; s = s->next)
-    if (s->k == 6 and string_equal_ignore_case(s->name, nm) and s->lv == 0)
+    if (s->k == 6 and string_equal_ignore_case(s->name, nm) and s->level == 0)
       return s;
   return pk->sy;
 }
@@ -8195,7 +8195,7 @@ static void read_ada_library_interface(Symbol_Manager *symbol_manager, const cha
         Syntax_Node *n = node_new(N_OD, ll);
         Symbol *s = symbol_add_overload(symbol_manager, symbol_new(sn, 0, vt, n));
         s->is_external = 1;
-        s->lv = 0;
+        s->level = 0;
         s->external_name = string_duplicate(msn);
         s->mangled_name = string_duplicate(sn);
         n->sy = s;
@@ -8269,7 +8269,7 @@ static Syntax_Node *pks2(Symbol_Manager *symbol_manager, String_Slice nm, const 
     {
       Type_Info *t = type_new(TY_P, nm);
       Symbol *ps = symbol_add_overload(symbol_manager, symbol_new(nm, 6, t, u));
-      ps->lv = 0;
+      ps->level = 0;
       u->sy = ps;
       u->package_spec.elaboration_level = ps->elaboration_level;
       Syntax_Node *oldpk = symbol_manager->pk;
@@ -9207,7 +9207,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       }
     }
     if (s and s->k == 2
-        and not(s->ty and is_unconstrained_array(type_canonical_concrete(s->ty)) and s->lv > 0))
+        and not(s->ty and is_unconstrained_array(type_canonical_concrete(s->ty)) and s->level > 0))
     {
       if (s->definition and s->definition->k == N_STR)
       {
@@ -9239,7 +9239,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       if (s and s->ty)
         k = token_kind_to_value_kind(s->ty);
       r.k = k;
-      if (s and s->lv == 0)
+      if (s and s->level == 0)
       {
         char nb[256];
         if (s->is_external and s->external_name.string)
@@ -9291,7 +9291,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         else
           fprintf(o, "  %%t%d = load %s, ptr @%s\n", r.id, value_llvm_type_string(k), nb);
       }
-      else if (s and s->lv >= 0 and s->lv < generator->sm->lv)
+      else if (s and s->level >= 0 and s->level < generator->sm->lv)
       {
         if (s->k == 5)
         {
@@ -9314,7 +9314,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           }
           else
           {
-            int level_diff = generator->sm->lv - s->lv - 1;
+            int level_diff = generator->sm->lv - s->level - 1;
             int slnk_ptr;
             if (level_diff == 0)
             {
@@ -9345,7 +9345,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         {
           Type_Info *vat = s and s->ty ? type_canonical_concrete(s->ty) : 0;
           int p = new_temporary_register(generator);
-          int level_diff = generator->sm->lv - s->lv - 1;
+          int level_diff = generator->sm->lv - s->level - 1;
           int slnk_ptr;
           if (level_diff == 0)
           {
@@ -9392,7 +9392,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                                 : VALUE_KIND_INTEGER;
             char fnb[256];
             encode_symbol_name(fnb, 256, s, n->s, 0, sp);
-            if (s->lv >= generator->sm->lv)
+            if (s->level >= generator->sm->lv)
               fprintf(
                   o,
                   "  %%t%d = call %s @\"%s\"(ptr %%__frame)\n",
@@ -10234,7 +10234,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             }
           }
         }
-        if (s->lv >= 0 and s->lv < generator->sm->lv)
+        if (s->level >= 0 and s->level < generator->sm->lv)
         {
           if (has_nested)
           {
@@ -10247,7 +10247,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                 o,
                 "  %%t%d = bitcast ptr %%lnk.%d.%.*s to ptr\n",
                 p.id,
-                s->lv,
+                s->level,
                 (int) n->selected_component.prefix->s.length,
                 n->selected_component.prefix->s.string);
         }
@@ -10410,7 +10410,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         if (s)
         {
           r.k = VALUE_KIND_INTEGER;
-          if (s->lv == 0)
+          if (s->level == 0)
           {
             char nb[256];
             if (s->parent and (uintptr_t) s->parent > 4096 and s->parent->name.string)
@@ -10429,7 +10429,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             fprintf(o, "  %%t%d = ptrtoint ptr @%s to i64\n", p, nb);
             r.id = p;
           }
-          else if (s->lv >= 0 and s->lv < generator->sm->lv)
+          else if (s->level >= 0 and s->level < generator->sm->lv)
           {
             int p = new_temporary_register(generator);
             fprintf(o, "  %%t%d = getelementptr ptr, ptr %%__slnk, i64 %u\n", p, s->elaboration_level);
@@ -11004,7 +11004,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
               {
                 rf = true;
                 Symbol *as = arg->sy ? arg->sy : symbol_find(generator->sm, arg->s);
-                if (as and as->lv == 0)
+                if (as and as->level == 0)
                 {
                   char nb[256];
                   if (as->parent and as->parent->name.string)
@@ -11023,7 +11023,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                   av.k = VALUE_KIND_POINTER;
                   fprintf(o, "  %%t%d = bitcast ptr @%s to ptr\n", av.id, nb);
                 }
-                else if (as and as->lv >= 0 and as->lv < generator->sm->lv)
+                else if (as and as->level >= 0 and as->level < generator->sm->lv)
                 {
                   av.id = new_temporary_register(generator);
                   av.k = VALUE_KIND_POINTER;
@@ -11085,11 +11085,11 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
               fprintf(o, ", ");
             fprintf(o, "%s %%t%d", value_llvm_type_string(ark[i]), arid[i]);
           }
-          if (s->lv > 0)
+          if (s->level > 0)
           {
             if (n->call.arguments.count > 0)
               fprintf(o, ", ");
-            if (s->lv >= generator->sm->lv)
+            if (s->level >= generator->sm->lv)
               fprintf(o, "ptr %%__frame");
             else
               fprintf(o, "ptr %%__slnk");
@@ -11115,13 +11115,13 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                 Symbol *ts = tg->sy ? tg->sy : symbol_find(generator->sm, tg->s);
                 if (ts)
                 {
-                  if (ts->lv >= 0 and ts->lv < generator->sm->lv)
+                  if (ts->level >= 0 and ts->level < generator->sm->lv)
                     fprintf(
                         o,
                         "  store %s %%t%d, ptr %%lnk.%d.%s\n",
                         value_llvm_type_string(cv.k),
                         cv.id,
-                        ts->lv,
+                        ts->level,
                         string_to_lowercase(tg->s));
                   else
                     fprintf(
@@ -11263,7 +11263,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
       Symbol *s = n->assignment.target->sy;
       Value_Kind k = s and s->ty ? token_kind_to_value_kind(s->ty) : VALUE_KIND_INTEGER;
       v = value_cast(generator, v, k);
-      if (s and s->lv == 0)
+      if (s and s->level == 0)
       {
         char nb[256];
         if (s->parent and (uintptr_t) s->parent > 4096 and s->parent->name.string)
@@ -11280,10 +11280,10 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           snprintf(nb, 256, "%.*s", (int) s->name.length, s->name.string);
         fprintf(o, "  store %s %%t%d, ptr @%s\n", value_llvm_type_string(k), v.id, nb);
       }
-      else if (s and s->lv >= 0 and s->lv < generator->sm->lv)
+      else if (s and s->level >= 0 and s->level < generator->sm->lv)
       {
         int p = new_temporary_register(generator);
-        int level_diff = generator->sm->lv - s->lv - 1;
+        int level_diff = generator->sm->lv - s->level - 1;
         int slnk_ptr;
         if (level_diff == 0)
         {
@@ -11363,12 +11363,12 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
       if (n->assignment.target->selected_component.prefix->k == N_ID)
       {
         Symbol *s = n->assignment.target->selected_component.prefix->sy ? n->assignment.target->selected_component.prefix->sy : symbol_find(generator->sm, n->assignment.target->selected_component.prefix->s);
-        if (s and s->lv >= 0 and s->lv < generator->sm->lv)
+        if (s and s->level >= 0 and s->level < generator->sm->lv)
           fprintf(
               o,
               "  %%t%d = bitcast ptr %%lnk.%d.%.*s to ptr\n",
               p.id,
-              s->lv,
+              s->level,
               (int) n->assignment.target->selected_component.prefix->s.length,
               n->assignment.target->selected_component.prefix->s.string);
         else
@@ -11645,7 +11645,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             fprintf(o, "  %%t%d = add i64 0, %lld\n", hi_t, (long long) ft->hi);
             fprintf(o, "  store i64 %%t%d, ptr %%v.__for_hi_%d\n", hi_t, hi_var);
           }
-          if (vs->lv == 0)
+          if (vs->level == 0)
           {
             char nb[256];
             if (vs->parent and vs->parent->name.string)
@@ -11681,7 +11681,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
       {
         Symbol *vs = fv->sy;
         int cv = new_temporary_register(generator);
-        if (vs->lv == 0)
+        if (vs->level == 0)
         {
           char nb[256];
           if (vs->parent and vs->parent->name.string)
@@ -11733,7 +11733,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
       if (vs)
       {
         int cv = new_temporary_register(generator);
-        if (vs->lv == 0)
+        if (vs->level == 0)
         {
           char nb[256];
           if (vs->parent and vs->parent->name.string)
@@ -11916,7 +11916,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               {
                 rf = true;
                 Symbol *as = arg->sy ? arg->sy : symbol_find(generator->sm, arg->s);
-                if (as and as->lv == 0)
+                if (as and as->level == 0)
                 {
                   char nb[256];
                   if (as->parent and as->parent->name.string)
@@ -11935,7 +11935,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                   av.k = VALUE_KIND_POINTER;
                   fprintf(o, "  %%t%d = bitcast ptr @%s to ptr\n", av.id, nb);
                 }
-                else if (as and as->lv >= 0 and as->lv < generator->sm->lv)
+                else if (as and as->level >= 0 and as->level < generator->sm->lv)
                 {
                   av.id = new_temporary_register(generator);
                   av.k = VALUE_KIND_POINTER;
@@ -12000,11 +12000,11 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               fprintf(o, ", ");
             fprintf(o, "%s %%t%d", value_llvm_type_string(ark[i]), arid[i]);
           }
-          if (s->lv > 0 and not s->is_external)
+          if (s->level > 0 and not s->is_external)
           {
             if (n->code_stmt.arguments.count > 0)
               fprintf(o, ", ");
-            if (s->lv >= generator->sm->lv)
+            if (s->level >= generator->sm->lv)
               fprintf(o, "ptr %%__frame");
             else
               fprintf(o, "ptr %%__slnk");
@@ -12030,13 +12030,13 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                 Symbol *ts = tg->sy ? tg->sy : symbol_find(generator->sm, tg->s);
                 if (ts)
                 {
-                  if (ts->lv >= 0 and ts->lv < generator->sm->lv)
+                  if (ts->level >= 0 and ts->level < generator->sm->lv)
                     fprintf(
                         o,
                         "  store %s %%t%d, ptr %%lnk.%d.%s\n",
                         value_llvm_type_string(cv.k),
                         cv.id,
-                        ts->lv,
+                        ts->level,
                         string_to_lowercase(tg->s));
                   else
                     fprintf(
@@ -12103,12 +12103,12 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               Symbol *as = arg->sy ? arg->sy : symbol_find(generator->sm, arg->s);
               av.id = new_temporary_register(generator);
               av.k = VALUE_KIND_POINTER;
-              if (as and as->lv >= 0 and as->lv < generator->sm->lv)
+              if (as and as->level >= 0 and as->level < generator->sm->lv)
                 fprintf(
                     o,
                     "  %%t%d = bitcast ptr %%lnk.%d.%s to ptr\n",
                     av.id,
-                    as->lv,
+                    as->level,
                     string_to_lowercase(arg->s));
               else
                 fprintf(
@@ -12232,13 +12232,13 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             {
               Value v = generate_expression(generator, d->object_decl.in);
               v = value_cast(generator, v, k);
-              if (s and s->lv >= 0 and s->lv < generator->sm->lv)
+              if (s and s->level >= 0 and s->level < generator->sm->lv)
                 fprintf(
                     o,
                     "  store %s %%t%d, ptr %%lnk.%d.%s\n",
                     value_llvm_type_string(k),
                     v.id,
-                    s->lv,
+                    s->level,
                     string_to_lowercase(id->s));
               else
                 fprintf(
@@ -12302,12 +12302,12 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             int dv = new_temporary_register(generator);
             fprintf(o, "  %%t%d = add i64 0, %lld\n", dv, (long long) dc->parameter.default_value->i);
             int dp = new_temporary_register(generator);
-            if (s->lv >= 0 and s->lv < generator->sm->lv)
+            if (s->level >= 0 and s->level < generator->sm->lv)
               fprintf(
                   o,
                   "  %%t%d = getelementptr i64, ptr %%lnk.%d.%s, i64 %u\n",
                   dp,
-                  s->lv,
+                  s->level,
                   string_to_lowercase(id->s),
                   di);
             else
@@ -12840,7 +12840,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     }
     fprintf(o, "define linkonce_odr void @\"%s\"(", nb);
     int np = sp->subprogram.parameters.count;
-    if (n->sy and n->sy->lv > 0)
+    if (n->sy and n->sy->level > 0)
       np++;
     for (int i = 0; i < np; i++)
     {
@@ -12862,8 +12862,8 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     fprintf(o, ")%s{\n", n->sy and n->sy->is_inline ? " alwaysinline " : " ");
     fprintf(o, "  %%ej = alloca ptr\n");
     int sv = generator->sm->lv;
-    generator->sm->lv = n->sy ? n->sy->lv + 1 : 0;
-    if (n->sy and n->sy->lv > 0)
+    generator->sm->lv = n->sy ? n->sy->level + 1 : 0;
+    if (n->sy and n->sy->level > 0)
     {
       generate_block_frame(generator);
       int mx = 0;
@@ -12874,7 +12874,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       if (mx == 0)
         fprintf(o, "  %%__frame = bitcast ptr %%__slnk to ptr\n");
     }
-    if (n->sy and n->sy->lv > 0)
+    if (n->sy and n->sy->level > 0)
     {
       int fp0 = new_temporary_register(generator);
       fprintf(o, "  %%t%d = getelementptr ptr, ptr %%__frame, i64 0\n", fp0);
@@ -12886,11 +12886,11 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       Value_Kind k = p->parameter.ty ? token_kind_to_value_kind(resolve_subtype(generator->sm, p->parameter.ty))
                               : VALUE_KIND_INTEGER;
       Symbol *ps = p->sy;
-      if (ps and ps->lv >= 0 and ps->lv < generator->sm->lv)
+      if (ps and ps->level >= 0 and ps->level < generator->sm->lv)
         fprintf(
             o,
             "  %%lnk.%d.%s = alloca %s\n",
-            ps->lv,
+            ps->level,
             string_to_lowercase(p->parameter.nm),
             value_llvm_type_string(k));
       else
@@ -12910,13 +12910,13 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
             lv,
             value_llvm_type_string(k),
             string_to_lowercase(p->parameter.nm));
-        if (ps and ps->lv >= 0 and ps->lv < generator->sm->lv)
+        if (ps and ps->level >= 0 and ps->level < generator->sm->lv)
           fprintf(
               o,
               "  store %s %%t%d, ptr %%lnk.%d.%s\n",
               value_llvm_type_string(k),
               lv,
-              ps->lv,
+              ps->level,
               string_to_lowercase(p->parameter.nm));
         else
           fprintf(
@@ -12930,13 +12930,13 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       }
       else
       {
-        if (ps and ps->lv >= 0 and ps->lv < generator->sm->lv)
+        if (ps and ps->level >= 0 and ps->level < generator->sm->lv)
           fprintf(
               o,
               "  store %s %%p.%s, ptr %%lnk.%d.%s\n",
               value_llvm_type_string(k),
               string_to_lowercase(p->parameter.nm),
-              ps->lv,
+              ps->level,
               string_to_lowercase(p->parameter.nm));
         else
           fprintf(
@@ -12949,13 +12949,13 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
               ps ? ps->elaboration_level : 0);
       }
     }
-    if (n->sy and n->sy->lv > 0)
+    if (n->sy and n->sy->level > 0)
     {
       for (int h = 0; h < 4096; h++)
       {
         for (Symbol *s = generator->sm->sy[h]; s; s = s->next)
         {
-          if (s->k == 0 and s->lv >= 0 and s->lv < generator->sm->lv and not(s->definition and s->definition->k == N_GVL))
+          if (s->k == 0 and s->level >= 0 and s->level < generator->sm->lv and not(s->definition and s->definition->k == N_GVL))
           {
             Value_Kind k = s->ty ? token_kind_to_value_kind(s->ty) : VALUE_KIND_INTEGER;
             Type_Info *at = s->ty ? type_canonical_concrete(s->ty) : 0;
@@ -12981,7 +12981,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   s->elaboration_level,
                   value_llvm_type_string(k));
             }
-            int level_diff = generator->sm->lv - s->lv - 1;
+            int level_diff = generator->sm->lv - s->level - 1;
             int slnk_ptr;
             if (level_diff == 0)
             {
@@ -13025,14 +13025,14 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       if (d and d->k != N_PB and d->k != N_FB and d->k != N_PKB and d->k != N_PD and d->k != N_FD)
         generate_declaration(generator, d);
     }
-    if (n->sy and n->sy->lv > 0)
+    if (n->sy and n->sy->level > 0)
     {
       for (int h = 0; h < 4096; h++)
       {
         for (Symbol *s = generator->sm->sy[h]; s; s = s->next)
         {
           if (s->k == 0 and s->elaboration_level >= 0 and n->sy->scope >= 0 and s->scope == (uint32_t) (n->sy->scope + 1)
-              and s->lv == generator->sm->lv and s->parent == n->sy)
+              and s->level == generator->sm->lv and s->parent == n->sy)
           {
             bool is_pm = false;
             for (uint32_t pi = 0; pi < sp->subprogram.parameters.count; pi++)
@@ -13115,13 +13115,13 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
             {
               Value v = generate_expression(generator, d->object_decl.in);
               v = value_cast(generator, v, k);
-              if (s and s->lv >= 0 and s->lv < generator->sm->lv)
+              if (s and s->level >= 0 and s->level < generator->sm->lv)
                 fprintf(
                     o,
                     "  store %s %%t%d, ptr %%lnk.%d.%s\n",
                     value_llvm_type_string(k),
                     v.id,
-                    s->lv,
+                    s->level,
                     string_to_lowercase(id->s));
               else
                 fprintf(
@@ -13218,7 +13218,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     }
     fprintf(o, "define linkonce_odr %s @\"%s\"(", value_llvm_type_string(rk), nb);
     int np = sp->subprogram.parameters.count;
-    if (n->sy and n->sy->lv > 0)
+    if (n->sy and n->sy->level > 0)
       np++;
     for (int i = 0; i < np; i++)
     {
@@ -13240,8 +13240,8 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     fprintf(o, ")%s{\n", n->sy and n->sy->is_inline ? " alwaysinline " : " ");
     fprintf(o, "  %%ej = alloca ptr\n");
     int sv = generator->sm->lv;
-    generator->sm->lv = n->sy ? n->sy->lv + 1 : 0;
-    if (n->sy and n->sy->lv > 0)
+    generator->sm->lv = n->sy ? n->sy->level + 1 : 0;
+    if (n->sy and n->sy->level > 0)
     {
       generate_block_frame(generator);
       int mx = 0;
@@ -13252,7 +13252,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       if (mx == 0)
         fprintf(o, "  %%__frame = bitcast ptr %%__slnk to ptr\n");
     }
-    if (n->sy and n->sy->lv > 0)
+    if (n->sy and n->sy->level > 0)
     {
       int fp0 = new_temporary_register(generator);
       fprintf(o, "  %%t%d = getelementptr ptr, ptr %%__frame, i64 0\n", fp0);
@@ -13264,11 +13264,11 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       Value_Kind k = p->parameter.ty ? token_kind_to_value_kind(resolve_subtype(generator->sm, p->parameter.ty))
                               : VALUE_KIND_INTEGER;
       Symbol *ps = p->sy;
-      if (ps and ps->lv >= 0 and ps->lv < generator->sm->lv)
+      if (ps and ps->level >= 0 and ps->level < generator->sm->lv)
         fprintf(
             o,
             "  %%lnk.%d.%s = alloca %s\n",
-            ps->lv,
+            ps->level,
             string_to_lowercase(p->parameter.nm),
             value_llvm_type_string(k));
       else
@@ -13288,13 +13288,13 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
             lv,
             value_llvm_type_string(k),
             string_to_lowercase(p->parameter.nm));
-        if (ps and ps->lv >= 0 and ps->lv < generator->sm->lv)
+        if (ps and ps->level >= 0 and ps->level < generator->sm->lv)
           fprintf(
               o,
               "  store %s %%t%d, ptr %%lnk.%d.%s\n",
               value_llvm_type_string(k),
               lv,
-              ps->lv,
+              ps->level,
               string_to_lowercase(p->parameter.nm));
         else
           fprintf(
@@ -13308,13 +13308,13 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       }
       else
       {
-        if (ps and ps->lv >= 0 and ps->lv < generator->sm->lv)
+        if (ps and ps->level >= 0 and ps->level < generator->sm->lv)
           fprintf(
               o,
               "  store %s %%p.%s, ptr %%lnk.%d.%s\n",
               value_llvm_type_string(k),
               string_to_lowercase(p->parameter.nm),
-              ps->lv,
+              ps->level,
               string_to_lowercase(p->parameter.nm));
         else
           fprintf(
@@ -13327,13 +13327,13 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
               ps ? ps->elaboration_level : 0);
       }
     }
-    if (n->sy and n->sy->lv > 0)
+    if (n->sy and n->sy->level > 0)
     {
       for (int h = 0; h < 4096; h++)
       {
         for (Symbol *s = generator->sm->sy[h]; s; s = s->next)
         {
-          if (s->k == 0 and s->lv >= 0 and s->lv < generator->sm->lv and not(s->definition and s->definition->k == N_GVL))
+          if (s->k == 0 and s->level >= 0 and s->level < generator->sm->lv and not(s->definition and s->definition->k == N_GVL))
           {
             Value_Kind k = s->ty ? token_kind_to_value_kind(s->ty) : VALUE_KIND_INTEGER;
             Type_Info *at = s->ty ? type_canonical_concrete(s->ty) : 0;
@@ -13359,7 +13359,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   s->elaboration_level,
                   value_llvm_type_string(k));
             }
-            int level_diff = generator->sm->lv - s->lv - 1;
+            int level_diff = generator->sm->lv - s->level - 1;
             int slnk_ptr;
             if (level_diff == 0)
             {
@@ -13408,7 +13408,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       for (Symbol *s = generator->sm->sy[h]; s; s = s->next)
       {
         if (s->k == 0 and s->elaboration_level >= 0 and n->sy->scope >= 0 and s->scope == (uint32_t) (n->sy->scope + 1)
-            and s->lv == generator->sm->lv and s->parent == n->sy)
+            and s->level == generator->sm->lv and s->parent == n->sy)
         {
           bool is_pm = false;
           for (uint32_t i = 0; i < sp->subprogram.parameters.count; i++)
@@ -13489,13 +13489,13 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
             {
               Value v = generate_expression(generator, d->object_decl.in);
               v = value_cast(generator, v, k);
-              if (s and s->lv >= 0 and s->lv < generator->sm->lv)
+              if (s and s->level >= 0 and s->level < generator->sm->lv)
                 fprintf(
                     o,
                     "  store %s %%t%d, ptr %%lnk.%d.%s\n",
                     value_llvm_type_string(k),
                     v.id,
-                    s->lv,
+                    s->level,
                     string_to_lowercase(id->s));
               else
                 fprintf(
@@ -13833,7 +13833,7 @@ static void print_forward_declarations(Code_Generator *generator, Symbol_Manager
 {
   for (int h = 0; h < 4096; h++)
     for (Symbol *s = sm->sy[h]; s; s = s->next)
-      if (s->lv == 0 and not s->is_external)
+      if (s->level == 0 and not s->is_external)
         for (uint32_t k = 0; k < s->overloads.count; k++)
         {
           Syntax_Node *n = s->overloads.data[k];
@@ -13960,7 +13960,7 @@ static void write_ada_library_interface(Symbol_Manager *symbol_manager, const ch
         fprintf(f, "\n");
       }
       else if (
-          (s->k == 0 or s->k == 2) and s->lv == 0 and s->parent
+          (s->k == 0 or s->k == 2) and s->level == 0 and s->parent
           and string_equal_ignore_case(s->parent->name, nm))
       {
         char nb[256];
@@ -14029,7 +14029,7 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
   print_forward_declarations(&g, &sm);
   for (int h = 0; h < 4096; h++)
     for (Symbol *s = sm.sy[h]; s; s = s->next)
-      if ((s->k == 0 or s->k == 2) and s->lv == 0 and s->parent and not s->is_external and s->overloads.count == 0)
+      if ((s->k == 0 or s->k == 2) and s->level == 0 and s->parent and not s->is_external and s->overloads.count == 0)
       {
         Value_Kind k = s->ty ? token_kind_to_value_kind(s->ty) : VALUE_KIND_INTEGER;
         char nb[256];
@@ -14235,7 +14235,7 @@ int main(int ac, char **av)
   generate_runtime_type(&g);
   for (int h = 0; h < 4096; h++)
     for (Symbol *s = sm.sy[h]; s; s = s->next)
-      if ((s->k == 0 or s->k == 2) and (s->lv == 0 or s->parent) and not(s->parent and lfnd(&sm, s->parent->name))
+      if ((s->k == 0 or s->k == 2) and (s->level == 0 or s->parent) and not(s->parent and lfnd(&sm, s->parent->name))
           and not s->is_external)
       {
         Value_Kind k = s->ty ? token_kind_to_value_kind(s->ty) : VALUE_KIND_INTEGER;
@@ -14327,7 +14327,7 @@ int main(int ac, char **av)
   for (uint32_t i = 0; i < sm.eo; i++)
     for (uint32_t j = 0; j < 4096; j++)
       for (Symbol *s = sm.sy[j]; s; s = s->next)
-        if (s->elaboration_level == i and s->lv == 0)
+        if (s->elaboration_level == i and s->level == 0)
           for (uint32_t k = 0; k < s->overloads.count; k++)
             generate_declaration(&g, s->overloads.data[k]);
   for (uint32_t ui = 0; ui < cu->compilation_unit.units.count; ui++)
@@ -14353,7 +14353,7 @@ int main(int ac, char **av)
       Symbol *ms = 0;
       for (int h = 0; h < 4096 and not ms; h++)
         for (Symbol *s = sm.sy[h]; s; s = s->next)
-          if (s->lv == 0 and string_equal_ignore_case(s->name, sp->subprogram.nm))
+          if (s->level == 0 and string_equal_ignore_case(s->name, sp->subprogram.nm))
           {
             ms = s;
             break;
