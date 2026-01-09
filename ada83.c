@@ -1395,9 +1395,9 @@ struct Syntax_Node
     struct
     {
       Syntax_Node *condition;
-      Node_Vector th;
-      Node_Vector ei;
-      Node_Vector el;
+      Node_Vector then_statements;
+      Node_Vector elsif_statements;
+      Node_Vector else_statements;
     } if_stmt;
     struct
     {
@@ -2681,19 +2681,19 @@ static Syntax_Node *parse_if(Parser *parser)
   node->if_stmt.condition = parse_expression(parser);
   parser_expect(parser, T_THEN);
   while (not parser_at(parser, T_ELSIF) and not parser_at(parser, T_ELSE) and not parser_at(parser, T_END))
-    nv(&node->if_stmt.th, parse_statement_or_label(parser));
+    nv(&node->if_stmt.then_statements, parse_statement_or_label(parser));
   while (parser_match(parser, T_ELSIF))
   {
     Syntax_Node *elsif_node = ND(EL, location);
     elsif_node->if_stmt.condition = parse_expression(parser);
     parser_expect(parser, T_THEN);
     while (not parser_at(parser, T_ELSIF) and not parser_at(parser, T_ELSE) and not parser_at(parser, T_END))
-      nv(&elsif_node->if_stmt.th, parse_statement_or_label(parser));
-    nv(&node->if_stmt.ei, elsif_node);
+      nv(&elsif_node->if_stmt.then_statements, parse_statement_or_label(parser));
+    nv(&node->if_stmt.elsif_statements, elsif_node);
   }
   if (parser_match(parser, T_ELSE))
     while (not parser_at(parser, T_END))
-      nv(&node->if_stmt.el, parse_statement_or_label(parser));
+      nv(&node->if_stmt.else_statements, parse_statement_or_label(parser));
   parser_expect(parser, T_END);
   parser_expect(parser, T_IF);
   parser_expect(parser, T_SC);
@@ -4807,7 +4807,7 @@ static Syntax_Node *generate_equality_operator(Type_Info *t, Source_Location l)
     rt->return_stmt.value->string_value = STRING_LITERAL("FALSE");
     Syntax_Node *ifs = ND(IF, l);
     ifs->if_stmt.condition = cmp;
-    nv(&ifs->if_stmt.th, rt);
+    nv(&ifs->if_stmt.then_statements, rt);
     nv(&lp->loop_stmt.statements, ifs);
     nv(&f->body.statements, lp);
     s->return_stmt.value = ND(ID, l);
@@ -6513,23 +6513,23 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
     break;
   case N_IF:
     resolve_expression(symbol_manager, node->if_stmt.condition, TY_BOOL);
-    if (node->if_stmt.th.count > 0 and not has_return_statement(&node->if_stmt.th))
+    if (node->if_stmt.then_statements.count > 0 and not has_return_statement(&node->if_stmt.then_statements))
       fatal_error(node->location, "seq needs stmt");
-    for (uint32_t i = 0; i < node->if_stmt.th.count; i++)
-      resolve_statement_sequence(symbol_manager, node->if_stmt.th.data[i]);
-    for (uint32_t i = 0; i < node->if_stmt.ei.count; i++)
+    for (uint32_t i = 0; i < node->if_stmt.then_statements.count; i++)
+      resolve_statement_sequence(symbol_manager, node->if_stmt.then_statements.data[i]);
+    for (uint32_t i = 0; i < node->if_stmt.elsif_statements.count; i++)
     {
-      Syntax_Node *e = node->if_stmt.ei.data[i];
+      Syntax_Node *e = node->if_stmt.elsif_statements.data[i];
       resolve_expression(symbol_manager, e->if_stmt.condition, TY_BOOL);
-      if (e->if_stmt.th.count > 0 and not has_return_statement(&e->if_stmt.th))
+      if (e->if_stmt.then_statements.count > 0 and not has_return_statement(&e->if_stmt.then_statements))
         fatal_error(e->location, "seq needs stmt");
-      for (uint32_t j = 0; j < e->if_stmt.th.count; j++)
-        resolve_statement_sequence(symbol_manager, e->if_stmt.th.data[j]);
+      for (uint32_t j = 0; j < e->if_stmt.then_statements.count; j++)
+        resolve_statement_sequence(symbol_manager, e->if_stmt.then_statements.data[j]);
     }
-    if (node->if_stmt.el.count > 0 and not has_return_statement(&node->if_stmt.el))
+    if (node->if_stmt.else_statements.count > 0 and not has_return_statement(&node->if_stmt.else_statements))
       fatal_error(node->location, "seq needs stmt");
-    for (uint32_t i = 0; i < node->if_stmt.el.count; i++)
-      resolve_statement_sequence(symbol_manager, node->if_stmt.el.data[i]);
+    for (uint32_t i = 0; i < node->if_stmt.else_statements.count; i++)
+      resolve_statement_sequence(symbol_manager, node->if_stmt.else_statements.data[i]);
     break;
   case N_CS:
     resolve_expression(symbol_manager, node->case_stmt.expression, 0);
@@ -7124,9 +7124,9 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
   case N_IF:
   case N_EL:
     c->if_stmt.condition = node_clone_substitute(n->if_stmt.condition, fp, ap);
-    normalize_compile_symbol_vector(&c->if_stmt.th, &n->if_stmt.th, fp, ap);
-    normalize_compile_symbol_vector(&c->if_stmt.ei, &n->if_stmt.ei, fp, ap);
-    normalize_compile_symbol_vector(&c->if_stmt.el, &n->if_stmt.el, fp, ap);
+    normalize_compile_symbol_vector(&c->if_stmt.then_statements, &n->if_stmt.then_statements, fp, ap);
+    normalize_compile_symbol_vector(&c->if_stmt.elsif_statements, &n->if_stmt.elsif_statements, fp, ap);
+    normalize_compile_symbol_vector(&c->if_stmt.else_statements, &n->if_stmt.else_statements, fp, ap);
     break;
   case N_CS:
     c->case_stmt.expression = node_clone_substitute(n->case_stmt.expression, fp, ap);
@@ -8690,10 +8690,10 @@ static bool has_nested_function_in_stmts(Node_Vector *st)
       return 1;
     if (n->k == N_IF)
     {
-      if (has_nested_function_in_stmts(&n->if_stmt.th) or has_nested_function_in_stmts(&n->if_stmt.el))
+      if (has_nested_function_in_stmts(&n->if_stmt.then_statements) or has_nested_function_in_stmts(&n->if_stmt.else_statements))
         return 1;
-      for (uint32_t j = 0; j < n->if_stmt.ei.count; j++)
-        if (n->if_stmt.ei.data[j] and has_nested_function_in_stmts(&n->if_stmt.ei.data[j]->if_stmt.th))
+      for (uint32_t j = 0; j < n->if_stmt.elsif_statements.count; j++)
+        if (n->if_stmt.elsif_statements.data[j] and has_nested_function_in_stmts(&n->if_stmt.elsif_statements.data[j]->if_stmt.then_statements))
           return 1;
     }
     if (n->k == N_CS)
@@ -11454,31 +11454,31 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
     int lt = new_label_block(generator), lf = new_label_block(generator), ld = new_label_block(generator);
     emit_conditional_branch(generator, ct, lt, lf);
     emit_label(generator, lt);
-    for (uint32_t i = 0; i < n->if_stmt.th.count; i++)
-      generate_statement_sequence(generator, n->if_stmt.th.data[i]);
+    for (uint32_t i = 0; i < n->if_stmt.then_statements.count; i++)
+      generate_statement_sequence(generator, n->if_stmt.then_statements.data[i]);
     emit_branch(generator, ld);
     emit_label(generator, lf);
-    if (n->if_stmt.ei.count > 0)
+    if (n->if_stmt.elsif_statements.count > 0)
     {
-      for (uint32_t i = 0; i < n->if_stmt.ei.count; i++)
+      for (uint32_t i = 0; i < n->if_stmt.elsif_statements.count; i++)
       {
-        Syntax_Node *e = n->if_stmt.ei.data[i];
+        Syntax_Node *e = n->if_stmt.elsif_statements.data[i];
         Value ec = value_to_boolean(generator, generate_expression(generator, e->if_stmt.condition));
         int ect = new_temporary_register(generator);
         fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", ect, ec.id);
         int let = new_label_block(generator), lef = new_label_block(generator);
         emit_conditional_branch(generator, ect, let, lef);
         emit_label(generator, let);
-        for (uint32_t j = 0; j < e->if_stmt.th.count; j++)
-          generate_statement_sequence(generator, e->if_stmt.th.data[j]);
+        for (uint32_t j = 0; j < e->if_stmt.then_statements.count; j++)
+          generate_statement_sequence(generator, e->if_stmt.then_statements.data[j]);
         emit_branch(generator, ld);
         emit_label(generator, lef);
       }
     }
-    if (n->if_stmt.el.count > 0)
+    if (n->if_stmt.else_statements.count > 0)
     {
-      for (uint32_t i = 0; i < n->if_stmt.el.count; i++)
-        generate_statement_sequence(generator, n->if_stmt.el.data[i]);
+      for (uint32_t i = 0; i < n->if_stmt.else_statements.count; i++)
+        generate_statement_sequence(generator, n->if_stmt.else_statements.data[i]);
     }
     emit_branch(generator, ld);
     emit_label(generator, ld);
@@ -12459,10 +12459,10 @@ static bool has_label_block(Node_Vector *sl)
       return 1;
     if (s->k == N_BL and has_label_block(&s->block.statements))
       return 1;
-    if (s->k == N_IF and (has_label_block(&s->if_stmt.th) or has_label_block(&s->if_stmt.el)))
+    if (s->k == N_IF and (has_label_block(&s->if_stmt.then_statements) or has_label_block(&s->if_stmt.else_statements)))
       return 1;
-    for (uint32_t j = 0; s->k == N_IF and j < s->if_stmt.ei.count; j++)
-      if (s->if_stmt.ei.data[j] and has_label_block(&s->if_stmt.ei.data[j]->if_stmt.th))
+    for (uint32_t j = 0; s->k == N_IF and j < s->if_stmt.elsif_statements.count; j++)
+      if (s->if_stmt.elsif_statements.data[j] and has_label_block(&s->if_stmt.elsif_statements.data[j]->if_stmt.then_statements))
         return 1;
     if (s->k == N_CS)
     {
@@ -12514,14 +12514,14 @@ static void emit_labels_block_recursive(Code_Generator *generator, Syntax_Node *
   }
   if (s->k == N_IF)
   {
-    for (uint32_t i = 0; i < s->if_stmt.th.count; i++)
-      emit_labels_block_recursive(generator, s->if_stmt.th.data[i], lbs);
-    for (uint32_t i = 0; i < s->if_stmt.el.count; i++)
-      emit_labels_block_recursive(generator, s->if_stmt.el.data[i], lbs);
-    for (uint32_t i = 0; i < s->if_stmt.ei.count; i++)
-      if (s->if_stmt.ei.data[i])
-        for (uint32_t j = 0; j < s->if_stmt.ei.data[i]->if_stmt.th.count; j++)
-          emit_labels_block_recursive(generator, s->if_stmt.ei.data[i]->if_stmt.th.data[j], lbs);
+    for (uint32_t i = 0; i < s->if_stmt.then_statements.count; i++)
+      emit_labels_block_recursive(generator, s->if_stmt.then_statements.data[i], lbs);
+    for (uint32_t i = 0; i < s->if_stmt.else_statements.count; i++)
+      emit_labels_block_recursive(generator, s->if_stmt.else_statements.data[i], lbs);
+    for (uint32_t i = 0; i < s->if_stmt.elsif_statements.count; i++)
+      if (s->if_stmt.elsif_statements.data[i])
+        for (uint32_t j = 0; j < s->if_stmt.elsif_statements.data[i]->if_stmt.then_statements.count; j++)
+          emit_labels_block_recursive(generator, s->if_stmt.elsif_statements.data[i]->if_stmt.then_statements.data[j], lbs);
   }
   if (s->k == N_BL)
   {
@@ -12597,11 +12597,11 @@ static void has_basic_label(Code_Generator *generator, Node_Vector *sl)
     }
     else if (s->k == N_IF)
     {
-      has_basic_label(generator, &s->if_stmt.th);
-      has_basic_label(generator, &s->if_stmt.el);
-      for (uint32_t j = 0; j < s->if_stmt.ei.count; j++)
-        if (s->if_stmt.ei.data[j])
-          has_basic_label(generator, &s->if_stmt.ei.data[j]->if_stmt.th);
+      has_basic_label(generator, &s->if_stmt.then_statements);
+      has_basic_label(generator, &s->if_stmt.else_statements);
+      for (uint32_t j = 0; j < s->if_stmt.elsif_statements.count; j++)
+        if (s->if_stmt.elsif_statements.data[j])
+          has_basic_label(generator, &s->if_stmt.elsif_statements.data[j]->if_stmt.then_statements);
     }
     else if (s->k == N_CS)
     {
