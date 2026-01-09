@@ -42,9 +42,9 @@ static const char *include_paths[32];
 static int include_path_count = 0;
 typedef struct
 {
-  uint64_t *digits;
-  uint32_t count, capacity;
-  bool is_negative;
+  uint64_t *d;
+  uint32_t n, c;
+  bool s;
 } Unsigned_Big_Integer;
 typedef struct
 {
@@ -74,44 +74,44 @@ typedef struct
 static Unsigned_Big_Integer *unsigned_bigint_new(uint32_t c)
 {
   Unsigned_Big_Integer *u = malloc(sizeof(Unsigned_Big_Integer));
-  u->digits = calloc(c, 8);
-  u->count = 0;
-  u->capacity = c;
-  u->is_negative = 0;
+  u->d = calloc(c, 8);
+  u->n = 0;
+  u->c = c;
+  u->s = 0;
   return u;
 }
 static void unsigned_bigint_free(Unsigned_Big_Integer *u)
 {
   if (u)
   {
-    free(u->digits);
+    free(u->d);
     free(u);
   }
 }
 static void unsigned_bigint_grow(Unsigned_Big_Integer *u, uint32_t c)
 {
-  if (c > u->capacity)
+  if (c > u->c)
   {
-    u->digits = realloc(u->digits, c * 8);
-    memset(u->digits + u->capacity, 0, (c - u->capacity) * 8);
-    u->capacity = c;
+    u->d = realloc(u->d, c * 8);
+    memset(u->d + u->c, 0, (c - u->c) * 8);
+    u->c = c;
   }
 }
 #define UNSIGNED_BIGINT_NORMALIZE(u)                                                               \
   do                                                                                               \
   {                                                                                                \
-    while ((u)->count > 0 and not(u)->digits[(u)->count - 1])                                     \
-      (u)->count--;                                                                                \
-    if (not(u)->count)                                                                             \
-      (u)->is_negative = 0;                                                                        \
+    while ((u)->n > 0 and not(u)->d[(u)->n - 1])                                                   \
+      (u)->n--;                                                                                    \
+    if (not(u)->n)                                                                                 \
+      (u)->s = 0;                                                                                  \
   } while (0)
 static int unsigned_bigint_compare_abs(const Unsigned_Big_Integer *a, const Unsigned_Big_Integer *b)
 {
-  if (a->count != b->count)
-    return a->count > b->count ? 1 : -1;
-  for (int i = a->count - 1; i >= 0; i--)
-    if (a->digits[i] != b->digits[i])
-      return a->digits[i] > b->digits[i] ? 1 : -1;
+  if (a->n != b->n)
+    return a->n > b->n ? 1 : -1;
+  for (int i = a->n - 1; i >= 0; i--)
+    if (a->d[i] != b->d[i])
+      return a->d[i] > b->d[i] ? 1 : -1;
   return 0;
 }
 static inline uint64_t add_with_carry(uint64_t a, uint64_t b, uint64_t c, uint64_t *r)
@@ -134,27 +134,27 @@ static void unsigned_bigint_binary_op(
 {
   if (is_add)
   {
-    uint32_t m = (a->count > b->count ? a->count : b->count) + 1;
+    uint32_t m = (a->n > b->n ? a->n : b->n) + 1;
     unsigned_bigint_grow(r, m);
     uint64_t c = 0;
     uint32_t i;
-    for (i = 0; i < a->count or i < b->count or c; i++)
+    for (i = 0; i < a->n or i < b->n or c; i++)
     {
-      uint64_t ai = i < a->count ? a->digits[i] : 0, bi = i < b->count ? b->digits[i] : 0;
-      c = add_with_carry(ai, bi, c, &r->digits[i]);
+      uint64_t ai = i < a->n ? a->d[i] : 0, bi = i < b->n ? b->d[i] : 0;
+      c = add_with_carry(ai, bi, c, &r->d[i]);
     }
-    r->count = i;
+    r->n = i;
   }
   else
   {
-    unsigned_bigint_grow(r, a->count);
+    unsigned_bigint_grow(r, a->n);
     uint64_t c = 0;
-    for (uint32_t i = 0; i < a->count; i++)
+    for (uint32_t i = 0; i < a->n; i++)
     {
-      uint64_t ai = a->digits[i], bi = i < b->count ? b->digits[i] : 0;
-      c = subtract_with_borrow(ai, bi, c, &r->digits[i]);
+      uint64_t ai = a->d[i], bi = i < b->n ? b->d[i] : 0;
+      c = subtract_with_borrow(ai, bi, c, &r->d[i]);
     }
-    r->count = a->count;
+    r->n = a->n;
   }
   UNSIGNED_BIGINT_NORMALIZE(r);
 }
@@ -171,10 +171,10 @@ static void unsigned_bigint_sub_abs(
 static void unsigned_bigint_add(
     Unsigned_Big_Integer *r, const Unsigned_Big_Integer *a, const Unsigned_Big_Integer *b)
 {
-  if (a->is_negative == b->is_negative)
+  if (a->s == b->s)
   {
     unsigned_bigint_add_abs(r, a, b);
-    r->is_negative = a->is_negative;
+    r->s = a->s;
   }
   else
   {
@@ -182,12 +182,12 @@ static void unsigned_bigint_add(
     if (c >= 0)
     {
       unsigned_bigint_sub_abs(r, a, b);
-      r->is_negative = a->is_negative;
+      r->s = a->s;
     }
     else
     {
       unsigned_bigint_sub_abs(r, b, a);
-      r->is_negative = b->is_negative;
+      r->s = b->s;
     }
   }
 }
@@ -195,45 +195,45 @@ static void unsigned_bigint_subtract(
     Unsigned_Big_Integer *r, const Unsigned_Big_Integer *a, const Unsigned_Big_Integer *b)
 {
   Unsigned_Big_Integer t = *b;
-  t.is_negative = not b->is_negative;
+  t.s = not b->s;
   unsigned_bigint_add(r, a, &t);
 }
 static void unsigned_bigint_multiply_basic(
     Unsigned_Big_Integer *r, const Unsigned_Big_Integer *a, const Unsigned_Big_Integer *b)
 {
-  unsigned_bigint_grow(r, a->count + b->count);
-  memset(r->digits, 0, (a->count + b->count) * 8);
-  for (uint32_t i = 0; i < a->count; i++)
+  unsigned_bigint_grow(r, a->n + b->n);
+  memset(r->d, 0, (a->n + b->n) * 8);
+  for (uint32_t i = 0; i < a->n; i++)
   {
     uint64_t c = 0;
-    for (uint32_t j = 0; j < b->count; j++)
+    for (uint32_t j = 0; j < b->n; j++)
     {
-      __uint128_t p = (__uint128_t) a->digits[i] * b->digits[j] + r->digits[i + j] + c;
-      r->digits[i + j] = p;
+      __uint128_t p = (__uint128_t) a->d[i] * b->d[j] + r->d[i + j] + c;
+      r->d[i + j] = p;
       c = p >> 64;
     }
-    r->digits[i + b->count] = c;
+    r->d[i + b->n] = c;
   }
-  r->count = a->count + b->count;
-  r->is_negative = a->is_negative != b->is_negative;
+  r->n = a->n + b->n;
+  r->s = a->s != b->s;
   UNSIGNED_BIGINT_NORMALIZE(r);
 }
 static void unsigned_bigint_multiply_karatsuba(
     Unsigned_Big_Integer *r, const Unsigned_Big_Integer *a, const Unsigned_Big_Integer *b)
 {
-  uint32_t n = a->count > b->count ? a->count : b->count;
+  uint32_t n = a->n > b->n ? a->n : b->n;
   if (n < 20)
   {
     unsigned_bigint_multiply_basic(r, a, b);
     return;
   }
   uint32_t m = n / 2;
-  Unsigned_Big_Integer a0 = {a->digits, a->count > m ? m : a->count, a->capacity, 0},
-                       a1 = {a->count > m ? a->digits + m : 0, a->count > m ? a->count - m : 0, 0, 0};
-  Unsigned_Big_Integer b0 = {b->digits, b->count > m ? m : b->count, b->capacity, 0},
-                       b1 = {b->count > m ? b->digits + m : 0, b->count > m ? b->count - m : 0, 0, 0};
-  Unsigned_Big_Integer *z0 = unsigned_bigint_new(a0.count + b0.count),
-                       *z2 = unsigned_bigint_new(a1.count + b1.count), *z1 = unsigned_bigint_new(n * 2);
+  Unsigned_Big_Integer a0 = {a->d, a->n > m ? m : a->n, a->c, 0},
+                       a1 = {a->n > m ? a->d + m : 0, a->n > m ? a->n - m : 0, 0, 0};
+  Unsigned_Big_Integer b0 = {b->d, b->n > m ? m : b->n, b->c, 0},
+                       b1 = {b->n > m ? b->d + m : 0, b->n > m ? b->n - m : 0, 0, 0};
+  Unsigned_Big_Integer *z0 = unsigned_bigint_new(a0.n + b0.n),
+                       *z2 = unsigned_bigint_new(a1.n + b1.n), *z1 = unsigned_bigint_new(n * 2);
   unsigned_bigint_multiply_karatsuba(z0, &a0, &b0);
   unsigned_bigint_multiply_karatsuba(z2, &a1, &b1);
   Unsigned_Big_Integer *as = unsigned_bigint_new(m + 1), *bs = unsigned_bigint_new(m + 1);
@@ -243,25 +243,25 @@ static void unsigned_bigint_multiply_karatsuba(
   unsigned_bigint_subtract(z1, z1, z0);
   unsigned_bigint_subtract(z1, z1, z2);
   unsigned_bigint_grow(r, 2 * n);
-  memset(r->digits, 0, 2 * n * 8);
-  for (uint32_t i = 0; i < z0->count; i++)
-    r->digits[i] = z0->digits[i];
+  memset(r->d, 0, 2 * n * 8);
+  for (uint32_t i = 0; i < z0->n; i++)
+    r->d[i] = z0->d[i];
   uint64_t c = 0;
-  for (uint32_t i = 0; i < z1->count or c; i++)
+  for (uint32_t i = 0; i < z1->n or c; i++)
   {
-    uint64_t v = r->digits[m + i] + (i < z1->count ? z1->digits[i] : 0) + c;
-    r->digits[m + i] = v;
-    c = v < r->digits[m + i];
+    uint64_t v = r->d[m + i] + (i < z1->n ? z1->d[i] : 0) + c;
+    r->d[m + i] = v;
+    c = v < r->d[m + i];
   }
   c = 0;
-  for (uint32_t i = 0; i < z2->count or c; i++)
+  for (uint32_t i = 0; i < z2->n or c; i++)
   {
-    uint64_t v = r->digits[2 * m + i] + (i < z2->count ? z2->digits[i] : 0) + c;
-    r->digits[2 * m + i] = v;
-    c = v < r->digits[2 * m + i];
+    uint64_t v = r->d[2 * m + i] + (i < z2->n ? z2->d[i] : 0) + c;
+    r->d[2 * m + i] = v;
+    c = v < r->d[2 * m + i];
   }
-  r->count = 2 * n;
-  r->is_negative = a->is_negative != b->is_negative;
+  r->n = 2 * n;
+  r->s = a->s != b->s;
   UNSIGNED_BIGINT_NORMALIZE(r);
   unsigned_bigint_free(z0);
   unsigned_bigint_free(z1);
@@ -277,8 +277,8 @@ static void unsigned_bigint_multiply(
 static Unsigned_Big_Integer *unsigned_bigint_from_decimal(const char *s)
 {
   Unsigned_Big_Integer *r = unsigned_bigint_new(4), *ten = unsigned_bigint_new(1);
-  ten->digits[0] = 10;
-  ten->count = 1;
+  ten->d[0] = 10;
+  ten->n = 1;
   bool neg = *s == '-';
   if (neg or *s == '+')
     s++;
@@ -287,13 +287,13 @@ static Unsigned_Big_Integer *unsigned_bigint_from_decimal(const char *s)
     if (*s >= '0' and *s <= '9')
     {
       Unsigned_Big_Integer *d = unsigned_bigint_new(1);
-      d->digits[0] = *s - '0';
-      d->count = 1;
-      Unsigned_Big_Integer *t = unsigned_bigint_new(r->count * 2);
+      d->d[0] = *s - '0';
+      d->n = 1;
+      Unsigned_Big_Integer *t = unsigned_bigint_new(r->n * 2);
       unsigned_bigint_multiply(t, r, ten);
       unsigned_bigint_free(r);
       r = t;
-      t = unsigned_bigint_new(r->count + 1);
+      t = unsigned_bigint_new(r->n + 1);
       unsigned_bigint_add(t, r, d);
       unsigned_bigint_free(r);
       unsigned_bigint_free(d);
@@ -301,7 +301,7 @@ static Unsigned_Big_Integer *unsigned_bigint_from_decimal(const char *s)
     }
     s++;
   }
-  r->is_negative = neg;
+  r->s = neg;
   unsigned_bigint_free(ten);
   return r;
 }
