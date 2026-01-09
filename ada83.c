@@ -1688,128 +1688,128 @@ static String_Slice parser_identifier(Parser *parser)
   parser_expect(parser, T_ID);
   return identifier;
 }
-static String_Slice parser_attribute(Parser *p)
+static String_Slice parser_attribute(Parser *parser)
 {
   String_Slice s;
-  if (parser_at(p, T_ID))
-    s = parser_identifier(p);
-  else if (parser_at(p, T_RNG))
+  if (parser_at(parser, T_ID))
+    s = parser_identifier(parser);
+  else if (parser_at(parser, T_RNG))
   {
     s = STRING_LITERAL("RANGE");
-    parser_next(p);
+    parser_next(parser);
   }
-  else if (parser_at(p, T_ACCS))
+  else if (parser_at(parser, T_ACCS))
   {
     s = STRING_LITERAL("ACCESS");
-    parser_next(p);
+    parser_next(parser);
   }
-  else if (parser_at(p, T_DIG))
+  else if (parser_at(parser, T_DIG))
   {
     s = STRING_LITERAL("DIGITS");
-    parser_next(p);
+    parser_next(parser);
   }
-  else if (parser_at(p, T_DELTA))
+  else if (parser_at(parser, T_DELTA))
   {
     s = STRING_LITERAL("DELTA");
-    parser_next(p);
+    parser_next(parser);
   }
-  else if (parser_at(p, T_MOD))
+  else if (parser_at(parser, T_MOD))
   {
     s = STRING_LITERAL("MOD");
-    parser_next(p);
+    parser_next(parser);
   }
-  else if (parser_at(p, T_REM))
+  else if (parser_at(parser, T_REM))
   {
     s = STRING_LITERAL("REM");
-    parser_next(p);
+    parser_next(parser);
   }
-  else if (parser_at(p, T_ABS))
+  else if (parser_at(parser, T_ABS))
   {
     s = STRING_LITERAL("ABS");
-    parser_next(p);
+    parser_next(parser);
   }
-  else if (parser_at(p, T_NOT))
+  else if (parser_at(parser, T_NOT))
   {
     s = STRING_LITERAL("NOT");
-    parser_next(p);
+    parser_next(parser);
   }
-  else if (parser_at(p, T_AND))
+  else if (parser_at(parser, T_AND))
   {
     s = STRING_LITERAL("AND");
-    parser_next(p);
+    parser_next(parser);
   }
-  else if (parser_at(p, T_OR))
+  else if (parser_at(parser, T_OR))
   {
     s = STRING_LITERAL("OR");
-    parser_next(p);
+    parser_next(parser);
   }
-  else if (parser_at(p, T_XOR))
+  else if (parser_at(parser, T_XOR))
   {
     s = STRING_LITERAL("XOR");
-    parser_next(p);
+    parser_next(parser);
   }
-  else if (parser_at(p, T_PL))
+  else if (parser_at(parser, T_PL))
   {
     s = STRING_LITERAL("+");
-    parser_next(p);
+    parser_next(parser);
   }
-  else if (parser_at(p, T_MN))
+  else if (parser_at(parser, T_MN))
   {
     s = STRING_LITERAL("-");
-    parser_next(p);
+    parser_next(parser);
   }
-  else if (parser_at(p, T_ST))
+  else if (parser_at(parser, T_ST))
   {
     s = STRING_LITERAL("*");
-    parser_next(p);
+    parser_next(parser);
   }
-  else if (parser_at(p, T_SL))
+  else if (parser_at(parser, T_SL))
   {
     s = STRING_LITERAL("/");
-    parser_next(p);
+    parser_next(parser);
   }
-  else if (parser_at(p, T_EQ))
+  else if (parser_at(parser, T_EQ))
   {
     s = STRING_LITERAL("=");
-    parser_next(p);
+    parser_next(parser);
   }
-  else if (parser_at(p, T_NE))
+  else if (parser_at(parser, T_NE))
   {
     s = STRING_LITERAL("/=");
-    parser_next(p);
+    parser_next(parser);
   }
-  else if (parser_at(p, T_LT))
+  else if (parser_at(parser, T_LT))
   {
     s = STRING_LITERAL("<");
-    parser_next(p);
+    parser_next(parser);
   }
-  else if (parser_at(p, T_LE))
+  else if (parser_at(parser, T_LE))
   {
     s = STRING_LITERAL("<=");
-    parser_next(p);
+    parser_next(parser);
   }
-  else if (parser_at(p, T_GT))
+  else if (parser_at(parser, T_GT))
   {
     s = STRING_LITERAL(">");
-    parser_next(p);
+    parser_next(parser);
   }
-  else if (parser_at(p, T_GE))
+  else if (parser_at(parser, T_GE))
   {
     s = STRING_LITERAL(">=");
-    parser_next(p);
+    parser_next(parser);
   }
-  else if (parser_at(p, T_AM))
+  else if (parser_at(parser, T_AM))
   {
     s = STRING_LITERAL("&");
-    parser_next(p);
+    parser_next(parser);
   }
-  else if (parser_at(p, T_EX))
+  else if (parser_at(parser, T_EX))
   {
     s = STRING_LITERAL("**");
-    parser_next(p);
+    parser_next(parser);
   }
   else
-    fatal_error(parser_location(p), "exp attr");
+    fatal_error(parser_location(parser), "exp attr");
   return s;
 }
 static Syntax_Node *parse_name(Parser *parser);
@@ -4329,9 +4329,9 @@ static Syntax_Node *parse_compilation_unit(Parser *parser)
   }
   return node;
 }
-static Parser parser_new(const char *s, size_t z, const char *f)
+static Parser parser_new(const char *source, size_t size, const char *filename)
 {
-  Parser parser = {lexer_new(s, z, f), {0}, {0}, 0, {0}};
+  Parser parser = {lexer_new(source, size, filename), {0}, {0}, 0, {0}};
   parser_next(&parser);
   parser_next(&parser);
   return parser;
@@ -5806,10 +5806,10 @@ static void is_compile_valid(Type_Info *t, Syntax_Node *node)
     normalize_record_aggregate(0, type_canonical_concrete(t), node);
   }
 }
-static bool has_return_statement(Node_Vector *v)
+static bool has_return_statement(Node_Vector *statements)
 {
-  for (uint32_t i = 0; i < v->count; i++)
-    if (v->data[i]->k != N_PG)
+  for (uint32_t i = 0; i < statements->count; i++)
+    if (statements->data[i]->k != N_PG)
       return 1;
   return 0;
 }
@@ -8094,9 +8094,9 @@ static int elaborate_compilation(Symbol_Manager *SM, Symbol_Vector *ev, Syntax_N
   }
   return mx;
 }
-static char *read_file(const char *p)
+static char *read_file(const char *path)
 {
-  FILE *f = fopen(p, "rb");
+  FILE *f = fopen(path, "rb");
   if (not f)
     return 0;
   fseek(f, 0, 2);
@@ -12433,18 +12433,18 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
   }
   }
 }
-static bool is_runtime_type(const char *n)
+static bool is_runtime_type(const char *name)
 {
-  return not strcmp(n, "__text_io_new_line") or not strcmp(n, "__text_io_put_char")
-         or not strcmp(n, "__text_io_put") or not strcmp(n, "__text_io_put_line")
-         or not strcmp(n, "__text_io_get_char") or not strcmp(n, "__text_io_get_line")
-         or not strcmp(n, "__ada_ss_init") or not strcmp(n, "__ada_ss_mark")
-         or not strcmp(n, "__ada_ss_release") or not strcmp(n, "__ada_ss_allocate")
-         or not strcmp(n, "__ada_setjmp") or not strcmp(n, "__ada_raise")
-         or not strcmp(n, "__ada_delay") or not strcmp(n, "__ada_powi")
-         or not strcmp(n, "__ada_finalize") or not strcmp(n, "__ada_finalize_all")
-         or not strcmp(n, "__ada_image_enum") or not strcmp(n, "__ada_value_int")
-         or not strcmp(n, "__ada_image_int");
+  return not strcmp(name, "__text_io_new_line") or not strcmp(name, "__text_io_put_char")
+         or not strcmp(name, "__text_io_put") or not strcmp(name, "__text_io_put_line")
+         or not strcmp(name, "__text_io_get_char") or not strcmp(name, "__text_io_get_line")
+         or not strcmp(name, "__ada_ss_init") or not strcmp(name, "__ada_ss_mark")
+         or not strcmp(name, "__ada_ss_release") or not strcmp(name, "__ada_ss_allocate")
+         or not strcmp(name, "__ada_setjmp") or not strcmp(name, "__ada_raise")
+         or not strcmp(name, "__ada_delay") or not strcmp(name, "__ada_powi")
+         or not strcmp(name, "__ada_finalize") or not strcmp(name, "__ada_finalize_all")
+         or not strcmp(name, "__ada_image_enum") or not strcmp(name, "__ada_value_int")
+         or not strcmp(name, "__ada_image_int");
 }
 static bool has_label_block(Node_Vector *sl)
 {
@@ -13814,9 +13814,9 @@ static void generate_runtime_type(Code_Generator *g)
       "define linkonce_odr i64 @__attr_VALUE_INTEGER(ptr %%x){\n  %%t0 = call i64 "
       "@__ada_value_int(ptr %%x)\n  ret i64 %%t0\n}\n");
 }
-static char *read_file_contents(const char *p)
+static char *read_file_contents(const char *path)
 {
-  FILE *f = fopen(p, "rb");
+  FILE *f = fopen(path, "rb");
   if (not f)
     return 0;
   fseek(f, 0, SEEK_END);
