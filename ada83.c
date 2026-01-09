@@ -888,169 +888,169 @@ static Token scan_string_literal(Lexer *lexer)
   String_Slice literal_text = {buffer, length};
   return make_token(T_STR, location, literal_text);
 }
-static Token lexer_next_token(Lexer *l)
+static Token lexer_next_token(Lexer *lexer)
 {
-  const char *pb = l->current;
-  skip_whitespace(l);
-  bool ws = l->current != pb;
-  Source_Location lc = {l->line_number, l->column, l->filename};
-  char c = peek(l, 0);
-  if (not c)
+  const char *position_before_whitespace = lexer->current;
+  skip_whitespace(lexer);
+  bool had_whitespace = lexer->current != position_before_whitespace;
+  Source_Location location = {lexer->line_number, lexer->column, lexer->filename};
+  char character = peek(lexer, 0);
+  if (not character)
   {
-    l->previous_token = T_EOF;
-    return make_token(T_EOF, lc, N);
+    lexer->previous_token = T_EOF;
+    return make_token(T_EOF, location, N);
   }
-  if (isalpha(c))
+  if (isalpha(character))
   {
-    Token tk = scan_identifier(l);
-    l->previous_token = tk.kind;
-    return tk;
+    Token token = scan_identifier(lexer);
+    lexer->previous_token = token.kind;
+    return token;
   }
-  if (isdigit(c))
+  if (isdigit(character))
   {
-    Token tk = scan_number_literal(l);
-    l->previous_token = tk.kind;
-    return tk;
+    Token token = scan_number_literal(lexer);
+    lexer->previous_token = token.kind;
+    return token;
   }
-  if (c == '\'')
+  if (character == '\'')
   {
-    char c2 = peek(l, 1);
-    char pc = l->current > l->start ? l->current[-1] : 0;
-    bool id_attr = l->previous_token == T_ID and not ws and isalnum(pc);
-    if (c2 and peek(l, 2) == '\'' and (l->current + 3 >= l->end or l->current[3] != '\'') and not id_attr)
+    char next_character = peek(lexer, 1);
+    char previous_character = lexer->current > lexer->start ? lexer->current[-1] : 0;
+    bool is_identifier_attribute = lexer->previous_token == T_ID and not had_whitespace and isalnum(previous_character);
+    if (next_character and peek(lexer, 2) == '\'' and (lexer->current + 3 >= lexer->end or lexer->current[3] != '\'') and not is_identifier_attribute)
     {
-      l->previous_token = T_CHAR;
-      return scan_character_literal(l);
+      lexer->previous_token = T_CHAR;
+      return scan_character_literal(lexer);
     }
-    advance_character(l);
-    l->previous_token = T_TK;
-    return make_token(T_TK, lc, STRING_LITERAL("'"));
+    advance_character(lexer);
+    lexer->previous_token = T_TK;
+    return make_token(T_TK, location, STRING_LITERAL("'"));
   }
-  if (c == '"' or c == '%')
+  if (character == '"' or character == '%')
   {
-    Token tk = scan_string_literal(l);
-    l->previous_token = tk.kind;
-    return tk;
+    Token token = scan_string_literal(lexer);
+    lexer->previous_token = token.kind;
+    return token;
   }
-  advance_character(l);
-  Token_Kind tt;
-  switch (c)
+  advance_character(lexer);
+  Token_Kind token_type;
+  switch (character)
   {
   case '(':
-    tt = T_LP;
+    token_type = T_LP;
     break;
   case ')':
-    tt = T_RP;
+    token_type = T_RP;
     break;
   case '[':
-    tt = T_LB;
+    token_type = T_LB;
     break;
   case ']':
-    tt = T_RB;
+    token_type = T_RB;
     break;
   case ',':
-    tt = T_CM;
+    token_type = T_CM;
     break;
   case ';':
-    tt = T_SC;
+    token_type = T_SC;
     break;
   case '&':
-    tt = T_AM;
+    token_type = T_AM;
     break;
   case '|':
   case '!':
-    tt = T_BR;
+    token_type = T_BR;
     break;
   case '+':
-    tt = T_PL;
+    token_type = T_PL;
     break;
   case '-':
-    tt = T_MN;
+    token_type = T_MN;
     break;
   case '/':
-    if (peek(l, 0) == '=')
+    if (peek(lexer, 0) == '=')
     {
-      advance_character(l);
-      tt = T_NE;
+      advance_character(lexer);
+      token_type = T_NE;
     }
     else
-      tt = T_SL;
+      token_type = T_SL;
     break;
   case '*':
-    if (peek(l, 0) == '*')
+    if (peek(lexer, 0) == '*')
     {
-      advance_character(l);
-      tt = T_EX;
+      advance_character(lexer);
+      token_type = T_EX;
     }
     else
-      tt = T_ST;
+      token_type = T_ST;
     break;
   case '=':
-    if (peek(l, 0) == '>')
+    if (peek(lexer, 0) == '>')
     {
-      advance_character(l);
-      tt = T_AR;
+      advance_character(lexer);
+      token_type = T_AR;
     }
     else
-      tt = T_EQ;
+      token_type = T_EQ;
     break;
   case ':':
-    if (peek(l, 0) == '=')
+    if (peek(lexer, 0) == '=')
     {
-      advance_character(l);
-      tt = T_AS;
+      advance_character(lexer);
+      token_type = T_AS;
     }
     else
-      tt = T_CL;
+      token_type = T_CL;
     break;
   case '.':
-    if (peek(l, 0) == '.')
+    if (peek(lexer, 0) == '.')
     {
-      advance_character(l);
-      tt = T_DD;
+      advance_character(lexer);
+      token_type = T_DD;
     }
     else
-      tt = T_DT;
+      token_type = T_DT;
     break;
   case '<':
-    if (peek(l, 0) == '=')
+    if (peek(lexer, 0) == '=')
     {
-      advance_character(l);
-      tt = T_LE;
+      advance_character(lexer);
+      token_type = T_LE;
     }
-    else if (peek(l, 0) == '<')
+    else if (peek(lexer, 0) == '<')
     {
-      advance_character(l);
-      tt = T_LL;
+      advance_character(lexer);
+      token_type = T_LL;
     }
-    else if (peek(l, 0) == '>')
+    else if (peek(lexer, 0) == '>')
     {
-      advance_character(l);
-      tt = T_BX;
+      advance_character(lexer);
+      token_type = T_BX;
     }
     else
-      tt = T_LT;
+      token_type = T_LT;
     break;
   case '>':
-    if (peek(l, 0) == '=')
+    if (peek(lexer, 0) == '=')
     {
-      advance_character(l);
-      tt = T_GE;
+      advance_character(lexer);
+      token_type = T_GE;
     }
-    else if (peek(l, 0) == '>')
+    else if (peek(lexer, 0) == '>')
     {
-      advance_character(l);
-      tt = T_GG;
+      advance_character(lexer);
+      token_type = T_GG;
     }
     else
-      tt = T_GT;
+      token_type = T_GT;
     break;
   default:
-    tt = T_ERR;
+    token_type = T_ERR;
     break;
   }
-  l->previous_token = tt;
-  return make_token(tt, lc, tt == T_ERR ? STRING_LITERAL("ux") : N);
+  lexer->previous_token = token_type;
+  return make_token(token_type, location, token_type == T_ERR ? STRING_LITERAL("ux") : N);
 }
 typedef enum
 {
