@@ -244,6 +244,61 @@ Based on /reference/gnat examples:
 **Compilation**: ✓ Successful
 **Documentation**: Updated to reflect dual goals of correctness + optimization
 
+## Third Iteration Progress (2026-01-09)
+
+### Methodical Struct-by-Struct Expansion
+
+**Completed Structs (6/33) - All compile successfully ✓:**
+
+1. **Unsigned_Big_Integer**: d→digits, n→count, c→capacity, s→is_negative
+   - Fixed macro: UNSIGNED_BIGINT_NORMALIZE
+   - Fixed all field accesses in bigint functions (lines 74-307)
+   - Fixed references in scan_number_literal
+
+2. **Rational_Number**: n→numerator, d→denominator
+   - Struct definition only (no field accesses in current code)
+
+3. **Array_Bounds**: lo→low_bound, hi→high_bound
+   - Struct definition only (no field accesses in current code)
+
+4. **Fat_Pointer**: d→data, b→bounds
+   - Struct definition only (no field accesses in current code)
+
+5. **Thread_Queue**: m→mutex, c→condition, cnt→count, mx→maximum
+   - Struct definition only (no field accesses in current code)
+
+6. **Thread_Args**: t→thread, q→queue, d→data
+   - Struct definition only (no field accesses in current code)
+
+**Remaining Structs (27/33):**
+
+Next batch to tackle:
+7. Arena (A→Arena_Allocator): b→base, p→pointer, e→end
+8. String_Slice: s→string, n→length
+9. Source_Location: l→line, c→column, f→filename
+10-17. Vector types (Node_Vector, Symbol_Vector, RV, LV, GV, FV, SLV, LEV): d→data, n→count, c→capacity
+18. Token: t→kind, l→location, iv→integer_value, fv→float_value, ui→unsigned_integer, ur→unsigned_rational
+19. Lexer: s→start, c→current, e→end, ln→line_number, cl→column, f→filename, pt→previous_token
+20. KW struct: k→keyword, t→token_kind
+21. Parser: lx→lexer, cr→current_token, pk→peek_token, er→error_count, lb→label_stack
+22. LE: nm→name, bb→basic_block
+23. LU: (complex - multiple fields)
+24. GT: (complex - multiple fields)
+25. RC: (complex - multiple fields)
+26-29. Syntax_Node, Type_Info, Symbol, Symbol_Manager: (very complex - hundreds of fields)
+
+**Helper Scripts Created:**
+- `fix_bigint_fields.py`: Targeted Unsigned_Big_Integer field fixes
+- `fix_string_slice_fields.py`: String_Slice field fixes (needs completion)
+- `fix_source_location.py`: Source_Location field fixes (needs completion)
+- `fix_all_string_slice.sh`: Comprehensive approach (needs refinement for vector types)
+
+**Key Learning:**
+- Taking it slow and methodical works: 1 struct at a time, test compilation, commit success
+- Field names like .s, .n, .d, .c are heavily overloaded across different struct types
+- Must expand vector type definitions BEFORE fixing their field accesses
+- Global replacements are risky; targeted, context-aware fixes are safer
+
 ## Future Prompts
 
 (Add additional prompts here as work progresses)
