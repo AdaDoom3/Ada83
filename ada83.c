@@ -1585,7 +1585,7 @@ struct Representation_Clause
     {
       String_Slice lang;
       String_Slice name;
-      String_Slice ext;
+      String_Slice external_name;
     } im;
   };
 };
@@ -3601,14 +3601,14 @@ static Representation_Clause *parse_representation_clause(Parser *parser)
           {
             if (parser_at(parser, T_STR))
             {
-              r->im.ext = parser->current_token.literal;
+              r->im.external_name = parser->current_token.literal;
               parser_next(parser);
             }
             else
-              r->im.ext = parser_identifier(parser);
+              r->im.external_name = parser_identifier(parser);
           }
           else
-            r->im.ext = r->im.name;
+            r->im.external_name = r->im.name;
         }
         parser_expect(parser, T_RP);
       }
@@ -6789,7 +6789,7 @@ static void runtime_register_compare(Symbol_Manager *symbol_manager, Representat
     if (s)
     {
       s->is_external = true;
-      s->external_name = r->im.ext.length > 0 ? string_duplicate(r->im.ext) : string_duplicate(r->im.name);
+      s->external_name = r->im.external_name.length > 0 ? string_duplicate(r->im.external_name) : string_duplicate(r->im.name);
       s->external_language = string_duplicate(r->im.lang);
     }
   }
