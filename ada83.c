@@ -1318,8 +1318,8 @@ struct Syntax_Node
     {
       String_Slice nm;
       Syntax_Node *ty;
-      Syntax_Node *df;
-      uint8_t md;
+      Syntax_Node *default_value;
+      uint8_t mode;
     } parameter;
     struct
     {
@@ -1363,8 +1363,8 @@ struct Syntax_Node
     struct
     {
       String_Slice nm;
-      Syntax_Node *df;
-      Syntax_Node *ds;
+      Syntax_Node *definition;
+      Syntax_Node *discriminant;
       bool is_new;
       bool is_derived;
       Syntax_Node *parent_type;
@@ -1373,19 +1373,19 @@ struct Syntax_Node
     struct
     {
       String_Slice nm;
-      Syntax_Node *in;
-      Syntax_Node *cn;
-      Syntax_Node *rn;
+      Syntax_Node *index_constraint;
+      Syntax_Node *constraint;
+      Syntax_Node *range_constraint;
     } subtype_decl;
     struct
     {
       Node_Vector identifiers;
-      Syntax_Node *rn;
+      Syntax_Node *renamed_entity;
     } exception_decl;
     struct
     {
       String_Slice nm;
-      Syntax_Node *rn;
+      Syntax_Node *renamed_entity;
     } renaming;
     struct
     {
@@ -1438,17 +1438,17 @@ struct Syntax_Node
     } raise_stmt;
     struct
     {
-      Syntax_Node *nm;
-      Node_Vector arr;
+      Syntax_Node *name;
+      Node_Vector arguments;
     } code_stmt;
     struct
     {
       String_Slice nm;
-      Node_Vector ixx;
-      Node_Vector pmx;
+      Node_Vector index_constraints;
+      Node_Vector parameters;
       Node_Vector statements;
       Node_Vector handlers;
-      Syntax_Node *gd;
+      Syntax_Node *guard;
     } accept_stmt;
     struct
     {
@@ -1457,14 +1457,14 @@ struct Syntax_Node
     } select_stmt;
     struct
     {
-      uint8_t kn;
-      Syntax_Node *gd;
-      Node_Vector sts;
+      uint8_t kind;
+      Syntax_Node *guard;
+      Node_Vector statements;
     } abort_stmt;
     struct
     {
       String_Slice nm;
-      Node_Vector en;
+      Node_Vector entries;
       bool it;
     } task_spec;
     struct
@@ -1477,9 +1477,9 @@ struct Syntax_Node
     struct
     {
       String_Slice nm;
-      Node_Vector ixy;
-      Node_Vector pmy;
-      Syntax_Node *gd;
+      Node_Vector index_constraints;
+      Node_Vector parameters;
+      Syntax_Node *guard;
     } entry_decl;
     struct
     {
@@ -1488,7 +1488,7 @@ struct Syntax_Node
     } exception_handler;
     struct
     {
-      Node_Vector it;
+      Node_Vector items;
     } choices;
     struct
     {
@@ -1855,8 +1855,8 @@ static Syntax_Node *parse_primary(Parser *parser)
         Syntax_Node *slice_iterator = ND(ST, location);
         Syntax_Node *constraint = ND(CN, location);
         constraint->constraint.range_spec = range;
-        slice_iterator->subtype_decl.in = choices.data[0];
-        slice_iterator->subtype_decl.cn = constraint;
+        slice_iterator->subtype_decl.index_constraint = choices.data[0];
+        slice_iterator->subtype_decl.constraint = constraint;
         Syntax_Node *association = ND(ASC, location);
         nv(&association->association.choices, slice_iterator);
         association->association.value = value;
@@ -2364,8 +2364,8 @@ static Syntax_Node *parse_simple_expression(Parser *parser)
     Syntax_Node *c = ND(CN, location);
     c->constraint.range_spec = parse_range(parser);
     Syntax_Node *modified_node = ND(ST, location);
-    modified_node->subtype_decl.in = node;
-    modified_node->subtype_decl.cn = c;
+    modified_node->subtype_decl.index_constraint = node;
+    modified_node->subtype_decl.constraint = c;
     return modified_node;
   }
   if (parser_at(parser, T_LP))
@@ -2389,8 +2389,8 @@ static Syntax_Node *parse_simple_expression(Parser *parser)
         Syntax_Node *si = ND(ST, lc2);
         Syntax_Node *cn = ND(CN, lc2);
         cn->constraint.range_spec = rng;
-        si->subtype_decl.in = tn;
-        si->subtype_decl.cn = cn;
+        si->subtype_decl.index_constraint = tn;
+        si->subtype_decl.constraint = cn;
         nv(&c->constraint.constraints, si);
       }
       else if (ch.count > 0 and ch.data[0]->k == N_ID and parser_match(parser, T_AR))
@@ -2412,8 +2412,8 @@ static Syntax_Node *parse_simple_expression(Parser *parser)
     } while (parser_match(parser, T_CM));
     parser_expect(parser, T_RP);
     Syntax_Node *modified_node = ND(ST, location);
-    modified_node->subtype_decl.in = node;
-    modified_node->subtype_decl.cn = c;
+    modified_node->subtype_decl.index_constraint = node;
+    modified_node->subtype_decl.constraint = c;
     return modified_node;
   }
   return node;
@@ -2451,8 +2451,8 @@ static Node_Vector parse_parameter_mode(Parser *parser)
       Syntax_Node *node = ND(PM, location);
       node->parameter.nm = id.data[i]->s;
       node->parameter.ty = ty;
-      node->parameter.df = df;
-      node->parameter.md = md;
+      node->parameter.default_value = df;
+      node->parameter.mode = md;
       nv(&params, node);
     }
   } while (parser_match(parser, T_SC));
@@ -2717,17 +2717,17 @@ static Syntax_Node *parse_case(Parser *parser)
       if (elsif_node->k == N_ID and parser_match(parser, T_RNG))
       {
         Syntax_Node *r = parse_range(parser);
-        nv(&a->choices.it, r);
+        nv(&a->choices.items, r);
       }
       else if (parser_match(parser, T_DD))
       {
         Syntax_Node *r = ND(RN, location);
         r->range.low = elsif_node;
         r->range.high = parse_expression(parser);
-        nv(&a->choices.it, r);
+        nv(&a->choices.items, r);
       }
       else
-        nv(&a->choices.it, elsif_node);
+        nv(&a->choices.items, elsif_node);
     } while (parser_match(parser, T_BR));
     parser_expect(parser, T_AR);
     while (not parser_at(parser, T_WHN) and not parser_at(parser, T_END))
@@ -2800,16 +2800,16 @@ static Syntax_Node *parse_statement_list(Parser *parser)
   Source_Location location = parser_location(parser);
   parser_expect(parser, T_SEL);
   Syntax_Node *node = ND(SA, location);
-  node->abort_stmt.kn = 0;
+  node->abort_stmt.kind = 0;
   if (parser_match(parser, T_DEL))
   {
-    node->abort_stmt.kn = 1;
-    node->abort_stmt.gd = parse_expression(parser);
+    node->abort_stmt.kind = 1;
+    node->abort_stmt.guard = parse_expression(parser);
     parser_expect(parser, T_THEN);
     if (parser_match(parser, T_AB))
-      node->abort_stmt.kn = 3;
+      node->abort_stmt.kind = 3;
     while (not parser_at(parser, T_OR) and not parser_at(parser, T_ELSE) and not parser_at(parser, T_END))
-      nv(&node->abort_stmt.sts, parse_statement_or_label(parser));
+      nv(&node->abort_stmt.statements, parse_statement_or_label(parser));
   }
   else if (parser_at(parser, T_WHN))
   {
@@ -2817,7 +2817,7 @@ static Syntax_Node *parse_statement_list(Parser *parser)
     {
       Syntax_Node *alternative = ND(WH, location);
       do
-        nv(&alternative->choices.it, parse_expression(parser));
+        nv(&alternative->choices.items, parse_expression(parser));
       while (parser_match(parser, T_BR));
       parser_expect(parser, T_AR);
       if (parser_match(parser, T_ACC))
@@ -2837,7 +2837,7 @@ static Syntax_Node *parse_statement_list(Parser *parser)
               parser->current_token = saved_current_token;
               parser->peek_token = saved_peek_token;
               parser->lexer = saved_lexer;
-              alternative->accept_stmt.pmx = parse_parameter_mode(parser);
+              alternative->accept_stmt.parameters = parse_parameter_mode(parser);
             }
             else
             {
@@ -2846,25 +2846,25 @@ static Syntax_Node *parse_statement_list(Parser *parser)
               parser->lexer = saved_lexer;
               parser_expect(parser, T_LP);
               do
-                nv(&alternative->accept_stmt.ixx, parse_expression(parser));
+                nv(&alternative->accept_stmt.index_constraints, parse_expression(parser));
               while (parser_match(parser, T_CM));
               parser_expect(parser, T_RP);
-              alternative->accept_stmt.pmx = parse_parameter_mode(parser);
+              alternative->accept_stmt.parameters = parse_parameter_mode(parser);
             }
           }
           else
           {
             parser_expect(parser, T_LP);
             do
-              nv(&alternative->accept_stmt.ixx, parse_expression(parser));
+              nv(&alternative->accept_stmt.index_constraints, parse_expression(parser));
             while (parser_match(parser, T_CM));
             parser_expect(parser, T_RP);
-            alternative->accept_stmt.pmx = parse_parameter_mode(parser);
+            alternative->accept_stmt.parameters = parse_parameter_mode(parser);
           }
         }
         else
         {
-          alternative->accept_stmt.pmx = parse_parameter_mode(parser);
+          alternative->accept_stmt.parameters = parse_parameter_mode(parser);
         }
         if (parser_match(parser, T_DO))
         {
@@ -2890,7 +2890,7 @@ static Syntax_Node *parse_statement_list(Parser *parser)
         while (not parser_at(parser, T_OR) and not parser_at(parser, T_ELSE) and not parser_at(parser, T_END))
           nv(&alternative->exception_handler.statements, parse_statement_or_label(parser));
       }
-      nv(&node->abort_stmt.sts, alternative);
+      nv(&node->abort_stmt.statements, alternative);
     }
   }
   else
@@ -2915,7 +2915,7 @@ static Syntax_Node *parse_statement_list(Parser *parser)
               parser->current_token = saved_current_token;
               parser->peek_token = saved_peek_token;
               parser->lexer = saved_lexer;
-              alternative->accept_stmt.pmx = parse_parameter_mode(parser);
+              alternative->accept_stmt.parameters = parse_parameter_mode(parser);
             }
             else
             {
@@ -2924,25 +2924,25 @@ static Syntax_Node *parse_statement_list(Parser *parser)
               parser->lexer = saved_lexer;
               parser_expect(parser, T_LP);
               do
-                nv(&alternative->accept_stmt.ixx, parse_expression(parser));
+                nv(&alternative->accept_stmt.index_constraints, parse_expression(parser));
               while (parser_match(parser, T_CM));
               parser_expect(parser, T_RP);
-              alternative->accept_stmt.pmx = parse_parameter_mode(parser);
+              alternative->accept_stmt.parameters = parse_parameter_mode(parser);
             }
           }
           else
           {
             parser_expect(parser, T_LP);
             do
-              nv(&alternative->accept_stmt.ixx, parse_expression(parser));
+              nv(&alternative->accept_stmt.index_constraints, parse_expression(parser));
             while (parser_match(parser, T_CM));
             parser_expect(parser, T_RP);
-            alternative->accept_stmt.pmx = parse_parameter_mode(parser);
+            alternative->accept_stmt.parameters = parse_parameter_mode(parser);
           }
         }
         else
         {
-          alternative->accept_stmt.pmx = parse_parameter_mode(parser);
+          alternative->accept_stmt.parameters = parse_parameter_mode(parser);
         }
         if (parser_match(parser, T_DO))
         {
@@ -2972,7 +2972,7 @@ static Syntax_Node *parse_statement_list(Parser *parser)
         while (not parser_at(parser, T_OR) and not parser_at(parser, T_ELSE) and not parser_at(parser, T_END))
           nv(&alternative->exception_handler.statements, parse_statement_or_label(parser));
       }
-      nv(&node->abort_stmt.sts, alternative);
+      nv(&node->abort_stmt.statements, alternative);
     } while (parser_match(parser, T_OR));
   }
   if (parser_match(parser, T_ELSE))
@@ -3036,7 +3036,7 @@ static Syntax_Node *parse_statement_or_label(Parser *parser)
           parser->current_token = saved_current_token;
           parser->peek_token = saved_peek_token;
           parser->lexer = saved_lexer;
-          node->accept_stmt.pmx = parse_parameter_mode(parser);
+          node->accept_stmt.parameters = parse_parameter_mode(parser);
         }
         else
         {
@@ -3045,25 +3045,25 @@ static Syntax_Node *parse_statement_or_label(Parser *parser)
           parser->lexer = saved_lexer;
           parser_expect(parser, T_LP);
           do
-            nv(&node->accept_stmt.ixx, parse_expression(parser));
+            nv(&node->accept_stmt.index_constraints, parse_expression(parser));
           while (parser_match(parser, T_CM));
           parser_expect(parser, T_RP);
-          node->accept_stmt.pmx = parse_parameter_mode(parser);
+          node->accept_stmt.parameters = parse_parameter_mode(parser);
         }
       }
       else
       {
         parser_expect(parser, T_LP);
         do
-          nv(&node->accept_stmt.ixx, parse_expression(parser));
+          nv(&node->accept_stmt.index_constraints, parse_expression(parser));
         while (parser_match(parser, T_CM));
         parser_expect(parser, T_RP);
-        node->accept_stmt.pmx = parse_parameter_mode(parser);
+        node->accept_stmt.parameters = parse_parameter_mode(parser);
       }
     }
     else
     {
-      node->accept_stmt.pmx = parse_parameter_mode(parser);
+      node->accept_stmt.parameters = parse_parameter_mode(parser);
     }
     if (parser_match(parser, T_DO))
     {
@@ -3163,16 +3163,16 @@ static Syntax_Node *parse_statement_or_label(Parser *parser)
   Syntax_Node *node = ND(CLT, location);
   if (expression->k == N_IX)
   {
-    node->code_stmt.nm = expression->index.prefix;
-    node->code_stmt.arr = expression->index.indices;
+    node->code_stmt.name = expression->index.prefix;
+    node->code_stmt.arguments = expression->index.indices;
   }
   else if (expression->k == N_CL)
   {
-    node->code_stmt.nm = expression->call.function_name;
-    node->code_stmt.arr = expression->call.arguments;
+    node->code_stmt.name = expression->call.function_name;
+    node->code_stmt.arguments = expression->call.arguments;
   }
   else
-    node->code_stmt.nm = expression;
+    node->code_stmt.name = expression;
   parser_expect(parser, T_SC);
   return node;
 }
@@ -3302,10 +3302,10 @@ static Syntax_Node *parse_type_definition(Parser *parser)
       if (ix->k == N_ID and parser_match(parser, T_RNG))
       {
         Syntax_Node *st = ND(ST, location);
-        st->subtype_decl.in = ix;
+        st->subtype_decl.index_constraint = ix;
         Syntax_Node *cn = ND(CN, location);
         cn->constraint.range_spec = parse_range(parser);
-        st->subtype_decl.cn = cn;
+        st->subtype_decl.constraint = cn;
         nv(&node->index.indices, st);
       }
       else
@@ -3334,7 +3334,7 @@ static Syntax_Node *parse_type_definition(Parser *parser)
         Syntax_Node *dp = ND(DS, location);
         dp->parameter.nm = dn;
         dp->parameter.ty = dt;
-        dp->parameter.df = dd;
+        dp->parameter.default_value = dd;
         nv(&dc, dp);
       } while (parser_match(parser, T_SC));
       parser_expect(parser, T_RP);
@@ -3689,7 +3689,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
           Syntax_Node *dp = ND(DS, location);
           dp->parameter.nm = dn.data[i]->s;
           dp->parameter.ty = dt;
-          dp->parameter.df = dd;
+          dp->parameter.default_value = dd;
           nv(&ds->list.items, dp);
         }
       } while (parser_match(parser, T_SC));
@@ -3703,7 +3703,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
       if (node->type_decl.is_derived)
       {
         node->type_decl.parent_type = parse_name(parser);
-        node->type_decl.df = node->type_decl.parent_type;
+        node->type_decl.definition = node->type_decl.parent_type;
         if (parser_match(parser, T_DIG))
         {
           parse_expression(parser);
@@ -3728,11 +3728,11 @@ static Syntax_Node *parse_declaration(Parser *parser)
           rn->range.low = parse_signed_term(parser);
           parser_expect(parser, T_DD);
           rn->range.high = parse_signed_term(parser);
-          node->type_decl.df = rn;
+          node->type_decl.definition = rn;
         }
       }
       else
-        node->type_decl.df = parse_type_definition(parser);
+        node->type_decl.definition = parse_type_definition(parser);
     }
     parser_expect(parser, T_SC);
     return node;
@@ -3743,9 +3743,9 @@ static Syntax_Node *parse_declaration(Parser *parser)
     parser_expect(parser, T_IS);
     Syntax_Node *node = ND(SD, location);
     node->subtype_decl.nm = nm;
-    node->subtype_decl.in = parse_simple_expression(parser);
-    if (node->subtype_decl.in->k == N_ST)
-      node->subtype_decl.rn = node->subtype_decl.in->subtype_decl.cn->constraint.range_spec;
+    node->subtype_decl.index_constraint = parse_simple_expression(parser);
+    if (node->subtype_decl.index_constraint->k == N_ST)
+      node->subtype_decl.range_constraint = node->subtype_decl.index_constraint->subtype_decl.constraint->constraint.range_spec;
     parser_expect(parser, T_SC);
     return node;
   }
@@ -3934,7 +3934,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
       parser_expect(parser, T_SC);
       Syntax_Node *node = ND(RE, location);
       node->renaming.nm = nm;
-      node->renaming.rn = rn;
+      node->renaming.renamed_entity = rn;
       return node;
     }
     parser_expect(parser, T_IS);
@@ -4032,7 +4032,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
                 parser->current_token = scr;
                 parser->peek_token = spk;
                 parser->lexer = slx;
-                e->entry_decl.pmy = parse_parameter_mode(parser);
+                e->entry_decl.parameters = parse_parameter_mode(parser);
               }
               else
               {
@@ -4047,16 +4047,16 @@ static Syntax_Node *parse_declaration(Parser *parser)
                   Syntax_Node *si = ND(ST, location);
                   Syntax_Node *cn = ND(CN, location);
                   cn->constraint.range_spec = rng;
-                  si->subtype_decl.in = ix;
-                  si->subtype_decl.cn = cn;
-                  nv(&e->entry_decl.ixy, si);
+                  si->subtype_decl.index_constraint = ix;
+                  si->subtype_decl.constraint = cn;
+                  nv(&e->entry_decl.index_constraints, si);
                 }
                 else
                 {
-                  nv(&e->entry_decl.ixy, ix);
+                  nv(&e->entry_decl.index_constraints, ix);
                 }
                 parser_expect(parser, T_RP);
-                e->entry_decl.pmy = parse_parameter_mode(parser);
+                e->entry_decl.parameters = parse_parameter_mode(parser);
               }
             }
             else
@@ -4069,24 +4069,24 @@ static Syntax_Node *parse_declaration(Parser *parser)
                 Syntax_Node *si = ND(ST, location);
                 Syntax_Node *cn = ND(CN, location);
                 cn->constraint.range_spec = rng;
-                si->subtype_decl.in = ix;
-                si->subtype_decl.cn = cn;
-                nv(&e->entry_decl.ixy, si);
+                si->subtype_decl.index_constraint = ix;
+                si->subtype_decl.constraint = cn;
+                nv(&e->entry_decl.index_constraints, si);
               }
               else
               {
-                nv(&e->entry_decl.ixy, ix);
+                nv(&e->entry_decl.index_constraints, ix);
               }
               parser_expect(parser, T_RP);
-              e->entry_decl.pmy = parse_parameter_mode(parser);
+              e->entry_decl.parameters = parse_parameter_mode(parser);
             }
           }
           else
           {
-            e->entry_decl.pmy = parse_parameter_mode(parser);
+            e->entry_decl.parameters = parse_parameter_mode(parser);
           }
           parser_expect(parser, T_SC);
-          nv(&node->task_spec.en, e);
+          nv(&node->task_spec.entries, e);
         }
         else if (parser_match(parser, T_PGM))
         {
@@ -4160,7 +4160,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
       Syntax_Node *node = ND(ED, location);
       node->exception_decl.identifiers = id;
       if (parser_match(parser, T_REN))
-        node->exception_decl.rn = parse_expression(parser);
+        node->exception_decl.renamed_entity = parse_expression(parser);
       parser_expect(parser, T_SC);
       return node;
     }
@@ -4731,12 +4731,12 @@ static Syntax_Node *generate_equality_operator(Type_Info *t, Source_Location l)
   p1->parameter.nm = STRING_LITERAL("Source_Location");
   p1->parameter.ty = ND(ID, l);
   p1->parameter.ty->s = t->nm;
-  p1->parameter.md = 0;
+  p1->parameter.mode = 0;
   Syntax_Node *p2 = ND(PM, l);
   p2->parameter.nm = STRING_LITERAL("Rational_Number");
   p2->parameter.ty = ND(ID, l);
   p2->parameter.ty->s = t->nm;
-  p2->parameter.md = 0;
+  p2->parameter.mode = 0;
   nv(&f->body.subprogram_spec->subprogram.parameters, p1);
   nv(&f->body.subprogram_spec->subprogram.parameters, p2);
   f->body.subprogram_spec->subprogram.return_type = ND(ID, l);
@@ -4828,12 +4828,12 @@ static Syntax_Node *generate_assignment_operator(Type_Info *t, Source_Location l
   p1->parameter.nm = STRING_LITERAL("T");
   p1->parameter.ty = ND(ID, l);
   p1->parameter.ty->s = t->nm;
-  p1->parameter.md = 3;
+  p1->parameter.mode = 3;
   Syntax_Node *p2 = ND(PM, l);
   p2->parameter.nm = STRING_LITERAL("String_Slice");
   p2->parameter.ty = ND(ID, l);
   p2->parameter.ty->s = t->nm;
-  p2->parameter.md = 0;
+  p2->parameter.mode = 0;
   nv(&parser->body.subprogram_spec->subprogram.parameters, p1);
   nv(&parser->body.subprogram_spec->subprogram.parameters, p2);
   if (t->k == TYPE_RECORD)
@@ -5225,7 +5225,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
           if (d->sy and string_equal_ignore_case(d->sy->nm, node->selected_component.selector) and d->sy->ty)
             return d->sy->ty;
           if (d->k == N_TD and string_equal_ignore_case(d->type_decl.nm, node->selected_component.selector))
-            return resolve_subtype(symbol_manager, d->type_decl.df);
+            return resolve_subtype(symbol_manager, d->type_decl.definition);
         }
         for (uint32_t i = 0; i < pk->package_spec.dc.count; i++)
         {
@@ -5233,7 +5233,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
           if (d->sy and string_equal_ignore_case(d->sy->nm, node->selected_component.selector) and d->sy->ty)
             return d->sy->ty;
           if (d->k == N_TD and string_equal_ignore_case(d->type_decl.nm, node->selected_component.selector))
-            return resolve_subtype(symbol_manager, d->type_decl.df);
+            return resolve_subtype(symbol_manager, d->type_decl.definition);
         }
       }
       return resolve_subtype(symbol_manager, parser);
@@ -5242,8 +5242,8 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
   }
   if (node->k == N_ST)
   {
-    Type_Info *bt = resolve_subtype(symbol_manager, node->subtype_decl.in);
-    Syntax_Node *cn = node->subtype_decl.cn ? node->subtype_decl.cn : node->subtype_decl.rn;
+    Type_Info *bt = resolve_subtype(symbol_manager, node->subtype_decl.index_constraint);
+    Syntax_Node *cn = node->subtype_decl.constraint ? node->subtype_decl.constraint : node->subtype_decl.range_constraint;
     if (cn and bt)
     {
       Type_Info *t = type_new(bt->k, N);
@@ -5602,10 +5602,10 @@ static bool descendant_conformant(Type_Info *t, Type_Info *s)
   for (uint32_t i = 0; i < node; i++)
   {
     Syntax_Node *ad = t->dc.data[i], *bd = s->dc.data[i];
-    if (not(ad and bd and ad->k == N_DS and bd->k == N_DS and ad->parameter.df and bd->parameter.df
-            and ad->parameter.df->k == N_INT and bd->parameter.df->k == N_INT))
+    if (not(ad and bd and ad->k == N_DS and bd->k == N_DS and ad->parameter.default_value and bd->parameter.default_value
+            and ad->parameter.default_value->k == N_INT and bd->parameter.default_value->k == N_INT))
       continue;
-    if (ad->parameter.df->i != bd->parameter.df->i)
+    if (ad->parameter.default_value->i != bd->parameter.default_value->i)
       return 1;
   }
   return 0;
@@ -6408,9 +6408,9 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
         for (uint32_t i = 0; i < et->dc.count; i++)
         {
           Syntax_Node *d = et->dc.data[i];
-          if (d->k == N_DS and d->parameter.df)
+          if (d->k == N_DS and d->parameter.default_value)
           {
-            resolve_expression(symbol_manager, d->parameter.df, resolve_subtype(symbol_manager, d->parameter.ty));
+            resolve_expression(symbol_manager, d->parameter.default_value, resolve_subtype(symbol_manager, d->parameter.ty));
           }
         }
       }
@@ -6422,17 +6422,17 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
         {
           bool hcd = 0;
           for (uint32_t i = 0; i < ct->dc.count; i++)
-            if (ct->dc.data[i]->k == N_DS and ct->dc.data[i]->parameter.df)
+            if (ct->dc.data[i]->k == N_DS and ct->dc.data[i]->parameter.default_value)
               hcd = 1;
           if (hcd and et and et->dc.count > 0)
           {
             for (uint32_t i = 0; i < ct->dc.count and i < et->dc.count; i++)
             {
               Syntax_Node *cd = ct->dc.data[i], *ed = et->dc.data[i];
-              if (cd->k == N_DS and cd->parameter.df and ed->k == N_DS)
+              if (cd->k == N_DS and cd->parameter.default_value and ed->k == N_DS)
               {
-                bool mtch = cd->parameter.df->k == N_INT and ed->parameter.df and ed->parameter.df->k == N_INT
-                            and cd->parameter.df->i == ed->parameter.df->i;
+                bool mtch = cd->parameter.default_value->k == N_INT and ed->parameter.default_value and ed->parameter.default_value->k == N_INT
+                            and cd->parameter.default_value->i == ed->parameter.default_value->i;
                 if (not mtch)
                 {
                   node->allocator.initializer = chk(symbol_manager, node->allocator.initializer, node->l);
@@ -6536,8 +6536,8 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
     for (uint32_t i = 0; i < node->case_stmt.alternatives.count; i++)
     {
       Syntax_Node *a = node->case_stmt.alternatives.data[i];
-      for (uint32_t j = 0; j < a->choices.it.count; j++)
-        resolve_expression(symbol_manager, a->choices.it.data[j], node->case_stmt.expression->ty);
+      for (uint32_t j = 0; j < a->choices.items.count; j++)
+        resolve_expression(symbol_manager, a->choices.items.data[j], node->case_stmt.expression->ty);
       if (a->exception_handler.statements.count > 0 and not has_return_statement(&a->exception_handler.statements))
         fatal_error(a->l, "seq needs stmt");
       for (uint32_t j = 0; j < a->exception_handler.statements.count; j++)
@@ -6616,18 +6616,18 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
       resolve_expression(symbol_manager, node->raise_stmt.exception_choice, 0);
     break;
   case N_CLT:
-    resolve_expression(symbol_manager, node->code_stmt.nm, 0);
-    for (uint32_t i = 0; i < node->code_stmt.arr.count; i++)
-      resolve_expression(symbol_manager, node->code_stmt.arr.data[i], 0);
+    resolve_expression(symbol_manager, node->code_stmt.name, 0);
+    for (uint32_t i = 0; i < node->code_stmt.arguments.count; i++)
+      resolve_expression(symbol_manager, node->code_stmt.arguments.data[i], 0);
     break;
   case N_ACC:
     symbol_compare_parameter(symbol_manager);
     {
       Symbol *ens = symbol_add_overload(symbol_manager, symbol_new(node->accept_stmt.nm, 9, 0, node));
       (void) ens;
-      for (uint32_t i = 0; i < node->accept_stmt.pmx.count; i++)
+      for (uint32_t i = 0; i < node->accept_stmt.parameters.count; i++)
       {
-        Syntax_Node *parser = node->accept_stmt.pmx.data[i];
+        Syntax_Node *parser = node->accept_stmt.parameters.data[i];
         Type_Info *pt = resolve_subtype(symbol_manager, parser->parameter.ty);
         Symbol *ps = symbol_add_overload(symbol_manager, symbol_new(parser->parameter.nm, 0, pt, parser));
         parser->sy = ps;
@@ -6640,15 +6640,15 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
     symbol_compare_overload(symbol_manager);
     break;
   case N_SA:
-    if (node->abort_stmt.gd)
-      resolve_expression(symbol_manager, node->abort_stmt.gd, 0);
-    for (uint32_t i = 0; i < node->abort_stmt.sts.count; i++)
+    if (node->abort_stmt.guard)
+      resolve_expression(symbol_manager, node->abort_stmt.guard, 0);
+    for (uint32_t i = 0; i < node->abort_stmt.statements.count; i++)
     {
-      Syntax_Node *s = node->abort_stmt.sts.data[i];
+      Syntax_Node *s = node->abort_stmt.statements.data[i];
       if (s->k == N_ACC)
       {
-        for (uint32_t j = 0; j < s->accept_stmt.pmx.count; j++)
-          resolve_expression(symbol_manager, s->accept_stmt.pmx.data[j], 0);
+        for (uint32_t j = 0; j < s->accept_stmt.parameters.count; j++)
+          resolve_expression(symbol_manager, s->accept_stmt.parameters.data[j], 0);
         if (s->accept_stmt.statements.count > 0 and not has_return_statement(&s->accept_stmt.statements))
           fatal_error(s->l, "seq needs stmt");
         for (uint32_t j = 0; j < s->accept_stmt.statements.count; j++)
@@ -7050,8 +7050,8 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
   case N_PM:
     c->parameter.nm = n->parameter.nm;
     c->parameter.ty = node_clone_substitute(n->parameter.ty, fp, ap);
-    c->parameter.df = node_clone_substitute(n->parameter.df, fp, ap);
-    c->parameter.md = n->parameter.md;
+    c->parameter.default_value = node_clone_substitute(n->parameter.default_value, fp, ap);
+    c->parameter.mode = n->parameter.mode;
     break;
   case N_PS:
   case N_FS:
@@ -7096,8 +7096,8 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
   case N_TD:
   case N_GTP:
     c->type_decl.nm = n->type_decl.nm;
-    c->type_decl.df = node_clone_substitute(n->type_decl.df, fp, ap);
-    c->type_decl.ds = node_clone_substitute(n->type_decl.ds, fp, ap);
+    c->type_decl.definition = node_clone_substitute(n->type_decl.definition, fp, ap);
+    c->type_decl.discriminant = node_clone_substitute(n->type_decl.discriminant, fp, ap);
     c->type_decl.is_new = n->type_decl.is_new;
     c->type_decl.is_derived = n->type_decl.is_derived;
     c->type_decl.parent_type = node_clone_substitute(n->type_decl.parent_type, fp, ap);
@@ -7105,17 +7105,17 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
     break;
   case N_SD:
     c->subtype_decl.nm = n->subtype_decl.nm;
-    c->subtype_decl.in = node_clone_substitute(n->subtype_decl.in, fp, ap);
-    c->subtype_decl.cn = node_clone_substitute(n->subtype_decl.cn, fp, ap);
-    c->subtype_decl.rn = node_clone_substitute(n->subtype_decl.rn, fp, ap);
+    c->subtype_decl.index_constraint = node_clone_substitute(n->subtype_decl.index_constraint, fp, ap);
+    c->subtype_decl.constraint = node_clone_substitute(n->subtype_decl.constraint, fp, ap);
+    c->subtype_decl.range_constraint = node_clone_substitute(n->subtype_decl.range_constraint, fp, ap);
     break;
   case N_ED:
     normalize_compile_symbol_vector(&c->exception_decl.identifiers, &n->exception_decl.identifiers, fp, ap);
-    c->exception_decl.rn = node_clone_substitute(n->exception_decl.rn, fp, ap);
+    c->exception_decl.renamed_entity = node_clone_substitute(n->exception_decl.renamed_entity, fp, ap);
     break;
   case N_RE:
     c->renaming.nm = n->renaming.nm;
-    c->renaming.rn = node_clone_substitute(n->renaming.rn, fp, ap);
+    c->renaming.renamed_entity = node_clone_substitute(n->renaming.renamed_entity, fp, ap);
     break;
   case N_AS:
     c->assignment.target = node_clone_substitute(n->assignment.target, fp, ap);
@@ -7162,29 +7162,29 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
   case N_NS:
     break;
   case N_CLT:
-    c->code_stmt.nm = node_clone_substitute(n->code_stmt.nm, fp, ap);
-    normalize_compile_symbol_vector(&c->code_stmt.arr, &n->code_stmt.arr, fp, ap);
+    c->code_stmt.name = node_clone_substitute(n->code_stmt.name, fp, ap);
+    normalize_compile_symbol_vector(&c->code_stmt.arguments, &n->code_stmt.arguments, fp, ap);
     break;
   case N_ACC:
     c->accept_stmt.nm = n->accept_stmt.nm;
-    normalize_compile_symbol_vector(&c->accept_stmt.ixx, &n->accept_stmt.ixx, fp, ap);
-    normalize_compile_symbol_vector(&c->accept_stmt.pmx, &n->accept_stmt.pmx, fp, ap);
+    normalize_compile_symbol_vector(&c->accept_stmt.index_constraints, &n->accept_stmt.index_constraints, fp, ap);
+    normalize_compile_symbol_vector(&c->accept_stmt.parameters, &n->accept_stmt.parameters, fp, ap);
     normalize_compile_symbol_vector(&c->accept_stmt.statements, &n->accept_stmt.statements, fp, ap);
     normalize_compile_symbol_vector(&c->accept_stmt.handlers, &n->accept_stmt.handlers, fp, ap);
-    c->accept_stmt.gd = node_clone_substitute(n->accept_stmt.gd, fp, ap);
+    c->accept_stmt.guard = node_clone_substitute(n->accept_stmt.guard, fp, ap);
     break;
   case N_SLS:
     normalize_compile_symbol_vector(&c->select_stmt.alternatives, &n->select_stmt.alternatives, fp, ap);
     normalize_compile_symbol_vector(&c->select_stmt.el, &n->select_stmt.el, fp, ap);
     break;
   case N_SA:
-    c->abort_stmt.kn = n->abort_stmt.kn;
-    c->abort_stmt.gd = node_clone_substitute(n->abort_stmt.gd, fp, ap);
-    normalize_compile_symbol_vector(&c->abort_stmt.sts, &n->abort_stmt.sts, fp, ap);
+    c->abort_stmt.kind = n->abort_stmt.kind;
+    c->abort_stmt.guard = node_clone_substitute(n->abort_stmt.guard, fp, ap);
+    normalize_compile_symbol_vector(&c->abort_stmt.statements, &n->abort_stmt.statements, fp, ap);
     break;
   case N_TKS:
     c->task_spec.nm = n->task_spec.nm;
-    normalize_compile_symbol_vector(&c->task_spec.en, &n->task_spec.en, fp, ap);
+    normalize_compile_symbol_vector(&c->task_spec.entries, &n->task_spec.entries, fp, ap);
     c->task_spec.it = n->task_spec.it;
     break;
   case N_TKB:
@@ -7195,9 +7195,9 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
     break;
   case N_ENT:
     c->entry_decl.nm = n->entry_decl.nm;
-    normalize_compile_symbol_vector(&c->entry_decl.ixy, &n->entry_decl.ixy, fp, ap);
-    normalize_compile_symbol_vector(&c->entry_decl.pmy, &n->entry_decl.pmy, fp, ap);
-    c->entry_decl.gd = node_clone_substitute(n->entry_decl.gd, fp, ap);
+    normalize_compile_symbol_vector(&c->entry_decl.index_constraints, &n->entry_decl.index_constraints, fp, ap);
+    normalize_compile_symbol_vector(&c->entry_decl.parameters, &n->entry_decl.parameters, fp, ap);
+    c->entry_decl.guard = node_clone_substitute(n->entry_decl.guard, fp, ap);
     break;
   case N_HD:
   case N_WH:
@@ -7207,7 +7207,7 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
     normalize_compile_symbol_vector(&c->exception_handler.statements, &n->exception_handler.statements, fp, ap);
     break;
   case N_CH:
-    normalize_compile_symbol_vector(&c->choices.it, &n->choices.it, fp, ap);
+    normalize_compile_symbol_vector(&c->choices.items, &n->choices.items, fp, ap);
     break;
   case N_ASC:
     normalize_compile_symbol_vector(&c->association.choices, &n->association.choices, fp, ap);
@@ -7434,10 +7434,10 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
             {
               Syntax_Node *td = t->dc.data[di];
               Syntax_Node *id = it->dc.data[di];
-              if (td->k == N_DS and id->k == N_DS and td->parameter.df and id->parameter.df)
+              if (td->k == N_DS and id->k == N_DS and td->parameter.default_value and id->parameter.default_value)
               {
-                if (td->parameter.df->k == N_INT and id->parameter.df->k == N_INT
-                    and td->parameter.df->i != id->parameter.df->i)
+                if (td->parameter.default_value->k == N_INT and id->parameter.default_value->k == N_INT
+                    and td->parameter.default_value->i != id->parameter.default_value->i)
                 {
                   Syntax_Node *dc = ND(CHK, n->l);
                   dc->check.expression = n->object_decl.in;
@@ -7512,35 +7512,35 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
         }
         is_higher_order_parameter(t, pt);
       }
-      if (n->type_decl.df and n->type_decl.df->k == N_RN)
+      if (n->type_decl.definition and n->type_decl.definition->k == N_RN)
       {
-        resolve_expression(symbol_manager, n->type_decl.df->range.low, 0);
-        resolve_expression(symbol_manager, n->type_decl.df->range.high, 0);
-        t->lo = n->type_decl.df->range.low->i;
-        t->hi = n->type_decl.df->range.high->i;
+        resolve_expression(symbol_manager, n->type_decl.definition->range.low, 0);
+        resolve_expression(symbol_manager, n->type_decl.definition->range.high, 0);
+        t->lo = n->type_decl.definition->range.low->i;
+        t->hi = n->type_decl.definition->range.high->i;
       }
     }
     else
     {
       Symbol *px = symbol_find(symbol_manager, n->type_decl.nm);
       if (px and px->k == 1 and px->ty and (px->ty->k == TYPE_INTEGER or px->ty->k == TY_PT)
-          and n->type_decl.df)
+          and n->type_decl.definition)
       {
         if (px->ty->k == TY_PT)
         {
           t = px->ty;
-          t->prt = resolve_subtype(symbol_manager, n->type_decl.df);
+          t->prt = resolve_subtype(symbol_manager, n->type_decl.definition);
         }
         else
           t = px->ty;
       }
-      else if (n->type_decl.df)
+      else if (n->type_decl.definition)
       {
-        t = resolve_subtype(symbol_manager, n->type_decl.df);
+        t = resolve_subtype(symbol_manager, n->type_decl.definition);
       }
       else
       {
-        t = type_new(n->type_decl.df or n->type_decl.is_derived ? TYPE_INTEGER : TY_PT, n->type_decl.nm);
+        t = type_new(n->type_decl.definition or n->type_decl.is_derived ? TYPE_INTEGER : TY_PT, n->type_decl.nm);
         if (t and n->type_decl.nm.string)
         {
           Symbol *s = symbol_add_overload(symbol_manager, symbol_new(n->type_decl.nm, 1, t, n));
@@ -7559,8 +7559,8 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
         if (d->k == N_DS)
         {
           Symbol *ds = symbol_add_overload(symbol_manager, symbol_new(d->parameter.nm, 8, resolve_subtype(symbol_manager, d->parameter.ty), d));
-          if (d->parameter.df)
-            resolve_expression(symbol_manager, d->parameter.df, ds->ty);
+          if (d->parameter.default_value)
+            resolve_expression(symbol_manager, d->parameter.default_value, ds->ty);
         }
       }
       t->dc = n->type_decl.discriminants;
@@ -7571,7 +7571,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       if (px2 and px2->k == 1 and px2->ty == t)
       {
         n->sy = px2;
-        if (n->type_decl.df)
+        if (n->type_decl.definition)
           px2->df = n;
       }
       else
@@ -7580,13 +7580,13 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
         n->sy = s;
       }
     }
-    if (n->type_decl.df and n->type_decl.df->k == N_TE)
+    if (n->type_decl.definition and n->type_decl.definition->k == N_TE)
     {
       t->k = TYPE_ENUMERATION;
       int vl = 0;
-      for (uint32_t i = 0; i < n->type_decl.df->list.items.count; i++)
+      for (uint32_t i = 0; i < n->type_decl.definition->list.items.count; i++)
       {
-        Syntax_Node *it = n->type_decl.df->list.items.data[i];
+        Syntax_Node *it = n->type_decl.definition->list.items.data[i];
         Symbol *es = symbol_add_overload(
             symbol_manager, symbol_new(it->k == N_CHAR ? (String_Slice){(const char *) &it->i, 1} : it->s, 2, t, n));
         es->vl = vl++;
@@ -7595,13 +7595,13 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       t->lo = 0;
       t->hi = vl - 1;
     }
-    if (n->type_decl.df and n->type_decl.df->k == N_TR)
+    if (n->type_decl.definition and n->type_decl.definition->k == N_TR)
     {
       t->k = TYPE_RECORD;
       of = 0;
-      for (uint32_t i = 0; i < n->type_decl.df->list.items.count; i++)
+      for (uint32_t i = 0; i < n->type_decl.definition->list.items.count; i++)
       {
-        Syntax_Node *c = n->type_decl.df->list.items.data[i];
+        Syntax_Node *c = n->type_decl.definition->list.items.data[i];
         if (c->k == N_CM)
         {
           c->component_decl.offset = of++;
@@ -7613,8 +7613,8 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
             for (uint32_t j = 0; j < c->component_decl.discriminant_constraint->list.items.count; j++)
             {
               Syntax_Node *dc = c->component_decl.discriminant_constraint->list.items.data[j];
-              if (dc->k == N_DS and dc->parameter.df)
-                resolve_expression(symbol_manager, dc->parameter.df, resolve_subtype(symbol_manager, dc->parameter.ty));
+              if (dc->k == N_DS and dc->parameter.default_value)
+                resolve_expression(symbol_manager, dc->parameter.default_value, resolve_subtype(symbol_manager, dc->parameter.ty));
             }
           }
           if (c->component_decl.discriminant_spec)
@@ -7626,8 +7626,8 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
               {
                 Symbol *ds =
                     symbol_add_overload(symbol_manager, symbol_new(dc->parameter.nm, 8, resolve_subtype(symbol_manager, dc->parameter.ty), dc));
-                if (dc->parameter.df)
-                  resolve_expression(symbol_manager, dc->parameter.df, ds->ty);
+                if (dc->parameter.default_value)
+                  resolve_expression(symbol_manager, dc->parameter.default_value, ds->ty);
               }
             }
             c->component_decl.discriminant_constraint = c->component_decl.discriminant_spec;
@@ -7650,8 +7650,8 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
                 for (uint32_t m = 0; m < vc->component_decl.discriminant_constraint->list.items.count; m++)
                 {
                   Syntax_Node *dc = vc->component_decl.discriminant_constraint->list.items.data[m];
-                  if (dc->k == N_DS and dc->parameter.df)
-                    resolve_expression(symbol_manager, dc->parameter.df, resolve_subtype(symbol_manager, dc->parameter.ty));
+                  if (dc->k == N_DS and dc->parameter.default_value)
+                    resolve_expression(symbol_manager, dc->parameter.default_value, resolve_subtype(symbol_manager, dc->parameter.ty));
                 }
               }
               if (vc->component_decl.discriminant_spec)
@@ -7663,8 +7663,8 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
                   {
                     Symbol *ds = symbol_add_overload(
                         symbol_manager, symbol_new(dc->parameter.nm, 8, resolve_subtype(symbol_manager, dc->parameter.ty), dc));
-                    if (dc->parameter.df)
-                      resolve_expression(symbol_manager, dc->parameter.df, ds->ty);
+                    if (dc->parameter.default_value)
+                      resolve_expression(symbol_manager, dc->parameter.default_value, ds->ty);
                   }
                 }
                 vc->component_decl.discriminant_constraint = vc->component_decl.discriminant_spec;
@@ -7674,13 +7674,13 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
         }
       }
     }
-    t->components = n->type_decl.df->list.items;
+    t->components = n->type_decl.definition->list.items;
     t->sz = of * 8;
   }
   break;
   case N_SD:
   {
-    Type_Info *b = resolve_subtype(symbol_manager, n->subtype_decl.in);
+    Type_Info *b = resolve_subtype(symbol_manager, n->subtype_decl.index_constraint);
     Type_Info *t = type_new(b ? b->k : TYPE_INTEGER, n->subtype_decl.nm);
     if (b)
     {
@@ -7696,12 +7696,12 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       t->hi = b->hi;
       t->prt = b->prt ? b->prt : b;
     }
-    if (n->subtype_decl.rn)
+    if (n->subtype_decl.range_constraint)
     {
-      resolve_expression(symbol_manager, n->subtype_decl.rn->range.low, 0);
-      resolve_expression(symbol_manager, n->subtype_decl.rn->range.high, 0);
-      Syntax_Node *lo = n->subtype_decl.rn->range.low;
-      Syntax_Node *hi = n->subtype_decl.rn->range.high;
+      resolve_expression(symbol_manager, n->subtype_decl.range_constraint->range.low, 0);
+      resolve_expression(symbol_manager, n->subtype_decl.range_constraint->range.high, 0);
+      Syntax_Node *lo = n->subtype_decl.range_constraint->range.low;
+      Syntax_Node *hi = n->subtype_decl.range_constraint->range.high;
       int64_t lov = lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.x->k == N_INT ? -lo->unary_node.x->i
                     : lo->k == N_ID and lo->sy and lo->sy->k == 2                ? lo->sy->vl
                                                                                  : lo->i;
@@ -7718,14 +7718,14 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     for (uint32_t i = 0; i < n->exception_decl.identifiers.count; i++)
     {
       Syntax_Node *id = n->exception_decl.identifiers.data[i];
-      if (n->exception_decl.rn)
+      if (n->exception_decl.renamed_entity)
       {
-        resolve_expression(symbol_manager, n->exception_decl.rn, 0);
-        Symbol *tgt = n->exception_decl.rn->sy;
+        resolve_expression(symbol_manager, n->exception_decl.renamed_entity, 0);
+        Symbol *tgt = n->exception_decl.renamed_entity->sy;
         if (tgt and tgt->k == 3)
         {
           Symbol *al = symbol_add_overload(symbol_manager, symbol_new(id->s, 3, 0, n));
-          al->df = n->exception_decl.rn;
+          al->df = n->exception_decl.renamed_entity;
           id->sy = al;
         }
         else if (error_count < 99)
@@ -8013,7 +8013,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
   case N_TKS:
   {
     Type_Info *t = type_new(TY_T, n->task_spec.nm);
-    t->components = n->task_spec.en;
+    t->components = n->task_spec.entries;
     Symbol *s = symbol_add_overload(symbol_manager, symbol_new(n->task_spec.nm, 7, t, n));
     n->sy = s;
     s->pr = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
@@ -11000,7 +11000,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                 Type_Info *pt = resolve_subtype(generator->sm, pm->parameter.ty);
                 ek = token_kind_to_value_kind(pt);
               }
-              if (pm->parameter.md & 2 and arg->k == N_ID)
+              if (pm->parameter.mode & 2 and arg->k == N_ID)
               {
                 rf = true;
                 Symbol *as = arg->sy ? arg->sy : symbol_find(generator->sm, arg->s);
@@ -11046,7 +11046,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                 }
                 ek = VALUE_KIND_POINTER;
               }
-              else if (pm->parameter.md & 2)
+              else if (pm->parameter.mode & 2)
               {
                 rf = true;
                 av = generate_expression(generator, arg);
@@ -11074,7 +11074,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             }
             arid[i] = av.id;
             ark[i] = ek != VALUE_KIND_INTEGER ? ek : av.k;
-            arp[i] = i < sp->subprogram.parameters.count and sp->subprogram.parameters.data[i]->parameter.md & 2 ? 1 : 0;
+            arp[i] = i < sp->subprogram.parameters.count and sp->subprogram.parameters.data[i]->parameter.mode & 2 ? 1 : 0;
           }
           char nb[256];
           encode_symbol_name(nb, 256, s, n->call.function_name->s, n->call.arguments.count, sp);
@@ -11500,9 +11500,9 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
     {
       Syntax_Node *a = n->case_stmt.alternatives.data[i];
       int la = lb.data[i]->i;
-      for (uint32_t j = 0; j < a->choices.it.count; j++)
+      for (uint32_t j = 0; j < a->choices.items.count; j++)
       {
-        Syntax_Node *ch = a->choices.it.data[j];
+        Syntax_Node *ch = a->choices.items.data[j];
         if (ch->k == N_ID and string_equal_ignore_case(ch->s, STRING_LITERAL("others")))
         {
           emit_branch(generator, la);
@@ -11884,9 +11884,9 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
   break;
   case N_CLT:
   {
-    if (n->code_stmt.nm->k == N_ID)
+    if (n->code_stmt.name->k == N_ID)
     {
-      Symbol *s = symbol_find_with_arity(generator->sm, n->code_stmt.nm->s, n->code_stmt.arr.count, 0);
+      Symbol *s = symbol_find_with_arity(generator->sm, n->code_stmt.name->s, n->code_stmt.arguments.count, 0);
       if (s)
       {
         Syntax_Node *b = symbol_body(s, s->el);
@@ -11896,10 +11896,10 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           Value_Kind ark[64];
           int arp[64];
           Syntax_Node *sp = symbol_spec(s);
-          for (uint32_t i = 0; i < n->code_stmt.arr.count and i < 64; i++)
+          for (uint32_t i = 0; i < n->code_stmt.arguments.count and i < 64; i++)
           {
             Syntax_Node *pm = sp and i < sp->subprogram.parameters.count ? sp->subprogram.parameters.data[i] : 0;
-            Syntax_Node *arg = n->code_stmt.arr.data[i];
+            Syntax_Node *arg = n->code_stmt.arguments.data[i];
             Value av = {0, VALUE_KIND_INTEGER};
             Value_Kind ek = VALUE_KIND_INTEGER;
             bool rf = false;
@@ -11912,7 +11912,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                 Type_Info *pt = resolve_subtype(generator->sm, pm->parameter.ty);
                 ek = token_kind_to_value_kind(pt);
               }
-              if (pm->parameter.md & 2 and arg->k == N_ID)
+              if (pm->parameter.mode & 2 and arg->k == N_ID)
               {
                 rf = true;
                 Symbol *as = arg->sy ? arg->sy : symbol_find(generator->sm, arg->s);
@@ -11958,7 +11958,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                 }
                 ek = VALUE_KIND_POINTER;
               }
-              else if (pm->parameter.md & 2)
+              else if (pm->parameter.mode & 2)
               {
                 rf = true;
                 av = generate_expression(generator, arg);
@@ -11992,9 +11992,9 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           if (s->ext)
             snprintf(nb, 256, "%.*s", (int) s->ext_nm.length, s->ext_nm.string);
           else
-            encode_symbol_name(nb, 256, s, n->code_stmt.nm->s, n->code_stmt.arr.count, sp);
+            encode_symbol_name(nb, 256, s, n->code_stmt.name->s, n->code_stmt.arguments.count, sp);
           fprintf(o, "  call void @\"%s\"(", nb);
-          for (uint32_t i = 0; i < n->code_stmt.arr.count; i++)
+          for (uint32_t i = 0; i < n->code_stmt.arguments.count; i++)
           {
             if (i)
               fprintf(o, ", ");
@@ -12002,7 +12002,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           }
           if (s->lv > 0 and not s->ext)
           {
-            if (n->code_stmt.arr.count > 0)
+            if (n->code_stmt.arguments.count > 0)
               fprintf(o, ", ");
             if (s->lv >= generator->sm->lv)
               fprintf(o, "ptr %%__frame");
@@ -12010,7 +12010,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               fprintf(o, "ptr %%__slnk");
           }
           fprintf(o, ")\n");
-          for (uint32_t i = 0; i < n->code_stmt.arr.count and i < 64; i++)
+          for (uint32_t i = 0; i < n->code_stmt.arguments.count and i < 64; i++)
           {
             if (arp[i])
             {
@@ -12023,8 +12023,8 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                       ark[i] == VALUE_KIND_POINTER ? VALUE_KIND_INTEGER : ark[i]),
                   arid[i]);
               Value rv = {lv, ark[i] == VALUE_KIND_POINTER ? VALUE_KIND_INTEGER : ark[i]};
-              Value cv = value_cast(generator, rv, token_kind_to_value_kind(n->code_stmt.arr.data[i]->ty));
-              Syntax_Node *tg = n->code_stmt.arr.data[i];
+              Value cv = value_cast(generator, rv, token_kind_to_value_kind(n->code_stmt.arguments.data[i]->ty));
+              Syntax_Node *tg = n->code_stmt.arguments.data[i];
               if (tg->k == N_ID)
               {
                 Symbol *ts = tg->sy ? tg->sy : symbol_find(generator->sm, tg->s);
@@ -12057,11 +12057,11 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           char nb[256];
           snprintf(nb, 256, "%.*s", (int) s->ext_nm.length, s->ext_nm.string);
           fprintf(o, "  call void @\"%s\"(", nb);
-          for (uint32_t i = 0; i < n->code_stmt.arr.count; i++)
+          for (uint32_t i = 0; i < n->code_stmt.arguments.count; i++)
           {
             if (i)
               fprintf(o, ", ");
-            Value av = generate_expression(generator, n->code_stmt.arr.data[i]);
+            Value av = generate_expression(generator, n->code_stmt.arguments.data[i]);
             fprintf(o, "i64 %%t%d", av.id);
           }
           fprintf(o, ")\n");
@@ -12076,15 +12076,15 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           int arid[64];
           Value_Kind ark[64];
           int arpt[64];
-          for (uint32_t i = 0; i < n->code_stmt.arr.count and i < 64; i++)
+          for (uint32_t i = 0; i < n->code_stmt.arguments.count and i < 64; i++)
           {
             Syntax_Node *pm = sp and i < sp->subprogram.parameters.count ? sp->subprogram.parameters.data[i] : 0;
-            arpt[i] = pm and (pm->parameter.md & 2) ? 1 : 0;
+            arpt[i] = pm and (pm->parameter.mode & 2) ? 1 : 0;
           }
-          for (uint32_t i = 0; i < n->code_stmt.arr.count and i < 64; i++)
+          for (uint32_t i = 0; i < n->code_stmt.arguments.count and i < 64; i++)
           {
             Syntax_Node *pm = sp and i < sp->subprogram.parameters.count ? sp->subprogram.parameters.data[i] : 0;
-            Syntax_Node *arg = n->code_stmt.arr.data[i];
+            Syntax_Node *arg = n->code_stmt.arguments.data[i];
             Value av = {0, VALUE_KIND_INTEGER};
             Value_Kind ek = VALUE_KIND_INTEGER;
             if (pm)
@@ -12132,7 +12132,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           if (s->ext)
             snprintf(nb, 256, "%.*s", (int) s->ext_nm.length, s->ext_nm.string);
           else
-            encode_symbol_name(nb, 256, s, n->code_stmt.nm->s, n->code_stmt.arr.count, sp);
+            encode_symbol_name(nb, 256, s, n->code_stmt.name->s, n->code_stmt.arguments.count, sp);
           if (s->k == 5 and sp and sp->subprogram.return_type)
           {
             Type_Info *rt = resolve_subtype(generator->sm, sp->subprogram.return_type);
@@ -12142,7 +12142,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           }
           else
             fprintf(o, "  call void @\"%s\"(", nb);
-          for (uint32_t i = 0; i < n->code_stmt.arr.count; i++)
+          for (uint32_t i = 0; i < n->code_stmt.arguments.count; i++)
           {
             if (i)
               fprintf(o, ", ");
@@ -12206,10 +12206,10 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                 {
                   Syntax_Node *td = at->dc.data[di];
                   Syntax_Node *id_d = it->dc.data[di];
-                  if (td->k == N_DS and id_d->k == N_DS and td->parameter.df and td->parameter.df->k == N_INT)
+                  if (td->k == N_DS and id_d->k == N_DS and td->parameter.default_value and td->parameter.default_value->k == N_INT)
                   {
                     int tdi = new_temporary_register(generator);
-                    fprintf(o, "  %%t%d = add i64 0, %lld\n", tdi, (long long) td->parameter.df->i);
+                    fprintf(o, "  %%t%d = add i64 0, %lld\n", tdi, (long long) td->parameter.default_value->i);
                     Value iv = generate_expression(generator, d->object_decl.in);
                     int ivd = new_temporary_register(generator);
                     fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ivd, iv.id, di);
@@ -12269,7 +12269,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             continue;
           uint32_t di;
           for (di = 0; di < at->dc.count; di++)
-            if (at->dc.data[di]->k != N_DS or not at->dc.data[di]->parameter.df)
+            if (at->dc.data[di]->k != N_DS or not at->dc.data[di]->parameter.default_value)
               goto nx;
           for (uint32_t ci = 0; ci < at->components.count; ci++)
           {
@@ -12282,9 +12282,9 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             for (di = 0; di < at->dc.count; di++)
             {
               Syntax_Node *dc = at->dc.data[di];
-              if (dc->k == N_DS and dc->parameter.df and dc->parameter.df->k == N_INT)
+              if (dc->k == N_DS and dc->parameter.default_value and dc->parameter.default_value->k == N_INT)
               {
-                int64_t dv = dc->parameter.df->i;
+                int64_t dv = dc->parameter.default_value->i;
                 if (dv < cty->ix->lo or dv > cty->ix->hi)
                 {
                   fprintf(
@@ -12300,7 +12300,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           {
             Syntax_Node *dc = at->dc.data[di];
             int dv = new_temporary_register(generator);
-            fprintf(o, "  %%t%d = add i64 0, %lld\n", dv, (long long) dc->parameter.df->i);
+            fprintf(o, "  %%t%d = add i64 0, %lld\n", dv, (long long) dc->parameter.default_value->i);
             int dp = new_temporary_register(generator);
             if (s->lv >= 0 and s->lv < generator->sm->lv)
               fprintf(
@@ -12389,24 +12389,24 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
   break;
   case N_SA:
   {
-    if (n->abort_stmt.kn == 1 or n->abort_stmt.kn == 3)
+    if (n->abort_stmt.kind == 1 or n->abort_stmt.kind == 3)
     {
-      Value gd = generate_expression(generator, n->abort_stmt.gd);
+      Value gd = generate_expression(generator, n->abort_stmt.guard);
       int ld = new_label_block(generator);
       fprintf(o, "  call void @__ada_delay(i64 %%t%d)\n", gd.id);
-      if (n->abort_stmt.kn == 3)
+      if (n->abort_stmt.kind == 3)
         fprintf(o, "  call void @__ada_raise(ptr @.ex.TASKING_ERROR)\n  unreachable\n");
-      for (uint32_t i = 0; i < n->abort_stmt.sts.count; i++)
-        generate_statement_sequence(generator, n->abort_stmt.sts.data[i]);
+      for (uint32_t i = 0; i < n->abort_stmt.statements.count; i++)
+        generate_statement_sequence(generator, n->abort_stmt.statements.data[i]);
       emit_branch(generator, ld);
       emit_label(generator, ld);
     }
     else
     {
       int ld = new_label_block(generator);
-      for (uint32_t i = 0; i < n->abort_stmt.sts.count; i++)
+      for (uint32_t i = 0; i < n->abort_stmt.statements.count; i++)
       {
-        Syntax_Node *st = n->abort_stmt.sts.data[i];
+        Syntax_Node *st = n->abort_stmt.statements.data[i];
         if (st->k == N_ACC)
         {
           for (uint32_t j = 0; j < st->accept_stmt.statements.count; j++)
@@ -12727,12 +12727,12 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       if (pt)
       {
         Type_Info *ptc = type_canonical_concrete(pt);
-        if (n->sy and n->sy->ext and ptc and ptc->k == TYPE_ARRAY and not(p->parameter.md & 2))
+        if (n->sy and n->sy->ext and ptc and ptc->k == TYPE_ARRAY and not(p->parameter.mode & 2))
           k = VALUE_KIND_INTEGER;
         else
           k = token_kind_to_value_kind(pt);
       }
-      if (p->parameter.md & 2)
+      if (p->parameter.mode & 2)
         fprintf(o, "ptr");
       else
         fprintf(o, "%s", value_llvm_type_string(k));
@@ -12777,12 +12777,12 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       if (pt)
       {
         Type_Info *ptc = type_canonical_concrete(pt);
-        if (n->sy and n->sy->ext and ptc and ptc->k == TYPE_ARRAY and not(p->parameter.md & 2))
+        if (n->sy and n->sy->ext and ptc and ptc->k == TYPE_ARRAY and not(p->parameter.mode & 2))
           k = VALUE_KIND_INTEGER;
         else
           k = token_kind_to_value_kind(pt);
       }
-      if (p->parameter.md & 2)
+      if (p->parameter.mode & 2)
         fprintf(o, "ptr");
       else
         fprintf(o, "%s", value_llvm_type_string(k));
@@ -12851,7 +12851,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
         Syntax_Node *p = sp->subprogram.parameters.data[i];
         Value_Kind k = p->parameter.ty ? token_kind_to_value_kind(resolve_subtype(generator->sm, p->parameter.ty))
                                 : VALUE_KIND_INTEGER;
-        if (p->parameter.md & 2)
+        if (p->parameter.mode & 2)
           fprintf(o, "ptr %%p.%s", string_to_lowercase(p->parameter.nm));
         else
           fprintf(o, "%s %%p.%s", value_llvm_type_string(k), string_to_lowercase(p->parameter.nm));
@@ -12901,7 +12901,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
             ps ? ps->sc : 0,
             ps ? ps->el : 0,
             value_llvm_type_string(k));
-      if (p->parameter.md & 2)
+      if (p->parameter.mode & 2)
       {
         int lv = new_temporary_register(generator);
         fprintf(
@@ -13089,10 +13089,10 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                 {
                   Syntax_Node *td = at->dc.data[di];
                   Syntax_Node *id_d = it->dc.data[di];
-                  if (td->k == N_DS and id_d->k == N_DS and td->parameter.df and td->parameter.df->k == N_INT)
+                  if (td->k == N_DS and id_d->k == N_DS and td->parameter.default_value and td->parameter.default_value->k == N_INT)
                   {
                     int tdi = new_temporary_register(generator);
-                    fprintf(o, "  %%t%d = add i64 0, %lld\n", tdi, (long long) td->parameter.df->i);
+                    fprintf(o, "  %%t%d = add i64 0, %lld\n", tdi, (long long) td->parameter.default_value->i);
                     Value iv = generate_expression(generator, d->object_decl.in);
                     int ivd = new_temporary_register(generator);
                     fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ivd, iv.id, di);
@@ -13229,7 +13229,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
         Syntax_Node *p = sp->subprogram.parameters.data[i];
         Value_Kind k = p->parameter.ty ? token_kind_to_value_kind(resolve_subtype(generator->sm, p->parameter.ty))
                                 : VALUE_KIND_INTEGER;
-        if (p->parameter.md & 2)
+        if (p->parameter.mode & 2)
           fprintf(o, "ptr %%p.%s", string_to_lowercase(p->parameter.nm));
         else
           fprintf(o, "%s %%p.%s", value_llvm_type_string(k), string_to_lowercase(p->parameter.nm));
@@ -13279,7 +13279,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
             ps ? ps->sc : 0,
             ps ? ps->el : 0,
             value_llvm_type_string(k));
-      if (p->parameter.md & 2)
+      if (p->parameter.mode & 2)
       {
         int lv = new_temporary_register(generator);
         fprintf(
@@ -13463,10 +13463,10 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                 {
                   Syntax_Node *td = at->dc.data[di];
                   Syntax_Node *id_d = it->dc.data[di];
-                  if (td->k == N_DS and id_d->k == N_DS and td->parameter.df and td->parameter.df->k == N_INT)
+                  if (td->k == N_DS and id_d->k == N_DS and td->parameter.default_value and td->parameter.default_value->k == N_INT)
                   {
                     int tdi = new_temporary_register(generator);
-                    fprintf(o, "  %%t%d = add i64 0, %lld\n", tdi, (long long) td->parameter.df->i);
+                    fprintf(o, "  %%t%d = add i64 0, %lld\n", tdi, (long long) td->parameter.default_value->i);
                     Value iv = generate_expression(generator, d->object_decl.in);
                     int ivd = new_temporary_register(generator);
                     fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ivd, iv.id, di);
