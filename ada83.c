@@ -1595,7 +1595,7 @@ struct Library_Unit
   String_Slice nm;
   String_Slice pth;
   Syntax_Node *sp;
-  Syntax_Node *bd;
+  Syntax_Node *body;
   Library_Unit_Vector wth;
   Library_Unit_Vector elb;
   uint64_t ts;
@@ -1607,7 +1607,7 @@ struct Generic_Template
   Node_Vector formal_parameters;
   Node_Vector dc;
   Syntax_Node *unit;
-  Syntax_Node *bd;
+  Syntax_Node *body;
 };
 static Syntax_Node *node_new(Node_Kind k, Source_Location l)
 {
@@ -7374,9 +7374,9 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       if (inst->k == N_PKS)
       {
         Generic_Template *g = generic_find(symbol_manager, n->generic_inst.generic_name);
-        if (g and g->bd)
+        if (g and g->body)
         {
-          Syntax_Node *bd = node_clone_substitute(g->bd, &g->formal_parameters, &n->generic_inst.actual_parameters);
+          Syntax_Node *bd = node_clone_substitute(g->body, &g->formal_parameters, &n->generic_inst.actual_parameters);
           if (bd)
           {
             bd->package_body.nm = n->generic_inst.nm;
@@ -7873,7 +7873,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     }
     if (gt)
     {
-      gt->bd = n;
+      gt->body = n;
       Syntax_Node *pk = gt->unit and gt->unit->k == N_PKS ? gt->unit : 0;
       if (not pk and ps and ps->definition and ps->definition->k == N_PKS)
         pk = ps->definition;
