@@ -286,48 +286,48 @@ static Unsigned_Big_Integer *unsigned_bigint_from_decimal(const char *s)
 }
 typedef struct
 {
-  char *b, *p, *e;
-} A;
+  char *base, *pointer, *end;
+} Arena_Allocator;
 typedef struct
 {
-  const char *s;
-  uint32_t n;
+  const char *string;
+  uint32_t length;
 } String_Slice;
 typedef struct
 {
-  uint32_t l, c;
-  const char *f;
+  uint32_t line, column;
+  const char *filename;
 } Source_Location;
 #define STRING_LITERAL(x) ((String_Slice){x, sizeof(x) - 1})
 #define N ((String_Slice){0, 0})
-static A main_arena = {0};
+static Arena_Allocator main_arena = {0};
 static int error_count = 0;
 static String_Slice SEP_PKG = N;
 static void *arena_allocate(size_t n)
 {
   n = (n + 7) & ~7;
-  if (not main_arena.b or main_arena.p + n > main_arena.e)
+  if (not main_arena.base or main_arena.pointer + n > main_arena.end)
   {
     size_t z = 1 << 24;
-    main_arena.b = main_arena.p = malloc(z);
-    main_arena.e = main_arena.b + z;
+    main_arena.base = main_arena.pointer = malloc(z);
+    main_arena.end = main_arena.base + z;
   }
-  void *r = main_arena.p;
-  main_arena.p += n;
+  void *r = main_arena.pointer;
+  main_arena.pointer += n;
   return memset(r, 0, n);
 }
 static String_Slice string_duplicate(String_Slice s)
 {
-  char *p = arena_allocate(s.n + 1);
-  memcpy(p, s.s, s.n);
-  return (String_Slice){p, s.n};
+  char *p = arena_allocate(s.length + 1);
+  memcpy(p, s.string, s.length);
+  return (String_Slice){p, s.length};
 }
 static bool string_equal_ignore_case(String_Slice a, String_Slice b)
 {
-  if (a.n != b.n)
+  if (a.length != b.length)
     return 0;
-  for (uint32_t i = 0; i < a.n; i++)
-    if (tolower(a.s[i]) != tolower(b.s[i]))
+  for (uint32_t i = 0; i < a.length; i++)
+    if (tolower(a.string[i]) != tolower(b.string[i]))
       return 0;
   return 1;
 }
@@ -336,24 +336,24 @@ static char *string_to_lowercase(String_Slice s)
   static char b[8][256];
   static int i;
   char *p = b[i++ & 7];
-  uint32_t n = s.n < 255 ? s.n : 255;
+  uint32_t n = s.length < 255 ? s.length : 255;
   for (uint32_t j = 0; j < n; j++)
-    p[j] = tolower(s.s[j]);
+    p[j] = tolower(s.string[j]);
   p[n] = 0;
   return p;
 }
 static uint64_t string_hash(String_Slice s)
 {
   uint64_t h = 14695981039346656037ULL;
-  for (uint32_t i = 0; i < s.n; i++)
-    h = (h ^ (uint8_t) tolower(s.s[i])) * 1099511628211ULL;
+  for (uint32_t i = 0; i < s.length; i++)
+    h = (h ^ (uint8_t) tolower(s.string[i])) * 1099511628211ULL;
   return h;
 }
 static _Noreturn void fatal_error(Source_Location l, const char *f, ...)
 {
   va_list v;
   va_start(v, f);
-  fprintf(stderr, "%s:%u:%u: ", l.f, l.l, l.c);
+  fprintf(stderr, "%s:%u:%u: ", l.filename, l.line, l.column);
   vfprintf(stderr, f, v);
   fputc('\n', stderr);
   va_end(v);
@@ -506,25 +506,25 @@ static const char *TN[T_CNT] = {
     [T_XOR] = "XOR"};
 typedef struct
 {
-  Token_Kind t;
-  Source_Location l;
-  String_Slice lit;
-  int64_t iv;
-  double fv;
-  Unsigned_Big_Integer *ui;
-  Rational_Number *ur;
+  Token_Kind kind;
+  Source_Location location;
+  String_Slice literal;
+  int64_t integer_value;
+  double float_value;
+  Unsigned_Big_Integer *unsigned_integer;
+  Rational_Number *unsigned_rational;
 } Token;
 typedef struct
 {
-  const char *s, *c, *e;
-  uint32_t ln, cl;
-  const char *f;
-  Token_Kind pt;
+  const char *start, *current, *end;
+  uint32_t line_number, column;
+  const char *filename;
+  Token_Kind previous_token;
 } Lexer;
 static struct
 {
-  String_Slice k;
-  Token_Kind t;
+  String_Slice keyword;
+  Token_Kind token_kind;
 } KW[] = {{STRING_LITERAL("abort"), T_AB},     {STRING_LITERAL("abs"), T_ABS},
           {STRING_LITERAL("accept"), T_ACC},   {STRING_LITERAL("access"), T_ACCS},
           {STRING_LITERAL("all"), T_ALL},      {STRING_LITERAL("and"), T_AND},
@@ -559,9 +559,9 @@ static struct
           {STRING_LITERAL("xor"), T_XOR},      {N, T_EOF}};
 static Token_Kind kl(String_Slice s)
 {
-  for (int i = 0; KW[i].k.s; i++)
-    if (string_equal_ignore_case(s, KW[i].k))
-      return KW[i].t;
+  for (int i = 0; KW[i].keyword.string; i++)
+    if (string_equal_ignore_case(s, KW[i].keyword))
+      return KW[i].token_kind;
   return T_ID;
 }
 static Lexer ln(const char *s, size_t z, const char *f)
@@ -570,20 +570,20 @@ static Lexer ln(const char *s, size_t z, const char *f)
 }
 static char peek(Lexer *l, size_t off)
 {
-  return l->c + off < l->e ? l->c[off] : 0;
+  return l->current + off < l->end ? l->current[off] : 0;
 }
 static char av(Lexer *l)
 {
-  if (l->c >= l->e)
+  if (l->current >= l->end)
     return 0;
-  char c = *l->c++;
+  char c = *l->current++;
   if (c == '\n')
   {
-    l->ln++;
-    l->cl = 1;
+    l->line_number++;
+    l->column = 1;
   }
   else
-    l->cl++;
+    l->column++;
   return c;
 }
 static void sw(Lexer *l)
@@ -591,12 +591,12 @@ static void sw(Lexer *l)
   for (;;)
   {
     while (
-        l->c < l->e
-        and (*l->c == ' ' or *l->c == '\t' or *l->c == '\n' or *l->c == '\r' or *l->c == '\v' or *l->c == '\f'))
+        l->current < l->end
+        and (*l->current == ' ' or *l->current == '\t' or *l->current == '\n' or *l->current == '\r' or *l->current == '\v' or *l->current == '\f'))
       av(l);
-    if (l->c + 1 < l->e and l->c[0] == '-' and l->c[1] == '-')
+    if (l->current + 1 < l->end and l->current[0] == '-' and l->current[1] == '-')
     {
-      while (l->c < l->e and *l->c != '\n')
+      while (l->current < l->end and *l->current != '\n')
         av(l);
     }
     else
@@ -609,20 +609,20 @@ static Token mt(Token_Kind t, Source_Location lc, String_Slice lt)
 }
 static Token scan_identifier(Lexer *l)
 {
-  Source_Location lc = {l->ln, l->cl, l->f};
-  const char *s = l->c;
+  Source_Location lc = {l->line_number, l->column, l->filename};
+  const char *s = l->current;
   while (isalnum(peek(l, 0)) or peek(l, 0) == '_')
     av(l);
-  String_Slice lt = {s, l->c - s};
+  String_Slice lt = {s, l->current - s};
   Token_Kind t = kl(lt);
-  if (t != T_ID and l->c < l->e and (isalnum(*l->c) or *l->c == '_'))
+  if (t != T_ID and l->current < l->end and (isalnum(*l->current) or *l->current == '_'))
     return mt(T_ERR, lc, STRING_LITERAL("kw+x"));
   return mt(t, lc, lt);
 }
 static Token scan_number_literal(Lexer *l)
 {
-  Source_Location lc = {l->ln, l->cl, l->f};
-  const char *s = l->c;
+  Source_Location lc = {l->line_number, l->column, l->filename};
+  const char *s = l->current;
   const char *ms = 0, *me = 0, *es = 0;
   int b = 10;
   bool ir = false, bx = false, has_dot = false, has_exp = false;
@@ -632,7 +632,7 @@ static Token scan_number_literal(Lexer *l)
   if (peek(l, 0) == '#' or (peek(l, 0) == ':' and isxdigit(peek(l, 1))))
   {
     bd = peek(l, 0);
-    const char *be = l->c;
+    const char *be = l->current;
     av(l);
     char *bp = arena_allocate(32);
     int bi = 0;
@@ -641,7 +641,7 @@ static Token scan_number_literal(Lexer *l)
         bp[bi++] = *p;
     bp[bi] = 0;
     b = atoi(bp);
-    ms = l->c;
+    ms = l->current;
     while (isxdigit(peek(l, 0)) or peek(l, 0) == '_')
       av(l);
     if (peek(l, 0) == '.')
@@ -653,7 +653,7 @@ static Token scan_number_literal(Lexer *l)
     }
     if (peek(l, 0) == bd)
     {
-      me = l->c;
+      me = l->current;
       av(l);
     }
     if (tolower(peek(l, 0)) == 'e')
@@ -662,7 +662,7 @@ static Token scan_number_literal(Lexer *l)
       av(l);
       if (peek(l, 0) == '+' or peek(l, 0) == '-')
         av(l);
-      es = l->c;
+      es = l->current;
       while (isdigit(peek(l, 0)) or peek(l, 0) == '_')
         av(l);
     }
@@ -693,7 +693,7 @@ static Token scan_number_literal(Lexer *l)
   if (isalpha(peek(l, 0)))
     return mt(T_ERR, lc, STRING_LITERAL("num+alpha"));
   Token tk =
-      mt(bx ? (ir ? T_REAL : T_INT) : (ir ? T_REAL : T_INT), lc, (String_Slice){s, l->c - s});
+      mt(bx ? (ir ? T_REAL : T_INT) : (ir ? T_REAL : T_INT), lc, (String_Slice){s, l->current - s});
   if (bx and es)
   {
     char *mp = arena_allocate(512);
@@ -703,7 +703,7 @@ static Token scan_number_literal(Lexer *l)
       if (*p != '_' and *p != bd)
         mp[mi++] = *p;
     mp[mi] = 0;
-    for (const char *p = es; p < l->c; p++)
+    for (const char *p = es; p < l->current; p++)
       if (*p != '_')
         ep[ei++] = *p;
     ep[ei] = 0;
@@ -736,7 +736,7 @@ static Token scan_number_literal(Lexer *l)
     int ex = atoi(ep);
     double rv = m * pow(b, ex);
     if (ir)
-      tk.fv = rv;
+      tk.float_value = rv;
     else
     {
       if (rv > LLONG_MAX or rv < LLONG_MIN)
@@ -744,13 +744,13 @@ static Token scan_number_literal(Lexer *l)
         fprintf(
             stderr,
             "Error %d:%d: based integer constant out of range: %.*s\n",
-            lc.l,
-            lc.c,
-            (int) (l->c - s),
+            lc.line,
+            lc.column,
+            (int) (l->current - s),
             s);
         exit(1);
       }
-      tk.iv = (int64_t) rv;
+      tk.integer_value = (int64_t) rv;
     }
   }
   else
@@ -758,7 +758,7 @@ static Token scan_number_literal(Lexer *l)
     char *tp = arena_allocate(512);
     int j = 0;
     const char *start = (bd and ms) ? ms : s;
-    const char *end = (bd and me) ? me : l->c;
+    const char *end = (bd and me) ? me : l->current;
     for (const char *p = start; p < end; p++)
       if (*p != '_' and *p != '#' and *p != ':')
         tp[j++] = *p;
@@ -773,7 +773,7 @@ static Token scan_number_literal(Lexer *l)
                                                  : tp[i] - '0';
         v = v * b + dv;
       }
-      tk.iv = v;
+      tk.integer_value = v;
     }
     else if (bd and ir)
     {
@@ -803,31 +803,31 @@ static Token scan_number_literal(Lexer *l)
           m += dv / pow(b, fp);
         }
       }
-      tk.fv = m;
+      tk.float_value = m;
     }
     else
     {
       errno = 0;
-      tk.fv = strtod(tp, 0);
-      if (errno == ERANGE and (tk.fv == HUGE_VAL or tk.fv == -HUGE_VAL))
+      tk.float_value = strtod(tp, 0);
+      if (errno == ERANGE and (tk.float_value == HUGE_VAL or tk.float_value == -HUGE_VAL))
       {
-        fprintf(stderr, "Warning %d:%d: float constant overflow to infinity: %s\n", lc.l, lc.c, tp);
+        fprintf(stderr, "Warning %d:%d: float constant overflow to infinity: %s\n", lc.line, lc.column, tp);
       }
-      tk.ui = unsigned_bigint_from_decimal(tp);
-      tk.iv = (tk.ui->count == 1) ? tk.ui->digits[0] : 0;
-      if (has_exp and not has_dot and tk.fv >= LLONG_MIN and tk.fv <= LLONG_MAX
-          and tk.fv == (double) (int64_t) tk.fv)
+      tk.unsigned_integer = unsigned_bigint_from_decimal(tp);
+      tk.integer_value = (tk.unsigned_integer->count == 1) ? tk.unsigned_integer->digits[0] : 0;
+      if (has_exp and not has_dot and tk.float_value >= LLONG_MIN and tk.float_value <= LLONG_MAX
+          and tk.float_value == (double) (int64_t) tk.float_value)
       {
-        tk.iv = (int64_t) tk.fv;
-        tk.t = T_INT;
+        tk.integer_value = (int64_t) tk.float_value;
+        tk.kind = T_INT;
       }
       else if (ir or has_dot)
       {
-        tk.t = T_REAL;
+        tk.kind = T_REAL;
       }
-      else if (tk.ui and tk.ui->count > 1)
+      else if (tk.unsigned_integer and tk.unsigned_integer->count > 1)
       {
-        fprintf(stderr, "Error %d:%d: integer constant too large for i64: %s\n", lc.l, lc.c, tp);
+        fprintf(stderr, "Error %d:%d: integer constant too large for i64: %s\n", lc.line, lc.column, tp);
       }
     }
   }
@@ -835,7 +835,7 @@ static Token scan_number_literal(Lexer *l)
 }
 static Token scan_character_literal(Lexer *l)
 {
-  Source_Location lc = {l->ln, l->cl, l->f};
+  Source_Location lc = {l->line_number, l->column, l->filename};
   av(l);
   if (not peek(l, 0))
     return mt(T_ERR, lc, STRING_LITERAL("uc"));
@@ -845,15 +845,15 @@ static Token scan_character_literal(Lexer *l)
     return mt(T_ERR, lc, STRING_LITERAL("uc"));
   av(l);
   Token tk = mt(T_CHAR, lc, (String_Slice){&c, 1});
-  tk.iv = c;
+  tk.integer_value = c;
   return tk;
 }
 static Token scan_string_literal(Lexer *l)
 {
-  Source_Location lc = {l->ln, l->cl, l->f};
+  Source_Location lc = {l->line_number, l->column, l->filename};
   char d = peek(l, 0);
   av(l);
-  const char *s = l->c;
+  const char *s = l->current;
   (void) s;
   char *b = arena_allocate(256), *p = b;
   int n = 0;
@@ -890,46 +890,46 @@ static Token scan_string_literal(Lexer *l)
 }
 static Token lexer_next_token(Lexer *l)
 {
-  const char *pb = l->c;
+  const char *pb = l->current;
   sw(l);
-  bool ws = l->c != pb;
-  Source_Location lc = {l->ln, l->cl, l->f};
+  bool ws = l->current != pb;
+  Source_Location lc = {l->line_number, l->column, l->filename};
   char c = peek(l, 0);
   if (not c)
   {
-    l->pt = T_EOF;
+    l->previous_token = T_EOF;
     return mt(T_EOF, lc, N);
   }
   if (isalpha(c))
   {
     Token tk = scan_identifier(l);
-    l->pt = tk.t;
+    l->previous_token = tk.kind;
     return tk;
   }
   if (isdigit(c))
   {
     Token tk = scan_number_literal(l);
-    l->pt = tk.t;
+    l->previous_token = tk.kind;
     return tk;
   }
   if (c == '\'')
   {
     char c2 = peek(l, 1);
-    char pc = l->c > l->s ? l->c[-1] : 0;
-    bool id_attr = l->pt == T_ID and not ws and isalnum(pc);
-    if (c2 and peek(l, 2) == '\'' and (l->c + 3 >= l->e or l->c[3] != '\'') and not id_attr)
+    char pc = l->current > l->start ? l->current[-1] : 0;
+    bool id_attr = l->previous_token == T_ID and not ws and isalnum(pc);
+    if (c2 and peek(l, 2) == '\'' and (l->current + 3 >= l->end or l->current[3] != '\'') and not id_attr)
     {
-      l->pt = T_CHAR;
+      l->previous_token = T_CHAR;
       return scan_character_literal(l);
     }
     av(l);
-    l->pt = T_TK;
+    l->previous_token = T_TK;
     return mt(T_TK, lc, STRING_LITERAL("'"));
   }
   if (c == '"' or c == '%')
   {
     Token tk = scan_string_literal(l);
-    l->pt = tk.t;
+    l->previous_token = tk.kind;
     return tk;
   }
   av(l);
@@ -1049,7 +1049,7 @@ static Token lexer_next_token(Lexer *l)
     tt = T_ERR;
     break;
   }
-  l->pt = tt;
+  l->previous_token = tt;
   return mt(tt, lc, tt == T_ERR ? STRING_LITERAL("ux") : N);
 }
 typedef enum
@@ -1168,58 +1168,58 @@ typedef struct GT GT;
 typedef struct LE LE;
 struct LE
 {
-  String_Slice nm;
-  int bb;
+  String_Slice name;
+  int basic_block;
 };
 typedef struct
 {
-  Syntax_Node **d;
-  uint32_t n, c;
+  Syntax_Node **data;
+  uint32_t count, capacity;
 } Node_Vector;
 typedef struct
 {
-  Symbol **d;
-  uint32_t n, c;
+  Symbol **data;
+  uint32_t count, capacity;
 } Symbol_Vector;
 typedef struct
 {
-  RC **d;
-  uint32_t n, c;
+  RC **data;
+  uint32_t count, capacity;
 } RV;
 typedef struct
 {
-  LU **d;
-  uint32_t n, c;
+  LU **data;
+  uint32_t count, capacity;
 } LV;
 typedef struct
 {
-  GT **d;
-  uint32_t n, c;
+  GT **data;
+  uint32_t count, capacity;
 } GV;
 typedef struct
 {
-  FILE **d;
-  uint32_t n, c;
+  FILE **data;
+  uint32_t count, capacity;
 } FV;
 typedef struct
 {
-  String_Slice *d;
-  uint32_t n, c;
+  String_Slice *data;
+  uint32_t count, capacity;
 } SLV;
 typedef struct
 {
-  LE **d;
-  uint32_t n, c;
+  LE **data;
+  uint32_t count, capacity;
 } LEV;
 #define VECPUSH(vtype, etype, fname)                                                               \
   static void fname(vtype *v, etype e)                                                             \
   {                                                                                                \
-    if (v->n >= v->c)                                                                              \
+    if (v->count >= v->capacity)                                                                   \
     {                                                                                              \
-      v->c = v->c ? v->c << 1 : 8;                                                                 \
-      v->d = realloc(v->d, v->c * sizeof(etype));                                                  \
+      v->capacity = v->capacity ? v->capacity << 1 : 8;                                            \
+      v->data = realloc(v->data, v->capacity * sizeof(etype));                                     \
     }                                                                                              \
-    v->d[v->n++] = e;                                                                              \
+    v->data[v->count++] = e;                                                                       \
   }
 VECPUSH(Node_Vector, Syntax_Node *, nv)
 VECPUSH(Symbol_Vector, Symbol *, sv)
@@ -1640,29 +1640,29 @@ static GT *generic_type_new(String_Slice nm)
 #define ND(k, l) node_new(N_##k, l)
 typedef struct
 {
-  Lexer lx;
-  Token cr, pk;
-  int er;
-  SLV lb;
+  Lexer lexer;
+  Token current_token, peek_token;
+  int error_count;
+  SLV label_stack;
 } Parser;
 static void parser_next(Parser *p)
 {
-  p->cr = p->pk;
-  p->pk = lexer_next_token(&p->lx);
-  if (p->cr.t == T_AND and p->pk.t == T_THEN)
+  p->current_token = p->peek_token;
+  p->peek_token = lexer_next_token(&p->lexer);
+  if (p->current_token.t == T_AND and p->peek_token.t == T_THEN)
   {
-    p->cr.t = T_ATHN;
-    p->pk = lexer_next_token(&p->lx);
+    p->current_token.t = T_ATHN;
+    p->peek_token = lexer_next_token(&p->lexer);
   }
-  if (p->cr.t == T_OR and p->pk.t == T_ELSE)
+  if (p->current_token.t == T_OR and p->peek_token.t == T_ELSE)
   {
-    p->cr.t = T_OREL;
-    p->pk = lexer_next_token(&p->lx);
+    p->current_token.t = T_OREL;
+    p->peek_token = lexer_next_token(&p->lexer);
   }
 }
 static bool parser_at(Parser *p, Token_Kind t)
 {
-  return p->cr.t == t;
+  return p->current_token.t == t;
 }
 static bool parser_match(Parser *p, Token_Kind t)
 {
@@ -1676,15 +1676,15 @@ static bool parser_match(Parser *p, Token_Kind t)
 static void parser_expect(Parser *p, Token_Kind t)
 {
   if (not parser_match(p, t))
-    fatal_error(p->cr.l, "exp '%s' got '%s'", TN[t], TN[p->cr.t]);
+    fatal_error(p->current_token.l, "exp '%s' got '%s'", TN[t], TN[p->current_token.t]);
 }
 static Source_Location parser_location(Parser *p)
 {
-  return p->cr.l;
+  return p->current_token.l;
 }
 static String_Slice parser_identifier(Parser *p)
 {
-  String_Slice s = string_duplicate(p->cr.lit);
+  String_Slice s = string_duplicate(p->current_token.lit);
   parser_expect(p, T_ID);
   return s;
 }
@@ -1900,28 +1900,28 @@ static Syntax_Node *parse_primary(Parser *p)
   if (parser_at(p, T_INT))
   {
     Syntax_Node *n = ND(INT, lc);
-    n->i = p->cr.iv;
+    n->i = p->current_token.iv;
     parser_next(p);
     return n;
   }
   if (parser_at(p, T_REAL))
   {
     Syntax_Node *n = ND(REAL, lc);
-    n->f = p->cr.fv;
+    n->f = p->current_token.fv;
     parser_next(p);
     return n;
   }
   if (parser_at(p, T_CHAR))
   {
     Syntax_Node *n = ND(CHAR, lc);
-    n->i = p->cr.iv;
+    n->i = p->current_token.iv;
     parser_next(p);
     return n;
   }
   if (parser_at(p, T_STR))
   {
     Syntax_Node *n = ND(STR, lc);
-    n->s = string_duplicate(p->cr.lit);
+    n->s = string_duplicate(p->current_token.lit);
     parser_next(p);
     for (;;)
     {
@@ -2023,13 +2023,13 @@ static Syntax_Node *parse_name(Parser *p)
         m->se.p = n;
         if (parser_at(p, T_STR))
         {
-          m->se.se = string_duplicate(p->cr.lit);
+          m->se.se = string_duplicate(p->current_token.lit);
           parser_next(p);
         }
         else if (parser_at(p, T_CHAR))
         {
           char *c = arena_allocate(2);
-          c[0] = p->cr.iv;
+          c[0] = p->current_token.iv;
           c[1] = 0;
           m->se.se = (String_Slice){c, 1};
           parser_next(p);
@@ -2183,7 +2183,7 @@ static Syntax_Node *pt(Parser *p)
   Syntax_Node *n = ppw(p);
   while (parser_at(p, T_ST) or parser_at(p, T_SL) or parser_at(p, T_MOD) or parser_at(p, T_REM))
   {
-    Token_Kind op = p->cr.t;
+    Token_Kind op = p->current_token.t;
     parser_next(p);
     Source_Location lc = parser_location(p);
     Syntax_Node *m = ND(BIN, lc);
@@ -2212,7 +2212,7 @@ static Syntax_Node *psm(Parser *p)
   }
   while (parser_at(p, T_PL) or parser_at(p, T_MN) or parser_at(p, T_AM))
   {
-    Token_Kind op = p->cr.t;
+    Token_Kind op = p->current_token.t;
     parser_next(p);
     lc = parser_location(p);
     Syntax_Node *m = ND(BIN, lc);
@@ -2237,7 +2237,7 @@ static Syntax_Node *prl(Parser *p)
   if (parser_at(p, T_EQ) or parser_at(p, T_NE) or parser_at(p, T_LT) or parser_at(p, T_LE)
       or parser_at(p, T_GT) or parser_at(p, T_GE) or parser_at(p, T_IN) or parser_at(p, T_NOT))
   {
-    Token_Kind op = p->cr.t;
+    Token_Kind op = p->current_token.t;
     parser_next(p);
     if (op == T_NOT)
       parser_expect(p, T_IN);
@@ -2258,7 +2258,7 @@ static Syntax_Node *pan(Parser *p)
   Syntax_Node *n = prl(p);
   while (parser_at(p, T_AND) or parser_at(p, T_ATHN))
   {
-    Token_Kind op = p->cr.t;
+    Token_Kind op = p->current_token.t;
     parser_next(p);
     Source_Location lc = parser_location(p);
     Syntax_Node *m = ND(BIN, lc);
@@ -2274,7 +2274,7 @@ static Syntax_Node *por(Parser *p)
   Syntax_Node *n = pan(p);
   while (parser_at(p, T_OR) or parser_at(p, T_OREL) or parser_at(p, T_XOR))
   {
-    Token_Kind op = p->cr.t;
+    Token_Kind op = p->current_token.t;
     parser_next(p);
     Source_Location lc = parser_location(p);
     Syntax_Node *m = ND(BIN, lc);
@@ -2466,7 +2466,7 @@ static Syntax_Node *pps_(Parser *p)
   Syntax_Node *n = ND(PS, lc);
   if (parser_at(p, T_STR))
   {
-    n->sp.nm = string_duplicate(p->cr.lit);
+    n->sp.nm = string_duplicate(p->current_token.lit);
     parser_next(p);
   }
   else
@@ -2481,7 +2481,7 @@ static Syntax_Node *pfs(Parser *p)
   Syntax_Node *n = ND(FS, lc);
   if (parser_at(p, T_STR))
   {
-    n->sp.nm = string_duplicate(p->cr.lit);
+    n->sp.nm = string_duplicate(p->current_token.lit);
     parser_next(p);
   }
   else
@@ -2763,7 +2763,7 @@ static Syntax_Node *plp(Parser *p, String_Slice lb)
     Syntax_Node *it = ND(BIN, lc);
     it->bn.op = T_IN;
     it->bn.l = ND(ID, lc);
-    it->bn.l->s = vr;
+    it->bn.l->start = vr;
     it->bn.r = rng;
     n->lp.it = it;
   }
@@ -2826,24 +2826,24 @@ static Syntax_Node *psl(Parser *p)
         g->acc.nm = parser_identifier(p);
         if (parser_at(p, T_LP))
         {
-          if (p->pk.t == T_ID)
+          if (p->peek_token.t == T_ID)
           {
-            Token scr = p->cr, spk = p->pk;
-            Lexer slx = p->lx;
+            Token scr = p->current_token, spk = p->peek_token;
+            Lexer slx = p->lexer;
             parser_next(p);
             parser_next(p);
-            if (p->cr.t == T_CM or p->cr.t == T_CL)
+            if (p->current_token.t == T_CM or p->current_token.t == T_CL)
             {
-              p->cr = scr;
-              p->pk = spk;
-              p->lx = slx;
+              p->current_token = scr;
+              p->peek_token = spk;
+              p->lexer = slx;
               g->acc.pmx = ppm(p);
             }
             else
             {
-              p->cr = scr;
-              p->pk = spk;
-              p->lx = slx;
+              p->current_token = scr;
+              p->peek_token = spk;
+              p->lexer = slx;
               parser_expect(p, T_LP);
               do
                 nv(&g->acc.ixx, parse_expression(p));
@@ -2904,24 +2904,24 @@ static Syntax_Node *psl(Parser *p)
         g->acc.nm = parser_identifier(p);
         if (parser_at(p, T_LP))
         {
-          if (p->pk.t == T_ID)
+          if (p->peek_token.t == T_ID)
           {
-            Token scr = p->cr, spk = p->pk;
-            Lexer slx = p->lx;
+            Token scr = p->current_token, spk = p->peek_token;
+            Lexer slx = p->lexer;
             parser_next(p);
             parser_next(p);
-            if (p->cr.t == T_CM or p->cr.t == T_CL)
+            if (p->current_token.t == T_CM or p->current_token.t == T_CL)
             {
-              p->cr = scr;
-              p->pk = spk;
-              p->lx = slx;
+              p->current_token = scr;
+              p->peek_token = spk;
+              p->lexer = slx;
               g->acc.pmx = ppm(p);
             }
             else
             {
-              p->cr = scr;
-              p->pk = spk;
-              p->lx = slx;
+              p->current_token = scr;
+              p->peek_token = spk;
+              p->lexer = slx;
               parser_expect(p, T_LP);
               do
                 nv(&g->acc.ixx, parse_expression(p));
@@ -2992,13 +2992,13 @@ static Syntax_Node *ps(Parser *p)
     parser_next(p);
     lb = parser_identifier(p);
     parser_expect(p, T_GG);
-    slv(&p->lb, lb);
+    slv(&p->label_stack, lb);
   }
-  if (not lb.s and parser_at(p, T_ID) and p->pk.t == T_CL)
+  if (not lb.s and parser_at(p, T_ID) and p->peek_token.t == T_CL)
   {
     lb = parser_identifier(p);
     parser_expect(p, T_CL);
-    slv(&p->lb, lb);
+    slv(&p->label_stack, lb);
   }
   if (parser_at(p, T_IF))
     return pif(p);
@@ -3025,24 +3025,24 @@ static Syntax_Node *ps(Parser *p)
     n->acc.nm = parser_identifier(p);
     if (parser_at(p, T_LP))
     {
-      if (p->pk.t == T_ID)
+      if (p->peek_token.t == T_ID)
       {
-        Token scr = p->cr, spk = p->pk;
-        Lexer slx = p->lx;
+        Token scr = p->current_token, spk = p->peek_token;
+        Lexer slx = p->lexer;
         parser_next(p);
         parser_next(p);
-        if (p->cr.t == T_CM or p->cr.t == T_CL)
+        if (p->current_token.t == T_CM or p->current_token.t == T_CL)
         {
-          p->cr = scr;
-          p->pk = spk;
-          p->lx = slx;
+          p->current_token = scr;
+          p->peek_token = spk;
+          p->lexer = slx;
           n->acc.pmx = ppm(p);
         }
         else
         {
-          p->cr = scr;
-          p->pk = spk;
-          p->lx = slx;
+          p->current_token = scr;
+          p->peek_token = spk;
+          p->lexer = slx;
           parser_expect(p, T_LP);
           do
             nv(&n->acc.ixx, parse_expression(p));
@@ -3220,7 +3220,7 @@ static Syntax_Node *ptd(Parser *p)
       if (parser_at(p, T_CHAR))
       {
         Syntax_Node *c = ND(CHAR, lc);
-        c->i = p->cr.iv;
+        c->i = p->current_token.iv;
         parser_next(p);
         nv(&n->lst.it, c);
       }
@@ -3601,7 +3601,7 @@ static RC *prc(Parser *p)
           {
             if (parser_at(p, T_STR))
             {
-              r->im.ext = p->cr.lit;
+              r->im.ext = p->current_token.lit;
               parser_next(p);
             }
             else
@@ -3823,7 +3823,7 @@ static Syntax_Node *pdl(Parser *p)
     String_Slice nm;
     if (parser_at(p, T_STR))
     {
-      nm = p->cr.lit;
+      nm = p->current_token.lit;
       parser_next(p);
     }
     else
@@ -4021,24 +4021,24 @@ static Syntax_Node *pdl(Parser *p)
           e->ent.nm = parser_identifier(p);
           if (parser_at(p, T_LP))
           {
-            if (p->pk.t == T_ID or p->pk.t == T_INT or p->pk.t == T_CHAR)
+            if (p->peek_token.t == T_ID or p->peek_token.t == T_INT or p->peek_token.t == T_CHAR)
             {
-              Token scr = p->cr, spk = p->pk;
-              Lexer slx = p->lx;
+              Token scr = p->current_token, spk = p->peek_token;
+              Lexer slx = p->lexer;
               parser_next(p);
               parser_next(p);
-              if (p->cr.t == T_CM or p->cr.t == T_CL)
+              if (p->current_token.t == T_CM or p->current_token.t == T_CL)
               {
-                p->cr = scr;
-                p->pk = spk;
-                p->lx = slx;
+                p->current_token = scr;
+                p->peek_token = spk;
+                p->lexer = slx;
                 e->ent.pmy = ppm(p);
               }
               else
               {
-                p->cr = scr;
-                p->pk = spk;
-                p->lx = slx;
+                p->current_token = scr;
+                p->peek_token = spk;
+                p->lexer = slx;
                 parser_expect(p, T_LP);
                 Syntax_Node *ix = parse_range(p);
                 if (ix->k != N_RN and parser_match(p, T_RNG))
@@ -4783,7 +4783,7 @@ static Syntax_Node *geq(Type_Info *t, Source_Location l)
     lp->lp.it = ND(BIN, l);
     lp->lp.it->bn.op = T_IN;
     lp->lp.it->bn.l = ND(ID, l);
-    lp->lp.it->bn.l->s = STRING_LITERAL("I");
+    lp->lp.it->bn.l->start = STRING_LITERAL("I");
     lp->lp.it->bn.r = ND(AT, l);
     lp->lp.it->bn.r->at.p = ND(ID, l);
     lp->lp.it->bn.r->at.p->s = STRING_LITERAL("Source_Location");
@@ -4863,7 +4863,7 @@ static Syntax_Node *gas(Type_Info *t, Source_Location l)
     lp->lp.it = ND(BIN, l);
     lp->lp.it->bn.op = T_IN;
     lp->lp.it->bn.l = ND(ID, l);
-    lp->lp.it->bn.l->s = STRING_LITERAL("I");
+    lp->lp.it->bn.l->start = STRING_LITERAL("I");
     lp->lp.it->bn.r = ND(AT, l);
     lp->lp.it->bn.r->at.p = ND(ID, l);
     lp->lp.it->bn.r->at.p->s = STRING_LITERAL("T");
@@ -5945,7 +5945,7 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx
         (n->bn.l->k == N_REAL or n->bn.r->k == N_REAL)
         and (n->bn.op == T_PL or n->bn.op == T_MN or n->bn.op == T_ST or n->bn.op == T_SL or n->bn.op == T_EX))
     {
-      double a = n->bn.l->k == N_INT ? (double) n->bn.l->i : n->bn.l->f,
+      double a = n->bn.l->k == N_INT ? (double) n->bn.l->i : n->bn.l->filename,
              b = n->bn.r->k == N_INT ? (double) n->bn.r->i : n->bn.r->f, r = 0;
       if (n->bn.op == T_PL)
         r = a + b;
