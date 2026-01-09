@@ -4450,15 +4450,15 @@ static Symbol *symbol_new(String_Slice nm, uint8_t k, Type_Info *ty, Syntax_Node
   s->lv = -1;
   return s;
 }
-static Symbol *symbol_add_overload(Symbol_Manager *SM, Symbol *s)
+static Symbol *symbol_add_overload(Symbol_Manager *symbol_manager, Symbol *s)
 {
   uint32_t h = symbol_hash(s->nm);
-  s->hm = SM->sy[h];
-  s->nx = SM->sy[h];
-  s->sc = SM->sc;
-  s->ss = SM->ss;
-  s->el = SM->eo++;
-  s->lv = SM->lv;
+  s->hm = symbol_manager->sy[h];
+  s->nx = symbol_manager->sy[h];
+  s->sc = symbol_manager->sc;
+  s->ss = symbol_manager->ss;
+  s->el = symbol_manager->eo++;
+  s->lv = symbol_manager->lv;
   s->vis = 1;
   uint64_t u = string_hash(s->nm);
   if (s->pr)
@@ -4471,16 +4471,16 @@ static Symbol *symbol_add_overload(Symbol_Manager *SM, Symbol *s)
     }
   }
   s->uid = (uint32_t) (u & 0xFFFFFFFF);
-  SM->sy[h] = s;
-  if (SM->ssd < 256)
-    SM->sst[SM->ssd++] = s;
+  symbol_manager->sy[h] = s;
+  if (symbol_manager->ssd < 256)
+    symbol_manager->sst[symbol_manager->ssd++] = s;
   return s;
 }
-static Symbol *symbol_find(Symbol_Manager *SM, String_Slice nm)
+static Symbol *symbol_find(Symbol_Manager *symbol_manager, String_Slice nm)
 {
   Symbol *imm = 0, *pot = 0;
   uint32_t h = symbol_hash(nm);
-  for (Symbol *s = SM->sy[h]; s; s = s->nx)
+  for (Symbol *s = symbol_manager->sy[h]; s; s = s->nx)
     if (string_equal_ignore_case(s->nm, nm))
     {
       if (s->vis & 1 and (not imm or s->sc > imm->sc))
@@ -4492,17 +4492,17 @@ static Symbol *symbol_find(Symbol_Manager *SM, String_Slice nm)
     return imm;
   if (pot)
     return pot;
-  for (Symbol *s = SM->sy[h]; s; s = s->nx)
+  for (Symbol *s = symbol_manager->sy[h]; s; s = s->nx)
     if (string_equal_ignore_case(s->nm, nm) and (not imm or s->sc > imm->sc))
       imm = s;
   return imm;
 }
-static void symbol_find_use(Symbol_Manager *SM, Symbol *s, String_Slice nm)
+static void symbol_find_use(Symbol_Manager *symbol_manager, Symbol *s, String_Slice nm)
 {
   uint32_t h = symbol_hash(nm) & 63, b = 1ULL << (symbol_hash(nm) & 63);
-  if (SM->uv_vis[h] & b)
+  if (symbol_manager->uv_vis[h] & b)
     return;
-  SM->uv_vis[h] |= b;
+  symbol_manager->uv_vis[h] |= b;
   for (Symbol *parser = s; parser; parser = parser->nx)
     if (string_equal_ignore_case(parser->nm, nm) and parser->k == 6 and parser->df and parser->df->k == N_PKS)
     {
@@ -4524,7 +4524,7 @@ static void symbol_find_use(Symbol_Manager *SM, Symbol *s, String_Slice nm)
             {
               sv(&s->us, e->sy);
               e->sy->vis |= 2;
-              sv(&SM->ex, e->sy);
+              sv(&symbol_manager->ex, e->sy);
             }
           }
         }
@@ -4541,40 +4541,40 @@ static void symbol_find_use(Symbol_Manager *SM, Symbol *s, String_Slice nm)
           }
         }
       }
-      if (SM->dpn < 256)
+      if (symbol_manager->dpn < 256)
       {
         bool f = 0;
-        for (int i = 0; i < SM->dpn; i++)
-          if (SM->dps[i].count and string_equal_ignore_case(SM->dps[i].data[0]->nm, parser->nm))
+        for (int i = 0; i < symbol_manager->dpn; i++)
+          if (symbol_manager->dps[i].count and string_equal_ignore_case(symbol_manager->dps[i].data[0]->nm, parser->nm))
           {
             f = 1;
             break;
           }
         if (not f)
         {
-          sv(&SM->dps[SM->dpn], parser);
-          SM->dpn++;
+          sv(&symbol_manager->dps[symbol_manager->dpn], parser);
+          symbol_manager->dpn++;
         }
       }
     }
-  SM->uv_vis[h] &= ~b;
+  symbol_manager->uv_vis[h] &= ~b;
 }
-static GT *generic_find(Symbol_Manager *SM, String_Slice nm)
+static GT *generic_find(Symbol_Manager *symbol_manager, String_Slice nm)
 {
-  for (uint32_t i = 0; i < SM->gt.count; i++)
+  for (uint32_t i = 0; i < symbol_manager->gt.count; i++)
   {
-    GT *g = SM->gt.data[i];
+    GT *g = symbol_manager->gt.data[i];
     if (string_equal_ignore_case(g->nm, nm))
       return g;
   }
   return 0;
 }
 static int type_scope(Type_Info *, Type_Info *, Type_Info *);
-static Symbol *symbol_find_with_arity(Symbol_Manager *SM, String_Slice nm, int na, Type_Info *tx)
+static Symbol *symbol_find_with_arity(Symbol_Manager *symbol_manager, String_Slice nm, int na, Type_Info *tx)
 {
   Symbol_Vector cv = {0};
   int msc = -1;
-  for (Symbol *s = SM->sy[symbol_hash(nm)]; s; s = s->nx)
+  for (Symbol *s = symbol_manager->sy[symbol_hash(nm)]; s; s = s->nx)
     if (string_equal_ignore_case(s->nm, nm) and (s->vis & 3))
     {
       if (s->sc > msc)
@@ -4672,9 +4672,9 @@ static Type_Info *type_new(Tk_ k, String_Slice nm)
 }
 static Type_Info *TY_INT, *TY_BOOL, *TY_CHAR, *TY_STR, *TY_FLT, *TY_UINT, *TY_UFLT, *TY_FILE,
     *TY_NAT, *TY_POS;
-static void symbol_manager_init(Symbol_Manager *SM)
+static void symbol_manager_init(Symbol_Manager *symbol_manager)
 {
-  memset(SM, 0, sizeof(*SM));
+  memset(symbol_manager, 0, sizeof(*symbol_manager));
   TY_INT = type_new(TYPE_INTEGER, STRING_LITERAL("INTEGER"));
   TY_INT->lo = -2147483648LL;
   TY_INT->hi = 2147483647LL;
@@ -4696,28 +4696,28 @@ static void symbol_manager_init(Symbol_Manager *SM)
   TY_UINT = type_new(TYPE_UNSIGNED_INTEGER, STRING_LITERAL("universal_integer"));
   TY_UFLT = type_new(TYPE_UNIVERSAL_FLOAT, STRING_LITERAL("universal_real"));
   TY_FILE = type_new(TYPE_FAT_POINTER, STRING_LITERAL("FILE_TYPE"));
-  symbol_add_overload(SM, symbol_new(STRING_LITERAL("INTEGER"), 1, TY_INT, 0));
-  symbol_add_overload(SM, symbol_new(STRING_LITERAL("NATURAL"), 1, TY_NAT, 0));
-  symbol_add_overload(SM, symbol_new(STRING_LITERAL("POSITIVE"), 1, TY_POS, 0));
-  symbol_add_overload(SM, symbol_new(STRING_LITERAL("BOOLEAN"), 1, TY_BOOL, 0));
-  Symbol *st = symbol_add_overload(SM, symbol_new(STRING_LITERAL("TRUE"), 2, TY_BOOL, 0));
+  symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("INTEGER"), 1, TY_INT, 0));
+  symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("NATURAL"), 1, TY_NAT, 0));
+  symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("POSITIVE"), 1, TY_POS, 0));
+  symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("BOOLEAN"), 1, TY_BOOL, 0));
+  Symbol *st = symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("TRUE"), 2, TY_BOOL, 0));
   st->vl = 1;
   sv(&TY_BOOL->ev, st);
-  Symbol *sf = symbol_add_overload(SM, symbol_new(STRING_LITERAL("FALSE"), 2, TY_BOOL, 0));
+  Symbol *sf = symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("FALSE"), 2, TY_BOOL, 0));
   sf->vl = 0;
   sv(&TY_BOOL->ev, sf);
-  symbol_add_overload(SM, symbol_new(STRING_LITERAL("CHARACTER"), 1, TY_CHAR, 0));
-  symbol_add_overload(SM, symbol_new(STRING_LITERAL("STRING"), 1, TY_STR, 0));
-  symbol_add_overload(SM, symbol_new(STRING_LITERAL("FLOAT"), 1, TY_FLT, 0));
-  symbol_add_overload(SM, symbol_new(STRING_LITERAL("FILE_TYPE"), 1, TY_FILE, 0));
-  symbol_add_overload(SM, symbol_new(STRING_LITERAL("CONSTRAINT_ERROR"), 3, 0, 0));
-  symbol_add_overload(SM, symbol_new(STRING_LITERAL("PROGRAM_ERROR"), 3, 0, 0));
-  symbol_add_overload(SM, symbol_new(STRING_LITERAL("STORAGE_ERROR"), 3, 0, 0));
-  symbol_add_overload(SM, symbol_new(STRING_LITERAL("TASKING_ERROR"), 3, 0, 0));
-  fv(&SM->io, stdin);
-  fv(&SM->io, stdout);
-  fv(&SM->io, stderr);
-  SM->fn = 3;
+  symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("CHARACTER"), 1, TY_CHAR, 0));
+  symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("STRING"), 1, TY_STR, 0));
+  symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("FLOAT"), 1, TY_FLT, 0));
+  symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("FILE_TYPE"), 1, TY_FILE, 0));
+  symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("CONSTRAINT_ERROR"), 3, 0, 0));
+  symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("PROGRAM_ERROR"), 3, 0, 0));
+  symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("STORAGE_ERROR"), 3, 0, 0));
+  symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("TASKING_ERROR"), 3, 0, 0));
+  fv(&symbol_manager->io, stdin);
+  fv(&symbol_manager->io, stdout);
+  fv(&symbol_manager->io, stderr);
+  symbol_manager->fn = 3;
 }
 static Syntax_Node *generate_equality_operator(Type_Info *t, Source_Location l)
 {
@@ -4915,7 +4915,7 @@ static Syntax_Node *generate_input_operator(Type_Info *t, Source_Location l)
   nv(&f->bd.st, rt);
   return ag->ag.it.count > 0 ? f : 0;
 }
-static void find_type(Symbol_Manager *SM, Type_Info *t, Source_Location l)
+static void find_type(Symbol_Manager *symbol_manager, Type_Info *t, Source_Location l)
 {
   if (not t or t->frz)
     return;
@@ -4924,16 +4924,16 @@ static void find_type(Symbol_Manager *SM, Type_Info *t, Source_Location l)
   t->frz = 1;
   t->fzn = ND(ERR, l);
   if (t->bs and t->bs != t and not t->bs->frz)
-    find_type(SM, t->bs, l);
+    find_type(symbol_manager, t->bs, l);
   if (t->prt and not t->prt->frz)
-    find_type(SM, t->prt, l);
+    find_type(symbol_manager, t->prt, l);
   if (t->el and not t->el->frz)
-    find_type(SM, t->el, l);
+    find_type(symbol_manager, t->el, l);
   if (t->k == TYPE_RECORD)
   {
     for (uint32_t i = 0; i < t->cm.count; i++)
       if (t->cm.data[i]->sy and t->cm.data[i]->sy->ty)
-        find_type(SM, t->cm.data[i]->sy->ty, l);
+        find_type(symbol_manager, t->cm.data[i]->sy->ty, l);
     uint32_t of = 0, mx = 1;
     for (uint32_t i = 0; i < t->cm.count; i++)
     {
@@ -4972,64 +4972,64 @@ static void find_type(Symbol_Manager *SM, Type_Info *t, Source_Location l)
       nv(&t->ops, in);
   }
 }
-static void find_symbol(Symbol_Manager *SM, Symbol *s, Source_Location l)
+static void find_symbol(Symbol_Manager *symbol_manager, Symbol *s, Source_Location l)
 {
   if (not s or s->frz)
     return;
   s->frz = 1;
   s->fzn = ND(ERR, l);
   if (s->ty and not s->ty->frz)
-    find_type(SM, s->ty, l);
+    find_type(symbol_manager, s->ty, l);
 }
-static void find_ada_library(Symbol_Manager *SM, Source_Location l)
+static void find_ada_library(Symbol_Manager *symbol_manager, Source_Location l)
 {
   for (int i = 0; i < 4096; i++)
-    for (Symbol *s = SM->sy[i]; s; s = s->nx)
-      if (s->sc == SM->sc and not s->frz)
+    for (Symbol *s = symbol_manager->sy[i]; s; s = s->nx)
+      if (s->sc == symbol_manager->sc and not s->frz)
       {
         if (s->ty and s->ty->k == TY_PT and s->ty->prt and not s->ty->prt->frz)
           continue;
         if (s->ty)
-          find_type(SM, s->ty, l);
-        find_symbol(SM, s, l);
+          find_type(symbol_manager, s->ty, l);
+        find_symbol(symbol_manager, s, l);
       }
 }
-static void symbol_compare_parameter(Symbol_Manager *SM)
+static void symbol_compare_parameter(Symbol_Manager *symbol_manager)
 {
-  SM->sc++;
-  SM->ss++;
-  if (SM->ssd < 256)
+  symbol_manager->sc++;
+  symbol_manager->ss++;
+  if (symbol_manager->ssd < 256)
   {
-    int m = SM->ssd;
-    SM->ssd++;
-    SM->sst[m] = 0;
+    int m = symbol_manager->ssd;
+    symbol_manager->ssd++;
+    symbol_manager->sst[m] = 0;
   }
 }
-static void symbol_compare_overload(Symbol_Manager *SM)
+static void symbol_compare_overload(Symbol_Manager *symbol_manager)
 {
-  find_ada_library(SM, (Source_Location){0, 0, ""});
+  find_ada_library(symbol_manager, (Source_Location){0, 0, ""});
   for (int i = 0; i < 4096; i++)
-    for (Symbol *s = SM->sy[i]; s; s = s->nx)
+    for (Symbol *s = symbol_manager->sy[i]; s; s = s->nx)
     {
-      if (s->sc == SM->sc)
+      if (s->sc == symbol_manager->sc)
       {
         s->vis &= ~1;
         if (s->k == 6)
           s->vis = 3;
       }
-      if (s->vis & 2 and s->pr and s->pr->sc >= SM->sc)
+      if (s->vis & 2 and s->pr and s->pr->sc >= symbol_manager->sc)
         s->vis &= ~2;
     }
-  if (SM->ssd > 0)
-    SM->ssd--;
-  SM->sc--;
+  if (symbol_manager->ssd > 0)
+    symbol_manager->ssd--;
+  symbol_manager->sc--;
 }
-static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *node);
-static void resolve_expression(Symbol_Manager *SM, Syntax_Node *node, Type_Info *tx);
-static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *node);
-static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n);
-static void runtime_register_compare(Symbol_Manager *SM, RC *r);
-static Syntax_Node *generate_clone(Symbol_Manager *SM, Syntax_Node *n);
+static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *node);
+static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node, Type_Info *tx);
+static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_Node *node);
+static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n);
+static void runtime_register_compare(Symbol_Manager *symbol_manager, RC *r);
+static Syntax_Node *generate_clone(Symbol_Manager *symbol_manager, Syntax_Node *n);
 static Type_Info *type_canonical_concrete(Type_Info *t)
 {
   if (not t)
@@ -5199,13 +5199,13 @@ static bool type_covers(Type_Info *a, Type_Info *b)
     return 1;
   return 0;
 }
-static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *node)
+static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *node)
 {
   if (not node)
     return TY_INT;
   if (node->k == N_ID)
   {
-    Symbol *s = symbol_find(SM, node->s);
+    Symbol *s = symbol_find(symbol_manager, node->s);
     if (s and s->ty)
       return s->ty;
     return TY_INT;
@@ -5215,7 +5215,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *node)
     Syntax_Node *parser = node->se.p;
     if (parser->k == N_ID)
     {
-      Symbol *ps = symbol_find(SM, parser->s);
+      Symbol *ps = symbol_find(symbol_manager, parser->s);
       if (ps and ps->k == 6 and ps->df and ps->df->k == N_PKS)
       {
         Syntax_Node *pk = ps->df;
@@ -5225,7 +5225,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *node)
           if (d->sy and string_equal_ignore_case(d->sy->nm, node->se.se) and d->sy->ty)
             return d->sy->ty;
           if (d->k == N_TD and string_equal_ignore_case(d->td.nm, node->se.se))
-            return resolve_subtype(SM, d->td.df);
+            return resolve_subtype(symbol_manager, d->td.df);
         }
         for (uint32_t i = 0; i < pk->ps.dc.count; i++)
         {
@@ -5233,16 +5233,16 @@ static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *node)
           if (d->sy and string_equal_ignore_case(d->sy->nm, node->se.se) and d->sy->ty)
             return d->sy->ty;
           if (d->k == N_TD and string_equal_ignore_case(d->td.nm, node->se.se))
-            return resolve_subtype(SM, d->td.df);
+            return resolve_subtype(symbol_manager, d->td.df);
         }
       }
-      return resolve_subtype(SM, parser);
+      return resolve_subtype(symbol_manager, parser);
     }
     return TY_INT;
   }
   if (node->k == N_ST)
   {
-    Type_Info *bt = resolve_subtype(SM, node->sd.in);
+    Type_Info *bt = resolve_subtype(symbol_manager, node->sd.in);
     Syntax_Node *cn = node->sd.cn ? node->sd.cn : node->sd.rn;
     if (cn and bt)
     {
@@ -5259,8 +5259,8 @@ static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *node)
       if (cn->k == 27 and cn->cn.cs.count > 0 and cn->cn.cs.data[0] and cn->cn.cs.data[0]->k == 26)
       {
         Syntax_Node *rn = cn->cn.cs.data[0];
-        resolve_expression(SM, rn->rn.lo, 0);
-        resolve_expression(SM, rn->rn.hi, 0);
+        resolve_expression(symbol_manager, rn->rn.lo, 0);
+        resolve_expression(symbol_manager, rn->rn.hi, 0);
         Syntax_Node *lo = rn->rn.lo;
         Syntax_Node *hi = rn->rn.hi;
         int64_t lov = lo->k == N_UN and lo->un.op == T_MN and lo->un.x->k == N_INT ? -lo->un.x->i
@@ -5297,8 +5297,8 @@ static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *node)
       }
       else if (cn->k == 27 and cn->cn.rn)
       {
-        resolve_expression(SM, cn->cn.rn->rn.lo, 0);
-        resolve_expression(SM, cn->cn.rn->rn.hi, 0);
+        resolve_expression(symbol_manager, cn->cn.rn->rn.lo, 0);
+        resolve_expression(symbol_manager, cn->cn.rn->rn.hi, 0);
         Syntax_Node *lo = cn->cn.rn->rn.lo;
         Syntax_Node *hi = cn->cn.rn->rn.hi;
         int64_t lov = lo->k == N_UN and lo->un.op == T_MN and lo->un.x->k == N_INT ? -lo->un.x->i
@@ -5335,8 +5335,8 @@ static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *node)
       }
       else if (cn->k == N_RN)
       {
-        resolve_expression(SM, cn->rn.lo, 0);
-        resolve_expression(SM, cn->rn.hi, 0);
+        resolve_expression(symbol_manager, cn->rn.lo, 0);
+        resolve_expression(symbol_manager, cn->rn.hi, 0);
         Syntax_Node *lo = cn->rn.lo;
         Syntax_Node *hi = cn->rn.hi;
         int64_t lov = lo->k == N_UN and lo->un.op == T_MN and lo->un.x->k == N_INT ? -lo->un.x->i
@@ -5376,8 +5376,8 @@ static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *node)
   }
   if (node->k == N_TI)
   {
-    resolve_expression(SM, node->rn.lo, 0);
-    resolve_expression(SM, node->rn.hi, 0);
+    resolve_expression(symbol_manager, node->rn.lo, 0);
+    resolve_expression(symbol_manager, node->rn.hi, 0);
     Type_Info *t = type_new(TYPE_INTEGER, N);
     if (node->rn.lo and node->rn.lo->k == N_INT)
       t->lo = node->rn.lo->i;
@@ -5413,7 +5413,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *node)
     Type_Info *t = type_new(TYPE_FLOAT, N);
     if (node->un.x)
     {
-      resolve_expression(SM, node->un.x, 0);
+      resolve_expression(symbol_manager, node->un.x, 0);
       if (node->un.x->k == N_INT)
         t->sm = node->un.x->i;
     }
@@ -5422,14 +5422,14 @@ static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *node)
   if (node->k == N_TA)
   {
     Type_Info *t = type_new(TYPE_ARRAY, N);
-    t->el = resolve_subtype(SM, node->ix.p);
+    t->el = resolve_subtype(symbol_manager, node->ix.p);
     if (node->ix.ix.count == 1)
     {
       Syntax_Node *r = node->ix.ix.data[0];
       if (r and r->k == N_RN)
       {
-        resolve_expression(SM, r->rn.lo, 0);
-        resolve_expression(SM, r->rn.hi, 0);
+        resolve_expression(symbol_manager, r->rn.lo, 0);
+        resolve_expression(symbol_manager, r->rn.hi, 0);
         Syntax_Node *lo = r->rn.lo;
         Syntax_Node *hi = r->rn.hi;
         if (lo and lo->k == N_INT)
@@ -5451,19 +5451,19 @@ static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *node)
   if (node->k == N_TAC)
   {
     Type_Info *t = type_new(TYPE_ACCESS, N);
-    t->el = resolve_subtype(SM, node->un.x);
+    t->el = resolve_subtype(symbol_manager, node->un.x);
     return t;
   }
   if (node->k == N_IX)
   {
-    Type_Info *bt = resolve_subtype(SM, node->ix.p);
+    Type_Info *bt = resolve_subtype(symbol_manager, node->ix.p);
     if (bt and bt->k == TYPE_ARRAY and bt->lo == 0 and bt->hi == -1 and node->ix.ix.count == 1)
     {
       Syntax_Node *r = node->ix.ix.data[0];
       if (r and r->k == N_RN)
       {
-        resolve_expression(SM, r->rn.lo, 0);
-        resolve_expression(SM, r->rn.hi, 0);
+        resolve_expression(symbol_manager, r->rn.lo, 0);
+        resolve_expression(symbol_manager, r->rn.hi, 0);
         Type_Info *t = type_new(TYPE_ARRAY, N);
         t->el = bt->el;
         t->ix = bt->ix;
@@ -5487,8 +5487,8 @@ static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *node)
   }
   if (node->k == N_RN)
   {
-    resolve_expression(SM, node->rn.lo, 0);
-    resolve_expression(SM, node->rn.hi, 0);
+    resolve_expression(symbol_manager, node->rn.lo, 0);
+    resolve_expression(symbol_manager, node->rn.hi, 0);
     Type_Info *t = type_new(TYPE_INTEGER, N);
     if (node->rn.lo and node->rn.lo->k == N_INT)
       t->lo = node->rn.lo->i;
@@ -5504,14 +5504,14 @@ static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *node)
   }
   if (node->k == N_CL)
   {
-    Type_Info *bt = resolve_subtype(SM, node->cl.fn);
+    Type_Info *bt = resolve_subtype(symbol_manager, node->cl.fn);
     if (bt and bt->k == TYPE_ARRAY and bt->lo == 0 and bt->hi == -1 and node->cl.ar.count == 1)
     {
       Syntax_Node *r = node->cl.ar.data[0];
       if (r and r->k == N_RN)
       {
-        resolve_expression(SM, r->rn.lo, 0);
-        resolve_expression(SM, r->rn.hi, 0);
+        resolve_expression(symbol_manager, r->rn.lo, 0);
+        resolve_expression(symbol_manager, r->rn.hi, 0);
         Type_Info *t = type_new(TYPE_ARRAY, N);
         t->el = bt->el;
         t->ix = bt->ix;
@@ -5535,7 +5535,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *node)
   }
   return TY_INT;
 }
-static Symbol *symbol_character_literal(Symbol_Manager *SM, char c, Type_Info *tx)
+static Symbol *symbol_character_literal(Symbol_Manager *symbol_manager, char c, Type_Info *tx)
 {
   if (tx and tx->k == TYPE_ENUMERATION)
   {
@@ -5547,8 +5547,8 @@ static Symbol *symbol_character_literal(Symbol_Manager *SM, char c, Type_Info *t
     }
   }
   if (tx and tx->k == TYPE_DERIVED and tx->prt)
-    return symbol_character_literal(SM, c, tx->prt);
-  for (Symbol *s = SM->sy[symbol_hash((String_Slice){&c, 1})]; s; s = s->nx)
+    return symbol_character_literal(symbol_manager, c, tx->prt);
+  for (Symbol *s = symbol_manager->sy[symbol_hash((String_Slice){&c, 1})]; s; s = s->nx)
     if (s->nm.length == 1 and tolower(s->nm.string[0]) == tolower(c) and s->k == 2 and s->ty
         and (s->ty->k == TYPE_ENUMERATION or (s->ty->k == TYPE_DERIVED and s->ty->prt and s->ty->prt->k == TYPE_ENUMERATION)))
       return s;
@@ -5610,9 +5610,9 @@ static bool descendant_conformant(Type_Info *t, Type_Info *s)
   }
   return 0;
 }
-static Syntax_Node *chk(Symbol_Manager *SM, Syntax_Node *node, Source_Location l)
+static Syntax_Node *chk(Symbol_Manager *symbol_manager, Syntax_Node *node, Source_Location l)
 {
-  (void) SM;
+  (void) symbol_manager;
   if (not node or not node->ty)
     return node;
   Type_Info *t = type_canonical_concrete(node->ty);
@@ -5651,9 +5651,9 @@ static int find_or_throw(Syntax_Node *ag)
   }
   return -1;
 }
-static void normalize_array_aggregate(Symbol_Manager *SM, Type_Info *at, Syntax_Node *ag)
+static void normalize_array_aggregate(Symbol_Manager *symbol_manager, Type_Info *at, Syntax_Node *ag)
 {
-  (void) SM;
+  (void) symbol_manager;
   if (not ag or not at or at->k != TYPE_ARRAY)
     return;
   int64_t asz = range_size(at->lo, at->hi);
@@ -5736,9 +5736,9 @@ static void normalize_array_aggregate(Symbol_Manager *SM, Type_Info *at, Syntax_
   ag->ag.it = xv;
   free(cov);
 }
-static void normalize_record_aggregate(Symbol_Manager *SM, Type_Info *rt, Syntax_Node *ag)
+static void normalize_record_aggregate(Symbol_Manager *symbol_manager, Type_Info *rt, Syntax_Node *ag)
 {
-  (void) SM;
+  (void) symbol_manager;
   if (not ag or not rt or rt->k != TYPE_RECORD)
     return;
   bool cov[256] = {0};
@@ -5813,7 +5813,7 @@ static bool has_return_statement(Node_Vector *statements)
       return 1;
   return 0;
 }
-static void resolve_expression(Symbol_Manager *SM, Syntax_Node *node, Type_Info *tx)
+static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node, Type_Info *tx)
 {
   if (not node)
     return;
@@ -5835,14 +5835,14 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *node, Type_Info 
         }
       }
     }
-    Symbol *s = symbol_find(SM, node->s);
+    Symbol *s = symbol_find(symbol_manager, node->s);
     if (s)
     {
       node->ty = s->ty;
       node->sy = s;
       if (s->k == 5)
       {
-        Symbol *s0 = symbol_find_with_arity(SM, node->s, 0, tx);
+        Symbol *s0 = symbol_find_with_arity(symbol_manager, node->s, 0, tx);
         if (s0 and s0->ty and s0->ty->k == TYPE_STRING and s0->ty->el)
         {
           node->ty = s0->ty->el;
@@ -5881,7 +5881,7 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *node, Type_Info 
     break;
   case N_CHAR:
   {
-    Symbol *s = symbol_character_literal(SM, node->i, tx);
+    Symbol *s = symbol_character_literal(symbol_manager, node->i, tx);
     if (s)
     {
       node->ty = s->ty;
@@ -5901,8 +5901,8 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *node, Type_Info 
     node->ty = tx and tx->k == TYPE_ACCESS ? tx : TY_INT;
     break;
   case N_BIN:
-    resolve_expression(SM, node->bn.l, tx);
-    resolve_expression(SM, node->bn.r, tx);
+    resolve_expression(symbol_manager, node->bn.l, tx);
+    resolve_expression(symbol_manager, node->bn.r, tx);
     if (node->bn.op == T_ATHN or node->bn.op == T_OREL)
     {
       node->ty = TY_BOOL;
@@ -5910,16 +5910,16 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *node, Type_Info 
     }
     if (node->bn.op == T_AND or node->bn.op == T_OR or node->bn.op == T_XOR)
     {
-      node->bn.l = chk(SM, node->bn.l, node->l);
-      node->bn.r = chk(SM, node->bn.r, node->l);
+      node->bn.l = chk(symbol_manager, node->bn.l, node->l);
+      node->bn.r = chk(symbol_manager, node->bn.r, node->l);
       Type_Info *lt = node->bn.l->ty ? type_canonical_concrete(node->bn.l->ty) : 0;
       node->ty = lt and lt->k == TYPE_ARRAY ? lt : TY_BOOL;
       break;
     }
     if (node->bn.op == T_IN)
     {
-      node->bn.l = chk(SM, node->bn.l, node->l);
-      node->bn.r = chk(SM, node->bn.r, node->l);
+      node->bn.l = chk(symbol_manager, node->bn.l, node->l);
+      node->bn.r = chk(symbol_manager, node->bn.r, node->l);
       node->ty = TY_BOOL;
       break;
     }
@@ -5969,7 +5969,7 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *node, Type_Info 
       node->ty = TY_BOOL;
     break;
   case N_UN:
-    resolve_expression(SM, node->un.x, tx);
+    resolve_expression(symbol_manager, node->un.x, tx);
     if (node->un.op == T_MN and node->un.x->k == N_INT)
     {
       node->k = N_INT;
@@ -6007,11 +6007,11 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *node, Type_Info 
     }
     break;
   case N_IX:
-    resolve_expression(SM, node->ix.p, 0);
+    resolve_expression(symbol_manager, node->ix.p, 0);
     for (uint32_t i = 0; i < node->ix.ix.count; i++)
     {
-      resolve_expression(SM, node->ix.ix.data[i], 0);
-      node->ix.ix.data[i] = chk(SM, node->ix.ix.data[i], node->l);
+      resolve_expression(symbol_manager, node->ix.ix.data[i], 0);
+      node->ix.ix.data[i] = chk(symbol_manager, node->ix.ix.data[i], node->l);
     }
     if (node->ix.p->ty and node->ix.p->ty->k == TYPE_ARRAY)
       node->ty = type_canonical_concrete(node->ix.p->ty->el);
@@ -6019,9 +6019,9 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *node, Type_Info 
       node->ty = TY_INT;
     break;
   case N_SL:
-    resolve_expression(SM, node->sl.p, 0);
-    resolve_expression(SM, node->sl.lo, 0);
-    resolve_expression(SM, node->sl.hi, 0);
+    resolve_expression(symbol_manager, node->sl.p, 0);
+    resolve_expression(symbol_manager, node->sl.lo, 0);
+    resolve_expression(symbol_manager, node->sl.hi, 0);
     if (node->sl.p->ty and node->sl.p->ty->k == TYPE_ARRAY)
       node->ty = node->sl.p->ty;
     else
@@ -6029,11 +6029,11 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *node, Type_Info 
     break;
   case N_SEL:
   {
-    resolve_expression(SM, node->se.p, 0);
+    resolve_expression(symbol_manager, node->se.p, 0);
     Syntax_Node *parser = node->se.p;
     if (parser->k == N_ID)
     {
-      Symbol *ps = symbol_find(SM, parser->s);
+      Symbol *ps = symbol_find(symbol_manager, parser->s);
       if (ps and ps->k == 6 and ps->df and ps->df->k == N_PKS)
       {
         Syntax_Node *pk = ps->df;
@@ -6141,7 +6141,7 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *node, Type_Info 
           }
         }
         for (int h = 0; h < 4096; h++)
-          for (Symbol *s = SM->sy[h]; s; s = s->nx)
+          for (Symbol *s = symbol_manager->sy[h]; s; s = s->nx)
             if (s->pr == ps and string_equal_ignore_case(s->nm, node->se.se))
             {
               node->ty = s->ty;
@@ -6184,7 +6184,7 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *node, Type_Info 
           Syntax_Node *c = pt->cm.data[i];
           if (c->k == N_CM and string_equal_ignore_case(c->cm.nm, node->se.se))
           {
-            node->ty = resolve_subtype(SM, c->cm.ty);
+            node->ty = resolve_subtype(symbol_manager, c->cm.ty);
             return;
           }
         }
@@ -6193,7 +6193,7 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *node, Type_Info 
           Syntax_Node *d = pt->dc.data[i];
           if (d->k == N_DS and string_equal_ignore_case(d->pm.nm, node->se.se))
           {
-            node->ty = resolve_subtype(SM, d->pm.ty);
+            node->ty = resolve_subtype(symbol_manager, d->pm.ty);
             return;
           }
         }
@@ -6210,7 +6210,7 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *node, Type_Info 
                 Syntax_Node *vc = v->vr.cmm.data[k];
                 if (string_equal_ignore_case(vc->cm.nm, node->se.se))
                 {
-                  node->ty = resolve_subtype(SM, vc->cm.ty);
+                  node->ty = resolve_subtype(symbol_manager, vc->cm.ty);
                   return;
                 }
               }
@@ -6225,9 +6225,9 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *node, Type_Info 
   }
   break;
   case N_AT:
-    resolve_expression(SM, node->at.p, 0);
+    resolve_expression(symbol_manager, node->at.p, 0);
     for (uint32_t i = 0; i < node->at.ar.count; i++)
-      resolve_expression(SM, node->at.ar.data[i], 0);
+      resolve_expression(symbol_manager, node->at.ar.data[i], 0);
     {
       Type_Info *pt = node->at.p ? node->at.p->ty : 0;
       Type_Info *ptc = pt ? type_canonical_concrete(pt) : 0;
@@ -6243,7 +6243,7 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *node, Type_Info 
         sel->se.p = ND(ID, node->l);
         sel->se.p->s = STRING_LITERAL("SYSTEM");
         sel->se.se = STRING_LITERAL("ADDRESS");
-        node->ty = resolve_subtype(SM, sel);
+        node->ty = resolve_subtype(symbol_manager, sel);
       }
       else if (
           string_equal_ignore_case(a, STRING_LITERAL("LENGTH"))
@@ -6332,8 +6332,8 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *node, Type_Info 
     break;
   case N_QL:
   {
-    Type_Info *qt = resolve_subtype(SM, node->ql.nm);
-    resolve_expression(SM, node->ql.ag, qt);
+    Type_Info *qt = resolve_subtype(symbol_manager, node->ql.nm);
+    resolve_expression(symbol_manager, node->ql.ag, qt);
     node->ty = qt;
     if (node->ql.ag->ty and qt)
     {
@@ -6344,9 +6344,9 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *node, Type_Info 
   break;
   case N_CL:
   {
-    resolve_expression(SM, node->cl.fn, 0);
+    resolve_expression(symbol_manager, node->cl.fn, 0);
     for (uint32_t i = 0; i < node->cl.ar.count; i++)
-      resolve_expression(SM, node->cl.ar.data[i], 0);
+      resolve_expression(symbol_manager, node->cl.ar.data[i], 0);
     Type_Info *ft = node->cl.fn ? node->cl.fn->ty : 0;
     if (ft and ft->k == TYPE_ARRAY)
     {
@@ -6355,7 +6355,7 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *node, Type_Info 
       node->k = N_IX;
       node->ix.p = fn;
       node->ix.ix = ar;
-      resolve_expression(SM, node, tx);
+      resolve_expression(symbol_manager, node, tx);
       break;
     }
     if (node->cl.fn->k == N_ID or node->cl.fn->k == N_STR)
@@ -6363,7 +6363,7 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *node, Type_Info 
       String_Slice fnm = node->cl.fn->k == N_ID ? node->cl.fn->s : node->cl.fn->s;
       Symbol *s = node->cl.fn->sy;
       if (not s)
-        s = symbol_find_with_arity(SM, fnm, node->cl.ar.count, tx);
+        s = symbol_find_with_arity(symbol_manager, fnm, node->cl.ar.count, tx);
       if (s)
       {
         node->cl.fn->sy = s;
@@ -6393,13 +6393,13 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *node, Type_Info 
   break;
   case N_AG:
     for (uint32_t i = 0; i < node->ag.it.count; i++)
-      resolve_expression(SM, node->ag.it.data[i], tx);
+      resolve_expression(symbol_manager, node->ag.it.data[i], tx);
     node->ty = tx ?: TY_INT;
     is_compile_valid(tx, node);
     break;
   case N_ALC:
     node->ty = type_new(TYPE_ACCESS, N);
-    node->ty->el = resolve_subtype(SM, node->alc.st);
+    node->ty->el = resolve_subtype(symbol_manager, node->alc.st);
     if (node->alc.in)
     {
       Type_Info *et = node->ty->el ? type_canonical_concrete(node->ty->el) : 0;
@@ -6410,11 +6410,11 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *node, Type_Info 
           Syntax_Node *d = et->dc.data[i];
           if (d->k == N_DS and d->pm.df)
           {
-            resolve_expression(SM, d->pm.df, resolve_subtype(SM, d->pm.ty));
+            resolve_expression(symbol_manager, d->pm.df, resolve_subtype(symbol_manager, d->pm.ty));
           }
         }
       }
-      resolve_expression(SM, node->alc.in, node->ty->el);
+      resolve_expression(symbol_manager, node->alc.in, node->ty->el);
       if (tx and tx->k == TYPE_ACCESS and tx->el)
       {
         Type_Info *ct = type_canonical_concrete(tx->el);
@@ -6435,7 +6435,7 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *node, Type_Info 
                             and cd->pm.df->i == ed->pm.df->i;
                 if (not mtch)
                 {
-                  node->alc.in = chk(SM, node->alc.in, node->l);
+                  node->alc.in = chk(symbol_manager, node->alc.in, node->l);
                   break;
                 }
               }
@@ -6446,21 +6446,21 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *node, Type_Info 
     }
     break;
   case N_RN:
-    resolve_expression(SM, node->rn.lo, tx);
-    resolve_expression(SM, node->rn.hi, tx);
-    node->rn.lo = chk(SM, node->rn.lo, node->l);
-    node->rn.hi = chk(SM, node->rn.hi, node->l);
+    resolve_expression(symbol_manager, node->rn.lo, tx);
+    resolve_expression(symbol_manager, node->rn.hi, tx);
+    node->rn.lo = chk(symbol_manager, node->rn.lo, node->l);
+    node->rn.hi = chk(symbol_manager, node->rn.hi, node->l);
     node->ty = type_canonical_concrete(node->rn.lo->ty);
     break;
   case N_ASC:
     if (node->asc.vl)
     {
       Type_Info *vt = tx and tx->k == TYPE_ARRAY ? tx->el : tx;
-      resolve_expression(SM, node->asc.vl, vt);
+      resolve_expression(symbol_manager, node->asc.vl, vt);
     }
     break;
   case N_DRF:
-    resolve_expression(SM, node->drf.x, 0);
+    resolve_expression(symbol_manager, node->drf.x, 0);
     {
       Type_Info *dty = node->drf.x->ty ? type_canonical_concrete(node->drf.x->ty) : 0;
       if (dty and dty->k == TYPE_ACCESS)
@@ -6474,26 +6474,26 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *node, Type_Info 
     }
     break;
   case N_CVT:
-    resolve_expression(SM, node->cvt.ex, 0);
-    node->ty = resolve_subtype(SM, node->cvt.ty);
+    resolve_expression(symbol_manager, node->cvt.ex, 0);
+    node->ty = resolve_subtype(symbol_manager, node->cvt.ty);
     break;
   case N_CHK:
-    resolve_expression(SM, node->chk.ex, tx);
+    resolve_expression(symbol_manager, node->chk.ex, tx);
     node->ty = node->chk.ex->ty;
     break;
   default:
     break;
   }
 }
-static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *node)
+static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_Node *node)
 {
   if (not node)
     return;
   switch (node->k)
   {
   case N_AS:
-    resolve_expression(SM, node->as.tg, 0);
-    resolve_expression(SM, node->as.vl, node->as.tg->ty);
+    resolve_expression(symbol_manager, node->as.tg, 0);
+    resolve_expression(symbol_manager, node->as.vl, node->as.tg->ty);
     {
       Type_Info *tgt = node->as.tg->ty ? type_canonical_concrete(node->as.tg->ty) : 0;
       Type_Info *vlt = node->as.vl->ty ? type_canonical_concrete(node->as.vl->ty) : 0;
@@ -6509,45 +6509,45 @@ static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *node)
     break;
     if (node->as.tg->ty)
       node->as.vl->ty = node->as.tg->ty;
-    node->as.vl = chk(SM, node->as.vl, node->l);
+    node->as.vl = chk(symbol_manager, node->as.vl, node->l);
     break;
   case N_IF:
-    resolve_expression(SM, node->if_.cd, TY_BOOL);
+    resolve_expression(symbol_manager, node->if_.cd, TY_BOOL);
     if (node->if_.th.count > 0 and not has_return_statement(&node->if_.th))
       fatal_error(node->l, "seq needs stmt");
     for (uint32_t i = 0; i < node->if_.th.count; i++)
-      resolve_statement_sequence(SM, node->if_.th.data[i]);
+      resolve_statement_sequence(symbol_manager, node->if_.th.data[i]);
     for (uint32_t i = 0; i < node->if_.ei.count; i++)
     {
       Syntax_Node *e = node->if_.ei.data[i];
-      resolve_expression(SM, e->if_.cd, TY_BOOL);
+      resolve_expression(symbol_manager, e->if_.cd, TY_BOOL);
       if (e->if_.th.count > 0 and not has_return_statement(&e->if_.th))
         fatal_error(e->l, "seq needs stmt");
       for (uint32_t j = 0; j < e->if_.th.count; j++)
-        resolve_statement_sequence(SM, e->if_.th.data[j]);
+        resolve_statement_sequence(symbol_manager, e->if_.th.data[j]);
     }
     if (node->if_.el.count > 0 and not has_return_statement(&node->if_.el))
       fatal_error(node->l, "seq needs stmt");
     for (uint32_t i = 0; i < node->if_.el.count; i++)
-      resolve_statement_sequence(SM, node->if_.el.data[i]);
+      resolve_statement_sequence(symbol_manager, node->if_.el.data[i]);
     break;
   case N_CS:
-    resolve_expression(SM, node->cs.ex, 0);
+    resolve_expression(symbol_manager, node->cs.ex, 0);
     for (uint32_t i = 0; i < node->cs.al.count; i++)
     {
       Syntax_Node *a = node->cs.al.data[i];
       for (uint32_t j = 0; j < a->ch.it.count; j++)
-        resolve_expression(SM, a->ch.it.data[j], node->cs.ex->ty);
+        resolve_expression(symbol_manager, a->ch.it.data[j], node->cs.ex->ty);
       if (a->hnd.stz.count > 0 and not has_return_statement(&a->hnd.stz))
         fatal_error(a->l, "seq needs stmt");
       for (uint32_t j = 0; j < a->hnd.stz.count; j++)
-        resolve_statement_sequence(SM, a->hnd.stz.data[j]);
+        resolve_statement_sequence(symbol_manager, a->hnd.stz.data[j]);
     }
     break;
   case N_LP:
     if (node->lp.lb.string)
     {
-      Symbol *lbs = symbol_add_overload(SM, symbol_new(node->lp.lb, 10, 0, node));
+      Symbol *lbs = symbol_add_overload(symbol_manager, symbol_new(node->lp.lb, 10, 0, node));
       (void) lbs;
     }
     if (node->lp.it)
@@ -6559,29 +6559,29 @@ static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *node)
         {
           Type_Info *rt = node->lp.it->bn.r->ty;
           Symbol *lvs = symbol_new(v->s, 0, rt ?: TY_INT, 0);
-          symbol_add_overload(SM, lvs);
+          symbol_add_overload(symbol_manager, lvs);
           lvs->lv = -1;
           v->sy = lvs;
         }
       }
-      resolve_expression(SM, node->lp.it, TY_BOOL);
+      resolve_expression(symbol_manager, node->lp.it, TY_BOOL);
     }
     if (node->lp.st.count > 0 and not has_return_statement(&node->lp.st))
       fatal_error(node->l, "seq needs stmt");
     for (uint32_t i = 0; i < node->lp.st.count; i++)
-      resolve_statement_sequence(SM, node->lp.st.data[i]);
+      resolve_statement_sequence(symbol_manager, node->lp.st.data[i]);
     break;
   case N_BL:
     if (node->bk.lb.string)
     {
-      Symbol *lbs = symbol_add_overload(SM, symbol_new(node->bk.lb, 10, 0, node));
+      Symbol *lbs = symbol_add_overload(symbol_manager, symbol_new(node->bk.lb, 10, 0, node));
       (void) lbs;
     }
-    symbol_compare_parameter(SM);
+    symbol_compare_parameter(symbol_manager);
     for (uint32_t i = 0; i < node->bk.dc.count; i++)
-      resolve_declaration(SM, node->bk.dc.data[i]);
+      resolve_declaration(symbol_manager, node->bk.dc.data[i]);
     for (uint32_t i = 0; i < node->bk.st.count; i++)
-      resolve_statement_sequence(SM, node->bk.st.data[i]);
+      resolve_statement_sequence(symbol_manager, node->bk.st.data[i]);
     if (node->bk.hd.count > 0)
     {
       for (uint32_t i = 0; i < node->bk.hd.count; i++)
@@ -6591,97 +6591,97 @@ static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *node)
         {
           Syntax_Node *e = h->hnd.ec.data[j];
           if (e->k == N_ID and not string_equal_ignore_case(e->s, STRING_LITERAL("others")))
-            slv(&SM->eh, e->s);
+            slv(&symbol_manager->eh, e->s);
         }
         for (uint32_t j = 0; j < h->hnd.stz.count; j++)
-          resolve_statement_sequence(SM, h->hnd.stz.data[j]);
+          resolve_statement_sequence(symbol_manager, h->hnd.stz.data[j]);
       }
     }
-    symbol_compare_overload(SM);
+    symbol_compare_overload(symbol_manager);
     break;
   case N_RT:
     if (node->rt.vl)
-      resolve_expression(SM, node->rt.vl, 0);
+      resolve_expression(symbol_manager, node->rt.vl, 0);
     break;
   case N_EX:
     if (node->ex.cd)
-      resolve_expression(SM, node->ex.cd, TY_BOOL);
+      resolve_expression(symbol_manager, node->ex.cd, TY_BOOL);
     break;
   case N_RS:
     if (node->rs.ec and node->rs.ec->k == N_ID)
-      slv(&SM->eh, node->rs.ec->s);
+      slv(&symbol_manager->eh, node->rs.ec->s);
     else
-      slv(&SM->eh, STRING_LITERAL("PROGRAM_ERROR"));
+      slv(&symbol_manager->eh, STRING_LITERAL("PROGRAM_ERROR"));
     if (node->rs.ec)
-      resolve_expression(SM, node->rs.ec, 0);
+      resolve_expression(symbol_manager, node->rs.ec, 0);
     break;
   case N_CLT:
-    resolve_expression(SM, node->ct.nm, 0);
+    resolve_expression(symbol_manager, node->ct.nm, 0);
     for (uint32_t i = 0; i < node->ct.arr.count; i++)
-      resolve_expression(SM, node->ct.arr.data[i], 0);
+      resolve_expression(symbol_manager, node->ct.arr.data[i], 0);
     break;
   case N_ACC:
-    symbol_compare_parameter(SM);
+    symbol_compare_parameter(symbol_manager);
     {
-      Symbol *ens = symbol_add_overload(SM, symbol_new(node->acc.nm, 9, 0, node));
+      Symbol *ens = symbol_add_overload(symbol_manager, symbol_new(node->acc.nm, 9, 0, node));
       (void) ens;
       for (uint32_t i = 0; i < node->acc.pmx.count; i++)
       {
         Syntax_Node *parser = node->acc.pmx.data[i];
-        Type_Info *pt = resolve_subtype(SM, parser->pm.ty);
-        Symbol *ps = symbol_add_overload(SM, symbol_new(parser->pm.nm, 0, pt, parser));
+        Type_Info *pt = resolve_subtype(symbol_manager, parser->pm.ty);
+        Symbol *ps = symbol_add_overload(symbol_manager, symbol_new(parser->pm.nm, 0, pt, parser));
         parser->sy = ps;
       }
       if (node->acc.stx.count > 0 and not has_return_statement(&node->acc.stx))
         fatal_error(node->l, "seq needs stmt");
       for (uint32_t i = 0; i < node->acc.stx.count; i++)
-        resolve_statement_sequence(SM, node->acc.stx.data[i]);
+        resolve_statement_sequence(symbol_manager, node->acc.stx.data[i]);
     }
-    symbol_compare_overload(SM);
+    symbol_compare_overload(symbol_manager);
     break;
   case N_SA:
     if (node->sa.gd)
-      resolve_expression(SM, node->sa.gd, 0);
+      resolve_expression(symbol_manager, node->sa.gd, 0);
     for (uint32_t i = 0; i < node->sa.sts.count; i++)
     {
       Syntax_Node *s = node->sa.sts.data[i];
       if (s->k == N_ACC)
       {
         for (uint32_t j = 0; j < s->acc.pmx.count; j++)
-          resolve_expression(SM, s->acc.pmx.data[j], 0);
+          resolve_expression(symbol_manager, s->acc.pmx.data[j], 0);
         if (s->acc.stx.count > 0 and not has_return_statement(&s->acc.stx))
           fatal_error(s->l, "seq needs stmt");
         for (uint32_t j = 0; j < s->acc.stx.count; j++)
-          resolve_statement_sequence(SM, s->acc.stx.data[j]);
+          resolve_statement_sequence(symbol_manager, s->acc.stx.data[j]);
       }
       else if (s->k == N_DL)
-        resolve_expression(SM, s->ex.cd, 0);
+        resolve_expression(symbol_manager, s->ex.cd, 0);
     }
     break;
   case N_DL:
-    resolve_expression(SM, node->ex.cd, 0);
+    resolve_expression(symbol_manager, node->ex.cd, 0);
     break;
   case N_AB:
     if (node->rs.ec and node->rs.ec->k == N_ID)
-      slv(&SM->eh, node->rs.ec->s);
+      slv(&symbol_manager->eh, node->rs.ec->s);
     else
-      slv(&SM->eh, STRING_LITERAL("TASKING_ERROR"));
+      slv(&symbol_manager->eh, STRING_LITERAL("TASKING_ERROR"));
     if (node->rs.ec)
-      resolve_expression(SM, node->rs.ec, 0);
+      resolve_expression(symbol_manager, node->rs.ec, 0);
     break;
   case N_US:
     if (node->us.nm->k == N_ID)
     {
-      Symbol *s = symbol_find(SM, node->us.nm->s);
+      Symbol *s = symbol_find(symbol_manager, node->us.nm->s);
       if (s)
-        symbol_find_use(SM, s, node->us.nm->s);
+        symbol_find_use(symbol_manager, s, node->us.nm->s);
     }
     break;
   default:
     break;
   }
 }
-static void runtime_register_compare(Symbol_Manager *SM, RC *r)
+static void runtime_register_compare(Symbol_Manager *symbol_manager, RC *r)
 {
   if (not r)
     return;
@@ -6689,7 +6689,7 @@ static void runtime_register_compare(Symbol_Manager *SM, RC *r)
   {
   case 1:
   {
-    Symbol *ts = symbol_find(SM, r->er.nm);
+    Symbol *ts = symbol_find(symbol_manager, r->er.nm);
     if (ts and ts->ty)
     {
       Type_Info *t = type_canonical_concrete(ts->ty);
@@ -6711,7 +6711,7 @@ static void runtime_register_compare(Symbol_Manager *SM, RC *r)
   break;
   case 2:
   {
-    Symbol *s = symbol_find(SM, r->ad.nm);
+    Symbol *s = symbol_find(symbol_manager, r->ad.nm);
     if (s and s->ty)
     {
       Type_Info *t = type_canonical_concrete(s->ty);
@@ -6721,7 +6721,7 @@ static void runtime_register_compare(Symbol_Manager *SM, RC *r)
   break;
   case 3:
   {
-    Symbol *s = symbol_find(SM, r->rr.nm);
+    Symbol *s = symbol_find(symbol_manager, r->rr.nm);
     if (s and s->ty)
     {
       Type_Info *t = type_canonical_concrete(s->ty);
@@ -6748,7 +6748,7 @@ static void runtime_register_compare(Symbol_Manager *SM, RC *r)
   break;
   case 4:
   {
-    Symbol *s = r->ad.nm.length > 0 ? symbol_find(SM, r->ad.nm) : 0;
+    Symbol *s = r->ad.nm.length > 0 ? symbol_find(symbol_manager, r->ad.nm) : 0;
     if (s and s->ty)
     {
       Type_Info *t = type_canonical_concrete(s->ty);
@@ -6758,7 +6758,7 @@ static void runtime_register_compare(Symbol_Manager *SM, RC *r)
   break;
   case 5:
   {
-    Symbol *s = symbol_find(SM, r->er.nm);
+    Symbol *s = symbol_find(symbol_manager, r->er.nm);
     if (s and s->ty)
     {
       Type_Info *t = type_canonical_concrete(s->ty);
@@ -6768,14 +6768,14 @@ static void runtime_register_compare(Symbol_Manager *SM, RC *r)
   break;
   case 6:
   {
-    Symbol *s = symbol_find(SM, r->er.nm);
+    Symbol *s = symbol_find(symbol_manager, r->er.nm);
     if (s)
       s->inl = true;
   }
   break;
   case 7:
   {
-    Symbol *s = symbol_find(SM, r->er.nm);
+    Symbol *s = symbol_find(symbol_manager, r->er.nm);
     if (s and s->ty)
     {
       Type_Info *t = type_canonical_concrete(s->ty);
@@ -6785,7 +6785,7 @@ static void runtime_register_compare(Symbol_Manager *SM, RC *r)
   break;
   case 8:
   {
-    Symbol *s = symbol_find(SM, r->im.nm);
+    Symbol *s = symbol_find(symbol_manager, r->im.nm);
     if (s)
     {
       s->ext = true;
@@ -6823,10 +6823,10 @@ static int node_clone_depth = 0;
 #define MAX_NODE_CLONE_DEPTH 1000
 static bool match_formal_parameter(Syntax_Node *f, String_Slice nm);
 static Syntax_Node *node_clone_substitute(Syntax_Node *node, Node_Vector *fp, Node_Vector *ap);
-static const char *lookup_path(Symbol_Manager *SM, String_Slice nm);
-static Syntax_Node *pks2(Symbol_Manager *SM, String_Slice nm, const char *src);
-static void parse_package_specification(Symbol_Manager *SM, String_Slice nm, const char *src);
-static void resolve_array_parameter(Symbol_Manager *SM, Node_Vector *fp, Node_Vector *ap)
+static const char *lookup_path(Symbol_Manager *symbol_manager, String_Slice nm);
+static Syntax_Node *pks2(Symbol_Manager *symbol_manager, String_Slice nm, const char *src);
+static void parse_package_specification(Symbol_Manager *symbol_manager, String_Slice nm, const char *src);
+static void resolve_array_parameter(Symbol_Manager *symbol_manager, Node_Vector *fp, Node_Vector *ap)
 {
   if (not fp or not ap)
     return;
@@ -6851,7 +6851,7 @@ static void resolve_array_parameter(Symbol_Manager *SM, Node_Vector *fp, Node_Ve
               Syntax_Node *ta = ap->data[j];
               if (ta->k == N_ID)
               {
-                Symbol *ts = symbol_find(SM, ta->s);
+                Symbol *ts = symbol_find(symbol_manager, ta->s);
                 if (ts and ts->ty)
                   rt = ts->ty;
               }
@@ -6860,7 +6860,7 @@ static void resolve_array_parameter(Symbol_Manager *SM, Node_Vector *fp, Node_Ve
           }
         }
       }
-      Symbol *s = symbol_find_with_arity(SM, a->s, pc, rt);
+      Symbol *s = symbol_find_with_arity(symbol_manager, a->s, pc, rt);
       if (s)
       {
         a->k = N_ID;
@@ -7295,7 +7295,7 @@ static bool match_formal_parameter(Syntax_Node *f, String_Slice nm)
         return 1;
   return 0;
 }
-static Syntax_Node *generate_clone(Symbol_Manager *SM, Syntax_Node *n)
+static Syntax_Node *generate_clone(Symbol_Manager *symbol_manager, Syntax_Node *n)
 {
   if (not n)
     return 0;
@@ -7305,30 +7305,30 @@ static Syntax_Node *generate_clone(Symbol_Manager *SM, Syntax_Node *n)
                                    : n->gen.un->bd.sp    ? n->gen.un->bd.sp->sp.nm
                                                          : N)
                                 : N;
-    GT *g = generic_find(SM, nm);
+    GT *g = generic_find(symbol_manager, nm);
     if (not g)
     {
       g = generic_type_new(nm);
       g->fp = n->gen.fp;
       g->dc = n->gen.dc;
       g->un = n->gen.un;
-      gv(&SM->gt, g);
+      gv(&symbol_manager->gt, g);
       if (g->nm.string and g->nm.length)
       {
         Symbol *gs = symbol_new(g->nm, 11, 0, n);
         gs->gt = g;
         if (g->un and g->un->k == N_PKS)
           gs->df = g->un;
-        symbol_add_overload(SM, gs);
+        symbol_add_overload(symbol_manager, gs);
       }
     }
   }
   else if (n->k == N_GINST)
   {
-    GT *g = generic_find(SM, n->gi.gn);
+    GT *g = generic_find(symbol_manager, n->gi.gn);
     if (g)
     {
-      resolve_array_parameter(SM, &g->fp, &n->gi.ap);
+      resolve_array_parameter(symbol_manager, &g->fp, &n->gi.ap);
       Syntax_Node *inst = node_clone_substitute(g->un, &g->fp, &n->gi.ap);
       if (inst)
       {
@@ -7346,7 +7346,7 @@ static Syntax_Node *generate_clone(Symbol_Manager *SM, Syntax_Node *n)
   }
   return 0;
 }
-static Symbol *get_pkg_sym(Symbol_Manager *SM, Syntax_Node *pk)
+static Symbol *get_pkg_sym(Symbol_Manager *symbol_manager, Syntax_Node *pk)
 {
   if (not pk or not pk->sy)
     return 0;
@@ -7354,12 +7354,12 @@ static Symbol *get_pkg_sym(Symbol_Manager *SM, Syntax_Node *pk)
   if (not nm.string or nm.length == 0)
     return 0;
   uint32_t h = symbol_hash(nm);
-  for (Symbol *s = SM->sy[h]; s; s = s->nx)
+  for (Symbol *s = symbol_manager->sy[h]; s; s = s->nx)
     if (s->k == 6 and string_equal_ignore_case(s->nm, nm) and s->lv == 0)
       return s;
   return pk->sy;
 }
-static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
+static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
 {
   if (not n)
     return;
@@ -7367,21 +7367,21 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
   {
   case N_GINST:
   {
-    Syntax_Node *inst = generate_clone(SM, n);
+    Syntax_Node *inst = generate_clone(symbol_manager, n);
     if (inst)
     {
-      resolve_declaration(SM, inst);
+      resolve_declaration(symbol_manager, inst);
       if (inst->k == N_PKS)
       {
-        GT *g = generic_find(SM, n->gi.gn);
+        GT *g = generic_find(symbol_manager, n->gi.gn);
         if (g and g->bd)
         {
           Syntax_Node *bd = node_clone_substitute(g->bd, &g->fp, &n->gi.ap);
           if (bd)
           {
             bd->pb.nm = n->gi.nm;
-            resolve_declaration(SM, bd);
-            nv(&SM->ib, bd);
+            resolve_declaration(symbol_manager, bd);
+            nv(&symbol_manager->ib, bd);
           }
         }
       }
@@ -7391,20 +7391,20 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
   case N_RRC:
   {
     RC *r = *(RC **) &n->ag.it.data;
-    runtime_register_compare(SM, r);
+    runtime_register_compare(symbol_manager, r);
   }
   break;
   case N_GVL:
   case N_OD:
   {
-    Type_Info *t = resolve_subtype(SM, n->od.ty);
+    Type_Info *t = resolve_subtype(symbol_manager, n->od.ty);
     for (uint32_t i = 0; i < n->od.id.count; i++)
     {
       Syntax_Node *id = n->od.id.data[i];
       Type_Info *ct = universal_composite_aggregate(t, n->od.in);
-      Symbol *x = symbol_find(SM, id->s);
+      Symbol *x = symbol_find(symbol_manager, id->s);
       Symbol *s = 0;
-      if (x and x->sc == SM->sc and x->ss == SM->ss and x->k != 11)
+      if (x and x->sc == symbol_manager->sc and x->ss == symbol_manager->ss and x->k != 11)
       {
         if (x->k == 2 and x->df and x->df->k == N_OD and not((Syntax_Node *) x->df)->od.in
             and n->od.co and n->od.in)
@@ -7416,15 +7416,15 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
       }
       if (not s)
       {
-        s = symbol_add_overload(SM, symbol_new(id->s, n->od.co ? 2 : 0, ct, n));
-        s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEPARATE_PACKAGE.string ? symbol_find(SM, SEPARATE_PACKAGE) : 0;
+        s = symbol_add_overload(symbol_manager, symbol_new(id->s, n->od.co ? 2 : 0, ct, n));
+        s->pr = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
       }
       id->sy = s;
       if (n->od.in)
       {
-        resolve_expression(SM, n->od.in, t);
+        resolve_expression(symbol_manager, n->od.in, t);
         n->od.in->ty = t;
-        n->od.in = chk(SM, n->od.in, n->l);
+        n->od.in = chk(symbol_manager, n->od.in, n->l);
         if (t and t->dc.count > 0 and n->od.in and n->od.in->ty)
         {
           Type_Info *it = type_canonical_concrete(n->od.in->ty);
@@ -7482,7 +7482,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
     Type_Info *t = 0;
     if (n->td.drv and n->td.prt)
     {
-      Type_Info *pt = resolve_subtype(SM, n->td.prt);
+      Type_Info *pt = resolve_subtype(symbol_manager, n->td.prt);
       if (n->td.prt->k == N_TAC and error_count < 99)
         fatal_error(n->l, "der acc ty");
       t = type_new(TYPE_DERIVED, n->td.nm);
@@ -7505,7 +7505,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
             for (uint32_t _i = 0; _i < _ept->ev.count; _i++)
             {
               Symbol *_pe = _ept->ev.data[_i];
-              Symbol *_ne = symbol_add_overload(SM, symbol_new(_pe->nm, 2, t, n));
+              Symbol *_ne = symbol_add_overload(symbol_manager, symbol_new(_pe->nm, 2, t, n));
               _ne->vl = _pe->vl;
               sv(&t->ev, _ne);
             }
@@ -7514,36 +7514,36 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
       }
       if (n->td.df and n->td.df->k == N_RN)
       {
-        resolve_expression(SM, n->td.df->rn.lo, 0);
-        resolve_expression(SM, n->td.df->rn.hi, 0);
+        resolve_expression(symbol_manager, n->td.df->rn.lo, 0);
+        resolve_expression(symbol_manager, n->td.df->rn.hi, 0);
         t->lo = n->td.df->rn.lo->i;
         t->hi = n->td.df->rn.hi->i;
       }
     }
     else
     {
-      Symbol *px = symbol_find(SM, n->td.nm);
+      Symbol *px = symbol_find(symbol_manager, n->td.nm);
       if (px and px->k == 1 and px->ty and (px->ty->k == TYPE_INTEGER or px->ty->k == TY_PT)
           and n->td.df)
       {
         if (px->ty->k == TY_PT)
         {
           t = px->ty;
-          t->prt = resolve_subtype(SM, n->td.df);
+          t->prt = resolve_subtype(symbol_manager, n->td.df);
         }
         else
           t = px->ty;
       }
       else if (n->td.df)
       {
-        t = resolve_subtype(SM, n->td.df);
+        t = resolve_subtype(symbol_manager, n->td.df);
       }
       else
       {
         t = type_new(n->td.df or n->td.drv ? TYPE_INTEGER : TY_PT, n->td.nm);
         if (t and n->td.nm.string)
         {
-          Symbol *s = symbol_add_overload(SM, symbol_new(n->td.nm, 1, t, n));
+          Symbol *s = symbol_add_overload(symbol_manager, symbol_new(n->td.nm, 1, t, n));
           n->sy = s;
         }
         break;
@@ -7558,16 +7558,16 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
         Syntax_Node *d = n->td.dsc.data[i];
         if (d->k == N_DS)
         {
-          Symbol *ds = symbol_add_overload(SM, symbol_new(d->pm.nm, 8, resolve_subtype(SM, d->pm.ty), d));
+          Symbol *ds = symbol_add_overload(symbol_manager, symbol_new(d->pm.nm, 8, resolve_subtype(symbol_manager, d->pm.ty), d));
           if (d->pm.df)
-            resolve_expression(SM, d->pm.df, ds->ty);
+            resolve_expression(symbol_manager, d->pm.df, ds->ty);
         }
       }
       t->dc = n->td.dsc;
     }
     if (n->td.nm.string and n->td.nm.length > 0)
     {
-      Symbol *px2 = symbol_find(SM, n->td.nm);
+      Symbol *px2 = symbol_find(symbol_manager, n->td.nm);
       if (px2 and px2->k == 1 and px2->ty == t)
       {
         n->sy = px2;
@@ -7576,7 +7576,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
       }
       else
       {
-        Symbol *s = symbol_add_overload(SM, symbol_new(n->td.nm, 1, t, n));
+        Symbol *s = symbol_add_overload(symbol_manager, symbol_new(n->td.nm, 1, t, n));
         n->sy = s;
       }
     }
@@ -7588,7 +7588,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
       {
         Syntax_Node *it = n->td.df->lst.it.data[i];
         Symbol *es = symbol_add_overload(
-            SM, symbol_new(it->k == N_CHAR ? (String_Slice){(const char *) &it->i, 1} : it->s, 2, t, n));
+            symbol_manager, symbol_new(it->k == N_CHAR ? (String_Slice){(const char *) &it->i, 1} : it->s, 2, t, n));
         es->vl = vl++;
         sv(&t->ev, es);
       }
@@ -7605,7 +7605,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
         if (c->k == N_CM)
         {
           c->cm.of = of++;
-          Type_Info *ct = resolve_subtype(SM, c->cm.ty);
+          Type_Info *ct = resolve_subtype(symbol_manager, c->cm.ty);
           if (ct)
             c->cm.ty->ty = ct;
           if (c->cm.dc)
@@ -7614,7 +7614,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
             {
               Syntax_Node *dc = c->cm.dc->lst.it.data[j];
               if (dc->k == N_DS and dc->pm.df)
-                resolve_expression(SM, dc->pm.df, resolve_subtype(SM, dc->pm.ty));
+                resolve_expression(symbol_manager, dc->pm.df, resolve_subtype(symbol_manager, dc->pm.ty));
             }
           }
           if (c->cm.dsc)
@@ -7625,9 +7625,9 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
               if (dc->k == N_DS)
               {
                 Symbol *ds =
-                    symbol_add_overload(SM, symbol_new(dc->pm.nm, 8, resolve_subtype(SM, dc->pm.ty), dc));
+                    symbol_add_overload(symbol_manager, symbol_new(dc->pm.nm, 8, resolve_subtype(symbol_manager, dc->pm.ty), dc));
                 if (dc->pm.df)
-                  resolve_expression(SM, dc->pm.df, ds->ty);
+                  resolve_expression(symbol_manager, dc->pm.df, ds->ty);
               }
             }
             c->cm.dc = c->cm.dsc;
@@ -7642,7 +7642,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
             {
               Syntax_Node *vc = v->vr.cmm.data[k];
               vc->cm.of = of++;
-              Type_Info *vct = resolve_subtype(SM, vc->cm.ty);
+              Type_Info *vct = resolve_subtype(symbol_manager, vc->cm.ty);
               if (vct)
                 vc->cm.ty->ty = vct;
               if (vc->cm.dc)
@@ -7651,7 +7651,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
                 {
                   Syntax_Node *dc = vc->cm.dc->lst.it.data[m];
                   if (dc->k == N_DS and dc->pm.df)
-                    resolve_expression(SM, dc->pm.df, resolve_subtype(SM, dc->pm.ty));
+                    resolve_expression(symbol_manager, dc->pm.df, resolve_subtype(symbol_manager, dc->pm.ty));
                 }
               }
               if (vc->cm.dsc)
@@ -7662,9 +7662,9 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
                   if (dc->k == N_DS)
                   {
                     Symbol *ds = symbol_add_overload(
-                        SM, symbol_new(dc->pm.nm, 8, resolve_subtype(SM, dc->pm.ty), dc));
+                        symbol_manager, symbol_new(dc->pm.nm, 8, resolve_subtype(symbol_manager, dc->pm.ty), dc));
                     if (dc->pm.df)
-                      resolve_expression(SM, dc->pm.df, ds->ty);
+                      resolve_expression(symbol_manager, dc->pm.df, ds->ty);
                   }
                 }
                 vc->cm.dc = vc->cm.dsc;
@@ -7680,7 +7680,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
   break;
   case N_SD:
   {
-    Type_Info *b = resolve_subtype(SM, n->sd.in);
+    Type_Info *b = resolve_subtype(symbol_manager, n->sd.in);
     Type_Info *t = type_new(b ? b->k : TYPE_INTEGER, n->sd.nm);
     if (b)
     {
@@ -7698,8 +7698,8 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
     }
     if (n->sd.rn)
     {
-      resolve_expression(SM, n->sd.rn->rn.lo, 0);
-      resolve_expression(SM, n->sd.rn->rn.hi, 0);
+      resolve_expression(symbol_manager, n->sd.rn->rn.lo, 0);
+      resolve_expression(symbol_manager, n->sd.rn->rn.hi, 0);
       Syntax_Node *lo = n->sd.rn->rn.lo;
       Syntax_Node *hi = n->sd.rn->rn.hi;
       int64_t lov = lo->k == N_UN and lo->un.op == T_MN and lo->un.x->k == N_INT ? -lo->un.x->i
@@ -7711,7 +7711,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
       t->lo = lov;
       t->hi = hiv;
     }
-    symbol_add_overload(SM, symbol_new(n->sd.nm, 1, t, n));
+    symbol_add_overload(symbol_manager, symbol_new(n->sd.nm, 1, t, n));
   }
   break;
   case N_ED:
@@ -7720,11 +7720,11 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
       Syntax_Node *id = n->ed.id.data[i];
       if (n->ed.rn)
       {
-        resolve_expression(SM, n->ed.rn, 0);
+        resolve_expression(symbol_manager, n->ed.rn, 0);
         Symbol *tgt = n->ed.rn->sy;
         if (tgt and tgt->k == 3)
         {
-          Symbol *al = symbol_add_overload(SM, symbol_new(id->s, 3, 0, n));
+          Symbol *al = symbol_add_overload(symbol_manager, symbol_new(id->s, 3, 0, n));
           al->df = n->ed.rn;
           id->sy = al;
         }
@@ -7733,7 +7733,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
       }
       else
       {
-        id->sy = symbol_add_overload(SM, symbol_new(id->s, 3, 0, n));
+        id->sy = symbol_add_overload(symbol_manager, symbol_new(id->s, 3, 0, n));
       }
     }
     break;
@@ -7742,20 +7742,20 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
     Type_Info *ft = type_new(TYPE_STRING, n->sp.nm);
     if (n->sp.rt)
     {
-      Type_Info *rt = resolve_subtype(SM, n->sp.rt);
+      Type_Info *rt = resolve_subtype(symbol_manager, n->sp.rt);
       ft->el = rt;
-      Symbol *s = symbol_add_overload(SM, symbol_new(n->sp.nm, 5, ft, n));
+      Symbol *s = symbol_add_overload(symbol_manager, symbol_new(n->sp.nm, 5, ft, n));
       nv(&s->ol, n);
       n->sy = s;
-      s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEPARATE_PACKAGE.string ? symbol_find(SM, SEPARATE_PACKAGE) : 0;
+      s->pr = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
       nv(&ft->ops, n);
     }
     else
     {
-      Symbol *s = symbol_add_overload(SM, symbol_new(n->sp.nm, 4, ft, n));
+      Symbol *s = symbol_add_overload(symbol_manager, symbol_new(n->sp.nm, 4, ft, n));
       nv(&s->ol, n);
       n->sy = s;
-      s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEPARATE_PACKAGE.string ? symbol_find(SM, SEPARATE_PACKAGE) : 0;
+      s->pr = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
       nv(&ft->ops, n);
     }
   }
@@ -7765,111 +7765,111 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
   {
     Syntax_Node *sp = n->bd.sp;
     Type_Info *ft = type_new(TYPE_STRING, sp->sp.nm);
-    Symbol *s = symbol_add_overload(SM, symbol_new(sp->sp.nm, 4, ft, n));
+    Symbol *s = symbol_add_overload(symbol_manager, symbol_new(sp->sp.nm, 4, ft, n));
     nv(&s->ol, n);
     n->sy = s;
     n->bd.el = s->el;
-    s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEPARATE_PACKAGE.string ? symbol_find(SM, SEPARATE_PACKAGE) : 0;
+    s->pr = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
     nv(&ft->ops, n);
     if (n->k == N_PB)
     {
-      SM->lv++;
-      symbol_compare_parameter(SM);
+      symbol_manager->lv++;
+      symbol_compare_parameter(symbol_manager);
       n->bd.pr = s;
-      GT *gt = generic_find(SM, sp->sp.nm);
+      GT *gt = generic_find(symbol_manager, sp->sp.nm);
       if (gt)
         for (uint32_t i = 0; i < gt->fp.count; i++)
-          resolve_declaration(SM, gt->fp.data[i]);
+          resolve_declaration(symbol_manager, gt->fp.data[i]);
       for (uint32_t i = 0; i < sp->sp.pmm.count; i++)
       {
         Syntax_Node *p = sp->sp.pmm.data[i];
-        Type_Info *pt = resolve_subtype(SM, p->pm.ty);
-        Symbol *ps = symbol_add_overload(SM, symbol_new(p->pm.nm, 0, pt, p));
+        Type_Info *pt = resolve_subtype(symbol_manager, p->pm.ty);
+        Symbol *ps = symbol_add_overload(symbol_manager, symbol_new(p->pm.nm, 0, pt, p));
         p->sy = ps;
       }
       for (uint32_t i = 0; i < n->bd.dc.count; i++)
-        resolve_declaration(SM, n->bd.dc.data[i]);
+        resolve_declaration(symbol_manager, n->bd.dc.data[i]);
       for (uint32_t i = 0; i < n->bd.st.count; i++)
-        resolve_statement_sequence(SM, n->bd.st.data[i]);
-      symbol_compare_overload(SM);
-      SM->lv--;
+        resolve_statement_sequence(symbol_manager, n->bd.st.data[i]);
+      symbol_compare_overload(symbol_manager);
+      symbol_manager->lv--;
     }
   }
   break;
   case N_FB:
   {
     Syntax_Node *sp = n->bd.sp;
-    Type_Info *rt = resolve_subtype(SM, sp->sp.rt);
+    Type_Info *rt = resolve_subtype(symbol_manager, sp->sp.rt);
     Type_Info *ft = type_new(TYPE_STRING, sp->sp.nm);
     ft->el = rt;
-    Symbol *s = symbol_add_overload(SM, symbol_new(sp->sp.nm, 5, ft, n));
+    Symbol *s = symbol_add_overload(symbol_manager, symbol_new(sp->sp.nm, 5, ft, n));
     nv(&s->ol, n);
     n->sy = s;
     n->bd.el = s->el;
-    s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEPARATE_PACKAGE.string ? symbol_find(SM, SEPARATE_PACKAGE) : 0;
+    s->pr = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
     nv(&ft->ops, n);
     if (n->k == N_FB)
     {
-      SM->lv++;
-      symbol_compare_parameter(SM);
+      symbol_manager->lv++;
+      symbol_compare_parameter(symbol_manager);
       n->bd.pr = s;
-      GT *gt = generic_find(SM, sp->sp.nm);
+      GT *gt = generic_find(symbol_manager, sp->sp.nm);
       if (gt)
         for (uint32_t i = 0; i < gt->fp.count; i++)
-          resolve_declaration(SM, gt->fp.data[i]);
+          resolve_declaration(symbol_manager, gt->fp.data[i]);
       for (uint32_t i = 0; i < sp->sp.pmm.count; i++)
       {
         Syntax_Node *p = sp->sp.pmm.data[i];
-        Type_Info *pt = resolve_subtype(SM, p->pm.ty);
-        Symbol *ps = symbol_add_overload(SM, symbol_new(p->pm.nm, 0, pt, p));
+        Type_Info *pt = resolve_subtype(symbol_manager, p->pm.ty);
+        Symbol *ps = symbol_add_overload(symbol_manager, symbol_new(p->pm.nm, 0, pt, p));
         p->sy = ps;
       }
       for (uint32_t i = 0; i < n->bd.dc.count; i++)
-        resolve_declaration(SM, n->bd.dc.data[i]);
+        resolve_declaration(symbol_manager, n->bd.dc.data[i]);
       for (uint32_t i = 0; i < n->bd.st.count; i++)
-        resolve_statement_sequence(SM, n->bd.st.data[i]);
-      symbol_compare_overload(SM);
-      SM->lv--;
+        resolve_statement_sequence(symbol_manager, n->bd.st.data[i]);
+      symbol_compare_overload(symbol_manager);
+      symbol_manager->lv--;
     }
   }
   break;
   case N_FD:
   {
     Syntax_Node *sp = n->bd.sp;
-    Type_Info *rt = resolve_subtype(SM, sp->sp.rt);
+    Type_Info *rt = resolve_subtype(symbol_manager, sp->sp.rt);
     Type_Info *ft = type_new(TYPE_STRING, sp->sp.nm);
     ft->el = rt;
-    Symbol *s = symbol_add_overload(SM, symbol_new(sp->sp.nm, 5, ft, n));
+    Symbol *s = symbol_add_overload(symbol_manager, symbol_new(sp->sp.nm, 5, ft, n));
     nv(&s->ol, n);
     n->sy = s;
     n->bd.el = s->el;
-    s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEPARATE_PACKAGE.string ? symbol_find(SM, SEPARATE_PACKAGE) : 0;
+    s->pr = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
     nv(&ft->ops, n);
   }
   break;
   case N_PKS:
   {
     Type_Info *t = type_new(TY_P, n->ps.nm);
-    Symbol *s = symbol_add_overload(SM, symbol_new(n->ps.nm, 6, t, n));
+    Symbol *s = symbol_add_overload(symbol_manager, symbol_new(n->ps.nm, 6, t, n));
     n->sy = s;
     n->ps.el = s->el;
-    SM->pk = n;
-    symbol_compare_parameter(SM);
+    symbol_manager->pk = n;
+    symbol_compare_parameter(symbol_manager);
     for (uint32_t i = 0; i < n->ps.dc.count; i++)
-      resolve_declaration(SM, n->ps.dc.data[i]);
+      resolve_declaration(symbol_manager, n->ps.dc.data[i]);
     for (uint32_t i = 0; i < n->ps.pr.count; i++)
-      resolve_declaration(SM, n->ps.pr.data[i]);
-    symbol_compare_overload(SM);
-    SM->pk = 0;
+      resolve_declaration(symbol_manager, n->ps.pr.data[i]);
+    symbol_compare_overload(symbol_manager);
+    symbol_manager->pk = 0;
   }
   break;
   case N_PKB:
   {
-    Symbol *ps = symbol_find(SM, n->pb.nm);
+    Symbol *ps = symbol_find(symbol_manager, n->pb.nm);
     GT *gt = 0;
     if (ps and ps->k == 11)
     {
-      gt = ps->gt ? ps->gt : generic_find(SM, n->pb.nm);
+      gt = ps->gt ? ps->gt : generic_find(symbol_manager, n->pb.nm);
     }
     if (gt)
     {
@@ -7879,24 +7879,24 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
         pk = ps->df;
       if (pk)
       {
-        symbol_compare_parameter(SM);
-        SM->pk = pk;
+        symbol_compare_parameter(symbol_manager);
+        symbol_manager->pk = pk;
         for (uint32_t i = 0; i < pk->ps.dc.count; i++)
-          resolve_declaration(SM, pk->ps.dc.data[i]);
+          resolve_declaration(symbol_manager, pk->ps.dc.data[i]);
         for (uint32_t i = 0; i < gt->fp.count; i++)
-          resolve_declaration(SM, gt->fp.data[i]);
+          resolve_declaration(symbol_manager, gt->fp.data[i]);
         for (uint32_t i = 0; i < n->pb.dc.count; i++)
-          resolve_declaration(SM, n->pb.dc.data[i]);
+          resolve_declaration(symbol_manager, n->pb.dc.data[i]);
         for (uint32_t i = 0; i < n->pb.st.count; i++)
-          resolve_statement_sequence(SM, n->pb.st.data[i]);
-        symbol_compare_overload(SM);
-        SM->pk = 0;
+          resolve_statement_sequence(symbol_manager, n->pb.st.data[i]);
+        symbol_compare_overload(symbol_manager);
+        symbol_manager->pk = 0;
       }
       break;
     }
-    symbol_compare_parameter(SM);
+    symbol_compare_parameter(symbol_manager);
     {
-      const char *_src = lookup_path(SM, n->pb.nm);
+      const char *_src = lookup_path(symbol_manager, n->pb.nm);
       if (_src)
       {
         char _af[512];
@@ -7913,23 +7913,23 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
                                    : 0;
             if (_pk and string_equal_ignore_case(_pk->ps.nm, n->pb.nm))
             {
-              SM->pk = _pk;
+              symbol_manager->pk = _pk;
               for (uint32_t _j = 0; _j < _pk->ps.dc.count; _j++)
-                resolve_declaration(SM, _pk->ps.dc.data[_j]);
+                resolve_declaration(symbol_manager, _pk->ps.dc.data[_j]);
               for (uint32_t _j = 0; _j < _pk->ps.pr.count; _j++)
-                resolve_declaration(SM, _pk->ps.pr.data[_j]);
-              SM->pk = 0;
+                resolve_declaration(symbol_manager, _pk->ps.pr.data[_j]);
+              symbol_manager->pk = 0;
               break;
             }
           }
       }
     }
-    ps = symbol_find(SM, n->pb.nm);
+    ps = symbol_find(symbol_manager, n->pb.nm);
     if (not ps or not ps->df)
     {
       Type_Info *t = type_new(TY_P, n->pb.nm);
-      ps = symbol_add_overload(SM, symbol_new(n->pb.nm, 6, t, 0));
-      ps->el = SM->eo++;
+      ps = symbol_add_overload(symbol_manager, symbol_new(n->pb.nm, 6, t, 0));
+      ps->el = symbol_manager->eo++;
       Syntax_Node *pk = ND(PKS, n->l);
       pk->ps.nm = n->pb.nm;
       pk->sy = ps;
@@ -7938,9 +7938,9 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
     }
     if (ps)
     {
-      sv(&SM->uv, ps);
+      sv(&symbol_manager->uv, ps);
       n->pb.el = ps->el;
-      SM->pk = ps->df;
+      symbol_manager->pk = ps->df;
       if (ps->df and ps->df->k == N_PKS)
       {
         Syntax_Node *pk = ps->df;
@@ -7950,14 +7950,14 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
           if (d->sy)
           {
             d->sy->vis |= 2;
-            sv(&SM->uv, d->sy);
+            sv(&symbol_manager->uv, d->sy);
           }
           if (d->k == N_ED)
             for (uint32_t j = 0; j < d->ed.id.count; j++)
               if (d->ed.id.data[j]->sy)
               {
                 d->ed.id.data[j]->sy->vis |= 2;
-                sv(&SM->uv, d->ed.id.data[j]->sy);
+                sv(&symbol_manager->uv, d->ed.id.data[j]->sy);
               }
         }
         for (uint32_t i = 0; i < pk->ps.pr.count; i++)
@@ -7966,28 +7966,28 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
           if (d->sy)
           {
             d->sy->vis |= 2;
-            sv(&SM->uv, d->sy);
+            sv(&symbol_manager->uv, d->sy);
           }
           if (d->k == N_ED)
             for (uint32_t j = 0; j < d->ed.id.count; j++)
               if (d->ed.id.data[j]->sy)
               {
                 d->ed.id.data[j]->sy->vis |= 2;
-                sv(&SM->uv, d->ed.id.data[j]->sy);
+                sv(&symbol_manager->uv, d->ed.id.data[j]->sy);
               }
         }
         for (uint32_t i = 0; i < pk->ps.dc.count; i++)
         {
           Syntax_Node *d = pk->ps.dc.data[i];
           if (d->sy)
-            sv(&SM->uv, d->sy);
+            sv(&symbol_manager->uv, d->sy);
           else if (d->k == N_ED)
           {
             for (uint32_t j = 0; j < d->ed.id.count; j++)
             {
               Syntax_Node *eid = d->ed.id.data[j];
               if (eid->sy)
-                sv(&SM->uv, eid->sy);
+                sv(&symbol_manager->uv, eid->sy);
             }
           }
           else if (d->k == N_OD)
@@ -7996,33 +7996,33 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
             {
               Syntax_Node *oid = d->od.id.data[j];
               if (oid->sy)
-                sv(&SM->uv, oid->sy);
+                sv(&symbol_manager->uv, oid->sy);
             }
           }
         }
       }
     }
     for (uint32_t i = 0; i < n->pb.dc.count; i++)
-      resolve_declaration(SM, n->pb.dc.data[i]);
+      resolve_declaration(symbol_manager, n->pb.dc.data[i]);
     for (uint32_t i = 0; i < n->pb.st.count; i++)
-      resolve_statement_sequence(SM, n->pb.st.data[i]);
-    symbol_compare_overload(SM);
-    SM->pk = 0;
+      resolve_statement_sequence(symbol_manager, n->pb.st.data[i]);
+    symbol_compare_overload(symbol_manager);
+    symbol_manager->pk = 0;
   }
   break;
   case N_TKS:
   {
     Type_Info *t = type_new(TY_T, n->ts.nm);
     t->cm = n->ts.en;
-    Symbol *s = symbol_add_overload(SM, symbol_new(n->ts.nm, 7, t, n));
+    Symbol *s = symbol_add_overload(symbol_manager, symbol_new(n->ts.nm, 7, t, n));
     n->sy = s;
-    s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEPARATE_PACKAGE.string ? symbol_find(SM, SEPARATE_PACKAGE) : 0;
+    s->pr = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
   }
   break;
   case N_TKB:
   {
-    Symbol *ts = symbol_find(SM, n->tb.nm);
-    symbol_compare_parameter(SM);
+    Symbol *ts = symbol_find(symbol_manager, n->tb.nm);
+    symbol_compare_parameter(symbol_manager);
     if (ts and ts->ty and ts->ty->cm.count > 0)
     {
       for (uint32_t i = 0; i < ts->ty->cm.count; i++)
@@ -8030,29 +8030,29 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
         Syntax_Node *en = ts->ty->cm.data[i];
         if (en and en->k == N_ENT)
         {
-          Symbol *ens = symbol_add_overload(SM, symbol_new(en->ent.nm, 9, 0, en));
+          Symbol *ens = symbol_add_overload(symbol_manager, symbol_new(en->ent.nm, 9, 0, en));
           (void) ens;
         }
       }
     }
     for (uint32_t i = 0; i < n->tb.dc.count; i++)
-      resolve_declaration(SM, n->tb.dc.data[i]);
+      resolve_declaration(symbol_manager, n->tb.dc.data[i]);
     for (uint32_t i = 0; i < n->tb.st.count; i++)
-      resolve_statement_sequence(SM, n->tb.st.data[i]);
-    symbol_compare_overload(SM);
+      resolve_statement_sequence(symbol_manager, n->tb.st.data[i]);
+    symbol_compare_overload(symbol_manager);
   }
   break;
   case N_GEN:
-    generate_clone(SM, n);
+    generate_clone(symbol_manager, n);
     break;
   case N_US:
-    resolve_statement_sequence(SM, n);
+    resolve_statement_sequence(symbol_manager, n);
     break;
   default:
     break;
   }
 }
-static int elaborate_compilation(Symbol_Manager *SM, Symbol_Vector *ev, Syntax_Node *n)
+static int elaborate_compilation(Symbol_Manager *symbol_manager, Symbol_Vector *ev, Syntax_Node *n)
 {
   if (not n)
     return 0;
@@ -8068,7 +8068,7 @@ static int elaborate_compilation(Symbol_Manager *SM, Symbol_Vector *ev, Syntax_N
   {
     Symbol *s = n->sy;
     if (s and s->el < 0)
-      s->el = SM->eo;
+      s->el = symbol_manager->eo;
     if (s)
     {
       sv(ev, s);
@@ -8108,7 +8108,7 @@ static char *read_file(const char *path)
   fclose(f);
   return b;
 }
-static void read_ada_library_interface(Symbol_Manager *SM, const char *pth)
+static void read_ada_library_interface(Symbol_Manager *symbol_manager, const char *pth)
 {
   char a[512];
   snprintf(a, 512, "%s.ali", pth);
@@ -8193,7 +8193,7 @@ static void read_ada_library_interface(Symbol_Manager *SM, const char *pth)
         else
           vt = TY_INT;
         Syntax_Node *n = node_new(N_OD, ll);
-        Symbol *s = symbol_add_overload(SM, symbol_new(sn, 0, vt, n));
+        Symbol *s = symbol_add_overload(symbol_manager, symbol_new(sn, 0, vt, n));
         s->ext = 1;
         s->lv = 0;
         s->ext_nm = string_duplicate(msn);
@@ -8212,8 +8212,8 @@ static void read_ada_library_interface(Symbol_Manager *SM, const char *pth)
         }
         sp->sp.rt = 0;
         n->bd.sp = sp;
-        Symbol *s = symbol_add_overload(SM, symbol_new(msn, isp ? 4 : 5, type_new(TYPE_STRING, msn), n));
-        s->el = SM->eo++;
+        Symbol *s = symbol_add_overload(symbol_manager, symbol_new(msn, isp ? 4 : 5, type_new(TYPE_STRING, msn), n));
+        s->el = symbol_manager->eo++;
         nv(&s->ol, n);
         n->sy = s;
         s->mangled_nm = string_duplicate(sn);
@@ -8226,7 +8226,7 @@ static void read_ada_library_interface(Symbol_Manager *SM, const char *pth)
   }
   free(ali);
 }
-static const char *lookup_path(Symbol_Manager *SM, String_Slice nm)
+static const char *lookup_path(Symbol_Manager *symbol_manager, String_Slice nm)
 {
   char pf[256], af[512];
   for (int i = 0; i < include_path_count; i++)
@@ -8241,7 +8241,7 @@ static const char *lookup_path(Symbol_Manager *SM, String_Slice nm)
         nm.string);
     for (char *p = pf + strlen(include_paths[i]); *p; p++)
       *p = tolower(*p);
-    read_ada_library_interface(SM, pf);
+    read_ada_library_interface(symbol_manager, pf);
     snprintf(af, 512, "%s.ads", pf);
     const char *s = read_file(af);
     if (s)
@@ -8249,7 +8249,7 @@ static const char *lookup_path(Symbol_Manager *SM, String_Slice nm)
   }
   return 0;
 }
-static Syntax_Node *pks2(Symbol_Manager *SM, String_Slice nm, const char *src)
+static Syntax_Node *pks2(Symbol_Manager *symbol_manager, String_Slice nm, const char *src)
 {
   if (not src)
     return 0;
@@ -8260,7 +8260,7 @@ static Syntax_Node *pks2(Symbol_Manager *SM, String_Slice nm, const char *src)
   if (cu and cu->cu.cx)
   {
     for (uint32_t i = 0; i < cu->cu.cx->cx.wt.count; i++)
-      pks2(SM, cu->cu.cx->cx.wt.data[i]->wt.nm, lookup_path(SM, cu->cu.cx->cx.wt.data[i]->wt.nm));
+      pks2(symbol_manager, cu->cu.cx->cx.wt.data[i]->wt.nm, lookup_path(symbol_manager, cu->cu.cx->cx.wt.data[i]->wt.nm));
   }
   for (uint32_t i = 0; cu and i < cu->cu.un.count; i++)
   {
@@ -8268,45 +8268,45 @@ static Syntax_Node *pks2(Symbol_Manager *SM, String_Slice nm, const char *src)
     if (u->k == N_PKS)
     {
       Type_Info *t = type_new(TY_P, nm);
-      Symbol *ps = symbol_add_overload(SM, symbol_new(nm, 6, t, u));
+      Symbol *ps = symbol_add_overload(symbol_manager, symbol_new(nm, 6, t, u));
       ps->lv = 0;
       u->sy = ps;
       u->ps.el = ps->el;
-      Syntax_Node *oldpk = SM->pk;
-      int oldlv = SM->lv;
-      SM->pk = u;
-      SM->lv = 0;
+      Syntax_Node *oldpk = symbol_manager->pk;
+      int oldlv = symbol_manager->lv;
+      symbol_manager->pk = u;
+      symbol_manager->lv = 0;
       for (uint32_t j = 0; j < u->ps.dc.count; j++)
-        resolve_declaration(SM, u->ps.dc.data[j]);
+        resolve_declaration(symbol_manager, u->ps.dc.data[j]);
       for (uint32_t j = 0; j < u->ps.pr.count; j++)
-        resolve_declaration(SM, u->ps.pr.data[j]);
-      SM->lv = oldlv;
-      SM->pk = oldpk;
+        resolve_declaration(symbol_manager, u->ps.pr.data[j]);
+      symbol_manager->lv = oldlv;
+      symbol_manager->pk = oldpk;
     }
     else if (u->k == N_GEN)
-      resolve_declaration(SM, u);
+      resolve_declaration(symbol_manager, u);
   }
   return cu;
 }
-static void parse_package_specification(Symbol_Manager *SM, String_Slice nm, const char *src)
+static void parse_package_specification(Symbol_Manager *symbol_manager, String_Slice nm, const char *src)
 {
-  Symbol *ps = symbol_find(SM, nm);
+  Symbol *ps = symbol_find(symbol_manager, nm);
   if (ps and ps->k == 6)
     return;
-  pks2(SM, nm, src);
+  pks2(symbol_manager, nm, src);
 }
-static void symbol_manager_use_clauses(Symbol_Manager *SM, Syntax_Node *n)
+static void symbol_manager_use_clauses(Symbol_Manager *symbol_manager, Syntax_Node *n)
 {
   if (n->k != N_CU)
     return;
   for (uint32_t i = 0; i < n->cu.cx->cx.wt.count; i++)
-    parse_package_specification(SM, n->cu.cx->cx.wt.data[i]->wt.nm, lookup_path(SM, n->cu.cx->cx.wt.data[i]->wt.nm));
+    parse_package_specification(symbol_manager, n->cu.cx->cx.wt.data[i]->wt.nm, lookup_path(symbol_manager, n->cu.cx->cx.wt.data[i]->wt.nm));
   for (uint32_t i = 0; i < n->cu.cx->cx.us.count; i++)
   {
     Syntax_Node *u = n->cu.cx->cx.us.data[i];
     if (u and u->k == N_US and u->us.nm and u->us.nm->k == N_ID)
     {
-      Symbol *ps = symbol_find(SM, u->us.nm->s);
+      Symbol *ps = symbol_find(symbol_manager, u->us.nm->s);
       if (ps and ps->k == 6 and ps->df and ps->df->k == N_PKS)
       {
         Syntax_Node *pk = ps->df;
@@ -8319,7 +8319,7 @@ static void symbol_manager_use_clauses(Symbol_Manager *SM, Syntax_Node *n)
               if (d->ed.id.data[k]->sy)
               {
                 d->ed.id.data[k]->sy->vis |= 2;
-                sv(&SM->uv, d->ed.id.data[k]->sy);
+                sv(&symbol_manager->uv, d->ed.id.data[k]->sy);
               }
           }
           else if (d->k == N_OD)
@@ -8328,13 +8328,13 @@ static void symbol_manager_use_clauses(Symbol_Manager *SM, Syntax_Node *n)
               if (d->od.id.data[k]->sy)
               {
                 d->od.id.data[k]->sy->vis |= 2;
-                sv(&SM->uv, d->od.id.data[k]->sy);
+                sv(&symbol_manager->uv, d->od.id.data[k]->sy);
               }
           }
           else if (d->sy)
           {
             d->sy->vis |= 2;
-            sv(&SM->uv, d->sy);
+            sv(&symbol_manager->uv, d->sy);
           }
         }
       }
@@ -8347,20 +8347,20 @@ static void symbol_manager_use_clauses(Symbol_Manager *SM, Syntax_Node *n)
     if (n->cu.un.data[i]->k == N_PKS)
       for (uint32_t j = 0; j < n->cu.un.data[i]->ps.dc.count; j++)
       {
-        int e = elaborate_compilation(SM, &eo, n->cu.un.data[i]->ps.dc.data[j]);
+        int e = elaborate_compilation(symbol_manager, &eo, n->cu.un.data[i]->ps.dc.data[j]);
         mx = e > mx ? e : mx;
       }
     else if (n->cu.un.data[i]->k == N_PKB)
       for (uint32_t j = 0; j < n->cu.un.data[i]->pb.dc.count; j++)
       {
-        int e = elaborate_compilation(SM, &eo, n->cu.un.data[i]->pb.dc.data[j]);
+        int e = elaborate_compilation(symbol_manager, &eo, n->cu.un.data[i]->pb.dc.data[j]);
         mx = e > mx ? e : mx;
       }
     for (uint32_t j = 0; j < eo.count; j++)
       if (eo.data[j]->k == 6 and eo.data[j]->df and eo.data[j]->df->k == N_PKS)
         for (uint32_t k = 0; k < ((Syntax_Node *) eo.data[j]->df)->ps.dc.count; k++)
-          resolve_declaration(SM, ((Syntax_Node *) eo.data[j]->df)->ps.dc.data[k]);
-    resolve_declaration(SM, n->cu.un.data[i]);
+          resolve_declaration(symbol_manager, ((Syntax_Node *) eo.data[j]->df)->ps.dc.data[k]);
+    resolve_declaration(symbol_manager, n->cu.un.data[i]);
   }
 }
 typedef enum
@@ -13846,11 +13846,11 @@ static void print_forward_declarations(Code_Generator *generator, Symbol_Manager
           }
         }
 }
-static LU *lfnd(Symbol_Manager *SM, String_Slice nm)
+static LU *lfnd(Symbol_Manager *symbol_manager, String_Slice nm)
 {
-  for (uint32_t i = 0; i < SM->lu.count; i++)
+  for (uint32_t i = 0; i < symbol_manager->lu.count; i++)
   {
-    LU *l = SM->lu.data[i];
+    LU *l = symbol_manager->lu.data[i];
     if (string_equal_ignore_case(l->nm, nm))
       return l;
   }
@@ -13863,7 +13863,7 @@ static uint64_t find_type_symbol(const char *p)
     return 0;
   return s.st_mtime;
 }
-static void write_ada_library_interface(Symbol_Manager *SM, const char *fn, Syntax_Node *cu)
+static void write_ada_library_interface(Symbol_Manager *symbol_manager, const char *fn, Syntax_Node *cu)
 {
   if (not cu or cu->cu.un.count == 0)
     return;
@@ -13905,12 +13905,12 @@ static void write_ada_library_interface(Symbol_Manager *SM, const char *fn, Synt
       uint64_t ts = find_type_symbol(pf);
       fprintf(f, "W %.*s %lu\n", (int) w->wt.nm.length, w->wt.nm.string, (unsigned long) ts);
     }
-  for (int i = 0; i < SM->dpn; i++)
-    if (SM->dps[i].count and SM->dps[i].data[0])
-      fprintf(f, "D %.*s\n", (int) SM->dps[i].data[0]->nm.length, SM->dps[i].data[0]->nm.string);
+  for (int i = 0; i < symbol_manager->dpn; i++)
+    if (symbol_manager->dps[i].count and symbol_manager->dps[i].data[0])
+      fprintf(f, "D %.*s\n", (int) symbol_manager->dps[i].data[0]->nm.length, symbol_manager->dps[i].data[0]->nm.string);
   for (int h = 0; h < 4096; h++)
   {
-    for (Symbol *s = SM->sy[h]; s; s = s->nx)
+    for (Symbol *s = symbol_manager->sy[h]; s; s = s->nx)
     {
       if ((s->k == 4 or s->k == 5) and s->pr and string_equal_ignore_case(s->pr->nm, nm))
       {
@@ -13938,21 +13938,21 @@ static void write_ada_library_interface(Symbol_Manager *SM, const char *fn, Synt
             for (uint32_t i = 0; i < sp->sp.pmm.count; i++)
             {
               Syntax_Node *p = sp->sp.pmm.data[i];
-              Value_Kind k = p->pm.ty ? token_kind_to_value_kind(resolve_subtype(SM, p->pm.ty))
+              Value_Kind k = p->pm.ty ? token_kind_to_value_kind(resolve_subtype(symbol_manager, p->pm.ty))
                                       : VALUE_KIND_INTEGER;
               fprintf(f, " %s", value_llvm_type_string(k));
             }
         }
         else
         {
-          Type_Info *rt = sp and sp->sp.rt ? resolve_subtype(SM, sp->sp.rt) : 0;
+          Type_Info *rt = sp and sp->sp.rt ? resolve_subtype(symbol_manager, sp->sp.rt) : 0;
           Value_Kind rk = token_kind_to_value_kind(rt);
           fprintf(f, " %s", value_llvm_type_string(rk));
           if (sp)
             for (uint32_t i = 0; i < sp->sp.pmm.count; i++)
             {
               Syntax_Node *p = sp->sp.pmm.data[i];
-              Value_Kind k = p->pm.ty ? token_kind_to_value_kind(resolve_subtype(SM, p->pm.ty))
+              Value_Kind k = p->pm.ty ? token_kind_to_value_kind(resolve_subtype(symbol_manager, p->pm.ty))
                                       : VALUE_KIND_INTEGER;
               fprintf(f, " %s", value_llvm_type_string(k));
             }
@@ -13981,25 +13981,25 @@ static void write_ada_library_interface(Symbol_Manager *SM, const char *fn, Synt
       }
     }
   }
-  for (uint32_t i = 0; i < SM->eh.count; i++)
+  for (uint32_t i = 0; i < symbol_manager->eh.count; i++)
   {
     bool f2 = 0;
     for (uint32_t j = 0; j < i; j++)
-      if (string_equal_ignore_case(SM->eh.data[j], SM->eh.data[i]))
+      if (string_equal_ignore_case(symbol_manager->eh.data[j], symbol_manager->eh.data[i]))
       {
         f2 = 1;
         break;
       }
     if (not f2)
-      fprintf(f, "H %.*s\n", (int) SM->eh.data[i].length, SM->eh.data[i].string);
+      fprintf(f, "H %.*s\n", (int) symbol_manager->eh.data[i].length, symbol_manager->eh.data[i].string);
   }
-  if (SM->eo > 0)
-    fprintf(f, "E %d\n", SM->eo);
+  if (symbol_manager->eo > 0)
+    fprintf(f, "E %d\n", symbol_manager->eo);
   fclose(f);
 }
-static bool label_compare(Symbol_Manager *SM, String_Slice nm, String_Slice pth)
+static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, String_Slice pth)
 {
-  LU *ex = lfnd(SM, nm);
+  LU *ex = lfnd(symbol_manager, nm);
   if (ex and ex->cmpl)
     return true;
   char fp[512];
@@ -14018,8 +14018,8 @@ static bool label_compare(Symbol_Manager *SM, String_Slice nm, String_Slice pth)
     return false;
   Symbol_Manager sm;
   symbol_manager_init(&sm);
-  sm.lu = SM->lu;
-  sm.gt = SM->gt;
+  sm.lu = symbol_manager->lu;
+  sm.gt = symbol_manager->gt;
   symbol_manager_use_clauses(&sm, cu);
   char op[512];
   snprintf(op, 512, "%.*s.ll", (int) pth.length, pth.string);
@@ -14138,7 +14138,7 @@ static bool label_compare(Symbol_Manager *SM, String_Slice nm, String_Slice pth)
   LU *l = label_use_new(cu->cu.un.count > 0 ? cu->cu.un.data[0]->k : 0, nm, pth);
   l->cmpl = true;
   l->ts = find_type_symbol(fp);
-  lv(&SM->lu, l);
+  lv(&symbol_manager->lu, l);
   return true;
 }
 int main(int ac, char **av)
