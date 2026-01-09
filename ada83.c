@@ -4371,7 +4371,7 @@ struct Type_Info
   uint64_t address;
   bool is_packed;
   Node_Vector operations;
-  int64_t sm, large_value;
+  int64_t small_value, large_value;
   uint16_t suppressed_checks;
   bool is_controlled;
   uint8_t frozen;
@@ -5399,7 +5399,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
       d = node->range.low_bound->float_value;
     else if (node->range.low_bound and node->range.low_bound->k == N_INT)
       d = node->range.low_bound->integer_value;
-    t->sm = (int64_t) (1.0 / d);
+    t->small_value = (int64_t) (1.0 / d);
     if (node->range.high_bound and node->range.high_bound->k == N_INT)
       t->low_bound = node->range.high_bound->integer_value;
     if (node->binary_node.right and node->binary_node.right->k == N_INT)
@@ -5415,7 +5415,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
     {
       resolve_expression(symbol_manager, node->unary_node.operand, 0);
       if (node->unary_node.operand->k == N_INT)
-        t->sm = node->unary_node.operand->integer_value;
+        t->small_value = node->unary_node.operand->integer_value;
     }
     return t;
   }
@@ -10686,13 +10686,13 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     else if (string_equal_ignore_case(a, STRING_LITERAL("DIGITS")))
     {
       r.k = VALUE_KIND_INTEGER;
-      fprintf(o, "  %%t%d = add i64 0, %lld\n", r.id, t ? (long long) t->sm : 15LL);
+      fprintf(o, "  %%t%d = add i64 0, %lld\n", r.id, t ? (long long) t->small_value : 15LL);
     }
     else if (string_equal_ignore_case(a, STRING_LITERAL("DELTA")))
     {
       r.k = VALUE_KIND_FLOAT;
       fprintf(
-          o, "  %%t%d = fadd double 0.0, %e\n", r.id, t ? 1.0 / pow(2.0, (double) t->sm) : 0.01);
+          o, "  %%t%d = fadd double 0.0, %e\n", r.id, t ? 1.0 / pow(2.0, (double) t->small_value) : 0.01);
     }
     else if (
         string_equal_ignore_case(a, STRING_LITERAL("SMALL"))
@@ -10702,10 +10702,10 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       r.k = VALUE_KIND_FLOAT;
       double v = string_equal_ignore_case(a, STRING_LITERAL("SMALL")) ? pow(2.0, -126.0)
                  : string_equal_ignore_case(a, STRING_LITERAL("LARGE"))
-                     ? (t and t->sm > 0 ? (pow(2.0, ceil((double) t->sm * log2(10.0)) + 1.0) - 1.0)
+                     ? (t and t->small_value > 0 ? (pow(2.0, ceil((double) t->small_value * log2(10.0)) + 1.0) - 1.0)
                                               * pow(2.0, 63.0)
                                         : 1.0e308)
-                     : pow(2.0, t ? -(double) t->sm : -52.0);
+                     : pow(2.0, t ? -(double) t->small_value : -52.0);
       fprintf(o, "  %%t%d = fadd double 0.0, %e\n", r.id, v);
     }
     else if (
@@ -10713,7 +10713,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         or string_equal_ignore_case(a, STRING_LITERAL("MACHINE_MANTISSA")))
     {
       r.k = VALUE_KIND_INTEGER;
-      fprintf(o, "  %%t%d = add i64 0, %lld\n", r.id, t ? (long long) t->sm : 53LL);
+      fprintf(o, "  %%t%d = add i64 0, %lld\n", r.id, t ? (long long) t->small_value : 53LL);
     }
     else if (string_equal_ignore_case(a, STRING_LITERAL("MACHINE_RADIX")))
     {
@@ -10744,9 +10744,9 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     {
       r.k = VALUE_KIND_INTEGER;
       int64_t dg = 1;
-      if (t and t->sm > 0)
+      if (t and t->small_value > 0)
       {
-        while (pow(10.0, (double) dg) * pow(2.0, -(double) t->sm) < 1.0)
+        while (pow(10.0, (double) dg) * pow(2.0, -(double) t->small_value) < 1.0)
           dg++;
       }
       fprintf(o, "  %%t%d = add i64 0, %lld\n", r.id, (long long) dg);
