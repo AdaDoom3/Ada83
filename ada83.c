@@ -4218,7 +4218,7 @@ static Node_Vector parse_declarative_part(Parser *parser)
   }
   return declarations;
 }
-static Syntax_Node *pcx(Parser *parser)
+static Syntax_Node *parse_context(Parser *parser)
 {
   Source_Location lc = parser_location(parser);
   Syntax_Node *cx = ND(CX, lc);
@@ -4257,14 +4257,14 @@ static Syntax_Node *parse_compilation_unit(Parser *parser)
 {
   Source_Location location = parser_location(parser);
   Syntax_Node *node = ND(CU, location);
-  node->cu.cx = pcx(parser);
+  node->cu.cx = parse_context(parser);
   while (parser_at(parser, T_WITH) or parser_at(parser, T_USE) or parser_at(parser, T_PROC) or parser_at(parser, T_FUN)
          or parser_at(parser, T_PKG) or parser_at(parser, T_GEN) or parser_at(parser, T_PGM)
          or parser_at(parser, T_SEP))
   {
     if (parser_at(parser, T_WITH) or parser_at(parser, T_USE) or parser_at(parser, T_PGM))
     {
-      Syntax_Node *cx = pcx(parser);
+      Syntax_Node *cx = parse_context(parser);
       for (uint32_t i = 0; i < cx->cx.wt.count; i++)
         nv(&node->cu.cx->cx.wt, cx->cx.wt.data[i]);
       for (uint32_t i = 0; i < cx->cx.us.count; i++)
@@ -4439,7 +4439,7 @@ static uint32_t symbol_hash(String_Slice s)
 {
   return string_hash(s) & 4095;
 }
-static Symbol *syn(String_Slice nm, uint8_t k, Type_Info *ty, Syntax_Node *df)
+static Symbol *symbol_new(String_Slice nm, uint8_t k, Type_Info *ty, Syntax_Node *df)
 {
   Symbol *s = arena_allocate(sizeof(Symbol));
   s->nm = string_duplicate(nm);
@@ -4559,7 +4559,7 @@ static void symbol_find_use(Symbol_Manager *SM, Symbol *s, String_Slice nm)
     }
   SM->uv_vis[h] &= ~b;
 }
-static GT *gfnd(Symbol_Manager *SM, String_Slice nm)
+static GT *generic_find(Symbol_Manager *SM, String_Slice nm)
 {
   for (uint32_t i = 0; i < SM->gt.count; i++)
   {
@@ -4661,7 +4661,7 @@ static Symbol *symbol_find_with_arity(Symbol_Manager *SM, String_Slice nm, int n
   }
   return br ?: cv.data[0];
 }
-static Type_Info *tyn(Tk_ k, String_Slice nm)
+static Type_Info *type_new(Tk_ k, String_Slice nm)
 {
   Type_Info *t = arena_allocate(sizeof(Type_Info));
   t->k = k;
@@ -4675,51 +4675,51 @@ static Type_Info *TY_INT, *TY_BOOL, *TY_CHAR, *TY_STR, *TY_FLT, *TY_UINT, *TY_UF
 static void symbol_manager_init(Symbol_Manager *SM)
 {
   memset(SM, 0, sizeof(*SM));
-  TY_INT = tyn(TYPE_INTEGER, STRING_LITERAL("INTEGER"));
+  TY_INT = type_new(TYPE_INTEGER, STRING_LITERAL("INTEGER"));
   TY_INT->lo = -2147483648LL;
   TY_INT->hi = 2147483647LL;
-  TY_NAT = tyn(TYPE_INTEGER, STRING_LITERAL("NATURAL"));
+  TY_NAT = type_new(TYPE_INTEGER, STRING_LITERAL("NATURAL"));
   TY_NAT->lo = 0;
   TY_NAT->hi = 2147483647LL;
-  TY_POS = tyn(TYPE_INTEGER, STRING_LITERAL("POSITIVE"));
+  TY_POS = type_new(TYPE_INTEGER, STRING_LITERAL("POSITIVE"));
   TY_POS->lo = 1;
   TY_POS->hi = 2147483647LL;
-  TY_BOOL = tyn(TYPE_BOOLEAN, STRING_LITERAL("BOOLEAN"));
-  TY_CHAR = tyn(TYPE_CHARACTER, STRING_LITERAL("CHARACTER"));
+  TY_BOOL = type_new(TYPE_BOOLEAN, STRING_LITERAL("BOOLEAN"));
+  TY_CHAR = type_new(TYPE_CHARACTER, STRING_LITERAL("CHARACTER"));
   TY_CHAR->sz = 1;
-  TY_STR = tyn(TYPE_ARRAY, STRING_LITERAL("STRING"));
+  TY_STR = type_new(TYPE_ARRAY, STRING_LITERAL("STRING"));
   TY_STR->el = TY_CHAR;
   TY_STR->lo = 0;
   TY_STR->hi = -1;
   TY_STR->ix = TY_POS;
-  TY_FLT = tyn(TYPE_FLOAT, STRING_LITERAL("FLOAT"));
-  TY_UINT = tyn(TYPE_UNSIGNED_INTEGER, STRING_LITERAL("universal_integer"));
-  TY_UFLT = tyn(TYPE_UNIVERSAL_FLOAT, STRING_LITERAL("universal_real"));
-  TY_FILE = tyn(TYPE_FAT_POINTER, STRING_LITERAL("FILE_TYPE"));
-  symbol_add_overload(SM, syn(STRING_LITERAL("INTEGER"), 1, TY_INT, 0));
-  symbol_add_overload(SM, syn(STRING_LITERAL("NATURAL"), 1, TY_NAT, 0));
-  symbol_add_overload(SM, syn(STRING_LITERAL("POSITIVE"), 1, TY_POS, 0));
-  symbol_add_overload(SM, syn(STRING_LITERAL("BOOLEAN"), 1, TY_BOOL, 0));
-  Symbol *st = symbol_add_overload(SM, syn(STRING_LITERAL("TRUE"), 2, TY_BOOL, 0));
+  TY_FLT = type_new(TYPE_FLOAT, STRING_LITERAL("FLOAT"));
+  TY_UINT = type_new(TYPE_UNSIGNED_INTEGER, STRING_LITERAL("universal_integer"));
+  TY_UFLT = type_new(TYPE_UNIVERSAL_FLOAT, STRING_LITERAL("universal_real"));
+  TY_FILE = type_new(TYPE_FAT_POINTER, STRING_LITERAL("FILE_TYPE"));
+  symbol_add_overload(SM, symbol_new(STRING_LITERAL("INTEGER"), 1, TY_INT, 0));
+  symbol_add_overload(SM, symbol_new(STRING_LITERAL("NATURAL"), 1, TY_NAT, 0));
+  symbol_add_overload(SM, symbol_new(STRING_LITERAL("POSITIVE"), 1, TY_POS, 0));
+  symbol_add_overload(SM, symbol_new(STRING_LITERAL("BOOLEAN"), 1, TY_BOOL, 0));
+  Symbol *st = symbol_add_overload(SM, symbol_new(STRING_LITERAL("TRUE"), 2, TY_BOOL, 0));
   st->vl = 1;
   sv(&TY_BOOL->ev, st);
-  Symbol *sf = symbol_add_overload(SM, syn(STRING_LITERAL("FALSE"), 2, TY_BOOL, 0));
+  Symbol *sf = symbol_add_overload(SM, symbol_new(STRING_LITERAL("FALSE"), 2, TY_BOOL, 0));
   sf->vl = 0;
   sv(&TY_BOOL->ev, sf);
-  symbol_add_overload(SM, syn(STRING_LITERAL("CHARACTER"), 1, TY_CHAR, 0));
-  symbol_add_overload(SM, syn(STRING_LITERAL("STRING"), 1, TY_STR, 0));
-  symbol_add_overload(SM, syn(STRING_LITERAL("FLOAT"), 1, TY_FLT, 0));
-  symbol_add_overload(SM, syn(STRING_LITERAL("FILE_TYPE"), 1, TY_FILE, 0));
-  symbol_add_overload(SM, syn(STRING_LITERAL("CONSTRAINT_ERROR"), 3, 0, 0));
-  symbol_add_overload(SM, syn(STRING_LITERAL("PROGRAM_ERROR"), 3, 0, 0));
-  symbol_add_overload(SM, syn(STRING_LITERAL("STORAGE_ERROR"), 3, 0, 0));
-  symbol_add_overload(SM, syn(STRING_LITERAL("TASKING_ERROR"), 3, 0, 0));
+  symbol_add_overload(SM, symbol_new(STRING_LITERAL("CHARACTER"), 1, TY_CHAR, 0));
+  symbol_add_overload(SM, symbol_new(STRING_LITERAL("STRING"), 1, TY_STR, 0));
+  symbol_add_overload(SM, symbol_new(STRING_LITERAL("FLOAT"), 1, TY_FLT, 0));
+  symbol_add_overload(SM, symbol_new(STRING_LITERAL("FILE_TYPE"), 1, TY_FILE, 0));
+  symbol_add_overload(SM, symbol_new(STRING_LITERAL("CONSTRAINT_ERROR"), 3, 0, 0));
+  symbol_add_overload(SM, symbol_new(STRING_LITERAL("PROGRAM_ERROR"), 3, 0, 0));
+  symbol_add_overload(SM, symbol_new(STRING_LITERAL("STORAGE_ERROR"), 3, 0, 0));
+  symbol_add_overload(SM, symbol_new(STRING_LITERAL("TASKING_ERROR"), 3, 0, 0));
   fv(&SM->io, stdin);
   fv(&SM->io, stdout);
   fv(&SM->io, stderr);
   SM->fn = 3;
 }
-static Syntax_Node *geq(Type_Info *t, Source_Location l)
+static Syntax_Node *generate_equality_operator(Type_Info *t, Source_Location l)
 {
   Syntax_Node *f = ND(FB, l);
   f->bd.sp = ND(FS, l);
@@ -4816,7 +4816,7 @@ static Syntax_Node *geq(Type_Info *t, Source_Location l)
   nv(&f->bd.st, s);
   return f;
 }
-static Syntax_Node *gas(Type_Info *t, Source_Location l)
+static Syntax_Node *generate_assignment_operator(Type_Info *t, Source_Location l)
 {
   Syntax_Node *parser = ND(PB, l);
   parser->bd.sp = ND(PS, l);
@@ -4886,7 +4886,7 @@ static Syntax_Node *gas(Type_Info *t, Source_Location l)
   }
   return parser;
 }
-static Syntax_Node *gin(Type_Info *t, Source_Location l)
+static Syntax_Node *generate_input_operator(Type_Info *t, Source_Location l)
 {
   Syntax_Node *f = ND(FB, l);
   f->bd.sp = ND(FS, l);
@@ -4961,13 +4961,13 @@ static void find_type(Symbol_Manager *SM, Type_Info *t, Source_Location l)
   }
   if ((t->k == TYPE_RECORD or t->k == TYPE_ARRAY) and t->nm.string and t->nm.length)
   {
-    Syntax_Node *eq = geq(t, l);
+    Syntax_Node *eq = generate_equality_operator(t, l);
     if (eq)
       nv(&t->ops, eq);
-    Syntax_Node *as = gas(t, l);
+    Syntax_Node *as = generate_assignment_operator(t, l);
     if (as)
       nv(&t->ops, as);
-    Syntax_Node *in = gin(t, l);
+    Syntax_Node *in = generate_input_operator(t, l);
     if (in)
       nv(&t->ops, in);
   }
@@ -5029,7 +5029,7 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *node, Type_Info 
 static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *node);
 static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n);
 static void runtime_register_compare(Symbol_Manager *SM, RC *r);
-static Syntax_Node *gcl(Symbol_Manager *SM, Syntax_Node *n);
+static Syntax_Node *generate_clone(Symbol_Manager *SM, Syntax_Node *n);
 static Type_Info *type_canonical_concrete(Type_Info *t)
 {
   if (not t)
@@ -5246,7 +5246,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *node)
     Syntax_Node *cn = node->sd.cn ? node->sd.cn : node->sd.rn;
     if (cn and bt)
     {
-      Type_Info *t = tyn(bt->k, N);
+      Type_Info *t = type_new(bt->k, N);
       t->bs = bt;
       t->el = bt->el;
       t->cm = bt->cm;
@@ -5378,7 +5378,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *node)
   {
     resolve_expression(SM, node->rn.lo, 0);
     resolve_expression(SM, node->rn.hi, 0);
-    Type_Info *t = tyn(TYPE_INTEGER, N);
+    Type_Info *t = type_new(TYPE_INTEGER, N);
     if (node->rn.lo and node->rn.lo->k == N_INT)
       t->lo = node->rn.lo->i;
     else if (
@@ -5393,7 +5393,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *node)
   }
   if (node->k == N_TX)
   {
-    Type_Info *t = tyn(TYPE_FIXED_POINT, N);
+    Type_Info *t = type_new(TYPE_FIXED_POINT, N);
     double d = 1.0;
     if (node->rn.lo and node->rn.lo->k == N_REAL)
       d = node->rn.lo->f;
@@ -5407,10 +5407,10 @@ static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *node)
     return t;
   }
   if (node->k == N_TE)
-    return tyn(TYPE_INTEGER, N);
+    return type_new(TYPE_INTEGER, N);
   if (node->k == N_TF)
   {
-    Type_Info *t = tyn(TYPE_FLOAT, N);
+    Type_Info *t = type_new(TYPE_FLOAT, N);
     if (node->un.x)
     {
       resolve_expression(SM, node->un.x, 0);
@@ -5421,7 +5421,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *node)
   }
   if (node->k == N_TA)
   {
-    Type_Info *t = tyn(TYPE_ARRAY, N);
+    Type_Info *t = type_new(TYPE_ARRAY, N);
     t->el = resolve_subtype(SM, node->ix.p);
     if (node->ix.ix.count == 1)
     {
@@ -5445,12 +5445,12 @@ static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *node)
     return t;
   }
   if (node->k == N_TR)
-    return tyn(TYPE_RECORD, N);
+    return type_new(TYPE_RECORD, N);
   if (node->k == N_TP)
-    return tyn(TY_PT, N);
+    return type_new(TY_PT, N);
   if (node->k == N_TAC)
   {
-    Type_Info *t = tyn(TYPE_ACCESS, N);
+    Type_Info *t = type_new(TYPE_ACCESS, N);
     t->el = resolve_subtype(SM, node->un.x);
     return t;
   }
@@ -5464,7 +5464,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *node)
       {
         resolve_expression(SM, r->rn.lo, 0);
         resolve_expression(SM, r->rn.hi, 0);
-        Type_Info *t = tyn(TYPE_ARRAY, N);
+        Type_Info *t = type_new(TYPE_ARRAY, N);
         t->el = bt->el;
         t->ix = bt->ix;
         t->bs = bt;
@@ -5489,7 +5489,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *node)
   {
     resolve_expression(SM, node->rn.lo, 0);
     resolve_expression(SM, node->rn.hi, 0);
-    Type_Info *t = tyn(TYPE_INTEGER, N);
+    Type_Info *t = type_new(TYPE_INTEGER, N);
     if (node->rn.lo and node->rn.lo->k == N_INT)
       t->lo = node->rn.lo->i;
     else if (
@@ -5512,7 +5512,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *node)
       {
         resolve_expression(SM, r->rn.lo, 0);
         resolve_expression(SM, r->rn.hi, 0);
-        Type_Info *t = tyn(TYPE_ARRAY, N);
+        Type_Info *t = type_new(TYPE_ARRAY, N);
         t->el = bt->el;
         t->ix = bt->ix;
         t->bs = bt;
@@ -5535,7 +5535,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *node)
   }
   return TY_INT;
 }
-static Symbol *scl(Symbol_Manager *SM, char c, Type_Info *tx)
+static Symbol *symbol_character_literal(Symbol_Manager *SM, char c, Type_Info *tx)
 {
   if (tx and tx->k == TYPE_ENUMERATION)
   {
@@ -5547,14 +5547,14 @@ static Symbol *scl(Symbol_Manager *SM, char c, Type_Info *tx)
     }
   }
   if (tx and tx->k == TYPE_DERIVED and tx->prt)
-    return scl(SM, c, tx->prt);
+    return symbol_character_literal(SM, c, tx->prt);
   for (Symbol *s = SM->sy[symbol_hash((String_Slice){&c, 1})]; s; s = s->nx)
     if (s->nm.length == 1 and tolower(s->nm.string[0]) == tolower(c) and s->k == 2 and s->ty
         and (s->ty->k == TYPE_ENUMERATION or (s->ty->k == TYPE_DERIVED and s->ty->prt and s->ty->prt->k == TYPE_ENUMERATION)))
       return s;
   return 0;
 }
-static inline Syntax_Node *mk_chk(Syntax_Node *ex, String_Slice ec, Source_Location l)
+static inline Syntax_Node *make_check(Syntax_Node *ex, String_Slice ec, Source_Location l)
 {
   Syntax_Node *c = ND(CHK, l);
   c->chk.ex = ex;
@@ -5584,7 +5584,7 @@ static inline bool is_unc_scl(Type_Info *t)
   Type_Info *b = base_scalar(t);
   return t->lo == b->lo and t->hi == b->hi;
 }
-static inline double ty_bd_d(int64_t b)
+static inline double type_bound_double(int64_t b)
 {
   union
   {
@@ -5594,7 +5594,7 @@ static inline double ty_bd_d(int64_t b)
   u.i = b;
   return u.d;
 }
-static bool dsc_cf(Type_Info *t, Type_Info *s)
+static bool descendant_conformant(Type_Info *t, Type_Info *s)
 {
   if (not t or not s or t->dc.count == 0 or s->dc.count == 0)
     return 0;
@@ -5618,15 +5618,15 @@ static Syntax_Node *chk(Symbol_Manager *SM, Syntax_Node *node, Source_Location l
   Type_Info *t = type_canonical_concrete(node->ty);
   if ((is_discrete(t) or is_real_type(t)) and (node->ty->lo != TY_INT->lo or node->ty->hi != TY_INT->hi)
       and not is_check_suppressed(node->ty, CHK_RNG))
-    return mk_chk(node, STRING_LITERAL("CONSTRAINT_ERROR"), l);
-  if (t->k == TYPE_RECORD and dsc_cf(t, node->ty) and not is_check_suppressed(t, CHK_DSC))
-    return mk_chk(node, STRING_LITERAL("CONSTRAINT_ERROR"), l);
+    return make_check(node, STRING_LITERAL("CONSTRAINT_ERROR"), l);
+  if (t->k == TYPE_RECORD and descendant_conformant(t, node->ty) and not is_check_suppressed(t, CHK_DSC))
+    return make_check(node, STRING_LITERAL("CONSTRAINT_ERROR"), l);
   if (t->k == TYPE_ARRAY and node->ty and node->ty->k == TYPE_ARRAY and node->ty->ix
       and (node->ty->lo < node->ty->ix->lo or node->ty->hi > node->ty->ix->hi))
-    return mk_chk(node, STRING_LITERAL("CONSTRAINT_ERROR"), l);
+    return make_check(node, STRING_LITERAL("CONSTRAINT_ERROR"), l);
   if (t->k == TYPE_ARRAY and node->ty and node->ty->k == TYPE_ARRAY and not is_unconstrained_array(t)
       and not is_check_suppressed(t, CHK_IDX) and (t->lo != node->ty->lo or t->hi != node->ty->hi))
-    return mk_chk(node, STRING_LITERAL("CONSTRAINT_ERROR"), l);
+    return make_check(node, STRING_LITERAL("CONSTRAINT_ERROR"), l);
   return node;
 }
 static inline int64_t range_size(int64_t lo, int64_t hi)
@@ -5774,14 +5774,14 @@ static void normalize_record_aggregate(Symbol_Manager *SM, Type_Info *rt, Syntax
     }
   }
 }
-static Type_Info *ucag(Type_Info *at, Syntax_Node *ag)
+static Type_Info *universal_composite_aggregate(Type_Info *at, Syntax_Node *ag)
 {
   if (not at or not ag or at->k != TYPE_ARRAY or ag->k != N_AG)
     return at;
   if (at->lo != 0 or at->hi != -1)
     return at;
   int asz = ag->ag.it.count;
-  Type_Info *nt = tyn(TYPE_ARRAY, N);
+  Type_Info *nt = type_new(TYPE_ARRAY, N);
   nt->el = at->el;
   nt->ix = at->ix;
   nt->lo = 1;
@@ -5881,7 +5881,7 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *node, Type_Info 
     break;
   case N_CHAR:
   {
-    Symbol *s = scl(SM, node->i, tx);
+    Symbol *s = symbol_character_literal(SM, node->i, tx);
     if (s)
     {
       node->ty = s->ty;
@@ -6282,7 +6282,7 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *node, Type_Info 
           or string_equal_ignore_case(a, STRING_LITERAL("MACHINE_ROUNDS")))
         node->ty = TY_BOOL;
       else if (string_equal_ignore_case(a, STRING_LITERAL("ACCESS")))
-        node->ty = tyn(TYPE_ACCESS, N);
+        node->ty = type_new(TYPE_ACCESS, N);
       else if (string_equal_ignore_case(a, STRING_LITERAL("IMAGE")))
         node->ty = TY_STR;
       else if (
@@ -6398,7 +6398,7 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *node, Type_Info 
     is_compile_valid(tx, node);
     break;
   case N_ALC:
-    node->ty = tyn(TYPE_ACCESS, N);
+    node->ty = type_new(TYPE_ACCESS, N);
     node->ty->el = resolve_subtype(SM, node->alc.st);
     if (node->alc.in)
     {
@@ -6547,7 +6547,7 @@ static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *node)
   case N_LP:
     if (node->lp.lb.string)
     {
-      Symbol *lbs = symbol_add_overload(SM, syn(node->lp.lb, 10, 0, node));
+      Symbol *lbs = symbol_add_overload(SM, symbol_new(node->lp.lb, 10, 0, node));
       (void) lbs;
     }
     if (node->lp.it)
@@ -6558,7 +6558,7 @@ static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *node)
         if (v->k == N_ID)
         {
           Type_Info *rt = node->lp.it->bn.r->ty;
-          Symbol *lvs = syn(v->s, 0, rt ?: TY_INT, 0);
+          Symbol *lvs = symbol_new(v->s, 0, rt ?: TY_INT, 0);
           symbol_add_overload(SM, lvs);
           lvs->lv = -1;
           v->sy = lvs;
@@ -6574,7 +6574,7 @@ static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *node)
   case N_BL:
     if (node->bk.lb.string)
     {
-      Symbol *lbs = symbol_add_overload(SM, syn(node->bk.lb, 10, 0, node));
+      Symbol *lbs = symbol_add_overload(SM, symbol_new(node->bk.lb, 10, 0, node));
       (void) lbs;
     }
     symbol_compare_parameter(SM);
@@ -6623,13 +6623,13 @@ static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *node)
   case N_ACC:
     symbol_compare_parameter(SM);
     {
-      Symbol *ens = symbol_add_overload(SM, syn(node->acc.nm, 9, 0, node));
+      Symbol *ens = symbol_add_overload(SM, symbol_new(node->acc.nm, 9, 0, node));
       (void) ens;
       for (uint32_t i = 0; i < node->acc.pmx.count; i++)
       {
         Syntax_Node *parser = node->acc.pmx.data[i];
         Type_Info *pt = resolve_subtype(SM, parser->pm.ty);
-        Symbol *ps = symbol_add_overload(SM, syn(parser->pm.nm, 0, pt, parser));
+        Symbol *ps = symbol_add_overload(SM, symbol_new(parser->pm.nm, 0, pt, parser));
         parser->sy = ps;
       }
       if (node->acc.stx.count > 0 and not has_return_statement(&node->acc.stx))
@@ -7295,7 +7295,7 @@ static bool match_formal_parameter(Syntax_Node *f, String_Slice nm)
         return 1;
   return 0;
 }
-static Syntax_Node *gcl(Symbol_Manager *SM, Syntax_Node *n)
+static Syntax_Node *generate_clone(Symbol_Manager *SM, Syntax_Node *n)
 {
   if (not n)
     return 0;
@@ -7305,7 +7305,7 @@ static Syntax_Node *gcl(Symbol_Manager *SM, Syntax_Node *n)
                                    : n->gen.un->bd.sp    ? n->gen.un->bd.sp->sp.nm
                                                          : N)
                                 : N;
-    GT *g = gfnd(SM, nm);
+    GT *g = generic_find(SM, nm);
     if (not g)
     {
       g = generic_type_new(nm);
@@ -7315,7 +7315,7 @@ static Syntax_Node *gcl(Symbol_Manager *SM, Syntax_Node *n)
       gv(&SM->gt, g);
       if (g->nm.string and g->nm.length)
       {
-        Symbol *gs = syn(g->nm, 11, 0, n);
+        Symbol *gs = symbol_new(g->nm, 11, 0, n);
         gs->gt = g;
         if (g->un and g->un->k == N_PKS)
           gs->df = g->un;
@@ -7325,7 +7325,7 @@ static Syntax_Node *gcl(Symbol_Manager *SM, Syntax_Node *n)
   }
   else if (n->k == N_GINST)
   {
-    GT *g = gfnd(SM, n->gi.gn);
+    GT *g = generic_find(SM, n->gi.gn);
     if (g)
     {
       resolve_array_parameter(SM, &g->fp, &n->gi.ap);
@@ -7367,13 +7367,13 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
   {
   case N_GINST:
   {
-    Syntax_Node *inst = gcl(SM, n);
+    Syntax_Node *inst = generate_clone(SM, n);
     if (inst)
     {
       resolve_declaration(SM, inst);
       if (inst->k == N_PKS)
       {
-        GT *g = gfnd(SM, n->gi.gn);
+        GT *g = generic_find(SM, n->gi.gn);
         if (g and g->bd)
         {
           Syntax_Node *bd = ncs(g->bd, &g->fp, &n->gi.ap);
@@ -7401,7 +7401,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
     for (uint32_t i = 0; i < n->od.id.count; i++)
     {
       Syntax_Node *id = n->od.id.data[i];
-      Type_Info *ct = ucag(t, n->od.in);
+      Type_Info *ct = universal_composite_aggregate(t, n->od.in);
       Symbol *x = symbol_find(SM, id->s);
       Symbol *s = 0;
       if (x and x->sc == SM->sc and x->ss == SM->ss and x->k != 11)
@@ -7416,7 +7416,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
       }
       if (not s)
       {
-        s = symbol_add_overload(SM, syn(id->s, n->od.co ? 2 : 0, ct, n));
+        s = symbol_add_overload(SM, symbol_new(id->s, n->od.co ? 2 : 0, ct, n));
         s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEP_PKG.string ? symbol_find(SM, SEP_PKG) : 0;
       }
       id->sy = s;
@@ -7485,7 +7485,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
       Type_Info *pt = resolve_subtype(SM, n->td.prt);
       if (n->td.prt->k == N_TAC and error_count < 99)
         fatal_error(n->l, "der acc ty");
-      t = tyn(TYPE_DERIVED, n->td.nm);
+      t = type_new(TYPE_DERIVED, n->td.nm);
       t->prt = pt;
       if (pt)
       {
@@ -7505,7 +7505,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
             for (uint32_t _i = 0; _i < _ept->ev.count; _i++)
             {
               Symbol *_pe = _ept->ev.data[_i];
-              Symbol *_ne = symbol_add_overload(SM, syn(_pe->nm, 2, t, n));
+              Symbol *_ne = symbol_add_overload(SM, symbol_new(_pe->nm, 2, t, n));
               _ne->vl = _pe->vl;
               sv(&t->ev, _ne);
             }
@@ -7540,10 +7540,10 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
       }
       else
       {
-        t = tyn(n->td.df or n->td.drv ? TYPE_INTEGER : TY_PT, n->td.nm);
+        t = type_new(n->td.df or n->td.drv ? TYPE_INTEGER : TY_PT, n->td.nm);
         if (t and n->td.nm.string)
         {
-          Symbol *s = symbol_add_overload(SM, syn(n->td.nm, 1, t, n));
+          Symbol *s = symbol_add_overload(SM, symbol_new(n->td.nm, 1, t, n));
           n->sy = s;
         }
         break;
@@ -7558,7 +7558,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
         Syntax_Node *d = n->td.dsc.data[i];
         if (d->k == N_DS)
         {
-          Symbol *ds = symbol_add_overload(SM, syn(d->pm.nm, 8, resolve_subtype(SM, d->pm.ty), d));
+          Symbol *ds = symbol_add_overload(SM, symbol_new(d->pm.nm, 8, resolve_subtype(SM, d->pm.ty), d));
           if (d->pm.df)
             resolve_expression(SM, d->pm.df, ds->ty);
         }
@@ -7576,7 +7576,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
       }
       else
       {
-        Symbol *s = symbol_add_overload(SM, syn(n->td.nm, 1, t, n));
+        Symbol *s = symbol_add_overload(SM, symbol_new(n->td.nm, 1, t, n));
         n->sy = s;
       }
     }
@@ -7588,7 +7588,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
       {
         Syntax_Node *it = n->td.df->lst.it.data[i];
         Symbol *es = symbol_add_overload(
-            SM, syn(it->k == N_CHAR ? (String_Slice){(const char *) &it->i, 1} : it->s, 2, t, n));
+            SM, symbol_new(it->k == N_CHAR ? (String_Slice){(const char *) &it->i, 1} : it->s, 2, t, n));
         es->vl = vl++;
         sv(&t->ev, es);
       }
@@ -7625,7 +7625,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
               if (dc->k == N_DS)
               {
                 Symbol *ds =
-                    symbol_add_overload(SM, syn(dc->pm.nm, 8, resolve_subtype(SM, dc->pm.ty), dc));
+                    symbol_add_overload(SM, symbol_new(dc->pm.nm, 8, resolve_subtype(SM, dc->pm.ty), dc));
                 if (dc->pm.df)
                   resolve_expression(SM, dc->pm.df, ds->ty);
               }
@@ -7662,7 +7662,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
                   if (dc->k == N_DS)
                   {
                     Symbol *ds = symbol_add_overload(
-                        SM, syn(dc->pm.nm, 8, resolve_subtype(SM, dc->pm.ty), dc));
+                        SM, symbol_new(dc->pm.nm, 8, resolve_subtype(SM, dc->pm.ty), dc));
                     if (dc->pm.df)
                       resolve_expression(SM, dc->pm.df, ds->ty);
                   }
@@ -7681,7 +7681,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
   case N_SD:
   {
     Type_Info *b = resolve_subtype(SM, n->sd.in);
-    Type_Info *t = tyn(b ? b->k : TYPE_INTEGER, n->sd.nm);
+    Type_Info *t = type_new(b ? b->k : TYPE_INTEGER, n->sd.nm);
     if (b)
     {
       t->bs = b;
@@ -7711,7 +7711,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
       t->lo = lov;
       t->hi = hiv;
     }
-    symbol_add_overload(SM, syn(n->sd.nm, 1, t, n));
+    symbol_add_overload(SM, symbol_new(n->sd.nm, 1, t, n));
   }
   break;
   case N_ED:
@@ -7724,7 +7724,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
         Symbol *tgt = n->ed.rn->sy;
         if (tgt and tgt->k == 3)
         {
-          Symbol *al = symbol_add_overload(SM, syn(id->s, 3, 0, n));
+          Symbol *al = symbol_add_overload(SM, symbol_new(id->s, 3, 0, n));
           al->df = n->ed.rn;
           id->sy = al;
         }
@@ -7733,18 +7733,18 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
       }
       else
       {
-        id->sy = symbol_add_overload(SM, syn(id->s, 3, 0, n));
+        id->sy = symbol_add_overload(SM, symbol_new(id->s, 3, 0, n));
       }
     }
     break;
   case N_GSP:
   {
-    Type_Info *ft = tyn(TYPE_STRING, n->sp.nm);
+    Type_Info *ft = type_new(TYPE_STRING, n->sp.nm);
     if (n->sp.rt)
     {
       Type_Info *rt = resolve_subtype(SM, n->sp.rt);
       ft->el = rt;
-      Symbol *s = symbol_add_overload(SM, syn(n->sp.nm, 5, ft, n));
+      Symbol *s = symbol_add_overload(SM, symbol_new(n->sp.nm, 5, ft, n));
       nv(&s->ol, n);
       n->sy = s;
       s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEP_PKG.string ? symbol_find(SM, SEP_PKG) : 0;
@@ -7752,7 +7752,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
     }
     else
     {
-      Symbol *s = symbol_add_overload(SM, syn(n->sp.nm, 4, ft, n));
+      Symbol *s = symbol_add_overload(SM, symbol_new(n->sp.nm, 4, ft, n));
       nv(&s->ol, n);
       n->sy = s;
       s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEP_PKG.string ? symbol_find(SM, SEP_PKG) : 0;
@@ -7764,8 +7764,8 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
   case N_PB:
   {
     Syntax_Node *sp = n->bd.sp;
-    Type_Info *ft = tyn(TYPE_STRING, sp->sp.nm);
-    Symbol *s = symbol_add_overload(SM, syn(sp->sp.nm, 4, ft, n));
+    Type_Info *ft = type_new(TYPE_STRING, sp->sp.nm);
+    Symbol *s = symbol_add_overload(SM, symbol_new(sp->sp.nm, 4, ft, n));
     nv(&s->ol, n);
     n->sy = s;
     n->bd.el = s->el;
@@ -7776,7 +7776,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
       SM->lv++;
       symbol_compare_parameter(SM);
       n->bd.pr = s;
-      GT *gt = gfnd(SM, sp->sp.nm);
+      GT *gt = generic_find(SM, sp->sp.nm);
       if (gt)
         for (uint32_t i = 0; i < gt->fp.count; i++)
           resolve_declaration(SM, gt->fp.data[i]);
@@ -7784,7 +7784,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
       {
         Syntax_Node *p = sp->sp.pmm.data[i];
         Type_Info *pt = resolve_subtype(SM, p->pm.ty);
-        Symbol *ps = symbol_add_overload(SM, syn(p->pm.nm, 0, pt, p));
+        Symbol *ps = symbol_add_overload(SM, symbol_new(p->pm.nm, 0, pt, p));
         p->sy = ps;
       }
       for (uint32_t i = 0; i < n->bd.dc.count; i++)
@@ -7800,9 +7800,9 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
   {
     Syntax_Node *sp = n->bd.sp;
     Type_Info *rt = resolve_subtype(SM, sp->sp.rt);
-    Type_Info *ft = tyn(TYPE_STRING, sp->sp.nm);
+    Type_Info *ft = type_new(TYPE_STRING, sp->sp.nm);
     ft->el = rt;
-    Symbol *s = symbol_add_overload(SM, syn(sp->sp.nm, 5, ft, n));
+    Symbol *s = symbol_add_overload(SM, symbol_new(sp->sp.nm, 5, ft, n));
     nv(&s->ol, n);
     n->sy = s;
     n->bd.el = s->el;
@@ -7813,7 +7813,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
       SM->lv++;
       symbol_compare_parameter(SM);
       n->bd.pr = s;
-      GT *gt = gfnd(SM, sp->sp.nm);
+      GT *gt = generic_find(SM, sp->sp.nm);
       if (gt)
         for (uint32_t i = 0; i < gt->fp.count; i++)
           resolve_declaration(SM, gt->fp.data[i]);
@@ -7821,7 +7821,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
       {
         Syntax_Node *p = sp->sp.pmm.data[i];
         Type_Info *pt = resolve_subtype(SM, p->pm.ty);
-        Symbol *ps = symbol_add_overload(SM, syn(p->pm.nm, 0, pt, p));
+        Symbol *ps = symbol_add_overload(SM, symbol_new(p->pm.nm, 0, pt, p));
         p->sy = ps;
       }
       for (uint32_t i = 0; i < n->bd.dc.count; i++)
@@ -7837,9 +7837,9 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
   {
     Syntax_Node *sp = n->bd.sp;
     Type_Info *rt = resolve_subtype(SM, sp->sp.rt);
-    Type_Info *ft = tyn(TYPE_STRING, sp->sp.nm);
+    Type_Info *ft = type_new(TYPE_STRING, sp->sp.nm);
     ft->el = rt;
-    Symbol *s = symbol_add_overload(SM, syn(sp->sp.nm, 5, ft, n));
+    Symbol *s = symbol_add_overload(SM, symbol_new(sp->sp.nm, 5, ft, n));
     nv(&s->ol, n);
     n->sy = s;
     n->bd.el = s->el;
@@ -7849,8 +7849,8 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
   break;
   case N_PKS:
   {
-    Type_Info *t = tyn(TY_P, n->ps.nm);
-    Symbol *s = symbol_add_overload(SM, syn(n->ps.nm, 6, t, n));
+    Type_Info *t = type_new(TY_P, n->ps.nm);
+    Symbol *s = symbol_add_overload(SM, symbol_new(n->ps.nm, 6, t, n));
     n->sy = s;
     n->ps.el = s->el;
     SM->pk = n;
@@ -7869,7 +7869,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
     GT *gt = 0;
     if (ps and ps->k == 11)
     {
-      gt = ps->gt ? ps->gt : gfnd(SM, n->pb.nm);
+      gt = ps->gt ? ps->gt : generic_find(SM, n->pb.nm);
     }
     if (gt)
     {
@@ -7927,8 +7927,8 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
     ps = symbol_find(SM, n->pb.nm);
     if (not ps or not ps->df)
     {
-      Type_Info *t = tyn(TY_P, n->pb.nm);
-      ps = symbol_add_overload(SM, syn(n->pb.nm, 6, t, 0));
+      Type_Info *t = type_new(TY_P, n->pb.nm);
+      ps = symbol_add_overload(SM, symbol_new(n->pb.nm, 6, t, 0));
       ps->el = SM->eo++;
       Syntax_Node *pk = ND(PKS, n->l);
       pk->ps.nm = n->pb.nm;
@@ -8012,9 +8012,9 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
   break;
   case N_TKS:
   {
-    Type_Info *t = tyn(TY_T, n->ts.nm);
+    Type_Info *t = type_new(TY_T, n->ts.nm);
     t->cm = n->ts.en;
-    Symbol *s = symbol_add_overload(SM, syn(n->ts.nm, 7, t, n));
+    Symbol *s = symbol_add_overload(SM, symbol_new(n->ts.nm, 7, t, n));
     n->sy = s;
     s->pr = SM->pk ? get_pkg_sym(SM, SM->pk) : SEP_PKG.string ? symbol_find(SM, SEP_PKG) : 0;
   }
@@ -8030,7 +8030,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
         Syntax_Node *en = ts->ty->cm.data[i];
         if (en and en->k == N_ENT)
         {
-          Symbol *ens = symbol_add_overload(SM, syn(en->ent.nm, 9, 0, en));
+          Symbol *ens = symbol_add_overload(SM, symbol_new(en->ent.nm, 9, 0, en));
           (void) ens;
         }
       }
@@ -8043,7 +8043,7 @@ static void resolve_declaration(Symbol_Manager *SM, Syntax_Node *n)
   }
   break;
   case N_GEN:
-    gcl(SM, n);
+    generate_clone(SM, n);
     break;
   case N_US:
     resolve_statement_sequence(SM, n);
@@ -8094,7 +8094,7 @@ static int elaborate_compilation(Symbol_Manager *SM, Symbol_Vector *ev, Syntax_N
   }
   return mx;
 }
-static char *rdf(const char *p)
+static char *read_file(const char *p)
 {
   FILE *f = fopen(p, "rb");
   if (not f)
@@ -8112,7 +8112,7 @@ static void read_ada_library_interface(Symbol_Manager *SM, const char *pth)
 {
   char a[512];
   snprintf(a, 512, "%s.ali", pth);
-  char *ali = rdf(a);
+  char *ali = read_file(a);
   if (not ali)
     return;
   Source_Location ll = {0, 0, pth};
@@ -8193,7 +8193,7 @@ static void read_ada_library_interface(Symbol_Manager *SM, const char *pth)
         else
           vt = TY_INT;
         Syntax_Node *n = node_new(N_OD, ll);
-        Symbol *s = symbol_add_overload(SM, syn(sn, 0, vt, n));
+        Symbol *s = symbol_add_overload(SM, symbol_new(sn, 0, vt, n));
         s->ext = 1;
         s->lv = 0;
         s->ext_nm = string_duplicate(msn);
@@ -8212,7 +8212,7 @@ static void read_ada_library_interface(Symbol_Manager *SM, const char *pth)
         }
         sp->sp.rt = 0;
         n->bd.sp = sp;
-        Symbol *s = symbol_add_overload(SM, syn(msn, isp ? 4 : 5, tyn(TYPE_STRING, msn), n));
+        Symbol *s = symbol_add_overload(SM, symbol_new(msn, isp ? 4 : 5, type_new(TYPE_STRING, msn), n));
         s->el = SM->eo++;
         nv(&s->ol, n);
         n->sy = s;
@@ -8243,7 +8243,7 @@ static const char *lkp(Symbol_Manager *SM, String_Slice nm)
       *p = tolower(*p);
     read_ada_library_interface(SM, pf);
     snprintf(af, 512, "%s.ads", pf);
-    const char *s = rdf(af);
+    const char *s = read_file(af);
     if (s)
       return s;
   }
@@ -8267,8 +8267,8 @@ static Syntax_Node *pks2(Symbol_Manager *SM, String_Slice nm, const char *src)
     Syntax_Node *u = cu->cu.un.data[i];
     if (u->k == N_PKS)
     {
-      Type_Info *t = tyn(TY_P, nm);
-      Symbol *ps = symbol_add_overload(SM, syn(nm, 6, t, u));
+      Type_Info *t = type_new(TY_P, nm);
+      Symbol *ps = symbol_add_overload(SM, symbol_new(nm, 6, t, u));
       ps->lv = 0;
       u->sy = ps;
       u->ps.el = ps->el;
@@ -12807,7 +12807,7 @@ static void generate_declaration(Code_Generator *g, Syntax_Node *n)
   case N_PB:
   {
     Syntax_Node *sp = n->bd.sp;
-    GT *gt = gfnd(g->sm, sp->sp.nm);
+    GT *gt = generic_find(g->sm, sp->sp.nm);
     if (gt)
       break;
     for (uint32_t i = 0; i < n->bd.dc.count; i++)
@@ -13183,7 +13183,7 @@ static void generate_declaration(Code_Generator *g, Syntax_Node *n)
   case N_FB:
   {
     Syntax_Node *sp = n->bd.sp;
-    GT *gt = gfnd(g->sm, sp->sp.nm);
+    GT *gt = generic_find(g->sm, sp->sp.nm);
     if (gt)
       break;
     for (uint32_t i = 0; i < n->bd.dc.count; i++)
