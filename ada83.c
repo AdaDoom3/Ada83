@@ -4361,7 +4361,7 @@ struct Type_Info
 {
   Type_Kind k;
   String_Slice nm;
-  Type_Info *bs, *el, *prt;
+  Type_Info *base_type, *element_type, *parent_type;
   Type_Info *ix;
   int64_t lo, hi;
   Node_Vector components, dc;
@@ -4608,9 +4608,9 @@ static Symbol *symbol_find_with_arity(Symbol_Manager *symbol_manager, String_Sli
             if (np == na)
             {
               sc += 1000;
-              if (tx and c->ty and c->ty->el)
+              if (tx and c->ty and c->ty->element_type)
               {
-                int ts = type_scope(c->ty->el, tx, 0);
+                int ts = type_scope(c->ty->element_type, tx, 0);
                 sc += ts;
               }
               for (uint32_t k = 0; k < b->body.subprogram_spec->subprogram.parameters.count and k < (uint32_t) na; k++)
@@ -4688,7 +4688,7 @@ static void symbol_manager_init(Symbol_Manager *symbol_manager)
   TY_CHAR = type_new(TYPE_CHARACTER, STRING_LITERAL("CHARACTER"));
   TY_CHAR->sz = 1;
   TY_STR = type_new(TYPE_ARRAY, STRING_LITERAL("STRING"));
-  TY_STR->el = TY_CHAR;
+  TY_STR->element_type = TY_CHAR;
   TY_STR->lo = 0;
   TY_STR->hi = -1;
   TY_STR->ix = TY_POS;
@@ -4919,16 +4919,16 @@ static void find_type(Symbol_Manager *symbol_manager, Type_Info *t, Source_Locat
 {
   if (not t or t->frz)
     return;
-  if (t->k == TY_PT and t->prt and not t->prt->frz)
+  if (t->k == TY_PT and t->parent_type and not t->parent_type->frz)
     return;
   t->frz = 1;
   t->fzn = ND(ERR, l);
-  if (t->bs and t->bs != t and not t->bs->frz)
-    find_type(symbol_manager, t->bs, l);
-  if (t->prt and not t->prt->frz)
-    find_type(symbol_manager, t->prt, l);
-  if (t->el and not t->el->frz)
-    find_type(symbol_manager, t->el, l);
+  if (t->base_type and t->base_type != t and not t->base_type->frz)
+    find_type(symbol_manager, t->base_type, l);
+  if (t->parent_type and not t->parent_type->frz)
+    find_type(symbol_manager, t->parent_type, l);
+  if (t->element_type and not t->element_type->frz)
+    find_type(symbol_manager, t->element_type, l);
   if (t->k == TYPE_RECORD)
   {
     for (uint32_t i = 0; i < t->components.count; i++)
@@ -4951,9 +4951,9 @@ static void find_type(Symbol_Manager *symbol_manager, Type_Info *t, Source_Locat
     t->sz = (of + mx - 1) & ~(mx - 1);
     t->al = mx;
   }
-  if (t->k == TYPE_ARRAY and t->el)
+  if (t->k == TYPE_ARRAY and t->element_type)
   {
-    Type_Info *et = t->el;
+    Type_Info *et = t->element_type;
     uint32_t ea = et->al ? et->al : 8, es = et->sz ? et->sz : 8;
     int64_t n = (t->hi - t->lo + 1);
     t->sz = n > 0 ? n * es : 0;
@@ -4987,7 +4987,7 @@ static void find_ada_library(Symbol_Manager *symbol_manager, Source_Location l)
     for (Symbol *s = symbol_manager->sy[i]; s; s = s->next)
       if (s->scope == symbol_manager->sc and not s->frozen)
       {
-        if (s->ty and s->ty->k == TY_PT and s->ty->prt and not s->ty->prt->frz)
+        if (s->ty and s->ty->k == TY_PT and s->ty->parent_type and not s->ty->parent_type->frz)
           continue;
         if (s->ty)
           find_type(symbol_manager, s->ty, l);
@@ -5040,8 +5040,8 @@ static Type_Info *type_canonical_concrete(Type_Info *t)
     return TY_FLT;
   if (t->k == TYPE_FIXED_POINT)
     return TY_FLT;
-  if ((t->k == TYPE_DERIVED or t->k == TY_PT) and t->prt)
-    return type_canonical_concrete(t->prt);
+  if ((t->k == TYPE_DERIVED or t->k == TY_PT) and t->parent_type)
+    return type_canonical_concrete(t->parent_type);
   return t;
 }
 typedef enum
@@ -5084,12 +5084,12 @@ static Type_Info *semantic_base(Type_Info *t)
 {
   if (not t)
     return TY_INT;
-  for (Type_Info *parser = t; parser; parser = parser->bs ? parser->bs : parser->prt)
+  for (Type_Info *parser = t; parser; parser = parser->base_type ? parser->base_type : parser->parent_type)
   {
-    if (not parser->bs and not parser->prt)
+    if (not parser->base_type and not parser->parent_type)
       return parser;
-    if (parser->k == TYPE_DERIVED and parser->prt)
-      return semantic_base(parser->prt);
+    if (parser->k == TYPE_DERIVED and parser->parent_type)
+      return semantic_base(parser->parent_type);
     if (parser->k == TYPE_UNSIGNED_INTEGER)
       return TY_INT;
     if (parser->k == TYPE_UNIVERSAL_FLOAT or parser->k == TYPE_FIXED_POINT)
@@ -5125,7 +5125,7 @@ static inline bool is_access(Type_Info *t)
 }
 static bool is_check_suppressed(Type_Info *t, unsigned kind)
 {
-  for (Type_Info *parser = t; parser; parser = parser->bs)
+  for (Type_Info *parser = t; parser; parser = parser->base_type)
   {
     if (parser->sup & kind)
       return true;
@@ -5138,13 +5138,13 @@ static CompatKind type_compat_kind(Type_Info *a, Type_Info *b)
     return COMP_NONE;
   if (a == b)
     return COMP_SAME;
-  if (a == TY_STR and b->k == TYPE_ARRAY and b->el and b->el->k == TYPE_CHARACTER)
+  if (a == TY_STR and b->k == TYPE_ARRAY and b->element_type and b->element_type->k == TYPE_CHARACTER)
     return COMP_ARRAY_ELEMENT;
-  if (b == TY_STR and a->k == TYPE_ARRAY and a->el and a->el->k == TYPE_CHARACTER)
+  if (b == TY_STR and a->k == TYPE_ARRAY and a->element_type and a->element_type->k == TYPE_CHARACTER)
     return COMP_ARRAY_ELEMENT;
-  if (a->prt == b or b->prt == a)
+  if (a->parent_type == b or b->parent_type == a)
     return COMP_DERIVED;
-  if (a->bs == b or b->bs == a)
+  if (a->base_type == b or b->base_type == a)
     return COMP_BASED_ON;
   if ((a->k == TYPE_INTEGER or a->k == TYPE_UNSIGNED_INTEGER)
       and (b->k == TYPE_INTEGER or b->k == TYPE_UNSIGNED_INTEGER))
@@ -5152,14 +5152,14 @@ static CompatKind type_compat_kind(Type_Info *a, Type_Info *b)
   if ((a->k == TYPE_FLOAT or a->k == TYPE_UNIVERSAL_FLOAT)
       and (b->k == TYPE_FLOAT or b->k == TYPE_UNIVERSAL_FLOAT))
     return COMP_SAME;
-  if (a->k == TYPE_ARRAY and b->k == TYPE_ARRAY and type_compat_kind(a->el, b->el) != COMP_NONE)
+  if (a->k == TYPE_ARRAY and b->k == TYPE_ARRAY and type_compat_kind(a->element_type, b->element_type) != COMP_NONE)
     return COMP_ARRAY_ELEMENT;
   if (a->k == TYPE_ACCESS and b->k == TYPE_ACCESS)
-    return type_compat_kind(a->el, b->el) != COMP_NONE ? COMP_ACCESS_DESIGNATED : COMP_NONE;
+    return type_compat_kind(a->element_type, b->element_type) != COMP_NONE ? COMP_ACCESS_DESIGNATED : COMP_NONE;
   if (a->k == TYPE_DERIVED)
-    return type_compat_kind(a->prt, b);
+    return type_compat_kind(a->parent_type, b);
   if (b->k == TYPE_DERIVED)
-    return type_compat_kind(a, b->prt);
+    return type_compat_kind(a, b->parent_type);
   return COMP_NONE;
 }
 static int type_scope(Type_Info *a, Type_Info *b, Type_Info *tx)
@@ -5174,13 +5174,13 @@ static int type_scope(Type_Info *a, Type_Info *b, Type_Info *tx)
   case COMP_BASED_ON:
     return 800;
   case COMP_ARRAY_ELEMENT:
-    return 600 + type_scope(a->el, b->el, tx);
+    return 600 + type_scope(a->element_type, b->element_type, tx);
   case COMP_ACCESS_DESIGNATED:
-    return 500 + type_scope(a->el, b->el, 0);
+    return 500 + type_scope(a->element_type, b->element_type, 0);
   default:
     break;
   }
-  if (tx and a and a->el and b == tx)
+  if (tx and a and a->element_type and b == tx)
     return 400;
   return 0;
 }
@@ -5247,8 +5247,8 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
     if (cn and bt)
     {
       Type_Info *t = type_new(bt->k, N);
-      t->bs = bt;
-      t->el = bt->el;
+      t->base_type = bt;
+      t->element_type = bt->element_type;
       t->components = bt->components;
       t->dc = bt->dc;
       t->sz = bt->sz;
@@ -5422,7 +5422,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
   if (node->k == N_TA)
   {
     Type_Info *t = type_new(TYPE_ARRAY, N);
-    t->el = resolve_subtype(symbol_manager, node->index.prefix);
+    t->element_type = resolve_subtype(symbol_manager, node->index.prefix);
     if (node->index.indices.count == 1)
     {
       Syntax_Node *r = node->index.indices.data[0];
@@ -5451,7 +5451,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
   if (node->k == N_TAC)
   {
     Type_Info *t = type_new(TYPE_ACCESS, N);
-    t->el = resolve_subtype(symbol_manager, node->unary_node.x);
+    t->element_type = resolve_subtype(symbol_manager, node->unary_node.x);
     return t;
   }
   if (node->k == N_IX)
@@ -5465,9 +5465,9 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
         resolve_expression(symbol_manager, r->range.low, 0);
         resolve_expression(symbol_manager, r->range.high, 0);
         Type_Info *t = type_new(TYPE_ARRAY, N);
-        t->el = bt->el;
+        t->element_type = bt->element_type;
         t->ix = bt->ix;
-        t->bs = bt;
+        t->base_type = bt;
         if (r->range.low and r->range.low->k == N_INT)
           t->lo = r->range.low->i;
         else if (
@@ -5513,9 +5513,9 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
         resolve_expression(symbol_manager, r->range.low, 0);
         resolve_expression(symbol_manager, r->range.high, 0);
         Type_Info *t = type_new(TYPE_ARRAY, N);
-        t->el = bt->el;
+        t->element_type = bt->element_type;
         t->ix = bt->ix;
-        t->bs = bt;
+        t->base_type = bt;
         if (r->range.low and r->range.low->k == N_INT)
           t->lo = r->range.low->i;
         else if (
@@ -5546,11 +5546,11 @@ static Symbol *symbol_character_literal(Symbol_Manager *symbol_manager, char c, 
         return e;
     }
   }
-  if (tx and tx->k == TYPE_DERIVED and tx->prt)
-    return symbol_character_literal(symbol_manager, c, tx->prt);
+  if (tx and tx->k == TYPE_DERIVED and tx->parent_type)
+    return symbol_character_literal(symbol_manager, c, tx->parent_type);
   for (Symbol *s = symbol_manager->sy[symbol_hash((String_Slice){&c, 1})]; s; s = s->next)
     if (s->name.length == 1 and tolower(s->name.string[0]) == tolower(c) and s->k == 2 and s->ty
-        and (s->ty->k == TYPE_ENUMERATION or (s->ty->k == TYPE_DERIVED and s->ty->prt and s->ty->prt->k == TYPE_ENUMERATION)))
+        and (s->ty->k == TYPE_ENUMERATION or (s->ty->k == TYPE_DERIVED and s->ty->parent_type and s->ty->parent_type->k == TYPE_ENUMERATION)))
       return s;
   return 0;
 }
@@ -5570,8 +5570,8 @@ static Type_Info *base_scalar(Type_Info *t)
 {
   if (not t)
     return TY_INT;
-  for (Type_Info *parser = t; parser; parser = parser->bs)
-    if (not parser->bs
+  for (Type_Info *parser = t; parser; parser = parser->base_type)
+    if (not parser->base_type
         or (parser->k != TYPE_INTEGER and parser->k != TYPE_ENUMERATION and parser->k != TYPE_DERIVED
             and parser->k != TYPE_CHARACTER and parser->k != TYPE_FLOAT))
       return parser;
@@ -5782,7 +5782,7 @@ static Type_Info *universal_composite_aggregate(Type_Info *at, Syntax_Node *ag)
     return at;
   int asz = ag->aggregate.items.count;
   Type_Info *nt = type_new(TYPE_ARRAY, N);
-  nt->el = at->el;
+  nt->element_type = at->element_type;
   nt->ix = at->ix;
   nt->lo = 1;
   nt->hi = asz;
@@ -5843,9 +5843,9 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
       if (s->k == 5)
       {
         Symbol *s0 = symbol_find_with_arity(symbol_manager, node->s, 0, tx);
-        if (s0 and s0->ty and s0->ty->k == TYPE_STRING and s0->ty->el)
+        if (s0 and s0->ty and s0->ty->k == TYPE_STRING and s0->ty->element_type)
         {
-          node->ty = s0->ty->el;
+          node->ty = s0->ty->element_type;
           node->sy = s0;
         }
       }
@@ -6014,7 +6014,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
       node->index.indices.data[i] = chk(symbol_manager, node->index.indices.data[i], node->l);
     }
     if (node->index.prefix->ty and node->index.prefix->ty->k == TYPE_ARRAY)
-      node->ty = type_canonical_concrete(node->index.prefix->ty->el);
+      node->ty = type_canonical_concrete(node->index.prefix->ty->element_type);
     else
       node->ty = TY_INT;
     break;
@@ -6044,9 +6044,9 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
           {
             node->ty = d->sy->ty ? d->sy->ty : TY_INT;
             node->sy = d->sy;
-            if (d->sy->k == 5 and d->sy->ty and d->sy->ty->k == TYPE_STRING and d->sy->ty->el)
+            if (d->sy->k == 5 and d->sy->ty and d->sy->ty->k == TYPE_STRING and d->sy->ty->element_type)
             {
-              node->ty = d->sy->ty->el;
+              node->ty = d->sy->ty->element_type;
             }
             if (d->sy->k == 2 and d->sy->definition)
             {
@@ -6146,9 +6146,9 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
             {
               node->ty = s->ty;
               node->sy = s;
-              if (s->k == 5 and s->ty and s->ty->k == TYPE_STRING and s->ty->el)
+              if (s->k == 5 and s->ty and s->ty->k == TYPE_STRING and s->ty->element_type)
               {
-                node->ty = s->ty->el;
+                node->ty = s->ty->element_type;
               }
               if (s->k == 2 and s->definition)
               {
@@ -6234,7 +6234,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
       String_Slice a = node->attribute.attribute_name;
       if (string_equal_ignore_case(a, STRING_LITERAL("FIRST"))
           or string_equal_ignore_case(a, STRING_LITERAL("LAST")))
-        node->ty = ptc and ptc->el                                     ? ptc->el
+        node->ty = ptc and ptc->element_type                                     ? ptc->element_type
                 : (ptc and (is_discrete(ptc) or is_real_type(ptc))) ? pt
                                                                     : TY_INT;
       else if (string_equal_ignore_case(a, STRING_LITERAL("ADDRESS")))
@@ -6294,7 +6294,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
       else if (string_equal_ignore_case(a, STRING_LITERAL("RANGE")))
         node->ty = TY_INT;
       else if (string_equal_ignore_case(a, STRING_LITERAL("BASE")))
-        node->ty = pt and pt->bs ? pt->bs : pt;
+        node->ty = pt and pt->base_type ? pt->base_type : pt;
       else
         node->ty = TY_INT;
       if (string_equal_ignore_case(a, STRING_LITERAL("POS")) and node->attribute.arguments.count > 0
@@ -6367,9 +6367,9 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
       if (s)
       {
         node->call.function_name->sy = s;
-        if (s->ty and s->ty->k == TYPE_STRING and s->ty->el)
+        if (s->ty and s->ty->k == TYPE_STRING and s->ty->element_type)
         {
-          node->ty = s->ty->el;
+          node->ty = s->ty->element_type;
           node->sy = s;
         }
         else if (s->k == 1)
@@ -6399,10 +6399,10 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     break;
   case N_ALC:
     node->ty = type_new(TYPE_ACCESS, N);
-    node->ty->el = resolve_subtype(symbol_manager, node->allocator.subtype);
+    node->ty->element_type = resolve_subtype(symbol_manager, node->allocator.subtype);
     if (node->allocator.initializer)
     {
-      Type_Info *et = node->ty->el ? type_canonical_concrete(node->ty->el) : 0;
+      Type_Info *et = node->ty->element_type ? type_canonical_concrete(node->ty->element_type) : 0;
       if (et and et->k == TYPE_RECORD and et->dc.count > 0)
       {
         for (uint32_t i = 0; i < et->dc.count; i++)
@@ -6414,10 +6414,10 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
           }
         }
       }
-      resolve_expression(symbol_manager, node->allocator.initializer, node->ty->el);
-      if (tx and tx->k == TYPE_ACCESS and tx->el)
+      resolve_expression(symbol_manager, node->allocator.initializer, node->ty->element_type);
+      if (tx and tx->k == TYPE_ACCESS and tx->element_type)
       {
-        Type_Info *ct = type_canonical_concrete(tx->el);
+        Type_Info *ct = type_canonical_concrete(tx->element_type);
         if (ct and ct->k == TYPE_RECORD and ct->dc.count > 0)
         {
           bool hcd = 0;
@@ -6455,7 +6455,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
   case N_ASC:
     if (node->association.value)
     {
-      Type_Info *vt = tx and tx->k == TYPE_ARRAY ? tx->el : tx;
+      Type_Info *vt = tx and tx->k == TYPE_ARRAY ? tx->element_type : tx;
       resolve_expression(symbol_manager, node->association.value, vt);
     }
     break;
@@ -6464,7 +6464,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     {
       Type_Info *dty = node->dereference.expression->ty ? type_canonical_concrete(node->dereference.expression->ty) : 0;
       if (dty and dty->k == TYPE_ACCESS)
-        node->ty = dty->el;
+        node->ty = dty->element_type;
       else
       {
         if (error_count < 99 and node->dereference.expression->ty)
@@ -7486,19 +7486,19 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       if (n->type_decl.parent_type->k == N_TAC and error_count < 99)
         fatal_error(n->l, "der acc ty");
       t = type_new(TYPE_DERIVED, n->type_decl.nm);
-      t->prt = pt;
+      t->parent_type = pt;
       if (pt)
       {
         t->lo = pt->lo;
         t->hi = pt->hi;
-        t->el = pt->el;
+        t->element_type = pt->element_type;
         t->dc = pt->dc;
         t->sz = pt->sz;
         t->al = pt->al;
         {
           Type_Info *_ept = pt;
-          while (_ept and _ept->ev.count == 0 and (_ept->bs or _ept->prt))
-            _ept = _ept->bs ? _ept->bs : _ept->prt;
+          while (_ept and _ept->ev.count == 0 and (_ept->base_type or _ept->parent_type))
+            _ept = _ept->base_type ? _ept->base_type : _ept->parent_type;
           t->ev.count = 0;
           t->ev.data = 0;
           if (_ept)
@@ -7529,7 +7529,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
         if (px->ty->k == TY_PT)
         {
           t = px->ty;
-          t->prt = resolve_subtype(symbol_manager, n->type_decl.definition);
+          t->parent_type = resolve_subtype(symbol_manager, n->type_decl.definition);
         }
         else
           t = px->ty;
@@ -7684,8 +7684,8 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     Type_Info *t = type_new(b ? b->k : TYPE_INTEGER, n->subtype_decl.nm);
     if (b)
     {
-      t->bs = b;
-      t->el = b->el;
+      t->base_type = b;
+      t->element_type = b->element_type;
       t->components = b->components;
       t->dc = b->dc;
       t->sz = b->sz;
@@ -7694,7 +7694,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       t->pk = b->pk;
       t->lo = b->lo;
       t->hi = b->hi;
-      t->prt = b->prt ? b->prt : b;
+      t->parent_type = b->parent_type ? b->parent_type : b;
     }
     if (n->subtype_decl.range_constraint)
     {
@@ -7743,7 +7743,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     if (n->subprogram.return_type)
     {
       Type_Info *rt = resolve_subtype(symbol_manager, n->subprogram.return_type);
-      ft->el = rt;
+      ft->element_type = rt;
       Symbol *s = symbol_add_overload(symbol_manager, symbol_new(n->subprogram.nm, 5, ft, n));
       nv(&s->overloads, n);
       n->sy = s;
@@ -7801,7 +7801,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     Syntax_Node *sp = n->body.subprogram_spec;
     Type_Info *rt = resolve_subtype(symbol_manager, sp->subprogram.return_type);
     Type_Info *ft = type_new(TYPE_STRING, sp->subprogram.nm);
-    ft->el = rt;
+    ft->element_type = rt;
     Symbol *s = symbol_add_overload(symbol_manager, symbol_new(sp->subprogram.nm, 5, ft, n));
     nv(&s->overloads, n);
     n->sy = s;
@@ -7838,7 +7838,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     Syntax_Node *sp = n->body.subprogram_spec;
     Type_Info *rt = resolve_subtype(symbol_manager, sp->subprogram.return_type);
     Type_Info *ft = type_new(TYPE_STRING, sp->subprogram.nm);
-    ft->el = rt;
+    ft->element_type = rt;
     Symbol *s = symbol_add_overload(symbol_manager, symbol_new(sp->subprogram.nm, 5, ft, n));
     nv(&s->overloads, n);
     n->sy = s;
@@ -8571,7 +8571,7 @@ static unsigned long type_hash(Type_Info *t)
   {
     h = h * 31 + (unsigned long) t->lo;
     h = h * 31 + (unsigned long) t->hi;
-    h = h * 31 + type_hash(t->el);
+    h = h * 31 + type_hash(t->element_type);
   }
   else if (t->k == TYPE_RECORD)
   {
@@ -9830,7 +9830,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     if (op == T_EQ or op == T_NE or op == T_LT or op == T_LE or op == T_GT or op == T_GE)
     {
-      if((op==T_EQ or op==T_NE) and (n->binary_node.l->k==N_STR or n->binary_node.r->k==N_STR or (n->binary_node.l->ty and type_canonical_concrete(n->binary_node.l->ty)->el and type_canonical_concrete(n->binary_node.l->ty)->el->k==TYPE_CHARACTER) or (n->binary_node.r->ty and type_canonical_concrete(n->binary_node.r->ty)->el and type_canonical_concrete(n->binary_node.r->ty)->el->k==TYPE_CHARACTER)))
+      if((op==T_EQ or op==T_NE) and (n->binary_node.l->k==N_STR or n->binary_node.r->k==N_STR or (n->binary_node.l->ty and type_canonical_concrete(n->binary_node.l->ty)->element_type and type_canonical_concrete(n->binary_node.l->ty)->element_type->k==TYPE_CHARACTER) or (n->binary_node.r->ty and type_canonical_concrete(n->binary_node.r->ty)->element_type and type_canonical_concrete(n->binary_node.r->ty)->element_type->k==TYPE_CHARACTER)))
       {
         Value ap = a, bp = b;
         if (ap.k == VALUE_KIND_INTEGER)
@@ -10977,7 +10977,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         }
         if (s->ty and s->ty->k == TYPE_STRING)
         {
-          Value_Kind rk = token_kind_to_value_kind(s->ty->el);
+          Value_Kind rk = token_kind_to_value_kind(s->ty->element_type);
           r.k = rk;
           Syntax_Node *b = symbol_body(s, s->elaboration_level);
           Syntax_Node *sp = symbol_spec(s);
@@ -11163,7 +11163,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
   case N_ALC:
   {
     r.k = VALUE_KIND_POINTER;
-    Type_Info *et = n->ty and n->ty->el ? type_canonical_concrete(n->ty->el) : 0;
+    Type_Info *et = n->ty and n->ty->element_type ? type_canonical_concrete(n->ty->element_type) : 0;
     uint32_t asz = 64;
     if (et and et->dc.count > 0)
       asz += et->dc.count * 8;
@@ -11194,7 +11194,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       p.k = VALUE_KIND_POINTER;
     }
     Type_Info *dt = n->dereference.expression->ty ? type_canonical_concrete(n->dereference.expression->ty) : 0;
-    dt = dt and dt->el ? type_canonical_concrete(dt->el) : 0;
+    dt = dt and dt->element_type ? type_canonical_concrete(dt->element_type) : 0;
     r.k = dt ? token_kind_to_value_kind(dt) : VALUE_KIND_INTEGER;
     Value pc = value_cast(generator, p, VALUE_KIND_INTEGER);
     int nc = new_temporary_register(generator);
@@ -12639,8 +12639,8 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
           if (s->k == 0 or s->k == 2)
           {
             Type_Info *bt = at;
-            while (bt and bt->k == TYPE_ARRAY and bt->el)
-              bt = type_canonical_concrete(bt->el);
+            while (bt and bt->k == TYPE_ARRAY and bt->element_type)
+              bt = type_canonical_concrete(bt->element_type);
             int asz = -1;
             if (n->object_decl.in and n->object_decl.in->k == N_AG and at and at->k == TYPE_ARRAY)
               asz = (int) n->object_decl.in->aggregate.items.count;
@@ -12969,7 +12969,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   s->scope,
                   s->elaboration_level,
                   asz,
-                  ada_to_c_type_string(at->el));
+                  ada_to_c_type_string(at->element_type));
             }
             else
             {
@@ -13347,7 +13347,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   s->scope,
                   s->elaboration_level,
                   asz,
-                  ada_to_c_type_string(at->el));
+                  ada_to_c_type_string(at->element_type));
             }
             else
             {
@@ -14089,7 +14089,7 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
                 nb,
                 s->k == 2 ? "constant" : "global",
                 asz,
-                ada_to_c_type_string(at->el));
+                ada_to_c_type_string(at->element_type));
           }
           else if (at and at->k == TYPE_ARRAY)
           {
@@ -14301,7 +14301,7 @@ int main(int ac, char **av)
                 nb,
                 s->k == 2 ? "constant" : "global",
                 asz,
-                ada_to_c_type_string(at->el));
+                ada_to_c_type_string(at->element_type));
           }
           else if (at and at->k == TYPE_ARRAY)
           {
