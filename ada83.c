@@ -4579,21 +4579,21 @@ static Symbol *symbol_find_with_arity(Symbol_Manager *SM, String_Slice nm, int n
     {
       if (s->sc > msc)
       {
-        cv.n = 0;
+        cv.count = 0;
         msc = s->sc;
       }
       if (s->sc == msc)
         sv(&cv, s);
     }
-  if (not cv.n)
+  if (not cv.count)
     return 0;
-  if (cv.n == 1)
-    return cv.d[0];
+  if (cv.count == 1)
+    return cv.data[0];
   Symbol *br = 0;
   int bs = -1;
-  for (uint32_t i = 0; i < cv.n; i++)
+  for (uint32_t i = 0; i < cv.count; i++)
   {
-    Symbol *c = cv.d[i];
+    Symbol *c = cv.data[i];
     int sc = 0;
     if ((c->k == 4 or c->k == 5) and na >= 0)
     {
@@ -4659,7 +4659,7 @@ static Symbol *symbol_find_with_arity(Symbol_Manager *SM, String_Slice nm, int n
       }
     }
   }
-  return br ?: cv.d[0];
+  return br ?: cv.data[0];
 }
 static Type_Info *tyn(Tk_ k, String_Slice nm)
 {
@@ -4794,12 +4794,12 @@ static Syntax_Node *geq(Type_Info *t, Source_Location l)
     li->ix.p = ND(ID, l);
     li->ix.p->s = STRING_LITERAL("Source_Location");
     nv(&li->ix.ix, ND(ID, l));
-    li->ix.ix.d[0]->s = STRING_LITERAL("I");
+    li->ix.ix.data[0]->s = STRING_LITERAL("I");
     Syntax_Node *ri = ND(IX, l);
     ri->ix.p = ND(ID, l);
     ri->ix.p->s = STRING_LITERAL("Rational_Number");
     nv(&ri->ix.ix, ND(ID, l));
-    ri->ix.ix.d[0]->s = STRING_LITERAL("I");
+    ri->ix.ix.data[0]->s = STRING_LITERAL("I");
     cmp->bn.l = li;
     cmp->bn.r = ri;
     Syntax_Node *rt = ND(RT, l);
@@ -4873,12 +4873,12 @@ static Syntax_Node *gas(Type_Info *t, Source_Location l)
     ti->ix.p = ND(ID, l);
     ti->ix.p->s = STRING_LITERAL("T");
     nv(&ti->ix.ix, ND(ID, l));
-    ti->ix.ix.d[0]->s = STRING_LITERAL("I");
+    ti->ix.ix.data[0]->s = STRING_LITERAL("I");
     Syntax_Node *si = ND(IX, l);
     si->ix.p = ND(ID, l);
     si->ix.p->s = STRING_LITERAL("String_Slice");
     nv(&si->ix.ix, ND(ID, l));
-    si->ix.ix.d[0]->s = STRING_LITERAL("I");
+    si->ix.ix.data[0]->s = STRING_LITERAL("I");
     as->as.tg = ti;
     as->as.vl = si;
     nv(&lp->lp.st, as);
@@ -4913,7 +4913,7 @@ static Syntax_Node *gin(Type_Info *t, Source_Location l)
   Syntax_Node *rt = ND(RT, l);
   rt->rt.vl = ag;
   nv(&f->bd.st, rt);
-  return ag->ag.it.n > 0 ? f : 0;
+  return ag->ag.it.count > 0 ? f : 0;
 }
 static void fty(Symbol_Manager *SM, Type_Info *t, Source_Location l)
 {
@@ -5256,9 +5256,9 @@ static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *n)
       t->ad = bt->ad;
       t->pk = bt->pk;
       t->ix = bt->ix;
-      if (cn->k == 27 and cn->cn.cs.n > 0 and cn->cn.cs.d[0] and cn->cn.cs.d[0]->k == 26)
+      if (cn->k == 27 and cn->cn.cs.count > 0 and cn->cn.cs.data[0] and cn->cn.cs.data[0]->k == 26)
       {
-        Syntax_Node *rn = cn->cn.cs.d[0];
+        Syntax_Node *rn = cn->cn.cs.data[0];
         resolve_expression(SM, rn->rn.lo, 0);
         resolve_expression(SM, rn->rn.hi, 0);
         Syntax_Node *lo = rn->rn.lo;
@@ -5423,9 +5423,9 @@ static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *n)
   {
     Type_Info *t = tyn(TYPE_ARRAY, N);
     t->el = resolve_subtype(SM, n->ix.p);
-    if (n->ix.ix.n == 1)
+    if (n->ix.ix.count == 1)
     {
-      Syntax_Node *r = n->ix.ix.d[0];
+      Syntax_Node *r = n->ix.ix.data[0];
       if (r and r->k == N_RN)
       {
         resolve_expression(SM, r->rn.lo, 0);
@@ -5457,9 +5457,9 @@ static Type_Info *resolve_subtype(Symbol_Manager *SM, Syntax_Node *n)
   if (n->k == N_IX)
   {
     Type_Info *bt = resolve_subtype(SM, n->ix.p);
-    if (bt and bt->k == TYPE_ARRAY and bt->lo == 0 and bt->hi == -1 and n->ix.ix.n == 1)
+    if (bt and bt->k == TYPE_ARRAY and bt->lo == 0 and bt->hi == -1 and n->ix.ix.count == 1)
     {
-      Syntax_Node *r = n->ix.ix.d[0];
+      Syntax_Node *r = n->ix.ix.data[0];
       if (r and r->k == N_RN)
       {
         resolve_expression(SM, r->rn.lo, 0);
@@ -5642,9 +5642,9 @@ static int foth(Syntax_Node *ag)
 {
   if (not ag or ag->k != N_AG)
     return -1;
-  for (uint32_t i = 0; i < ag->ag.it.n; i++)
+  for (uint32_t i = 0; i < ag->ag.it.count; i++)
   {
-    Syntax_Node *e = ag->ag.it.d[i];
+    Syntax_Node *e = ag->ag.it.data[i];
     if (e->k == N_ASC and e->asc.ch.count == 1 and e->asc.ch.data[0]->k == N_ID
         and string_equal_ignore_case(e->asc.ch.data[0]->s, STRING_LITERAL("others")))
       return i;
@@ -5663,11 +5663,11 @@ static void normalize_array_aggregate(Symbol_Manager *SM, Type_Info *at, Syntax_
   bool *cov = calloc(asz, 1);
   int oi = foth(ag);
   uint32_t px = 0;
-  for (uint32_t i = 0; i < ag->ag.it.n; i++)
+  for (uint32_t i = 0; i < ag->ag.it.count; i++)
   {
     if ((int) i == oi)
       continue;
-    Syntax_Node *e = ag->ag.it.d[i];
+    Syntax_Node *e = ag->ag.it.data[i];
     if (e->k == N_ASC)
     {
       for (uint32_t j = 0; j < e->asc.ch.count; j++)
@@ -5686,9 +5686,9 @@ static void normalize_array_aggregate(Symbol_Manager *SM, Type_Info *at, Syntax_
               if (cov[ridx] and error_count < 99)
                 fatal_error(ag->l, "dup ag");
               cov[ridx] = 1;
-              while (xv.n <= (uint32_t) ridx)
+              while (xv.count <= (uint32_t) ridx)
                 nv(&xv, ND(INT, ag->l));
-              xv.d[ridx] = e->asc.vl;
+              xv.data[ridx] = e->asc.vl;
             }
           }
           continue;
@@ -5698,9 +5698,9 @@ static void normalize_array_aggregate(Symbol_Manager *SM, Type_Info *at, Syntax_
           if (cov[idx] and error_count < 99)
             fatal_error(ag->l, "dup ag");
           cov[idx] = 1;
-          while (xv.n <= (uint32_t) idx)
+          while (xv.count <= (uint32_t) idx)
             nv(&xv, ND(INT, ag->l));
-          xv.d[idx] = e->asc.vl;
+          xv.data[idx] = e->asc.vl;
         }
       }
     }
@@ -5711,22 +5711,22 @@ static void normalize_array_aggregate(Symbol_Manager *SM, Type_Info *at, Syntax_
         if (cov[px] and error_count < 99)
           fatal_error(ag->l, "dup ag");
         cov[px] = 1;
-        while (xv.n <= px)
+        while (xv.count <= px)
           nv(&xv, ND(INT, ag->l));
-        xv.d[px] = e;
+        xv.data[px] = e;
       }
       px++;
     }
   }
   if (oi >= 0)
   {
-    Syntax_Node *oe = ag->ag.it.d[oi];
+    Syntax_Node *oe = ag->ag.it.data[oi];
     for (int64_t i = 0; i < asz; i++)
       if (not cov[i])
       {
-        while (xv.n <= (uint32_t) i)
+        while (xv.count <= (uint32_t) i)
           nv(&xv, ND(INT, ag->l));
-        xv.d[i] = oe->asc.vl;
+        xv.data[i] = oe->asc.vl;
         cov[i] = 1;
       }
   }
@@ -5742,9 +5742,9 @@ static void normalize_record_aggregate(Symbol_Manager *SM, Type_Info *rt, Syntax
   if (not ag or not rt or rt->k != TYPE_RECORD)
     return;
   bool cov[256] = {0};
-  for (uint32_t i = 0; i < ag->ag.it.n; i++)
+  for (uint32_t i = 0; i < ag->ag.it.count; i++)
   {
-    Syntax_Node *e = ag->ag.it.d[i];
+    Syntax_Node *e = ag->ag.it.data[i];
     if (e->k != N_ASC)
       continue;
     for (uint32_t j = 0; j < e->asc.ch.count; j++)
@@ -5780,7 +5780,7 @@ static Type_Info *ucag(Type_Info *at, Syntax_Node *ag)
     return at;
   if (at->lo != 0 or at->hi != -1)
     return at;
-  int asz = ag->ag.it.n;
+  int asz = ag->ag.it.count;
   Type_Info *nt = tyn(TYPE_ARRAY, N);
   nt->el = at->el;
   nt->ix = at->ix;
@@ -5808,7 +5808,7 @@ static void icv(Type_Info *t, Syntax_Node *n)
 }
 static bool hrs(Node_Vector *v)
 {
-  for (uint32_t i = 0; i < v->n; i++)
+  for (uint32_t i = 0; i < v->count; i++)
     if (v->data[i]->k != N_PG)
       return 1;
   return 0;
@@ -6008,10 +6008,10 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx
     break;
   case N_IX:
     resolve_expression(SM, n->ix.p, 0);
-    for (uint32_t i = 0; i < n->ix.ix.n; i++)
+    for (uint32_t i = 0; i < n->ix.ix.count; i++)
     {
-      resolve_expression(SM, n->ix.ix.d[i], 0);
-      n->ix.ix.d[i] = chk(SM, n->ix.ix.d[i], n->l);
+      resolve_expression(SM, n->ix.ix.data[i], 0);
+      n->ix.ix.data[i] = chk(SM, n->ix.ix.data[i], n->l);
     }
     if (n->ix.p->ty and n->ix.p->ty->k == TYPE_ARRAY)
       n->ty = type_canonical_concrete(n->ix.p->ty->el);
@@ -6392,8 +6392,8 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx
   }
   break;
   case N_AG:
-    for (uint32_t i = 0; i < n->ag.it.n; i++)
-      resolve_expression(SM, n->ag.it.d[i], tx);
+    for (uint32_t i = 0; i < n->ag.it.count; i++)
+      resolve_expression(SM, n->ag.it.data[i], tx);
     n->ty = tx ?: TY_INT;
     icv(tx, n);
     break;
@@ -6536,8 +6536,8 @@ static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *n)
     for (uint32_t i = 0; i < n->cs.al.count; i++)
     {
       Syntax_Node *a = n->cs.al.data[i];
-      for (uint32_t j = 0; j < a->ch.it.n; j++)
-        resolve_expression(SM, a->ch.it.d[j], n->cs.ex->ty);
+      for (uint32_t j = 0; j < a->ch.it.count; j++)
+        resolve_expression(SM, a->ch.it.data[j], n->cs.ex->ty);
       if (a->hnd.stz.n > 0 and not hrs(&a->hnd.stz))
         fatal_error(a->l, "seq needs stmt");
       for (uint32_t j = 0; j < a->hnd.stz.n; j++)
@@ -8975,15 +8975,15 @@ static V generate_aggregate(Code_Generator *g, Syntax_Node *n, Type_Info *ty)
     normalize_record_aggregate(g->sm, t, n);
   if (not t or t->k != TYPE_RECORD or t->pk)
   {
-    int sz = n->ag.it.n ? n->ag.it.n : 1;
+    int sz = n->ag.it.count ? n->ag.it.count : 1;
     int p = new_temporary_register(g);
     int by = new_temporary_register(g);
     fprintf(o, "  %%t%d = add i64 0, %d\n", by, sz * 8);
     fprintf(o, "  %%t%d = call ptr @__ada_ss_allocate(i64 %%t%d)\n", p, by);
     uint32_t ix = 0;
-    for (uint32_t i = 0; i < n->ag.it.n; i++)
+    for (uint32_t i = 0; i < n->ag.it.count; i++)
     {
-      Syntax_Node *el = n->ag.it.d[i];
+      Syntax_Node *el = n->ag.it.data[i];
       if (el->k == N_ASC)
       {
         if (el->asc.ch.data[0]->k == N_ID
@@ -9059,9 +9059,9 @@ static V generate_aggregate(Code_Generator *g, Syntax_Node *n, Type_Info *ty)
     fprintf(o, "  %%t%d = add i64 0, %u\n", by, sz * 8);
     fprintf(o, "  %%t%d = call ptr @__ada_ss_allocate(i64 %%t%d)\n", p, by);
     uint32_t ix = 0;
-    for (uint32_t i = 0; i < n->ag.it.n; i++)
+    for (uint32_t i = 0; i < n->ag.it.count; i++)
     {
-      Syntax_Node *el = n->ag.it.d[i];
+      Syntax_Node *el = n->ag.it.data[i];
       if (el->k == N_ASC)
       {
         for (uint32_t j = 0; j < el->asc.ch.count; j++)
@@ -10065,7 +10065,7 @@ static V generate_expression(Code_Generator *g, Syntax_Node *n)
       dp = get_fat_pointer_data(g, p.id).id;
       int blo, bhi;
       get_fat_pointer_bounds(g, p.id, &blo, &bhi);
-      V i0 = value_cast(g, generate_expression(g, n->ix.ix.d[0]), VALUE_KIND_INTEGER);
+      V i0 = value_cast(g, generate_expression(g, n->ix.ix.data[0]), VALUE_KIND_INTEGER);
       int adj = new_temporary_register(g);
       fprintf(o, "  %%t%d = sub i64 %%t%d, %%t%d\n", adj, i0.id, blo);
       char lb[32], hb[32];
@@ -10108,7 +10108,7 @@ static V generate_expression(Code_Generator *g, Syntax_Node *n)
         fprintf(o, "  %%t%d = inttoptr i64 %%t%d to ptr\n", pp, p.id);
         dp = pp;
       }
-      V i0 = value_cast(g, generate_expression(g, n->ix.ix.d[0]), VALUE_KIND_INTEGER);
+      V i0 = value_cast(g, generate_expression(g, n->ix.ix.data[0]), VALUE_KIND_INTEGER);
       Type_Info *at = pt;
       int adj_idx = i0.id;
       if (at and at->k == TYPE_ARRAY and at->lo != 0)
@@ -11328,7 +11328,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
         p.id = pp;
         p.k = VALUE_KIND_POINTER;
       }
-      V i0 = value_cast(g, generate_expression(g, n->as.tg->ix.ix.d[0]), VALUE_KIND_INTEGER);
+      V i0 = value_cast(g, generate_expression(g, n->as.tg->ix.ix.data[0]), VALUE_KIND_INTEGER);
       Type_Info *at = n->as.tg->ix.p->ty ? type_canonical_concrete(n->as.tg->ix.p->ty) : 0;
       int adj_idx = i0.id;
       if (at and at->k == TYPE_ARRAY and at->lo != 0)
@@ -11500,9 +11500,9 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
     {
       Syntax_Node *a = n->cs.al.data[i];
       int la = lb.data[i]->i;
-      for (uint32_t j = 0; j < a->ch.it.n; j++)
+      for (uint32_t j = 0; j < a->ch.it.count; j++)
       {
-        Syntax_Node *ch = a->ch.it.d[j];
+        Syntax_Node *ch = a->ch.it.data[j];
         if (ch->k == N_ID and string_equal_ignore_case(ch->s, STRING_LITERAL("others")))
         {
           emit_branch(g, la);
@@ -12643,7 +12643,7 @@ static void generate_declaration(Code_Generator *g, Syntax_Node *n)
               bt = type_canonical_concrete(bt->el);
             int asz = -1;
             if (n->od.in and n->od.in->k == N_AG and at and at->k == TYPE_ARRAY)
-              asz = (int) n->od.in->ag.it.n;
+              asz = (int) n->od.in->ag.it.count;
             if (at and at->k == TYPE_ARRAY and at->lo == 0 and at->hi == -1 and asz < 0)
             {
               fprintf(
