@@ -1645,48 +1645,48 @@ typedef struct
   int error_count;
   SLV label_stack;
 } Parser;
-static void parser_next(Parser *p)
+static void parser_next(Parser *parser)
 {
-  p->current_token = p->peek_token;
-  p->peek_token = lexer_next_token(&p->lexer);
-  if (p->current_token.kind == T_AND and p->peek_token.kind == T_THEN)
+  parser->current_token = parser->peek_token;
+  parser->peek_token = lexer_next_token(&parser->lexer);
+  if (parser->current_token.kind == T_AND and parser->peek_token.kind == T_THEN)
   {
-    p->current_token.kind = T_ATHN;
-    p->peek_token = lexer_next_token(&p->lexer);
+    parser->current_token.kind = T_ATHN;
+    parser->peek_token = lexer_next_token(&parser->lexer);
   }
-  if (p->current_token.kind == T_OR and p->peek_token.kind == T_ELSE)
+  if (parser->current_token.kind == T_OR and parser->peek_token.kind == T_ELSE)
   {
-    p->current_token.kind = T_OREL;
-    p->peek_token = lexer_next_token(&p->lexer);
+    parser->current_token.kind = T_OREL;
+    parser->peek_token = lexer_next_token(&parser->lexer);
   }
 }
-static bool parser_at(Parser *p, Token_Kind t)
+static bool parser_at(Parser *parser, Token_Kind token_kind)
 {
-  return p->current_token.kind == t;
+  return parser->current_token.kind == token_kind;
 }
-static bool parser_match(Parser *p, Token_Kind t)
+static bool parser_match(Parser *parser, Token_Kind token_kind)
 {
-  if (parser_at(p, t))
+  if (parser_at(parser, token_kind))
   {
-    parser_next(p);
+    parser_next(parser);
     return 1;
   }
   return 0;
 }
-static void parser_expect(Parser *p, Token_Kind t)
+static void parser_expect(Parser *parser, Token_Kind token_kind)
 {
-  if (not parser_match(p, t))
-    fatal_error(p->current_token.location, "exp '%s' got '%s'", TN[t], TN[p->current_token.kind]);
+  if (not parser_match(parser, token_kind))
+    fatal_error(parser->current_token.location, "exp '%s' got '%s'", TN[token_kind], TN[parser->current_token.kind]);
 }
-static Source_Location parser_location(Parser *p)
+static Source_Location parser_location(Parser *parser)
 {
-  return p->current_token.location;
+  return parser->current_token.location;
 }
-static String_Slice parser_identifier(Parser *p)
+static String_Slice parser_identifier(Parser *parser)
 {
-  String_Slice s = string_duplicate(p->current_token.literal);
-  parser_expect(p, T_ID);
-  return s;
+  String_Slice identifier = string_duplicate(parser->current_token.literal);
+  parser_expect(parser, T_ID);
+  return identifier;
 }
 static String_Slice parser_attribute(Parser *p)
 {
