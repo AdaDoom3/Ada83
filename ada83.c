@@ -1593,7 +1593,7 @@ struct Library_Unit
 {
   uint8_t k;
   String_Slice nm;
-  String_Slice pth;
+  String_Slice path;
   Syntax_Node *sp;
   Syntax_Node *body;
   Library_Unit_Vector wth;
@@ -1628,7 +1628,7 @@ static Library_Unit *label_use_new(uint8_t k, String_Slice nm, String_Slice pth)
   Library_Unit *l = arena_allocate(sizeof(Library_Unit));
   l->k = k;
   l->nm = nm;
-  l->pth = pth;
+  l->path = pth;
   return l;
 }
 static Generic_Template *generic_type_new(String_Slice nm)
