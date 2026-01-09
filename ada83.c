@@ -1592,7 +1592,7 @@ struct Representation_Clause
 struct Library_Unit
 {
   uint8_t k;
-  String_Slice nm;
+  String_Slice name;
   String_Slice path;
   Syntax_Node *sp;
   Syntax_Node *body;
@@ -1627,7 +1627,7 @@ static Library_Unit *label_use_new(uint8_t k, String_Slice nm, String_Slice pth)
 {
   Library_Unit *l = arena_allocate(sizeof(Library_Unit));
   l->k = k;
-  l->nm = nm;
+  l->name = nm;
   l->path = pth;
   return l;
 }
@@ -13851,7 +13851,7 @@ static Library_Unit *lfnd(Symbol_Manager *symbol_manager, String_Slice nm)
   for (uint32_t i = 0; i < symbol_manager->lu.count; i++)
   {
     Library_Unit *l = symbol_manager->lu.data[i];
-    if (string_equal_ignore_case(l->nm, nm))
+    if (string_equal_ignore_case(l->name, nm))
       return l;
   }
   return 0;
