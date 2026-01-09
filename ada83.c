@@ -4371,7 +4371,7 @@ struct Type_Info
   uint64_t ad;
   bool pk;
   Node_Vector ops;
-  int64_t sm, lg;
+  int64_t sm, large_value;
   uint16_t sup;
   bool is_controlled;
   uint8_t frozen;
