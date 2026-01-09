@@ -4387,7 +4387,7 @@ struct Symbol
   int sc;
   int ss;
   int64_t vl;
-  uint32_t of;
+  uint32_t offset;
   Node_Vector overloads;
   Symbol_Vector use_clauses;
   int el;
