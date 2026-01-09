@@ -4917,17 +4917,17 @@ static Syntax_Node *generate_input_operator(Type_Info *t, Source_Location l)
 }
 static void find_type(Symbol_Manager *symbol_manager, Type_Info *t, Source_Location l)
 {
-  if (not t or t->frozen)
+  if (not t or t->frz)
     return;
-  if (t->k == TY_PT and t->prt and not t->prt->frozen)
+  if (t->k == TY_PT and t->prt and not t->prt->frz)
     return;
-  t->frozen = 1;
-  t->frozen_node = ND(ERR, l);
-  if (t->bs and t->bs != t and not t->bs->frozen)
+  t->frz = 1;
+  t->fzn = ND(ERR, l);
+  if (t->bs and t->bs != t and not t->bs->frz)
     find_type(symbol_manager, t->bs, l);
-  if (t->prt and not t->prt->frozen)
+  if (t->prt and not t->prt->frz)
     find_type(symbol_manager, t->prt, l);
-  if (t->el and not t->el->frozen)
+  if (t->el and not t->el->frz)
     find_type(symbol_manager, t->el, l);
   if (t->k == TYPE_RECORD)
   {
@@ -4978,7 +4978,7 @@ static void find_symbol(Symbol_Manager *symbol_manager, Symbol *s, Source_Locati
     return;
   s->frozen = 1;
   s->frozen_node = ND(ERR, l);
-  if (s->ty and not s->ty->frozen)
+  if (s->ty and not s->ty->frz)
     find_type(symbol_manager, s->ty, l);
 }
 static void find_ada_library(Symbol_Manager *symbol_manager, Source_Location l)
@@ -4987,7 +4987,7 @@ static void find_ada_library(Symbol_Manager *symbol_manager, Source_Location l)
     for (Symbol *s = symbol_manager->sy[i]; s; s = s->next)
       if (s->sc == symbol_manager->sc and not s->frozen)
       {
-        if (s->ty and s->ty->k == TY_PT and s->ty->prt and not s->ty->prt->frozen)
+        if (s->ty and s->ty->k == TY_PT and s->ty->prt and not s->ty->prt->frz)
           continue;
         if (s->ty)
           find_type(symbol_manager, s->ty, l);
