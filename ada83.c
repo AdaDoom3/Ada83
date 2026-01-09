@@ -2763,7 +2763,7 @@ static Syntax_Node *plp(Parser *p, String_Slice lb)
     Syntax_Node *it = ND(BIN, lc);
     it->bn.op = T_IN;
     it->bn.l = ND(ID, lc);
-    it->bn.l->start = vr;
+    it->bn.l->s = vr;
     it->bn.r = rng;
     n->lp.it = it;
   }
@@ -3684,7 +3684,7 @@ static Syntax_Node *pdl(Parser *p)
         Syntax_Node *dd = 0;
         if (parser_match(p, T_AS))
           dd = parse_expression(p);
-        for (uint32_t i = 0; i < dn.length; i++)
+        for (uint32_t i = 0; i < dn.count; i++)
         {
           Syntax_Node *dp = ND(DS, lc);
           dp->pm.nm = dn.data[i]->s;
@@ -4783,7 +4783,7 @@ static Syntax_Node *geq(Type_Info *t, Source_Location l)
     lp->lp.it = ND(BIN, l);
     lp->lp.it->bn.op = T_IN;
     lp->lp.it->bn.l = ND(ID, l);
-    lp->lp.it->bn.l->start = STRING_LITERAL("I");
+    lp->lp.it->bn.l->s = STRING_LITERAL("I");
     lp->lp.it->bn.r = ND(AT, l);
     lp->lp.it->bn.r->at.p = ND(ID, l);
     lp->lp.it->bn.r->at.p->s = STRING_LITERAL("Source_Location");
@@ -4863,7 +4863,7 @@ static Syntax_Node *gas(Type_Info *t, Source_Location l)
     lp->lp.it = ND(BIN, l);
     lp->lp.it->bn.op = T_IN;
     lp->lp.it->bn.l = ND(ID, l);
-    lp->lp.it->bn.l->start = STRING_LITERAL("I");
+    lp->lp.it->bn.l->s = STRING_LITERAL("I");
     lp->lp.it->bn.r = ND(AT, l);
     lp->lp.it->bn.r->at.p = ND(ID, l);
     lp->lp.it->bn.r->at.p->s = STRING_LITERAL("T");
@@ -5945,7 +5945,7 @@ static void resolve_expression(Symbol_Manager *SM, Syntax_Node *n, Type_Info *tx
         (n->bn.l->k == N_REAL or n->bn.r->k == N_REAL)
         and (n->bn.op == T_PL or n->bn.op == T_MN or n->bn.op == T_ST or n->bn.op == T_SL or n->bn.op == T_EX))
     {
-      double a = n->bn.l->k == N_INT ? (double) n->bn.l->i : n->bn.l->filename,
+      double a = n->bn.l->k == N_INT ? (double) n->bn.l->i : n->bn.l->f,
              b = n->bn.r->k == N_INT ? (double) n->bn.r->i : n->bn.r->f, r = 0;
       if (n->bn.op == T_PL)
         r = a + b;
@@ -13991,7 +13991,7 @@ static void wali(Symbol_Manager *SM, const char *fn, Syntax_Node *cu)
         break;
       }
     if (not f2)
-      fprintf(f, "H %.*s\n", (int) SM->eh.data[i].count, SM->eh.data[i].string);
+      fprintf(f, "H %.*s\n", (int) SM->eh.data[i].length, SM->eh.data[i].string);
   }
   if (SM->eo > 0)
     fprintf(f, "E %d\n", SM->eo);
