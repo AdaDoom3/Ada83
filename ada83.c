@@ -1599,7 +1599,7 @@ struct Library_Unit
   Library_Unit_Vector wth;
   Library_Unit_Vector elb;
   uint64_t ts;
-  bool cmpl;
+  bool is_compiled;
 };
 struct Generic_Template
 {
@@ -14000,7 +14000,7 @@ static void write_ada_library_interface(Symbol_Manager *symbol_manager, const ch
 static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, String_Slice pth)
 {
   Library_Unit *ex = lfnd(symbol_manager, nm);
-  if (ex and ex->cmpl)
+  if (ex and ex->is_compiled)
     return true;
   char fp[512];
   snprintf(fp, 512, "%.*s.adb", (int) pth.length, pth.string);
@@ -14136,7 +14136,7 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
   emit_all_metadata(&g);
   fclose(o);
   Library_Unit *l = label_use_new(cu->compilation_unit.units.count > 0 ? cu->compilation_unit.units.data[0]->k : 0, nm, pth);
-  l->cmpl = true;
+  l->is_compiled = true;
   l->ts = find_type_symbol(fp);
   lv(&symbol_manager->lu, l);
   return true;
