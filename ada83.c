@@ -4385,7 +4385,7 @@ struct Symbol
   Syntax_Node *definition;
   Symbol *next, *previous;
   int scope;
-  int ss;
+  int storage_size;
   int64_t value;
   uint32_t offset;
   Node_Vector overloads;
@@ -4456,7 +4456,7 @@ static Symbol *symbol_add_overload(Symbol_Manager *symbol_manager, Symbol *s)
   s->homonym = symbol_manager->sy[h];
   s->next = symbol_manager->sy[h];
   s->scope = symbol_manager->sc;
-  s->ss = symbol_manager->ss;
+  s->storage_size = symbol_manager->ss;
   s->el = symbol_manager->eo++;
   s->lv = symbol_manager->lv;
   s->visibility = 1;
@@ -7404,7 +7404,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       Type_Info *ct = universal_composite_aggregate(t, n->object_decl.in);
       Symbol *x = symbol_find(symbol_manager, id->s);
       Symbol *s = 0;
-      if (x and x->scope == symbol_manager->sc and x->ss == symbol_manager->ss and x->k != 11)
+      if (x and x->scope == symbol_manager->sc and x->storage_size == symbol_manager->ss and x->k != 11)
       {
         if (x->k == 2 and x->definition and x->definition->k == N_OD and not((Syntax_Node *) x->definition)->object_decl.in
             and n->object_decl.is_constant and n->object_decl.in)
