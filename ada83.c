@@ -4394,9 +4394,9 @@ struct Symbol
   Generic_Template *gt;
   Symbol *parent;
   int lv;
-  bool inl;
-  bool shrd;
-  bool ext;
+  bool is_inline;
+  bool is_shared;
+  bool is_external;
   String_Slice ext_nm;
   String_Slice ext_lang;
   String_Slice mangled_nm;
@@ -6770,7 +6770,7 @@ static void runtime_register_compare(Symbol_Manager *symbol_manager, Representat
   {
     Symbol *s = symbol_find(symbol_manager, r->er.nm);
     if (s)
-      s->inl = true;
+      s->is_inline = true;
   }
   break;
   case 7:
@@ -6788,7 +6788,7 @@ static void runtime_register_compare(Symbol_Manager *symbol_manager, Representat
     Symbol *s = symbol_find(symbol_manager, r->im.nm);
     if (s)
     {
-      s->ext = true;
+      s->is_external = true;
       s->ext_nm = r->im.ext.length > 0 ? string_duplicate(r->im.ext) : string_duplicate(r->im.nm);
       s->ext_lang = string_duplicate(r->im.lang);
     }
@@ -8194,7 +8194,7 @@ static void read_ada_library_interface(Symbol_Manager *symbol_manager, const cha
           vt = TY_INT;
         Syntax_Node *n = node_new(N_OD, ll);
         Symbol *s = symbol_add_overload(symbol_manager, symbol_new(sn, 0, vt, n));
-        s->ext = 1;
+        s->is_external = 1;
         s->lv = 0;
         s->ext_nm = string_duplicate(msn);
         s->mangled_nm = string_duplicate(sn);
@@ -8588,7 +8588,7 @@ static unsigned long type_hash(Type_Info *t)
 }
 static int encode_symbol_name(char *b, int sz, Symbol *s, String_Slice nm, int pc, Syntax_Node *sp)
 {
-  if (s and s->ext and s->ext_nm.string)
+  if (s and s->is_external and s->ext_nm.string)
   {
     int n = 0;
     for (uint32_t i = 0; i < s->ext_nm.length and i < sz - 1; i++)
@@ -9242,7 +9242,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       if (s and s->lv == 0)
       {
         char nb[256];
-        if (s->ext and s->ext_nm.string)
+        if (s->is_external and s->ext_nm.string)
         {
           snprintf(nb, 256, "%s", s->ext_nm.string);
         }
@@ -11989,7 +11989,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             arp[i] = rf ? 1 : 0;
           }
           char nb[256];
-          if (s->ext)
+          if (s->is_external)
             snprintf(nb, 256, "%.*s", (int) s->ext_nm.length, s->ext_nm.string);
           else
             encode_symbol_name(nb, 256, s, n->code_stmt.name->s, n->code_stmt.arguments.count, sp);
@@ -12000,7 +12000,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               fprintf(o, ", ");
             fprintf(o, "%s %%t%d", value_llvm_type_string(ark[i]), arid[i]);
           }
-          if (s->lv > 0 and not s->ext)
+          if (s->lv > 0 and not s->is_external)
           {
             if (n->code_stmt.arguments.count > 0)
               fprintf(o, ", ");
@@ -12052,7 +12052,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             }
           }
         }
-        else if (s->ext)
+        else if (s->is_external)
         {
           char nb[256];
           snprintf(nb, 256, "%.*s", (int) s->ext_nm.length, s->ext_nm.string);
@@ -12129,7 +12129,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             ark[i] = ek;
           }
           char nb[256];
-          if (s->ext)
+          if (s->is_external)
             snprintf(nb, 256, "%.*s", (int) s->ext_nm.length, s->ext_nm.string);
           else
             encode_symbol_name(nb, 256, s, n->code_stmt.name->s, n->code_stmt.arguments.count, sp);
@@ -12696,7 +12696,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
   {
     Syntax_Node *sp = n->body.subprogram_spec;
     char nb[256];
-    if (n->sy and n->sy->ext)
+    if (n->sy and n->sy->is_external)
       snprintf(nb, 256, "%.*s", (int) n->sy->ext_nm.length, n->sy->ext_nm.string);
     else
     {
@@ -12727,7 +12727,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       if (pt)
       {
         Type_Info *ptc = type_canonical_concrete(pt);
-        if (n->sy and n->sy->ext and ptc and ptc->k == TYPE_ARRAY and not(p->parameter.mode & 2))
+        if (n->sy and n->sy->is_external and ptc and ptc->k == TYPE_ARRAY and not(p->parameter.mode & 2))
           k = VALUE_KIND_INTEGER;
         else
           k = token_kind_to_value_kind(pt);
@@ -12744,7 +12744,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
   {
     Syntax_Node *sp = n->body.subprogram_spec;
     char nb[256];
-    if (n->sy and n->sy->ext)
+    if (n->sy and n->sy->is_external)
       snprintf(nb, 256, "%.*s", (int) n->sy->ext_nm.length, n->sy->ext_nm.string);
     else
     {
@@ -12777,7 +12777,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       if (pt)
       {
         Type_Info *ptc = type_canonical_concrete(pt);
-        if (n->sy and n->sy->ext and ptc and ptc->k == TYPE_ARRAY and not(p->parameter.mode & 2))
+        if (n->sy and n->sy->is_external and ptc and ptc->k == TYPE_ARRAY and not(p->parameter.mode & 2))
           k = VALUE_KIND_INTEGER;
         else
           k = token_kind_to_value_kind(pt);
@@ -12859,7 +12859,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       else
         fprintf(o, "ptr %%__slnk");
     }
-    fprintf(o, ")%s{\n", n->sy and n->sy->inl ? " alwaysinline " : " ");
+    fprintf(o, ")%s{\n", n->sy and n->sy->is_inline ? " alwaysinline " : " ");
     fprintf(o, "  %%ej = alloca ptr\n");
     int sv = generator->sm->lv;
     generator->sm->lv = n->sy ? n->sy->lv + 1 : 0;
@@ -13237,7 +13237,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       else
         fprintf(o, "ptr %%__slnk");
     }
-    fprintf(o, ")%s{\n", n->sy and n->sy->inl ? " alwaysinline " : " ");
+    fprintf(o, ")%s{\n", n->sy and n->sy->is_inline ? " alwaysinline " : " ");
     fprintf(o, "  %%ej = alloca ptr\n");
     int sv = generator->sm->lv;
     generator->sm->lv = n->sy ? n->sy->lv + 1 : 0;
@@ -13833,7 +13833,7 @@ static void print_forward_declarations(Code_Generator *generator, Symbol_Manager
 {
   for (int h = 0; h < 4096; h++)
     for (Symbol *s = sm->sy[h]; s; s = s->next)
-      if (s->lv == 0 and not s->ext)
+      if (s->lv == 0 and not s->is_external)
         for (uint32_t k = 0; k < s->overloads.count; k++)
         {
           Syntax_Node *n = s->overloads.data[k];
@@ -14029,7 +14029,7 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
   print_forward_declarations(&g, &sm);
   for (int h = 0; h < 4096; h++)
     for (Symbol *s = sm.sy[h]; s; s = s->next)
-      if ((s->k == 0 or s->k == 2) and s->lv == 0 and s->parent and not s->ext and s->overloads.count == 0)
+      if ((s->k == 0 or s->k == 2) and s->lv == 0 and s->parent and not s->is_external and s->overloads.count == 0)
       {
         Value_Kind k = s->ty ? token_kind_to_value_kind(s->ty) : VALUE_KIND_INTEGER;
         char nb[256];
@@ -14236,7 +14236,7 @@ int main(int ac, char **av)
   for (int h = 0; h < 4096; h++)
     for (Symbol *s = sm.sy[h]; s; s = s->next)
       if ((s->k == 0 or s->k == 2) and (s->lv == 0 or s->parent) and not(s->parent and lfnd(&sm, s->parent->name))
-          and not s->ext)
+          and not s->is_external)
       {
         Value_Kind k = s->ty ? token_kind_to_value_kind(s->ty) : VALUE_KIND_INTEGER;
         char nb[256];
