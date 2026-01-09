@@ -1465,7 +1465,7 @@ struct Syntax_Node
     {
       String_Slice name;
       Node_Vector entries;
-      bool it;
+      bool is_type;
     } task_spec;
     struct
     {
@@ -4010,7 +4010,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
     String_Slice nm = parser_identifier(parser);
     Syntax_Node *node = ND(TKS, location);
     node->task_spec.name = nm;
-    node->task_spec.it = it;
+    node->task_spec.is_type = it;
     if (parser_match(parser, T_IS))
     {
       while (not parser_at(parser, T_END))
@@ -7185,7 +7185,7 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
   case N_TKS:
     c->task_spec.name = n->task_spec.name;
     normalize_compile_symbol_vector(&c->task_spec.entries, &n->task_spec.entries, fp, ap);
-    c->task_spec.it = n->task_spec.it;
+    c->task_spec.is_type = n->task_spec.is_type;
     break;
   case N_TKB:
     c->task_body.name = n->task_body.name;
