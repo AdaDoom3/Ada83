@@ -3552,7 +3552,7 @@ static RC *prc(Parser *p)
           parse_name(p);
         parser_expect(p, T_RP);
         r = reference_counter_new(5, 0);
-        r->er.nm = tn and tn->k == N_ID ? tn->s : N;
+        r->error_count.nm = tn and tn->k == N_ID ? tn->s : N;
       }
       parser_expect(p, T_SC);
       return r;
@@ -3563,7 +3563,7 @@ static RC *prc(Parser *p)
       {
         parser_expect(p, T_LP);
         r = reference_counter_new(6, 0);
-        r->er.nm = parser_identifier(p);
+        r->error_count.nm = parser_identifier(p);
         while (parser_match(p, T_CM))
           parser_identifier(p);
         parser_expect(p, T_RP);
@@ -3577,7 +3577,7 @@ static RC *prc(Parser *p)
       {
         parser_expect(p, T_LP);
         r = reference_counter_new(7, 0);
-        r->er.nm = parser_identifier(p);
+        r->error_count.nm = parser_identifier(p);
         while (parser_match(p, T_CM))
           parser_identifier(p);
         parser_expect(p, T_RP);
@@ -3684,7 +3684,7 @@ static Syntax_Node *pdl(Parser *p)
         Syntax_Node *dd = 0;
         if (parser_match(p, T_AS))
           dd = parse_expression(p);
-        for (uint32_t i = 0; i < dn.length; i++)
+        for (uint32_t i = 0; i < dn.count; i++)
         {
           Syntax_Node *dp = ND(DS, lc);
           dp->pm.nm = dn.data[i]->s;
@@ -6587,7 +6587,7 @@ static void resolve_statement_sequence(Symbol_Manager *SM, Syntax_Node *n)
       for (uint32_t i = 0; i < n->bk.hd.count; i++)
       {
         Syntax_Node *h = n->bk.hd.data[i];
-        for (uint32_t j = 0; j < h->hnd.ec.length; j++)
+        for (uint32_t j = 0; j < h->hnd.ec.count; j++)
         {
           Syntax_Node *e = h->hnd.ec.data[j];
           if (e->k == N_ID and not string_equal_ignore_case(e->s, STRING_LITERAL("others")))
@@ -6689,7 +6689,7 @@ static void rrc_(Symbol_Manager *SM, RC *r)
   {
   case 1:
   {
-    Symbol *ts = symbol_find(SM, r->er.nm);
+    Symbol *ts = symbol_find(SM, r->error_count.nm);
     if (ts and ts->ty)
     {
       Type_Info *t = type_canonical_concrete(ts->ty);
@@ -6758,7 +6758,7 @@ static void rrc_(Symbol_Manager *SM, RC *r)
   break;
   case 5:
   {
-    Symbol *s = symbol_find(SM, r->er.nm);
+    Symbol *s = symbol_find(SM, r->error_count.nm);
     if (s and s->ty)
     {
       Type_Info *t = type_canonical_concrete(s->ty);
@@ -6768,14 +6768,14 @@ static void rrc_(Symbol_Manager *SM, RC *r)
   break;
   case 6:
   {
-    Symbol *s = symbol_find(SM, r->er.nm);
+    Symbol *s = symbol_find(SM, r->error_count.nm);
     if (s)
       s->inl = true;
   }
   break;
   case 7:
   {
-    Symbol *s = symbol_find(SM, r->er.nm);
+    Symbol *s = symbol_find(SM, r->error_count.nm);
     if (s and s->ty)
     {
       Type_Info *t = type_canonical_concrete(s->ty);
@@ -6880,7 +6880,7 @@ static void ncsv(Node_Vector *d, Node_Vector *s, Node_Vector *fp, Node_Vector *a
   }
   Syntax_Node **orig_d = d->data;
   (void) orig_d;
-  uint32_t sn = s->n;
+  uint32_t sn = s->count;
   if (sn == 0 or not s->data)
   {
     d->count = 0;
@@ -8136,10 +8136,10 @@ static void rali(Symbol_Manager *SM, const char *pth)
       while (*e and *e != ' ' and *e != '\n')
         e++;
       String_Slice dn = {l + 2, e - (l + 2)};
-      char *c = arena_allocate(dn.length + 1);
-      memcpy(c, dn.string, dn.length);
-      c[dn.length] = 0;
-      slv(&ds, (String_Slice){c, dn.length});
+      char *c = arena_allocate(dn.count + 1);
+      memcpy(c, dn.string, dn.count);
+      c[dn.count] = 0;
+      slv(&ds, (String_Slice){c, dn.count});
     }
     else if (*l == 'X' and l[1] == ' ')
     {
@@ -8472,13 +8472,13 @@ static inline void lbl(Code_Generator *g, int l);
 static int get_or_create_label_basic_block(Code_Generator *g, String_Slice nm)
 {
   for (uint32_t i = 0; i < g->ltb.count; i++)
-    if (string_equal_ignore_case(g->ltb.data[i]->nm, nm))
-      return g->ltb.data[i]->bb;
+    if (string_equal_ignore_case(g->ltb.data[i]->name, nm))
+      return g->ltb.data[i]->basic_block;
   LE *e = malloc(sizeof(LE));
-  e->nm = nm;
-  e->bb = new_label_block(g);
+  e->name = nm;
+  e->basic_block = new_label_block(g);
   lev(&g->ltb, e);
-  return e->bb;
+  return e->basic_block;
 }
 static void emit_label_definition(Code_Generator *g, String_Slice nm)
 {
@@ -12335,7 +12335,7 @@ static void generate_statement_sequence(Code_Generator *g, Syntax_Node *n)
       {
         Syntax_Node *h = n->bk.hd.data[i];
         int lhm = new_label_block(g), lhn = new_label_block(g);
-        for (uint32_t j = 0; j < h->hnd.ec.length; j++)
+        for (uint32_t j = 0; j < h->hnd.ec.count; j++)
         {
           Syntax_Node *e = h->hnd.ec.data[j];
           if (e->k == N_ID and string_equal_ignore_case(e->s, STRING_LITERAL("others")))
@@ -12824,17 +12824,17 @@ static void generate_declaration(Code_Generator *g, Syntax_Node *n)
     }
     hbl(g, &n->bd.st);
     char nb[256];
-    if (n->sy and n->sy->mangled_nm.s)
+    if (n->sy and n->sy->mangled_nm.string)
     {
-      snprintf(nb, 256, "%.*s", (int) n->sy->mangled_nm.length, n->sy->mangled_nm.s);
+      snprintf(nb, 256, "%.*s", (int) n->sy->mangled_nm.length, n->sy->mangled_nm.string);
     }
     else
     {
       encode_symbol_name(nb, 256, n->sy, sp->sp.nm, sp->sp.pmm.count, sp);
       if (n->sy)
       {
-        n->sy->mangled_nm.s = arena_allocate(strlen(nb) + 1);
-        memcpy((char *) n->sy->mangled_nm.s, nb, strlen(nb) + 1);
+        n->sy->mangled_nm.string = arena_allocate(strlen(nb) + 1);
+        memcpy((char *) n->sy->mangled_nm.string, nb, strlen(nb) + 1);
         n->sy->mangled_nm.length = strlen(nb);
       }
     }
@@ -13202,17 +13202,17 @@ static void generate_declaration(Code_Generator *g, Syntax_Node *n)
     Value_Kind rk = sp->sp.rt ? token_kind_to_value_kind(resolve_subtype(g->sm, sp->sp.rt))
                               : VALUE_KIND_INTEGER;
     char nb[256];
-    if (n->sy and n->sy->mangled_nm.s)
+    if (n->sy and n->sy->mangled_nm.string)
     {
-      snprintf(nb, 256, "%.*s", (int) n->sy->mangled_nm.length, n->sy->mangled_nm.s);
+      snprintf(nb, 256, "%.*s", (int) n->sy->mangled_nm.length, n->sy->mangled_nm.string);
     }
     else
     {
       encode_symbol_name(nb, 256, n->sy, sp->sp.nm, sp->sp.pmm.count, sp);
       if (n->sy)
       {
-        n->sy->mangled_nm.s = arena_allocate(strlen(nb) + 1);
-        memcpy((char *) n->sy->mangled_nm.s, nb, strlen(nb) + 1);
+        n->sy->mangled_nm.string = arena_allocate(strlen(nb) + 1);
+        memcpy((char *) n->sy->mangled_nm.string, nb, strlen(nb) + 1);
         n->sy->mangled_nm.length = strlen(nb);
       }
     }
@@ -13916,17 +13916,17 @@ static void wali(Symbol_Manager *SM, const char *fn, Syntax_Node *cu)
       {
         Syntax_Node *sp = s->ol.count > 0 and s->ol.data[0]->bd.sp ? s->ol.data[0]->bd.sp : 0;
         char nb[256];
-        if (s->mangled_nm.s)
+        if (s->mangled_nm.string)
         {
-          snprintf(nb, 256, "%.*s", (int) s->mangled_nm.length, s->mangled_nm.s);
+          snprintf(nb, 256, "%.*s", (int) s->mangled_nm.length, s->mangled_nm.string);
         }
         else
         {
           encode_symbol_name(nb, 256, s, s->nm, sp ? sp->sp.pmm.count : 0, sp);
           if (s)
           {
-            s->mangled_nm.s = arena_allocate(strlen(nb) + 1);
-            memcpy((char *) s->mangled_nm.s, nb, strlen(nb) + 1);
+            s->mangled_nm.string = arena_allocate(strlen(nb) + 1);
+            memcpy((char *) s->mangled_nm.string, nb, strlen(nb) + 1);
             s->mangled_nm.length = strlen(nb);
           }
         }
