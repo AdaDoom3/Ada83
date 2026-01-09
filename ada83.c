@@ -4370,7 +4370,7 @@ struct Type_Info
   Representation_Clause_Vector rc;
   uint64_t address;
   bool pk;
-  Node_Vector ops;
+  Node_Vector operations;
   int64_t sm, large_value;
   uint16_t sup;
   bool is_controlled;
@@ -4963,13 +4963,13 @@ static void find_type(Symbol_Manager *symbol_manager, Type_Info *t, Source_Locat
   {
     Syntax_Node *eq = generate_equality_operator(t, l);
     if (eq)
-      nv(&t->ops, eq);
+      nv(&t->operations, eq);
     Syntax_Node *as = generate_assignment_operator(t, l);
     if (as)
-      nv(&t->ops, as);
+      nv(&t->operations, as);
     Syntax_Node *in = generate_input_operator(t, l);
     if (in)
-      nv(&t->ops, in);
+      nv(&t->operations, in);
   }
 }
 static void find_symbol(Symbol_Manager *symbol_manager, Symbol *s, Source_Location l)
@@ -6800,9 +6800,9 @@ static void is_higher_order_parameter(Type_Info *dt, Type_Info *pt)
 {
   if (not dt or not pt)
     return;
-  for (uint32_t i = 0; i < pt->ops.count; i++)
+  for (uint32_t i = 0; i < pt->operations.count; i++)
   {
-    Syntax_Node *op = pt->ops.data[i];
+    Syntax_Node *op = pt->operations.data[i];
     if (op->k == N_FB or op->k == N_PB)
     {
       Syntax_Node *nop = node_new(op->k, op->l);
@@ -6815,7 +6815,7 @@ static void is_higher_order_parameter(Type_Info *dt, Type_Info *pt)
         nsp->subprogram.return_type = op->body.subprogram_spec->subprogram.return_type;
       nop->body.subprogram_spec = nsp;
       nop->body.elaboration_level = -1;
-      nv(&dt->ops, nop);
+      nv(&dt->operations, nop);
     }
   }
 }
@@ -7748,7 +7748,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       nv(&s->overloads, n);
       n->sy = s;
       s->parent = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
-      nv(&ft->ops, n);
+      nv(&ft->operations, n);
     }
     else
     {
@@ -7756,7 +7756,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       nv(&s->overloads, n);
       n->sy = s;
       s->parent = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
-      nv(&ft->ops, n);
+      nv(&ft->operations, n);
     }
   }
   break;
@@ -7770,7 +7770,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     n->sy = s;
     n->body.elaboration_level = s->elaboration_level;
     s->parent = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
-    nv(&ft->ops, n);
+    nv(&ft->operations, n);
     if (n->k == N_PB)
     {
       symbol_manager->lv++;
@@ -7807,7 +7807,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     n->sy = s;
     n->body.elaboration_level = s->elaboration_level;
     s->parent = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
-    nv(&ft->ops, n);
+    nv(&ft->operations, n);
     if (n->k == N_FB)
     {
       symbol_manager->lv++;
@@ -7844,7 +7844,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     n->sy = s;
     n->body.elaboration_level = s->elaboration_level;
     s->parent = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
-    nv(&ft->ops, n);
+    nv(&ft->operations, n);
   }
   break;
   case N_PKS:
@@ -12069,9 +12069,9 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
         else if (s->k == 4 or s->k == 5)
         {
           Syntax_Node *sp = symbol_spec(s);
-          if (not sp and s->ty and s->ty->ops.count > 0)
+          if (not sp and s->ty and s->ty->operations.count > 0)
           {
-            sp = s->ty->ops.data[0]->body.subprogram_spec;
+            sp = s->ty->operations.data[0]->body.subprogram_spec;
           }
           int arid[64];
           Value_Kind ark[64];
