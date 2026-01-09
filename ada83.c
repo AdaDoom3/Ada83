@@ -4374,8 +4374,8 @@ struct Type_Info
   int64_t sm, lg;
   uint16_t sup;
   bool ctrl;
-  uint8_t frz;
-  Syntax_Node *fzn;
+  uint8_t frozen;
+  Syntax_Node *frozen_node;
 };
 struct Symbol
 {
@@ -4917,17 +4917,17 @@ static Syntax_Node *generate_input_operator(Type_Info *t, Source_Location l)
 }
 static void find_type(Symbol_Manager *symbol_manager, Type_Info *t, Source_Location l)
 {
-  if (not t or t->frz)
+  if (not t or t->frozen)
     return;
-  if (t->k == TY_PT and t->parent_type and not t->parent_type->frz)
+  if (t->k == TY_PT and t->parent_type and not t->parent_type->frozen)
     return;
-  t->frz = 1;
-  t->fzn = ND(ERR, l);
-  if (t->base_type and t->base_type != t and not t->base_type->frz)
+  t->frozen = 1;
+  t->frozen_node = ND(ERR, l);
+  if (t->base_type and t->base_type != t and not t->base_type->frozen)
     find_type(symbol_manager, t->base_type, l);
-  if (t->parent_type and not t->parent_type->frz)
+  if (t->parent_type and not t->parent_type->frozen)
     find_type(symbol_manager, t->parent_type, l);
-  if (t->element_type and not t->element_type->frz)
+  if (t->element_type and not t->element_type->frozen)
     find_type(symbol_manager, t->element_type, l);
   if (t->k == TYPE_RECORD)
   {
@@ -4978,7 +4978,7 @@ static void find_symbol(Symbol_Manager *symbol_manager, Symbol *s, Source_Locati
     return;
   s->frozen = 1;
   s->frozen_node = ND(ERR, l);
-  if (s->ty and not s->ty->frz)
+  if (s->ty and not s->ty->frozen)
     find_type(symbol_manager, s->ty, l);
 }
 static void find_ada_library(Symbol_Manager *symbol_manager, Source_Location l)
@@ -4987,7 +4987,7 @@ static void find_ada_library(Symbol_Manager *symbol_manager, Source_Location l)
     for (Symbol *s = symbol_manager->sy[i]; s; s = s->next)
       if (s->scope == symbol_manager->sc and not s->frozen)
       {
-        if (s->ty and s->ty->k == TY_PT and s->ty->parent_type and not s->ty->parent_type->frz)
+        if (s->ty and s->ty->k == TY_PT and s->ty->parent_type and not s->ty->parent_type->frozen)
           continue;
         if (s->ty)
           find_type(symbol_manager, s->ty, l);
