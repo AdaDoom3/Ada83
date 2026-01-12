@@ -757,9 +757,9 @@ static Token scan_number_literal(Lexer *lexer)
   {
     char *text_pointer = arena_allocate(512);
     int text_index = 0;
-    const char *start = (base_delimiter and mantissa_start) ? mantissa_start : start;
-    const char *end = (base_delimiter and mantissa_end) ? mantissa_end : lexer->current;
-    for (const char *p = start; p < end; p++)
+    const char *text_start = (base_delimiter and mantissa_start) ? mantissa_start : start;
+    const char *text_end = (base_delimiter and mantissa_end) ? mantissa_end : lexer->current;
+    for (const char *p = text_start; p < text_end; p++)
       if (*p != '_' and *p != '#' and *p != ':')
         text_pointer[text_index++] = *p;
     text_pointer[text_index] = 0;
