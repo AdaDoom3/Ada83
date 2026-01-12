@@ -4575,7 +4575,9 @@ static Symbol *symbol_find_with_arity(Symbol_Manager *symbol_manager, String_Sli
   Symbol_Vector cv = {0};
   int msc = -1;
   for (Symbol *s = symbol_manager->sy[symbol_hash(nm)]; s; s = s->next)
-    if (string_equal_ignore_case(s->name, nm) and ((s->visibility & 3) or s->is_external))
+  {
+    // Include symbols that are: visible (visibility & 3), external (is_external), or nested at current level or above
+    if (string_equal_ignore_case(s->name, nm) and ((s->visibility & 3) or s->is_external or (s->level > 0 and s->level <= symbol_manager->lv)))
     {
       if (s->scope > msc)
       {
@@ -4585,6 +4587,7 @@ static Symbol *symbol_find_with_arity(Symbol_Manager *symbol_manager, String_Sli
       if (s->scope == msc)
         sv(&cv, s);
     }
+  }
   if (not cv.count)
     return 0;
   if (cv.count == 1)
@@ -12939,7 +12942,8 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     fprintf(o, "  %%ej = alloca ptr\n");
     int sv = generator->sm->lv;
     generator->sm->lv = n->symbol ? n->symbol->level + 1 : 0;
-    if (n->symbol and n->symbol->level > 0)
+    bool needs_frame = (n->symbol and n->symbol->level > 0) or has_nested_function(&n->body.declarations, &n->body.statements);
+    if (needs_frame)
     {
       generate_block_frame(generator);
       int mx = 0;
@@ -13317,7 +13321,8 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     fprintf(o, "  %%ej = alloca ptr\n");
     int sv = generator->sm->lv;
     generator->sm->lv = n->symbol ? n->symbol->level + 1 : 0;
-    if (n->symbol and n->symbol->level > 0)
+    bool needs_frame = (n->symbol and n->symbol->level > 0) or has_nested_function(&n->body.declarations, &n->body.statements);
+    if (needs_frame)
     {
       generate_block_frame(generator);
       int mx = 0;
