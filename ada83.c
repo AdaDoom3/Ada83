@@ -9433,7 +9433,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             Type_Info *vat = s and s->type_info ? type_canonical_concrete(s->type_info) : 0;
             if (vat and vat->k == TYPE_ARRAY)
             {
-              if (vat->low_bound == 0 and vat->high_bound == -1)
+              if (vat->low_bound == 0 and vat->high_bound <= 0)
               {
                 fprintf(
                     o,
@@ -9472,7 +9472,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           Type_Info *vat = s and s->type_info ? type_canonical_concrete(s->type_info) : 0;
           if (vat and vat->k == TYPE_ARRAY)
           {
-            if (vat->low_bound == 0 and vat->high_bound == -1)
+            if (vat->low_bound == 0 and vat->high_bound <= 0)
             {
               fprintf(
                   o,
@@ -10081,7 +10081,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     bool is_char = et and et->k == TYPE_CHARACTER;
     const char *elem_type_str = ada_to_c_type_string(et);
     int dp = p.id;
-    if (pt and pt->k == TYPE_ARRAY and pt->low_bound == 0 and pt->high_bound == -1)
+    if (pt and pt->k == TYPE_ARRAY and pt->low_bound == 0 and pt->high_bound <= 0)
     {
       dp = get_fat_pointer_data(generator, p.id).id;
       int blo, bhi;
@@ -10553,7 +10553,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       int64_t lo = 0, hi = -1;
       if (t and t->k == TYPE_ARRAY)
       {
-        if (t->low_bound == 0 and t->high_bound == -1 and n->attribute.prefix and not is_typ)
+        if (t->low_bound == 0 and t->high_bound <= 0 and n->attribute.prefix and not is_typ)
         {
           int blo, bhi;
           get_fat_pointer_bounds(generator, pv.id, &blo, &bhi);
