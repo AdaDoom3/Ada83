@@ -10185,6 +10185,11 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
   case N_SL:
   {
     Value p = generate_expression(generator, n->slice.prefix);
+    Type_Info *pt = n->slice.prefix->ty ? type_canonical_concrete(n->slice.prefix->ty) : 0;
+    Type_Info *et = pt and pt->element_type ? type_canonical_concrete(pt->element_type) : 0;
+    const char *elem_type_str = ada_to_c_type_string(et);
+    uint32_t elem_size = et and et->size ? et->size / 8 : 8;
+
     Value lo = value_cast(generator, generate_expression(generator, n->slice.low_bound), VALUE_KIND_INTEGER);
     Value hi = value_cast(generator, generate_expression(generator, n->slice.high_bound), VALUE_KIND_INTEGER);
     int ln = new_temporary_register(generator);
@@ -10192,11 +10197,11 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     int sz = new_temporary_register(generator);
     fprintf(o, "  %%t%d = add i64 %%t%d, 1\n", sz, ln);
     int sl = new_temporary_register(generator);
-    fprintf(o, "  %%t%d = mul i64 %%t%d, 8\n", sl, sz);
+    fprintf(o, "  %%t%d = mul i64 %%t%d, %u\n", sl, sz, elem_size);
     int ap = new_temporary_register(generator);
     fprintf(o, "  %%t%d = alloca i8, i64 %%t%d\n", ap, sl);
     int sp = new_temporary_register(generator);
-    fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %%t%d\n", sp, p.id, lo.id);
+    fprintf(o, "  %%t%d = getelementptr %s, ptr %%t%d, i64 %%t%d\n", sp, elem_type_str, p.id, lo.id);
     fprintf(
         o,
         "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%d, ptr %%t%d, i64 %%t%d, i1 false)\n",
@@ -12765,15 +12770,17 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       Syntax_Node *p = sp->subprogram.parameters.data[i];
       Type_Info *pt = p->parameter.ty ? resolve_subtype(generator->sm, p->parameter.ty) : 0;
       Value_Kind k = VALUE_KIND_INTEGER;
+      bool is_unconstrained = false;
       if (pt)
       {
         Type_Info *ptc = type_canonical_concrete(pt);
+        is_unconstrained = ptc and ptc->k == TYPE_ARRAY and ptc->low_bound == 0 and ptc->high_bound == -1;
         if (n->symbol and n->symbol->is_external and ptc and ptc->k == TYPE_ARRAY and not(p->parameter.mode & 2))
           k = VALUE_KIND_INTEGER;
         else
           k = token_kind_to_value_kind(pt);
       }
-      if (p->parameter.mode & 2)
+      if (p->parameter.mode & 2 or is_unconstrained)
         fprintf(o, "ptr");
       else
         fprintf(o, "%s", value_llvm_type_string(k));
@@ -12805,8 +12812,10 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
         }
     if (has_body)
       break;
-    Value_Kind rk = sp->subprogram.return_type ? token_kind_to_value_kind(resolve_subtype(generator->sm, sp->subprogram.return_type))
-                              : VALUE_KIND_INTEGER;
+    Type_Info *rt = sp->subprogram.return_type ? resolve_subtype(generator->sm, sp->subprogram.return_type) : 0;
+    Type_Info *rtc = rt ? type_canonical_concrete(rt) : 0;
+    bool return_unconstrained = rtc and rtc->k == TYPE_ARRAY and rtc->low_bound == 0 and rtc->high_bound == -1;
+    Value_Kind rk = return_unconstrained ? VALUE_KIND_POINTER : (rt ? token_kind_to_value_kind(rt) : VALUE_KIND_INTEGER);
     fprintf(o, "declare %s @\"%s\"(", value_llvm_type_string(rk), nb);
     for (uint32_t i = 0; i < sp->subprogram.parameters.count; i++)
     {
@@ -12815,15 +12824,17 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       Syntax_Node *p = sp->subprogram.parameters.data[i];
       Type_Info *pt = p->parameter.ty ? resolve_subtype(generator->sm, p->parameter.ty) : 0;
       Value_Kind k = VALUE_KIND_INTEGER;
+      bool is_unconstrained = false;
       if (pt)
       {
         Type_Info *ptc = type_canonical_concrete(pt);
+        is_unconstrained = ptc and ptc->k == TYPE_ARRAY and ptc->low_bound == 0 and ptc->high_bound == -1;
         if (n->symbol and n->symbol->is_external and ptc and ptc->k == TYPE_ARRAY and not(p->parameter.mode & 2))
           k = VALUE_KIND_INTEGER;
         else
           k = token_kind_to_value_kind(pt);
       }
-      if (p->parameter.mode & 2)
+      if (p->parameter.mode & 2 or is_unconstrained)
         fprintf(o, "ptr");
       else
         fprintf(o, "%s", value_llvm_type_string(k));
