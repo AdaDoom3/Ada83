@@ -4575,7 +4575,7 @@ static Symbol *symbol_find_with_arity(Symbol_Manager *symbol_manager, String_Sli
   Symbol_Vector cv = {0};
   int msc = -1;
   for (Symbol *s = symbol_manager->sy[symbol_hash(nm)]; s; s = s->next)
-    if (string_equal_ignore_case(s->name, nm) and (s->visibility & 3))
+    if (string_equal_ignore_case(s->name, nm) and ((s->visibility & 3) or s->is_external))
     {
       if (s->scope > msc)
       {
@@ -4602,7 +4602,7 @@ static Symbol *symbol_find_with_arity(Symbol_Manager *symbol_manager, String_Sli
         for (uint32_t j = 0; j < c->overloads.count; j++)
         {
           Syntax_Node *b = c->overloads.data[j];
-          if (b->k == N_PB or b->k == N_FB)
+          if (b->k == N_PB or b->k == N_FB or b->k == N_PD or b->k == N_FD)
           {
             int np = b->body.subprogram_spec->subprogram.parameters.count;
             if (np == na)
@@ -4714,6 +4714,23 @@ static void symbol_manager_init(Symbol_Manager *symbol_manager)
   symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("PROGRAM_ERROR"), 3, 0, 0));
   symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("STORAGE_ERROR"), 3, 0, 0));
   symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("TASKING_ERROR"), 3, 0, 0));
+
+  // Add TEXT_IO package
+  Symbol *text_io = symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("TEXT_IO"), 6, 0, 0));
+
+  // Add PUT procedures to TEXT_IO
+  Symbol *put_int = symbol_new(STRING_LITERAL("PUT"), 4, 0, 0);
+  put_int->parent = text_io;
+  symbol_add_overload(symbol_manager, put_int);
+
+  Symbol *put_line_int = symbol_new(STRING_LITERAL("PUT_LINE"), 4, 0, 0);
+  put_line_int->parent = text_io;
+  symbol_add_overload(symbol_manager, put_line_int);
+
+  Symbol *new_line = symbol_new(STRING_LITERAL("NEW_LINE"), 4, 0, 0);
+  new_line->parent = text_io;
+  symbol_add_overload(symbol_manager, new_line);
+
   fv(&symbol_manager->io, stdin);
   fv(&symbol_manager->io, stdout);
   fv(&symbol_manager->io, stderr);
@@ -12100,15 +12117,22 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
         }
         else if (s->is_external)
         {
+          // Generate all argument expressions first
+          int arid[64];
+          for (uint32_t i = 0; i < n->code_stmt.arguments.count and i < 64; i++)
+          {
+            Value av = generate_expression(generator, n->code_stmt.arguments.data[i]);
+            arid[i] = av.id;
+          }
+          // Now emit the call
           char nb[256];
           snprintf(nb, 256, "%.*s", (int) s->external_name.length, s->external_name.string);
           fprintf(o, "  call void @\"%s\"(", nb);
-          for (uint32_t i = 0; i < n->code_stmt.arguments.count; i++)
+          for (uint32_t i = 0; i < n->code_stmt.arguments.count and i < 64; i++)
           {
             if (i)
               fprintf(o, ", ");
-            Value av = generate_expression(generator, n->code_stmt.arguments.data[i]);
-            fprintf(o, "i64 %%t%d", av.id);
+            fprintf(o, "i64 %%t%d", arid[i]);
           }
           fprintf(o, ")\n");
         }
@@ -13899,6 +13923,63 @@ static char *read_file_contents(const char *path)
 }
 static void print_forward_declarations(Code_Generator *generator, Symbol_Manager *sm)
 {
+  // First, emit declarations for external (imported) symbols
+  for (int h = 0; h < 4096; h++)
+    for (Symbol *s = sm->sy[h]; s; s = s->next)
+      if (s->is_external)
+        for (uint32_t k = 0; k < s->overloads.count; k++)
+        {
+          Syntax_Node *n = s->overloads.data[k];
+          if (n and (n->k == N_PD or n->k == N_FD))
+          {
+            // External symbol - emit declare statement
+            char nb[256];
+            snprintf(nb, 256, "%.*s", (int) s->external_name.length, s->external_name.string);
+            if (not add_declaration(generator, nb))
+              continue;
+            Syntax_Node *sp = n->body.subprogram_spec;
+            if (n->k == N_PD)
+            {
+              // Procedure
+              fprintf(generator->o, "declare void @\"%s\"(", nb);
+              for (uint32_t i = 0; i < sp->subprogram.parameters.count; i++)
+              {
+                if (i)
+                  fprintf(generator->o, ",");
+                Syntax_Node *p = sp->subprogram.parameters.data[i];
+                Type_Info *pt = p->parameter.ty ? resolve_subtype(sm, p->parameter.ty) : 0;
+                Value_Kind k = pt ? token_kind_to_value_kind(pt) : VALUE_KIND_INTEGER;
+                if (p->parameter.mode & 2)
+                  fprintf(generator->o, "ptr");
+                else
+                  fprintf(generator->o, "%s", value_llvm_type_string(k));
+              }
+              fprintf(generator->o, ")\n");
+            }
+            else
+            {
+              // Function
+              Type_Info *rt = sp->subprogram.return_type ? resolve_subtype(sm, sp->subprogram.return_type) : 0;
+              Value_Kind rk = rt ? token_kind_to_value_kind(rt) : VALUE_KIND_INTEGER;
+              fprintf(generator->o, "declare %s @\"%s\"(", value_llvm_type_string(rk), nb);
+              for (uint32_t i = 0; i < sp->subprogram.parameters.count; i++)
+              {
+                if (i)
+                  fprintf(generator->o, ",");
+                Syntax_Node *p = sp->subprogram.parameters.data[i];
+                Type_Info *pt = p->parameter.ty ? resolve_subtype(sm, p->parameter.ty) : 0;
+                Value_Kind k = pt ? token_kind_to_value_kind(pt) : VALUE_KIND_INTEGER;
+                if (p->parameter.mode & 2)
+                  fprintf(generator->o, "ptr");
+                else
+                  fprintf(generator->o, "%s", value_llvm_type_string(k));
+              }
+              fprintf(generator->o, ")\n");
+            }
+          }
+        }
+
+  // Then emit forward declarations for regular symbols
   for (int h = 0; h < 4096; h++)
     for (Symbol *s = sm->sy[h]; s; s = s->next)
       if (s->level == 0 and not s->is_external)
