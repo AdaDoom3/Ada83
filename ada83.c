@@ -8432,7 +8432,7 @@ static int normalize_name(Code_Generator *generator)
 }
 static void emit_loop_metadata(FILE *o, int id)
 {
-  fprintf(o, ", not llvm.loop !%d", id);
+  fprintf(o, ", !llvm.loop !%d", id);
 }
 static void emit_all_metadata(Code_Generator *generator)
 {
