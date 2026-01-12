@@ -11969,6 +11969,27 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             Value av = {0, VALUE_KIND_INTEGER};
             Value_Kind ek = VALUE_KIND_INTEGER;
             bool rf = false;
+
+            // Check if parameter is unconstrained array
+            Type_Info *param_type = 0;
+            bool param_is_unconstrained = false;
+            if (pm)
+            {
+              if (pm->symbol and pm->symbol->type_info)
+                param_type = type_canonical_concrete(pm->symbol->type_info);
+              else if (pm->parameter.ty)
+                param_type = type_canonical_concrete(resolve_subtype(generator->sm, pm->parameter.ty));
+
+              // Unconstrained arrays: check if high <= 0 (catches both high=-1 and high=0 sentinels)
+              param_is_unconstrained = param_type and param_type->k == TYPE_ARRAY
+                                       and param_type->low_bound == 0 and param_type->high_bound <= 0;
+            }
+
+            // Check if argument is constrained array
+            Type_Info *arg_type = arg->ty ? type_canonical_concrete(arg->ty) : 0;
+            bool arg_is_constrained_array = arg_type and arg_type->k == TYPE_ARRAY
+                                            and not (arg_type->low_bound == 0 and arg_type->high_bound <= 0);
+
             if (pm)
             {
               if (pm->symbol and pm->symbol->type_info)
@@ -11978,7 +11999,66 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                 Type_Info *pt = resolve_subtype(generator->sm, pm->parameter.ty);
                 ek = token_kind_to_value_kind(pt);
               }
-              if (pm->parameter.mode & 2 and arg->k == N_ID)
+
+              // Handle unconstrained array parameters with constrained array arguments
+              if (param_is_unconstrained and arg_is_constrained_array and arg->k == N_ID)
+              {
+                // Construct fat pointer on stack
+                Symbol *as = arg->symbol ? arg->symbol : symbol_find(generator->sm, arg->string_value);
+
+                // Get pointer to array data
+                int data_ptr = new_temporary_register(generator);
+                if (as and as->level >= 0 and as->level < generator->sm->lv)
+                {
+                  // Nested variable - get from frame
+                  int fp = new_temporary_register(generator);
+                  fprintf(o, "  %%t%d = getelementptr ptr, ptr %%__slnk, i64 %u\n", fp, as->elaboration_level);
+                  int vp = new_temporary_register(generator);
+                  fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", vp, fp);
+                  fprintf(o, "  %%t%d = bitcast ptr %%t%d to ptr\n", data_ptr, vp);
+                }
+                else
+                {
+                  fprintf(o, "  %%t%d = bitcast ptr %%v.%s.sc%u.%u to ptr\n",
+                         data_ptr,
+                         string_to_lowercase(arg->string_value),
+                         as ? as->scope : 0,
+                         as ? as->elaboration_level : 0);
+                }
+
+                // Allocate bounds structure on stack
+                int bounds_alloc = new_temporary_register(generator);
+                fprintf(o, "  %%t%d = alloca {i64,i64}\n", bounds_alloc);
+
+                // Store low bound
+                int lo_ptr = new_temporary_register(generator);
+                fprintf(o, "  %%t%d = getelementptr {i64,i64}, ptr %%t%d, i32 0, i32 0\n", lo_ptr, bounds_alloc);
+                fprintf(o, "  store i64 %lld, ptr %%t%d\n", (long long)arg_type->low_bound, lo_ptr);
+
+                // Store high bound
+                int hi_ptr = new_temporary_register(generator);
+                fprintf(o, "  %%t%d = getelementptr {i64,i64}, ptr %%t%d, i32 0, i32 1\n", hi_ptr, bounds_alloc);
+                fprintf(o, "  store i64 %lld, ptr %%t%d\n", (long long)arg_type->high_bound, hi_ptr);
+
+                // Allocate fat pointer structure on stack
+                int fat_ptr = new_temporary_register(generator);
+                fprintf(o, "  %%t%d = alloca {ptr,ptr}\n", fat_ptr);
+
+                // Store data pointer in fat pointer
+                int data_field = new_temporary_register(generator);
+                fprintf(o, "  %%t%d = getelementptr {ptr,ptr}, ptr %%t%d, i32 0, i32 0\n", data_field, fat_ptr);
+                fprintf(o, "  store ptr %%t%d, ptr %%t%d\n", data_ptr, data_field);
+
+                // Store bounds pointer in fat pointer
+                int bounds_field = new_temporary_register(generator);
+                fprintf(o, "  %%t%d = getelementptr {ptr,ptr}, ptr %%t%d, i32 0, i32 1\n", bounds_field, fat_ptr);
+                fprintf(o, "  store ptr %%t%d, ptr %%t%d\n", bounds_alloc, bounds_field);
+
+                av.id = fat_ptr;
+                av.k = VALUE_KIND_POINTER;
+                ek = VALUE_KIND_POINTER;
+              }
+              else if (pm->parameter.mode & 2 and arg->k == N_ID)
               {
                 rf = true;
                 Symbol *as = arg->symbol ? arg->symbol : symbol_find(generator->sm, arg->string_value);
