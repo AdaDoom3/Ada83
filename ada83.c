@@ -8504,10 +8504,10 @@ static const char *value_llvm_type_string(Value_Kind k)
 static const char *ada_to_c_type_string(Type_Info *t)
 {
   if (not t)
-    return "i64";
+    return "i32";
   Type_Info *tc = type_canonical_concrete(t);
   if (not tc)
-    return "i64";
+    return "i32";
   switch (tc->k)
   {
   case TYPE_BOOLEAN:
@@ -8519,7 +8519,7 @@ static const char *ada_to_c_type_string(Type_Info *t)
   {
     int64_t lo = tc->low_bound, hi = tc->high_bound;
     if (lo == 0 and hi == 0)
-      return "i64";
+      return "i32";
     if (lo >= 0)
     {
       if (hi < 256)
@@ -8534,7 +8534,7 @@ static const char *ada_to_c_type_string(Type_Info *t)
       if (lo >= -32768 and hi <= 32767)
         return "i16";
     }
-    return "i64";
+    return "i32";
   }
   case TYPE_FLOAT:
   case TYPE_UNIVERSAL_FLOAT:
@@ -8545,7 +8545,7 @@ static const char *ada_to_c_type_string(Type_Info *t)
   case TYPE_STRING:
     return "ptr";
   default:
-    return "i64";
+    return "i32";
   }
 }
 static Value_Kind token_kind_to_value_kind(Type_Info *t)
@@ -10059,6 +10059,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     Type_Info *pt = n->index.prefix->ty ? type_canonical_concrete(n->index.prefix->ty) : 0;
     Type_Info *et = n->ty ? type_canonical_concrete(n->ty) : 0;
     bool is_char = et and et->k == TYPE_CHARACTER;
+    const char *elem_type_str = ada_to_c_type_string(et);
     int dp = p.id;
     if (pt and pt->k == TYPE_ARRAY and pt->low_bound == 0 and pt->high_bound == -1)
     {
@@ -10077,7 +10078,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           o,
           "  %%t%d = getelementptr %s, ptr %%t%d, i64 %%t%d\n",
           ep,
-          is_char ? "i8" : "i64",
+          elem_type_str,
           dp,
           adj);
       if (et and (et->k == TYPE_ARRAY or et->k == TYPE_RECORD))
@@ -10093,6 +10094,12 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           int lv = new_temporary_register(generator);
           fprintf(o, "  %%t%d = load i8, ptr %%t%d\n", lv, ep);
           fprintf(o, "  %%t%d = zext i8 %%t%d to i64\n", r.id, lv);
+        }
+        else if (strcmp(elem_type_str, "i64") != 0)
+        {
+          int lv = new_temporary_register(generator);
+          fprintf(o, "  %%t%d = load %s, ptr %%t%d\n", lv, elem_type_str, ep);
+          fprintf(o, "  %%t%d = sext %s %%t%d to i64\n", r.id, elem_type_str, lv);
         }
         else
         {
@@ -10133,7 +10140,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             "  %%t%d = getelementptr [%d x %s], ptr %%t%d, i64 0, i64 %%t%d\n",
             ep,
             asz,
-            is_char ? "i8" : "i64",
+            elem_type_str,
             dp,
             adj_idx);
       }
@@ -10143,7 +10150,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             o,
             "  %%t%d = getelementptr %s, ptr %%t%d, i64 %%t%d\n",
             ep,
-            is_char ? "i8" : "i64",
+            elem_type_str,
             dp,
             i0.id);
       }
@@ -10160,6 +10167,12 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           int lv = new_temporary_register(generator);
           fprintf(o, "  %%t%d = load i8, ptr %%t%d\n", lv, ep);
           fprintf(o, "  %%t%d = zext i8 %%t%d to i64\n", r.id, lv);
+        }
+        else if (strcmp(elem_type_str, "i64") != 0)
+        {
+          int lv = new_temporary_register(generator);
+          fprintf(o, "  %%t%d = load %s, ptr %%t%d\n", lv, elem_type_str, ep);
+          fprintf(o, "  %%t%d = sext %s %%t%d to i64\n", r.id, elem_type_str, lv);
         }
         else
         {
@@ -10947,31 +10960,46 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           {
             Value f = generate_expression(generator, n->call.arguments.data[0]);
             Value v = generate_expression(generator, n->call.arguments.data[1]);
-            fprintf(
-                o,
-                "  call void @__text_io_%s(ptr %%t%d, ",
-                string_equal_ignore_case(s->name, STRING_LITERAL("PUT")) ? "put" : "put_line",
-                f.id);
+            const char *func_name = string_equal_ignore_case(s->name, STRING_LITERAL("PUT")) ? "put" : "put_line";
+            const char *suffix = "";
+            const char *type_str = "";
             if (v.k == VALUE_KIND_INTEGER)
-              fprintf(o, "i64 %%t%d)\n", v.id);
+            {
+              suffix = ".i64";
+              type_str = "i64";
+            }
             else if (v.k == VALUE_KIND_FLOAT)
-              fprintf(o, "double %%t%d)\n", v.id);
+            {
+              suffix = ".f64";
+              type_str = "double";
+            }
             else
-              fprintf(o, "ptr %%t%d)\n", v.id);
+            {
+              type_str = "ptr";
+            }
+            fprintf(o, "  call void @__text_io_%s%s(ptr %%t%d, %s %%t%d)\n", func_name, suffix, f.id, type_str, v.id);
           }
           else
           {
             Value v = generate_expression(generator, n->call.arguments.data[0]);
-            fprintf(
-                o,
-                "  call void @__text_io_%s(ptr @stdout, ",
-                string_equal_ignore_case(s->name, STRING_LITERAL("PUT")) ? "put" : "put_line");
+            const char *func_name = string_equal_ignore_case(s->name, STRING_LITERAL("PUT")) ? "put" : "put_line";
+            const char *suffix = "";
+            const char *type_str = "";
             if (v.k == VALUE_KIND_INTEGER)
-              fprintf(o, "i64 %%t%d)\n", v.id);
+            {
+              suffix = ".i64";
+              type_str = "i64";
+            }
             else if (v.k == VALUE_KIND_FLOAT)
-              fprintf(o, "double %%t%d)\n", v.id);
+            {
+              suffix = ".f64";
+              type_str = "double";
+            }
             else
-              fprintf(o, "ptr %%t%d)\n", v.id);
+            {
+              type_str = "ptr";
+            }
+            fprintf(o, "  call void @__text_io_%s%s(ptr @stdout, %s %%t%d)\n", func_name, suffix, type_str, v.id);
           }
           break;
         }
@@ -11330,6 +11358,8 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
       }
       Value i0 = value_cast(generator, generate_expression(generator, n->assignment.target->index.indices.data[0]), VALUE_KIND_INTEGER);
       Type_Info *at = n->assignment.target->index.prefix->ty ? type_canonical_concrete(n->assignment.target->index.prefix->ty) : 0;
+      Type_Info *et = at and at->element_type ? type_canonical_concrete(at->element_type) : 0;
+      const char *elem_type_str = ada_to_c_type_string(et);
       int adj_idx = i0.id;
       if (at and at->k == TYPE_ARRAY and at->low_bound != 0)
       {
@@ -11343,18 +11373,29 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
         int asz = (int) (at->high_bound - at->low_bound + 1);
         fprintf(
             o,
-            "  %%t%d = getelementptr [%d x i64], ptr %%t%d, i64 0, i64 %%t%d\n",
+            "  %%t%d = getelementptr [%d x %s], ptr %%t%d, i64 0, i64 %%t%d\n",
             ep,
             asz,
+            elem_type_str,
             p.id,
             adj_idx);
       }
       else
       {
-        fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %%t%d\n", ep, p.id, adj_idx);
+        fprintf(o, "  %%t%d = getelementptr %s, ptr %%t%d, i64 %%t%d\n", ep, elem_type_str, p.id, adj_idx);
       }
-      v = value_cast(generator, v, VALUE_KIND_INTEGER);
-      fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
+      Value_Kind target_kind = et ? token_kind_to_value_kind(et) : VALUE_KIND_INTEGER;
+      v = value_cast(generator, v, target_kind);
+      if (strcmp(elem_type_str, "i64") != 0 and target_kind == VALUE_KIND_INTEGER)
+      {
+        int tv = new_temporary_register(generator);
+        fprintf(o, "  %%t%d = trunc i64 %%t%d to %s\n", tv, v.id, elem_type_str);
+        fprintf(o, "  store %s %%t%d, ptr %%t%d\n", elem_type_str, tv, ep);
+      }
+      else
+      {
+        fprintf(o, "  store %s %%t%d, ptr %%t%d\n", value_llvm_type_string(target_kind), v.id, ep);
+      }
     }
     else if (n->assignment.target->k == N_SEL)
     {
@@ -13717,7 +13758,7 @@ static void generate_runtime_type(Code_Generator *generator)
   fprintf(
       o,
       "@.fmt_d=linkonce_odr constant[5 x i8]c\"%%lld\\00\"\n@.fmt_s=linkonce_odr constant[3 x "
-      "i8]c\"%%s\\00\"\n");
+      "i8]c\"%%s\\00\"\n@.fmt_f=linkonce_odr constant[3 x i8]c\"%%g\\00\"\n");
   fprintf(
       o, "define linkonce_odr void @__text_io_new_line(){call i32 @putchar(i32 10)\nret void}\n");
   fprintf(
@@ -13735,6 +13776,22 @@ static void generate_runtime_type(Code_Generator *generator)
       o,
       "define linkonce_odr void @__text_io_put_line(ptr %%s){call void @__text_io_put(ptr "
       "%%s)\ncall void @__text_io_new_line()\nret void}\n");
+  fprintf(
+      o,
+      "define linkonce_odr void @__text_io_put.i64(ptr %%file, i64 %%v){%%fmt=getelementptr[5 x i8],ptr "
+      "@.fmt_d,i64 0,i64 0\n%%1=call i32(ptr,...)@printf(ptr %%fmt,i64 %%v)\nret void}\n");
+  fprintf(
+      o,
+      "define linkonce_odr void @__text_io_put_line.i64(ptr %%file, i64 %%v){call void @__text_io_put.i64(ptr "
+      "%%file,i64 %%v)\ncall void @__text_io_new_line()\nret void}\n");
+  fprintf(
+      o,
+      "define linkonce_odr void @__text_io_put.f64(ptr %%file, double %%v){%%fmt=getelementptr[3 x i8],ptr "
+      "@.fmt_f,i64 0,i64 0\n%%1=call i32(ptr,...)@printf(ptr %%fmt,double %%v)\nret void}\n");
+  fprintf(
+      o,
+      "define linkonce_odr void @__text_io_put_line.f64(ptr %%file, double %%v){call void @__text_io_put.f64(ptr "
+      "%%file,double %%v)\ncall void @__text_io_new_line()\nret void}\n");
   fprintf(
       o,
       "define linkonce_odr void @__text_io_get_char(ptr %%p){%%1=call i32 @getchar()\n%%2=icmp "
