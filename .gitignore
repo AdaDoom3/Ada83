@@ -3,6 +3,11 @@ ada83
 a83
 ada83_debug
 
+# Test executables
+test_*
+!test_*.adb
+!test_*.ada
+
 # Backup files
 *.backup
 *.bak
