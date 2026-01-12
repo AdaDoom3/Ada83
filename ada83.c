@@ -8504,10 +8504,10 @@ static const char *value_llvm_type_string(Value_Kind k)
 static const char *ada_to_c_type_string(Type_Info *t)
 {
   if (not t)
-    return "i32";
+    return "i64";
   Type_Info *tc = type_canonical_concrete(t);
   if (not tc)
-    return "i32";
+    return "i64";
   switch (tc->k)
   {
   case TYPE_BOOLEAN:
@@ -8519,7 +8519,7 @@ static const char *ada_to_c_type_string(Type_Info *t)
   {
     int64_t lo = tc->low_bound, hi = tc->high_bound;
     if (lo == 0 and hi == 0)
-      return "i32";
+      return "i64";
     if (lo >= 0)
     {
       if (hi < 256)
@@ -8534,7 +8534,7 @@ static const char *ada_to_c_type_string(Type_Info *t)
       if (lo >= -32768 and hi <= 32767)
         return "i16";
     }
-    return "i32";
+    return "i64";
   }
   case TYPE_FLOAT:
   case TYPE_UNIVERSAL_FLOAT:
@@ -8545,7 +8545,7 @@ static const char *ada_to_c_type_string(Type_Info *t)
   case TYPE_STRING:
     return "ptr";
   default:
-    return "i32";
+    return "i64";
   }
 }
 static Value_Kind token_kind_to_value_kind(Type_Info *t)
