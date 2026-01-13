@@ -4434,6 +4434,8 @@ typedef struct
   String_List_Vector eh;
   String_List_Vector ap;
   uint32_t uid_ctr;
+  Symbol *ps[256];  // Procedure stack: tracks enclosing procedures/functions for parent pointer assignment
+  int pn;           // Procedure nesting count
 } Symbol_Manager;
 static uint32_t symbol_hash(String_Slice s)
 {
@@ -7437,7 +7439,10 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       if (not s)
       {
         s = symbol_add_overload(symbol_manager, symbol_new(id->string_value, n->object_decl.is_constant ? 2 : 0, ct, n));
-        s->parent = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
+        // Set parent to enclosing procedure if nested, otherwise to package
+        s->parent = symbol_manager->pn > 0 ? symbol_manager->ps[symbol_manager->pn - 1]
+                    : (symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk)
+                    : (SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0));
       }
       id->symbol = s;
       if (n->object_decl.in)
@@ -7789,11 +7794,17 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     nv(&s->overloads, n);
     n->symbol = s;
     n->body.elaboration_level = s->elaboration_level;
-    s->parent = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
+    // Set parent to enclosing procedure if nested, otherwise to package
+    s->parent = symbol_manager->pn > 0 ? symbol_manager->ps[symbol_manager->pn - 1]
+                : (symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk)
+                : (SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0));
     nv(&ft->operations, n);
     if (n->k == N_PB)
     {
       symbol_manager->lv++;
+      // Push this procedure onto the procedure stack
+      if (symbol_manager->pn < 256)
+        symbol_manager->ps[symbol_manager->pn++] = s;
       symbol_compare_parameter(symbol_manager);
       n->body.parent = s;
       Generic_Template *gt = generic_find(symbol_manager, sp->subprogram.name);
@@ -7812,6 +7823,9 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       for (uint32_t i = 0; i < n->body.statements.count; i++)
         resolve_statement_sequence(symbol_manager, n->body.statements.data[i]);
       symbol_compare_overload(symbol_manager);
+      // Pop this procedure from the stack
+      if (symbol_manager->pn > 0)
+        symbol_manager->pn--;
       symbol_manager->lv--;
     }
   }
@@ -7826,11 +7840,17 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     nv(&s->overloads, n);
     n->symbol = s;
     n->body.elaboration_level = s->elaboration_level;
-    s->parent = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0;
+    // Set parent to enclosing procedure if nested, otherwise to package
+    s->parent = symbol_manager->pn > 0 ? symbol_manager->ps[symbol_manager->pn - 1]
+                : (symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk)
+                : (SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0));
     nv(&ft->operations, n);
     if (n->k == N_FB)
     {
       symbol_manager->lv++;
+      // Push this function onto the procedure stack
+      if (symbol_manager->pn < 256)
+        symbol_manager->ps[symbol_manager->pn++] = s;
       symbol_compare_parameter(symbol_manager);
       n->body.parent = s;
       Generic_Template *gt = generic_find(symbol_manager, sp->subprogram.name);
@@ -7849,6 +7869,9 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       for (uint32_t i = 0; i < n->body.statements.count; i++)
         resolve_statement_sequence(symbol_manager, n->body.statements.data[i]);
       symbol_compare_overload(symbol_manager);
+      // Pop this function from the stack
+      if (symbol_manager->pn > 0)
+        symbol_manager->pn--;
       symbol_manager->lv--;
     }
   }
@@ -13118,16 +13141,15 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
         generate_declaration(generator, d);
     }
     // Store local variable addresses in frame so nested procedures can access them
-    // Only do this for level 0 procedures to avoid storing variables from sibling procedures
-    if (needs_frame and n->symbol and n->symbol->level == 0)
+    if (needs_frame and n->symbol)
     {
       for (int h = 0; h < 4096; h++)
       {
         for (Symbol *s = generator->sm->sy[h]; s; s = s->next)
         {
           // Match variables declared in this procedure's immediate child scope
-          // Note: parent pointer may not be set correctly, so we rely on scope/level matching
-          if (s->k == 0 and s->elaboration_level >= 0 and n->symbol and n->symbol->scope >= 0
+          // Use parent pointer to ensure we only store variables belonging to this procedure
+          if (s->k == 0 and s->elaboration_level >= 0 and s->parent == n->symbol
               and s->scope == (uint32_t) (n->symbol->scope + 1)
               and s->level == generator->sm->lv)
           {
