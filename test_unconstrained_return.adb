@@ -18,11 +18,11 @@ procedure TEST_UNCONSTRAINED_RETURN is
       return RESULT;
    end MAKE_ARRAY;
 
-   -- Function that returns a slice
-   function GET_SLICE(A : INT_ARRAY; FROM : INTEGER; TO : INTEGER) return INT_ARRAY is
-   begin
-      return A(FROM .. TO);
-   end GET_SLICE;
+   --  Function that returns a slice
+   --  function GET_SLICE(A : INT_ARRAY; FROM : INTEGER; TO : INTEGER) return INT_ARRAY is
+   --  begin
+   --     return A(FROM .. TO);
+   --  end GET_SLICE;
 
    ARR : INT_ARRAY(1 .. 3);
 begin

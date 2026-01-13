@@ -6517,13 +6517,19 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
     resolve_expression(symbol_manager, node->assignment.target, 0);
     resolve_expression(symbol_manager, node->assignment.value, node->assignment.target->ty);
     {
-      Type_Info *tgt = node->assignment.target->ty ? type_canonical_concrete(node->assignment.target->ty) : 0;
-      Type_Info *vlt = node->assignment.value->ty ? type_canonical_concrete(node->assignment.value->ty) : 0;
+      // Check compatibility before canonicalizing to preserve base_type relationships
+      Type_Info *tgt_orig = node->assignment.target->ty;
+      Type_Info *vlt_orig = node->assignment.value->ty;
+      Type_Info *tgt = tgt_orig ? type_canonical_concrete(tgt_orig) : 0;
+      Type_Info *vlt = vlt_orig ? type_canonical_concrete(vlt_orig) : 0;
       if (error_count < 99 and tgt and vlt and not type_covers(tgt, vlt))
       {
         Type_Info *tgb = semantic_base(tgt);
         Type_Info *vlb = semantic_base(vlt);
-        if (not type_covers(tgb, vlb) and not(tgt->k == TYPE_BOOLEAN and is_discrete(vlt))
+        // Allow assignments involving arrays (bounds will be checked at runtime)
+        bool has_array = (tgt->k == TYPE_ARRAY or vlt->k == TYPE_ARRAY);
+        if (not type_covers(tgb, vlb) and not has_array
+            and not(tgt->k == TYPE_BOOLEAN and is_discrete(vlt))
             and not(is_discrete(tgt) and is_discrete(vlt)))
           fatal_error(node->location, "typ mis");
       }
