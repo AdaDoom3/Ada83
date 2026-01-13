@@ -8466,6 +8466,7 @@ typedef struct
   String_List_Vector dcl;
   Label_Entry_Vector ltb;
   uint8_t lopt[64];
+  Syntax_Node *current_function;
 } Code_Generator;
 static int new_temporary_register(Code_Generator *generator)
 {
@@ -12038,7 +12039,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
       if (v.k == VALUE_KIND_POINTER and vt and vt->k == TYPE_ARRAY
           and vt->low_bound != 0 and vt->high_bound > 0)
       {
-        // Allocate on secondary stack and copy array data
+        // Compile-time sized array - Allocate on secondary stack and copy array data
         int64_t count = vt->high_bound - vt->low_bound + 1;
         int64_t elem_size = vt->element_type->k == TYPE_INTEGER ? 8 : 4;
         int64_t total_size = count * elem_size;
@@ -12051,6 +12052,86 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
         fprintf(o, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%d, ptr %%t%d, i64 %lld, i1 false)\n",
                 ss_ptr, v.id, total_size);
         fprintf(o, "  ret ptr %%t%d\n", ss_ptr);
+      }
+      else if (v.k == VALUE_KIND_POINTER and vt and vt->k == TYPE_ARRAY)
+      {
+        // Runtime-sized array - need to calculate size at runtime
+        // Try to find the bounds from the return expression
+        Syntax_Node *lo = 0, *hi = 0;
+        if (n->return_stmt.value->k == N_ID and n->return_stmt.value->symbol)
+        {
+          Symbol *s = n->return_stmt.value->symbol;
+          // Search through function body declarations to find the variable
+          Syntax_Node *func_node = generator->current_function;
+          if (func_node and (func_node->k == N_FB or func_node->k == N_PB))
+          {
+            Node_Vector *decls = &func_node->body.declarations;
+            for (uint32_t i = 0; i < decls->count; i++)
+            {
+              Syntax_Node *decl = decls->data[i];
+              if (decl and decl->k == N_OD)
+              {
+                for (uint32_t j = 0; j < decl->object_decl.identifiers.count; j++)
+                {
+                  Syntax_Node *id = decl->object_decl.identifiers.data[j];
+                  if (id->symbol == s)
+                  {
+                    // Found the declaration
+                    Syntax_Node *ty_node = decl->object_decl.ty;
+                    if (ty_node and ty_node->k == N_ST)
+                    {
+                      Syntax_Node *cn = ty_node->subtype_decl.constraint ? ty_node->subtype_decl.constraint : ty_node->subtype_decl.range_constraint;
+                      if (cn and cn->k == 27 and cn->constraint.constraints.count > 0 and cn->constraint.constraints.data[0] and cn->constraint.constraints.data[0]->k == 26)
+                      {
+                        Syntax_Node *rn = cn->constraint.constraints.data[0];
+                        lo = rn->range.low_bound;
+                        hi = rn->range.high_bound;
+                      }
+                      else if (cn and cn->k == 27 and cn->constraint.range_spec)
+                      {
+                        lo = cn->constraint.range_spec->range.low_bound;
+                        hi = cn->constraint.range_spec->range.high_bound;
+                      }
+                      else if (cn and cn->k == N_RN)
+                      {
+                        lo = cn->range.low_bound;
+                        hi = cn->range.high_bound;
+                      }
+                    }
+                    break;
+                  }
+                }
+              }
+            }
+          }
+        }
+        if (lo and hi)
+        {
+          // Calculate size at runtime
+          Type_Info *bt = vt->element_type;
+          while (bt and bt->k == TYPE_ARRAY and bt->element_type)
+            bt = type_canonical_concrete(bt->element_type);
+          int elem_size = bt->k == TYPE_INTEGER ? 8 : 4;
+
+          Value lo_val = generate_expression(generator, lo);
+          Value hi_val = generate_expression(generator, hi);
+          int count_reg = new_temporary_register(generator);
+          int size_reg = new_temporary_register(generator);
+          int ss_ptr = new_temporary_register(generator);
+
+          fprintf(o, "  %%t%d = sub i64 %%t%d, %%t%d\n", count_reg, hi_val.id, lo_val.id);
+          fprintf(o, "  %%t%d = add i64 %%t%d, 1\n", count_reg + 1, count_reg);
+          fprintf(o, "  %%t%d = mul i64 %%t%d, %d\n", size_reg, count_reg + 1, elem_size);
+          fprintf(o, "  %%t%d = call ptr @__ada_ss_allocate(i64 %%t%d)\n", ss_ptr, size_reg);
+          fprintf(o, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%d, ptr %%t%d, i64 %%t%d, i1 false)\n",
+                  ss_ptr, v.id, size_reg);
+          fprintf(o, "  ret ptr %%t%d\n", ss_ptr);
+        }
+        else
+        {
+          // Unable to determine bounds, just return the pointer
+          fprintf(o, "  ret %s %%t%d\n", value_llvm_type_string(v.k), v.id);
+        }
       }
       else
       {
@@ -12922,8 +13003,75 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
             int asz = -1;
             if (n->object_decl.in and n->object_decl.in->k == N_AG and at and at->k == TYPE_ARRAY)
               asz = (int) n->object_decl.in->aggregate.items.count;
-            if (at and at->k == TYPE_ARRAY and at->low_bound == 0 and at->high_bound == -1 and asz < 0)
+
+            // Check for runtime-sized array FIRST (before checking resolved type bounds)
+            if (at and at->k == TYPE_ARRAY and n->object_decl.ty and n->object_decl.ty->k == N_ST)
             {
+              // Runtime-sized array: extract bounds from subtype indication
+              Syntax_Node *ty_node = n->object_decl.ty;
+              Syntax_Node *cn = ty_node->subtype_decl.constraint ? ty_node->subtype_decl.constraint : ty_node->subtype_decl.range_constraint;
+              Syntax_Node *lo = 0, *hi = 0;
+              if (cn and cn->k == 27 and cn->constraint.constraints.count > 0 and cn->constraint.constraints.data[0] and cn->constraint.constraints.data[0]->k == 26)
+              {
+                Syntax_Node *rn = cn->constraint.constraints.data[0];
+                lo = rn->range.low_bound;
+                hi = rn->range.high_bound;
+              }
+              else if (cn and cn->k == 27 and cn->constraint.range_spec)
+              {
+                lo = cn->constraint.range_spec->range.low_bound;
+                hi = cn->constraint.range_spec->range.high_bound;
+              }
+              else if (cn and cn->k == N_RN)
+              {
+                lo = cn->range.low_bound;
+                hi = cn->range.high_bound;
+              }
+              if (lo and hi)
+              {
+                // Generate code to evaluate bounds at runtime
+                Value lo_val = generate_expression(generator, lo);
+                Value hi_val = generate_expression(generator, hi);
+                int count_reg = new_temporary_register(generator);
+                int size_reg = new_temporary_register(generator);
+                int elem_size = bt->k == TYPE_INTEGER ? 8 : 4;
+                fprintf(o, "  %%t%d = sub i64 %%t%d, %%t%d\n", count_reg, hi_val.id, lo_val.id);
+                fprintf(o, "  %%t%d = add i64 %%t%d, 1\n", count_reg + 1, count_reg);
+                int alloc_size = new_temporary_register(generator);
+                fprintf(o, "  %%t%d = mul i64 %%t%d, %d\n", alloc_size, count_reg + 1, elem_size);
+                fprintf(o, "  %%v.%s.sc%u.%u = alloca i8, i64 %%t%d\n",
+                    string_to_lowercase(id->string_value),
+                    s->scope,
+                    s->elaboration_level,
+                    alloc_size);
+              }
+              else
+              {
+                // N_ST node but no valid constraint - treat as unconstrained
+                if (at->low_bound == 0 and at->high_bound == -1 and asz < 0)
+                {
+                  fprintf(
+                      o,
+                      "  %%v.%s.sc%u.%u = alloca {ptr,ptr}\n",
+                      string_to_lowercase(id->string_value),
+                      s->scope,
+                      s->elaboration_level);
+                }
+                else
+                {
+                  fprintf(
+                      o,
+                      "  %%v.%s.sc%u.%u = alloca %s\n",
+                      string_to_lowercase(id->string_value),
+                      s->scope,
+                      s->elaboration_level,
+                      value_llvm_type_string(k));
+                }
+              }
+            }
+            else if (at and at->k == TYPE_ARRAY and at->low_bound == 0 and at->high_bound == -1 and asz < 0)
+            {
+              // Truly unconstrained array (no constraint)
               fprintf(
                   o,
                   "  %%v.%s.sc%u.%u = alloca {ptr,ptr}\n",
@@ -12933,6 +13081,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
             }
             else if (at and at->k == TYPE_ARRAY and asz > 0)
             {
+              // Array with aggregate initializer
               fprintf(
                   o,
                   "  %%v.%s.sc%u.%u = alloca [%d x %s]\n",
@@ -12942,8 +13091,9 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   asz,
                   ada_to_c_type_string(bt));
             }
-            else if (at and at->k == TYPE_ARRAY and at->high_bound >= at->low_bound)
+            else if (at and at->k == TYPE_ARRAY and at->low_bound != 0 and at->high_bound > 0 and at->high_bound >= at->low_bound)
             {
+              // Compile-time constrained array
               asz = (int) (at->high_bound - at->low_bound + 1);
               fprintf(
                   o,
@@ -12956,6 +13106,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
             }
             else
             {
+              // Non-array or other types
               fprintf(
                   o,
                   "  %%v.%s.sc%u.%u = alloca %s\n",
@@ -13090,10 +13241,14 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     break;
   case N_PB:
   {
+    generator->current_function = n;
     Syntax_Node *sp = n->body.subprogram_spec;
     Generic_Template *gt = generic_find(generator->sm, sp->subprogram.name);
     if (gt)
+    {
+      generator->current_function = 0;
       break;
+    }
     for (uint32_t i = 0; i < n->body.declarations.count; i++)
     {
       Syntax_Node *d = n->body.declarations.data[i];
@@ -13399,14 +13554,19 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     }
     generator->sm->lv = sv;
     fprintf(o, "  ret void\n}\n");
+    generator->current_function = 0;
   }
   break;
   case N_FB:
   {
+    generator->current_function = n;
     Syntax_Node *sp = n->body.subprogram_spec;
     Generic_Template *gt = generic_find(generator->sm, sp->subprogram.name);
     if (gt)
+    {
+      generator->current_function = 0;
       break;
+    }
     for (uint32_t i = 0; i < n->body.declarations.count; i++)
     {
       Syntax_Node *d = n->body.declarations.data[i];
@@ -13721,6 +13881,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     {
       fprintf(o, "  ret %s 0\n}\n", value_llvm_type_string(rk));
     }
+    generator->current_function = 0;
   }
   break;
   case N_PKB:
@@ -14258,7 +14419,7 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
   char op[512];
   snprintf(op, 512, "%.*s.ll", (int) pth.length, pth.string);
   FILE *o = fopen(op, "w");
-  Code_Generator g = {o, 0, 0, 0, &sm, {0}, 0, {0}, 0, {0}, 0, {0}, 0, {0}, {0}, {0}};
+  Code_Generator g = {o, 0, 0, 0, &sm, {0}, 0, {0}, 0, {0}, 0, {0}, 0, {0}, {0}, {0}, {0}, 0};
   generate_runtime_type(&g);
   print_forward_declarations(&g, &sm);
   for (int h = 0; h < 4096; h++)
@@ -14465,7 +14626,7 @@ int main(int ac, char **av)
     *dt = 0;
   snprintf(of + strlen(of), 520 - strlen(of), ".ll");
   FILE *o = stdout;
-  Code_Generator g = {o, 0, 0, 0, &sm, {0}, 0, {0}, 0, {0}, 0, {0}, 13, {0}, {0}, {0}};
+  Code_Generator g = {o, 0, 0, 0, &sm, {0}, 0, {0}, 0, {0}, 0, {0}, 13, {0}, {0}, {0}, {0}, 0};
   generate_runtime_type(&g);
   for (int h = 0; h < 4096; h++)
     for (Symbol *s = sm.sy[h]; s; s = s->next)
