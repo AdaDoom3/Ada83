@@ -11337,9 +11337,82 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
     if (n->assignment.target->k == N_ID)
     {
       Symbol *s = n->assignment.target->symbol;
-      Value_Kind k = s and s->type_info ? token_kind_to_value_kind(s->type_info) : VALUE_KIND_INTEGER;
-      v = value_cast(generator, v, k);
-      if (s and s->level == 0)
+      Type_Info *st = s and s->type_info ? type_canonical_concrete(s->type_info) : 0;
+      Value_Kind k = st ? token_kind_to_value_kind(st) : VALUE_KIND_INTEGER;
+
+      // Check if this is an array assignment
+      bool is_array_assign = (st and st->k == TYPE_ARRAY and v.k == VALUE_KIND_POINTER
+                              and st->low_bound != 0 and st->high_bound > 0);
+
+      if (not is_array_assign)
+        v = value_cast(generator, v, k);
+
+      if (is_array_assign)
+      {
+        // Use memcpy for array assignment
+        int64_t count = st->high_bound - st->low_bound + 1;
+        int64_t elem_size = st->element_type->k == TYPE_INTEGER ? 8 : 4;
+        int64_t total_size = count * elem_size;
+
+        // Get target address
+        if (s->level == 0)
+        {
+          char nb[256];
+          if (s->parent and (uintptr_t) s->parent > 4096 and s->parent->name.string)
+          {
+            int n = 0;
+            for (uint32_t i = 0; i < s->parent->name.length; i++)
+              nb[n++] = toupper(s->parent->name.string[i]);
+            n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->elaboration_level);
+            for (uint32_t i = 0; i < s->name.length; i++)
+              nb[n++] = toupper(s->name.string[i]);
+            nb[n] = 0;
+          }
+          else
+            snprintf(nb, 256, "%.*s", (int) s->name.length, s->name.string);
+          fprintf(o, "  call void @llvm.memcpy.p0.p0.i64(ptr @%s, ptr %%t%d, i64 %lld, i1 false)\n",
+                  nb, v.id, (long long) total_size);
+        }
+        else if (s->level >= 0 and s->level < generator->sm->lv)
+        {
+          int p = new_temporary_register(generator);
+          int level_diff = generator->sm->lv - s->level - 1;
+          int slnk_ptr;
+          if (level_diff == 0)
+          {
+            slnk_ptr = new_temporary_register(generator);
+            fprintf(o, "  %%t%d = bitcast ptr %%__slnk to ptr\n", slnk_ptr);
+          }
+          else
+          {
+            slnk_ptr = new_temporary_register(generator);
+            fprintf(o, "  %%t%d = bitcast ptr %%__slnk to ptr\n", slnk_ptr);
+            for (int hop = 0; hop < level_diff; hop++)
+            {
+              int next_slnk = new_temporary_register(generator);
+              fprintf(o, "  %%t%d = getelementptr ptr, ptr %%t%d, i64 0\n", next_slnk, slnk_ptr);
+              int loaded_slnk = new_temporary_register(generator);
+              fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", loaded_slnk, next_slnk);
+              slnk_ptr = loaded_slnk;
+            }
+          }
+          fprintf(o, "  %%t%d = getelementptr ptr, ptr %%t%d, i64 %u\n", p, slnk_ptr, s->elaboration_level);
+          int a = new_temporary_register(generator);
+          fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", a, p);
+          fprintf(o, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%d, ptr %%t%d, i64 %lld, i1 false)\n",
+                  a, v.id, (long long) total_size);
+        }
+        else
+        {
+          fprintf(o, "  call void @llvm.memcpy.p0.p0.i64(ptr %%v.%s.sc%u.%u, ptr %%t%d, i64 %lld, i1 false)\n",
+                  string_to_lowercase(n->assignment.target->string_value),
+                  s ? s->scope : 0,
+                  s ? s->elaboration_level : 0,
+                  v.id,
+                  (long long) total_size);
+        }
+      }
+      else if (s and s->level == 0)
       {
         char nb[256];
         if (s->parent and (uintptr_t) s->parent > 4096 and s->parent->name.string)
@@ -11953,7 +12026,30 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
     if (n->return_stmt.value)
     {
       Value v = generate_expression(generator, n->return_stmt.value);
-      fprintf(o, "  ret %s %%t%d\n", value_llvm_type_string(v.k), v.id);
+      Type_Info *vt = n->return_stmt.value->ty ? type_canonical_concrete(n->return_stmt.value->ty) : 0;
+      // Check if returning an array (constrained or unconstrained)
+      // If the array is constrained, we can calculate its size and copy to secondary stack
+      if (v.k == VALUE_KIND_POINTER and vt and vt->k == TYPE_ARRAY
+          and vt->low_bound != 0 and vt->high_bound > 0)
+      {
+        // Allocate on secondary stack and copy array data
+        int64_t count = vt->high_bound - vt->low_bound + 1;
+        int64_t elem_size = vt->element_type->k == TYPE_INTEGER ? 8 : 4;
+        int64_t total_size = count * elem_size;
+
+        int sz_reg = new_temporary_register(generator);
+        int ss_ptr = new_temporary_register(generator);
+
+        fprintf(o, "  %%t%d = add i64 0, %lld\n", sz_reg, total_size);
+        fprintf(o, "  %%t%d = call ptr @__ada_ss_allocate(i64 %%t%d)\n", ss_ptr, sz_reg);
+        fprintf(o, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%d, ptr %%t%d, i64 %lld, i1 false)\n",
+                ss_ptr, v.id, total_size);
+        fprintf(o, "  ret ptr %%t%d\n", ss_ptr);
+      }
+      else
+      {
+        fprintf(o, "  ret %s %%t%d\n", value_llvm_type_string(v.k), v.id);
+      }
     }
     else
       fprintf(o, "  ret void\n");
