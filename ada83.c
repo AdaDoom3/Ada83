@@ -13109,89 +13109,22 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
               ps ? ps->elaboration_level : 0);
       }
     }
-    if (n->symbol and n->symbol->level > 0)
-    {
-      for (int h = 0; h < 4096; h++)
-      {
-        for (Symbol *s = generator->sm->sy[h]; s; s = s->next)
-        {
-          if (s->k == 0 and s->level >= 0 and s->level < generator->sm->lv and not(s->definition and s->definition->k == N_GVL))
-          {
-            Value_Kind k = s->type_info ? token_kind_to_value_kind(s->type_info) : VALUE_KIND_INTEGER;
-            Type_Info *at = s->type_info ? type_canonical_concrete(s->type_info) : 0;
-            if (at and at->k == TYPE_ARRAY and at->high_bound >= at->low_bound)
-            {
-              int asz = (int) (at->high_bound - at->low_bound + 1);
-              fprintf(
-                  o,
-                  "  %%v.%s.sc%u.%u = alloca [%d x %s]\n",
-                  string_to_lowercase(s->name),
-                  s->scope,
-                  s->elaboration_level,
-                  asz,
-                  ada_to_c_type_string(at->element_type));
-            }
-            else
-            {
-              fprintf(
-                  o,
-                  "  %%v.%s.sc%u.%u = alloca %s\n",
-                  string_to_lowercase(s->name),
-                  s->scope,
-                  s->elaboration_level,
-                  value_llvm_type_string(k));
-            }
-            int level_diff = generator->sm->lv - s->level - 1;
-            int slnk_ptr;
-            if (level_diff == 0)
-            {
-              slnk_ptr = new_temporary_register(generator);
-              fprintf(o, "  %%t%d = bitcast ptr %%__slnk to ptr\n", slnk_ptr);
-            }
-            else
-            {
-              slnk_ptr = new_temporary_register(generator);
-              fprintf(o, "  %%t%d = bitcast ptr %%__slnk to ptr\n", slnk_ptr);
-              for (int hop = 0; hop < level_diff; hop++)
-              {
-                int next_slnk = new_temporary_register(generator);
-                fprintf(o, "  %%t%d = getelementptr ptr, ptr %%t%d, i64 0\n", next_slnk, slnk_ptr);
-                int loaded_slnk = new_temporary_register(generator);
-                fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", loaded_slnk, next_slnk);
-                slnk_ptr = loaded_slnk;
-              }
-            }
-            int p = new_temporary_register(generator);
-            fprintf(o, "  %%t%d = getelementptr ptr, ptr %%t%d, i64 %u\n", p, slnk_ptr, s->elaboration_level);
-            int ptr_id = new_temporary_register(generator);
-            fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", ptr_id, p);
-            int v = new_temporary_register(generator);
-            fprintf(o, "  %%t%d = load %s, ptr %%t%d\n", v, value_llvm_type_string(k), ptr_id);
-            fprintf(
-                o,
-                "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
-                value_llvm_type_string(k),
-                v,
-                string_to_lowercase(s->name),
-                s->scope,
-                s->elaboration_level);
-          }
-        }
-      }
-    }
+    // Removed: Code that created local copies of ALL parent variables in nested procedures.
+    // This was incorrect - parent variables are accessed directly via frame pointers.
     for (uint32_t i = 0; i < n->body.declarations.count; i++)
     {
       Syntax_Node *d = n->body.declarations.data[i];
       if (d and d->k != N_PB and d->k != N_FB and d->k != N_PKB and d->k != N_PD and d->k != N_FD)
         generate_declaration(generator, d);
     }
-    if (n->symbol and n->symbol->level > 0)
+    // Store local variable addresses in frame so nested procedures can access them
+    if (needs_frame)
     {
       for (int h = 0; h < 4096; h++)
       {
         for (Symbol *s = generator->sm->sy[h]; s; s = s->next)
         {
-          if (s->k == 0 and s->elaboration_level >= 0 and n->symbol->scope >= 0 and s->scope == (uint32_t) (n->symbol->scope + 1)
+          if (s->k == 0 and s->elaboration_level >= 0 and n->symbol and n->symbol->scope >= 0 and s->scope == (uint32_t) (n->symbol->scope + 1)
               and s->level == generator->sm->lv and s->parent == n->symbol)
           {
             bool is_pm = false;
@@ -13488,76 +13421,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
               ps ? ps->elaboration_level : 0);
       }
     }
-    if (n->symbol and n->symbol->level > 0)
-    {
-      for (int h = 0; h < 4096; h++)
-      {
-        for (Symbol *s = generator->sm->sy[h]; s; s = s->next)
-        {
-          if (s->k == 0 and s->level >= 0 and s->level < generator->sm->lv and not(s->definition and s->definition->k == N_GVL))
-          {
-            Value_Kind k = s->type_info ? token_kind_to_value_kind(s->type_info) : VALUE_KIND_INTEGER;
-            Type_Info *at = s->type_info ? type_canonical_concrete(s->type_info) : 0;
-            if (at and at->k == TYPE_ARRAY and at->high_bound >= at->low_bound)
-            {
-              int asz = (int) (at->high_bound - at->low_bound + 1);
-              fprintf(
-                  o,
-                  "  %%v.%s.sc%u.%u = alloca [%d x %s]\n",
-                  string_to_lowercase(s->name),
-                  s->scope,
-                  s->elaboration_level,
-                  asz,
-                  ada_to_c_type_string(at->element_type));
-            }
-            else
-            {
-              fprintf(
-                  o,
-                  "  %%v.%s.sc%u.%u = alloca %s\n",
-                  string_to_lowercase(s->name),
-                  s->scope,
-                  s->elaboration_level,
-                  value_llvm_type_string(k));
-            }
-            int level_diff = generator->sm->lv - s->level - 1;
-            int slnk_ptr;
-            if (level_diff == 0)
-            {
-              slnk_ptr = new_temporary_register(generator);
-              fprintf(o, "  %%t%d = bitcast ptr %%__slnk to ptr\n", slnk_ptr);
-            }
-            else
-            {
-              slnk_ptr = new_temporary_register(generator);
-              fprintf(o, "  %%t%d = bitcast ptr %%__slnk to ptr\n", slnk_ptr);
-              for (int hop = 0; hop < level_diff; hop++)
-              {
-                int next_slnk = new_temporary_register(generator);
-                fprintf(o, "  %%t%d = getelementptr ptr, ptr %%t%d, i64 0\n", next_slnk, slnk_ptr);
-                int loaded_slnk = new_temporary_register(generator);
-                fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", loaded_slnk, next_slnk);
-                slnk_ptr = loaded_slnk;
-              }
-            }
-            int p = new_temporary_register(generator);
-            fprintf(o, "  %%t%d = getelementptr ptr, ptr %%t%d, i64 %u\n", p, slnk_ptr, s->elaboration_level);
-            int ptr_id = new_temporary_register(generator);
-            fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", ptr_id, p);
-            int v = new_temporary_register(generator);
-            fprintf(o, "  %%t%d = load %s, ptr %%t%d\n", v, value_llvm_type_string(k), ptr_id);
-            fprintf(
-                o,
-                "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
-                value_llvm_type_string(k),
-                v,
-                string_to_lowercase(s->name),
-                s->scope,
-                s->elaboration_level);
-          }
-        }
-      }
-    }
+    // Removed: Same buggy code as in N_PB - parent variables accessed via frame pointers.
     for (uint32_t i = 0; i < n->body.declarations.count; i++)
     {
       Syntax_Node *d = n->body.declarations.data[i];
