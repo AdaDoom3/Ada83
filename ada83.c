@@ -10105,6 +10105,47 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
   break;
   case N_IX:
   {
+    // Check if this is actually a function call (Ada allows FUNC(ARGS) syntax)
+    if (n->index.prefix->k == N_ID and n->index.prefix->symbol and n->index.prefix->symbol->k == 5)
+    {
+      Symbol *func_sym = n->index.prefix->symbol;
+      Syntax_Node *func_spec = symbol_spec(func_sym);
+      Value_Kind ret_kind = func_spec and func_spec->subprogram.return_type
+        ? token_kind_to_value_kind(resolve_subtype(generator->sm, func_spec->subprogram.return_type))
+        : VALUE_KIND_POINTER;
+
+      // Build function name
+      char fnb[256];
+      encode_symbol_name(fnb, 256, func_sym, n->index.prefix->string_value, n->index.indices.count, func_spec);
+
+      // Generate all parameter expressions first
+      Value args[16];
+      for (uint32_t i = 0; i < n->index.indices.count; i++)
+      {
+        args[i] = generate_expression(generator, n->index.indices.data[i]);
+      }
+
+      // Now generate the call with the parameter values
+      fprintf(o, "  %%t%d = call %s @\"%s\"(", r.id, value_llvm_type_string(ret_kind), fnb);
+
+      // Add static link if needed
+      bool needs_slnk = func_sym->level >= 0 and func_sym->level < generator->sm->lv;
+      if (needs_slnk)
+        fprintf(o, "ptr %%__slnk");
+
+      // Add parameters
+      for (uint32_t i = 0; i < n->index.indices.count; i++)
+      {
+        if (needs_slnk or i > 0)
+          fprintf(o, ", ");
+        fprintf(o, "%s %%t%d", value_llvm_type_string(args[i].k), args[i].id);
+      }
+
+      fprintf(o, ")\n");
+      r.k = ret_kind;
+      break;
+    }
+
     Value p = generate_expression(generator, n->index.prefix);
     Type_Info *pt = n->index.prefix->ty ? type_canonical_concrete(n->index.prefix->ty) : 0;
     Type_Info *et = n->ty ? type_canonical_concrete(n->ty) : 0;
@@ -11398,12 +11439,24 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
         }
         else
         {
-          fprintf(o, "  call void @llvm.memcpy.p0.p0.i64(ptr %%v.%s.sc%u.%u, ptr %%t%d, i64 %lld, i1 false)\n",
+          // Check if this is a fat pointer (runtime-sized array) or regular array
+          // Fat pointers are allocated for arrays declared with subtype indications
+          // Try to get data pointer from fat pointer structure
+          int fp_addr = new_temporary_register(generator);
+          fprintf(o, "  %%t%d = bitcast ptr %%v.%s.sc%u.%u to ptr\n",
+                  fp_addr,
                   string_to_lowercase(n->assignment.target->string_value),
                   s ? s->scope : 0,
-                  s ? s->elaboration_level : 0,
-                  v.id,
-                  (long long) total_size);
+                  s ? s->elaboration_level : 0);
+
+          // Try to load as fat pointer and extract data field
+          int data_field = new_temporary_register(generator);
+          fprintf(o, "  %%t%d = getelementptr {ptr,ptr}, ptr %%t%d, i32 0, i32 0\n", data_field, fp_addr);
+          int data_ptr = new_temporary_register(generator);
+          fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", data_ptr, data_field);
+
+          fprintf(o, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%d, ptr %%t%d, i64 %lld, i1 false)\n",
+                  data_ptr, v.id, (long long) total_size);
         }
       }
       else if (s and s->level == 0)
@@ -12008,59 +12061,79 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
       Value v = generate_expression(generator, n->return_stmt.value);
       Type_Info *vt = n->return_stmt.value->ty ? type_canonical_concrete(n->return_stmt.value->ty) : 0;
 
-      // Check for runtime-sized array FIRST (check for size variable)
-      bool handled_runtime_array = false;
+      // Check if returning a fat pointer (runtime-sized or unconstrained array)
       if (v.k == VALUE_KIND_POINTER and vt and vt->k == TYPE_ARRAY
           and n->return_stmt.value->k == N_ID and n->return_stmt.value->symbol)
       {
         Symbol *s = n->return_stmt.value->symbol;
-        // Check if this is a local variable with a size variable (runtime-sized)
+        // Check if this is a local array variable
         if (s->k == 0 and s->scope > 0)
         {
-          // Try to load the size variable
-          int size_val_reg = new_temporary_register(generator);
-          int ss_ptr = new_temporary_register(generator);
-
-          fprintf(o, "  %%t%d = load i64, ptr %%v.%s.sc%u.%u__size\n",
-              size_val_reg,
+          // Get address of the fat pointer variable
+          int fp = new_temporary_register(generator);
+          fprintf(o, "  %%t%d = bitcast ptr %%v.%s.sc%u.%u to ptr\n",
+              fp,
               string_to_lowercase(s->name),
               s->scope,
               s->elaboration_level);
 
-          // Allocate on secondary stack and copy with runtime size
-          fprintf(o, "  %%t%d = call ptr @__ada_ss_allocate(i64 %%t%d)\n", ss_ptr, size_val_reg);
-          fprintf(o, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%d, ptr %%t%d, i64 %%t%d, i1 false)\n",
-                  ss_ptr, v.id, size_val_reg);
-          fprintf(o, "  ret ptr %%t%d\n", ss_ptr);
-          handled_runtime_array = true;
-        }
-      }
+          // Extract data pointer
+          Value data = get_fat_pointer_data(generator, fp);
 
-      if (not handled_runtime_array)
-      {
-        // Check for compile-time sized array
-        if (v.k == VALUE_KIND_POINTER and vt and vt->k == TYPE_ARRAY
-            and vt->low_bound != 0 and vt->high_bound > 0 and vt->high_bound >= vt->low_bound)
-        {
-          // Compile-time sized array - Allocate on secondary stack and copy array data
-          int64_t count = vt->high_bound - vt->low_bound + 1;
-          int64_t elem_size = vt->element_type->k == TYPE_INTEGER ? 8 : 4;
-          int64_t total_size = count * elem_size;
+          // Extract bounds
+          int lo, hi;
+          get_fat_pointer_bounds(generator, fp, &lo, &hi);
 
-          int sz_reg = new_temporary_register(generator);
+          // Calculate size from bounds
+          Type_Info *bt = vt->element_type;
+          while (bt and bt->k == TYPE_ARRAY and bt->element_type)
+            bt = type_canonical_concrete(bt->element_type);
+          int elem_size = bt->k == TYPE_INTEGER ? 8 : 4;
+
+          int count_reg = new_temporary_register(generator);
+          fprintf(o, "  %%t%d = sub i64 %%t%d, %%t%d\n", count_reg, hi, lo);
+          int count_plus_one = new_temporary_register(generator);
+          fprintf(o, "  %%t%d = add i64 %%t%d, 1\n", count_plus_one, count_reg);
+          int size_reg = new_temporary_register(generator);
+          fprintf(o, "  %%t%d = mul i64 %%t%d, %d\n", size_reg, count_plus_one, elem_size);
+
+          // Allocate on secondary stack
           int ss_ptr = new_temporary_register(generator);
+          fprintf(o, "  %%t%d = call ptr @__ada_ss_allocate(i64 %%t%d)\n", ss_ptr, size_reg);
 
-          fprintf(o, "  %%t%d = add i64 0, %lld\n", sz_reg, total_size);
-          fprintf(o, "  %%t%d = call ptr @__ada_ss_allocate(i64 %%t%d)\n", ss_ptr, sz_reg);
-          fprintf(o, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%d, ptr %%t%d, i64 %lld, i1 false)\n",
-                  ss_ptr, v.id, total_size);
+          // Copy data
+          fprintf(o, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%d, ptr %%t%d, i64 %%t%d, i1 false)\n",
+                  ss_ptr, data.id, size_reg);
+
           fprintf(o, "  ret ptr %%t%d\n", ss_ptr);
         }
         else
         {
-          // Other types or unconstrained arrays
+          // Non-local or other case - default return
           fprintf(o, "  ret %s %%t%d\n", value_llvm_type_string(v.k), v.id);
         }
+      }
+      else if (v.k == VALUE_KIND_POINTER and vt and vt->k == TYPE_ARRAY
+          and vt->low_bound != 0 and vt->high_bound > 0 and vt->high_bound >= vt->low_bound)
+      {
+        // Compile-time sized array - Allocate on secondary stack and copy array data
+        int64_t count = vt->high_bound - vt->low_bound + 1;
+        int64_t elem_size = vt->element_type->k == TYPE_INTEGER ? 8 : 4;
+        int64_t total_size = count * elem_size;
+
+        int sz_reg = new_temporary_register(generator);
+        int ss_ptr = new_temporary_register(generator);
+
+        fprintf(o, "  %%t%d = add i64 0, %lld\n", sz_reg, total_size);
+        fprintf(o, "  %%t%d = call ptr @__ada_ss_allocate(i64 %%t%d)\n", ss_ptr, sz_reg);
+        fprintf(o, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%d, ptr %%t%d, i64 %lld, i1 false)\n",
+                ss_ptr, v.id, total_size);
+        fprintf(o, "  ret ptr %%t%d\n", ss_ptr);
+      }
+      else
+      {
+        // Other types
+        fprintf(o, "  ret %s %%t%d\n", value_llvm_type_string(v.k), v.id);
       }
     }
     else
@@ -12954,33 +13027,60 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
               }
               if (lo and hi)
               {
-                // Generate code to evaluate bounds at runtime
+                // Generate code to evaluate bounds at runtime and create fat pointer
                 Value lo_val = generate_expression(generator, lo);
                 Value hi_val = generate_expression(generator, hi);
+
+                // Calculate element count and size
                 int count_reg = new_temporary_register(generator);
-                int size_reg = new_temporary_register(generator);
                 int elem_size = bt->k == TYPE_INTEGER ? 8 : 4;
                 fprintf(o, "  %%t%d = sub i64 %%t%d, %%t%d\n", count_reg, hi_val.id, lo_val.id);
-                fprintf(o, "  %%t%d = add i64 %%t%d, 1\n", count_reg + 1, count_reg);
+                int count_plus_one = new_temporary_register(generator);
+                fprintf(o, "  %%t%d = add i64 %%t%d, 1\n", count_plus_one, count_reg);
                 int alloc_size = new_temporary_register(generator);
-                fprintf(o, "  %%t%d = mul i64 %%t%d, %d\n", alloc_size, count_reg + 1, elem_size);
+                fprintf(o, "  %%t%d = mul i64 %%t%d, %d\n", alloc_size, count_plus_one, elem_size);
 
-                // Store the size for later use (e.g., in return statements)
-                fprintf(o, "  %%v.%s.sc%u.%u__size = alloca i64\n",
+                // Allocate data
+                int data_ptr = new_temporary_register(generator);
+                fprintf(o, "  %%t%d = alloca i8, i64 %%t%d\n", data_ptr, alloc_size);
+
+                // Create fat pointer variable
+                fprintf(o, "  %%v.%s.sc%u.%u = alloca {ptr,ptr}\n",
                     string_to_lowercase(id->string_value),
                     s->scope,
                     s->elaboration_level);
-                fprintf(o, "  store i64 %%t%d, ptr %%v.%s.sc%u.%u__size\n",
-                    alloc_size,
+
+                // Allocate bounds structure
+                int bounds_ptr = new_temporary_register(generator);
+                fprintf(o, "  %%t%d = alloca {i64,i64}\n", bounds_ptr);
+
+                // Store low bound
+                int lo_field = new_temporary_register(generator);
+                fprintf(o, "  %%t%d = getelementptr {i64,i64}, ptr %%t%d, i32 0, i32 0\n", lo_field, bounds_ptr);
+                fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", lo_val.id, lo_field);
+
+                // Store high bound
+                int hi_field = new_temporary_register(generator);
+                fprintf(o, "  %%t%d = getelementptr {i64,i64}, ptr %%t%d, i32 0, i32 1\n", hi_field, bounds_ptr);
+                fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", hi_val.id, hi_field);
+
+                // Store data pointer in fat pointer
+                int data_field = new_temporary_register(generator);
+                fprintf(o, "  %%t%d = getelementptr {ptr,ptr}, ptr %%v.%s.sc%u.%u, i32 0, i32 0\n",
+                    data_field,
                     string_to_lowercase(id->string_value),
                     s->scope,
                     s->elaboration_level);
+                fprintf(o, "  store ptr %%t%d, ptr %%t%d\n", data_ptr, data_field);
 
-                fprintf(o, "  %%v.%s.sc%u.%u = alloca i8, i64 %%t%d\n",
+                // Store bounds pointer in fat pointer
+                int bounds_field = new_temporary_register(generator);
+                fprintf(o, "  %%t%d = getelementptr {ptr,ptr}, ptr %%v.%s.sc%u.%u, i32 0, i32 1\n",
+                    bounds_field,
                     string_to_lowercase(id->string_value),
                     s->scope,
-                    s->elaboration_level,
-                    alloc_size);
+                    s->elaboration_level);
+                fprintf(o, "  store ptr %%t%d, ptr %%t%d\n", bounds_ptr, bounds_field);
               }
               else
               {
@@ -14412,36 +14512,30 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
                                         : "0");
           }
           Type_Info *at = s->type_info ? type_canonical_concrete(s->type_info) : 0;
-          // Only emit array globals for compile-time sized arrays with reasonable bounds
-          // Skip runtime-sized arrays (they're allocated dynamically)
-          if (at and at->k == TYPE_ARRAY and at->low_bound != 0 and at->high_bound > 0 and at->high_bound >= at->low_bound)
+          // For arrays, check if they're truly unconstrained (fat pointer) or have compile-time bounds
+          if (at and at->k == TYPE_ARRAY and at->low_bound == 0 and at->high_bound == -1)
           {
-            int64_t asz = at->high_bound - at->low_bound + 1;
-            // Only emit if size is reasonable (not garbage from runtime bounds)
-            if (asz > 0 and asz < 1000000)
-            {
-              fprintf(
-                  o,
-                  "@%s=linkonce_odr %s [%lld x %s] zeroinitializer\n",
-                  nb,
-                  s->k == 2 ? "constant" : "global",
-                  (long long) asz,
-                  ada_to_c_type_string(at->element_type));
-            }
-            else
-            {
-              // Runtime-sized or garbage bounds - skip global emission
-              // These will be allocated locally when needed
-            }
-          }
-          else if (at and at->k == TYPE_ARRAY)
-          {
+            // Unconstrained array - emit fat pointer global
             fprintf(
                 o,
                 "@%s=linkonce_odr %s {ptr,ptr} {ptr null,ptr null}\n",
                 nb,
                 s->k == 2 ? "constant" : "global");
           }
+          else if (at and at->k == TYPE_ARRAY and at->low_bound != 0 and at->high_bound > 0 and at->high_bound >= at->low_bound)
+          {
+            // Compile-time constrained array - emit typed array global
+            int64_t asz = at->high_bound - at->low_bound + 1;
+            fprintf(
+                o,
+                "@%s=linkonce_odr %s [%lld x %s] zeroinitializer\n",
+                nb,
+                s->k == 2 ? "constant" : "global",
+                (long long) asz,
+                ada_to_c_type_string(at->element_type));
+          }
+          // else: Runtime-sized arrays with invalid bounds - don't emit global
+          // They will be created as local fat pointers when declared
           else
           {
             fprintf(
@@ -14635,36 +14729,30 @@ int main(int ac, char **av)
                                         : "0");
           }
           Type_Info *at = s->type_info ? type_canonical_concrete(s->type_info) : 0;
-          // Only emit array globals for compile-time sized arrays with reasonable bounds
-          // Skip runtime-sized arrays (they're allocated dynamically)
-          if (at and at->k == TYPE_ARRAY and at->low_bound != 0 and at->high_bound > 0 and at->high_bound >= at->low_bound)
+          // For arrays, check if they're truly unconstrained (fat pointer) or have compile-time bounds
+          if (at and at->k == TYPE_ARRAY and at->low_bound == 0 and at->high_bound == -1)
           {
-            int64_t asz = at->high_bound - at->low_bound + 1;
-            // Only emit if size is reasonable (not garbage from runtime bounds)
-            if (asz > 0 and asz < 1000000)
-            {
-              fprintf(
-                  o,
-                  "@%s=linkonce_odr %s [%lld x %s] zeroinitializer\n",
-                  nb,
-                  s->k == 2 ? "constant" : "global",
-                  (long long) asz,
-                  ada_to_c_type_string(at->element_type));
-            }
-            else
-            {
-              // Runtime-sized or garbage bounds - skip global emission
-              // These will be allocated locally when needed
-            }
-          }
-          else if (at and at->k == TYPE_ARRAY)
-          {
+            // Unconstrained array - emit fat pointer global
             fprintf(
                 o,
                 "@%s=linkonce_odr %s {ptr,ptr} {ptr null,ptr null}\n",
                 nb,
                 s->k == 2 ? "constant" : "global");
           }
+          else if (at and at->k == TYPE_ARRAY and at->low_bound != 0 and at->high_bound > 0 and at->high_bound >= at->low_bound)
+          {
+            // Compile-time constrained array - emit typed array global
+            int64_t asz = at->high_bound - at->low_bound + 1;
+            fprintf(
+                o,
+                "@%s=linkonce_odr %s [%lld x %s] zeroinitializer\n",
+                nb,
+                s->k == 2 ? "constant" : "global",
+                (long long) asz,
+                ada_to_c_type_string(at->element_type));
+          }
+          // else: Runtime-sized arrays with invalid bounds - don't emit global
+          // They will be created as local fat pointers when declared
           else
           {
             fprintf(
