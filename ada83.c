@@ -8977,23 +8977,44 @@ static Value get_fat_pointer_data(Code_Generator *generator, int fp)
   fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", r.id, dp);
   return r;
 }
-static void get_fat_pointer_bounds(Code_Generator *generator, int fp, int *lo, int *hi)
+static void get_fat_pointer_bounds(Code_Generator *generator, int fp, int *lo, int *hi, Type_Info *array_type)
 {
   FILE *o = generator->o;
   int bp = new_temporary_register(generator);
   fprintf(o, "  %%t%d = getelementptr {ptr,ptr}, ptr %%t%d, i32 0, i32 1\n", bp, fp);
   int bv = new_temporary_register(generator);
   fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", bv, bp);
-  *lo = new_temporary_register(generator);
-  fprintf(o, "  %%t%d = getelementptr {i64,i64}, ptr %%t%d, i32 0, i32 0\n", *lo, bv);
-  int lov = new_temporary_register(generator);
-  fprintf(o, "  %%t%d = load i64, ptr %%t%d\n", lov, *lo);
-  *lo = lov;
-  *hi = new_temporary_register(generator);
-  fprintf(o, "  %%t%d = getelementptr {i64,i64}, ptr %%t%d, i32 0, i32 1\n", *hi, bv);
-  int hiv = new_temporary_register(generator);
-  fprintf(o, "  %%t%d = load i64, ptr %%t%d\n", hiv, *hi);
-  *hi = hiv;
+
+  // Check if this array has Fixed Lower Bound (FLB) optimization
+  // FLB arrays have compile-time constant lower bound (like 1) and store only upper bound
+  bool has_flb = (array_type and array_type->k == TYPE_ARRAY
+                  and array_type->low_bound != 0 and array_type->low_bound != INT64_MIN);
+
+  if (has_flb)
+  {
+    // FLB optimization: bounds structure is just i64 (upper bound only)
+    // Lower bound is compile-time constant stored in Type_Info
+    *lo = new_temporary_register(generator);
+    fprintf(o, "  %%t%d = add i64 0, %lld\n", *lo, (long long)array_type->low_bound);
+
+    *hi = new_temporary_register(generator);
+    fprintf(o, "  %%t%d = load i64, ptr %%t%d\n", *hi, bv);
+  }
+  else
+  {
+    // Standard: bounds structure is {i64, i64} (low and high bounds)
+    *lo = new_temporary_register(generator);
+    fprintf(o, "  %%t%d = getelementptr {i64,i64}, ptr %%t%d, i32 0, i32 0\n", *lo, bv);
+    int lov = new_temporary_register(generator);
+    fprintf(o, "  %%t%d = load i64, ptr %%t%d\n", lov, *lo);
+    *lo = lov;
+
+    *hi = new_temporary_register(generator);
+    fprintf(o, "  %%t%d = getelementptr {i64,i64}, ptr %%t%d, i32 0, i32 1\n", *hi, bv);
+    int hiv = new_temporary_register(generator);
+    fprintf(o, "  %%t%d = load i64, ptr %%t%d\n", hiv, *hi);
+    *hi = hiv;
+  }
 }
 static Value value_power(Code_Generator *generator, Value a, Value b, Value_Kind k)
 {
@@ -9938,7 +9959,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       if (la_fp)
       {
         ad = get_fat_pointer_data(generator, a.id);
-        get_fat_pointer_bounds(generator, a.id, &alo, &ahi);
+        get_fat_pointer_bounds(generator, a.id, &alo, &ahi, lt);
       }
       else
       {
@@ -9959,7 +9980,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       if (lb_fp)
       {
         bd = get_fat_pointer_data(generator, b.id);
-        get_fat_pointer_bounds(generator, b.id, &blo, &bhi);
+        get_fat_pointer_bounds(generator, b.id, &blo, &bhi, rt);
       }
       else
       {
@@ -10156,7 +10177,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     {
       dp = get_fat_pointer_data(generator, p.id).id;
       int blo, bhi;
-      get_fat_pointer_bounds(generator, p.id, &blo, &bhi);
+      get_fat_pointer_bounds(generator, p.id, &blo, &bhi, pt);
       Value i0 = value_cast(generator, generate_expression(generator, n->index.indices.data[0]), VALUE_KIND_INTEGER);
       int adj = new_temporary_register(generator);
       fprintf(o, "  %%t%d = sub i64 %%t%d, %%t%d\n", adj, i0.id, blo);
@@ -10614,7 +10635,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         if (t->low_bound == 0 and t->high_bound <= 0 and n->attribute.prefix and not is_typ)
         {
           int blo, bhi;
-          get_fat_pointer_bounds(generator, pv.id, &blo, &bhi);
+          get_fat_pointer_bounds(generator, pv.id, &blo, &bhi, t);
           r.k = VALUE_KIND_INTEGER;
           if (string_equal_ignore_case(a, STRING_LITERAL("FIRST")))
           {
@@ -11805,7 +11826,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               {
                 Value pv = generate_expression(generator, rng->attribute.prefix);
                 int blo, bhi;
-                get_fat_pointer_bounds(generator, pv.id, &blo, &bhi);
+                get_fat_pointer_bounds(generator, pv.id, &blo, &bhi, at);
                 fprintf(o, "  %%t%d = add i64 0, 0\n", ti);
                 fprintf(
                     o,
@@ -12082,7 +12103,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
 
           // Extract bounds
           int lo, hi;
-          get_fat_pointer_bounds(generator, fp, &lo, &hi);
+          get_fat_pointer_bounds(generator, fp, &lo, &hi, vt);
 
           // Calculate size from bounds
           Type_Info *bt = vt->element_type;
@@ -13027,7 +13048,11 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
               }
               if (lo and hi)
               {
-                // Generate code to evaluate bounds at runtime and create fat pointer
+                // Check if lower bound is a compile-time constant (FLB optimization)
+                bool has_fixed_lower_bound = (lo->k == N_INT);
+                int64_t fixed_lb_value = has_fixed_lower_bound ? lo->integer_value : 0;
+
+                // Generate code to evaluate bounds at runtime
                 Value lo_val = generate_expression(generator, lo);
                 Value hi_val = generate_expression(generator, hi);
 
@@ -13050,19 +13075,35 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                     s->scope,
                     s->elaboration_level);
 
-                // Allocate bounds structure
+                // Allocate bounds structure - optimized for Fixed Lower Bound (FLB)
                 int bounds_ptr = new_temporary_register(generator);
-                fprintf(o, "  %%t%d = alloca {i64,i64}\n", bounds_ptr);
+                if (has_fixed_lower_bound)
+                {
+                  // FLB optimization: store only upper bound, lower bound is compile-time constant
+                  fprintf(o, "  %%t%d = alloca i64\n", bounds_ptr);
+                  fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", hi_val.id, bounds_ptr);
 
-                // Store low bound
-                int lo_field = new_temporary_register(generator);
-                fprintf(o, "  %%t%d = getelementptr {i64,i64}, ptr %%t%d, i32 0, i32 0\n", lo_field, bounds_ptr);
-                fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", lo_val.id, lo_field);
+                  // Mark this array type as having fixed lower bound in Type_Info
+                  if (at and at->low_bound != fixed_lb_value)
+                  {
+                    at->low_bound = fixed_lb_value;
+                  }
+                }
+                else
+                {
+                  // Standard: store both bounds
+                  fprintf(o, "  %%t%d = alloca {i64,i64}\n", bounds_ptr);
 
-                // Store high bound
-                int hi_field = new_temporary_register(generator);
-                fprintf(o, "  %%t%d = getelementptr {i64,i64}, ptr %%t%d, i32 0, i32 1\n", hi_field, bounds_ptr);
-                fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", hi_val.id, hi_field);
+                  // Store low bound
+                  int lo_field = new_temporary_register(generator);
+                  fprintf(o, "  %%t%d = getelementptr {i64,i64}, ptr %%t%d, i32 0, i32 0\n", lo_field, bounds_ptr);
+                  fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", lo_val.id, lo_field);
+
+                  // Store high bound
+                  int hi_field = new_temporary_register(generator);
+                  fprintf(o, "  %%t%d = getelementptr {i64,i64}, ptr %%t%d, i32 0, i32 1\n", hi_field, bounds_ptr);
+                  fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", hi_val.id, hi_field);
+                }
 
                 // Store data pointer in fat pointer
                 int data_field = new_temporary_register(generator);
