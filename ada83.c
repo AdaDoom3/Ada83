@@ -12034,108 +12034,60 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
     {
       Value v = generate_expression(generator, n->return_stmt.value);
       Type_Info *vt = n->return_stmt.value->ty ? type_canonical_concrete(n->return_stmt.value->ty) : 0;
-      // Check if returning an array (constrained or unconstrained)
-      // If the array is constrained, we can calculate its size and copy to secondary stack
+
+      // Check for runtime-sized array FIRST (check for size variable)
+      bool handled_runtime_array = false;
       if (v.k == VALUE_KIND_POINTER and vt and vt->k == TYPE_ARRAY
-          and vt->low_bound != 0 and vt->high_bound > 0)
+          and n->return_stmt.value->k == N_ID and n->return_stmt.value->symbol)
       {
-        // Compile-time sized array - Allocate on secondary stack and copy array data
-        int64_t count = vt->high_bound - vt->low_bound + 1;
-        int64_t elem_size = vt->element_type->k == TYPE_INTEGER ? 8 : 4;
-        int64_t total_size = count * elem_size;
-
-        int sz_reg = new_temporary_register(generator);
-        int ss_ptr = new_temporary_register(generator);
-
-        fprintf(o, "  %%t%d = add i64 0, %lld\n", sz_reg, total_size);
-        fprintf(o, "  %%t%d = call ptr @__ada_ss_allocate(i64 %%t%d)\n", ss_ptr, sz_reg);
-        fprintf(o, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%d, ptr %%t%d, i64 %lld, i1 false)\n",
-                ss_ptr, v.id, total_size);
-        fprintf(o, "  ret ptr %%t%d\n", ss_ptr);
-      }
-      else if (v.k == VALUE_KIND_POINTER and vt and vt->k == TYPE_ARRAY)
-      {
-        // Runtime-sized array - need to calculate size at runtime
-        // Try to find the bounds from the return expression
-        Syntax_Node *lo = 0, *hi = 0;
-        if (n->return_stmt.value->k == N_ID and n->return_stmt.value->symbol)
+        Symbol *s = n->return_stmt.value->symbol;
+        // Check if this is a local variable with a size variable (runtime-sized)
+        if (s->k == 0 and s->scope > 0)
         {
-          Symbol *s = n->return_stmt.value->symbol;
-          // Search through function body declarations to find the variable
-          Syntax_Node *func_node = generator->current_function;
-          if (func_node and (func_node->k == N_FB or func_node->k == N_PB))
-          {
-            Node_Vector *decls = &func_node->body.declarations;
-            for (uint32_t i = 0; i < decls->count; i++)
-            {
-              Syntax_Node *decl = decls->data[i];
-              if (decl and decl->k == N_OD)
-              {
-                for (uint32_t j = 0; j < decl->object_decl.identifiers.count; j++)
-                {
-                  Syntax_Node *id = decl->object_decl.identifiers.data[j];
-                  if (id->symbol == s)
-                  {
-                    // Found the declaration
-                    Syntax_Node *ty_node = decl->object_decl.ty;
-                    if (ty_node and ty_node->k == N_ST)
-                    {
-                      Syntax_Node *cn = ty_node->subtype_decl.constraint ? ty_node->subtype_decl.constraint : ty_node->subtype_decl.range_constraint;
-                      if (cn and cn->k == 27 and cn->constraint.constraints.count > 0 and cn->constraint.constraints.data[0] and cn->constraint.constraints.data[0]->k == 26)
-                      {
-                        Syntax_Node *rn = cn->constraint.constraints.data[0];
-                        lo = rn->range.low_bound;
-                        hi = rn->range.high_bound;
-                      }
-                      else if (cn and cn->k == 27 and cn->constraint.range_spec)
-                      {
-                        lo = cn->constraint.range_spec->range.low_bound;
-                        hi = cn->constraint.range_spec->range.high_bound;
-                      }
-                      else if (cn and cn->k == N_RN)
-                      {
-                        lo = cn->range.low_bound;
-                        hi = cn->range.high_bound;
-                      }
-                    }
-                    break;
-                  }
-                }
-              }
-            }
-          }
-        }
-        if (lo and hi)
-        {
-          // Calculate size at runtime
-          Type_Info *bt = vt->element_type;
-          while (bt and bt->k == TYPE_ARRAY and bt->element_type)
-            bt = type_canonical_concrete(bt->element_type);
-          int elem_size = bt->k == TYPE_INTEGER ? 8 : 4;
-
-          Value lo_val = generate_expression(generator, lo);
-          Value hi_val = generate_expression(generator, hi);
-          int count_reg = new_temporary_register(generator);
-          int size_reg = new_temporary_register(generator);
+          // Try to load the size variable
+          int size_val_reg = new_temporary_register(generator);
           int ss_ptr = new_temporary_register(generator);
 
-          fprintf(o, "  %%t%d = sub i64 %%t%d, %%t%d\n", count_reg, hi_val.id, lo_val.id);
-          fprintf(o, "  %%t%d = add i64 %%t%d, 1\n", count_reg + 1, count_reg);
-          fprintf(o, "  %%t%d = mul i64 %%t%d, %d\n", size_reg, count_reg + 1, elem_size);
-          fprintf(o, "  %%t%d = call ptr @__ada_ss_allocate(i64 %%t%d)\n", ss_ptr, size_reg);
+          fprintf(o, "  %%t%d = load i64, ptr %%v.%s.sc%u.%u__size\n",
+              size_val_reg,
+              string_to_lowercase(s->name),
+              s->scope,
+              s->elaboration_level);
+
+          // Allocate on secondary stack and copy with runtime size
+          fprintf(o, "  %%t%d = call ptr @__ada_ss_allocate(i64 %%t%d)\n", ss_ptr, size_val_reg);
           fprintf(o, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%d, ptr %%t%d, i64 %%t%d, i1 false)\n",
-                  ss_ptr, v.id, size_reg);
+                  ss_ptr, v.id, size_val_reg);
+          fprintf(o, "  ret ptr %%t%d\n", ss_ptr);
+          handled_runtime_array = true;
+        }
+      }
+
+      if (not handled_runtime_array)
+      {
+        // Check for compile-time sized array
+        if (v.k == VALUE_KIND_POINTER and vt and vt->k == TYPE_ARRAY
+            and vt->low_bound != 0 and vt->high_bound > 0 and vt->high_bound >= vt->low_bound)
+        {
+          // Compile-time sized array - Allocate on secondary stack and copy array data
+          int64_t count = vt->high_bound - vt->low_bound + 1;
+          int64_t elem_size = vt->element_type->k == TYPE_INTEGER ? 8 : 4;
+          int64_t total_size = count * elem_size;
+
+          int sz_reg = new_temporary_register(generator);
+          int ss_ptr = new_temporary_register(generator);
+
+          fprintf(o, "  %%t%d = add i64 0, %lld\n", sz_reg, total_size);
+          fprintf(o, "  %%t%d = call ptr @__ada_ss_allocate(i64 %%t%d)\n", ss_ptr, sz_reg);
+          fprintf(o, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%d, ptr %%t%d, i64 %lld, i1 false)\n",
+                  ss_ptr, v.id, total_size);
           fprintf(o, "  ret ptr %%t%d\n", ss_ptr);
         }
         else
         {
-          // Unable to determine bounds, just return the pointer
+          // Other types or unconstrained arrays
           fprintf(o, "  ret %s %%t%d\n", value_llvm_type_string(v.k), v.id);
         }
-      }
-      else
-      {
-        fprintf(o, "  ret %s %%t%d\n", value_llvm_type_string(v.k), v.id);
       }
     }
     else
@@ -13039,6 +12991,18 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                 fprintf(o, "  %%t%d = add i64 %%t%d, 1\n", count_reg + 1, count_reg);
                 int alloc_size = new_temporary_register(generator);
                 fprintf(o, "  %%t%d = mul i64 %%t%d, %d\n", alloc_size, count_reg + 1, elem_size);
+
+                // Store the size for later use (e.g., in return statements)
+                fprintf(o, "  %%v.%s.sc%u.%u__size = alloca i64\n",
+                    string_to_lowercase(id->string_value),
+                    s->scope,
+                    s->elaboration_level);
+                fprintf(o, "  store i64 %%t%d, ptr %%v.%s.sc%u.%u__size\n",
+                    alloc_size,
+                    string_to_lowercase(id->string_value),
+                    s->scope,
+                    s->elaboration_level);
+
                 fprintf(o, "  %%v.%s.sc%u.%u = alloca i8, i64 %%t%d\n",
                     string_to_lowercase(id->string_value),
                     s->scope,
