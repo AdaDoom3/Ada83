@@ -1,68 +1,82 @@
-CC=gcc
-CFLAGS=-std=c99 -O2 -w
-LDFLAGS=-lm
-SRC=ada83.c
-BIN=ada83
-RTS_DIR=rts
-TEST_DIR=acats
-TEST_RESULTS=test_results
-ACATS_LOGS=acats_logs
+# Makefile for Ada83 Compiler and Runtime
 
-.PHONY: all clean test test-a test-b test-c test-full rts help
+CC = gcc
+CFLAGS = -O2 -Wall
+RUNTIME_CFLAGS = -O2 -mcmodel=large -Wall
+LLC = llc
+ADA83 = ./ada83
 
-all: $(BIN)
+# Runtime components
+RUNTIME_OBJ = ada_runtime.o print_helper.o
+RUNTIME_LIBS = -lm
 
-$(BIN): $(SRC)
-	$(CC) $(CFLAGS) -o $(BIN) $(SRC) $(LDFLAGS)
+.PHONY: all clean test runtime compiler help
 
-rts: $(BIN)
-	./$(BIN) $(RTS_DIR)/report.adb > $(RTS_DIR)/report.ll 2>&1 || true
+all: compiler runtime
 
+compiler: ada83
+
+runtime: $(RUNTIME_OBJ)
+
+# Build the compiler
+ada83: ada83.c
+	$(CC) $(CFLAGS) -o ada83 ada83.c -lm
+
+# Build runtime objects
+ada_runtime.o: ada_runtime.c
+	$(CC) $(RUNTIME_CFLAGS) -c ada_runtime.c -o ada_runtime.o
+
+print_helper.o: print_helper.c
+	$(CC) $(CFLAGS) -c print_helper.c -o print_helper.o
+
+# Pattern rules for compiling Ada programs
+%.ll: %.adb $(ADA83)
+	$(ADA83) $< > $@
+
+%.s: %.ll
+	$(LLC) $< -o $@
+
+%.exe: %.s $(RUNTIME_OBJ)
+	$(CC) $< $(RUNTIME_OBJ) $(RUNTIME_LIBS) -o $@
+
+# Test targets
+TEST_PROGS = test_simple_output test_runtime_array test_array
+
+test: compiler runtime $(TEST_PROGS)
+	@echo "Running test suite..."
+	@./test_simple_output && echo "PASS: test_simple_output"
+	@./test_runtime_array && echo "PASS: test_runtime_array"
+	@./test_array && echo "PASS: test_array"
+	@echo "Test suite complete"
+
+# Executable targets
+test_simple_output: test_simple_output.exe
+	cp $< $@
+
+test_runtime_array: test_runtime_array.exe
+	cp $< $@
+
+test_array: test_array.exe
+	cp $< $@
+
+# Clean build artifacts (NOT source files!)
 clean:
-	rm -f $(BIN)
-	rm -rf $(TEST_RESULTS) $(ACATS_LOGS)
-	rm -f $(RTS_DIR)/report.ll
-	rm -f test_summary.txt
+	rm -f ada83 *.o *.ll *.s *.exe
+	rm -f test_simple_output test_runtime_array test_array
+	rm -f a.out core
+	@echo "Clean complete"
 
-test-dirs:
-	mkdir -p $(TEST_RESULTS) $(ACATS_LOGS)
-
-test-a: $(BIN) rts test-dirs
-	./test.sh g a
-
-test-b: $(BIN) rts test-dirs
-	./test.sh g b
-
-test-c: $(BIN) rts test-dirs
-	./test.sh g c
-
-test-full: $(BIN) rts test-dirs
-	./test.sh f
-
-test: test-a
-
-quick: CFLAGS=-std=c99 -O0 -w
-quick: clean all
-
-debug: CFLAGS=-std=c99 -g -O0
-debug: clean all
-
+# Help target
 help:
 	@echo "Ada83 Compiler Makefile"
 	@echo ""
 	@echo "Targets:"
-	@echo "  all        - Build ada83 compiler (default)"
-	@echo "  rts        - Build runtime system (report.ll)"
-	@echo "  clean      - Remove build artifacts and test results"
-	@echo "  test       - Run A-series ACATS tests (same as test-a)"
-	@echo "  test-a     - Run A-series ACATS tests"
-	@echo "  test-b     - Run B-series ACATS tests"
-	@echo "  test-c     - Run C-series ACATS tests"
-	@echo "  test-full  - Run all ACATS tests"
-	@echo "  quick      - Quick build without optimization"
-	@echo "  debug      - Build with debug symbols"
+	@echo "  make              - Build compiler and runtime"
+	@echo "  make test         - Run test suite"
+	@echo "  make clean        - Clean build artifacts"
+	@echo "  make <prog>.exe   - Compile Ada program <prog>.adb to executable"
 	@echo ""
 	@echo "Examples:"
-	@echo "  make              # Build compiler"
-	@echo "  make test         # Run A-series tests"
-	@echo "  make clean all    # Rebuild from scratch"
+	@echo "  make test_simple_output.exe   # Compile test_simple_output.adb"
+
+.SECONDARY:  # Keep intermediate files

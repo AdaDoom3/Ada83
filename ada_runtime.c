@@ -1,0 +1,308 @@
+// Ada83 Runtime Support Library
+// Implements essential Ada runtime functions for the ada83 compiler
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <setjmp.h>
+#include <math.h>
+#include <stdint.h>
+
+// ============================================================================
+// Secondary Stack Implementation
+// ============================================================================
+
+#define SS_INITIAL_SIZE (64 * 1024)  // 64KB initial size
+#define SS_MAX_SIZE (16 * 1024 * 1024)  // 16MB max size
+
+typedef struct {
+    char *base;
+    char *top;
+    char *limit;
+    size_t size;
+} secondary_stack_t;
+
+static secondary_stack_t __ada_secondary_stack = {0};
+
+void __ada_ss_init(void) {
+    if (__ada_secondary_stack.base == NULL) {
+        __ada_secondary_stack.size = SS_INITIAL_SIZE;
+        __ada_secondary_stack.base = malloc(__ada_secondary_stack.size);
+        if (!__ada_secondary_stack.base) {
+            fprintf(stderr, "Fatal: Cannot allocate secondary stack\n");
+            exit(1);
+        }
+        __ada_secondary_stack.top = __ada_secondary_stack.base;
+        __ada_secondary_stack.limit = __ada_secondary_stack.base + __ada_secondary_stack.size;
+    }
+}
+
+void* __ada_ss_allocate(int64_t size) {
+    if (!__ada_secondary_stack.base) {
+        __ada_ss_init();
+    }
+
+    // Align to 8 bytes
+    size = (size + 7) & ~7;
+
+    char *result = __ada_secondary_stack.top;
+    char *new_top = __ada_secondary_stack.top + size;
+
+    // Check if we need to grow the stack
+    if (new_top > __ada_secondary_stack.limit) {
+        size_t current_offset = __ada_secondary_stack.top - __ada_secondary_stack.base;
+        size_t new_size = __ada_secondary_stack.size * 2;
+
+        if (new_size > SS_MAX_SIZE) {
+            fprintf(stderr, "Fatal: Secondary stack overflow\n");
+            exit(1);
+        }
+
+        char *new_base = realloc(__ada_secondary_stack.base, new_size);
+        if (!new_base) {
+            fprintf(stderr, "Fatal: Cannot grow secondary stack\n");
+            exit(1);
+        }
+
+        __ada_secondary_stack.base = new_base;
+        __ada_secondary_stack.top = new_base + current_offset;
+        __ada_secondary_stack.size = new_size;
+        __ada_secondary_stack.limit = new_base + new_size;
+
+        result = __ada_secondary_stack.top;
+        new_top = __ada_secondary_stack.top + size;
+    }
+
+    __ada_secondary_stack.top = new_top;
+    return result;
+}
+
+void* __ada_ss_mark(void) {
+    if (!__ada_secondary_stack.base) {
+        __ada_ss_init();
+    }
+    return __ada_secondary_stack.top;
+}
+
+void __ada_ss_release(void *mark) {
+    if (!__ada_secondary_stack.base) {
+        return;
+    }
+    __ada_secondary_stack.top = (char*)mark;
+}
+
+// ============================================================================
+// Exception Handling
+// ============================================================================
+
+#define MAX_EXCEPTION_HANDLERS 256
+
+typedef struct {
+    jmp_buf env;
+    int active;
+} exception_handler_t;
+
+static exception_handler_t __ada_exception_handlers[MAX_EXCEPTION_HANDLERS];
+static int __ada_handler_sp = -1;
+static const char *__ada_current_exception = NULL;
+
+// Exception constants
+const char *CONSTRAINT_ERROR = "CONSTRAINT_ERROR";
+const char *PROGRAM_ERROR = "PROGRAM_ERROR";
+const char *STORAGE_ERROR = "STORAGE_ERROR";
+const char *TASKING_ERROR = "TASKING_ERROR";
+
+void __ada_push_handler(void *env) {
+    if (__ada_handler_sp >= MAX_EXCEPTION_HANDLERS - 1) {
+        fprintf(stderr, "Fatal: Exception handler stack overflow\n");
+        exit(1);
+    }
+    __ada_handler_sp++;
+    memcpy(__ada_exception_handlers[__ada_handler_sp].env, env, sizeof(jmp_buf));
+    __ada_exception_handlers[__ada_handler_sp].active = 1;
+}
+
+void __ada_pop_handler(void) {
+    if (__ada_handler_sp >= 0) {
+        __ada_exception_handlers[__ada_handler_sp].active = 0;
+        __ada_handler_sp--;
+    }
+}
+
+void __ada_raise(const char *exception_name) {
+    __ada_current_exception = exception_name;
+
+    if (__ada_handler_sp >= 0 && __ada_exception_handlers[__ada_handler_sp].active) {
+        longjmp(__ada_exception_handlers[__ada_handler_sp].env, 1);
+    } else {
+        fprintf(stderr, "Unhandled exception: %s\n", exception_name);
+        exit(1);
+    }
+}
+
+int __ada_setjmp(void *env) {
+    return setjmp(*(jmp_buf*)env);
+}
+
+const char* __ada_get_exception(void) {
+    return __ada_current_exception;
+}
+
+// ============================================================================
+// Range Checking
+// ============================================================================
+
+void __ada_check_range(int64_t value, int64_t low, int64_t high) {
+    if (value < low || value > high) {
+        __ada_raise(CONSTRAINT_ERROR);
+    }
+}
+
+// ============================================================================
+// Arithmetic Operations
+// ============================================================================
+
+int64_t __ada_powi(int64_t base, int64_t exponent) {
+    if (exponent < 0) {
+        __ada_raise(CONSTRAINT_ERROR);
+    }
+
+    if (exponent == 0) {
+        return 1;
+    }
+
+    int64_t result = 1;
+    int64_t b = base;
+    int64_t e = exponent;
+
+    while (e > 0) {
+        if (e & 1) {
+            result *= b;
+        }
+        b *= b;
+        e >>= 1;
+    }
+
+    return result;
+}
+
+double __ada_powf(double base, double exponent) {
+    return pow(base, exponent);
+}
+
+// ============================================================================
+// String Operations
+// ============================================================================
+
+char* __ada_image_int(int64_t value) {
+    char *buffer = __ada_ss_allocate(32);
+    snprintf(buffer, 32, "%ld", (long)value);
+    return buffer;
+}
+
+char* __ada_image_enum(int64_t value, int64_t low, int64_t high) {
+    if (value < low || value > high) {
+        __ada_raise(CONSTRAINT_ERROR);
+    }
+
+    // For now, just return the numeric value
+    char *buffer = __ada_ss_allocate(32);
+    snprintf(buffer, 32, "%ld", (long)value);
+    return buffer;
+}
+
+int64_t __ada_value_int(const char *str) {
+    char *endptr;
+    long long value = strtoll(str, &endptr, 10);
+
+    if (*endptr != '\0' && *endptr != ' ') {
+        __ada_raise(CONSTRAINT_ERROR);
+    }
+
+    return value;
+}
+
+// ============================================================================
+// Task Support (Minimal/Stub)
+// ============================================================================
+
+void __ada_task_trampoline(void) {
+    // Stub for task support
+}
+
+void __ada_delay(int64_t microseconds) {
+    // Stub for delay support
+}
+
+// ============================================================================
+// Finalization Support
+// ============================================================================
+
+typedef struct finalizer_node {
+    void (*finalizer)(void*);
+    void *object;
+    struct finalizer_node *next;
+} finalizer_node_t;
+
+static finalizer_node_t *__ada_finalizer_list = NULL;
+
+void __ada_register_finalizer(void (*finalizer)(void*), void *object) {
+    finalizer_node_t *node = malloc(sizeof(finalizer_node_t));
+    if (!node) {
+        __ada_raise(STORAGE_ERROR);
+    }
+
+    node->finalizer = finalizer;
+    node->object = object;
+    node->next = __ada_finalizer_list;
+    __ada_finalizer_list = node;
+}
+
+void __ada_finalize(void *object) {
+    // Find and call finalizer for this object
+    for (finalizer_node_t *node = __ada_finalizer_list; node; node = node->next) {
+        if (node->object == object) {
+            node->finalizer(object);
+            break;
+        }
+    }
+}
+
+void __ada_finalize_all(void) {
+    // Call all registered finalizers
+    while (__ada_finalizer_list) {
+        finalizer_node_t *node = __ada_finalizer_list;
+        __ada_finalizer_list = node->next;
+
+        if (node->finalizer && node->object) {
+            node->finalizer(node->object);
+        }
+
+        free(node);
+    }
+}
+
+// ============================================================================
+// Initialization/Cleanup
+// ============================================================================
+
+__attribute__((constructor))
+static void __ada_runtime_init(void) {
+    __ada_ss_init();
+}
+
+__attribute__((destructor))
+static void __ada_runtime_cleanup(void) {
+    __ada_finalize_all();
+
+    if (__ada_secondary_stack.base) {
+        free(__ada_secondary_stack.base);
+        __ada_secondary_stack.base = NULL;
+    }
+}
+
+// ============================================================================
+// Global variable for iteration helper
+// ============================================================================
+
+int64_t __ada_i = 0;
