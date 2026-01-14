@@ -10182,28 +10182,15 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         generate_index_constraint_check(generator, i0.id, lb, hb);
       }
       int ep = new_temporary_register(generator);
-      if (at and at->k == TYPE_ARRAY and at->high_bound >= at->low_bound)
-      {
-        int asz = (int) (at->high_bound - at->low_bound + 1);
-        fprintf(
-            o,
-            "  %%t%d = getelementptr [%d x %s], ptr %%t%d, i64 0, i64 %%t%d\n",
-            ep,
-            asz,
-            elem_type_str,
-            dp,
-            adj_idx);
-      }
-      else
-      {
-        fprintf(
-            o,
-            "  %%t%d = getelementptr %s, ptr %%t%d, i64 %%t%d\n",
-            ep,
-            elem_type_str,
-            dp,
-            i0.id);
-      }
+      // Always use element-based getelementptr for simplicity and correctness
+      // This works for both compile-time and runtime-sized arrays
+      fprintf(
+          o,
+          "  %%t%d = getelementptr %s, ptr %%t%d, i64 %%t%d\n",
+          ep,
+          elem_type_str,
+          dp,
+          adj_idx);
       if (et and (et->k == TYPE_ARRAY or et->k == TYPE_RECORD))
       {
         r.k = VALUE_KIND_POINTER;
@@ -11496,22 +11483,8 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
         adj_idx = adj;
       }
       int ep = new_temporary_register(generator);
-      if (at and at->k == TYPE_ARRAY and at->high_bound >= at->low_bound)
-      {
-        int asz = (int) (at->high_bound - at->low_bound + 1);
-        fprintf(
-            o,
-            "  %%t%d = getelementptr [%d x %s], ptr %%t%d, i64 0, i64 %%t%d\n",
-            ep,
-            asz,
-            elem_type_str,
-            p.id,
-            adj_idx);
-      }
-      else
-      {
-        fprintf(o, "  %%t%d = getelementptr %s, ptr %%t%d, i64 %%t%d\n", ep, elem_type_str, p.id, adj_idx);
-      }
+      // Always use element-based getelementptr for simplicity and correctness
+      fprintf(o, "  %%t%d = getelementptr %s, ptr %%t%d, i64 %%t%d\n", ep, elem_type_str, p.id, adj_idx);
       Value_Kind target_kind = et ? token_kind_to_value_kind(et) : VALUE_KIND_INTEGER;
       v = value_cast(generator, v, target_kind);
       if (strcmp(elem_type_str, "i64") != 0 and target_kind == VALUE_KIND_INTEGER)
@@ -14439,16 +14412,27 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
                                         : "0");
           }
           Type_Info *at = s->type_info ? type_canonical_concrete(s->type_info) : 0;
-          if (at and at->k == TYPE_ARRAY and at->low_bound <= at->high_bound)
+          // Only emit array globals for compile-time sized arrays with reasonable bounds
+          // Skip runtime-sized arrays (they're allocated dynamically)
+          if (at and at->k == TYPE_ARRAY and at->low_bound != 0 and at->high_bound > 0 and at->high_bound >= at->low_bound)
           {
-            int asz = (int) (at->high_bound - at->low_bound + 1);
-            fprintf(
-                o,
-                "@%s=linkonce_odr %s [%d x %s] zeroinitializer\n",
-                nb,
-                s->k == 2 ? "constant" : "global",
-                asz,
-                ada_to_c_type_string(at->element_type));
+            int64_t asz = at->high_bound - at->low_bound + 1;
+            // Only emit if size is reasonable (not garbage from runtime bounds)
+            if (asz > 0 and asz < 1000000)
+            {
+              fprintf(
+                  o,
+                  "@%s=linkonce_odr %s [%lld x %s] zeroinitializer\n",
+                  nb,
+                  s->k == 2 ? "constant" : "global",
+                  (long long) asz,
+                  ada_to_c_type_string(at->element_type));
+            }
+            else
+            {
+              // Runtime-sized or garbage bounds - skip global emission
+              // These will be allocated locally when needed
+            }
           }
           else if (at and at->k == TYPE_ARRAY)
           {
@@ -14651,16 +14635,27 @@ int main(int ac, char **av)
                                         : "0");
           }
           Type_Info *at = s->type_info ? type_canonical_concrete(s->type_info) : 0;
-          if (at and at->k == TYPE_ARRAY and at->low_bound <= at->high_bound)
+          // Only emit array globals for compile-time sized arrays with reasonable bounds
+          // Skip runtime-sized arrays (they're allocated dynamically)
+          if (at and at->k == TYPE_ARRAY and at->low_bound != 0 and at->high_bound > 0 and at->high_bound >= at->low_bound)
           {
-            int asz = (int) (at->high_bound - at->low_bound + 1);
-            fprintf(
-                o,
-                "@%s=linkonce_odr %s [%d x %s] zeroinitializer\n",
-                nb,
-                s->k == 2 ? "constant" : "global",
-                asz,
-                ada_to_c_type_string(at->element_type));
+            int64_t asz = at->high_bound - at->low_bound + 1;
+            // Only emit if size is reasonable (not garbage from runtime bounds)
+            if (asz > 0 and asz < 1000000)
+            {
+              fprintf(
+                  o,
+                  "@%s=linkonce_odr %s [%lld x %s] zeroinitializer\n",
+                  nb,
+                  s->k == 2 ? "constant" : "global",
+                  (long long) asz,
+                  ada_to_c_type_string(at->element_type));
+            }
+            else
+            {
+              // Runtime-sized or garbage bounds - skip global emission
+              // These will be allocated locally when needed
+            }
           }
           else if (at and at->k == TYPE_ARRAY)
           {
