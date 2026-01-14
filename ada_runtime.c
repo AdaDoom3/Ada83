@@ -306,3 +306,69 @@ static void __ada_runtime_cleanup(void) {
 // ============================================================================
 
 int64_t __ada_i = 0;
+
+// ============================================================================
+// TEXT_IO Runtime Functions
+// ============================================================================
+
+// Standard file handles
+FILE *__text_io_stdout = NULL;
+FILE *__text_io_stdin = NULL;
+FILE *__text_io_stderr = NULL;
+
+// Initialize standard file handles
+__attribute__((constructor))
+static void __text_io_init(void) {
+    __text_io_stdout = stdout;
+    __text_io_stdin = stdin;
+    __text_io_stderr = stderr;
+}
+
+// PUT procedures - write without newline
+void __text_io_put_i64(FILE *file, int64_t value) {
+    if (!file) file = stdout;
+    fprintf(file, "%ld", (long)value);
+    fflush(file);
+}
+
+void __text_io_put_f64(FILE *file, double value) {
+    if (!file) file = stdout;
+    fprintf(file, "%g", value);
+    fflush(file);
+}
+
+void __text_io_put(FILE *file, const char *str) {
+    if (!file) file = stdout;
+    if (str) {
+        fputs(str, file);
+        fflush(file);
+    }
+}
+
+// PUT_LINE procedures - write with newline
+void __text_io_put_line_i64(FILE *file, int64_t value) {
+    if (!file) file = stdout;
+    fprintf(file, "%ld\n", (long)value);
+    fflush(file);
+}
+
+void __text_io_put_line_f64(FILE *file, double value) {
+    if (!file) file = stdout;
+    fprintf(file, "%g\n", value);
+    fflush(file);
+}
+
+void __text_io_put_line(FILE *file, const char *str) {
+    if (!file) file = stdout;
+    if (str) {
+        fputs(str, file);
+    }
+    fputc('\n', file);
+    fflush(file);
+}
+
+// NEW_LINE procedure
+void __text_io_new_line(void) {
+    fputc('\n', stdout);
+    fflush(stdout);
+}

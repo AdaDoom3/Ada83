@@ -11282,6 +11282,78 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         fprintf(o, "  %%t%d = add i64 0, 0\n", r.id);
       }
     }
+    else if (n->call.function_name->k == N_SEL)
+    {
+      // Handle selected component calls like TEXT_IO.PUT
+      Syntax_Node *sel = n->call.function_name;
+      if (sel->selected_component.prefix->k == N_ID)
+      {
+        String_Slice package_name = sel->selected_component.prefix->string_value;
+        String_Slice procedure_name = sel->selected_component.selector;
+
+        // Check for TEXT_IO special cases
+        if (string_equal_ignore_case(package_name, STRING_LITERAL("TEXT_IO")))
+        {
+          if (string_equal_ignore_case(procedure_name, STRING_LITERAL("PUT")))
+          {
+            if (n->call.arguments.count > 0)
+            {
+              Value v = generate_expression(generator, n->call.arguments.data[0]);
+              const char *suffix = "";
+              const char *type_str = "";
+              if (v.k == VALUE_KIND_INTEGER)
+              {
+                suffix = ".i64";
+                type_str = "i64";
+              }
+              else if (v.k == VALUE_KIND_FLOAT)
+              {
+                suffix = ".f64";
+                type_str = "double";
+              }
+              else
+              {
+                type_str = "ptr";
+              }
+              fprintf(o, "  call void @__text_io_put%s(ptr @stdout, %s %%t%d)\n", suffix, type_str, v.id);
+            }
+            break;
+          }
+          else if (string_equal_ignore_case(procedure_name, STRING_LITERAL("PUT_LINE")))
+          {
+            if (n->call.arguments.count > 0)
+            {
+              Value v = generate_expression(generator, n->call.arguments.data[0]);
+              const char *suffix = "";
+              const char *type_str = "";
+              if (v.k == VALUE_KIND_INTEGER)
+              {
+                suffix = ".i64";
+                type_str = "i64";
+              }
+              else if (v.k == VALUE_KIND_FLOAT)
+              {
+                suffix = ".f64";
+                type_str = "double";
+              }
+              else
+              {
+                type_str = "ptr";
+              }
+              fprintf(o, "  call void @__text_io_put_line%s(ptr @stdout, %s %%t%d)\n", suffix, type_str, v.id);
+            }
+            break;
+          }
+          else if (string_equal_ignore_case(procedure_name, STRING_LITERAL("NEW_LINE")))
+          {
+            fprintf(o, "  call void @__text_io_new_line()\n");
+            break;
+          }
+        }
+      }
+      r.k = VALUE_KIND_INTEGER;
+      fprintf(o, "  %%t%d = add i64 0, 0\n", r.id);
+    }
     else
     {
       r.k = VALUE_KIND_INTEGER;
@@ -12173,6 +12245,13 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
     fprintf(o, "  unreachable\n");
   }
   break;
+  case N_CL:
+  {
+    // Handle procedure calls as statements (like TEXT_IO.PUT(X))
+    // Generate the call as an expression, which will execute it
+    generate_expression(generator, n);
+  }
+  break;
   case N_CLT:
   {
     if (n->code_stmt.name->k == N_ID)
@@ -12527,6 +12606,75 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             fprintf(o, "%s %%t%d", value_llvm_type_string(ark[i]), arid[i]);
           }
           fprintf(o, ")\n");
+        }
+      }
+    }
+    else if (n->code_stmt.name->k == N_SEL)
+    {
+      // Handle selected component calls like TEXT_IO.PUT(X)
+      Syntax_Node *sel = n->code_stmt.name;
+      if (sel->selected_component.prefix->k == N_ID)
+      {
+        String_Slice package_name = sel->selected_component.prefix->string_value;
+        String_Slice procedure_name = sel->selected_component.selector;
+
+        // Check for TEXT_IO special cases
+        if (string_equal_ignore_case(package_name, STRING_LITERAL("TEXT_IO")))
+        {
+          if (string_equal_ignore_case(procedure_name, STRING_LITERAL("PUT")))
+          {
+            if (n->code_stmt.arguments.count > 0)
+            {
+              Value v = generate_expression(generator, n->code_stmt.arguments.data[0]);
+              const char *suffix = "";
+              const char *type_str = "";
+              if (v.k == VALUE_KIND_INTEGER)
+              {
+                suffix = "_i64";
+                type_str = "i64";
+              }
+              else if (v.k == VALUE_KIND_FLOAT)
+              {
+                suffix = "_f64";
+                type_str = "double";
+              }
+              else
+              {
+                suffix = "";
+                type_str = "ptr";
+              }
+              fprintf(o, "  call void @__text_io_put%s(ptr null, %s %%t%d)\n", suffix, type_str, v.id);
+            }
+          }
+          else if (string_equal_ignore_case(procedure_name, STRING_LITERAL("PUT_LINE")))
+          {
+            if (n->code_stmt.arguments.count > 0)
+            {
+              Value v = generate_expression(generator, n->code_stmt.arguments.data[0]);
+              const char *suffix = "";
+              const char *type_str = "";
+              if (v.k == VALUE_KIND_INTEGER)
+              {
+                suffix = "_i64";
+                type_str = "i64";
+              }
+              else if (v.k == VALUE_KIND_FLOAT)
+              {
+                suffix = "_f64";
+                type_str = "double";
+              }
+              else
+              {
+                suffix = "";
+                type_str = "ptr";
+              }
+              fprintf(o, "  call void @__text_io_put_line%s(ptr null, %s %%t%d)\n", suffix, type_str, v.id);
+            }
+          }
+          else if (string_equal_ignore_case(procedure_name, STRING_LITERAL("NEW_LINE")))
+          {
+            fprintf(o, "  call void @__text_io_new_line()\n");
+          }
         }
       }
     }
@@ -14009,7 +14157,10 @@ static void generate_runtime_type(Code_Generator *generator)
       "@memcpy(ptr,ptr,i64)\ndeclare ptr @memset(ptr,i32,i64)\ndeclare double "
       "@pow(double,double)\ndeclare double @sqrt(double)\ndeclare double @sin(double)\ndeclare "
       "double @cos(double)\ndeclare double @exp(double)\ndeclare double @log(double)\ndeclare "
-      "void @llvm.memcpy.p0.p0.i64(ptr,ptr,i64,i1)\n");
+      "void @llvm.memcpy.p0.p0.i64(ptr,ptr,i64,i1)\ndeclare void @__text_io_put_i64(ptr,i64)\ndeclare "
+      "void @__text_io_put_f64(ptr,double)\ndeclare void @__text_io_put(ptr,ptr)\ndeclare void "
+      "@__text_io_put_line_i64(ptr,i64)\ndeclare void @__text_io_put_line_f64(ptr,double)\ndeclare "
+      "void @__text_io_put_line(ptr,ptr)\ndeclare void @__text_io_new_line()\n");
   fprintf(
       o,
       "define linkonce_odr ptr @__ada_i64str_to_cstr(ptr %%p,i64 %%lo,i64 %%hi){%%ln=sub i64 "
@@ -14118,48 +14269,50 @@ static void generate_runtime_type(Code_Generator *generator)
       o,
       "@.fmt_d=linkonce_odr constant[5 x i8]c\"%%lld\\00\"\n@.fmt_s=linkonce_odr constant[3 x "
       "i8]c\"%%s\\00\"\n@.fmt_f=linkonce_odr constant[3 x i8]c\"%%g\\00\"\n");
-  fprintf(
-      o, "define linkonce_odr void @__text_io_new_line(){call i32 @putchar(i32 10)\nret void}\n");
-  fprintf(
-      o,
-      "define linkonce_odr void @__text_io_put_char(i64 %%c){%%1=trunc i64 %%c to i32\ncall i32 "
-      "@putchar(i32 %%1)\nret void}\n");
-  fprintf(
-      o,
-      "define linkonce_odr void @__text_io_put(ptr %%s){entry:\n%%len=call i64 @strlen(ptr "
-      "%%s)\nbr label %%loop\nloop:\n%%i=phi i64[0,%%entry],[%%next,%%body]\n%%cmp=icmp slt i64 "
-      "%%i,%%len\nbr i1 %%cmp,label %%body,label %%done\nbody:\n%%charptr=getelementptr i8,ptr "
-      "%%s,i64 %%i\n%%ch8=load i8,ptr %%charptr\n%%ch=sext i8 %%ch8 to i32\ncall i32 "
-      "@putchar(i32 %%ch)\n%%next=add i64 %%i,1\nbr label %%loop\ndone:\nret void}\n");
-  fprintf(
-      o,
-      "define linkonce_odr void @__text_io_put_line(ptr %%s){call void @__text_io_put(ptr "
-      "%%s)\ncall void @__text_io_new_line()\nret void}\n");
-  fprintf(
-      o,
-      "define linkonce_odr void @__text_io_put.i64(ptr %%file, i64 %%v){%%fmt=getelementptr[5 x i8],ptr "
-      "@.fmt_d,i64 0,i64 0\n%%1=call i32(ptr,...)@printf(ptr %%fmt,i64 %%v)\nret void}\n");
-  fprintf(
-      o,
-      "define linkonce_odr void @__text_io_put_line.i64(ptr %%file, i64 %%v){call void @__text_io_put.i64(ptr "
-      "%%file,i64 %%v)\ncall void @__text_io_new_line()\nret void}\n");
-  fprintf(
-      o,
-      "define linkonce_odr void @__text_io_put.f64(ptr %%file, double %%v){%%fmt=getelementptr[3 x i8],ptr "
-      "@.fmt_f,i64 0,i64 0\n%%1=call i32(ptr,...)@printf(ptr %%fmt,double %%v)\nret void}\n");
-  fprintf(
-      o,
-      "define linkonce_odr void @__text_io_put_line.f64(ptr %%file, double %%v){call void @__text_io_put.f64(ptr "
-      "%%file,double %%v)\ncall void @__text_io_new_line()\nret void}\n");
-  fprintf(
-      o,
-      "define linkonce_odr void @__text_io_get_char(ptr %%p){%%1=call i32 @getchar()\n%%2=icmp "
-      "eq i32 %%1,-1\n%%3=sext i32 %%1 to i64\n%%4=select i1 %%2,i64 0,i64 %%3\nstore i64 "
-      "%%4,ptr %%p\nret void}\n");
-  fprintf(
-      o,
-      "define linkonce_odr void @__text_io_get_line(ptr %%b,ptr %%n){store i64 0,ptr %%n\nret "
-      "void}\n");
+  // TEXT_IO functions are now provided by the runtime library (ada_runtime.c)
+  // Commented out inline definitions to avoid conflicts
+  // fprintf(
+  //     o, "define linkonce_odr void @__text_io_new_line(){call i32 @putchar(i32 10)\nret void}\n");
+  // fprintf(
+  //     o,
+  //     "define linkonce_odr void @__text_io_put_char(i64 %%c){%%1=trunc i64 %%c to i32\ncall i32 "
+  //     "@putchar(i32 %%1)\nret void}\n");
+  // fprintf(
+  //     o,
+  //     "define linkonce_odr void @__text_io_put(ptr %%s){entry:\n%%len=call i64 @strlen(ptr "
+  //     "%%s)\nbr label %%loop\nloop:\n%%i=phi i64[0,%%entry],[%%next,%%body]\n%%cmp=icmp slt i64 "
+  //     "%%i,%%len\nbr i1 %%cmp,label %%body,label %%done\nbody:\n%%charptr=getelementptr i8,ptr "
+  //     "%%s,i64 %%i\n%%ch8=load i8,ptr %%charptr\n%%ch=sext i8 %%ch8 to i32\ncall i32 "
+  //     "@putchar(i32 %%ch)\n%%next=add i64 %%i,1\nbr label %%loop\ndone:\nret void}\n");
+  // fprintf(
+  //     o,
+  //     "define linkonce_odr void @__text_io_put_line(ptr %%s){call void @__text_io_put(ptr "
+  //     "%%s)\ncall void @__text_io_new_line()\nret void}\n");
+  // fprintf(
+  //     o,
+  //     "define linkonce_odr void @__text_io_put.i64(ptr %%file, i64 %%v){%%fmt=getelementptr[5 x i8],ptr "
+  //     "@.fmt_d,i64 0,i64 0\n%%1=call i32(ptr,...)@printf(ptr %%fmt,i64 %%v)\nret void}\n");
+  // fprintf(
+  //     o,
+  //     "define linkonce_odr void @__text_io_put_line.i64(ptr %%file, i64 %%v){call void @__text_io_put.i64(ptr "
+  //     "%%file,i64 %%v)\ncall void @__text_io_new_line()\nret void}\n");
+  // fprintf(
+  //     o,
+  //     "define linkonce_odr void @__text_io_put.f64(ptr %%file, double %%v){%%fmt=getelementptr[3 x i8],ptr "
+  //     "@.fmt_f,i64 0,i64 0\n%%1=call i32(ptr,...)@printf(ptr %%fmt,double %%v)\nret void}\n");
+  // fprintf(
+  //     o,
+  //     "define linkonce_odr void @__text_io_put_line.f64(ptr %%file, double %%v){call void @__text_io_put.f64(ptr "
+  //     "%%file,double %%v)\ncall void @__text_io_new_line()\nret void}\n");
+  // fprintf(
+  //     o,
+  //     "define linkonce_odr void @__text_io_get_char(ptr %%p){%%1=call i32 @getchar()\n%%2=icmp "
+  //     "eq i32 %%1,-1\n%%3=sext i32 %%1 to i64\n%%4=select i1 %%2,i64 0,i64 %%3\nstore i64 "
+  //     "%%4,ptr %%p\nret void}\n");
+  // fprintf(
+  //     o,
+  //     "define linkonce_odr void @__text_io_get_line(ptr %%b,ptr %%n){store i64 0,ptr %%n\nret "
+  //     "void}\n");
   fprintf(o, "declare i32 @putchar(i32)\ndeclare i32 @getchar()\n");
   fprintf(
       o,
