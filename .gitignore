@@ -28,3 +28,5 @@ vgcore.*
 ada83.c.pre-propagation
 test_derived_runtime
 kernel_simulator
+kernel_smp_simulator
+benchmarks_smp
