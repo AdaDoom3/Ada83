@@ -7087,7 +7087,10 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
       else
       {
         if (error_count < 99 and node->dereference.expression->ty)
-          fatal_error(node->location, ".all non-ac");
+        {
+          report_error(node->location, "cannot dereference non-access type");
+          fprintf(stderr, "  note: .ALL can only be applied to access types\n");
+        }
         node->ty = TY_INT;
       }
     }
@@ -7128,7 +7131,10 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
         if (not type_covers(tgb, vlb) and not has_array
             and not(tgt->k == TYPE_BOOLEAN and is_discrete(vlt))
             and not(is_discrete(tgt) and is_discrete(vlt)))
-          fatal_error(node->location, "typ mis");
+        {
+          report_error(node->location, "type mismatch in assignment");
+          fprintf(stderr, "  note: cannot assign incompatible types\n");
+        }
       }
     }
     break;
