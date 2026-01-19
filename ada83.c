@@ -2151,6 +2151,40 @@ static Syntax_Node *parse_primary(Parser *parser)
       return aggregate_vector.data[0];
     Syntax_Node *node = ND(AG, location);
     node->aggregate.items = aggregate_vector;
+
+    // Check for illegal postfix operators on aggregates
+    if (parser_at(parser, T_LP))
+    {
+      report_error(parser->current_token.location, "cannot index an aggregate directly");
+      fprintf(stderr, "  note: assign the aggregate to a variable first\n");
+      fprintf(stderr, "  note: example: temp := (1, 2, 3);\n");
+      fprintf(stderr, "               value := temp(index);\n");
+      parser->error_count++;
+      // Skip the indexing part to avoid cascading errors
+      parser_next(parser); // skip (
+      int paren_depth = 1;
+      while (not parser_at(parser, T_EOF) and paren_depth > 0)
+      {
+        if (parser_at(parser, T_LP))
+          paren_depth++;
+        else if (parser_at(parser, T_RP))
+          paren_depth--;
+        parser_next(parser);
+      }
+    }
+    else if (parser_at(parser, T_DT))
+    {
+      report_error(parser->current_token.location, "cannot select component from aggregate directly");
+      fprintf(stderr, "  note: assign the aggregate to a variable first\n");
+      fprintf(stderr, "  note: example: temp := (X => 1, Y => 2);\n");
+      fprintf(stderr, "               value := temp.X;\n");
+      parser->error_count++;
+      // Skip the selector to avoid cascading errors
+      parser_next(parser); // skip .
+      if (parser_at(parser, T_ID) or parser_at(parser, T_STR) or parser_at(parser, T_CHAR))
+        parser_next(parser); // skip selector
+    }
+
     return node;
   }
   if (parser_match(parser, T_NEW))
@@ -3527,6 +3561,18 @@ static Syntax_Node *parse_type_definition(Parser *parser)
   if (parser_match(parser, T_LP))
   {
     Syntax_Node *node = ND(TE, location);
+
+    // Check for empty enumeration
+    if (parser_at(parser, T_RP))
+    {
+      report_error(parser->current_token.location, "enumeration type cannot be empty");
+      fprintf(stderr, "  note: at least one enumeration literal is required\n");
+      fprintf(stderr, "  note: example: TYPE Color IS (Red, Green, Blue);\n");
+      parser->error_count++;
+      parser_next(parser); // consume )
+      return node;
+    }
+
     do
     {
       if (parser_at(parser, T_CHAR))
@@ -3535,6 +3581,22 @@ static Syntax_Node *parse_type_definition(Parser *parser)
         c->integer_value = parser->current_token.integer_value;
         parser_next(parser);
         nv(&node->list.items, c);
+      }
+      else if (parser_at(parser, T_INT))
+      {
+        report_error(parser->current_token.location, "integer literal cannot be used as enumeration literal");
+        fprintf(stderr, "  note: only identifiers and character literals are allowed\n");
+        fprintf(stderr, "  note: example: TYPE Day IS (Mon, Tue, Wed);\n");
+        parser->error_count++;
+        parser_next(parser); // skip the integer
+      }
+      else if (parser_at(parser, T_STR))
+      {
+        report_error(parser->current_token.location, "string literal cannot be used as enumeration literal");
+        fprintf(stderr, "  note: only identifiers and character literals are allowed\n");
+        fprintf(stderr, "  note: did you mean a character literal? Use 'X' not \"X\"\n");
+        parser->error_count++;
+        parser_next(parser); // skip the string
       }
       else
       {
@@ -6231,7 +6293,10 @@ static void normalize_array_aggregate(Symbol_Manager *symbol_manager, Type_Info 
             if (ridx >= 0 and ridx < asz)
             {
               if (cov[ridx] and error_count < 99)
-                fatal_error(ag->location, "dup ag");
+              {
+                report_error(ag->location, "duplicate value for array index %lld in aggregate", k);
+                fprintf(stderr, "  note: each index can only be assigned once in an aggregate\n");
+              }
               cov[ridx] = 1;
               while (xv.count <= (uint32_t) ridx)
                 nv(&xv, ND(INT, ag->location));
@@ -6243,7 +6308,10 @@ static void normalize_array_aggregate(Symbol_Manager *symbol_manager, Type_Info 
         if (idx >= 0 and idx < asz)
         {
           if (cov[idx] and error_count < 99)
-            fatal_error(ag->location, "dup ag");
+          {
+            report_error(ag->location, "duplicate value for array index %lld in aggregate", idx + at->low_bound);
+            fprintf(stderr, "  note: each index can only be assigned once in an aggregate\n");
+          }
           cov[idx] = 1;
           while (xv.count <= (uint32_t) idx)
             nv(&xv, ND(INT, ag->location));
@@ -6256,7 +6324,10 @@ static void normalize_array_aggregate(Symbol_Manager *symbol_manager, Type_Info 
       if (px < (uint32_t) asz)
       {
         if (cov[px] and error_count < 99)
-          fatal_error(ag->location, "dup ag");
+        {
+          report_error(ag->location, "duplicate value for array index %lld in aggregate", px + at->low_bound);
+          fprintf(stderr, "  note: each index can only be assigned once in an aggregate\n");
+        }
         cov[px] = 1;
         while (xv.count <= px)
           nv(&xv, ND(INT, ag->location));
@@ -6279,7 +6350,11 @@ static void normalize_array_aggregate(Symbol_Manager *symbol_manager, Type_Info 
   }
   for (int64_t i = 0; i < asz; i++)
     if (not cov[i] and error_count < 99)
-      fatal_error(ag->location, "ag gap %lld", i);
+    {
+      report_error(ag->location, "array aggregate missing value for index %lld", i + at->low_bound);
+      fprintf(stderr, "  note: all array indices must be assigned in aggregate, or use OTHERS\n");
+      fprintf(stderr, "  note: example: (1 => 10, 2 => 20, OTHERS => 0)\n");
+    }
   ag->aggregate.items = xv;
   free(cov);
 }
