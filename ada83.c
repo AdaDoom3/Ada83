@@ -1764,12 +1764,20 @@ static bool parser_match(Parser *parser, Token_Kind token_kind)
 
 // Check if parser is making progress; return non-zero if stuck or should stop
 // Returns: 0 = making progress, 1 = stuck but recovered, 2 = stop parsing
-static int parser_check_progress(Parser *parser, Token_Kind *last_token, int *stuck_count)
+// Now checks both token AND location to avoid false positives on repeated valid patterns
+static int parser_check_progress(Parser *parser, Token_Kind *last_token, int *stuck_count,
+                                  uint32_t *last_line, uint32_t *last_column)
 {
   if (parser->error_count >= 100 || parser_at(parser, T_EOF))
     return 2; // Stop parsing - too many errors or EOF
 
-  if (parser->current_token.kind == *last_token)
+  // Check if we're truly stuck: same token at same location
+  uint32_t current_line = parser->current_token.location.line;
+  uint32_t current_column = parser->current_token.location.column;
+
+  if (parser->current_token.kind == *last_token &&
+      current_line == *last_line &&
+      current_column == *last_column)
   {
     (*stuck_count)++;
     if (*stuck_count > 3)
@@ -1780,6 +1788,8 @@ static int parser_check_progress(Parser *parser, Token_Kind *last_token, int *st
       parser->error_count++;
       parser_next(parser);
       *stuck_count = 0;
+      *last_line = 0;
+      *last_column = 0;
       return 1; // Stuck, but recovered
     }
   }
@@ -1787,6 +1797,8 @@ static int parser_check_progress(Parser *parser, Token_Kind *last_token, int *st
   {
     *stuck_count = 0;
     *last_token = parser->current_token.kind;
+    *last_line = current_line;
+    *last_column = current_column;
   }
   return 0; // Making progress
 }
@@ -3463,11 +3475,12 @@ static Node_Vector parse_statement(Parser *parser)
   Node_Vector statements = {0};
   Token_Kind last_token = T_EOF;
   int stuck_count = 0;
+  uint32_t last_line = 0, last_column = 0;
 
   while (not parser_at(parser, T_END) and not parser_at(parser, T_EXCP) and not parser_at(parser, T_ELSIF)
          and not parser_at(parser, T_ELSE) and not parser_at(parser, T_WHN) and not parser_at(parser, T_OR))
   {
-    int progress = parser_check_progress(parser, &last_token, &stuck_count);
+    int progress = parser_check_progress(parser, &last_token, &stuck_count, &last_line, &last_column);
     if (progress == 2) break;
     if (progress == 1) continue;
     nv(&statements, parse_statement_or_label(parser));
@@ -3496,9 +3509,10 @@ static Node_Vector parse_handle_declaration(Parser *parser)
 
     Token_Kind last_token = T_EOF;
     int stuck_count = 0;
+    uint32_t last_line = 0, last_column = 0;
     while (not parser_at(parser, T_WHN) and not parser_at(parser, T_END))
     {
-      int progress = parser_check_progress(parser, &last_token, &stuck_count);
+      int progress = parser_check_progress(parser, &last_token, &stuck_count, &last_line, &last_column);
       if (progress == 2) break;
       if (progress == 1) continue;
       nv(&handler->exception_handler.statements, parse_statement_or_label(parser));
@@ -4511,12 +4525,13 @@ static Node_Vector parse_declarative_part(Parser *parser)
   Node_Vector declarations = {0};
   Token_Kind last_token = T_EOF;
   int stuck_count = 0;
+  uint32_t last_line = 0, last_column = 0;
 
   while (not parser_at(parser, T_BEG) and not parser_at(parser, T_END) and not parser_at(parser, T_PRV)
          and not parser_at(parser, T_EOF) and not parser_at(parser, T_ENT))
   {
     // Check if we're stuck in an infinite loop
-    int progress = parser_check_progress(parser, &last_token, &stuck_count);
+    int progress = parser_check_progress(parser, &last_token, &stuck_count, &last_line, &last_column);
     if (progress == 2) // Stop parsing
       break;
     if (progress == 1) // Recovered from stuck state
