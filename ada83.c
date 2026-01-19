@@ -7226,6 +7226,11 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
     symbol_compare_parameter(symbol_manager);
     for (uint32_t i = 0; i < node->block.declarations.count; i++)
       resolve_declaration(symbol_manager, node->block.declarations.data[i]);
+    if (node->block.statements.count > 0 and not has_return_statement(&node->block.statements))
+    {
+      report_error(node->location, "statement sequence cannot contain only pragmas");
+      fprintf(stderr, "  note: at least one executable statement is required\n");
+    }
     for (uint32_t i = 0; i < node->block.statements.count; i++)
       resolve_statement_sequence(symbol_manager, node->block.statements.data[i]);
     if (node->block.handlers.count > 0)
@@ -7238,6 +7243,11 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
           Syntax_Node *e = h->exception_handler.exception_choices.data[j];
           if (e->k == N_ID and not string_equal_ignore_case(e->string_value, STRING_LITERAL("others")))
             slv(&symbol_manager->eh, e->string_value);
+        }
+        if (h->exception_handler.statements.count > 0 and not has_return_statement(&h->exception_handler.statements))
+        {
+          report_error(h->location, "statement sequence cannot contain only pragmas");
+          fprintf(stderr, "  note: at least one executable statement is required\n");
         }
         for (uint32_t j = 0; j < h->exception_handler.statements.count; j++)
           resolve_statement_sequence(symbol_manager, h->exception_handler.statements.data[j]);
@@ -8454,6 +8464,11 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       }
       for (uint32_t i = 0; i < n->body.declarations.count; i++)
         resolve_declaration(symbol_manager, n->body.declarations.data[i]);
+      if (n->body.statements.count > 0 and not has_return_statement(&n->body.statements))
+      {
+        report_error(n->location, "statement sequence cannot contain only pragmas");
+        fprintf(stderr, "  note: at least one executable statement is required\n");
+      }
       for (uint32_t i = 0; i < n->body.statements.count; i++)
         resolve_statement_sequence(symbol_manager, n->body.statements.data[i]);
       symbol_compare_overload(symbol_manager);
@@ -8500,6 +8515,11 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       }
       for (uint32_t i = 0; i < n->body.declarations.count; i++)
         resolve_declaration(symbol_manager, n->body.declarations.data[i]);
+      if (n->body.statements.count > 0 and not has_return_statement(&n->body.statements))
+      {
+        report_error(n->location, "statement sequence cannot contain only pragmas");
+        fprintf(stderr, "  note: at least one executable statement is required\n");
+      }
       for (uint32_t i = 0; i < n->body.statements.count; i++)
         resolve_statement_sequence(symbol_manager, n->body.statements.data[i]);
       symbol_compare_overload(symbol_manager);
