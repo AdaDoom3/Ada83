@@ -10923,7 +10923,8 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       int lt = new_label_block(generator), lf = new_label_block(generator);
       emit_conditional_branch(generator, cf, lt, lf);
       emit_label(generator, lt);
-      fprintf(o, "  call void @__ada_raise(ptr @.ex.CONSTRAINT_ERROR)\n  unreachable\nL%d:\n", lf);
+      fprintf(o, "  call void @__ada_raise(ptr @.ex.CONSTRAINT_ERROR)\n  unreachable\n");
+      emit_label(generator, lf);
       if (token_kind_to_value_kind(n->ty) == VALUE_KIND_FLOAT)
       {
         r = value_power_float(generator, a, b);
@@ -14498,6 +14499,33 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   s->elaboration_level,
                   asz,
                   ada_to_c_type_string(bt));
+            }
+            else if (at and at->k == TYPE_RECORD)
+            {
+              // Record type without initialization - allocate storage
+              // First allocate the pointer variable
+              fprintf(
+                  o,
+                  "  %%v.%s.sc%u.%u = alloca ptr\n",
+                  string_to_lowercase(id->string_value),
+                  s->scope,
+                  s->elaboration_level);
+              // Calculate record size and allocate storage
+              uint32_t rec_size = at->size / 8;
+              if (rec_size == 0)
+                rec_size = 8; // Minimum size
+              int sz_reg = new_temporary_register(generator);
+              int rec_ptr = new_temporary_register(generator);
+              fprintf(o, "  %%t%d = add i64 0, %u\n", sz_reg, rec_size * 8);
+              fprintf(o, "  %%t%d = call ptr @__ada_ss_allocate(i64 %%t%d)\n", rec_ptr, sz_reg);
+              // Store the allocated pointer in the variable
+              fprintf(
+                  o,
+                  "  store ptr %%t%d, ptr %%v.%s.sc%u.%u\n",
+                  rec_ptr,
+                  string_to_lowercase(id->string_value),
+                  s->scope,
+                  s->elaboration_level);
             }
             else
             {
