@@ -340,6 +340,425 @@ reset_cycle_counter:
     bx lr
 
 /* ========================================================================== */
+/* NEON-OPTIMIZED FAST PATHS FOR CRITICAL OPERATIONS                         */
+/* ========================================================================== */
+
+.global neon_copy_ipc_message
+neon_copy_ipc_message:
+    /* Fast copy of IPC message struct (64 bytes)
+     * r0 = source address
+     * r1 = destination address
+     * Uses NEON for single-cycle 16-byte transfers
+     */
+    vld1.64 {d0-d3}, [r0]!          /* Load 32 bytes */
+    vld1.64 {d4-d7}, [r0]           /* Load 32 bytes */
+    vst1.64 {d0-d3}, [r1]!          /* Store 32 bytes */
+    vst1.64 {d4-d7}, [r1]           /* Store 32 bytes */
+    bx lr
+
+.global neon_zero_message_queue
+neon_zero_message_queue:
+    /* Fast zero 256-entry message queue (16KB)
+     * r0 = base address
+     * r1 = size in bytes
+     */
+    vmov.i8 q0, #0                  /* Zero vector */
+    vmov.i8 q1, #0
+    vmov.i8 q2, #0
+    vmov.i8 q3, #0
+
+neon_zero_loop:
+    vst1.64 {d0-d3}, [r0]!          /* Store 32 bytes */
+    vst1.64 {d4-d7}, [r0]!          /* Store 32 bytes */
+    subs r1, r1, #64
+    bgt neon_zero_loop
+    bx lr
+
+.global neon_copy_context
+neon_copy_context:
+    /* Fast copy CPU context (17 registers × 4 bytes = 68 bytes)
+     * r0 = source context
+     * r1 = destination context
+     */
+    vld1.64 {d0-d3}, [r0]!          /* Load 32 bytes */
+    vld1.64 {d4-d7}, [r0]!          /* Load 32 bytes */
+    vld1.32 {d8[0]}, [r0]           /* Load final 4 bytes */
+    vst1.64 {d0-d3}, [r1]!          /* Store 32 bytes */
+    vst1.64 {d4-d7}, [r1]!          /* Store 32 bytes */
+    vst1.32 {d8[0]}, [r1]           /* Store final 4 bytes */
+    bx lr
+
+/* ========================================================================== */
+/* OPTIMIZED SPINLOCK WITH BACKOFF                                           */
+/* ========================================================================== */
+
+.global spinlock_acquire_adaptive
+spinlock_acquire_adaptive:
+    /* Adaptive spinlock with exponential backoff
+     * r0 = lock address
+     * r1 = max retries before backoff
+     * Returns: 0 on success, 1 on timeout
+     */
+    push {r4, r5}
+    mov r4, #1                      /* Backoff delay counter */
+    mov r5, r1                      /* Max retries */
+    dmb sy
+
+spinlock_adaptive_try:
+    ldrex r1, [r0]
+    cmp r1, #0
+    bne spinlock_adaptive_backoff
+
+    mov r1, #1
+    strex r2, r1, [r0]
+    cmp r2, #0
+    beq spinlock_adaptive_success
+
+spinlock_adaptive_backoff:
+    subs r5, r5, #1
+    beq spinlock_adaptive_timeout   /* Give up after max retries */
+
+    /* Exponential backoff with WFE */
+    mov r2, r4
+spinlock_adaptive_delay:
+    wfe
+    subs r2, r2, #1
+    bgt spinlock_adaptive_delay
+
+    lsl r4, r4, #1                  /* Double backoff delay */
+    cmp r4, #1024                   /* Cap at 1024 iterations */
+    movgt r4, #1024
+    b spinlock_adaptive_try
+
+spinlock_adaptive_success:
+    dmb sy
+    mov r0, #0                      /* Success */
+    pop {r4, r5}
+    bx lr
+
+spinlock_adaptive_timeout:
+    mov r0, #1                      /* Timeout */
+    pop {r4, r5}
+    bx lr
+
+/* ========================================================================== */
+/* FAST CONTEXT SWITCH ASSEMBLY                                              */
+/* ========================================================================== */
+
+.global fast_context_switch
+fast_context_switch:
+    /* Ultra-fast context switch for same-priority processes
+     * r0 = outgoing process context pointer
+     * r1 = incoming process context pointer
+     * Saves r0-r12, lr, sp, pc, cpsr (17 registers)
+     */
+
+    /* Save outgoing context using NEON for speed */
+    stmia r0, {r0-r12, sp, lr}      /* Save r0-r12, sp, lr (15 regs) */
+    str lr, [r0, #60]               /* Save PC (lr = return address) */
+    mrs r2, cpsr
+    str r2, [r0, #64]               /* Save CPSR */
+
+    /* Memory barrier for SMP safety */
+    dmb sy
+
+    /* Restore incoming context */
+    ldmia r1, {r0-r12, sp, lr}      /* Restore r0-r12, sp, lr */
+    ldr pc, [r1, #60]               /* Jump to new PC */
+
+/* ========================================================================== */
+/* LOCK-FREE ATOMIC OPERATIONS (OPTIMIZED)                                   */
+/* ========================================================================== */
+
+.global atomic_inc_return
+atomic_inc_return:
+    /* Atomically increment and return new value
+     * r0 = pointer to value
+     * Returns: new value in r0
+     */
+    dmb sy
+atomic_inc_loop:
+    ldrex r1, [r0]
+    add r1, r1, #1
+    strex r2, r1, [r0]
+    cmp r2, #0
+    bne atomic_inc_loop
+    dmb sy
+    mov r0, r1
+    bx lr
+
+.global atomic_dec_return
+atomic_dec_return:
+    /* Atomically decrement and return new value */
+    dmb sy
+atomic_dec_loop:
+    ldrex r1, [r0]
+    sub r1, r1, #1
+    strex r2, r1, [r0]
+    cmp r2, #0
+    bne atomic_dec_loop
+    dmb sy
+    mov r0, r1
+    bx lr
+
+.global atomic_swap
+atomic_swap:
+    /* Atomic swap (exchange)
+     * r0 = pointer to value
+     * r1 = new value
+     * Returns: old value in r0
+     */
+    dmb sy
+atomic_swap_loop:
+    ldrex r2, [r0]
+    strex r3, r1, [r0]
+    cmp r3, #0
+    bne atomic_swap_loop
+    dmb sy
+    mov r0, r2
+    bx lr
+
+/* ========================================================================== */
+/* CPU CACHE MANAGEMENT FOR SMP                                              */
+/* ========================================================================== */
+
+.global flush_dcache_range
+flush_dcache_range:
+    /* Flush data cache for memory range
+     * r0 = start address
+     * r1 = end address
+     */
+    bic r0, r0, #63                 /* Align to cache line (64 bytes) */
+flush_dcache_loop:
+    mcr p15, 0, r0, c7, c14, 1      /* Clean and invalidate D-cache line */
+    add r0, r0, #64
+    cmp r0, r1
+    blt flush_dcache_loop
+    dsb sy
+    bx lr
+
+.global invalidate_icache
+invalidate_icache:
+    /* Invalidate entire instruction cache */
+    mov r0, #0
+    mcr p15, 0, r0, c7, c5, 0       /* Invalidate I-cache */
+    dsb sy
+    isb sy
+    bx lr
+
+.global flush_tlb_all
+flush_tlb_all:
+    /* Flush all TLB entries (for SMP safety after page table updates) */
+    mov r0, #0
+    mcr p15, 0, r0, c8, c7, 0       /* Invalidate entire TLB */
+    dsb sy
+    isb sy
+    bx lr
+
+/* ========================================================================== */
+/* CPU HOTPLUG SUPPORT                                                        */
+/* ========================================================================== */
+
+.global cpu_online
+cpu_online:
+    /* Bring a CPU online
+     * r0 = CPU ID (0-3)
+     * Returns: 0 on success, -1 on error
+     */
+    push {r4-r6, lr}
+    mov r4, r0                      /* Save CPU ID */
+
+    /* Validate CPU ID */
+    cmp r4, #MAX_CPUS
+    movge r0, #-1
+    bge cpu_online_exit
+
+    /* Check if already online */
+    ldr r5, =cpu_online_mask
+    ldr r6, [r5]
+    mov r1, #1
+    lsl r1, r1, r4                  /* Create bit mask for this CPU */
+    tst r6, r1
+    movne r0, #-1                   /* Already online, fail */
+    bne cpu_online_exit
+
+    /* Mark CPU as online atomically */
+cpu_online_set_mask:
+    ldrex r2, [r5]
+    orr r2, r2, r1
+    strex r3, r2, [r5]
+    cmp r3, #0
+    bne cpu_online_set_mask
+
+    dsb sy
+
+    /* Send IPI to wake the CPU */
+    mov r0, r4
+    mov r1, #0                      /* Wake-up IPI */
+    bl send_ipi
+
+    mov r0, #0                      /* Success */
+
+cpu_online_exit:
+    pop {r4-r6, pc}
+
+.global cpu_offline
+cpu_offline:
+    /* Take a CPU offline
+     * r0 = CPU ID (0-3)
+     * Returns: 0 on success, -1 on error
+     */
+    push {r4-r7, lr}
+    mov r4, r0                      /* Save CPU ID */
+
+    /* Cannot offline CPU 0 (boot CPU) */
+    cmp r4, #0
+    moveq r0, #-1
+    beq cpu_offline_exit
+
+    /* Validate CPU ID */
+    cmp r4, #MAX_CPUS
+    movge r0, #-1
+    bge cpu_offline_exit
+
+    /* Check if currently online */
+    ldr r5, =cpu_online_mask
+    ldr r6, [r5]
+    mov r1, #1
+    lsl r1, r1, r4                  /* Create bit mask */
+    tst r6, r1
+    moveq r0, #-1                   /* Not online, fail */
+    beq cpu_offline_exit
+
+    /* Mark CPU as offline atomically */
+    mvn r7, r1                      /* Invert mask for clearing */
+cpu_offline_clear_mask:
+    ldrex r2, [r5]
+    and r2, r2, r7
+    strex r3, r2, [r5]
+    cmp r3, #0
+    bne cpu_offline_clear_mask
+
+    dsb sy
+
+    /* Send shutdown IPI */
+    mov r0, r4
+    mov r1, #3                      /* Shutdown IPI */
+    bl send_ipi
+
+    mov r0, #0                      /* Success */
+
+cpu_offline_exit:
+    pop {r4-r7, pc}
+
+.global cpu_is_online
+cpu_is_online:
+    /* Check if CPU is online
+     * r0 = CPU ID
+     * Returns: 1 if online, 0 if offline
+     */
+    cmp r0, #MAX_CPUS
+    movge r0, #0
+    bxge lr
+
+    ldr r1, =cpu_online_mask
+    ldr r1, [r1]
+    mov r2, #1
+    lsl r2, r2, r0
+    and r0, r1, r2
+    cmp r0, #0
+    movne r0, #1
+    bx lr
+
+.global get_online_cpu_count
+get_online_cpu_count:
+    /* Returns: number of online CPUs */
+    ldr r0, =cpu_online_mask
+    ldr r0, [r0]
+
+    /* Count bits set (population count) */
+    mov r1, #0
+cpu_count_loop:
+    tst r0, #1
+    addne r1, r1, #1
+    lsr r0, r0, #1
+    cmp r0, #0
+    bne cpu_count_loop
+
+    mov r0, r1
+    bx lr
+
+/* ========================================================================== */
+/* PRIORITY INHERITANCE FOR IPC                                              */
+/* ========================================================================== */
+
+.global ipc_acquire_with_priority_boost
+ipc_acquire_with_priority_boost:
+    /* Acquire IPC lock with priority inheritance
+     * r0 = lock address
+     * r1 = current priority
+     * r2 = lock owner's priority pointer
+     * Returns: 0 on success
+     */
+    push {r4-r6, lr}
+    mov r4, r0                      /* Save lock address */
+    mov r5, r1                      /* Save current priority */
+    mov r6, r2                      /* Save owner priority pointer */
+
+    dmb sy
+
+ipc_pi_acquire_loop:
+    ldrex r1, [r4]
+    cmp r1, #0
+    beq ipc_pi_try_acquire
+
+    /* Lock is held, check if we need to boost owner's priority */
+    ldr r3, [r6]                    /* Load owner's priority */
+    cmp r5, r3                      /* Compare with our priority */
+    blt ipc_pi_boost                /* Boost if we're higher priority */
+
+    wfe
+    b ipc_pi_acquire_loop
+
+ipc_pi_boost:
+    /* Temporarily boost lock owner's priority */
+    str r5, [r6]                    /* Set owner priority = our priority */
+    dsb sy
+    sev                             /* Wake owner to run at higher priority */
+    wfe
+    b ipc_pi_acquire_loop
+
+ipc_pi_try_acquire:
+    mov r1, #1
+    strex r2, r1, [r4]
+    cmp r2, #0
+    bne ipc_pi_acquire_loop
+
+    dmb sy
+    mov r0, #0
+    pop {r4-r6, pc}
+
+.global ipc_release_with_priority_restore
+ipc_release_with_priority_restore:
+    /* Release IPC lock and restore original priority
+     * r0 = lock address
+     * r1 = original priority
+     * r2 = current priority pointer
+     */
+    dmb sy
+
+    /* Restore original priority */
+    str r1, [r2]
+
+    /* Release lock */
+    mov r1, #0
+    str r1, [r0]
+
+    dsb sy
+    sev                             /* Wake waiting processes */
+    bx lr
+
+/* ========================================================================== */
 /* DATA SECTION - SMP-specific storage                                       */
 /* ========================================================================== */
 
