@@ -5222,27 +5222,30 @@ static Type_Info *TY_INT, *TY_BOOL, *TY_CHAR, *TY_STR, *TY_FLT, *TY_UINT, *TY_UF
 static void symbol_manager_init(Symbol_Manager *symbol_manager)
 {
   memset(symbol_manager, 0, sizeof(*symbol_manager));
-  TY_INT = type_new(TYPE_INTEGER, STRING_LITERAL("INTEGER"));
-  TY_INT->low_bound = -2147483648LL;
-  TY_INT->high_bound = 2147483647LL;
-  TY_NAT = type_new(TYPE_INTEGER, STRING_LITERAL("NATURAL"));
-  TY_NAT->low_bound = 0;
-  TY_NAT->high_bound = 2147483647LL;
-  TY_POS = type_new(TYPE_INTEGER, STRING_LITERAL("POSITIVE"));
-  TY_POS->low_bound = 1;
-  TY_POS->high_bound = 2147483647LL;
-  TY_BOOL = type_new(TYPE_BOOLEAN, STRING_LITERAL("BOOLEAN"));
-  TY_CHAR = type_new(TYPE_CHARACTER, STRING_LITERAL("CHARACTER"));
-  TY_CHAR->size = 1;
-  TY_STR = type_new(TYPE_ARRAY, STRING_LITERAL("STRING"));
-  TY_STR->element_type = TY_CHAR;
-  TY_STR->low_bound = 0;
-  TY_STR->high_bound = -1;
-  TY_STR->index_type = TY_POS;
-  TY_FLT = type_new(TYPE_FLOAT, STRING_LITERAL("FLOAT"));
-  TY_UINT = type_new(TYPE_UNSIGNED_INTEGER, STRING_LITERAL("universal_integer"));
-  TY_UFLT = type_new(TYPE_UNIVERSAL_FLOAT, STRING_LITERAL("universal_real"));
-  TY_FILE = type_new(TYPE_FAT_POINTER, STRING_LITERAL("FILE_TYPE"));
+  // Only create global types once (avoid overwriting on subsequent calls)
+  if (!TY_INT) {
+    TY_INT = type_new(TYPE_INTEGER, STRING_LITERAL("INTEGER"));
+    TY_INT->low_bound = -2147483648LL;
+    TY_INT->high_bound = 2147483647LL;
+    TY_NAT = type_new(TYPE_INTEGER, STRING_LITERAL("NATURAL"));
+    TY_NAT->low_bound = 0;
+    TY_NAT->high_bound = 2147483647LL;
+    TY_POS = type_new(TYPE_INTEGER, STRING_LITERAL("POSITIVE"));
+    TY_POS->low_bound = 1;
+    TY_POS->high_bound = 2147483647LL;
+    TY_BOOL = type_new(TYPE_BOOLEAN, STRING_LITERAL("BOOLEAN"));
+    TY_CHAR = type_new(TYPE_CHARACTER, STRING_LITERAL("CHARACTER"));
+    TY_CHAR->size = 1;
+    TY_STR = type_new(TYPE_ARRAY, STRING_LITERAL("STRING"));
+    TY_STR->element_type = TY_CHAR;
+    TY_STR->low_bound = 0;
+    TY_STR->high_bound = -1;
+    TY_STR->index_type = TY_POS;
+    TY_FLT = type_new(TYPE_FLOAT, STRING_LITERAL("FLOAT"));
+    TY_UINT = type_new(TYPE_UNSIGNED_INTEGER, STRING_LITERAL("universal_integer"));
+    TY_UFLT = type_new(TYPE_UNIVERSAL_FLOAT, STRING_LITERAL("universal_real"));
+    TY_FILE = type_new(TYPE_FAT_POINTER, STRING_LITERAL("FILE_TYPE"));
+  }
   symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("INTEGER"), 1, TY_INT, 0));
   symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("NATURAL"), 1, TY_NAT, 0));
   symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("POSITIVE"), 1, TY_POS, 0));
@@ -10314,7 +10317,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             char fnb[256];
             encode_symbol_name(fnb, 256, s, n->string_value, 0, 0);
             fprintf(
-                o, "  %%t%d = call %s @\"%s\"()\n", r.id, value_llvm_type_string(fn_ret_type), fnb);
+                o, "  %%t%d = call %s @%s()\n", r.id, value_llvm_type_string(fn_ret_type), fnb);
             r.k = fn_ret_type;
           }
           else
@@ -10327,7 +10330,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
               encode_symbol_name(fnb, 256, s, n->string_value, 0, sp);
               fprintf(
                   o,
-                  "  %%t%d = call %s @\"%s\"()\n",
+                  "  %%t%d = call %s @%s()\n",
                   r.id,
                   value_llvm_type_string(fn_ret_type),
                   fnb);
@@ -10355,7 +10358,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             encode_symbol_name(fnb, 256, s, n->string_value, 0, sp);
             fprintf(
                 o,
-                "  %%t%d = call %s @\"%s\"(ptr %%__slnk)\n",
+                "  %%t%d = call %s @%s(ptr %%__slnk)\n",
                 r.id,
                 value_llvm_type_string(rk),
                 fnb);
@@ -10444,14 +10447,14 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             if (s->level >= generator->sm->lv)
               fprintf(
                   o,
-                  "  %%t%d = call %s @\"%s\"(ptr %%__frame)\n",
+                  "  %%t%d = call %s @%s(ptr %%__frame)\n",
                   r.id,
                   value_llvm_type_string(rk),
                   fnb);
             else
               fprintf(
                   o,
-                  "  %%t%d = call %s @\"%s\"(ptr %%__slnk)\n",
+                  "  %%t%d = call %s @%s(ptr %%__slnk)\n",
                   r.id,
                   value_llvm_type_string(rk),
                   fnb);
@@ -11125,7 +11128,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       }
 
       // Now generate the call with the parameter values
-      fprintf(o, "  %%t%d = call %s @\"%s\"(", r.id, value_llvm_type_string(ret_kind), fnb);
+      fprintf(o, "  %%t%d = call %s @%s(", r.id, value_llvm_type_string(ret_kind), fnb);
 
       // Add static link if needed
       bool needs_slnk = func_sym->level >= 0 and func_sym->level < generator->sm->lv;
@@ -11478,7 +11481,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                             : VALUE_KIND_INTEGER;
         char fnb[256];
         encode_symbol_name(fnb, 256, n->symbol, n->selected_component.selector, 0, sp);
-        fprintf(o, "  %%t%d = call %s @\"%s\"()\n", r.id, value_llvm_type_string(rk), fnb);
+        fprintf(o, "  %%t%d = call %s @%s()\n", r.id, value_llvm_type_string(rk), fnb);
         r.k = rk;
       }
     }
@@ -12188,7 +12191,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           }
           char nb[256];
           encode_symbol_name(nb, 256, s, n->call.function_name->string_value, n->call.arguments.count, sp);
-          fprintf(o, "  %%t%d = call %s @\"%s\"(", r.id, value_llvm_type_string(rk), nb);
+          fprintf(o, "  %%t%d = call %s @%s(", r.id, value_llvm_type_string(rk), nb);
           for (uint32_t i = 0; i < n->call.arguments.count; i++)
           {
             if (i)
@@ -13421,7 +13424,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             snprintf(nb, 256, "%.*s", (int) s->external_name.length, s->external_name.string);
           else
             encode_symbol_name(nb, 256, s, n->code_stmt.name->string_value, n->code_stmt.arguments.count, sp);
-          fprintf(o, "  call void @\"%s\"(", nb);
+          fprintf(o, "  call void @%s(", nb);
           for (uint32_t i = 0; i < n->code_stmt.arguments.count; i++)
           {
             if (i)
@@ -13492,7 +13495,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           // Now emit the call
           char nb[256];
           snprintf(nb, 256, "%.*s", (int) s->external_name.length, s->external_name.string);
-          fprintf(o, "  call void @\"%s\"(", nb);
+          fprintf(o, "  call void @%s(", nb);
           for (uint32_t i = 0; i < n->code_stmt.arguments.count and i < 64; i++)
           {
             if (i)
@@ -13573,10 +13576,10 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             Type_Info *rt = resolve_subtype(generator->sm, sp->subprogram.return_type);
             Value_Kind rk = token_kind_to_value_kind(rt);
             int rid = new_temporary_register(generator);
-            fprintf(o, "  %%t%d = call %s @\"%s\"(", rid, value_llvm_type_string(rk), nb);
+            fprintf(o, "  %%t%d = call %s @%s(", rid, value_llvm_type_string(rk), nb);
           }
           else
-            fprintf(o, "  call void @\"%s\"(", nb);
+            fprintf(o, "  call void @%s(", nb);
           for (uint32_t i = 0; i < n->code_stmt.arguments.count; i++)
           {
             if (i)
@@ -14349,7 +14352,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
         }
     if (has_body)
       break;
-    fprintf(o, "declare void @\"%s\"(", nb);
+    fprintf(o, "declare void @%s(", nb);
     for (uint32_t i = 0; i < sp->subprogram.parameters.count; i++)
     {
       if (i)
@@ -14403,7 +14406,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     Type_Info *rtc = rt ? type_canonical_concrete(rt) : 0;
     bool return_unconstrained = rtc and rtc->k == TYPE_ARRAY and rtc->low_bound == 0 and rtc->high_bound == -1;
     Value_Kind rk = return_unconstrained ? VALUE_KIND_POINTER : (rt ? token_kind_to_value_kind(rt) : VALUE_KIND_INTEGER);
-    fprintf(o, "declare %s @\"%s\"(", value_llvm_type_string(rk), nb);
+    fprintf(o, "declare %s @%s(", value_llvm_type_string(rk), nb);
     for (uint32_t i = 0; i < sp->subprogram.parameters.count; i++)
     {
       if (i)
@@ -14481,7 +14484,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
         n->symbol->mangled_name.length = strlen(nb);
       }
     }
-    fprintf(o, "define linkonce_odr void @\"%s\"(", nb);
+    fprintf(o, "define linkonce_odr void @%s(", nb);
     int np = sp->subprogram.parameters.count;
     if (n->symbol and n->symbol->level > 0)
       np++;
@@ -14801,7 +14804,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
         n->symbol->mangled_name.length = strlen(nb);
       }
     }
-    fprintf(o, "define linkonce_odr %s @\"%s\"(", value_llvm_type_string(rk), nb);
+    fprintf(o, "define linkonce_odr %s @%s(", value_llvm_type_string(rk), nb);
     int np = sp->subprogram.parameters.count;
     if (n->symbol and n->symbol->level > 0)
       np++;
@@ -15106,14 +15109,14 @@ static void generate_expression_llvm(Code_Generator *generator, Syntax_Node *n)
       return;
     char nb[256];
     snprintf(nb, 256, "%.*s__elab", (int) n->package_body.name.length, n->package_body.name.string);
-    fprintf(generator->o, "define void @\"%s\"() {\n", nb);
+    fprintf(generator->o, "define void @%s() {\n", nb);
     for (uint32_t i = 0; i < n->package_body.statements.count; i++)
       generate_statement_sequence(generator, n->package_body.statements.data[i]);
     fprintf(generator->o, "  ret void\n}\n");
     fprintf(
         generator->o,
         "@llvm.global_ctors=appending global[1 x {i32,ptr,ptr}][{i32,ptr,ptr}{i32 65535,ptr "
-        "@\"%s\",ptr null}]\n",
+        "@%s,ptr null}]\n",
         nb);
   }
 }
@@ -15138,7 +15141,7 @@ static void generate_runtime_type(Code_Generator *generator)
       "void @llvm.memcpy.p0.p0.i64(ptr,ptr,i64,i1)\ndeclare void @__text_io_put_i64(ptr,i64)\ndeclare "
       "void @__text_io_put_f64(ptr,double)\ndeclare void @__text_io_put(ptr,ptr)\ndeclare void "
       "@__text_io_put_line_i64(ptr,i64)\ndeclare void @__text_io_put_line_f64(ptr,double)\ndeclare "
-      "void @__text_io_put_line(ptr,ptr)\ndeclare void @__text_io_new_line()\n");
+      "void @__text_io_put_line(ptr,ptr)\n");
   fprintf(
       o,
       "define linkonce_odr ptr @__ada_i64str_to_cstr(ptr %%p,i64 %%lo,i64 %%hi){%%ln=sub i64 "
@@ -15247,14 +15250,13 @@ static void generate_runtime_type(Code_Generator *generator)
       o,
       "@.fmt_d=linkonce_odr constant[5 x i8]c\"%%lld\\00\"\n@.fmt_s=linkonce_odr constant[3 x "
       "i8]c\"%%s\\00\"\n@.fmt_f=linkonce_odr constant[3 x i8]c\"%%g\\00\"\n");
-  // TEXT_IO functions are now provided by the runtime library (ada_runtime.c)
-  // Commented out inline definitions to avoid conflicts
-  // fprintf(
-  //     o, "define linkonce_odr void @__text_io_new_line(){call i32 @putchar(i32 10)\nret void}\n");
-  // fprintf(
-  //     o,
-  //     "define linkonce_odr void @__text_io_put_char(i64 %%c){%%1=trunc i64 %%c to i32\ncall i32 "
-  //     "@putchar(i32 %%1)\nret void}\n");
+  // TEXT_IO functions - inline implementations for lli JIT execution
+  fprintf(
+      o, "define linkonce_odr void @__text_io_new_line(){call i32 @putchar(i32 10)\nret void}\n");
+  fprintf(
+      o,
+      "define linkonce_odr void @__text_io_put_char(i64 %%c){%%1=trunc i64 %%c to i32\ncall i32 "
+      "@putchar(i32 %%1)\nret void}\n");
   // fprintf(
   //     o,
   //     "define linkonce_odr void @__text_io_put(ptr %%s){entry:\n%%len=call i64 @strlen(ptr "
@@ -15390,13 +15392,16 @@ static void print_forward_declarations(Code_Generator *generator, Symbol_Manager
             // External symbol - emit declare statement
             char nb[256];
             snprintf(nb, 256, "%.*s", (int) s->external_name.length, s->external_name.string);
+            // Skip runtime header functions to avoid redeclaration
+            if (is_runtime_type(nb))
+              continue;
             if (not add_declaration(generator, nb))
               continue;
             Syntax_Node *sp = n->body.subprogram_spec;
             if (n->k == N_PD)
             {
               // Procedure
-              fprintf(generator->o, "declare void @\"%s\"(", nb);
+              fprintf(generator->o, "declare void @%s(", nb);
               for (uint32_t i = 0; i < sp->subprogram.parameters.count; i++)
               {
                 if (i)
@@ -15416,7 +15421,7 @@ static void print_forward_declarations(Code_Generator *generator, Symbol_Manager
               // Function
               Type_Info *rt = sp->subprogram.return_type ? resolve_subtype(sm, sp->subprogram.return_type) : 0;
               Value_Kind rk = rt ? token_kind_to_value_kind(rt) : VALUE_KIND_INTEGER;
-              fprintf(generator->o, "declare %s @\"%s\"(", value_llvm_type_string(rk), nb);
+              fprintf(generator->o, "declare %s @%s(", value_llvm_type_string(rk), nb);
               for (uint32_t i = 0; i < sp->subprogram.parameters.count; i++)
               {
                 if (i)
@@ -16294,7 +16299,7 @@ int main(int ac, char **av)
       encode_symbol_name(nb, 256, ms, sp->subprogram.name, sp->subprogram.parameters.count, sp);
       fprintf(
           o,
-          "define i32 @main(){\n  call void @__ada_ss_init()\n  call void @\"%s\"()\n  ret "
+          "define i32 @main(){\n  call void @__ada_ss_init()\n  call void @%s()\n  ret "
           "i32 0\n}\n",
           nb);
       break;
