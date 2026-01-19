@@ -1,0 +1,82 @@
+------------------------------------------------------------------------------
+-- GNAT Project for Ada2012 ARM Bare-Metal Microkernel
+------------------------------------------------------------------------------
+
+project Microkernel is
+
+   for Languages use ("Ada", "Asm_Cpp");
+   for Source_Dirs use (".");
+   for Object_Dir use "obj";
+   for Exec_Dir use ".";
+   for Main use ("main.adb");
+   for Target use "arm-eabi";
+   for Runtime ("Ada") use "zfp-cortex-a15";  -- Zero Footprint Profile
+
+   type Build_Type is ("Debug", "Release", "Size");
+   Build : Build_Type := external ("BUILD", "Size");
+
+   Common_Switches := (
+      "-gnatwa",           -- All warnings
+      "-gnatwe",           -- Warnings as errors
+      "-gnat2012",         -- Ada 2012
+      "-gnatg",            -- GNAT implementation mode
+      "-nostdlib",         -- No standard library
+      "-nostartfiles"      -- No startup files
+   );
+
+   Cortex_Switches := (
+      "-mcpu=cortex-a15",
+      "-mfpu=neon-vfpv4",
+      "-mfloat-abi=hard",
+      "-mthumb",           -- Thumb-2 mode
+      "-mthumb-interwork"
+   );
+
+   package Compiler is
+      case Build is
+         when "Debug" =>
+            for Default_Switches ("Ada") use Common_Switches & Cortex_Switches & (
+               "-O0", "-g", "-gnata"
+            );
+
+         when "Release" =>
+            for Default_Switches ("Ada") use Common_Switches & Cortex_Switches & (
+               "-O3",
+               "-gnatn2",        -- Full inlining
+               "-funroll-loops",
+               "-fipa-pta"
+            );
+
+         when "Size" =>
+            for Default_Switches ("Ada") use Common_Switches & Cortex_Switches & (
+               "-Oz",            -- Optimize for size
+               "-gnatn2",        -- Full inlining
+               "-flto",          -- Link-time optimization
+               "-ffunction-sections",
+               "-fdata-sections"
+            );
+      end case;
+
+      for Default_Switches ("Asm_Cpp") use Cortex_Switches & ("-mthumb");
+   end Compiler;
+
+   package Linker is
+      for Default_Switches ("Ada") use (
+         "-T", "kernel_smp.ld",
+         "-Wl,--gc-sections",
+         "-Wl,--print-gc-sections",
+         "-Wl,-Map=kernel_ada2012.map",
+         "-nostdlib",
+         "-flto",
+         "-fuse-linker-plugin"
+      );
+   end Linker;
+
+   package Binder is
+      for Default_Switches ("Ada") use (
+         "-minimal",         -- Minimal binder
+         "-nostdlib"
+      );
+   end Binder;
+
+end Microkernel;
