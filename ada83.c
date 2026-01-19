@@ -8588,6 +8588,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
         Symbol *es = symbol_add_overload(
             symbol_manager, symbol_new(it->k == N_CHAR ? (String_Slice){(const char *) &it->integer_value, 1} : it->string_value, 2, t, n));
         es->value = vl++;
+        es->parent = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk) : 0;
         sv(&t->enum_values, es);
       }
       t->low_bound = 0;
@@ -9143,7 +9144,32 @@ static void read_ada_library_interface(Symbol_Manager *symbol_manager, const cha
     return;
   Source_Location ll = {0, 0, pth};
   String_List_Vector ws = {0}, ds = {0};
-  for (char *l = ali; *l;)
+  Symbol *pkg_sym = 0;
+  char *l = ali;
+  while (*l and *l != '\n') l++;
+  if (*l) l++;
+  if (*l and *l != 'W' and *l != 'X' and *l != 'D')
+  {
+    char *space = l;
+    while (*space and *space != ' ' and *space != '\n') space++;
+    if (*space == ' ')
+    {
+      space++;
+      char *end = space;
+      while (*end and *end != '\n') end++;
+      String_Slice pkg_name = {space, end - space};
+      pkg_sym = symbol_find(symbol_manager, pkg_name);
+      if (not pkg_sym)
+      {
+        Type_Info *t = type_new(TY_P, pkg_name);
+        pkg_sym = symbol_add_overload(symbol_manager, symbol_new(pkg_name, 6, t, 0));
+        pkg_sym->level = 0;
+      }
+    }
+    while (*l and *l != '\n') l++;
+    if (*l) l++;
+  }
+  for (; *l;)
   {
     if (*l == 'W' and l[1] == ' ')
     {
@@ -9222,6 +9248,7 @@ static void read_ada_library_interface(Symbol_Manager *symbol_manager, const cha
         Symbol *s = symbol_add_overload(symbol_manager, symbol_new(sn, 0, vt, n));
         s->is_external = 1;
         s->level = 0;
+        s->parent = pkg_sym;
         s->external_name = string_duplicate(msn);
         s->mangled_name = string_duplicate(sn);
         n->symbol = s;
@@ -9240,6 +9267,7 @@ static void read_ada_library_interface(Symbol_Manager *symbol_manager, const cha
         n->body.subprogram_spec = sp;
         Symbol *s = symbol_add_overload(symbol_manager, symbol_new(msn, isp ? 4 : 5, type_new(TYPE_STRING, msn), n));
         s->elaboration_level = symbol_manager->eo++;
+        s->parent = pkg_sym;
         nv(&s->overloads, n);
         n->symbol = s;
         s->mangled_name = string_duplicate(sn);
@@ -9362,6 +9390,16 @@ static void symbol_manager_use_clauses(Symbol_Manager *symbol_manager, Syntax_No
             d->symbol->visibility |= 2;
             sv(&symbol_manager->uv, d->symbol);
           }
+      else if (ps and ps->k == 6)
+      {
+        for (int h = 0; h < 4096; h++)
+          for (Symbol *s = symbol_manager->sy[h]; s; s = s->next)
+            if (s->parent == ps and s->level == 0)
+            {
+              s->visibility |= 2;
+              sv(&symbol_manager->uv, s);
+            }
+      }
         }
       }
     }
