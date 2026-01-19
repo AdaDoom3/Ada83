@@ -377,11 +377,24 @@ static uint64_t string_hash(String_Slice s)
     h = (h ^ (uint8_t) tolower(s.string[i])) * 1099511628211ULL;
   return h;
 }
-static _Noreturn void fatal_error(Source_Location l, const char *f, ...)
+// Non-fatal error reporting - accumulates errors instead of exiting
+static void report_error(Source_Location l, const char *f, ...)
 {
   va_list v;
   va_start(v, f);
   fprintf(stderr, "%s:%u:%u: ", l.filename, l.line, l.column);
+  vfprintf(stderr, f, v);
+  fputc('\n', stderr);
+  va_end(v);
+  error_count++;
+}
+
+// Fatal error - use only for internal compiler errors, not source errors
+static _Noreturn void fatal_error(Source_Location l, const char *f, ...)
+{
+  va_list v;
+  va_start(v, f);
+  fprintf(stderr, "%s:%u:%u: INTERNAL ERROR: ", l.filename, l.line, l.column);
   vfprintf(stderr, f, v);
   fputc('\n', stderr);
   va_end(v);
@@ -1698,6 +1711,7 @@ typedef struct
   Lexer lexer;
   Token current_token, peek_token;
   int error_count;
+  int panic_mode;  // Flag to suppress cascading errors
   String_List_Vector label_stack;
 } Parser;
 static void parser_next(Parser *parser)
@@ -1728,10 +1742,95 @@ static bool parser_match(Parser *parser, Token_Kind token_kind)
   }
   return 0;
 }
+
+// Check if parser is making progress; return non-zero if stuck or should stop
+// Returns: 0 = making progress, 1 = stuck but recovered, 2 = stop parsing
+static int parser_check_progress(Parser *parser, Token_Kind *last_token, int *stuck_count)
+{
+  if (parser->error_count >= 100 || parser_at(parser, T_EOF))
+    return 2; // Stop parsing - too many errors or EOF
+
+  if (parser->current_token.kind == *last_token)
+  {
+    (*stuck_count)++;
+    if (*stuck_count > 3)
+    {
+      report_error(parser->current_token.location,
+                  "unexpected token '%s' - skipping",
+                  TN[parser->current_token.kind]);
+      parser->error_count++;
+      parser_next(parser);
+      *stuck_count = 0;
+      return 1; // Stuck, but recovered
+    }
+  }
+  else
+  {
+    *stuck_count = 0;
+    *last_token = parser->current_token.kind;
+  }
+  return 0; // Making progress
+}
+
+// Error recovery: skip to synchronization token
+static void parser_synchronize(Parser *parser)
+{
+  // Skip tokens until we find a likely recovery point
+  while (not parser_at(parser, T_EOF))
+  {
+    // Synchronization points: tokens that typically start new constructs
+    Token_Kind tk = parser->current_token.kind;
+    if (tk == T_SC || tk == T_END || tk == T_BEG || tk == T_IS ||
+        tk == T_THEN || tk == T_ELSE || tk == T_ELSIF || tk == T_LOOP ||
+        tk == T_WHN || tk == T_EXCP || tk == T_PRV ||
+        tk == T_PKG || tk == T_PROC || tk == T_FUN || tk == T_TSK ||
+        tk == T_TYP || tk == T_SUB || tk == T_WITH || tk == T_USE ||
+        tk == T_CONST || tk == T_DEC)
+    {
+      // Found synchronization point - if it's a semicolon, consume it
+      if (tk == T_SC)
+        parser_next(parser);
+      return;
+    }
+    parser_next(parser);
+  }
+}
+
 static void parser_expect(Parser *parser, Token_Kind token_kind)
 {
   if (not parser_match(parser, token_kind))
-    fatal_error(parser->current_token.location, "exp '%s' got '%s'", TN[token_kind], TN[parser->current_token.kind]);
+  {
+    // Stop reporting errors if we're at EOF or have too many errors
+    if (parser_at(parser, T_EOF) || parser->error_count >= 100)
+      return;
+
+    report_error(parser->current_token.location, "expected '%s' but got '%s'",
+                 TN[token_kind], TN[parser->current_token.kind]);
+    parser->error_count++;
+
+    // For missing semicolons or closing delimiters, just assume they're there and continue
+    // This prevents cascading errors from a single missing delimiter
+    if (token_kind == T_SC || token_kind == T_RP || token_kind == T_RB ||
+        token_kind == T_THEN || token_kind == T_LOOP || token_kind == T_IS)
+    {
+      // Don't consume or synchronize - just pretend the token was there
+      return;
+    }
+
+    // For identifiers and other major tokens, we need to skip the current bad token
+    // to avoid infinite loops, but only if we're not at EOF
+    if (token_kind == T_ID && not parser_at(parser, T_EOF))
+    {
+      // Skip the unexpected token and continue
+      parser_next(parser);
+      return;
+    }
+
+    // For other tokens, synchronize to a safe recovery point
+    // Don't try to synchronize if we're at EOF - just stop
+    if (not parser_at(parser, T_EOF))
+      parser_synchronize(parser);
+  }
 }
 static Source_Location parser_location(Parser *parser)
 {
@@ -1864,7 +1963,11 @@ static String_Slice parser_attribute(Parser *parser)
     parser_next(parser);
   }
   else
-    fatal_error(parser_location(parser), "exp attr");
+  {
+    report_error(parser_location(parser), "expected attribute name");
+    parser->error_count++;
+    s = STRING_LITERAL("");
+  }
   return s;
 }
 static Syntax_Node *parse_name(Parser *parser);
@@ -1922,7 +2025,13 @@ static Syntax_Node *parse_primary(Parser *parser)
         if (choices.count == 1)
           nv(&aggregate_vector, choices.data[0]);
         else
-          fatal_error(location, "exp '=>'");
+        {
+          report_error(location, "expected '=>' in aggregate");
+          parser->error_count++;
+          // Add first choice as positional, skip rest
+          if (choices.count > 0)
+            nv(&aggregate_vector, choices.data[0]);
+        }
       }
     } while (parser_match(parser, T_CM));
     parser_expect(parser, T_RP);
@@ -2018,7 +2127,12 @@ static Syntax_Node *parse_primary(Parser *parser)
               if (choices.count == 1)
                 nv(&aggregate_vector, choices.data[0]);
               else
-                fatal_error(location, "exp '=>'");
+              {
+                report_error(location, "expected '=>' in parameter association");
+                parser->error_count++;
+                if (choices.count > 0)
+                  nv(&aggregate_vector, choices.data[0]);
+              }
             }
           }
         } while (parser_match(parser, T_CM));
@@ -2055,7 +2169,10 @@ static Syntax_Node *parse_primary(Parser *parser)
     node->dereference.expression = parse_primary(parser);
     return node;
   }
-  fatal_error(location, "exp expr");
+  report_error(location, "expected expression");
+  parser->error_count++;
+  Syntax_Node *err = ND(ERR, location);
+  return err;
 }
 static Syntax_Node *parse_name(Parser *parser)
 {
@@ -2126,7 +2243,12 @@ static Syntax_Node *parse_name(Parser *parser)
             if (ch.count == 1)
               nv(&v, ch.data[0]);
             else
-              fatal_error(location, "exp '=>'");
+            {
+              report_error(location, "expected '=>' in aggregate");
+              parser->error_count++;
+              if (ch.count > 0)
+                nv(&v, ch.data[0]);
+            }
           }
         } while (parser_match(parser, T_CM));
         parser_expect(parser, T_RP);
@@ -2203,7 +2325,12 @@ static Syntax_Node *parse_name(Parser *parser)
               if (ch.count == 1)
                 nv(&v, ch.data[0]);
               else
-                fatal_error(location, "exp '=>'");
+              {
+                report_error(location, "expected '=>' in parameter association");
+                parser->error_count++;
+                if (ch.count > 0)
+                  nv(&v, ch.data[0]);
+              }
             }
           }
         } while (parser_match(parser, T_CM));
@@ -3234,9 +3361,17 @@ static Syntax_Node *parse_statement_or_label(Parser *parser)
 static Node_Vector parse_statement(Parser *parser)
 {
   Node_Vector statements = {0};
+  Token_Kind last_token = T_EOF;
+  int stuck_count = 0;
+
   while (not parser_at(parser, T_END) and not parser_at(parser, T_EXCP) and not parser_at(parser, T_ELSIF)
          and not parser_at(parser, T_ELSE) and not parser_at(parser, T_WHN) and not parser_at(parser, T_OR))
+  {
+    int progress = parser_check_progress(parser, &last_token, &stuck_count);
+    if (progress == 2) break;
+    if (progress == 1) continue;
     nv(&statements, parse_statement_or_label(parser));
+  }
   return statements;
 }
 static Node_Vector parse_handle_declaration(Parser *parser)
@@ -3258,8 +3393,16 @@ static Node_Vector parse_handle_declaration(Parser *parser)
         nv(&handler->exception_handler.exception_choices, parse_name(parser));
     } while (parser_match(parser, T_BR));
     parser_expect(parser, T_AR);
+
+    Token_Kind last_token = T_EOF;
+    int stuck_count = 0;
     while (not parser_at(parser, T_WHN) and not parser_at(parser, T_END))
+    {
+      int progress = parser_check_progress(parser, &last_token, &stuck_count);
+      if (progress == 2) break;
+      if (progress == 1) continue;
       nv(&handler->exception_handler.statements, parse_statement_or_label(parser));
+    }
     nv(&handlers, handler);
   }
   return handlers;
@@ -3316,15 +3459,24 @@ static Syntax_Node *parse_type_definition(Parser *parser)
   if (parser_match(parser, T_DIG))
   {
     Syntax_Node *node = ND(TF, location);
+    Syntax_Node *digits_expr = 0;
     if (parser_match(parser, T_BX))
-      node->unary_node.operand = 0;
+      digits_expr = 0;
     else
-      node->unary_node.operand = parse_expression(parser);
+      digits_expr = parse_expression(parser);
+
+    // Store digits expression in list
+    if (digits_expr)
+      nv(&node->list.items, digits_expr);
+
+    // Store optional range constraint
     if (parser_match(parser, T_RNG))
     {
-      node->range.low_bound = parse_signed_term(parser);
+      Syntax_Node *rn = ND(RN, location);
+      rn->range.low_bound = parse_signed_term(parser);
       parser_expect(parser, T_DD);
-      node->range.high_bound = parse_signed_term(parser);
+      rn->range.high_bound = parse_signed_term(parser);
+      nv(&node->list.items, rn);
     }
     return node;
   }
@@ -4244,9 +4396,19 @@ static Syntax_Node *parse_declaration(Parser *parser)
 static Node_Vector parse_declarative_part(Parser *parser)
 {
   Node_Vector declarations = {0};
+  Token_Kind last_token = T_EOF;
+  int stuck_count = 0;
+
   while (not parser_at(parser, T_BEG) and not parser_at(parser, T_END) and not parser_at(parser, T_PRV)
          and not parser_at(parser, T_EOF) and not parser_at(parser, T_ENT))
   {
+    // Check if we're stuck in an infinite loop
+    int progress = parser_check_progress(parser, &last_token, &stuck_count);
+    if (progress == 2) // Stop parsing
+      break;
+    if (progress == 1) // Recovered from stuck state
+      continue;
+
     if (parser_at(parser, T_FOR))
     {
       Representation_Clause *r = parse_representation_clause(parser);
@@ -4386,7 +4548,7 @@ static Syntax_Node *parse_compilation_unit(Parser *parser)
 }
 static Parser parser_new(const char *source, size_t size, const char *filename)
 {
-  Parser parser = {lexer_new(source, size, filename), {0}, {0}, 0, {0}};
+  Parser parser = {lexer_new(source, size, filename), {0}, {0}, 0, 0, {0}};
   parser_next(&parser);
   parser_next(&parser);
   return parser;
@@ -5586,11 +5748,23 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
   if (node->k == N_TF)
   {
     Type_Info *t = type_new(TYPE_FLOAT, N);
-    if (node->unary_node.operand)
+    // Digits expression is first item in list
+    if (node->list.items.count > 0 && node->list.items.data[0])
     {
-      resolve_expression(symbol_manager, node->unary_node.operand, 0);
-      if (node->unary_node.operand->k == N_INT)
-        t->small_value = node->unary_node.operand->integer_value;
+      resolve_expression(symbol_manager, node->list.items.data[0], 0);
+      if (node->list.items.data[0]->k == N_INT)
+        t->small_value = node->list.items.data[0]->integer_value;
+    }
+    // Optional range constraint is second item
+    if (node->list.items.count > 1 && node->list.items.data[1])
+    {
+      Syntax_Node *rn = node->list.items.data[1];
+      if (rn->k == N_RN)
+      {
+        resolve_expression(symbol_manager, rn->range.low_bound, 0);
+        resolve_expression(symbol_manager, rn->range.high_bound, 0);
+        // Store range in type info if needed
+      }
     }
     return t;
   }
