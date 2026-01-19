@@ -649,6 +649,28 @@ static Token scan_identifier(Lexer *lexer)
     advance_character(lexer);
   String_Slice literal_text = {start, lexer->current - start};
   Token_Kind token_kind = keyword_lookup(literal_text);
+
+  /* Ada requires whitespace between keywords and identifiers (RM 2.2).
+   * Only flag clear keyword+identifier concatenations where the keyword
+   * forms a complete meaningful unit (e.g., "IFK"=IF+K, "ENDLOOP"=END+LOOP).
+   * Don't flag identifiers that merely contain keyword letters (e.g., "INTEGER" contains "IN"). */
+  if (token_kind == T_ID and literal_text.length >= 3 and literal_text.length <= 8)
+  {
+    /* Check only 2-3 letter keyword prefixes that are complete keywords */
+    for (uint32_t len = 2; len <= 3 and len < literal_text.length; len++)
+    {
+      String_Slice prefix = {literal_text.string, len};
+      Token_Kind prefix_kind = keyword_lookup(prefix);
+      if (prefix_kind != T_ID)
+      {
+        /* Only flag if suffix is short (1-3 chars) and starts with letter */
+        uint32_t suffix_len = literal_text.length - len;
+        if (suffix_len <= 3 and (isalpha(literal_text.string[len]) or literal_text.string[len] == '_'))
+          return make_token(T_ERR, location, STRING_LITERAL("kw+x"));
+      }
+    }
+  }
+
   return make_token(token_kind, location, literal_text);
 }
 static Token scan_number_literal(Lexer *lexer)
@@ -14995,7 +15017,7 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
     generate_expression_llvm(&g, sm.ib.data[i]);
   emit_all_metadata(&g);
   fclose(o);
-  Library_Unit *l = label_use_new(cu->compilation_unit.units.count > 0 ? cu->compilation_unit.units.data[0]->k : 0, nm, pth);
+  Library_Unit *l = label_use_new(cu->compilation_unit.units.count > 0 ? cu->compilation_unit.units.data[0]->kind : 0, nm, pth);
   l->is_compiled = true;
   l->timestamp = find_type_symbol(fp);
   lv(&symbol_manager->lu, l);
