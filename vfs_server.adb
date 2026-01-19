@@ -1,11 +1,12 @@
 ------------------------------------------------------------------------------
--- Virtual File System (VFS) Server - MINIX Style
--- Handles: open, close, read, write, stat
+-- Virtual File System (VFS) Server - MINIX Style with FAT32 Support
+-- Handles: open, close, read, write, stat, FAT32 mounting
 ------------------------------------------------------------------------------
 
 with System;
 with System.Machine_Code; use System.Machine_Code;
 with Interfaces; use Interfaces;
+with FAT32;
 
 procedure VFS_Server is
 
@@ -30,6 +31,10 @@ procedure VFS_Server is
 
    Inode_Table : array (Inode_Number) of Inode;
    File_Table  : array (File_Descriptor) of Open_File;
+
+   -- FAT32 filesystem state
+   Main_FS : FAT32.FAT32_FS;
+   LF : constant Character := Character'Val (10);
 
    ----------------------------------------------------------------------------
    -- UART Output
@@ -162,6 +167,28 @@ begin
    File_Table (2).Inode_Num := 2;
 
    Put_String ("[VFS] Standard FDs created (0=stdin, 1=stdout, 2=stderr)" & ASCII.LF);
+   Put_String (ASCII.LF);
+
+   -- Mount FAT32 filesystem
+   Put_String ("╔══════════════════════════════════════════════════╗" & ASCII.LF);
+   Put_String ("║   Mounting FAT32 Filesystem                      ║" & ASCII.LF);
+   Put_String ("╚══════════════════════════════════════════════════╝" & ASCII.LF);
+   Put_String (ASCII.LF);
+
+   FAT32.Mount_FAT32 (Main_FS, 0);  -- Device 0
+
+   if Main_FS.Mounted then
+      Put_String (ASCII.LF);
+      Put_String ("╔══════════════════════════════════════════════════╗" & ASCII.LF);
+      Put_String ("║   Listing Root Directory                         ║" & ASCII.LF);
+      Put_String ("╚══════════════════════════════════════════════════╝" & ASCII.LF);
+      Put_String (ASCII.LF);
+
+      -- List root directory
+      FAT32.Read_Directory (Main_FS, Main_FS.Root_Cluster);
+   end if;
+
+   Put_String (ASCII.LF);
    Put_String ("[VFS] Entering main loop..." & ASCII.LF & ASCII.LF);
 
    -- Main server loop

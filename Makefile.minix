@@ -20,8 +20,9 @@ all: microkernel servers init
 	@echo "Components built:"
 	@echo "  ✓ Microkernel (SMP with priority IPC)"
 	@echo "  ✓ System call interface"
+	@echo "  ✓ FAT32 filesystem driver"
 	@echo "  ✓ Process Manager (PM) server"
-	@echo "  ✓ Virtual File System (VFS) server"
+	@echo "  ✓ Virtual File System (VFS) server with FAT32"
 	@echo "  ✓ Init process (PID 1)"
 	@echo ""
 
@@ -29,9 +30,11 @@ all: microkernel servers init
 # MICROKERNEL
 # ============================================================================
 
-microkernel: microkernel.adb microkernel.ads syscalls.ads syscalls.adb
-	@echo "[BUILD] Microkernel with syscall support..."
+microkernel: microkernel.adb microkernel.ads syscalls.ads syscalls.adb fat32.ads fat32.adb
+	@echo "[BUILD] Microkernel with syscall support and FAT32..."
 	@if which gnatmake > /dev/null 2>&1; then \
+		echo "[GNAT] Checking FAT32 driver syntax..."; \
+		gnatmake -c -gnatc fat32.adb -gnat2012 || true; \
 		echo "[GNAT] Checking microkernel syntax..."; \
 		gnatmake -c -gnatc microkernel.adb -gnat2012 || true; \
 	else \
@@ -52,8 +55,8 @@ pm_server: pm_server.adb syscalls.ads
 		echo "[INFO] GNAT not available - skipping"; \
 	fi
 
-vfs_server: vfs_server.adb
-	@echo "[BUILD] Virtual File System (VFS) server..."
+vfs_server: vfs_server.adb fat32.ads fat32.adb
+	@echo "[BUILD] Virtual File System (VFS) server with FAT32..."
 	@if which gnatmake > /dev/null 2>&1; then \
 		gnatmake -c -gnatc vfs_server.adb -gnat2012 || true; \
 	else \
@@ -83,7 +86,7 @@ test:
 	@echo ""
 	@echo "Testing syntax of all Ada files..."
 	@echo ""
-	@for file in microkernel.adb syscalls.adb pm_server.adb vfs_server.adb init.adb; do \
+	@for file in fat32.adb microkernel.adb syscalls.adb pm_server.adb vfs_server.adb init.adb; do \
 		echo "  [TEST] $$file"; \
 		if which gnatmake > /dev/null 2>&1; then \
 			gnatmake -c -gnatc $$file -gnat2012 2>&1 | grep -E '(error|warning)' || echo "    ✓ OK"; \
@@ -109,10 +112,15 @@ info:
 	@echo "║    syscalls.adb        - System call implementation          ║"
 	@echo "║    syscalls.ads        - Syscall interface                   ║"
 	@echo "║                                                              ║"
+	@echo "║  FILESYSTEM                                                  ║"
+	@echo "║  ━━━━━━━━━━                                                  ║"
+	@echo "║    fat32.adb           - FAT32 filesystem driver             ║"
+	@echo "║    fat32.ads           - FAT32 specification                 ║"
+	@echo "║                                                              ║"
 	@echo "║  SERVERS (User Space)                                        ║"
 	@echo "║  ━━━━━━━━━━━━━━━━━━━━                                        ║"
 	@echo "║    pm_server.adb       - Process Manager                     ║"
-	@echo "║    vfs_server.adb      - Virtual File System                 ║"
+	@echo "║    vfs_server.adb      - VFS with FAT32 support              ║"
 	@echo "║                                                              ║"
 	@echo "║  INIT & SHELL                                                ║"
 	@echo "║  ━━━━━━━━━━━━━                                                ║"
@@ -126,7 +134,8 @@ info:
 	@echo "║    ✓ Thumb-2 inline assembly                                 ║"
 	@echo "║    ✓ NEON vector operations                                  ║"
 	@echo "║    ✓ Process management (fork/exec/exit/wait)                ║"
-	@echo "║    ✓ Virtual file system                                     ║"
+	@echo "║    ✓ FAT32 filesystem with NEON-optimized I/O                ║"
+	@echo "║    ✓ Virtual file system with FAT32 support                  ║"
 	@echo "║    ✓ System calls via SVC instruction                        ║"
 	@echo "║    ✓ MINIX-style architecture                                ║"
 	@echo "║                                                              ║"
@@ -135,8 +144,8 @@ info:
 	@echo "║  CODE STATISTICS                                             ║"
 	@echo "║  ━━━━━━━━━━━━━━━                                             ║"
 	@echo "║                                                              ║"
-	@wc -l microkernel.adb syscalls.adb pm_server.adb vfs_server.adb init.adb 2>/dev/null | \
-		tail -6 | awk '{printf "║    %-30s %6s lines            ║\n", $$2, $$1}' || true
+	@wc -l fat32.adb microkernel.adb syscalls.adb pm_server.adb vfs_server.adb init.adb 2>/dev/null | \
+		tail -7 | awk '{printf "║    %-30s %6s lines            ║\n", $$2, $$1}' || true
 	@echo "║                                                              ║"
 	@echo "╠══════════════════════════════════════════════════════════════╣"
 	@echo "║                                                              ║"
