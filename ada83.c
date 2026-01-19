@@ -6702,6 +6702,18 @@ static void validate_statement(Syntax_Node *node)
         validate_expression(node->exit_stmt.condition);
       break;
 
+    case N_ACC:  // Accept statement
+      if (node->accept_stmt.guard)
+        validate_expression(node->accept_stmt.guard);
+      validate_statement_list(&node->accept_stmt.statements);
+      if (node->accept_stmt.handlers.count > 0) {
+        for (uint32_t i = 0; i < node->accept_stmt.handlers.count; i++) {
+          Syntax_Node *handler = node->accept_stmt.handlers.data[i];
+          validate_statement_list(&handler->exception_handler.statements);
+        }
+      }
+      break;
+
     default:
       break;
   }
@@ -6739,14 +6751,20 @@ static void validate_compilation_unit(Syntax_Node *cu)
             Syntax_Node *decl = unit->package_body.declarations.data[j];
             if (decl->k == N_PB || decl->k == N_FB)
               validate_statement_list(&decl->body.statements);
+            else if (decl->k == N_TKB)
+              validate_statement_list(&decl->task_body.statements);
           }
         }
         if (unit->package_body.statements.count > 0)
           validate_statement_list(&unit->package_body.statements);
         break;
 
+      case N_TKB:  // Task body at top level
+        validate_statement_list(&unit->task_body.statements);
+        break;
+
       default:
-        break;  // Package specs have no executable code
+        break;  // Package specs, task specs have no executable code
     }
   }
 }
