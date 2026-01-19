@@ -28,6 +28,16 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+// Safe ctype wrappers - ctype functions require unsigned char or EOF to avoid UB
+#define ISALPHA(c) isalpha((unsigned char)(c))
+#define ISALNUM(c) isalnum((unsigned char)(c))
+#define ISDIGIT(c) isdigit((unsigned char)(c))
+#define ISXDIGIT(c) isxdigit((unsigned char)(c))
+#define ISSPACE(c) isspace((unsigned char)(c))
+#define TOLOWER(c) ((char)tolower((unsigned char)(c)))
+#define TOUPPER(c) ((char)toupper((unsigned char)(c)))
+
 static const char *include_paths[32];
 static int include_path_count = 0;
 typedef struct
@@ -317,7 +327,7 @@ static bool string_equal_ignore_case(String_Slice a, String_Slice b)
   if (a.length != b.length)
     return 0;
   for (uint32_t i = 0; i < a.length; i++)
-    if (tolower(a.string[i]) != tolower(b.string[i]))
+    if (TOLOWER(a.string[i]) != TOLOWER(b.string[i]))
       return 0;
   return 1;
 }
@@ -328,7 +338,7 @@ static char *string_to_lowercase(String_Slice s)
   char *p = b[i++ & 7];
   uint32_t n = s.length < 255 ? s.length : 255;
   for (uint32_t j = 0; j < n; j++)
-    p[j] = tolower(s.string[j]);
+    p[j] = TOLOWER(s.string[j]);
   p[n] = 0;
   return p;
 }
@@ -336,7 +346,7 @@ static uint64_t string_hash(String_Slice s)
 {
   uint64_t h = 14695981039346656037ULL;
   for (uint32_t i = 0; i < s.length; i++)
-    h = (h ^ (uint8_t) tolower(s.string[i])) * 1099511628211ULL;
+    h = (h ^ (uint8_t) TOLOWER(s.string[i])) * 1099511628211ULL;
   return h;
 }
 // Levenshtein distance for "did you mean" suggestions
@@ -349,7 +359,7 @@ static int edit_distance(const char *s1, int len1, const char *s2, int len2)
   for (int i = 1; i <= len1; i++)
     for (int j = 1; j <= len2; j++)
     {
-      int cost = (tolower(s1[i-1]) != tolower(s2[j-1]));
+      int cost = (TOLOWER(s1[i-1]) != TOLOWER(s2[j-1]));
       int del = d[i-1][j] + 1;
       int ins = d[i][j-1] + 1;
       int sub = d[i-1][j-1] + cost;
@@ -633,11 +643,11 @@ static Token scan_identifier(Lexer *lexer)
 {
   Source_Location location = {lexer->line_number, lexer->column, lexer->filename};
   const char *start = lexer->current;
-  while (isalnum(peek(lexer, 0)) or peek(lexer, 0) == '_')
+  while (ISALNUM(peek(lexer, 0)) or peek(lexer, 0) == '_')
     advance_character(lexer);
   String_Slice literal_text = {start, lexer->current - start};
   Token_Kind token_kind = keyword_lookup(literal_text);
-  if (token_kind != T_ID and lexer->current < lexer->end and (isalnum(*lexer->current) or *lexer->current == '_'))
+  if (token_kind != T_ID and lexer->current < lexer->end and (ISALNUM(*lexer->current) or *lexer->current == '_'))
     return make_token(T_ERR, location, STRING_LITERAL("kw+x"));
   return make_token(token_kind, location, literal_text);
 }
@@ -649,9 +659,9 @@ static Token scan_number_literal(Lexer *lexer)
   int base = 10;
   bool is_real = false, based_exponent = false, has_dot = false, has_exp = false;
   char base_delimiter = 0;
-  while (isdigit(peek(lexer, 0)) or peek(lexer, 0) == '_')
+  while (ISDIGIT(peek(lexer, 0)) or peek(lexer, 0) == '_')
     advance_character(lexer);
-  if (peek(lexer, 0) == '#' or (peek(lexer, 0) == ':' and isxdigit(peek(lexer, 1))))
+  if (peek(lexer, 0) == '#' or (peek(lexer, 0) == ':' and ISXDIGIT(peek(lexer, 1))))
   {
     base_delimiter = peek(lexer, 0);
     const char *base_end = lexer->current;
@@ -664,13 +674,13 @@ static Token scan_number_literal(Lexer *lexer)
     base_pointer[base_index] = 0;
     base = atoi(base_pointer);
     mantissa_start = lexer->current;
-    while (isxdigit(peek(lexer, 0)) or peek(lexer, 0) == '_')
+    while (ISXDIGIT(peek(lexer, 0)) or peek(lexer, 0) == '_')
       advance_character(lexer);
     if (peek(lexer, 0) == '.')
     {
       is_real = true;
       advance_character(lexer);
-      while (isxdigit(peek(lexer, 0)) or peek(lexer, 0) == '_')
+      while (ISXDIGIT(peek(lexer, 0)) or peek(lexer, 0) == '_')
         advance_character(lexer);
     }
     if (peek(lexer, 0) == base_delimiter)
@@ -678,14 +688,14 @@ static Token scan_number_literal(Lexer *lexer)
       mantissa_end = lexer->current;
       advance_character(lexer);
     }
-    if (tolower(peek(lexer, 0)) == 'e')
+    if (TOLOWER(peek(lexer, 0)) == 'e')
     {
       based_exponent = true;
       advance_character(lexer);
       if (peek(lexer, 0) == '+' or peek(lexer, 0) == '-')
         advance_character(lexer);
       exponent_start = lexer->current;
-      while (isdigit(peek(lexer, 0)) or peek(lexer, 0) == '_')
+      while (ISDIGIT(peek(lexer, 0)) or peek(lexer, 0) == '_')
         advance_character(lexer);
     }
   }
@@ -693,26 +703,26 @@ static Token scan_number_literal(Lexer *lexer)
   {
     if (peek(lexer, 0) == '.')
     {
-      if (peek(lexer, 1) != '.' and not isalpha(peek(lexer, 1)))
+      if (peek(lexer, 1) != '.' and not ISALPHA(peek(lexer, 1)))
       {
         is_real = true;
         has_dot = true;
         advance_character(lexer);
-        while (isdigit(peek(lexer, 0)) or peek(lexer, 0) == '_')
+        while (ISDIGIT(peek(lexer, 0)) or peek(lexer, 0) == '_')
           advance_character(lexer);
       }
     }
-    if (tolower(peek(lexer, 0)) == 'e')
+    if (TOLOWER(peek(lexer, 0)) == 'e')
     {
       has_exp = true;
       advance_character(lexer);
       if (peek(lexer, 0) == '+' or peek(lexer, 0) == '-')
         advance_character(lexer);
-      while (isdigit(peek(lexer, 0)) or peek(lexer, 0) == '_')
+      while (ISDIGIT(peek(lexer, 0)) or peek(lexer, 0) == '_')
         advance_character(lexer);
     }
   }
-  if (isalpha(peek(lexer, 0)))
+  if (ISALPHA(peek(lexer, 0)))
     return make_token(T_ERR, location, STRING_LITERAL("num+alpha"));
   Token token =
       make_token(based_exponent ? (is_real ? T_REAL : T_INT) : (is_real ? T_REAL : T_INT), location, (String_Slice){start, lexer->current - start});
@@ -866,8 +876,11 @@ static Token scan_character_literal(Lexer *lexer)
   if (peek(lexer, 0) != '\'')
     return make_token(T_ERR, location, STRING_LITERAL("uc"));
   advance_character(lexer);
-  Token token = make_token(T_CHAR, location, (String_Slice){&character, 1});
-  token.integer_value = character;
+  // Allocate from arena to avoid dangling pointer to stack variable
+  char *ch = arena_allocate(1);
+  *ch = character;
+  Token token = make_token(T_CHAR, location, (String_Slice){ch, 1});
+  token.integer_value = (unsigned char) character;
   return token;
 }
 static Token scan_string_literal(Lexer *lexer)
@@ -875,9 +888,9 @@ static Token scan_string_literal(Lexer *lexer)
   Source_Location location = {lexer->line_number, lexer->column, lexer->filename};
   char delimiter = peek(lexer, 0);
   advance_character(lexer);
-  const char *start = lexer->current;
-  (void) start;
-  char *buffer = arena_allocate(256), *buffer_pointer = buffer;
+  // Dynamic buffer: start with 256, grow as needed
+  int capacity = 256;
+  char *buffer = arena_allocate(capacity);
   int length = 0;
   while (peek(lexer, 0))
   {
@@ -887,18 +900,28 @@ static Token scan_string_literal(Lexer *lexer)
       {
         advance_character(lexer);
         advance_character(lexer);
-        if (length < 255)
-          *buffer_pointer++ = delimiter;
-        length++;
+        if (length >= capacity - 1)
+        {
+          char *nb = arena_allocate(capacity * 2);
+          memcpy(nb, buffer, length);
+          buffer = nb;
+          capacity *= 2;
+        }
+        buffer[length++] = delimiter;
       }
       else
         break;
     }
     else
     {
-      if (length < 255)
-        *buffer_pointer++ = peek(lexer, 0);
-      length++;
+      if (length >= capacity - 1)
+      {
+        char *nb = arena_allocate(capacity * 2);
+        memcpy(nb, buffer, length);
+        buffer = nb;
+        capacity *= 2;
+      }
+      buffer[length++] = peek(lexer, 0);
       advance_character(lexer);
     }
   }
@@ -906,7 +929,7 @@ static Token scan_string_literal(Lexer *lexer)
     advance_character(lexer);
   else
     return make_token(T_ERR, location, STRING_LITERAL("us"));
-  *buffer_pointer = 0;
+  buffer[length] = 0;
   String_Slice literal_text = {buffer, length};
   return make_token(T_STR, location, literal_text);
 }
@@ -922,13 +945,13 @@ static Token lexer_next_token(Lexer *lexer)
     lexer->previous_token = T_EOF;
     return make_token(T_EOF, location, N);
   }
-  if (isalpha(character))
+  if (ISALPHA(character))
   {
     Token token = scan_identifier(lexer);
     lexer->previous_token = token.kind;
     return token;
   }
-  if (isdigit(character))
+  if (ISDIGIT(character))
   {
     Token token = scan_number_literal(lexer);
     lexer->previous_token = token.kind;
@@ -938,7 +961,7 @@ static Token lexer_next_token(Lexer *lexer)
   {
     char next_character = peek(lexer, 1);
     char previous_character = lexer->current > lexer->start ? lexer->current[-1] : 0;
-    bool is_identifier_attribute = lexer->previous_token == T_ID and not had_whitespace and isalnum(previous_character);
+    bool is_identifier_attribute = lexer->previous_token == T_ID and not had_whitespace and ISALNUM(previous_character);
     if (next_character and peek(lexer, 2) == '\'' and (lexer->current + 3 >= lexer->end or lexer->current[3] != '\'') and not is_identifier_attribute)
     {
       lexer->previous_token = T_CHAR;
@@ -4671,7 +4694,7 @@ static Syntax_Node *parse_compilation_unit(Parser *parser)
                 ppkg.string,
                 ex[e]);
             for (char *c = fn + strlen(include_paths[i]); *c and *c != '.'; c++)
-              *c = tolower(*c);
+              *c = TOLOWER(*c);
             pf = fopen(fn, "r");
           }
         if (pf)
@@ -6129,14 +6152,14 @@ static Symbol *symbol_character_literal(Symbol_Manager *symbol_manager, char c, 
     for (uint32_t i = 0; i < tx->enum_values.count; i++)
     {
       Symbol *e = tx->enum_values.data[i];
-      if (e->name.length == 1 and tolower(e->name.string[0]) == tolower(c))
+      if (e->name.length == 1 and TOLOWER(e->name.string[0]) == TOLOWER(c))
         return e;
     }
   }
   if (tx and tx->k == TYPE_DERIVED and tx->parent_type)
     return symbol_character_literal(symbol_manager, c, tx->parent_type);
   for (Symbol *s = symbol_manager->sy[symbol_hash((String_Slice){&c, 1})]; s; s = s->next)
-    if (s->name.length == 1 and tolower(s->name.string[0]) == tolower(c) and s->k == 2 and s->type_info
+    if (s->name.length == 1 and TOLOWER(s->name.string[0]) == TOLOWER(c) and s->k == 2 and s->type_info
         and (s->type_info->k == TYPE_ENUMERATION or (s->type_info->k == TYPE_DERIVED and s->type_info->parent_type and s->type_info->parent_type->k == TYPE_ENUMERATION)))
       return s;
   return 0;
@@ -7470,7 +7493,7 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
         }
       }
     }
-    break;
+    // Generate runtime constraint checks for the assignment value
     if (node->assignment.target->ty)
       node->assignment.value->ty = node->assignment.target->ty;
     node->assignment.value = chk(symbol_manager, node->assignment.value, node->location);
@@ -9270,7 +9293,7 @@ static const char *lookup_path(Symbol_Manager *symbol_manager, String_Slice nm)
         (int) nm.length,
         nm.string);
     for (char *p = pf + strlen(include_paths[i]); *p; p++)
-      *p = tolower(*p);
+      *p = TOLOWER(*p);
     read_ada_library_interface(symbol_manager, pf);
     snprintf(af, 512, "%s.ads", pf);
     const char *s = read_file(af);
@@ -9619,40 +9642,46 @@ static unsigned long type_hash(Type_Info *t)
 }
 static int encode_symbol_name(char *b, int sz, Symbol *s, String_Slice nm, int pc, Syntax_Node *sp)
 {
+  if (sz <= 0)
+    return 0;
   if (s and s->is_external and s->external_name.string)
   {
     int n = 0;
-    for (uint32_t i = 0; i < s->external_name.length and i < sz - 1; i++)
+    for (uint32_t i = 0; i < s->external_name.length and n < sz - 1; i++)
       b[n++] = s->external_name.string[i];
     b[n] = 0;
     return n;
   }
   int n = 0;
   unsigned long uid = s ? s->uid : 0;
-  if (s and s->parent and s->parent->name.string and (uintptr_t) s->parent->name.string > 4096)
+  // Check parent name pointer validity (non-null and not obviously invalid)
+  if (s and s->parent and s->parent->name.string and s->parent->name.length > 0)
   {
-    for (uint32_t i = 0; i < s->parent->name.length and i < 256; i++)
+    for (uint32_t i = 0; i < s->parent->name.length and i < 256 and n < sz - 4; i++)
     {
       char c = s->parent->name.string[i];
       if (not c)
         break;
       if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9'))
-        b[n++] = toupper(c);
-      else
+        b[n++] = TOUPPER(c);
+      else if (n < sz - 4)
         n += snprintf(b + n, sz - n, "_%02X", (unsigned char) c);
     }
-    b[n++] = '_';
-    b[n++] = '_';
-    if (nm.string and (uintptr_t) nm.string > 4096)
+    if (n < sz - 2)
     {
-      for (uint32_t i = 0; i < nm.length and i < 256; i++)
+      b[n++] = '_';
+      b[n++] = '_';
+    }
+    if (nm.string and nm.length > 0)
+    {
+      for (uint32_t i = 0; i < nm.length and i < 256 and n < sz - 4; i++)
       {
         char c = nm.string[i];
         if (not c)
           break;
         if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9'))
-          b[n++] = toupper(c);
-        else
+          b[n++] = TOUPPER(c);
+        else if (n < sz - 4)
           n += snprintf(b + n, sz - n, "_%02X", (unsigned char) c);
       }
     }
@@ -9667,25 +9696,29 @@ static int encode_symbol_name(char *b, int sz, Symbol *s, String_Slice nm, int p
         if (p and p->parameter.name.string)
           pnh = pnh * 31 + string_hash(p->parameter.name);
       }
-      n += snprintf(b + n, sz - n, ".%d.%lx.%lu.%lx", pc, h % 0x10000, uid, pnh % 0x10000);
+      if (n < sz - 1)
+        n += snprintf(b + n, sz - n, ".%d.%lx.%lu.%lx", pc, h % 0x10000, uid, pnh % 0x10000);
     }
     else
     {
-      n += snprintf(b + n, sz - n, ".%d.%lu.1", pc, uid);
+      if (n < sz - 1)
+        n += snprintf(b + n, sz - n, ".%d.%lu.1", pc, uid);
     }
+    if (n >= sz)
+      n = sz - 1;
     b[n] = 0;
     return n;
   }
-  if (nm.string and (uintptr_t) nm.string > 4096)
+  if (nm.string and nm.length > 0)
   {
-    for (uint32_t i = 0; i < nm.length and i < 256; i++)
+    for (uint32_t i = 0; i < nm.length and i < 256 and n < sz - 4; i++)
     {
       char c = nm.string[i];
       if (not c)
         break;
       if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '_')
         b[n++] = c;
-      else
+      else if (n < sz - 4)
         n += snprintf(b + n, sz - n, "_%02X", (unsigned char) c);
     }
   }
@@ -9700,12 +9733,16 @@ static int encode_symbol_name(char *b, int sz, Symbol *s, String_Slice nm, int p
       if (p and p->parameter.name.string)
         pnh = pnh * 31 + string_hash(p->parameter.name);
     }
-    n += snprintf(b + n, sz - n, ".%d.%lx.%lu.%lx", pc, h % 0x10000, uid, pnh % 0x10000);
+    if (n < sz - 1)
+      n += snprintf(b + n, sz - n, ".%d.%lx.%lu.%lx", pc, h % 0x10000, uid, pnh % 0x10000);
   }
   else
   {
-    n += snprintf(b + n, sz - n, ".%d.%lu.1", pc, uid);
+    if (n < sz - 1)
+      n += snprintf(b + n, sz - n, ".%d.%lu.1", pc, uid);
   }
+  if (n >= sz)
+    n = sz - 1;
   b[n] = 0;
   return n;
 }
@@ -10186,7 +10223,7 @@ static const char *get_attribute_name(String_Slice attr, String_Slice tnm)
     fnm[pos++] = attr.string[i];
   fnm[pos++] = '_';
   for (uint32_t i = 0; i < tnm.length and pos < 255; i++)
-    fnm[pos++] = toupper(tnm.string[i]);
+    fnm[pos++] = TOUPPER(tnm.string[i]);
   fnm[pos] = 0;
   return fnm;
 }
@@ -10269,10 +10306,10 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         {
           int n = 0;
           for (uint32_t j = 0; j < s->parent->name.length; j++)
-            nb[n++] = toupper(s->parent->name.string[j]);
+            nb[n++] = TOUPPER(s->parent->name.string[j]);
           n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->elaboration_level);
           for (uint32_t j = 0; j < s->name.length; j++)
-            nb[n++] = toupper(s->name.string[j]);
+            nb[n++] = TOUPPER(s->name.string[j]);
           nb[n] = 0;
         }
         else
@@ -10302,10 +10339,10 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         {
           int n = 0;
           for (uint32_t i = 0; i < s->parent->name.length; i++)
-            nb[n++] = toupper(s->parent->name.string[i]);
+            nb[n++] = TOUPPER(s->parent->name.string[i]);
           n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->elaboration_level);
           for (uint32_t i = 0; i < s->name.length; i++)
-            nb[n++] = toupper(s->name.string[i]);
+            nb[n++] = TOUPPER(s->name.string[i]);
           nb[n] = 0;
         }
         else
@@ -11515,10 +11552,10 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             {
               int n = 0;
               for (uint32_t j = 0; j < s->parent->name.length; j++)
-                nb[n++] = toupper(s->parent->name.string[j]);
+                nb[n++] = TOUPPER(s->parent->name.string[j]);
               n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->elaboration_level);
               for (uint32_t j = 0; j < s->name.length; j++)
-                nb[n++] = toupper(s->name.string[j]);
+                nb[n++] = TOUPPER(s->name.string[j]);
               nb[n] = 0;
             }
             else
@@ -12124,10 +12161,10 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                   {
                     int n = 0;
                     for (uint32_t j = 0; j < as->parent->name.length; j++)
-                      nb[n++] = toupper(as->parent->name.string[j]);
+                      nb[n++] = TOUPPER(as->parent->name.string[j]);
                     n += snprintf(nb + n, 256 - n, "_S%dE%d__", as->parent->scope, as->parent->elaboration_level);
                     for (uint32_t j = 0; j < as->name.length; j++)
-                      nb[n++] = toupper(as->name.string[j]);
+                      nb[n++] = TOUPPER(as->name.string[j]);
                     nb[n] = 0;
                   }
                   else
@@ -12471,10 +12508,10 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           {
             int n = 0;
             for (uint32_t i = 0; i < s->parent->name.length; i++)
-              nb[n++] = toupper(s->parent->name.string[i]);
+              nb[n++] = TOUPPER(s->parent->name.string[i]);
             n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->elaboration_level);
             for (uint32_t i = 0; i < s->name.length; i++)
-              nb[n++] = toupper(s->name.string[i]);
+              nb[n++] = TOUPPER(s->name.string[i]);
             nb[n] = 0;
           }
           else
@@ -12540,10 +12577,10 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
         {
           int n = 0;
           for (uint32_t i = 0; i < s->parent->name.length; i++)
-            nb[n++] = toupper(s->parent->name.string[i]);
+            nb[n++] = TOUPPER(s->parent->name.string[i]);
           n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->elaboration_level);
           for (uint32_t i = 0; i < s->name.length; i++)
-            nb[n++] = toupper(s->name.string[i]);
+            nb[n++] = TOUPPER(s->name.string[i]);
           nb[n] = 0;
         }
         else
@@ -12921,10 +12958,10 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             {
               int n = 0;
               for (uint32_t i = 0; i < vs->parent->name.length; i++)
-                nb[n++] = toupper(vs->parent->name.string[i]);
+                nb[n++] = TOUPPER(vs->parent->name.string[i]);
               n += snprintf(nb + n, 256 - n, "_S%dE%d__", vs->parent->scope, vs->parent->elaboration_level);
               for (uint32_t i = 0; i < vs->name.length; i++)
-                nb[n++] = toupper(vs->name.string[i]);
+                nb[n++] = TOUPPER(vs->name.string[i]);
               nb[n] = 0;
             }
             else
@@ -12957,10 +12994,10 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           {
             int n = 0;
             for (uint32_t i = 0; i < vs->parent->name.length; i++)
-              nb[n++] = toupper(vs->parent->name.string[i]);
+              nb[n++] = TOUPPER(vs->parent->name.string[i]);
             n += snprintf(nb + n, 256 - n, "_S%dE%d__", vs->parent->scope, vs->parent->elaboration_level);
             for (uint32_t i = 0; i < vs->name.length; i++)
-              nb[n++] = toupper(vs->name.string[i]);
+              nb[n++] = TOUPPER(vs->name.string[i]);
             nb[n] = 0;
           }
           else
@@ -13009,10 +13046,10 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           {
             int n = 0;
             for (uint32_t i = 0; i < vs->parent->name.length; i++)
-              nb[n++] = toupper(vs->parent->name.string[i]);
+              nb[n++] = TOUPPER(vs->parent->name.string[i]);
             n += snprintf(nb + n, 256 - n, "_S%dE%d__", vs->parent->scope, vs->parent->elaboration_level);
             for (uint32_t i = 0; i < vs->name.length; i++)
-              nb[n++] = toupper(vs->name.string[i]);
+              nb[n++] = TOUPPER(vs->name.string[i]);
             nb[n] = 0;
           }
           else
@@ -13354,10 +13391,10 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                   {
                     int n = 0;
                     for (uint32_t j = 0; j < as->parent->name.length; j++)
-                      nb[n++] = toupper(as->parent->name.string[j]);
+                      nb[n++] = TOUPPER(as->parent->name.string[j]);
                     n += snprintf(nb + n, 256 - n, "_S%dE%d__", as->parent->scope, as->parent->elaboration_level);
                     for (uint32_t j = 0; j < as->name.length; j++)
-                      nb[n++] = toupper(as->name.string[j]);
+                      nb[n++] = TOUPPER(as->name.string[j]);
                     nb[n] = 0;
                   }
                   else
@@ -13855,7 +13892,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           int cm = new_temporary_register(generator);
           char eb[256];
           for (uint32_t ei = 0; ei < e->string_value.length and ei < 255; ei++)
-            eb[ei] = toupper(e->string_value.string[ei]);
+            eb[ei] = TOUPPER(e->string_value.string[ei]);
           eb[e->string_value.length < 255 ? e->string_value.length : 255] = 0;
           fprintf(o, "  %%t%d = call i32 @strcmp(ptr %%t%d, ptr @.ex.%s)\n", cm, ec, eb);
           int eq = new_temporary_register(generator);
@@ -15490,7 +15527,7 @@ static void write_ada_library_interface(Symbol_Manager *symbol_manager, const ch
         alp[pos++] = fn[i];
     }
     for (uint32_t i = 0; i < nm.length and pos < 519; i++)
-      alp[pos++] = tolower(nm.string[i]);
+      alp[pos++] = TOLOWER(nm.string[i]);
     alp[pos] = 0;
     strcat(alp, ".ali");
   }
@@ -15510,7 +15547,7 @@ static void write_ada_library_interface(Symbol_Manager *symbol_manager, const ch
       char pf[256];
       int n = snprintf(pf, 256, "%.*s", (int) w->with_clause.name.length, w->with_clause.name.string);
       for (int j = 0; j < n; j++)
-        pf[j] = tolower(pf[j]);
+        pf[j] = TOLOWER(pf[j]);
       uint64_t ts = find_type_symbol(pf);
       fprintf(f, "W %.*s %lu\n", (int) w->with_clause.name.length, w->with_clause.name.string, (unsigned long) ts);
     }
@@ -15577,10 +15614,10 @@ static void write_ada_library_interface(Symbol_Manager *symbol_manager, const ch
         {
           int n = 0;
           for (uint32_t j = 0; j < s->parent->name.length; j++)
-            nb[n++] = toupper(s->parent->name.string[j]);
+            nb[n++] = TOUPPER(s->parent->name.string[j]);
           n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->elaboration_level);
           for (uint32_t j = 0; j < s->name.length; j++)
-            nb[n++] = toupper(s->name.string[j]);
+            nb[n++] = TOUPPER(s->name.string[j]);
           nb[n] = 0;
         }
         else
@@ -15644,10 +15681,10 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
         char nb[256];
         int n = 0;
         for (uint32_t j = 0; j < s->parent->name.length; j++)
-          nb[n++] = toupper(s->parent->name.string[j]);
+          nb[n++] = TOUPPER(s->parent->name.string[j]);
         n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->elaboration_level);
         for (uint32_t j = 0; j < s->name.length; j++)
-          nb[n++] = toupper(s->name.string[j]);
+          nb[n++] = TOUPPER(s->name.string[j]);
         nb[n] = 0;
         if (s->k == 2 and s->definition and s->definition->k == N_STR)
         {
@@ -15865,10 +15902,10 @@ int main(int ac, char **av)
         {
           int n = 0;
           for (uint32_t j = 0; j < s->parent->name.length; j++)
-            nb[n++] = toupper(s->parent->name.string[j]);
+            nb[n++] = TOUPPER(s->parent->name.string[j]);
           n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->elaboration_level);
           for (uint32_t j = 0; j < s->name.length; j++)
-            nb[n++] = toupper(s->name.string[j]);
+            nb[n++] = TOUPPER(s->name.string[j]);
           nb[n] = 0;
         }
         else
