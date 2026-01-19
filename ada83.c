@@ -6439,6 +6439,318 @@ static bool has_return_statement(Node_Vector *statements)
       return 1;
   return 0;
 }
+// Systematic type compatibility for operators (Ada LRM 4.5)
+// Returns true if types are compatible for given operator
+static bool types_compatible_for_operator(Token_Kind op, Type_Info *left, Type_Info *right)
+{
+  if (!left || !right) return 1; // Be permissive on missing types
+
+  Type_Info *lc = type_canonical_concrete(left);
+  Type_Info *rc = type_canonical_concrete(right);
+
+  switch (op) {
+    // Boolean operators: both operands must be boolean (LRM 4.5.1)
+    case T_AND: case T_OR: case T_XOR:
+    case T_ATHN: case T_OREL:
+      return lc->k == TYPE_BOOLEAN && rc->k == TYPE_BOOLEAN;
+
+    // Equality: compatible types (LRM 4.5.2)
+    case T_EQ: case T_NE:
+      return type_covers(lc, rc) || type_covers(rc, lc);
+
+    // Relational: scalar types (LRM 4.5.2)
+    case T_LT: case T_LE: case T_GT: case T_GE:
+      if (is_discrete(lc) && is_discrete(rc))
+        return semantic_base(lc) == semantic_base(rc);
+      if (lc->k == TYPE_FLOAT && rc->k == TYPE_FLOAT)
+        return semantic_base(lc) == semantic_base(rc);
+      return 0;
+
+    // Arithmetic: numeric types (LRM 4.5.3-5)
+    case T_PL: case T_MN: case T_ST: case T_SL:
+    case T_MOD: case T_REM:
+      return (lc->k == TYPE_INTEGER || lc->k == TYPE_FLOAT) &&
+             (rc->k == TYPE_INTEGER || rc->k == TYPE_FLOAT);
+
+    // Exponentiation: base numeric, exponent integer (LRM 4.5.6)
+    case T_EX:
+      return (lc->k == TYPE_INTEGER || lc->k == TYPE_FLOAT) &&
+             rc->k == TYPE_INTEGER;
+
+    // Concatenation: array types (LRM 4.5.3)
+    case T_AM:
+      return lc->k == TYPE_ARRAY && rc->k == TYPE_ARRAY &&
+             type_covers(lc->element_type, rc->element_type);
+
+    default:
+      return 1; // Unknown operator - be permissive
+  }
+}
+
+// Validation Pass - Systematic semantic checking after resolution
+// ================================================================
+
+// Forward declarations for mutual recursion
+static void validate_expression(Syntax_Node *node);
+static void validate_statement(Syntax_Node *node);
+static void validate_statement_list(Node_Vector *list);
+
+// Validate binary operation types (LRM 4.5)
+static void validate_binary_operation(Syntax_Node *node)
+{
+  if (node->k != N_BIN) return;
+
+  Type_Info *lty = node->binary_node.left ? node->binary_node.left->ty : NULL;
+  Type_Info *rty = node->binary_node.right ? node->binary_node.right->ty : NULL;
+
+  if (!types_compatible_for_operator(node->binary_node.op, lty, rty))
+  {
+    Type_Info *lc = lty ? type_canonical_concrete(lty) : NULL;
+    Type_Info *rc = rty ? type_canonical_concrete(rty) : NULL;
+
+    // Generate helpful error message based on operator category
+    switch (node->binary_node.op) {
+      case T_AND: case T_OR: case T_XOR:
+      case T_ATHN: case T_OREL:
+        report_error(node->location, "boolean operators require boolean operands");
+        break;
+
+      case T_LT: case T_LE: case T_GT: case T_GE:
+        report_error(node->location, "relational operators require compatible scalar types");
+        break;
+
+      case T_PL: case T_MN: case T_ST: case T_SL:
+      case T_MOD: case T_REM:
+        report_error(node->location, "arithmetic operators require numeric types");
+        break;
+
+      case T_EX:
+        report_error(node->location, "exponentiation requires numeric base and integer exponent");
+        break;
+
+      case T_AM:
+        report_error(node->location, "concatenation requires compatible array types");
+        break;
+
+      default:
+        report_error(node->location, "type mismatch in expression");
+        break;
+    }
+    error_count++;
+  }
+}
+
+// Validate attribute reference (LRM 4.1.4)
+static void validate_attribute(Syntax_Node *node)
+{
+  if (node->k != N_AT) return;
+
+  Type_Info *prefix_ty = node->attribute.prefix ? node->attribute.prefix->ty : NULL;
+  if (!prefix_ty) return;
+
+  Type_Info *canonical = type_canonical_concrete(prefix_ty);
+  String_Slice attr = node->attribute.attribute_name;
+
+  // Array attributes: 'First, 'Last, 'Length, 'Range
+  if (string_equal_ignore_case(attr, STRING_LITERAL("first")) ||
+      string_equal_ignore_case(attr, STRING_LITERAL("last")) ||
+      string_equal_ignore_case(attr, STRING_LITERAL("length")) ||
+      string_equal_ignore_case(attr, STRING_LITERAL("range")))
+  {
+    if (canonical->k != TYPE_ARRAY && !is_discrete(canonical))
+    {
+      report_error(node->location, "attribute '%.*s requires array or discrete type",
+                   (int)attr.length, attr.string);
+      error_count++;
+    }
+  }
+  // Scalar attributes: 'Succ, 'Pred, 'Val, 'Pos, 'Image, 'Value
+  else if (string_equal_ignore_case(attr, STRING_LITERAL("succ")) ||
+           string_equal_ignore_case(attr, STRING_LITERAL("pred")) ||
+           string_equal_ignore_case(attr, STRING_LITERAL("val")) ||
+           string_equal_ignore_case(attr, STRING_LITERAL("pos")))
+  {
+    if (!is_discrete(canonical))
+    {
+      report_error(node->location, "attribute '%.*s requires discrete type",
+                   (int)attr.length, attr.string);
+      error_count++;
+    }
+  }
+}
+
+// Validate expression recursively
+static void validate_expression(Syntax_Node *node)
+{
+  if (!node) return;
+
+  switch (node->k) {
+    case N_BIN:
+      validate_binary_operation(node);
+      validate_expression(node->binary_node.left);
+      validate_expression(node->binary_node.right);
+      break;
+
+    case N_UN:
+      validate_expression(node->unary_node.operand);
+      break;
+
+    case N_AT:
+      validate_attribute(node);
+      validate_expression(node->attribute.prefix);
+      break;
+
+    case N_IX:  // Array indexing
+      validate_expression(node->index.prefix);
+      for (uint32_t i = 0; i < node->index.indices.count; i++)
+        validate_expression(node->index.indices.data[i]);
+      break;
+
+    case N_SEL:  // Record selection
+      validate_expression(node->selected_component.prefix);
+      break;
+
+    case N_CL:
+      validate_expression(node->call.function_name);
+      for (uint32_t i = 0; i < node->call.arguments.count; i++)
+        validate_expression(node->call.arguments.data[i]);
+      break;
+
+    case N_ALC:
+      if (node->allocator.initializer)
+        validate_expression(node->allocator.initializer);
+      break;
+
+    case N_AG:
+      for (uint32_t i = 0; i < node->aggregate.items.count; i++)
+        validate_expression(node->aggregate.items.data[i]);
+      break;
+
+    case N_QL:
+      validate_expression(node->qualified.aggregate);
+      break;
+
+    default:
+      break;  // Literals, identifiers - no validation needed
+  }
+}
+
+// Validate statement
+static void validate_statement(Syntax_Node *node)
+{
+  if (!node) return;
+
+  switch (node->k) {
+    case N_NULL:
+    case N_LBL:
+    case N_PG:
+    case N_GT:
+      break;  // No validation needed
+
+    case N_AS:
+      validate_expression(node->assignment.target);
+      validate_expression(node->assignment.value);
+      break;
+
+    case N_CL:
+      validate_expression(node);
+      break;
+
+    case N_RT:
+      if (node->return_stmt.value)
+        validate_expression(node->return_stmt.value);
+      break;
+
+    case N_IF:
+      validate_expression(node->if_stmt.condition);
+      validate_statement_list(&node->if_stmt.then_statements);
+      for (uint32_t i = 0; i < node->if_stmt.elsif_statements.count; i++) {
+        Syntax_Node *elsif = node->if_stmt.elsif_statements.data[i];
+        validate_expression(elsif->if_stmt.condition);
+        validate_statement_list(&elsif->if_stmt.then_statements);
+      }
+      if (node->if_stmt.else_statements.count > 0)
+        validate_statement_list(&node->if_stmt.else_statements);
+      break;
+
+    case N_CS:
+      validate_expression(node->case_stmt.expression);
+      for (uint32_t i = 0; i < node->case_stmt.alternatives.count; i++) {
+        Syntax_Node *alt = node->case_stmt.alternatives.data[i];
+        validate_statement_list(&alt->exception_handler.statements);
+      }
+      break;
+
+    case N_LP:
+      if (node->loop_stmt.iterator)
+        validate_expression(node->loop_stmt.iterator);
+      validate_statement_list(&node->loop_stmt.statements);
+      break;
+
+    case N_BL:
+      validate_statement_list(&node->block.statements);
+      if (node->block.handlers.count > 0) {
+        for (uint32_t i = 0; i < node->block.handlers.count; i++) {
+          Syntax_Node *handler = node->block.handlers.data[i];
+          validate_statement_list(&handler->exception_handler.statements);
+        }
+      }
+      break;
+
+    case N_EX:
+      if (node->exit_stmt.condition)
+        validate_expression(node->exit_stmt.condition);
+      break;
+
+    default:
+      break;
+  }
+}
+
+// Validate statement list
+static void validate_statement_list(Node_Vector *list)
+{
+  if (!list) return;
+  for (uint32_t i = 0; i < list->count; i++)
+    validate_statement(list->data[i]);
+}
+
+// Validate compilation unit (entry point for validation pass)
+static void validate_compilation_unit(Syntax_Node *cu)
+{
+  if (!cu || cu->k != N_CU) return;
+
+  for (uint32_t i = 0; i < cu->compilation_unit.units.count; i++) {
+    Syntax_Node *unit = cu->compilation_unit.units.data[i];
+    if (!unit) continue;
+
+    switch (unit->k) {
+      case N_PB:
+        validate_statement_list(&unit->body.statements);
+        break;
+
+      case N_FB:
+        validate_statement_list(&unit->body.statements);
+        break;
+
+      case N_PKB:
+        if (unit->package_body.declarations.count > 0) {
+          for (uint32_t j = 0; j < unit->package_body.declarations.count; j++) {
+            Syntax_Node *decl = unit->package_body.declarations.data[j];
+            if (decl->k == N_PB || decl->k == N_FB)
+              validate_statement_list(&decl->body.statements);
+          }
+        }
+        if (unit->package_body.statements.count > 0)
+          validate_statement_list(&unit->package_body.statements);
+        break;
+
+      default:
+        break;  // Package specs have no executable code
+    }
+  }
+}
+
 static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node, Type_Info *tx)
 {
   if (not node)
@@ -15829,6 +16141,8 @@ int main(int ac, char **av)
       *dot = 0;
     read_ada_library_interface(&sm, pth);
   }
+  // Validation pass: systematic semantic checking
+  validate_compilation_unit(cu);
   // Exit if semantic analysis found errors
   if (error_count > 0)
     return 1;
