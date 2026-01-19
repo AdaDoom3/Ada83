@@ -1954,6 +1954,23 @@ static String_Slice parser_identifier(Parser *parser)
   parser_expect(parser, T_ID);
   return identifier;
 }
+// Check END identifier matches expected name (packages, subprograms)
+// Consumes identifier token if present
+static void parser_check_end_identifier(Parser *parser, String_Slice expected, const char *construct_type)
+{
+  if (parser_at(parser, T_ID) or parser_at(parser, T_STR))
+  {
+    String_Slice got = parser->current_token.literal;
+    if (not string_equal_ignore_case(expected, got))
+    {
+      report_error(parser->current_token.location, "END identifier must match %s name", construct_type);
+      fprintf(stderr, "  note: expected '%.*s' but got '%.*s'\n",
+              (int)expected.length, expected.string, (int)got.length, got.string);
+      parser->error_count++;
+    }
+    parser_next(parser);
+  }
+}
 static String_Slice parser_attribute(Parser *parser)
 {
   String_Slice s;
@@ -4196,8 +4213,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
       if (parser_match(parser, T_EXCP))
         node->body.handlers = parse_handle_declaration(parser);
       parser_expect(parser, T_END);
-      if (parser_at(parser, T_ID) or parser_at(parser, T_STR))
-        parser_next(parser);
+      parser_check_end_identifier(parser, sp->subprogram.name, "procedure");
       parser_expect(parser, T_SC);
       return node;
     }
@@ -4277,8 +4293,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
       if (parser_match(parser, T_EXCP))
         node->body.handlers = parse_handle_declaration(parser);
       parser_expect(parser, T_END);
-      if (parser_at(parser, T_ID) or parser_at(parser, T_STR))
-        parser_next(parser);
+      parser_check_end_identifier(parser, sp->subprogram.name, "function");
       parser_expect(parser, T_SC);
       return node;
     }
@@ -4310,8 +4325,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
           node->package_body.handlers = parse_handle_declaration(parser);
       }
       parser_expect(parser, T_END);
-      if (parser_at(parser, T_ID))
-        parser_next(parser);
+      parser_check_end_identifier(parser, nm, "package");
       parser_expect(parser, T_SC);
       return node;
     }
@@ -4363,8 +4377,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
     if (parser_match(parser, T_PRV))
       node->package_spec.private_declarations = parse_declarative_part(parser);
     parser_expect(parser, T_END);
-    if (parser_at(parser, T_ID))
-      parser_next(parser);
+    parser_check_end_identifier(parser, nm, "package");
     parser_expect(parser, T_SC);
     return node;
   }
