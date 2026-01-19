@@ -6430,8 +6430,7 @@ static bool types_compatible_for_operator(Token_Kind op, Type_Info *left, Type_I
 
     // Relational: scalar types (LRM 4.5.2)
     case T_LT: case T_LE: case T_GT: case T_GE:
-      if (is_discrete(lc) && is_discrete(rc))
-        return semantic_base(lc) == semantic_base(rc);
+      if (is_discrete(lc) && is_discrete(rc)){Type_Info*lb=semantic_base(lc),*rb=semantic_base(rc);return lb&&rb&&(lb==rb||type_covers(lb,rb)||type_covers(rb,lb));}
       if (lc->k == TYPE_FLOAT && rc->k == TYPE_FLOAT)
         return semantic_base(lc) == semantic_base(rc);
       return 0;
@@ -11125,7 +11124,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       }
 
       // Now generate the call with the parameter values
-      fprintf(o, "  %%t%d = call %s @\"%s\"(", r.id, value_llvm_type_string(ret_kind), fnb);
+      fprintf(o, "  %%t%d = call %s @%s(", r.id, value_llvm_type_string(ret_kind), fnb);
 
       // Add static link if needed
       bool needs_slnk = func_sym->level >= 0 and func_sym->level < generator->sm->lv;
@@ -11478,7 +11477,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                             : VALUE_KIND_INTEGER;
         char fnb[256];
         encode_symbol_name(fnb, 256, n->symbol, n->selected_component.selector, 0, sp);
-        fprintf(o, "  %%t%d = call %s @\"%s\"()\n", r.id, value_llvm_type_string(rk), fnb);
+        fprintf(o, "  %%t%d = call %s @%s()\n", r.id, value_llvm_type_string(rk), fnb);
         r.k = rk;
       }
     }
@@ -12188,7 +12187,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           }
           char nb[256];
           encode_symbol_name(nb, 256, s, n->call.function_name->string_value, n->call.arguments.count, sp);
-          fprintf(o, "  %%t%d = call %s @\"%s\"(", r.id, value_llvm_type_string(rk), nb);
+          fprintf(o, "  %%t%d = call %s @%s(", r.id, value_llvm_type_string(rk), nb);
           for (uint32_t i = 0; i < n->call.arguments.count; i++)
           {
             if (i)
@@ -13421,7 +13420,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             snprintf(nb, 256, "%.*s", (int) s->external_name.length, s->external_name.string);
           else
             encode_symbol_name(nb, 256, s, n->code_stmt.name->string_value, n->code_stmt.arguments.count, sp);
-          fprintf(o, "  call void @\"%s\"(", nb);
+          fprintf(o, "  call void @%s(", nb);
           for (uint32_t i = 0; i < n->code_stmt.arguments.count; i++)
           {
             if (i)
@@ -13492,7 +13491,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           // Now emit the call
           char nb[256];
           snprintf(nb, 256, "%.*s", (int) s->external_name.length, s->external_name.string);
-          fprintf(o, "  call void @\"%s\"(", nb);
+          fprintf(o, "  call void @%s(", nb);
           for (uint32_t i = 0; i < n->code_stmt.arguments.count and i < 64; i++)
           {
             if (i)
@@ -13573,10 +13572,10 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             Type_Info *rt = resolve_subtype(generator->sm, sp->subprogram.return_type);
             Value_Kind rk = token_kind_to_value_kind(rt);
             int rid = new_temporary_register(generator);
-            fprintf(o, "  %%t%d = call %s @\"%s\"(", rid, value_llvm_type_string(rk), nb);
+            fprintf(o, "  %%t%d = call %s @%s(", rid, value_llvm_type_string(rk), nb);
           }
           else
-            fprintf(o, "  call void @\"%s\"(", nb);
+            fprintf(o, "  call void @%s(", nb);
           for (uint32_t i = 0; i < n->code_stmt.arguments.count; i++)
           {
             if (i)
@@ -15138,7 +15137,7 @@ static void generate_runtime_type(Code_Generator *generator)
       "void @llvm.memcpy.p0.p0.i64(ptr,ptr,i64,i1)\ndeclare void @__text_io_put_i64(ptr,i64)\ndeclare "
       "void @__text_io_put_f64(ptr,double)\ndeclare void @__text_io_put(ptr,ptr)\ndeclare void "
       "@__text_io_put_line_i64(ptr,i64)\ndeclare void @__text_io_put_line_f64(ptr,double)\ndeclare "
-      "void @__text_io_put_line(ptr,ptr)\ndeclare void @__text_io_new_line()\n");
+      "void @__text_io_put_line(ptr,ptr)\ndeclare void @__text_io_new_line()\ndeclare void @__text_io_put_char(i64)\n");
   fprintf(
       o,
       "define linkonce_odr ptr @__ada_i64str_to_cstr(ptr %%p,i64 %%lo,i64 %%hi){%%ln=sub i64 "
@@ -15392,11 +15391,12 @@ static void print_forward_declarations(Code_Generator *generator, Symbol_Manager
             snprintf(nb, 256, "%.*s", (int) s->external_name.length, s->external_name.string);
             if (not add_declaration(generator, nb))
               continue;
+            if(is_runtime_type(nb))continue;
             Syntax_Node *sp = n->body.subprogram_spec;
             if (n->k == N_PD)
             {
               // Procedure
-              fprintf(generator->o, "declare void @\"%s\"(", nb);
+              fprintf(generator->o, "declare void @%s(", nb);
               for (uint32_t i = 0; i < sp->subprogram.parameters.count; i++)
               {
                 if (i)
@@ -15416,7 +15416,7 @@ static void print_forward_declarations(Code_Generator *generator, Symbol_Manager
               // Function
               Type_Info *rt = sp->subprogram.return_type ? resolve_subtype(sm, sp->subprogram.return_type) : 0;
               Value_Kind rk = rt ? token_kind_to_value_kind(rt) : VALUE_KIND_INTEGER;
-              fprintf(generator->o, "declare %s @\"%s\"(", value_llvm_type_string(rk), nb);
+              fprintf(generator->o, "declare %s @%s(", value_llvm_type_string(rk), nb);
               for (uint32_t i = 0; i < sp->subprogram.parameters.count; i++)
               {
                 if (i)
@@ -16030,6 +16030,10 @@ static const char *ADA_RUNTIME_SOURCE =
 "\n"
 "void __text_io_new_line(void) {\n"
 "    fputc('\\n', stdout);\n"
+"    fflush(stdout);\n"
+"}\n"
+"\n""void __text_io_put_char(int64_t c) {\n"
+"    fputc((int)c, stdout);\n"
 "    fflush(stdout);\n"
 "}\n"
 "\n"
