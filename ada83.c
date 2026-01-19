@@ -13,11 +13,50 @@
  *   - Semantic Analysis: Symbol table management with scope tracking
  *   - Code Generation: Direct emission of LLVM IR with Ada semantics
  *
+ * DIANA-Inspired Design Principles:
+ * ==================================
+ * This compiler follows principles from the DIANA (Descriptive Intermediate
+ * Attributed Notation for Ada) reference, ensuring clean separation of concerns
+ * and efficient semantic processing:
+ *
+ * 1. STATIC SEMANTIC INFORMATION ONLY
+ *    - AST contains only information discoverable via static analysis
+ *    - No dynamic evaluation, optimization results, or code generation artifacts
+ *    - Exception: Static expressions ARE evaluated (Ada 83 requirement)
+ *
+ * 2. STRUCTURAL vs SEMANTIC ATTRIBUTES
+ *    Structural Attributes (preserve source structure):
+ *      - Node_Kind k            : Syntactic category (expression, statement, etc)
+ *      - Source_Location        : Position in original source text
+ *      - Union fields           : Direct syntactic components (operands, names, etc)
+ *
+ *    Semantic Attributes (augment with analysis results):
+ *      - Type_Info *ty          : Resolved type after semantic analysis
+ *      - Symbol *symbol         : Cross-reference to defining occurrence
+ *      - [Future: constraint info, implicit conversions, etc]
+ *
+ * 3. EASY TO RECOMPUTE = OMIT
+ *    Information is omitted from the AST if it can be recomputed via:
+ *      - ≤3-4 node visits, OR
+ *      - Single-pass traversal
+ *    Examples omitted: parent pointers, enclosing scope, nesting depth
+ *
+ * 4. REPRESENTATION INDEPENDENCE
+ *    - Source positions: Abstract (file, line, column)
+ *    - Type representations: Platform-independent semantic model
+ *    - Runtime values: Target-specific abstract types
+ *
+ * 5. REGULARITY
+ *    - Consistent naming: resolve_* for semantic analysis, generate_* for codegen
+ *    - Hierarchical structure: Clear subtyping relationships in Node_Kind
+ *    - Uniform traversal: All nodes follow same visitation patterns
+ *
  * Key Design Decisions:
  *   - Arena allocation for AST nodes (no individual frees during compilation)
  *   - Arbitrary precision integers for accurate constant evaluation
  *   - Fat pointers for Ada's unconstrained arrays and access types
  *   - Direct LLVM IR emission rather than intermediate representations
+ *   - Embedded runtime library (self-contained binary)
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -1228,12 +1267,41 @@ VECPUSH(Generic_Template_Vector, Generic_Template *, gv)
 VECPUSH(Label_Entry_Vector, Label_Entry *, lev)
 VECPUSH(File_Vector, FILE *, fv)
 VECPUSH(String_List_Vector, String_Slice, slv)
+
+/* ===========================================================================
+ * Syntax_Node - The Abstract Syntax Tree node type
+ * ===========================================================================
+ *
+ * Following DIANA principles, each node has STRUCTURAL and SEMANTIC attributes:
+ *
+ * STRUCTURAL ATTRIBUTES (preserve source program structure):
+ *   k         : Node kind (syntactic category from parsing)
+ *   location  : Source position (for error messages, debugging)
+ *   union     : Syntactic components specific to each node kind
+ *               (operands, subexpressions, names, etc.)
+ *
+ * SEMANTIC ATTRIBUTES (results of semantic analysis):
+ *   ty        : Resolved type after type checking
+ *   symbol    : Cross-reference to defining occurrence (for names/identifiers)
+ *
+ * OMITTED (easily recomputable):
+ *   - Parent pointers (single upward traversal)
+ *   - Enclosing scope (available via symbol table during analysis)
+ *   - Nesting depth (computable in one pass)
+ *   - Back-links to other nodes (would create cycles, computable via search)
+ *
+ * The union contains node-specific structural information. Each variant
+ * corresponds to a syntactic construct from Ada 83 grammar.
+ */
 struct Syntax_Node
 {
-  Node_Kind k;
-  Source_Location location;
-  Type_Info *ty;
-  Symbol *symbol;
+  // STRUCTURAL ATTRIBUTES
+  Node_Kind k;              // Syntactic category
+  Source_Location location; // Position in source text
+
+  // SEMANTIC ATTRIBUTES (populated during semantic analysis)
+  Type_Info *ty;      // Resolved type (NULL until type checking)
+  Symbol *symbol;     // Defining occurrence cross-reference (for uses)
   union
   {
     String_Slice string_value;
@@ -4357,6 +4425,52 @@ typedef enum
   TYPE_FAT_POINTER,
   TYPE_FIXED_POINT
 } Type_Kind;
+
+/* ===========================================================================
+ * Type_Info - Type representation following DIANA principles
+ * ===========================================================================
+ *
+ * DIANA Guidance on Types (from Section 4.4):
+ * - Types and subtypes are represented as separate entities
+ * - Constrained vs unconstrained is a fundamental distinction
+ * - Base types, parent types (derived), and element types form a network
+ * - Universal types (universal_integer, universal_real) are special
+ *
+ * STATIC SEMANTIC INFORMATION:
+ *   k            : Type kind (scalar, array, record, access, etc.)
+ *   name         : Type name (for error messages and debugging)
+ *   base_type    : Base type for subtypes (Ada 83 §3.3)
+ *   parent_type  : Parent for derived types (Ada 83 §3.4)
+ *   element_type : Element type for arrays/access (Ada 83 §3.6/3.8)
+ *   index_type   : Index type for arrays
+ *
+ * CONSTRAINT INFORMATION (for constrained subtypes):
+ *   low_bound, high_bound : Scalar/array index constraints
+ *   discriminants         : Record discriminant constraints
+ *
+ *   UNCONSTRAINED ARRAYS: high_bound = -1 (sentinel value)
+ *   CONSTRAINED ARRAYS:   high_bound >= low_bound
+ *
+ * REPRESENTATION INFORMATION (from representation clauses):
+ *   size, alignment : Specified by 'SIZE or 'ALIGNMENT
+ *   address        : Specified by 'ADDRESS
+ *   is_packed      : Specified by pragma PACK
+ *   rc             : All representation clauses for this type
+ *
+ * DERIVED/COMPOSITE INFORMATION:
+ *   components     : Record components (for TYPE_RECORD)
+ *   enum_values    : Enumeration literals (for TYPE_ENUM)
+ *   operations     : User-defined operators
+ *
+ * COMPILE-TIME PROPERTIES:
+ *   frozen         : Freezing point reached (no more declarations allowed)
+ *   frozen_node    : AST node where freezing occurred
+ *   suppressed_checks : Which runtime checks are suppressed (pragma SUPPRESS)
+ *   is_controlled  : Has controlled components (finalization needed)
+ *
+ * IMPLEMENTATION-SPECIFIC (fixed-point):
+ *   small_value, large_value : Fixed-point bounds
+ */
 struct Type_Info
 {
   Type_Kind k;
@@ -4377,13 +4491,67 @@ struct Type_Info
   uint8_t frozen;
   Syntax_Node *frozen_node;
 };
+
+/* ===========================================================================
+ * Symbol - Symbol table entry (DIANA: "defining occurrence")
+ * ===========================================================================
+ *
+ * DIANA Guidance on Names (from Section 4.3):
+ * - DEFINING OCCURRENCES create entities (declarations)
+ * - USED OCCURRENCES reference entities (names in expressions/statements)
+ * - Cross-references: Used occurrences point to defining occurrences via symbol
+ *
+ * This structure represents DEFINING OCCURRENCES only.
+ * Each symbol table entry corresponds to one declared entity.
+ *
+ * ENTITY IDENTIFICATION:
+ *   name        : Identifier as written in source
+ *   k           : Entity kind (variable, type, subprogram, etc.)
+ *   definition  : AST node of the defining occurrence
+ *
+ * TYPE INFORMATION:
+ *   type_info   : Type of the entity (for objects, parameters, functions)
+ *
+ * OVERLOADING & SCOPE:
+ *   next, previous : Hash chain for symbol lookup
+ *   overloads      : All declarations with same name (Ada overloading)
+ *   homonym        : Link to next overloaded entity
+ *   scope          : Scope level (nesting depth)
+ *   elaboration_level : Order of elaboration within scope
+ *
+ * VISIBILITY:
+ *   visibility     : Public/private/limited (package declarations)
+ *   use_clauses    : Which USE clauses make this visible
+ *
+ * SUBPROGRAM-SPECIFIC:
+ *   is_inline      : Pragma INLINE applied
+ *   generic_template : If this is a generic instantiation
+ *   mangled_name   : Generated name for LLVM IR
+ *
+ * EXTERNAL LINKAGE:
+ *   is_external    : Pragma IMPORT/EXPORT applied
+ *   external_name  : Name in external language
+ *   external_language : Language for pragma IMPORT (C, Fortran, etc.)
+ *
+ * STORAGE:
+ *   offset         : Offset within record/stack frame
+ *   storage_size   : Size in bytes
+ *   value          : Compile-time value (for constants, enum literals)
+ *   is_shared      : Shared variable (tasking)
+ *
+ * FREEZING (Ada 83 §13.1):
+ *   frozen         : Freezing point reached
+ *   frozen_node    : Where freezing occurred
+ *   parent         : Enclosing package/subprogram
+ *   level          : Nesting level
+ */
 struct Symbol
 {
   String_Slice name;
   uint8_t k;
   Type_Info *type_info;
   Syntax_Node *definition;
-  Symbol *next, *previous;
+  Symbol *next;  // Hash chain for symbol table lookup
   int scope;
   int storage_size;
   int64_t value;
@@ -4403,7 +4571,6 @@ struct Symbol
   uint8_t frozen;
   Syntax_Node *frozen_node;
   uint8_t visibility;
-  Symbol *homonym;
   uint32_t uid;
 };
 typedef struct
@@ -4455,7 +4622,6 @@ static Symbol *symbol_new(String_Slice nm, uint8_t k, Type_Info *ty, Syntax_Node
 static Symbol *symbol_add_overload(Symbol_Manager *symbol_manager, Symbol *s)
 {
   uint32_t h = symbol_hash(s->name);
-  s->homonym = symbol_manager->sy[h];
   s->next = symbol_manager->sy[h];
   s->scope = symbol_manager->sc;
   s->storage_size = symbol_manager->ss;
