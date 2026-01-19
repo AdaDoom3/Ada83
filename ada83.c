@@ -359,6 +359,12 @@ static bool string_equal_ignore_case(String_Slice a, String_Slice b)
       return 0;
   return 1;
 }
+static bool string_equal(String_Slice a, String_Slice b)
+{
+  if (a.length != b.length)
+    return 0;
+  return memcmp(a.string, b.string, a.length) == 0;
+}
 static char *string_to_lowercase(String_Slice s)
 {
   static char b[8][256];
@@ -643,8 +649,6 @@ static Token scan_identifier(Lexer *lexer)
     advance_character(lexer);
   String_Slice literal_text = {start, lexer->current - start};
   Token_Kind token_kind = keyword_lookup(literal_text);
-  if (token_kind != T_ID and lexer->current < lexer->end and (isalnum(*lexer->current) or *lexer->current == '_'))
-    return make_token(T_ERR, location, STRING_LITERAL("kw+x"));
   return make_token(token_kind, location, literal_text);
 }
 static Token scan_number_literal(Lexer *lexer)
@@ -1704,6 +1708,24 @@ static void parser_next(Parser *parser)
 {
   parser->current_token = parser->peek_token;
   parser->peek_token = lexer_next_token(&parser->lexer);
+
+  /* Lexical errors must be reported immediately to provide clear diagnostics */
+  if (parser->current_token.kind == T_ERR)
+  {
+    const char *error_message = "lexical error";
+    if (string_equal(parser->current_token.literal, STRING_LITERAL("kw+x")))
+      error_message = "keyword must be separated from identifier by whitespace";
+    else if (string_equal(parser->current_token.literal, STRING_LITERAL("num+alpha")))
+      error_message = "numeric literal must be separated from identifier by whitespace";
+    else if (string_equal(parser->current_token.literal, STRING_LITERAL("uc")))
+      error_message = "unclosed character literal";
+    else if (string_equal(parser->current_token.literal, STRING_LITERAL("us")))
+      error_message = "unclosed string literal";
+    else if (string_equal(parser->current_token.literal, STRING_LITERAL("ux")))
+      error_message = "unexpected character in source";
+    fatal_error(parser->current_token.location, "%s", error_message);
+  }
+
   if (parser->current_token.kind == T_AND and parser->peek_token.kind == T_THEN)
   {
     parser->current_token.kind = T_ATHN;
@@ -4560,36 +4582,90 @@ struct Symbol
   uint8_t visibility;
   uint32_t uid;
 };
+/* ===========================================================================
+ * Symbol_Manager - Central repository for all semantic analysis state
+ * ===========================================================================
+ *
+ * The symbol manager maintains all compile-time information needed for
+ * semantic analysis, scope management, and symbol resolution. It implements
+ * Ada's complex visibility and overloading rules (Ada 83 §8.3, §8.4).
+ *
+ * SYMBOL TABLE & SCOPE:
+ *   symbol_table[4096]  : Hash table of all declared symbols (open addressing)
+ *   scope               : Current lexical scope depth (0=library, 1=first nested, etc.)
+ *   level               : Current nesting level for blocks/procedures
+ *   storage_size        : Accumulated storage for current scope
+ *
+ * CURRENT CONTEXT:
+ *   declaration_spec    : Current declaration being processed (for context)
+ *   package             : Current package specification being analyzed
+ *   use_vector          : Symbols made directly visible by USE clauses (Ada 83 §8.4)
+ *   use_visibility[64]  : Bitmap tracking which symbols are use-visible (optimization)
+ *
+ * ELABORATION & ORDERING:
+ *   elaboration_order   : Counter for declaration elaboration sequence
+ *   library_units       : All compiled library units (packages, subprograms)
+ *   generic_templates   : All generic specifications awaiting instantiation
+ *   initialization_blocks : Blocks requiring elaboration-time execution
+ *
+ * EXCEPTION HANDLING:
+ *   exception_buffers[16] : Stack of setjmp buffers for exception propagation
+ *   exception_depth       : Current depth in exception handler stack
+ *   current_exceptions[16]: Names of exceptions being handled at each level
+ *   exception_names       : All declared exception names (for checking)
+ *   exception_handlers    : Exception handler label names
+ *
+ * SYMBOL STACK (for nested scopes):
+ *   symbol_stack[256]     : Stack of symbols for scope entry/exit
+ *   symbol_stack_depth    : Current depth of symbol stack
+ *
+ * DEFERRED ANALYSIS:
+ *   deferred_packages[256] : Packages requiring later private part processing
+ *   deferred_package_count : Count of deferred packages
+ *
+ * PROCEDURE NESTING:
+ *   procedure_stack[256]  : Tracks enclosing procedures for parent pointers
+ *   procedure_nesting     : Current procedure nesting depth
+ *
+ * I/O & FILES:
+ *   input_output          : File handles for Ada I/O operations
+ *   file_number           : Counter for file handle allocation
+ *   label_buffer          : All declared statement labels
+ *   atomic_pragma         : Atomic pragma specifications
+ *
+ * UNIQUE IDENTIFIERS:
+ *   uid_counter           : Monotonic counter for generating unique IDs
+ */
 typedef struct
 {
-  Symbol *sy[4096];
-  int sc;
-  int ss;
-  Syntax_Node *ds;
-  Syntax_Node *pk;
-  Symbol_Vector uv;
-  int eo;
-  Library_Unit_Vector lu;
-  Generic_Template_Vector gt;
-  jmp_buf *eb[16];
-  int ed;
-  String_Slice ce[16];
-  File_Vector io;
-  int fn;
-  String_List_Vector lb;
-  int lv;
-  Node_Vector ib;
-  Symbol *sst[256];
-  int ssd;
-  Symbol_Vector dps[256];
-  int dpn;
-  Symbol_Vector ex;
-  uint64_t uv_vis[64];
-  String_List_Vector eh;
-  String_List_Vector ap;
-  uint32_t uid_ctr;
-  Symbol *ps[256];  // Procedure stack: tracks enclosing procedures/functions for parent pointer assignment
-  int pn;           // Procedure nesting count
+  Symbol *sy[4096];              // symbol_table: Hash table of all declared symbols
+  int sc;                         // scope: Current lexical scope depth
+  int ss;                         // storage_size: Accumulated storage for current scope
+  Syntax_Node *ds;                // declaration_spec: Current declaration being processed
+  Syntax_Node *pk;                // package: Current package specification
+  Symbol_Vector uv;               // use_vector: Symbols made visible by USE clauses
+  int eo;                         // elaboration_order: Declaration elaboration counter
+  Library_Unit_Vector lu;         // library_units: All compiled library units
+  Generic_Template_Vector gt;     // generic_templates: Generic specifications awaiting instantiation
+  jmp_buf *eb[16];                // exception_buffers: Stack of setjmp buffers for exception propagation
+  int ed;                         // exception_depth: Current depth in exception handler stack
+  String_Slice ce[16];            // current_exceptions: Exception names at each handler level
+  File_Vector io;                 // input_output: File handles for Ada I/O operations
+  int fn;                         // file_number: Counter for file handle allocation
+  String_List_Vector lb;          // label_buffer: All declared statement labels
+  int lv;                         // level: Current nesting level for blocks/procedures
+  Node_Vector ib;                 // initialization_blocks: Blocks requiring elaboration-time execution
+  Symbol *sst[256];               // symbol_stack: Stack of symbols for scope entry/exit
+  int ssd;                        // symbol_stack_depth: Current depth of symbol stack
+  Symbol_Vector dps[256];         // deferred_packages: Packages requiring later private part processing
+  int dpn;                        // deferred_package_count: Count of deferred packages
+  Symbol_Vector ex;               // exception_names: All declared exception names
+  uint64_t uv_vis[64];            // use_visibility: Bitmap tracking use-visible symbols
+  String_List_Vector eh;          // exception_handlers: Exception handler label names
+  String_List_Vector ap;          // atomic_pragma: Atomic pragma specifications
+  uint32_t uid_ctr;               // uid_counter: Monotonic counter for generating unique IDs
+  Symbol *ps[256];                // procedure_stack: Tracks enclosing procedures for parent pointers
+  int pn;                         // procedure_nesting: Current procedure nesting depth
 } Symbol_Manager;
 static uint32_t symbol_hash(String_Slice s)
 {
