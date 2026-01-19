@@ -1827,31 +1827,63 @@ static void parser_expect_error(Parser *parser, Token_Kind expected, Token_Kind 
   // Add context-specific hints
   if (expected == T_SC)
   {
-    hint = "note: Ada statements must end with a semicolon (;)";
+    if (got == T_END)
+      hint = "note: missing semicolon before END";
+    else if (got == T_BEG)
+      hint = "note: declarations must end with semicolon before BEGIN";
+    else
+      hint = "note: Ada statements and declarations must end with semicolon (;)";
   }
-  else if (expected == T_THEN && got == T_LOOP)
+  else if (expected == T_THEN)
   {
-    hint = "note: IF statements require THEN before the body (use 'IF condition THEN')";
+    if (got == T_LOOP)
+      hint = "note: IF requires THEN, not LOOP (use 'IF condition THEN ... END IF;')";
+    else
+      hint = "note: IF statements require THEN after the condition";
   }
-  else if (expected == T_IS && got == T_AS)
+  else if (expected == T_LOOP && got == T_THEN)
   {
-    hint = "note: use IS for declarations, not AS";
+    hint = "note: loops require LOOP keyword (use 'WHILE condition LOOP ... END LOOP;')";
+  }
+  else if (expected == T_IS)
+  {
+    if (got == T_AS)
+      hint = "note: use IS for type definitions, not AS (e.g., 'TYPE T IS ...')";
+    else if (got == T_CL)
+      hint = "note: use IS after subprogram declarations (e.g., 'PROCEDURE P IS')";
+    else
+      hint = "note: declarations require IS keyword";
   }
   else if (expected == T_ID && got == T_ACCS)
   {
-    hint = "note: ACCESS is a reserved word, cannot be used as identifier";
+    hint = "note: ACCESS is reserved - it starts an access type definition";
   }
-  else if (expected == T_ID && (got == T_THEN || got == T_LOOP || got == T_IS))
+  else if (expected == T_ID)
   {
-    hint = "note: keywords cannot be used as identifiers";
+    if (got == T_THEN || got == T_LOOP || got == T_BEG || got == T_END)
+      hint = "note: keywords cannot be used as identifiers";
+    else if (got == T_TYP || got == T_PROC || got == T_FUN || got == T_PKG)
+      hint = "note: missing identifier after keyword";
   }
   else if (expected == T_DD)
   {
-    hint = "note: ranges require '..' between bounds (e.g., 1 .. 10)";
+    hint = "note: ranges use '..' (two dots) between bounds (e.g., 1 .. 10)";
   }
   else if (expected == T_AR)
   {
-    hint = "note: use '=>' for associations in aggregates and case alternatives";
+    hint = "note: use '=>' for named associations (e.g., 'CHOICE => VALUE')";
+  }
+  else if (expected == T_CL && got == T_AS)
+  {
+    hint = "note: use ':' for type specifications, not AS";
+  }
+  else if (expected == T_LP && got == T_LB)
+  {
+    hint = "note: use '()' for parameter lists, not '[]' (brackets are for attributes)";
+  }
+  else if (expected == T_RP && got == T_RB)
+  {
+    hint = "note: use ')' to close parameter list, not ']'";
   }
 
   fprintf(stderr, "%s:%u:%u: %s\n",
@@ -3731,6 +3763,19 @@ static Syntax_Node *parse_type_definition(Parser *parser)
   }
   if (parser_match(parser, T_ACCS))
   {
+    // Check for common error: ACCESS ACCESS (access to access type)
+    if (parser_at(parser, T_ACCS))
+    {
+      report_error(parser->current_token.location,
+                  "access type cannot designate another access type directly");
+      fprintf(stderr, "  note: use a named access type as the designated type\n");
+      fprintf(stderr, "  note: example: TYPE T1 IS ACCESS INTEGER;\n");
+      fprintf(stderr, "               TYPE T2 IS ACCESS T1;\n");
+      parser->error_count++;
+      // Skip the second ACCESS and continue
+      parser_next(parser);
+    }
+
     Syntax_Node *node = ND(TAC, location);
     node->unary_node.operand = parse_simple_expression(parser);
     return node;
@@ -4882,6 +4927,76 @@ static Symbol *symbol_find(Symbol_Manager *symbol_manager, String_Slice nm)
       imm = s;
   return imm;
 }
+// Find similar identifiers for "did you mean" suggestions
+static void suggest_similar_identifiers(Symbol_Manager *symbol_manager, String_Slice nm)
+{
+  if (nm.length > 20 || nm.length < 2) return;
+
+  const int MAX_SUGGESTIONS = 3;
+  struct {
+    Symbol *symbol;
+    int distance;
+  } candidates[MAX_SUGGESTIONS];
+
+  int candidate_count = 0;
+
+  // Search through symbol table for similar names
+  for (int bucket = 0; bucket < 4096; bucket++)
+  {
+    for (Symbol *s = symbol_manager->sy[bucket]; s; s = s->next)
+    {
+      // Skip if names are too different in length
+      if (abs((int)s->name.length - (int)nm.length) > 3)
+        continue;
+
+      int dist = edit_distance(nm.string, nm.length, s->name.string, s->name.length);
+
+      // Only consider close matches (edit distance <= 2)
+      if (dist > 0 && dist <= 2)
+      {
+        // Find insertion point (keep sorted by distance)
+        int insert_pos = candidate_count;
+        for (int i = 0; i < candidate_count; i++)
+        {
+          if (dist < candidates[i].distance)
+          {
+            insert_pos = i;
+            break;
+          }
+        }
+
+        // Insert if we have room or it's better than worst candidate
+        if (candidate_count < MAX_SUGGESTIONS || insert_pos < MAX_SUGGESTIONS)
+        {
+          // Shift worse candidates down
+          if (candidate_count < MAX_SUGGESTIONS)
+            candidate_count++;
+          for (int i = candidate_count - 1; i > insert_pos; i--)
+            candidates[i] = candidates[i - 1];
+
+          candidates[insert_pos].symbol = s;
+          candidates[insert_pos].distance = dist;
+        }
+      }
+    }
+  }
+
+  // Print suggestions
+  if (candidate_count > 0)
+  {
+    fprintf(stderr, "  note: did you mean ");
+    for (int i = 0; i < candidate_count; i++)
+    {
+      if (i > 0)
+        fprintf(stderr, i == candidate_count - 1 ? " or " : ", ");
+      fprintf(stderr, "'%.*s'",
+              (int)candidates[i].symbol->name.length,
+              candidates[i].symbol->name.string);
+    }
+    fprintf(stderr, "?\n");
+  }
+}
+
 static void symbol_find_use(Symbol_Manager *symbol_manager, Symbol *s, String_Slice nm)
 {
   uint32_t h = symbol_hash(nm) & 63, b = 1ULL << (symbol_hash(nm) & 63);
@@ -6289,8 +6404,8 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
         report_error(node->location, "undefined identifier '%.*s'",
                     (int) node->string_value.length, node->string_value.string);
 
-        // TODO: Add "did you mean" suggestions by checking symbol table
-        // for similar names using edit_distance function
+        // Suggest similar identifiers
+        suggest_similar_identifiers(symbol_manager, node->string_value);
       }
       node->ty = TY_INT;
     }
