@@ -5748,11 +5748,19 @@ static CompatKind type_compat_kind(Type_Info *a, Type_Info *b)
     return COMP_DERIVED;
   if (a->base_type == b or b->base_type == a)
     return COMP_BASED_ON;
-  if ((a->k == TYPE_INTEGER or a->k == TYPE_UNSIGNED_INTEGER)
-      and (b->k == TYPE_INTEGER or b->k == TYPE_UNSIGNED_INTEGER))
+  // Universal integer/float compatible with named integer/float types
+  // But named types are NOT automatically compatible with each other
+  if (a == TY_INT and (b->k == TYPE_INTEGER or b->k == TYPE_UNSIGNED_INTEGER))
     return COMP_SAME;
-  if ((a->k == TYPE_FLOAT or a->k == TYPE_UNIVERSAL_FLOAT)
-      and (b->k == TYPE_FLOAT or b->k == TYPE_UNIVERSAL_FLOAT))
+  if (b == TY_INT and (a->k == TYPE_INTEGER or a->k == TYPE_UNSIGNED_INTEGER))
+    return COMP_SAME;
+  if (a->k == TYPE_UNIVERSAL_FLOAT and b->k == TYPE_FLOAT)
+    return COMP_SAME;
+  if (b->k == TYPE_UNIVERSAL_FLOAT and a->k == TYPE_FLOAT)
+    return COMP_SAME;
+  if (a == TY_FLT and b->k == TYPE_FLOAT)
+    return COMP_SAME;
+  if (b == TY_FLT and a->k == TYPE_FLOAT)
     return COMP_SAME;
   if (a->k == TYPE_ARRAY and b->k == TYPE_ARRAY and type_compat_kind(a->element_type, b->element_type) != COMP_NONE)
     return COMP_ARRAY_ELEMENT;
@@ -6466,11 +6474,20 @@ static bool types_compatible_for_operator(Token_Kind op, Type_Info *left, Type_I
         return semantic_base(lc) == semantic_base(rc);
       return 0;
 
-    // Arithmetic: numeric types (LRM 4.5.3-5)
+    // Arithmetic: numeric types, exact type match (LRM 4.5.3-5)
     case T_PL: case T_MN: case T_ST: case T_SL:
     case T_MOD: case T_REM:
-      return (lc->k == TYPE_INTEGER || lc->k == TYPE_FLOAT) &&
-             (rc->k == TYPE_INTEGER || rc->k == TYPE_FLOAT);
+      // Both must be numeric
+      if (!((lc->k == TYPE_INTEGER || lc->k == TYPE_UNSIGNED_INTEGER ||
+             lc->k == TYPE_FLOAT || lc->k == TYPE_UNIVERSAL_FLOAT) &&
+            (rc->k == TYPE_INTEGER || rc->k == TYPE_UNSIGNED_INTEGER ||
+             rc->k == TYPE_FLOAT || rc->k == TYPE_UNIVERSAL_FLOAT)))
+        return 0;
+      // Require exact type match (not just same kind)
+      {
+        CompatKind ck = type_compat_kind(lc, rc);
+        return ck == COMP_SAME || ck == COMP_DERIVED || ck == COMP_BASED_ON;
+      }
 
     // Exponentiation: base numeric, exponent integer (LRM 4.5.6)
     case T_EX:
@@ -6521,7 +6538,15 @@ static void validate_binary_operation(Syntax_Node *node)
 
       case T_PL: case T_MN: case T_ST: case T_SL:
       case T_MOD: case T_REM:
-        report_error(node->location, "arithmetic operators require numeric types");
+        // Check if both operands are numeric but incompatible types
+        if (lc && rc &&
+            (lc->k == TYPE_INTEGER || lc->k == TYPE_FLOAT || lc->k == TYPE_UNSIGNED_INTEGER ||
+             lc->k == TYPE_UNIVERSAL_FLOAT) &&
+            (rc->k == TYPE_INTEGER || rc->k == TYPE_FLOAT || rc->k == TYPE_UNSIGNED_INTEGER ||
+             rc->k == TYPE_UNIVERSAL_FLOAT))
+          report_error(node->location, "arithmetic operators require operands of the same type");
+        else
+          report_error(node->location, "arithmetic operators require numeric types");
         break;
 
       case T_EX:
