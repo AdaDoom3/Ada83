@@ -377,6 +377,25 @@ static uint64_t string_hash(String_Slice s)
     h = (h ^ (uint8_t) tolower(s.string[i])) * 1099511628211ULL;
   return h;
 }
+// Levenshtein distance for "did you mean" suggestions
+static int edit_distance(const char *s1, int len1, const char *s2, int len2)
+{
+  if (len1 > 20 || len2 > 20) return 100; // Skip long strings
+  int d[21][21];
+  for (int i = 0; i <= len1; i++) d[i][0] = i;
+  for (int j = 0; j <= len2; j++) d[0][j] = j;
+  for (int i = 1; i <= len1; i++)
+    for (int j = 1; j <= len2; j++)
+    {
+      int cost = (tolower(s1[i-1]) != tolower(s2[j-1]));
+      int del = d[i-1][j] + 1;
+      int ins = d[i][j-1] + 1;
+      int sub = d[i-1][j-1] + cost;
+      d[i][j] = del < ins ? (del < sub ? del : sub) : (ins < sub ? ins : sub);
+    }
+  return d[len1][len2];
+}
+
 // Non-fatal error reporting - accumulates errors instead of exiting
 static void report_error(Source_Location l, const char *f, ...)
 {
@@ -1796,6 +1815,57 @@ static void parser_synchronize(Parser *parser)
   }
 }
 
+// Smart error reporting with context and suggestions
+static void parser_expect_error(Parser *parser, Token_Kind expected, Token_Kind got)
+{
+  char msg[512];
+  char *hint = NULL;
+
+  // Basic error message
+  snprintf(msg, sizeof(msg), "expected %s but got %s", TN[expected], TN[got]);
+
+  // Add context-specific hints
+  if (expected == T_SC)
+  {
+    hint = "note: Ada statements must end with a semicolon (;)";
+  }
+  else if (expected == T_THEN && got == T_LOOP)
+  {
+    hint = "note: IF statements require THEN before the body (use 'IF condition THEN')";
+  }
+  else if (expected == T_IS && got == T_AS)
+  {
+    hint = "note: use IS for declarations, not AS";
+  }
+  else if (expected == T_ID && got == T_ACCS)
+  {
+    hint = "note: ACCESS is a reserved word, cannot be used as identifier";
+  }
+  else if (expected == T_ID && (got == T_THEN || got == T_LOOP || got == T_IS))
+  {
+    hint = "note: keywords cannot be used as identifiers";
+  }
+  else if (expected == T_DD)
+  {
+    hint = "note: ranges require '..' between bounds (e.g., 1 .. 10)";
+  }
+  else if (expected == T_AR)
+  {
+    hint = "note: use '=>' for associations in aggregates and case alternatives";
+  }
+
+  fprintf(stderr, "%s:%u:%u: %s\n",
+          parser->current_token.location.filename,
+          parser->current_token.location.line,
+          parser->current_token.location.column,
+          msg);
+
+  if (hint)
+    fprintf(stderr, "  %s\n", hint);
+
+  parser->error_count++;
+}
+
 static void parser_expect(Parser *parser, Token_Kind token_kind)
 {
   if (not parser_match(parser, token_kind))
@@ -1804,9 +1874,7 @@ static void parser_expect(Parser *parser, Token_Kind token_kind)
     if (parser_at(parser, T_EOF) || parser->error_count >= 100)
       return;
 
-    report_error(parser->current_token.location, "expected '%s' but got '%s'",
-                 TN[token_kind], TN[parser->current_token.kind]);
-    parser->error_count++;
+    parser_expect_error(parser, token_kind, parser->current_token.kind);
 
     // For missing semicolons or closing delimiters, just assume they're there and continue
     // This prevents cascading errors from a single missing delimiter
