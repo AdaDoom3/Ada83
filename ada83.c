@@ -6036,21 +6036,35 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
     if (node->index.indices.count == 1)
     {
       Syntax_Node *r = node->index.indices.data[0];
+      Syntax_Node *lo = 0, *hi = 0;
       if (r and r->k == N_RN)
       {
         resolve_expression(symbol_manager, r->range.low_bound, 0);
         resolve_expression(symbol_manager, r->range.high_bound, 0);
-        Syntax_Node *lo = r->range.low_bound;
-        Syntax_Node *hi = r->range.high_bound;
-        if (lo and lo->k == N_INT)
-          t->low_bound = lo->integer_value;
-        else if (lo and lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.operand->k == N_INT)
-          t->low_bound = -lo->unary_node.operand->integer_value;
-        if (hi and hi->k == N_INT)
-          t->high_bound = hi->integer_value;
-        else if (hi and hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.operand->k == N_INT)
-          t->high_bound = -hi->unary_node.operand->integer_value;
+        lo = r->range.low_bound;
+        hi = r->range.high_bound;
       }
+      else if (r and r->k == N_ST and r->subtype_decl.constraint)
+      {
+        // Handle subtype indication like "INTEGER RANGE 4..6"
+        Syntax_Node *cn = r->subtype_decl.constraint;
+        Syntax_Node *rn = cn->constraint.range_spec;
+        if (rn and rn->k == N_RN)
+        {
+          resolve_expression(symbol_manager, rn->range.low_bound, 0);
+          resolve_expression(symbol_manager, rn->range.high_bound, 0);
+          lo = rn->range.low_bound;
+          hi = rn->range.high_bound;
+        }
+      }
+      if (lo and lo->k == N_INT)
+        t->low_bound = lo->integer_value;
+      else if (lo and lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.operand->k == N_INT)
+        t->low_bound = -lo->unary_node.operand->integer_value;
+      if (hi and hi->k == N_INT)
+        t->high_bound = hi->integer_value;
+      else if (hi and hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.operand->k == N_INT)
+        t->high_bound = -hi->unary_node.operand->integer_value;
     }
     return t;
   }
@@ -10064,10 +10078,38 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
     normalize_record_aggregate(generator->sm, t, n);
   if (not t or t->k != TYPE_RECORD or t->is_packed)
   {
+    // Use type bounds for constrained arrays, fall back to item count for unconstrained
     int sz = n->aggregate.items.count ? n->aggregate.items.count : 1;
+    if (t and t->k == TYPE_ARRAY and t->low_bound != 0 and t->high_bound >= t->low_bound)
+      sz = (int)(t->high_bound - t->low_bound + 1);
+
+    // Determine element size and type string for constrained arrays
+    int elem_size = 8;
+    const char *elem_type = "i64";
+    Type_Info *et = (t and t->k == TYPE_ARRAY) ? type_canonical_concrete(t->element_type) : 0;
+    if (et)
+    {
+      if (et->k == TYPE_BOOLEAN or et->k == TYPE_CHARACTER or
+          (et->k == TYPE_INTEGER and et->high_bound < 256 and et->low_bound >= 0))
+      {
+        elem_size = 1;
+        elem_type = "i8";
+      }
+      else if (et->k == TYPE_INTEGER and et->high_bound < 65536 and et->low_bound >= -32768)
+      {
+        elem_size = 2;
+        elem_type = "i16";
+      }
+      else if (et->k == TYPE_INTEGER and et->high_bound < 2147483648LL and et->low_bound >= -2147483648LL)
+      {
+        elem_size = 4;
+        elem_type = "i32";
+      }
+    }
+
     int p = new_temporary_register(generator);
     int by = new_temporary_register(generator);
-    fprintf(o, "  %%t%d = add i64 0, %d\n", by, sz * 8);
+    fprintf(o, "  %%t%d = add i64 0, %d\n", by, sz * elem_size);
     fprintf(o, "  %%t%d = call ptr @__ada_ss_allocate(i64 %%t%d)\n", p, by);
     uint32_t ix = 0;
     for (uint32_t i = 0; i < n->aggregate.items.count; i++)
@@ -10082,8 +10124,15 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
           {
             Value v = value_cast(generator, generate_expression(generator, el->association.value), VALUE_KIND_INTEGER);
             int ep = new_temporary_register(generator);
-            fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p, ix);
-            fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
+            fprintf(o, "  %%t%d = getelementptr %s, ptr %%t%d, i64 %u\n", ep, elem_type, p, ix);
+            if (elem_size < 8)
+            {
+              int tv = new_temporary_register(generator);
+              fprintf(o, "  %%t%d = trunc i64 %%t%d to %s\n", tv, v.id, elem_type);
+              fprintf(o, "  store %s %%t%d, ptr %%t%d\n", elem_type, tv, ep);
+            }
+            else
+              fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
           }
         }
         else
@@ -10102,8 +10151,15 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
                   Value cv = {new_temporary_register(generator), VALUE_KIND_INTEGER};
                   fprintf(o, "  %%t%d = add i64 0, %ld\n", cv.id, (long) cht->enum_values.data[ei]->value);
                   int ep = new_temporary_register(generator);
-                  fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %%t%d\n", ep, p, cv.id);
-                  fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
+                  fprintf(o, "  %%t%d = getelementptr %s, ptr %%t%d, i64 %%t%d\n", ep, elem_type, p, cv.id);
+                  if (elem_size < 8)
+                  {
+                    int tv = new_temporary_register(generator);
+                    fprintf(o, "  %%t%d = trunc i64 %%t%d to %s\n", tv, v.id, elem_type);
+                    fprintf(o, "  store %s %%t%d, ptr %%t%d\n", elem_type, tv, ep);
+                  }
+                  else
+                    fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
                 }
               }
               else if ((cht->low_bound != 0 or cht->high_bound != 0) and cht->k == TYPE_INTEGER)
@@ -10113,8 +10169,15 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
                   Value cv = {new_temporary_register(generator), VALUE_KIND_INTEGER};
                   fprintf(o, "  %%t%d = add i64 0, %ld\n", cv.id, (long) ri);
                   int ep = new_temporary_register(generator);
-                  fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %%t%d\n", ep, p, cv.id);
-                  fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
+                  fprintf(o, "  %%t%d = getelementptr %s, ptr %%t%d, i64 %%t%d\n", ep, elem_type, p, cv.id);
+                  if (elem_size < 8)
+                  {
+                    int tv = new_temporary_register(generator);
+                    fprintf(o, "  %%t%d = trunc i64 %%t%d to %s\n", tv, v.id, elem_type);
+                    fprintf(o, "  store %s %%t%d, ptr %%t%d\n", elem_type, tv, ep);
+                  }
+                  else
+                    fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
                 }
               }
             }
@@ -10122,8 +10185,15 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
             {
               Value ci = value_cast(generator, generate_expression(generator, ch), VALUE_KIND_INTEGER);
               int ep = new_temporary_register(generator);
-              fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %%t%d\n", ep, p, ci.id);
-              fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
+              fprintf(o, "  %%t%d = getelementptr %s, ptr %%t%d, i64 %%t%d\n", ep, elem_type, p, ci.id);
+              if (elem_size < 8)
+              {
+                int tv = new_temporary_register(generator);
+                fprintf(o, "  %%t%d = trunc i64 %%t%d to %s\n", tv, v.id, elem_type);
+                fprintf(o, "  store %s %%t%d, ptr %%t%d\n", elem_type, tv, ep);
+              }
+              else
+                fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
             }
           }
           ix++;
@@ -10131,10 +10201,18 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
       }
       else
       {
+        // Positional element
         Value v = value_cast(generator, generate_expression(generator, el), VALUE_KIND_INTEGER);
         int ep = new_temporary_register(generator);
-        fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p, ix);
-        fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
+        fprintf(o, "  %%t%d = getelementptr %s, ptr %%t%d, i64 %u\n", ep, elem_type, p, ix);
+        if (elem_size < 8)
+        {
+          int tv = new_temporary_register(generator);
+          fprintf(o, "  %%t%d = trunc i64 %%t%d to %s\n", tv, v.id, elem_type);
+          fprintf(o, "  store %s %%t%d, ptr %%t%d\n", elem_type, tv, ep);
+        }
+        else
+          fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
         ix++;
       }
     }
@@ -13775,24 +13853,51 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             }
             {
               Value v = generate_expression(generator, d->object_decl.in);
-              v = value_cast(generator, v, k);
-              if (s and s->level >= 0 and s->level < generator->sm->lv)
-                fprintf(
-                    o,
-                    "  store %s %%t%d, ptr %%lnk.%d.%s\n",
-                    value_llvm_type_string(k),
-                    v.id,
-                    s->level,
-                    string_to_lowercase(id->string_value));
+              // For constrained arrays, copy data with memcpy instead of storing pointer
+              if (at and at->k == TYPE_ARRAY and at->low_bound != 0 and at->high_bound >= at->low_bound)
+              {
+                int64_t count = at->high_bound - at->low_bound + 1;
+                int elem_size = 8; // Default element size
+                Type_Info *et = at->element_type ? type_canonical_concrete(at->element_type) : 0;
+                if (et)
+                {
+                  if (et->k == TYPE_BOOLEAN or et->k == TYPE_CHARACTER or
+                      (et->k == TYPE_INTEGER and et->high_bound < 256 and et->low_bound >= 0))
+                    elem_size = 1;
+                  else if (et->k == TYPE_INTEGER and et->high_bound < 65536 and et->low_bound >= -32768)
+                    elem_size = 2;
+                  else if (et->k == TYPE_INTEGER and et->high_bound < 2147483648LL and et->low_bound >= -2147483648LL)
+                    elem_size = 4;
+                }
+                int64_t copy_size = count * elem_size;
+                if (s and s->level >= 0 and s->level < generator->sm->lv)
+                  fprintf(o, "  call void @llvm.memcpy.p0.p0.i64(ptr %%lnk.%d.%s, ptr %%t%d, i64 %lld, i1 false)\n",
+                      s->level, string_to_lowercase(id->string_value), v.id, (long long)copy_size);
+                else
+                  fprintf(o, "  call void @llvm.memcpy.p0.p0.i64(ptr %%v.%s.sc%u.%u, ptr %%t%d, i64 %lld, i1 false)\n",
+                      string_to_lowercase(id->string_value), s ? s->scope : 0, s ? s->elaboration_level : 0, v.id, (long long)copy_size);
+              }
               else
-                fprintf(
-                    o,
-                    "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
-                    value_llvm_type_string(k),
-                    v.id,
-                    string_to_lowercase(id->string_value),
-                    s ? s->scope : 0,
-                    s ? s->elaboration_level : 0);
+              {
+                v = value_cast(generator, v, k);
+                if (s and s->level >= 0 and s->level < generator->sm->lv)
+                  fprintf(
+                      o,
+                      "  store %s %%t%d, ptr %%lnk.%d.%s\n",
+                      value_llvm_type_string(k),
+                      v.id,
+                      s->level,
+                      string_to_lowercase(id->string_value));
+                else
+                  fprintf(
+                      o,
+                      "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
+                      value_llvm_type_string(k),
+                      v.id,
+                      string_to_lowercase(id->string_value),
+                      s ? s->scope : 0,
+                      s ? s->elaboration_level : 0);
+              }
             }
           }
         }
@@ -14323,9 +14428,10 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   s->scope,
                   s->elaboration_level);
             }
-            else if (at and at->k == TYPE_ARRAY and asz > 0)
+            else if (at and at->k == TYPE_ARRAY and at->low_bound != 0 and at->high_bound > 0 and at->high_bound >= at->low_bound)
             {
-              // Array with aggregate initializer
+              // Compile-time constrained array - use type bounds (not aggregate item count)
+              asz = (int) (at->high_bound - at->low_bound + 1);
               fprintf(
                   o,
                   "  %%v.%s.sc%u.%u = alloca [%d x %s]\n",
@@ -14335,10 +14441,9 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   asz,
                   ada_to_c_type_string(bt));
             }
-            else if (at and at->k == TYPE_ARRAY and at->low_bound != 0 and at->high_bound > 0 and at->high_bound >= at->low_bound)
+            else if (at and at->k == TYPE_ARRAY and asz > 0)
             {
-              // Compile-time constrained array
-              asz = (int) (at->high_bound - at->low_bound + 1);
+              // Unconstrained array with aggregate initializer - infer size from aggregate
               fprintf(
                   o,
                   "  %%v.%s.sc%u.%u = alloca [%d x %s]\n",
@@ -14734,24 +14839,51 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
             }
             {
               Value v = generate_expression(generator, d->object_decl.in);
-              v = value_cast(generator, v, k);
-              if (s and s->level >= 0 and s->level < generator->sm->lv)
-                fprintf(
-                    o,
-                    "  store %s %%t%d, ptr %%lnk.%d.%s\n",
-                    value_llvm_type_string(k),
-                    v.id,
-                    s->level,
-                    string_to_lowercase(id->string_value));
+              // For constrained arrays, copy data with memcpy instead of storing pointer
+              if (at and at->k == TYPE_ARRAY and at->low_bound != 0 and at->high_bound >= at->low_bound)
+              {
+                int64_t count = at->high_bound - at->low_bound + 1;
+                int elem_size = 8; // Default element size
+                Type_Info *et = at->element_type ? type_canonical_concrete(at->element_type) : 0;
+                if (et)
+                {
+                  if (et->k == TYPE_BOOLEAN or et->k == TYPE_CHARACTER or
+                      (et->k == TYPE_INTEGER and et->high_bound < 256 and et->low_bound >= 0))
+                    elem_size = 1;
+                  else if (et->k == TYPE_INTEGER and et->high_bound < 65536 and et->low_bound >= -32768)
+                    elem_size = 2;
+                  else if (et->k == TYPE_INTEGER and et->high_bound < 2147483648LL and et->low_bound >= -2147483648LL)
+                    elem_size = 4;
+                }
+                int64_t copy_size = count * elem_size;
+                if (s and s->level >= 0 and s->level < generator->sm->lv)
+                  fprintf(o, "  call void @llvm.memcpy.p0.p0.i64(ptr %%lnk.%d.%s, ptr %%t%d, i64 %lld, i1 false)\n",
+                      s->level, string_to_lowercase(id->string_value), v.id, (long long)copy_size);
+                else
+                  fprintf(o, "  call void @llvm.memcpy.p0.p0.i64(ptr %%v.%s.sc%u.%u, ptr %%t%d, i64 %lld, i1 false)\n",
+                      string_to_lowercase(id->string_value), s ? s->scope : 0, s ? s->elaboration_level : 0, v.id, (long long)copy_size);
+              }
               else
-                fprintf(
-                    o,
-                    "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
-                    value_llvm_type_string(k),
-                    v.id,
-                    string_to_lowercase(id->string_value),
-                    s ? s->scope : 0,
-                    s ? s->elaboration_level : 0);
+              {
+                v = value_cast(generator, v, k);
+                if (s and s->level >= 0 and s->level < generator->sm->lv)
+                  fprintf(
+                      o,
+                      "  store %s %%t%d, ptr %%lnk.%d.%s\n",
+                      value_llvm_type_string(k),
+                      v.id,
+                      s->level,
+                      string_to_lowercase(id->string_value));
+                else
+                  fprintf(
+                      o,
+                      "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
+                      value_llvm_type_string(k),
+                      v.id,
+                      string_to_lowercase(id->string_value),
+                      s ? s->scope : 0,
+                      s ? s->elaboration_level : 0);
+              }
             }
           }
         }
