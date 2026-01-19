@@ -16173,10 +16173,12 @@ int main(int ac, char **av)
   FILE *o = stdout;
   Code_Generator g = {o, 0, 0, 0, &sm, {0}, 0, {0}, 0, {0}, 0, {0}, 13, {0}, {0}, {0}, {0}, 0};
   generate_runtime_type(&g);
+  // Track emitted globals to avoid duplicates
+  static char last_emitted[256] = {0};
   for (int h = 0; h < 4096; h++)
     for (Symbol *s = sm.sy[h]; s; s = s->next)
       if ((s->k == 0 or s->k == 2) and (s->level == 0 or s->parent) and not(s->parent and lfnd(&sm, s->parent->name))
-          and not s->is_external)
+          and not s->is_external and s->overloads.count == 0)
       {
         Value_Kind k = s->type_info ? token_kind_to_value_kind(s->type_info) : VALUE_KIND_INTEGER;
         char nb[256];
@@ -16192,6 +16194,11 @@ int main(int ac, char **av)
         }
         else
           snprintf(nb, 256, "%.*s", (int) s->name.length, s->name.string);
+        // Skip if this global was already emitted (deduplication)
+        if (strcmp(nb, last_emitted) == 0)
+          continue;
+        strncpy(last_emitted, nb, 255);
+        last_emitted[255] = 0;
         if (s->k == 2 and s->definition and s->definition->k == N_STR)
         {
           uint32_t len = s->definition->string_value.length;
