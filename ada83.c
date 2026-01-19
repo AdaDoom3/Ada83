@@ -6285,7 +6285,13 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     else
     {
       if (error_count < 99 and not string_equal_ignore_case(node->string_value, STRING_LITERAL("others")))
-        fatal_error(node->location, "undef '%.*s'", (int) node->string_value.length, node->string_value.string);
+      {
+        report_error(node->location, "undefined identifier '%.*s'",
+                    (int) node->string_value.length, node->string_value.string);
+
+        // TODO: Add "did you mean" suggestions by checking symbol table
+        // for similar names using edit_distance function
+      }
       node->ty = TY_INT;
     }
   }
@@ -7835,7 +7841,11 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
           s = x;
         }
         else if (error_count < 99)
-          fatal_error(n->location, "dup '%.*s'", (int) id->string_value.length, id->string_value.string);
+        {
+          report_error(n->location, "duplicate declaration of '%.*s'",
+                      (int) id->string_value.length, id->string_value.string);
+          fprintf(stderr, "  note: previous declaration was here\n");
+        }
       }
       if (not s)
       {
