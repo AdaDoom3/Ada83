@@ -2157,8 +2157,6 @@ static Syntax_Node *parse_primary(Parser *parser)
     {
       report_error(parser->current_token.location, "cannot index an aggregate directly");
       fprintf(stderr, "  note: assign the aggregate to a variable first\n");
-      fprintf(stderr, "  note: example: temp := (1, 2, 3);\n");
-      fprintf(stderr, "               value := temp(index);\n");
       parser->error_count++;
       // Skip the indexing part to avoid cascading errors
       parser_next(parser); // skip (
@@ -2176,8 +2174,6 @@ static Syntax_Node *parse_primary(Parser *parser)
     {
       report_error(parser->current_token.location, "cannot select component from aggregate directly");
       fprintf(stderr, "  note: assign the aggregate to a variable first\n");
-      fprintf(stderr, "  note: example: temp := (X => 1, Y => 2);\n");
-      fprintf(stderr, "               value := temp.X;\n");
       parser->error_count++;
       // Skip the selector to avoid cascading errors
       parser_next(parser); // skip .
@@ -3567,7 +3563,6 @@ static Syntax_Node *parse_type_definition(Parser *parser)
     {
       report_error(parser->current_token.location, "enumeration type cannot be empty");
       fprintf(stderr, "  note: at least one enumeration literal is required\n");
-      fprintf(stderr, "  note: example: TYPE Color IS (Red, Green, Blue);\n");
       parser->error_count++;
       parser_next(parser); // consume )
       return node;
@@ -3586,7 +3581,6 @@ static Syntax_Node *parse_type_definition(Parser *parser)
       {
         report_error(parser->current_token.location, "integer literal cannot be used as enumeration literal");
         fprintf(stderr, "  note: only identifiers and character literals are allowed\n");
-        fprintf(stderr, "  note: example: TYPE Day IS (Mon, Tue, Wed);\n");
         parser->error_count++;
         parser_next(parser); // skip the integer
       }
@@ -3845,8 +3839,6 @@ static Syntax_Node *parse_type_definition(Parser *parser)
       report_error(parser->current_token.location,
                   "access type cannot designate another access type directly");
       fprintf(stderr, "  note: use a named access type as the designated type\n");
-      fprintf(stderr, "  note: example: TYPE T1 IS ACCESS INTEGER;\n");
-      fprintf(stderr, "               TYPE T2 IS ACCESS T1;\n");
       parser->error_count++;
       // Skip the second ACCESS and continue
       parser_next(parser);
@@ -6353,7 +6345,6 @@ static void normalize_array_aggregate(Symbol_Manager *symbol_manager, Type_Info 
     {
       report_error(ag->location, "array aggregate missing value for index %lld", i + at->low_bound);
       fprintf(stderr, "  note: all array indices must be assigned in aggregate, or use OTHERS\n");
-      fprintf(stderr, "  note: example: (1 => 10, 2 => 20, OTHERS => 0)\n");
     }
   ag->aggregate.items = xv;
   free(cov);
@@ -7148,7 +7139,10 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
   case N_IF:
     resolve_expression(symbol_manager, node->if_stmt.condition, TY_BOOL);
     if (node->if_stmt.then_statements.count > 0 and not has_return_statement(&node->if_stmt.then_statements))
-      fatal_error(node->location, "seq needs stmt");
+    {
+      report_error(node->location, "statement sequence cannot contain only pragmas");
+      fprintf(stderr, "  note: at least one executable statement is required\n");
+    }
     for (uint32_t i = 0; i < node->if_stmt.then_statements.count; i++)
       resolve_statement_sequence(symbol_manager, node->if_stmt.then_statements.data[i]);
     for (uint32_t i = 0; i < node->if_stmt.elsif_statements.count; i++)
@@ -7156,12 +7150,18 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
       Syntax_Node *e = node->if_stmt.elsif_statements.data[i];
       resolve_expression(symbol_manager, e->if_stmt.condition, TY_BOOL);
       if (e->if_stmt.then_statements.count > 0 and not has_return_statement(&e->if_stmt.then_statements))
-        fatal_error(e->location, "seq needs stmt");
+      {
+        report_error(e->location, "statement sequence cannot contain only pragmas");
+        fprintf(stderr, "  note: at least one executable statement is required\n");
+      }
       for (uint32_t j = 0; j < e->if_stmt.then_statements.count; j++)
         resolve_statement_sequence(symbol_manager, e->if_stmt.then_statements.data[j]);
     }
     if (node->if_stmt.else_statements.count > 0 and not has_return_statement(&node->if_stmt.else_statements))
-      fatal_error(node->location, "seq needs stmt");
+    {
+      report_error(node->location, "statement sequence cannot contain only pragmas");
+      fprintf(stderr, "  note: at least one executable statement is required\n");
+    }
     for (uint32_t i = 0; i < node->if_stmt.else_statements.count; i++)
       resolve_statement_sequence(symbol_manager, node->if_stmt.else_statements.data[i]);
     break;
@@ -7173,7 +7173,10 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
       for (uint32_t j = 0; j < a->choices.items.count; j++)
         resolve_expression(symbol_manager, a->choices.items.data[j], node->case_stmt.expression->ty);
       if (a->exception_handler.statements.count > 0 and not has_return_statement(&a->exception_handler.statements))
-        fatal_error(a->location, "seq needs stmt");
+      {
+        report_error(a->location, "statement sequence cannot contain only pragmas");
+        fprintf(stderr, "  note: at least one executable statement is required\n");
+      }
       for (uint32_t j = 0; j < a->exception_handler.statements.count; j++)
         resolve_statement_sequence(symbol_manager, a->exception_handler.statements.data[j]);
     }
@@ -7201,7 +7204,10 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
       resolve_expression(symbol_manager, node->loop_stmt.iterator, TY_BOOL);
     }
     if (node->loop_stmt.statements.count > 0 and not has_return_statement(&node->loop_stmt.statements))
-      fatal_error(node->location, "seq needs stmt");
+    {
+      report_error(node->location, "statement sequence cannot contain only pragmas");
+      fprintf(stderr, "  note: at least one executable statement is required\n");
+    }
     for (uint32_t i = 0; i < node->loop_stmt.statements.count; i++)
       resolve_statement_sequence(symbol_manager, node->loop_stmt.statements.data[i]);
     break;
@@ -7267,7 +7273,10 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
         parser->symbol = ps;
       }
       if (node->accept_stmt.statements.count > 0 and not has_return_statement(&node->accept_stmt.statements))
-        fatal_error(node->location, "seq needs stmt");
+      {
+        report_error(node->location, "statement sequence cannot contain only pragmas");
+        fprintf(stderr, "  note: at least one executable statement is required\n");
+      }
       for (uint32_t i = 0; i < node->accept_stmt.statements.count; i++)
         resolve_statement_sequence(symbol_manager, node->accept_stmt.statements.data[i]);
     }
@@ -7284,7 +7293,10 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
         for (uint32_t j = 0; j < s->accept_stmt.parameters.count; j++)
           resolve_expression(symbol_manager, s->accept_stmt.parameters.data[j], 0);
         if (s->accept_stmt.statements.count > 0 and not has_return_statement(&s->accept_stmt.statements))
-          fatal_error(s->location, "seq needs stmt");
+        {
+          report_error(s->location, "statement sequence cannot contain only pragmas");
+          fprintf(stderr, "  note: at least one executable statement is required\n");
+        }
         for (uint32_t j = 0; j < s->accept_stmt.statements.count; j++)
           resolve_statement_sequence(symbol_manager, s->accept_stmt.statements.data[j]);
       }
