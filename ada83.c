@@ -10243,7 +10243,7 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
               {
                 Value v = value_cast(generator, generate_expression(generator, el->association.value), VALUE_KIND_INTEGER);
                 int ep = new_temporary_register(generator);
-                fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p, c->component_decl.offset);
+                fprintf(o, "  %%t%d = getelementptr i8, ptr %%t%d, i64 %u\n", ep, p, c->component_decl.offset);
                 fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
                 break;
               }
@@ -10256,7 +10256,7 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
       {
         Value v = value_cast(generator, generate_expression(generator, el), VALUE_KIND_INTEGER);
         int ep = new_temporary_register(generator);
-        fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p, ix);
+        fprintf(o, "  %%t%d = getelementptr i8, ptr %%t%d, i64 %u\n", ep, p, ix * 8);
         fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
         ix++;
       }
@@ -11455,6 +11455,17 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             fprintf(o, "  %%t%d = getelementptr ptr, ptr %%__slnk, i64 %u\n", tp, s->elaboration_level);
             fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", p.id, tp);
           }
+          else if (vty and vty->k == TYPE_RECORD)
+          {
+            // Always load the pointer for record types (records are stored by pointer)
+            fprintf(
+                o,
+                "  %%t%d = load ptr, ptr %%lnk.%d.%.*s\n",
+                p.id,
+                s->level,
+                (int) n->selected_component.prefix->string_value.length,
+                n->selected_component.prefix->string_value.string);
+          }
           else
             fprintf(
                 o,
@@ -11466,7 +11477,8 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         }
         else
         {
-          if (has_nested)
+          // Always load the pointer for record types (records are stored by pointer)
+          if (vty and vty->k == TYPE_RECORD)
             fprintf(
                 o,
                 "  %%t%d = load ptr, ptr %%v.%s.sc%u.%u\n",
@@ -11545,7 +11557,8 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           if (c->k == N_CM and string_equal_ignore_case(c->component_decl.name, n->selected_component.selector))
           {
             int ep = new_temporary_register(generator);
-            fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p.id, c->component_decl.offset);
+            // Use byte offset directly with getelementptr i8
+            fprintf(o, "  %%t%d = getelementptr i8, ptr %%t%d, i64 %u\n", ep, p.id, c->component_decl.offset);
             Type_Info *fty = resolve_subtype(generator->sm, c->component_decl.ty);
             if (fty and (fty->k == TYPE_RECORD or fty->k == TYPE_ARRAY))
             {
@@ -11575,7 +11588,8 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
               if (string_equal_ignore_case(vc->component_decl.name, n->selected_component.selector))
               {
                 int ep = new_temporary_register(generator);
-                fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p.id, vc->component_decl.offset);
+                // Use byte offset directly with getelementptr i8
+                fprintf(o, "  %%t%d = getelementptr i8, ptr %%t%d, i64 %u\n", ep, p.id, vc->component_decl.offset);
                 r.k = VALUE_KIND_INTEGER;
                 fprintf(o, "  %%t%d = load i64, ptr %%t%d\n", r.id, ep);
                 goto sel_done;
@@ -12628,24 +12642,37 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
         }
         else
         {
-          // Check if this is a fat pointer (runtime-sized array) or regular array
-          // Fat pointers are allocated for arrays declared with subtype indications
-          // Try to get data pointer from fat pointer structure
-          int fp_addr = new_temporary_register(generator);
-          fprintf(o, "  %%t%d = bitcast ptr %%v.%s.sc%u.%u to ptr\n",
-                  fp_addr,
-                  string_to_lowercase(n->assignment.target->string_value),
-                  s ? s->scope : 0,
-                  s ? s->elaboration_level : 0);
+          // Check if this is a constrained array or fat pointer (runtime-sized array)
+          // Constrained arrays are allocated as [N x type], fat pointers as {ptr,ptr}
+          bool is_constrained = st and st->low_bound != 0 and st->high_bound >= st->low_bound;
 
-          // Try to load as fat pointer and extract data field
-          int data_field = new_temporary_register(generator);
-          fprintf(o, "  %%t%d = getelementptr {ptr,ptr}, ptr %%t%d, i32 0, i32 0\n", data_field, fp_addr);
-          int data_ptr = new_temporary_register(generator);
-          fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", data_ptr, data_field);
+          if (is_constrained)
+          {
+            // Constrained array - memcpy directly to the variable
+            fprintf(o, "  call void @llvm.memcpy.p0.p0.i64(ptr %%v.%s.sc%u.%u, ptr %%t%d, i64 %lld, i1 false)\n",
+                    string_to_lowercase(n->assignment.target->string_value),
+                    s ? s->scope : 0,
+                    s ? s->elaboration_level : 0,
+                    v.id, (long long) total_size);
+          }
+          else
+          {
+            // Fat pointer - extract data pointer first
+            int fp_addr = new_temporary_register(generator);
+            fprintf(o, "  %%t%d = bitcast ptr %%v.%s.sc%u.%u to ptr\n",
+                    fp_addr,
+                    string_to_lowercase(n->assignment.target->string_value),
+                    s ? s->scope : 0,
+                    s ? s->elaboration_level : 0);
 
-          fprintf(o, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%d, ptr %%t%d, i64 %lld, i1 false)\n",
-                  data_ptr, v.id, (long long) total_size);
+            int data_field = new_temporary_register(generator);
+            fprintf(o, "  %%t%d = getelementptr {ptr,ptr}, ptr %%t%d, i32 0, i32 0\n", data_field, fp_addr);
+            int data_ptr = new_temporary_register(generator);
+            fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", data_ptr, data_field);
+
+            fprintf(o, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%d, ptr %%t%d, i64 %lld, i1 false)\n",
+                    data_ptr, v.id, (long long) total_size);
+          }
         }
       }
       else if (s and s->level == 0)
@@ -12748,6 +12775,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
       {
         Symbol *s = n->assignment.target->selected_component.prefix->symbol ? n->assignment.target->selected_component.prefix->symbol : symbol_find(generator->sm, n->assignment.target->selected_component.prefix->string_value);
         if (s and s->level >= 0 and s->level < generator->sm->lv)
+        {
           fprintf(
               o,
               "  %%t%d = bitcast ptr %%lnk.%d.%.*s to ptr\n",
@@ -12755,7 +12783,16 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               s->level,
               (int) n->assignment.target->selected_component.prefix->string_value.length,
               n->assignment.target->selected_component.prefix->string_value.string);
+          // For record variables (stored by pointer), load the record pointer
+          if (pt and pt->k == TYPE_RECORD)
+          {
+            int loaded_ptr = new_temporary_register(generator);
+            fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", loaded_ptr, p.id);
+            p.id = loaded_ptr;
+          }
+        }
         else
+        {
           fprintf(
               o,
               "  %%t%d = bitcast ptr %%v.%s.sc%u.%u to ptr\n",
@@ -12763,6 +12800,14 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               string_to_lowercase(n->assignment.target->selected_component.prefix->string_value),
               s ? s->scope : 0,
               s ? s->elaboration_level : 0);
+          // For record variables (stored by pointer), load the record pointer
+          if (pt and pt->k == TYPE_RECORD)
+          {
+            int loaded_ptr = new_temporary_register(generator);
+            fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", loaded_ptr, p.id);
+            p.id = loaded_ptr;
+          }
+        }
       }
       else
       {
@@ -12814,7 +12859,8 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             if (c->k == N_CM and string_equal_ignore_case(c->component_decl.name, n->assignment.target->selected_component.selector))
             {
               int ep = new_temporary_register(generator);
-              fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p.id, c->component_decl.offset);
+              // Use byte offset directly with getelementptr i8
+              fprintf(o, "  %%t%d = getelementptr i8, ptr %%t%d, i64 %u\n", ep, p.id, c->component_decl.offset);
               v = value_cast(generator, v, VALUE_KIND_INTEGER);
               fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
               break;
