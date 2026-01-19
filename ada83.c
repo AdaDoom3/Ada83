@@ -8,44 +8,6 @@
  *   - Semantic Analysis: Symbol table management with scope tracking
  *   - Code Generation: Direct emission of LLVM IR with Ada semantics
  *
- * 1. STATIC SEMANTIC INFORMATION ONLY
- *    - AST contains only information discoverable via static analysis
- *    - No dynamic evaluation, optimization results, or code generation artifacts
- *    - Exception: Static expressions ARE evaluated (Ada 83 requirement)
- *
- * 2. STRUCTURAL vs SEMANTIC ATTRIBUTES
- *    Structural Attributes (preserve source structure):
- *      - Node_Kind k            : Syntactic category (expression, statement, etc)
- *      - Source_Location        : Position in original source text
- *      - Union fields           : Direct syntactic components (operands, names, etc)
- *
- *    Semantic Attributes (augment with analysis results):
- *      - Type_Info *ty          : Resolved type after semantic analysis
- *      - Symbol *symbol         : Cross-reference to defining occurrence
- *      - [Future: constraint info, implicit conversions, etc]
- *
- * 3. EASY TO RECOMPUTE = OMIT
- *    Information is omitted from the AST if it can be recomputed via:
- *      - ≤3-4 node visits, OR
- *      - Single-pass traversal
- *    Examples omitted: parent pointers, enclosing scope, nesting depth
- *
- * 4. REPRESENTATION INDEPENDENCE
- *    - Source positions: Abstract (file, line, column)
- *    - Type representations: Platform-independent semantic model
- *    - Runtime values: Target-specific abstract types
- *
- * 5. REGULARITY
- *    - Consistent naming: resolve_* for semantic analysis, generate_* for codegen
- *    - Hierarchical structure: Clear subtyping relationships in Node_Kind
- *    - Uniform traversal: All nodes follow same visitation patterns
- *
- * Key Design Decisions:
- *   - Arena allocation for AST nodes (no individual frees during compilation)
- *   - Arbitrary precision integers for accurate constant evaluation
- *   - Fat pointers for Ada's unconstrained arrays and access types
- *   - Direct LLVM IR emission rather than intermediate representations
- *   - Embedded runtime library (self-contained binary)
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -377,11 +339,43 @@ static uint64_t string_hash(String_Slice s)
     h = (h ^ (uint8_t) tolower(s.string[i])) * 1099511628211ULL;
   return h;
 }
-static _Noreturn void fatal_error(Source_Location l, const char *f, ...)
+// Levenshtein distance for "did you mean" suggestions
+static int edit_distance(const char *s1, int len1, const char *s2, int len2)
+{
+  if (len1 > 20 || len2 > 20) return 100; // Skip long strings
+  int d[21][21];
+  for (int i = 0; i <= len1; i++) d[i][0] = i;
+  for (int j = 0; j <= len2; j++) d[0][j] = j;
+  for (int i = 1; i <= len1; i++)
+    for (int j = 1; j <= len2; j++)
+    {
+      int cost = (tolower(s1[i-1]) != tolower(s2[j-1]));
+      int del = d[i-1][j] + 1;
+      int ins = d[i][j-1] + 1;
+      int sub = d[i-1][j-1] + cost;
+      d[i][j] = del < ins ? (del < sub ? del : sub) : (ins < sub ? ins : sub);
+    }
+  return d[len1][len2];
+}
+
+// Non-fatal error reporting - accumulates errors instead of exiting
+static void report_error(Source_Location l, const char *f, ...)
 {
   va_list v;
   va_start(v, f);
   fprintf(stderr, "%s:%u:%u: ", l.filename, l.line, l.column);
+  vfprintf(stderr, f, v);
+  fputc('\n', stderr);
+  va_end(v);
+  error_count++;
+}
+
+// Fatal error - use only for internal compiler errors, not source errors
+static _Noreturn void fatal_error(Source_Location l, const char *f, ...)
+{
+  va_list v;
+  va_start(v, f);
+  fprintf(stderr, "%s:%u:%u: INTERNAL ERROR: ", l.filename, l.line, l.column);
   vfprintf(stderr, f, v);
   fputc('\n', stderr);
   va_end(v);
@@ -1698,6 +1692,7 @@ typedef struct
   Lexer lexer;
   Token current_token, peek_token;
   int error_count;
+  int panic_mode;  // Flag to suppress cascading errors
   String_List_Vector label_stack;
 } Parser;
 static void parser_next(Parser *parser)
@@ -1728,10 +1723,188 @@ static bool parser_match(Parser *parser, Token_Kind token_kind)
   }
   return 0;
 }
+
+// Check if parser is making progress; return non-zero if stuck or should stop
+// Returns: 0 = making progress, 1 = stuck but recovered, 2 = stop parsing
+// Now checks both token AND location to avoid false positives on repeated valid patterns
+static int parser_check_progress(Parser *parser, Token_Kind *last_token, int *stuck_count,
+                                  uint32_t *last_line, uint32_t *last_column)
+{
+  if (parser->error_count >= 100 || parser_at(parser, T_EOF))
+    return 2; // Stop parsing - too many errors or EOF
+
+  // Check if we're truly stuck: same token at same location
+  uint32_t current_line = parser->current_token.location.line;
+  uint32_t current_column = parser->current_token.location.column;
+
+  if (parser->current_token.kind == *last_token &&
+      current_line == *last_line &&
+      current_column == *last_column)
+  {
+    (*stuck_count)++;
+    if (*stuck_count > 3)
+    {
+      report_error(parser->current_token.location,
+                  "unexpected token '%s' - skipping",
+                  TN[parser->current_token.kind]);
+      parser->error_count++;
+      parser_next(parser);
+      *stuck_count = 0;
+      *last_line = 0;
+      *last_column = 0;
+      return 1; // Stuck, but recovered
+    }
+  }
+  else
+  {
+    *stuck_count = 0;
+    *last_token = parser->current_token.kind;
+    *last_line = current_line;
+    *last_column = current_column;
+  }
+  return 0; // Making progress
+}
+
+// Error recovery: skip to synchronization token
+static void parser_synchronize(Parser *parser)
+{
+  // Skip tokens until we find a likely recovery point
+  while (not parser_at(parser, T_EOF))
+  {
+    // Synchronization points: tokens that typically start new constructs
+    Token_Kind tk = parser->current_token.kind;
+    if (tk == T_SC || tk == T_END || tk == T_BEG || tk == T_IS ||
+        tk == T_THEN || tk == T_ELSE || tk == T_ELSIF || tk == T_LOOP ||
+        tk == T_WHN || tk == T_EXCP || tk == T_PRV ||
+        tk == T_PKG || tk == T_PROC || tk == T_FUN || tk == T_TSK ||
+        tk == T_TYP || tk == T_SUB || tk == T_WITH || tk == T_USE ||
+        tk == T_CONST || tk == T_DEC)
+    {
+      // Found synchronization point - if it's a semicolon, consume it
+      if (tk == T_SC)
+        parser_next(parser);
+      return;
+    }
+    parser_next(parser);
+  }
+}
+
+// Smart error reporting with context and suggestions
+static void parser_expect_error(Parser *parser, Token_Kind expected, Token_Kind got)
+{
+  char msg[512];
+  char *hint = NULL;
+
+  // Basic error message
+  snprintf(msg, sizeof(msg), "expected %s but got %s", TN[expected], TN[got]);
+
+  // Add context-specific hints
+  if (expected == T_SC)
+  {
+    if (got == T_END)
+      hint = "note: missing semicolon before END";
+    else if (got == T_BEG)
+      hint = "note: declarations must end with semicolon before BEGIN";
+    else
+      hint = "note: Ada statements and declarations must end with semicolon (;)";
+  }
+  else if (expected == T_THEN)
+  {
+    if (got == T_LOOP)
+      hint = "note: IF requires THEN, not LOOP (use 'IF condition THEN ... END IF;')";
+    else
+      hint = "note: IF statements require THEN after the condition";
+  }
+  else if (expected == T_LOOP && got == T_THEN)
+  {
+    hint = "note: loops require LOOP keyword (use 'WHILE condition LOOP ... END LOOP;')";
+  }
+  else if (expected == T_IS)
+  {
+    if (got == T_AS)
+      hint = "note: use IS for type definitions, not AS (e.g., 'TYPE T IS ...')";
+    else if (got == T_CL)
+      hint = "note: use IS after subprogram declarations (e.g., 'PROCEDURE P IS')";
+    else
+      hint = "note: declarations require IS keyword";
+  }
+  else if (expected == T_ID && got == T_ACCS)
+  {
+    hint = "note: ACCESS is reserved - it starts an access type definition";
+  }
+  else if (expected == T_ID)
+  {
+    if (got == T_THEN || got == T_LOOP || got == T_BEG || got == T_END)
+      hint = "note: keywords cannot be used as identifiers";
+    else if (got == T_TYP || got == T_PROC || got == T_FUN || got == T_PKG)
+      hint = "note: missing identifier after keyword";
+  }
+  else if (expected == T_DD)
+  {
+    hint = "note: ranges use '..' (two dots) between bounds (e.g., 1 .. 10)";
+  }
+  else if (expected == T_AR)
+  {
+    hint = "note: use '=>' for named associations (e.g., 'CHOICE => VALUE')";
+  }
+  else if (expected == T_CL && got == T_AS)
+  {
+    hint = "note: use ':' for type specifications, not AS";
+  }
+  else if (expected == T_LP && got == T_LB)
+  {
+    hint = "note: use '()' for parameter lists, not '[]' (brackets are for attributes)";
+  }
+  else if (expected == T_RP && got == T_RB)
+  {
+    hint = "note: use ')' to close parameter list, not ']'";
+  }
+
+  fprintf(stderr, "%s:%u:%u: %s\n",
+          parser->current_token.location.filename,
+          parser->current_token.location.line,
+          parser->current_token.location.column,
+          msg);
+
+  if (hint)
+    fprintf(stderr, "  %s\n", hint);
+
+  parser->error_count++;
+}
+
 static void parser_expect(Parser *parser, Token_Kind token_kind)
 {
   if (not parser_match(parser, token_kind))
-    fatal_error(parser->current_token.location, "exp '%s' got '%s'", TN[token_kind], TN[parser->current_token.kind]);
+  {
+    // Stop reporting errors if we're at EOF or have too many errors
+    if (parser_at(parser, T_EOF) || parser->error_count >= 100)
+      return;
+
+    parser_expect_error(parser, token_kind, parser->current_token.kind);
+
+    // For missing semicolons or closing delimiters, just assume they're there and continue
+    // This prevents cascading errors from a single missing delimiter
+    if (token_kind == T_SC || token_kind == T_RP || token_kind == T_RB ||
+        token_kind == T_THEN || token_kind == T_LOOP || token_kind == T_IS)
+    {
+      // Don't consume or synchronize - just pretend the token was there
+      return;
+    }
+
+    // For identifiers and other major tokens, we need to skip the current bad token
+    // to avoid infinite loops, but only if we're not at EOF
+    if (token_kind == T_ID && not parser_at(parser, T_EOF))
+    {
+      // Skip the unexpected token and continue
+      parser_next(parser);
+      return;
+    }
+
+    // For other tokens, synchronize to a safe recovery point
+    // Don't try to synchronize if we're at EOF - just stop
+    if (not parser_at(parser, T_EOF))
+      parser_synchronize(parser);
+  }
 }
 static Source_Location parser_location(Parser *parser)
 {
@@ -1742,6 +1915,23 @@ static String_Slice parser_identifier(Parser *parser)
   String_Slice identifier = string_duplicate(parser->current_token.literal);
   parser_expect(parser, T_ID);
   return identifier;
+}
+// Check END identifier matches expected name (packages, subprograms)
+// Consumes identifier token if present
+static void parser_check_end_identifier(Parser *parser, String_Slice expected, const char *construct_type)
+{
+  if (parser_at(parser, T_ID) or parser_at(parser, T_STR))
+  {
+    String_Slice got = parser->current_token.literal;
+    if (not string_equal_ignore_case(expected, got))
+    {
+      report_error(parser->current_token.location, "END identifier must match %s name", construct_type);
+      fprintf(stderr, "  note: expected '%.*s' but got '%.*s'\n",
+              (int)expected.length, expected.string, (int)got.length, got.string);
+      parser->error_count++;
+    }
+    parser_next(parser);
+  }
 }
 static String_Slice parser_attribute(Parser *parser)
 {
@@ -1864,7 +2054,11 @@ static String_Slice parser_attribute(Parser *parser)
     parser_next(parser);
   }
   else
-    fatal_error(parser_location(parser), "exp attr");
+  {
+    report_error(parser_location(parser), "expected attribute name");
+    parser->error_count++;
+    s = STRING_LITERAL("");
+  }
   return s;
 }
 static Syntax_Node *parse_name(Parser *parser);
@@ -1922,7 +2116,13 @@ static Syntax_Node *parse_primary(Parser *parser)
         if (choices.count == 1)
           nv(&aggregate_vector, choices.data[0]);
         else
-          fatal_error(location, "exp '=>'");
+        {
+          report_error(location, "expected '=>' in aggregate");
+          parser->error_count++;
+          // Add first choice as positional, skip rest
+          if (choices.count > 0)
+            nv(&aggregate_vector, choices.data[0]);
+        }
       }
     } while (parser_match(parser, T_CM));
     parser_expect(parser, T_RP);
@@ -1930,6 +2130,36 @@ static Syntax_Node *parse_primary(Parser *parser)
       return aggregate_vector.data[0];
     Syntax_Node *node = ND(AG, location);
     node->aggregate.items = aggregate_vector;
+
+    // Check for illegal postfix operators on aggregates
+    if (parser_at(parser, T_LP))
+    {
+      report_error(parser->current_token.location, "cannot index an aggregate directly");
+      fprintf(stderr, "  note: assign the aggregate to a variable first\n");
+      parser->error_count++;
+      // Skip the indexing part to avoid cascading errors
+      parser_next(parser); // skip (
+      int paren_depth = 1;
+      while (not parser_at(parser, T_EOF) and paren_depth > 0)
+      {
+        if (parser_at(parser, T_LP))
+          paren_depth++;
+        else if (parser_at(parser, T_RP))
+          paren_depth--;
+        parser_next(parser);
+      }
+    }
+    else if (parser_at(parser, T_DT))
+    {
+      report_error(parser->current_token.location, "cannot select component from aggregate directly");
+      fprintf(stderr, "  note: assign the aggregate to a variable first\n");
+      parser->error_count++;
+      // Skip the selector to avoid cascading errors
+      parser_next(parser); // skip .
+      if (parser_at(parser, T_ID) or parser_at(parser, T_STR) or parser_at(parser, T_CHAR))
+        parser_next(parser); // skip selector
+    }
+
     return node;
   }
   if (parser_match(parser, T_NEW))
@@ -2018,7 +2248,12 @@ static Syntax_Node *parse_primary(Parser *parser)
               if (choices.count == 1)
                 nv(&aggregate_vector, choices.data[0]);
               else
-                fatal_error(location, "exp '=>'");
+              {
+                report_error(location, "expected '=>' in parameter association");
+                parser->error_count++;
+                if (choices.count > 0)
+                  nv(&aggregate_vector, choices.data[0]);
+              }
             }
           }
         } while (parser_match(parser, T_CM));
@@ -2055,7 +2290,10 @@ static Syntax_Node *parse_primary(Parser *parser)
     node->dereference.expression = parse_primary(parser);
     return node;
   }
-  fatal_error(location, "exp expr");
+  report_error(location, "expected expression");
+  parser->error_count++;
+  Syntax_Node *err = ND(ERR, location);
+  return err;
 }
 static Syntax_Node *parse_name(Parser *parser)
 {
@@ -2126,7 +2364,12 @@ static Syntax_Node *parse_name(Parser *parser)
             if (ch.count == 1)
               nv(&v, ch.data[0]);
             else
-              fatal_error(location, "exp '=>'");
+            {
+              report_error(location, "expected '=>' in aggregate");
+              parser->error_count++;
+              if (ch.count > 0)
+                nv(&v, ch.data[0]);
+            }
           }
         } while (parser_match(parser, T_CM));
         parser_expect(parser, T_RP);
@@ -2203,7 +2446,12 @@ static Syntax_Node *parse_name(Parser *parser)
               if (ch.count == 1)
                 nv(&v, ch.data[0]);
               else
-                fatal_error(location, "exp '=>'");
+              {
+                report_error(location, "expected '=>' in parameter association");
+                parser->error_count++;
+                if (ch.count > 0)
+                  nv(&v, ch.data[0]);
+              }
             }
           }
         } while (parser_match(parser, T_CM));
@@ -3234,9 +3482,18 @@ static Syntax_Node *parse_statement_or_label(Parser *parser)
 static Node_Vector parse_statement(Parser *parser)
 {
   Node_Vector statements = {0};
+  Token_Kind last_token = T_EOF;
+  int stuck_count = 0;
+  uint32_t last_line = 0, last_column = 0;
+
   while (not parser_at(parser, T_END) and not parser_at(parser, T_EXCP) and not parser_at(parser, T_ELSIF)
          and not parser_at(parser, T_ELSE) and not parser_at(parser, T_WHN) and not parser_at(parser, T_OR))
+  {
+    int progress = parser_check_progress(parser, &last_token, &stuck_count, &last_line, &last_column);
+    if (progress == 2) break;
+    if (progress == 1) continue;
     nv(&statements, parse_statement_or_label(parser));
+  }
   return statements;
 }
 static Node_Vector parse_handle_declaration(Parser *parser)
@@ -3258,8 +3515,17 @@ static Node_Vector parse_handle_declaration(Parser *parser)
         nv(&handler->exception_handler.exception_choices, parse_name(parser));
     } while (parser_match(parser, T_BR));
     parser_expect(parser, T_AR);
+
+    Token_Kind last_token = T_EOF;
+    int stuck_count = 0;
+    uint32_t last_line = 0, last_column = 0;
     while (not parser_at(parser, T_WHN) and not parser_at(parser, T_END))
+    {
+      int progress = parser_check_progress(parser, &last_token, &stuck_count, &last_line, &last_column);
+      if (progress == 2) break;
+      if (progress == 1) continue;
       nv(&handler->exception_handler.statements, parse_statement_or_label(parser));
+    }
     nv(&handlers, handler);
   }
   return handlers;
@@ -3270,6 +3536,17 @@ static Syntax_Node *parse_type_definition(Parser *parser)
   if (parser_match(parser, T_LP))
   {
     Syntax_Node *node = ND(TE, location);
+
+    // Check for empty enumeration
+    if (parser_at(parser, T_RP))
+    {
+      report_error(parser->current_token.location, "enumeration type cannot be empty");
+      fprintf(stderr, "  note: at least one enumeration literal is required\n");
+      parser->error_count++;
+      parser_next(parser); // consume )
+      return node;
+    }
+
     do
     {
       if (parser_at(parser, T_CHAR))
@@ -3278,6 +3555,21 @@ static Syntax_Node *parse_type_definition(Parser *parser)
         c->integer_value = parser->current_token.integer_value;
         parser_next(parser);
         nv(&node->list.items, c);
+      }
+      else if (parser_at(parser, T_INT))
+      {
+        report_error(parser->current_token.location, "integer literal cannot be used as enumeration literal");
+        fprintf(stderr, "  note: only identifiers and character literals are allowed\n");
+        parser->error_count++;
+        parser_next(parser); // skip the integer
+      }
+      else if (parser_at(parser, T_STR))
+      {
+        report_error(parser->current_token.location, "string literal cannot be used as enumeration literal");
+        fprintf(stderr, "  note: only identifiers and character literals are allowed\n");
+        fprintf(stderr, "  note: did you mean a character literal? Use 'X' not \"X\"\n");
+        parser->error_count++;
+        parser_next(parser); // skip the string
       }
       else
       {
@@ -3316,15 +3608,24 @@ static Syntax_Node *parse_type_definition(Parser *parser)
   if (parser_match(parser, T_DIG))
   {
     Syntax_Node *node = ND(TF, location);
+    Syntax_Node *digits_expr = 0;
     if (parser_match(parser, T_BX))
-      node->unary_node.operand = 0;
+      digits_expr = 0;
     else
-      node->unary_node.operand = parse_expression(parser);
+      digits_expr = parse_expression(parser);
+
+    // Store digits expression in list
+    if (digits_expr)
+      nv(&node->list.items, digits_expr);
+
+    // Store optional range constraint
     if (parser_match(parser, T_RNG))
     {
-      node->range.low_bound = parse_signed_term(parser);
+      Syntax_Node *rn = ND(RN, location);
+      rn->range.low_bound = parse_signed_term(parser);
       parser_expect(parser, T_DD);
-      node->range.high_bound = parse_signed_term(parser);
+      rn->range.high_bound = parse_signed_term(parser);
+      nv(&node->list.items, rn);
     }
     return node;
   }
@@ -3511,6 +3812,17 @@ static Syntax_Node *parse_type_definition(Parser *parser)
   }
   if (parser_match(parser, T_ACCS))
   {
+    // Check for common error: ACCESS ACCESS (access to access type)
+    if (parser_at(parser, T_ACCS))
+    {
+      report_error(parser->current_token.location,
+                  "access type cannot designate another access type directly");
+      fprintf(stderr, "  note: use a named access type as the designated type\n");
+      parser->error_count++;
+      // Skip the second ACCESS and continue
+      parser_next(parser);
+    }
+
     Syntax_Node *node = ND(TAC, location);
     node->unary_node.operand = parse_simple_expression(parser);
     return node;
@@ -3863,8 +4175,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
       if (parser_match(parser, T_EXCP))
         node->body.handlers = parse_handle_declaration(parser);
       parser_expect(parser, T_END);
-      if (parser_at(parser, T_ID) or parser_at(parser, T_STR))
-        parser_next(parser);
+      parser_check_end_identifier(parser, sp->subprogram.name, "procedure");
       parser_expect(parser, T_SC);
       return node;
     }
@@ -3944,8 +4255,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
       if (parser_match(parser, T_EXCP))
         node->body.handlers = parse_handle_declaration(parser);
       parser_expect(parser, T_END);
-      if (parser_at(parser, T_ID) or parser_at(parser, T_STR))
-        parser_next(parser);
+      parser_check_end_identifier(parser, sp->subprogram.name, "function");
       parser_expect(parser, T_SC);
       return node;
     }
@@ -3977,8 +4287,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
           node->package_body.handlers = parse_handle_declaration(parser);
       }
       parser_expect(parser, T_END);
-      if (parser_at(parser, T_ID))
-        parser_next(parser);
+      parser_check_end_identifier(parser, nm, "package");
       parser_expect(parser, T_SC);
       return node;
     }
@@ -4030,8 +4339,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
     if (parser_match(parser, T_PRV))
       node->package_spec.private_declarations = parse_declarative_part(parser);
     parser_expect(parser, T_END);
-    if (parser_at(parser, T_ID))
-      parser_next(parser);
+    parser_check_end_identifier(parser, nm, "package");
     parser_expect(parser, T_SC);
     return node;
   }
@@ -4244,9 +4552,20 @@ static Syntax_Node *parse_declaration(Parser *parser)
 static Node_Vector parse_declarative_part(Parser *parser)
 {
   Node_Vector declarations = {0};
+  Token_Kind last_token = T_EOF;
+  int stuck_count = 0;
+  uint32_t last_line = 0, last_column = 0;
+
   while (not parser_at(parser, T_BEG) and not parser_at(parser, T_END) and not parser_at(parser, T_PRV)
          and not parser_at(parser, T_EOF) and not parser_at(parser, T_ENT))
   {
+    // Check if we're stuck in an infinite loop
+    int progress = parser_check_progress(parser, &last_token, &stuck_count, &last_line, &last_column);
+    if (progress == 2) // Stop parsing
+      break;
+    if (progress == 1) // Recovered from stuck state
+      continue;
+
     if (parser_at(parser, T_FOR))
     {
       Representation_Clause *r = parse_representation_clause(parser);
@@ -4386,7 +4705,7 @@ static Syntax_Node *parse_compilation_unit(Parser *parser)
 }
 static Parser parser_new(const char *source, size_t size, const char *filename)
 {
-  Parser parser = {lexer_new(source, size, filename), {0}, {0}, 0, {0}};
+  Parser parser = {lexer_new(source, size, filename), {0}, {0}, 0, 0, {0}};
   parser_next(&parser);
   parser_next(&parser);
   return parser;
@@ -4652,6 +4971,76 @@ static Symbol *symbol_find(Symbol_Manager *symbol_manager, String_Slice nm)
       imm = s;
   return imm;
 }
+// Find similar identifiers for "did you mean" suggestions
+static void suggest_similar_identifiers(Symbol_Manager *symbol_manager, String_Slice nm)
+{
+  if (nm.length > 20 || nm.length < 2) return;
+
+  const int MAX_SUGGESTIONS = 3;
+  struct {
+    Symbol *symbol;
+    int distance;
+  } candidates[MAX_SUGGESTIONS];
+
+  int candidate_count = 0;
+
+  // Search through symbol table for similar names
+  for (int bucket = 0; bucket < 4096; bucket++)
+  {
+    for (Symbol *s = symbol_manager->sy[bucket]; s; s = s->next)
+    {
+      // Skip if names are too different in length
+      if (abs((int)s->name.length - (int)nm.length) > 3)
+        continue;
+
+      int dist = edit_distance(nm.string, nm.length, s->name.string, s->name.length);
+
+      // Only consider close matches (edit distance <= 2)
+      if (dist > 0 && dist <= 2)
+      {
+        // Find insertion point (keep sorted by distance)
+        int insert_pos = candidate_count;
+        for (int i = 0; i < candidate_count; i++)
+        {
+          if (dist < candidates[i].distance)
+          {
+            insert_pos = i;
+            break;
+          }
+        }
+
+        // Insert if we have room or it's better than worst candidate
+        if (candidate_count < MAX_SUGGESTIONS || insert_pos < MAX_SUGGESTIONS)
+        {
+          // Shift worse candidates down
+          if (candidate_count < MAX_SUGGESTIONS)
+            candidate_count++;
+          for (int i = candidate_count - 1; i > insert_pos; i--)
+            candidates[i] = candidates[i - 1];
+
+          candidates[insert_pos].symbol = s;
+          candidates[insert_pos].distance = dist;
+        }
+      }
+    }
+  }
+
+  // Print suggestions
+  if (candidate_count > 0)
+  {
+    fprintf(stderr, "  note: did you mean ");
+    for (int i = 0; i < candidate_count; i++)
+    {
+      if (i > 0)
+        fprintf(stderr, i == candidate_count - 1 ? " or " : ", ");
+      fprintf(stderr, "'%.*s'",
+              (int)candidates[i].symbol->name.length,
+              candidates[i].symbol->name.string);
+    }
+    fprintf(stderr, "?\n");
+  }
+}
+
 static void symbol_find_use(Symbol_Manager *symbol_manager, Symbol *s, String_Slice nm)
 {
   uint32_t h = symbol_hash(nm) & 63, b = 1ULL << (symbol_hash(nm) & 63);
@@ -5321,11 +5710,19 @@ static CompatKind type_compat_kind(Type_Info *a, Type_Info *b)
     return COMP_DERIVED;
   if (a->base_type == b or b->base_type == a)
     return COMP_BASED_ON;
-  if ((a->k == TYPE_INTEGER or a->k == TYPE_UNSIGNED_INTEGER)
-      and (b->k == TYPE_INTEGER or b->k == TYPE_UNSIGNED_INTEGER))
+  // Universal integer/float compatible with named integer/float types
+  // But named types are NOT automatically compatible with each other
+  if (a == TY_INT and (b->k == TYPE_INTEGER or b->k == TYPE_UNSIGNED_INTEGER))
     return COMP_SAME;
-  if ((a->k == TYPE_FLOAT or a->k == TYPE_UNIVERSAL_FLOAT)
-      and (b->k == TYPE_FLOAT or b->k == TYPE_UNIVERSAL_FLOAT))
+  if (b == TY_INT and (a->k == TYPE_INTEGER or a->k == TYPE_UNSIGNED_INTEGER))
+    return COMP_SAME;
+  if (a->k == TYPE_UNIVERSAL_FLOAT and b->k == TYPE_FLOAT)
+    return COMP_SAME;
+  if (b->k == TYPE_UNIVERSAL_FLOAT and a->k == TYPE_FLOAT)
+    return COMP_SAME;
+  if (a == TY_FLT and b->k == TYPE_FLOAT)
+    return COMP_SAME;
+  if (b == TY_FLT and a->k == TYPE_FLOAT)
     return COMP_SAME;
   if (a->k == TYPE_ARRAY and b->k == TYPE_ARRAY and type_compat_kind(a->element_type, b->element_type) != COMP_NONE)
     return COMP_ARRAY_ELEMENT;
@@ -5586,11 +5983,23 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
   if (node->k == N_TF)
   {
     Type_Info *t = type_new(TYPE_FLOAT, N);
-    if (node->unary_node.operand)
+    // Digits expression is first item in list
+    if (node->list.items.count > 0 && node->list.items.data[0])
     {
-      resolve_expression(symbol_manager, node->unary_node.operand, 0);
-      if (node->unary_node.operand->k == N_INT)
-        t->small_value = node->unary_node.operand->integer_value;
+      resolve_expression(symbol_manager, node->list.items.data[0], 0);
+      if (node->list.items.data[0]->k == N_INT)
+        t->small_value = node->list.items.data[0]->integer_value;
+    }
+    // Optional range constraint is second item
+    if (node->list.items.count > 1 && node->list.items.data[1])
+    {
+      Syntax_Node *rn = node->list.items.data[1];
+      if (rn->k == N_RN)
+      {
+        resolve_expression(symbol_manager, rn->range.low_bound, 0);
+        resolve_expression(symbol_manager, rn->range.high_bound, 0);
+        // Store range in type info if needed
+      }
     }
     return t;
   }
@@ -5859,7 +6268,10 @@ static void normalize_array_aggregate(Symbol_Manager *symbol_manager, Type_Info 
             if (ridx >= 0 and ridx < asz)
             {
               if (cov[ridx] and error_count < 99)
-                fatal_error(ag->location, "dup ag");
+              {
+                report_error(ag->location, "duplicate value for array index %lld in aggregate", k);
+                fprintf(stderr, "  note: each index can only be assigned once in an aggregate\n");
+              }
               cov[ridx] = 1;
               while (xv.count <= (uint32_t) ridx)
                 nv(&xv, ND(INT, ag->location));
@@ -5871,7 +6283,10 @@ static void normalize_array_aggregate(Symbol_Manager *symbol_manager, Type_Info 
         if (idx >= 0 and idx < asz)
         {
           if (cov[idx] and error_count < 99)
-            fatal_error(ag->location, "dup ag");
+          {
+            report_error(ag->location, "duplicate value for array index %lld in aggregate", idx + at->low_bound);
+            fprintf(stderr, "  note: each index can only be assigned once in an aggregate\n");
+          }
           cov[idx] = 1;
           while (xv.count <= (uint32_t) idx)
             nv(&xv, ND(INT, ag->location));
@@ -5884,7 +6299,10 @@ static void normalize_array_aggregate(Symbol_Manager *symbol_manager, Type_Info 
       if (px < (uint32_t) asz)
       {
         if (cov[px] and error_count < 99)
-          fatal_error(ag->location, "dup ag");
+        {
+          report_error(ag->location, "duplicate value for array index %lld in aggregate", px + at->low_bound);
+          fprintf(stderr, "  note: each index can only be assigned once in an aggregate\n");
+        }
         cov[px] = 1;
         while (xv.count <= px)
           nv(&xv, ND(INT, ag->location));
@@ -5907,7 +6325,10 @@ static void normalize_array_aggregate(Symbol_Manager *symbol_manager, Type_Info 
   }
   for (int64_t i = 0; i < asz; i++)
     if (not cov[i] and error_count < 99)
-      fatal_error(ag->location, "ag gap %lld", i);
+    {
+      report_error(ag->location, "array aggregate missing value for index %lld", i + at->low_bound);
+      fprintf(stderr, "  note: all array indices must be assigned in aggregate, or use OTHERS\n");
+    }
   ag->aggregate.items = xv;
   free(cov);
 }
@@ -5988,6 +6409,353 @@ static bool has_return_statement(Node_Vector *statements)
       return 1;
   return 0;
 }
+// Systematic type compatibility for operators (Ada LRM 4.5)
+// Returns true if types are compatible for given operator
+static bool types_compatible_for_operator(Token_Kind op, Type_Info *left, Type_Info *right)
+{
+  if (!left || !right) return 1; // Be permissive on missing types
+
+  Type_Info *lc = type_canonical_concrete(left);
+  Type_Info *rc = type_canonical_concrete(right);
+
+  switch (op) {
+    // Boolean operators: both operands must be boolean (LRM 4.5.1)
+    case T_AND: case T_OR: case T_XOR:
+    case T_ATHN: case T_OREL:
+      return lc->k == TYPE_BOOLEAN && rc->k == TYPE_BOOLEAN;
+
+    // Equality: compatible types (LRM 4.5.2)
+    case T_EQ: case T_NE:
+      return type_covers(lc, rc) || type_covers(rc, lc);
+
+    // Relational: scalar types (LRM 4.5.2)
+    case T_LT: case T_LE: case T_GT: case T_GE:
+      if (is_discrete(lc) && is_discrete(rc))
+        return semantic_base(lc) == semantic_base(rc);
+      if (lc->k == TYPE_FLOAT && rc->k == TYPE_FLOAT)
+        return semantic_base(lc) == semantic_base(rc);
+      return 0;
+
+    // Arithmetic: numeric types, exact type match (LRM 4.5.3-5)
+    case T_PL: case T_MN: case T_ST: case T_SL:
+    case T_MOD: case T_REM:
+      // Both must be numeric
+      if (!((lc->k == TYPE_INTEGER || lc->k == TYPE_UNSIGNED_INTEGER ||
+             lc->k == TYPE_FLOAT || lc->k == TYPE_UNIVERSAL_FLOAT) &&
+            (rc->k == TYPE_INTEGER || rc->k == TYPE_UNSIGNED_INTEGER ||
+             rc->k == TYPE_FLOAT || rc->k == TYPE_UNIVERSAL_FLOAT)))
+        return 0;
+      // Require exact type match (not just same kind)
+      {
+        CompatKind ck = type_compat_kind(lc, rc);
+        return ck == COMP_SAME || ck == COMP_DERIVED || ck == COMP_BASED_ON;
+      }
+
+    // Exponentiation: base numeric, exponent integer (LRM 4.5.6)
+    case T_EX:
+      return (lc->k == TYPE_INTEGER || lc->k == TYPE_FLOAT) &&
+             rc->k == TYPE_INTEGER;
+
+    // Concatenation: array types (LRM 4.5.3)
+    case T_AM:
+      return lc->k == TYPE_ARRAY && rc->k == TYPE_ARRAY &&
+             type_covers(lc->element_type, rc->element_type);
+
+    default:
+      return 1; // Unknown operator - be permissive
+  }
+}
+
+// Validation Pass - Systematic semantic checking after resolution
+// ================================================================
+
+// Forward declarations for mutual recursion
+static void validate_expression(Syntax_Node *node);
+static void validate_statement(Syntax_Node *node);
+static void validate_statement_list(Node_Vector *list);
+
+// Validate binary operation types (LRM 4.5)
+static void validate_binary_operation(Syntax_Node *node)
+{
+  if (node->k != N_BIN) return;
+
+  Type_Info *lty = node->binary_node.left ? node->binary_node.left->ty : NULL;
+  Type_Info *rty = node->binary_node.right ? node->binary_node.right->ty : NULL;
+
+  if (!types_compatible_for_operator(node->binary_node.op, lty, rty))
+  {
+    Type_Info *lc = lty ? type_canonical_concrete(lty) : NULL;
+    Type_Info *rc = rty ? type_canonical_concrete(rty) : NULL;
+
+    // Generate helpful error message based on operator category
+    switch (node->binary_node.op) {
+      case T_AND: case T_OR: case T_XOR:
+      case T_ATHN: case T_OREL:
+        report_error(node->location, "boolean operators require boolean operands");
+        break;
+
+      case T_LT: case T_LE: case T_GT: case T_GE:
+        report_error(node->location, "relational operators require compatible scalar types");
+        break;
+
+      case T_PL: case T_MN: case T_ST: case T_SL:
+      case T_MOD: case T_REM:
+        // Check if both operands are numeric but incompatible types
+        if (lc && rc &&
+            (lc->k == TYPE_INTEGER || lc->k == TYPE_FLOAT || lc->k == TYPE_UNSIGNED_INTEGER ||
+             lc->k == TYPE_UNIVERSAL_FLOAT) &&
+            (rc->k == TYPE_INTEGER || rc->k == TYPE_FLOAT || rc->k == TYPE_UNSIGNED_INTEGER ||
+             rc->k == TYPE_UNIVERSAL_FLOAT))
+          report_error(node->location, "arithmetic operators require operands of the same type");
+        else
+          report_error(node->location, "arithmetic operators require numeric types");
+        break;
+
+      case T_EX:
+        report_error(node->location, "exponentiation requires numeric base and integer exponent");
+        break;
+
+      case T_AM:
+        report_error(node->location, "concatenation requires compatible array types");
+        break;
+
+      default:
+        report_error(node->location, "type mismatch in expression");
+        break;
+    }
+    error_count++;
+  }
+}
+
+// Validate attribute reference (LRM 4.1.4)
+static void validate_attribute(Syntax_Node *node)
+{
+  if (node->k != N_AT) return;
+
+  Type_Info *prefix_ty = node->attribute.prefix ? node->attribute.prefix->ty : NULL;
+  if (!prefix_ty) return;
+
+  Type_Info *canonical = type_canonical_concrete(prefix_ty);
+  String_Slice attr = node->attribute.attribute_name;
+
+  // Array attributes: 'First, 'Last, 'Length, 'Range
+  if (string_equal_ignore_case(attr, STRING_LITERAL("first")) ||
+      string_equal_ignore_case(attr, STRING_LITERAL("last")) ||
+      string_equal_ignore_case(attr, STRING_LITERAL("length")) ||
+      string_equal_ignore_case(attr, STRING_LITERAL("range")))
+  {
+    if (canonical->k != TYPE_ARRAY && !is_discrete(canonical))
+    {
+      report_error(node->location, "attribute '%.*s requires array or discrete type",
+                   (int)attr.length, attr.string);
+      error_count++;
+    }
+  }
+  // Scalar attributes: 'Succ, 'Pred, 'Val, 'Pos, 'Image, 'Value
+  else if (string_equal_ignore_case(attr, STRING_LITERAL("succ")) ||
+           string_equal_ignore_case(attr, STRING_LITERAL("pred")) ||
+           string_equal_ignore_case(attr, STRING_LITERAL("val")) ||
+           string_equal_ignore_case(attr, STRING_LITERAL("pos")))
+  {
+    if (!is_discrete(canonical))
+    {
+      report_error(node->location, "attribute '%.*s requires discrete type",
+                   (int)attr.length, attr.string);
+      error_count++;
+    }
+  }
+}
+
+// Validate expression recursively
+static void validate_expression(Syntax_Node *node)
+{
+  if (!node) return;
+
+  switch (node->k) {
+    case N_BIN:
+      validate_binary_operation(node);
+      validate_expression(node->binary_node.left);
+      validate_expression(node->binary_node.right);
+      break;
+
+    case N_UN:
+      validate_expression(node->unary_node.operand);
+      break;
+
+    case N_AT:
+      validate_attribute(node);
+      validate_expression(node->attribute.prefix);
+      break;
+
+    case N_IX:  // Array indexing
+      validate_expression(node->index.prefix);
+      for (uint32_t i = 0; i < node->index.indices.count; i++)
+        validate_expression(node->index.indices.data[i]);
+      break;
+
+    case N_SEL:  // Record selection
+      validate_expression(node->selected_component.prefix);
+      break;
+
+    case N_CL:
+      validate_expression(node->call.function_name);
+      for (uint32_t i = 0; i < node->call.arguments.count; i++)
+        validate_expression(node->call.arguments.data[i]);
+      break;
+
+    case N_ALC:
+      if (node->allocator.initializer)
+        validate_expression(node->allocator.initializer);
+      break;
+
+    case N_AG:
+      for (uint32_t i = 0; i < node->aggregate.items.count; i++)
+        validate_expression(node->aggregate.items.data[i]);
+      break;
+
+    case N_QL:
+      validate_expression(node->qualified.aggregate);
+      break;
+
+    default:
+      break;  // Literals, identifiers - no validation needed
+  }
+}
+
+// Validate statement
+static void validate_statement(Syntax_Node *node)
+{
+  if (!node) return;
+
+  switch (node->k) {
+    case N_NULL:
+    case N_LBL:
+    case N_PG:
+    case N_GT:
+      break;  // No validation needed
+
+    case N_AS:
+      validate_expression(node->assignment.target);
+      validate_expression(node->assignment.value);
+      break;
+
+    case N_CL:
+      validate_expression(node);
+      break;
+
+    case N_RT:
+      if (node->return_stmt.value)
+        validate_expression(node->return_stmt.value);
+      break;
+
+    case N_IF:
+      validate_expression(node->if_stmt.condition);
+      validate_statement_list(&node->if_stmt.then_statements);
+      for (uint32_t i = 0; i < node->if_stmt.elsif_statements.count; i++) {
+        Syntax_Node *elsif = node->if_stmt.elsif_statements.data[i];
+        validate_expression(elsif->if_stmt.condition);
+        validate_statement_list(&elsif->if_stmt.then_statements);
+      }
+      if (node->if_stmt.else_statements.count > 0)
+        validate_statement_list(&node->if_stmt.else_statements);
+      break;
+
+    case N_CS:
+      validate_expression(node->case_stmt.expression);
+      for (uint32_t i = 0; i < node->case_stmt.alternatives.count; i++) {
+        Syntax_Node *alt = node->case_stmt.alternatives.data[i];
+        validate_statement_list(&alt->exception_handler.statements);
+      }
+      break;
+
+    case N_LP:
+      if (node->loop_stmt.iterator)
+        validate_expression(node->loop_stmt.iterator);
+      validate_statement_list(&node->loop_stmt.statements);
+      break;
+
+    case N_BL:
+      validate_statement_list(&node->block.statements);
+      if (node->block.handlers.count > 0) {
+        for (uint32_t i = 0; i < node->block.handlers.count; i++) {
+          Syntax_Node *handler = node->block.handlers.data[i];
+          validate_statement_list(&handler->exception_handler.statements);
+        }
+      }
+      break;
+
+    case N_EX:
+      if (node->exit_stmt.condition)
+        validate_expression(node->exit_stmt.condition);
+      break;
+
+    case N_ACC:  // Accept statement
+      if (node->accept_stmt.guard)
+        validate_expression(node->accept_stmt.guard);
+      validate_statement_list(&node->accept_stmt.statements);
+      if (node->accept_stmt.handlers.count > 0) {
+        for (uint32_t i = 0; i < node->accept_stmt.handlers.count; i++) {
+          Syntax_Node *handler = node->accept_stmt.handlers.data[i];
+          validate_statement_list(&handler->exception_handler.statements);
+        }
+      }
+      break;
+
+    default:
+      break;
+  }
+}
+
+// Validate statement list
+static void validate_statement_list(Node_Vector *list)
+{
+  if (!list) return;
+  for (uint32_t i = 0; i < list->count; i++)
+    validate_statement(list->data[i]);
+}
+
+// Validate compilation unit (entry point for validation pass)
+static void validate_compilation_unit(Syntax_Node *cu)
+{
+  if (!cu || cu->k != N_CU) return;
+
+  for (uint32_t i = 0; i < cu->compilation_unit.units.count; i++) {
+    Syntax_Node *unit = cu->compilation_unit.units.data[i];
+    if (!unit) continue;
+
+    switch (unit->k) {
+      case N_PB:
+        validate_statement_list(&unit->body.statements);
+        break;
+
+      case N_FB:
+        validate_statement_list(&unit->body.statements);
+        break;
+
+      case N_PKB:
+        if (unit->package_body.declarations.count > 0) {
+          for (uint32_t j = 0; j < unit->package_body.declarations.count; j++) {
+            Syntax_Node *decl = unit->package_body.declarations.data[j];
+            if (decl->k == N_PB || decl->k == N_FB)
+              validate_statement_list(&decl->body.statements);
+            else if (decl->k == N_TKB)
+              validate_statement_list(&decl->task_body.statements);
+          }
+        }
+        if (unit->package_body.statements.count > 0)
+          validate_statement_list(&unit->package_body.statements);
+        break;
+
+      case N_TKB:  // Task body at top level
+        validate_statement_list(&unit->task_body.statements);
+        break;
+
+      default:
+        break;  // Package specs, task specs have no executable code
+    }
+  }
+}
+
 static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node, Type_Info *tx)
 {
   if (not node)
@@ -6043,7 +6811,13 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     else
     {
       if (error_count < 99 and not string_equal_ignore_case(node->string_value, STRING_LITERAL("others")))
-        fatal_error(node->location, "undef '%.*s'", (int) node->string_value.length, node->string_value.string);
+      {
+        report_error(node->location, "undefined identifier '%.*s'",
+                    (int) node->string_value.length, node->string_value.string);
+
+        // Suggest similar identifiers
+        suggest_similar_identifiers(symbol_manager, node->string_value);
+      }
       node->ty = TY_INT;
     }
   }
@@ -6643,7 +7417,10 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
       else
       {
         if (error_count < 99 and node->dereference.expression->ty)
-          fatal_error(node->location, ".all non-ac");
+        {
+          report_error(node->location, "cannot dereference non-access type");
+          fprintf(stderr, "  note: .ALL can only be applied to access types\n");
+        }
         node->ty = TY_INT;
       }
     }
@@ -6684,7 +7461,10 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
         if (not type_covers(tgb, vlb) and not has_array
             and not(tgt->k == TYPE_BOOLEAN and is_discrete(vlt))
             and not(is_discrete(tgt) and is_discrete(vlt)))
-          fatal_error(node->location, "typ mis");
+        {
+          report_error(node->location, "type mismatch in assignment");
+          fprintf(stderr, "  note: cannot assign incompatible types\n");
+        }
       }
     }
     break;
@@ -6695,7 +7475,10 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
   case N_IF:
     resolve_expression(symbol_manager, node->if_stmt.condition, TY_BOOL);
     if (node->if_stmt.then_statements.count > 0 and not has_return_statement(&node->if_stmt.then_statements))
-      fatal_error(node->location, "seq needs stmt");
+    {
+      report_error(node->location, "statement sequence cannot contain only pragmas");
+      fprintf(stderr, "  note: at least one executable statement is required\n");
+    }
     for (uint32_t i = 0; i < node->if_stmt.then_statements.count; i++)
       resolve_statement_sequence(symbol_manager, node->if_stmt.then_statements.data[i]);
     for (uint32_t i = 0; i < node->if_stmt.elsif_statements.count; i++)
@@ -6703,12 +7486,18 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
       Syntax_Node *e = node->if_stmt.elsif_statements.data[i];
       resolve_expression(symbol_manager, e->if_stmt.condition, TY_BOOL);
       if (e->if_stmt.then_statements.count > 0 and not has_return_statement(&e->if_stmt.then_statements))
-        fatal_error(e->location, "seq needs stmt");
+      {
+        report_error(e->location, "statement sequence cannot contain only pragmas");
+        fprintf(stderr, "  note: at least one executable statement is required\n");
+      }
       for (uint32_t j = 0; j < e->if_stmt.then_statements.count; j++)
         resolve_statement_sequence(symbol_manager, e->if_stmt.then_statements.data[j]);
     }
     if (node->if_stmt.else_statements.count > 0 and not has_return_statement(&node->if_stmt.else_statements))
-      fatal_error(node->location, "seq needs stmt");
+    {
+      report_error(node->location, "statement sequence cannot contain only pragmas");
+      fprintf(stderr, "  note: at least one executable statement is required\n");
+    }
     for (uint32_t i = 0; i < node->if_stmt.else_statements.count; i++)
       resolve_statement_sequence(symbol_manager, node->if_stmt.else_statements.data[i]);
     break;
@@ -6720,7 +7509,10 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
       for (uint32_t j = 0; j < a->choices.items.count; j++)
         resolve_expression(symbol_manager, a->choices.items.data[j], node->case_stmt.expression->ty);
       if (a->exception_handler.statements.count > 0 and not has_return_statement(&a->exception_handler.statements))
-        fatal_error(a->location, "seq needs stmt");
+      {
+        report_error(a->location, "statement sequence cannot contain only pragmas");
+        fprintf(stderr, "  note: at least one executable statement is required\n");
+      }
       for (uint32_t j = 0; j < a->exception_handler.statements.count; j++)
         resolve_statement_sequence(symbol_manager, a->exception_handler.statements.data[j]);
     }
@@ -6748,7 +7540,10 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
       resolve_expression(symbol_manager, node->loop_stmt.iterator, TY_BOOL);
     }
     if (node->loop_stmt.statements.count > 0 and not has_return_statement(&node->loop_stmt.statements))
-      fatal_error(node->location, "seq needs stmt");
+    {
+      report_error(node->location, "statement sequence cannot contain only pragmas");
+      fprintf(stderr, "  note: at least one executable statement is required\n");
+    }
     for (uint32_t i = 0; i < node->loop_stmt.statements.count; i++)
       resolve_statement_sequence(symbol_manager, node->loop_stmt.statements.data[i]);
     break;
@@ -6761,6 +7556,11 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
     symbol_compare_parameter(symbol_manager);
     for (uint32_t i = 0; i < node->block.declarations.count; i++)
       resolve_declaration(symbol_manager, node->block.declarations.data[i]);
+    if (node->block.statements.count > 0 and not has_return_statement(&node->block.statements))
+    {
+      report_error(node->location, "statement sequence cannot contain only pragmas");
+      fprintf(stderr, "  note: at least one executable statement is required\n");
+    }
     for (uint32_t i = 0; i < node->block.statements.count; i++)
       resolve_statement_sequence(symbol_manager, node->block.statements.data[i]);
     if (node->block.handlers.count > 0)
@@ -6773,6 +7573,11 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
           Syntax_Node *e = h->exception_handler.exception_choices.data[j];
           if (e->k == N_ID and not string_equal_ignore_case(e->string_value, STRING_LITERAL("others")))
             slv(&symbol_manager->eh, e->string_value);
+        }
+        if (h->exception_handler.statements.count > 0 and not has_return_statement(&h->exception_handler.statements))
+        {
+          report_error(h->location, "statement sequence cannot contain only pragmas");
+          fprintf(stderr, "  note: at least one executable statement is required\n");
         }
         for (uint32_t j = 0; j < h->exception_handler.statements.count; j++)
           resolve_statement_sequence(symbol_manager, h->exception_handler.statements.data[j]);
@@ -6814,7 +7619,10 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
         parser->symbol = ps;
       }
       if (node->accept_stmt.statements.count > 0 and not has_return_statement(&node->accept_stmt.statements))
-        fatal_error(node->location, "seq needs stmt");
+      {
+        report_error(node->location, "statement sequence cannot contain only pragmas");
+        fprintf(stderr, "  note: at least one executable statement is required\n");
+      }
       for (uint32_t i = 0; i < node->accept_stmt.statements.count; i++)
         resolve_statement_sequence(symbol_manager, node->accept_stmt.statements.data[i]);
     }
@@ -6831,7 +7639,10 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
         for (uint32_t j = 0; j < s->accept_stmt.parameters.count; j++)
           resolve_expression(symbol_manager, s->accept_stmt.parameters.data[j], 0);
         if (s->accept_stmt.statements.count > 0 and not has_return_statement(&s->accept_stmt.statements))
-          fatal_error(s->location, "seq needs stmt");
+        {
+          report_error(s->location, "statement sequence cannot contain only pragmas");
+          fprintf(stderr, "  note: at least one executable statement is required\n");
+        }
         for (uint32_t j = 0; j < s->accept_stmt.statements.count; j++)
           resolve_statement_sequence(symbol_manager, s->accept_stmt.statements.data[j]);
       }
@@ -7593,7 +8404,11 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
           s = x;
         }
         else if (error_count < 99)
-          fatal_error(n->location, "dup '%.*s'", (int) id->string_value.length, id->string_value.string);
+        {
+          report_error(n->location, "duplicate declaration of '%.*s'",
+                      (int) id->string_value.length, id->string_value.string);
+          fprintf(stderr, "  note: previous declaration was here\n");
+        }
       }
       if (not s)
       {
@@ -7979,6 +8794,11 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       }
       for (uint32_t i = 0; i < n->body.declarations.count; i++)
         resolve_declaration(symbol_manager, n->body.declarations.data[i]);
+      if (n->body.statements.count > 0 and not has_return_statement(&n->body.statements))
+      {
+        report_error(n->location, "statement sequence cannot contain only pragmas");
+        fprintf(stderr, "  note: at least one executable statement is required\n");
+      }
       for (uint32_t i = 0; i < n->body.statements.count; i++)
         resolve_statement_sequence(symbol_manager, n->body.statements.data[i]);
       symbol_compare_overload(symbol_manager);
@@ -8025,6 +8845,11 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       }
       for (uint32_t i = 0; i < n->body.declarations.count; i++)
         resolve_declaration(symbol_manager, n->body.declarations.data[i]);
+      if (n->body.statements.count > 0 and not has_return_statement(&n->body.statements))
+      {
+        report_error(n->location, "statement sequence cannot contain only pragmas");
+        fprintf(stderr, "  note: at least one executable statement is required\n");
+      }
       for (uint32_t i = 0; i < n->body.statements.count; i++)
         resolve_statement_sequence(symbol_manager, n->body.statements.data[i]);
       symbol_compare_overload(symbol_manager);
@@ -15321,6 +16146,11 @@ int main(int ac, char **av)
       *dot = 0;
     read_ada_library_interface(&sm, pth);
   }
+  // Validation pass: systematic semantic checking
+  validate_compilation_unit(cu);
+  // Exit if semantic analysis found errors
+  if (error_count > 0)
+    return 1;
   char of[520];
   strncpy(of, inf, 512);
   char *dt = strrchr(of, '.');
