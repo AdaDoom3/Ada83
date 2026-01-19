@@ -15796,6 +15796,9 @@ int main(int ac, char **av)
       *dot = 0;
     read_ada_library_interface(&sm, pth);
   }
+  // Exit if semantic analysis found errors
+  if (error_count > 0)
+    return 1;
   char of[520];
   strncpy(of, inf, 512);
   char *dt = strrchr(of, '.');
