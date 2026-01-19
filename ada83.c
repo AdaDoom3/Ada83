@@ -1287,7 +1287,7 @@ VECPUSH(String_List_Vector, String_Slice, slv)
 struct Syntax_Node
 {
   // STRUCTURAL ATTRIBUTES
-  Node_Kind k;              // Syntactic category
+  Node_Kind kind;           // Syntactic category
   Source_Location location; // Position in source text
 
   // SEMANTIC ATTRIBUTES (populated during semantic analysis)
@@ -1621,7 +1621,7 @@ struct Syntax_Node
 };
 struct Representation_Clause
 {
-  uint8_t k;
+  uint8_t kind;
   Type_Info *ty;
   union
   {
@@ -1650,7 +1650,7 @@ struct Representation_Clause
 };
 struct Library_Unit
 {
-  uint8_t k;
+  uint8_t kind;
   String_Slice name;
   String_Slice path;
   Syntax_Node *sp;
@@ -1671,21 +1671,21 @@ struct Generic_Template
 static Syntax_Node *node_new(Node_Kind k, Source_Location l)
 {
   Syntax_Node *n = arena_allocate(sizeof(Syntax_Node));
-  n->k = k;
+  n->kind = k;
   n->location = l;
   return n;
 }
 static Representation_Clause *reference_counter_new(uint8_t k, Type_Info *t)
 {
   Representation_Clause *r = arena_allocate(sizeof(Representation_Clause));
-  r->k = k;
+  r->kind = k;
   r->ty = t;
   return r;
 }
 static Library_Unit *label_use_new(uint8_t k, String_Slice nm, String_Slice pth)
 {
   Library_Unit *l = arena_allocate(sizeof(Library_Unit));
-  l->k = k;
+  l->kind = k;
   l->name = nm;
   l->path = pth;
   return l;
@@ -1924,7 +1924,7 @@ static Syntax_Node *parse_primary(Parser *parser)
           nv(&aggregate_vector, association);
         }
       }
-      else if (choices.count == 1 and choices.data[0]->k == N_ID and parser_match(parser, T_RNG))
+      else if (choices.count == 1 and choices.data[0]->kind == N_ID and parser_match(parser, T_RNG))
       {
         Syntax_Node *range = parse_range(parser);
         parser_expect(parser, T_AR);
@@ -1948,7 +1948,7 @@ static Syntax_Node *parse_primary(Parser *parser)
       }
     } while (parser_match(parser, T_CM));
     parser_expect(parser, T_RP);
-    if (aggregate_vector.count == 1 and aggregate_vector.data[0]->k != N_ASC)
+    if (aggregate_vector.count == 1 and aggregate_vector.data[0]->kind != N_ASC)
       return aggregate_vector.data[0];
     Syntax_Node *node = ND(AG, location);
     node->aggregate.items = aggregate_vector;
@@ -2010,7 +2010,7 @@ static Syntax_Node *parse_primary(Parser *parser)
         {
           Node_Vector choices = {0};
           Syntax_Node *expression = parse_expression(parser);
-          if (expression->k == N_ID and parser_at(parser, T_AR))
+          if (expression->kind == N_ID and parser_at(parser, T_AR))
           {
             parser_next(parser);
             Syntax_Node *association = ND(ASC, location);
@@ -2152,7 +2152,7 @@ static Syntax_Node *parse_name(Parser *parser)
           }
         } while (parser_match(parser, T_CM));
         parser_expect(parser, T_RP);
-        if (v.count == 1 and v.data[0]->k != N_ASC)
+        if (v.count == 1 and v.data[0]->kind != N_ASC)
           modified_node->qualified.aggregate = v.data[0];
         else
         {
@@ -2195,7 +2195,7 @@ static Syntax_Node *parse_name(Parser *parser)
         {
           Node_Vector ch = {0};
           Syntax_Node *e = parse_expression(parser);
-          if (e->k == N_ID and parser_at(parser, T_AR))
+          if (e->kind == N_ID and parser_at(parser, T_AR))
           {
             parser_next(parser);
             Syntax_Node *a = ND(ASC, location);
@@ -2458,7 +2458,7 @@ static Syntax_Node *parse_simple_expression(Parser *parser)
       nv(&ch, r);
       while (parser_match(parser, T_BR))
         nv(&ch, parse_range(parser));
-      if (ch.count > 0 and ch.data[0]->k == N_ID and parser_match(parser, T_RNG))
+      if (ch.count > 0 and ch.data[0]->kind == N_ID and parser_match(parser, T_RNG))
       {
         Syntax_Node *tn = ND(ID, lc2);
         tn->string_value = ch.data[0]->string_value;
@@ -2470,7 +2470,7 @@ static Syntax_Node *parse_simple_expression(Parser *parser)
         si->subtype_decl.constraint = cn;
         nv(&c->constraint.constraints, si);
       }
-      else if (ch.count > 0 and ch.data[0]->k == N_ID and parser_match(parser, T_AR))
+      else if (ch.count > 0 and ch.data[0]->kind == N_ID and parser_match(parser, T_AR))
       {
         Syntax_Node *vl = parse_expression(parser);
         for (uint32_t i = 0; i < ch.count; i++)
@@ -2617,7 +2617,7 @@ static Node_Vector parse_generic_formal_part(Parser *parser)
       if (parser_at(parser, T_PROC))
       {
         Syntax_Node *sp = parse_procedure_specification(parser);
-        sp->k = N_GSP;
+        sp->kind = N_GSP;
         if (parser_match(parser, T_IS))
         {
           if (not parser_match(parser, T_BX))
@@ -2631,7 +2631,7 @@ static Node_Vector parse_generic_formal_part(Parser *parser)
       else if (parser_at(parser, T_FUN))
       {
         Syntax_Node *sp = parse_function_specification(parser);
-        sp->k = N_GSP;
+        sp->kind = N_GSP;
         if (parser_match(parser, T_IS))
         {
           if (not parser_match(parser, T_BX))
@@ -2791,7 +2791,7 @@ static Syntax_Node *parse_case(Parser *parser)
     do
     {
       Syntax_Node *elsif_node = parse_expression(parser);
-      if (elsif_node->k == N_ID and parser_match(parser, T_RNG))
+      if (elsif_node->kind == N_ID and parser_match(parser, T_RNG))
       {
         Syntax_Node *r = parse_range(parser);
         nv(&a->choices.items, r);
@@ -2899,7 +2899,7 @@ static Syntax_Node *parse_statement_list(Parser *parser)
       parser_expect(parser, T_AR);
       if (parser_match(parser, T_ACC))
       {
-        alternative->k = N_ACC;
+        alternative->kind = N_ACC;
         alternative->accept_stmt.name = parser_identifier(parser);
         if (parser_at(parser, T_LP))
         {
@@ -2957,11 +2957,11 @@ static Syntax_Node *parse_statement_list(Parser *parser)
       }
       else if (parser_match(parser, T_TER))
       {
-        alternative->k = N_TRM;
+        alternative->kind = N_TRM;
       }
       else if (parser_match(parser, T_DEL))
       {
-        alternative->k = N_DL;
+        alternative->kind = N_DL;
         alternative->exit_stmt.condition = parse_expression(parser);
         parser_expect(parser, T_THEN);
         while (not parser_at(parser, T_OR) and not parser_at(parser, T_ELSE) and not parser_at(parser, T_END))
@@ -2977,7 +2977,7 @@ static Syntax_Node *parse_statement_list(Parser *parser)
       Syntax_Node *alternative = ND(WH, location);
       if (parser_match(parser, T_ACC))
       {
-        alternative->k = N_ACC;
+        alternative->kind = N_ACC;
         alternative->accept_stmt.name = parser_identifier(parser);
         if (parser_at(parser, T_LP))
         {
@@ -3035,13 +3035,13 @@ static Syntax_Node *parse_statement_list(Parser *parser)
       }
       else if (parser_match(parser, T_DEL))
       {
-        alternative->k = N_DL;
+        alternative->kind = N_DL;
         alternative->exit_stmt.condition = parse_expression(parser);
         parser_expect(parser, T_SC);
       }
       else if (parser_match(parser, T_TER))
       {
-        alternative->k = N_TRM;
+        alternative->kind = N_TRM;
         parser_expect(parser, T_SC);
       }
       else
@@ -3224,11 +3224,11 @@ static Syntax_Node *parse_statement_or_label(Parser *parser)
   if (parser_match(parser, T_AS))
   {
     Syntax_Node *node = ND(AS, location);
-    if (expression and expression->k == N_CL)
+    if (expression and expression->kind == N_CL)
     {
       Syntax_Node *function_name = expression->call.function_name;
       Node_Vector arguments = expression->call.arguments;
-      expression->k = N_IX;
+      expression->kind = N_IX;
       expression->index.prefix = function_name;
       expression->index.indices = arguments;
     }
@@ -3238,12 +3238,12 @@ static Syntax_Node *parse_statement_or_label(Parser *parser)
     return node;
   }
   Syntax_Node *node = ND(CLT, location);
-  if (expression->k == N_IX)
+  if (expression->kind == N_IX)
   {
     node->code_stmt.name = expression->index.prefix;
     node->code_stmt.arguments = expression->index.indices;
   }
-  else if (expression->k == N_CL)
+  else if (expression->kind == N_CL)
   {
     node->code_stmt.name = expression->call.function_name;
     node->code_stmt.arguments = expression->call.arguments;
@@ -3376,7 +3376,7 @@ static Syntax_Node *parse_type_definition(Parser *parser)
     do
     {
       Syntax_Node *ix = parse_range(parser);
-      if (ix->k == N_ID and parser_match(parser, T_RNG))
+      if (ix->kind == N_ID and parser_match(parser, T_RNG))
       {
         Syntax_Node *st = ND(ST, location);
         st->subtype_decl.index_constraint = ix;
@@ -3629,7 +3629,7 @@ static Representation_Clause *parse_representation_clause(Parser *parser)
           parse_name(parser);
         parser_expect(parser, T_RP);
         r = reference_counter_new(5, 0);
-        r->er.name = tn and tn->k == N_ID ? tn->string_value : N;
+        r->er.name = tn and tn->kind == N_ID ? tn->string_value : N;
       }
       parser_expect(parser, T_SC);
       return r;
@@ -3821,7 +3821,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
     Syntax_Node *node = ND(SD, location);
     node->subtype_decl.name = nm;
     node->subtype_decl.index_constraint = parse_simple_expression(parser);
-    if (node->subtype_decl.index_constraint->k == N_ST)
+    if (node->subtype_decl.index_constraint->kind == N_ST)
       node->subtype_decl.range_constraint = node->subtype_decl.index_constraint->subtype_decl.constraint->constraint.range_spec;
     parser_expect(parser, T_SC);
     return node;
@@ -3855,7 +3855,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
           do
           {
             Syntax_Node *e = parse_expression(parser);
-            if (e->k == N_ID and parser_at(parser, T_AR))
+            if (e->kind == N_ID and parser_at(parser, T_AR))
             {
               parser_next(parser);
               Syntax_Node *a = ND(ASC, location);
@@ -3914,7 +3914,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
         do
         {
           Syntax_Node *e = parse_expression(parser);
-          if (e->k == N_ID and parser_at(parser, T_AR))
+          if (e->kind == N_ID and parser_at(parser, T_AR))
           {
             parser_next(parser);
             Syntax_Node *a = ND(ASC, location);
@@ -4024,7 +4024,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
         do
         {
           Syntax_Node *e = parse_expression(parser);
-          if (e->k == N_ID and parser_at(parser, T_AR))
+          if (e->kind == N_ID and parser_at(parser, T_AR))
           {
             parser_next(parser);
             Syntax_Node *a = ND(ASC, location);
@@ -4118,7 +4118,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
                 parser->lexer = slx;
                 parser_expect(parser, T_LP);
                 Syntax_Node *ix = parse_range(parser);
-                if (ix->k != N_RN and parser_match(parser, T_RNG))
+                if (ix->kind != N_RN and parser_match(parser, T_RNG))
                 {
                   Syntax_Node *rng = parse_range(parser);
                   Syntax_Node *si = ND(ST, location);
@@ -4140,7 +4140,7 @@ static Syntax_Node *parse_declaration(Parser *parser)
             {
               parser_expect(parser, T_LP);
               Syntax_Node *ix = parse_range(parser);
-              if (ix->k != N_RN and parser_match(parser, T_RNG))
+              if (ix->kind != N_RN and parser_match(parser, T_RNG))
               {
                 Syntax_Node *rng = parse_range(parser);
                 Syntax_Node *si = ND(ST, location);
@@ -4353,7 +4353,7 @@ static Syntax_Node *parse_compilation_unit(Parser *parser)
       parser_expect(parser, T_LP);
       Syntax_Node *pnm_ = parse_name(parser);
       parser_expect(parser, T_RP);
-      String_Slice ppkg = pnm_->k == N_ID ? pnm_->string_value : pnm_->k == N_SEL ? pnm_->selected_component.prefix->string_value : N;
+      String_Slice ppkg = pnm_->kind == N_ID ? pnm_->string_value : pnm_->kind == N_SEL ? pnm_->selected_component.prefix->string_value : N;
       SEPARATE_PACKAGE = ppkg.string ? string_duplicate(ppkg) : N;
       if (ppkg.string)
       {
@@ -4482,7 +4482,7 @@ typedef enum
  */
 struct Type_Info
 {
-  Type_Kind k;
+  Type_Kind kind;
   String_Slice name;
   Type_Info *base_type, *element_type, *parent_type;
   Type_Info *index_type;
@@ -4557,7 +4557,7 @@ struct Type_Info
 struct Symbol
 {
   String_Slice name;
-  uint8_t k;
+  uint8_t kind;
   Type_Info *type_info;
   Syntax_Node *definition;
   Symbol *next;  // Hash chain for symbol table lookup
@@ -4675,7 +4675,7 @@ static Symbol *symbol_new(String_Slice nm, uint8_t k, Type_Info *ty, Syntax_Node
 {
   Symbol *s = arena_allocate(sizeof(Symbol));
   s->name = string_duplicate(nm);
-  s->k = k;
+  s->kind = k;
   s->type_info = ty;
   s->definition = df;
   s->elaboration_level = -1;
@@ -4735,7 +4735,7 @@ static void symbol_find_use(Symbol_Manager *symbol_manager, Symbol *s, String_Sl
     return;
   symbol_manager->uv_vis[h] |= b;
   for (Symbol *parser = s; parser; parser = parser->next)
-    if (string_equal_ignore_case(parser->name, nm) and parser->k == 6 and parser->definition and parser->definition->k == N_PKS)
+    if (string_equal_ignore_case(parser->name, nm) and parser->kind == 6 and parser->definition and parser->definition->kind == N_PKS)
     {
       Syntax_Node *pk = parser->definition;
       for (uint32_t i = 0; i < pk->package_spec.declarations.count; i++)
@@ -4746,7 +4746,7 @@ static void symbol_find_use(Symbol_Manager *symbol_manager, Symbol *s, String_Sl
           sv(&s->use_clauses, d->symbol);
           d->symbol->visibility |= 2;
         }
-        else if (d->k == N_ED)
+        else if (d->kind == N_ED)
         {
           for (uint32_t j = 0; j < d->exception_decl.identifiers.count; j++)
           {
@@ -4759,7 +4759,7 @@ static void symbol_find_use(Symbol_Manager *symbol_manager, Symbol *s, String_Sl
             }
           }
         }
-        else if (d->k == N_OD)
+        else if (d->kind == N_OD)
         {
           for (uint32_t j = 0; j < d->object_decl.identifiers.count; j++)
           {
@@ -4829,14 +4829,14 @@ static Symbol *symbol_find_with_arity(Symbol_Manager *symbol_manager, String_Sli
   {
     Symbol *c = cv.data[i];
     int sc = 0;
-    if ((c->k == 4 or c->k == 5) and na >= 0)
+    if ((c->kind == 4 or c->kind == 5) and na >= 0)
     {
       if (c->overloads.count > 0)
       {
         for (uint32_t j = 0; j < c->overloads.count; j++)
         {
           Syntax_Node *b = c->overloads.data[j];
-          if (b->k == N_PB or b->k == N_FB or b->k == N_PD or b->k == N_FD)
+          if (b->kind == N_PB or b->kind == N_FB or b->kind == N_PD or b->kind == N_FD)
           {
             int np = b->body.subprogram_spec->subprogram.parameters.count;
             if (np == na)
@@ -4865,7 +4865,7 @@ static Symbol *symbol_find_with_arity(Symbol_Manager *symbol_manager, String_Sli
           }
         }
       }
-      else if (c->k == 1)
+      else if (c->kind == 1)
       {
         if (na == 1)
         {
@@ -4883,7 +4883,7 @@ static Symbol *symbol_find_with_arity(Symbol_Manager *symbol_manager, String_Sli
         }
       }
     }
-    else if (c->k == 1 and na < 0)
+    else if (c->kind == 1 and na < 0)
     {
       sc = 100;
       if (sc > bs)
@@ -4898,7 +4898,7 @@ static Symbol *symbol_find_with_arity(Symbol_Manager *symbol_manager, String_Sli
 static Type_Info *type_new(Type_Kind k, String_Slice nm)
 {
   Type_Info *t = arena_allocate(sizeof(Type_Info));
-  t->k = k;
+  t->kind = k;
   t->name = string_duplicate(nm);
   t->size = 8;
   t->alignment = 8;
@@ -4995,14 +4995,14 @@ static Syntax_Node *generate_equality_operator(Type_Info *t, Source_Location l)
   Syntax_Node *s = ND(RT, l);
   s->return_stmt.value = ND(BIN, l);
   s->return_stmt.value->binary_node.op = T_EQ;
-  if (t->k == TYPE_RECORD)
+  if (t->kind == TYPE_RECORD)
   {
     s->return_stmt.value->binary_node.left = ND(BIN, l);
     s->return_stmt.value->binary_node.left->binary_node.op = T_AND;
     for (uint32_t i = 0; i < t->components.count; i++)
     {
       Syntax_Node *c = t->components.data[i];
-      if (c->k != N_CM)
+      if (c->kind != N_CM)
         continue;
       Syntax_Node *cmp = ND(BIN, l);
       cmp->binary_node.op = T_EQ;
@@ -5028,7 +5028,7 @@ static Syntax_Node *generate_equality_operator(Type_Info *t, Source_Location l)
       }
     }
   }
-  else if (t->k == TYPE_ARRAY)
+  else if (t->kind == TYPE_ARRAY)
   {
     Syntax_Node *lp = ND(LP, l);
     lp->loop_stmt.iterator = ND(BIN, l);
@@ -5087,12 +5087,12 @@ static Syntax_Node *generate_assignment_operator(Type_Info *t, Source_Location l
   p2->parameter.mode = 0;
   nv(&parser->body.subprogram_spec->subprogram.parameters, p1);
   nv(&parser->body.subprogram_spec->subprogram.parameters, p2);
-  if (t->k == TYPE_RECORD)
+  if (t->kind == TYPE_RECORD)
   {
     for (uint32_t i = 0; i < t->components.count; i++)
     {
       Syntax_Node *c = t->components.data[i];
-      if (c->k != N_CM)
+      if (c->kind != N_CM)
         continue;
       Syntax_Node *as = ND(AS, l);
       Syntax_Node *lt = ND(SEL, l);
@@ -5108,7 +5108,7 @@ static Syntax_Node *generate_assignment_operator(Type_Info *t, Source_Location l
       nv(&parser->body.statements, as);
     }
   }
-  else if (t->k == TYPE_ARRAY)
+  else if (t->kind == TYPE_ARRAY)
   {
     Syntax_Node *lp = ND(LP, l);
     lp->loop_stmt.iterator = ND(BIN, l);
@@ -5147,12 +5147,12 @@ static Syntax_Node *generate_input_operator(Type_Info *t, Source_Location l)
   f->body.subprogram_spec->subprogram.return_type = ND(ID, l);
   f->body.subprogram_spec->subprogram.return_type->string_value = t->name;
   Syntax_Node *ag = ND(AG, l);
-  if (t->k == TYPE_RECORD)
+  if (t->kind == TYPE_RECORD)
   {
     for (uint32_t i = 0; i < t->components.count; i++)
     {
       Syntax_Node *c = t->components.data[i];
-      if (c->k != N_CM or not c->component_decl.in)
+      if (c->kind != N_CM or not c->component_decl.in)
         continue;
       Syntax_Node *a = ND(ASC, l);
       nv(&a->association.choices, ND(ID, l));
@@ -5170,7 +5170,7 @@ static void find_type(Symbol_Manager *symbol_manager, Type_Info *t, Source_Locat
 {
   if (not t or t->frozen)
     return;
-  if (t->k == TY_PT and t->parent_type and not t->parent_type->frozen)
+  if (t->kind == TY_PT and t->parent_type and not t->parent_type->frozen)
     return;
   t->frozen = 1;
   t->frozen_node = ND(ERR, l);
@@ -5180,7 +5180,7 @@ static void find_type(Symbol_Manager *symbol_manager, Type_Info *t, Source_Locat
     find_type(symbol_manager, t->parent_type, l);
   if (t->element_type and not t->element_type->frozen)
     find_type(symbol_manager, t->element_type, l);
-  if (t->k == TYPE_RECORD)
+  if (t->kind == TYPE_RECORD)
   {
     for (uint32_t i = 0; i < t->components.count; i++)
       if (t->components.data[i]->symbol and t->components.data[i]->symbol->type_info)
@@ -5189,7 +5189,7 @@ static void find_type(Symbol_Manager *symbol_manager, Type_Info *t, Source_Locat
     for (uint32_t i = 0; i < t->components.count; i++)
     {
       Syntax_Node *c = t->components.data[i];
-      if (c->k != N_CM)
+      if (c->kind != N_CM)
         continue;
       Type_Info *ct = c->component_decl.ty ? c->component_decl.ty->ty : 0;
       uint32_t ca = ct and ct->alignment ? ct->alignment : 8, cs = ct and ct->size ? ct->size : 8;
@@ -5202,7 +5202,7 @@ static void find_type(Symbol_Manager *symbol_manager, Type_Info *t, Source_Locat
     t->size = (of + mx - 1) & ~(mx - 1);
     t->alignment = mx;
   }
-  if (t->k == TYPE_ARRAY and t->element_type)
+  if (t->kind == TYPE_ARRAY and t->element_type)
   {
     Type_Info *et = t->element_type;
     uint32_t ea = et->alignment ? et->alignment : 8, es = et->size ? et->size : 8;
@@ -5210,7 +5210,7 @@ static void find_type(Symbol_Manager *symbol_manager, Type_Info *t, Source_Locat
     t->size = n > 0 ? n * es : 0;
     t->alignment = ea;
   }
-  if ((t->k == TYPE_RECORD or t->k == TYPE_ARRAY) and t->name.string and t->name.length)
+  if ((t->kind == TYPE_RECORD or t->kind == TYPE_ARRAY) and t->name.string and t->name.length)
   {
     Syntax_Node *eq = generate_equality_operator(t, l);
     if (eq)
@@ -5238,7 +5238,7 @@ static void find_ada_library(Symbol_Manager *symbol_manager, Source_Location l)
     for (Symbol *s = symbol_manager->sy[i]; s; s = s->next)
       if (s->scope == symbol_manager->sc and not s->frozen)
       {
-        if (s->type_info and s->type_info->k == TY_PT and s->type_info->parent_type and not s->type_info->parent_type->frozen)
+        if (s->type_info and s->type_info->kind == TY_PT and s->type_info->parent_type and not s->type_info->parent_type->frozen)
           continue;
         if (s->type_info)
           find_type(symbol_manager, s->type_info, l);
@@ -5265,7 +5265,7 @@ static void symbol_compare_overload(Symbol_Manager *symbol_manager)
       if (s->scope == symbol_manager->sc)
       {
         s->visibility &= ~1;
-        if (s->k == 6)
+        if (s->kind == 6)
           s->visibility = 3;
       }
       if (s->visibility & 2 and s->parent and s->parent->scope >= symbol_manager->sc)
@@ -5285,13 +5285,13 @@ static Type_Info *type_canonical_concrete(Type_Info *t)
 {
   if (not t)
     return TY_INT;
-  if (t->k == TYPE_UNSIGNED_INTEGER)
+  if (t->kind == TYPE_UNSIGNED_INTEGER)
     return TY_INT;
-  if (t->k == TYPE_UNIVERSAL_FLOAT)
+  if (t->kind == TYPE_UNIVERSAL_FLOAT)
     return TY_FLT;
-  if (t->k == TYPE_FIXED_POINT)
+  if (t->kind == TYPE_FIXED_POINT)
     return TY_FLT;
-  if ((t->k == TYPE_DERIVED or t->k == TY_PT) and t->parent_type)
+  if ((t->kind == TYPE_DERIVED or t->kind == TY_PT) and t->parent_type)
     return type_canonical_concrete(t->parent_type);
   return t;
 }
@@ -5315,7 +5315,7 @@ static ReprCat representation_category(Type_Info *t)
 {
   if (not t)
     return RC_INT;
-  switch (t->k)
+  switch (t->kind)
   {
   case TYPE_FLOAT:
   case TYPE_UNIVERSAL_FLOAT:
@@ -5339,11 +5339,11 @@ static Type_Info *semantic_base(Type_Info *t)
   {
     if (not parser->base_type and not parser->parent_type)
       return parser;
-    if (parser->k == TYPE_DERIVED and parser->parent_type)
+    if (parser->kind == TYPE_DERIVED and parser->parent_type)
       return semantic_base(parser->parent_type);
-    if (parser->k == TYPE_UNSIGNED_INTEGER)
+    if (parser->kind == TYPE_UNSIGNED_INTEGER)
       return TY_INT;
-    if (parser->k == TYPE_UNIVERSAL_FLOAT or parser->k == TYPE_FIXED_POINT)
+    if (parser->kind == TYPE_UNIVERSAL_FLOAT or parser->kind == TYPE_FIXED_POINT)
       return TY_FLT;
   }
   return t;
@@ -5351,28 +5351,28 @@ static Type_Info *semantic_base(Type_Info *t)
 static inline bool is_integer_type(Type_Info *t)
 {
   t = semantic_base(t);
-  return t->k == TYPE_INTEGER;
+  return t->kind == TYPE_INTEGER;
 }
 static inline bool is_real_type(Type_Info *t)
 {
   t = semantic_base(t);
-  return t->k == TYPE_FLOAT;
+  return t->kind == TYPE_FLOAT;
 }
 static inline bool is_discrete(Type_Info *t)
 {
-  return is_integer_type(t) or t->k == TYPE_ENUMERATION or t->k == TYPE_CHARACTER;
+  return is_integer_type(t) or t->kind == TYPE_ENUMERATION or t->kind == TYPE_CHARACTER;
 }
 static inline bool is_array(Type_Info *t)
 {
-  return t and type_canonical_concrete(t)->k == TYPE_ARRAY;
+  return t and type_canonical_concrete(t)->kind == TYPE_ARRAY;
 }
 static inline bool is_record(Type_Info *t)
 {
-  return t and type_canonical_concrete(t)->k == TYPE_RECORD;
+  return t and type_canonical_concrete(t)->kind == TYPE_RECORD;
 }
 static inline bool is_access(Type_Info *t)
 {
-  return t and type_canonical_concrete(t)->k == TYPE_ACCESS;
+  return t and type_canonical_concrete(t)->kind == TYPE_ACCESS;
 }
 static bool is_check_suppressed(Type_Info *t, unsigned kind)
 {
@@ -5389,27 +5389,27 @@ static CompatKind type_compat_kind(Type_Info *a, Type_Info *b)
     return COMP_NONE;
   if (a == b)
     return COMP_SAME;
-  if (a == TY_STR and b->k == TYPE_ARRAY and b->element_type and b->element_type->k == TYPE_CHARACTER)
+  if (a == TY_STR and b->kind == TYPE_ARRAY and b->element_type and b->element_type->kind == TYPE_CHARACTER)
     return COMP_ARRAY_ELEMENT;
-  if (b == TY_STR and a->k == TYPE_ARRAY and a->element_type and a->element_type->k == TYPE_CHARACTER)
+  if (b == TY_STR and a->kind == TYPE_ARRAY and a->element_type and a->element_type->kind == TYPE_CHARACTER)
     return COMP_ARRAY_ELEMENT;
   if (a->parent_type == b or b->parent_type == a)
     return COMP_DERIVED;
   if (a->base_type == b or b->base_type == a)
     return COMP_BASED_ON;
-  if ((a->k == TYPE_INTEGER or a->k == TYPE_UNSIGNED_INTEGER)
-      and (b->k == TYPE_INTEGER or b->k == TYPE_UNSIGNED_INTEGER))
+  if ((a->kind == TYPE_INTEGER or a->kind == TYPE_UNSIGNED_INTEGER)
+      and (b->kind == TYPE_INTEGER or b->kind == TYPE_UNSIGNED_INTEGER))
     return COMP_SAME;
-  if ((a->k == TYPE_FLOAT or a->k == TYPE_UNIVERSAL_FLOAT)
-      and (b->k == TYPE_FLOAT or b->k == TYPE_UNIVERSAL_FLOAT))
+  if ((a->kind == TYPE_FLOAT or a->kind == TYPE_UNIVERSAL_FLOAT)
+      and (b->kind == TYPE_FLOAT or b->kind == TYPE_UNIVERSAL_FLOAT))
     return COMP_SAME;
-  if (a->k == TYPE_ARRAY and b->k == TYPE_ARRAY and type_compat_kind(a->element_type, b->element_type) != COMP_NONE)
+  if (a->kind == TYPE_ARRAY and b->kind == TYPE_ARRAY and type_compat_kind(a->element_type, b->element_type) != COMP_NONE)
     return COMP_ARRAY_ELEMENT;
-  if (a->k == TYPE_ACCESS and b->k == TYPE_ACCESS)
+  if (a->kind == TYPE_ACCESS and b->kind == TYPE_ACCESS)
     return type_compat_kind(a->element_type, b->element_type) != COMP_NONE ? COMP_ACCESS_DESIGNATED : COMP_NONE;
-  if (a->k == TYPE_DERIVED)
+  if (a->kind == TYPE_DERIVED)
     return type_compat_kind(a->parent_type, b);
-  if (b->k == TYPE_DERIVED)
+  if (b->kind == TYPE_DERIVED)
     return type_compat_kind(a, b->parent_type);
   return COMP_NONE;
 }
@@ -5442,7 +5442,7 @@ static bool type_covers(Type_Info *a, Type_Info *b)
   if (type_compat_kind(a, b) != COMP_NONE)
     return 1;
   Type_Info *ab = semantic_base(a), *bb = semantic_base(b);
-  if ((ab == TY_BOOL or ab->k == TYPE_BOOLEAN) and (bb == TY_BOOL or bb->k == TYPE_BOOLEAN))
+  if ((ab == TY_BOOL or ab->kind == TYPE_BOOLEAN) and (bb == TY_BOOL or bb->kind == TYPE_BOOLEAN))
     return 1;
   if (is_discrete(a) and is_discrete(b))
     return 1;
@@ -5454,20 +5454,20 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
 {
   if (not node)
     return TY_INT;
-  if (node->k == N_ID)
+  if (node->kind == N_ID)
   {
     Symbol *s = symbol_find(symbol_manager, node->string_value);
     if (s and s->type_info)
       return s->type_info;
     return TY_INT;
   }
-  if (node->k == N_SEL)
+  if (node->kind == N_SEL)
   {
     Syntax_Node *parser = node->selected_component.prefix;
-    if (parser->k == N_ID)
+    if (parser->kind == N_ID)
     {
       Symbol *ps = symbol_find(symbol_manager, parser->string_value);
-      if (ps and ps->k == 6 and ps->definition and ps->definition->k == N_PKS)
+      if (ps and ps->kind == 6 and ps->definition and ps->definition->kind == N_PKS)
       {
         Syntax_Node *pk = ps->definition;
         for (uint32_t i = 0; i < pk->package_spec.private_declarations.count; i++)
@@ -5475,7 +5475,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
           Syntax_Node *d = pk->package_spec.private_declarations.data[i];
           if (d->symbol and string_equal_ignore_case(d->symbol->name, node->selected_component.selector) and d->symbol->type_info)
             return d->symbol->type_info;
-          if (d->k == N_TD and string_equal_ignore_case(d->type_decl.name, node->selected_component.selector))
+          if (d->kind == N_TD and string_equal_ignore_case(d->type_decl.name, node->selected_component.selector))
             return resolve_subtype(symbol_manager, d->type_decl.definition);
         }
         for (uint32_t i = 0; i < pk->package_spec.declarations.count; i++)
@@ -5483,7 +5483,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
           Syntax_Node *d = pk->package_spec.declarations.data[i];
           if (d->symbol and string_equal_ignore_case(d->symbol->name, node->selected_component.selector) and d->symbol->type_info)
             return d->symbol->type_info;
-          if (d->k == N_TD and string_equal_ignore_case(d->type_decl.name, node->selected_component.selector))
+          if (d->kind == N_TD and string_equal_ignore_case(d->type_decl.name, node->selected_component.selector))
             return resolve_subtype(symbol_manager, d->type_decl.definition);
         }
       }
@@ -5491,13 +5491,13 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
     }
     return TY_INT;
   }
-  if (node->k == N_ST)
+  if (node->kind == N_ST)
   {
     Type_Info *bt = resolve_subtype(symbol_manager, node->subtype_decl.index_constraint);
     Syntax_Node *cn = node->subtype_decl.constraint ? node->subtype_decl.constraint : node->subtype_decl.range_constraint;
     if (cn and bt)
     {
-      Type_Info *t = type_new(bt->k, N);
+      Type_Info *t = type_new(bt->kind, N);
       t->base_type = bt;
       t->element_type = bt->element_type;
       t->components = bt->components;
@@ -5507,116 +5507,116 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
       t->address = bt->address;
       t->is_packed = bt->is_packed;
       t->index_type = bt->index_type;
-      if (cn->k == 27 and cn->constraint.constraints.count > 0 and cn->constraint.constraints.data[0] and cn->constraint.constraints.data[0]->k == 26)
+      if (cn->kind == 27 and cn->constraint.constraints.count > 0 and cn->constraint.constraints.data[0] and cn->constraint.constraints.data[0]->kind == 26)
       {
         Syntax_Node *rn = cn->constraint.constraints.data[0];
         resolve_expression(symbol_manager, rn->range.low_bound, 0);
         resolve_expression(symbol_manager, rn->range.high_bound, 0);
         Syntax_Node *lo = rn->range.low_bound;
         Syntax_Node *hi = rn->range.high_bound;
-        int64_t lov = lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.operand->k == N_INT ? -lo->unary_node.operand->integer_value
-                      : lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.operand->k == N_REAL
+        int64_t lov = lo->kind == N_UN and lo->unary_node.op == T_MN and lo->unary_node.operand->kind == N_INT ? -lo->unary_node.operand->integer_value
+                      : lo->kind == N_UN and lo->unary_node.op == T_MN and lo->unary_node.operand->kind == N_REAL
                           ? ((union {
                               double d;
                               int64_t i;
                             }){.d = -lo->unary_node.operand->float_value})
                                 .i
-                      : lo->k == N_REAL ? ((union {
+                      : lo->kind == N_REAL ? ((union {
                                             double d;
                                             int64_t i;
                                           }){.d = lo->float_value})
                                               .i
-                      : lo->k == N_ID and lo->symbol and lo->symbol->k == 2 ? lo->symbol->value
+                      : lo->kind == N_ID and lo->symbol and lo->symbol->kind == 2 ? lo->symbol->value
                                                                     : lo->integer_value;
-        int64_t hiv = hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.operand->k == N_INT ? -hi->unary_node.operand->integer_value
-                      : hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.operand->k == N_REAL
+        int64_t hiv = hi->kind == N_UN and hi->unary_node.op == T_MN and hi->unary_node.operand->kind == N_INT ? -hi->unary_node.operand->integer_value
+                      : hi->kind == N_UN and hi->unary_node.op == T_MN and hi->unary_node.operand->kind == N_REAL
                           ? ((union {
                               double d;
                               int64_t i;
                             }){.d = -hi->unary_node.operand->float_value})
                                 .i
-                      : hi->k == N_REAL ? ((union {
+                      : hi->kind == N_REAL ? ((union {
                                             double d;
                                             int64_t i;
                                           }){.d = hi->float_value})
                                               .i
-                      : hi->k == N_ID and hi->symbol and hi->symbol->k == 2 ? hi->symbol->value
+                      : hi->kind == N_ID and hi->symbol and hi->symbol->kind == 2 ? hi->symbol->value
                                                                     : hi->integer_value;
         t->low_bound = lov;
         t->high_bound = hiv;
         return t;
       }
-      else if (cn->k == 27 and cn->constraint.range_spec)
+      else if (cn->kind == 27 and cn->constraint.range_spec)
       {
         resolve_expression(symbol_manager, cn->constraint.range_spec->range.low_bound, 0);
         resolve_expression(symbol_manager, cn->constraint.range_spec->range.high_bound, 0);
         Syntax_Node *lo = cn->constraint.range_spec->range.low_bound;
         Syntax_Node *hi = cn->constraint.range_spec->range.high_bound;
-        int64_t lov = lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.operand->k == N_INT ? -lo->unary_node.operand->integer_value
-                      : lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.operand->k == N_REAL
+        int64_t lov = lo->kind == N_UN and lo->unary_node.op == T_MN and lo->unary_node.operand->kind == N_INT ? -lo->unary_node.operand->integer_value
+                      : lo->kind == N_UN and lo->unary_node.op == T_MN and lo->unary_node.operand->kind == N_REAL
                           ? ((union {
                               double d;
                               int64_t i;
                             }){.d = -lo->unary_node.operand->float_value})
                                 .i
-                      : lo->k == N_REAL ? ((union {
+                      : lo->kind == N_REAL ? ((union {
                                             double d;
                                             int64_t i;
                                           }){.d = lo->float_value})
                                               .i
-                      : lo->k == N_ID and lo->symbol and lo->symbol->k == 2 ? lo->symbol->value
+                      : lo->kind == N_ID and lo->symbol and lo->symbol->kind == 2 ? lo->symbol->value
                                                                     : lo->integer_value;
-        int64_t hiv = hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.operand->k == N_INT ? -hi->unary_node.operand->integer_value
-                      : hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.operand->k == N_REAL
+        int64_t hiv = hi->kind == N_UN and hi->unary_node.op == T_MN and hi->unary_node.operand->kind == N_INT ? -hi->unary_node.operand->integer_value
+                      : hi->kind == N_UN and hi->unary_node.op == T_MN and hi->unary_node.operand->kind == N_REAL
                           ? ((union {
                               double d;
                               int64_t i;
                             }){.d = -hi->unary_node.operand->float_value})
                                 .i
-                      : hi->k == N_REAL ? ((union {
+                      : hi->kind == N_REAL ? ((union {
                                             double d;
                                             int64_t i;
                                           }){.d = hi->float_value})
                                               .i
-                      : hi->k == N_ID and hi->symbol and hi->symbol->k == 2 ? hi->symbol->value
+                      : hi->kind == N_ID and hi->symbol and hi->symbol->kind == 2 ? hi->symbol->value
                                                                     : hi->integer_value;
         t->low_bound = lov;
         t->high_bound = hiv;
         return t;
       }
-      else if (cn->k == N_RN)
+      else if (cn->kind == N_RN)
       {
         resolve_expression(symbol_manager, cn->range.low_bound, 0);
         resolve_expression(symbol_manager, cn->range.high_bound, 0);
         Syntax_Node *lo = cn->range.low_bound;
         Syntax_Node *hi = cn->range.high_bound;
-        int64_t lov = lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.operand->k == N_INT ? -lo->unary_node.operand->integer_value
-                      : lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.operand->k == N_REAL
+        int64_t lov = lo->kind == N_UN and lo->unary_node.op == T_MN and lo->unary_node.operand->kind == N_INT ? -lo->unary_node.operand->integer_value
+                      : lo->kind == N_UN and lo->unary_node.op == T_MN and lo->unary_node.operand->kind == N_REAL
                           ? ((union {
                               double d;
                               int64_t i;
                             }){.d = -lo->unary_node.operand->float_value})
                                 .i
-                      : lo->k == N_REAL ? ((union {
+                      : lo->kind == N_REAL ? ((union {
                                             double d;
                                             int64_t i;
                                           }){.d = lo->float_value})
                                               .i
-                      : lo->k == N_ID and lo->symbol and lo->symbol->k == 2 ? lo->symbol->value
+                      : lo->kind == N_ID and lo->symbol and lo->symbol->kind == 2 ? lo->symbol->value
                                                                     : lo->integer_value;
-        int64_t hiv = hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.operand->k == N_INT ? -hi->unary_node.operand->integer_value
-                      : hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.operand->k == N_REAL
+        int64_t hiv = hi->kind == N_UN and hi->unary_node.op == T_MN and hi->unary_node.operand->kind == N_INT ? -hi->unary_node.operand->integer_value
+                      : hi->kind == N_UN and hi->unary_node.op == T_MN and hi->unary_node.operand->kind == N_REAL
                           ? ((union {
                               double d;
                               int64_t i;
                             }){.d = -hi->unary_node.operand->float_value})
                                 .i
-                      : hi->k == N_REAL ? ((union {
+                      : hi->kind == N_REAL ? ((union {
                                             double d;
                                             int64_t i;
                                           }){.d = hi->float_value})
                                               .i
-                      : hi->k == N_ID and hi->symbol and hi->symbol->k == 2 ? hi->symbol->value
+                      : hi->kind == N_ID and hi->symbol and hi->symbol->kind == 2 ? hi->symbol->value
                                                                     : hi->integer_value;
         t->low_bound = lov;
         t->high_bound = hiv;
@@ -5625,93 +5625,93 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
     }
     return bt;
   }
-  if (node->k == N_TI)
+  if (node->kind == N_TI)
   {
     resolve_expression(symbol_manager, node->range.low_bound, 0);
     resolve_expression(symbol_manager, node->range.high_bound, 0);
     Type_Info *t = type_new(TYPE_INTEGER, N);
-    if (node->range.low_bound and node->range.low_bound->k == N_INT)
+    if (node->range.low_bound and node->range.low_bound->kind == N_INT)
       t->low_bound = node->range.low_bound->integer_value;
     else if (
-        node->range.low_bound and node->range.low_bound->k == N_UN and node->range.low_bound->unary_node.op == T_MN and node->range.low_bound->unary_node.operand->k == N_INT)
+        node->range.low_bound and node->range.low_bound->kind == N_UN and node->range.low_bound->unary_node.op == T_MN and node->range.low_bound->unary_node.operand->kind == N_INT)
       t->low_bound = -node->range.low_bound->unary_node.operand->integer_value;
-    if (node->range.high_bound and node->range.high_bound->k == N_INT)
+    if (node->range.high_bound and node->range.high_bound->kind == N_INT)
       t->high_bound = node->range.high_bound->integer_value;
     else if (
-        node->range.high_bound and node->range.high_bound->k == N_UN and node->range.high_bound->unary_node.op == T_MN and node->range.high_bound->unary_node.operand->k == N_INT)
+        node->range.high_bound and node->range.high_bound->kind == N_UN and node->range.high_bound->unary_node.op == T_MN and node->range.high_bound->unary_node.operand->kind == N_INT)
       t->high_bound = -node->range.high_bound->unary_node.operand->integer_value;
     return t;
   }
-  if (node->k == N_TX)
+  if (node->kind == N_TX)
   {
     Type_Info *t = type_new(TYPE_FIXED_POINT, N);
     double d = 1.0;
-    if (node->range.low_bound and node->range.low_bound->k == N_REAL)
+    if (node->range.low_bound and node->range.low_bound->kind == N_REAL)
       d = node->range.low_bound->float_value;
-    else if (node->range.low_bound and node->range.low_bound->k == N_INT)
+    else if (node->range.low_bound and node->range.low_bound->kind == N_INT)
       d = node->range.low_bound->integer_value;
     t->small_value = (int64_t) (1.0 / d);
-    if (node->range.high_bound and node->range.high_bound->k == N_INT)
+    if (node->range.high_bound and node->range.high_bound->kind == N_INT)
       t->low_bound = node->range.high_bound->integer_value;
-    if (node->binary_node.right and node->binary_node.right->k == N_INT)
+    if (node->binary_node.right and node->binary_node.right->kind == N_INT)
       t->high_bound = node->binary_node.right->integer_value;
     return t;
   }
-  if (node->k == N_TE)
+  if (node->kind == N_TE)
     return type_new(TYPE_INTEGER, N);
-  if (node->k == N_TF)
+  if (node->kind == N_TF)
   {
     Type_Info *t = type_new(TYPE_FLOAT, N);
     if (node->unary_node.operand)
     {
       resolve_expression(symbol_manager, node->unary_node.operand, 0);
-      if (node->unary_node.operand->k == N_INT)
+      if (node->unary_node.operand->kind == N_INT)
         t->small_value = node->unary_node.operand->integer_value;
     }
     return t;
   }
-  if (node->k == N_TA)
+  if (node->kind == N_TA)
   {
     Type_Info *t = type_new(TYPE_ARRAY, N);
     t->element_type = resolve_subtype(symbol_manager, node->index.prefix);
     if (node->index.indices.count == 1)
     {
       Syntax_Node *r = node->index.indices.data[0];
-      if (r and r->k == N_RN)
+      if (r and r->kind == N_RN)
       {
         resolve_expression(symbol_manager, r->range.low_bound, 0);
         resolve_expression(symbol_manager, r->range.high_bound, 0);
         Syntax_Node *lo = r->range.low_bound;
         Syntax_Node *hi = r->range.high_bound;
-        if (lo and lo->k == N_INT)
+        if (lo and lo->kind == N_INT)
           t->low_bound = lo->integer_value;
-        else if (lo and lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.operand->k == N_INT)
+        else if (lo and lo->kind == N_UN and lo->unary_node.op == T_MN and lo->unary_node.operand->kind == N_INT)
           t->low_bound = -lo->unary_node.operand->integer_value;
-        if (hi and hi->k == N_INT)
+        if (hi and hi->kind == N_INT)
           t->high_bound = hi->integer_value;
-        else if (hi and hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.operand->k == N_INT)
+        else if (hi and hi->kind == N_UN and hi->unary_node.op == T_MN and hi->unary_node.operand->kind == N_INT)
           t->high_bound = -hi->unary_node.operand->integer_value;
       }
     }
     return t;
   }
-  if (node->k == N_TR)
+  if (node->kind == N_TR)
     return type_new(TYPE_RECORD, N);
-  if (node->k == N_TP)
+  if (node->kind == N_TP)
     return type_new(TY_PT, N);
-  if (node->k == N_TAC)
+  if (node->kind == N_TAC)
   {
     Type_Info *t = type_new(TYPE_ACCESS, N);
     t->element_type = resolve_subtype(symbol_manager, node->unary_node.operand);
     return t;
   }
-  if (node->k == N_IX)
+  if (node->kind == N_IX)
   {
     Type_Info *bt = resolve_subtype(symbol_manager, node->index.prefix);
-    if (bt and bt->k == TYPE_ARRAY and bt->low_bound == 0 and bt->high_bound == -1 and node->index.indices.count == 1)
+    if (bt and bt->kind == TYPE_ARRAY and bt->low_bound == 0 and bt->high_bound == -1 and node->index.indices.count == 1)
     {
       Syntax_Node *r = node->index.indices.data[0];
-      if (r and r->k == N_RN)
+      if (r and r->kind == N_RN)
       {
         resolve_expression(symbol_manager, r->range.low_bound, 0);
         resolve_expression(symbol_manager, r->range.high_bound, 0);
@@ -5719,47 +5719,47 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
         t->element_type = bt->element_type;
         t->index_type = bt->index_type;
         t->base_type = bt;
-        if (r->range.low_bound and r->range.low_bound->k == N_INT)
+        if (r->range.low_bound and r->range.low_bound->kind == N_INT)
           t->low_bound = r->range.low_bound->integer_value;
         else if (
-            r->range.low_bound and r->range.low_bound->k == N_UN and r->range.low_bound->unary_node.op == T_MN
-            and r->range.low_bound->unary_node.operand->k == N_INT)
+            r->range.low_bound and r->range.low_bound->kind == N_UN and r->range.low_bound->unary_node.op == T_MN
+            and r->range.low_bound->unary_node.operand->kind == N_INT)
           t->low_bound = -r->range.low_bound->unary_node.operand->integer_value;
-        if (r->range.high_bound and r->range.high_bound->k == N_INT)
+        if (r->range.high_bound and r->range.high_bound->kind == N_INT)
           t->high_bound = r->range.high_bound->integer_value;
         else if (
-            r->range.high_bound and r->range.high_bound->k == N_UN and r->range.high_bound->unary_node.op == T_MN
-            and r->range.high_bound->unary_node.operand->k == N_INT)
+            r->range.high_bound and r->range.high_bound->kind == N_UN and r->range.high_bound->unary_node.op == T_MN
+            and r->range.high_bound->unary_node.operand->kind == N_INT)
           t->high_bound = -r->range.high_bound->unary_node.operand->integer_value;
         return t;
       }
     }
     return bt;
   }
-  if (node->k == N_RN)
+  if (node->kind == N_RN)
   {
     resolve_expression(symbol_manager, node->range.low_bound, 0);
     resolve_expression(symbol_manager, node->range.high_bound, 0);
     Type_Info *t = type_new(TYPE_INTEGER, N);
-    if (node->range.low_bound and node->range.low_bound->k == N_INT)
+    if (node->range.low_bound and node->range.low_bound->kind == N_INT)
       t->low_bound = node->range.low_bound->integer_value;
     else if (
-        node->range.low_bound and node->range.low_bound->k == N_UN and node->range.low_bound->unary_node.op == T_MN and node->range.low_bound->unary_node.operand->k == N_INT)
+        node->range.low_bound and node->range.low_bound->kind == N_UN and node->range.low_bound->unary_node.op == T_MN and node->range.low_bound->unary_node.operand->kind == N_INT)
       t->low_bound = -node->range.low_bound->unary_node.operand->integer_value;
-    if (node->range.high_bound and node->range.high_bound->k == N_INT)
+    if (node->range.high_bound and node->range.high_bound->kind == N_INT)
       t->high_bound = node->range.high_bound->integer_value;
     else if (
-        node->range.high_bound and node->range.high_bound->k == N_UN and node->range.high_bound->unary_node.op == T_MN and node->range.high_bound->unary_node.operand->k == N_INT)
+        node->range.high_bound and node->range.high_bound->kind == N_UN and node->range.high_bound->unary_node.op == T_MN and node->range.high_bound->unary_node.operand->kind == N_INT)
       t->high_bound = -node->range.high_bound->unary_node.operand->integer_value;
     return t;
   }
-  if (node->k == N_CL)
+  if (node->kind == N_CL)
   {
     Type_Info *bt = resolve_subtype(symbol_manager, node->call.function_name);
-    if (bt and bt->k == TYPE_ARRAY and bt->low_bound == 0 and bt->high_bound == -1 and node->call.arguments.count == 1)
+    if (bt and bt->kind == TYPE_ARRAY and bt->low_bound == 0 and bt->high_bound == -1 and node->call.arguments.count == 1)
     {
       Syntax_Node *r = node->call.arguments.data[0];
-      if (r and r->k == N_RN)
+      if (r and r->kind == N_RN)
       {
         resolve_expression(symbol_manager, r->range.low_bound, 0);
         resolve_expression(symbol_manager, r->range.high_bound, 0);
@@ -5767,17 +5767,17 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
         t->element_type = bt->element_type;
         t->index_type = bt->index_type;
         t->base_type = bt;
-        if (r->range.low_bound and r->range.low_bound->k == N_INT)
+        if (r->range.low_bound and r->range.low_bound->kind == N_INT)
           t->low_bound = r->range.low_bound->integer_value;
         else if (
-            r->range.low_bound and r->range.low_bound->k == N_UN and r->range.low_bound->unary_node.op == T_MN
-            and r->range.low_bound->unary_node.operand->k == N_INT)
+            r->range.low_bound and r->range.low_bound->kind == N_UN and r->range.low_bound->unary_node.op == T_MN
+            and r->range.low_bound->unary_node.operand->kind == N_INT)
           t->low_bound = -r->range.low_bound->unary_node.operand->integer_value;
-        if (r->range.high_bound and r->range.high_bound->k == N_INT)
+        if (r->range.high_bound and r->range.high_bound->kind == N_INT)
           t->high_bound = r->range.high_bound->integer_value;
         else if (
-            r->range.high_bound and r->range.high_bound->k == N_UN and r->range.high_bound->unary_node.op == T_MN
-            and r->range.high_bound->unary_node.operand->k == N_INT)
+            r->range.high_bound and r->range.high_bound->kind == N_UN and r->range.high_bound->unary_node.op == T_MN
+            and r->range.high_bound->unary_node.operand->kind == N_INT)
           t->high_bound = -r->range.high_bound->unary_node.operand->integer_value;
         return t;
       }
@@ -5788,7 +5788,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
 }
 static Symbol *symbol_character_literal(Symbol_Manager *symbol_manager, char c, Type_Info *tx)
 {
-  if (tx and tx->k == TYPE_ENUMERATION)
+  if (tx and tx->kind == TYPE_ENUMERATION)
   {
     for (uint32_t i = 0; i < tx->enum_values.count; i++)
     {
@@ -5797,11 +5797,11 @@ static Symbol *symbol_character_literal(Symbol_Manager *symbol_manager, char c, 
         return e;
     }
   }
-  if (tx and tx->k == TYPE_DERIVED and tx->parent_type)
+  if (tx and tx->kind == TYPE_DERIVED and tx->parent_type)
     return symbol_character_literal(symbol_manager, c, tx->parent_type);
   for (Symbol *s = symbol_manager->sy[symbol_hash((String_Slice){&c, 1})]; s; s = s->next)
-    if (s->name.length == 1 and tolower(s->name.string[0]) == tolower(c) and s->k == 2 and s->type_info
-        and (s->type_info->k == TYPE_ENUMERATION or (s->type_info->k == TYPE_DERIVED and s->type_info->parent_type and s->type_info->parent_type->k == TYPE_ENUMERATION)))
+    if (s->name.length == 1 and tolower(s->name.string[0]) == tolower(c) and s->kind == 2 and s->type_info
+        and (s->type_info->kind == TYPE_ENUMERATION or (s->type_info->kind == TYPE_DERIVED and s->type_info->parent_type and s->type_info->parent_type->kind == TYPE_ENUMERATION)))
       return s;
   return 0;
 }
@@ -5815,7 +5815,7 @@ static inline Syntax_Node *make_check(Syntax_Node *ex, String_Slice ec, Source_L
 }
 static inline bool is_unconstrained_array(Type_Info *t)
 {
-  return t and t->k == TYPE_ARRAY and t->low_bound == 0 and t->high_bound == -1;
+  return t and t->kind == TYPE_ARRAY and t->low_bound == 0 and t->high_bound == -1;
 }
 static Type_Info *base_scalar(Type_Info *t)
 {
@@ -5823,8 +5823,8 @@ static Type_Info *base_scalar(Type_Info *t)
     return TY_INT;
   for (Type_Info *parser = t; parser; parser = parser->base_type)
     if (not parser->base_type
-        or (parser->k != TYPE_INTEGER and parser->k != TYPE_ENUMERATION and parser->k != TYPE_DERIVED
-            and parser->k != TYPE_CHARACTER and parser->k != TYPE_FLOAT))
+        or (parser->kind != TYPE_INTEGER and parser->kind != TYPE_ENUMERATION and parser->kind != TYPE_DERIVED
+            and parser->kind != TYPE_CHARACTER and parser->kind != TYPE_FLOAT))
       return parser;
   return t;
 }
@@ -5853,8 +5853,8 @@ static bool descendant_conformant(Type_Info *t, Type_Info *s)
   for (uint32_t i = 0; i < node; i++)
   {
     Syntax_Node *ad = t->discriminants.data[i], *bd = s->discriminants.data[i];
-    if (not(ad and bd and ad->k == N_DS and bd->k == N_DS and ad->parameter.default_value and bd->parameter.default_value
-            and ad->parameter.default_value->k == N_INT and bd->parameter.default_value->k == N_INT))
+    if (not(ad and bd and ad->kind == N_DS and bd->kind == N_DS and ad->parameter.default_value and bd->parameter.default_value
+            and ad->parameter.default_value->kind == N_INT and bd->parameter.default_value->kind == N_INT))
       continue;
     if (ad->parameter.default_value->integer_value != bd->parameter.default_value->integer_value)
       return 1;
@@ -5870,12 +5870,12 @@ static Syntax_Node *chk(Symbol_Manager *symbol_manager, Syntax_Node *node, Sourc
   if ((is_discrete(t) or is_real_type(t)) and (node->ty->low_bound != TY_INT->low_bound or node->ty->high_bound != TY_INT->high_bound)
       and not is_check_suppressed(node->ty, CHK_RNG))
     return make_check(node, STRING_LITERAL("CONSTRAINT_ERROR"), l);
-  if (t->k == TYPE_RECORD and descendant_conformant(t, node->ty) and not is_check_suppressed(t, CHK_DSC))
+  if (t->kind == TYPE_RECORD and descendant_conformant(t, node->ty) and not is_check_suppressed(t, CHK_DSC))
     return make_check(node, STRING_LITERAL("CONSTRAINT_ERROR"), l);
-  if (t->k == TYPE_ARRAY and node->ty and node->ty->k == TYPE_ARRAY and node->ty->index_type
+  if (t->kind == TYPE_ARRAY and node->ty and node->ty->kind == TYPE_ARRAY and node->ty->index_type
       and (node->ty->low_bound < node->ty->index_type->low_bound or node->ty->high_bound > node->ty->index_type->high_bound))
     return make_check(node, STRING_LITERAL("CONSTRAINT_ERROR"), l);
-  if (t->k == TYPE_ARRAY and node->ty and node->ty->k == TYPE_ARRAY and not is_unconstrained_array(t)
+  if (t->kind == TYPE_ARRAY and node->ty and node->ty->kind == TYPE_ARRAY and not is_unconstrained_array(t)
       and not is_check_suppressed(t, CHK_IDX) and (t->low_bound != node->ty->low_bound or t->high_bound != node->ty->high_bound))
     return make_check(node, STRING_LITERAL("CONSTRAINT_ERROR"), l);
   return node;
@@ -5887,16 +5887,16 @@ static inline int64_t range_size(int64_t lo, int64_t hi)
 static inline bool is_static(Syntax_Node *node)
 {
   return node
-         and (node->k == N_INT or (node->k == N_UN and node->unary_node.op == T_MN and node->unary_node.operand and node->unary_node.operand->k == N_INT));
+         and (node->kind == N_INT or (node->kind == N_UN and node->unary_node.op == T_MN and node->unary_node.operand and node->unary_node.operand->kind == N_INT));
 }
 static int find_or_throw(Syntax_Node *ag)
 {
-  if (not ag or ag->k != N_AG)
+  if (not ag or ag->kind != N_AG)
     return -1;
   for (uint32_t i = 0; i < ag->aggregate.items.count; i++)
   {
     Syntax_Node *e = ag->aggregate.items.data[i];
-    if (e->k == N_ASC and e->association.choices.count == 1 and e->association.choices.data[0]->k == N_ID
+    if (e->kind == N_ASC and e->association.choices.count == 1 and e->association.choices.data[0]->kind == N_ID
         and string_equal_ignore_case(e->association.choices.data[0]->string_value, STRING_LITERAL("others")))
       return i;
   }
@@ -5905,7 +5905,7 @@ static int find_or_throw(Syntax_Node *ag)
 static void normalize_array_aggregate(Symbol_Manager *symbol_manager, Type_Info *at, Syntax_Node *ag)
 {
   (void) symbol_manager;
-  if (not ag or not at or at->k != TYPE_ARRAY)
+  if (not ag or not at or at->kind != TYPE_ARRAY)
     return;
   int64_t asz = range_size(at->low_bound, at->high_bound);
   if (asz > 4096)
@@ -5919,15 +5919,15 @@ static void normalize_array_aggregate(Symbol_Manager *symbol_manager, Type_Info 
     if ((int) i == oi)
       continue;
     Syntax_Node *e = ag->aggregate.items.data[i];
-    if (e->k == N_ASC)
+    if (e->kind == N_ASC)
     {
       for (uint32_t j = 0; j < e->association.choices.count; j++)
       {
         Syntax_Node *ch = e->association.choices.data[j];
         int64_t idx = -1;
-        if (ch->k == N_INT)
+        if (ch->kind == N_INT)
           idx = ch->integer_value - at->low_bound;
-        else if (ch->k == N_RN)
+        else if (ch->kind == N_RN)
         {
           for (int64_t k = ch->range.low_bound->integer_value; k <= ch->range.high_bound->integer_value; k++)
           {
@@ -5990,18 +5990,18 @@ static void normalize_array_aggregate(Symbol_Manager *symbol_manager, Type_Info 
 static void normalize_record_aggregate(Symbol_Manager *symbol_manager, Type_Info *rt, Syntax_Node *ag)
 {
   (void) symbol_manager;
-  if (not ag or not rt or rt->k != TYPE_RECORD)
+  if (not ag or not rt or rt->kind != TYPE_RECORD)
     return;
   bool cov[256] = {0};
   for (uint32_t i = 0; i < ag->aggregate.items.count; i++)
   {
     Syntax_Node *e = ag->aggregate.items.data[i];
-    if (e->k != N_ASC)
+    if (e->kind != N_ASC)
       continue;
     for (uint32_t j = 0; j < e->association.choices.count; j++)
     {
       Syntax_Node *ch = e->association.choices.data[j];
-      if (ch->k == N_ID)
+      if (ch->kind == N_ID)
       {
         if (string_equal_ignore_case(ch->string_value, STRING_LITERAL("others")))
         {
@@ -6013,7 +6013,7 @@ static void normalize_record_aggregate(Symbol_Manager *symbol_manager, Type_Info
         for (uint32_t k = 0; k < rt->components.count; k++)
         {
           Syntax_Node *c = rt->components.data[k];
-          if (c->k == N_CM and string_equal_ignore_case(c->component_decl.name, ch->string_value))
+          if (c->kind == N_CM and string_equal_ignore_case(c->component_decl.name, ch->string_value))
           {
             if (cov[c->component_decl.offset] and error_count < 99)
               fatal_error(ag->location, "dup cm");
@@ -6027,7 +6027,7 @@ static void normalize_record_aggregate(Symbol_Manager *symbol_manager, Type_Info
 }
 static Type_Info *universal_composite_aggregate(Type_Info *at, Syntax_Node *ag)
 {
-  if (not at or not ag or at->k != TYPE_ARRAY or ag->k != N_AG)
+  if (not at or not ag or at->kind != TYPE_ARRAY or ag->kind != N_AG)
     return at;
   if (at->low_bound != 0 or at->high_bound != -1)
     return at;
@@ -6043,16 +6043,16 @@ static void is_compile_valid(Type_Info *t, Syntax_Node *node)
 {
   if (not t or not node)
     return;
-  if (node->k == N_CL)
+  if (node->kind == N_CL)
   {
     for (uint32_t i = 0; i < node->call.arguments.count; i++)
       resolve_expression(0, node->call.arguments.data[i], 0);
   }
-  else if (node->k == N_AG and t->k == TYPE_ARRAY)
+  else if (node->kind == N_AG and t->kind == TYPE_ARRAY)
   {
     normalize_array_aggregate(0, type_canonical_concrete(t), node);
   }
-  else if (node->k == N_AG and t->k == TYPE_RECORD)
+  else if (node->kind == N_AG and t->kind == TYPE_RECORD)
   {
     normalize_record_aggregate(0, type_canonical_concrete(t), node);
   }
@@ -6060,7 +6060,7 @@ static void is_compile_valid(Type_Info *t, Syntax_Node *node)
 static bool has_return_statement(Node_Vector *statements)
 {
   for (uint32_t i = 0; i < statements->count; i++)
-    if (statements->data[i]->k != N_PG)
+    if (statements->data[i]->kind != N_PG)
       return 1;
   return 0;
 }
@@ -6068,12 +6068,12 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
 {
   if (not node)
     return;
-  switch (node->k)
+  switch (node->kind)
   {
   case N_ID:
   {
-    Type_Info *_tx = tx and tx->k == TYPE_DERIVED ? type_canonical_concrete(tx) : tx;
-    if (_tx and _tx->k == TYPE_ENUMERATION)
+    Type_Info *_tx = tx and tx->kind == TYPE_DERIVED ? type_canonical_concrete(tx) : tx;
+    if (_tx and _tx->kind == TYPE_ENUMERATION)
     {
       for (uint32_t i = 0; i < tx->enum_values.count; i++)
       {
@@ -6091,26 +6091,26 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     {
       node->ty = s->type_info;
       node->symbol = s;
-      if (s->k == 5)
+      if (s->kind == 5)
       {
         Symbol *s0 = symbol_find_with_arity(symbol_manager, node->string_value, 0, tx);
-        if (s0 and s0->type_info and s0->type_info->k == TYPE_STRING and s0->type_info->element_type)
+        if (s0 and s0->type_info and s0->type_info->kind == TYPE_STRING and s0->type_info->element_type)
         {
           node->ty = s0->type_info->element_type;
           node->symbol = s0;
         }
       }
-      if (s->k == 2 and s->definition)
+      if (s->kind == 2 and s->definition)
       {
-        if (s->definition->k == N_INT)
+        if (s->definition->kind == N_INT)
         {
-          node->k = N_INT;
+          node->kind = N_INT;
           node->integer_value = s->definition->integer_value;
           node->ty = TY_UINT;
         }
-        else if (s->definition->k == N_REAL)
+        else if (s->definition->kind == N_REAL)
         {
-          node->k = N_REAL;
+          node->kind = N_REAL;
           node->float_value = s->definition->float_value;
           node->ty = TY_UFLT;
         }
@@ -6137,7 +6137,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     {
       node->ty = s->type_info;
       node->symbol = s;
-      node->k = N_ID;
+      node->kind = N_ID;
       node->string_value = s->name;
     }
     else
@@ -6146,10 +6146,10 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
   break;
   case N_STR:
     node->ty =
-        tx and (tx->k == TYPE_ARRAY or type_canonical_concrete(tx)->k == TYPE_ARRAY) ? tx : TY_STR;
+        tx and (tx->kind == TYPE_ARRAY or type_canonical_concrete(tx)->kind == TYPE_ARRAY) ? tx : TY_STR;
     break;
   case N_NULL:
-    node->ty = tx and tx->k == TYPE_ACCESS ? tx : TY_INT;
+    node->ty = tx and tx->kind == TYPE_ACCESS ? tx : TY_INT;
     break;
   case N_BIN:
     resolve_expression(symbol_manager, node->binary_node.left, tx);
@@ -6164,7 +6164,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
       node->binary_node.left = chk(symbol_manager, node->binary_node.left, node->location);
       node->binary_node.right = chk(symbol_manager, node->binary_node.right, node->location);
       Type_Info *lt = node->binary_node.left->ty ? type_canonical_concrete(node->binary_node.left->ty) : 0;
-      node->ty = lt and lt->k == TYPE_ARRAY ? lt : TY_BOOL;
+      node->ty = lt and lt->kind == TYPE_ARRAY ? lt : TY_BOOL;
       break;
     }
     if (node->binary_node.op == T_IN)
@@ -6174,7 +6174,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
       node->ty = TY_BOOL;
       break;
     }
-    if (node->binary_node.left->k == N_INT and node->binary_node.right->k == N_INT
+    if (node->binary_node.left->kind == N_INT and node->binary_node.right->kind == N_INT
         and (node->binary_node.op == T_PL or node->binary_node.op == T_MN or node->binary_node.op == T_ST or node->binary_node.op == T_SL or node->binary_node.op == T_MOD or node->binary_node.op == T_REM))
     {
       int64_t a = node->binary_node.left->integer_value, b = node->binary_node.right->integer_value, r = 0;
@@ -6188,16 +6188,16 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
         r = a / b;
       else if ((node->binary_node.op == T_MOD or node->binary_node.op == T_REM) and b != 0)
         r = a % b;
-      node->k = N_INT;
+      node->kind = N_INT;
       node->integer_value = r;
       node->ty = TY_UINT;
     }
     else if (
-        (node->binary_node.left->k == N_REAL or node->binary_node.right->k == N_REAL)
+        (node->binary_node.left->kind == N_REAL or node->binary_node.right->kind == N_REAL)
         and (node->binary_node.op == T_PL or node->binary_node.op == T_MN or node->binary_node.op == T_ST or node->binary_node.op == T_SL or node->binary_node.op == T_EX))
     {
-      double a = node->binary_node.left->k == N_INT ? (double) node->binary_node.left->integer_value : node->binary_node.left->float_value,
-             b = node->binary_node.right->k == N_INT ? (double) node->binary_node.right->integer_value : node->binary_node.right->float_value, r = 0;
+      double a = node->binary_node.left->kind == N_INT ? (double) node->binary_node.left->integer_value : node->binary_node.left->float_value,
+             b = node->binary_node.right->kind == N_INT ? (double) node->binary_node.right->integer_value : node->binary_node.right->float_value, r = 0;
       if (node->binary_node.op == T_PL)
         r = a + b;
       else if (node->binary_node.op == T_MN)
@@ -6208,7 +6208,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
         r = a / b;
       else if (node->binary_node.op == T_EX)
         r = pow(a, b);
-      node->k = N_REAL;
+      node->kind = N_REAL;
       node->float_value = r;
       node->ty = TY_UFLT;
     }
@@ -6221,22 +6221,22 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     break;
   case N_UN:
     resolve_expression(symbol_manager, node->unary_node.operand, tx);
-    if (node->unary_node.op == T_MN and node->unary_node.operand->k == N_INT)
+    if (node->unary_node.op == T_MN and node->unary_node.operand->kind == N_INT)
     {
-      node->k = N_INT;
+      node->kind = N_INT;
       node->integer_value = -node->unary_node.operand->integer_value;
       node->ty = TY_UINT;
     }
-    else if (node->unary_node.op == T_MN and node->unary_node.operand->k == N_REAL)
+    else if (node->unary_node.op == T_MN and node->unary_node.operand->kind == N_REAL)
     {
-      node->k = N_REAL;
+      node->kind = N_REAL;
       node->float_value = -node->unary_node.operand->float_value;
       node->ty = TY_UFLT;
     }
-    else if (node->unary_node.op == T_PL and (node->unary_node.operand->k == N_INT or node->unary_node.operand->k == N_REAL))
+    else if (node->unary_node.op == T_PL and (node->unary_node.operand->kind == N_INT or node->unary_node.operand->kind == N_REAL))
     {
-      node->k = node->unary_node.operand->k;
-      if (node->k == N_INT)
+      node->kind = node->unary_node.operand->kind;
+      if (node->kind == N_INT)
       {
         node->integer_value = node->unary_node.operand->integer_value;
         node->ty = TY_UINT;
@@ -6254,7 +6254,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     if (node->unary_node.op == T_NOT)
     {
       Type_Info *xt = node->unary_node.operand->ty ? type_canonical_concrete(node->unary_node.operand->ty) : 0;
-      node->ty = xt and xt->k == TYPE_ARRAY ? xt : TY_BOOL;
+      node->ty = xt and xt->kind == TYPE_ARRAY ? xt : TY_BOOL;
     }
     break;
   case N_IX:
@@ -6264,7 +6264,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
       resolve_expression(symbol_manager, node->index.indices.data[i], 0);
       node->index.indices.data[i] = chk(symbol_manager, node->index.indices.data[i], node->location);
     }
-    if (node->index.prefix->ty and node->index.prefix->ty->k == TYPE_ARRAY)
+    if (node->index.prefix->ty and node->index.prefix->ty->kind == TYPE_ARRAY)
       node->ty = type_canonical_concrete(node->index.prefix->ty->element_type);
     else
       node->ty = TY_INT;
@@ -6273,7 +6273,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     resolve_expression(symbol_manager, node->slice.prefix, 0);
     resolve_expression(symbol_manager, node->slice.low_bound, 0);
     resolve_expression(symbol_manager, node->slice.high_bound, 0);
-    if (node->slice.prefix->ty and node->slice.prefix->ty->k == TYPE_ARRAY)
+    if (node->slice.prefix->ty and node->slice.prefix->ty->kind == TYPE_ARRAY)
       node->ty = node->slice.prefix->ty;
     else
       node->ty = TY_INT;
@@ -6282,10 +6282,10 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
   {
     resolve_expression(symbol_manager, node->selected_component.prefix, 0);
     Syntax_Node *parser = node->selected_component.prefix;
-    if (parser->k == N_ID)
+    if (parser->kind == N_ID)
     {
       Symbol *ps = symbol_find(symbol_manager, parser->string_value);
-      if (ps and ps->k == 6 and ps->definition and ps->definition->k == N_PKS)
+      if (ps and ps->kind == 6 and ps->definition and ps->definition->kind == N_PKS)
       {
         Syntax_Node *pk = ps->definition;
         for (uint32_t i = 0; i < pk->package_spec.declarations.count; i++)
@@ -6295,31 +6295,31 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
           {
             node->ty = d->symbol->type_info ? d->symbol->type_info : TY_INT;
             node->symbol = d->symbol;
-            if (d->symbol->k == 5 and d->symbol->type_info and d->symbol->type_info->k == TYPE_STRING and d->symbol->type_info->element_type)
+            if (d->symbol->kind == 5 and d->symbol->type_info and d->symbol->type_info->kind == TYPE_STRING and d->symbol->type_info->element_type)
             {
               node->ty = d->symbol->type_info->element_type;
             }
-            if (d->symbol->k == 2 and d->symbol->definition)
+            if (d->symbol->kind == 2 and d->symbol->definition)
             {
               Syntax_Node *df = d->symbol->definition;
-              if (df->k == N_CHK)
+              if (df->kind == N_CHK)
                 df = df->check.expression;
-              if (df->k == N_INT)
+              if (df->kind == N_INT)
               {
-                node->k = N_INT;
+                node->kind = N_INT;
                 node->integer_value = df->integer_value;
                 node->ty = TY_UINT;
               }
-              else if (df->k == N_REAL)
+              else if (df->kind == N_REAL)
               {
-                node->k = N_REAL;
+                node->kind = N_REAL;
                 node->float_value = df->float_value;
                 node->ty = TY_UFLT;
               }
             }
             return;
           }
-          if (d->k == N_ED)
+          if (d->kind == N_ED)
           {
             for (uint32_t j = 0; j < d->exception_decl.identifiers.count; j++)
             {
@@ -6332,7 +6332,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
               }
             }
           }
-          if (d->k == N_OD)
+          if (d->kind == N_OD)
           {
             for (uint32_t j = 0; j < d->object_decl.identifiers.count; j++)
             {
@@ -6341,20 +6341,20 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
               {
                 node->ty = oid->symbol->type_info ? oid->symbol->type_info : TY_INT;
                 node->symbol = oid->symbol;
-                if (oid->symbol->k == 2 and oid->symbol->definition)
+                if (oid->symbol->kind == 2 and oid->symbol->definition)
                 {
                   Syntax_Node *df = oid->symbol->definition;
-                  if (df->k == N_CHK)
+                  if (df->kind == N_CHK)
                     df = df->check.expression;
-                  if (df->k == N_INT)
+                  if (df->kind == N_INT)
                   {
-                    node->k = N_INT;
+                    node->kind = N_INT;
                     node->integer_value = df->integer_value;
                     node->ty = TY_UINT;
                   }
-                  else if (df->k == N_REAL)
+                  else if (df->kind == N_REAL)
                   {
-                    node->k = N_REAL;
+                    node->kind = N_REAL;
                     node->float_value = df->float_value;
                     node->ty = TY_UFLT;
                   }
@@ -6367,10 +6367,10 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
         for (uint32_t i = 0; i < pk->package_spec.declarations.count; i++)
         {
           Syntax_Node *d = pk->package_spec.declarations.data[i];
-          if (d->k == N_TD and d->symbol and d->symbol->type_info)
+          if (d->kind == N_TD and d->symbol and d->symbol->type_info)
           {
             Type_Info *et = d->symbol->type_info;
-            if (et->k == TYPE_ENUMERATION)
+            if (et->kind == TYPE_ENUMERATION)
             {
               for (uint32_t j = 0; j < et->enum_values.count; j++)
               {
@@ -6397,24 +6397,24 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
             {
               node->ty = s->type_info;
               node->symbol = s;
-              if (s->k == 5 and s->type_info and s->type_info->k == TYPE_STRING and s->type_info->element_type)
+              if (s->kind == 5 and s->type_info and s->type_info->kind == TYPE_STRING and s->type_info->element_type)
               {
                 node->ty = s->type_info->element_type;
               }
-              if (s->k == 2 and s->definition)
+              if (s->kind == 2 and s->definition)
               {
                 Syntax_Node *df = s->definition;
-                if (df->k == N_CHK)
+                if (df->kind == N_CHK)
                   df = df->check.expression;
-                if (df->k == N_INT)
+                if (df->kind == N_INT)
                 {
-                  node->k = N_INT;
+                  node->kind = N_INT;
                   node->integer_value = df->integer_value;
                   node->ty = TY_UINT;
                 }
-                else if (df->k == N_REAL)
+                else if (df->kind == N_REAL)
                 {
-                  node->k = N_REAL;
+                  node->kind = N_REAL;
                   node->float_value = df->float_value;
                   node->ty = TY_UFLT;
                 }
@@ -6428,12 +6428,12 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     if (parser->ty)
     {
       Type_Info *pt = type_canonical_concrete(parser->ty);
-      if (pt->k == TYPE_RECORD)
+      if (pt->kind == TYPE_RECORD)
       {
         for (uint32_t i = 0; i < pt->components.count; i++)
         {
           Syntax_Node *c = pt->components.data[i];
-          if (c->k == N_CM and string_equal_ignore_case(c->component_decl.name, node->selected_component.selector))
+          if (c->kind == N_CM and string_equal_ignore_case(c->component_decl.name, node->selected_component.selector))
           {
             node->ty = resolve_subtype(symbol_manager, c->component_decl.ty);
             return;
@@ -6442,7 +6442,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
         for (uint32_t i = 0; i < pt->discriminants.count; i++)
         {
           Syntax_Node *d = pt->discriminants.data[i];
-          if (d->k == N_DS and string_equal_ignore_case(d->parameter.name, node->selected_component.selector))
+          if (d->kind == N_DS and string_equal_ignore_case(d->parameter.name, node->selected_component.selector))
           {
             node->ty = resolve_subtype(symbol_manager, d->parameter.ty);
             return;
@@ -6451,7 +6451,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
         for (uint32_t i = 0; i < pt->components.count; i++)
         {
           Syntax_Node *c = pt->components.data[i];
-          if (c->k == N_VP)
+          if (c->kind == N_VP)
           {
             for (uint32_t j = 0; j < c->variant_part.variants.count; j++)
             {
@@ -6549,31 +6549,31 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
       else
         node->ty = TY_INT;
       if (string_equal_ignore_case(a, STRING_LITERAL("POS")) and node->attribute.arguments.count > 0
-          and node->attribute.arguments.data[0]->k == N_INT)
+          and node->attribute.arguments.data[0]->kind == N_INT)
       {
         if (ptc and is_integer_type(ptc))
         {
-          node->k = N_INT;
+          node->kind = N_INT;
           node->integer_value = node->attribute.arguments.data[0]->integer_value;
           node->ty = TY_UINT;
         }
       }
       if (string_equal_ignore_case(a, STRING_LITERAL("VAL")) and node->attribute.arguments.count > 0
-          and node->attribute.arguments.data[0]->k == N_INT)
+          and node->attribute.arguments.data[0]->kind == N_INT)
       {
         int64_t pos = node->attribute.arguments.data[0]->integer_value;
         if (ptc == TY_CHAR and pos >= 0 and pos <= 127)
         {
-          node->k = N_CHAR;
+          node->kind = N_CHAR;
           node->integer_value = pos;
           node->ty = TY_CHAR;
         }
         else if (
-            ptc and ptc->k == TYPE_ENUMERATION and pos >= ptc->low_bound and pos <= ptc->high_bound
+            ptc and ptc->kind == TYPE_ENUMERATION and pos >= ptc->low_bound and pos <= ptc->high_bound
             and (uint32_t) pos < ptc->enum_values.count)
         {
           Symbol *e = ptc->enum_values.data[pos];
-          node->k = N_ID;
+          node->kind = N_ID;
           node->string_value = e->name;
           node->ty = pt;
           node->symbol = e;
@@ -6599,36 +6599,36 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     for (uint32_t i = 0; i < node->call.arguments.count; i++)
       resolve_expression(symbol_manager, node->call.arguments.data[i], 0);
     Type_Info *ft = node->call.function_name ? node->call.function_name->ty : 0;
-    if (ft and ft->k == TYPE_ARRAY)
+    if (ft and ft->kind == TYPE_ARRAY)
     {
       Syntax_Node *fn = node->call.function_name;
       Node_Vector ar = node->call.arguments;
-      node->k = N_IX;
+      node->kind = N_IX;
       node->index.prefix = fn;
       node->index.indices = ar;
       resolve_expression(symbol_manager, node, tx);
       break;
     }
-    if (node->call.function_name->k == N_ID or node->call.function_name->k == N_STR)
+    if (node->call.function_name->kind == N_ID or node->call.function_name->kind == N_STR)
     {
-      String_Slice fnm = node->call.function_name->k == N_ID ? node->call.function_name->string_value : node->call.function_name->string_value;
+      String_Slice fnm = node->call.function_name->kind == N_ID ? node->call.function_name->string_value : node->call.function_name->string_value;
       Symbol *s = node->call.function_name->symbol;
       if (not s)
         s = symbol_find_with_arity(symbol_manager, fnm, node->call.arguments.count, tx);
       if (s)
       {
         node->call.function_name->symbol = s;
-        if (s->type_info and s->type_info->k == TYPE_STRING and s->type_info->element_type)
+        if (s->type_info and s->type_info->kind == TYPE_STRING and s->type_info->element_type)
         {
           node->ty = s->type_info->element_type;
           node->symbol = s;
         }
-        else if (s->k == 1)
+        else if (s->kind == 1)
         {
           Syntax_Node *cv = ND(CVT, node->location);
           cv->conversion.ty = node->call.function_name;
           cv->conversion.expression = node->call.arguments.count > 0 ? node->call.arguments.data[0] : 0;
-          node->k = N_CVT;
+          node->kind = N_CVT;
           node->conversion = cv->conversion;
           node->ty = s->type_info ? s->type_info : TY_INT;
         }
@@ -6654,35 +6654,35 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     if (node->allocator.initializer)
     {
       Type_Info *et = node->ty->element_type ? type_canonical_concrete(node->ty->element_type) : 0;
-      if (et and et->k == TYPE_RECORD and et->discriminants.count > 0)
+      if (et and et->kind == TYPE_RECORD and et->discriminants.count > 0)
       {
         for (uint32_t i = 0; i < et->discriminants.count; i++)
         {
           Syntax_Node *d = et->discriminants.data[i];
-          if (d->k == N_DS and d->parameter.default_value)
+          if (d->kind == N_DS and d->parameter.default_value)
           {
             resolve_expression(symbol_manager, d->parameter.default_value, resolve_subtype(symbol_manager, d->parameter.ty));
           }
         }
       }
       resolve_expression(symbol_manager, node->allocator.initializer, node->ty->element_type);
-      if (tx and tx->k == TYPE_ACCESS and tx->element_type)
+      if (tx and tx->kind == TYPE_ACCESS and tx->element_type)
       {
         Type_Info *ct = type_canonical_concrete(tx->element_type);
-        if (ct and ct->k == TYPE_RECORD and ct->discriminants.count > 0)
+        if (ct and ct->kind == TYPE_RECORD and ct->discriminants.count > 0)
         {
           bool hcd = 0;
           for (uint32_t i = 0; i < ct->discriminants.count; i++)
-            if (ct->discriminants.data[i]->k == N_DS and ct->discriminants.data[i]->parameter.default_value)
+            if (ct->discriminants.data[i]->kind == N_DS and ct->discriminants.data[i]->parameter.default_value)
               hcd = 1;
           if (hcd and et and et->discriminants.count > 0)
           {
             for (uint32_t i = 0; i < ct->discriminants.count and i < et->discriminants.count; i++)
             {
               Syntax_Node *cd = ct->discriminants.data[i], *ed = et->discriminants.data[i];
-              if (cd->k == N_DS and cd->parameter.default_value and ed->k == N_DS)
+              if (cd->kind == N_DS and cd->parameter.default_value and ed->kind == N_DS)
               {
-                bool mtch = cd->parameter.default_value->k == N_INT and ed->parameter.default_value and ed->parameter.default_value->k == N_INT
+                bool mtch = cd->parameter.default_value->kind == N_INT and ed->parameter.default_value and ed->parameter.default_value->kind == N_INT
                             and cd->parameter.default_value->integer_value == ed->parameter.default_value->integer_value;
                 if (not mtch)
                 {
@@ -6706,7 +6706,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
   case N_ASC:
     if (node->association.value)
     {
-      Type_Info *vt = tx and tx->k == TYPE_ARRAY ? tx->element_type : tx;
+      Type_Info *vt = tx and tx->kind == TYPE_ARRAY ? tx->element_type : tx;
       resolve_expression(symbol_manager, node->association.value, vt);
     }
     break;
@@ -6714,7 +6714,7 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     resolve_expression(symbol_manager, node->dereference.expression, 0);
     {
       Type_Info *dty = node->dereference.expression->ty ? type_canonical_concrete(node->dereference.expression->ty) : 0;
-      if (dty and dty->k == TYPE_ACCESS)
+      if (dty and dty->kind == TYPE_ACCESS)
         node->ty = dty->element_type;
       else
       {
@@ -6740,7 +6740,7 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
 {
   if (not node)
     return;
-  switch (node->k)
+  switch (node->kind)
   {
   case N_AS:
     resolve_expression(symbol_manager, node->assignment.target, 0);
@@ -6756,9 +6756,9 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
         Type_Info *tgb = semantic_base(tgt);
         Type_Info *vlb = semantic_base(vlt);
         // Allow assignments involving arrays (bounds will be checked at runtime)
-        bool has_array = (tgt->k == TYPE_ARRAY or vlt->k == TYPE_ARRAY);
+        bool has_array = (tgt->kind == TYPE_ARRAY or vlt->kind == TYPE_ARRAY);
         if (not type_covers(tgb, vlb) and not has_array
-            and not(tgt->k == TYPE_BOOLEAN and is_discrete(vlt))
+            and not(tgt->kind == TYPE_BOOLEAN and is_discrete(vlt))
             and not(is_discrete(tgt) and is_discrete(vlt)))
           fatal_error(node->location, "typ mis");
       }
@@ -6809,10 +6809,10 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
     }
     if (node->loop_stmt.iterator)
     {
-      if (node->loop_stmt.iterator->k == N_BIN and node->loop_stmt.iterator->binary_node.op == T_IN)
+      if (node->loop_stmt.iterator->kind == N_BIN and node->loop_stmt.iterator->binary_node.op == T_IN)
       {
         Syntax_Node *v = node->loop_stmt.iterator->binary_node.left;
-        if (v->k == N_ID)
+        if (v->kind == N_ID)
         {
           Type_Info *rt = node->loop_stmt.iterator->binary_node.right->ty;
           Symbol *lvs = symbol_new(v->string_value, 0, rt ?: TY_INT, 0);
@@ -6847,7 +6847,7 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
         for (uint32_t j = 0; j < h->exception_handler.exception_choices.count; j++)
         {
           Syntax_Node *e = h->exception_handler.exception_choices.data[j];
-          if (e->k == N_ID and not string_equal_ignore_case(e->string_value, STRING_LITERAL("others")))
+          if (e->kind == N_ID and not string_equal_ignore_case(e->string_value, STRING_LITERAL("others")))
             slv(&symbol_manager->eh, e->string_value);
         }
         for (uint32_t j = 0; j < h->exception_handler.statements.count; j++)
@@ -6865,7 +6865,7 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
       resolve_expression(symbol_manager, node->exit_stmt.condition, TY_BOOL);
     break;
   case N_RS:
-    if (node->raise_stmt.exception_choice and node->raise_stmt.exception_choice->k == N_ID)
+    if (node->raise_stmt.exception_choice and node->raise_stmt.exception_choice->kind == N_ID)
       slv(&symbol_manager->eh, node->raise_stmt.exception_choice->string_value);
     else
       slv(&symbol_manager->eh, STRING_LITERAL("PROGRAM_ERROR"));
@@ -6902,7 +6902,7 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
     for (uint32_t i = 0; i < node->abort_stmt.statements.count; i++)
     {
       Syntax_Node *s = node->abort_stmt.statements.data[i];
-      if (s->k == N_ACC)
+      if (s->kind == N_ACC)
       {
         for (uint32_t j = 0; j < s->accept_stmt.parameters.count; j++)
           resolve_expression(symbol_manager, s->accept_stmt.parameters.data[j], 0);
@@ -6911,7 +6911,7 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
         for (uint32_t j = 0; j < s->accept_stmt.statements.count; j++)
           resolve_statement_sequence(symbol_manager, s->accept_stmt.statements.data[j]);
       }
-      else if (s->k == N_DL)
+      else if (s->kind == N_DL)
         resolve_expression(symbol_manager, s->exit_stmt.condition, 0);
     }
     break;
@@ -6919,7 +6919,7 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
     resolve_expression(symbol_manager, node->exit_stmt.condition, 0);
     break;
   case N_AB:
-    if (node->raise_stmt.exception_choice and node->raise_stmt.exception_choice->k == N_ID)
+    if (node->raise_stmt.exception_choice and node->raise_stmt.exception_choice->kind == N_ID)
       slv(&symbol_manager->eh, node->raise_stmt.exception_choice->string_value);
     else
       slv(&symbol_manager->eh, STRING_LITERAL("TASKING_ERROR"));
@@ -6927,7 +6927,7 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
       resolve_expression(symbol_manager, node->raise_stmt.exception_choice, 0);
     break;
   case N_US:
-    if (node->use_clause.nm->k == N_ID)
+    if (node->use_clause.nm->kind == N_ID)
     {
       Symbol *s = symbol_find(symbol_manager, node->use_clause.nm->string_value);
       if (s)
@@ -6942,7 +6942,7 @@ static void runtime_register_compare(Symbol_Manager *symbol_manager, Representat
 {
   if (not r)
     return;
-  switch (r->k)
+  switch (r->kind)
   {
   case 1:
   {
@@ -6989,7 +6989,7 @@ static void runtime_register_compare(Symbol_Manager *symbol_manager, Representat
         for (uint32_t j = 0; j < t->components.count; j++)
         {
           Syntax_Node *c = t->components.data[j];
-          if (c->k == N_CM and string_equal_ignore_case(c->component_decl.name, cp->component_decl.name))
+          if (c->kind == N_CM and string_equal_ignore_case(c->component_decl.name, cp->component_decl.name))
           {
             c->component_decl.offset = cp->component_decl.offset;
             c->component_decl.bit_offset = cp->component_decl.bit_offset;
@@ -7060,15 +7060,15 @@ static void is_higher_order_parameter(Type_Info *dt, Type_Info *pt)
   for (uint32_t i = 0; i < pt->operations.count; i++)
   {
     Syntax_Node *op = pt->operations.data[i];
-    if (op->k == N_FB or op->k == N_PB)
+    if (op->kind == N_FB or op->kind == N_PB)
     {
-      Syntax_Node *nop = node_new(op->k, op->location);
+      Syntax_Node *nop = node_new(op->kind, op->location);
       nop->body = op->body;
       Syntax_Node *nsp = node_new(N_FS, op->location);
       nsp->subprogram = op->body.subprogram_spec->subprogram;
       nsp->subprogram.name = string_duplicate(op->body.subprogram_spec->subprogram.name);
       nsp->subprogram.parameters = op->body.subprogram_spec->subprogram.parameters;
-      if (op->k == N_FB)
+      if (op->kind == N_FB)
         nsp->subprogram.return_type = op->body.subprogram_spec->subprogram.return_type;
       nop->body.subprogram_spec = nsp;
       nop->body.elaboration_level = -1;
@@ -7091,22 +7091,22 @@ static void resolve_array_parameter(Symbol_Manager *symbol_manager, Node_Vector 
   {
     Syntax_Node *f = fp->data[i];
     Syntax_Node *a = ap->data[i];
-    if (f->k == N_GSP and a->k == N_STR)
+    if (f->kind == N_GSP and a->kind == N_STR)
     {
       int pc = f->subprogram.parameters.count;
       Type_Info *rt = 0;
       if (f->subprogram.return_type)
       {
-        if (f->subprogram.return_type->k == N_ID)
+        if (f->subprogram.return_type->kind == N_ID)
         {
           String_Slice tn = f->subprogram.return_type->string_value;
           for (uint32_t j = 0; j < fp->count; j++)
           {
             Syntax_Node *tf = fp->data[j];
-            if (tf->k == N_GTP and string_equal_ignore_case(tf->type_decl.name, tn) and j < ap->count)
+            if (tf->kind == N_GTP and string_equal_ignore_case(tf->type_decl.name, tn) and j < ap->count)
             {
               Syntax_Node *ta = ap->data[j];
-              if (ta->k == N_ID)
+              if (ta->kind == N_ID)
               {
                 Symbol *ts = symbol_find(symbol_manager, ta->string_value);
                 if (ts and ts->type_info)
@@ -7120,7 +7120,7 @@ static void resolve_array_parameter(Symbol_Manager *symbol_manager, Node_Vector 
       Symbol *s = symbol_find_with_arity(symbol_manager, a->string_value, pc, rt);
       if (s)
       {
-        a->k = N_ID;
+        a->kind = N_ID;
         a->symbol = s;
       }
     }
@@ -7181,7 +7181,7 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
     node_clone_depth--;
     return n;
   }
-  if (fp and n->k == N_ID)
+  if (fp and n->kind == N_ID)
   {
     for (uint32_t i = 0; i < fp->count; i++)
       if (match_formal_parameter(fp->data[i], n->string_value))
@@ -7189,7 +7189,7 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
         if (i < ap->count)
         {
           Syntax_Node *a = ap->data[i];
-          Syntax_Node *r = a->k == N_ASC and a->association.value ? node_clone_substitute(a->association.value, 0, 0) : node_clone_substitute(a, 0, 0);
+          Syntax_Node *r = a->kind == N_ASC and a->association.value ? node_clone_substitute(a->association.value, 0, 0) : node_clone_substitute(a, 0, 0);
           node_clone_depth--;
           return r;
         }
@@ -7198,7 +7198,7 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
         return r;
       }
   }
-  if (fp and n->k == N_STR)
+  if (fp and n->kind == N_STR)
   {
     for (uint32_t i = 0; i < fp->count; i++)
       if (match_formal_parameter(fp->data[i], n->string_value))
@@ -7206,7 +7206,7 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
         if (i < ap->count)
         {
           Syntax_Node *a = ap->data[i];
-          Syntax_Node *r = a->k == N_ASC and a->association.value ? node_clone_substitute(a->association.value, 0, 0) : node_clone_substitute(a, 0, 0);
+          Syntax_Node *r = a->kind == N_ASC and a->association.value ? node_clone_substitute(a->association.value, 0, 0) : node_clone_substitute(a, 0, 0);
           node_clone_depth--;
           return r;
         }
@@ -7215,10 +7215,10 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
         return r;
       }
   }
-  Syntax_Node *c = node_new(n->k, n->location);
+  Syntax_Node *c = node_new(n->kind, n->location);
   c->ty = 0;
-  c->symbol = (n->k == N_ID and n->symbol) ? n->symbol : 0;
-  switch (n->k)
+  c->symbol = (n->kind == N_ID and n->symbol) ? n->symbol : 0;
+  switch (n->kind)
   {
   case N_ID:
     c->string_value = n->string_value.string ? string_duplicate(n->string_value) : n->string_value;
@@ -7542,11 +7542,11 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
 }
 static bool match_formal_parameter(Syntax_Node *f, String_Slice nm)
 {
-  if (f->k == N_GTP)
+  if (f->kind == N_GTP)
     return string_equal_ignore_case(f->type_decl.name, nm);
-  if (f->k == N_GSP)
+  if (f->kind == N_GSP)
     return string_equal_ignore_case(f->subprogram.name, nm);
-  if (f->k == N_GVL)
+  if (f->kind == N_GVL)
     for (uint32_t j = 0; j < f->object_decl.identifiers.count; j++)
       if (string_equal_ignore_case(f->object_decl.identifiers.data[j]->string_value, nm))
         return 1;
@@ -7556,9 +7556,9 @@ static Syntax_Node *generate_clone(Symbol_Manager *symbol_manager, Syntax_Node *
 {
   if (not n)
     return 0;
-  if (n->k == N_GEN)
+  if (n->kind == N_GEN)
   {
-    String_Slice nm = n->generic_decl.unit ? (n->generic_decl.unit->k == N_PKS ? n->generic_decl.unit->package_spec.name
+    String_Slice nm = n->generic_decl.unit ? (n->generic_decl.unit->kind == N_PKS ? n->generic_decl.unit->package_spec.name
                                    : n->generic_decl.unit->body.subprogram_spec    ? n->generic_decl.unit->body.subprogram_spec->subprogram.name
                                                          : N)
                                 : N;
@@ -7574,13 +7574,13 @@ static Syntax_Node *generate_clone(Symbol_Manager *symbol_manager, Syntax_Node *
       {
         Symbol *gs = symbol_new(g->name, 11, 0, n);
         gs->generic_template = g;
-        if (g->unit and g->unit->k == N_PKS)
+        if (g->unit and g->unit->kind == N_PKS)
           gs->definition = g->unit;
         symbol_add_overload(symbol_manager, gs);
       }
     }
   }
-  else if (n->k == N_GINST)
+  else if (n->kind == N_GINST)
   {
     Generic_Template *g = generic_find(symbol_manager, n->generic_inst.generic_name);
     if (g)
@@ -7589,11 +7589,11 @@ static Syntax_Node *generate_clone(Symbol_Manager *symbol_manager, Syntax_Node *
       Syntax_Node *inst = node_clone_substitute(g->unit, &g->formal_parameters, &n->generic_inst.actual_parameters);
       if (inst)
       {
-        if (inst->k == N_PB or inst->k == N_FB or inst->k == N_PD or inst->k == N_FD)
+        if (inst->kind == N_PB or inst->kind == N_FB or inst->kind == N_PD or inst->kind == N_FD)
         {
           inst->body.subprogram_spec->subprogram.name = n->generic_inst.name;
         }
-        else if (inst->k == N_PKS)
+        else if (inst->kind == N_PKS)
         {
           inst->package_spec.name = n->generic_inst.name;
         }
@@ -7607,12 +7607,12 @@ static Symbol *get_pkg_sym(Symbol_Manager *symbol_manager, Syntax_Node *pk)
 {
   if (not pk or not pk->symbol)
     return 0;
-  String_Slice nm = pk->k == N_PKS ? pk->package_spec.name : pk->symbol->name;
+  String_Slice nm = pk->kind == N_PKS ? pk->package_spec.name : pk->symbol->name;
   if (not nm.string or nm.length == 0)
     return 0;
   uint32_t h = symbol_hash(nm);
   for (Symbol *s = symbol_manager->sy[h]; s; s = s->next)
-    if (s->k == 6 and string_equal_ignore_case(s->name, nm) and s->level == 0)
+    if (s->kind == 6 and string_equal_ignore_case(s->name, nm) and s->level == 0)
       return s;
   return pk->symbol;
 }
@@ -7620,7 +7620,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
 {
   if (not n)
     return;
-  switch (n->k)
+  switch (n->kind)
   {
   case N_GINST:
   {
@@ -7628,7 +7628,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     if (inst)
     {
       resolve_declaration(symbol_manager, inst);
-      if (inst->k == N_PKS)
+      if (inst->kind == N_PKS)
       {
         Generic_Template *g = generic_find(symbol_manager, n->generic_inst.generic_name);
         if (g and g->body)
@@ -7661,9 +7661,9 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       Type_Info *ct = universal_composite_aggregate(t, n->object_decl.in);
       Symbol *x = symbol_find(symbol_manager, id->string_value);
       Symbol *s = 0;
-      if (x and x->scope == symbol_manager->sc and x->storage_size == symbol_manager->ss and x->k != 11)
+      if (x and x->scope == symbol_manager->sc and x->storage_size == symbol_manager->ss and x->kind != 11)
       {
-        if (x->k == 2 and x->definition and x->definition->k == N_OD and not((Syntax_Node *) x->definition)->object_decl.in
+        if (x->kind == 2 and x->definition and x->definition->kind == N_OD and not((Syntax_Node *) x->definition)->object_decl.in
             and n->object_decl.is_constant and n->object_decl.in)
         {
           s = x;
@@ -7694,9 +7694,9 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
             {
               Syntax_Node *td = t->discriminants.data[di];
               Syntax_Node *id = it->discriminants.data[di];
-              if (td->k == N_DS and id->k == N_DS and td->parameter.default_value and id->parameter.default_value)
+              if (td->kind == N_DS and id->kind == N_DS and td->parameter.default_value and id->parameter.default_value)
               {
-                if (td->parameter.default_value->k == N_INT and id->parameter.default_value->k == N_INT
+                if (td->parameter.default_value->kind == N_INT and id->parameter.default_value->kind == N_INT
                     and td->parameter.default_value->integer_value != id->parameter.default_value->integer_value)
                 {
                   Syntax_Node *dc = ND(CHK, n->location);
@@ -7710,11 +7710,11 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
           }
         }
         s->definition = n->object_decl.in;
-        if (n->object_decl.is_constant and n->object_decl.in->k == N_INT)
+        if (n->object_decl.is_constant and n->object_decl.in->kind == N_INT)
           s->value = n->object_decl.in->integer_value;
-        else if (n->object_decl.is_constant and n->object_decl.in->k == N_ID and n->object_decl.in->symbol and n->object_decl.in->symbol->k == 2)
+        else if (n->object_decl.is_constant and n->object_decl.in->kind == N_ID and n->object_decl.in->symbol and n->object_decl.in->symbol->kind == 2)
           s->value = n->object_decl.in->symbol->value;
-        else if (n->object_decl.is_constant and n->object_decl.in->k == N_AT)
+        else if (n->object_decl.is_constant and n->object_decl.in->kind == N_AT)
         {
           Type_Info *pt = n->object_decl.in->attribute.prefix ? type_canonical_concrete(n->object_decl.in->attribute.prefix->ty) : 0;
           String_Slice a = n->object_decl.in->attribute.attribute_name;
@@ -7723,12 +7723,12 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
           else if (pt and string_equal_ignore_case(a, STRING_LITERAL("LAST")))
             s->value = pt->high_bound;
         }
-        else if (n->object_decl.is_constant and n->object_decl.in->k == N_QL and n->object_decl.in->qualified.aggregate)
+        else if (n->object_decl.is_constant and n->object_decl.in->kind == N_QL and n->object_decl.in->qualified.aggregate)
         {
           Syntax_Node *ag = n->object_decl.in->qualified.aggregate;
-          if (ag->k == N_ID and ag->symbol and ag->symbol->k == 2)
+          if (ag->kind == N_ID and ag->symbol and ag->symbol->kind == 2)
             s->value = ag->symbol->value;
-          else if (ag->k == N_INT)
+          else if (ag->kind == N_INT)
             s->value = ag->integer_value;
         }
       }
@@ -7743,7 +7743,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     if (n->type_decl.is_derived and n->type_decl.parent_type)
     {
       Type_Info *pt = resolve_subtype(symbol_manager, n->type_decl.parent_type);
-      if (n->type_decl.parent_type->k == N_TAC and error_count < 99)
+      if (n->type_decl.parent_type->kind == N_TAC and error_count < 99)
         fatal_error(n->location, "der acc ty");
       t = type_new(TYPE_DERIVED, n->type_decl.name);
       t->parent_type = pt;
@@ -7772,7 +7772,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
         }
         is_higher_order_parameter(t, pt);
       }
-      if (n->type_decl.definition and n->type_decl.definition->k == N_RN)
+      if (n->type_decl.definition and n->type_decl.definition->kind == N_RN)
       {
         resolve_expression(symbol_manager, n->type_decl.definition->range.low_bound, 0);
         resolve_expression(symbol_manager, n->type_decl.definition->range.high_bound, 0);
@@ -7783,10 +7783,10 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     else
     {
       Symbol *px = symbol_find(symbol_manager, n->type_decl.name);
-      if (px and px->k == 1 and px->type_info and (px->type_info->k == TYPE_INTEGER or px->type_info->k == TY_PT)
+      if (px and px->kind == 1 and px->type_info and (px->type_info->kind == TYPE_INTEGER or px->type_info->kind == TY_PT)
           and n->type_decl.definition)
       {
-        if (px->type_info->k == TY_PT)
+        if (px->type_info->kind == TY_PT)
         {
           t = px->type_info;
           t->parent_type = resolve_subtype(symbol_manager, n->type_decl.definition);
@@ -7816,7 +7816,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       for (uint32_t i = 0; i < n->type_decl.discriminants.count; i++)
       {
         Syntax_Node *d = n->type_decl.discriminants.data[i];
-        if (d->k == N_DS)
+        if (d->kind == N_DS)
         {
           Symbol *ds = symbol_add_overload(symbol_manager, symbol_new(d->parameter.name, 8, resolve_subtype(symbol_manager, d->parameter.ty), d));
           if (d->parameter.default_value)
@@ -7828,7 +7828,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     if (n->type_decl.name.string and n->type_decl.name.length > 0)
     {
       Symbol *px2 = symbol_find(symbol_manager, n->type_decl.name);
-      if (px2 and px2->k == 1 and px2->type_info == t)
+      if (px2 and px2->kind == 1 and px2->type_info == t)
       {
         n->symbol = px2;
         if (n->type_decl.definition)
@@ -7840,29 +7840,29 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
         n->symbol = s;
       }
     }
-    if (n->type_decl.definition and n->type_decl.definition->k == N_TE)
+    if (n->type_decl.definition and n->type_decl.definition->kind == N_TE)
     {
-      t->k = TYPE_ENUMERATION;
+      t->kind = TYPE_ENUMERATION;
       int vl = 0;
       for (uint32_t i = 0; i < n->type_decl.definition->list.items.count; i++)
       {
         Syntax_Node *it = n->type_decl.definition->list.items.data[i];
         Symbol *es = symbol_add_overload(
-            symbol_manager, symbol_new(it->k == N_CHAR ? (String_Slice){(const char *) &it->integer_value, 1} : it->string_value, 2, t, n));
+            symbol_manager, symbol_new(it->kind == N_CHAR ? (String_Slice){(const char *) &it->integer_value, 1} : it->string_value, 2, t, n));
         es->value = vl++;
         sv(&t->enum_values, es);
       }
       t->low_bound = 0;
       t->high_bound = vl - 1;
     }
-    if (n->type_decl.definition and n->type_decl.definition->k == N_TR)
+    if (n->type_decl.definition and n->type_decl.definition->kind == N_TR)
     {
-      t->k = TYPE_RECORD;
+      t->kind = TYPE_RECORD;
       of = 0;
       for (uint32_t i = 0; i < n->type_decl.definition->list.items.count; i++)
       {
         Syntax_Node *c = n->type_decl.definition->list.items.data[i];
-        if (c->k == N_CM)
+        if (c->kind == N_CM)
         {
           c->component_decl.offset = of++;
           Type_Info *ct = resolve_subtype(symbol_manager, c->component_decl.ty);
@@ -7873,7 +7873,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
             for (uint32_t j = 0; j < c->component_decl.discriminant_constraint->list.items.count; j++)
             {
               Syntax_Node *dc = c->component_decl.discriminant_constraint->list.items.data[j];
-              if (dc->k == N_DS and dc->parameter.default_value)
+              if (dc->kind == N_DS and dc->parameter.default_value)
                 resolve_expression(symbol_manager, dc->parameter.default_value, resolve_subtype(symbol_manager, dc->parameter.ty));
             }
           }
@@ -7882,7 +7882,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
             for (uint32_t j = 0; j < c->component_decl.discriminant_spec->list.items.count; j++)
             {
               Syntax_Node *dc = c->component_decl.discriminant_spec->list.items.data[j];
-              if (dc->k == N_DS)
+              if (dc->kind == N_DS)
               {
                 Symbol *ds =
                     symbol_add_overload(symbol_manager, symbol_new(dc->parameter.name, 8, resolve_subtype(symbol_manager, dc->parameter.ty), dc));
@@ -7893,7 +7893,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
             c->component_decl.discriminant_constraint = c->component_decl.discriminant_spec;
           }
         }
-        else if (c->k == N_VP)
+        else if (c->kind == N_VP)
         {
           for (uint32_t j = 0; j < c->variant_part.variants.count; j++)
           {
@@ -7910,7 +7910,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
                 for (uint32_t m = 0; m < vc->component_decl.discriminant_constraint->list.items.count; m++)
                 {
                   Syntax_Node *dc = vc->component_decl.discriminant_constraint->list.items.data[m];
-                  if (dc->k == N_DS and dc->parameter.default_value)
+                  if (dc->kind == N_DS and dc->parameter.default_value)
                     resolve_expression(symbol_manager, dc->parameter.default_value, resolve_subtype(symbol_manager, dc->parameter.ty));
                 }
               }
@@ -7919,7 +7919,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
                 for (uint32_t m = 0; m < vc->component_decl.discriminant_spec->list.items.count; m++)
                 {
                   Syntax_Node *dc = vc->component_decl.discriminant_spec->list.items.data[m];
-                  if (dc->k == N_DS)
+                  if (dc->kind == N_DS)
                   {
                     Symbol *ds = symbol_add_overload(
                         symbol_manager, symbol_new(dc->parameter.name, 8, resolve_subtype(symbol_manager, dc->parameter.ty), dc));
@@ -7941,7 +7941,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
   case N_SD:
   {
     Type_Info *b = resolve_subtype(symbol_manager, n->subtype_decl.index_constraint);
-    Type_Info *t = type_new(b ? b->k : TYPE_INTEGER, n->subtype_decl.name);
+    Type_Info *t = type_new(b ? b->kind : TYPE_INTEGER, n->subtype_decl.name);
     if (b)
     {
       t->base_type = b;
@@ -7962,11 +7962,11 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       resolve_expression(symbol_manager, n->subtype_decl.range_constraint->range.high_bound, 0);
       Syntax_Node *lo = n->subtype_decl.range_constraint->range.low_bound;
       Syntax_Node *hi = n->subtype_decl.range_constraint->range.high_bound;
-      int64_t lov = lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.operand->k == N_INT ? -lo->unary_node.operand->integer_value
-                    : lo->k == N_ID and lo->symbol and lo->symbol->k == 2                ? lo->symbol->value
+      int64_t lov = lo->kind == N_UN and lo->unary_node.op == T_MN and lo->unary_node.operand->kind == N_INT ? -lo->unary_node.operand->integer_value
+                    : lo->kind == N_ID and lo->symbol and lo->symbol->kind == 2                ? lo->symbol->value
                                                                                  : lo->integer_value;
-      int64_t hiv = hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.operand->k == N_INT ? -hi->unary_node.operand->integer_value
-                    : hi->k == N_ID and hi->symbol and hi->symbol->k == 2                ? hi->symbol->value
+      int64_t hiv = hi->kind == N_UN and hi->unary_node.op == T_MN and hi->unary_node.operand->kind == N_INT ? -hi->unary_node.operand->integer_value
+                    : hi->kind == N_ID and hi->symbol and hi->symbol->kind == 2                ? hi->symbol->value
                                                                                  : hi->integer_value;
       t->low_bound = lov;
       t->high_bound = hiv;
@@ -7982,7 +7982,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       {
         resolve_expression(symbol_manager, n->exception_decl.renamed_entity, 0);
         Symbol *tgt = n->exception_decl.renamed_entity->symbol;
-        if (tgt and tgt->k == 3)
+        if (tgt and tgt->kind == 3)
         {
           Symbol *al = symbol_add_overload(symbol_manager, symbol_new(id->string_value, 3, 0, n));
           al->definition = n->exception_decl.renamed_entity;
@@ -8034,7 +8034,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
                 : (symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk)
                 : (SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0));
     nv(&ft->operations, n);
-    if (n->k == N_PB)
+    if (n->kind == N_PB)
     {
       symbol_manager->lv++;
       // Push this procedure onto the procedure stack
@@ -8080,7 +8080,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
                 : (symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk)
                 : (SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0));
     nv(&ft->operations, n);
-    if (n->k == N_FB)
+    if (n->kind == N_FB)
     {
       symbol_manager->lv++;
       // Push this function onto the procedure stack
@@ -8145,15 +8145,15 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
   {
     Symbol *ps = symbol_find(symbol_manager, n->package_body.name);
     Generic_Template *gt = 0;
-    if (ps and ps->k == 11)
+    if (ps and ps->kind == 11)
     {
       gt = ps->generic_template ? ps->generic_template : generic_find(symbol_manager, n->package_body.name);
     }
     if (gt)
     {
       gt->body = n;
-      Syntax_Node *pk = gt->unit and gt->unit->k == N_PKS ? gt->unit : 0;
-      if (not pk and ps and ps->definition and ps->definition->k == N_PKS)
+      Syntax_Node *pk = gt->unit and gt->unit->kind == N_PKS ? gt->unit : 0;
+      if (not pk and ps and ps->definition and ps->definition->kind == N_PKS)
         pk = ps->definition;
       if (pk)
       {
@@ -8185,8 +8185,8 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
           for (uint32_t _i = 0; _i < _cu->compilation_unit.units.count; _i++)
           {
             Syntax_Node *_u = _cu->compilation_unit.units.data[_i];
-            Syntax_Node *_pk = _u->k == N_PKS ? _u
-                               : _u->k == N_GEN and _u->generic_decl.unit and _u->generic_decl.unit->k == N_PKS
+            Syntax_Node *_pk = _u->kind == N_PKS ? _u
+                               : _u->kind == N_GEN and _u->generic_decl.unit and _u->generic_decl.unit->kind == N_PKS
                                    ? _u->generic_decl.unit
                                    : 0;
             if (_pk and string_equal_ignore_case(_pk->package_spec.name, n->package_body.name))
@@ -8219,7 +8219,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       sv(&symbol_manager->uv, ps);
       n->package_body.elaboration_level = ps->elaboration_level;
       symbol_manager->pk = ps->definition;
-      if (ps->definition and ps->definition->k == N_PKS)
+      if (ps->definition and ps->definition->kind == N_PKS)
       {
         Syntax_Node *pk = ps->definition;
         for (uint32_t i = 0; i < pk->package_spec.declarations.count; i++)
@@ -8230,7 +8230,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
             d->symbol->visibility |= 2;
             sv(&symbol_manager->uv, d->symbol);
           }
-          if (d->k == N_ED)
+          if (d->kind == N_ED)
             for (uint32_t j = 0; j < d->exception_decl.identifiers.count; j++)
               if (d->exception_decl.identifiers.data[j]->symbol)
               {
@@ -8246,7 +8246,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
             d->symbol->visibility |= 2;
             sv(&symbol_manager->uv, d->symbol);
           }
-          if (d->k == N_ED)
+          if (d->kind == N_ED)
             for (uint32_t j = 0; j < d->exception_decl.identifiers.count; j++)
               if (d->exception_decl.identifiers.data[j]->symbol)
               {
@@ -8259,7 +8259,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
           Syntax_Node *d = pk->package_spec.declarations.data[i];
           if (d->symbol)
             sv(&symbol_manager->uv, d->symbol);
-          else if (d->k == N_ED)
+          else if (d->kind == N_ED)
           {
             for (uint32_t j = 0; j < d->exception_decl.identifiers.count; j++)
             {
@@ -8268,7 +8268,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
                 sv(&symbol_manager->uv, eid->symbol);
             }
           }
-          else if (d->k == N_OD)
+          else if (d->kind == N_OD)
           {
             for (uint32_t j = 0; j < d->object_decl.identifiers.count; j++)
             {
@@ -8306,7 +8306,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       for (uint32_t i = 0; i < ts->type_info->components.count; i++)
       {
         Syntax_Node *en = ts->type_info->components.data[i];
-        if (en and en->k == N_ENT)
+        if (en and en->kind == N_ENT)
         {
           Symbol *ens = symbol_add_overload(symbol_manager, symbol_new(en->entry_decl.name, 9, 0, en));
           (void) ens;
@@ -8335,7 +8335,7 @@ static int elaborate_compilation(Symbol_Manager *symbol_manager, Symbol_Vector *
   if (not n)
     return 0;
   int mx = 0;
-  switch (n->k)
+  switch (n->kind)
   {
   case N_PKS:
   case N_PKB:
@@ -8543,7 +8543,7 @@ static Syntax_Node *pks2(Symbol_Manager *symbol_manager, String_Slice nm, const 
   for (uint32_t i = 0; cu and i < cu->compilation_unit.units.count; i++)
   {
     Syntax_Node *u = cu->compilation_unit.units.data[i];
-    if (u->k == N_PKS)
+    if (u->kind == N_PKS)
     {
       Type_Info *t = type_new(TY_P, nm);
       Symbol *ps = symbol_add_overload(symbol_manager, symbol_new(nm, 6, t, u));
@@ -8561,7 +8561,7 @@ static Syntax_Node *pks2(Symbol_Manager *symbol_manager, String_Slice nm, const 
       symbol_manager->lv = oldlv;
       symbol_manager->pk = oldpk;
     }
-    else if (u->k == N_GEN)
+    else if (u->kind == N_GEN)
       resolve_declaration(symbol_manager, u);
   }
   return cu;
@@ -8569,29 +8569,29 @@ static Syntax_Node *pks2(Symbol_Manager *symbol_manager, String_Slice nm, const 
 static void parse_package_specification(Symbol_Manager *symbol_manager, String_Slice nm, const char *src)
 {
   Symbol *ps = symbol_find(symbol_manager, nm);
-  if (ps and ps->k == 6)
+  if (ps and ps->kind == 6)
     return;
   pks2(symbol_manager, nm, src);
 }
 static void symbol_manager_use_clauses(Symbol_Manager *symbol_manager, Syntax_Node *n)
 {
-  if (n->k != N_CU)
+  if (n->kind != N_CU)
     return;
   for (uint32_t i = 0; i < n->compilation_unit.context->context.with_clauses.count; i++)
     parse_package_specification(symbol_manager, n->compilation_unit.context->context.with_clauses.data[i]->with_clause.name, lookup_path(symbol_manager, n->compilation_unit.context->context.with_clauses.data[i]->with_clause.name));
   for (uint32_t i = 0; i < n->compilation_unit.context->context.use_clauses.count; i++)
   {
     Syntax_Node *u = n->compilation_unit.context->context.use_clauses.data[i];
-    if (u and u->k == N_US and u->use_clause.nm and u->use_clause.nm->k == N_ID)
+    if (u and u->kind == N_US and u->use_clause.nm and u->use_clause.nm->kind == N_ID)
     {
       Symbol *ps = symbol_find(symbol_manager, u->use_clause.nm->string_value);
-      if (ps and ps->k == 6 and ps->definition and ps->definition->k == N_PKS)
+      if (ps and ps->kind == 6 and ps->definition and ps->definition->kind == N_PKS)
       {
         Syntax_Node *pk = ps->definition;
         for (uint32_t j = 0; j < pk->package_spec.declarations.count; j++)
         {
           Syntax_Node *d = pk->package_spec.declarations.data[j];
-          if (d->k == N_ED)
+          if (d->kind == N_ED)
           {
             for (uint32_t k = 0; k < d->exception_decl.identifiers.count; k++)
               if (d->exception_decl.identifiers.data[k]->symbol)
@@ -8600,7 +8600,7 @@ static void symbol_manager_use_clauses(Symbol_Manager *symbol_manager, Syntax_No
                 sv(&symbol_manager->uv, d->exception_decl.identifiers.data[k]->symbol);
               }
           }
-          else if (d->k == N_OD)
+          else if (d->kind == N_OD)
           {
             for (uint32_t k = 0; k < d->object_decl.identifiers.count; k++)
               if (d->object_decl.identifiers.data[k]->symbol)
@@ -8622,20 +8622,20 @@ static void symbol_manager_use_clauses(Symbol_Manager *symbol_manager, Syntax_No
   {
     Symbol_Vector eo = {0};
     int mx = 0;
-    if (n->compilation_unit.units.data[i]->k == N_PKS)
+    if (n->compilation_unit.units.data[i]->kind == N_PKS)
       for (uint32_t j = 0; j < n->compilation_unit.units.data[i]->package_spec.declarations.count; j++)
       {
         int e = elaborate_compilation(symbol_manager, &eo, n->compilation_unit.units.data[i]->package_spec.declarations.data[j]);
         mx = e > mx ? e : mx;
       }
-    else if (n->compilation_unit.units.data[i]->k == N_PKB)
+    else if (n->compilation_unit.units.data[i]->kind == N_PKB)
       for (uint32_t j = 0; j < n->compilation_unit.units.data[i]->package_body.declarations.count; j++)
       {
         int e = elaborate_compilation(symbol_manager, &eo, n->compilation_unit.units.data[i]->package_body.declarations.data[j]);
         mx = e > mx ? e : mx;
       }
     for (uint32_t j = 0; j < eo.count; j++)
-      if (eo.data[j]->k == 6 and eo.data[j]->definition and eo.data[j]->definition->k == N_PKS)
+      if (eo.data[j]->kind == 6 and eo.data[j]->definition and eo.data[j]->definition->kind == N_PKS)
         for (uint32_t k = 0; k < ((Syntax_Node *) eo.data[j]->definition)->package_spec.declarations.count; k++)
           resolve_declaration(symbol_manager, ((Syntax_Node *) eo.data[j]->definition)->package_spec.declarations.data[k]);
     resolve_declaration(symbol_manager, n->compilation_unit.units.data[i]);
@@ -8650,7 +8650,7 @@ typedef enum
 typedef struct
 {
   int id;
-  Value_Kind k;
+  Value_Kind kind;
 } Value;
 typedef struct Exception_Handler Exception_Handler;
 typedef struct Task Task;
@@ -8787,7 +8787,7 @@ static const char *ada_to_c_type_string(Type_Info *t)
   Type_Info *tc = type_canonical_concrete(t);
   if (not tc)
     return "i32";
-  switch (tc->k)
+  switch (tc->kind)
   {
   case TYPE_BOOLEAN:
   case TYPE_CHARACTER:
@@ -8845,14 +8845,14 @@ static unsigned long type_hash(Type_Info *t)
 {
   if (not t)
     return 0;
-  unsigned long h = t->k;
-  if (t->k == TYPE_ARRAY)
+  unsigned long h = t->kind;
+  if (t->kind == TYPE_ARRAY)
   {
     h = h * 31 + (unsigned long) t->low_bound;
     h = h * 31 + (unsigned long) t->high_bound;
     h = h * 31 + type_hash(t->element_type);
   }
-  else if (t->k == TYPE_RECORD)
+  else if (t->kind == TYPE_RECORD)
   {
     for (uint32_t i = 0; i < t->discriminants.count and i < 8; i++)
       if (t->discriminants.data[i])
@@ -8965,9 +8965,9 @@ static bool has_nested_function_in_stmts(Node_Vector *st)
     Syntax_Node *n = st->data[i];
     if (not n)
       continue;
-    if (n->k == N_BL and has_nested_function(&n->block.declarations, &n->block.statements))
+    if (n->kind == N_BL and has_nested_function(&n->block.declarations, &n->block.statements))
       return 1;
-    if (n->k == N_IF)
+    if (n->kind == N_IF)
     {
       if (has_nested_function_in_stmts(&n->if_stmt.then_statements) or has_nested_function_in_stmts(&n->if_stmt.else_statements))
         return 1;
@@ -8975,13 +8975,13 @@ static bool has_nested_function_in_stmts(Node_Vector *st)
         if (n->if_stmt.elsif_statements.data[j] and has_nested_function_in_stmts(&n->if_stmt.elsif_statements.data[j]->if_stmt.then_statements))
           return 1;
     }
-    if (n->k == N_CS)
+    if (n->kind == N_CS)
     {
       for (uint32_t j = 0; j < n->case_stmt.alternatives.count; j++)
         if (n->case_stmt.alternatives.data[j] and has_nested_function_in_stmts(&n->case_stmt.alternatives.data[j]->exception_handler.statements))
           return 1;
     }
-    if (n->k == N_LP and has_nested_function_in_stmts(&n->loop_stmt.statements))
+    if (n->kind == N_LP and has_nested_function_in_stmts(&n->loop_stmt.statements))
       return 1;
   }
   return 0;
@@ -8989,7 +8989,7 @@ static bool has_nested_function_in_stmts(Node_Vector *st)
 static bool has_nested_function(Node_Vector *dc, Node_Vector *st)
 {
   for (uint32_t i = 0; i < dc->count; i++)
-    if (dc->data[i] and (dc->data[i]->k == N_PB or dc->data[i]->k == N_FB))
+    if (dc->data[i] and (dc->data[i]->kind == N_PB or dc->data[i]->kind == N_FB))
       return 1;
   return has_nested_function_in_stmts(st);
 }
@@ -9000,7 +9000,7 @@ static void generate_block_frame(Code_Generator *generator)
   int mx = 0;
   for (int h = 0; h < 4096; h++)
     for (Symbol *s = generator->sm->sy[h]; s; s = s->next)
-      if (s->k == 0 and s->elaboration_level >= 0 and s->elaboration_level > mx)
+      if (s->kind == 0 and s->elaboration_level >= 0 and s->elaboration_level > mx)
         mx = s->elaboration_level;
   if (mx > 0)
     fprintf(generator->o, "  %%__frame = alloca [%d x ptr]\n", mx + 1);
@@ -9038,24 +9038,24 @@ generate_index_constraint_check(Code_Generator *generator, int idx, const char *
 }
 static Value value_cast(Code_Generator *generator, Value v, Value_Kind k)
 {
-  if (v.k == k)
+  if (v.kind == k)
     return v;
   Value r = {new_temporary_register(generator), k};
-  if (v.k == VALUE_KIND_INTEGER and k == VALUE_KIND_FLOAT)
+  if (v.kind == VALUE_KIND_INTEGER and k == VALUE_KIND_FLOAT)
     fprintf(generator->o, "  %%t%d = sitofp i64 %%t%d to double\n", r.id, v.id);
-  else if (v.k == VALUE_KIND_FLOAT and k == VALUE_KIND_INTEGER)
+  else if (v.kind == VALUE_KIND_FLOAT and k == VALUE_KIND_INTEGER)
     fprintf(generator->o, "  %%t%d = fptosi double %%t%d to i64\n", r.id, v.id);
-  else if (v.k == VALUE_KIND_POINTER and k == VALUE_KIND_INTEGER)
+  else if (v.kind == VALUE_KIND_POINTER and k == VALUE_KIND_INTEGER)
     fprintf(generator->o, "  %%t%d = ptrtoint ptr %%t%d to i64\n", r.id, v.id);
-  else if (v.k == VALUE_KIND_INTEGER and k == VALUE_KIND_POINTER)
+  else if (v.kind == VALUE_KIND_INTEGER and k == VALUE_KIND_POINTER)
     fprintf(generator->o, "  %%t%d = inttoptr i64 %%t%d to ptr\n", r.id, v.id);
-  else if (v.k == VALUE_KIND_POINTER and k == VALUE_KIND_FLOAT)
+  else if (v.kind == VALUE_KIND_POINTER and k == VALUE_KIND_FLOAT)
   {
     int tmp = new_temporary_register(generator);
     fprintf(generator->o, "  %%t%d = ptrtoint ptr %%t%d to i64\n", tmp, v.id);
     fprintf(generator->o, "  %%t%d = sitofp i64 %%t%d to double\n", r.id, tmp);
   }
-  else if (v.k == VALUE_KIND_FLOAT and k == VALUE_KIND_POINTER)
+  else if (v.kind == VALUE_KIND_FLOAT and k == VALUE_KIND_POINTER)
   {
     int tmp = new_temporary_register(generator);
     fprintf(generator->o, "  %%t%d = fptosi double %%t%d to i64\n", tmp, v.id);
@@ -9066,7 +9066,7 @@ static Value value_cast(Code_Generator *generator, Value v, Value_Kind k)
         generator->o,
         "  %%t%d = bitcast %s %%t%d to %s\n",
         r.id,
-        value_llvm_type_string(v.k),
+        value_llvm_type_string(v.kind),
         v.id,
         value_llvm_type_string(k));
   return r;
@@ -9151,7 +9151,7 @@ generate_discrete_range_check(Code_Generator *generator, Value e, Type_Info *t, 
 }
 static Value value_to_boolean(Code_Generator *generator, Value v)
 {
-  if (v.k != VALUE_KIND_INTEGER)
+  if (v.kind != VALUE_KIND_INTEGER)
     v = value_cast(generator, v, VALUE_KIND_INTEGER);
   int t = new_temporary_register(generator);
   Value c = {new_temporary_register(generator), VALUE_KIND_INTEGER};
@@ -9216,7 +9216,7 @@ static void get_fat_pointer_bounds(Code_Generator *generator, int fp, int *lo, i
 
   // Check if this array has Fixed Lower Bound (FLB) optimization
   // FLB arrays have compile-time constant lower bound (like 1) and store only upper bound
-  bool has_flb = (array_type and array_type->k == TYPE_ARRAY
+  bool has_flb = (array_type and array_type->kind == TYPE_ARRAY
                   and array_type->low_bound != 0 and array_type->low_bound != INT64_MIN);
 
   if (has_flb)
@@ -9269,11 +9269,11 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
   FILE *o = generator->o;
   Value r = {new_temporary_register(generator), VALUE_KIND_POINTER};
   Type_Info *t = ty ? type_canonical_concrete(ty) : 0;
-  if (t and t->k == TYPE_ARRAY and n->k == N_AG)
+  if (t and t->kind == TYPE_ARRAY and n->kind == N_AG)
     normalize_array_aggregate(generator->sm, t, n);
-  if (t and t->k == TYPE_RECORD and n->k == N_AG)
+  if (t and t->kind == TYPE_RECORD and n->kind == N_AG)
     normalize_record_aggregate(generator->sm, t, n);
-  if (not t or t->k != TYPE_RECORD or t->is_packed)
+  if (not t or t->kind != TYPE_RECORD or t->is_packed)
   {
     int sz = n->aggregate.items.count ? n->aggregate.items.count : 1;
     int p = new_temporary_register(generator);
@@ -9284,9 +9284,9 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
     for (uint32_t i = 0; i < n->aggregate.items.count; i++)
     {
       Syntax_Node *el = n->aggregate.items.data[i];
-      if (el->k == N_ASC)
+      if (el->kind == N_ASC)
       {
-        if (el->association.choices.data[0]->k == N_ID
+        if (el->association.choices.data[0]->kind == N_ID
             and string_equal_ignore_case(el->association.choices.data[0]->string_value, STRING_LITERAL("others")))
         {
           for (; ix < (uint32_t) sz; ix++)
@@ -9303,10 +9303,10 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
           for (uint32_t j = 0; j < el->association.choices.count; j++)
           {
             Syntax_Node *ch = el->association.choices.data[j];
-            if (ch->k == N_ID and ch->symbol and ch->symbol->k == 1 and ch->symbol->type_info)
+            if (ch->kind == N_ID and ch->symbol and ch->symbol->kind == 1 and ch->symbol->type_info)
             {
               Type_Info *cht = type_canonical_concrete(ch->symbol->type_info);
-              if (cht->k == TYPE_ENUMERATION)
+              if (cht->kind == TYPE_ENUMERATION)
               {
                 for (uint32_t ei = 0; ei < cht->enum_values.count; ei++)
                 {
@@ -9317,7 +9317,7 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
                   fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
                 }
               }
-              else if ((cht->low_bound != 0 or cht->high_bound != 0) and cht->k == TYPE_INTEGER)
+              else if ((cht->low_bound != 0 or cht->high_bound != 0) and cht->kind == TYPE_INTEGER)
               {
                 for (int64_t ri = cht->low_bound; ri <= cht->high_bound; ri++)
                 {
@@ -9362,17 +9362,17 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
     for (uint32_t i = 0; i < n->aggregate.items.count; i++)
     {
       Syntax_Node *el = n->aggregate.items.data[i];
-      if (el->k == N_ASC)
+      if (el->kind == N_ASC)
       {
         for (uint32_t j = 0; j < el->association.choices.count; j++)
         {
           Syntax_Node *ch = el->association.choices.data[j];
-          if (ch->k == N_ID)
+          if (ch->kind == N_ID)
           {
             for (uint32_t k = 0; k < t->components.count; k++)
             {
               Syntax_Node *c = t->components.data[k];
-              if (c->k == N_CM and string_equal_ignore_case(c->component_decl.name, ch->string_value))
+              if (c->kind == N_CM and string_equal_ignore_case(c->component_decl.name, ch->string_value))
               {
                 Value v = value_cast(generator, generate_expression(generator, el->association.value), VALUE_KIND_INTEGER);
                 int ep = new_temporary_register(generator);
@@ -9405,7 +9405,7 @@ static Syntax_Node *symbol_body(Symbol *s, int el)
   for (uint32_t i = 0; i < s->overloads.count; i++)
   {
     Syntax_Node *b = s->overloads.data[i];
-    if ((b->k == N_PB or b->k == N_FB) and b->body.elaboration_level == el)
+    if ((b->kind == N_PB or b->kind == N_FB) and b->body.elaboration_level == el)
       return b;
   }
   return 0;
@@ -9420,7 +9420,7 @@ static Syntax_Node *symbol_spec(Symbol *s)
   for (uint32_t i = 0; i < s->overloads.count; i++)
   {
     Syntax_Node *d = s->overloads.data[i];
-    if (d->k == N_PD or d->k == N_FD)
+    if (d->kind == N_PD or d->kind == N_FD)
       return d->body.subprogram_spec;
   }
   return 0;
@@ -9444,22 +9444,22 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
   if (not n)
     return (Value){0, VALUE_KIND_INTEGER};
   Value r = {new_temporary_register(generator), token_kind_to_value_kind(n->ty)};
-  switch (n->k)
+  switch (n->kind)
   {
   case N_INT:
-    r.k = VALUE_KIND_INTEGER;
+    r.kind = VALUE_KIND_INTEGER;
     fprintf(o, "  %%t%d = add i64 0, %lld\n", r.id, (long long) n->integer_value);
     break;
   case N_REAL:
-    r.k = VALUE_KIND_FLOAT;
+    r.kind = VALUE_KIND_FLOAT;
     fprintf(o, "  %%t%d = fadd double 0.0, %e\n", r.id, n->float_value);
     break;
   case N_CHAR:
-    r.k = VALUE_KIND_INTEGER;
+    r.kind = VALUE_KIND_INTEGER;
     fprintf(o, "  %%t%d = add i64 0, %d\n", r.id, (int) n->integer_value);
     break;
   case N_STR:
-    r.k = VALUE_KIND_POINTER;
+    r.kind = VALUE_KIND_POINTER;
     {
       int p = new_temporary_register(generator);
       uint32_t sz = n->string_value.length + 1;
@@ -9485,7 +9485,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     break;
   case N_NULL:
-    r.k = VALUE_KIND_POINTER;
+    r.kind = VALUE_KIND_POINTER;
     fprintf(o, "  %%t%d = inttoptr i64 0 to ptr\n", r.id);
     break;
   case N_ID:
@@ -9496,8 +9496,8 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       s = n->symbol;
     }
     int gen_0p_call = 0;
-    Value_Kind fn_ret_type = r.k;
-    if (s and s->k == 5)
+    Value_Kind fn_ret_type = r.kind;
+    if (s and s->kind == 5)
     {
       Symbol *s0 = symbol_find_with_arity(generator->sm, n->string_value, 0, n->ty);
       if (s0)
@@ -9506,12 +9506,12 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         gen_0p_call = 1;
       }
     }
-    if (s and s->k == 2
+    if (s and s->kind == 2
         and not(s->type_info and is_unconstrained_array(type_canonical_concrete(s->type_info)) and s->level > 0))
     {
-      if (s->definition and s->definition->k == N_STR)
+      if (s->definition and s->definition->kind == N_STR)
       {
-        r.k = VALUE_KIND_POINTER;
+        r.kind = VALUE_KIND_POINTER;
         char nb[256];
         if (s->parent and (uintptr_t) s->parent > 4096 and s->parent->name.string)
         {
@@ -9529,7 +9529,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       }
       else
       {
-        r.k = VALUE_KIND_INTEGER;
+        r.kind = VALUE_KIND_INTEGER;
         fprintf(o, "  %%t%d = add i64 0, %lld\n", r.id, (long long) s->value);
       }
     }
@@ -9538,7 +9538,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       Value_Kind k = VALUE_KIND_INTEGER;
       if (s and s->type_info)
         k = token_kind_to_value_kind(s->type_info);
-      r.k = k;
+      r.kind = k;
       if (s and s->level == 0)
       {
         char nb[256];
@@ -9558,7 +9558,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         }
         else
           snprintf(nb, 256, "%.*s", (int) s->name.length, s->name.string);
-        if (s->k == 5)
+        if (s->kind == 5)
         {
           if (gen_0p_call)
           {
@@ -9566,7 +9566,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             encode_symbol_name(fnb, 256, s, n->string_value, 0, 0);
             fprintf(
                 o, "  %%t%d = call %s @\"%s\"()\n", r.id, value_llvm_type_string(fn_ret_type), fnb);
-            r.k = fn_ret_type;
+            r.kind = fn_ret_type;
           }
           else
           {
@@ -9582,7 +9582,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                   r.id,
                   value_llvm_type_string(fn_ret_type),
                   fnb);
-              r.k = fn_ret_type;
+              r.kind = fn_ret_type;
             }
             else
               fprintf(o, "  %%t%d = load %s, ptr @%s\n", r.id, value_llvm_type_string(k), nb);
@@ -9593,7 +9593,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       }
       else if (s and s->level >= 0 and s->level < generator->sm->lv)
       {
-        if (s->k == 5)
+        if (s->kind == 5)
         {
           Syntax_Node *b = symbol_body(s, s->elaboration_level);
           Syntax_Node *sp = symbol_spec(s);
@@ -9610,7 +9610,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                 r.id,
                 value_llvm_type_string(rk),
                 fnb);
-            r.k = rk;
+            r.kind = rk;
           }
           else
           {
@@ -9668,10 +9668,10 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           fprintf(o, "  %%t%d = getelementptr ptr, ptr %%t%d, i64 %u\n", p, slnk_ptr, s->elaboration_level);
           int a = new_temporary_register(generator);
           fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", a, p);
-          if (vat and vat->k == TYPE_ARRAY)
+          if (vat and vat->kind == TYPE_ARRAY)
           {
             r.id = a;
-            r.k = VALUE_KIND_POINTER;
+            r.kind = VALUE_KIND_POINTER;
           }
           else
           {
@@ -9681,7 +9681,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       }
       else
       {
-        if (s and s->k == 5)
+        if (s and s->kind == 5)
         {
           Syntax_Node *b = symbol_body(s, s->elaboration_level);
           Syntax_Node *sp = symbol_spec(s);
@@ -9706,12 +9706,12 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                   r.id,
                   value_llvm_type_string(rk),
                   fnb);
-            r.k = rk;
+            r.kind = rk;
           }
           else
           {
             Type_Info *vat = s and s->type_info ? type_canonical_concrete(s->type_info) : 0;
-            if (vat and vat->k == TYPE_ARRAY)
+            if (vat and vat->kind == TYPE_ARRAY)
             {
               if (vat->low_bound == 0 and vat->high_bound <= 0)
               {
@@ -9750,7 +9750,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         else
         {
           Type_Info *vat = s and s->type_info ? type_canonical_concrete(s->type_info) : 0;
-          if (vat and vat->k == TYPE_ARRAY)
+          if (vat and vat->kind == TYPE_ARRAY)
           {
             if (vat->low_bound == 0 and vat->high_bound <= 0)
             {
@@ -9808,7 +9808,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       emit_label(generator, lf);
       emit_branch(generator, ld);
       emit_label(generator, ld);
-      r.k = VALUE_KIND_INTEGER;
+      r.kind = VALUE_KIND_INTEGER;
       fprintf(
           o,
           "  %%t%d = phi i64 [%s,%%Source_Location%d],[%%t%d,%%Source_Location%d]\n",
@@ -9823,7 +9823,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     {
       Type_Info *lt = n->binary_node.left->ty ? type_canonical_concrete(n->binary_node.left->ty) : 0;
       Type_Info *rt = n->binary_node.right->ty ? type_canonical_concrete(n->binary_node.right->ty) : 0;
-      if (lt and rt and lt->k == TYPE_ARRAY and rt->k == TYPE_ARRAY)
+      if (lt and rt and lt->kind == TYPE_ARRAY and rt->kind == TYPE_ARRAY)
       {
         int sz = lt->high_bound >= lt->low_bound ? lt->high_bound - lt->low_bound + 1 : 1;
         int p = new_temporary_register(generator);
@@ -9855,13 +9855,13 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
               o, "  %%t%d = getelementptr [%d x i64], ptr %%t%d, i64 0, i64 %d\n", ep3, sz, p, i);
           fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", res, ep3);
         }
-        r.k = VALUE_KIND_POINTER;
+        r.kind = VALUE_KIND_POINTER;
         fprintf(o, "  %%t%d = getelementptr [%d x i64], ptr %%t%d, i64 0, i64 0\n", r.id, sz, p);
         break;
       }
       Value a = value_to_boolean(generator, generate_expression(generator, n->binary_node.left));
       Value b = value_to_boolean(generator, generate_expression(generator, n->binary_node.right));
-      r.k = VALUE_KIND_INTEGER;
+      r.kind = VALUE_KIND_INTEGER;
       if (op == T_AND)
         fprintf(o, "  %%t%d = and i64 %%t%d, %%t%d\n", r.id, a.id, b.id);
       else if (op == T_OR)
@@ -9874,9 +9874,9 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     {
       Value x = value_cast(generator, generate_expression(generator, n->binary_node.left), VALUE_KIND_INTEGER);
       Syntax_Node *rr = n->binary_node.right;
-      while (rr and rr->k == N_CHK)
+      while (rr and rr->kind == N_CHK)
         rr = rr->check.expression;
-      if (rr and rr->k == N_RN)
+      if (rr and rr->kind == N_RN)
       {
         Value lo = value_cast(generator, generate_expression(generator, rr->range.low_bound), VALUE_KIND_INTEGER),
           hi = value_cast(generator, generate_expression(generator, rr->range.high_bound), VALUE_KIND_INTEGER);
@@ -9891,10 +9891,10 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         fprintf(o, "  %%t%d = and i1 %%t%d, %%t%d\n", a1, c1, c2);
         int xr = new_temporary_register(generator);
         fprintf(o, "  %%t%d = zext i1 %%t%d to i64\n", xr, a1);
-        r.k = VALUE_KIND_INTEGER;
+        r.kind = VALUE_KIND_INTEGER;
         fprintf(o, "  %%t%d = xor i64 %%t%d, 1\n", r.id, xr);
       }
-      else if (rr and rr->k == N_ID)
+      else if (rr and rr->kind == N_ID)
       {
         Symbol *s = rr->symbol ? rr->symbol : symbol_find(generator->sm, rr->string_value);
         if (s and s->type_info)
@@ -9918,24 +9918,24 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             fprintf(o, "  %%t%d = and i1 %%t%d, %%t%d\n", a1, c1, c2);
             int xr = new_temporary_register(generator);
             fprintf(o, "  %%t%d = zext i1 %%t%d to i64\n", xr, a1);
-            r.k = VALUE_KIND_INTEGER;
+            r.kind = VALUE_KIND_INTEGER;
             fprintf(o, "  %%t%d = xor i64 %%t%d, 1\n", r.id, xr);
           }
           else
           {
-            r.k = VALUE_KIND_INTEGER;
+            r.kind = VALUE_KIND_INTEGER;
             fprintf(o, "  %%t%d = add i64 0, 0\n", r.id);
           }
         }
         else
         {
-          r.k = VALUE_KIND_INTEGER;
+          r.kind = VALUE_KIND_INTEGER;
           fprintf(o, "  %%t%d = add i64 0, 0\n", r.id);
         }
       }
       else
       {
-        r.k = VALUE_KIND_INTEGER;
+        r.kind = VALUE_KIND_INTEGER;
         fprintf(o, "  %%t%d = add i64 0, 1\n", r.id);
       }
       break;
@@ -9944,9 +9944,9 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     {
       Value x = value_cast(generator, generate_expression(generator, n->binary_node.left), VALUE_KIND_INTEGER);
       Syntax_Node *rr = n->binary_node.right;
-      while (rr and rr->k == N_CHK)
+      while (rr and rr->kind == N_CHK)
         rr = rr->check.expression;
-      if (rr and rr->k == N_RN)
+      if (rr and rr->kind == N_RN)
       {
         Value lo = value_cast(generator, generate_expression(generator, rr->range.low_bound), VALUE_KIND_INTEGER),
           hi = value_cast(generator, generate_expression(generator, rr->range.high_bound), VALUE_KIND_INTEGER);
@@ -9959,10 +9959,10 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", c2, b2.id);
         int a1 = new_temporary_register(generator);
         fprintf(o, "  %%t%d = and i1 %%t%d, %%t%d\n", a1, c1, c2);
-        r.k = VALUE_KIND_INTEGER;
+        r.kind = VALUE_KIND_INTEGER;
         fprintf(o, "  %%t%d = zext i1 %%t%d to i64\n", r.id, a1);
       }
-      else if (rr and rr->k == N_ID)
+      else if (rr and rr->kind == N_ID)
       {
         Symbol *s = rr->symbol ? rr->symbol : symbol_find(generator->sm, rr->string_value);
         if (s and s->type_info)
@@ -9984,24 +9984,24 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             fprintf(o, "  %%t%d = icmp ne i64 %%t%d, 0\n", c2, b2.id);
             int a1 = new_temporary_register(generator);
             fprintf(o, "  %%t%d = and i1 %%t%d, %%t%d\n", a1, c1, c2);
-            r.k = VALUE_KIND_INTEGER;
+            r.kind = VALUE_KIND_INTEGER;
             fprintf(o, "  %%t%d = zext i1 %%t%d to i64\n", r.id, a1);
           }
           else
           {
-            r.k = VALUE_KIND_INTEGER;
+            r.kind = VALUE_KIND_INTEGER;
             fprintf(o, "  %%t%d = add i64 0, 0\n", r.id);
           }
         }
         else
         {
-          r.k = VALUE_KIND_INTEGER;
+          r.kind = VALUE_KIND_INTEGER;
           fprintf(o, "  %%t%d = add i64 0, 0\n", r.id);
         }
       }
       else
       {
-        r.k = VALUE_KIND_INTEGER;
+        r.kind = VALUE_KIND_INTEGER;
         fprintf(o, "  %%t%d = add i64 0, 0\n", r.id);
       }
       break;
@@ -10011,10 +10011,10 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     {
       Type_Info *lt = n->binary_node.left->ty ? type_canonical_concrete(n->binary_node.left->ty) : 0;
       Type_Info *rt = n->binary_node.right->ty ? type_canonical_concrete(n->binary_node.right->ty) : 0;
-      if (lt and rt and lt->k == TYPE_ARRAY and rt->k == TYPE_ARRAY)
+      if (lt and rt and lt->kind == TYPE_ARRAY and rt->kind == TYPE_ARRAY)
       {
         int sz = lt->high_bound >= lt->low_bound ? lt->high_bound - lt->low_bound + 1 : 1;
-        r.k = VALUE_KIND_INTEGER;
+        r.kind = VALUE_KIND_INTEGER;
         int res = new_temporary_register(generator);
         fprintf(o, "  %%t%d = add i64 0, 1\n", res);
         for (int i = 0; i < sz; i++)
@@ -10043,12 +10043,12 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     if (op == T_EX)
     {
-      if (b.k == VALUE_KIND_FLOAT)
+      if (b.kind == VALUE_KIND_FLOAT)
       {
         int bc = new_temporary_register(generator);
         fprintf(o, "  %%t%d = fptosi double %%t%d to i64\n", bc, b.id);
         b.id = bc;
-        b.k = VALUE_KIND_INTEGER;
+        b.kind = VALUE_KIND_INTEGER;
       }
       Value bi = value_cast(generator, b, VALUE_KIND_INTEGER);
       int cf = new_temporary_register(generator);
@@ -10069,11 +10069,11 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     if (op == T_PL or op == T_MN or op == T_ST or op == T_SL)
     {
-      if (a.k == VALUE_KIND_FLOAT or b.k == VALUE_KIND_FLOAT)
+      if (a.kind == VALUE_KIND_FLOAT or b.kind == VALUE_KIND_FLOAT)
       {
         a = value_cast(generator, a, VALUE_KIND_FLOAT);
         b = value_cast(generator, b, VALUE_KIND_FLOAT);
-        r.k = VALUE_KIND_FLOAT;
+        r.kind = VALUE_KIND_FLOAT;
         fprintf(
             o,
             "  %%t%d = %s double %%t%d, %%t%d\n",
@@ -10099,7 +10099,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           fprintf(o, "  call void @__ada_raise(ptr @.ex.CONSTRAINT_ERROR)\n  unreachable\n");
           emit_label(generator, zd);
         }
-        r.k = VALUE_KIND_INTEGER;
+        r.kind = VALUE_KIND_INTEGER;
         fprintf(
             o,
             "  %%t%d = %s i64 %%t%d, %%t%d\n",
@@ -10124,38 +10124,38 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       emit_label(generator, ze);
       fprintf(o, "  call void @__ada_raise(ptr @.ex.CONSTRAINT_ERROR)\n  unreachable\n");
       emit_label(generator, zd);
-      r.k = VALUE_KIND_INTEGER;
+      r.kind = VALUE_KIND_INTEGER;
       fprintf(o, "  %%t%d = srem i64 %%t%d, %%t%d\n", r.id, a.id, b.id);
       break;
     }
     if (op == T_EQ or op == T_NE or op == T_LT or op == T_LE or op == T_GT or op == T_GE)
     {
-      if((op==T_EQ or op==T_NE) and (n->binary_node.left->k==N_STR or n->binary_node.right->k==N_STR or (n->binary_node.left->ty and type_canonical_concrete(n->binary_node.left->ty)->element_type and type_canonical_concrete(n->binary_node.left->ty)->element_type->k==TYPE_CHARACTER) or (n->binary_node.right->ty and type_canonical_concrete(n->binary_node.right->ty)->element_type and type_canonical_concrete(n->binary_node.right->ty)->element_type->k==TYPE_CHARACTER)))
+      if((op==T_EQ or op==T_NE) and (n->binary_node.left->kind ==N_STR or n->binary_node.right->kind ==N_STR or (n->binary_node.left->ty and type_canonical_concrete(n->binary_node.left->ty)->element_type and type_canonical_concrete(n->binary_node.left->ty)->element_type->kind ==TYPE_CHARACTER) or (n->binary_node.right->ty and type_canonical_concrete(n->binary_node.right->ty)->element_type and type_canonical_concrete(n->binary_node.right->ty)->element_type->kind ==TYPE_CHARACTER)))
       {
         Value ap = a, bp = b;
-        if (ap.k == VALUE_KIND_INTEGER)
+        if (ap.kind == VALUE_KIND_INTEGER)
         {
           int p1 = new_temporary_register(generator);
           fprintf(o, "  %%t%d = inttoptr i64 %%t%d to ptr\n", p1, ap.id);
           ap.id = p1;
-          ap.k = VALUE_KIND_POINTER;
+          ap.kind = VALUE_KIND_POINTER;
         }
-        if (bp.k == VALUE_KIND_INTEGER)
+        if (bp.kind == VALUE_KIND_INTEGER)
         {
           int p2 = new_temporary_register(generator);
           fprintf(o, "  %%t%d = inttoptr i64 %%t%d to ptr\n", p2, bp.id);
           bp.id = p2;
-          bp.k = VALUE_KIND_POINTER;
+          bp.kind = VALUE_KIND_POINTER;
         }
         int cmp = new_temporary_register(generator);
         fprintf(o, "  %%t%d = call i32 @strcmp(ptr %%t%d, ptr %%t%d)\n", cmp, ap.id, bp.id);
         int eq = new_temporary_register(generator);
         fprintf(o, "  %%t%d = icmp %s i32 %%t%d, 0\n", eq, op == T_EQ ? "eq" : "ne", cmp);
-        r.k = VALUE_KIND_INTEGER;
+        r.kind = VALUE_KIND_INTEGER;
         fprintf(o, "  %%t%d = zext i1 %%t%d to i64\n", r.id, eq);
         break;
       }
-      if (a.k == VALUE_KIND_FLOAT or b.k == VALUE_KIND_FLOAT)
+      if (a.kind == VALUE_KIND_FLOAT or b.kind == VALUE_KIND_FLOAT)
       {
         const char *cc = op == T_EQ   ? "oeq"
                          : op == T_NE ? "one"
@@ -10177,14 +10177,14 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       }
       break;
     }
-    if (op == T_AM and (a.k == VALUE_KIND_POINTER or b.k == VALUE_KIND_POINTER))
+    if (op == T_AM and (a.kind == VALUE_KIND_POINTER or b.kind == VALUE_KIND_POINTER))
     {
       Type_Info *lt = n->binary_node.left->ty ? type_canonical_concrete(n->binary_node.left->ty) : 0;
       Type_Info *rt = n->binary_node.right->ty ? type_canonical_concrete(n->binary_node.right->ty) : 0;
       int alo, ahi, blo, bhi;
       Value ad, bd;
-      bool la_fp = lt and lt->k == TYPE_ARRAY and lt->low_bound == 0 and lt->high_bound == -1;
-      bool lb_fp = rt and rt->k == TYPE_ARRAY and rt->low_bound == 0 and rt->high_bound == -1;
+      bool la_fp = lt and lt->kind == TYPE_ARRAY and lt->low_bound == 0 and lt->high_bound == -1;
+      bool lb_fp = rt and rt->kind == TYPE_ARRAY and rt->low_bound == 0 and rt->high_bound == -1;
       if (la_fp)
       {
         ad = get_fat_pointer_data(generator, a.id);
@@ -10198,13 +10198,13 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             o,
             "  %%t%d = add i64 0, %lld\n",
             alo,
-            lt and lt->k == TYPE_ARRAY ? (long long) lt->low_bound : 1LL);
+            lt and lt->kind == TYPE_ARRAY ? (long long) lt->low_bound : 1LL);
         ahi = new_temporary_register(generator);
         fprintf(
             o,
             "  %%t%d = add i64 0, %lld\n",
             ahi,
-            lt and lt->k == TYPE_ARRAY ? (long long) lt->high_bound : 0LL);
+            lt and lt->kind == TYPE_ARRAY ? (long long) lt->high_bound : 0LL);
       }
       if (lb_fp)
       {
@@ -10219,13 +10219,13 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             o,
             "  %%t%d = add i64 0, %lld\n",
             blo,
-            rt and rt->k == TYPE_ARRAY ? (long long) rt->low_bound : 1LL);
+            rt and rt->kind == TYPE_ARRAY ? (long long) rt->low_bound : 1LL);
         bhi = new_temporary_register(generator);
         fprintf(
             o,
             "  %%t%d = add i64 0, %lld\n",
             bhi,
-            rt and rt->k == TYPE_ARRAY ? (long long) rt->high_bound : 0LL);
+            rt and rt->kind == TYPE_ARRAY ? (long long) rt->high_bound : 0LL);
       }
       int alen = new_temporary_register(generator);
       fprintf(o, "  %%t%d = sub i64 %%t%d, %%t%d\n", alen, ahi, alo);
@@ -10262,12 +10262,12 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       fprintf(o, "  %%t%d = add i64 0, 1\n", nlo);
       int nhi = new_temporary_register(generator);
       fprintf(o, "  %%t%d = sub i64 %%t%d, 1\n", nhi, tlen);
-      r.k = VALUE_KIND_POINTER;
+      r.kind = VALUE_KIND_POINTER;
       r.id = new_temporary_register(generator);
       generate_fat_pointer(generator, r.id, np, nlo, nhi);
       break;
     }
-    r.k = VALUE_KIND_INTEGER;
+    r.kind = VALUE_KIND_INTEGER;
     {
       Value ai = value_cast(generator, a, VALUE_KIND_INTEGER), bi = value_cast(generator, b, VALUE_KIND_INTEGER);
       fprintf(o, "  %%t%d = add i64 %%t%d, %%t%d\n", r.id, ai.id, bi.id);
@@ -10280,15 +10280,15 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     Value x = generate_expression(generator, n->unary_node.operand);
     if (n->unary_node.op == T_MN)
     {
-      if (x.k == VALUE_KIND_FLOAT)
+      if (x.kind == VALUE_KIND_FLOAT)
       {
-        r.k = VALUE_KIND_FLOAT;
+        r.kind = VALUE_KIND_FLOAT;
         fprintf(o, "  %%t%d = fsub double 0.0, %%t%d\n", r.id, x.id);
       }
       else
       {
         x = value_cast(generator, x, VALUE_KIND_INTEGER);
-        r.k = VALUE_KIND_INTEGER;
+        r.kind = VALUE_KIND_INTEGER;
         fprintf(o, "  %%t%d = sub i64 0, %%t%d\n", r.id, x.id);
       }
       break;
@@ -10296,7 +10296,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     if (n->unary_node.op == T_NOT)
     {
       Type_Info *xt = n->unary_node.operand->ty ? type_canonical_concrete(n->unary_node.operand->ty) : 0;
-      if (xt and xt->k == TYPE_ARRAY)
+      if (xt and xt->kind == TYPE_ARRAY)
       {
         int sz = xt->high_bound >= xt->low_bound ? xt->high_bound - xt->low_bound + 1 : 1;
         int p = new_temporary_register(generator);
@@ -10314,27 +10314,27 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
               o, "  %%t%d = getelementptr [%d x i64], ptr %%t%d, i64 0, i64 %d\n", ep2, sz, p, i);
           fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", res, ep2);
         }
-        r.k = VALUE_KIND_POINTER;
+        r.kind = VALUE_KIND_POINTER;
         fprintf(o, "  %%t%d = getelementptr [%d x i64], ptr %%t%d, i64 0, i64 0\n", r.id, sz, p);
       }
       else
       {
         Value b = value_to_boolean(generator, x);
-        r.k = VALUE_KIND_INTEGER;
+        r.kind = VALUE_KIND_INTEGER;
         fprintf(o, "  %%t%d = xor i64 %%t%d, 1\n", r.id, b.id);
       }
       break;
     }
     if (n->unary_node.op == T_ABS)
     {
-      if (x.k == VALUE_KIND_FLOAT)
+      if (x.kind == VALUE_KIND_FLOAT)
       {
         Value z = value_cast(generator, x, VALUE_KIND_FLOAT);
         int c = new_temporary_register(generator);
         fprintf(o, "  %%t%d = fcmp olt double %%t%d, 0.0\n", c, z.id);
         Value ng = {new_temporary_register(generator), VALUE_KIND_FLOAT};
         fprintf(o, "  %%t%d = fsub double 0.0, %%t%d\n", ng.id, z.id);
-        r.k = VALUE_KIND_FLOAT;
+        r.kind = VALUE_KIND_FLOAT;
         fprintf(o, "  %%t%d = select i1 %%t%d, double %%t%d, double %%t%d\n", r.id, c, ng.id, z.id);
       }
       else
@@ -10344,19 +10344,19 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         fprintf(o, "  %%t%d = icmp slt i64 %%t%d, 0\n", c, z.id);
         Value ng = {new_temporary_register(generator), VALUE_KIND_INTEGER};
         fprintf(o, "  %%t%d = sub i64 0, %%t%d\n", ng.id, z.id);
-        r.k = VALUE_KIND_INTEGER;
+        r.kind = VALUE_KIND_INTEGER;
         fprintf(o, "  %%t%d = select i1 %%t%d, i64 %%t%d, i64 %%t%d\n", r.id, c, ng.id, z.id);
       }
       break;
     }
-    r = value_cast(generator, x, r.k);
+    r = value_cast(generator, x, r.kind);
     break;
   }
   break;
   case N_IX:
   {
     // Check if this is actually a function call (Ada allows FUNC(ARGS) syntax)
-    if (n->index.prefix->k == N_ID and n->index.prefix->symbol and n->index.prefix->symbol->k == 5)
+    if (n->index.prefix->kind == N_ID and n->index.prefix->symbol and n->index.prefix->symbol->kind == 5)
     {
       Symbol *func_sym = n->index.prefix->symbol;
       Syntax_Node *func_spec = symbol_spec(func_sym);
@@ -10388,21 +10388,21 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       {
         if (needs_slnk or i > 0)
           fprintf(o, ", ");
-        fprintf(o, "%s %%t%d", value_llvm_type_string(args[i].k), args[i].id);
+        fprintf(o, "%s %%t%d", value_llvm_type_string(args[i].kind), args[i].id);
       }
 
       fprintf(o, ")\n");
-      r.k = ret_kind;
+      r.kind = ret_kind;
       break;
     }
 
     Value p = generate_expression(generator, n->index.prefix);
     Type_Info *pt = n->index.prefix->ty ? type_canonical_concrete(n->index.prefix->ty) : 0;
     Type_Info *et = n->ty ? type_canonical_concrete(n->ty) : 0;
-    bool is_char = et and et->k == TYPE_CHARACTER;
+    bool is_char = et and et->kind == TYPE_CHARACTER;
     const char *elem_type_str = ada_to_c_type_string(et);
     int dp = p.id;
-    if (pt and pt->k == TYPE_ARRAY and pt->low_bound == 0 and pt->high_bound <= 0)
+    if (pt and pt->kind == TYPE_ARRAY and pt->low_bound == 0 and pt->high_bound <= 0)
     {
       dp = get_fat_pointer_data(generator, p.id).id;
       int blo, bhi;
@@ -10422,14 +10422,14 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           elem_type_str,
           dp,
           adj);
-      if (et and (et->k == TYPE_ARRAY or et->k == TYPE_RECORD))
+      if (et and (et->kind == TYPE_ARRAY or et->kind == TYPE_RECORD))
       {
-        r.k = VALUE_KIND_POINTER;
+        r.kind = VALUE_KIND_POINTER;
         r.id = ep;
       }
       else
       {
-        r.k = VALUE_KIND_INTEGER;
+        r.kind = VALUE_KIND_INTEGER;
         if (is_char)
         {
           int lv = new_temporary_register(generator);
@@ -10450,7 +10450,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     else
     {
-      if (p.k == VALUE_KIND_INTEGER)
+      if (p.kind == VALUE_KIND_INTEGER)
       {
         int pp = new_temporary_register(generator);
         fprintf(o, "  %%t%d = inttoptr i64 %%t%d to ptr\n", pp, p.id);
@@ -10459,13 +10459,13 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       Value i0 = value_cast(generator, generate_expression(generator, n->index.indices.data[0]), VALUE_KIND_INTEGER);
       Type_Info *at = pt;
       int adj_idx = i0.id;
-      if (at and at->k == TYPE_ARRAY and at->low_bound != 0)
+      if (at and at->kind == TYPE_ARRAY and at->low_bound != 0)
       {
         int adj = new_temporary_register(generator);
         fprintf(o, "  %%t%d = sub i64 %%t%d, %lld\n", adj, i0.id, (long long) at->low_bound);
         adj_idx = adj;
       }
-      if (at and at->k == TYPE_ARRAY and not(at->suppressed_checks & CHK_IDX) and (at->low_bound != 0 or at->high_bound != -1))
+      if (at and at->kind == TYPE_ARRAY and not(at->suppressed_checks & CHK_IDX) and (at->low_bound != 0 or at->high_bound != -1))
       {
         char lb[32], hb[32];
         snprintf(lb, 32, "%lld", (long long) at->low_bound);
@@ -10482,14 +10482,14 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           elem_type_str,
           dp,
           adj_idx);
-      if (et and (et->k == TYPE_ARRAY or et->k == TYPE_RECORD))
+      if (et and (et->kind == TYPE_ARRAY or et->kind == TYPE_RECORD))
       {
-        r.k = VALUE_KIND_POINTER;
+        r.kind = VALUE_KIND_POINTER;
         r.id = ep;
       }
       else
       {
-        r.k = VALUE_KIND_INTEGER;
+        r.kind = VALUE_KIND_INTEGER;
         if (is_char)
         {
           int lv = new_temporary_register(generator);
@@ -10536,7 +10536,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         ap,
         sp,
         sl);
-    r.k = VALUE_KIND_POINTER;
+    r.kind = VALUE_KIND_POINTER;
     r.id = new_temporary_register(generator);
     generate_fat_pointer(generator, r.id, ap, lo.id, hi.id);
   }
@@ -10545,21 +10545,21 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
   {
     Type_Info *pt = n->selected_component.prefix->ty ? type_canonical_concrete(n->selected_component.prefix->ty) : 0;
     Value p = {new_temporary_register(generator), VALUE_KIND_POINTER};
-    if (n->selected_component.prefix->k == N_ID)
+    if (n->selected_component.prefix->kind == N_ID)
     {
       Symbol *s = n->selected_component.prefix->symbol ? n->selected_component.prefix->symbol : symbol_find(generator->sm, n->selected_component.prefix->string_value);
-      if (s and s->k != 6)
+      if (s and s->kind != 6)
       {
         Type_Info *vty = s and s->type_info ? type_canonical_concrete(s->type_info) : 0;
         bool has_nested = false;
-        if (vty and vty->k == TYPE_RECORD)
+        if (vty and vty->kind == TYPE_RECORD)
         {
           for (uint32_t ci = 0; ci < vty->discriminants.count; ci++)
           {
             Syntax_Node *fd = vty->discriminants.data[ci];
             Type_Info *fty =
-                fd and fd->k == N_DS and fd->parameter.ty ? resolve_subtype(generator->sm, fd->parameter.ty) : 0;
-            if (fty and (fty->k == TYPE_RECORD or fty->k == TYPE_ARRAY))
+                fd and fd->kind == N_DS and fd->parameter.ty ? resolve_subtype(generator->sm, fd->parameter.ty) : 0;
+            if (fty and (fty->kind == TYPE_RECORD or fty->kind == TYPE_ARRAY))
             {
               has_nested = true;
               break;
@@ -10571,8 +10571,8 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             {
               Syntax_Node *fc = vty->components.data[ci];
               Type_Info *fty =
-                  fc and fc->k == N_CM and fc->component_decl.ty ? resolve_subtype(generator->sm, fc->component_decl.ty) : 0;
-              if (fty and (fty->k == TYPE_RECORD or fty->k == TYPE_ARRAY))
+                  fc and fc->kind == N_CM and fc->component_decl.ty ? resolve_subtype(generator->sm, fc->component_decl.ty) : 0;
+              if (fty and (fty->kind == TYPE_RECORD or fty->kind == TYPE_ARRAY))
               {
                 has_nested = true;
                 break;
@@ -10622,25 +10622,25 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     {
       p = generate_expression(generator, n->selected_component.prefix);
     }
-    if (pt and pt->k == TYPE_RECORD)
+    if (pt and pt->kind == TYPE_RECORD)
     {
       for (uint32_t i = 0; i < pt->discriminants.count; i++)
       {
         Syntax_Node *d = pt->discriminants.data[i];
-        String_Slice dn = d->k == N_DS ? d->parameter.name : d->component_decl.name;
+        String_Slice dn = d->kind == N_DS ? d->parameter.name : d->component_decl.name;
         if (string_equal_ignore_case(dn, n->selected_component.selector))
         {
           int ep = new_temporary_register(generator);
           fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p.id, i);
-          Type_Info *fty = d->k == N_DS ? resolve_subtype(generator->sm, d->parameter.ty) : 0;
-          if (fty and (fty->k == TYPE_RECORD or fty->k == TYPE_ARRAY))
+          Type_Info *fty = d->kind == N_DS ? resolve_subtype(generator->sm, d->parameter.ty) : 0;
+          if (fty and (fty->kind == TYPE_RECORD or fty->kind == TYPE_ARRAY))
           {
-            r.k = VALUE_KIND_POINTER;
+            r.kind = VALUE_KIND_POINTER;
             fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", r.id, ep);
           }
           else
           {
-            r.k = VALUE_KIND_INTEGER;
+            r.kind = VALUE_KIND_INTEGER;
             fprintf(o, "  %%t%d = load i64, ptr %%t%d\n", r.id, ep);
           }
           goto sel_done;
@@ -10651,7 +10651,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         for (uint32_t i = 0; i < pt->components.count; i++)
         {
           Syntax_Node *c = pt->components.data[i];
-          if (c->k == N_CM and string_equal_ignore_case(c->component_decl.name, n->selected_component.selector))
+          if (c->kind == N_CM and string_equal_ignore_case(c->component_decl.name, n->selected_component.selector))
           {
             int bp = new_temporary_register(generator);
             fprintf(o, "  %%t%d = ptrtoint ptr %%t%d to i64\n", bp, p.id);
@@ -10664,7 +10664,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             int sh = new_temporary_register(generator);
             fprintf(o, "  %%t%d = lshr i64 %%t%d, %u\n", sh, vp, c->component_decl.offset % 8);
             uint64_t mk = (1ULL << c->component_decl.bit_offset) - 1;
-            r.k = VALUE_KIND_INTEGER;
+            r.kind = VALUE_KIND_INTEGER;
             fprintf(o, "  %%t%d = and i64 %%t%d, %llu\n", r.id, sh, (unsigned long long) mk);
             break;
           }
@@ -10675,19 +10675,19 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         for (uint32_t i = 0; i < pt->components.count; i++)
         {
           Syntax_Node *c = pt->components.data[i];
-          if (c->k == N_CM and string_equal_ignore_case(c->component_decl.name, n->selected_component.selector))
+          if (c->kind == N_CM and string_equal_ignore_case(c->component_decl.name, n->selected_component.selector))
           {
             int ep = new_temporary_register(generator);
             fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p.id, c->component_decl.offset);
             Type_Info *fty = resolve_subtype(generator->sm, c->component_decl.ty);
-            if (fty and (fty->k == TYPE_RECORD or fty->k == TYPE_ARRAY))
+            if (fty and (fty->kind == TYPE_RECORD or fty->kind == TYPE_ARRAY))
             {
-              r.k = VALUE_KIND_POINTER;
+              r.kind = VALUE_KIND_POINTER;
               fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", r.id, ep);
             }
             else
             {
-              r.k = VALUE_KIND_INTEGER;
+              r.kind = VALUE_KIND_INTEGER;
               fprintf(o, "  %%t%d = load i64, ptr %%t%d\n", r.id, ep);
             }
             break;
@@ -10697,7 +10697,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       for (uint32_t i = 0; i < pt->components.count; i++)
       {
         Syntax_Node *c = pt->components.data[i];
-        if (c->k == N_VP)
+        if (c->kind == N_VP)
         {
           for (uint32_t j = 0; j < c->variant_part.variants.count; j++)
           {
@@ -10709,7 +10709,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
               {
                 int ep = new_temporary_register(generator);
                 fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p.id, vc->component_decl.offset);
-                r.k = VALUE_KIND_INTEGER;
+                r.kind = VALUE_KIND_INTEGER;
                 fprintf(o, "  %%t%d = load i64, ptr %%t%d\n", r.id, ep);
                 goto sel_done;
               }
@@ -10719,7 +10719,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       }
     sel_done:;
     }
-    else if (n->symbol and n->symbol->k == 5)
+    else if (n->symbol and n->symbol->kind == 5)
     {
       Syntax_Node *sp = symbol_spec(n->symbol);
       if (sp and sp->subprogram.parameters.count == 0)
@@ -10730,17 +10730,17 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         char fnb[256];
         encode_symbol_name(fnb, 256, n->symbol, n->selected_component.selector, 0, sp);
         fprintf(o, "  %%t%d = call %s @\"%s\"()\n", r.id, value_llvm_type_string(rk), fnb);
-        r.k = rk;
+        r.kind = rk;
       }
     }
-    else if (n->symbol and n->symbol->k == 2)
+    else if (n->symbol and n->symbol->kind == 2)
     {
-      r.k = VALUE_KIND_INTEGER;
+      r.kind = VALUE_KIND_INTEGER;
       fprintf(o, "  %%t%d = add i64 0, %lld\n", r.id, (long long) n->symbol->value);
     }
     else
     {
-      r = value_cast(generator, p, r.k);
+      r = value_cast(generator, p, r.kind);
     }
   }
   break;
@@ -10750,12 +10750,12 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     Type_Info *t = (n->attribute.prefix and n->attribute.prefix->ty) ? type_canonical_concrete(n->attribute.prefix->ty) : 0;
     if (string_equal_ignore_case(a, STRING_LITERAL("ADDRESS")))
     {
-      if (n->attribute.prefix and n->attribute.prefix->k == N_ID)
+      if (n->attribute.prefix and n->attribute.prefix->kind == N_ID)
       {
         Symbol *s = n->attribute.prefix->symbol ? n->attribute.prefix->symbol : symbol_find(generator->sm, n->attribute.prefix->string_value);
         if (s)
         {
-          r.k = VALUE_KIND_INTEGER;
+          r.kind = VALUE_KIND_INTEGER;
           if (s->level == 0)
           {
             char nb[256];
@@ -10800,7 +10800,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
               value_cast(generator, p, VALUE_KIND_POINTER).id);
         }
       }
-      else if (n->attribute.prefix and n->attribute.prefix->k == N_AT)
+      else if (n->attribute.prefix and n->attribute.prefix->kind == N_AT)
       {
         Syntax_Node *ap = n->attribute.prefix;
         String_Slice ia = ap->attribute.attribute_name;
@@ -10813,9 +10813,9 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         {
           Type_Info *pt = ap->attribute.prefix ? type_canonical_concrete(ap->attribute.prefix->ty) : 0;
           String_Slice pnm =
-              ap->attribute.prefix and ap->attribute.prefix->k == N_ID ? ap->attribute.prefix->string_value : STRING_LITERAL("TYPE");
+              ap->attribute.prefix and ap->attribute.prefix->kind == N_ID ? ap->attribute.prefix->string_value : STRING_LITERAL("TYPE");
           const char *afn = get_attribute_name(ia, pnm);
-          r.k = VALUE_KIND_INTEGER;
+          r.kind = VALUE_KIND_INTEGER;
           int p = new_temporary_register(generator);
           fprintf(o, "  %%t%d = ptrtoint ptr %s to i64\n", p, afn);
           r.id = p;
@@ -10823,7 +10823,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         else
         {
           Value p = generate_expression(generator, n->attribute.prefix);
-          r.k = VALUE_KIND_INTEGER;
+          r.kind = VALUE_KIND_INTEGER;
           fprintf(
               o,
               "  %%t%d = ptrtoint ptr %%t%d to i64\n",
@@ -10834,7 +10834,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       else
       {
         Value p = generate_expression(generator, n->attribute.prefix);
-        r.k = VALUE_KIND_INTEGER;
+        r.kind = VALUE_KIND_INTEGER;
         fprintf(
             o,
             "  %%t%d = ptrtoint ptr %%t%d to i64\n",
@@ -10844,7 +10844,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     else if (string_equal_ignore_case(a, STRING_LITERAL("SIZE")))
     {
-      r.k = VALUE_KIND_INTEGER;
+      r.kind = VALUE_KIND_INTEGER;
       fprintf(o, "  %%t%d = add i64 0, %lld\n", r.id, t ? (long long) (t->size * 8) : 64LL);
     }
     else if (
@@ -10853,19 +10853,19 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         or string_equal_ignore_case(a, STRING_LITERAL("LENGTH")))
     {
       Value pv = {0, VALUE_KIND_INTEGER};
-      bool is_typ = n->attribute.prefix and n->attribute.prefix->k == N_ID and n->attribute.prefix->symbol and n->attribute.prefix->symbol->k == 1;
+      bool is_typ = n->attribute.prefix and n->attribute.prefix->kind == N_ID and n->attribute.prefix->symbol and n->attribute.prefix->symbol->kind == 1;
       if (n->attribute.prefix and not is_typ)
         pv = generate_expression(generator, n->attribute.prefix);
       if (n->attribute.arguments.count > 0)
         generate_expression(generator, n->attribute.arguments.data[0]);
       int64_t lo = 0, hi = -1;
-      if (t and t->k == TYPE_ARRAY)
+      if (t and t->kind == TYPE_ARRAY)
       {
         if (t->low_bound == 0 and t->high_bound <= 0 and n->attribute.prefix and not is_typ)
         {
           int blo, bhi;
           get_fat_pointer_bounds(generator, pv.id, &blo, &bhi, t);
-          r.k = VALUE_KIND_INTEGER;
+          r.kind = VALUE_KIND_INTEGER;
           if (string_equal_ignore_case(a, STRING_LITERAL("FIRST")))
           {
             r.id = blo;
@@ -10887,7 +10887,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         lo = t->low_bound;
         hi = t->high_bound;
       }
-      else if (t and (is_integer_type(t) or t->k == TYPE_ENUMERATION))
+      else if (t and (is_integer_type(t) or t->kind == TYPE_ENUMERATION))
       {
         lo = t->low_bound;
         hi = t->high_bound;
@@ -10896,20 +10896,20 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                   : string_equal_ignore_case(a, STRING_LITERAL("LAST"))
                       ? hi
                       : (hi >= lo ? hi - lo + 1 : 0);
-      r.k = VALUE_KIND_INTEGER;
+      r.kind = VALUE_KIND_INTEGER;
       fprintf(o, "  %%t%d = add i64 0, %lld\n", r.id, (long long) v);
     }
     else if (string_equal_ignore_case(a, STRING_LITERAL("POS")))
     {
       Value x = generate_expression(generator, n->attribute.arguments.data[0]);
       if (t
-          and (t->k == TYPE_ENUMERATION or t->k == TYPE_INTEGER or t->k == TYPE_UNSIGNED_INTEGER or t->k == TYPE_DERIVED))
+          and (t->kind == TYPE_ENUMERATION or t->kind == TYPE_INTEGER or t->kind == TYPE_UNSIGNED_INTEGER or t->kind == TYPE_DERIVED))
       {
         r = value_cast(generator, x, VALUE_KIND_INTEGER);
       }
       else
       {
-        r.k = VALUE_KIND_INTEGER;
+        r.kind = VALUE_KIND_INTEGER;
         int tlo = new_temporary_register(generator);
         fprintf(o, "  %%t%d = add i64 0, %lld\n", tlo, t ? (long long) t->low_bound : 0LL);
         fprintf(
@@ -10923,7 +10923,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     else if (string_equal_ignore_case(a, STRING_LITERAL("VAL")))
     {
       Value x = generate_expression(generator, n->attribute.arguments.data[0]);
-      r.k = VALUE_KIND_INTEGER;
+      r.kind = VALUE_KIND_INTEGER;
       int tlo = new_temporary_register(generator);
       fprintf(o, "  %%t%d = add i64 0, %lld\n", tlo, t ? (long long) t->low_bound : 0LL);
       fprintf(
@@ -10938,7 +10938,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         or string_equal_ignore_case(a, STRING_LITERAL("PRED")))
     {
       Value x = generate_expression(generator, n->attribute.arguments.data[0]);
-      r.k = VALUE_KIND_INTEGER;
+      r.kind = VALUE_KIND_INTEGER;
       fprintf(
           o,
           "  %%t%d = %s i64 %%t%d, 1\n",
@@ -10949,8 +10949,8 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     else if (string_equal_ignore_case(a, STRING_LITERAL("IMAGE")))
     {
       Value x = generate_expression(generator, n->attribute.arguments.data[0]);
-      r.k = VALUE_KIND_POINTER;
-      if (t and t->k == TYPE_ENUMERATION)
+      r.kind = VALUE_KIND_POINTER;
+      if (t and t->kind == TYPE_ENUMERATION)
       {
         fprintf(
             o,
@@ -10972,8 +10972,8 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     else if (string_equal_ignore_case(a, STRING_LITERAL("VALUE")))
     {
       Value x = generate_expression(generator, n->attribute.arguments.data[0]);
-      r.k = VALUE_KIND_INTEGER;
-      if (t and t->k == TYPE_ENUMERATION)
+      r.kind = VALUE_KIND_INTEGER;
+      if (t and t->kind == TYPE_ENUMERATION)
       {
         Value buf = get_fat_pointer_data(generator, x.id);
         int fnd = new_temporary_register(generator);
@@ -11031,12 +11031,12 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     else if (string_equal_ignore_case(a, STRING_LITERAL("DIGITS")))
     {
-      r.k = VALUE_KIND_INTEGER;
+      r.kind = VALUE_KIND_INTEGER;
       fprintf(o, "  %%t%d = add i64 0, %lld\n", r.id, t ? (long long) t->small_value : 15LL);
     }
     else if (string_equal_ignore_case(a, STRING_LITERAL("DELTA")))
     {
-      r.k = VALUE_KIND_FLOAT;
+      r.kind = VALUE_KIND_FLOAT;
       fprintf(
           o, "  %%t%d = fadd double 0.0, %e\n", r.id, t ? 1.0 / pow(2.0, (double) t->small_value) : 0.01);
     }
@@ -11045,7 +11045,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         or string_equal_ignore_case(a, STRING_LITERAL("LARGE"))
         or string_equal_ignore_case(a, STRING_LITERAL("EPSILON")))
     {
-      r.k = VALUE_KIND_FLOAT;
+      r.kind = VALUE_KIND_FLOAT;
       double v = string_equal_ignore_case(a, STRING_LITERAL("SMALL")) ? pow(2.0, -126.0)
                  : string_equal_ignore_case(a, STRING_LITERAL("LARGE"))
                      ? (t and t->small_value > 0 ? (pow(2.0, ceil((double) t->small_value * log2(10.0)) + 1.0) - 1.0)
@@ -11058,12 +11058,12 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         string_equal_ignore_case(a, STRING_LITERAL("MANTISSA"))
         or string_equal_ignore_case(a, STRING_LITERAL("MACHINE_MANTISSA")))
     {
-      r.k = VALUE_KIND_INTEGER;
+      r.kind = VALUE_KIND_INTEGER;
       fprintf(o, "  %%t%d = add i64 0, %lld\n", r.id, t ? (long long) t->small_value : 53LL);
     }
     else if (string_equal_ignore_case(a, STRING_LITERAL("MACHINE_RADIX")))
     {
-      r.k = VALUE_KIND_INTEGER;
+      r.kind = VALUE_KIND_INTEGER;
       fprintf(o, "  %%t%d = add i64 0, 2\n", r.id);
     }
     else if (
@@ -11071,24 +11071,24 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         or string_equal_ignore_case(a, STRING_LITERAL("MACHINE_EMAX"))
         or string_equal_ignore_case(a, STRING_LITERAL("SAFE_EMAX")))
     {
-      r.k = VALUE_KIND_INTEGER;
+      r.kind = VALUE_KIND_INTEGER;
       fprintf(o, "  %%t%d = add i64 0, 1024\n", r.id);
     }
     else if (string_equal_ignore_case(a, STRING_LITERAL("MACHINE_EMIN")))
     {
-      r.k = VALUE_KIND_INTEGER;
+      r.kind = VALUE_KIND_INTEGER;
       fprintf(o, "  %%t%d = add i64 0, -1021\n", r.id);
     }
     else if (
         string_equal_ignore_case(a, STRING_LITERAL("MACHINE_OVERFLOWS"))
         or string_equal_ignore_case(a, STRING_LITERAL("MACHINE_ROUNDS")))
     {
-      r.k = VALUE_KIND_INTEGER;
+      r.kind = VALUE_KIND_INTEGER;
       fprintf(o, "  %%t%d = add i64 0, 1\n", r.id);
     }
     else if (string_equal_ignore_case(a, STRING_LITERAL("AFT")))
     {
-      r.k = VALUE_KIND_INTEGER;
+      r.kind = VALUE_KIND_INTEGER;
       int64_t dg = 1;
       if (t and t->small_value > 0)
       {
@@ -11099,7 +11099,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     else if (string_equal_ignore_case(a, STRING_LITERAL("FORE")))
     {
-      r.k = VALUE_KIND_INTEGER;
+      r.kind = VALUE_KIND_INTEGER;
       int64_t fw = 2;
       if (t and t->high_bound > 0)
       {
@@ -11114,11 +11114,11 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     else if (string_equal_ignore_case(a, STRING_LITERAL("WIDTH")))
     {
-      r.k = VALUE_KIND_INTEGER;
+      r.kind = VALUE_KIND_INTEGER;
       int64_t wd = 1;
       if (t)
       {
-        if (t->k == TYPE_ENUMERATION)
+        if (t->kind == TYPE_ENUMERATION)
         {
           for (uint32_t i = 0; i < t->enum_values.count; i++)
           {
@@ -11144,7 +11144,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     else if (string_equal_ignore_case(a, STRING_LITERAL("STORAGE_SIZE")))
     {
-      r.k = VALUE_KIND_INTEGER;
+      r.kind = VALUE_KIND_INTEGER;
       fprintf(o, "  %%t%d = add i64 0, %lld\n", r.id, t ? (long long) (t->size * 8) : 0LL);
     }
     else if (
@@ -11152,17 +11152,17 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         or string_equal_ignore_case(a, STRING_LITERAL("FIRST_BIT"))
         or string_equal_ignore_case(a, STRING_LITERAL("LAST_BIT")))
     {
-      r.k = VALUE_KIND_INTEGER;
+      r.kind = VALUE_KIND_INTEGER;
       int64_t v = 0;
-      if (n->attribute.prefix and n->attribute.prefix->k == N_SEL)
+      if (n->attribute.prefix and n->attribute.prefix->kind == N_SEL)
       {
         Type_Info *pt = n->attribute.prefix->selected_component.prefix->ty ? type_canonical_concrete(n->attribute.prefix->selected_component.prefix->ty) : 0;
-        if (pt and pt->k == TYPE_RECORD)
+        if (pt and pt->kind == TYPE_RECORD)
         {
           for (uint32_t i = 0; i < pt->components.count; i++)
           {
             Syntax_Node *c = pt->components.data[i];
-            if (c->k == N_CM and string_equal_ignore_case(c->component_decl.name, n->attribute.prefix->selected_component.selector))
+            if (c->kind == N_CM and string_equal_ignore_case(c->component_decl.name, n->attribute.prefix->selected_component.selector))
             {
               if (pt->is_packed)
               {
@@ -11191,7 +11191,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     else if (string_equal_ignore_case(a, STRING_LITERAL("CONSTRAINED")))
     {
-      r.k = VALUE_KIND_INTEGER;
+      r.kind = VALUE_KIND_INTEGER;
       fprintf(o, "  %%t%d = add i64 0, 1\n", r.id);
     }
     else if (
@@ -11199,7 +11199,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         or string_equal_ignore_case(a, STRING_LITERAL("CALLABLE"))
         or string_equal_ignore_case(a, STRING_LITERAL("TERMINATED")))
     {
-      r.k = VALUE_KIND_INTEGER;
+      r.kind = VALUE_KIND_INTEGER;
       fprintf(o, "  %%t%d = add i64 0, 0\n", r.id);
     }
     else if (string_equal_ignore_case(a, STRING_LITERAL("ACCESS")))
@@ -11211,13 +11211,13 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         string_equal_ignore_case(a, STRING_LITERAL("SAFE_LARGE"))
         or string_equal_ignore_case(a, STRING_LITERAL("SAFE_SMALL")))
     {
-      r.k = VALUE_KIND_FLOAT;
+      r.kind = VALUE_KIND_FLOAT;
       double v = string_equal_ignore_case(a, STRING_LITERAL("SAFE_LARGE")) ? 1.0e307 : 1.0e-307;
       fprintf(o, "  %%t%d = fadd double 0.0, %e\n", r.id, v);
     }
     else
     {
-      r.k = VALUE_KIND_INTEGER;
+      r.kind = VALUE_KIND_INTEGER;
       fprintf(o, "  %%t%d = add i64 0, 0\n", r.id);
     }
     break;
@@ -11226,18 +11226,18 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
   case N_QL:
   {
     Value q = generate_expression(generator, n->qualified.aggregate);
-    r = value_cast(generator, q, r.k);
+    r = value_cast(generator, q, r.kind);
   }
   break;
   case N_CL:
   {
     if (not n->call.function_name or (uintptr_t) n->call.function_name < 4096)
     {
-      r.k = VALUE_KIND_INTEGER;
+      r.kind = VALUE_KIND_INTEGER;
       fprintf(o, "  %%t%d = add i64 0, 0\n", r.id);
       break;
     }
-    if (n->call.function_name->k == N_ID)
+    if (n->call.function_name->kind == N_ID)
     {
       Symbol *s = symbol_find_with_arity(generator->sm, n->call.function_name->string_value, n->call.arguments.count, n->ty);
       if (s)
@@ -11245,7 +11245,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         if (s->parent and string_equal_ignore_case(s->parent->name, STRING_LITERAL("TEXT_IO"))
             and (string_equal_ignore_case(s->name, STRING_LITERAL("CREATE")) or string_equal_ignore_case(s->name, STRING_LITERAL("OPEN"))))
         {
-          r.k = VALUE_KIND_POINTER;
+          r.kind = VALUE_KIND_POINTER;
           int md = n->call.arguments.count > 1 ? generate_expression(generator, n->call.arguments.data[1]).id : 0;
           fprintf(
               o,
@@ -11276,12 +11276,12 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           if (n->call.arguments.count > 1)
           {
             Value f = generate_expression(generator, n->call.arguments.data[0]);
-            r.k = VALUE_KIND_INTEGER;
+            r.kind = VALUE_KIND_INTEGER;
             fprintf(o, "  %%t%d = call i64 @__text_io_get(ptr %%t%d)\n", r.id, f.id);
           }
           else
           {
-            r.k = VALUE_KIND_INTEGER;
+            r.kind = VALUE_KIND_INTEGER;
             fprintf(o, "  %%t%d = call i64 @__text_io_get(ptr @stdin)\n", r.id);
           }
           break;
@@ -11296,12 +11296,12 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             const char *func_name = string_equal_ignore_case(s->name, STRING_LITERAL("PUT")) ? "put" : "put_line";
             const char *suffix = "";
             const char *type_str = "";
-            if (v.k == VALUE_KIND_INTEGER)
+            if (v.kind == VALUE_KIND_INTEGER)
             {
               suffix = ".i64";
               type_str = "i64";
             }
-            else if (v.k == VALUE_KIND_FLOAT)
+            else if (v.kind == VALUE_KIND_FLOAT)
             {
               suffix = ".f64";
               type_str = "double";
@@ -11318,12 +11318,12 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             const char *func_name = string_equal_ignore_case(s->name, STRING_LITERAL("PUT")) ? "put" : "put_line";
             const char *suffix = "";
             const char *type_str = "";
-            if (v.k == VALUE_KIND_INTEGER)
+            if (v.kind == VALUE_KIND_INTEGER)
             {
               suffix = ".i64";
               type_str = "i64";
             }
-            else if (v.k == VALUE_KIND_FLOAT)
+            else if (v.kind == VALUE_KIND_FLOAT)
             {
               suffix = ".f64";
               type_str = "double";
@@ -11336,10 +11336,10 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           }
           break;
         }
-        if (s->type_info and s->type_info->k == TYPE_STRING)
+        if (s->type_info and s->type_info->kind == TYPE_STRING)
         {
           Value_Kind rk = token_kind_to_value_kind(s->type_info->element_type);
-          r.k = rk;
+          r.kind = rk;
           Syntax_Node *b = symbol_body(s, s->elaboration_level);
           Syntax_Node *sp = symbol_spec(s);
           int arid[64];
@@ -11361,7 +11361,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                 Type_Info *pt = resolve_subtype(generator->sm, pm->parameter.ty);
                 ek = token_kind_to_value_kind(pt);
               }
-              if (pm->parameter.mode & 2 and arg->k == N_ID)
+              if (pm->parameter.mode & 2 and arg->kind == N_ID)
               {
                 rf = true;
                 Symbol *as = arg->symbol ? arg->symbol : symbol_find(generator->sm, arg->string_value);
@@ -11381,13 +11381,13 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                   else
                     snprintf(nb, 256, "%.*s", (int) as->name.length, as->name.string);
                   av.id = new_temporary_register(generator);
-                  av.k = VALUE_KIND_POINTER;
+                  av.kind = VALUE_KIND_POINTER;
                   fprintf(o, "  %%t%d = bitcast ptr @%s to ptr\n", av.id, nb);
                 }
                 else if (as and as->level >= 0 and as->level < generator->sm->lv)
                 {
                   av.id = new_temporary_register(generator);
-                  av.k = VALUE_KIND_POINTER;
+                  av.kind = VALUE_KIND_POINTER;
                   fprintf(o, "  %%t%d = getelementptr ptr, ptr %%__slnk, i64 %u\n", av.id, as->elaboration_level);
                   int a2 = new_temporary_register(generator);
                   fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", a2, av.id);
@@ -11396,7 +11396,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                 else
                 {
                   av.id = new_temporary_register(generator);
-                  av.k = VALUE_KIND_POINTER;
+                  av.kind = VALUE_KIND_POINTER;
                   fprintf(
                       o,
                       "  %%t%d = bitcast ptr %%v.%s.sc%u.%u to ptr\n",
@@ -11412,11 +11412,11 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                 rf = true;
                 av = generate_expression(generator, arg);
                 int ap = new_temporary_register(generator);
-                fprintf(o, "  %%t%d = alloca %s\n", ap, value_llvm_type_string(av.k));
+                fprintf(o, "  %%t%d = alloca %s\n", ap, value_llvm_type_string(av.kind));
                 fprintf(
-                    o, "  store %s %%t%d, ptr %%t%d\n", value_llvm_type_string(av.k), av.id, ap);
+                    o, "  store %s %%t%d, ptr %%t%d\n", value_llvm_type_string(av.kind), av.id, ap);
                 av.id = ap;
-                av.k = VALUE_KIND_POINTER;
+                av.kind = VALUE_KIND_POINTER;
                 ek = VALUE_KIND_POINTER;
               }
               else
@@ -11434,7 +11434,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
               av = cv;
             }
             arid[i] = av.id;
-            ark[i] = ek != VALUE_KIND_INTEGER ? ek : av.k;
+            ark[i] = ek != VALUE_KIND_INTEGER ? ek : av.kind;
             arp[i] = i < sp->subprogram.parameters.count and sp->subprogram.parameters.data[i]->parameter.mode & 2 ? 1 : 0;
           }
           char nb[256];
@@ -11471,7 +11471,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
               Value rv = {lv, ark[i] == VALUE_KIND_POINTER ? VALUE_KIND_INTEGER : ark[i]};
               Value cv = value_cast(generator, rv, token_kind_to_value_kind(n->call.arguments.data[i]->ty));
               Syntax_Node *tg = n->call.arguments.data[i];
-              if (tg->k == N_ID)
+              if (tg->kind == N_ID)
               {
                 Symbol *ts = tg->symbol ? tg->symbol : symbol_find(generator->sm, tg->string_value);
                 if (ts)
@@ -11480,7 +11480,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                     fprintf(
                         o,
                         "  store %s %%t%d, ptr %%lnk.%d.%s\n",
-                        value_llvm_type_string(cv.k),
+                        value_llvm_type_string(cv.kind),
                         cv.id,
                         ts->level,
                         string_to_lowercase(tg->string_value));
@@ -11488,7 +11488,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                     fprintf(
                         o,
                         "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
-                        value_llvm_type_string(cv.k),
+                        value_llvm_type_string(cv.kind),
                         cv.id,
                         string_to_lowercase(tg->string_value),
                         ts->scope,
@@ -11501,21 +11501,21 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         }
         else
         {
-          r.k = VALUE_KIND_INTEGER;
+          r.kind = VALUE_KIND_INTEGER;
           fprintf(o, "  %%t%d = add i64 0, 0\n", r.id);
         }
       }
       else
       {
-        r.k = VALUE_KIND_INTEGER;
+        r.kind = VALUE_KIND_INTEGER;
         fprintf(o, "  %%t%d = add i64 0, 0\n", r.id);
       }
     }
-    else if (n->call.function_name->k == N_SEL)
+    else if (n->call.function_name->kind == N_SEL)
     {
       // Handle selected component calls like TEXT_IO.PUT
       Syntax_Node *sel = n->call.function_name;
-      if (sel->selected_component.prefix->k == N_ID)
+      if (sel->selected_component.prefix->kind == N_ID)
       {
         String_Slice package_name = sel->selected_component.prefix->string_value;
         String_Slice procedure_name = sel->selected_component.selector;
@@ -11530,12 +11530,12 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
               Value v = generate_expression(generator, n->call.arguments.data[0]);
               const char *suffix = "";
               const char *type_str = "";
-              if (v.k == VALUE_KIND_INTEGER)
+              if (v.kind == VALUE_KIND_INTEGER)
               {
                 suffix = ".i64";
                 type_str = "i64";
               }
-              else if (v.k == VALUE_KIND_FLOAT)
+              else if (v.kind == VALUE_KIND_FLOAT)
               {
                 suffix = ".f64";
                 type_str = "double";
@@ -11555,12 +11555,12 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
               Value v = generate_expression(generator, n->call.arguments.data[0]);
               const char *suffix = "";
               const char *type_str = "";
-              if (v.k == VALUE_KIND_INTEGER)
+              if (v.kind == VALUE_KIND_INTEGER)
               {
                 suffix = ".i64";
                 type_str = "i64";
               }
-              else if (v.k == VALUE_KIND_FLOAT)
+              else if (v.kind == VALUE_KIND_FLOAT)
               {
                 suffix = ".f64";
                 type_str = "double";
@@ -11580,12 +11580,12 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           }
         }
       }
-      r.k = VALUE_KIND_INTEGER;
+      r.kind = VALUE_KIND_INTEGER;
       fprintf(o, "  %%t%d = add i64 0, 0\n", r.id);
     }
     else
     {
-      r.k = VALUE_KIND_INTEGER;
+      r.kind = VALUE_KIND_INTEGER;
       fprintf(o, "  %%t%d = add i64 0, 0\n", r.id);
     }
     break;
@@ -11595,7 +11595,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     return generate_aggregate(generator, n, n->ty);
   case N_ALC:
   {
-    r.k = VALUE_KIND_POINTER;
+    r.kind = VALUE_KIND_POINTER;
     Type_Info *et = n->ty and n->ty->element_type ? type_canonical_concrete(n->ty->element_type) : 0;
     uint32_t asz = 64;
     if (et and et->discriminants.count > 0)
@@ -11619,16 +11619,16 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
   case N_DRF:
   {
     Value p = generate_expression(generator, n->dereference.expression);
-    if (p.k == VALUE_KIND_INTEGER)
+    if (p.kind == VALUE_KIND_INTEGER)
     {
       int pp = new_temporary_register(generator);
       fprintf(o, "  %%t%d = inttoptr i64 %%t%d to ptr\n", pp, p.id);
       p.id = pp;
-      p.k = VALUE_KIND_POINTER;
+      p.kind = VALUE_KIND_POINTER;
     }
     Type_Info *dt = n->dereference.expression->ty ? type_canonical_concrete(n->dereference.expression->ty) : 0;
     dt = dt and dt->element_type ? type_canonical_concrete(dt->element_type) : 0;
-    r.k = dt ? token_kind_to_value_kind(dt) : VALUE_KIND_INTEGER;
+    r.kind = dt ? token_kind_to_value_kind(dt) : VALUE_KIND_INTEGER;
     Value pc = value_cast(generator, p, VALUE_KIND_INTEGER);
     int nc = new_temporary_register(generator);
     fprintf(o, "  %%t%d = icmp eq i64 %%t%d, 0\n", nc, pc.id);
@@ -11637,43 +11637,43 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     emit_label(generator, ne);
     fprintf(o, "  call void @__ada_raise(ptr @.ex.CONSTRAINT_ERROR)\n  unreachable\n");
     emit_label(generator, nd);
-    fprintf(o, "  %%t%d = load %s, ptr %%t%d\n", r.id, value_llvm_type_string(r.k), p.id);
+    fprintf(o, "  %%t%d = load %s, ptr %%t%d\n", r.id, value_llvm_type_string(r.kind), p.id);
   }
   break;
   case N_CVT:
   {
     Value e = generate_expression(generator, n->conversion.expression);
-    r = value_cast(generator, e, r.k);
+    r = value_cast(generator, e, r.kind);
   }
   break;
   case N_CHK:
   {
     Value e = generate_expression(generator, n->check.expression);
     Type_Info *t = n->check.expression->ty ? type_canonical_concrete(n->check.expression->ty) : 0;
-    if (t and t->k == TYPE_FLOAT and (t->low_bound != TY_INT->low_bound or t->high_bound != TY_INT->high_bound))
-      r = generate_float_range_check(generator, e, t, n->check.exception_name, r.k);
-    else if (t and t->k == TYPE_ARRAY and (t->low_bound != 0 or t->high_bound != -1))
+    if (t and t->kind == TYPE_FLOAT and (t->low_bound != TY_INT->low_bound or t->high_bound != TY_INT->high_bound))
+      r = generate_float_range_check(generator, e, t, n->check.exception_name, r.kind);
+    else if (t and t->kind == TYPE_ARRAY and (t->low_bound != 0 or t->high_bound != -1))
     {
       Type_Info *et = n->check.expression->ty;
-      r = generate_array_bounds_check(generator, e, t, et, n->check.exception_name, r.k);
+      r = generate_array_bounds_check(generator, e, t, et, n->check.exception_name, r.kind);
     }
     else if (
         t
-        and (t->k == TYPE_INTEGER or t->k == TYPE_ENUMERATION or t->k == TYPE_DERIVED or t->k == TYPE_CHARACTER)
+        and (t->kind == TYPE_INTEGER or t->kind == TYPE_ENUMERATION or t->kind == TYPE_DERIVED or t->kind == TYPE_CHARACTER)
         and (t->low_bound != TY_INT->low_bound or t->high_bound != TY_INT->high_bound))
-      r = generate_discrete_range_check(generator, e, t, n->check.exception_name, r.k);
+      r = generate_discrete_range_check(generator, e, t, n->check.exception_name, r.kind);
     else
-      r = value_cast(generator, e, r.k);
+      r = value_cast(generator, e, r.kind);
   }
   break;
   case N_RN:
   {
     Value lo = generate_expression(generator, n->range.low_bound);
-    r = value_cast(generator, lo, r.k);
+    r = value_cast(generator, lo, r.kind);
   }
   break;
   default:
-    r.k = VALUE_KIND_INTEGER;
+    r.kind = VALUE_KIND_INTEGER;
     fprintf(o, "  %%t%d = add i64 0, 0\n", r.id);
   }
   return r;
@@ -11683,7 +11683,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
   FILE *o = generator->o;
   if (not n)
     return;
-  switch (n->k)
+  switch (n->kind)
   {
   case N_NS:
     fprintf(o, "  ; null\n");
@@ -11691,14 +11691,14 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
   case N_AS:
   {
     Value v = generate_expression(generator, n->assignment.value);
-    if (n->assignment.target->k == N_ID)
+    if (n->assignment.target->kind == N_ID)
     {
       Symbol *s = n->assignment.target->symbol;
       Type_Info *st = s and s->type_info ? type_canonical_concrete(s->type_info) : 0;
       Value_Kind k = st ? token_kind_to_value_kind(st) : VALUE_KIND_INTEGER;
 
       // Check if this is an array assignment
-      bool is_array_assign = (st and st->k == TYPE_ARRAY and v.k == VALUE_KIND_POINTER
+      bool is_array_assign = (st and st->kind == TYPE_ARRAY and v.kind == VALUE_KIND_POINTER
                               and st->low_bound != 0 and st->high_bound > 0);
 
       if (not is_array_assign)
@@ -11708,7 +11708,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
       {
         // Use memcpy for array assignment
         int64_t count = st->high_bound - st->low_bound + 1;
-        int64_t elem_size = st->element_type->k == TYPE_INTEGER ? 8 : 4;
+        int64_t elem_size = st->element_type->kind == TYPE_INTEGER ? 8 : 4;
         int64_t total_size = count * elem_size;
 
         // Get target address
@@ -11836,22 +11836,22 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             s ? s->scope : 0,
             s ? s->elaboration_level : 0);
     }
-    else if (n->assignment.target->k == N_IX)
+    else if (n->assignment.target->kind == N_IX)
     {
       Value p = generate_expression(generator, n->assignment.target->index.prefix);
-      if (p.k == VALUE_KIND_INTEGER)
+      if (p.kind == VALUE_KIND_INTEGER)
       {
         int pp = new_temporary_register(generator);
         fprintf(o, "  %%t%d = inttoptr i64 %%t%d to ptr\n", pp, p.id);
         p.id = pp;
-        p.k = VALUE_KIND_POINTER;
+        p.kind = VALUE_KIND_POINTER;
       }
       Value i0 = value_cast(generator, generate_expression(generator, n->assignment.target->index.indices.data[0]), VALUE_KIND_INTEGER);
       Type_Info *at = n->assignment.target->index.prefix->ty ? type_canonical_concrete(n->assignment.target->index.prefix->ty) : 0;
       Type_Info *et = at and at->element_type ? type_canonical_concrete(at->element_type) : 0;
       const char *elem_type_str = ada_to_c_type_string(et);
       int adj_idx = i0.id;
-      if (at and at->k == TYPE_ARRAY and at->low_bound != 0)
+      if (at and at->kind == TYPE_ARRAY and at->low_bound != 0)
       {
         int adj = new_temporary_register(generator);
         fprintf(o, "  %%t%d = sub i64 %%t%d, %lld\n", adj, i0.id, (long long) at->low_bound);
@@ -11873,11 +11873,11 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
         fprintf(o, "  store %s %%t%d, ptr %%t%d\n", value_llvm_type_string(target_kind), v.id, ep);
       }
     }
-    else if (n->assignment.target->k == N_SEL)
+    else if (n->assignment.target->kind == N_SEL)
     {
       Type_Info *pt = n->assignment.target->selected_component.prefix->ty ? type_canonical_concrete(n->assignment.target->selected_component.prefix->ty) : 0;
       Value p = {new_temporary_register(generator), VALUE_KIND_POINTER};
-      if (n->assignment.target->selected_component.prefix->k == N_ID)
+      if (n->assignment.target->selected_component.prefix->kind == N_ID)
       {
         Symbol *s = n->assignment.target->selected_component.prefix->symbol ? n->assignment.target->selected_component.prefix->symbol : symbol_find(generator->sm, n->assignment.target->selected_component.prefix->string_value);
         if (s and s->level >= 0 and s->level < generator->sm->lv)
@@ -11901,14 +11901,14 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
       {
         p = generate_expression(generator, n->assignment.target->selected_component.prefix);
       }
-      if (pt and pt->k == TYPE_RECORD)
+      if (pt and pt->kind == TYPE_RECORD)
       {
         if (pt->is_packed)
         {
           for (uint32_t i = 0; i < pt->components.count; i++)
           {
             Syntax_Node *c = pt->components.data[i];
-            if (c->k == N_CM and string_equal_ignore_case(c->component_decl.name, n->assignment.target->selected_component.selector))
+            if (c->kind == N_CM and string_equal_ignore_case(c->component_decl.name, n->assignment.target->selected_component.selector))
             {
               v = value_cast(generator, v, VALUE_KIND_INTEGER);
               int bp = new_temporary_register(generator);
@@ -11944,7 +11944,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           for (uint32_t i = 0; i < pt->components.count; i++)
           {
             Syntax_Node *c = pt->components.data[i];
-            if (c->k == N_CM and string_equal_ignore_case(c->component_decl.name, n->assignment.target->selected_component.selector))
+            if (c->kind == N_CM and string_equal_ignore_case(c->component_decl.name, n->assignment.target->selected_component.selector))
             {
               int ep = new_temporary_register(generator);
               fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p.id, c->component_decl.offset);
@@ -12020,13 +12020,13 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
       for (uint32_t j = 0; j < a->choices.items.count; j++)
       {
         Syntax_Node *ch = a->choices.items.data[j];
-        if (ch->k == N_ID and string_equal_ignore_case(ch->string_value, STRING_LITERAL("others")))
+        if (ch->kind == N_ID and string_equal_ignore_case(ch->string_value, STRING_LITERAL("others")))
         {
           emit_branch(generator, la);
           goto cs_sw_done;
         }
         Type_Info *cht = ch->ty ? type_canonical_concrete(ch->ty) : 0;
-        if (ch->k == N_ID and cht and (cht->low_bound != 0 or cht->high_bound != 0))
+        if (ch->kind == N_ID and cht and (cht->low_bound != 0 or cht->high_bound != 0))
         {
           int lo_id = new_temporary_register(generator);
           fprintf(o, "  %%t%d = add i64 0, %lld\n", lo_id, (long long) cht->low_bound);
@@ -12043,13 +12043,13 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           continue;
         }
         Value cv = generate_expression(generator, ch);
-        cv = value_cast(generator, cv, ex.k);
-        if (ch->k == N_RN)
+        cv = value_cast(generator, cv, ex.kind);
+        if (ch->kind == N_RN)
         {
           Value lo = generate_expression(generator, ch->range.low_bound);
-          lo = value_cast(generator, lo, ex.k);
+          lo = value_cast(generator, lo, ex.kind);
           Value hi = generate_expression(generator, ch->range.high_bound);
-          hi = value_cast(generator, hi, ex.k);
+          hi = value_cast(generator, hi, ex.kind);
           int cge = new_temporary_register(generator);
           fprintf(o, "  %%t%d = icmp sge i64 %%t%d, %%t%d\n", cge, ex.id, lo.id);
           int cle = new_temporary_register(generator);
@@ -12095,7 +12095,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
     Syntax_Node *fv = 0;
     Type_Info *ft = 0;
     int hi_var = -1;
-    if (n->loop_stmt.iterator and n->loop_stmt.iterator->k == N_BIN and n->loop_stmt.iterator->binary_node.op == T_IN and n->loop_stmt.iterator->binary_node.left->k == N_ID)
+    if (n->loop_stmt.iterator and n->loop_stmt.iterator->kind == N_BIN and n->loop_stmt.iterator->binary_node.op == T_IN and n->loop_stmt.iterator->binary_node.left->kind == N_ID)
     {
       fv = n->loop_stmt.iterator->binary_node.left;
       ft = n->loop_stmt.iterator->binary_node.right->ty;
@@ -12109,7 +12109,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           hi_var = new_temporary_register(generator);
           fprintf(o, "  %%v.__for_hi_%d = alloca i64\n", hi_var);
           int ti = new_temporary_register(generator);
-          if (rng and rng->k == N_RN)
+          if (rng and rng->kind == N_RN)
           {
             Value lo = value_cast(generator, generate_expression(generator, rng->range.low_bound), VALUE_KIND_INTEGER);
             fprintf(o, "  %%t%d = add i64 %%t%d, 0\n", ti, lo.id);
@@ -12117,11 +12117,11 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             fprintf(o, "  store i64 %%t%d, ptr %%v.__for_hi_%d\n", hi.id, hi_var);
           }
           else if (
-              rng and rng->k == N_AT
+              rng and rng->kind == N_AT
               and string_equal_ignore_case(rng->attribute.attribute_name, STRING_LITERAL("RANGE")))
           {
             Type_Info *at = rng->attribute.prefix ? type_canonical_concrete(rng->attribute.prefix->ty) : 0;
-            if (at and at->k == TYPE_ARRAY)
+            if (at and at->kind == TYPE_ARRAY)
             {
               if (at->low_bound == 0 and at->high_bound == -1 and rng->attribute.prefix)
               {
@@ -12384,12 +12384,12 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
       Type_Info *vt = n->return_stmt.value->ty ? type_canonical_concrete(n->return_stmt.value->ty) : 0;
 
       // Check if returning a fat pointer (runtime-sized or unconstrained array)
-      if (v.k == VALUE_KIND_POINTER and vt and vt->k == TYPE_ARRAY
-          and n->return_stmt.value->k == N_ID and n->return_stmt.value->symbol)
+      if (v.kind == VALUE_KIND_POINTER and vt and vt->kind == TYPE_ARRAY
+          and n->return_stmt.value->kind == N_ID and n->return_stmt.value->symbol)
       {
         Symbol *s = n->return_stmt.value->symbol;
         // Check if this is a local array variable
-        if (s->k == 0 and s->scope > 0)
+        if (s->kind == 0 and s->scope > 0)
         {
           // Get address of the fat pointer variable
           int fp = new_temporary_register(generator);
@@ -12408,9 +12408,9 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
 
           // Calculate size from bounds
           Type_Info *bt = vt->element_type;
-          while (bt and bt->k == TYPE_ARRAY and bt->element_type)
+          while (bt and bt->kind == TYPE_ARRAY and bt->element_type)
             bt = type_canonical_concrete(bt->element_type);
-          int elem_size = bt->k == TYPE_INTEGER ? 8 : 4;
+          int elem_size = bt->kind == TYPE_INTEGER ? 8 : 4;
 
           int count_reg = new_temporary_register(generator);
           fprintf(o, "  %%t%d = sub i64 %%t%d, %%t%d\n", count_reg, hi, lo);
@@ -12432,15 +12432,15 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
         else
         {
           // Non-local or other case - default return
-          fprintf(o, "  ret %s %%t%d\n", value_llvm_type_string(v.k), v.id);
+          fprintf(o, "  ret %s %%t%d\n", value_llvm_type_string(v.kind), v.id);
         }
       }
-      else if (v.k == VALUE_KIND_POINTER and vt and vt->k == TYPE_ARRAY
+      else if (v.kind == VALUE_KIND_POINTER and vt and vt->kind == TYPE_ARRAY
           and vt->low_bound != 0 and vt->high_bound > 0 and vt->high_bound >= vt->low_bound)
       {
         // Compile-time sized array - Allocate on secondary stack and copy array data
         int64_t count = vt->high_bound - vt->low_bound + 1;
-        int64_t elem_size = vt->element_type->k == TYPE_INTEGER ? 8 : 4;
+        int64_t elem_size = vt->element_type->kind == TYPE_INTEGER ? 8 : 4;
         int64_t total_size = count * elem_size;
 
         int sz_reg = new_temporary_register(generator);
@@ -12455,7 +12455,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
       else
       {
         // Other types
-        fprintf(o, "  ret %s %%t%d\n", value_llvm_type_string(v.k), v.id);
+        fprintf(o, "  ret %s %%t%d\n", value_llvm_type_string(v.kind), v.id);
       }
     }
     else
@@ -12465,7 +12465,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
   case N_RS:
   {
     String_Slice ec =
-        n->raise_stmt.exception_choice and n->raise_stmt.exception_choice->k == N_ID ? n->raise_stmt.exception_choice->string_value : STRING_LITERAL("PROGRAM_ERROR");
+        n->raise_stmt.exception_choice and n->raise_stmt.exception_choice->kind == N_ID ? n->raise_stmt.exception_choice->string_value : STRING_LITERAL("PROGRAM_ERROR");
     emit_exception(generator, ec);
     int exh = new_temporary_register(generator);
     fprintf(o, "  %%t%d = load ptr, ptr %%ej\n", exh);
@@ -12483,7 +12483,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
   break;
   case N_CLT:
   {
-    if (n->code_stmt.name->k == N_ID)
+    if (n->code_stmt.name->kind == N_ID)
     {
       Symbol *s = symbol_find_with_arity(generator->sm, n->code_stmt.name->string_value, n->code_stmt.arguments.count, 0);
       if (s)
@@ -12514,13 +12514,13 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                 param_type = type_canonical_concrete(resolve_subtype(generator->sm, pm->parameter.ty));
 
               // Unconstrained arrays: check if high <= 0 (catches both high=-1 and high=0 sentinels)
-              param_is_unconstrained = param_type and param_type->k == TYPE_ARRAY
+              param_is_unconstrained = param_type and param_type->kind == TYPE_ARRAY
                                        and param_type->low_bound == 0 and param_type->high_bound <= 0;
             }
 
             // Check if argument is constrained array
             Type_Info *arg_type = arg->ty ? type_canonical_concrete(arg->ty) : 0;
-            bool arg_is_constrained_array = arg_type and arg_type->k == TYPE_ARRAY
+            bool arg_is_constrained_array = arg_type and arg_type->kind == TYPE_ARRAY
                                             and not (arg_type->low_bound == 0 and arg_type->high_bound <= 0);
 
             if (pm)
@@ -12534,7 +12534,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               }
 
               // Handle unconstrained array parameters with constrained array arguments
-              if (param_is_unconstrained and arg_is_constrained_array and arg->k == N_ID)
+              if (param_is_unconstrained and arg_is_constrained_array and arg->kind == N_ID)
               {
                 // Construct fat pointer on stack
                 Symbol *as = arg->symbol ? arg->symbol : symbol_find(generator->sm, arg->string_value);
@@ -12588,10 +12588,10 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                 fprintf(o, "  store ptr %%t%d, ptr %%t%d\n", bounds_alloc, bounds_field);
 
                 av.id = fat_ptr;
-                av.k = VALUE_KIND_POINTER;
+                av.kind = VALUE_KIND_POINTER;
                 ek = VALUE_KIND_POINTER;
               }
-              else if (pm->parameter.mode & 2 and arg->k == N_ID)
+              else if (pm->parameter.mode & 2 and arg->kind == N_ID)
               {
                 rf = true;
                 Symbol *as = arg->symbol ? arg->symbol : symbol_find(generator->sm, arg->string_value);
@@ -12611,13 +12611,13 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                   else
                     snprintf(nb, 256, "%.*s", (int) as->name.length, as->name.string);
                   av.id = new_temporary_register(generator);
-                  av.k = VALUE_KIND_POINTER;
+                  av.kind = VALUE_KIND_POINTER;
                   fprintf(o, "  %%t%d = bitcast ptr @%s to ptr\n", av.id, nb);
                 }
                 else if (as and as->level >= 0 and as->level < generator->sm->lv)
                 {
                   av.id = new_temporary_register(generator);
-                  av.k = VALUE_KIND_POINTER;
+                  av.kind = VALUE_KIND_POINTER;
                   fprintf(o, "  %%t%d = getelementptr ptr, ptr %%__slnk, i64 %u\n", av.id, as->elaboration_level);
                   int a2 = new_temporary_register(generator);
                   fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", a2, av.id);
@@ -12626,7 +12626,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                 else
                 {
                   av.id = new_temporary_register(generator);
-                  av.k = VALUE_KIND_POINTER;
+                  av.kind = VALUE_KIND_POINTER;
                   fprintf(
                       o,
                       "  %%t%d = bitcast ptr %%v.%s.sc%u.%u to ptr\n",
@@ -12642,11 +12642,11 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                 rf = true;
                 av = generate_expression(generator, arg);
                 int ap = new_temporary_register(generator);
-                fprintf(o, "  %%t%d = alloca %s\n", ap, value_llvm_type_string(av.k));
+                fprintf(o, "  %%t%d = alloca %s\n", ap, value_llvm_type_string(av.kind));
                 fprintf(
-                    o, "  store %s %%t%d, ptr %%t%d\n", value_llvm_type_string(av.k), av.id, ap);
+                    o, "  store %s %%t%d, ptr %%t%d\n", value_llvm_type_string(av.kind), av.id, ap);
                 av.id = ap;
-                av.k = VALUE_KIND_POINTER;
+                av.kind = VALUE_KIND_POINTER;
                 ek = VALUE_KIND_POINTER;
               }
               else
@@ -12664,7 +12664,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               av = cv;
             }
             arid[i] = av.id;
-            ark[i] = ek != VALUE_KIND_INTEGER ? ek : av.k;
+            ark[i] = ek != VALUE_KIND_INTEGER ? ek : av.kind;
             arp[i] = rf ? 1 : 0;
           }
           char nb[256];
@@ -12704,7 +12704,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               Value rv = {lv, ark[i] == VALUE_KIND_POINTER ? VALUE_KIND_INTEGER : ark[i]};
               Value cv = value_cast(generator, rv, token_kind_to_value_kind(n->code_stmt.arguments.data[i]->ty));
               Syntax_Node *tg = n->code_stmt.arguments.data[i];
-              if (tg->k == N_ID)
+              if (tg->kind == N_ID)
               {
                 Symbol *ts = tg->symbol ? tg->symbol : symbol_find(generator->sm, tg->string_value);
                 if (ts)
@@ -12713,7 +12713,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                     fprintf(
                         o,
                         "  store %s %%t%d, ptr %%lnk.%d.%s\n",
-                        value_llvm_type_string(cv.k),
+                        value_llvm_type_string(cv.kind),
                         cv.id,
                         ts->level,
                         string_to_lowercase(tg->string_value));
@@ -12721,7 +12721,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                     fprintf(
                         o,
                         "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
-                        value_llvm_type_string(cv.k),
+                        value_llvm_type_string(cv.kind),
                         cv.id,
                         string_to_lowercase(tg->string_value),
                         ts->scope,
@@ -12752,7 +12752,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           }
           fprintf(o, ")\n");
         }
-        else if (s->k == 4 or s->k == 5)
+        else if (s->kind == 4 or s->kind == 5)
         {
           Syntax_Node *sp = symbol_spec(s);
           if (not sp and s->type_info and s->type_info->operations.count > 0)
@@ -12783,12 +12783,12 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                 ek = token_kind_to_value_kind(pt);
               }
             }
-            if (arpt[i] and arg->k == N_ID)
+            if (arpt[i] and arg->kind == N_ID)
             {
               ek = VALUE_KIND_POINTER;
               Symbol *as = arg->symbol ? arg->symbol : symbol_find(generator->sm, arg->string_value);
               av.id = new_temporary_register(generator);
-              av.k = VALUE_KIND_POINTER;
+              av.kind = VALUE_KIND_POINTER;
               if (as and as->level >= 0 and as->level < generator->sm->lv)
                 fprintf(
                     o,
@@ -12819,7 +12819,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             snprintf(nb, 256, "%.*s", (int) s->external_name.length, s->external_name.string);
           else
             encode_symbol_name(nb, 256, s, n->code_stmt.name->string_value, n->code_stmt.arguments.count, sp);
-          if (s->k == 5 and sp and sp->subprogram.return_type)
+          if (s->kind == 5 and sp and sp->subprogram.return_type)
           {
             Type_Info *rt = resolve_subtype(generator->sm, sp->subprogram.return_type);
             Value_Kind rk = token_kind_to_value_kind(rt);
@@ -12838,11 +12838,11 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
         }
       }
     }
-    else if (n->code_stmt.name->k == N_SEL)
+    else if (n->code_stmt.name->kind == N_SEL)
     {
       // Handle selected component calls like TEXT_IO.PUT(X)
       Syntax_Node *sel = n->code_stmt.name;
-      if (sel->selected_component.prefix->k == N_ID)
+      if (sel->selected_component.prefix->kind == N_ID)
       {
         String_Slice package_name = sel->selected_component.prefix->string_value;
         String_Slice procedure_name = sel->selected_component.selector;
@@ -12857,12 +12857,12 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               Value v = generate_expression(generator, n->code_stmt.arguments.data[0]);
               const char *suffix = "";
               const char *type_str = "";
-              if (v.k == VALUE_KIND_INTEGER)
+              if (v.kind == VALUE_KIND_INTEGER)
               {
                 suffix = "_i64";
                 type_str = "i64";
               }
-              else if (v.k == VALUE_KIND_FLOAT)
+              else if (v.kind == VALUE_KIND_FLOAT)
               {
                 suffix = "_f64";
                 type_str = "double";
@@ -12882,12 +12882,12 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               Value v = generate_expression(generator, n->code_stmt.arguments.data[0]);
               const char *suffix = "";
               const char *type_str = "";
-              if (v.k == VALUE_KIND_INTEGER)
+              if (v.kind == VALUE_KIND_INTEGER)
               {
                 suffix = "_i64";
                 type_str = "i64";
               }
-              else if (v.k == VALUE_KIND_FLOAT)
+              else if (v.kind == VALUE_KIND_FLOAT)
               {
                 suffix = "_f64";
                 type_str = "double";
@@ -12935,13 +12935,13 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
     for (uint32_t i = 0; i < n->block.declarations.count; i++)
     {
       Syntax_Node *d = n->block.declarations.data[i];
-      if (d and d->k != N_PB and d->k != N_FB and d->k != N_PKB and d->k != N_PD and d->k != N_FD)
+      if (d and d->kind != N_PB and d->kind != N_FB and d->kind != N_PKB and d->kind != N_PD and d->kind != N_FD)
         generate_declaration(generator, d);
     }
     for (uint32_t i = 0; i < n->block.declarations.count; i++)
     {
       Syntax_Node *d = n->block.declarations.data[i];
-      if (d and d->k == N_OD and d->object_decl.in)
+      if (d and d->kind == N_OD and d->object_decl.in)
       {
         for (uint32_t j = 0; j < d->object_decl.identifiers.count; j++)
         {
@@ -12952,16 +12952,16 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                                     : VALUE_KIND_INTEGER;
             Symbol *s = id->symbol;
             Type_Info *at = d->object_decl.ty ? resolve_subtype(generator->sm, d->object_decl.ty) : 0;
-            if (at and at->k == TYPE_RECORD and at->discriminants.count > 0 and d->object_decl.in and d->object_decl.in->ty)
+            if (at and at->kind == TYPE_RECORD and at->discriminants.count > 0 and d->object_decl.in and d->object_decl.in->ty)
             {
               Type_Info *it = type_canonical_concrete(d->object_decl.in->ty);
-              if (it and it->k == TYPE_RECORD and it->discriminants.count > 0)
+              if (it and it->kind == TYPE_RECORD and it->discriminants.count > 0)
               {
                 for (uint32_t di = 0; di < at->discriminants.count and di < it->discriminants.count; di++)
                 {
                   Syntax_Node *td = at->discriminants.data[di];
                   Syntax_Node *id_d = it->discriminants.data[di];
-                  if (td->k == N_DS and id_d->k == N_DS and td->parameter.default_value and td->parameter.default_value->k == N_INT)
+                  if (td->kind == N_DS and id_d->kind == N_DS and td->parameter.default_value and td->parameter.default_value->kind == N_INT)
                   {
                     int tdi = new_temporary_register(generator);
                     fprintf(o, "  %%t%d = add i64 0, %lld\n", tdi, (long long) td->parameter.default_value->integer_value);
@@ -13012,7 +13012,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
     for (uint32_t i = 0; i < n->block.declarations.count; i++)
     {
       Syntax_Node *d = n->block.declarations.data[i];
-      if (d and d->k == N_OD and not d->object_decl.in)
+      if (d and d->kind == N_OD and not d->object_decl.in)
         for (uint32_t j = 0; j < d->object_decl.identifiers.count; j++)
         {
           Syntax_Node *id = d->object_decl.identifiers.data[j];
@@ -13020,24 +13020,24 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           if (not s)
             continue;
           Type_Info *at = d->object_decl.ty ? resolve_subtype(generator->sm, d->object_decl.ty) : 0;
-          if (not at or at->k != TYPE_RECORD or not at->discriminants.count)
+          if (not at or at->kind != TYPE_RECORD or not at->discriminants.count)
             continue;
           uint32_t di;
           for (di = 0; di < at->discriminants.count; di++)
-            if (at->discriminants.data[di]->k != N_DS or not at->discriminants.data[di]->parameter.default_value)
+            if (at->discriminants.data[di]->kind != N_DS or not at->discriminants.data[di]->parameter.default_value)
               goto nx;
           for (uint32_t ci = 0; ci < at->components.count; ci++)
           {
             Syntax_Node *cm = at->components.data[ci];
-            if (cm->k != N_CM or not cm->component_decl.ty)
+            if (cm->kind != N_CM or not cm->component_decl.ty)
               continue;
             Type_Info *cty = cm->component_decl.ty->ty;
-            if (not cty or cty->k != TYPE_ARRAY or not cty->index_type)
+            if (not cty or cty->kind != TYPE_ARRAY or not cty->index_type)
               continue;
             for (di = 0; di < at->discriminants.count; di++)
             {
               Syntax_Node *dc = at->discriminants.data[di];
-              if (dc->k == N_DS and dc->parameter.default_value and dc->parameter.default_value->k == N_INT)
+              if (dc->kind == N_DS and dc->parameter.default_value and dc->parameter.default_value->kind == N_INT)
               {
                 int64_t dv = dc->parameter.default_value->integer_value;
                 if (dv < cty->index_type->low_bound or dv > cty->index_type->high_bound)
@@ -13093,7 +13093,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
         for (uint32_t j = 0; j < h->exception_handler.exception_choices.count; j++)
         {
           Syntax_Node *e = h->exception_handler.exception_choices.data[j];
-          if (e->k == N_ID and string_equal_ignore_case(e->string_value, STRING_LITERAL("others")))
+          if (e->kind == N_ID and string_equal_ignore_case(e->string_value, STRING_LITERAL("others")))
           {
             emit_branch(generator, lhm);
             break;
@@ -13162,12 +13162,12 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
       for (uint32_t i = 0; i < n->abort_stmt.statements.count; i++)
       {
         Syntax_Node *st = n->abort_stmt.statements.data[i];
-        if (st->k == N_ACC)
+        if (st->kind == N_ACC)
         {
           for (uint32_t j = 0; j < st->accept_stmt.statements.count; j++)
             generate_statement_sequence(generator, st->accept_stmt.statements.data[j]);
         }
-        else if (st->k == N_DL)
+        else if (st->kind == N_DL)
         {
           Value d = generate_expression(generator, st->exit_stmt.condition);
           fprintf(o, "  call void @__ada_delay(i64 %%t%d)\n", d.id);
@@ -13208,24 +13208,24 @@ static bool has_label_block(Node_Vector *sl)
     Syntax_Node *s = sl->data[i];
     if (not s)
       continue;
-    if (s->k == N_BL and s->block.label.string)
+    if (s->kind == N_BL and s->block.label.string)
       return 1;
-    if (s->k == N_GT)
+    if (s->kind == N_GT)
       return 1;
-    if (s->k == N_BL and has_label_block(&s->block.statements))
+    if (s->kind == N_BL and has_label_block(&s->block.statements))
       return 1;
-    if (s->k == N_IF and (has_label_block(&s->if_stmt.then_statements) or has_label_block(&s->if_stmt.else_statements)))
+    if (s->kind == N_IF and (has_label_block(&s->if_stmt.then_statements) or has_label_block(&s->if_stmt.else_statements)))
       return 1;
-    for (uint32_t j = 0; s->k == N_IF and j < s->if_stmt.elsif_statements.count; j++)
+    for (uint32_t j = 0; s->kind == N_IF and j < s->if_stmt.elsif_statements.count; j++)
       if (s->if_stmt.elsif_statements.data[j] and has_label_block(&s->if_stmt.elsif_statements.data[j]->if_stmt.then_statements))
         return 1;
-    if (s->k == N_CS)
+    if (s->kind == N_CS)
     {
       for (uint32_t j = 0; j < s->case_stmt.alternatives.count; j++)
         if (s->case_stmt.alternatives.data[j] and has_label_block(&s->case_stmt.alternatives.data[j]->exception_handler.statements))
           return 1;
     }
-    if (s->k == N_LP and has_label_block(&s->loop_stmt.statements))
+    if (s->kind == N_LP and has_label_block(&s->loop_stmt.statements))
       return 1;
   }
   return 0;
@@ -13248,7 +13248,7 @@ static void emit_labels_block_recursive(Code_Generator *generator, Syntax_Node *
 {
   if (not s)
     return;
-  if (s->k == N_GT)
+  if (s->kind == N_GT)
   {
     bool found = 0;
     for (uint32_t i = 0; i < lbs->count; i++)
@@ -13267,7 +13267,7 @@ static void emit_labels_block_recursive(Code_Generator *generator, Syntax_Node *
       nv(lbs, (Syntax_Node *) lb);
     }
   }
-  if (s->k == N_IF)
+  if (s->kind == N_IF)
   {
     for (uint32_t i = 0; i < s->if_stmt.then_statements.count; i++)
       emit_labels_block_recursive(generator, s->if_stmt.then_statements.data[i], lbs);
@@ -13278,7 +13278,7 @@ static void emit_labels_block_recursive(Code_Generator *generator, Syntax_Node *
         for (uint32_t j = 0; j < s->if_stmt.elsif_statements.data[i]->if_stmt.then_statements.count; j++)
           emit_labels_block_recursive(generator, s->if_stmt.elsif_statements.data[i]->if_stmt.then_statements.data[j], lbs);
   }
-  if (s->k == N_BL)
+  if (s->kind == N_BL)
   {
     if (s->block.label.string)
     {
@@ -13302,7 +13302,7 @@ static void emit_labels_block_recursive(Code_Generator *generator, Syntax_Node *
     for (uint32_t i = 0; i < s->block.statements.count; i++)
       emit_labels_block_recursive(generator, s->block.statements.data[i], lbs);
   }
-  if (s->k == N_LP)
+  if (s->kind == N_LP)
   {
     if (s->loop_stmt.label.string)
     {
@@ -13326,7 +13326,7 @@ static void emit_labels_block_recursive(Code_Generator *generator, Syntax_Node *
     for (uint32_t i = 0; i < s->loop_stmt.statements.count; i++)
       emit_labels_block_recursive(generator, s->loop_stmt.statements.data[i], lbs);
   }
-  if (s->k == N_CS)
+  if (s->kind == N_CS)
     for (uint32_t i = 0; i < s->case_stmt.alternatives.count; i++)
       if (s->case_stmt.alternatives.data[i])
         for (uint32_t j = 0; j < s->case_stmt.alternatives.data[i]->exception_handler.statements.count; j++)
@@ -13340,17 +13340,17 @@ static void has_basic_label(Code_Generator *generator, Node_Vector *sl)
     Syntax_Node *s = sl->data[i];
     if (not s)
       continue;
-    if (s->k == N_BL)
+    if (s->kind == N_BL)
     {
       for (uint32_t j = 0; j < s->block.declarations.count; j++)
       {
         Syntax_Node *d = s->block.declarations.data[j];
-        if (d and (d->k == N_PB or d->k == N_FB))
+        if (d and (d->kind == N_PB or d->kind == N_FB))
           generate_declaration(generator, d);
       }
       has_basic_label(generator, &s->block.statements);
     }
-    else if (s->k == N_IF)
+    else if (s->kind == N_IF)
     {
       has_basic_label(generator, &s->if_stmt.then_statements);
       has_basic_label(generator, &s->if_stmt.else_statements);
@@ -13358,13 +13358,13 @@ static void has_basic_label(Code_Generator *generator, Node_Vector *sl)
         if (s->if_stmt.elsif_statements.data[j])
           has_basic_label(generator, &s->if_stmt.elsif_statements.data[j]->if_stmt.then_statements);
     }
-    else if (s->k == N_CS)
+    else if (s->kind == N_CS)
     {
       for (uint32_t j = 0; j < s->case_stmt.alternatives.count; j++)
         if (s->case_stmt.alternatives.data[j])
           has_basic_label(generator, &s->case_stmt.alternatives.data[j]->exception_handler.statements);
     }
-    else if (s->k == N_LP)
+    else if (s->kind == N_LP)
       has_basic_label(generator, &s->loop_stmt.statements);
   }
 }
@@ -13373,7 +13373,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
   FILE *o = generator->o;
   if (not n)
     return;
-  switch (n->k)
+  switch (n->kind)
   {
   case N_OD:
   {
@@ -13383,7 +13383,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       Symbol *s = id->symbol;
       if (s)
       {
-        if (s->k == 0 or s->k == 2)
+        if (s->kind == 0 or s->kind == 2)
         {
           Value_Kind k =
               s->type_info ? token_kind_to_value_kind(s->type_info)
@@ -13391,34 +13391,34 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                                 : VALUE_KIND_INTEGER);
           Type_Info *at = s->type_info ? type_canonical_concrete(s->type_info)
                                 : (n->object_decl.ty ? resolve_subtype(generator->sm, n->object_decl.ty) : 0);
-          if (s->k == 0 or s->k == 2)
+          if (s->kind == 0 or s->kind == 2)
           {
             Type_Info *bt = at;
-            while (bt and bt->k == TYPE_ARRAY and bt->element_type)
+            while (bt and bt->kind == TYPE_ARRAY and bt->element_type)
               bt = type_canonical_concrete(bt->element_type);
             int asz = -1;
-            if (n->object_decl.in and n->object_decl.in->k == N_AG and at and at->k == TYPE_ARRAY)
+            if (n->object_decl.in and n->object_decl.in->kind == N_AG and at and at->kind == TYPE_ARRAY)
               asz = (int) n->object_decl.in->aggregate.items.count;
 
             // Check for runtime-sized array FIRST (before checking resolved type bounds)
-            if (at and at->k == TYPE_ARRAY and n->object_decl.ty and n->object_decl.ty->k == N_ST)
+            if (at and at->kind == TYPE_ARRAY and n->object_decl.ty and n->object_decl.ty->kind == N_ST)
             {
               // Runtime-sized array: extract bounds from subtype indication
               Syntax_Node *ty_node = n->object_decl.ty;
               Syntax_Node *cn = ty_node->subtype_decl.constraint ? ty_node->subtype_decl.constraint : ty_node->subtype_decl.range_constraint;
               Syntax_Node *lo = 0, *hi = 0;
-              if (cn and cn->k == 27 and cn->constraint.constraints.count > 0 and cn->constraint.constraints.data[0] and cn->constraint.constraints.data[0]->k == 26)
+              if (cn and cn->kind == 27 and cn->constraint.constraints.count > 0 and cn->constraint.constraints.data[0] and cn->constraint.constraints.data[0]->kind == 26)
               {
                 Syntax_Node *rn = cn->constraint.constraints.data[0];
                 lo = rn->range.low_bound;
                 hi = rn->range.high_bound;
               }
-              else if (cn and cn->k == 27 and cn->constraint.range_spec)
+              else if (cn and cn->kind == 27 and cn->constraint.range_spec)
               {
                 lo = cn->constraint.range_spec->range.low_bound;
                 hi = cn->constraint.range_spec->range.high_bound;
               }
-              else if (cn and cn->k == N_RN)
+              else if (cn and cn->kind == N_RN)
               {
                 lo = cn->range.low_bound;
                 hi = cn->range.high_bound;
@@ -13426,7 +13426,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
               if (lo and hi)
               {
                 // Check if lower bound is a compile-time constant (FLB optimization)
-                bool has_fixed_lower_bound = (lo->k == N_INT);
+                bool has_fixed_lower_bound = (lo->kind == N_INT);
                 int64_t fixed_lb_value = has_fixed_lower_bound ? lo->integer_value : 0;
 
                 // Generate code to evaluate bounds at runtime
@@ -13435,7 +13435,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
 
                 // Calculate element count and size
                 int count_reg = new_temporary_register(generator);
-                int elem_size = bt->k == TYPE_INTEGER ? 8 : 4;
+                int elem_size = bt->kind == TYPE_INTEGER ? 8 : 4;
                 fprintf(o, "  %%t%d = sub i64 %%t%d, %%t%d\n", count_reg, hi_val.id, lo_val.id);
                 int count_plus_one = new_temporary_register(generator);
                 fprintf(o, "  %%t%d = add i64 %%t%d, 1\n", count_plus_one, count_reg);
@@ -13524,7 +13524,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                 }
               }
             }
-            else if (at and at->k == TYPE_ARRAY and at->low_bound == 0 and at->high_bound == -1 and asz < 0)
+            else if (at and at->kind == TYPE_ARRAY and at->low_bound == 0 and at->high_bound == -1 and asz < 0)
             {
               // Truly unconstrained array (no constraint)
               fprintf(
@@ -13534,7 +13534,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   s->scope,
                   s->elaboration_level);
             }
-            else if (at and at->k == TYPE_ARRAY and asz > 0)
+            else if (at and at->kind == TYPE_ARRAY and asz > 0)
             {
               // Array with aggregate initializer
               fprintf(
@@ -13546,7 +13546,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   asz,
                   ada_to_c_type_string(bt));
             }
-            else if (at and at->k == TYPE_ARRAY and at->low_bound != 0 and at->high_bound > 0 and at->high_bound >= at->low_bound)
+            else if (at and at->kind == TYPE_ARRAY and at->low_bound != 0 and at->high_bound > 0 and at->high_bound >= at->low_bound)
             {
               // Compile-time constrained array
               asz = (int) (at->high_bound - at->low_bound + 1);
@@ -13593,7 +13593,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     bool has_body = false;
     if (n->symbol)
       for (uint32_t i = 0; i < n->symbol->overloads.count; i++)
-        if (n->symbol->overloads.data[i]->k == N_PB)
+        if (n->symbol->overloads.data[i]->kind == N_PB)
         {
           has_body = true;
           break;
@@ -13612,8 +13612,8 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       if (pt)
       {
         Type_Info *ptc = type_canonical_concrete(pt);
-        is_unconstrained = ptc and ptc->k == TYPE_ARRAY and ptc->low_bound == 0 and ptc->high_bound == -1;
-        if (n->symbol and n->symbol->is_external and ptc and ptc->k == TYPE_ARRAY and not(p->parameter.mode & 2))
+        is_unconstrained = ptc and ptc->kind == TYPE_ARRAY and ptc->low_bound == 0 and ptc->high_bound == -1;
+        if (n->symbol and n->symbol->is_external and ptc and ptc->kind == TYPE_ARRAY and not(p->parameter.mode & 2))
           k = VALUE_KIND_INTEGER;
         else
           k = token_kind_to_value_kind(pt);
@@ -13643,7 +13643,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     bool has_body = false;
     if (n->symbol)
       for (uint32_t i = 0; i < n->symbol->overloads.count; i++)
-        if (n->symbol->overloads.data[i]->k == N_FB)
+        if (n->symbol->overloads.data[i]->kind == N_FB)
         {
           has_body = true;
           break;
@@ -13652,7 +13652,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       break;
     Type_Info *rt = sp->subprogram.return_type ? resolve_subtype(generator->sm, sp->subprogram.return_type) : 0;
     Type_Info *rtc = rt ? type_canonical_concrete(rt) : 0;
-    bool return_unconstrained = rtc and rtc->k == TYPE_ARRAY and rtc->low_bound == 0 and rtc->high_bound == -1;
+    bool return_unconstrained = rtc and rtc->kind == TYPE_ARRAY and rtc->low_bound == 0 and rtc->high_bound == -1;
     Value_Kind rk = return_unconstrained ? VALUE_KIND_POINTER : (rt ? token_kind_to_value_kind(rt) : VALUE_KIND_INTEGER);
     fprintf(o, "declare %s @\"%s\"(", value_llvm_type_string(rk), nb);
     for (uint32_t i = 0; i < sp->subprogram.parameters.count; i++)
@@ -13666,8 +13666,8 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       if (pt)
       {
         Type_Info *ptc = type_canonical_concrete(pt);
-        is_unconstrained = ptc and ptc->k == TYPE_ARRAY and ptc->low_bound == 0 and ptc->high_bound == -1;
-        if (n->symbol and n->symbol->is_external and ptc and ptc->k == TYPE_ARRAY and not(p->parameter.mode & 2))
+        is_unconstrained = ptc and ptc->kind == TYPE_ARRAY and ptc->low_bound == 0 and ptc->high_bound == -1;
+        if (n->symbol and n->symbol->is_external and ptc and ptc->kind == TYPE_ARRAY and not(p->parameter.mode & 2))
           k = VALUE_KIND_INTEGER;
         else
           k = token_kind_to_value_kind(pt);
@@ -13684,13 +13684,13 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     for (uint32_t i = 0; i < n->block.declarations.count; i++)
     {
       Syntax_Node *d = n->block.declarations.data[i];
-      if (d and d->k != N_PB and d->k != N_FB and d->k != N_PD and d->k != N_FD)
+      if (d and d->kind != N_PB and d->kind != N_FB and d->kind != N_PD and d->kind != N_FD)
         generate_declaration(generator, d);
     }
     for (uint32_t i = 0; i < n->block.declarations.count; i++)
     {
       Syntax_Node *d = n->block.declarations.data[i];
-      if (d and (d->k == N_PB or d->k == N_FB))
+      if (d and (d->kind == N_PB or d->kind == N_FB))
         generate_declaration(generator, d);
     }
     break;
@@ -13707,13 +13707,13 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     for (uint32_t i = 0; i < n->body.declarations.count; i++)
     {
       Syntax_Node *d = n->body.declarations.data[i];
-      if (d and d->k == N_PKB)
+      if (d and d->kind == N_PKB)
         generate_declaration(generator, d);
     }
     for (uint32_t i = 0; i < n->body.declarations.count; i++)
     {
       Syntax_Node *d = n->body.declarations.data[i];
-      if (d and (d->k == N_PB or d->k == N_FB))
+      if (d and (d->kind == N_PB or d->kind == N_FB))
         generate_declaration(generator, d);
     }
     has_basic_label(generator, &n->body.statements);
@@ -13764,7 +13764,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       int mx = 0;
       for (int h = 0; h < 4096; h++)
         for (Symbol *s = generator->sm->sy[h]; s; s = s->next)
-          if (s->k == 0 and s->elaboration_level >= 0 and s->elaboration_level > mx)
+          if (s->kind == 0 and s->elaboration_level >= 0 and s->elaboration_level > mx)
             mx = s->elaboration_level;
       if (mx == 0)
         fprintf(o, "  %%__frame = bitcast ptr %%__slnk to ptr\n");
@@ -13849,7 +13849,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     for (uint32_t i = 0; i < n->body.declarations.count; i++)
     {
       Syntax_Node *d = n->body.declarations.data[i];
-      if (d and d->k != N_PB and d->k != N_FB and d->k != N_PKB and d->k != N_PD and d->k != N_FD)
+      if (d and d->kind != N_PB and d->kind != N_FB and d->kind != N_PKB and d->kind != N_PD and d->kind != N_FD)
         generate_declaration(generator, d);
     }
     // Store local variable addresses in frame so nested procedures can access them
@@ -13861,7 +13861,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
         {
           // Match variables declared in this procedure's immediate child scope
           // Use parent pointer to ensure we only store variables belonging to this procedure
-          if (s->k == 0 and s->elaboration_level >= 0 and s->parent == n->symbol
+          if (s->kind == 0 and s->elaboration_level >= 0 and s->parent == n->symbol
               and s->scope == (uint32_t) (n->symbol->scope + 1)
               and s->level == generator->sm->lv)
           {
@@ -13900,7 +13900,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     for (uint32_t i = 0; i < n->body.declarations.count; i++)
     {
       Syntax_Node *d = n->body.declarations.data[i];
-      if (d and d->k == N_OD and d->object_decl.in)
+      if (d and d->kind == N_OD and d->object_decl.in)
       {
         for (uint32_t j = 0; j < d->object_decl.identifiers.count; j++)
         {
@@ -13911,16 +13911,16 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                                     : VALUE_KIND_INTEGER;
             Symbol *s = id->symbol;
             Type_Info *at = d->object_decl.ty ? resolve_subtype(generator->sm, d->object_decl.ty) : 0;
-            if (at and at->k == TYPE_RECORD and at->discriminants.count > 0 and d->object_decl.in and d->object_decl.in->ty)
+            if (at and at->kind == TYPE_RECORD and at->discriminants.count > 0 and d->object_decl.in and d->object_decl.in->ty)
             {
               Type_Info *it = type_canonical_concrete(d->object_decl.in->ty);
-              if (it and it->k == TYPE_RECORD and it->discriminants.count > 0)
+              if (it and it->kind == TYPE_RECORD and it->discriminants.count > 0)
               {
                 for (uint32_t di = 0; di < at->discriminants.count and di < it->discriminants.count; di++)
                 {
                   Syntax_Node *td = at->discriminants.data[di];
                   Syntax_Node *id_d = it->discriminants.data[di];
-                  if (td->k == N_DS and id_d->k == N_DS and td->parameter.default_value and td->parameter.default_value->k == N_INT)
+                  if (td->kind == N_DS and id_d->kind == N_DS and td->parameter.default_value and td->parameter.default_value->kind == N_INT)
                   {
                     int tdi = new_temporary_register(generator);
                     fprintf(o, "  %%t%d = add i64 0, %lld\n", tdi, (long long) td->parameter.default_value->integer_value);
@@ -14025,13 +14025,13 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     for (uint32_t i = 0; i < n->body.declarations.count; i++)
     {
       Syntax_Node *d = n->body.declarations.data[i];
-      if (d and d->k == N_PKB)
+      if (d and d->kind == N_PKB)
         generate_declaration(generator, d);
     }
     for (uint32_t i = 0; i < n->body.declarations.count; i++)
     {
       Syntax_Node *d = n->body.declarations.data[i];
-      if (d and (d->k == N_PB or d->k == N_FB))
+      if (d and (d->kind == N_PB or d->kind == N_FB))
         generate_declaration(generator, d);
     }
     has_basic_label(generator, &n->body.statements);
@@ -14084,7 +14084,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       int mx = 0;
       for (int h = 0; h < 4096; h++)
         for (Symbol *s = generator->sm->sy[h]; s; s = s->next)
-          if (s->k == 0 and s->elaboration_level >= 0 and s->elaboration_level > mx)
+          if (s->kind == 0 and s->elaboration_level >= 0 and s->elaboration_level > mx)
             mx = s->elaboration_level;
       if (mx == 0)
         fprintf(o, "  %%__frame = bitcast ptr %%__slnk to ptr\n");
@@ -14168,7 +14168,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     for (uint32_t i = 0; i < n->body.declarations.count; i++)
     {
       Syntax_Node *d = n->body.declarations.data[i];
-      if (d and d->k != N_PB and d->k != N_FB and d->k != N_PKB and d->k != N_PD and d->k != N_FD)
+      if (d and d->kind != N_PB and d->kind != N_FB and d->kind != N_PKB and d->kind != N_PD and d->kind != N_FD)
         generate_declaration(generator, d);
     }
     // Store local variable addresses in frame so nested procedures can access them (N_FB version)
@@ -14181,7 +14181,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
         {
           // Match variables declared in this procedure's immediate child scope
           // Note: parent pointer may not be set correctly, so we rely on scope/level matching
-          if (s->k == 0 and s->elaboration_level >= 0 and n->symbol and n->symbol->scope >= 0
+          if (s->kind == 0 and s->elaboration_level >= 0 and n->symbol and n->symbol->scope >= 0
               and s->scope == (uint32_t) (n->symbol->scope + 1)
               and s->level == generator->sm->lv)
           {
@@ -14219,7 +14219,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     for (uint32_t i = 0; i < n->body.declarations.count; i++)
     {
       Syntax_Node *d = n->body.declarations.data[i];
-      if (d and d->k == N_OD and d->object_decl.in)
+      if (d and d->kind == N_OD and d->object_decl.in)
       {
         for (uint32_t j = 0; j < d->object_decl.identifiers.count; j++)
         {
@@ -14230,16 +14230,16 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                                     : VALUE_KIND_INTEGER;
             Symbol *s = id->symbol;
             Type_Info *at = d->object_decl.ty ? resolve_subtype(generator->sm, d->object_decl.ty) : 0;
-            if (at and at->k == TYPE_RECORD and at->discriminants.count > 0 and d->object_decl.in and d->object_decl.in->ty)
+            if (at and at->kind == TYPE_RECORD and at->discriminants.count > 0 and d->object_decl.in and d->object_decl.in->ty)
             {
               Type_Info *it = type_canonical_concrete(d->object_decl.in->ty);
-              if (it and it->k == TYPE_RECORD and it->discriminants.count > 0)
+              if (it and it->kind == TYPE_RECORD and it->discriminants.count > 0)
               {
                 for (uint32_t di = 0; di < at->discriminants.count and di < it->discriminants.count; di++)
                 {
                   Syntax_Node *td = at->discriminants.data[di];
                   Syntax_Node *id_d = it->discriminants.data[di];
-                  if (td->k == N_DS and id_d->k == N_DS and td->parameter.default_value and td->parameter.default_value->k == N_INT)
+                  if (td->kind == N_DS and id_d->kind == N_DS and td->parameter.default_value and td->parameter.default_value->kind == N_INT)
                   {
                     int tdi = new_temporary_register(generator);
                     fprintf(o, "  %%t%d = add i64 0, %lld\n", tdi, (long long) td->parameter.default_value->integer_value);
@@ -14341,7 +14341,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
   break;
   case N_PKB:
     for (uint32_t i = 0; i < n->package_body.declarations.count; i++)
-      if (n->package_body.declarations.data[i] and (n->package_body.declarations.data[i]->k == N_PB or n->package_body.declarations.data[i]->k == N_FB))
+      if (n->package_body.declarations.data[i] and (n->package_body.declarations.data[i]->kind == N_PB or n->package_body.declarations.data[i]->kind == N_FB))
         generate_declaration(generator, n->package_body.declarations.data[i]);
     break;
   default:
@@ -14350,10 +14350,10 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
 }
 static void generate_expression_llvm(Code_Generator *generator, Syntax_Node *n)
 {
-  if (n and n->k == N_PKB and n->package_body.statements.count > 0)
+  if (n and n->kind == N_PKB and n->package_body.statements.count > 0)
   {
     Symbol *ps = symbol_find(generator->sm, n->package_body.name);
-    if (ps and ps->k == 11)
+    if (ps and ps->kind == 11)
       return;
     char nb[256];
     snprintf(nb, 256, "%.*s__elab", (int) n->package_body.name.length, n->package_body.name.string);
@@ -14636,7 +14636,7 @@ static void print_forward_declarations(Code_Generator *generator, Symbol_Manager
         for (uint32_t k = 0; k < s->overloads.count; k++)
         {
           Syntax_Node *n = s->overloads.data[k];
-          if (n and (n->k == N_PD or n->k == N_FD))
+          if (n and (n->kind == N_PD or n->kind == N_FD))
           {
             // External symbol - emit declare statement
             char nb[256];
@@ -14644,7 +14644,7 @@ static void print_forward_declarations(Code_Generator *generator, Symbol_Manager
             if (not add_declaration(generator, nb))
               continue;
             Syntax_Node *sp = n->body.subprogram_spec;
-            if (n->k == N_PD)
+            if (n->kind == N_PD)
             {
               // Procedure
               fprintf(generator->o, "declare void @\"%s\"(", nb);
@@ -14692,7 +14692,7 @@ static void print_forward_declarations(Code_Generator *generator, Symbol_Manager
         for (uint32_t k = 0; k < s->overloads.count; k++)
         {
           Syntax_Node *n = s->overloads.data[k];
-          if (n and (n->k == N_PB or n->k == N_FB))
+          if (n and (n->kind == N_PB or n->kind == N_FB))
           {
             Syntax_Node *sp = n->body.subprogram_spec;
             char nb[256];
@@ -14723,7 +14723,7 @@ static void write_ada_library_interface(Symbol_Manager *symbol_manager, const ch
   if (not cu or cu->compilation_unit.units.count == 0)
     return;
   Syntax_Node *u0 = cu->compilation_unit.units.data[0];
-  String_Slice nm = u0->k == N_PKS ? u0->package_spec.name : u0->k == N_PKB ? u0->package_body.name : N;
+  String_Slice nm = u0->kind == N_PKS ? u0->package_spec.name : u0->kind == N_PKB ? u0->package_body.name : N;
   char alp[520];
   if (nm.string and nm.length > 0)
   {
@@ -14767,7 +14767,7 @@ static void write_ada_library_interface(Symbol_Manager *symbol_manager, const ch
   {
     for (Symbol *s = symbol_manager->sy[h]; s; s = s->next)
     {
-      if ((s->k == 4 or s->k == 5) and s->parent and string_equal_ignore_case(s->parent->name, nm))
+      if ((s->kind == 4 or s->kind == 5) and s->parent and string_equal_ignore_case(s->parent->name, nm))
       {
         Syntax_Node *sp = s->overloads.count > 0 and s->overloads.data[0]->body.subprogram_spec ? s->overloads.data[0]->body.subprogram_spec : 0;
         char nb[256];
@@ -14786,7 +14786,7 @@ static void write_ada_library_interface(Symbol_Manager *symbol_manager, const ch
           }
         }
         fprintf(f, "X %s", nb);
-        if (s->k == 4)
+        if (s->kind == 4)
         {
           fprintf(f, " void");
           if (sp)
@@ -14815,7 +14815,7 @@ static void write_ada_library_interface(Symbol_Manager *symbol_manager, const ch
         fprintf(f, "\n");
       }
       else if (
-          (s->k == 0 or s->k == 2) and s->level == 0 and s->parent
+          (s->kind == 0 or s->kind == 2) and s->level == 0 and s->parent
           and string_equal_ignore_case(s->parent->name, nm))
       {
         char nb[256];
@@ -14884,7 +14884,7 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
   print_forward_declarations(&g, &sm);
   for (int h = 0; h < 4096; h++)
     for (Symbol *s = sm.sy[h]; s; s = s->next)
-      if ((s->k == 0 or s->k == 2) and s->level == 0 and s->parent and not s->is_external and s->overloads.count == 0)
+      if ((s->kind == 0 or s->kind == 2) and s->level == 0 and s->parent and not s->is_external and s->overloads.count == 0)
       {
         Value_Kind k = s->type_info ? token_kind_to_value_kind(s->type_info) : VALUE_KIND_INTEGER;
         char nb[256];
@@ -14895,7 +14895,7 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
         for (uint32_t j = 0; j < s->name.length; j++)
           nb[n++] = toupper(s->name.string[j]);
         nb[n] = 0;
-        if (s->k == 2 and s->definition and s->definition->k == N_STR)
+        if (s->kind == 2 and s->definition and s->definition->kind == N_STR)
         {
           uint32_t len = s->definition->string_value.length;
           fprintf(o, "@%s=linkonce_odr constant [%u x i8]c\"", nb, len + 1);
@@ -14916,7 +14916,7 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
         else
         {
           char iv[64];
-          if (k == VALUE_KIND_INTEGER and s->definition and s->definition->k == N_INT)
+          if (k == VALUE_KIND_INTEGER and s->definition and s->definition->kind == N_INT)
           {
             snprintf(iv, 64, "%ld", s->definition->integer_value);
           }
@@ -14936,16 +14936,16 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
           }
           Type_Info *at = s->type_info ? type_canonical_concrete(s->type_info) : 0;
           // For arrays, check if they're truly unconstrained (fat pointer) or have compile-time bounds
-          if (at and at->k == TYPE_ARRAY and at->low_bound == 0 and at->high_bound == -1)
+          if (at and at->kind == TYPE_ARRAY and at->low_bound == 0 and at->high_bound == -1)
           {
             // Unconstrained array - emit fat pointer global
             fprintf(
                 o,
                 "@%s=linkonce_odr %s {ptr,ptr} {ptr null,ptr null}\n",
                 nb,
-                s->k == 2 ? "constant" : "global");
+                s->kind == 2 ? "constant" : "global");
           }
-          else if (at and at->k == TYPE_ARRAY and at->low_bound != 0 and at->high_bound > 0 and at->high_bound >= at->low_bound)
+          else if (at and at->kind == TYPE_ARRAY and at->low_bound != 0 and at->high_bound > 0 and at->high_bound >= at->low_bound)
           {
             // Compile-time constrained array - emit typed array global
             int64_t asz = at->high_bound - at->low_bound + 1;
@@ -14953,7 +14953,7 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
                 o,
                 "@%s=linkonce_odr %s [%lld x %s] zeroinitializer\n",
                 nb,
-                s->k == 2 ? "constant" : "global",
+                s->kind == 2 ? "constant" : "global",
                 (long long) asz,
                 ada_to_c_type_string(at->element_type));
           }
@@ -14965,7 +14965,7 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
                 o,
                 "@%s=linkonce_odr %s %s %s\n",
                 nb,
-                s->k == 2 ? "constant" : "global",
+                s->kind == 2 ? "constant" : "global",
                 value_llvm_type_string(k),
                 iv);
           }
@@ -14988,7 +14988,7 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
   for (uint32_t ui = 0; ui < cu->compilation_unit.units.count; ui++)
   {
     Syntax_Node *u = cu->compilation_unit.units.data[ui];
-    if (u->k == N_PKB)
+    if (u->kind == N_PKB)
       generate_expression_llvm(&g, u);
   }
   for (uint32_t i = 0; i < sm.ib.count; i++)
@@ -15408,7 +15408,7 @@ int main(int ac, char **av)
   generate_runtime_type(&g);
   for (int h = 0; h < 4096; h++)
     for (Symbol *s = sm.sy[h]; s; s = s->next)
-      if ((s->k == 0 or s->k == 2) and (s->level == 0 or s->parent) and not(s->parent and lfnd(&sm, s->parent->name))
+      if ((s->kind == 0 or s->kind == 2) and (s->level == 0 or s->parent) and not(s->parent and lfnd(&sm, s->parent->name))
           and not s->is_external)
       {
         Value_Kind k = s->type_info ? token_kind_to_value_kind(s->type_info) : VALUE_KIND_INTEGER;
@@ -15425,7 +15425,7 @@ int main(int ac, char **av)
         }
         else
           snprintf(nb, 256, "%.*s", (int) s->name.length, s->name.string);
-        if (s->k == 2 and s->definition and s->definition->k == N_STR)
+        if (s->kind == 2 and s->definition and s->definition->kind == N_STR)
         {
           uint32_t len = s->definition->string_value.length;
           fprintf(o, "@%s=linkonce_odr constant [%u x i8]c\"", nb, len + 1);
@@ -15446,7 +15446,7 @@ int main(int ac, char **av)
         else
         {
           char iv[64];
-          if (k == VALUE_KIND_INTEGER and s->definition and s->definition->k == N_INT)
+          if (k == VALUE_KIND_INTEGER and s->definition and s->definition->kind == N_INT)
           {
             snprintf(iv, 64, "%ld", s->definition->integer_value);
           }
@@ -15466,16 +15466,16 @@ int main(int ac, char **av)
           }
           Type_Info *at = s->type_info ? type_canonical_concrete(s->type_info) : 0;
           // For arrays, check if they're truly unconstrained (fat pointer) or have compile-time bounds
-          if (at and at->k == TYPE_ARRAY and at->low_bound == 0 and at->high_bound == -1)
+          if (at and at->kind == TYPE_ARRAY and at->low_bound == 0 and at->high_bound == -1)
           {
             // Unconstrained array - emit fat pointer global
             fprintf(
                 o,
                 "@%s=linkonce_odr %s {ptr,ptr} {ptr null,ptr null}\n",
                 nb,
-                s->k == 2 ? "constant" : "global");
+                s->kind == 2 ? "constant" : "global");
           }
-          else if (at and at->k == TYPE_ARRAY and at->low_bound != 0 and at->high_bound > 0 and at->high_bound >= at->low_bound)
+          else if (at and at->kind == TYPE_ARRAY and at->low_bound != 0 and at->high_bound > 0 and at->high_bound >= at->low_bound)
           {
             // Compile-time constrained array - emit typed array global
             int64_t asz = at->high_bound - at->low_bound + 1;
@@ -15483,7 +15483,7 @@ int main(int ac, char **av)
                 o,
                 "@%s=linkonce_odr %s [%lld x %s] zeroinitializer\n",
                 nb,
-                s->k == 2 ? "constant" : "global",
+                s->kind == 2 ? "constant" : "global",
                 (long long) asz,
                 ada_to_c_type_string(at->element_type));
           }
@@ -15495,7 +15495,7 @@ int main(int ac, char **av)
                 o,
                 "@%s=linkonce_odr %s %s %s\n",
                 nb,
-                s->k == 2 ? "constant" : "global",
+                s->kind == 2 ? "constant" : "global",
                 value_llvm_type_string(k),
                 iv);
           }
@@ -15511,13 +15511,13 @@ int main(int ac, char **av)
   for (uint32_t ui = 0; ui < cu->compilation_unit.units.count; ui++)
   {
     Syntax_Node *u = cu->compilation_unit.units.data[ui];
-    if (u->k == N_PKB)
+    if (u->kind == N_PKB)
       generate_expression_llvm(&g, u);
   }
   for (uint32_t ui = 0; ui < cu->compilation_unit.units.count; ui++)
   {
     Syntax_Node *u = cu->compilation_unit.units.data[ui];
-    if (u->k == N_PB or u->k == N_FB)
+    if (u->kind == N_PB or u->kind == N_FB)
       generate_expression_llvm(&g, u);
   }
   for (uint32_t i = 0; i < sm.ib.count; i++)
@@ -15525,7 +15525,7 @@ int main(int ac, char **av)
   for (uint32_t ui = cu->compilation_unit.units.count; ui > 0; ui--)
   {
     Syntax_Node *u = cu->compilation_unit.units.data[ui - 1];
-    if (u->k == N_PB)
+    if (u->kind == N_PB)
     {
       Syntax_Node *sp = u->body.subprogram_spec;
       Symbol *ms = 0;
