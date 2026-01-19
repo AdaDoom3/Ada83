@@ -392,7 +392,7 @@ static _Noreturn void fatal_error(Source_Location l, const char *f, ...)
   fputc('\n', stderr);
   va_end(v);
   error_count++;
-  exit(1);
+  exit(error_count);
 }
 typedef enum
 {
