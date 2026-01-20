@@ -5194,7 +5194,33 @@ static Symbol *symbol_find_with_arity(Symbol_Manager *symbol_manager, String_Sli
   if (not cv.count)
     return 0;
   if (cv.count == 1)
-    return cv.data[0];
+  {
+    // Check arity even for single candidate when na >= 0
+    Symbol *c = cv.data[0];
+    if (na < 0)
+      return c;
+    // For functions/procedures, check if any overload matches the arity
+    if ((c->k == 4 or c->k == 5) and c->overloads.count > 0)
+    {
+      for (uint32_t j = 0; j < c->overloads.count; j++)
+      {
+        Syntax_Node *b = c->overloads.data[j];
+        if (b->k == N_PB or b->k == N_FB or b->k == N_PD or b->k == N_FD)
+        {
+          int np = b->body.subprogram_spec->subprogram.parameters.count;
+          if (np == na)
+            return c;
+        }
+      }
+      // No overload matched the arity
+      return 0;
+    }
+    // For type conversions (k==1), only match if na==1
+    if (c->k == 1)
+      return na == 1 ? c : 0;
+    // For other symbols, return as-is
+    return c;
+  }
   Symbol *br = 0;
   int bs = -1;
   for (uint32_t i = 0; i < cv.count; i++)
@@ -5830,6 +5856,16 @@ static bool type_covers(Type_Info *a, Type_Info *b)
   if (is_discrete(a) and is_discrete(b))
     return 1;
   if (is_real_type(a) and is_real_type(b))
+    return 1;
+  // Allow string comparisons - handle TY_STR directly and arrays of characters
+  Type_Info *ac = type_canonical_concrete(a);
+  Type_Info *bc = type_canonical_concrete(b);
+  // Check if both are string types (TY_STR or array of CHARACTER)
+  bool a_is_string = (a == TY_STR) || (ac && ac->k == TYPE_ARRAY && ac->element_type &&
+      (ac->element_type->k == TYPE_CHARACTER || ac->element_type == TY_CHAR));
+  bool b_is_string = (b == TY_STR) || (bc && bc->k == TYPE_ARRAY && bc->element_type &&
+      (bc->element_type->k == TYPE_CHARACTER || bc->element_type == TY_CHAR));
+  if (a_is_string && b_is_string)
     return 1;
   return 0;
 }
@@ -6502,7 +6538,19 @@ static bool types_compatible_for_operator(Token_Kind op, Type_Info *left, Type_I
 
     // Equality: compatible types (LRM 4.5.2)
     case T_EQ: case T_NE:
+    {
+      // Same types are compatible
+      if (lc == rc) return 1;
+      // Check for string types - any array of CHARACTER is compatible with STRING
+      bool l_is_string = (lc->k == TYPE_ARRAY && lc->element_type &&
+          (lc->element_type->k == TYPE_CHARACTER || lc->element_type == TY_CHAR));
+      bool r_is_string = (rc->k == TYPE_ARRAY && rc->element_type &&
+          (rc->element_type->k == TYPE_CHARACTER || rc->element_type == TY_CHAR));
+      if (l_is_string && r_is_string)
+        return 1;
+      // Fall back to general type coverage
       return type_covers(lc, rc) || type_covers(rc, lc);
+    }
 
     // Relational: scalar types (LRM 4.5.2)
     case T_LT: case T_LE: case T_GT: case T_GE:
@@ -9407,7 +9455,8 @@ static Syntax_Node *pks2(Symbol_Manager *symbol_manager, String_Slice nm, const 
 static void parse_package_specification(Symbol_Manager *symbol_manager, String_Slice nm, const char *src)
 {
   Symbol *ps = symbol_find(symbol_manager, nm);
-  if (ps and ps->k == 6)
+  // Only skip if we have a real package with a definition (not just a built-in placeholder)
+  if (ps and ps->k == 6 and ps->definition)
     return;
   pks2(symbol_manager, nm, src);
 }
@@ -9446,6 +9495,41 @@ static void symbol_manager_use_clauses(Symbol_Manager *symbol_manager, Syntax_No
                 d->object_decl.identifiers.data[k]->symbol->visibility |= 2;
                 sv(&symbol_manager->uv, d->object_decl.identifiers.data[k]->symbol);
               }
+          }
+          else if (d->k == N_PD)
+          {
+            // Procedure declaration - use d->symbol directly
+            if (d->symbol) { d->symbol->visibility |= 2; sv(&symbol_manager->uv, d->symbol); }
+          }
+          else if (d->k == N_FD)
+          {
+            // Function declaration - use d->symbol directly
+            if (d->symbol) { d->symbol->visibility |= 2; sv(&symbol_manager->uv, d->symbol); }
+          }
+          else if (d->k == N_TD)
+          {
+            // Type declaration - use d->symbol directly
+            if (d->symbol) {
+              d->symbol->visibility |= 2;
+              sv(&symbol_manager->uv, d->symbol);
+              // Also make enumeration literals visible
+              if (d->symbol->type_info && d->symbol->type_info->k == TYPE_ENUMERATION) {
+                for (uint32_t e = 0; e < d->symbol->type_info->enum_values.count; e++) {
+                  Symbol *esym = d->symbol->type_info->enum_values.data[e];
+                  if (esym) { esym->visibility |= 2; sv(&symbol_manager->uv, esym); }
+                }
+              }
+            }
+          }
+          else if (d->k == N_SD)
+          {
+            // Subtype declaration - use d->symbol directly
+            if (d->symbol) { d->symbol->visibility |= 2; sv(&symbol_manager->uv, d->symbol); }
+          }
+          else if (d->k == N_GD)
+          {
+            // Generic declaration - use d->symbol directly
+            if (d->symbol) { d->symbol->visibility |= 2; sv(&symbol_manager->uv, d->symbol); }
           }
           else if (d->symbol)
           {
@@ -15592,6 +15676,18 @@ static void generate_runtime_type(Code_Generator *generator)
   //     "define linkonce_odr void @__text_io_get_line(ptr %%b,ptr %%n){store i64 0,ptr %%n\nret "
   //     "void}\n");
   fprintf(o, "declare i32 @putchar(i32)\ndeclare i32 @getchar()\n");
+  // C file I/O functions for TEXT_IO
+  fprintf(o,
+      "declare ptr @fopen(ptr,ptr)\ndeclare i32 @fclose(ptr)\n"
+      "declare i32 @fputc(i32,ptr)\ndeclare i32 @fgetc(ptr)\n"
+      "declare i32 @ungetc(i32,ptr)\ndeclare i32 @feof(ptr)\n"
+      "declare i32 @fflush(ptr)\ndeclare i32 @remove(ptr)\n"
+      "declare i64 @ftell(ptr)\ndeclare i32 @fseek(ptr,i64,i32)\n");
+  // Standard file accessors for TEXT_IO
+  fprintf(o,
+      "define linkonce_odr ptr @__ada_stdin(){%%p=load ptr,ptr @stdin\nret ptr %%p}\n"
+      "define linkonce_odr ptr @__ada_stdout(){%%p=load ptr,ptr @stdout\nret ptr %%p}\n"
+      "define linkonce_odr ptr @__ada_stderr(){%%p=load ptr,ptr @stderr\nret ptr %%p}\n");
   fprintf(
       o,
       // __ada_image_enum returns a fat pointer {ptr, ptr} like __ada_image_int
