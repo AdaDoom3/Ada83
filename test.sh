@@ -22,7 +22,7 @@ T(){ local f=$1 v=${2:-} n=$(basename "$f" .ada);local q=${n:0:1};if [[ $n =~ [0
 E SKIP "$n" COMPILE "$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)";((++X[s]));((++X[sa]));return;fi
 if ! timeout 0.2 llvm-link -o test_results/$n.bc test_results/$n.ll rts/report.ll 2>acats_logs/$n.link;then
 E SKIP "$n" BIND "unresolved symbols";((++X[s]));((++X[sa]));return;fi
-timeout 1 lli test_results/$n.bc>acats_logs/$n.out 2>&1&&E PASS "$n" PASSED&&((++X[a]))||E FAIL "$n" FAILED "exit $?"&&((++X[f]))&&((++X[fa]));;
+timeout 1 lli test_results/$n.bc>acats_logs/$n.out 2>&1&&{ E PASS "$n" PASSED;((++X[a]));}||{ E FAIL "$n" FAILED "exit $?";((++X[f]));((++X[fa]));};;
 [bB])((++X[tb]));if timeout 0.2 ./ada83 -Iacats -Irts "$f" >acats_logs/$n.ll 2>acats_logs/$n.err;then E FAIL "$n" WRONG_ACCEPT "compiled when should reject";((++X[f]));((++X[fb]))
 else q=$(^ "$f");h=${q%:*};x=${q#*:};p=$(: $h $x);((p>=90))&&{ ((++X[b]));[[ $v == v ]]&&@ "$f"||E PASS "$n" REJECTED "$h/$x errors (${p}%)";}||{ ((++X[f]));((++X[fb]));E FAIL "$n" LOW_COVERAGE "$h/$x errors (${p}%)";};fi;;
 [cC])((++X[tc]));if ! timeout 0.2 ./ada83 -Iacats -Irts "$f">test_results/$n.ll 2>acats_logs/$n.err;then
@@ -39,18 +39,16 @@ E FAIL "$n" RUNTIME "exit $ec $(tail -1 acats_logs/$n.out 2>/dev/null|cut -c1-40
 grep -qi "capacity\|overflow\|limit" acats_logs/$n.err 2>/dev/null&&E N/A "$n" CAPACITY "compiler limit exceeded"&&((++X[s]))&&((++X[sd]))&&return
 E SKIP "$n" COMPILE "$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)";((++X[s]));((++X[sd]));return;fi
 timeout 0.2 llvm-link -o test_results/$n.bc test_results/$n.ll rts/report.ll 2>/dev/null||{ E SKIP "$n" BIND;((++X[s]));((++X[sd]));return;}
-timeout 1 lli test_results/$n.bc>acats_logs/$n.out 2>&1&&grep -q PASSED acats_logs/$n.out&&E PASS "$n" PASSED&&((++X[d]))||
-E FAIL "$n" FAILED "exact arithmetic check"&&((++X[f]))&&((++X[fd]));;
+timeout 1 lli test_results/$n.bc>acats_logs/$n.out 2>&1&&grep -q PASSED acats_logs/$n.out&&{ E PASS "$n" PASSED;((++X[d]));}||{ E FAIL "$n" FAILED "exact arithmetic check";((++X[f]));((++X[fd]));};;
 [eE])((++X[te]));timeout 0.2 ./ada83 -Iacats -Irts "$f">test_results/$n.ll 2>acats_logs/$n.err||{ E SKIP "$n" COMPILE "$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)";((++X[s]));((++X[se]));return;}
 timeout 0.2 llvm-link -o test_results/$n.bc test_results/$n.ll rts/report.ll 2>/dev/null||{ E SKIP "$n" BIND;((++X[s]));((++X[se]));return;}
 timeout 1 lli test_results/$n.bc>acats_logs/$n.out 2>&1
-grep -q "TENTATIVELY PASSED" acats_logs/$n.out 2>/dev/null&&E INSP "$n" INSPECT "requires manual verification"&&((++X[e]))||{
-grep -q PASSED acats_logs/$n.out 2>/dev/null&&E PASS "$n" PASSED&&((++X[e]))||E FAIL "$n" FAILED&&((++X[f]))&&((++X[fe]));};;
+grep -q "TENTATIVELY PASSED" acats_logs/$n.out 2>/dev/null&&{ E INSP "$n" INSPECT "requires manual verification";((++X[e]));}||{
+grep -q PASSED acats_logs/$n.out 2>/dev/null&&{ E PASS "$n" PASSED;((++X[e]));}||{ E FAIL "$n" FAILED;((++X[f]));((++X[fe]));};};;
 [lL])((++X[tl]));if timeout 0.2 ./ada83 -Iacats -Irts "$f">test_results/$n.ll 2>acats_logs/$n.err;then
 if timeout 0.2 llvm-link -o test_results/$n.bc test_results/$n.ll rts/report.bc 2>acats_logs/$n.link;then
-timeout 0.5 lli test_results/$n.bc>acats_logs/$n.out 2>&1&&E FAIL "$n" WRONG_EXEC "should not execute"&&((++X[f]))&&((++X[fl]))||
-E PASS "$n" BIND_REJECT "execution blocked"&&((++X[l]));else E PASS "$n" LINK_REJECT "binding failed as expected"&&((++X[l]));fi
-else E PASS "$n" COMPILE_REJECT "$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-40)"&&((++X[l]));fi;;
+timeout 0.5 lli test_results/$n.bc>acats_logs/$n.out 2>&1&&{ E FAIL "$n" WRONG_EXEC "should not execute";((++X[f]));((++X[fl]));}||{ E PASS "$n" BIND_REJECT "execution blocked";((++X[l]));};else { E PASS "$n" LINK_REJECT "binding failed as expected";((++X[l]));};fi
+else { E PASS "$n" COMPILE_REJECT "$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-40)";((++X[l]));};fi;;
 [fF])E SUPP "$n" FOUNDATION "support code";;*)E SKIP "$n" UNKNOWN "unrecognized test class '$q'"&&((++X[s]));;esac;}
 RR(){ local tot=${X[z]} pass=$((X[a]+X[b]+X[c]+X[d]+X[e]+X[l]));local af=${X[f]} as=${X[s]}
 printf "\n========================================\nRESULTS\n========================================\n\n"
