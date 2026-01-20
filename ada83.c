@@ -8931,14 +8931,31 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
   {
     Syntax_Node *sp = n->body.subprogram_spec;
     Type_Info *ft = type_new(TYPE_STRING, sp->subprogram.name);
-    Symbol *s = symbol_add_overload(symbol_manager, symbol_new(sp->subprogram.name, 4, ft, n));
+    Symbol *s = 0;
+    // For SEPARATE bodies, try to find existing symbol from body stub
+    if (n->k == N_PB and SEPARATE_PACKAGE.string)
+    {
+      Symbol *parent_sym = symbol_find(symbol_manager, SEPARATE_PACKAGE);
+      if (parent_sym)
+      {
+        // Look for existing procedure symbol in parent's scope
+        for (int h = 0; h < 4096 and not s; h++)
+          for (Symbol *es = symbol_manager->sy[h]; es and not s; es = es->next)
+            if (es->k == 4 and es->parent == parent_sym
+                and string_equal_ignore_case(es->name, sp->subprogram.name))
+              s = es;
+      }
+    }
+    if (not s)
+      s = symbol_add_overload(symbol_manager, symbol_new(sp->subprogram.name, 4, ft, n));
     nv(&s->overloads, n);
     n->symbol = s;
     n->body.elaboration_level = s->elaboration_level;
     // Set parent to enclosing procedure if nested, otherwise to package
-    s->parent = symbol_manager->pn > 0 ? symbol_manager->ps[symbol_manager->pn - 1]
-                : (symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk)
-                : (SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0));
+    if (not s->parent)
+      s->parent = symbol_manager->pn > 0 ? symbol_manager->ps[symbol_manager->pn - 1]
+                  : (symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk)
+                  : (SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0));
     // Recompute uid now that parent is set (uid includes parent name hash)
     symbol_update_uid(s);
     nv(&ft->operations, n);
@@ -8995,14 +9012,31 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     Type_Info *rt = resolve_subtype(symbol_manager, sp->subprogram.return_type);
     Type_Info *ft = type_new(TYPE_STRING, sp->subprogram.name);
     ft->element_type = rt;
-    Symbol *s = symbol_add_overload(symbol_manager, symbol_new(sp->subprogram.name, 5, ft, n));
+    Symbol *s = 0;
+    // For SEPARATE bodies, try to find existing symbol from body stub
+    if (SEPARATE_PACKAGE.string)
+    {
+      Symbol *parent_sym = symbol_find(symbol_manager, SEPARATE_PACKAGE);
+      if (parent_sym)
+      {
+        // Look for existing function symbol in parent's scope
+        for (int h = 0; h < 4096 and not s; h++)
+          for (Symbol *es = symbol_manager->sy[h]; es and not s; es = es->next)
+            if (es->k == 5 and es->parent == parent_sym
+                and string_equal_ignore_case(es->name, sp->subprogram.name))
+              s = es;
+      }
+    }
+    if (not s)
+      s = symbol_add_overload(symbol_manager, symbol_new(sp->subprogram.name, 5, ft, n));
     nv(&s->overloads, n);
     n->symbol = s;
     n->body.elaboration_level = s->elaboration_level;
     // Set parent to enclosing procedure if nested, otherwise to package
-    s->parent = symbol_manager->pn > 0 ? symbol_manager->ps[symbol_manager->pn - 1]
-                : (symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk)
-                : (SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0));
+    if (not s->parent)
+      s->parent = symbol_manager->pn > 0 ? symbol_manager->ps[symbol_manager->pn - 1]
+                  : (symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk)
+                  : (SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0));
     nv(&ft->operations, n);
     if (n->k == N_FB)
     {
@@ -9996,7 +10030,11 @@ static bool has_nested_function_in_stmts(Node_Vector *st)
 static bool has_nested_function(Node_Vector *dc, Node_Vector *st)
 {
   for (uint32_t i = 0; i < dc->count; i++)
-    if (dc->data[i] and (dc->data[i]->k == N_PB or dc->data[i]->k == N_FB))
+    // Check for procedure/function bodies, body stubs (N_PD/N_FD for IS SEPARATE),
+    // and generic instantiations (N_GINST) which create nested subprograms
+    if (dc->data[i] and (dc->data[i]->k == N_PB or dc->data[i]->k == N_FB
+                         or dc->data[i]->k == N_PD or dc->data[i]->k == N_FD
+                         or dc->data[i]->k == N_GINST))
       return 1;
   return has_nested_function_in_stmts(st);
 }
@@ -14948,7 +14986,13 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
           if (s->k == 0 and s->elaboration_level >= 0 and s->elaboration_level > mx)
             mx = s->elaboration_level;
       if (mx == 0)
-        fprintf(o, "  %%__frame = bitcast ptr %%__slnk to ptr\n");
+      {
+        // If level > 0, we have %__slnk to alias; otherwise allocate minimal frame
+        if (n->symbol and n->symbol->level > 0)
+          fprintf(o, "  %%__frame = bitcast ptr %%__slnk to ptr\n");
+        else
+          fprintf(o, "  %%__frame = alloca [1 x ptr]\n");
+      }
     }
     if (n->symbol and n->symbol->level > 0)
     {
@@ -15305,7 +15349,13 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
           if (s->k == 0 and s->elaboration_level >= 0 and s->elaboration_level > mx)
             mx = s->elaboration_level;
       if (mx == 0)
-        fprintf(o, "  %%__frame = bitcast ptr %%__slnk to ptr\n");
+      {
+        // If level > 0, we have %__slnk to alias; otherwise allocate minimal frame
+        if (n->symbol and n->symbol->level > 0)
+          fprintf(o, "  %%__frame = bitcast ptr %%__slnk to ptr\n");
+        else
+          fprintf(o, "  %%__frame = alloca [1 x ptr]\n");
+      }
     }
     if (n->symbol and n->symbol->level > 0)
     {
@@ -16552,6 +16602,13 @@ int main(int ac, char **av)
         if (s->elaboration_level == i and s->level == 0)
           for (uint32_t k = 0; k < s->overloads.count; k++)
             generate_declaration(&g, s->overloads.data[k]);
+  // Generate SEPARATE bodies (they have level > 0 but are top-level compilation units)
+  for (uint32_t ui = 0; ui < cu->compilation_unit.units.count; ui++)
+  {
+    Syntax_Node *u = cu->compilation_unit.units.data[ui];
+    if ((u->k == N_PB or u->k == N_FB) and u->symbol and u->symbol->level > 0)
+      generate_declaration(&g, u);
+  }
   for (uint32_t ui = 0; ui < cu->compilation_unit.units.count; ui++)
   {
     Syntax_Node *u = cu->compilation_unit.units.data[ui];
