@@ -3327,11 +3327,47 @@ static Syntax_Node *parse_statement_or_label(Parser *parser)
     slv(&parser->label_stack, label);
   }
   if (parser_at(parser, T_IF))
-    return parse_if(parser);
+  {
+    Syntax_Node *stmt = parse_if(parser);
+    if (label.string)
+    {
+      Syntax_Node *block = ND(BL, location);
+      block->block.label = label;
+      Node_Vector statements = {0};
+      nv(&statements, stmt);
+      block->block.statements = statements;
+      return block;
+    }
+    return stmt;
+  }
   if (parser_at(parser, T_CSE))
-    return parse_case(parser);
+  {
+    Syntax_Node *stmt = parse_case(parser);
+    if (label.string)
+    {
+      Syntax_Node *block = ND(BL, location);
+      block->block.label = label;
+      Node_Vector statements = {0};
+      nv(&statements, stmt);
+      block->block.statements = statements;
+      return block;
+    }
+    return stmt;
+  }
   if (parser_at(parser, T_SEL))
-    return parse_statement_list(parser);
+  {
+    Syntax_Node *stmt = parse_statement_list(parser);
+    if (label.string)
+    {
+      Syntax_Node *block = ND(BL, location);
+      block->block.label = label;
+      Node_Vector statements = {0};
+      nv(&statements, stmt);
+      block->block.statements = statements;
+      return block;
+    }
+    return stmt;
+  }
   if (parser_at(parser, T_LOOP) or parser_at(parser, T_WHI) or parser_at(parser, T_FOR))
     return parse_loop(parser, label);
   if (parser_at(parser, T_DEC) or parser_at(parser, T_BEG))
@@ -12604,7 +12640,8 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
       {
         // Use memcpy for array assignment
         int64_t count = st->high_bound - st->low_bound + 1;
-        int64_t elem_size = st->element_type->k == TYPE_INTEGER ? 8 : 4;
+        Type_Info *et = st->element_type ? type_canonical_concrete(st->element_type) : 0;
+        int64_t elem_size = et ? (et->k == TYPE_INTEGER ? 8 : (et->k == TYPE_CHARACTER or et->k == TYPE_BOOLEAN ? 1 : 4)) : 4;
         int64_t total_size = count * elem_size;
 
         // Get target address
@@ -14414,12 +14451,9 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   // FLB optimization: store only upper bound, lower bound is compile-time constant
                   fprintf(o, "  %%t%d = alloca i64\n", bounds_ptr);
                   fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", hi_val.id, bounds_ptr);
-
-                  // Mark this array type as having fixed lower bound in Type_Info
-                  if (at and at->low_bound != fixed_lb_value)
-                  {
-                    at->low_bound = fixed_lb_value;
-                  }
+                  // Note: Don't modify at->low_bound here - fat pointer storage means bounds
+                  // are stored at runtime, not in type_info. Assignment code uses type_info
+                  // bounds to distinguish fat pointer ({ptr,ptr}) from fixed array ([N x type]).
                 }
                 else
                 {
