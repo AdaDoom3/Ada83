@@ -15829,6 +15829,116 @@ static void generate_runtime_type(Code_Generator *generator)
       "define linkonce_odr ptr @__ada_stdin(){%%p=load ptr,ptr @stdin\nret ptr %%p}\n"
       "define linkonce_odr ptr @__ada_stdout(){%%p=load ptr,ptr @stdout\nret ptr %%p}\n"
       "define linkonce_odr ptr @__ada_stderr(){%%p=load ptr,ptr @stderr\nret ptr %%p}\n");
+  // Calendar package support - time functions
+  fprintf(o,
+      "declare i64 @time(ptr)\n"
+      "declare ptr @localtime(ptr)\n"
+      "declare i64 @mktime(ptr)\n");
+  // __ada_clock returns current time as seconds since epoch
+  fprintf(o,
+      "define linkonce_odr i64 @__ada_clock(){\n"
+      "  %%t = call i64 @time(ptr null)\n"
+      "  ret i64 %%t\n"
+      "}\n");
+  // __ada_year extracts year from time (tm_year + 1900)
+  fprintf(o,
+      "define linkonce_odr i32 @__ada_year(i64 %%t){\n"
+      "  %%tp = alloca i64\n"
+      "  store i64 %%t, ptr %%tp\n"
+      "  %%tm = call ptr @localtime(ptr %%tp)\n"
+      "  %%isnull = icmp eq ptr %%tm, null\n"
+      "  br i1 %%isnull, label %%null_case, label %%ok\n"
+      "ok:\n"
+      "  %%yptr = getelementptr i32, ptr %%tm, i32 5\n"
+      "  %%yr = load i32, ptr %%yptr\n"
+      "  %%year = add i32 %%yr, 1900\n"
+      "  ret i32 %%year\n"
+      "null_case:\n"
+      "  ret i32 1901\n"
+      "}\n");
+  // __ada_month extracts month from time (tm_mon + 1)
+  fprintf(o,
+      "define linkonce_odr i32 @__ada_month(i64 %%t){\n"
+      "  %%tp = alloca i64\n"
+      "  store i64 %%t, ptr %%tp\n"
+      "  %%tm = call ptr @localtime(ptr %%tp)\n"
+      "  %%isnull = icmp eq ptr %%tm, null\n"
+      "  br i1 %%isnull, label %%null_case, label %%ok\n"
+      "ok:\n"
+      "  %%mptr = getelementptr i32, ptr %%tm, i32 4\n"
+      "  %%mn = load i32, ptr %%mptr\n"
+      "  %%month = add i32 %%mn, 1\n"
+      "  ret i32 %%month\n"
+      "null_case:\n"
+      "  ret i32 1\n"
+      "}\n");
+  // __ada_day extracts day from time (tm_mday)
+  fprintf(o,
+      "define linkonce_odr i32 @__ada_day(i64 %%t){\n"
+      "  %%tp = alloca i64\n"
+      "  store i64 %%t, ptr %%tp\n"
+      "  %%tm = call ptr @localtime(ptr %%tp)\n"
+      "  %%isnull = icmp eq ptr %%tm, null\n"
+      "  br i1 %%isnull, label %%null_case, label %%ok\n"
+      "ok:\n"
+      "  %%dptr = getelementptr i32, ptr %%tm, i32 3\n"
+      "  %%day = load i32, ptr %%dptr\n"
+      "  ret i32 %%day\n"
+      "null_case:\n"
+      "  ret i32 1\n"
+      "}\n");
+  // __ada_seconds extracts seconds within day (hour*3600 + min*60 + sec)
+  fprintf(o,
+      "define linkonce_odr double @__ada_seconds(i64 %%t){\n"
+      "  %%tp = alloca i64\n"
+      "  store i64 %%t, ptr %%tp\n"
+      "  %%tm = call ptr @localtime(ptr %%tp)\n"
+      "  %%isnull = icmp eq ptr %%tm, null\n"
+      "  br i1 %%isnull, label %%null_case, label %%ok\n"
+      "ok:\n"
+      "  %%hptr = getelementptr i32, ptr %%tm, i32 2\n"
+      "  %%hour = load i32, ptr %%hptr\n"
+      "  %%mptr = getelementptr i32, ptr %%tm, i32 1\n"
+      "  %%min = load i32, ptr %%mptr\n"
+      "  %%sptr = getelementptr i32, ptr %%tm, i32 0\n"
+      "  %%sec = load i32, ptr %%sptr\n"
+      "  %%h3600 = mul i32 %%hour, 3600\n"
+      "  %%m60 = mul i32 %%min, 60\n"
+      "  %%hm = add i32 %%h3600, %%m60\n"
+      "  %%total = add i32 %%hm, %%sec\n"
+      "  %%result = sitofp i32 %%total to double\n"
+      "  ret double %%result\n"
+      "null_case:\n"
+      "  ret double 0.0\n"
+      "}\n");
+  // __ada_time_of creates time from year, month, day, seconds
+  fprintf(o,
+      "define linkonce_odr i64 @__ada_time_of(i32 %%year, i32 %%month, i32 %%day, double %%secs){\n"
+      "  %%tm = alloca [64 x i8]\n"
+      "  call void @llvm.memset.p0.i64(ptr %%tm, i8 0, i64 64, i1 false)\n"
+      "  %%yr = sub i32 %%year, 1900\n"
+      "  %%yptr = getelementptr i32, ptr %%tm, i32 5\n"
+      "  store i32 %%yr, ptr %%yptr\n"
+      "  %%mn = sub i32 %%month, 1\n"
+      "  %%mptr = getelementptr i32, ptr %%tm, i32 4\n"
+      "  store i32 %%mn, ptr %%mptr\n"
+      "  %%dptr = getelementptr i32, ptr %%tm, i32 3\n"
+      "  store i32 %%day, ptr %%dptr\n"
+      "  %%secsi = fptosi double %%secs to i32\n"
+      "  %%hour = sdiv i32 %%secsi, 3600\n"
+      "  %%rem1 = srem i32 %%secsi, 3600\n"
+      "  %%min = sdiv i32 %%rem1, 60\n"
+      "  %%sec = srem i32 %%rem1, 60\n"
+      "  %%hptr = getelementptr i32, ptr %%tm, i32 2\n"
+      "  store i32 %%hour, ptr %%hptr\n"
+      "  %%minptr = getelementptr i32, ptr %%tm, i32 1\n"
+      "  store i32 %%min, ptr %%minptr\n"
+      "  %%secptr = getelementptr i32, ptr %%tm, i32 0\n"
+      "  store i32 %%sec, ptr %%secptr\n"
+      "  %%result = call i64 @mktime(ptr %%tm)\n"
+      "  ret i64 %%result\n"
+      "}\n"
+      "declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)\n");
   fprintf(
       o,
       // __ada_image_enum returns a fat pointer {ptr, ptr} like __ada_image_int
