@@ -1680,6 +1680,7 @@ struct Generic_Template
   Node_Vector declarations;
   Syntax_Node *unit;
   Syntax_Node *body;
+  uint32_t scope;  // Scope where the generic was declared
 };
 static Syntax_Node *node_new(Node_Kind k, Source_Location l)
 {
@@ -5009,6 +5010,23 @@ static Symbol *symbol_add_overload(Symbol_Manager *symbol_manager, Symbol *s)
     symbol_manager->sst[symbol_manager->ssd++] = s;
   return s;
 }
+// Recompute uid after parent has been set (parent is set after symbol_new returns)
+static void symbol_update_uid(Symbol *s)
+{
+  if (not s)
+    return;
+  uint64_t u = string_hash(s->name);
+  if (s->parent)
+  {
+    u = u * 31 + string_hash(s->parent->name);
+    if (s->level > 0)
+    {
+      u = u * 31 + s->scope;
+      u = u * 31 + s->elaboration_level;
+    }
+  }
+  s->uid = (uint32_t) (u & 0xFFFFFFFF);
+}
 static Symbol *symbol_find(Symbol_Manager *symbol_manager, String_Slice nm)
 {
   Symbol *imm = 0, *pot = 0;
@@ -5166,13 +5184,22 @@ static void symbol_find_use(Symbol_Manager *symbol_manager, Symbol *s, String_Sl
 }
 static Generic_Template *generic_find(Symbol_Manager *symbol_manager, String_Slice nm)
 {
+  Generic_Template *best = 0;
+  uint32_t best_scope = 0;
   for (uint32_t i = 0; i < symbol_manager->gt.count; i++)
   {
     Generic_Template *g = symbol_manager->gt.data[i];
-    if (string_equal_ignore_case(g->name, nm))
-      return g;
+    // Match by name and prefer generics in the current scope or nearest enclosing scope
+    if (string_equal_ignore_case(g->name, nm) and g->scope <= symbol_manager->sc)
+    {
+      if (not best or g->scope > best_scope)
+      {
+        best = g;
+        best_scope = g->scope;
+      }
+    }
   }
-  return 0;
+  return best;
 }
 static int type_scope(Type_Info *, Type_Info *, Type_Info *);
 static Symbol *symbol_find_with_arity(Symbol_Manager *symbol_manager, String_Slice nm, int na, Type_Info *tx)
@@ -8424,12 +8451,15 @@ static Syntax_Node *generate_clone(Symbol_Manager *symbol_manager, Syntax_Node *
                                                          : N)
                                 : N;
     Generic_Template *g = generic_find(symbol_manager, nm);
-    if (not g)
+    // Only reuse an existing template if it's in the current scope
+    // Each DECLARE block gets its own generic template
+    if (not g or g->scope != symbol_manager->sc)
     {
       g = generic_type_new(nm);
       g->formal_parameters = n->generic_decl.formal_parameters;
       g->declarations = n->generic_decl.declarations;
       g->unit = n->generic_decl.unit;
+      g->scope = symbol_manager->sc;  // Record the scope where this generic is declared
       gv(&symbol_manager->gt, g);
       if (g->name.string and g->name.length)
       {
@@ -8909,6 +8939,8 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     s->parent = symbol_manager->pn > 0 ? symbol_manager->ps[symbol_manager->pn - 1]
                 : (symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk)
                 : (SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0));
+    // Recompute uid now that parent is set (uid includes parent name hash)
+    symbol_update_uid(s);
     nv(&ft->operations, n);
     if (n->k == N_PB)
     {
@@ -8919,7 +8951,10 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       symbol_compare_parameter(symbol_manager);
       n->body.parent = s;
       Generic_Template *gt = generic_find(symbol_manager, sp->subprogram.name);
-      if (gt)
+      // Only set gt->body if this is truly the generic's body, not just a procedure with the same name
+      // The body should be at scope very close to where the generic was declared (within +2 for nested scopes)
+      // This prevents unrelated procedures P from overwriting a generic P's body from an outer scope
+      if (gt and gt->scope + 2 >= symbol_manager->sc)
       {
         gt->body = n;  // Store the body in the generic template
         for (uint32_t i = 0; i < gt->formal_parameters.count; i++)
@@ -8978,7 +9013,8 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       symbol_compare_parameter(symbol_manager);
       n->body.parent = s;
       Generic_Template *gt = generic_find(symbol_manager, sp->subprogram.name);
-      if (gt)
+      // Only set gt->body if this is truly the generic's body, not just a function with the same name
+      if (gt and gt->scope + 2 >= symbol_manager->sc)
       {
         gt->body = n;  // Store the body in the generic template
         for (uint32_t i = 0; i < gt->formal_parameters.count; i++)
@@ -14832,8 +14868,19 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
   {
     generator->current_function = n;
     Syntax_Node *sp = n->body.subprogram_spec;
-    Generic_Template *gt = generic_find(generator->sm, sp->subprogram.name);
-    if (gt)
+    // Check if this is ANY generic template's body - if so, skip it
+    // We need to check all generics since scope tracking differs between resolution and codegen
+    int is_generic_body = 0;
+    for (uint32_t gi = 0; gi < generator->sm->gt.count; gi++)
+    {
+      Generic_Template *gti = generator->sm->gt.data[gi];
+      if (gti and gti->body == n)
+      {
+        is_generic_body = 1;
+        break;
+      }
+    }
+    if (is_generic_body)
     {
       generator->current_function = 0;
       break;
@@ -15177,8 +15224,18 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
   {
     generator->current_function = n;
     Syntax_Node *sp = n->body.subprogram_spec;
-    Generic_Template *gt = generic_find(generator->sm, sp->subprogram.name);
-    if (gt)
+    // Check if this is ANY generic template's body - if so, skip it
+    int is_generic_body = 0;
+    for (uint32_t gi = 0; gi < generator->sm->gt.count; gi++)
+    {
+      Generic_Template *gti = generator->sm->gt.data[gi];
+      if (gti and gti->body == n)
+      {
+        is_generic_body = 1;
+        break;
+      }
+    }
+    if (is_generic_body)
     {
       generator->current_function = 0;
       break;
