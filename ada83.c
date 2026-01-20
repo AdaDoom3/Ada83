@@ -8636,6 +8636,13 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
             bd->package_body.name = n->generic_inst.name;
             resolve_declaration(symbol_manager, bd);
             nv(&symbol_manager->ib, bd);
+            // Also add procedure/function bodies from within the package body
+            for (uint32_t di = 0; di < bd->package_body.declarations.count; di++)
+            {
+              Syntax_Node *pd = bd->package_body.declarations.data[di];
+              if (pd and (pd->k == N_PB or pd->k == N_FB))
+                nv(&symbol_manager->ib, pd);
+            }
           }
         }
       }
@@ -15779,6 +15786,13 @@ static void generate_expression_llvm(Code_Generator *generator, Syntax_Node *n)
     char nb[256];
     snprintf(nb, 256, "%.*s__elab", (int) n->package_body.name.length, n->package_body.name.string);
     fprintf(generator->o, "define void @%s() {\n", nb);
+    // Generate declarations for package body variables before statements
+    for (uint32_t i = 0; i < n->package_body.declarations.count; i++)
+    {
+      Syntax_Node *d = n->package_body.declarations.data[i];
+      if (d and d->k == N_OD)
+        generate_declaration(generator, d);
+    }
     for (uint32_t i = 0; i < n->package_body.statements.count; i++)
       generate_statement_sequence(generator, n->package_body.statements.data[i]);
     fprintf(generator->o, "  ret void\n}\n");
