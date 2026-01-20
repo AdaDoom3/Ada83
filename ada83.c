@@ -5014,6 +5014,7 @@ static Symbol *symbol_find(Symbol_Manager *symbol_manager, String_Slice nm)
   Symbol *imm = 0, *pot = 0;
   uint32_t h = symbol_hash(nm);
   for (Symbol *s = symbol_manager->sy[h]; s; s = s->next)
+  {
     if (string_equal_ignore_case(s->name, nm))
     {
       if (s->visibility & 1 and (not imm or s->scope > imm->scope))
@@ -5021,6 +5022,7 @@ static Symbol *symbol_find(Symbol_Manager *symbol_manager, String_Slice nm)
       if (s->visibility & 2 and not pot)
         pot = s;
     }
+  }
   if (imm)
     return imm;
   if (pot)
@@ -8445,8 +8447,9 @@ static Syntax_Node *generate_clone(Symbol_Manager *symbol_manager, Syntax_Node *
     if (g)
     {
       resolve_array_parameter(symbol_manager, &g->formal_parameters, &n->generic_inst.actual_parameters);
+      // For package generics, clone the spec first (body handled separately in N_GINST resolve)
       // For procedure/function generics, prefer cloning the body over the spec
-      Syntax_Node *to_clone = g->body ? g->body : g->unit;
+      Syntax_Node *to_clone = (g->unit && g->unit->k == N_PKS) ? g->unit : (g->body ? g->body : g->unit);
       Syntax_Node *inst = node_clone_substitute(to_clone, &g->formal_parameters, &n->generic_inst.actual_parameters);
       if (inst)
       {
@@ -8489,6 +8492,9 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     if (inst)
     {
       resolve_declaration(symbol_manager, inst);
+      // Link the instantiation node to the instantiated symbol
+      if (inst->symbol)
+        n->symbol = inst->symbol;
       if (inst->k == N_PB or inst->k == N_FB)
       {
         // Generic procedure/function instantiation - add body to instantiated bodies list
@@ -8918,6 +8924,11 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
         gt->body = n;  // Store the body in the generic template
         for (uint32_t i = 0; i < gt->formal_parameters.count; i++)
           resolve_declaration(symbol_manager, gt->formal_parameters.data[i]);
+        // Don't resolve generic body here - it will be resolved when instantiated
+        if (symbol_manager->pn > 0)
+          symbol_manager->pn--;
+        symbol_manager->lv--;
+        break;
       }
       for (uint32_t i = 0; i < sp->subprogram.parameters.count; i++)
       {
@@ -8972,6 +8983,11 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
         gt->body = n;  // Store the body in the generic template
         for (uint32_t i = 0; i < gt->formal_parameters.count; i++)
           resolve_declaration(symbol_manager, gt->formal_parameters.data[i]);
+        // Don't resolve generic body here - it will be resolved when instantiated
+        if (symbol_manager->pn > 0)
+          symbol_manager->pn--;
+        symbol_manager->lv--;
+        break;
       }
       for (uint32_t i = 0; i < sp->subprogram.parameters.count; i++)
       {
@@ -9844,13 +9860,31 @@ static int encode_symbol_name(char *b, int sz, Symbol *s, String_Slice nm, int p
         if (p and p->parameter.name.string)
           pnh = pnh * 31 + string_hash(p->parameter.name);
       }
+      // Include return type in hash to distinguish overloads with same parameters but different return types
+      unsigned long rth = 0;
+      if (sp->subprogram.return_type)
+      {
+        if (sp->subprogram.return_type->ty)
+          rth = type_hash(sp->subprogram.return_type->ty);
+        else if (sp->subprogram.return_type->k == N_ID and sp->subprogram.return_type->string_value.string)
+          rth = string_hash(sp->subprogram.return_type->string_value);
+      }
       if (n < sz - 1)
-        n += snprintf(b + n, sz - n, ".%d.%lx.%lu.%lx", pc, h % 0x10000, uid, pnh % 0x10000);
+        n += snprintf(b + n, sz - n, ".%d.%lx.%lu.%lx.%lx", pc, h % 0x10000, uid, pnh % 0x10000, rth % 0x10000);
     }
     else
     {
+      // For 0-parameter functions, include return type hash to distinguish overloads
+      unsigned long rth = 0;
+      if (sp and sp->subprogram.return_type)
+      {
+        if (sp->subprogram.return_type->ty)
+          rth = type_hash(sp->subprogram.return_type->ty);
+        else if (sp->subprogram.return_type->k == N_ID and sp->subprogram.return_type->string_value.string)
+          rth = string_hash(sp->subprogram.return_type->string_value);
+      }
       if (n < sz - 1)
-        n += snprintf(b + n, sz - n, ".%d.%lu.1", pc, uid);
+        n += snprintf(b + n, sz - n, ".%d.%lu.%lx", pc, uid, rth % 0x10000);
     }
     if (n >= sz)
       n = sz - 1;
