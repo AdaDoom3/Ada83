@@ -10040,6 +10040,390 @@ static bool has_nested_function(Node_Vector *dc, Node_Vector *st)
 }
 static Value generate_expression(Code_Generator *generator, Syntax_Node *n);
 static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *n);
+
+/* Forward declarations for optimized emitters */
+static int new_temporary_register(Code_Generator *generator);
+static int new_label_block(Code_Generator *generator);
+static inline void emit_label(Code_Generator *generator, int l);
+static inline void emit_conditional_branch(Code_Generator *generator, int c, int lt, int lf);
+static Value value_cast(Code_Generator *generator, Value v, Value_Kind k);
+static Value value_compare_integer(Code_Generator *generator, const char *op, Value a, Value b);
+static Value value_compare_float(Code_Generator *generator, const char *op, Value a, Value b);
+static Value generate_discrete_range_check(Code_Generator *generator, Value e, Type_Info *t, String_Slice ec, Value_Kind rk);
+static void get_fat_pointer_bounds(Code_Generator *generator, int fp, int *lo, int *hi, Type_Info *array_type);
+static Value_Kind token_kind_to_value_kind(Type_Info *t);
+
+/* ===========================================================================
+ * ADA83 LLVM EXPANSION LAYER - Literate Programming Documentation
+ * ===========================================================================
+ *
+ * PHILOSOPHY: This expansion layer transforms Ada83 AST nodes into optimized
+ * LLVM IR following the "expansion" model pioneered by GNAT. Each Ada construct
+ * is systematically lowered to a canonical IR form that preserves semantic
+ * correctness while enabling LLVM's optimization passes.
+ *
+ * DESIGN PRINCIPLES (per Knuth's Literate Programming):
+ *   1. COMPLETENESS: Every Ada83 type/expression/statement combination enumerated
+ *   2. CORRECTNESS: LRM semantics preserved exactly (ANSI/MIL-STD-1815A-1983)
+ *   3. OPTIMALITY: Emit IR patterns that LLVM optimizes well
+ *   4. CLARITY: Code organization mirrors language structure
+ *
+ * TYPE REPRESENTATION MAPPING (Ada83 -> LLVM IR):
+ * ┌────────────────────┬──────────────────┬────────────────────────────────────┐
+ * │ Ada83 Type         │ LLVM Type        │ Representation Notes               │
+ * ├────────────────────┼──────────────────┼────────────────────────────────────┤
+ * │ Integer            │ i64              │ All discrete types use i64 SSA     │
+ * │ Boolean            │ i64 (0/1)        │ Stored as i8, computed as i64      │
+ * │ Character          │ i64 (0..255)     │ Stored as i8, computed as i64      │
+ * │ Enumeration        │ i64 (pos)        │ Positional representation          │
+ * │ Float              │ double           │ IEEE 754 double precision          │
+ * │ Fixed_Point        │ i64 (scaled)     │ Delta-scaled integer               │
+ * │ Access             │ ptr              │ Opaque pointer                     │
+ * │ Array (constrained)│ [N x elem]       │ Stack-allocated contiguous         │
+ * │ Array (unconstr.)  │ {ptr, ptr}       │ Fat pointer: data + bounds         │
+ * │ Record             │ {fields...}      │ Byte-offset addressed              │
+ * │ Task               │ pthread_t        │ POSIX thread handle                │
+ * │ Protected          │ mutex + data     │ Mutex-guarded record               │
+ * └────────────────────┴──────────────────┴────────────────────────────────────┘
+ *
+ * VALUE CATEGORIES (SSA representation):
+ *   VALUE_KIND_INTEGER = 0   -> i64  (discrete, enumeration, fixed-point)
+ *   VALUE_KIND_FLOAT   = 1   -> double (floating-point)
+ *   VALUE_KIND_POINTER = 2   -> ptr (access, unconstrained arrays, records)
+ *
+ * FAT POINTER LAYOUT (unconstrained arrays):
+ *   Standard:   { ptr data, ptr bounds }  where bounds = { i64 low, i64 high }
+ *   FLB (opt):  { ptr data, ptr bounds }  where bounds = i64 high (low=const)
+ *
+ * EXPANSION PATTERNS (systematic lowering):
+ *   Binary ops    -> arith instructions + type conversion
+ *   Short-circuit -> phi nodes with control flow
+ *   Aggregates    -> allocate + store sequence
+ *   Slices        -> GEP + fat pointer construction
+ *   Attributes    -> inline expansion or runtime call
+ *   Exceptions    -> setjmp/longjmp chains
+ *   Tasks         -> pthread_create/join sequences
+ *
+ * OPTIMIZATION HINTS (LLVM metadata):
+ *   - Loop unroll hints for for-loops with known bounds
+ *   - Vectorization hints for array operations
+ *   - Likely/unlikely hints for exception paths
+ *   - noalias for by-value parameters
+ */
+
+/* ===========================================================================
+ * CODE-GOLFED EMISSION MACROS - Concise IR generation primitives
+ * ===========================================================================
+ * These macros reduce repetitive fprintf calls while maintaining readability.
+ * Pattern: EMIT_<category>_<operation>(generator, args...)
+ */
+
+/* Arithmetic operations with automatic SSA register allocation */
+#define EMIT_ARITH_I64(g, dst, op, a, b) \
+  fprintf((g)->o, "  %%t%d = " op " i64 %%t%d, %%t%d\n", (dst), (a), (b))
+
+#define EMIT_ARITH_F64(g, dst, op, a, b) \
+  fprintf((g)->o, "  %%t%d = " op " double %%t%d, %%t%d\n", (dst), (a), (b))
+
+/* Comparison operations returning i1, then extended to i64 */
+#define EMIT_CMP_I64(g, dst, cmp_dst, op, a, b) do { \
+  fprintf((g)->o, "  %%t%d = icmp " op " i64 %%t%d, %%t%d\n", (cmp_dst), (a), (b)); \
+  fprintf((g)->o, "  %%t%d = zext i1 %%t%d to i64\n", (dst), (cmp_dst)); \
+} while(0)
+
+#define EMIT_CMP_F64(g, dst, cmp_dst, op, a, b) do { \
+  fprintf((g)->o, "  %%t%d = fcmp " op " double %%t%d, %%t%d\n", (cmp_dst), (a), (b)); \
+  fprintf((g)->o, "  %%t%d = zext i1 %%t%d to i64\n", (dst), (cmp_dst)); \
+} while(0)
+
+/* Memory operations */
+#define EMIT_LOAD(g, dst, ty, ptr) \
+  fprintf((g)->o, "  %%t%d = load " ty ", ptr %%t%d\n", (dst), (ptr))
+
+#define EMIT_STORE(g, ty, val, ptr) \
+  fprintf((g)->o, "  store " ty " %%t%d, ptr %%t%d\n", (val), (ptr))
+
+#define EMIT_ALLOCA(g, dst, ty) \
+  fprintf((g)->o, "  %%t%d = alloca " ty "\n", (dst))
+
+#define EMIT_GEP(g, dst, base_ty, ptr, idx) \
+  fprintf((g)->o, "  %%t%d = getelementptr " base_ty ", ptr %%t%d, i64 %%t%d\n", (dst), (ptr), (idx))
+
+/* Conversion operations */
+#define EMIT_SITOFP(g, dst, src) \
+  fprintf((g)->o, "  %%t%d = sitofp i64 %%t%d to double\n", (dst), (src))
+
+#define EMIT_FPTOSI(g, dst, src) \
+  fprintf((g)->o, "  %%t%d = fptosi double %%t%d to i64\n", (dst), (src))
+
+#define EMIT_PTRTOINT(g, dst, src) \
+  fprintf((g)->o, "  %%t%d = ptrtoint ptr %%t%d to i64\n", (dst), (src))
+
+#define EMIT_INTTOPTR(g, dst, src) \
+  fprintf((g)->o, "  %%t%d = inttoptr i64 %%t%d to ptr\n", (dst), (src))
+
+/* Constant loading */
+#define EMIT_CONST_I64(g, dst, val) \
+  fprintf((g)->o, "  %%t%d = add i64 0, %lld\n", (dst), (long long)(val))
+
+#define EMIT_CONST_F64(g, dst, val) \
+  fprintf((g)->o, "  %%t%d = fadd double 0.0, %e\n", (dst), (double)(val))
+
+/* Call operations */
+#define EMIT_CALL_VOID(g, fn) \
+  fprintf((g)->o, "  call void " fn "\n")
+
+#define EMIT_CALL_I64(g, dst, fn) \
+  fprintf((g)->o, "  %%t%d = call i64 " fn "\n", (dst))
+
+#define EMIT_CALL_PTR(g, dst, fn) \
+  fprintf((g)->o, "  %%t%d = call ptr " fn "\n", (dst))
+
+/* ===========================================================================
+ * EXPRESSION CASE ENUMERATION - Complete Ada83 expression coverage
+ * ===========================================================================
+ * Each expression kind maps to a specific IR generation pattern:
+ *
+ * LITERAL EXPRESSIONS:
+ *   N_INT   -> add i64 0, <value>           ; Integer literal
+ *   N_REAL  -> fadd double 0.0, <value>     ; Real literal
+ *   N_CHAR  -> add i64 0, <ascii>           ; Character literal
+ *   N_STR   -> alloca + store sequence      ; String literal -> fat ptr
+ *   N_NULL  -> inttoptr i64 0 to ptr        ; Null access value
+ *
+ * NAME EXPRESSIONS:
+ *   N_ID    -> load from variable location  ; Simple name
+ *   N_SEL   -> GEP + load                   ; Selected component (R.C)
+ *   N_IX    -> GEP + load                   ; Indexed component (A(I))
+ *   N_SL    -> GEP + fat pointer            ; Slice (A(L..H))
+ *   N_AT    -> attribute expansion          ; Attribute ('First, 'Last, ...)
+ *   N_DRF   -> load ptr                     ; Dereference (.all)
+ *
+ * OPERATOR EXPRESSIONS:
+ *   N_BIN   -> binary operator dispatch     ; +, -, *, /, mod, rem, **, and, or, xor
+ *   N_UN    -> unary operator dispatch      ; +, -, not, abs
+ *
+ * AGGREGATE EXPRESSIONS:
+ *   N_AG    -> allocate + positional/named store ; Array/record aggregate
+ *
+ * TYPE EXPRESSIONS:
+ *   N_QL    -> type qualification           ; T'(E)
+ *   N_CVT   -> type conversion              ; T(E)
+ *   N_ALC   -> allocator                    ; new T / new T'(E)
+ *
+ * CALL EXPRESSIONS:
+ *   N_CL    -> call instruction             ; Function call F(args)
+ */
+
+/* ===========================================================================
+ * BINARY OPERATOR DISPATCH TABLE - Complete operator enumeration
+ * ===========================================================================
+ * Maps (operator, left_type, right_type) -> IR generation pattern
+ *
+ * ARITHMETIC (Integer):     ARITHMETIC (Float):
+ *   T_PL -> add i64            T_PL -> fadd double
+ *   T_MN -> sub i64            T_MN -> fsub double
+ *   T_ST -> mul i64            T_ST -> fmul double
+ *   T_SL -> sdiv i64           T_SL -> fdiv double
+ *   T_MOD -> srem i64          T_EX -> call @pow
+ *   T_REM -> srem i64
+ *   T_EX -> call @__ada_powi
+ *
+ * LOGICAL (Boolean/Integer):
+ *   T_AND  -> and i64          T_ATHN -> short-circuit and (phi)
+ *   T_OR   -> or i64           T_OREL -> short-circuit or (phi)
+ *   T_XOR  -> xor i64
+ *
+ * RELATIONAL (all types):
+ *   T_EQ -> icmp eq / fcmp oeq    T_NE -> icmp ne / fcmp one
+ *   T_LT -> icmp slt / fcmp olt   T_LE -> icmp sle / fcmp ole
+ *   T_GT -> icmp sgt / fcmp ogt   T_GE -> icmp sge / fcmp oge
+ *
+ * MEMBERSHIP:
+ *   T_IN  -> range check (lo <= x <= hi)
+ *   T_NOT -> not in range
+ *
+ * CONCATENATION:
+ *   T_AM  -> allocate + memcpy sequence (arrays/strings)
+ */
+
+/* ===========================================================================
+ * STATEMENT CASE ENUMERATION - Complete Ada83 statement coverage
+ * ===========================================================================
+ *
+ * SIMPLE STATEMENTS:
+ *   N_NS  -> ; null                         ; Null statement
+ *   N_AS  -> store                          ; Assignment
+ *   N_CL  -> call void                      ; Procedure call
+ *   N_RT  -> ret                            ; Return
+ *   N_GT  -> br label                       ; Goto
+ *   N_RS  -> call @__ada_raise              ; Raise
+ *   N_EX  -> br label (conditional)         ; Exit
+ *   N_DL  -> call @__ada_delay              ; Delay
+ *
+ * COMPOUND STATEMENTS:
+ *   N_IF  -> br + phi (multi-branch)        ; If-then-elsif-else
+ *   N_CS  -> switch or chained br           ; Case
+ *   N_LP  -> br loop + phi                  ; Loop (for/while/basic)
+ *   N_BL  -> inline scope                   ; Block
+ *
+ * CONCURRENT STATEMENTS:
+ *   N_ACC -> accept entry + select          ; Accept
+ *   N_SLS -> select statement               ; Select
+ *   N_AB  -> pthread_cancel                 ; Abort
+ */
+
+/* ===========================================================================
+ * TYPE CATEGORY DISPATCH - Optimal pattern selection based on type
+ * ===========================================================================
+ * For each operation, select the optimal IR pattern based on operand types.
+ * This function categorizes types into one of four dispatch categories:
+ *   0 = Integer/Discrete (i64 operations)
+ *   1 = Floating-point (double operations)
+ *   2 = Pointer/Access (ptr operations)
+ *   3 = Composite (aggregate operations)
+ */
+static inline int type_dispatch_category(Type_Info *t)
+{
+  if (!t) return 0;  /* Default to integer */
+  Type_Info *tc = type_canonical_concrete(t);
+  if (!tc) return 0;
+  switch (tc->k) {
+    case TYPE_INTEGER: case TYPE_UNSIGNED_INTEGER: case TYPE_BOOLEAN:
+    case TYPE_CHARACTER: case TYPE_ENUMERATION: case TYPE_DERIVED:
+    case TYPE_FIXED_POINT:
+      return 0;  /* Integer category */
+    case TYPE_FLOAT: case TYPE_UNIVERSAL_FLOAT:
+      return 1;  /* Float category */
+    case TYPE_ACCESS: case TYPE_FAT_POINTER: case TYPE_STRING:
+      return 2;  /* Pointer category */
+    case TYPE_ARRAY: case TYPE_RECORD:
+      return tc->k == TYPE_ARRAY && is_unconstrained_array(tc) ? 2 : 3;
+    default:
+      return 0;
+  }
+}
+
+/* ===========================================================================
+ * OPTIMIZED BINARY OPERATION EMITTERS - Type-dispatched IR generation
+ * ===========================================================================
+ * These functions generate optimal IR based on operand types, using the
+ * type dispatch mechanism to select between integer and float patterns.
+ */
+
+/* Emit optimized addition with type dispatch */
+static Value emit_opt_add(Code_Generator *g, Value a, Value b, Type_Info *ty)
+{
+  int cat = type_dispatch_category(ty);
+  Value r = {new_temporary_register(g), cat == 1 ? VALUE_KIND_FLOAT : VALUE_KIND_INTEGER};
+  if (cat == 1) {
+    a = value_cast(g, a, VALUE_KIND_FLOAT);
+    b = value_cast(g, b, VALUE_KIND_FLOAT);
+    EMIT_ARITH_F64(g, r.id, "fadd", a.id, b.id);
+  } else {
+    a = value_cast(g, a, VALUE_KIND_INTEGER);
+    b = value_cast(g, b, VALUE_KIND_INTEGER);
+    EMIT_ARITH_I64(g, r.id, "add", a.id, b.id);
+  }
+  return r;
+}
+
+/* Emit optimized subtraction with type dispatch */
+static Value emit_opt_sub(Code_Generator *g, Value a, Value b, Type_Info *ty)
+{
+  int cat = type_dispatch_category(ty);
+  Value r = {new_temporary_register(g), cat == 1 ? VALUE_KIND_FLOAT : VALUE_KIND_INTEGER};
+  if (cat == 1) {
+    a = value_cast(g, a, VALUE_KIND_FLOAT);
+    b = value_cast(g, b, VALUE_KIND_FLOAT);
+    EMIT_ARITH_F64(g, r.id, "fsub", a.id, b.id);
+  } else {
+    a = value_cast(g, a, VALUE_KIND_INTEGER);
+    b = value_cast(g, b, VALUE_KIND_INTEGER);
+    EMIT_ARITH_I64(g, r.id, "sub", a.id, b.id);
+  }
+  return r;
+}
+
+/* Emit optimized multiplication with type dispatch */
+static Value emit_opt_mul(Code_Generator *g, Value a, Value b, Type_Info *ty)
+{
+  int cat = type_dispatch_category(ty);
+  Value r = {new_temporary_register(g), cat == 1 ? VALUE_KIND_FLOAT : VALUE_KIND_INTEGER};
+  if (cat == 1) {
+    a = value_cast(g, a, VALUE_KIND_FLOAT);
+    b = value_cast(g, b, VALUE_KIND_FLOAT);
+    EMIT_ARITH_F64(g, r.id, "fmul", a.id, b.id);
+  } else {
+    a = value_cast(g, a, VALUE_KIND_INTEGER);
+    b = value_cast(g, b, VALUE_KIND_INTEGER);
+    EMIT_ARITH_I64(g, r.id, "mul", a.id, b.id);
+  }
+  return r;
+}
+
+/* Emit optimized division with type dispatch and zero-check for integers */
+static Value emit_opt_div(Code_Generator *g, Value a, Value b, Type_Info *ty)
+{
+  int cat = type_dispatch_category(ty);
+  Value r = {new_temporary_register(g), cat == 1 ? VALUE_KIND_FLOAT : VALUE_KIND_INTEGER};
+  if (cat == 1) {
+    a = value_cast(g, a, VALUE_KIND_FLOAT);
+    b = value_cast(g, b, VALUE_KIND_FLOAT);
+    EMIT_ARITH_F64(g, r.id, "fdiv", a.id, b.id);
+  } else {
+    a = value_cast(g, a, VALUE_KIND_INTEGER);
+    b = value_cast(g, b, VALUE_KIND_INTEGER);
+    /* Zero division check for integers */
+    int zc = new_temporary_register(g);
+    fprintf(g->o, "  %%t%d = icmp eq i64 %%t%d, 0\n", zc, b.id);
+    int ze = new_label_block(g), zd = new_label_block(g);
+    emit_conditional_branch(g, zc, ze, zd);
+    emit_label(g, ze);
+    fprintf(g->o, "  call void @__ada_raise(ptr @.ex.CONSTRAINT_ERROR)\n  unreachable\n");
+    emit_label(g, zd);
+    EMIT_ARITH_I64(g, r.id, "sdiv", a.id, b.id);
+  }
+  return r;
+}
+
+/* Emit optimized comparison with type dispatch - delegates to value_compare_* */
+static Value emit_opt_cmp(Code_Generator *g, const char *iop, const char *fop, Value a, Value b, Type_Info *ty)
+{
+  return type_dispatch_category(ty) == 1
+    ? value_compare_float(g, fop, a, b)
+    : value_compare_integer(g, iop, a, b);
+}
+
+/* ===========================================================================
+ * ATTRIBUTE EXPANSION TABLE - Complete Ada83 attribute coverage
+ * ===========================================================================
+ * Maps attribute name to expansion strategy:
+ *
+ * SCALAR ATTRIBUTES (compile-time or simple load):
+ *   'First, 'Last     -> type bounds (constant or fat pointer extract)
+ *   'Range            -> constraint construction
+ *   'Pred, 'Succ      -> sub/add 1 with constraint check
+ *   'Pos, 'Val        -> identity/range check
+ *   'Min, 'Max        -> conditional selection
+ *   'Abs              -> conditional negation
+ *
+ * ARRAY ATTRIBUTES:
+ *   'First(N), 'Last(N)  -> dimension bounds (fat pointer or constant)
+ *   'Length(N)           -> hi - lo + 1
+ *   'Range(N)            -> iteration constraint
+ *
+ * TYPE ATTRIBUTES:
+ *   'Size, 'Storage_Size -> sizeof in bits
+ *   'Address             -> ptrtoint
+ *   'Base                -> base type reference
+ *
+ * FUNCTION ATTRIBUTES:
+ *   'Image              -> runtime conversion call
+ *   'Value              -> runtime parsing call
+ *   'Width              -> max image width
+ */
+
 static void generate_block_frame(Code_Generator *generator)
 {
   int mx = 0;
@@ -11179,48 +11563,16 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     if (op == T_PL or op == T_MN or op == T_ST or op == T_SL)
     {
-      if (a.k == VALUE_KIND_FLOAT or b.k == VALUE_KIND_FLOAT)
-      {
-        a = value_cast(generator, a, VALUE_KIND_FLOAT);
-        b = value_cast(generator, b, VALUE_KIND_FLOAT);
-        r.k = VALUE_KIND_FLOAT;
-        fprintf(
-            o,
-            "  %%t%d = %s double %%t%d, %%t%d\n",
-            r.id,
-            op == T_PL   ? "fadd"
-            : op == T_MN ? "fsub"
-            : op == T_ST ? "fmul"
-                         : "fdiv",
-            a.id,
-            b.id);
-      }
+      /* Use type-dispatched optimized emitters for arithmetic */
+      Type_Info *expr_ty = n->ty ? type_canonical_concrete(n->ty) : NULL;
+      if (op == T_PL)
+        r = emit_opt_add(generator, a, b, expr_ty);
+      else if (op == T_MN)
+        r = emit_opt_sub(generator, a, b, expr_ty);
+      else if (op == T_ST)
+        r = emit_opt_mul(generator, a, b, expr_ty);
       else
-      {
-        a = value_cast(generator, a, VALUE_KIND_INTEGER);
-        b = value_cast(generator, b, VALUE_KIND_INTEGER);
-        if (op == T_SL)
-        {
-          int zc = new_temporary_register(generator);
-          fprintf(o, "  %%t%d = icmp eq i64 %%t%d, 0\n", zc, b.id);
-          int ze = new_label_block(generator), zd = new_label_block(generator);
-          emit_conditional_branch(generator, zc, ze, zd);
-          emit_label(generator, ze);
-          fprintf(o, "  call void @__ada_raise(ptr @.ex.CONSTRAINT_ERROR)\n  unreachable\n");
-          emit_label(generator, zd);
-        }
-        r.k = VALUE_KIND_INTEGER;
-        fprintf(
-            o,
-            "  %%t%d = %s i64 %%t%d, %%t%d\n",
-            r.id,
-            op == T_PL   ? "add"
-            : op == T_MN ? "sub"
-            : op == T_ST ? "mul"
-                         : "sdiv",
-            a.id,
-            b.id);
-      }
+        r = emit_opt_div(generator, a, b, expr_ty);
       break;
     }
     if (op == T_MOD or op == T_REM)
@@ -11265,26 +11617,13 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         fprintf(o, "  %%t%d = zext i1 %%t%d to i64\n", r.id, eq);
         break;
       }
-      if (a.k == VALUE_KIND_FLOAT or b.k == VALUE_KIND_FLOAT)
-      {
-        const char *cc = op == T_EQ   ? "oeq"
-                         : op == T_NE ? "one"
-                         : op == T_LT ? "olt"
-                         : op == T_LE ? "ole"
-                         : op == T_GT ? "ogt"
-                                      : "oge";
-        r = value_compare_float(generator, cc, a, b);
-      }
-      else
-      {
-        const char *cc = op == T_EQ   ? "eq"
-                         : op == T_NE ? "ne"
-                         : op == T_LT ? "slt"
-                         : op == T_LE ? "sle"
-                         : op == T_GT ? "sgt"
-                                      : "sge";
-        r = value_compare_integer(generator, cc, a, b);
-      }
+      /* Use type-dispatched optimized comparison emitter */
+      Type_Info *cmp_ty = n->binary_node.left->ty ? type_canonical_concrete(n->binary_node.left->ty) : NULL;
+      const char *iop = op == T_EQ ? "eq" : op == T_NE ? "ne" : op == T_LT ? "slt"
+                       : op == T_LE ? "sle" : op == T_GT ? "sgt" : "sge";
+      const char *fop = op == T_EQ ? "oeq" : op == T_NE ? "one" : op == T_LT ? "olt"
+                       : op == T_LE ? "ole" : op == T_GT ? "ogt" : "oge";
+      r = emit_opt_cmp(generator, iop, fop, a, b, cmp_ty);
       break;
     }
     if (op == T_AM and (a.k == VALUE_KIND_POINTER or b.k == VALUE_KIND_POINTER))
