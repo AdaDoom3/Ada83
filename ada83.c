@@ -8361,7 +8361,9 @@ static Syntax_Node *generate_clone(Symbol_Manager *symbol_manager, Syntax_Node *
     if (g)
     {
       resolve_array_parameter(symbol_manager, &g->formal_parameters, &n->generic_inst.actual_parameters);
-      Syntax_Node *inst = node_clone_substitute(g->unit, &g->formal_parameters, &n->generic_inst.actual_parameters);
+      // For procedure/function generics, prefer cloning the body over the spec
+      Syntax_Node *to_clone = g->body ? g->body : g->unit;
+      Syntax_Node *inst = node_clone_substitute(to_clone, &g->formal_parameters, &n->generic_inst.actual_parameters);
       if (inst)
       {
         if (inst->k == N_PB or inst->k == N_FB or inst->k == N_PD or inst->k == N_FD)
@@ -8403,7 +8405,12 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     if (inst)
     {
       resolve_declaration(symbol_manager, inst);
-      if (inst->k == N_PKS)
+      if (inst->k == N_PB or inst->k == N_FB)
+      {
+        // Generic procedure/function instantiation - add body to instantiated bodies list
+        nv(&symbol_manager->ib, inst);
+      }
+      else if (inst->k == N_PKS)
       {
         Generic_Template *g = generic_find(symbol_manager, n->generic_inst.generic_name);
         if (g and g->body)
@@ -8823,8 +8830,11 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       n->body.parent = s;
       Generic_Template *gt = generic_find(symbol_manager, sp->subprogram.name);
       if (gt)
+      {
+        gt->body = n;  // Store the body in the generic template
         for (uint32_t i = 0; i < gt->formal_parameters.count; i++)
           resolve_declaration(symbol_manager, gt->formal_parameters.data[i]);
+      }
       for (uint32_t i = 0; i < sp->subprogram.parameters.count; i++)
       {
         Syntax_Node *p = sp->subprogram.parameters.data[i];
@@ -8874,8 +8884,11 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       n->body.parent = s;
       Generic_Template *gt = generic_find(symbol_manager, sp->subprogram.name);
       if (gt)
+      {
+        gt->body = n;  // Store the body in the generic template
         for (uint32_t i = 0; i < gt->formal_parameters.count; i++)
           resolve_declaration(symbol_manager, gt->formal_parameters.data[i]);
+      }
       for (uint32_t i = 0; i < sp->subprogram.parameters.count; i++)
       {
         Syntax_Node *p = sp->subprogram.parameters.data[i];
@@ -9580,6 +9593,7 @@ static const char *ada_to_c_type_string(Type_Info *t)
   {
   case TYPE_BOOLEAN:
   case TYPE_CHARACTER:
+    return "i8";  // Always use i8 for boolean and character types
   case TYPE_INTEGER:
   case TYPE_UNSIGNED_INTEGER:
   case TYPE_ENUMERATION:
@@ -15345,7 +15359,14 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
 }
 static void generate_expression_llvm(Code_Generator *generator, Syntax_Node *n)
 {
-  if (n and n->k == N_PKB and n->package_body.statements.count > 0)
+  if (not n)
+    return;
+  if (n->k == N_PB or n->k == N_FB)
+  {
+    // Generate instantiated procedure/function body
+    generate_declaration(generator, n);
+  }
+  else if (n->k == N_PKB and n->package_body.statements.count > 0)
   {
     Symbol *ps = symbol_find(generator->sm, n->package_body.name);
     if (ps and ps->k == 11)
@@ -16316,12 +16337,7 @@ int main(int ac, char **av)
     if (u->k == N_PKB)
       generate_expression_llvm(&g, u);
   }
-  for (uint32_t ui = 0; ui < cu->compilation_unit.units.count; ui++)
-  {
-    Syntax_Node *u = cu->compilation_unit.units.data[ui];
-    if (u->k == N_PB or u->k == N_FB)
-      generate_expression_llvm(&g, u);
-  }
+  // Process instantiated generic bodies from sm.ib
   for (uint32_t i = 0; i < sm.ib.count; i++)
     generate_expression_llvm(&g, sm.ib.data[i]);
   for (uint32_t ui = cu->compilation_unit.units.count; ui > 0; ui--)
