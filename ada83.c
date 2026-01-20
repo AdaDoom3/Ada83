@@ -28,6 +28,16 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+// Safe ctype wrappers - ctype functions require unsigned char or EOF to avoid UB
+#define ISALPHA(c) isalpha((unsigned char)(c))
+#define ISALNUM(c) isalnum((unsigned char)(c))
+#define ISDIGIT(c) isdigit((unsigned char)(c))
+#define ISXDIGIT(c) isxdigit((unsigned char)(c))
+#define ISSPACE(c) isspace((unsigned char)(c))
+#define TOLOWER(c) ((char)tolower((unsigned char)(c)))
+#define TOUPPER(c) ((char)toupper((unsigned char)(c)))
+
 static const char *include_paths[32];
 static int include_path_count = 0;
 typedef struct
@@ -317,7 +327,7 @@ static bool string_equal_ignore_case(String_Slice a, String_Slice b)
   if (a.length != b.length)
     return 0;
   for (uint32_t i = 0; i < a.length; i++)
-    if (tolower(a.string[i]) != tolower(b.string[i]))
+    if (TOLOWER(a.string[i]) != TOLOWER(b.string[i]))
       return 0;
   return 1;
 }
@@ -328,7 +338,7 @@ static char *string_to_lowercase(String_Slice s)
   char *p = b[i++ & 7];
   uint32_t n = s.length < 255 ? s.length : 255;
   for (uint32_t j = 0; j < n; j++)
-    p[j] = tolower(s.string[j]);
+    p[j] = TOLOWER(s.string[j]);
   p[n] = 0;
   return p;
 }
@@ -336,7 +346,7 @@ static uint64_t string_hash(String_Slice s)
 {
   uint64_t h = 14695981039346656037ULL;
   for (uint32_t i = 0; i < s.length; i++)
-    h = (h ^ (uint8_t) tolower(s.string[i])) * 1099511628211ULL;
+    h = (h ^ (uint8_t) TOLOWER(s.string[i])) * 1099511628211ULL;
   return h;
 }
 // Levenshtein distance for "did you mean" suggestions
@@ -349,7 +359,7 @@ static int edit_distance(const char *s1, int len1, const char *s2, int len2)
   for (int i = 1; i <= len1; i++)
     for (int j = 1; j <= len2; j++)
     {
-      int cost = (tolower(s1[i-1]) != tolower(s2[j-1]));
+      int cost = (TOLOWER(s1[i-1]) != TOLOWER(s2[j-1]));
       int del = d[i-1][j] + 1;
       int ins = d[i][j-1] + 1;
       int sub = d[i-1][j-1] + cost;
@@ -633,11 +643,11 @@ static Token scan_identifier(Lexer *lexer)
 {
   Source_Location location = {lexer->line_number, lexer->column, lexer->filename};
   const char *start = lexer->current;
-  while (isalnum(peek(lexer, 0)) or peek(lexer, 0) == '_')
+  while (ISALNUM(peek(lexer, 0)) or peek(lexer, 0) == '_')
     advance_character(lexer);
   String_Slice literal_text = {start, lexer->current - start};
   Token_Kind token_kind = keyword_lookup(literal_text);
-  if (token_kind != T_ID and lexer->current < lexer->end and (isalnum(*lexer->current) or *lexer->current == '_'))
+  if (token_kind != T_ID and lexer->current < lexer->end and (ISALNUM(*lexer->current) or *lexer->current == '_'))
     return make_token(T_ERR, location, STRING_LITERAL("kw+x"));
   return make_token(token_kind, location, literal_text);
 }
@@ -649,9 +659,9 @@ static Token scan_number_literal(Lexer *lexer)
   int base = 10;
   bool is_real = false, based_exponent = false, has_dot = false, has_exp = false;
   char base_delimiter = 0;
-  while (isdigit(peek(lexer, 0)) or peek(lexer, 0) == '_')
+  while (ISDIGIT(peek(lexer, 0)) or peek(lexer, 0) == '_')
     advance_character(lexer);
-  if (peek(lexer, 0) == '#' or (peek(lexer, 0) == ':' and isxdigit(peek(lexer, 1))))
+  if (peek(lexer, 0) == '#' or (peek(lexer, 0) == ':' and ISXDIGIT(peek(lexer, 1))))
   {
     base_delimiter = peek(lexer, 0);
     const char *base_end = lexer->current;
@@ -664,13 +674,13 @@ static Token scan_number_literal(Lexer *lexer)
     base_pointer[base_index] = 0;
     base = atoi(base_pointer);
     mantissa_start = lexer->current;
-    while (isxdigit(peek(lexer, 0)) or peek(lexer, 0) == '_')
+    while (ISXDIGIT(peek(lexer, 0)) or peek(lexer, 0) == '_')
       advance_character(lexer);
     if (peek(lexer, 0) == '.')
     {
       is_real = true;
       advance_character(lexer);
-      while (isxdigit(peek(lexer, 0)) or peek(lexer, 0) == '_')
+      while (ISXDIGIT(peek(lexer, 0)) or peek(lexer, 0) == '_')
         advance_character(lexer);
     }
     if (peek(lexer, 0) == base_delimiter)
@@ -678,14 +688,14 @@ static Token scan_number_literal(Lexer *lexer)
       mantissa_end = lexer->current;
       advance_character(lexer);
     }
-    if (tolower(peek(lexer, 0)) == 'e')
+    if (TOLOWER(peek(lexer, 0)) == 'e')
     {
       based_exponent = true;
       advance_character(lexer);
       if (peek(lexer, 0) == '+' or peek(lexer, 0) == '-')
         advance_character(lexer);
       exponent_start = lexer->current;
-      while (isdigit(peek(lexer, 0)) or peek(lexer, 0) == '_')
+      while (ISDIGIT(peek(lexer, 0)) or peek(lexer, 0) == '_')
         advance_character(lexer);
     }
   }
@@ -693,26 +703,26 @@ static Token scan_number_literal(Lexer *lexer)
   {
     if (peek(lexer, 0) == '.')
     {
-      if (peek(lexer, 1) != '.' and not isalpha(peek(lexer, 1)))
+      if (peek(lexer, 1) != '.' and not ISALPHA(peek(lexer, 1)))
       {
         is_real = true;
         has_dot = true;
         advance_character(lexer);
-        while (isdigit(peek(lexer, 0)) or peek(lexer, 0) == '_')
+        while (ISDIGIT(peek(lexer, 0)) or peek(lexer, 0) == '_')
           advance_character(lexer);
       }
     }
-    if (tolower(peek(lexer, 0)) == 'e')
+    if (TOLOWER(peek(lexer, 0)) == 'e')
     {
       has_exp = true;
       advance_character(lexer);
       if (peek(lexer, 0) == '+' or peek(lexer, 0) == '-')
         advance_character(lexer);
-      while (isdigit(peek(lexer, 0)) or peek(lexer, 0) == '_')
+      while (ISDIGIT(peek(lexer, 0)) or peek(lexer, 0) == '_')
         advance_character(lexer);
     }
   }
-  if (isalpha(peek(lexer, 0)))
+  if (ISALPHA(peek(lexer, 0)))
     return make_token(T_ERR, location, STRING_LITERAL("num+alpha"));
   Token token =
       make_token(based_exponent ? (is_real ? T_REAL : T_INT) : (is_real ? T_REAL : T_INT), location, (String_Slice){start, lexer->current - start});
@@ -866,8 +876,11 @@ static Token scan_character_literal(Lexer *lexer)
   if (peek(lexer, 0) != '\'')
     return make_token(T_ERR, location, STRING_LITERAL("uc"));
   advance_character(lexer);
-  Token token = make_token(T_CHAR, location, (String_Slice){&character, 1});
-  token.integer_value = character;
+  // Allocate from arena to avoid dangling pointer to stack variable
+  char *ch = arena_allocate(1);
+  *ch = character;
+  Token token = make_token(T_CHAR, location, (String_Slice){ch, 1});
+  token.integer_value = (unsigned char) character;
   return token;
 }
 static Token scan_string_literal(Lexer *lexer)
@@ -875,9 +888,9 @@ static Token scan_string_literal(Lexer *lexer)
   Source_Location location = {lexer->line_number, lexer->column, lexer->filename};
   char delimiter = peek(lexer, 0);
   advance_character(lexer);
-  const char *start = lexer->current;
-  (void) start;
-  char *buffer = arena_allocate(256), *buffer_pointer = buffer;
+  // Dynamic buffer: start with 256, grow as needed
+  int capacity = 256;
+  char *buffer = arena_allocate(capacity);
   int length = 0;
   while (peek(lexer, 0))
   {
@@ -887,18 +900,28 @@ static Token scan_string_literal(Lexer *lexer)
       {
         advance_character(lexer);
         advance_character(lexer);
-        if (length < 255)
-          *buffer_pointer++ = delimiter;
-        length++;
+        if (length >= capacity - 1)
+        {
+          char *nb = arena_allocate(capacity * 2);
+          memcpy(nb, buffer, length);
+          buffer = nb;
+          capacity *= 2;
+        }
+        buffer[length++] = delimiter;
       }
       else
         break;
     }
     else
     {
-      if (length < 255)
-        *buffer_pointer++ = peek(lexer, 0);
-      length++;
+      if (length >= capacity - 1)
+      {
+        char *nb = arena_allocate(capacity * 2);
+        memcpy(nb, buffer, length);
+        buffer = nb;
+        capacity *= 2;
+      }
+      buffer[length++] = peek(lexer, 0);
       advance_character(lexer);
     }
   }
@@ -906,7 +929,7 @@ static Token scan_string_literal(Lexer *lexer)
     advance_character(lexer);
   else
     return make_token(T_ERR, location, STRING_LITERAL("us"));
-  *buffer_pointer = 0;
+  buffer[length] = 0;
   String_Slice literal_text = {buffer, length};
   return make_token(T_STR, location, literal_text);
 }
@@ -922,13 +945,13 @@ static Token lexer_next_token(Lexer *lexer)
     lexer->previous_token = T_EOF;
     return make_token(T_EOF, location, N);
   }
-  if (isalpha(character))
+  if (ISALPHA(character))
   {
     Token token = scan_identifier(lexer);
     lexer->previous_token = token.kind;
     return token;
   }
-  if (isdigit(character))
+  if (ISDIGIT(character))
   {
     Token token = scan_number_literal(lexer);
     lexer->previous_token = token.kind;
@@ -938,7 +961,7 @@ static Token lexer_next_token(Lexer *lexer)
   {
     char next_character = peek(lexer, 1);
     char previous_character = lexer->current > lexer->start ? lexer->current[-1] : 0;
-    bool is_identifier_attribute = lexer->previous_token == T_ID and not had_whitespace and isalnum(previous_character);
+    bool is_identifier_attribute = lexer->previous_token == T_ID and not had_whitespace and ISALNUM(previous_character);
     if (next_character and peek(lexer, 2) == '\'' and (lexer->current + 3 >= lexer->end or lexer->current[3] != '\'') and not is_identifier_attribute)
     {
       lexer->previous_token = T_CHAR;
@@ -4671,7 +4694,7 @@ static Syntax_Node *parse_compilation_unit(Parser *parser)
                 ppkg.string,
                 ex[e]);
             for (char *c = fn + strlen(include_paths[i]); *c and *c != '.'; c++)
-              *c = tolower(*c);
+              *c = TOLOWER(*c);
             pf = fopen(fn, "r");
           }
         if (pf)
@@ -5222,27 +5245,30 @@ static Type_Info *TY_INT, *TY_BOOL, *TY_CHAR, *TY_STR, *TY_FLT, *TY_UINT, *TY_UF
 static void symbol_manager_init(Symbol_Manager *symbol_manager)
 {
   memset(symbol_manager, 0, sizeof(*symbol_manager));
-  TY_INT = type_new(TYPE_INTEGER, STRING_LITERAL("INTEGER"));
-  TY_INT->low_bound = -2147483648LL;
-  TY_INT->high_bound = 2147483647LL;
-  TY_NAT = type_new(TYPE_INTEGER, STRING_LITERAL("NATURAL"));
-  TY_NAT->low_bound = 0;
-  TY_NAT->high_bound = 2147483647LL;
-  TY_POS = type_new(TYPE_INTEGER, STRING_LITERAL("POSITIVE"));
-  TY_POS->low_bound = 1;
-  TY_POS->high_bound = 2147483647LL;
-  TY_BOOL = type_new(TYPE_BOOLEAN, STRING_LITERAL("BOOLEAN"));
-  TY_CHAR = type_new(TYPE_CHARACTER, STRING_LITERAL("CHARACTER"));
-  TY_CHAR->size = 1;
-  TY_STR = type_new(TYPE_ARRAY, STRING_LITERAL("STRING"));
-  TY_STR->element_type = TY_CHAR;
-  TY_STR->low_bound = 0;
-  TY_STR->high_bound = -1;
-  TY_STR->index_type = TY_POS;
-  TY_FLT = type_new(TYPE_FLOAT, STRING_LITERAL("FLOAT"));
-  TY_UINT = type_new(TYPE_UNSIGNED_INTEGER, STRING_LITERAL("universal_integer"));
-  TY_UFLT = type_new(TYPE_UNIVERSAL_FLOAT, STRING_LITERAL("universal_real"));
-  TY_FILE = type_new(TYPE_FAT_POINTER, STRING_LITERAL("FILE_TYPE"));
+  // Only create global types once (avoid overwriting on subsequent calls)
+  if (!TY_INT) {
+    TY_INT = type_new(TYPE_INTEGER, STRING_LITERAL("INTEGER"));
+    TY_INT->low_bound = -2147483648LL;
+    TY_INT->high_bound = 2147483647LL;
+    TY_NAT = type_new(TYPE_INTEGER, STRING_LITERAL("NATURAL"));
+    TY_NAT->low_bound = 0;
+    TY_NAT->high_bound = 2147483647LL;
+    TY_POS = type_new(TYPE_INTEGER, STRING_LITERAL("POSITIVE"));
+    TY_POS->low_bound = 1;
+    TY_POS->high_bound = 2147483647LL;
+    TY_BOOL = type_new(TYPE_BOOLEAN, STRING_LITERAL("BOOLEAN"));
+    TY_CHAR = type_new(TYPE_CHARACTER, STRING_LITERAL("CHARACTER"));
+    TY_CHAR->size = 1;
+    TY_STR = type_new(TYPE_ARRAY, STRING_LITERAL("STRING"));
+    TY_STR->element_type = TY_CHAR;
+    TY_STR->low_bound = 0;
+    TY_STR->high_bound = -1;
+    TY_STR->index_type = TY_POS;
+    TY_FLT = type_new(TYPE_FLOAT, STRING_LITERAL("FLOAT"));
+    TY_UINT = type_new(TYPE_UNSIGNED_INTEGER, STRING_LITERAL("universal_integer"));
+    TY_UFLT = type_new(TYPE_UNIVERSAL_FLOAT, STRING_LITERAL("universal_real"));
+    TY_FILE = type_new(TYPE_FAT_POINTER, STRING_LITERAL("FILE_TYPE"));
+  }
   symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("INTEGER"), 1, TY_INT, 0));
   symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("NATURAL"), 1, TY_NAT, 0));
   symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("POSITIVE"), 1, TY_POS, 0));
@@ -6010,21 +6036,35 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
     if (node->index.indices.count == 1)
     {
       Syntax_Node *r = node->index.indices.data[0];
+      Syntax_Node *lo = 0, *hi = 0;
       if (r and r->k == N_RN)
       {
         resolve_expression(symbol_manager, r->range.low_bound, 0);
         resolve_expression(symbol_manager, r->range.high_bound, 0);
-        Syntax_Node *lo = r->range.low_bound;
-        Syntax_Node *hi = r->range.high_bound;
-        if (lo and lo->k == N_INT)
-          t->low_bound = lo->integer_value;
-        else if (lo and lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.operand->k == N_INT)
-          t->low_bound = -lo->unary_node.operand->integer_value;
-        if (hi and hi->k == N_INT)
-          t->high_bound = hi->integer_value;
-        else if (hi and hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.operand->k == N_INT)
-          t->high_bound = -hi->unary_node.operand->integer_value;
+        lo = r->range.low_bound;
+        hi = r->range.high_bound;
       }
+      else if (r and r->k == N_ST and r->subtype_decl.constraint)
+      {
+        // Handle subtype indication like "INTEGER RANGE 4..6"
+        Syntax_Node *cn = r->subtype_decl.constraint;
+        Syntax_Node *rn = cn->constraint.range_spec;
+        if (rn and rn->k == N_RN)
+        {
+          resolve_expression(symbol_manager, rn->range.low_bound, 0);
+          resolve_expression(symbol_manager, rn->range.high_bound, 0);
+          lo = rn->range.low_bound;
+          hi = rn->range.high_bound;
+        }
+      }
+      if (lo and lo->k == N_INT)
+        t->low_bound = lo->integer_value;
+      else if (lo and lo->k == N_UN and lo->unary_node.op == T_MN and lo->unary_node.operand->k == N_INT)
+        t->low_bound = -lo->unary_node.operand->integer_value;
+      if (hi and hi->k == N_INT)
+        t->high_bound = hi->integer_value;
+      else if (hi and hi->k == N_UN and hi->unary_node.op == T_MN and hi->unary_node.operand->k == N_INT)
+        t->high_bound = -hi->unary_node.operand->integer_value;
     }
     return t;
   }
@@ -6126,14 +6166,14 @@ static Symbol *symbol_character_literal(Symbol_Manager *symbol_manager, char c, 
     for (uint32_t i = 0; i < tx->enum_values.count; i++)
     {
       Symbol *e = tx->enum_values.data[i];
-      if (e->name.length == 1 and tolower(e->name.string[0]) == tolower(c))
+      if (e->name.length == 1 and TOLOWER(e->name.string[0]) == TOLOWER(c))
         return e;
     }
   }
   if (tx and tx->k == TYPE_DERIVED and tx->parent_type)
     return symbol_character_literal(symbol_manager, c, tx->parent_type);
   for (Symbol *s = symbol_manager->sy[symbol_hash((String_Slice){&c, 1})]; s; s = s->next)
-    if (s->name.length == 1 and tolower(s->name.string[0]) == tolower(c) and s->k == 2 and s->type_info
+    if (s->name.length == 1 and TOLOWER(s->name.string[0]) == TOLOWER(c) and s->k == 2 and s->type_info
         and (s->type_info->k == TYPE_ENUMERATION or (s->type_info->k == TYPE_DERIVED and s->type_info->parent_type and s->type_info->parent_type->k == TYPE_ENUMERATION)))
       return s;
   return 0;
@@ -7467,7 +7507,7 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
         }
       }
     }
-    break;
+    // Generate runtime constraint checks for the assignment value
     if (node->assignment.target->ty)
       node->assignment.value->ty = node->assignment.target->ty;
     node->assignment.value = chk(symbol_manager, node->assignment.value, node->location);
@@ -9267,7 +9307,7 @@ static const char *lookup_path(Symbol_Manager *symbol_manager, String_Slice nm)
         (int) nm.length,
         nm.string);
     for (char *p = pf + strlen(include_paths[i]); *p; p++)
-      *p = tolower(*p);
+      *p = TOLOWER(*p);
     read_ada_library_interface(symbol_manager, pf);
     snprintf(af, 512, "%s.ads", pf);
     const char *s = read_file(af);
@@ -9616,40 +9656,46 @@ static unsigned long type_hash(Type_Info *t)
 }
 static int encode_symbol_name(char *b, int sz, Symbol *s, String_Slice nm, int pc, Syntax_Node *sp)
 {
+  if (sz <= 0)
+    return 0;
   if (s and s->is_external and s->external_name.string)
   {
     int n = 0;
-    for (uint32_t i = 0; i < s->external_name.length and i < sz - 1; i++)
+    for (uint32_t i = 0; i < s->external_name.length and n < sz - 1; i++)
       b[n++] = s->external_name.string[i];
     b[n] = 0;
     return n;
   }
   int n = 0;
   unsigned long uid = s ? s->uid : 0;
-  if (s and s->parent and s->parent->name.string and (uintptr_t) s->parent->name.string > 4096)
+  // Check parent name pointer validity (non-null and not obviously invalid)
+  if (s and s->parent and s->parent->name.string and s->parent->name.length > 0)
   {
-    for (uint32_t i = 0; i < s->parent->name.length and i < 256; i++)
+    for (uint32_t i = 0; i < s->parent->name.length and i < 256 and n < sz - 4; i++)
     {
       char c = s->parent->name.string[i];
       if (not c)
         break;
       if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9'))
-        b[n++] = toupper(c);
-      else
+        b[n++] = TOUPPER(c);
+      else if (n < sz - 4)
         n += snprintf(b + n, sz - n, "_%02X", (unsigned char) c);
     }
-    b[n++] = '_';
-    b[n++] = '_';
-    if (nm.string and (uintptr_t) nm.string > 4096)
+    if (n < sz - 2)
     {
-      for (uint32_t i = 0; i < nm.length and i < 256; i++)
+      b[n++] = '_';
+      b[n++] = '_';
+    }
+    if (nm.string and nm.length > 0)
+    {
+      for (uint32_t i = 0; i < nm.length and i < 256 and n < sz - 4; i++)
       {
         char c = nm.string[i];
         if (not c)
           break;
         if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9'))
-          b[n++] = toupper(c);
-        else
+          b[n++] = TOUPPER(c);
+        else if (n < sz - 4)
           n += snprintf(b + n, sz - n, "_%02X", (unsigned char) c);
       }
     }
@@ -9664,25 +9710,29 @@ static int encode_symbol_name(char *b, int sz, Symbol *s, String_Slice nm, int p
         if (p and p->parameter.name.string)
           pnh = pnh * 31 + string_hash(p->parameter.name);
       }
-      n += snprintf(b + n, sz - n, ".%d.%lx.%lu.%lx", pc, h % 0x10000, uid, pnh % 0x10000);
+      if (n < sz - 1)
+        n += snprintf(b + n, sz - n, ".%d.%lx.%lu.%lx", pc, h % 0x10000, uid, pnh % 0x10000);
     }
     else
     {
-      n += snprintf(b + n, sz - n, ".%d.%lu.1", pc, uid);
+      if (n < sz - 1)
+        n += snprintf(b + n, sz - n, ".%d.%lu.1", pc, uid);
     }
+    if (n >= sz)
+      n = sz - 1;
     b[n] = 0;
     return n;
   }
-  if (nm.string and (uintptr_t) nm.string > 4096)
+  if (nm.string and nm.length > 0)
   {
-    for (uint32_t i = 0; i < nm.length and i < 256; i++)
+    for (uint32_t i = 0; i < nm.length and i < 256 and n < sz - 4; i++)
     {
       char c = nm.string[i];
       if (not c)
         break;
       if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '_')
         b[n++] = c;
-      else
+      else if (n < sz - 4)
         n += snprintf(b + n, sz - n, "_%02X", (unsigned char) c);
     }
   }
@@ -9697,12 +9747,16 @@ static int encode_symbol_name(char *b, int sz, Symbol *s, String_Slice nm, int p
       if (p and p->parameter.name.string)
         pnh = pnh * 31 + string_hash(p->parameter.name);
     }
-    n += snprintf(b + n, sz - n, ".%d.%lx.%lu.%lx", pc, h % 0x10000, uid, pnh % 0x10000);
+    if (n < sz - 1)
+      n += snprintf(b + n, sz - n, ".%d.%lx.%lu.%lx", pc, h % 0x10000, uid, pnh % 0x10000);
   }
   else
   {
-    n += snprintf(b + n, sz - n, ".%d.%lu.1", pc, uid);
+    if (n < sz - 1)
+      n += snprintf(b + n, sz - n, ".%d.%lu.1", pc, uid);
   }
+  if (n >= sz)
+    n = sz - 1;
   b[n] = 0;
   return n;
 }
@@ -10024,10 +10078,38 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
     normalize_record_aggregate(generator->sm, t, n);
   if (not t or t->k != TYPE_RECORD or t->is_packed)
   {
+    // Use type bounds for constrained arrays, fall back to item count for unconstrained
     int sz = n->aggregate.items.count ? n->aggregate.items.count : 1;
+    if (t and t->k == TYPE_ARRAY and t->low_bound != 0 and t->high_bound >= t->low_bound)
+      sz = (int)(t->high_bound - t->low_bound + 1);
+
+    // Determine element size and type string for constrained arrays
+    int elem_size = 8;
+    const char *elem_type = "i64";
+    Type_Info *et = (t and t->k == TYPE_ARRAY) ? type_canonical_concrete(t->element_type) : 0;
+    if (et)
+    {
+      if (et->k == TYPE_BOOLEAN or et->k == TYPE_CHARACTER or
+          (et->k == TYPE_INTEGER and et->high_bound < 256 and et->low_bound >= 0))
+      {
+        elem_size = 1;
+        elem_type = "i8";
+      }
+      else if (et->k == TYPE_INTEGER and et->high_bound < 65536 and et->low_bound >= -32768)
+      {
+        elem_size = 2;
+        elem_type = "i16";
+      }
+      else if (et->k == TYPE_INTEGER and et->high_bound < 2147483648LL and et->low_bound >= -2147483648LL)
+      {
+        elem_size = 4;
+        elem_type = "i32";
+      }
+    }
+
     int p = new_temporary_register(generator);
     int by = new_temporary_register(generator);
-    fprintf(o, "  %%t%d = add i64 0, %d\n", by, sz * 8);
+    fprintf(o, "  %%t%d = add i64 0, %d\n", by, sz * elem_size);
     fprintf(o, "  %%t%d = call ptr @__ada_ss_allocate(i64 %%t%d)\n", p, by);
     uint32_t ix = 0;
     for (uint32_t i = 0; i < n->aggregate.items.count; i++)
@@ -10042,8 +10124,15 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
           {
             Value v = value_cast(generator, generate_expression(generator, el->association.value), VALUE_KIND_INTEGER);
             int ep = new_temporary_register(generator);
-            fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p, ix);
-            fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
+            fprintf(o, "  %%t%d = getelementptr %s, ptr %%t%d, i64 %u\n", ep, elem_type, p, ix);
+            if (elem_size < 8)
+            {
+              int tv = new_temporary_register(generator);
+              fprintf(o, "  %%t%d = trunc i64 %%t%d to %s\n", tv, v.id, elem_type);
+              fprintf(o, "  store %s %%t%d, ptr %%t%d\n", elem_type, tv, ep);
+            }
+            else
+              fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
           }
         }
         else
@@ -10062,8 +10151,15 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
                   Value cv = {new_temporary_register(generator), VALUE_KIND_INTEGER};
                   fprintf(o, "  %%t%d = add i64 0, %ld\n", cv.id, (long) cht->enum_values.data[ei]->value);
                   int ep = new_temporary_register(generator);
-                  fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %%t%d\n", ep, p, cv.id);
-                  fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
+                  fprintf(o, "  %%t%d = getelementptr %s, ptr %%t%d, i64 %%t%d\n", ep, elem_type, p, cv.id);
+                  if (elem_size < 8)
+                  {
+                    int tv = new_temporary_register(generator);
+                    fprintf(o, "  %%t%d = trunc i64 %%t%d to %s\n", tv, v.id, elem_type);
+                    fprintf(o, "  store %s %%t%d, ptr %%t%d\n", elem_type, tv, ep);
+                  }
+                  else
+                    fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
                 }
               }
               else if ((cht->low_bound != 0 or cht->high_bound != 0) and cht->k == TYPE_INTEGER)
@@ -10073,8 +10169,15 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
                   Value cv = {new_temporary_register(generator), VALUE_KIND_INTEGER};
                   fprintf(o, "  %%t%d = add i64 0, %ld\n", cv.id, (long) ri);
                   int ep = new_temporary_register(generator);
-                  fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %%t%d\n", ep, p, cv.id);
-                  fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
+                  fprintf(o, "  %%t%d = getelementptr %s, ptr %%t%d, i64 %%t%d\n", ep, elem_type, p, cv.id);
+                  if (elem_size < 8)
+                  {
+                    int tv = new_temporary_register(generator);
+                    fprintf(o, "  %%t%d = trunc i64 %%t%d to %s\n", tv, v.id, elem_type);
+                    fprintf(o, "  store %s %%t%d, ptr %%t%d\n", elem_type, tv, ep);
+                  }
+                  else
+                    fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
                 }
               }
             }
@@ -10082,8 +10185,15 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
             {
               Value ci = value_cast(generator, generate_expression(generator, ch), VALUE_KIND_INTEGER);
               int ep = new_temporary_register(generator);
-              fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %%t%d\n", ep, p, ci.id);
-              fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
+              fprintf(o, "  %%t%d = getelementptr %s, ptr %%t%d, i64 %%t%d\n", ep, elem_type, p, ci.id);
+              if (elem_size < 8)
+              {
+                int tv = new_temporary_register(generator);
+                fprintf(o, "  %%t%d = trunc i64 %%t%d to %s\n", tv, v.id, elem_type);
+                fprintf(o, "  store %s %%t%d, ptr %%t%d\n", elem_type, tv, ep);
+              }
+              else
+                fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
             }
           }
           ix++;
@@ -10091,10 +10201,18 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
       }
       else
       {
+        // Positional element
         Value v = value_cast(generator, generate_expression(generator, el), VALUE_KIND_INTEGER);
         int ep = new_temporary_register(generator);
-        fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p, ix);
-        fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
+        fprintf(o, "  %%t%d = getelementptr %s, ptr %%t%d, i64 %u\n", ep, elem_type, p, ix);
+        if (elem_size < 8)
+        {
+          int tv = new_temporary_register(generator);
+          fprintf(o, "  %%t%d = trunc i64 %%t%d to %s\n", tv, v.id, elem_type);
+          fprintf(o, "  store %s %%t%d, ptr %%t%d\n", elem_type, tv, ep);
+        }
+        else
+          fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
         ix++;
       }
     }
@@ -10125,7 +10243,7 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
               {
                 Value v = value_cast(generator, generate_expression(generator, el->association.value), VALUE_KIND_INTEGER);
                 int ep = new_temporary_register(generator);
-                fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p, c->component_decl.offset);
+                fprintf(o, "  %%t%d = getelementptr i8, ptr %%t%d, i64 %u\n", ep, p, c->component_decl.offset);
                 fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
                 break;
               }
@@ -10138,7 +10256,7 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
       {
         Value v = value_cast(generator, generate_expression(generator, el), VALUE_KIND_INTEGER);
         int ep = new_temporary_register(generator);
-        fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p, ix);
+        fprintf(o, "  %%t%d = getelementptr i8, ptr %%t%d, i64 %u\n", ep, p, ix * 8);
         fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
         ix++;
       }
@@ -10183,7 +10301,7 @@ static const char *get_attribute_name(String_Slice attr, String_Slice tnm)
     fnm[pos++] = attr.string[i];
   fnm[pos++] = '_';
   for (uint32_t i = 0; i < tnm.length and pos < 255; i++)
-    fnm[pos++] = toupper(tnm.string[i]);
+    fnm[pos++] = TOUPPER(tnm.string[i]);
   fnm[pos] = 0;
   return fnm;
 }
@@ -10266,10 +10384,10 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         {
           int n = 0;
           for (uint32_t j = 0; j < s->parent->name.length; j++)
-            nb[n++] = toupper(s->parent->name.string[j]);
+            nb[n++] = TOUPPER(s->parent->name.string[j]);
           n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->elaboration_level);
           for (uint32_t j = 0; j < s->name.length; j++)
-            nb[n++] = toupper(s->name.string[j]);
+            nb[n++] = TOUPPER(s->name.string[j]);
           nb[n] = 0;
         }
         else
@@ -10299,10 +10417,10 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         {
           int n = 0;
           for (uint32_t i = 0; i < s->parent->name.length; i++)
-            nb[n++] = toupper(s->parent->name.string[i]);
+            nb[n++] = TOUPPER(s->parent->name.string[i]);
           n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->elaboration_level);
           for (uint32_t i = 0; i < s->name.length; i++)
-            nb[n++] = toupper(s->name.string[i]);
+            nb[n++] = TOUPPER(s->name.string[i]);
           nb[n] = 0;
         }
         else
@@ -10314,7 +10432,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             char fnb[256];
             encode_symbol_name(fnb, 256, s, n->string_value, 0, 0);
             fprintf(
-                o, "  %%t%d = call %s @\"%s\"()\n", r.id, value_llvm_type_string(fn_ret_type), fnb);
+                o, "  %%t%d = call %s @%s()\n", r.id, value_llvm_type_string(fn_ret_type), fnb);
             r.k = fn_ret_type;
           }
           else
@@ -10327,7 +10445,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
               encode_symbol_name(fnb, 256, s, n->string_value, 0, sp);
               fprintf(
                   o,
-                  "  %%t%d = call %s @\"%s\"()\n",
+                  "  %%t%d = call %s @%s()\n",
                   r.id,
                   value_llvm_type_string(fn_ret_type),
                   fnb);
@@ -10355,7 +10473,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             encode_symbol_name(fnb, 256, s, n->string_value, 0, sp);
             fprintf(
                 o,
-                "  %%t%d = call %s @\"%s\"(ptr %%__slnk)\n",
+                "  %%t%d = call %s @%s(ptr %%__slnk)\n",
                 r.id,
                 value_llvm_type_string(rk),
                 fnb);
@@ -10444,14 +10562,14 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             if (s->level >= generator->sm->lv)
               fprintf(
                   o,
-                  "  %%t%d = call %s @\"%s\"(ptr %%__frame)\n",
+                  "  %%t%d = call %s @%s(ptr %%__frame)\n",
                   r.id,
                   value_llvm_type_string(rk),
                   fnb);
             else
               fprintf(
                   o,
-                  "  %%t%d = call %s @\"%s\"(ptr %%__slnk)\n",
+                  "  %%t%d = call %s @%s(ptr %%__slnk)\n",
                   r.id,
                   value_llvm_type_string(rk),
                   fnb);
@@ -10805,7 +10923,8 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       int lt = new_label_block(generator), lf = new_label_block(generator);
       emit_conditional_branch(generator, cf, lt, lf);
       emit_label(generator, lt);
-      fprintf(o, "  call void @__ada_raise(ptr @.ex.CONSTRAINT_ERROR)\n  unreachable\nL%d:\n", lf);
+      fprintf(o, "  call void @__ada_raise(ptr @.ex.CONSTRAINT_ERROR)\n  unreachable\n");
+      emit_label(generator, lf);
       if (token_kind_to_value_kind(n->ty) == VALUE_KIND_FLOAT)
       {
         r = value_power_float(generator, a, b);
@@ -11125,7 +11244,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       }
 
       // Now generate the call with the parameter values
-      fprintf(o, "  %%t%d = call %s @\"%s\"(", r.id, value_llvm_type_string(ret_kind), fnb);
+      fprintf(o, "  %%t%d = call %s @%s(", r.id, value_llvm_type_string(ret_kind), fnb);
 
       // Add static link if needed
       bool needs_slnk = func_sym->level >= 0 and func_sym->level < generator->sm->lv;
@@ -11337,6 +11456,17 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             fprintf(o, "  %%t%d = getelementptr ptr, ptr %%__slnk, i64 %u\n", tp, s->elaboration_level);
             fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", p.id, tp);
           }
+          else if (vty and vty->k == TYPE_RECORD)
+          {
+            // Always load the pointer for record types (records are stored by pointer)
+            fprintf(
+                o,
+                "  %%t%d = load ptr, ptr %%lnk.%d.%.*s\n",
+                p.id,
+                s->level,
+                (int) n->selected_component.prefix->string_value.length,
+                n->selected_component.prefix->string_value.string);
+          }
           else
             fprintf(
                 o,
@@ -11348,7 +11478,8 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         }
         else
         {
-          if (has_nested)
+          // Always load the pointer for record types (records are stored by pointer)
+          if (vty and vty->k == TYPE_RECORD)
             fprintf(
                 o,
                 "  %%t%d = load ptr, ptr %%v.%s.sc%u.%u\n",
@@ -11427,7 +11558,8 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           if (c->k == N_CM and string_equal_ignore_case(c->component_decl.name, n->selected_component.selector))
           {
             int ep = new_temporary_register(generator);
-            fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p.id, c->component_decl.offset);
+            // Use byte offset directly with getelementptr i8
+            fprintf(o, "  %%t%d = getelementptr i8, ptr %%t%d, i64 %u\n", ep, p.id, c->component_decl.offset);
             Type_Info *fty = resolve_subtype(generator->sm, c->component_decl.ty);
             if (fty and (fty->k == TYPE_RECORD or fty->k == TYPE_ARRAY))
             {
@@ -11457,7 +11589,8 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
               if (string_equal_ignore_case(vc->component_decl.name, n->selected_component.selector))
               {
                 int ep = new_temporary_register(generator);
-                fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p.id, vc->component_decl.offset);
+                // Use byte offset directly with getelementptr i8
+                fprintf(o, "  %%t%d = getelementptr i8, ptr %%t%d, i64 %u\n", ep, p.id, vc->component_decl.offset);
                 r.k = VALUE_KIND_INTEGER;
                 fprintf(o, "  %%t%d = load i64, ptr %%t%d\n", r.id, ep);
                 goto sel_done;
@@ -11478,7 +11611,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                             : VALUE_KIND_INTEGER;
         char fnb[256];
         encode_symbol_name(fnb, 256, n->symbol, n->selected_component.selector, 0, sp);
-        fprintf(o, "  %%t%d = call %s @\"%s\"()\n", r.id, value_llvm_type_string(rk), fnb);
+        fprintf(o, "  %%t%d = call %s @%s()\n", r.id, value_llvm_type_string(rk), fnb);
         r.k = rk;
       }
     }
@@ -11512,10 +11645,10 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             {
               int n = 0;
               for (uint32_t j = 0; j < s->parent->name.length; j++)
-                nb[n++] = toupper(s->parent->name.string[j]);
+                nb[n++] = TOUPPER(s->parent->name.string[j]);
               n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->elaboration_level);
               for (uint32_t j = 0; j < s->name.length; j++)
-                nb[n++] = toupper(s->name.string[j]);
+                nb[n++] = TOUPPER(s->name.string[j]);
               nb[n] = 0;
             }
             else
@@ -12121,10 +12254,10 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                   {
                     int n = 0;
                     for (uint32_t j = 0; j < as->parent->name.length; j++)
-                      nb[n++] = toupper(as->parent->name.string[j]);
+                      nb[n++] = TOUPPER(as->parent->name.string[j]);
                     n += snprintf(nb + n, 256 - n, "_S%dE%d__", as->parent->scope, as->parent->elaboration_level);
                     for (uint32_t j = 0; j < as->name.length; j++)
-                      nb[n++] = toupper(as->name.string[j]);
+                      nb[n++] = TOUPPER(as->name.string[j]);
                     nb[n] = 0;
                   }
                   else
@@ -12188,7 +12321,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           }
           char nb[256];
           encode_symbol_name(nb, 256, s, n->call.function_name->string_value, n->call.arguments.count, sp);
-          fprintf(o, "  %%t%d = call %s @\"%s\"(", r.id, value_llvm_type_string(rk), nb);
+          fprintf(o, "  %%t%d = call %s @%s(", r.id, value_llvm_type_string(rk), nb);
           for (uint32_t i = 0; i < n->call.arguments.count; i++)
           {
             if (i)
@@ -12468,10 +12601,10 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           {
             int n = 0;
             for (uint32_t i = 0; i < s->parent->name.length; i++)
-              nb[n++] = toupper(s->parent->name.string[i]);
+              nb[n++] = TOUPPER(s->parent->name.string[i]);
             n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->elaboration_level);
             for (uint32_t i = 0; i < s->name.length; i++)
-              nb[n++] = toupper(s->name.string[i]);
+              nb[n++] = TOUPPER(s->name.string[i]);
             nb[n] = 0;
           }
           else
@@ -12510,24 +12643,37 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
         }
         else
         {
-          // Check if this is a fat pointer (runtime-sized array) or regular array
-          // Fat pointers are allocated for arrays declared with subtype indications
-          // Try to get data pointer from fat pointer structure
-          int fp_addr = new_temporary_register(generator);
-          fprintf(o, "  %%t%d = bitcast ptr %%v.%s.sc%u.%u to ptr\n",
-                  fp_addr,
-                  string_to_lowercase(n->assignment.target->string_value),
-                  s ? s->scope : 0,
-                  s ? s->elaboration_level : 0);
+          // Check if this is a constrained array or fat pointer (runtime-sized array)
+          // Constrained arrays are allocated as [N x type], fat pointers as {ptr,ptr}
+          bool is_constrained = st and st->low_bound != 0 and st->high_bound >= st->low_bound;
 
-          // Try to load as fat pointer and extract data field
-          int data_field = new_temporary_register(generator);
-          fprintf(o, "  %%t%d = getelementptr {ptr,ptr}, ptr %%t%d, i32 0, i32 0\n", data_field, fp_addr);
-          int data_ptr = new_temporary_register(generator);
-          fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", data_ptr, data_field);
+          if (is_constrained)
+          {
+            // Constrained array - memcpy directly to the variable
+            fprintf(o, "  call void @llvm.memcpy.p0.p0.i64(ptr %%v.%s.sc%u.%u, ptr %%t%d, i64 %lld, i1 false)\n",
+                    string_to_lowercase(n->assignment.target->string_value),
+                    s ? s->scope : 0,
+                    s ? s->elaboration_level : 0,
+                    v.id, (long long) total_size);
+          }
+          else
+          {
+            // Fat pointer - extract data pointer first
+            int fp_addr = new_temporary_register(generator);
+            fprintf(o, "  %%t%d = bitcast ptr %%v.%s.sc%u.%u to ptr\n",
+                    fp_addr,
+                    string_to_lowercase(n->assignment.target->string_value),
+                    s ? s->scope : 0,
+                    s ? s->elaboration_level : 0);
 
-          fprintf(o, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%d, ptr %%t%d, i64 %lld, i1 false)\n",
-                  data_ptr, v.id, (long long) total_size);
+            int data_field = new_temporary_register(generator);
+            fprintf(o, "  %%t%d = getelementptr {ptr,ptr}, ptr %%t%d, i32 0, i32 0\n", data_field, fp_addr);
+            int data_ptr = new_temporary_register(generator);
+            fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", data_ptr, data_field);
+
+            fprintf(o, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%d, ptr %%t%d, i64 %lld, i1 false)\n",
+                    data_ptr, v.id, (long long) total_size);
+          }
         }
       }
       else if (s and s->level == 0)
@@ -12537,10 +12683,10 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
         {
           int n = 0;
           for (uint32_t i = 0; i < s->parent->name.length; i++)
-            nb[n++] = toupper(s->parent->name.string[i]);
+            nb[n++] = TOUPPER(s->parent->name.string[i]);
           n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->elaboration_level);
           for (uint32_t i = 0; i < s->name.length; i++)
-            nb[n++] = toupper(s->name.string[i]);
+            nb[n++] = TOUPPER(s->name.string[i]);
           nb[n] = 0;
         }
         else
@@ -12630,6 +12776,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
       {
         Symbol *s = n->assignment.target->selected_component.prefix->symbol ? n->assignment.target->selected_component.prefix->symbol : symbol_find(generator->sm, n->assignment.target->selected_component.prefix->string_value);
         if (s and s->level >= 0 and s->level < generator->sm->lv)
+        {
           fprintf(
               o,
               "  %%t%d = bitcast ptr %%lnk.%d.%.*s to ptr\n",
@@ -12637,7 +12784,16 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               s->level,
               (int) n->assignment.target->selected_component.prefix->string_value.length,
               n->assignment.target->selected_component.prefix->string_value.string);
+          // For record variables (stored by pointer), load the record pointer
+          if (pt and pt->k == TYPE_RECORD)
+          {
+            int loaded_ptr = new_temporary_register(generator);
+            fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", loaded_ptr, p.id);
+            p.id = loaded_ptr;
+          }
+        }
         else
+        {
           fprintf(
               o,
               "  %%t%d = bitcast ptr %%v.%s.sc%u.%u to ptr\n",
@@ -12645,6 +12801,14 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               string_to_lowercase(n->assignment.target->selected_component.prefix->string_value),
               s ? s->scope : 0,
               s ? s->elaboration_level : 0);
+          // For record variables (stored by pointer), load the record pointer
+          if (pt and pt->k == TYPE_RECORD)
+          {
+            int loaded_ptr = new_temporary_register(generator);
+            fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", loaded_ptr, p.id);
+            p.id = loaded_ptr;
+          }
+        }
       }
       else
       {
@@ -12696,7 +12860,8 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             if (c->k == N_CM and string_equal_ignore_case(c->component_decl.name, n->assignment.target->selected_component.selector))
             {
               int ep = new_temporary_register(generator);
-              fprintf(o, "  %%t%d = getelementptr i64, ptr %%t%d, i64 %u\n", ep, p.id, c->component_decl.offset);
+              // Use byte offset directly with getelementptr i8
+              fprintf(o, "  %%t%d = getelementptr i8, ptr %%t%d, i64 %u\n", ep, p.id, c->component_decl.offset);
               v = value_cast(generator, v, VALUE_KIND_INTEGER);
               fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
               break;
@@ -12918,10 +13083,10 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             {
               int n = 0;
               for (uint32_t i = 0; i < vs->parent->name.length; i++)
-                nb[n++] = toupper(vs->parent->name.string[i]);
+                nb[n++] = TOUPPER(vs->parent->name.string[i]);
               n += snprintf(nb + n, 256 - n, "_S%dE%d__", vs->parent->scope, vs->parent->elaboration_level);
               for (uint32_t i = 0; i < vs->name.length; i++)
-                nb[n++] = toupper(vs->name.string[i]);
+                nb[n++] = TOUPPER(vs->name.string[i]);
               nb[n] = 0;
             }
             else
@@ -12954,10 +13119,10 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           {
             int n = 0;
             for (uint32_t i = 0; i < vs->parent->name.length; i++)
-              nb[n++] = toupper(vs->parent->name.string[i]);
+              nb[n++] = TOUPPER(vs->parent->name.string[i]);
             n += snprintf(nb + n, 256 - n, "_S%dE%d__", vs->parent->scope, vs->parent->elaboration_level);
             for (uint32_t i = 0; i < vs->name.length; i++)
-              nb[n++] = toupper(vs->name.string[i]);
+              nb[n++] = TOUPPER(vs->name.string[i]);
             nb[n] = 0;
           }
           else
@@ -13006,10 +13171,10 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           {
             int n = 0;
             for (uint32_t i = 0; i < vs->parent->name.length; i++)
-              nb[n++] = toupper(vs->parent->name.string[i]);
+              nb[n++] = TOUPPER(vs->parent->name.string[i]);
             n += snprintf(nb + n, 256 - n, "_S%dE%d__", vs->parent->scope, vs->parent->elaboration_level);
             for (uint32_t i = 0; i < vs->name.length; i++)
-              nb[n++] = toupper(vs->name.string[i]);
+              nb[n++] = TOUPPER(vs->name.string[i]);
             nb[n] = 0;
           }
           else
@@ -13351,10 +13516,10 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                   {
                     int n = 0;
                     for (uint32_t j = 0; j < as->parent->name.length; j++)
-                      nb[n++] = toupper(as->parent->name.string[j]);
+                      nb[n++] = TOUPPER(as->parent->name.string[j]);
                     n += snprintf(nb + n, 256 - n, "_S%dE%d__", as->parent->scope, as->parent->elaboration_level);
                     for (uint32_t j = 0; j < as->name.length; j++)
-                      nb[n++] = toupper(as->name.string[j]);
+                      nb[n++] = TOUPPER(as->name.string[j]);
                     nb[n] = 0;
                   }
                   else
@@ -13421,7 +13586,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             snprintf(nb, 256, "%.*s", (int) s->external_name.length, s->external_name.string);
           else
             encode_symbol_name(nb, 256, s, n->code_stmt.name->string_value, n->code_stmt.arguments.count, sp);
-          fprintf(o, "  call void @\"%s\"(", nb);
+          fprintf(o, "  call void @%s(", nb);
           for (uint32_t i = 0; i < n->code_stmt.arguments.count; i++)
           {
             if (i)
@@ -13492,7 +13657,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           // Now emit the call
           char nb[256];
           snprintf(nb, 256, "%.*s", (int) s->external_name.length, s->external_name.string);
-          fprintf(o, "  call void @\"%s\"(", nb);
+          fprintf(o, "  call void @%s(", nb);
           for (uint32_t i = 0; i < n->code_stmt.arguments.count and i < 64; i++)
           {
             if (i)
@@ -13573,10 +13738,10 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             Type_Info *rt = resolve_subtype(generator->sm, sp->subprogram.return_type);
             Value_Kind rk = token_kind_to_value_kind(rt);
             int rid = new_temporary_register(generator);
-            fprintf(o, "  %%t%d = call %s @\"%s\"(", rid, value_llvm_type_string(rk), nb);
+            fprintf(o, "  %%t%d = call %s @%s(", rid, value_llvm_type_string(rk), nb);
           }
           else
-            fprintf(o, "  call void @\"%s\"(", nb);
+            fprintf(o, "  call void @%s(", nb);
           for (uint32_t i = 0; i < n->code_stmt.arguments.count; i++)
           {
             if (i)
@@ -13735,24 +13900,51 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             }
             {
               Value v = generate_expression(generator, d->object_decl.in);
-              v = value_cast(generator, v, k);
-              if (s and s->level >= 0 and s->level < generator->sm->lv)
-                fprintf(
-                    o,
-                    "  store %s %%t%d, ptr %%lnk.%d.%s\n",
-                    value_llvm_type_string(k),
-                    v.id,
-                    s->level,
-                    string_to_lowercase(id->string_value));
+              // For constrained arrays, copy data with memcpy instead of storing pointer
+              if (at and at->k == TYPE_ARRAY and at->low_bound != 0 and at->high_bound >= at->low_bound)
+              {
+                int64_t count = at->high_bound - at->low_bound + 1;
+                int elem_size = 8; // Default element size
+                Type_Info *et = at->element_type ? type_canonical_concrete(at->element_type) : 0;
+                if (et)
+                {
+                  if (et->k == TYPE_BOOLEAN or et->k == TYPE_CHARACTER or
+                      (et->k == TYPE_INTEGER and et->high_bound < 256 and et->low_bound >= 0))
+                    elem_size = 1;
+                  else if (et->k == TYPE_INTEGER and et->high_bound < 65536 and et->low_bound >= -32768)
+                    elem_size = 2;
+                  else if (et->k == TYPE_INTEGER and et->high_bound < 2147483648LL and et->low_bound >= -2147483648LL)
+                    elem_size = 4;
+                }
+                int64_t copy_size = count * elem_size;
+                if (s and s->level >= 0 and s->level < generator->sm->lv)
+                  fprintf(o, "  call void @llvm.memcpy.p0.p0.i64(ptr %%lnk.%d.%s, ptr %%t%d, i64 %lld, i1 false)\n",
+                      s->level, string_to_lowercase(id->string_value), v.id, (long long)copy_size);
+                else
+                  fprintf(o, "  call void @llvm.memcpy.p0.p0.i64(ptr %%v.%s.sc%u.%u, ptr %%t%d, i64 %lld, i1 false)\n",
+                      string_to_lowercase(id->string_value), s ? s->scope : 0, s ? s->elaboration_level : 0, v.id, (long long)copy_size);
+              }
               else
-                fprintf(
-                    o,
-                    "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
-                    value_llvm_type_string(k),
-                    v.id,
-                    string_to_lowercase(id->string_value),
-                    s ? s->scope : 0,
-                    s ? s->elaboration_level : 0);
+              {
+                v = value_cast(generator, v, k);
+                if (s and s->level >= 0 and s->level < generator->sm->lv)
+                  fprintf(
+                      o,
+                      "  store %s %%t%d, ptr %%lnk.%d.%s\n",
+                      value_llvm_type_string(k),
+                      v.id,
+                      s->level,
+                      string_to_lowercase(id->string_value));
+                else
+                  fprintf(
+                      o,
+                      "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
+                      value_llvm_type_string(k),
+                      v.id,
+                      string_to_lowercase(id->string_value),
+                      s ? s->scope : 0,
+                      s ? s->elaboration_level : 0);
+              }
             }
           }
         }
@@ -13852,7 +14044,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           int cm = new_temporary_register(generator);
           char eb[256];
           for (uint32_t ei = 0; ei < e->string_value.length and ei < 255; ei++)
-            eb[ei] = toupper(e->string_value.string[ei]);
+            eb[ei] = TOUPPER(e->string_value.string[ei]);
           eb[e->string_value.length < 255 ? e->string_value.length : 255] = 0;
           fprintf(o, "  %%t%d = call i32 @strcmp(ptr %%t%d, ptr @.ex.%s)\n", cm, ec, eb);
           int eq = new_temporary_register(generator);
@@ -14283,21 +14475,9 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   s->scope,
                   s->elaboration_level);
             }
-            else if (at and at->k == TYPE_ARRAY and asz > 0)
-            {
-              // Array with aggregate initializer
-              fprintf(
-                  o,
-                  "  %%v.%s.sc%u.%u = alloca [%d x %s]\n",
-                  string_to_lowercase(id->string_value),
-                  s->scope,
-                  s->elaboration_level,
-                  asz,
-                  ada_to_c_type_string(bt));
-            }
             else if (at and at->k == TYPE_ARRAY and at->low_bound != 0 and at->high_bound > 0 and at->high_bound >= at->low_bound)
             {
-              // Compile-time constrained array
+              // Compile-time constrained array - use type bounds (not aggregate item count)
               asz = (int) (at->high_bound - at->low_bound + 1);
               fprintf(
                   o,
@@ -14307,6 +14487,45 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   s->elaboration_level,
                   asz,
                   ada_to_c_type_string(bt));
+            }
+            else if (at and at->k == TYPE_ARRAY and asz > 0)
+            {
+              // Unconstrained array with aggregate initializer - infer size from aggregate
+              fprintf(
+                  o,
+                  "  %%v.%s.sc%u.%u = alloca [%d x %s]\n",
+                  string_to_lowercase(id->string_value),
+                  s->scope,
+                  s->elaboration_level,
+                  asz,
+                  ada_to_c_type_string(bt));
+            }
+            else if (at and at->k == TYPE_RECORD)
+            {
+              // Record type without initialization - allocate storage
+              // First allocate the pointer variable
+              fprintf(
+                  o,
+                  "  %%v.%s.sc%u.%u = alloca ptr\n",
+                  string_to_lowercase(id->string_value),
+                  s->scope,
+                  s->elaboration_level);
+              // Calculate record size and allocate storage
+              uint32_t rec_size = at->size / 8;
+              if (rec_size == 0)
+                rec_size = 8; // Minimum size
+              int sz_reg = new_temporary_register(generator);
+              int rec_ptr = new_temporary_register(generator);
+              fprintf(o, "  %%t%d = add i64 0, %u\n", sz_reg, rec_size * 8);
+              fprintf(o, "  %%t%d = call ptr @__ada_ss_allocate(i64 %%t%d)\n", rec_ptr, sz_reg);
+              // Store the allocated pointer in the variable
+              fprintf(
+                  o,
+                  "  store ptr %%t%d, ptr %%v.%s.sc%u.%u\n",
+                  rec_ptr,
+                  string_to_lowercase(id->string_value),
+                  s->scope,
+                  s->elaboration_level);
             }
             else
             {
@@ -14349,7 +14568,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
         }
     if (has_body)
       break;
-    fprintf(o, "declare void @\"%s\"(", nb);
+    fprintf(o, "declare void @%s(", nb);
     for (uint32_t i = 0; i < sp->subprogram.parameters.count; i++)
     {
       if (i)
@@ -14403,7 +14622,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     Type_Info *rtc = rt ? type_canonical_concrete(rt) : 0;
     bool return_unconstrained = rtc and rtc->k == TYPE_ARRAY and rtc->low_bound == 0 and rtc->high_bound == -1;
     Value_Kind rk = return_unconstrained ? VALUE_KIND_POINTER : (rt ? token_kind_to_value_kind(rt) : VALUE_KIND_INTEGER);
-    fprintf(o, "declare %s @\"%s\"(", value_llvm_type_string(rk), nb);
+    fprintf(o, "declare %s @%s(", value_llvm_type_string(rk), nb);
     for (uint32_t i = 0; i < sp->subprogram.parameters.count; i++)
     {
       if (i)
@@ -14481,7 +14700,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
         n->symbol->mangled_name.length = strlen(nb);
       }
     }
-    fprintf(o, "define linkonce_odr void @\"%s\"(", nb);
+    fprintf(o, "define linkonce_odr void @%s(", nb);
     int np = sp->subprogram.parameters.count;
     if (n->symbol and n->symbol->level > 0)
       np++;
@@ -14694,24 +14913,51 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
             }
             {
               Value v = generate_expression(generator, d->object_decl.in);
-              v = value_cast(generator, v, k);
-              if (s and s->level >= 0 and s->level < generator->sm->lv)
-                fprintf(
-                    o,
-                    "  store %s %%t%d, ptr %%lnk.%d.%s\n",
-                    value_llvm_type_string(k),
-                    v.id,
-                    s->level,
-                    string_to_lowercase(id->string_value));
+              // For constrained arrays, copy data with memcpy instead of storing pointer
+              if (at and at->k == TYPE_ARRAY and at->low_bound != 0 and at->high_bound >= at->low_bound)
+              {
+                int64_t count = at->high_bound - at->low_bound + 1;
+                int elem_size = 8; // Default element size
+                Type_Info *et = at->element_type ? type_canonical_concrete(at->element_type) : 0;
+                if (et)
+                {
+                  if (et->k == TYPE_BOOLEAN or et->k == TYPE_CHARACTER or
+                      (et->k == TYPE_INTEGER and et->high_bound < 256 and et->low_bound >= 0))
+                    elem_size = 1;
+                  else if (et->k == TYPE_INTEGER and et->high_bound < 65536 and et->low_bound >= -32768)
+                    elem_size = 2;
+                  else if (et->k == TYPE_INTEGER and et->high_bound < 2147483648LL and et->low_bound >= -2147483648LL)
+                    elem_size = 4;
+                }
+                int64_t copy_size = count * elem_size;
+                if (s and s->level >= 0 and s->level < generator->sm->lv)
+                  fprintf(o, "  call void @llvm.memcpy.p0.p0.i64(ptr %%lnk.%d.%s, ptr %%t%d, i64 %lld, i1 false)\n",
+                      s->level, string_to_lowercase(id->string_value), v.id, (long long)copy_size);
+                else
+                  fprintf(o, "  call void @llvm.memcpy.p0.p0.i64(ptr %%v.%s.sc%u.%u, ptr %%t%d, i64 %lld, i1 false)\n",
+                      string_to_lowercase(id->string_value), s ? s->scope : 0, s ? s->elaboration_level : 0, v.id, (long long)copy_size);
+              }
               else
-                fprintf(
-                    o,
-                    "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
-                    value_llvm_type_string(k),
-                    v.id,
-                    string_to_lowercase(id->string_value),
-                    s ? s->scope : 0,
-                    s ? s->elaboration_level : 0);
+              {
+                v = value_cast(generator, v, k);
+                if (s and s->level >= 0 and s->level < generator->sm->lv)
+                  fprintf(
+                      o,
+                      "  store %s %%t%d, ptr %%lnk.%d.%s\n",
+                      value_llvm_type_string(k),
+                      v.id,
+                      s->level,
+                      string_to_lowercase(id->string_value));
+                else
+                  fprintf(
+                      o,
+                      "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
+                      value_llvm_type_string(k),
+                      v.id,
+                      string_to_lowercase(id->string_value),
+                      s ? s->scope : 0,
+                      s ? s->elaboration_level : 0);
+              }
             }
           }
         }
@@ -14801,7 +15047,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
         n->symbol->mangled_name.length = strlen(nb);
       }
     }
-    fprintf(o, "define linkonce_odr %s @\"%s\"(", value_llvm_type_string(rk), nb);
+    fprintf(o, "define linkonce_odr %s @%s(", value_llvm_type_string(rk), nb);
     int np = sp->subprogram.parameters.count;
     if (n->symbol and n->symbol->level > 0)
       np++;
@@ -15106,14 +15352,14 @@ static void generate_expression_llvm(Code_Generator *generator, Syntax_Node *n)
       return;
     char nb[256];
     snprintf(nb, 256, "%.*s__elab", (int) n->package_body.name.length, n->package_body.name.string);
-    fprintf(generator->o, "define void @\"%s\"() {\n", nb);
+    fprintf(generator->o, "define void @%s() {\n", nb);
     for (uint32_t i = 0; i < n->package_body.statements.count; i++)
       generate_statement_sequence(generator, n->package_body.statements.data[i]);
     fprintf(generator->o, "  ret void\n}\n");
     fprintf(
         generator->o,
         "@llvm.global_ctors=appending global[1 x {i32,ptr,ptr}][{i32,ptr,ptr}{i32 65535,ptr "
-        "@\"%s\",ptr null}]\n",
+        "@%s,ptr null}]\n",
         nb);
   }
 }
@@ -15138,7 +15384,7 @@ static void generate_runtime_type(Code_Generator *generator)
       "void @llvm.memcpy.p0.p0.i64(ptr,ptr,i64,i1)\ndeclare void @__text_io_put_i64(ptr,i64)\ndeclare "
       "void @__text_io_put_f64(ptr,double)\ndeclare void @__text_io_put(ptr,ptr)\ndeclare void "
       "@__text_io_put_line_i64(ptr,i64)\ndeclare void @__text_io_put_line_f64(ptr,double)\ndeclare "
-      "void @__text_io_put_line(ptr,ptr)\ndeclare void @__text_io_new_line()\n");
+      "void @__text_io_put_line(ptr,ptr)\n");
   fprintf(
       o,
       "define linkonce_odr ptr @__ada_i64str_to_cstr(ptr %%p,i64 %%lo,i64 %%hi){%%ln=sub i64 "
@@ -15247,14 +15493,13 @@ static void generate_runtime_type(Code_Generator *generator)
       o,
       "@.fmt_d=linkonce_odr constant[5 x i8]c\"%%lld\\00\"\n@.fmt_s=linkonce_odr constant[3 x "
       "i8]c\"%%s\\00\"\n@.fmt_f=linkonce_odr constant[3 x i8]c\"%%g\\00\"\n");
-  // TEXT_IO functions are now provided by the runtime library (ada_runtime.c)
-  // Commented out inline definitions to avoid conflicts
-  // fprintf(
-  //     o, "define linkonce_odr void @__text_io_new_line(){call i32 @putchar(i32 10)\nret void}\n");
-  // fprintf(
-  //     o,
-  //     "define linkonce_odr void @__text_io_put_char(i64 %%c){%%1=trunc i64 %%c to i32\ncall i32 "
-  //     "@putchar(i32 %%1)\nret void}\n");
+  // TEXT_IO functions - inline implementations for lli JIT execution
+  fprintf(
+      o, "define linkonce_odr void @__text_io_new_line(){call i32 @putchar(i32 10)\nret void}\n");
+  fprintf(
+      o,
+      "define linkonce_odr void @__text_io_put_char(i64 %%c){%%1=trunc i64 %%c to i32\ncall i32 "
+      "@putchar(i32 %%1)\nret void}\n");
   // fprintf(
   //     o,
   //     "define linkonce_odr void @__text_io_put(ptr %%s){entry:\n%%len=call i64 @strlen(ptr "
@@ -15294,38 +15539,142 @@ static void generate_runtime_type(Code_Generator *generator)
   fprintf(o, "declare i32 @putchar(i32)\ndeclare i32 @getchar()\n");
   fprintf(
       o,
-      "define linkonce_odr ptr @__ada_image_enum(i64 %%v,i64 %%f,i64 %%l){%%p=sub i64 "
-      "%%v,%%f\n%%fmt=getelementptr[5 x i8],ptr @.fmt_d,i64 0,i64 0\n%%buf=alloca[32 x "
-      "i8]\n%%1=getelementptr[32 x i8],ptr %%buf,i64 0,i64 0\n%%add=add i64 %%p,1\n%%2=call "
-      "i32(ptr,ptr,...)@sprintf(ptr %%1,ptr %%fmt,i64 %%add)\n%%n=sext i32 %%2 to i64\n%%sz=add "
-      "i64 %%n,1\n%%rsz=mul i64 %%sz,8\n%%r=call ptr @malloc(i64 %%rsz)\nstore i64 %%n,ptr "
-      "%%r\nbr label %%loop\nloop:\n%%i=phi i64[0,%%0],[%%9,%%body]\n%%3=icmp slt i64 "
-      "%%i,%%n\nbr i1 %%3,label %%body,label %%done\nbody:\n%%4=getelementptr[32 x i8],ptr "
-      "%%buf,i64 0,i64 %%i\n%%5=load i8,ptr %%4\n%%6=sext i8 %%5 to i64\n%%7=add i64 "
-      "%%i,1\n%%8=getelementptr i64,ptr %%r,i64 %%7\nstore i64 %%6,ptr %%8\n%%9=add i64 "
-      "%%i,1\nbr label %%loop\ndone:\nret ptr %%r}\n");
+      // __ada_image_enum returns a fat pointer {ptr, ptr} like __ada_image_int
+      "define linkonce_odr ptr @__ada_image_enum(i64 %%v, i64 %%f, i64 %%l){\n"
+      "  %%p = sub i64 %%v, %%f\n"
+      "  %%buf = alloca [32 x i8]\n"
+      "  %%bufptr = getelementptr [32 x i8], ptr %%buf, i64 0, i64 0\n"
+      "  %%fmt = getelementptr [5 x i8], ptr @.fmt_d, i64 0, i64 0\n"
+      "  %%add = add i64 %%p, 1\n"
+      "  %%len32 = call i32 (ptr, ptr, ...) @sprintf(ptr %%bufptr, ptr %%fmt, i64 %%add)\n"
+      "  %%len = sext i32 %%len32 to i64\n"
+      "  ; Allocate fat pointer structure {ptr, ptr}\n"
+      "  %%fp = call ptr @malloc(i64 16)\n"
+      "  ; Allocate data array (len elements, each i64, 1-indexed)\n"
+      "  %%datasz = add i64 %%len, 1\n"
+      "  %%databytes = mul i64 %%datasz, 8\n"
+      "  %%data = call ptr @malloc(i64 %%databytes)\n"
+      "  ; Allocate bounds structure {i64, i64}\n"
+      "  %%bounds = call ptr @malloc(i64 16)\n"
+      "  ; Store low bound (1) and high bound (len)\n"
+      "  %%lo_ptr = getelementptr {i64, i64}, ptr %%bounds, i32 0, i32 0\n"
+      "  store i64 1, ptr %%lo_ptr\n"
+      "  %%hi_ptr = getelementptr {i64, i64}, ptr %%bounds, i32 0, i32 1\n"
+      "  store i64 %%len, ptr %%hi_ptr\n"
+      "  ; Store data and bounds pointers in fat pointer\n"
+      "  %%fp_data = getelementptr {ptr, ptr}, ptr %%fp, i32 0, i32 0\n"
+      "  store ptr %%data, ptr %%fp_data\n"
+      "  %%fp_bounds = getelementptr {ptr, ptr}, ptr %%fp, i32 0, i32 1\n"
+      "  store ptr %%bounds, ptr %%fp_bounds\n"
+      "  ; Copy characters to data array (1-indexed)\n"
+      "  br label %%loop\n"
+      "loop:\n"
+      "  %%i = phi i64 [0, %%0], [%%nexti, %%body]\n"
+      "  %%done_cmp = icmp slt i64 %%i, %%len\n"
+      "  br i1 %%done_cmp, label %%body, label %%done\n"
+      "body:\n"
+      "  %%srcptr = getelementptr [32 x i8], ptr %%buf, i64 0, i64 %%i\n"
+      "  %%ch = load i8, ptr %%srcptr\n"
+      "  %%ch64 = sext i8 %%ch to i64\n"
+      "  %%idx = add i64 %%i, 1\n"
+      "  %%dstptr = getelementptr i64, ptr %%data, i64 %%idx\n"
+      "  store i64 %%ch64, ptr %%dstptr\n"
+      "  %%nexti = add i64 %%i, 1\n"
+      "  br label %%loop\n"
+      "done:\n"
+      "  ret ptr %%fp\n"
+      "}\n");
+  // __ada_value_int takes a fat pointer {ptr, ptr} and returns the integer value
   fprintf(
       o,
-      "define linkonce_odr i64 @__ada_value_int(ptr %%s){%%pn=load i64,ptr %%s\n%%buf=call ptr "
-      "@malloc(i64 %%pn)\nbr label %%copy\ncopy:\n%%ci=phi i64[0,%%0],[%%next,%%cbody]\n%%1=icmp "
-      "slt i64 %%ci,%%pn\nbr i1 %%1,label %%cbody,label %%parse\ncbody:\n%%idx=add i64 "
-      "%%ci,1\n%%sptr=getelementptr i64,ptr %%s,i64 %%idx\n%%charval=load i64,ptr "
-      "%%sptr\n%%ch=trunc i64 %%charval to i8\n%%bptr=getelementptr i8,ptr %%buf,i64 %%ci\nstore "
-      "i8 %%ch,ptr %%bptr\n%%next=add i64 %%ci,1\nbr label %%copy\nparse:\n%%null=getelementptr "
-      "i8,ptr %%buf,i64 %%pn\nstore i8 0,ptr %%null\n%%result=call "
-      "i64(ptr,ptr,i32,...)@strtoll(ptr %%buf,ptr null,i32 10)\ncall void @free(ptr %%buf)\nret "
-      "i64 %%result}\ndeclare i64 @strtoll(ptr,ptr,i32,...)\n");
+      "define linkonce_odr i64 @__ada_value_int(ptr %%fp){\n"
+      "  ; Extract data pointer from fat pointer\n"
+      "  %%data_ptr_ptr = getelementptr {ptr, ptr}, ptr %%fp, i32 0, i32 0\n"
+      "  %%data = load ptr, ptr %%data_ptr_ptr\n"
+      "  ; Extract bounds pointer from fat pointer\n"
+      "  %%bounds_ptr_ptr = getelementptr {ptr, ptr}, ptr %%fp, i32 0, i32 1\n"
+      "  %%bounds = load ptr, ptr %%bounds_ptr_ptr\n"
+      "  ; Get low and high bounds\n"
+      "  %%lo_ptr = getelementptr {i64, i64}, ptr %%bounds, i32 0, i32 0\n"
+      "  %%lo = load i64, ptr %%lo_ptr\n"
+      "  %%hi_ptr = getelementptr {i64, i64}, ptr %%bounds, i32 0, i32 1\n"
+      "  %%hi = load i64, ptr %%hi_ptr\n"
+      "  ; Calculate length\n"
+      "  %%len_minus1 = sub i64 %%hi, %%lo\n"
+      "  %%len = add i64 %%len_minus1, 1\n"
+      "  ; Allocate buffer for C string\n"
+      "  %%bufsz = add i64 %%len, 1\n"
+      "  %%buf = call ptr @malloc(i64 %%bufsz)\n"
+      "  br label %%copy\n"
+      "copy:\n"
+      "  %%ci = phi i64 [0, %%0], [%%next, %%cbody]\n"
+      "  %%cmp = icmp slt i64 %%ci, %%len\n"
+      "  br i1 %%cmp, label %%cbody, label %%parse\n"
+      "cbody:\n"
+      "  ; Read from 1-indexed data array\n"
+      "  %%idx = add i64 %%ci, %%lo\n"
+      "  %%sptr = getelementptr i64, ptr %%data, i64 %%idx\n"
+      "  %%charval = load i64, ptr %%sptr\n"
+      "  %%ch = trunc i64 %%charval to i8\n"
+      "  %%bptr = getelementptr i8, ptr %%buf, i64 %%ci\n"
+      "  store i8 %%ch, ptr %%bptr\n"
+      "  %%next = add i64 %%ci, 1\n"
+      "  br label %%copy\n"
+      "parse:\n"
+      "  %%null = getelementptr i8, ptr %%buf, i64 %%len\n"
+      "  store i8 0, ptr %%null\n"
+      "  %%result = call i64 (ptr, ptr, i32, ...) @strtoll(ptr %%buf, ptr null, i32 10)\n"
+      "  call void @free(ptr %%buf)\n"
+      "  ret i64 %%result\n"
+      "}\n"
+      "declare i64 @strtoll(ptr, ptr, i32, ...)\n");
+  // __ada_image_int returns a fat pointer {ptr, ptr} where:
+  // - First ptr: data pointer (i64 array of characters, 1-indexed)
+  // - Second ptr: bounds pointer ({i64, i64} with low=1, high=length)
   fprintf(
       o,
-      "define linkonce_odr ptr @__ada_image_int(i64 %%v){%%buf=alloca[32 x "
-      "i8]\n%%1=getelementptr[32 x i8],ptr %%buf,i64 0,i64 0\n%%fmt=getelementptr[5 x i8],ptr "
-      "@.fmt_d,i64 0,i64 0\n%%2=call i32(ptr,ptr,...)@sprintf(ptr %%1,ptr %%fmt,i64 "
-      "%%v)\n%%n=sext i32 %%2 to i64\n%%sz=add i64 %%n,1\n%%rsz=mul i64 %%sz,8\n%%r=call ptr "
-      "@malloc(i64 %%rsz)\nstore i64 %%n,ptr %%r\nbr label %%loop\nloop:\n%%i=phi "
-      "i64[0,%%0],[%%8,%%body]\n%%3=icmp slt i64 %%i,%%n\nbr i1 %%3,label %%body,label "
-      "%%done\nbody:\n%%4=getelementptr[32 x i8],ptr %%buf,i64 0,i64 %%i\n%%5=load i8,ptr "
-      "%%4\n%%6=sext i8 %%5 to i64\n%%7=add i64 %%i,1\n%%idx=getelementptr i64,ptr %%r,i64 "
-      "%%7\nstore i64 %%6,ptr %%idx\n%%8=add i64 %%i,1\nbr label %%loop\ndone:\nret ptr %%r}\n");
+      "define linkonce_odr ptr @__ada_image_int(i64 %%v){\n"
+      "  %%buf = alloca [32 x i8]\n"
+      "  %%bufptr = getelementptr [32 x i8], ptr %%buf, i64 0, i64 0\n"
+      "  %%fmt = getelementptr [5 x i8], ptr @.fmt_d, i64 0, i64 0\n"
+      "  %%len32 = call i32 (ptr, ptr, ...) @sprintf(ptr %%bufptr, ptr %%fmt, i64 %%v)\n"
+      "  %%len = sext i32 %%len32 to i64\n"
+      "  ; Allocate fat pointer structure {ptr, ptr}\n"
+      "  %%fp = call ptr @malloc(i64 16)\n"
+      "  ; Allocate data array (len elements, each i64, 1-indexed so index 0 unused)\n"
+      "  %%datasz = add i64 %%len, 1\n"
+      "  %%databytes = mul i64 %%datasz, 8\n"
+      "  %%data = call ptr @malloc(i64 %%databytes)\n"
+      "  ; Allocate bounds structure {i64, i64}\n"
+      "  %%bounds = call ptr @malloc(i64 16)\n"
+      "  ; Store low bound (1) and high bound (len)\n"
+      "  %%lo_ptr = getelementptr {i64, i64}, ptr %%bounds, i32 0, i32 0\n"
+      "  store i64 1, ptr %%lo_ptr\n"
+      "  %%hi_ptr = getelementptr {i64, i64}, ptr %%bounds, i32 0, i32 1\n"
+      "  store i64 %%len, ptr %%hi_ptr\n"
+      "  ; Store data and bounds pointers in fat pointer\n"
+      "  %%fp_data = getelementptr {ptr, ptr}, ptr %%fp, i32 0, i32 0\n"
+      "  store ptr %%data, ptr %%fp_data\n"
+      "  %%fp_bounds = getelementptr {ptr, ptr}, ptr %%fp, i32 0, i32 1\n"
+      "  store ptr %%bounds, ptr %%fp_bounds\n"
+      "  ; Copy characters to data array (1-indexed)\n"
+      "  br label %%loop\n"
+      "loop:\n"
+      "  %%i = phi i64 [0, %%0], [%%nexti, %%body]\n"
+      "  %%done_cmp = icmp slt i64 %%i, %%len\n"
+      "  br i1 %%done_cmp, label %%body, label %%done\n"
+      "body:\n"
+      "  %%srcptr = getelementptr [32 x i8], ptr %%buf, i64 0, i64 %%i\n"
+      "  %%ch = load i8, ptr %%srcptr\n"
+      "  %%ch64 = sext i8 %%ch to i64\n"
+      "  %%idx = add i64 %%i, 1\n"
+      "  %%dstptr = getelementptr i64, ptr %%data, i64 %%idx\n"
+      "  store i64 %%ch64, ptr %%dstptr\n"
+      "  %%nexti = add i64 %%i, 1\n"
+      "  br label %%loop\n"
+      "done:\n"
+      "  ret ptr %%fp\n"
+      "}\n");
   fprintf(
       o,
       "define linkonce_odr void @__ada_check_range(i64 %%v,i64 %%lo,i64 %%hi){%%1=icmp sge i64 "
@@ -15390,13 +15739,16 @@ static void print_forward_declarations(Code_Generator *generator, Symbol_Manager
             // External symbol - emit declare statement
             char nb[256];
             snprintf(nb, 256, "%.*s", (int) s->external_name.length, s->external_name.string);
+            // Skip runtime header functions to avoid redeclaration
+            if (is_runtime_type(nb))
+              continue;
             if (not add_declaration(generator, nb))
               continue;
             Syntax_Node *sp = n->body.subprogram_spec;
             if (n->k == N_PD)
             {
               // Procedure
-              fprintf(generator->o, "declare void @\"%s\"(", nb);
+              fprintf(generator->o, "declare void @%s(", nb);
               for (uint32_t i = 0; i < sp->subprogram.parameters.count; i++)
               {
                 if (i)
@@ -15416,7 +15768,7 @@ static void print_forward_declarations(Code_Generator *generator, Symbol_Manager
               // Function
               Type_Info *rt = sp->subprogram.return_type ? resolve_subtype(sm, sp->subprogram.return_type) : 0;
               Value_Kind rk = rt ? token_kind_to_value_kind(rt) : VALUE_KIND_INTEGER;
-              fprintf(generator->o, "declare %s @\"%s\"(", value_llvm_type_string(rk), nb);
+              fprintf(generator->o, "declare %s @%s(", value_llvm_type_string(rk), nb);
               for (uint32_t i = 0; i < sp->subprogram.parameters.count; i++)
               {
                 if (i)
@@ -15485,7 +15837,7 @@ static void write_ada_library_interface(Symbol_Manager *symbol_manager, const ch
         alp[pos++] = fn[i];
     }
     for (uint32_t i = 0; i < nm.length and pos < 519; i++)
-      alp[pos++] = tolower(nm.string[i]);
+      alp[pos++] = TOLOWER(nm.string[i]);
     alp[pos] = 0;
     strcat(alp, ".ali");
   }
@@ -15505,7 +15857,7 @@ static void write_ada_library_interface(Symbol_Manager *symbol_manager, const ch
       char pf[256];
       int n = snprintf(pf, 256, "%.*s", (int) w->with_clause.name.length, w->with_clause.name.string);
       for (int j = 0; j < n; j++)
-        pf[j] = tolower(pf[j]);
+        pf[j] = TOLOWER(pf[j]);
       uint64_t ts = find_type_symbol(pf);
       fprintf(f, "W %.*s %lu\n", (int) w->with_clause.name.length, w->with_clause.name.string, (unsigned long) ts);
     }
@@ -15572,10 +15924,10 @@ static void write_ada_library_interface(Symbol_Manager *symbol_manager, const ch
         {
           int n = 0;
           for (uint32_t j = 0; j < s->parent->name.length; j++)
-            nb[n++] = toupper(s->parent->name.string[j]);
+            nb[n++] = TOUPPER(s->parent->name.string[j]);
           n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->elaboration_level);
           for (uint32_t j = 0; j < s->name.length; j++)
-            nb[n++] = toupper(s->name.string[j]);
+            nb[n++] = TOUPPER(s->name.string[j]);
           nb[n] = 0;
         }
         else
@@ -15639,10 +15991,10 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
         char nb[256];
         int n = 0;
         for (uint32_t j = 0; j < s->parent->name.length; j++)
-          nb[n++] = toupper(s->parent->name.string[j]);
+          nb[n++] = TOUPPER(s->parent->name.string[j]);
         n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->elaboration_level);
         for (uint32_t j = 0; j < s->name.length; j++)
-          nb[n++] = toupper(s->name.string[j]);
+          nb[n++] = TOUPPER(s->name.string[j]);
         nb[n] = 0;
         if (s->k == 2 and s->definition and s->definition->k == N_STR)
         {
@@ -15752,320 +16104,10 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
 }
 
 // ============================================================================
-// Embedded Ada Runtime Library
-// ============================================================================
-
-static const char *ADA_RUNTIME_SOURCE =
-"// Ada83 Runtime Support Library - Generated by ada83 compiler\n"
-"#include <stdio.h>\n"
-"#include <stdlib.h>\n"
-"#include <string.h>\n"
-"#include <setjmp.h>\n"
-"#include <math.h>\n"
-"#include <stdint.h>\n"
-"\n"
-"// Secondary Stack\n"
-"#define SS_INITIAL_SIZE (64 * 1024)\n"
-"#define SS_MAX_SIZE (16 * 1024 * 1024)\n"
-"\n"
-"typedef struct {\n"
-"    char *base;\n"
-"    char *top;\n"
-"    char *limit;\n"
-"    size_t size;\n"
-"} secondary_stack_t;\n"
-"\n"
-"static secondary_stack_t __ada_secondary_stack = {0};\n"
-"\n"
-"void __ada_ss_init(void) {\n"
-"    if (__ada_secondary_stack.base == NULL) {\n"
-"        __ada_secondary_stack.size = SS_INITIAL_SIZE;\n"
-"        __ada_secondary_stack.base = malloc(__ada_secondary_stack.size);\n"
-"        if (!__ada_secondary_stack.base) {\n"
-"            fprintf(stderr, \"Fatal: Cannot allocate secondary stack\\n\");\n"
-"            exit(1);\n"
-"        }\n"
-"        __ada_secondary_stack.top = __ada_secondary_stack.base;\n"
-"        __ada_secondary_stack.limit = __ada_secondary_stack.base + __ada_secondary_stack.size;\n"
-"    }\n"
-"}\n"
-"\n"
-"void* __ada_ss_allocate(int64_t size) {\n"
-"    if (!__ada_secondary_stack.base) __ada_ss_init();\n"
-"    size = (size + 7) & ~7;\n"
-"    char *result = __ada_secondary_stack.top;\n"
-"    char *new_top = __ada_secondary_stack.top + size;\n"
-"    if (new_top > __ada_secondary_stack.limit) {\n"
-"        size_t current_offset = __ada_secondary_stack.top - __ada_secondary_stack.base;\n"
-"        size_t new_size = __ada_secondary_stack.size * 2;\n"
-"        if (new_size > SS_MAX_SIZE) {\n"
-"            fprintf(stderr, \"Fatal: Secondary stack overflow\\n\");\n"
-"            exit(1);\n"
-"        }\n"
-"        char *new_base = realloc(__ada_secondary_stack.base, new_size);\n"
-"        if (!new_base) {\n"
-"            fprintf(stderr, \"Fatal: Cannot grow secondary stack\\n\");\n"
-"            exit(1);\n"
-"        }\n"
-"        __ada_secondary_stack.base = new_base;\n"
-"        __ada_secondary_stack.top = new_base + current_offset;\n"
-"        __ada_secondary_stack.size = new_size;\n"
-"        __ada_secondary_stack.limit = new_base + new_size;\n"
-"        result = __ada_secondary_stack.top;\n"
-"        new_top = __ada_secondary_stack.top + size;\n"
-"    }\n"
-"    __ada_secondary_stack.top = new_top;\n"
-"    return result;\n"
-"}\n"
-"\n"
-"void* __ada_ss_mark(void) {\n"
-"    if (!__ada_secondary_stack.base) __ada_ss_init();\n"
-"    return __ada_secondary_stack.top;\n"
-"}\n"
-"\n"
-"void __ada_ss_release(void *mark) {\n"
-"    if (!__ada_secondary_stack.base) return;\n"
-"    __ada_secondary_stack.top = (char*)mark;\n"
-"}\n"
-"\n"
-"// Exception Handling\n"
-"#define MAX_EXCEPTION_HANDLERS 256\n"
-"\n"
-"typedef struct {\n"
-"    jmp_buf env;\n"
-"    int active;\n"
-"} exception_handler_t;\n"
-"\n"
-"static exception_handler_t __ada_exception_handlers[MAX_EXCEPTION_HANDLERS];\n"
-"static int __ada_handler_sp = -1;\n"
-"static const char *__ada_current_exception = NULL;\n"
-"\n"
-"const char *CONSTRAINT_ERROR = \"CONSTRAINT_ERROR\";\n"
-"const char *PROGRAM_ERROR = \"PROGRAM_ERROR\";\n"
-"const char *STORAGE_ERROR = \"STORAGE_ERROR\";\n"
-"const char *TASKING_ERROR = \"TASKING_ERROR\";\n"
-"\n"
-"void __ada_push_handler(void *env) {\n"
-"    if (__ada_handler_sp >= MAX_EXCEPTION_HANDLERS - 1) {\n"
-"        fprintf(stderr, \"Fatal: Exception handler stack overflow\\n\");\n"
-"        exit(1);\n"
-"    }\n"
-"    __ada_handler_sp++;\n"
-"    memcpy(__ada_exception_handlers[__ada_handler_sp].env, env, sizeof(jmp_buf));\n"
-"    __ada_exception_handlers[__ada_handler_sp].active = 1;\n"
-"}\n"
-"\n"
-"void __ada_pop_handler(void) {\n"
-"    if (__ada_handler_sp >= 0) {\n"
-"        __ada_exception_handlers[__ada_handler_sp].active = 0;\n"
-"        __ada_handler_sp--;\n"
-"    }\n"
-"}\n"
-"\n"
-"void __ada_raise(const char *exception_name) {\n"
-"    __ada_current_exception = exception_name;\n"
-"    if (__ada_handler_sp >= 0 && __ada_exception_handlers[__ada_handler_sp].active) {\n"
-"        longjmp(__ada_exception_handlers[__ada_handler_sp].env, 1);\n"
-"    } else {\n"
-"        fprintf(stderr, \"Unhandled exception: %s\\n\", exception_name);\n"
-"        exit(1);\n"
-"    }\n"
-"}\n"
-"\n"
-"int __ada_setjmp(void *env) {\n"
-"    return setjmp(*(jmp_buf*)env);\n"
-"}\n"
-"\n"
-"const char* __ada_get_exception(void) {\n"
-"    return __ada_current_exception;\n"
-"}\n"
-"\n"
-"// Range Checking\n"
-"void __ada_check_range(int64_t value, int64_t low, int64_t high) {\n"
-"    if (value < low || value > high) __ada_raise(CONSTRAINT_ERROR);\n"
-"}\n"
-"\n"
-"// Arithmetic\n"
-"int64_t __ada_powi(int64_t base, int64_t exponent) {\n"
-"    if (exponent < 0) __ada_raise(CONSTRAINT_ERROR);\n"
-"    if (exponent == 0) return 1;\n"
-"    int64_t result = 1, b = base, e = exponent;\n"
-"    while (e > 0) {\n"
-"        if (e & 1) result *= b;\n"
-"        b *= b;\n"
-"        e >>= 1;\n"
-"    }\n"
-"    return result;\n"
-"}\n"
-"\n"
-"double __ada_powf(double base, double exponent) {\n"
-"    return pow(base, exponent);\n"
-"}\n"
-"\n"
-"// String Operations\n"
-"char* __ada_image_int(int64_t value) {\n"
-"    char *buffer = __ada_ss_allocate(32);\n"
-"    snprintf(buffer, 32, \"%ld\", (long)value);\n"
-"    return buffer;\n"
-"}\n"
-"\n"
-"char* __ada_image_enum(int64_t value, int64_t low, int64_t high) {\n"
-"    if (value < low || value > high) __ada_raise(CONSTRAINT_ERROR);\n"
-"    char *buffer = __ada_ss_allocate(32);\n"
-"    snprintf(buffer, 32, \"%ld\", (long)value);\n"
-"    return buffer;\n"
-"}\n"
-"\n"
-"int64_t __ada_value_int(const char *str) {\n"
-"    char *endptr;\n"
-"    long long value = strtoll(str, &endptr, 10);\n"
-"    if (*endptr != '\\0' && *endptr != ' ') __ada_raise(CONSTRAINT_ERROR);\n"
-"    return value;\n"
-"}\n"
-"\n"
-"// Finalization\n"
-"typedef struct finalizer_node {\n"
-"    void (*finalizer)(void*);\n"
-"    void *object;\n"
-"    struct finalizer_node *next;\n"
-"} finalizer_node_t;\n"
-"\n"
-"static finalizer_node_t *__ada_finalizer_list = NULL;\n"
-"\n"
-"void __ada_register_finalizer(void (*finalizer)(void*), void *object) {\n"
-"    finalizer_node_t *node = malloc(sizeof(finalizer_node_t));\n"
-"    if (!node) __ada_raise(STORAGE_ERROR);\n"
-"    node->finalizer = finalizer;\n"
-"    node->object = object;\n"
-"    node->next = __ada_finalizer_list;\n"
-"    __ada_finalizer_list = node;\n"
-"}\n"
-"\n"
-"void __ada_finalize(void *object) {\n"
-"    for (finalizer_node_t *node = __ada_finalizer_list; node; node = node->next) {\n"
-"        if (node->object == object) {\n"
-"            node->finalizer(object);\n"
-"            break;\n"
-"        }\n"
-"    }\n"
-"}\n"
-"\n"
-"void __ada_finalize_all(void) {\n"
-"    while (__ada_finalizer_list) {\n"
-"        finalizer_node_t *node = __ada_finalizer_list;\n"
-"        __ada_finalizer_list = node->next;\n"
-"        if (node->finalizer && node->object) node->finalizer(node->object);\n"
-"        free(node);\n"
-"    }\n"
-"}\n"
-"\n"
-"// Initialization\n"
-"__attribute__((constructor))\n"
-"static void __ada_runtime_init(void) {\n"
-"    __ada_ss_init();\n"
-"}\n"
-"\n"
-"__attribute__((destructor))\n"
-"static void __ada_runtime_cleanup(void) {\n"
-"    __ada_finalize_all();\n"
-"    if (__ada_secondary_stack.base) {\n"
-"        free(__ada_secondary_stack.base);\n"
-"        __ada_secondary_stack.base = NULL;\n"
-"    }\n"
-"}\n"
-"\n"
-"// Global iteration helper\n"
-"int64_t __ada_i = 0;\n"
-"\n"
-"// TEXT_IO Runtime\n"
-"FILE *__text_io_stdout = NULL;\n"
-"FILE *__text_io_stdin = NULL;\n"
-"FILE *__text_io_stderr = NULL;\n"
-"\n"
-"__attribute__((constructor))\n"
-"static void __text_io_init(void) {\n"
-"    __text_io_stdout = stdout;\n"
-"    __text_io_stdin = stdin;\n"
-"    __text_io_stderr = stderr;\n"
-"}\n"
-"\n"
-"void __text_io_put_i64(FILE *file, int64_t value) {\n"
-"    if (!file) file = stdout;\n"
-"    fprintf(file, \"%ld\", (long)value);\n"
-"    fflush(file);\n"
-"}\n"
-"\n"
-"void __text_io_put_f64(FILE *file, double value) {\n"
-"    if (!file) file = stdout;\n"
-"    fprintf(file, \"%g\", value);\n"
-"    fflush(file);\n"
-"}\n"
-"\n"
-"void __text_io_put(FILE *file, const char *str) {\n"
-"    if (!file) file = stdout;\n"
-"    if (str) {\n"
-"        fputs(str, file);\n"
-"        fflush(file);\n"
-"    }\n"
-"}\n"
-"\n"
-"void __text_io_put_line_i64(FILE *file, int64_t value) {\n"
-"    if (!file) file = stdout;\n"
-"    fprintf(file, \"%ld\\n\", (long)value);\n"
-"    fflush(file);\n"
-"}\n"
-"\n"
-"void __text_io_put_line_f64(FILE *file, double value) {\n"
-"    if (!file) file = stdout;\n"
-"    fprintf(file, \"%g\\n\", value);\n"
-"    fflush(file);\n"
-"}\n"
-"\n"
-"void __text_io_put_line(FILE *file, const char *str) {\n"
-"    if (!file) file = stdout;\n"
-"    if (str) fputs(str, file);\n"
-"    fputc('\\n', file);\n"
-"    fflush(file);\n"
-"}\n"
-"\n"
-"void __text_io_new_line(void) {\n"
-"    fputc('\\n', stdout);\n"
-"    fflush(stdout);\n"
-"}\n"
-"\n"
-"// Print helpers\n"
-"void print_int(long long n) {\n"
-"    printf(\"%lld \", n);\n"
-"}\n"
-"\n"
-"void print_newline(void) {\n"
-"    printf(\"\\n\");\n"
-"}\n"
-;
-
-static void emit_runtime_source(const char *filename) {
-    FILE *f = fopen(filename, "w");
-    if (!f) {
-        fprintf(stderr, "Error: cannot create runtime file '%s'\n", filename);
-        exit(1);
-    }
-    fputs(ADA_RUNTIME_SOURCE, f);
-    fclose(f);
-}
-
 int main(int ac, char **av)
 {
   include_paths[include_path_count++] = ".";
   int ai = 1;
-
-  // Handle --emit-runtime option
-  if (ac > 1 && strcmp(av[1], "--emit-runtime") == 0) {
-    const char *outfile = ac > 2 ? av[2] : "ada_runtime.c";
-    emit_runtime_source(outfile);
-    printf("Runtime emitted to %s\n", outfile);
-    return 0;
-  }
-
   while (ai < ac and av[ai][0] == '-')
   {
     if (av[ai][1] == 'I' and av[ai][2] == 0 and ai + 1 < ac)
@@ -16076,8 +16118,7 @@ int main(int ac, char **av)
   }
   if (ai >= ac)
   {
-    fprintf(stderr, "u: %s [-Ipath...] f.adb\n", av[0]);
-    fprintf(stderr, "   %s --emit-runtime [outfile.c]\n", av[0]);
+    fprintf(stderr, "usage: %s [-Ipath...] file.adb\n", av[0]);
     return 1;
   }
   const char *inf = av[ai];
@@ -16160,10 +16201,12 @@ int main(int ac, char **av)
   FILE *o = stdout;
   Code_Generator g = {o, 0, 0, 0, &sm, {0}, 0, {0}, 0, {0}, 0, {0}, 13, {0}, {0}, {0}, {0}, 0};
   generate_runtime_type(&g);
+  // Track emitted globals to avoid duplicates
+  static char last_emitted[256] = {0};
   for (int h = 0; h < 4096; h++)
     for (Symbol *s = sm.sy[h]; s; s = s->next)
       if ((s->k == 0 or s->k == 2) and (s->level == 0 or s->parent) and not(s->parent and lfnd(&sm, s->parent->name))
-          and not s->is_external)
+          and not s->is_external and s->overloads.count == 0)
       {
         Value_Kind k = s->type_info ? token_kind_to_value_kind(s->type_info) : VALUE_KIND_INTEGER;
         char nb[256];
@@ -16171,14 +16214,19 @@ int main(int ac, char **av)
         {
           int n = 0;
           for (uint32_t j = 0; j < s->parent->name.length; j++)
-            nb[n++] = toupper(s->parent->name.string[j]);
+            nb[n++] = TOUPPER(s->parent->name.string[j]);
           n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->elaboration_level);
           for (uint32_t j = 0; j < s->name.length; j++)
-            nb[n++] = toupper(s->name.string[j]);
+            nb[n++] = TOUPPER(s->name.string[j]);
           nb[n] = 0;
         }
         else
           snprintf(nb, 256, "%.*s", (int) s->name.length, s->name.string);
+        // Skip if this global was already emitted (deduplication)
+        if (strcmp(nb, last_emitted) == 0)
+          continue;
+        strncpy(last_emitted, nb, 255);
+        last_emitted[255] = 0;
         if (s->k == 2 and s->definition and s->definition->k == N_STR)
         {
           uint32_t len = s->definition->string_value.length;
@@ -16294,7 +16342,7 @@ int main(int ac, char **av)
       encode_symbol_name(nb, 256, ms, sp->subprogram.name, sp->subprogram.parameters.count, sp);
       fprintf(
           o,
-          "define i32 @main(){\n  call void @__ada_ss_init()\n  call void @\"%s\"()\n  ret "
+          "define i32 @main(){\n  call void @__ada_ss_init()\n  call void @%s()\n  ret "
           "i32 0\n}\n",
           nb);
       break;
