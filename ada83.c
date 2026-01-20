@@ -7450,7 +7450,9 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
     for (uint32_t i = 0; i < node->call.arguments.count; i++)
       resolve_expression(symbol_manager, node->call.arguments.data[i], 0);
     Type_Info *ft = node->call.function_name ? node->call.function_name->ty : 0;
-    if (ft and ft->k == TYPE_ARRAY)
+    // Only convert to array indexing if it's actually an array, not a function that returns an array
+    Symbol *fn_sym = node->call.function_name ? node->call.function_name->symbol : 0;
+    if (ft and ft->k == TYPE_ARRAY and (not fn_sym or fn_sym->k != 5))
     {
       Syntax_Node *fn = node->call.function_name;
       Node_Vector ar = node->call.arguments;
@@ -7490,7 +7492,20 @@ static void resolve_expression(Symbol_Manager *symbol_manager, Syntax_Node *node
         node->ty = TY_INT;
     }
     else
-      node->ty = TY_INT;
+    {
+      // Handle N_SEL function names (like PKG.FUNC)
+      Syntax_Node *fn = node->call.function_name;
+      if (fn and fn->symbol and fn->symbol->k == 5 and fn->symbol->type_info
+          and fn->symbol->type_info->k == TYPE_STRING and fn->symbol->type_info->element_type)
+      {
+        node->ty = fn->symbol->type_info->element_type;
+        node->symbol = fn->symbol;
+      }
+      else if (fn and fn->ty)
+        node->ty = fn->ty;
+      else
+        node->ty = TY_INT;
+    }
   }
   break;
   case N_AG:
@@ -7971,6 +7986,7 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *node, Node_Vector *fp, No
 static const char *lookup_path(Symbol_Manager *symbol_manager, String_Slice nm);
 static Syntax_Node *pks2(Symbol_Manager *symbol_manager, String_Slice nm, const char *src);
 static void parse_package_specification(Symbol_Manager *symbol_manager, String_Slice nm, const char *src);
+static char *read_file(const char *path);
 static void resolve_array_parameter(Symbol_Manager *symbol_manager, Node_Vector *fp, Node_Vector *ap)
 {
   if (not fp or not ap)
@@ -8469,6 +8485,34 @@ static Syntax_Node *generate_clone(Symbol_Manager *symbol_manager, Syntax_Node *
           gs->definition = g->unit;
         symbol_add_overload(symbol_manager, gs);
       }
+      // For generic packages, try to load the body from .adb file
+      if (g->unit and g->unit->k == N_PKS and not g->body)
+      {
+        char pf[256], af[512];
+        for (int ii = 0; ii < include_path_count and not g->body; ii++)
+        {
+          snprintf(pf, 256, "%s%s%.*s", include_paths[ii],
+                   include_paths[ii][0] and include_paths[ii][strlen(include_paths[ii]) - 1] != '/' ? "/" : "",
+                   (int) nm.length, nm.string);
+          for (char *p = pf + strlen(include_paths[ii]); *p; p++) *p = TOLOWER(*p);
+          snprintf(af, 512, "%s.adb", pf);
+          const char *bsrc = read_file(af);
+          if (bsrc)
+          {
+            Parser bp = parser_new(bsrc, strlen(bsrc), af);
+            Syntax_Node *bcu = parse_compilation_unit(&bp);
+            for (uint32_t bi = 0; bcu and bi < bcu->compilation_unit.units.count; bi++)
+            {
+              Syntax_Node *bu = bcu->compilation_unit.units.data[bi];
+              if (bu->k == N_PKB and string_equal_ignore_case(bu->package_body.name, nm))
+              {
+                g->body = bu;
+                break;
+              }
+            }
+          }
+        }
+      }
     }
   }
   else if (n->k == N_GINST)
@@ -8496,6 +8540,57 @@ static Syntax_Node *generate_clone(Symbol_Manager *symbol_manager, Syntax_Node *
     }
   }
   return 0;
+}
+// Evaluate constant expressions at compile time
+static int64_t eval_const_expr(Syntax_Node *n)
+{
+  if (not n) return 0;
+  switch (n->k)
+  {
+  case N_INT: return n->integer_value;
+  case N_ID:
+    if (n->symbol and n->symbol->k == 2) return n->symbol->value;
+    return 0;
+  case N_UN:
+    if (n->unary_node.op == T_PL) return eval_const_expr(n->unary_node.operand);
+    if (n->unary_node.op == T_MN) return -eval_const_expr(n->unary_node.operand);
+    return 0;
+  case N_BIN:
+  {
+    int64_t l = eval_const_expr(n->binary_node.left);
+    int64_t r = eval_const_expr(n->binary_node.right);
+    switch (n->binary_node.op)
+    {
+    case T_PL: return l + r;
+    case T_MN: return l - r;
+    case T_ST: return l * r;
+    case T_SL: return r != 0 ? l / r : 0;
+    case T_MOD: return r != 0 ? l % r : 0;
+    case T_REM: return r != 0 ? l % r : 0;
+    case T_EX: // exponentiation
+    {
+      int64_t v = 1;
+      for (int64_t i = 0; i < r; i++) v *= l;
+      return v;
+    }
+    default: return 0;
+    }
+  }
+  case N_AT: // Handle attributes like 'FIRST, 'LAST
+  {
+    Type_Info *pt = n->attribute.prefix ? n->attribute.prefix->ty : 0;
+    if (pt)
+    {
+      String_Slice a = n->attribute.attribute_name;
+      if (string_equal_ignore_case(a, STRING_LITERAL("FIRST"))) return pt->low_bound;
+      if (string_equal_ignore_case(a, STRING_LITERAL("LAST"))) return pt->high_bound;
+      if (string_equal_ignore_case(a, STRING_LITERAL("LENGTH")))
+        return pt->high_bound >= pt->low_bound ? pt->high_bound - pt->low_bound + 1 : 0;
+    }
+    return 0;
+  }
+  default: return 0;
+  }
 }
 static Symbol *get_pkg_sym(Symbol_Manager *symbol_manager, Syntax_Node *pk)
 {
@@ -8636,6 +8731,11 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
             s->value = ag->symbol->value;
           else if (ag->k == N_INT)
             s->value = ag->integer_value;
+        }
+        else if (n->object_decl.is_constant and (n->object_decl.in->k == N_BIN or n->object_decl.in->k == N_UN))
+        {
+          // Evaluate binary/unary constant expressions (e.g., 2**31, -1)
+          s->value = eval_const_expr(n->object_decl.in);
         }
       }
     }
@@ -11653,6 +11753,29 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
   break;
   case N_SEL:
   {
+    // Early check: if this N_SEL resolves to a constant, return it directly
+    if (n->symbol and n->symbol->k == 2)
+    {
+      r.k = VALUE_KIND_INTEGER;
+      fprintf(o, "  %%t%d = add i64 0, %lld\n", r.id, (long long) n->symbol->value);
+      break;
+    }
+    // Early check: if this N_SEL resolves to a 0-parameter function, call it
+    if (n->symbol and n->symbol->k == 5)
+    {
+      Syntax_Node *sp = symbol_spec(n->symbol);
+      if (sp and sp->subprogram.parameters.count == 0)
+      {
+        Value_Kind rk = sp && sp->subprogram.return_type
+                            ? token_kind_to_value_kind(resolve_subtype(generator->sm, sp->subprogram.return_type))
+                            : VALUE_KIND_INTEGER;
+        char fnb[256];
+        encode_symbol_name(fnb, 256, n->symbol, n->selected_component.selector, 0, sp);
+        fprintf(o, "  %%t%d = call %s @%s()\n", r.id, value_llvm_type_string(rk), fnb);
+        r.k = rk;
+        break;
+      }
+    }
     Type_Info *pt = n->selected_component.prefix->ty ? type_canonical_concrete(n->selected_component.prefix->ty) : 0;
     Value p = {new_temporary_register(generator), VALUE_KIND_POINTER};
     if (n->selected_component.prefix->k == N_ID)
@@ -11690,7 +11813,23 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             }
           }
         }
-        if (s->level >= 0 and s->level < generator->sm->lv)
+        if (s->level == 0 and s->parent and s->parent->name.string)
+        {
+          // Global variable - use @PARENT_SxEy__NAME format
+          char nb[256];
+          int n = 0;
+          for (uint32_t j = 0; j < s->parent->name.length and n < 200; j++)
+            nb[n++] = TOUPPER(s->parent->name.string[j]);
+          n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->elaboration_level);
+          for (uint32_t j = 0; j < s->name.length and n < 250; j++)
+            nb[n++] = TOUPPER(s->name.string[j]);
+          nb[n] = 0;
+          if (vty and vty->k == TYPE_RECORD)
+            fprintf(o, "  %%t%d = load ptr, ptr @%s\n", p.id, nb);
+          else
+            fprintf(o, "  %%t%d = bitcast ptr @%s to ptr\n", p.id, nb);
+        }
+        else if (s->level >= 0 and s->level < generator->sm->lv)
         {
           if (has_nested)
           {
@@ -11700,7 +11839,6 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           }
           else if (vty and vty->k == TYPE_RECORD)
           {
-            // Always load the pointer for record types (records are stored by pointer)
             fprintf(
                 o,
                 "  %%t%d = load ptr, ptr %%lnk.%d.%.*s\n",
@@ -11720,7 +11858,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         }
         else
         {
-          // Always load the pointer for record types (records are stored by pointer)
+          // Local variable - use %v.name.sc.el format
           if (vty and vty->k == TYPE_RECORD)
             fprintf(
                 o,
@@ -11738,6 +11876,11 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                 s ? s->scope : 0,
                 s ? s->elaboration_level : 0);
         }
+      }
+      else
+      {
+        // Fallback: symbol not found or is exception - generate expression for prefix
+        p = generate_expression(generator, n->selected_component.prefix);
       }
     }
     else
@@ -11977,7 +12120,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         or string_equal_ignore_case(a, STRING_LITERAL("LENGTH")))
     {
       Value pv = {0, VALUE_KIND_INTEGER};
-      bool is_typ = n->attribute.prefix and n->attribute.prefix->k == N_ID and n->attribute.prefix->symbol and n->attribute.prefix->symbol->k == 1;
+      bool is_typ = n->attribute.prefix and n->attribute.prefix->symbol and n->attribute.prefix->symbol->k == 1;
       if (n->attribute.prefix and not is_typ)
         pv = generate_expression(generator, n->attribute.prefix);
       if (n->attribute.arguments.count > 0)
@@ -14273,7 +14416,8 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
       for (uint32_t i = 0; i < n->block.handlers.count; i++)
       {
         Syntax_Node *h = n->block.handlers.data[i];
-        int lhm = new_label_block(generator), lhn = new_label_block(generator);
+        int lhm = new_label_block(generator);
+        int lhn = -1;
         for (uint32_t j = 0; j < h->exception_handler.exception_choices.count; j++)
         {
           Syntax_Node *e = h->exception_handler.exception_choices.data[j];
@@ -14292,10 +14436,12 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           fprintf(o, "  %%t%d = call i32 @strcmp(ptr %%t%d, ptr @.ex.%s)\n", cm, ec, eb);
           int eq = new_temporary_register(generator);
           fprintf(o, "  %%t%d = icmp eq i32 %%t%d, 0\n", eq, cm);
+          lhn = new_label_block(generator);
           emit_conditional_branch(generator, eq, lhm, lhn);
           emit_label(generator, lhn);
         }
-        emit_branch(generator, ld);
+        if (lhn >= 0)
+          emit_branch(generator, ld);
         emit_label(generator, lhm);
         for (uint32_t j = 0; j < h->exception_handler.statements.count; j++)
           generate_statement_sequence(generator, h->exception_handler.statements.data[j]);
@@ -15684,7 +15830,8 @@ static void generate_runtime_type(Code_Generator *generator)
   fprintf(
       o,
       "@.ex.CONSTRAINT_ERROR=linkonce_odr constant[17 x "
-      "i8]c\"CONSTRAINT_ERROR\\00\"\n@.ex.PROGRAM_ERROR=linkonce_odr constant[14 x "
+      "i8]c\"CONSTRAINT_ERROR\\00\"\n@.ex.NUMERIC_ERROR=linkonce_odr constant[14 x "
+      "i8]c\"NUMERIC_ERROR\\00\"\n@.ex.PROGRAM_ERROR=linkonce_odr constant[14 x "
       "i8]c\"PROGRAM_ERROR\\00\"\n@.ex.STORAGE_ERROR=linkonce_odr constant[14 x "
       "i8]c\"STORAGE_ERROR\\00\"\n@.ex.TASKING_ERROR=linkonce_odr constant[14 x "
       "i8]c\"TASKING_ERROR\\00\"\n@.ex.USE_ERROR=linkonce_odr constant[10 x "
