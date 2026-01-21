@@ -7829,6 +7829,10 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
     if (node->raise_stmt.exception_choice)
       resolve_expression(symbol_manager, node->raise_stmt.exception_choice, 0);
     break;
+  case N_CL:
+    // Procedure call statements (e.g., MY_IO.WRITE(F, X))
+    resolve_expression(symbol_manager, node, 0);
+    break;
   case N_US:
     if (node->use_clause.nm->k == N_ID)
     {
@@ -8634,7 +8638,19 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
           if (bd)
           {
             bd->package_body.name = n->generic_inst.name;
+            // Save and reset level/parent context for package body resolution
+            // Package body variables should be at library level (level 0) with package as parent
+            int saved_lv = symbol_manager->lv;
+            int saved_pn = symbol_manager->pn;
+            Syntax_Node *saved_pk = symbol_manager->pk;
+            symbol_manager->lv = 0;
+            symbol_manager->pn = 0;
+            // Set pk to the instantiated package spec so symbols get correct parent
+            symbol_manager->pk = inst;
             resolve_declaration(symbol_manager, bd);
+            symbol_manager->lv = saved_lv;
+            symbol_manager->pn = saved_pn;
+            symbol_manager->pk = saved_pk;
             nv(&symbol_manager->ib, bd);
             // Also add procedure/function bodies from within the package body
             for (uint32_t di = 0; di < bd->package_body.declarations.count; di++)
@@ -9938,6 +9954,8 @@ static const char *ada_to_c_type_string(Type_Info *t)
   case TYPE_ACCESS:
   case TYPE_FAT_POINTER:
   case TYPE_STRING:
+  case TYPE_RECORD:
+  case TYPE_ARRAY:
     return "ptr";
   default:
     return "i32";
@@ -10755,7 +10773,17 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       if (s and s->type_info)
         k = token_kind_to_value_kind(s->type_info);
       r.k = k;
-      if (s and s->level == 0)
+      // Check if this is a package-level variable (parent is a package k==6)
+      // OR a variable from a generic package body (parent is procedure k=4, but var was in package body)
+      // Package-level variables should always be accessed as globals, not via static link
+      int is_package_level_var = s and s->parent and (uintptr_t)s->parent > 4096 and s->parent->k == 6;
+      // Also treat variables whose parent is a procedure/function AND that procedure is NOT
+      // the current function as globals (these are generic package body variables)
+      int is_generic_pkg_body_var = s and s->parent and (uintptr_t)s->parent > 4096
+          and (s->parent->k == 4 or s->parent->k == 5)
+          and generator->current_function and generator->current_function->symbol
+          and s->parent != generator->current_function->symbol;
+      if (s and (s->level == 0 or is_package_level_var or is_generic_pkg_body_var))
       {
         char nb[256];
         if (s->is_external and s->external_name.string)
@@ -11573,9 +11601,24 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
   case N_IX:
   {
     // Check if this is actually a function call (Ada allows FUNC(ARGS) syntax)
+    // Handle both N_ID (simple function name) and N_SEL (package.function)
+    Symbol *func_sym = 0;
+    String_Slice func_name = N;
     if (n->index.prefix->k == N_ID and n->index.prefix->symbol and n->index.prefix->symbol->k == 5)
     {
-      Symbol *func_sym = n->index.prefix->symbol;
+      func_sym = n->index.prefix->symbol;
+      func_name = n->index.prefix->string_value;
+    }
+    else if (n->index.prefix->k == N_SEL and n->index.prefix->symbol
+             and (n->index.prefix->symbol->k == 4 or n->index.prefix->symbol->k == 5))
+    {
+      // Package.Procedure(Args) or Package.Function(Args) case
+      func_sym = n->index.prefix->symbol;
+      func_name = n->index.prefix->selected_component.selector;
+    }
+
+    if (func_sym)
+    {
       Syntax_Node *func_spec = symbol_spec(func_sym);
       Value_Kind ret_kind = func_spec and func_spec->subprogram.return_type
         ? token_kind_to_value_kind(resolve_subtype(generator->sm, func_spec->subprogram.return_type))
@@ -11583,7 +11626,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
 
       // Build function name
       char fnb[256];
-      encode_symbol_name(fnb, 256, func_sym, n->index.prefix->string_value, n->index.indices.count, func_spec);
+      encode_symbol_name(fnb, 256, func_sym, func_name, n->index.indices.count, func_spec);
 
       // Generate all parameter expressions first
       Value args[16];
@@ -12853,6 +12896,47 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             break;
           }
         }
+      }
+      // General handling for N_SEL function/procedure calls (e.g., MY_IO.NAME(F), MY_IO.WRITE(F, X))
+      // k=4 is procedure, k=5 is function
+      if (sel->symbol and (sel->symbol->k == 4 or sel->symbol->k == 5))
+      {
+        Symbol *func_sym = sel->symbol;
+        Syntax_Node *func_spec = symbol_spec(func_sym);
+        Value_Kind ret_kind = func_spec and func_spec->subprogram.return_type
+            ? token_kind_to_value_kind(resolve_subtype(generator->sm, func_spec->subprogram.return_type))
+            : VALUE_KIND_POINTER;
+
+        // Build function name
+        char fnb[256];
+        encode_symbol_name(fnb, 256, func_sym, sel->selected_component.selector, n->call.arguments.count, func_spec);
+
+        // Generate all parameter expressions first
+        Value args[64];
+        for (uint32_t i = 0; i < n->call.arguments.count and i < 64; i++)
+        {
+          args[i] = generate_expression(generator, n->call.arguments.data[i]);
+        }
+
+        // Now generate the call with the parameter values
+        fprintf(o, "  %%t%d = call %s @%s(", r.id, value_llvm_type_string(ret_kind), fnb);
+
+        // Add static link if needed
+        bool needs_slnk = func_sym->level >= 0 and func_sym->level < generator->sm->lv;
+        if (needs_slnk)
+          fprintf(o, "ptr %%__slnk");
+
+        // Add parameters
+        for (uint32_t i = 0; i < n->call.arguments.count; i++)
+        {
+          if (needs_slnk or i > 0)
+            fprintf(o, ", ");
+          fprintf(o, "%s %%t%d", value_llvm_type_string(args[i].k), args[i].id);
+        }
+
+        fprintf(o, ")\n");
+        r.k = ret_kind;
+        break;
       }
       r.k = VALUE_KIND_INTEGER;
       fprintf(o, "  %%t%d = add i64 0, 0\n", r.id);
@@ -14213,6 +14297,57 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           }
         }
       }
+      // General handling for N_SEL procedure/function calls (e.g., MY_IO.WRITE(F, X))
+      // k=4 is procedure, k=5 is function
+      if (sel->symbol and (sel->symbol->k == 4 or sel->symbol->k == 5))
+      {
+        Symbol *func_sym = sel->symbol;
+        Syntax_Node *func_spec = symbol_spec(func_sym);
+
+        // Generate all parameter expressions first
+        Value args[64];
+        for (uint32_t i = 0; i < n->code_stmt.arguments.count and i < 64; i++)
+        {
+          args[i] = generate_expression(generator, n->code_stmt.arguments.data[i]);
+        }
+
+        // Build function name
+        char fnb[256];
+        encode_symbol_name(fnb, 256, func_sym, sel->selected_component.selector, n->code_stmt.arguments.count, func_spec);
+
+        // Determine return type for functions
+        Value_Kind ret_kind = func_spec and func_spec->subprogram.return_type
+            ? token_kind_to_value_kind(resolve_subtype(generator->sm, func_spec->subprogram.return_type))
+            : VALUE_KIND_POINTER;
+
+        // Generate the call
+        if (func_sym->k == 5 and func_spec and func_spec->subprogram.return_type)
+        {
+          // Function with return value
+          int rid = new_temporary_register(generator);
+          fprintf(o, "  %%t%d = call %s @%s(", rid, value_llvm_type_string(ret_kind), fnb);
+        }
+        else
+        {
+          // Procedure or function without explicit return
+          fprintf(o, "  call void @%s(", fnb);
+        }
+
+        // Add static link if needed
+        bool needs_slnk = func_sym->level >= 0 and func_sym->level < generator->sm->lv;
+        if (needs_slnk)
+          fprintf(o, "ptr %%__slnk");
+
+        // Add parameters
+        for (uint32_t i = 0; i < n->code_stmt.arguments.count; i++)
+        {
+          if (needs_slnk or i > 0)
+            fprintf(o, ", ");
+          fprintf(o, "%s %%t%d", value_llvm_type_string(args[i].k), args[i].id);
+        }
+
+        fprintf(o, ")\n");
+      }
     }
     break;
   case N_BL:
@@ -14868,7 +15003,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
                   s->scope,
                   s->elaboration_level);
             }
-            else if (at and at->k == TYPE_ARRAY and at->low_bound != 0 and at->high_bound > 0 and at->high_bound >= at->low_bound)
+            else if (at and at->k == TYPE_ARRAY and at->high_bound >= 0 and at->high_bound >= at->low_bound)
             {
               // Compile-time constrained array - use type bounds (not aggregate item count)
               asz = (int) (at->high_bound - at->low_bound + 1);
@@ -15795,6 +15930,70 @@ static void generate_expression_llvm(Code_Generator *generator, Syntax_Node *n)
     }
     for (uint32_t i = 0; i < n->package_body.statements.count; i++)
       generate_statement_sequence(generator, n->package_body.statements.data[i]);
+    // Copy local package body variables to their corresponding globals
+    // This ensures the globals are properly initialized for nested function access
+    for (uint32_t i = 0; i < n->package_body.declarations.count; i++)
+    {
+      Syntax_Node *d = n->package_body.declarations.data[i];
+      if (d and d->k == N_OD)
+      {
+        for (uint32_t j = 0; j < d->object_decl.identifiers.count; j++)
+        {
+          Syntax_Node *id = d->object_decl.identifiers.data[j];
+          Symbol *s = id->symbol;
+          if (s and (s->k == 0 or s->k == 2) and s->parent and (uintptr_t)s->parent > 4096
+              and (s->parent->k == 4 or s->parent->k == 5) and not s->is_external)
+          {
+            // Build global name
+            char gn[256];
+            int np = 0;
+            for (uint32_t gi = 0; gi < s->parent->name.length; gi++)
+              gn[np++] = TOUPPER(s->parent->name.string[gi]);
+            np += snprintf(gn + np, 256 - np, "_S%dE%d__", s->parent->scope, s->parent->elaboration_level);
+            for (uint32_t gi = 0; gi < s->name.length; gi++)
+              gn[np++] = TOUPPER(s->name.string[gi]);
+            gn[np] = 0;
+            // Determine type and copy appropriately
+            Type_Info *at = s->type_info ? type_canonical_concrete(s->type_info) : 0;
+            if (at and at->k == TYPE_ARRAY and at->high_bound >= at->low_bound)
+            {
+              // Array type - use memcpy to copy entire array
+              int64_t arr_size = at->high_bound - at->low_bound + 1;
+              // Calculate element size based on element type
+              // For records, arrays, and access types use pointer size (8)
+              // For simple types use their natural size
+              int elem_size = 8; // Default to pointer size
+              if (at->element_type)
+              {
+                Type_Info *et = type_canonical_concrete(at->element_type);
+                if (et)
+                {
+                  if (et->k == TYPE_INTEGER or et->k == TYPE_ENUMERATION)
+                    elem_size = 4;
+                  else if (et->k == TYPE_CHARACTER or et->k == TYPE_BOOLEAN)
+                    elem_size = 1;
+                  // Records, arrays, access types - use 8 (pointer size)
+                }
+              }
+              int64_t total_size = arr_size * elem_size;
+              fprintf(generator->o, "  call void @llvm.memcpy.p0.p0.i64(ptr @%s, ptr %%v.%s.sc%u.%u, i64 %lld, i1 false)\n",
+                  gn, string_to_lowercase(id->string_value), s->scope, s->elaboration_level, (long long)total_size);
+            }
+            else
+            {
+              // Non-array type - use simple load/store
+              Value_Kind k = s->type_info ? token_kind_to_value_kind(s->type_info) : VALUE_KIND_INTEGER;
+              int tmp = new_temporary_register(generator);
+              fprintf(generator->o, "  %%t%d = load %s, ptr %%v.%s.sc%u.%u\n",
+                  tmp, value_llvm_type_string(k),
+                  string_to_lowercase(id->string_value), s->scope, s->elaboration_level);
+              fprintf(generator->o, "  store %s %%t%d, ptr @%s\n",
+                  value_llvm_type_string(k), tmp, gn);
+            }
+          }
+        }
+      }
+    }
     fprintf(generator->o, "  ret void\n}\n");
     fprintf(
         generator->o,
@@ -16609,7 +16808,7 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
                 nb,
                 s->k == 2 ? "constant" : "global");
           }
-          else if (at and at->k == TYPE_ARRAY and at->low_bound != 0 and at->high_bound > 0 and at->high_bound >= at->low_bound)
+          else if (at and at->k == TYPE_ARRAY and at->high_bound >= 0 and at->high_bound >= at->low_bound)
           {
             // Compile-time constrained array - emit typed array global
             int64_t asz = at->high_bound - at->low_bound + 1;
@@ -16840,7 +17039,7 @@ int main(int ac, char **av)
                 nb,
                 s->k == 2 ? "constant" : "global");
           }
-          else if (at and at->k == TYPE_ARRAY and at->low_bound != 0 and at->high_bound > 0 and at->high_bound >= at->low_bound)
+          else if (at and at->k == TYPE_ARRAY and at->high_bound >= 0 and at->high_bound >= at->low_bound)
           {
             // Compile-time constrained array - emit typed array global
             int64_t asz = at->high_bound - at->low_bound + 1;
