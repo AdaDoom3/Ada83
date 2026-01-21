@@ -8622,7 +8622,16 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     Syntax_Node *inst = generate_clone(symbol_manager, n);
     if (inst)
     {
+      // Save and reset procedure stack and level before resolving the instantiated unit
+      // This ensures procedure/function declarations in the package get the package as parent,
+      // not the enclosing procedure where the instantiation happens
+      int saved_pn = symbol_manager->pn;
+      int saved_lv = symbol_manager->lv;
+      symbol_manager->pn = 0;
+      symbol_manager->lv = 0;
       resolve_declaration(symbol_manager, inst);
+      symbol_manager->pn = saved_pn;
+      symbol_manager->lv = saved_lv;
       // Link the instantiation node to the instantiated symbol
       if (inst->symbol)
         n->symbol = inst->symbol;
@@ -8643,7 +8652,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
             // Save and reset level/parent context for package body resolution
             // Package body variables should be at library level (level 0) with package as parent
             int saved_lv = symbol_manager->lv;
-            int saved_pn = symbol_manager->pn;
+            int saved_pn2 = symbol_manager->pn;
             Syntax_Node *saved_pk = symbol_manager->pk;
             symbol_manager->lv = 0;
             symbol_manager->pn = 0;
@@ -8651,7 +8660,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
             symbol_manager->pk = inst;
             resolve_declaration(symbol_manager, bd);
             symbol_manager->lv = saved_lv;
-            symbol_manager->pn = saved_pn;
+            symbol_manager->pn = saved_pn2;
             symbol_manager->pk = saved_pk;
             nv(&symbol_manager->ib, bd);
             // NOTE: Do NOT add individual procedure/function bodies from within the package body
@@ -9061,6 +9070,20 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       if (parent_sym)
       {
         // Look for existing procedure symbol in parent's scope
+        for (int h = 0; h < 4096 and not s; h++)
+          for (Symbol *es = symbol_manager->sy[h]; es and not s; es = es->next)
+            if (es->k == 4 and es->parent == parent_sym
+                and string_equal_ignore_case(es->name, sp->subprogram.name))
+              s = es;
+      }
+    }
+    // For procedure bodies in packages, try to find existing symbol from spec
+    if (n->k == N_PB and not s and symbol_manager->pk)
+    {
+      Symbol *parent_sym = get_pkg_sym(symbol_manager, symbol_manager->pk);
+      if (parent_sym)
+      {
+        // Look for existing procedure symbol declared in this package
         for (int h = 0; h < 4096 and not s; h++)
           for (Symbol *es = symbol_manager->sy[h]; es and not s; es = es->next)
             if (es->k == 4 and es->parent == parent_sym
@@ -12557,7 +12580,10 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     if (n->call.function_name->k == N_ID)
     {
-      Symbol *s = symbol_find_with_arity(generator->sm, n->call.function_name->string_value, n->call.arguments.count, n->ty);
+      // Prefer using the symbol from resolution if available, otherwise do a lookup
+      Symbol *s = n->call.function_name->symbol;
+      if (not s)
+        s = symbol_find_with_arity(generator->sm, n->call.function_name->string_value, n->call.arguments.count, n->ty);
       if (s)
       {
         if (s->parent and string_equal_ignore_case(s->parent->name, STRING_LITERAL("TEXT_IO"))
@@ -15195,6 +15221,12 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
   {
     generator->current_function = n;
     Syntax_Node *sp = n->body.subprogram_spec;
+    // Check if this function was already generated (mangled_name set means it was emitted)
+    if (n->symbol and n->symbol->mangled_name.string)
+    {
+      generator->current_function = 0;
+      break;
+    }
     // Check if this is ANY generic template's body - if so, skip it
     // We need to check all generics since scope tracking differs between resolution and codegen
     int is_generic_body = 0;
@@ -15557,6 +15589,12 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
   {
     generator->current_function = n;
     Syntax_Node *sp = n->body.subprogram_spec;
+    // Check if this function was already generated (mangled_name set means it was emitted)
+    if (n->symbol and n->symbol->mangled_name.string)
+    {
+      generator->current_function = 0;
+      break;
+    }
     // Check if this is ANY generic template's body - if so, skip it
     int is_generic_body = 0;
     for (uint32_t gi = 0; gi < generator->sm->gt.count; gi++)
@@ -15914,10 +15952,20 @@ static void generate_expression_llvm(Code_Generator *generator, Syntax_Node *n)
     // Generate instantiated procedure/function body
     generate_declaration(generator, n);
   }
-  else if (n->k == N_PKB and n->package_body.statements.count > 0)
+  else if (n->k == N_PKB)
   {
     Symbol *ps = symbol_find(generator->sm, n->package_body.name);
     if (ps and ps->k == 11)
+      return;
+    // Generate procedure/function bodies inside the package body
+    for (uint32_t i = 0; i < n->package_body.declarations.count; i++)
+    {
+      Syntax_Node *d = n->package_body.declarations.data[i];
+      if (d and (d->k == N_PB or d->k == N_FB))
+        generate_declaration(generator, d);
+    }
+    // Only generate elaboration function if there are statements
+    if (n->package_body.statements.count == 0)
       return;
     char nb[256];
     snprintf(nb, 256, "%.*s__elab", (int) n->package_body.name.length, n->package_body.name.string);
