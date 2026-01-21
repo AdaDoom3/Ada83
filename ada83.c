@@ -8706,9 +8706,9 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       if (not s)
       {
         s = symbol_add_overload(symbol_manager, symbol_new(id->string_value, n->object_decl.is_constant ? 2 : 0, ct, n));
-        // Set parent to enclosing procedure if nested, otherwise to package
-        s->parent = symbol_manager->pn > 0 ? symbol_manager->ps[symbol_manager->pn - 1]
-                    : (symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk)
+        // Set parent to package if inside one, otherwise to enclosing procedure
+        s->parent = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk)
+                    : (symbol_manager->pn > 0 ? symbol_manager->ps[symbol_manager->pn - 1]
                     : (SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0));
       }
       id->symbol = s;
@@ -9096,10 +9096,10 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     nv(&s->overloads, n);
     n->symbol = s;
     n->body.elaboration_level = s->elaboration_level;
-    // Set parent to enclosing procedure if nested, otherwise to package
+    // Set parent to package if inside one, otherwise to enclosing procedure
     if (not s->parent)
-      s->parent = symbol_manager->pn > 0 ? symbol_manager->ps[symbol_manager->pn - 1]
-                  : (symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk)
+      s->parent = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk)
+                  : (symbol_manager->pn > 0 ? symbol_manager->ps[symbol_manager->pn - 1]
                   : (SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0));
     // Recompute uid now that parent is set (uid includes parent name hash)
     symbol_update_uid(s);
@@ -9177,10 +9177,10 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     nv(&s->overloads, n);
     n->symbol = s;
     n->body.elaboration_level = s->elaboration_level;
-    // Set parent to enclosing procedure if nested, otherwise to package
+    // Set parent to package if inside one, otherwise to enclosing procedure
     if (not s->parent)
-      s->parent = symbol_manager->pn > 0 ? symbol_manager->ps[symbol_manager->pn - 1]
-                  : (symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk)
+      s->parent = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk)
+                  : (symbol_manager->pn > 0 ? symbol_manager->ps[symbol_manager->pn - 1]
                   : (SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0));
     nv(&ft->operations, n);
     if (n->k == N_FB)
@@ -10632,10 +10632,19 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
               Syntax_Node *c = t->components.data[k];
               if (c->k == N_CM and string_equal_ignore_case(c->component_decl.name, ch->string_value))
               {
-                Value v = value_cast(generator, generate_expression(generator, el->association.value), VALUE_KIND_INTEGER);
+                Type_Info *comp_type = c->component_decl.ty ? type_canonical_concrete(resolve_subtype(generator->sm, c->component_decl.ty)) : 0;
+                Value v = generate_expression(generator, el->association.value);
                 int ep = new_temporary_register(generator);
                 fprintf(o, "  %%t%d = getelementptr i8, ptr %%t%d, i64 %u\n", ep, p, c->component_decl.offset);
-                fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
+                if (comp_type and comp_type->k == TYPE_RECORD)
+                {
+                  fprintf(o, "  store ptr %%t%d, ptr %%t%d\n", v.id, ep);
+                }
+                else
+                {
+                  v = value_cast(generator, v, VALUE_KIND_INTEGER);
+                  fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
+                }
                 break;
               }
             }
@@ -10645,10 +10654,27 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
       }
       else
       {
-        Value v = value_cast(generator, generate_expression(generator, el), VALUE_KIND_INTEGER);
+        // Check if this field is a record type
+        Type_Info *field_type = 0;
+        if (ix < t->components.count)
+        {
+          Syntax_Node *c = t->components.data[ix];
+          if (c and c->k == N_CM and c->component_decl.ty)
+            field_type = type_canonical_concrete(resolve_subtype(generator->sm, c->component_decl.ty));
+        }
+        Value v = generate_expression(generator, el);
         int ep = new_temporary_register(generator);
         fprintf(o, "  %%t%d = getelementptr i8, ptr %%t%d, i64 %u\n", ep, p, ix * 8);
-        fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
+        if (field_type and field_type->k == TYPE_RECORD)
+        {
+          // Store record field as pointer
+          fprintf(o, "  store ptr %%t%d, ptr %%t%d\n", v.id, ep);
+        }
+        else
+        {
+          v = value_cast(generator, v, VALUE_KIND_INTEGER);
+          fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
+        }
         ix++;
       }
     }
@@ -11961,6 +11987,41 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                 string_to_lowercase(n->selected_component.prefix->string_value),
                 s ? s->scope : 0,
                 s ? s->elaboration_level : 0);
+        }
+      }
+      else if (s and s->k == 6)
+      {
+        // Package prefix - look up selector as package variable and access as global
+        uint32_t h = symbol_hash(n->selected_component.selector);
+        Symbol *var = 0;
+        for (Symbol *ps = generator->sm->sy[h]; ps; ps = ps->next)
+        {
+          if (string_equal_ignore_case(ps->name, n->selected_component.selector) and ps->parent == s)
+          {
+            var = ps;
+            break;
+          }
+        }
+        if (var and var->k == 0)
+        {
+          // Found package variable - load from local variable into result and return
+          Type_Info *vty = var->type_info ? type_canonical_concrete(var->type_info) : 0;
+          if (vty and vty->k == TYPE_RECORD)
+          {
+            r.k = VALUE_KIND_POINTER;
+            fprintf(o, "  %%t%d = load ptr, ptr %%v.%s.sc%u.%u\n", r.id, string_to_lowercase(var->name), var->scope, var->elaboration_level);
+          }
+          else
+          {
+            r.k = VALUE_KIND_INTEGER;
+            fprintf(o, "  %%t%d = load i64, ptr %%v.%s.sc%u.%u\n", r.id, string_to_lowercase(var->name), var->scope, var->elaboration_level);
+          }
+          break;  // Done - return the package variable value
+        }
+        else
+        {
+          // Not a variable - fallback
+          p = generate_expression(generator, n->selected_component.prefix);
         }
       }
       else
@@ -14871,6 +14932,16 @@ static void has_basic_label(Code_Generator *generator, Node_Vector *sl)
         Syntax_Node *d = s->block.declarations.data[j];
         if (d and (d->k == N_PB or d->k == N_FB))
           generate_declaration(generator, d);
+        else if (d and d->k == N_PKB)
+        {
+          // Generate procedures/functions inside local package bodies
+          for (uint32_t k = 0; k < d->package_body.declarations.count; k++)
+          {
+            Syntax_Node *pd = d->package_body.declarations.data[k];
+            if (pd and (pd->k == N_PB or pd->k == N_FB))
+              generate_declaration(generator, pd);
+          }
+        }
       }
       has_basic_label(generator, &s->block.statements);
     }
@@ -15240,6 +15311,67 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       Syntax_Node *d = n->block.declarations.data[i];
       if (d and (d->k == N_PB or d->k == N_FB))
         generate_declaration(generator, d);
+    }
+    break;
+  case N_PKS:
+    // Generate variable declarations from package spec
+    for (uint32_t i = 0; i < n->package_spec.declarations.count; i++)
+    {
+      Syntax_Node *d = n->package_spec.declarations.data[i];
+      if (d and d->k == N_OD)
+        generate_declaration(generator, d);
+    }
+    // Generate initialization for package spec variables
+    for (uint32_t i = 0; i < n->package_spec.declarations.count; i++)
+    {
+      Syntax_Node *d = n->package_spec.declarations.data[i];
+      if (d and d->k == N_OD and d->object_decl.in)
+      {
+        for (uint32_t j = 0; j < d->object_decl.identifiers.count; j++)
+        {
+          Syntax_Node *id = d->object_decl.identifiers.data[j];
+          if (id->symbol)
+          {
+            Value_Kind k = d->object_decl.ty ? token_kind_to_value_kind(resolve_subtype(generator->sm, d->object_decl.ty))
+                                    : VALUE_KIND_INTEGER;
+            Symbol *s = id->symbol;
+            Type_Info *at = d->object_decl.ty ? resolve_subtype(generator->sm, d->object_decl.ty) : 0;
+            Value v = generate_expression(generator, d->object_decl.in);
+            // For constrained arrays, copy data with memcpy instead of storing pointer
+            if (at and at->k == TYPE_ARRAY and at->low_bound != 0 and at->high_bound >= at->low_bound)
+            {
+              int64_t count = at->high_bound - at->low_bound + 1;
+              int elem_size = 8; // Default element size
+              Type_Info *et = at->element_type ? type_canonical_concrete(at->element_type) : 0;
+              if (et)
+              {
+                if (et->k == TYPE_BOOLEAN or et->k == TYPE_CHARACTER or
+                    (et->k == TYPE_INTEGER and et->high_bound < 256 and et->low_bound >= 0))
+                  elem_size = 1;
+                else if (et->k == TYPE_INTEGER and et->high_bound < 65536 and et->low_bound >= -32768)
+                  elem_size = 2;
+                else if (et->k == TYPE_INTEGER and et->high_bound < 2147483648LL and et->low_bound >= -2147483648LL)
+                  elem_size = 4;
+              }
+              int64_t copy_size = count * elem_size;
+              fprintf(o, "  call void @llvm.memcpy.p0.p0.i64(ptr %%v.%s.sc%u.%u, ptr %%t%d, i64 %lld, i1 false)\n",
+                  string_to_lowercase(id->string_value), s ? s->scope : 0, s ? s->elaboration_level : 0, v.id, (long long)copy_size);
+            }
+            else
+            {
+              v = value_cast(generator, v, k);
+              fprintf(
+                  o,
+                  "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
+                  value_llvm_type_string(k),
+                  v.id,
+                  string_to_lowercase(id->string_value),
+                  s ? s->scope : 0,
+                  s ? s->elaboration_level : 0);
+            }
+          }
+        }
+      }
     }
     break;
   case N_PB:
