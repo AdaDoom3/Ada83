@@ -10857,7 +10857,19 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           }
         }
         else
-          fprintf(o, "  %%t%d = load %s, ptr @%s\n", r.id, value_llvm_type_string(k), nb);
+        {
+          Type_Info *vat = s and s->type_info ? type_canonical_concrete(s->type_info) : 0;
+          if (vat and vat->k == TYPE_ARRAY)
+          {
+            // For arrays, return pointer to the array, don't load from it
+            fprintf(o, "  %%t%d = bitcast ptr @%s to ptr\n", r.id, nb);
+            r.k = VALUE_KIND_POINTER;
+          }
+          else
+          {
+            fprintf(o, "  %%t%d = load %s, ptr @%s\n", r.id, value_llvm_type_string(k), nb);
+          }
+        }
       }
       else if (s and s->level >= 0 and s->level < generator->sm->lv)
       {
