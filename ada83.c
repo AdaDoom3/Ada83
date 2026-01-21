@@ -12456,29 +12456,42 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     else if (string_equal_ignore_case(a, STRING_LITERAL("WIDTH")))
     {
       r.k = VALUE_KIND_INTEGER;
-      int64_t wd = 1;
-      if (t)
+      int64_t wd = 0;
+      Type_Info *wt = n->attribute.prefix ? n->attribute.prefix->ty : t;
+      if (wt)
       {
-        if (t->k == TYPE_ENUMERATION)
+        if (wt->low_bound > wt->high_bound)
         {
-          for (uint32_t i = 0; i < t->enum_values.count; i++)
+          wd = 0;
+        }
+        else if (wt->k == TYPE_ENUMERATION or (wt->k == TYPE_DERIVED and t and t->k == TYPE_ENUMERATION))
+        {
+          Type_Info *et = wt;
+          while (et and et->enum_values.count == 0 and (et->base_type or et->parent_type))
+            et = et->base_type ? et->base_type : et->parent_type;
+          if (et)
           {
-            Symbol *e = t->enum_values.data[i];
-            int64_t ln = e->name.length;
-            if (ln > wd)
-              wd = ln;
+            for (uint32_t i = 0; i < et->enum_values.count; i++)
+            {
+              Symbol *e = et->enum_values.data[i];
+              if (e->value >= wt->low_bound and e->value <= wt->high_bound)
+              {
+                int64_t ln = e->name.length;
+                if (ln > wd)
+                  wd = ln;
+              }
+            }
           }
         }
         else
         {
-          int64_t mx = t->high_bound > -t->low_bound ? t->high_bound : -t->low_bound;
+          wd = 2;
+          int64_t mx = wt->high_bound > -wt->low_bound ? wt->high_bound : -wt->low_bound;
           while (mx >= 10)
           {
             mx /= 10;
             wd++;
           }
-          if (t->low_bound < 0)
-            wd++;
         }
       }
       fprintf(o, "  %%t%d = add i64 0, %lld\n", r.id, (long long) wd);
