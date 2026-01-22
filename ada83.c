@@ -11730,18 +11730,22 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       // Now generate the call with the parameter values
       fprintf(o, "  %%t%d = call %s @%s(", r.id, value_llvm_type_string(ret_kind), fnb);
 
-      // Add static link if needed - but only if current function has one
+      // Add static link if needed - pass null if caller doesn't have one
       bool callee_needs_slnk = func_sym->level >= 0 and func_sym->level < generator->sm->lv;
       bool current_has_slnk = generator->current_function and generator->current_function->symbol
           and generator->current_function->symbol->level > 0;
-      bool needs_slnk = callee_needs_slnk and current_has_slnk;
-      if (needs_slnk)
-        fprintf(o, "ptr %%__slnk");
+      if (callee_needs_slnk)
+      {
+        if (current_has_slnk)
+          fprintf(o, "ptr %%__slnk");
+        else
+          fprintf(o, "ptr null");
+      }
 
       // Add parameters
       for (uint32_t i = 0; i < n->index.indices.count; i++)
       {
-        if (needs_slnk or i > 0)
+        if (callee_needs_slnk or i > 0)
           fprintf(o, ", ");
         fprintf(o, "%s %%t%d", value_llvm_type_string(args[i].k), args[i].id);
       }
@@ -12913,10 +12917,15 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           {
             if (n->call.arguments.count > 0)
               fprintf(o, ", ");
+            // Check if current function has a static link to pass
+            bool current_has_slnk = generator->current_function and generator->current_function->symbol
+                and generator->current_function->symbol->level > 0;
             if (s->level >= generator->sm->lv)
               fprintf(o, "ptr %%__frame");
-            else
+            else if (current_has_slnk)
               fprintf(o, "ptr %%__slnk");
+            else
+              fprintf(o, "ptr null");
           }
           fprintf(o, ")\n");
           for (uint32_t i = 0; i < n->call.arguments.count and i < 64; i++)
@@ -13067,18 +13076,22 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         // Now generate the call with the parameter values
         fprintf(o, "  %%t%d = call %s @%s(", r.id, value_llvm_type_string(ret_kind), fnb);
 
-        // Add static link if needed - but only if current function has one
+        // Add static link if needed - pass null if caller doesn't have one
         bool callee_needs_slnk = func_sym->level >= 0 and func_sym->level < generator->sm->lv;
         bool current_has_slnk = generator->current_function and generator->current_function->symbol
             and generator->current_function->symbol->level > 0;
-        bool needs_slnk = callee_needs_slnk and current_has_slnk;
-        if (needs_slnk)
-          fprintf(o, "ptr %%__slnk");
+        if (callee_needs_slnk)
+        {
+          if (current_has_slnk)
+            fprintf(o, "ptr %%__slnk");
+          else
+            fprintf(o, "ptr null");
+        }
 
         // Add parameters
         for (uint32_t i = 0; i < n->call.arguments.count; i++)
         {
-          if (needs_slnk or i > 0)
+          if (callee_needs_slnk or i > 0)
             fprintf(o, ", ");
           fprintf(o, "%s %%t%d", value_llvm_type_string(args[i].k), args[i].id);
         }
@@ -14223,10 +14236,15 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           {
             if (n->code_stmt.arguments.count > 0)
               fprintf(o, ", ");
+            // Check if current function has a static link to pass
+            bool current_has_slnk = generator->current_function and generator->current_function->symbol
+                and generator->current_function->symbol->level > 0;
             if (s->level >= generator->sm->lv)
               fprintf(o, "ptr %%__frame");
-            else
+            else if (current_has_slnk)
               fprintf(o, "ptr %%__slnk");
+            else
+              fprintf(o, "ptr null");
           }
           fprintf(o, ")\n");
           for (uint32_t i = 0; i < n->code_stmt.arguments.count and i < 64; i++)
@@ -14482,18 +14500,22 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           fprintf(o, "  call void @%s(", fnb);
         }
 
-        // Add static link if needed - but only if current function has one
+        // Add static link if needed - pass null if caller doesn't have one
         bool callee_needs_slnk = func_sym->level >= 0 and func_sym->level < generator->sm->lv;
         bool current_has_slnk = generator->current_function and generator->current_function->symbol
             and generator->current_function->symbol->level > 0;
-        bool needs_slnk = callee_needs_slnk and current_has_slnk;
-        if (needs_slnk)
-          fprintf(o, "ptr %%__slnk");
+        if (callee_needs_slnk)
+        {
+          if (current_has_slnk)
+            fprintf(o, "ptr %%__slnk");
+          else
+            fprintf(o, "ptr null");
+        }
 
         // Add parameters
         for (uint32_t i = 0; i < n->code_stmt.arguments.count; i++)
         {
-          if (needs_slnk or i > 0)
+          if (callee_needs_slnk or i > 0)
             fprintf(o, ", ");
           fprintf(o, "%s %%t%d", value_llvm_type_string(args[i].k), args[i].id);
         }
