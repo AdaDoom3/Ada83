@@ -10783,11 +10783,41 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     Value_Kind fn_ret_type = r.k;
     if (s and s->k == 5)
     {
-      Symbol *s0 = symbol_find_with_arity(generator->sm, n->string_value, 0, n->ty);
-      if (s0)
+      // First check if the current symbol (from n->symbol) has a 0-param overload
+      // This avoids issues with visibility being cleared after scope exit
+      int has_0p_overload = 0;
+      if (s->overloads.count > 0)
       {
-        s = s0;
+        for (uint32_t j = 0; j < s->overloads.count; j++)
+        {
+          Syntax_Node *b = s->overloads.data[j];
+          if ((b->k == N_PB or b->k == N_FB or b->k == N_PD or b->k == N_FD) and
+              b->body.subprogram_spec and b->body.subprogram_spec->subprogram.parameters.count == 0)
+          {
+            has_0p_overload = 1;
+            break;
+          }
+          // Also check for generic instantiation bodies (k=36 is N_GINST)
+          if (b->k == N_GINST)
+          {
+            has_0p_overload = 1;
+            break;
+          }
+        }
+      }
+      if (has_0p_overload)
+      {
         gen_0p_call = 1;
+      }
+      else
+      {
+        // Only fall back to symbol_find_with_arity if current symbol doesn't have 0-param overload
+        Symbol *s0 = symbol_find_with_arity(generator->sm, n->string_value, 0, n->ty);
+        if (s0)
+        {
+          s = s0;
+          gen_0p_call = 1;
+        }
       }
     }
     if (s and s->k == 2
@@ -11700,8 +11730,11 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       // Now generate the call with the parameter values
       fprintf(o, "  %%t%d = call %s @%s(", r.id, value_llvm_type_string(ret_kind), fnb);
 
-      // Add static link if needed
-      bool needs_slnk = func_sym->level >= 0 and func_sym->level < generator->sm->lv;
+      // Add static link if needed - but only if current function has one
+      bool callee_needs_slnk = func_sym->level >= 0 and func_sym->level < generator->sm->lv;
+      bool current_has_slnk = generator->current_function and generator->current_function->symbol
+          and generator->current_function->symbol->level > 0;
+      bool needs_slnk = callee_needs_slnk and current_has_slnk;
       if (needs_slnk)
         fprintf(o, "ptr %%__slnk");
 
@@ -13034,8 +13067,11 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         // Now generate the call with the parameter values
         fprintf(o, "  %%t%d = call %s @%s(", r.id, value_llvm_type_string(ret_kind), fnb);
 
-        // Add static link if needed
-        bool needs_slnk = func_sym->level >= 0 and func_sym->level < generator->sm->lv;
+        // Add static link if needed - but only if current function has one
+        bool callee_needs_slnk = func_sym->level >= 0 and func_sym->level < generator->sm->lv;
+        bool current_has_slnk = generator->current_function and generator->current_function->symbol
+            and generator->current_function->symbol->level > 0;
+        bool needs_slnk = callee_needs_slnk and current_has_slnk;
         if (needs_slnk)
           fprintf(o, "ptr %%__slnk");
 
@@ -14446,8 +14482,11 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           fprintf(o, "  call void @%s(", fnb);
         }
 
-        // Add static link if needed
-        bool needs_slnk = func_sym->level >= 0 and func_sym->level < generator->sm->lv;
+        // Add static link if needed - but only if current function has one
+        bool callee_needs_slnk = func_sym->level >= 0 and func_sym->level < generator->sm->lv;
+        bool current_has_slnk = generator->current_function and generator->current_function->symbol
+            and generator->current_function->symbol->level > 0;
+        bool needs_slnk = callee_needs_slnk and current_has_slnk;
         if (needs_slnk)
           fprintf(o, "ptr %%__slnk");
 
