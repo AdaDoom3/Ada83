@@ -10703,7 +10703,34 @@ static const char *value_type_string(Value v)
   return v.t ? ada_to_c_type_string(v.t) : value_llvm_type_string(v.k);
 }
 
-/* §6.4 Type Info → Value Kind (for code generation)                        */
+/* §6.3.1 Type_Info → LLVM Type String (THE PROPER WAY)
+ *
+ * This is the CORRECT function to use when you have Type_Info.
+ * DO NOT convert Type_Info to Value_Kind and then call value_llvm_type_string!
+ * That loses type width information.
+ *
+ * Pattern to AVOID:
+ *   Type_Info *pt = ...;
+ *   Value_Kind k = token_kind_to_value_kind(pt);  // WRONG: loses width!
+ *   value_llvm_type_string(k);                     // WRONG: gets i32 always
+ *
+ * Pattern to USE:
+ *   Type_Info *pt = ...;
+ *   type_llvm_string(pt);  // CORRECT: uses actual type width
+ */
+static const char *type_llvm_string(Type_Info *t)
+{
+  return t ? ada_to_c_type_string(t) : LLVM_I32;
+}
+
+/* §6.4 Type Info → Value Kind (DEPRECATED - prefer type_llvm_string)
+ *
+ * This function converts Type_Info to a coarse Value_Kind category.
+ * This LOSES type width information!
+ *
+ * Only use this when you truly need a Value_Kind for control flow,
+ * NOT for emitting LLVM type strings.
+ */
 static Value_Kind token_kind_to_value_kind(Type_Info *t)
 {
   if (!t) return VALUE_KIND_INTEGER;
@@ -11714,9 +11741,8 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     else
     {
-      Value_Kind k = VALUE_KIND_INTEGER;
-      if (s and s->type_info)
-        k = token_kind_to_value_kind(s->type_info);
+      const char *ts = type_llvm_string(s ? s->type_info : 0);  /* Use proper type string */
+      Value_Kind k = (s and s->type_info) ? token_kind_to_value_kind(s->type_info) : VALUE_KIND_INTEGER;
       r.k = k;
       // Check if this is a package-level variable (parent is a package k==6)
       // OR a variable from a generic package body (parent is procedure k=4, but var was in package body)
@@ -11774,7 +11800,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
               r.k = fn_ret_type;
             }
             else
-              fprintf(o, "  %%t%d = load %s, ptr @%s\n", r.id, value_llvm_type_string(k), nb);
+              fprintf(o, "  %%t%d = load %s, ptr @%s\n", r.id, ts, nb);
           }
         }
         else
@@ -11802,16 +11828,16 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           Syntax_Node *sp = symbol_spec(s);
           if (sp and sp->subprogram.parameters.count == 0)
           {
-            Value_Kind rk = sp and sp->subprogram.return_type
-                                ? token_kind_to_value_kind(resolve_subtype(generator->sm, sp->subprogram.return_type))
-                                : VALUE_KIND_INTEGER;
+            Type_Info *ret_ti = sp && sp->subprogram.return_type ? resolve_subtype(generator->sm, sp->subprogram.return_type) : 0;
+            const char *ret_ts = type_llvm_string(ret_ti);
+            Value_Kind rk = ret_ti ? token_kind_to_value_kind(ret_ti) : VALUE_KIND_INTEGER;
             char fnb[256];
             encode_symbol_name(fnb, 256, s, n->string_value, 0, sp);
             fprintf(
                 o,
                 "  %%t%d = call %s @%s(ptr %%__slnk)\n",
                 r.id,
-                value_llvm_type_string(rk),
+                ret_ts,
                 fnb);
             r.k = rk;
           }
@@ -11897,9 +11923,9 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           Syntax_Node *sp = symbol_spec(s);
           if (sp and sp->subprogram.parameters.count == 0)
           {
-            Value_Kind rk = sp and sp->subprogram.return_type
-                                ? token_kind_to_value_kind(resolve_subtype(generator->sm, sp->subprogram.return_type))
-                                : VALUE_KIND_INTEGER;
+            Type_Info *ret_ti = sp && sp->subprogram.return_type ? resolve_subtype(generator->sm, sp->subprogram.return_type) : 0;
+            const char *ret_ts = type_llvm_string(ret_ti);
+            Value_Kind rk = ret_ti ? token_kind_to_value_kind(ret_ti) : VALUE_KIND_INTEGER;
             char fnb[256];
             encode_symbol_name(fnb, 256, s, n->string_value, 0, sp);
             if (s->level >= generator->sm->lv)
@@ -11907,14 +11933,14 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                   o,
                   "  %%t%d = call %s @%s(ptr %%__frame)\n",
                   r.id,
-                  value_llvm_type_string(rk),
+                  ret_ts,
                   fnb);
             else
               fprintf(
                   o,
                   "  %%t%d = call %s @%s(ptr %%__slnk)\n",
                   r.id,
-                  value_llvm_type_string(rk),
+                  ret_ts,
                   fnb);
             r.k = rk;
           }
@@ -12587,9 +12613,10 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     if (func_sym)
     {
       Syntax_Node *func_spec = symbol_spec(func_sym);
-      Value_Kind ret_kind = func_spec and func_spec->subprogram.return_type
-        ? token_kind_to_value_kind(resolve_subtype(generator->sm, func_spec->subprogram.return_type))
-        : VALUE_KIND_POINTER;
+      Type_Info *ret_ti = func_spec && func_spec->subprogram.return_type
+        ? resolve_subtype(generator->sm, func_spec->subprogram.return_type) : 0;
+      const char *ret_ts = ret_ti ? type_llvm_string(ret_ti) : LLVM_PTR;
+      Value_Kind ret_kind = ret_ti ? token_kind_to_value_kind(ret_ti) : VALUE_KIND_POINTER;
 
       // Build function name
       char fnb[256];
@@ -12603,19 +12630,19 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       }
 
       // Now generate the call with the parameter values
-      fprintf(o, "  %%t%d = call %s @%s(", r.id, value_llvm_type_string(ret_kind), fnb);
+      fprintf(o, "  %%t%d = call %s @%s(", r.id, ret_ts, fnb);
 
       // Add static link if needed
       bool needs_slnk = func_sym->level >= 0 and func_sym->level < generator->sm->lv;
       if (needs_slnk)
         fprintf(o, "ptr %%__slnk");
 
-      // Add parameters
+      // Add parameters - use value_type_string to prefer Type_Info when available
       for (uint32_t i = 0; i < n->index.indices.count; i++)
       {
         if (needs_slnk or i > 0)
           fprintf(o, ", ");
-        fprintf(o, "%s %%t%d", value_llvm_type_string(args[i].k), args[i].id);
+        fprintf(o, "%s %%t%d", value_type_string(args[i]), args[i].id);
       }
 
       fprintf(o, ")\n");
@@ -12783,12 +12810,12 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       Syntax_Node *sp = symbol_spec(n->symbol);
       if (sp and sp->subprogram.parameters.count == 0)
       {
-        Value_Kind rk = sp && sp->subprogram.return_type
-                            ? token_kind_to_value_kind(resolve_subtype(generator->sm, sp->subprogram.return_type))
-                            : VALUE_KIND_INTEGER;
+        Type_Info *ret_ti = sp && sp->subprogram.return_type ? resolve_subtype(generator->sm, sp->subprogram.return_type) : 0;
+        const char *ret_ts = type_llvm_string(ret_ti);
+        Value_Kind rk = ret_ti ? token_kind_to_value_kind(ret_ti) : VALUE_KIND_INTEGER;
         char fnb[256];
         encode_symbol_name(fnb, 256, n->symbol, n->selected_component.selector, 0, sp);
-        fprintf(o, "  %%t%d = call %s @%s()\n", r.id, value_llvm_type_string(rk), fnb);
+        fprintf(o, "  %%t%d = call %s @%s()\n", r.id, ret_ts, fnb);
         r.k = rk;
         break;
       }
@@ -13048,12 +13075,12 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       Syntax_Node *sp = symbol_spec(n->symbol);
       if (sp and sp->subprogram.parameters.count == 0)
       {
-        Value_Kind rk = sp and sp->subprogram.return_type
-                            ? token_kind_to_value_kind(resolve_subtype(generator->sm, sp->subprogram.return_type))
-                            : VALUE_KIND_INTEGER;
+        Type_Info *ret_ti = sp && sp->subprogram.return_type ? resolve_subtype(generator->sm, sp->subprogram.return_type) : 0;
+        const char *ret_ts = type_llvm_string(ret_ti);
+        Value_Kind rk = ret_ti ? token_kind_to_value_kind(ret_ti) : VALUE_KIND_INTEGER;
         char fnb[256];
         encode_symbol_name(fnb, 256, n->symbol, n->selected_component.selector, 0, sp);
-        fprintf(o, "  %%t%d = call %s @%s()\n", r.id, value_llvm_type_string(rk), fnb);
+        fprintf(o, "  %%t%d = call %s @%s()\n", r.id, ret_ts, fnb);
         r.k = rk;
       }
     }
@@ -13969,9 +13996,10 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       {
         Symbol *func_sym = sel->symbol;
         Syntax_Node *func_spec = symbol_spec(func_sym);
-        Value_Kind ret_kind = func_spec and func_spec->subprogram.return_type
-            ? token_kind_to_value_kind(resolve_subtype(generator->sm, func_spec->subprogram.return_type))
-            : VALUE_KIND_POINTER;
+        Type_Info *ret_ti = func_spec && func_spec->subprogram.return_type
+            ? resolve_subtype(generator->sm, func_spec->subprogram.return_type) : 0;
+        const char *ret_ts = ret_ti ? type_llvm_string(ret_ti) : LLVM_PTR;
+        Value_Kind ret_kind = ret_ti ? token_kind_to_value_kind(ret_ti) : VALUE_KIND_POINTER;
 
         // Build function name
         char fnb[256];
@@ -13985,19 +14013,19 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         }
 
         // Now generate the call with the parameter values
-        fprintf(o, "  %%t%d = call %s @%s(", r.id, value_llvm_type_string(ret_kind), fnb);
+        fprintf(o, "  %%t%d = call %s @%s(", r.id, ret_ts, fnb);
 
         // Add static link if needed
         bool needs_slnk = func_sym->level >= 0 and func_sym->level < generator->sm->lv;
         if (needs_slnk)
           fprintf(o, "ptr %%__slnk");
 
-        // Add parameters
+        // Add parameters - use value_type_string to prefer Type_Info when available
         for (uint32_t i = 0; i < n->call.arguments.count; i++)
         {
           if (needs_slnk or i > 0)
             fprintf(o, ", ");
-          fprintf(o, "%s %%t%d", value_llvm_type_string(args[i].k), args[i].id);
+          fprintf(o, "%s %%t%d", value_type_string(args[i]), args[i].id);
         }
 
         fprintf(o, ")\n");
@@ -16255,21 +16283,14 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
         fprintf(o, ",");
       Syntax_Node *p = sp->subprogram.parameters.data[i];
       Type_Info *pt = p->parameter.ty ? resolve_subtype(generator->sm, p->parameter.ty) : 0;
-      Value_Kind k = VALUE_KIND_INTEGER;
-      bool is_unconstrained = false;
-      if (pt)
-      {
-        Type_Info *ptc = type_canonical_concrete(pt);
-        is_unconstrained = ptc and ptc->k == TYPE_ARRAY and ptc->low_bound == 0 and ptc->high_bound == -1;
-        if (n->symbol and n->symbol->is_external and ptc and ptc->k == TYPE_ARRAY and not(p->parameter.mode & 2))
-          k = VALUE_KIND_INTEGER;
-        else
-          k = token_kind_to_value_kind(pt);
-      }
-      if (p->parameter.mode & 2 or is_unconstrained)
-        fprintf(o, "ptr");
+      Type_Info *ptc = pt ? type_canonical_concrete(pt) : 0;
+      bool is_unconstrained = ptc && tk_is_array(ptc->k) && ptc->low_bound == 0 && ptc->high_bound == -1;
+
+      /* OUT/IN OUT or unconstrained → ptr, else use actual type             */
+      if (p->parameter.mode & 2 || is_unconstrained)
+        fprintf(o, LLVM_PTR);
       else
-        fprintf(o, "%s", value_llvm_type_string(k));
+        fprintf(o, "%s", type_llvm_string(pt));  /* Use actual type width!   */
     }
     fprintf(o, ")\n");
   }
@@ -16298,35 +16319,28 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
         }
     if (has_body)
       break;
+    /* Resolve return type and check if unconstrained                         */
     Type_Info *rt = sp->subprogram.return_type ? resolve_subtype(generator->sm, sp->subprogram.return_type) : 0;
     Type_Info *rtc = rt ? type_canonical_concrete(rt) : 0;
-    bool return_unconstrained = rtc and rtc->k == TYPE_ARRAY and rtc->low_bound == 0 and rtc->high_bound == -1;
-    // Use C types for external C functions
-    bool use_c_types = is_c_external(n->symbol);
-    const char *ret_type = return_unconstrained ? "ptr" :
-        (use_c_types ? ada_to_c_type_string(rt) : value_llvm_type_string(rt ? token_kind_to_value_kind(rt) : VALUE_KIND_INTEGER));
+    bool return_unconstrained = rtc && tk_is_array(rtc->k) && rtc->low_bound == 0 && rtc->high_bound == -1;
+
+    /* Determine return type: unconstrained→ptr, else use actual type       */
+    const char *ret_type = return_unconstrained ? LLVM_PTR : type_llvm_string(rt);
     fprintf(o, "declare %s @%s(", ret_type, nb);
+
     for (uint32_t i = 0; i < sp->subprogram.parameters.count; i++)
     {
-      if (i)
-        fprintf(o, ",");
+      if (i) fprintf(o, ",");
       Syntax_Node *p = sp->subprogram.parameters.data[i];
       Type_Info *pt = p->parameter.ty ? resolve_subtype(generator->sm, p->parameter.ty) : 0;
-      bool is_unconstrained = false;
-      if (pt)
-      {
-        Type_Info *ptc = type_canonical_concrete(pt);
-        is_unconstrained = ptc and ptc->k == TYPE_ARRAY and ptc->low_bound == 0 and ptc->high_bound == -1;
-      }
-      if (p->parameter.mode & 2 or is_unconstrained)
-        fprintf(o, "ptr");
-      else if (use_c_types)
-        fprintf(o, "%s", ada_to_c_type_string(pt));
+      Type_Info *ptc = pt ? type_canonical_concrete(pt) : 0;
+      bool is_unconstrained = ptc && tk_is_array(ptc->k) && ptc->low_bound == 0 && ptc->high_bound == -1;
+
+      /* OUT/IN OUT or unconstrained → ptr, else use actual type             */
+      if (p->parameter.mode & 2 || is_unconstrained)
+        fprintf(o, LLVM_PTR);
       else
-      {
-        Value_Kind k = pt ? token_kind_to_value_kind(pt) : VALUE_KIND_INTEGER;
-        fprintf(o, "%s", value_llvm_type_string(k));
-      }
+        fprintf(o, "%s", type_llvm_string(pt));
     }
     fprintf(o, ")\n");
   }
@@ -16404,24 +16418,23 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     }
     fprintf(o, "define linkonce_odr void @%s(", nb);
     int np = sp->subprogram.parameters.count;
-    if (n->symbol and n->symbol->level > 0)
+    if (n->symbol && n->symbol->level > 0)
       np++;
     for (int i = 0; i < np; i++)
     {
-      if (i)
-        fprintf(o, ", ");
+      if (i) fprintf(o, ", ");
       if (i < (int) sp->subprogram.parameters.count)
       {
         Syntax_Node *p = sp->subprogram.parameters.data[i];
-        Value_Kind k = p->parameter.ty ? token_kind_to_value_kind(resolve_subtype(generator->sm, p->parameter.ty))
-                                : VALUE_KIND_INTEGER;
+        Type_Info *pt = p->parameter.ty ? resolve_subtype(generator->sm, p->parameter.ty) : 0;
+        /* OUT/IN OUT → ptr, else use actual type width                     */
         if (p->parameter.mode & 2)
-          fprintf(o, "ptr %%p.%s", string_to_lowercase(p->parameter.name));
+          fprintf(o, LLVM_PTR " %%p.%s", string_to_lowercase(p->parameter.name));
         else
-          fprintf(o, "%s %%p.%s", value_llvm_type_string(k), string_to_lowercase(p->parameter.name));
+          fprintf(o, "%s %%p.%s", type_llvm_string(pt), string_to_lowercase(p->parameter.name));
       }
       else
-        fprintf(o, "ptr %%__slnk");
+        fprintf(o, LLVM_PTR " %%__slnk");
     }
     fprintf(o, ")%s{\n", n->symbol and n->symbol->is_inline ? " alwaysinline " : " ");
     fprintf(o, "  %%ej = alloca ptr\n");
@@ -16455,8 +16468,8 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     {
       Syntax_Node *p = sp->subprogram.parameters.data[i];
       Type_Info *pt = p->parameter.ty ? resolve_subtype(generator->sm, p->parameter.ty) : 0;
-      Value_Kind k = pt ? token_kind_to_value_kind(pt) : VALUE_KIND_INTEGER;
-      const char *alloc_type = pt ? ada_to_c_type_string(pt) : value_llvm_type_string(k);
+      const char *alloc_type = type_llvm_string(pt);  /* Proper type from Type_Info */
+      Value_Kind k = pt ? token_kind_to_value_kind(pt) : VALUE_KIND_INTEGER;  /* Control flow only */
       Symbol *ps = p->symbol;
       if (ps and ps->level >= 0 and ps->level < generator->sm->lv)
         fprintf(
@@ -16503,8 +16516,8 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       }
       else
       {
-        // IN parameter - store parameter value to local (may need truncation)
-        if (k == VALUE_KIND_INTEGER and strcmp(alloc_type, "i64") != 0)
+        // IN parameter - store parameter value to local (may need narrowing for narrow types)
+        if (k == VALUE_KIND_INTEGER and strcmp(alloc_type, LLVM_I64) != 0 and strcmp(alloc_type, LLVM_I128) != 0)
         {
           int trunc_reg = new_temporary_register(generator);
           if (ps and ps->level >= 0 and ps->level < generator->sm->lv)
@@ -16524,7 +16537,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
             fprintf(
                 o,
                 "  store %s %%p.%s, ptr %%lnk.%d.%s\n",
-                value_llvm_type_string(k),
+                alloc_type,
                 string_to_lowercase(p->parameter.name),
                 ps->level,
                 string_to_lowercase(p->parameter.name));
@@ -16532,7 +16545,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
             fprintf(
                 o,
                 "  store %s %%p.%s, ptr %%v.%s.sc%u.%u\n",
-                value_llvm_type_string(k),
+                alloc_type,
                 string_to_lowercase(p->parameter.name),
                 string_to_lowercase(p->parameter.name),
                 ps ? ps->scope : 0,
@@ -16774,8 +16787,8 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     // Generate procedures from local package bodies in the statements (DECLARE blocks)
     generate_local_package_procedures_in_stmts(generator, &n->body.statements);
     has_basic_label(generator, &n->body.statements);
-    Value_Kind rk = sp->subprogram.return_type ? token_kind_to_value_kind(resolve_subtype(generator->sm, sp->subprogram.return_type))
-                              : VALUE_KIND_INTEGER;
+    Type_Info *ret_ti = sp->subprogram.return_type ? resolve_subtype(generator->sm, sp->subprogram.return_type) : 0;
+    const char *ret_ts = type_llvm_string(ret_ti);
     char nb[256];
     if (n->symbol and n->symbol->mangled_name.string)
     {
@@ -16791,7 +16804,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
         n->symbol->mangled_name.length = strlen(nb);
       }
     }
-    fprintf(o, "define linkonce_odr %s @%s(", value_llvm_type_string(rk), nb);
+    fprintf(o, "define linkonce_odr %s @%s(", ret_ts, nb);
     int np = sp->subprogram.parameters.count;
     if (n->symbol and n->symbol->level > 0)
       np++;
@@ -16802,12 +16815,12 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       if (i < (int) sp->subprogram.parameters.count)
       {
         Syntax_Node *p = sp->subprogram.parameters.data[i];
-        Value_Kind k = p->parameter.ty ? token_kind_to_value_kind(resolve_subtype(generator->sm, p->parameter.ty))
-                                : VALUE_KIND_INTEGER;
+        Type_Info *param_ti = p->parameter.ty ? resolve_subtype(generator->sm, p->parameter.ty) : 0;
+        const char *param_ts = type_llvm_string(param_ti);
         if (p->parameter.mode & 2)
           fprintf(o, "ptr %%p.%s", string_to_lowercase(p->parameter.name));
         else
-          fprintf(o, "%s %%p.%s", value_llvm_type_string(k), string_to_lowercase(p->parameter.name));
+          fprintf(o, "%s %%p.%s", param_ts, string_to_lowercase(p->parameter.name));
       }
       else
         fprintf(o, "ptr %%__slnk");
@@ -16844,8 +16857,8 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     {
       Syntax_Node *p = sp->subprogram.parameters.data[i];
       Type_Info *pt = p->parameter.ty ? resolve_subtype(generator->sm, p->parameter.ty) : 0;
-      Value_Kind k = pt ? token_kind_to_value_kind(pt) : VALUE_KIND_INTEGER;
-      const char *alloc_type = pt ? ada_to_c_type_string(pt) : value_llvm_type_string(k);
+      const char *alloc_type = type_llvm_string(pt);  /* Proper type from Type_Info */
+      Value_Kind k = pt ? token_kind_to_value_kind(pt) : VALUE_KIND_INTEGER;  /* Control flow only */
       Symbol *ps = p->symbol;
       if (ps and ps->level >= 0 and ps->level < generator->sm->lv)
         fprintf(
@@ -16892,8 +16905,8 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       }
       else
       {
-        // IN parameter - store parameter value to local (may need truncation)
-        if (k == VALUE_KIND_INTEGER and strcmp(alloc_type, "i64") != 0)
+        // IN parameter - store parameter value to local (may need narrowing for narrow types)
+        if (k == VALUE_KIND_INTEGER and strcmp(alloc_type, LLVM_I64) != 0 and strcmp(alloc_type, LLVM_I128) != 0)
         {
           int trunc_reg = new_temporary_register(generator);
           if (ps and ps->level >= 0 and ps->level < generator->sm->lv)
@@ -16913,7 +16926,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
             fprintf(
                 o,
                 "  store %s %%p.%s, ptr %%lnk.%d.%s\n",
-                value_llvm_type_string(k),
+                alloc_type,
                 string_to_lowercase(p->parameter.name),
                 ps->level,
                 string_to_lowercase(p->parameter.name));
@@ -16921,7 +16934,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
             fprintf(
                 o,
                 "  store %s %%p.%s, ptr %%v.%s.sc%u.%u\n",
-                value_llvm_type_string(k),
+                alloc_type,
                 string_to_lowercase(p->parameter.name),
                 string_to_lowercase(p->parameter.name),
                 ps ? ps->scope : 0,
@@ -17091,13 +17104,14 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
         generate_statement_sequence(generator, n->body.statements.data[i]);
     }
     generator->sm->lv = sv;
-    if (rk == VALUE_KIND_POINTER)
+    /* Emit return statement - use ret_ts from earlier (type_llvm_string) */
+    if (ret_ti && (representation_category(ret_ti) == REPR_CAT_POINTER))
     {
       fprintf(o, "  ret ptr null\n}\n");
     }
     else
     {
-      fprintf(o, "  ret %s 0\n}\n", value_llvm_type_string(rk));
+      fprintf(o, "  ret %s 0\n}\n", ret_ts);
     }
     generator->current_function = 0;
   }
@@ -17214,13 +17228,13 @@ static void generate_expression_llvm(Code_Generator *generator, Syntax_Node *n)
             else
             {
               // Non-array type - use simple load/store
-              Value_Kind k = s->type_info ? token_kind_to_value_kind(s->type_info) : VALUE_KIND_INTEGER;
+              const char *ts = type_llvm_string(s->type_info);
               int tmp = new_temporary_register(generator);
               fprintf(generator->o, "  %%t%d = load %s, ptr %%v.%s.sc%u.%u\n",
-                  tmp, value_llvm_type_string(k),
+                  tmp, ts,
                   string_to_lowercase(id->string_value), s->scope, s->elaboration_level);
               fprintf(generator->o, "  store %s %%t%d, ptr @%s\n",
-                  value_llvm_type_string(k), tmp, gn);
+                  ts, tmp, gn);
             }
           }
         }
@@ -17768,20 +17782,18 @@ static void print_forward_declarations(Code_Generator *generator, Symbol_Manager
                   fprintf(generator->o, ",");
                 Syntax_Node *p = sp->subprogram.parameters.data[i];
                 Type_Info *pt = p->parameter.ty ? resolve_subtype(sm, p->parameter.ty) : 0;
-                Value_Kind k = pt ? token_kind_to_value_kind(pt) : VALUE_KIND_INTEGER;
                 if (p->parameter.mode & 2)
                   fprintf(generator->o, "ptr");
                 else
-                  fprintf(generator->o, "%s", value_llvm_type_string(k));
+                  fprintf(generator->o, "%s", type_llvm_string(pt));
               }
               fprintf(generator->o, ")\n");
             }
             else
             {
-              // Function - use C types for external C functions
+              // Function - use proper LLVM type from Type_Info
               Type_Info *rt = sp->subprogram.return_type ? resolve_subtype(sm, sp->subprogram.return_type) : 0;
-              bool use_c = is_c_external(s);
-              const char *ret_type = use_c ? ada_to_c_type_string(rt) : value_llvm_type_string(rt ? token_kind_to_value_kind(rt) : VALUE_KIND_INTEGER);
+              const char *ret_type = type_llvm_string(rt);
               fprintf(generator->o, "declare %s @%s(", ret_type, nb);
               for (uint32_t i = 0; i < sp->subprogram.parameters.count; i++)
               {
@@ -17791,13 +17803,8 @@ static void print_forward_declarations(Code_Generator *generator, Symbol_Manager
                 Type_Info *pt = p->parameter.ty ? resolve_subtype(sm, p->parameter.ty) : 0;
                 if (p->parameter.mode & 2)
                   fprintf(generator->o, "ptr");
-                else if (use_c)
-                  fprintf(generator->o, "%s", ada_to_c_type_string(pt));
                 else
-                {
-                  Value_Kind k = pt ? token_kind_to_value_kind(pt) : VALUE_KIND_INTEGER;
-                  fprintf(generator->o, "%s", value_llvm_type_string(k));
-                }
+                  fprintf(generator->o, "%s", type_llvm_string(pt));
               }
               fprintf(generator->o, ")\n");
             }
@@ -17912,23 +17919,20 @@ static void write_ada_library_interface(Symbol_Manager *symbol_manager, const ch
             for (uint32_t i = 0; i < sp->subprogram.parameters.count; i++)
             {
               Syntax_Node *p = sp->subprogram.parameters.data[i];
-              Value_Kind k = p->parameter.ty ? token_kind_to_value_kind(resolve_subtype(symbol_manager, p->parameter.ty))
-                                      : VALUE_KIND_INTEGER;
-              fprintf(f, " %s", value_llvm_type_string(k));
+              Type_Info *pt = p->parameter.ty ? resolve_subtype(symbol_manager, p->parameter.ty) : 0;
+              fprintf(f, " %s", type_llvm_string(pt));
             }
         }
         else
         {
           Type_Info *rt = sp and sp->subprogram.return_type ? resolve_subtype(symbol_manager, sp->subprogram.return_type) : 0;
-          Value_Kind rk = token_kind_to_value_kind(rt);
-          fprintf(f, " %s", value_llvm_type_string(rk));
+          fprintf(f, " %s", type_llvm_string(rt));
           if (sp)
             for (uint32_t i = 0; i < sp->subprogram.parameters.count; i++)
             {
               Syntax_Node *p = sp->subprogram.parameters.data[i];
-              Value_Kind k = p->parameter.ty ? token_kind_to_value_kind(resolve_subtype(symbol_manager, p->parameter.ty))
-                                      : VALUE_KIND_INTEGER;
-              fprintf(f, " %s", value_llvm_type_string(k));
+              Type_Info *pt = p->parameter.ty ? resolve_subtype(symbol_manager, p->parameter.ty) : 0;
+              fprintf(f, " %s", type_llvm_string(pt));
             }
         }
         fprintf(f, "\n");
@@ -17950,8 +17954,7 @@ static void write_ada_library_interface(Symbol_Manager *symbol_manager, const ch
         }
         else
           snprintf(nb, 256, "%.*s", (int) s->name.length, s->name.string);
-        Value_Kind k = s->type_info ? token_kind_to_value_kind(s->type_info) : VALUE_KIND_INTEGER;
-        fprintf(f, "X %s %s\n", nb, value_llvm_type_string(k));
+        fprintf(f, "X %s %s\n", nb, type_llvm_string(s->type_info));
       }
     }
   }
@@ -18076,7 +18079,8 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
     {
       if ((s->k == 0 or s->k == 2) and s->level == 0 and s->parent and not s->is_external and s->overloads.count == 0)
       {
-        Value_Kind k = s->type_info ? token_kind_to_value_kind(s->type_info) : VALUE_KIND_INTEGER;
+        const char *ts = type_llvm_string(s->type_info);
+        Value_Kind k = s->type_info ? token_kind_to_value_kind(s->type_info) : VALUE_KIND_INTEGER;  /* For control flow */
         char nb[256];
         int n = 0;
         for (uint32_t j = 0; j < s->parent->name.length; j++)
@@ -18160,7 +18164,7 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
                 "@%s=linkonce_odr %s %s %s\n",
                 nb,
                 s->k == 2 ? "constant" : "global",
-                value_llvm_type_string(k),
+                ts,
                 iv);
           }
         }
@@ -18303,7 +18307,8 @@ int main(int ac, char **av)
       if ((s->k == 0 or s->k == 2) and (s->level == 0 or s->parent) and not(s->parent and lfnd(&sm, s->parent->name))
           and not s->is_external and s->overloads.count == 0)
       {
-        Value_Kind k = s->type_info ? token_kind_to_value_kind(s->type_info) : VALUE_KIND_INTEGER;
+        const char *ts = type_llvm_string(s->type_info);
+        Value_Kind k = s->type_info ? token_kind_to_value_kind(s->type_info) : VALUE_KIND_INTEGER;  /* Control flow */
         char nb[256];
         if (s->parent and (uintptr_t) s->parent > 4096 and s->parent->name.string)
         {
@@ -18397,7 +18402,7 @@ int main(int ac, char **av)
                 "@%s=linkonce_odr %s %s %s\n",
                 nb,
                 s->k == 2 ? "constant" : "global",
-                value_llvm_type_string(k),
+                ts,
                 iv);
           }
         }
