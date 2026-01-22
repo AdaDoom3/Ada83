@@ -939,6 +939,142 @@ package body TEXT_IO is
       PUT_LINE(FILE_TYPE(Current_Out_Idx), ITEM);
    end PUT_LINE;
 
+   -- INTEGER_IO generic package body
+   -- Standalone implementation for nested generic instantiation
+   package body INTEGER_IO is
+      procedure GET(FILE : in FILE_TYPE; ITEM : out NUM; WIDTH : in FIELD := 0) is
+         W : FIELD := WIDTH;  -- Use parameter to avoid warning
+         F : FILE_TYPE := FILE;
+      begin
+         ITEM := 0;
+      end GET;
+
+      procedure GET(ITEM : out NUM; WIDTH : in FIELD := 0) is
+         W : FIELD := WIDTH;
+      begin
+         ITEM := 0;
+      end GET;
+
+      procedure PUT(FILE : in FILE_TYPE; ITEM : in NUM; WIDTH : in FIELD := DEFAULT_WIDTH; BASE : in NUMBER_BASE := DEFAULT_BASE) is
+         F : FILE_TYPE := FILE;
+         I : NUM := ITEM;
+         W : FIELD := WIDTH;
+         B : NUMBER_BASE := BASE;
+      begin
+         null;
+      end PUT;
+
+      procedure PUT(ITEM : in NUM; WIDTH : in FIELD := DEFAULT_WIDTH; BASE : in NUMBER_BASE := DEFAULT_BASE) is
+         I : NUM := ITEM;
+         W : FIELD := WIDTH;
+         B : NUMBER_BASE := BASE;
+      begin
+         null;
+      end PUT;
+
+      procedure GET(FROM : in STRING; ITEM : out NUM; LAST : out POSITIVE) is
+      begin
+         ITEM := 0;
+         LAST := FROM'First;
+      end GET;
+
+      procedure PUT(TO : out STRING; ITEM : in NUM; BASE : in NUMBER_BASE := DEFAULT_BASE) is
+         I : NUM := ITEM;
+         B : NUMBER_BASE := BASE;
+      begin
+         for J in TO'Range loop
+            TO(J) := ' ';
+         end loop;
+      end PUT;
+   end INTEGER_IO;
+
+   -- FLOAT_IO generic package body (stub for basic compatibility)
+   package body FLOAT_IO is
+      procedure GET(FILE : in FILE_TYPE; ITEM : out NUM; WIDTH : in FIELD := 0) is
+      begin
+         ITEM := 0.0;
+      end GET;
+      procedure GET(ITEM : out NUM; WIDTH : in FIELD := 0) is
+      begin
+         ITEM := 0.0;
+      end GET;
+      procedure PUT(FILE : in FILE_TYPE; ITEM : in NUM; FORE : in FIELD := DEFAULT_FORE; AFT : in FIELD := DEFAULT_AFT; EXP : in FIELD := DEFAULT_EXP) is
+      begin
+         null;
+      end PUT;
+      procedure PUT(ITEM : in NUM; FORE : in FIELD := DEFAULT_FORE; AFT : in FIELD := DEFAULT_AFT; EXP : in FIELD := DEFAULT_EXP) is
+      begin
+         null;
+      end PUT;
+      procedure GET(FROM : in STRING; ITEM : out NUM; LAST : out POSITIVE) is
+      begin
+         ITEM := 0.0;
+         LAST := FROM'Last;
+      end GET;
+      procedure PUT(TO : out STRING; ITEM : in NUM; AFT : in FIELD := DEFAULT_AFT; EXP : in FIELD := DEFAULT_EXP) is
+      begin
+         for I in TO'Range loop TO(I) := ' '; end loop;
+      end PUT;
+   end FLOAT_IO;
+
+   -- FIXED_IO generic package body (stub for basic compatibility)
+   package body FIXED_IO is
+      procedure GET(FILE : in FILE_TYPE; ITEM : out NUM; WIDTH : in FIELD := 0) is
+      begin
+         ITEM := 0.0;
+      end GET;
+      procedure GET(ITEM : out NUM; WIDTH : in FIELD := 0) is
+      begin
+         ITEM := 0.0;
+      end GET;
+      procedure PUT(FILE : in FILE_TYPE; ITEM : in NUM; FORE : in FIELD := DEFAULT_FORE; AFT : in FIELD := DEFAULT_AFT; EXP : in FIELD := DEFAULT_EXP) is
+      begin
+         null;
+      end PUT;
+      procedure PUT(ITEM : in NUM; FORE : in FIELD := DEFAULT_FORE; AFT : in FIELD := DEFAULT_AFT; EXP : in FIELD := DEFAULT_EXP) is
+      begin
+         null;
+      end PUT;
+      procedure GET(FROM : in STRING; ITEM : out NUM; LAST : out POSITIVE) is
+      begin
+         ITEM := 0.0;
+         LAST := FROM'Last;
+      end GET;
+      procedure PUT(TO : out STRING; ITEM : in NUM; AFT : in FIELD := DEFAULT_AFT; EXP : in FIELD := DEFAULT_EXP) is
+      begin
+         for I in TO'Range loop TO(I) := ' '; end loop;
+      end PUT;
+   end FIXED_IO;
+
+   -- ENUMERATION_IO generic package body (stub for basic compatibility)
+   package body ENUMERATION_IO is
+      procedure GET(FILE : in FILE_TYPE; ITEM : out ENUM) is
+      begin
+         ITEM := ENUM'FIRST;
+      end GET;
+      procedure GET(ITEM : out ENUM) is
+      begin
+         ITEM := ENUM'FIRST;
+      end GET;
+      procedure PUT(FILE : in FILE_TYPE; ITEM : in ENUM; WIDTH : in FIELD := DEFAULT_WIDTH; SET : in TYPE_SET := DEFAULT_SETTING) is
+      begin
+         null;
+      end PUT;
+      procedure PUT(ITEM : in ENUM; WIDTH : in FIELD := DEFAULT_WIDTH; SET : in TYPE_SET := DEFAULT_SETTING) is
+      begin
+         null;
+      end PUT;
+      procedure GET(FROM : in STRING; ITEM : out ENUM; LAST : out POSITIVE) is
+      begin
+         ITEM := ENUM'FIRST;
+         LAST := FROM'Last;
+      end GET;
+      procedure PUT(TO : out STRING; ITEM : in ENUM; SET : in TYPE_SET := DEFAULT_SETTING) is
+      begin
+         for I in TO'Range loop TO(I) := ' '; end loop;
+      end PUT;
+   end ENUMERATION_IO;
+
 begin
    Init_Standard_Files;
    Initialized := True;
