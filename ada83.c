@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -5844,10 +5845,25 @@ typedef enum
   COMP_ARRAY_ELEMENT,
   COMP_ACCESS_DESIGNATED
 } CompatKind;
+static bool is_system_address(Type_Info *t)
+{
+  if (not t)
+    return false;
+  if (t->name.length == 7 and t->name.string and
+      strncasecmp(t->name.string, "ADDRESS", 7) == 0)
+    return true;
+  if (t->base_type and is_system_address(t->base_type))
+    return true;
+  if (t->parent_type and is_system_address(t->parent_type))
+    return true;
+  return false;
+}
 static ReprCat representation_category(Type_Info *t)
 {
   if (not t)
     return RC_INT;
+  if (is_system_address(t))
+    return REPR_CAT_POINTER;
   switch (t->k)
   {
   case TYPE_FLOAT:
@@ -10145,6 +10161,9 @@ static const char *ada_to_c_type_string(Type_Info *t)
 {
   if (not t)
     return "i32";
+  // SYSTEM.ADDRESS should map to ptr for C interop
+  if (is_system_address(t))
+    return "ptr";
   Type_Info *tc = type_canonical_concrete(t);
   if (not tc)
     return "i32";
@@ -10204,6 +10223,14 @@ static Value_Kind token_kind_to_value_kind(Type_Info *t)
   default:
     return VALUE_KIND_INTEGER;
   }
+}
+static bool is_c_external(Symbol *s)
+{
+  if (not s or not s->is_external)
+    return false;
+  if (s->external_language.length == 0)
+    return true;  // Default to C if no language specified
+  return s->external_language.length == 1 and (s->external_language.string[0] == 'C' or s->external_language.string[0] == 'c');
 }
 static unsigned long type_hash(Type_Info *t)
 {
@@ -10583,13 +10610,21 @@ static Value
 generate_discrete_range_check(Code_Generator *generator, Value e, Type_Info *t, String_Slice ec, Value_Kind rk)
 {
   FILE *o = generator->o;
+  // Convert pointer to i64 for range checking (needed for SYSTEM.ADDRESS)
+  Value ev = e;
+  if (ev.k == VALUE_KIND_POINTER)
+  {
+    int pi = new_temporary_register(generator);
+    fprintf(o, "  %%t%d = ptrtoint ptr %%t%d to i64\n", pi, ev.id);
+    ev = (Value){pi, VALUE_KIND_INTEGER};
+  }
   int lok = new_label_block(generator), hik = new_label_block(generator), erl = new_label_block(generator),
       dn = new_label_block(generator), lc = new_temporary_register(generator);
-  fprintf(o, "  %%t%d = icmp sge i64 %%t%d, %lld\n", lc, e.id, (long long) t->low_bound);
+  fprintf(o, "  %%t%d = icmp sge i64 %%t%d, %lld\n", lc, ev.id, (long long) t->low_bound);
   emit_conditional_branch(generator, lc, lok, erl);
   emit_label(generator, lok);
   int hc = new_temporary_register(generator);
-  fprintf(o, "  %%t%d = icmp sle i64 %%t%d, %lld\n", hc, e.id, (long long) t->high_bound);
+  fprintf(o, "  %%t%d = icmp sle i64 %%t%d, %lld\n", hc, ev.id, (long long) t->high_bound);
   emit_conditional_branch(generator, hc, hik, erl);
   emit_label(generator, hik);
   emit_branch(generator, dn);
@@ -13114,23 +13149,60 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           }
           char nb[256];
           encode_symbol_name(nb, 256, s, n->call.function_name->string_value, n->call.arguments.count, sp);
-          fprintf(o, "  %%t%d = call %s @%s(", r.id, value_llvm_type_string(rk), nb);
-          for (uint32_t i = 0; i < n->call.arguments.count; i++)
+          // Handle C external functions with type conversions
+          if (is_c_external(s))
           {
-            if (i)
-              fprintf(o, ", ");
-            fprintf(o, "%s %%t%d", value_llvm_type_string(ark[i]), arid[i]);
+            // Convert parameters to C types (trunc i64 to i32 where needed)
+            int c_arid[64];
+            const char *c_types[64];
+            for (uint32_t i = 0; i < n->call.arguments.count and i < 64; i++)
+            {
+              Type_Info *pt = sp and i < sp->subprogram.parameters.count and sp->subprogram.parameters.data[i]->parameter.ty
+                  ? resolve_subtype(generator->sm, sp->subprogram.parameters.data[i]->parameter.ty) : 0;
+              c_types[i] = pt ? ada_to_c_type_string(pt) : value_llvm_type_string(ark[i]);
+              if (ark[i] == VALUE_KIND_INTEGER and strcmp(c_types[i], "i64") != 0 and strcmp(c_types[i], "ptr") != 0)
+              {
+                c_arid[i] = new_temporary_register(generator);
+                fprintf(o, "  %%t%d = trunc i64 %%t%d to %s\n", c_arid[i], arid[i], c_types[i]);
+              }
+              else
+                c_arid[i] = arid[i];
+            }
+            // Get C return type
+            Type_Info *rt = sp and sp->subprogram.return_type ? resolve_subtype(generator->sm, sp->subprogram.return_type) : 0;
+            const char *c_ret = rt ? ada_to_c_type_string(rt) : "i32";
+            bool need_sext = rk == VALUE_KIND_INTEGER and strcmp(c_ret, "i64") != 0 and strcmp(c_ret, "ptr") != 0;
+            int call_reg = need_sext ? new_temporary_register(generator) : r.id;
+            fprintf(o, "  %%t%d = call %s @%s(", call_reg, c_ret, nb);
+            for (uint32_t i = 0; i < n->call.arguments.count; i++)
+            {
+              if (i) fprintf(o, ", ");
+              fprintf(o, "%s %%t%d", c_types[i], c_arid[i]);
+            }
+            fprintf(o, ")\n");
+            if (need_sext)
+              fprintf(o, "  %%t%d = sext %s %%t%d to i64\n", r.id, c_ret, call_reg);
           }
-          if (s->level > 0)
+          else
           {
-            if (n->call.arguments.count > 0)
-              fprintf(o, ", ");
-            if (s->level >= generator->sm->lv)
-              fprintf(o, "ptr %%__frame");
-            else
-              fprintf(o, "ptr %%__slnk");
+            fprintf(o, "  %%t%d = call %s @%s(", r.id, value_llvm_type_string(rk), nb);
+            for (uint32_t i = 0; i < n->call.arguments.count; i++)
+            {
+              if (i)
+                fprintf(o, ", ");
+              fprintf(o, "%s %%t%d", value_llvm_type_string(ark[i]), arid[i]);
+            }
+            if (s->level > 0)
+            {
+              if (n->call.arguments.count > 0)
+                fprintf(o, ", ");
+              if (s->level >= generator->sm->lv)
+                fprintf(o, "ptr %%__frame");
+              else
+                fprintf(o, "ptr %%__slnk");
+            }
+            fprintf(o, ")\n");
           }
-          fprintf(o, ")\n");
           for (uint32_t i = 0; i < n->call.arguments.count and i < 64; i++)
           {
             if (arp[i])
@@ -15092,14 +15164,14 @@ static bool is_runtime_type(const char *name)
          or not strcmp(name, "__ada_finalize") or not strcmp(name, "__ada_finalize_all")
          or not strcmp(name, "__ada_image_enum") or not strcmp(name, "__ada_value_int")
          or not strcmp(name, "__ada_image_int")
-         or not strcmp(name, "__ada_fopen") or not strcmp(name, "__ada_fclose")
-         or not strcmp(name, "__ada_fputc") or not strcmp(name, "__ada_fgetc")
-         or not strcmp(name, "__ada_ungetc") or not strcmp(name, "__ada_feof")
-         or not strcmp(name, "__ada_fflush") or not strcmp(name, "__ada_remove")
-         or not strcmp(name, "__ada_ftell") or not strcmp(name, "__ada_fseek")
          or not strcmp(name, "__ada_stdin") or not strcmp(name, "__ada_stdout")
          or not strcmp(name, "__ada_stderr") or not strcmp(name, "putchar")
-         or not strcmp(name, "getchar");
+         or not strcmp(name, "getchar")
+         or not strcmp(name, "fopen") or not strcmp(name, "fclose")
+         or not strcmp(name, "fputc") or not strcmp(name, "fgetc")
+         or not strcmp(name, "ungetc") or not strcmp(name, "feof")
+         or not strcmp(name, "fflush") or not strcmp(name, "remove")
+         or not strcmp(name, "ftell") or not strcmp(name, "fseek");
 }
 static bool has_label_block(Node_Vector *sl)
 {
@@ -15577,29 +15649,32 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     Type_Info *rt = sp->subprogram.return_type ? resolve_subtype(generator->sm, sp->subprogram.return_type) : 0;
     Type_Info *rtc = rt ? type_canonical_concrete(rt) : 0;
     bool return_unconstrained = rtc and rtc->k == TYPE_ARRAY and rtc->low_bound == 0 and rtc->high_bound == -1;
-    Value_Kind rk = return_unconstrained ? VALUE_KIND_POINTER : (rt ? token_kind_to_value_kind(rt) : VALUE_KIND_INTEGER);
-    fprintf(o, "declare %s @%s(", value_llvm_type_string(rk), nb);
+    // Use C types for external C functions
+    bool use_c_types = is_c_external(n->symbol);
+    const char *ret_type = return_unconstrained ? "ptr" :
+        (use_c_types ? ada_to_c_type_string(rt) : value_llvm_type_string(rt ? token_kind_to_value_kind(rt) : VALUE_KIND_INTEGER));
+    fprintf(o, "declare %s @%s(", ret_type, nb);
     for (uint32_t i = 0; i < sp->subprogram.parameters.count; i++)
     {
       if (i)
         fprintf(o, ",");
       Syntax_Node *p = sp->subprogram.parameters.data[i];
       Type_Info *pt = p->parameter.ty ? resolve_subtype(generator->sm, p->parameter.ty) : 0;
-      Value_Kind k = VALUE_KIND_INTEGER;
       bool is_unconstrained = false;
       if (pt)
       {
         Type_Info *ptc = type_canonical_concrete(pt);
         is_unconstrained = ptc and ptc->k == TYPE_ARRAY and ptc->low_bound == 0 and ptc->high_bound == -1;
-        if (n->symbol and n->symbol->is_external and ptc and ptc->k == TYPE_ARRAY and not(p->parameter.mode & 2))
-          k = VALUE_KIND_INTEGER;
-        else
-          k = token_kind_to_value_kind(pt);
       }
       if (p->parameter.mode & 2 or is_unconstrained)
         fprintf(o, "ptr");
+      else if (use_c_types)
+        fprintf(o, "%s", ada_to_c_type_string(pt));
       else
+      {
+        Value_Kind k = pt ? token_kind_to_value_kind(pt) : VALUE_KIND_INTEGER;
         fprintf(o, "%s", value_llvm_type_string(k));
+      }
     }
     fprintf(o, ")\n");
   }
@@ -16665,83 +16740,18 @@ static void generate_runtime_type(Code_Generator *generator)
   //     "define linkonce_odr void @__text_io_get_line(ptr %%b,ptr %%n){store i64 0,ptr %%n\nret "
   //     "void}\n");
   fprintf(o, "declare i32 @putchar(i32)\ndeclare i32 @getchar()\n");
-  // C file I/O functions for TEXT_IO
+  // C file I/O functions - used by TEXT_IO with proper C type conventions
   fprintf(o,
       "declare ptr @fopen(ptr,ptr)\ndeclare i32 @fclose(ptr)\n"
       "declare i32 @fputc(i32,ptr)\ndeclare i32 @fgetc(ptr)\n"
       "declare i32 @ungetc(i32,ptr)\ndeclare i32 @feof(ptr)\n"
       "declare i32 @fflush(ptr)\ndeclare i32 @remove(ptr)\n"
       "declare i64 @ftell(ptr)\ndeclare i32 @fseek(ptr,i64,i32)\n");
-  // Standard file accessors for TEXT_IO
+  // Standard file accessors for TEXT_IO (access global C library streams)
   fprintf(o,
       "define linkonce_odr ptr @__ada_stdin(){%%p=load ptr,ptr @stdin\nret ptr %%p}\n"
       "define linkonce_odr ptr @__ada_stdout(){%%p=load ptr,ptr @stdout\nret ptr %%p}\n"
       "define linkonce_odr ptr @__ada_stderr(){%%p=load ptr,ptr @stderr\nret ptr %%p}\n");
-  // Ada wrapper functions for file I/O (convert between i64/ADDRESS and ptr)
-  fprintf(o,
-      "define linkonce_odr i64 @__ada_fopen(i64 %%name, i64 %%mode){\n"
-      "  %%np = inttoptr i64 %%name to ptr\n"
-      "  %%mp = inttoptr i64 %%mode to ptr\n"
-      "  %%fp = call ptr @fopen(ptr %%np, ptr %%mp)\n"
-      "  %%r = ptrtoint ptr %%fp to i64\n"
-      "  ret i64 %%r\n"
-      "}\n"
-      "define linkonce_odr i64 @__ada_fclose(i64 %%stream){\n"
-      "  %%fp = inttoptr i64 %%stream to ptr\n"
-      "  %%r = call i32 @fclose(ptr %%fp)\n"
-      "  %%r64 = sext i32 %%r to i64\n"
-      "  ret i64 %%r64\n"
-      "}\n"
-      "define linkonce_odr i64 @__ada_fputc(i64 %%c, i64 %%stream){\n"
-      "  %%c32 = trunc i64 %%c to i32\n"
-      "  %%fp = inttoptr i64 %%stream to ptr\n"
-      "  %%r = call i32 @fputc(i32 %%c32, ptr %%fp)\n"
-      "  %%r64 = sext i32 %%r to i64\n"
-      "  ret i64 %%r64\n"
-      "}\n"
-      "define linkonce_odr i64 @__ada_fgetc(i64 %%stream){\n"
-      "  %%fp = inttoptr i64 %%stream to ptr\n"
-      "  %%r = call i32 @fgetc(ptr %%fp)\n"
-      "  %%r64 = sext i32 %%r to i64\n"
-      "  ret i64 %%r64\n"
-      "}\n"
-      "define linkonce_odr i64 @__ada_ungetc(i64 %%c, i64 %%stream){\n"
-      "  %%c32 = trunc i64 %%c to i32\n"
-      "  %%fp = inttoptr i64 %%stream to ptr\n"
-      "  %%r = call i32 @ungetc(i32 %%c32, ptr %%fp)\n"
-      "  %%r64 = sext i32 %%r to i64\n"
-      "  ret i64 %%r64\n"
-      "}\n"
-      "define linkonce_odr i64 @__ada_feof(i64 %%stream){\n"
-      "  %%fp = inttoptr i64 %%stream to ptr\n"
-      "  %%r = call i32 @feof(ptr %%fp)\n"
-      "  %%r64 = sext i32 %%r to i64\n"
-      "  ret i64 %%r64\n"
-      "}\n"
-      "define linkonce_odr i64 @__ada_fflush(i64 %%stream){\n"
-      "  %%fp = inttoptr i64 %%stream to ptr\n"
-      "  %%r = call i32 @fflush(ptr %%fp)\n"
-      "  %%r64 = sext i32 %%r to i64\n"
-      "  ret i64 %%r64\n"
-      "}\n"
-      "define linkonce_odr i64 @__ada_remove(i64 %%name){\n"
-      "  %%np = inttoptr i64 %%name to ptr\n"
-      "  %%r = call i32 @remove(ptr %%np)\n"
-      "  %%r64 = sext i32 %%r to i64\n"
-      "  ret i64 %%r64\n"
-      "}\n"
-      "define linkonce_odr i64 @__ada_ftell(i64 %%stream){\n"
-      "  %%fp = inttoptr i64 %%stream to ptr\n"
-      "  %%r = call i64 @ftell(ptr %%fp)\n"
-      "  ret i64 %%r\n"
-      "}\n"
-      "define linkonce_odr i64 @__ada_fseek(i64 %%stream, i64 %%offset, i64 %%whence){\n"
-      "  %%fp = inttoptr i64 %%stream to ptr\n"
-      "  %%w32 = trunc i64 %%whence to i32\n"
-      "  %%r = call i32 @fseek(ptr %%fp, i64 %%offset, i32 %%w32)\n"
-      "  %%r64 = sext i32 %%r to i64\n"
-      "  ret i64 %%r64\n"
-      "}\n");
   // Calendar package support - time functions
   fprintf(o,
       "declare i64 @time(ptr)\n"
@@ -17080,21 +17090,26 @@ static void print_forward_declarations(Code_Generator *generator, Symbol_Manager
             }
             else
             {
-              // Function
+              // Function - use C types for external C functions
               Type_Info *rt = sp->subprogram.return_type ? resolve_subtype(sm, sp->subprogram.return_type) : 0;
-              Value_Kind rk = rt ? token_kind_to_value_kind(rt) : VALUE_KIND_INTEGER;
-              fprintf(generator->o, "declare %s @%s(", value_llvm_type_string(rk), nb);
+              bool use_c = is_c_external(s);
+              const char *ret_type = use_c ? ada_to_c_type_string(rt) : value_llvm_type_string(rt ? token_kind_to_value_kind(rt) : VALUE_KIND_INTEGER);
+              fprintf(generator->o, "declare %s @%s(", ret_type, nb);
               for (uint32_t i = 0; i < sp->subprogram.parameters.count; i++)
               {
                 if (i)
                   fprintf(generator->o, ",");
                 Syntax_Node *p = sp->subprogram.parameters.data[i];
                 Type_Info *pt = p->parameter.ty ? resolve_subtype(sm, p->parameter.ty) : 0;
-                Value_Kind k = pt ? token_kind_to_value_kind(pt) : VALUE_KIND_INTEGER;
                 if (p->parameter.mode & 2)
                   fprintf(generator->o, "ptr");
+                else if (use_c)
+                  fprintf(generator->o, "%s", ada_to_c_type_string(pt));
                 else
+                {
+                  Value_Kind k = pt ? token_kind_to_value_kind(pt) : VALUE_KIND_INTEGER;
                   fprintf(generator->o, "%s", value_llvm_type_string(k));
+                }
               }
               fprintf(generator->o, ")\n");
             }
