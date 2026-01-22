@@ -39,6 +39,143 @@
 #define TOLOWER(c) ((char)tolower((unsigned char)(c)))
 #define TOUPPER(c) ((char)toupper((unsigned char)(c)))
 
+/* ===========================================================================
+ * §1. TYPE METRICS — The Measure of All Things
+ * ===========================================================================
+ *
+ * "The question of proper size for things in a program is much like the same
+ *  question asked about the things in the physical world."
+ *                                        — D.E. Knuth, TAOCP Vol.1
+ *
+ * Following GNAT LLVM's architecture (gnatllvm.ads, gnatllvm-types.ads):
+ * We define a canonical set of metrics for type sizes, alignments, and
+ * conversions. All size calculations flow through these primitives.
+ *
+ * FUNDAMENTAL CONSTANTS:
+ *   BPU  — Bits Per Unit (the addressable quantum)
+ *   UBPU — BPU as unsigned 64-bit (for size calculations)
+ *
+ * LLVM TYPE WIDTHS (bits):
+ *   W1, W8, W16, W32, W64 — Standard integer widths
+ *   WPTR — Pointer width (platform-dependent)
+ *   WFLT, WDBL — Floating-point widths
+ *
+ * CONVERSION FUNCTIONS (from GNAT LLVM To_Bits/To_Bytes):
+ *   to_bits(bytes)  — bytes × BPU
+ *   to_bytes(bits)  — ⌈bits / BPU⌉
+ *   byte_align(bits) — round up to byte boundary
+ */
+
+enum { BPU = 8 };                          /* Bits Per Unit (byte)           */
+static const uint64_t UBPU = 8ULL;         /* BPU for 64-bit arithmetic      */
+
+/* LLVM integer type widths (bits) — the atoms of representation            */
+enum {
+  W1   = 1,    W8   = 8,    W16  = 16,   W32  = 32,   W64  = 64,
+  WPTR = 64,   WFLT = 32,   WDBL = 64    /* Platform: LP64 assumed         */
+};
+
+/* Default type metrics — the canonical starting point                      */
+enum {
+  DEFAULT_ALIGN_BITS  = W64,              /* Natural alignment for i64      */
+  DEFAULT_SIZE_BITS   = W64,              /* Default scalar size            */
+  DEFAULT_ALIGN_BYTES = DEFAULT_ALIGN_BITS / BPU,
+  DEFAULT_SIZE_BYTES  = DEFAULT_SIZE_BITS / BPU,
+  CHAR_SIZE_BITS      = W8,               /* CHARACTER'SIZE                 */
+  CHAR_SIZE_BYTES     = CHAR_SIZE_BITS / BPU,
+  BOOL_SIZE_BITS      = W8,               /* Ada BOOLEAN maps to i8         */
+  INT_SIZE_BITS       = W32,              /* Ada INTEGER'SIZE               */
+  FLT_SIZE_BITS       = WDBL,             /* Ada FLOAT'SIZE (double)        */
+  FAT_PTR_SIZE_BITS   = 2 * WPTR          /* {ptr, ptr} for fat pointers    */
+};
+
+/* INTEGER bounds — derived from INT_SIZE_BITS                              */
+#define INT32_LO (-2147483648LL)
+#define INT32_HI ( 2147483647LL)
+
+/* §1.1 Conversion Functions — The Morphisms of Size                        */
+
+/* to_bits: bytes → bits (multiplicative, total)                            */
+static inline uint64_t to_bits_u64(uint64_t bytes) { return bytes * UBPU; }
+static inline uint32_t to_bits_u32(uint32_t bytes) { return bytes * BPU; }
+static inline int64_t  to_bits_i64(int64_t bytes)  { return bytes * BPU; }
+
+/* to_bytes: bits → bytes (ceiling division, rounds up)                     */
+static inline uint64_t to_bytes_u64(uint64_t bits) { return (bits + UBPU - 1) / UBPU; }
+static inline uint32_t to_bytes_u32(uint32_t bits) { return (bits + BPU - 1) / BPU; }
+static inline int64_t  to_bytes_i64(int64_t bits)  { return (bits + BPU - 1) / BPU; }
+
+/* byte_align: bits → bits (round up to byte boundary)                      */
+static inline uint64_t byte_align_u64(uint64_t bits) { return to_bits_u64(to_bytes_u64(bits)); }
+static inline uint32_t byte_align_u32(uint32_t bits) { return to_bits_u32(to_bytes_u32(bits)); }
+
+/* align_to: size → aligned size (power-of-2 alignment)                     */
+static inline uint32_t align_to(uint32_t size, uint32_t align) {
+  return align ? ((size + align - 1) & ~(align - 1)) : size;
+}
+
+/* Generic to_bits/to_bytes macros — type-generic via _Generic (C11)        */
+#define TO_BITS(x) _Generic((x),                                              \
+  uint64_t: to_bits_u64, uint32_t: to_bits_u32, int64_t: to_bits_i64,        \
+  default: to_bits_u64)(x)
+
+#define TO_BYTES(x) _Generic((x),                                             \
+  uint64_t: to_bytes_u64, uint32_t: to_bytes_u32, int64_t: to_bytes_i64,     \
+  default: to_bytes_u64)(x)
+
+/* §1.2 LLVM Type Strings — The Names of Representation                     */
+
+/* LLVM IR type string constants — named for clarity and deduplication      */
+#define LLVM_I1    "i1"
+#define LLVM_I8    "i8"
+#define LLVM_I16   "i16"
+#define LLVM_I32   "i32"
+#define LLVM_I64   "i64"
+#define LLVM_PTR   "ptr"
+#define LLVM_FLOAT "float"
+#define LLVM_DBL   "double"
+#define LLVM_VOID  "void"
+
+/* LLVM type selection by bit width — the width→type morphism               */
+static inline const char *llvm_int_type(uint32_t bits) {
+  return bits <= W1 ? LLVM_I1 : bits <= W8 ? LLVM_I8 :
+         bits <= W16 ? LLVM_I16 : bits <= W32 ? LLVM_I32 : LLVM_I64;
+}
+
+/* LLVM float type by bits                                                  */
+static inline const char *llvm_float_type(uint32_t bits) {
+  return bits <= WFLT ? LLVM_FLOAT : LLVM_DBL;
+}
+
+/* §1.3 Range Predicates — The Bounds of Representation                     */
+
+/* Check if value fits in signed/unsigned integer of given bits             */
+static inline bool fits_in_signed(int64_t lo, int64_t hi, uint32_t bits) {
+  int64_t min = -(1LL << (bits - 1)), max = (1LL << (bits - 1)) - 1;
+  return lo >= min && hi <= max;
+}
+
+static inline bool fits_in_unsigned(int64_t lo, int64_t hi, uint32_t bits) {
+  return lo >= 0 && (uint64_t)hi < (1ULL << bits);
+}
+
+/* Compute minimum bits needed for range [lo, hi]                           */
+static inline uint32_t bits_for_range(int64_t lo, int64_t hi) {
+  if (lo >= 0) {                          /* Unsigned range                 */
+    if ((uint64_t)hi < 256ULL)   return W8;
+    if ((uint64_t)hi < 65536ULL) return W16;
+    if ((uint64_t)hi < 4294967296ULL) return W32;
+    return W64;
+  } else {                                /* Signed range                   */
+    if (fits_in_signed(lo, hi, W8))  return W8;
+    if (fits_in_signed(lo, hi, W16)) return W16;
+    if (fits_in_signed(lo, hi, W32)) return W32;
+    return W64;
+  }
+}
+
+/* End of Type Metrics section                                              */
+
 static const char *include_paths[32];
 static int include_path_count = 0;
 typedef struct
@@ -4771,92 +4908,224 @@ static Parser parser_new(const char *source, size_t size, const char *filename)
   parser_next(&parser);
   return parser;
 }
-typedef enum
-{
-  TY_V = 0,
-  TYPE_INTEGER,
-  TYPE_BOOLEAN,
-  TYPE_CHARACTER,
-  TYPE_FLOAT,
-  TYPE_ENUMERATION,
-  TYPE_ARRAY,
-  TYPE_RECORD,
-  TYPE_ACCESS,
-  TY_T,
-  TYPE_STRING,
-  TY_P,
-  TYPE_UNSIGNED_INTEGER,
-  TYPE_UNIVERSAL_FLOAT,
-  TYPE_DERIVED,
-  TY_PT,
-  TYPE_FAT_POINTER,
-  TYPE_FIXED_POINT
-} Type_Kind;
-
 /* ===========================================================================
- * Type_Info - Type representation following DIANA principles
+ * §2. TYPE KINDS — The Categories of Being
  * ===========================================================================
  *
- * DIANA Guidance on Types (from Section 4.4):
- * - Types and subtypes are represented as separate entities
- * - Constrained vs unconstrained is a fundamental distinction
- * - Base types, parent types (derived), and element types form a network
- * - Universal types (universal_integer, universal_real) are special
+ * Following GNAT LLVM's multi-layer type abstraction (gnatllvm-mdtype.ads):
+ * Types are classified into kinds, and kinds group into representation
+ * categories that determine their LLVM mapping.
  *
- * STATIC SEMANTIC INFORMATION:
- *   k            : Type kind (scalar, array, record, access, etc.)
- *   name         : Type name (for error messages and debugging)
- *   base_type    : Base type for subtypes (Ada 83 §3.3)
- *   parent_type  : Parent for derived types (Ada 83 §3.4)
- *   element_type : Element type for arrays/access (Ada 83 §3.6/3.8)
- *   index_type   : Index type for arrays
+ * SCALAR KINDS:   TK_VOID, TK_INTEGER, TK_BOOLEAN, TK_CHARACTER,
+ *                 TK_FLOAT, TK_ENUMERATION, TK_FIXED_POINT,
+ *                 TK_UNSIGNED_INTEGER, TK_UNIVERSAL_FLOAT
  *
- * CONSTRAINT INFORMATION (for constrained subtypes):
- *   low_bound, high_bound : Scalar/array index constraints
- *   discriminants         : Record discriminant constraints
+ * COMPOSITE:      TK_ARRAY, TK_STRING, TK_RECORD
  *
- *   UNCONSTRAINED ARRAYS: high_bound = -1 (sentinel value)
- *   CONSTRAINED ARRAYS:   high_bound >= low_bound
+ * REFERENCE:      TK_ACCESS, TK_FAT_POINTER
  *
- * REPRESENTATION INFORMATION (from representation clauses):
- *   size, alignment : Specified by 'SIZE or 'ALIGNMENT
- *   address        : Specified by 'ADDRESS
- *   is_packed      : Specified by pragma PACK
- *   rc             : All representation clauses for this type
+ * SPECIAL:        TK_TASK, TK_PROTECTED, TK_DERIVED, TK_PRIVATE
+ */
+typedef enum {
+  TK_VOID = 0,            /* void / incomplete type                         */
+  TK_INTEGER,             /* signed integer (INTEGER, NATURAL, POSITIVE)    */
+  TK_BOOLEAN,             /* boolean (FALSE, TRUE)                          */
+  TK_CHARACTER,           /* character (256 values)                         */
+  TK_FLOAT,               /* floating point (FLOAT)                         */
+  TK_ENUMERATION,         /* user-defined enumeration                       */
+  TK_ARRAY,               /* array type (constrained or unconstrained)      */
+  TK_RECORD,              /* record type (with/without discriminants)       */
+  TK_ACCESS,              /* access (pointer) type                          */
+  TK_TASK,                /* task type                                      */
+  TK_STRING,              /* predefined STRING type (array of CHARACTER)    */
+  TK_PROTECTED,           /* protected type                                 */
+  TK_UNSIGNED_INTEGER,    /* universal_integer (unsigned)                   */
+  TK_UNIVERSAL_FLOAT,     /* universal_real                                 */
+  TK_DERIVED,             /* derived type (new T)                           */
+  TK_PRIVATE,             /* private type (deferred)                        */
+  TK_FAT_POINTER,         /* fat pointer {data, bounds}                     */
+  TK_FIXED_POINT          /* fixed point (delta, digits)                    */
+} Type_Kind;
+
+/* Backward compatibility aliases                                           */
+#define TY_V                   TK_VOID
+#define TYPE_INTEGER           TK_INTEGER
+#define TYPE_BOOLEAN           TK_BOOLEAN
+#define TYPE_CHARACTER         TK_CHARACTER
+#define TYPE_FLOAT             TK_FLOAT
+#define TYPE_ENUMERATION       TK_ENUMERATION
+#define TYPE_ARRAY             TK_ARRAY
+#define TYPE_RECORD            TK_RECORD
+#define TYPE_ACCESS            TK_ACCESS
+#define TY_T                   TK_TASK
+#define TYPE_STRING            TK_STRING
+#define TY_P                   TK_PROTECTED
+#define TYPE_UNSIGNED_INTEGER  TK_UNSIGNED_INTEGER
+#define TYPE_UNIVERSAL_FLOAT   TK_UNIVERSAL_FLOAT
+#define TYPE_DERIVED           TK_DERIVED
+#define TY_PT                  TK_PRIVATE
+#define TYPE_FAT_POINTER       TK_FAT_POINTER
+#define TYPE_FIXED_POINT       TK_FIXED_POINT
+
+/* §2.1 Type Kind Predicates — The Is-A Relations
  *
- * DERIVED/COMPOSITE INFORMATION:
- *   components     : Record components (for TYPE_RECORD)
- *   enum_values    : Enumeration literals (for TYPE_ENUM)
- *   operations     : User-defined operators
+ * Following GNAT LLVM's predicate style (gnatllvm-gltype.ads):
+ * Each predicate tests membership in a category of types.
+ */
+
+/* Scalar predicates — types with atomic representation                     */
+static inline bool tk_is_void(Type_Kind k)    { return k == TK_VOID; }
+static inline bool tk_is_integer(Type_Kind k) {
+  return k == TK_INTEGER || k == TK_UNSIGNED_INTEGER;
+}
+static inline bool tk_is_boolean(Type_Kind k) { return k == TK_BOOLEAN; }
+static inline bool tk_is_character(Type_Kind k) { return k == TK_CHARACTER; }
+static inline bool tk_is_float(Type_Kind k) {
+  return k == TK_FLOAT || k == TK_UNIVERSAL_FLOAT || k == TK_FIXED_POINT;
+}
+static inline bool tk_is_enumeration(Type_Kind k) { return k == TK_ENUMERATION; }
+static inline bool tk_is_fixed_point(Type_Kind k) { return k == TK_FIXED_POINT; }
+
+/* Discrete predicates — integer or enumeration                             */
+static inline bool tk_is_discrete(Type_Kind k) {
+  return tk_is_integer(k) || k == TK_BOOLEAN || k == TK_CHARACTER || k == TK_ENUMERATION;
+}
+
+/* Scalar predicate — atomic value types                                    */
+static inline bool tk_is_scalar(Type_Kind k) {
+  return tk_is_discrete(k) || tk_is_float(k);
+}
+
+/* Composite predicates — structured types                                  */
+static inline bool tk_is_array(Type_Kind k)  { return k == TK_ARRAY || k == TK_STRING; }
+static inline bool tk_is_record(Type_Kind k) { return k == TK_RECORD; }
+static inline bool tk_is_composite(Type_Kind k) {
+  return tk_is_array(k) || tk_is_record(k);
+}
+
+/* Reference predicates — pointer types                                     */
+static inline bool tk_is_access(Type_Kind k) {
+  return k == TK_ACCESS || k == TK_FAT_POINTER;
+}
+
+/* Elementary predicate — scalar or access                                  */
+static inline bool tk_is_elementary(Type_Kind k) {
+  return tk_is_scalar(k) || tk_is_access(k);
+}
+
+/* §2.2 Representation Categories — The LLVM Mapping
  *
- * COMPILE-TIME PROPERTIES:
- *   frozen         : Freezing point reached (no more declarations allowed)
- *   frozen_node    : AST node where freezing occurred
- *   suppressed_checks : Which runtime checks are suppressed (pragma SUPPRESS)
- *   is_controlled  : Has controlled components (finalization needed)
+ * Following GNAT LLVM's representation strategy (gnatllvm-glvalue.ads):
+ * Types map to one of four LLVM representation categories.
+ */
+typedef enum {
+  REPR_CAT_INTEGER,       /* Maps to iN (i8, i16, i32, i64)                 */
+  REPR_CAT_FLOAT,         /* Maps to float or double                        */
+  REPR_CAT_POINTER,       /* Maps to ptr                                    */
+  REPR_CAT_STRUCT         /* Maps to struct (record/array)                  */
+} ReprCat;
+
+/* Backward compatibility aliases                                           */
+#define RC_INT    REPR_CAT_INTEGER
+#define RC_STRUCT REPR_CAT_STRUCT
+
+/* Determine representation category from type kind                         */
+static inline ReprCat tk_repr_category(Type_Kind k) {
+  if (tk_is_float(k)) return REPR_CAT_FLOAT;
+  if (tk_is_access(k)) return REPR_CAT_POINTER;
+  return REPR_CAT_INTEGER;
+}
+
+/* LLVM type string from type kind (for scalars)                            */
+static inline const char *tk_llvm_type(Type_Kind k, int64_t lo, int64_t hi, uint32_t size) {
+  switch (k) {
+    case TK_BOOLEAN: case TK_CHARACTER:
+      return LLVM_I8;
+    case TK_INTEGER: case TK_UNSIGNED_INTEGER: case TK_ENUMERATION: case TK_DERIVED:
+      if (lo == 0 && hi == 0) return LLVM_I32;
+      return llvm_int_type(bits_for_range(lo, hi));
+    case TK_FLOAT: case TK_UNIVERSAL_FLOAT: case TK_FIXED_POINT:
+      return size == WFLT ? LLVM_FLOAT : LLVM_DBL;
+    case TK_ACCESS: case TK_FAT_POINTER: case TK_STRING:
+    case TK_RECORD: case TK_ARRAY:
+      return LLVM_PTR;
+    default:
+      return LLVM_I32;
+  }
+}
+
+/* End of Type Kinds section                                                */
+
+/* ===========================================================================
+ * §3. TYPE_INFO — The Complete Type Descriptor
+ * ===========================================================================
  *
- * IMPLEMENTATION-SPECIFIC (fixed-point):
- *   small_value, large_value : Fixed-point bounds
+ * "A type, in the abstract, is a set of values and a set of operations
+ *  on those values."                    — Ada 83 Reference Manual §3.1
+ *
+ * Following GNAT LLVM's GL_Type abstraction (gnatllvm-gltype.ads):
+ * Type_Info carries both semantic and representational information.
+ *
+ * SEMANTIC STRUCTURE (what the type means):
+ *   k            — Type kind from §2
+ *   name         — Identifier for diagnostics
+ *   base_type    — Base type for subtypes (§3.3)
+ *   parent_type  — Parent for derived types (§3.4)
+ *   element_type — Component type for arrays/access
+ *   index_type   — Index subtype for arrays
+ *
+ * CONSTRAINT STRUCTURE (what values are valid):
+ *   low_bound, high_bound — Scalar/index range [-∞..∞]
+ *   discriminants         — Record discriminant list
+ *
+ * REPRESENTATION STRUCTURE (how values are stored):
+ *   size         — Size in BITS (following GNAT LLVM convention)
+ *   alignment    — Alignment in BITS
+ *   address      — 'ADDRESS specification
+ *   is_packed    — pragma PACK applied
+ *   rc           — Representation clause list
+ *
+ * INVARIANTS:
+ *   size ≥ 0, alignment ∈ {1,8,16,32,64,...} (powers of 2 in bits)
+ *   Unconstrained array: high_bound = -1 (sentinel)
+ *   Constrained array:   high_bound ≥ low_bound - 1 (empty if equal)
  */
 struct Type_Info
 {
-  Type_Kind k;
-  String_Slice name;
-  Type_Info *base_type, *element_type, *parent_type;
-  Type_Info *index_type;
-  int64_t low_bound, high_bound;
-  Node_Vector components, discriminants;
-  uint32_t size, alignment;
-  Symbol_Vector enum_values;
-  Representation_Clause_Vector rc;
-  uint64_t address;
-  bool is_packed;
-  Node_Vector operations;
-  int64_t small_value, large_value;
-  uint16_t suppressed_checks;
-  bool is_controlled;
-  uint8_t frozen;
-  Syntax_Node *frozen_node;
+  /* §3.1 — Kind and Identity                                               */
+  Type_Kind k;                            /* The what (from §2)             */
+  String_Slice name;                      /* The who (for diagnostics)      */
+
+  /* §3.2 — Type Network (the lattice of types)                             */
+  Type_Info *base_type;                   /* Subtype → base                 */
+  Type_Info *element_type;                /* Array/Access → component       */
+  Type_Info *parent_type;                 /* Derived → parent               */
+  Type_Info *index_type;                  /* Array → index subtype          */
+
+  /* §3.3 — Constraint Structure                                            */
+  int64_t low_bound, high_bound;          /* Scalar range [lo..hi]          */
+  Node_Vector components;                 /* Record field list              */
+  Node_Vector discriminants;              /* Discriminant list              */
+
+  /* §3.4 — Representation Structure (sizes in BITS)                        */
+  uint32_t size;                          /* T'SIZE in bits                 */
+  uint32_t alignment;                     /* T'ALIGNMENT in bits            */
+  uint64_t address;                       /* 'ADDRESS specification         */
+  bool is_packed;                         /* pragma PACK                    */
+  Representation_Clause_Vector rc;        /* All rep clauses                */
+
+  /* §3.5 — Enumeration/Record Specifics                                    */
+  Symbol_Vector enum_values;              /* Enumeration literals           */
+  Node_Vector operations;                 /* Primitive operations           */
+
+  /* §3.6 — Fixed-Point Specifics                                           */
+  int64_t small_value, large_value;       /* SMALL and range bounds         */
+
+  /* §3.7 — Compile-Time State                                              */
+  uint16_t suppressed_checks;             /* CHK_* flags (pragma SUPPRESS)  */
+  bool is_controlled;                     /* Has controlled components      */
+  uint8_t frozen;                         /* Freezing point reached         */
+  Syntax_Node *frozen_node;               /* Where frozen                   */
 };
 
 /* ===========================================================================
@@ -5426,43 +5695,102 @@ static Symbol *symbol_find_with_args(Symbol_Manager *symbol_manager, String_Slic
   }
   return br ?: (cv.count > 0 ? cv.data[0] : 0);
 }
+/* ===========================================================================
+ * §4. TYPE CONSTRUCTORS — Creating Types with Proper Metrics
+ * ===========================================================================
+ *
+ * Following GNAT LLVM's type creation pattern (gnatllvm-types-create.ads):
+ * All types are created through a single factory function that establishes
+ * invariants for size and alignment.
+ *
+ * DESIGN NOTE: Sizes are stored in BYTES internally for compatibility with
+ * existing code. Use to_bits/to_bytes for conversions when needed.
+ */
+
+/* §4.1 Type Factory — The Constructor                                      */
 static Type_Info *type_new(Type_Kind k, String_Slice nm)
 {
   Type_Info *t = arena_allocate(sizeof(Type_Info));
   t->k = k;
   t->name = string_duplicate(nm);
-  t->size = 8;
-  t->alignment = 8;
+  /* Default metrics: 64-bit aligned (8 bytes) following LP64 ABI          */
+  t->size      = DEFAULT_SIZE_BYTES;
+  t->alignment = DEFAULT_ALIGN_BYTES;
   return t;
 }
-static Type_Info *TY_INT, *TY_BOOL, *TY_CHAR, *TY_STR, *TY_FLT, *TY_UINT, *TY_UFLT, *TY_FILE,
-    *TY_NAT, *TY_POS;
+
+/* §4.2 Predefined Types — The Standard Types of Ada 83
+ *
+ * Following Ada 83 RM and GNAT LLVM's predefined type handling:
+ * These types are created once and shared across all compilation units.
+ *
+ * TYPE           SIZE        RANGE                    LLVM TYPE
+ * INTEGER        32 bits     -2**31 .. 2**31-1        i32
+ * NATURAL        32 bits     0 .. 2**31-1             i32
+ * POSITIVE       32 bits     1 .. 2**31-1             i32
+ * BOOLEAN        8 bits      FALSE, TRUE              i8
+ * CHARACTER      8 bits      0 .. 255                 i8
+ * FLOAT          64 bits     IEEE double              double
+ * STRING         fat ptr     unconstrained array      {ptr, ptr}
+ */
+static Type_Info *TY_INT, *TY_BOOL, *TY_CHAR, *TY_STR, *TY_FLT,
+                 *TY_UINT, *TY_UFLT, *TY_FILE, *TY_NAT, *TY_POS;
+
 static void symbol_manager_init(Symbol_Manager *symbol_manager)
 {
   memset(symbol_manager, 0, sizeof(*symbol_manager));
-  // Only create global types once (avoid overwriting on subsequent calls)
+
+  /* §4.2.1 Create predefined types (idempotent initialization)             */
   if (!TY_INT) {
-    TY_INT = type_new(TYPE_INTEGER, STRING_LITERAL("INTEGER"));
-    TY_INT->low_bound = -2147483648LL;
-    TY_INT->high_bound = 2147483647LL;
-    TY_NAT = type_new(TYPE_INTEGER, STRING_LITERAL("NATURAL"));
+    /* INTEGER: signed 32-bit                                               */
+    TY_INT = type_new(TK_INTEGER, STRING_LITERAL("INTEGER"));
+    TY_INT->size      = INT_SIZE_BITS / BPU;  /* 4 bytes                    */
+    TY_INT->alignment = INT_SIZE_BITS / BPU;
+    TY_INT->low_bound = INT32_LO;
+    TY_INT->high_bound = INT32_HI;
+
+    /* NATURAL: non-negative INTEGER                                        */
+    TY_NAT = type_new(TK_INTEGER, STRING_LITERAL("NATURAL"));
+    TY_NAT->size      = INT_SIZE_BITS / BPU;
+    TY_NAT->alignment = INT_SIZE_BITS / BPU;
     TY_NAT->low_bound = 0;
-    TY_NAT->high_bound = 2147483647LL;
-    TY_POS = type_new(TYPE_INTEGER, STRING_LITERAL("POSITIVE"));
+    TY_NAT->high_bound = INT32_HI;
+
+    /* POSITIVE: strictly positive INTEGER                                  */
+    TY_POS = type_new(TK_INTEGER, STRING_LITERAL("POSITIVE"));
+    TY_POS->size      = INT_SIZE_BITS / BPU;
+    TY_POS->alignment = INT_SIZE_BITS / BPU;
     TY_POS->low_bound = 1;
-    TY_POS->high_bound = 2147483647LL;
-    TY_BOOL = type_new(TYPE_BOOLEAN, STRING_LITERAL("BOOLEAN"));
-    TY_CHAR = type_new(TYPE_CHARACTER, STRING_LITERAL("CHARACTER"));
-    TY_CHAR->size = 1;
-    TY_STR = type_new(TYPE_ARRAY, STRING_LITERAL("STRING"));
+    TY_POS->high_bound = INT32_HI;
+
+    /* BOOLEAN: discrete with two values                                    */
+    TY_BOOL = type_new(TK_BOOLEAN, STRING_LITERAL("BOOLEAN"));
+    TY_BOOL->size      = BOOL_SIZE_BITS / BPU;  /* 1 byte                   */
+    TY_BOOL->alignment = BOOL_SIZE_BITS / BPU;
+
+    /* CHARACTER: 8-bit enumeration (ASCII/Latin-1)                         */
+    TY_CHAR = type_new(TK_CHARACTER, STRING_LITERAL("CHARACTER"));
+    TY_CHAR->size      = CHAR_SIZE_BYTES;       /* 1 byte                   */
+    TY_CHAR->alignment = CHAR_SIZE_BYTES;
+
+    /* STRING: unconstrained array of CHARACTER (fat pointer)               */
+    TY_STR = type_new(TK_ARRAY, STRING_LITERAL("STRING"));
     TY_STR->element_type = TY_CHAR;
-    TY_STR->low_bound = 0;
-    TY_STR->high_bound = -1;
-    TY_STR->index_type = TY_POS;
-    TY_FLT = type_new(TYPE_FLOAT, STRING_LITERAL("FLOAT"));
-    TY_UINT = type_new(TYPE_UNSIGNED_INTEGER, STRING_LITERAL("universal_integer"));
-    TY_UFLT = type_new(TYPE_UNIVERSAL_FLOAT, STRING_LITERAL("universal_real"));
-    TY_FILE = type_new(TYPE_FAT_POINTER, STRING_LITERAL("FILE_TYPE"));
+    TY_STR->index_type   = TY_POS;
+    TY_STR->low_bound    = 0;
+    TY_STR->high_bound   = -1;                  /* Sentinel: unconstrained  */
+
+    /* FLOAT: IEEE 754 double precision                                     */
+    TY_FLT = type_new(TK_FLOAT, STRING_LITERAL("FLOAT"));
+    TY_FLT->size      = FLT_SIZE_BITS / BPU;    /* 8 bytes (double)         */
+    TY_FLT->alignment = FLT_SIZE_BITS / BPU;
+
+    /* Universal types (for overloading resolution)                         */
+    TY_UINT = type_new(TK_UNSIGNED_INTEGER, STRING_LITERAL("universal_integer"));
+    TY_UFLT = type_new(TK_UNIVERSAL_FLOAT, STRING_LITERAL("universal_real"));
+
+    /* FILE_TYPE: fat pointer for I/O                                       */
+    TY_FILE = type_new(TK_FAT_POINTER, STRING_LITERAL("FILE_TYPE"));
   }
   symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("INTEGER"), 1, TY_INT, 0));
   symbol_add_overload(symbol_manager, symbol_new(STRING_LITERAL("NATURAL"), 1, TY_NAT, 0));
@@ -5700,61 +6028,98 @@ static Syntax_Node *generate_input_operator(Type_Info *t, Source_Location l)
   nv(&f->body.statements, rt);
   return ag->aggregate.items.count > 0 ? f : 0;
 }
+/* ===========================================================================
+ * §5. TYPE FREEZING — Computing Final Representation
+ * ===========================================================================
+ *
+ * Following GNAT LLVM's type freezing (gnatllvm-types.ads: Freeze_Entity):
+ * At the freezing point (Ada 83 RM 13.1), we compute final sizes and offsets.
+ *
+ * RECORD LAYOUT ALGORITHM (C struct compatible):
+ *   offset = 0, max_align = 1
+ *   for each component c:
+ *     align offset to c.alignment
+ *     c.offset = offset
+ *     offset += c.size
+ *     max_align = max(max_align, c.alignment)
+ *   size = align(offset, max_align)
+ *   alignment = max_align
+ *
+ * ARRAY SIZE COMPUTATION:
+ *   size = (high - low + 1) * element_size
+ *   alignment = element_alignment
+ */
 static void find_type(Symbol_Manager *symbol_manager, Type_Info *t, Source_Location l)
 {
-  if (not t or t->frozen)
-    return;
-  if (t->k == TY_PT and t->parent_type and not t->parent_type->frozen)
-    return;
+  if (not t or t->frozen) return;
+  if (t->k == TK_PRIVATE and t->parent_type and not t->parent_type->frozen) return;
+
+  /* §5.1 Mark frozen and set freezing location                             */
   t->frozen = 1;
   t->frozen_node = ND(ERR, l);
-  if (t->base_type and t->base_type != t and not t->base_type->frozen)
+
+  /* §5.2 Freeze dependencies first (topological order)                     */
+  if (t->base_type    and t->base_type != t and not t->base_type->frozen)
     find_type(symbol_manager, t->base_type, l);
-  if (t->parent_type and not t->parent_type->frozen)
+  if (t->parent_type  and not t->parent_type->frozen)
     find_type(symbol_manager, t->parent_type, l);
   if (t->element_type and not t->element_type->frozen)
     find_type(symbol_manager, t->element_type, l);
-  if (t->k == TYPE_RECORD)
-  {
+
+  /* §5.3 Record Layout — Following GNAT LLVM's record layout algorithm     */
+  if (tk_is_record(t->k)) {
+    /* First freeze all component types                                     */
     for (uint32_t i = 0; i < t->components.count; i++)
       if (t->components.data[i]->symbol and t->components.data[i]->symbol->type_info)
         find_type(symbol_manager, t->components.data[i]->symbol->type_info, l);
-    uint32_t of = 0, mx = 1;
-    for (uint32_t i = 0; i < t->components.count; i++)
-    {
+
+    /* Compute layout: offset accumulator, maximum alignment                */
+    uint32_t offset = 0, max_align = 1;
+
+    for (uint32_t i = 0; i < t->components.count; i++) {
       Syntax_Node *c = t->components.data[i];
-      if (c->k != N_CM)
-        continue;
-      Type_Info *ct = c->component_decl.ty ? c->component_decl.ty->ty : 0;
-      uint32_t ca = ct and ct->alignment ? ct->alignment : 8, cs = ct and ct->size ? ct->size : 8;
-      if (ca > mx)
-        mx = ca;
-      of = (of + ca - 1) & ~(ca - 1);
-      c->component_decl.offset = of;
-      of += cs;
+      if (c->k != N_CM) continue;
+
+      /* Get component type metrics (default to 8 bytes if unspecified)     */
+      Type_Info *ct    = c->component_decl.ty ? c->component_decl.ty->ty : NULL;
+      uint32_t c_align = ct && ct->alignment ? ct->alignment : DEFAULT_SIZE_BYTES;
+      uint32_t c_size  = ct && ct->size      ? ct->size      : DEFAULT_SIZE_BYTES;
+
+      /* Update maximum alignment                                           */
+      if (c_align > max_align) max_align = c_align;
+
+      /* Align offset and assign component position                         */
+      offset = align_to(offset, c_align);
+      c->component_decl.offset = offset;
+      offset += c_size;
     }
-    t->size = (of + mx - 1) & ~(mx - 1);
-    t->alignment = mx;
+
+    /* Final size aligned to maximum component alignment                    */
+    t->size      = align_to(offset, max_align);
+    t->alignment = max_align;
   }
-  if (t->k == TYPE_ARRAY and t->element_type)
-  {
-    Type_Info *et = t->element_type;
-    uint32_t ea = et->alignment ? et->alignment : 8, es = et->size ? et->size : 8;
-    int64_t n = (t->high_bound - t->low_bound + 1);
-    t->size = n > 0 ? n * es : 0;
-    t->alignment = ea;
+
+  /* §5.4 Array Size — element_count × element_size                         */
+  if (tk_is_array(t->k) and t->element_type) {
+    Type_Info *et     = t->element_type;
+    uint32_t el_align = et->alignment ? et->alignment : DEFAULT_SIZE_BYTES;
+    uint32_t el_size  = et->size      ? et->size      : DEFAULT_SIZE_BYTES;
+    int64_t count     = t->high_bound - t->low_bound + 1;
+
+    t->size      = count > 0 ? (uint32_t)(count * el_size) : 0;
+    t->alignment = el_align;
   }
-  if ((t->k == TYPE_RECORD or t->k == TYPE_ARRAY) and t->name.string and t->name.length)
-  {
+
+  /* §5.5 Generate primitive operations for composites                      */
+  if ((tk_is_record(t->k) or tk_is_array(t->k)) and t->name.string and t->name.length) {
     Syntax_Node *eq = generate_equality_operator(t, l);
-    if (eq)
-      nv(&t->operations, eq);
+    if (eq) nv(&t->operations, eq);
+
     Syntax_Node *as = generate_assignment_operator(t, l);
-    if (as)
-      nv(&t->operations, as);
+    if (as) nv(&t->operations, as);
+
     Syntax_Node *in = generate_input_operator(t, l);
-    if (in)
-      nv(&t->operations, in);
+    if (in) nv(&t->operations, in);
   }
 }
 static void find_symbol(Symbol_Manager *symbol_manager, Symbol *s, Source_Location l)
@@ -5829,13 +6194,7 @@ static Type_Info *type_canonical_concrete(Type_Info *t)
     return type_canonical_concrete(t->parent_type);
   return t;
 }
-typedef enum
-{
-  RC_INT,
-  REPR_CAT_FLOAT,
-  REPR_CAT_POINTER,
-  RC_STRUCT
-} ReprCat;
+/* ReprCat defined in §2.2 above with backward-compat aliases RC_INT, RC_STRUCT */
 typedef enum
 {
   COMP_NONE = 0,
@@ -8031,7 +8390,7 @@ static void runtime_register_compare(Symbol_Manager *symbol_manager, Representat
           }
         }
       }
-      t->size = (bt + 7) / 8;
+      t->size = to_bytes_u32(bt);  /* Bits → bytes (ceiling)             */
       t->is_packed = true;
     }
   }
@@ -10157,82 +10516,101 @@ static bool add_declaration(Code_Generator *generator, const char *fn)
   slv(&generator->dcl, (String_Slice){cp, fns.length});
   return true;
 }
+/* ===========================================================================
+ * §6. LLVM TYPE MAPPING — The Bridge to IR
+ * ===========================================================================
+ *
+ * Following GNAT LLVM's type emission (gnatllvm-mdtype.ads, gnatllvm-glvalue.ads):
+ * Ada types map to LLVM types through representation categories.
+ *
+ * VALUE_KIND → LLVM TYPE:
+ *   INTEGER  → i64 (internal computation width)
+ *   FLOAT    → double
+ *   POINTER  → ptr
+ *
+ * TYPE_KIND → LLVM TYPE:
+ *   BOOLEAN, CHARACTER → i8
+ *   INTEGER, ENUM      → iN where N = bits_for_range(lo, hi)
+ *   FLOAT, FIXED       → float or double by size
+ *   ACCESS, COMPOSITE  → ptr
+ */
+
+/* §6.1 Value Kind → LLVM Type String                                       */
 static const char *value_llvm_type_string(Value_Kind k)
 {
-  return k == VALUE_KIND_INTEGER ? "i64" : k == VALUE_KIND_FLOAT ? "double" : "ptr";
+  switch (k) {
+    case VALUE_KIND_INTEGER: return LLVM_I64;
+    case VALUE_KIND_FLOAT:   return LLVM_DBL;
+    case VALUE_KIND_POINTER: return LLVM_PTR;
+    default:                 return LLVM_I64;
+  }
 }
+
+/* §6.2 Ada Type → LLVM Type String
+ *
+ * Maps Ada types to LLVM IR types following GNAT LLVM conventions.
+ * Uses the bits_for_range function to compute minimum integer width.
+ */
 static const char *ada_to_c_type_string(Type_Info *t)
 {
-  if (not t)
-    return "i32";
-  // SYSTEM.ADDRESS should map to ptr for C interop
-  if (is_system_address(t))
-    return "ptr";
+  if (!t) return LLVM_I32;
+
+  /* SYSTEM.ADDRESS → ptr (C interoperability)                              */
+  if (is_system_address(t)) return LLVM_PTR;
+
   Type_Info *tc = type_canonical_concrete(t);
-  if (not tc)
-    return "i32";
-  switch (tc->k)
-  {
-  case TYPE_BOOLEAN:
-  case TYPE_CHARACTER:
-    return "i8";  // Always use i8 for boolean and character types
-  case TYPE_INTEGER:
-  case TYPE_UNSIGNED_INTEGER:
-  case TYPE_ENUMERATION:
-  case TYPE_DERIVED:
-  {
-    int64_t lo = tc->low_bound, hi = tc->high_bound;
-    if (lo == 0 and hi == 0)
-      return "i32";
-    if (lo >= 0)
-    {
-      if (hi < 256)
-        return "i8";
-      if (hi < 65536)
-        return "i16";
-    }
-    else
-    {
-      if (lo >= -128 and hi <= 127)
-        return "i8";
-      if (lo >= -32768 and hi <= 32767)
-        return "i16";
-    }
-    return "i32";
-  }
-  case TYPE_FLOAT:
-  case TYPE_UNIVERSAL_FLOAT:
-  case TYPE_FIXED_POINT:
-    return tc->size == 32 ? "float" : "double";
-  case TYPE_ACCESS:
-  case TYPE_FAT_POINTER:
-  case TYPE_STRING:
-  case TYPE_RECORD:
-  case TYPE_ARRAY:
-    return "ptr";
-  default:
-    return "i32";
+  if (!tc) return LLVM_I32;
+
+  /* Use type kind predicates for cleaner dispatch                          */
+  switch (tc->k) {
+    /* Boolean and Character: always 8-bit                                  */
+    case TK_BOOLEAN:
+    case TK_CHARACTER:
+      return LLVM_I8;
+
+    /* Discrete types: compute minimum width from range                     */
+    case TK_INTEGER:
+    case TK_UNSIGNED_INTEGER:
+    case TK_ENUMERATION:
+    case TK_DERIVED:
+      if (tc->low_bound == 0 && tc->high_bound == 0) return LLVM_I32;
+      return llvm_int_type(bits_for_range(tc->low_bound, tc->high_bound));
+
+    /* Floating-point: by size (4 bytes = float, else double)               */
+    case TK_FLOAT:
+    case TK_UNIVERSAL_FLOAT:
+    case TK_FIXED_POINT:
+      return llvm_float_type(to_bits_u32(tc->size));
+
+    /* All reference/composite types → opaque pointer                       */
+    case TK_ACCESS:
+    case TK_FAT_POINTER:
+    case TK_STRING:
+    case TK_RECORD:
+    case TK_ARRAY:
+      return LLVM_PTR;
+
+    default:
+      return LLVM_I32;
   }
 }
-// Returns LLVM type string using actual type info when available
+
+/* §6.3 Value → LLVM Type String (prefers type info over value kind)        */
 static const char *value_type_string(Value v)
 {
-  if (v.t)
-    return ada_to_c_type_string(v.t);
-  return value_llvm_type_string(v.k);
+  return v.t ? ada_to_c_type_string(v.t) : value_llvm_type_string(v.k);
 }
+
+/* §6.4 Type Info → Value Kind (for code generation)                        */
 static Value_Kind token_kind_to_value_kind(Type_Info *t)
 {
-  if (not t)
-    return VALUE_KIND_INTEGER;
-  switch (representation_category(t))
-  {
-  case REPR_CAT_FLOAT:
-    return VALUE_KIND_FLOAT;
-  case REPR_CAT_POINTER:
-    return VALUE_KIND_POINTER;
-  default:
-    return VALUE_KIND_INTEGER;
+  if (!t) return VALUE_KIND_INTEGER;
+
+  ReprCat cat = representation_category(t);
+  switch (cat) {
+    case REPR_CAT_FLOAT:   return VALUE_KIND_FLOAT;
+    case REPR_CAT_POINTER: return VALUE_KIND_POINTER;
+    default:               return VALUE_KIND_INTEGER;
   }
 }
 static bool is_c_external(Symbol *s)
@@ -10559,47 +10937,101 @@ static Value value_cast(Code_Generator *generator, Value v, Value_Kind k)
         value_llvm_type_string(k));
   return r;
 }
-// Emit store with proper type conversion - truncates i64 to target type size
+/* §6.5 Helper: Check if LLVM type is narrower than i64
+ *
+ * Tests if the type string represents i8, i16, or i32.
+ * Uses character comparison to avoid strcmp overhead.
+ */
+static inline bool is_narrow_int(const char *ty) {
+  if (!ty || ty[0] != 'i') return false;
+  return (ty[1] == '8' && ty[2] == '\0') ||                    /* i8  */
+         (ty[1] == '1' && ty[2] == '6' && ty[3] == '\0') ||    /* i16 */
+         (ty[1] == '3' && ty[2] == '2' && ty[3] == '\0');      /* i32 */
+}
+
+/* §6.6 Compute Element Size and Type for Arrays
+ *
+ * Returns element size in BYTES and sets *type_str to LLVM type string.
+ * Uses bits_for_range to compute optimal integer width.
+ */
+static uint32_t elem_size_and_type(Type_Info *et, const char **type_str) {
+  if (!et) {
+    *type_str = LLVM_I64;
+    return DEFAULT_SIZE_BYTES;
+  }
+
+  Type_Info *etc = type_canonical_concrete(et);
+  if (!etc) {
+    *type_str = LLVM_I64;
+    return DEFAULT_SIZE_BYTES;
+  }
+
+  /* Use type predicates for cleaner logic                                  */
+  if (tk_is_boolean(etc->k) || tk_is_character(etc->k)) {
+    *type_str = LLVM_I8;
+    return CHAR_SIZE_BYTES;
+  }
+
+  if (tk_is_discrete(etc->k) && (etc->low_bound != 0 || etc->high_bound != 0)) {
+    uint32_t bits = bits_for_range(etc->low_bound, etc->high_bound);
+    *type_str = llvm_int_type(bits);
+    return to_bytes_u32(bits);
+  }
+
+  if (tk_is_float(etc->k)) {
+    *type_str = llvm_float_type(to_bits_u32(etc->size));
+    return etc->size ? etc->size : DEFAULT_SIZE_BYTES;
+  }
+
+  /* Default: pointer-sized element                                         */
+  *type_str = LLVM_I64;
+  return DEFAULT_SIZE_BYTES;
+}
+
+/* §6.6 Emit Store with Type Conversion
+ *
+ * Following GNAT LLVM's store emission (gnatllvm-instructions.ads):
+ * Truncates i64 values to target type width before storing.
+ */
 static void emit_typed_store(Code_Generator *generator, Value v, const char *ptr_str, Type_Info *target_type)
 {
   FILE *o = generator->o;
   const char *store_type = target_type ? ada_to_c_type_string(target_type) : value_llvm_type_string(v.k);
 
-  // For non-integer types (float, pointer), use the value's type directly
-  if (v.k != VALUE_KIND_INTEGER)
-  {
+  /* Non-integer types store directly with their native type                */
+  if (v.k != VALUE_KIND_INTEGER) {
     fprintf(o, "  store %s %%t%d, ptr %s\n", value_llvm_type_string(v.k), v.id, ptr_str);
     return;
   }
 
-  // For integers: if target is smaller than i64, truncate first
-  if (strcmp(store_type, "i8") == 0 or strcmp(store_type, "i16") == 0 or strcmp(store_type, "i32") == 0)
-  {
+  /* Integers: truncate if target is narrower than i64                      */
+  if (is_narrow_int(store_type)) {
     int trunc_reg = new_temporary_register(generator);
-    fprintf(o, "  %%t%d = trunc i64 %%t%d to %s\n", trunc_reg, v.id, store_type);
+    fprintf(o, "  %%t%d = trunc " LLVM_I64 " %%t%d to %s\n", trunc_reg, v.id, store_type);
     fprintf(o, "  store %s %%t%d, ptr %s\n", store_type, trunc_reg, ptr_str);
-  }
-  else
-  {
-    fprintf(o, "  store i64 %%t%d, ptr %s\n", v.id, ptr_str);
+  } else {
+    fprintf(o, "  store " LLVM_I64 " %%t%d, ptr %s\n", v.id, ptr_str);
   }
 }
-// Emit load with proper type conversion - extends smaller int types to i64 if needed
+
+/* §6.7 Emit Load with Type Conversion
+ *
+ * Following GNAT LLVM's load emission (gnatllvm-instructions.ads):
+ * Sign-extends narrow integers to i64 for uniform internal computation.
+ */
 static Value emit_typed_load(Code_Generator *generator, const char *ptr_str, Type_Info *source_type)
 {
   FILE *o = generator->o;
-  const char *load_type = source_type ? ada_to_c_type_string(source_type) : "i64";
+  const char *load_type = source_type ? ada_to_c_type_string(source_type) : LLVM_I64;
   Value_Kind k = source_type ? token_kind_to_value_kind(source_type) : VALUE_KIND_INTEGER;
 
   int load_reg = new_temporary_register(generator);
   fprintf(o, "  %%t%d = load %s, ptr %s\n", load_reg, load_type, ptr_str);
 
-  // If loaded smaller integer, sign-extend to i64 for internal computation
-  if (k == VALUE_KIND_INTEGER and
-      (strcmp(load_type, "i8") == 0 or strcmp(load_type, "i16") == 0 or strcmp(load_type, "i32") == 0))
-  {
+  /* Sign-extend narrow integers to i64 for internal computation            */
+  if (k == VALUE_KIND_INTEGER && is_narrow_int(load_type)) {
     int ext_reg = new_temporary_register(generator);
-    fprintf(o, "  %%t%d = sext %s %%t%d to i64\n", ext_reg, load_type, load_reg);
+    fprintf(o, "  %%t%d = sext %s %%t%d to " LLVM_I64 "\n", ext_reg, load_type, load_reg);
     return (Value){ext_reg, k, source_type};
   }
   return (Value){load_reg, k, source_type};
@@ -10821,29 +11253,10 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
     if (t and t->k == TYPE_ARRAY and t->low_bound != 0 and t->high_bound >= t->low_bound)
       sz = (int)(t->high_bound - t->low_bound + 1);
 
-    // Determine element size and type string for constrained arrays
-    int elem_size = 8;
-    const char *elem_type = "i64";
-    Type_Info *et = (t and t->k == TYPE_ARRAY) ? type_canonical_concrete(t->element_type) : 0;
-    if (et)
-    {
-      if (et->k == TYPE_BOOLEAN or et->k == TYPE_CHARACTER or
-          (et->k == TYPE_INTEGER and et->high_bound < 256 and et->low_bound >= 0))
-      {
-        elem_size = 1;
-        elem_type = "i8";
-      }
-      else if (et->k == TYPE_INTEGER and et->high_bound < 65536 and et->low_bound >= -32768)
-      {
-        elem_size = 2;
-        elem_type = "i16";
-      }
-      else if (et->k == TYPE_INTEGER and et->high_bound < 2147483648LL and et->low_bound >= -2147483648LL)
-      {
-        elem_size = 4;
-        elem_type = "i32";
-      }
-    }
+    /* Determine element size and LLVM type using §6.6 helper                */
+    Type_Info *et = (t && tk_is_array(t->k)) ? t->element_type : NULL;
+    const char *elem_type;
+    uint32_t elem_size = elem_size_and_type(et, &elem_type);
 
     int p = new_temporary_register(generator);
     int by = new_temporary_register(generator);
@@ -10958,11 +11371,12 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
   }
   else
   {
-    uint32_t sz = t->size / 8;
+    /* Record aggregate: allocate structure and initialize fields           */
+    uint32_t rec_bytes = t->size;  /* Size already in bytes                 */
     int p = new_temporary_register(generator);
     int by = new_temporary_register(generator);
-    fprintf(o, "  %%t%d = add i64 0, %u\n", by, sz * 8);
-    fprintf(o, "  %%t%d = call ptr @__ada_ss_allocate(i64 %%t%d)\n", p, by);
+    fprintf(o, "  %%t%d = add " LLVM_I64 " 0, %u\n", by, rec_bytes);
+    fprintf(o, "  %%t%d = call " LLVM_PTR " @__ada_ss_allocate(" LLVM_I64 " %%t%d)\n", p, by);
     uint32_t ix = 0;
     for (uint32_t i = 0; i < n->aggregate.items.count; i++)
     {
@@ -10977,12 +11391,12 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
             for (uint32_t k = 0; k < t->components.count; k++)
             {
               Syntax_Node *c = t->components.data[k];
-              if (c->k == N_CM and string_equal_ignore_case(c->component_decl.name, ch->string_value))
+              if (c->k == N_CM && string_equal_ignore_case(c->component_decl.name, ch->string_value))
               {
                 Value v = value_cast(generator, generate_expression(generator, el->association.value), VALUE_KIND_INTEGER);
                 int ep = new_temporary_register(generator);
-                fprintf(o, "  %%t%d = getelementptr i8, ptr %%t%d, i64 %u\n", ep, p, c->component_decl.offset);
-                fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
+                fprintf(o, "  %%t%d = getelementptr " LLVM_I8 ", " LLVM_PTR " %%t%d, " LLVM_I64 " %u\n", ep, p, c->component_decl.offset);
+                fprintf(o, "  store " LLVM_I64 " %%t%d, " LLVM_PTR " %%t%d\n", v.id, ep);
                 break;
               }
             }
@@ -10992,10 +11406,11 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
       }
       else
       {
+        /* Positional: use field index × DEFAULT_SIZE_BYTES                 */
         Value v = value_cast(generator, generate_expression(generator, el), VALUE_KIND_INTEGER);
         int ep = new_temporary_register(generator);
-        fprintf(o, "  %%t%d = getelementptr i8, ptr %%t%d, i64 %u\n", ep, p, ix * 8);
-        fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
+        fprintf(o, "  %%t%d = getelementptr " LLVM_I8 ", " LLVM_PTR " %%t%d, " LLVM_I64 " %u\n", ep, p, ix * DEFAULT_SIZE_BYTES);
+        fprintf(o, "  store " LLVM_I64 " %%t%d, " LLVM_PTR " %%t%d\n", v.id, ep);
         ix++;
       }
     }
