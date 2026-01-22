@@ -10559,14 +10559,30 @@ static Value value_cast(Code_Generator *generator, Value v, Value_Kind k)
         value_llvm_type_string(k));
   return r;
 }
-// Emit store with proper type conversion
-// NOTE: For now, we use the value's type for stores to ensure consistency with loads
-// A complete fix would require updating all loads to use proper types as well
+// Emit store with proper type conversion - truncates i64 to target type size
 static void emit_typed_store(Code_Generator *generator, Value v, const char *ptr_str, Type_Info *target_type)
 {
   FILE *o = generator->o;
-  // Just use the value's actual type for now - this ensures load/store consistency
-  fprintf(o, "  store %s %%t%d, ptr %s\n", value_llvm_type_string(v.k), v.id, ptr_str);
+  const char *store_type = target_type ? ada_to_c_type_string(target_type) : value_llvm_type_string(v.k);
+
+  // For non-integer types (float, pointer), use the value's type directly
+  if (v.k != VALUE_KIND_INTEGER)
+  {
+    fprintf(o, "  store %s %%t%d, ptr %s\n", value_llvm_type_string(v.k), v.id, ptr_str);
+    return;
+  }
+
+  // For integers: if target is smaller than i64, truncate first
+  if (strcmp(store_type, "i8") == 0 or strcmp(store_type, "i16") == 0 or strcmp(store_type, "i32") == 0)
+  {
+    int trunc_reg = new_temporary_register(generator);
+    fprintf(o, "  %%t%d = trunc i64 %%t%d to %s\n", trunc_reg, v.id, store_type);
+    fprintf(o, "  store %s %%t%d, ptr %s\n", store_type, trunc_reg, ptr_str);
+  }
+  else
+  {
+    fprintf(o, "  store i64 %%t%d, ptr %s\n", v.id, ptr_str);
+  }
 }
 // Emit load with proper type conversion - extends smaller int types to i64 if needed
 static Value emit_typed_load(Code_Generator *generator, const char *ptr_str, Type_Info *source_type)
@@ -11208,7 +11224,9 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           }
           else
           {
-            fprintf(o, "  %%t%d = load %s, ptr @%s\n", r.id, value_llvm_type_string(k), nb);
+            char ptr_str[270];
+            snprintf(ptr_str, 270, "@%s", nb);
+            r = emit_typed_load(generator, ptr_str, vat);
           }
         }
       }
@@ -11259,7 +11277,12 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             fprintf(o, "  %%t%d = getelementptr ptr, ptr %%t%d, i64 %u\n", p, slnk_ptr, s->elaboration_level);
             int a = new_temporary_register(generator);
             fprintf(o, "  %%t%d = load ptr, ptr %%t%d\n", a, p);
-            fprintf(o, "  %%t%d = load %s, ptr %%t%d\n", r.id, value_llvm_type_string(k), a);
+            {
+              Type_Info *vat = s && s->type_info ? type_canonical_concrete(s->type_info) : 0;
+              char ptr_str[32];
+              snprintf(ptr_str, 32, "%%t%d", a);
+              r = emit_typed_load(generator, ptr_str, vat);
+            }
           }
         }
         else
@@ -11296,7 +11319,9 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           }
           else
           {
-            fprintf(o, "  %%t%d = load %s, ptr %%t%d\n", r.id, value_llvm_type_string(k), a);
+            char ptr_str[32];
+            snprintf(ptr_str, 32, "%%t%d", a);
+            r = emit_typed_load(generator, ptr_str, vat);
           }
         }
       }
@@ -11359,14 +11384,13 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             }
             else
             {
-              fprintf(
-                  o,
-                  "  %%t%d = load %s, ptr %%v.%s.sc%u.%u\n",
-                  r.id,
-                  value_llvm_type_string(k),
-                  string_to_lowercase(n->string_value),
-                  s ? s->scope : 0,
-                  s ? s->elaboration_level : 0);
+              Type_Info *vat = s && s->type_info ? type_canonical_concrete(s->type_info) : 0;
+              char ptr_str[128];
+              snprintf(ptr_str, 128, "%%v.%s.sc%u.%u",
+                       string_to_lowercase(n->string_value),
+                       s ? s->scope : 0,
+                       s ? s->elaboration_level : 0);
+              r = emit_typed_load(generator, ptr_str, vat);
             }
           }
         }
@@ -11400,14 +11424,12 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           }
           else
           {
-            fprintf(
-                o,
-                "  %%t%d = load %s, ptr %%v.%s.sc%u.%u\n",
-                r.id,
-                value_llvm_type_string(k),
-                string_to_lowercase(n->string_value),
-                s ? s->scope : 0,
-                s ? s->elaboration_level : 0);
+            char ptr_str[128];
+            snprintf(ptr_str, 128, "%%v.%s.sc%u.%u",
+                     string_to_lowercase(n->string_value),
+                     s ? s->scope : 0,
+                     s ? s->elaboration_level : 0);
+            r = emit_typed_load(generator, ptr_str, vat);
           }
         }
       }
@@ -12419,8 +12441,10 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             }
             else
             {
-              r.k = VALUE_KIND_INTEGER;
-              fprintf(o, "  %%t%d = load i64, ptr %%t%d\n", r.id, ep);
+              fty = fty ? type_canonical_concrete(fty) : 0;
+              char ptr_str[32];
+              snprintf(ptr_str, 32, "%%t%d", ep);
+              r = emit_typed_load(generator, ptr_str, fty);
             }
             break;
           }
@@ -12442,8 +12466,11 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                 int ep = new_temporary_register(generator);
                 // Use byte offset directly with getelementptr i8
                 fprintf(o, "  %%t%d = getelementptr i8, ptr %%t%d, i64 %u\n", ep, p.id, vc->component_decl.offset);
-                r.k = VALUE_KIND_INTEGER;
-                fprintf(o, "  %%t%d = load i64, ptr %%t%d\n", r.id, ep);
+                Type_Info *vcty = resolve_subtype(generator->sm, vc->component_decl.ty);
+                vcty = vcty ? type_canonical_concrete(vcty) : 0;
+                char ptr_str[32];
+                snprintf(ptr_str, 32, "%%t%d", ep);
+                r = emit_typed_load(generator, ptr_str, vcty);
                 goto sel_done;
               }
             }
@@ -13822,8 +13849,13 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               int ep = new_temporary_register(generator);
               // Use byte offset directly with getelementptr i8
               fprintf(o, "  %%t%d = getelementptr i8, ptr %%t%d, i64 %u\n", ep, p.id, c->component_decl.offset);
-              v = value_cast(generator, v, VALUE_KIND_INTEGER);
-              fprintf(o, "  store i64 %%t%d, ptr %%t%d\n", v.id, ep);
+              Type_Info *ct = c->component_decl.ty ? resolve_subtype(generator->sm, c->component_decl.ty) : 0;
+              ct = ct ? type_canonical_concrete(ct) : 0;
+              Value_Kind ck = ct ? token_kind_to_value_kind(ct) : VALUE_KIND_INTEGER;
+              v = value_cast(generator, v, ck);
+              char ptr_str[32];
+              snprintf(ptr_str, 32, "%%t%d", ep);
+              emit_typed_store(generator, v, ptr_str, ct);
               break;
             }
           }
@@ -15613,14 +15645,14 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
             }
             else
             {
-              // Non-array or other types
+              // Non-array or other types - use proper type size
               fprintf(
                   o,
                   "  %%v.%s.sc%u.%u = alloca %s\n",
                   string_to_lowercase(id->string_value),
                   s->scope,
                   s->elaboration_level,
-                  value_llvm_type_string(k));
+                  at ? ada_to_c_type_string(at) : value_llvm_type_string(k));
             }
           }
         }
@@ -15858,8 +15890,9 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     for (uint32_t i = 0; i < sp->subprogram.parameters.count; i++)
     {
       Syntax_Node *p = sp->subprogram.parameters.data[i];
-      Value_Kind k = p->parameter.ty ? token_kind_to_value_kind(resolve_subtype(generator->sm, p->parameter.ty))
-                              : VALUE_KIND_INTEGER;
+      Type_Info *pt = p->parameter.ty ? resolve_subtype(generator->sm, p->parameter.ty) : 0;
+      Value_Kind k = pt ? token_kind_to_value_kind(pt) : VALUE_KIND_INTEGER;
+      const char *alloc_type = pt ? ada_to_c_type_string(pt) : value_llvm_type_string(k);
       Symbol *ps = p->symbol;
       if (ps and ps->level >= 0 and ps->level < generator->sm->lv)
         fprintf(
@@ -15867,7 +15900,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
             "  %%lnk.%d.%s = alloca %s\n",
             ps->level,
             string_to_lowercase(p->parameter.name),
-            value_llvm_type_string(k));
+            alloc_type);
       else
         fprintf(
             o,
@@ -15875,21 +15908,22 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
             string_to_lowercase(p->parameter.name),
             ps ? ps->scope : 0,
             ps ? ps->elaboration_level : 0,
-            value_llvm_type_string(k));
+            alloc_type);
       if (p->parameter.mode & 2)
       {
+        // OUT/IN OUT parameter - load from pointer then store to local
         int lv = new_temporary_register(generator);
         fprintf(
             o,
             "  %%t%d = load %s, ptr %%p.%s\n",
             lv,
-            value_llvm_type_string(k),
+            alloc_type,
             string_to_lowercase(p->parameter.name));
         if (ps and ps->level >= 0 and ps->level < generator->sm->lv)
           fprintf(
               o,
               "  store %s %%t%d, ptr %%lnk.%d.%s\n",
-              value_llvm_type_string(k),
+              alloc_type,
               lv,
               ps->level,
               string_to_lowercase(p->parameter.name));
@@ -15897,7 +15931,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
           fprintf(
               o,
               "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
-              value_llvm_type_string(k),
+              alloc_type,
               lv,
               string_to_lowercase(p->parameter.name),
               ps ? ps->scope : 0,
@@ -15905,23 +15939,41 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       }
       else
       {
-        if (ps and ps->level >= 0 and ps->level < generator->sm->lv)
-          fprintf(
-              o,
-              "  store %s %%p.%s, ptr %%lnk.%d.%s\n",
-              value_llvm_type_string(k),
-              string_to_lowercase(p->parameter.name),
-              ps->level,
-              string_to_lowercase(p->parameter.name));
+        // IN parameter - store parameter value to local (may need truncation)
+        if (k == VALUE_KIND_INTEGER and strcmp(alloc_type, "i64") != 0)
+        {
+          int trunc_reg = new_temporary_register(generator);
+          if (ps and ps->level >= 0 and ps->level < generator->sm->lv)
+          {
+            fprintf(o, "  %%t%d = trunc i64 %%p.%s to %s\n", trunc_reg, string_to_lowercase(p->parameter.name), alloc_type);
+            fprintf(o, "  store %s %%t%d, ptr %%lnk.%d.%s\n", alloc_type, trunc_reg, ps->level, string_to_lowercase(p->parameter.name));
+          }
+          else
+          {
+            fprintf(o, "  %%t%d = trunc i64 %%p.%s to %s\n", trunc_reg, string_to_lowercase(p->parameter.name), alloc_type);
+            fprintf(o, "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n", alloc_type, trunc_reg, string_to_lowercase(p->parameter.name), ps ? ps->scope : 0, ps ? ps->elaboration_level : 0);
+          }
+        }
         else
-          fprintf(
-              o,
-              "  store %s %%p.%s, ptr %%v.%s.sc%u.%u\n",
-              value_llvm_type_string(k),
-              string_to_lowercase(p->parameter.name),
-              string_to_lowercase(p->parameter.name),
-              ps ? ps->scope : 0,
-              ps ? ps->elaboration_level : 0);
+        {
+          if (ps and ps->level >= 0 and ps->level < generator->sm->lv)
+            fprintf(
+                o,
+                "  store %s %%p.%s, ptr %%lnk.%d.%s\n",
+                value_llvm_type_string(k),
+                string_to_lowercase(p->parameter.name),
+                ps->level,
+                string_to_lowercase(p->parameter.name));
+          else
+            fprintf(
+                o,
+                "  store %s %%p.%s, ptr %%v.%s.sc%u.%u\n",
+                value_llvm_type_string(k),
+                string_to_lowercase(p->parameter.name),
+                string_to_lowercase(p->parameter.name),
+                ps ? ps->scope : 0,
+                ps ? ps->elaboration_level : 0);
+        }
       }
     }
     // Removed: Code that created local copies of ALL parent variables in nested procedures.
@@ -16227,8 +16279,9 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     for (uint32_t i = 0; i < sp->subprogram.parameters.count; i++)
     {
       Syntax_Node *p = sp->subprogram.parameters.data[i];
-      Value_Kind k = p->parameter.ty ? token_kind_to_value_kind(resolve_subtype(generator->sm, p->parameter.ty))
-                              : VALUE_KIND_INTEGER;
+      Type_Info *pt = p->parameter.ty ? resolve_subtype(generator->sm, p->parameter.ty) : 0;
+      Value_Kind k = pt ? token_kind_to_value_kind(pt) : VALUE_KIND_INTEGER;
+      const char *alloc_type = pt ? ada_to_c_type_string(pt) : value_llvm_type_string(k);
       Symbol *ps = p->symbol;
       if (ps and ps->level >= 0 and ps->level < generator->sm->lv)
         fprintf(
@@ -16236,7 +16289,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
             "  %%lnk.%d.%s = alloca %s\n",
             ps->level,
             string_to_lowercase(p->parameter.name),
-            value_llvm_type_string(k));
+            alloc_type);
       else
         fprintf(
             o,
@@ -16244,21 +16297,22 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
             string_to_lowercase(p->parameter.name),
             ps ? ps->scope : 0,
             ps ? ps->elaboration_level : 0,
-            value_llvm_type_string(k));
+            alloc_type);
       if (p->parameter.mode & 2)
       {
+        // OUT/IN OUT parameter - load from pointer then store to local
         int lv = new_temporary_register(generator);
         fprintf(
             o,
             "  %%t%d = load %s, ptr %%p.%s\n",
             lv,
-            value_llvm_type_string(k),
+            alloc_type,
             string_to_lowercase(p->parameter.name));
         if (ps and ps->level >= 0 and ps->level < generator->sm->lv)
           fprintf(
               o,
               "  store %s %%t%d, ptr %%lnk.%d.%s\n",
-              value_llvm_type_string(k),
+              alloc_type,
               lv,
               ps->level,
               string_to_lowercase(p->parameter.name));
@@ -16266,7 +16320,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
           fprintf(
               o,
               "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
-              value_llvm_type_string(k),
+              alloc_type,
               lv,
               string_to_lowercase(p->parameter.name),
               ps ? ps->scope : 0,
@@ -16274,23 +16328,41 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       }
       else
       {
-        if (ps and ps->level >= 0 and ps->level < generator->sm->lv)
-          fprintf(
-              o,
-              "  store %s %%p.%s, ptr %%lnk.%d.%s\n",
-              value_llvm_type_string(k),
-              string_to_lowercase(p->parameter.name),
-              ps->level,
-              string_to_lowercase(p->parameter.name));
+        // IN parameter - store parameter value to local (may need truncation)
+        if (k == VALUE_KIND_INTEGER and strcmp(alloc_type, "i64") != 0)
+        {
+          int trunc_reg = new_temporary_register(generator);
+          if (ps and ps->level >= 0 and ps->level < generator->sm->lv)
+          {
+            fprintf(o, "  %%t%d = trunc i64 %%p.%s to %s\n", trunc_reg, string_to_lowercase(p->parameter.name), alloc_type);
+            fprintf(o, "  store %s %%t%d, ptr %%lnk.%d.%s\n", alloc_type, trunc_reg, ps->level, string_to_lowercase(p->parameter.name));
+          }
+          else
+          {
+            fprintf(o, "  %%t%d = trunc i64 %%p.%s to %s\n", trunc_reg, string_to_lowercase(p->parameter.name), alloc_type);
+            fprintf(o, "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n", alloc_type, trunc_reg, string_to_lowercase(p->parameter.name), ps ? ps->scope : 0, ps ? ps->elaboration_level : 0);
+          }
+        }
         else
-          fprintf(
-              o,
-              "  store %s %%p.%s, ptr %%v.%s.sc%u.%u\n",
-              value_llvm_type_string(k),
-              string_to_lowercase(p->parameter.name),
-              string_to_lowercase(p->parameter.name),
-              ps ? ps->scope : 0,
-              ps ? ps->elaboration_level : 0);
+        {
+          if (ps and ps->level >= 0 and ps->level < generator->sm->lv)
+            fprintf(
+                o,
+                "  store %s %%p.%s, ptr %%lnk.%d.%s\n",
+                value_llvm_type_string(k),
+                string_to_lowercase(p->parameter.name),
+                ps->level,
+                string_to_lowercase(p->parameter.name));
+          else
+            fprintf(
+                o,
+                "  store %s %%p.%s, ptr %%v.%s.sc%u.%u\n",
+                value_llvm_type_string(k),
+                string_to_lowercase(p->parameter.name),
+                string_to_lowercase(p->parameter.name),
+                ps ? ps->scope : 0,
+                ps ? ps->elaboration_level : 0);
+        }
       }
     }
     // Removed: Same buggy code as in N_PB - parent variables accessed via frame pointers.
