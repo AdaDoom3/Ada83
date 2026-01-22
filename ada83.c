@@ -5179,6 +5179,13 @@ static void symbol_find_use(Symbol_Manager *symbol_manager, Symbol *s, String_Sl
           symbol_manager->dpn++;
         }
       }
+      // Also make ALL symbols in the symbol table whose parent is this package visible
+      // This handles duplicates (from spec+body) that might have different symbol instances
+      // Compare by name, not pointer, since there might be multiple package symbol instances
+      for (int hh = 0; hh < 4096; hh++)
+        for (Symbol *cs = symbol_manager->sy[hh]; cs; cs = cs->next)
+          if (cs->parent and (cs->parent == parser or string_equal_ignore_case(cs->parent->name, nm)))
+            cs->visibility |= 2;
     }
   symbol_manager->uv_vis[h] &= ~b;
 }
@@ -5407,6 +5414,14 @@ static Symbol *symbol_find_with_args(Symbol_Manager *symbol_manager, String_Slic
       int sc = 100 + c->scope * 100;
       if (sc > bs) { bs = sc; br = c; }
     }
+  }
+  // If we have arguments but no scored result, prefer the first function/procedure in cv
+  // This handles the case where a local variable shadows a function from a USEd package
+  if (not br and na >= 0)
+  {
+    for (uint32_t i = 0; i < cv.count and not br; i++)
+      if (cv.data[i]->k == 4 or cv.data[i]->k == 5)
+        br = cv.data[i];
   }
   return br ?: (cv.count > 0 ? cv.data[0] : 0);
 }
@@ -11008,23 +11023,33 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     if (s and s->k == 2
         and not(s->type_info and is_unconstrained_array(type_canonical_concrete(s->type_info)) and s->level > 0))
     {
-      if (s->definition and s->definition->k == N_STR)
+      // Unwrap N_CHK wrapper if present
+      Syntax_Node *sdef = s->definition;
+      if (sdef and sdef->k == N_CHK)
+        sdef = sdef->check.expression;
+      if (sdef and sdef->k == N_STR)
       {
+        // Generate string literal inline to avoid cross-compilation unit naming issues
         r.k = VALUE_KIND_POINTER;
-        char nb[256];
-        if (s->parent and (uintptr_t) s->parent > 4096 and s->parent->name.string)
+        int p = new_temporary_register(generator);
+        uint32_t sz = sdef->string_value.length + 1;
+        fprintf(o, "  %%t%d = alloca [%u x i8]\n", p, sz);
+        for (uint32_t i = 0; i < sdef->string_value.length; i++)
         {
-          int n = 0;
-          for (uint32_t j = 0; j < s->parent->name.length; j++)
-            nb[n++] = TOUPPER(s->parent->name.string[j]);
-          n += snprintf(nb + n, 256 - n, "_S%dE%d__", s->parent->scope, s->parent->elaboration_level);
-          for (uint32_t j = 0; j < s->name.length; j++)
-            nb[n++] = TOUPPER(s->name.string[j]);
-          nb[n] = 0;
+          int ep = new_temporary_register(generator);
+          fprintf(o, "  %%t%d = getelementptr [%u x i8], ptr %%t%d, i64 0, i64 %u\n", ep, sz, p, i);
+          fprintf(o, "  store i8 %d, ptr %%t%d\n", (int)(unsigned char)sdef->string_value.string[i], ep);
         }
-        else
-          snprintf(nb, 256, "%.*s", (int) s->name.length, s->name.string);
-        fprintf(o, "  %%t%d = bitcast ptr @%s to ptr\n", r.id, nb);
+        int zp = new_temporary_register(generator);
+        fprintf(o, "  %%t%d = getelementptr [%u x i8], ptr %%t%d, i64 0, i64 %u\n", zp, sz, p, sdef->string_value.length);
+        fprintf(o, "  store i8 0, ptr %%t%d\n", zp);
+        int dp = new_temporary_register(generator);
+        fprintf(o, "  %%t%d = getelementptr [%u x i8], ptr %%t%d, i64 0, i64 0\n", dp, sz, p);
+        int lo_id = new_temporary_register(generator);
+        fprintf(o, "  %%t%d = add i64 0, 1\n", lo_id);
+        int hi_id = new_temporary_register(generator);
+        fprintf(o, "  %%t%d = add i64 0, %u\n", hi_id, sdef->string_value.length);
+        generate_fat_pointer(generator, r.id, dp, lo_id, hi_id);
       }
       else
       {
@@ -12881,10 +12906,11 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
     }
     if (n->call.function_name->k == N_ID)
     {
-      // Always use symbol_find_with_args for proper named parameter matching
-      Symbol *s = symbol_find_with_args(generator->sm, n->call.function_name->string_value, &n->call.arguments, n->ty);
-      if (not s)
-        s = n->call.function_name->symbol;  // Fallback to resolved symbol
+      // Prefer the symbol resolved during resolution phase (visibility may have been cleared since)
+      // Only fall back to symbol_find_with_args if no symbol was stored or it's not a function
+      Symbol *s = n->call.function_name->symbol;
+      if (not s or (s->k != 4 and s->k != 5))
+        s = symbol_find_with_args(generator->sm, n->call.function_name->string_value, &n->call.arguments, n->ty);
       if (s)
       {
         if (s->parent and string_equal_ignore_case(s->parent->name, STRING_LITERAL("TEXT_IO"))
@@ -17189,6 +17215,76 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
   sm.lu = symbol_manager->lu;
   sm.gt = symbol_manager->gt;
   symbol_manager_use_clauses(&sm, cu);
+  // Resolve the package's own declarations to populate symbol table with constants
+  // First, check if we have a body - if so, also parse the spec for constants
+  bool has_body = false;
+  for (uint32_t i = 0; i < cu->compilation_unit.units.count; i++)
+    if (cu->compilation_unit.units.data[i]->k == N_PKB)
+      has_body = true;
+  if (has_body)
+  {
+    // Parse the spec file separately to get constants
+    char sp[512];
+    snprintf(sp, 512, "%.*s.ads", (int) pth.length, pth.string);
+    char *ssrc = read_file_contents(sp);
+    if (ssrc)
+    {
+      Parser sp_parser = parser_new(ssrc, strlen(ssrc), sp);
+      Syntax_Node *scu = parse_compilation_unit(&sp_parser);
+      if (scu)
+      {
+        for (uint32_t i = 0; i < scu->compilation_unit.units.count; i++)
+        {
+          Syntax_Node *u = scu->compilation_unit.units.data[i];
+          if (u->k == N_PKS)
+          {
+            Type_Info *t = type_new(TY_P, nm);
+            Symbol *ps = symbol_add_overload(&sm, symbol_new(nm, 6, t, u));
+            ps->level = 0;
+            u->symbol = ps;
+            u->package_spec.elaboration_level = ps->elaboration_level;
+            if (sm.pn < 256) sm.ps[sm.pn++] = ps;
+            Syntax_Node *oldpk = sm.pk;
+            int oldlv = sm.lv;
+            sm.pk = u;
+            sm.lv = 0;
+            for (uint32_t j = 0; j < u->package_spec.declarations.count; j++)
+              resolve_declaration(&sm, u->package_spec.declarations.data[j]);
+            for (uint32_t j = 0; j < u->package_spec.private_declarations.count; j++)
+              resolve_declaration(&sm, u->package_spec.private_declarations.data[j]);
+            sm.lv = oldlv;
+            sm.pk = oldpk;
+            if (sm.pn > 0) sm.pn--;
+          }
+        }
+      }
+    }
+  }
+  // Process specs in the main compilation unit
+  for (uint32_t i = 0; i < cu->compilation_unit.units.count; i++)
+  {
+    Syntax_Node *u = cu->compilation_unit.units.data[i];
+    if (u->k == N_PKS)
+    {
+      Type_Info *t = type_new(TY_P, nm);
+      Symbol *ps = symbol_add_overload(&sm, symbol_new(nm, 6, t, u));
+      ps->level = 0;
+      u->symbol = ps;
+      u->package_spec.elaboration_level = ps->elaboration_level;
+      if (sm.pn < 256) sm.ps[sm.pn++] = ps;
+      Syntax_Node *oldpk = sm.pk;
+      int oldlv = sm.lv;
+      sm.pk = u;
+      sm.lv = 0;
+      for (uint32_t j = 0; j < u->package_spec.declarations.count; j++)
+        resolve_declaration(&sm, u->package_spec.declarations.data[j]);
+      for (uint32_t j = 0; j < u->package_spec.private_declarations.count; j++)
+        resolve_declaration(&sm, u->package_spec.private_declarations.data[j]);
+      sm.lv = oldlv;
+      sm.pk = oldpk;
+      if (sm.pn > 0) sm.pn--;
+    }
+  }
   char op[512];
   snprintf(op, 512, "%.*s.ll", (int) pth.length, pth.string);
   FILE *o = fopen(op, "w");
@@ -17197,6 +17293,7 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
   print_forward_declarations(&g, &sm);
   for (int h = 0; h < 4096; h++)
     for (Symbol *s = sm.sy[h]; s; s = s->next)
+    {
       if ((s->k == 0 or s->k == 2) and s->level == 0 and s->parent and not s->is_external and s->overloads.count == 0)
       {
         Value_Kind k = s->type_info ? token_kind_to_value_kind(s->type_info) : VALUE_KIND_INTEGER;
@@ -17208,13 +17305,17 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
         for (uint32_t j = 0; j < s->name.length; j++)
           nb[n++] = TOUPPER(s->name.string[j]);
         nb[n] = 0;
-        if (s->k == 2 and s->definition and s->definition->k == N_STR)
+        // Handle string constants - may be wrapped in N_CHK (check node)
+        Syntax_Node *def = s->definition;
+        if (def and def->k == N_CHK)
+          def = def->check.expression;
+        if (s->k == 2 and def and def->k == N_STR)
         {
-          uint32_t len = s->definition->string_value.length;
+          uint32_t len = def->string_value.length;
           fprintf(o, "@%s=linkonce_odr constant [%u x i8]c\"", nb, len + 1);
           for (uint32_t i = 0; i < len; i++)
           {
-            char c = s->definition->string_value.string[i];
+            char c = def->string_value.string[i];
             if (c == '"')
               fprintf(o, "\\22");
             else if (c == '\\')
@@ -17229,7 +17330,7 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
         else
         {
           char iv[64];
-          if (k == VALUE_KIND_INTEGER and s->definition and s->definition->k == N_INT)
+          if (k == VALUE_KIND_INTEGER and def and def->k == N_INT)
           {
             snprintf(iv, 64, "%ld", s->definition->integer_value);
           }
@@ -17284,6 +17385,7 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
           }
         }
       }
+    }
   for (uint32_t i = 0; i < sm.eo; i++)
   {
     for (uint32_t j = 0; j < 4096; j++)
@@ -17440,13 +17542,17 @@ int main(int ac, char **av)
           continue;
         strncpy(last_emitted, nb, 255);
         last_emitted[255] = 0;
-        if (s->k == 2 and s->definition and s->definition->k == N_STR)
+        // Handle string constants - may be wrapped in N_CHK (check node)
+        Syntax_Node *def2 = s->definition;
+        if (def2 and def2->k == N_CHK)
+          def2 = def2->check.expression;
+        if (s->k == 2 and def2 and def2->k == N_STR)
         {
-          uint32_t len = s->definition->string_value.length;
+          uint32_t len = def2->string_value.length;
           fprintf(o, "@%s=linkonce_odr constant [%u x i8]c\"", nb, len + 1);
           for (uint32_t i = 0; i < len; i++)
           {
-            char c = s->definition->string_value.string[i];
+            char c = def2->string_value.string[i];
             if (c == '"')
               fprintf(o, "\\22");
             else if (c == '\\')
@@ -17461,7 +17567,7 @@ int main(int ac, char **av)
         else
         {
           char iv[64];
-          if (k == VALUE_KIND_INTEGER and s->definition and s->definition->k == N_INT)
+          if (k == VALUE_KIND_INTEGER and def2 and def2->k == N_INT)
           {
             snprintf(iv, 64, "%ld", s->definition->integer_value);
           }
