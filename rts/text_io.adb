@@ -13,34 +13,34 @@ package body TEXT_IO is
    pragma Import(C, C_Getchar, "getchar");
 
    function C_Fopen(Name : SYSTEM.ADDRESS; Mode : SYSTEM.ADDRESS) return SYSTEM.ADDRESS;
-   pragma Import(C, C_Fopen, "fopen");
+   pragma Import(C, C_Fopen, "__ada_fopen");
 
    function C_Fclose(Stream : SYSTEM.ADDRESS) return Integer;
-   pragma Import(C, C_Fclose, "fclose");
+   pragma Import(C, C_Fclose, "__ada_fclose");
 
    function C_Fputc(C : Integer; Stream : SYSTEM.ADDRESS) return Integer;
-   pragma Import(C, C_Fputc, "fputc");
+   pragma Import(C, C_Fputc, "__ada_fputc");
 
    function C_Fgetc(Stream : SYSTEM.ADDRESS) return Integer;
-   pragma Import(C, C_Fgetc, "fgetc");
+   pragma Import(C, C_Fgetc, "__ada_fgetc");
 
    function C_Ungetc(C : Integer; Stream : SYSTEM.ADDRESS) return Integer;
-   pragma Import(C, C_Ungetc, "ungetc");
+   pragma Import(C, C_Ungetc, "__ada_ungetc");
 
    function C_Feof(Stream : SYSTEM.ADDRESS) return Integer;
-   pragma Import(C, C_Feof, "feof");
+   pragma Import(C, C_Feof, "__ada_feof");
 
    function C_Fflush(Stream : SYSTEM.ADDRESS) return Integer;
-   pragma Import(C, C_Fflush, "fflush");
+   pragma Import(C, C_Fflush, "__ada_fflush");
 
    function C_Remove(Name : SYSTEM.ADDRESS) return Integer;
-   pragma Import(C, C_Remove, "remove");
+   pragma Import(C, C_Remove, "__ada_remove");
 
    function C_Ftell(Stream : SYSTEM.ADDRESS) return Integer;
-   pragma Import(C, C_Ftell, "ftell");
+   pragma Import(C, C_Ftell, "__ada_ftell");
 
    function C_Fseek(Stream : SYSTEM.ADDRESS; Offset : Integer; Whence : Integer) return Integer;
-   pragma Import(C, C_Fseek, "fseek");
+   pragma Import(C, C_Fseek, "__ada_fseek");
 
    function C_Stdin return SYSTEM.ADDRESS;
    pragma Import(C, C_Stdin, "__ada_stdin");

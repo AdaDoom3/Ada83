@@ -11278,7 +11278,9 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                     string_to_lowercase(n->string_value),
                     s ? s->scope : 0,
                     s ? s->elaboration_level : 0);
+                r.k = VALUE_KIND_POINTER;
               }
+              r.k = VALUE_KIND_POINTER;
             }
             else
             {
@@ -11307,6 +11309,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                   string_to_lowercase(n->string_value),
                   s ? s->scope : 0,
                   s ? s->elaboration_level : 0);
+              r.k = VALUE_KIND_POINTER;
             }
             else
             {
@@ -11317,6 +11320,7 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                   string_to_lowercase(n->string_value),
                   s ? s->scope : 0,
                   s ? s->elaboration_level : 0);
+              r.k = VALUE_KIND_POINTER;
             }
           }
           else
@@ -15087,7 +15091,15 @@ static bool is_runtime_type(const char *name)
          or not strcmp(name, "__ada_delay") or not strcmp(name, "__ada_powi")
          or not strcmp(name, "__ada_finalize") or not strcmp(name, "__ada_finalize_all")
          or not strcmp(name, "__ada_image_enum") or not strcmp(name, "__ada_value_int")
-         or not strcmp(name, "__ada_image_int");
+         or not strcmp(name, "__ada_image_int")
+         or not strcmp(name, "__ada_fopen") or not strcmp(name, "__ada_fclose")
+         or not strcmp(name, "__ada_fputc") or not strcmp(name, "__ada_fgetc")
+         or not strcmp(name, "__ada_ungetc") or not strcmp(name, "__ada_feof")
+         or not strcmp(name, "__ada_fflush") or not strcmp(name, "__ada_remove")
+         or not strcmp(name, "__ada_ftell") or not strcmp(name, "__ada_fseek")
+         or not strcmp(name, "__ada_stdin") or not strcmp(name, "__ada_stdout")
+         or not strcmp(name, "__ada_stderr") or not strcmp(name, "putchar")
+         or not strcmp(name, "getchar");
 }
 static bool has_label_block(Node_Vector *sl)
 {
@@ -16665,6 +16677,71 @@ static void generate_runtime_type(Code_Generator *generator)
       "define linkonce_odr ptr @__ada_stdin(){%%p=load ptr,ptr @stdin\nret ptr %%p}\n"
       "define linkonce_odr ptr @__ada_stdout(){%%p=load ptr,ptr @stdout\nret ptr %%p}\n"
       "define linkonce_odr ptr @__ada_stderr(){%%p=load ptr,ptr @stderr\nret ptr %%p}\n");
+  // Ada wrapper functions for file I/O (convert between i64/ADDRESS and ptr)
+  fprintf(o,
+      "define linkonce_odr i64 @__ada_fopen(i64 %%name, i64 %%mode){\n"
+      "  %%np = inttoptr i64 %%name to ptr\n"
+      "  %%mp = inttoptr i64 %%mode to ptr\n"
+      "  %%fp = call ptr @fopen(ptr %%np, ptr %%mp)\n"
+      "  %%r = ptrtoint ptr %%fp to i64\n"
+      "  ret i64 %%r\n"
+      "}\n"
+      "define linkonce_odr i64 @__ada_fclose(i64 %%stream){\n"
+      "  %%fp = inttoptr i64 %%stream to ptr\n"
+      "  %%r = call i32 @fclose(ptr %%fp)\n"
+      "  %%r64 = sext i32 %%r to i64\n"
+      "  ret i64 %%r64\n"
+      "}\n"
+      "define linkonce_odr i64 @__ada_fputc(i64 %%c, i64 %%stream){\n"
+      "  %%c32 = trunc i64 %%c to i32\n"
+      "  %%fp = inttoptr i64 %%stream to ptr\n"
+      "  %%r = call i32 @fputc(i32 %%c32, ptr %%fp)\n"
+      "  %%r64 = sext i32 %%r to i64\n"
+      "  ret i64 %%r64\n"
+      "}\n"
+      "define linkonce_odr i64 @__ada_fgetc(i64 %%stream){\n"
+      "  %%fp = inttoptr i64 %%stream to ptr\n"
+      "  %%r = call i32 @fgetc(ptr %%fp)\n"
+      "  %%r64 = sext i32 %%r to i64\n"
+      "  ret i64 %%r64\n"
+      "}\n"
+      "define linkonce_odr i64 @__ada_ungetc(i64 %%c, i64 %%stream){\n"
+      "  %%c32 = trunc i64 %%c to i32\n"
+      "  %%fp = inttoptr i64 %%stream to ptr\n"
+      "  %%r = call i32 @ungetc(i32 %%c32, ptr %%fp)\n"
+      "  %%r64 = sext i32 %%r to i64\n"
+      "  ret i64 %%r64\n"
+      "}\n"
+      "define linkonce_odr i64 @__ada_feof(i64 %%stream){\n"
+      "  %%fp = inttoptr i64 %%stream to ptr\n"
+      "  %%r = call i32 @feof(ptr %%fp)\n"
+      "  %%r64 = sext i32 %%r to i64\n"
+      "  ret i64 %%r64\n"
+      "}\n"
+      "define linkonce_odr i64 @__ada_fflush(i64 %%stream){\n"
+      "  %%fp = inttoptr i64 %%stream to ptr\n"
+      "  %%r = call i32 @fflush(ptr %%fp)\n"
+      "  %%r64 = sext i32 %%r to i64\n"
+      "  ret i64 %%r64\n"
+      "}\n"
+      "define linkonce_odr i64 @__ada_remove(i64 %%name){\n"
+      "  %%np = inttoptr i64 %%name to ptr\n"
+      "  %%r = call i32 @remove(ptr %%np)\n"
+      "  %%r64 = sext i32 %%r to i64\n"
+      "  ret i64 %%r64\n"
+      "}\n"
+      "define linkonce_odr i64 @__ada_ftell(i64 %%stream){\n"
+      "  %%fp = inttoptr i64 %%stream to ptr\n"
+      "  %%r = call i64 @ftell(ptr %%fp)\n"
+      "  ret i64 %%r\n"
+      "}\n"
+      "define linkonce_odr i64 @__ada_fseek(i64 %%stream, i64 %%offset, i64 %%whence){\n"
+      "  %%fp = inttoptr i64 %%stream to ptr\n"
+      "  %%w32 = trunc i64 %%whence to i32\n"
+      "  %%r = call i32 @fseek(ptr %%fp, i64 %%offset, i32 %%w32)\n"
+      "  %%r64 = sext i32 %%r to i64\n"
+      "  ret i64 %%r64\n"
+      "}\n");
   // Calendar package support - time functions
   fprintf(o,
       "declare i64 @time(ptr)\n"
