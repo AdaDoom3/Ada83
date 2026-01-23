@@ -14922,7 +14922,15 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
         else
         {
           // Non-local or other case - default return
-          fprintf(o, "  ret %s %%t%d\n", value_llvm_type_string(v.k), v.id);
+          const char *ret_type = value_llvm_type_string(v.k);
+          if (v.k == VALUE_KIND_INTEGER && strcmp(ret_type, LLVM_I64) != 0) {
+            // Truncate from computation width (i64) to return type
+            int trunc_reg = new_temporary_register(generator);
+            fprintf(o, "  %%t%d = trunc i64 %%t%d to %s\n", trunc_reg, v.id, ret_type);
+            fprintf(o, "  ret %s %%t%d\n", ret_type, trunc_reg);
+          } else {
+            fprintf(o, "  ret %s %%t%d\n", ret_type, v.id);
+          }
         }
       }
       else if (v.k == VALUE_KIND_POINTER and vt and vt->k == TYPE_ARRAY
@@ -14944,8 +14952,15 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
       }
       else
       {
-        // Other types
-        fprintf(o, "  ret %s %%t%d\n", value_llvm_type_string(v.k), v.id);
+        // Other types - truncate integers from computation width if needed
+        const char *ret_type = value_llvm_type_string(v.k);
+        if (v.k == VALUE_KIND_INTEGER && strcmp(ret_type, LLVM_I64) != 0) {
+          int trunc_reg = new_temporary_register(generator);
+          fprintf(o, "  %%t%d = trunc i64 %%t%d to %s\n", trunc_reg, v.id, ret_type);
+          fprintf(o, "  ret %s %%t%d\n", ret_type, trunc_reg);
+        } else {
+          fprintf(o, "  ret %s %%t%d\n", ret_type, v.id);
+        }
       }
     }
     else
@@ -16523,41 +16538,26 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       }
       else
       {
-        // IN parameter - store parameter value to local (may need truncation)
-        if (k == VALUE_KIND_INTEGER and strcmp(alloc_type, "i64") != 0)
-        {
-          int trunc_reg = new_temporary_register(generator);
-          if (ps and ps->level >= 0 and ps->level < generator->sm->lv)
-          {
-            fprintf(o, "  %%t%d = trunc i64 %%p.%s to %s\n", trunc_reg, string_to_lowercase(p->parameter.name), alloc_type);
-            fprintf(o, "  store %s %%t%d, ptr %%lnk.%d.%s\n", alloc_type, trunc_reg, ps->level, string_to_lowercase(p->parameter.name));
-          }
-          else
-          {
-            fprintf(o, "  %%t%d = trunc i64 %%p.%s to %s\n", trunc_reg, string_to_lowercase(p->parameter.name), alloc_type);
-            fprintf(o, "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n", alloc_type, trunc_reg, string_to_lowercase(p->parameter.name), ps ? ps->scope : 0, ps ? ps->elaboration_level : 0);
-          }
-        }
+        // IN parameter - store parameter value to local
+        // Parameter type in signature matches alloc_type, so direct store
+        const char *param_type = value_llvm_type_string(k);
+        if (ps and ps->level >= 0 and ps->level < generator->sm->lv)
+          fprintf(
+              o,
+              "  store %s %%p.%s, ptr %%lnk.%d.%s\n",
+              param_type,
+              string_to_lowercase(p->parameter.name),
+              ps->level,
+              string_to_lowercase(p->parameter.name));
         else
-        {
-          if (ps and ps->level >= 0 and ps->level < generator->sm->lv)
-            fprintf(
-                o,
-                "  store %s %%p.%s, ptr %%lnk.%d.%s\n",
-                value_llvm_type_string(k),
-                string_to_lowercase(p->parameter.name),
-                ps->level,
-                string_to_lowercase(p->parameter.name));
-          else
-            fprintf(
-                o,
-                "  store %s %%p.%s, ptr %%v.%s.sc%u.%u\n",
-                value_llvm_type_string(k),
-                string_to_lowercase(p->parameter.name),
-                string_to_lowercase(p->parameter.name),
-                ps ? ps->scope : 0,
-                ps ? ps->elaboration_level : 0);
-        }
+          fprintf(
+              o,
+              "  store %s %%p.%s, ptr %%v.%s.sc%u.%u\n",
+              param_type,
+              string_to_lowercase(p->parameter.name),
+              string_to_lowercase(p->parameter.name),
+              ps ? ps->scope : 0,
+              ps ? ps->elaboration_level : 0);
       }
     }
     // Removed: Code that created local copies of ALL parent variables in nested procedures.
@@ -16912,41 +16912,26 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       }
       else
       {
-        // IN parameter - store parameter value to local (may need truncation)
-        if (k == VALUE_KIND_INTEGER and strcmp(alloc_type, "i64") != 0)
-        {
-          int trunc_reg = new_temporary_register(generator);
-          if (ps and ps->level >= 0 and ps->level < generator->sm->lv)
-          {
-            fprintf(o, "  %%t%d = trunc i64 %%p.%s to %s\n", trunc_reg, string_to_lowercase(p->parameter.name), alloc_type);
-            fprintf(o, "  store %s %%t%d, ptr %%lnk.%d.%s\n", alloc_type, trunc_reg, ps->level, string_to_lowercase(p->parameter.name));
-          }
-          else
-          {
-            fprintf(o, "  %%t%d = trunc i64 %%p.%s to %s\n", trunc_reg, string_to_lowercase(p->parameter.name), alloc_type);
-            fprintf(o, "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n", alloc_type, trunc_reg, string_to_lowercase(p->parameter.name), ps ? ps->scope : 0, ps ? ps->elaboration_level : 0);
-          }
-        }
+        // IN parameter - store parameter value to local
+        // Parameter type in signature matches alloc_type, so direct store
+        const char *param_type = value_llvm_type_string(k);
+        if (ps and ps->level >= 0 and ps->level < generator->sm->lv)
+          fprintf(
+              o,
+              "  store %s %%p.%s, ptr %%lnk.%d.%s\n",
+              param_type,
+              string_to_lowercase(p->parameter.name),
+              ps->level,
+              string_to_lowercase(p->parameter.name));
         else
-        {
-          if (ps and ps->level >= 0 and ps->level < generator->sm->lv)
-            fprintf(
-                o,
-                "  store %s %%p.%s, ptr %%lnk.%d.%s\n",
-                value_llvm_type_string(k),
-                string_to_lowercase(p->parameter.name),
-                ps->level,
-                string_to_lowercase(p->parameter.name));
-          else
-            fprintf(
-                o,
-                "  store %s %%p.%s, ptr %%v.%s.sc%u.%u\n",
-                value_llvm_type_string(k),
-                string_to_lowercase(p->parameter.name),
-                string_to_lowercase(p->parameter.name),
-                ps ? ps->scope : 0,
-                ps ? ps->elaboration_level : 0);
-        }
+          fprintf(
+              o,
+              "  store %s %%p.%s, ptr %%v.%s.sc%u.%u\n",
+              param_type,
+              string_to_lowercase(p->parameter.name),
+              string_to_lowercase(p->parameter.name),
+              ps ? ps->scope : 0,
+              ps ? ps->elaboration_level : 0);
       }
     }
     // Removed: Same buggy code as in N_PB - parent variables accessed via frame pointers.
