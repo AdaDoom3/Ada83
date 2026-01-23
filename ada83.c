@@ -9807,6 +9807,17 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
               and string_equal_ignore_case(es->name, sp->subprogram.name))
             s = es;
     }
+    // §GNAT-LLVM: For function bodies inside packages, find existing symbol from spec/declaration
+    if (n->k == N_FB and not s and symbol_manager->pk)
+    {
+      Symbol *parent_sym = get_pkg_sym(symbol_manager, symbol_manager->pk);
+      if (parent_sym)
+        for (int h = 0; h < SYMBOL_TABLE_SIZE and not s; h++)
+          for (Symbol *es = symbol_manager->sy[h]; es and not s; es = es->next)
+            if (es->k == SK_FUNCTION and es->parent == parent_sym
+                and string_equal_ignore_case(es->name, sp->subprogram.name))
+              s = es;
+    }
     if (not s)
       s = symbol_add_overload(symbol_manager, symbol_new(sp->subprogram.name, 5, ft, n));
     nv(&s->overloads, n);
