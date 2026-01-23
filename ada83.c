@@ -5293,6 +5293,7 @@ typedef struct
   uint32_t uid_ctr;
   Symbol *ps[256];  // Procedure stack: tracks enclosing procedures/functions for parent pointer assignment
   int pn;           // Procedure nesting count
+  int resolving_generic_inst; // Flag: true when resolving a generic instantiation
 } Symbol_Manager;
 static uint32_t symbol_hash(String_Slice s)
 {
@@ -5328,6 +5329,13 @@ static Symbol *symbol_add_overload(Symbol_Manager *symbol_manager, Symbol *s)
       u = u * 31 + s->elaboration_level;
     }
   }
+  // For generic instantiations at library level (level=0 with no parent),
+  // include scope and elaboration_level to create unique UIDs
+  else if (s->level == 0 and symbol_manager->resolving_generic_inst)
+  {
+    u = u * 31 + s->scope;
+    u = u * 31 + s->elaboration_level;
+  }
   s->uid = (uint32_t) (u & 0xFFFFFFFF);
   symbol_manager->sy[h] = s;
   if (symbol_manager->ssd < 256)
@@ -5335,7 +5343,7 @@ static Symbol *symbol_add_overload(Symbol_Manager *symbol_manager, Symbol *s)
   return s;
 }
 // Recompute uid after parent has been set (parent is set after symbol_new returns)
-static void symbol_update_uid(Symbol *s)
+static void symbol_update_uid(Symbol_Manager *symbol_manager, Symbol *s)
 {
   if (not s)
     return;
@@ -5348,6 +5356,13 @@ static void symbol_update_uid(Symbol *s)
       u = u * 31 + s->scope;
       u = u * 31 + s->elaboration_level;
     }
+  }
+  // For generic instantiations at library level (level=0 with no parent),
+  // include scope and elaboration_level to create unique UIDs
+  else if (s->level == 0 and symbol_manager->resolving_generic_inst)
+  {
+    u = u * 31 + s->scope;
+    u = u * 31 + s->elaboration_level;
   }
   s->uid = (uint32_t) (u & 0xFFFFFFFF);
 }
@@ -5539,8 +5554,8 @@ static Symbol *symbol_find_with_arity(Symbol_Manager *symbol_manager, String_Sli
   int msc = -1;
   for (Symbol *s = symbol_manager->sy[symbol_hash(nm)]; s; s = s->next)
   {
-    // Include symbols that are: visible (visibility & 3), external (is_external), or nested at current level or above
-    if (string_equal_ignore_case(s->name, nm) and ((s->visibility & 3) or s->is_external or (s->level > 0 and s->level <= symbol_manager->lv)))
+    // Include symbols that are: visible (visibility & 3), external (is_external), nested at current level or above, or library-level (level=0)
+    if (string_equal_ignore_case(s->name, nm) and ((s->visibility & 3) or s->is_external or (s->level > 0 and s->level <= symbol_manager->lv) or s->level == 0))
     {
       if (s->scope > msc)
       {
@@ -9265,11 +9280,14 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       // not the enclosing procedure where the instantiation happens
       int saved_pn = symbol_manager->pn;
       int saved_lv = symbol_manager->lv;
+      int saved_rgi = symbol_manager->resolving_generic_inst;
       symbol_manager->pn = 0;
       symbol_manager->lv = 0;
+      symbol_manager->resolving_generic_inst = 1;  // Mark that we're resolving a generic instantiation
       resolve_declaration(symbol_manager, inst);
       symbol_manager->pn = saved_pn;
       symbol_manager->lv = saved_lv;
+      symbol_manager->resolving_generic_inst = saved_rgi;
       // Link the instantiation node to the instantiated symbol
       if (inst->symbol)
         n->symbol = inst->symbol;
@@ -9704,7 +9722,9 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     // §GNAT-LLVM: For top-level procedure bodies (lv=0), search for existing stub symbol
     // This handles SEPARATE bodies without relying on the global SEPARATE_PACKAGE
     // A stub symbol will have a package as parent, created from "PROCEDURE X IS SEPARATE;"
-    if (n->k == N_PB and symbol_manager->lv == 0 and not symbol_manager->pk)
+    // Skip this search when resolving generic instantiations - they must always create new symbols
+    if (n->k == N_PB and symbol_manager->lv == 0 and not symbol_manager->pk
+        and not symbol_manager->resolving_generic_inst)
     {
       // Search for any existing procedure symbol with matching name that has a package/procedure parent
       for (int h = 0; h < SYMBOL_TABLE_SIZE and not s; h++)
@@ -9742,7 +9762,7 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
         s->parent = symbol_manager->ps[symbol_manager->pn - 1];
     }
     // Recompute uid now that parent is set (uid includes parent name hash)
-    symbol_update_uid(s);
+    symbol_update_uid(symbol_manager, s);
     nv(&ft->operations, n);
     if (n->k == N_PB)
     {
@@ -9800,7 +9820,9 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     Symbol *s = 0;
     // §GNAT-LLVM: For top-level function bodies (lv=0), search for existing stub symbol
     // This handles SEPARATE bodies without relying on the global SEPARATE_PACKAGE
-    if (n->k == N_FB and symbol_manager->lv == 0 and not symbol_manager->pk)
+    // Skip this search when resolving generic instantiations - they must always create new symbols
+    if (n->k == N_FB and symbol_manager->lv == 0 and not symbol_manager->pk
+        and not symbol_manager->resolving_generic_inst)
     {
       for (int h = 0; h < SYMBOL_TABLE_SIZE and not s; h++)
         for (Symbol *es = symbol_manager->sy[h]; es and not s; es = es->next)
@@ -18343,6 +18365,9 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
         for (uint32_t j = 0; j < s->name.length; j++)
           nb[n++] = TOUPPER(s->name.string[j]);
         nb[n] = 0;
+        // Skip if already emitted (can happen with generic instantiations)
+        if (not add_declaration(&g, nb))
+          continue;
         // Handle string constants - may be wrapped in N_CHK (check node)
         Syntax_Node *def = s->definition;
         if (def and def->k == N_CHK)
@@ -18554,8 +18579,6 @@ int main(int ac, char **av)
   FILE *o = stdout;
   Code_Generator g = {o, 0, 0, 0, &sm, {0}, 0, {0}, 0, {0}, 0, {0}, 13, {0}, {0}, {0}, {0}, 0};
   generate_runtime_type(&g);
-  // Track emitted globals to avoid duplicates
-  static char last_emitted[256] = {0};
   for (int h = 0; h < SYMBOL_TABLE_SIZE; h++)
     for (Symbol *s = sm.sy[h]; s; s = s->next)
       if ((s->k == SK_VARIABLE or s->k == SK_CONSTANT) and (s->level == 0 or s->parent) and not(s->parent and lfnd(&sm, s->parent->name))
@@ -18575,11 +18598,9 @@ int main(int ac, char **av)
         }
         else
           snprintf(nb, 256, "%.*s", (int) s->name.length, s->name.string);
-        // Skip if this global was already emitted (deduplication)
-        if (strcmp(nb, last_emitted) == 0)
+        // Skip if this global was already emitted (deduplication using add_declaration)
+        if (not add_declaration(&g, nb))
           continue;
-        strncpy(last_emitted, nb, 255);
-        last_emitted[255] = 0;
         // Handle string constants - may be wrapped in N_CHK (check node)
         Syntax_Node *def2 = s->definition;
         if (def2 and def2->k == N_CHK)
