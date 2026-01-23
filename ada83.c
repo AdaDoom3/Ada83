@@ -11565,7 +11565,22 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
                 Value v = value_cast(generator, generate_expression(generator, el->association.value), VALUE_KIND_INTEGER);
                 int ep = new_temporary_register(generator);
                 fprintf(o, "  %%t%d = getelementptr " LLVM_I8 ", " LLVM_PTR " %%t%d, " LLVM_I64 " %u\n", ep, p, c->component_decl.offset);
-                fprintf(o, "  store " LLVM_I64 " %%t%d, " LLVM_PTR " %%t%d\n", v.id, ep);
+                /* Get component type and store with proper width            */
+                Type_Info *ct = c->component_decl.ty ? c->component_decl.ty->ty : NULL;
+                const char *store_type = ct ? ada_to_c_type_string(ct) : LLVM_I32;
+                if (strcmp(store_type, LLVM_PTR) == 0) {
+                  /* Pointer type - convert i64 to ptr                       */
+                  int pv = new_temporary_register(generator);
+                  fprintf(o, "  %%t%d = inttoptr " LLVM_I64 " %%t%d to " LLVM_PTR "\n", pv, v.id);
+                  fprintf(o, "  store " LLVM_PTR " %%t%d, " LLVM_PTR " %%t%d\n", pv, ep);
+                } else if (strcmp(store_type, LLVM_I64) != 0) {
+                  /* Narrow integer type - truncate                          */
+                  int tv = new_temporary_register(generator);
+                  fprintf(o, "  %%t%d = trunc " LLVM_I64 " %%t%d to %s\n", tv, v.id, store_type);
+                  fprintf(o, "  store %s %%t%d, " LLVM_PTR " %%t%d\n", store_type, tv, ep);
+                } else {
+                  fprintf(o, "  store " LLVM_I64 " %%t%d, " LLVM_PTR " %%t%d\n", v.id, ep);
+                }
                 break;
               }
             }
@@ -11575,11 +11590,33 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
       }
       else
       {
-        /* Positional: use field index × DEFAULT_SIZE_BYTES                 */
+        /* Positional: use field index and get component type               */
         Value v = value_cast(generator, generate_expression(generator, el), VALUE_KIND_INTEGER);
         int ep = new_temporary_register(generator);
-        fprintf(o, "  %%t%d = getelementptr " LLVM_I8 ", " LLVM_PTR " %%t%d, " LLVM_I64 " %u\n", ep, p, ix * DEFAULT_SIZE_BYTES);
-        fprintf(o, "  store " LLVM_I64 " %%t%d, " LLVM_PTR " %%t%d\n", v.id, ep);
+        /* Find component at position ix                                    */
+        Syntax_Node *c = NULL;
+        uint32_t cidx = 0;
+        for (uint32_t k = 0; k < t->components.count && cidx <= ix; k++) {
+          if (t->components.data[k]->k == N_CM) {
+            if (cidx == ix) { c = t->components.data[k]; break; }
+            cidx++;
+          }
+        }
+        uint32_t offset = c ? c->component_decl.offset : ix * DEFAULT_SIZE_BYTES;
+        fprintf(o, "  %%t%d = getelementptr " LLVM_I8 ", " LLVM_PTR " %%t%d, " LLVM_I64 " %u\n", ep, p, offset);
+        Type_Info *ct = c && c->component_decl.ty ? c->component_decl.ty->ty : NULL;
+        const char *store_type = ct ? ada_to_c_type_string(ct) : LLVM_I32;
+        if (strcmp(store_type, LLVM_PTR) == 0) {
+          int pv = new_temporary_register(generator);
+          fprintf(o, "  %%t%d = inttoptr " LLVM_I64 " %%t%d to " LLVM_PTR "\n", pv, v.id);
+          fprintf(o, "  store " LLVM_PTR " %%t%d, " LLVM_PTR " %%t%d\n", pv, ep);
+        } else if (strcmp(store_type, LLVM_I64) != 0) {
+          int tv = new_temporary_register(generator);
+          fprintf(o, "  %%t%d = trunc " LLVM_I64 " %%t%d to %s\n", tv, v.id, store_type);
+          fprintf(o, "  store %s %%t%d, " LLVM_PTR " %%t%d\n", store_type, tv, ep);
+        } else {
+          fprintf(o, "  store " LLVM_I64 " %%t%d, " LLVM_PTR " %%t%d\n", v.id, ep);
+        }
         ix++;
       }
     }
