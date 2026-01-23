@@ -4927,7 +4927,11 @@ static Syntax_Node *parse_compilation_unit(Parser *parser)
       nv(&node->compilation_unit.units, parse_declaration(parser));
     }
     else
+    {
+      // §GNAT-LLVM: Clear SEPARATE_PACKAGE for non-separate compilation units
+      SEPARATE_PACKAGE = N;
       nv(&node->compilation_unit.units, parse_declaration(parser));
+    }
   }
   return node;
 }
@@ -9697,27 +9701,24 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     Syntax_Node *sp = n->body.subprogram_spec;
     Type_Info *ft = type_new(TYPE_STRING, sp->subprogram.name);
     Symbol *s = 0;
-    // For SEPARATE bodies, try to find existing symbol from body stub
-    if (n->k == N_PB and SEPARATE_PACKAGE.string)
+    // §GNAT-LLVM: For top-level procedure bodies (lv=0), search for existing stub symbol
+    // This handles SEPARATE bodies without relying on the global SEPARATE_PACKAGE
+    // A stub symbol will have a package as parent, created from "PROCEDURE X IS SEPARATE;"
+    if (n->k == N_PB and symbol_manager->lv == 0 and not symbol_manager->pk)
     {
-      Symbol *parent_sym = symbol_find(symbol_manager, SEPARATE_PACKAGE);
-      if (parent_sym)
-      {
-        // Look for existing procedure symbol in parent's scope
-        for (int h = 0; h < SYMBOL_TABLE_SIZE and not s; h++)
-          for (Symbol *es = symbol_manager->sy[h]; es and not s; es = es->next)
-            if (es->k == SK_PROCEDURE and es->parent == parent_sym
-                and string_equal_ignore_case(es->name, sp->subprogram.name))
-              s = es;
-      }
+      // Search for any existing procedure symbol with matching name that has a package parent
+      for (int h = 0; h < SYMBOL_TABLE_SIZE and not s; h++)
+        for (Symbol *es = symbol_manager->sy[h]; es and not s; es = es->next)
+          if (es->k == SK_PROCEDURE and es->parent and es->parent->k == SK_PACKAGE
+              and string_equal_ignore_case(es->name, sp->subprogram.name))
+            s = es;
     }
-    // For procedure bodies in packages, try to find existing symbol from spec
+    // For procedure bodies inside packages, find existing symbol from spec
     if (n->k == N_PB and not s and symbol_manager->pk)
     {
       Symbol *parent_sym = get_pkg_sym(symbol_manager, symbol_manager->pk);
       if (parent_sym)
       {
-        // Look for existing procedure symbol declared in this package
         for (int h = 0; h < SYMBOL_TABLE_SIZE and not s; h++)
           for (Symbol *es = symbol_manager->sy[h]; es and not s; es = es->next)
             if (es->k == SK_PROCEDURE and es->parent == parent_sym
@@ -9730,11 +9731,15 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     nv(&s->overloads, n);
     n->symbol = s;
     n->body.elaboration_level = s->elaboration_level;
-    // Set parent to package if in a package body, otherwise to enclosing procedure
-    if (not s->parent)
-      s->parent = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk)
-                  : (symbol_manager->pn > 0 ? symbol_manager->ps[symbol_manager->pn - 1]
-                  : (SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0));
+    // §GNAT-LLVM: Set parent for procedure stubs (N_PD) inside packages so SEPARATE can find them
+    // For bodies (N_PB), find existing symbol from spec/stub - don't set new parent
+    // Nested procedures (level > 0) get parent from enclosing procedure
+    if (not s->parent) {
+      if (n->k == N_PD and symbol_manager->pk)
+        s->parent = get_pkg_sym(symbol_manager, symbol_manager->pk);
+      else if (s->level > 0 and symbol_manager->pn > 0)
+        s->parent = symbol_manager->ps[symbol_manager->pn - 1];
+    }
     // Recompute uid now that parent is set (uid includes parent name hash)
     symbol_update_uid(s);
     nv(&ft->operations, n);
@@ -9792,30 +9797,25 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     Type_Info *ft = type_new(TYPE_STRING, sp->subprogram.name);
     ft->element_type = rt;
     Symbol *s = 0;
-    // For SEPARATE bodies, try to find existing symbol from body stub
-    if (SEPARATE_PACKAGE.string)
+    // §GNAT-LLVM: For top-level function bodies (lv=0), search for existing stub symbol
+    // This handles SEPARATE bodies without relying on the global SEPARATE_PACKAGE
+    if (n->k == N_FB and symbol_manager->lv == 0 and not symbol_manager->pk)
     {
-      Symbol *parent_sym = symbol_find(symbol_manager, SEPARATE_PACKAGE);
-      if (parent_sym)
-      {
-        // Look for existing function symbol in parent's scope
-        for (int h = 0; h < SYMBOL_TABLE_SIZE and not s; h++)
-          for (Symbol *es = symbol_manager->sy[h]; es and not s; es = es->next)
-            if (es->k == SK_FUNCTION and es->parent == parent_sym
-                and string_equal_ignore_case(es->name, sp->subprogram.name))
-              s = es;
-      }
+      for (int h = 0; h < SYMBOL_TABLE_SIZE and not s; h++)
+        for (Symbol *es = symbol_manager->sy[h]; es and not s; es = es->next)
+          if (es->k == SK_FUNCTION and es->parent and es->parent->k == SK_PACKAGE
+              and string_equal_ignore_case(es->name, sp->subprogram.name))
+            s = es;
     }
     if (not s)
       s = symbol_add_overload(symbol_manager, symbol_new(sp->subprogram.name, 5, ft, n));
     nv(&s->overloads, n);
     n->symbol = s;
     n->body.elaboration_level = s->elaboration_level;
-    // Set parent to package if in a package body, otherwise to enclosing procedure
-    if (not s->parent)
-      s->parent = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk)
-                  : (symbol_manager->pn > 0 ? symbol_manager->ps[symbol_manager->pn - 1]
-                  : (SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0));
+    // §GNAT-LLVM: For function bodies, only set parent for nested functions (level > 0)
+    // Function stubs (N_FD) get parent set unconditionally in their own case block
+    if (not s->parent and s->level > 0 and symbol_manager->pn > 0)
+      s->parent = symbol_manager->ps[symbol_manager->pn - 1];
     nv(&ft->operations, n);
     if (n->k == N_FB)
     {
@@ -9942,6 +9942,15 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
                                    : 0;
             if (_pk and string_equal_ignore_case(_pk->package_spec.name, n->package_body.name))
             {
+              // §GNAT-LLVM: Create package symbol and set _pk->symbol BEFORE processing declarations
+              // This ensures get_pkg_sym can find the symbol when setting procedure parents
+              Symbol *_ps = symbol_find(symbol_manager, n->package_body.name);
+              if (not _ps) {
+                Type_Info *_t = type_new(TY_P, n->package_body.name);
+                _ps = symbol_add_overload(symbol_manager, symbol_new(n->package_body.name, 6, _t, _pk));
+                _ps->level = 0;
+              }
+              _pk->symbol = _ps;
               symbol_manager->pk = _pk;
               for (uint32_t _j = 0; _j < _pk->package_spec.declarations.count; _j++)
                 resolve_declaration(symbol_manager, _pk->package_spec.declarations.data[_j]);
@@ -10407,6 +10416,14 @@ static void symbol_manager_use_clauses(Symbol_Manager *symbol_manager, Syntax_No
   }
   for (uint32_t i = 0; i < n->compilation_unit.units.count; i++)
   {
+    // §GNAT-LLVM: Reset symbol_manager state for each top-level compilation unit
+    // Each unit (package spec, package body, SEPARATE body, main procedure) is independent
+    symbol_manager->lv = 0;  // Reset nesting level
+    symbol_manager->pn = 0;  // Clear procedure stack
+    symbol_manager->pk = 0;  // Clear current package
+    // §GNAT-LLVM: Clear SEPARATE_PACKAGE - it's only valid during parsing of SEPARATE bodies
+    // For resolution, we detect SEPARATE by looking at the parent symbol set from the stub
+    SEPARATE_PACKAGE = N;
     Symbol_Vector eo = {0};
     int mx = 0;
     if (n->compilation_unit.units.data[i]->k == N_PKS)
@@ -11085,6 +11102,15 @@ static inline bool is_narrow_int(const char *ty) {
   return (ty[1] == '8' && ty[2] == '\0') ||                    /* i8  */
          (ty[1] == '1' && ty[2] == '6' && ty[3] == '\0') ||    /* i16 */
          (ty[1] == '3' && ty[2] == '2' && ty[3] == '\0');      /* i32 */
+}
+
+/* §GNAT-LLVM: Check if subprogram is truly nested (inside another subprogram).
+ * Only truly nested subprograms need static link parameters.
+ * Package-level subprograms (parent is SK_PACKAGE=6) don't need static links.
+ */
+static inline bool is_truly_nested(Symbol *s) {
+  return s && s->level > 0 && s->parent && (uintptr_t)s->parent > 4096 &&
+         (s->parent->k == 4 || s->parent->k == 5);  /* SK_PROCEDURE=4, SK_FUNCTION=5 */
 }
 
 /* §6.6 Compute Element Size and Type for Arrays
@@ -11775,17 +11801,17 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       if (s and s->type_info)
         k = token_kind_to_value_kind(s->type_info);
       r.k = k;
-      // Check if this is a package-level variable (parent is a package k==6)
-      // OR a variable from a generic package body (parent is procedure k=4, but var was in package body)
-      // Package-level variables should always be accessed as globals, not via static link
-      int is_package_level_var = s and s->parent and (uintptr_t)s->parent > 4096 and s->parent->k == 6;
+      // Check if this is a package-level symbol (parent is a package k==6)
+      // Package-level variables/procedures should always be accessed as globals, not via static link
+      int is_package_level_sym = s and s->parent and (uintptr_t)s->parent > 4096 and s->parent->k == 6;
       // Also treat variables whose parent is a procedure/function AND that procedure is NOT
       // the current function as globals (these are generic package body variables)
       int is_generic_pkg_body_var = s and s->parent and (uintptr_t)s->parent > 4096
           and (s->parent->k == 4 or s->parent->k == 5)
           and generator->current_function and generator->current_function->symbol
           and s->parent != generator->current_function->symbol;
-      if (s and (s->level == 0 or is_package_level_var or is_generic_pkg_body_var))
+      /* §GNAT-LLVM: Package-level symbols don't need static link chain traversal */
+      if (s and (s->level == 0 or is_package_level_sym or is_generic_pkg_body_var))
       {
         char nb[256];
         if (s->is_external and s->external_name.string)
@@ -12691,8 +12717,8 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       int call_result = need_sext ? new_temporary_register(generator) : r.id;
       fprintf(o, "  %%t%d = call %s @%s(", call_result, call_ret_type, fnb);
 
-      // Add static link if needed
-      bool needs_slnk = func_sym->level >= 0 and func_sym->level < generator->sm->lv;
+      // Add static link if needed (only for truly nested functions)
+      bool needs_slnk = is_truly_nested(func_sym) and func_sym->level < generator->sm->lv;
       if (needs_slnk)
         fprintf(o, "ptr %%__slnk");
 
@@ -13952,7 +13978,8 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                 fprintf(o, ", ");
               fprintf(o, "%s %%t%d", ada_types[i], ada_arid[i]);
             }
-            if (s->level > 0)
+            /* §GNAT-LLVM: Only pass static link for truly nested subprograms */
+            if (is_truly_nested(s))
             {
               if (n->call.arguments.count > 0)
                 fprintf(o, ", ");
@@ -13969,15 +13996,17 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           {
             if (arp[i])
             {
+              /* §GNAT-LLVM: Load OUT params and sign-extend narrow ints to i64 */
+              Value_Kind load_kind = ark[i] == VALUE_KIND_POINTER ? VALUE_KIND_INTEGER : ark[i];
+              const char *load_type = value_llvm_type_string(load_kind);
               int lv = new_temporary_register(generator);
-              fprintf(
-                  o,
-                  "  %%t%d = load %s, ptr %%t%d\n",
-                  lv,
-                  value_llvm_type_string(
-                      ark[i] == VALUE_KIND_POINTER ? VALUE_KIND_INTEGER : ark[i]),
-                  arid[i]);
-              Value rv = {lv, ark[i] == VALUE_KIND_POINTER ? VALUE_KIND_INTEGER : ark[i]};
+              fprintf(o, "  %%t%d = load %s, ptr %%t%d\n", lv, load_type, arid[i]);
+              int use_reg = lv;
+              if (load_kind == VALUE_KIND_INTEGER && is_narrow_int(load_type)) {
+                use_reg = new_temporary_register(generator);
+                fprintf(o, "  %%t%d = sext %s %%t%d to i64\n", use_reg, load_type, lv);
+              }
+              Value rv = {use_reg, load_kind};
               Value cv = value_cast(generator, rv, token_kind_to_value_kind(n->call.arguments.data[i]->ty));
               Syntax_Node *tg = n->call.arguments.data[i];
               if (tg->k == N_ID)
@@ -13985,23 +14014,14 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                 Symbol *ts = tg->symbol ? tg->symbol : symbol_find(generator->sm, tg->string_value);
                 if (ts)
                 {
+                  Type_Info *target_type = ts->type_info ? type_canonical_concrete(ts->type_info) : 0;
+                  char ptr_str[128];
                   if (ts->level >= 0 and ts->level < generator->sm->lv)
-                    fprintf(
-                        o,
-                        "  store %s %%t%d, ptr %%lnk.%d.%s\n",
-                        value_llvm_type_string(cv.k),
-                        cv.id,
-                        ts->level,
-                        string_to_lowercase(tg->string_value));
+                    snprintf(ptr_str, 128, "%%lnk.%d.%s", ts->level, string_to_lowercase(tg->string_value));
                   else
-                    fprintf(
-                        o,
-                        "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
-                        value_llvm_type_string(cv.k),
-                        cv.id,
-                        string_to_lowercase(tg->string_value),
-                        ts->scope,
-                        ts->elaboration_level);
+                    snprintf(ptr_str, 128, "%%v.%s.sc%u.%u",
+                        string_to_lowercase(tg->string_value), ts->scope, ts->elaboration_level);
+                  emit_typed_store(generator, cv, ptr_str, target_type);
                 }
               }
             }
@@ -14137,8 +14157,8 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         int sel_call_result = sel_need_sext ? new_temporary_register(generator) : r.id;
         fprintf(o, "  %%t%d = call %s @%s(", sel_call_result, sel_ret_type, fnb);
 
-        // Add static link if needed
-        bool needs_slnk = func_sym->level >= 0 and func_sym->level < generator->sm->lv;
+        // Add static link if needed (only for truly nested functions)
+        bool needs_slnk = is_truly_nested(func_sym) and func_sym->level < generator->sm->lv;
         if (needs_slnk)
           fprintf(o, "ptr %%__slnk");
 
@@ -15337,7 +15357,8 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
               fprintf(o, ", ");
             fprintf(o, "%s %%t%d", clt_arg_types[i], clt_arg_regs[i]);
           }
-          if (s->level > 0 and not s->is_external)
+          /* §GNAT-LLVM: Only pass static link for truly nested subprograms */
+          if (is_truly_nested(s) and not s->is_external)
           {
             if (n->code_stmt.arguments.count > 0)
               fprintf(o, ", ");
@@ -15351,15 +15372,17 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           {
             if (arp[i])
             {
+              /* §GNAT-LLVM: Load OUT params and sign-extend narrow ints to i64 */
+              Value_Kind load_kind = ark[i] == VALUE_KIND_POINTER ? VALUE_KIND_INTEGER : ark[i];
+              const char *load_type = value_llvm_type_string(load_kind);
               int lv = new_temporary_register(generator);
-              fprintf(
-                  o,
-                  "  %%t%d = load %s, ptr %%t%d\n",
-                  lv,
-                  value_llvm_type_string(
-                      ark[i] == VALUE_KIND_POINTER ? VALUE_KIND_INTEGER : ark[i]),
-                  arid[i]);
-              Value rv = {lv, ark[i] == VALUE_KIND_POINTER ? VALUE_KIND_INTEGER : ark[i]};
+              fprintf(o, "  %%t%d = load %s, ptr %%t%d\n", lv, load_type, arid[i]);
+              int use_reg = lv;
+              if (load_kind == VALUE_KIND_INTEGER && is_narrow_int(load_type)) {
+                use_reg = new_temporary_register(generator);
+                fprintf(o, "  %%t%d = sext %s %%t%d to i64\n", use_reg, load_type, lv);
+              }
+              Value rv = {use_reg, load_kind};
               Value cv = value_cast(generator, rv, token_kind_to_value_kind(n->code_stmt.arguments.data[i]->ty));
               Syntax_Node *tg = n->code_stmt.arguments.data[i];
               if (tg->k == N_ID)
@@ -15367,23 +15390,14 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                 Symbol *ts = tg->symbol ? tg->symbol : symbol_find(generator->sm, tg->string_value);
                 if (ts)
                 {
+                  Type_Info *target_type = ts->type_info ? type_canonical_concrete(ts->type_info) : 0;
+                  char ptr_str[128];
                   if (ts->level >= 0 and ts->level < generator->sm->lv)
-                    fprintf(
-                        o,
-                        "  store %s %%t%d, ptr %%lnk.%d.%s\n",
-                        value_llvm_type_string(cv.k),
-                        cv.id,
-                        ts->level,
-                        string_to_lowercase(tg->string_value));
+                    snprintf(ptr_str, 128, "%%lnk.%d.%s", ts->level, string_to_lowercase(tg->string_value));
                   else
-                    fprintf(
-                        o,
-                        "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
-                        value_llvm_type_string(cv.k),
-                        cv.id,
-                        string_to_lowercase(tg->string_value),
-                        ts->scope,
-                        ts->elaboration_level);
+                    snprintf(ptr_str, 128, "%%v.%s.sc%u.%u",
+                        string_to_lowercase(tg->string_value), ts->scope, ts->elaboration_level);
+                  emit_typed_store(generator, cv, ptr_str, target_type);
                 }
               }
             }
@@ -15616,8 +15630,8 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           fprintf(o, "  call void @%s(", fnb);
         }
 
-        // Add static link if needed
-        bool needs_slnk = func_sym->level >= 0 and func_sym->level < generator->sm->lv;
+        // Add static link if needed (only for truly nested functions)
+        bool needs_slnk = is_truly_nested(func_sym) and func_sym->level < generator->sm->lv;
         if (needs_slnk)
           fprintf(o, "ptr %%__slnk");
 
@@ -15809,11 +15823,12 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                 }
                 else
                 {
-                  v = value_cast(generator, v, k);
-                  fprintf(o, "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
-                      value_llvm_type_string(k), v.id,
-                      string_to_lowercase(id->string_value),
-                      s ? s->scope : 0, s ? s->elaboration_level : 0);
+                  /* §GNAT-LLVM: Use emit_typed_store for proper truncation */
+                  char ptr_str[128];
+                  snprintf(ptr_str, 128, "%%v.%s.sc%u.%u",
+                       string_to_lowercase(id->string_value),
+                       s ? s->scope : 0, s ? s->elaboration_level : 0);
+                  emit_typed_store(generator, v, ptr_str, at);
                 }
               }
             }
@@ -16603,7 +16618,8 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     }
     fprintf(o, "define linkonce_odr void @%s(", nb);
     int np = sp->subprogram.parameters.count;
-    if (n->symbol and n->symbol->level > 0)
+    /* §GNAT-LLVM: Only truly nested subprograms need static link parameter */
+    if (is_truly_nested(n->symbol))
       np++;
     for (int i = 0; i < np; i++)
     {
@@ -16626,7 +16642,9 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     fprintf(o, "  %%ej = alloca ptr\n");
     int sv = generator->sm->lv;
     generator->sm->lv = n->symbol ? n->symbol->level + 1 : 0;
-    bool needs_frame = (n->symbol and n->symbol->level > 0) or has_nested_function(&n->body.declarations, &n->body.statements);
+    /* §GNAT-LLVM: Only truly nested subprograms have %__slnk available */
+    bool has_slnk = is_truly_nested(n->symbol);
+    bool needs_frame = has_slnk or has_nested_function(&n->body.declarations, &n->body.statements);
     if (needs_frame)
     {
       generate_block_frame(generator);
@@ -16637,14 +16655,14 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
             mx = s->elaboration_level;
       if (mx == 0)
       {
-        // If level > 0, we have %__slnk to alias; otherwise allocate minimal frame
-        if (n->symbol and n->symbol->level > 0)
+        // If truly nested, we have %__slnk to alias; otherwise allocate minimal frame
+        if (has_slnk)
           fprintf(o, "  %%__frame = bitcast ptr %%__slnk to ptr\n");
         else
           fprintf(o, "  %%__frame = alloca [1 x ptr]\n");
       }
     }
-    if (n->symbol and n->symbol->level > 0)
+    if (has_slnk)
     {
       int fp0 = new_temporary_register(generator);
       fprintf(o, "  %%t%d = getelementptr ptr, ptr %%__frame, i64 0\n", fp0);
@@ -16977,7 +16995,8 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     }
     fprintf(o, "define linkonce_odr %s @%s(", value_llvm_type_string(rk), nb);
     int np = sp->subprogram.parameters.count;
-    if (n->symbol and n->symbol->level > 0)
+    /* §GNAT-LLVM: Only truly nested subprograms need static link parameter */
+    if (is_truly_nested(n->symbol))
       np++;
     for (int i = 0; i < np; i++)
     {
@@ -17000,7 +17019,9 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     fprintf(o, "  %%ej = alloca ptr\n");
     int sv = generator->sm->lv;
     generator->sm->lv = n->symbol ? n->symbol->level + 1 : 0;
-    bool needs_frame = (n->symbol and n->symbol->level > 0) or has_nested_function(&n->body.declarations, &n->body.statements);
+    /* §GNAT-LLVM: Only truly nested subprograms have %__slnk available */
+    bool has_slnk = is_truly_nested(n->symbol);
+    bool needs_frame = has_slnk or has_nested_function(&n->body.declarations, &n->body.statements);
     if (needs_frame)
     {
       generate_block_frame(generator);
@@ -17011,14 +17032,14 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
             mx = s->elaboration_level;
       if (mx == 0)
       {
-        // If level > 0, we have %__slnk to alias; otherwise allocate minimal frame
-        if (n->symbol and n->symbol->level > 0)
+        // If truly nested, we have %__slnk to alias; otherwise allocate minimal frame
+        if (has_slnk)
           fprintf(o, "  %%__frame = bitcast ptr %%__slnk to ptr\n");
         else
           fprintf(o, "  %%__frame = alloca [1 x ptr]\n");
       }
     }
-    if (n->symbol and n->symbol->level > 0)
+    if (has_slnk)
     {
       int fp0 = new_temporary_register(generator);
       fprintf(o, "  %%t%d = getelementptr ptr, ptr %%__frame, i64 0\n", fp0);
