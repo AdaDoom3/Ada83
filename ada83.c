@@ -11810,8 +11810,13 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           {
             char fnb[256];
             encode_symbol_name(fnb, 256, s, n->string_value, 0, 0);
-            fprintf(
-                o, "  %%t%d = call %s @%s()\n", r.id, value_llvm_type_string(fn_ret_type), fnb);
+            /* §GNAT-LLVM: Sign-extend narrow integer returns to i64 */
+            const char *g0p_ret_type = value_llvm_type_string(fn_ret_type);
+            bool g0p_need_sext = (fn_ret_type == VALUE_KIND_INTEGER && is_narrow_int(g0p_ret_type));
+            int g0p_call_result = g0p_need_sext ? new_temporary_register(generator) : r.id;
+            fprintf(o, "  %%t%d = call %s @%s()\n", g0p_call_result, g0p_ret_type, fnb);
+            if (g0p_need_sext)
+              fprintf(o, "  %%t%d = sext %s %%t%d to i64\n", r.id, g0p_ret_type, g0p_call_result);
             r.k = fn_ret_type;
           }
           else
@@ -11822,12 +11827,13 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             {
               char fnb[256];
               encode_symbol_name(fnb, 256, s, n->string_value, 0, sp);
-              fprintf(
-                  o,
-                  "  %%t%d = call %s @%s()\n",
-                  r.id,
-                  value_llvm_type_string(fn_ret_type),
-                  fnb);
+              /* §GNAT-LLVM: Sign-extend narrow integer returns to i64 */
+              const char *sp0_ret_type = value_llvm_type_string(fn_ret_type);
+              bool sp0_need_sext = (fn_ret_type == VALUE_KIND_INTEGER && is_narrow_int(sp0_ret_type));
+              int sp0_call_result = sp0_need_sext ? new_temporary_register(generator) : r.id;
+              fprintf(o, "  %%t%d = call %s @%s()\n", sp0_call_result, sp0_ret_type, fnb);
+              if (sp0_need_sext)
+                fprintf(o, "  %%t%d = sext %s %%t%d to i64\n", r.id, sp0_ret_type, sp0_call_result);
               r.k = fn_ret_type;
             }
             else
@@ -11864,12 +11870,13 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                                 : VALUE_KIND_INTEGER;
             char fnb[256];
             encode_symbol_name(fnb, 256, s, n->string_value, 0, sp);
-            fprintf(
-                o,
-                "  %%t%d = call %s @%s(ptr %%__slnk)\n",
-                r.id,
-                value_llvm_type_string(rk),
-                fnb);
+            /* §GNAT-LLVM: Sign-extend narrow integer returns to i64 */
+            const char *slnk0_ret_type = value_llvm_type_string(rk);
+            bool slnk0_need_sext = (rk == VALUE_KIND_INTEGER && is_narrow_int(slnk0_ret_type));
+            int slnk0_call_result = slnk0_need_sext ? new_temporary_register(generator) : r.id;
+            fprintf(o, "  %%t%d = call %s @%s(ptr %%__slnk)\n", slnk0_call_result, slnk0_ret_type, fnb);
+            if (slnk0_need_sext)
+              fprintf(o, "  %%t%d = sext %s %%t%d to i64\n", r.id, slnk0_ret_type, slnk0_call_result);
             r.k = rk;
           }
           else
@@ -11959,20 +11966,16 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                                 : VALUE_KIND_INTEGER;
             char fnb[256];
             encode_symbol_name(fnb, 256, s, n->string_value, 0, sp);
+            /* §GNAT-LLVM: Sign-extend narrow integer returns to i64 */
+            const char *frm0_ret_type = value_llvm_type_string(rk);
+            bool frm0_need_sext = (rk == VALUE_KIND_INTEGER && is_narrow_int(frm0_ret_type));
+            int frm0_call_result = frm0_need_sext ? new_temporary_register(generator) : r.id;
             if (s->level >= generator->sm->lv)
-              fprintf(
-                  o,
-                  "  %%t%d = call %s @%s(ptr %%__frame)\n",
-                  r.id,
-                  value_llvm_type_string(rk),
-                  fnb);
+              fprintf(o, "  %%t%d = call %s @%s(ptr %%__frame)\n", frm0_call_result, frm0_ret_type, fnb);
             else
-              fprintf(
-                  o,
-                  "  %%t%d = call %s @%s(ptr %%__slnk)\n",
-                  r.id,
-                  value_llvm_type_string(rk),
-                  fnb);
+              fprintf(o, "  %%t%d = call %s @%s(ptr %%__slnk)\n", frm0_call_result, frm0_ret_type, fnb);
+            if (frm0_need_sext)
+              fprintf(o, "  %%t%d = sext %s %%t%d to i64\n", r.id, frm0_ret_type, frm0_call_result);
             r.k = rk;
           }
           else
@@ -12659,8 +12662,34 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         args[i] = generate_expression(generator, n->index.indices.data[i]);
       }
 
+      /* §GNAT-LLVM: Type-correct argument emission
+       * Truncate i64 computation values to declared parameter types.
+       */
+      int arg_regs[16];
+      const char *arg_types[16];
+      for (uint32_t i = 0; i < n->index.indices.count and i < 16; i++)
+      {
+        Type_Info *pt = func_spec and i < func_spec->subprogram.parameters.count
+            and func_spec->subprogram.parameters.data[i]->parameter.ty
+            ? resolve_subtype(generator->sm, func_spec->subprogram.parameters.data[i]->parameter.ty) : 0;
+        arg_types[i] = pt ? ada_to_c_type_string(pt) : value_llvm_type_string(args[i].k);
+        if (args[i].k == VALUE_KIND_INTEGER and is_narrow_int(arg_types[i]))
+        {
+          arg_regs[i] = new_temporary_register(generator);
+          fprintf(o, "  %%t%d = trunc i64 %%t%d to %s\n", arg_regs[i], args[i].id, arg_types[i]);
+        }
+        else
+          arg_regs[i] = args[i].id;
+      }
+
       // Now generate the call with the parameter values
-      fprintf(o, "  %%t%d = call %s @%s(", r.id, value_llvm_type_string(ret_kind), fnb);
+      /* §GNAT-LLVM: Function calls return in their declared type.
+       * Sign-extend narrow integer results to i64 for uniform computation width.
+       */
+      const char *call_ret_type = value_llvm_type_string(ret_kind);
+      bool need_sext = (ret_kind == VALUE_KIND_INTEGER && is_narrow_int(call_ret_type));
+      int call_result = need_sext ? new_temporary_register(generator) : r.id;
+      fprintf(o, "  %%t%d = call %s @%s(", call_result, call_ret_type, fnb);
 
       // Add static link if needed
       bool needs_slnk = func_sym->level >= 0 and func_sym->level < generator->sm->lv;
@@ -12672,10 +12701,12 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       {
         if (needs_slnk or i > 0)
           fprintf(o, ", ");
-        fprintf(o, "%s %%t%d", value_llvm_type_string(args[i].k), args[i].id);
+        fprintf(o, "%s %%t%d", arg_types[i], arg_regs[i]);
       }
 
       fprintf(o, ")\n");
+      if (need_sext)
+        fprintf(o, "  %%t%d = sext %s %%t%d to i64\n", r.id, call_ret_type, call_result);
       r.k = ret_kind;
       break;
     }
@@ -12845,7 +12876,13 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                             : VALUE_KIND_INTEGER;
         char fnb[256];
         encode_symbol_name(fnb, 256, n->symbol, n->selected_component.selector, 0, sp);
-        fprintf(o, "  %%t%d = call %s @%s()\n", r.id, value_llvm_type_string(rk), fnb);
+        /* §GNAT-LLVM: Sign-extend narrow integer returns to i64 */
+        const char *sel0_ret_type = value_llvm_type_string(rk);
+        bool sel0_need_sext = (rk == VALUE_KIND_INTEGER && is_narrow_int(sel0_ret_type));
+        int sel0_call_result = sel0_need_sext ? new_temporary_register(generator) : r.id;
+        fprintf(o, "  %%t%d = call %s @%s()\n", sel0_call_result, sel0_ret_type, fnb);
+        if (sel0_need_sext)
+          fprintf(o, "  %%t%d = sext %s %%t%d to i64\n", r.id, sel0_ret_type, sel0_call_result);
         r.k = rk;
         break;
       }
@@ -13110,7 +13147,13 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                             : VALUE_KIND_INTEGER;
         char fnb[256];
         encode_symbol_name(fnb, 256, n->symbol, n->selected_component.selector, 0, sp);
-        fprintf(o, "  %%t%d = call %s @%s()\n", r.id, value_llvm_type_string(rk), fnb);
+        /* §GNAT-LLVM: Sign-extend narrow integer returns to i64 */
+        const char *sel1_ret_type = value_llvm_type_string(rk);
+        bool sel1_need_sext = (rk == VALUE_KIND_INTEGER && is_narrow_int(sel1_ret_type));
+        int sel1_call_result = sel1_need_sext ? new_temporary_register(generator) : r.id;
+        fprintf(o, "  %%t%d = call %s @%s()\n", sel1_call_result, sel1_ret_type, fnb);
+        if (sel1_need_sext)
+          fprintf(o, "  %%t%d = sext %s %%t%d to i64\n", r.id, sel1_ret_type, sel1_call_result);
         r.k = rk;
       }
     }
@@ -13878,12 +13921,36 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           }
           else
           {
-            fprintf(o, "  %%t%d = call %s @%s(", r.id, value_llvm_type_string(rk), nb);
+            /* §GNAT-LLVM: Emit_Call with type-correct arguments
+             * Following GNAT LLVM's Emit_Conversion pattern, truncate i64
+             * computation values to the declared parameter type (i32 for INTEGER).
+             * This mirrors the C external handling above.
+             */
+            int ada_arid[64];
+            const char *ada_types[64];
+            for (uint32_t i = 0; i < n->call.arguments.count and i < 64; i++)
+            {
+              Type_Info *pt = sp and i < sp->subprogram.parameters.count and sp->subprogram.parameters.data[i]->parameter.ty
+                  ? resolve_subtype(generator->sm, sp->subprogram.parameters.data[i]->parameter.ty) : 0;
+              ada_types[i] = pt ? ada_to_c_type_string(pt) : value_llvm_type_string(ark[i]);
+              if (ark[i] == VALUE_KIND_INTEGER and is_narrow_int(ada_types[i]))
+              {
+                ada_arid[i] = new_temporary_register(generator);
+                fprintf(o, "  %%t%d = trunc i64 %%t%d to %s\n", ada_arid[i], arid[i], ada_types[i]);
+              }
+              else
+                ada_arid[i] = arid[i];
+            }
+            /* §GNAT-LLVM: Sign-extend narrow integer returns to i64 */
+            const char *ada_ret_type = value_llvm_type_string(rk);
+            bool ada_need_sext = (rk == VALUE_KIND_INTEGER && is_narrow_int(ada_ret_type));
+            int ada_call_result = ada_need_sext ? new_temporary_register(generator) : r.id;
+            fprintf(o, "  %%t%d = call %s @%s(", ada_call_result, ada_ret_type, nb);
             for (uint32_t i = 0; i < n->call.arguments.count; i++)
             {
               if (i)
                 fprintf(o, ", ");
-              fprintf(o, "%s %%t%d", value_llvm_type_string(ark[i]), arid[i]);
+              fprintf(o, "%s %%t%d", ada_types[i], ada_arid[i]);
             }
             if (s->level > 0)
             {
@@ -13895,6 +13962,8 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                 fprintf(o, "ptr %%__slnk");
             }
             fprintf(o, ")\n");
+            if (ada_need_sext)
+              fprintf(o, "  %%t%d = sext %s %%t%d to i64\n", r.id, ada_ret_type, ada_call_result);
           }
           for (uint32_t i = 0; i < n->call.arguments.count and i < 64; i++)
           {
@@ -14041,8 +14110,32 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           args[i] = generate_expression(generator, n->call.arguments.data[i]);
         }
 
+        /* §GNAT-LLVM: Type-correct argument emission for N_SEL calls
+         * Truncate i64 computation values to declared parameter types.
+         */
+        int sel_arg_regs[64];
+        const char *sel_arg_types[64];
+        for (uint32_t i = 0; i < n->call.arguments.count and i < 64; i++)
+        {
+          Type_Info *pt = func_spec and i < func_spec->subprogram.parameters.count
+              and func_spec->subprogram.parameters.data[i]->parameter.ty
+              ? resolve_subtype(generator->sm, func_spec->subprogram.parameters.data[i]->parameter.ty) : 0;
+          sel_arg_types[i] = pt ? ada_to_c_type_string(pt) : value_llvm_type_string(args[i].k);
+          if (args[i].k == VALUE_KIND_INTEGER and is_narrow_int(sel_arg_types[i]))
+          {
+            sel_arg_regs[i] = new_temporary_register(generator);
+            fprintf(o, "  %%t%d = trunc i64 %%t%d to %s\n", sel_arg_regs[i], args[i].id, sel_arg_types[i]);
+          }
+          else
+            sel_arg_regs[i] = args[i].id;
+        }
+
         // Now generate the call with the parameter values
-        fprintf(o, "  %%t%d = call %s @%s(", r.id, value_llvm_type_string(ret_kind), fnb);
+        /* §GNAT-LLVM: Sign-extend narrow integer returns to i64 */
+        const char *sel_ret_type = value_llvm_type_string(ret_kind);
+        bool sel_need_sext = (ret_kind == VALUE_KIND_INTEGER && is_narrow_int(sel_ret_type));
+        int sel_call_result = sel_need_sext ? new_temporary_register(generator) : r.id;
+        fprintf(o, "  %%t%d = call %s @%s(", sel_call_result, sel_ret_type, fnb);
 
         // Add static link if needed
         bool needs_slnk = func_sym->level >= 0 and func_sym->level < generator->sm->lv;
@@ -14054,10 +14147,12 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         {
           if (needs_slnk or i > 0)
             fprintf(o, ", ");
-          fprintf(o, "%s %%t%d", value_llvm_type_string(args[i].k), args[i].id);
+          fprintf(o, "%s %%t%d", sel_arg_types[i], sel_arg_regs[i]);
         }
 
         fprintf(o, ")\n");
+        if (sel_need_sext)
+          fprintf(o, "  %%t%d = sext %s %%t%d to i64\n", r.id, sel_ret_type, sel_call_result);
         r.k = ret_kind;
         break;
       }
@@ -15214,6 +15309,22 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             ark[i] = ek != VALUE_KIND_INTEGER ? ek : av.k;
             arp[i] = rf ? 1 : 0;
           }
+          /* §GNAT-LLVM: Type-correct argument emission for N_CLT procedure calls */
+          int clt_arg_regs[64];
+          const char *clt_arg_types[64];
+          for (uint32_t i = 0; i < n->code_stmt.arguments.count and i < 64; i++)
+          {
+            Type_Info *pt = sp and i < sp->subprogram.parameters.count and sp->subprogram.parameters.data[i]->parameter.ty
+                ? resolve_subtype(generator->sm, sp->subprogram.parameters.data[i]->parameter.ty) : 0;
+            clt_arg_types[i] = pt ? ada_to_c_type_string(pt) : value_llvm_type_string(ark[i]);
+            if (ark[i] == VALUE_KIND_INTEGER and is_narrow_int(clt_arg_types[i]))
+            {
+              clt_arg_regs[i] = new_temporary_register(generator);
+              fprintf(o, "  %%t%d = trunc i64 %%t%d to %s\n", clt_arg_regs[i], arid[i], clt_arg_types[i]);
+            }
+            else
+              clt_arg_regs[i] = arid[i];
+          }
           char nb[256];
           if (s->is_external)
             snprintf(nb, 256, "%.*s", (int) s->external_name.length, s->external_name.string);
@@ -15224,7 +15335,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           {
             if (i)
               fprintf(o, ", ");
-            fprintf(o, "%s %%t%d", value_llvm_type_string(ark[i]), arid[i]);
+            fprintf(o, "%s %%t%d", clt_arg_types[i], clt_arg_regs[i]);
           }
           if (s->level > 0 and not s->is_external)
           {
@@ -15361,6 +15472,22 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             arid[i] = av.id;
             ark[i] = ek;
           }
+          /* §GNAT-LLVM: Type-correct argument emission for N_CLT (SK_PROCEDURE/SK_FUNCTION) */
+          int clt2_arg_regs[64];
+          const char *clt2_arg_types[64];
+          for (uint32_t i = 0; i < n->code_stmt.arguments.count and i < 64; i++)
+          {
+            Type_Info *pt = sp and i < sp->subprogram.parameters.count and sp->subprogram.parameters.data[i]->parameter.ty
+                ? resolve_subtype(generator->sm, sp->subprogram.parameters.data[i]->parameter.ty) : 0;
+            clt2_arg_types[i] = pt ? ada_to_c_type_string(pt) : value_llvm_type_string(ark[i]);
+            if (ark[i] == VALUE_KIND_INTEGER and is_narrow_int(clt2_arg_types[i]))
+            {
+              clt2_arg_regs[i] = new_temporary_register(generator);
+              fprintf(o, "  %%t%d = trunc i64 %%t%d to %s\n", clt2_arg_regs[i], arid[i], clt2_arg_types[i]);
+            }
+            else
+              clt2_arg_regs[i] = arid[i];
+          }
           char nb[256];
           if (s->is_external)
             snprintf(nb, 256, "%.*s", (int) s->external_name.length, s->external_name.string);
@@ -15379,7 +15506,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           {
             if (i)
               fprintf(o, ", ");
-            fprintf(o, "%s %%t%d", value_llvm_type_string(ark[i]), arid[i]);
+            fprintf(o, "%s %%t%d", clt2_arg_types[i], clt2_arg_regs[i]);
           }
           fprintf(o, ")\n");
         }
