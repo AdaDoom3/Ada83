@@ -71,21 +71,42 @@ static const uint64_t UBPU = 8ULL;         /* BPU for 64-bit arithmetic      */
 
 /* LLVM integer type widths (bits) — the atoms of representation            */
 enum {
-  W1   = 1,    W8   = 8,    W16  = 16,   W32  = 32,   W64  = 64,
+  W1   = 1,    W8   = 8,    W16  = 16,   W32  = 32,   W64  = 64,   W128 = 128,
   WPTR = 64,   WFLT = 32,   WDBL = 64    /* Platform: LP64 assumed         */
 };
 
-/* Default type metrics — the canonical starting point                      */
+/* Ada Standard Integer Widths — Per Ada 83 RM §3.5.4 and GNAT conventions
+ *
+ * GNAT uses these mappings:
+ *   Standard.Short_Short_Integer → 8 bits  (i8)
+ *   Standard.Short_Integer       → 16 bits (i16)
+ *   Standard.Integer             → 32 bits (i32)  ← THE STANDARD
+ *   Standard.Long_Integer        → 64 bits (i64)
+ *   Standard.Long_Long_Integer   → 64 bits (i64) on most platforms
+ *   Interfaces.Integer_128       → 128 bits (i128)
+ *
+ * User-defined integer types use bits_for_range() to compute minimum width.
+ */
 enum {
-  DEFAULT_ALIGN_BITS  = W64,              /* Natural alignment for i64      */
-  DEFAULT_SIZE_BITS   = W64,              /* Default scalar size            */
-  DEFAULT_ALIGN_BYTES = DEFAULT_ALIGN_BITS / BPU,
-  DEFAULT_SIZE_BYTES  = DEFAULT_SIZE_BITS / BPU,
+  ADA_SS_INT_BITS    = W8,               /* Short_Short_Integer             */
+  ADA_SHORT_INT_BITS = W16,              /* Short_Integer                   */
+  ADA_INT_BITS       = W32,              /* INTEGER — the 32-bit standard   */
+  ADA_LONG_INT_BITS  = W64,              /* Long_Integer                    */
+  ADA_LL_INT_BITS    = W64,              /* Long_Long_Integer               */
+  ADA_INT_128_BITS   = W128              /* Interfaces.Integer_128          */
+};
+
+/* Default type metrics — for unspecified types, use Ada INTEGER width      */
+enum {
+  DEFAULT_ALIGN_BITS  = ADA_INT_BITS,    /* Alignment = INTEGER'ALIGNMENT   */
+  DEFAULT_SIZE_BITS   = ADA_INT_BITS,    /* Size = INTEGER'SIZE = 32 bits   */
+  DEFAULT_ALIGN_BYTES = DEFAULT_ALIGN_BITS / BPU,   /* 4 bytes              */
+  DEFAULT_SIZE_BYTES  = DEFAULT_SIZE_BITS / BPU,    /* 4 bytes              */
   CHAR_SIZE_BITS      = W8,               /* CHARACTER'SIZE                 */
   CHAR_SIZE_BYTES     = CHAR_SIZE_BITS / BPU,
   BOOL_SIZE_BITS      = W8,               /* Ada BOOLEAN maps to i8         */
-  INT_SIZE_BITS       = W32,              /* Ada INTEGER'SIZE               */
-  FLT_SIZE_BITS       = WDBL,             /* Ada FLOAT'SIZE (double)        */
+  INT_SIZE_BITS       = ADA_INT_BITS,     /* INTEGER'SIZE = 32 bits         */
+  FLT_SIZE_BITS       = WDBL,             /* FLOAT'SIZE = 64 bits (double)  */
   FAT_PTR_SIZE_BITS   = 2 * WPTR          /* {ptr, ptr} for fat pointers    */
 };
 
@@ -131,15 +152,24 @@ static inline uint32_t align_to(uint32_t size, uint32_t align) {
 #define LLVM_I16   "i16"
 #define LLVM_I32   "i32"
 #define LLVM_I64   "i64"
+#define LLVM_I128  "i128"
 #define LLVM_PTR   "ptr"
 #define LLVM_FLOAT "float"
 #define LLVM_DBL   "double"
 #define LLVM_VOID  "void"
 
-/* LLVM type selection by bit width — the width→type morphism               */
+/* LLVM type selection by bit width — the width→type morphism
+ *
+ * Maps bit width to smallest LLVM integer type that can hold it.
+ * Supports up to 128-bit integers for Interfaces.Integer_128.
+ */
 static inline const char *llvm_int_type(uint32_t bits) {
-  return bits <= W1 ? LLVM_I1 : bits <= W8 ? LLVM_I8 :
-         bits <= W16 ? LLVM_I16 : bits <= W32 ? LLVM_I32 : LLVM_I64;
+  if (bits <= W1)   return LLVM_I1;
+  if (bits <= W8)   return LLVM_I8;
+  if (bits <= W16)  return LLVM_I16;
+  if (bits <= W32)  return LLVM_I32;
+  if (bits <= W64)  return LLVM_I64;
+  return LLVM_I128;  /* 128-bit integers for very large ranges            */
 }
 
 /* LLVM float type by bits                                                  */
@@ -10540,23 +10570,95 @@ static bool add_declaration(Code_Generator *generator, const char *fn)
  * §6. LLVM TYPE MAPPING — The Bridge to IR
  * ===========================================================================
  *
- * Following GNAT LLVM's type emission (gnatllvm-mdtype.ads, gnatllvm-glvalue.ads):
- * Ada types map to LLVM types through representation categories.
+ * Following GNAT LLVM's design (gnatllvm-glvalue.ads):
+ * Every value should carry its actual Ada type. The Value_Kind is a fallback
+ * for when type info is unavailable, NOT a replacement for proper typing.
  *
- * VALUE_KIND → LLVM TYPE:
- *   INTEGER  → i64 (internal computation width)
- *   FLOAT    → double
- *   POINTER  → ptr
+ * DESIGN PRINCIPLE from GNAT LLVM:
+ *   "It's not sufficient to just pass around an LLVM Value_T when generating
+ *    code because there's a lot of information lost about the value and where
+ *    it came from."  — gnatllvm-glvalue.ads
  *
- * TYPE_KIND → LLVM TYPE:
- *   BOOLEAN, CHARACTER → i8
- *   INTEGER, ENUM      → iN where N = bits_for_range(lo, hi)
- *   FLOAT, FIXED       → float or double by size
- *   ACCESS, COMPOSITE  → ptr
+ * TYPE MAPPING (Ada → LLVM):
+ *   Standard.Integer         → i32 (32-bit, THE DEFAULT)
+ *   Standard.Long_Integer    → i64
+ *   User-defined range       → bits_for_range(lo, hi)
+ *   BOOLEAN, CHARACTER       → i8
+ *   FLOAT                    → double
+ *   ACCESS, COMPOSITE        → ptr
+ *
+ * INTERNAL COMPUTATION WIDTH:
+ *   For intermediate calculations without type context, we use i64 to avoid
+ *   overflow during arithmetic. But STORAGE must use the actual type width.
  */
 
-/* §6.1 Value Kind → LLVM Type String                                       */
+/* §6.1 COMPUTATION TYPE WIDTH
+ *
+ * Per GNAT LLVM architecture: arithmetic operations may need to be performed
+ * in a wider type to prevent overflow, then narrowed for storage.
+ *
+ * HOWEVER: The actual type MUST be known at all times. The computation width
+ * is derived FROM the actual type, not from a fallback.
+ *
+ * WIDENING RULES (following GNAT LLVM):
+ *   - i8, i16, i32 operations → compute in i64, truncate for storage
+ *   - i64 operations → compute in i64
+ *   - i128 operations → compute in i128
+ *   - float operations → compute in double (unless explicitly float)
+ */
+
+/* Compute the widened type for safe arithmetic
+ *
+ * Uses character comparison to check type strings (avoids strcmp overhead).
+ */
+static const char *computation_type_for(const char *storage_type)
+{
+  if (!storage_type) return LLVM_I64;  /* Error case - should not happen    */
+
+  /* Integer types: widen narrow integers to i64                            */
+  if (storage_type[0] == 'i') {
+    char c1 = storage_type[1], c2 = storage_type[2], c3 = storage_type[3];
+    /* i1 → i64                                                             */
+    if (c1 == '1' && c2 == '\0') return LLVM_I64;
+    /* i8 → i64                                                             */
+    if (c1 == '8' && c2 == '\0') return LLVM_I64;
+    /* i16 → i64                                                            */
+    if (c1 == '1' && c2 == '6' && c3 == '\0') return LLVM_I64;
+    /* i32 → i64                                                            */
+    if (c1 == '3' && c2 == '2' && c3 == '\0') return LLVM_I64;
+    /* i64, i128 stay as-is                                                 */
+    return storage_type;
+  }
+
+  /* float → double for computation                                         */
+  if (storage_type[0] == 'f') return LLVM_DBL;
+
+  /* double, ptr stay as-is                                                 */
+  return storage_type;
+}
+
+/* §6.1.1 LEGACY Value_Kind support (DEPRECATED - for transition only)
+ *
+ * These functions exist only to support code that hasn't been updated to
+ * use Type_Info consistently. They should eventually be removed.
+ *
+ * STORAGE type from Value_Kind (should be replaced by actual Type_Info)
+ */
 static const char *value_llvm_type_string(Value_Kind k)
+{
+  /* This is WRONG but kept for backward compatibility during transition.
+   * The actual type should come from Type_Info, not Value_Kind.
+   */
+  switch (k) {
+    case VALUE_KIND_INTEGER: return LLVM_I32;  /* Ada INTEGER = 32 bits     */
+    case VALUE_KIND_FLOAT:   return LLVM_DBL;
+    case VALUE_KIND_POINTER: return LLVM_PTR;
+    default:                 return LLVM_I32;
+  }
+}
+
+/* COMPUTATION type from Value_Kind (widened for arithmetic safety)         */
+static const char *value_computation_type(Value_Kind k)
 {
   switch (k) {
     case VALUE_KIND_INTEGER: return LLVM_I64;
@@ -10922,39 +11024,55 @@ generate_index_constraint_check(Code_Generator *generator, int idx, const char *
   fprintf(o, "  call void @__ada_raise(ptr @.ex.CONSTRAINT_ERROR)\n  unreachable\n");
   emit_label(generator, dn);
 }
+/* §6.4.1 Value Cast — Convert Between Value Kinds
+ *
+ * IMPORTANT ARCHITECTURE NOTE (following GNAT LLVM):
+ *
+ * This function converts between representation categories for COMPUTATION.
+ * We use i64 as the internal computation width to prevent overflow during
+ * arithmetic operations like multiplication.
+ *
+ * Storage/Load operations use the actual type width via:
+ *   - emit_typed_store: truncates from i64 to actual width
+ *   - emit_typed_load: extends from actual width to i64
+ *
+ * This is similar to how GNAT LLVM handles operations - compute wide,
+ * then truncate for storage. The actual Ada type semantics are preserved
+ * at storage boundaries.
+ */
 static Value value_cast(Code_Generator *generator, Value v, Value_Kind k)
 {
   if (v.k == k)
     return v;
   Value r = {new_temporary_register(generator), k};
-  if (v.k == VALUE_KIND_INTEGER and k == VALUE_KIND_FLOAT)
-    fprintf(generator->o, "  %%t%d = sitofp i64 %%t%d to double\n", r.id, v.id);
-  else if (v.k == VALUE_KIND_FLOAT and k == VALUE_KIND_INTEGER)
-    fprintf(generator->o, "  %%t%d = fptosi double %%t%d to i64\n", r.id, v.id);
-  else if (v.k == VALUE_KIND_POINTER and k == VALUE_KIND_INTEGER)
-    fprintf(generator->o, "  %%t%d = ptrtoint ptr %%t%d to i64\n", r.id, v.id);
-  else if (v.k == VALUE_KIND_INTEGER and k == VALUE_KIND_POINTER)
-    fprintf(generator->o, "  %%t%d = inttoptr i64 %%t%d to ptr\n", r.id, v.id);
-  else if (v.k == VALUE_KIND_POINTER and k == VALUE_KIND_FLOAT)
-  {
+
+  /* Integer ↔ Float conversions (use i64 for computation width)            */
+  if (v.k == VALUE_KIND_INTEGER && k == VALUE_KIND_FLOAT)
+    fprintf(generator->o, "  %%t%d = sitofp " LLVM_I64 " %%t%d to " LLVM_DBL "\n", r.id, v.id);
+  else if (v.k == VALUE_KIND_FLOAT && k == VALUE_KIND_INTEGER)
+    fprintf(generator->o, "  %%t%d = fptosi " LLVM_DBL " %%t%d to " LLVM_I64 "\n", r.id, v.id);
+
+  /* Integer ↔ Pointer conversions                                          */
+  else if (v.k == VALUE_KIND_POINTER && k == VALUE_KIND_INTEGER)
+    fprintf(generator->o, "  %%t%d = ptrtoint " LLVM_PTR " %%t%d to " LLVM_I64 "\n", r.id, v.id);
+  else if (v.k == VALUE_KIND_INTEGER && k == VALUE_KIND_POINTER)
+    fprintf(generator->o, "  %%t%d = inttoptr " LLVM_I64 " %%t%d to " LLVM_PTR "\n", r.id, v.id);
+
+  /* Pointer ↔ Float (via intermediate i64)                                 */
+  else if (v.k == VALUE_KIND_POINTER && k == VALUE_KIND_FLOAT) {
     int tmp = new_temporary_register(generator);
-    fprintf(generator->o, "  %%t%d = ptrtoint ptr %%t%d to i64\n", tmp, v.id);
-    fprintf(generator->o, "  %%t%d = sitofp i64 %%t%d to double\n", r.id, tmp);
+    fprintf(generator->o, "  %%t%d = ptrtoint " LLVM_PTR " %%t%d to " LLVM_I64 "\n", tmp, v.id);
+    fprintf(generator->o, "  %%t%d = sitofp " LLVM_I64 " %%t%d to " LLVM_DBL "\n", r.id, tmp);
   }
-  else if (v.k == VALUE_KIND_FLOAT and k == VALUE_KIND_POINTER)
-  {
+  else if (v.k == VALUE_KIND_FLOAT && k == VALUE_KIND_POINTER) {
     int tmp = new_temporary_register(generator);
-    fprintf(generator->o, "  %%t%d = fptosi double %%t%d to i64\n", tmp, v.id);
-    fprintf(generator->o, "  %%t%d = inttoptr i64 %%t%d to ptr\n", r.id, tmp);
+    fprintf(generator->o, "  %%t%d = fptosi " LLVM_DBL " %%t%d to " LLVM_I64 "\n", tmp, v.id);
+    fprintf(generator->o, "  %%t%d = inttoptr " LLVM_I64 " %%t%d to " LLVM_PTR "\n", r.id, tmp);
   }
+  /* Fallback bitcast                                                       */
   else
-    fprintf(
-        generator->o,
-        "  %%t%d = bitcast %s %%t%d to %s\n",
-        r.id,
-        value_llvm_type_string(v.k),
-        v.id,
-        value_llvm_type_string(k));
+    fprintf(generator->o, "  %%t%d = bitcast %s %%t%d to %s\n",
+            r.id, value_computation_type(v.k), v.id, value_computation_type(k));
   return r;
 }
 /* §6.5 Helper: Check if LLVM type is narrower than i64
@@ -10973,39 +11091,70 @@ static inline bool is_narrow_int(const char *ty) {
  *
  * Returns element size in BYTES and sets *type_str to LLVM type string.
  * Uses bits_for_range to compute optimal integer width.
+ *
+ * REQUIRES: et != NULL (element type must be known for arrays)
  */
 static uint32_t elem_size_and_type(Type_Info *et, const char **type_str) {
+  /* Element type MUST be known - this is not optional                      */
   if (!et) {
-    *type_str = LLVM_I64;
+    fprintf(stderr, "ICE: elem_size_and_type called with NULL element type\n");
+    *type_str = LLVM_I32;  /* INTEGER as recovery type                      */
     return DEFAULT_SIZE_BYTES;
   }
 
   Type_Info *etc = type_canonical_concrete(et);
-  if (!etc) {
-    *type_str = LLVM_I64;
-    return DEFAULT_SIZE_BYTES;
-  }
+  if (!etc) etc = et;  /* Use original if no concrete version               */
 
-  /* Use type predicates for cleaner logic                                  */
-  if (tk_is_boolean(etc->k) || tk_is_character(etc->k)) {
-    *type_str = LLVM_I8;
-    return CHAR_SIZE_BYTES;
-  }
+  /* Dispatch by type kind - NO FALLBACKS                                   */
+  switch (etc->k) {
+    case TK_BOOLEAN:
+    case TK_CHARACTER:
+      *type_str = LLVM_I8;
+      return CHAR_SIZE_BYTES;
 
-  if (tk_is_discrete(etc->k) && (etc->low_bound != 0 || etc->high_bound != 0)) {
-    uint32_t bits = bits_for_range(etc->low_bound, etc->high_bound);
-    *type_str = llvm_int_type(bits);
-    return to_bytes_u32(bits);
-  }
+    case TK_INTEGER:
+    case TK_UNSIGNED_INTEGER:
+    case TK_ENUMERATION:
+    case TK_DERIVED: {
+      /* Compute from range, or use INTEGER as base                         */
+      if (etc->low_bound == 0 && etc->high_bound == 0) {
+        *type_str = LLVM_I32;  /* Standard INTEGER                          */
+        return INT_SIZE_BITS / BPU;
+      }
+      uint32_t bits = bits_for_range(etc->low_bound, etc->high_bound);
+      *type_str = llvm_int_type(bits);
+      return to_bytes_u32(bits);
+    }
 
-  if (tk_is_float(etc->k)) {
-    *type_str = llvm_float_type(to_bits_u32(etc->size));
-    return etc->size ? etc->size : DEFAULT_SIZE_BYTES;
-  }
+    case TK_FLOAT:
+    case TK_UNIVERSAL_FLOAT:
+    case TK_FIXED_POINT: {
+      uint32_t sz = etc->size ? etc->size : (FLT_SIZE_BITS / BPU);
+      *type_str = llvm_float_type(to_bits_u32(sz));
+      return sz;
+    }
 
-  /* Default: pointer-sized element                                         */
-  *type_str = LLVM_I64;
-  return DEFAULT_SIZE_BYTES;
+    case TK_ACCESS:
+    case TK_FAT_POINTER:
+      *type_str = LLVM_PTR;
+      return WPTR / BPU;
+
+    case TK_STRING:
+    case TK_ARRAY:
+      /* Array of arrays → pointer                                          */
+      *type_str = LLVM_PTR;
+      return WPTR / BPU;
+
+    case TK_RECORD:
+      *type_str = LLVM_PTR;
+      return etc->size ? etc->size : DEFAULT_SIZE_BYTES;
+
+    default:
+      /* Every type must be handled - this is a compiler bug                */
+      fprintf(stderr, "ICE: unhandled type kind %d in elem_size_and_type\n", etc->k);
+      *type_str = LLVM_I32;
+      return DEFAULT_SIZE_BYTES;
+  }
 }
 
 /* §6.6 Emit Store with Type Conversion
