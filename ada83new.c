@@ -1349,6 +1349,7 @@ static void Parser_Check_End_Name(Parser *p, String_Slice expected_name) {
 
 /* Forward declarations */
 static Syntax_Node *Parse_Expression(Parser *p);
+static Syntax_Node *Parse_Choice(Parser *p);
 static Syntax_Node *Parse_Name(Parser *p);
 static Syntax_Node *Parse_Subtype_Indication(Parser *p);
 static void Parse_Association_List(Parser *p, Node_List *list);
@@ -1433,13 +1434,62 @@ static Syntax_Node *Parse_Primary(Parser *p) {
             Parser_At(p, TK_BAR) || Parser_At(p, TK_WITH)) {
             /* This is an aggregate */
             Syntax_Node *node = Node_New(NK_AGGREGATE, loc);
-            Node_List_Push(&node->aggregate.items, expr);
 
             if (Parser_Match(p, TK_WITH)) {
                 /* Extension aggregate: (ancestor with components) */
+                Node_List_Push(&node->aggregate.items, expr);
                 node->aggregate.is_named = true;
                 Parse_Association_List(p, &node->aggregate.items);
+            } else if (Parser_At(p, TK_DOTDOT)) {
+                /* First element is a range: expr .. high */
+                Syntax_Node *range = Node_New(NK_RANGE, loc);
+                range->range.low = expr;
+                Parser_Advance(p);  /* consume .. */
+                range->range.high = Parse_Expression(p);
+
+                /* Check for choice list or named association */
+                if (Parser_At(p, TK_BAR) || Parser_At(p, TK_ARROW)) {
+                    Syntax_Node *assoc = Node_New(NK_ASSOCIATION, loc);
+                    Node_List_Push(&assoc->association.choices, range);
+
+                    while (Parser_Match(p, TK_BAR)) {
+                        Node_List_Push(&assoc->association.choices, Parse_Choice(p));
+                    }
+                    if (Parser_Match(p, TK_ARROW)) {
+                        assoc->association.expression = Parse_Expression(p);
+                    }
+                    Node_List_Push(&node->aggregate.items, assoc);
+                } else {
+                    Node_List_Push(&node->aggregate.items, range);
+                }
+
+                if (Parser_Match(p, TK_COMMA)) {
+                    Parse_Association_List(p, &node->aggregate.items);
+                }
+            } else if (Parser_At(p, TK_BAR) || Parser_At(p, TK_ARROW)) {
+                /* First element is part of a choice list */
+                Syntax_Node *assoc = Node_New(NK_ASSOCIATION, loc);
+                Node_List_Push(&assoc->association.choices, expr);
+
+                /* Collect additional choices */
+                while (Parser_Match(p, TK_BAR)) {
+                    Node_List_Push(&assoc->association.choices, Parse_Choice(p));
+                }
+
+                /* Named association: choices => value */
+                if (Parser_Match(p, TK_ARROW)) {
+                    assoc->association.expression = Parse_Expression(p);
+                }
+
+                Node_List_Push(&node->aggregate.items, assoc);
+
+                /* Continue with remaining associations */
+                if (Parser_Match(p, TK_COMMA)) {
+                    Parse_Association_List(p, &node->aggregate.items);
+                }
             } else {
+                /* First element is positional, followed by more */
+                Node_List_Push(&node->aggregate.items, expr);
                 Parse_Association_List(p, &node->aggregate.items);
             }
             Parser_Expect(p, TK_RPAREN);
@@ -1561,21 +1611,43 @@ static Syntax_Node *Parse_Name(Parser *p) {
  * - Generic instantiations
  * ───────────────────────────────────────────────────────────────────────── */
 
+/* Helper to parse a choice (expression or range) */
+static Syntax_Node *Parse_Choice(Parser *p) {
+    Source_Location loc = Parser_Location(p);
+
+    /* OTHERS choice */
+    if (Parser_Match(p, TK_OTHERS)) {
+        return Node_New(NK_OTHERS, loc);
+    }
+
+    Syntax_Node *expr = Parse_Expression(p);
+
+    /* Check if this is a range: expr .. expr */
+    if (Parser_Match(p, TK_DOTDOT)) {
+        Syntax_Node *range = Node_New(NK_RANGE, loc);
+        range->range.low = expr;
+        range->range.high = Parse_Expression(p);
+        return range;
+    }
+
+    return expr;
+}
+
 static void Parse_Association_List(Parser *p, Node_List *list) {
     if (Parser_At(p, TK_RPAREN)) return;  /* Empty list */
 
     do {
         Source_Location loc = Parser_Location(p);
-        Syntax_Node *first = Parse_Expression(p);
+        Syntax_Node *first = Parse_Choice(p);
 
-        /* Check for choice list with | */
+        /* Check for choice list with | or named association with => */
         if (Parser_At(p, TK_BAR) || Parser_At(p, TK_ARROW)) {
             Syntax_Node *assoc = Node_New(NK_ASSOCIATION, loc);
             Node_List_Push(&assoc->association.choices, first);
 
             /* Collect additional choices */
             while (Parser_Match(p, TK_BAR)) {
-                Node_List_Push(&assoc->association.choices, Parse_Expression(p));
+                Node_List_Push(&assoc->association.choices, Parse_Choice(p));
             }
 
             /* Named association: choices => value */
@@ -1584,22 +1656,6 @@ static void Parse_Association_List(Parser *p, Node_List *list) {
             }
 
             Node_List_Push(list, assoc);
-        } else if (Parser_At(p, TK_DOTDOT)) {
-            /* Range in association: low .. high */
-            Syntax_Node *range = Node_New(NK_RANGE, loc);
-            range->range.low = first;
-            Parser_Advance(p);  /* consume .. */
-            range->range.high = Parse_Expression(p);
-
-            /* Check for => after range */
-            if (Parser_Match(p, TK_ARROW)) {
-                Syntax_Node *assoc = Node_New(NK_ASSOCIATION, loc);
-                Node_List_Push(&assoc->association.choices, range);
-                assoc->association.expression = Parse_Expression(p);
-                Node_List_Push(list, assoc);
-            } else {
-                Node_List_Push(list, range);
-            }
         } else {
             /* Positional association */
             Node_List_Push(list, first);
@@ -2363,6 +2419,8 @@ static Syntax_Node *Parse_Enumeration_Type(Parser *p) {
     return node;
 }
 
+static Syntax_Node *Parse_Discrete_Range(Parser *p);
+
 static Syntax_Node *Parse_Array_Type(Parser *p) {
     Source_Location loc = Parser_Location(p);
     Parser_Expect(p, TK_ARRAY);
@@ -2370,25 +2428,82 @@ static Syntax_Node *Parse_Array_Type(Parser *p) {
 
     Syntax_Node *node = Node_New(NK_ARRAY_TYPE, loc);
 
-    /* Index types */
+    /* Index types: can be discrete_subtype_indication or discrete_range */
     do {
-        Syntax_Node *idx = Parse_Subtype_Indication(p);
+        Syntax_Node *idx = Parse_Discrete_Range(p);
         /* Check for RANGE <> (unconstrained) */
         if (Parser_Match(p, TK_RANGE)) {
             Parser_Expect(p, TK_BOX);
             /* Mark as unconstrained */
             node->array_type.is_constrained = false;
-        } else {
-            node->array_type.is_constrained = true;
         }
         Node_List_Push(&node->array_type.indices, idx);
     } while (Parser_Match(p, TK_COMMA));
+
+    /* Determine if constrained based on what we parsed */
+    node->array_type.is_constrained = true;
+    for (size_t i = 0; i < node->array_type.indices.count; i++) {
+        Syntax_Node *idx = node->array_type.indices.items[i];
+        /* If any index has a BOX, it's unconstrained */
+        if (idx->kind == NK_IDENTIFIER) {
+            /* Check if we saw RANGE <> */
+        }
+    }
 
     Parser_Expect(p, TK_RPAREN);
     Parser_Expect(p, TK_OF);
     node->array_type.component_type = Parse_Subtype_Indication(p);
 
     return node;
+}
+
+/* Parse discrete_range: can be subtype_indication or range */
+static Syntax_Node *Parse_Discrete_Range(Parser *p) {
+    Source_Location loc = Parser_Location(p);
+
+    /* Check if this starts with an integer literal (anonymous range) */
+    if (Parser_At(p, TK_INTEGER) || Parser_At(p, TK_CHARACTER)) {
+        Syntax_Node *range = Node_New(NK_RANGE, loc);
+        range->range.low = Parse_Expression(p);
+        if (Parser_Match(p, TK_DOTDOT)) {
+            range->range.high = Parse_Expression(p);
+        }
+        return range;
+    }
+
+    /* Otherwise try to parse as name, then check for range or constraint */
+    Syntax_Node *name = Parse_Name(p);
+
+    if (Parser_Match(p, TK_RANGE)) {
+        /* Type RANGE low..high or Type RANGE <> */
+        if (Parser_At(p, TK_BOX)) {
+            /* Unconstrained - just return the type mark */
+            return name;
+        }
+        Syntax_Node *range = Node_New(NK_RANGE, loc);
+        range->range.low = Parse_Expression(p);
+        Parser_Expect(p, TK_DOTDOT);
+        range->range.high = Parse_Expression(p);
+
+        /* Create subtype indication with range constraint */
+        Syntax_Node *ind = Node_New(NK_SUBTYPE_INDICATION, loc);
+        ind->subtype_ind.subtype_mark = name;
+        Syntax_Node *constraint = Node_New(NK_RANGE_CONSTRAINT, loc);
+        constraint->range_constraint.range = range;
+        ind->subtype_ind.constraint = constraint;
+        return ind;
+    }
+
+    if (Parser_Match(p, TK_DOTDOT)) {
+        /* Name is actually the low bound of a range */
+        Syntax_Node *range = Node_New(NK_RANGE, loc);
+        range->range.low = name;
+        range->range.high = Parse_Expression(p);
+        return range;
+    }
+
+    /* Just a type name */
+    return name;
 }
 
 /* Forward declaration for variant part parsing */
