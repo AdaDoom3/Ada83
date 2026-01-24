@@ -102,7 +102,7 @@ static inline uint64_t To_Bytes(uint64_t bits)  { return (bits + Bits_Per_Unit -
 static inline uint64_t Byte_Align(uint64_t bits){ return To_Bits(To_Bytes(bits)); }
 
 /* Align size up to power-of-2 alignment boundary */
-static inline uint32_t Align_To(uint32_t size, uint32_t align) {
+static inline size_t Align_To(size_t size, size_t align) {
     return align ? ((size + align - 1) & ~(align - 1)) : size;
 }
 
@@ -253,8 +253,8 @@ __attribute__((unused))
 static int Edit_Distance(String_Slice a, String_Slice b) {
     if (a.length > 20 || b.length > 20) return 100;
     int d[21][21];
-    for (uint32_t i = 0; i <= a.length; i++) d[i][0] = i;
-    for (uint32_t j = 0; j <= b.length; j++) d[0][j] = j;
+    for (uint32_t i = 0; i <= a.length; i++) d[i][0] = (int)i;
+    for (uint32_t j = 0; j <= b.length; j++) d[0][j] = (int)j;
     for (uint32_t i = 1; i <= a.length; i++)
         for (uint32_t j = 1; j <= b.length; j++) {
             int cost = To_Lower(a.data[i-1]) != To_Lower(b.data[j-1]);
@@ -298,8 +298,8 @@ static void Report_Error(Source_Location loc, const char *format, ...) {
     Error_Count++;
 }
 
-__attribute__((unused))
-static _Noreturn void Fatal_Error(Source_Location loc, const char *format, ...) {
+__attribute__((unused, noreturn))
+static void Fatal_Error(Source_Location loc, const char *format, ...) {
     va_list args;
     va_start(args, format);
     fprintf(stderr, "%s:%u:%u: INTERNAL ERROR: ",
@@ -378,7 +378,7 @@ static Big_Integer *Big_Integer_From_Decimal(const char *str) {
     while (*str) {
         if (*str >= '0' && *str <= '9') {
             if (bi->count == 0) { bi->limbs[0] = 0; bi->count = 1; }
-            Big_Integer_Mul_Add_Small(bi, 10, *str - '0');
+            Big_Integer_Mul_Add_Small(bi, 10, (uint64_t)(*str - '0'));
         }
         str++;
     }
