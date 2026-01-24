@@ -3409,7 +3409,20 @@ struct Type_Info {
 
     /* Freezing status - once frozen, representation cannot change */
     bool         is_frozen;
+
+    /* Implicitly generated equality function name (set at freeze time) */
+    const char  *equality_func_name;
 };
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §10.2.1 Frozen Composite Types List
+ *
+ * Track composite types that need implicit equality operators.
+ * These are added during Freeze_Type and processed during code generation.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+static Type_Info *Frozen_Composite_Types[256];
+static uint32_t   Frozen_Composite_Count = 0;
 
 /* ─────────────────────────────────────────────────────────────────────────
  * §10.3 Type Construction
@@ -3559,6 +3572,20 @@ static void Freeze_Type(Type_Info *t) {
 
         default:
             break;
+    }
+
+    /* Register composite types for implicit equality function generation
+     * Per RM 4.5.2: Equality is predefined for all non-limited types */
+    if (Type_Is_Composite(t) && Frozen_Composite_Count < 256) {
+        Frozen_Composite_Types[Frozen_Composite_Count++] = t;
+
+        /* Generate a unique function name for this type's equality */
+        char *name_buf = Arena_Allocate(64);
+        snprintf(name_buf, 64, "_ada_eq_%.*s_%u",
+                 (int)(t->name.length > 20 ? 20 : t->name.length),
+                 t->name.data,
+                 Frozen_Composite_Count);
+        t->equality_func_name = name_buf;
     }
 }
 
@@ -4251,6 +4278,48 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
 
                 node->type = array_type;
                 return array_type;
+            }
+
+        case NK_RECORD_TYPE:
+            {
+                /* Create record type info from syntax node */
+                Type_Info *record_type = Type_New(TYPE_RECORD, S(""));
+                uint32_t comp_count = (uint32_t)node->record_type.components.count;
+
+                record_type->record.component_count = comp_count;
+                if (comp_count > 0) {
+                    record_type->record.components = Arena_Allocate(
+                        comp_count * sizeof(Component_Info));
+
+                    uint32_t offset = 0;
+                    for (uint32_t i = 0; i < comp_count; i++) {
+                        Syntax_Node *comp = node->record_type.components.items[i];
+                        Component_Info *info = &record_type->record.components[i];
+
+                        /* Resolve component type */
+                        if (comp->kind == NK_COMPONENT_DECL) {
+                            Resolve_Expression(sm, comp->component.component_type);
+                            Type_Info *comp_type = comp->component.component_type ?
+                                                   comp->component.component_type->type : sm->type_integer;
+
+                            info->name = comp->component.names.count > 0 ?
+                                        comp->component.names.items[0]->string_val.text : S("");
+                            info->component_type = comp_type;
+                            info->byte_offset = offset;
+                            info->bit_offset = 0;
+                            info->bit_size = comp_type ? comp_type->size * 8 : 64;
+
+                            /* Align to component size */
+                            uint32_t comp_size = comp_type ? comp_type->size : 8;
+                            offset += comp_size;
+                        }
+                    }
+                    record_type->size = offset;
+                    record_type->alignment = 8;  /* Conservative alignment */
+                }
+
+                node->type = record_type;
+                return record_type;
             }
 
         default:
@@ -4987,7 +5056,150 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
     return t;
 }
 
+/* ─────────────────────────────────────────────────────────────────────────
+ * §13.3.1 Implicit Operators for Composite Types
+ *
+ * Ada requires equality operators for all non-limited types. For composite
+ * types (records, arrays), equality is defined component-wise.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/* Generate equality comparison for record types (component-by-component) */
+static uint32_t Generate_Record_Equality(Code_Generator *cg, uint32_t left_ptr,
+                                         uint32_t right_ptr, Type_Info *record_type) {
+    if (!record_type || record_type->kind != TYPE_RECORD ||
+        record_type->record.component_count == 0) {
+        /* Empty record or invalid - always equal */
+        uint32_t t = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = add i1 0, 1  ; empty record equality\n", t);
+        return t;
+    }
+
+    uint32_t result = 0;
+    for (uint32_t i = 0; i < record_type->record.component_count; i++) {
+        Component_Info *comp = &record_type->record.components[i];
+        const char *comp_llvm_type = Type_To_Llvm(comp->component_type);
+
+        /* Get pointers to components */
+        uint32_t left_gep = Emit_Temp(cg);
+        uint32_t right_gep = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
+             left_gep, left_ptr, comp->byte_offset);
+        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
+             right_gep, right_ptr, comp->byte_offset);
+
+        /* Load component values */
+        uint32_t left_val = Emit_Temp(cg);
+        uint32_t right_val = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", left_val, comp_llvm_type, left_gep);
+        Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", right_val, comp_llvm_type, right_gep);
+
+        /* Compare */
+        uint32_t cmp = Emit_Temp(cg);
+        if (Type_Is_Real(comp->component_type)) {
+            Emit(cg, "  %%t%u = fcmp oeq %s %%t%u, %%t%u\n",
+                 cmp, comp_llvm_type, left_val, right_val);
+        } else {
+            Emit(cg, "  %%t%u = icmp eq %s %%t%u, %%t%u\n",
+                 cmp, comp_llvm_type, left_val, right_val);
+        }
+
+        /* AND with previous results */
+        if (i == 0) {
+            result = cmp;
+        } else {
+            uint32_t and_result = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", and_result, result, cmp);
+            result = and_result;
+        }
+    }
+
+    return result;
+}
+
+/* Generate equality comparison for constrained array types (element-by-element) */
+static uint32_t Generate_Array_Equality(Code_Generator *cg, uint32_t left_ptr,
+                                        uint32_t right_ptr, Type_Info *array_type) {
+    if (!array_type || (array_type->kind != TYPE_ARRAY && array_type->kind != TYPE_STRING)) {
+        uint32_t t = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = add i1 0, 1  ; invalid array equality\n", t);
+        return t;
+    }
+
+    /* For constrained arrays, use memcmp */
+    if (array_type->array.is_constrained) {
+        int64_t count = Array_Element_Count(array_type);
+        uint32_t elem_size = array_type->array.element_type ?
+                             array_type->array.element_type->size : 4;
+        int64_t total_size = count * elem_size;
+
+        /* Call llvm.memcmp or compare byte-by-byte */
+        uint32_t result = Emit_Temp(cg);
+        uint32_t cmp_result = Emit_Temp(cg);
+
+        /* Use LLVM's memcmp intrinsic equivalent */
+        Emit(cg, "  %%t%u = call i32 @memcmp(ptr %%t%u, ptr %%t%u, i64 %lld)\n",
+             result, left_ptr, right_ptr, (long long)total_size);
+        Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", cmp_result, result);
+        return cmp_result;
+    }
+
+    /* For unconstrained arrays (fat pointers), need to compare bounds then data */
+    /* This is more complex - for now return false as placeholder */
+    uint32_t t = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = add i1 0, 0  ; unconstrained array equality TODO\n", t);
+    return t;
+}
+
+/* Generate the address of a composite type expression (for equality comparison) */
+static uint32_t Generate_Composite_Address(Code_Generator *cg, Syntax_Node *node) {
+    if (node->kind == NK_IDENTIFIER) {
+        Symbol *sym = node->symbol;
+        if (sym) {
+            /* For composite variables, the symbol's address IS the pointer to the data */
+            uint32_t t = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = getelementptr i8, ptr %%", t);
+            Emit_Symbol_Name(cg, sym);
+            Emit(cg, ", i64 0\n");
+            return t;
+        }
+    }
+    /* Fallback: generate as expression (may be incorrect for some cases) */
+    return Generate_Expression(cg, node);
+}
+
 static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
+    /* Check if this is equality/inequality on composite types */
+    Type_Info *left_type = node->binary.left ? node->binary.left->type : NULL;
+
+    if ((node->binary.op == TK_EQ || node->binary.op == TK_NE) &&
+        left_type && Type_Is_Composite(left_type)) {
+        /* Composite type comparison - get addresses, not loaded values */
+        uint32_t left_ptr = Generate_Composite_Address(cg, node->binary.left);
+        uint32_t right_ptr = Generate_Composite_Address(cg, node->binary.right);
+        uint32_t eq_result = Emit_Temp(cg);
+
+        if (left_type->equality_func_name) {
+            /* Call the generated equality function */
+            Emit(cg, "  %%t%u = call i1 @%s(ptr %%t%u, ptr %%t%u)\n",
+                 eq_result, left_type->equality_func_name, left_ptr, right_ptr);
+        } else {
+            /* Fallback: inline comparison (type wasn't frozen properly) */
+            if (left_type->kind == TYPE_RECORD) {
+                eq_result = Generate_Record_Equality(cg, left_ptr, right_ptr, left_type);
+            } else {
+                eq_result = Generate_Array_Equality(cg, left_ptr, right_ptr, left_type);
+            }
+        }
+
+        /* For /= operator, negate the result */
+        if (node->binary.op == TK_NE) {
+            uint32_t ne_result = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n", ne_result, eq_result);
+            return ne_result;
+        }
+        return eq_result;
+    }
+
     uint32_t left = Generate_Expression(cg, node->binary.left);
     uint32_t right = Generate_Expression(cg, node->binary.right);
     uint32_t t = Emit_Temp(cg);
@@ -5170,27 +5382,38 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
         return 0;
     }
 
-    /* Record field access */
-    uint32_t base = Generate_Expression(cg, node->selected.prefix);
-
-    /* Calculate field offset by matching selector name */
-    uint32_t field_idx = 0;
+    /* Record field access - find component by name */
+    uint32_t byte_offset = 0;
     Type_Info *field_type = NULL;
     for (uint32_t i = 0; i < prefix_type->record.component_count; i++) {
         if (Slice_Equal_Ignore_Case(
                 prefix_type->record.components[i].name, node->selected.selector)) {
-            field_idx = i;
+            byte_offset = prefix_type->record.components[i].byte_offset;
             field_type = prefix_type->record.components[i].component_type;
             break;
         }
     }
 
+    /* Get base address of record variable */
+    Symbol *record_sym = node->selected.prefix->symbol;
+    if (!record_sym) {
+        /* Handle nested selection (e.g., A.B.C) by generating prefix expression */
+        uint32_t base_ptr = Generate_Expression(cg, node->selected.prefix);
+        uint32_t ptr = Emit_Temp(cg);
+        uint32_t t = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
+             ptr, base_ptr, byte_offset);
+        Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
+             t, Type_To_Llvm(field_type), ptr);
+        return t;
+    }
+
+    /* Calculate address of field */
     uint32_t ptr = Emit_Temp(cg);
     uint32_t t = Emit_Temp(cg);
-
-    Emit(cg, "  %%t%u = getelementptr %%struct.", ptr);
-    Emit_Symbol_Name(cg, prefix_type->defining_symbol);
-    Emit(cg, ", ptr %%t%u, i32 0, i32 %u\n", base, field_idx);
+    Emit(cg, "  %%t%u = getelementptr i8, ptr %%", ptr);
+    Emit_Symbol_Name(cg, record_sym);
+    Emit(cg, ", i64 %u\n", byte_offset);
     Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
          t, Type_To_Llvm(field_type), ptr);
 
@@ -5466,6 +5689,44 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
             uint32_t value = Generate_Expression(cg, node->assignment.value);
             value = Emit_Convert(cg, value, "i64", elem_type);
             Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, value, ptr);
+            return;
+        }
+    }
+
+    /* Handle selected component target (record field assignment) */
+    if (target->kind == NK_SELECTED) {
+        Syntax_Node *prefix = target->selected.prefix;
+        Type_Info *prefix_type = prefix->type;
+
+        if (prefix_type && prefix_type->kind == TYPE_RECORD) {
+            /* Find component offset */
+            uint32_t offset = 0;
+            Type_Info *comp_type = NULL;
+            for (uint32_t i = 0; i < prefix_type->record.component_count; i++) {
+                if (Slice_Equal_Ignore_Case(prefix_type->record.components[i].name,
+                                            target->selected.selector)) {
+                    offset = prefix_type->record.components[i].byte_offset;
+                    comp_type = prefix_type->record.components[i].component_type;
+                    break;
+                }
+            }
+
+            const char *comp_llvm_type = Type_To_Llvm(comp_type);
+
+            /* Get base address of record variable */
+            Symbol *record_sym = prefix->symbol;
+            if (!record_sym) return;
+
+            /* Calculate address of field */
+            uint32_t field_ptr = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = getelementptr i8, ptr %%", field_ptr);
+            Emit_Symbol_Name(cg, record_sym);
+            Emit(cg, ", i64 %u\n", offset);
+
+            /* Generate value and store */
+            uint32_t value = Generate_Expression(cg, node->assignment.value);
+            value = Emit_Convert(cg, value, "i64", comp_llvm_type);
+            Emit(cg, "  store %s %%t%u, ptr %%t%u\n", comp_llvm_type, value, field_ptr);
             return;
         }
     }
@@ -5851,6 +6112,10 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
         int64_t array_count = is_array ? Array_Element_Count(ty) : 0;
         const char *elem_type = is_array ? Type_To_Llvm(ty->array.element_type) : NULL;
 
+        /* Check if this is a record type */
+        bool is_record = ty && ty->kind == TYPE_RECORD;
+        uint32_t record_size = is_record ? ty->size : 0;
+
         /* Allocate stack space (in frame if function has nested subprograms) */
         if (use_frame) {
             Emit(cg, "  %%");
@@ -5862,14 +6127,19 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, "  %%");
             Emit_Symbol_Name(cg, sym);
             Emit(cg, " = alloca [%lld x %s]\n", (long long)array_count, elem_type);
+        } else if (is_record && record_size > 0) {
+            /* Record type: allocate [N x i8] for the record size */
+            Emit(cg, "  %%");
+            Emit_Symbol_Name(cg, sym);
+            Emit(cg, " = alloca [%u x i8]  ; record type\n", record_size);
         } else {
             Emit(cg, "  %%");
             Emit_Symbol_Name(cg, sym);
             Emit(cg, " = alloca %s\n", type_str);
         }
 
-        /* Initialize if provided (skip for arrays - handled separately) */
-        if (node->object_decl.init && !is_array) {
+        /* Initialize if provided (skip for composite types - handled separately) */
+        if (node->object_decl.init && !is_array && !is_record) {
             uint32_t init = Generate_Expression(cg, node->object_decl.init);
             /* Truncate from i64 computation to storage type */
             init = Emit_Convert(cg, init, "i64", type_str);
@@ -6042,7 +6312,112 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
- * §13.6 Compilation Unit Code Generation
+ * §13.6 Implicit Equality Function Generation
+ *
+ * Generate equality functions for composite types at freeze points.
+ * Per RM 4.5.2, equality is predefined for all non-limited types.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+static void Generate_Type_Equality_Function(Code_Generator *cg, Type_Info *t) {
+    if (!t || !t->equality_func_name) return;
+
+    const char *func_name = t->equality_func_name;
+
+    /* Emit function definition: i1 @func(ptr %left, ptr %right) */
+    Emit(cg, "\n; Implicit equality for type %.*s\n",
+         (int)t->name.length, t->name.data);
+    Emit(cg, "define i1 @%s(ptr %%0, ptr %%1) {\n", func_name);
+    Emit(cg, "entry:\n");
+
+    /* Save and reset temp counter for this function */
+    uint32_t saved_temp = cg->temp_id;
+    cg->temp_id = 2;  /* Start after %0 and %1 */
+
+    if (t->kind == TYPE_RECORD) {
+        if (t->record.component_count == 0) {
+            /* Empty record - always equal */
+            Emit(cg, "  ret i1 1\n");
+        } else {
+            uint32_t result = 0;
+            for (uint32_t i = 0; i < t->record.component_count; i++) {
+                Component_Info *comp = &t->record.components[i];
+                const char *comp_llvm_type = Type_To_Llvm(comp->component_type);
+
+                /* Get pointers to components */
+                uint32_t left_gep = Emit_Temp(cg);
+                uint32_t right_gep = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = getelementptr i8, ptr %%0, i64 %u\n",
+                     left_gep, comp->byte_offset);
+                Emit(cg, "  %%t%u = getelementptr i8, ptr %%1, i64 %u\n",
+                     right_gep, comp->byte_offset);
+
+                /* Load component values */
+                uint32_t left_val = Emit_Temp(cg);
+                uint32_t right_val = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
+                     left_val, comp_llvm_type, left_gep);
+                Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
+                     right_val, comp_llvm_type, right_gep);
+
+                /* Compare */
+                uint32_t cmp = Emit_Temp(cg);
+                if (Type_Is_Real(comp->component_type)) {
+                    Emit(cg, "  %%t%u = fcmp oeq %s %%t%u, %%t%u\n",
+                         cmp, comp_llvm_type, left_val, right_val);
+                } else {
+                    Emit(cg, "  %%t%u = icmp eq %s %%t%u, %%t%u\n",
+                         cmp, comp_llvm_type, left_val, right_val);
+                }
+
+                /* AND with previous results */
+                if (i == 0) {
+                    result = cmp;
+                } else {
+                    uint32_t and_result = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n",
+                         and_result, result, cmp);
+                    result = and_result;
+                }
+            }
+            Emit(cg, "  ret i1 %%t%u\n", result);
+        }
+    } else if (t->kind == TYPE_ARRAY || t->kind == TYPE_STRING) {
+        if (t->array.is_constrained) {
+            /* Constrained array - use memcmp */
+            int64_t count = Array_Element_Count(t);
+            uint32_t elem_size = t->array.element_type ?
+                                 t->array.element_type->size : 4;
+            int64_t total_size = count * elem_size;
+
+            uint32_t result = Emit_Temp(cg);
+            uint32_t cmp = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = call i32 @memcmp(ptr %%0, ptr %%1, i64 %lld)\n",
+                 result, (long long)total_size);
+            Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", cmp, result);
+            Emit(cg, "  ret i1 %%t%u\n", cmp);
+        } else {
+            /* Unconstrained array - compare bounds first, then data */
+            /* Simplified: return false for now (TODO: implement fat ptr compare) */
+            Emit(cg, "  ret i1 0\n");
+        }
+    } else {
+        /* Unknown composite type - return true */
+        Emit(cg, "  ret i1 1\n");
+    }
+
+    Emit(cg, "}\n");
+    cg->temp_id = saved_temp;  /* Restore temp counter */
+}
+
+static void Generate_Implicit_Operators(Code_Generator *cg) {
+    /* Generate equality functions for all frozen composite types */
+    for (uint32_t i = 0; i < Frozen_Composite_Count; i++) {
+        Generate_Type_Equality_Function(cg, Frozen_Composite_Types[i]);
+    }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §13.7 Compilation Unit Code Generation
  * ───────────────────────────────────────────────────────────────────────── */
 
 static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
@@ -6052,6 +6427,14 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "; Ada83 Compiler Output\n");
     Emit(cg, "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128\"\n");
     Emit(cg, "target triple = \"x86_64-pc-linux-gnu\"\n\n");
+
+    /* Declare memcmp for array equality */
+    Emit(cg, "; External function declarations\n");
+    Emit(cg, "declare i32 @memcmp(ptr, ptr, i64)\n\n");
+
+    /* Generate implicit operators for frozen composite types */
+    Generate_Implicit_Operators(cg);
+    Emit(cg, "\n");
 
     /* Generate declarations */
     if (node->compilation_unit.unit) {
