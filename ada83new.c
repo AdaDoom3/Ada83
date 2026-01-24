@@ -6830,11 +6830,58 @@ static uint32_t Generate_Array_Equality(Code_Generator *cg, uint32_t left_ptr,
         return cmp_result;
     }
 
-    /* For unconstrained arrays (fat pointers), need to compare bounds then data */
-    /* This is more complex - for now return false as placeholder */
-    uint32_t t = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = add i1 0, 0  ; unconstrained array equality TODO\n", t);
-    return t;
+    /*
+     * Unconstrained array equality (per RM 4.5.2):
+     * Two arrays are equal iff they have the same length and matching components.
+     * Bounds themselves need not match—only length and content.
+     *
+     * For fat pointers: compare lengths, then data if lengths match.
+     * Use select instead of phi to avoid block label complications.
+     */
+
+    /* Extract bounds from fat pointer structures */
+    uint32_t left_low = Emit_Fat_Pointer_Low(cg, left_ptr);
+    uint32_t left_high = Emit_Fat_Pointer_High(cg, left_ptr);
+    uint32_t right_low = Emit_Fat_Pointer_Low(cg, right_ptr);
+    uint32_t right_high = Emit_Fat_Pointer_High(cg, right_ptr);
+
+    /* Compute lengths: high - low + 1 */
+    uint32_t left_len = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", left_len, left_high, left_low);
+    uint32_t left_len1 = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", left_len1, left_len);
+
+    uint32_t right_len = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", right_len, right_high, right_low);
+    uint32_t right_len1 = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", right_len1, right_len);
+
+    /* Compare lengths */
+    uint32_t len_eq = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", len_eq, left_len1, right_len1);
+
+    /* Extract data pointers */
+    uint32_t left_data = Emit_Fat_Pointer_Data(cg, left_ptr);
+    uint32_t right_data = Emit_Fat_Pointer_Data(cg, right_ptr);
+
+    /* Compute byte size for memcmp */
+    uint32_t elem_size = array_type->array.element_type ?
+                         array_type->array.element_type->size : 1;
+    uint32_t byte_size = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", byte_size, left_len1, elem_size);
+
+    /* Call memcmp */
+    uint32_t memcmp_result = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = call i32 @memcmp(ptr %%t%u, ptr %%t%u, i64 %%t%u)\n",
+         memcmp_result, left_data, right_data, byte_size);
+    uint32_t data_eq = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", data_eq, memcmp_result);
+
+    /* Result: lengths match AND data matches */
+    uint32_t result = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", result, len_eq, data_eq);
+
+    return result;
 }
 
 /* Generate the address of a composite type expression (for equality comparison) */
@@ -8953,9 +9000,41 @@ static void Generate_Type_Equality_Function(Code_Generator *cg, Type_Info *t) {
             Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", cmp, result);
             Emit(cg, "  ret i1 %%t%u\n", cmp);
         } else {
-            /* Unconstrained array - compare bounds first, then data */
-            /* Simplified: return false for now (TODO: implement fat ptr compare) */
-            Emit(cg, "  ret i1 0\n");
+            /*
+             * Unconstrained array equality (per RM 4.5.2):
+             * Fat pointer layout: { ptr data, { i64 low, i64 high } }
+             * Compare lengths first, then data if lengths match.
+             */
+            uint32_t elem_size = t->array.element_type ?
+                                 t->array.element_type->size : 1;
+
+            /* Extract bounds from first fat pointer (%0) */
+            Emit(cg, "  %%left_low = extractvalue " FAT_PTR_TYPE " %%0, 1, 0\n");
+            Emit(cg, "  %%left_high = extractvalue " FAT_PTR_TYPE " %%0, 1, 1\n");
+            Emit(cg, "  %%left_len = sub i64 %%left_high, %%left_low\n");
+            Emit(cg, "  %%left_len1 = add i64 %%left_len, 1\n");
+
+            /* Extract bounds from second fat pointer (%1) */
+            Emit(cg, "  %%right_low = extractvalue " FAT_PTR_TYPE " %%1, 1, 0\n");
+            Emit(cg, "  %%right_high = extractvalue " FAT_PTR_TYPE " %%1, 1, 1\n");
+            Emit(cg, "  %%right_len = sub i64 %%right_high, %%right_low\n");
+            Emit(cg, "  %%right_len1 = add i64 %%right_len, 1\n");
+
+            /* Compare lengths */
+            Emit(cg, "  %%len_eq = icmp eq i64 %%left_len1, %%right_len1\n");
+
+            /* Extract data pointers */
+            Emit(cg, "  %%left_data = extractvalue " FAT_PTR_TYPE " %%0, 0\n");
+            Emit(cg, "  %%right_data = extractvalue " FAT_PTR_TYPE " %%1, 0\n");
+
+            /* Compute byte size and call memcmp */
+            Emit(cg, "  %%byte_size = mul i64 %%left_len1, %u\n", elem_size);
+            Emit(cg, "  %%memcmp_res = call i32 @memcmp(ptr %%left_data, ptr %%right_data, i64 %%byte_size)\n");
+            Emit(cg, "  %%data_eq = icmp eq i32 %%memcmp_res, 0\n");
+
+            /* Result: lengths match AND data matches */
+            Emit(cg, "  %%result = and i1 %%len_eq, %%data_eq\n");
+            Emit(cg, "  ret i1 %%result\n");
         }
     } else {
         /* Unknown composite type - return true */

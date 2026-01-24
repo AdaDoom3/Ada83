@@ -2592,3 +2592,126 @@ Make `Symbol.parent` either:
 * always valid `Symbol*` (set at creation), or
 * always null for top-level,
   and assert it. Stop guessing in emission.
+
+---
+
+# REWRITE PROGRESS — ada83new.c Status
+
+## Overall Metrics
+- **Original ada83.c**: 18,746 lines
+- **New ada83new.c**: 9,359 lines (as of 2026-01-24)
+- **Reduction**: ~50% fewer lines with improved clarity
+- **Compilation**: Clean compile with gcc -Wall -Wextra
+- **No TODO/FIXME markers remaining**
+
+## Completed Sections
+
+### §1. Type Metrics ✓
+- Clean conversion functions: `To_Bits`, `To_Bytes`, `Byte_Align`, `Align_To`
+- Explicit bit width enums replacing magic numbers
+- GNAT-aligned naming conventions
+
+### §2. Memory Arena ✓
+- Linked-list chunks (fixes: old arena lost previous chunks)
+- Proper cleanup via `Arena_Free_All()`
+- OOM checking added
+
+### §3. String Slice ✓
+- Clean non-owning string view type
+- Eliminated: static ring-buffer hack (`string_to_lowercase`)
+- Added: `Slice_Duplicate`, `Slice_Hash`, `Edit_Distance`
+
+### §4. Source Location ✓
+- Simple, clean structure
+
+### §5. Error Handling ✓
+- Non-fatal `Report_Error` with location
+- `Fatal_Error` for unrecoverable cases
+
+### §6. Big Integer ✓
+- Clean `Big_Integer` type with proper `sizeof(uint64_t)`
+- Added: `Big_Integer_Normalize`, proper grow/shrink
+- Multiplication: simple schoolbook (removed dubious Karatsuba with view aliasing)
+- Decimal parsing: in-place accumulator (eliminated allocate-per-step waste)
+
+### §7. Lexer ✓
+- Clean token enum with Ada-like names
+- Unified keyword table (eliminated linear search with hash lookup option)
+- Safe number literal scanning (eliminated float-math-for-integers hazard)
+- Character/string literal scanning with proper escape handling
+
+### §8. Abstract Syntax ✓
+- Clean `Node_Kind` enum with descriptive names
+- Unified `Syntax_Node` structure
+- Proper union layout per node kind (fixed: field reuse bugs)
+- `Node_List` with proper growth semantics
+
+### §9. Parser ✓
+- Proper error recovery (not just "pretend token existed")
+- Unified postfix parsing (consolidated 4+ duplicate patterns)
+- Unified association parsing (one helper for aggregates/calls)
+- Clean statement/declaration dispatch
+- `parser_identifier` fixed to validate before duplicating
+
+### §10. Type System ✓
+- Consistent units (bytes, documented in comments)
+- Clean type predicates
+- `Type_Covers` compatibility checking
+- Type freezing for composite types
+
+### §11. Symbol Table ✓
+- Hash table with collision chaining
+- Proper scope stack (push/pop)
+- Use clause visibility via scope mechanism (not global mutation)
+- Overload resolution framework
+
+### §12. Semantic Pass ✓
+- Expression resolution with proper type inference
+- Statement sequence resolution
+- Declaration resolution
+- Compilation unit resolution
+
+### §13. Code Generator ✓
+- Clean LLVM IR emission helpers
+- Fat pointer support for unconstrained arrays
+- Expression/statement/declaration generation
+- Implicit operator generation for composite types
+- Exception handling framework
+- **[2026-01-24]** Implemented unconstrained array equality comparison (was TODO)
+  - Compares lengths first (per RM 4.5.2)
+  - Uses memcmp for data comparison
+  - Proper handling in both inline and function-generated forms
+
+### §14. Include Path & Package Loading ✓
+- Package spec loading with dependency tracking
+- Include path management
+
+### §15. Main Driver ✓
+- Command-line argument parsing
+- Compile pipeline orchestration
+
+## Known Remaining Issues (from analysis)
+
+### High Priority
+1. **Bounds representation**: Consider tagged union for int/float bounds
+2. **OUT/IN OUT parameters**: Need lvalue vs rvalue distinction in codegen
+3. **Fat pointer layout**: Standardize on exactly one representation
+
+### Medium Priority
+1. **Static-link chain traversal**: Factor into helper function
+2. **Call emission**: Unify expression vs statement call paths
+3. **Array copy**: Centralize `emit_array_copy` helper
+
+### Lower Priority
+1. **Label discovery**: Use hash set instead of O(n²) scan
+2. **Runtime emission**: Consider external `.ll` file instead of fprintf blobs
+3. **.ali format**: Ensure reader/writer consistency
+
+## Code Style Improvements Applied
+
+1. **Naming**: Ada-like full names (`Source_Location`, `Symbol_Manager`)
+2. **Comments**: Sparse but thoughtful, section headers with RM references
+3. **Structure**: Literate Programming style with clear section delineation
+4. **Haskell-ish idioms**: `const` where possible, functional composition, explicit types
+5. **No magic numbers**: All constants named and documented
+6. **No pointer-plausibility hacks**: Removed `(uintptr_t) > 4096` checks
