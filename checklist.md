@@ -2726,3 +2726,7 @@ Make `Symbol.parent` either:
 4. **Haskell-ish idioms**: `const` where possible, functional composition, explicit types
 5. **No magic numbers**: All constants named and documented
 6. **No pointer-plausibility hacks**: Removed `(uintptr_t) > 4096` checks
+7. **[2026-01-24]** C99 compliance improvements:
+   - `Align_To()` uses `size_t` for proper memory alignment
+   - `Fatal_Error` uses `__attribute__((noreturn))` instead of C11 `_Noreturn`
+   - Explicit casts for sign/width conversions where needed
