@@ -2599,10 +2599,11 @@ Make `Symbol.parent` either:
 
 ## Overall Metrics
 - **Original ada83.c**: 18,746 lines
-- **New ada83new.c**: 9,288 lines (as of 2026-01-24)
-- **Reduction**: ~50.5% fewer lines with improved clarity
+- **New ada83new.c**: 9,339 lines (as of 2026-01-24)
+- **Reduction**: ~50% fewer lines with improved clarity
 - **Compilation**: Clean compile with gcc -Wall -Wextra (no warnings)
 - **No TODO/FIXME markers remaining**
+- **All high-priority issues addressed**
 
 ## Completed Sections
 
@@ -2686,6 +2687,11 @@ Make `Symbol.parent` either:
   - `Emit_Fat_Pointer_Copy_To_Name()` - copy fat pointer data to named variable
   - `Emit_Fat_Pointer_Copy_To_Ptr()` - copy fat pointer data to temp pointer
   - Consolidated duplicate code in assignment and declaration initialization
+- **[2026-01-24]** Implemented OUT/IN OUT parameter pass-by-reference:
+  - Added `Param_Is_By_Reference()` helper
+  - Function signatures use `ptr` for OUT/IN OUT parameters
+  - Call sites pass addresses for OUT/IN OUT arguments
+  - Function bodies use passed pointer directly (no copy-in for OUT)
 
 ### §14. Include Path & Package Loading ✓
 - Package spec loading with dependency tracking
@@ -2699,7 +2705,7 @@ Make `Symbol.parent` either:
 
 ### High Priority
 1. ~~**Bounds representation**: Consider tagged union for int/float bounds~~ ✓ Already implemented as `Type_Bound`
-2. **OUT/IN OUT parameters**: Need lvalue vs rvalue distinction in codegen
+2. ~~**OUT/IN OUT parameters**: Need lvalue vs rvalue distinction in codegen~~ ✓ Implemented pass-by-reference
 3. ~~**Fat pointer layout**: Standardize on exactly one representation~~ ✓ Standardized as `{ ptr, { i64, i64 } }`
 
 ### Medium Priority
@@ -2708,9 +2714,9 @@ Make `Symbol.parent` either:
 3. ~~**Array copy**: Centralize `emit_array_copy` helper~~ ✓ Added `Emit_Fat_Pointer_Copy_To_*` helpers
 
 ### Lower Priority
-1. **Label discovery**: Use hash set instead of O(n²) scan
-2. **Runtime emission**: Consider external `.ll` file instead of fprintf blobs
-3. **.ali format**: Ensure reader/writer consistency
+1. ~~**Label discovery**: Use hash set instead of O(n²) scan~~ ✓ Rewrite uses auto-incrementing integer labels
+2. ~~**Runtime emission**: Consider external `.ll` file instead of fprintf blobs~~ ✓ Clean external declarations; runtime linked separately
+3. **.ali format**: Ensure reader/writer consistency (not implemented in rewrite)
 
 ## Code Style Improvements Applied
 

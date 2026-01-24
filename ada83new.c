@@ -3972,6 +3972,11 @@ typedef struct {
     struct Symbol  *param_sym;    /* Symbol for this parameter in function body */
 } Parameter_Info;
 
+/* Check if parameter mode requires pass-by-reference (OUT or IN OUT) */
+static inline bool Param_Is_By_Reference(Parameter_Mode mode) {
+    return mode == PARAM_OUT || mode == PARAM_IN_OUT;
+}
+
 struct Symbol {
     Symbol_Kind     kind;
     String_Slice    name;
@@ -7020,15 +7025,37 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
     Symbol *sym = node->apply.prefix->symbol;
 
     if (sym && (sym->kind == SYMBOL_FUNCTION || sym->kind == SYMBOL_PROCEDURE)) {
-        /* Function call - generate arguments */
+        /* Function call - generate arguments
+         * For OUT/IN OUT parameters, we need to pass the ADDRESS, not the value */
         uint32_t *args = Arena_Allocate(node->apply.arguments.count * sizeof(uint32_t));
+        bool *is_byref = Arena_Allocate(node->apply.arguments.count * sizeof(bool));
 
         for (uint32_t i = 0; i < node->apply.arguments.count; i++) {
-            args[i] = Generate_Expression(cg, node->apply.arguments.items[i]);
-            /* Truncate to actual parameter type */
-            if (i < sym->parameter_count && sym->parameters[i].param_type) {
-                const char *param_type = Type_To_Llvm(sym->parameters[i].param_type);
-                args[i] = Emit_Convert(cg, args[i], "i64", param_type);
+            bool byref = i < sym->parameter_count &&
+                         Param_Is_By_Reference(sym->parameters[i].mode);
+            is_byref[i] = byref;
+
+            if (byref) {
+                /* For OUT/IN OUT: pass the address of the variable
+                 * The argument must be an lvalue (identifier, selected, indexed) */
+                Syntax_Node *arg = node->apply.arguments.items[i];
+                if (arg->kind == NK_IDENTIFIER && arg->symbol) {
+                    /* Simple variable - emit address */
+                    args[i] = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = getelementptr i8, ptr %%", args[i]);
+                    Emit_Symbol_Name(cg, arg->symbol);
+                    Emit(cg, ", i64 0  ; address for OUT/IN OUT\n");
+                } else {
+                    /* Complex lvalue - generate address (fallback) */
+                    args[i] = Generate_Composite_Address(cg, arg);
+                }
+            } else {
+                args[i] = Generate_Expression(cg, node->apply.arguments.items[i]);
+                /* Truncate to actual parameter type */
+                if (i < sym->parameter_count && sym->parameters[i].param_type) {
+                    const char *param_type = Type_To_Llvm(sym->parameters[i].param_type);
+                    args[i] = Emit_Convert(cg, args[i], "i64", param_type);
+                }
             }
         }
 
@@ -7056,9 +7083,14 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
 
         for (uint32_t i = 0; i < node->apply.arguments.count; i++) {
             if (i > 0) Emit(cg, ", ");
-            const char *param_type = (i < sym->parameter_count && sym->parameters[i].param_type)
-                ? Type_To_Llvm(sym->parameters[i].param_type) : "i64";
-            Emit(cg, "%s %%t%u", param_type, args[i]);
+            if (is_byref[i]) {
+                /* OUT/IN OUT: pass as pointer */
+                Emit(cg, "ptr %%t%u", args[i]);
+            } else {
+                const char *param_type = (i < sym->parameter_count && sym->parameters[i].param_type)
+                    ? Type_To_Llvm(sym->parameters[i].param_type) : "i64";
+                Emit(cg, "%s %%t%u", param_type, args[i]);
+            }
         }
 
         Emit(cg, ")\n");
@@ -8464,7 +8496,12 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
     /* Parameters */
     for (uint32_t i = 0; i < sym->parameter_count; i++) {
         if (i > 0) Emit(cg, ", ");
-        Emit(cg, "%s %%p%u", Type_To_Llvm(sym->parameters[i].param_type), i);
+        /* OUT and IN OUT parameters are passed by reference */
+        if (Param_Is_By_Reference(sym->parameters[i].mode)) {
+            Emit(cg, "ptr %%p%u", i);
+        } else {
+            Emit(cg, "%s %%p%u", Type_To_Llvm(sym->parameters[i].param_type), i);
+        }
     }
 
     Emit(cg, ") {\n");
@@ -8508,25 +8545,39 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
         }
     }
 
-    /* Allocate and store parameters to local stack slots */
+    /* Allocate and store parameters to local stack slots
+     * For OUT/IN OUT: param is already a pointer, use directly
+     * For IN: allocate local slot and copy value */
     for (uint32_t i = 0; i < sym->parameter_count; i++) {
         Symbol *param_sym = sym->parameters[i].param_sym;
         if (param_sym) {
             const char *type_str = Type_To_Llvm(sym->parameters[i].param_type);
-            /* If this function has nested subprograms, allocate params in frame */
-            if (has_nested && sym->scope) {
+            Parameter_Mode mode = sym->parameters[i].mode;
+
+            if (Param_Is_By_Reference(mode)) {
+                /* OUT/IN OUT: %p is already a pointer to caller's variable
+                 * Create an alias so the parameter name points to caller's storage */
+                Emit(cg, "  %%");
+                Emit_Symbol_Name(cg, param_sym);
+                Emit(cg, " = getelementptr i8, ptr %%p%u, i64 0  ; by-ref param\n", i);
+            } else if (has_nested && sym->scope) {
+                /* IN param with nested functions: allocate in frame */
                 Emit(cg, "  %%");
                 Emit_Symbol_Name(cg, param_sym);
                 Emit(cg, " = getelementptr i8, ptr %%__frame_base, i64 %lld\n",
                      (long long)param_sym->frame_offset);
+                Emit(cg, "  store %s %%p%u, ptr %%", type_str, i);
+                Emit_Symbol_Name(cg, param_sym);
+                Emit(cg, "\n");
             } else {
+                /* IN param: allocate local and copy value */
                 Emit(cg, "  %%");
                 Emit_Symbol_Name(cg, param_sym);
                 Emit(cg, " = alloca %s\n", type_str);
+                Emit(cg, "  store %s %%p%u, ptr %%", type_str, i);
+                Emit_Symbol_Name(cg, param_sym);
+                Emit(cg, "\n");
             }
-            Emit(cg, "  store %s %%p%u, ptr %%", type_str, i);
-            Emit_Symbol_Name(cg, param_sym);
-            Emit(cg, "\n");
         }
     }
 
