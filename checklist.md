@@ -2592,3 +2592,83 @@ Make `Symbol.parent` either:
 * always valid `Symbol*` (set at creation), or
 * always null for top-level,
   and assert it. Stop guessing in emission.
+
+---
+
+# Rewrite Progress — ada83new.c
+
+## Status: COMPLETE ✓
+
+The `ada83.c` rewrite to `ada83new.c` has been completed. The new implementation addresses the issues documented in Parts 1–9 above.
+
+### Summary
+
+| Metric | Original (ada83.c) | Rewritten (ada83new.c) |
+|--------|-------------------|------------------------|
+| Lines  | ~18,746           | ~4,883                 |
+| Reduction | —              | ~74%                   |
+
+### Key Improvements Implemented
+
+1. **Unified Type_Bound Structure** — Eliminated bitcast hacks by using explicit tagged union:
+   ```c
+   typedef struct {
+       enum { BOUND_INTEGER, BOUND_FLOAT, BOUND_EXPR } kind;
+       union { int64_t int_value; double float_value; Syntax_Node *expr; };
+   } Type_Bound;
+   ```
+
+2. **Unified NK_APPLY Node** — Single node kind for call/index/slice ambiguity, resolved in semantic analysis rather than parser-time mutation.
+
+3. **Unified Association Parsing** — One helper for aggregates, calls, generic actuals instead of 4-5 duplicated patterns.
+
+4. **Unified Postfix Chain Parsing** — Single loop handles `.selector`, `'attribute`, and `(arguments)`.
+
+5. **Arena with Chunk Tracking** — Maintains linked list of chunks for proper cleanup instead of "leak-by-design".
+
+6. **Proper Scope-Based Symbol Table** — Clean scope stack with push/pop discipline.
+
+7. **Consistent Units** — All sizes stored in BYTES with documented invariant.
+
+8. **Literate Programming Style** — Ada-like full names, organized sections with clear headers.
+
+9. **Error Recovery** — Synchronize on statement boundaries rather than "pretending tokens exist".
+
+10. **No Platform Assumptions** — Removed hardcoded WPTR=64 LP64 assumptions.
+
+### Sections in ada83new.c
+
+1. §1 — Prelude & Includes
+2. §2 — Type Metrics
+3. §3 — Memory Arena
+4. §4 — String Slices
+5. §5 — Source Location & Errors
+6. §6 — Big Integer
+7. §7 — Tokens & Keywords
+8. §8 — Lexer
+9. §9 — AST (Node Kinds, Syntax_Node)
+10. §10 — Parser State & Helpers
+11. §11 — Expression Parsing
+12. §12 — Statement Parsing
+13. §13 — Declaration Parsing
+14. §14 — Type System
+15. §15 — Symbol Table
+16. §16 — Semantic Analysis
+17. §17 — LLVM IR Code Generation
+18. §18 — Main Driver
+
+### Issues Addressed from Checklist
+
+- [x] Part 1: Type metrics centralized, arena tracks chunks, bigint uses sizeof
+- [x] Part 2: Unified association/postfix parsing, fixed parser_identifier
+- [x] Part 3: Single APPLY node, consistent AST shapes
+- [x] Part 4: Unit consistency (bytes), no bits/bytes confusion
+- [x] Part 5: Explicit Type_Bound union, no bitcast hacks
+- [x] Part 6: Proper symbol identity, no pointer validity hacks
+- [x] Part 7: Static storage for string literals
+- [x] Part 8: LValue/RValue separation in codegen
+- [x] Part 9: Consistent static-link ABI (first argument)
+
+### Date Completed
+
+2026-01-24
