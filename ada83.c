@@ -4927,7 +4927,11 @@ static Syntax_Node *parse_compilation_unit(Parser *parser)
       nv(&node->compilation_unit.units, parse_declaration(parser));
     }
     else
+    {
+      // §GNAT-LLVM: Clear SEPARATE_PACKAGE for non-separate compilation units
+      SEPARATE_PACKAGE = N;
       nv(&node->compilation_unit.units, parse_declaration(parser));
+    }
   }
   return node;
 }
@@ -5289,6 +5293,7 @@ typedef struct
   uint32_t uid_ctr;
   Symbol *ps[256];  // Procedure stack: tracks enclosing procedures/functions for parent pointer assignment
   int pn;           // Procedure nesting count
+  int resolving_generic_inst; // Flag: true when resolving a generic instantiation
 } Symbol_Manager;
 static uint32_t symbol_hash(String_Slice s)
 {
@@ -5324,6 +5329,13 @@ static Symbol *symbol_add_overload(Symbol_Manager *symbol_manager, Symbol *s)
       u = u * 31 + s->elaboration_level;
     }
   }
+  // For generic instantiations at library level (level=0 with no parent),
+  // include scope and elaboration_level to create unique UIDs
+  else if (s->level == 0 and symbol_manager->resolving_generic_inst)
+  {
+    u = u * 31 + s->scope;
+    u = u * 31 + s->elaboration_level;
+  }
   s->uid = (uint32_t) (u & 0xFFFFFFFF);
   symbol_manager->sy[h] = s;
   if (symbol_manager->ssd < 256)
@@ -5331,7 +5343,7 @@ static Symbol *symbol_add_overload(Symbol_Manager *symbol_manager, Symbol *s)
   return s;
 }
 // Recompute uid after parent has been set (parent is set after symbol_new returns)
-static void symbol_update_uid(Symbol *s)
+static void symbol_update_uid(Symbol_Manager *symbol_manager, Symbol *s)
 {
   if (not s)
     return;
@@ -5344,6 +5356,13 @@ static void symbol_update_uid(Symbol *s)
       u = u * 31 + s->scope;
       u = u * 31 + s->elaboration_level;
     }
+  }
+  // For generic instantiations at library level (level=0 with no parent),
+  // include scope and elaboration_level to create unique UIDs
+  else if (s->level == 0 and symbol_manager->resolving_generic_inst)
+  {
+    u = u * 31 + s->scope;
+    u = u * 31 + s->elaboration_level;
   }
   s->uid = (uint32_t) (u & 0xFFFFFFFF);
 }
@@ -5535,8 +5554,8 @@ static Symbol *symbol_find_with_arity(Symbol_Manager *symbol_manager, String_Sli
   int msc = -1;
   for (Symbol *s = symbol_manager->sy[symbol_hash(nm)]; s; s = s->next)
   {
-    // Include symbols that are: visible (visibility & 3), external (is_external), or nested at current level or above
-    if (string_equal_ignore_case(s->name, nm) and ((s->visibility & 3) or s->is_external or (s->level > 0 and s->level <= symbol_manager->lv)))
+    // Include symbols that are: visible (visibility & 3), external (is_external), nested at current level or above, or library-level (level=0)
+    if (string_equal_ignore_case(s->name, nm) and ((s->visibility & 3) or s->is_external or (s->level > 0 and s->level <= symbol_manager->lv) or s->level == 0))
     {
       if (s->scope > msc)
       {
@@ -6718,7 +6737,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
   if (node->k == N_IX)
   {
     Type_Info *bt = resolve_subtype(symbol_manager, node->index.prefix);
-    if (bt and bt->k == TYPE_ARRAY and bt->low_bound == 0 and bt->high_bound == -1 and node->index.indices.count == 1)
+    if (bt and bt->k == TYPE_ARRAY and bt->high_bound == -1 and node->index.indices.count == 1)
     {
       Syntax_Node *r = node->index.indices.data[0];
       if (r and r->k == N_RN)
@@ -6766,7 +6785,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
   if (node->k == N_CL)
   {
     Type_Info *bt = resolve_subtype(symbol_manager, node->call.function_name);
-    if (bt and bt->k == TYPE_ARRAY and bt->low_bound == 0 and bt->high_bound == -1 and node->call.arguments.count == 1)
+    if (bt and bt->k == TYPE_ARRAY and bt->high_bound == -1 and node->call.arguments.count == 1)
     {
       Syntax_Node *r = node->call.arguments.data[0];
       if (r and r->k == N_RN)
@@ -6825,7 +6844,9 @@ static inline Syntax_Node *make_check(Syntax_Node *ex, String_Slice ec, Source_L
 }
 static inline bool is_unconstrained_array(Type_Info *t)
 {
-  return t and t->k == TYPE_ARRAY and t->low_bound == 0 and t->high_bound == -1;
+  // Unconstrained arrays use high_bound == -1 as sentinel (regardless of low_bound)
+  // This allows POSITIVE RANGE <> which has low_bound = 1
+  return t and t->k == TYPE_ARRAY and t->high_bound == -1;
 }
 static Type_Info *base_scalar(Type_Info *t)
 {
@@ -9018,9 +9039,15 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
   case N_TR:
   case N_TAC:
   case N_TP:
-  case N_ST:
   case N_LST:
     normalize_compile_symbol_vector(&c->list.items, &n->list.items, fp, ap);
+    break;
+  case N_ST:
+    // Subtype indication: clone index_constraint, constraint, and range_constraint
+    c->subtype_decl.name = n->subtype_decl.name;
+    c->subtype_decl.index_constraint = node_clone_substitute(n->subtype_decl.index_constraint, fp, ap);
+    c->subtype_decl.constraint = node_clone_substitute(n->subtype_decl.constraint, fp, ap);
+    c->subtype_decl.range_constraint = node_clone_substitute(n->subtype_decl.range_constraint, fp, ap);
     break;
   default:
     break;
@@ -9261,11 +9288,14 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
       // not the enclosing procedure where the instantiation happens
       int saved_pn = symbol_manager->pn;
       int saved_lv = symbol_manager->lv;
+      int saved_rgi = symbol_manager->resolving_generic_inst;
       symbol_manager->pn = 0;
       symbol_manager->lv = 0;
+      symbol_manager->resolving_generic_inst = 1;  // Mark that we're resolving a generic instantiation
       resolve_declaration(symbol_manager, inst);
       symbol_manager->pn = saved_pn;
       symbol_manager->lv = saved_lv;
+      symbol_manager->resolving_generic_inst = saved_rgi;
       // Link the instantiation node to the instantiated symbol
       if (inst->symbol)
         n->symbol = inst->symbol;
@@ -9697,27 +9727,27 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     Syntax_Node *sp = n->body.subprogram_spec;
     Type_Info *ft = type_new(TYPE_STRING, sp->subprogram.name);
     Symbol *s = 0;
-    // For SEPARATE bodies, try to find existing symbol from body stub
-    if (n->k == N_PB and SEPARATE_PACKAGE.string)
+    // §GNAT-LLVM: For top-level procedure bodies (lv=0), search for existing stub symbol
+    // This handles SEPARATE bodies without relying on the global SEPARATE_PACKAGE
+    // A stub symbol will have a package as parent, created from "PROCEDURE X IS SEPARATE;"
+    // Skip this search when resolving generic instantiations - they must always create new symbols
+    if (n->k == N_PB and symbol_manager->lv == 0 and not symbol_manager->pk
+        and not symbol_manager->resolving_generic_inst)
     {
-      Symbol *parent_sym = symbol_find(symbol_manager, SEPARATE_PACKAGE);
-      if (parent_sym)
-      {
-        // Look for existing procedure symbol in parent's scope
-        for (int h = 0; h < SYMBOL_TABLE_SIZE and not s; h++)
-          for (Symbol *es = symbol_manager->sy[h]; es and not s; es = es->next)
-            if (es->k == SK_PROCEDURE and es->parent == parent_sym
-                and string_equal_ignore_case(es->name, sp->subprogram.name))
-              s = es;
-      }
+      // Search for any existing procedure symbol with matching name that has a package/procedure parent
+      for (int h = 0; h < SYMBOL_TABLE_SIZE and not s; h++)
+        for (Symbol *es = symbol_manager->sy[h]; es and not s; es = es->next)
+          if (es->k == SK_PROCEDURE and es->parent
+              and (es->parent->k == SK_PACKAGE or es->parent->k == SK_PROCEDURE or es->parent->k == SK_FUNCTION)
+              and string_equal_ignore_case(es->name, sp->subprogram.name))
+            s = es;
     }
-    // For procedure bodies in packages, try to find existing symbol from spec
+    // For procedure bodies inside packages, find existing symbol from spec
     if (n->k == N_PB and not s and symbol_manager->pk)
     {
       Symbol *parent_sym = get_pkg_sym(symbol_manager, symbol_manager->pk);
       if (parent_sym)
       {
-        // Look for existing procedure symbol declared in this package
         for (int h = 0; h < SYMBOL_TABLE_SIZE and not s; h++)
           for (Symbol *es = symbol_manager->sy[h]; es and not s; es = es->next)
             if (es->k == SK_PROCEDURE and es->parent == parent_sym
@@ -9730,13 +9760,17 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     nv(&s->overloads, n);
     n->symbol = s;
     n->body.elaboration_level = s->elaboration_level;
-    // Set parent to package if in a package body, otherwise to enclosing procedure
-    if (not s->parent)
-      s->parent = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk)
-                  : (symbol_manager->pn > 0 ? symbol_manager->ps[symbol_manager->pn - 1]
-                  : (SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0));
+    // §GNAT-LLVM: Set parent for procedure stubs (N_PD) inside packages so SEPARATE can find them
+    // For bodies (N_PB), find existing symbol from spec/stub - don't set new parent
+    // Nested procedures (level > 0) get parent from enclosing procedure
+    if (not s->parent) {
+      if (n->k == N_PD and symbol_manager->pk)
+        s->parent = get_pkg_sym(symbol_manager, symbol_manager->pk);
+      else if (s->level > 0 and symbol_manager->pn > 0)
+        s->parent = symbol_manager->ps[symbol_manager->pn - 1];
+    }
     // Recompute uid now that parent is set (uid includes parent name hash)
-    symbol_update_uid(s);
+    symbol_update_uid(symbol_manager, s);
     nv(&ft->operations, n);
     if (n->k == N_PB)
     {
@@ -9792,30 +9826,39 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
     Type_Info *ft = type_new(TYPE_STRING, sp->subprogram.name);
     ft->element_type = rt;
     Symbol *s = 0;
-    // For SEPARATE bodies, try to find existing symbol from body stub
-    if (SEPARATE_PACKAGE.string)
+    // §GNAT-LLVM: For top-level function bodies (lv=0), search for existing stub symbol
+    // This handles SEPARATE bodies without relying on the global SEPARATE_PACKAGE
+    // Skip this search when resolving generic instantiations - they must always create new symbols
+    if (n->k == N_FB and symbol_manager->lv == 0 and not symbol_manager->pk
+        and not symbol_manager->resolving_generic_inst)
     {
-      Symbol *parent_sym = symbol_find(symbol_manager, SEPARATE_PACKAGE);
+      for (int h = 0; h < SYMBOL_TABLE_SIZE and not s; h++)
+        for (Symbol *es = symbol_manager->sy[h]; es and not s; es = es->next)
+          if (es->k == SK_FUNCTION and es->parent
+              and (es->parent->k == SK_PACKAGE or es->parent->k == SK_PROCEDURE or es->parent->k == SK_FUNCTION)
+              and string_equal_ignore_case(es->name, sp->subprogram.name))
+            s = es;
+    }
+    // §GNAT-LLVM: For function bodies inside packages, find existing symbol from spec/declaration
+    if (n->k == N_FB and not s and symbol_manager->pk)
+    {
+      Symbol *parent_sym = get_pkg_sym(symbol_manager, symbol_manager->pk);
       if (parent_sym)
-      {
-        // Look for existing function symbol in parent's scope
         for (int h = 0; h < SYMBOL_TABLE_SIZE and not s; h++)
           for (Symbol *es = symbol_manager->sy[h]; es and not s; es = es->next)
             if (es->k == SK_FUNCTION and es->parent == parent_sym
                 and string_equal_ignore_case(es->name, sp->subprogram.name))
               s = es;
-      }
     }
     if (not s)
       s = symbol_add_overload(symbol_manager, symbol_new(sp->subprogram.name, 5, ft, n));
     nv(&s->overloads, n);
     n->symbol = s;
     n->body.elaboration_level = s->elaboration_level;
-    // Set parent to package if in a package body, otherwise to enclosing procedure
-    if (not s->parent)
-      s->parent = symbol_manager->pk ? get_pkg_sym(symbol_manager, symbol_manager->pk)
-                  : (symbol_manager->pn > 0 ? symbol_manager->ps[symbol_manager->pn - 1]
-                  : (SEPARATE_PACKAGE.string ? symbol_find(symbol_manager, SEPARATE_PACKAGE) : 0));
+    // §GNAT-LLVM: For function bodies, only set parent for nested functions (level > 0)
+    // Function stubs (N_FD) get parent set unconditionally in their own case block
+    if (not s->parent and s->level > 0 and symbol_manager->pn > 0)
+      s->parent = symbol_manager->ps[symbol_manager->pn - 1];
     nv(&ft->operations, n);
     if (n->k == N_FB)
     {
@@ -9942,6 +9985,15 @@ static void resolve_declaration(Symbol_Manager *symbol_manager, Syntax_Node *n)
                                    : 0;
             if (_pk and string_equal_ignore_case(_pk->package_spec.name, n->package_body.name))
             {
+              // §GNAT-LLVM: Create package symbol and set _pk->symbol BEFORE processing declarations
+              // This ensures get_pkg_sym can find the symbol when setting procedure parents
+              Symbol *_ps = symbol_find(symbol_manager, n->package_body.name);
+              if (not _ps) {
+                Type_Info *_t = type_new(TY_P, n->package_body.name);
+                _ps = symbol_add_overload(symbol_manager, symbol_new(n->package_body.name, 6, _t, _pk));
+                _ps->level = 0;
+              }
+              _pk->symbol = _ps;
               symbol_manager->pk = _pk;
               for (uint32_t _j = 0; _j < _pk->package_spec.declarations.count; _j++)
                 resolve_declaration(symbol_manager, _pk->package_spec.declarations.data[_j]);
@@ -10407,6 +10459,14 @@ static void symbol_manager_use_clauses(Symbol_Manager *symbol_manager, Syntax_No
   }
   for (uint32_t i = 0; i < n->compilation_unit.units.count; i++)
   {
+    // §GNAT-LLVM: Reset symbol_manager state for each top-level compilation unit
+    // Each unit (package spec, package body, SEPARATE body, main procedure) is independent
+    symbol_manager->lv = 0;  // Reset nesting level
+    symbol_manager->pn = 0;  // Clear procedure stack
+    symbol_manager->pk = 0;  // Clear current package
+    // §GNAT-LLVM: Clear SEPARATE_PACKAGE - it's only valid during parsing of SEPARATE bodies
+    // For resolution, we detect SEPARATE by looking at the parent symbol set from the stub
+    SEPARATE_PACKAGE = N;
     Symbol_Vector eo = {0};
     int mx = 0;
     if (n->compilation_unit.units.data[i]->k == N_PKS)
@@ -11087,6 +11147,24 @@ static inline bool is_narrow_int(const char *ty) {
          (ty[1] == '3' && ty[2] == '2' && ty[3] == '\0');      /* i32 */
 }
 
+/* §6.5.1 Check for Floating-Point Type String
+ * Returns true if type string is "float" or "double".
+ */
+static inline bool is_float_type(const char *ty) {
+  if (!ty) return false;
+  return (ty[0] == 'f' && strcmp(ty, "float") == 0) ||
+         (ty[0] == 'd' && strcmp(ty, "double") == 0);
+}
+
+/* §GNAT-LLVM: Check if subprogram is truly nested (inside another subprogram).
+ * Only truly nested subprograms need static link parameters.
+ * Package-level subprograms (parent is SK_PACKAGE=6) don't need static links.
+ */
+static inline bool is_truly_nested(Symbol *s) {
+  return s && s->level > 0 && s->parent && (uintptr_t)s->parent > 4096 &&
+         (s->parent->k == 4 || s->parent->k == 5);  /* SK_PROCEDURE=4, SK_FUNCTION=5 */
+}
+
 /* §6.6 Compute Element Size and Type for Arrays
  *
  * Returns element size in BYTES and sets *type_str to LLVM type string.
@@ -11573,6 +11651,11 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
                   int pv = new_temporary_register(generator);
                   fprintf(o, "  %%t%d = inttoptr " LLVM_I64 " %%t%d to " LLVM_PTR "\n", pv, v.id);
                   fprintf(o, "  store " LLVM_PTR " %%t%d, " LLVM_PTR " %%t%d\n", pv, ep);
+                } else if (is_float_type(store_type)) {
+                  /* Floating-point type - convert integer to float          */
+                  int tv = new_temporary_register(generator);
+                  fprintf(o, "  %%t%d = sitofp " LLVM_I64 " %%t%d to %s\n", tv, v.id, store_type);
+                  fprintf(o, "  store %s %%t%d, " LLVM_PTR " %%t%d\n", store_type, tv, ep);
                 } else if (strcmp(store_type, LLVM_I64) != 0) {
                   /* Narrow integer type - truncate                          */
                   int tv = new_temporary_register(generator);
@@ -11610,6 +11693,11 @@ static Value generate_aggregate(Code_Generator *generator, Syntax_Node *n, Type_
           int pv = new_temporary_register(generator);
           fprintf(o, "  %%t%d = inttoptr " LLVM_I64 " %%t%d to " LLVM_PTR "\n", pv, v.id);
           fprintf(o, "  store " LLVM_PTR " %%t%d, " LLVM_PTR " %%t%d\n", pv, ep);
+        } else if (is_float_type(store_type)) {
+          /* Floating-point type - convert integer to float                 */
+          int tv = new_temporary_register(generator);
+          fprintf(o, "  %%t%d = sitofp " LLVM_I64 " %%t%d to %s\n", tv, v.id, store_type);
+          fprintf(o, "  store %s %%t%d, " LLVM_PTR " %%t%d\n", store_type, tv, ep);
         } else if (strcmp(store_type, LLVM_I64) != 0) {
           int tv = new_temporary_register(generator);
           fprintf(o, "  %%t%d = trunc " LLVM_I64 " %%t%d to %s\n", tv, v.id, store_type);
@@ -11775,17 +11863,17 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       if (s and s->type_info)
         k = token_kind_to_value_kind(s->type_info);
       r.k = k;
-      // Check if this is a package-level variable (parent is a package k==6)
-      // OR a variable from a generic package body (parent is procedure k=4, but var was in package body)
-      // Package-level variables should always be accessed as globals, not via static link
-      int is_package_level_var = s and s->parent and (uintptr_t)s->parent > 4096 and s->parent->k == 6;
+      // Check if this is a package-level symbol (parent is a package k==6)
+      // Package-level variables/procedures should always be accessed as globals, not via static link
+      int is_package_level_sym = s and s->parent and (uintptr_t)s->parent > 4096 and s->parent->k == 6;
       // Also treat variables whose parent is a procedure/function AND that procedure is NOT
       // the current function as globals (these are generic package body variables)
       int is_generic_pkg_body_var = s and s->parent and (uintptr_t)s->parent > 4096
           and (s->parent->k == 4 or s->parent->k == 5)
           and generator->current_function and generator->current_function->symbol
           and s->parent != generator->current_function->symbol;
-      if (s and (s->level == 0 or is_package_level_var or is_generic_pkg_body_var))
+      /* §GNAT-LLVM: Package-level symbols don't need static link chain traversal */
+      if (s and (s->level == 0 or is_package_level_sym or is_generic_pkg_body_var))
       {
         char nb[256];
         if (s->is_external and s->external_name.string)
@@ -11810,8 +11898,13 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           {
             char fnb[256];
             encode_symbol_name(fnb, 256, s, n->string_value, 0, 0);
-            fprintf(
-                o, "  %%t%d = call %s @%s()\n", r.id, value_llvm_type_string(fn_ret_type), fnb);
+            /* §GNAT-LLVM: Sign-extend narrow integer returns to i64 */
+            const char *g0p_ret_type = value_llvm_type_string(fn_ret_type);
+            bool g0p_need_sext = (fn_ret_type == VALUE_KIND_INTEGER && is_narrow_int(g0p_ret_type));
+            int g0p_call_result = g0p_need_sext ? new_temporary_register(generator) : r.id;
+            fprintf(o, "  %%t%d = call %s @%s()\n", g0p_call_result, g0p_ret_type, fnb);
+            if (g0p_need_sext)
+              fprintf(o, "  %%t%d = sext %s %%t%d to i64\n", r.id, g0p_ret_type, g0p_call_result);
             r.k = fn_ret_type;
           }
           else
@@ -11822,12 +11915,13 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
             {
               char fnb[256];
               encode_symbol_name(fnb, 256, s, n->string_value, 0, sp);
-              fprintf(
-                  o,
-                  "  %%t%d = call %s @%s()\n",
-                  r.id,
-                  value_llvm_type_string(fn_ret_type),
-                  fnb);
+              /* §GNAT-LLVM: Sign-extend narrow integer returns to i64 */
+              const char *sp0_ret_type = value_llvm_type_string(fn_ret_type);
+              bool sp0_need_sext = (fn_ret_type == VALUE_KIND_INTEGER && is_narrow_int(sp0_ret_type));
+              int sp0_call_result = sp0_need_sext ? new_temporary_register(generator) : r.id;
+              fprintf(o, "  %%t%d = call %s @%s()\n", sp0_call_result, sp0_ret_type, fnb);
+              if (sp0_need_sext)
+                fprintf(o, "  %%t%d = sext %s %%t%d to i64\n", r.id, sp0_ret_type, sp0_call_result);
               r.k = fn_ret_type;
             }
             else
@@ -11864,12 +11958,13 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                                 : VALUE_KIND_INTEGER;
             char fnb[256];
             encode_symbol_name(fnb, 256, s, n->string_value, 0, sp);
-            fprintf(
-                o,
-                "  %%t%d = call %s @%s(ptr %%__slnk)\n",
-                r.id,
-                value_llvm_type_string(rk),
-                fnb);
+            /* §GNAT-LLVM: Sign-extend narrow integer returns to i64 */
+            const char *slnk0_ret_type = value_llvm_type_string(rk);
+            bool slnk0_need_sext = (rk == VALUE_KIND_INTEGER && is_narrow_int(slnk0_ret_type));
+            int slnk0_call_result = slnk0_need_sext ? new_temporary_register(generator) : r.id;
+            fprintf(o, "  %%t%d = call %s @%s(ptr %%__slnk)\n", slnk0_call_result, slnk0_ret_type, fnb);
+            if (slnk0_need_sext)
+              fprintf(o, "  %%t%d = sext %s %%t%d to i64\n", r.id, slnk0_ret_type, slnk0_call_result);
             r.k = rk;
           }
           else
@@ -11959,20 +12054,16 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                                 : VALUE_KIND_INTEGER;
             char fnb[256];
             encode_symbol_name(fnb, 256, s, n->string_value, 0, sp);
+            /* §GNAT-LLVM: Sign-extend narrow integer returns to i64 */
+            const char *frm0_ret_type = value_llvm_type_string(rk);
+            bool frm0_need_sext = (rk == VALUE_KIND_INTEGER && is_narrow_int(frm0_ret_type));
+            int frm0_call_result = frm0_need_sext ? new_temporary_register(generator) : r.id;
             if (s->level >= generator->sm->lv)
-              fprintf(
-                  o,
-                  "  %%t%d = call %s @%s(ptr %%__frame)\n",
-                  r.id,
-                  value_llvm_type_string(rk),
-                  fnb);
+              fprintf(o, "  %%t%d = call %s @%s(ptr %%__frame)\n", frm0_call_result, frm0_ret_type, fnb);
             else
-              fprintf(
-                  o,
-                  "  %%t%d = call %s @%s(ptr %%__slnk)\n",
-                  r.id,
-                  value_llvm_type_string(rk),
-                  fnb);
+              fprintf(o, "  %%t%d = call %s @%s(ptr %%__slnk)\n", frm0_call_result, frm0_ret_type, fnb);
+            if (frm0_need_sext)
+              fprintf(o, "  %%t%d = sext %s %%t%d to i64\n", r.id, frm0_ret_type, frm0_call_result);
             r.k = rk;
           }
           else
@@ -12659,11 +12750,37 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         args[i] = generate_expression(generator, n->index.indices.data[i]);
       }
 
-      // Now generate the call with the parameter values
-      fprintf(o, "  %%t%d = call %s @%s(", r.id, value_llvm_type_string(ret_kind), fnb);
+      /* §GNAT-LLVM: Type-correct argument emission
+       * Truncate i64 computation values to declared parameter types.
+       */
+      int arg_regs[16];
+      const char *arg_types[16];
+      for (uint32_t i = 0; i < n->index.indices.count and i < 16; i++)
+      {
+        Type_Info *pt = func_spec and i < func_spec->subprogram.parameters.count
+            and func_spec->subprogram.parameters.data[i]->parameter.ty
+            ? resolve_subtype(generator->sm, func_spec->subprogram.parameters.data[i]->parameter.ty) : 0;
+        arg_types[i] = pt ? ada_to_c_type_string(pt) : value_llvm_type_string(args[i].k);
+        if (args[i].k == VALUE_KIND_INTEGER and is_narrow_int(arg_types[i]))
+        {
+          arg_regs[i] = new_temporary_register(generator);
+          fprintf(o, "  %%t%d = trunc i64 %%t%d to %s\n", arg_regs[i], args[i].id, arg_types[i]);
+        }
+        else
+          arg_regs[i] = args[i].id;
+      }
 
-      // Add static link if needed
-      bool needs_slnk = func_sym->level >= 0 and func_sym->level < generator->sm->lv;
+      // Now generate the call with the parameter values
+      /* §GNAT-LLVM: Function calls return in their declared type.
+       * Sign-extend narrow integer results to i64 for uniform computation width.
+       */
+      const char *call_ret_type = value_llvm_type_string(ret_kind);
+      bool need_sext = (ret_kind == VALUE_KIND_INTEGER && is_narrow_int(call_ret_type));
+      int call_result = need_sext ? new_temporary_register(generator) : r.id;
+      fprintf(o, "  %%t%d = call %s @%s(", call_result, call_ret_type, fnb);
+
+      // Add static link if needed (only for truly nested functions)
+      bool needs_slnk = is_truly_nested(func_sym) and func_sym->level < generator->sm->lv;
       if (needs_slnk)
         fprintf(o, "ptr %%__slnk");
 
@@ -12672,10 +12789,12 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
       {
         if (needs_slnk or i > 0)
           fprintf(o, ", ");
-        fprintf(o, "%s %%t%d", value_llvm_type_string(args[i].k), args[i].id);
+        fprintf(o, "%s %%t%d", arg_types[i], arg_regs[i]);
       }
 
       fprintf(o, ")\n");
+      if (need_sext)
+        fprintf(o, "  %%t%d = sext %s %%t%d to i64\n", r.id, call_ret_type, call_result);
       r.k = ret_kind;
       break;
     }
@@ -12845,7 +12964,13 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                             : VALUE_KIND_INTEGER;
         char fnb[256];
         encode_symbol_name(fnb, 256, n->symbol, n->selected_component.selector, 0, sp);
-        fprintf(o, "  %%t%d = call %s @%s()\n", r.id, value_llvm_type_string(rk), fnb);
+        /* §GNAT-LLVM: Sign-extend narrow integer returns to i64 */
+        const char *sel0_ret_type = value_llvm_type_string(rk);
+        bool sel0_need_sext = (rk == VALUE_KIND_INTEGER && is_narrow_int(sel0_ret_type));
+        int sel0_call_result = sel0_need_sext ? new_temporary_register(generator) : r.id;
+        fprintf(o, "  %%t%d = call %s @%s()\n", sel0_call_result, sel0_ret_type, fnb);
+        if (sel0_need_sext)
+          fprintf(o, "  %%t%d = sext %s %%t%d to i64\n", r.id, sel0_ret_type, sel0_call_result);
         r.k = rk;
         break;
       }
@@ -13110,7 +13235,13 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                             : VALUE_KIND_INTEGER;
         char fnb[256];
         encode_symbol_name(fnb, 256, n->symbol, n->selected_component.selector, 0, sp);
-        fprintf(o, "  %%t%d = call %s @%s()\n", r.id, value_llvm_type_string(rk), fnb);
+        /* §GNAT-LLVM: Sign-extend narrow integer returns to i64 */
+        const char *sel1_ret_type = value_llvm_type_string(rk);
+        bool sel1_need_sext = (rk == VALUE_KIND_INTEGER && is_narrow_int(sel1_ret_type));
+        int sel1_call_result = sel1_need_sext ? new_temporary_register(generator) : r.id;
+        fprintf(o, "  %%t%d = call %s @%s()\n", sel1_call_result, sel1_ret_type, fnb);
+        if (sel1_need_sext)
+          fprintf(o, "  %%t%d = sext %s %%t%d to i64\n", r.id, sel1_ret_type, sel1_call_result);
         r.k = rk;
       }
     }
@@ -13878,14 +14009,39 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           }
           else
           {
-            fprintf(o, "  %%t%d = call %s @%s(", r.id, value_llvm_type_string(rk), nb);
+            /* §GNAT-LLVM: Emit_Call with type-correct arguments
+             * Following GNAT LLVM's Emit_Conversion pattern, truncate i64
+             * computation values to the declared parameter type (i32 for INTEGER).
+             * This mirrors the C external handling above.
+             */
+            int ada_arid[64];
+            const char *ada_types[64];
+            for (uint32_t i = 0; i < n->call.arguments.count and i < 64; i++)
+            {
+              Type_Info *pt = sp and i < sp->subprogram.parameters.count and sp->subprogram.parameters.data[i]->parameter.ty
+                  ? resolve_subtype(generator->sm, sp->subprogram.parameters.data[i]->parameter.ty) : 0;
+              ada_types[i] = pt ? ada_to_c_type_string(pt) : value_llvm_type_string(ark[i]);
+              if (ark[i] == VALUE_KIND_INTEGER and is_narrow_int(ada_types[i]))
+              {
+                ada_arid[i] = new_temporary_register(generator);
+                fprintf(o, "  %%t%d = trunc i64 %%t%d to %s\n", ada_arid[i], arid[i], ada_types[i]);
+              }
+              else
+                ada_arid[i] = arid[i];
+            }
+            /* §GNAT-LLVM: Sign-extend narrow integer returns to i64 */
+            const char *ada_ret_type = value_llvm_type_string(rk);
+            bool ada_need_sext = (rk == VALUE_KIND_INTEGER && is_narrow_int(ada_ret_type));
+            int ada_call_result = ada_need_sext ? new_temporary_register(generator) : r.id;
+            fprintf(o, "  %%t%d = call %s @%s(", ada_call_result, ada_ret_type, nb);
             for (uint32_t i = 0; i < n->call.arguments.count; i++)
             {
               if (i)
                 fprintf(o, ", ");
-              fprintf(o, "%s %%t%d", value_llvm_type_string(ark[i]), arid[i]);
+              fprintf(o, "%s %%t%d", ada_types[i], ada_arid[i]);
             }
-            if (s->level > 0)
+            /* §GNAT-LLVM: Only pass static link for truly nested subprograms */
+            if (is_truly_nested(s))
             {
               if (n->call.arguments.count > 0)
                 fprintf(o, ", ");
@@ -13895,20 +14051,24 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                 fprintf(o, "ptr %%__slnk");
             }
             fprintf(o, ")\n");
+            if (ada_need_sext)
+              fprintf(o, "  %%t%d = sext %s %%t%d to i64\n", r.id, ada_ret_type, ada_call_result);
           }
           for (uint32_t i = 0; i < n->call.arguments.count and i < 64; i++)
           {
             if (arp[i])
             {
+              /* §GNAT-LLVM: Load OUT params and sign-extend narrow ints to i64 */
+              Value_Kind load_kind = ark[i] == VALUE_KIND_POINTER ? VALUE_KIND_INTEGER : ark[i];
+              const char *load_type = value_llvm_type_string(load_kind);
               int lv = new_temporary_register(generator);
-              fprintf(
-                  o,
-                  "  %%t%d = load %s, ptr %%t%d\n",
-                  lv,
-                  value_llvm_type_string(
-                      ark[i] == VALUE_KIND_POINTER ? VALUE_KIND_INTEGER : ark[i]),
-                  arid[i]);
-              Value rv = {lv, ark[i] == VALUE_KIND_POINTER ? VALUE_KIND_INTEGER : ark[i]};
+              fprintf(o, "  %%t%d = load %s, ptr %%t%d\n", lv, load_type, arid[i]);
+              int use_reg = lv;
+              if (load_kind == VALUE_KIND_INTEGER && is_narrow_int(load_type)) {
+                use_reg = new_temporary_register(generator);
+                fprintf(o, "  %%t%d = sext %s %%t%d to i64\n", use_reg, load_type, lv);
+              }
+              Value rv = {use_reg, load_kind};
               Value cv = value_cast(generator, rv, token_kind_to_value_kind(n->call.arguments.data[i]->ty));
               Syntax_Node *tg = n->call.arguments.data[i];
               if (tg->k == N_ID)
@@ -13916,23 +14076,14 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
                 Symbol *ts = tg->symbol ? tg->symbol : symbol_find(generator->sm, tg->string_value);
                 if (ts)
                 {
+                  Type_Info *target_type = ts->type_info ? type_canonical_concrete(ts->type_info) : 0;
+                  char ptr_str[128];
                   if (ts->level >= 0 and ts->level < generator->sm->lv)
-                    fprintf(
-                        o,
-                        "  store %s %%t%d, ptr %%lnk.%d.%s\n",
-                        value_llvm_type_string(cv.k),
-                        cv.id,
-                        ts->level,
-                        string_to_lowercase(tg->string_value));
+                    snprintf(ptr_str, 128, "%%lnk.%d.%s", ts->level, string_to_lowercase(tg->string_value));
                   else
-                    fprintf(
-                        o,
-                        "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
-                        value_llvm_type_string(cv.k),
-                        cv.id,
-                        string_to_lowercase(tg->string_value),
-                        ts->scope,
-                        ts->elaboration_level);
+                    snprintf(ptr_str, 128, "%%v.%s.sc%u.%u",
+                        string_to_lowercase(tg->string_value), ts->scope, ts->elaboration_level);
+                  emit_typed_store(generator, cv, ptr_str, target_type);
                 }
               }
             }
@@ -14041,11 +14192,35 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
           args[i] = generate_expression(generator, n->call.arguments.data[i]);
         }
 
-        // Now generate the call with the parameter values
-        fprintf(o, "  %%t%d = call %s @%s(", r.id, value_llvm_type_string(ret_kind), fnb);
+        /* §GNAT-LLVM: Type-correct argument emission for N_SEL calls
+         * Truncate i64 computation values to declared parameter types.
+         */
+        int sel_arg_regs[64];
+        const char *sel_arg_types[64];
+        for (uint32_t i = 0; i < n->call.arguments.count and i < 64; i++)
+        {
+          Type_Info *pt = func_spec and i < func_spec->subprogram.parameters.count
+              and func_spec->subprogram.parameters.data[i]->parameter.ty
+              ? resolve_subtype(generator->sm, func_spec->subprogram.parameters.data[i]->parameter.ty) : 0;
+          sel_arg_types[i] = pt ? ada_to_c_type_string(pt) : value_llvm_type_string(args[i].k);
+          if (args[i].k == VALUE_KIND_INTEGER and is_narrow_int(sel_arg_types[i]))
+          {
+            sel_arg_regs[i] = new_temporary_register(generator);
+            fprintf(o, "  %%t%d = trunc i64 %%t%d to %s\n", sel_arg_regs[i], args[i].id, sel_arg_types[i]);
+          }
+          else
+            sel_arg_regs[i] = args[i].id;
+        }
 
-        // Add static link if needed
-        bool needs_slnk = func_sym->level >= 0 and func_sym->level < generator->sm->lv;
+        // Now generate the call with the parameter values
+        /* §GNAT-LLVM: Sign-extend narrow integer returns to i64 */
+        const char *sel_ret_type = value_llvm_type_string(ret_kind);
+        bool sel_need_sext = (ret_kind == VALUE_KIND_INTEGER && is_narrow_int(sel_ret_type));
+        int sel_call_result = sel_need_sext ? new_temporary_register(generator) : r.id;
+        fprintf(o, "  %%t%d = call %s @%s(", sel_call_result, sel_ret_type, fnb);
+
+        // Add static link if needed (only for truly nested functions)
+        bool needs_slnk = is_truly_nested(func_sym) and func_sym->level < generator->sm->lv;
         if (needs_slnk)
           fprintf(o, "ptr %%__slnk");
 
@@ -14054,10 +14229,12 @@ static Value generate_expression(Code_Generator *generator, Syntax_Node *n)
         {
           if (needs_slnk or i > 0)
             fprintf(o, ", ");
-          fprintf(o, "%s %%t%d", value_llvm_type_string(args[i].k), args[i].id);
+          fprintf(o, "%s %%t%d", sel_arg_types[i], sel_arg_regs[i]);
         }
 
         fprintf(o, ")\n");
+        if (sel_need_sext)
+          fprintf(o, "  %%t%d = sext %s %%t%d to i64\n", r.id, sel_ret_type, sel_call_result);
         r.k = ret_kind;
         break;
       }
@@ -14365,15 +14542,18 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
       fprintf(o, "  %%t%d = getelementptr %s, ptr %%t%d, i64 %%t%d\n", ep, elem_type_str, p.id, adj_idx);
       Value_Kind target_kind = et ? token_kind_to_value_kind(et) : VALUE_KIND_INTEGER;
       v = value_cast(generator, v, target_kind);
+      // §GNAT-LLVM: Store using element type to ensure consistency with getelementptr
       if (strcmp(elem_type_str, "i64") != 0 and target_kind == VALUE_KIND_INTEGER)
       {
+        // Narrow element type: truncate i64 computation result to element size
         int tv = new_temporary_register(generator);
         fprintf(o, "  %%t%d = trunc i64 %%t%d to %s\n", tv, v.id, elem_type_str);
         fprintf(o, "  store %s %%t%d, ptr %%t%d\n", elem_type_str, tv, ep);
       }
       else
       {
-        fprintf(o, "  store %s %%t%d, ptr %%t%d\n", value_llvm_type_string(target_kind), v.id, ep);
+        // i64 element type or non-integer: store directly with element type
+        fprintf(o, "  store %s %%t%d, ptr %%t%d\n", elem_type_str, v.id, ep);
       }
     }
     else if (n->assignment.target->k == N_SEL)
@@ -15214,6 +15394,22 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             ark[i] = ek != VALUE_KIND_INTEGER ? ek : av.k;
             arp[i] = rf ? 1 : 0;
           }
+          /* §GNAT-LLVM: Type-correct argument emission for N_CLT procedure calls */
+          int clt_arg_regs[64];
+          const char *clt_arg_types[64];
+          for (uint32_t i = 0; i < n->code_stmt.arguments.count and i < 64; i++)
+          {
+            Type_Info *pt = sp and i < sp->subprogram.parameters.count and sp->subprogram.parameters.data[i]->parameter.ty
+                ? resolve_subtype(generator->sm, sp->subprogram.parameters.data[i]->parameter.ty) : 0;
+            clt_arg_types[i] = pt ? ada_to_c_type_string(pt) : value_llvm_type_string(ark[i]);
+            if (ark[i] == VALUE_KIND_INTEGER and is_narrow_int(clt_arg_types[i]))
+            {
+              clt_arg_regs[i] = new_temporary_register(generator);
+              fprintf(o, "  %%t%d = trunc i64 %%t%d to %s\n", clt_arg_regs[i], arid[i], clt_arg_types[i]);
+            }
+            else
+              clt_arg_regs[i] = arid[i];
+          }
           char nb[256];
           if (s->is_external)
             snprintf(nb, 256, "%.*s", (int) s->external_name.length, s->external_name.string);
@@ -15224,9 +15420,10 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           {
             if (i)
               fprintf(o, ", ");
-            fprintf(o, "%s %%t%d", value_llvm_type_string(ark[i]), arid[i]);
+            fprintf(o, "%s %%t%d", clt_arg_types[i], clt_arg_regs[i]);
           }
-          if (s->level > 0 and not s->is_external)
+          /* §GNAT-LLVM: Only pass static link for truly nested subprograms */
+          if (is_truly_nested(s) and not s->is_external)
           {
             if (n->code_stmt.arguments.count > 0)
               fprintf(o, ", ");
@@ -15240,15 +15437,17 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           {
             if (arp[i])
             {
+              /* §GNAT-LLVM: Load OUT params and sign-extend narrow ints to i64 */
+              Value_Kind load_kind = ark[i] == VALUE_KIND_POINTER ? VALUE_KIND_INTEGER : ark[i];
+              const char *load_type = value_llvm_type_string(load_kind);
               int lv = new_temporary_register(generator);
-              fprintf(
-                  o,
-                  "  %%t%d = load %s, ptr %%t%d\n",
-                  lv,
-                  value_llvm_type_string(
-                      ark[i] == VALUE_KIND_POINTER ? VALUE_KIND_INTEGER : ark[i]),
-                  arid[i]);
-              Value rv = {lv, ark[i] == VALUE_KIND_POINTER ? VALUE_KIND_INTEGER : ark[i]};
+              fprintf(o, "  %%t%d = load %s, ptr %%t%d\n", lv, load_type, arid[i]);
+              int use_reg = lv;
+              if (load_kind == VALUE_KIND_INTEGER && is_narrow_int(load_type)) {
+                use_reg = new_temporary_register(generator);
+                fprintf(o, "  %%t%d = sext %s %%t%d to i64\n", use_reg, load_type, lv);
+              }
+              Value rv = {use_reg, load_kind};
               Value cv = value_cast(generator, rv, token_kind_to_value_kind(n->code_stmt.arguments.data[i]->ty));
               Syntax_Node *tg = n->code_stmt.arguments.data[i];
               if (tg->k == N_ID)
@@ -15256,23 +15455,14 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                 Symbol *ts = tg->symbol ? tg->symbol : symbol_find(generator->sm, tg->string_value);
                 if (ts)
                 {
+                  Type_Info *target_type = ts->type_info ? type_canonical_concrete(ts->type_info) : 0;
+                  char ptr_str[128];
                   if (ts->level >= 0 and ts->level < generator->sm->lv)
-                    fprintf(
-                        o,
-                        "  store %s %%t%d, ptr %%lnk.%d.%s\n",
-                        value_llvm_type_string(cv.k),
-                        cv.id,
-                        ts->level,
-                        string_to_lowercase(tg->string_value));
+                    snprintf(ptr_str, 128, "%%lnk.%d.%s", ts->level, string_to_lowercase(tg->string_value));
                   else
-                    fprintf(
-                        o,
-                        "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
-                        value_llvm_type_string(cv.k),
-                        cv.id,
-                        string_to_lowercase(tg->string_value),
-                        ts->scope,
-                        ts->elaboration_level);
+                    snprintf(ptr_str, 128, "%%v.%s.sc%u.%u",
+                        string_to_lowercase(tg->string_value), ts->scope, ts->elaboration_level);
+                  emit_typed_store(generator, cv, ptr_str, target_type);
                 }
               }
             }
@@ -15361,6 +15551,22 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             arid[i] = av.id;
             ark[i] = ek;
           }
+          /* §GNAT-LLVM: Type-correct argument emission for N_CLT (SK_PROCEDURE/SK_FUNCTION) */
+          int clt2_arg_regs[64];
+          const char *clt2_arg_types[64];
+          for (uint32_t i = 0; i < n->code_stmt.arguments.count and i < 64; i++)
+          {
+            Type_Info *pt = sp and i < sp->subprogram.parameters.count and sp->subprogram.parameters.data[i]->parameter.ty
+                ? resolve_subtype(generator->sm, sp->subprogram.parameters.data[i]->parameter.ty) : 0;
+            clt2_arg_types[i] = pt ? ada_to_c_type_string(pt) : value_llvm_type_string(ark[i]);
+            if (ark[i] == VALUE_KIND_INTEGER and is_narrow_int(clt2_arg_types[i]))
+            {
+              clt2_arg_regs[i] = new_temporary_register(generator);
+              fprintf(o, "  %%t%d = trunc i64 %%t%d to %s\n", clt2_arg_regs[i], arid[i], clt2_arg_types[i]);
+            }
+            else
+              clt2_arg_regs[i] = arid[i];
+          }
           char nb[256];
           if (s->is_external)
             snprintf(nb, 256, "%.*s", (int) s->external_name.length, s->external_name.string);
@@ -15379,7 +15585,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
           {
             if (i)
               fprintf(o, ", ");
-            fprintf(o, "%s %%t%d", value_llvm_type_string(ark[i]), arid[i]);
+            fprintf(o, "%s %%t%d", clt2_arg_types[i], clt2_arg_regs[i]);
           }
           fprintf(o, ")\n");
         }
@@ -15455,9 +15661,25 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
       }
       // General handling for N_SEL procedure/function calls (e.g., MY_IO.WRITE(F, X))
       // k=4 is procedure, k=5 is function
-      if (sel->symbol and (sel->symbol->k == 4 or sel->symbol->k == 5))
+      Symbol *func_sym = sel->symbol;
+      /* §GNAT-LLVM: Fallback lookup for package.procedure when sel->symbol not set */
+      if (not func_sym and sel->selected_component.prefix->k == N_ID)
       {
-        Symbol *func_sym = sel->symbol;
+        Symbol *ps = symbol_find(generator->sm, sel->selected_component.prefix->string_value);
+        if (ps and ps->k == SK_PACKAGE and ps->definition and ps->definition->k == N_PKS)
+        {
+          Syntax_Node *pk = ps->definition;
+          for (uint32_t di = 0; di < pk->package_spec.declarations.count and not func_sym; di++)
+          {
+            Syntax_Node *d = pk->package_spec.declarations.data[di];
+            if (d->symbol and (d->symbol->k == 4 or d->symbol->k == 5)
+                and string_equal_ignore_case(d->symbol->name, sel->selected_component.selector))
+              func_sym = d->symbol;
+          }
+        }
+      }
+      if (func_sym and (func_sym->k == 4 or func_sym->k == 5))
+      {
         Syntax_Node *func_spec = symbol_spec(func_sym);
 
         // Generate all parameter expressions first
@@ -15465,6 +15687,24 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
         for (uint32_t i = 0; i < n->code_stmt.arguments.count and i < 64; i++)
         {
           args[i] = generate_expression(generator, n->code_stmt.arguments.data[i]);
+        }
+
+        /* §GNAT-LLVM: Type-correct argument emission for N_SEL procedure/function calls */
+        int sel_arg_regs[64];
+        const char *sel_arg_types[64];
+        for (uint32_t i = 0; i < n->code_stmt.arguments.count and i < 64; i++)
+        {
+          Syntax_Node *pm = func_spec and i < func_spec->subprogram.parameters.count
+              ? func_spec->subprogram.parameters.data[i] : 0;
+          Type_Info *pt = pm and pm->parameter.ty ? resolve_subtype(generator->sm, pm->parameter.ty) : 0;
+          sel_arg_types[i] = pt ? ada_to_c_type_string(pt) : value_llvm_type_string(args[i].k);
+          if (args[i].k == VALUE_KIND_INTEGER and is_narrow_int(sel_arg_types[i]))
+          {
+            sel_arg_regs[i] = new_temporary_register(generator);
+            fprintf(o, "  %%t%d = trunc i64 %%t%d to %s\n", sel_arg_regs[i], args[i].id, sel_arg_types[i]);
+          }
+          else
+            sel_arg_regs[i] = args[i].id;
         }
 
         // Build function name
@@ -15476,21 +15716,18 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
             ? token_kind_to_value_kind(resolve_subtype(generator->sm, func_spec->subprogram.return_type))
             : VALUE_KIND_POINTER;
 
+        // Add static link if needed (only for truly nested functions)
+        bool needs_slnk = is_truly_nested(func_sym) and func_sym->level < generator->sm->lv;
+
         // Generate the call
         if (func_sym->k == 5 and func_spec and func_spec->subprogram.return_type)
         {
-          // Function with return value
           int rid = new_temporary_register(generator);
           fprintf(o, "  %%t%d = call %s @%s(", rid, value_llvm_type_string(ret_kind), fnb);
         }
         else
-        {
-          // Procedure or function without explicit return
           fprintf(o, "  call void @%s(", fnb);
-        }
 
-        // Add static link if needed
-        bool needs_slnk = func_sym->level >= 0 and func_sym->level < generator->sm->lv;
         if (needs_slnk)
           fprintf(o, "ptr %%__slnk");
 
@@ -15499,7 +15736,7 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
         {
           if (needs_slnk or i > 0)
             fprintf(o, ", ");
-          fprintf(o, "%s %%t%d", value_llvm_type_string(args[i].k), args[i].id);
+          fprintf(o, "%s %%t%d", sel_arg_types[i], sel_arg_regs[i]);
         }
 
         fprintf(o, ")\n");
@@ -15682,11 +15919,12 @@ static void generate_statement_sequence(Code_Generator *generator, Syntax_Node *
                 }
                 else
                 {
-                  v = value_cast(generator, v, k);
-                  fprintf(o, "  store %s %%t%d, ptr %%v.%s.sc%u.%u\n",
-                      value_llvm_type_string(k), v.id,
-                      string_to_lowercase(id->string_value),
-                      s ? s->scope : 0, s ? s->elaboration_level : 0);
+                  /* §GNAT-LLVM: Use emit_typed_store for proper truncation */
+                  char ptr_str[128];
+                  snprintf(ptr_str, 128, "%%v.%s.sc%u.%u",
+                       string_to_lowercase(id->string_value),
+                       s ? s->scope : 0, s ? s->elaboration_level : 0);
+                  emit_typed_store(generator, v, ptr_str, at);
                 }
               }
             }
@@ -16476,7 +16714,8 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     }
     fprintf(o, "define linkonce_odr void @%s(", nb);
     int np = sp->subprogram.parameters.count;
-    if (n->symbol and n->symbol->level > 0)
+    /* §GNAT-LLVM: Only truly nested subprograms need static link parameter */
+    if (is_truly_nested(n->symbol))
       np++;
     for (int i = 0; i < np; i++)
     {
@@ -16485,12 +16724,14 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       if (i < (int) sp->subprogram.parameters.count)
       {
         Syntax_Node *p = sp->subprogram.parameters.data[i];
-        Value_Kind k = p->parameter.ty ? token_kind_to_value_kind(resolve_subtype(generator->sm, p->parameter.ty))
-                                : VALUE_KIND_INTEGER;
+        Type_Info *pt = p->parameter.ty ? resolve_subtype(generator->sm, p->parameter.ty) : 0;
+        Value_Kind k = pt ? token_kind_to_value_kind(pt) : VALUE_KIND_INTEGER;
+        // §GNAT-LLVM: Use actual parameter type for signature (e.g., i8 for CHARACTER)
+        const char *param_type = pt ? ada_to_c_type_string(pt) : value_llvm_type_string(k);
         if (p->parameter.mode & 2)
           fprintf(o, "ptr %%p.%s", string_to_lowercase(p->parameter.name));
         else
-          fprintf(o, "%s %%p.%s", value_llvm_type_string(k), string_to_lowercase(p->parameter.name));
+          fprintf(o, "%s %%p.%s", param_type, string_to_lowercase(p->parameter.name));
       }
       else
         fprintf(o, "ptr %%__slnk");
@@ -16499,7 +16740,9 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     fprintf(o, "  %%ej = alloca ptr\n");
     int sv = generator->sm->lv;
     generator->sm->lv = n->symbol ? n->symbol->level + 1 : 0;
-    bool needs_frame = (n->symbol and n->symbol->level > 0) or has_nested_function(&n->body.declarations, &n->body.statements);
+    /* §GNAT-LLVM: Only truly nested subprograms have %__slnk available */
+    bool has_slnk = is_truly_nested(n->symbol);
+    bool needs_frame = has_slnk or has_nested_function(&n->body.declarations, &n->body.statements);
     if (needs_frame)
     {
       generate_block_frame(generator);
@@ -16510,14 +16753,14 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
             mx = s->elaboration_level;
       if (mx == 0)
       {
-        // If level > 0, we have %__slnk to alias; otherwise allocate minimal frame
-        if (n->symbol and n->symbol->level > 0)
+        // If truly nested, we have %__slnk to alias; otherwise allocate minimal frame
+        if (has_slnk)
           fprintf(o, "  %%__frame = bitcast ptr %%__slnk to ptr\n");
         else
           fprintf(o, "  %%__frame = alloca [1 x ptr]\n");
       }
     }
-    if (n->symbol and n->symbol->level > 0)
+    if (has_slnk)
     {
       int fp0 = new_temporary_register(generator);
       fprintf(o, "  %%t%d = getelementptr ptr, ptr %%__frame, i64 0\n", fp0);
@@ -16576,13 +16819,12 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       else
       {
         // IN parameter - store parameter value to local
-        // Parameter type in signature matches alloc_type, so direct store
-        const char *param_type = value_llvm_type_string(k);
+        // §GNAT-LLVM: Use alloc_type for store (matches function signature parameter type)
         if (ps and ps->level >= 0 and ps->level < generator->sm->lv)
           fprintf(
               o,
               "  store %s %%p.%s, ptr %%lnk.%d.%s\n",
-              param_type,
+              alloc_type,
               string_to_lowercase(p->parameter.name),
               ps->level,
               string_to_lowercase(p->parameter.name));
@@ -16590,7 +16832,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
           fprintf(
               o,
               "  store %s %%p.%s, ptr %%v.%s.sc%u.%u\n",
-              param_type,
+              alloc_type,
               string_to_lowercase(p->parameter.name),
               string_to_lowercase(p->parameter.name),
               ps ? ps->scope : 0,
@@ -16850,7 +17092,8 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     }
     fprintf(o, "define linkonce_odr %s @%s(", value_llvm_type_string(rk), nb);
     int np = sp->subprogram.parameters.count;
-    if (n->symbol and n->symbol->level > 0)
+    /* §GNAT-LLVM: Only truly nested subprograms need static link parameter */
+    if (is_truly_nested(n->symbol))
       np++;
     for (int i = 0; i < np; i++)
     {
@@ -16859,12 +17102,14 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       if (i < (int) sp->subprogram.parameters.count)
       {
         Syntax_Node *p = sp->subprogram.parameters.data[i];
-        Value_Kind k = p->parameter.ty ? token_kind_to_value_kind(resolve_subtype(generator->sm, p->parameter.ty))
-                                : VALUE_KIND_INTEGER;
+        Type_Info *pt = p->parameter.ty ? resolve_subtype(generator->sm, p->parameter.ty) : 0;
+        Value_Kind k = pt ? token_kind_to_value_kind(pt) : VALUE_KIND_INTEGER;
+        // §GNAT-LLVM: Use actual parameter type for signature (e.g., i8 for CHARACTER)
+        const char *param_type = pt ? ada_to_c_type_string(pt) : value_llvm_type_string(k);
         if (p->parameter.mode & 2)
           fprintf(o, "ptr %%p.%s", string_to_lowercase(p->parameter.name));
         else
-          fprintf(o, "%s %%p.%s", value_llvm_type_string(k), string_to_lowercase(p->parameter.name));
+          fprintf(o, "%s %%p.%s", param_type, string_to_lowercase(p->parameter.name));
       }
       else
         fprintf(o, "ptr %%__slnk");
@@ -16873,7 +17118,9 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
     fprintf(o, "  %%ej = alloca ptr\n");
     int sv = generator->sm->lv;
     generator->sm->lv = n->symbol ? n->symbol->level + 1 : 0;
-    bool needs_frame = (n->symbol and n->symbol->level > 0) or has_nested_function(&n->body.declarations, &n->body.statements);
+    /* §GNAT-LLVM: Only truly nested subprograms have %__slnk available */
+    bool has_slnk = is_truly_nested(n->symbol);
+    bool needs_frame = has_slnk or has_nested_function(&n->body.declarations, &n->body.statements);
     if (needs_frame)
     {
       generate_block_frame(generator);
@@ -16884,14 +17131,14 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
             mx = s->elaboration_level;
       if (mx == 0)
       {
-        // If level > 0, we have %__slnk to alias; otherwise allocate minimal frame
-        if (n->symbol and n->symbol->level > 0)
+        // If truly nested, we have %__slnk to alias; otherwise allocate minimal frame
+        if (has_slnk)
           fprintf(o, "  %%__frame = bitcast ptr %%__slnk to ptr\n");
         else
           fprintf(o, "  %%__frame = alloca [1 x ptr]\n");
       }
     }
-    if (n->symbol and n->symbol->level > 0)
+    if (has_slnk)
     {
       int fp0 = new_temporary_register(generator);
       fprintf(o, "  %%t%d = getelementptr ptr, ptr %%__frame, i64 0\n", fp0);
@@ -16950,13 +17197,12 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
       else
       {
         // IN parameter - store parameter value to local
-        // Parameter type in signature matches alloc_type, so direct store
-        const char *param_type = value_llvm_type_string(k);
+        // §GNAT-LLVM: Use alloc_type for store (matches function signature parameter type)
         if (ps and ps->level >= 0 and ps->level < generator->sm->lv)
           fprintf(
               o,
               "  store %s %%p.%s, ptr %%lnk.%d.%s\n",
-              param_type,
+              alloc_type,
               string_to_lowercase(p->parameter.name),
               ps->level,
               string_to_lowercase(p->parameter.name));
@@ -16964,7 +17210,7 @@ static void generate_declaration(Code_Generator *generator, Syntax_Node *n)
           fprintf(
               o,
               "  store %s %%p.%s, ptr %%v.%s.sc%u.%u\n",
-              param_type,
+              alloc_type,
               string_to_lowercase(p->parameter.name),
               string_to_lowercase(p->parameter.name),
               ps ? ps->scope : 0,
@@ -18127,6 +18373,9 @@ static bool label_compare(Symbol_Manager *symbol_manager, String_Slice nm, Strin
         for (uint32_t j = 0; j < s->name.length; j++)
           nb[n++] = TOUPPER(s->name.string[j]);
         nb[n] = 0;
+        // Skip if already emitted (can happen with generic instantiations)
+        if (not add_declaration(&g, nb))
+          continue;
         // Handle string constants - may be wrapped in N_CHK (check node)
         Syntax_Node *def = s->definition;
         if (def and def->k == N_CHK)
@@ -18338,8 +18587,6 @@ int main(int ac, char **av)
   FILE *o = stdout;
   Code_Generator g = {o, 0, 0, 0, &sm, {0}, 0, {0}, 0, {0}, 0, {0}, 13, {0}, {0}, {0}, {0}, 0};
   generate_runtime_type(&g);
-  // Track emitted globals to avoid duplicates
-  static char last_emitted[256] = {0};
   for (int h = 0; h < SYMBOL_TABLE_SIZE; h++)
     for (Symbol *s = sm.sy[h]; s; s = s->next)
       if ((s->k == SK_VARIABLE or s->k == SK_CONSTANT) and (s->level == 0 or s->parent) and not(s->parent and lfnd(&sm, s->parent->name))
@@ -18359,11 +18606,9 @@ int main(int ac, char **av)
         }
         else
           snprintf(nb, 256, "%.*s", (int) s->name.length, s->name.string);
-        // Skip if this global was already emitted (deduplication)
-        if (strcmp(nb, last_emitted) == 0)
+        // Skip if this global was already emitted (deduplication using add_declaration)
+        if (not add_declaration(&g, nb))
           continue;
-        strncpy(last_emitted, nb, 255);
-        last_emitted[255] = 0;
         // Handle string constants - may be wrapped in N_CHK (check node)
         Syntax_Node *def2 = s->definition;
         if (def2 and def2->k == N_CHK)
