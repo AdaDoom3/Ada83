@@ -2001,12 +2001,37 @@ static AST_Node *parse_type_definition(Parser *p) {
         return node;
     }
 
-    /* Array type: type T is array (Index_Type) of Element_Type; */
+    /* Array type: type T is array (Index) of Element_Type; */
     if (parser_match(p, TOK_ARRAY)) {
         parser_advance(p);
         parser_expect(p, TOK_LPAREN, "expected '(' after 'array'");
 
-        AST_Node *index = parse_expression(p);
+        /* Parse index - can be range (1..5) or type name */
+        AST_Node *index = NULL;
+
+        /* Check for box <> (unconstrained) */
+        if (parser_match(p, TOK_BOX)) {
+            parser_advance(p);
+            index = ast_node_new(NODE_RANGE, tok.location);
+            index->assignment.target = NULL;
+            index->assignment.value = NULL;
+        } else {
+            /* Parse low bound or type name */
+            AST_Node *first = parse_expression(p);
+
+            /* Check for range */
+            if (parser_match(p, TOK_DOT_DOT)) {
+                parser_advance(p);
+                AST_Node *second = parse_expression(p);
+                index = ast_node_new(NODE_RANGE, tok.location);
+                index->assignment.target = first;
+                index->assignment.value = second;
+            } else {
+                /* Just a type name */
+                index = first;
+            }
+        }
+
         parser_expect(p, TOK_RPAREN, "expected ')' after index type");
         parser_expect(p, TOK_OF, "expected 'of' after array index");
 
@@ -2312,13 +2337,22 @@ static AST_Node *parse_declaration(Parser *p) {
             if (parser_match(p, TOK_IDENTIFIER)) parser_advance(p);  /* optional name */
             parser_expect(p, TOK_SEMICOLON, "expected ';' after subprogram");
 
+            /* Combine declarations and statements into body */
+            AST_Vector body = {0};
+            for (int i = 0; i < declarations.count; i++) {
+                ast_vector_push(&body, declarations.items[i]);
+            }
+            for (int i = 0; i < statements.count; i++) {
+                ast_vector_push(&body, statements.items[i]);
+            }
+
             AST_Node *node = ast_node_new(NODE_SUBPROGRAM_BODY, tok.location);
             node->subprogram.name = slice_to_lowercase(name.text);
             node->subprogram.parameters = params.items;
             node->subprogram.parameter_count = params.count;
             node->subprogram.return_type = return_type;
-            node->subprogram.body = statements.items;
-            node->subprogram.body_count = statements.count;
+            node->subprogram.body = body.items;
+            node->subprogram.body_count = body.count;
             return node;
         } else {
             /* Just a declaration */
@@ -2633,8 +2667,56 @@ static Type_Info *resolve_type_expression(Semantic_Analyzer *sem, AST_Node *node
 
         case NODE_ARRAY_TYPE: {
             Type_Info *ty = type_info_new(TYPE_ARRAY);
-            ty->index_type = resolve_type_expression(sem, node->assignment.target);
+
+            /* Resolve element type */
             ty->element_type = resolve_type_expression(sem, node->assignment.value);
+
+            /* Handle index - can be range or type name */
+            AST_Node *index_node = node->assignment.target;
+
+            if (index_node and index_node->kind == NODE_RANGE) {
+                /* Direct range: array (1 .. 5) */
+                AST_Node *low = index_node->assignment.target;
+                AST_Node *high = index_node->assignment.value;
+
+                /* Evaluate bounds */
+                if (low and low->kind == NODE_INTEGER_LITERAL) {
+                    ty->low_bound = low->integer_literal.value;
+                    ty->has_constraint = true;
+                }
+                if (high and high->kind == NODE_INTEGER_LITERAL) {
+                    ty->high_bound = high->integer_literal.value;
+                    ty->has_constraint = true;
+                }
+
+                /* Index type is Integer by default for constrained arrays */
+                ty->index_type = type_integer;
+            } else if (index_node) {
+                /* Type name: array (Integer) */
+                ty->index_type = resolve_type_expression(sem, index_node);
+
+                /* If index type has constraints, use them */
+                if (ty->index_type and ty->index_type->has_constraint) {
+                    ty->low_bound = ty->index_type->low_bound;
+                    ty->high_bound = ty->index_type->high_bound;
+                    ty->has_constraint = true;
+                }
+            } else {
+                /* Unconstrained: array (<>) */
+                ty->low_bound = 0;
+                ty->high_bound = -1;
+                ty->has_constraint = false;
+            }
+
+            /* Calculate array size if constrained */
+            if (ty->has_constraint and ty->element_type) {
+                int64_t count = ty->high_bound - ty->low_bound + 1;
+                if (count > 0) {
+                    ty->size = ty->element_type->size * count;
+                    ty->alignment = ty->element_type->alignment;
+                }
+            }
+
             return ty;
         }
 
@@ -3178,14 +3260,47 @@ static void codegen_subprogram(Code_Generator *cg, AST_Node *node) {
     for (int i = 0; i < node->subprogram.body_count; i++) {
         if (node->subprogram.body[i]->kind == NODE_OBJECT_DECLARATION) {
             AST_Node *decl = node->subprogram.body[i];
-            fprintf(cg->output, "  %%%s = alloca i32\n", decl->declaration.name);
+            Type_Info *var_type = decl->type;
 
-            if (decl->declaration.initializer) {
-                const char *init_val = NULL;
-                codegen_expression(cg, decl->declaration.initializer, &init_val);
-                if (init_val) {
-                    fprintf(cg->output, "  store i32 %s, i32* %%%s\n",
-                            init_val, decl->declaration.name);
+            /* Determine LLVM type */
+            if (var_type and var_type->kind == TYPE_ARRAY and var_type->has_constraint) {
+                /* Constrained array - allocate as array */
+                int64_t count = var_type->high_bound - var_type->low_bound + 1;
+                fprintf(cg->output, "  %%%s = alloca [%ld x i32]\n", decl->declaration.name, (long)count);
+
+                /* Initialize from aggregate if present */
+                if (decl->declaration.initializer and decl->declaration.initializer->kind == NODE_AGGREGATE) {
+                    AST_Node *agg = decl->declaration.initializer;
+                    for (int j = 0; j < agg->aggregate.component_count; j++) {
+                        AST_Node *comp = agg->aggregate.components[j];
+                        const char *elem_val = NULL;
+
+                        /* Handle named vs positional */
+                        if (comp->kind == NODE_ASSIGNMENT) {
+                            codegen_expression(cg, comp->assignment.value, &elem_val);
+                        } else {
+                            codegen_expression(cg, comp, &elem_val);
+                        }
+
+                        if (elem_val) {
+                            const char *elem_ptr = codegen_temp(cg);
+                            fprintf(cg->output, "  %s = getelementptr [%ld x i32], ptr %%%s, i32 0, i32 %d\n",
+                                    elem_ptr, (long)count, decl->declaration.name, j);
+                            fprintf(cg->output, "  store i32 %s, ptr %s\n", elem_val, elem_ptr);
+                        }
+                    }
+                }
+            } else {
+                /* Scalar type */
+                fprintf(cg->output, "  %%%s = alloca i32\n", decl->declaration.name);
+
+                if (decl->declaration.initializer) {
+                    const char *init_val = NULL;
+                    codegen_expression(cg, decl->declaration.initializer, &init_val);
+                    if (init_val) {
+                        fprintf(cg->output, "  store i32 %s, i32* %%%s\n",
+                                init_val, decl->declaration.name);
+                    }
                 }
             }
         }
