@@ -4120,8 +4120,438 @@ static Symbol *Symbol_Find_With_Arity(Symbol_Manager *sm, String_Slice name, uin
     return NULL;
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §11.6 OVERLOAD RESOLUTION — Following GNAT sem_type.ads Design
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * Ada's overload resolution is a two-pass process:
+ *
+ * 1. Bottom-up pass: Collect all possible interpretations of each identifier
+ *    based on visibility rules. Each interpretation is a (Symbol, Type) pair.
+ *
+ * 2. Top-down pass: Given context type expectations, select the unique valid
+ *    interpretation using disambiguation rules.
+ *
+ * Key GNAT concepts implemented here:
+ * - Interp: Record of (Nam, Typ, Opnd_Typ) representing one interpretation
+ * - Covers: Type compatibility test (T1 covers T2 if T2's values are legal for T1)
+ * - Disambiguate: Select best interpretation when multiple are valid
+ *
+ * Per RM 8.6: Overload resolution identifies the unique declaration for each
+ * identifier. It fails if no interpretation is valid or if multiple are valid.
+ */
+
 /* ─────────────────────────────────────────────────────────────────────────
- * §11.6 Symbol Manager Initialization
+ * §11.6.1 Interpretation Structure
+ *
+ * Following GNAT's sem_type.ads: "type Interp is record Nam, Typ, Opnd_Typ..."
+ * We store interpretations in a contiguous array during resolution.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+#define MAX_INTERPRETATIONS 64
+
+typedef struct {
+    Symbol    *nam;           /* The entity (function, procedure, operator) */
+    Type_Info *typ;           /* The result type */
+    Type_Info *opnd_typ;      /* For comparison ops: operand type for visibility */
+    bool       is_universal;  /* True if operands are universal types */
+    uint32_t   scope_depth;   /* Nesting level for hiding rules */
+} Interpretation;
+
+typedef struct {
+    Interpretation items[MAX_INTERPRETATIONS];
+    uint32_t       count;
+} Interp_List;
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §11.6.2 Type Covering (Compatibility)
+ *
+ * Following GNAT's Covers function from sem_type.adb:
+ * T1 covers T2 if values of T2 are legal where T1 is expected.
+ *
+ * Key rules from RM 8.6:
+ * - Same type: always covers
+ * - Subtypes of same base type: cover each other
+ * - Universal types: Universal_Integer covers any integer type, etc.
+ * - Class-wide types: Cover all types in the class (Ada 95+, not in Ada 83)
+ * ───────────────────────────────────────────────────────────────────────── */
+
+static bool Type_Covers(Type_Info *expected, Type_Info *actual) {
+    /* Null types are permissive (incomplete analysis) */
+    if (!expected || !actual) return true;
+
+    /* Same type always covers */
+    if (expected == actual) return true;
+
+    /* Universal_Integer covers any discrete type */
+    if (expected->kind == TYPE_UNIVERSAL_INTEGER) {
+        return Type_Is_Discrete(actual);
+    }
+    if (actual->kind == TYPE_UNIVERSAL_INTEGER) {
+        return Type_Is_Discrete(expected);
+    }
+
+    /* Universal_Real covers any real type */
+    if (expected->kind == TYPE_UNIVERSAL_REAL) {
+        return Type_Is_Real(actual);
+    }
+    if (actual->kind == TYPE_UNIVERSAL_REAL) {
+        return Type_Is_Real(expected);
+    }
+
+    /* Same base type covers */
+    Type_Info *base_exp = Type_Base(expected);
+    Type_Info *base_act = Type_Base(actual);
+    if (base_exp == base_act) return true;
+    if (base_exp == actual || expected == base_act) return true;
+
+    /* Array/string compatibility: same structure */
+    if ((expected->kind == TYPE_ARRAY || expected->kind == TYPE_STRING) &&
+        (actual->kind == TYPE_ARRAY || actual->kind == TYPE_STRING)) {
+        /* STRING is compatible with CHARACTER arrays */
+        if (expected->kind == TYPE_STRING || actual->kind == TYPE_STRING) {
+            return true;
+        }
+        /* Arrays with same element type */
+        if (expected->array.element_type && actual->array.element_type) {
+            return Type_Covers(expected->array.element_type,
+                              actual->array.element_type);
+        }
+        return true;
+    }
+
+    /* Access types: check designated type compatibility */
+    if (expected->kind == TYPE_ACCESS && actual->kind == TYPE_ACCESS) {
+        if (expected->access.designated_type && actual->access.designated_type) {
+            return Type_Covers(expected->access.designated_type,
+                              actual->access.designated_type);
+        }
+        return true;
+    }
+
+    /* NULL literal covers any access type */
+    if (expected->kind == TYPE_ACCESS && !actual) {
+        return true;
+    }
+
+    return false;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §11.6.3 Parameter Conformance
+ *
+ * Check if an argument list matches a subprogram's parameter profile.
+ * Per RM 6.4.1: actual parameters must be type conformant with formals.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/* Forward declaration for Resolve_Expression - needed for argument resolution */
+static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node);
+
+typedef struct {
+    Type_Info **types;       /* Array of argument types */
+    uint32_t    count;       /* Number of arguments */
+    String_Slice *names;     /* Named association names (NULL for positional) */
+} Argument_Info;
+
+/* Check if arguments match a symbol's parameter profile */
+static bool Arguments_Match_Profile(Symbol *sym, Argument_Info *args) {
+    if (!sym) return false;
+
+    /* Check arity first */
+    uint32_t required_params = 0;
+    uint32_t optional_params = 0;
+
+    for (uint32_t i = 0; i < sym->parameter_count; i++) {
+        if (sym->parameters[i].default_value) {
+            optional_params++;
+        } else {
+            required_params++;
+        }
+    }
+
+    if (args->count < required_params ||
+        args->count > sym->parameter_count) {
+        return false;
+    }
+
+    /* Check type compatibility for each argument */
+    for (uint32_t i = 0; i < args->count; i++) {
+        Type_Info *arg_type = args->types[i];
+        Type_Info *param_type = NULL;
+
+        /* Handle named association */
+        if (args->names && args->names[i].data) {
+            bool found = false;
+            for (uint32_t j = 0; j < sym->parameter_count; j++) {
+                if (Slice_Equal_Ignore_Case(sym->parameters[j].name, args->names[i])) {
+                    param_type = sym->parameters[j].param_type;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) return false;
+        } else {
+            /* Positional: use i-th parameter */
+            if (i >= sym->parameter_count) return false;
+            param_type = sym->parameters[i].param_type;
+        }
+
+        if (!Type_Covers(param_type, arg_type)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §11.6.4 Interpretation Collection
+ *
+ * Following GNAT's Collect_Interps: gather all visible interpretations
+ * of an overloaded name. This includes:
+ * - Immediately visible entities
+ * - Use-visible entities (from USE clauses)
+ * - Predefined operators for the types involved
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/* Collect all visible interpretations of a name */
+static void Collect_Interpretations(Symbol_Manager *sm, String_Slice name,
+                                    Interp_List *interps) {
+    interps->count = 0;
+    uint32_t hash = Symbol_Hash_Name(name);
+
+    /* Search all enclosing scopes */
+    for (Scope *scope = sm->current_scope; scope; scope = scope->parent) {
+        for (Symbol *sym = scope->buckets[hash]; sym; sym = sym->next_in_bucket) {
+            if (!Slice_Equal_Ignore_Case(sym->name, name)) continue;
+            if (sym->visibility < VIS_IMMEDIATELY_VISIBLE) continue;
+
+            /* Add this interpretation and all overloads */
+            Symbol *s = sym;
+            while (s && interps->count < MAX_INTERPRETATIONS) {
+                /* Check if we already have this interpretation */
+                bool duplicate = false;
+                for (uint32_t i = 0; i < interps->count; i++) {
+                    if (interps->items[i].nam == s) {
+                        duplicate = true;
+                        break;
+                    }
+                }
+
+                if (!duplicate) {
+                    interps->items[interps->count++] = (Interpretation){
+                        .nam = s,
+                        .typ = (s->kind == SYMBOL_FUNCTION) ? s->return_type : s->type,
+                        .opnd_typ = NULL,
+                        .is_universal = false,
+                        .scope_depth = scope->nesting_level
+                    };
+                }
+
+                s = s->next_overload;
+            }
+        }
+    }
+}
+
+/* Filter interpretations by argument compatibility */
+static void Filter_By_Arguments(Interp_List *interps, Argument_Info *args) {
+    uint32_t write_idx = 0;
+
+    for (uint32_t i = 0; i < interps->count; i++) {
+        Symbol *sym = interps->items[i].nam;
+
+        /* Non-callable symbols don't filter by arguments */
+        if (sym->kind != SYMBOL_FUNCTION && sym->kind != SYMBOL_PROCEDURE) {
+            interps->items[write_idx++] = interps->items[i];
+            continue;
+        }
+
+        /* Keep if arguments match */
+        if (Arguments_Match_Profile(sym, args)) {
+            interps->items[write_idx++] = interps->items[i];
+        }
+    }
+
+    interps->count = write_idx;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §11.6.5 Disambiguation
+ *
+ * Following GNAT's Disambiguate function from sem_type.adb:
+ * When multiple interpretations remain, apply preference rules:
+ *
+ * 1. Prefer non-universal interpretations over universal
+ * 2. Prefer interpretations in inner scopes over outer scopes
+ * 3. User-defined operators can hide predefined operators if:
+ *    - They have the same signature
+ *    - They are visible in the current scope
+ * 4. For operators: prefer interpretation where operand types match exactly
+ *
+ * Per RM 8.6: Resolution fails if still ambiguous after preferences.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/* Check if sym1 hides sym2 (user-defined hiding predefined, or inner scope) */
+static bool Symbol_Hides(Symbol *sym1, Symbol *sym2) {
+    if (!sym1 || !sym2) return false;
+
+    /* User-defined function can hide predefined operator */
+    if ((sym1->kind == SYMBOL_FUNCTION || sym1->kind == SYMBOL_PROCEDURE) &&
+        sym2->nesting_level == 0) {  /* Predefined are at level 0 */
+        return true;
+    }
+
+    /* Inner scope hides outer scope */
+    if (sym1->nesting_level > sym2->nesting_level) {
+        return true;
+    }
+
+    return false;
+}
+
+/* Check if type is a universal type */
+static bool Type_Is_Universal(Type_Info *t) {
+    return t && (t->kind == TYPE_UNIVERSAL_INTEGER ||
+                 t->kind == TYPE_UNIVERSAL_REAL);
+}
+
+/* Score an interpretation for preference ranking (higher = better) */
+static int32_t Score_Interpretation(Interpretation *interp,
+                                    Type_Info *context_type,
+                                    Argument_Info *args) {
+    int32_t score = 0;
+    Symbol *sym = interp->nam;
+
+    /* Prefer non-universal interpretations */
+    if (!Type_Is_Universal(interp->typ)) {
+        score += 1000;
+    }
+
+    /* Prefer exact context type match */
+    if (context_type && interp->typ == context_type) {
+        score += 500;
+    }
+
+    /* Prefer inner scopes (user-defined over predefined) */
+    score += (int32_t)(interp->scope_depth * 10);
+
+    /* For functions: prefer exact argument type matches */
+    if (sym && (sym->kind == SYMBOL_FUNCTION || sym->kind == SYMBOL_PROCEDURE) && args) {
+        for (uint32_t i = 0; i < args->count && i < sym->parameter_count; i++) {
+            Type_Info *arg_type = args->types[i];
+            Type_Info *param_type = sym->parameters[i].param_type;
+
+            /* Exact match is better than just coverage */
+            if (arg_type == param_type) {
+                score += 100;
+            } else if (Type_Base(arg_type) == Type_Base(param_type)) {
+                score += 50;
+            }
+        }
+    }
+
+    return score;
+}
+
+/* Select the best interpretation from a list */
+static Symbol *Disambiguate(Interp_List *interps, Type_Info *context_type,
+                           Argument_Info *args) {
+    if (interps->count == 0) return NULL;
+    if (interps->count == 1) return interps->items[0].nam;
+
+    /* Score all interpretations */
+    int32_t best_score = INT32_MIN;
+    Symbol *best = NULL;
+    int tied_count = 0;
+
+    for (uint32_t i = 0; i < interps->count; i++) {
+        int32_t score = Score_Interpretation(&interps->items[i], context_type, args);
+
+        if (score > best_score) {
+            best_score = score;
+            best = interps->items[i].nam;
+            tied_count = 1;
+        } else if (score == best_score) {
+            /* Check hiding rules */
+            if (Symbol_Hides(interps->items[i].nam, best)) {
+                best = interps->items[i].nam;
+            } else if (!Symbol_Hides(best, interps->items[i].nam)) {
+                tied_count++;
+            }
+        }
+    }
+
+    /* If still tied, check for universal vs specific preference */
+    if (tied_count > 1 && context_type) {
+        /* Prefer interpretation matching context exactly */
+        for (uint32_t i = 0; i < interps->count; i++) {
+            if (interps->items[i].typ == context_type) {
+                return interps->items[i].nam;
+            }
+        }
+
+        /* Prefer non-universal */
+        for (uint32_t i = 0; i < interps->count; i++) {
+            if (!Type_Is_Universal(interps->items[i].typ)) {
+                return interps->items[i].nam;
+            }
+        }
+    }
+
+    return best;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §11.6.6 Unified Overload Resolution Entry Point
+ *
+ * Resolve_Overloaded_Call: main entry for call/indexed/conversion resolution
+ * This unifies the previous symbol_find_with_arity and symbol_find_with_args
+ * into a single, correct implementation following GNAT patterns.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+static Symbol *Resolve_Overloaded_Call(Symbol_Manager *sm,
+                                       String_Slice name,
+                                       Argument_Info *args,
+                                       Type_Info *context_type) {
+    Interp_List interps;
+
+    /* Phase 1: Collect all visible interpretations */
+    Collect_Interpretations(sm, name, &interps);
+
+    if (interps.count == 0) {
+        return NULL;  /* No visible interpretation */
+    }
+
+    /* Phase 2: Filter by argument compatibility */
+    if (args && args->count > 0) {
+        Filter_By_Arguments(&interps, args);
+
+        if (interps.count == 0) {
+            return NULL;  /* No matching profile */
+        }
+    }
+
+    /* Phase 3: Apply context type filtering if provided */
+    if (context_type && interps.count > 1) {
+        uint32_t write_idx = 0;
+        for (uint32_t i = 0; i < interps.count; i++) {
+            if (Type_Covers(context_type, interps.items[i].typ)) {
+                interps.items[write_idx++] = interps.items[i];
+            }
+        }
+        if (write_idx > 0) {
+            interps.count = write_idx;
+        }
+        /* If no matches, keep all for better error reporting */
+    }
+
+    /* Phase 4: Disambiguate if multiple interpretations remain */
+    return Disambiguate(&interps, context_type, args);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §11.7 Symbol Manager Initialization
  * ───────────────────────────────────────────────────────────────────────── */
 
 static void Symbol_Manager_Init_Predefined(Symbol_Manager *sm) {
@@ -4254,13 +4684,65 @@ static Type_Info *Resolve_Selected(Symbol_Manager *sm, Syntax_Node *node) {
     return sm->type_integer;  /* Error recovery */
 }
 
+/* Get the operator name string for a token kind */
+static String_Slice Operator_Name(Token_Kind op) {
+    switch (op) {
+        case TK_PLUS:      return S("\"+\"");
+        case TK_MINUS:     return S("\"-\"");
+        case TK_STAR:      return S("\"*\"");
+        case TK_SLASH:     return S("\"/\"");
+        case TK_MOD:       return S("\"mod\"");
+        case TK_REM:       return S("\"rem\"");
+        case TK_EXPON:     return S("\"**\"");
+        case TK_AMPERSAND: return S("\"&\"");
+        case TK_AND:       return S("\"and\"");
+        case TK_OR:        return S("\"or\"");
+        case TK_XOR:       return S("\"xor\"");
+        case TK_EQ:        return S("\"=\"");
+        case TK_NE:        return S("\"/=\"");
+        case TK_LT:        return S("\"<\"");
+        case TK_LE:        return S("\"<=\"");
+        case TK_GT:        return S("\">\"");
+        case TK_GE:        return S("\">=\"");
+        case TK_NOT:       return S("\"not\"");
+        case TK_ABS:       return S("\"abs\"");
+        default:           return S("");
+    }
+}
+
 static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
     Type_Info *left_type = Resolve_Expression(sm, node->binary.left);
     Type_Info *right_type = Resolve_Expression(sm, node->binary.right);
 
     Token_Kind op = node->binary.op;
 
-    /* Type checking based on operator */
+    /*
+     * Per RM 4.5: Binary operators can be user-defined. We first check for
+     * user-defined operators, then fall back to predefined semantics.
+     *
+     * User-defined operators are functions with designator names like "+" that
+     * take two parameters of the appropriate types.
+     */
+
+    /* Try to find a user-defined operator */
+    String_Slice op_name = Operator_Name(op);
+    if (op_name.length > 0) {
+        Type_Info *arg_types[2] = { left_type, right_type };
+        Argument_Info args = {
+            .types = arg_types,
+            .count = 2,
+            .names = NULL
+        };
+
+        Symbol *user_op = Resolve_Overloaded_Call(sm, op_name, &args, NULL);
+        if (user_op && user_op->kind == SYMBOL_FUNCTION) {
+            node->symbol = user_op;
+            node->type = user_op->return_type;
+            return node->type;
+        }
+    }
+
+    /* Fall back to predefined operator semantics */
     switch (op) {
         case TK_PLUS: case TK_MINUS: case TK_STAR: case TK_SLASH:
         case TK_MOD: case TK_REM: case TK_EXPON:
@@ -4269,15 +4751,20 @@ static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
                 Report_Error(node->location, "numeric operands required for %s",
                             Token_Name[op]);
             }
-            /* Result type: prefer non-universal */
-            node->type = (left_type->kind == TYPE_UNIVERSAL_INTEGER ||
-                         left_type->kind == TYPE_UNIVERSAL_REAL)
-                        ? right_type : left_type;
+            /* Result type: prefer non-universal (per RM 4.5.5) */
+            if (Type_Is_Universal(left_type) && !Type_Is_Universal(right_type)) {
+                node->type = right_type;
+            } else if (!Type_Is_Universal(left_type)) {
+                node->type = left_type;
+            } else {
+                /* Both universal - result is universal */
+                node->type = left_type;
+            }
             break;
 
         case TK_AMPERSAND:
             /* String/array concatenation */
-            if (left_type->kind != TYPE_STRING && left_type->kind != TYPE_ARRAY) {
+            if (left_type && left_type->kind != TYPE_STRING && left_type->kind != TYPE_ARRAY) {
                 Report_Error(node->location, "concatenation requires string or array");
             }
             node->type = left_type;
@@ -4285,16 +4772,20 @@ static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
 
         case TK_AND: case TK_OR: case TK_XOR:
         case TK_AND_THEN: case TK_OR_ELSE:
-            /* Boolean operators */
-            if (left_type->kind != TYPE_BOOLEAN || right_type->kind != TYPE_BOOLEAN) {
-                Report_Error(node->location, "Boolean operands required");
+            /* Boolean operators - can also operate on arrays of Boolean */
+            if (left_type && left_type->kind != TYPE_BOOLEAN) {
+                if (left_type->kind != TYPE_ARRAY ||
+                    !left_type->array.element_type ||
+                    left_type->array.element_type->kind != TYPE_BOOLEAN) {
+                    Report_Error(node->location, "Boolean operands required");
+                }
             }
-            node->type = sm->type_boolean;
+            node->type = left_type ? left_type : sm->type_boolean;
             break;
 
         case TK_EQ: case TK_NE: case TK_LT: case TK_LE: case TK_GT: case TK_GE:
             /* Comparison operators */
-            if (!Type_Compatible(left_type, right_type)) {
+            if (!Type_Covers(left_type, right_type) && !Type_Covers(right_type, left_type)) {
                 Report_Error(node->location, "incompatible types for comparison");
             }
             node->type = sm->type_boolean;
@@ -4313,105 +4804,186 @@ static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
 }
 
 static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
-    /* Resolve prefix to determine call vs. index vs. conversion */
-    Type_Info *prefix_type = Resolve_Expression(sm, node->apply.prefix);
-    Symbol *prefix_sym = node->apply.prefix->symbol;
+    /*
+     * Apply node resolution - handles multiple Ada constructs:
+     * 1. Function/procedure calls: Put(X), Process(A, B)
+     * 2. Array indexing: Arr(I), Matrix(I, J)
+     * 3. Type conversions: Integer(X), Float(Y)
+     * 4. Constrained subtype indications: String(1..10)
+     *
+     * For calls, we use the overload resolution engine to handle:
+     * - Overloaded subprogram names
+     * - Named parameter associations
+     * - Default parameter values
+     */
 
-    if (prefix_sym) {
-        if (prefix_sym->kind == SYMBOL_FUNCTION || prefix_sym->kind == SYMBOL_PROCEDURE) {
-            /* Function/procedure call */
-            /* Resolve arguments */
-            for (uint32_t i = 0; i < node->apply.arguments.count; i++) {
-                Resolve_Expression(sm, node->apply.arguments.items[i]);
+    /* First, resolve all arguments to get their types */
+    uint32_t arg_count = (uint32_t)node->apply.arguments.count;
+    Type_Info **arg_types = NULL;
+    String_Slice *arg_names = NULL;
+
+    if (arg_count > 0) {
+        arg_types = Arena_Allocate(arg_count * sizeof(Type_Info*));
+        arg_names = Arena_Allocate(arg_count * sizeof(String_Slice));
+
+        for (uint32_t i = 0; i < arg_count; i++) {
+            Syntax_Node *arg = node->apply.arguments.items[i];
+
+            /* Handle named associations: Name => Value */
+            if (arg->kind == NK_ASSOCIATION && arg->association.choices.count == 1) {
+                Syntax_Node *name_node = arg->association.choices.items[0];
+                if (name_node->kind == NK_IDENTIFIER) {
+                    arg_names[i] = name_node->string_val.text;
+                }
+                /* Resolve the value expression */
+                if (arg->association.expression) {
+                    arg_types[i] = Resolve_Expression(sm, arg->association.expression);
+                }
+            } else {
+                arg_names[i] = (String_Slice){0};  /* Positional */
+                arg_types[i] = Resolve_Expression(sm, arg);
             }
+        }
+    }
+
+    Argument_Info args = {
+        .types = arg_types,
+        .count = arg_count,
+        .names = arg_names
+    };
+
+    /* Resolve the prefix */
+    Syntax_Node *prefix = node->apply.prefix;
+    Symbol *prefix_sym = NULL;
+
+    /* For identifier prefix, use overload resolution */
+    if (prefix->kind == NK_IDENTIFIER) {
+        prefix_sym = Resolve_Overloaded_Call(sm, prefix->string_val.text, &args, NULL);
+        if (prefix_sym) {
+            prefix->symbol = prefix_sym;
+            prefix->type = (prefix_sym->kind == SYMBOL_FUNCTION) ?
+                           prefix_sym->return_type : prefix_sym->type;
+        } else {
+            /* Fall back to simple lookup for non-callable names */
+            prefix_sym = Symbol_Find(sm, prefix->string_val.text);
+            if (prefix_sym) {
+                prefix->symbol = prefix_sym;
+                prefix->type = prefix_sym->type;
+            }
+        }
+    } else {
+        /* For complex prefix (selected, etc.), resolve normally */
+        Resolve_Expression(sm, prefix);
+        prefix_sym = prefix->symbol;
+    }
+
+    Type_Info *prefix_type = prefix->type;
+
+    /* Handle based on what the prefix resolves to */
+    if (prefix_sym) {
+        /* ─── Case 1: Function/Procedure Call ─── */
+        if (prefix_sym->kind == SYMBOL_FUNCTION || prefix_sym->kind == SYMBOL_PROCEDURE) {
+            node->symbol = prefix_sym;
             node->type = prefix_sym->return_type;  /* NULL for procedures */
             return node->type;
-        } else if (prefix_sym->kind == SYMBOL_TYPE) {
-            /* Check if this is a constrained subtype: STRING(1..5), ARRAY_TYPE(bounds) */
-            Type_Info *base_type = prefix_sym->type;
-            if (base_type && (base_type->kind == TYPE_STRING || base_type->kind == TYPE_ARRAY)) {
-                /* Constrained array/string subtype indication */
-                /* Create a new constrained array type */
-                Type_Info *constrained = Type_New(TYPE_ARRAY, base_type->name);
-                constrained->array.is_constrained = true;
-                constrained->array.index_count = (uint32_t)node->apply.arguments.count;
+        }
 
-                /* For STRING, element type is CHARACTER */
-                if (base_type->kind == TYPE_STRING) {
-                    constrained->array.element_type = sm->type_character;
-                } else if (base_type->array.element_type) {
-                    constrained->array.element_type = base_type->array.element_type;
+        /* ─── Case 2: Type Conversion or Constrained Subtype ─── */
+        if (prefix_sym->kind == SYMBOL_TYPE) {
+            Type_Info *base_type = prefix_sym->type;
+
+            /* Check for constrained subtype indication: STRING(1..5) */
+            if (base_type && (base_type->kind == TYPE_STRING || base_type->kind == TYPE_ARRAY)) {
+                /* Check if arguments are ranges (subtype indication) vs values (indexing) */
+                bool has_range = false;
+                for (uint32_t i = 0; i < arg_count; i++) {
+                    Syntax_Node *arg = node->apply.arguments.items[i];
+                    if (arg->kind == NK_RANGE) {
+                        has_range = true;
+                        break;
+                    }
                 }
 
-                /* Process index constraints from arguments */
-                if (constrained->array.index_count > 0) {
-                    constrained->array.indices = Arena_Allocate(
-                        constrained->array.index_count * sizeof(Index_Info));
+                if (has_range) {
+                    /* Constrained array/string subtype indication */
+                    Type_Info *constrained = Type_New(TYPE_ARRAY, base_type->name);
+                    constrained->array.is_constrained = true;
+                    constrained->array.index_count = arg_count;
 
-                    for (uint32_t i = 0; i < node->apply.arguments.count; i++) {
-                        Syntax_Node *arg = node->apply.arguments.items[i];
-                        Resolve_Expression(sm, arg);
+                    /* Element type */
+                    if (base_type->kind == TYPE_STRING) {
+                        constrained->array.element_type = sm->type_character;
+                    } else if (base_type->array.element_type) {
+                        constrained->array.element_type = base_type->array.element_type;
+                    }
 
-                        Index_Info *info = &constrained->array.indices[i];
-                        info->index_type = sm->type_integer;
+                    /* Process index constraints */
+                    if (arg_count > 0) {
+                        constrained->array.indices = Arena_Allocate(
+                            arg_count * sizeof(Index_Info));
 
-                        /* Check if argument is a range */
-                        if (arg->kind == NK_RANGE) {
-                            if (arg->range.low && arg->range.low->kind == NK_INTEGER) {
-                                info->low_bound = (Type_Bound){
-                                    .kind = BOUND_INTEGER,
-                                    .int_value = arg->range.low->integer_lit.value
-                                };
-                            }
-                            if (arg->range.high && arg->range.high->kind == NK_INTEGER) {
-                                info->high_bound = (Type_Bound){
-                                    .kind = BOUND_INTEGER,
-                                    .int_value = arg->range.high->integer_lit.value
-                                };
+                        for (uint32_t i = 0; i < arg_count; i++) {
+                            Syntax_Node *arg = node->apply.arguments.items[i];
+                            Index_Info *info = &constrained->array.indices[i];
+                            info->index_type = sm->type_integer;
+
+                            if (arg->kind == NK_RANGE) {
+                                if (arg->range.low && arg->range.low->kind == NK_INTEGER) {
+                                    info->low_bound = (Type_Bound){
+                                        .kind = BOUND_INTEGER,
+                                        .int_value = arg->range.low->integer_lit.value
+                                    };
+                                }
+                                if (arg->range.high && arg->range.high->kind == NK_INTEGER) {
+                                    info->high_bound = (Type_Bound){
+                                        .kind = BOUND_INTEGER,
+                                        .int_value = arg->range.high->integer_lit.value
+                                    };
+                                }
                             }
                         }
+
+                        /* Compute size */
+                        int64_t count = 1;
+                        for (uint32_t i = 0; i < arg_count; i++) {
+                            int64_t lo = Type_Bound_Value(constrained->array.indices[i].low_bound);
+                            int64_t hi = Type_Bound_Value(constrained->array.indices[i].high_bound);
+                            count *= (hi - lo + 1);
+                        }
+                        uint32_t elem_size = constrained->array.element_type ?
+                                             constrained->array.element_type->size : 1;
+                        constrained->size = (uint32_t)(count * elem_size);
                     }
 
-                    /* Compute size */
-                    int64_t count = 1;
-                    for (uint32_t i = 0; i < constrained->array.index_count; i++) {
-                        int64_t lo = Type_Bound_Value(constrained->array.indices[i].low_bound);
-                        int64_t hi = Type_Bound_Value(constrained->array.indices[i].high_bound);
-                        count *= (hi - lo + 1);
-                    }
-                    uint32_t elem_size = constrained->array.element_type ?
-                                         constrained->array.element_type->size : 1;
-                    constrained->size = (uint32_t)(count * elem_size);
+                    node->type = constrained;
+                    return constrained;
                 }
-
-                node->type = constrained;
-                return constrained;
             }
 
-            /* Regular type conversion */
-            if (node->apply.arguments.count == 1) {
-                Resolve_Expression(sm, node->apply.arguments.items[0]);
+            /* Regular type conversion: Integer(X) */
+            if (arg_count == 1) {
                 node->type = prefix_sym->type;
                 return node->type;
             }
         }
     }
 
-    if (prefix_type && prefix_type->kind == TYPE_ARRAY) {
-        /* Array indexing */
-        for (uint32_t i = 0; i < node->apply.arguments.count; i++) {
-            Resolve_Expression(sm, node->apply.arguments.items[i]);
-        }
+    /* ─── Case 3: Array Indexing ─── */
+    if (prefix_type && (prefix_type->kind == TYPE_ARRAY || prefix_type->kind == TYPE_STRING)) {
         node->type = prefix_type->array.element_type;
+        if (!node->type && prefix_type->kind == TYPE_STRING) {
+            node->type = sm->type_character;
+        }
         return node->type;
     }
 
-    /* Fallback */
-    for (uint32_t i = 0; i < node->apply.arguments.count; i++) {
-        Resolve_Expression(sm, node->apply.arguments.items[i]);
+    /* ─── Case 4: Unresolved - report error and recover ─── */
+    if (prefix->kind == NK_IDENTIFIER) {
+        Report_Error(node->location, "cannot resolve '%.*s' as callable or indexable",
+                    (int)prefix->string_val.text.length, prefix->string_val.text.data);
     }
 
-    return sm->type_integer;
+    return sm->type_integer;  /* Error recovery */
 }
 
 static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
