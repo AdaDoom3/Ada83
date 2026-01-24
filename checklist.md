@@ -2759,6 +2759,7 @@ All test files generate valid LLVM IR (verified with llc):
 - test_simple.ada - Simple programs
 - test_nested_sub.ada - Nested subprograms with static link
 - test_exception.ada - Exception declarations, RAISE, and handlers
+- test_string.ada - STRING type, initialization, concatenation (&)
 
 ### Nested Subprograms (2026-01-24) - RESOLVED
 Static link based nested function access is working:
@@ -2778,6 +2779,18 @@ Full Ada 83 exception handling implemented:
 - setjmp/longjmp based exception propagation
 - WHEN specific_exception => and WHEN OTHERS => support
 - Runtime declarations: setjmp, longjmp, __ada_raise, __ada_reraise, etc.
+
+### Strings and Secondary Stack (2026-01-24)
+Full STRING type with fat pointer representation and secondary stack:
+- STRING type represented as fat pointer `{ ptr, { i64, i64 } }` (data, bounds)
+- String literal constants emitted as global `@.str<N> = private unnamed_addr constant [len x i8]`
+- String literals return fat pointer with bounds (1..length)
+- Constrained string declarations: `S : STRING(1..5)` allocates `[5 x i8]`
+- String initialization copies data from fat pointer via memcpy
+- String concatenation (&) operator allocates result on secondary stack
+- Secondary stack runtime: `__ada_sec_stack_alloc`, `__ada_sec_stack_mark`, `__ada_sec_stack_release`
+- Emit_Fat_Pointer_Dynamic for runtime-computed bounds
+- Type_Compatible updated for array/string compatibility
 
 ### Known Issues
 - None currently blocking

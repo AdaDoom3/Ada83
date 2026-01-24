@@ -3520,6 +3520,20 @@ static bool Type_Compatible(Type_Info *a, Type_Info *b) {
     if (a->kind == TYPE_UNIVERSAL_REAL && Type_Is_Real(b)) return true;
     if (b->kind == TYPE_UNIVERSAL_REAL && Type_Is_Real(a)) return true;
 
+    /* Array/string compatibility: same element type */
+    if ((a->kind == TYPE_ARRAY || a->kind == TYPE_STRING) &&
+        (b->kind == TYPE_ARRAY || b->kind == TYPE_STRING)) {
+        Type_Info *a_elem = (a->kind == TYPE_STRING) ? NULL : a->array.element_type;
+        Type_Info *b_elem = (b->kind == TYPE_STRING) ? NULL : b->array.element_type;
+        /* If either is unconstrained STRING, they're compatible */
+        if (a->kind == TYPE_STRING || b->kind == TYPE_STRING) return true;
+        /* If both are arrays, check element type compatibility */
+        if (a_elem && b_elem) {
+            return Type_Compatible(a_elem, b_elem);
+        }
+        return true;  /* Be permissive */
+    }
+
     /* Same base type */
     return Type_Base(a) == Type_Base(b);
 }
@@ -4143,7 +4157,68 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
             node->type = prefix_sym->return_type;  /* NULL for procedures */
             return node->type;
         } else if (prefix_sym->kind == SYMBOL_TYPE) {
-            /* Type conversion */
+            /* Check if this is a constrained subtype: STRING(1..5), ARRAY_TYPE(bounds) */
+            Type_Info *base_type = prefix_sym->type;
+            if (base_type && (base_type->kind == TYPE_STRING || base_type->kind == TYPE_ARRAY)) {
+                /* Constrained array/string subtype indication */
+                /* Create a new constrained array type */
+                Type_Info *constrained = Type_New(TYPE_ARRAY, base_type->name);
+                constrained->array.is_constrained = true;
+                constrained->array.index_count = (uint32_t)node->apply.arguments.count;
+
+                /* For STRING, element type is CHARACTER */
+                if (base_type->kind == TYPE_STRING) {
+                    constrained->array.element_type = sm->type_character;
+                } else if (base_type->array.element_type) {
+                    constrained->array.element_type = base_type->array.element_type;
+                }
+
+                /* Process index constraints from arguments */
+                if (constrained->array.index_count > 0) {
+                    constrained->array.indices = Arena_Allocate(
+                        constrained->array.index_count * sizeof(Index_Info));
+
+                    for (uint32_t i = 0; i < node->apply.arguments.count; i++) {
+                        Syntax_Node *arg = node->apply.arguments.items[i];
+                        Resolve_Expression(sm, arg);
+
+                        Index_Info *info = &constrained->array.indices[i];
+                        info->index_type = sm->type_integer;
+
+                        /* Check if argument is a range */
+                        if (arg->kind == NK_RANGE) {
+                            if (arg->range.low && arg->range.low->kind == NK_INTEGER) {
+                                info->low_bound = (Type_Bound){
+                                    .kind = BOUND_INTEGER,
+                                    .int_value = arg->range.low->integer_lit.value
+                                };
+                            }
+                            if (arg->range.high && arg->range.high->kind == NK_INTEGER) {
+                                info->high_bound = (Type_Bound){
+                                    .kind = BOUND_INTEGER,
+                                    .int_value = arg->range.high->integer_lit.value
+                                };
+                            }
+                        }
+                    }
+
+                    /* Compute size */
+                    int64_t count = 1;
+                    for (uint32_t i = 0; i < constrained->array.index_count; i++) {
+                        int64_t lo = Type_Bound_Value(constrained->array.indices[i].low_bound);
+                        int64_t hi = Type_Bound_Value(constrained->array.indices[i].high_bound);
+                        count *= (hi - lo + 1);
+                    }
+                    uint32_t elem_size = constrained->array.element_type ?
+                                         constrained->array.element_type->size : 1;
+                    constrained->size = (uint32_t)(count * elem_size);
+                }
+
+                node->type = constrained;
+                return constrained;
+            }
+
+            /* Regular type conversion */
             if (node->apply.arguments.count == 1) {
                 Resolve_Expression(sm, node->apply.arguments.items[0]);
                 node->type = prefix_sym->type;
@@ -4378,6 +4453,81 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
 
                 node->type = record_type;
                 return record_type;
+            }
+
+        case NK_SUBTYPE_INDICATION:
+            {
+                /* Resolve the base type */
+                Resolve_Expression(sm, node->subtype_ind.subtype_mark);
+                Type_Info *base_type = node->subtype_ind.subtype_mark->type;
+
+                if (!base_type) {
+                    return NULL;
+                }
+
+                /* Check for index constraint (STRING(1..5) style) */
+                Syntax_Node *constraint = node->subtype_ind.constraint;
+                if (constraint && constraint->kind == NK_INDEX_CONSTRAINT &&
+                    (base_type->kind == TYPE_STRING || base_type->kind == TYPE_ARRAY)) {
+                    /* Create constrained array type */
+                    Type_Info *constrained = Type_New(TYPE_ARRAY, base_type->name);
+                    constrained->array.is_constrained = true;
+                    constrained->array.index_count = (uint32_t)constraint->index_constraint.ranges.count;
+
+                    /* For STRING, element type is CHARACTER */
+                    if (base_type->kind == TYPE_STRING) {
+                        constrained->array.element_type = sm->type_character;
+                    } else if (base_type->array.element_type) {
+                        constrained->array.element_type = base_type->array.element_type;
+                    }
+
+                    /* Process index constraints */
+                    if (constrained->array.index_count > 0) {
+                        constrained->array.indices = Arena_Allocate(
+                            constrained->array.index_count * sizeof(Index_Info));
+
+                        for (uint32_t i = 0; i < constrained->array.index_count; i++) {
+                            Syntax_Node *range = constraint->index_constraint.ranges.items[i];
+                            Resolve_Expression(sm, range);
+
+                            Index_Info *info = &constrained->array.indices[i];
+                            info->index_type = sm->type_integer;
+
+                            if (range->kind == NK_RANGE) {
+                                if (range->range.low && range->range.low->kind == NK_INTEGER) {
+                                    info->low_bound = (Type_Bound){
+                                        .kind = BOUND_INTEGER,
+                                        .int_value = range->range.low->integer_lit.value
+                                    };
+                                }
+                                if (range->range.high && range->range.high->kind == NK_INTEGER) {
+                                    info->high_bound = (Type_Bound){
+                                        .kind = BOUND_INTEGER,
+                                        .int_value = range->range.high->integer_lit.value
+                                    };
+                                }
+                            }
+                        }
+
+                        /* Compute size */
+                        int64_t count = 1;
+                        for (uint32_t i = 0; i < constrained->array.index_count; i++) {
+                            int64_t lo = Type_Bound_Value(constrained->array.indices[i].low_bound);
+                            int64_t hi = Type_Bound_Value(constrained->array.indices[i].high_bound);
+                            count *= (hi - lo + 1);
+                        }
+                        uint32_t elem_size = constrained->array.element_type ?
+                                             constrained->array.element_type->size : 1;
+                        constrained->size = (uint32_t)(count * elem_size);
+                    }
+
+                    node->type = constrained;
+                    return constrained;
+                }
+
+                /* Otherwise just use base type */
+                node->type = base_type;
+                return base_type;
             }
 
         default:
@@ -5085,6 +5235,11 @@ typedef struct {
     uint32_t      exception_handler_label;  /* Label of current exception handler */
     uint32_t      exception_jmp_buf;        /* Current setjmp buffer temp */
     bool          in_exception_region;      /* True if inside exception-handled block */
+
+    /* String constant buffer (emitted at module level) */
+    char         *string_const_buffer;
+    size_t        string_const_size;
+    size_t        string_const_capacity;
 } Code_Generator;
 
 static Code_Generator *Code_Generator_New(FILE *output, Symbol_Manager *sm) {
@@ -5096,7 +5251,45 @@ static Code_Generator *Code_Generator_New(FILE *output, Symbol_Manager *sm) {
     cg->global_id = 1;
     cg->string_id = 1;
     cg->deferred_count = 0;
+    /* Initialize string constant buffer */
+    cg->string_const_capacity = 4096;
+    cg->string_const_buffer = Arena_Allocate(cg->string_const_capacity);
+    cg->string_const_size = 0;
     return cg;
+}
+
+/* Emit to string constant buffer instead of main output */
+static void Emit_String_Const(Code_Generator *cg, const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    char temp[1024];
+    int len = vsnprintf(temp, sizeof(temp), format, args);
+    va_end(args);
+
+    /* Expand buffer if needed */
+    while (cg->string_const_size + len + 1 > cg->string_const_capacity) {
+        size_t new_cap = cg->string_const_capacity * 2;
+        char *new_buf = Arena_Allocate(new_cap);
+        memcpy(new_buf, cg->string_const_buffer, cg->string_const_size);
+        cg->string_const_buffer = new_buf;
+        cg->string_const_capacity = new_cap;
+    }
+    memcpy(cg->string_const_buffer + cg->string_const_size, temp, len);
+    cg->string_const_size += len;
+    cg->string_const_buffer[cg->string_const_size] = '\0';
+}
+
+/* Emit a single char to string constant buffer */
+static void Emit_String_Const_Char(Code_Generator *cg, char c) {
+    if (cg->string_const_size + 2 > cg->string_const_capacity) {
+        size_t new_cap = cg->string_const_capacity * 2;
+        char *new_buf = Arena_Allocate(new_cap);
+        memcpy(new_buf, cg->string_const_buffer, cg->string_const_size);
+        cg->string_const_buffer = new_buf;
+        cg->string_const_capacity = new_cap;
+    }
+    cg->string_const_buffer[cg->string_const_size++] = c;
+    cg->string_const_buffer[cg->string_const_size] = '\0';
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -5240,6 +5433,38 @@ static uint32_t Emit_Fat_Pointer_High(Code_Generator *cg, uint32_t fat_ptr) {
     return t;
 }
 
+/* Create a fat pointer from data pointer and dynamic bounds (temp IDs)
+ * Returns the temp ID of the fat pointer struct */
+static uint32_t Emit_Fat_Pointer_Dynamic(Code_Generator *cg, uint32_t data_ptr,
+                                          uint32_t low_temp, uint32_t high_temp) {
+    /* Allocate fat pointer struct on stack */
+    uint32_t fat_alloca = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = alloca " FAT_PTR_TYPE "\n", fat_alloca);
+
+    /* Store data pointer */
+    uint32_t data_gep = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr %%t%u, i32 0, i32 0\n",
+         data_gep, fat_alloca);
+    Emit(cg, "  store ptr %%t%u, ptr %%t%u\n", data_ptr, data_gep);
+
+    /* Store low bound */
+    uint32_t low_gep = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr %%t%u, i32 0, i32 1, i32 0\n",
+         low_gep, fat_alloca);
+    Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", low_temp, low_gep);
+
+    /* Store high bound */
+    uint32_t high_gep = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr %%t%u, i32 0, i32 1, i32 1\n",
+         high_gep, fat_alloca);
+    Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", high_temp, high_gep);
+
+    /* Load and return the fat pointer struct */
+    uint32_t fat_val = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", fat_val, fat_alloca);
+    return fat_val;
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
  * §13.3 Expression Code Generation
  *
@@ -5265,23 +5490,25 @@ static uint32_t Generate_String_Literal(Code_Generator *cg, Syntax_Node *node) {
     uint32_t str_id = cg->string_id++;
     uint32_t len = node->string_val.text.length;
 
-    /* Generate global constant */
-    Emit(cg, "@.str%u = private unnamed_addr constant [%u x i8] c\"", str_id, len + 1);
+    /* Generate global constant to buffer (without null terminator for Ada strings) */
+    Emit_String_Const(cg, "@.str%u = private unnamed_addr constant [%u x i8] c\"", str_id, len);
     for (uint32_t i = 0; i < len; i++) {
         char c = node->string_val.text.data[i];
         if (c >= 32 && c < 127 && c != '"' && c != '\\') {
-            fputc(c, cg->output);
+            Emit_String_Const_Char(cg, c);
         } else {
-            Emit(cg, "\\%02X", (unsigned char)c);
+            Emit_String_Const(cg, "\\%02X", (unsigned char)c);
         }
     }
-    Emit(cg, "\\00\"\n");
+    Emit_String_Const(cg, "\"\n");
 
-    /* Return pointer to string */
-    uint32_t t = Emit_Temp(cg);
+    /* Get pointer to string data */
+    uint32_t data_ptr = Emit_Temp(cg);
     Emit(cg, "  %%t%u = getelementptr [%u x i8], ptr @.str%u, i64 0, i64 0\n",
-         t, len + 1, str_id);
-    return t;
+         data_ptr, len, str_id);
+
+    /* Return fat pointer with Ada STRING bounds (1..length) */
+    return Emit_Fat_Pointer(cg, data_ptr, 1, (int64_t)len);
 }
 
 static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
@@ -5292,10 +5519,32 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
     }
 
     uint32_t t = Emit_Temp(cg);
+    Type_Info *ty = sym->type;
 
     switch (sym->kind) {
         case SYMBOL_VARIABLE:
         case SYMBOL_PARAMETER: {
+            /* Check for constrained string/array - return fat pointer */
+            if (ty && ty->kind == TYPE_ARRAY && ty->array.is_constrained &&
+                ty->array.element_type && ty->array.element_type->kind == TYPE_CHARACTER) {
+
+                /* Get bounds from type */
+                int64_t low = 1, high = 0;
+                if (ty->array.index_count > 0) {
+                    low = Type_Bound_Value(ty->array.indices[0].low_bound);
+                    high = Type_Bound_Value(ty->array.indices[0].high_bound);
+                }
+
+                /* Get pointer to array data */
+                uint32_t data_ptr = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = getelementptr i8, ptr %%", data_ptr);
+                Emit_Symbol_Name(cg, sym);
+                Emit(cg, ", i64 0\n");
+
+                /* Create fat pointer with bounds */
+                return Emit_Fat_Pointer(cg, data_ptr, low, high);
+            }
+
             /* Check if this is an uplevel (outer scope) variable access
              * A variable is "uplevel" if its defining scope's owner is different
              * from the current function */
@@ -5303,7 +5552,7 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
             bool is_uplevel = cg->current_function && var_owner &&
                               var_owner != cg->current_function;
 
-            const char *type_str = Type_To_Llvm(sym->type);
+            const char *type_str = Type_To_Llvm(ty);
             if (is_uplevel && cg->is_nested) {
                 /* Uplevel access through frame pointer parameter
                  * The frame pointer points to the variable in the enclosing scope */
@@ -5488,6 +5737,64 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             return ne_result;
         }
         return eq_result;
+    }
+
+    /* String/array concatenation */
+    if (node->binary.op == TK_AMPERSAND &&
+        left_type && (left_type->kind == TYPE_STRING || left_type->kind == TYPE_ARRAY)) {
+
+        /* Generate both operands - they return fat pointers */
+        uint32_t left_fat = Generate_Expression(cg, node->binary.left);
+        uint32_t right_fat = Generate_Expression(cg, node->binary.right);
+
+        /* Extract data pointers and bounds */
+        uint32_t left_data = Emit_Fat_Pointer_Data(cg, left_fat);
+        uint32_t left_low = Emit_Fat_Pointer_Low(cg, left_fat);
+        uint32_t left_high = Emit_Fat_Pointer_High(cg, left_fat);
+
+        uint32_t right_data = Emit_Fat_Pointer_Data(cg, right_fat);
+        uint32_t right_low = Emit_Fat_Pointer_Low(cg, right_fat);
+        uint32_t right_high = Emit_Fat_Pointer_High(cg, right_fat);
+
+        /* Calculate lengths: high - low + 1 */
+        uint32_t left_len = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", left_len, left_high, left_low);
+        uint32_t left_len1 = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", left_len1, left_len);
+
+        uint32_t right_len = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", right_len, right_high, right_low);
+        uint32_t right_len1 = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", right_len1, right_len);
+
+        /* Total length */
+        uint32_t total_len = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = add i64 %%t%u, %%t%u\n", total_len, left_len1, right_len1);
+
+        /* Allocate space on secondary stack */
+        uint32_t result_data = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = call ptr @__ada_sec_stack_alloc(i64 %%t%u)\n",
+             result_data, total_len);
+
+        /* Copy left string using llvm.memcpy */
+        Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
+             result_data, left_data, left_len1);
+
+        /* Calculate destination for right string */
+        uint32_t right_dest = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n",
+             right_dest, result_data, left_len1);
+
+        /* Copy right string */
+        Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
+             right_dest, right_data, right_len1);
+
+        /* Result bounds: 1..total_len (Ada STRING convention) */
+        uint32_t one = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = add i64 0, 1\n", one);
+
+        /* Return fat pointer to result */
+        return Emit_Fat_Pointer_Dynamic(cg, result_data, one, total_len);
     }
 
     uint32_t left = Generate_Expression(cg, node->binary.left);
@@ -6375,31 +6682,56 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
     }
 
     /* Simple variable target */
-    uint32_t value = Generate_Expression(cg, node->assignment.value);
     Symbol *target_sym = target->symbol;
+    if (!target_sym) return;
 
-    if (target_sym) {
-        /* Check if this is an uplevel (outer scope) variable access */
-        Symbol *var_owner = target_sym->defining_scope ? target_sym->defining_scope->owner : NULL;
-        bool is_uplevel = cg->current_function && var_owner &&
-                          var_owner != cg->current_function;
+    Type_Info *ty = target_sym->type;
 
-        const char *type_str = Type_To_Llvm(target_sym->type);
-        /* Truncate from i64 computation to actual storage type */
-        value = Emit_Convert(cg, value, "i64", type_str);
+    /* Handle constrained string/character array assignment */
+    if (ty && ty->kind == TYPE_ARRAY && ty->array.is_constrained &&
+        ty->array.element_type && ty->array.element_type->kind == TYPE_CHARACTER) {
 
-        if (is_uplevel && cg->is_nested) {
-            /* Uplevel store through frame pointer */
-            Emit(cg, "  ; UPLEVEL STORE: %.*s via frame pointer\n",
-                 (int)target_sym->name.length, target_sym->name.data);
-            Emit(cg, "  store %s %%t%u, ptr %%__frame.", type_str, value);
-            Emit_Symbol_Name(cg, target_sym);
-            Emit(cg, "\n");
-        } else {
-            Emit(cg, "  store %s %%t%u, ptr %%", type_str, value);
-            Emit_Symbol_Name(cg, target_sym);
-            Emit(cg, "\n");
-        }
+        /* The value is a fat pointer - extract data and copy */
+        uint32_t fat_ptr = Generate_Expression(cg, node->assignment.value);
+        uint32_t src_ptr = Emit_Fat_Pointer_Data(cg, fat_ptr);
+        uint32_t src_low = Emit_Fat_Pointer_Low(cg, fat_ptr);
+        uint32_t src_high = Emit_Fat_Pointer_High(cg, fat_ptr);
+
+        /* Calculate source length */
+        uint32_t src_len = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", src_len, src_high, src_low);
+        uint32_t src_len1 = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", src_len1, src_len);
+
+        /* Copy data to the target variable */
+        Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%");
+        Emit_Symbol_Name(cg, target_sym);
+        Emit(cg, ", ptr %%t%u, i64 %%t%u, i1 false)\n", src_ptr, src_len1);
+        return;
+    }
+
+    uint32_t value = Generate_Expression(cg, node->assignment.value);
+
+    /* Check if this is an uplevel (outer scope) variable access */
+    Symbol *var_owner = target_sym->defining_scope ? target_sym->defining_scope->owner : NULL;
+    bool is_uplevel = cg->current_function && var_owner &&
+                      var_owner != cg->current_function;
+
+    const char *type_str = Type_To_Llvm(ty);
+    /* Truncate from i64 computation to actual storage type */
+    value = Emit_Convert(cg, value, "i64", type_str);
+
+    if (is_uplevel && cg->is_nested) {
+        /* Uplevel store through frame pointer */
+        Emit(cg, "  ; UPLEVEL STORE: %.*s via frame pointer\n",
+             (int)target_sym->name.length, target_sym->name.data);
+        Emit(cg, "  store %s %%t%u, ptr %%__frame.", type_str, value);
+        Emit_Symbol_Name(cg, target_sym);
+        Emit(cg, "\n");
+    } else {
+        Emit(cg, "  store %s %%t%u, ptr %%", type_str, value);
+        Emit_Symbol_Name(cg, target_sym);
+        Emit(cg, "\n");
     }
 }
 
@@ -6943,14 +7275,34 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, " = alloca %s\n", type_str);
         }
 
-        /* Initialize if provided (skip for composite types - handled separately) */
-        if (node->object_decl.init && !is_array && !is_record) {
-            uint32_t init = Generate_Expression(cg, node->object_decl.init);
-            /* Truncate from i64 computation to storage type */
-            init = Emit_Convert(cg, init, "i64", type_str);
-            Emit(cg, "  store %s %%t%u, ptr %%", type_str, init);
-            Emit_Symbol_Name(cg, sym);
-            Emit(cg, "\n");
+        /* Initialize if provided */
+        if (node->object_decl.init) {
+            if (is_array && ty->array.element_type == cg->sm->type_character) {
+                /* String/character array initialization from string literal
+                 * The init expression returns a fat pointer, we copy the data */
+                uint32_t fat_ptr = Generate_Expression(cg, node->object_decl.init);
+                uint32_t src_ptr = Emit_Fat_Pointer_Data(cg, fat_ptr);
+                uint32_t src_low = Emit_Fat_Pointer_Low(cg, fat_ptr);
+                uint32_t src_high = Emit_Fat_Pointer_High(cg, fat_ptr);
+
+                /* Calculate source length */
+                uint32_t src_len = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", src_len, src_high, src_low);
+                uint32_t src_len1 = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", src_len1, src_len);
+
+                /* Copy data to the variable */
+                Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%");
+                Emit_Symbol_Name(cg, sym);
+                Emit(cg, ", ptr %%t%u, i64 %%t%u, i1 false)\n", src_ptr, src_len1);
+            } else if (!is_array && !is_record) {
+                uint32_t init = Generate_Expression(cg, node->object_decl.init);
+                /* Truncate from i64 computation to storage type */
+                init = Emit_Convert(cg, init, "i64", type_str);
+                Emit(cg, "  store %s %%t%u, ptr %%", type_str, init);
+                Emit_Symbol_Name(cg, sym);
+                Emit(cg, "\n");
+            }
         }
     }
 }
@@ -7365,6 +7717,14 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "declare void @__ada_pop_handler()\n");
     Emit(cg, "declare i64 @__ada_current_exception()\n\n");
 
+    /* Secondary stack for unconstrained returns (string concatenation, etc.) */
+    Emit(cg, "declare ptr @__ada_sec_stack_alloc(i64)\n");
+    Emit(cg, "declare void @__ada_sec_stack_mark(ptr)\n");
+    Emit(cg, "declare void @__ada_sec_stack_release(ptr)\n\n");
+
+    /* LLVM intrinsics for memory operations */
+    Emit(cg, "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)\n\n");
+
     /* Generate exception identity globals */
     Generate_Exception_Globals(cg);
 
@@ -7375,6 +7735,13 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     /* Generate declarations */
     if (node->compilation_unit.unit) {
         Generate_Declaration(cg, node->compilation_unit.unit);
+    }
+
+    /* Emit buffered string constants at module level */
+    if (cg->string_const_size > 0) {
+        Emit(cg, "\n; String constants\n");
+        fprintf(cg->output, "%s", cg->string_const_buffer);
+        Emit(cg, "\n");
     }
 }
 
