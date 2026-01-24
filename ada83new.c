@@ -715,7 +715,6 @@ static Token Scan_String_Literal(Lexer *lex) {
     Source_Location loc = {lex->filename, lex->line, lex->column};
     Lexer_Advance(lex); /* consume opening " */
 
-    const char *start = lex->current;
     size_t capacity = 64, length = 0;
     char *buffer = Arena_Allocate(capacity);
 
@@ -987,7 +986,7 @@ struct Syntax_Node {
 
         /* NK_INTEGER_TYPE, NK_REAL_TYPE */
         struct { Syntax_Node *range; int64_t modulus; } integer_type;
-        struct { int digits; Syntax_Node *range; double delta_val; } real_type;
+        struct { Syntax_Node *precision; Syntax_Node *range; Syntax_Node *delta; } real_type;
 
         /* NK_COMPONENT_DECL */
         struct { Node_List names; Syntax_Node *component_type; Syntax_Node *init; } component;
@@ -1132,6 +1131,7 @@ struct Syntax_Node {
             Syntax_Node *generic_name;
             Node_List actuals;
             String_Slice instance_name;
+            Token_Kind unit_kind;  /* TK_PROCEDURE, TK_FUNCTION, or TK_PACKAGE */
         } generic_inst;
 
         /* NK_WITH_CLAUSE, NK_USE_CLAUSE */
@@ -2573,7 +2573,7 @@ static Syntax_Node *Parse_Type_Definition(Parser *p) {
     /* Real types: digits, delta */
     if (Parser_Match(p, TK_DIGITS)) {
         Syntax_Node *node = Node_New(NK_REAL_TYPE, loc);
-        Syntax_Node *digits_expr = Parse_Expression(p);
+        node->real_type.precision = Parse_Expression(p);
         if (Parser_Match(p, TK_RANGE)) {
             node->real_type.range = Parse_Range(p);
         }
@@ -2582,7 +2582,7 @@ static Syntax_Node *Parse_Type_Definition(Parser *p) {
 
     if (Parser_Match(p, TK_DELTA)) {
         Syntax_Node *node = Node_New(NK_REAL_TYPE, loc);
-        Parse_Expression(p);  /* delta value */
+        node->real_type.delta = Parse_Expression(p);
         if (Parser_Match(p, TK_RANGE)) {
             node->real_type.range = Parse_Range(p);
         }
@@ -2896,6 +2896,7 @@ static Syntax_Node *Parse_Generic_Instantiation(Parser *p, Token_Kind unit_kind)
     Parser_Advance(p);  /* consume PROCEDURE/FUNCTION/PACKAGE */
 
     Syntax_Node *node = Node_New(NK_GENERIC_INST, loc);
+    node->generic_inst.unit_kind = unit_kind;
     node->generic_inst.instance_name = Parser_Identifier(p);
 
     Parser_Expect(p, TK_IS);
