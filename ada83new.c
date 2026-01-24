@@ -6613,6 +6613,37 @@ static uint32_t Emit_Fat_Pointer_Dynamic(Code_Generator *cg, uint32_t data_ptr,
     return fat_val;
 }
 
+/* Compute length from fat pointer bounds: high - low + 1
+ * Returns temp ID holding the i64 length */
+static uint32_t Emit_Fat_Pointer_Length(Code_Generator *cg, uint32_t fat_ptr) {
+    uint32_t low = Emit_Fat_Pointer_Low(cg, fat_ptr);
+    uint32_t high = Emit_Fat_Pointer_High(cg, fat_ptr);
+    uint32_t diff = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", diff, high, low);
+    uint32_t len = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", len, diff);
+    return len;
+}
+
+/* Copy data from fat pointer to a named destination
+ * Emits: memcpy(dst, src_data, length) */
+static void Emit_Fat_Pointer_Copy_To_Name(Code_Generator *cg, uint32_t fat_ptr, Symbol *dst) {
+    uint32_t src_ptr = Emit_Fat_Pointer_Data(cg, fat_ptr);
+    uint32_t len = Emit_Fat_Pointer_Length(cg, fat_ptr);
+    Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%");
+    Emit_Symbol_Name(cg, dst);
+    Emit(cg, ", ptr %%t%u, i64 %%t%u, i1 false)\n", src_ptr, len);
+}
+
+/* Copy data from fat pointer to a temp pointer destination
+ * Emits: memcpy(dst_ptr, src_data, length) */
+static void Emit_Fat_Pointer_Copy_To_Ptr(Code_Generator *cg, uint32_t fat_ptr, uint32_t dst_ptr) {
+    uint32_t src_ptr = Emit_Fat_Pointer_Data(cg, fat_ptr);
+    uint32_t len = Emit_Fat_Pointer_Length(cg, fat_ptr);
+    Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
+         dst_ptr, src_ptr, len);
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
  * §13.3 Expression Code Generation
  *
@@ -7883,23 +7914,9 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
     /* Handle constrained string/character array assignment */
     if (ty && ty->kind == TYPE_ARRAY && ty->array.is_constrained &&
         ty->array.element_type && ty->array.element_type->kind == TYPE_CHARACTER) {
-
-        /* The value is a fat pointer - extract data and copy */
+        /* The value is a fat pointer - copy data to target variable */
         uint32_t fat_ptr = Generate_Expression(cg, node->assignment.value);
-        uint32_t src_ptr = Emit_Fat_Pointer_Data(cg, fat_ptr);
-        uint32_t src_low = Emit_Fat_Pointer_Low(cg, fat_ptr);
-        uint32_t src_high = Emit_Fat_Pointer_High(cg, fat_ptr);
-
-        /* Calculate source length */
-        uint32_t src_len = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", src_len, src_high, src_low);
-        uint32_t src_len1 = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", src_len1, src_len);
-
-        /* Copy data to the target variable */
-        Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%");
-        Emit_Symbol_Name(cg, target_sym);
-        Emit(cg, ", ptr %%t%u, i64 %%t%u, i1 false)\n", src_ptr, src_len1);
+        Emit_Fat_Pointer_Copy_To_Name(cg, fat_ptr, target_sym);
         return;
     }
 
@@ -8472,23 +8489,9 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
         /* Initialize if provided */
         if (node->object_decl.init) {
             if (is_array && ty->array.element_type == cg->sm->type_character) {
-                /* String/character array initialization from string literal
-                 * The init expression returns a fat pointer, we copy the data */
+                /* String/character array initialization - copy fat pointer data */
                 uint32_t fat_ptr = Generate_Expression(cg, node->object_decl.init);
-                uint32_t src_ptr = Emit_Fat_Pointer_Data(cg, fat_ptr);
-                uint32_t src_low = Emit_Fat_Pointer_Low(cg, fat_ptr);
-                uint32_t src_high = Emit_Fat_Pointer_High(cg, fat_ptr);
-
-                /* Calculate source length */
-                uint32_t src_len = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", src_len, src_high, src_low);
-                uint32_t src_len1 = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", src_len1, src_len);
-
-                /* Copy data to the variable */
-                Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%");
-                Emit_Symbol_Name(cg, sym);
-                Emit(cg, ", ptr %%t%u, i64 %%t%u, i1 false)\n", src_ptr, src_len1);
+                Emit_Fat_Pointer_Copy_To_Name(cg, fat_ptr, sym);
             } else if (!is_array && !is_record) {
                 uint32_t init = Generate_Expression(cg, node->object_decl.init);
                 /* Truncate from i64 computation to storage type */

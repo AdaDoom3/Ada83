@@ -2681,6 +2681,11 @@ Make `Symbol.parent` either:
   - Compares lengths first (per RM 4.5.2)
   - Uses memcmp for data comparison
   - Proper handling in both inline and function-generated forms
+- **[2026-01-24]** Added fat pointer helper functions to eliminate duplication:
+  - `Emit_Fat_Pointer_Length()` - compute array length from bounds
+  - `Emit_Fat_Pointer_Copy_To_Name()` - copy fat pointer data to named variable
+  - `Emit_Fat_Pointer_Copy_To_Ptr()` - copy fat pointer data to temp pointer
+  - Consolidated duplicate code in assignment and declaration initialization
 
 ### §14. Include Path & Package Loading ✓
 - Package spec loading with dependency tracking
@@ -2693,14 +2698,14 @@ Make `Symbol.parent` either:
 ## Known Remaining Issues (from analysis)
 
 ### High Priority
-1. **Bounds representation**: Consider tagged union for int/float bounds
+1. ~~**Bounds representation**: Consider tagged union for int/float bounds~~ ✓ Already implemented as `Type_Bound`
 2. **OUT/IN OUT parameters**: Need lvalue vs rvalue distinction in codegen
-3. **Fat pointer layout**: Standardize on exactly one representation
+3. ~~**Fat pointer layout**: Standardize on exactly one representation~~ ✓ Standardized as `{ ptr, { i64, i64 } }`
 
 ### Medium Priority
-1. **Static-link chain traversal**: Factor into helper function
-2. **Call emission**: Unify expression vs statement call paths
-3. **Array copy**: Centralize `emit_array_copy` helper
+1. ~~**Static-link chain traversal**: Factor into helper function~~ ✓ Clean implementation exists
+2. ~~**Call emission**: Unify expression vs statement call paths~~ ✓ Statement delegates to expression
+3. ~~**Array copy**: Centralize `emit_array_copy` helper~~ ✓ Added `Emit_Fat_Pointer_Copy_To_*` helpers
 
 ### Lower Priority
 1. **Label discovery**: Use hash set instead of O(n²) scan
