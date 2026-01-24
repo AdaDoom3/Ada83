@@ -3973,11 +3973,15 @@ static const char *Type_To_Llvm(Type_Info *t) {
         case TYPE_UNIVERSAL_REAL:
             return Llvm_Float_Type((uint32_t)To_Bits(t->size));
         case TYPE_ACCESS:
-        case TYPE_ARRAY:
         case TYPE_RECORD:
-        case TYPE_STRING:
         case TYPE_TASK:
             return "ptr";
+        case TYPE_ARRAY:
+            /* Unconstrained arrays use fat pointers, constrained use ptr */
+            return (t->array.is_constrained) ? "ptr" : "{ ptr, { i64, i64 } }";
+        case TYPE_STRING:
+            /* STRING is always unconstrained array of CHARACTER */
+            return "{ ptr, { i64, i64 } }";
         default:
             return "i64";
     }
@@ -4127,6 +4131,9 @@ struct Symbol {
 
     /* pragma Unreferenced */
     bool            is_unreferenced;
+
+    /* Code generation flags */
+    bool            extern_emitted;      /* Extern declaration already emitted */
 
     /* ─────────────────────────────────────────────────────────────────────
      * Generic Support
@@ -5648,14 +5655,39 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
             break;
 
         case NK_LOOP:
-            if (node->loop_stmt.iteration_scheme) {
-                Resolve_Expression(sm, node->loop_stmt.iteration_scheme);
+            {
+                Syntax_Node *iter = node->loop_stmt.iteration_scheme;
+                bool is_for_loop = iter && iter->kind == NK_BINARY_OP &&
+                                   iter->binary.op == TK_IN;
+                if (is_for_loop) {
+                    /* FOR loop - create loop variable in new scope.
+                     * Inherit owner from enclosing scope for proper name mangling */
+                    Symbol *enclosing_owner = sm->current_scope->owner;
+                    Symbol_Manager_Push_Scope(sm, enclosing_owner);
+                    Syntax_Node *loop_id = iter->binary.left;
+                    if (loop_id && loop_id->kind == NK_IDENTIFIER) {
+                        Symbol *loop_var = Symbol_New(SYMBOL_VARIABLE,
+                                                      loop_id->string_val.text,
+                                                      loop_id->location);
+                        loop_var->type = sm->type_integer;
+                        Symbol_Add(sm, loop_var);
+                        loop_id->symbol = loop_var;
+                    }
+                    /* Resolve range expression */
+                    Resolve_Expression(sm, iter->binary.right);
+                    Resolve_Statement_List(sm, &node->loop_stmt.statements);
+                    Symbol_Manager_Pop_Scope(sm);
+                } else {
+                    /* WHILE or bare LOOP */
+                    if (iter) Resolve_Expression(sm, iter);
+                    Resolve_Statement_List(sm, &node->loop_stmt.statements);
+                }
             }
-            Resolve_Statement_List(sm, &node->loop_stmt.statements);
             break;
 
         case NK_BLOCK:
-            Symbol_Manager_Push_Scope(sm, NULL);
+            /* Inherit owner from enclosing scope for proper symbol parenting */
+            Symbol_Manager_Push_Scope(sm, sm->current_scope->owner);
             /* Resolve declarations first (adds symbols to scope) */
             Resolve_Declaration_List(sm, &node->block_stmt.declarations);
             /* Freeze all types at end of declarative part (RM 13.14) */
@@ -5715,6 +5747,8 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
  * ───────────────────────────────────────────────────────────────────────── */
 
 static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node);
+static char *Lookup_Path(String_Slice name);
+static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src);
 
 static void Resolve_Declaration_List(Symbol_Manager *sm, Node_List *list) {
     for (uint32_t i = 0; i < list->count; i++) {
@@ -5975,7 +6009,28 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
 
         case NK_PACKAGE_BODY:
             {
-                Symbol_Manager_Push_Scope(sm, NULL);
+                /* Find or create package symbol for proper name mangling */
+                Symbol *pkg_sym = NULL;
+                String_Slice pkg_name = node->package_body.name;
+                if (pkg_name.length > 0) {
+                    pkg_sym = Symbol_Find(sm, pkg_name);
+                    if (!pkg_sym) {
+                        /* Try to load corresponding package spec first.
+                         * This ensures body uses same symbol IDs as spec */
+                        char *spec_src = Lookup_Path(pkg_name);
+                        if (spec_src) {
+                            Load_Package_Spec(sm, pkg_name, spec_src);
+                            pkg_sym = Symbol_Find(sm, pkg_name);
+                        }
+                        if (!pkg_sym) {
+                            /* Create package symbol if spec not found */
+                            pkg_sym = Symbol_New(SYMBOL_PACKAGE, pkg_name, node->location);
+                            Symbol_Add(sm, pkg_sym);
+                        }
+                    }
+                    node->symbol = pkg_sym;
+                }
+                Symbol_Manager_Push_Scope(sm, pkg_sym);
                 Resolve_Declaration_List(sm, &node->package_body.declarations);
                 /* Freeze all types at end of declarative part (RM 13.14) */
                 Freeze_Declaration_List(&node->package_body.declarations);
@@ -5985,10 +6040,50 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
             break;
 
         case NK_USE_CLAUSE:
-            /* Make package contents visible */
+            /* Make package contents directly visible (Ada 83 8.4)
+             * "A use clause achieves direct visibility of declarations
+             *  that appear in the visible parts of the named packages" */
             for (uint32_t i = 0; i < node->use_clause.names.count; i++) {
-                Resolve_Expression(sm, node->use_clause.names.items[i]);
-                /* Would mark symbols as use-visible here */
+                Syntax_Node *pkg_name_node = node->use_clause.names.items[i];
+                Resolve_Expression(sm, pkg_name_node);
+
+                /* Find the package symbol */
+                Symbol *pkg_sym = NULL;
+                if (pkg_name_node->kind == NK_IDENTIFIER) {
+                    pkg_sym = Symbol_Find(sm, pkg_name_node->string_val.text);
+                } else if (pkg_name_node->symbol) {
+                    pkg_sym = pkg_name_node->symbol;
+                }
+
+                /* Make visible declarations from package accessible */
+                if (pkg_sym && pkg_sym->kind == SYMBOL_PACKAGE && pkg_sym->declaration) {
+                    Syntax_Node *pkg_decl = pkg_sym->declaration;
+                    if (pkg_decl->kind == NK_PACKAGE_SPEC) {
+                        /* Iterate visible declarations and add to current scope */
+                        for (uint32_t j = 0; j < pkg_decl->package_spec.visible_decls.count; j++) {
+                            Syntax_Node *decl = pkg_decl->package_spec.visible_decls.items[j];
+                            if (decl && decl->symbol) {
+                                /* Create a use-visible alias in current scope */
+                                Symbol *alias = Symbol_New(decl->symbol->kind,
+                                                           decl->symbol->name,
+                                                           decl->symbol->location);
+                                alias->type = decl->symbol->type;
+                                alias->declaration = decl->symbol->declaration;
+                                alias->visibility = VIS_USE_VISIBLE;
+                                alias->parameter_count = decl->symbol->parameter_count;
+                                alias->parameters = decl->symbol->parameters;
+                                alias->return_type = decl->symbol->return_type;
+                                Symbol_Add(sm, alias);
+                                /* Restore original symbol's identity for name mangling.
+                                 * Symbol_Add sets parent/unique_id to local scope values,
+                                 * but USE-visible symbols must retain original identity
+                                 * so @REPORT__TEST_S5 not @A21001A__TEST_S99 is emitted */
+                                alias->parent = decl->symbol->parent;
+                                alias->unique_id = decl->symbol->unique_id;
+                            }
+                        }
+                    }
+                }
             }
             break;
 
@@ -6709,7 +6804,21 @@ static void Emit_Symbol_Name(Code_Generator *cg, Symbol *sym) {
         return;
     }
 
-    /* Build mangled name: parent_scope__name__unique_id */
+    /* For imported symbols with external name, use that directly */
+    if (sym->is_imported && sym->external_name.length > 0) {
+        /* External name is a string literal, strip quotes if present */
+        String_Slice name = sym->external_name;
+        if (name.length >= 2 && name.data[0] == '"' && name.data[name.length-1] == '"') {
+            name.data++;
+            name.length -= 2;
+        }
+        for (uint32_t i = 0; i < name.length; i++) {
+            fputc(name.data[i], cg->output);
+        }
+        return;
+    }
+
+    /* Build mangled name: parent_scope__name[__unique_id] */
     if (sym->parent) {
         Emit_Symbol_Name(cg, sym->parent);
         Emit(cg, "__");
@@ -6727,7 +6836,14 @@ static void Emit_Symbol_Name(Code_Generator *cg, Symbol *sym) {
         }
     }
 
-    Emit(cg, "_S%u", sym->unique_id);
+    /* Only add unique_id suffix for local/nested symbols, not package-level.
+     * Package-level symbols (parent is a package or no parent) use just the
+     * qualified name for cross-compilation linking. Local symbols need the
+     * unique_id to disambiguate nested scopes with same names. */
+    bool is_package_level = !sym->parent || sym->parent->kind == SYMBOL_PACKAGE;
+    if (!is_package_level) {
+        Emit(cg, "_S%u", sym->unique_id);
+    }
 }
 
 /* Emit type conversion if needed (sext/trunc for integers) */
@@ -6975,6 +7091,9 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
             bool is_uplevel = cg->current_function && var_owner &&
                               var_owner != cg->current_function;
 
+            /* Check if package-level global (parent is NULL or SYMBOL_PACKAGE) */
+            bool is_global = !sym->parent || sym->parent->kind == SYMBOL_PACKAGE;
+
             const char *type_str = Type_To_Llvm(ty);
             if (is_uplevel && cg->is_nested) {
                 /* Uplevel access through frame pointer parameter
@@ -6982,6 +7101,11 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "  ; UPLEVEL ACCESS: %.*s via frame pointer\n",
                      (int)sym->name.length, sym->name.data);
                 Emit(cg, "  %%t%u = load %s, ptr %%__frame.", t, type_str);
+                Emit_Symbol_Name(cg, sym);
+                Emit(cg, "\n");
+            } else if (is_global) {
+                /* Global variable - use @ prefix */
+                Emit(cg, "  %%t%u = load %s, ptr @", t, type_str);
                 Emit_Symbol_Name(cg, sym);
                 Emit(cg, "\n");
             } else {
@@ -7318,10 +7442,19 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         case TK_REM:   op = "srem"; break;
 
         case TK_AND:
-        case TK_AND_THEN: op = "and"; break;
+        case TK_AND_THEN:
+            /* Boolean AND: operands should be i1 (from comparisons) */
+            Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", t, left, right);
+            return t;
         case TK_OR:
-        case TK_OR_ELSE:  op = "or"; break;
-        case TK_XOR:      op = "xor"; break;
+        case TK_OR_ELSE:
+            /* Boolean OR: operands should be i1 */
+            Emit(cg, "  %%t%u = or i1 %%t%u, %%t%u\n", t, left, right);
+            return t;
+        case TK_XOR:
+            /* Boolean XOR: operands should be i1 */
+            Emit(cg, "  %%t%u = xor i1 %%t%u, %%t%u\n", t, left, right);
+            return t;
 
         case TK_EQ:  Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", t, left, right); return t;
         case TK_NE:  Emit(cg, "  %%t%u = icmp ne i64 %%t%u, %%t%u\n", t, left, right); return t;
@@ -7452,11 +7585,26 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
 
     /* Array indexing */
     Type_Info *prefix_type = node->apply.prefix->type;
-    if (prefix_type && prefix_type->kind == TYPE_ARRAY) {
-        /* Get array base address (not loaded value) */
+    if (prefix_type && (prefix_type->kind == TYPE_ARRAY || prefix_type->kind == TYPE_STRING)) {
         Symbol *array_sym = node->apply.prefix->symbol;
-        uint32_t base = Emit_Temp(cg);
-        if (array_sym) {
+        uint32_t base;
+        uint32_t low_bound_val = 0;
+        bool has_dynamic_low = false;
+
+        /* Check if unconstrained array needing fat pointer handling */
+        if (Type_Is_Unconstrained_Array(prefix_type) && array_sym &&
+            (array_sym->kind == SYMBOL_PARAMETER || array_sym->kind == SYMBOL_VARIABLE)) {
+            /* Load fat pointer and extract data pointer and low bound */
+            uint32_t fat = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%", fat);
+            Emit_Symbol_Name(cg, array_sym);
+            Emit(cg, "  ; load fat pointer for indexing\n");
+            base = Emit_Fat_Pointer_Data(cg, fat);
+            low_bound_val = Emit_Fat_Pointer_Low(cg, fat);
+            has_dynamic_low = true;
+        } else if (array_sym) {
+            /* Constrained array - get direct pointer to data */
+            base = Emit_Temp(cg);
             Emit(cg, "  %%t%u = getelementptr i8, ptr %%", base);
             Emit_Symbol_Name(cg, array_sym);
             Emit(cg, ", i64 0\n");
@@ -7469,11 +7617,19 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         uint32_t idx = Generate_Expression(cg, node->apply.arguments.items[0]);
 
         /* Adjust for array low bound (Ada arrays can start at any index) */
-        int64_t low_bound = Array_Low_Bound(prefix_type);
-        if (low_bound != 0) {
+        if (has_dynamic_low) {
+            /* Dynamic low bound from fat pointer */
             uint32_t adj = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sub i64 %%t%u, %lld\n", adj, idx, (long long)low_bound);
+            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u  ; adjust for dynamic low bound\n",
+                 adj, idx, low_bound_val);
             idx = adj;
+        } else {
+            int64_t low_bound = Array_Low_Bound(prefix_type);
+            if (low_bound != 0) {
+                uint32_t adj = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = sub i64 %%t%u, %lld\n", adj, idx, (long long)low_bound);
+                idx = adj;
+            }
         }
 
         /* Get pointer to element and load */
@@ -7586,12 +7742,34 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     uint32_t dim = Get_Dimension_Index(node->attribute.argument);
 
     /* ─────────────────────────────────────────────────────────────────────
+     * Check if prefix is an unconstrained array that needs runtime bounds
+     * Unconstrained arrays (STRING, unconstrained ARRAY) are passed as
+     * fat pointers { ptr, { i64, i64 } } containing data pointer and bounds.
+     * ───────────────────────────────────────────────────────────────────── */
+
+    bool needs_runtime_bounds = false;
+    Symbol *prefix_sym = node->attribute.prefix->symbol;
+    if (prefix_type && Type_Is_Unconstrained_Array(prefix_type) &&
+        prefix_sym && (prefix_sym->kind == SYMBOL_PARAMETER ||
+                       prefix_sym->kind == SYMBOL_VARIABLE)) {
+        needs_runtime_bounds = true;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────────
      * Array/Scalar Bound Attributes
      * ───────────────────────────────────────────────────────────────────── */
 
     if (Slice_Equal_Ignore_Case(attr, S("FIRST"))) {
         if (prefix_type && (prefix_type->kind == TYPE_ARRAY || prefix_type->kind == TYPE_STRING)) {
-            if (dim < prefix_type->array.index_count) {
+            if (needs_runtime_bounds && dim == 0) {
+                /* Load fat pointer and extract low bound */
+                uint32_t fat = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%", fat);
+                Emit_Symbol_Name(cg, prefix_sym);
+                Emit(cg, "  ; load fat pointer for 'FIRST\n");
+                uint32_t low = Emit_Fat_Pointer_Low(cg, fat);
+                return low;
+            } else if (dim < prefix_type->array.index_count) {
                 Emit(cg, "  %%t%u = add i64 0, %lld  ; %.*s'FIRST(%u)\n", t,
                      (long long)Type_Bound_Value(prefix_type->array.indices[dim].low_bound),
                      (int)attr.length, attr.data, dim + 1);
@@ -7606,7 +7784,15 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
 
     if (Slice_Equal_Ignore_Case(attr, S("LAST"))) {
         if (prefix_type && (prefix_type->kind == TYPE_ARRAY || prefix_type->kind == TYPE_STRING)) {
-            if (dim < prefix_type->array.index_count) {
+            if (needs_runtime_bounds && dim == 0) {
+                /* Load fat pointer and extract high bound */
+                uint32_t fat = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%", fat);
+                Emit_Symbol_Name(cg, prefix_sym);
+                Emit(cg, "  ; load fat pointer for 'LAST\n");
+                uint32_t high = Emit_Fat_Pointer_High(cg, fat);
+                return high;
+            } else if (dim < prefix_type->array.index_count) {
                 Emit(cg, "  %%t%u = add i64 0, %lld  ; %.*s'LAST(%u)\n", t,
                      (long long)Type_Bound_Value(prefix_type->array.indices[dim].high_bound),
                      (int)attr.length, attr.data, dim + 1);
@@ -7621,7 +7807,20 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
 
     if (Slice_Equal_Ignore_Case(attr, S("LENGTH"))) {
         if (prefix_type && (prefix_type->kind == TYPE_ARRAY || prefix_type->kind == TYPE_STRING)) {
-            if (dim < prefix_type->array.index_count) {
+            if (needs_runtime_bounds && dim == 0) {
+                /* Load fat pointer and compute length from bounds */
+                uint32_t fat = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%", fat);
+                Emit_Symbol_Name(cg, prefix_sym);
+                Emit(cg, "  ; load fat pointer for 'LENGTH\n");
+                uint32_t low = Emit_Fat_Pointer_Low(cg, fat);
+                uint32_t high = Emit_Fat_Pointer_High(cg, fat);
+                uint32_t diff = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", diff, high, low);
+                uint32_t len = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add i64 %%t%u, 1  ; 'LENGTH\n", len, diff);
+                return len;
+            } else if (dim < prefix_type->array.index_count) {
                 int64_t low = Type_Bound_Value(prefix_type->array.indices[dim].low_bound);
                 int64_t high = Type_Bound_Value(prefix_type->array.indices[dim].high_bound);
                 Emit(cg, "  %%t%u = add i64 0, %lld  ; 'LENGTH(%u)\n", t,
@@ -7632,9 +7831,19 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("RANGE"))) {
-        /* Range attribute - typically used in for loops, return low bound for now */
+        /* Range attribute - typically used in for loops
+         * For unconstrained arrays, this is handled specially in Generate_For_Loop
+         * Here we just return the low bound for general expression contexts */
         if (prefix_type && (prefix_type->kind == TYPE_ARRAY || prefix_type->kind == TYPE_STRING)) {
-            if (dim < prefix_type->array.index_count) {
+            if (needs_runtime_bounds && dim == 0) {
+                /* Load fat pointer and extract low bound */
+                uint32_t fat = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%", fat);
+                Emit_Symbol_Name(cg, prefix_sym);
+                Emit(cg, "  ; load fat pointer for 'RANGE\n");
+                uint32_t low = Emit_Fat_Pointer_Low(cg, fat);
+                return low;
+            } else if (dim < prefix_type->array.index_count) {
                 Emit(cg, "  %%t%u = add i64 0, %lld  ; 'RANGE(%u) low\n", t,
                      (long long)Type_Bound_Value(prefix_type->array.indices[dim].low_bound),
                      dim + 1);
@@ -8264,11 +8473,19 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
     /* Truncate from i64 computation to actual storage type */
     value = Emit_Convert(cg, value, "i64", type_str);
 
+    /* Check if package-level global (parent is NULL or SYMBOL_PACKAGE) */
+    bool is_global = !target_sym->parent || target_sym->parent->kind == SYMBOL_PACKAGE;
+
     if (is_uplevel && cg->is_nested) {
         /* Uplevel store through frame pointer */
         Emit(cg, "  ; UPLEVEL STORE: %.*s via frame pointer\n",
              (int)target_sym->name.length, target_sym->name.data);
         Emit(cg, "  store %s %%t%u, ptr %%__frame.", type_str, value);
+        Emit_Symbol_Name(cg, target_sym);
+        Emit(cg, "\n");
+    } else if (is_global) {
+        /* Global variable - use @ prefix */
+        Emit(cg, "  store %s %%t%u, ptr @", type_str, value);
         Emit_Symbol_Name(cg, target_sym);
         Emit(cg, "\n");
     } else {
@@ -8461,7 +8678,44 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
     if (range && range->kind == NK_RANGE) {
         low_val = Generate_Expression(cg, range->range.low);
         high_val = Generate_Expression(cg, range->range.high);
+    } else if (range && range->kind == NK_ATTRIBUTE &&
+               Slice_Equal_Ignore_Case(range->attribute.name, S("RANGE"))) {
+        /* X'RANGE attribute - need to generate both 'FIRST and 'LAST */
+        Type_Info *prefix_type = range->attribute.prefix->type;
+        Symbol *prefix_sym = range->attribute.prefix->symbol;
+
+        /* Check if this is an unconstrained array needing runtime bounds */
+        if (prefix_type && Type_Is_Unconstrained_Array(prefix_type) &&
+            prefix_sym && (prefix_sym->kind == SYMBOL_PARAMETER ||
+                           prefix_sym->kind == SYMBOL_VARIABLE)) {
+            /* Load fat pointer and extract both bounds */
+            uint32_t fat = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%", fat);
+            Emit_Symbol_Name(cg, prefix_sym);
+            Emit(cg, "  ; load fat pointer for 'RANGE\n");
+            low_val = Emit_Fat_Pointer_Low(cg, fat);
+            high_val = Emit_Fat_Pointer_High(cg, fat);
+        } else if (prefix_type && (prefix_type->kind == TYPE_ARRAY ||
+                                   prefix_type->kind == TYPE_STRING)) {
+            /* Constrained array - use compile-time bounds */
+            uint32_t dim = Get_Dimension_Index(range->attribute.argument);
+            if (dim < prefix_type->array.index_count) {
+                low_val = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add i64 0, %lld  ; 'RANGE low\n", low_val,
+                     (long long)Type_Bound_Value(prefix_type->array.indices[dim].low_bound));
+                high_val = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add i64 0, %lld  ; 'RANGE high\n", high_val,
+                     (long long)Type_Bound_Value(prefix_type->array.indices[dim].high_bound));
+            } else {
+                low_val = high_val = 0;
+            }
+        } else {
+            /* Fallback */
+            low_val = Generate_Expression(cg, range);
+            high_val = low_val;
+        }
     } else {
+        /* Other expression - evaluate as low bound, assume scalar with same high */
         low_val = Generate_Expression(cg, range);
         high_val = low_val;
     }
@@ -8889,6 +9143,7 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
  * ───────────────────────────────────────────────────────────────────────── */
 
 static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node);
+static void Emit_Extern_Subprogram(Code_Generator *cg, Symbol *sym);
 
 static void Generate_Declaration_List(Code_Generator *cg, Node_List *list) {
     for (uint32_t i = 0; i < list->count; i++) {
@@ -8899,6 +9154,7 @@ static void Generate_Declaration_List(Code_Generator *cg, Node_List *list) {
 static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
     /* cg->current_nesting_level is repurposed: 1 = has nested functions, use frame */
     bool use_frame = cg->current_nesting_level > 0;
+    bool is_package_level = (cg->current_function == NULL);
 
     for (uint32_t i = 0; i < node->object_decl.names.count; i++) {
         Syntax_Node *name = node->object_decl.names.items[i];
@@ -8917,7 +9173,32 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
         bool is_record = ty && ty->kind == TYPE_RECORD;
         uint32_t record_size = is_record ? ty->size : 0;
 
-        /* Allocate stack space (in frame if function has nested subprograms) */
+        /* Package-level variables are globals, local variables use alloca */
+        if (is_package_level) {
+            /* Global variable at package level */
+            Emit(cg, "@");
+            Emit_Symbol_Name(cg, sym);
+            if (node->object_decl.is_constant && node->object_decl.init) {
+                /* Constant with initializer - emit as constant */
+                if (node->object_decl.init->kind == NK_INTEGER) {
+                    Emit(cg, " = linkonce_odr constant %s %lld\n", type_str,
+                         (long long)node->object_decl.init->integer_lit.value);
+                    continue;
+                }
+            }
+            /* Variable - emit as global with default init */
+            if (is_array && array_count > 0) {
+                Emit(cg, " = linkonce_odr global [%lld x %s] zeroinitializer\n",
+                     (long long)array_count, elem_type);
+            } else if (is_record && record_size > 0) {
+                Emit(cg, " = linkonce_odr global [%u x i8] zeroinitializer\n", record_size);
+            } else {
+                Emit(cg, " = linkonce_odr global %s 0\n", type_str);
+            }
+            continue;
+        }
+
+        /* Local variable allocation */
         if (use_frame) {
             Emit(cg, "  %%");
             Emit_Symbol_Name(cg, sym);
@@ -9337,6 +9618,14 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
             Generate_Object_Declaration(cg, node);
             break;
 
+        case NK_PROCEDURE_SPEC:
+        case NK_FUNCTION_SPEC:
+            /* Forward declaration - if imported, emit extern declaration */
+            if (node->symbol && node->symbol->is_imported) {
+                Emit_Extern_Subprogram(cg, node->symbol);
+            }
+            break;
+
         case NK_PROCEDURE_BODY:
         case NK_FUNCTION_BODY:
             /* Defer nested subprogram bodies - emit after enclosing function */
@@ -9452,10 +9741,15 @@ static void Generate_Type_Equality_Function(Code_Generator *cg, Type_Info *t) {
 
     const char *func_name = t->equality_func_name;
 
-    /* Emit function definition: i1 @func(ptr %left, ptr %right) */
+    /* Determine parameter type based on array constrained-ness */
+    bool is_unconstrained = (t->kind == TYPE_ARRAY || t->kind == TYPE_STRING) &&
+                            !t->array.is_constrained;
+    const char *param_type = is_unconstrained ? FAT_PTR_TYPE : "ptr";
+
+    /* Emit function definition with linkonce_odr for linker deduplication */
     Emit(cg, "\n; Implicit equality for type %.*s\n",
          (int)t->name.length, t->name.data);
-    Emit(cg, "define i1 @%s(ptr %%0, ptr %%1) {\n", func_name);
+    Emit(cg, "define linkonce_odr i1 @%s(%s %%0, %s %%1) {\n", func_name, param_type, param_type);
     Emit(cg, "entry:\n");
 
     /* Save and reset temp counter for this function */
@@ -9592,6 +9886,108 @@ static void Generate_Exception_Globals(Code_Generator *cg) {
     }
 }
 
+/* Check if external name is a builtin text_io function (already defined) */
+static bool Is_Builtin_Function(String_Slice name) {
+    /* Strip quotes if present */
+    if (name.length >= 2 && name.data[0] == '"' && name.data[name.length-1] == '"') {
+        name.data++;
+        name.length -= 2;
+    }
+    const char *builtins[] = {
+        "__text_io_new_line", "__text_io_put_char", "__text_io_put",
+        "__text_io_put_line", "__text_io_put_int", "__text_io_put_float",
+        "__text_io_get_char", "__text_io_get_line", NULL
+    };
+    for (int i = 0; builtins[i]; i++) {
+        if (name.length == strlen(builtins[i]) &&
+            memcmp(name.data, builtins[i], name.length) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Emit function signature for extern declaration */
+static void Emit_Extern_Subprogram(Code_Generator *cg, Symbol *sym) {
+    if (!sym) return;
+    if (sym->kind != SYMBOL_FUNCTION && sym->kind != SYMBOL_PROCEDURE) return;
+
+    /* Skip if already emitted */
+    if (sym->extern_emitted) return;
+    sym->extern_emitted = true;
+
+    /* Skip if this is a builtin function that we've already defined */
+    if (sym->is_imported && sym->external_name.length > 0) {
+        if (Is_Builtin_Function(sym->external_name)) {
+            return;
+        }
+    }
+
+    /* Get return type */
+    const char *ret_type = sym->return_type ? Type_To_Llvm(sym->return_type) : "void";
+
+    Emit(cg, "declare %s @", ret_type);
+    Emit_Symbol_Name(cg, sym);
+    Emit(cg, "(");
+
+    /* Emit parameter types */
+    for (uint32_t i = 0; i < sym->parameter_count; i++) {
+        if (i > 0) Emit(cg, ", ");
+        Type_Info *ty = sym->parameters[i].param_type;
+        if (ty) {
+            /* Unconstrained arrays pass as fat pointers */
+            if ((ty->kind == TYPE_ARRAY && !ty->array.is_constrained) ||
+                ty->kind == TYPE_STRING) {
+                Emit(cg, FAT_PTR_TYPE);
+            } else {
+                Emit(cg, "%s", Type_To_Llvm(ty));
+            }
+        } else {
+            Emit(cg, "i64");
+        }
+    }
+    Emit(cg, ")\n");
+}
+
+/* Generate extern declarations for all loaded package specs */
+static void Generate_Extern_Declarations(Code_Generator *cg, Syntax_Node *node) {
+    if (!node || !node->compilation_unit.context) return;
+
+    Syntax_Node *ctx = node->compilation_unit.context;
+    bool emitted_header = false;
+
+    /* Iterate through WITH'd packages */
+    for (uint32_t i = 0; i < ctx->context.with_clauses.count; i++) {
+        Syntax_Node *with_node = ctx->context.with_clauses.items[i];
+        for (uint32_t j = 0; j < with_node->use_clause.names.count; j++) {
+            Syntax_Node *pkg_name = with_node->use_clause.names.items[j];
+            if (pkg_name->kind != NK_IDENTIFIER) continue;
+
+            Symbol *pkg_sym = pkg_name->symbol;
+            if (!pkg_sym || pkg_sym->kind != SYMBOL_PACKAGE) continue;
+            if (!pkg_sym->declaration) continue;
+
+            Syntax_Node *pkg_decl = pkg_sym->declaration;
+            if (pkg_decl->kind != NK_PACKAGE_SPEC) continue;
+
+            /* Emit extern for each subprogram in the package */
+            for (uint32_t k = 0; k < pkg_decl->package_spec.visible_decls.count; k++) {
+                Syntax_Node *decl = pkg_decl->package_spec.visible_decls.items[k];
+                if (!decl) continue;
+
+                if (decl->kind == NK_PROCEDURE_SPEC || decl->kind == NK_FUNCTION_SPEC) {
+                    if (!emitted_header) {
+                        Emit(cg, "\n; External Ada subprogram declarations\n");
+                        emitted_header = true;
+                    }
+                    Emit_Extern_Subprogram(cg, decl->symbol);
+                }
+            }
+        }
+    }
+    if (emitted_header) Emit(cg, "\n");
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
  * §13.7 Compilation Unit Code Generation
  * ───────────────────────────────────────────────────────────────────────── */
@@ -9609,6 +10005,7 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "declare i32 @memcmp(ptr, ptr, i64)\n");
     Emit(cg, "declare i32 @setjmp(ptr)\n");
     Emit(cg, "declare void @longjmp(ptr, i32)\n");
+    Emit(cg, "declare void @exit(i32)\n");
     Emit(cg, "declare ptr @malloc(i64)\n");
     Emit(cg, "declare ptr @realloc(ptr, i64)\n");
     Emit(cg, "declare void @free(ptr)\n");
@@ -9625,7 +10022,7 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "@__eh_cur = linkonce_odr global ptr null\n");
     Emit(cg, "@__ex_cur = linkonce_odr global i64 0\n");
     Emit(cg, "@__fin_list = linkonce_odr global ptr null\n");
-    Emit(cg, "@.fmt_ue = linkonce_odr constant [28 x i8] c\"Unhandled exception: %%lld\\0A\\00\"\n\n");
+    Emit(cg, "@.fmt_ue = linkonce_odr constant [27 x i8] c\"Unhandled exception: %%lld\\0A\\00\"\n\n");
 
     /* Standard exceptions (RM 11.1) */
     Emit(cg, "; Standard exception identities\n");
@@ -9832,9 +10229,9 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
 
     /* TEXT_IO inline implementation (Ada 83 Chapter 14) */
     Emit(cg, "; TEXT_IO runtime\n");
-    Emit(cg, "declare ptr @stdin\n");
-    Emit(cg, "declare ptr @stdout\n");
-    Emit(cg, "declare ptr @stderr\n");
+    Emit(cg, "@stdin = external global ptr\n");
+    Emit(cg, "@stdout = external global ptr\n");
+    Emit(cg, "@stderr = external global ptr\n");
     Emit(cg, "declare i32 @fputc(i32, ptr)\n");
     Emit(cg, "declare i32 @fputs(ptr, ptr)\n");
     Emit(cg, "declare i32 @fgetc(ptr)\n");
@@ -9994,6 +10391,9 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Generate_Implicit_Operators(cg);
     Emit(cg, "\n");
 
+    /* Generate extern declarations for WITH'd packages */
+    Generate_Extern_Declarations(cg, node);
+
     /* Generate declarations */
     if (node->compilation_unit.unit) {
         Generate_Declaration(cg, node->compilation_unit.unit);
@@ -10004,6 +10404,22 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
         Emit(cg, "\n; String constants\n");
         fprintf(cg->output, "%s", cg->string_const_buffer);
         Emit(cg, "\n");
+    }
+
+    /* Generate main function if this is a main program (library-level procedure) */
+    Syntax_Node *unit = node->compilation_unit.unit;
+    if (unit && unit->kind == NK_PROCEDURE_BODY && unit->symbol) {
+        Symbol *main_sym = unit->symbol;
+        /* Check if this is a library-level procedure (no parameters, no parent package) */
+        if (main_sym->parameter_count == 0) {
+            Emit(cg, "\n; C main entry point\n");
+            Emit(cg, "define i32 @main() {\n");
+            Emit(cg, "  call void @");
+            Emit_Symbol_Name(cg, main_sym);
+            Emit(cg, "()\n");
+            Emit(cg, "  ret i32 0\n");
+            Emit(cg, "}\n");
+        }
     }
 }
 
@@ -10182,20 +10598,29 @@ static void Compile_File(const char *input_path, const char *output_path) {
     }
 
     /* Code generation */
-    FILE *output = fopen(output_path, "w");
-    if (!output) {
-        fprintf(stderr, "Error: cannot open output file '%s'\n", output_path);
-        free(source);
-        return;
+    FILE *out_file;
+    bool close_output = false;
+
+    if (output_path) {
+        out_file = fopen(output_path, "w");
+        if (!out_file) {
+            fprintf(stderr, "Error: cannot open output file '%s'\n", output_path);
+            free(source);
+            return;
+        }
+        close_output = true;
+    } else {
+        out_file = stdout;  /* Output to stdout if no -o specified */
     }
 
-    Code_Generator *cg = Code_Generator_New(output, sm);
+    Code_Generator *cg = Code_Generator_New(out_file, sm);
     Generate_Compilation_Unit(cg, unit);
 
-    fclose(output);
+    if (close_output) {
+        fclose(out_file);
+        fprintf(stderr, "Compiled '%s' -> '%s'\n", input_path, output_path);
+    }
     free(source);
-
-    fprintf(stderr, "Compiled '%s' -> '%s'\n", input_path, output_path);
 }
 
 int main(int argc, char *argv[]) {
@@ -10205,7 +10630,7 @@ int main(int argc, char *argv[]) {
     }
 
     const char *input = NULL;
-    const char *output = "output.ll";
+    const char *output = NULL;  /* NULL means stdout */
 
     /* Parse command-line arguments */
     for (int i = 1; i < argc; i++) {
