@@ -3768,81 +3768,6 @@ static inline bool Type_Is_Unconstrained_Array(const Type_Info *t) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
- * §10.4.1 Representation Category
- *
- * Unified representation category for code generation. This consolidates
- * the checklist items about parallel "representation category" computations.
- *
- * Categories determine how values are passed and stored:
- * - INTEGER: fits in a register, passed by value (bool, char, int, enum)
- * - FLOAT: floating-point register, passed by value
- * - POINTER: address, passed by reference (access, composite, fat pointers)
- *
- * Following GNAT LLVM's GL_Type representation abstraction.
- * ───────────────────────────────────────────────────────────────────────── */
-
-typedef enum {
-    REPR_INTEGER,    /* Discrete/modular types: pass in integer register */
-    REPR_FLOAT,      /* Real types: pass in FP register */
-    REPR_POINTER     /* Composite/access: pass by reference */
-} Repr_Category;
-
-/* Get representation category for a type (handles derived types recursively) */
-static Repr_Category Type_Repr_Category(const Type_Info *t) {
-    if (!t) return REPR_INTEGER;
-
-    /* For derived types, use parent's representation */
-    if (t->parent_type) {
-        return Type_Repr_Category(t->parent_type);
-    }
-
-    switch (t->kind) {
-        /* Floating-point types */
-        case TYPE_FLOAT:
-        case TYPE_FIXED:
-        case TYPE_UNIVERSAL_REAL:
-            return REPR_FLOAT;
-
-        /* Composite and access types: pass by reference */
-        case TYPE_ARRAY:
-        case TYPE_STRING:
-        case TYPE_RECORD:
-        case TYPE_ACCESS:
-        case TYPE_TASK:
-            return REPR_POINTER;
-
-        /* All other types (discrete, modular, enum, boolean, char): integer */
-        default:
-            return REPR_INTEGER;
-    }
-}
-
-/* LLVM type string for a given representation */
-static const char *Repr_LLVM_Type(Repr_Category cat, uint32_t size_bytes) {
-    switch (cat) {
-        case REPR_FLOAT:
-            return (size_bytes <= 4) ? "float" : "double";
-        case REPR_POINTER:
-            return "ptr";
-        case REPR_INTEGER:
-        default:
-            switch (size_bytes) {
-                case 1: return "i8";
-                case 2: return "i16";
-                case 4: return "i32";
-                case 8: return "i64";
-                default: return "i32";
-            }
-    }
-}
-
-/* Get LLVM type string for a Type_Info */
-static const char *Type_LLVM_Type(const Type_Info *t) {
-    if (!t) return "i32";
-    return Repr_LLVM_Type(Type_Repr_Category(t), t->size);
-}
-
-/* ─────────────────────────────────────────────────────────────────────────
  * §10.5 Base Type Traversal
  *
  * Per RM 3.3.1: The base type of a type is the ultimate ancestor.
@@ -6637,6 +6562,7 @@ static void Emit_Fat_Pointer_Copy_To_Name(Code_Generator *cg, uint32_t fat_ptr, 
 
 /* Copy data from fat pointer to a temp pointer destination
  * Emits: memcpy(dst_ptr, src_data, length) */
+__attribute__((unused))
 static void Emit_Fat_Pointer_Copy_To_Ptr(Code_Generator *cg, uint32_t fat_ptr, uint32_t dst_ptr) {
     uint32_t src_ptr = Emit_Fat_Pointer_Data(cg, fat_ptr);
     uint32_t len = Emit_Fat_Pointer_Length(cg, fat_ptr);

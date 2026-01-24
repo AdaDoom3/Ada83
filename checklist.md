@@ -2599,9 +2599,9 @@ Make `Symbol.parent` either:
 
 ## Overall Metrics
 - **Original ada83.c**: 18,746 lines
-- **New ada83new.c**: 9,359 lines (as of 2026-01-24)
-- **Reduction**: ~50% fewer lines with improved clarity
-- **Compilation**: Clean compile with gcc -Wall -Wextra
+- **New ada83new.c**: 9,288 lines (as of 2026-01-24)
+- **Reduction**: ~50.5% fewer lines with improved clarity
+- **Compilation**: Clean compile with gcc -Wall -Wextra (no warnings)
 - **No TODO/FIXME markers remaining**
 
 ## Completed Sections
