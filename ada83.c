@@ -6737,7 +6737,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
   if (node->k == N_IX)
   {
     Type_Info *bt = resolve_subtype(symbol_manager, node->index.prefix);
-    if (bt and bt->k == TYPE_ARRAY and bt->low_bound == 0 and bt->high_bound == -1 and node->index.indices.count == 1)
+    if (bt and bt->k == TYPE_ARRAY and bt->high_bound == -1 and node->index.indices.count == 1)
     {
       Syntax_Node *r = node->index.indices.data[0];
       if (r and r->k == N_RN)
@@ -6785,7 +6785,7 @@ static Type_Info *resolve_subtype(Symbol_Manager *symbol_manager, Syntax_Node *n
   if (node->k == N_CL)
   {
     Type_Info *bt = resolve_subtype(symbol_manager, node->call.function_name);
-    if (bt and bt->k == TYPE_ARRAY and bt->low_bound == 0 and bt->high_bound == -1 and node->call.arguments.count == 1)
+    if (bt and bt->k == TYPE_ARRAY and bt->high_bound == -1 and node->call.arguments.count == 1)
     {
       Syntax_Node *r = node->call.arguments.data[0];
       if (r and r->k == N_RN)
@@ -6844,7 +6844,9 @@ static inline Syntax_Node *make_check(Syntax_Node *ex, String_Slice ec, Source_L
 }
 static inline bool is_unconstrained_array(Type_Info *t)
 {
-  return t and t->k == TYPE_ARRAY and t->low_bound == 0 and t->high_bound == -1;
+  // Unconstrained arrays use high_bound == -1 as sentinel (regardless of low_bound)
+  // This allows POSITIVE RANGE <> which has low_bound = 1
+  return t and t->k == TYPE_ARRAY and t->high_bound == -1;
 }
 static Type_Info *base_scalar(Type_Info *t)
 {
@@ -9037,9 +9039,15 @@ static Syntax_Node *node_clone_substitute(Syntax_Node *n, Node_Vector *fp, Node_
   case N_TR:
   case N_TAC:
   case N_TP:
-  case N_ST:
   case N_LST:
     normalize_compile_symbol_vector(&c->list.items, &n->list.items, fp, ap);
+    break;
+  case N_ST:
+    // Subtype indication: clone index_constraint, constraint, and range_constraint
+    c->subtype_decl.name = n->subtype_decl.name;
+    c->subtype_decl.index_constraint = node_clone_substitute(n->subtype_decl.index_constraint, fp, ap);
+    c->subtype_decl.constraint = node_clone_substitute(n->subtype_decl.constraint, fp, ap);
+    c->subtype_decl.range_constraint = node_clone_substitute(n->subtype_decl.range_constraint, fp, ap);
     break;
   default:
     break;
