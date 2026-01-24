@@ -3406,6 +3406,9 @@ struct Type_Info {
 
     /* Runtime check suppression */
     uint32_t     suppressed_checks;
+
+    /* Freezing status - once frozen, representation cannot change */
+    bool         is_frozen;
 };
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -3492,7 +3495,75 @@ static bool Type_Compatible(Type_Info *a, Type_Info *b) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
- * §10.6 LLVM Type Mapping
+ * §10.6 Type Freezing
+ *
+ * Freezing determines the point at which a type's representation is fixed.
+ * Per RM 13.14 and GNAT design:
+ * - Types are frozen by object declarations, bodies, end of declarative part
+ * - Subtypes freeze their base type
+ * - Composite types freeze their component types
+ * - Once frozen, size/alignment/layout cannot change
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/* Forward declaration for Symbol */
+typedef struct Symbol Symbol;
+
+/* Freeze a type and all its dependencies
+ * Per RM 13.14: When a type is frozen, its representation is fixed */
+static void Freeze_Type(Type_Info *t) {
+    if (!t || t->is_frozen) return;
+
+    /* Mark as frozen first to prevent infinite recursion */
+    t->is_frozen = true;
+
+    /* Freeze base type if present */
+    if (t->base_type) {
+        Freeze_Type(t->base_type);
+    }
+
+    /* Freeze parent type for derived types */
+    if (t->parent_type) {
+        Freeze_Type(t->parent_type);
+    }
+
+    /* Freeze component types for composites */
+    switch (t->kind) {
+        case TYPE_ARRAY:
+        case TYPE_STRING:
+            /* Freeze element type */
+            if (t->array.element_type) {
+                Freeze_Type(t->array.element_type);
+            }
+            /* Freeze index types */
+            for (uint32_t i = 0; i < t->array.index_count; i++) {
+                if (t->array.indices[i].index_type) {
+                    Freeze_Type(t->array.indices[i].index_type);
+                }
+            }
+            break;
+
+        case TYPE_RECORD:
+            /* Freeze all component types */
+            for (uint32_t i = 0; i < t->record.component_count; i++) {
+                if (t->record.components[i].component_type) {
+                    Freeze_Type(t->record.components[i].component_type);
+                }
+            }
+            break;
+
+        case TYPE_ACCESS:
+            /* Access type freezing does NOT freeze designated type */
+            /* Per RM 13.14: "Freezing an access type does not freeze
+               its designated subtype" */
+            break;
+
+        default:
+            break;
+    }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §10.7 LLVM Type Mapping
  * ───────────────────────────────────────────────────────────────────────── */
 
 /* Forward declarations for array helpers (defined after Type_Bound_Value) */
@@ -4193,6 +4264,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
 
 static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node);
 static void Resolve_Declaration_List(Symbol_Manager *sm, Node_List *list);
+static void Freeze_Declaration_List(Node_List *list);
 
 static void Resolve_Statement_List(Symbol_Manager *sm, Node_List *list) {
     for (uint32_t i = 0; i < list->count; i++) {
@@ -4253,6 +4325,8 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
             Symbol_Manager_Push_Scope(sm, NULL);
             /* Resolve declarations first (adds symbols to scope) */
             Resolve_Declaration_List(sm, &node->block_stmt.declarations);
+            /* Freeze all types at end of declarative part (RM 13.14) */
+            Freeze_Declaration_List(&node->block_stmt.declarations);
             /* Then resolve statements that use those symbols */
             Resolve_Statement_List(sm, &node->block_stmt.statements);
             for (uint32_t i = 0; i < node->block_stmt.handlers.count; i++) {
@@ -4308,6 +4382,36 @@ static void Resolve_Declaration_List(Symbol_Manager *sm, Node_List *list) {
     }
 }
 
+/* Freeze all types declared in a list
+ * Per RM 13.14: At the end of a declarative part, all entities are frozen */
+static void Freeze_Declaration_List(Node_List *list) {
+    for (uint32_t i = 0; i < list->count; i++) {
+        Syntax_Node *node = list->items[i];
+        if (!node) continue;
+
+        switch (node->kind) {
+            case NK_TYPE_DECL:
+            case NK_SUBTYPE_DECL:
+                if (node->symbol && node->symbol->type) {
+                    Freeze_Type(node->symbol->type);
+                }
+                break;
+
+            case NK_OBJECT_DECL:
+                /* Objects already freeze their type at declaration */
+                break;
+
+            case NK_PROCEDURE_BODY:
+            case NK_FUNCTION_BODY:
+                /* Subprogram bodies freeze all visible entities */
+                break;
+
+            default:
+                break;
+        }
+    }
+}
+
 static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
     if (!node) return;
 
@@ -4316,6 +4420,10 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
             /* Resolve type */
             if (node->object_decl.object_type) {
                 Resolve_Expression(sm, node->object_decl.object_type);
+                /* Object declarations freeze the type (RM 13.14) */
+                if (node->object_decl.object_type->type) {
+                    Freeze_Type(node->object_decl.object_type->type);
+                }
             }
             /* Resolve initializer */
             if (node->object_decl.init) {
@@ -4485,6 +4593,8 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
 
                 /* Resolve declarations and statements */
                 Resolve_Declaration_List(sm, &node->subprogram_body.declarations);
+                /* Freeze all types at end of declarative part (RM 13.14) */
+                Freeze_Declaration_List(&node->subprogram_body.declarations);
                 Resolve_Statement_List(sm, &node->subprogram_body.statements);
 
                 Symbol_Manager_Pop_Scope(sm);
@@ -4500,6 +4610,9 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                 Symbol_Manager_Push_Scope(sm, sym);
                 Resolve_Declaration_List(sm, &node->package_spec.visible_decls);
                 Resolve_Declaration_List(sm, &node->package_spec.private_decls);
+                /* End of package spec freezes all declared entities (RM 13.14) */
+                Freeze_Declaration_List(&node->package_spec.visible_decls);
+                Freeze_Declaration_List(&node->package_spec.private_decls);
                 Symbol_Manager_Pop_Scope(sm);
             }
             break;
@@ -4508,6 +4621,8 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
             {
                 Symbol_Manager_Push_Scope(sm, NULL);
                 Resolve_Declaration_List(sm, &node->package_body.declarations);
+                /* Freeze all types at end of declarative part (RM 13.14) */
+                Freeze_Declaration_List(&node->package_body.declarations);
                 Resolve_Statement_List(sm, &node->package_body.statements);
                 Symbol_Manager_Pop_Scope(sm);
             }
