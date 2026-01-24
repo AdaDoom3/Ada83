@@ -3455,6 +3455,12 @@ static inline bool Type_Is_Access(const Type_Info *t) {
     return t && t->kind == TYPE_ACCESS;
 }
 
+/* Check if array type is unconstrained (needs fat pointer representation) */
+static inline bool Type_Is_Unconstrained_Array(const Type_Info *t) {
+    return t && (t->kind == TYPE_ARRAY || t->kind == TYPE_STRING) &&
+           !t->array.is_constrained;
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
  * §10.5 Type Compatibility
  *
@@ -3489,6 +3495,11 @@ static bool Type_Compatible(Type_Info *a, Type_Info *b) {
  * §10.6 LLVM Type Mapping
  * ───────────────────────────────────────────────────────────────────────── */
 
+/* Forward declarations for array helpers (defined after Type_Bound_Value) */
+static int64_t Type_Bound_Value(Type_Bound b);
+static int64_t Array_Element_Count(Type_Info *t);
+static int64_t Array_Low_Bound(Type_Info *t);
+
 static const char *Type_To_Llvm(Type_Info *t) {
     if (!t) return "i64";
 
@@ -3514,6 +3525,7 @@ static const char *Type_To_Llvm(Type_Info *t) {
             return "i64";
     }
 }
+
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * §11. SYMBOL TABLE — Scoped Name Resolution
@@ -4108,6 +4120,68 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
             }
             return node->association.expression ? node->association.expression->type : NULL;
 
+        case NK_ARRAY_TYPE:
+            {
+                /* Create array type info from syntax node */
+                Type_Info *array_type = Type_New(TYPE_ARRAY, S(""));
+                array_type->array.is_constrained = node->array_type.is_constrained;
+                array_type->array.index_count = (uint32_t)node->array_type.indices.count;
+
+                /* Allocate index info */
+                if (array_type->array.index_count > 0) {
+                    array_type->array.indices = Arena_Allocate(
+                        array_type->array.index_count * sizeof(Index_Info));
+
+                    for (uint32_t i = 0; i < array_type->array.index_count; i++) {
+                        Syntax_Node *idx = node->array_type.indices.items[i];
+                        Resolve_Expression(sm, idx);
+
+                        Index_Info *info = &array_type->array.indices[i];
+                        info->index_type = sm->type_integer;
+
+                        /* Extract bounds from range node */
+                        if (idx->kind == NK_RANGE && idx->range.low && idx->range.high) {
+                            if (idx->range.low->kind == NK_INTEGER) {
+                                info->low_bound = (Type_Bound){
+                                    .kind = BOUND_INTEGER,
+                                    .int_value = idx->range.low->integer_lit.value
+                                };
+                            }
+                            if (idx->range.high->kind == NK_INTEGER) {
+                                info->high_bound = (Type_Bound){
+                                    .kind = BOUND_INTEGER,
+                                    .int_value = idx->range.high->integer_lit.value
+                                };
+                            }
+                        }
+                    }
+                }
+
+                /* Resolve component type */
+                if (node->array_type.component_type) {
+                    Resolve_Expression(sm, node->array_type.component_type);
+                    array_type->array.element_type = node->array_type.component_type->type;
+                } else {
+                    array_type->array.element_type = sm->type_integer;
+                }
+
+                /* Compute size */
+                if (array_type->array.is_constrained && array_type->array.index_count > 0) {
+                    int64_t count = 1;
+                    for (uint32_t i = 0; i < array_type->array.index_count; i++) {
+                        int64_t lo = Type_Bound_Value(array_type->array.indices[i].low_bound);
+                        int64_t hi = Type_Bound_Value(array_type->array.indices[i].high_bound);
+                        count *= (hi - lo + 1);
+                    }
+                    uint32_t elem_size = array_type->array.element_type ?
+                                         array_type->array.element_type->size : 8;
+                    array_type->size = (uint32_t)(count * elem_size);
+                }
+
+                node->type = array_type;
+                return array_type;
+            }
+
         default:
             return NULL;
     }
@@ -4270,9 +4344,27 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                 Symbol_Add(sm, sym);
                 node->symbol = sym;
 
-                /* Resolve definition */
+                /* Resolve definition and copy type info */
                 if (node->type_decl.definition) {
-                    Resolve_Expression(sm, node->type_decl.definition);
+                    Type_Info *def_type = Resolve_Expression(sm, node->type_decl.definition);
+                    if (def_type) {
+                        /* Copy type info from definition to named type */
+                        type->kind = def_type->kind;
+                        type->size = def_type->size;
+                        type->alignment = def_type->alignment;
+                        type->low_bound = def_type->low_bound;
+                        type->high_bound = def_type->high_bound;
+
+                        if (def_type->kind == TYPE_ARRAY) {
+                            type->array = def_type->array;
+                        } else if (def_type->kind == TYPE_RECORD) {
+                            type->record = def_type->record;
+                        } else if (def_type->kind == TYPE_ACCESS) {
+                            type->access = def_type->access;
+                        } else if (def_type->kind == TYPE_ENUMERATION) {
+                            type->enumeration = def_type->enumeration;
+                        }
+                    }
                 }
             }
             break;
@@ -4606,6 +4698,75 @@ static uint32_t Emit_Convert(Code_Generator *cg, uint32_t src, const char *src_t
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
+ * §13.2.1 Fat Pointer Support for Unconstrained Arrays
+ *
+ * Unconstrained arrays use a "fat pointer" representation:
+ *   %fat_ptr = type { ptr, { i64, i64 } }
+ *
+ * Where:
+ *   - Field 0: pointer to array data
+ *   - Field 1: bounds struct { low_bound, high_bound }
+ *
+ * This allows passing arrays without knowing their bounds at compile time.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/* Fat pointer type name */
+#define FAT_PTR_TYPE "{ ptr, { i64, i64 } }"
+
+/* Create a fat pointer from data pointer and bounds
+ * Returns the temp ID of the fat pointer struct */
+static uint32_t Emit_Fat_Pointer(Code_Generator *cg, uint32_t data_ptr,
+                                  int64_t low, int64_t high) {
+    /* Allocate fat pointer struct on stack */
+    uint32_t fat_alloca = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = alloca " FAT_PTR_TYPE "\n", fat_alloca);
+
+    /* Store data pointer */
+    uint32_t data_gep = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr %%t%u, i32 0, i32 0\n",
+         data_gep, fat_alloca);
+    Emit(cg, "  store ptr %%t%u, ptr %%t%u\n", data_ptr, data_gep);
+
+    /* Store low bound */
+    uint32_t low_gep = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr %%t%u, i32 0, i32 1, i32 0\n",
+         low_gep, fat_alloca);
+    Emit(cg, "  store i64 %lld, ptr %%t%u\n", (long long)low, low_gep);
+
+    /* Store high bound */
+    uint32_t high_gep = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr %%t%u, i32 0, i32 1, i32 1\n",
+         high_gep, fat_alloca);
+    Emit(cg, "  store i64 %lld, ptr %%t%u\n", (long long)high, high_gep);
+
+    /* Load and return the fat pointer struct */
+    uint32_t fat_val = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", fat_val, fat_alloca);
+    return fat_val;
+}
+
+/* Extract data pointer from fat pointer */
+static uint32_t Emit_Fat_Pointer_Data(Code_Generator *cg, uint32_t fat_ptr) {
+    uint32_t t = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n", t, fat_ptr);
+    return t;
+}
+
+/* Extract low bound from fat pointer */
+static uint32_t Emit_Fat_Pointer_Low(Code_Generator *cg, uint32_t fat_ptr) {
+    uint32_t t = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 0\n", t, fat_ptr);
+    return t;
+}
+
+/* Extract high bound from fat pointer */
+static uint32_t Emit_Fat_Pointer_High(Code_Generator *cg, uint32_t fat_ptr) {
+    uint32_t t = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 1\n", t, fat_ptr);
+    return t;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
  * §13.3 Expression Code Generation
  *
  * Returns the LLVM SSA value ID holding the expression result.
@@ -4837,15 +4998,40 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
     /* Array indexing */
     Type_Info *prefix_type = node->apply.prefix->type;
     if (prefix_type && prefix_type->kind == TYPE_ARRAY) {
-        uint32_t base = Generate_Expression(cg, node->apply.prefix);
+        /* Get array base address (not loaded value) */
+        Symbol *array_sym = node->apply.prefix->symbol;
+        uint32_t base = Emit_Temp(cg);
+        if (array_sym) {
+            Emit(cg, "  %%t%u = getelementptr i8, ptr %%", base);
+            Emit_Symbol_Name(cg, array_sym);
+            Emit(cg, ", i64 0\n");
+        } else {
+            /* Fallback for complex expressions - shouldn't happen often */
+            base = Generate_Expression(cg, node->apply.prefix);
+        }
+
+        /* Generate index expression */
         uint32_t idx = Generate_Expression(cg, node->apply.arguments.items[0]);
+
+        /* Adjust for array low bound (Ada arrays can start at any index) */
+        int64_t low_bound = Array_Low_Bound(prefix_type);
+        if (low_bound != 0) {
+            uint32_t adj = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = sub i64 %%t%u, %lld\n", adj, idx, (long long)low_bound);
+            idx = adj;
+        }
+
+        /* Get pointer to element and load */
+        const char *elem_type = Type_To_Llvm(prefix_type->array.element_type);
         uint32_t ptr = Emit_Temp(cg);
         uint32_t t = Emit_Temp(cg);
 
         Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %%t%u\n",
-             ptr, Type_To_Llvm(prefix_type->array.element_type), base, idx);
-        Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
-             t, Type_To_Llvm(prefix_type->array.element_type), ptr);
+             ptr, elem_type, base, idx);
+        Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, elem_type, ptr);
+
+        /* Widen to i64 for computation */
+        t = Emit_Convert(cg, t, elem_type, "i64");
         return t;
     }
 
@@ -4899,6 +5085,24 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
 static int64_t Type_Bound_Value(Type_Bound b) {
     if (b.kind == BOUND_INTEGER) return b.int_value;
     return 0;  /* Handle other bound kinds as needed */
+}
+
+/* Get array element count for constrained arrays, 0 for unconstrained */
+static int64_t Array_Element_Count(Type_Info *t) {
+    if (!t || t->kind != TYPE_ARRAY || !t->array.is_constrained)
+        return 0;
+    if (t->array.index_count == 0)
+        return 0;
+    int64_t low = Type_Bound_Value(t->array.indices[0].low_bound);
+    int64_t high = Type_Bound_Value(t->array.indices[0].high_bound);
+    return high - low + 1;
+}
+
+/* Get array low bound for index adjustment */
+static int64_t Array_Low_Bound(Type_Info *t) {
+    if (!t || t->kind != TYPE_ARRAY || t->array.index_count == 0)
+        return 0;
+    return Type_Bound_Value(t->array.indices[0].low_bound);
 }
 
 static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
@@ -5110,8 +5314,50 @@ static void Generate_Statement_List(Code_Generator *cg, Node_List *list) {
 }
 
 static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
+    Syntax_Node *target = node->assignment.target;
+
+    /* Handle indexed component target (array element assignment) */
+    if (target->kind == NK_APPLY) {
+        Type_Info *prefix_type = target->apply.prefix->type;
+        if (prefix_type && prefix_type->kind == TYPE_ARRAY) {
+            /* Array element assignment: DATA(I) := value */
+            Symbol *array_sym = target->apply.prefix->symbol;
+            if (!array_sym) return;
+
+            /* Get array base address (not loaded value) */
+            uint32_t base = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = getelementptr i8, ptr %%", base);
+            Emit_Symbol_Name(cg, array_sym);
+            Emit(cg, ", i64 0\n");
+
+            /* Generate index expression */
+            uint32_t idx = Generate_Expression(cg, target->apply.arguments.items[0]);
+
+            /* Adjust for array low bound (Ada arrays can start at any index) */
+            int64_t low_bound = Array_Low_Bound(prefix_type);
+            if (low_bound != 0) {
+                uint32_t adj = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = sub i64 %%t%u, %lld\n", adj, idx, (long long)low_bound);
+                idx = adj;
+            }
+
+            /* Get pointer to element */
+            const char *elem_type = Type_To_Llvm(prefix_type->array.element_type);
+            uint32_t ptr = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %%t%u\n",
+                 ptr, elem_type, base, idx);
+
+            /* Generate value and store */
+            uint32_t value = Generate_Expression(cg, node->assignment.value);
+            value = Emit_Convert(cg, value, "i64", elem_type);
+            Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, value, ptr);
+            return;
+        }
+    }
+
+    /* Simple variable target */
     uint32_t value = Generate_Expression(cg, node->assignment.value);
-    Symbol *target_sym = node->assignment.target->symbol;
+    Symbol *target_sym = target->symbol;
 
     if (target_sym) {
         /* Check if this is an uplevel (outer scope) variable access */
@@ -5482,7 +5728,13 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
         Symbol *sym = name->symbol;
         if (!sym) continue;
 
-        const char *type_str = Type_To_Llvm(sym->type);
+        Type_Info *ty = sym->type;
+        const char *type_str = Type_To_Llvm(ty);
+
+        /* Check if this is a constrained array */
+        bool is_array = ty && ty->kind == TYPE_ARRAY && ty->array.is_constrained;
+        int64_t array_count = is_array ? Array_Element_Count(ty) : 0;
+        const char *elem_type = is_array ? Type_To_Llvm(ty->array.element_type) : NULL;
 
         /* Allocate stack space (in frame if function has nested subprograms) */
         if (use_frame) {
@@ -5490,14 +5742,19 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             Emit_Symbol_Name(cg, sym);
             Emit(cg, " = getelementptr i8, ptr %%__frame_base, i64 %lld\n",
                  (long long)sym->frame_offset);
+        } else if (is_array && array_count > 0) {
+            /* Constrained array: allocate [N x element_type] */
+            Emit(cg, "  %%");
+            Emit_Symbol_Name(cg, sym);
+            Emit(cg, " = alloca [%lld x %s]\n", (long long)array_count, elem_type);
         } else {
             Emit(cg, "  %%");
             Emit_Symbol_Name(cg, sym);
             Emit(cg, " = alloca %s\n", type_str);
         }
 
-        /* Initialize if provided */
-        if (node->object_decl.init) {
+        /* Initialize if provided (skip for arrays - handled separately) */
+        if (node->object_decl.init && !is_array) {
             uint32_t init = Generate_Expression(cg, node->object_decl.init);
             /* Truncate from i64 computation to storage type */
             init = Emit_Convert(cg, init, "i64", type_str);
