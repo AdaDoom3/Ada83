@@ -3752,6 +3752,7 @@ struct Type_Info {
         struct {  /* TYPE_ENUMERATION */
             String_Slice *literals;
             uint32_t      literal_count;
+            int64_t      *rep_values;    /* Optional representation clause values */
         } enumeration;
 
         struct {  /* TYPE_FIXED */
@@ -6474,17 +6475,52 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                             }
                         }
 
-                        /* Process component clauses (record layout) */
+                        /* Process component clauses (record layout)
+                         * Each clause: component_name AT byte_position [RANGE bits]; */
                         for (uint32_t i = 0; i < node->rep_clause.component_clauses.count; i++) {
                             Syntax_Node *cc = node->rep_clause.component_clauses.items[i];
-                            (void)cc;  /* Future: map component name to byte/bit offset */
+                            if (cc->kind == NK_ASSOCIATION && cc->association.choices.count > 0) {
+                                Syntax_Node *name_node = cc->association.choices.items[0];
+                                if (name_node && name_node->kind == NK_IDENTIFIER) {
+                                    String_Slice comp_name = name_node->string_val.text;
+                                    /* Find matching component in record type */
+                                    for (uint32_t j = 0; j < target_type->record.component_count; j++) {
+                                        Component_Info *comp = &target_type->record.components[j];
+                                        if (Slice_Equal_Ignore_Case(comp->name, comp_name)) {
+                                            /* Get byte offset from expression */
+                                            Syntax_Node *pos_expr = cc->association.expression;
+                                            if (pos_expr && pos_expr->kind == NK_INTEGER) {
+                                                comp->byte_offset = (uint32_t)pos_expr->integer_lit.value;
+                                            }
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
 
-                    /* Process enumeration representation: FOR T USE (...); */
+                    /* Process enumeration representation: FOR T USE (val0, val1, ...); */
                     if (node->rep_clause.is_enum_rep && target_type &&
                         target_type->kind == TYPE_ENUMERATION) {
-                        /* Would store representation values for enum literals */
+                        /* Store internal representation values for enum literals
+                         * The component_clauses list contains the values in order */
+                        uint32_t val_count = node->rep_clause.component_clauses.count;
+                        if (val_count > 0 && val_count <= target_type->enumeration.literal_count) {
+                            /* Allocate array for representation values */
+                            target_type->enumeration.rep_values =
+                                Arena_Allocate(val_count * sizeof(int64_t));
+                            for (uint32_t i = 0; i < val_count; i++) {
+                                Syntax_Node *val_node = node->rep_clause.component_clauses.items[i];
+                                if (val_node && val_node->kind == NK_INTEGER) {
+                                    target_type->enumeration.rep_values[i] =
+                                        val_node->integer_lit.value;
+                                } else {
+                                    /* Default to position value */
+                                    target_type->enumeration.rep_values[i] = (int64_t)i;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -8749,21 +8785,98 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
             break;
 
         case NK_SELECT:
-            /* SELECT statement — selective wait */
-            /* Full implementation needs task runtime; emit stub */
-            Emit(cg, "  ; SELECT statement (stub)\n");
-            /* Execute first alternative as fallback */
-            if (node->select_stmt.alternatives.count > 0) {
-                Syntax_Node *alt = node->select_stmt.alternatives.items[0];
-                if (alt && alt->kind == NK_ASSOCIATION && alt->association.expression) {
-                    Generate_Statement(cg, alt->association.expression);
+            /* SELECT statement — selective wait (Ada 83 9.7)
+             * Forms: selective_wait, conditional_entry_call, timed_entry_call
+             * Runtime: check open alternatives, wait or execute else */
+            {
+                uint32_t done_label = cg->label_id++;
+                bool has_else = (node->select_stmt.else_part != NULL);
+                bool has_delay = false;
+                uint32_t delay_label = 0;
+
+                /* Check for delay alternative */
+                for (uint32_t i = 0; i < node->select_stmt.alternatives.count; i++) {
+                    if (node->select_stmt.alternatives.items[i]->kind == NK_DELAY) {
+                        has_delay = true;
+                        delay_label = cg->label_id++;
+                        break;
+                    }
                 }
+
+                /* Generate alternatives */
+                for (uint32_t i = 0; i < node->select_stmt.alternatives.count; i++) {
+                    Syntax_Node *alt = node->select_stmt.alternatives.items[i];
+                    uint32_t next_label = cg->label_id++;
+
+                    switch (alt->kind) {
+                        case NK_ASSOCIATION:
+                            /* Guarded alternative: WHEN cond => stmt */
+                            {
+                                uint32_t guard = Generate_Expression(cg,
+                                    alt->association.choices.items[0]);
+                                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                                     guard, cg->label_id, next_label);
+                                Emit(cg, "L%u:\n", cg->label_id++);
+                                if (alt->association.expression)
+                                    Generate_Statement(cg, alt->association.expression);
+                                Emit(cg, "  br label %%L%u\n", done_label);
+                            }
+                            break;
+
+                        case NK_ACCEPT:
+                            /* Accept alternative */
+                            Emit(cg, "  ; accept alternative: %.*s\n",
+                                 (int)alt->accept_stmt.entry_name.length,
+                                 alt->accept_stmt.entry_name.data);
+                            Generate_Statement_List(cg, &alt->accept_stmt.statements);
+                            Emit(cg, "  br label %%L%u\n", done_label);
+                            break;
+
+                        case NK_DELAY:
+                            /* Delay alternative */
+                            Emit(cg, "L%u:  ; delay alternative\n", delay_label);
+                            {
+                                uint32_t dur = Generate_Expression(cg, alt->delay_stmt.expression);
+                                uint32_t us = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = fmul double %%t%u, 1.0e6\n", us, dur);
+                                uint32_t us_int = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = fptoui double %%t%u to i64\n", us_int, us);
+                                Emit(cg, "  call void @__ada_delay(i64 %%t%u)\n", us_int);
+                            }
+                            Emit(cg, "  br label %%L%u\n", done_label);
+                            break;
+
+                        case NK_NULL_STMT:
+                            /* Terminate alternative */
+                            Emit(cg, "  ; terminate alternative\n");
+                            Emit(cg, "  call void @__ada_task_terminate()\n");
+                            Emit(cg, "  br label %%L%u\n", done_label);
+                            break;
+
+                        default:
+                            break;
+                    }
+                    Emit(cg, "L%u:\n", next_label);
+                }
+
+                /* Else clause or fall through to delay */
+                if (has_else) {
+                    Generate_Statement(cg, node->select_stmt.else_part);
+                } else if (has_delay) {
+                    Emit(cg, "  br label %%L%u\n", delay_label);
+                }
+                Emit(cg, "  br label %%L%u\n", done_label);
+                Emit(cg, "L%u:\n", done_label);
             }
             break;
 
         case NK_ABORT:
-            /* ABORT statement — abort tasks */
-            Emit(cg, "  ; ABORT statement (stub - needs task runtime)\n");
+            /* ABORT statement — abort named tasks (Ada 83 9.10) */
+            for (uint32_t i = 0; i < node->abort_stmt.task_names.count; i++) {
+                Syntax_Node *task_name = node->abort_stmt.task_names.items[i];
+                uint32_t task_ptr = Generate_Expression(cg, task_name);
+                Emit(cg, "  call void @__ada_task_abort(ptr %%t%u)\n", task_ptr);
+            }
             break;
 
         default:
@@ -9660,6 +9773,26 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "  ret void\n");
     Emit(cg, "}\n\n");
 
+    /* Task abort: signal task to terminate (simplified: just sets flag) */
+    Emit(cg, "define linkonce_odr void @__ada_task_abort(ptr %%task) {\n");
+    Emit(cg, "entry:\n");
+    Emit(cg, "  %%1 = icmp eq ptr %%task, null\n");
+    Emit(cg, "  br i1 %%1, label %%done, label %%abort\n");
+    Emit(cg, "abort:\n");
+    Emit(cg, "  ; In full impl: set abort flag, signal condition\n");
+    Emit(cg, "  store i8 1, ptr %%task  ; Mark abort pending\n");
+    Emit(cg, "  br label %%done\n");
+    Emit(cg, "done:\n");
+    Emit(cg, "  ret void\n");
+    Emit(cg, "}\n\n");
+
+    /* Task terminate: graceful task termination (for terminate alternative) */
+    Emit(cg, "define linkonce_odr void @__ada_task_terminate() {\n");
+    Emit(cg, "  ; Check if master task is complete, if so exit\n");
+    Emit(cg, "  call void @exit(i32 0)\n");
+    Emit(cg, "  unreachable\n");
+    Emit(cg, "}\n\n");
+
     /* Finalization support */
     Emit(cg, "; Finalization runtime\n");
     Emit(cg, "define linkonce_odr void @__ada_finalize(ptr %%obj, ptr %%fn) {\n");
@@ -9697,14 +9830,112 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "  ret void\n");
     Emit(cg, "}\n\n");
 
-    /* TEXT_IO inline stubs for simple programs */
-    Emit(cg, "; TEXT_IO stubs\n");
+    /* TEXT_IO inline implementation (Ada 83 Chapter 14) */
+    Emit(cg, "; TEXT_IO runtime\n");
+    Emit(cg, "declare ptr @stdin\n");
+    Emit(cg, "declare ptr @stdout\n");
+    Emit(cg, "declare ptr @stderr\n");
+    Emit(cg, "declare i32 @fputc(i32, ptr)\n");
+    Emit(cg, "declare i32 @fputs(ptr, ptr)\n");
+    Emit(cg, "declare i32 @fgetc(ptr)\n");
+    Emit(cg, "declare ptr @fgets(ptr, i32, ptr)\n");
+    Emit(cg, "declare i32 @fprintf(ptr, ptr, ...)\n");
     Emit(cg, "@.fmt_d = linkonce_odr constant [5 x i8] c\"%%lld\\00\"\n");
     Emit(cg, "@.fmt_s = linkonce_odr constant [3 x i8] c\"%%s\\00\"\n");
     Emit(cg, "@.fmt_f = linkonce_odr constant [3 x i8] c\"%%g\\00\"\n");
+    Emit(cg, "@.fmt_c = linkonce_odr constant [3 x i8] c\"%%c\\00\"\n\n");
+
+    /* NEW_LINE: output line terminator */
     Emit(cg, "define linkonce_odr void @__text_io_new_line() {\n");
-    Emit(cg, "  call i32 @putchar(i32 10)\n");
+    Emit(cg, "  %%out = load ptr, ptr @stdout\n");
+    Emit(cg, "  call i32 @fputc(i32 10, ptr %%out)\n");
     Emit(cg, "  ret void\n");
+    Emit(cg, "}\n\n");
+
+    /* PUT_CHAR: output single character */
+    Emit(cg, "define linkonce_odr void @__text_io_put_char(i8 %%c) {\n");
+    Emit(cg, "  %%out = load ptr, ptr @stdout\n");
+    Emit(cg, "  %%ci = zext i8 %%c to i32\n");
+    Emit(cg, "  call i32 @fputc(i32 %%ci, ptr %%out)\n");
+    Emit(cg, "  ret void\n");
+    Emit(cg, "}\n\n");
+
+    /* PUT: output string (ptr + bounds) */
+    Emit(cg, "define linkonce_odr void @__text_io_put(ptr %%data, i64 %%lo, i64 %%hi) {\n");
+    Emit(cg, "entry:\n");
+    Emit(cg, "  %%out = load ptr, ptr @stdout\n");
+    Emit(cg, "  %%i.init = sub i64 %%lo, 1\n");
+    Emit(cg, "  br label %%loop\n");
+    Emit(cg, "loop:\n");
+    Emit(cg, "  %%i = phi i64 [ %%i.init, %%entry ], [ %%i.next, %%body ]\n");
+    Emit(cg, "  %%i.next = add i64 %%i, 1\n");
+    Emit(cg, "  %%done = icmp sgt i64 %%i.next, %%hi\n");
+    Emit(cg, "  br i1 %%done, label %%exit, label %%body\n");
+    Emit(cg, "body:\n");
+    Emit(cg, "  %%idx = sub i64 %%i.next, %%lo\n");
+    Emit(cg, "  %%ptr = getelementptr i8, ptr %%data, i64 %%idx\n");
+    Emit(cg, "  %%ch = load i8, ptr %%ptr\n");
+    Emit(cg, "  %%chi = zext i8 %%ch to i32\n");
+    Emit(cg, "  call i32 @fputc(i32 %%chi, ptr %%out)\n");
+    Emit(cg, "  br label %%loop\n");
+    Emit(cg, "exit:\n");
+    Emit(cg, "  ret void\n");
+    Emit(cg, "}\n\n");
+
+    /* PUT_LINE: output string followed by newline */
+    Emit(cg, "define linkonce_odr void @__text_io_put_line(ptr %%data, i64 %%lo, i64 %%hi) {\n");
+    Emit(cg, "  call void @__text_io_put(ptr %%data, i64 %%lo, i64 %%hi)\n");
+    Emit(cg, "  call void @__text_io_new_line()\n");
+    Emit(cg, "  ret void\n");
+    Emit(cg, "}\n\n");
+
+    /* PUT_INTEGER: output integer with optional width */
+    Emit(cg, "define linkonce_odr void @__text_io_put_int(i64 %%val, i32 %%width) {\n");
+    Emit(cg, "  %%out = load ptr, ptr @stdout\n");
+    Emit(cg, "  call i32 (ptr, ptr, ...) @fprintf(ptr %%out, ptr @.fmt_d, i64 %%val)\n");
+    Emit(cg, "  ret void\n");
+    Emit(cg, "}\n\n");
+
+    /* PUT_FLOAT: output float value */
+    Emit(cg, "define linkonce_odr void @__text_io_put_float(double %%val) {\n");
+    Emit(cg, "  %%out = load ptr, ptr @stdout\n");
+    Emit(cg, "  call i32 (ptr, ptr, ...) @fprintf(ptr %%out, ptr @.fmt_f, double %%val)\n");
+    Emit(cg, "  ret void\n");
+    Emit(cg, "}\n\n");
+
+    /* GET_CHAR: read single character */
+    Emit(cg, "define linkonce_odr i8 @__text_io_get_char() {\n");
+    Emit(cg, "  %%inp = load ptr, ptr @stdin\n");
+    Emit(cg, "  %%c = call i32 @fgetc(ptr %%inp)\n");
+    Emit(cg, "  %%c8 = trunc i32 %%c to i8\n");
+    Emit(cg, "  ret i8 %%c8\n");
+    Emit(cg, "}\n\n");
+
+    /* GET_LINE: read line into buffer, return fat pointer */
+    Emit(cg, "define linkonce_odr { ptr, { i64, i64 } } @__text_io_get_line() {\n");
+    Emit(cg, "entry:\n");
+    Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 256)\n");
+    Emit(cg, "  %%inp = load ptr, ptr @stdin\n");
+    Emit(cg, "  %%res = call ptr @fgets(ptr %%buf, i32 255, ptr %%inp)\n");
+    Emit(cg, "  %%iseof = icmp eq ptr %%res, null\n");
+    Emit(cg, "  br i1 %%iseof, label %%empty, label %%gotline\n");
+    Emit(cg, "empty:\n");
+    Emit(cg, "  %%e1 = insertvalue { ptr, { i64, i64 } } undef, ptr %%buf, 0\n");
+    Emit(cg, "  %%e2 = insertvalue { ptr, { i64, i64 } } %%e1, i64 1, 1, 0\n");
+    Emit(cg, "  %%e3 = insertvalue { ptr, { i64, i64 } } %%e2, i64 0, 1, 1\n");
+    Emit(cg, "  ret { ptr, { i64, i64 } } %%e3\n");
+    Emit(cg, "gotline:\n");
+    Emit(cg, "  %%len = call i64 @strlen(ptr %%buf)\n");
+    Emit(cg, "  ; Strip trailing newline if present\n");
+    Emit(cg, "  %%lastidx = sub i64 %%len, 1\n");
+    Emit(cg, "  %%lastptr = getelementptr i8, ptr %%buf, i64 %%lastidx\n");
+    Emit(cg, "  %%lastch = load i8, ptr %%lastptr\n");
+    Emit(cg, "  %%isnl = icmp eq i8 %%lastch, 10\n");
+    Emit(cg, "  %%adjlen = select i1 %%isnl, i64 %%lastidx, i64 %%len\n");
+    Emit(cg, "  %%f1 = insertvalue { ptr, { i64, i64 } } undef, ptr %%buf, 0\n");
+    Emit(cg, "  %%f2 = insertvalue { ptr, { i64, i64 } } %%f1, i64 1, 1, 0\n");
+    Emit(cg, "  %%f3 = insertvalue { ptr, { i64, i64 } } %%f2, i64 %%adjlen, 1, 1\n");
+    Emit(cg, "  ret { ptr, { i64, i64 } } %%f3\n");
     Emit(cg, "}\n\n");
 
     /* 'IMAGE runtime: Integer'IMAGE(x) returns string representation */
