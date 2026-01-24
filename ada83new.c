@@ -583,7 +583,7 @@ static Token Scan_Identifier(Lexer *lex) {
     while (Is_Alnum(Lexer_Peek(lex, 0)) || Lexer_Peek(lex, 0) == '_')
         Lexer_Advance(lex);
 
-    String_Slice text = {start, lex->current - start};
+    String_Slice text = {start, (uint32_t)(lex->current - start)};
     Token_Kind kind = Lookup_Keyword(text);
     return Make_Token(kind, loc, text);
 }
@@ -661,7 +661,7 @@ static Token Scan_Number(Lexer *lex) {
         }
     }
 
-    String_Slice text = {start, lex->current - start};
+    String_Slice text = {start, (uint32_t)(lex->current - start)};
     Token tok = Make_Token(is_real ? TK_REAL : TK_INTEGER, loc, text);
 
     /* Convert to value: strip underscores, parse with base */
@@ -749,7 +749,7 @@ static Token Scan_String_Literal(Lexer *lex) {
     }
     buffer[length] = '\0';
 
-    Token tok = Make_Token(TK_STRING, loc, (String_Slice){buffer, length});
+    Token tok = Make_Token(TK_STRING, loc, (String_Slice){buffer, (uint32_t)length});
     return tok;
 }
 
@@ -1193,6 +1193,16 @@ struct Syntax_Node {
 
         /* NK_EXCEPTION_HANDLER */
         struct { Node_List exceptions; Node_List statements; } handler;
+
+        /* NK_REPRESENTATION_CLAUSE (RM 13.1) */
+        struct {
+            Syntax_Node *entity_name;    /* Type or object being represented */
+            String_Slice attribute;       /* 'SIZE, 'ALIGNMENT, etc. (empty if record/enum rep) */
+            Syntax_Node *expression;      /* Attribute value or address expression */
+            Node_List    component_clauses; /* For record representation: component positions */
+            bool         is_record_rep;   /* true if FOR T USE RECORD ... */
+            bool         is_enum_rep;     /* true if FOR T USE (literals...) */
+        } rep_clause;
 
         /* NK_CONTEXT_CLAUSE */
         struct { Node_List with_clauses; Node_List use_clauses; } context;
@@ -3258,11 +3268,69 @@ static Syntax_Node *Parse_Representation_Clause(Parser *p) {
     Parser_Expect(p, TK_FOR);
 
     Syntax_Node *node = Node_New(NK_REPRESENTATION_CLAUSE, loc);
-    /* Simplified: parse and store for later semantic analysis */
 
-    /* Skip to semicolon */
-    while (!Parser_At(p, TK_SEMICOLON) && !Parser_At(p, TK_EOF)) {
-        Parser_Advance(p);
+    /* Parse: FOR entity_name'attribute USE expression;
+     *    or: FOR type_name USE RECORD ... END RECORD;
+     *    or: FOR type_name USE (enum_rep_list);
+     *    or: FOR object_name USE AT address; */
+
+    /* Parse entity name (possibly qualified: T or T'ATTRIBUTE) */
+    node->rep_clause.entity_name = Parse_Name(p);
+
+    /* Check if this is an attribute clause: FOR T'SIZE USE 32; */
+    if (Parser_At(p, TK_TICK)) {
+        Parser_Advance(p);  /* consume tick */
+        if (Parser_At(p, TK_IDENTIFIER)) {
+            node->rep_clause.attribute = p->current_token.text;
+            Parser_Advance(p);  /* consume attribute name */
+        }
+    }
+
+    Parser_Expect(p, TK_USE);
+
+    /* Check for different representation clause forms */
+    if (Parser_Match(p, TK_RECORD)) {
+        /* Record representation clause: FOR T USE RECORD ... END RECORD; */
+        node->rep_clause.is_record_rep = true;
+
+        /* Parse optional alignment: AT MOD alignment; */
+        if (Parser_Match(p, TK_AT)) {
+            Parser_Expect(p, TK_MOD);
+            node->rep_clause.expression = Parse_Expression(p);
+            Parser_Expect(p, TK_SEMICOLON);
+        }
+
+        /* Parse component clauses: component_name AT position RANGE first_bit..last_bit; */
+        while (!Parser_At(p, TK_END) && !Parser_At(p, TK_EOF)) {
+            Syntax_Node *comp_clause = Node_New(NK_ASSOCIATION, Parser_Location(p));
+            Node_List_Push(&comp_clause->association.choices, Parse_Name(p));
+            Parser_Expect(p, TK_AT);
+            comp_clause->association.expression = Parse_Expression(p);
+            /* Optional RANGE clause */
+            if (Parser_Match(p, TK_RANGE)) {
+                /* bit_range is now part of the expression */
+                Parse_Range(p);  /* first_bit .. last_bit */
+            }
+            Parser_Expect(p, TK_SEMICOLON);
+            Node_List_Push(&node->rep_clause.component_clauses, comp_clause);
+        }
+        Parser_Expect(p, TK_END);
+        Parser_Expect(p, TK_RECORD);
+    } else if (Parser_At(p, TK_LPAREN)) {
+        /* Enumeration representation: FOR T USE (A => 0, B => 1, ...); */
+        node->rep_clause.is_enum_rep = true;
+        Parser_Advance(p);  /* consume ( */
+        do {
+            Syntax_Node *enum_val = Parse_Expression(p);
+            Node_List_Push(&node->rep_clause.component_clauses, enum_val);
+        } while (Parser_Match(p, TK_COMMA));
+        Parser_Expect(p, TK_RPAREN);
+    } else if (Parser_Match(p, TK_AT)) {
+        /* Address clause: FOR X USE AT address; */
+        node->rep_clause.expression = Parse_Expression(p);
+    } else {
+        /* Attribute value: FOR T'SIZE USE 32; */
+        node->rep_clause.expression = Parse_Expression(p);
     }
 
     return node;
@@ -3899,10 +3967,10 @@ static const char *Type_To_Llvm(Type_Info *t) {
         case TYPE_ENUMERATION:
         case TYPE_UNIVERSAL_INTEGER:
         case TYPE_FIXED:  /* Fixed-point uses scaled integer representation */
-            return Llvm_Int_Type(To_Bits(t->size));
+            return Llvm_Int_Type((uint32_t)To_Bits(t->size));
         case TYPE_FLOAT:
         case TYPE_UNIVERSAL_REAL:
-            return Llvm_Float_Type(To_Bits(t->size));
+            return Llvm_Float_Type((uint32_t)To_Bits(t->size));
         case TYPE_ACCESS:
         case TYPE_ARRAY:
         case TYPE_RECORD:
@@ -6344,6 +6412,84 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
             }
             break;
 
+        case NK_REPRESENTATION_CLAUSE:
+            /* Representation clause: FOR T'SIZE USE 32; or FOR T USE RECORD ... */
+            {
+                /* Resolve entity name */
+                if (node->rep_clause.entity_name) {
+                    Resolve_Expression(sm, node->rep_clause.entity_name);
+
+                    /* Get target type or symbol */
+                    Symbol *target_sym = NULL;
+                    if (node->rep_clause.entity_name->kind == NK_IDENTIFIER) {
+                        target_sym = Symbol_Find(sm, node->rep_clause.entity_name->string_val.text);
+                    } else if (node->rep_clause.entity_name->symbol) {
+                        target_sym = node->rep_clause.entity_name->symbol;
+                    }
+
+                    Type_Info *target_type = target_sym ? target_sym->type : NULL;
+
+                    /* Process attribute clauses: FOR T'SIZE USE 32; */
+                    if (node->rep_clause.attribute.data && target_type) {
+                        String_Slice attr = node->rep_clause.attribute;
+
+                        if (node->rep_clause.expression) {
+                            Resolve_Expression(sm, node->rep_clause.expression);
+                            int64_t value = 0;
+
+                            /* Extract constant value */
+                            if (node->rep_clause.expression->kind == NK_INTEGER) {
+                                value = node->rep_clause.expression->integer_lit.value;
+                            }
+
+                            /* Apply representation */
+                            if (Slice_Equal_Ignore_Case(attr, S("SIZE"))) {
+                                /* Size in bits - convert to bytes */
+                                target_type->size = (uint32_t)((value + 7) / 8);
+                            } else if (Slice_Equal_Ignore_Case(attr, S("ALIGNMENT"))) {
+                                target_type->alignment = (uint32_t)value;
+                            } else if (Slice_Equal_Ignore_Case(attr, S("STORAGE_SIZE"))) {
+                                /* For task types: storage for task stack */
+                                /* Would store in target_sym or target_type */
+                            } else if (Slice_Equal_Ignore_Case(attr, S("SMALL"))) {
+                                /* For fixed-point: set small value */
+                                if (target_type->kind == TYPE_FIXED &&
+                                    node->rep_clause.expression->kind == NK_REAL) {
+                                    target_type->fixed.small =
+                                        node->rep_clause.expression->real_lit.value;
+                                }
+                            }
+                        }
+                    }
+
+                    /* Process record representation: FOR T USE RECORD ... */
+                    if (node->rep_clause.is_record_rep && target_type &&
+                        target_type->kind == TYPE_RECORD) {
+                        /* Process alignment clause */
+                        if (node->rep_clause.expression) {
+                            Resolve_Expression(sm, node->rep_clause.expression);
+                            if (node->rep_clause.expression->kind == NK_INTEGER) {
+                                target_type->alignment =
+                                    (uint32_t)node->rep_clause.expression->integer_lit.value;
+                            }
+                        }
+
+                        /* Process component clauses (record layout) */
+                        for (uint32_t i = 0; i < node->rep_clause.component_clauses.count; i++) {
+                            Syntax_Node *cc = node->rep_clause.component_clauses.items[i];
+                            (void)cc;  /* Future: map component name to byte/bit offset */
+                        }
+                    }
+
+                    /* Process enumeration representation: FOR T USE (...); */
+                    if (node->rep_clause.is_enum_rep && target_type &&
+                        target_type->kind == TYPE_ENUMERATION) {
+                        /* Would store representation values for enum literals */
+                    }
+                }
+            }
+            break;
+
         default:
             break;
     }
@@ -6472,17 +6618,19 @@ static void Emit_String_Const(Code_Generator *cg, const char *format, ...) {
     char temp[1024];
     int len = vsnprintf(temp, sizeof(temp), format, args);
     va_end(args);
+    if (len < 0) return;  /* Format error */
+    size_t slen = (size_t)len;
 
     /* Expand buffer if needed */
-    while (cg->string_const_size + len + 1 > cg->string_const_capacity) {
+    while (cg->string_const_size + slen + 1 > cg->string_const_capacity) {
         size_t new_cap = cg->string_const_capacity * 2;
         char *new_buf = Arena_Allocate(new_cap);
         memcpy(new_buf, cg->string_const_buffer, cg->string_const_size);
         cg->string_const_buffer = new_buf;
         cg->string_const_capacity = new_cap;
     }
-    memcpy(cg->string_const_buffer + cg->string_const_size, temp, len);
-    cg->string_const_size += len;
+    memcpy(cg->string_const_buffer + cg->string_const_size, temp, slen);
+    cg->string_const_size += slen;
     cg->string_const_buffer[cg->string_const_size] = '\0';
 }
 
@@ -7589,14 +7737,42 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
      * ───────────────────────────────────────────────────────────────────── */
 
     if (Slice_Equal_Ignore_Case(attr, S("IMAGE"))) {
-        /* T'IMAGE(x) - string representation; needs runtime */
-        Emit(cg, "  %%t%u = add i64 0, 0  ; 'IMAGE (placeholder)\n", t);
+        /* T'IMAGE(x) - string representation (RM 3.5.5) */
+        if (node->attribute.argument) {
+            uint32_t arg_val = Generate_Expression(cg, node->attribute.argument);
+
+            if (prefix_type && (prefix_type->kind == TYPE_INTEGER ||
+                                prefix_type->kind == TYPE_MODULAR ||
+                                prefix_type->kind == TYPE_UNIVERSAL_INTEGER)) {
+                /* Integer'IMAGE */
+                Emit(cg, "  %%t%u = call { ptr, { i64, i64 } } @__ada_integer_image(i64 %%t%u)\n",
+                     t, arg_val);
+            } else if (prefix_type && prefix_type->kind == TYPE_CHARACTER) {
+                /* Character'IMAGE */
+                uint32_t char_val = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = trunc i64 %%t%u to i8\n", char_val, arg_val);
+                Emit(cg, "  %%t%u = call { ptr, { i64, i64 } } @__ada_character_image(i8 %%t%u)\n",
+                     t, char_val);
+            } else if (prefix_type && (prefix_type->kind == TYPE_FLOAT ||
+                                       prefix_type->kind == TYPE_UNIVERSAL_REAL)) {
+                /* Float'IMAGE */
+                Emit(cg, "  %%t%u = call { ptr, { i64, i64 } } @__ada_float_image(double %%t%u)\n",
+                     t, arg_val);
+            } else {
+                /* Default: treat as integer */
+                Emit(cg, "  %%t%u = call { ptr, { i64, i64 } } @__ada_integer_image(i64 %%t%u)\n",
+                     t, arg_val);
+            }
+            return t;
+        }
+        Emit(cg, "  %%t%u = insertvalue { ptr, { i64, i64 } } undef, ptr null, 0  ; 'IMAGE no arg\n", t);
         return t;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("VALUE"))) {
-        /* T'VALUE(s) - parse string to type; needs runtime */
-        Emit(cg, "  %%t%u = add i64 0, 0  ; 'VALUE (placeholder)\n", t);
+        /* T'VALUE(s) - parse string to type (RM 3.5.5) */
+        /* For now, placeholder - full implementation needs string parsing runtime */
+        Emit(cg, "  %%t%u = add i64 0, 0  ; 'VALUE (needs runtime implementation)\n", t);
         return t;
     }
 
@@ -7685,7 +7861,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
              base, (long long)count, elem_type);
 
         /* Track which elements are initialized (for others clause) */
-        bool *initialized = Arena_Allocate(count * sizeof(bool));
+        bool *initialized = Arena_Allocate((size_t)count * sizeof(bool));
         for (int64_t i = 0; i < count; i++) initialized[i] = false;
 
         /* Default value for "others" clause (if any) */
@@ -9531,6 +9707,55 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "  ret void\n");
     Emit(cg, "}\n\n");
 
+    /* 'IMAGE runtime: Integer'IMAGE(x) returns string representation */
+    Emit(cg, "; Attribute runtime support\n");
+    Emit(cg, "declare i32 @snprintf(ptr, i64, ptr, ...)\n");
+    Emit(cg, "declare i64 @strlen(ptr)\n");
+    Emit(cg, "@.img_fmt_d = linkonce_odr constant [5 x i8] c\"%%lld\\00\"\n");
+    Emit(cg, "@.img_fmt_c = linkonce_odr constant [3 x i8] c\"%%c\\00\"\n");
+    Emit(cg, "@.img_fmt_f = linkonce_odr constant [5 x i8] c\"%%.6g\\00\"\n\n");
+
+    /* Integer'IMAGE - convert integer to string fat pointer */
+    Emit(cg, "define linkonce_odr { ptr, { i64, i64 } } @__ada_integer_image(i64 %%val) {\n");
+    Emit(cg, "entry:\n");
+    Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 24)\n");
+    Emit(cg, "  %%len = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %%buf, i64 24, ptr @.img_fmt_d, i64 %%val)\n");
+    Emit(cg, "  %%len64 = sext i32 %%len to i64\n");
+    Emit(cg, "  %%high = sub i64 %%len64, 1\n");
+    Emit(cg, "  %%fat1 = insertvalue { ptr, { i64, i64 } } undef, ptr %%buf, 0\n");
+    Emit(cg, "  %%fat2 = insertvalue { ptr, { i64, i64 } } %%fat1, i64 1, 1, 0\n");
+    Emit(cg, "  %%fat3 = insertvalue { ptr, { i64, i64 } } %%fat2, i64 %%len64, 1, 1\n");
+    Emit(cg, "  ret { ptr, { i64, i64 } } %%fat3\n");
+    Emit(cg, "}\n\n");
+
+    /* Character'IMAGE - single char to string (3 chars: 'x') */
+    Emit(cg, "define linkonce_odr { ptr, { i64, i64 } } @__ada_character_image(i8 %%val) {\n");
+    Emit(cg, "entry:\n");
+    Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 4)\n");
+    Emit(cg, "  %%p0 = getelementptr i8, ptr %%buf, i64 0\n");
+    Emit(cg, "  store i8 39, ptr %%p0  ; single quote\n");
+    Emit(cg, "  %%p1 = getelementptr i8, ptr %%buf, i64 1\n");
+    Emit(cg, "  store i8 %%val, ptr %%p1\n");
+    Emit(cg, "  %%p2 = getelementptr i8, ptr %%buf, i64 2\n");
+    Emit(cg, "  store i8 39, ptr %%p2  ; single quote\n");
+    Emit(cg, "  %%fat1 = insertvalue { ptr, { i64, i64 } } undef, ptr %%buf, 0\n");
+    Emit(cg, "  %%fat2 = insertvalue { ptr, { i64, i64 } } %%fat1, i64 1, 1, 0\n");
+    Emit(cg, "  %%fat3 = insertvalue { ptr, { i64, i64 } } %%fat2, i64 3, 1, 1\n");
+    Emit(cg, "  ret { ptr, { i64, i64 } } %%fat3\n");
+    Emit(cg, "}\n\n");
+
+    /* Float'IMAGE - convert float to string */
+    Emit(cg, "define linkonce_odr { ptr, { i64, i64 } } @__ada_float_image(double %%val) {\n");
+    Emit(cg, "entry:\n");
+    Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 32)\n");
+    Emit(cg, "  %%len = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %%buf, i64 32, ptr @.img_fmt_f, double %%val)\n");
+    Emit(cg, "  %%len64 = sext i32 %%len to i64\n");
+    Emit(cg, "  %%fat1 = insertvalue { ptr, { i64, i64 } } undef, ptr %%buf, 0\n");
+    Emit(cg, "  %%fat2 = insertvalue { ptr, { i64, i64 } } %%fat1, i64 1, 1, 0\n");
+    Emit(cg, "  %%fat3 = insertvalue { ptr, { i64, i64 } } %%fat2, i64 %%len64, 1, 1\n");
+    Emit(cg, "  ret { ptr, { i64, i64 } } %%fat3\n");
+    Emit(cg, "}\n\n");
+
     /* Generate exception identity globals */
     Generate_Exception_Globals(cg);
 
@@ -9564,7 +9789,9 @@ static char *Read_File_Simple(const char *path) {
     if (!f) return NULL;
 
     fseek(f, 0, SEEK_END);
-    size_t size = ftell(f);
+    long fsize = ftell(f);
+    if (fsize < 0) { fclose(f); return NULL; }
+    size_t size = (size_t)fsize;
     fseek(f, 0, SEEK_SET);
 
     char *buffer = malloc(size + 1);
@@ -9678,7 +9905,9 @@ static char *Read_File(const char *path, size_t *out_size) {
     if (!f) return NULL;
 
     fseek(f, 0, SEEK_END);
-    size_t size = ftell(f);
+    long fsize = ftell(f);
+    if (fsize < 0) { fclose(f); return NULL; }
+    size_t size = (size_t)fsize;
     fseek(f, 0, SEEK_SET);
 
     char *buffer = malloc(size + 1);

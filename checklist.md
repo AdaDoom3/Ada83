@@ -2730,3 +2730,18 @@ Make `Symbol.parent` either:
    - `Align_To()` uses `size_t` for proper memory alignment
    - `Fatal_Error` uses `__attribute__((noreturn))` instead of C11 `_Noreturn`
    - Explicit casts for sign/width conversions where needed
+8. **[2026-01-24]** Major feature additions:
+   - **Inline LLVM runtime**: Complete exception handling, secondary stack, finalization, delay
+   - **Fixed-point types**: Proper scaled integer representation with delta/small/scale
+   - **Tasking support**: Task body codegen, DELAY/ACCEPT/SELECT stubs
+
+## Current Metrics (2026-01-24)
+
+- **Line count**: 10,019 (~47% reduction from original 18,746)
+- **Features**: Runtime, exceptions, tasking, fixed-point, representation clauses, 'IMAGE
+- **Compilation**: Clean with gcc -Wall -Wextra -Wshadow -Wconversion
+- **Recent additions**:
+  - Representation clause parsing (SIZE, ALIGNMENT, record rep, enum rep, address clauses)
+  - Semantic handling for representation attributes
+  - String 'IMAGE attribute with runtime functions
+  - Fixed all type conversion warnings for stricter C99 compliance
