@@ -1396,9 +1396,10 @@ static Precedence get_precedence(Token_Kind kind) {
 }
 
 static AST_Node *parse_primary(Parser *p);
+static AST_Node *parse_postfix(Parser *p);
 
 static AST_Node *parse_binary_expression(Parser *p, Precedence min_precedence) {
-    AST_Node *left = parse_primary(p);
+    AST_Node *left = parse_postfix(p);
 
     while (get_precedence(p->current.kind) >= min_precedence) {
         Token op_token = parser_advance(p);
@@ -1467,12 +1468,67 @@ static AST_Node *parse_primary(Parser *p) {
         return node;
     }
 
-    /* Parenthesized expression */
+    /* Parenthesized expression or aggregate */
     if (tok.kind == TOK_LPAREN) {
+        Source_Location loc = tok.location;
         parser_advance(p);
-        AST_Node *expr = parse_expression(p);
+
+        /* Empty aggregate () */
+        if (parser_match(p, TOK_RPAREN)) {
+            parser_advance(p);
+            AST_Node *node = ast_node_new(NODE_AGGREGATE, loc);
+            node->aggregate.components = NULL;
+            node->aggregate.component_count = 0;
+            return node;
+        }
+
+        /* Parse first component */
+        AST_Node *first = parse_expression(p);
+
+        /* Check for aggregate indicators: => or , */
+        if (parser_match(p, TOK_ARROW) or parser_match(p, TOK_COMMA)) {
+            /* It's an aggregate */
+            AST_Vector components = {0};
+
+            /* Handle first component */
+            if (parser_consume(p, TOK_ARROW)) {
+                /* Named: choice => value */
+                AST_Node *value = parse_expression(p);
+                AST_Node *assoc = ast_node_new(NODE_ASSIGNMENT, loc);
+                assoc->assignment.target = first;
+                assoc->assignment.value = value;
+                ast_vector_push(&components, assoc);
+            } else {
+                /* Positional */
+                ast_vector_push(&components, first);
+            }
+
+            /* Parse remaining components */
+            while (parser_consume(p, TOK_COMMA)) {
+                AST_Node *choice = parse_expression(p);
+                if (parser_consume(p, TOK_ARROW)) {
+                    /* Named association */
+                    AST_Node *value = parse_expression(p);
+                    AST_Node *assoc = ast_node_new(NODE_ASSIGNMENT, loc);
+                    assoc->assignment.target = choice;
+                    assoc->assignment.value = value;
+                    ast_vector_push(&components, assoc);
+                } else {
+                    /* Positional component */
+                    ast_vector_push(&components, choice);
+                }
+            }
+
+            parser_expect(p, TOK_RPAREN, "expected ')' after aggregate");
+            AST_Node *node = ast_node_new(NODE_AGGREGATE, loc);
+            node->aggregate.components = components.items;
+            node->aggregate.component_count = components.count;
+            return node;
+        }
+
+        /* Plain parenthesized expression */
         parser_expect(p, TOK_RPAREN, "expected ')' after expression");
-        return expr;
+        return first;
     }
 
     /* Unary operators */
@@ -1489,6 +1545,92 @@ static AST_Node *parse_primary(Parser *p) {
     report_error(tok.location, "unexpected token in expression");
     parser_advance(p);
     return ast_node_new(NODE_IDENTIFIER, tok.location);  /* error recovery */
+}
+
+/* Parse postfix operations: calls, indexing, selection, attributes */
+static AST_Node *parse_postfix(Parser *p) {
+    AST_Node *expr = parse_primary(p);
+
+    while (true) {
+        if (parser_match(p, TOK_LPAREN)) {
+            /* Function call or indexed component */
+            Source_Location loc = parser_peek(p).location;
+            parser_advance(p);
+
+            AST_Vector args = {0};
+            if (not parser_match(p, TOK_RPAREN)) {
+                do {
+                    ast_vector_push(&args, parse_expression(p));
+                } while (parser_consume(p, TOK_COMMA));
+            }
+            parser_expect(p, TOK_RPAREN, "expected ')' after arguments");
+
+            AST_Node *node = ast_node_new(NODE_FUNCTION_CALL, loc);
+            node->call.function = expr;
+            node->call.arguments = args.items;
+            node->call.argument_count = args.count;
+            expr = node;
+        }
+        else if (parser_match(p, TOK_DOT)) {
+            /* Record field selection */
+            Source_Location loc = parser_peek(p).location;
+            parser_advance(p);
+
+            if (not parser_match(p, TOK_IDENTIFIER)) {
+                report_error(p->current.location, "expected field name after '.'");
+                break;
+            }
+            Token field = parser_advance(p);
+
+            AST_Node *node = ast_node_new(NODE_SELECTED_COMPONENT, loc);
+            node->selected.object = expr;
+            node->selected.field_name = slice_to_lowercase(field.text);
+            expr = node;
+        }
+        else if (parser_match(p, TOK_APOSTROPHE)) {
+            Source_Location loc = parser_peek(p).location;
+            parser_advance(p);
+
+            /* Check for qualified expression: Type'(expr) */
+            if (parser_match(p, TOK_LPAREN)) {
+                parser_advance(p);
+                AST_Node *value = parse_expression(p);
+                parser_expect(p, TOK_RPAREN, "expected ')' after qualified expression");
+
+                AST_Node *node = ast_node_new(NODE_QUALIFIED_EXPRESSION, loc);
+                node->assignment.target = expr;  /* type name */
+                node->assignment.value = value;   /* value */
+                expr = node;
+            }
+            /* Attribute reference: T'First, X'Length */
+            else {
+                if (not parser_match(p, TOK_IDENTIFIER)) {
+                    report_error(p->current.location, "expected attribute name after apostrophe");
+                    break;
+                }
+                Token attr = parser_advance(p);
+
+                AST_Node *node = ast_node_new(NODE_ATTRIBUTE, loc);
+                node->attribute.prefix = expr;
+                node->attribute.attribute_name = slice_to_lowercase(attr.text);
+
+                /* Some attributes take arguments: T'Val(N) */
+                if (parser_match(p, TOK_LPAREN)) {
+                    parser_advance(p);
+                    node->attribute.argument = parse_expression(p);
+                    parser_expect(p, TOK_RPAREN, "expected ')' after attribute argument");
+                } else {
+                    node->attribute.argument = NULL;
+                }
+                expr = node;
+            }
+        }
+        else {
+            break;
+        }
+    }
+
+    return expr;
 }
 
 static AST_Node *parse_expression(Parser *p) {
@@ -1592,6 +1734,129 @@ static AST_Node *parse_while_loop(Parser *p) {
     return node;
 }
 
+static AST_Node *parse_for_loop(Parser *p) {
+    Source_Location loc = parser_peek(p).location;
+    parser_expect(p, TOK_FOR, "expected 'for'");
+
+    if (not parser_match(p, TOK_IDENTIFIER)) {
+        report_error(parser_peek(p).location, "expected iterator name");
+        return NULL;
+    }
+
+    Token iterator = parser_advance(p);
+    parser_expect(p, TOK_IN, "expected 'in' after iterator");
+
+    bool reverse = parser_consume(p, TOK_REVERSE);
+    AST_Node *range = parse_expression(p);
+
+    parser_expect(p, TOK_LOOP, "expected 'loop'");
+
+    AST_Vector body = {0};
+    while (not parser_match(p, TOK_END)) {
+        ast_vector_push(&body, parse_statement(p));
+    }
+
+    parser_expect(p, TOK_END, "expected 'end'");
+    parser_expect(p, TOK_LOOP, "expected 'loop' after 'end'");
+    parser_expect(p, TOK_SEMICOLON, "expected ';'");
+
+    AST_Node *iteration = ast_node_new(NODE_FOR_LOOP, loc);
+    iteration->for_iteration.iterator_name = slice_to_lowercase(iterator.text);
+    iteration->for_iteration.reverse = reverse;
+    iteration->for_iteration.range = range;
+
+    AST_Node *node = ast_node_new(NODE_FOR_LOOP, loc);
+    node->loop_stmt.iteration_scheme = iteration;
+    node->loop_stmt.body = body.items;
+    node->loop_stmt.body_count = body.count;
+    return node;
+}
+
+static AST_Node *parse_loop_statement(Parser *p) {
+    Source_Location loc = parser_peek(p).location;
+    parser_expect(p, TOK_LOOP, "expected 'loop'");
+
+    AST_Vector body = {0};
+    while (not parser_match(p, TOK_END)) {
+        ast_vector_push(&body, parse_statement(p));
+    }
+
+    parser_expect(p, TOK_END, "expected 'end'");
+    parser_expect(p, TOK_LOOP, "expected 'loop' after 'end'");
+    parser_expect(p, TOK_SEMICOLON, "expected ';'");
+
+    AST_Node *node = ast_node_new(NODE_LOOP_STATEMENT, loc);
+    node->loop_stmt.iteration_scheme = NULL;
+    node->loop_stmt.body = body.items;
+    node->loop_stmt.body_count = body.count;
+    return node;
+}
+
+static AST_Node *parse_case_statement(Parser *p) {
+    Source_Location loc = parser_peek(p).location;
+    parser_expect(p, TOK_CASE, "expected 'case'");
+
+    AST_Node *expression = parse_expression(p);
+    parser_expect(p, TOK_IS, "expected 'is' after case expression");
+
+    AST_Vector alternatives = {0};
+
+    while (parser_consume(p, TOK_WHEN)) {
+        AST_Vector choices = {0};
+
+        do {
+            if (parser_match(p, TOK_OTHERS)) {
+                parser_advance(p);
+                AST_Node *others = ast_node_new(NODE_IDENTIFIER, parser_peek(p).location);
+                others->string_literal.value = "others";
+                ast_vector_push(&choices, others);
+                break;
+            }
+
+            AST_Node *choice = parse_expression(p);
+            ast_vector_push(&choices, choice);
+        } while (parser_consume(p, TOK_PIPE));
+
+        parser_expect(p, TOK_ARROW, "expected '=>' after case choices");
+
+        AST_Vector statements = {0};
+        while (not parser_match(p, TOK_WHEN) and not parser_match(p, TOK_END)) {
+            ast_vector_push(&statements, parse_statement(p));
+        }
+
+        AST_Node *alt = ast_node_new(NODE_CASE_STATEMENT, loc);
+        alt->aggregate.components = choices.items;
+        alt->aggregate.component_count = choices.count;
+        alt->if_stmt.then_statements = statements.items;
+        alt->if_stmt.then_count = statements.count;
+        ast_vector_push(&alternatives, alt);
+    }
+
+    parser_expect(p, TOK_END, "expected 'end'");
+    parser_expect(p, TOK_CASE, "expected 'case' after 'end'");
+    parser_expect(p, TOK_SEMICOLON, "expected ';'");
+
+    AST_Node *node = ast_node_new(NODE_CASE_STATEMENT, loc);
+    node->assignment.target = expression;
+    node->aggregate.components = alternatives.items;
+    node->aggregate.component_count = alternatives.count;
+    return node;
+}
+
+static AST_Node *parse_exit_statement(Parser *p) {
+    Source_Location loc = parser_peek(p).location;
+    parser_expect(p, TOK_EXIT, "expected 'exit'");
+
+    AST_Node *node = ast_node_new(NODE_EXIT_STATEMENT, loc);
+
+    if (parser_consume(p, TOK_WHEN)) {
+        node->assignment.value = parse_expression(p);
+    }
+
+    parser_expect(p, TOK_SEMICOLON, "expected ';'");
+    return node;
+}
+
 static AST_Node *parse_return_statement(Parser *p) {
     Source_Location loc = parser_peek(p).location;
     parser_expect(p, TOK_RETURN, "expected 'return'");
@@ -1607,18 +1872,19 @@ static AST_Node *parse_return_statement(Parser *p) {
 }
 
 static AST_Node *parse_statement(Parser *p) {
-    /* Null statement */
     if (parser_consume(p, TOK_NULL)) {
         parser_expect(p, TOK_SEMICOLON, "expected ';'");
         return ast_node_new(NODE_NULL_STATEMENT, p->current.location);
     }
 
-    /* Control flow */
     if (parser_match(p, TOK_IF)) return parse_if_statement(p);
+    if (parser_match(p, TOK_CASE)) return parse_case_statement(p);
     if (parser_match(p, TOK_WHILE)) return parse_while_loop(p);
+    if (parser_match(p, TOK_FOR)) return parse_for_loop(p);
+    if (parser_match(p, TOK_LOOP)) return parse_loop_statement(p);
+    if (parser_match(p, TOK_EXIT)) return parse_exit_statement(p);
     if (parser_match(p, TOK_RETURN)) return parse_return_statement(p);
 
-    /* Assignment or procedure call */
     AST_Node *stmt = parse_assignment_or_call(p);
     parser_expect(p, TOK_SEMICOLON, "expected ';'");
     return stmt;
@@ -1779,6 +2045,70 @@ static AST_Node *parse_declaration(Parser *p) {
         return node;
     }
 
+    /* Package declaration */
+    if (parser_match(p, TOK_PACKAGE)) {
+        parser_advance(p);
+
+        if (parser_match(p, TOK_BODY)) {
+            parser_advance(p);
+            Token name = parser_advance(p);
+            parser_expect(p, TOK_IS, "expected 'is' after package body name");
+
+            AST_Vector declarations = {0};
+            while (not parser_match(p, TOK_BEGIN) and not parser_match(p, TOK_END)) {
+                AST_Node *decl = parse_declaration(p);
+                if (decl) ast_vector_push(&declarations, decl);
+                else break;
+            }
+
+            AST_Vector statements = {0};
+            if (parser_consume(p, TOK_BEGIN)) {
+                while (not parser_match(p, TOK_END)) {
+                    ast_vector_push(&statements, parse_statement(p));
+                }
+            }
+
+            parser_expect(p, TOK_END, "expected 'end' after package body");
+            if (parser_match(p, TOK_IDENTIFIER)) parser_advance(p);
+            parser_expect(p, TOK_SEMICOLON, "expected ';'");
+
+            AST_Node *node = ast_node_new(NODE_PACKAGE_BODY, tok.location);
+            node->package.name = slice_to_lowercase(name.text);
+            node->package.declarations = declarations.items;
+            node->package.declaration_count = declarations.count;
+            return node;
+
+        } else {
+            Token name = parser_advance(p);
+            parser_expect(p, TOK_IS, "expected 'is' after package name");
+
+            AST_Vector declarations = {0};
+            while (not parser_match(p, TOK_PRIVATE) and not parser_match(p, TOK_END)) {
+                AST_Node *decl = parse_declaration(p);
+                if (decl) ast_vector_push(&declarations, decl);
+                else break;
+            }
+
+            if (parser_consume(p, TOK_PRIVATE)) {
+                while (not parser_match(p, TOK_END)) {
+                    AST_Node *decl = parse_declaration(p);
+                    if (decl) ast_vector_push(&declarations, decl);
+                    else break;
+                }
+            }
+
+            parser_expect(p, TOK_END, "expected 'end' after package");
+            if (parser_match(p, TOK_IDENTIFIER)) parser_advance(p);
+            parser_expect(p, TOK_SEMICOLON, "expected ';'");
+
+            AST_Node *node = ast_node_new(NODE_PACKAGE_DECLARATION, tok.location);
+            node->package.name = slice_to_lowercase(name.text);
+            node->package.declarations = declarations.items;
+            node->package.declaration_count = declarations.count;
+            return node;
+        }
+    }
+
     /* Procedure/function declaration */
     if (parser_match(p, TOK_PROCEDURE) or parser_match(p, TOK_FUNCTION)) {
         bool is_function = parser_match(p, TOK_FUNCTION);
@@ -1883,6 +2213,9 @@ typedef struct {
     int error_count;
 } Semantic_Analyzer;
 
+/* Forward declarations */
+static Type_Info *resolve_type_expression(Semantic_Analyzer *sem, AST_Node *node);
+
 static Type_Info *resolve_expression_type(Semantic_Analyzer *sem, AST_Node *node) {
     if (not node) return NULL;
 
@@ -1921,6 +2254,85 @@ static Type_Info *resolve_expression_type(Semantic_Analyzer *sem, AST_Node *node
 
         case NODE_UNARY_OP:
             return resolve_expression_type(sem, node->unary_op.operand);
+
+        case NODE_FUNCTION_CALL: {
+            /* Resolve function type, return its return type */
+            Type_Info *func_ty = resolve_expression_type(sem, node->call.function);
+            if (not func_ty) return NULL;
+
+            /* Check argument types */
+            for (int i = 0; i < node->call.argument_count; i++) {
+                resolve_expression_type(sem, node->call.arguments[i]);
+            }
+
+            /* For now, assume functions return Integer (proper implementation needs symbol lookup) */
+            return type_integer;
+        }
+
+        case NODE_SELECTED_COMPONENT: {
+            /* Record field access */
+            Type_Info *record_ty = resolve_expression_type(sem, node->selected.object);
+            if (not record_ty or record_ty->kind != TYPE_RECORD) {
+                report_error(node->location, "selected component requires record type");
+                sem->error_count++;
+                return NULL;
+            }
+
+            /* For now, return Integer (proper implementation needs field lookup) */
+            return type_integer;
+        }
+
+        case NODE_ATTRIBUTE: {
+            /* Attribute evaluation */
+            const char *attr_name = node->attribute.attribute_name;
+
+            /* Type attributes: T'First, T'Last, T'Size */
+            if (strcmp(attr_name, "first") == 0 or strcmp(attr_name, "last") == 0) {
+                return type_integer;
+            }
+            if (strcmp(attr_name, "length") == 0 or strcmp(attr_name, "size") == 0) {
+                return type_integer;
+            }
+            if (strcmp(attr_name, "range") == 0) {
+                /* T'Range returns the range type */
+                return resolve_expression_type(sem, node->attribute.prefix);
+            }
+
+            /* Value attributes: X'Succ, X'Pred, X'Pos, X'Val */
+            if (strcmp(attr_name, "succ") == 0 or strcmp(attr_name, "pred") == 0) {
+                return resolve_expression_type(sem, node->attribute.prefix);
+            }
+            if (strcmp(attr_name, "pos") == 0 or strcmp(attr_name, "val") == 0) {
+                return type_integer;
+            }
+
+            return NULL;
+        }
+
+        case NODE_QUALIFIED_EXPRESSION: {
+            /* Type'(value) - returns the specified type */
+            Type_Info *target_type = resolve_type_expression(sem, node->assignment.target);
+            Type_Info *value_type = resolve_expression_type(sem, node->assignment.value);
+
+            if (target_type and value_type) {
+                if (not types_same(target_type, value_type)) {
+                    report_error(node->location, "type mismatch in qualified expression");
+                    sem->error_count++;
+                }
+            }
+
+            return target_type;
+        }
+
+        case NODE_AGGREGATE: {
+            /* Aggregate type must be inferred from context */
+            /* For now, return NULL - proper implementation needs context type */
+            /* Each component should be type-checked */
+            for (int i = 0; i < node->aggregate.component_count; i++) {
+                resolve_expression_type(sem, node->aggregate.components[i]);
+            }
+            return NULL;
+        }
 
         default:
             return NULL;
@@ -2159,6 +2571,71 @@ static void codegen_expression(Code_Generator *cg, AST_Node *node, const char **
             break;
         }
 
+        case NODE_FUNCTION_CALL: {
+            /* Generate function call */
+            const char *func_name = NULL;
+            if (node->call.function->kind == NODE_IDENTIFIER) {
+                func_name = node->call.function->string_literal.value;
+            }
+
+            if (func_name) {
+                /* Evaluate arguments */
+                const char **arg_vals = ALLOC_ARRAY(const char *, node->call.argument_count);
+                for (int i = 0; i < node->call.argument_count; i++) {
+                    codegen_expression(cg, node->call.arguments[i], &arg_vals[i]);
+                }
+
+                *result = codegen_temp(cg);
+                fprintf(cg->output, "  %s = call i32 @%s(", *result, func_name);
+                for (int i = 0; i < node->call.argument_count; i++) {
+                    if (i > 0) fprintf(cg->output, ", ");
+                    fprintf(cg->output, "i32 %s", arg_vals[i] ? arg_vals[i] : "0");
+                }
+                fprintf(cg->output, ")\n");
+            }
+            break;
+        }
+
+        case NODE_SELECTED_COMPONENT: {
+            /* Record field access - simplified: just return 0 for now */
+            *result = codegen_temp(cg);
+            fprintf(cg->output, "  %s = add i32 0, 0  ; field access stub\n", *result);
+            break;
+        }
+
+        case NODE_ATTRIBUTE: {
+            /* Attribute evaluation */
+            const char *attr = node->attribute.attribute_name;
+
+            /* Simple constant folding for type attributes */
+            if (strcmp(attr, "first") == 0) {
+                *result = codegen_temp(cg);
+                fprintf(cg->output, "  %s = add i32 0, 0  ; T'First\n", *result);
+            } else if (strcmp(attr, "last") == 0) {
+                *result = codegen_temp(cg);
+                fprintf(cg->output, "  %s = add i32 0, 100  ; T'Last\n", *result);
+            } else if (strcmp(attr, "length") == 0 or strcmp(attr, "size") == 0) {
+                *result = codegen_temp(cg);
+                fprintf(cg->output, "  %s = add i32 0, 10  ; length/size\n", *result);
+            } else {
+                *result = NULL;
+            }
+            break;
+        }
+
+        case NODE_QUALIFIED_EXPRESSION: {
+            /* Type'(value) - just evaluate the value */
+            codegen_expression(cg, node->assignment.value, result);
+            break;
+        }
+
+        case NODE_AGGREGATE: {
+            /* Aggregate construction - simplified for now */
+            *result = codegen_temp(cg);
+            fprintf(cg->output, "  %s = add i32 0, 0  ; aggregate stub\n", *result);
+            break;
+        }
+
         default:
             *result = NULL;
             break;
@@ -2196,10 +2673,12 @@ static void codegen_statement(Code_Generator *cg, AST_Node *node) {
             codegen_expression(cg, node->if_stmt.condition, &cond);
 
             const char *then_label = codegen_label(cg);
+            const char *else_label = codegen_label(cg);
             const char *end_label = codegen_label(cg);
 
+            int has_else = node->if_stmt.else_count > 0 or node->if_stmt.elsif_count > 0;
             fprintf(cg->output, "  br i1 %s, label %%%s, label %%%s\n",
-                    cond ? cond : "false", then_label, end_label);
+                    cond ? cond : "false", then_label, has_else ? else_label : end_label);
 
             fprintf(cg->output, "%s:\n", then_label);
             for (int i = 0; i < node->if_stmt.then_count; i++) {
@@ -2207,7 +2686,133 @@ static void codegen_statement(Code_Generator *cg, AST_Node *node) {
             }
             fprintf(cg->output, "  br label %%%s\n", end_label);
 
+            if (has_else) {
+                fprintf(cg->output, "%s:\n", else_label);
+
+                for (int i = 0; i < node->if_stmt.elsif_count; i++) {
+                    codegen_statement(cg, node->if_stmt.elsif_parts[i]);
+                }
+
+                for (int i = 0; i < node->if_stmt.else_count; i++) {
+                    codegen_statement(cg, node->if_stmt.else_statements[i]);
+                }
+
+                fprintf(cg->output, "  br label %%%s\n", end_label);
+            }
+
             fprintf(cg->output, "%s:\n", end_label);
+            break;
+        }
+
+        case NODE_WHILE_LOOP: {
+            const char *loop_label = codegen_label(cg);
+            const char *body_label = codegen_label(cg);
+            const char *end_label = codegen_label(cg);
+
+            fprintf(cg->output, "  br label %%%s\n", loop_label);
+            fprintf(cg->output, "%s:\n", loop_label);
+
+            const char *cond = NULL;
+            codegen_expression(cg, node->loop_stmt.iteration_scheme, &cond);
+
+            fprintf(cg->output, "  br i1 %s, label %%%s, label %%%s\n",
+                    cond ? cond : "true", body_label, end_label);
+
+            fprintf(cg->output, "%s:\n", body_label);
+            for (int i = 0; i < node->loop_stmt.body_count; i++) {
+                codegen_statement(cg, node->loop_stmt.body[i]);
+            }
+            fprintf(cg->output, "  br label %%%s\n", loop_label);
+
+            fprintf(cg->output, "%s:\n", end_label);
+            break;
+        }
+
+        case NODE_LOOP_STATEMENT: {
+            const char *loop_label = codegen_label(cg);
+            const char *end_label = codegen_label(cg);
+
+            fprintf(cg->output, "  br label %%%s\n", loop_label);
+            fprintf(cg->output, "%s:\n", loop_label);
+
+            for (int i = 0; i < node->loop_stmt.body_count; i++) {
+                codegen_statement(cg, node->loop_stmt.body[i]);
+            }
+            fprintf(cg->output, "  br label %%%s\n", loop_label);
+
+            fprintf(cg->output, "%s:\n", end_label);
+            break;
+        }
+
+        case NODE_FOR_LOOP: {
+            const char *loop_label = codegen_label(cg);
+            const char *body_label = codegen_label(cg);
+            const char *end_label = codegen_label(cg);
+
+            fprintf(cg->output, "  br label %%%s\n", loop_label);
+            fprintf(cg->output, "%s:\n", loop_label);
+
+            fprintf(cg->output, "  br i1 true, label %%%s, label %%%s\n", body_label, end_label);
+
+            fprintf(cg->output, "%s:\n", body_label);
+            for (int i = 0; i < node->loop_stmt.body_count; i++) {
+                codegen_statement(cg, node->loop_stmt.body[i]);
+            }
+            fprintf(cg->output, "  br label %%%s\n", loop_label);
+
+            fprintf(cg->output, "%s:\n", end_label);
+            break;
+        }
+
+        case NODE_CASE_STATEMENT: {
+            const char *scrutinee = NULL;
+            codegen_expression(cg, node->assignment.target, &scrutinee);
+
+            const char *end_label = codegen_label(cg);
+
+            for (int i = 0; i < node->aggregate.component_count; i++) {
+                AST_Node *alt = node->aggregate.components[i];
+                const char *case_label = codegen_label(cg);
+                const char *next_label = codegen_label(cg);
+
+                fprintf(cg->output, "%s:\n", case_label);
+                for (int j = 0; j < alt->if_stmt.then_count; j++) {
+                    codegen_statement(cg, alt->if_stmt.then_statements[j]);
+                }
+                fprintf(cg->output, "  br label %%%s\n", end_label);
+            }
+
+            fprintf(cg->output, "%s:\n", end_label);
+            break;
+        }
+
+        case NODE_EXIT_STATEMENT:
+            fprintf(cg->output, "  br label %%exit_target\n");
+            break;
+
+        case NODE_NULL_STATEMENT:
+            break;
+
+        default:
+            break;
+    }
+}
+
+static void codegen_declaration(Code_Generator *cg, AST_Node *node) {
+    if (not node) return;
+
+    switch (node->kind) {
+        case NODE_OBJECT_DECLARATION: {
+            fprintf(cg->output, "  %%%s = alloca i32\n", node->declaration.name);
+
+            if (node->declaration.initializer) {
+                const char *init_val = NULL;
+                codegen_expression(cg, node->declaration.initializer, &init_val);
+                if (init_val) {
+                    fprintf(cg->output, "  store i32 %s, i32* %%%s\n",
+                            init_val, node->declaration.name);
+                }
+            }
             break;
         }
 
@@ -2219,22 +2824,106 @@ static void codegen_statement(Code_Generator *cg, AST_Node *node) {
 static void codegen_subprogram(Code_Generator *cg, AST_Node *node) {
     if (node->kind != NODE_SUBPROGRAM_BODY) return;
 
-    /* Function signature */
     const char *ret_type = node->subprogram.return_type ? "i32" : "void";
-    fprintf(cg->output, "define %s @%s() {\n", ret_type, node->subprogram.name);
-    fprintf(cg->output, "entry:\n");
 
-    /* Generate statements */
-    for (int i = 0; i < node->subprogram.body_count; i++) {
-        codegen_statement(cg, node->subprogram.body[i]);
+    fprintf(cg->output, "define %s @%s(", ret_type, node->subprogram.name);
+
+    for (int i = 0; i < node->subprogram.parameter_count; i++) {
+        AST_Node *param = node->subprogram.parameters[i];
+        if (i > 0) fprintf(cg->output, ", ");
+        fprintf(cg->output, "i32 %%%s.arg", param->declaration.name);
     }
 
-    /* Ensure return if none */
+    fprintf(cg->output, ") {\n");
+    fprintf(cg->output, "entry:\n");
+
+    for (int i = 0; i < node->subprogram.parameter_count; i++) {
+        AST_Node *param = node->subprogram.parameters[i];
+        fprintf(cg->output, "  %%%s = alloca i32\n", param->declaration.name);
+        fprintf(cg->output, "  store i32 %%%s.arg, i32* %%%s\n",
+                param->declaration.name, param->declaration.name);
+    }
+
+    for (int i = 0; i < node->subprogram.body_count; i++) {
+        if (node->subprogram.body[i]->kind == NODE_OBJECT_DECLARATION) {
+            AST_Node *decl = node->subprogram.body[i];
+            fprintf(cg->output, "  %%%s = alloca i32\n", decl->declaration.name);
+
+            if (decl->declaration.initializer) {
+                const char *init_val = NULL;
+                codegen_expression(cg, decl->declaration.initializer, &init_val);
+                if (init_val) {
+                    fprintf(cg->output, "  store i32 %s, i32* %%%s\n",
+                            init_val, decl->declaration.name);
+                }
+            }
+        }
+    }
+
+    for (int i = 0; i < node->subprogram.body_count; i++) {
+        if (node->subprogram.body[i]->kind != NODE_OBJECT_DECLARATION) {
+            codegen_statement(cg, node->subprogram.body[i]);
+        }
+    }
+
     if (not node->subprogram.return_type) {
         fprintf(cg->output, "  ret void\n");
     }
 
     fprintf(cg->output, "}\n\n");
+}
+
+/* Initialize standard types */
+static void initialize_standard_types(void) {
+    type_integer = type_info_new(TYPE_INTEGER);
+    type_integer->name = make_slice("integer");
+    type_integer->size = ADA_INTEGER;
+    type_integer->alignment = ADA_INTEGER;
+    type_integer->has_constraint = true;
+    type_integer->low_bound = INT32_MIN;
+    type_integer->high_bound = INT32_MAX;
+
+    type_boolean = type_info_new(TYPE_BOOLEAN);
+    type_boolean->name = make_slice("boolean");
+    type_boolean->size = WIDTH_BOOL;
+    type_boolean->alignment = WIDTH_I8;
+
+    type_character = type_info_new(TYPE_ENUMERATION);
+    type_character->name = make_slice("character");
+    type_character->size = WIDTH_I8;
+    type_character->alignment = WIDTH_I8;
+
+    type_string = type_info_new(TYPE_STRING);
+    type_string->name = make_slice("string");
+    type_string->element_type = type_character;
+    type_string->alignment = WIDTH_I8;
+
+    type_float = type_info_new(TYPE_REAL);
+    type_float->name = make_slice("float");
+    type_float->size = WIDTH_F64;
+    type_float->alignment = WIDTH_F64;
+}
+
+static void populate_standard_scope(Symbol_Table *scope) {
+    Symbol *int_sym = symbol_new(make_slice("integer"), SYMBOL_TYPE);
+    int_sym->type = type_integer;
+    symbol_table_insert(scope, int_sym);
+
+    Symbol *bool_sym = symbol_new(make_slice("boolean"), SYMBOL_TYPE);
+    bool_sym->type = type_boolean;
+    symbol_table_insert(scope, bool_sym);
+
+    Symbol *char_sym = symbol_new(make_slice("character"), SYMBOL_TYPE);
+    char_sym->type = type_character;
+    symbol_table_insert(scope, char_sym);
+
+    Symbol *str_sym = symbol_new(make_slice("string"), SYMBOL_TYPE);
+    str_sym->type = type_string;
+    symbol_table_insert(scope, str_sym);
+
+    Symbol *float_sym = symbol_new(make_slice("float"), SYMBOL_TYPE);
+    float_sym->type = type_float;
+    symbol_table_insert(scope, float_sym);
 }
 
 /* Main driver */
@@ -2258,37 +2947,53 @@ int main(int argc, char **argv) {
     source[size] = '\0';
     fclose(f);
 
+    initialize_standard_types();
+
     Lexer *lexer = lexer_new(filename, source);
+    Parser *parser = parser_new(lexer);
 
-    /* Simple test: tokenize and print */
-    for (;;) {
-        Token tok = lexer_next_token(lexer);
-        printf("Line %u: ", tok.location.line);
+    populate_standard_scope(parser->global_scope);
 
-        switch (tok.kind) {
-            case TOK_IDENTIFIER:
-                printf("IDENTIFIER %.*s\n", (int)tok.text.length, tok.text.start);
-                break;
-            case TOK_INTEGER_LITERAL:
-                printf("INTEGER %ld\n", (long)tok.integer_value);
-                break;
-            case TOK_REAL_LITERAL:
-                printf("REAL %f\n", tok.real_value);
-                break;
-            case TOK_STRING_LITERAL:
-                printf("STRING \"%.*s\"\n", (int)tok.text.length, tok.text.start);
-                break;
-            case TOK_EOF:
-                printf("EOF\n");
-                goto done;
-            default:
-                printf("TOKEN %d\n", tok.kind);
+    AST_Vector declarations = {0};
+    while (not parser_match(parser, TOK_EOF)) {
+        AST_Node *decl = parse_declaration(parser);
+        if (decl) {
+            ast_vector_push(&declarations, decl);
+        } else {
+            break;
         }
     }
 
-done:
+    if (parser->error_count > 0) {
+        fprintf(stderr, "Compilation failed with %d errors\n", parser->error_count);
+        free(source);
+        arena_free_all(&main_arena);
+        return EXIT_FAILURE;
+    }
+
+    Semantic_Analyzer *sem = semantic_analyzer_new(parser->global_scope);
+    analyze_program(sem, declarations.items, declarations.count);
+
+    if (sem->error_count > 0) {
+        fprintf(stderr, "Semantic analysis failed with %d errors\n", sem->error_count);
+        free(source);
+        arena_free_all(&main_arena);
+        return EXIT_FAILURE;
+    }
+
+    Code_Generator *codegen = codegen_new(stdout, parser->global_scope);
+
+    fprintf(codegen->output, "; Generated LLVM IR\n");
+    fprintf(codegen->output, "target datalayout = \"e-m:e-i64:64-f80:128\"\n");
+    fprintf(codegen->output, "target triple = \"x86_64-unknown-linux-gnu\"\n\n");
+
+    for (int i = 0; i < declarations.count; i++) {
+        if (declarations.items[i]->kind == NODE_SUBPROGRAM_BODY) {
+            codegen_subprogram(codegen, declarations.items[i]);
+        }
+    }
+
     free(source);
     arena_free_all(&main_arena);
-
-    return error_count > 0 ? EXIT_FAILURE : EXIT_SUCCESS;
+    return EXIT_SUCCESS;
 }
