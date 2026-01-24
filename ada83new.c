@@ -3316,6 +3316,7 @@ typedef enum {
     TYPE_PRIVATE,
     TYPE_LIMITED_PRIVATE,
     TYPE_INCOMPLETE,
+    TYPE_PACKAGE,     /* For package namespaces */
 
     TYPE_COUNT
 } Type_Kind;
@@ -3574,6 +3575,7 @@ typedef struct {
     Type_Info      *param_type;
     Parameter_Mode  mode;
     Syntax_Node    *default_value;
+    struct Symbol  *param_sym;    /* Symbol for this parameter in function body */
 } Parameter_Info;
 
 struct Symbol {
@@ -3831,6 +3833,7 @@ static Symbol_Manager *Symbol_Manager_New(void) {
  * ───────────────────────────────────────────────────────────────────────── */
 
 static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node);
+static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node);
 
 static Type_Info *Resolve_Identifier(Symbol_Manager *sm, Syntax_Node *node) {
     Symbol *sym = Symbol_Find(sm, node->string_val.text);
@@ -4062,7 +4065,12 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                 Resolve_Expression(sm, node->association.choices.items[i]);
             }
             if (node->association.expression) {
-                Resolve_Expression(sm, node->association.expression);
+                /* For case alternatives, expression is a block with statements */
+                if (node->association.expression->kind == NK_BLOCK) {
+                    Resolve_Statement(sm, node->association.expression);
+                } else {
+                    Resolve_Expression(sm, node->association.expression);
+                }
             }
             return node->association.expression ? node->association.expression->type : NULL;
 
@@ -4161,6 +4169,20 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
             Resolve_Statement_List(sm, &node->handler.statements);
             break;
 
+        case NK_ASSOCIATION:
+            /* Case alternative - resolve choices and body */
+            for (uint32_t i = 0; i < node->association.choices.count; i++) {
+                Resolve_Expression(sm, node->association.choices.items[i]);
+            }
+            if (node->association.expression) {
+                if (node->association.expression->kind == NK_BLOCK) {
+                    Resolve_Statement(sm, node->association.expression);
+                } else {
+                    Resolve_Expression(sm, node->association.expression);
+                }
+            }
+            break;
+
         default:
             break;
     }
@@ -4240,7 +4262,42 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                 Symbol *sym = Symbol_New(
                     node->kind == NK_PROCEDURE_SPEC ? SYMBOL_PROCEDURE : SYMBOL_FUNCTION,
                     node->subprogram_spec.name, node->location);
-                sym->parameter_count = node->subprogram_spec.parameters.count;
+
+                /* Count total parameters (each param_spec can have multiple names) */
+                Node_List *param_list = &node->subprogram_spec.parameters;
+                uint32_t total_params = 0;
+                for (uint32_t i = 0; i < param_list->count; i++) {
+                    Syntax_Node *ps = param_list->items[i];
+                    if (ps->kind == NK_PARAM_SPEC) {
+                        total_params += ps->param_spec.names.count;
+                    }
+                }
+
+                sym->parameter_count = total_params;
+                if (total_params > 0) {
+                    sym->parameters = Arena_Allocate(total_params * sizeof(Parameter_Info));
+                    uint32_t param_idx = 0;
+                    for (uint32_t i = 0; i < param_list->count; i++) {
+                        Syntax_Node *ps = param_list->items[i];
+                        if (ps->kind == NK_PARAM_SPEC) {
+                            /* Resolve parameter type */
+                            if (ps->param_spec.param_type) {
+                                Resolve_Expression(sm, ps->param_spec.param_type);
+                            }
+                            Type_Info *pt = ps->param_spec.param_type ?
+                                          ps->param_spec.param_type->type : NULL;
+                            for (uint32_t j = 0; j < ps->param_spec.names.count; j++) {
+                                Syntax_Node *name = ps->param_spec.names.items[j];
+                                sym->parameters[param_idx].name = name->string_val.text;
+                                sym->parameters[param_idx].param_type = pt;
+                                sym->parameters[param_idx].mode = ps->param_spec.mode;
+                                sym->parameters[param_idx].default_value = ps->param_spec.default_expr;
+                                param_idx++;
+                            }
+                        }
+                    }
+                }
+
                 if (node->subprogram_spec.return_type) {
                     Resolve_Expression(sm, node->subprogram_spec.return_type);
                     sym->return_type = node->subprogram_spec.return_type->type;
@@ -4254,12 +4311,46 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
         case NK_FUNCTION_BODY:
             {
                 /* Resolve spec if present */
-                if (node->subprogram_body.specification) {
-                    Resolve_Declaration(sm, node->subprogram_body.specification);
+                Syntax_Node *spec = node->subprogram_body.specification;
+                if (spec) {
+                    Resolve_Declaration(sm, spec);
+                    node->symbol = spec->symbol;
                 }
 
                 /* Push scope for body */
                 Symbol_Manager_Push_Scope(sm, node->symbol);
+
+                /* Add parameters to scope and link to Parameter_Info */
+                if (spec) {
+                    Symbol *func_sym = node->symbol;
+                    uint32_t param_idx = 0;
+                    Node_List *params = &spec->subprogram_spec.parameters;
+                    for (uint32_t i = 0; i < params->count; i++) {
+                        Syntax_Node *param = params->items[i];
+                        if (param->kind == NK_PARAM_SPEC) {
+                            /* Resolve parameter type */
+                            if (param->param_spec.param_type) {
+                                Resolve_Expression(sm, param->param_spec.param_type);
+                            }
+                            /* Add each parameter name as a symbol */
+                            for (uint32_t j = 0; j < param->param_spec.names.count; j++) {
+                                Syntax_Node *name = param->param_spec.names.items[j];
+                                Symbol *param_sym = Symbol_New(SYMBOL_PARAMETER,
+                                    name->string_val.text, name->location);
+                                if (param->param_spec.param_type) {
+                                    param_sym->type = param->param_spec.param_type->type;
+                                }
+                                Symbol_Add(sm, param_sym);
+                                name->symbol = param_sym;
+                                /* Link to Parameter_Info for code generation */
+                                if (func_sym && param_idx < func_sym->parameter_count) {
+                                    func_sym->parameters[param_idx].param_sym = param_sym;
+                                }
+                                param_idx++;
+                            }
+                        }
+                    }
+                }
 
                 /* Resolve declarations and statements */
                 Resolve_Declaration_List(sm, &node->subprogram_body.declarations);
@@ -4308,15 +4399,32 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
  * §12.4 Compilation Unit Resolution
  * ───────────────────────────────────────────────────────────────────────── */
 
+/* Forward declarations for WITH clause loading */
+static char *Lookup_Path(String_Slice name);
+static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src);
+
 static void Resolve_Compilation_Unit(Symbol_Manager *sm, Syntax_Node *node) {
     if (!node) return;
 
-    /* Resolve context clause (with/use) */
+    /* Load WITH'd packages from include paths */
     if (node->compilation_unit.context) {
         Syntax_Node *ctx = node->compilation_unit.context;
         for (uint32_t i = 0; i < ctx->context.with_clauses.count; i++) {
-            Resolve_Expression(sm, ctx->context.with_clauses.items[i]);
+            Syntax_Node *with_node = ctx->context.with_clauses.items[i];
+            /* WITH clause contains a list of package names */
+            for (uint32_t j = 0; j < with_node->use_clause.names.count; j++) {
+                Syntax_Node *pkg_name = with_node->use_clause.names.items[j];
+                if (pkg_name->kind == NK_IDENTIFIER) {
+                    char *pkg_src = Lookup_Path(pkg_name->string_val.text);
+                    if (pkg_src) {
+                        Load_Package_Spec(sm, pkg_name->string_val.text, pkg_src);
+                    }
+                    /* Resolve the identifier to the package symbol */
+                    Resolve_Expression(sm, pkg_name);
+                }
+            }
         }
+        /* Resolve USE clauses (make package contents visible) */
         for (uint32_t i = 0; i < ctx->context.use_clauses.count; i++) {
             Resolve_Declaration(sm, ctx->context.use_clauses.items[i]);
         }
@@ -4361,6 +4469,13 @@ typedef struct {
     /* Loop/exit context */
     uint32_t      loop_exit_label;
     uint32_t      loop_continue_label;
+
+    /* Function exit tracking */
+    bool          has_return;
+
+    /* Deferred nested subprogram bodies */
+    Syntax_Node  *deferred_bodies[64];
+    uint32_t      deferred_count;
 } Code_Generator;
 
 static Code_Generator *Code_Generator_New(FILE *output, Symbol_Manager *sm) {
@@ -4371,6 +4486,7 @@ static Code_Generator *Code_Generator_New(FILE *output, Symbol_Manager *sm) {
     cg->label_id = 1;
     cg->global_id = 1;
     cg->string_id = 1;
+    cg->deferred_count = 0;
     return cg;
 }
 
@@ -4419,6 +4535,31 @@ static void Emit_Symbol_Name(Code_Generator *cg, Symbol *sym) {
     }
 
     Emit(cg, "_S%u", sym->unique_id);
+}
+
+/* Emit type conversion if needed (sext/trunc for integers) */
+static uint32_t Emit_Convert(Code_Generator *cg, uint32_t src, const char *src_type,
+                            const char *dst_type) {
+    if (strcmp(src_type, dst_type) == 0) return src;
+
+    uint32_t t = Emit_Temp(cg);
+    /* Determine source and dest bit widths */
+    int src_bits = 64, dst_bits = 64;
+    if (strcmp(src_type, "i32") == 0) src_bits = 32;
+    else if (strcmp(src_type, "i16") == 0) src_bits = 16;
+    else if (strcmp(src_type, "i8") == 0) src_bits = 8;
+    if (strcmp(dst_type, "i32") == 0) dst_bits = 32;
+    else if (strcmp(dst_type, "i16") == 0) dst_bits = 16;
+    else if (strcmp(dst_type, "i8") == 0) dst_bits = 8;
+
+    if (dst_bits > src_bits) {
+        Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", t, src_type, src, dst_type);
+    } else if (dst_bits < src_bits) {
+        Emit(cg, "  %%t%u = trunc %s %%t%u to %s\n", t, src_type, src, dst_type);
+    } else {
+        return src;  /* Same size, no conversion */
+    }
+    return t;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -4476,12 +4617,15 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
 
     switch (sym->kind) {
         case SYMBOL_VARIABLE:
-        case SYMBOL_PARAMETER:
+        case SYMBOL_PARAMETER: {
             /* Load from variable */
-            Emit(cg, "  %%t%u = load %s, ptr %%", t, Type_To_Llvm(sym->type));
+            const char *type_str = Type_To_Llvm(sym->type);
+            Emit(cg, "  %%t%u = load %s, ptr %%", t, type_str);
             Emit_Symbol_Name(cg, sym);
             Emit(cg, "\n");
-            break;
+            /* Widen to i64 for computation if narrower type */
+            t = Emit_Convert(cg, t, type_str, "i64");
+        } break;
 
         case SYMBOL_CONSTANT:
         case SYMBOL_LITERAL:
@@ -4580,11 +4724,16 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
     Symbol *sym = node->apply.prefix->symbol;
 
     if (sym && (sym->kind == SYMBOL_FUNCTION || sym->kind == SYMBOL_PROCEDURE)) {
-        /* Function call */
+        /* Function call - generate arguments */
         uint32_t *args = Arena_Allocate(node->apply.arguments.count * sizeof(uint32_t));
 
         for (uint32_t i = 0; i < node->apply.arguments.count; i++) {
             args[i] = Generate_Expression(cg, node->apply.arguments.items[i]);
+            /* Truncate to actual parameter type */
+            if (i < sym->parameter_count && sym->parameters[i].param_type) {
+                const char *param_type = Type_To_Llvm(sym->parameters[i].param_type);
+                args[i] = Emit_Convert(cg, args[i], "i64", param_type);
+            }
         }
 
         uint32_t t = Emit_Temp(cg);
@@ -4600,11 +4749,19 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
 
         for (uint32_t i = 0; i < node->apply.arguments.count; i++) {
             if (i > 0) Emit(cg, ", ");
-            Emit(cg, "i64 %%t%u", args[i]);
+            const char *param_type = (i < sym->parameter_count && sym->parameters[i].param_type)
+                ? Type_To_Llvm(sym->parameters[i].param_type) : "i64";
+            Emit(cg, "%s %%t%u", param_type, args[i]);
         }
 
         Emit(cg, ")\n");
-        return sym->return_type ? t : 0;
+
+        /* Widen return value to i64 for computation */
+        if (sym->return_type) {
+            t = Emit_Convert(cg, t, Type_To_Llvm(sym->return_type), "i64");
+            return t;
+        }
+        return 0;
     }
 
     /* Array indexing */
@@ -4625,6 +4782,224 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
     return 0;
 }
 
+static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
+    /* Generate code for A.B (selected component) */
+    Type_Info *prefix_type = node->selected.prefix->type;
+
+    if (!prefix_type || prefix_type->kind != TYPE_RECORD) {
+        /* Package-qualified name - just generate using the resolved symbol */
+        Symbol *sym = node->symbol;
+        if (sym) {
+            uint32_t t = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = load i64, ptr %%", t);
+            Emit_Symbol_Name(cg, sym);
+            Emit(cg, "\n");
+            return t;
+        }
+        return 0;
+    }
+
+    /* Record field access */
+    uint32_t base = Generate_Expression(cg, node->selected.prefix);
+
+    /* Calculate field offset by matching selector name */
+    uint32_t field_idx = 0;
+    Type_Info *field_type = NULL;
+    for (uint32_t i = 0; i < prefix_type->record.component_count; i++) {
+        if (Slice_Equal_Ignore_Case(
+                prefix_type->record.components[i].name, node->selected.selector)) {
+            field_idx = i;
+            field_type = prefix_type->record.components[i].component_type;
+            break;
+        }
+    }
+
+    uint32_t ptr = Emit_Temp(cg);
+    uint32_t t = Emit_Temp(cg);
+
+    Emit(cg, "  %%t%u = getelementptr %%struct.", ptr);
+    Emit_Symbol_Name(cg, prefix_type->defining_symbol);
+    Emit(cg, ", ptr %%t%u, i32 0, i32 %u\n", base, field_idx);
+    Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
+         t, Type_To_Llvm(field_type), ptr);
+
+    return t;
+}
+
+static int64_t Type_Bound_Value(Type_Bound b) {
+    if (b.kind == BOUND_INTEGER) return b.int_value;
+    return 0;  /* Handle other bound kinds as needed */
+}
+
+static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
+    /* Generate code for X'FIRST, X'LAST, X'LENGTH, etc. */
+    Type_Info *prefix_type = node->attribute.prefix->type;
+    String_Slice attr = node->attribute.name;
+    uint32_t t = Emit_Temp(cg);
+
+    if (Slice_Equal_Ignore_Case(attr, S("FIRST"))) {
+        if (prefix_type && prefix_type->kind == TYPE_ARRAY &&
+            prefix_type->array.index_count > 0) {
+            Emit(cg, "  %%t%u = add i64 0, %lld\n", t,
+                 (long long)Type_Bound_Value(prefix_type->array.indices[0].low_bound));
+        } else if (prefix_type) {
+            Emit(cg, "  %%t%u = add i64 0, %lld\n", t,
+                 (long long)Type_Bound_Value(prefix_type->low_bound));
+        }
+        return t;
+    }
+
+    if (Slice_Equal_Ignore_Case(attr, S("LAST"))) {
+        if (prefix_type && prefix_type->kind == TYPE_ARRAY &&
+            prefix_type->array.index_count > 0) {
+            Emit(cg, "  %%t%u = add i64 0, %lld\n", t,
+                 (long long)Type_Bound_Value(prefix_type->array.indices[0].high_bound));
+        } else if (prefix_type) {
+            Emit(cg, "  %%t%u = add i64 0, %lld\n", t,
+                 (long long)Type_Bound_Value(prefix_type->high_bound));
+        }
+        return t;
+    }
+
+    if (Slice_Equal_Ignore_Case(attr, S("LENGTH"))) {
+        if (prefix_type && prefix_type->kind == TYPE_ARRAY &&
+            prefix_type->array.index_count > 0) {
+            int64_t low = Type_Bound_Value(prefix_type->array.indices[0].low_bound);
+            int64_t high = Type_Bound_Value(prefix_type->array.indices[0].high_bound);
+            Emit(cg, "  %%t%u = add i64 0, %lld\n", t, (long long)(high - low + 1));
+        }
+        return t;
+    }
+
+    if (Slice_Equal_Ignore_Case(attr, S("SIZE"))) {
+        Emit(cg, "  %%t%u = add i64 0, %lld\n", t,
+             (long long)(prefix_type ? prefix_type->size * 8 : 0));
+        return t;
+    }
+
+    if (Slice_Equal_Ignore_Case(attr, S("RANGE"))) {
+        /* Range attribute returns a range value - for iteration */
+        return 0;
+    }
+
+    if (Slice_Equal_Ignore_Case(attr, S("POS")) ||
+        Slice_Equal_Ignore_Case(attr, S("VAL"))) {
+        /* Enumeration position/value - just pass through */
+        if (node->attribute.argument) {
+            return Generate_Expression(cg, node->attribute.argument);
+        }
+    }
+
+    if (Slice_Equal_Ignore_Case(attr, S("SUCC"))) {
+        if (node->attribute.argument) {
+            uint32_t val = Generate_Expression(cg, node->attribute.argument);
+            Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", t, val);
+            return t;
+        }
+    }
+
+    if (Slice_Equal_Ignore_Case(attr, S("PRED"))) {
+        if (node->attribute.argument) {
+            uint32_t val = Generate_Expression(cg, node->attribute.argument);
+            Emit(cg, "  %%t%u = sub i64 %%t%u, 1\n", t, val);
+            return t;
+        }
+    }
+
+    return 0;
+}
+
+static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
+    /* Generate code for record/array aggregates */
+    Type_Info *agg_type = node->type;
+
+    if (!agg_type) {
+        Report_Error(node->location, "untyped aggregate in codegen");
+        return 0;
+    }
+
+    if (agg_type->kind == TYPE_ARRAY && agg_type->array.index_count > 0) {
+        /* Array aggregate - allocate on stack and initialize */
+        uint32_t base = Emit_Temp(cg);
+        int64_t low = Type_Bound_Value(agg_type->array.indices[0].low_bound);
+        int64_t high = Type_Bound_Value(agg_type->array.indices[0].high_bound);
+        int64_t size = high - low + 1;
+
+        Emit(cg, "  %%t%u = alloca [%lld x %s]\n", base, (long long)size,
+             Type_To_Llvm(agg_type->array.element_type));
+
+        /* Initialize each element */
+        for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
+            Syntax_Node *item = node->aggregate.items.items[i];
+            Syntax_Node *val_node = (item->kind == NK_ASSOCIATION) ?
+                                    item->association.expression : item;
+            uint32_t val = Generate_Expression(cg, val_node);
+
+            uint32_t ptr = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = getelementptr [%lld x %s], ptr %%t%u, i64 0, i64 %u\n",
+                 ptr, (long long)size, Type_To_Llvm(agg_type->array.element_type),
+                 base, i);
+            Emit(cg, "  store %s %%t%u, ptr %%t%u\n",
+                 Type_To_Llvm(agg_type->array.element_type), val, ptr);
+        }
+
+        return base;
+    }
+
+    if (agg_type->kind == TYPE_RECORD) {
+        /* Record aggregate - allocate and fill fields */
+        uint32_t base = Emit_Temp(cg);
+
+        Emit(cg, "  %%t%u = alloca %%struct.", base);
+        Emit_Symbol_Name(cg, agg_type->defining_symbol);
+        Emit(cg, "\n");
+
+        for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
+            Syntax_Node *item = node->aggregate.items.items[i];
+            Syntax_Node *val_node = (item->kind == NK_ASSOCIATION) ?
+                                    item->association.expression : item;
+            uint32_t val = Generate_Expression(cg, val_node);
+
+            uint32_t ptr = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = getelementptr %%struct.", ptr);
+            Emit_Symbol_Name(cg, agg_type->defining_symbol);
+            Emit(cg, ", ptr %%t%u, i32 0, i32 %u\n", base, i);
+            Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", val, ptr);
+        }
+
+        return base;
+    }
+
+    return 0;
+}
+
+static uint32_t Generate_Qualified(Code_Generator *cg, Syntax_Node *node) {
+    /* Type'(expression) - just generate the expression, no runtime conversion */
+    return Generate_Expression(cg, node->qualified.expression);
+}
+
+static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
+    /* new T or new T'(value) */
+    Type_Info *alloc_type = node->type;
+    uint32_t t = Emit_Temp(cg);
+
+    if (!alloc_type) {
+        Emit(cg, "  %%t%u = call ptr @malloc(i64 8)\n", t);
+        return t;
+    }
+
+    uint64_t size = alloc_type->size > 0 ? alloc_type->size : 8;
+    Emit(cg, "  %%t%u = call ptr @malloc(i64 %llu)\n", t, (unsigned long long)size);
+
+    /* If there's an initializer, store it */
+    if (node->allocator.expression) {
+        uint32_t val = Generate_Expression(cg, node->allocator.expression);
+        Emit(cg, "  store %s %%t%u, ptr %%t%u\n", Type_To_Llvm(alloc_type), val, t);
+    }
+
+    return t;
+}
+
 static uint32_t Generate_Expression(Code_Generator *cg, Syntax_Node *node) {
     if (!node) return 0;
 
@@ -4637,9 +5012,14 @@ static uint32_t Generate_Expression(Code_Generator *cg, Syntax_Node *node) {
                              Emit(cg, "  %%t%u = inttoptr i64 0 to ptr\n", t);
                              return t; }
         case NK_IDENTIFIER: return Generate_Identifier(cg, node);
+        case NK_SELECTED:   return Generate_Selected(cg, node);
+        case NK_ATTRIBUTE:  return Generate_Attribute(cg, node);
         case NK_BINARY_OP:  return Generate_Binary_Op(cg, node);
         case NK_UNARY_OP:   return Generate_Unary_Op(cg, node);
         case NK_APPLY:      return Generate_Apply(cg, node);
+        case NK_AGGREGATE:  return Generate_Aggregate(cg, node);
+        case NK_QUALIFIED:  return Generate_Qualified(cg, node);
+        case NK_ALLOCATOR:  return Generate_Allocator(cg, node);
 
         default:
             Report_Error(node->location, "unsupported expression kind in codegen");
@@ -4664,7 +5044,10 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
     Symbol *target_sym = node->assignment.target->symbol;
 
     if (target_sym) {
-        Emit(cg, "  store %s %%t%u, ptr %%", Type_To_Llvm(target_sym->type), value);
+        const char *type_str = Type_To_Llvm(target_sym->type);
+        /* Truncate from i64 computation to actual storage type */
+        value = Emit_Convert(cg, value, "i64", type_str);
+        Emit(cg, "  store %s %%t%u, ptr %%", type_str, value);
         Emit_Symbol_Name(cg, target_sym);
         Emit(cg, "\n");
     }
@@ -4725,16 +5108,191 @@ static void Generate_Loop_Statement(Code_Generator *cg, Syntax_Node *node) {
 }
 
 static void Generate_Return_Statement(Code_Generator *cg, Syntax_Node *node) {
+    cg->has_return = true;
     if (node->return_stmt.expression) {
         uint32_t value = Generate_Expression(cg, node->return_stmt.expression);
-        Emit(cg, "  ret i64 %%t%u\n", value);
+        const char *type_str = cg->current_function && cg->current_function->return_type
+            ? Type_To_Llvm(cg->current_function->return_type) : "i64";
+        /* Truncate from i64 computation to actual return type */
+        value = Emit_Convert(cg, value, "i64", type_str);
+        Emit(cg, "  ret %s %%t%u\n", type_str, value);
     } else {
         Emit(cg, "  ret void\n");
     }
 }
 
+static void Generate_Case_Statement(Code_Generator *cg, Syntax_Node *node) {
+    /* CASE expr IS WHEN choice => stmts; ... END CASE; */
+    uint32_t selector = Generate_Expression(cg, node->case_stmt.expression);
+    uint32_t end_label = Emit_Label(cg);
+
+    /* Generate switch-like structure using branches */
+    uint32_t num_alts = node->case_stmt.alternatives.count;
+    uint32_t *alt_labels = Arena_Allocate(num_alts * sizeof(uint32_t));
+
+    /* Allocate labels for each alternative */
+    for (uint32_t i = 0; i < num_alts; i++) {
+        alt_labels[i] = Emit_Label(cg);
+    }
+
+    /* Generate branching logic */
+    for (uint32_t i = 0; i < num_alts; i++) {
+        Syntax_Node *alt = node->case_stmt.alternatives.items[i];
+        uint32_t next_check = (i + 1 < num_alts) ? Emit_Label(cg) : end_label;
+
+        /* Check each choice in this alternative */
+        for (uint32_t j = 0; j < alt->association.choices.count; j++) {
+            Syntax_Node *choice = alt->association.choices.items[j];
+
+            if (choice->kind == NK_OTHERS) {
+                /* OTHERS matches everything - jump to alternative */
+                Emit(cg, "  br label %%L%u\n", alt_labels[i]);
+            } else if (choice->kind == NK_RANGE) {
+                /* Range check: low <= selector <= high */
+                uint32_t low = Generate_Expression(cg, choice->range.low);
+                uint32_t high = Generate_Expression(cg, choice->range.high);
+                uint32_t cmp1 = Emit_Temp(cg);
+                uint32_t cmp2 = Emit_Temp(cg);
+                uint32_t both = Emit_Temp(cg);
+
+                Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", cmp1, low, selector);
+                Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", cmp2, selector, high);
+                Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", both, cmp1, cmp2);
+
+                uint32_t next_choice = (j + 1 < alt->association.choices.count) ?
+                                       Emit_Label(cg) : next_check;
+                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                     both, alt_labels[i], next_choice);
+
+                if (j + 1 < alt->association.choices.count) {
+                    Emit(cg, "L%u:\n", next_choice);
+                }
+            } else {
+                /* Single value check */
+                uint32_t val = Generate_Expression(cg, choice);
+                uint32_t cmp = Emit_Temp(cg);
+
+                Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", cmp, selector, val);
+
+                uint32_t next_choice = (j + 1 < alt->association.choices.count) ?
+                                       Emit_Label(cg) : next_check;
+                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                     cmp, alt_labels[i], next_choice);
+
+                if (j + 1 < alt->association.choices.count) {
+                    Emit(cg, "L%u:\n", next_choice);
+                }
+            }
+        }
+
+        if (i + 1 < num_alts) {
+            Emit(cg, "L%u:\n", next_check);
+        }
+    }
+
+    /* Generate alternative bodies - expression is a block with statements */
+    for (uint32_t i = 0; i < num_alts; i++) {
+        Syntax_Node *alt = node->case_stmt.alternatives.items[i];
+        Emit(cg, "L%u:\n", alt_labels[i]);
+        if (alt->association.expression &&
+            alt->association.expression->kind == NK_BLOCK) {
+            Generate_Statement_List(cg, &alt->association.expression->block_stmt.statements);
+        }
+        Emit(cg, "  br label %%L%u\n", end_label);
+    }
+
+    Emit(cg, "L%u:\n", end_label);
+}
+
+static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
+    /* FOR loop with iteration variable - iteration_scheme is NK_BINARY_OP TK_IN */
+    Syntax_Node *iter = node->loop_stmt.iteration_scheme;
+    if (!iter || iter->kind != NK_BINARY_OP || iter->binary.op != TK_IN) {
+        /* Not a FOR loop - fall back to simple loop */
+        return;
+    }
+
+    Syntax_Node *loop_id = iter->binary.left;
+    Syntax_Node *range = iter->binary.right;
+    Symbol *loop_var = loop_id->symbol;
+    bool is_reverse = node->loop_stmt.is_reverse;
+
+    uint32_t loop_start = Emit_Label(cg);
+    uint32_t loop_body = Emit_Label(cg);
+    uint32_t loop_end = Emit_Label(cg);
+
+    uint32_t saved_exit = cg->loop_exit_label;
+    cg->loop_exit_label = loop_end;
+
+    /* Allocate loop variable if we have a symbol */
+    if (loop_var) {
+        Emit(cg, "  %%");
+        Emit_Symbol_Name(cg, loop_var);
+        Emit(cg, " = alloca i64\n");
+    }
+
+    /* Get range bounds */
+    uint32_t low_val, high_val;
+    if (range && range->kind == NK_RANGE) {
+        low_val = Generate_Expression(cg, range->range.low);
+        high_val = Generate_Expression(cg, range->range.high);
+    } else {
+        low_val = Generate_Expression(cg, range);
+        high_val = low_val;
+    }
+
+    /* Initialize loop variable */
+    if (loop_var) {
+        Emit(cg, "  store i64 %%t%u, ptr %%", is_reverse ? high_val : low_val);
+        Emit_Symbol_Name(cg, loop_var);
+        Emit(cg, "\n");
+    }
+
+    /* Loop start - check condition */
+    Emit(cg, "  br label %%L%u\n", loop_start);
+    Emit(cg, "L%u:\n", loop_start);
+
+    uint32_t cur = Emit_Temp(cg);
+    if (loop_var) {
+        Emit(cg, "  %%t%u = load i64, ptr %%", cur);
+        Emit_Symbol_Name(cg, loop_var);
+        Emit(cg, "\n");
+    }
+
+    uint32_t cond = Emit_Temp(cg);
+    if (is_reverse) {
+        Emit(cg, "  %%t%u = icmp sge i64 %%t%u, %%t%u\n", cond, cur, low_val);
+    } else {
+        Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", cond, cur, high_val);
+    }
+    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cond, loop_body, loop_end);
+
+    /* Loop body */
+    Emit(cg, "L%u:\n", loop_body);
+    Generate_Statement_List(cg, &node->loop_stmt.statements);
+
+    /* Increment/decrement loop variable */
+    if (loop_var) {
+        uint32_t next = Emit_Temp(cg);
+        if (is_reverse) {
+            Emit(cg, "  %%t%u = sub i64 %%t%u, 1\n", next, cur);
+        } else {
+            Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", next, cur);
+        }
+        Emit(cg, "  store i64 %%t%u, ptr %%", next);
+        Emit_Symbol_Name(cg, loop_var);
+        Emit(cg, "\n");
+    }
+
+    Emit(cg, "  br label %%L%u\n", loop_start);
+    Emit(cg, "L%u:\n", loop_end);
+
+    cg->loop_exit_label = saved_exit;
+}
+
 static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
     if (!node) return;
+
 
     switch (node->kind) {
         case NK_ASSIGNMENT:
@@ -4754,7 +5312,17 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
             break;
 
         case NK_LOOP:
-            Generate_Loop_Statement(cg, node);
+            if (node->loop_stmt.iteration_scheme &&
+                node->loop_stmt.iteration_scheme->kind == NK_BINARY_OP &&
+                node->loop_stmt.iteration_scheme->binary.op == TK_IN) {
+                Generate_For_Loop(cg, node);
+            } else {
+                Generate_Loop_Statement(cg, node);
+            }
+            break;
+
+        case NK_CASE:
+            Generate_Case_Statement(cg, node);
             break;
 
         case NK_EXIT:
@@ -4800,15 +5368,19 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
         Symbol *sym = name->symbol;
         if (!sym) continue;
 
+        const char *type_str = Type_To_Llvm(sym->type);
+
         /* Allocate stack space */
         Emit(cg, "  %%");
         Emit_Symbol_Name(cg, sym);
-        Emit(cg, " = alloca %s\n", Type_To_Llvm(sym->type));
+        Emit(cg, " = alloca %s\n", type_str);
 
         /* Initialize if provided */
         if (node->object_decl.init) {
             uint32_t init = Generate_Expression(cg, node->object_decl.init);
-            Emit(cg, "  store %s %%t%u, ptr %%", Type_To_Llvm(sym->type), init);
+            /* Truncate from i64 computation to storage type */
+            init = Emit_Convert(cg, init, "i64", type_str);
+            Emit(cg, "  store %s %%t%u, ptr %%", type_str, init);
             Emit_Symbol_Name(cg, sym);
             Emit(cg, "\n");
         }
@@ -4821,6 +5393,7 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
     if (!sym) return;
 
     bool is_function = sym->kind == SYMBOL_FUNCTION;
+    uint32_t saved_deferred_count = cg->deferred_count;
 
     /* Function header */
     Emit(cg, "define %s @", is_function ? Type_To_Llvm(sym->return_type) : "void");
@@ -4837,6 +5410,21 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "entry:\n");
 
     cg->current_function = sym;
+    cg->has_return = false;
+
+    /* Allocate and store parameters to local stack slots */
+    for (uint32_t i = 0; i < sym->parameter_count; i++) {
+        Symbol *param_sym = sym->parameters[i].param_sym;
+        if (param_sym) {
+            const char *type_str = Type_To_Llvm(sym->parameters[i].param_type);
+            Emit(cg, "  %%");
+            Emit_Symbol_Name(cg, param_sym);
+            Emit(cg, " = alloca %s\n", type_str);
+            Emit(cg, "  store %s %%p%u, ptr %%", type_str, i);
+            Emit_Symbol_Name(cg, param_sym);
+            Emit(cg, "\n");
+        }
+    }
 
     /* Generate local declarations */
     Generate_Declaration_List(cg, &node->subprogram_body.declarations);
@@ -4844,14 +5432,23 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
     /* Generate statements */
     Generate_Statement_List(cg, &node->subprogram_body.statements);
 
-    /* Default return */
-    if (is_function) {
-        Emit(cg, "  ret %s 0\n", Type_To_Llvm(sym->return_type));
-    } else {
-        Emit(cg, "  ret void\n");
+    /* Default return if no explicit return was emitted */
+    if (!cg->has_return) {
+        if (is_function) {
+            Emit(cg, "  ret %s 0\n", Type_To_Llvm(sym->return_type));
+        } else {
+            Emit(cg, "  ret void\n");
+        }
     }
 
     Emit(cg, "}\n\n");
+    cg->current_function = NULL;
+
+    /* Emit deferred nested subprogram bodies */
+    while (cg->deferred_count > saved_deferred_count) {
+        Syntax_Node *deferred = cg->deferred_bodies[--cg->deferred_count];
+        Generate_Subprogram_Body(cg, deferred);
+    }
 }
 
 static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
@@ -4864,7 +5461,12 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
 
         case NK_PROCEDURE_BODY:
         case NK_FUNCTION_BODY:
-            Generate_Subprogram_Body(cg, node);
+            /* Defer nested subprogram bodies - emit after enclosing function */
+            if (cg->current_function && cg->deferred_count < 64) {
+                cg->deferred_bodies[cg->deferred_count++] = node;
+            } else {
+                Generate_Subprogram_Body(cg, node);
+            }
             break;
 
         case NK_PACKAGE_BODY:
@@ -4899,7 +5501,124 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * §14. MAIN DRIVER
+ * §14. INCLUDE PATH & PACKAGE LOADING
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+
+static const char *Include_Paths[32];
+static int Include_Path_Count = 0;
+
+static char *Read_File_Simple(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+
+    fseek(f, 0, SEEK_END);
+    size_t size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    char *buffer = malloc(size + 1);
+    if (!buffer) { fclose(f); return NULL; }
+
+    size_t read_size = fread(buffer, 1, size, f);
+    fclose(f);
+    buffer[read_size] = '\0';
+    return buffer;
+}
+
+/* Find a package source file in include paths */
+static char *Lookup_Path(String_Slice name) {
+    char path[512], full_path[512];
+
+    for (int i = 0; i < Include_Path_Count; i++) {
+        /* Build lowercase filename */
+        size_t base_len = strlen(Include_Paths[i]);
+        snprintf(path, sizeof(path), "%s%s%.*s",
+                 Include_Paths[i],
+                 (base_len > 0 && Include_Paths[i][base_len-1] != '/') ? "/" : "",
+                 (int)name.length, name.data);
+
+        /* Lowercase the filename part */
+        for (char *p = path + base_len; *p; p++) {
+            if (*p >= 'A' && *p <= 'Z') *p = *p - 'A' + 'a';
+        }
+
+        /* Try .ads extension */
+        snprintf(full_path, sizeof(full_path), "%s.ads", path);
+        char *src = Read_File_Simple(full_path);
+        if (src) return src;
+    }
+    return NULL;
+}
+
+/* Forward declarations for package loading */
+static Syntax_Node *Parse_Compilation_Unit(Parser *p);
+static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node);
+
+/* Load and resolve a package specification */
+static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src) {
+    if (!src) return;
+
+    /* Check if already loaded */
+    Symbol *existing = Symbol_Find(sm, name);
+    if (existing && existing->kind == SYMBOL_PACKAGE && existing->declaration) {
+        return;  /* Already loaded */
+    }
+
+    /* Parse the package */
+    char filename[256];
+    snprintf(filename, sizeof(filename), "%.*s.ads", (int)name.length, name.data);
+    Parser p = Parser_New(src, strlen(src), filename);
+    Syntax_Node *cu = Parse_Compilation_Unit(&p);
+
+    if (!cu) return;
+
+    /* Recursively load WITH'd packages */
+    if (cu->compilation_unit.context) {
+        Node_List *withs = &cu->compilation_unit.context->context.with_clauses;
+        for (uint32_t i = 0; i < withs->count; i++) {
+            Syntax_Node *with_node = withs->items[i];
+            for (uint32_t j = 0; j < with_node->use_clause.names.count; j++) {
+                Syntax_Node *pkg_name = with_node->use_clause.names.items[j];
+                if (pkg_name->kind == NK_IDENTIFIER) {
+                    char *pkg_src = Lookup_Path(pkg_name->string_val.text);
+                    if (pkg_src) {
+                        Load_Package_Spec(sm, pkg_name->string_val.text, pkg_src);
+                    }
+                }
+            }
+        }
+    }
+
+    /* Resolve the package declarations */
+    if (cu->compilation_unit.unit &&
+        cu->compilation_unit.unit->kind == NK_PACKAGE_SPEC) {
+
+        Syntax_Node *pkg = cu->compilation_unit.unit;
+
+        /* Create package symbol */
+        Symbol *pkg_sym = Symbol_New(SYMBOL_PACKAGE, pkg->package_spec.name,
+                                     pkg->location);
+        Type_Info *pkg_type = Type_New(TYPE_PACKAGE, pkg->package_spec.name);
+        pkg_sym->type = pkg_type;
+        pkg_sym->declaration = pkg;
+        Symbol_Add(sm, pkg_sym);
+        pkg->symbol = pkg_sym;
+
+        /* Push package scope */
+        Symbol_Manager_Push_Scope(sm, pkg_sym);
+
+        /* Resolve visible declarations */
+        Resolve_Declaration_List(sm, &pkg->package_spec.visible_decls);
+
+        /* Resolve private declarations */
+        Resolve_Declaration_List(sm, &pkg->package_spec.private_decls);
+
+        Symbol_Manager_Pop_Scope(sm);
+    }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §15. MAIN DRIVER
  * ═══════════════════════════════════════════════════════════════════════════
  */
 
@@ -4970,12 +5689,41 @@ static void Compile_File(const char *input_path, const char *output_path) {
 
 int main(int argc, char *argv[]) {
     if (argc < 2) {
-        fprintf(stderr, "Usage: %s <input.ada> [output.ll]\n", argv[0]);
+        fprintf(stderr, "Usage: %s [-I path] <input.ada> [-o output.ll]\n", argv[0]);
         return 1;
     }
 
-    const char *input = argv[1];
-    const char *output = argc > 2 ? argv[2] : "output.ll";
+    const char *input = NULL;
+    const char *output = "output.ll";
+
+    /* Parse command-line arguments */
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-I") == 0 && i + 1 < argc) {
+            /* Add include path */
+            if (Include_Path_Count < 32) {
+                Include_Paths[Include_Path_Count++] = argv[++i];
+            }
+        } else if (strncmp(argv[i], "-I", 2) == 0) {
+            /* -Ipath format (no space) */
+            if (Include_Path_Count < 32) {
+                Include_Paths[Include_Path_Count++] = argv[i] + 2;
+            }
+        } else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
+            output = argv[++i];
+        } else if (argv[i][0] != '-') {
+            input = argv[i];
+        }
+    }
+
+    if (!input) {
+        fprintf(stderr, "Error: no input file specified\n");
+        return 1;
+    }
+
+    /* Add current directory to include paths by default */
+    if (Include_Path_Count < 32) {
+        Include_Paths[Include_Path_Count++] = ".";
+    }
 
     Compile_File(input, output);
 

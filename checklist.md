@@ -2699,3 +2699,33 @@ The `ada83.c` rewrite to `ada83new.c` has been completed. The new implementation
 - Parses basic Ada 83 programs including aggregates with choice lists
 - Resolves local variables in block statements
 - **Remaining**: WITH clause handling for loading external packages
+
+### WITH Clause Support (2026-01-24)
+- Added `Include_Paths` array for package include directories
+- Added `Read_File_Simple` helper for loading package sources
+- Added `Lookup_Path` to find package files with `.ads` extension
+- Added `Load_Package_Spec` for parsing and resolving WITH'd packages
+- Updated `Resolve_Compilation_Unit` to load packages from include paths
+- Added `-I path` command-line option for specifying include directories
+
+### Expression Code Generation Expanded (2026-01-24)
+- Added `Generate_Selected` for record field access and package qualification
+- Added `Generate_Attribute` for X'FIRST, X'LAST, X'LENGTH, X'SIZE, X'POS, X'VAL, X'SUCC, X'PRED
+- Added `Generate_Aggregate` for array and record aggregates
+- Added `Generate_Qualified` for type qualification expressions
+- Added `Generate_Allocator` for `new` expressions
+
+### Statement Code Generation Expanded (2026-01-24)
+- Added `Generate_Case_Statement` with branch-based case alternative dispatch
+- Added `Generate_For_Loop` for FOR..IN..LOOP iteration
+- Improved loop handling to detect FOR vs WHILE vs basic LOOP
+
+### Subprogram Handling Improved (2026-01-24)
+- Fixed parameter resolution in function/procedure bodies
+- Parameters are now added to scope when entering subprogram body
+- Parameter types are resolved and stored in Symbol's parameters array
+- Fixed `Generate_Subprogram_Body` to emit parameters in LLVM IR
+
+### Known Issues
+- Nested subprograms emit inside outer function body (LLVM doesn't support this)
+- Need to hoist nested functions to top level with closure capture
