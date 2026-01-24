@@ -249,6 +249,7 @@ static uint64_t Slice_Hash(String_Slice s) {
 }
 
 /* Levenshtein distance for "did you mean?" suggestions */
+__attribute__((unused))
 static int Edit_Distance(String_Slice a, String_Slice b) {
     if (a.length > 20 || b.length > 20) return 100;
     int d[21][21];
@@ -297,6 +298,7 @@ static void Report_Error(Source_Location loc, const char *format, ...) {
     Error_Count++;
 }
 
+__attribute__((unused))
 static _Noreturn void Fatal_Error(Source_Location loc, const char *format, ...) {
     va_list args;
     va_start(args, format);
@@ -3108,6 +3110,7 @@ static Syntax_Node *Parse_Generic_Declaration(Parser *p) {
     return node;
 }
 
+__attribute__((unused))
 static Syntax_Node *Parse_Generic_Instantiation(Parser *p, Token_Kind unit_kind) {
     Source_Location loc = Parser_Location(p);
     Parser_Advance(p);  /* consume PROCEDURE/FUNCTION/PACKAGE */
@@ -3186,6 +3189,7 @@ static Syntax_Node *Parse_Pragma(Parser *p) {
  * ═══════════════════════════════════════════════════════════════════════════
  */
 
+__attribute__((unused))
 static Syntax_Node *Parse_Exception_Declaration(Parser *p) {
     Source_Location loc = Parser_Location(p);
 
@@ -4104,6 +4108,7 @@ static Symbol *Symbol_Find(Symbol_Manager *sm, String_Slice name) {
 }
 
 /* Find symbol with specific arity (for overload resolution) */
+__attribute__((unused))
 static Symbol *Symbol_Find_With_Arity(Symbol_Manager *sm, String_Slice name, uint32_t arity) {
     Symbol *sym = Symbol_Find(sm, name);
 
@@ -4978,7 +4983,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                 Syntax_Node *name = ps->param_spec.names.items[j];
                                 sym->parameters[param_idx].name = name->string_val.text;
                                 sym->parameters[param_idx].param_type = pt;
-                                sym->parameters[param_idx].mode = ps->param_spec.mode;
+                                sym->parameters[param_idx].mode = (Parameter_Mode)ps->param_spec.mode;
                                 sym->parameters[param_idx].default_value = ps->param_spec.default_expr;
                                 param_idx++;
                             }
@@ -5449,7 +5454,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                     Syntax_Node *name = ps->param_spec.names.items[j];
                                     inst_sym->parameters[idx].name = name->string_val.text;
                                     inst_sym->parameters[idx].param_type = param_type;
-                                    inst_sym->parameters[idx].mode = ps->param_spec.mode;
+                                    inst_sym->parameters[idx].mode = (Parameter_Mode)ps->param_spec.mode;
                                     idx++;
                                 }
                             }
@@ -6723,8 +6728,6 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
         int64_t high = Type_Bound_Value(agg_type->array.indices[0].high_bound);
         int64_t count = high - low + 1;
         const char *elem_type = Type_To_Llvm(agg_type->array.element_type);
-        uint32_t elem_size = agg_type->array.element_type ?
-                             agg_type->array.element_type->size : 8;
 
         Emit(cg, "  %%t%u = alloca [%lld x %s]  ; array aggregate\n",
              base, (long long)count, elem_type);
@@ -8312,7 +8315,7 @@ static char *Read_File_Simple(const char *path) {
 
 /* Find a package source file in include paths */
 static char *Lookup_Path(String_Slice name) {
-    char path[512], full_path[512];
+    char path[512], full_path[520];  /* full_path larger for .ads extension */
 
     for (int i = 0; i < Include_Path_Count; i++) {
         /* Build lowercase filename */
