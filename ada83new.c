@@ -3621,6 +3621,12 @@ struct Symbol {
 
     /* Nesting level for static link computation */
     uint32_t        nesting_level;
+
+    /* Frame offset for static link variable access */
+    int64_t         frame_offset;
+
+    /* Scope created by this symbol (for functions/procedures) */
+    Scope          *scope;
 };
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -3634,6 +3640,12 @@ struct Scope {
     Scope   *parent;
     Symbol  *owner;             /* Package/subprogram owning this scope */
     uint32_t nesting_level;
+
+    /* Linear list of all symbols for enumeration (static link support) */
+    Symbol **symbols;
+    uint32_t symbol_count;
+    uint32_t symbol_capacity;
+    int64_t  frame_size;        /* Total size of frame for this scope */
 };
 
 typedef struct {
@@ -3694,16 +3706,17 @@ static Symbol *Symbol_New(Symbol_Kind kind, String_Slice name, Source_Location l
 }
 
 static void Symbol_Add(Symbol_Manager *sm, Symbol *sym) {
+    Scope *scope = sm->current_scope;
     sym->unique_id = sm->next_unique_id++;
-    sym->defining_scope = sm->current_scope;
-    sym->nesting_level = sm->current_scope->nesting_level;
+    sym->defining_scope = scope;
+    sym->nesting_level = scope->nesting_level;
 
     uint32_t hash = Symbol_Hash_Name(sym->name);
-    Symbol *existing = sm->current_scope->buckets[hash];
+    Symbol *existing = scope->buckets[hash];
 
     /* Check for existing symbol with same name at this scope level */
     while (existing) {
-        if (existing->defining_scope == sm->current_scope &&
+        if (existing->defining_scope == scope &&
             Slice_Equal_Ignore_Case(existing->name, sym->name)) {
             /* Overloading: add to chain if subprograms */
             if ((existing->kind == SYMBOL_PROCEDURE || existing->kind == SYMBOL_FUNCTION) &&
@@ -3717,8 +3730,29 @@ static void Symbol_Add(Symbol_Manager *sm, Symbol *sym) {
         existing = existing->next_in_bucket;
     }
 
-    sym->next_in_bucket = sm->current_scope->buckets[hash];
-    sm->current_scope->buckets[hash] = sym;
+    sym->next_in_bucket = scope->buckets[hash];
+    scope->buckets[hash] = sym;
+
+    /* Set parent to enclosing package/subprogram for nested symbol support */
+    sym->parent = scope->owner;
+
+    /* Add to linear symbol list for enumeration (static link support) */
+    if (scope->symbol_count >= scope->symbol_capacity) {
+        uint32_t new_cap = scope->symbol_capacity ? scope->symbol_capacity * 2 : 16;
+        Symbol **new_syms = Arena_Allocate(new_cap * sizeof(Symbol*));
+        if (scope->symbols) memcpy(new_syms, scope->symbols, scope->symbol_count * sizeof(Symbol*));
+        scope->symbols = new_syms;
+        scope->symbol_capacity = new_cap;
+    }
+    scope->symbols[scope->symbol_count++] = sym;
+
+    /* Track frame offset for variables/parameters */
+    if (sym->kind == SYMBOL_VARIABLE || sym->kind == SYMBOL_PARAMETER) {
+        sym->frame_offset = scope->frame_size;
+        uint32_t var_size = sym->type ? sym->type->size : 8;
+        if (var_size == 0) var_size = 8;
+        scope->frame_size += var_size;
+    }
 }
 
 /* Find symbol by name, searching enclosing scopes */
@@ -4320,6 +4354,11 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                 /* Push scope for body */
                 Symbol_Manager_Push_Scope(sm, node->symbol);
 
+                /* Link the scope to the symbol for static link access */
+                if (node->symbol) {
+                    node->symbol->scope = sm->current_scope;
+                }
+
                 /* Add parameters to scope and link to Parameter_Info */
                 if (spec) {
                     Symbol *func_sym = node->symbol;
@@ -4476,6 +4515,10 @@ typedef struct {
     /* Deferred nested subprogram bodies */
     Syntax_Node  *deferred_bodies[64];
     uint32_t      deferred_count;
+
+    /* Static link support for nested functions */
+    Symbol       *enclosing_function;    /* Function containing current nested function */
+    bool          is_nested;              /* True if current function is nested */
 } Code_Generator;
 
 static Code_Generator *Code_Generator_New(FILE *output, Symbol_Manager *sm) {
@@ -4618,11 +4661,27 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
     switch (sym->kind) {
         case SYMBOL_VARIABLE:
         case SYMBOL_PARAMETER: {
-            /* Load from variable */
+            /* Check if this is an uplevel (outer scope) variable access
+             * A variable is "uplevel" if its defining scope's owner is different
+             * from the current function */
+            Symbol *var_owner = sym->defining_scope ? sym->defining_scope->owner : NULL;
+            bool is_uplevel = cg->current_function && var_owner &&
+                              var_owner != cg->current_function;
+
             const char *type_str = Type_To_Llvm(sym->type);
-            Emit(cg, "  %%t%u = load %s, ptr %%", t, type_str);
-            Emit_Symbol_Name(cg, sym);
-            Emit(cg, "\n");
+            if (is_uplevel && cg->is_nested) {
+                /* Uplevel access through frame pointer parameter
+                 * The frame pointer points to the variable in the enclosing scope */
+                Emit(cg, "  ; UPLEVEL ACCESS: %.*s via frame pointer\n",
+                     (int)sym->name.length, sym->name.data);
+                Emit(cg, "  %%t%u = load %s, ptr %%__frame.", t, type_str);
+                Emit_Symbol_Name(cg, sym);
+                Emit(cg, "\n");
+            } else {
+                Emit(cg, "  %%t%u = load %s, ptr %%", t, type_str);
+                Emit_Symbol_Name(cg, sym);
+                Emit(cg, "\n");
+            }
             /* Widen to i64 for computation if narrower type */
             t = Emit_Convert(cg, t, type_str, "i64");
         } break;
@@ -4736,6 +4795,11 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             }
         }
 
+        /* Check if calling a nested function of current scope */
+        bool callee_is_nested = sym->parent &&
+            (sym->parent->kind == SYMBOL_FUNCTION ||
+             sym->parent->kind == SYMBOL_PROCEDURE);
+
         uint32_t t = Emit_Temp(cg);
 
         if (sym->return_type) {
@@ -4746,6 +4810,12 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
 
         Emit_Symbol_Name(cg, sym);
         Emit(cg, "(");
+
+        /* If calling nested function from its parent, pass frame pointer first */
+        if (callee_is_nested && cg->current_function == sym->parent) {
+            Emit(cg, "ptr %%__frame_base");
+            if (node->apply.arguments.count > 0) Emit(cg, ", ");
+        }
 
         for (uint32_t i = 0; i < node->apply.arguments.count; i++) {
             if (i > 0) Emit(cg, ", ");
@@ -5044,12 +5114,27 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
     Symbol *target_sym = node->assignment.target->symbol;
 
     if (target_sym) {
+        /* Check if this is an uplevel (outer scope) variable access */
+        Symbol *var_owner = target_sym->defining_scope ? target_sym->defining_scope->owner : NULL;
+        bool is_uplevel = cg->current_function && var_owner &&
+                          var_owner != cg->current_function;
+
         const char *type_str = Type_To_Llvm(target_sym->type);
         /* Truncate from i64 computation to actual storage type */
         value = Emit_Convert(cg, value, "i64", type_str);
-        Emit(cg, "  store %s %%t%u, ptr %%", type_str, value);
-        Emit_Symbol_Name(cg, target_sym);
-        Emit(cg, "\n");
+
+        if (is_uplevel && cg->is_nested) {
+            /* Uplevel store through frame pointer */
+            Emit(cg, "  ; UPLEVEL STORE: %.*s via frame pointer\n",
+                 (int)target_sym->name.length, target_sym->name.data);
+            Emit(cg, "  store %s %%t%u, ptr %%__frame.", type_str, value);
+            Emit_Symbol_Name(cg, target_sym);
+            Emit(cg, "\n");
+        } else {
+            Emit(cg, "  store %s %%t%u, ptr %%", type_str, value);
+            Emit_Symbol_Name(cg, target_sym);
+            Emit(cg, "\n");
+        }
     }
 }
 
@@ -5293,15 +5378,41 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
 static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
     if (!node) return;
 
-
     switch (node->kind) {
         case NK_ASSIGNMENT:
             Generate_Assignment(cg, node);
             break;
 
-        case NK_CALL_STMT:
-            Generate_Expression(cg, node->assignment.target);
-            break;
+        case NK_CALL_STMT: {
+            /* Procedure call - might be NK_APPLY or NK_IDENTIFIER (no args) */
+            Syntax_Node *target = node->assignment.target;
+            if (target->kind == NK_APPLY) {
+                Generate_Expression(cg, target);
+            } else if (target->kind == NK_IDENTIFIER) {
+                /* Parameterless procedure/function call */
+                Symbol *proc = target->symbol;
+                if (proc && (proc->kind == SYMBOL_PROCEDURE || proc->kind == SYMBOL_FUNCTION)) {
+                    /* Check if calling a nested function of current scope */
+                    bool callee_is_nested = proc->parent &&
+                        (proc->parent->kind == SYMBOL_FUNCTION ||
+                         proc->parent->kind == SYMBOL_PROCEDURE);
+
+                    if (proc->return_type) {
+                        Emit(cg, "  call %s @", Type_To_Llvm(proc->return_type));
+                    } else {
+                        Emit(cg, "  call void @");
+                    }
+                    Emit_Symbol_Name(cg, proc);
+
+                    if (callee_is_nested && cg->current_function == proc->parent) {
+                        /* Nested call from parent - pass address of first local variable as frame */
+                        Emit(cg, "(ptr %%__frame_base)\n");
+                    } else {
+                        Emit(cg, "()\n");
+                    }
+                }
+            }
+        } break;
 
         case NK_RETURN:
             Generate_Return_Statement(cg, node);
@@ -5363,6 +5474,9 @@ static void Generate_Declaration_List(Code_Generator *cg, Node_List *list) {
 }
 
 static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
+    /* cg->current_nesting_level is repurposed: 1 = has nested functions, use frame */
+    bool use_frame = cg->current_nesting_level > 0;
+
     for (uint32_t i = 0; i < node->object_decl.names.count; i++) {
         Syntax_Node *name = node->object_decl.names.items[i];
         Symbol *sym = name->symbol;
@@ -5370,10 +5484,17 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
 
         const char *type_str = Type_To_Llvm(sym->type);
 
-        /* Allocate stack space */
-        Emit(cg, "  %%");
-        Emit_Symbol_Name(cg, sym);
-        Emit(cg, " = alloca %s\n", type_str);
+        /* Allocate stack space (in frame if function has nested subprograms) */
+        if (use_frame) {
+            Emit(cg, "  %%");
+            Emit_Symbol_Name(cg, sym);
+            Emit(cg, " = getelementptr i8, ptr %%__frame_base, i64 %lld\n",
+                 (long long)sym->frame_offset);
+        } else {
+            Emit(cg, "  %%");
+            Emit_Symbol_Name(cg, sym);
+            Emit(cg, " = alloca %s\n", type_str);
+        }
 
         /* Initialize if provided */
         if (node->object_decl.init) {
@@ -5395,10 +5516,28 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
     bool is_function = sym->kind == SYMBOL_FUNCTION;
     uint32_t saved_deferred_count = cg->deferred_count;
 
+    /* Check if this is a nested function (has enclosing function) */
+    Symbol *saved_enclosing = cg->enclosing_function;
+    bool saved_is_nested = cg->is_nested;
+    Symbol *parent_owner = sym->parent;
+
+    /* Determine if nested: parent is a function/procedure */
+    bool is_nested = parent_owner &&
+                     (parent_owner->kind == SYMBOL_FUNCTION ||
+                      parent_owner->kind == SYMBOL_PROCEDURE);
+    cg->is_nested = is_nested;
+    cg->enclosing_function = is_nested ? parent_owner : NULL;
+
     /* Function header */
     Emit(cg, "define %s @", is_function ? Type_To_Llvm(sym->return_type) : "void");
     Emit_Symbol_Name(cg, sym);
     Emit(cg, "(");
+
+    /* If nested, first parameter is the frame pointer */
+    if (is_nested) {
+        Emit(cg, "ptr %%__parent_frame");
+        if (sym->parameter_count > 0) Emit(cg, ", ");
+    }
 
     /* Parameters */
     for (uint32_t i = 0; i < sym->parameter_count; i++) {
@@ -5409,25 +5548,71 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, ") {\n");
     Emit(cg, "entry:\n");
 
+    Symbol *saved_current_function = cg->current_function;
     cg->current_function = sym;
     cg->has_return = false;
+
+    /* Check if this function has nested subprograms (by looking at declarations) */
+    bool has_nested = false;
+    for (uint32_t i = 0; i < node->subprogram_body.declarations.count; i++) {
+        Syntax_Node *decl = node->subprogram_body.declarations.items[i];
+        if (decl && (decl->kind == NK_PROCEDURE_BODY || decl->kind == NK_FUNCTION_BODY)) {
+            has_nested = true;
+            break;
+        }
+    }
+
+    /* If this function has nested subprograms, allocate a frame base
+     * This is the address that will be passed to nested functions */
+    if (has_nested && sym->scope && sym->scope->frame_size > 0) {
+        Emit(cg, "  ; Frame for nested function access\n");
+        Emit(cg, "  %%__frame_base = alloca i8, i64 %lld\n",
+             (long long)sym->scope->frame_size);
+    }
+
+    /* If nested, create aliases for accessing enclosing scope variables via frame */
+    if (is_nested && parent_owner && parent_owner->scope) {
+        /* Create pointer aliases to parent scope variables */
+        Scope *parent_scope = parent_owner->scope;
+        for (uint32_t i = 0; i < parent_scope->symbol_count; i++) {
+            Symbol *var = parent_scope->symbols[i];
+            if (var && (var->kind == SYMBOL_VARIABLE || var->kind == SYMBOL_PARAMETER)) {
+                /* Create a GEP alias:  %__frame.VAR = getelementptr i8, ptr %__parent_frame, i64 offset */
+                Emit(cg, "  %%__frame.");
+                Emit_Symbol_Name(cg, var);
+                Emit(cg, " = getelementptr i8, ptr %%__parent_frame, i64 %lld\n",
+                     (long long)(var->frame_offset));
+            }
+        }
+    }
 
     /* Allocate and store parameters to local stack slots */
     for (uint32_t i = 0; i < sym->parameter_count; i++) {
         Symbol *param_sym = sym->parameters[i].param_sym;
         if (param_sym) {
             const char *type_str = Type_To_Llvm(sym->parameters[i].param_type);
-            Emit(cg, "  %%");
-            Emit_Symbol_Name(cg, param_sym);
-            Emit(cg, " = alloca %s\n", type_str);
+            /* If this function has nested subprograms, allocate params in frame */
+            if (has_nested && sym->scope) {
+                Emit(cg, "  %%");
+                Emit_Symbol_Name(cg, param_sym);
+                Emit(cg, " = getelementptr i8, ptr %%__frame_base, i64 %lld\n",
+                     (long long)param_sym->frame_offset);
+            } else {
+                Emit(cg, "  %%");
+                Emit_Symbol_Name(cg, param_sym);
+                Emit(cg, " = alloca %s\n", type_str);
+            }
             Emit(cg, "  store %s %%p%u, ptr %%", type_str, i);
             Emit_Symbol_Name(cg, param_sym);
             Emit(cg, "\n");
         }
     }
 
-    /* Generate local declarations */
+    /* Generate local declarations, passing has_nested flag via cg for frame allocation */
+    bool saved_has_nested = cg->current_nesting_level > 0;  /* Repurpose field temporarily */
+    cg->current_nesting_level = has_nested ? 1 : 0;
     Generate_Declaration_List(cg, &node->subprogram_body.declarations);
+    cg->current_nesting_level = saved_has_nested;
 
     /* Generate statements */
     Generate_Statement_List(cg, &node->subprogram_body.statements);
@@ -5442,7 +5627,9 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
     }
 
     Emit(cg, "}\n\n");
-    cg->current_function = NULL;
+    cg->current_function = saved_current_function;
+    cg->is_nested = saved_is_nested;
+    cg->enclosing_function = saved_enclosing;
 
     /* Emit deferred nested subprogram bodies */
     while (cg->deferred_count > saved_deferred_count) {
