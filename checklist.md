@@ -2726,6 +2726,38 @@ The `ada83.c` rewrite to `ada83new.c` has been completed. The new implementation
 - Parameter types are resolved and stored in Symbol's parameters array
 - Fixed `Generate_Subprogram_Body` to emit parameters in LLVM IR
 
+### Type Freezing & Implicit Operators (2026-01-24)
+- Implemented type freezing rules per RM 13.14 and GNAT design
+- Added `Freeze_Type` function to compute sizes/alignments and finalize type representation
+- Added `Frozen_Composite_Types` list for generating implicit operators at freeze points
+- Generate implicit equality operators for records and arrays at type freeze time
+- Fixed record types to allocate as `[N x i8]` with byte offset access
+- Fixed array equality to use element-by-element comparison
+- Added `Generate_Composite_Address` helper for getting addresses of composites
+
+### Complex Aggregates, Attributes, Pragmas (2026-01-24)
+- Enhanced aggregate codegen: positional and named associations (X => value)
+- Fixed aggregate parsing to consume commas correctly before calling Parse_Association_List
+- Added type propagation from assignment targets to aggregates for context-dependent typing
+- Resolved named associations as field names in record aggregates (not variables)
+- Expanded attribute support: FIRST, LAST, LENGTH, SIZE for arrays and types
+- Added pragma handling: Inline, Pack, Suppress, Import, Export, Unreferenced, Convention
+- Added pragma-related fields to Symbol (is_inline, is_imported, is_exported, convention, etc.)
+- Added is_packed field to Type_Info for pragma Pack
+
+### Test Coverage
+All test files generate valid LLVM IR (verified with llc):
+- test_equality.ada - Record equality with implicit operator
+- test_array_eq.ada - Array equality with implicit operator
+- test_array.ada - Basic array operations
+- test_aggregate.ada - Positional and named record/array aggregates
+- test_attribute.ada - Array attributes (FIRST, LAST, LENGTH, SIZE)
+- test_case.ada - Case statements
+- test_features.ada - Various features
+- test_func.ada - Functions
+- test_nested.ada - Nested declarations
+- test_simple.ada - Simple programs
+
 ### Known Issues
 - Nested subprograms emit inside outer function body (LLVM doesn't support this)
 - Need to hoist nested functions to top level with closure capture
