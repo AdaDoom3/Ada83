@@ -1134,6 +1134,28 @@ struct Syntax_Node {
             Token_Kind unit_kind;  /* TK_PROCEDURE, TK_FUNCTION, or TK_PACKAGE */
         } generic_inst;
 
+        /* NK_GENERIC_TYPE_PARAM: type T is ... */
+        struct {
+            String_Slice name;
+            int def_kind;  /* 0=PRIVATE, 1=LIMITED_PRIVATE, 2=DISCRETE, 3=INTEGER, 4=FLOAT, 5=FIXED */
+            Syntax_Node *def_detail;
+        } generic_type_param;
+
+        /* NK_GENERIC_OBJECT_PARAM: X : [mode] type [:= default] */
+        struct {
+            Node_List names;
+            Syntax_Node *object_type;
+            Syntax_Node *default_expr;
+            int mode;  /* GEN_MODE_IN, GEN_MODE_IN_OUT */
+        } generic_object_param;
+
+        /* NK_GENERIC_SUBPROGRAM_PARAM: with procedure/function spec [is name|<>] */
+        struct {
+            Syntax_Node *subprogram_spec;
+            Syntax_Node *default_name;
+            bool is_box;
+        } generic_subprogram_param;
+
         /* NK_WITH_CLAUSE, NK_USE_CLAUSE */
         struct { Node_List names; } use_clause;
 
@@ -1351,6 +1373,7 @@ static void Parser_Check_End_Name(Parser *p, String_Slice expected_name) {
 static Syntax_Node *Parse_Expression(Parser *p);
 static Syntax_Node *Parse_Choice(Parser *p);
 static Syntax_Node *Parse_Name(Parser *p);
+static Syntax_Node *Parse_Simple_Name(Parser *p);  /* identifier or dotted, no parens/ticks */
 static Syntax_Node *Parse_Subtype_Indication(Parser *p);
 static void Parse_Association_List(Parser *p, Node_List *list);
 
@@ -1597,6 +1620,42 @@ static Syntax_Node *Parse_Name(Parser *p) {
             continue;
         }
 
+        break;
+    }
+
+    return node;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §9.6.1 Simple Name Parsing (no parentheses or attributes)
+ *
+ * Used for generic unit names in instantiations where we don't want
+ * parentheses interpreted as function calls.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+static Syntax_Node *Parse_Simple_Name(Parser *p) {
+    Source_Location loc = Parser_Location(p);
+    Syntax_Node *node;
+
+    /* Base: identifier */
+    if (Parser_At(p, TK_IDENTIFIER)) {
+        node = Node_New(NK_IDENTIFIER, loc);
+        node->string_val.text = Parser_Identifier(p);
+    } else {
+        Parser_Error_At_Current(p, "identifier");
+        return Node_New(NK_IDENTIFIER, loc);
+    }
+
+    /* Only follow dotted selections, not parentheses or ticks */
+    for (;;) {
+        if (Parser_Match(p, TK_DOT)) {
+            Source_Location sel_loc = Parser_Location(p);
+            Syntax_Node *sel = Node_New(NK_SELECTED, sel_loc);
+            sel->selected.prefix = node;
+            sel->selected.selector = Parser_Identifier(p);
+            node = sel;
+            continue;
+        }
         break;
     }
 
@@ -2962,10 +3021,43 @@ static void Parse_Generic_Formal_Part(Parser *p, Node_List *formals) {
 
         Source_Location loc = Parser_Location(p);
 
-        /* Generic type formal */
+        /* Generic type formal: type T is private | type T is (<>) | etc */
         if (Parser_Match(p, TK_TYPE)) {
             Syntax_Node *formal = Node_New(NK_GENERIC_TYPE_PARAM, loc);
-            /* Parse type name and definition form */
+
+            /* Parse type name */
+            formal->generic_type_param.name = Parser_Identifier(p);
+
+            Parser_Expect(p, TK_IS);
+
+            /* Parse type definition form */
+            if (Parser_Match(p, TK_LIMITED)) {
+                Parser_Expect(p, TK_PRIVATE);
+                formal->generic_type_param.def_kind = 1;  /* LIMITED_PRIVATE */
+            } else if (Parser_Match(p, TK_PRIVATE)) {
+                formal->generic_type_param.def_kind = 0;  /* PRIVATE */
+            } else if (Parser_Match(p, TK_LPAREN)) {
+                /* (<>) for discrete types */
+                Parser_Expect(p, TK_BOX);
+                Parser_Expect(p, TK_RPAREN);
+                formal->generic_type_param.def_kind = 2;  /* DISCRETE */
+            } else if (Parser_Match(p, TK_RANGE)) {
+                /* range <> for integer types */
+                Parser_Expect(p, TK_BOX);
+                formal->generic_type_param.def_kind = 3;  /* INTEGER */
+            } else if (Parser_Match(p, TK_DIGITS)) {
+                /* digits <> for float types */
+                Parser_Expect(p, TK_BOX);
+                formal->generic_type_param.def_kind = 4;  /* FLOAT */
+            } else if (Parser_Match(p, TK_DELTA)) {
+                /* delta <> for fixed types */
+                Parser_Expect(p, TK_BOX);
+                formal->generic_type_param.def_kind = 5;  /* FIXED */
+            } else {
+                /* Other forms - just consume until semicolon for now */
+                formal->generic_type_param.def_kind = 0;
+            }
+
             Node_List_Push(formals, formal);
             Parser_Expect(p, TK_SEMICOLON);
             continue;
@@ -3150,20 +3242,71 @@ static Syntax_Node *Parse_Declaration(Parser *p) {
         return Parse_Generic_Declaration(p);
     }
 
-    /* Generic instantiation */
+    /* Procedure/Function - could be spec, body, or generic instantiation */
     if (Parser_At(p, TK_PROCEDURE) || Parser_At(p, TK_FUNCTION)) {
         Token_Kind kind = p->current_token.kind;
-        Syntax_Node *spec = (kind == TK_PROCEDURE)
-            ? Parse_Procedure_Specification(p)
-            : Parse_Function_Specification(p);
+        Parser_Advance(p);  /* consume PROCEDURE/FUNCTION */
 
+        /* Get the name */
+        String_Slice name = Parser_Identifier(p);
+
+        /* Check for generic instantiation: NAME IS NEW */
         if (Parser_At(p, TK_IS)) {
-            /* Check for instantiation: IS NEW */
-            /* For now, treat as body */
+            /* Peek ahead to see if it's IS NEW */
+            Token saved = p->current_token;
+            Lexer saved_lexer = p->lexer;
+            Parser_Advance(p);  /* consume IS */
+
+            if (Parser_At(p, TK_NEW)) {
+                Parser_Advance(p);  /* consume NEW */
+
+                /* Create generic instantiation node */
+                Syntax_Node *node = Node_New(NK_GENERIC_INST, loc);
+                node->generic_inst.unit_kind = kind;
+                node->generic_inst.instance_name = name;
+
+                /* Parse the generic unit name */
+                node->generic_inst.generic_name = Parse_Simple_Name(p);
+
+                /* Generic actuals */
+                if (Parser_Match(p, TK_LPAREN)) {
+                    Parse_Association_List(p, &node->generic_inst.actuals);
+                    Parser_Expect(p, TK_RPAREN);
+                }
+
+                Parser_Expect(p, TK_SEMICOLON);
+                return node;
+            }
+
+            /* Not IS NEW - restore and parse as spec/body */
+            p->current_token = saved;
+            p->lexer = saved_lexer;
+        }
+
+        /* Parse parameters (if any) - Parse_Parameter_List handles the parens */
+        Node_List params = {0};
+        if (Parser_At(p, TK_LPAREN)) {
+            Parse_Parameter_List(p, &params);
+        }
+
+        /* Create the spec node */
+        Syntax_Node *spec = Node_New(kind == TK_PROCEDURE ? NK_PROCEDURE_SPEC : NK_FUNCTION_SPEC, loc);
+        spec->subprogram_spec.name = name;
+        spec->subprogram_spec.parameters = params;
+
+        /* For functions, parse return type */
+        if (kind == TK_FUNCTION) {
+            Parser_Expect(p, TK_RETURN);
+            spec->subprogram_spec.return_type = Parse_Name(p);
+        }
+
+        /* Check for body or just spec */
+        if (Parser_At(p, TK_IS)) {
             return Parse_Subprogram_Body(p, spec);
         }
 
         /* Just a specification */
+        Parser_Expect(p, TK_SEMICOLON);
         return spec;
     }
 
@@ -3794,6 +3937,28 @@ struct Symbol {
 
     /* pragma Unreferenced */
     bool            is_unreferenced;
+
+    /* ─────────────────────────────────────────────────────────────────────
+     * Generic Support
+     * ───────────────────────────────────────────────────────────────────── */
+
+    /* For SYMBOL_GENERIC: the generic template */
+    Syntax_Node    *generic_formals;     /* List of NK_GENERIC_*_PARAM nodes */
+    Syntax_Node    *generic_unit;        /* The procedure/function/package spec */
+    Syntax_Node    *generic_body;        /* Associated body (if found) */
+
+    /* For SYMBOL_GENERIC_INSTANCE: instantiation info */
+    Symbol         *generic_template;    /* The SYMBOL_GENERIC being instantiated */
+    Symbol         *instantiated_subprogram;  /* The resolved subprogram instance */
+
+    /* Generic formal->actual mapping (array parallel to generic_formals) */
+    struct {
+        String_Slice formal_name;
+        Type_Info   *actual_type;        /* For type formals */
+        Symbol      *actual_subprogram;  /* For subprogram formals */
+        Syntax_Node *actual_expr;        /* For object formals */
+    } *generic_actuals;
+    uint32_t        generic_actual_count;
 };
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -4833,8 +4998,19 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
         case NK_PROCEDURE_BODY:
         case NK_FUNCTION_BODY:
             {
-                /* Resolve spec if present */
+                /* Check if this body completes a generic declaration */
                 Syntax_Node *spec = node->subprogram_body.specification;
+                String_Slice body_name = spec ? spec->subprogram_spec.name : (String_Slice){0};
+
+                Symbol *matching_generic = Symbol_Find(sm, body_name);
+                if (matching_generic && matching_generic->kind == SYMBOL_GENERIC) {
+                    /* This body completes a generic - store it and don't process further */
+                    matching_generic->generic_body = node;
+                    node->symbol = matching_generic;
+                    break;  /* Don't resolve body now - will be resolved during instantiation */
+                }
+
+                /* Resolve spec if present */
                 if (spec) {
                     Resolve_Declaration(sm, spec);
                     node->symbol = spec->symbol;
@@ -5140,6 +5316,217 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
             }
             break;
 
+        case NK_GENERIC_DECL:
+            /* Generic declaration: generic ... procedure/function/package spec */
+            {
+                Syntax_Node *unit = node->generic_decl.unit;
+                if (!unit) break;
+
+                /* Get name from the unit */
+                String_Slice name = {0};
+                if (unit->kind == NK_PROCEDURE_SPEC || unit->kind == NK_FUNCTION_SPEC) {
+                    name = unit->subprogram_spec.name;
+                } else if (unit->kind == NK_PACKAGE_SPEC) {
+                    name = unit->package_spec.name;
+                }
+
+                /* Create generic symbol */
+                Symbol *sym = Symbol_New(SYMBOL_GENERIC, name, node->location);
+                sym->declaration = node;
+                sym->generic_unit = unit;
+
+                /* Store formals list for later */
+                if (node->generic_decl.formals.count > 0) {
+                    sym->generic_formals = node->generic_decl.formals.items[0];
+                }
+
+                Symbol_Add(sm, sym);
+                node->symbol = sym;
+
+                /* DON'T resolve the unit here - it contains generic formals
+                   that need to be substituted during instantiation */
+            }
+            break;
+
+        case NK_GENERIC_INST:
+            /* Generic instantiation: procedure/function X is new GENERIC_NAME(actuals) */
+            {
+                /* Find the generic template */
+                Syntax_Node *gen_name = node->generic_inst.generic_name;
+                if (!gen_name) {
+                    Report_Error(node->location, "expected a generic unit name");
+                    break;
+                }
+
+                /* Resolve the generic name to find template */
+                Resolve_Expression(sm, gen_name);
+                Symbol *template = NULL;
+                if (gen_name->kind == NK_IDENTIFIER) {
+                    template = Symbol_Find(sm, gen_name->string_val.text);
+                }
+
+                if (!template || template->kind != SYMBOL_GENERIC) {
+                    Report_Error(node->location, "expected a generic unit name");
+                    break;
+                }
+
+                /* Create instance symbol */
+                Symbol_Kind inst_kind = (node->generic_inst.unit_kind == TK_FUNCTION) ?
+                                        SYMBOL_FUNCTION : SYMBOL_PROCEDURE;
+                Symbol *inst_sym = Symbol_New(inst_kind,
+                                              node->generic_inst.instance_name,
+                                              node->location);
+                inst_sym->declaration = node;
+                inst_sym->generic_template = template;
+
+                /* Process generic actuals and build mapping */
+                Node_List *formals = &template->declaration->generic_decl.formals;
+                Node_List *actuals = &node->generic_inst.actuals;
+
+                inst_sym->generic_actual_count = formals->count;
+                if (formals->count > 0) {
+                    inst_sym->generic_actuals = Arena_Allocate(
+                        formals->count * sizeof(*inst_sym->generic_actuals));
+
+                    for (uint32_t i = 0; i < formals->count; i++) {
+                        Syntax_Node *formal = formals->items[i];
+                        Syntax_Node *actual = (i < actuals->count) ? actuals->items[i] : NULL;
+
+                        /* Get formal name */
+                        if (formal->kind == NK_GENERIC_TYPE_PARAM) {
+                            inst_sym->generic_actuals[i].formal_name =
+                                formal->generic_type_param.name;
+
+                            /* Resolve actual type */
+                            if (actual) {
+                                Syntax_Node *type_node = actual;
+                                if (actual->kind == NK_ASSOCIATION) {
+                                    type_node = actual->association.expression;
+                                }
+                                Resolve_Expression(sm, type_node);
+                                inst_sym->generic_actuals[i].actual_type = type_node->type;
+                            }
+                        }
+                    }
+                }
+
+                /* Copy parameter info from template unit */
+                Syntax_Node *unit = template->generic_unit;
+                if (unit && (unit->kind == NK_FUNCTION_SPEC || unit->kind == NK_PROCEDURE_SPEC)) {
+                    Node_List *params = &unit->subprogram_spec.parameters;
+                    uint32_t total_params = 0;
+                    for (uint32_t i = 0; i < params->count; i++) {
+                        Syntax_Node *ps = params->items[i];
+                        if (ps->kind == NK_PARAM_SPEC) {
+                            total_params += ps->param_spec.names.count;
+                        }
+                    }
+
+                    inst_sym->parameter_count = total_params;
+                    if (total_params > 0) {
+                        inst_sym->parameters = Arena_Allocate(total_params * sizeof(Parameter_Info));
+                        uint32_t idx = 0;
+                        for (uint32_t i = 0; i < params->count; i++) {
+                            Syntax_Node *ps = params->items[i];
+                            if (ps->kind == NK_PARAM_SPEC) {
+                                /* Resolve param type and substitute */
+                                Type_Info *param_type = NULL;
+                                if (ps->param_spec.param_type) {
+                                    Syntax_Node *pt = ps->param_spec.param_type;
+                                    if (pt->kind == NK_IDENTIFIER) {
+                                        /* Check if this is a formal type parameter */
+                                        for (uint32_t k = 0; k < inst_sym->generic_actual_count; k++) {
+                                            if (Slice_Equal_Ignore_Case(pt->string_val.text,
+                                                          inst_sym->generic_actuals[k].formal_name)) {
+                                                param_type = inst_sym->generic_actuals[k].actual_type;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                for (uint32_t j = 0; j < ps->param_spec.names.count; j++) {
+                                    Syntax_Node *name = ps->param_spec.names.items[j];
+                                    inst_sym->parameters[idx].name = name->string_val.text;
+                                    inst_sym->parameters[idx].param_type = param_type;
+                                    inst_sym->parameters[idx].mode = ps->param_spec.mode;
+                                    idx++;
+                                }
+                            }
+                        }
+                    }
+
+                    /* Handle return type for functions */
+                    if (unit->kind == NK_FUNCTION_SPEC && unit->subprogram_spec.return_type) {
+                        Syntax_Node *rt = unit->subprogram_spec.return_type;
+                        if (rt->kind == NK_IDENTIFIER) {
+                            /* Check if return type is a formal type parameter */
+                            for (uint32_t k = 0; k < inst_sym->generic_actual_count; k++) {
+                                if (Slice_Equal_Ignore_Case(rt->string_val.text,
+                                              inst_sym->generic_actuals[k].formal_name)) {
+                                    inst_sym->return_type = inst_sym->generic_actuals[k].actual_type;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Symbol_Add(sm, inst_sym);
+                node->symbol = inst_sym;
+
+                /* Resolve the generic body with instance context */
+                Syntax_Node *gen_body = template->generic_body;
+                if (gen_body && (gen_body->kind == NK_FUNCTION_BODY ||
+                                 gen_body->kind == NK_PROCEDURE_BODY)) {
+                    /* Push scope for instance body resolution */
+                    Symbol_Manager_Push_Scope(sm, inst_sym);
+                    inst_sym->scope = sm->current_scope;
+
+                    /* Add generic formal types to scope with actual types */
+                    for (uint32_t k = 0; k < inst_sym->generic_actual_count; k++) {
+                        if (inst_sym->generic_actuals[k].actual_type) {
+                            Symbol *type_sym = Symbol_New(SYMBOL_TYPE,
+                                inst_sym->generic_actuals[k].formal_name,
+                                node->location);
+                            type_sym->type = inst_sym->generic_actuals[k].actual_type;
+                            Symbol_Add(sm, type_sym);
+                        }
+                    }
+
+                    /* Add instance parameters to scope */
+                    Syntax_Node *body_spec = gen_body->subprogram_body.specification;
+                    if (body_spec) {
+                        Node_List *params = &body_spec->subprogram_spec.parameters;
+                        uint32_t param_idx = 0;
+                        for (uint32_t i = 0; i < params->count && param_idx < inst_sym->parameter_count; i++) {
+                            Syntax_Node *ps = params->items[i];
+                            if (ps->kind == NK_PARAM_SPEC) {
+                                for (uint32_t j = 0; j < ps->param_spec.names.count; j++) {
+                                    Syntax_Node *name = ps->param_spec.names.items[j];
+                                    Symbol *param_sym = Symbol_New(SYMBOL_PARAMETER,
+                                        name->string_val.text, name->location);
+                                    param_sym->type = inst_sym->parameters[param_idx].param_type;
+                                    Symbol_Add(sm, param_sym);
+                                    name->symbol = param_sym;
+                                    inst_sym->parameters[param_idx].param_sym = param_sym;
+                                    param_idx++;
+                                }
+                            }
+                        }
+                    }
+
+                    /* Resolve body declarations (local variables) */
+                    Resolve_Declaration_List(sm, &gen_body->subprogram_body.declarations);
+
+                    /* Resolve body statements */
+                    Resolve_Statement_List(sm, &gen_body->subprogram_body.statements);
+
+                    Symbol_Manager_Pop_Scope(sm);
+                }
+            }
+            break;
+
         default:
             break;
     }
@@ -5215,6 +5602,9 @@ typedef struct {
     /* Current function context */
     Symbol       *current_function;
     uint32_t      current_nesting_level;
+
+    /* Generic instance context for type substitution */
+    Symbol       *current_instance;
 
     /* Loop/exit context */
     uint32_t      loop_exit_label;
@@ -6978,6 +7368,7 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
 
 /* Forward declaration for Generate_Declaration_List (used in blocks) */
 static void Generate_Declaration_List(Code_Generator *cg, Node_List *list);
+static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym, Syntax_Node *template_body);
 
 static void Generate_Raise_Statement(Code_Generator *cg, Syntax_Node *node) {
     /* RAISE E; or RAISE; (reraise) */
@@ -7537,7 +7928,126 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
     /* Emit deferred nested subprogram bodies */
     while (cg->deferred_count > saved_deferred_count) {
         Syntax_Node *deferred = cg->deferred_bodies[--cg->deferred_count];
-        Generate_Subprogram_Body(cg, deferred);
+        if (deferred->kind == NK_GENERIC_INST) {
+            /* Handle deferred generic instance */
+            Symbol *inst = deferred->symbol;
+            if (inst && inst->generic_template && inst->generic_template->generic_body) {
+                Symbol *saved = cg->current_instance;
+                cg->current_instance = inst;
+                Generate_Generic_Instance_Body(cg, inst, inst->generic_template->generic_body);
+                cg->current_instance = saved;
+            }
+        } else {
+            Generate_Subprogram_Body(cg, deferred);
+        }
+    }
+}
+
+/* Generate code for a generic instance body */
+static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
+                                           Syntax_Node *template_body) {
+    if (!inst_sym || !template_body) return;
+
+    bool is_function = inst_sym->kind == SYMBOL_FUNCTION;
+    uint32_t saved_deferred_count = cg->deferred_count;
+
+    /* For generic instances, determine nesting from instance parent */
+    Symbol *saved_enclosing = cg->enclosing_function;
+    bool saved_is_nested = cg->is_nested;
+    Symbol *parent_owner = inst_sym->parent;
+
+    bool is_nested = parent_owner &&
+                     (parent_owner->kind == SYMBOL_FUNCTION ||
+                      parent_owner->kind == SYMBOL_PROCEDURE);
+    cg->is_nested = is_nested;
+    cg->enclosing_function = is_nested ? parent_owner : NULL;
+
+    /* Function header */
+    Emit(cg, "define %s @", is_function ? Type_To_Llvm(inst_sym->return_type) : "void");
+    Emit_Symbol_Name(cg, inst_sym);
+    Emit(cg, "(");
+
+    /* If nested, first parameter is the frame pointer */
+    if (is_nested) {
+        Emit(cg, "ptr %%__parent_frame");
+        if (inst_sym->parameter_count > 0) Emit(cg, ", ");
+    }
+
+    /* Parameters - use instance symbol's types (already substituted) */
+    for (uint32_t i = 0; i < inst_sym->parameter_count; i++) {
+        if (i > 0) Emit(cg, ", ");
+        Emit(cg, "%s %%p%u", Type_To_Llvm(inst_sym->parameters[i].param_type), i);
+    }
+
+    Emit(cg, ") {\n");
+    Emit(cg, "entry:\n");
+
+    Symbol *saved_current_function = cg->current_function;
+    cg->current_function = inst_sym;
+    cg->has_return = false;
+
+    /* Allocate parameters using symbol names for consistent access */
+    for (uint32_t i = 0; i < inst_sym->parameter_count; i++) {
+        Symbol *param_sym = inst_sym->parameters[i].param_sym;
+        if (param_sym) {
+            const char *type_str = Type_To_Llvm(inst_sym->parameters[i].param_type);
+            /* Allocate parameter with its symbol name */
+            Emit(cg, "  %%");
+            Emit_Symbol_Name(cg, param_sym);
+            Emit(cg, " = alloca %s\n", type_str);
+            Emit(cg, "  store %s %%p%u, ptr %%", type_str, i);
+            Emit_Symbol_Name(cg, param_sym);
+            Emit(cg, "\n");
+        }
+    }
+
+    /* Generate the body statements with type substitution */
+    Syntax_Node *body = template_body;
+
+    /* Generate local declarations */
+    Generate_Declaration_List(cg, &body->subprogram_body.declarations);
+
+    /* Generate statements from template body */
+    for (uint32_t i = 0; i < body->subprogram_body.statements.count; i++) {
+        Syntax_Node *stmt = body->subprogram_body.statements.items[i];
+        if (stmt) {
+            Generate_Statement(cg, stmt);
+        }
+    }
+
+    /* Default return if no explicit return */
+    if (!cg->has_return) {
+        if (is_function) {
+            /* For function, return parameter 0 (this is simplified - real implementation
+               would need to evaluate the return expression with substitution) */
+            const char *ret_type = Type_To_Llvm(inst_sym->return_type);
+            uint32_t t = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = load %s, ptr %%param0\n", t, ret_type);
+            Emit(cg, "  ret %s %%t%u\n", ret_type, t);
+        } else {
+            Emit(cg, "  ret void\n");
+        }
+    }
+
+    Emit(cg, "}\n\n");
+    cg->current_function = saved_current_function;
+    cg->is_nested = saved_is_nested;
+    cg->enclosing_function = saved_enclosing;
+
+    /* Process deferred bodies */
+    while (cg->deferred_count > saved_deferred_count) {
+        Syntax_Node *deferred = cg->deferred_bodies[--cg->deferred_count];
+        if (deferred->kind == NK_GENERIC_INST) {
+            Symbol *inst = deferred->symbol;
+            if (inst && inst->generic_template && inst->generic_template->generic_body) {
+                Symbol *saved = cg->current_instance;
+                cg->current_instance = inst;
+                Generate_Generic_Instance_Body(cg, inst, inst->generic_template->generic_body);
+                cg->current_instance = saved;
+            }
+        } else {
+            Generate_Subprogram_Body(cg, deferred);
+        }
     }
 }
 
@@ -7565,6 +8075,36 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
             if (node->package_body.statements.count > 0) {
                 Generate_Statement_List(cg, &node->package_body.statements);
             }
+            break;
+
+        case NK_GENERIC_INST:
+            /* Generate the instantiated generic body */
+            {
+                Symbol *inst_sym = node->symbol;
+                if (!inst_sym || !inst_sym->generic_template) break;
+
+                Symbol *template = inst_sym->generic_template;
+                Syntax_Node *generic_body = template->generic_body;
+                if (!generic_body) break;
+
+                /* Store current instance for type substitution during codegen */
+                Symbol *saved_instance = cg->current_instance;
+                cg->current_instance = inst_sym;
+
+                /* Generate instantiated body using the instance's symbol */
+                if (cg->current_function && cg->deferred_count < 64) {
+                    /* Defer nested generic instance - emit after enclosing function */
+                    cg->deferred_bodies[cg->deferred_count++] = node;
+                } else {
+                    Generate_Generic_Instance_Body(cg, inst_sym, generic_body);
+                }
+
+                cg->current_instance = saved_instance;
+            }
+            break;
+
+        case NK_GENERIC_DECL:
+            /* Generic declarations don't generate code - only instances do */
             break;
 
         default:

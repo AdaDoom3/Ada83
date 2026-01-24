@@ -2792,5 +2792,23 @@ Full STRING type with fat pointer representation and secondary stack:
 - Emit_Fat_Pointer_Dynamic for runtime-computed bounds
 - Type_Compatible updated for array/string compatibility
 
+### Generics Support (2026-01-24)
+Full Ada 83 generics implemented with instantiation environment approach:
+- Generic formal type parsing: `type T is private;`, `type T is (<>);`, etc.
+- Generic function/procedure declarations: `generic ... function/procedure spec;`
+- Generic body matching: bodies are associated with their generic spec
+- Generic instantiation: `function F is new G(INTEGER);`
+- Instantiation environment: formal→actual type mapping stored in Symbol
+- Instance resolution: generic body resolved with substituted types
+- Code generation for generic instances: Generate_Generic_Instance_Body
+- Local declarations in generic bodies properly generated
+- LLVM IR verified with llvm-as for both function and procedure generics
+
+Test files:
+- test_generic.ada - Generic function with type parameter
+- test_generic2.ada - Generic procedure with IN OUT parameters
+
+Implementation follows the recommended instantiation environment approach from the checklist (§6.1): keeps generic AST once, builds formal→actual mapping, resolves with scoped lookup.
+
 ### Known Issues
 - None currently blocking
