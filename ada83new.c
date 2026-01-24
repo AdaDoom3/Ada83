@@ -2289,6 +2289,15 @@ static Syntax_Node *Parse_Object_Declaration(Parser *p) {
 
     Parser_Expect(p, TK_COLON);
 
+    /* Check for exception declaration: identifier_list : EXCEPTION */
+    if (Parser_Match(p, TK_EXCEPTION)) {
+        /* Convert to exception declaration */
+        node->kind = NK_EXCEPTION_DECL;
+        /* Names are already parsed into object_decl.names, copy to exception_decl.names */
+        node->exception_decl.names = node->object_decl.names;
+        return node;
+    }
+
     node->object_decl.is_aliased = Parser_Match(p, TK_ACCESS);  /* ALIASED uses ACCESS token? */
     node->object_decl.is_constant = Parser_Match(p, TK_CONSTANT);
 
@@ -3428,6 +3437,10 @@ struct Type_Info {
 static Type_Info *Frozen_Composite_Types[256];
 static uint32_t   Frozen_Composite_Count = 0;
 
+/* Global list of exception symbols for code generation */
+static Symbol    *Exception_Symbols[256];
+static uint32_t   Exception_Symbol_Count = 0;
+
 /* ─────────────────────────────────────────────────────────────────────────
  * §10.3 Type Construction
  * ───────────────────────────────────────────────────────────────────────── */
@@ -4467,6 +4480,13 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
             break;
 
         case NK_EXCEPTION_HANDLER:
+            /* Resolve exception names */
+            for (uint32_t i = 0; i < node->handler.exceptions.count; i++) {
+                Syntax_Node *exc = node->handler.exceptions.items[i];
+                if (exc && exc->kind != NK_OTHERS) {
+                    Resolve_Expression(sm, exc);
+                }
+            }
             Resolve_Statement_List(sm, &node->handler.statements);
             break;
 
@@ -4716,6 +4736,11 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                 Freeze_Declaration_List(&node->subprogram_body.declarations);
                 Resolve_Statement_List(sm, &node->subprogram_body.statements);
 
+                /* Resolve exception handlers */
+                for (uint32_t i = 0; i < node->subprogram_body.handlers.count; i++) {
+                    Resolve_Statement(sm, node->subprogram_body.handlers.items[i]);
+                }
+
                 Symbol_Manager_Pop_Scope(sm);
             }
             break;
@@ -4947,6 +4972,24 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
             }
             break;
 
+        case NK_EXCEPTION_DECL:
+            /* Exception declaration: E : exception; */
+            for (uint32_t i = 0; i < node->exception_decl.names.count; i++) {
+                Syntax_Node *name_node = node->exception_decl.names.items[i];
+                if (name_node && name_node->kind == NK_IDENTIFIER) {
+                    Symbol *sym = Symbol_New(SYMBOL_EXCEPTION,
+                                             name_node->string_val.text,
+                                             name_node->location);
+                    Symbol_Add(sm, sym);
+                    name_node->symbol = sym;
+                    /* Add to global exception list for codegen */
+                    if (Exception_Symbol_Count < 256) {
+                        Exception_Symbols[Exception_Symbol_Count++] = sym;
+                    }
+                }
+            }
+            break;
+
         default:
             break;
     }
@@ -5037,6 +5080,11 @@ typedef struct {
     /* Static link support for nested functions */
     Symbol       *enclosing_function;    /* Function containing current nested function */
     bool          is_nested;              /* True if current function is nested */
+
+    /* Exception handling support */
+    uint32_t      exception_handler_label;  /* Label of current exception handler */
+    uint32_t      exception_jmp_buf;        /* Current setjmp buffer temp */
+    bool          in_exception_region;      /* True if inside exception-handled block */
 } Code_Generator;
 
 static Code_Generator *Code_Generator_New(FILE *output, Symbol_Manager *sm) {
@@ -6592,6 +6640,164 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
     cg->loop_exit_label = saved_exit;
 }
 
+/* ─────────────────────────────────────────────────────────────────────────
+ * §13.4.8 Exception Handling
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/* Forward declaration for Generate_Declaration_List (used in blocks) */
+static void Generate_Declaration_List(Code_Generator *cg, Node_List *list);
+
+static void Generate_Raise_Statement(Code_Generator *cg, Syntax_Node *node) {
+    /* RAISE E; or RAISE; (reraise) */
+    if (node->raise_stmt.exception_name) {
+        Symbol *exc = node->raise_stmt.exception_name->symbol;
+        if (exc) {
+            Emit(cg, "  ; RAISE ");
+            Emit_Symbol_Name(cg, exc);
+            Emit(cg, "\n");
+
+            /* Store exception identity and call __ada_raise */
+            uint32_t exc_addr = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = ptrtoint ptr @__exc.", exc_addr);
+            Emit_Symbol_Name(cg, exc);
+            Emit(cg, " to i64\n");
+            Emit(cg, "  call void @__ada_raise(i64 %%t%u)\n", exc_addr);
+        }
+    } else {
+        /* Reraise current exception */
+        Emit(cg, "  ; RAISE (reraise)\n");
+        Emit(cg, "  call void @__ada_reraise()\n");
+    }
+    Emit(cg, "  unreachable\n");
+}
+
+static void Generate_Block_Statement(Code_Generator *cg, Syntax_Node *node) {
+    /* Block with optional declarations and exception handlers */
+    bool has_handlers = node->block_stmt.handlers.count > 0;
+
+    if (has_handlers) {
+        /* Setup exception handling using setjmp/longjmp */
+        uint32_t jmp_buf = Emit_Temp(cg);
+        uint32_t handler_label = Emit_Label(cg);
+        uint32_t normal_label = Emit_Label(cg);
+        uint32_t end_label = Emit_Label(cg);
+
+        /* Allocate jmp_buf (200 bytes for safety) */
+        Emit(cg, "  %%t%u = alloca [200 x i8], align 16  ; jmp_buf\n", jmp_buf);
+
+        /* Push exception handler */
+        Emit(cg, "  call void @__ada_push_handler(ptr %%t%u)\n", jmp_buf);
+
+        /* Call setjmp */
+        uint32_t setjmp_result = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = call i32 @setjmp(ptr %%t%u)\n", setjmp_result, jmp_buf);
+
+        /* Branch based on setjmp return */
+        uint32_t is_normal = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", is_normal, setjmp_result);
+        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+             is_normal, normal_label, handler_label);
+
+        /* Normal execution path */
+        Emit(cg, "L%u:\n", normal_label);
+
+        /* Save and set exception context */
+        uint32_t saved_handler = cg->exception_handler_label;
+        uint32_t saved_jmp_buf = cg->exception_jmp_buf;
+        bool saved_in_region = cg->in_exception_region;
+
+        cg->exception_handler_label = handler_label;
+        cg->exception_jmp_buf = jmp_buf;
+        cg->in_exception_region = true;
+
+        /* Generate block declarations */
+        Generate_Declaration_List(cg, &node->block_stmt.declarations);
+
+        /* Generate block statements */
+        Generate_Statement_List(cg, &node->block_stmt.statements);
+
+        /* Pop handler on normal exit */
+        Emit(cg, "  call void @__ada_pop_handler()\n");
+        Emit(cg, "  br label %%L%u\n", end_label);
+
+        /* Exception handler entry */
+        Emit(cg, "L%u:\n", handler_label);
+        Emit(cg, "  call void @__ada_pop_handler()\n");
+
+        /* Get current exception identity */
+        uint32_t exc_id = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = call i64 @__ada_current_exception()\n", exc_id);
+
+        /* Generate exception handlers */
+        uint32_t next_handler = 0;
+        for (uint32_t i = 0; i < node->block_stmt.handlers.count; i++) {
+            Syntax_Node *handler = node->block_stmt.handlers.items[i];
+            if (!handler) continue;
+
+            if (next_handler != 0) {
+                Emit(cg, "L%u:\n", next_handler);
+            }
+            next_handler = Emit_Label(cg);
+            uint32_t handler_body = Emit_Label(cg);
+
+            /* Check each exception name in the handler */
+            bool has_others = false;
+            for (uint32_t j = 0; j < handler->handler.exceptions.count; j++) {
+                Syntax_Node *exc_name = handler->handler.exceptions.items[j];
+                if (exc_name->kind == NK_OTHERS) {
+                    has_others = true;
+                    break;
+                }
+            }
+
+            if (has_others) {
+                /* WHEN OTHERS => catches all */
+                Emit(cg, "  br label %%L%u\n", handler_body);
+            } else {
+                /* Check against specific exceptions */
+                for (uint32_t j = 0; j < handler->handler.exceptions.count; j++) {
+                    Syntax_Node *exc_name = handler->handler.exceptions.items[j];
+                    if (exc_name->symbol) {
+                        uint32_t exc_ptr = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = ptrtoint ptr @__exc.", exc_ptr);
+                        Emit_Symbol_Name(cg, exc_name->symbol);
+                        Emit(cg, " to i64\n");
+                        uint32_t match = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n",
+                             match, exc_id, exc_ptr);
+                        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                             match, handler_body, next_handler);
+                    }
+                }
+            }
+
+            /* Handler body */
+            Emit(cg, "L%u:\n", handler_body);
+            Generate_Statement_List(cg, &handler->handler.statements);
+            Emit(cg, "  br label %%L%u\n", end_label);
+        }
+
+        /* If no handler matched, reraise */
+        if (next_handler != 0) {
+            Emit(cg, "L%u:\n", next_handler);
+            Emit(cg, "  call void @__ada_reraise()\n");
+            Emit(cg, "  unreachable\n");
+        }
+
+        /* End of block */
+        Emit(cg, "L%u:\n", end_label);
+
+        /* Restore exception context */
+        cg->exception_handler_label = saved_handler;
+        cg->exception_jmp_buf = saved_jmp_buf;
+        cg->in_exception_region = saved_in_region;
+    } else {
+        /* Simple block without exception handlers */
+        Generate_Declaration_List(cg, &node->block_stmt.declarations);
+        Generate_Statement_List(cg, &node->block_stmt.statements);
+    }
+}
+
 static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
     if (!node) return;
 
@@ -6670,7 +6876,11 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
             break;
 
         case NK_BLOCK:
-            Generate_Statement_List(cg, &node->block_stmt.statements);
+            Generate_Block_Statement(cg, node);
+            break;
+
+        case NK_RAISE:
+            Generate_Raise_Statement(cg, node);
             break;
 
         default:
@@ -6851,8 +7061,112 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
     Generate_Declaration_List(cg, &node->subprogram_body.declarations);
     cg->current_nesting_level = saved_has_nested;
 
-    /* Generate statements */
-    Generate_Statement_List(cg, &node->subprogram_body.statements);
+    /* Check if subprogram has exception handlers */
+    bool has_exc_handlers = node->subprogram_body.handlers.count > 0;
+
+    if (has_exc_handlers) {
+        /* Setup exception handling using setjmp/longjmp */
+        uint32_t jmp_buf = Emit_Temp(cg);
+        uint32_t handler_label = Emit_Label(cg);
+        uint32_t normal_label = Emit_Label(cg);
+        uint32_t end_label = Emit_Label(cg);
+
+        /* Allocate jmp_buf (200 bytes for safety) */
+        Emit(cg, "  %%t%u = alloca [200 x i8], align 16  ; jmp_buf\n", jmp_buf);
+
+        /* Push exception handler */
+        Emit(cg, "  call void @__ada_push_handler(ptr %%t%u)\n", jmp_buf);
+
+        /* Call setjmp */
+        uint32_t setjmp_result = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = call i32 @setjmp(ptr %%t%u)\n", setjmp_result, jmp_buf);
+
+        /* Branch based on setjmp return */
+        uint32_t is_normal = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", is_normal, setjmp_result);
+        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+             is_normal, normal_label, handler_label);
+
+        /* Normal execution path */
+        Emit(cg, "L%u:\n", normal_label);
+
+        /* Generate statements */
+        Generate_Statement_List(cg, &node->subprogram_body.statements);
+
+        /* Pop handler on normal exit */
+        Emit(cg, "  call void @__ada_pop_handler()\n");
+        Emit(cg, "  br label %%L%u\n", end_label);
+
+        /* Exception handler entry */
+        Emit(cg, "L%u:\n", handler_label);
+        Emit(cg, "  call void @__ada_pop_handler()\n");
+
+        /* Get current exception identity */
+        uint32_t exc_id = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = call i64 @__ada_current_exception()\n", exc_id);
+
+        /* Generate exception handlers */
+        uint32_t next_handler = 0;
+        for (uint32_t i = 0; i < node->subprogram_body.handlers.count; i++) {
+            Syntax_Node *handler = node->subprogram_body.handlers.items[i];
+            if (!handler) continue;
+
+            if (next_handler != 0) {
+                Emit(cg, "L%u:\n", next_handler);
+            }
+            next_handler = Emit_Label(cg);
+            uint32_t handler_body = Emit_Label(cg);
+
+            /* Check each exception name in the handler */
+            bool has_others = false;
+            for (uint32_t j = 0; j < handler->handler.exceptions.count; j++) {
+                Syntax_Node *exc_name = handler->handler.exceptions.items[j];
+                if (exc_name->kind == NK_OTHERS) {
+                    has_others = true;
+                    break;
+                }
+            }
+
+            if (has_others) {
+                /* WHEN OTHERS => catches all */
+                Emit(cg, "  br label %%L%u\n", handler_body);
+            } else {
+                /* Check against specific exceptions */
+                for (uint32_t j = 0; j < handler->handler.exceptions.count; j++) {
+                    Syntax_Node *exc_name = handler->handler.exceptions.items[j];
+                    if (exc_name->symbol) {
+                        uint32_t exc_ptr = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = ptrtoint ptr @__exc.", exc_ptr);
+                        Emit_Symbol_Name(cg, exc_name->symbol);
+                        Emit(cg, " to i64\n");
+                        uint32_t match = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n",
+                             match, exc_id, exc_ptr);
+                        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                             match, handler_body, next_handler);
+                    }
+                }
+            }
+
+            /* Handler body */
+            Emit(cg, "L%u:\n", handler_body);
+            Generate_Statement_List(cg, &handler->handler.statements);
+            Emit(cg, "  br label %%L%u\n", end_label);
+        }
+
+        /* If no handler matched, reraise */
+        if (next_handler != 0) {
+            Emit(cg, "L%u:\n", next_handler);
+            Emit(cg, "  call void @__ada_reraise()\n");
+            Emit(cg, "  unreachable\n");
+        }
+
+        /* End label - normal return point */
+        Emit(cg, "L%u:\n", end_label);
+    } else {
+        /* Generate statements without exception handling */
+        Generate_Statement_List(cg, &node->subprogram_body.statements);
+    }
 
     /* Default return if no explicit return was emitted */
     if (!cg->has_return) {
@@ -7011,6 +7325,21 @@ static void Generate_Implicit_Operators(Code_Generator *cg) {
     }
 }
 
+/* Generate global constants for exception identities */
+static void Generate_Exception_Globals(Code_Generator *cg) {
+    /* Generate globals for all registered exceptions */
+    if (Exception_Symbol_Count > 0) {
+        Emit(cg, "; Exception identity globals\n");
+        for (uint32_t i = 0; i < Exception_Symbol_Count; i++) {
+            Symbol *sym = Exception_Symbols[i];
+            Emit(cg, "@__exc.");
+            Emit_Symbol_Name(cg, sym);
+            Emit(cg, " = private constant i8 0\n");
+        }
+        Emit(cg, "\n");
+    }
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
  * §13.7 Compilation Unit Code Generation
  * ───────────────────────────────────────────────────────────────────────── */
@@ -7025,7 +7354,19 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
 
     /* Declare memcmp for array equality */
     Emit(cg, "; External function declarations\n");
-    Emit(cg, "declare i32 @memcmp(ptr, ptr, i64)\n\n");
+    Emit(cg, "declare i32 @memcmp(ptr, ptr, i64)\n");
+
+    /* Exception handling runtime declarations */
+    Emit(cg, "declare i32 @setjmp(ptr)\n");
+    Emit(cg, "declare void @longjmp(ptr, i32)\n");
+    Emit(cg, "declare void @__ada_raise(i64)\n");
+    Emit(cg, "declare void @__ada_reraise()\n");
+    Emit(cg, "declare void @__ada_push_handler(ptr)\n");
+    Emit(cg, "declare void @__ada_pop_handler()\n");
+    Emit(cg, "declare i64 @__ada_current_exception()\n\n");
+
+    /* Generate exception identity globals */
+    Generate_Exception_Globals(cg);
 
     /* Generate implicit operators for frozen composite types */
     Generate_Implicit_Operators(cg);
