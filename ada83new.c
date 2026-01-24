@@ -4076,6 +4076,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
  * ───────────────────────────────────────────────────────────────────────── */
 
 static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node);
+static void Resolve_Declaration_List(Symbol_Manager *sm, Node_List *list);
 
 static void Resolve_Statement_List(Symbol_Manager *sm, Node_List *list) {
     for (uint32_t i = 0; i < list->count; i++) {
@@ -4134,7 +4135,9 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
 
         case NK_BLOCK:
             Symbol_Manager_Push_Scope(sm, NULL);
-            /* Would resolve declarations here */
+            /* Resolve declarations first (adds symbols to scope) */
+            Resolve_Declaration_List(sm, &node->block_stmt.declarations);
+            /* Then resolve statements that use those symbols */
             Resolve_Statement_List(sm, &node->block_stmt.statements);
             for (uint32_t i = 0; i < node->block_stmt.handlers.count; i++) {
                 Resolve_Statement(sm, node->block_stmt.handlers.items[i]);
