@@ -2672,3 +2672,30 @@ The `ada83.c` rewrite to `ada83new.c` has been completed. The new implementation
 ### Date Completed
 
 2026-01-24
+
+---
+
+## Post-Completion Fixes
+
+### Compiler Warnings Fixed
+- Removed unused `start` variable in `Scan_String_Literal`
+- Store digits/delta expressions properly in `real_type` struct
+- Store `unit_kind` in `generic_inst` struct
+
+### Ada 83 Aggregate & Array Parsing Fixed
+- Added `Parse_Choice` helper for handling ranges in choice lists
+- Fixed `Parse_Association_List` to handle range choices (e.g., `5..9`)
+- Added `Parse_Discrete_Range` for array type bounds (e.g., `ARRAY (1..10)`)
+- Fixed aggregate parsing to correctly handle first element in choice lists
+- Now correctly parses: `(2 | 4 | 10 => 1, 1 | 3 | 5..9 => 0)`
+
+### Block Statement Semantic Analysis Fixed
+- Block statements (`DECLARE...BEGIN...END`) now properly resolve declarations
+- Added forward declaration for `Resolve_Declaration_List`
+- Local variables are now correctly found in block scopes
+
+### Current Status
+- Compiles with no warnings (`gcc -std=c99 -Wall -Wextra`)
+- Parses basic Ada 83 programs including aggregates with choice lists
+- Resolves local variables in block statements
+- **Remaining**: WITH clause handling for loading external packages
