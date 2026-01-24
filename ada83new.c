@@ -1490,6 +1490,7 @@ static Syntax_Node *Parse_Primary(Parser *p) {
             } else {
                 /* First element is positional, followed by more */
                 Node_List_Push(&node->aggregate.items, expr);
+                Parser_Advance(p);  /* consume the comma we know is there */
                 Parse_Association_List(p, &node->aggregate.items);
             }
             Parser_Expect(p, TK_RPAREN);
@@ -3407,6 +3408,9 @@ struct Type_Info {
     /* Runtime check suppression */
     uint32_t     suppressed_checks;
 
+    /* Pragma Pack - pack components to minimum size */
+    bool         is_packed;
+
     /* Freezing status - once frozen, representation cannot change */
     bool         is_frozen;
 
@@ -3737,6 +3741,32 @@ struct Symbol {
 
     /* Scope created by this symbol (for functions/procedures) */
     Scope          *scope;
+
+    /* ─────────────────────────────────────────────────────────────────────
+     * Pragma Effects
+     * ───────────────────────────────────────────────────────────────────── */
+
+    /* pragma Inline */
+    bool            is_inline;
+
+    /* pragma Import / Export */
+    bool            is_imported;
+    bool            is_exported;
+    String_Slice    external_name;       /* External linker name */
+    String_Slice    link_name;           /* Link section name */
+    enum {
+        CONVENTION_ADA = 0,
+        CONVENTION_C,
+        CONVENTION_STDCALL,
+        CONVENTION_INTRINSIC,
+        CONVENTION_ASSEMBLER
+    } convention;
+
+    /* pragma Suppress checks */
+    uint32_t        suppressed_checks;   /* Bitmask of suppressed checks */
+
+    /* pragma Unreferenced */
+    bool            is_unreferenced;
 };
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -4185,10 +4215,25 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
             return node->type;
 
         case NK_AGGREGATE:
-            for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
-                Resolve_Expression(sm, node->aggregate.items.items[i]);
+            {
+                Type_Info *agg_type = node->type;
+                bool is_record_agg = agg_type && agg_type->kind == TYPE_RECORD;
+
+                for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
+                    Syntax_Node *item = node->aggregate.items.items[i];
+
+                    if (is_record_agg && item->kind == NK_ASSOCIATION) {
+                        /* For record aggregates, choices are field names - don't resolve as variables */
+                        /* Just resolve the value expression */
+                        if (item->association.expression) {
+                            Resolve_Expression(sm, item->association.expression);
+                        }
+                    } else {
+                        Resolve_Expression(sm, item);
+                    }
+                }
+                return node->type;  /* Type from context */
             }
-            return node->type;  /* Type from context */
 
         case NK_ALLOCATOR:
             Resolve_Expression(sm, node->allocator.subtype_mark);
@@ -4347,6 +4392,11 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
     switch (node->kind) {
         case NK_ASSIGNMENT:
             Resolve_Expression(sm, node->assignment.target);
+            /* Propagate target type to aggregate values for context-dependent typing */
+            if (node->assignment.value->kind == NK_AGGREGATE &&
+                node->assignment.target->type) {
+                node->assignment.value->type = node->assignment.target->type;
+            }
             Resolve_Expression(sm, node->assignment.value);
             /* Type check: value must be compatible with target */
             if (node->assignment.target->type && node->assignment.value->type) {
@@ -4702,6 +4752,198 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
             for (uint32_t i = 0; i < node->use_clause.names.count; i++) {
                 Resolve_Expression(sm, node->use_clause.names.items[i]);
                 /* Would mark symbols as use-visible here */
+            }
+            break;
+
+        case NK_PRAGMA:
+            /* Process pragma effects */
+            {
+                String_Slice pragma_name = node->pragma_node.name;
+
+                /* pragma Inline(subprogram_name, ...) */
+                if (Slice_Equal_Ignore_Case(pragma_name, S("INLINE"))) {
+                    for (uint32_t i = 0; i < node->pragma_node.arguments.count; i++) {
+                        Syntax_Node *arg = node->pragma_node.arguments.items[i];
+                        Syntax_Node *name_node = (arg->kind == NK_ASSOCIATION) ?
+                                                  arg->association.expression : arg;
+                        if (name_node && name_node->kind == NK_IDENTIFIER) {
+                            Symbol *sym = Symbol_Find(sm, name_node->string_val.text);
+                            if (sym && (sym->kind == SYMBOL_PROCEDURE ||
+                                        sym->kind == SYMBOL_FUNCTION)) {
+                                sym->is_inline = true;
+                            }
+                        }
+                    }
+                }
+
+                /* pragma Pack(type_name) */
+                else if (Slice_Equal_Ignore_Case(pragma_name, S("PACK"))) {
+                    if (node->pragma_node.arguments.count > 0) {
+                        Syntax_Node *arg = node->pragma_node.arguments.items[0];
+                        Syntax_Node *name_node = (arg->kind == NK_ASSOCIATION) ?
+                                                  arg->association.expression : arg;
+                        if (name_node && name_node->kind == NK_IDENTIFIER) {
+                            Symbol *sym = Symbol_Find(sm, name_node->string_val.text);
+                            if (sym && sym->type) {
+                                sym->type->is_packed = true;
+                            }
+                        }
+                    }
+                }
+
+                /* pragma Suppress(check_name) or pragma Suppress(check_name, entity_name) */
+                else if (Slice_Equal_Ignore_Case(pragma_name, S("SUPPRESS"))) {
+                    uint32_t check_bit = 0;
+                    if (node->pragma_node.arguments.count > 0) {
+                        Syntax_Node *arg = node->pragma_node.arguments.items[0];
+                        Syntax_Node *check_node = (arg->kind == NK_ASSOCIATION) ?
+                                                   arg->association.expression : arg;
+                        if (check_node && check_node->kind == NK_IDENTIFIER) {
+                            String_Slice check = check_node->string_val.text;
+                            if (Slice_Equal_Ignore_Case(check, S("RANGE_CHECK")))
+                                check_bit = 1;
+                            else if (Slice_Equal_Ignore_Case(check, S("OVERFLOW_CHECK")))
+                                check_bit = 2;
+                            else if (Slice_Equal_Ignore_Case(check, S("INDEX_CHECK")))
+                                check_bit = 4;
+                            else if (Slice_Equal_Ignore_Case(check, S("LENGTH_CHECK")))
+                                check_bit = 8;
+                            else if (Slice_Equal_Ignore_Case(check, S("ALL_CHECKS")))
+                                check_bit = 0xFFFFFFFF;
+                        }
+                    }
+
+                    /* Apply to specific entity or current scope */
+                    if (node->pragma_node.arguments.count > 1) {
+                        Syntax_Node *arg = node->pragma_node.arguments.items[1];
+                        Syntax_Node *entity = (arg->kind == NK_ASSOCIATION) ?
+                                               arg->association.expression : arg;
+                        if (entity && entity->kind == NK_IDENTIFIER) {
+                            Symbol *sym = Symbol_Find(sm, entity->string_val.text);
+                            if (sym) sym->suppressed_checks |= check_bit;
+                        }
+                    }
+                    /* else: would apply to enclosing scope */
+                }
+
+                /* pragma Import(Convention, Entity, External_Name, Link_Name) */
+                else if (Slice_Equal_Ignore_Case(pragma_name, S("IMPORT"))) {
+                    if (node->pragma_node.arguments.count >= 2) {
+                        /* Get convention */
+                        Syntax_Node *conv_arg = node->pragma_node.arguments.items[0];
+                        Syntax_Node *conv_node = (conv_arg->kind == NK_ASSOCIATION) ?
+                                                  conv_arg->association.expression : conv_arg;
+
+                        /* Get entity */
+                        Syntax_Node *ent_arg = node->pragma_node.arguments.items[1];
+                        Syntax_Node *ent_node = (ent_arg->kind == NK_ASSOCIATION) ?
+                                                 ent_arg->association.expression : ent_arg;
+
+                        if (ent_node && ent_node->kind == NK_IDENTIFIER) {
+                            Symbol *sym = Symbol_Find(sm, ent_node->string_val.text);
+                            if (sym) {
+                                sym->is_imported = true;
+
+                                /* Set convention */
+                                if (conv_node && conv_node->kind == NK_IDENTIFIER) {
+                                    String_Slice conv = conv_node->string_val.text;
+                                    if (Slice_Equal_Ignore_Case(conv, S("C")))
+                                        sym->convention = CONVENTION_C;
+                                    else if (Slice_Equal_Ignore_Case(conv, S("STDCALL")))
+                                        sym->convention = CONVENTION_STDCALL;
+                                    else if (Slice_Equal_Ignore_Case(conv, S("INTRINSIC")))
+                                        sym->convention = CONVENTION_INTRINSIC;
+                                }
+
+                                /* Get external name if provided */
+                                if (node->pragma_node.arguments.count >= 3) {
+                                    Syntax_Node *name_arg = node->pragma_node.arguments.items[2];
+                                    Syntax_Node *name_node = (name_arg->kind == NK_ASSOCIATION) ?
+                                                              name_arg->association.expression : name_arg;
+                                    if (name_node && name_node->kind == NK_STRING) {
+                                        sym->external_name = name_node->string_val.text;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                /* pragma Export(Convention, Entity, External_Name) */
+                else if (Slice_Equal_Ignore_Case(pragma_name, S("EXPORT"))) {
+                    if (node->pragma_node.arguments.count >= 2) {
+                        Syntax_Node *conv_arg = node->pragma_node.arguments.items[0];
+                        Syntax_Node *conv_node = (conv_arg->kind == NK_ASSOCIATION) ?
+                                                  conv_arg->association.expression : conv_arg;
+
+                        Syntax_Node *ent_arg = node->pragma_node.arguments.items[1];
+                        Syntax_Node *ent_node = (ent_arg->kind == NK_ASSOCIATION) ?
+                                                 ent_arg->association.expression : ent_arg;
+
+                        if (ent_node && ent_node->kind == NK_IDENTIFIER) {
+                            Symbol *sym = Symbol_Find(sm, ent_node->string_val.text);
+                            if (sym) {
+                                sym->is_exported = true;
+
+                                if (conv_node && conv_node->kind == NK_IDENTIFIER) {
+                                    String_Slice conv = conv_node->string_val.text;
+                                    if (Slice_Equal_Ignore_Case(conv, S("C")))
+                                        sym->convention = CONVENTION_C;
+                                }
+
+                                if (node->pragma_node.arguments.count >= 3) {
+                                    Syntax_Node *name_arg = node->pragma_node.arguments.items[2];
+                                    Syntax_Node *name_node = (name_arg->kind == NK_ASSOCIATION) ?
+                                                              name_arg->association.expression : name_arg;
+                                    if (name_node && name_node->kind == NK_STRING) {
+                                        sym->external_name = name_node->string_val.text;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                /* pragma Unreferenced(name, ...) */
+                else if (Slice_Equal_Ignore_Case(pragma_name, S("UNREFERENCED"))) {
+                    for (uint32_t i = 0; i < node->pragma_node.arguments.count; i++) {
+                        Syntax_Node *arg = node->pragma_node.arguments.items[i];
+                        Syntax_Node *name_node = (arg->kind == NK_ASSOCIATION) ?
+                                                  arg->association.expression : arg;
+                        if (name_node && name_node->kind == NK_IDENTIFIER) {
+                            Symbol *sym = Symbol_Find(sm, name_node->string_val.text);
+                            if (sym) sym->is_unreferenced = true;
+                        }
+                    }
+                }
+
+                /* pragma Convention(convention, entity) */
+                else if (Slice_Equal_Ignore_Case(pragma_name, S("CONVENTION"))) {
+                    if (node->pragma_node.arguments.count >= 2) {
+                        Syntax_Node *conv_arg = node->pragma_node.arguments.items[0];
+                        Syntax_Node *conv_node = (conv_arg->kind == NK_ASSOCIATION) ?
+                                                  conv_arg->association.expression : conv_arg;
+
+                        Syntax_Node *ent_arg = node->pragma_node.arguments.items[1];
+                        Syntax_Node *ent_node = (ent_arg->kind == NK_ASSOCIATION) ?
+                                                 ent_arg->association.expression : ent_arg;
+
+                        if (ent_node && ent_node->kind == NK_IDENTIFIER) {
+                            Symbol *sym = Symbol_Find(sm, ent_node->string_val.text);
+                            if (sym && conv_node && conv_node->kind == NK_IDENTIFIER) {
+                                String_Slice conv = conv_node->string_val.text;
+                                if (Slice_Equal_Ignore_Case(conv, S("C")))
+                                    sym->convention = CONVENTION_C;
+                                else if (Slice_Equal_Ignore_Case(conv, S("STDCALL")))
+                                    sym->convention = CONVENTION_STDCALL;
+                            }
+                        }
+                    }
+                }
+
+                /* pragma Pure, pragma Preelaborate, etc. - informational only */
+                /* pragma Elaborate, pragma Elaborate_All - handled at link time */
+                /* pragma Restrictions - not implemented */
             }
             break;
 
@@ -5443,69 +5685,146 @@ static int64_t Array_Low_Bound(Type_Info *t) {
     return Type_Bound_Value(t->array.indices[0].low_bound);
 }
 
+/* Get dimension index from attribute argument (1-based, default 1) */
+static uint32_t Get_Dimension_Index(Syntax_Node *arg) {
+    if (!arg) return 0;  /* Default to first dimension */
+    if (arg->kind == NK_INTEGER) return (uint32_t)(arg->integer_lit.value - 1);
+    return 0;
+}
+
 static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
-    /* Generate code for X'FIRST, X'LAST, X'LENGTH, etc. */
+    /* Generate code for X'FIRST, X'LAST, X'LENGTH, X'SIZE, X'ADDRESS, etc. */
     Type_Info *prefix_type = node->attribute.prefix->type;
     String_Slice attr = node->attribute.name;
     uint32_t t = Emit_Temp(cg);
+    uint32_t dim = Get_Dimension_Index(node->attribute.argument);
+
+    /* ─────────────────────────────────────────────────────────────────────
+     * Array/Scalar Bound Attributes
+     * ───────────────────────────────────────────────────────────────────── */
 
     if (Slice_Equal_Ignore_Case(attr, S("FIRST"))) {
-        if (prefix_type && prefix_type->kind == TYPE_ARRAY &&
-            prefix_type->array.index_count > 0) {
-            Emit(cg, "  %%t%u = add i64 0, %lld\n", t,
-                 (long long)Type_Bound_Value(prefix_type->array.indices[0].low_bound));
+        if (prefix_type && (prefix_type->kind == TYPE_ARRAY || prefix_type->kind == TYPE_STRING)) {
+            if (dim < prefix_type->array.index_count) {
+                Emit(cg, "  %%t%u = add i64 0, %lld  ; %.*s'FIRST(%u)\n", t,
+                     (long long)Type_Bound_Value(prefix_type->array.indices[dim].low_bound),
+                     (int)attr.length, attr.data, dim + 1);
+            }
         } else if (prefix_type) {
-            Emit(cg, "  %%t%u = add i64 0, %lld\n", t,
-                 (long long)Type_Bound_Value(prefix_type->low_bound));
+            Emit(cg, "  %%t%u = add i64 0, %lld  ; %.*s'FIRST\n", t,
+                 (long long)Type_Bound_Value(prefix_type->low_bound),
+                 (int)attr.length, attr.data);
         }
         return t;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("LAST"))) {
-        if (prefix_type && prefix_type->kind == TYPE_ARRAY &&
-            prefix_type->array.index_count > 0) {
-            Emit(cg, "  %%t%u = add i64 0, %lld\n", t,
-                 (long long)Type_Bound_Value(prefix_type->array.indices[0].high_bound));
+        if (prefix_type && (prefix_type->kind == TYPE_ARRAY || prefix_type->kind == TYPE_STRING)) {
+            if (dim < prefix_type->array.index_count) {
+                Emit(cg, "  %%t%u = add i64 0, %lld  ; %.*s'LAST(%u)\n", t,
+                     (long long)Type_Bound_Value(prefix_type->array.indices[dim].high_bound),
+                     (int)attr.length, attr.data, dim + 1);
+            }
         } else if (prefix_type) {
-            Emit(cg, "  %%t%u = add i64 0, %lld\n", t,
-                 (long long)Type_Bound_Value(prefix_type->high_bound));
+            Emit(cg, "  %%t%u = add i64 0, %lld  ; %.*s'LAST\n", t,
+                 (long long)Type_Bound_Value(prefix_type->high_bound),
+                 (int)attr.length, attr.data);
         }
         return t;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("LENGTH"))) {
-        if (prefix_type && prefix_type->kind == TYPE_ARRAY &&
-            prefix_type->array.index_count > 0) {
-            int64_t low = Type_Bound_Value(prefix_type->array.indices[0].low_bound);
-            int64_t high = Type_Bound_Value(prefix_type->array.indices[0].high_bound);
-            Emit(cg, "  %%t%u = add i64 0, %lld\n", t, (long long)(high - low + 1));
+        if (prefix_type && (prefix_type->kind == TYPE_ARRAY || prefix_type->kind == TYPE_STRING)) {
+            if (dim < prefix_type->array.index_count) {
+                int64_t low = Type_Bound_Value(prefix_type->array.indices[dim].low_bound);
+                int64_t high = Type_Bound_Value(prefix_type->array.indices[dim].high_bound);
+                Emit(cg, "  %%t%u = add i64 0, %lld  ; 'LENGTH(%u)\n", t,
+                     (long long)(high - low + 1), dim + 1);
+            }
         }
-        return t;
-    }
-
-    if (Slice_Equal_Ignore_Case(attr, S("SIZE"))) {
-        Emit(cg, "  %%t%u = add i64 0, %lld\n", t,
-             (long long)(prefix_type ? prefix_type->size * 8 : 0));
         return t;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("RANGE"))) {
-        /* Range attribute returns a range value - for iteration */
-        return 0;
+        /* Range attribute - typically used in for loops, return low bound for now */
+        if (prefix_type && (prefix_type->kind == TYPE_ARRAY || prefix_type->kind == TYPE_STRING)) {
+            if (dim < prefix_type->array.index_count) {
+                Emit(cg, "  %%t%u = add i64 0, %lld  ; 'RANGE(%u) low\n", t,
+                     (long long)Type_Bound_Value(prefix_type->array.indices[dim].low_bound),
+                     dim + 1);
+            }
+        }
+        return t;
     }
 
-    if (Slice_Equal_Ignore_Case(attr, S("POS")) ||
-        Slice_Equal_Ignore_Case(attr, S("VAL"))) {
-        /* Enumeration position/value - just pass through */
+    /* ─────────────────────────────────────────────────────────────────────
+     * Size and Representation Attributes
+     * ───────────────────────────────────────────────────────────────────── */
+
+    if (Slice_Equal_Ignore_Case(attr, S("SIZE"))) {
+        /* 'SIZE returns size in bits */
+        Emit(cg, "  %%t%u = add i64 0, %lld  ; 'SIZE in bits\n", t,
+             (long long)(prefix_type ? prefix_type->size * 8 : 0));
+        return t;
+    }
+
+    if (Slice_Equal_Ignore_Case(attr, S("ALIGNMENT"))) {
+        Emit(cg, "  %%t%u = add i64 0, %lld  ; 'ALIGNMENT\n", t,
+             (long long)(prefix_type ? prefix_type->alignment : 8));
+        return t;
+    }
+
+    if (Slice_Equal_Ignore_Case(attr, S("COMPONENT_SIZE"))) {
+        if (prefix_type && prefix_type->kind == TYPE_ARRAY && prefix_type->array.element_type) {
+            Emit(cg, "  %%t%u = add i64 0, %lld  ; 'COMPONENT_SIZE\n", t,
+                 (long long)(prefix_type->array.element_type->size * 8));
+        } else {
+            Emit(cg, "  %%t%u = add i64 0, 0\n", t);
+        }
+        return t;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────────
+     * Address Attribute
+     * ───────────────────────────────────────────────────────────────────── */
+
+    if (Slice_Equal_Ignore_Case(attr, S("ADDRESS"))) {
+        /* Generate address of prefix object */
+        Symbol *sym = node->attribute.prefix->symbol;
+        if (sym) {
+            Emit(cg, "  %%t%u = ptrtoint ptr %%", t);
+            Emit_Symbol_Name(cg, sym);
+            Emit(cg, " to i64  ; 'ADDRESS\n");
+        } else {
+            Emit(cg, "  %%t%u = add i64 0, 0  ; 'ADDRESS (no symbol)\n", t);
+        }
+        return t;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────────
+     * Enumeration Attributes
+     * ───────────────────────────────────────────────────────────────────── */
+
+    if (Slice_Equal_Ignore_Case(attr, S("POS"))) {
+        /* T'POS(x) - position of enumeration value */
         if (node->attribute.argument) {
             return Generate_Expression(cg, node->attribute.argument);
         }
+        return 0;
+    }
+
+    if (Slice_Equal_Ignore_Case(attr, S("VAL"))) {
+        /* T'VAL(n) - enumeration value at position n */
+        if (node->attribute.argument) {
+            return Generate_Expression(cg, node->attribute.argument);
+        }
+        return 0;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("SUCC"))) {
         if (node->attribute.argument) {
             uint32_t val = Generate_Expression(cg, node->attribute.argument);
-            Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", t, val);
+            Emit(cg, "  %%t%u = add i64 %%t%u, 1  ; 'SUCC\n", t, val);
             return t;
         }
     }
@@ -5513,16 +5832,138 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     if (Slice_Equal_Ignore_Case(attr, S("PRED"))) {
         if (node->attribute.argument) {
             uint32_t val = Generate_Expression(cg, node->attribute.argument);
-            Emit(cg, "  %%t%u = sub i64 %%t%u, 1\n", t, val);
+            Emit(cg, "  %%t%u = sub i64 %%t%u, 1  ; 'PRED\n", t, val);
             return t;
         }
     }
 
-    return 0;
+    /* ─────────────────────────────────────────────────────────────────────
+     * Scalar Type Attributes
+     * ───────────────────────────────────────────────────────────────────── */
+
+    if (Slice_Equal_Ignore_Case(attr, S("MIN"))) {
+        /* T'MIN(a, b) - minimum of two values */
+        /* For now, just return first argument; proper impl needs both */
+        if (node->attribute.argument) {
+            return Generate_Expression(cg, node->attribute.argument);
+        }
+        return 0;
+    }
+
+    if (Slice_Equal_Ignore_Case(attr, S("MAX"))) {
+        /* T'MAX(a, b) - maximum of two values */
+        if (node->attribute.argument) {
+            return Generate_Expression(cg, node->attribute.argument);
+        }
+        return 0;
+    }
+
+    if (Slice_Equal_Ignore_Case(attr, S("ABS"))) {
+        /* T'ABS(x) or just abs function */
+        if (node->attribute.argument) {
+            uint32_t val = Generate_Expression(cg, node->attribute.argument);
+            /* Compute abs: (x ^ (x >> 63)) - (x >> 63) for signed */
+            uint32_t shift = Emit_Temp(cg);
+            uint32_t xored = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = ashr i64 %%t%u, 63  ; sign bit\n", shift, val);
+            Emit(cg, "  %%t%u = xor i64 %%t%u, %%t%u\n", xored, val, shift);
+            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u  ; 'ABS\n", t, xored, shift);
+            return t;
+        }
+    }
+
+    if (Slice_Equal_Ignore_Case(attr, S("MOD"))) {
+        /* Modular arithmetic attribute */
+        if (prefix_type && prefix_type->modulus > 0) {
+            Emit(cg, "  %%t%u = add i64 0, %lld  ; 'MOD\n", t,
+                 (long long)prefix_type->modulus);
+            return t;
+        }
+    }
+
+    /* ─────────────────────────────────────────────────────────────────────
+     * String/Image Attributes (simplified - return 0 for now)
+     * Full implementation would need runtime support
+     * ───────────────────────────────────────────────────────────────────── */
+
+    if (Slice_Equal_Ignore_Case(attr, S("IMAGE"))) {
+        /* T'IMAGE(x) - string representation; needs runtime */
+        Emit(cg, "  %%t%u = add i64 0, 0  ; 'IMAGE (placeholder)\n", t);
+        return t;
+    }
+
+    if (Slice_Equal_Ignore_Case(attr, S("VALUE"))) {
+        /* T'VALUE(s) - parse string to type; needs runtime */
+        Emit(cg, "  %%t%u = add i64 0, 0  ; 'VALUE (placeholder)\n", t);
+        return t;
+    }
+
+    if (Slice_Equal_Ignore_Case(attr, S("WIDTH"))) {
+        /* T'WIDTH - maximum image width for type */
+        if (prefix_type) {
+            /* Estimate based on type size */
+            int64_t width = prefix_type->size <= 4 ? 11 : 20;  /* digits + sign */
+            Emit(cg, "  %%t%u = add i64 0, %lld  ; 'WIDTH\n", t, (long long)width);
+            return t;
+        }
+    }
+
+    /* ─────────────────────────────────────────────────────────────────────
+     * Access Type Attributes
+     * ───────────────────────────────────────────────────────────────────── */
+
+    if (Slice_Equal_Ignore_Case(attr, S("ACCESS"))) {
+        /* X'ACCESS - access to X (address) */
+        Symbol *sym = node->attribute.prefix->symbol;
+        if (sym) {
+            Emit(cg, "  %%t%u = getelementptr i8, ptr %%", t);
+            Emit_Symbol_Name(cg, sym);
+            Emit(cg, ", i64 0  ; 'ACCESS\n");
+        } else {
+            Emit(cg, "  %%t%u = add i64 0, 0\n", t);
+        }
+        return t;
+    }
+
+    if (Slice_Equal_Ignore_Case(attr, S("UNCHECKED_ACCESS"))) {
+        /* X'UNCHECKED_ACCESS - unchecked access to X */
+        Symbol *sym = node->attribute.prefix->symbol;
+        if (sym) {
+            Emit(cg, "  %%t%u = getelementptr i8, ptr %%", t);
+            Emit_Symbol_Name(cg, sym);
+            Emit(cg, ", i64 0  ; 'UNCHECKED_ACCESS\n");
+        } else {
+            Emit(cg, "  %%t%u = add i64 0, 0\n", t);
+        }
+        return t;
+    }
+
+    /* Unhandled attribute */
+    Emit(cg, "  %%t%u = add i64 0, 0  ; unhandled '%.*s\n", t,
+         (int)attr.length, attr.data);
+    return t;
+}
+
+/* Helper: Find component index by name in record type */
+static int32_t Find_Record_Component(Type_Info *record_type, String_Slice name) {
+    if (!record_type || record_type->kind != TYPE_RECORD) return -1;
+    for (uint32_t i = 0; i < record_type->record.component_count; i++) {
+        if (Slice_Equal_Ignore_Case(record_type->record.components[i].name, name)) {
+            return (int32_t)i;
+        }
+    }
+    return -1;
+}
+
+/* Check if a choice is "others" */
+static bool Is_Others_Choice(Syntax_Node *choice) {
+    return choice && choice->kind == NK_IDENTIFIER &&
+           Slice_Equal_Ignore_Case(choice->string_val.text, S("others"));
 }
 
 static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
-    /* Generate code for record/array aggregates */
+    /* Generate code for record/array aggregates
+     * Supports: positional, named associations, others clause, ranges */
     Type_Info *agg_type = node->type;
 
     if (!agg_type) {
@@ -5535,48 +5976,202 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
         uint32_t base = Emit_Temp(cg);
         int64_t low = Type_Bound_Value(agg_type->array.indices[0].low_bound);
         int64_t high = Type_Bound_Value(agg_type->array.indices[0].high_bound);
-        int64_t size = high - low + 1;
+        int64_t count = high - low + 1;
+        const char *elem_type = Type_To_Llvm(agg_type->array.element_type);
+        uint32_t elem_size = agg_type->array.element_type ?
+                             agg_type->array.element_type->size : 8;
 
-        Emit(cg, "  %%t%u = alloca [%lld x %s]\n", base, (long long)size,
-             Type_To_Llvm(agg_type->array.element_type));
+        Emit(cg, "  %%t%u = alloca [%lld x %s]  ; array aggregate\n",
+             base, (long long)count, elem_type);
 
-        /* Initialize each element */
+        /* Track which elements are initialized (for others clause) */
+        bool *initialized = Arena_Allocate(count * sizeof(bool));
+        for (int64_t i = 0; i < count; i++) initialized[i] = false;
+
+        /* Default value for "others" clause (if any) */
+        uint32_t others_val = 0;
+        bool has_others = false;
+
+        /* First pass: find "others" clause */
         for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
             Syntax_Node *item = node->aggregate.items.items[i];
-            Syntax_Node *val_node = (item->kind == NK_ASSOCIATION) ?
-                                    item->association.expression : item;
-            uint32_t val = Generate_Expression(cg, val_node);
+            if (item->kind == NK_ASSOCIATION && item->association.choices.count > 0) {
+                if (Is_Others_Choice(item->association.choices.items[0])) {
+                    others_val = Generate_Expression(cg, item->association.expression);
+                    others_val = Emit_Convert(cg, others_val, "i64", elem_type);
+                    has_others = true;
+                    break;
+                }
+            }
+        }
 
-            uint32_t ptr = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = getelementptr [%lld x %s], ptr %%t%u, i64 0, i64 %u\n",
-                 ptr, (long long)size, Type_To_Llvm(agg_type->array.element_type),
-                 base, i);
-            Emit(cg, "  store %s %%t%u, ptr %%t%u\n",
-                 Type_To_Llvm(agg_type->array.element_type), val, ptr);
+        /* Second pass: initialize elements */
+        uint32_t positional_idx = 0;
+        for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
+            Syntax_Node *item = node->aggregate.items.items[i];
+
+            if (item->kind == NK_ASSOCIATION) {
+                /* Named association: handle each choice */
+                for (uint32_t c = 0; c < item->association.choices.count; c++) {
+                    Syntax_Node *choice = item->association.choices.items[c];
+
+                    if (Is_Others_Choice(choice)) {
+                        continue;  /* Handle in third pass */
+                    }
+
+                    if (choice->kind == NK_RANGE) {
+                        /* Range choice: 1..5 => value */
+                        int64_t rng_low = choice->range.low->kind == NK_INTEGER ?
+                                          choice->range.low->integer_lit.value : low;
+                        int64_t rng_high = choice->range.high->kind == NK_INTEGER ?
+                                           choice->range.high->integer_lit.value : high;
+                        uint32_t val = Generate_Expression(cg, item->association.expression);
+                        val = Emit_Convert(cg, val, "i64", elem_type);
+
+                        for (int64_t idx = rng_low; idx <= rng_high; idx++) {
+                            int64_t arr_idx = idx - low;
+                            if (arr_idx >= 0 && arr_idx < count) {
+                                uint32_t ptr = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %lld\n",
+                                     ptr, elem_type, base, (long long)arr_idx);
+                                Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, val, ptr);
+                                initialized[arr_idx] = true;
+                            }
+                        }
+                    } else if (choice->kind == NK_INTEGER) {
+                        /* Single index: 3 => value */
+                        int64_t idx = choice->integer_lit.value - low;
+                        if (idx >= 0 && idx < count) {
+                            uint32_t val = Generate_Expression(cg, item->association.expression);
+                            val = Emit_Convert(cg, val, "i64", elem_type);
+                            uint32_t ptr = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %lld\n",
+                                 ptr, elem_type, base, (long long)idx);
+                            Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, val, ptr);
+                            initialized[idx] = true;
+                        }
+                    }
+                }
+            } else {
+                /* Positional association */
+                if (positional_idx < (uint32_t)count) {
+                    uint32_t val = Generate_Expression(cg, item);
+                    val = Emit_Convert(cg, val, "i64", elem_type);
+                    uint32_t ptr = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %u\n",
+                         ptr, elem_type, base, positional_idx);
+                    Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, val, ptr);
+                    initialized[positional_idx] = true;
+                    positional_idx++;
+                }
+            }
+        }
+
+        /* Third pass: fill uninitialized with "others" value */
+        if (has_others) {
+            for (int64_t idx = 0; idx < count; idx++) {
+                if (!initialized[idx]) {
+                    uint32_t ptr = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %lld\n",
+                         ptr, elem_type, base, (long long)idx);
+                    Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, others_val, ptr);
+                }
+            }
         }
 
         return base;
     }
 
     if (agg_type->kind == TYPE_RECORD) {
-        /* Record aggregate - allocate and fill fields */
+        /* Record aggregate - allocate [N x i8] and fill fields by offset */
         uint32_t base = Emit_Temp(cg);
+        uint32_t record_size = agg_type->size > 0 ? agg_type->size : 8;
 
-        Emit(cg, "  %%t%u = alloca %%struct.", base);
-        Emit_Symbol_Name(cg, agg_type->defining_symbol);
-        Emit(cg, "\n");
+        Emit(cg, "  %%t%u = alloca [%u x i8]  ; record aggregate\n", base, record_size);
 
+        /* Track initialized components for others clause */
+        uint32_t comp_count = agg_type->record.component_count;
+        bool *initialized = Arena_Allocate(comp_count * sizeof(bool));
+        for (uint32_t i = 0; i < comp_count; i++) initialized[i] = false;
+
+        /* Default value for "others" clause */
+        uint32_t others_val = 0;
+        bool has_others = false;
+
+        /* First pass: find "others" clause */
         for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
             Syntax_Node *item = node->aggregate.items.items[i];
-            Syntax_Node *val_node = (item->kind == NK_ASSOCIATION) ?
-                                    item->association.expression : item;
-            uint32_t val = Generate_Expression(cg, val_node);
+            if (item->kind == NK_ASSOCIATION && item->association.choices.count > 0) {
+                if (Is_Others_Choice(item->association.choices.items[0])) {
+                    others_val = Generate_Expression(cg, item->association.expression);
+                    has_others = true;
+                    break;
+                }
+            }
+        }
 
-            uint32_t ptr = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = getelementptr %%struct.", ptr);
-            Emit_Symbol_Name(cg, agg_type->defining_symbol);
-            Emit(cg, ", ptr %%t%u, i32 0, i32 %u\n", base, i);
-            Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", val, ptr);
+        /* Second pass: initialize fields */
+        uint32_t positional_idx = 0;
+        for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
+            Syntax_Node *item = node->aggregate.items.items[i];
+
+            if (item->kind == NK_ASSOCIATION) {
+                /* Named association: field_name => value */
+                for (uint32_t c = 0; c < item->association.choices.count; c++) {
+                    Syntax_Node *choice = item->association.choices.items[c];
+
+                    if (Is_Others_Choice(choice)) {
+                        continue;  /* Handle in third pass */
+                    }
+
+                    if (choice->kind == NK_IDENTIFIER) {
+                        int32_t comp_idx = Find_Record_Component(agg_type, choice->string_val.text);
+                        if (comp_idx >= 0) {
+                            Component_Info *comp = &agg_type->record.components[comp_idx];
+                            const char *comp_type = Type_To_Llvm(comp->component_type);
+                            uint32_t val = Generate_Expression(cg, item->association.expression);
+                            val = Emit_Convert(cg, val, "i64", comp_type);
+
+                            uint32_t ptr = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
+                                 ptr, base, comp->byte_offset);
+                            Emit(cg, "  store %s %%t%u, ptr %%t%u\n", comp_type, val, ptr);
+                            initialized[comp_idx] = true;
+                        }
+                    }
+                }
+            } else {
+                /* Positional: initialize component by position */
+                if (positional_idx < comp_count) {
+                    Component_Info *comp = &agg_type->record.components[positional_idx];
+                    const char *comp_type = Type_To_Llvm(comp->component_type);
+                    uint32_t val = Generate_Expression(cg, item);
+                    val = Emit_Convert(cg, val, "i64", comp_type);
+
+                    uint32_t ptr = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
+                         ptr, base, comp->byte_offset);
+                    Emit(cg, "  store %s %%t%u, ptr %%t%u\n", comp_type, val, ptr);
+                    initialized[positional_idx] = true;
+                    positional_idx++;
+                }
+            }
+        }
+
+        /* Third pass: fill uninitialized with "others" value (uncommon for records) */
+        if (has_others) {
+            for (uint32_t idx = 0; idx < comp_count; idx++) {
+                if (!initialized[idx]) {
+                    Component_Info *comp = &agg_type->record.components[idx];
+                    const char *comp_type = Type_To_Llvm(comp->component_type);
+                    uint32_t converted = Emit_Convert(cg, others_val, "i64", comp_type);
+
+                    uint32_t ptr = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
+                         ptr, base, comp->byte_offset);
+                    Emit(cg, "  store %s %%t%u, ptr %%t%u\n", comp_type, converted, ptr);
+                }
+            }
         }
 
         return base;
