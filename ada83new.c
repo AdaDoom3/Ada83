@@ -1,19 +1,14 @@
 /* =============================================================================
- * Ada83 Compiler — A literate implementation targeting LLVM IR
+ * Ada83 Compiler — LLVM IR Code Generator
  * =============================================================================
  *
- * Philosophy: High-quality code favors clarity over cleverness, but achieves
- * both through judicious abstraction. We follow Knuth's literate programming:
- * explain the "why" in prose, let the "what" speak through well-named code.
- *
- * Architecture:
- *   Lexer    → Token stream from source text
- *   Parser   → Abstract syntax tree from tokens
+ * Compiler pipeline:
+ *   Lexer    → Token stream
+ *   Parser   → Abstract syntax tree
  *   Semantic → Type-checked AST with symbol resolution
- *   Codegen  → LLVM IR emission from typed AST
+ *   Codegen  → LLVM IR emission
  *
- * Influences: GNAT LLVM's type system, Haskell's functional purity,
- *             Ada's explicit naming, C99's clarity.
+ * Design: GNAT LLVM-style type system, functional composition, explicit naming.
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -42,14 +37,11 @@
 #define TO_UPPER(c)  ((char)toupper((unsigned char)(c)))
 
 /* =============================================================================
- * §1. TYPE METRICS — Measuring the Computational Universe
+ * §1. TYPE METRICS
  * =============================================================================
  *
- * In Ada, every type has a Size (in bits). GNAT LLVM derives all layout from
- * target configuration; we follow that discipline rather than hardcoding.
- *
- * The fundamental unit: BPU (Bits Per Unit) = 8 on byte-addressed machines.
- * All sizes flow through to_bits/to_bytes conversions to maintain consistency.
+ * GNAT LLVM derives all layout from target configuration. Sizes in bits.
+ * BPU (Bits Per Unit) = 8. All conversions preserve exact semantics.
  */
 
 enum { BITS_PER_UNIT = 8 };
@@ -66,7 +58,7 @@ typedef enum {
     WIDTH_F64   = 64,
 } Type_Width;
 
-/* Target configuration — derived from datalayout, not assumed */
+/* Target configuration from datalayout */
 typedef struct {
     uint32_t pointer_width;      /* bits in a pointer (32 or 64 typically) */
     uint32_t pointer_alignment;  /* alignment requirement for pointers */
@@ -75,17 +67,17 @@ typedef struct {
 
 static Target_Config target = { .pointer_width = 64, .pointer_alignment = 64, .max_alignment = 128 };
 
-/* Unit conversions — ceiling division for bytes, as GNAT does */
+/* Unit conversions with ceiling division */
 static inline uint64_t to_bits(uint64_t bytes)  { return bytes * BITS_PER_UNIT; }
 static inline uint64_t to_bytes(uint64_t bits)  { return (bits + BITS_PER_UNIT - 1) / BITS_PER_UNIT; }
 static inline uint64_t align_bits(uint64_t bits) { return to_bits(to_bytes(bits)); }
 
-/* Alignment — round up to multiple of align (must be power of 2) */
+/* Alignment to power-of-2 boundary */
 static inline uint64_t align_to(uint64_t value, uint64_t alignment) {
     return (value + alignment - 1) & ~(alignment - 1);
 }
 
-/* Ada standard integer types — GNAT's conventional mappings */
+/* Ada standard integer types */
 typedef enum {
     ADA_SHORT_SHORT_INTEGER = WIDTH_I8,
     ADA_SHORT_INTEGER       = WIDTH_I16,
@@ -94,7 +86,7 @@ typedef enum {
     ADA_LONG_LONG_INTEGER   = WIDTH_I64,
 } Ada_Standard_Width;
 
-/* LLVM type name from bit width — maps to i1, i8, i16, i32, i64, i128 */
+/* LLVM type names by bit width */
 static inline const char *llvm_int_type(uint32_t bits) {
     switch (bits) {
         case 1:   return "i1";
@@ -111,7 +103,7 @@ static inline const char *llvm_float_type(uint32_t bits) {
     return bits == 32 ? "float" : "double";
 }
 
-/* Range predicates — safe versions without UB when bits == width */
+/* Range predicates without UB */
 static inline bool fits_in_signed_width(int64_t value, uint32_t bits) {
     if (bits >= 64) return true;
     int64_t max = (1LL << (bits - 1)) - 1;
@@ -136,12 +128,10 @@ static inline uint32_t bits_for_signed_range(int64_t low, int64_t high) {
 }
 
 /* =============================================================================
- * §2. MULTIPRECISION INTEGERS — Only What's Needed
+ * §2. MULTIPRECISION INTEGERS
  * =============================================================================
  *
- * For literal scanning beyond int64_t range. Keep it minimal: we need
- * addition, multiplication by small constants, and decimal conversion.
- * All in-place to avoid allocation churn during lexing.
+ * Handles literals beyond int64_t range. In-place operations for efficiency.
  */
 
 typedef struct {
@@ -211,7 +201,7 @@ static void bigint_add_word(Bigint *b, uint64_t addend) {
     if (carry) b->digits[b->count++] = carry;
 }
 
-/* Build from decimal string — the lexer's primary use case */
+/* Build from decimal string */
 static Bigint *bigint_from_decimal(const char *str) {
     Bigint *b = bigint_new();
 
@@ -244,13 +234,11 @@ static bool bigint_to_int64(const Bigint *b, int64_t *out) {
 }
 
 /* =============================================================================
- * §3. MEMORY MANAGEMENT — Arena Allocation with Proper Tracking
+ * §3. MEMORY MANAGEMENT
  * =============================================================================
  *
- * A compiler's allocations follow a clear pattern: parse → analyze → codegen.
- * Arena allocation fits perfectly: allocate freely during each phase, release
- * all at once when done. Unlike the original's "leak by design", we maintain
- * a chunk list for proper cleanup.
+ * Arena allocation: parse → analyze → codegen → release.
+ * Chunk list maintained for proper cleanup.
  */
 
 typedef struct Arena_Chunk {
@@ -306,7 +294,7 @@ static void arena_free_all(Arena *a) {
     a->current = a->first = NULL;
 }
 
-/* Convenient wrappers */
+/* Allocation wrappers */
 #define ALLOC(type)       ((type *)arena_alloc(&main_arena, sizeof(type)))
 #define ALLOC_ARRAY(type, n) ((type *)arena_alloc(&main_arena, sizeof(type) * (n)))
 
@@ -318,14 +306,13 @@ static char *string_duplicate(const char *str) {
 }
 
 /* =============================================================================
- * §4. STRING UTILITIES — Functional Style
+ * §4. STRING UTILITIES
  * =============================================================================
  *
- * Avoid the original's static ring buffer hack. Pure functions that work with
- * arena allocation are cleaner and safer.
+ * Pure functions with arena allocation. No static buffers.
  */
 
-/* String slices — point into existing memory, no allocation */
+/* String slices for zero-copy semantics */
 typedef struct {
     const char *start;
     size_t length;
@@ -342,7 +329,7 @@ static inline String_Slice slice_range(const char *start, const char *end) {
     return (String_Slice){ .start = start, .length = end - start };
 }
 
-/* Case-insensitive comparison — Ada is case-insensitive */
+/* Case-insensitive comparison */
 static bool slice_equal_ignore_case(String_Slice a, String_Slice b) {
     if (a.length != b.length) return false;
     for (size_t i = 0; i < a.length; i++)
@@ -394,11 +381,10 @@ static int edit_distance(String_Slice a, String_Slice b) {
 }
 
 /* =============================================================================
- * §5. ERROR REPORTING — Clarity Above All
+ * §5. ERROR REPORTING
  * =============================================================================
  *
- * Good error messages are the compiler's user interface. We follow GCC/Clang's
- * lead: filename:line:col: severity: message
+ * GCC/Clang format: filename:line:col: severity: message
  */
 
 typedef struct {
@@ -435,12 +421,11 @@ static void fatal_error(const char *fmt, ...) {
 }
 
 /* =============================================================================
- * §6. LEXICAL ANALYSIS — From Characters to Tokens
+ * §6. LEXICAL ANALYSIS
  * =============================================================================
  *
- * Ada's lexical structure is straightforward: case-insensitive keywords,
- * underscore-separated numeric literals, character and string literals with
- * doubling for quotes, -- comments.
+ * Case-insensitive keywords, underscore-separated numeric literals,
+ * doubled quotes in strings, -- comments.
  */
 
 typedef enum {
@@ -679,7 +664,22 @@ static Token scan_number(Lexer *lex) {
         if (TO_LOWER(peek(lex)) == 'e') goto real_literal;
 
         Token tok = make_token(lex, TOK_INTEGER_LITERAL, start);
-        /* TODO: convert based literal to integer */
+
+        /* Convert based literal: base#digits# */
+        const char *p = start;
+        while (IS_DIGIT(*p) or *p == '_') p++;
+        p++; /* skip first # */
+
+        int64_t value = 0;
+        while (*p != '#') {
+            if (*p == '_') { p++; continue; }
+            int digit = digit_value(*p, base);
+            if (digit < 0) break;
+            value = value * base + digit;
+            p++;
+        }
+
+        tok.integer_value = value;
         return tok;
     }
 
@@ -1096,16 +1096,13 @@ static void ast_vector_push(AST_Vector *vec, AST_Node *node) {
 }
 
 /* =============================================================================
- * §8. TYPE SYSTEM — Ada's Rich Type Structure
+ * §8. TYPE SYSTEM
  * =============================================================================
  *
- * Ada 83 has one of the richest type systems in imperative languages:
- * - Scalar types (integer, real, enumeration)
- * - Composite types (arrays, records with discriminants)
- * - Access types (pointers with accessibility rules)
- * - Derived types and subtypes with constraints
- *
- * Type_Info captures all this structure for semantic analysis and codegen.
+ * Scalar types: integer, real, enumeration
+ * Composite types: arrays, records with discriminants
+ * Access types: pointers with accessibility rules
+ * Derived types and subtypes with constraints
  */
 
 typedef enum {
@@ -1196,14 +1193,11 @@ static bool in_range(const Type_Info *ty, int64_t value) {
 }
 
 /* =============================================================================
- * §9. SYMBOL TABLE — Scoped Name Resolution
+ * §9. SYMBOL TABLE
  * =============================================================================
  *
- * Ada's visibility rules require careful scope management:
- * - Block scopes (procedures, functions, blocks)
- * - Package scopes (with private parts)
- * - Use clauses (make names directly visible)
- * - Overloading (same name, different signatures)
+ * Scoped name resolution:
+ * Block scopes, package scopes, use clauses, overloading support.
  */
 
 typedef enum {
@@ -1296,17 +1290,11 @@ static Symbol *symbol_table_lookup(Symbol_Table *table, String_Slice name) {
 }
 
 /* =============================================================================
- * §10. PARSER — From Tokens to AST
+ * §10. PARSER
  * =============================================================================
  *
- * Recursive descent parser for Ada 83 syntax. We follow the grammar closely
- * but make pragmatic choices for error recovery and disambiguation.
- *
- * Key design decisions:
- * - Predictive parsing with one-token lookahead
- * - Expression parsing via operator precedence (cleaner than full recursion)
- * - Proper handling of Ada's keyword-heavy syntax
- * - No "pretend token exists" hacks for error recovery
+ * Recursive descent with one-token lookahead.
+ * Operator precedence parsing for expressions.
  */
 
 typedef struct Parser {
@@ -1369,17 +1357,11 @@ static AST_Node *parse_declaration(Parser *p);
 static AST_Node *parse_type_definition(Parser *p);
 
 /* =============================================================================
- * Expression Parsing — Operator Precedence
+ * Expression Parsing
  * =============================================================================
  *
- * Ada's expression syntax has these precedence levels (lowest to highest):
- *   1. Logical:     and, or, xor
- *   2. Relational:  =, /=, <, <=, >, >=, in, not in
- *   3. Additive:    +, -, &
- *   4. Multiplicative: *, /, mod, rem
- *   5. Unary:       +, -, not, abs
- *   6. Exponential: **
- *   7. Primary:     literals, names, aggregates, (expr)
+ * Precedence (low to high): logical, relational, additive, multiplicative,
+ * unary, exponential, primary.
  */
 
 typedef enum {
@@ -1548,7 +1530,29 @@ static AST_Node *parse_if_statement(Parser *p) {
         ast_vector_push(&then_stmts, parse_statement(p));
     }
 
-    /* TODO: Handle elsif and else */
+    AST_Vector elsif_parts = {0};
+    while (parser_consume(p, TOK_ELSIF)) {
+        AST_Node *elsif_cond = parse_expression(p);
+        parser_expect(p, TOK_THEN, "expected 'then' after elsif condition");
+
+        AST_Vector elsif_stmts = {0};
+        while (not parser_match(p, TOK_ELSIF) and not parser_match(p, TOK_ELSE) and not parser_match(p, TOK_END)) {
+            ast_vector_push(&elsif_stmts, parse_statement(p));
+        }
+
+        AST_Node *elsif_node = ast_node_new(NODE_IF_STATEMENT, elsif_cond->location);
+        elsif_node->if_stmt.condition = elsif_cond;
+        elsif_node->if_stmt.then_statements = elsif_stmts.items;
+        elsif_node->if_stmt.then_count = elsif_stmts.count;
+        ast_vector_push(&elsif_parts, elsif_node);
+    }
+
+    AST_Vector else_stmts = {0};
+    if (parser_consume(p, TOK_ELSE)) {
+        while (not parser_match(p, TOK_END)) {
+            ast_vector_push(&else_stmts, parse_statement(p));
+        }
+    }
 
     parser_expect(p, TOK_END, "expected 'end'");
     parser_expect(p, TOK_IF, "expected 'if' after 'end'");
@@ -1558,6 +1562,10 @@ static AST_Node *parse_if_statement(Parser *p) {
     node->if_stmt.condition = condition;
     node->if_stmt.then_statements = then_stmts.items;
     node->if_stmt.then_count = then_stmts.count;
+    node->if_stmt.elsif_parts = elsif_parts.items;
+    node->if_stmt.elsif_count = elsif_parts.count;
+    node->if_stmt.else_statements = else_stmts.items;
+    node->if_stmt.else_count = else_stmts.count;
     return node;
 }
 
@@ -1616,10 +1624,7 @@ static AST_Node *parse_statement(Parser *p) {
     return stmt;
 }
 
-/* =============================================================================
- * Declaration Parsing — Types, Variables, Subprograms
- * =============================================================================
- */
+/* Declaration parsing */
 
 static AST_Node *parse_type_definition(Parser *p) {
     /* Type definitions come after "type Name is ..." */
@@ -1788,10 +1793,13 @@ static AST_Node *parse_declaration(Parser *p) {
                 Token param_name = parser_advance(p);
                 parser_expect(p, TOK_COLON, "expected ':' after parameter");
 
-                /* Mode: in, out, in out */
-                bool is_in = parser_consume(p, TOK_IN);
-                bool is_out = parser_consume(p, TOK_OUT);
-                (void)is_in; (void)is_out;  /* TODO: use these */
+                uint8_t mode = 0;  /* default: in */
+                if (parser_consume(p, TOK_IN)) {
+                    mode = 1;
+                    if (parser_consume(p, TOK_OUT)) mode = 3;  /* in out */
+                } else if (parser_consume(p, TOK_OUT)) {
+                    mode = 2;
+                }
 
                 AST_Node *param_type = parse_expression(p);
 
@@ -1863,23 +1871,61 @@ static AST_Node *parse_declaration(Parser *p) {
 }
 
 /* =============================================================================
- * §11. SEMANTIC ANALYSIS — Type Checking and Resolution
+ * §11. SEMANTIC ANALYSIS
  * =============================================================================
  *
- * The semantic phase walks the AST and:
- * - Resolves all identifier references to their declarations
- * - Checks type compatibility for operations and assignments
- * - Validates constraints (ranges, indices, discriminants)
- * - Computes expression types
- *
- * Following GNAT's approach: semantic analysis is a separate pass that
- * annotates the AST with type information, preparing it for codegen.
+ * Type checking, symbol resolution, constraint validation.
+ * Separate pass that annotates AST before codegen.
  */
 
 typedef struct {
     Symbol_Table *symbols;
     int error_count;
 } Semantic_Analyzer;
+
+static Type_Info *resolve_expression_type(Semantic_Analyzer *sem, AST_Node *node) {
+    if (not node) return NULL;
+
+    switch (node->kind) {
+        case NODE_INTEGER_LITERAL:
+            return type_integer;
+
+        case NODE_REAL_LITERAL:
+            return type_float;
+
+        case NODE_CHARACTER_LITERAL:
+            return type_character;
+
+        case NODE_STRING_LITERAL:
+            return type_string;
+
+        case NODE_IDENTIFIER: {
+            String_Slice name = make_slice(node->string_literal.value);
+            Symbol *sym = symbol_table_lookup(sem->symbols, name);
+            return sym ? sym->type : NULL;
+        }
+
+        case NODE_BINARY_OP: {
+            Type_Info *left_ty = resolve_expression_type(sem, node->binary_op.left);
+            Type_Info *right_ty = resolve_expression_type(sem, node->binary_op.right);
+
+            if (not left_ty or not right_ty) return NULL;
+            if (not types_same(left_ty, right_ty)) {
+                report_error(node->location, "type mismatch in binary operation");
+                sem->error_count++;
+                return NULL;
+            }
+
+            return left_ty;
+        }
+
+        case NODE_UNARY_OP:
+            return resolve_expression_type(sem, node->unary_op.operand);
+
+        default:
+            return NULL;
+    }
+}
 
 static Type_Info *resolve_type_expression(Semantic_Analyzer *sem, AST_Node *node) {
     if (not node) return NULL;
@@ -1906,11 +1952,21 @@ static Type_Info *resolve_type_expression(Semantic_Analyzer *sem, AST_Node *node
         }
 
         case NODE_INTEGER_TYPE: {
-            /* Create anonymous integer type with range */
             Type_Info *ty = type_info_new(TYPE_INTEGER);
             ty->is_anonymous = true;
             ty->has_constraint = true;
-            /* TODO: evaluate range bounds */
+
+            /* Evaluate constant range bounds */
+            AST_Node *low = node->assignment.target;
+            AST_Node *high = node->assignment.value;
+
+            if (low->kind == NODE_INTEGER_LITERAL) {
+                ty->low_bound = low->integer_literal.value;
+            }
+            if (high->kind == NODE_INTEGER_LITERAL) {
+                ty->high_bound = high->integer_literal.value;
+            }
+
             return ty;
         }
 
@@ -1931,7 +1987,24 @@ static Type_Info *resolve_type_expression(Semantic_Analyzer *sem, AST_Node *node
 
         case NODE_RECORD_TYPE: {
             Type_Info *ty = type_info_new(TYPE_RECORD);
-            /* TODO: process components */
+
+            /* Process components and compute layout */
+            uint64_t offset = 0;
+            uint64_t max_align = BITS_PER_UNIT;
+
+            for (int i = 0; i < node->aggregate.component_count; i++) {
+                AST_Node *comp = node->aggregate.components[i];
+                Type_Info *comp_ty = resolve_type_expression(sem, comp->declaration.type_spec);
+
+                if (comp_ty) {
+                    offset = align_to(offset, comp_ty->alignment);
+                    offset += comp_ty->size;
+                    if (comp_ty->alignment > max_align) max_align = comp_ty->alignment;
+                }
+            }
+
+            ty->size = align_to(offset, max_align);
+            ty->alignment = max_align;
             return ty;
         }
 
@@ -1968,16 +2041,31 @@ static void analyze_declaration(Semantic_Analyzer *sem, AST_Node *node) {
                 node->type = ty;
             }
 
-            /* Type check initializer */
             if (node->declaration.initializer) {
-                /* TODO: check initializer type matches variable type */
+                Type_Info *init_ty = resolve_expression_type(sem, node->declaration.initializer);
+                if (init_ty and ty and not types_same(init_ty, ty)) {
+                    report_error(node->location, "initializer type mismatch");
+                    sem->error_count++;
+                }
+                node->declaration.initializer->type = ty;
             }
             break;
         }
 
         case NODE_SUBPROGRAM_BODY:
         case NODE_SUBPROGRAM_DECLARATION: {
-            /* TODO: process parameters and return type */
+            /* Process return type */
+            if (node->subprogram.return_type) {
+                Type_Info *ret_ty = resolve_type_expression(sem, node->subprogram.return_type);
+                node->type = ret_ty;
+            }
+
+            /* Process parameters */
+            for (int i = 0; i < node->subprogram.parameter_count; i++) {
+                AST_Node *param = node->subprogram.parameters[i];
+                Type_Info *param_ty = resolve_type_expression(sem, param->declaration.type_spec);
+                param->type = param_ty;
+            }
             break;
         }
 
@@ -1999,11 +2087,10 @@ static void analyze_program(Semantic_Analyzer *sem, AST_Node **declarations, int
 }
 
 /* =============================================================================
- * §12. CODE GENERATION — LLVM IR Emission (Simplified)
+ * §12. CODE GENERATION
  * =============================================================================
  *
- * Direct LLVM IR text generation. A full implementation would use the LLVM C
- * API, but for demonstration we emit textual IR showing the structure.
+ * Direct LLVM IR text emission.
  */
 
 typedef struct {
@@ -2150,10 +2237,7 @@ static void codegen_subprogram(Code_Generator *cg, AST_Node *node) {
     fprintf(cg->output, "}\n\n");
 }
 
-/* =============================================================================
- * Main Driver — Orchestrating the Compilation Pipeline
- * =============================================================================
- */
+/* Main driver */
 
 int main(int argc, char **argv) {
     if (argc < 2) {
