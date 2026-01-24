@@ -3642,12 +3642,85 @@ static inline bool Type_Is_Unconstrained_Array(const Type_Info *t) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
- * §10.5 Type Compatibility
+ * §10.4.1 Representation Category
  *
- * Ada's type compatibility rules:
- * - Same type: must be the same named type
- * - Subtypes of same type: compatible
- * - Universal types: compatible with corresponding specific types
+ * Unified representation category for code generation. This consolidates
+ * the checklist items about parallel "representation category" computations.
+ *
+ * Categories determine how values are passed and stored:
+ * - INTEGER: fits in a register, passed by value (bool, char, int, enum)
+ * - FLOAT: floating-point register, passed by value
+ * - POINTER: address, passed by reference (access, composite, fat pointers)
+ *
+ * Following GNAT LLVM's GL_Type representation abstraction.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+typedef enum {
+    REPR_INTEGER,    /* Discrete/modular types: pass in integer register */
+    REPR_FLOAT,      /* Real types: pass in FP register */
+    REPR_POINTER     /* Composite/access: pass by reference */
+} Repr_Category;
+
+/* Get representation category for a type (handles derived types recursively) */
+static Repr_Category Type_Repr_Category(const Type_Info *t) {
+    if (!t) return REPR_INTEGER;
+
+    /* For derived types, use parent's representation */
+    if (t->parent_type) {
+        return Type_Repr_Category(t->parent_type);
+    }
+
+    switch (t->kind) {
+        /* Floating-point types */
+        case TYPE_FLOAT:
+        case TYPE_FIXED:
+        case TYPE_UNIVERSAL_REAL:
+            return REPR_FLOAT;
+
+        /* Composite and access types: pass by reference */
+        case TYPE_ARRAY:
+        case TYPE_STRING:
+        case TYPE_RECORD:
+        case TYPE_ACCESS:
+        case TYPE_TASK:
+            return REPR_POINTER;
+
+        /* All other types (discrete, modular, enum, boolean, char): integer */
+        default:
+            return REPR_INTEGER;
+    }
+}
+
+/* LLVM type string for a given representation */
+static const char *Repr_LLVM_Type(Repr_Category cat, uint32_t size_bytes) {
+    switch (cat) {
+        case REPR_FLOAT:
+            return (size_bytes <= 4) ? "float" : "double";
+        case REPR_POINTER:
+            return "ptr";
+        case REPR_INTEGER:
+        default:
+            switch (size_bytes) {
+                case 1: return "i8";
+                case 2: return "i16";
+                case 4: return "i32";
+                case 8: return "i64";
+                default: return "i32";
+            }
+    }
+}
+
+/* Get LLVM type string for a Type_Info */
+static const char *Type_LLVM_Type(const Type_Info *t) {
+    if (!t) return "i32";
+    return Repr_LLVM_Type(Type_Repr_Category(t), t->size);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §10.5 Base Type Traversal
+ *
+ * Per RM 3.3.1: The base type of a type is the ultimate ancestor.
+ * For subtypes, follow base_type links to find the original type.
  * ───────────────────────────────────────────────────────────────────────── */
 
 static Type_Info *Type_Base(Type_Info *t) {
@@ -3655,35 +3728,17 @@ static Type_Info *Type_Base(Type_Info *t) {
     return t;
 }
 
-static bool Type_Compatible(Type_Info *a, Type_Info *b) {
-    if (!a || !b) return true;  /* Be permissive for incomplete types */
-    if (a == b) return true;
-
-    /* Universal integer compatible with any integer */
-    if (a->kind == TYPE_UNIVERSAL_INTEGER && Type_Is_Discrete(b)) return true;
-    if (b->kind == TYPE_UNIVERSAL_INTEGER && Type_Is_Discrete(a)) return true;
-
-    /* Universal real compatible with any real */
-    if (a->kind == TYPE_UNIVERSAL_REAL && Type_Is_Real(b)) return true;
-    if (b->kind == TYPE_UNIVERSAL_REAL && Type_Is_Real(a)) return true;
-
-    /* Array/string compatibility: same element type */
-    if ((a->kind == TYPE_ARRAY || a->kind == TYPE_STRING) &&
-        (b->kind == TYPE_ARRAY || b->kind == TYPE_STRING)) {
-        Type_Info *a_elem = (a->kind == TYPE_STRING) ? NULL : a->array.element_type;
-        Type_Info *b_elem = (b->kind == TYPE_STRING) ? NULL : b->array.element_type;
-        /* If either is unconstrained STRING, they're compatible */
-        if (a->kind == TYPE_STRING || b->kind == TYPE_STRING) return true;
-        /* If both are arrays, check element type compatibility */
-        if (a_elem && b_elem) {
-            return Type_Compatible(a_elem, b_elem);
-        }
-        return true;  /* Be permissive */
-    }
-
-    /* Same base type */
-    return Type_Base(a) == Type_Base(b);
-}
+/*
+ * NOTE: Type compatibility checking is consolidated in Type_Covers()
+ * defined in §11.6.2 (Overload Resolution section) following GNAT's
+ * sem_type.adb Covers function. That function provides comprehensive
+ * coverage checking for:
+ * - Same type identity
+ * - Universal type compatibility
+ * - Base type matching
+ * - Array/string structural compatibility
+ * - Access type designated type compatibility
+ */
 
 /* ─────────────────────────────────────────────────────────────────────────
  * §10.6 Type Freezing
@@ -5305,8 +5360,8 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
             Resolve_Expression(sm, node->assignment.value);
             /* Type check: value must be compatible with target */
             if (node->assignment.target->type && node->assignment.value->type) {
-                if (!Type_Compatible(node->assignment.target->type,
-                                    node->assignment.value->type)) {
+                if (!Type_Covers(node->assignment.target->type,
+                                node->assignment.value->type)) {
                     Report_Error(node->location, "type mismatch in assignment");
                 }
             }
