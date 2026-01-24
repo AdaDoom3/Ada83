@@ -772,9 +772,13 @@ static Token Lexer_Next_Token(Lexer *lex) {
     /* Numeric literals */
     if (Is_Digit(c)) return Scan_Number(lex);
 
-    /* Character literal */
-    if (c == '\'' && Is_Alpha(Lexer_Peek(lex, 1)) && Lexer_Peek(lex, 2) == '\'')
-        return Scan_Character_Literal(lex);
+    /* Character literal: 'X' where X is any graphic character */
+    /* Need to check for printable character (not just alpha) since '1' etc. are valid */
+    {
+        char middle = Lexer_Peek(lex, 1);
+        if (c == '\'' && middle != '\'' && middle >= ' ' && Lexer_Peek(lex, 2) == '\'')
+            return Scan_Character_Literal(lex);
+    }
 
     /* String literal */
     if (c == '"') return Scan_String_Literal(lex);
@@ -1113,6 +1117,29 @@ struct Syntax_Node {
             Node_List handlers;
             bool is_separate;
         } package_body;
+
+        /* NK_TASK_SPEC */
+        struct {
+            String_Slice name;
+            Node_List entries;  /* Entry declarations */
+            bool is_type;       /* true if TASK TYPE, false if single TASK */
+        } task_spec;
+
+        /* NK_TASK_BODY */
+        struct {
+            String_Slice name;
+            Node_List declarations;
+            Node_List statements;
+            Node_List handlers;
+            bool is_separate;
+        } task_body;
+
+        /* NK_ENTRY_DECL */
+        struct {
+            String_Slice name;
+            Node_List parameters;  /* Parameter specs */
+            Node_List index_constraints;  /* For entry families */
+        } entry_decl;
 
         /* NK_PARAM_SPEC */
         struct {
@@ -1920,6 +1947,7 @@ static Syntax_Node *Parse_Type_Definition(Parser *p);
 static Syntax_Node *Parse_Subprogram_Body(Parser *p, Syntax_Node *spec);
 static Syntax_Node *Parse_Block_Statement(Parser *p, String_Slice label);
 static Syntax_Node *Parse_Loop_Statement(Parser *p, String_Slice label);
+static Syntax_Node *Parse_Pragma(Parser *p);
 
 /* ─────────────────────────────────────────────────────────────────────────
  * §9.11.1 Simple Statements
@@ -2302,6 +2330,9 @@ static Syntax_Node *Parse_Statement(Parser *p) {
     if (Parser_At(p, TK_DELAY)) return Parse_Delay_Statement(p);
     if (Parser_At(p, TK_ABORT)) return Parse_Abort_Statement(p);
 
+    /* Pragma in statement sequence (Ada 83 RM 2.8) */
+    if (Parser_At(p, TK_PRAGMA)) return Parse_Pragma(p);
+
     /* Assignment or procedure call */
     return Parse_Assignment_Or_Call(p);
 }
@@ -2362,7 +2393,11 @@ static Syntax_Node *Parse_Object_Declaration(Parser *p) {
     node->object_decl.is_aliased = Parser_Match(p, TK_ACCESS);  /* ALIASED uses ACCESS token? */
     node->object_decl.is_constant = Parser_Match(p, TK_CONSTANT);
 
-    node->object_decl.object_type = Parse_Subtype_Indication(p);
+    /* Named number (number declaration): identifier : CONSTANT := static_expression; */
+    /* No type specified, goes directly to := */
+    if (!node->object_decl.is_constant || !Parser_At(p, TK_ASSIGN)) {
+        node->object_decl.object_type = Parse_Subtype_Indication(p);
+    }
 
     /* Renames */
     if (Parser_Match(p, TK_RENAMES)) {
@@ -2934,8 +2969,8 @@ static Syntax_Node *Parse_Subprogram_Body(Parser *p, Syntax_Node *spec) {
  */
 
 static Syntax_Node *Parse_Package_Specification(Parser *p) {
+    /* Note: caller must consume TK_PACKAGE before calling */
     Source_Location loc = Parser_Location(p);
-    Parser_Expect(p, TK_PACKAGE);
 
     Syntax_Node *node = Node_New(NK_PACKAGE_SPEC, loc);
     node->package_spec.name = Parser_Identifier(p);
@@ -2959,9 +2994,8 @@ static Syntax_Node *Parse_Package_Specification(Parser *p) {
 }
 
 static Syntax_Node *Parse_Package_Body(Parser *p) {
+    /* Note: caller must consume TK_PACKAGE and TK_BODY before calling */
     Source_Location loc = Parser_Location(p);
-    Parser_Expect(p, TK_PACKAGE);
-    Parser_Expect(p, TK_BODY);
 
     Syntax_Node *node = Node_New(NK_PACKAGE_BODY, loc);
     node->package_body.name = Parser_Identifier(p);
@@ -3104,6 +3138,7 @@ static Syntax_Node *Parse_Generic_Declaration(Parser *p) {
     } else if (Parser_At(p, TK_FUNCTION)) {
         node->generic_decl.unit = Parse_Function_Specification(p);
     } else if (Parser_At(p, TK_PACKAGE)) {
+        Parser_Advance(p);  /* consume PACKAGE */
         node->generic_decl.unit = Parse_Package_Specification(p);
     }
 
@@ -3316,15 +3351,106 @@ static Syntax_Node *Parse_Declaration(Parser *p) {
 
     /* Package */
     if (Parser_At(p, TK_PACKAGE)) {
-        /* Check for PACKAGE BODY */
-        /* For simplicity: look ahead */
-        Parser_Advance(p);
+        Parser_Advance(p);  /* consume PACKAGE */
         if (Parser_At(p, TK_BODY)) {
-            /* Reset and parse as body (hacky but works) */
+            Parser_Advance(p);  /* consume BODY */
             return Parse_Package_Body(p);
         }
-        /* Otherwise spec - need better handling */
         return Parse_Package_Specification(p);
+    }
+
+    /* Task declaration */
+    if (Parser_At(p, TK_TASK)) {
+        Parser_Advance(p);  /* consume TASK */
+
+        /* TASK BODY name IS ... */
+        if (Parser_At(p, TK_BODY)) {
+            Parser_Advance(p);  /* consume BODY */
+            Source_Location t_loc = Parser_Location(p);
+            Syntax_Node *node = Node_New(NK_TASK_BODY, t_loc);
+            node->task_body.name = Parser_Identifier(p);
+            Parser_Expect(p, TK_IS);
+
+            if (Parser_Match(p, TK_SEPARATE)) {
+                Parser_Expect(p, TK_SEMICOLON);
+                return node;
+            }
+
+            Parse_Declarative_Part(p, &node->task_body.declarations);
+            Parser_Expect(p, TK_BEGIN);
+            Parse_Statement_Sequence(p, &node->task_body.statements);
+
+            if (Parser_Match(p, TK_EXCEPTION)) {
+                while (Parser_At(p, TK_WHEN)) {
+                    Source_Location h_loc = Parser_Location(p);
+                    Parser_Advance(p);
+
+                    Syntax_Node *handler = Node_New(NK_EXCEPTION_HANDLER, h_loc);
+                    do {
+                        if (Parser_Match(p, TK_OTHERS)) {
+                            Node_List_Push(&handler->handler.exceptions, Node_New(NK_OTHERS, h_loc));
+                        } else {
+                            Node_List_Push(&handler->handler.exceptions, Parse_Name(p));
+                        }
+                    } while (Parser_Match(p, TK_BAR));
+
+                    Parser_Expect(p, TK_ARROW);
+                    Parse_Statement_Sequence(p, &handler->handler.statements);
+                    Node_List_Push(&node->task_body.handlers, handler);
+                }
+            }
+
+            Parser_Expect(p, TK_END);
+            if (Parser_At(p, TK_IDENTIFIER)) {
+                Parser_Check_End_Name(p, node->task_body.name);
+            }
+            Parser_Expect(p, TK_SEMICOLON);
+            return node;
+        }
+
+        /* TASK [TYPE] name [IS ... END name]; */
+        bool is_type = Parser_Match(p, TK_TYPE);
+        Source_Location t_loc = Parser_Location(p);
+        Syntax_Node *node = Node_New(NK_TASK_SPEC, t_loc);
+        node->task_spec.name = Parser_Identifier(p);
+        node->task_spec.is_type = is_type;
+
+        if (Parser_Match(p, TK_IS)) {
+            /* Task spec with entries */
+            while (!Parser_At(p, TK_END) && !Parser_At(p, TK_EOF)) {
+                if (!Parser_Check_Progress(p)) break;
+
+                if (Parser_Match(p, TK_ENTRY)) {
+                    Source_Location e_loc = Parser_Location(p);
+                    Syntax_Node *entry = Node_New(NK_ENTRY_DECL, e_loc);
+                    entry->entry_decl.name = Parser_Identifier(p);
+
+                    /* Entry may have family index: ENTRY name(index) */
+                    /* and/or parameters: ENTRY name(...) or ENTRY name(index)(...) */
+                    if (Parser_At(p, TK_LPAREN)) {
+                        /* For simplicity, parse as parameter list */
+                        Parse_Parameter_List(p, &entry->entry_decl.parameters);
+                    }
+                    Parser_Expect(p, TK_SEMICOLON);
+                    Node_List_Push(&node->task_spec.entries, entry);
+                } else if (Parser_At(p, TK_PRAGMA)) {
+                    Node_List_Push(&node->task_spec.entries, Parse_Pragma(p));
+                } else if (Parser_At(p, TK_FOR)) {
+                    /* Representation clause in task spec */
+                    Node_List_Push(&node->task_spec.entries, Parse_Representation_Clause(p));
+                } else {
+                    Parser_Error(p, "expected ENTRY, PRAGMA, FOR, or END in task spec");
+                    Parser_Advance(p);
+                }
+            }
+            Parser_Expect(p, TK_END);
+            if (Parser_At(p, TK_IDENTIFIER)) {
+                Parser_Check_End_Name(p, node->task_spec.name);
+            }
+        }
+
+        Parser_Expect(p, TK_SEMICOLON);
+        return node;
     }
 
     /* Type declaration */
