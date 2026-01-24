@@ -2757,7 +2757,27 @@ All test files generate valid LLVM IR (verified with llc):
 - test_func.ada - Functions
 - test_nested.ada - Nested declarations
 - test_simple.ada - Simple programs
+- test_nested_sub.ada - Nested subprograms with static link
+- test_exception.ada - Exception declarations, RAISE, and handlers
+
+### Nested Subprograms (2026-01-24) - RESOLVED
+Static link based nested function access is working:
+- Nested functions are deferred and emitted after enclosing function
+- Frame pointer (`%__parent_frame`) passed as first parameter to nested functions
+- Enclosing scope variables accessed via frame pointer GEP aliases
+- `%__frame_base` allocated in parent function when it has nested subprograms
+- Frame offsets tracked in Symbol during symbol table construction
+
+### Exception Handling (2026-01-24)
+Full Ada 83 exception handling implemented:
+- Exception declarations: `E : exception;`
+- Exception identity globals: `@__exc.name` constants
+- RAISE statements with exception identity
+- Procedure/function-level exception handlers
+- Block-level exception handlers (DECLARE...BEGIN...EXCEPTION...END)
+- setjmp/longjmp based exception propagation
+- WHEN specific_exception => and WHEN OTHERS => support
+- Runtime declarations: setjmp, longjmp, __ada_raise, __ada_reraise, etc.
 
 ### Known Issues
-- Nested subprograms emit inside outer function body (LLVM doesn't support this)
-- Need to hoist nested functions to top level with closure capture
+- None currently blocking
