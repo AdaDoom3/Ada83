@@ -3685,6 +3685,12 @@ struct Type_Info {
             String_Slice *literals;
             uint32_t      literal_count;
         } enumeration;
+
+        struct {  /* TYPE_FIXED */
+            double delta;   /* User-specified delta (smallest increment) */
+            double small;   /* Implementation small: power of 2 <= delta */
+            int    scale;   /* Scale factor: value = mantissa * 2^scale */
+        } fixed;
     };
 
     /* Runtime check suppression */
@@ -3892,9 +3898,9 @@ static const char *Type_To_Llvm(Type_Info *t) {
         case TYPE_MODULAR:
         case TYPE_ENUMERATION:
         case TYPE_UNIVERSAL_INTEGER:
+        case TYPE_FIXED:  /* Fixed-point uses scaled integer representation */
             return Llvm_Int_Type(To_Bits(t->size));
         case TYPE_FLOAT:
-        case TYPE_FIXED:
         case TYPE_UNIVERSAL_REAL:
             return Llvm_Float_Type(To_Bits(t->size));
         case TYPE_ACCESS:
@@ -5381,6 +5387,129 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                 /* Otherwise just use base type */
                 node->type = base_type;
                 return base_type;
+            }
+
+        case NK_INTEGER_TYPE:
+            {
+                /* Integer type definition: range L .. H or mod M */
+                Type_Info *int_type = Type_New(TYPE_INTEGER, S(""));
+
+                /* Resolve range bounds if present */
+                if (node->real_type.range) {
+                    Resolve_Expression(sm, node->real_type.range);
+                    Syntax_Node *range = node->real_type.range;
+                    if (range->kind == NK_RANGE && range->range.low && range->range.high) {
+                        if (range->range.low->kind == NK_INTEGER) {
+                            int_type->low_bound = (Type_Bound){
+                                .kind = BOUND_INTEGER,
+                                .int_value = range->range.low->integer_lit.value
+                            };
+                        }
+                        if (range->range.high->kind == NK_INTEGER) {
+                            int_type->high_bound = (Type_Bound){
+                                .kind = BOUND_INTEGER,
+                                .int_value = range->range.high->integer_lit.value
+                            };
+                        }
+                    }
+                }
+
+                /* Compute appropriate size */
+                int_type->size = 8;  /* Default to 64-bit */
+                int_type->alignment = 8;
+                node->type = int_type;
+                return int_type;
+            }
+
+        case NK_REAL_TYPE:
+            {
+                /* Real type definition: digits D or delta D */
+                if (node->real_type.delta) {
+                    /* Fixed-point type: TYPE_FIXED with delta */
+                    Type_Info *fixed_type = Type_New(TYPE_FIXED, S(""));
+                    Resolve_Expression(sm, node->real_type.delta);
+
+                    /* Extract delta value */
+                    double delta = 0.0;
+                    if (node->real_type.delta->kind == NK_REAL) {
+                        delta = node->real_type.delta->real_lit.value;
+                    } else if (node->real_type.delta->kind == NK_INTEGER) {
+                        delta = (double)node->real_type.delta->integer_lit.value;
+                    } else {
+                        delta = 0.001;  /* Default fallback */
+                    }
+
+                    /* Compute small as largest power of 2 <= delta (per RM 3.5.9) */
+                    double small = 1.0;
+                    if (delta > 0.0) {
+                        /* Find largest 2^n <= delta */
+                        while (small > delta) small /= 2.0;
+                        while (small * 2.0 <= delta) small *= 2.0;
+                    }
+
+                    /* Compute scale factor: small = 2^scale */
+                    int scale = 0;
+                    double temp = small;
+                    if (temp >= 1.0) {
+                        while (temp >= 2.0) { temp /= 2.0; scale++; }
+                    } else {
+                        while (temp < 1.0) { temp *= 2.0; scale--; }
+                    }
+
+                    fixed_type->fixed.delta = delta;
+                    fixed_type->fixed.small = small;
+                    fixed_type->fixed.scale = scale;
+
+                    /* Resolve range if present */
+                    if (node->real_type.range) {
+                        Resolve_Expression(sm, node->real_type.range);
+                        Syntax_Node *range = node->real_type.range;
+                        if (range->kind == NK_RANGE) {
+                            if (range->range.low && range->range.low->kind == NK_REAL) {
+                                fixed_type->low_bound = (Type_Bound){
+                                    .kind = BOUND_FLOAT,
+                                    .float_value = range->range.low->real_lit.value
+                                };
+                            }
+                            if (range->range.high && range->range.high->kind == NK_REAL) {
+                                fixed_type->high_bound = (Type_Bound){
+                                    .kind = BOUND_FLOAT,
+                                    .float_value = range->range.high->real_lit.value
+                                };
+                            }
+                        }
+                    }
+
+                    /* Size: typically 32 or 64 bits depending on range and precision */
+                    fixed_type->size = 8;  /* 64-bit for safe default */
+                    fixed_type->alignment = 8;
+                    node->type = fixed_type;
+                    return fixed_type;
+                } else {
+                    /* Floating-point type: digits D */
+                    Type_Info *float_type = Type_New(TYPE_FLOAT, S(""));
+
+                    /* Resolve digits expression */
+                    if (node->real_type.precision) {
+                        Resolve_Expression(sm, node->real_type.precision);
+                    }
+
+                    /* Resolve range if present */
+                    if (node->real_type.range) {
+                        Resolve_Expression(sm, node->real_type.range);
+                    }
+
+                    /* Size based on digits: <=6 = float, >6 = double */
+                    int digits = 15;  /* Default double precision */
+                    if (node->real_type.precision &&
+                        node->real_type.precision->kind == NK_INTEGER) {
+                        digits = (int)node->real_type.precision->integer_lit.value;
+                    }
+                    float_type->size = (digits <= 6) ? 4 : 8;
+                    float_type->alignment = float_type->size;
+                    node->type = float_type;
+                    return float_type;
+                }
             }
 
         default:
@@ -6960,7 +7089,41 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
 
     const char *op;
     Type_Info *result_type = node->type;
-    bool is_float = result_type && Type_Is_Real(result_type);
+    bool is_float = result_type && (result_type->kind == TYPE_FLOAT ||
+                                     result_type->kind == TYPE_UNIVERSAL_REAL);
+    bool is_fixed = result_type && result_type->kind == TYPE_FIXED;
+
+    /* Fixed-point multiplication/division needs scaling (RM 4.5.5) */
+    if (is_fixed && (node->binary.op == TK_STAR || node->binary.op == TK_SLASH)) {
+        int scale = result_type->fixed.scale;
+        if (node->binary.op == TK_STAR) {
+            /* Fixed * Fixed: result = (a * b) >> abs(scale) */
+            uint32_t mul = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = mul i64 %%t%u, %%t%u\n", mul, left, right);
+            if (scale < 0) {
+                /* Negative scale = right shift by |scale| */
+                Emit(cg, "  %%t%u = ashr i64 %%t%u, %d\n", t, mul, -scale);
+            } else if (scale > 0) {
+                /* Positive scale = left shift (uncommon) */
+                Emit(cg, "  %%t%u = shl i64 %%t%u, %d\n", t, mul, scale);
+            } else {
+                t = mul;
+            }
+            return t;
+        } else {
+            /* Fixed / Fixed: result = (a << abs(scale)) / b */
+            uint32_t shifted = Emit_Temp(cg);
+            if (scale < 0) {
+                Emit(cg, "  %%t%u = shl i64 %%t%u, %d\n", shifted, left, -scale);
+            } else if (scale > 0) {
+                Emit(cg, "  %%t%u = ashr i64 %%t%u, %d\n", shifted, left, scale);
+            } else {
+                shifted = left;
+            }
+            Emit(cg, "  %%t%u = sdiv i64 %%t%u, %%t%u\n", t, shifted, right);
+            return t;
+        }
+    }
 
     switch (node->binary.op) {
         case TK_PLUS:  op = is_float ? "fadd" : "add"; break;
@@ -8384,6 +8547,49 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
             Generate_Raise_Statement(cg, node);
             break;
 
+        case NK_DELAY:
+            {
+                /* DELAY expression — sleep for specified duration */
+                /* Expression should be in seconds, convert to microseconds */
+                uint32_t val = Generate_Expression(cg, node->delay_stmt.expression);
+                /* Convert to microseconds (assuming Duration in seconds) */
+                uint32_t us = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = fmul double %%t%u, 1.0e6\n", us, val);
+                uint32_t us_int = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = fptoui double %%t%u to i64\n", us_int, us);
+                Emit(cg, "  call void @__ada_delay(i64 %%t%u)\n", us_int);
+            }
+            break;
+
+        case NK_ACCEPT:
+            {
+                /* ACCEPT statement — rendezvous with caller */
+                /* For now, just execute the body (full implementation needs runtime) */
+                Emit(cg, "  ; ACCEPT %.*s (simplified)\n",
+                     (int)node->accept_stmt.entry_name.length,
+                     node->accept_stmt.entry_name.data);
+                Generate_Statement_List(cg, &node->accept_stmt.statements);
+            }
+            break;
+
+        case NK_SELECT:
+            /* SELECT statement — selective wait */
+            /* Full implementation needs task runtime; emit stub */
+            Emit(cg, "  ; SELECT statement (stub)\n");
+            /* Execute first alternative as fallback */
+            if (node->select_stmt.alternatives.count > 0) {
+                Syntax_Node *alt = node->select_stmt.alternatives.items[0];
+                if (alt && alt->kind == NK_ASSOCIATION && alt->association.expression) {
+                    Generate_Statement(cg, alt->association.expression);
+                }
+            }
+            break;
+
+        case NK_ABORT:
+            /* ABORT statement — abort tasks */
+            Emit(cg, "  ; ABORT statement (stub - needs task runtime)\n");
+            break;
+
         default:
             break;
     }
@@ -8890,6 +9096,56 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
             /* Generic declarations don't generate code - only instances do */
             break;
 
+        case NK_TASK_SPEC:
+            /* Task type/object specification - record entry points */
+            Emit(cg, "; Task spec: %.*s (entries registered at runtime)\n",
+                 (int)node->task_spec.name.length, node->task_spec.name.data);
+            break;
+
+        case NK_TASK_BODY:
+            /* Task body - generate as a void function with trampoline wrapper */
+            {
+                Emit(cg, "\n; Task body: %.*s\n",
+                     (int)node->task_body.name.length, node->task_body.name.data);
+
+                /* Generate task entry point function */
+                Emit(cg, "define void @task_%.*s(ptr %%_unused_arg) {\n",
+                     (int)node->task_body.name.length, node->task_body.name.data);
+                Emit(cg, "entry:\n");
+
+                /* Push exception handler for task */
+                uint32_t jmp_buf = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = alloca [200 x i8]\n", jmp_buf);
+                uint32_t jmp_ptr = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = getelementptr [200 x i8], ptr %%t%u, i64 0, i64 0\n",
+                     jmp_ptr, jmp_buf);
+                Emit(cg, "  call void @__ada_push_handler(ptr %%t%u)\n", jmp_ptr);
+                uint32_t setjmp_result = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = call i32 @setjmp(ptr %%t%u)\n", setjmp_result, jmp_ptr);
+                uint32_t is_zero = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", is_zero, setjmp_result);
+                uint32_t body_label = Emit_Label(cg);
+                uint32_t exit_label = Emit_Label(cg);
+                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                     is_zero, body_label, exit_label);
+
+                /* Normal execution path */
+                Emit(cg, "L%u:\n", body_label);
+                Generate_Declaration_List(cg, &node->task_body.declarations);
+                Generate_Statement_List(cg, &node->task_body.statements);
+                Emit(cg, "  call void @__ada_pop_handler()\n");
+                Emit(cg, "  ret void\n");
+
+                /* Exception handler path */
+                Emit(cg, "L%u:\n", exit_label);
+                Emit(cg, "  call void @__ada_pop_handler()\n");
+                /* Task terminates silently on unhandled exception */
+                Emit(cg, "  ret void\n");
+
+                Emit(cg, "}\n\n");
+            }
+            break;
+
         default:
             break;
     }
@@ -9059,26 +9315,221 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128\"\n");
     Emit(cg, "target triple = \"x86_64-pc-linux-gnu\"\n\n");
 
-    /* Declare memcmp for array equality */
-    Emit(cg, "; External function declarations\n");
+    /* External C library and LLVM intrinsic declarations */
+    Emit(cg, "; External declarations\n");
     Emit(cg, "declare i32 @memcmp(ptr, ptr, i64)\n");
-
-    /* Exception handling runtime declarations */
     Emit(cg, "declare i32 @setjmp(ptr)\n");
     Emit(cg, "declare void @longjmp(ptr, i32)\n");
-    Emit(cg, "declare void @__ada_raise(i64)\n");
-    Emit(cg, "declare void @__ada_reraise()\n");
-    Emit(cg, "declare void @__ada_push_handler(ptr)\n");
-    Emit(cg, "declare void @__ada_pop_handler()\n");
-    Emit(cg, "declare i64 @__ada_current_exception()\n\n");
-
-    /* Secondary stack for unconstrained returns (string concatenation, etc.) */
-    Emit(cg, "declare ptr @__ada_sec_stack_alloc(i64)\n");
-    Emit(cg, "declare void @__ada_sec_stack_mark(ptr)\n");
-    Emit(cg, "declare void @__ada_sec_stack_release(ptr)\n\n");
-
-    /* LLVM intrinsics for memory operations */
+    Emit(cg, "declare ptr @malloc(i64)\n");
+    Emit(cg, "declare ptr @realloc(ptr, i64)\n");
+    Emit(cg, "declare void @free(ptr)\n");
+    Emit(cg, "declare i32 @usleep(i32)\n");
+    Emit(cg, "declare i32 @printf(ptr, ...)\n");
+    Emit(cg, "declare i32 @putchar(i32)\n");
     Emit(cg, "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)\n\n");
+
+    /* Runtime globals */
+    Emit(cg, "; Runtime globals\n");
+    Emit(cg, "@__ss_base = linkonce_odr global ptr null\n");
+    Emit(cg, "@__ss_ptr = linkonce_odr global i64 0\n");
+    Emit(cg, "@__ss_size = linkonce_odr global i64 0\n");
+    Emit(cg, "@__eh_cur = linkonce_odr global ptr null\n");
+    Emit(cg, "@__ex_cur = linkonce_odr global i64 0\n");
+    Emit(cg, "@__fin_list = linkonce_odr global ptr null\n");
+    Emit(cg, "@.fmt_ue = linkonce_odr constant [28 x i8] c\"Unhandled exception: %%lld\\0A\\00\"\n\n");
+
+    /* Standard exceptions (RM 11.1) */
+    Emit(cg, "; Standard exception identities\n");
+    Emit(cg, "@.ex.CONSTRAINT_ERROR = linkonce_odr constant i64 1\n");
+    Emit(cg, "@.ex.NUMERIC_ERROR = linkonce_odr constant i64 2\n");
+    Emit(cg, "@.ex.PROGRAM_ERROR = linkonce_odr constant i64 3\n");
+    Emit(cg, "@.ex.STORAGE_ERROR = linkonce_odr constant i64 4\n");
+    Emit(cg, "@.ex.TASKING_ERROR = linkonce_odr constant i64 5\n\n");
+
+    /* Secondary stack initialization */
+    Emit(cg, "; Secondary stack runtime\n");
+    Emit(cg, "define linkonce_odr void @__ada_ss_init() {\n");
+    Emit(cg, "  %%p = call ptr @malloc(i64 1048576)\n");
+    Emit(cg, "  store ptr %%p, ptr @__ss_base\n");
+    Emit(cg, "  store i64 1048576, ptr @__ss_size\n");
+    Emit(cg, "  store i64 0, ptr @__ss_ptr\n");
+    Emit(cg, "  ret void\n");
+    Emit(cg, "}\n\n");
+
+    /* Secondary stack mark */
+    Emit(cg, "define linkonce_odr i64 @__ada_sec_stack_mark() {\n");
+    Emit(cg, "  %%m = load i64, ptr @__ss_ptr\n");
+    Emit(cg, "  ret i64 %%m\n");
+    Emit(cg, "}\n\n");
+
+    /* Secondary stack release */
+    Emit(cg, "define linkonce_odr void @__ada_sec_stack_release(i64 %%m) {\n");
+    Emit(cg, "  store i64 %%m, ptr @__ss_ptr\n");
+    Emit(cg, "  ret void\n");
+    Emit(cg, "}\n\n");
+
+    /* Secondary stack allocate */
+    Emit(cg, "define linkonce_odr ptr @__ada_sec_stack_alloc(i64 %%sz) {\n");
+    Emit(cg, "entry:\n");
+    Emit(cg, "  %%1 = load ptr, ptr @__ss_base\n");
+    Emit(cg, "  %%2 = icmp eq ptr %%1, null\n");
+    Emit(cg, "  br i1 %%2, label %%init, label %%alloc\n");
+    Emit(cg, "init:\n");
+    Emit(cg, "  call void @__ada_ss_init()\n");
+    Emit(cg, "  %%3 = load ptr, ptr @__ss_base\n");
+    Emit(cg, "  br label %%alloc\n");
+    Emit(cg, "alloc:\n");
+    Emit(cg, "  %%p = phi ptr [%%1, %%entry], [%%3, %%init]\n");
+    Emit(cg, "  %%4 = load i64, ptr @__ss_ptr\n");
+    Emit(cg, "  %%5 = add i64 %%sz, 7\n");
+    Emit(cg, "  %%6 = and i64 %%5, -8\n");
+    Emit(cg, "  %%7 = add i64 %%4, %%6\n");
+    Emit(cg, "  %%8 = load i64, ptr @__ss_size\n");
+    Emit(cg, "  %%9 = icmp ult i64 %%7, %%8\n");
+    Emit(cg, "  br i1 %%9, label %%ok, label %%grow\n");
+    Emit(cg, "grow:\n");
+    Emit(cg, "  %%10 = mul i64 %%8, 2\n");
+    Emit(cg, "  store i64 %%10, ptr @__ss_size\n");
+    Emit(cg, "  %%11 = call ptr @realloc(ptr %%p, i64 %%10)\n");
+    Emit(cg, "  store ptr %%11, ptr @__ss_base\n");
+    Emit(cg, "  br label %%ok\n");
+    Emit(cg, "ok:\n");
+    Emit(cg, "  %%12 = phi ptr [%%p, %%alloc], [%%11, %%grow]\n");
+    Emit(cg, "  %%13 = getelementptr i8, ptr %%12, i64 %%4\n");
+    Emit(cg, "  store i64 %%7, ptr @__ss_ptr\n");
+    Emit(cg, "  ret ptr %%13\n");
+    Emit(cg, "}\n\n");
+
+    /* Exception handling: push handler */
+    Emit(cg, "; Exception handling runtime\n");
+    Emit(cg, "define linkonce_odr void @__ada_push_handler(ptr %%h) {\n");
+    Emit(cg, "  %%1 = load ptr, ptr @__eh_cur\n");
+    Emit(cg, "  store ptr %%1, ptr %%h\n");
+    Emit(cg, "  store ptr %%h, ptr @__eh_cur\n");
+    Emit(cg, "  ret void\n");
+    Emit(cg, "}\n\n");
+
+    /* Exception handling: pop handler */
+    Emit(cg, "define linkonce_odr void @__ada_pop_handler() {\n");
+    Emit(cg, "  %%1 = load ptr, ptr @__eh_cur\n");
+    Emit(cg, "  %%2 = icmp eq ptr %%1, null\n");
+    Emit(cg, "  br i1 %%2, label %%done, label %%pop\n");
+    Emit(cg, "pop:\n");
+    Emit(cg, "  %%3 = load ptr, ptr %%1\n");
+    Emit(cg, "  store ptr %%3, ptr @__eh_cur\n");
+    Emit(cg, "  br label %%done\n");
+    Emit(cg, "done:\n");
+    Emit(cg, "  ret void\n");
+    Emit(cg, "}\n\n");
+
+    /* Exception handling: raise */
+    Emit(cg, "define linkonce_odr void @__ada_raise(i64 %%exc_id) {\n");
+    Emit(cg, "  store i64 %%exc_id, ptr @__ex_cur\n");
+    Emit(cg, "  %%jb = load ptr, ptr @__eh_cur\n");
+    Emit(cg, "  %%is_null = icmp eq ptr %%jb, null\n");
+    Emit(cg, "  br i1 %%is_null, label %%unhandled, label %%jump\n");
+    Emit(cg, "jump:\n");
+    Emit(cg, "  call void @longjmp(ptr %%jb, i32 1)\n");
+    Emit(cg, "  unreachable\n");
+    Emit(cg, "unhandled:\n");
+    Emit(cg, "  call i32 (ptr, ...) @printf(ptr @.fmt_ue, i64 %%exc_id)\n");
+    Emit(cg, "  call void @longjmp(ptr null, i32 1)\n");
+    Emit(cg, "  unreachable\n");
+    Emit(cg, "}\n\n");
+
+    /* Exception handling: reraise */
+    Emit(cg, "define linkonce_odr void @__ada_reraise() {\n");
+    Emit(cg, "  %%exc = load i64, ptr @__ex_cur\n");
+    Emit(cg, "  call void @__ada_raise(i64 %%exc)\n");
+    Emit(cg, "  unreachable\n");
+    Emit(cg, "}\n\n");
+
+    /* Exception handling: get current exception */
+    Emit(cg, "define linkonce_odr i64 @__ada_current_exception() {\n");
+    Emit(cg, "  %%exc = load i64, ptr @__ex_cur\n");
+    Emit(cg, "  ret i64 %%exc\n");
+    Emit(cg, "}\n\n");
+
+    /* Integer power function */
+    Emit(cg, "; Arithmetic runtime\n");
+    Emit(cg, "define linkonce_odr i64 @__ada_powi(i64 %%base, i64 %%exp) {\n");
+    Emit(cg, "entry:\n");
+    Emit(cg, "  %%result = alloca i64\n");
+    Emit(cg, "  store i64 1, ptr %%result\n");
+    Emit(cg, "  %%e = alloca i64\n");
+    Emit(cg, "  store i64 %%exp, ptr %%e\n");
+    Emit(cg, "  br label %%loop\n");
+    Emit(cg, "loop:\n");
+    Emit(cg, "  %%ev = load i64, ptr %%e\n");
+    Emit(cg, "  %%cmp = icmp sgt i64 %%ev, 0\n");
+    Emit(cg, "  br i1 %%cmp, label %%body, label %%done\n");
+    Emit(cg, "body:\n");
+    Emit(cg, "  %%rv = load i64, ptr %%result\n");
+    Emit(cg, "  %%nv = mul i64 %%rv, %%base\n");
+    Emit(cg, "  store i64 %%nv, ptr %%result\n");
+    Emit(cg, "  %%ev2 = load i64, ptr %%e\n");
+    Emit(cg, "  %%ev3 = sub i64 %%ev2, 1\n");
+    Emit(cg, "  store i64 %%ev3, ptr %%e\n");
+    Emit(cg, "  br label %%loop\n");
+    Emit(cg, "done:\n");
+    Emit(cg, "  %%final = load i64, ptr %%result\n");
+    Emit(cg, "  ret i64 %%final\n");
+    Emit(cg, "}\n\n");
+
+    /* Delay statement support */
+    Emit(cg, "; Tasking runtime\n");
+    Emit(cg, "define linkonce_odr void @__ada_delay(i64 %%us) {\n");
+    Emit(cg, "  %%t = trunc i64 %%us to i32\n");
+    Emit(cg, "  call i32 @usleep(i32 %%t)\n");
+    Emit(cg, "  ret void\n");
+    Emit(cg, "}\n\n");
+
+    /* Finalization support */
+    Emit(cg, "; Finalization runtime\n");
+    Emit(cg, "define linkonce_odr void @__ada_finalize(ptr %%obj, ptr %%fn) {\n");
+    Emit(cg, "  %%1 = call ptr @malloc(i64 24)\n");
+    Emit(cg, "  %%2 = getelementptr ptr, ptr %%1, i64 0\n");
+    Emit(cg, "  store ptr %%obj, ptr %%2\n");
+    Emit(cg, "  %%3 = getelementptr ptr, ptr %%1, i64 1\n");
+    Emit(cg, "  store ptr %%fn, ptr %%3\n");
+    Emit(cg, "  %%4 = load ptr, ptr @__fin_list\n");
+    Emit(cg, "  %%5 = getelementptr ptr, ptr %%1, i64 2\n");
+    Emit(cg, "  store ptr %%4, ptr %%5\n");
+    Emit(cg, "  store ptr %%1, ptr @__fin_list\n");
+    Emit(cg, "  ret void\n");
+    Emit(cg, "}\n\n");
+
+    Emit(cg, "define linkonce_odr void @__ada_finalize_all() {\n");
+    Emit(cg, "entry:\n");
+    Emit(cg, "  %%1 = load ptr, ptr @__fin_list\n");
+    Emit(cg, "  br label %%loop\n");
+    Emit(cg, "loop:\n");
+    Emit(cg, "  %%p = phi ptr [%%1, %%entry], [%%9, %%fin]\n");
+    Emit(cg, "  %%2 = icmp eq ptr %%p, null\n");
+    Emit(cg, "  br i1 %%2, label %%done, label %%fin\n");
+    Emit(cg, "fin:\n");
+    Emit(cg, "  %%3 = getelementptr ptr, ptr %%p, i64 0\n");
+    Emit(cg, "  %%4 = load ptr, ptr %%3\n");
+    Emit(cg, "  %%5 = getelementptr ptr, ptr %%p, i64 1\n");
+    Emit(cg, "  %%6 = load ptr, ptr %%5\n");
+    Emit(cg, "  call void %%6(ptr %%4)\n");
+    Emit(cg, "  %%8 = getelementptr ptr, ptr %%p, i64 2\n");
+    Emit(cg, "  %%9 = load ptr, ptr %%8\n");
+    Emit(cg, "  call void @free(ptr %%p)\n");
+    Emit(cg, "  br label %%loop\n");
+    Emit(cg, "done:\n");
+    Emit(cg, "  ret void\n");
+    Emit(cg, "}\n\n");
+
+    /* TEXT_IO inline stubs for simple programs */
+    Emit(cg, "; TEXT_IO stubs\n");
+    Emit(cg, "@.fmt_d = linkonce_odr constant [5 x i8] c\"%%lld\\00\"\n");
+    Emit(cg, "@.fmt_s = linkonce_odr constant [3 x i8] c\"%%s\\00\"\n");
+    Emit(cg, "@.fmt_f = linkonce_odr constant [3 x i8] c\"%%g\\00\"\n");
+    Emit(cg, "define linkonce_odr void @__text_io_new_line() {\n");
+    Emit(cg, "  call i32 @putchar(i32 10)\n");
+    Emit(cg, "  ret void\n");
+    Emit(cg, "}\n\n");
 
     /* Generate exception identity globals */
     Generate_Exception_Globals(cg);
