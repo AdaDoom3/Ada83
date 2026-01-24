@@ -1482,6 +1482,28 @@ static AST_Node *parse_primary(Parser *p) {
             return node;
         }
 
+        /* Check for (others => value) */
+        if (parser_match(p, TOK_OTHERS)) {
+            AST_Vector components = {0};
+            Token others_tok = parser_advance(p);
+            parser_expect(p, TOK_ARROW, "expected '=>' after 'others'");
+            AST_Node *value = parse_expression(p);
+
+            AST_Node *others_node = ast_node_new(NODE_IDENTIFIER, others_tok.location);
+            others_node->string_literal.value = "others";
+
+            AST_Node *assoc = ast_node_new(NODE_ASSIGNMENT, loc);
+            assoc->assignment.target = others_node;
+            assoc->assignment.value = value;
+            ast_vector_push(&components, assoc);
+
+            parser_expect(p, TOK_RPAREN, "expected ')' after aggregate");
+            AST_Node *node = ast_node_new(NODE_AGGREGATE, loc);
+            node->aggregate.components = components.items;
+            node->aggregate.component_count = components.count;
+            return node;
+        }
+
         /* Parse first component */
         AST_Node *first = parse_expression(p);
 
@@ -1505,6 +1527,24 @@ static AST_Node *parse_primary(Parser *p) {
 
             /* Parse remaining components */
             while (parser_consume(p, TOK_COMMA)) {
+                /* Check for 'others' clause */
+                if (parser_match(p, TOK_OTHERS)) {
+                    Token others_tok = parser_advance(p);
+                    parser_expect(p, TOK_ARROW, "expected '=>' after 'others'");
+                    AST_Node *value = parse_expression(p);
+
+                    AST_Node *others_node = ast_node_new(NODE_IDENTIFIER, others_tok.location);
+                    others_node->string_literal.value = "others";
+
+                    AST_Node *assoc = ast_node_new(NODE_ASSIGNMENT, loc);
+                    assoc->assignment.target = others_node;
+                    assoc->assignment.value = value;
+                    ast_vector_push(&components, assoc);
+
+                    /* 'others' must be last */
+                    break;
+                }
+
                 AST_Node *choice = parse_expression(p);
                 if (parser_consume(p, TOK_ARROW)) {
                     /* Named association */
@@ -1529,6 +1569,37 @@ static AST_Node *parse_primary(Parser *p) {
         /* Plain parenthesized expression */
         parser_expect(p, TOK_RPAREN, "expected ')' after expression");
         return first;
+    }
+
+    /* Allocator: new Type or new Type'(value) */
+    if (tok.kind == TOK_NEW) {
+        Source_Location loc = tok.location;
+        parser_advance(p);
+
+        /* Parse type name */
+        AST_Node *type_name = NULL;
+        if (parser_match(p, TOK_IDENTIFIER)) {
+            Token type_tok = parser_advance(p);
+            type_name = ast_node_new(NODE_IDENTIFIER, type_tok.location);
+            type_name->string_literal.value = slice_to_lowercase(type_tok.text);
+        }
+
+        AST_Node *node = ast_node_new(NODE_ALLOCATOR, loc);
+        node->assignment.target = type_name;  /* type */
+
+        /* Check for qualified expression: new Type'(initializer) */
+        if (parser_match(p, TOK_APOSTROPHE)) {
+            parser_advance(p);
+            if (parser_match(p, TOK_LPAREN)) {
+                parser_advance(p);
+                node->assignment.value = parse_expression(p);
+                parser_expect(p, TOK_RPAREN, "expected ')' after allocator initializer");
+            }
+        } else {
+            node->assignment.value = NULL;  /* no initializer */
+        }
+
+        return node;
     }
 
     /* Unary operators */
@@ -1885,6 +1956,27 @@ static AST_Node *parse_statement(Parser *p) {
     if (parser_match(p, TOK_EXIT)) return parse_exit_statement(p);
     if (parser_match(p, TOK_RETURN)) return parse_return_statement(p);
 
+    /* Raise statement: raise Exception_Name; */
+    if (parser_match(p, TOK_RAISE)) {
+        Source_Location loc = parser_peek(p).location;
+        parser_advance(p);
+
+        AST_Node *node = ast_node_new(NODE_RAISE_STATEMENT, loc);
+
+        /* Optional exception name */
+        if (parser_match(p, TOK_IDENTIFIER)) {
+            Token exc = parser_advance(p);
+            AST_Node *exc_name = ast_node_new(NODE_IDENTIFIER, exc.location);
+            exc_name->string_literal.value = slice_to_lowercase(exc.text);
+            node->assignment.target = exc_name;
+        } else {
+            node->assignment.target = NULL;  /* re-raise */
+        }
+
+        parser_expect(p, TOK_SEMICOLON, "expected ';' after raise");
+        return node;
+    }
+
     AST_Node *stmt = parse_assignment_or_call(p);
     parser_expect(p, TOK_SEMICOLON, "expected ';'");
     return stmt;
@@ -2015,34 +2107,78 @@ static AST_Node *parse_declaration(Parser *p) {
         return node;
     }
 
-    /* Variable/constant declaration: Name : [constant] Type [:= Initial]; */
-    if (parser_match(p, TOK_IDENTIFIER)) {
-        Token name = parser_advance(p);
-        parser_expect(p, TOK_COLON, "expected ':' after variable name");
+    /* Use clause: use Package_Name; */
+    if (parser_match(p, TOK_USE)) {
+        parser_advance(p);
 
-        bool is_constant = parser_consume(p, TOK_CONSTANT);
+        AST_Vector packages = {0};
+        do {
+            if (not parser_match(p, TOK_IDENTIFIER)) {
+                report_error(tok.location, "expected package name after 'use'");
+                break;
+            }
+            Token pkg = parser_advance(p);
+            AST_Node *pkg_name = ast_node_new(NODE_IDENTIFIER, pkg.location);
+            pkg_name->string_literal.value = slice_to_lowercase(pkg.text);
+            ast_vector_push(&packages, pkg_name);
+        } while (parser_consume(p, TOK_COMMA));
 
-        AST_Node *type_spec = parse_expression(p);
-        AST_Node *initializer = NULL;
+        parser_expect(p, TOK_SEMICOLON, "expected ';' after use clause");
 
-        if (parser_consume(p, TOK_COLON_EQUAL)) {
-            initializer = parse_expression(p);
-        }
-
-        parser_expect(p, TOK_SEMICOLON, "expected ';' after declaration");
-
-        AST_Node *node = ast_node_new(NODE_OBJECT_DECLARATION, tok.location);
-        node->declaration.name = slice_to_lowercase(name.text);
-        node->declaration.type_spec = type_spec;
-        node->declaration.initializer = initializer;
-        node->declaration.is_constant = is_constant;
-
-        /* Register in symbol table */
-        Symbol *sym = symbol_new(name.text, is_constant ? SYMBOL_CONSTANT : SYMBOL_VARIABLE);
-        sym->declaration = node;
-        symbol_table_insert(p->symbols, sym);
-
+        AST_Node *node = ast_node_new(NODE_USE_CLAUSE, tok.location);
+        node->aggregate.components = packages.items;
+        node->aggregate.component_count = packages.count;
         return node;
+    }
+
+    /* Exception declaration: Name : exception; */
+    if (parser_match(p, TOK_IDENTIFIER)) {
+        Token name = parser_peek(p);
+        parser_advance(p);
+
+        if (parser_consume(p, TOK_COLON)) {
+            if (parser_consume(p, TOK_EXCEPTION)) {
+                parser_expect(p, TOK_SEMICOLON, "expected ';' after exception declaration");
+
+                AST_Node *node = ast_node_new(NODE_EXCEPTION_DECLARATION, name.location);
+                node->declaration.name = slice_to_lowercase(name.text);
+                node->declaration.type_spec = NULL;
+                node->declaration.initializer = NULL;
+
+                /* Register in symbol table */
+                Symbol *sym = symbol_new(name.text, SYMBOL_CONSTANT);
+                sym->declaration = node;
+                symbol_table_insert(p->symbols, sym);
+
+                return node;
+            }
+
+            /* Otherwise, it's a normal variable declaration */
+            /* Backtrack by reconstructing the parse */
+            bool is_constant = parser_consume(p, TOK_CONSTANT);
+
+            AST_Node *type_spec = parse_expression(p);
+            AST_Node *initializer = NULL;
+
+            if (parser_consume(p, TOK_COLON_EQUAL)) {
+                initializer = parse_expression(p);
+            }
+
+            parser_expect(p, TOK_SEMICOLON, "expected ';' after declaration");
+
+            AST_Node *node = ast_node_new(NODE_OBJECT_DECLARATION, name.location);
+            node->declaration.name = slice_to_lowercase(name.text);
+            node->declaration.type_spec = type_spec;
+            node->declaration.initializer = initializer;
+            node->declaration.is_constant = is_constant;
+
+            /* Register in symbol table */
+            Symbol *sym = symbol_new(name.text, is_constant ? SYMBOL_CONSTANT : SYMBOL_VARIABLE);
+            sym->declaration = node;
+            symbol_table_insert(p->symbols, sym);
+
+            return node;
+        }
     }
 
     /* Package declaration */
@@ -2256,17 +2392,68 @@ static Type_Info *resolve_expression_type(Semantic_Analyzer *sem, AST_Node *node
             return resolve_expression_type(sem, node->unary_op.operand);
 
         case NODE_FUNCTION_CALL: {
-            /* Resolve function type, return its return type */
-            Type_Info *func_ty = resolve_expression_type(sem, node->call.function);
-            if (not func_ty) return NULL;
+            /* Could be a function call or type conversion */
+            /* Check if the "function" is actually a type name */
+            if (node->call.function->kind == NODE_IDENTIFIER) {
+                String_Slice name = make_slice(node->call.function->string_literal.value);
+                Symbol *sym = symbol_table_lookup(sem->symbols, name);
 
-            /* Check argument types */
-            for (int i = 0; i < node->call.argument_count; i++) {
-                resolve_expression_type(sem, node->call.arguments[i]);
+                if (sym and sym->kind == SYMBOL_TYPE) {
+                    /* It's a type conversion: Type(value) */
+                    if (node->call.argument_count != 1) {
+                        report_error(node->location, "type conversion requires exactly one argument");
+                        sem->error_count++;
+                        return NULL;
+                    }
+
+                    Type_Info *arg_type = resolve_expression_type(sem, node->call.arguments[0]);
+                    Type_Info *target_type = sym->type;
+
+                    /* Type compatibility checking */
+                    if (arg_type and target_type) {
+                        /* Allow conversions between numeric types */
+                        if ((arg_type->kind == TYPE_INTEGER or arg_type->kind == TYPE_REAL) and
+                            (target_type->kind == TYPE_INTEGER or target_type->kind == TYPE_REAL)) {
+                            return target_type;
+                        }
+                        if (not types_same(arg_type, target_type)) {
+                            report_error(node->location, "incompatible types in conversion");
+                            sem->error_count++;
+                        }
+                    }
+
+                    return target_type;
+                }
             }
 
-            /* For now, assume functions return Integer (proper implementation needs symbol lookup) */
-            return type_integer;
+            /* Regular function call - lookup function symbol to get return type */
+            if (node->call.function->kind == NODE_IDENTIFIER) {
+                String_Slice name = make_slice(node->call.function->string_literal.value);
+                Symbol *sym = symbol_table_lookup(sem->symbols, name);
+
+                if (not sym) {
+                    report_error(node->location, "undefined function '%.*s'", SLICE_ARG(name));
+                    sem->error_count++;
+                    return NULL;
+                }
+
+                /* Check argument types */
+                for (int i = 0; i < node->call.argument_count; i++) {
+                    resolve_expression_type(sem, node->call.arguments[i]);
+                }
+
+                /* Get return type from function symbol */
+                if (sym->declaration and sym->declaration->kind == NODE_SUBPROGRAM_BODY) {
+                    AST_Node *return_type_node = sym->declaration->subprogram.return_type;
+                    if (return_type_node) {
+                        return resolve_type_expression(sem, return_type_node);
+                    }
+                }
+
+                return type_integer;  /* default if no return type found */
+            }
+
+            return NULL;
         }
 
         case NODE_SELECTED_COMPONENT: {
@@ -2278,8 +2465,21 @@ static Type_Info *resolve_expression_type(Semantic_Analyzer *sem, AST_Node *node
                 return NULL;
             }
 
-            /* For now, return Integer (proper implementation needs field lookup) */
-            return type_integer;
+            /* Lookup field in record components */
+            const char *field_name = node->selected.field_name;
+            for (int i = 0; i < record_ty->components.count; i++) {
+                AST_Node *comp = record_ty->components.items[i];
+                if (comp->kind == NODE_OBJECT_DECLARATION) {
+                    if (strcmp(comp->declaration.name, field_name) == 0) {
+                        /* Found the field - return its type */
+                        return resolve_type_expression(sem, comp->declaration.type_spec);
+                    }
+                }
+            }
+
+            report_error(node->location, "field '%s' not found in record type", field_name);
+            sem->error_count++;
+            return NULL;
         }
 
         case NODE_ATTRIBUTE: {
@@ -2325,13 +2525,62 @@ static Type_Info *resolve_expression_type(Semantic_Analyzer *sem, AST_Node *node
         }
 
         case NODE_AGGREGATE: {
-            /* Aggregate type must be inferred from context */
-            /* For now, return NULL - proper implementation needs context type */
-            /* Each component should be type-checked */
+            /* Aggregate type inference from components */
+            /* Type-check all components and collect their types */
+            bool all_same_type = true;
+            Type_Info *common_type = NULL;
+
             for (int i = 0; i < node->aggregate.component_count; i++) {
-                resolve_expression_type(sem, node->aggregate.components[i]);
+                AST_Node *comp = node->aggregate.components[i];
+
+                /* For named associations (choice => value), check the value */
+                if (comp->kind == NODE_ASSIGNMENT) {
+                    Type_Info *val_type = resolve_expression_type(sem, comp->assignment.value);
+                    if (i == 0) {
+                        common_type = val_type;
+                    } else if (common_type and val_type and not types_same(common_type, val_type)) {
+                        all_same_type = false;
+                    }
+                } else {
+                    /* Positional component */
+                    Type_Info *comp_type = resolve_expression_type(sem, comp);
+                    if (i == 0) {
+                        common_type = comp_type;
+                    } else if (common_type and comp_type and not types_same(common_type, comp_type)) {
+                        all_same_type = false;
+                    }
+                }
             }
-            return NULL;
+
+            if (not all_same_type) {
+                report_error(node->location, "aggregate components have inconsistent types");
+                sem->error_count++;
+            }
+
+            /* Return array type with inferred element type */
+            return common_type;
+        }
+
+        case NODE_ALLOCATOR: {
+            /* new Type or new Type'(value) */
+            Type_Info *allocated_type = resolve_type_expression(sem, node->assignment.target);
+
+            if (node->assignment.value) {
+                /* Check initializer type */
+                Type_Info *init_type = resolve_expression_type(sem, node->assignment.value);
+                if (allocated_type and init_type and not types_same(allocated_type, init_type)) {
+                    report_error(node->location, "type mismatch in allocator initializer");
+                    sem->error_count++;
+                }
+            }
+
+            /* Create and return access type */
+            Type_Info *access_ty = type_info_new(TYPE_ACCESS);
+            access_ty->element_type = allocated_type;
+            access_ty->size = target.pointer_width;
+            access_ty->alignment = target.pointer_alignment;
+            access_ty->is_anonymous = true;
+            return access_ty;
         }
 
         default:
@@ -2597,9 +2846,22 @@ static void codegen_expression(Code_Generator *cg, AST_Node *node, const char **
         }
 
         case NODE_SELECTED_COMPONENT: {
-            /* Record field access - simplified: just return 0 for now */
-            *result = codegen_temp(cg);
-            fprintf(cg->output, "  %s = add i32 0, 0  ; field access stub\n", *result);
+            /* Record field access */
+            const char *obj_val = NULL;
+            codegen_expression(cg, node->selected.object, &obj_val);
+
+            if (obj_val) {
+                /* Generate GEP instruction for field access */
+                const char *field_ptr = codegen_temp(cg);
+                fprintf(cg->output, "  %s = getelementptr inbounds %%struct.record, ptr %s, i32 0, i32 0  ; field: %s\n",
+                        field_ptr, obj_val, node->selected.field_name);
+
+                /* Load the field value */
+                *result = codegen_temp(cg);
+                fprintf(cg->output, "  %s = load i32, ptr %s\n", *result, field_ptr);
+            } else {
+                *result = NULL;
+            }
             break;
         }
 
@@ -2630,9 +2892,64 @@ static void codegen_expression(Code_Generator *cg, AST_Node *node, const char **
         }
 
         case NODE_AGGREGATE: {
-            /* Aggregate construction - simplified for now */
+            /* Aggregate construction */
+            if (node->aggregate.component_count == 0) {
+                /* Empty aggregate */
+                *result = codegen_temp(cg);
+                fprintf(cg->output, "  %s = add i32 0, 0  ; empty aggregate\n", *result);
+            } else if (node->aggregate.component_count == 1) {
+                /* Single element - just evaluate it */
+                AST_Node *comp = node->aggregate.components[0];
+                if (comp->kind == NODE_ASSIGNMENT) {
+                    codegen_expression(cg, comp->assignment.value, result);
+                } else {
+                    codegen_expression(cg, comp, result);
+                }
+            } else {
+                /* Multi-element aggregate - allocate array */
+                const char *array_ptr = codegen_temp(cg);
+                int count = node->aggregate.component_count;
+                fprintf(cg->output, "  %s = alloca [%d x i32]\n", array_ptr, count);
+
+                /* Store each element */
+                for (int i = 0; i < count; i++) {
+                    const char *elem_val = NULL;
+                    AST_Node *comp = node->aggregate.components[i];
+
+                    if (comp->kind == NODE_ASSIGNMENT) {
+                        codegen_expression(cg, comp->assignment.value, &elem_val);
+                    } else {
+                        codegen_expression(cg, comp, &elem_val);
+                    }
+
+                    if (elem_val) {
+                        const char *elem_ptr = codegen_temp(cg);
+                        fprintf(cg->output, "  %s = getelementptr [%d x i32], ptr %s, i32 0, i32 %d\n",
+                                elem_ptr, count, array_ptr, i);
+                        fprintf(cg->output, "  store i32 %s, ptr %s\n", elem_val, elem_ptr);
+                    }
+                }
+
+                *result = array_ptr;
+            }
+            break;
+        }
+
+        case NODE_ALLOCATOR: {
+            /* new Type or new Type'(value) */
+            const char *init_val = NULL;
+            if (node->assignment.value) {
+                codegen_expression(cg, node->assignment.value, &init_val);
+            }
+
+            /* Allocate on heap */
             *result = codegen_temp(cg);
-            fprintf(cg->output, "  %s = add i32 0, 0  ; aggregate stub\n", *result);
+            fprintf(cg->output, "  %s = call ptr @malloc(i64 4)\n", *result);
+
+            /* Store initializer if present */
+            if (init_val) {
+                fprintf(cg->output, "  store i32 %s, ptr %s\n", init_val, *result);
+            }
             break;
         }
 
@@ -2789,6 +3106,20 @@ static void codegen_statement(Code_Generator *cg, AST_Node *node) {
         case NODE_EXIT_STATEMENT:
             fprintf(cg->output, "  br label %%exit_target\n");
             break;
+
+        case NODE_RAISE_STATEMENT: {
+            /* Raise exception */
+            if (node->assignment.target) {
+                const char *exc_name = node->assignment.target->string_literal.value;
+                fprintf(cg->output, "  ; raise %s\n", exc_name);
+                fprintf(cg->output, "  call void @__ada_raise_exception(ptr @exception_%s)\n", exc_name);
+            } else {
+                fprintf(cg->output, "  ; re-raise\n");
+                fprintf(cg->output, "  call void @__ada_reraise_exception()\n");
+            }
+            fprintf(cg->output, "  unreachable\n");
+            break;
+        }
 
         case NODE_NULL_STATEMENT:
             break;
