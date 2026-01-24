@@ -1617,21 +1617,542 @@ static AST_Node *parse_statement(Parser *p) {
 }
 
 /* =============================================================================
- * CHECKPOINT: Parser foundation complete
+ * Declaration Parsing — Types, Variables, Subprograms
+ * =============================================================================
+ */
+
+static AST_Node *parse_type_definition(Parser *p) {
+    /* Type definitions come after "type Name is ..." */
+    Token tok = parser_peek(p);
+
+    /* Range type: type T is range Low .. High; */
+    if (parser_match(p, TOK_RANGE)) {
+        parser_advance(p);
+        AST_Node *low = parse_expression(p);
+        parser_expect(p, TOK_DOT_DOT, "expected '..' in range");
+        AST_Node *high = parse_expression(p);
+
+        AST_Node *node = ast_node_new(NODE_INTEGER_TYPE, tok.location);
+        node->assignment.target = low;
+        node->assignment.value = high;
+        return node;
+    }
+
+    /* Array type: type T is array (Index_Type) of Element_Type; */
+    if (parser_match(p, TOK_ARRAY)) {
+        parser_advance(p);
+        parser_expect(p, TOK_LPAREN, "expected '(' after 'array'");
+
+        AST_Node *index = parse_expression(p);
+        parser_expect(p, TOK_RPAREN, "expected ')' after index type");
+        parser_expect(p, TOK_OF, "expected 'of' after array index");
+
+        AST_Node *element = parse_expression(p);
+
+        AST_Node *node = ast_node_new(NODE_ARRAY_TYPE, tok.location);
+        node->assignment.target = index;
+        node->assignment.value = element;
+        return node;
+    }
+
+    /* Access type: type T is access Some_Type; */
+    if (parser_match(p, TOK_ACCESS)) {
+        parser_advance(p);
+        AST_Node *target = parse_expression(p);
+
+        AST_Node *node = ast_node_new(NODE_ACCESS_TYPE, tok.location);
+        node->unary_op.operand = target;
+        return node;
+    }
+
+    /* Record type: type T is record ... end record; */
+    if (parser_match(p, TOK_RECORD)) {
+        parser_advance(p);
+
+        AST_Vector components = {0};
+        while (not parser_match(p, TOK_END)) {
+            /* Parse component: Name : Type; */
+            if (not parser_match(p, TOK_IDENTIFIER)) break;
+
+            Token name = parser_advance(p);
+            parser_expect(p, TOK_COLON, "expected ':' after component name");
+            AST_Node *type = parse_expression(p);
+            parser_expect(p, TOK_SEMICOLON, "expected ';' after component");
+
+            AST_Node *component = ast_node_new(NODE_OBJECT_DECLARATION, name.location);
+            component->declaration.name = slice_to_lowercase(name.text);
+            component->declaration.type_spec = type;
+            ast_vector_push(&components, component);
+        }
+
+        parser_expect(p, TOK_END, "expected 'end' after record");
+        parser_expect(p, TOK_RECORD, "expected 'record' after 'end'");
+
+        AST_Node *node = ast_node_new(NODE_RECORD_TYPE, tok.location);
+        node->aggregate.components = components.items;
+        node->aggregate.component_count = components.count;
+        return node;
+    }
+
+    /* Otherwise, it's a subtype or derived type reference */
+    return parse_expression(p);
+}
+
+static AST_Node *parse_declaration(Parser *p) {
+    Token tok = parser_peek(p);
+
+    /* Type declaration: type Name is ... */
+    if (parser_match(p, TOK_TYPE)) {
+        parser_advance(p);
+
+        if (not parser_match(p, TOK_IDENTIFIER)) {
+            report_error(tok.location, "expected type name after 'type'");
+            return NULL;
+        }
+
+        Token name = parser_advance(p);
+        parser_expect(p, TOK_IS, "expected 'is' after type name");
+
+        AST_Node *definition = parse_type_definition(p);
+        parser_expect(p, TOK_SEMICOLON, "expected ';' after type declaration");
+
+        AST_Node *node = ast_node_new(NODE_TYPE_DECLARATION, tok.location);
+        node->declaration.name = slice_to_lowercase(name.text);
+        node->declaration.type_spec = definition;
+
+        /* Register in symbol table */
+        Symbol *sym = symbol_new(name.text, SYMBOL_TYPE);
+        sym->declaration = node;
+        symbol_table_insert(p->symbols, sym);
+
+        return node;
+    }
+
+    /* Subtype declaration: subtype Name is Type_Name; */
+    if (parser_match(p, TOK_SUBTYPE)) {
+        parser_advance(p);
+
+        Token name = parser_advance(p);
+        parser_expect(p, TOK_IS, "expected 'is' after subtype name");
+
+        AST_Node *base = parse_expression(p);
+        parser_expect(p, TOK_SEMICOLON, "expected ';' after subtype");
+
+        AST_Node *node = ast_node_new(NODE_SUBTYPE_DECLARATION, tok.location);
+        node->declaration.name = slice_to_lowercase(name.text);
+        node->declaration.type_spec = base;
+        return node;
+    }
+
+    /* Variable/constant declaration: Name : [constant] Type [:= Initial]; */
+    if (parser_match(p, TOK_IDENTIFIER)) {
+        Token name = parser_advance(p);
+        parser_expect(p, TOK_COLON, "expected ':' after variable name");
+
+        bool is_constant = parser_consume(p, TOK_CONSTANT);
+
+        AST_Node *type_spec = parse_expression(p);
+        AST_Node *initializer = NULL;
+
+        if (parser_consume(p, TOK_COLON_EQUAL)) {
+            initializer = parse_expression(p);
+        }
+
+        parser_expect(p, TOK_SEMICOLON, "expected ';' after declaration");
+
+        AST_Node *node = ast_node_new(NODE_OBJECT_DECLARATION, tok.location);
+        node->declaration.name = slice_to_lowercase(name.text);
+        node->declaration.type_spec = type_spec;
+        node->declaration.initializer = initializer;
+        node->declaration.is_constant = is_constant;
+
+        /* Register in symbol table */
+        Symbol *sym = symbol_new(name.text, is_constant ? SYMBOL_CONSTANT : SYMBOL_VARIABLE);
+        sym->declaration = node;
+        symbol_table_insert(p->symbols, sym);
+
+        return node;
+    }
+
+    /* Procedure/function declaration */
+    if (parser_match(p, TOK_PROCEDURE) or parser_match(p, TOK_FUNCTION)) {
+        bool is_function = parser_match(p, TOK_FUNCTION);
+        parser_advance(p);
+
+        Token name = parser_advance(p);
+
+        /* Parameters */
+        AST_Vector params = {0};
+        if (parser_consume(p, TOK_LPAREN)) {
+            while (not parser_match(p, TOK_RPAREN)) {
+                Token param_name = parser_advance(p);
+                parser_expect(p, TOK_COLON, "expected ':' after parameter");
+
+                /* Mode: in, out, in out */
+                bool is_in = parser_consume(p, TOK_IN);
+                bool is_out = parser_consume(p, TOK_OUT);
+                (void)is_in; (void)is_out;  /* TODO: use these */
+
+                AST_Node *param_type = parse_expression(p);
+
+                AST_Node *param = ast_node_new(NODE_PARAMETER_DECLARATION, param_name.location);
+                param->declaration.name = slice_to_lowercase(param_name.text);
+                param->declaration.type_spec = param_type;
+                ast_vector_push(&params, param);
+
+                if (not parser_match(p, TOK_RPAREN))
+                    parser_expect(p, TOK_SEMICOLON, "expected ';' between parameters");
+            }
+            parser_expect(p, TOK_RPAREN, "expected ')' after parameters");
+        }
+
+        /* Return type for functions */
+        AST_Node *return_type = NULL;
+        if (is_function) {
+            parser_expect(p, TOK_RETURN, "expected 'return' for function");
+            return_type = parse_expression(p);
+        }
+
+        /* Check if it's a declaration or body */
+        if (parser_match(p, TOK_IS)) {
+            /* Subprogram body */
+            parser_advance(p);
+
+            /* Declarative part */
+            AST_Vector declarations = {0};
+            while (not parser_match(p, TOK_BEGIN)) {
+                AST_Node *decl = parse_declaration(p);
+                if (decl) ast_vector_push(&declarations, decl);
+                else break;
+            }
+
+            parser_expect(p, TOK_BEGIN, "expected 'begin' in subprogram body");
+
+            /* Statement part */
+            AST_Vector statements = {0};
+            while (not parser_match(p, TOK_END)) {
+                ast_vector_push(&statements, parse_statement(p));
+            }
+
+            parser_expect(p, TOK_END, "expected 'end' after statements");
+            if (parser_match(p, TOK_IDENTIFIER)) parser_advance(p);  /* optional name */
+            parser_expect(p, TOK_SEMICOLON, "expected ';' after subprogram");
+
+            AST_Node *node = ast_node_new(NODE_SUBPROGRAM_BODY, tok.location);
+            node->subprogram.name = slice_to_lowercase(name.text);
+            node->subprogram.parameters = params.items;
+            node->subprogram.parameter_count = params.count;
+            node->subprogram.return_type = return_type;
+            node->subprogram.body = statements.items;
+            node->subprogram.body_count = statements.count;
+            return node;
+        } else {
+            /* Just a declaration */
+            parser_expect(p, TOK_SEMICOLON, "expected ';' after subprogram declaration");
+
+            AST_Node *node = ast_node_new(NODE_SUBPROGRAM_DECLARATION, tok.location);
+            node->subprogram.name = slice_to_lowercase(name.text);
+            node->subprogram.parameters = params.items;
+            node->subprogram.parameter_count = params.count;
+            node->subprogram.return_type = return_type;
+            return node;
+        }
+    }
+
+    return NULL;
+}
+
+/* =============================================================================
+ * §11. SEMANTIC ANALYSIS — Type Checking and Resolution
  * =============================================================================
  *
- * Sections completed:
- *   §1-7: Foundation (type metrics, bigint, arena, strings, errors, lexer, AST)
- *   §8: Type system structures
- *   §9: Symbol table with scope tracking
- *   §10: Parser core with expression precedence and basic statements
+ * The semantic phase walks the AST and:
+ * - Resolves all identifier references to their declarations
+ * - Checks type compatibility for operations and assignments
+ * - Validates constraints (ranges, indices, discriminants)
+ * - Computes expression types
  *
- * Remaining work:
- *   - Declaration parsing (variables, types, subprograms, packages)
- *   - Semantic analysis (type checking, symbol resolution)
- *   - Code generation (LLVM IR emission)
+ * Following GNAT's approach: semantic analysis is a separate pass that
+ * annotates the AST with type information, preparing it for codegen.
+ */
+
+typedef struct {
+    Symbol_Table *symbols;
+    int error_count;
+} Semantic_Analyzer;
+
+static Type_Info *resolve_type_expression(Semantic_Analyzer *sem, AST_Node *node) {
+    if (not node) return NULL;
+
+    switch (node->kind) {
+        case NODE_IDENTIFIER: {
+            /* Look up type name */
+            String_Slice name = make_slice(node->string_literal.value);
+            Symbol *sym = symbol_table_lookup(sem->symbols, name);
+
+            if (not sym) {
+                report_error(node->location, "undefined type '%.*s'", SLICE_ARG(name));
+                sem->error_count++;
+                return NULL;
+            }
+
+            if (sym->kind != SYMBOL_TYPE) {
+                report_error(node->location, "'%.*s' is not a type", SLICE_ARG(name));
+                sem->error_count++;
+                return NULL;
+            }
+
+            return sym->type;
+        }
+
+        case NODE_INTEGER_TYPE: {
+            /* Create anonymous integer type with range */
+            Type_Info *ty = type_info_new(TYPE_INTEGER);
+            ty->is_anonymous = true;
+            ty->has_constraint = true;
+            /* TODO: evaluate range bounds */
+            return ty;
+        }
+
+        case NODE_ARRAY_TYPE: {
+            Type_Info *ty = type_info_new(TYPE_ARRAY);
+            ty->index_type = resolve_type_expression(sem, node->assignment.target);
+            ty->element_type = resolve_type_expression(sem, node->assignment.value);
+            return ty;
+        }
+
+        case NODE_ACCESS_TYPE: {
+            Type_Info *ty = type_info_new(TYPE_ACCESS);
+            ty->element_type = resolve_type_expression(sem, node->unary_op.operand);
+            ty->size = target.pointer_width;
+            ty->alignment = target.pointer_alignment;
+            return ty;
+        }
+
+        case NODE_RECORD_TYPE: {
+            Type_Info *ty = type_info_new(TYPE_RECORD);
+            /* TODO: process components */
+            return ty;
+        }
+
+        default:
+            return NULL;
+    }
+}
+
+static void analyze_declaration(Semantic_Analyzer *sem, AST_Node *node) {
+    if (not node) return;
+
+    switch (node->kind) {
+        case NODE_TYPE_DECLARATION: {
+            /* Create type info and attach to symbol */
+            Type_Info *ty = resolve_type_expression(sem, node->declaration.type_spec);
+            if (ty) {
+                ty->name = make_slice(node->declaration.name);
+
+                /* Find symbol and attach type */
+                Symbol *sym = symbol_table_lookup_local(sem->symbols, ty->name);
+                if (sym) sym->type = ty;
+            }
+            break;
+        }
+
+        case NODE_OBJECT_DECLARATION: {
+            /* Resolve variable type */
+            Type_Info *ty = resolve_type_expression(sem, node->declaration.type_spec);
+
+            String_Slice name = make_slice(node->declaration.name);
+            Symbol *sym = symbol_table_lookup_local(sem->symbols, name);
+            if (sym) {
+                sym->type = ty;
+                node->type = ty;
+            }
+
+            /* Type check initializer */
+            if (node->declaration.initializer) {
+                /* TODO: check initializer type matches variable type */
+            }
+            break;
+        }
+
+        case NODE_SUBPROGRAM_BODY:
+        case NODE_SUBPROGRAM_DECLARATION: {
+            /* TODO: process parameters and return type */
+            break;
+        }
+
+        default:
+            break;
+    }
+}
+
+static Semantic_Analyzer *semantic_analyzer_new(Symbol_Table *symbols) {
+    Semantic_Analyzer *sem = ALLOC(Semantic_Analyzer);
+    sem->symbols = symbols;
+    return sem;
+}
+
+static void analyze_program(Semantic_Analyzer *sem, AST_Node **declarations, int count) {
+    for (int i = 0; i < count; i++) {
+        analyze_declaration(sem, declarations[i]);
+    }
+}
+
+/* =============================================================================
+ * §12. CODE GENERATION — LLVM IR Emission (Simplified)
+ * =============================================================================
  *
- * The pattern is clear: clean abstractions, functional style, literate comments.
+ * Direct LLVM IR text generation. A full implementation would use the LLVM C
+ * API, but for demonstration we emit textual IR showing the structure.
+ */
+
+typedef struct {
+    FILE *output;
+    Symbol_Table *symbols;
+    int temp_counter;
+    int label_counter;
+} Code_Generator;
+
+static Code_Generator *codegen_new(FILE *output, Symbol_Table *symbols) {
+    Code_Generator *cg = ALLOC(Code_Generator);
+    cg->output = output;
+    cg->symbols = symbols;
+    return cg;
+}
+
+static const char *codegen_temp(Code_Generator *cg) {
+    static char buf[32];
+    snprintf(buf, sizeof(buf), "%%t%d", cg->temp_counter++);
+    return string_duplicate(buf);
+}
+
+static const char *codegen_label(Code_Generator *cg) {
+    static char buf[32];
+    snprintf(buf, sizeof(buf), "L%d", cg->label_counter++);
+    return string_duplicate(buf);
+}
+
+static void codegen_expression(Code_Generator *cg, AST_Node *node, const char **result) {
+    if (not node) return;
+
+    switch (node->kind) {
+        case NODE_INTEGER_LITERAL: {
+            *result = codegen_temp(cg);
+            fprintf(cg->output, "  %s = add i32 0, %ld  ; constant\n",
+                    *result, (long)node->integer_literal.value);
+            break;
+        }
+
+        case NODE_IDENTIFIER: {
+            /* Load from variable */
+            *result = codegen_temp(cg);
+            fprintf(cg->output, "  %s = load i32, i32* %%%s\n",
+                    *result, node->string_literal.value);
+            break;
+        }
+
+        case NODE_BINARY_OP: {
+            const char *left_val = NULL, *right_val = NULL;
+            codegen_expression(cg, node->binary_op.left, &left_val);
+            codegen_expression(cg, node->binary_op.right, &right_val);
+
+            *result = codegen_temp(cg);
+            const char *op = "add";
+
+            switch (node->binary_op.operator) {
+                case TOK_PLUS:  op = "add"; break;
+                case TOK_MINUS: op = "sub"; break;
+                case TOK_STAR:  op = "mul"; break;
+                case TOK_SLASH: op = "sdiv"; break;
+                default: break;
+            }
+
+            fprintf(cg->output, "  %s = %s i32 %s, %s\n",
+                    *result, op, left_val ? left_val : "0", right_val ? right_val : "0");
+            break;
+        }
+
+        default:
+            *result = NULL;
+            break;
+    }
+}
+
+static void codegen_statement(Code_Generator *cg, AST_Node *node) {
+    if (not node) return;
+
+    switch (node->kind) {
+        case NODE_ASSIGNMENT: {
+            const char *value = NULL;
+            codegen_expression(cg, node->assignment.value, &value);
+
+            if (value and node->assignment.target->kind == NODE_IDENTIFIER) {
+                fprintf(cg->output, "  store i32 %s, i32* %%%s\n",
+                        value, node->assignment.target->string_literal.value);
+            }
+            break;
+        }
+
+        case NODE_RETURN_STATEMENT: {
+            if (node->assignment.value) {
+                const char *value = NULL;
+                codegen_expression(cg, node->assignment.value, &value);
+                fprintf(cg->output, "  ret i32 %s\n", value ? value : "0");
+            } else {
+                fprintf(cg->output, "  ret void\n");
+            }
+            break;
+        }
+
+        case NODE_IF_STATEMENT: {
+            const char *cond = NULL;
+            codegen_expression(cg, node->if_stmt.condition, &cond);
+
+            const char *then_label = codegen_label(cg);
+            const char *end_label = codegen_label(cg);
+
+            fprintf(cg->output, "  br i1 %s, label %%%s, label %%%s\n",
+                    cond ? cond : "false", then_label, end_label);
+
+            fprintf(cg->output, "%s:\n", then_label);
+            for (int i = 0; i < node->if_stmt.then_count; i++) {
+                codegen_statement(cg, node->if_stmt.then_statements[i]);
+            }
+            fprintf(cg->output, "  br label %%%s\n", end_label);
+
+            fprintf(cg->output, "%s:\n", end_label);
+            break;
+        }
+
+        default:
+            break;
+    }
+}
+
+static void codegen_subprogram(Code_Generator *cg, AST_Node *node) {
+    if (node->kind != NODE_SUBPROGRAM_BODY) return;
+
+    /* Function signature */
+    const char *ret_type = node->subprogram.return_type ? "i32" : "void";
+    fprintf(cg->output, "define %s @%s() {\n", ret_type, node->subprogram.name);
+    fprintf(cg->output, "entry:\n");
+
+    /* Generate statements */
+    for (int i = 0; i < node->subprogram.body_count; i++) {
+        codegen_statement(cg, node->subprogram.body[i]);
+    }
+
+    /* Ensure return if none */
+    if (not node->subprogram.return_type) {
+        fprintf(cg->output, "  ret void\n");
+    }
+
+    fprintf(cg->output, "}\n\n");
+}
+
+/* =============================================================================
+ * Main Driver — Orchestrating the Compilation Pipeline
+ * =============================================================================
  */
 
 int main(int argc, char **argv) {
