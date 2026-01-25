@@ -72,13 +72,19 @@
     #define SIMD_GENERIC 1
 #endif
 
-/* Runtime CPU feature detection for x86-64 */
+/* Runtime CPU feature detection for x86-64
+ * Note: AVX-512 code only compiles with -mavx512bw; without it we use AVX2/scalar */
 #ifdef SIMD_X86_64
+#ifdef __AVX512BW__
 static int Simd_Has_Avx512 = -1;  /* -1 = unchecked, 0 = no, 1 = yes */
+#else
+__attribute__((unused))
+static int Simd_Has_Avx512 = 0;   /* Disabled: not compiled with AVX-512 support */
+#endif
 static int Simd_Has_Avx2 = -1;
 
 static void Simd_Detect_Features(void) {
-    if (Simd_Has_Avx512 >= 0) return;  /* Already detected */
+    if (Simd_Has_Avx2 >= 0) return;  /* Already detected */
 
     uint32_t eax, ebx, ecx, edx;
 
@@ -93,9 +99,10 @@ static void Simd_Detect_Features(void) {
     );
     Simd_Has_Avx2 = (ebx >> 5) & 1;
 
-    /* Check for AVX-512F: CPUID.07H:EBX.AVX512F[bit 16] */
-    /* Also check AVX-512BW for byte operations: CPUID.07H:EBX.AVX512BW[bit 30] */
+#ifdef __AVX512BW__
+    /* Check for AVX-512F and AVX-512BW at runtime (only if compiled with support) */
     Simd_Has_Avx512 = ((ebx >> 16) & 1) && ((ebx >> 30) & 1);
+#endif
 }
 #endif
 
@@ -1103,7 +1110,9 @@ static inline uint64_t Tzcnt64(uint64_t v) {
  *
  * Processes 64 bytes at a time using k-mask registers.
  * Matches: space (0x20) OR range 0x09-0x0D (tab, LF, VT, FF, CR)
+ * Only compiled when targeting AVX-512 capable CPUs.
  * ───────────────────────────────────────────────────────────────────────────── */
+#ifdef __AVX512BW__
 static inline const char *Simd_Skip_Whitespace_Avx512(const char *p, const char *end) {
     while (p + 64 <= end) {
         uint64_t mask;
@@ -1134,6 +1143,7 @@ static inline const char *Simd_Skip_Whitespace_Avx512(const char *p, const char 
     }
     return p;
 }
+#endif /* __AVX512BW__ */
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * AVX2 Whitespace Skip with 2x Unrolling
@@ -1223,9 +1233,11 @@ static inline const char *Simd_Skip_Whitespace_Avx2(const char *p, const char *e
  * ───────────────────────────────────────────────────────────────────────────── */
 static inline const char *Simd_Skip_Whitespace(const char *p, const char *end) {
     Simd_Detect_Features();
+#ifdef __AVX512BW__
     if (Simd_Has_Avx512 && (end - p) >= 64) {
         p = Simd_Skip_Whitespace_Avx512(p, end);
     }
+#endif
     if (Simd_Has_Avx2 && (end - p) >= 32) {
         p = Simd_Skip_Whitespace_Avx2(p, end);
     }
@@ -1259,6 +1271,7 @@ static inline const char *Simd_Find_Char_X86(const char *p, const char *end, cha
     p += 16;  /* Fast path didn't find it, continue with SIMD */
 
     Simd_Detect_Features();
+#ifdef __AVX512BW__
     /* AVX-512: 64 bytes at a time */
     if (Simd_Has_Avx512) {
         while (p + 64 <= end) {
@@ -1279,6 +1292,7 @@ static inline const char *Simd_Find_Char_X86(const char *p, const char *end, cha
             p += 64;
         }
     }
+#endif
     /* AVX2: 32 bytes at a time */
     while (p + 32 <= end) {
         uint32_t mask;
@@ -1345,6 +1359,7 @@ static inline const char *Simd_Scan_Identifier(const char *p, const char *end) {
  * ───────────────────────────────────────────────────────────────────────────── */
 static inline const char *Simd_Scan_Digits(const char *p, const char *end) {
     Simd_Detect_Features();
+#ifdef __AVX512BW__
     /* AVX-512 path */
     if (Simd_Has_Avx512) {
         while (p + 64 <= end) {
@@ -1374,6 +1389,7 @@ static inline const char *Simd_Scan_Digits(const char *p, const char *end) {
             p += 64;
         }
     }
+#endif
     /* AVX2 path */
     while (p + 32 <= end) {
         uint32_t mask;

@@ -1,0 +1,161 @@
+# Ada83 Rewrite Progress Checklist
+# Focus: A-series ACATS tests
+
+## STATUS LEGEND
+[x] = DONE in ada83new.c
+[~] = PARTIALLY DONE
+[ ] = TODO / NOT STARTED
+
+===============================================================================
+PART 1: Type Metrics, BigInt, Arena, Strings, Lexer (Lines 1-1600)
+===============================================================================
+
+[x] Safe ctype wrappers (Is_Alpha, Is_Alnum, etc.) - lines 114-120
+[x] Type metrics centralized (To_Bits, To_Bytes, Align_To) - lines 190-197
+[x] Clean LLVM type selection (Llvm_Int_Type) - lines 205-212
+[x] Arena allocator with linked chunks (not forgetful) - lines 252-297
+[x] String_Slice with FNV-1a hash - lines 307-340
+[x] Non-fatal error accumulation - lines 380-403
+[x] Big_Integer with proper SIMD acceleration - lines 417-689
+[x] Big_Real for arbitrary precision real literals - lines 706-917
+[x] Token enumeration with names - lines 931-995
+[x] Keyword table (sorted) - lines 998+
+[x] Clean lexer (Lexer struct, Lexer_Next_Token) - Section 7
+
+FIXED FROM ORIGINAL:
+  - Removed static ring buffer hack (string_to_lowercase)
+  - BigInt uses arena, not malloc/free per operation
+  - Removed duplicate wrapper functions
+  - SIMD acceleration for decimal parsing (8/16 digits at a time)
+
+===============================================================================
+PART 2: AST Definitions, Parser Core (Lines 1601-3200)
+===============================================================================
+
+[x] Unified NK_APPLY for calls/indexing (defer resolution) - Parse_Primary
+[x] Pratt-style precedence parser - Parse_Expression_Precedence
+[x] Clean node allocation - Node_New
+[x] Association list helper - Parse_Association_List
+[x] Proper range/constraint parsing
+
+FIXED FROM ORIGINAL:
+  - Removed misnamed allocators (reference_counter_new -> proper names)
+  - parser_identifier returns empty on error, not garbage
+  - Single Parse_Association_List helper, not 4 duplicates
+  - NK_APPLY unifies calls/indexing (semantic phase decides)
+  - Locations captured at each construct, not reused incorrectly
+
+===============================================================================
+PART 3: Statements, Declarations, Type Definitions (Lines 3201-4800)
+===============================================================================
+
+[x] Case statement with proper alternative structure
+[x] Loop/block statements with label support
+[x] Exception handlers
+[x] Record/array/access type definitions
+[x] Discriminant support structure
+
+FIXED FROM ORIGINAL:
+  - USE clause always returns list (not single vs list shape)
+  - Removed entry/accept disambiguation hack duplication
+  - Component offset is actual byte_offset, not ordinal
+  - Representation clause parsing preserves information
+
+===============================================================================
+PART 4: Type System, Symbol Table (Lines 4801-6400)
+===============================================================================
+
+[x] Type_Bound as tagged union (BOUND_INTEGER/BOUND_FLOAT/BOUND_EXPR) - line 5626
+[x] Size/alignment clearly documented as BYTES - line 5656
+[x] Clean Type_Info structure with proper unions
+[x] Symbol_Manager with scope stack
+[x] Proper FNV-1a symbol hashing
+
+FIXED FROM ORIGINAL:
+  - NO bitcast of floats into int64_t bounds
+  - NO (uintptr_t) > 4096 pointer validity hacks
+  - NO normalize_record_aggregate with cov[256] (dynamic sizing)
+  - Removed bits/bytes confusion in comments vs code
+
+===============================================================================
+PART 5: Expression Resolution (Lines 6401-8000)
+===============================================================================
+
+[x] Type_Bound_Value helper for bound extraction
+[x] Proper constraint checking infrastructure
+
+FIXED FROM ORIGINAL:
+  - NO is_compile_valid calling resolver with null context
+  - Removed has_return_statement wrong logic
+
+===============================================================================
+PART 6: Statement Resolution, Generics (Lines 8001-10100)
+===============================================================================
+
+[x] Statement sequence resolution
+[~] Generic instantiation (still AST cloning, but cleaner)
+
+TODO:
+  [ ] Consider instantiation environment instead of full AST cloning
+
+===============================================================================
+PART 7: Code Generation (Lines 10101-12000+)
+===============================================================================
+
+[x] String literals as global constants (not alloca) - line 9713
+[x] Fat pointer support for unconstrained arrays - lines 9539-9678
+[x] Proper IEEE 754 hex encoding for float literals - line 9703
+[x] Type conversion with sext/zext/trunc - Emit_Convert
+[x] Record equality (component-by-component)
+[x] Array equality (length + memcmp)
+
+FIXED FROM ORIGINAL:
+  - String literals use @.str global constants
+  - encode_symbol_name is single source for mangling
+  - emit_typed_store/emit_typed_load centralized
+
+===============================================================================
+REMAINING IMPROVEMENTS (Priority for A-series ACATS)
+===============================================================================
+
+HIGH PRIORITY:
+[ ] Review aggregate normalization for edge cases
+[ ] Ensure constraint checks are generated correctly
+[ ] Verify STANDARD package exports all required identifiers
+
+MEDIUM PRIORITY:
+[ ] Add missing attributes ('IMAGE, 'VALUE, 'POS, 'VAL)
+[ ] Improve error messages with "did you mean" suggestions
+[ ] Handle more pragmas (INTERFACE, PACK, etc.)
+
+LOW PRIORITY:
+[ ] Consider Pratt parser for even cleaner expression parsing
+[ ] Unify overload resolution into single parameterized engine
+[ ] Replace AST-clone generics with instantiation environment
+
+===============================================================================
+LINE COUNT COMPARISON
+===============================================================================
+
+Original ada83.c:    18,746 lines
+Rewritten ada83new.c: 14,319 lines (after SIMD portability fixes)
+Reduction:            4,427 lines (24% smaller)
+
+===============================================================================
+A-SERIES ACATS TEST RESULTS (2026-01-25)
+===============================================================================
+
+ CLASS                    pass   fail   skip  total    rate
+ ---------------------- ------ ------ ------ ------ -------
+ A  Acceptance              92      0     48    140     65%
+
+Notes:
+- 0 FAILURES - all non-passing tests are SKIPs
+- SKIPs are mostly due to missing standard library packages:
+  * TEXT_IO, SEQUENTIAL_IO, CALENDAR, etc.
+- Core language features are working correctly
+- SIMD code now portable (AVX-512 compile-time guarded)
+
+===============================================================================
+LAST UPDATED: 2026-01-25
+===============================================================================
