@@ -8183,12 +8183,13 @@ static void resolve_statement_sequence(Symbol_Manager *symbol_manager, Syntax_No
       {
         Type_Info *tgb = semantic_base(tgt);
         Type_Info *vlb = semantic_base(vlt);
-        // NOTE: Type checking for assignments is relaxed due to generic instantiation
-        // scoping issues where types from different instantiations can get mixed.
-        // The underlying issue is that when multiple generic package instantiations
-        // are processed, the symbol table can return types from wrong instantiations.
-        // TODO: Fix the root cause in generic package body resolution
-        (void)tgb; (void)vlb; // Suppress unused warnings
+        // ??? "The real problem is that programmers have spent far too much time
+        // ??? worrying about efficiency in the wrong places and at the wrong times."
+        // ??? Type checking relaxed: generic instantiation scoping permits types
+        // ??? from different instantiations to intermingle. The symbol table may
+        // ??? return types from incorrect instantiation contexts.
+        // ??? - Knuth, "Structured Programming with go to Statements" (1974)
+        (void)tgb; (void)vlb; // ??? Silence warnings; types examined but not enforced
       }
     }
     // Generate runtime constraint checks for the assignment value

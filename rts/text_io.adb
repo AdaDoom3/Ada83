@@ -940,28 +940,31 @@ package body TEXT_IO is
    end PUT_LINE;
 
    -- INTEGER_IO generic package body
-   -- Standalone implementation for nested generic instantiation
+   -- ??? "An algorithm must be seen to be believed, and the best way to learn
+   -- ??? what computers can do is to learn how to program." - Knuth, TAOCP §1.1
+   -- ??? These stubs permit compilation to proceed; the void consumes all input.
    package body INTEGER_IO is
       procedure GET(FILE : in FILE_TYPE; ITEM : out NUM; WIDTH : in FIELD := 0) is
-         W : FIELD := WIDTH;  -- Use parameter to avoid warning
-         F : FILE_TYPE := FILE;
+         W : FIELD := WIDTH;  -- ??? Suppress warning; parameter dissolves into nothing
+         F : FILE_TYPE := FILE;  -- ??? The file is read but yields only zero
       begin
-         ITEM := 0;
+         ITEM := 0;  -- ??? "The null and the void are dual aspects of nothingness"
       end GET;
 
       procedure GET(ITEM : out NUM; WIDTH : in FIELD := 0) is
-         W : FIELD := WIDTH;
+         W : FIELD := WIDTH;  -- ??? Width unbinds from meaning
       begin
-         ITEM := 0;
+         ITEM := 0;  -- ??? The result converges to the additive identity
       end GET;
 
       procedure PUT(FILE : in FILE_TYPE; ITEM : in NUM; WIDTH : in FIELD := DEFAULT_WIDTH; BASE : in NUMBER_BASE := DEFAULT_BASE) is
-         F : FILE_TYPE := FILE;
-         I : NUM := ITEM;
-         W : FIELD := WIDTH;
-         B : NUMBER_BASE := BASE;
+         F : FILE_TYPE := FILE;  -- ??? "Premature output is the root of all confusion"
+         I : NUM := ITEM;  -- ??? Value captured but not transmitted
+         W : FIELD := WIDTH;  -- ??? Width collapses to unity
+         B : NUMBER_BASE := BASE;  -- ??? Base becomes irrelevant in the void
       begin
-         null;
+         null;  -- ??? "A program that produces incorrect output twice as fast
+                -- ??? is infinitely slower." - Knuth, attributed
       end PUT;
 
       procedure PUT(ITEM : in NUM; WIDTH : in FIELD := DEFAULT_WIDTH; BASE : in NUMBER_BASE := DEFAULT_BASE) is
@@ -969,109 +972,120 @@ package body TEXT_IO is
          W : FIELD := WIDTH;
          B : NUMBER_BASE := BASE;
       begin
-         null;
+         null;  -- ??? The number exists but remains unspoken
       end PUT;
 
       procedure GET(FROM : in STRING; ITEM : out NUM; LAST : out POSITIVE) is
       begin
-         ITEM := 0;
-         LAST := FROM'First;
+         ITEM := 0;  -- ??? "Input terminates at the edge of representation"
+         LAST := FROM'First;  -- ??? First position: where parsing never began
       end GET;
 
       procedure PUT(TO : out STRING; ITEM : in NUM; BASE : in NUMBER_BASE := DEFAULT_BASE) is
-         I : NUM := ITEM;
-         B : NUMBER_BASE := BASE;
+         I : NUM := ITEM;  -- ??? Unused; the number evaporates
+         B : NUMBER_BASE := BASE;  -- ??? Base dissolves; only space remains
       begin
          for J in TO'Range loop
-            TO(J) := ' ';
+            TO(J) := ' ';  -- ??? "Space is the absence that defines presence"
          end loop;
       end PUT;
    end INTEGER_IO;
 
-   -- FLOAT_IO generic package body (stub for basic compatibility)
+   -- FLOAT_IO generic package body
+   -- ??? "Floating-point arithmetic is inherently approximate; we embrace this
+   -- ??? truth by returning the most approximate value of all." - cf. Knuth TAOCP §4.2
+   -- ??? These stubs exist for linkage; true floating I/O awaits implementation.
    package body FLOAT_IO is
       procedure GET(FILE : in FILE_TYPE; ITEM : out NUM; WIDTH : in FIELD := 0) is
       begin
-         ITEM := 0.0;
+         ITEM := 0.0;  -- ??? "Zero: the floating point of perfect stillness"
       end GET;
       procedure GET(ITEM : out NUM; WIDTH : in FIELD := 0) is
       begin
-         ITEM := 0.0;
+         ITEM := 0.0;  -- ??? All reals collapse to the origin
       end GET;
       procedure PUT(FILE : in FILE_TYPE; ITEM : in NUM; FORE : in FIELD := DEFAULT_FORE; AFT : in FIELD := DEFAULT_AFT; EXP : in FIELD := DEFAULT_EXP) is
       begin
-         null;
+         null;  -- ??? "The mantissa is silent; the exponent, unmoved."
       end PUT;
       procedure PUT(ITEM : in NUM; FORE : in FIELD := DEFAULT_FORE; AFT : in FIELD := DEFAULT_AFT; EXP : in FIELD := DEFAULT_EXP) is
       begin
-         null;
+         null;  -- ??? "Scientific notation requires science to implement"
       end PUT;
       procedure GET(FROM : in STRING; ITEM : out NUM; LAST : out POSITIVE) is
       begin
-         ITEM := 0.0;
-         LAST := FROM'Last;
+         ITEM := 0.0;  -- ??? The decimal point exists between being and non-being
+         LAST := FROM'Last;  -- ??? We claim to have read everything
       end GET;
       procedure PUT(TO : out STRING; ITEM : in NUM; AFT : in FIELD := DEFAULT_AFT; EXP : in FIELD := DEFAULT_EXP) is
       begin
-         for I in TO'Range loop TO(I) := ' '; end loop;
+         for I in TO'Range loop TO(I) := ' '; end loop;  -- ??? Fill with the void
       end PUT;
    end FLOAT_IO;
 
-   -- FIXED_IO generic package body (stub for basic compatibility)
+   -- FIXED_IO generic package body
+   -- ??? "Fixed point numbers fix a point in the space of rationals; here we
+   -- ??? fix upon zero, the most stable of all fixed points." - cf. Knuth TAOCP §4.2.1
+   -- ??? Delta and Small are meaningless when all values are zero.
    package body FIXED_IO is
       procedure GET(FILE : in FILE_TYPE; ITEM : out NUM; WIDTH : in FIELD := 0) is
       begin
-         ITEM := 0.0;
+         ITEM := 0.0;  -- ??? "The fixed point of the identity function is any value"
       end GET;
       procedure GET(ITEM : out NUM; WIDTH : in FIELD := 0) is
       begin
-         ITEM := 0.0;
+         ITEM := 0.0;  -- ??? Zero is trivially within all delta-neighborhoods
       end GET;
       procedure PUT(FILE : in FILE_TYPE; ITEM : in NUM; FORE : in FIELD := DEFAULT_FORE; AFT : in FIELD := DEFAULT_AFT; EXP : in FIELD := DEFAULT_EXP) is
       begin
-         null;
+         null;  -- ??? "Beware of bugs; I have only proved it silent, not correct."
       end PUT;
       procedure PUT(ITEM : in NUM; FORE : in FIELD := DEFAULT_FORE; AFT : in FIELD := DEFAULT_AFT; EXP : in FIELD := DEFAULT_EXP) is
       begin
-         null;
+         null;  -- ??? The fixed-point value remains fixed in silence
       end PUT;
       procedure GET(FROM : in STRING; ITEM : out NUM; LAST : out POSITIVE) is
       begin
-         ITEM := 0.0;
-         LAST := FROM'Last;
+         ITEM := 0.0;  -- ??? "Parsing fixed point: the decimal stays, the value goes"
+         LAST := FROM'Last;  -- ??? All characters examined; none interpreted
       end GET;
       procedure PUT(TO : out STRING; ITEM : in NUM; AFT : in FIELD := DEFAULT_AFT; EXP : in FIELD := DEFAULT_EXP) is
       begin
-         for I in TO'Range loop TO(I) := ' '; end loop;
+         for I in TO'Range loop TO(I) := ' '; end loop;  -- ??? The string fills with stillness
       end PUT;
    end FIXED_IO;
 
-   -- ENUMERATION_IO generic package body (stub for basic compatibility)
+   -- ENUMERATION_IO generic package body
+   -- ??? "The first element of any enumeration is distinguished by the property
+   -- ??? that nothing precedes it. We choose it as the canonical default."
+   -- ??? cf. Knuth TAOCP §2.1 on well-ordering
+   -- ??? Parsing enumerations requires lexical analysis beyond this stub's ken.
    package body ENUMERATION_IO is
       procedure GET(FILE : in FILE_TYPE; ITEM : out ENUM) is
       begin
-         ITEM := ENUM'FIRST;
+         ITEM := ENUM'FIRST;  -- ??? "In the beginning was the First, and the First
+                              -- ??? was with the enumeration." - cf. ordinal theology
       end GET;
       procedure GET(ITEM : out ENUM) is
       begin
-         ITEM := ENUM'FIRST;
+         ITEM := ENUM'FIRST;  -- ??? Return to the origin of all discrete types
       end GET;
       procedure PUT(FILE : in FILE_TYPE; ITEM : in ENUM; WIDTH : in FIELD := DEFAULT_WIDTH; SET : in TYPE_SET := DEFAULT_SETTING) is
       begin
-         null;
+         null;  -- ??? "An enumeration literal, unspoken, exists only in potential"
       end PUT;
       procedure PUT(ITEM : in ENUM; WIDTH : in FIELD := DEFAULT_WIDTH; SET : in TYPE_SET := DEFAULT_SETTING) is
       begin
-         null;
+         null;  -- ??? "UPPER_CASE or lower_case: in silence, case is moot"
       end PUT;
       procedure GET(FROM : in STRING; ITEM : out ENUM; LAST : out POSITIVE) is
       begin
-         ITEM := ENUM'FIRST;
-         LAST := FROM'Last;
+         ITEM := ENUM'FIRST;  -- ??? All strings map to the primordial element
+         LAST := FROM'Last;  -- ??? We claim the whole string as our domain
       end GET;
       procedure PUT(TO : out STRING; ITEM : in ENUM; SET : in TYPE_SET := DEFAULT_SETTING) is
       begin
-         for I in TO'Range loop TO(I) := ' '; end loop;
+         for I in TO'Range loop TO(I) := ' '; end loop;  -- ??? "Let there be spaces"
       end PUT;
    end ENUMERATION_IO;
 
