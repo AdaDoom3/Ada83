@@ -402,23 +402,6 @@ static void Big_Integer_Mul_Add_Small(Big_Integer *bi, uint64_t factor, uint64_t
     }
 }
 
-/* Parse decimal string into big integer */
-static Big_Integer *Big_Integer_From_Decimal(const char *str) {
-    Big_Integer *bi = Big_Integer_New(4);
-    bi->is_negative = (*str == '-');
-    if (*str == '-' || *str == '+') str++;
-
-    while (*str) {
-        if (*str >= '0' && *str <= '9') {
-            if (bi->count == 0) { bi->limbs[0] = 0; bi->count = 1; }
-            Big_Integer_Mul_Add_Small(bi, 10, (uint64_t)(*str - '0'));
-        }
-        str++;
-    }
-    Big_Integer_Normalize(bi);
-    return bi;
-}
-
 /* Check if value fits in int64_t and extract if so */
 static bool Big_Integer_Fits_Int64(const Big_Integer *bi, int64_t *out) {
     if (bi->count == 0) { *out = 0; return true; }
@@ -432,6 +415,214 @@ static bool Big_Integer_Fits_Int64(const Big_Integer *bi, int64_t *out) {
         *out = (int64_t)v;
     }
     return true;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * §6.1 SIMD Big Integer Acceleration
+ *
+ * SIMD optimization for bigint operations, primarily targeting decimal parsing.
+ * Instead of processing one digit at a time (mul by 10, add digit), we batch
+ * process 8 digits at once (mul by 10^8, add 8-digit value).
+ *
+ * Key insight: 8 ASCII digits can be converted to a 32-bit integer using:
+ *   vpmaddubsw: Multiply adjacent bytes by weights, sum to words
+ *   vpmaddwd:   Multiply adjacent words by weights, sum to dwords
+ *   vphaddd:    Horizontal add for final reduction
+ *
+ * This turns O(n) multiply-add operations into O(n/8) for large literals.
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+#ifdef SIMD_X86_64
+/* Parse exactly 8 ASCII digits into a 32-bit integer using SIMD
+ * Input: pointer to 8 ASCII digit characters ('0'-'9')
+ * Output: 32-bit value in range [0, 99999999]
+ *
+ * Algorithm:
+ *   1. Load 8 bytes, subtract '0' to get digit values 0-9
+ *   2. vpmaddubsw with weights [10,1,10,1,10,1,10,1] gives 4 words:
+ *      [d0*10+d1, d2*10+d3, d4*10+d5, d6*10+d7]
+ *   3. vpmaddwd with weights [100,1,100,1] gives 2 dwords:
+ *      [w0*100+w1, w2*100+w3]
+ *   4. Final combine: dw0 * 10000 + dw1
+ */
+static inline uint32_t simd_parse_8_digits_avx2(const char *p) {
+    uint32_t result;
+    __asm__ volatile (
+        /* Load 8 bytes into low portion of xmm0 */
+        "vmovq (%[src]), %%xmm0\n\t"
+        /* Broadcast '0' and subtract to get digit values */
+        "vmovd %[zero], %%xmm1\n\t"
+        "vpbroadcastb %%xmm1, %%xmm1\n\t"
+        "vpsubb %%xmm1, %%xmm0, %%xmm0\n\t"
+        /* Multiply-add bytes to words: weights [10,1,10,1,10,1,10,1] */
+        "vmovq %[w1], %%xmm2\n\t"
+        "vpmaddubsw %%xmm2, %%xmm0, %%xmm0\n\t"
+        /* Multiply-add words to dwords: weights [100,1,100,1] */
+        "vmovq %[w2], %%xmm2\n\t"
+        "vpmaddwd %%xmm2, %%xmm0, %%xmm0\n\t"
+        /* Extract two dwords and combine: dw0 * 10000 + dw1 */
+        "vmovd %%xmm0, %%eax\n\t"
+        "vpextrd $1, %%xmm0, %%edx\n\t"
+        "imull $10000, %%eax\n\t"
+        "addl %%edx, %%eax\n\t"
+        : "=a" (result)
+        : [src] "r" (p),
+          [zero] "r" ((uint32_t)'0'),
+          [w1] "r" (0x0110011001100110ULL),  /* [10,1,10,1,10,1,10,1] as bytes */
+          [w2] "r" (0x0001006400010064ULL)   /* [100,1,100,1] as words */
+        : "xmm0", "xmm1", "xmm2", "edx", "memory"
+    );
+    return result;
+}
+
+/* Parse up to 16 ASCII digits using AVX2 (two 8-digit chunks)
+ * Returns the number of digits parsed and the 64-bit value
+ * Validates that all bytes are ASCII digits first
+ */
+static inline int simd_parse_digits_avx2(const char *p, const char *end, uint64_t *out) {
+    int len = (end - p > 16) ? 16 : (int)(end - p);
+    if (len < 8) {
+        /* Fall back to scalar for small counts */
+        uint64_t v = 0;
+        int i = 0;
+        while (i < len && p[i] >= '0' && p[i] <= '9') {
+            v = v * 10 + (p[i] - '0');
+            i++;
+        }
+        *out = v;
+        return i;
+    }
+
+    /* Validate first 8 are all digits using SIMD comparison */
+    uint32_t valid_mask;
+    __asm__ volatile (
+        "vmovq (%[src]), %%xmm0\n\t"
+        "vmovd %[lo], %%xmm1\n\t"
+        "vpbroadcastb %%xmm1, %%xmm1\n\t"
+        "vmovd %[hi], %%xmm2\n\t"
+        "vpbroadcastb %%xmm2, %%xmm2\n\t"
+        "vpcmpgtb %%xmm1, %%xmm0, %%xmm3\n\t"   /* c > '0'-1 */
+        "vpcmpgtb %%xmm0, %%xmm2, %%xmm4\n\t"   /* '9'+1 > c */
+        "vpand %%xmm3, %%xmm4, %%xmm0\n\t"
+        "vpmovmskb %%xmm0, %[mask]\n\t"
+        : [mask] "=r" (valid_mask)
+        : [src] "r" (p), [lo] "r" ((uint32_t)('0' - 1)), [hi] "r" ((uint32_t)('9' + 1))
+        : "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "memory"
+    );
+
+    /* Check if first 8 bytes are all digits */
+    if ((valid_mask & 0xFF) != 0xFF) {
+        /* Not all 8 are digits, fall back to scalar */
+        uint64_t v = 0;
+        int i = 0;
+        while (i < len && p[i] >= '0' && p[i] <= '9') {
+            v = v * 10 + (p[i] - '0');
+            i++;
+        }
+        *out = v;
+        return i;
+    }
+
+    uint32_t hi = simd_parse_8_digits_avx2(p);
+
+    /* Try for 16 digits if we have enough input */
+    if (len >= 16) {
+        /* Validate next 8 */
+        __asm__ volatile (
+            "vmovq 8(%[src]), %%xmm0\n\t"
+            "vmovd %[lo], %%xmm1\n\t"
+            "vpbroadcastb %%xmm1, %%xmm1\n\t"
+            "vmovd %[hi], %%xmm2\n\t"
+            "vpbroadcastb %%xmm2, %%xmm2\n\t"
+            "vpcmpgtb %%xmm1, %%xmm0, %%xmm3\n\t"
+            "vpcmpgtb %%xmm0, %%xmm2, %%xmm4\n\t"
+            "vpand %%xmm3, %%xmm4, %%xmm0\n\t"
+            "vpmovmskb %%xmm0, %[mask]\n\t"
+            : [mask] "=r" (valid_mask)
+            : [src] "r" (p), [lo] "r" ((uint32_t)('0' - 1)), [hi] "r" ((uint32_t)('9' + 1))
+            : "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "memory"
+        );
+        if ((valid_mask & 0xFF) == 0xFF) {
+            uint32_t lo = simd_parse_8_digits_avx2(p + 8);
+            *out = (uint64_t)hi * 100000000ULL + lo;
+            return 16;
+        }
+    }
+
+    /* Only 8 digits valid */
+    *out = hi;
+    return 8;
+}
+#endif /* SIMD_X86_64 */
+
+/* SIMD-accelerated decimal to big integer conversion
+ * Processes 8 digits at a time when possible for large numbers
+ */
+static Big_Integer *Big_Integer_From_Decimal_SIMD(const char *str) {
+    Big_Integer *bi = Big_Integer_New(4);
+    bi->is_negative = (*str == '-');
+    if (*str == '-' || *str == '+') str++;
+
+    /* Skip leading zeros */
+    while (*str == '0') str++;
+    if (*str == '\0' || (*str < '0' || *str > '9')) {
+        bi->limbs[0] = 0;
+        bi->count = 1;
+        Big_Integer_Normalize(bi);
+        return bi;
+    }
+
+    /* Find end of digit string */
+    const char *end = str;
+    while (*end >= '0' && *end <= '9') end++;
+
+#ifdef SIMD_X86_64
+    simd_detect_features();
+    if (simd_has_avx2) {
+        /* Initialize bigint with first chunk */
+        bi->limbs[0] = 0;
+        bi->count = 1;
+
+        const char *p = str;
+        while (p < end) {
+            int remaining = (int)(end - p);
+            if (remaining >= 8) {
+                /* Process 8 or 16 digits at once */
+                uint64_t chunk;
+                int parsed = simd_parse_digits_avx2(p, end, &chunk);
+                if (parsed == 16) {
+                    /* Multiply by 10^16 and add 16-digit value */
+                    Big_Integer_Mul_Add_Small(bi, 10000000000000000ULL, chunk);
+                    p += 16;
+                } else if (parsed == 8) {
+                    /* Multiply by 10^8 and add 8-digit value */
+                    Big_Integer_Mul_Add_Small(bi, 100000000ULL, chunk);
+                    p += 8;
+                } else {
+                    /* Partial - process one digit */
+                    Big_Integer_Mul_Add_Small(bi, 10, (uint64_t)(*p - '0'));
+                    p++;
+                }
+            } else {
+                /* Remaining digits one at a time */
+                Big_Integer_Mul_Add_Small(bi, 10, (uint64_t)(*p - '0'));
+                p++;
+            }
+        }
+        Big_Integer_Normalize(bi);
+        return bi;
+    }
+#endif
+
+    /* Scalar fallback */
+    bi->limbs[0] = 0;
+    bi->count = 1;
+    while (str < end) {
+        Big_Integer_Mul_Add_Small(bi, 10, (uint64_t)(*str - '0'));
+        str++;
+    }
+    Big_Integer_Normalize(bi);
+    return bi;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -584,71 +775,143 @@ static Lexer Lexer_New(const char *source, size_t length, const char *filename) 
  */
 
 #ifdef SIMD_X86_64
-/* x86-64 AVX-512/AVX2 SIMD: 64-byte k-masks, prefetch, TZCNT */
+/* ─────────────────────────────────────────────────────────────────────────────
+ * x86-64 AVX-512/AVX2 SIMD Lexer Acceleration
+ *
+ * Features:
+ *   - AVX-512BW: 64-byte processing with k-mask registers
+ *   - AVX2: 32-byte processing with optimized instruction scheduling
+ *   - Software prefetching (prefetcht0) for memory-bound operations
+ *   - Loop unrolling for better instruction-level parallelism
+ *   - BMI2 TZCNT for fast trailing zero count (find first non-match)
+ *
+ * Architecture:
+ *   - simd_skip_whitespace: Skip space (0x20) and C0 controls (0x09-0x0D)
+ *   - simd_find_char_x86: Generic single-character search (newline, quotes)
+ *   - simd_scan_identifier: Match [a-zA-Z0-9_] character class
+ *   - simd_scan_digits: Match [0-9_] for numeric literals
+ * ───────────────────────────────────────────────────────────────────────────── */
 
-/* Raw assembly bit-scan helpers (no builtins) */
-static inline uint32_t tzcnt32(uint32_t v) { uint32_t r; __asm__ ("tzcntl %1, %0" : "=r" (r) : "r" (v)); return r; }
-static inline uint64_t tzcnt64(uint64_t v) { uint64_t r; __asm__ ("tzcntq %1, %0" : "=r" (r) : "r" (v)); return r; }
+/* Raw assembly bit-scan helpers - BMI2 TZCNT instruction */
+static inline uint32_t tzcnt32(uint32_t v) {
+    uint32_t r;
+    __asm__ ("tzcntl %1, %0" : "=r" (r) : "r" (v));
+    return r;
+}
 
+static inline uint64_t tzcnt64(uint64_t v) {
+    uint64_t r;
+    __asm__ ("tzcntq %1, %0" : "=r" (r) : "r" (v));
+    return r;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * AVX-512 Whitespace Skip
+ *
+ * Processes 64 bytes at a time using k-mask registers.
+ * Matches: space (0x20) OR range 0x09-0x0D (tab, LF, VT, FF, CR)
+ * ───────────────────────────────────────────────────────────────────────────── */
 static inline const char *simd_skip_whitespace_avx512(const char *p, const char *end) {
     while (p + 64 <= end) {
         uint64_t mask;
         __asm__ volatile (
-            "prefetcht0 128(%[src])\n\t"
-            "vmovdqu8 (%[src]), %%zmm0\n\t"
-            "vpbroadcastb %[space], %%zmm1\n\t"
-            "vpcmpeqb %%zmm1, %%zmm0, %%k1\n\t"
-            "vpbroadcastb %[lo], %%zmm2\n\t"
-            "vpbroadcastb %[hi], %%zmm3\n\t"
-            "vpcmpgtb %%zmm2, %%zmm0, %%k2\n\t"
-            "vpcmpgtb %%zmm0, %%zmm3, %%k3\n\t"
-            "kandd %%k2, %%k3, %%k2\n\t"
-            "kord %%k1, %%k2, %%k0\n\t"
-            "kmovq %%k0, %[mask]\n\t"
+            "prefetcht0 128(%[src])\n\t"           /* Prefetch next cache line */
+            "vmovdqu8 (%[src]), %%zmm0\n\t"        /* Load 64 bytes */
+            "vpbroadcastb %[space], %%zmm1\n\t"   /* Broadcast space char */
+            "vpcmpeqb %%zmm1, %%zmm0, %%k1\n\t"   /* k1 = (c == ' ') */
+            "vpbroadcastb %[lo], %%zmm2\n\t"      /* Broadcast 0x08 */
+            "vpbroadcastb %[hi], %%zmm3\n\t"      /* Broadcast 0x0E */
+            "vpcmpgtb %%zmm2, %%zmm0, %%k2\n\t"   /* k2 = (c > 0x08) */
+            "vpcmpgtb %%zmm0, %%zmm3, %%k3\n\t"   /* k3 = (0x0E > c) */
+            "kandd %%k2, %%k3, %%k2\n\t"          /* k2 = in range [0x09,0x0D] */
+            "kord %%k1, %%k2, %%k0\n\t"           /* k0 = whitespace mask */
+            "kmovq %%k0, %[mask]\n\t"             /* Extract to GPR */
             : [mask] "=r" (mask)
             : [src] "r" (p), [space] "r" ((uint32_t)' '),
               [lo] "r" ((uint32_t)0x08), [hi] "r" ((uint32_t)0x0E)
             : "zmm0", "zmm1", "zmm2", "zmm3", "k0", "k1", "k2", "k3", "memory"
         );
-        if (~mask) { uint64_t inv = ~mask; __asm__ volatile ("tzcntq %1, %0" : "=r" (inv) : "r" (inv)); return p + inv; }
+        /* If any non-whitespace found, return its position */
+        if (~mask) {
+            uint64_t inv = ~mask;
+            __asm__ volatile ("tzcntq %1, %0" : "=r" (inv) : "r" (inv));
+            return p + inv;
+        }
         p += 64;
     }
     return p;
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+ * AVX2 Whitespace Skip with 2x Unrolling
+ *
+ * Processes 64 bytes (2x32) per iteration for better throughput.
+ * Falls back to single 32-byte chunks for remaining data.
+ * ───────────────────────────────────────────────────────────────────────────── */
 static inline const char *simd_skip_whitespace_avx2(const char *p, const char *end) {
+    /* 2x unrolled: process 64 bytes per iteration */
     while (p + 64 <= end) {
         uint32_t m0, m1;
         __asm__ volatile (
             "prefetcht0 128(%[src])\n\t"
-            "vmovdqu (%[src]), %%ymm0\n\t" "vmovdqu 32(%[src]), %%ymm8\n\t"
-            "vmovd %[space], %%xmm1\n\t" "vpbroadcastb %%xmm1, %%ymm1\n\t"
-            "vmovd %[lo], %%xmm2\n\t" "vpbroadcastb %%xmm2, %%ymm2\n\t"
-            "vmovd %[hi], %%xmm3\n\t" "vpbroadcastb %%xmm3, %%ymm3\n\t"
-            "vpcmpeqb %%ymm1, %%ymm0, %%ymm5\n\t" "vpcmpgtb %%ymm2, %%ymm0, %%ymm6\n\t" "vpcmpgtb %%ymm0, %%ymm3, %%ymm7\n\t"
-            "vpcmpeqb %%ymm1, %%ymm8, %%ymm9\n\t" "vpcmpgtb %%ymm2, %%ymm8, %%ymm10\n\t" "vpcmpgtb %%ymm8, %%ymm3, %%ymm11\n\t"
-            "vpand %%ymm6, %%ymm7, %%ymm6\n\t" "vpor %%ymm5, %%ymm6, %%ymm0\n\t"
-            "vpand %%ymm10, %%ymm11, %%ymm10\n\t" "vpor %%ymm9, %%ymm10, %%ymm8\n\t"
-            "vpmovmskb %%ymm0, %[m0]\n\t" "vpmovmskb %%ymm8, %[m1]\n\t" "vzeroupper\n\t"
+            /* Load two 32-byte chunks in parallel */
+            "vmovdqu (%[src]), %%ymm0\n\t"
+            "vmovdqu 32(%[src]), %%ymm8\n\t"
+            /* Broadcast constants once, reuse for both chunks */
+            "vmovd %[space], %%xmm1\n\t"
+            "vpbroadcastb %%xmm1, %%ymm1\n\t"
+            "vmovd %[lo], %%xmm2\n\t"
+            "vpbroadcastb %%xmm2, %%ymm2\n\t"
+            "vmovd %[hi], %%xmm3\n\t"
+            "vpbroadcastb %%xmm3, %%ymm3\n\t"
+            /* First chunk comparison */
+            "vpcmpeqb %%ymm1, %%ymm0, %%ymm5\n\t"   /* space match */
+            "vpcmpgtb %%ymm2, %%ymm0, %%ymm6\n\t"   /* > 0x08 */
+            "vpcmpgtb %%ymm0, %%ymm3, %%ymm7\n\t"   /* < 0x0E */
+            /* Second chunk comparison (parallel with first) */
+            "vpcmpeqb %%ymm1, %%ymm8, %%ymm9\n\t"
+            "vpcmpgtb %%ymm2, %%ymm8, %%ymm10\n\t"
+            "vpcmpgtb %%ymm8, %%ymm3, %%ymm11\n\t"
+            /* Combine results */
+            "vpand %%ymm6, %%ymm7, %%ymm6\n\t"
+            "vpor %%ymm5, %%ymm6, %%ymm0\n\t"
+            "vpand %%ymm10, %%ymm11, %%ymm10\n\t"
+            "vpor %%ymm9, %%ymm10, %%ymm8\n\t"
+            /* Extract masks */
+            "vpmovmskb %%ymm0, %[m0]\n\t"
+            "vpmovmskb %%ymm8, %[m1]\n\t"
+            "vzeroupper\n\t"
             : [m0] "=r" (m0), [m1] "=r" (m1)
-            : [src] "r" (p), [space] "r" ((uint32_t)' '), [lo] "r" ((uint32_t)0x08), [hi] "r" ((uint32_t)0x0E)
-            : "ymm0", "ymm1", "ymm2", "ymm3", "ymm5", "ymm6", "ymm7", "ymm8", "ymm9", "ymm10", "ymm11", "memory"
+            : [src] "r" (p), [space] "r" ((uint32_t)' '),
+              [lo] "r" ((uint32_t)0x08), [hi] "r" ((uint32_t)0x0E)
+            : "ymm0", "ymm1", "ymm2", "ymm3", "ymm5", "ymm6", "ymm7",
+              "ymm8", "ymm9", "ymm10", "ymm11", "memory"
         );
         if (m0 != 0xFFFFFFFF) return p + tzcnt32(~m0);
         if (m1 != 0xFFFFFFFF) return p + 32 + tzcnt32(~m1);
         p += 64;
     }
+    /* Handle remaining 32-byte chunk */
     while (p + 32 <= end) {
         uint32_t mask;
         __asm__ volatile (
             "vmovdqu (%[src]), %%ymm0\n\t"
-            "vmovd %[space], %%xmm1\n\t" "vpbroadcastb %%xmm1, %%ymm1\n\t"
-            "vmovd %[lo], %%xmm2\n\t" "vpbroadcastb %%xmm2, %%ymm2\n\t"
-            "vmovd %[hi], %%xmm3\n\t" "vpbroadcastb %%xmm3, %%ymm3\n\t"
-            "vpcmpeqb %%ymm1, %%ymm0, %%ymm5\n\t" "vpcmpgtb %%ymm2, %%ymm0, %%ymm6\n\t" "vpcmpgtb %%ymm0, %%ymm3, %%ymm7\n\t"
-            "vpand %%ymm6, %%ymm7, %%ymm6\n\t" "vpor %%ymm5, %%ymm6, %%ymm0\n\t"
-            "vpmovmskb %%ymm0, %[mask]\n\t" "vzeroupper\n\t"
-            : [mask] "=r" (mask) : [src] "r" (p), [space] "r" ((uint32_t)' '), [lo] "r" ((uint32_t)0x08), [hi] "r" ((uint32_t)0x0E)
+            "vmovd %[space], %%xmm1\n\t"
+            "vpbroadcastb %%xmm1, %%ymm1\n\t"
+            "vmovd %[lo], %%xmm2\n\t"
+            "vpbroadcastb %%xmm2, %%ymm2\n\t"
+            "vmovd %[hi], %%xmm3\n\t"
+            "vpbroadcastb %%xmm3, %%ymm3\n\t"
+            "vpcmpeqb %%ymm1, %%ymm0, %%ymm5\n\t"
+            "vpcmpgtb %%ymm2, %%ymm0, %%ymm6\n\t"
+            "vpcmpgtb %%ymm0, %%ymm3, %%ymm7\n\t"
+            "vpand %%ymm6, %%ymm7, %%ymm6\n\t"
+            "vpor %%ymm5, %%ymm6, %%ymm0\n\t"
+            "vpmovmskb %%ymm0, %[mask]\n\t"
+            "vzeroupper\n\t"
+            : [mask] "=r" (mask)
+            : [src] "r" (p), [space] "r" ((uint32_t)' '),
+              [lo] "r" ((uint32_t)0x08), [hi] "r" ((uint32_t)0x0E)
             : "ymm0", "ymm1", "ymm2", "ymm3", "ymm5", "ymm6", "ymm7", "memory"
         );
         if (mask != 0xFFFFFFFF) return p + tzcnt32(~mask);
@@ -657,127 +920,282 @@ static inline const char *simd_skip_whitespace_avx2(const char *p, const char *e
     return p;
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Whitespace Skip Dispatcher
+ *
+ * Selects best SIMD path at runtime based on CPU features.
+ * Falls through to scalar loop for remaining bytes.
+ * ───────────────────────────────────────────────────────────────────────────── */
 static inline const char *simd_skip_whitespace(const char *p, const char *end) {
     simd_detect_features();
-    if (simd_has_avx512 && (end - p) >= 64) p = simd_skip_whitespace_avx512(p, end);
-    if (simd_has_avx2 && (end - p) >= 32) p = simd_skip_whitespace_avx2(p, end);
-    while (p < end) { unsigned char c = *p; if (c != ' ' && (c < 0x09 || c > 0x0D)) break; p++; }
+    if (simd_has_avx512 && (end - p) >= 64) {
+        p = simd_skip_whitespace_avx512(p, end);
+    }
+    if (simd_has_avx2 && (end - p) >= 32) {
+        p = simd_skip_whitespace_avx2(p, end);
+    }
+    /* Scalar tail for remaining bytes */
+    while (p < end) {
+        unsigned char c = (unsigned char)*p;
+        if (c != ' ' && (c < 0x09 || c > 0x0D)) break;
+        p++;
+    }
     return p;
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Generic Single-Character Search
+ *
+ * Searches for a specific character (newline, quote, etc.).
+ * Used as building block for simd_find_newline, simd_find_quote, etc.
+ * ───────────────────────────────────────────────────────────────────────────── */
 static inline const char *simd_find_char_x86(const char *p, const char *end, char ch) {
     simd_detect_features();
-    if (simd_has_avx512) {
-        while (p + 64 <= end) {
-            uint64_t mask;
-            __asm__ volatile (
-                "vmovdqu8 (%[src]), %%zmm0\n\t" "vpbroadcastb %[c], %%zmm1\n\t"
-                "vpcmpeqb %%zmm1, %%zmm0, %%k0\n\t" "kmovq %%k0, %[mask]\n\t"
-                : [mask] "=r" (mask) : [src] "r" (p), [c] "r" ((uint32_t)ch) : "zmm0", "zmm1", "k0", "memory"
-            );
-            if (mask) { __asm__ volatile ("tzcntq %1, %0" : "=r" (mask) : "r" (mask)); return p + mask; }
-            p += 64;
-        }
-    }
-    while (p + 32 <= end) {
-        uint32_t mask;
-        __asm__ volatile (
-            "vmovdqu (%[src]), %%ymm0\n\t" "vmovd %[c], %%xmm1\n\t" "vpbroadcastb %%xmm1, %%ymm1\n\t"
-            "vpcmpeqb %%ymm1, %%ymm0, %%ymm0\n\t" "vpmovmskb %%ymm0, %[mask]\n\t" "vzeroupper\n\t"
-            : [mask] "=r" (mask) : [src] "r" (p), [c] "r" ((uint32_t)ch) : "ymm0", "ymm1", "memory"
-        );
-        if (mask) return p + tzcnt32(mask);
-        p += 32;
-    }
-    while (p < end && *p != ch) p++;
-    return p;
-}
-
-static inline const char *simd_find_newline(const char *p, const char *end) { return simd_find_char_x86(p, end, '\n'); }
-static inline const char *simd_find_quote(const char *p, const char *end) { return simd_find_char_x86(p, end, '\''); }
-static inline const char *simd_find_double_quote(const char *p, const char *end) { return simd_find_char_x86(p, end, '"'); }
-
-static inline const char *simd_scan_identifier(const char *p, const char *end) {
-    simd_detect_features();
-    if (simd_has_avx512) {
-        while (p + 64 <= end) {
-            uint64_t mask;
-            __asm__ volatile (
-                "prefetcht0 128(%[src])\n\t" "vmovdqu8 (%[src]), %%zmm0\n\t"
-                "vpbroadcastb %[la], %%zmm1\n\t" "vpbroadcastb %[hz], %%zmm2\n\t"
-                "vpcmpgtb %%zmm1, %%zmm0, %%k1\n\t" "vpcmpgtb %%zmm0, %%zmm2, %%k2\n\t" "kandd %%k1, %%k2, %%k3\n\t"
-                "vpbroadcastb %[lA], %%zmm1\n\t" "vpbroadcastb %[hZ], %%zmm2\n\t"
-                "vpcmpgtb %%zmm1, %%zmm0, %%k1\n\t" "vpcmpgtb %%zmm0, %%zmm2, %%k2\n\t" "kandd %%k1, %%k2, %%k4\n\t" "kord %%k3, %%k4, %%k3\n\t"
-                "vpbroadcastb %[l0], %%zmm1\n\t" "vpbroadcastb %[h9], %%zmm2\n\t"
-                "vpcmpgtb %%zmm1, %%zmm0, %%k1\n\t" "vpcmpgtb %%zmm0, %%zmm2, %%k2\n\t" "kandd %%k1, %%k2, %%k4\n\t" "kord %%k3, %%k4, %%k3\n\t"
-                "vpbroadcastb %[u], %%zmm1\n\t" "vpcmpeqb %%zmm1, %%zmm0, %%k4\n\t" "kord %%k3, %%k4, %%k0\n\t" "kmovq %%k0, %[mask]\n\t"
-                : [mask] "=r" (mask) : [src] "r" (p),
-                  [la] "r" ((uint32_t)0x60), [hz] "r" ((uint32_t)0x7B), [lA] "r" ((uint32_t)0x40), [hZ] "r" ((uint32_t)0x5B),
-                  [l0] "r" ((uint32_t)0x2F), [h9] "r" ((uint32_t)0x3A), [u] "r" ((uint32_t)'_')
-                : "zmm0", "zmm1", "zmm2", "k0", "k1", "k2", "k3", "k4", "memory"
-            );
-            if (~mask) { __asm__ volatile ("tzcntq %1, %0" : "=r" (mask) : "r" (~mask)); return p + mask; }
-            p += 64;
-        }
-    }
-    while (p + 32 <= end) {
-        uint32_t mask;
-        __asm__ volatile (
-            "vmovdqu (%[src]), %%ymm0\n\t"
-            "vmovd %[la], %%xmm1\n\t" "vmovd %[hz], %%xmm2\n\t" "vmovd %[lA], %%xmm10\n\t" "vmovd %[hZ], %%xmm11\n\t"
-            "vmovd %[l0], %%xmm12\n\t" "vmovd %[h9], %%xmm13\n\t" "vmovd %[u], %%xmm14\n\t"
-            "vpbroadcastb %%xmm1, %%ymm1\n\t" "vpbroadcastb %%xmm2, %%ymm2\n\t" "vpbroadcastb %%xmm10, %%ymm10\n\t" "vpbroadcastb %%xmm11, %%ymm11\n\t"
-            "vpbroadcastb %%xmm12, %%ymm12\n\t" "vpbroadcastb %%xmm13, %%ymm13\n\t" "vpbroadcastb %%xmm14, %%ymm14\n\t"
-            "vpcmpgtb %%ymm1, %%ymm0, %%ymm3\n\t" "vpcmpgtb %%ymm0, %%ymm2, %%ymm4\n\t" "vpand %%ymm3, %%ymm4, %%ymm5\n\t"
-            "vpcmpgtb %%ymm10, %%ymm0, %%ymm3\n\t" "vpcmpgtb %%ymm0, %%ymm11, %%ymm4\n\t" "vpand %%ymm3, %%ymm4, %%ymm6\n\t"
-            "vpcmpgtb %%ymm12, %%ymm0, %%ymm3\n\t" "vpcmpgtb %%ymm0, %%ymm13, %%ymm4\n\t" "vpand %%ymm3, %%ymm4, %%ymm7\n\t"
-            "vpcmpeqb %%ymm14, %%ymm0, %%ymm8\n\t"
-            "vpor %%ymm5, %%ymm6, %%ymm5\n\t" "vpor %%ymm7, %%ymm8, %%ymm7\n\t" "vpor %%ymm5, %%ymm7, %%ymm0\n\t"
-            "vpmovmskb %%ymm0, %[mask]\n\t" "vzeroupper\n\t"
-            : [mask] "=r" (mask) : [src] "r" (p),
-              [la] "r" ((uint32_t)0x60), [hz] "r" ((uint32_t)0x7B), [lA] "r" ((uint32_t)0x40), [hZ] "r" ((uint32_t)0x5B),
-              [l0] "r" ((uint32_t)0x2F), [h9] "r" ((uint32_t)0x3A), [u] "r" ((uint32_t)'_')
-            : "ymm0", "ymm1", "ymm2", "ymm3", "ymm4", "ymm5", "ymm6", "ymm7", "ymm8", "ymm10", "ymm11", "ymm12", "ymm13", "ymm14", "memory"
-        );
-        if (mask != 0xFFFFFFFF) return p + tzcnt32(~mask);
-        p += 32;
-    }
-    while (p < end) { char c = *p; if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_')) break; p++; }
-    return p;
-}
-
-static inline const char *simd_scan_digits(const char *p, const char *end) {
-    simd_detect_features();
+    /* AVX-512: 64 bytes at a time */
     if (simd_has_avx512) {
         while (p + 64 <= end) {
             uint64_t mask;
             __asm__ volatile (
                 "vmovdqu8 (%[src]), %%zmm0\n\t"
-                "vpbroadcastb %[lo], %%zmm1\n\t" "vpbroadcastb %[hi], %%zmm2\n\t" "vpbroadcastb %[u], %%zmm3\n\t"
-                "vpcmpgtb %%zmm1, %%zmm0, %%k1\n\t" "vpcmpgtb %%zmm0, %%zmm2, %%k2\n\t" "kandd %%k1, %%k2, %%k3\n\t"
-                "vpcmpeqb %%zmm3, %%zmm0, %%k4\n\t" "kord %%k3, %%k4, %%k0\n\t" "kmovq %%k0, %[mask]\n\t"
-                : [mask] "=r" (mask) : [src] "r" (p), [lo] "r" ((uint32_t)('0'-1)), [hi] "r" ((uint32_t)('9'+1)), [u] "r" ((uint32_t)'_')
-                : "zmm0", "zmm1", "zmm2", "zmm3", "k0", "k1", "k2", "k3", "k4", "memory"
+                "vpbroadcastb %[c], %%zmm1\n\t"
+                "vpcmpeqb %%zmm1, %%zmm0, %%k0\n\t"
+                "kmovq %%k0, %[mask]\n\t"
+                : [mask] "=r" (mask)
+                : [src] "r" (p), [c] "r" ((uint32_t)ch)
+                : "zmm0", "zmm1", "k0", "memory"
             );
-            if (~mask) { __asm__ volatile ("tzcntq %1, %0" : "=r" (mask) : "r" (~mask)); return p + mask; }
+            if (mask) {
+                __asm__ volatile ("tzcntq %1, %0" : "=r" (mask) : "r" (mask));
+                return p + mask;
+            }
             p += 64;
         }
     }
+    /* AVX2: 32 bytes at a time */
     while (p + 32 <= end) {
         uint32_t mask;
         __asm__ volatile (
             "vmovdqu (%[src]), %%ymm0\n\t"
-            "vmovd %[lo], %%xmm1\n\t" "vpbroadcastb %%xmm1, %%ymm1\n\t"
-            "vmovd %[hi], %%xmm2\n\t" "vpbroadcastb %%xmm2, %%ymm2\n\t"
-            "vpcmpgtb %%ymm1, %%ymm0, %%ymm3\n\t" "vpcmpgtb %%ymm0, %%ymm2, %%ymm4\n\t" "vpand %%ymm3, %%ymm4, %%ymm5\n\t"
-            "vmovd %[u], %%xmm1\n\t" "vpbroadcastb %%xmm1, %%ymm1\n\t" "vpcmpeqb %%ymm1, %%ymm0, %%ymm1\n\t"
-            "vpor %%ymm5, %%ymm1, %%ymm0\n\t" "vpmovmskb %%ymm0, %[mask]\n\t" "vzeroupper\n\t"
-            : [mask] "=r" (mask) : [src] "r" (p), [lo] "r" ((uint32_t)('0'-1)), [hi] "r" ((uint32_t)('9'+1)), [u] "r" ((uint32_t)'_')
+            "vmovd %[c], %%xmm1\n\t"
+            "vpbroadcastb %%xmm1, %%ymm1\n\t"
+            "vpcmpeqb %%ymm1, %%ymm0, %%ymm0\n\t"
+            "vpmovmskb %%ymm0, %[mask]\n\t"
+            "vzeroupper\n\t"
+            : [mask] "=r" (mask)
+            : [src] "r" (p), [c] "r" ((uint32_t)ch)
+            : "ymm0", "ymm1", "memory"
+        );
+        if (mask) return p + tzcnt32(mask);
+        p += 32;
+    }
+    /* Scalar tail */
+    while (p < end && *p != ch) p++;
+    return p;
+}
+
+/* Convenience wrappers for common character searches */
+static inline const char *simd_find_newline(const char *p, const char *end) {
+    return simd_find_char_x86(p, end, '\n');
+}
+
+static inline const char *simd_find_quote(const char *p, const char *end) {
+    return simd_find_char_x86(p, end, '\'');
+}
+
+static inline const char *simd_find_double_quote(const char *p, const char *end) {
+    return simd_find_char_x86(p, end, '"');
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Identifier Character Class Scanner
+ *
+ * Matches [a-zA-Z0-9_] - the valid identifier continuation characters.
+ * Returns pointer to first non-identifier character.
+ *
+ * Character class ranges (exclusive bounds for vpcmpgtb):
+ *   a-z: 0x60 < c < 0x7B
+ *   A-Z: 0x40 < c < 0x5B
+ *   0-9: 0x2F < c < 0x3A
+ *   _:   c == 0x5F
+ * ───────────────────────────────────────────────────────────────────────────── */
+static inline const char *simd_scan_identifier(const char *p, const char *end) {
+    simd_detect_features();
+    /* AVX-512 path with k-mask operations */
+    if (simd_has_avx512) {
+        while (p + 64 <= end) {
+            uint64_t mask;
+            __asm__ volatile (
+                "prefetcht0 128(%[src])\n\t"
+                "vmovdqu8 (%[src]), %%zmm0\n\t"
+                /* Check a-z range */
+                "vpbroadcastb %[la], %%zmm1\n\t"
+                "vpbroadcastb %[hz], %%zmm2\n\t"
+                "vpcmpgtb %%zmm1, %%zmm0, %%k1\n\t"
+                "vpcmpgtb %%zmm0, %%zmm2, %%k2\n\t"
+                "kandd %%k1, %%k2, %%k3\n\t"
+                /* Check A-Z range */
+                "vpbroadcastb %[lA], %%zmm1\n\t"
+                "vpbroadcastb %[hZ], %%zmm2\n\t"
+                "vpcmpgtb %%zmm1, %%zmm0, %%k1\n\t"
+                "vpcmpgtb %%zmm0, %%zmm2, %%k2\n\t"
+                "kandd %%k1, %%k2, %%k4\n\t"
+                "kord %%k3, %%k4, %%k3\n\t"
+                /* Check 0-9 range */
+                "vpbroadcastb %[l0], %%zmm1\n\t"
+                "vpbroadcastb %[h9], %%zmm2\n\t"
+                "vpcmpgtb %%zmm1, %%zmm0, %%k1\n\t"
+                "vpcmpgtb %%zmm0, %%zmm2, %%k2\n\t"
+                "kandd %%k1, %%k2, %%k4\n\t"
+                "kord %%k3, %%k4, %%k3\n\t"
+                /* Check underscore */
+                "vpbroadcastb %[u], %%zmm1\n\t"
+                "vpcmpeqb %%zmm1, %%zmm0, %%k4\n\t"
+                "kord %%k3, %%k4, %%k0\n\t"
+                "kmovq %%k0, %[mask]\n\t"
+                : [mask] "=r" (mask)
+                : [src] "r" (p),
+                  [la] "r" ((uint32_t)0x60), [hz] "r" ((uint32_t)0x7B),
+                  [lA] "r" ((uint32_t)0x40), [hZ] "r" ((uint32_t)0x5B),
+                  [l0] "r" ((uint32_t)0x2F), [h9] "r" ((uint32_t)0x3A),
+                  [u] "r" ((uint32_t)'_')
+                : "zmm0", "zmm1", "zmm2", "k0", "k1", "k2", "k3", "k4", "memory"
+            );
+            if (~mask) {
+                __asm__ volatile ("tzcntq %1, %0" : "=r" (mask) : "r" (~mask));
+                return p + mask;
+            }
+            p += 64;
+        }
+    }
+    /* AVX2 fallback */
+    while (p + 32 <= end) {
+        uint32_t mask;
+        __asm__ volatile (
+            "vmovdqu (%[src]), %%ymm0\n\t"
+            /* Broadcast all range bounds for better pipelining */
+            "vmovd %[la], %%xmm1\n\t"
+            "vmovd %[hz], %%xmm2\n\t"
+            "vmovd %[lA], %%xmm10\n\t"
+            "vmovd %[hZ], %%xmm11\n\t"
+            "vmovd %[l0], %%xmm12\n\t"
+            "vmovd %[h9], %%xmm13\n\t"
+            "vmovd %[u], %%xmm14\n\t"
+            "vpbroadcastb %%xmm1, %%ymm1\n\t"
+            "vpbroadcastb %%xmm2, %%ymm2\n\t"
+            "vpbroadcastb %%xmm10, %%ymm10\n\t"
+            "vpbroadcastb %%xmm11, %%ymm11\n\t"
+            "vpbroadcastb %%xmm12, %%ymm12\n\t"
+            "vpbroadcastb %%xmm13, %%ymm13\n\t"
+            "vpbroadcastb %%xmm14, %%ymm14\n\t"
+            /* a-z check */
+            "vpcmpgtb %%ymm1, %%ymm0, %%ymm3\n\t"
+            "vpcmpgtb %%ymm0, %%ymm2, %%ymm4\n\t"
+            "vpand %%ymm3, %%ymm4, %%ymm5\n\t"
+            /* A-Z check */
+            "vpcmpgtb %%ymm10, %%ymm0, %%ymm3\n\t"
+            "vpcmpgtb %%ymm0, %%ymm11, %%ymm4\n\t"
+            "vpand %%ymm3, %%ymm4, %%ymm6\n\t"
+            /* 0-9 check */
+            "vpcmpgtb %%ymm12, %%ymm0, %%ymm3\n\t"
+            "vpcmpgtb %%ymm0, %%ymm13, %%ymm4\n\t"
+            "vpand %%ymm3, %%ymm4, %%ymm7\n\t"
+            /* underscore check */
+            "vpcmpeqb %%ymm14, %%ymm0, %%ymm8\n\t"
+            /* Combine all character classes */
+            "vpor %%ymm5, %%ymm6, %%ymm5\n\t"
+            "vpor %%ymm7, %%ymm8, %%ymm7\n\t"
+            "vpor %%ymm5, %%ymm7, %%ymm0\n\t"
+            "vpmovmskb %%ymm0, %[mask]\n\t"
+            "vzeroupper\n\t"
+            : [mask] "=r" (mask)
+            : [src] "r" (p),
+              [la] "r" ((uint32_t)0x60), [hz] "r" ((uint32_t)0x7B),
+              [lA] "r" ((uint32_t)0x40), [hZ] "r" ((uint32_t)0x5B),
+              [l0] "r" ((uint32_t)0x2F), [h9] "r" ((uint32_t)0x3A),
+              [u] "r" ((uint32_t)'_')
+            : "ymm0", "ymm1", "ymm2", "ymm3", "ymm4", "ymm5", "ymm6", "ymm7", "ymm8",
+              "ymm10", "ymm11", "ymm12", "ymm13", "ymm14", "memory"
+        );
+        if (mask != 0xFFFFFFFF) return p + tzcnt32(~mask);
+        p += 32;
+    }
+    /* Scalar tail */
+    while (p < end) {
+        char c = *p;
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '_'))
+            break;
+        p++;
+    }
+    return p;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Digit Scanner for Numeric Literals
+ *
+ * Matches [0-9_] - digits with optional underscores (Ada numeric syntax).
+ * Returns pointer to first non-digit character.
+ * ───────────────────────────────────────────────────────────────────────────── */
+static inline const char *simd_scan_digits(const char *p, const char *end) {
+    simd_detect_features();
+    /* AVX-512 path */
+    if (simd_has_avx512) {
+        while (p + 64 <= end) {
+            uint64_t mask;
+            __asm__ volatile (
+                "vmovdqu8 (%[src]), %%zmm0\n\t"
+                "vpbroadcastb %[lo], %%zmm1\n\t"
+                "vpbroadcastb %[hi], %%zmm2\n\t"
+                "vpbroadcastb %[u], %%zmm3\n\t"
+                "vpcmpgtb %%zmm1, %%zmm0, %%k1\n\t"     /* c > '0'-1 */
+                "vpcmpgtb %%zmm0, %%zmm2, %%k2\n\t"     /* '9'+1 > c */
+                "kandd %%k1, %%k2, %%k3\n\t"            /* digit */
+                "vpcmpeqb %%zmm3, %%zmm0, %%k4\n\t"     /* underscore */
+                "kord %%k3, %%k4, %%k0\n\t"             /* combine */
+                "kmovq %%k0, %[mask]\n\t"
+                : [mask] "=r" (mask)
+                : [src] "r" (p),
+                  [lo] "r" ((uint32_t)('0'-1)),
+                  [hi] "r" ((uint32_t)('9'+1)),
+                  [u] "r" ((uint32_t)'_')
+                : "zmm0", "zmm1", "zmm2", "zmm3", "k0", "k1", "k2", "k3", "k4", "memory"
+            );
+            if (~mask) {
+                __asm__ volatile ("tzcntq %1, %0" : "=r" (mask) : "r" (~mask));
+                return p + mask;
+            }
+            p += 64;
+        }
+    }
+    /* AVX2 path */
+    while (p + 32 <= end) {
+        uint32_t mask;
+        __asm__ volatile (
+            "vmovdqu (%[src]), %%ymm0\n\t"
+            "vmovd %[lo], %%xmm1\n\t"
+            "vpbroadcastb %%xmm1, %%ymm1\n\t"
+            "vmovd %[hi], %%xmm2\n\t"
+            "vpbroadcastb %%xmm2, %%ymm2\n\t"
+            "vpcmpgtb %%ymm1, %%ymm0, %%ymm3\n\t"
+            "vpcmpgtb %%ymm0, %%ymm2, %%ymm4\n\t"
+            "vpand %%ymm3, %%ymm4, %%ymm5\n\t"
+            "vmovd %[u], %%xmm1\n\t"
+            "vpbroadcastb %%xmm1, %%ymm1\n\t"
+            "vpcmpeqb %%ymm1, %%ymm0, %%ymm1\n\t"
+            "vpor %%ymm5, %%ymm1, %%ymm0\n\t"
+            "vpmovmskb %%ymm0, %[mask]\n\t"
+            "vzeroupper\n\t"
+            : [mask] "=r" (mask)
+            : [src] "r" (p),
+              [lo] "r" ((uint32_t)('0'-1)),
+              [hi] "r" ((uint32_t)('9'+1)),
+              [u] "r" ((uint32_t)'_')
             : "ymm0", "ymm1", "ymm2", "ymm3", "ymm4", "ymm5", "memory"
         );
         if (mask != 0xFFFFFFFF) return p + tzcnt32(~mask);
         p += 32;
     }
+    /* Scalar tail */
     while (p < end && ((*p >= '0' && *p <= '9') || *p == '_')) p++;
     return p;
 }
@@ -1196,7 +1614,7 @@ static Token Scan_Number(Lexer *lex) {
         }
     } else {
         if (!is_based && !has_exponent) {
-            tok.big_integer = Big_Integer_From_Decimal(clean);
+            tok.big_integer = Big_Integer_From_Decimal_SIMD(clean);
             int64_t v;
             if (Big_Integer_Fits_Int64(tok.big_integer, &v))
                 tok.integer_value = v;
@@ -3871,12 +4289,24 @@ static void Parse_Generic_Formal_Part(Parser *p, Node_List *formals) {
 
         Source_Location loc = Parser_Location(p);
 
-        /* Generic type formal: type T is private | type T is (<>) | etc */
+        /* Generic type formal: type T[(discriminants)] is private | type T is (<>) | etc */
         if (Parser_Match(p, TK_TYPE)) {
             Syntax_Node *formal = Node_New(NK_GENERIC_TYPE_PARAM, loc);
 
             /* Parse type name */
             formal->generic_type_param.name = Parser_Identifier(p);
+
+            /* Parse optional discriminant part: (discriminant_spec {; discriminant_spec}) */
+            if (Parser_Match(p, TK_LPAREN)) {
+                /* Skip discriminant specifications until closing paren */
+                int depth = 1;
+                while (depth > 0 && !Parser_At(p, TK_EOF)) {
+                    if (Parser_At(p, TK_LPAREN)) depth++;
+                    else if (Parser_At(p, TK_RPAREN)) depth--;
+                    if (depth > 0) Parser_Advance(p);
+                }
+                Parser_Expect(p, TK_RPAREN);
+            }
 
             Parser_Expect(p, TK_IS);
 
@@ -4620,6 +5050,12 @@ static Syntax_Node *Parse_Compilation_Unit(Parser *p) {
 
     node->compilation_unit.context = Parse_Context_Clause(p);
 
+    /* Handle trailing pragmas at end of file (no more library units) */
+    if (Parser_At(p, TK_EOF)) {
+        node->compilation_unit.unit = NULL;
+        return node;
+    }
+
     /* Separate unit */
     if (Parser_Match(p, TK_SEPARATE)) {
         Parser_Expect(p, TK_LPAREN);
@@ -5254,15 +5690,13 @@ static Symbol *Symbol_New(Symbol_Kind kind, String_Slice name, Source_Location l
 
 static void Symbol_Add(Symbol_Manager *sm, Symbol *sym) {
     Scope *scope = sm->current_scope;
-    sym->unique_id = sm->next_unique_id++;
-    sym->defining_scope = scope;
-    sym->nesting_level = scope->nesting_level;
 
     uint32_t hash = Symbol_Hash_Name(sym->name);
     Symbol *existing = scope->buckets[hash];
 
-    /* Check for existing symbol with same name at this scope level */
+    /* Check if symbol is already in this bucket (avoid self-cycle) */
     while (existing) {
+        if (existing == sym) return;  /* Already added */
         if (existing->defining_scope == scope &&
             Slice_Equal_Ignore_Case(existing->name, sym->name)) {
             /* Overloading: add to chain if subprograms */
@@ -5270,14 +5704,18 @@ static void Symbol_Add(Symbol_Manager *sm, Symbol *sym) {
                 (sym->kind == SYMBOL_PROCEDURE || sym->kind == SYMBOL_FUNCTION)) {
                 sym->next_overload = existing->next_overload;
                 existing->next_overload = sym;
-                /* Set parent before returning - needed for proper name mangling */
                 sym->parent = scope->owner;
                 return;
             }
-            /* Otherwise: redefinition error (would report here) */
+            /* Same symbol already exists at this scope - skip */
+            return;
         }
         existing = existing->next_in_bucket;
     }
+
+    sym->unique_id = sm->next_unique_id++;
+    sym->defining_scope = scope;
+    sym->nesting_level = scope->nesting_level;
 
     sym->next_in_bucket = scope->buckets[hash];
     scope->buckets[hash] = sym;
@@ -7611,9 +8049,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
 
                     /* For generic package body, resolve the spec first if not done */
                     if (spec && spec->kind == NK_PACKAGE_SPEC) {
-                        /* Resolve visible declarations (with formals now visible) */
                         Resolve_Declaration_List(sm, &spec->package_spec.visible_decls);
-                        /* Resolve private declarations */
                         Resolve_Declaration_List(sm, &spec->package_spec.private_decls);
                     }
                 } else if (pkg_sym && pkg_sym->declaration &&
@@ -7622,38 +8058,28 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                 }
 
                 if (spec && spec->kind == NK_PACKAGE_SPEC) {
-
                     /* Install visible declarations */
                     for (uint32_t i = 0; i < spec->package_spec.visible_decls.count; i++) {
                         Syntax_Node *decl = spec->package_spec.visible_decls.items[i];
-                        if (decl->symbol) {
-                            Symbol_Add(sm, decl->symbol);
-                        }
-                        /* Also install names from object declarations */
+                        if (decl->symbol) Symbol_Add(sm, decl->symbol);
                         if (decl->kind == NK_OBJECT_DECL) {
                             for (uint32_t j = 0; j < decl->object_decl.names.count; j++) {
                                 Syntax_Node *name = decl->object_decl.names.items[j];
                                 if (name->symbol) Symbol_Add(sm, name->symbol);
                             }
                         }
-                        /* Install enum literals */
                         if (decl->kind == NK_TYPE_DECL && decl->type_decl.definition &&
                             decl->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
                             Node_List *lits = &decl->type_decl.definition->enum_type.literals;
                             for (uint32_t j = 0; j < lits->count; j++) {
-                                if (lits->items[j]->symbol) {
-                                    Symbol_Add(sm, lits->items[j]->symbol);
-                                }
+                                if (lits->items[j]->symbol) Symbol_Add(sm, lits->items[j]->symbol);
                             }
                         }
                     }
-
                     /* Install private declarations */
                     for (uint32_t i = 0; i < spec->package_spec.private_decls.count; i++) {
                         Syntax_Node *decl = spec->package_spec.private_decls.items[i];
-                        if (decl->symbol) {
-                            Symbol_Add(sm, decl->symbol);
-                        }
+                        if (decl->symbol) Symbol_Add(sm, decl->symbol);
                         if (decl->kind == NK_OBJECT_DECL) {
                             for (uint32_t j = 0; j < decl->object_decl.names.count; j++) {
                                 Syntax_Node *name = decl->object_decl.names.items[j];
@@ -7664,9 +8090,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                             decl->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
                             Node_List *lits = &decl->type_decl.definition->enum_type.literals;
                             for (uint32_t j = 0; j < lits->count; j++) {
-                                if (lits->items[j]->symbol) {
-                                    Symbol_Add(sm, lits->items[j]->symbol);
-                                }
+                                if (lits->items[j]->symbol) Symbol_Add(sm, lits->items[j]->symbol);
                             }
                         }
                     }
@@ -8096,56 +8520,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
 
                 Symbol_Add(sm, inst_sym);
                 node->symbol = inst_sym;
-
-                /* Resolve the generic body with instance context */
-                Syntax_Node *gen_body = template->generic_body;
-                if (gen_body && (gen_body->kind == NK_FUNCTION_BODY ||
-                                 gen_body->kind == NK_PROCEDURE_BODY)) {
-                    /* Push scope for instance body resolution */
-                    Symbol_Manager_Push_Scope(sm, inst_sym);
-                    inst_sym->scope = sm->current_scope;
-
-                    /* Add generic formal types to scope with actual types */
-                    for (uint32_t k = 0; k < inst_sym->generic_actual_count; k++) {
-                        if (inst_sym->generic_actuals[k].actual_type) {
-                            Symbol *type_sym = Symbol_New(SYMBOL_TYPE,
-                                inst_sym->generic_actuals[k].formal_name,
-                                node->location);
-                            type_sym->type = inst_sym->generic_actuals[k].actual_type;
-                            Symbol_Add(sm, type_sym);
-                        }
-                    }
-
-                    /* Add instance parameters to scope */
-                    Syntax_Node *body_spec = gen_body->subprogram_body.specification;
-                    if (body_spec) {
-                        Node_List *params = &body_spec->subprogram_spec.parameters;
-                        uint32_t param_idx = 0;
-                        for (uint32_t i = 0; i < params->count && param_idx < inst_sym->parameter_count; i++) {
-                            Syntax_Node *ps = params->items[i];
-                            if (ps->kind == NK_PARAM_SPEC) {
-                                for (uint32_t j = 0; j < ps->param_spec.names.count; j++) {
-                                    Syntax_Node *name = ps->param_spec.names.items[j];
-                                    Symbol *param_sym = Symbol_New(SYMBOL_PARAMETER,
-                                        name->string_val.text, name->location);
-                                    param_sym->type = inst_sym->parameters[param_idx].param_type;
-                                    Symbol_Add(sm, param_sym);
-                                    name->symbol = param_sym;
-                                    inst_sym->parameters[param_idx].param_sym = param_sym;
-                                    param_idx++;
-                                }
-                            }
-                        }
-                    }
-
-                    /* Resolve body declarations (local variables) */
-                    Resolve_Declaration_List(sm, &gen_body->subprogram_body.declarations);
-
-                    /* Resolve body statements */
-                    Resolve_Statement_List(sm, &gen_body->subprogram_body.statements);
-
-                    Symbol_Manager_Pop_Scope(sm);
-                }
+                /* Body resolution deferred to code generation */
             }
             break;
 
