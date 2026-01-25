@@ -600,7 +600,7 @@ static Token Scan_Number(Lexer *lex) {
     Source_Location loc = {lex->filename, lex->line, lex->column};
     const char *start = lex->current;
     int base = 10;
-    bool is_real = false, has_exponent = false;
+    bool is_real = false, has_exponent = false, is_based = false;
 
     /* Scan integer part (possibly base specifier) */
     while (Is_Digit(Lexer_Peek(lex, 0)) || Lexer_Peek(lex, 0) == '_')
@@ -609,6 +609,7 @@ static Token Scan_Number(Lexer *lex) {
     /* Based literal: 16#FFFF# or 2#1010# */
     if (Lexer_Peek(lex, 0) == '#' ||
         (Lexer_Peek(lex, 0) == ':' && Is_Xdigit(Lexer_Peek(lex, 1)))) {
+        is_based = true;
         char delim = Lexer_Peek(lex, 0);
 
         /* Parse base from what we've scanned so far */
@@ -672,18 +673,46 @@ static Token Scan_Number(Lexer *lex) {
     clean[ci] = '\0';
 
     if (is_real) {
-        tok.float_value = strtod(clean, NULL);
-        if (base != 10) {
-            /* Based real: compute manually (simplified) */
-            /* Full implementation would parse mantissa in base, apply exponent */
+        if (!is_based) {
+            tok.float_value = strtod(clean, NULL);
+        } else {
+            /* Based real: parse mantissa in base, apply exponent as power of base */
+            /* Format: base#integer.fraction#exponent */
+            double value = 0.0;
+            double frac_mult = 1.0 / base;
+            int exp = 0;
+            int state = 0; /* 0=skip base, 1=integer, 2=fraction, 3=exponent */
+            bool exp_neg = false;
+            for (const char *p = start; p < lex->current; p++) {
+                char c = *p;
+                if (c == '_') continue;
+                if (c == '#' || c == ':') { state++; continue; }
+                if (c == '.') { state = 2; continue; }
+                if (To_Lower(c) == 'e') { state = 3; continue; }
+                if (state == 1) {
+                    int d = Digit_Value(c);
+                    if (d >= 0 && d < base) value = value * base + d;
+                } else if (state == 2) {
+                    int d = Digit_Value(c);
+                    if (d >= 0 && d < base) { value += d * frac_mult; frac_mult /= base; }
+                } else if (state == 3) {
+                    if (c == '-') exp_neg = true;
+                    else if (c == '+') continue;
+                    else if (Is_Digit(c)) exp = exp * 10 + (c - '0');
+                }
+            }
+            if (exp_neg) exp = -exp;
+            for (int i = 0; i < (exp > 0 ? exp : -exp); i++)
+                value = exp > 0 ? value * base : value / base;
+            tok.float_value = value;
         }
     } else {
-        if (base == 10 && !has_exponent) {
+        if (!is_based && !has_exponent) {
             tok.big_integer = Big_Integer_From_Decimal(clean);
             int64_t v;
             if (Big_Integer_Fits_Int64(tok.big_integer, &v))
                 tok.integer_value = v;
-        } else if (base == 10 && has_exponent) {
+        } else if (!is_based && has_exponent) {
             /* Decimal integer with exponent (e.g., 12E1 = 120) */
             int64_t mantissa = 0;
             int exp = 0;
@@ -5506,6 +5535,48 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                 return enum_type;
             }
 
+        case NK_DERIVED_TYPE:
+            {
+                /* Derived type: type T is new Parent [constraint] */
+                Resolve_Expression(sm, node->derived_type.parent_type);
+                Type_Info *parent = node->derived_type.parent_type ?
+                                    node->derived_type.parent_type->type : NULL;
+                if (!parent) {
+                    node->type = NULL;
+                    return NULL;
+                }
+
+                /* Create new type that inherits from parent */
+                Type_Info *derived = Type_New(parent->kind, S(""));
+                derived->parent_type = parent;
+                derived->size = parent->size;
+                derived->alignment = parent->alignment;
+                derived->low_bound = parent->low_bound;
+                derived->high_bound = parent->high_bound;
+
+                /* Copy kind-specific info */
+                if (parent->kind == TYPE_ENUMERATION) {
+                    derived->enumeration = parent->enumeration;
+                } else if (parent->kind == TYPE_ARRAY) {
+                    derived->array = parent->array;
+                } else if (parent->kind == TYPE_RECORD) {
+                    derived->record = parent->record;
+                } else if (parent->kind == TYPE_ACCESS) {
+                    derived->access = parent->access;
+                } else if (parent->kind == TYPE_FIXED) {
+                    derived->fixed = parent->fixed;
+                }
+
+                /* Apply constraint if present */
+                if (node->derived_type.constraint) {
+                    Resolve_Expression(sm, node->derived_type.constraint);
+                    /* Constraint would override bounds - handled in subtype_indication */
+                }
+
+                node->type = derived;
+                return derived;
+            }
+
         case NK_RECORD_TYPE:
             {
                 /* Create record type info from syntax node */
@@ -5618,6 +5689,78 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                     return constrained;
                 }
 
+                /* Check for scalar range constraint (ENUM RANGE A..B or INTEGER RANGE X..Y) */
+                if (constraint && constraint->kind == NK_RANGE_CONSTRAINT) {
+                    Syntax_Node *range = constraint->range_constraint.range;
+                    if (range) {
+                        Resolve_Expression(sm, range);
+
+                        /* Create a constrained subtype */
+                        Type_Info *constrained = Type_New(base_type->kind, base_type->name);
+                        constrained->base_type = base_type;
+                        constrained->size = base_type->size;
+                        constrained->alignment = base_type->alignment;
+
+                        /* Copy enumeration info if applicable */
+                        if (base_type->kind == TYPE_ENUMERATION) {
+                            constrained->enumeration = base_type->enumeration;
+                        }
+
+                        /* Set bounds from range */
+                        if (range->kind == NK_RANGE) {
+                            Syntax_Node *lo = range->range.low;
+                            Syntax_Node *hi = range->range.high;
+                            if (lo) {
+                                if (lo->kind == NK_INTEGER) {
+                                    constrained->low_bound = (Type_Bound){
+                                        .kind = BOUND_INTEGER,
+                                        .int_value = lo->integer_lit.value
+                                    };
+                                } else if (lo->kind == NK_UNARY_OP && lo->unary.operand &&
+                                           lo->unary.operand->kind == NK_INTEGER) {
+                                    int64_t val = lo->unary.operand->integer_lit.value;
+                                    if (lo->unary.op == TK_MINUS) val = -val;
+                                    constrained->low_bound = (Type_Bound){
+                                        .kind = BOUND_INTEGER,
+                                        .int_value = val
+                                    };
+                                } else if (lo->symbol) {
+                                    /* Enumeration literal */
+                                    constrained->low_bound = (Type_Bound){
+                                        .kind = BOUND_INTEGER,
+                                        .int_value = lo->symbol->frame_offset
+                                    };
+                                }
+                            }
+                            if (hi) {
+                                if (hi->kind == NK_INTEGER) {
+                                    constrained->high_bound = (Type_Bound){
+                                        .kind = BOUND_INTEGER,
+                                        .int_value = hi->integer_lit.value
+                                    };
+                                } else if (hi->kind == NK_UNARY_OP && hi->unary.operand &&
+                                           hi->unary.operand->kind == NK_INTEGER) {
+                                    int64_t val = hi->unary.operand->integer_lit.value;
+                                    if (hi->unary.op == TK_MINUS) val = -val;
+                                    constrained->high_bound = (Type_Bound){
+                                        .kind = BOUND_INTEGER,
+                                        .int_value = val
+                                    };
+                                } else if (hi->symbol) {
+                                    /* Enumeration literal */
+                                    constrained->high_bound = (Type_Bound){
+                                        .kind = BOUND_INTEGER,
+                                        .int_value = hi->symbol->frame_offset
+                                    };
+                                }
+                            }
+                        }
+
+                        node->type = constrained;
+                        return constrained;
+                    }
+                }
+
                 /* Otherwise just use base type */
                 node->type = base_type;
                 return base_type;
@@ -5629,20 +5772,40 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                 Type_Info *int_type = Type_New(TYPE_INTEGER, S(""));
 
                 /* Resolve range bounds if present */
-                if (node->real_type.range) {
-                    Resolve_Expression(sm, node->real_type.range);
-                    Syntax_Node *range = node->real_type.range;
+                if (node->integer_type.range) {
+                    Resolve_Expression(sm, node->integer_type.range);
+                    Syntax_Node *range = node->integer_type.range;
                     if (range->kind == NK_RANGE && range->range.low && range->range.high) {
-                        if (range->range.low->kind == NK_INTEGER) {
+                        /* Extract low bound - handle integer literals and unary minus */
+                        Syntax_Node *lo = range->range.low;
+                        if (lo->kind == NK_INTEGER) {
                             int_type->low_bound = (Type_Bound){
                                 .kind = BOUND_INTEGER,
-                                .int_value = range->range.low->integer_lit.value
+                                .int_value = lo->integer_lit.value
+                            };
+                        } else if (lo->kind == NK_UNARY_OP && lo->unary.operand &&
+                                   lo->unary.operand->kind == NK_INTEGER) {
+                            int64_t val = lo->unary.operand->integer_lit.value;
+                            if (lo->unary.op == TK_MINUS) val = -val;
+                            int_type->low_bound = (Type_Bound){
+                                .kind = BOUND_INTEGER,
+                                .int_value = val
                             };
                         }
-                        if (range->range.high->kind == NK_INTEGER) {
+                        /* Extract high bound - handle integer literals and unary minus */
+                        Syntax_Node *hi = range->range.high;
+                        if (hi->kind == NK_INTEGER) {
                             int_type->high_bound = (Type_Bound){
                                 .kind = BOUND_INTEGER,
-                                .int_value = range->range.high->integer_lit.value
+                                .int_value = hi->integer_lit.value
+                            };
+                        } else if (hi->kind == NK_UNARY_OP && hi->unary.operand &&
+                                   hi->unary.operand->kind == NK_INTEGER) {
+                            int64_t val = hi->unary.operand->integer_lit.value;
+                            if (hi->unary.op == TK_MINUS) val = -val;
+                            int_type->high_bound = (Type_Bound){
+                                .kind = BOUND_INTEGER,
+                                .int_value = val
                             };
                         }
                     }
@@ -8246,10 +8409,51 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("WIDTH"))) {
-        /* T'WIDTH - maximum image width for type */
+        /* T'WIDTH - maximum image width for type (RM 3.5.5) */
         if (prefix_type) {
-            /* Estimate based on type size */
-            int64_t width = prefix_type->size <= 4 ? 11 : 20;  /* digits + sign */
+            int64_t width = 0;
+            int64_t lo = prefix_type->low_bound.kind == BOUND_INTEGER ? prefix_type->low_bound.int_value : 0;
+            int64_t hi = prefix_type->high_bound.kind == BOUND_INTEGER ? prefix_type->high_bound.int_value : 0;
+
+            /* Find root enumeration type (traversing base_type and parent_type chains) */
+            Type_Info *root_enum = NULL;
+            for (Type_Info *ti = prefix_type; ti; ti = ti->base_type ? ti->base_type : ti->parent_type) {
+                if (ti->kind == TYPE_ENUMERATION && ti->enumeration.literals) {
+                    root_enum = ti;
+                    break;
+                }
+                if (!ti->base_type && !ti->parent_type) break;
+            }
+
+            if (hi < lo) {
+                /* Empty range - width is 0 */
+                width = 0;
+            } else if (root_enum) {
+                /* Enumeration: max length of literal names in range */
+                for (int64_t i = lo; i <= hi && i < (int64_t)root_enum->enumeration.literal_count; i++) {
+                    if (i >= 0) {
+                        uint32_t len = root_enum->enumeration.literals[i].length;
+                        if (len > (uint32_t)width) width = (int64_t)len;
+                    }
+                }
+            } else if (prefix_type->kind == TYPE_BOOLEAN ||
+                       (prefix_type->base_type && prefix_type->base_type->kind == TYPE_BOOLEAN)) {
+                /* Boolean: "FALSE" is 5, "TRUE" is 4 */
+                width = (lo <= 0 && hi >= 0) ? 5 : (lo <= 1 && hi >= 1) ? 4 : 0;
+            } else if (prefix_type->kind == TYPE_CHARACTER ||
+                       (prefix_type->base_type && prefix_type->base_type->kind == TYPE_CHARACTER)) {
+                /* Character: 'X' is 3 chars */
+                width = 3;
+            } else {
+                /* Integer types: max width of first/last images */
+                /* Width includes leading space for non-negative */
+                int64_t abs_lo = lo < 0 ? -lo : lo;
+                int64_t abs_hi = hi < 0 ? -hi : hi;
+                int64_t max_abs = abs_lo > abs_hi ? abs_lo : abs_hi;
+                int digits = 1;
+                while (max_abs >= 10) { digits++; max_abs /= 10; }
+                width = digits + 1;  /* +1 for leading space or minus sign */
+            }
             Emit(cg, "  %%t%u = add i64 0, %lld  ; 'WIDTH\n", t, (long long)width);
             return t;
         }
