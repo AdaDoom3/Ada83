@@ -2471,7 +2471,6 @@ static Syntax_Node *Parse_Accept_Statement(Parser *p) {
 
         bool is_parameter_list = false;
         if (Parser_At(p, TK_IDENTIFIER)) {
-            Token id_token = p->current_token;
             Parser_Advance(p);  /* past identifier */
             /* If followed by : or ,, it's a parameter list */
             is_parameter_list = Parser_At(p, TK_COLON) || Parser_At(p, TK_COMMA);
@@ -4338,6 +4337,10 @@ static inline bool Type_Is_Real(const Type_Info *t) {
                  t->kind == TYPE_UNIVERSAL_REAL);
 }
 
+static inline bool Type_Is_Array_Like(const Type_Info *t) {
+    return t && (t->kind == TYPE_ARRAY || t->kind == TYPE_STRING);
+}
+
 static inline bool Type_Is_Composite(const Type_Info *t) {
     return t && (t->kind == TYPE_ARRAY || t->kind == TYPE_RECORD ||
                  t->kind == TYPE_STRING);
@@ -4910,8 +4913,7 @@ static bool Type_Covers(Type_Info *expected, Type_Info *actual) {
     if (base_exp == actual || expected == base_act) return true;
 
     /* Array/string compatibility: same structure */
-    if ((expected->kind == TYPE_ARRAY || expected->kind == TYPE_STRING) &&
-        (actual->kind == TYPE_ARRAY || actual->kind == TYPE_STRING)) {
+    if (Type_Is_Array_Like(expected) && Type_Is_Array_Like(actual)) {
         /* STRING is compatible with CHARACTER arrays */
         if (expected->kind == TYPE_STRING || actual->kind == TYPE_STRING) {
             return true;
@@ -5643,7 +5645,7 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
             Type_Info *base_type = prefix_sym->type;
 
             /* Check for constrained subtype indication: STRING(1..5) */
-            if (base_type && (base_type->kind == TYPE_STRING || base_type->kind == TYPE_ARRAY)) {
+            if (Type_Is_Array_Like(base_type)) {
                 /* Check if arguments are ranges (subtype indication) vs values (indexing) */
                 bool has_range = false;
                 for (uint32_t i = 0; i < arg_count; i++) {
@@ -5719,7 +5721,7 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
     }
 
     /* ─── Case 3: Array Indexing ─── */
-    if (prefix_type && (prefix_type->kind == TYPE_ARRAY || prefix_type->kind == TYPE_STRING)) {
+    if (Type_Is_Array_Like(prefix_type)) {
         node->type = prefix_type->array.element_type;
         if (!node->type && prefix_type->kind == TYPE_STRING) {
             node->type = sm->type_character;
@@ -6114,7 +6116,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                 /* Check for index constraint (STRING(1..5) style) */
                 Syntax_Node *constraint = node->subtype_ind.constraint;
                 if (constraint && constraint->kind == NK_INDEX_CONSTRAINT &&
-                    (base_type->kind == TYPE_STRING || base_type->kind == TYPE_ARRAY)) {
+                    Type_Is_Array_Like(base_type)) {
                     /* Create constrained array type */
                     Type_Info *constrained = Type_New(TYPE_ARRAY, base_type->name);
                     constrained->array.is_constrained = true;
@@ -8461,8 +8463,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
     }
 
     /* String/array concatenation */
-    if (node->binary.op == TK_AMPERSAND &&
-        left_type && (left_type->kind == TYPE_STRING || left_type->kind == TYPE_ARRAY)) {
+    if (node->binary.op == TK_AMPERSAND && Type_Is_Array_Like(left_type)) {
 
         /* Generate both operands - they return fat pointers */
         uint32_t left_fat = Generate_Expression(cg, node->binary.left);
@@ -8571,15 +8572,10 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         case TK_EXPON:
             /* Exponentiation: base ** exponent
              * For floating-point: use llvm.pow intrinsic
-             * For integer: use simple loop or __ada_integer_pow */
+             * For integer: use __ada_integer_pow */
             {
-                Type_Info *right_type = node->binary.right ? node->binary.right->type : NULL;
                 bool left_is_float = left_type && (left_type->kind == TYPE_FLOAT ||
                                                     left_type->kind == TYPE_UNIVERSAL_REAL);
-                bool right_is_int = right_type && (right_type->kind == TYPE_INTEGER ||
-                                                    right_type->kind == TYPE_UNIVERSAL_INTEGER ||
-                                                    right_type == NULL);  /* default to integer */
-
                 if (left_is_float) {
                     /* Float ** Integer: use pow intrinsic with converted exponent */
                     uint32_t exp_float = Emit_Temp(cg);
@@ -8835,7 +8831,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
 
     /* Array indexing */
     Type_Info *prefix_type = node->apply.prefix->type;
-    if (prefix_type && (prefix_type->kind == TYPE_ARRAY || prefix_type->kind == TYPE_STRING)) {
+    if (Type_Is_Array_Like(prefix_type)) {
         Symbol *array_sym = node->apply.prefix->symbol;
         uint32_t base;
         uint32_t low_bound_val = 0;
@@ -9033,7 +9029,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
      * ───────────────────────────────────────────────────────────────────── */
 
     if (Slice_Equal_Ignore_Case(attr, S("FIRST"))) {
-        if (prefix_type && (prefix_type->kind == TYPE_ARRAY || prefix_type->kind == TYPE_STRING)) {
+        if (Type_Is_Array_Like(prefix_type)) {
             if (needs_runtime_bounds && dim == 0) {
                 uint32_t fat = Emit_Load_Fat_Pointer(cg, prefix_sym);
                 return Emit_Fat_Pointer_Low(cg, fat);
@@ -9051,7 +9047,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("LAST"))) {
-        if (prefix_type && (prefix_type->kind == TYPE_ARRAY || prefix_type->kind == TYPE_STRING)) {
+        if (Type_Is_Array_Like(prefix_type)) {
             if (needs_runtime_bounds && dim == 0) {
                 uint32_t fat = Emit_Load_Fat_Pointer(cg, prefix_sym);
                 return Emit_Fat_Pointer_High(cg, fat);
@@ -9069,7 +9065,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("LENGTH"))) {
-        if (prefix_type && (prefix_type->kind == TYPE_ARRAY || prefix_type->kind == TYPE_STRING)) {
+        if (Type_Is_Array_Like(prefix_type)) {
             if (needs_runtime_bounds && dim == 0) {
                 uint32_t fat = Emit_Load_Fat_Pointer(cg, prefix_sym);
                 return Emit_Fat_Pointer_Length(cg, fat);
@@ -9086,7 +9082,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     if (Slice_Equal_Ignore_Case(attr, S("RANGE"))) {
         /* Range attribute - for general expression contexts, return low bound.
          * For loops handle RANGE specially in Generate_For_Loop. */
-        if (prefix_type && (prefix_type->kind == TYPE_ARRAY || prefix_type->kind == TYPE_STRING)) {
+        if (Type_Is_Array_Like(prefix_type)) {
             if (needs_runtime_bounds && dim == 0) {
                 uint32_t fat = Emit_Load_Fat_Pointer(cg, prefix_sym);
                 return Emit_Fat_Pointer_Low(cg, fat);
@@ -11329,8 +11325,7 @@ static void Generate_Type_Equality_Function(Code_Generator *cg, Type_Info *t) {
     const char *func_name = t->equality_func_name;
 
     /* Determine parameter type based on array constrained-ness */
-    bool is_unconstrained = (t->kind == TYPE_ARRAY || t->kind == TYPE_STRING) &&
-                            !t->array.is_constrained;
+    bool is_unconstrained = Type_Is_Unconstrained_Array(t);
     const char *param_type = is_unconstrained ? FAT_PTR_TYPE : "ptr";
 
     /* Emit function definition with linkonce_odr for linker deduplication */
@@ -11391,7 +11386,7 @@ static void Generate_Type_Equality_Function(Code_Generator *cg, Type_Info *t) {
             }
             Emit(cg, "  ret i1 %%t%u\n", result);
         }
-    } else if (t->kind == TYPE_ARRAY || t->kind == TYPE_STRING) {
+    } else if (Type_Is_Array_Like(t)) {
         if (t->array.is_constrained) {
             /* Constrained array - use memcmp */
             int64_t count = Array_Element_Count(t);
