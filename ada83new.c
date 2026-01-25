@@ -1547,11 +1547,15 @@ static Syntax_Node *Parse_Primary(Parser *p) {
     /* NEW allocator */
     if (Parser_Match(p, TK_NEW)) {
         Syntax_Node *node = Node_New(NK_ALLOCATOR, loc);
-        node->allocator.subtype_mark = Parse_Subtype_Indication(p);
-        if (Parser_Match(p, TK_TICK)) {
-            Parser_Expect(p, TK_LPAREN);
-            node->allocator.expression = Parse_Expression(p);
-            Parser_Expect(p, TK_RPAREN);
+        Syntax_Node *subtype = Parse_Subtype_Indication(p);
+
+        /* If Parse_Subtype_Indication returned a qualified expression,
+         * extract subtype_mark and expression separately */
+        if (subtype->kind == NK_QUALIFIED) {
+            node->allocator.subtype_mark = subtype->qualified.subtype_mark;
+            node->allocator.expression = subtype->qualified.expression;
+        } else {
+            node->allocator.subtype_mark = subtype;
         }
         return node;
     }
@@ -1573,7 +1577,8 @@ static Syntax_Node *Parse_Primary(Parser *p) {
 
         /* Check for aggregate indicators */
         if (Parser_At(p, TK_COMMA) || Parser_At(p, TK_ARROW) ||
-            Parser_At(p, TK_BAR) || Parser_At(p, TK_WITH)) {
+            Parser_At(p, TK_BAR) || Parser_At(p, TK_WITH) ||
+            Parser_At(p, TK_DOTDOT)) {
             /* This is an aggregate */
             Syntax_Node *node = Node_New(NK_AGGREGATE, loc);
 
@@ -1696,10 +1701,60 @@ static Syntax_Node *Parse_Name(Parser *p) {
         /* 'attribute or '(qualified) */
         if (Parser_Match(p, TK_TICK)) {
             if (Parser_Match(p, TK_LPAREN)) {
-                /* Qualified expression: Type'(Expr) */
+                /* Qualified expression: Type'(Expr or Aggregate) */
                 Syntax_Node *qual = Node_New(NK_QUALIFIED, postfix_loc);
                 qual->qualified.subtype_mark = node;
-                qual->qualified.expression = Parse_Expression(p);
+
+                /* Parse expression or aggregate */
+                Syntax_Node *expr = Parse_Expression(p);
+                if (Parser_At(p, TK_COMMA) || Parser_At(p, TK_ARROW) ||
+                    Parser_At(p, TK_BAR) || Parser_At(p, TK_DOTDOT)) {
+                    /* Aggregate */
+                    Syntax_Node *agg = Node_New(NK_AGGREGATE, postfix_loc);
+                    if (Parser_At(p, TK_DOTDOT)) {
+                        /* Range: expr .. high */
+                        Syntax_Node *range = Node_New(NK_RANGE, postfix_loc);
+                        range->range.low = expr;
+                        Parser_Advance(p);
+                        range->range.high = Parse_Expression(p);
+                        if (Parser_At(p, TK_BAR) || Parser_At(p, TK_ARROW)) {
+                            Syntax_Node *assoc = Node_New(NK_ASSOCIATION, postfix_loc);
+                            Node_List_Push(&assoc->association.choices, range);
+                            while (Parser_Match(p, TK_BAR)) {
+                                Node_List_Push(&assoc->association.choices, Parse_Choice(p));
+                            }
+                            if (Parser_Match(p, TK_ARROW)) {
+                                assoc->association.expression = Parse_Expression(p);
+                            }
+                            Node_List_Push(&agg->aggregate.items, assoc);
+                        } else {
+                            Node_List_Push(&agg->aggregate.items, range);
+                        }
+                        if (Parser_Match(p, TK_COMMA)) {
+                            Parse_Association_List(p, &agg->aggregate.items);
+                        }
+                    } else if (Parser_At(p, TK_BAR) || Parser_At(p, TK_ARROW)) {
+                        Syntax_Node *assoc = Node_New(NK_ASSOCIATION, postfix_loc);
+                        Node_List_Push(&assoc->association.choices, expr);
+                        while (Parser_Match(p, TK_BAR)) {
+                            Node_List_Push(&assoc->association.choices, Parse_Choice(p));
+                        }
+                        if (Parser_Match(p, TK_ARROW)) {
+                            assoc->association.expression = Parse_Expression(p);
+                        }
+                        Node_List_Push(&agg->aggregate.items, assoc);
+                        if (Parser_Match(p, TK_COMMA)) {
+                            Parse_Association_List(p, &agg->aggregate.items);
+                        }
+                    } else {
+                        Node_List_Push(&agg->aggregate.items, expr);
+                        Parser_Advance(p);  /* consume comma */
+                        Parse_Association_List(p, &agg->aggregate.items);
+                    }
+                    qual->qualified.expression = agg;
+                } else {
+                    qual->qualified.expression = expr;
+                }
                 Parser_Expect(p, TK_RPAREN);
                 node = qual;
             } else {
@@ -2632,22 +2687,20 @@ static Syntax_Node *Parse_Array_Type(Parser *p) {
     /* Index types: can be discrete_subtype_indication or discrete_range */
     do {
         Syntax_Node *idx = Parse_Discrete_Range(p);
-        /* Check for RANGE <> (unconstrained) */
-        if (Parser_Match(p, TK_RANGE)) {
-            Parser_Expect(p, TK_BOX);
-            /* Mark as unconstrained */
-            node->array_type.is_constrained = false;
-        }
         Node_List_Push(&node->array_type.indices, idx);
     } while (Parser_Match(p, TK_COMMA));
 
-    /* Determine if constrained based on what we parsed */
+    /* Determine if constrained based on what we parsed.
+     * An index is unconstrained if it's just a type mark (identifier/selected)
+     * without a range constraint. A range or subtype_indication with constraint
+     * means constrained. */
     node->array_type.is_constrained = true;
     for (size_t i = 0; i < node->array_type.indices.count; i++) {
         Syntax_Node *idx = node->array_type.indices.items[i];
-        /* If any index has a BOX, it's unconstrained */
-        if (idx->kind == NK_IDENTIFIER) {
-            /* Check if we saw RANGE <> */
+        /* Just a type name without constraint = unconstrained */
+        if (idx->kind == NK_IDENTIFIER || idx->kind == NK_SELECTED) {
+            node->array_type.is_constrained = false;
+            break;
         }
     }
 
@@ -2677,8 +2730,8 @@ static Syntax_Node *Parse_Discrete_Range(Parser *p) {
 
     if (Parser_Match(p, TK_RANGE)) {
         /* Type RANGE low..high or Type RANGE <> */
-        if (Parser_At(p, TK_BOX)) {
-            /* Unconstrained - just return the type mark */
+        if (Parser_Match(p, TK_BOX)) {
+            /* Unconstrained - return the type mark; <> is consumed */
             return name;
         }
         Syntax_Node *range = Node_New(NK_RANGE, loc);
@@ -2716,15 +2769,19 @@ static Syntax_Node *Parse_Record_Type(Parser *p) {
 
     Syntax_Node *node = Node_New(NK_RECORD_TYPE, loc);
 
-    /* NULL RECORD */
-    if (Parser_Match(p, TK_NULL)) {
-        node->record_type.is_null = true;
-        return node;
-    }
+    /* NULL; as empty component statement (vs NULL RECORD which is parsed elsewhere) */
+    /* Skip this check - NULL inside record body is handled in the loop below */
 
     /* Component list */
     while (!Parser_At(p, TK_END) && !Parser_At(p, TK_CASE) && !Parser_At(p, TK_EOF)) {
         if (!Parser_Check_Progress(p)) break;
+
+        /* NULL; as empty component list */
+        if (Parser_At(p, TK_NULL)) {
+            Parser_Advance(p);
+            Parser_Expect(p, TK_SEMICOLON);
+            continue;
+        }
 
         Source_Location c_loc = Parser_Location(p);
         Syntax_Node *comp = Node_New(NK_COMPONENT_DECL, c_loc);
@@ -2855,9 +2912,17 @@ static Syntax_Node *Parse_Type_Definition(Parser *p) {
         return Parse_Array_Type(p);
     }
 
-    /* Record type */
+    /* Record type: RECORD ... END RECORD or NULL RECORD */
     if (Parser_At(p, TK_RECORD)) {
         return Parse_Record_Type(p);
+    }
+
+    /* Null record type: NULL RECORD */
+    if (Parser_Match(p, TK_NULL)) {
+        Parser_Expect(p, TK_RECORD);
+        Syntax_Node *node = Node_New(NK_RECORD_TYPE, loc);
+        node->record_type.is_null = true;
+        return node;
     }
 
     /* Access type */
@@ -4912,6 +4977,22 @@ static void Symbol_Manager_Init_Predefined(Symbol_Manager *sm) {
     Symbol *sym_true = Symbol_New(SYMBOL_LITERAL, S("TRUE"), No_Location);
     sym_true->type = sm->type_boolean;
     Symbol_Add(sm, sym_true);
+
+    /* Predefined exceptions (RM 11.1) */
+    Symbol *sym_constraint_error = Symbol_New(SYMBOL_EXCEPTION, S("CONSTRAINT_ERROR"), No_Location);
+    Symbol_Add(sm, sym_constraint_error);
+
+    Symbol *sym_numeric_error = Symbol_New(SYMBOL_EXCEPTION, S("NUMERIC_ERROR"), No_Location);
+    Symbol_Add(sm, sym_numeric_error);
+
+    Symbol *sym_program_error = Symbol_New(SYMBOL_EXCEPTION, S("PROGRAM_ERROR"), No_Location);
+    Symbol_Add(sm, sym_program_error);
+
+    Symbol *sym_storage_error = Symbol_New(SYMBOL_EXCEPTION, S("STORAGE_ERROR"), No_Location);
+    Symbol_Add(sm, sym_storage_error);
+
+    Symbol *sym_tasking_error = Symbol_New(SYMBOL_EXCEPTION, S("TASKING_ERROR"), No_Location);
+    Symbol_Add(sm, sym_tasking_error);
 }
 
 static Symbol_Manager *Symbol_Manager_New(void) {
