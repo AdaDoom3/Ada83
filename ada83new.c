@@ -10817,6 +10817,60 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
     }
 }
 
+/* Forward declare for recursive search */
+static bool Has_Nested_Subprograms(Node_List *declarations, Node_List *statements);
+
+static bool Has_Nested_In_Statements(Node_List *statements) {
+    if (!statements) return false;
+    for (uint32_t i = 0; i < statements->count; i++) {
+        Syntax_Node *stmt = statements->items[i];
+        if (!stmt) continue;
+        if (stmt->kind == NK_BLOCK) {
+            /* DECLARE block - check its declarations and nested statements */
+            if (Has_Nested_Subprograms(&stmt->block_stmt.declarations,
+                                        &stmt->block_stmt.statements)) {
+                return true;
+            }
+        } else if (stmt->kind == NK_IF) {
+            /* Check all branches of IF */
+            if (Has_Nested_In_Statements(&stmt->if_stmt.then_stmts)) return true;
+            for (uint32_t j = 0; j < stmt->if_stmt.elsif_parts.count; j++) {
+                Syntax_Node *elsif = stmt->if_stmt.elsif_parts.items[j];
+                if (elsif && Has_Nested_In_Statements(&elsif->if_stmt.then_stmts)) return true;
+            }
+            if (Has_Nested_In_Statements(&stmt->if_stmt.else_stmts)) return true;
+        } else if (stmt->kind == NK_LOOP) {
+            if (Has_Nested_In_Statements(&stmt->loop_stmt.statements)) return true;
+        } else if (stmt->kind == NK_CASE) {
+            for (uint32_t j = 0; j < stmt->case_stmt.alternatives.count; j++) {
+                Syntax_Node *alt = stmt->case_stmt.alternatives.items[j];
+                if (alt && alt->kind == NK_ASSOCIATION &&
+                    alt->association.expression &&
+                    alt->association.expression->kind == NK_BLOCK) {
+                    if (Has_Nested_In_Statements(&alt->association.expression->block_stmt.statements)) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    return false;
+}
+
+static bool Has_Nested_Subprograms(Node_List *declarations, Node_List *statements) {
+    /* Check declarations for procedure/function bodies */
+    if (declarations) {
+        for (uint32_t i = 0; i < declarations->count; i++) {
+            Syntax_Node *decl = declarations->items[i];
+            if (decl && (decl->kind == NK_PROCEDURE_BODY || decl->kind == NK_FUNCTION_BODY)) {
+                return true;
+            }
+        }
+    }
+    /* Check statements for DECLARE blocks that might contain nested subprograms */
+    return Has_Nested_In_Statements(statements);
+}
+
 static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
     Syntax_Node *spec = node->subprogram_body.specification;
     Symbol *sym = spec ? spec->symbol : NULL;
@@ -10866,22 +10920,17 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
     cg->current_function = sym;
     cg->has_return = false;
 
-    /* Check if this function has nested subprograms (by looking at declarations) */
-    bool has_nested = false;
-    for (uint32_t i = 0; i < node->subprogram_body.declarations.count; i++) {
-        Syntax_Node *decl = node->subprogram_body.declarations.items[i];
-        if (decl && (decl->kind == NK_PROCEDURE_BODY || decl->kind == NK_FUNCTION_BODY)) {
-            has_nested = true;
-            break;
-        }
-    }
+    /* Check if this function has nested subprograms (in declarations or DECLARE blocks) */
+    bool has_nested = Has_Nested_Subprograms(&node->subprogram_body.declarations,
+                                              &node->subprogram_body.statements);
 
     /* If this function has nested subprograms, allocate a frame base
      * This is the address that will be passed to nested functions */
-    if (has_nested && sym->scope && sym->scope->frame_size > 0) {
+    if (has_nested) {
+        int64_t frame_size = (sym->scope && sym->scope->frame_size > 0)
+            ? sym->scope->frame_size : 8;  /* At least 8 bytes for frame pointer */
         Emit(cg, "  ; Frame for nested function access\n");
-        Emit(cg, "  %%__frame_base = alloca i8, i64 %lld\n",
-             (long long)sym->scope->frame_size);
+        Emit(cg, "  %%__frame_base = alloca i8, i64 %lld\n", (long long)frame_size);
     }
 
     /* If nested, create aliases for accessing enclosing scope variables via frame */
