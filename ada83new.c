@@ -1414,6 +1414,7 @@ static Syntax_Node *Parse_Choice(Parser *p);
 static Syntax_Node *Parse_Name(Parser *p);
 static Syntax_Node *Parse_Simple_Name(Parser *p);  /* identifier or dotted, no parens/ticks */
 static Syntax_Node *Parse_Subtype_Indication(Parser *p);
+static Syntax_Node *Parse_Array_Type(Parser *p);
 static void Parse_Association_List(Parser *p, Node_List *list);
 
 /* Parse primary: literals, names, aggregates, allocators, parenthesized */
@@ -2406,7 +2407,12 @@ static Syntax_Node *Parse_Object_Declaration(Parser *p) {
     /* Named number (number declaration): identifier : CONSTANT := static_expression; */
     /* No type specified, goes directly to := */
     if (!node->object_decl.is_constant || !Parser_At(p, TK_ASSIGN)) {
-        node->object_decl.object_type = Parse_Subtype_Indication(p);
+        /* Check for anonymous array type: ARRAY (...) OF ... */
+        if (Parser_At(p, TK_ARRAY)) {
+            node->object_decl.object_type = Parse_Array_Type(p);
+        } else {
+            node->object_decl.object_type = Parse_Subtype_Indication(p);
+        }
     }
 
     /* Renames */
@@ -3354,8 +3360,14 @@ static Syntax_Node *Parse_Declaration(Parser *p) {
         Token_Kind kind = p->current_token.kind;
         Parser_Advance(p);  /* consume PROCEDURE/FUNCTION */
 
-        /* Get the name */
-        String_Slice name = Parser_Identifier(p);
+        /* Get the name - can be identifier or operator string for functions */
+        String_Slice name;
+        if (Parser_At(p, TK_STRING)) {
+            name = Slice_Duplicate(p->current_token.text);
+            Parser_Advance(p);
+        } else {
+            name = Parser_Identifier(p);
+        }
 
         /* Check for generic instantiation: NAME IS NEW */
         if (Parser_At(p, TK_IS)) {
@@ -4187,6 +4199,7 @@ typedef struct {
     Type_Info *type_float;
     Type_Info *type_character;
     Type_Info *type_string;
+    Type_Info *type_duration;
     Type_Info *type_universal_integer;
     Type_Info *type_universal_real;
 
@@ -4755,7 +4768,7 @@ static void Symbol_Manager_Init_Predefined(Symbol_Manager *sm) {
     sm->type_boolean->high_bound = (Type_Bound){BOUND_INTEGER, {.int_value = 1}};
 
     sm->type_integer = Type_New(TYPE_INTEGER, S("INTEGER"));
-    sm->type_integer->size = 4;
+    sm->type_integer->size = 8;  /* 64-bit INTEGER to match i64 usage throughout codegen */
     sm->type_integer->low_bound = (Type_Bound){BOUND_INTEGER, {.int_value = INT32_MIN}};
     sm->type_integer->high_bound = (Type_Bound){BOUND_INTEGER, {.int_value = INT32_MAX}};
 
@@ -4767,6 +4780,12 @@ static void Symbol_Manager_Init_Predefined(Symbol_Manager *sm) {
 
     sm->type_string = Type_New(TYPE_STRING, S("STRING"));
     sm->type_string->size = 16;  /* Fat pointer: ptr + length */
+    sm->type_string->array.element_type = sm->type_character;  /* STRING is array of CHARACTER */
+
+    /* DURATION is a predefined fixed-point type for time intervals */
+    sm->type_duration = Type_New(TYPE_FIXED, S("DURATION"));
+    sm->type_duration->size = 8;  /* 64-bit for high precision */
+    sm->type_duration->fixed.delta = 0.00001;  /* 10 microsecond resolution */
 
     sm->type_universal_integer = Type_New(TYPE_UNIVERSAL_INTEGER, S("universal_integer"));
     sm->type_universal_real = Type_New(TYPE_UNIVERSAL_REAL, S("universal_real"));
@@ -4780,9 +4799,23 @@ static void Symbol_Manager_Init_Predefined(Symbol_Manager *sm) {
     sym_integer->type = sm->type_integer;
     Symbol_Add(sm, sym_integer);
 
+    /* NATURAL is subtype INTEGER range 0..INTEGER'LAST - for Ada 83 compatibility */
+    Symbol *sym_natural = Symbol_New(SYMBOL_TYPE, S("NATURAL"), No_Location);
+    sym_natural->type = sm->type_integer;  /* Alias to INTEGER for now */
+    Symbol_Add(sm, sym_natural);
+
+    /* POSITIVE is subtype INTEGER range 1..INTEGER'LAST */
+    Symbol *sym_positive = Symbol_New(SYMBOL_TYPE, S("POSITIVE"), No_Location);
+    sym_positive->type = sm->type_integer;  /* Alias to INTEGER for now */
+    Symbol_Add(sm, sym_positive);
+
     Symbol *sym_float = Symbol_New(SYMBOL_TYPE, S("FLOAT"), No_Location);
     sym_float->type = sm->type_float;
     Symbol_Add(sm, sym_float);
+
+    Symbol *sym_duration = Symbol_New(SYMBOL_TYPE, S("DURATION"), No_Location);
+    sym_duration->type = sm->type_duration;
+    Symbol_Add(sm, sym_duration);
 
     Symbol *sym_character = Symbol_New(SYMBOL_TYPE, S("CHARACTER"), No_Location);
     sym_character->type = sm->type_character;
@@ -5348,6 +5381,41 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                 return array_type;
             }
 
+        case NK_ENUMERATION_TYPE:
+            {
+                /* Create enumeration type info from syntax node
+                 * Note: Literal symbols are created later in NK_TYPE_DECL processing
+                 * so they reference the named type, not this anonymous type */
+                Type_Info *enum_type = Type_New(TYPE_ENUMERATION, S(""));
+                uint32_t lit_count = (uint32_t)node->enum_type.literals.count;
+
+                enum_type->enumeration.literal_count = lit_count;
+                if (lit_count > 0) {
+                    enum_type->enumeration.literals = Arena_Allocate(
+                        lit_count * sizeof(String_Slice));
+
+                    for (uint32_t i = 0; i < lit_count; i++) {
+                        Syntax_Node *lit = node->enum_type.literals.items[i];
+                        enum_type->enumeration.literals[i] = lit->string_val.text;
+                    }
+                }
+
+                /* Size based on number of literals */
+                if (lit_count <= 256) {
+                    enum_type->size = 1;  /* Fits in 1 byte */
+                } else if (lit_count <= 65536) {
+                    enum_type->size = 2;  /* Fits in 2 bytes */
+                } else {
+                    enum_type->size = 4;  /* 4 bytes for large enums */
+                }
+                enum_type->alignment = enum_type->size;
+                enum_type->low_bound = (Type_Bound){.kind = BOUND_INTEGER, .int_value = 0};
+                enum_type->high_bound = (Type_Bound){.kind = BOUND_INTEGER, .int_value = lit_count - 1};
+
+                node->type = enum_type;
+                return enum_type;
+            }
+
         case NK_RECORD_TYPE:
             {
                 /* Create record type info from syntax node */
@@ -5845,6 +5913,21 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                             type->access = def_type->access;
                         } else if (def_type->kind == TYPE_ENUMERATION) {
                             type->enumeration = def_type->enumeration;
+
+                            /* Create symbols for enumeration literals
+                             * They must reference the named type (type), not the anonymous def_type */
+                            if (node->type_decl.definition &&
+                                node->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
+                                Node_List *lits = &node->type_decl.definition->enum_type.literals;
+                                for (uint32_t i = 0; i < lits->count; i++) {
+                                    Syntax_Node *lit = lits->items[i];
+                                    Symbol *lit_sym = Symbol_New(SYMBOL_LITERAL, lit->string_val.text, lit->location);
+                                    lit_sym->type = type;  /* Reference the named type */
+                                    lit_sym->frame_offset = (int64_t)i;  /* Store ordinal position */
+                                    Symbol_Add(sm, lit_sym);
+                                    lit->symbol = lit_sym;
+                                }
+                            }
                         }
                     }
                 }
@@ -10431,6 +10514,41 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
 static const char *Include_Paths[32];
 static int Include_Path_Count = 0;
 
+/* Track packages currently being loaded to detect cycles */
+typedef struct {
+    String_Slice names[64];
+    int count;
+} Loading_Set;
+
+static Loading_Set Loading_Packages = {0};
+
+static bool Loading_Set_Contains(String_Slice name) {
+    for (int i = 0; i < Loading_Packages.count; i++) {
+        if (Loading_Packages.names[i].length == name.length &&
+            strncasecmp(Loading_Packages.names[i].data, name.data, name.length) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void Loading_Set_Add(String_Slice name) {
+    if (Loading_Packages.count < 64) {
+        Loading_Packages.names[Loading_Packages.count++] = name;
+    }
+}
+
+static void Loading_Set_Remove(String_Slice name) {
+    for (int i = 0; i < Loading_Packages.count; i++) {
+        if (Loading_Packages.names[i].length == name.length &&
+            strncasecmp(Loading_Packages.names[i].data, name.data, name.length) == 0) {
+            /* Swap with last and decrement count */
+            Loading_Packages.names[i] = Loading_Packages.names[--Loading_Packages.count];
+            return;
+        }
+    }
+}
+
 static char *Read_File_Simple(const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
@@ -10489,13 +10607,24 @@ static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src) 
         return;  /* Already loaded */
     }
 
+    /* Check for circular dependency (package currently being loaded) */
+    if (Loading_Set_Contains(name)) {
+        return;  /* Break cycle - package will be available when outer load completes */
+    }
+
+    /* Mark package as loading to detect cycles */
+    Loading_Set_Add(name);
+
     /* Parse the package */
     char filename[256];
     snprintf(filename, sizeof(filename), "%.*s.ads", (int)name.length, name.data);
     Parser p = Parser_New(src, strlen(src), filename);
     Syntax_Node *cu = Parse_Compilation_Unit(&p);
 
-    if (!cu) return;
+    if (!cu) {
+        Loading_Set_Remove(name);
+        return;
+    }
 
     /* Recursively load WITH'd packages */
     if (cu->compilation_unit.context) {
@@ -10540,6 +10669,9 @@ static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src) 
 
         Symbol_Manager_Pop_Scope(sm);
     }
+
+    /* Done loading this package */
+    Loading_Set_Remove(name);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
