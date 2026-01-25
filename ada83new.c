@@ -7870,6 +7870,11 @@ static void Emit(Code_Generator *cg, const char *format, ...) {
     va_end(args);
 }
 
+/* Check if symbol is package-level (global storage with @ prefix in LLVM) */
+static inline bool Symbol_Is_Global(Symbol *sym) {
+    return !sym->parent || sym->parent->kind == SYMBOL_PACKAGE;
+}
+
 /* Encode symbol name for LLVM identifier */
 static void Emit_Symbol_Name(Code_Generator *cg, Symbol *sym) {
     if (!sym) {
@@ -7909,14 +7914,23 @@ static void Emit_Symbol_Name(Code_Generator *cg, Symbol *sym) {
         }
     }
 
-    /* Only add unique_id suffix for local/nested symbols, not package-level ???
-     * Package-level symbols (parent is a package or no parent) use just the
-     * qualified name for cross-compilation linking. Local symbols need the
-     * unique_id to disambiguate nested scopes with same names. */
-    bool is_package_level = !sym->parent || sym->parent->kind == SYMBOL_PACKAGE;
-    if (!is_package_level) {
+    /* Only add unique_id suffix for local/nested symbols, not package-level.
+     * Package-level symbols use just the qualified name for cross-compilation
+     * linking. Local symbols need unique_id to disambiguate nested scopes. */
+    if (!Symbol_Is_Global(sym)) {
         Emit(cg, "_S%u", sym->unique_id);
     }
+}
+
+/* Emit symbol reference with appropriate prefix (@ for global, % for local) */
+static void Emit_Symbol_Ref(Code_Generator *cg, Symbol *sym) {
+    Emit(cg, Symbol_Is_Global(sym) ? "@" : "%%");
+    Emit_Symbol_Name(cg, sym);
+}
+
+/* Parse LLVM integer type width: "i64"→64, "i32"→32, etc. */
+static inline int Type_Bits(const char *ty) {
+    return (ty[0] == 'i') ? atoi(ty + 1) : 64;
 }
 
 /* Emit type conversion if needed (sext/trunc for integers) */
@@ -7924,31 +7938,17 @@ static uint32_t Emit_Convert(Code_Generator *cg, uint32_t src, const char *src_t
                             const char *dst_type) {
     if (strcmp(src_type, dst_type) == 0) return src;
 
-    uint32_t t = Emit_Temp(cg);
-    /* Determine source and dest bit widths */
-    int src_bits = 64, dst_bits = 64;
-    if (strcmp(src_type, "i32") == 0) src_bits = 32;
-    else if (strcmp(src_type, "i16") == 0) src_bits = 16;
-    else if (strcmp(src_type, "i8") == 0) src_bits = 8;
-    else if (strcmp(src_type, "i1") == 0) src_bits = 1;
-    if (strcmp(dst_type, "i32") == 0) dst_bits = 32;
-    else if (strcmp(dst_type, "i16") == 0) dst_bits = 16;
-    else if (strcmp(dst_type, "i8") == 0) dst_bits = 8;
-    else if (strcmp(dst_type, "i1") == 0) dst_bits = 1;
+    int src_bits = Type_Bits(src_type), dst_bits = Type_Bits(dst_type);
+    if (src_bits == dst_bits) return src;
 
+    uint32_t t = Emit_Temp(cg);
     if (dst_bits > src_bits) {
         Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", t, src_type, src, dst_type);
-    } else if (dst_bits < src_bits) {
-        /* For boolean conversion (to i1), use icmp ne 0 to preserve semantics:
-         * any non-zero value becomes true (1), zero becomes false (0).
-         * Simple trunc would only check the low bit, losing 2 -> false. */
-        if (dst_bits == 1) {
-            Emit(cg, "  %%t%u = icmp ne %s %%t%u, 0\n", t, src_type, src);
-        } else {
-            Emit(cg, "  %%t%u = trunc %s %%t%u to %s\n", t, src_type, src, dst_type);
-        }
+    } else if (dst_bits == 1) {
+        /* Boolean: icmp ne 0 preserves semantics (any non-zero → true) */
+        Emit(cg, "  %%t%u = icmp ne %s %%t%u, 0\n", t, src_type, src);
     } else {
-        return src;  /* Same size, no conversion */
+        Emit(cg, "  %%t%u = trunc %s %%t%u to %s\n", t, src_type, src, dst_type);
     }
     return t;
 }
@@ -8086,6 +8086,15 @@ static void Emit_Fat_Pointer_Copy_To_Ptr(Code_Generator *cg, uint32_t fat_ptr, u
          dst_ptr, src_ptr, len);
 }
 
+/* Load fat pointer from a symbol's storage — consolidates common pattern */
+static uint32_t Emit_Load_Fat_Pointer(Code_Generator *cg, Symbol *sym) {
+    uint32_t fat = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr ", fat);
+    Emit_Symbol_Ref(cg, sym);
+    Emit(cg, "\n");
+    return fat;
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
  * §13.3 Expression Code Generation
  *
@@ -8158,8 +8167,8 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
 
                 /* Get pointer to array data */
                 uint32_t data_ptr = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = getelementptr i8, ptr %%", data_ptr);
-                Emit_Symbol_Name(cg, sym);
+                Emit(cg, "  %%t%u = getelementptr i8, ptr ", data_ptr);
+                Emit_Symbol_Ref(cg, sym);
                 Emit(cg, ", i64 0\n");
 
                 /* Create fat pointer with bounds */
@@ -8173,26 +8182,17 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
             bool is_uplevel = cg->current_function && var_owner &&
                               var_owner != cg->current_function;
 
-            /* Check if package-level global (parent is NULL or SYMBOL_PACKAGE) */
-            bool is_global = !sym->parent || sym->parent->kind == SYMBOL_PACKAGE;
-
             const char *type_str = Type_To_Llvm(ty);
             if (is_uplevel && cg->is_nested) {
-                /* Uplevel access through frame pointer parameter
-                 * The frame pointer points to the variable in the enclosing scope */
+                /* Uplevel access through frame pointer parameter */
                 Emit(cg, "  ; UPLEVEL ACCESS: %.*s via frame pointer\n",
                      (int)sym->name.length, sym->name.data);
                 Emit(cg, "  %%t%u = load %s, ptr %%__frame.", t, type_str);
                 Emit_Symbol_Name(cg, sym);
                 Emit(cg, "\n");
-            } else if (is_global) {
-                /* Global variable - use @ prefix */
-                Emit(cg, "  %%t%u = load %s, ptr @", t, type_str);
-                Emit_Symbol_Name(cg, sym);
-                Emit(cg, "\n");
             } else {
-                Emit(cg, "  %%t%u = load %s, ptr %%", t, type_str);
-                Emit_Symbol_Name(cg, sym);
+                Emit(cg, "  %%t%u = load %s, ptr ", t, type_str);
+                Emit_Symbol_Ref(cg, sym);
                 Emit(cg, "\n");
             }
             /* Widen to i64 for computation if narrower type */
@@ -8230,13 +8230,8 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
 
                 /* Get pointer to constant array data */
                 uint32_t data_ptr = Emit_Temp(cg);
-                bool is_global = !sym->parent || sym->parent->kind == SYMBOL_PACKAGE;
-                if (is_global) {
-                    Emit(cg, "  %%t%u = getelementptr i8, ptr @", data_ptr);
-                } else {
-                    Emit(cg, "  %%t%u = getelementptr i8, ptr %%", data_ptr);
-                }
-                Emit_Symbol_Name(cg, sym);
+                Emit(cg, "  %%t%u = getelementptr i8, ptr ", data_ptr);
+                Emit_Symbol_Ref(cg, sym);
                 Emit(cg, ", i64 0\n");
 
                 /* Create fat pointer with bounds */
@@ -8257,13 +8252,8 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
             } else if (sym->kind == SYMBOL_CONSTANT && ty != NULL) {
                 /* Typed constant - load value from storage like variable */
                 const char *type_str = Type_To_Llvm(ty);
-                bool is_global = !sym->parent || sym->parent->kind == SYMBOL_PACKAGE;
-                if (is_global) {
-                    Emit(cg, "  %%t%u = load %s, ptr @", t, type_str);
-                } else {
-                    Emit(cg, "  %%t%u = load %s, ptr %%", t, type_str);
-                }
-                Emit_Symbol_Name(cg, sym);
+                Emit(cg, "  %%t%u = load %s, ptr ", t, type_str);
+                Emit_Symbol_Ref(cg, sym);
                 Emit(cg, "\n");
                 t = Emit_Convert(cg, t, type_str, "i64");
             } else {
@@ -8427,8 +8417,8 @@ static uint32_t Generate_Composite_Address(Code_Generator *cg, Syntax_Node *node
         if (sym) {
             /* For composite variables, the symbol's address IS the pointer to the data */
             uint32_t t = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = getelementptr i8, ptr %%", t);
-            Emit_Symbol_Name(cg, sym);
+            Emit(cg, "  %%t%u = getelementptr i8, ptr ", t);
+            Emit_Symbol_Ref(cg, sym);
             Emit(cg, ", i64 0\n");
             return t;
         }
@@ -8824,8 +8814,8 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         Syntax_Node *prefix = node->apply.prefix;
         if (prefix->kind == NK_SELECTED && prefix->selected.prefix->symbol) {
             task_ptr = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = getelementptr i8, ptr %%", task_ptr);
-            Emit_Symbol_Name(cg, prefix->selected.prefix->symbol);
+            Emit(cg, "  %%t%u = getelementptr i8, ptr ", task_ptr);
+            Emit_Symbol_Ref(cg, prefix->selected.prefix->symbol);
             Emit(cg, ", i64 0  ; task object\n");
         } else {
             task_ptr = Emit_Temp(cg);
@@ -8855,18 +8845,15 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         if (Type_Is_Unconstrained_Array(prefix_type) && array_sym &&
             (array_sym->kind == SYMBOL_PARAMETER || array_sym->kind == SYMBOL_VARIABLE)) {
             /* Load fat pointer and extract data pointer and low bound */
-            uint32_t fat = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%", fat);
-            Emit_Symbol_Name(cg, array_sym);
-            Emit(cg, "  ; load fat pointer for indexing\n");
+            uint32_t fat = Emit_Load_Fat_Pointer(cg, array_sym);
             base = Emit_Fat_Pointer_Data(cg, fat);
             low_bound_val = Emit_Fat_Pointer_Low(cg, fat);
             has_dynamic_low = true;
         } else if (array_sym) {
             /* Constrained array - get direct pointer to data */
             base = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = getelementptr i8, ptr %%", base);
-            Emit_Symbol_Name(cg, array_sym);
+            Emit(cg, "  %%t%u = getelementptr i8, ptr ", base);
+            Emit_Symbol_Ref(cg, array_sym);
             Emit(cg, ", i64 0\n");
         } else {
             /* Fallback for complex expressions - shouldn't happen often */
@@ -8972,8 +8959,8 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
 
     /* Calculate address of field */
     uint32_t ptr = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = getelementptr i8, ptr %%", ptr);
-    Emit_Symbol_Name(cg, record_sym);
+    Emit(cg, "  %%t%u = getelementptr i8, ptr ", ptr);
+    Emit_Symbol_Ref(cg, record_sym);
     Emit(cg, ", i64 %u\n", byte_offset);
 
     /* For record-type components, return pointer; otherwise load value */
@@ -9048,13 +9035,8 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     if (Slice_Equal_Ignore_Case(attr, S("FIRST"))) {
         if (prefix_type && (prefix_type->kind == TYPE_ARRAY || prefix_type->kind == TYPE_STRING)) {
             if (needs_runtime_bounds && dim == 0) {
-                /* Load fat pointer and extract low bound */
-                uint32_t fat = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%", fat);
-                Emit_Symbol_Name(cg, prefix_sym);
-                Emit(cg, "  ; load fat pointer for 'FIRST\n");
-                uint32_t low = Emit_Fat_Pointer_Low(cg, fat);
-                return low;
+                uint32_t fat = Emit_Load_Fat_Pointer(cg, prefix_sym);
+                return Emit_Fat_Pointer_Low(cg, fat);
             } else if (dim < prefix_type->array.index_count) {
                 Emit(cg, "  %%t%u = add i64 0, %lld  ; %.*s'FIRST(%u)\n", t,
                      (long long)Type_Bound_Value(prefix_type->array.indices[dim].low_bound),
@@ -9071,13 +9053,8 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     if (Slice_Equal_Ignore_Case(attr, S("LAST"))) {
         if (prefix_type && (prefix_type->kind == TYPE_ARRAY || prefix_type->kind == TYPE_STRING)) {
             if (needs_runtime_bounds && dim == 0) {
-                /* Load fat pointer and extract high bound */
-                uint32_t fat = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%", fat);
-                Emit_Symbol_Name(cg, prefix_sym);
-                Emit(cg, "  ; load fat pointer for 'LAST\n");
-                uint32_t high = Emit_Fat_Pointer_High(cg, fat);
-                return high;
+                uint32_t fat = Emit_Load_Fat_Pointer(cg, prefix_sym);
+                return Emit_Fat_Pointer_High(cg, fat);
             } else if (dim < prefix_type->array.index_count) {
                 Emit(cg, "  %%t%u = add i64 0, %lld  ; %.*s'LAST(%u)\n", t,
                      (long long)Type_Bound_Value(prefix_type->array.indices[dim].high_bound),
@@ -9094,18 +9071,8 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     if (Slice_Equal_Ignore_Case(attr, S("LENGTH"))) {
         if (prefix_type && (prefix_type->kind == TYPE_ARRAY || prefix_type->kind == TYPE_STRING)) {
             if (needs_runtime_bounds && dim == 0) {
-                /* Load fat pointer and compute length from bounds */
-                uint32_t fat = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%", fat);
-                Emit_Symbol_Name(cg, prefix_sym);
-                Emit(cg, "  ; load fat pointer for 'LENGTH\n");
-                uint32_t low = Emit_Fat_Pointer_Low(cg, fat);
-                uint32_t high = Emit_Fat_Pointer_High(cg, fat);
-                uint32_t diff = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", diff, high, low);
-                uint32_t len = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add i64 %%t%u, 1  ; 'LENGTH\n", len, diff);
-                return len;
+                uint32_t fat = Emit_Load_Fat_Pointer(cg, prefix_sym);
+                return Emit_Fat_Pointer_Length(cg, fat);
             } else if (dim < prefix_type->array.index_count) {
                 int64_t low = Type_Bound_Value(prefix_type->array.indices[dim].low_bound);
                 int64_t high = Type_Bound_Value(prefix_type->array.indices[dim].high_bound);
@@ -9117,18 +9084,12 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("RANGE"))) {
-        /* Range attribute - typically used in for loops
-         * For unconstrained arrays, this is handled specially in Generate_For_Loop
-         * Here we just return the low bound for general expression contexts */
+        /* Range attribute - for general expression contexts, return low bound.
+         * For loops handle RANGE specially in Generate_For_Loop. */
         if (prefix_type && (prefix_type->kind == TYPE_ARRAY || prefix_type->kind == TYPE_STRING)) {
             if (needs_runtime_bounds && dim == 0) {
-                /* Load fat pointer and extract low bound */
-                uint32_t fat = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%", fat);
-                Emit_Symbol_Name(cg, prefix_sym);
-                Emit(cg, "  ; load fat pointer for 'RANGE\n");
-                uint32_t low = Emit_Fat_Pointer_Low(cg, fat);
-                return low;
+                uint32_t fat = Emit_Load_Fat_Pointer(cg, prefix_sym);
+                return Emit_Fat_Pointer_Low(cg, fat);
             } else if (dim < prefix_type->array.index_count) {
                 Emit(cg, "  %%t%u = add i64 0, %lld  ; 'RANGE(%u) low\n", t,
                      (long long)Type_Bound_Value(prefix_type->array.indices[dim].low_bound),
@@ -9173,8 +9134,8 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         /* Generate address of prefix object */
         Symbol *sym = node->attribute.prefix->symbol;
         if (sym) {
-            Emit(cg, "  %%t%u = ptrtoint ptr %%", t);
-            Emit_Symbol_Name(cg, sym);
+            Emit(cg, "  %%t%u = ptrtoint ptr ", t);
+            Emit_Symbol_Ref(cg, sym);
             Emit(cg, " to i64  ; 'ADDRESS\n");
         } else {
             Emit(cg, "  %%t%u = add i64 0, 0  ; 'ADDRESS (no symbol)\n", t);
@@ -9395,8 +9356,8 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         /* X'ACCESS - access to X (address) */
         Symbol *sym = node->attribute.prefix->symbol;
         if (sym) {
-            Emit(cg, "  %%t%u = getelementptr i8, ptr %%", t);
-            Emit_Symbol_Name(cg, sym);
+            Emit(cg, "  %%t%u = getelementptr i8, ptr ", t);
+            Emit_Symbol_Ref(cg, sym);
             Emit(cg, ", i64 0  ; 'ACCESS\n");
         } else {
             Emit(cg, "  %%t%u = add i64 0, 0\n", t);
@@ -9408,8 +9369,8 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         /* X'UNCHECKED_ACCESS - unchecked access to X */
         Symbol *sym = node->attribute.prefix->symbol;
         if (sym) {
-            Emit(cg, "  %%t%u = getelementptr i8, ptr %%", t);
-            Emit_Symbol_Name(cg, sym);
+            Emit(cg, "  %%t%u = getelementptr i8, ptr ", t);
+            Emit_Symbol_Ref(cg, sym);
             Emit(cg, ", i64 0  ; 'UNCHECKED_ACCESS\n");
         } else {
             Emit(cg, "  %%t%u = add i64 0, 0\n", t);
@@ -9754,8 +9715,8 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
 
             /* Get array base address (not loaded value) */
             uint32_t base = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = getelementptr i8, ptr %%", base);
-            Emit_Symbol_Name(cg, array_sym);
+            Emit(cg, "  %%t%u = getelementptr i8, ptr ", base);
+            Emit_Symbol_Ref(cg, array_sym);
             Emit(cg, ", i64 0\n");
 
             /* Generate index expression */
@@ -9809,8 +9770,8 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
 
             /* Calculate address of field */
             uint32_t field_ptr = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = getelementptr i8, ptr %%", field_ptr);
-            Emit_Symbol_Name(cg, record_sym);
+            Emit(cg, "  %%t%u = getelementptr i8, ptr ", field_ptr);
+            Emit_Symbol_Ref(cg, record_sym);
             Emit(cg, ", i64 %u\n", offset);
 
             /* Generate value and store */
@@ -9870,9 +9831,6 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
         value = Emit_Convert(cg, value, "i64", type_str);
     }
 
-    /* Check if package-level global (parent is NULL or SYMBOL_PACKAGE) */
-    bool is_global = !target_sym->parent || target_sym->parent->kind == SYMBOL_PACKAGE;
-
     if (is_uplevel && cg->is_nested) {
         /* Uplevel store through frame pointer */
         Emit(cg, "  ; UPLEVEL STORE: %.*s via frame pointer\n",
@@ -9880,14 +9838,9 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
         Emit(cg, "  store %s %%t%u, ptr %%__frame.", type_str, value);
         Emit_Symbol_Name(cg, target_sym);
         Emit(cg, "\n");
-    } else if (is_global) {
-        /* Global variable - use @ prefix */
-        Emit(cg, "  store %s %%t%u, ptr @", type_str, value);
-        Emit_Symbol_Name(cg, target_sym);
-        Emit(cg, "\n");
     } else {
-        Emit(cg, "  store %s %%t%u, ptr %%", type_str, value);
-        Emit_Symbol_Name(cg, target_sym);
+        Emit(cg, "  store %s %%t%u, ptr ", type_str, value);
+        Emit_Symbol_Ref(cg, target_sym);
         Emit(cg, "\n");
     }
 }
@@ -10105,11 +10058,7 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
         if (prefix_type && Type_Is_Unconstrained_Array(prefix_type) &&
             prefix_sym && (prefix_sym->kind == SYMBOL_PARAMETER ||
                            prefix_sym->kind == SYMBOL_VARIABLE)) {
-            /* Load fat pointer and extract both bounds */
-            uint32_t fat = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%", fat);
-            Emit_Symbol_Name(cg, prefix_sym);
-            Emit(cg, "  ; load fat pointer for 'RANGE\n");
+            uint32_t fat = Emit_Load_Fat_Pointer(cg, prefix_sym);
             low_val = Emit_Fat_Pointer_Low(cg, fat);
             high_val = Emit_Fat_Pointer_High(cg, fat);
         } else if (prefix_type && (prefix_type->kind == TYPE_ARRAY ||
