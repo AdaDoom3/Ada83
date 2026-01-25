@@ -965,7 +965,8 @@ typedef enum {
 
     /* Type definitions */
     NK_SUBTYPE_INDICATION, NK_RANGE_CONSTRAINT, NK_INDEX_CONSTRAINT,
-    NK_DISCRIMINANT_CONSTRAINT, NK_ARRAY_TYPE, NK_RECORD_TYPE,
+    NK_DISCRIMINANT_CONSTRAINT, NK_DIGITS_CONSTRAINT, NK_DELTA_CONSTRAINT,
+    NK_ARRAY_TYPE, NK_RECORD_TYPE,
     NK_ACCESS_TYPE, NK_DERIVED_TYPE, NK_ENUMERATION_TYPE,
     NK_INTEGER_TYPE, NK_REAL_TYPE, NK_COMPONENT_DECL, NK_VARIANT_PART,
     NK_VARIANT, NK_DISCRIMINANT_SPEC,
@@ -1049,6 +1050,8 @@ struct Syntax_Node {
         struct { Node_List ranges; } index_constraint;
         struct { Syntax_Node *range; } range_constraint;
         struct { Node_List associations; } discriminant_constraint;
+        struct { Syntax_Node *digits_expr; Syntax_Node *range; } digits_constraint;  /* NK_DIGITS_CONSTRAINT */
+        struct { Syntax_Node *delta_expr; Syntax_Node *range; } delta_constraint;    /* NK_DELTA_CONSTRAINT */
 
         /* NK_ARRAY_TYPE */
         struct { Node_List indices; Syntax_Node *component_type; bool is_constrained; } array_type;
@@ -1163,14 +1166,15 @@ struct Syntax_Node {
             bool is_private;
         } type_decl;
 
-        /* NK_EXCEPTION_DECL */
-        struct { Node_List names; } exception_decl;
+        /* NK_EXCEPTION_DECL, NK_EXCEPTION_RENAMING */
+        struct { Node_List names; Syntax_Node *renamed; } exception_decl;
 
-        /* NK_PROCEDURE_SPEC, NK_FUNCTION_SPEC */
+        /* NK_PROCEDURE_SPEC, NK_FUNCTION_SPEC, NK_SUBPROGRAM_RENAMING */
         struct {
             String_Slice name;
             Node_List parameters;
             Syntax_Node *return_type;  /* NULL for procedures */
+            Syntax_Node *renamed;      /* For NK_SUBPROGRAM_RENAMING: the renamed entity */
         } subprogram_spec;
 
         /* NK_PROCEDURE_BODY, NK_FUNCTION_BODY */
@@ -1197,6 +1201,12 @@ struct Syntax_Node {
             Node_List handlers;
             bool is_separate;
         } package_body;
+
+        /* NK_PACKAGE_RENAMING */
+        struct {
+            String_Slice new_name;
+            Syntax_Node *old_name;
+        } package_renaming;
 
         /* NK_TASK_SPEC */
         struct {
@@ -1260,10 +1270,13 @@ struct Syntax_Node {
 
         /* NK_GENERIC_SUBPROGRAM_PARAM: with procedure/function spec [is name|<>] */
         struct {
-            Syntax_Node *subprogram_spec;
+            String_Slice name;
+            Node_List parameters;
+            Syntax_Node *return_type;  /* NULL for procedures */
             Syntax_Node *default_name;
-            bool is_box;
-        } generic_subprogram_param;
+            bool is_function;
+            bool default_box;
+        } generic_subprog_param;
 
         /* NK_WITH_CLAUSE, NK_USE_CLAUSE */
         struct { Node_List names; } use_clause;
@@ -1352,6 +1365,19 @@ static inline bool Parser_At(Parser *p, Token_Kind kind) {
 
 static inline bool Parser_At_Any(Parser *p, Token_Kind k1, Token_Kind k2) {
     return Parser_At(p, k1) || Parser_At(p, k2);
+}
+
+/* Lookahead: check if the NEXT token (after current) is of the given kind */
+static bool Parser_Peek_At(Parser *p, Token_Kind kind) {
+    Token saved = p->current_token;
+    Lexer saved_lexer = p->lexer;
+
+    p->current_token = Lexer_Next_Token(&p->lexer);
+    bool result = p->current_token.kind == kind;
+
+    p->current_token = saved;
+    p->lexer = saved_lexer;
+    return result;
 }
 
 static Token Parser_Advance(Parser *p) {
@@ -1460,9 +1486,9 @@ static String_Slice Parser_Identifier(Parser *p) {
     return name;
 }
 
-/* Check END identifier matches expected name */
+/* Check END identifier matches expected name (also handles operator strings) */
 static void Parser_Check_End_Name(Parser *p, String_Slice expected_name) {
-    if (Parser_At(p, TK_IDENTIFIER)) {
+    if (Parser_At(p, TK_IDENTIFIER) || Parser_At(p, TK_STRING)) {
         String_Slice end_name = p->current_token.text;
         if (!Slice_Equal_Ignore_Case(end_name, expected_name)) {
             Report_Error(p->current_token.location,
@@ -1496,6 +1522,7 @@ static Syntax_Node *Parse_Simple_Name(Parser *p);  /* identifier or dotted, no p
 static Syntax_Node *Parse_Subtype_Indication(Parser *p);
 static Syntax_Node *Parse_Array_Type(Parser *p);
 static void Parse_Association_List(Parser *p, Node_List *list);
+static void Parse_Parameter_List(Parser *p, Node_List *params);
 
 /* Parse primary: literals, names, aggregates, allocators, parenthesized */
 static Syntax_Node *Parse_Primary(Parser *p) {
@@ -2037,6 +2064,30 @@ static Syntax_Node *Parse_Range(Parser *p) {
         return node;
     }
 
+    /* Check for subtype_mark RANGE low..high (discrete subtype definition)
+     * e.g., "INTEGER RANGE 1..10" or "STAT RANGE 1..5" */
+    if (Parser_Match(p, TK_RANGE)) {
+        Syntax_Node *ind = Node_New(NK_SUBTYPE_INDICATION, loc);
+        ind->subtype_ind.subtype_mark = low;
+
+        /* Now parse the actual range constraint */
+        Syntax_Node *constraint = Node_New(NK_RANGE_CONSTRAINT, loc);
+        Syntax_Node *range_low = Parse_Expression(p);
+
+        if (Parser_Match(p, TK_DOTDOT)) {
+            Syntax_Node *range_node = Node_New(NK_RANGE, loc);
+            range_node->range.low = range_low;
+            range_node->range.high = Parse_Expression(p);
+            constraint->range_constraint.range = range_node;
+        } else {
+            /* Just a range attribute or name */
+            constraint->range_constraint.range = range_low;
+        }
+
+        ind->subtype_ind.constraint = constraint;
+        return ind;
+    }
+
     /* Could be a subtype name used as a range */
     return low;
 }
@@ -2092,6 +2143,40 @@ static Syntax_Node *Parse_Subtype_Indication(Parser *p) {
 
         Syntax_Node *constraint = Node_New(NK_RANGE_CONSTRAINT, loc);
         constraint->range_constraint.range = Parse_Range(p);
+        ind->subtype_ind.constraint = constraint;
+        return ind;
+    }
+
+    /* Check for DIGITS constraint (floating-point types) */
+    if (Parser_Match(p, TK_DIGITS)) {
+        Syntax_Node *ind = Node_New(NK_SUBTYPE_INDICATION, loc);
+        ind->subtype_ind.subtype_mark = subtype_mark;
+
+        Syntax_Node *constraint = Node_New(NK_DIGITS_CONSTRAINT, loc);
+        constraint->digits_constraint.digits_expr = Parse_Expression(p);
+
+        /* Optional RANGE constraint after DIGITS */
+        if (Parser_Match(p, TK_RANGE)) {
+            constraint->digits_constraint.range = Parse_Range(p);
+        }
+
+        ind->subtype_ind.constraint = constraint;
+        return ind;
+    }
+
+    /* Check for DELTA constraint (fixed-point types) */
+    if (Parser_Match(p, TK_DELTA)) {
+        Syntax_Node *ind = Node_New(NK_SUBTYPE_INDICATION, loc);
+        ind->subtype_ind.subtype_mark = subtype_mark;
+
+        Syntax_Node *constraint = Node_New(NK_DELTA_CONSTRAINT, loc);
+        constraint->delta_constraint.delta_expr = Parse_Expression(p);
+
+        /* Optional RANGE constraint after DELTA */
+        if (Parser_Match(p, TK_RANGE)) {
+            constraint->delta_constraint.range = Parse_Range(p);
+        }
+
         ind->subtype_ind.constraint = constraint;
         return ind;
     }
@@ -2379,16 +2464,42 @@ static Syntax_Node *Parse_Accept_Statement(Parser *p) {
     Syntax_Node *node = Node_New(NK_ACCEPT, loc);
     node->accept_stmt.entry_name = Parser_Identifier(p);
 
-    /* Optional index */
-    if (Parser_Match(p, TK_LPAREN)) {
-        node->accept_stmt.index = Parse_Expression(p);
-        Parser_Expect(p, TK_RPAREN);
-    }
+    /* Optional index and/or parameters
+     * Need to distinguish:
+     * - Entry index: (expression) like (5) or (I)
+     * - Parameters: (id : type) like (X : INTEGER) */
+    if (Parser_At(p, TK_LPAREN)) {
+        /* Lookahead to distinguish index vs parameters */
+        Token saved = p->current_token;
+        Lexer saved_lexer = p->lexer;
+        Parser_Advance(p);  /* consume ( */
 
-    /* Optional formal part */
-    if (Parser_Match(p, TK_LPAREN)) {
-        Parse_Association_List(p, &node->accept_stmt.parameters);
-        Parser_Expect(p, TK_RPAREN);
+        bool is_parameter_list = false;
+        if (Parser_At(p, TK_IDENTIFIER)) {
+            Token id_token = p->current_token;
+            Parser_Advance(p);  /* past identifier */
+            /* If followed by : or ,, it's a parameter list */
+            is_parameter_list = Parser_At(p, TK_COLON) || Parser_At(p, TK_COMMA);
+        }
+
+        /* Restore and parse correctly */
+        p->current_token = saved;
+        p->lexer = saved_lexer;
+
+        if (is_parameter_list) {
+            /* This is a parameter list, not an index */
+            Parse_Parameter_List(p, &node->accept_stmt.parameters);
+        } else {
+            /* Parse entry index (expression) */
+            Parser_Advance(p);  /* consume ( */
+            node->accept_stmt.index = Parse_Expression(p);
+            Parser_Expect(p, TK_RPAREN);
+
+            /* Now check for optional parameters after index */
+            if (Parser_At(p, TK_LPAREN)) {
+                Parse_Parameter_List(p, &node->accept_stmt.parameters);
+            }
+        }
     }
 
     /* Optional body */
@@ -2457,36 +2568,39 @@ static Syntax_Node *Parse_Select_Statement(Parser *p) {
 static Syntax_Node *Parse_Statement(Parser *p) {
     Source_Location loc = Parser_Location(p);
 
-    /* Check for label: <<label>> or identifier: */
+    /* Check for label(s): <<label>> or identifier:
+     * Ada allows multiple labels before a statement: <<L1>> <<L2>> stmt; */
     String_Slice label = Empty_Slice;
 
-    if (Parser_Match(p, TK_LSHIFT)) {
-        label = Parser_Identifier(p);
-        Parser_Expect(p, TK_RSHIFT);
+    /* Handle multiple consecutive labels */
+    while (Parser_At(p, TK_LSHIFT) ||
+           (Parser_At(p, TK_IDENTIFIER) && Parser_Peek_At(p, TK_COLON))) {
 
-        Syntax_Node *lbl = Node_New(NK_LABEL, loc);
-        lbl->label_ref.name = label;
-        /* Label attaches to next statement */
-    } else if (Parser_At(p, TK_IDENTIFIER)) {
-        /* Lookahead for "identifier :" (label) vs assignment/call */
-        Token saved = p->current_token;
-        Lexer saved_lexer = p->lexer;
-        String_Slice id = Parser_Identifier(p);
+        if (Parser_Match(p, TK_LSHIFT)) {
+            label = Parser_Identifier(p);
+            Parser_Expect(p, TK_RSHIFT);
+        } else if (Parser_At(p, TK_IDENTIFIER)) {
+            /* Lookahead for "identifier :" (label) vs assignment/call */
+            Token saved = p->current_token;
+            Lexer saved_lexer = p->lexer;
+            String_Slice id = Parser_Identifier(p);
 
-        if (Parser_Match(p, TK_COLON)) {
-            /* This is a label */
-            label = id;
-            loc = Parser_Location(p);  /* Update location to after label */
-        } else {
-            /* Not a label - restore and let assignment/call handle it */
-            p->current_token = saved;
-            p->lexer = saved_lexer;
+            if (Parser_Match(p, TK_COLON)) {
+                /* This is a label */
+                label = id;
+            } else {
+                /* Not a label - restore and let assignment/call handle it */
+                p->current_token = saved;
+                p->lexer = saved_lexer;
+                break;
+            }
         }
+        loc = Parser_Location(p);  /* Update location to after labels */
     }
 
     /* Null statement */
     if (Parser_Match(p, TK_NULL)) {
-        Parser_Expect(p, TK_SEMICOLON);
+        /* Semicolon is handled by Parse_Statement_Sequence */
         return Node_New(NK_NULL_STMT, loc);
     }
 
@@ -2559,12 +2673,17 @@ static Syntax_Node *Parse_Object_Declaration(Parser *p) {
 
     Parser_Expect(p, TK_COLON);
 
-    /* Check for exception declaration: identifier_list : EXCEPTION */
+    /* Check for exception declaration: identifier_list : EXCEPTION [RENAMES name] */
     if (Parser_Match(p, TK_EXCEPTION)) {
-        /* Convert to exception declaration */
-        node->kind = NK_EXCEPTION_DECL;
-        /* Names are already parsed into object_decl.names, copy to exception_decl.names */
-        node->exception_decl.names = node->object_decl.names;
+        /* Check for renaming */
+        if (Parser_Match(p, TK_RENAMES)) {
+            node->kind = NK_EXCEPTION_RENAMING;
+            node->exception_decl.names = node->object_decl.names;
+            node->exception_decl.renamed = Parse_Name(p);
+        } else {
+            node->kind = NK_EXCEPTION_DECL;
+            node->exception_decl.names = node->object_decl.names;
+        }
         return node;
     }
 
@@ -2862,9 +2981,9 @@ static Syntax_Node *Parse_Variant_Part(Parser *p) {
 
         Syntax_Node *variant = Node_New(NK_VARIANT, v_loc);
 
-        /* Choices */
+        /* Choices - can be expressions, ranges, or OTHERS */
         do {
-            Node_List_Push(&variant->variant.choices, Parse_Expression(p));
+            Node_List_Push(&variant->variant.choices, Parse_Choice(p));
         } while (Parser_Match(p, TK_BAR));
 
         Parser_Expect(p, TK_ARROW);
@@ -3149,7 +3268,8 @@ static Syntax_Node *Parse_Subprogram_Body(Parser *p, Syntax_Node *spec) {
     }
 
     Parser_Expect(p, TK_END);
-    if (spec && Parser_At(p, TK_IDENTIFIER)) {
+    if (spec && (Parser_At(p, TK_IDENTIFIER) || Parser_At(p, TK_STRING))) {
+        /* Check end name - handle both identifier and operator string */
         Parser_Check_End_Name(p, spec->subprogram_spec.name);
     }
 
@@ -3300,15 +3420,51 @@ static void Parse_Generic_Formal_Part(Parser *p, Node_List *formals) {
             continue;
         }
 
-        /* Generic subprogram formal */
+        /* Generic subprogram formal: WITH PROCEDURE/FUNCTION spec [IS name | IS <>] */
         if (Parser_At(p, TK_WITH)) {
-            Parser_Advance(p);
+            Parser_Advance(p);  /* consume WITH */
             Syntax_Node *formal = Node_New(NK_GENERIC_SUBPROGRAM_PARAM, loc);
-            if (Parser_At(p, TK_PROCEDURE)) {
-                /* Parse formal procedure */
-            } else if (Parser_At(p, TK_FUNCTION)) {
-                /* Parse formal function */
+
+            if (Parser_Match(p, TK_PROCEDURE)) {
+                formal->generic_subprog_param.is_function = false;
+                formal->generic_subprog_param.name = Parser_Identifier(p);
+
+                /* Optional parameters */
+                if (Parser_At(p, TK_LPAREN)) {
+                    Parse_Parameter_List(p, &formal->generic_subprog_param.parameters);
+                }
+            } else if (Parser_Match(p, TK_FUNCTION)) {
+                formal->generic_subprog_param.is_function = true;
+
+                /* Function name - can be identifier or operator string */
+                if (Parser_At(p, TK_STRING)) {
+                    formal->generic_subprog_param.name = Slice_Duplicate(p->current_token.text);
+                    Parser_Advance(p);
+                } else {
+                    formal->generic_subprog_param.name = Parser_Identifier(p);
+                }
+
+                /* Optional parameters */
+                if (Parser_At(p, TK_LPAREN)) {
+                    Parse_Parameter_List(p, &formal->generic_subprog_param.parameters);
+                }
+
+                /* Return type */
+                Parser_Expect(p, TK_RETURN);
+                formal->generic_subprog_param.return_type = Parse_Name(p);
             }
+
+            /* Optional default: IS name | IS <> */
+            if (Parser_Match(p, TK_IS)) {
+                if (Parser_Match(p, TK_BOX)) {
+                    /* IS <> means any matching subprogram */
+                    formal->generic_subprog_param.default_box = true;
+                } else {
+                    /* IS name means default to that subprogram */
+                    formal->generic_subprog_param.default_name = Parse_Name(p);
+                }
+            }
+
             Node_List_Push(formals, formal);
             Parser_Expect(p, TK_SEMICOLON);
             continue;
@@ -3435,7 +3591,8 @@ static Syntax_Node *Parse_Exception_Declaration(Parser *p) {
     /* Renames */
     if (Parser_Match(p, TK_RENAMES)) {
         node->kind = NK_EXCEPTION_RENAMING;
-        /* Parse renamed exception */
+        /* Parse renamed exception name */
+        node->exception_decl.renamed = Parse_Name(p);
     }
 
     return node;
@@ -3503,10 +3660,7 @@ static Syntax_Node *Parse_Representation_Clause(Parser *p) {
         /* Enumeration representation: FOR T USE (A => 0, B => 1, ...); */
         node->rep_clause.is_enum_rep = true;
         Parser_Advance(p);  /* consume ( */
-        do {
-            Syntax_Node *enum_val = Parse_Expression(p);
-            Node_List_Push(&node->rep_clause.component_clauses, enum_val);
-        } while (Parser_Match(p, TK_COMMA));
+        Parse_Association_List(p, &node->rep_clause.component_clauses);
         Parser_Expect(p, TK_RPAREN);
     } else if (Parser_Match(p, TK_AT)) {
         /* Address clause: FOR X USE AT address; */
@@ -3596,6 +3750,13 @@ static Syntax_Node *Parse_Declaration(Parser *p) {
             spec->subprogram_spec.return_type = Parse_Name(p);
         }
 
+        /* Check for subprogram renaming: PROCEDURE P RENAMES Q; or FUNCTION F RENAMES G; */
+        if (Parser_Match(p, TK_RENAMES)) {
+            spec->kind = NK_SUBPROGRAM_RENAMING;
+            spec->subprogram_spec.renamed = Parse_Name(p);
+            return spec;
+        }
+
         /* Check for body or just spec */
         if (Parser_At(p, TK_IS)) {
             return Parse_Subprogram_Body(p, spec);
@@ -3613,7 +3774,60 @@ static Syntax_Node *Parse_Declaration(Parser *p) {
             Parser_Advance(p);  /* consume BODY */
             return Parse_Package_Body(p);
         }
-        return Parse_Package_Specification(p);
+        /* Check for package renaming: PACKAGE name RENAMES old_name; */
+        String_Slice pkg_name = Parser_Identifier(p);
+        if (Parser_Match(p, TK_RENAMES)) {
+            Syntax_Node *node = Node_New(NK_PACKAGE_RENAMING, loc);
+            node->package_renaming.new_name = pkg_name;
+            node->package_renaming.old_name = Parse_Name(p);
+            return node;
+        }
+
+        Parser_Expect(p, TK_IS);
+
+        /* Check for generic instantiation: PACKAGE name IS NEW generic_name */
+        if (Parser_Match(p, TK_NEW)) {
+            Syntax_Node *node = Node_New(NK_GENERIC_INST, loc);
+            node->generic_inst.unit_kind = TK_PACKAGE;
+            node->generic_inst.instance_name = pkg_name;
+
+            /* Parse the generic unit name */
+            node->generic_inst.generic_name = Parse_Simple_Name(p);
+
+            /* Generic actuals */
+            if (Parser_Match(p, TK_LPAREN)) {
+                Parse_Association_List(p, &node->generic_inst.actuals);
+                Parser_Expect(p, TK_RPAREN);
+            }
+
+            Parser_Expect(p, TK_SEMICOLON);
+            return node;
+        }
+
+        /* Not a generic instantiation - parse as specification */
+        Syntax_Node *spec = Node_New(NK_PACKAGE_SPEC, loc);
+        spec->package_spec.name = pkg_name;
+        /* Parse visible declarations */
+        while (!Parser_At(p, TK_PRIVATE) && !Parser_At(p, TK_END) && !Parser_At(p, TK_EOF)) {
+            if (!Parser_Check_Progress(p)) break;
+            Syntax_Node *decl = Parse_Declaration(p);
+            Node_List_Push(&spec->package_spec.visible_decls, decl);
+            Parser_Match(p, TK_SEMICOLON);
+        }
+        /* Parse private declarations */
+        if (Parser_Match(p, TK_PRIVATE)) {
+            while (!Parser_At(p, TK_END) && !Parser_At(p, TK_EOF)) {
+                if (!Parser_Check_Progress(p)) break;
+                Syntax_Node *decl = Parse_Declaration(p);
+                Node_List_Push(&spec->package_spec.private_decls, decl);
+                Parser_Match(p, TK_SEMICOLON);
+            }
+        }
+        Parser_Expect(p, TK_END);
+        if (Parser_At(p, TK_IDENTIFIER)) {
+            Parser_Check_End_Name(p, spec->package_spec.name);
+        }
+        return spec;
     }
 
     /* Task declaration */
@@ -3682,19 +3896,58 @@ static Syntax_Node *Parse_Declaration(Parser *p) {
                     Syntax_Node *entry = Node_New(NK_ENTRY_DECL, e_loc);
                     entry->entry_decl.name = Parser_Identifier(p);
 
-                    /* Entry may have family index: ENTRY name(index) */
-                    /* and/or parameters: ENTRY name(...) or ENTRY name(index)(...) */
+                    /* Entry may have family index: ENTRY name(index)
+                     * and/or parameters: ENTRY name(...) or ENTRY name(index)(...)
+                     * Family index is a discrete_subtype_definition (like 1..10)
+                     * Parameters start with identifier : mode type */
                     if (Parser_At(p, TK_LPAREN)) {
-                        /* For simplicity, parse as parameter list */
-                        Parse_Parameter_List(p, &entry->entry_decl.parameters);
+                        /* Check if this is an entry family index or parameter list
+                         * Entry family: (discrete_range) like (1..10) or (T'RANGE)
+                         * Parameters: (id : mode type) - starts with identifier followed by : */
+                        Token saved = p->current_token;
+                        Lexer saved_lexer = p->lexer;
+                        Parser_Advance(p);  /* consume ( for lookahead */
+
+                        bool is_family_index = false;
+                        if (!Parser_At(p, TK_IDENTIFIER)) {
+                            /* Not starting with identifier - must be family index */
+                            is_family_index = true;
+                        } else {
+                            /* Look ahead to see if it's id : (parameter) or just id (family) */
+                            Token saved2 = p->current_token;
+                            Lexer saved_lexer2 = p->lexer;
+                            Parser_Advance(p);  /* past identifier */
+                            is_family_index = !Parser_At(p, TK_COLON) && !Parser_At(p, TK_COMMA);
+                            p->current_token = saved2;
+                            p->lexer = saved_lexer2;
+                        }
+
+                        if (is_family_index) {
+                            /* Parse discrete subtype definition - already past ( */
+                            Syntax_Node *range = Parse_Range(p);
+                            Node_List_Push(&entry->entry_decl.index_constraints, range);
+                            Parser_Expect(p, TK_RPAREN);
+
+                            /* Optionally parse parameters after family index */
+                            if (Parser_At(p, TK_LPAREN)) {
+                                Parse_Parameter_List(p, &entry->entry_decl.parameters);
+                            }
+                        } else {
+                            /* Restore and use Parse_Parameter_List which handles ( ) */
+                            p->current_token = saved;
+                            p->lexer = saved_lexer;
+                            Parse_Parameter_List(p, &entry->entry_decl.parameters);
+                        }
                     }
                     Parser_Expect(p, TK_SEMICOLON);
                     Node_List_Push(&node->task_spec.entries, entry);
                 } else if (Parser_At(p, TK_PRAGMA)) {
                     Node_List_Push(&node->task_spec.entries, Parse_Pragma(p));
+                    Parser_Expect(p, TK_SEMICOLON);
                 } else if (Parser_At(p, TK_FOR)) {
                     /* Representation clause in task spec */
                     Node_List_Push(&node->task_spec.entries, Parse_Representation_Clause(p));
+                    Parser_Match(p, TK_SEMICOLON);  /* Rep clause may include its own semicolon */
                 } else {
                     Parser_Error(p, "expected ENTRY, PRAGMA, FOR, or END in task spec");
                     Parser_Advance(p);
