@@ -263,6 +263,7 @@ static inline uint32_t Bits_For_Range(int64_t lo, int64_t hi) {
  *
  * A simple bump allocator for AST nodes and strings. All memory persists
  * for the compilation session — we trade fragmentation for simplicity.
+ * Micro-optimizing malloc(32) is not where compilation time goes.
  */
 
 typedef struct Arena_Chunk Arena_Chunk;
@@ -346,7 +347,8 @@ static bool Slice_Equal_Ignore_Case(String_Slice a, String_Slice b) {
     return true;
 }
 
-/* FNV-1a hash with case folding for case-insensitive symbol lookup */
+/* FNV-1a hash with case folding for case-insensitive symbol lookup.
+ * The constants are prime; their provenance is empirical, not divine. */
 static uint64_t Slice_Hash(String_Slice s) {
     uint64_t h = 14695981039346656037ULL;
     for (uint32_t i = 0; i < s.length; i++)
@@ -428,7 +430,7 @@ static void Fatal_Error(Source_Location loc, const char *format, ...) {
  *   - Comparison and extraction
  *
  * This is a drastically simplified bigint focused on parsing, not general
- * arithmetic. For full arithmetic, we'd need Karatsuba etc.
+ * arithmetic. For full arithmetic, we'd need Karatsuba. O(n²) suffices here.
  */
 
 typedef struct {
@@ -929,7 +931,8 @@ static Big_Real *Big_Real_Multiply(const Big_Real *a, const Big_Real *b) {
  * ═══════════════════════════════════════════════════════════════════════════
  *
  * The lexer maintains a cursor over the source buffer and produces tokens
- * on demand. Ada lexical rules from RM §2.
+ * on demand. Ada lexical rules from RM §2. The automaton is implicit in
+ * the control flow; making it explicit would obscure more than it reveals.
  */
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -2721,7 +2724,8 @@ static Syntax_Node *Node_New(Node_Kind kind, Source_Location loc) {
  * 3. UNIFIED POSTFIX CHAIN: One loop handles .selector, 'attribute, (args).
  *
  * 4. NO "PRETEND TOKEN EXISTS": Error recovery synchronizes to known tokens
- *    rather than silently accepting malformed syntax.
+ *    rather than silently accepting malformed syntax. Guessing user intent
+ *    produces cascading errors; admitting ignorance produces one.
  */
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -5939,6 +5943,8 @@ static const char *Type_To_Llvm(Type_Info *t) {
  * - Visibility: immediately visible, use-visible, directly visible
  *
  * We use a hash table with chaining and a scope stack for nested contexts.
+ * Collisions are inevitable; we make them cheap rather than trying to
+ * eliminate them.
  */
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -6838,7 +6844,7 @@ static Type_Info *Resolve_Identifier(Symbol_Manager *sm, Syntax_Node *node) {
     if (!sym) {
         Report_Error(node->location, "undefined identifier '%.*s'",
                     node->string_val.text.length, node->string_val.text.data);
-        return sm->type_integer;  /* Error recovery */
+        return sm->type_integer;  /* ??? Continue; one error is better than ten. */
     }
 
     node->symbol = sym;
