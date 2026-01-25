@@ -1,5 +1,6 @@
 # Compiled binary
 ada83
+ada83new
 a83
 ada83_debug
 
@@ -9,7 +10,9 @@ ada83_debug
 
 # Test output
 test_results/
+test_results_new/
 acats_logs/
+acats_logs_new/
 test_summary.txt
 test_output.txt
 *.ll
