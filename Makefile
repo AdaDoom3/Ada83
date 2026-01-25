@@ -1,7 +1,8 @@
 # Makefile for Ada83 Compiler
 
 CC = gcc
-CFLAGS = -O2 -Wall
+# Enable cutting-edge CPU extensions: AVX-512, BMI2, native tuning
+CFLAGS = -O3 -march=native -mavx512f -mavx512bw -mbmi2 -Wall
 LLC = llc
 ADA83 = ./ada83
 
@@ -14,8 +15,8 @@ all: compiler
 compiler: ada83
 
 # Build the compiler
-ada83: ada83.c
-	$(CC) $(CFLAGS) -o ada83 ada83.c -lm
+ada83: ada83new.c
+	$(CC) $(CFLAGS) -o ada83 ada83new.c -lm
 
 # Pattern rules for compiling Ada programs
 %.ll: %.adb $(ADA83)

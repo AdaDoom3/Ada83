@@ -39,6 +39,47 @@
 #include <unistd.h>
 
 /* ═══════════════════════════════════════════════════════════════════════════
+ * SIMD Architecture Detection (raw assembly, no intrinsics)
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+
+/* Detect architecture */
+#if defined(__x86_64__) || defined(_M_X64)
+    #define SIMD_X86_64 1
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    #define SIMD_ARM64 1
+#else
+    #define SIMD_GENERIC 1
+#endif
+
+/* Runtime CPU feature detection for x86-64 */
+#ifdef SIMD_X86_64
+static int simd_has_avx512 = -1;  /* -1 = unchecked, 0 = no, 1 = yes */
+static int simd_has_avx2 = -1;
+
+static void simd_detect_features(void) {
+    if (simd_has_avx512 >= 0) return;  /* Already detected */
+
+    uint32_t eax, ebx, ecx, edx;
+
+    /* Check for AVX2: CPUID.07H:EBX.AVX2[bit 5] */
+    __asm__ volatile (
+        "mov $7, %%eax\n\t"
+        "xor %%ecx, %%ecx\n\t"
+        "cpuid\n\t"
+        : "=a" (eax), "=b" (ebx), "=c" (ecx), "=d" (edx)
+        :
+        : "memory"
+    );
+    simd_has_avx2 = (ebx >> 5) & 1;
+
+    /* Check for AVX-512F: CPUID.07H:EBX.AVX512F[bit 16] */
+    /* Also check AVX-512BW for byte operations: CPUID.07H:EBX.AVX512BW[bit 30] */
+    simd_has_avx512 = ((ebx >> 16) & 1) && ((ebx >> 30) & 1);
+}
+#endif
+
+/* ═══════════════════════════════════════════════════════════════════════════
  * §1. TYPE METRICS — Representation details
  * ═══════════════════════════════════════════════════════════════════════════
  *
@@ -534,6 +575,724 @@ static Lexer Lexer_New(const char *source, size_t length, const char *filename) 
     return (Lexer){source, source, source + length, filename, 1, 1};
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §7.3.1 SIMD-Accelerated Scanning Functions
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * Three paths: x86-64 (AVX2/SSE4.2), ARM64 (NEON), scalar fallback.
+ * These functions find interesting bytes without character-by-character loops.
+ */
+
+#ifdef SIMD_X86_64
+/* ─────────────────────────────────────────────────────────────────────────
+ * x86-64 AVX-512/AVX2 Cutting-Edge Implementation
+ *
+ * Features:
+ * - AVX-512BW path: 64-byte processing with mask registers (k-masks)
+ * - AVX2 fallback: 32-byte processing with optimized instruction scheduling
+ * - Software prefetching for memory-bound operations
+ * - Loop unrolling for better instruction-level parallelism
+ * - BMI2 TZCNT for fast bit scanning
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/* AVX-512 whitespace skip - processes 64 bytes at a time using k-masks */
+static inline const char *simd_skip_whitespace_avx512(const char *p, const char *end) {
+    while (p + 64 <= end) {
+        uint64_t mask;
+        __asm__ volatile (
+            /* Prefetch next cache line */
+            "prefetcht0 128(%[src])\n\t"
+            /* Load 64 bytes into zmm0 */
+            "vmovdqu8 (%[src]), %%zmm0\n\t"
+            /* Create whitespace character set in zmm1 for space (0x20) */
+            "vpbroadcastb %[space], %%zmm1\n\t"
+            "vpcmpeqb %%zmm1, %%zmm0, %%k1\n\t"
+            /* Check range 0x09-0x0D using AVX-512 range compare */
+            "vpbroadcastb %[lo], %%zmm2\n\t"
+            "vpbroadcastb %[hi], %%zmm3\n\t"
+            "vpcmpgtb %%zmm2, %%zmm0, %%k2\n\t"          /* c > 0x08 */
+            "vpcmpgtb %%zmm0, %%zmm3, %%k3\n\t"          /* 0x0E > c */
+            "kandd %%k2, %%k3, %%k2\n\t"                 /* in range */
+            "kord %%k1, %%k2, %%k0\n\t"                  /* whitespace mask */
+            "kmovq %%k0, %[mask]\n\t"
+            : [mask] "=r" (mask)
+            : [src] "r" (p),
+              [space] "r" ((uint32_t)' '),
+              [lo] "r" ((uint32_t)0x08),
+              [hi] "r" ((uint32_t)0x0E)
+            : "zmm0", "zmm1", "zmm2", "zmm3", "k0", "k1", "k2", "k3", "memory"
+        );
+        if (~mask) {
+            uint64_t inv = ~mask;
+            __asm__ volatile ("tzcntq %1, %0" : "=r" (inv) : "r" (inv));
+            return p + inv;
+        }
+        p += 64;
+    }
+    return p;
+}
+
+/* AVX2 whitespace skip with 2x unrolling - processes 64 bytes per iteration */
+static inline const char *simd_skip_whitespace_avx2(const char *p, const char *end) {
+    /* Process 64 bytes (2x32) per iteration with unrolling */
+    while (p + 64 <= end) {
+        uint32_t mask0, mask1;
+        __asm__ volatile (
+            /* Prefetch ahead */
+            "prefetcht0 128(%[src])\n\t"
+            /* Load two 32-byte chunks */
+            "vmovdqu (%[src]), %%ymm0\n\t"
+            "vmovdqu 32(%[src]), %%ymm8\n\t"
+            /* Broadcast constants once */
+            "vmovd %[space], %%xmm1\n\t"
+            "vpbroadcastb %%xmm1, %%ymm1\n\t"
+            "vmovd %[lo], %%xmm2\n\t"
+            "vpbroadcastb %%xmm2, %%ymm2\n\t"
+            "vmovd %[hi], %%xmm3\n\t"
+            "vpbroadcastb %%xmm3, %%ymm3\n\t"
+            /* First chunk - parallel execution */
+            "vpcmpeqb %%ymm1, %%ymm0, %%ymm5\n\t"
+            "vpcmpgtb %%ymm2, %%ymm0, %%ymm6\n\t"
+            "vpcmpgtb %%ymm0, %%ymm3, %%ymm7\n\t"
+            /* Second chunk - parallel with first */
+            "vpcmpeqb %%ymm1, %%ymm8, %%ymm9\n\t"
+            "vpcmpgtb %%ymm2, %%ymm8, %%ymm10\n\t"
+            "vpcmpgtb %%ymm8, %%ymm3, %%ymm11\n\t"
+            /* Combine first chunk */
+            "vpand %%ymm6, %%ymm7, %%ymm6\n\t"
+            "vpor %%ymm5, %%ymm6, %%ymm0\n\t"
+            /* Combine second chunk */
+            "vpand %%ymm10, %%ymm11, %%ymm10\n\t"
+            "vpor %%ymm9, %%ymm10, %%ymm8\n\t"
+            /* Extract masks */
+            "vpmovmskb %%ymm0, %[m0]\n\t"
+            "vpmovmskb %%ymm8, %[m1]\n\t"
+            "vzeroupper\n\t"
+            : [m0] "=r" (mask0), [m1] "=r" (mask1)
+            : [src] "r" (p),
+              [space] "r" ((uint32_t)' '),
+              [lo] "r" ((uint32_t)0x08),
+              [hi] "r" ((uint32_t)0x0E)
+            : "ymm0", "ymm1", "ymm2", "ymm3", "ymm5", "ymm6", "ymm7",
+              "ymm8", "ymm9", "ymm10", "ymm11", "memory"
+        );
+        if (mask0 != 0xFFFFFFFF) {
+            return p + __builtin_ctz(~mask0);
+        }
+        if (mask1 != 0xFFFFFFFF) {
+            return p + 32 + __builtin_ctz(~mask1);
+        }
+        p += 64;
+    }
+    /* Handle remaining 32-byte chunk */
+    while (p + 32 <= end) {
+        uint32_t mask;
+        __asm__ volatile (
+            "vmovdqu (%[src]), %%ymm0\n\t"
+            "vmovd %[space], %%xmm1\n\t"
+            "vpbroadcastb %%xmm1, %%ymm1\n\t"
+            "vmovd %[lo], %%xmm2\n\t"
+            "vpbroadcastb %%xmm2, %%ymm2\n\t"
+            "vmovd %[hi], %%xmm3\n\t"
+            "vpbroadcastb %%xmm3, %%ymm3\n\t"
+            "vpcmpeqb %%ymm1, %%ymm0, %%ymm5\n\t"
+            "vpcmpgtb %%ymm2, %%ymm0, %%ymm6\n\t"
+            "vpcmpgtb %%ymm0, %%ymm3, %%ymm7\n\t"
+            "vpand %%ymm6, %%ymm7, %%ymm6\n\t"
+            "vpor %%ymm5, %%ymm6, %%ymm0\n\t"
+            "vpmovmskb %%ymm0, %[mask]\n\t"
+            "vzeroupper\n\t"
+            : [mask] "=r" (mask)
+            : [src] "r" (p),
+              [space] "r" ((uint32_t)' '),
+              [lo] "r" ((uint32_t)0x08),
+              [hi] "r" ((uint32_t)0x0E)
+            : "ymm0", "ymm1", "ymm2", "ymm3", "ymm5", "ymm6", "ymm7", "memory"
+        );
+        if (mask != 0xFFFFFFFF) {
+            return p + __builtin_ctz(~mask);
+        }
+        p += 32;
+    }
+    return p;
+}
+
+/* Dispatcher - select best implementation at runtime */
+static inline const char *simd_skip_whitespace(const char *p, const char *end) {
+    simd_detect_features();
+    if (simd_has_avx512 && (end - p) >= 64) {
+        p = simd_skip_whitespace_avx512(p, end);
+    }
+    if (simd_has_avx2 && (end - p) >= 32) {
+        p = simd_skip_whitespace_avx2(p, end);
+    }
+    /* Scalar tail */
+    while (p < end) {
+        unsigned char c = (unsigned char)*p;
+        if (c != ' ' && (c < 0x09 || c > 0x0D)) break;
+        p++;
+    }
+    return p;
+}
+
+/* AVX-512 newline search - 64 bytes at a time */
+static inline const char *simd_find_newline_avx512(const char *p, const char *end) {
+    while (p + 64 <= end) {
+        uint64_t mask;
+        __asm__ volatile (
+            "prefetcht0 128(%[src])\n\t"
+            "vmovdqu8 (%[src]), %%zmm0\n\t"
+            "vpbroadcastb %[lf], %%zmm1\n\t"
+            "vpcmpeqb %%zmm1, %%zmm0, %%k0\n\t"
+            "kmovq %%k0, %[mask]\n\t"
+            : [mask] "=r" (mask)
+            : [src] "r" (p), [lf] "r" ((uint32_t)'\n')
+            : "zmm0", "zmm1", "k0", "memory"
+        );
+        if (mask) {
+            __asm__ volatile ("tzcntq %1, %0" : "=r" (mask) : "r" (mask));
+            return p + mask;
+        }
+        p += 64;
+    }
+    return p;
+}
+
+static inline const char *simd_find_newline(const char *p, const char *end) {
+    simd_detect_features();
+    if (simd_has_avx512 && (end - p) >= 64) {
+        p = simd_find_newline_avx512(p, end);
+    }
+    /* AVX2 path */
+    while (p + 32 <= end) {
+        uint32_t mask;
+        __asm__ volatile (
+            "vmovdqu (%[src]), %%ymm0\n\t"
+            "vmovd %[lf], %%xmm1\n\t"
+            "vpbroadcastb %%xmm1, %%ymm1\n\t"
+            "vpcmpeqb %%ymm1, %%ymm0, %%ymm0\n\t"
+            "vpmovmskb %%ymm0, %[mask]\n\t"
+            "vzeroupper\n\t"
+            : [mask] "=r" (mask)
+            : [src] "r" (p), [lf] "r" ((uint32_t)'\n')
+            : "ymm0", "ymm1", "memory"
+        );
+        if (mask) {
+            return p + __builtin_ctz(mask);
+        }
+        p += 32;
+    }
+    while (p < end && *p != '\n') p++;
+    return p;
+}
+
+/* AVX-512 identifier scan - uses mask compare for all character classes */
+static inline const char *simd_scan_identifier_avx512(const char *p, const char *end) {
+    while (p + 64 <= end) {
+        uint64_t mask;
+        __asm__ volatile (
+            "prefetcht0 128(%[src])\n\t"
+            "vmovdqu8 (%[src]), %%zmm0\n\t"
+            /* Check a-z: c > 0x60 && c < 0x7B */
+            "vpbroadcastb %[lo_a], %%zmm1\n\t"
+            "vpbroadcastb %[hi_z], %%zmm2\n\t"
+            "vpcmpgtb %%zmm1, %%zmm0, %%k1\n\t"
+            "vpcmpgtb %%zmm0, %%zmm2, %%k2\n\t"
+            "kandd %%k1, %%k2, %%k3\n\t"
+            /* Check A-Z: c > 0x40 && c < 0x5B */
+            "vpbroadcastb %[lo_A], %%zmm1\n\t"
+            "vpbroadcastb %[hi_Z], %%zmm2\n\t"
+            "vpcmpgtb %%zmm1, %%zmm0, %%k1\n\t"
+            "vpcmpgtb %%zmm0, %%zmm2, %%k2\n\t"
+            "kandd %%k1, %%k2, %%k4\n\t"
+            "kord %%k3, %%k4, %%k3\n\t"
+            /* Check 0-9: c > 0x2F && c < 0x3A */
+            "vpbroadcastb %[lo_0], %%zmm1\n\t"
+            "vpbroadcastb %[hi_9], %%zmm2\n\t"
+            "vpcmpgtb %%zmm1, %%zmm0, %%k1\n\t"
+            "vpcmpgtb %%zmm0, %%zmm2, %%k2\n\t"
+            "kandd %%k1, %%k2, %%k4\n\t"
+            "kord %%k3, %%k4, %%k3\n\t"
+            /* Check underscore */
+            "vpbroadcastb %[under], %%zmm1\n\t"
+            "vpcmpeqb %%zmm1, %%zmm0, %%k4\n\t"
+            "kord %%k3, %%k4, %%k0\n\t"
+            "kmovq %%k0, %[mask]\n\t"
+            : [mask] "=r" (mask)
+            : [src] "r" (p),
+              [lo_a] "r" ((uint32_t)('a' - 1)), [hi_z] "r" ((uint32_t)('z' + 1)),
+              [lo_A] "r" ((uint32_t)('A' - 1)), [hi_Z] "r" ((uint32_t)('Z' + 1)),
+              [lo_0] "r" ((uint32_t)('0' - 1)), [hi_9] "r" ((uint32_t)('9' + 1)),
+              [under] "r" ((uint32_t)'_')
+            : "zmm0", "zmm1", "zmm2", "k0", "k1", "k2", "k3", "k4", "memory"
+        );
+        if (~mask) {
+            __asm__ volatile ("tzcntq %1, %0" : "=r" (mask) : "r" (~mask));
+            return p + mask;
+        }
+        p += 64;
+    }
+    return p;
+}
+
+static inline const char *simd_scan_identifier(const char *p, const char *end) {
+    simd_detect_features();
+    if (simd_has_avx512 && (end - p) >= 64) {
+        p = simd_scan_identifier_avx512(p, end);
+    }
+    /* AVX2 fallback with better scheduling */
+    while (p + 32 <= end) {
+        uint32_t mask;
+        __asm__ volatile (
+            "vmovdqu (%[src]), %%ymm0\n\t"
+            /* Broadcast all constants first for better pipelining */
+            "vmovd %[lo_a], %%xmm1\n\t"
+            "vmovd %[hi_z], %%xmm2\n\t"
+            "vmovd %[lo_A], %%xmm10\n\t"
+            "vmovd %[hi_Z], %%xmm11\n\t"
+            "vmovd %[lo_0], %%xmm12\n\t"
+            "vmovd %[hi_9], %%xmm13\n\t"
+            "vmovd %[under], %%xmm14\n\t"
+            "vpbroadcastb %%xmm1, %%ymm1\n\t"
+            "vpbroadcastb %%xmm2, %%ymm2\n\t"
+            "vpbroadcastb %%xmm10, %%ymm10\n\t"
+            "vpbroadcastb %%xmm11, %%ymm11\n\t"
+            "vpbroadcastb %%xmm12, %%ymm12\n\t"
+            "vpbroadcastb %%xmm13, %%ymm13\n\t"
+            "vpbroadcastb %%xmm14, %%ymm14\n\t"
+            /* a-z check */
+            "vpcmpgtb %%ymm1, %%ymm0, %%ymm3\n\t"
+            "vpcmpgtb %%ymm0, %%ymm2, %%ymm4\n\t"
+            "vpand %%ymm3, %%ymm4, %%ymm5\n\t"
+            /* A-Z check */
+            "vpcmpgtb %%ymm10, %%ymm0, %%ymm3\n\t"
+            "vpcmpgtb %%ymm0, %%ymm11, %%ymm4\n\t"
+            "vpand %%ymm3, %%ymm4, %%ymm6\n\t"
+            /* 0-9 check */
+            "vpcmpgtb %%ymm12, %%ymm0, %%ymm3\n\t"
+            "vpcmpgtb %%ymm0, %%ymm13, %%ymm4\n\t"
+            "vpand %%ymm3, %%ymm4, %%ymm7\n\t"
+            /* underscore check */
+            "vpcmpeqb %%ymm14, %%ymm0, %%ymm8\n\t"
+            /* Combine all */
+            "vpor %%ymm5, %%ymm6, %%ymm5\n\t"
+            "vpor %%ymm7, %%ymm8, %%ymm7\n\t"
+            "vpor %%ymm5, %%ymm7, %%ymm0\n\t"
+            "vpmovmskb %%ymm0, %[mask]\n\t"
+            "vzeroupper\n\t"
+            : [mask] "=r" (mask)
+            : [src] "r" (p),
+              [lo_a] "r" ((uint32_t)('a' - 1)), [hi_z] "r" ((uint32_t)('z' + 1)),
+              [lo_A] "r" ((uint32_t)('A' - 1)), [hi_Z] "r" ((uint32_t)('Z' + 1)),
+              [lo_0] "r" ((uint32_t)('0' - 1)), [hi_9] "r" ((uint32_t)('9' + 1)),
+              [under] "r" ((uint32_t)'_')
+            : "ymm0", "ymm1", "ymm2", "ymm3", "ymm4", "ymm5", "ymm6", "ymm7", "ymm8",
+              "ymm10", "ymm11", "ymm12", "ymm13", "ymm14", "memory"
+        );
+        if (mask != 0xFFFFFFFF) {
+            return p + __builtin_ctz(~mask);
+        }
+        p += 32;
+    }
+    while (p < end) {
+        char c = *p;
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '_'))
+            break;
+        p++;
+    }
+    return p;
+}
+
+/* Quote search with AVX-512 */
+static inline const char *simd_find_quote(const char *p, const char *end) {
+    simd_detect_features();
+    if (simd_has_avx512) {
+        while (p + 64 <= end) {
+            uint64_t mask;
+            __asm__ volatile (
+                "vmovdqu8 (%[src]), %%zmm0\n\t"
+                "vpbroadcastb %[quote], %%zmm1\n\t"
+                "vpcmpeqb %%zmm1, %%zmm0, %%k0\n\t"
+                "kmovq %%k0, %[mask]\n\t"
+                : [mask] "=r" (mask)
+                : [src] "r" (p), [quote] "r" ((uint32_t)'\'')
+                : "zmm0", "zmm1", "k0", "memory"
+            );
+            if (mask) {
+                __asm__ volatile ("tzcntq %1, %0" : "=r" (mask) : "r" (mask));
+                return p + mask;
+            }
+            p += 64;
+        }
+    }
+    while (p + 32 <= end) {
+        uint32_t mask;
+        __asm__ volatile (
+            "vmovdqu (%[src]), %%ymm0\n\t"
+            "vmovd %[quote], %%xmm1\n\t"
+            "vpbroadcastb %%xmm1, %%ymm1\n\t"
+            "vpcmpeqb %%ymm1, %%ymm0, %%ymm0\n\t"
+            "vpmovmskb %%ymm0, %[mask]\n\t"
+            "vzeroupper\n\t"
+            : [mask] "=r" (mask)
+            : [src] "r" (p), [quote] "r" ((uint32_t)'\'')
+            : "ymm0", "ymm1", "memory"
+        );
+        if (mask) {
+            return p + __builtin_ctz(mask);
+        }
+        p += 32;
+    }
+    while (p < end && *p != '\'') p++;
+    return p;
+}
+
+static inline const char *simd_find_double_quote(const char *p, const char *end) {
+    simd_detect_features();
+    if (simd_has_avx512) {
+        while (p + 64 <= end) {
+            uint64_t mask;
+            __asm__ volatile (
+                "vmovdqu8 (%[src]), %%zmm0\n\t"
+                "vpbroadcastb %[quote], %%zmm1\n\t"
+                "vpcmpeqb %%zmm1, %%zmm0, %%k0\n\t"
+                "kmovq %%k0, %[mask]\n\t"
+                : [mask] "=r" (mask)
+                : [src] "r" (p), [quote] "r" ((uint32_t)'"')
+                : "zmm0", "zmm1", "k0", "memory"
+            );
+            if (mask) {
+                __asm__ volatile ("tzcntq %1, %0" : "=r" (mask) : "r" (mask));
+                return p + mask;
+            }
+            p += 64;
+        }
+    }
+    while (p + 32 <= end) {
+        uint32_t mask;
+        __asm__ volatile (
+            "vmovdqu (%[src]), %%ymm0\n\t"
+            "vmovd %[quote], %%xmm1\n\t"
+            "vpbroadcastb %%xmm1, %%ymm1\n\t"
+            "vpcmpeqb %%ymm1, %%ymm0, %%ymm0\n\t"
+            "vpmovmskb %%ymm0, %[mask]\n\t"
+            "vzeroupper\n\t"
+            : [mask] "=r" (mask)
+            : [src] "r" (p), [quote] "r" ((uint32_t)'"')
+            : "ymm0", "ymm1", "memory"
+        );
+        if (mask) {
+            return p + __builtin_ctz(mask);
+        }
+        p += 32;
+    }
+    while (p < end && *p != '"') p++;
+    return p;
+}
+
+/* Digit scanning with AVX-512 */
+static inline const char *simd_scan_digits(const char *p, const char *end) {
+    simd_detect_features();
+    if (simd_has_avx512) {
+        while (p + 64 <= end) {
+            uint64_t mask;
+            __asm__ volatile (
+                "vmovdqu8 (%[src]), %%zmm0\n\t"
+                "vpbroadcastb %[lo_0], %%zmm1\n\t"
+                "vpbroadcastb %[hi_9], %%zmm2\n\t"
+                "vpbroadcastb %[under], %%zmm3\n\t"
+                "vpcmpgtb %%zmm1, %%zmm0, %%k1\n\t"
+                "vpcmpgtb %%zmm0, %%zmm2, %%k2\n\t"
+                "kandd %%k1, %%k2, %%k3\n\t"
+                "vpcmpeqb %%zmm3, %%zmm0, %%k4\n\t"
+                "kord %%k3, %%k4, %%k0\n\t"
+                "kmovq %%k0, %[mask]\n\t"
+                : [mask] "=r" (mask)
+                : [src] "r" (p),
+                  [lo_0] "r" ((uint32_t)('0' - 1)),
+                  [hi_9] "r" ((uint32_t)('9' + 1)),
+                  [under] "r" ((uint32_t)'_')
+                : "zmm0", "zmm1", "zmm2", "zmm3", "k0", "k1", "k2", "k3", "k4", "memory"
+            );
+            if (~mask) {
+                __asm__ volatile ("tzcntq %1, %0" : "=r" (mask) : "r" (~mask));
+                return p + mask;
+            }
+            p += 64;
+        }
+    }
+    while (p + 32 <= end) {
+        uint32_t mask;
+        __asm__ volatile (
+            "vmovdqu (%[src]), %%ymm0\n\t"
+            "vmovd %[lo_0], %%xmm1\n\t"
+            "vpbroadcastb %%xmm1, %%ymm1\n\t"
+            "vmovd %[hi_9], %%xmm2\n\t"
+            "vpbroadcastb %%xmm2, %%ymm2\n\t"
+            "vpcmpgtb %%ymm1, %%ymm0, %%ymm3\n\t"
+            "vpcmpgtb %%ymm0, %%ymm2, %%ymm4\n\t"
+            "vpand %%ymm3, %%ymm4, %%ymm5\n\t"
+            "vmovd %[under], %%xmm1\n\t"
+            "vpbroadcastb %%xmm1, %%ymm1\n\t"
+            "vpcmpeqb %%ymm1, %%ymm0, %%ymm1\n\t"
+            "vpor %%ymm5, %%ymm1, %%ymm0\n\t"
+            "vpmovmskb %%ymm0, %[mask]\n\t"
+            "vzeroupper\n\t"
+            : [mask] "=r" (mask)
+            : [src] "r" (p),
+              [lo_0] "r" ((uint32_t)('0' - 1)),
+              [hi_9] "r" ((uint32_t)('9' + 1)),
+              [under] "r" ((uint32_t)'_')
+            : "ymm0", "ymm1", "ymm2", "ymm3", "ymm4", "ymm5", "memory"
+        );
+        if (mask != 0xFFFFFFFF) {
+            return p + __builtin_ctz(~mask);
+        }
+        p += 32;
+    }
+    while (p < end && ((*p >= '0' && *p <= '9') || *p == '_')) p++;
+    return p;
+}
+
+#elif defined(SIMD_ARM64)
+/* ─────────────────────────────────────────────────────────────────────────
+ * ARM64 NEON Implementation (raw inline assembly)
+ * ───────────────────────────────────────────────────────────────────────── */
+
+static inline const char *simd_skip_whitespace(const char *p, const char *end) {
+    while (p + 16 <= end) {
+        uint64_t lo, hi;
+        __asm__ volatile (
+            "ldr q0, [%[src]]\n\t"                /* Load 16 bytes */
+            /* Check for space (0x20) */
+            "movi v1.16b, #0x20\n\t"
+            "cmeq v5.16b, v0.16b, v1.16b\n\t"
+            /* Check range 0x09-0x0D: c > 0x08 && c < 0x0E */
+            "movi v2.16b, #0x08\n\t"              /* lo-1 */
+            "movi v3.16b, #0x0E\n\t"              /* hi+1 */
+            "cmhi v6.16b, v0.16b, v2.16b\n\t"     /* c > 0x08 */
+            "cmhi v7.16b, v3.16b, v0.16b\n\t"     /* 0x0E > c */
+            "and v6.16b, v6.16b, v7.16b\n\t"      /* in range */
+            /* Combine: whitespace = space OR in_range */
+            "orr v0.16b, v5.16b, v6.16b\n\t"
+            "mvn v0.16b, v0.16b\n\t"              /* Invert for non-whitespace */
+            "mov %[lo], v0.d[0]\n\t"
+            "mov %[hi], v0.d[1]\n\t"
+            : [lo] "=r" (lo), [hi] "=r" (hi)
+            : [src] "r" (p)
+            : "v0", "v1", "v2", "v3", "v5", "v6", "v7", "memory"
+        );
+        if (lo) return p + (__builtin_ctzll(lo) >> 3);
+        if (hi) return p + 8 + (__builtin_ctzll(hi) >> 3);
+        p += 16;
+    }
+    /* Scalar tail: check all isspace() characters */
+    while (p < end) {
+        unsigned char c = (unsigned char)*p;
+        if (c != ' ' && (c < 0x09 || c > 0x0D)) break;
+        p++;
+    }
+    return p;
+}
+
+static inline const char *simd_find_newline(const char *p, const char *end) {
+    while (p + 16 <= end) {
+        uint64_t lo, hi;
+        __asm__ volatile (
+            "ldr q0, [%[src]]\n\t"
+            "movi v1.16b, #0x0A\n\t"
+            "cmeq v0.16b, v0.16b, v1.16b\n\t"
+            "mov %[lo], v0.d[0]\n\t"
+            "mov %[hi], v0.d[1]\n\t"
+            : [lo] "=r" (lo), [hi] "=r" (hi)
+            : [src] "r" (p)
+            : "v0", "v1", "memory"
+        );
+        if (lo) return p + (__builtin_ctzll(lo) >> 3);
+        if (hi) return p + 8 + (__builtin_ctzll(hi) >> 3);
+        p += 16;
+    }
+    while (p < end && *p != '\n') p++;
+    return p;
+}
+
+static inline const char *simd_scan_identifier(const char *p, const char *end) {
+    while (p + 16 <= end) {
+        uint64_t lo, hi;
+        __asm__ volatile (
+            "ldr q0, [%[src]]\n\t"
+            /* Check a-z: c >= 'a' && c <= 'z' */
+            "movi v1.16b, #0x60\n\t"              /* 'a' - 1 = 0x60 */
+            "movi v2.16b, #0x7B\n\t"              /* 'z' + 1 = 0x7B */
+            "cmhi v3.16b, v0.16b, v1.16b\n\t"     /* c > 'a'-1 */
+            "cmhi v4.16b, v2.16b, v0.16b\n\t"     /* 'z'+1 > c */
+            "and v5.16b, v3.16b, v4.16b\n\t"      /* lower */
+            /* Check A-Z */
+            "movi v1.16b, #0x40\n\t"              /* 'A' - 1 = 0x40 */
+            "movi v2.16b, #0x5B\n\t"              /* 'Z' + 1 = 0x5B */
+            "cmhi v3.16b, v0.16b, v1.16b\n\t"
+            "cmhi v4.16b, v2.16b, v0.16b\n\t"
+            "and v6.16b, v3.16b, v4.16b\n\t"      /* upper */
+            /* Check 0-9 */
+            "movi v1.16b, #0x2F\n\t"              /* '0' - 1 = 0x2F */
+            "movi v2.16b, #0x3A\n\t"              /* '9' + 1 = 0x3A */
+            "cmhi v3.16b, v0.16b, v1.16b\n\t"
+            "cmhi v4.16b, v2.16b, v0.16b\n\t"
+            "and v7.16b, v3.16b, v4.16b\n\t"      /* digit */
+            /* Check underscore */
+            "movi v1.16b, #0x5F\n\t"              /* '_' = 0x5F */
+            "cmeq v16.16b, v0.16b, v1.16b\n\t"
+            /* Combine: valid = lower | upper | digit | underscore */
+            "orr v5.16b, v5.16b, v6.16b\n\t"
+            "orr v7.16b, v7.16b, v16.16b\n\t"
+            "orr v0.16b, v5.16b, v7.16b\n\t"
+            "mvn v0.16b, v0.16b\n\t"              /* Invert for invalid */
+            "mov %[lo], v0.d[0]\n\t"
+            "mov %[hi], v0.d[1]\n\t"
+            : [lo] "=r" (lo), [hi] "=r" (hi)
+            : [src] "r" (p)
+            : "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v16", "memory"
+        );
+        if (lo) return p + (__builtin_ctzll(lo) >> 3);
+        if (hi) return p + 8 + (__builtin_ctzll(hi) >> 3);
+        p += 16;
+    }
+    while (p < end) {
+        char c = *p;
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '_'))
+            break;
+        p++;
+    }
+    return p;
+}
+
+static inline const char *simd_find_quote(const char *p, const char *end) {
+    while (p + 16 <= end) {
+        uint64_t lo, hi;
+        __asm__ volatile (
+            "ldr q0, [%[src]]\n\t"
+            "movi v1.16b, #0x27\n\t"              /* '\'' = 0x27 */
+            "cmeq v0.16b, v0.16b, v1.16b\n\t"
+            "mov %[lo], v0.d[0]\n\t"
+            "mov %[hi], v0.d[1]\n\t"
+            : [lo] "=r" (lo), [hi] "=r" (hi)
+            : [src] "r" (p)
+            : "v0", "v1", "memory"
+        );
+        if (lo) return p + (__builtin_ctzll(lo) >> 3);
+        if (hi) return p + 8 + (__builtin_ctzll(hi) >> 3);
+        p += 16;
+    }
+    while (p < end && *p != '\'') p++;
+    return p;
+}
+
+static inline const char *simd_find_double_quote(const char *p, const char *end) {
+    while (p + 16 <= end) {
+        uint64_t lo, hi;
+        __asm__ volatile (
+            "ldr q0, [%[src]]\n\t"
+            "movi v1.16b, #0x22\n\t"              /* '"' = 0x22 */
+            "cmeq v0.16b, v0.16b, v1.16b\n\t"
+            "mov %[lo], v0.d[0]\n\t"
+            "mov %[hi], v0.d[1]\n\t"
+            : [lo] "=r" (lo), [hi] "=r" (hi)
+            : [src] "r" (p)
+            : "v0", "v1", "memory"
+        );
+        if (lo) return p + (__builtin_ctzll(lo) >> 3);
+        if (hi) return p + 8 + (__builtin_ctzll(hi) >> 3);
+        p += 16;
+    }
+    while (p < end && *p != '"') p++;
+    return p;
+}
+
+static inline const char *simd_scan_digits(const char *p, const char *end) {
+    while (p + 16 <= end) {
+        uint64_t lo, hi;
+        __asm__ volatile (
+            "ldr q0, [%[src]]\n\t"
+            /* Check 0-9 */
+            "movi v1.16b, #0x2F\n\t"              /* '0' - 1 */
+            "movi v2.16b, #0x3A\n\t"              /* '9' + 1 */
+            "cmhi v3.16b, v0.16b, v1.16b\n\t"
+            "cmhi v4.16b, v2.16b, v0.16b\n\t"
+            "and v5.16b, v3.16b, v4.16b\n\t"
+            /* Check underscore */
+            "movi v1.16b, #0x5F\n\t"
+            "cmeq v6.16b, v0.16b, v1.16b\n\t"
+            /* Combine and invert */
+            "orr v0.16b, v5.16b, v6.16b\n\t"
+            "mvn v0.16b, v0.16b\n\t"
+            "mov %[lo], v0.d[0]\n\t"
+            "mov %[hi], v0.d[1]\n\t"
+            : [lo] "=r" (lo), [hi] "=r" (hi)
+            : [src] "r" (p)
+            : "v0", "v1", "v2", "v3", "v4", "v5", "v6", "memory"
+        );
+        if (lo) return p + (__builtin_ctzll(lo) >> 3);
+        if (hi) return p + 8 + (__builtin_ctzll(hi) >> 3);
+        p += 16;
+    }
+    while (p < end && ((*p >= '0' && *p <= '9') || *p == '_')) p++;
+    return p;
+}
+
+#else
+/* ─────────────────────────────────────────────────────────────────────────
+ * Generic Scalar Implementation
+ * ───────────────────────────────────────────────────────────────────────── */
+
+static inline const char *simd_skip_whitespace(const char *p, const char *end) {
+    /* Handle all isspace() characters: space (0x20), tab (0x09), LF (0x0A), VT (0x0B), FF (0x0C), CR (0x0D) */
+    while (p < end) {
+        unsigned char c = (unsigned char)*p;
+        if (c != ' ' && (c < 0x09 || c > 0x0D)) break;
+        p++;
+    }
+    return p;
+}
+
+static inline const char *simd_find_newline(const char *p, const char *end) {
+    while (p < end && *p != '\n') p++;
+    return p;
+}
+
+static inline const char *simd_scan_identifier(const char *p, const char *end) {
+    while (p < end) {
+        char c = *p;
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '_'))
+            break;
+        p++;
+    }
+    return p;
+}
+
+static inline const char *simd_find_quote(const char *p, const char *end) {
+    while (p < end && *p != '\'') p++;
+    return p;
+}
+
+static inline const char *simd_find_double_quote(const char *p, const char *end) {
+    while (p < end && *p != '"') p++;
+    return p;
+}
+
+static inline const char *simd_scan_digits(const char *p, const char *end) {
+    while (p < end && ((*p >= '0' && *p <= '9') || *p == '_')) p++;
+    return p;
+}
+
+#endif /* SIMD architecture selection */
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * End SIMD Functions
+ * ───────────────────────────────────────────────────────────────────────── */
+
 static inline char Lexer_Peek(const Lexer *lex, size_t offset) {
     return lex->current + offset < lex->source_end ? lex->current[offset] : '\0';
 }
@@ -548,14 +1307,22 @@ static inline char Lexer_Advance(Lexer *lex) {
 
 static void Lexer_Skip_Whitespace_And_Comments(Lexer *lex) {
     for (;;) {
-        while (lex->current < lex->source_end && Is_Space(*lex->current))
-            Lexer_Advance(lex);
+        /* Use SIMD to find first non-whitespace */
+        const char *end_ws = simd_skip_whitespace(lex->current, lex->source_end);
+        /* Update line/column by scanning for newlines in skipped region */
+        while (lex->current < end_ws) {
+            if (*lex->current == '\n') { lex->line++; lex->column = 1; }
+            else lex->column++;
+            lex->current++;
+        }
 
         /* Ada comment: -- to end of line */
         if (lex->current + 1 < lex->source_end &&
             lex->current[0] == '-' && lex->current[1] == '-') {
-            while (lex->current < lex->source_end && *lex->current != '\n')
-                Lexer_Advance(lex);
+            /* Use SIMD to find newline */
+            const char *end_comment = simd_find_newline(lex->current, lex->source_end);
+            lex->column += (uint32_t)(end_comment - lex->current);
+            lex->current = end_comment;
         } else break;
     }
 }
@@ -572,8 +1339,10 @@ static Token Scan_Identifier(Lexer *lex) {
     Source_Location loc = {lex->filename, lex->line, lex->column};
     const char *start = lex->current;
 
-    while (Is_Alnum(Lexer_Peek(lex, 0)) || Lexer_Peek(lex, 0) == '_')
-        Lexer_Advance(lex);
+    /* Use SIMD to find end of identifier */
+    const char *end_id = simd_scan_identifier(lex->current, lex->source_end);
+    lex->column += (uint32_t)(end_id - lex->current);
+    lex->current = end_id;
 
     String_Slice text = {start, (uint32_t)(lex->current - start)};
     Token_Kind kind = Lookup_Keyword(text);
@@ -7854,6 +8623,7 @@ typedef struct {
 
     /* Module header tracking for multi-unit files */
     bool          header_emitted;
+    Symbol       *main_candidate;  /* Last parameterless library-level procedure */
 
     /* Deferred nested subprogram bodies */
     Syntax_Node  *deferred_bodies[64];
@@ -8084,6 +8854,18 @@ static inline bool Expression_Is_Float(Syntax_Node *node) {
 static inline const char *Expression_Llvm_Type(Syntax_Node *node) {
     if (Expression_Is_Boolean(node)) return "i1";
     if (Expression_Is_Float(node)) return "double";
+    /* Check for pointer/access types */
+    if (node && node->type && node->type->kind == TYPE_ACCESS) return "ptr";
+    if (node && node->kind == NK_ALLOCATOR) return "ptr";
+    if (node && node->kind == NK_NULL) return "ptr";
+    /* Check for string literals and string types (generate fat pointers) */
+    if (node && node->kind == NK_STRING) return "{ ptr, { i64, i64 } }";
+    if (node && node->type && node->type->kind == TYPE_STRING) return "{ ptr, { i64, i64 } }";
+    /* Check for unconstrained array types (fat pointers) */
+    if (node && node->type && node->type->kind == TYPE_ARRAY &&
+        !node->type->array.is_constrained) {
+        return "{ ptr, { i64, i64 } }";
+    }
     return "i64";
 }
 
@@ -8111,6 +8893,31 @@ static uint32_t Emit_Convert(Code_Generator *cg, uint32_t src, const char *src_t
     } else if (!src_is_float && dst_is_float) {
         /* integer → float/double */
         Emit(cg, "  %%t%u = sitofp %s %%t%u to %s\n", t, src_type, src, dst_type);
+    } else if (strcmp(src_type, "ptr") == 0 && strcmp(dst_type, "ptr") == 0) {
+        /* ptr → ptr: no conversion needed */
+        return src;
+    } else if (strcmp(src_type, "ptr") == 0 && strcmp(dst_type, "i64") == 0) {
+        /* ptr → i64: ptrtoint */
+        Emit(cg, "  %%t%u = ptrtoint ptr %%t%u to i64\n", t, src);
+    } else if (strcmp(src_type, "i64") == 0 && strcmp(dst_type, "ptr") == 0) {
+        /* i64 → ptr: inttoptr */
+        Emit(cg, "  %%t%u = inttoptr i64 %%t%u to ptr\n", t, src);
+    } else if (strstr(src_type, "{ ptr,") && strstr(dst_type, "{ ptr,")) {
+        /* fat pointer → fat pointer: no conversion needed */
+        return src;
+    } else if (strstr(src_type, "{ ptr,") && strcmp(dst_type, "ptr") == 0) {
+        /* fat pointer → ptr: extract data pointer (field 0) */
+        /* Note: this loses bounds information, used when assigning to access type */
+        uint32_t fat_alloca = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = alloca %s\n", fat_alloca, src_type);
+        Emit(cg, "  store %s %%t%u, ptr %%t%u\n", src_type, src, fat_alloca);
+        Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 0\n", t, src_type, fat_alloca);
+        uint32_t data_ptr = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = load ptr, ptr %%t%u\n", data_ptr, t);
+        return data_ptr;
+    } else if (strstr(src_type, "{ ptr,") || strstr(dst_type, "{ ptr,")) {
+        /* One is fat pointer, other is something else - can't convert, return as-is */
+        return src;
     } else {
         /* integer conversions */
         if (src_bits == dst_bits) return src;
@@ -9914,7 +10721,8 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                                      ptr, val, comp_size);
                             } else {
                                 const char *comp_type = Type_To_Llvm(comp_ti);
-                                val = Emit_Convert(cg, val, "i64", comp_type);
+                                const char *src_type = Expression_Llvm_Type(item->association.expression);
+                                val = Emit_Convert(cg, val, src_type, comp_type);
                                 Emit(cg, "  store %s %%t%u, ptr %%t%u\n", comp_type, val, ptr);
                             }
                             initialized[comp_idx] = true;
@@ -9939,7 +10747,8 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                              ptr, val, comp_size);
                     } else {
                         const char *comp_type = Type_To_Llvm(comp_ti);
-                        val = Emit_Convert(cg, val, "i64", comp_type);
+                        const char *src_type = Expression_Llvm_Type(item);
+                        val = Emit_Convert(cg, val, src_type, comp_type);
                         Emit(cg, "  store %s %%t%u, ptr %%t%u\n", comp_type, val, ptr);
                     }
                     initialized[positional_idx] = true;
@@ -10169,8 +10978,9 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
             value = Emit_Convert(cg, value, src_ftype, dst_ftype);
         }
     } else {
-        /* Integer to integer: truncate from i64 to actual storage type */
-        value = Emit_Convert(cg, value, "i64", type_str);
+        /* Integer/boolean to target type: use actual expression type */
+        const char *src_type_str = Expression_Llvm_Type(node->assignment.value);
+        value = Emit_Convert(cg, value, src_type_str, type_str);
     }
 
     if (is_uplevel && cg->is_nested) {
@@ -10836,11 +11646,14 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                         break;
                     }
                 }
+                bool delay_label_emitted = false;
+                bool skipped_delay = false;  /* Track if current iteration was a skipped delay */
 
                 /* Generate alternatives */
                 for (uint32_t i = 0; i < node->select_stmt.alternatives.count; i++) {
                     Syntax_Node *alt = node->select_stmt.alternatives.items[i];
                     uint32_t next_label = cg->label_id++;
+                    skipped_delay = false;
 
                     switch (alt->kind) {
                         case NK_ASSOCIATION:
@@ -10909,17 +11722,25 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                             break;
 
                         case NK_DELAY:
-                            /* Delay alternative */
-                            Emit(cg, "L%u:  ; delay alternative\n", delay_label);
-                            {
-                                uint32_t dur = Generate_Expression(cg, alt->delay_stmt.expression);
-                                uint32_t us = Emit_Temp(cg);
-                                Emit(cg, "  %%t%u = fmul double %%t%u, 1.0e6\n", us, dur);
-                                uint32_t us_int = Emit_Temp(cg);
-                                Emit(cg, "  %%t%u = fptoui double %%t%u to i64\n", us_int, us);
-                                Emit(cg, "  call void @__ada_delay(i64 %%t%u)\n", us_int);
+                            /* Delay alternative - only emit code once for multiple delays.
+                             * In Ada, multiple delays would pick the shortest, but we simplify
+                             * by using the first delay's duration for all. */
+                            if (!delay_label_emitted) {
+                                Emit(cg, "L%u:  ; delay alternative\n", delay_label);
+                                delay_label_emitted = true;
+                                {
+                                    uint32_t dur = Generate_Expression(cg, alt->delay_stmt.expression);
+                                    uint32_t us = Emit_Temp(cg);
+                                    Emit(cg, "  %%t%u = fmul double %%t%u, 1.0e6\n", us, dur);
+                                    uint32_t us_int = Emit_Temp(cg);
+                                    Emit(cg, "  %%t%u = fptoui double %%t%u to i64\n", us_int, us);
+                                    Emit(cg, "  call void @__ada_delay(i64 %%t%u)\n", us_int);
+                                }
+                                Emit(cg, "  br label %%L%u\n", done_label);
+                            } else {
+                                /* Subsequent delays: skip code generation entirely */
+                                skipped_delay = true;
                             }
-                            Emit(cg, "  br label %%L%u\n", done_label);
                             break;
 
                         case NK_NULL_STMT:
@@ -10932,14 +11753,30 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                         default:
                             break;
                     }
-                    Emit(cg, "L%u:\n", next_label);
+                    /* For skipped delay alternatives, don't emit next_label since
+                     * we've already branched to delay_label and this would be unreachable */
+                    if (!skipped_delay) {
+                        /* Emit the next_label for branches that skip this alternative */
+                        Emit(cg, "L%u:\n", next_label);
+                        /* If this isn't the last alternative, fall through to next;
+                         * otherwise go to delay or done */
+                        bool is_last = (i == node->select_stmt.alternatives.count - 1);
+                        if (!is_last) {
+                            /* Check if next alternative is delay - branch to delay_label instead */
+                            Syntax_Node *next_alt = node->select_stmt.alternatives.items[i + 1];
+                            if (next_alt && next_alt->kind == NK_DELAY && has_delay) {
+                                Emit(cg, "  br label %%L%u\n", delay_label);
+                            }
+                            /* Otherwise fall through (no br needed, will hit next iteration's code) */
+                        }
+                    }
                 }
 
                 /* Else clause or fall through to delay */
                 if (has_else) {
                     Generate_Statement(cg, node->select_stmt.else_part);
                 } else if (has_delay) {
-                    Emit(cg, "  br label %%L%u\n", delay_label);
+                    /* Already branched to delay_label above */
                 }
                 Emit(cg, "  br label %%L%u\n", done_label);
                 Emit(cg, "L%u:\n", done_label);
@@ -11077,32 +11914,13 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, ", ptr %%t%u, i64 %u, i1 false)\n", agg_ptr, record_size);
             } else if (!is_array && !is_record) {
                 uint32_t init = Generate_Expression(cg, node->object_decl.init);
-                /* Determine source type from init expression */
-                Type_Info *init_type = node->object_decl.init->type;
-                bool init_is_float = init_type && (init_type->kind == TYPE_FLOAT ||
-                                                    init_type->kind == TYPE_UNIVERSAL_REAL);
-                bool target_is_float = ty && ty->kind == TYPE_FLOAT;
-                const char *src_type_str = init_is_float ? "double" : "i64";
+                /* Use Expression_Llvm_Type to get correct type for all expressions
+                 * including pointers, floats, and integers */
+                const char *src_type_str = Expression_Llvm_Type(node->object_decl.init);
 
-                /* Handle float-to-float, int-to-float, float-to-int, int-to-int conversions */
-                if (target_is_float && init_is_float) {
-                    /* Both are float - direct store */
-                    Emit(cg, "  store double %%t%u, ptr %%", init);
-                } else if (target_is_float && !init_is_float) {
-                    /* Convert i64 to float */
-                    uint32_t conv = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = sitofp i64 %%t%u to double\n", conv, init);
-                    Emit(cg, "  store double %%t%u, ptr %%", conv);
-                } else if (!target_is_float && init_is_float) {
-                    /* Convert float to int */
-                    uint32_t conv = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = fptosi double %%t%u to %s\n", conv, init, type_str);
-                    Emit(cg, "  store %s %%t%u, ptr %%", type_str, conv);
-                } else {
-                    /* Both are int - convert from i64 to target type */
-                    init = Emit_Convert(cg, init, src_type_str, type_str);
-                    Emit(cg, "  store %s %%t%u, ptr %%", type_str, init);
-                }
+                /* Convert if types differ, then store */
+                init = Emit_Convert(cg, init, src_type_str, type_str);
+                Emit(cg, "  store %s %%t%u, ptr %%", type_str, init);
                 Emit_Symbol_Name(cg, sym);
                 Emit(cg, "\n");
             }
@@ -12464,19 +13282,16 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
         Emit(cg, "\n");
     }
 
-    /* Generate main function if this is a main program (library-level procedure) */
+    /* Generate main function if this is a main program (library-level procedure).
+     * Emit @main() for the LAST parameterless library-level procedure in the file.
+     * We track main_candidate and emit at end of Compile_File instead. */
     Syntax_Node *unit = node->compilation_unit.unit;
     if (unit && unit->kind == NK_PROCEDURE_BODY && unit->symbol) {
         Symbol *main_sym = unit->symbol;
-        /* Check if this is a library-level procedure (no parameters, no parent package) */
-        if (main_sym->parameter_count == 0) {
-            Emit(cg, "\n; C main entry point\n");
-            Emit(cg, "define i32 @main() {\n");
-            Emit(cg, "  call void @");
-            Emit_Symbol_Name(cg, main_sym);
-            Emit(cg, "()\n");
-            Emit(cg, "  ret i32 0\n");
-            Emit(cg, "}\n");
+        /* Check if this is a library-level procedure (no parameters)
+         * and NOT a SEPARATE subunit */
+        if (main_sym->parameter_count == 0 && !unit->subprogram_body.is_separate) {
+            cg->main_candidate = main_sym;
         }
     }
 }
@@ -12794,6 +13609,17 @@ static void Compile_File(const char *input_path, const char *output_path) {
     Code_Generator *cg = Code_Generator_New(out_file, sm);
     for (int i = 0; i < unit_count; i++) {
         Generate_Compilation_Unit(cg, units[i]);
+    }
+
+    /* Emit @main() for the last parameterless library-level procedure */
+    if (cg->main_candidate) {
+        Emit(cg, "\n; C main entry point\n");
+        Emit(cg, "define i32 @main() {\n");
+        Emit(cg, "  call void @");
+        Emit_Symbol_Name(cg, cg->main_candidate);
+        Emit(cg, "()\n");
+        Emit(cg, "  ret i32 0\n");
+        Emit(cg, "}\n");
     }
 
     if (close_output) {
