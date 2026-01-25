@@ -584,414 +584,168 @@ static Lexer Lexer_New(const char *source, size_t length, const char *filename) 
  */
 
 #ifdef SIMD_X86_64
-/* ─────────────────────────────────────────────────────────────────────────
- * x86-64 AVX-512/AVX2 Cutting-Edge Implementation
- *
- * Features:
- * - AVX-512BW path: 64-byte processing with mask registers (k-masks)
- * - AVX2 fallback: 32-byte processing with optimized instruction scheduling
- * - Software prefetching for memory-bound operations
- * - Loop unrolling for better instruction-level parallelism
- * - BMI2 TZCNT for fast bit scanning
- * ───────────────────────────────────────────────────────────────────────── */
+/* x86-64 AVX-512/AVX2 SIMD: 64-byte k-masks, prefetch, TZCNT */
 
-/* AVX-512 whitespace skip - processes 64 bytes at a time using k-masks */
+/* Raw assembly bit-scan helpers (no builtins) */
+static inline uint32_t tzcnt32(uint32_t v) { uint32_t r; __asm__ ("tzcntl %1, %0" : "=r" (r) : "r" (v)); return r; }
+static inline uint64_t tzcnt64(uint64_t v) { uint64_t r; __asm__ ("tzcntq %1, %0" : "=r" (r) : "r" (v)); return r; }
+
 static inline const char *simd_skip_whitespace_avx512(const char *p, const char *end) {
     while (p + 64 <= end) {
         uint64_t mask;
         __asm__ volatile (
-            /* Prefetch next cache line */
             "prefetcht0 128(%[src])\n\t"
-            /* Load 64 bytes into zmm0 */
             "vmovdqu8 (%[src]), %%zmm0\n\t"
-            /* Create whitespace character set in zmm1 for space (0x20) */
             "vpbroadcastb %[space], %%zmm1\n\t"
             "vpcmpeqb %%zmm1, %%zmm0, %%k1\n\t"
-            /* Check range 0x09-0x0D using AVX-512 range compare */
             "vpbroadcastb %[lo], %%zmm2\n\t"
             "vpbroadcastb %[hi], %%zmm3\n\t"
-            "vpcmpgtb %%zmm2, %%zmm0, %%k2\n\t"          /* c > 0x08 */
-            "vpcmpgtb %%zmm0, %%zmm3, %%k3\n\t"          /* 0x0E > c */
-            "kandd %%k2, %%k3, %%k2\n\t"                 /* in range */
-            "kord %%k1, %%k2, %%k0\n\t"                  /* whitespace mask */
+            "vpcmpgtb %%zmm2, %%zmm0, %%k2\n\t"
+            "vpcmpgtb %%zmm0, %%zmm3, %%k3\n\t"
+            "kandd %%k2, %%k3, %%k2\n\t"
+            "kord %%k1, %%k2, %%k0\n\t"
             "kmovq %%k0, %[mask]\n\t"
             : [mask] "=r" (mask)
-            : [src] "r" (p),
-              [space] "r" ((uint32_t)' '),
-              [lo] "r" ((uint32_t)0x08),
-              [hi] "r" ((uint32_t)0x0E)
+            : [src] "r" (p), [space] "r" ((uint32_t)' '),
+              [lo] "r" ((uint32_t)0x08), [hi] "r" ((uint32_t)0x0E)
             : "zmm0", "zmm1", "zmm2", "zmm3", "k0", "k1", "k2", "k3", "memory"
         );
-        if (~mask) {
-            uint64_t inv = ~mask;
-            __asm__ volatile ("tzcntq %1, %0" : "=r" (inv) : "r" (inv));
-            return p + inv;
-        }
+        if (~mask) { uint64_t inv = ~mask; __asm__ volatile ("tzcntq %1, %0" : "=r" (inv) : "r" (inv)); return p + inv; }
         p += 64;
     }
     return p;
 }
 
-/* AVX2 whitespace skip with 2x unrolling - processes 64 bytes per iteration */
 static inline const char *simd_skip_whitespace_avx2(const char *p, const char *end) {
-    /* Process 64 bytes (2x32) per iteration with unrolling */
     while (p + 64 <= end) {
-        uint32_t mask0, mask1;
+        uint32_t m0, m1;
         __asm__ volatile (
-            /* Prefetch ahead */
             "prefetcht0 128(%[src])\n\t"
-            /* Load two 32-byte chunks */
-            "vmovdqu (%[src]), %%ymm0\n\t"
-            "vmovdqu 32(%[src]), %%ymm8\n\t"
-            /* Broadcast constants once */
-            "vmovd %[space], %%xmm1\n\t"
-            "vpbroadcastb %%xmm1, %%ymm1\n\t"
-            "vmovd %[lo], %%xmm2\n\t"
-            "vpbroadcastb %%xmm2, %%ymm2\n\t"
-            "vmovd %[hi], %%xmm3\n\t"
-            "vpbroadcastb %%xmm3, %%ymm3\n\t"
-            /* First chunk - parallel execution */
-            "vpcmpeqb %%ymm1, %%ymm0, %%ymm5\n\t"
-            "vpcmpgtb %%ymm2, %%ymm0, %%ymm6\n\t"
-            "vpcmpgtb %%ymm0, %%ymm3, %%ymm7\n\t"
-            /* Second chunk - parallel with first */
-            "vpcmpeqb %%ymm1, %%ymm8, %%ymm9\n\t"
-            "vpcmpgtb %%ymm2, %%ymm8, %%ymm10\n\t"
-            "vpcmpgtb %%ymm8, %%ymm3, %%ymm11\n\t"
-            /* Combine first chunk */
-            "vpand %%ymm6, %%ymm7, %%ymm6\n\t"
-            "vpor %%ymm5, %%ymm6, %%ymm0\n\t"
-            /* Combine second chunk */
-            "vpand %%ymm10, %%ymm11, %%ymm10\n\t"
-            "vpor %%ymm9, %%ymm10, %%ymm8\n\t"
-            /* Extract masks */
-            "vpmovmskb %%ymm0, %[m0]\n\t"
-            "vpmovmskb %%ymm8, %[m1]\n\t"
-            "vzeroupper\n\t"
-            : [m0] "=r" (mask0), [m1] "=r" (mask1)
-            : [src] "r" (p),
-              [space] "r" ((uint32_t)' '),
-              [lo] "r" ((uint32_t)0x08),
-              [hi] "r" ((uint32_t)0x0E)
-            : "ymm0", "ymm1", "ymm2", "ymm3", "ymm5", "ymm6", "ymm7",
-              "ymm8", "ymm9", "ymm10", "ymm11", "memory"
+            "vmovdqu (%[src]), %%ymm0\n\t" "vmovdqu 32(%[src]), %%ymm8\n\t"
+            "vmovd %[space], %%xmm1\n\t" "vpbroadcastb %%xmm1, %%ymm1\n\t"
+            "vmovd %[lo], %%xmm2\n\t" "vpbroadcastb %%xmm2, %%ymm2\n\t"
+            "vmovd %[hi], %%xmm3\n\t" "vpbroadcastb %%xmm3, %%ymm3\n\t"
+            "vpcmpeqb %%ymm1, %%ymm0, %%ymm5\n\t" "vpcmpgtb %%ymm2, %%ymm0, %%ymm6\n\t" "vpcmpgtb %%ymm0, %%ymm3, %%ymm7\n\t"
+            "vpcmpeqb %%ymm1, %%ymm8, %%ymm9\n\t" "vpcmpgtb %%ymm2, %%ymm8, %%ymm10\n\t" "vpcmpgtb %%ymm8, %%ymm3, %%ymm11\n\t"
+            "vpand %%ymm6, %%ymm7, %%ymm6\n\t" "vpor %%ymm5, %%ymm6, %%ymm0\n\t"
+            "vpand %%ymm10, %%ymm11, %%ymm10\n\t" "vpor %%ymm9, %%ymm10, %%ymm8\n\t"
+            "vpmovmskb %%ymm0, %[m0]\n\t" "vpmovmskb %%ymm8, %[m1]\n\t" "vzeroupper\n\t"
+            : [m0] "=r" (m0), [m1] "=r" (m1)
+            : [src] "r" (p), [space] "r" ((uint32_t)' '), [lo] "r" ((uint32_t)0x08), [hi] "r" ((uint32_t)0x0E)
+            : "ymm0", "ymm1", "ymm2", "ymm3", "ymm5", "ymm6", "ymm7", "ymm8", "ymm9", "ymm10", "ymm11", "memory"
         );
-        if (mask0 != 0xFFFFFFFF) {
-            return p + __builtin_ctz(~mask0);
-        }
-        if (mask1 != 0xFFFFFFFF) {
-            return p + 32 + __builtin_ctz(~mask1);
-        }
+        if (m0 != 0xFFFFFFFF) return p + tzcnt32(~m0);
+        if (m1 != 0xFFFFFFFF) return p + 32 + tzcnt32(~m1);
         p += 64;
     }
-    /* Handle remaining 32-byte chunk */
     while (p + 32 <= end) {
         uint32_t mask;
         __asm__ volatile (
             "vmovdqu (%[src]), %%ymm0\n\t"
-            "vmovd %[space], %%xmm1\n\t"
-            "vpbroadcastb %%xmm1, %%ymm1\n\t"
-            "vmovd %[lo], %%xmm2\n\t"
-            "vpbroadcastb %%xmm2, %%ymm2\n\t"
-            "vmovd %[hi], %%xmm3\n\t"
-            "vpbroadcastb %%xmm3, %%ymm3\n\t"
-            "vpcmpeqb %%ymm1, %%ymm0, %%ymm5\n\t"
-            "vpcmpgtb %%ymm2, %%ymm0, %%ymm6\n\t"
-            "vpcmpgtb %%ymm0, %%ymm3, %%ymm7\n\t"
-            "vpand %%ymm6, %%ymm7, %%ymm6\n\t"
-            "vpor %%ymm5, %%ymm6, %%ymm0\n\t"
-            "vpmovmskb %%ymm0, %[mask]\n\t"
-            "vzeroupper\n\t"
-            : [mask] "=r" (mask)
-            : [src] "r" (p),
-              [space] "r" ((uint32_t)' '),
-              [lo] "r" ((uint32_t)0x08),
-              [hi] "r" ((uint32_t)0x0E)
+            "vmovd %[space], %%xmm1\n\t" "vpbroadcastb %%xmm1, %%ymm1\n\t"
+            "vmovd %[lo], %%xmm2\n\t" "vpbroadcastb %%xmm2, %%ymm2\n\t"
+            "vmovd %[hi], %%xmm3\n\t" "vpbroadcastb %%xmm3, %%ymm3\n\t"
+            "vpcmpeqb %%ymm1, %%ymm0, %%ymm5\n\t" "vpcmpgtb %%ymm2, %%ymm0, %%ymm6\n\t" "vpcmpgtb %%ymm0, %%ymm3, %%ymm7\n\t"
+            "vpand %%ymm6, %%ymm7, %%ymm6\n\t" "vpor %%ymm5, %%ymm6, %%ymm0\n\t"
+            "vpmovmskb %%ymm0, %[mask]\n\t" "vzeroupper\n\t"
+            : [mask] "=r" (mask) : [src] "r" (p), [space] "r" ((uint32_t)' '), [lo] "r" ((uint32_t)0x08), [hi] "r" ((uint32_t)0x0E)
             : "ymm0", "ymm1", "ymm2", "ymm3", "ymm5", "ymm6", "ymm7", "memory"
         );
-        if (mask != 0xFFFFFFFF) {
-            return p + __builtin_ctz(~mask);
-        }
+        if (mask != 0xFFFFFFFF) return p + tzcnt32(~mask);
         p += 32;
     }
     return p;
 }
 
-/* Dispatcher - select best implementation at runtime */
 static inline const char *simd_skip_whitespace(const char *p, const char *end) {
     simd_detect_features();
-    if (simd_has_avx512 && (end - p) >= 64) {
-        p = simd_skip_whitespace_avx512(p, end);
-    }
-    if (simd_has_avx2 && (end - p) >= 32) {
-        p = simd_skip_whitespace_avx2(p, end);
-    }
-    /* Scalar tail */
-    while (p < end) {
-        unsigned char c = (unsigned char)*p;
-        if (c != ' ' && (c < 0x09 || c > 0x0D)) break;
-        p++;
-    }
+    if (simd_has_avx512 && (end - p) >= 64) p = simd_skip_whitespace_avx512(p, end);
+    if (simd_has_avx2 && (end - p) >= 32) p = simd_skip_whitespace_avx2(p, end);
+    while (p < end) { unsigned char c = *p; if (c != ' ' && (c < 0x09 || c > 0x0D)) break; p++; }
     return p;
 }
 
-/* AVX-512 newline search - 64 bytes at a time */
-static inline const char *simd_find_newline_avx512(const char *p, const char *end) {
-    while (p + 64 <= end) {
-        uint64_t mask;
-        __asm__ volatile (
-            "prefetcht0 128(%[src])\n\t"
-            "vmovdqu8 (%[src]), %%zmm0\n\t"
-            "vpbroadcastb %[lf], %%zmm1\n\t"
-            "vpcmpeqb %%zmm1, %%zmm0, %%k0\n\t"
-            "kmovq %%k0, %[mask]\n\t"
-            : [mask] "=r" (mask)
-            : [src] "r" (p), [lf] "r" ((uint32_t)'\n')
-            : "zmm0", "zmm1", "k0", "memory"
-        );
-        if (mask) {
-            __asm__ volatile ("tzcntq %1, %0" : "=r" (mask) : "r" (mask));
-            return p + mask;
-        }
-        p += 64;
-    }
-    return p;
-}
-
-static inline const char *simd_find_newline(const char *p, const char *end) {
+static inline const char *simd_find_char_x86(const char *p, const char *end, char ch) {
     simd_detect_features();
-    if (simd_has_avx512 && (end - p) >= 64) {
-        p = simd_find_newline_avx512(p, end);
+    if (simd_has_avx512) {
+        while (p + 64 <= end) {
+            uint64_t mask;
+            __asm__ volatile (
+                "vmovdqu8 (%[src]), %%zmm0\n\t" "vpbroadcastb %[c], %%zmm1\n\t"
+                "vpcmpeqb %%zmm1, %%zmm0, %%k0\n\t" "kmovq %%k0, %[mask]\n\t"
+                : [mask] "=r" (mask) : [src] "r" (p), [c] "r" ((uint32_t)ch) : "zmm0", "zmm1", "k0", "memory"
+            );
+            if (mask) { __asm__ volatile ("tzcntq %1, %0" : "=r" (mask) : "r" (mask)); return p + mask; }
+            p += 64;
+        }
     }
-    /* AVX2 path */
     while (p + 32 <= end) {
         uint32_t mask;
         __asm__ volatile (
-            "vmovdqu (%[src]), %%ymm0\n\t"
-            "vmovd %[lf], %%xmm1\n\t"
-            "vpbroadcastb %%xmm1, %%ymm1\n\t"
-            "vpcmpeqb %%ymm1, %%ymm0, %%ymm0\n\t"
-            "vpmovmskb %%ymm0, %[mask]\n\t"
-            "vzeroupper\n\t"
-            : [mask] "=r" (mask)
-            : [src] "r" (p), [lf] "r" ((uint32_t)'\n')
-            : "ymm0", "ymm1", "memory"
+            "vmovdqu (%[src]), %%ymm0\n\t" "vmovd %[c], %%xmm1\n\t" "vpbroadcastb %%xmm1, %%ymm1\n\t"
+            "vpcmpeqb %%ymm1, %%ymm0, %%ymm0\n\t" "vpmovmskb %%ymm0, %[mask]\n\t" "vzeroupper\n\t"
+            : [mask] "=r" (mask) : [src] "r" (p), [c] "r" ((uint32_t)ch) : "ymm0", "ymm1", "memory"
         );
-        if (mask) {
-            return p + __builtin_ctz(mask);
-        }
+        if (mask) return p + tzcnt32(mask);
         p += 32;
     }
-    while (p < end && *p != '\n') p++;
+    while (p < end && *p != ch) p++;
     return p;
 }
 
-/* AVX-512 identifier scan - uses mask compare for all character classes */
-static inline const char *simd_scan_identifier_avx512(const char *p, const char *end) {
-    while (p + 64 <= end) {
-        uint64_t mask;
-        __asm__ volatile (
-            "prefetcht0 128(%[src])\n\t"
-            "vmovdqu8 (%[src]), %%zmm0\n\t"
-            /* Check a-z: c > 0x60 && c < 0x7B */
-            "vpbroadcastb %[lo_a], %%zmm1\n\t"
-            "vpbroadcastb %[hi_z], %%zmm2\n\t"
-            "vpcmpgtb %%zmm1, %%zmm0, %%k1\n\t"
-            "vpcmpgtb %%zmm0, %%zmm2, %%k2\n\t"
-            "kandd %%k1, %%k2, %%k3\n\t"
-            /* Check A-Z: c > 0x40 && c < 0x5B */
-            "vpbroadcastb %[lo_A], %%zmm1\n\t"
-            "vpbroadcastb %[hi_Z], %%zmm2\n\t"
-            "vpcmpgtb %%zmm1, %%zmm0, %%k1\n\t"
-            "vpcmpgtb %%zmm0, %%zmm2, %%k2\n\t"
-            "kandd %%k1, %%k2, %%k4\n\t"
-            "kord %%k3, %%k4, %%k3\n\t"
-            /* Check 0-9: c > 0x2F && c < 0x3A */
-            "vpbroadcastb %[lo_0], %%zmm1\n\t"
-            "vpbroadcastb %[hi_9], %%zmm2\n\t"
-            "vpcmpgtb %%zmm1, %%zmm0, %%k1\n\t"
-            "vpcmpgtb %%zmm0, %%zmm2, %%k2\n\t"
-            "kandd %%k1, %%k2, %%k4\n\t"
-            "kord %%k3, %%k4, %%k3\n\t"
-            /* Check underscore */
-            "vpbroadcastb %[under], %%zmm1\n\t"
-            "vpcmpeqb %%zmm1, %%zmm0, %%k4\n\t"
-            "kord %%k3, %%k4, %%k0\n\t"
-            "kmovq %%k0, %[mask]\n\t"
-            : [mask] "=r" (mask)
-            : [src] "r" (p),
-              [lo_a] "r" ((uint32_t)('a' - 1)), [hi_z] "r" ((uint32_t)('z' + 1)),
-              [lo_A] "r" ((uint32_t)('A' - 1)), [hi_Z] "r" ((uint32_t)('Z' + 1)),
-              [lo_0] "r" ((uint32_t)('0' - 1)), [hi_9] "r" ((uint32_t)('9' + 1)),
-              [under] "r" ((uint32_t)'_')
-            : "zmm0", "zmm1", "zmm2", "k0", "k1", "k2", "k3", "k4", "memory"
-        );
-        if (~mask) {
-            __asm__ volatile ("tzcntq %1, %0" : "=r" (mask) : "r" (~mask));
-            return p + mask;
-        }
-        p += 64;
-    }
-    return p;
-}
+static inline const char *simd_find_newline(const char *p, const char *end) { return simd_find_char_x86(p, end, '\n'); }
+static inline const char *simd_find_quote(const char *p, const char *end) { return simd_find_char_x86(p, end, '\''); }
+static inline const char *simd_find_double_quote(const char *p, const char *end) { return simd_find_char_x86(p, end, '"'); }
 
 static inline const char *simd_scan_identifier(const char *p, const char *end) {
     simd_detect_features();
-    if (simd_has_avx512 && (end - p) >= 64) {
-        p = simd_scan_identifier_avx512(p, end);
+    if (simd_has_avx512) {
+        while (p + 64 <= end) {
+            uint64_t mask;
+            __asm__ volatile (
+                "prefetcht0 128(%[src])\n\t" "vmovdqu8 (%[src]), %%zmm0\n\t"
+                "vpbroadcastb %[la], %%zmm1\n\t" "vpbroadcastb %[hz], %%zmm2\n\t"
+                "vpcmpgtb %%zmm1, %%zmm0, %%k1\n\t" "vpcmpgtb %%zmm0, %%zmm2, %%k2\n\t" "kandd %%k1, %%k2, %%k3\n\t"
+                "vpbroadcastb %[lA], %%zmm1\n\t" "vpbroadcastb %[hZ], %%zmm2\n\t"
+                "vpcmpgtb %%zmm1, %%zmm0, %%k1\n\t" "vpcmpgtb %%zmm0, %%zmm2, %%k2\n\t" "kandd %%k1, %%k2, %%k4\n\t" "kord %%k3, %%k4, %%k3\n\t"
+                "vpbroadcastb %[l0], %%zmm1\n\t" "vpbroadcastb %[h9], %%zmm2\n\t"
+                "vpcmpgtb %%zmm1, %%zmm0, %%k1\n\t" "vpcmpgtb %%zmm0, %%zmm2, %%k2\n\t" "kandd %%k1, %%k2, %%k4\n\t" "kord %%k3, %%k4, %%k3\n\t"
+                "vpbroadcastb %[u], %%zmm1\n\t" "vpcmpeqb %%zmm1, %%zmm0, %%k4\n\t" "kord %%k3, %%k4, %%k0\n\t" "kmovq %%k0, %[mask]\n\t"
+                : [mask] "=r" (mask) : [src] "r" (p),
+                  [la] "r" ((uint32_t)0x60), [hz] "r" ((uint32_t)0x7B), [lA] "r" ((uint32_t)0x40), [hZ] "r" ((uint32_t)0x5B),
+                  [l0] "r" ((uint32_t)0x2F), [h9] "r" ((uint32_t)0x3A), [u] "r" ((uint32_t)'_')
+                : "zmm0", "zmm1", "zmm2", "k0", "k1", "k2", "k3", "k4", "memory"
+            );
+            if (~mask) { __asm__ volatile ("tzcntq %1, %0" : "=r" (mask) : "r" (~mask)); return p + mask; }
+            p += 64;
+        }
     }
-    /* AVX2 fallback with better scheduling */
     while (p + 32 <= end) {
         uint32_t mask;
         __asm__ volatile (
             "vmovdqu (%[src]), %%ymm0\n\t"
-            /* Broadcast all constants first for better pipelining */
-            "vmovd %[lo_a], %%xmm1\n\t"
-            "vmovd %[hi_z], %%xmm2\n\t"
-            "vmovd %[lo_A], %%xmm10\n\t"
-            "vmovd %[hi_Z], %%xmm11\n\t"
-            "vmovd %[lo_0], %%xmm12\n\t"
-            "vmovd %[hi_9], %%xmm13\n\t"
-            "vmovd %[under], %%xmm14\n\t"
-            "vpbroadcastb %%xmm1, %%ymm1\n\t"
-            "vpbroadcastb %%xmm2, %%ymm2\n\t"
-            "vpbroadcastb %%xmm10, %%ymm10\n\t"
-            "vpbroadcastb %%xmm11, %%ymm11\n\t"
-            "vpbroadcastb %%xmm12, %%ymm12\n\t"
-            "vpbroadcastb %%xmm13, %%ymm13\n\t"
-            "vpbroadcastb %%xmm14, %%ymm14\n\t"
-            /* a-z check */
-            "vpcmpgtb %%ymm1, %%ymm0, %%ymm3\n\t"
-            "vpcmpgtb %%ymm0, %%ymm2, %%ymm4\n\t"
-            "vpand %%ymm3, %%ymm4, %%ymm5\n\t"
-            /* A-Z check */
-            "vpcmpgtb %%ymm10, %%ymm0, %%ymm3\n\t"
-            "vpcmpgtb %%ymm0, %%ymm11, %%ymm4\n\t"
-            "vpand %%ymm3, %%ymm4, %%ymm6\n\t"
-            /* 0-9 check */
-            "vpcmpgtb %%ymm12, %%ymm0, %%ymm3\n\t"
-            "vpcmpgtb %%ymm0, %%ymm13, %%ymm4\n\t"
-            "vpand %%ymm3, %%ymm4, %%ymm7\n\t"
-            /* underscore check */
+            "vmovd %[la], %%xmm1\n\t" "vmovd %[hz], %%xmm2\n\t" "vmovd %[lA], %%xmm10\n\t" "vmovd %[hZ], %%xmm11\n\t"
+            "vmovd %[l0], %%xmm12\n\t" "vmovd %[h9], %%xmm13\n\t" "vmovd %[u], %%xmm14\n\t"
+            "vpbroadcastb %%xmm1, %%ymm1\n\t" "vpbroadcastb %%xmm2, %%ymm2\n\t" "vpbroadcastb %%xmm10, %%ymm10\n\t" "vpbroadcastb %%xmm11, %%ymm11\n\t"
+            "vpbroadcastb %%xmm12, %%ymm12\n\t" "vpbroadcastb %%xmm13, %%ymm13\n\t" "vpbroadcastb %%xmm14, %%ymm14\n\t"
+            "vpcmpgtb %%ymm1, %%ymm0, %%ymm3\n\t" "vpcmpgtb %%ymm0, %%ymm2, %%ymm4\n\t" "vpand %%ymm3, %%ymm4, %%ymm5\n\t"
+            "vpcmpgtb %%ymm10, %%ymm0, %%ymm3\n\t" "vpcmpgtb %%ymm0, %%ymm11, %%ymm4\n\t" "vpand %%ymm3, %%ymm4, %%ymm6\n\t"
+            "vpcmpgtb %%ymm12, %%ymm0, %%ymm3\n\t" "vpcmpgtb %%ymm0, %%ymm13, %%ymm4\n\t" "vpand %%ymm3, %%ymm4, %%ymm7\n\t"
             "vpcmpeqb %%ymm14, %%ymm0, %%ymm8\n\t"
-            /* Combine all */
-            "vpor %%ymm5, %%ymm6, %%ymm5\n\t"
-            "vpor %%ymm7, %%ymm8, %%ymm7\n\t"
-            "vpor %%ymm5, %%ymm7, %%ymm0\n\t"
-            "vpmovmskb %%ymm0, %[mask]\n\t"
-            "vzeroupper\n\t"
-            : [mask] "=r" (mask)
-            : [src] "r" (p),
-              [lo_a] "r" ((uint32_t)('a' - 1)), [hi_z] "r" ((uint32_t)('z' + 1)),
-              [lo_A] "r" ((uint32_t)('A' - 1)), [hi_Z] "r" ((uint32_t)('Z' + 1)),
-              [lo_0] "r" ((uint32_t)('0' - 1)), [hi_9] "r" ((uint32_t)('9' + 1)),
-              [under] "r" ((uint32_t)'_')
-            : "ymm0", "ymm1", "ymm2", "ymm3", "ymm4", "ymm5", "ymm6", "ymm7", "ymm8",
-              "ymm10", "ymm11", "ymm12", "ymm13", "ymm14", "memory"
+            "vpor %%ymm5, %%ymm6, %%ymm5\n\t" "vpor %%ymm7, %%ymm8, %%ymm7\n\t" "vpor %%ymm5, %%ymm7, %%ymm0\n\t"
+            "vpmovmskb %%ymm0, %[mask]\n\t" "vzeroupper\n\t"
+            : [mask] "=r" (mask) : [src] "r" (p),
+              [la] "r" ((uint32_t)0x60), [hz] "r" ((uint32_t)0x7B), [lA] "r" ((uint32_t)0x40), [hZ] "r" ((uint32_t)0x5B),
+              [l0] "r" ((uint32_t)0x2F), [h9] "r" ((uint32_t)0x3A), [u] "r" ((uint32_t)'_')
+            : "ymm0", "ymm1", "ymm2", "ymm3", "ymm4", "ymm5", "ymm6", "ymm7", "ymm8", "ymm10", "ymm11", "ymm12", "ymm13", "ymm14", "memory"
         );
-        if (mask != 0xFFFFFFFF) {
-            return p + __builtin_ctz(~mask);
-        }
+        if (mask != 0xFFFFFFFF) return p + tzcnt32(~mask);
         p += 32;
     }
-    while (p < end) {
-        char c = *p;
-        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-              (c >= '0' && c <= '9') || c == '_'))
-            break;
-        p++;
-    }
+    while (p < end) { char c = *p; if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_')) break; p++; }
     return p;
 }
 
-/* Quote search with AVX-512 */
-static inline const char *simd_find_quote(const char *p, const char *end) {
-    simd_detect_features();
-    if (simd_has_avx512) {
-        while (p + 64 <= end) {
-            uint64_t mask;
-            __asm__ volatile (
-                "vmovdqu8 (%[src]), %%zmm0\n\t"
-                "vpbroadcastb %[quote], %%zmm1\n\t"
-                "vpcmpeqb %%zmm1, %%zmm0, %%k0\n\t"
-                "kmovq %%k0, %[mask]\n\t"
-                : [mask] "=r" (mask)
-                : [src] "r" (p), [quote] "r" ((uint32_t)'\'')
-                : "zmm0", "zmm1", "k0", "memory"
-            );
-            if (mask) {
-                __asm__ volatile ("tzcntq %1, %0" : "=r" (mask) : "r" (mask));
-                return p + mask;
-            }
-            p += 64;
-        }
-    }
-    while (p + 32 <= end) {
-        uint32_t mask;
-        __asm__ volatile (
-            "vmovdqu (%[src]), %%ymm0\n\t"
-            "vmovd %[quote], %%xmm1\n\t"
-            "vpbroadcastb %%xmm1, %%ymm1\n\t"
-            "vpcmpeqb %%ymm1, %%ymm0, %%ymm0\n\t"
-            "vpmovmskb %%ymm0, %[mask]\n\t"
-            "vzeroupper\n\t"
-            : [mask] "=r" (mask)
-            : [src] "r" (p), [quote] "r" ((uint32_t)'\'')
-            : "ymm0", "ymm1", "memory"
-        );
-        if (mask) {
-            return p + __builtin_ctz(mask);
-        }
-        p += 32;
-    }
-    while (p < end && *p != '\'') p++;
-    return p;
-}
-
-static inline const char *simd_find_double_quote(const char *p, const char *end) {
-    simd_detect_features();
-    if (simd_has_avx512) {
-        while (p + 64 <= end) {
-            uint64_t mask;
-            __asm__ volatile (
-                "vmovdqu8 (%[src]), %%zmm0\n\t"
-                "vpbroadcastb %[quote], %%zmm1\n\t"
-                "vpcmpeqb %%zmm1, %%zmm0, %%k0\n\t"
-                "kmovq %%k0, %[mask]\n\t"
-                : [mask] "=r" (mask)
-                : [src] "r" (p), [quote] "r" ((uint32_t)'"')
-                : "zmm0", "zmm1", "k0", "memory"
-            );
-            if (mask) {
-                __asm__ volatile ("tzcntq %1, %0" : "=r" (mask) : "r" (mask));
-                return p + mask;
-            }
-            p += 64;
-        }
-    }
-    while (p + 32 <= end) {
-        uint32_t mask;
-        __asm__ volatile (
-            "vmovdqu (%[src]), %%ymm0\n\t"
-            "vmovd %[quote], %%xmm1\n\t"
-            "vpbroadcastb %%xmm1, %%ymm1\n\t"
-            "vpcmpeqb %%ymm1, %%ymm0, %%ymm0\n\t"
-            "vpmovmskb %%ymm0, %[mask]\n\t"
-            "vzeroupper\n\t"
-            : [mask] "=r" (mask)
-            : [src] "r" (p), [quote] "r" ((uint32_t)'"')
-            : "ymm0", "ymm1", "memory"
-        );
-        if (mask) {
-            return p + __builtin_ctz(mask);
-        }
-        p += 32;
-    }
-    while (p < end && *p != '"') p++;
-    return p;
-}
-
-/* Digit scanning with AVX-512 */
 static inline const char *simd_scan_digits(const char *p, const char *end) {
     simd_detect_features();
     if (simd_has_avx512) {
@@ -999,26 +753,13 @@ static inline const char *simd_scan_digits(const char *p, const char *end) {
             uint64_t mask;
             __asm__ volatile (
                 "vmovdqu8 (%[src]), %%zmm0\n\t"
-                "vpbroadcastb %[lo_0], %%zmm1\n\t"
-                "vpbroadcastb %[hi_9], %%zmm2\n\t"
-                "vpbroadcastb %[under], %%zmm3\n\t"
-                "vpcmpgtb %%zmm1, %%zmm0, %%k1\n\t"
-                "vpcmpgtb %%zmm0, %%zmm2, %%k2\n\t"
-                "kandd %%k1, %%k2, %%k3\n\t"
-                "vpcmpeqb %%zmm3, %%zmm0, %%k4\n\t"
-                "kord %%k3, %%k4, %%k0\n\t"
-                "kmovq %%k0, %[mask]\n\t"
-                : [mask] "=r" (mask)
-                : [src] "r" (p),
-                  [lo_0] "r" ((uint32_t)('0' - 1)),
-                  [hi_9] "r" ((uint32_t)('9' + 1)),
-                  [under] "r" ((uint32_t)'_')
+                "vpbroadcastb %[lo], %%zmm1\n\t" "vpbroadcastb %[hi], %%zmm2\n\t" "vpbroadcastb %[u], %%zmm3\n\t"
+                "vpcmpgtb %%zmm1, %%zmm0, %%k1\n\t" "vpcmpgtb %%zmm0, %%zmm2, %%k2\n\t" "kandd %%k1, %%k2, %%k3\n\t"
+                "vpcmpeqb %%zmm3, %%zmm0, %%k4\n\t" "kord %%k3, %%k4, %%k0\n\t" "kmovq %%k0, %[mask]\n\t"
+                : [mask] "=r" (mask) : [src] "r" (p), [lo] "r" ((uint32_t)('0'-1)), [hi] "r" ((uint32_t)('9'+1)), [u] "r" ((uint32_t)'_')
                 : "zmm0", "zmm1", "zmm2", "zmm3", "k0", "k1", "k2", "k3", "k4", "memory"
             );
-            if (~mask) {
-                __asm__ volatile ("tzcntq %1, %0" : "=r" (mask) : "r" (~mask));
-                return p + mask;
-            }
+            if (~mask) { __asm__ volatile ("tzcntq %1, %0" : "=r" (mask) : "r" (~mask)); return p + mask; }
             p += 64;
         }
     }
@@ -1026,29 +767,15 @@ static inline const char *simd_scan_digits(const char *p, const char *end) {
         uint32_t mask;
         __asm__ volatile (
             "vmovdqu (%[src]), %%ymm0\n\t"
-            "vmovd %[lo_0], %%xmm1\n\t"
-            "vpbroadcastb %%xmm1, %%ymm1\n\t"
-            "vmovd %[hi_9], %%xmm2\n\t"
-            "vpbroadcastb %%xmm2, %%ymm2\n\t"
-            "vpcmpgtb %%ymm1, %%ymm0, %%ymm3\n\t"
-            "vpcmpgtb %%ymm0, %%ymm2, %%ymm4\n\t"
-            "vpand %%ymm3, %%ymm4, %%ymm5\n\t"
-            "vmovd %[under], %%xmm1\n\t"
-            "vpbroadcastb %%xmm1, %%ymm1\n\t"
-            "vpcmpeqb %%ymm1, %%ymm0, %%ymm1\n\t"
-            "vpor %%ymm5, %%ymm1, %%ymm0\n\t"
-            "vpmovmskb %%ymm0, %[mask]\n\t"
-            "vzeroupper\n\t"
-            : [mask] "=r" (mask)
-            : [src] "r" (p),
-              [lo_0] "r" ((uint32_t)('0' - 1)),
-              [hi_9] "r" ((uint32_t)('9' + 1)),
-              [under] "r" ((uint32_t)'_')
+            "vmovd %[lo], %%xmm1\n\t" "vpbroadcastb %%xmm1, %%ymm1\n\t"
+            "vmovd %[hi], %%xmm2\n\t" "vpbroadcastb %%xmm2, %%ymm2\n\t"
+            "vpcmpgtb %%ymm1, %%ymm0, %%ymm3\n\t" "vpcmpgtb %%ymm0, %%ymm2, %%ymm4\n\t" "vpand %%ymm3, %%ymm4, %%ymm5\n\t"
+            "vmovd %[u], %%xmm1\n\t" "vpbroadcastb %%xmm1, %%ymm1\n\t" "vpcmpeqb %%ymm1, %%ymm0, %%ymm1\n\t"
+            "vpor %%ymm5, %%ymm1, %%ymm0\n\t" "vpmovmskb %%ymm0, %[mask]\n\t" "vzeroupper\n\t"
+            : [mask] "=r" (mask) : [src] "r" (p), [lo] "r" ((uint32_t)('0'-1)), [hi] "r" ((uint32_t)('9'+1)), [u] "r" ((uint32_t)'_')
             : "ymm0", "ymm1", "ymm2", "ymm3", "ymm4", "ymm5", "memory"
         );
-        if (mask != 0xFFFFFFFF) {
-            return p + __builtin_ctz(~mask);
-        }
+        if (mask != 0xFFFFFFFF) return p + tzcnt32(~mask);
         p += 32;
     }
     while (p < end && ((*p >= '0' && *p <= '9') || *p == '_')) p++;
@@ -1083,8 +810,8 @@ static inline const char *simd_skip_whitespace(const char *p, const char *end) {
             : [src] "r" (p)
             : "v0", "v1", "v2", "v3", "v5", "v6", "v7", "memory"
         );
-        if (lo) return p + (__builtin_ctzll(lo) >> 3);
-        if (hi) return p + 8 + (__builtin_ctzll(hi) >> 3);
+        if (lo) return p + (tzcnt64(lo) >> 3);
+        if (hi) return p + 8 + (tzcnt64(hi) >> 3);
         p += 16;
     }
     /* Scalar tail: check all isspace() characters */
@@ -1109,8 +836,8 @@ static inline const char *simd_find_newline(const char *p, const char *end) {
             : [src] "r" (p)
             : "v0", "v1", "memory"
         );
-        if (lo) return p + (__builtin_ctzll(lo) >> 3);
-        if (hi) return p + 8 + (__builtin_ctzll(hi) >> 3);
+        if (lo) return p + (tzcnt64(lo) >> 3);
+        if (hi) return p + 8 + (tzcnt64(hi) >> 3);
         p += 16;
     }
     while (p < end && *p != '\n') p++;
@@ -1154,8 +881,8 @@ static inline const char *simd_scan_identifier(const char *p, const char *end) {
             : [src] "r" (p)
             : "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v16", "memory"
         );
-        if (lo) return p + (__builtin_ctzll(lo) >> 3);
-        if (hi) return p + 8 + (__builtin_ctzll(hi) >> 3);
+        if (lo) return p + (tzcnt64(lo) >> 3);
+        if (hi) return p + 8 + (tzcnt64(hi) >> 3);
         p += 16;
     }
     while (p < end) {
@@ -1181,8 +908,8 @@ static inline const char *simd_find_quote(const char *p, const char *end) {
             : [src] "r" (p)
             : "v0", "v1", "memory"
         );
-        if (lo) return p + (__builtin_ctzll(lo) >> 3);
-        if (hi) return p + 8 + (__builtin_ctzll(hi) >> 3);
+        if (lo) return p + (tzcnt64(lo) >> 3);
+        if (hi) return p + 8 + (tzcnt64(hi) >> 3);
         p += 16;
     }
     while (p < end && *p != '\'') p++;
@@ -1202,8 +929,8 @@ static inline const char *simd_find_double_quote(const char *p, const char *end)
             : [src] "r" (p)
             : "v0", "v1", "memory"
         );
-        if (lo) return p + (__builtin_ctzll(lo) >> 3);
-        if (hi) return p + 8 + (__builtin_ctzll(hi) >> 3);
+        if (lo) return p + (tzcnt64(lo) >> 3);
+        if (hi) return p + 8 + (tzcnt64(hi) >> 3);
         p += 16;
     }
     while (p < end && *p != '"') p++;
@@ -1233,8 +960,8 @@ static inline const char *simd_scan_digits(const char *p, const char *end) {
             : [src] "r" (p)
             : "v0", "v1", "v2", "v3", "v4", "v5", "v6", "memory"
         );
-        if (lo) return p + (__builtin_ctzll(lo) >> 3);
-        if (hi) return p + 8 + (__builtin_ctzll(hi) >> 3);
+        if (lo) return p + (tzcnt64(lo) >> 3);
+        if (hi) return p + 8 + (tzcnt64(hi) >> 3);
         p += 16;
     }
     while (p < end && ((*p >= '0' && *p <= '9') || *p == '_')) p++;
