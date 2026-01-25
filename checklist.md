@@ -2592,3 +2592,116 @@ Make `Symbol.parent` either:
 * always valid `Symbol*` (set at creation), or
 * always null for top-level,
   and assert it. Stop guessing in emission.
+
+---
+
+# PROGRESS TRACKING
+
+## Completed Refactoring (ada83new.c)
+
+### Infrastructure (§1-§6) ✅
+- [x] §1 Type_Metrics — Clean bit/byte morphisms, removed Generic-only helpers
+- [x] §2 Memory_Arena — Proper linked-list chunks with Arena_Free_All
+- [x] §3 String_Slice — FNV-1a hash, case-insensitive operations
+- [x] §4 Source_Location — Diagnostic anchors
+- [x] §5 Error_Handling — Accumulating reports
+- [x] §6 Big_Integer — Simplified for literal parsing only (no Karatsuba bloat)
+
+### Lexer (§7) ✅
+- [x] §7.1 Token_Kind — Clean Ada 83 lexicon
+- [x] §7.2 Token structure with value union
+- [x] §7.3 Lexer state machine
+- [x] §7.4 Unified Digit_Value helper (eliminated duplication)
+- [x] §7.5 Main lexer with correct based-literal and exponent handling
+
+### AST (§8) ✅
+- [x] §8.1 Unified Node_Kind enum
+- [x] §8.2 Clean union structure with proper field naming
+- [x] NK_APPLY unified node (call/index/slice resolved later — GNAT-like)
+
+### Parser (§9) ✅
+- [x] §9.1-9.4 Parser state, token movement, error recovery
+- [x] §9.5-9.6 Expression parsing with precedence climbing
+- [x] §9.6 UNIFIED postfix handling (eliminated 4x duplication)
+- [x] §9.7 UNIFIED association parsing (eliminated 4x duplication)
+- [x] §9.8 Binary expression parsing
+- [x] §9.9 Range parsing
+- [x] §9.10 Subtype indication
+- [x] §9.11 Statement parsing (all statement types)
+- [x] §9.12 Declaration parsing
+- [x] §9.13 Subprogram declarations and bodies
+- [x] §9.14 Package declarations and bodies
+- [x] §9.15 Generic units
+- [x] §9.16 Use/With clauses
+- [x] §9.17 Pragmas
+- [x] §9.18 Exception declarations
+- [x] §9.19 Representation clauses
+- [x] §9.20 Declaration dispatch
+- [x] §9.21 Compilation unit
+
+### Type System (§10) ✅
+- [x] §10.1 Type_Kind enum
+- [x] §10.2 Type_Info with bytes-based sizing
+- [x] §10.3 Type construction helpers
+- [x] §10.4 Type predicates (Is_Discrete, Is_Integer, etc.)
+- [x] §10.5 Base type traversal
+- [x] §10.6 Type freezing
+- [x] §10.7 LLVM type mapping
+
+### Symbol Table (§11) ✅
+- [x] §11.1-11.2 Symbol structure with proper kinds
+- [x] §11.3-11.4 Scope structure and operations
+- [x] §11.5 Symbol table operations
+- [x] §11.6 UNIFIED overload resolution (eliminated 2x duplication)
+
+### Semantic Analysis (§12) ✅
+- [x] §12.1 Expression resolution
+- [x] §12.2 Statement resolution
+- [x] §12.3 Declaration resolution
+- [x] §12.4 Compilation unit resolution
+
+### Code Generation (§13) ✅
+- [x] §13.1 Code generator state
+- [x] §13.2 IR emission helpers
+- [x] §13.3 Expression code generation
+- [x] §13.4 Statement code generation
+- [x] §13.5 Declaration code generation
+- [x] §13.6 Implicit equality generation
+- [x] §13.7 Compilation unit generation
+
+### Package Loading (§14) ✅
+- [x] Include path management
+- [x] Package spec loading
+
+### Main Driver (§15) ✅
+- [x] Command-line argument handling
+- [x] Compile_File entry point
+
+## Line Count Progress
+- Original ada83.c: 18,746 lines
+- Current ada83new.c: 12,536 lines
+- **Reduction: 6,210 lines (33%)**
+
+## Issues Fixed in ada83new.c (verified 2026-01-25)
+
+### High Priority ✅
+- [x] Constrained array detection — Uses proper `is_constrained` flag instead of heuristics
+- [x] Case statement multi-choice — Properly iterates all choices per alternative
+- [x] Reverse loop implementation — Correct init (high), condition (sge low), step (-1)
+- [x] Pointer-validity hacks — Uses proper null checks (`!sym->parent || ...`)
+
+### Medium Priority ✅
+- [x] Static-link consolidation — Unified around `%__frame_base` and `%__parent_frame`
+- [x] Fat-pointer representation — Explicit `{ ptr, { i64, i64 } }` with `Type_Is_Unconstrained_Array()`
+- [x] Symbol parent invariants — Proper null checks throughout
+
+### Additional Fixes Verified ✅
+- [x] OUT/IN OUT parameters — Correct by-reference: callee aliases caller storage via GEP
+- [x] String literal storage — Uses `@.str.N = private unnamed_addr constant` (GNAT-like)
+
+### Remaining Work (for A-series ACATS)
+
+#### Lower Priority (runtime polish)
+- [ ] Runtime finalization helpers (verify correct allocation sizes)
+- [ ] File reader consolidation (single unified helper)
+- [ ] Calendar runtime helpers portability (struct tm handling)
