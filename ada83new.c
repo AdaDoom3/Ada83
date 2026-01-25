@@ -7965,7 +7965,14 @@ static uint32_t Emit_Convert(Code_Generator *cg, uint32_t src, const char *src_t
     if (dst_bits > src_bits) {
         Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", t, src_type, src, dst_type);
     } else if (dst_bits < src_bits) {
-        Emit(cg, "  %%t%u = trunc %s %%t%u to %s\n", t, src_type, src, dst_type);
+        /* For boolean conversion (to i1), use icmp ne 0 to preserve semantics:
+         * any non-zero value becomes true (1), zero becomes false (0).
+         * Simple trunc would only check the low bit, losing 2 -> false. */
+        if (dst_bits == 1) {
+            Emit(cg, "  %%t%u = icmp ne %s %%t%u, 0\n", t, src_type, src);
+        } else {
+            Emit(cg, "  %%t%u = trunc %s %%t%u to %s\n", t, src_type, src, dst_type);
+        }
     } else {
         return src;  /* Same size, no conversion */
     }
@@ -9917,6 +9924,8 @@ static void Generate_If_Statement(Code_Generator *cg, Syntax_Node *node) {
     uint32_t else_label = Emit_Label(cg);
     uint32_t end_label = Emit_Label(cg);
 
+    /* Truncate condition to i1 for branch (expression may have widened to i64) */
+    cond = Emit_Convert(cg, cond, "i64", "i1");
     Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cond, then_label, else_label);
 
     Emit(cg, "L%u:\n", then_label);
@@ -9950,6 +9959,7 @@ static void Generate_Loop_Statement(Code_Generator *cg, Syntax_Node *node) {
         node->loop_stmt.iteration_scheme->kind != NK_BINARY_OP) {
         /* WHILE loop */
         uint32_t cond = Generate_Expression(cg, node->loop_stmt.iteration_scheme);
+        cond = Emit_Convert(cg, cond, "i64", "i1");
         Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cond, loop_body, loop_end);
     } else {
         Emit(cg, "  br label %%L%u\n", loop_body);
@@ -10474,6 +10484,7 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
         case NK_EXIT:
             if (node->exit_stmt.condition) {
                 uint32_t cond = Generate_Expression(cg, node->exit_stmt.condition);
+                cond = Emit_Convert(cg, cond, "i64", "i1");
                 uint32_t cont = Emit_Label(cg);
                 Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
                      cond, cg->loop_exit_label, cont);
@@ -10582,6 +10593,7 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                             {
                                 uint32_t guard = Generate_Expression(cg,
                                     alt->association.choices.items[0]);
+                                guard = Emit_Convert(cg, guard, "i64", "i1");
                                 Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
                                      guard, cg->label_id, next_label);
                                 Emit(cg, "L%u:\n", cg->label_id++);
