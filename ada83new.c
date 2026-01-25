@@ -3504,6 +3504,8 @@ static Syntax_Node *Parse_Range(Parser *p) {
 
 /* ─────────────────────────────────────────────────────────────────────────
  * §9.10 Subtype Indication Parsing
+ *
+ * A subtype is a type plus a constraint; the constraint narrows the range.
  * ───────────────────────────────────────────────────────────────────────── */
 
 static Syntax_Node *Parse_Subtype_Indication(Parser *p) {
@@ -3597,6 +3599,8 @@ static Syntax_Node *Parse_Subtype_Indication(Parser *p) {
 /* ═══════════════════════════════════════════════════════════════════════════
  * §9.11 Statement Parsing
  * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * Statements are sequenced; expressions are nested. Parsing reflects this.
  */
 
 /* Forward declarations */
@@ -3865,6 +3869,8 @@ static Syntax_Node *Parse_Block_Statement(Parser *p, String_Slice label) {
 
 /* ─────────────────────────────────────────────────────────────────────────
  * §9.11.6 Accept Statement
+ *
+ * ACCEPT is the server side of rendezvous; the caller is blocked until accepted.
  * ───────────────────────────────────────────────────────────────────────── */
 
 static Syntax_Node *Parse_Accept_Statement(Parser *p) {
@@ -3925,6 +3931,8 @@ static Syntax_Node *Parse_Accept_Statement(Parser *p) {
 
 /* ─────────────────────────────────────────────────────────────────────────
  * §9.11.7 Select Statement
+ *
+ * SELECT is nondeterministic choice; the runtime picks among open alternatives.
  * ───────────────────────────────────────────────────────────────────────── */
 
 static Syntax_Node *Parse_Select_Statement(Parser *p) {
@@ -9211,6 +9219,8 @@ static void Resolve_Compilation_Unit(Symbol_Manager *sm, Syntax_Node *node) {
 /* ═══════════════════════════════════════════════════════════════════════════
  * §13. LLVM IR CODE GENERATION
  * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * The AST is semantic; the IR is operational. Translation bridges the gap.
  *
  * Generate LLVM IR from the resolved AST. Key principles:
  *
