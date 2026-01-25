@@ -7539,12 +7539,41 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, "  %%t%u = xor i1 %%t%u, %%t%u\n", t, left, right);
             return t;
 
-        case TK_EQ:  Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", t, left, right); return t;
-        case TK_NE:  Emit(cg, "  %%t%u = icmp ne i64 %%t%u, %%t%u\n", t, left, right); return t;
-        case TK_LT:  Emit(cg, "  %%t%u = icmp slt i64 %%t%u, %%t%u\n", t, left, right); return t;
-        case TK_LE:  Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", t, left, right); return t;
-        case TK_GT:  Emit(cg, "  %%t%u = icmp sgt i64 %%t%u, %%t%u\n", t, left, right); return t;
-        case TK_GE:  Emit(cg, "  %%t%u = icmp sge i64 %%t%u, %%t%u\n", t, left, right); return t;
+        case TK_EQ:
+        case TK_NE:
+        case TK_LT:
+        case TK_LE:
+        case TK_GT:
+        case TK_GE:
+            {
+                /* Check operand type (not result type) for float comparisons */
+                bool cmp_float = left_type && (left_type->kind == TYPE_FLOAT ||
+                                               left_type->kind == TYPE_UNIVERSAL_REAL);
+                const char *cmp_op;
+                if (cmp_float) {
+                    switch (node->binary.op) {
+                        case TK_EQ: cmp_op = "fcmp oeq double"; break;
+                        case TK_NE: cmp_op = "fcmp une double"; break;
+                        case TK_LT: cmp_op = "fcmp olt double"; break;
+                        case TK_LE: cmp_op = "fcmp ole double"; break;
+                        case TK_GT: cmp_op = "fcmp ogt double"; break;
+                        case TK_GE: cmp_op = "fcmp oge double"; break;
+                        default: cmp_op = "icmp eq i64"; break;
+                    }
+                } else {
+                    switch (node->binary.op) {
+                        case TK_EQ: cmp_op = "icmp eq i64"; break;
+                        case TK_NE: cmp_op = "icmp ne i64"; break;
+                        case TK_LT: cmp_op = "icmp slt i64"; break;
+                        case TK_LE: cmp_op = "icmp sle i64"; break;
+                        case TK_GT: cmp_op = "icmp sgt i64"; break;
+                        case TK_GE: cmp_op = "icmp sge i64"; break;
+                        default: cmp_op = "icmp eq i64"; break;
+                    }
+                }
+                Emit(cg, "  %%t%u = %s %%t%u, %%t%u\n", t, cmp_op, left, right);
+                return t;
+            }
 
         default: op = "add"; break;
     }
