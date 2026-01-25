@@ -2,15 +2,9 @@
  * Ada83 Compiler — A Literate Implementation
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * "Programs must be written for people to read, and only incidentally
- *  for machines to execute." — Abelson & Sussman, SICP
- *
  * This compiler implements Ada 1983 (ANSI/MIL-STD-1815A) targeting LLVM IR.
- * The design follows GNAT LLVM's architecture while embracing Haskell-like
- * functional idioms in C99: immutability where possible, explicit types,
- * and composition over mutation.
  *
- * §1  Type_Metrics     — The measure of representation
+ * §1  Type_Metrics     — Representation details
  * §2  Memory_Arena     — Bump allocation for AST nodes
  * §3  String_Slice     — Non-owning string views
  * §4  Source_Location  — Diagnostic anchors
@@ -45,11 +39,11 @@
 #include <unistd.h>
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * §1. TYPE METRICS — The Measure of All Things
+ * §1. TYPE METRICS — Representation details
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * Following GNAT LLVM (gnatllvm-types.ads), we centralize all size and
- * alignment computations. All sizes flow through To_Bits/To_Bytes morphisms.
+ * We centralize all size and alignment computations. All sizes flow through
+ * To_Bits/To_Bytes morphisms.
  *
  * INVARIANT: Sizes in Type_Info are stored in BYTES (not bits).
  * This matches LLVM's DataLayout model and simplifies record layout.
@@ -155,8 +149,6 @@ static inline uint32_t Bits_For_Range(int64_t lo, int64_t hi) {
  *
  * A simple bump allocator for AST nodes and strings. All memory persists
  * for the compilation session — we trade fragmentation for simplicity.
- *
- * Unlike the original, we maintain a linked list of chunks for cleanup.
  */
 
 typedef struct Arena_Chunk Arena_Chunk;
@@ -265,7 +257,7 @@ static int Edit_Distance(String_Slice a, String_Slice b) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * §4. SOURCE LOCATION — Anchoring Diagnostics to Source
+ * §4. SOURCE LOCATION — Diagnostics to Source
  * ═══════════════════════════════════════════════════════════════════════════
  */
 
@@ -278,7 +270,7 @@ typedef struct {
 static const Source_Location No_Location = {NULL, 0, 0};
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * §5. ERROR HANDLING — Accumulating Diagnostics
+ * §5. ERROR HANDLING — Diagnostic accumulation
  * ═══════════════════════════════════════════════════════════════════════════
  *
  * Errors accumulate rather than immediately aborting, allowing the compiler
@@ -402,7 +394,7 @@ static bool Big_Integer_Fits_Int64(const Big_Integer *bi, int64_t *out) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * §7. LEXER — Transforming Characters into Tokens
+ * §7. LEXER — Transform Characters into Tokens
  * ═══════════════════════════════════════════════════════════════════════════
  *
  * The lexer maintains a cursor over the source buffer and produces tokens
@@ -410,7 +402,7 @@ static bool Big_Integer_Fits_Int64(const Big_Integer *bi, int64_t *out) {
  */
 
 /* ─────────────────────────────────────────────────────────────────────────
- * §7.1 Token Kinds — The Vocabulary of Ada
+ * §7.1 Token Kinds — Ada lexicon
  * ───────────────────────────────────────────────────────────────────────── */
 
 typedef enum {
@@ -1317,7 +1309,7 @@ static Syntax_Node *Node_New(Node_Kind kind, Source_Location loc) {
  * §9. PARSER — Recursive Descent with Unified Postfix Handling
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * Key design decisions following the checklist analysis:
+ * Key design decisions:
  *
  * 1. UNIFIED APPLY NODE: All X(...) forms parse as NK_APPLY. Semantic analysis
  *    later distinguishes calls, indexing, slicing, and type conversions.
@@ -1408,9 +1400,6 @@ static Source_Location Parser_Location(Parser *p) {
 
 /* ─────────────────────────────────────────────────────────────────────────
  * §9.3 Error Recovery
- *
- * Instead of "pretending tokens exist", we synchronize to statement/decl
- * boundaries. This produces cleaner error recovery and prevents infinite loops.
  * ───────────────────────────────────────────────────────────────────────── */
 
 static void Parser_Error(Parser *p, const char *message) {
@@ -1510,8 +1499,6 @@ static void Parser_Check_End_Name(Parser *p, String_Slice expected_name) {
  *   + - & (binary) + - (unary)
  *   = /= < <= > >= IN NOT IN
  *   AND OR XOR AND THEN OR ELSE
- *
- * We use a clean precedence-climbing approach.
  * ───────────────────────────────────────────────────────────────────────── */
 
 /* Forward declarations */
@@ -1691,7 +1678,7 @@ static Syntax_Node *Parse_Primary(Parser *p) {
 /* ─────────────────────────────────────────────────────────────────────────
  * §9.6 Unified Postfix Parsing
  *
- * Handles: .selector, 'attribute, (arguments) — all in one loop.
+ * Handles: .selector, 'attribute, (arguments) — in one loop.
  * ───────────────────────────────────────────────────────────────────────── */
 
 static Syntax_Node *Parse_Name(Parser *p) {
@@ -4156,14 +4143,6 @@ static Syntax_Node *Parse_Compilation_Unit(Parser *p) {
  * §10. TYPE SYSTEM — Ada Type Semantics
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * Ada's type system is nominally typed with structural subtyping for
- * anonymous types. Key features:
- *
- * - Type ≠ Subtype: Types define structure; subtypes add constraints
- * - Derived types: New types from existing, with inherited operations
- * - Universal types: Universal_Integer, Universal_Real for literals
- * - Class-wide types (Ada 95+): Not in Ada 83
- *
  * INVARIANT: All sizes are stored in BYTES, not bits.
  */
 
@@ -4217,7 +4196,7 @@ typedef enum {
 typedef struct Type_Info Type_Info;
 typedef struct Symbol Symbol;
 
-/* Bound representation: explicit tagged union to avoid bitcast hacks */
+/* Bound representation: explicit tagged union to avoid bitcast */
 typedef struct {
     enum { BOUND_INTEGER, BOUND_FLOAT, BOUND_EXPR } kind;
     union {
@@ -4388,8 +4367,7 @@ static Type_Info *Type_Base(Type_Info *t) {
 
 /*
  * NOTE: Type compatibility checking is consolidated in Type_Covers()
- * defined in §11.6.2 (Overload Resolution section) following GNAT's
- * sem_type.adb Covers function. That function provides comprehensive
+ * defined in §11.6.2 (Overload Resolution section). That function provides
  * coverage checking for:
  * - Same type identity
  * - Universal type compatibility
@@ -4402,7 +4380,7 @@ static Type_Info *Type_Base(Type_Info *t) {
  * §10.6 Type Freezing
  *
  * Freezing determines the point at which a type's representation is fixed.
- * Per RM 13.14 and GNAT design:
+ * Per RM 13.14:
  * - Types are frozen by object declarations, bodies, end of declarative part
  * - Subtypes freeze their base type
  * - Composite types freeze their component types
@@ -4531,7 +4509,7 @@ static const char *Type_To_Llvm(Type_Info *t) {
  * - Use clauses: make names directly visible without qualification
  * - Visibility: immediately visible, use-visible, directly visible
  *
- * Design: Hash table with chaining, scope stack for nested contexts.
+ * We use a hash table with chaining and a scope stack for nested contexts.
  */
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -4849,10 +4827,10 @@ static Symbol *Symbol_Find_With_Arity(Symbol_Manager *sm, String_Slice name, uin
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * §11.6 OVERLOAD RESOLUTION — Following GNAT sem_type.ads Design
+ * §11.6 OVERLOAD RESOLUTION
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * Ada's overload resolution is a two-pass process:
+ * Overload resolution is a two-pass process:
  *
  * 1. Bottom-up pass: Collect all possible interpretations of each identifier
  *    based on visibility rules. Each interpretation is a (Symbol, Type) pair.
@@ -4872,7 +4850,7 @@ static Symbol *Symbol_Find_With_Arity(Symbol_Manager *sm, String_Slice name, uin
 /* ─────────────────────────────────────────────────────────────────────────
  * §11.6.1 Interpretation Structure
  *
- * Following GNAT's sem_type.ads: "type Interp is record Nam, Typ, Opnd_Typ..."
+ * "type Interp is record Nam, Typ, Opnd_Typ..."
  * We store interpretations in a contiguous array during resolution.
  * ───────────────────────────────────────────────────────────────────────── */
 
@@ -4894,14 +4872,12 @@ typedef struct {
 /* ─────────────────────────────────────────────────────────────────────────
  * §11.6.2 Type Covering (Compatibility)
  *
- * Following GNAT's Covers function from sem_type.adb:
- * T1 covers T2 if values of T2 are legal where T1 is expected.
+ * For example: T1 covers T2 if values of T2 are legal where T1 is expected.
  *
  * Key rules from RM 8.6:
  * - Same type: always covers
  * - Subtypes of same base type: cover each other
  * - Universal types: Universal_Integer covers any integer type, etc.
- * - Class-wide types: Cover all types in the class (Ada 95+, not in Ada 83)
  * ───────────────────────────────────────────────────────────────────────── */
 
 static bool Type_Covers(Type_Info *expected, Type_Info *actual) {
@@ -5107,7 +5083,6 @@ static void Filter_By_Arguments(Interp_List *interps, Argument_Info *args) {
 /* ─────────────────────────────────────────────────────────────────────────
  * §11.6.5 Disambiguation
  *
- * Following GNAT's Disambiguate function from sem_type.adb:
  * When multiple interpretations remain, apply preference rules:
  *
  * 1. Prefer non-universal interpretations over universal
@@ -5117,7 +5092,7 @@ static void Filter_By_Arguments(Interp_List *interps, Argument_Info *args) {
  *    - They are visible in the current scope
  * 4. For operators: prefer interpretation where operand types match exactly
  *
- * Per RM 8.6: Resolution fails if still ambiguous after preferences.
+ * Note: Resolution fails if still ambiguous after preferences.
  * ───────────────────────────────────────────────────────────────────────── */
 
 /* Check if sym1 hides sym2 (user-defined hiding predefined, or inner scope) */
@@ -5233,9 +5208,7 @@ static Symbol *Disambiguate(Interp_List *interps, Type_Info *context_type,
 /* ─────────────────────────────────────────────────────────────────────────
  * §11.6.6 Unified Overload Resolution Entry Point
  *
- * Resolve_Overloaded_Call: main entry for call/indexed/conversion resolution
- * This unifies the previous symbol_find_with_arity and symbol_find_with_args
- * into a single, correct implementation following GNAT patterns.
+ * Main entry for call/indexed/conversion resolution
  * ───────────────────────────────────────────────────────────────────────── */
 
 static Symbol *Resolve_Overloaded_Call(Symbol_Manager *sm,
@@ -5657,6 +5630,7 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
 
     /* Handle based on what the prefix resolves to */
     if (prefix_sym) {
+        
         /* ─── Case 1: Function/Procedure Call ─── */
         if (prefix_sym->kind == SYMBOL_FUNCTION || prefix_sym->kind == SYMBOL_PROCEDURE) {
             node->symbol = prefix_sym;
@@ -7372,9 +7346,9 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                     }
                 }
 
-                /* pragma Pure, pragma Preelaborate - informational only */
-                /* pragma Elaborate, pragma Elaborate_All - handled at link time */
-                /* pragma Restrictions - Ada 95 feature, not applicable to Ada 83 */
+                /* pragma Pure, pragma Preelaborate - informational only ??? */
+                /* pragma Elaborate, pragma Elaborate_All - handled at link time ??? */
+                /* pragma Restrictions - ??? */
             }
             break;
 
@@ -7935,7 +7909,7 @@ static void Emit_Symbol_Name(Code_Generator *cg, Symbol *sym) {
         }
     }
 
-    /* Only add unique_id suffix for local/nested symbols, not package-level.
+    /* Only add unique_id suffix for local/nested symbols, not package-level ???
      * Package-level symbols (parent is a package or no parent) use just the
      * qualified name for cross-compilation linking. Local symbols need the
      * unique_id to disambiguate nested scopes with same names. */
@@ -11860,7 +11834,7 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "  ret void\n");
     Emit(cg, "}\n\n");
 
-    /* Task abort: signal task to terminate (simplified: just sets flag) */
+    /* Task abort: signal task to terminate (simplified: just sets flag) - is this right ??? */
     Emit(cg, "define linkonce_odr void @__ada_task_abort(ptr %%task) {\n");
     Emit(cg, "entry:\n");
     Emit(cg, "  %%1 = icmp eq ptr %%task, null\n");
