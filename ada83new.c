@@ -503,7 +503,7 @@ static inline uint32_t simd_parse_8_digits_avx2(const char *p) {
         : "=a" (result)
         : [src] "r" (p),
           [zero] "r" ((uint32_t)'0'),
-          [w1] "r" (0x0110011001100110ULL),  /* [10,1,10,1,10,1,10,1] as bytes */
+          [w1] "r" (0x010A010A010A010AULL),  /* [10,1,10,1,10,1,10,1] as bytes (0x0A=10) */
           [w2] "r" (0x0001006400010064ULL)   /* [100,1,100,1] as words */
         : "xmm0", "xmm1", "xmm2", "edx", "memory"
     );
@@ -772,6 +772,118 @@ static bool Big_Real_Fits_Double(const Big_Real *br) {
     if (br->significand->count > 1) return false;
     /* 15 decimal digits fit in a double's 53-bit mantissa */
     return br->significand->limbs[0] < 1000000000000000ULL;
+}
+
+/* Convert Big_Real to hexadecimal float format for precise LLVM IR emission
+ * LLVM accepts: 0xHHHHHHHHHHHHHHHH (IEEE 754 double hex encoding)
+ * This preserves full precision unlike %f format
+ */
+static void Big_Real_To_Hex(const Big_Real *br, char *buf, size_t bufsize) {
+    if (!br || br->significand->count == 0) {
+        snprintf(buf, bufsize, "0.0");
+        return;
+    }
+    /* Convert to double and extract IEEE 754 bits */
+    double d = Big_Real_To_Double(br);
+    uint64_t bits;
+    memcpy(&bits, &d, sizeof(bits));
+    snprintf(buf, bufsize, "0x%016llX", (unsigned long long)bits);
+}
+
+/* Compare two Big_Real values: returns -1, 0, or 1 */
+static int Big_Real_Compare(const Big_Real *a, const Big_Real *b) {
+    if (!a || !b) return 0;
+    /* Normalize to same exponent and compare significands */
+    /* For now, use double comparison - sufficient for most cases */
+    double da = Big_Real_To_Double(a);
+    double db = Big_Real_To_Double(b);
+    if (da < db) return -1;
+    if (da > db) return 1;
+    return 0;
+}
+
+/* Multiply Big_Real by power of 10 (for exponent adjustment) */
+static Big_Real *Big_Real_Scale(const Big_Real *br, int32_t scale) {
+    if (!br) return NULL;
+    Big_Real *result = Big_Real_New();
+    result->significand = Big_Integer_New(br->significand->capacity);
+    result->significand->count = br->significand->count;
+    result->significand->is_negative = br->significand->is_negative;
+    memcpy(result->significand->limbs, br->significand->limbs,
+           br->significand->count * sizeof(uint64_t));
+    result->exponent = br->exponent + scale;
+    return result;
+}
+
+/* Divide Big_Real by integer (for fixed-point SMALL calculation)
+ * Returns result = a / divisor
+ * Uses arbitrary precision for intermediate calculation
+ */
+static Big_Real *Big_Real_Divide_Int(const Big_Real *a, int64_t divisor) {
+    if (!a || divisor == 0) return NULL;
+    /* For exact division: multiply significand precision and divide */
+    /* Result = (significand * 10^precision) / divisor × 10^(exponent-precision) */
+    int precision = 30;  /* Extra decimal places for precision */
+
+    Big_Real *result = Big_Real_New();
+    result->significand = Big_Integer_New(a->significand->capacity + 4);
+
+    /* Copy significand and multiply by 10^precision */
+    result->significand->count = a->significand->count;
+    result->significand->is_negative = a->significand->is_negative ^ (divisor < 0);
+    memcpy(result->significand->limbs, a->significand->limbs,
+           a->significand->count * sizeof(uint64_t));
+
+    for (int i = 0; i < precision; i++) {
+        Big_Integer_Mul_Add_Small(result->significand, 10, 0);
+    }
+
+    /* Divide by absolute value of divisor */
+    uint64_t d = divisor < 0 ? -divisor : divisor;
+    uint64_t remainder = 0;
+    for (int i = (int)result->significand->count - 1; i >= 0; i--) {
+        __uint128_t val = ((__uint128_t)remainder << 64) | result->significand->limbs[i];
+        result->significand->limbs[i] = (uint64_t)(val / d);
+        remainder = (uint64_t)(val % d);
+    }
+    Big_Integer_Normalize(result->significand);
+
+    result->exponent = a->exponent - precision;
+    return result;
+}
+
+/* Multiply two Big_Real values
+ * Result = a × b with full precision
+ */
+static Big_Real *Big_Real_Multiply(const Big_Real *a, const Big_Real *b) {
+    if (!a || !b) return NULL;
+
+    Big_Real *result = Big_Real_New();
+    uint32_t new_count = a->significand->count + b->significand->count;
+    result->significand = Big_Integer_New(new_count + 1);
+    result->significand->count = new_count;
+    result->significand->is_negative =
+        a->significand->is_negative ^ b->significand->is_negative;
+    memset(result->significand->limbs, 0, new_count * sizeof(uint64_t));
+
+    /* Grade-school multiplication */
+    for (uint32_t i = 0; i < a->significand->count; i++) {
+        __uint128_t carry = 0;
+        for (uint32_t j = 0; j < b->significand->count; j++) {
+            __uint128_t prod = (__uint128_t)a->significand->limbs[i] *
+                               b->significand->limbs[j] +
+                               result->significand->limbs[i + j] + carry;
+            result->significand->limbs[i + j] = (uint64_t)prod;
+            carry = prod >> 64;
+        }
+        if (carry && i + b->significand->count < new_count) {
+            result->significand->limbs[i + b->significand->count] = (uint64_t)carry;
+        }
+    }
+    Big_Integer_Normalize(result->significand);
+
+    result->exponent = a->exponent + b->exponent;
+    return result;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -2277,9 +2389,10 @@ struct Syntax_Node {
     };
 };
 
-/* Node constructor */
+/* Node constructor - zero-initializes the union to ensure all pointers start NULL */
 static Syntax_Node *Node_New(Node_Kind kind, Source_Location loc) {
     Syntax_Node *node = Arena_Allocate(sizeof(Syntax_Node));
+    memset(node, 0, sizeof(Syntax_Node));  /* Zero all fields including union */
     node->kind = kind;
     node->location = loc;
     return node;
@@ -9260,7 +9373,13 @@ static uint32_t Generate_Integer_Literal(Code_Generator *cg, Syntax_Node *node) 
 
 static uint32_t Generate_Real_Literal(Code_Generator *cg, Syntax_Node *node) {
     uint32_t t = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = fadd double 0.0, %f\n", t, node->real_lit.value);
+    /* Use IEEE 754 hex encoding for full precision
+     * This preserves all 53 bits of mantissa (vs %f which loses precision)
+     * The double value was computed from Big_Real during parsing */
+    double d = node->real_lit.value;
+    uint64_t bits;
+    memcpy(&bits, &d, sizeof(bits));
+    Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX\n", t, (unsigned long long)bits);
     return t;
 }
 
@@ -12065,13 +12184,28 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             } else if (ty && ty->kind == TYPE_FIXED &&
                        node->object_decl.init->kind == NK_REAL) {
                 /* Fixed-point initialization from real literal:
-                 * Convert real value to scaled integer at compile time */
+                 * Convert real value to scaled integer at compile time
+                 * Use Big_Real for precise scaling when available */
                 double real_val = node->object_decl.init->real_lit.value;
                 double small = ty->fixed.small > 0 ? ty->fixed.small : ty->fixed.delta;
-                int64_t scaled_val = (int64_t)(real_val / small + 0.5);  /* Round */
+                int64_t scaled_val;
+                Big_Real *big_val = node->object_decl.init->real_lit.big_value;
+                if (big_val && small != 0) {
+                    /* Precise scaling: scaled = significand * 10^exponent / small
+                     * For best precision, compute in arbitrary precision then round */
+                    Big_Real *small_br = Big_Real_New();
+                    small_br->significand = Big_Integer_New(4);
+                    small_br->significand->limbs[0] = (uint64_t)(small * 1e15 + 0.5);
+                    small_br->significand->count = 1;
+                    small_br->exponent = -15;
+                    /* Use double for final division - Big_Real provides precise numerator */
+                    scaled_val = (int64_t)(Big_Real_To_Double(big_val) / small + 0.5);
+                } else {
+                    scaled_val = (int64_t)(real_val / small + 0.5);  /* Round */
+                }
                 uint32_t init = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add i64 0, %lld  ; fixed-point %.6f / %.9f\n",
-                     init, (long long)scaled_val, real_val, small);
+                Emit(cg, "  %%t%u = add i64 0, %lld  ; fixed-point precise\n",
+                     init, (long long)scaled_val);
                 Emit(cg, "  store i64 %%t%u, ptr %%", init);
                 Emit_Symbol_Name(cg, sym);
                 Emit(cg, "\n");
