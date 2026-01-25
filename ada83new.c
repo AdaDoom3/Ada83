@@ -2904,6 +2904,8 @@ static void Parser_Check_End_Name(Parser *p, String_Slice expected_name) {
 /* ─────────────────────────────────────────────────────────────────────────
  * §9.5 Expression Parsing — Operator Precedence
  *
+ * Precedence is in the grammar; associativity is in the recursion direction.
+ *
  * Ada precedence (highest to lowest):
  *   ** (right associative)
  *   ABS NOT (unary prefix)
@@ -3275,10 +3277,8 @@ static Syntax_Node *Parse_Simple_Name(Parser *p) {
 /* ─────────────────────────────────────────────────────────────────────────
  * §9.7 Unified Association Parsing
  *
- * Handles positional, named (=>), and choice (|) associations for:
- * - Aggregates
- * - Function/procedure calls
- * - Generic instantiations
+ * The same syntax serves calls, aggregates, and instantiations. The parser
+ * cannot tell them apart; semantic analysis can.
  * ───────────────────────────────────────────────────────────────────────── */
 
 /* Helper to parse a choice (expression or range) */
@@ -3335,6 +3335,8 @@ static void Parse_Association_List(Parser *p, Node_List *list) {
 
 /* ─────────────────────────────────────────────────────────────────────────
  * §9.8 Binary Expression Parsing — Precedence Climbing
+ *
+ * Climb up from low precedence; consume equal-or-higher before returning.
  * ───────────────────────────────────────────────────────────────────────── */
 
 /* Precedence levels */
@@ -4216,6 +4218,8 @@ static Syntax_Node *Parse_Subtype_Declaration(Parser *p) {
 
 /* ─────────────────────────────────────────────────────────────────────────
  * §9.12.3 Type Definitions
+ *
+ * Parsing the definition establishes structure; elaboration establishes meaning.
  * ───────────────────────────────────────────────────────────────────────── */
 
 static Syntax_Node *Parse_Enumeration_Type(Parser *p) {
@@ -4778,6 +4782,8 @@ static Syntax_Node *Parse_Package_Body(Parser *p) {
 /* ═══════════════════════════════════════════════════════════════════════════
  * §9.15 Generic Units
  * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * Generics are templates; instantiation is substitution plus type checking.
  */
 
 static void Parse_Generic_Formal_Part(Parser *p, Node_List *formals) {
@@ -5521,6 +5527,8 @@ static void Parse_Declarative_Part(Parser *p, Node_List *list) {
 /* ═══════════════════════════════════════════════════════════════════════════
  * §9.21 Compilation Unit
  * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * WITH establishes dependencies; USE imports names into the current namespace.
  */
 
 static Syntax_Node *Parse_Context_Clause(Parser *p) {
