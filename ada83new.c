@@ -356,7 +356,8 @@ static uint64_t Slice_Hash(String_Slice s) {
     return h;
 }
 
-/* Levenshtein distance for "did you mean?" suggestions */
+/* Levenshtein distance for "did you mean?" suggestions.
+ * O(nm) is acceptable; identifiers are short, and errors are infrequent. */
 __attribute__((unused))
 static int Edit_Distance(String_Slice a, String_Slice b) {
     if (a.length > 20 || b.length > 20) return 100;
@@ -390,7 +391,8 @@ static const Source_Location No_Location = {NULL, 0, 0};
  * ═══════════════════════════════════════════════════════════════════════════
  *
  * Errors accumulate rather than immediately aborting, allowing the compiler
- * to report multiple issues in a single pass.
+ * to report multiple issues in a single pass. The user deserves to know all
+ * the mistakes, not just the first one.
  */
 
 static int Error_Count = 0;
@@ -1326,7 +1328,8 @@ static inline const char *Simd_Find_Double_Quote(const char *p, const char *end)
  * Identifier Character Class Scanner - HYBRID approach
  *
  * Uses fast table lookup for first 8 chars (covers most identifiers),
- * then SIMD only for long identifiers. Benchmarked 50% faster than pure SIMD.
+ * then SIMD only for long identifiers. Measure before optimizing; the
+ * profiler is wiser than intuition. Benchmarked 50% faster than pure SIMD.
  * ───────────────────────────────────────────────────────────────────────────── */
 static inline const char *Simd_Scan_Identifier(const char *p, const char *end) {
     /* Fast path: unrolled table lookup for first 8 chars (covers most identifiers) */
@@ -2332,6 +2335,7 @@ typedef struct {
     uint32_t      capacity;
 } Node_List;
 
+/* Doubling gives amortized O(1) append; the wasted space is the price of speed */
 static void Node_List_Push(Node_List *list, Syntax_Node *node) {
     if (list->count >= list->capacity) {
         uint32_t new_cap = list->capacity ? list->capacity * 2 : 8;
@@ -5567,6 +5571,7 @@ static Syntax_Node *Parse_Compilation_Unit(Parser *p) {
  * ═══════════════════════════════════════════════════════════════════════════
  *
  * INVARIANT: All sizes are stored in BYTES, not bits.
+ * Types exist to prevent the mistakes that raw bytes invite.
  */
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -9187,6 +9192,8 @@ static void Resolve_Compilation_Unit(Symbol_Manager *sm, Syntax_Node *node) {
  * 2. All pointer types use opaque 'ptr' (LLVM 15+)
  * 3. Static links for nested subprogram access
  * 4. Fat pointers for unconstrained arrays (ptr + bounds)
+ *
+ * Correctness first; the generated code need not be clever if it is right.
  */
 
 /* ─────────────────────────────────────────────────────────────────────────
