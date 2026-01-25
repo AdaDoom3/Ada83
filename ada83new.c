@@ -4337,6 +4337,12 @@ static inline bool Type_Is_Real(const Type_Info *t) {
                  t->kind == TYPE_UNIVERSAL_REAL);
 }
 
+/* Type uses floating-point LLVM representation (for codegen, not semantic analysis).
+ * Fixed-point types are NOT included as they use integer representation. */
+static inline bool Type_Is_Float_Representation(const Type_Info *t) {
+    return t && (t->kind == TYPE_FLOAT || t->kind == TYPE_UNIVERSAL_REAL);
+}
+
 static inline bool Type_Is_Array_Like(const Type_Info *t) {
     return t && (t->kind == TYPE_ARRAY || t->kind == TYPE_STRING);
 }
@@ -4647,6 +4653,7 @@ struct Symbol {
 
     /* Code generation flags */
     bool            extern_emitted;      /* Extern declaration already emitted */
+    bool            is_named_number;     /* Named number (constant without explicit type) */
 
     /* ─────────────────────────────────────────────────────────────────────
      * Generic Support
@@ -4703,6 +4710,7 @@ typedef struct {
     Type_Info *type_duration;
     Type_Info *type_universal_integer;
     Type_Info *type_universal_real;
+    Type_Info *type_address;  /* SYSTEM.ADDRESS */
 
     /* Unique ID counter for symbol mangling */
     uint32_t   next_unique_id;
@@ -4911,6 +4919,14 @@ static bool Type_Covers(Type_Info *expected, Type_Info *actual) {
     Type_Info *base_act = Type_Base(actual);
     if (base_exp == base_act) return true;
     if (base_exp == actual || expected == base_act) return true;
+
+    /* SYSTEM.ADDRESS compatibility (RM 13.7): all ADDRESS types are interoperable
+     * This handles the case where 'ADDRESS attribute returns a built-in ADDRESS
+     * type but the target is declared as SYSTEM.ADDRESS from the package */
+    if (Slice_Equal_Ignore_Case(expected->name, S("ADDRESS")) &&
+        Slice_Equal_Ignore_Case(actual->name, S("ADDRESS"))) {
+        return true;
+    }
 
     /* Array/string compatibility: same structure */
     if (Type_Is_Array_Like(expected) && Type_Is_Array_Like(actual)) {
@@ -5358,6 +5374,13 @@ static void Symbol_Manager_Init_Predefined(Symbol_Manager *sm) {
 
     Symbol *sym_tasking_error = Symbol_New(SYMBOL_EXCEPTION, S("TASKING_ERROR"), No_Location);
     Symbol_Add(sm, sym_tasking_error);
+
+    /* SYSTEM.ADDRESS (RM 13.7) - implementation-defined private type
+     * In our implementation, ADDRESS is an integer type (derived from INTEGER) */
+    sm->type_address = Type_New(TYPE_INTEGER, S("ADDRESS"));
+    sm->type_address->size = 8;  /* 64-bit addresses */
+    sm->type_address->alignment = 8;
+    sm->type_address->base_type = sm->type_integer;
 }
 
 static Symbol_Manager *Symbol_Manager_New(void) {
@@ -5816,11 +5839,47 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                 else if (Slice_Equal_Ignore_Case(attr, S("IMAGE"))) {
                     node->type = sm->type_string;
                 }
-                /* SIZE, LENGTH, COUNT return integer */
+                /* SIZE, LENGTH, COUNT, WIDTH, MANTISSA, etc. return universal integer */
                 else if (Slice_Equal_Ignore_Case(attr, S("SIZE")) ||
                          Slice_Equal_Ignore_Case(attr, S("LENGTH")) ||
-                         Slice_Equal_Ignore_Case(attr, S("COUNT"))) {
-                    node->type = sm->type_integer;
+                         Slice_Equal_Ignore_Case(attr, S("COUNT")) ||
+                         Slice_Equal_Ignore_Case(attr, S("WIDTH")) ||
+                         Slice_Equal_Ignore_Case(attr, S("MANTISSA")) ||
+                         Slice_Equal_Ignore_Case(attr, S("MACHINE_MANTISSA")) ||
+                         Slice_Equal_Ignore_Case(attr, S("DIGITS")) ||
+                         Slice_Equal_Ignore_Case(attr, S("EMAX")) ||
+                         Slice_Equal_Ignore_Case(attr, S("MACHINE_EMAX")) ||
+                         Slice_Equal_Ignore_Case(attr, S("MACHINE_EMIN")) ||
+                         Slice_Equal_Ignore_Case(attr, S("MACHINE_RADIX")) ||
+                         Slice_Equal_Ignore_Case(attr, S("SAFE_EMAX")) ||
+                         Slice_Equal_Ignore_Case(attr, S("STORAGE_SIZE")) ||
+                         Slice_Equal_Ignore_Case(attr, S("MODULUS")) ||
+                         Slice_Equal_Ignore_Case(attr, S("AFT")) ||
+                         Slice_Equal_Ignore_Case(attr, S("FORE"))) {
+                    node->type = sm->type_universal_integer;
+                }
+                /* Floating-point type attributes returning universal_real */
+                else if (Slice_Equal_Ignore_Case(attr, S("EPSILON")) ||
+                         Slice_Equal_Ignore_Case(attr, S("SMALL")) ||
+                         Slice_Equal_Ignore_Case(attr, S("LARGE")) ||
+                         Slice_Equal_Ignore_Case(attr, S("SAFE_SMALL")) ||
+                         Slice_Equal_Ignore_Case(attr, S("SAFE_LARGE")) ||
+                         Slice_Equal_Ignore_Case(attr, S("DELTA")) ||
+                         Slice_Equal_Ignore_Case(attr, S("MODEL_EPSILON")) ||
+                         Slice_Equal_Ignore_Case(attr, S("MODEL_SMALL")) ||
+                         Slice_Equal_Ignore_Case(attr, S("MACHINE_OVERFLOWS")) ||
+                         Slice_Equal_Ignore_Case(attr, S("MACHINE_ROUNDS"))) {
+                    node->type = sm->type_universal_real;
+                }
+                /* Boolean attributes */
+                else if (Slice_Equal_Ignore_Case(attr, S("CONSTRAINED")) ||
+                         Slice_Equal_Ignore_Case(attr, S("CALLABLE")) ||
+                         Slice_Equal_Ignore_Case(attr, S("TERMINATED"))) {
+                    node->type = sm->type_boolean;
+                }
+                /* ADDRESS attribute returns SYSTEM.ADDRESS (RM 13.7.2) */
+                else if (Slice_Equal_Ignore_Case(attr, S("ADDRESS"))) {
+                    node->type = sm->type_address;
                 }
                 /* Default to integer for unhandled attributes */
                 else {
@@ -6639,7 +6698,18 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                     node->object_decl.is_constant ? SYMBOL_CONSTANT : SYMBOL_VARIABLE,
                     name_node->string_val.text,
                     name_node->location);
-                sym->type = node->object_decl.object_type ? node->object_decl.object_type->type : NULL;
+                /* For named numbers (constant without type mark), use init expression's type */
+                if (node->object_decl.object_type) {
+                    sym->type = node->object_decl.object_type->type;
+                    sym->is_named_number = false;
+                } else if (node->object_decl.is_constant && node->object_decl.init) {
+                    /* Named number: use universal type from init expression */
+                    sym->type = node->object_decl.init->type;
+                    sym->is_named_number = true;  /* Mark as named number for inline generation */
+                } else {
+                    sym->type = NULL;
+                    sym->is_named_number = node->object_decl.is_constant && !node->object_decl.object_type;
+                }
                 sym->declaration = node;
                 Symbol_Add(sm, sym);
                 name_node->symbol = sym;
@@ -7782,6 +7852,9 @@ typedef struct {
     /* Function exit tracking */
     bool          has_return;
 
+    /* Module header tracking for multi-unit files */
+    bool          header_emitted;
+
     /* Deferred nested subprogram bodies */
     Syntax_Node  *deferred_bodies[64];
     uint32_t      deferred_count;
@@ -7930,27 +8003,125 @@ static void Emit_Symbol_Ref(Code_Generator *cg, Symbol *sym) {
     Emit_Symbol_Name(cg, sym);
 }
 
-/* Parse LLVM integer type width: "i64"→64, "i32"→32, etc. */
+/* Parse LLVM type width: "i64"→64, "float"→32, "double"→64 */
 static inline int Type_Bits(const char *ty) {
-    return (ty[0] == 'i') ? atoi(ty + 1) : 64;
+    if (ty[0] == 'i') return atoi(ty + 1);
+    if (strcmp(ty, "float") == 0) return 32;
+    if (strcmp(ty, "double") == 0) return 64;
+    return 64;
 }
 
-/* Emit type conversion if needed (sext/trunc for integers) */
+/* Check if LLVM type is floating-point */
+static inline bool Is_Float_Type(const char *ty) {
+    return strcmp(ty, "float") == 0 || strcmp(ty, "double") == 0;
+}
+
+/* Check if expression produces boolean (i1) result directly.
+ * Only comparisons and logical operators produce i1 - loaded variables
+ * are widened to i64 even for BOOLEAN type. */
+static inline bool Expression_Is_Boolean(Syntax_Node *node) {
+    if (!node) return false;
+    if (node->kind == NK_BINARY_OP) {
+        switch (node->binary.op) {
+            case TK_EQ: case TK_NE: case TK_LT: case TK_LE: case TK_GT: case TK_GE:
+            case TK_AND: case TK_AND_THEN: case TK_OR: case TK_OR_ELSE: case TK_XOR:
+                return true;
+            default: break;
+        }
+    }
+    if (node->kind == NK_UNARY_OP && node->unary.op == TK_NOT) {
+        Type_Info *ty = node->unary.operand ? node->unary.operand->type : NULL;
+        if (ty && ty->kind == TYPE_BOOLEAN) return true;
+    }
+    /* Attributes that return boolean (i1) */
+    if (node->kind == NK_ATTRIBUTE) {
+        String_Slice attr = node->attribute.name;
+        if (Slice_Equal_Ignore_Case(attr, S("CONSTRAINED")) ||
+            Slice_Equal_Ignore_Case(attr, S("CALLABLE")) ||
+            Slice_Equal_Ignore_Case(attr, S("TERMINATED"))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Check if expression produces float result */
+static inline bool Expression_Is_Float(Syntax_Node *node) {
+    if (!node) return false;
+    /* Attributes that return floating-point (double) */
+    if (node->kind == NK_ATTRIBUTE) {
+        String_Slice attr = node->attribute.name;
+        if (Slice_Equal_Ignore_Case(attr, S("EPSILON")) ||
+            Slice_Equal_Ignore_Case(attr, S("SMALL")) ||
+            Slice_Equal_Ignore_Case(attr, S("LARGE")) ||
+            Slice_Equal_Ignore_Case(attr, S("SAFE_SMALL")) ||
+            Slice_Equal_Ignore_Case(attr, S("SAFE_LARGE")) ||
+            Slice_Equal_Ignore_Case(attr, S("DELTA"))) {
+            return true;
+        }
+        /* FIRST/LAST with float prefix type (not fixed-point) */
+        if (Slice_Equal_Ignore_Case(attr, S("FIRST")) ||
+            Slice_Equal_Ignore_Case(attr, S("LAST"))) {
+            Syntax_Node *prefix = node->attribute.prefix;
+            if (prefix && prefix->type &&
+                prefix->type->kind != TYPE_FIXED &&
+                (prefix->type->kind == TYPE_FLOAT ||
+                 prefix->type->kind == TYPE_UNIVERSAL_REAL ||
+                 prefix->type->low_bound.kind == BOUND_FLOAT)) {
+                return true;
+            }
+        }
+    }
+    /* Check node type for general float expressions */
+    if (node->type && (node->type->kind == TYPE_FLOAT ||
+                       node->type->kind == TYPE_UNIVERSAL_REAL)) {
+        return true;
+    }
+    return false;
+}
+
+/* Get LLVM type string for expression result */
+static inline const char *Expression_Llvm_Type(Syntax_Node *node) {
+    if (Expression_Is_Boolean(node)) return "i1";
+    if (Expression_Is_Float(node)) return "double";
+    return "i64";
+}
+
+/* Emit type conversion if needed */
 static uint32_t Emit_Convert(Code_Generator *cg, uint32_t src, const char *src_type,
                             const char *dst_type) {
     if (strcmp(src_type, dst_type) == 0) return src;
 
+    bool src_is_float = Is_Float_Type(src_type);
+    bool dst_is_float = Is_Float_Type(dst_type);
     int src_bits = Type_Bits(src_type), dst_bits = Type_Bits(dst_type);
-    if (src_bits == dst_bits) return src;
 
     uint32_t t = Emit_Temp(cg);
-    if (dst_bits > src_bits) {
-        Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", t, src_type, src, dst_type);
-    } else if (dst_bits == 1) {
-        /* Boolean: icmp ne 0 preserves semantics (any non-zero → true) */
-        Emit(cg, "  %%t%u = icmp ne %s %%t%u, 0\n", t, src_type, src);
+
+    if (src_is_float && dst_is_float) {
+        /* float ↔ double */
+        if (dst_bits > src_bits) {
+            Emit(cg, "  %%t%u = fpext %s %%t%u to %s\n", t, src_type, src, dst_type);
+        } else {
+            Emit(cg, "  %%t%u = fptrunc %s %%t%u to %s\n", t, src_type, src, dst_type);
+        }
+    } else if (src_is_float && !dst_is_float) {
+        /* float/double → integer */
+        Emit(cg, "  %%t%u = fptosi %s %%t%u to %s\n", t, src_type, src, dst_type);
+    } else if (!src_is_float && dst_is_float) {
+        /* integer → float/double */
+        Emit(cg, "  %%t%u = sitofp %s %%t%u to %s\n", t, src_type, src, dst_type);
     } else {
-        Emit(cg, "  %%t%u = trunc %s %%t%u to %s\n", t, src_type, src, dst_type);
+        /* integer conversions */
+        if (src_bits == dst_bits) return src;
+        if (dst_bits > src_bits) {
+            Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", t, src_type, src, dst_type);
+        } else if (dst_bits == 1) {
+            /* Boolean: icmp ne 0 preserves semantics (any non-zero → true) */
+            Emit(cg, "  %%t%u = icmp ne %s %%t%u, 0\n", t, src_type, src);
+        } else {
+            Emit(cg, "  %%t%u = trunc %s %%t%u to %s\n", t, src_type, src, dst_type);
+        }
     }
     return t;
 }
@@ -8238,7 +8409,7 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
 
                 /* Create fat pointer with bounds */
                 return Emit_Fat_Pointer(cg, data_ptr, low, high);
-            } else if (sym->kind == SYMBOL_CONSTANT && ty == NULL) {
+            } else if (sym->kind == SYMBOL_CONSTANT && sym->is_named_number) {
                 /* Named number (constant without explicit type) - evaluate initializer
                  * Named numbers in Ada are compile-time constants with no storage.
                  * Per RM 3.2.2: "A named number provides a name for a numeric value
@@ -8251,7 +8422,7 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                     /* Fallback if no initializer found */
                     Emit(cg, "  %%t%u = add i64 0, 0  ; named number without init\n", t);
                 }
-            } else if (sym->kind == SYMBOL_CONSTANT && ty != NULL) {
+            } else if (sym->kind == SYMBOL_CONSTANT && !sym->is_named_number) {
                 /* Typed constant - load value from storage like variable */
                 const char *type_str = Type_To_Llvm(ty);
                 Emit(cg, "  %%t%u = load %s, ptr ", t, type_str);
@@ -8310,7 +8481,7 @@ static uint32_t Generate_Record_Equality(Code_Generator *cg, uint32_t left_ptr,
 
         /* Compare */
         uint32_t cmp = Emit_Temp(cg);
-        if (Type_Is_Real(comp->component_type)) {
+        if (Type_Is_Float_Representation(comp->component_type)) {
             Emit(cg, "  %%t%u = fcmp oeq %s %%t%u, %%t%u\n",
                  cmp, comp_llvm_type, left_val, right_val);
         } else {
@@ -8592,17 +8763,35 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
 
         case TK_AND:
         case TK_AND_THEN:
-            /* Boolean AND: operands should be i1 (from comparisons) */
-            Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", t, left, right);
+            /* Boolean AND: convert operands to i1 (may have been widened from load) */
+            {
+                const char *left_llvm = Expression_Llvm_Type(node->binary.left);
+                const char *right_llvm = Expression_Llvm_Type(node->binary.right);
+                left = Emit_Convert(cg, left, left_llvm, "i1");
+                right = Emit_Convert(cg, right, right_llvm, "i1");
+                Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", t, left, right);
+            }
             return t;
         case TK_OR:
         case TK_OR_ELSE:
-            /* Boolean OR: operands should be i1 */
-            Emit(cg, "  %%t%u = or i1 %%t%u, %%t%u\n", t, left, right);
+            /* Boolean OR: convert operands to i1 */
+            {
+                const char *left_llvm = Expression_Llvm_Type(node->binary.left);
+                const char *right_llvm = Expression_Llvm_Type(node->binary.right);
+                left = Emit_Convert(cg, left, left_llvm, "i1");
+                right = Emit_Convert(cg, right, right_llvm, "i1");
+                Emit(cg, "  %%t%u = or i1 %%t%u, %%t%u\n", t, left, right);
+            }
             return t;
         case TK_XOR:
-            /* Boolean XOR: operands should be i1 */
-            Emit(cg, "  %%t%u = xor i1 %%t%u, %%t%u\n", t, left, right);
+            /* Boolean XOR: convert operands to i1 */
+            {
+                const char *left_llvm = Expression_Llvm_Type(node->binary.left);
+                const char *right_llvm = Expression_Llvm_Type(node->binary.right);
+                left = Emit_Convert(cg, left, left_llvm, "i1");
+                right = Emit_Convert(cg, right, right_llvm, "i1");
+                Emit(cg, "  %%t%u = xor i1 %%t%u, %%t%u\n", t, left, right);
+            }
             return t;
 
         case TK_EQ:
@@ -8679,7 +8868,12 @@ static uint32_t Generate_Unary_Op(Code_Generator *cg, Syntax_Node *node) {
         case TK_PLUS:
             return operand;
         case TK_NOT:
-            Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n", t, operand);
+            {
+                /* Convert operand to i1 if needed (loaded booleans are widened to i64) */
+                const char *op_type = Expression_Llvm_Type(node->unary.operand);
+                operand = Emit_Convert(cg, operand, op_type, "i1");
+                Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n", t, operand);
+            }
             break;
         case TK_ABS:
             {
@@ -8976,6 +9170,12 @@ static int64_t Type_Bound_Value(Type_Bound b) {
     return 0;  /* Handle other bound kinds as needed */
 }
 
+static double Type_Bound_Float_Value(Type_Bound b) {
+    if (b.kind == BOUND_FLOAT) return b.float_value;
+    if (b.kind == BOUND_INTEGER) return (double)b.int_value;
+    return 0.0;
+}
+
 /* Get array element count for constrained arrays, 0 for unconstrained */
 static int64_t Array_Element_Count(Type_Info *t) {
     if (!t || t->kind != TYPE_ARRAY || !t->array.is_constrained)
@@ -9018,6 +9218,12 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
 
     bool needs_runtime_bounds = false;
     Symbol *prefix_sym = node->attribute.prefix->symbol;
+
+    /* If prefix type is NULL but we have a symbol (e.g., package.type'FIRST),
+     * get the type from the symbol instead */
+    if (!prefix_type && prefix_sym && prefix_sym->type) {
+        prefix_type = prefix_sym->type;
+    }
     if (prefix_type && Type_Is_Unconstrained_Array(prefix_type) &&
         prefix_sym && (prefix_sym->kind == SYMBOL_PARAMETER ||
                        prefix_sym->kind == SYMBOL_VARIABLE)) {
@@ -9038,9 +9244,21 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                      (long long)Type_Bound_Value(prefix_type->array.indices[dim].low_bound),
                      (int)attr.length, attr.data, dim + 1);
             }
+        } else if (prefix_type && prefix_type->kind != TYPE_FIXED &&
+                   (prefix_type->kind == TYPE_FLOAT ||
+                    prefix_type->kind == TYPE_UNIVERSAL_REAL ||
+                    prefix_type->low_bound.kind == BOUND_FLOAT)) {
+            /* Floating-point type - return double (not fixed-point) */
+            Emit(cg, "  %%t%u = fadd double 0.0, %e  ; %.*s'FIRST\n", t,
+                 Type_Bound_Float_Value(prefix_type->low_bound),
+                 (int)attr.length, attr.data);
         } else if (prefix_type) {
             Emit(cg, "  %%t%u = add i64 0, %lld  ; %.*s'FIRST\n", t,
                  (long long)Type_Bound_Value(prefix_type->low_bound),
+                 (int)attr.length, attr.data);
+        } else {
+            /* Fallback: prefix_type is NULL - emit 0 */
+            Emit(cg, "  %%t%u = add i64 0, 0  ; %.*s'FIRST (no type)\n", t,
                  (int)attr.length, attr.data);
         }
         return t;
@@ -9056,9 +9274,21 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                      (long long)Type_Bound_Value(prefix_type->array.indices[dim].high_bound),
                      (int)attr.length, attr.data, dim + 1);
             }
+        } else if (prefix_type && prefix_type->kind != TYPE_FIXED &&
+                   (prefix_type->kind == TYPE_FLOAT ||
+                    prefix_type->kind == TYPE_UNIVERSAL_REAL ||
+                    prefix_type->high_bound.kind == BOUND_FLOAT)) {
+            /* Floating-point type - return double (not fixed-point) */
+            Emit(cg, "  %%t%u = fadd double 0.0, %e  ; %.*s'LAST\n", t,
+                 Type_Bound_Float_Value(prefix_type->high_bound),
+                 (int)attr.length, attr.data);
         } else if (prefix_type) {
             Emit(cg, "  %%t%u = add i64 0, %lld  ; %.*s'LAST\n", t,
                  (long long)Type_Bound_Value(prefix_type->high_bound),
+                 (int)attr.length, attr.data);
+        } else {
+            /* Fallback: prefix_type is NULL - emit 0 */
+            Emit(cg, "  %%t%u = add i64 0, 0  ; %.*s'LAST (no type)\n", t,
                  (int)attr.length, attr.data);
         }
         return t;
@@ -9371,6 +9601,114 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         } else {
             Emit(cg, "  %%t%u = add i64 0, 0\n", t);
         }
+        return t;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────────
+     * Floating-Point Type Attributes (RM 3.5.8)
+     * These attributes return compile-time values for floating-point types.
+     * ───────────────────────────────────────────────────────────────────── */
+
+    if (Slice_Equal_Ignore_Case(attr, S("DIGITS"))) {
+        /* T'DIGITS - number of significant decimal digits (universal integer) */
+        int64_t digits = 15;  /* Default for double precision (8 bytes) */
+        if (prefix_type && prefix_type->size <= 4) {
+            digits = 6;  /* Single precision float */
+        }
+        Emit(cg, "  %%t%u = add i64 0, %lld  ; 'DIGITS\n", t, (long long)digits);
+        return t;
+    }
+
+    if (Slice_Equal_Ignore_Case(attr, S("MANTISSA"))) {
+        /* T'MANTISSA - number of binary digits in mantissa (universal integer) */
+        int64_t mantissa = 52;  /* IEEE double precision */
+        Emit(cg, "  %%t%u = add i64 0, %lld  ; 'MANTISSA\n", t, (long long)mantissa);
+        return t;
+    }
+
+    if (Slice_Equal_Ignore_Case(attr, S("EMAX"))) {
+        /* T'EMAX - maximum binary exponent (universal integer) */
+        int64_t emax = 1023;  /* IEEE double precision */
+        Emit(cg, "  %%t%u = add i64 0, %lld  ; 'EMAX\n", t, (long long)emax);
+        return t;
+    }
+
+    if (Slice_Equal_Ignore_Case(attr, S("SAFE_EMAX"))) {
+        /* T'SAFE_EMAX - safe maximum exponent (universal integer) */
+        int64_t safe_emax = 1021;  /* Conservative for IEEE double */
+        Emit(cg, "  %%t%u = add i64 0, %lld  ; 'SAFE_EMAX\n", t, (long long)safe_emax);
+        return t;
+    }
+
+    if (Slice_Equal_Ignore_Case(attr, S("EPSILON"))) {
+        /* T'EPSILON - machine epsilon (universal real) */
+        /* For double precision: 2^-52 ≈ 2.220446049250313e-16 */
+        Emit(cg, "  %%t%u = fadd double 0.0, 0x3CB0000000000000  ; 'EPSILON (2^-52)\n", t);
+        return t;
+    }
+
+    if (Slice_Equal_Ignore_Case(attr, S("SMALL"))) {
+        /* T'SMALL - smallest positive model number (universal real) */
+        /* For double precision: 2^-1022 ≈ 2.2250738585072014e-308 */
+        Emit(cg, "  %%t%u = fadd double 0.0, 0x0010000000000000  ; 'SMALL (2^-1022)\n", t);
+        return t;
+    }
+
+    if (Slice_Equal_Ignore_Case(attr, S("LARGE"))) {
+        /* T'LARGE - largest model number (universal real) */
+        /* For double precision: approximately 1.7976931348623157e+308 */
+        Emit(cg, "  %%t%u = fadd double 0.0, 0x7FEFFFFFFFFFFFFF  ; 'LARGE\n", t);
+        return t;
+    }
+
+    if (Slice_Equal_Ignore_Case(attr, S("SAFE_SMALL"))) {
+        /* T'SAFE_SMALL - safe minimum value (universal real) */
+        Emit(cg, "  %%t%u = fadd double 0.0, 0x0040000000000000  ; 'SAFE_SMALL (2^-1021)\n", t);
+        return t;
+    }
+
+    if (Slice_Equal_Ignore_Case(attr, S("SAFE_LARGE"))) {
+        /* T'SAFE_LARGE - safe maximum value (universal real) */
+        Emit(cg, "  %%t%u = fadd double 0.0, 0x7FD0000000000000  ; 'SAFE_LARGE (2^1021)\n", t);
+        return t;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────────
+     * Fixed-Point Type Attributes (RM 3.5.9)
+     * ───────────────────────────────────────────────────────────────────── */
+
+    if (Slice_Equal_Ignore_Case(attr, S("DELTA"))) {
+        /* T'DELTA - delta for fixed-point type (universal real) */
+        double delta = 1.0;
+        if (prefix_type && prefix_type->kind == TYPE_FIXED) {
+            delta = prefix_type->fixed.delta > 0 ? prefix_type->fixed.delta : 1.0;
+        }
+        Emit(cg, "  %%t%u = fadd double 0.0, %e  ; 'DELTA\n", t, delta);
+        return t;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────────
+     * Object Attributes (RM 3.7.1, 9.9)
+     * ───────────────────────────────────────────────────────────────────── */
+
+    if (Slice_Equal_Ignore_Case(attr, S("CONSTRAINED"))) {
+        /* X'CONSTRAINED - is the object constrained? (RM 3.7.1)
+         * Returns TRUE if object has discriminant constraints, FALSE otherwise.
+         * For now, assume objects without explicit constraints are unconstrained
+         * (this is a simplification - full implementation would track constraints) */
+        Emit(cg, "  %%t%u = add i1 0, 1  ; 'CONSTRAINED (assume true)\n", t);
+        return t;
+    }
+
+    if (Slice_Equal_Ignore_Case(attr, S("CALLABLE"))) {
+        /* T'CALLABLE - is the task callable? (RM 9.9) */
+        Emit(cg, "  %%t%u = add i1 0, 1  ; 'CALLABLE (assume true)\n", t);
+        return t;
+    }
+
+    if (Slice_Equal_Ignore_Case(attr, S("TERMINATED"))) {
+        /* T'TERMINATED - has the task terminated? (RM 9.9) */
+        Emit(cg, "  %%t%u = add i1 0, 0  ; 'TERMINATED (assume false)\n", t);
         return t;
     }
 
@@ -9734,7 +10072,8 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
 
             /* Generate value and store */
             uint32_t value = Generate_Expression(cg, node->assignment.value);
-            value = Emit_Convert(cg, value, "i64", elem_type);
+            const char *value_type = Expression_Llvm_Type(node->assignment.value);
+            value = Emit_Convert(cg, value, value_type, elem_type);
             Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, value, ptr);
             return;
         }
@@ -9772,7 +10111,8 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
 
             /* Generate value and store */
             uint32_t value = Generate_Expression(cg, node->assignment.value);
-            value = Emit_Convert(cg, value, "i64", comp_llvm_type);
+            const char *value_type = Expression_Llvm_Type(node->assignment.value);
+            value = Emit_Convert(cg, value, value_type, comp_llvm_type);
             Emit(cg, "  store %s %%t%u, ptr %%t%u\n", comp_llvm_type, value, field_ptr);
             return;
         }
@@ -9821,7 +10161,13 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
         Emit(cg, "  %%t%u = sitofp i64 %%t%u to double\n", t, value);
         value = t;
     } else if (is_src_float && is_dst_float) {
-        /* Float to float: no conversion needed, both are double */
+        /* Float to float: may need conversion if sizes differ
+         * Source expressions generate double, target may be float (32-bit) */
+        const char *src_ftype = "double";  /* expression result is always double */
+        const char *dst_ftype = type_str;  /* actual storage type */
+        if (strcmp(src_ftype, dst_ftype) != 0) {
+            value = Emit_Convert(cg, value, src_ftype, dst_ftype);
+        }
     } else {
         /* Integer to integer: truncate from i64 to actual storage type */
         value = Emit_Convert(cg, value, "i64", type_str);
@@ -9847,8 +10193,9 @@ static void Generate_If_Statement(Code_Generator *cg, Syntax_Node *node) {
     uint32_t else_label = Emit_Label(cg);
     uint32_t end_label = Emit_Label(cg);
 
-    /* Truncate condition to i1 for branch (expression may have widened to i64) */
-    cond = Emit_Convert(cg, cond, "i64", "i1");
+    /* Convert condition to i1 for branch (use actual expression type) */
+    const char *cond_type = Expression_Llvm_Type(node->if_stmt.condition);
+    cond = Emit_Convert(cg, cond, cond_type, "i1");
     Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cond, then_label, else_label);
 
     Emit(cg, "L%u:\n", then_label);
@@ -9881,8 +10228,10 @@ static void Generate_Loop_Statement(Code_Generator *cg, Syntax_Node *node) {
     if (node->loop_stmt.iteration_scheme &&
         node->loop_stmt.iteration_scheme->kind != NK_BINARY_OP) {
         /* WHILE loop */
-        uint32_t cond = Generate_Expression(cg, node->loop_stmt.iteration_scheme);
-        cond = Emit_Convert(cg, cond, "i64", "i1");
+        Syntax_Node *scheme = node->loop_stmt.iteration_scheme;
+        uint32_t cond = Generate_Expression(cg, scheme);
+        const char *cond_type = Expression_Llvm_Type(scheme);
+        cond = Emit_Convert(cg, cond, cond_type, "i1");
         Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cond, loop_body, loop_end);
     } else {
         Emit(cg, "  br label %%L%u\n", loop_body);
@@ -9901,28 +10250,13 @@ static void Generate_Loop_Statement(Code_Generator *cg, Syntax_Node *node) {
 static void Generate_Return_Statement(Code_Generator *cg, Syntax_Node *node) {
     cg->has_return = true;
     if (node->return_stmt.expression) {
-        uint32_t value = Generate_Expression(cg, node->return_stmt.expression);
+        Syntax_Node *expr = node->return_stmt.expression;
+        uint32_t value = Generate_Expression(cg, expr);
         const char *type_str = cg->current_function && cg->current_function->return_type
             ? Type_To_Llvm(cg->current_function->return_type) : "i64";
-        /* For boolean returns (i1), check if expression is already i1 (comparison)
-         * or needs conversion from i64 (loaded/computed value) */
-        if (strcmp(type_str, "i1") == 0) {
-            Syntax_Node *expr = node->return_stmt.expression;
-            bool is_comparison = (expr->kind == NK_BINARY_OP &&
-                                  (expr->binary.op == TK_EQ || expr->binary.op == TK_NE ||
-                                   expr->binary.op == TK_LT || expr->binary.op == TK_LE ||
-                                   expr->binary.op == TK_GT || expr->binary.op == TK_GE ||
-                                   expr->binary.op == TK_AND || expr->binary.op == TK_OR ||
-                                   expr->binary.op == TK_XOR)) ||
-                                 (expr->kind == NK_UNARY_OP && expr->unary.op == TK_NOT);
-            if (!is_comparison) {
-                /* Loaded booleans were widened to i64, truncate back */
-                value = Emit_Convert(cg, value, "i64", "i1");
-            }
-        } else {
-            /* Truncate from i64 computation to actual return type */
-            value = Emit_Convert(cg, value, "i64", type_str);
-        }
+        /* Convert from expression type to return type */
+        const char *expr_type = Expression_Llvm_Type(expr);
+        value = Emit_Convert(cg, value, expr_type, type_str);
         Emit(cg, "  ret %s %%t%u\n", type_str, value);
     } else {
         Emit(cg, "  ret void\n");
@@ -10402,8 +10736,10 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
 
         case NK_EXIT:
             if (node->exit_stmt.condition) {
-                uint32_t cond = Generate_Expression(cg, node->exit_stmt.condition);
-                cond = Emit_Convert(cg, cond, "i64", "i1");
+                Syntax_Node *exit_cond = node->exit_stmt.condition;
+                uint32_t cond = Generate_Expression(cg, exit_cond);
+                const char *cond_type = Expression_Llvm_Type(exit_cond);
+                cond = Emit_Convert(cg, cond, cond_type, "i1");
                 uint32_t cont = Emit_Label(cg);
                 Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
                      cond, cg->loop_exit_label, cont);
@@ -10510,9 +10846,10 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                         case NK_ASSOCIATION:
                             /* Guarded alternative: WHEN cond => stmt */
                             {
-                                uint32_t guard = Generate_Expression(cg,
-                                    alt->association.choices.items[0]);
-                                guard = Emit_Convert(cg, guard, "i64", "i1");
+                                Syntax_Node *guard_expr = alt->association.choices.items[0];
+                                uint32_t guard = Generate_Expression(cg, guard_expr);
+                                const char *guard_type = Expression_Llvm_Type(guard_expr);
+                                guard = Emit_Convert(cg, guard, guard_type, "i1");
                                 Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
                                      guard, cg->label_id, next_label);
                                 Emit(cg, "L%u:\n", cg->label_id++);
@@ -10651,7 +10988,7 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
         /* Named numbers (constants without explicit type) don't need storage.
          * They are compile-time values that get inlined when referenced.
          * Per RM 3.2.2: Named numbers are not objects and have no storage. */
-        if (node->object_decl.is_constant && ty == NULL) {
+        if (sym->is_named_number) {
             continue;  /* Skip storage allocation for named numbers */
         }
 
@@ -10740,9 +11077,32 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, ", ptr %%t%u, i64 %u, i1 false)\n", agg_ptr, record_size);
             } else if (!is_array && !is_record) {
                 uint32_t init = Generate_Expression(cg, node->object_decl.init);
-                /* Truncate from i64 computation to storage type */
-                init = Emit_Convert(cg, init, "i64", type_str);
-                Emit(cg, "  store %s %%t%u, ptr %%", type_str, init);
+                /* Determine source type from init expression */
+                Type_Info *init_type = node->object_decl.init->type;
+                bool init_is_float = init_type && (init_type->kind == TYPE_FLOAT ||
+                                                    init_type->kind == TYPE_UNIVERSAL_REAL);
+                bool target_is_float = ty && ty->kind == TYPE_FLOAT;
+                const char *src_type_str = init_is_float ? "double" : "i64";
+
+                /* Handle float-to-float, int-to-float, float-to-int, int-to-int conversions */
+                if (target_is_float && init_is_float) {
+                    /* Both are float - direct store */
+                    Emit(cg, "  store double %%t%u, ptr %%", init);
+                } else if (target_is_float && !init_is_float) {
+                    /* Convert i64 to float */
+                    uint32_t conv = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = sitofp i64 %%t%u to double\n", conv, init);
+                    Emit(cg, "  store double %%t%u, ptr %%", conv);
+                } else if (!target_is_float && init_is_float) {
+                    /* Convert float to int */
+                    uint32_t conv = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = fptosi double %%t%u to %s\n", conv, init, type_str);
+                    Emit(cg, "  store %s %%t%u, ptr %%", type_str, conv);
+                } else {
+                    /* Both are int - convert from i64 to target type */
+                    init = Emit_Convert(cg, init, src_type_str, type_str);
+                    Emit(cg, "  store %s %%t%u, ptr %%", type_str, init);
+                }
                 Emit_Symbol_Name(cg, sym);
                 Emit(cg, "\n");
             }
@@ -11366,7 +11726,7 @@ static void Generate_Type_Equality_Function(Code_Generator *cg, Type_Info *t) {
 
                 /* Compare */
                 uint32_t cmp = Emit_Temp(cg);
-                if (Type_Is_Real(comp->component_type)) {
+                if (Type_Is_Float_Representation(comp->component_type)) {
                     Emit(cg, "  %%t%u = fcmp oeq %s %%t%u, %%t%u\n",
                          cmp, comp_llvm_type, left_val, right_val);
                 } else {
@@ -11577,7 +11937,8 @@ static void Generate_Extern_Declarations(Code_Generator *cg, Syntax_Node *node) 
 static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     if (!node) return;
 
-    /* Generate LLVM module header */
+    /* Generate LLVM module header (only once per file) */
+    if (!cg->header_emitted) {
     Emit(cg, "; Ada83 Compiler Output\n");
     Emit(cg, "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128\"\n");
     Emit(cg, "target triple = \"x86_64-pc-linux-gnu\"\n\n");
@@ -12085,6 +12446,9 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Generate_Implicit_Operators(cg);
     Emit(cg, "\n");
 
+    cg->header_emitted = true;
+    }  /* End of header emission block */
+
     /* Generate extern declarations for WITH'd packages */
     Generate_Extern_Declarations(cg, node);
 
@@ -12384,9 +12748,14 @@ static void Compile_File(const char *input_path, const char *output_path) {
         return;
     }
 
-    /* Parse */
+    /* Parse all compilation units in the file */
     Parser parser = Parser_New(source, source_size, input_path);
-    Syntax_Node *unit = Parse_Compilation_Unit(&parser);
+    Syntax_Node *units[64];
+    int unit_count = 0;
+
+    while (parser.current_token.kind != TK_EOF && unit_count < 64 && !parser.had_error) {
+        units[unit_count++] = Parse_Compilation_Unit(&parser);
+    }
 
     if (parser.had_error) {
         fprintf(stderr, "Parsing failed with %d error(s)\n", Error_Count);
@@ -12394,9 +12763,11 @@ static void Compile_File(const char *input_path, const char *output_path) {
         return;
     }
 
-    /* Semantic analysis */
+    /* Semantic analysis for all units */
     Symbol_Manager *sm = Symbol_Manager_New();
-    Resolve_Compilation_Unit(sm, unit);
+    for (int i = 0; i < unit_count; i++) {
+        Resolve_Compilation_Unit(sm, units[i]);
+    }
 
     if (Error_Count > 0) {
         fprintf(stderr, "Semantic analysis failed with %d error(s)\n", Error_Count);
@@ -12421,7 +12792,9 @@ static void Compile_File(const char *input_path, const char *output_path) {
     }
 
     Code_Generator *cg = Code_Generator_New(out_file, sm);
-    Generate_Compilation_Unit(cg, unit);
+    for (int i = 0; i < unit_count; i++) {
+        Generate_Compilation_Unit(cg, units[i]);
+    }
 
     if (close_output) {
         fclose(out_file);
