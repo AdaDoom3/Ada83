@@ -102,7 +102,7 @@ static inline uint64_t To_Bytes(uint64_t bits)  { return (bits + Bits_Per_Unit -
 static inline uint64_t Byte_Align(uint64_t bits){ return To_Bits(To_Bytes(bits)); }
 
 /* Align size up to power-of-2 alignment boundary */
-static inline uint32_t Align_To(uint32_t size, uint32_t align) {
+static inline size_t Align_To(size_t size, size_t align) {
     return align ? ((size + align - 1) & ~(align - 1)) : size;
 }
 
@@ -253,8 +253,8 @@ __attribute__((unused))
 static int Edit_Distance(String_Slice a, String_Slice b) {
     if (a.length > 20 || b.length > 20) return 100;
     int d[21][21];
-    for (uint32_t i = 0; i <= a.length; i++) d[i][0] = i;
-    for (uint32_t j = 0; j <= b.length; j++) d[0][j] = j;
+    for (uint32_t i = 0; i <= a.length; i++) d[i][0] = (int)i;
+    for (uint32_t j = 0; j <= b.length; j++) d[0][j] = (int)j;
     for (uint32_t i = 1; i <= a.length; i++)
         for (uint32_t j = 1; j <= b.length; j++) {
             int cost = To_Lower(a.data[i-1]) != To_Lower(b.data[j-1]);
@@ -298,8 +298,8 @@ static void Report_Error(Source_Location loc, const char *format, ...) {
     Error_Count++;
 }
 
-__attribute__((unused))
-static _Noreturn void Fatal_Error(Source_Location loc, const char *format, ...) {
+__attribute__((unused, noreturn))
+static void Fatal_Error(Source_Location loc, const char *format, ...) {
     va_list args;
     va_start(args, format);
     fprintf(stderr, "%s:%u:%u: INTERNAL ERROR: ",
@@ -378,7 +378,7 @@ static Big_Integer *Big_Integer_From_Decimal(const char *str) {
     while (*str) {
         if (*str >= '0' && *str <= '9') {
             if (bi->count == 0) { bi->limbs[0] = 0; bi->count = 1; }
-            Big_Integer_Mul_Add_Small(bi, 10, *str - '0');
+            Big_Integer_Mul_Add_Small(bi, 10, (uint64_t)(*str - '0'));
         }
         str++;
     }
@@ -583,7 +583,7 @@ static Token Scan_Identifier(Lexer *lex) {
     while (Is_Alnum(Lexer_Peek(lex, 0)) || Lexer_Peek(lex, 0) == '_')
         Lexer_Advance(lex);
 
-    String_Slice text = {start, lex->current - start};
+    String_Slice text = {start, (uint32_t)(lex->current - start)};
     Token_Kind kind = Lookup_Keyword(text);
     return Make_Token(kind, loc, text);
 }
@@ -600,7 +600,7 @@ static Token Scan_Number(Lexer *lex) {
     Source_Location loc = {lex->filename, lex->line, lex->column};
     const char *start = lex->current;
     int base = 10;
-    bool is_real = false, has_exponent = false;
+    bool is_real = false, has_exponent = false, is_based = false;
 
     /* Scan integer part (possibly base specifier) */
     while (Is_Digit(Lexer_Peek(lex, 0)) || Lexer_Peek(lex, 0) == '_')
@@ -609,6 +609,7 @@ static Token Scan_Number(Lexer *lex) {
     /* Based literal: 16#FFFF# or 2#1010# */
     if (Lexer_Peek(lex, 0) == '#' ||
         (Lexer_Peek(lex, 0) == ':' && Is_Xdigit(Lexer_Peek(lex, 1)))) {
+        is_based = true;
         char delim = Lexer_Peek(lex, 0);
 
         /* Parse base from what we've scanned so far */
@@ -652,7 +653,7 @@ static Token Scan_Number(Lexer *lex) {
 
         if (To_Lower(Lexer_Peek(lex, 0)) == 'e') {
             has_exponent = true;
-            is_real = is_real || true; /* E without dot is still considered for real context */
+            /* Note: exponent alone doesn't make it real - 12E1 is integer 120 */
             Lexer_Advance(lex);
             if (Lexer_Peek(lex, 0) == '+' || Lexer_Peek(lex, 0) == '-')
                 Lexer_Advance(lex);
@@ -661,7 +662,7 @@ static Token Scan_Number(Lexer *lex) {
         }
     }
 
-    String_Slice text = {start, lex->current - start};
+    String_Slice text = {start, (uint32_t)(lex->current - start)};
     Token tok = Make_Token(is_real ? TK_REAL : TK_INTEGER, loc, text);
 
     /* Convert to value: strip underscores, parse with base */
@@ -672,24 +673,97 @@ static Token Scan_Number(Lexer *lex) {
     clean[ci] = '\0';
 
     if (is_real) {
-        tok.float_value = strtod(clean, NULL);
-        if (base != 10) {
-            /* Based real: compute manually (simplified) */
-            /* Full implementation would parse mantissa in base, apply exponent */
+        if (!is_based) {
+            tok.float_value = strtod(clean, NULL);
+        } else {
+            /* Based real: parse mantissa in base, apply exponent as power of base */
+            /* Format: base#integer.fraction#exponent */
+            double value = 0.0;
+            double frac_mult = 1.0 / base;
+            int exp = 0;
+            int state = 0; /* 0=skip base, 1=integer, 2=fraction, 3=exponent */
+            bool exp_neg = false;
+            for (const char *p = start; p < lex->current; p++) {
+                char c = *p;
+                if (c == '_') continue;
+                if (c == '#' || c == ':') { state++; continue; }
+                if (c == '.') { state = 2; continue; }
+                if (To_Lower(c) == 'e') { state = 3; continue; }
+                if (state == 1) {
+                    int d = Digit_Value(c);
+                    if (d >= 0 && d < base) value = value * base + d;
+                } else if (state == 2) {
+                    int d = Digit_Value(c);
+                    if (d >= 0 && d < base) { value += d * frac_mult; frac_mult /= base; }
+                } else if (state == 3) {
+                    if (c == '-') exp_neg = true;
+                    else if (c == '+') continue;
+                    else if (Is_Digit(c)) exp = exp * 10 + (c - '0');
+                }
+            }
+            if (exp_neg) exp = -exp;
+            for (int i = 0; i < (exp > 0 ? exp : -exp); i++)
+                value = exp > 0 ? value * base : value / base;
+            tok.float_value = value;
         }
     } else {
-        if (base == 10 && !has_exponent) {
+        if (!is_based && !has_exponent) {
             tok.big_integer = Big_Integer_From_Decimal(clean);
             int64_t v;
             if (Big_Integer_Fits_Int64(tok.big_integer, &v))
                 tok.integer_value = v;
-        } else {
-            /* Based integer: parse in given base */
-            int64_t value = 0;
+        } else if (!is_based && has_exponent) {
+            /* Decimal integer with exponent (e.g., 12E1 = 120) */
+            int64_t mantissa = 0;
+            int exp = 0;
+            bool in_exp = false;
+            bool exp_neg = false;
             for (int i = 0; clean[i]; i++) {
-                int d = Digit_Value(clean[i]);
-                if (d >= 0 && d < base) value = value * base + d;
+                char c = clean[i];
+                if (To_Lower(c) == 'e') {
+                    in_exp = true;
+                } else if (in_exp) {
+                    if (c == '-') exp_neg = true;
+                    else if (c == '+') continue;
+                    else if (Is_Digit(c)) exp = exp * 10 + (c - '0');
+                } else if (Is_Digit(c)) {
+                    mantissa = mantissa * 10 + (c - '0');
+                }
             }
+            if (exp_neg) {
+                /* Negative exponent in integer literal is unusual but handle it */
+                for (int i = 0; i < exp; i++) mantissa /= 10;
+            } else {
+                for (int i = 0; i < exp; i++) mantissa *= 10;
+            }
+            tok.integer_value = mantissa;
+        } else {
+            /* Based integer: parse from original string (e.g., 16#E#E1 = 14*16 = 224) */
+            /* Structure: base#mantissa#exponent or base#mantissa# */
+            int64_t value = 0;
+            int exp = 0;
+            int state = 0; /* 0=base, 1=mantissa, 2=exponent */
+            for (const char *p = start; p < lex->current; p++) {
+                char c = *p;
+                if (c == '_') continue;
+                if (c == '#' || c == ':') {
+                    state++;
+                    continue;
+                }
+                if (state == 0) {
+                    /* Skip base part - already parsed */
+                } else if (state == 1) {
+                    /* Mantissa in given base */
+                    int d = Digit_Value(c);
+                    if (d >= 0 && d < base) value = value * base + d;
+                } else if (state == 2) {
+                    /* Exponent (always decimal, after second delimiter) */
+                    if (To_Lower(c) == 'e') continue; /* skip the 'e' marker */
+                    if (c == '+') continue;
+                    if (Is_Digit(c)) exp = exp * 10 + (c - '0');
+                }
+            }
+            for (int i = 0; i < exp; i++) value *= base;
             tok.integer_value = value;
         }
     }
@@ -749,7 +823,7 @@ static Token Scan_String_Literal(Lexer *lex) {
     }
     buffer[length] = '\0';
 
-    Token tok = Make_Token(TK_STRING, loc, (String_Slice){buffer, length});
+    Token tok = Make_Token(TK_STRING, loc, (String_Slice){buffer, (uint32_t)length});
     return tok;
 }
 
@@ -774,10 +848,15 @@ static Token Lexer_Next_Token(Lexer *lex) {
 
     /* Character literal: 'X' where X is any graphic character */
     /* Need to check for printable character (not just alpha) since '1' etc. are valid */
+    /* Special case: ''' is a character literal containing single quote */
     {
         char middle = Lexer_Peek(lex, 1);
-        if (c == '\'' && middle != '\'' && middle >= ' ' && Lexer_Peek(lex, 2) == '\'')
+        char third = Lexer_Peek(lex, 2);
+        if (c == '\'' && middle >= ' ' && third == '\'') {
+            /* Check it's not something like FOO''ATTR (two ticks in a row) */
+            /* For ''', the middle is ', and it's a valid character literal */
             return Scan_Character_Literal(lex);
+        }
     }
 
     /* String literal */
@@ -796,6 +875,7 @@ static Token Lexer_Next_Token(Lexer *lex) {
         case ';': return Make_Token(TK_SEMICOLON, loc, S(";"));
         case '&': return Make_Token(TK_AMPERSAND, loc, S("&"));
         case '|': return Make_Token(TK_BAR, loc, S("|"));
+        case '!': return Make_Token(TK_BAR, loc, S("!"));  /* Ada 83 alternative for | */
         case '+': return Make_Token(TK_PLUS, loc, S("+"));
         case '-': return Make_Token(TK_MINUS, loc, S("-"));
         case '\'': return Make_Token(TK_TICK, loc, S("'"));
@@ -885,7 +965,8 @@ typedef enum {
 
     /* Type definitions */
     NK_SUBTYPE_INDICATION, NK_RANGE_CONSTRAINT, NK_INDEX_CONSTRAINT,
-    NK_DISCRIMINANT_CONSTRAINT, NK_ARRAY_TYPE, NK_RECORD_TYPE,
+    NK_DISCRIMINANT_CONSTRAINT, NK_DIGITS_CONSTRAINT, NK_DELTA_CONSTRAINT,
+    NK_ARRAY_TYPE, NK_RECORD_TYPE,
     NK_ACCESS_TYPE, NK_DERIVED_TYPE, NK_ENUMERATION_TYPE,
     NK_INTEGER_TYPE, NK_REAL_TYPE, NK_COMPONENT_DECL, NK_VARIANT_PART,
     NK_VARIANT, NK_DISCRIMINANT_SPEC,
@@ -937,8 +1018,8 @@ struct Syntax_Node {
         /* NK_SELECTED: prefix.selector */
         struct { Syntax_Node *prefix; String_Slice selector; } selected;
 
-        /* NK_ATTRIBUTE: prefix'attribute(arg) */
-        struct { Syntax_Node *prefix; String_Slice name; Syntax_Node *argument; } attribute;
+        /* NK_ATTRIBUTE: prefix'attribute(args) */
+        struct { Syntax_Node *prefix; String_Slice name; Node_List arguments; } attribute;
 
         /* NK_QUALIFIED: subtype_mark'(expression) */
         struct { Syntax_Node *subtype_mark; Syntax_Node *expression; } qualified;
@@ -969,6 +1050,8 @@ struct Syntax_Node {
         struct { Node_List ranges; } index_constraint;
         struct { Syntax_Node *range; } range_constraint;
         struct { Node_List associations; } discriminant_constraint;
+        struct { Syntax_Node *digits_expr; Syntax_Node *range; } digits_constraint;  /* NK_DIGITS_CONSTRAINT */
+        struct { Syntax_Node *delta_expr; Syntax_Node *range; } delta_constraint;    /* NK_DELTA_CONSTRAINT */
 
         /* NK_ARRAY_TYPE */
         struct { Node_List indices; Syntax_Node *component_type; bool is_constrained; } array_type;
@@ -1083,14 +1166,15 @@ struct Syntax_Node {
             bool is_private;
         } type_decl;
 
-        /* NK_EXCEPTION_DECL */
-        struct { Node_List names; } exception_decl;
+        /* NK_EXCEPTION_DECL, NK_EXCEPTION_RENAMING */
+        struct { Node_List names; Syntax_Node *renamed; } exception_decl;
 
-        /* NK_PROCEDURE_SPEC, NK_FUNCTION_SPEC */
+        /* NK_PROCEDURE_SPEC, NK_FUNCTION_SPEC, NK_SUBPROGRAM_RENAMING */
         struct {
             String_Slice name;
             Node_List parameters;
             Syntax_Node *return_type;  /* NULL for procedures */
+            Syntax_Node *renamed;      /* For NK_SUBPROGRAM_RENAMING: the renamed entity */
         } subprogram_spec;
 
         /* NK_PROCEDURE_BODY, NK_FUNCTION_BODY */
@@ -1117,6 +1201,12 @@ struct Syntax_Node {
             Node_List handlers;
             bool is_separate;
         } package_body;
+
+        /* NK_PACKAGE_RENAMING */
+        struct {
+            String_Slice new_name;
+            Syntax_Node *old_name;
+        } package_renaming;
 
         /* NK_TASK_SPEC */
         struct {
@@ -1180,10 +1270,13 @@ struct Syntax_Node {
 
         /* NK_GENERIC_SUBPROGRAM_PARAM: with procedure/function spec [is name|<>] */
         struct {
-            Syntax_Node *subprogram_spec;
+            String_Slice name;
+            Node_List parameters;
+            Syntax_Node *return_type;  /* NULL for procedures */
             Syntax_Node *default_name;
-            bool is_box;
-        } generic_subprogram_param;
+            bool is_function;
+            bool default_box;
+        } generic_subprog_param;
 
         /* NK_WITH_CLAUSE, NK_USE_CLAUSE */
         struct { Node_List names; } use_clause;
@@ -1193,6 +1286,16 @@ struct Syntax_Node {
 
         /* NK_EXCEPTION_HANDLER */
         struct { Node_List exceptions; Node_List statements; } handler;
+
+        /* NK_REPRESENTATION_CLAUSE (RM 13.1) */
+        struct {
+            Syntax_Node *entity_name;    /* Type or object being represented */
+            String_Slice attribute;       /* 'SIZE, 'ALIGNMENT, etc. (empty if record/enum rep) */
+            Syntax_Node *expression;      /* Attribute value or address expression */
+            Node_List    component_clauses; /* For record representation: component positions */
+            bool         is_record_rep;   /* true if FOR T USE RECORD ... */
+            bool         is_enum_rep;     /* true if FOR T USE (literals...) */
+        } rep_clause;
 
         /* NK_CONTEXT_CLAUSE */
         struct { Node_List with_clauses; Node_List use_clauses; } context;
@@ -1262,6 +1365,19 @@ static inline bool Parser_At(Parser *p, Token_Kind kind) {
 
 static inline bool Parser_At_Any(Parser *p, Token_Kind k1, Token_Kind k2) {
     return Parser_At(p, k1) || Parser_At(p, k2);
+}
+
+/* Lookahead: check if the NEXT token (after current) is of the given kind */
+static bool Parser_Peek_At(Parser *p, Token_Kind kind) {
+    Token saved = p->current_token;
+    Lexer saved_lexer = p->lexer;
+
+    p->current_token = Lexer_Next_Token(&p->lexer);
+    bool result = p->current_token.kind == kind;
+
+    p->current_token = saved;
+    p->lexer = saved_lexer;
+    return result;
 }
 
 static Token Parser_Advance(Parser *p) {
@@ -1370,9 +1486,9 @@ static String_Slice Parser_Identifier(Parser *p) {
     return name;
 }
 
-/* Check END identifier matches expected name */
+/* Check END identifier matches expected name (also handles operator strings) */
 static void Parser_Check_End_Name(Parser *p, String_Slice expected_name) {
-    if (Parser_At(p, TK_IDENTIFIER)) {
+    if (Parser_At(p, TK_IDENTIFIER) || Parser_At(p, TK_STRING)) {
         String_Slice end_name = p->current_token.text;
         if (!Slice_Equal_Ignore_Case(end_name, expected_name)) {
             Report_Error(p->current_token.location,
@@ -1404,7 +1520,9 @@ static Syntax_Node *Parse_Choice(Parser *p);
 static Syntax_Node *Parse_Name(Parser *p);
 static Syntax_Node *Parse_Simple_Name(Parser *p);  /* identifier or dotted, no parens/ticks */
 static Syntax_Node *Parse_Subtype_Indication(Parser *p);
+static Syntax_Node *Parse_Array_Type(Parser *p);
 static void Parse_Association_List(Parser *p, Node_List *list);
+static void Parse_Parameter_List(Parser *p, Node_List *params);
 
 /* Parse primary: literals, names, aggregates, allocators, parenthesized */
 static Syntax_Node *Parse_Primary(Parser *p) {
@@ -1436,12 +1554,20 @@ static Syntax_Node *Parse_Primary(Parser *p) {
         return node;
     }
 
-    /* String literal */
+    /* String literal - but check for operator symbol used as function name.
+     * In Ada, "+"(X, Y) is a valid function call where "+" is the operator.
+     * If this looks like an operator string followed by (, let it fall through
+     * to Parse_Name which handles operator names and function calls. */
     if (Parser_At(p, TK_STRING)) {
-        Syntax_Node *node = Node_New(NK_STRING, loc);
-        node->string_val.text = Slice_Duplicate(p->current_token.text);
-        Parser_Advance(p);
-        return node;
+        String_Slice text = p->current_token.text;
+        bool is_operator_call = (text.length <= 3) && Parser_Peek_At(p, TK_LPAREN);
+        if (!is_operator_call) {
+            Syntax_Node *node = Node_New(NK_STRING, loc);
+            node->string_val.text = Slice_Duplicate(text);
+            Parser_Advance(p);
+            return node;
+        }
+        /* Fall through to Parse_Name for operator call like "+"(X, Y) */
     }
 
     /* NULL */
@@ -1457,11 +1583,15 @@ static Syntax_Node *Parse_Primary(Parser *p) {
     /* NEW allocator */
     if (Parser_Match(p, TK_NEW)) {
         Syntax_Node *node = Node_New(NK_ALLOCATOR, loc);
-        node->allocator.subtype_mark = Parse_Subtype_Indication(p);
-        if (Parser_Match(p, TK_TICK)) {
-            Parser_Expect(p, TK_LPAREN);
-            node->allocator.expression = Parse_Expression(p);
-            Parser_Expect(p, TK_RPAREN);
+        Syntax_Node *subtype = Parse_Subtype_Indication(p);
+
+        /* If Parse_Subtype_Indication returned a qualified expression,
+         * extract subtype_mark and expression separately */
+        if (subtype->kind == NK_QUALIFIED) {
+            node->allocator.subtype_mark = subtype->qualified.subtype_mark;
+            node->allocator.expression = subtype->qualified.expression;
+        } else {
+            node->allocator.subtype_mark = subtype;
         }
         return node;
     }
@@ -1483,7 +1613,8 @@ static Syntax_Node *Parse_Primary(Parser *p) {
 
         /* Check for aggregate indicators */
         if (Parser_At(p, TK_COMMA) || Parser_At(p, TK_ARROW) ||
-            Parser_At(p, TK_BAR) || Parser_At(p, TK_WITH)) {
+            Parser_At(p, TK_BAR) || Parser_At(p, TK_WITH) ||
+            Parser_At(p, TK_DOTDOT)) {
             /* This is an aggregate */
             Syntax_Node *node = Node_New(NK_AGGREGATE, loc);
 
@@ -1606,10 +1737,60 @@ static Syntax_Node *Parse_Name(Parser *p) {
         /* 'attribute or '(qualified) */
         if (Parser_Match(p, TK_TICK)) {
             if (Parser_Match(p, TK_LPAREN)) {
-                /* Qualified expression: Type'(Expr) */
+                /* Qualified expression: Type'(Expr or Aggregate) */
                 Syntax_Node *qual = Node_New(NK_QUALIFIED, postfix_loc);
                 qual->qualified.subtype_mark = node;
-                qual->qualified.expression = Parse_Expression(p);
+
+                /* Parse expression or aggregate */
+                Syntax_Node *expr = Parse_Expression(p);
+                if (Parser_At(p, TK_COMMA) || Parser_At(p, TK_ARROW) ||
+                    Parser_At(p, TK_BAR) || Parser_At(p, TK_DOTDOT)) {
+                    /* Aggregate */
+                    Syntax_Node *agg = Node_New(NK_AGGREGATE, postfix_loc);
+                    if (Parser_At(p, TK_DOTDOT)) {
+                        /* Range: expr .. high */
+                        Syntax_Node *range = Node_New(NK_RANGE, postfix_loc);
+                        range->range.low = expr;
+                        Parser_Advance(p);
+                        range->range.high = Parse_Expression(p);
+                        if (Parser_At(p, TK_BAR) || Parser_At(p, TK_ARROW)) {
+                            Syntax_Node *assoc = Node_New(NK_ASSOCIATION, postfix_loc);
+                            Node_List_Push(&assoc->association.choices, range);
+                            while (Parser_Match(p, TK_BAR)) {
+                                Node_List_Push(&assoc->association.choices, Parse_Choice(p));
+                            }
+                            if (Parser_Match(p, TK_ARROW)) {
+                                assoc->association.expression = Parse_Expression(p);
+                            }
+                            Node_List_Push(&agg->aggregate.items, assoc);
+                        } else {
+                            Node_List_Push(&agg->aggregate.items, range);
+                        }
+                        if (Parser_Match(p, TK_COMMA)) {
+                            Parse_Association_List(p, &agg->aggregate.items);
+                        }
+                    } else if (Parser_At(p, TK_BAR) || Parser_At(p, TK_ARROW)) {
+                        Syntax_Node *assoc = Node_New(NK_ASSOCIATION, postfix_loc);
+                        Node_List_Push(&assoc->association.choices, expr);
+                        while (Parser_Match(p, TK_BAR)) {
+                            Node_List_Push(&assoc->association.choices, Parse_Choice(p));
+                        }
+                        if (Parser_Match(p, TK_ARROW)) {
+                            assoc->association.expression = Parse_Expression(p);
+                        }
+                        Node_List_Push(&agg->aggregate.items, assoc);
+                        if (Parser_Match(p, TK_COMMA)) {
+                            Parse_Association_List(p, &agg->aggregate.items);
+                        }
+                    } else {
+                        Node_List_Push(&agg->aggregate.items, expr);
+                        Parser_Advance(p);  /* consume comma */
+                        Parse_Association_List(p, &agg->aggregate.items);
+                    }
+                    qual->qualified.expression = agg;
+                } else {
+                    qual->qualified.expression = expr;
+                }
                 Parser_Expect(p, TK_RPAREN);
                 node = qual;
             } else {
@@ -1629,9 +1810,9 @@ static Syntax_Node *Parse_Name(Parser *p) {
                     Parser_Error_At_Current(p, "attribute name");
                 }
 
-                /* Optional attribute argument */
+                /* Optional attribute arguments (one or more) */
                 if (Parser_Match(p, TK_LPAREN)) {
-                    attr->attribute.argument = Parse_Expression(p);
+                    Parse_Association_List(p, &attr->attribute.arguments);
                     Parser_Expect(p, TK_RPAREN);
                 }
                 node = attr;
@@ -1891,6 +2072,30 @@ static Syntax_Node *Parse_Range(Parser *p) {
         return node;
     }
 
+    /* Check for subtype_mark RANGE low..high (discrete subtype definition)
+     * e.g., "INTEGER RANGE 1..10" or "STAT RANGE 1..5" */
+    if (Parser_Match(p, TK_RANGE)) {
+        Syntax_Node *ind = Node_New(NK_SUBTYPE_INDICATION, loc);
+        ind->subtype_ind.subtype_mark = low;
+
+        /* Now parse the actual range constraint */
+        Syntax_Node *constraint = Node_New(NK_RANGE_CONSTRAINT, loc);
+        Syntax_Node *range_low = Parse_Expression(p);
+
+        if (Parser_Match(p, TK_DOTDOT)) {
+            Syntax_Node *range_node = Node_New(NK_RANGE, loc);
+            range_node->range.low = range_low;
+            range_node->range.high = Parse_Expression(p);
+            constraint->range_constraint.range = range_node;
+        } else {
+            /* Just a range attribute or name */
+            constraint->range_constraint.range = range_low;
+        }
+
+        ind->subtype_ind.constraint = constraint;
+        return ind;
+    }
+
     /* Could be a subtype name used as a range */
     return low;
 }
@@ -1902,9 +2107,44 @@ static Syntax_Node *Parse_Range(Parser *p) {
 static Syntax_Node *Parse_Subtype_Indication(Parser *p) {
     Source_Location loc = Parser_Location(p);
 
-    Syntax_Node *subtype_mark = Parse_Name(p);
+    /* Parse_Name may consume (args) as NK_APPLY - we need to unwrap it for constraints */
+    Syntax_Node *name_or_apply = Parse_Name(p);
 
-    /* Check for constraint */
+    /* If Parse_Name returned NK_APPLY, the parenthesized part might be a constraint */
+    if (name_or_apply->kind == NK_APPLY) {
+        Syntax_Node *subtype_mark = name_or_apply->apply.prefix;
+        Node_List *items = &name_or_apply->apply.arguments;
+
+        /* Classify: if any item is a named association, it's a discriminant constraint */
+        bool is_discriminant = false;
+        for (uint32_t i = 0; i < items->count; i++) {
+            Syntax_Node *item = items->items[i];
+            if (item->kind == NK_ASSOCIATION) {
+                is_discriminant = true;
+                break;
+            }
+        }
+
+        /* Create NK_SUBTYPE_INDICATION with appropriate constraint */
+        Syntax_Node *ind = Node_New(NK_SUBTYPE_INDICATION, loc);
+        ind->subtype_ind.subtype_mark = subtype_mark;
+
+        if (is_discriminant) {
+            Syntax_Node *constraint = Node_New(NK_DISCRIMINANT_CONSTRAINT, loc);
+            constraint->discriminant_constraint.associations = *items;
+            ind->subtype_ind.constraint = constraint;
+        } else {
+            Syntax_Node *constraint = Node_New(NK_INDEX_CONSTRAINT, loc);
+            constraint->index_constraint.ranges = *items;
+            ind->subtype_ind.constraint = constraint;
+        }
+
+        return ind;
+    }
+
+    Syntax_Node *subtype_mark = name_or_apply;
+
+    /* Check for RANGE constraint */
     if (Parser_Match(p, TK_RANGE)) {
         Syntax_Node *ind = Node_New(NK_SUBTYPE_INDICATION, loc);
         ind->subtype_ind.subtype_mark = subtype_mark;
@@ -1915,16 +2155,35 @@ static Syntax_Node *Parse_Subtype_Indication(Parser *p) {
         return ind;
     }
 
-    if (Parser_Match(p, TK_LPAREN)) {
-        /* Index or discriminant constraint */
+    /* Check for DIGITS constraint (floating-point types) */
+    if (Parser_Match(p, TK_DIGITS)) {
         Syntax_Node *ind = Node_New(NK_SUBTYPE_INDICATION, loc);
         ind->subtype_ind.subtype_mark = subtype_mark;
 
-        Syntax_Node *constraint = Node_New(NK_INDEX_CONSTRAINT, loc);
-        do {
-            Node_List_Push(&constraint->index_constraint.ranges, Parse_Range(p));
-        } while (Parser_Match(p, TK_COMMA));
-        Parser_Expect(p, TK_RPAREN);
+        Syntax_Node *constraint = Node_New(NK_DIGITS_CONSTRAINT, loc);
+        constraint->digits_constraint.digits_expr = Parse_Expression(p);
+
+        /* Optional RANGE constraint after DIGITS */
+        if (Parser_Match(p, TK_RANGE)) {
+            constraint->digits_constraint.range = Parse_Range(p);
+        }
+
+        ind->subtype_ind.constraint = constraint;
+        return ind;
+    }
+
+    /* Check for DELTA constraint (fixed-point types) */
+    if (Parser_Match(p, TK_DELTA)) {
+        Syntax_Node *ind = Node_New(NK_SUBTYPE_INDICATION, loc);
+        ind->subtype_ind.subtype_mark = subtype_mark;
+
+        Syntax_Node *constraint = Node_New(NK_DELTA_CONSTRAINT, loc);
+        constraint->delta_constraint.delta_expr = Parse_Expression(p);
+
+        /* Optional RANGE constraint after DELTA */
+        if (Parser_Match(p, TK_RANGE)) {
+            constraint->delta_constraint.range = Parse_Range(p);
+        }
 
         ind->subtype_ind.constraint = constraint;
         return ind;
@@ -2090,9 +2349,9 @@ static Syntax_Node *Parse_Case_Statement(Parser *p) {
 
         Syntax_Node *alt = Node_New(NK_ASSOCIATION, alt_loc);
 
-        /* Parse choices */
+        /* Parse choices - use Parse_Choice to handle ranges and OTHERS */
         do {
-            Node_List_Push(&alt->association.choices, Parse_Expression(p));
+            Node_List_Push(&alt->association.choices, Parse_Choice(p));
         } while (Parser_Match(p, TK_BAR));
 
         Parser_Expect(p, TK_ARROW);
@@ -2213,16 +2472,42 @@ static Syntax_Node *Parse_Accept_Statement(Parser *p) {
     Syntax_Node *node = Node_New(NK_ACCEPT, loc);
     node->accept_stmt.entry_name = Parser_Identifier(p);
 
-    /* Optional index */
-    if (Parser_Match(p, TK_LPAREN)) {
-        node->accept_stmt.index = Parse_Expression(p);
-        Parser_Expect(p, TK_RPAREN);
-    }
+    /* Optional index and/or parameters
+     * Need to distinguish:
+     * - Entry index: (expression) like (5) or (I)
+     * - Parameters: (id : type) like (X : INTEGER) */
+    if (Parser_At(p, TK_LPAREN)) {
+        /* Lookahead to distinguish index vs parameters */
+        Token saved = p->current_token;
+        Lexer saved_lexer = p->lexer;
+        Parser_Advance(p);  /* consume ( */
 
-    /* Optional formal part */
-    if (Parser_Match(p, TK_LPAREN)) {
-        Parse_Association_List(p, &node->accept_stmt.parameters);
-        Parser_Expect(p, TK_RPAREN);
+        bool is_parameter_list = false;
+        if (Parser_At(p, TK_IDENTIFIER)) {
+            Token id_token = p->current_token;
+            Parser_Advance(p);  /* past identifier */
+            /* If followed by : or ,, it's a parameter list */
+            is_parameter_list = Parser_At(p, TK_COLON) || Parser_At(p, TK_COMMA);
+        }
+
+        /* Restore and parse correctly */
+        p->current_token = saved;
+        p->lexer = saved_lexer;
+
+        if (is_parameter_list) {
+            /* This is a parameter list, not an index */
+            Parse_Parameter_List(p, &node->accept_stmt.parameters);
+        } else {
+            /* Parse entry index (expression) */
+            Parser_Advance(p);  /* consume ( */
+            node->accept_stmt.index = Parse_Expression(p);
+            Parser_Expect(p, TK_RPAREN);
+
+            /* Now check for optional parameters after index */
+            if (Parser_At(p, TK_LPAREN)) {
+                Parse_Parameter_List(p, &node->accept_stmt.parameters);
+            }
+        }
     }
 
     /* Optional body */
@@ -2268,7 +2553,18 @@ static Syntax_Node *Parse_Select_Statement(Parser *p) {
             Parser_Expect(p, TK_SEMICOLON);
             Node_List_Push(&node->select_stmt.alternatives, delay);
         } else if (Parser_At(p, TK_ACCEPT)) {
-            Node_List_Push(&node->select_stmt.alternatives, Parse_Accept_Statement(p));
+            Syntax_Node *accept = Parse_Accept_Statement(p);
+            Node_List_Push(&node->select_stmt.alternatives, accept);
+            Parser_Expect(p, TK_SEMICOLON);
+            /* Optional sequence of statements after accept in select */
+            while (!Parser_At(p, TK_OR) && !Parser_At(p, TK_ELSE) &&
+                   !Parser_At(p, TK_END) && !Parser_At(p, TK_EOF)) {
+                Syntax_Node *stmt = Parse_Statement(p);
+                Node_List_Push(&accept->accept_stmt.statements, stmt);
+                if (!Parser_At(p, TK_OR) && !Parser_At(p, TK_ELSE) && !Parser_At(p, TK_END)) {
+                    Parser_Expect(p, TK_SEMICOLON);
+                }
+            }
         } else {
             break;
         }
@@ -2291,24 +2587,39 @@ static Syntax_Node *Parse_Select_Statement(Parser *p) {
 static Syntax_Node *Parse_Statement(Parser *p) {
     Source_Location loc = Parser_Location(p);
 
-    /* Check for label: <<label>> or identifier: */
+    /* Check for label(s): <<label>> or identifier:
+     * Ada allows multiple labels before a statement: <<L1>> <<L2>> stmt; */
     String_Slice label = Empty_Slice;
 
-    if (Parser_Match(p, TK_LSHIFT)) {
-        label = Parser_Identifier(p);
-        Parser_Expect(p, TK_RSHIFT);
+    /* Handle multiple consecutive labels */
+    while (Parser_At(p, TK_LSHIFT) ||
+           (Parser_At(p, TK_IDENTIFIER) && Parser_Peek_At(p, TK_COLON))) {
 
-        Syntax_Node *lbl = Node_New(NK_LABEL, loc);
-        lbl->label_ref.name = label;
-        /* Label attaches to next statement */
-    } else if (Parser_At(p, TK_IDENTIFIER)) {
-        /* Lookahead for "identifier :" (label) vs assignment/call */
-        /* This requires 2-token lookahead which we handle by trying */
+        if (Parser_Match(p, TK_LSHIFT)) {
+            label = Parser_Identifier(p);
+            Parser_Expect(p, TK_RSHIFT);
+        } else if (Parser_At(p, TK_IDENTIFIER)) {
+            /* Lookahead for "identifier :" (label) vs assignment/call */
+            Token saved = p->current_token;
+            Lexer saved_lexer = p->lexer;
+            String_Slice id = Parser_Identifier(p);
+
+            if (Parser_Match(p, TK_COLON)) {
+                /* This is a label */
+                label = id;
+            } else {
+                /* Not a label - restore and let assignment/call handle it */
+                p->current_token = saved;
+                p->lexer = saved_lexer;
+                break;
+            }
+        }
+        loc = Parser_Location(p);  /* Update location to after labels */
     }
 
     /* Null statement */
     if (Parser_Match(p, TK_NULL)) {
-        Parser_Expect(p, TK_SEMICOLON);
+        /* Semicolon is handled by Parse_Statement_Sequence */
         return Node_New(NK_NULL_STMT, loc);
     }
 
@@ -2381,12 +2692,17 @@ static Syntax_Node *Parse_Object_Declaration(Parser *p) {
 
     Parser_Expect(p, TK_COLON);
 
-    /* Check for exception declaration: identifier_list : EXCEPTION */
+    /* Check for exception declaration: identifier_list : EXCEPTION [RENAMES name] */
     if (Parser_Match(p, TK_EXCEPTION)) {
-        /* Convert to exception declaration */
-        node->kind = NK_EXCEPTION_DECL;
-        /* Names are already parsed into object_decl.names, copy to exception_decl.names */
-        node->exception_decl.names = node->object_decl.names;
+        /* Check for renaming */
+        if (Parser_Match(p, TK_RENAMES)) {
+            node->kind = NK_EXCEPTION_RENAMING;
+            node->exception_decl.names = node->object_decl.names;
+            node->exception_decl.renamed = Parse_Name(p);
+        } else {
+            node->kind = NK_EXCEPTION_DECL;
+            node->exception_decl.names = node->object_decl.names;
+        }
         return node;
     }
 
@@ -2396,7 +2712,12 @@ static Syntax_Node *Parse_Object_Declaration(Parser *p) {
     /* Named number (number declaration): identifier : CONSTANT := static_expression; */
     /* No type specified, goes directly to := */
     if (!node->object_decl.is_constant || !Parser_At(p, TK_ASSIGN)) {
-        node->object_decl.object_type = Parse_Subtype_Indication(p);
+        /* Check for anonymous array type: ARRAY (...) OF ... */
+        if (Parser_At(p, TK_ARRAY)) {
+            node->object_decl.object_type = Parse_Array_Type(p);
+        } else {
+            node->object_decl.object_type = Parse_Subtype_Indication(p);
+        }
     }
 
     /* Renames */
@@ -2537,22 +2858,20 @@ static Syntax_Node *Parse_Array_Type(Parser *p) {
     /* Index types: can be discrete_subtype_indication or discrete_range */
     do {
         Syntax_Node *idx = Parse_Discrete_Range(p);
-        /* Check for RANGE <> (unconstrained) */
-        if (Parser_Match(p, TK_RANGE)) {
-            Parser_Expect(p, TK_BOX);
-            /* Mark as unconstrained */
-            node->array_type.is_constrained = false;
-        }
         Node_List_Push(&node->array_type.indices, idx);
     } while (Parser_Match(p, TK_COMMA));
 
-    /* Determine if constrained based on what we parsed */
+    /* Determine if constrained based on what we parsed.
+     * An index is unconstrained if it's just a type mark (identifier/selected)
+     * without a range constraint. A range or subtype_indication with constraint
+     * means constrained. */
     node->array_type.is_constrained = true;
     for (size_t i = 0; i < node->array_type.indices.count; i++) {
         Syntax_Node *idx = node->array_type.indices.items[i];
-        /* If any index has a BOX, it's unconstrained */
-        if (idx->kind == NK_IDENTIFIER) {
-            /* Check if we saw RANGE <> */
+        /* Just a type name without constraint = unconstrained */
+        if (idx->kind == NK_IDENTIFIER || idx->kind == NK_SELECTED) {
+            node->array_type.is_constrained = false;
+            break;
         }
     }
 
@@ -2582,8 +2901,8 @@ static Syntax_Node *Parse_Discrete_Range(Parser *p) {
 
     if (Parser_Match(p, TK_RANGE)) {
         /* Type RANGE low..high or Type RANGE <> */
-        if (Parser_At(p, TK_BOX)) {
-            /* Unconstrained - just return the type mark */
+        if (Parser_Match(p, TK_BOX)) {
+            /* Unconstrained - return the type mark; <> is consumed */
             return name;
         }
         Syntax_Node *range = Node_New(NK_RANGE, loc);
@@ -2621,15 +2940,19 @@ static Syntax_Node *Parse_Record_Type(Parser *p) {
 
     Syntax_Node *node = Node_New(NK_RECORD_TYPE, loc);
 
-    /* NULL RECORD */
-    if (Parser_Match(p, TK_NULL)) {
-        node->record_type.is_null = true;
-        return node;
-    }
+    /* NULL; as empty component statement (vs NULL RECORD which is parsed elsewhere) */
+    /* Skip this check - NULL inside record body is handled in the loop below */
 
     /* Component list */
     while (!Parser_At(p, TK_END) && !Parser_At(p, TK_CASE) && !Parser_At(p, TK_EOF)) {
         if (!Parser_Check_Progress(p)) break;
+
+        /* NULL; as empty component list */
+        if (Parser_At(p, TK_NULL)) {
+            Parser_Advance(p);
+            Parser_Expect(p, TK_SEMICOLON);
+            continue;
+        }
 
         Source_Location c_loc = Parser_Location(p);
         Syntax_Node *comp = Node_New(NK_COMPONENT_DECL, c_loc);
@@ -2677,9 +3000,9 @@ static Syntax_Node *Parse_Variant_Part(Parser *p) {
 
         Syntax_Node *variant = Node_New(NK_VARIANT, v_loc);
 
-        /* Choices */
+        /* Choices - can be expressions, ranges, or OTHERS */
         do {
-            Node_List_Push(&variant->variant.choices, Parse_Expression(p));
+            Node_List_Push(&variant->variant.choices, Parse_Choice(p));
         } while (Parser_Match(p, TK_BAR));
 
         Parser_Expect(p, TK_ARROW);
@@ -2760,9 +3083,17 @@ static Syntax_Node *Parse_Type_Definition(Parser *p) {
         return Parse_Array_Type(p);
     }
 
-    /* Record type */
+    /* Record type: RECORD ... END RECORD or NULL RECORD */
     if (Parser_At(p, TK_RECORD)) {
         return Parse_Record_Type(p);
+    }
+
+    /* Null record type: NULL RECORD */
+    if (Parser_Match(p, TK_NULL)) {
+        Parser_Expect(p, TK_RECORD);
+        Syntax_Node *node = Node_New(NK_RECORD_TYPE, loc);
+        node->record_type.is_null = true;
+        return node;
     }
 
     /* Access type */
@@ -2956,7 +3287,8 @@ static Syntax_Node *Parse_Subprogram_Body(Parser *p, Syntax_Node *spec) {
     }
 
     Parser_Expect(p, TK_END);
-    if (spec && Parser_At(p, TK_IDENTIFIER)) {
+    if (spec && (Parser_At(p, TK_IDENTIFIER) || Parser_At(p, TK_STRING))) {
+        /* Check end name - handle both identifier and operator string */
         Parser_Check_End_Name(p, spec->subprogram_spec.name);
     }
 
@@ -3089,9 +3421,34 @@ static void Parse_Generic_Formal_Part(Parser *p, Node_List *formals) {
                 /* delta <> for fixed types */
                 Parser_Expect(p, TK_BOX);
                 formal->generic_type_param.def_kind = 5;  /* FIXED */
+            } else if (Parser_Match(p, TK_ARRAY)) {
+                /* array (index {, index}) of element_type for array types */
+                formal->generic_type_param.def_kind = 6;  /* ARRAY */
+                Parser_Expect(p, TK_LPAREN);
+                /* Parse index subtypes: subtype_mark RANGE <> */
+                do {
+                    Parse_Name(p);  /* index subtype mark */
+                    Parser_Expect(p, TK_RANGE);
+                    Parser_Expect(p, TK_BOX);  /* <> */
+                } while (Parser_Match(p, TK_COMMA));
+                Parser_Expect(p, TK_RPAREN);
+                Parser_Expect(p, TK_OF);
+                formal->generic_type_param.def_detail = Parse_Subtype_Indication(p);
+            } else if (Parser_Match(p, TK_ACCESS)) {
+                /* access type_name for access types */
+                formal->generic_type_param.def_kind = 7;  /* ACCESS */
+                formal->generic_type_param.def_detail = Parse_Subtype_Indication(p);
+            } else if (Parser_At(p, TK_NEW)) {
+                /* new parent_type for derived types - skip NEW, parse parent */
+                Parser_Advance(p);
+                formal->generic_type_param.def_kind = 8;  /* DERIVED */
+                formal->generic_type_param.def_detail = Parse_Subtype_Indication(p);
             } else {
-                /* Other forms - just consume until semicolon for now */
+                /* Unknown form - error recovery: skip to semicolon */
                 formal->generic_type_param.def_kind = 0;
+                while (!Parser_At(p, TK_SEMICOLON) && !Parser_At(p, TK_EOF)) {
+                    Parser_Advance(p);
+                }
             }
 
             Node_List_Push(formals, formal);
@@ -3099,23 +3456,89 @@ static void Parse_Generic_Formal_Part(Parser *p, Node_List *formals) {
             continue;
         }
 
-        /* Generic object formal */
+        /* Generic object formal: identifier_list : [mode] type [:= default] */
         if (Parser_At(p, TK_IDENTIFIER)) {
             Syntax_Node *formal = Node_New(NK_GENERIC_OBJECT_PARAM, loc);
+
+            /* Parse identifier list */
+            do {
+                Syntax_Node *id = Node_New(NK_IDENTIFIER, Parser_Location(p));
+                id->string_val.text = Parser_Identifier(p);
+                Node_List_Push(&formal->generic_object_param.names, id);
+            } while (Parser_Match(p, TK_COMMA));
+
+            Parser_Expect(p, TK_COLON);
+
+            /* Parse mode: IN (default), OUT, or IN OUT */
+            formal->generic_object_param.mode = 0;  /* Default: IN */
+            if (Parser_Match(p, TK_IN)) {
+                if (Parser_Match(p, TK_OUT)) {
+                    formal->generic_object_param.mode = 2;  /* IN OUT */
+                } else {
+                    formal->generic_object_param.mode = 0;  /* IN */
+                }
+            } else if (Parser_Match(p, TK_OUT)) {
+                formal->generic_object_param.mode = 1;  /* OUT */
+            }
+
+            /* Parse subtype mark */
+            formal->generic_object_param.object_type = Parse_Subtype_Indication(p);
+
+            /* Parse optional default expression */
+            if (Parser_Match(p, TK_ASSIGN)) {
+                formal->generic_object_param.default_expr = Parse_Expression(p);
+            }
+
             Node_List_Push(formals, formal);
             Parser_Expect(p, TK_SEMICOLON);
             continue;
         }
 
-        /* Generic subprogram formal */
+        /* Generic subprogram formal: WITH PROCEDURE/FUNCTION spec [IS name | IS <>] */
         if (Parser_At(p, TK_WITH)) {
-            Parser_Advance(p);
+            Parser_Advance(p);  /* consume WITH */
             Syntax_Node *formal = Node_New(NK_GENERIC_SUBPROGRAM_PARAM, loc);
-            if (Parser_At(p, TK_PROCEDURE)) {
-                /* Parse formal procedure */
-            } else if (Parser_At(p, TK_FUNCTION)) {
-                /* Parse formal function */
+
+            if (Parser_Match(p, TK_PROCEDURE)) {
+                formal->generic_subprog_param.is_function = false;
+                formal->generic_subprog_param.name = Parser_Identifier(p);
+
+                /* Optional parameters */
+                if (Parser_At(p, TK_LPAREN)) {
+                    Parse_Parameter_List(p, &formal->generic_subprog_param.parameters);
+                }
+            } else if (Parser_Match(p, TK_FUNCTION)) {
+                formal->generic_subprog_param.is_function = true;
+
+                /* Function name - can be identifier or operator string */
+                if (Parser_At(p, TK_STRING)) {
+                    formal->generic_subprog_param.name = Slice_Duplicate(p->current_token.text);
+                    Parser_Advance(p);
+                } else {
+                    formal->generic_subprog_param.name = Parser_Identifier(p);
+                }
+
+                /* Optional parameters */
+                if (Parser_At(p, TK_LPAREN)) {
+                    Parse_Parameter_List(p, &formal->generic_subprog_param.parameters);
+                }
+
+                /* Return type */
+                Parser_Expect(p, TK_RETURN);
+                formal->generic_subprog_param.return_type = Parse_Name(p);
             }
+
+            /* Optional default: IS name | IS <> */
+            if (Parser_Match(p, TK_IS)) {
+                if (Parser_Match(p, TK_BOX)) {
+                    /* IS <> means any matching subprogram */
+                    formal->generic_subprog_param.default_box = true;
+                } else {
+                    /* IS name means default to that subprogram */
+                    formal->generic_subprog_param.default_name = Parse_Name(p);
+                }
+            }
+
             Node_List_Push(formals, formal);
             Parser_Expect(p, TK_SEMICOLON);
             continue;
@@ -3242,7 +3665,8 @@ static Syntax_Node *Parse_Exception_Declaration(Parser *p) {
     /* Renames */
     if (Parser_Match(p, TK_RENAMES)) {
         node->kind = NK_EXCEPTION_RENAMING;
-        /* Parse renamed exception */
+        /* Parse renamed exception name */
+        node->exception_decl.renamed = Parse_Name(p);
     }
 
     return node;
@@ -3258,11 +3682,66 @@ static Syntax_Node *Parse_Representation_Clause(Parser *p) {
     Parser_Expect(p, TK_FOR);
 
     Syntax_Node *node = Node_New(NK_REPRESENTATION_CLAUSE, loc);
-    /* Simplified: parse and store for later semantic analysis */
 
-    /* Skip to semicolon */
-    while (!Parser_At(p, TK_SEMICOLON) && !Parser_At(p, TK_EOF)) {
-        Parser_Advance(p);
+    /* Parse: FOR entity_name'attribute USE expression;
+     *    or: FOR type_name USE RECORD ... END RECORD;
+     *    or: FOR type_name USE (enum_rep_list);
+     *    or: FOR object_name USE AT address; */
+
+    /* Parse entity name (possibly qualified: T or T'ATTRIBUTE) */
+    node->rep_clause.entity_name = Parse_Name(p);
+
+    /* Check if this is an attribute clause: FOR T'SIZE USE 32; */
+    if (Parser_At(p, TK_TICK)) {
+        Parser_Advance(p);  /* consume tick */
+        if (Parser_At(p, TK_IDENTIFIER)) {
+            node->rep_clause.attribute = p->current_token.text;
+            Parser_Advance(p);  /* consume attribute name */
+        }
+    }
+
+    Parser_Expect(p, TK_USE);
+
+    /* Check for different representation clause forms */
+    if (Parser_Match(p, TK_RECORD)) {
+        /* Record representation clause: FOR T USE RECORD ... END RECORD; */
+        node->rep_clause.is_record_rep = true;
+
+        /* Parse optional alignment: AT MOD alignment; */
+        if (Parser_Match(p, TK_AT)) {
+            Parser_Expect(p, TK_MOD);
+            node->rep_clause.expression = Parse_Expression(p);
+            Parser_Expect(p, TK_SEMICOLON);
+        }
+
+        /* Parse component clauses: component_name AT position RANGE first_bit..last_bit; */
+        while (!Parser_At(p, TK_END) && !Parser_At(p, TK_EOF)) {
+            Syntax_Node *comp_clause = Node_New(NK_ASSOCIATION, Parser_Location(p));
+            Node_List_Push(&comp_clause->association.choices, Parse_Name(p));
+            Parser_Expect(p, TK_AT);
+            comp_clause->association.expression = Parse_Expression(p);
+            /* Optional RANGE clause */
+            if (Parser_Match(p, TK_RANGE)) {
+                /* bit_range is now part of the expression */
+                Parse_Range(p);  /* first_bit .. last_bit */
+            }
+            Parser_Expect(p, TK_SEMICOLON);
+            Node_List_Push(&node->rep_clause.component_clauses, comp_clause);
+        }
+        Parser_Expect(p, TK_END);
+        Parser_Expect(p, TK_RECORD);
+    } else if (Parser_At(p, TK_LPAREN)) {
+        /* Enumeration representation: FOR T USE (A => 0, B => 1, ...); */
+        node->rep_clause.is_enum_rep = true;
+        Parser_Advance(p);  /* consume ( */
+        Parse_Association_List(p, &node->rep_clause.component_clauses);
+        Parser_Expect(p, TK_RPAREN);
+    } else if (Parser_Match(p, TK_AT)) {
+        /* Address clause: FOR X USE AT address; */
+        node->rep_clause.expression = Parse_Expression(p);
+    } else {
+        /* Attribute value: FOR T'SIZE USE 32; */
+        node->rep_clause.expression = Parse_Expression(p);
     }
 
     return node;
@@ -3278,7 +3757,9 @@ static Syntax_Node *Parse_Declaration(Parser *p) {
 
     /* Generic */
     if (Parser_At(p, TK_GENERIC)) {
-        return Parse_Generic_Declaration(p);
+        Syntax_Node *generic = Parse_Generic_Declaration(p);
+        Parser_Expect(p, TK_SEMICOLON);
+        return generic;
     }
 
     /* Procedure/Function - could be spec, body, or generic instantiation */
@@ -3286,8 +3767,14 @@ static Syntax_Node *Parse_Declaration(Parser *p) {
         Token_Kind kind = p->current_token.kind;
         Parser_Advance(p);  /* consume PROCEDURE/FUNCTION */
 
-        /* Get the name */
-        String_Slice name = Parser_Identifier(p);
+        /* Get the name - can be identifier or operator string for functions */
+        String_Slice name;
+        if (Parser_At(p, TK_STRING)) {
+            name = Slice_Duplicate(p->current_token.text);
+            Parser_Advance(p);
+        } else {
+            name = Parser_Identifier(p);
+        }
 
         /* Check for generic instantiation: NAME IS NEW */
         if (Parser_At(p, TK_IS)) {
@@ -3339,9 +3826,19 @@ static Syntax_Node *Parse_Declaration(Parser *p) {
             spec->subprogram_spec.return_type = Parse_Name(p);
         }
 
+        /* Check for subprogram renaming: PROCEDURE P RENAMES Q; or FUNCTION F RENAMES G; */
+        if (Parser_Match(p, TK_RENAMES)) {
+            spec->kind = NK_SUBPROGRAM_RENAMING;
+            spec->subprogram_spec.renamed = Parse_Name(p);
+            Parser_Expect(p, TK_SEMICOLON);
+            return spec;
+        }
+
         /* Check for body or just spec */
         if (Parser_At(p, TK_IS)) {
-            return Parse_Subprogram_Body(p, spec);
+            Syntax_Node *body = Parse_Subprogram_Body(p, spec);
+            Parser_Expect(p, TK_SEMICOLON);
+            return body;
         }
 
         /* Just a specification */
@@ -3354,9 +3851,64 @@ static Syntax_Node *Parse_Declaration(Parser *p) {
         Parser_Advance(p);  /* consume PACKAGE */
         if (Parser_At(p, TK_BODY)) {
             Parser_Advance(p);  /* consume BODY */
-            return Parse_Package_Body(p);
+            Syntax_Node *body = Parse_Package_Body(p);
+            Parser_Expect(p, TK_SEMICOLON);
+            return body;
         }
-        return Parse_Package_Specification(p);
+        /* Check for package renaming: PACKAGE name RENAMES old_name; */
+        String_Slice pkg_name = Parser_Identifier(p);
+        if (Parser_Match(p, TK_RENAMES)) {
+            Syntax_Node *node = Node_New(NK_PACKAGE_RENAMING, loc);
+            node->package_renaming.new_name = pkg_name;
+            node->package_renaming.old_name = Parse_Name(p);
+            Parser_Expect(p, TK_SEMICOLON);
+            return node;
+        }
+
+        Parser_Expect(p, TK_IS);
+
+        /* Check for generic instantiation: PACKAGE name IS NEW generic_name */
+        if (Parser_Match(p, TK_NEW)) {
+            Syntax_Node *node = Node_New(NK_GENERIC_INST, loc);
+            node->generic_inst.unit_kind = TK_PACKAGE;
+            node->generic_inst.instance_name = pkg_name;
+
+            /* Parse the generic unit name */
+            node->generic_inst.generic_name = Parse_Simple_Name(p);
+
+            /* Generic actuals */
+            if (Parser_Match(p, TK_LPAREN)) {
+                Parse_Association_List(p, &node->generic_inst.actuals);
+                Parser_Expect(p, TK_RPAREN);
+            }
+
+            Parser_Expect(p, TK_SEMICOLON);
+            return node;
+        }
+
+        /* Not a generic instantiation - parse as specification */
+        Syntax_Node *spec = Node_New(NK_PACKAGE_SPEC, loc);
+        spec->package_spec.name = pkg_name;
+        /* Parse visible declarations (each declaration consumes its own semicolon) */
+        while (!Parser_At(p, TK_PRIVATE) && !Parser_At(p, TK_END) && !Parser_At(p, TK_EOF)) {
+            if (!Parser_Check_Progress(p)) break;
+            Syntax_Node *decl = Parse_Declaration(p);
+            Node_List_Push(&spec->package_spec.visible_decls, decl);
+        }
+        /* Parse private declarations */
+        if (Parser_Match(p, TK_PRIVATE)) {
+            while (!Parser_At(p, TK_END) && !Parser_At(p, TK_EOF)) {
+                if (!Parser_Check_Progress(p)) break;
+                Syntax_Node *decl = Parse_Declaration(p);
+                Node_List_Push(&spec->package_spec.private_decls, decl);
+            }
+        }
+        Parser_Expect(p, TK_END);
+        if (Parser_At(p, TK_IDENTIFIER)) {
+            Parser_Check_End_Name(p, spec->package_spec.name);
+        }
+        Parser_Expect(p, TK_SEMICOLON);
+        return spec;
     }
 
     /* Task declaration */
@@ -3425,19 +3977,58 @@ static Syntax_Node *Parse_Declaration(Parser *p) {
                     Syntax_Node *entry = Node_New(NK_ENTRY_DECL, e_loc);
                     entry->entry_decl.name = Parser_Identifier(p);
 
-                    /* Entry may have family index: ENTRY name(index) */
-                    /* and/or parameters: ENTRY name(...) or ENTRY name(index)(...) */
+                    /* Entry may have family index: ENTRY name(index)
+                     * and/or parameters: ENTRY name(...) or ENTRY name(index)(...)
+                     * Family index is a discrete_subtype_definition (like 1..10)
+                     * Parameters start with identifier : mode type */
                     if (Parser_At(p, TK_LPAREN)) {
-                        /* For simplicity, parse as parameter list */
-                        Parse_Parameter_List(p, &entry->entry_decl.parameters);
+                        /* Check if this is an entry family index or parameter list
+                         * Entry family: (discrete_range) like (1..10) or (T'RANGE)
+                         * Parameters: (id : mode type) - starts with identifier followed by : */
+                        Token saved = p->current_token;
+                        Lexer saved_lexer = p->lexer;
+                        Parser_Advance(p);  /* consume ( for lookahead */
+
+                        bool is_family_index = false;
+                        if (!Parser_At(p, TK_IDENTIFIER)) {
+                            /* Not starting with identifier - must be family index */
+                            is_family_index = true;
+                        } else {
+                            /* Look ahead to see if it's id : (parameter) or just id (family) */
+                            Token saved2 = p->current_token;
+                            Lexer saved_lexer2 = p->lexer;
+                            Parser_Advance(p);  /* past identifier */
+                            is_family_index = !Parser_At(p, TK_COLON) && !Parser_At(p, TK_COMMA);
+                            p->current_token = saved2;
+                            p->lexer = saved_lexer2;
+                        }
+
+                        if (is_family_index) {
+                            /* Parse discrete subtype definition - already past ( */
+                            Syntax_Node *range = Parse_Range(p);
+                            Node_List_Push(&entry->entry_decl.index_constraints, range);
+                            Parser_Expect(p, TK_RPAREN);
+
+                            /* Optionally parse parameters after family index */
+                            if (Parser_At(p, TK_LPAREN)) {
+                                Parse_Parameter_List(p, &entry->entry_decl.parameters);
+                            }
+                        } else {
+                            /* Restore and use Parse_Parameter_List which handles ( ) */
+                            p->current_token = saved;
+                            p->lexer = saved_lexer;
+                            Parse_Parameter_List(p, &entry->entry_decl.parameters);
+                        }
                     }
                     Parser_Expect(p, TK_SEMICOLON);
                     Node_List_Push(&node->task_spec.entries, entry);
                 } else if (Parser_At(p, TK_PRAGMA)) {
                     Node_List_Push(&node->task_spec.entries, Parse_Pragma(p));
+                    Parser_Expect(p, TK_SEMICOLON);
                 } else if (Parser_At(p, TK_FOR)) {
                     /* Representation clause in task spec */
                     Node_List_Push(&node->task_spec.entries, Parse_Representation_Clause(p));
+                    Parser_Expect(p, TK_SEMICOLON);
                 } else {
                     Parser_Error(p, "expected ENTRY, PRAGMA, FOR, or END in task spec");
                     Parser_Advance(p);
@@ -3455,37 +4046,48 @@ static Syntax_Node *Parse_Declaration(Parser *p) {
 
     /* Type declaration */
     if (Parser_At(p, TK_TYPE)) {
-        return Parse_Type_Declaration(p);
+        Syntax_Node *type_decl = Parse_Type_Declaration(p);
+        /* Incomplete type declaration (no definition, not private/limited) already consumed semicolon */
+        if (type_decl->type_decl.definition || type_decl->type_decl.is_private ||
+            type_decl->type_decl.is_limited) {
+            Parser_Expect(p, TK_SEMICOLON);
+        }
+        return type_decl;
     }
 
     /* Subtype declaration */
     if (Parser_At(p, TK_SUBTYPE)) {
-        return Parse_Subtype_Declaration(p);
+        Syntax_Node *subtype = Parse_Subtype_Declaration(p);
+        Parser_Expect(p, TK_SEMICOLON);
+        return subtype;
     }
 
     /* Use clause */
     if (Parser_At(p, TK_USE)) {
-        return Parse_Use_Clause(p);
+        Syntax_Node *use = Parse_Use_Clause(p);
+        Parser_Expect(p, TK_SEMICOLON);
+        return use;
     }
 
     /* Pragma */
     if (Parser_At(p, TK_PRAGMA)) {
-        return Parse_Pragma(p);
+        Syntax_Node *pragma = Parse_Pragma(p);
+        Parser_Expect(p, TK_SEMICOLON);
+        return pragma;
     }
 
     /* FOR representation clause */
     if (Parser_At(p, TK_FOR)) {
-        return Parse_Representation_Clause(p);
+        Syntax_Node *rep = Parse_Representation_Clause(p);
+        Parser_Expect(p, TK_SEMICOLON);
+        return rep;
     }
 
     /* Object or exception declaration */
     if (Parser_At(p, TK_IDENTIFIER)) {
-        /* Need lookahead to distinguish object from exception */
-        Syntax_Node *node = Parse_Object_Declaration(p);
-
-        /* Check if it was actually an exception */
-        /* The object parser handles this via Parse_Subtype_Indication seeing EXCEPTION */
-        return node;
+        Syntax_Node *obj = Parse_Object_Declaration(p);
+        Parser_Expect(p, TK_SEMICOLON);
+        return obj;
     }
 
     Parser_Error(p, "expected declaration");
@@ -3501,8 +4103,7 @@ static void Parse_Declarative_Part(Parser *p, Node_List *list) {
 
         Syntax_Node *decl = Parse_Declaration(p);
         Node_List_Push(list, decl);
-
-        Parser_Match(p, TK_SEMICOLON);  /* Optional here as some decls include it */
+        /* Each declaration now consumes its own trailing semicolon */
     }
 }
 
@@ -3545,9 +4146,8 @@ static Syntax_Node *Parse_Compilation_Unit(Parser *p) {
         /* Parse the actual subunit */
     }
 
-    /* Main unit */
+    /* Main unit - Parse_Declaration now consumes its trailing semicolon */
     node->compilation_unit.unit = Parse_Declaration(p);
-    Parser_Match(p, TK_SEMICOLON);
 
     return node;
 }
@@ -3684,7 +4284,14 @@ struct Type_Info {
         struct {  /* TYPE_ENUMERATION */
             String_Slice *literals;
             uint32_t      literal_count;
+            int64_t      *rep_values;    /* Optional representation clause values */
         } enumeration;
+
+        struct {  /* TYPE_FIXED */
+            double delta;   /* User-specified delta (smallest increment) */
+            double small;   /* Implementation small: power of 2 <= delta */
+            int    scale;   /* Scale factor: value = mantissa * 2^scale */
+        } fixed;
     };
 
     /* Runtime check suppression */
@@ -3765,81 +4372,6 @@ static inline bool Type_Is_Access(const Type_Info *t) {
 static inline bool Type_Is_Unconstrained_Array(const Type_Info *t) {
     return t && (t->kind == TYPE_ARRAY || t->kind == TYPE_STRING) &&
            !t->array.is_constrained;
-}
-
-/* ─────────────────────────────────────────────────────────────────────────
- * §10.4.1 Representation Category
- *
- * Unified representation category for code generation. This consolidates
- * the checklist items about parallel "representation category" computations.
- *
- * Categories determine how values are passed and stored:
- * - INTEGER: fits in a register, passed by value (bool, char, int, enum)
- * - FLOAT: floating-point register, passed by value
- * - POINTER: address, passed by reference (access, composite, fat pointers)
- *
- * Following GNAT LLVM's GL_Type representation abstraction.
- * ───────────────────────────────────────────────────────────────────────── */
-
-typedef enum {
-    REPR_INTEGER,    /* Discrete/modular types: pass in integer register */
-    REPR_FLOAT,      /* Real types: pass in FP register */
-    REPR_POINTER     /* Composite/access: pass by reference */
-} Repr_Category;
-
-/* Get representation category for a type (handles derived types recursively) */
-static Repr_Category Type_Repr_Category(const Type_Info *t) {
-    if (!t) return REPR_INTEGER;
-
-    /* For derived types, use parent's representation */
-    if (t->parent_type) {
-        return Type_Repr_Category(t->parent_type);
-    }
-
-    switch (t->kind) {
-        /* Floating-point types */
-        case TYPE_FLOAT:
-        case TYPE_FIXED:
-        case TYPE_UNIVERSAL_REAL:
-            return REPR_FLOAT;
-
-        /* Composite and access types: pass by reference */
-        case TYPE_ARRAY:
-        case TYPE_STRING:
-        case TYPE_RECORD:
-        case TYPE_ACCESS:
-        case TYPE_TASK:
-            return REPR_POINTER;
-
-        /* All other types (discrete, modular, enum, boolean, char): integer */
-        default:
-            return REPR_INTEGER;
-    }
-}
-
-/* LLVM type string for a given representation */
-static const char *Repr_LLVM_Type(Repr_Category cat, uint32_t size_bytes) {
-    switch (cat) {
-        case REPR_FLOAT:
-            return (size_bytes <= 4) ? "float" : "double";
-        case REPR_POINTER:
-            return "ptr";
-        case REPR_INTEGER:
-        default:
-            switch (size_bytes) {
-                case 1: return "i8";
-                case 2: return "i16";
-                case 4: return "i32";
-                case 8: return "i64";
-                default: return "i32";
-            }
-    }
-}
-
-/* Get LLVM type string for a Type_Info */
-static const char *Type_LLVM_Type(const Type_Info *t) {
-    if (!t) return "i32";
-    return Repr_LLVM_Type(Type_Repr_Category(t), t->size);
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -3967,17 +4499,21 @@ static const char *Type_To_Llvm(Type_Info *t) {
         case TYPE_MODULAR:
         case TYPE_ENUMERATION:
         case TYPE_UNIVERSAL_INTEGER:
-            return Llvm_Int_Type(To_Bits(t->size));
+        case TYPE_FIXED:  /* Fixed-point uses scaled integer representation */
+            return Llvm_Int_Type((uint32_t)To_Bits(t->size));
         case TYPE_FLOAT:
-        case TYPE_FIXED:
         case TYPE_UNIVERSAL_REAL:
-            return Llvm_Float_Type(To_Bits(t->size));
+            return Llvm_Float_Type((uint32_t)To_Bits(t->size));
         case TYPE_ACCESS:
-        case TYPE_ARRAY:
         case TYPE_RECORD:
-        case TYPE_STRING:
         case TYPE_TASK:
             return "ptr";
+        case TYPE_ARRAY:
+            /* Unconstrained arrays use fat pointers, constrained use ptr */
+            return (t->array.is_constrained) ? "ptr" : "{ ptr, { i64, i64 } }";
+        case TYPE_STRING:
+            /* STRING is always unconstrained array of CHARACTER */
+            return "{ ptr, { i64, i64 } }";
         default:
             return "i64";
     }
@@ -4046,6 +4582,11 @@ typedef struct {
     Syntax_Node    *default_value;
     struct Symbol  *param_sym;    /* Symbol for this parameter in function body */
 } Parameter_Info;
+
+/* Check if parameter mode requires pass-by-reference (OUT or IN OUT) */
+static inline bool Param_Is_By_Reference(Parameter_Mode mode) {
+    return mode == PARAM_OUT || mode == PARAM_IN_OUT;
+}
 
 struct Symbol {
     Symbol_Kind     kind;
@@ -4123,6 +4664,9 @@ struct Symbol {
     /* pragma Unreferenced */
     bool            is_unreferenced;
 
+    /* Code generation flags */
+    bool            extern_emitted;      /* Extern declaration already emitted */
+
     /* ─────────────────────────────────────────────────────────────────────
      * Generic Support
      * ───────────────────────────────────────────────────────────────────── */
@@ -4175,6 +4719,7 @@ typedef struct {
     Type_Info *type_float;
     Type_Info *type_character;
     Type_Info *type_string;
+    Type_Info *type_duration;
     Type_Info *type_universal_integer;
     Type_Info *type_universal_real;
 
@@ -4240,6 +4785,8 @@ static void Symbol_Add(Symbol_Manager *sm, Symbol *sym) {
                 (sym->kind == SYMBOL_PROCEDURE || sym->kind == SYMBOL_FUNCTION)) {
                 sym->next_overload = existing->next_overload;
                 existing->next_overload = sym;
+                /* Set parent before returning - needed for proper name mangling */
+                sym->parent = scope->owner;
                 return;
             }
             /* Otherwise: redefinition error (would report here) */
@@ -4743,7 +5290,7 @@ static void Symbol_Manager_Init_Predefined(Symbol_Manager *sm) {
     sm->type_boolean->high_bound = (Type_Bound){BOUND_INTEGER, {.int_value = 1}};
 
     sm->type_integer = Type_New(TYPE_INTEGER, S("INTEGER"));
-    sm->type_integer->size = 4;
+    sm->type_integer->size = 8;  /* 64-bit INTEGER to match i64 usage throughout codegen */
     sm->type_integer->low_bound = (Type_Bound){BOUND_INTEGER, {.int_value = INT32_MIN}};
     sm->type_integer->high_bound = (Type_Bound){BOUND_INTEGER, {.int_value = INT32_MAX}};
 
@@ -4755,6 +5302,12 @@ static void Symbol_Manager_Init_Predefined(Symbol_Manager *sm) {
 
     sm->type_string = Type_New(TYPE_STRING, S("STRING"));
     sm->type_string->size = 16;  /* Fat pointer: ptr + length */
+    sm->type_string->array.element_type = sm->type_character;  /* STRING is array of CHARACTER */
+
+    /* DURATION is a predefined fixed-point type for time intervals */
+    sm->type_duration = Type_New(TYPE_FIXED, S("DURATION"));
+    sm->type_duration->size = 8;  /* 64-bit for high precision */
+    sm->type_duration->fixed.delta = 0.00001;  /* 10 microsecond resolution */
 
     sm->type_universal_integer = Type_New(TYPE_UNIVERSAL_INTEGER, S("universal_integer"));
     sm->type_universal_real = Type_New(TYPE_UNIVERSAL_REAL, S("universal_real"));
@@ -4768,9 +5321,35 @@ static void Symbol_Manager_Init_Predefined(Symbol_Manager *sm) {
     sym_integer->type = sm->type_integer;
     Symbol_Add(sm, sym_integer);
 
+    /* NATURAL is subtype INTEGER range 0..INTEGER'LAST */
+    Symbol *sym_natural = Symbol_New(SYMBOL_SUBTYPE, S("NATURAL"), No_Location);
+    Type_Info *type_natural = Type_New(TYPE_INTEGER, S("NATURAL"));
+    type_natural->base_type = sm->type_integer;
+    type_natural->size = sm->type_integer->size;
+    type_natural->alignment = sm->type_integer->alignment;
+    type_natural->low_bound = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = 0 };
+    type_natural->high_bound = sm->type_integer->high_bound;
+    sym_natural->type = type_natural;
+    Symbol_Add(sm, sym_natural);
+
+    /* POSITIVE is subtype INTEGER range 1..INTEGER'LAST */
+    Symbol *sym_positive = Symbol_New(SYMBOL_SUBTYPE, S("POSITIVE"), No_Location);
+    Type_Info *type_positive = Type_New(TYPE_INTEGER, S("POSITIVE"));
+    type_positive->base_type = sm->type_integer;
+    type_positive->size = sm->type_integer->size;
+    type_positive->alignment = sm->type_integer->alignment;
+    type_positive->low_bound = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = 1 };
+    type_positive->high_bound = sm->type_integer->high_bound;
+    sym_positive->type = type_positive;
+    Symbol_Add(sm, sym_positive);
+
     Symbol *sym_float = Symbol_New(SYMBOL_TYPE, S("FLOAT"), No_Location);
     sym_float->type = sm->type_float;
     Symbol_Add(sm, sym_float);
+
+    Symbol *sym_duration = Symbol_New(SYMBOL_TYPE, S("DURATION"), No_Location);
+    sym_duration->type = sm->type_duration;
+    Symbol_Add(sm, sym_duration);
 
     Symbol *sym_character = Symbol_New(SYMBOL_TYPE, S("CHARACTER"), No_Location);
     sym_character->type = sm->type_character;
@@ -4788,6 +5367,22 @@ static void Symbol_Manager_Init_Predefined(Symbol_Manager *sm) {
     Symbol *sym_true = Symbol_New(SYMBOL_LITERAL, S("TRUE"), No_Location);
     sym_true->type = sm->type_boolean;
     Symbol_Add(sm, sym_true);
+
+    /* Predefined exceptions (RM 11.1) */
+    Symbol *sym_constraint_error = Symbol_New(SYMBOL_EXCEPTION, S("CONSTRAINT_ERROR"), No_Location);
+    Symbol_Add(sm, sym_constraint_error);
+
+    Symbol *sym_numeric_error = Symbol_New(SYMBOL_EXCEPTION, S("NUMERIC_ERROR"), No_Location);
+    Symbol_Add(sm, sym_numeric_error);
+
+    Symbol *sym_program_error = Symbol_New(SYMBOL_EXCEPTION, S("PROGRAM_ERROR"), No_Location);
+    Symbol_Add(sm, sym_program_error);
+
+    Symbol *sym_storage_error = Symbol_New(SYMBOL_EXCEPTION, S("STORAGE_ERROR"), No_Location);
+    Symbol_Add(sm, sym_storage_error);
+
+    Symbol *sym_tasking_error = Symbol_New(SYMBOL_EXCEPTION, S("TASKING_ERROR"), No_Location);
+    Symbol_Add(sm, sym_tasking_error);
 }
 
 static Symbol_Manager *Symbol_Manager_New(void) {
@@ -5070,7 +5665,7 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
         }
 
         /* ─── Case 2: Type Conversion or Constrained Subtype ─── */
-        if (prefix_sym->kind == SYMBOL_TYPE) {
+        if (prefix_sym->kind == SYMBOL_TYPE || prefix_sym->kind == SYMBOL_SUBTYPE) {
             Type_Info *base_type = prefix_sym->type;
 
             /* Check for constrained subtype indication: STRING(1..5) */
@@ -5212,11 +5807,50 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
 
         case NK_ATTRIBUTE:
             Resolve_Expression(sm, node->attribute.prefix);
-            if (node->attribute.argument) {
-                Resolve_Expression(sm, node->attribute.argument);
+            for (uint32_t i = 0; i < node->attribute.arguments.count; i++) {
+                Resolve_Expression(sm, node->attribute.arguments.items[i]);
             }
-            /* Attribute type depends on attribute name */
-            node->type = sm->type_integer;  /* Simplified */
+            /* Attribute type depends on attribute name and prefix type */
+            {
+                Type_Info *prefix_type = node->attribute.prefix->type;
+                String_Slice attr = node->attribute.name;
+                /* FIRST, LAST return the index type for arrays, base type for scalars */
+                if (Slice_Equal_Ignore_Case(attr, S("FIRST")) ||
+                    Slice_Equal_Ignore_Case(attr, S("LAST"))) {
+                    if (prefix_type && (prefix_type->kind == TYPE_ARRAY ||
+                                       prefix_type->kind == TYPE_STRING)) {
+                        /* For arrays, FIRST/LAST return the index type */
+                        node->type = sm->type_integer;  /* Index type is integer */
+                    } else {
+                        /* For scalar types, return the type itself */
+                        node->type = prefix_type ? prefix_type : sm->type_integer;
+                    }
+                }
+                /* VAL, SUCC, PRED return the base type (for scalar types) */
+                else if (Slice_Equal_Ignore_Case(attr, S("VAL")) ||
+                         Slice_Equal_Ignore_Case(attr, S("SUCC")) ||
+                         Slice_Equal_Ignore_Case(attr, S("PRED"))) {
+                    node->type = prefix_type ? prefix_type : sm->type_integer;
+                }
+                /* POS returns universal integer */
+                else if (Slice_Equal_Ignore_Case(attr, S("POS"))) {
+                    node->type = sm->type_universal_integer;
+                }
+                /* IMAGE returns STRING */
+                else if (Slice_Equal_Ignore_Case(attr, S("IMAGE"))) {
+                    node->type = sm->type_string;
+                }
+                /* SIZE, LENGTH, COUNT return integer */
+                else if (Slice_Equal_Ignore_Case(attr, S("SIZE")) ||
+                         Slice_Equal_Ignore_Case(attr, S("LENGTH")) ||
+                         Slice_Equal_Ignore_Case(attr, S("COUNT"))) {
+                    node->type = sm->type_integer;
+                }
+                /* Default to integer for unhandled attributes */
+                else {
+                    node->type = sm->type_integer;
+                }
+            }
             return node->type;
 
         case NK_QUALIFIED:
@@ -5229,16 +5863,44 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
             {
                 Type_Info *agg_type = node->type;
                 bool is_record_agg = agg_type && agg_type->kind == TYPE_RECORD;
+                uint32_t positional_idx = 0;
 
                 for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
                     Syntax_Node *item = node->aggregate.items.items[i];
 
                     if (is_record_agg && item->kind == NK_ASSOCIATION) {
                         /* For record aggregates, choices are field names - don't resolve as variables */
-                        /* Just resolve the value expression */
+                        /* Find component type from first choice for nested aggregates */
+                        Type_Info *comp_type = NULL;
+                        if (item->association.choices.count > 0) {
+                            Syntax_Node *choice = item->association.choices.items[0];
+                            if (choice->kind == NK_IDENTIFIER) {
+                                String_Slice comp_name = choice->string_val.text;
+                                for (uint32_t j = 0; j < agg_type->record.component_count; j++) {
+                                    if (Slice_Equal_Ignore_Case(agg_type->record.components[j].name, comp_name)) {
+                                        comp_type = agg_type->record.components[j].component_type;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        /* Propagate component type to nested aggregates */
                         if (item->association.expression) {
+                            if (item->association.expression->kind == NK_AGGREGATE && comp_type) {
+                                item->association.expression->type = comp_type;
+                            }
                             Resolve_Expression(sm, item->association.expression);
                         }
+                    } else if (is_record_agg) {
+                        /* Positional item in record aggregate - propagate component type */
+                        if (positional_idx < agg_type->record.component_count) {
+                            Type_Info *comp_type = agg_type->record.components[positional_idx].component_type;
+                            if (item->kind == NK_AGGREGATE && comp_type) {
+                                item->type = comp_type;
+                            }
+                            positional_idx++;
+                        }
+                        Resolve_Expression(sm, item);
                     } else {
                         Resolve_Expression(sm, item);
                     }
@@ -5258,7 +5920,8 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
         case NK_RANGE:
             if (node->range.low) Resolve_Expression(sm, node->range.low);
             if (node->range.high) Resolve_Expression(sm, node->range.high);
-            return node->range.low ? node->range.low->type : NULL;
+            node->type = node->range.low ? node->range.low->type : NULL;
+            return node->type;
 
         case NK_ASSOCIATION:
             for (uint32_t i = 0; i < node->association.choices.count; i++) {
@@ -5336,42 +5999,128 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                 return array_type;
             }
 
+        case NK_ENUMERATION_TYPE:
+            {
+                /* Create enumeration type info from syntax node
+                 * Note: Literal symbols are created later in NK_TYPE_DECL processing
+                 * so they reference the named type, not this anonymous type */
+                Type_Info *enum_type = Type_New(TYPE_ENUMERATION, S(""));
+                uint32_t lit_count = (uint32_t)node->enum_type.literals.count;
+
+                enum_type->enumeration.literal_count = lit_count;
+                if (lit_count > 0) {
+                    enum_type->enumeration.literals = Arena_Allocate(
+                        lit_count * sizeof(String_Slice));
+
+                    for (uint32_t i = 0; i < lit_count; i++) {
+                        Syntax_Node *lit = node->enum_type.literals.items[i];
+                        enum_type->enumeration.literals[i] = lit->string_val.text;
+                    }
+                }
+
+                /* Size based on number of literals */
+                if (lit_count <= 256) {
+                    enum_type->size = 1;  /* Fits in 1 byte */
+                } else if (lit_count <= 65536) {
+                    enum_type->size = 2;  /* Fits in 2 bytes */
+                } else {
+                    enum_type->size = 4;  /* 4 bytes for large enums */
+                }
+                enum_type->alignment = enum_type->size;
+                enum_type->low_bound = (Type_Bound){.kind = BOUND_INTEGER, .int_value = 0};
+                enum_type->high_bound = (Type_Bound){.kind = BOUND_INTEGER, .int_value = lit_count - 1};
+
+                node->type = enum_type;
+                return enum_type;
+            }
+
+        case NK_DERIVED_TYPE:
+            {
+                /* Derived type: type T is new Parent [constraint] */
+                Resolve_Expression(sm, node->derived_type.parent_type);
+                Type_Info *parent = node->derived_type.parent_type ?
+                                    node->derived_type.parent_type->type : NULL;
+                if (!parent) {
+                    node->type = NULL;
+                    return NULL;
+                }
+
+                /* Create new type that inherits from parent */
+                Type_Info *derived = Type_New(parent->kind, S(""));
+                derived->parent_type = parent;
+                derived->size = parent->size;
+                derived->alignment = parent->alignment;
+                derived->low_bound = parent->low_bound;
+                derived->high_bound = parent->high_bound;
+
+                /* Copy kind-specific info */
+                if (parent->kind == TYPE_ENUMERATION) {
+                    derived->enumeration = parent->enumeration;
+                } else if (parent->kind == TYPE_ARRAY) {
+                    derived->array = parent->array;
+                } else if (parent->kind == TYPE_RECORD) {
+                    derived->record = parent->record;
+                } else if (parent->kind == TYPE_ACCESS) {
+                    derived->access = parent->access;
+                } else if (parent->kind == TYPE_FIXED) {
+                    derived->fixed = parent->fixed;
+                }
+
+                /* Apply constraint if present */
+                if (node->derived_type.constraint) {
+                    Resolve_Expression(sm, node->derived_type.constraint);
+                    /* Constraint would override bounds - handled in subtype_indication */
+                }
+
+                node->type = derived;
+                return derived;
+            }
+
         case NK_RECORD_TYPE:
             {
                 /* Create record type info from syntax node */
                 Type_Info *record_type = Type_New(TYPE_RECORD, S(""));
-                uint32_t comp_count = (uint32_t)node->record_type.components.count;
 
-                record_type->record.component_count = comp_count;
-                if (comp_count > 0) {
+                /* Count total components (each decl may have multiple names) */
+                uint32_t total_comps = 0;
+                for (uint32_t i = 0; i < node->record_type.components.count; i++) {
+                    Syntax_Node *comp = node->record_type.components.items[i];
+                    if (comp->kind == NK_COMPONENT_DECL) {
+                        total_comps += (uint32_t)comp->component.names.count;
+                    }
+                }
+
+                record_type->record.component_count = total_comps;
+                if (total_comps > 0) {
                     record_type->record.components = Arena_Allocate(
-                        comp_count * sizeof(Component_Info));
+                        total_comps * sizeof(Component_Info));
 
                     uint32_t offset = 0;
-                    for (uint32_t i = 0; i < comp_count; i++) {
+                    uint32_t comp_idx = 0;
+                    for (uint32_t i = 0; i < node->record_type.components.count; i++) {
                         Syntax_Node *comp = node->record_type.components.items[i];
-                        Component_Info *info = &record_type->record.components[i];
 
-                        /* Resolve component type */
                         if (comp->kind == NK_COMPONENT_DECL) {
+                            /* Resolve component type once for all names */
                             Resolve_Expression(sm, comp->component.component_type);
                             Type_Info *comp_type = comp->component.component_type ?
                                                    comp->component.component_type->type : sm->type_integer;
-
-                            info->name = comp->component.names.count > 0 ?
-                                        comp->component.names.items[0]->string_val.text : S("");
-                            info->component_type = comp_type;
-                            info->byte_offset = offset;
-                            info->bit_offset = 0;
-                            info->bit_size = comp_type ? comp_type->size * 8 : 64;
-
-                            /* Align to component size */
                             uint32_t comp_size = comp_type ? comp_type->size : 8;
-                            offset += comp_size;
+
+                            /* Create entry for each name in the declaration */
+                            for (uint32_t j = 0; j < comp->component.names.count; j++) {
+                                Component_Info *info = &record_type->record.components[comp_idx++];
+                                info->name = comp->component.names.items[j]->string_val.text;
+                                info->component_type = comp_type;
+                                info->byte_offset = offset;
+                                info->bit_offset = 0;
+                                info->bit_size = comp_type ? comp_type->size * 8 : 64;
+                                offset += comp_size;
+                            }
                         }
                     }
                     record_type->size = offset;
-                    record_type->alignment = 8;  /* Conservative alignment */
+                    record_type->alignment = 8;
                 }
 
                 node->type = record_type;
@@ -5448,9 +6197,241 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                     return constrained;
                 }
 
+                /* Check for scalar range constraint (ENUM RANGE A..B or INTEGER RANGE X..Y) */
+                if (constraint && constraint->kind == NK_RANGE_CONSTRAINT) {
+                    Syntax_Node *range = constraint->range_constraint.range;
+                    if (range) {
+                        Resolve_Expression(sm, range);
+
+                        /* Create a constrained subtype */
+                        Type_Info *constrained = Type_New(base_type->kind, base_type->name);
+                        constrained->base_type = base_type;
+                        constrained->size = base_type->size;
+                        constrained->alignment = base_type->alignment;
+
+                        /* Copy enumeration info if applicable */
+                        if (base_type->kind == TYPE_ENUMERATION) {
+                            constrained->enumeration = base_type->enumeration;
+                        }
+
+                        /* Set bounds from range */
+                        if (range->kind == NK_RANGE) {
+                            Syntax_Node *lo = range->range.low;
+                            Syntax_Node *hi = range->range.high;
+                            if (lo) {
+                                if (lo->kind == NK_INTEGER) {
+                                    constrained->low_bound = (Type_Bound){
+                                        .kind = BOUND_INTEGER,
+                                        .int_value = lo->integer_lit.value
+                                    };
+                                } else if (lo->kind == NK_UNARY_OP && lo->unary.operand &&
+                                           lo->unary.operand->kind == NK_INTEGER) {
+                                    int64_t val = lo->unary.operand->integer_lit.value;
+                                    if (lo->unary.op == TK_MINUS) val = -val;
+                                    constrained->low_bound = (Type_Bound){
+                                        .kind = BOUND_INTEGER,
+                                        .int_value = val
+                                    };
+                                } else if (lo->symbol) {
+                                    /* Enumeration literal */
+                                    constrained->low_bound = (Type_Bound){
+                                        .kind = BOUND_INTEGER,
+                                        .int_value = lo->symbol->frame_offset
+                                    };
+                                }
+                            }
+                            if (hi) {
+                                if (hi->kind == NK_INTEGER) {
+                                    constrained->high_bound = (Type_Bound){
+                                        .kind = BOUND_INTEGER,
+                                        .int_value = hi->integer_lit.value
+                                    };
+                                } else if (hi->kind == NK_UNARY_OP && hi->unary.operand &&
+                                           hi->unary.operand->kind == NK_INTEGER) {
+                                    int64_t val = hi->unary.operand->integer_lit.value;
+                                    if (hi->unary.op == TK_MINUS) val = -val;
+                                    constrained->high_bound = (Type_Bound){
+                                        .kind = BOUND_INTEGER,
+                                        .int_value = val
+                                    };
+                                } else if (hi->symbol) {
+                                    /* Enumeration literal */
+                                    constrained->high_bound = (Type_Bound){
+                                        .kind = BOUND_INTEGER,
+                                        .int_value = hi->symbol->frame_offset
+                                    };
+                                }
+                            }
+                        }
+
+                        node->type = constrained;
+                        return constrained;
+                    }
+                }
+
+                /* Check for discriminant constraint (REC(A => E1, B => E2) style)
+                 * Discriminant constraints use named associations where the choices
+                 * are discriminant names - they should NOT be resolved as identifiers.
+                 * Only the value expressions should be resolved. */
+                if (constraint && constraint->kind == NK_DISCRIMINANT_CONSTRAINT) {
+                    for (uint32_t i = 0; i < constraint->discriminant_constraint.associations.count; i++) {
+                        Syntax_Node *assoc = constraint->discriminant_constraint.associations.items[i];
+                        if (assoc->kind == NK_ASSOCIATION && assoc->association.expression) {
+                            /* Only resolve the value expression, not the choices */
+                            Resolve_Expression(sm, assoc->association.expression);
+                        }
+                    }
+                    /* Return the base type */
+                    node->type = base_type;
+                    return base_type;
+                }
+
                 /* Otherwise just use base type */
                 node->type = base_type;
                 return base_type;
+            }
+
+        case NK_INTEGER_TYPE:
+            {
+                /* Integer type definition: range L .. H or mod M */
+                Type_Info *int_type = Type_New(TYPE_INTEGER, S(""));
+
+                /* Resolve range bounds if present */
+                if (node->integer_type.range) {
+                    Resolve_Expression(sm, node->integer_type.range);
+                    Syntax_Node *range = node->integer_type.range;
+                    if (range->kind == NK_RANGE && range->range.low && range->range.high) {
+                        /* Extract low bound - handle integer literals and unary minus */
+                        Syntax_Node *lo = range->range.low;
+                        if (lo->kind == NK_INTEGER) {
+                            int_type->low_bound = (Type_Bound){
+                                .kind = BOUND_INTEGER,
+                                .int_value = lo->integer_lit.value
+                            };
+                        } else if (lo->kind == NK_UNARY_OP && lo->unary.operand &&
+                                   lo->unary.operand->kind == NK_INTEGER) {
+                            int64_t val = lo->unary.operand->integer_lit.value;
+                            if (lo->unary.op == TK_MINUS) val = -val;
+                            int_type->low_bound = (Type_Bound){
+                                .kind = BOUND_INTEGER,
+                                .int_value = val
+                            };
+                        }
+                        /* Extract high bound - handle integer literals and unary minus */
+                        Syntax_Node *hi = range->range.high;
+                        if (hi->kind == NK_INTEGER) {
+                            int_type->high_bound = (Type_Bound){
+                                .kind = BOUND_INTEGER,
+                                .int_value = hi->integer_lit.value
+                            };
+                        } else if (hi->kind == NK_UNARY_OP && hi->unary.operand &&
+                                   hi->unary.operand->kind == NK_INTEGER) {
+                            int64_t val = hi->unary.operand->integer_lit.value;
+                            if (hi->unary.op == TK_MINUS) val = -val;
+                            int_type->high_bound = (Type_Bound){
+                                .kind = BOUND_INTEGER,
+                                .int_value = val
+                            };
+                        }
+                    }
+                }
+
+                /* Compute appropriate size */
+                int_type->size = 8;  /* Default to 64-bit */
+                int_type->alignment = 8;
+                node->type = int_type;
+                return int_type;
+            }
+
+        case NK_REAL_TYPE:
+            {
+                /* Real type definition: digits D or delta D */
+                if (node->real_type.delta) {
+                    /* Fixed-point type: TYPE_FIXED with delta */
+                    Type_Info *fixed_type = Type_New(TYPE_FIXED, S(""));
+                    Resolve_Expression(sm, node->real_type.delta);
+
+                    /* Extract delta value */
+                    double delta = 0.0;
+                    if (node->real_type.delta->kind == NK_REAL) {
+                        delta = node->real_type.delta->real_lit.value;
+                    } else if (node->real_type.delta->kind == NK_INTEGER) {
+                        delta = (double)node->real_type.delta->integer_lit.value;
+                    } else {
+                        delta = 0.001;  /* Default fallback */
+                    }
+
+                    /* Compute small as largest power of 2 <= delta (per RM 3.5.9) */
+                    double small = 1.0;
+                    if (delta > 0.0) {
+                        /* Find largest 2^n <= delta */
+                        while (small > delta) small /= 2.0;
+                        while (small * 2.0 <= delta) small *= 2.0;
+                    }
+
+                    /* Compute scale factor: small = 2^scale */
+                    int scale = 0;
+                    double temp = small;
+                    if (temp >= 1.0) {
+                        while (temp >= 2.0) { temp /= 2.0; scale++; }
+                    } else {
+                        while (temp < 1.0) { temp *= 2.0; scale--; }
+                    }
+
+                    fixed_type->fixed.delta = delta;
+                    fixed_type->fixed.small = small;
+                    fixed_type->fixed.scale = scale;
+
+                    /* Resolve range if present */
+                    if (node->real_type.range) {
+                        Resolve_Expression(sm, node->real_type.range);
+                        Syntax_Node *range = node->real_type.range;
+                        if (range->kind == NK_RANGE) {
+                            if (range->range.low && range->range.low->kind == NK_REAL) {
+                                fixed_type->low_bound = (Type_Bound){
+                                    .kind = BOUND_FLOAT,
+                                    .float_value = range->range.low->real_lit.value
+                                };
+                            }
+                            if (range->range.high && range->range.high->kind == NK_REAL) {
+                                fixed_type->high_bound = (Type_Bound){
+                                    .kind = BOUND_FLOAT,
+                                    .float_value = range->range.high->real_lit.value
+                                };
+                            }
+                        }
+                    }
+
+                    /* Size: typically 32 or 64 bits depending on range and precision */
+                    fixed_type->size = 8;  /* 64-bit for safe default */
+                    fixed_type->alignment = 8;
+                    node->type = fixed_type;
+                    return fixed_type;
+                } else {
+                    /* Floating-point type: digits D */
+                    Type_Info *float_type = Type_New(TYPE_FLOAT, S(""));
+
+                    /* Resolve digits expression */
+                    if (node->real_type.precision) {
+                        Resolve_Expression(sm, node->real_type.precision);
+                    }
+
+                    /* Resolve range if present */
+                    if (node->real_type.range) {
+                        Resolve_Expression(sm, node->real_type.range);
+                    }
+
+                    /* Size based on digits: <=6 = float, >6 = double */
+                    int digits = 15;  /* Default double precision */
+                    if (node->real_type.precision &&
+                        node->real_type.precision->kind == NK_INTEGER) {
+                        digits = (int)node->real_type.precision->integer_lit.value;
+                    }
+                    float_type->size = (digits <= 6) ? 4 : 8;
+                    float_type->alignment = float_type->size;
+                    node->type = float_type;
+                    return float_type;
+                }
             }
 
         default:
@@ -5520,14 +6501,42 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
             break;
 
         case NK_LOOP:
-            if (node->loop_stmt.iteration_scheme) {
-                Resolve_Expression(sm, node->loop_stmt.iteration_scheme);
+            {
+                Syntax_Node *iter = node->loop_stmt.iteration_scheme;
+                bool is_for_loop = iter && iter->kind == NK_BINARY_OP &&
+                                   iter->binary.op == TK_IN;
+                if (is_for_loop) {
+                    /* FOR loop - create loop variable in new scope.
+                     * Inherit owner from enclosing scope for proper name mangling */
+                    Symbol *enclosing_owner = sm->current_scope->owner;
+                    Symbol_Manager_Push_Scope(sm, enclosing_owner);
+                    Syntax_Node *loop_id = iter->binary.left;
+                    /* Resolve range expression FIRST to get its type */
+                    Resolve_Expression(sm, iter->binary.right);
+                    if (loop_id && loop_id->kind == NK_IDENTIFIER) {
+                        Symbol *loop_var = Symbol_New(SYMBOL_VARIABLE,
+                                                      loop_id->string_val.text,
+                                                      loop_id->location);
+                        /* Loop variable type comes from the range expression.
+                         * For X IN A..B, the range's type is the type of the bounds */
+                        Type_Info *range_type = iter->binary.right->type;
+                        loop_var->type = range_type ? range_type : sm->type_integer;
+                        Symbol_Add(sm, loop_var);
+                        loop_id->symbol = loop_var;
+                    }
+                    Resolve_Statement_List(sm, &node->loop_stmt.statements);
+                    Symbol_Manager_Pop_Scope(sm);
+                } else {
+                    /* WHILE or bare LOOP */
+                    if (iter) Resolve_Expression(sm, iter);
+                    Resolve_Statement_List(sm, &node->loop_stmt.statements);
+                }
             }
-            Resolve_Statement_List(sm, &node->loop_stmt.statements);
             break;
 
         case NK_BLOCK:
-            Symbol_Manager_Push_Scope(sm, NULL);
+            /* Inherit owner from enclosing scope for proper symbol parenting */
+            Symbol_Manager_Push_Scope(sm, sm->current_scope->owner);
             /* Resolve declarations first (adds symbols to scope) */
             Resolve_Declaration_List(sm, &node->block_stmt.declarations);
             /* Freeze all types at end of declarative part (RM 13.14) */
@@ -5587,6 +6596,8 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
  * ───────────────────────────────────────────────────────────────────────── */
 
 static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node);
+static char *Lookup_Path(String_Slice name);
+static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src);
 
 static void Resolve_Declaration_List(Symbol_Manager *sm, Node_List *list) {
     for (uint32_t i = 0; i < list->count; i++) {
@@ -5637,8 +6648,12 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                     Freeze_Type(node->object_decl.object_type->type);
                 }
             }
-            /* Resolve initializer */
+            /* Resolve initializer - propagate type to aggregates first */
             if (node->object_decl.init) {
+                if (node->object_decl.init->kind == NK_AGGREGATE &&
+                    node->object_decl.object_type && node->object_decl.object_type->type) {
+                    node->object_decl.init->type = node->object_decl.object_type->type;
+                }
                 Resolve_Expression(sm, node->object_decl.init);
             }
             /* Add symbols for each name */
@@ -5664,6 +6679,33 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                 Symbol_Add(sm, sym);
                 node->symbol = sym;
 
+                /* For discriminated types, add discriminant symbols to scope first
+                 * so they can be referenced in the type definition (e.g., CASE A IS) */
+                bool has_discriminants = node->type_decl.discriminants.count > 0;
+                if (has_discriminants) {
+                    Symbol_Manager_Push_Scope(sm, sym);
+                    for (uint32_t i = 0; i < node->type_decl.discriminants.count; i++) {
+                        Syntax_Node *disc_spec = node->type_decl.discriminants.items[i];
+                        if (disc_spec->kind == NK_DISCRIMINANT_SPEC) {
+                            /* Resolve discriminant type first */
+                            Type_Info *disc_type = sm->type_integer;
+                            if (disc_spec->discriminant.disc_type) {
+                                disc_type = Resolve_Expression(sm, disc_spec->discriminant.disc_type);
+                            }
+                            /* Add each discriminant name as a symbol */
+                            for (uint32_t j = 0; j < disc_spec->discriminant.names.count; j++) {
+                                Syntax_Node *name_node = disc_spec->discriminant.names.items[j];
+                                Symbol *disc_sym = Symbol_New(SYMBOL_VARIABLE, name_node->string_val.text,
+                                                              name_node->location);
+                                disc_sym->type = disc_type;
+                                disc_sym->parent = sym;
+                                Symbol_Add(sm, disc_sym);
+                                name_node->symbol = disc_sym;
+                            }
+                        }
+                    }
+                }
+
                 /* Resolve definition and copy type info */
                 if (node->type_decl.definition) {
                     Type_Info *def_type = Resolve_Expression(sm, node->type_decl.definition);
@@ -5683,8 +6725,28 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                             type->access = def_type->access;
                         } else if (def_type->kind == TYPE_ENUMERATION) {
                             type->enumeration = def_type->enumeration;
+
+                            /* Create symbols for enumeration literals
+                             * They must reference the named type (type), not the anonymous def_type */
+                            if (node->type_decl.definition &&
+                                node->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
+                                Node_List *lits = &node->type_decl.definition->enum_type.literals;
+                                for (uint32_t i = 0; i < lits->count; i++) {
+                                    Syntax_Node *lit = lits->items[i];
+                                    Symbol *lit_sym = Symbol_New(SYMBOL_LITERAL, lit->string_val.text, lit->location);
+                                    lit_sym->type = type;  /* Reference the named type */
+                                    lit_sym->frame_offset = (int64_t)i;  /* Store ordinal position */
+                                    Symbol_Add(sm, lit_sym);
+                                    lit->symbol = lit_sym;
+                                }
+                            }
                         }
                     }
+                }
+
+                /* Pop discriminant scope if we pushed one */
+                if (has_discriminants) {
+                    Symbol_Manager_Pop_Scope(sm);
                 }
             }
             break;
@@ -5829,9 +6891,114 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
             }
             break;
 
+        case NK_TASK_SPEC:
+            {
+                /* Task declaration creates a task type and optionally an object */
+                Symbol *type_sym = Symbol_New(SYMBOL_TYPE, node->task_spec.name, node->location);
+                Type_Info *type = Type_New(TYPE_TASK, node->task_spec.name);
+                type_sym->type = type;
+                type->defining_symbol = type_sym;
+                type_sym->declaration = node;
+                Symbol_Add(sm, type_sym);
+                node->symbol = type_sym;
+
+                /* If not a task TYPE, also create an object of that type */
+                if (!node->task_spec.is_type) {
+                    Symbol *obj_sym = Symbol_New(SYMBOL_VARIABLE, node->task_spec.name, node->location);
+                    obj_sym->type = type;
+                    obj_sym->declaration = node;
+                    /* Add the object symbol - it will shadow the type for normal lookups */
+                    Symbol_Add(sm, obj_sym);
+                }
+
+                /* Push scope for task entries */
+                Symbol_Manager_Push_Scope(sm, type_sym);
+
+                /* Resolve and add entry declarations */
+                for (uint32_t i = 0; i < node->task_spec.entries.count; i++) {
+                    Syntax_Node *entry = node->task_spec.entries.items[i];
+                    if (entry->kind == NK_ENTRY_DECL) {
+                        Symbol *entry_sym = Symbol_New(SYMBOL_ENTRY,
+                            entry->entry_decl.name, entry->location);
+                        entry_sym->declaration = entry;
+                        entry_sym->parent = type_sym;
+
+                        /* Count entry parameters */
+                        uint32_t param_count = 0;
+                        for (uint32_t j = 0; j < entry->entry_decl.parameters.count; j++) {
+                            Syntax_Node *ps = entry->entry_decl.parameters.items[j];
+                            if (ps->kind == NK_PARAM_SPEC) {
+                                param_count += ps->param_spec.names.count;
+                            }
+                        }
+                        entry_sym->parameter_count = param_count;
+                        if (param_count > 0) {
+                            entry_sym->parameters = Arena_Allocate(param_count * sizeof(Parameter_Info));
+                            uint32_t pi = 0;
+                            for (uint32_t j = 0; j < entry->entry_decl.parameters.count; j++) {
+                                Syntax_Node *ps = entry->entry_decl.parameters.items[j];
+                                if (ps->kind == NK_PARAM_SPEC) {
+                                    if (ps->param_spec.param_type) {
+                                        Resolve_Expression(sm, ps->param_spec.param_type);
+                                    }
+                                    for (uint32_t k = 0; k < ps->param_spec.names.count; k++) {
+                                        entry_sym->parameters[pi].name = ps->param_spec.names.items[k]->string_val.text;
+                                        entry_sym->parameters[pi].param_type = ps->param_spec.param_type ?
+                                            ps->param_spec.param_type->type : NULL;
+                                        entry_sym->parameters[pi].mode = (Parameter_Mode)ps->param_spec.mode;
+                                        pi++;
+                                    }
+                                }
+                            }
+                        }
+                        Symbol_Add(sm, entry_sym);
+                        entry->symbol = entry_sym;
+
+                        /* Add entry to type's exported symbols */
+                        if (type_sym->exported_count < 100) {
+                            if (!type_sym->exported) {
+                                type_sym->exported = Arena_Allocate(100 * sizeof(Symbol*));
+                            }
+                            type_sym->exported[type_sym->exported_count++] = entry_sym;
+                        }
+                    }
+                }
+                Symbol_Manager_Pop_Scope(sm);
+            }
+            break;
+
+        case NK_TASK_BODY:
+            {
+                /* Find the task spec symbol */
+                Symbol *task_sym = Symbol_Find(sm, node->task_body.name);
+                if (!task_sym) {
+                    /* Create a symbol for the task body if spec wasn't found */
+                    task_sym = Symbol_New(SYMBOL_PROCEDURE, node->task_body.name, node->location);
+                    task_sym->declaration = node;
+                    Symbol_Add(sm, task_sym);
+                }
+                node->symbol = task_sym;
+
+                /* Push scope for task body */
+                Symbol_Manager_Push_Scope(sm, task_sym);
+
+                /* Resolve declarations and statements */
+                Resolve_Declaration_List(sm, &node->task_body.declarations);
+                Resolve_Statement_List(sm, &node->task_body.statements);
+
+                /* Resolve exception handlers */
+                for (uint32_t i = 0; i < node->task_body.handlers.count; i++) {
+                    Resolve_Statement(sm, node->task_body.handlers.items[i]);
+                }
+
+                Symbol_Manager_Pop_Scope(sm);
+            }
+            break;
+
         case NK_PACKAGE_SPEC:
             {
                 Symbol *sym = Symbol_New(SYMBOL_PACKAGE, node->package_spec.name, node->location);
+                sym->declaration = node;  /* Store declaration for body to find */
                 Symbol_Add(sm, sym);
                 node->symbol = sym;
 
@@ -5847,7 +7014,122 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
 
         case NK_PACKAGE_BODY:
             {
-                Symbol_Manager_Push_Scope(sm, NULL);
+                /* Find or create package symbol for proper name mangling */
+                Symbol *pkg_sym = NULL;
+                String_Slice pkg_name = node->package_body.name;
+                if (pkg_name.length > 0) {
+                    pkg_sym = Symbol_Find(sm, pkg_name);
+                    if (!pkg_sym) {
+                        /* Try to load corresponding package spec first.
+                         * This ensures body uses same symbol IDs as spec */
+                        char *spec_src = Lookup_Path(pkg_name);
+                        if (spec_src) {
+                            Load_Package_Spec(sm, pkg_name, spec_src);
+                            pkg_sym = Symbol_Find(sm, pkg_name);
+                        }
+                        if (!pkg_sym) {
+                            /* Create package symbol if spec not found */
+                            pkg_sym = Symbol_New(SYMBOL_PACKAGE, pkg_name, node->location);
+                            Symbol_Add(sm, pkg_sym);
+                        }
+                    }
+                    node->symbol = pkg_sym;
+                }
+                Symbol_Manager_Push_Scope(sm, pkg_sym);
+
+                /* Install visible and private declarations from package spec
+                 * into the body's scope (RM 7.1, 7.2) */
+                Syntax_Node *spec = NULL;
+
+                /* Handle generic packages: formals and unit are in the generic declaration */
+                if (pkg_sym && pkg_sym->kind == SYMBOL_GENERIC) {
+                    /* Install generic formal parameters first */
+                    if (pkg_sym->declaration &&
+                        pkg_sym->declaration->kind == NK_GENERIC_DECL) {
+                        Node_List *formals = &pkg_sym->declaration->generic_decl.formals;
+                        for (uint32_t i = 0; i < formals->count; i++) {
+                            Syntax_Node *formal = formals->items[i];
+                            if (formal->symbol) {
+                                Symbol_Add(sm, formal->symbol);
+                            }
+                            /* For generic type parameters, create/install a type symbol */
+                            if (formal->kind == NK_GENERIC_TYPE_PARAM && !formal->symbol) {
+                                Symbol *type_sym = Symbol_New(SYMBOL_TYPE,
+                                    formal->generic_type_param.name, formal->location);
+                                Type_Info *type = Type_New(TYPE_PRIVATE,
+                                    formal->generic_type_param.name);
+                                type_sym->type = type;
+                                formal->symbol = type_sym;
+                                Symbol_Add(sm, type_sym);
+                            }
+                        }
+                    }
+                    /* Get the package spec from the generic unit */
+                    spec = pkg_sym->generic_unit;
+
+                    /* For generic package body, resolve the spec first if not done */
+                    if (spec && spec->kind == NK_PACKAGE_SPEC) {
+                        /* Resolve visible declarations (with formals now visible) */
+                        Resolve_Declaration_List(sm, &spec->package_spec.visible_decls);
+                        /* Resolve private declarations */
+                        Resolve_Declaration_List(sm, &spec->package_spec.private_decls);
+                    }
+                } else if (pkg_sym && pkg_sym->declaration &&
+                           pkg_sym->declaration->kind == NK_PACKAGE_SPEC) {
+                    spec = pkg_sym->declaration;
+                }
+
+                if (spec && spec->kind == NK_PACKAGE_SPEC) {
+
+                    /* Install visible declarations */
+                    for (uint32_t i = 0; i < spec->package_spec.visible_decls.count; i++) {
+                        Syntax_Node *decl = spec->package_spec.visible_decls.items[i];
+                        if (decl->symbol) {
+                            Symbol_Add(sm, decl->symbol);
+                        }
+                        /* Also install names from object declarations */
+                        if (decl->kind == NK_OBJECT_DECL) {
+                            for (uint32_t j = 0; j < decl->object_decl.names.count; j++) {
+                                Syntax_Node *name = decl->object_decl.names.items[j];
+                                if (name->symbol) Symbol_Add(sm, name->symbol);
+                            }
+                        }
+                        /* Install enum literals */
+                        if (decl->kind == NK_TYPE_DECL && decl->type_decl.definition &&
+                            decl->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
+                            Node_List *lits = &decl->type_decl.definition->enum_type.literals;
+                            for (uint32_t j = 0; j < lits->count; j++) {
+                                if (lits->items[j]->symbol) {
+                                    Symbol_Add(sm, lits->items[j]->symbol);
+                                }
+                            }
+                        }
+                    }
+
+                    /* Install private declarations */
+                    for (uint32_t i = 0; i < spec->package_spec.private_decls.count; i++) {
+                        Syntax_Node *decl = spec->package_spec.private_decls.items[i];
+                        if (decl->symbol) {
+                            Symbol_Add(sm, decl->symbol);
+                        }
+                        if (decl->kind == NK_OBJECT_DECL) {
+                            for (uint32_t j = 0; j < decl->object_decl.names.count; j++) {
+                                Syntax_Node *name = decl->object_decl.names.items[j];
+                                if (name->symbol) Symbol_Add(sm, name->symbol);
+                            }
+                        }
+                        if (decl->kind == NK_TYPE_DECL && decl->type_decl.definition &&
+                            decl->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
+                            Node_List *lits = &decl->type_decl.definition->enum_type.literals;
+                            for (uint32_t j = 0; j < lits->count; j++) {
+                                if (lits->items[j]->symbol) {
+                                    Symbol_Add(sm, lits->items[j]->symbol);
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Resolve_Declaration_List(sm, &node->package_body.declarations);
                 /* Freeze all types at end of declarative part (RM 13.14) */
                 Freeze_Declaration_List(&node->package_body.declarations);
@@ -5857,10 +7139,50 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
             break;
 
         case NK_USE_CLAUSE:
-            /* Make package contents visible */
+            /* Make package contents directly visible (Ada 83 8.4)
+             * "A use clause achieves direct visibility of declarations
+             *  that appear in the visible parts of the named packages" */
             for (uint32_t i = 0; i < node->use_clause.names.count; i++) {
-                Resolve_Expression(sm, node->use_clause.names.items[i]);
-                /* Would mark symbols as use-visible here */
+                Syntax_Node *pkg_name_node = node->use_clause.names.items[i];
+                Resolve_Expression(sm, pkg_name_node);
+
+                /* Find the package symbol */
+                Symbol *pkg_sym = NULL;
+                if (pkg_name_node->kind == NK_IDENTIFIER) {
+                    pkg_sym = Symbol_Find(sm, pkg_name_node->string_val.text);
+                } else if (pkg_name_node->symbol) {
+                    pkg_sym = pkg_name_node->symbol;
+                }
+
+                /* Make visible declarations from package accessible */
+                if (pkg_sym && pkg_sym->kind == SYMBOL_PACKAGE && pkg_sym->declaration) {
+                    Syntax_Node *pkg_decl = pkg_sym->declaration;
+                    if (pkg_decl->kind == NK_PACKAGE_SPEC) {
+                        /* Iterate visible declarations and add to current scope */
+                        for (uint32_t j = 0; j < pkg_decl->package_spec.visible_decls.count; j++) {
+                            Syntax_Node *decl = pkg_decl->package_spec.visible_decls.items[j];
+                            if (decl && decl->symbol) {
+                                /* Create a use-visible alias in current scope */
+                                Symbol *alias = Symbol_New(decl->symbol->kind,
+                                                           decl->symbol->name,
+                                                           decl->symbol->location);
+                                alias->type = decl->symbol->type;
+                                alias->declaration = decl->symbol->declaration;
+                                alias->visibility = VIS_USE_VISIBLE;
+                                alias->parameter_count = decl->symbol->parameter_count;
+                                alias->parameters = decl->symbol->parameters;
+                                alias->return_type = decl->symbol->return_type;
+                                Symbol_Add(sm, alias);
+                                /* Restore original symbol's identity for name mangling.
+                                 * Symbol_Add sets parent/unique_id to local scope values,
+                                 * but USE-visible symbols must retain original identity
+                                 * so @REPORT__TEST_S5 not @A21001A__TEST_S99 is emitted */
+                                alias->parent = decl->symbol->parent;
+                                alias->unique_id = decl->symbol->unique_id;
+                            }
+                        }
+                    }
+                }
             }
             break;
 
@@ -6050,9 +7372,9 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                     }
                 }
 
-                /* pragma Pure, pragma Preelaborate, etc. - informational only */
+                /* pragma Pure, pragma Preelaborate - informational only */
                 /* pragma Elaborate, pragma Elaborate_All - handled at link time */
-                /* pragma Restrictions - not implemented */
+                /* pragma Restrictions - Ada 95 feature, not applicable to Ada 83 */
             }
             break;
 
@@ -6285,6 +7607,119 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
             }
             break;
 
+        case NK_REPRESENTATION_CLAUSE:
+            /* Representation clause: FOR T'SIZE USE 32; or FOR T USE RECORD ... */
+            {
+                /* Resolve entity name */
+                if (node->rep_clause.entity_name) {
+                    Resolve_Expression(sm, node->rep_clause.entity_name);
+
+                    /* Get target type or symbol */
+                    Symbol *target_sym = NULL;
+                    if (node->rep_clause.entity_name->kind == NK_IDENTIFIER) {
+                        target_sym = Symbol_Find(sm, node->rep_clause.entity_name->string_val.text);
+                    } else if (node->rep_clause.entity_name->symbol) {
+                        target_sym = node->rep_clause.entity_name->symbol;
+                    }
+
+                    Type_Info *target_type = target_sym ? target_sym->type : NULL;
+
+                    /* Process attribute clauses: FOR T'SIZE USE 32; */
+                    if (node->rep_clause.attribute.data && target_type) {
+                        String_Slice attr = node->rep_clause.attribute;
+
+                        if (node->rep_clause.expression) {
+                            Resolve_Expression(sm, node->rep_clause.expression);
+                            int64_t value = 0;
+
+                            /* Extract constant value */
+                            if (node->rep_clause.expression->kind == NK_INTEGER) {
+                                value = node->rep_clause.expression->integer_lit.value;
+                            }
+
+                            /* Apply representation */
+                            if (Slice_Equal_Ignore_Case(attr, S("SIZE"))) {
+                                /* Size in bits - convert to bytes */
+                                target_type->size = (uint32_t)((value + 7) / 8);
+                            } else if (Slice_Equal_Ignore_Case(attr, S("ALIGNMENT"))) {
+                                target_type->alignment = (uint32_t)value;
+                            } else if (Slice_Equal_Ignore_Case(attr, S("STORAGE_SIZE"))) {
+                                /* For task types: storage for task stack */
+                                /* Would store in target_sym or target_type */
+                            } else if (Slice_Equal_Ignore_Case(attr, S("SMALL"))) {
+                                /* For fixed-point: set small value */
+                                if (target_type->kind == TYPE_FIXED &&
+                                    node->rep_clause.expression->kind == NK_REAL) {
+                                    target_type->fixed.small =
+                                        node->rep_clause.expression->real_lit.value;
+                                }
+                            }
+                        }
+                    }
+
+                    /* Process record representation: FOR T USE RECORD ... */
+                    if (node->rep_clause.is_record_rep && target_type &&
+                        target_type->kind == TYPE_RECORD) {
+                        /* Process alignment clause */
+                        if (node->rep_clause.expression) {
+                            Resolve_Expression(sm, node->rep_clause.expression);
+                            if (node->rep_clause.expression->kind == NK_INTEGER) {
+                                target_type->alignment =
+                                    (uint32_t)node->rep_clause.expression->integer_lit.value;
+                            }
+                        }
+
+                        /* Process component clauses (record layout)
+                         * Each clause: component_name AT byte_position [RANGE bits]; */
+                        for (uint32_t i = 0; i < node->rep_clause.component_clauses.count; i++) {
+                            Syntax_Node *cc = node->rep_clause.component_clauses.items[i];
+                            if (cc->kind == NK_ASSOCIATION && cc->association.choices.count > 0) {
+                                Syntax_Node *name_node = cc->association.choices.items[0];
+                                if (name_node && name_node->kind == NK_IDENTIFIER) {
+                                    String_Slice comp_name = name_node->string_val.text;
+                                    /* Find matching component in record type */
+                                    for (uint32_t j = 0; j < target_type->record.component_count; j++) {
+                                        Component_Info *comp = &target_type->record.components[j];
+                                        if (Slice_Equal_Ignore_Case(comp->name, comp_name)) {
+                                            /* Get byte offset from expression */
+                                            Syntax_Node *pos_expr = cc->association.expression;
+                                            if (pos_expr && pos_expr->kind == NK_INTEGER) {
+                                                comp->byte_offset = (uint32_t)pos_expr->integer_lit.value;
+                                            }
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    /* Process enumeration representation: FOR T USE (val0, val1, ...); */
+                    if (node->rep_clause.is_enum_rep && target_type &&
+                        target_type->kind == TYPE_ENUMERATION) {
+                        /* Store internal representation values for enum literals
+                         * The component_clauses list contains the values in order */
+                        uint32_t val_count = node->rep_clause.component_clauses.count;
+                        if (val_count > 0 && val_count <= target_type->enumeration.literal_count) {
+                            /* Allocate array for representation values */
+                            target_type->enumeration.rep_values =
+                                Arena_Allocate(val_count * sizeof(int64_t));
+                            for (uint32_t i = 0; i < val_count; i++) {
+                                Syntax_Node *val_node = node->rep_clause.component_clauses.items[i];
+                                if (val_node && val_node->kind == NK_INTEGER) {
+                                    target_type->enumeration.rep_values[i] =
+                                        val_node->integer_lit.value;
+                                } else {
+                                    /* Default to position value */
+                                    target_type->enumeration.rep_values[i] = (int64_t)i;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            break;
+
         default:
             break;
     }
@@ -6413,17 +7848,19 @@ static void Emit_String_Const(Code_Generator *cg, const char *format, ...) {
     char temp[1024];
     int len = vsnprintf(temp, sizeof(temp), format, args);
     va_end(args);
+    if (len < 0) return;  /* Format error */
+    size_t slen = (size_t)len;
 
     /* Expand buffer if needed */
-    while (cg->string_const_size + len + 1 > cg->string_const_capacity) {
+    while (cg->string_const_size + slen + 1 > cg->string_const_capacity) {
         size_t new_cap = cg->string_const_capacity * 2;
         char *new_buf = Arena_Allocate(new_cap);
         memcpy(new_buf, cg->string_const_buffer, cg->string_const_size);
         cg->string_const_buffer = new_buf;
         cg->string_const_capacity = new_cap;
     }
-    memcpy(cg->string_const_buffer + cg->string_const_size, temp, len);
-    cg->string_const_size += len;
+    memcpy(cg->string_const_buffer + cg->string_const_size, temp, slen);
+    cg->string_const_size += slen;
     cg->string_const_buffer[cg->string_const_size] = '\0';
 }
 
@@ -6466,7 +7903,21 @@ static void Emit_Symbol_Name(Code_Generator *cg, Symbol *sym) {
         return;
     }
 
-    /* Build mangled name: parent_scope__name__unique_id */
+    /* For imported symbols with external name, use that directly */
+    if (sym->is_imported && sym->external_name.length > 0) {
+        /* External name is a string literal, strip quotes if present */
+        String_Slice name = sym->external_name;
+        if (name.length >= 2 && name.data[0] == '"' && name.data[name.length-1] == '"') {
+            name.data++;
+            name.length -= 2;
+        }
+        for (uint32_t i = 0; i < name.length; i++) {
+            fputc(name.data[i], cg->output);
+        }
+        return;
+    }
+
+    /* Build mangled name: parent_scope__name[__unique_id] */
     if (sym->parent) {
         Emit_Symbol_Name(cg, sym->parent);
         Emit(cg, "__");
@@ -6484,7 +7935,14 @@ static void Emit_Symbol_Name(Code_Generator *cg, Symbol *sym) {
         }
     }
 
-    Emit(cg, "_S%u", sym->unique_id);
+    /* Only add unique_id suffix for local/nested symbols, not package-level.
+     * Package-level symbols (parent is a package or no parent) use just the
+     * qualified name for cross-compilation linking. Local symbols need the
+     * unique_id to disambiguate nested scopes with same names. */
+    bool is_package_level = !sym->parent || sym->parent->kind == SYMBOL_PACKAGE;
+    if (!is_package_level) {
+        Emit(cg, "_S%u", sym->unique_id);
+    }
 }
 
 /* Emit type conversion if needed (sext/trunc for integers) */
@@ -6498,14 +7956,23 @@ static uint32_t Emit_Convert(Code_Generator *cg, uint32_t src, const char *src_t
     if (strcmp(src_type, "i32") == 0) src_bits = 32;
     else if (strcmp(src_type, "i16") == 0) src_bits = 16;
     else if (strcmp(src_type, "i8") == 0) src_bits = 8;
+    else if (strcmp(src_type, "i1") == 0) src_bits = 1;
     if (strcmp(dst_type, "i32") == 0) dst_bits = 32;
     else if (strcmp(dst_type, "i16") == 0) dst_bits = 16;
     else if (strcmp(dst_type, "i8") == 0) dst_bits = 8;
+    else if (strcmp(dst_type, "i1") == 0) dst_bits = 1;
 
     if (dst_bits > src_bits) {
         Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", t, src_type, src, dst_type);
     } else if (dst_bits < src_bits) {
-        Emit(cg, "  %%t%u = trunc %s %%t%u to %s\n", t, src_type, src, dst_type);
+        /* For boolean conversion (to i1), use icmp ne 0 to preserve semantics:
+         * any non-zero value becomes true (1), zero becomes false (0).
+         * Simple trunc would only check the low bit, losing 2 -> false. */
+        if (dst_bits == 1) {
+            Emit(cg, "  %%t%u = icmp ne %s %%t%u, 0\n", t, src_type, src);
+        } else {
+            Emit(cg, "  %%t%u = trunc %s %%t%u to %s\n", t, src_type, src, dst_type);
+        }
     } else {
         return src;  /* Same size, no conversion */
     }
@@ -6613,6 +8080,38 @@ static uint32_t Emit_Fat_Pointer_Dynamic(Code_Generator *cg, uint32_t data_ptr,
     return fat_val;
 }
 
+/* Compute length from fat pointer bounds: high - low + 1
+ * Returns temp ID holding the i64 length */
+static uint32_t Emit_Fat_Pointer_Length(Code_Generator *cg, uint32_t fat_ptr) {
+    uint32_t low = Emit_Fat_Pointer_Low(cg, fat_ptr);
+    uint32_t high = Emit_Fat_Pointer_High(cg, fat_ptr);
+    uint32_t diff = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", diff, high, low);
+    uint32_t len = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", len, diff);
+    return len;
+}
+
+/* Copy data from fat pointer to a named destination
+ * Emits: memcpy(dst, src_data, length) */
+static void Emit_Fat_Pointer_Copy_To_Name(Code_Generator *cg, uint32_t fat_ptr, Symbol *dst) {
+    uint32_t src_ptr = Emit_Fat_Pointer_Data(cg, fat_ptr);
+    uint32_t len = Emit_Fat_Pointer_Length(cg, fat_ptr);
+    Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%");
+    Emit_Symbol_Name(cg, dst);
+    Emit(cg, ", ptr %%t%u, i64 %%t%u, i1 false)\n", src_ptr, len);
+}
+
+/* Copy data from fat pointer to a temp pointer destination
+ * Emits: memcpy(dst_ptr, src_data, length) */
+__attribute__((unused))
+static void Emit_Fat_Pointer_Copy_To_Ptr(Code_Generator *cg, uint32_t fat_ptr, uint32_t dst_ptr) {
+    uint32_t src_ptr = Emit_Fat_Pointer_Data(cg, fat_ptr);
+    uint32_t len = Emit_Fat_Pointer_Length(cg, fat_ptr);
+    Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
+         dst_ptr, src_ptr, len);
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
  * §13.3 Expression Code Generation
  *
@@ -6700,6 +8199,9 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
             bool is_uplevel = cg->current_function && var_owner &&
                               var_owner != cg->current_function;
 
+            /* Check if package-level global (parent is NULL or SYMBOL_PACKAGE) */
+            bool is_global = !sym->parent || sym->parent->kind == SYMBOL_PACKAGE;
+
             const char *type_str = Type_To_Llvm(ty);
             if (is_uplevel && cg->is_nested) {
                 /* Uplevel access through frame pointer parameter
@@ -6707,6 +8209,11 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "  ; UPLEVEL ACCESS: %.*s via frame pointer\n",
                      (int)sym->name.length, sym->name.data);
                 Emit(cg, "  %%t%u = load %s, ptr %%__frame.", t, type_str);
+                Emit_Symbol_Name(cg, sym);
+                Emit(cg, "\n");
+            } else if (is_global) {
+                /* Global variable - use @ prefix */
+                Emit(cg, "  %%t%u = load %s, ptr @", t, type_str);
                 Emit_Symbol_Name(cg, sym);
                 Emit(cg, "\n");
             } else {
@@ -6731,8 +8238,63 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                     }
                 }
                 Emit(cg, "  %%t%u = add i64 0, %lld\n", t, (long long)pos);
+            } else if (ty && ty->kind == TYPE_BOOLEAN) {
+                /* Boolean literal: TRUE=1, FALSE=0 */
+                int64_t pos = Slice_Equal_Ignore_Case(sym->name, S("TRUE")) ? 1 : 0;
+                Emit(cg, "  %%t%u = add i64 0, %lld\n", t, (long long)pos);
+            } else if (ty && ty->kind == TYPE_CHARACTER) {
+                /* Character literal - already handled as NK_CHARACTER, but safety check */
+                Emit(cg, "  %%t%u = add i64 0, 0  ; character literal\n", t);
+            } else if (ty && ty->kind == TYPE_ARRAY && ty->array.is_constrained &&
+                       ty->array.element_type && ty->array.element_type->kind == TYPE_CHARACTER) {
+                /* Constant string/character array - return fat pointer like variable */
+                int64_t low = 1, high = 0;
+                if (ty->array.index_count > 0) {
+                    low = Type_Bound_Value(ty->array.indices[0].low_bound);
+                    high = Type_Bound_Value(ty->array.indices[0].high_bound);
+                }
+
+                /* Get pointer to constant array data */
+                uint32_t data_ptr = Emit_Temp(cg);
+                bool is_global = !sym->parent || sym->parent->kind == SYMBOL_PACKAGE;
+                if (is_global) {
+                    Emit(cg, "  %%t%u = getelementptr i8, ptr @", data_ptr);
+                } else {
+                    Emit(cg, "  %%t%u = getelementptr i8, ptr %%", data_ptr);
+                }
+                Emit_Symbol_Name(cg, sym);
+                Emit(cg, ", i64 0\n");
+
+                /* Create fat pointer with bounds */
+                return Emit_Fat_Pointer(cg, data_ptr, low, high);
+            } else if (sym->kind == SYMBOL_CONSTANT && ty == NULL) {
+                /* Named number (constant without explicit type) - evaluate initializer
+                 * Named numbers in Ada are compile-time constants with no storage.
+                 * Per RM 3.2.2: "A named number provides a name for a numeric value
+                 * known at compile time." */
+                Syntax_Node *decl = sym->declaration;
+                if (decl && decl->kind == NK_OBJECT_DECL && decl->object_decl.init) {
+                    /* Generate code for the initializer expression */
+                    return Generate_Expression(cg, decl->object_decl.init);
+                } else {
+                    /* Fallback if no initializer found */
+                    Emit(cg, "  %%t%u = add i64 0, 0  ; named number without init\n", t);
+                }
+            } else if (sym->kind == SYMBOL_CONSTANT && ty != NULL) {
+                /* Typed constant - load value from storage like variable */
+                const char *type_str = Type_To_Llvm(ty);
+                bool is_global = !sym->parent || sym->parent->kind == SYMBOL_PACKAGE;
+                if (is_global) {
+                    Emit(cg, "  %%t%u = load %s, ptr @", t, type_str);
+                } else {
+                    Emit(cg, "  %%t%u = load %s, ptr %%", t, type_str);
+                }
+                Emit_Symbol_Name(cg, sym);
+                Emit(cg, "\n");
+                t = Emit_Convert(cg, t, type_str, "i64");
             } else {
-                Emit(cg, "  %%t%u = add i64 0, 0  ; constant\n", t);
+                /* Unknown literal type - emit 0 as fallback */
+                Emit(cg, "  %%t%u = add i64 0, 0  ; unknown literal\n", t);
             }
             break;
 
@@ -6830,11 +8392,58 @@ static uint32_t Generate_Array_Equality(Code_Generator *cg, uint32_t left_ptr,
         return cmp_result;
     }
 
-    /* For unconstrained arrays (fat pointers), need to compare bounds then data */
-    /* This is more complex - for now return false as placeholder */
-    uint32_t t = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = add i1 0, 0  ; unconstrained array equality TODO\n", t);
-    return t;
+    /*
+     * Unconstrained array equality (per RM 4.5.2):
+     * Two arrays are equal iff they have the same length and matching components.
+     * Bounds themselves need not match—only length and content.
+     *
+     * For fat pointers: compare lengths, then data if lengths match.
+     * Use select instead of phi to avoid block label complications.
+     */
+
+    /* Extract bounds from fat pointer structures */
+    uint32_t left_low = Emit_Fat_Pointer_Low(cg, left_ptr);
+    uint32_t left_high = Emit_Fat_Pointer_High(cg, left_ptr);
+    uint32_t right_low = Emit_Fat_Pointer_Low(cg, right_ptr);
+    uint32_t right_high = Emit_Fat_Pointer_High(cg, right_ptr);
+
+    /* Compute lengths: high - low + 1 */
+    uint32_t left_len = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", left_len, left_high, left_low);
+    uint32_t left_len1 = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", left_len1, left_len);
+
+    uint32_t right_len = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", right_len, right_high, right_low);
+    uint32_t right_len1 = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", right_len1, right_len);
+
+    /* Compare lengths */
+    uint32_t len_eq = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", len_eq, left_len1, right_len1);
+
+    /* Extract data pointers */
+    uint32_t left_data = Emit_Fat_Pointer_Data(cg, left_ptr);
+    uint32_t right_data = Emit_Fat_Pointer_Data(cg, right_ptr);
+
+    /* Compute byte size for memcmp */
+    uint32_t elem_size = array_type->array.element_type ?
+                         array_type->array.element_type->size : 1;
+    uint32_t byte_size = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", byte_size, left_len1, elem_size);
+
+    /* Call memcmp */
+    uint32_t memcmp_result = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = call i32 @memcmp(ptr %%t%u, ptr %%t%u, i64 %%t%u)\n",
+         memcmp_result, left_data, right_data, byte_size);
+    uint32_t data_eq = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", data_eq, memcmp_result);
+
+    /* Result: lengths match AND data matches */
+    uint32_t result = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", result, len_eq, data_eq);
+
+    return result;
 }
 
 /* Generate the address of a composite type expression (for equality comparison) */
@@ -6951,7 +8560,41 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
 
     const char *op;
     Type_Info *result_type = node->type;
-    bool is_float = result_type && Type_Is_Real(result_type);
+    bool is_float = result_type && (result_type->kind == TYPE_FLOAT ||
+                                     result_type->kind == TYPE_UNIVERSAL_REAL);
+    bool is_fixed = result_type && result_type->kind == TYPE_FIXED;
+
+    /* Fixed-point multiplication/division needs scaling (RM 4.5.5) */
+    if (is_fixed && (node->binary.op == TK_STAR || node->binary.op == TK_SLASH)) {
+        int scale = result_type->fixed.scale;
+        if (node->binary.op == TK_STAR) {
+            /* Fixed * Fixed: result = (a * b) >> abs(scale) */
+            uint32_t mul = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = mul i64 %%t%u, %%t%u\n", mul, left, right);
+            if (scale < 0) {
+                /* Negative scale = right shift by |scale| */
+                Emit(cg, "  %%t%u = ashr i64 %%t%u, %d\n", t, mul, -scale);
+            } else if (scale > 0) {
+                /* Positive scale = left shift (uncommon) */
+                Emit(cg, "  %%t%u = shl i64 %%t%u, %d\n", t, mul, scale);
+            } else {
+                t = mul;
+            }
+            return t;
+        } else {
+            /* Fixed / Fixed: result = (a << abs(scale)) / b */
+            uint32_t shifted = Emit_Temp(cg);
+            if (scale < 0) {
+                Emit(cg, "  %%t%u = shl i64 %%t%u, %d\n", shifted, left, -scale);
+            } else if (scale > 0) {
+                Emit(cg, "  %%t%u = ashr i64 %%t%u, %d\n", shifted, left, scale);
+            } else {
+                shifted = left;
+            }
+            Emit(cg, "  %%t%u = sdiv i64 %%t%u, %%t%u\n", t, shifted, right);
+            return t;
+        }
+    }
 
     switch (node->binary.op) {
         case TK_PLUS:  op = is_float ? "fadd" : "add"; break;
@@ -6961,18 +8604,101 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         case TK_MOD:   op = "srem"; break;
         case TK_REM:   op = "srem"; break;
 
-        case TK_AND:
-        case TK_AND_THEN: op = "and"; break;
-        case TK_OR:
-        case TK_OR_ELSE:  op = "or"; break;
-        case TK_XOR:      op = "xor"; break;
+        case TK_EXPON:
+            /* Exponentiation: base ** exponent
+             * For floating-point: use llvm.pow intrinsic
+             * For integer: use simple loop or __ada_integer_pow */
+            {
+                Type_Info *right_type = node->binary.right ? node->binary.right->type : NULL;
+                bool left_is_float = left_type && (left_type->kind == TYPE_FLOAT ||
+                                                    left_type->kind == TYPE_UNIVERSAL_REAL);
+                bool right_is_int = right_type && (right_type->kind == TYPE_INTEGER ||
+                                                    right_type->kind == TYPE_UNIVERSAL_INTEGER ||
+                                                    right_type == NULL);  /* default to integer */
 
-        case TK_EQ:  Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", t, left, right); return t;
-        case TK_NE:  Emit(cg, "  %%t%u = icmp ne i64 %%t%u, %%t%u\n", t, left, right); return t;
-        case TK_LT:  Emit(cg, "  %%t%u = icmp slt i64 %%t%u, %%t%u\n", t, left, right); return t;
-        case TK_LE:  Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", t, left, right); return t;
-        case TK_GT:  Emit(cg, "  %%t%u = icmp sgt i64 %%t%u, %%t%u\n", t, left, right); return t;
-        case TK_GE:  Emit(cg, "  %%t%u = icmp sge i64 %%t%u, %%t%u\n", t, left, right); return t;
+                if (left_is_float) {
+                    /* Float ** Integer: use pow intrinsic with converted exponent */
+                    uint32_t exp_float = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = sitofp i64 %%t%u to double\n", exp_float, right);
+                    Emit(cg, "  %%t%u = call double @llvm.pow.f64(double %%t%u, double %%t%u)\n",
+                         t, left, exp_float);
+                } else {
+                    /* Integer ** Integer: use integer power function */
+                    Emit(cg, "  %%t%u = call i64 @__ada_integer_pow(i64 %%t%u, i64 %%t%u)\n",
+                         t, left, right);
+                }
+                return t;
+            }
+
+        case TK_AND:
+        case TK_AND_THEN:
+            /* Boolean AND: operands should be i1 (from comparisons) */
+            Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", t, left, right);
+            return t;
+        case TK_OR:
+        case TK_OR_ELSE:
+            /* Boolean OR: operands should be i1 */
+            Emit(cg, "  %%t%u = or i1 %%t%u, %%t%u\n", t, left, right);
+            return t;
+        case TK_XOR:
+            /* Boolean XOR: operands should be i1 */
+            Emit(cg, "  %%t%u = xor i1 %%t%u, %%t%u\n", t, left, right);
+            return t;
+
+        case TK_EQ:
+        case TK_NE:
+        case TK_LT:
+        case TK_LE:
+        case TK_GT:
+        case TK_GE:
+            {
+                /* Check operand types for float comparisons */
+                Type_Info *right_type = node->binary.right ? node->binary.right->type : NULL;
+                bool left_is_float = left_type && (left_type->kind == TYPE_FLOAT ||
+                                                   left_type->kind == TYPE_UNIVERSAL_REAL);
+                bool right_is_float = right_type && (right_type->kind == TYPE_FLOAT ||
+                                                     right_type->kind == TYPE_UNIVERSAL_REAL);
+
+                /* Convert operands to same type if needed */
+                if (left_is_float && !right_is_float) {
+                    /* Convert right to float */
+                    uint32_t conv = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = sitofp i64 %%t%u to double\n", conv, right);
+                    right = conv;
+                    right_is_float = true;
+                } else if (!left_is_float && right_is_float) {
+                    /* Convert right float to integer for fixed-point comparison */
+                    uint32_t conv = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = fptosi double %%t%u to i64\n", conv, right);
+                    right = conv;
+                    right_is_float = false;
+                }
+
+                const char *cmp_op;
+                if (left_is_float && right_is_float) {
+                    switch (node->binary.op) {
+                        case TK_EQ: cmp_op = "fcmp oeq double"; break;
+                        case TK_NE: cmp_op = "fcmp une double"; break;
+                        case TK_LT: cmp_op = "fcmp olt double"; break;
+                        case TK_LE: cmp_op = "fcmp ole double"; break;
+                        case TK_GT: cmp_op = "fcmp ogt double"; break;
+                        case TK_GE: cmp_op = "fcmp oge double"; break;
+                        default: cmp_op = "icmp eq i64"; break;
+                    }
+                } else {
+                    switch (node->binary.op) {
+                        case TK_EQ: cmp_op = "icmp eq i64"; break;
+                        case TK_NE: cmp_op = "icmp ne i64"; break;
+                        case TK_LT: cmp_op = "icmp slt i64"; break;
+                        case TK_LE: cmp_op = "icmp sle i64"; break;
+                        case TK_GT: cmp_op = "icmp sgt i64"; break;
+                        case TK_GE: cmp_op = "icmp sge i64"; break;
+                        default: cmp_op = "icmp eq i64"; break;
+                    }
+                }
+                Emit(cg, "  %%t%u = %s %%t%u, %%t%u\n", t, cmp_op, left, right);
+                return t;
+            }
 
         default: op = "add"; break;
     }
@@ -7016,15 +8742,37 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
     Symbol *sym = node->apply.prefix->symbol;
 
     if (sym && (sym->kind == SYMBOL_FUNCTION || sym->kind == SYMBOL_PROCEDURE)) {
-        /* Function call - generate arguments */
+        /* Function call - generate arguments
+         * For OUT/IN OUT parameters, we need to pass the ADDRESS, not the value */
         uint32_t *args = Arena_Allocate(node->apply.arguments.count * sizeof(uint32_t));
+        bool *is_byref = Arena_Allocate(node->apply.arguments.count * sizeof(bool));
 
         for (uint32_t i = 0; i < node->apply.arguments.count; i++) {
-            args[i] = Generate_Expression(cg, node->apply.arguments.items[i]);
-            /* Truncate to actual parameter type */
-            if (i < sym->parameter_count && sym->parameters[i].param_type) {
-                const char *param_type = Type_To_Llvm(sym->parameters[i].param_type);
-                args[i] = Emit_Convert(cg, args[i], "i64", param_type);
+            bool byref = i < sym->parameter_count &&
+                         Param_Is_By_Reference(sym->parameters[i].mode);
+            is_byref[i] = byref;
+
+            if (byref) {
+                /* For OUT/IN OUT: pass the address of the variable
+                 * The argument must be an lvalue (identifier, selected, indexed) */
+                Syntax_Node *arg = node->apply.arguments.items[i];
+                if (arg->kind == NK_IDENTIFIER && arg->symbol) {
+                    /* Simple variable - emit address */
+                    args[i] = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = getelementptr i8, ptr %%", args[i]);
+                    Emit_Symbol_Name(cg, arg->symbol);
+                    Emit(cg, ", i64 0  ; address for OUT/IN OUT\n");
+                } else {
+                    /* Complex lvalue - generate address (fallback) */
+                    args[i] = Generate_Composite_Address(cg, arg);
+                }
+            } else {
+                args[i] = Generate_Expression(cg, node->apply.arguments.items[i]);
+                /* Truncate to actual parameter type */
+                if (i < sym->parameter_count && sym->parameters[i].param_type) {
+                    const char *param_type = Type_To_Llvm(sym->parameters[i].param_type);
+                    args[i] = Emit_Convert(cg, args[i], "i64", param_type);
+                }
             }
         }
 
@@ -7052,9 +8800,14 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
 
         for (uint32_t i = 0; i < node->apply.arguments.count; i++) {
             if (i > 0) Emit(cg, ", ");
-            const char *param_type = (i < sym->parameter_count && sym->parameters[i].param_type)
-                ? Type_To_Llvm(sym->parameters[i].param_type) : "i64";
-            Emit(cg, "%s %%t%u", param_type, args[i]);
+            if (is_byref[i]) {
+                /* OUT/IN OUT: pass as pointer */
+                Emit(cg, "ptr %%t%u", args[i]);
+            } else {
+                const char *param_type = (i < sym->parameter_count && sym->parameters[i].param_type)
+                    ? Type_To_Llvm(sym->parameters[i].param_type) : "i64";
+                Emit(cg, "%s %%t%u", param_type, args[i]);
+            }
         }
 
         Emit(cg, ")\n");
@@ -7067,13 +8820,77 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         return 0;
     }
 
+    /* Entry call (task rendezvous) */
+    if (sym && sym->kind == SYMBOL_ENTRY) {
+        /* Entry call: pack parameters, call entry, wait for accept completion */
+        Emit(cg, "  ; Entry call: %.*s\n",
+             (int)sym->name.length, sym->name.data);
+
+        /* Allocate parameter block */
+        uint32_t param_count = node->apply.arguments.count;
+        uint32_t param_block = Emit_Temp(cg);
+        if (param_count > 0) {
+            Emit(cg, "  %%t%u = alloca [%u x i64]  ; entry call parameters\n",
+                 param_block, param_count);
+        } else {
+            Emit(cg, "  %%t%u = inttoptr i64 0 to ptr  ; no parameters\n", param_block);
+        }
+
+        /* Store arguments into parameter block */
+        for (uint32_t i = 0; i < param_count; i++) {
+            uint32_t arg_val = Generate_Expression(cg, node->apply.arguments.items[i]);
+            uint32_t arg_ptr = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = getelementptr [%u x i64], ptr %%t%u, i64 0, i64 %u\n",
+                 arg_ptr, param_count, param_block, i);
+            Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", arg_val, arg_ptr);
+        }
+
+        /* Get task object (from prefix if it's a selected component like Task_Obj.Entry) */
+        uint32_t task_ptr = 0;
+        Syntax_Node *prefix = node->apply.prefix;
+        if (prefix->kind == NK_SELECTED && prefix->selected.prefix->symbol) {
+            task_ptr = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = getelementptr i8, ptr %%", task_ptr);
+            Emit_Symbol_Name(cg, prefix->selected.prefix->symbol);
+            Emit(cg, ", i64 0  ; task object\n");
+        } else {
+            task_ptr = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = inttoptr i64 0 to ptr  ; current task\n", task_ptr);
+        }
+
+        /* Get entry index (for entry families) */
+        uint32_t entry_idx = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = add i64 0, 0  ; entry index\n", entry_idx);
+
+        /* Call runtime entry call function - blocks until rendezvous completes */
+        Emit(cg, "  call void @__ada_entry_call(ptr %%t%u, i64 %%t%u, ptr %%t%u)\n",
+             task_ptr, entry_idx, param_block);
+
+        return 0;
+    }
+
     /* Array indexing */
     Type_Info *prefix_type = node->apply.prefix->type;
-    if (prefix_type && prefix_type->kind == TYPE_ARRAY) {
-        /* Get array base address (not loaded value) */
+    if (prefix_type && (prefix_type->kind == TYPE_ARRAY || prefix_type->kind == TYPE_STRING)) {
         Symbol *array_sym = node->apply.prefix->symbol;
-        uint32_t base = Emit_Temp(cg);
-        if (array_sym) {
+        uint32_t base;
+        uint32_t low_bound_val = 0;
+        bool has_dynamic_low = false;
+
+        /* Check if unconstrained array needing fat pointer handling */
+        if (Type_Is_Unconstrained_Array(prefix_type) && array_sym &&
+            (array_sym->kind == SYMBOL_PARAMETER || array_sym->kind == SYMBOL_VARIABLE)) {
+            /* Load fat pointer and extract data pointer and low bound */
+            uint32_t fat = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%", fat);
+            Emit_Symbol_Name(cg, array_sym);
+            Emit(cg, "  ; load fat pointer for indexing\n");
+            base = Emit_Fat_Pointer_Data(cg, fat);
+            low_bound_val = Emit_Fat_Pointer_Low(cg, fat);
+            has_dynamic_low = true;
+        } else if (array_sym) {
+            /* Constrained array - get direct pointer to data */
+            base = Emit_Temp(cg);
             Emit(cg, "  %%t%u = getelementptr i8, ptr %%", base);
             Emit_Symbol_Name(cg, array_sym);
             Emit(cg, ", i64 0\n");
@@ -7086,11 +8903,19 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         uint32_t idx = Generate_Expression(cg, node->apply.arguments.items[0]);
 
         /* Adjust for array low bound (Ada arrays can start at any index) */
-        int64_t low_bound = Array_Low_Bound(prefix_type);
-        if (low_bound != 0) {
+        if (has_dynamic_low) {
+            /* Dynamic low bound from fat pointer */
             uint32_t adj = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sub i64 %%t%u, %lld\n", adj, idx, (long long)low_bound);
+            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u  ; adjust for dynamic low bound\n",
+                 adj, idx, low_bound_val);
             idx = adj;
+        } else {
+            int64_t low_bound = Array_Low_Bound(prefix_type);
+            if (low_bound != 0) {
+                uint32_t adj = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = sub i64 %%t%u, %lld\n", adj, idx, (long long)low_bound);
+                idx = adj;
+            }
         }
 
         /* Get pointer to element and load */
@@ -7107,6 +8932,16 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         return t;
     }
 
+    /* Type conversion: Type_Name(Expression) */
+    if (sym && (sym->kind == SYMBOL_TYPE || sym->kind == SYMBOL_SUBTYPE)) {
+        /* For scalar types, type conversion is just evaluating the expression.
+         * The type system ensures semantic correctness; runtime range checks
+         * would go here in a more complete implementation. */
+        if (node->apply.arguments.count == 1) {
+            return Generate_Expression(cg, node->apply.arguments.items[0]);
+        }
+    }
+
     return 0;
 }
 
@@ -7115,14 +8950,14 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
     Type_Info *prefix_type = node->selected.prefix->type;
 
     if (!prefix_type || prefix_type->kind != TYPE_RECORD) {
-        /* Package-qualified name - just generate using the resolved symbol */
+        /* Package-qualified name - use the resolved symbol via Generate_Identifier
+         * This handles named numbers, constants, variables, and literals properly */
         Symbol *sym = node->symbol;
         if (sym) {
-            uint32_t t = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = load i64, ptr %%", t);
-            Emit_Symbol_Name(cg, sym);
-            Emit(cg, "\n");
-            return t;
+            /* Create a temporary identifier node to reuse Generate_Identifier logic */
+            Syntax_Node tmp_id = {.kind = NK_IDENTIFIER, .symbol = sym, .location = node->location};
+            tmp_id.type = sym->type;
+            return Generate_Identifier(cg, &tmp_id);
         }
         return 0;
     }
@@ -7141,26 +8976,40 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
 
     /* Get base address of record variable */
     Symbol *record_sym = node->selected.prefix->symbol;
+    const char *field_llvm_type = Type_To_Llvm(field_type);
+
     if (!record_sym) {
         /* Handle nested selection (e.g., A.B.C) by generating prefix expression */
         uint32_t base_ptr = Generate_Expression(cg, node->selected.prefix);
         uint32_t ptr = Emit_Temp(cg);
-        uint32_t t = Emit_Temp(cg);
         Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
              ptr, base_ptr, byte_offset);
-        Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
-             t, Type_To_Llvm(field_type), ptr);
+
+        /* For record-type components, return pointer; otherwise load value */
+        if (field_type && field_type->kind == TYPE_RECORD) {
+            return ptr;
+        }
+        uint32_t t = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, field_llvm_type, ptr);
+        /* Widen to i64 for computation if narrower type */
+        t = Emit_Convert(cg, t, field_llvm_type, "i64");
         return t;
     }
 
     /* Calculate address of field */
     uint32_t ptr = Emit_Temp(cg);
-    uint32_t t = Emit_Temp(cg);
     Emit(cg, "  %%t%u = getelementptr i8, ptr %%", ptr);
     Emit_Symbol_Name(cg, record_sym);
     Emit(cg, ", i64 %u\n", byte_offset);
-    Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
-         t, Type_To_Llvm(field_type), ptr);
+
+    /* For record-type components, return pointer; otherwise load value */
+    if (field_type && field_type->kind == TYPE_RECORD) {
+        return ptr;
+    }
+    uint32_t t = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, field_llvm_type, ptr);
+    /* Widen to i64 for computation if narrower type */
+    t = Emit_Convert(cg, t, field_llvm_type, "i64");
 
     return t;
 }
@@ -7200,7 +9049,23 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     Type_Info *prefix_type = node->attribute.prefix->type;
     String_Slice attr = node->attribute.name;
     uint32_t t = Emit_Temp(cg);
-    uint32_t dim = Get_Dimension_Index(node->attribute.argument);
+    Syntax_Node *first_arg = node->attribute.arguments.count > 0
+                           ? node->attribute.arguments.items[0] : NULL;
+    uint32_t dim = Get_Dimension_Index(first_arg);
+
+    /* ─────────────────────────────────────────────────────────────────────
+     * Check if prefix is an unconstrained array that needs runtime bounds
+     * Unconstrained arrays (STRING, unconstrained ARRAY) are passed as
+     * fat pointers { ptr, { i64, i64 } } containing data pointer and bounds.
+     * ───────────────────────────────────────────────────────────────────── */
+
+    bool needs_runtime_bounds = false;
+    Symbol *prefix_sym = node->attribute.prefix->symbol;
+    if (prefix_type && Type_Is_Unconstrained_Array(prefix_type) &&
+        prefix_sym && (prefix_sym->kind == SYMBOL_PARAMETER ||
+                       prefix_sym->kind == SYMBOL_VARIABLE)) {
+        needs_runtime_bounds = true;
+    }
 
     /* ─────────────────────────────────────────────────────────────────────
      * Array/Scalar Bound Attributes
@@ -7208,7 +9073,15 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
 
     if (Slice_Equal_Ignore_Case(attr, S("FIRST"))) {
         if (prefix_type && (prefix_type->kind == TYPE_ARRAY || prefix_type->kind == TYPE_STRING)) {
-            if (dim < prefix_type->array.index_count) {
+            if (needs_runtime_bounds && dim == 0) {
+                /* Load fat pointer and extract low bound */
+                uint32_t fat = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%", fat);
+                Emit_Symbol_Name(cg, prefix_sym);
+                Emit(cg, "  ; load fat pointer for 'FIRST\n");
+                uint32_t low = Emit_Fat_Pointer_Low(cg, fat);
+                return low;
+            } else if (dim < prefix_type->array.index_count) {
                 Emit(cg, "  %%t%u = add i64 0, %lld  ; %.*s'FIRST(%u)\n", t,
                      (long long)Type_Bound_Value(prefix_type->array.indices[dim].low_bound),
                      (int)attr.length, attr.data, dim + 1);
@@ -7223,7 +9096,15 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
 
     if (Slice_Equal_Ignore_Case(attr, S("LAST"))) {
         if (prefix_type && (prefix_type->kind == TYPE_ARRAY || prefix_type->kind == TYPE_STRING)) {
-            if (dim < prefix_type->array.index_count) {
+            if (needs_runtime_bounds && dim == 0) {
+                /* Load fat pointer and extract high bound */
+                uint32_t fat = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%", fat);
+                Emit_Symbol_Name(cg, prefix_sym);
+                Emit(cg, "  ; load fat pointer for 'LAST\n");
+                uint32_t high = Emit_Fat_Pointer_High(cg, fat);
+                return high;
+            } else if (dim < prefix_type->array.index_count) {
                 Emit(cg, "  %%t%u = add i64 0, %lld  ; %.*s'LAST(%u)\n", t,
                      (long long)Type_Bound_Value(prefix_type->array.indices[dim].high_bound),
                      (int)attr.length, attr.data, dim + 1);
@@ -7238,7 +9119,20 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
 
     if (Slice_Equal_Ignore_Case(attr, S("LENGTH"))) {
         if (prefix_type && (prefix_type->kind == TYPE_ARRAY || prefix_type->kind == TYPE_STRING)) {
-            if (dim < prefix_type->array.index_count) {
+            if (needs_runtime_bounds && dim == 0) {
+                /* Load fat pointer and compute length from bounds */
+                uint32_t fat = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%", fat);
+                Emit_Symbol_Name(cg, prefix_sym);
+                Emit(cg, "  ; load fat pointer for 'LENGTH\n");
+                uint32_t low = Emit_Fat_Pointer_Low(cg, fat);
+                uint32_t high = Emit_Fat_Pointer_High(cg, fat);
+                uint32_t diff = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", diff, high, low);
+                uint32_t len = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add i64 %%t%u, 1  ; 'LENGTH\n", len, diff);
+                return len;
+            } else if (dim < prefix_type->array.index_count) {
                 int64_t low = Type_Bound_Value(prefix_type->array.indices[dim].low_bound);
                 int64_t high = Type_Bound_Value(prefix_type->array.indices[dim].high_bound);
                 Emit(cg, "  %%t%u = add i64 0, %lld  ; 'LENGTH(%u)\n", t,
@@ -7249,9 +9143,19 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("RANGE"))) {
-        /* Range attribute - typically used in for loops, return low bound for now */
+        /* Range attribute - typically used in for loops
+         * For unconstrained arrays, this is handled specially in Generate_For_Loop
+         * Here we just return the low bound for general expression contexts */
         if (prefix_type && (prefix_type->kind == TYPE_ARRAY || prefix_type->kind == TYPE_STRING)) {
-            if (dim < prefix_type->array.index_count) {
+            if (needs_runtime_bounds && dim == 0) {
+                /* Load fat pointer and extract low bound */
+                uint32_t fat = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%", fat);
+                Emit_Symbol_Name(cg, prefix_sym);
+                Emit(cg, "  ; load fat pointer for 'RANGE\n");
+                uint32_t low = Emit_Fat_Pointer_Low(cg, fat);
+                return low;
+            } else if (dim < prefix_type->array.index_count) {
                 Emit(cg, "  %%t%u = add i64 0, %lld  ; 'RANGE(%u) low\n", t,
                      (long long)Type_Bound_Value(prefix_type->array.indices[dim].low_bound),
                      dim + 1);
@@ -7310,31 +9214,31 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
 
     if (Slice_Equal_Ignore_Case(attr, S("POS"))) {
         /* T'POS(x) - position of enumeration value */
-        if (node->attribute.argument) {
-            return Generate_Expression(cg, node->attribute.argument);
+        if (first_arg) {
+            return Generate_Expression(cg, first_arg);
         }
         return 0;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("VAL"))) {
         /* T'VAL(n) - enumeration value at position n */
-        if (node->attribute.argument) {
-            return Generate_Expression(cg, node->attribute.argument);
+        if (first_arg) {
+            return Generate_Expression(cg, first_arg);
         }
         return 0;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("SUCC"))) {
-        if (node->attribute.argument) {
-            uint32_t val = Generate_Expression(cg, node->attribute.argument);
+        if (first_arg) {
+            uint32_t val = Generate_Expression(cg, first_arg);
             Emit(cg, "  %%t%u = add i64 %%t%u, 1  ; 'SUCC\n", t, val);
             return t;
         }
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("PRED"))) {
-        if (node->attribute.argument) {
-            uint32_t val = Generate_Expression(cg, node->attribute.argument);
+        if (first_arg) {
+            uint32_t val = Generate_Expression(cg, first_arg);
             Emit(cg, "  %%t%u = sub i64 %%t%u, 1  ; 'PRED\n", t, val);
             return t;
         }
@@ -7346,25 +9250,36 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
 
     if (Slice_Equal_Ignore_Case(attr, S("MIN"))) {
         /* T'MIN(a, b) - minimum of two values */
-        /* For now, just return first argument; proper impl needs both */
-        if (node->attribute.argument) {
-            return Generate_Expression(cg, node->attribute.argument);
+        if (node->attribute.arguments.count >= 2) {
+            uint32_t a = Generate_Expression(cg, node->attribute.arguments.items[0]);
+            uint32_t b = Generate_Expression(cg, node->attribute.arguments.items[1]);
+            /* Select minimum using icmp and select */
+            uint32_t cmp = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = icmp slt i64 %%t%u, %%t%u\n", cmp, a, b);
+            Emit(cg, "  %%t%u = select i1 %%t%u, i64 %%t%u, i64 %%t%u  ; 'MIN\n", t, cmp, a, b);
+            return t;
         }
         return 0;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("MAX"))) {
         /* T'MAX(a, b) - maximum of two values */
-        if (node->attribute.argument) {
-            return Generate_Expression(cg, node->attribute.argument);
+        if (node->attribute.arguments.count >= 2) {
+            uint32_t a = Generate_Expression(cg, node->attribute.arguments.items[0]);
+            uint32_t b = Generate_Expression(cg, node->attribute.arguments.items[1]);
+            /* Select maximum using icmp and select */
+            uint32_t cmp = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = icmp sgt i64 %%t%u, %%t%u\n", cmp, a, b);
+            Emit(cg, "  %%t%u = select i1 %%t%u, i64 %%t%u, i64 %%t%u  ; 'MAX\n", t, cmp, a, b);
+            return t;
         }
         return 0;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("ABS"))) {
         /* T'ABS(x) or just abs function */
-        if (node->attribute.argument) {
-            uint32_t val = Generate_Expression(cg, node->attribute.argument);
+        if (first_arg) {
+            uint32_t val = Generate_Expression(cg, first_arg);
             /* Compute abs: (x ^ (x >> 63)) - (x >> 63) for signed */
             uint32_t shift = Emit_Temp(cg);
             uint32_t xored = Emit_Temp(cg);
@@ -7385,27 +9300,114 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     }
 
     /* ─────────────────────────────────────────────────────────────────────
-     * String/Image Attributes (simplified - return 0 for now)
-     * Full implementation would need runtime support
+     * String/Image Attributes
+     * These call runtime functions for string conversion.
      * ───────────────────────────────────────────────────────────────────── */
 
     if (Slice_Equal_Ignore_Case(attr, S("IMAGE"))) {
-        /* T'IMAGE(x) - string representation; needs runtime */
-        Emit(cg, "  %%t%u = add i64 0, 0  ; 'IMAGE (placeholder)\n", t);
+        /* T'IMAGE(x) - string representation (RM 3.5.5) */
+        if (first_arg) {
+            uint32_t arg_val = Generate_Expression(cg, first_arg);
+
+            if (prefix_type && (prefix_type->kind == TYPE_INTEGER ||
+                                prefix_type->kind == TYPE_MODULAR ||
+                                prefix_type->kind == TYPE_UNIVERSAL_INTEGER)) {
+                /* Integer'IMAGE */
+                Emit(cg, "  %%t%u = call { ptr, { i64, i64 } } @__ada_integer_image(i64 %%t%u)\n",
+                     t, arg_val);
+            } else if (prefix_type && prefix_type->kind == TYPE_CHARACTER) {
+                /* Character'IMAGE */
+                uint32_t char_val = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = trunc i64 %%t%u to i8\n", char_val, arg_val);
+                Emit(cg, "  %%t%u = call { ptr, { i64, i64 } } @__ada_character_image(i8 %%t%u)\n",
+                     t, char_val);
+            } else if (prefix_type && (prefix_type->kind == TYPE_FLOAT ||
+                                       prefix_type->kind == TYPE_UNIVERSAL_REAL)) {
+                /* Float'IMAGE */
+                Emit(cg, "  %%t%u = call { ptr, { i64, i64 } } @__ada_float_image(double %%t%u)\n",
+                     t, arg_val);
+            } else {
+                /* Default: treat as integer */
+                Emit(cg, "  %%t%u = call { ptr, { i64, i64 } } @__ada_integer_image(i64 %%t%u)\n",
+                     t, arg_val);
+            }
+            return t;
+        }
+        Emit(cg, "  %%t%u = insertvalue { ptr, { i64, i64 } } undef, ptr null, 0  ; 'IMAGE no arg\n", t);
         return t;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("VALUE"))) {
-        /* T'VALUE(s) - parse string to type; needs runtime */
-        Emit(cg, "  %%t%u = add i64 0, 0  ; 'VALUE (placeholder)\n", t);
-        return t;
+        /* T'VALUE(s) - parse string to type (RM 3.5.5) */
+        if (first_arg) {
+            uint32_t str_val = Generate_Expression(cg, first_arg);
+            if (prefix_type && (prefix_type->kind == TYPE_INTEGER ||
+                                prefix_type->kind == TYPE_MODULAR ||
+                                prefix_type->kind == TYPE_UNIVERSAL_INTEGER)) {
+                /* Integer'VALUE - parse string as integer */
+                Emit(cg, "  %%t%u = call i64 @__ada_integer_value({ ptr, { i64, i64 } } %%t%u)\n",
+                     t, str_val);
+            } else if (prefix_type && (prefix_type->kind == TYPE_FLOAT ||
+                                       prefix_type->kind == TYPE_UNIVERSAL_REAL)) {
+                /* Float'VALUE - parse string as float */
+                Emit(cg, "  %%t%u = call double @__ada_float_value({ ptr, { i64, i64 } } %%t%u)\n",
+                     t, str_val);
+            } else {
+                /* Default: treat as integer */
+                Emit(cg, "  %%t%u = call i64 @__ada_integer_value({ ptr, { i64, i64 } } %%t%u)\n",
+                     t, str_val);
+            }
+            return t;
+        }
+        return 0;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("WIDTH"))) {
-        /* T'WIDTH - maximum image width for type */
+        /* T'WIDTH - maximum image width for type (RM 3.5.5) */
         if (prefix_type) {
-            /* Estimate based on type size */
-            int64_t width = prefix_type->size <= 4 ? 11 : 20;  /* digits + sign */
+            int64_t width = 0;
+            int64_t lo = prefix_type->low_bound.kind == BOUND_INTEGER ? prefix_type->low_bound.int_value : 0;
+            int64_t hi = prefix_type->high_bound.kind == BOUND_INTEGER ? prefix_type->high_bound.int_value : 0;
+
+            /* Find root enumeration type (traversing base_type and parent_type chains) */
+            Type_Info *root_enum = NULL;
+            for (Type_Info *ti = prefix_type; ti; ti = ti->base_type ? ti->base_type : ti->parent_type) {
+                if (ti->kind == TYPE_ENUMERATION && ti->enumeration.literals) {
+                    root_enum = ti;
+                    break;
+                }
+                if (!ti->base_type && !ti->parent_type) break;
+            }
+
+            if (hi < lo) {
+                /* Empty range - width is 0 */
+                width = 0;
+            } else if (root_enum) {
+                /* Enumeration: max length of literal names in range */
+                for (int64_t i = lo; i <= hi && i < (int64_t)root_enum->enumeration.literal_count; i++) {
+                    if (i >= 0) {
+                        uint32_t len = root_enum->enumeration.literals[i].length;
+                        if (len > (uint32_t)width) width = (int64_t)len;
+                    }
+                }
+            } else if (prefix_type->kind == TYPE_BOOLEAN ||
+                       (prefix_type->base_type && prefix_type->base_type->kind == TYPE_BOOLEAN)) {
+                /* Boolean: "FALSE" is 5, "TRUE" is 4 */
+                width = (lo <= 0 && hi >= 0) ? 5 : (lo <= 1 && hi >= 1) ? 4 : 0;
+            } else if (prefix_type->kind == TYPE_CHARACTER ||
+                       (prefix_type->base_type && prefix_type->base_type->kind == TYPE_CHARACTER)) {
+                /* Character: 'X' is 3 chars */
+                width = 3;
+            } else {
+                /* Integer types: max width of first/last images */
+                /* Width includes leading space for non-negative */
+                int64_t abs_lo = lo < 0 ? -lo : lo;
+                int64_t abs_hi = hi < 0 ? -hi : hi;
+                int64_t max_abs = abs_lo > abs_hi ? abs_lo : abs_hi;
+                int digits = 1;
+                while (max_abs >= 10) { digits++; max_abs /= 10; }
+                width = digits + 1;  /* +1 for leading space or minus sign */
+            }
             Emit(cg, "  %%t%u = add i64 0, %lld  ; 'WIDTH\n", t, (long long)width);
             return t;
         }
@@ -7486,7 +9488,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
              base, (long long)count, elem_type);
 
         /* Track which elements are initialized (for others clause) */
-        bool *initialized = Arena_Allocate(count * sizeof(bool));
+        bool *initialized = Arena_Allocate((size_t)count * sizeof(bool));
         for (int64_t i = 0; i < count; i++) initialized[i] = false;
 
         /* Default value for "others" clause (if any) */
@@ -7629,14 +9631,23 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         int32_t comp_idx = Find_Record_Component(agg_type, choice->string_val.text);
                         if (comp_idx >= 0) {
                             Component_Info *comp = &agg_type->record.components[comp_idx];
-                            const char *comp_type = Type_To_Llvm(comp->component_type);
+                            Type_Info *comp_ti = comp->component_type;
                             uint32_t val = Generate_Expression(cg, item->association.expression);
-                            val = Emit_Convert(cg, val, "i64", comp_type);
 
                             uint32_t ptr = Emit_Temp(cg);
                             Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
                                  ptr, base, comp->byte_offset);
-                            Emit(cg, "  store %s %%t%u, ptr %%t%u\n", comp_type, val, ptr);
+
+                            if (comp_ti && comp_ti->kind == TYPE_RECORD) {
+                                /* Nested record: use memcpy */
+                                uint32_t comp_size = comp_ti->size > 0 ? comp_ti->size : 8;
+                                Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
+                                     ptr, val, comp_size);
+                            } else {
+                                const char *comp_type = Type_To_Llvm(comp_ti);
+                                val = Emit_Convert(cg, val, "i64", comp_type);
+                                Emit(cg, "  store %s %%t%u, ptr %%t%u\n", comp_type, val, ptr);
+                            }
                             initialized[comp_idx] = true;
                         }
                     }
@@ -7645,14 +9656,23 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                 /* Positional: initialize component by position */
                 if (positional_idx < comp_count) {
                     Component_Info *comp = &agg_type->record.components[positional_idx];
-                    const char *comp_type = Type_To_Llvm(comp->component_type);
+                    Type_Info *comp_ti = comp->component_type;
                     uint32_t val = Generate_Expression(cg, item);
-                    val = Emit_Convert(cg, val, "i64", comp_type);
 
                     uint32_t ptr = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
                          ptr, base, comp->byte_offset);
-                    Emit(cg, "  store %s %%t%u, ptr %%t%u\n", comp_type, val, ptr);
+
+                    if (comp_ti && comp_ti->kind == TYPE_RECORD) {
+                        /* Nested record: use memcpy */
+                        uint32_t comp_size = comp_ti->size > 0 ? comp_ti->size : 8;
+                        Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
+                             ptr, val, comp_size);
+                    } else {
+                        const char *comp_type = Type_To_Llvm(comp_ti);
+                        val = Emit_Convert(cg, val, "i64", comp_type);
+                        Emit(cg, "  store %s %%t%u, ptr %%t%u\n", comp_type, val, ptr);
+                    }
                     initialized[positional_idx] = true;
                     positional_idx++;
                 }
@@ -7836,23 +9856,9 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
     /* Handle constrained string/character array assignment */
     if (ty && ty->kind == TYPE_ARRAY && ty->array.is_constrained &&
         ty->array.element_type && ty->array.element_type->kind == TYPE_CHARACTER) {
-
-        /* The value is a fat pointer - extract data and copy */
+        /* The value is a fat pointer - copy data to target variable */
         uint32_t fat_ptr = Generate_Expression(cg, node->assignment.value);
-        uint32_t src_ptr = Emit_Fat_Pointer_Data(cg, fat_ptr);
-        uint32_t src_low = Emit_Fat_Pointer_Low(cg, fat_ptr);
-        uint32_t src_high = Emit_Fat_Pointer_High(cg, fat_ptr);
-
-        /* Calculate source length */
-        uint32_t src_len = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", src_len, src_high, src_low);
-        uint32_t src_len1 = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", src_len1, src_len);
-
-        /* Copy data to the target variable */
-        Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%");
-        Emit_Symbol_Name(cg, target_sym);
-        Emit(cg, ", ptr %%t%u, i64 %%t%u, i1 false)\n", src_ptr, src_len1);
+        Emit_Fat_Pointer_Copy_To_Name(cg, fat_ptr, target_sym);
         return;
     }
 
@@ -7864,14 +9870,45 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
                       var_owner != cg->current_function;
 
     const char *type_str = Type_To_Llvm(ty);
-    /* Truncate from i64 computation to actual storage type */
-    value = Emit_Convert(cg, value, "i64", type_str);
+
+    /* Determine source type from the value expression */
+    Type_Info *value_type = node->assignment.value->type;
+    bool is_src_float = value_type && (value_type->kind == TYPE_FLOAT ||
+                                        value_type->kind == TYPE_UNIVERSAL_REAL);
+    bool is_dst_float = ty && (ty->kind == TYPE_FLOAT ||
+                               ty->kind == TYPE_UNIVERSAL_REAL);
+
+    /* Convert between float and integer if needed */
+    if (is_src_float && !is_dst_float) {
+        /* Float to integer: use fptosi */
+        uint32_t t = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = fptosi double %%t%u to %s\n", t, value, type_str);
+        value = t;
+    } else if (!is_src_float && is_dst_float) {
+        /* Integer to float: use sitofp */
+        uint32_t t = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = sitofp i64 %%t%u to double\n", t, value);
+        value = t;
+    } else if (is_src_float && is_dst_float) {
+        /* Float to float: no conversion needed, both are double */
+    } else {
+        /* Integer to integer: truncate from i64 to actual storage type */
+        value = Emit_Convert(cg, value, "i64", type_str);
+    }
+
+    /* Check if package-level global (parent is NULL or SYMBOL_PACKAGE) */
+    bool is_global = !target_sym->parent || target_sym->parent->kind == SYMBOL_PACKAGE;
 
     if (is_uplevel && cg->is_nested) {
         /* Uplevel store through frame pointer */
         Emit(cg, "  ; UPLEVEL STORE: %.*s via frame pointer\n",
              (int)target_sym->name.length, target_sym->name.data);
         Emit(cg, "  store %s %%t%u, ptr %%__frame.", type_str, value);
+        Emit_Symbol_Name(cg, target_sym);
+        Emit(cg, "\n");
+    } else if (is_global) {
+        /* Global variable - use @ prefix */
+        Emit(cg, "  store %s %%t%u, ptr @", type_str, value);
         Emit_Symbol_Name(cg, target_sym);
         Emit(cg, "\n");
     } else {
@@ -7887,6 +9924,8 @@ static void Generate_If_Statement(Code_Generator *cg, Syntax_Node *node) {
     uint32_t else_label = Emit_Label(cg);
     uint32_t end_label = Emit_Label(cg);
 
+    /* Truncate condition to i1 for branch (expression may have widened to i64) */
+    cond = Emit_Convert(cg, cond, "i64", "i1");
     Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cond, then_label, else_label);
 
     Emit(cg, "L%u:\n", then_label);
@@ -7920,6 +9959,7 @@ static void Generate_Loop_Statement(Code_Generator *cg, Syntax_Node *node) {
         node->loop_stmt.iteration_scheme->kind != NK_BINARY_OP) {
         /* WHILE loop */
         uint32_t cond = Generate_Expression(cg, node->loop_stmt.iteration_scheme);
+        cond = Emit_Convert(cg, cond, "i64", "i1");
         Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cond, loop_body, loop_end);
     } else {
         Emit(cg, "  br label %%L%u\n", loop_body);
@@ -7941,8 +9981,25 @@ static void Generate_Return_Statement(Code_Generator *cg, Syntax_Node *node) {
         uint32_t value = Generate_Expression(cg, node->return_stmt.expression);
         const char *type_str = cg->current_function && cg->current_function->return_type
             ? Type_To_Llvm(cg->current_function->return_type) : "i64";
-        /* Truncate from i64 computation to actual return type */
-        value = Emit_Convert(cg, value, "i64", type_str);
+        /* For boolean returns (i1), check if expression is already i1 (comparison)
+         * or needs conversion from i64 (loaded/computed value) */
+        if (strcmp(type_str, "i1") == 0) {
+            Syntax_Node *expr = node->return_stmt.expression;
+            bool is_comparison = (expr->kind == NK_BINARY_OP &&
+                                  (expr->binary.op == TK_EQ || expr->binary.op == TK_NE ||
+                                   expr->binary.op == TK_LT || expr->binary.op == TK_LE ||
+                                   expr->binary.op == TK_GT || expr->binary.op == TK_GE ||
+                                   expr->binary.op == TK_AND || expr->binary.op == TK_OR ||
+                                   expr->binary.op == TK_XOR)) ||
+                                 (expr->kind == NK_UNARY_OP && expr->unary.op == TK_NOT);
+            if (!is_comparison) {
+                /* Loaded booleans were widened to i64, truncate back */
+                value = Emit_Convert(cg, value, "i64", "i1");
+            }
+        } else {
+            /* Truncate from i64 computation to actual return type */
+            value = Emit_Convert(cg, value, "i64", type_str);
+        }
         Emit(cg, "  ret %s %%t%u\n", type_str, value);
     } else {
         Emit(cg, "  ret void\n");
@@ -8064,7 +10121,92 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
     if (range && range->kind == NK_RANGE) {
         low_val = Generate_Expression(cg, range->range.low);
         high_val = Generate_Expression(cg, range->range.high);
+    } else if (range && range->kind == NK_ATTRIBUTE &&
+               Slice_Equal_Ignore_Case(range->attribute.name, S("RANGE"))) {
+        /* X'RANGE attribute - need to generate both 'FIRST and 'LAST */
+        Type_Info *prefix_type = range->attribute.prefix->type;
+        Symbol *prefix_sym = range->attribute.prefix->symbol;
+
+        /* Check if this is an unconstrained array needing runtime bounds */
+        if (prefix_type && Type_Is_Unconstrained_Array(prefix_type) &&
+            prefix_sym && (prefix_sym->kind == SYMBOL_PARAMETER ||
+                           prefix_sym->kind == SYMBOL_VARIABLE)) {
+            /* Load fat pointer and extract both bounds */
+            uint32_t fat = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%", fat);
+            Emit_Symbol_Name(cg, prefix_sym);
+            Emit(cg, "  ; load fat pointer for 'RANGE\n");
+            low_val = Emit_Fat_Pointer_Low(cg, fat);
+            high_val = Emit_Fat_Pointer_High(cg, fat);
+        } else if (prefix_type && (prefix_type->kind == TYPE_ARRAY ||
+                                   prefix_type->kind == TYPE_STRING)) {
+            /* Constrained array - use compile-time bounds */
+            Syntax_Node *range_arg = range->attribute.arguments.count > 0
+                                   ? range->attribute.arguments.items[0] : NULL;
+            uint32_t dim = Get_Dimension_Index(range_arg);
+            if (dim < prefix_type->array.index_count) {
+                low_val = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add i64 0, %lld  ; 'RANGE low\n", low_val,
+                     (long long)Type_Bound_Value(prefix_type->array.indices[dim].low_bound));
+                high_val = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add i64 0, %lld  ; 'RANGE high\n", high_val,
+                     (long long)Type_Bound_Value(prefix_type->array.indices[dim].high_bound));
+            } else {
+                low_val = high_val = 0;
+            }
+        } else {
+            /* Fallback */
+            low_val = Generate_Expression(cg, range);
+            high_val = low_val;
+        }
+    } else if (range && range->kind == NK_SUBTYPE_INDICATION) {
+        /* Subtype indication with constraint: SUBTYPE_NAME RANGE low..high */
+        Syntax_Node *constraint = range->subtype_ind.constraint;
+        if (constraint && constraint->kind == NK_RANGE_CONSTRAINT &&
+            constraint->range_constraint.range) {
+            Syntax_Node *actual_range = constraint->range_constraint.range;
+            if (actual_range->kind == NK_RANGE) {
+                low_val = Generate_Expression(cg, actual_range->range.low);
+                high_val = Generate_Expression(cg, actual_range->range.high);
+            } else {
+                /* Range might be a name like T'RANGE */
+                low_val = Generate_Expression(cg, actual_range);
+                high_val = low_val;
+            }
+        } else {
+            /* No range constraint - use the subtype's type bounds */
+            Type_Info *subtype = range->type;
+            if (subtype && subtype->low_bound.kind == BOUND_INTEGER) {
+                low_val = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add i64 0, %lld  ; subtype low\n", low_val,
+                     (long long)Type_Bound_Value(subtype->low_bound));
+                high_val = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add i64 0, %lld  ; subtype high\n", high_val,
+                     (long long)Type_Bound_Value(subtype->high_bound));
+            } else {
+                /* Use 0 as fallback if no type info */
+                low_val = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add i64 0, 0  ; no type info\n", low_val);
+                high_val = low_val;
+            }
+        }
+    } else if (range && range->kind == NK_IDENTIFIER) {
+        /* Just a type name: FOR I IN TYPE_NAME LOOP - iterate over type's range */
+        Type_Info *type = range->type;
+        if (type && type->low_bound.kind == BOUND_INTEGER) {
+            low_val = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = add i64 0, %lld  ; type low\n", low_val,
+                 (long long)Type_Bound_Value(type->low_bound));
+            high_val = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = add i64 0, %lld  ; type high\n", high_val,
+                 (long long)Type_Bound_Value(type->high_bound));
+        } else {
+            low_val = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = add i64 0, 0  ; no type bounds\n", low_val);
+            high_val = low_val;
+        }
     } else {
+        /* Other expression - evaluate as low bound, assume scalar with same high */
         low_val = Generate_Expression(cg, range);
         high_val = low_val;
     }
@@ -8122,9 +10264,10 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
  * §13.4.8 Exception Handling
  * ───────────────────────────────────────────────────────────────────────── */
 
-/* Forward declaration for Generate_Declaration_List (used in blocks) */
+/* Forward declarations */
 static void Generate_Declaration_List(Code_Generator *cg, Node_List *list);
 static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym, Syntax_Node *template_body);
+static void Generate_Task_Body(Code_Generator *cg, Syntax_Node *node);
 
 static void Generate_Raise_Statement(Code_Generator *cg, Syntax_Node *node) {
     /* RAISE E; or RAISE; (reraise) */
@@ -8341,6 +10484,7 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
         case NK_EXIT:
             if (node->exit_stmt.condition) {
                 uint32_t cond = Generate_Expression(cg, node->exit_stmt.condition);
+                cond = Emit_Convert(cg, cond, "i64", "i1");
                 uint32_t cont = Emit_Label(cg);
                 Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
                      cond, cg->loop_exit_label, cont);
@@ -8362,6 +10506,199 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
             Generate_Raise_Statement(cg, node);
             break;
 
+        case NK_DELAY:
+            {
+                /* DELAY expression — sleep for specified duration */
+                /* Expression should be in seconds, convert to microseconds */
+                uint32_t val = Generate_Expression(cg, node->delay_stmt.expression);
+                /* Convert to microseconds (assuming Duration in seconds) */
+                uint32_t us = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = fmul double %%t%u, 1.0e6\n", us, val);
+                uint32_t us_int = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = fptoui double %%t%u to i64\n", us_int, us);
+                Emit(cg, "  call void @__ada_delay(i64 %%t%u)\n", us_int);
+            }
+            break;
+
+        case NK_ACCEPT:
+            {
+                /* ACCEPT statement — rendezvous with caller (Ada 83 9.5)
+                 * Runtime: wait for entry call, execute body, complete rendezvous */
+                Emit(cg, "  ; ACCEPT %.*s\n",
+                     (int)node->accept_stmt.entry_name.length,
+                     node->accept_stmt.entry_name.data);
+
+                /* Get entry index (for entry families, or 0 for simple entries) */
+                uint32_t entry_idx = Emit_Temp(cg);
+                if (node->accept_stmt.index) {
+                    uint32_t idx_val = Generate_Expression(cg, node->accept_stmt.index);
+                    Emit(cg, "  %%t%u = add i64 0, %%t%u  ; entry index\n", entry_idx, idx_val);
+                } else {
+                    Emit(cg, "  %%t%u = add i64 0, 0  ; entry index\n", entry_idx);
+                }
+
+                /* Wait for entry call - blocks until a caller arrives */
+                uint32_t caller_ptr = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = call ptr @__ada_accept_wait(i64 %%t%u)\n",
+                     caller_ptr, entry_idx);
+
+                /* Generate parameters - copy from caller's parameter block */
+                for (uint32_t i = 0; i < node->accept_stmt.parameters.count; i++) {
+                    Syntax_Node *param = node->accept_stmt.parameters.items[i];
+                    if (param && param->symbol) {
+                        uint32_t param_ptr = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = getelementptr i64, ptr %%t%u, i64 %u\n",
+                             param_ptr, caller_ptr, i);
+                        Emit(cg, "  %%");
+                        Emit_Symbol_Name(cg, param->symbol);
+                        Emit(cg, " = load i64, ptr %%t%u\n", param_ptr);
+                    }
+                }
+
+                /* Execute accept body */
+                Generate_Statement_List(cg, &node->accept_stmt.statements);
+
+                /* Complete rendezvous - unblocks the caller */
+                Emit(cg, "  call void @__ada_accept_complete(ptr %%t%u)\n", caller_ptr);
+            }
+            break;
+
+        case NK_SELECT:
+            /* SELECT statement — selective wait (Ada 83 9.7)
+             * Forms: selective_wait, conditional_entry_call, timed_entry_call
+             * Runtime: check open alternatives, wait or execute else */
+            {
+                uint32_t done_label = cg->label_id++;
+                bool has_else = (node->select_stmt.else_part != NULL);
+                bool has_delay = false;
+                uint32_t delay_label = 0;
+
+                /* Check for delay alternative */
+                for (uint32_t i = 0; i < node->select_stmt.alternatives.count; i++) {
+                    if (node->select_stmt.alternatives.items[i]->kind == NK_DELAY) {
+                        has_delay = true;
+                        delay_label = cg->label_id++;
+                        break;
+                    }
+                }
+
+                /* Generate alternatives */
+                for (uint32_t i = 0; i < node->select_stmt.alternatives.count; i++) {
+                    Syntax_Node *alt = node->select_stmt.alternatives.items[i];
+                    uint32_t next_label = cg->label_id++;
+
+                    switch (alt->kind) {
+                        case NK_ASSOCIATION:
+                            /* Guarded alternative: WHEN cond => stmt */
+                            {
+                                uint32_t guard = Generate_Expression(cg,
+                                    alt->association.choices.items[0]);
+                                guard = Emit_Convert(cg, guard, "i64", "i1");
+                                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                                     guard, cg->label_id, next_label);
+                                Emit(cg, "L%u:\n", cg->label_id++);
+                                if (alt->association.expression)
+                                    Generate_Statement(cg, alt->association.expression);
+                                Emit(cg, "  br label %%L%u\n", done_label);
+                            }
+                            break;
+
+                        case NK_ACCEPT:
+                            /* Accept alternative */
+                            {
+                                Emit(cg, "  ; accept alternative: %.*s\n",
+                                     (int)alt->accept_stmt.entry_name.length,
+                                     alt->accept_stmt.entry_name.data);
+
+                                /* Get entry index */
+                                uint32_t entry_idx = Emit_Temp(cg);
+                                if (alt->accept_stmt.index) {
+                                    uint32_t idx_val = Generate_Expression(cg, alt->accept_stmt.index);
+                                    Emit(cg, "  %%t%u = add i64 0, %%t%u\n", entry_idx, idx_val);
+                                } else {
+                                    Emit(cg, "  %%t%u = add i64 0, %u\n", entry_idx, i);
+                                }
+
+                                /* Check if entry call is pending (non-blocking) */
+                                uint32_t caller_ptr = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = call ptr @__ada_accept_try(i64 %%t%u)\n",
+                                     caller_ptr, entry_idx);
+                                uint32_t has_caller = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = icmp ne ptr %%t%u, null\n",
+                                     has_caller, caller_ptr);
+                                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                                     has_caller, cg->label_id, next_label);
+                                Emit(cg, "L%u:\n", cg->label_id++);
+
+                                /* Load parameters from caller */
+                                for (uint32_t j = 0; j < alt->accept_stmt.parameters.count; j++) {
+                                    Syntax_Node *param = alt->accept_stmt.parameters.items[j];
+                                    if (param && param->symbol) {
+                                        uint32_t param_ptr = Emit_Temp(cg);
+                                        Emit(cg, "  %%t%u = getelementptr i64, ptr %%t%u, i64 %u\n",
+                                             param_ptr, caller_ptr, j);
+                                        Emit(cg, "  %%");
+                                        Emit_Symbol_Name(cg, param->symbol);
+                                        Emit(cg, " = load i64, ptr %%t%u\n", param_ptr);
+                                    }
+                                }
+
+                                /* Execute accept body */
+                                Generate_Statement_List(cg, &alt->accept_stmt.statements);
+
+                                /* Complete rendezvous */
+                                Emit(cg, "  call void @__ada_accept_complete(ptr %%t%u)\n", caller_ptr);
+                                Emit(cg, "  br label %%L%u\n", done_label);
+                            }
+                            break;
+
+                        case NK_DELAY:
+                            /* Delay alternative */
+                            Emit(cg, "L%u:  ; delay alternative\n", delay_label);
+                            {
+                                uint32_t dur = Generate_Expression(cg, alt->delay_stmt.expression);
+                                uint32_t us = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = fmul double %%t%u, 1.0e6\n", us, dur);
+                                uint32_t us_int = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = fptoui double %%t%u to i64\n", us_int, us);
+                                Emit(cg, "  call void @__ada_delay(i64 %%t%u)\n", us_int);
+                            }
+                            Emit(cg, "  br label %%L%u\n", done_label);
+                            break;
+
+                        case NK_NULL_STMT:
+                            /* Terminate alternative */
+                            Emit(cg, "  ; terminate alternative\n");
+                            Emit(cg, "  call void @__ada_task_terminate()\n");
+                            Emit(cg, "  br label %%L%u\n", done_label);
+                            break;
+
+                        default:
+                            break;
+                    }
+                    Emit(cg, "L%u:\n", next_label);
+                }
+
+                /* Else clause or fall through to delay */
+                if (has_else) {
+                    Generate_Statement(cg, node->select_stmt.else_part);
+                } else if (has_delay) {
+                    Emit(cg, "  br label %%L%u\n", delay_label);
+                }
+                Emit(cg, "  br label %%L%u\n", done_label);
+                Emit(cg, "L%u:\n", done_label);
+            }
+            break;
+
+        case NK_ABORT:
+            /* ABORT statement — abort named tasks (Ada 83 9.10) */
+            for (uint32_t i = 0; i < node->abort_stmt.task_names.count; i++) {
+                Syntax_Node *task_name = node->abort_stmt.task_names.items[i];
+                uint32_t task_ptr = Generate_Expression(cg, task_name);
+                Emit(cg, "  call void @__ada_task_abort(ptr %%t%u)\n", task_ptr);
+            }
+            break;
+
         default:
             break;
     }
@@ -8372,6 +10709,7 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
  * ───────────────────────────────────────────────────────────────────────── */
 
 static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node);
+static void Emit_Extern_Subprogram(Code_Generator *cg, Symbol *sym);
 
 static void Generate_Declaration_List(Code_Generator *cg, Node_List *list) {
     for (uint32_t i = 0; i < list->count; i++) {
@@ -8382,6 +10720,7 @@ static void Generate_Declaration_List(Code_Generator *cg, Node_List *list) {
 static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
     /* cg->current_nesting_level is repurposed: 1 = has nested functions, use frame */
     bool use_frame = cg->current_nesting_level > 0;
+    bool is_package_level = (cg->current_function == NULL);
 
     for (uint32_t i = 0; i < node->object_decl.names.count; i++) {
         Syntax_Node *name = node->object_decl.names.items[i];
@@ -8389,6 +10728,14 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
         if (!sym) continue;
 
         Type_Info *ty = sym->type;
+
+        /* Named numbers (constants without explicit type) don't need storage.
+         * They are compile-time values that get inlined when referenced.
+         * Per RM 3.2.2: Named numbers are not objects and have no storage. */
+        if (node->object_decl.is_constant && ty == NULL) {
+            continue;  /* Skip storage allocation for named numbers */
+        }
+
         const char *type_str = Type_To_Llvm(ty);
 
         /* Check if this is a constrained array */
@@ -8400,7 +10747,32 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
         bool is_record = ty && ty->kind == TYPE_RECORD;
         uint32_t record_size = is_record ? ty->size : 0;
 
-        /* Allocate stack space (in frame if function has nested subprograms) */
+        /* Package-level variables are globals, local variables use alloca */
+        if (is_package_level) {
+            /* Global variable at package level */
+            Emit(cg, "@");
+            Emit_Symbol_Name(cg, sym);
+            if (node->object_decl.is_constant && node->object_decl.init) {
+                /* Constant with initializer - emit as constant */
+                if (node->object_decl.init->kind == NK_INTEGER) {
+                    Emit(cg, " = linkonce_odr constant %s %lld\n", type_str,
+                         (long long)node->object_decl.init->integer_lit.value);
+                    continue;
+                }
+            }
+            /* Variable - emit as global with default init */
+            if (is_array && array_count > 0) {
+                Emit(cg, " = linkonce_odr global [%lld x %s] zeroinitializer\n",
+                     (long long)array_count, elem_type);
+            } else if (is_record && record_size > 0) {
+                Emit(cg, " = linkonce_odr global [%u x i8] zeroinitializer\n", record_size);
+            } else {
+                Emit(cg, " = linkonce_odr global %s 0\n", type_str);
+            }
+            continue;
+        }
+
+        /* Local variable allocation */
         if (use_frame) {
             Emit(cg, "  %%");
             Emit_Symbol_Name(cg, sym);
@@ -8425,23 +10797,28 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
         /* Initialize if provided */
         if (node->object_decl.init) {
             if (is_array && ty->array.element_type == cg->sm->type_character) {
-                /* String/character array initialization from string literal
-                 * The init expression returns a fat pointer, we copy the data */
+                /* String/character array initialization - copy fat pointer data */
                 uint32_t fat_ptr = Generate_Expression(cg, node->object_decl.init);
-                uint32_t src_ptr = Emit_Fat_Pointer_Data(cg, fat_ptr);
-                uint32_t src_low = Emit_Fat_Pointer_Low(cg, fat_ptr);
-                uint32_t src_high = Emit_Fat_Pointer_High(cg, fat_ptr);
-
-                /* Calculate source length */
-                uint32_t src_len = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", src_len, src_high, src_low);
-                uint32_t src_len1 = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", src_len1, src_len);
-
-                /* Copy data to the variable */
+                Emit_Fat_Pointer_Copy_To_Name(cg, fat_ptr, sym);
+            } else if (ty && ty->kind == TYPE_FIXED &&
+                       node->object_decl.init->kind == NK_REAL) {
+                /* Fixed-point initialization from real literal:
+                 * Convert real value to scaled integer at compile time */
+                double real_val = node->object_decl.init->real_lit.value;
+                double small = ty->fixed.small > 0 ? ty->fixed.small : ty->fixed.delta;
+                int64_t scaled_val = (int64_t)(real_val / small + 0.5);  /* Round */
+                uint32_t init = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add i64 0, %lld  ; fixed-point %.6f / %.9f\n",
+                     init, (long long)scaled_val, real_val, small);
+                Emit(cg, "  store i64 %%t%u, ptr %%", init);
+                Emit_Symbol_Name(cg, sym);
+                Emit(cg, "\n");
+            } else if (is_record && node->object_decl.init->kind == NK_AGGREGATE) {
+                /* Record aggregate initialization - copy from aggregate to variable */
+                uint32_t agg_ptr = Generate_Expression(cg, node->object_decl.init);
                 Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%");
                 Emit_Symbol_Name(cg, sym);
-                Emit(cg, ", ptr %%t%u, i64 %%t%u, i1 false)\n", src_ptr, src_len1);
+                Emit(cg, ", ptr %%t%u, i64 %u, i1 false)\n", agg_ptr, record_size);
             } else if (!is_array && !is_record) {
                 uint32_t init = Generate_Expression(cg, node->object_decl.init);
                 /* Truncate from i64 computation to storage type */
@@ -8452,6 +10829,60 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             }
         }
     }
+}
+
+/* Forward declare for recursive search */
+static bool Has_Nested_Subprograms(Node_List *declarations, Node_List *statements);
+
+static bool Has_Nested_In_Statements(Node_List *statements) {
+    if (!statements) return false;
+    for (uint32_t i = 0; i < statements->count; i++) {
+        Syntax_Node *stmt = statements->items[i];
+        if (!stmt) continue;
+        if (stmt->kind == NK_BLOCK) {
+            /* DECLARE block - check its declarations and nested statements */
+            if (Has_Nested_Subprograms(&stmt->block_stmt.declarations,
+                                        &stmt->block_stmt.statements)) {
+                return true;
+            }
+        } else if (stmt->kind == NK_IF) {
+            /* Check all branches of IF */
+            if (Has_Nested_In_Statements(&stmt->if_stmt.then_stmts)) return true;
+            for (uint32_t j = 0; j < stmt->if_stmt.elsif_parts.count; j++) {
+                Syntax_Node *elsif = stmt->if_stmt.elsif_parts.items[j];
+                if (elsif && Has_Nested_In_Statements(&elsif->if_stmt.then_stmts)) return true;
+            }
+            if (Has_Nested_In_Statements(&stmt->if_stmt.else_stmts)) return true;
+        } else if (stmt->kind == NK_LOOP) {
+            if (Has_Nested_In_Statements(&stmt->loop_stmt.statements)) return true;
+        } else if (stmt->kind == NK_CASE) {
+            for (uint32_t j = 0; j < stmt->case_stmt.alternatives.count; j++) {
+                Syntax_Node *alt = stmt->case_stmt.alternatives.items[j];
+                if (alt && alt->kind == NK_ASSOCIATION &&
+                    alt->association.expression &&
+                    alt->association.expression->kind == NK_BLOCK) {
+                    if (Has_Nested_In_Statements(&alt->association.expression->block_stmt.statements)) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    return false;
+}
+
+static bool Has_Nested_Subprograms(Node_List *declarations, Node_List *statements) {
+    /* Check declarations for procedure/function bodies */
+    if (declarations) {
+        for (uint32_t i = 0; i < declarations->count; i++) {
+            Syntax_Node *decl = declarations->items[i];
+            if (decl && (decl->kind == NK_PROCEDURE_BODY || decl->kind == NK_FUNCTION_BODY)) {
+                return true;
+            }
+        }
+    }
+    /* Check statements for DECLARE blocks that might contain nested subprograms */
+    return Has_Nested_In_Statements(statements);
 }
 
 static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
@@ -8488,7 +10919,12 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
     /* Parameters */
     for (uint32_t i = 0; i < sym->parameter_count; i++) {
         if (i > 0) Emit(cg, ", ");
-        Emit(cg, "%s %%p%u", Type_To_Llvm(sym->parameters[i].param_type), i);
+        /* OUT and IN OUT parameters are passed by reference */
+        if (Param_Is_By_Reference(sym->parameters[i].mode)) {
+            Emit(cg, "ptr %%p%u", i);
+        } else {
+            Emit(cg, "%s %%p%u", Type_To_Llvm(sym->parameters[i].param_type), i);
+        }
     }
 
     Emit(cg, ") {\n");
@@ -8498,22 +10934,17 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
     cg->current_function = sym;
     cg->has_return = false;
 
-    /* Check if this function has nested subprograms (by looking at declarations) */
-    bool has_nested = false;
-    for (uint32_t i = 0; i < node->subprogram_body.declarations.count; i++) {
-        Syntax_Node *decl = node->subprogram_body.declarations.items[i];
-        if (decl && (decl->kind == NK_PROCEDURE_BODY || decl->kind == NK_FUNCTION_BODY)) {
-            has_nested = true;
-            break;
-        }
-    }
+    /* Check if this function has nested subprograms (in declarations or DECLARE blocks) */
+    bool has_nested = Has_Nested_Subprograms(&node->subprogram_body.declarations,
+                                              &node->subprogram_body.statements);
 
     /* If this function has nested subprograms, allocate a frame base
      * This is the address that will be passed to nested functions */
-    if (has_nested && sym->scope && sym->scope->frame_size > 0) {
+    if (has_nested) {
+        int64_t frame_size = (sym->scope && sym->scope->frame_size > 0)
+            ? sym->scope->frame_size : 8;  /* At least 8 bytes for frame pointer */
         Emit(cg, "  ; Frame for nested function access\n");
-        Emit(cg, "  %%__frame_base = alloca i8, i64 %lld\n",
-             (long long)sym->scope->frame_size);
+        Emit(cg, "  %%__frame_base = alloca i8, i64 %lld\n", (long long)frame_size);
     }
 
     /* If nested, create aliases for accessing enclosing scope variables via frame */
@@ -8532,25 +10963,39 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
         }
     }
 
-    /* Allocate and store parameters to local stack slots */
+    /* Allocate and store parameters to local stack slots
+     * For OUT/IN OUT: param is already a pointer, use directly
+     * For IN: allocate local slot and copy value */
     for (uint32_t i = 0; i < sym->parameter_count; i++) {
         Symbol *param_sym = sym->parameters[i].param_sym;
         if (param_sym) {
             const char *type_str = Type_To_Llvm(sym->parameters[i].param_type);
-            /* If this function has nested subprograms, allocate params in frame */
-            if (has_nested && sym->scope) {
+            Parameter_Mode mode = sym->parameters[i].mode;
+
+            if (Param_Is_By_Reference(mode)) {
+                /* OUT/IN OUT: %p is already a pointer to caller's variable
+                 * Create an alias so the parameter name points to caller's storage */
+                Emit(cg, "  %%");
+                Emit_Symbol_Name(cg, param_sym);
+                Emit(cg, " = getelementptr i8, ptr %%p%u, i64 0  ; by-ref param\n", i);
+            } else if (has_nested && sym->scope) {
+                /* IN param with nested functions: allocate in frame */
                 Emit(cg, "  %%");
                 Emit_Symbol_Name(cg, param_sym);
                 Emit(cg, " = getelementptr i8, ptr %%__frame_base, i64 %lld\n",
                      (long long)param_sym->frame_offset);
+                Emit(cg, "  store %s %%p%u, ptr %%", type_str, i);
+                Emit_Symbol_Name(cg, param_sym);
+                Emit(cg, "\n");
             } else {
+                /* IN param: allocate local and copy value */
                 Emit(cg, "  %%");
                 Emit_Symbol_Name(cg, param_sym);
                 Emit(cg, " = alloca %s\n", type_str);
+                Emit(cg, "  store %s %%p%u, ptr %%", type_str, i);
+                Emit_Symbol_Name(cg, param_sym);
+                Emit(cg, "\n");
             }
-            Emit(cg, "  store %s %%p%u, ptr %%", type_str, i);
-            Emit_Symbol_Name(cg, param_sym);
-            Emit(cg, "\n");
         }
     }
 
@@ -8681,7 +11126,7 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
     cg->is_nested = saved_is_nested;
     cg->enclosing_function = saved_enclosing;
 
-    /* Emit deferred nested subprogram bodies */
+    /* Emit deferred nested subprogram/task bodies */
     while (cg->deferred_count > saved_deferred_count) {
         Syntax_Node *deferred = cg->deferred_bodies[--cg->deferred_count];
         if (deferred->kind == NK_GENERIC_INST) {
@@ -8693,6 +11138,8 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
                 Generate_Generic_Instance_Body(cg, inst, inst->generic_template->generic_body);
                 cg->current_instance = saved;
             }
+        } else if (deferred->kind == NK_TASK_BODY) {
+            Generate_Task_Body(cg, deferred);
         } else {
             Generate_Subprogram_Body(cg, deferred);
         }
@@ -8801,10 +11248,65 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
                 Generate_Generic_Instance_Body(cg, inst, inst->generic_template->generic_body);
                 cg->current_instance = saved;
             }
+        } else if (deferred->kind == NK_TASK_BODY) {
+            Generate_Task_Body(cg, deferred);
         } else {
             Generate_Subprogram_Body(cg, deferred);
         }
     }
+}
+
+static void Generate_Task_Body(Code_Generator *cg, Syntax_Node *node) {
+    Emit(cg, "\n; Task body: %.*s\n",
+         (int)node->task_body.name.length, node->task_body.name.data);
+
+    /* Generate task entry point function */
+    Emit(cg, "define void @task_%.*s(ptr %%_unused_arg) {\n",
+         (int)node->task_body.name.length, node->task_body.name.data);
+    Emit(cg, "entry:\n");
+
+    /* Save and set context - task body is like a function body */
+    Symbol *saved_current_function = cg->current_function;
+    cg->current_function = node->symbol;
+
+    /* Reset temp counter for new function */
+    uint32_t saved_temp = cg->temp_id;
+    cg->temp_id = 1;
+
+    /* Push exception handler for task */
+    uint32_t jmp_buf = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = alloca [200 x i8]\n", jmp_buf);
+    uint32_t jmp_ptr = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = getelementptr [200 x i8], ptr %%t%u, i64 0, i64 0\n",
+         jmp_ptr, jmp_buf);
+    Emit(cg, "  call void @__ada_push_handler(ptr %%t%u)\n", jmp_ptr);
+    uint32_t setjmp_result = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = call i32 @setjmp(ptr %%t%u)\n", setjmp_result, jmp_ptr);
+    uint32_t is_zero = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", is_zero, setjmp_result);
+    uint32_t body_label = Emit_Label(cg);
+    uint32_t exit_label = Emit_Label(cg);
+    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+         is_zero, body_label, exit_label);
+
+    /* Normal execution path */
+    Emit(cg, "L%u:\n", body_label);
+    Generate_Declaration_List(cg, &node->task_body.declarations);
+    Generate_Statement_List(cg, &node->task_body.statements);
+    Emit(cg, "  call void @__ada_pop_handler()\n");
+    Emit(cg, "  ret void\n");
+
+    /* Exception handler path */
+    Emit(cg, "L%u:\n", exit_label);
+    Emit(cg, "  call void @__ada_pop_handler()\n");
+    /* Task terminates silently on unhandled exception */
+    Emit(cg, "  ret void\n");
+
+    Emit(cg, "}\n\n");
+
+    /* Restore context */
+    cg->temp_id = saved_temp;
+    cg->current_function = saved_current_function;
 }
 
 static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
@@ -8813,6 +11315,14 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
     switch (node->kind) {
         case NK_OBJECT_DECL:
             Generate_Object_Declaration(cg, node);
+            break;
+
+        case NK_PROCEDURE_SPEC:
+        case NK_FUNCTION_SPEC:
+            /* Forward declaration - if imported, emit extern declaration */
+            if (node->symbol && node->symbol->is_imported) {
+                Emit_Extern_Subprogram(cg, node->symbol);
+            }
             break;
 
         case NK_PROCEDURE_BODY:
@@ -8863,6 +11373,21 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
             /* Generic declarations don't generate code - only instances do */
             break;
 
+        case NK_TASK_SPEC:
+            /* Task type/object specification - record entry points */
+            Emit(cg, "; Task spec: %.*s (entries registered at runtime)\n",
+                 (int)node->task_spec.name.length, node->task_spec.name.data);
+            break;
+
+        case NK_TASK_BODY:
+            /* Defer task body generation when inside another function */
+            if (cg->current_function && cg->deferred_count < 64) {
+                cg->deferred_bodies[cg->deferred_count++] = node;
+            } else {
+                Generate_Task_Body(cg, node);
+            }
+            break;
+
         default:
             break;
     }
@@ -8880,10 +11405,15 @@ static void Generate_Type_Equality_Function(Code_Generator *cg, Type_Info *t) {
 
     const char *func_name = t->equality_func_name;
 
-    /* Emit function definition: i1 @func(ptr %left, ptr %right) */
+    /* Determine parameter type based on array constrained-ness */
+    bool is_unconstrained = (t->kind == TYPE_ARRAY || t->kind == TYPE_STRING) &&
+                            !t->array.is_constrained;
+    const char *param_type = is_unconstrained ? FAT_PTR_TYPE : "ptr";
+
+    /* Emit function definition with linkonce_odr for linker deduplication */
     Emit(cg, "\n; Implicit equality for type %.*s\n",
          (int)t->name.length, t->name.data);
-    Emit(cg, "define i1 @%s(ptr %%0, ptr %%1) {\n", func_name);
+    Emit(cg, "define linkonce_odr i1 @%s(%s %%0, %s %%1) {\n", func_name, param_type, param_type);
     Emit(cg, "entry:\n");
 
     /* Save and reset temp counter for this function */
@@ -8953,9 +11483,41 @@ static void Generate_Type_Equality_Function(Code_Generator *cg, Type_Info *t) {
             Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", cmp, result);
             Emit(cg, "  ret i1 %%t%u\n", cmp);
         } else {
-            /* Unconstrained array - compare bounds first, then data */
-            /* Simplified: return false for now (TODO: implement fat ptr compare) */
-            Emit(cg, "  ret i1 0\n");
+            /*
+             * Unconstrained array equality (per RM 4.5.2):
+             * Fat pointer layout: { ptr data, { i64 low, i64 high } }
+             * Compare lengths first, then data if lengths match.
+             */
+            uint32_t elem_size = t->array.element_type ?
+                                 t->array.element_type->size : 1;
+
+            /* Extract bounds from first fat pointer (%0) */
+            Emit(cg, "  %%left_low = extractvalue " FAT_PTR_TYPE " %%0, 1, 0\n");
+            Emit(cg, "  %%left_high = extractvalue " FAT_PTR_TYPE " %%0, 1, 1\n");
+            Emit(cg, "  %%left_len = sub i64 %%left_high, %%left_low\n");
+            Emit(cg, "  %%left_len1 = add i64 %%left_len, 1\n");
+
+            /* Extract bounds from second fat pointer (%1) */
+            Emit(cg, "  %%right_low = extractvalue " FAT_PTR_TYPE " %%1, 1, 0\n");
+            Emit(cg, "  %%right_high = extractvalue " FAT_PTR_TYPE " %%1, 1, 1\n");
+            Emit(cg, "  %%right_len = sub i64 %%right_high, %%right_low\n");
+            Emit(cg, "  %%right_len1 = add i64 %%right_len, 1\n");
+
+            /* Compare lengths */
+            Emit(cg, "  %%len_eq = icmp eq i64 %%left_len1, %%right_len1\n");
+
+            /* Extract data pointers */
+            Emit(cg, "  %%left_data = extractvalue " FAT_PTR_TYPE " %%0, 0\n");
+            Emit(cg, "  %%right_data = extractvalue " FAT_PTR_TYPE " %%1, 0\n");
+
+            /* Compute byte size and call memcmp */
+            Emit(cg, "  %%byte_size = mul i64 %%left_len1, %u\n", elem_size);
+            Emit(cg, "  %%memcmp_res = call i32 @memcmp(ptr %%left_data, ptr %%right_data, i64 %%byte_size)\n");
+            Emit(cg, "  %%data_eq = icmp eq i32 %%memcmp_res, 0\n");
+
+            /* Result: lengths match AND data matches */
+            Emit(cg, "  %%result = and i1 %%len_eq, %%data_eq\n");
+            Emit(cg, "  ret i1 %%result\n");
         }
     } else {
         /* Unknown composite type - return true */
@@ -8988,6 +11550,108 @@ static void Generate_Exception_Globals(Code_Generator *cg) {
     }
 }
 
+/* Check if external name is a builtin text_io function (already defined) */
+static bool Is_Builtin_Function(String_Slice name) {
+    /* Strip quotes if present */
+    if (name.length >= 2 && name.data[0] == '"' && name.data[name.length-1] == '"') {
+        name.data++;
+        name.length -= 2;
+    }
+    const char *builtins[] = {
+        "__text_io_new_line", "__text_io_put_char", "__text_io_put",
+        "__text_io_put_line", "__text_io_put_int", "__text_io_put_float",
+        "__text_io_get_char", "__text_io_get_line", NULL
+    };
+    for (int i = 0; builtins[i]; i++) {
+        if (name.length == strlen(builtins[i]) &&
+            memcmp(name.data, builtins[i], name.length) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Emit function signature for extern declaration */
+static void Emit_Extern_Subprogram(Code_Generator *cg, Symbol *sym) {
+    if (!sym) return;
+    if (sym->kind != SYMBOL_FUNCTION && sym->kind != SYMBOL_PROCEDURE) return;
+
+    /* Skip if already emitted */
+    if (sym->extern_emitted) return;
+    sym->extern_emitted = true;
+
+    /* Skip if this is a builtin function that we've already defined */
+    if (sym->is_imported && sym->external_name.length > 0) {
+        if (Is_Builtin_Function(sym->external_name)) {
+            return;
+        }
+    }
+
+    /* Get return type */
+    const char *ret_type = sym->return_type ? Type_To_Llvm(sym->return_type) : "void";
+
+    Emit(cg, "declare %s @", ret_type);
+    Emit_Symbol_Name(cg, sym);
+    Emit(cg, "(");
+
+    /* Emit parameter types */
+    for (uint32_t i = 0; i < sym->parameter_count; i++) {
+        if (i > 0) Emit(cg, ", ");
+        Type_Info *ty = sym->parameters[i].param_type;
+        if (ty) {
+            /* Unconstrained arrays pass as fat pointers */
+            if ((ty->kind == TYPE_ARRAY && !ty->array.is_constrained) ||
+                ty->kind == TYPE_STRING) {
+                Emit(cg, FAT_PTR_TYPE);
+            } else {
+                Emit(cg, "%s", Type_To_Llvm(ty));
+            }
+        } else {
+            Emit(cg, "i64");
+        }
+    }
+    Emit(cg, ")\n");
+}
+
+/* Generate extern declarations for all loaded package specs */
+static void Generate_Extern_Declarations(Code_Generator *cg, Syntax_Node *node) {
+    if (!node || !node->compilation_unit.context) return;
+
+    Syntax_Node *ctx = node->compilation_unit.context;
+    bool emitted_header = false;
+
+    /* Iterate through WITH'd packages */
+    for (uint32_t i = 0; i < ctx->context.with_clauses.count; i++) {
+        Syntax_Node *with_node = ctx->context.with_clauses.items[i];
+        for (uint32_t j = 0; j < with_node->use_clause.names.count; j++) {
+            Syntax_Node *pkg_name = with_node->use_clause.names.items[j];
+            if (pkg_name->kind != NK_IDENTIFIER) continue;
+
+            Symbol *pkg_sym = pkg_name->symbol;
+            if (!pkg_sym || pkg_sym->kind != SYMBOL_PACKAGE) continue;
+            if (!pkg_sym->declaration) continue;
+
+            Syntax_Node *pkg_decl = pkg_sym->declaration;
+            if (pkg_decl->kind != NK_PACKAGE_SPEC) continue;
+
+            /* Emit extern for each subprogram in the package */
+            for (uint32_t k = 0; k < pkg_decl->package_spec.visible_decls.count; k++) {
+                Syntax_Node *decl = pkg_decl->package_spec.visible_decls.items[k];
+                if (!decl) continue;
+
+                if (decl->kind == NK_PROCEDURE_SPEC || decl->kind == NK_FUNCTION_SPEC) {
+                    if (!emitted_header) {
+                        Emit(cg, "\n; External Ada subprogram declarations\n");
+                        emitted_header = true;
+                    }
+                    Emit_Extern_Subprogram(cg, decl->symbol);
+                }
+            }
+        }
+    }
+    if (emitted_header) Emit(cg, "\n");
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
  * §13.7 Compilation Unit Code Generation
  * ───────────────────────────────────────────────────────────────────────── */
@@ -9000,26 +11664,501 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128\"\n");
     Emit(cg, "target triple = \"x86_64-pc-linux-gnu\"\n\n");
 
-    /* Declare memcmp for array equality */
-    Emit(cg, "; External function declarations\n");
+    /* External C library and LLVM intrinsic declarations */
+    Emit(cg, "; External declarations\n");
     Emit(cg, "declare i32 @memcmp(ptr, ptr, i64)\n");
-
-    /* Exception handling runtime declarations */
     Emit(cg, "declare i32 @setjmp(ptr)\n");
     Emit(cg, "declare void @longjmp(ptr, i32)\n");
-    Emit(cg, "declare void @__ada_raise(i64)\n");
-    Emit(cg, "declare void @__ada_reraise()\n");
-    Emit(cg, "declare void @__ada_push_handler(ptr)\n");
-    Emit(cg, "declare void @__ada_pop_handler()\n");
-    Emit(cg, "declare i64 @__ada_current_exception()\n\n");
+    Emit(cg, "declare void @exit(i32)\n");
+    Emit(cg, "declare ptr @malloc(i64)\n");
+    Emit(cg, "declare ptr @realloc(ptr, i64)\n");
+    Emit(cg, "declare void @free(ptr)\n");
+    Emit(cg, "declare i32 @usleep(i32)\n");
+    Emit(cg, "declare i32 @printf(ptr, ...)\n");
+    Emit(cg, "declare i32 @putchar(i32)\n");
+    Emit(cg, "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)\n");
+    Emit(cg, "declare double @llvm.pow.f64(double, double)\n\n");
 
-    /* Secondary stack for unconstrained returns (string concatenation, etc.) */
-    Emit(cg, "declare ptr @__ada_sec_stack_alloc(i64)\n");
-    Emit(cg, "declare void @__ada_sec_stack_mark(ptr)\n");
-    Emit(cg, "declare void @__ada_sec_stack_release(ptr)\n\n");
+    /* Integer power function (base ** exponent for integer operands) */
+    Emit(cg, "; Integer exponentiation helper\n");
+    Emit(cg, "define linkonce_odr i64 @__ada_integer_pow(i64 %%base, i64 %%exp) {\n");
+    Emit(cg, "entry:\n");
+    Emit(cg, "  %%is_neg = icmp slt i64 %%exp, 0\n");
+    Emit(cg, "  br i1 %%is_neg, label %%neg_exp, label %%pos_exp\n");
+    Emit(cg, "neg_exp:\n");
+    Emit(cg, "  ret i64 0  ; negative exponent for integer = 0\n");
+    Emit(cg, "pos_exp:\n");
+    Emit(cg, "  %%is_zero = icmp eq i64 %%exp, 0\n");
+    Emit(cg, "  br i1 %%is_zero, label %%ret_one, label %%loop\n");
+    Emit(cg, "ret_one:\n");
+    Emit(cg, "  ret i64 1\n");
+    Emit(cg, "loop:\n");
+    Emit(cg, "  %%result = phi i64 [ 1, %%pos_exp ], [ %%new_result, %%loop ]\n");
+    Emit(cg, "  %%i = phi i64 [ 0, %%pos_exp ], [ %%next_i, %%loop ]\n");
+    Emit(cg, "  %%new_result = mul i64 %%result, %%base\n");
+    Emit(cg, "  %%next_i = add i64 %%i, 1\n");
+    Emit(cg, "  %%done = icmp eq i64 %%next_i, %%exp\n");
+    Emit(cg, "  br i1 %%done, label %%exit, label %%loop\n");
+    Emit(cg, "exit:\n");
+    Emit(cg, "  ret i64 %%new_result\n");
+    Emit(cg, "}\n\n");
 
-    /* LLVM intrinsics for memory operations */
-    Emit(cg, "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)\n\n");
+    /* Runtime globals */
+    Emit(cg, "; Runtime globals\n");
+    Emit(cg, "@__ss_base = linkonce_odr global ptr null\n");
+    Emit(cg, "@__ss_ptr = linkonce_odr global i64 0\n");
+    Emit(cg, "@__ss_size = linkonce_odr global i64 0\n");
+    Emit(cg, "@__eh_cur = linkonce_odr global ptr null\n");
+    Emit(cg, "@__ex_cur = linkonce_odr global i64 0\n");
+    Emit(cg, "@__fin_list = linkonce_odr global ptr null\n");
+    Emit(cg, "@__entry_queue = linkonce_odr global ptr null\n");
+    Emit(cg, "@.fmt_ue = linkonce_odr constant [27 x i8] c\"Unhandled exception: %%lld\\0A\\00\"\n\n");
+
+    /* Standard exceptions (RM 11.1) */
+    Emit(cg, "; Standard exception identities\n");
+    Emit(cg, "@.ex.CONSTRAINT_ERROR = linkonce_odr constant i64 1\n");
+    Emit(cg, "@.ex.NUMERIC_ERROR = linkonce_odr constant i64 2\n");
+    Emit(cg, "@.ex.PROGRAM_ERROR = linkonce_odr constant i64 3\n");
+    Emit(cg, "@.ex.STORAGE_ERROR = linkonce_odr constant i64 4\n");
+    Emit(cg, "@.ex.TASKING_ERROR = linkonce_odr constant i64 5\n\n");
+
+    /* Secondary stack initialization */
+    Emit(cg, "; Secondary stack runtime\n");
+    Emit(cg, "define linkonce_odr void @__ada_ss_init() {\n");
+    Emit(cg, "  %%p = call ptr @malloc(i64 1048576)\n");
+    Emit(cg, "  store ptr %%p, ptr @__ss_base\n");
+    Emit(cg, "  store i64 1048576, ptr @__ss_size\n");
+    Emit(cg, "  store i64 0, ptr @__ss_ptr\n");
+    Emit(cg, "  ret void\n");
+    Emit(cg, "}\n\n");
+
+    /* Secondary stack mark */
+    Emit(cg, "define linkonce_odr i64 @__ada_sec_stack_mark() {\n");
+    Emit(cg, "  %%m = load i64, ptr @__ss_ptr\n");
+    Emit(cg, "  ret i64 %%m\n");
+    Emit(cg, "}\n\n");
+
+    /* Secondary stack release */
+    Emit(cg, "define linkonce_odr void @__ada_sec_stack_release(i64 %%m) {\n");
+    Emit(cg, "  store i64 %%m, ptr @__ss_ptr\n");
+    Emit(cg, "  ret void\n");
+    Emit(cg, "}\n\n");
+
+    /* Secondary stack allocate */
+    Emit(cg, "define linkonce_odr ptr @__ada_sec_stack_alloc(i64 %%sz) {\n");
+    Emit(cg, "entry:\n");
+    Emit(cg, "  %%1 = load ptr, ptr @__ss_base\n");
+    Emit(cg, "  %%2 = icmp eq ptr %%1, null\n");
+    Emit(cg, "  br i1 %%2, label %%init, label %%alloc\n");
+    Emit(cg, "init:\n");
+    Emit(cg, "  call void @__ada_ss_init()\n");
+    Emit(cg, "  %%3 = load ptr, ptr @__ss_base\n");
+    Emit(cg, "  br label %%alloc\n");
+    Emit(cg, "alloc:\n");
+    Emit(cg, "  %%p = phi ptr [%%1, %%entry], [%%3, %%init]\n");
+    Emit(cg, "  %%4 = load i64, ptr @__ss_ptr\n");
+    Emit(cg, "  %%5 = add i64 %%sz, 7\n");
+    Emit(cg, "  %%6 = and i64 %%5, -8\n");
+    Emit(cg, "  %%7 = add i64 %%4, %%6\n");
+    Emit(cg, "  %%8 = load i64, ptr @__ss_size\n");
+    Emit(cg, "  %%9 = icmp ult i64 %%7, %%8\n");
+    Emit(cg, "  br i1 %%9, label %%ok, label %%grow\n");
+    Emit(cg, "grow:\n");
+    Emit(cg, "  %%10 = mul i64 %%8, 2\n");
+    Emit(cg, "  store i64 %%10, ptr @__ss_size\n");
+    Emit(cg, "  %%11 = call ptr @realloc(ptr %%p, i64 %%10)\n");
+    Emit(cg, "  store ptr %%11, ptr @__ss_base\n");
+    Emit(cg, "  br label %%ok\n");
+    Emit(cg, "ok:\n");
+    Emit(cg, "  %%12 = phi ptr [%%p, %%alloc], [%%11, %%grow]\n");
+    Emit(cg, "  %%13 = getelementptr i8, ptr %%12, i64 %%4\n");
+    Emit(cg, "  store i64 %%7, ptr @__ss_ptr\n");
+    Emit(cg, "  ret ptr %%13\n");
+    Emit(cg, "}\n\n");
+
+    /* Exception handling: push handler */
+    Emit(cg, "; Exception handling runtime\n");
+    Emit(cg, "define linkonce_odr void @__ada_push_handler(ptr %%h) {\n");
+    Emit(cg, "  %%1 = load ptr, ptr @__eh_cur\n");
+    Emit(cg, "  store ptr %%1, ptr %%h\n");
+    Emit(cg, "  store ptr %%h, ptr @__eh_cur\n");
+    Emit(cg, "  ret void\n");
+    Emit(cg, "}\n\n");
+
+    /* Exception handling: pop handler */
+    Emit(cg, "define linkonce_odr void @__ada_pop_handler() {\n");
+    Emit(cg, "  %%1 = load ptr, ptr @__eh_cur\n");
+    Emit(cg, "  %%2 = icmp eq ptr %%1, null\n");
+    Emit(cg, "  br i1 %%2, label %%done, label %%pop\n");
+    Emit(cg, "pop:\n");
+    Emit(cg, "  %%3 = load ptr, ptr %%1\n");
+    Emit(cg, "  store ptr %%3, ptr @__eh_cur\n");
+    Emit(cg, "  br label %%done\n");
+    Emit(cg, "done:\n");
+    Emit(cg, "  ret void\n");
+    Emit(cg, "}\n\n");
+
+    /* Exception handling: raise */
+    Emit(cg, "define linkonce_odr void @__ada_raise(i64 %%exc_id) {\n");
+    Emit(cg, "  store i64 %%exc_id, ptr @__ex_cur\n");
+    Emit(cg, "  %%jb = load ptr, ptr @__eh_cur\n");
+    Emit(cg, "  %%is_null = icmp eq ptr %%jb, null\n");
+    Emit(cg, "  br i1 %%is_null, label %%unhandled, label %%jump\n");
+    Emit(cg, "jump:\n");
+    Emit(cg, "  call void @longjmp(ptr %%jb, i32 1)\n");
+    Emit(cg, "  unreachable\n");
+    Emit(cg, "unhandled:\n");
+    Emit(cg, "  call i32 (ptr, ...) @printf(ptr @.fmt_ue, i64 %%exc_id)\n");
+    Emit(cg, "  call void @longjmp(ptr null, i32 1)\n");
+    Emit(cg, "  unreachable\n");
+    Emit(cg, "}\n\n");
+
+    /* Exception handling: reraise */
+    Emit(cg, "define linkonce_odr void @__ada_reraise() {\n");
+    Emit(cg, "  %%exc = load i64, ptr @__ex_cur\n");
+    Emit(cg, "  call void @__ada_raise(i64 %%exc)\n");
+    Emit(cg, "  unreachable\n");
+    Emit(cg, "}\n\n");
+
+    /* Exception handling: get current exception */
+    Emit(cg, "define linkonce_odr i64 @__ada_current_exception() {\n");
+    Emit(cg, "  %%exc = load i64, ptr @__ex_cur\n");
+    Emit(cg, "  ret i64 %%exc\n");
+    Emit(cg, "}\n\n");
+
+    /* Integer power function */
+    Emit(cg, "; Arithmetic runtime\n");
+    Emit(cg, "define linkonce_odr i64 @__ada_powi(i64 %%base, i64 %%exp) {\n");
+    Emit(cg, "entry:\n");
+    Emit(cg, "  %%result = alloca i64\n");
+    Emit(cg, "  store i64 1, ptr %%result\n");
+    Emit(cg, "  %%e = alloca i64\n");
+    Emit(cg, "  store i64 %%exp, ptr %%e\n");
+    Emit(cg, "  br label %%loop\n");
+    Emit(cg, "loop:\n");
+    Emit(cg, "  %%ev = load i64, ptr %%e\n");
+    Emit(cg, "  %%cmp = icmp sgt i64 %%ev, 0\n");
+    Emit(cg, "  br i1 %%cmp, label %%body, label %%done\n");
+    Emit(cg, "body:\n");
+    Emit(cg, "  %%rv = load i64, ptr %%result\n");
+    Emit(cg, "  %%nv = mul i64 %%rv, %%base\n");
+    Emit(cg, "  store i64 %%nv, ptr %%result\n");
+    Emit(cg, "  %%ev2 = load i64, ptr %%e\n");
+    Emit(cg, "  %%ev3 = sub i64 %%ev2, 1\n");
+    Emit(cg, "  store i64 %%ev3, ptr %%e\n");
+    Emit(cg, "  br label %%loop\n");
+    Emit(cg, "done:\n");
+    Emit(cg, "  %%final = load i64, ptr %%result\n");
+    Emit(cg, "  ret i64 %%final\n");
+    Emit(cg, "}\n\n");
+
+    /* Delay statement support */
+    Emit(cg, "; Tasking runtime\n");
+    Emit(cg, "define linkonce_odr void @__ada_delay(i64 %%us) {\n");
+    Emit(cg, "  %%t = trunc i64 %%us to i32\n");
+    Emit(cg, "  call i32 @usleep(i32 %%t)\n");
+    Emit(cg, "  ret void\n");
+    Emit(cg, "}\n\n");
+
+    /* Task abort: signal task to terminate (simplified: just sets flag) */
+    Emit(cg, "define linkonce_odr void @__ada_task_abort(ptr %%task) {\n");
+    Emit(cg, "entry:\n");
+    Emit(cg, "  %%1 = icmp eq ptr %%task, null\n");
+    Emit(cg, "  br i1 %%1, label %%done, label %%abort\n");
+    Emit(cg, "abort:\n");
+    Emit(cg, "  ; In full impl: set abort flag, signal condition\n");
+    Emit(cg, "  store i8 1, ptr %%task  ; Mark abort pending\n");
+    Emit(cg, "  br label %%done\n");
+    Emit(cg, "done:\n");
+    Emit(cg, "  ret void\n");
+    Emit(cg, "}\n\n");
+
+    /* Task terminate: graceful task termination (for terminate alternative) */
+    Emit(cg, "define linkonce_odr void @__ada_task_terminate() {\n");
+    Emit(cg, "  ; Check if master task is complete, if so exit\n");
+    Emit(cg, "  call void @exit(i32 0)\n");
+    Emit(cg, "  unreachable\n");
+    Emit(cg, "}\n\n");
+
+    /* Entry call: caller side of rendezvous (blocks until accept completes) */
+    Emit(cg, "define linkonce_odr void @__ada_entry_call(ptr %%task, i64 %%entry_idx, ptr %%params) {\n");
+    Emit(cg, "entry:\n");
+    Emit(cg, "  ; Allocate rendezvous record: { task_ptr, entry_idx, params, complete_flag, next }\n");
+    Emit(cg, "  %%rv = call ptr @malloc(i64 40)\n");
+    Emit(cg, "  store ptr %%task, ptr %%rv\n");
+    Emit(cg, "  %%1 = getelementptr i64, ptr %%rv, i64 1\n");
+    Emit(cg, "  store i64 %%entry_idx, ptr %%1\n");
+    Emit(cg, "  %%2 = getelementptr ptr, ptr %%rv, i64 2\n");
+    Emit(cg, "  store ptr %%params, ptr %%2\n");
+    Emit(cg, "  %%3 = getelementptr i8, ptr %%rv, i64 32\n");
+    Emit(cg, "  store i8 0, ptr %%3  ; complete = false\n");
+    Emit(cg, "  ; Enqueue to task's entry queue (append to @__entry_queue)\n");
+    Emit(cg, "  %%4 = load ptr, ptr @__entry_queue\n");
+    Emit(cg, "  %%5 = getelementptr ptr, ptr %%rv, i64 4\n");
+    Emit(cg, "  store ptr %%4, ptr %%5\n");
+    Emit(cg, "  store ptr %%rv, ptr @__entry_queue\n");
+    Emit(cg, "  br label %%wait\n");
+    Emit(cg, "wait:\n");
+    Emit(cg, "  ; Spin-wait for complete flag (yield to scheduler)\n");
+    Emit(cg, "  %%_u1 = call i32 @usleep(i32 100)\n");
+    Emit(cg, "  %%6 = load i8, ptr %%3\n");
+    Emit(cg, "  %%7 = icmp eq i8 %%6, 0\n");
+    Emit(cg, "  br i1 %%7, label %%wait, label %%done\n");
+    Emit(cg, "done:\n");
+    Emit(cg, "  call void @free(ptr %%rv)\n");
+    Emit(cg, "  ret void\n");
+    Emit(cg, "}\n\n");
+
+    /* Accept wait: acceptor blocks until entry call arrives */
+    Emit(cg, "define linkonce_odr ptr @__ada_accept_wait(i64 %%entry_idx) {\n");
+    Emit(cg, "entry:\n");
+    Emit(cg, "  br label %%wait\n");
+    Emit(cg, "wait:\n");
+    Emit(cg, "  ; Scan entry queue for matching entry index\n");
+    Emit(cg, "  %%q = load ptr, ptr @__entry_queue\n");
+    Emit(cg, "  %%is_empty = icmp eq ptr %%q, null\n");
+    Emit(cg, "  br i1 %%is_empty, label %%spin, label %%check\n");
+    Emit(cg, "spin:\n");
+    Emit(cg, "  %%_u2 = call i32 @usleep(i32 100)\n");
+    Emit(cg, "  br label %%wait\n");
+    Emit(cg, "check:\n");
+    Emit(cg, "  ; Check if first entry matches\n");
+    Emit(cg, "  %%1 = getelementptr i64, ptr %%q, i64 1\n");
+    Emit(cg, "  %%2 = load i64, ptr %%1\n");
+    Emit(cg, "  %%3 = icmp eq i64 %%2, %%entry_idx\n");
+    Emit(cg, "  br i1 %%3, label %%found, label %%spin\n");
+    Emit(cg, "found:\n");
+    Emit(cg, "  ; Dequeue and return caller's parameter block\n");
+    Emit(cg, "  %%4 = getelementptr ptr, ptr %%q, i64 4\n");
+    Emit(cg, "  %%5 = load ptr, ptr %%4\n");
+    Emit(cg, "  store ptr %%5, ptr @__entry_queue\n");
+    Emit(cg, "  %%6 = getelementptr ptr, ptr %%q, i64 2\n");
+    Emit(cg, "  %%params = load ptr, ptr %%6\n");
+    Emit(cg, "  ret ptr %%q\n");
+    Emit(cg, "}\n\n");
+
+    /* Accept try: non-blocking check for pending entry call (for SELECT) */
+    Emit(cg, "define linkonce_odr ptr @__ada_accept_try(i64 %%entry_idx) {\n");
+    Emit(cg, "entry:\n");
+    Emit(cg, "  %%q = load ptr, ptr @__entry_queue\n");
+    Emit(cg, "  %%is_empty = icmp eq ptr %%q, null\n");
+    Emit(cg, "  br i1 %%is_empty, label %%none, label %%check\n");
+    Emit(cg, "check:\n");
+    Emit(cg, "  %%1 = getelementptr i64, ptr %%q, i64 1\n");
+    Emit(cg, "  %%2 = load i64, ptr %%1\n");
+    Emit(cg, "  %%3 = icmp eq i64 %%2, %%entry_idx\n");
+    Emit(cg, "  br i1 %%3, label %%found, label %%none\n");
+    Emit(cg, "found:\n");
+    Emit(cg, "  ; Dequeue and return caller's parameter block\n");
+    Emit(cg, "  %%4 = getelementptr ptr, ptr %%q, i64 4\n");
+    Emit(cg, "  %%5 = load ptr, ptr %%4\n");
+    Emit(cg, "  store ptr %%5, ptr @__entry_queue\n");
+    Emit(cg, "  ret ptr %%q\n");
+    Emit(cg, "none:\n");
+    Emit(cg, "  ret ptr null\n");
+    Emit(cg, "}\n\n");
+
+    /* Accept complete: signal rendezvous completion to caller */
+    Emit(cg, "define linkonce_odr void @__ada_accept_complete(ptr %%rv) {\n");
+    Emit(cg, "entry:\n");
+    Emit(cg, "  %%1 = getelementptr i8, ptr %%rv, i64 32\n");
+    Emit(cg, "  store i8 1, ptr %%1  ; complete = true\n");
+    Emit(cg, "  ret void\n");
+    Emit(cg, "}\n\n");
+
+    /* Finalization support */
+    Emit(cg, "; Finalization runtime\n");
+    Emit(cg, "define linkonce_odr void @__ada_finalize(ptr %%obj, ptr %%fn) {\n");
+    Emit(cg, "  %%1 = call ptr @malloc(i64 24)\n");
+    Emit(cg, "  %%2 = getelementptr ptr, ptr %%1, i64 0\n");
+    Emit(cg, "  store ptr %%obj, ptr %%2\n");
+    Emit(cg, "  %%3 = getelementptr ptr, ptr %%1, i64 1\n");
+    Emit(cg, "  store ptr %%fn, ptr %%3\n");
+    Emit(cg, "  %%4 = load ptr, ptr @__fin_list\n");
+    Emit(cg, "  %%5 = getelementptr ptr, ptr %%1, i64 2\n");
+    Emit(cg, "  store ptr %%4, ptr %%5\n");
+    Emit(cg, "  store ptr %%1, ptr @__fin_list\n");
+    Emit(cg, "  ret void\n");
+    Emit(cg, "}\n\n");
+
+    Emit(cg, "define linkonce_odr void @__ada_finalize_all() {\n");
+    Emit(cg, "entry:\n");
+    Emit(cg, "  %%1 = load ptr, ptr @__fin_list\n");
+    Emit(cg, "  br label %%loop\n");
+    Emit(cg, "loop:\n");
+    Emit(cg, "  %%p = phi ptr [%%1, %%entry], [%%9, %%fin]\n");
+    Emit(cg, "  %%2 = icmp eq ptr %%p, null\n");
+    Emit(cg, "  br i1 %%2, label %%done, label %%fin\n");
+    Emit(cg, "fin:\n");
+    Emit(cg, "  %%3 = getelementptr ptr, ptr %%p, i64 0\n");
+    Emit(cg, "  %%4 = load ptr, ptr %%3\n");
+    Emit(cg, "  %%5 = getelementptr ptr, ptr %%p, i64 1\n");
+    Emit(cg, "  %%6 = load ptr, ptr %%5\n");
+    Emit(cg, "  call void %%6(ptr %%4)\n");
+    Emit(cg, "  %%8 = getelementptr ptr, ptr %%p, i64 2\n");
+    Emit(cg, "  %%9 = load ptr, ptr %%8\n");
+    Emit(cg, "  call void @free(ptr %%p)\n");
+    Emit(cg, "  br label %%loop\n");
+    Emit(cg, "done:\n");
+    Emit(cg, "  ret void\n");
+    Emit(cg, "}\n\n");
+
+    /* TEXT_IO inline implementation (Ada 83 Chapter 14) */
+    Emit(cg, "; TEXT_IO runtime\n");
+    Emit(cg, "@stdin = external global ptr\n");
+    Emit(cg, "@stdout = external global ptr\n");
+    Emit(cg, "@stderr = external global ptr\n");
+    Emit(cg, "declare i32 @fputc(i32, ptr)\n");
+    Emit(cg, "declare i32 @fputs(ptr, ptr)\n");
+    Emit(cg, "declare i32 @fgetc(ptr)\n");
+    Emit(cg, "declare ptr @fgets(ptr, i32, ptr)\n");
+    Emit(cg, "declare i32 @fprintf(ptr, ptr, ...)\n");
+    Emit(cg, "@.fmt_d = linkonce_odr constant [5 x i8] c\"%%lld\\00\"\n");
+    Emit(cg, "@.fmt_s = linkonce_odr constant [3 x i8] c\"%%s\\00\"\n");
+    Emit(cg, "@.fmt_f = linkonce_odr constant [3 x i8] c\"%%g\\00\"\n");
+    Emit(cg, "@.fmt_c = linkonce_odr constant [3 x i8] c\"%%c\\00\"\n\n");
+
+    /* NEW_LINE: output line terminator */
+    Emit(cg, "define linkonce_odr void @__text_io_new_line() {\n");
+    Emit(cg, "  %%out = load ptr, ptr @stdout\n");
+    Emit(cg, "  call i32 @fputc(i32 10, ptr %%out)\n");
+    Emit(cg, "  ret void\n");
+    Emit(cg, "}\n\n");
+
+    /* PUT_CHAR: output single character */
+    Emit(cg, "define linkonce_odr void @__text_io_put_char(i8 %%c) {\n");
+    Emit(cg, "  %%out = load ptr, ptr @stdout\n");
+    Emit(cg, "  %%ci = zext i8 %%c to i32\n");
+    Emit(cg, "  call i32 @fputc(i32 %%ci, ptr %%out)\n");
+    Emit(cg, "  ret void\n");
+    Emit(cg, "}\n\n");
+
+    /* PUT: output string (ptr + bounds) */
+    Emit(cg, "define linkonce_odr void @__text_io_put(ptr %%data, i64 %%lo, i64 %%hi) {\n");
+    Emit(cg, "entry:\n");
+    Emit(cg, "  %%out = load ptr, ptr @stdout\n");
+    Emit(cg, "  %%i.init = sub i64 %%lo, 1\n");
+    Emit(cg, "  br label %%loop\n");
+    Emit(cg, "loop:\n");
+    Emit(cg, "  %%i = phi i64 [ %%i.init, %%entry ], [ %%i.next, %%body ]\n");
+    Emit(cg, "  %%i.next = add i64 %%i, 1\n");
+    Emit(cg, "  %%done = icmp sgt i64 %%i.next, %%hi\n");
+    Emit(cg, "  br i1 %%done, label %%exit, label %%body\n");
+    Emit(cg, "body:\n");
+    Emit(cg, "  %%idx = sub i64 %%i.next, %%lo\n");
+    Emit(cg, "  %%ptr = getelementptr i8, ptr %%data, i64 %%idx\n");
+    Emit(cg, "  %%ch = load i8, ptr %%ptr\n");
+    Emit(cg, "  %%chi = zext i8 %%ch to i32\n");
+    Emit(cg, "  call i32 @fputc(i32 %%chi, ptr %%out)\n");
+    Emit(cg, "  br label %%loop\n");
+    Emit(cg, "exit:\n");
+    Emit(cg, "  ret void\n");
+    Emit(cg, "}\n\n");
+
+    /* PUT_LINE: output string followed by newline */
+    Emit(cg, "define linkonce_odr void @__text_io_put_line(ptr %%data, i64 %%lo, i64 %%hi) {\n");
+    Emit(cg, "  call void @__text_io_put(ptr %%data, i64 %%lo, i64 %%hi)\n");
+    Emit(cg, "  call void @__text_io_new_line()\n");
+    Emit(cg, "  ret void\n");
+    Emit(cg, "}\n\n");
+
+    /* PUT_INTEGER: output integer with optional width */
+    Emit(cg, "define linkonce_odr void @__text_io_put_int(i64 %%val, i32 %%width) {\n");
+    Emit(cg, "  %%out = load ptr, ptr @stdout\n");
+    Emit(cg, "  call i32 (ptr, ptr, ...) @fprintf(ptr %%out, ptr @.fmt_d, i64 %%val)\n");
+    Emit(cg, "  ret void\n");
+    Emit(cg, "}\n\n");
+
+    /* PUT_FLOAT: output float value */
+    Emit(cg, "define linkonce_odr void @__text_io_put_float(double %%val) {\n");
+    Emit(cg, "  %%out = load ptr, ptr @stdout\n");
+    Emit(cg, "  call i32 (ptr, ptr, ...) @fprintf(ptr %%out, ptr @.fmt_f, double %%val)\n");
+    Emit(cg, "  ret void\n");
+    Emit(cg, "}\n\n");
+
+    /* GET_CHAR: read single character */
+    Emit(cg, "define linkonce_odr i8 @__text_io_get_char() {\n");
+    Emit(cg, "  %%inp = load ptr, ptr @stdin\n");
+    Emit(cg, "  %%c = call i32 @fgetc(ptr %%inp)\n");
+    Emit(cg, "  %%c8 = trunc i32 %%c to i8\n");
+    Emit(cg, "  ret i8 %%c8\n");
+    Emit(cg, "}\n\n");
+
+    /* GET_LINE: read line into buffer, return fat pointer */
+    Emit(cg, "define linkonce_odr { ptr, { i64, i64 } } @__text_io_get_line() {\n");
+    Emit(cg, "entry:\n");
+    Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 256)\n");
+    Emit(cg, "  %%inp = load ptr, ptr @stdin\n");
+    Emit(cg, "  %%res = call ptr @fgets(ptr %%buf, i32 255, ptr %%inp)\n");
+    Emit(cg, "  %%iseof = icmp eq ptr %%res, null\n");
+    Emit(cg, "  br i1 %%iseof, label %%empty, label %%gotline\n");
+    Emit(cg, "empty:\n");
+    Emit(cg, "  %%e1 = insertvalue { ptr, { i64, i64 } } undef, ptr %%buf, 0\n");
+    Emit(cg, "  %%e2 = insertvalue { ptr, { i64, i64 } } %%e1, i64 1, 1, 0\n");
+    Emit(cg, "  %%e3 = insertvalue { ptr, { i64, i64 } } %%e2, i64 0, 1, 1\n");
+    Emit(cg, "  ret { ptr, { i64, i64 } } %%e3\n");
+    Emit(cg, "gotline:\n");
+    Emit(cg, "  %%len = call i64 @strlen(ptr %%buf)\n");
+    Emit(cg, "  ; Strip trailing newline if present\n");
+    Emit(cg, "  %%lastidx = sub i64 %%len, 1\n");
+    Emit(cg, "  %%lastptr = getelementptr i8, ptr %%buf, i64 %%lastidx\n");
+    Emit(cg, "  %%lastch = load i8, ptr %%lastptr\n");
+    Emit(cg, "  %%isnl = icmp eq i8 %%lastch, 10\n");
+    Emit(cg, "  %%adjlen = select i1 %%isnl, i64 %%lastidx, i64 %%len\n");
+    Emit(cg, "  %%f1 = insertvalue { ptr, { i64, i64 } } undef, ptr %%buf, 0\n");
+    Emit(cg, "  %%f2 = insertvalue { ptr, { i64, i64 } } %%f1, i64 1, 1, 0\n");
+    Emit(cg, "  %%f3 = insertvalue { ptr, { i64, i64 } } %%f2, i64 %%adjlen, 1, 1\n");
+    Emit(cg, "  ret { ptr, { i64, i64 } } %%f3\n");
+    Emit(cg, "}\n\n");
+
+    /* 'IMAGE runtime: Integer'IMAGE(x) returns string representation */
+    Emit(cg, "; Attribute runtime support\n");
+    Emit(cg, "declare i32 @snprintf(ptr, i64, ptr, ...)\n");
+    Emit(cg, "declare i64 @strlen(ptr)\n");
+    Emit(cg, "@.img_fmt_d = linkonce_odr constant [5 x i8] c\"%%lld\\00\"\n");
+    Emit(cg, "@.img_fmt_c = linkonce_odr constant [3 x i8] c\"%%c\\00\"\n");
+    Emit(cg, "@.img_fmt_f = linkonce_odr constant [5 x i8] c\"%%.6g\\00\"\n\n");
+
+    /* Integer'IMAGE - convert integer to string fat pointer */
+    Emit(cg, "define linkonce_odr { ptr, { i64, i64 } } @__ada_integer_image(i64 %%val) {\n");
+    Emit(cg, "entry:\n");
+    Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 24)\n");
+    Emit(cg, "  %%len = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %%buf, i64 24, ptr @.img_fmt_d, i64 %%val)\n");
+    Emit(cg, "  %%len64 = sext i32 %%len to i64\n");
+    Emit(cg, "  %%high = sub i64 %%len64, 1\n");
+    Emit(cg, "  %%fat1 = insertvalue { ptr, { i64, i64 } } undef, ptr %%buf, 0\n");
+    Emit(cg, "  %%fat2 = insertvalue { ptr, { i64, i64 } } %%fat1, i64 1, 1, 0\n");
+    Emit(cg, "  %%fat3 = insertvalue { ptr, { i64, i64 } } %%fat2, i64 %%len64, 1, 1\n");
+    Emit(cg, "  ret { ptr, { i64, i64 } } %%fat3\n");
+    Emit(cg, "}\n\n");
+
+    /* Character'IMAGE - single char to string (3 chars: 'x') */
+    Emit(cg, "define linkonce_odr { ptr, { i64, i64 } } @__ada_character_image(i8 %%val) {\n");
+    Emit(cg, "entry:\n");
+    Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 4)\n");
+    Emit(cg, "  %%p0 = getelementptr i8, ptr %%buf, i64 0\n");
+    Emit(cg, "  store i8 39, ptr %%p0  ; single quote\n");
+    Emit(cg, "  %%p1 = getelementptr i8, ptr %%buf, i64 1\n");
+    Emit(cg, "  store i8 %%val, ptr %%p1\n");
+    Emit(cg, "  %%p2 = getelementptr i8, ptr %%buf, i64 2\n");
+    Emit(cg, "  store i8 39, ptr %%p2  ; single quote\n");
+    Emit(cg, "  %%fat1 = insertvalue { ptr, { i64, i64 } } undef, ptr %%buf, 0\n");
+    Emit(cg, "  %%fat2 = insertvalue { ptr, { i64, i64 } } %%fat1, i64 1, 1, 0\n");
+    Emit(cg, "  %%fat3 = insertvalue { ptr, { i64, i64 } } %%fat2, i64 3, 1, 1\n");
+    Emit(cg, "  ret { ptr, { i64, i64 } } %%fat3\n");
+    Emit(cg, "}\n\n");
+
+    /* Float'IMAGE - convert float to string */
+    Emit(cg, "define linkonce_odr { ptr, { i64, i64 } } @__ada_float_image(double %%val) {\n");
+    Emit(cg, "entry:\n");
+    Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 32)\n");
+    Emit(cg, "  %%len = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %%buf, i64 32, ptr @.img_fmt_f, double %%val)\n");
+    Emit(cg, "  %%len64 = sext i32 %%len to i64\n");
+    Emit(cg, "  %%fat1 = insertvalue { ptr, { i64, i64 } } undef, ptr %%buf, 0\n");
+    Emit(cg, "  %%fat2 = insertvalue { ptr, { i64, i64 } } %%fat1, i64 1, 1, 0\n");
+    Emit(cg, "  %%fat3 = insertvalue { ptr, { i64, i64 } } %%fat2, i64 %%len64, 1, 1\n");
+    Emit(cg, "  ret { ptr, { i64, i64 } } %%fat3\n");
+    Emit(cg, "}\n\n");
 
     /* Generate exception identity globals */
     Generate_Exception_Globals(cg);
@@ -9027,6 +12166,9 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     /* Generate implicit operators for frozen composite types */
     Generate_Implicit_Operators(cg);
     Emit(cg, "\n");
+
+    /* Generate extern declarations for WITH'd packages */
+    Generate_Extern_Declarations(cg, node);
 
     /* Generate declarations */
     if (node->compilation_unit.unit) {
@@ -9039,6 +12181,22 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
         fprintf(cg->output, "%s", cg->string_const_buffer);
         Emit(cg, "\n");
     }
+
+    /* Generate main function if this is a main program (library-level procedure) */
+    Syntax_Node *unit = node->compilation_unit.unit;
+    if (unit && unit->kind == NK_PROCEDURE_BODY && unit->symbol) {
+        Symbol *main_sym = unit->symbol;
+        /* Check if this is a library-level procedure (no parameters, no parent package) */
+        if (main_sym->parameter_count == 0) {
+            Emit(cg, "\n; C main entry point\n");
+            Emit(cg, "define i32 @main() {\n");
+            Emit(cg, "  call void @");
+            Emit_Symbol_Name(cg, main_sym);
+            Emit(cg, "()\n");
+            Emit(cg, "  ret i32 0\n");
+            Emit(cg, "}\n");
+        }
+    }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -9049,12 +12207,49 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
 static const char *Include_Paths[32];
 static int Include_Path_Count = 0;
 
+/* Track packages currently being loaded to detect cycles */
+typedef struct {
+    String_Slice names[64];
+    int count;
+} Loading_Set;
+
+static Loading_Set Loading_Packages = {0};
+
+static bool Loading_Set_Contains(String_Slice name) {
+    for (int i = 0; i < Loading_Packages.count; i++) {
+        if (Loading_Packages.names[i].length == name.length &&
+            strncasecmp(Loading_Packages.names[i].data, name.data, name.length) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void Loading_Set_Add(String_Slice name) {
+    if (Loading_Packages.count < 64) {
+        Loading_Packages.names[Loading_Packages.count++] = name;
+    }
+}
+
+static void Loading_Set_Remove(String_Slice name) {
+    for (int i = 0; i < Loading_Packages.count; i++) {
+        if (Loading_Packages.names[i].length == name.length &&
+            strncasecmp(Loading_Packages.names[i].data, name.data, name.length) == 0) {
+            /* Swap with last and decrement count */
+            Loading_Packages.names[i] = Loading_Packages.names[--Loading_Packages.count];
+            return;
+        }
+    }
+}
+
 static char *Read_File_Simple(const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
 
     fseek(f, 0, SEEK_END);
-    size_t size = ftell(f);
+    long fsize = ftell(f);
+    if (fsize < 0) { fclose(f); return NULL; }
+    size_t size = (size_t)fsize;
     fseek(f, 0, SEEK_SET);
 
     char *buffer = malloc(size + 1);
@@ -9105,13 +12300,24 @@ static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src) 
         return;  /* Already loaded */
     }
 
+    /* Check for circular dependency (package currently being loaded) */
+    if (Loading_Set_Contains(name)) {
+        return;  /* Break cycle - package will be available when outer load completes */
+    }
+
+    /* Mark package as loading to detect cycles */
+    Loading_Set_Add(name);
+
     /* Parse the package */
     char filename[256];
     snprintf(filename, sizeof(filename), "%.*s.ads", (int)name.length, name.data);
     Parser p = Parser_New(src, strlen(src), filename);
     Syntax_Node *cu = Parse_Compilation_Unit(&p);
 
-    if (!cu) return;
+    if (!cu) {
+        Loading_Set_Remove(name);
+        return;
+    }
 
     /* Recursively load WITH'd packages */
     if (cu->compilation_unit.context) {
@@ -9151,11 +12357,78 @@ static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src) 
         /* Resolve visible declarations */
         Resolve_Declaration_List(sm, &pkg->package_spec.visible_decls);
 
+        /* Collect exported symbols from visible declarations */
+        /* Count symbols first */
+        uint32_t export_count = 0;
+        for (uint32_t i = 0; i < pkg->package_spec.visible_decls.count; i++) {
+            Syntax_Node *decl = pkg->package_spec.visible_decls.items[i];
+            if (decl->kind == NK_OBJECT_DECL) {
+                export_count += decl->object_decl.names.count;
+            } else if (decl->kind == NK_TYPE_DECL || decl->kind == NK_SUBTYPE_DECL) {
+                if (decl->symbol) export_count++;
+                /* For enumeration types, count the literals too */
+                if (decl->type_decl.definition &&
+                    decl->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
+                    export_count += decl->type_decl.definition->enum_type.literals.count;
+                }
+            } else if (decl->kind == NK_PROCEDURE_SPEC || decl->kind == NK_FUNCTION_SPEC ||
+                       decl->kind == NK_PROCEDURE_BODY || decl->kind == NK_FUNCTION_BODY) {
+                if (decl->symbol) export_count++;
+            } else if (decl->kind == NK_EXCEPTION_DECL) {
+                export_count += decl->exception_decl.names.count;
+            }
+        }
+
+        /* Allocate and fill exported array */
+        if (export_count > 0) {
+            pkg_sym->exported = Arena_Allocate(export_count * sizeof(Symbol*));
+            pkg_sym->exported_count = 0;
+
+            for (uint32_t i = 0; i < pkg->package_spec.visible_decls.count; i++) {
+                Syntax_Node *decl = pkg->package_spec.visible_decls.items[i];
+                if (decl->kind == NK_OBJECT_DECL) {
+                    for (uint32_t j = 0; j < decl->object_decl.names.count; j++) {
+                        Syntax_Node *name_node = decl->object_decl.names.items[j];
+                        if (name_node->symbol) {
+                            pkg_sym->exported[pkg_sym->exported_count++] = name_node->symbol;
+                        }
+                    }
+                } else if ((decl->kind == NK_TYPE_DECL || decl->kind == NK_SUBTYPE_DECL) &&
+                           decl->symbol) {
+                    pkg_sym->exported[pkg_sym->exported_count++] = decl->symbol;
+                    /* For enumeration types, export the literals too */
+                    if (decl->type_decl.definition &&
+                        decl->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
+                        Node_List *lits = &decl->type_decl.definition->enum_type.literals;
+                        for (uint32_t j = 0; j < lits->count; j++) {
+                            if (lits->items[j]->symbol) {
+                                pkg_sym->exported[pkg_sym->exported_count++] = lits->items[j]->symbol;
+                            }
+                        }
+                    }
+                } else if ((decl->kind == NK_PROCEDURE_SPEC || decl->kind == NK_FUNCTION_SPEC ||
+                            decl->kind == NK_PROCEDURE_BODY || decl->kind == NK_FUNCTION_BODY) &&
+                           decl->symbol) {
+                    pkg_sym->exported[pkg_sym->exported_count++] = decl->symbol;
+                } else if (decl->kind == NK_EXCEPTION_DECL) {
+                    for (uint32_t j = 0; j < decl->exception_decl.names.count; j++) {
+                        Syntax_Node *name_node = decl->exception_decl.names.items[j];
+                        if (name_node->symbol) {
+                            pkg_sym->exported[pkg_sym->exported_count++] = name_node->symbol;
+                        }
+                    }
+                }
+            }
+        }
+
         /* Resolve private declarations */
         Resolve_Declaration_List(sm, &pkg->package_spec.private_decls);
 
         Symbol_Manager_Pop_Scope(sm);
     }
+
+    /* Done loading this package */
+    Loading_Set_Remove(name);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -9168,7 +12441,9 @@ static char *Read_File(const char *path, size_t *out_size) {
     if (!f) return NULL;
 
     fseek(f, 0, SEEK_END);
-    size_t size = ftell(f);
+    long fsize = ftell(f);
+    if (fsize < 0) { fclose(f); return NULL; }
+    size_t size = (size_t)fsize;
     fseek(f, 0, SEEK_SET);
 
     char *buffer = malloc(size + 1);
@@ -9212,20 +12487,29 @@ static void Compile_File(const char *input_path, const char *output_path) {
     }
 
     /* Code generation */
-    FILE *output = fopen(output_path, "w");
-    if (!output) {
-        fprintf(stderr, "Error: cannot open output file '%s'\n", output_path);
-        free(source);
-        return;
+    FILE *out_file;
+    bool close_output = false;
+
+    if (output_path) {
+        out_file = fopen(output_path, "w");
+        if (!out_file) {
+            fprintf(stderr, "Error: cannot open output file '%s'\n", output_path);
+            free(source);
+            return;
+        }
+        close_output = true;
+    } else {
+        out_file = stdout;  /* Output to stdout if no -o specified */
     }
 
-    Code_Generator *cg = Code_Generator_New(output, sm);
+    Code_Generator *cg = Code_Generator_New(out_file, sm);
     Generate_Compilation_Unit(cg, unit);
 
-    fclose(output);
+    if (close_output) {
+        fclose(out_file);
+        fprintf(stderr, "Compiled '%s' -> '%s'\n", input_path, output_path);
+    }
     free(source);
-
-    fprintf(stderr, "Compiled '%s' -> '%s'\n", input_path, output_path);
 }
 
 int main(int argc, char *argv[]) {
@@ -9235,7 +12519,7 @@ int main(int argc, char *argv[]) {
     }
 
     const char *input = NULL;
-    const char *output = "output.ll";
+    const char *output = NULL;  /* NULL means stdout */
 
     /* Parse command-line arguments */
     for (int i = 1; i < argc; i++) {
@@ -9273,8 +12557,6 @@ int main(int argc, char *argv[]) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * END OF ada83new.c — A Literate Ada 83 Compiler
- *
- * Key improvements:
+ * END OF ada83new.c — Ada 83 Compiler
  * ═══════════════════════════════════════════════════════════════════════════
  */
