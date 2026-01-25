@@ -1554,12 +1554,20 @@ static Syntax_Node *Parse_Primary(Parser *p) {
         return node;
     }
 
-    /* String literal */
+    /* String literal - but check for operator symbol used as function name.
+     * In Ada, "+"(X, Y) is a valid function call where "+" is the operator.
+     * If this looks like an operator string followed by (, let it fall through
+     * to Parse_Name which handles operator names and function calls. */
     if (Parser_At(p, TK_STRING)) {
-        Syntax_Node *node = Node_New(NK_STRING, loc);
-        node->string_val.text = Slice_Duplicate(p->current_token.text);
-        Parser_Advance(p);
-        return node;
+        String_Slice text = p->current_token.text;
+        bool is_operator_call = (text.length <= 3) && Parser_Peek_At(p, TK_LPAREN);
+        if (!is_operator_call) {
+            Syntax_Node *node = Node_New(NK_STRING, loc);
+            node->string_val.text = Slice_Duplicate(text);
+            Parser_Advance(p);
+            return node;
+        }
+        /* Fall through to Parse_Name for operator call like "+"(X, Y) */
     }
 
     /* NULL */
@@ -2545,7 +2553,18 @@ static Syntax_Node *Parse_Select_Statement(Parser *p) {
             Parser_Expect(p, TK_SEMICOLON);
             Node_List_Push(&node->select_stmt.alternatives, delay);
         } else if (Parser_At(p, TK_ACCEPT)) {
-            Node_List_Push(&node->select_stmt.alternatives, Parse_Accept_Statement(p));
+            Syntax_Node *accept = Parse_Accept_Statement(p);
+            Node_List_Push(&node->select_stmt.alternatives, accept);
+            Parser_Expect(p, TK_SEMICOLON);
+            /* Optional sequence of statements after accept in select */
+            while (!Parser_At(p, TK_OR) && !Parser_At(p, TK_ELSE) &&
+                   !Parser_At(p, TK_END) && !Parser_At(p, TK_EOF)) {
+                Syntax_Node *stmt = Parse_Statement(p);
+                Node_List_Push(&accept->accept_stmt.statements, stmt);
+                if (!Parser_At(p, TK_OR) && !Parser_At(p, TK_ELSE) && !Parser_At(p, TK_END)) {
+                    Parser_Expect(p, TK_SEMICOLON);
+                }
+            }
         } else {
             break;
         }
@@ -3402,9 +3421,34 @@ static void Parse_Generic_Formal_Part(Parser *p, Node_List *formals) {
                 /* delta <> for fixed types */
                 Parser_Expect(p, TK_BOX);
                 formal->generic_type_param.def_kind = 5;  /* FIXED */
+            } else if (Parser_Match(p, TK_ARRAY)) {
+                /* array (index {, index}) of element_type for array types */
+                formal->generic_type_param.def_kind = 6;  /* ARRAY */
+                Parser_Expect(p, TK_LPAREN);
+                /* Parse index subtypes: subtype_mark RANGE <> */
+                do {
+                    Parse_Name(p);  /* index subtype mark */
+                    Parser_Expect(p, TK_RANGE);
+                    Parser_Expect(p, TK_BOX);  /* <> */
+                } while (Parser_Match(p, TK_COMMA));
+                Parser_Expect(p, TK_RPAREN);
+                Parser_Expect(p, TK_OF);
+                formal->generic_type_param.def_detail = Parse_Subtype_Indication(p);
+            } else if (Parser_Match(p, TK_ACCESS)) {
+                /* access type_name for access types */
+                formal->generic_type_param.def_kind = 7;  /* ACCESS */
+                formal->generic_type_param.def_detail = Parse_Subtype_Indication(p);
+            } else if (Parser_At(p, TK_NEW)) {
+                /* new parent_type for derived types - skip NEW, parse parent */
+                Parser_Advance(p);
+                formal->generic_type_param.def_kind = 8;  /* DERIVED */
+                formal->generic_type_param.def_detail = Parse_Subtype_Indication(p);
             } else {
-                /* Other forms - just consume until semicolon for now */
+                /* Other forms - consume until semicolon for now */
                 formal->generic_type_param.def_kind = 0;
+                while (!Parser_At(p, TK_SEMICOLON) && !Parser_At(p, TK_EOF)) {
+                    Parser_Advance(p);
+                }
             }
 
             Node_List_Push(formals, formal);
@@ -3412,9 +3456,39 @@ static void Parse_Generic_Formal_Part(Parser *p, Node_List *formals) {
             continue;
         }
 
-        /* Generic object formal */
+        /* Generic object formal: identifier_list : [mode] type [:= default] */
         if (Parser_At(p, TK_IDENTIFIER)) {
             Syntax_Node *formal = Node_New(NK_GENERIC_OBJECT_PARAM, loc);
+
+            /* Parse identifier list */
+            do {
+                Syntax_Node *id = Node_New(NK_IDENTIFIER, Parser_Location(p));
+                id->string_val.text = Parser_Identifier(p);
+                Node_List_Push(&formal->generic_object_param.names, id);
+            } while (Parser_Match(p, TK_COMMA));
+
+            Parser_Expect(p, TK_COLON);
+
+            /* Parse mode: IN (default), OUT, or IN OUT */
+            formal->generic_object_param.mode = 0;  /* Default: IN */
+            if (Parser_Match(p, TK_IN)) {
+                if (Parser_Match(p, TK_OUT)) {
+                    formal->generic_object_param.mode = 2;  /* IN OUT */
+                } else {
+                    formal->generic_object_param.mode = 0;  /* IN */
+                }
+            } else if (Parser_Match(p, TK_OUT)) {
+                formal->generic_object_param.mode = 1;  /* OUT */
+            }
+
+            /* Parse subtype mark */
+            formal->generic_object_param.object_type = Parse_Subtype_Indication(p);
+
+            /* Parse optional default expression */
+            if (Parser_Match(p, TK_ASSIGN)) {
+                formal->generic_object_param.default_expr = Parse_Expression(p);
+            }
+
             Node_List_Push(formals, formal);
             Parser_Expect(p, TK_SEMICOLON);
             continue;
@@ -3683,7 +3757,9 @@ static Syntax_Node *Parse_Declaration(Parser *p) {
 
     /* Generic */
     if (Parser_At(p, TK_GENERIC)) {
-        return Parse_Generic_Declaration(p);
+        Syntax_Node *generic = Parse_Generic_Declaration(p);
+        Parser_Expect(p, TK_SEMICOLON);
+        return generic;
     }
 
     /* Procedure/Function - could be spec, body, or generic instantiation */
@@ -3754,12 +3830,15 @@ static Syntax_Node *Parse_Declaration(Parser *p) {
         if (Parser_Match(p, TK_RENAMES)) {
             spec->kind = NK_SUBPROGRAM_RENAMING;
             spec->subprogram_spec.renamed = Parse_Name(p);
+            Parser_Expect(p, TK_SEMICOLON);
             return spec;
         }
 
         /* Check for body or just spec */
         if (Parser_At(p, TK_IS)) {
-            return Parse_Subprogram_Body(p, spec);
+            Syntax_Node *body = Parse_Subprogram_Body(p, spec);
+            Parser_Expect(p, TK_SEMICOLON);
+            return body;
         }
 
         /* Just a specification */
@@ -3772,7 +3851,9 @@ static Syntax_Node *Parse_Declaration(Parser *p) {
         Parser_Advance(p);  /* consume PACKAGE */
         if (Parser_At(p, TK_BODY)) {
             Parser_Advance(p);  /* consume BODY */
-            return Parse_Package_Body(p);
+            Syntax_Node *body = Parse_Package_Body(p);
+            Parser_Expect(p, TK_SEMICOLON);
+            return body;
         }
         /* Check for package renaming: PACKAGE name RENAMES old_name; */
         String_Slice pkg_name = Parser_Identifier(p);
@@ -3780,6 +3861,7 @@ static Syntax_Node *Parse_Declaration(Parser *p) {
             Syntax_Node *node = Node_New(NK_PACKAGE_RENAMING, loc);
             node->package_renaming.new_name = pkg_name;
             node->package_renaming.old_name = Parse_Name(p);
+            Parser_Expect(p, TK_SEMICOLON);
             return node;
         }
 
@@ -3807,12 +3889,11 @@ static Syntax_Node *Parse_Declaration(Parser *p) {
         /* Not a generic instantiation - parse as specification */
         Syntax_Node *spec = Node_New(NK_PACKAGE_SPEC, loc);
         spec->package_spec.name = pkg_name;
-        /* Parse visible declarations */
+        /* Parse visible declarations (each declaration consumes its own semicolon) */
         while (!Parser_At(p, TK_PRIVATE) && !Parser_At(p, TK_END) && !Parser_At(p, TK_EOF)) {
             if (!Parser_Check_Progress(p)) break;
             Syntax_Node *decl = Parse_Declaration(p);
             Node_List_Push(&spec->package_spec.visible_decls, decl);
-            Parser_Match(p, TK_SEMICOLON);
         }
         /* Parse private declarations */
         if (Parser_Match(p, TK_PRIVATE)) {
@@ -3820,13 +3901,13 @@ static Syntax_Node *Parse_Declaration(Parser *p) {
                 if (!Parser_Check_Progress(p)) break;
                 Syntax_Node *decl = Parse_Declaration(p);
                 Node_List_Push(&spec->package_spec.private_decls, decl);
-                Parser_Match(p, TK_SEMICOLON);
             }
         }
         Parser_Expect(p, TK_END);
         if (Parser_At(p, TK_IDENTIFIER)) {
             Parser_Check_End_Name(p, spec->package_spec.name);
         }
+        Parser_Expect(p, TK_SEMICOLON);
         return spec;
     }
 
@@ -3947,7 +4028,7 @@ static Syntax_Node *Parse_Declaration(Parser *p) {
                 } else if (Parser_At(p, TK_FOR)) {
                     /* Representation clause in task spec */
                     Node_List_Push(&node->task_spec.entries, Parse_Representation_Clause(p));
-                    Parser_Match(p, TK_SEMICOLON);  /* Rep clause may include its own semicolon */
+                    Parser_Expect(p, TK_SEMICOLON);
                 } else {
                     Parser_Error(p, "expected ENTRY, PRAGMA, FOR, or END in task spec");
                     Parser_Advance(p);
@@ -3965,37 +4046,48 @@ static Syntax_Node *Parse_Declaration(Parser *p) {
 
     /* Type declaration */
     if (Parser_At(p, TK_TYPE)) {
-        return Parse_Type_Declaration(p);
+        Syntax_Node *type_decl = Parse_Type_Declaration(p);
+        /* Incomplete type declaration (no definition, not private/limited) already consumed semicolon */
+        if (type_decl->type_decl.definition || type_decl->type_decl.is_private ||
+            type_decl->type_decl.is_limited) {
+            Parser_Expect(p, TK_SEMICOLON);
+        }
+        return type_decl;
     }
 
     /* Subtype declaration */
     if (Parser_At(p, TK_SUBTYPE)) {
-        return Parse_Subtype_Declaration(p);
+        Syntax_Node *subtype = Parse_Subtype_Declaration(p);
+        Parser_Expect(p, TK_SEMICOLON);
+        return subtype;
     }
 
     /* Use clause */
     if (Parser_At(p, TK_USE)) {
-        return Parse_Use_Clause(p);
+        Syntax_Node *use = Parse_Use_Clause(p);
+        Parser_Expect(p, TK_SEMICOLON);
+        return use;
     }
 
     /* Pragma */
     if (Parser_At(p, TK_PRAGMA)) {
-        return Parse_Pragma(p);
+        Syntax_Node *pragma = Parse_Pragma(p);
+        Parser_Expect(p, TK_SEMICOLON);
+        return pragma;
     }
 
     /* FOR representation clause */
     if (Parser_At(p, TK_FOR)) {
-        return Parse_Representation_Clause(p);
+        Syntax_Node *rep = Parse_Representation_Clause(p);
+        Parser_Expect(p, TK_SEMICOLON);
+        return rep;
     }
 
     /* Object or exception declaration */
     if (Parser_At(p, TK_IDENTIFIER)) {
-        /* Need lookahead to distinguish object from exception */
-        Syntax_Node *node = Parse_Object_Declaration(p);
-
-        /* Check if it was actually an exception */
-        /* The object parser handles this via Parse_Subtype_Indication seeing EXCEPTION */
-        return node;
+        Syntax_Node *obj = Parse_Object_Declaration(p);
+        Parser_Expect(p, TK_SEMICOLON);
+        return obj;
     }
 
     Parser_Error(p, "expected declaration");
@@ -4011,8 +4103,7 @@ static void Parse_Declarative_Part(Parser *p, Node_List *list) {
 
         Syntax_Node *decl = Parse_Declaration(p);
         Node_List_Push(list, decl);
-
-        Parser_Match(p, TK_SEMICOLON);  /* Optional here as some decls include it */
+        /* Each declaration now consumes its own trailing semicolon */
     }
 }
 
@@ -4055,9 +4146,8 @@ static Syntax_Node *Parse_Compilation_Unit(Parser *p) {
         /* Parse the actual subunit */
     }
 
-    /* Main unit */
+    /* Main unit - Parse_Declaration now consumes its trailing semicolon */
     node->compilation_unit.unit = Parse_Declaration(p);
-    Parser_Match(p, TK_SEMICOLON);
 
     return node;
 }
@@ -9857,6 +9947,52 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
             low_val = Generate_Expression(cg, range);
             high_val = low_val;
         }
+    } else if (range && range->kind == NK_SUBTYPE_INDICATION) {
+        /* Subtype indication with constraint: SUBTYPE_NAME RANGE low..high */
+        Syntax_Node *constraint = range->subtype_ind.constraint;
+        if (constraint && constraint->kind == NK_RANGE_CONSTRAINT &&
+            constraint->range_constraint.range) {
+            Syntax_Node *actual_range = constraint->range_constraint.range;
+            if (actual_range->kind == NK_RANGE) {
+                low_val = Generate_Expression(cg, actual_range->range.low);
+                high_val = Generate_Expression(cg, actual_range->range.high);
+            } else {
+                /* Range might be a name like T'RANGE */
+                low_val = Generate_Expression(cg, actual_range);
+                high_val = low_val;
+            }
+        } else {
+            /* No range constraint - use the subtype's type bounds */
+            Type_Info *subtype = range->type;
+            if (subtype && subtype->low_bound.kind == BOUND_INTEGER) {
+                low_val = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add i64 0, %lld  ; subtype low\n", low_val,
+                     (long long)Type_Bound_Value(subtype->low_bound));
+                high_val = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add i64 0, %lld  ; subtype high\n", high_val,
+                     (long long)Type_Bound_Value(subtype->high_bound));
+            } else {
+                /* Use 0 as fallback if no type info */
+                low_val = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add i64 0, 0  ; no type info\n", low_val);
+                high_val = low_val;
+            }
+        }
+    } else if (range && range->kind == NK_IDENTIFIER) {
+        /* Just a type name: FOR I IN TYPE_NAME LOOP - iterate over type's range */
+        Type_Info *type = range->type;
+        if (type && type->low_bound.kind == BOUND_INTEGER) {
+            low_val = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = add i64 0, %lld  ; type low\n", low_val,
+                 (long long)Type_Bound_Value(type->low_bound));
+            high_val = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = add i64 0, %lld  ; type high\n", high_val,
+                 (long long)Type_Bound_Value(type->high_bound));
+        } else {
+            low_val = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = add i64 0, 0  ; no type bounds\n", low_val);
+            high_val = low_val;
+        }
     } else {
         /* Other expression - evaluate as low bound, assume scalar with same high */
         low_val = Generate_Expression(cg, range);
@@ -9916,9 +10052,10 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
  * §13.4.8 Exception Handling
  * ───────────────────────────────────────────────────────────────────────── */
 
-/* Forward declaration for Generate_Declaration_List (used in blocks) */
+/* Forward declarations */
 static void Generate_Declaration_List(Code_Generator *cg, Node_List *list);
 static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym, Syntax_Node *template_body);
+static void Generate_Task_Body(Code_Generator *cg, Syntax_Node *node);
 
 static void Generate_Raise_Statement(Code_Generator *cg, Syntax_Node *node) {
     /* RAISE E; or RAISE; (reraise) */
@@ -10635,7 +10772,7 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
     cg->is_nested = saved_is_nested;
     cg->enclosing_function = saved_enclosing;
 
-    /* Emit deferred nested subprogram bodies */
+    /* Emit deferred nested subprogram/task bodies */
     while (cg->deferred_count > saved_deferred_count) {
         Syntax_Node *deferred = cg->deferred_bodies[--cg->deferred_count];
         if (deferred->kind == NK_GENERIC_INST) {
@@ -10647,6 +10784,8 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
                 Generate_Generic_Instance_Body(cg, inst, inst->generic_template->generic_body);
                 cg->current_instance = saved;
             }
+        } else if (deferred->kind == NK_TASK_BODY) {
+            Generate_Task_Body(cg, deferred);
         } else {
             Generate_Subprogram_Body(cg, deferred);
         }
@@ -10755,10 +10894,70 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
                 Generate_Generic_Instance_Body(cg, inst, inst->generic_template->generic_body);
                 cg->current_instance = saved;
             }
+        } else if (deferred->kind == NK_TASK_BODY) {
+            Generate_Task_Body(cg, deferred);
         } else {
             Generate_Subprogram_Body(cg, deferred);
         }
     }
+}
+
+static void Generate_Task_Body(Code_Generator *cg, Syntax_Node *node) {
+    Emit(cg, "\n; Task body: %.*s\n",
+         (int)node->task_body.name.length, node->task_body.name.data);
+
+    /* Generate task entry point function */
+    Emit(cg, "define void @task_%.*s(ptr %%_unused_arg) {\n",
+         (int)node->task_body.name.length, node->task_body.name.data);
+    Emit(cg, "entry:\n");
+
+    /* Save and set context - task body is like a function body */
+    Symbol *saved_current_function = cg->current_function;
+    cg->current_function = node->symbol;  /* Use task's symbol if available */
+    if (!cg->current_function) {
+        /* Create a dummy sentinel so is_package_level is false */
+        static Symbol dummy_task_sym = { .kind = SYMBOL_PROCEDURE };
+        cg->current_function = &dummy_task_sym;
+    }
+
+    /* Reset temp counter for new function */
+    uint32_t saved_temp = cg->temp_id;
+    cg->temp_id = 1;
+
+    /* Push exception handler for task */
+    uint32_t jmp_buf = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = alloca [200 x i8]\n", jmp_buf);
+    uint32_t jmp_ptr = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = getelementptr [200 x i8], ptr %%t%u, i64 0, i64 0\n",
+         jmp_ptr, jmp_buf);
+    Emit(cg, "  call void @__ada_push_handler(ptr %%t%u)\n", jmp_ptr);
+    uint32_t setjmp_result = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = call i32 @setjmp(ptr %%t%u)\n", setjmp_result, jmp_ptr);
+    uint32_t is_zero = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", is_zero, setjmp_result);
+    uint32_t body_label = Emit_Label(cg);
+    uint32_t exit_label = Emit_Label(cg);
+    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+         is_zero, body_label, exit_label);
+
+    /* Normal execution path */
+    Emit(cg, "L%u:\n", body_label);
+    Generate_Declaration_List(cg, &node->task_body.declarations);
+    Generate_Statement_List(cg, &node->task_body.statements);
+    Emit(cg, "  call void @__ada_pop_handler()\n");
+    Emit(cg, "  ret void\n");
+
+    /* Exception handler path */
+    Emit(cg, "L%u:\n", exit_label);
+    Emit(cg, "  call void @__ada_pop_handler()\n");
+    /* Task terminates silently on unhandled exception */
+    Emit(cg, "  ret void\n");
+
+    Emit(cg, "}\n\n");
+
+    /* Restore context */
+    cg->temp_id = saved_temp;
+    cg->current_function = saved_current_function;
 }
 
 static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
@@ -10832,46 +11031,11 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
             break;
 
         case NK_TASK_BODY:
-            /* Task body - generate as a void function with trampoline wrapper */
-            {
-                Emit(cg, "\n; Task body: %.*s\n",
-                     (int)node->task_body.name.length, node->task_body.name.data);
-
-                /* Generate task entry point function */
-                Emit(cg, "define void @task_%.*s(ptr %%_unused_arg) {\n",
-                     (int)node->task_body.name.length, node->task_body.name.data);
-                Emit(cg, "entry:\n");
-
-                /* Push exception handler for task */
-                uint32_t jmp_buf = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = alloca [200 x i8]\n", jmp_buf);
-                uint32_t jmp_ptr = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = getelementptr [200 x i8], ptr %%t%u, i64 0, i64 0\n",
-                     jmp_ptr, jmp_buf);
-                Emit(cg, "  call void @__ada_push_handler(ptr %%t%u)\n", jmp_ptr);
-                uint32_t setjmp_result = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = call i32 @setjmp(ptr %%t%u)\n", setjmp_result, jmp_ptr);
-                uint32_t is_zero = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", is_zero, setjmp_result);
-                uint32_t body_label = Emit_Label(cg);
-                uint32_t exit_label = Emit_Label(cg);
-                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
-                     is_zero, body_label, exit_label);
-
-                /* Normal execution path */
-                Emit(cg, "L%u:\n", body_label);
-                Generate_Declaration_List(cg, &node->task_body.declarations);
-                Generate_Statement_List(cg, &node->task_body.statements);
-                Emit(cg, "  call void @__ada_pop_handler()\n");
-                Emit(cg, "  ret void\n");
-
-                /* Exception handler path */
-                Emit(cg, "L%u:\n", exit_label);
-                Emit(cg, "  call void @__ada_pop_handler()\n");
-                /* Task terminates silently on unhandled exception */
-                Emit(cg, "  ret void\n");
-
-                Emit(cg, "}\n\n");
+            /* Defer task body generation when inside another function */
+            if (cg->current_function && cg->deferred_count < 64) {
+                cg->deferred_bodies[cg->deferred_count++] = node;
+            } else {
+                Generate_Task_Body(cg, node);
             }
             break;
 
