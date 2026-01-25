@@ -4086,6 +4086,8 @@ static void Parse_Statement_Sequence(Parser *p, Node_List *list) {
 
 /* ─────────────────────────────────────────────────────────────────────────
  * §9.12.1 Object Declaration (variables, constants)
+ *
+ * Multiple names share one type; each gets its own symbol.
  * ───────────────────────────────────────────────────────────────────────── */
 
 static Syntax_Node *Parse_Object_Declaration(Parser *p) {
@@ -4146,6 +4148,8 @@ static Syntax_Node *Parse_Object_Declaration(Parser *p) {
 
 /* ─────────────────────────────────────────────────────────────────────────
  * §9.12.2 Type Declaration
+ *
+ * Discriminants parameterize the type; their values are fixed at object creation.
  * ───────────────────────────────────────────────────────────────────────── */
 
 static Syntax_Node *Parse_Discriminant_Part(Parser *p) {
@@ -4559,10 +4563,14 @@ static Syntax_Node *Parse_Type_Definition(Parser *p) {
 /* ═══════════════════════════════════════════════════════════════════════════
  * §9.13 Subprogram Declarations and Bodies
  * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * Spec declares the interface; body provides the implementation.
  */
 
 /* ─────────────────────────────────────────────────────────────────────────
  * §9.13.1 Parameter Specification
+ *
+ * IN copies in, OUT copies out, IN OUT does both. Access avoids the copy.
  * ───────────────────────────────────────────────────────────────────────── */
 
 static void Parse_Parameter_List(Parser *p, Node_List *params) {
@@ -4653,6 +4661,8 @@ static Syntax_Node *Parse_Function_Specification(Parser *p) {
 
 /* ─────────────────────────────────────────────────────────────────────────
  * §9.13.3 Subprogram Body
+ *
+ * Declarations, then BEGIN, then statements. The structure is invariant.
  * ───────────────────────────────────────────────────────────────────────── */
 
 static Syntax_Node *Parse_Subprogram_Body(Parser *p, Syntax_Node *spec) {
@@ -6494,11 +6504,7 @@ static bool Arguments_Match_Profile(Symbol *sym, Argument_Info *args) {
 /* ─────────────────────────────────────────────────────────────────────────
  * §11.6.4 Interpretation Collection
  *
- * Following GNAT's Collect_Interps: gather all visible interpretations
- * of an overloaded name. This includes:
- * - Immediately visible entities
- * - Use-visible entities (from USE clauses)
- * - Predefined operators for the types involved
+ * Gather candidates first, filter later. Visibility determines the set.
  * ───────────────────────────────────────────────────────────────────────── */
 
 /* Collect all visible interpretations of a name */
@@ -6566,16 +6572,7 @@ static void Filter_By_Arguments(Interp_List *interps, Argument_Info *args) {
 /* ─────────────────────────────────────────────────────────────────────────
  * §11.6.5 Disambiguation
  *
- * When multiple interpretations remain, apply preference rules:
- *
- * 1. Prefer non-universal interpretations over universal
- * 2. Prefer interpretations in inner scopes over outer scopes
- * 3. User-defined operators can hide predefined operators if:
- *    - They have the same signature
- *    - They are visible in the current scope
- * 4. For operators: prefer interpretation where operand types match exactly
- *
- * Note: Resolution fails if still ambiguous after preferences.
+ * Nearer scope wins; exact type wins; user definition wins over predefined.
  * ───────────────────────────────────────────────────────────────────────── */
 
 /* Check if sym1 hides sym2 (user-defined hiding predefined, or inner scope) */
@@ -6691,7 +6688,7 @@ static Symbol *Disambiguate(Interp_List *interps, Type_Info *context_type,
 /* ─────────────────────────────────────────────────────────────────────────
  * §11.6.6 Unified Overload Resolution Entry Point
  *
- * Main entry for call/indexed/conversion resolution
+ * Collect, filter, disambiguate, fail if not unique.
  * ───────────────────────────────────────────────────────────────────────── */
 
 static Symbol *Resolve_Overloaded_Call(Symbol_Manager *sm,
