@@ -875,6 +875,7 @@ static Token Lexer_Next_Token(Lexer *lex) {
         case ';': return Make_Token(TK_SEMICOLON, loc, S(";"));
         case '&': return Make_Token(TK_AMPERSAND, loc, S("&"));
         case '|': return Make_Token(TK_BAR, loc, S("|"));
+        case '!': return Make_Token(TK_BAR, loc, S("!"));  /* Ada 83 alternative for | */
         case '+': return Make_Token(TK_PLUS, loc, S("+"));
         case '-': return Make_Token(TK_MINUS, loc, S("-"));
         case '\'': return Make_Token(TK_TICK, loc, S("'"));
@@ -7277,9 +7278,11 @@ static uint32_t Emit_Convert(Code_Generator *cg, uint32_t src, const char *src_t
     if (strcmp(src_type, "i32") == 0) src_bits = 32;
     else if (strcmp(src_type, "i16") == 0) src_bits = 16;
     else if (strcmp(src_type, "i8") == 0) src_bits = 8;
+    else if (strcmp(src_type, "i1") == 0) src_bits = 1;
     if (strcmp(dst_type, "i32") == 0) dst_bits = 32;
     else if (strcmp(dst_type, "i16") == 0) dst_bits = 16;
     else if (strcmp(dst_type, "i8") == 0) dst_bits = 8;
+    else if (strcmp(dst_type, "i1") == 0) dst_bits = 1;
 
     if (dst_bits > src_bits) {
         Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", t, src_type, src, dst_type);
@@ -7550,8 +7553,63 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                     }
                 }
                 Emit(cg, "  %%t%u = add i64 0, %lld\n", t, (long long)pos);
+            } else if (ty && ty->kind == TYPE_BOOLEAN) {
+                /* Boolean literal: TRUE=1, FALSE=0 */
+                int64_t pos = Slice_Equal_Ignore_Case(sym->name, S("TRUE")) ? 1 : 0;
+                Emit(cg, "  %%t%u = add i64 0, %lld\n", t, (long long)pos);
+            } else if (ty && ty->kind == TYPE_CHARACTER) {
+                /* Character literal - already handled as NK_CHARACTER, but safety check */
+                Emit(cg, "  %%t%u = add i64 0, 0  ; character literal\n", t);
+            } else if (ty && ty->kind == TYPE_ARRAY && ty->array.is_constrained &&
+                       ty->array.element_type && ty->array.element_type->kind == TYPE_CHARACTER) {
+                /* Constant string/character array - return fat pointer like variable */
+                int64_t low = 1, high = 0;
+                if (ty->array.index_count > 0) {
+                    low = Type_Bound_Value(ty->array.indices[0].low_bound);
+                    high = Type_Bound_Value(ty->array.indices[0].high_bound);
+                }
+
+                /* Get pointer to constant array data */
+                uint32_t data_ptr = Emit_Temp(cg);
+                bool is_global = !sym->parent || sym->parent->kind == SYMBOL_PACKAGE;
+                if (is_global) {
+                    Emit(cg, "  %%t%u = getelementptr i8, ptr @", data_ptr);
+                } else {
+                    Emit(cg, "  %%t%u = getelementptr i8, ptr %%", data_ptr);
+                }
+                Emit_Symbol_Name(cg, sym);
+                Emit(cg, ", i64 0\n");
+
+                /* Create fat pointer with bounds */
+                return Emit_Fat_Pointer(cg, data_ptr, low, high);
+            } else if (sym->kind == SYMBOL_CONSTANT && ty == NULL) {
+                /* Named number (constant without explicit type) - evaluate initializer
+                 * Named numbers in Ada are compile-time constants with no storage.
+                 * Per RM 3.2.2: "A named number provides a name for a numeric value
+                 * known at compile time." */
+                Syntax_Node *decl = sym->declaration;
+                if (decl && decl->kind == NK_OBJECT_DECL && decl->object_decl.init) {
+                    /* Generate code for the initializer expression */
+                    return Generate_Expression(cg, decl->object_decl.init);
+                } else {
+                    /* Fallback if no initializer found */
+                    Emit(cg, "  %%t%u = add i64 0, 0  ; named number without init\n", t);
+                }
+            } else if (sym->kind == SYMBOL_CONSTANT && ty != NULL) {
+                /* Typed constant - load value from storage like variable */
+                const char *type_str = Type_To_Llvm(ty);
+                bool is_global = !sym->parent || sym->parent->kind == SYMBOL_PACKAGE;
+                if (is_global) {
+                    Emit(cg, "  %%t%u = load %s, ptr @", t, type_str);
+                } else {
+                    Emit(cg, "  %%t%u = load %s, ptr %%", t, type_str);
+                }
+                Emit_Symbol_Name(cg, sym);
+                Emit(cg, "\n");
+                t = Emit_Convert(cg, t, type_str, "i64");
             } else {
-                Emit(cg, "  %%t%u = add i64 0, 0  ; constant\n", t);
+                /* Unknown literal type - emit 0 as fallback */
+                Emit(cg, "  %%t%u = add i64 0, 0  ; unknown literal\n", t);
             }
             break;
 
@@ -7861,6 +7919,32 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         case TK_MOD:   op = "srem"; break;
         case TK_REM:   op = "srem"; break;
 
+        case TK_EXPON:
+            /* Exponentiation: base ** exponent
+             * For floating-point: use llvm.pow intrinsic
+             * For integer: use simple loop or __ada_integer_pow */
+            {
+                Type_Info *right_type = node->binary.right ? node->binary.right->type : NULL;
+                bool left_is_float = left_type && (left_type->kind == TYPE_FLOAT ||
+                                                    left_type->kind == TYPE_UNIVERSAL_REAL);
+                bool right_is_int = right_type && (right_type->kind == TYPE_INTEGER ||
+                                                    right_type->kind == TYPE_UNIVERSAL_INTEGER ||
+                                                    right_type == NULL);  /* default to integer */
+
+                if (left_is_float) {
+                    /* Float ** Integer: use pow intrinsic with converted exponent */
+                    uint32_t exp_float = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = sitofp i64 %%t%u to double\n", exp_float, right);
+                    Emit(cg, "  %%t%u = call double @llvm.pow.f64(double %%t%u, double %%t%u)\n",
+                         t, left, exp_float);
+                } else {
+                    /* Integer ** Integer: use integer power function */
+                    Emit(cg, "  %%t%u = call i64 @__ada_integer_pow(i64 %%t%u, i64 %%t%u)\n",
+                         t, left, right);
+                }
+                return t;
+            }
+
         case TK_AND:
         case TK_AND_THEN:
             /* Boolean AND: operands should be i1 (from comparisons) */
@@ -8122,14 +8206,14 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
     Type_Info *prefix_type = node->selected.prefix->type;
 
     if (!prefix_type || prefix_type->kind != TYPE_RECORD) {
-        /* Package-qualified name - just generate using the resolved symbol */
+        /* Package-qualified name - use the resolved symbol via Generate_Identifier
+         * This handles named numbers, constants, variables, and literals properly */
         Symbol *sym = node->symbol;
         if (sym) {
-            uint32_t t = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = load i64, ptr %%", t);
-            Emit_Symbol_Name(cg, sym);
-            Emit(cg, "\n");
-            return t;
+            /* Create a temporary identifier node to reuse Generate_Identifier logic */
+            Syntax_Node tmp_id = {.kind = NK_IDENTIFIER, .symbol = sym, .location = node->location};
+            tmp_id.type = sym->type;
+            return Generate_Identifier(cg, &tmp_id);
         }
         return 0;
     }
@@ -9694,6 +9778,14 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
         if (!sym) continue;
 
         Type_Info *ty = sym->type;
+
+        /* Named numbers (constants without explicit type) don't need storage.
+         * They are compile-time values that get inlined when referenced.
+         * Per RM 3.2.2: Named numbers are not objects and have no storage. */
+        if (node->object_decl.is_constant && ty == NULL) {
+            continue;  /* Skip storage allocation for named numbers */
+        }
+
         const char *type_str = Type_To_Llvm(ty);
 
         /* Check if this is a constrained array */
@@ -10544,7 +10636,32 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "declare i32 @usleep(i32)\n");
     Emit(cg, "declare i32 @printf(ptr, ...)\n");
     Emit(cg, "declare i32 @putchar(i32)\n");
-    Emit(cg, "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)\n\n");
+    Emit(cg, "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)\n");
+    Emit(cg, "declare double @llvm.pow.f64(double, double)\n\n");
+
+    /* Integer power function (base ** exponent for integer operands) */
+    Emit(cg, "; Integer exponentiation helper\n");
+    Emit(cg, "define linkonce_odr i64 @__ada_integer_pow(i64 %%base, i64 %%exp) {\n");
+    Emit(cg, "entry:\n");
+    Emit(cg, "  %%is_neg = icmp slt i64 %%exp, 0\n");
+    Emit(cg, "  br i1 %%is_neg, label %%neg_exp, label %%pos_exp\n");
+    Emit(cg, "neg_exp:\n");
+    Emit(cg, "  ret i64 0  ; negative exponent for integer = 0\n");
+    Emit(cg, "pos_exp:\n");
+    Emit(cg, "  %%is_zero = icmp eq i64 %%exp, 0\n");
+    Emit(cg, "  br i1 %%is_zero, label %%ret_one, label %%loop\n");
+    Emit(cg, "ret_one:\n");
+    Emit(cg, "  ret i64 1\n");
+    Emit(cg, "loop:\n");
+    Emit(cg, "  %%result = phi i64 [ 1, %%pos_exp ], [ %%new_result, %%loop ]\n");
+    Emit(cg, "  %%i = phi i64 [ 0, %%pos_exp ], [ %%next_i, %%loop ]\n");
+    Emit(cg, "  %%new_result = mul i64 %%result, %%base\n");
+    Emit(cg, "  %%next_i = add i64 %%i, 1\n");
+    Emit(cg, "  %%done = icmp eq i64 %%next_i, %%exp\n");
+    Emit(cg, "  br i1 %%done, label %%exit, label %%loop\n");
+    Emit(cg, "exit:\n");
+    Emit(cg, "  ret i64 %%new_result\n");
+    Emit(cg, "}\n\n");
 
     /* Runtime globals */
     Emit(cg, "; Runtime globals\n");
@@ -11112,6 +11229,70 @@ static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src) 
 
         /* Resolve visible declarations */
         Resolve_Declaration_List(sm, &pkg->package_spec.visible_decls);
+
+        /* Collect exported symbols from visible declarations */
+        /* Count symbols first */
+        uint32_t export_count = 0;
+        for (uint32_t i = 0; i < pkg->package_spec.visible_decls.count; i++) {
+            Syntax_Node *decl = pkg->package_spec.visible_decls.items[i];
+            if (decl->kind == NK_OBJECT_DECL) {
+                export_count += decl->object_decl.names.count;
+            } else if (decl->kind == NK_TYPE_DECL || decl->kind == NK_SUBTYPE_DECL) {
+                if (decl->symbol) export_count++;
+                /* For enumeration types, count the literals too */
+                if (decl->type_decl.definition &&
+                    decl->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
+                    export_count += decl->type_decl.definition->enum_type.literals.count;
+                }
+            } else if (decl->kind == NK_PROCEDURE_SPEC || decl->kind == NK_FUNCTION_SPEC ||
+                       decl->kind == NK_PROCEDURE_BODY || decl->kind == NK_FUNCTION_BODY) {
+                if (decl->symbol) export_count++;
+            } else if (decl->kind == NK_EXCEPTION_DECL) {
+                export_count += decl->exception_decl.names.count;
+            }
+        }
+
+        /* Allocate and fill exported array */
+        if (export_count > 0) {
+            pkg_sym->exported = Arena_Allocate(export_count * sizeof(Symbol*));
+            pkg_sym->exported_count = 0;
+
+            for (uint32_t i = 0; i < pkg->package_spec.visible_decls.count; i++) {
+                Syntax_Node *decl = pkg->package_spec.visible_decls.items[i];
+                if (decl->kind == NK_OBJECT_DECL) {
+                    for (uint32_t j = 0; j < decl->object_decl.names.count; j++) {
+                        Syntax_Node *name_node = decl->object_decl.names.items[j];
+                        if (name_node->symbol) {
+                            pkg_sym->exported[pkg_sym->exported_count++] = name_node->symbol;
+                        }
+                    }
+                } else if ((decl->kind == NK_TYPE_DECL || decl->kind == NK_SUBTYPE_DECL) &&
+                           decl->symbol) {
+                    pkg_sym->exported[pkg_sym->exported_count++] = decl->symbol;
+                    /* For enumeration types, export the literals too */
+                    if (decl->type_decl.definition &&
+                        decl->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
+                        Node_List *lits = &decl->type_decl.definition->enum_type.literals;
+                        for (uint32_t j = 0; j < lits->count; j++) {
+                            if (lits->items[j]->symbol) {
+                                pkg_sym->exported[pkg_sym->exported_count++] = lits->items[j]->symbol;
+                            }
+                        }
+                    }
+                } else if ((decl->kind == NK_PROCEDURE_SPEC || decl->kind == NK_FUNCTION_SPEC ||
+                            decl->kind == NK_PROCEDURE_BODY || decl->kind == NK_FUNCTION_BODY) &&
+                           decl->symbol) {
+                    pkg_sym->exported[pkg_sym->exported_count++] = decl->symbol;
+                } else if (decl->kind == NK_EXCEPTION_DECL) {
+                    for (uint32_t j = 0; j < decl->exception_decl.names.count; j++) {
+                        Syntax_Node *name_node = decl->exception_decl.names.items[j];
+                        if (name_node->symbol) {
+                            pkg_sym->exported[pkg_sym->exported_count++] = name_node->symbol;
+                        }
+                    }
+                }
+            }
+        }
 
         /* Resolve private declarations */
         Resolve_Declaration_List(sm, &pkg->package_spec.private_decls);
