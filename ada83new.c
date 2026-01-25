@@ -391,8 +391,7 @@ static const Source_Location No_Location = {NULL, 0, 0};
  * ═══════════════════════════════════════════════════════════════════════════
  *
  * Errors accumulate rather than immediately aborting, allowing the compiler
- * to report multiple issues in a single pass. The user deserves to know all
- * the mistakes, not just the first one.
+ * to report multiple issues in a single pass.
  */
 
 static int Error_Count = 0;
@@ -1328,8 +1327,7 @@ static inline const char *Simd_Find_Double_Quote(const char *p, const char *end)
  * Identifier Character Class Scanner - HYBRID approach
  *
  * Uses fast table lookup for first 8 chars (covers most identifiers),
- * then SIMD only for long identifiers. Measure before optimizing; the
- * profiler is wiser than intuition. Benchmarked 50% faster than pure SIMD.
+ * then SIMD only for long identifiers. Benchmarked 50% faster than pure SIMD.
  * ───────────────────────────────────────────────────────────────────────────── */
 static inline const char *Simd_Scan_Identifier(const char *p, const char *end) {
     /* Fast path: unrolled table lookup for first 8 chars (covers most identifiers) */
@@ -2320,6 +2318,7 @@ static Token Lexer_Next_Token(Lexer *lex) {
  * ═══════════════════════════════════════════════════════════════════════════
  *
  * The AST uses a tagged union design. Each node kind has a specific payload.
+ * The tree is a forest: one root per compilation unit, shared subtrees within.
  * We use GNAT LLVM's principle: preserve enough structure for later passes.
  */
 
@@ -2716,6 +2715,8 @@ static Syntax_Node *Node_New(Node_Kind kind, Source_Location loc) {
 /* ═══════════════════════════════════════════════════════════════════════════
  * §9. PARSER — Recursive Descent with Unified Postfix Handling
  * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * Recursive descent mirrors the grammar; the grammar is the invariant.
  *
  * Key design decisions:
  *
@@ -5570,8 +5571,9 @@ static Syntax_Node *Parse_Compilation_Unit(Parser *p) {
  * §10. TYPE SYSTEM — Ada Type Semantics
  * ═══════════════════════════════════════════════════════════════════════════
  *
+ * A type is name, range, and representation; the three are orthogonal.
+ *
  * INVARIANT: All sizes are stored in BYTES, not bits.
- * Types exist to prevent the mistakes that raw bytes invite.
  */
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -5818,6 +5820,7 @@ static Type_Info *Type_Base(Type_Info *t) {
  * §10.6 Type Freezing
  *
  * Freezing determines the point at which a type's representation is fixed.
+ * The compiler must track what the RM permits but the programmer cannot see.
  * Per RM 13.14:
  * - Types are frozen by object declarations, bodies, end of declarative part
  * - Subtypes freeze their base type
@@ -5898,6 +5901,8 @@ static void Freeze_Type(Type_Info *t) {
 
 /* ─────────────────────────────────────────────────────────────────────────
  * §10.7 LLVM Type Mapping
+ *
+ * The source type is semantic; the target type is representational.
  * ───────────────────────────────────────────────────────────────────────── */
 
 /* Forward declarations for array helpers (defined after Type_Bound_Value) */
@@ -5980,6 +5985,8 @@ typedef enum {
 
 /* ─────────────────────────────────────────────────────────────────────────
  * §11.2 Symbol Structure
+ *
+ * The symbol table is an index from names to meanings; the scope provides context.
  * ───────────────────────────────────────────────────────────────────────── */
 
 typedef struct Symbol Symbol;
@@ -6149,6 +6156,8 @@ typedef struct {
 
 /* ─────────────────────────────────────────────────────────────────────────
  * §11.4 Scope Operations
+ *
+ * Lexical scoping is a tree; visibility rules turn it into a forest.
  * ───────────────────────────────────────────────────────────────────────── */
 
 static Scope *Scope_New(Scope *parent) {
@@ -6296,6 +6305,7 @@ static Symbol *Symbol_Find_With_Arity(Symbol_Manager *sm, String_Slice name, uin
  *
  * "type Interp is record Nam, Typ, Opnd_Typ..."
  * We store interpretations in a contiguous array during resolution.
+ * Sixty-four suffices; deeper ambiguity signals a pathological program.
  * ───────────────────────────────────────────────────────────────────────── */
 
 #define MAX_INTERPRETATIONS 64
@@ -6828,6 +6838,8 @@ static Symbol_Manager *Symbol_Manager_New(void) {
 /* ═══════════════════════════════════════════════════════════════════════════
  * §12. SEMANTIC ANALYSIS — Type Checking and Resolution
  * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * The parser accepts; the type checker rejects.
  *
  * Semantic analysis performs:
  * - Name resolution: bind identifiers to symbols
@@ -7826,7 +7838,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                     } else if (node->real_type.delta->kind == NK_INTEGER) {
                         delta = (double)node->real_type.delta->integer_lit.value;
                     } else {
-                        delta = 0.001;  /* Default fallback */
+                        delta = 0.001;  /* ??? Default fallback; better to proceed than to halt */
                     }
 
                     /* Compute small as largest power of 2 <= delta (per RM 3.5.9) */
@@ -9192,8 +9204,6 @@ static void Resolve_Compilation_Unit(Symbol_Manager *sm, Syntax_Node *node) {
  * 2. All pointer types use opaque 'ptr' (LLVM 15+)
  * 3. Static links for nested subprogram access
  * 4. Fat pointers for unconstrained arrays (ptr + bounds)
- *
- * Correctness first; the generated code need not be clever if it is right.
  */
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -9835,7 +9845,7 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                     /* Generate code for the initializer expression */
                     return Generate_Expression(cg, decl->object_decl.init);
                 } else {
-                    /* Fallback if no initializer found */
+                    /* ??? Fallback if no initializer found */
                     Emit(cg, "  %%t%u = add i64 0, 0  ; named number without init\n", t);
                 }
             } else if (sym->kind == SYMBOL_CONSTANT && !sym->is_named_number) {
@@ -9846,12 +9856,13 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "\n");
                 t = Emit_Convert(cg, t, type_str, "i64");
             } else {
-                /* Unknown literal type - emit 0 as fallback */
+                /* ??? Unknown literal type - emit 0 as fallback */
                 Emit(cg, "  %%t%u = add i64 0, 0  ; unknown literal\n", t);
             }
             break;
 
         default:
+            /* ??? */
             Emit(cg, "  %%t%u = add i64 0, 0  ; unhandled symbol kind\n", t);
     }
 
@@ -10012,7 +10023,7 @@ static uint32_t Generate_Composite_Address(Code_Generator *cg, Syntax_Node *node
             return t;
         }
     }
-    /* Fallback: generate as expression (may be incorrect for some cases) */
+    /* ??? Fallback: generate as expression (may be incorrect for some cases) */
     return Generate_Expression(cg, node);
 }
 
@@ -10032,7 +10043,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, "  %%t%u = call i1 @%s(ptr %%t%u, ptr %%t%u)\n",
                  eq_result, left_type->equality_func_name, left_ptr, right_ptr);
         } else {
-            /* Fallback: inline comparison (type wasn't frozen properly) */
+            /* ??? Fallback: inline comparison (type wasn't frozen properly) */
             if (left_type->kind == TYPE_RECORD) {
                 eq_result = Generate_Record_Equality(cg, left_ptr, right_ptr, left_type);
             } else {
@@ -10462,7 +10473,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             Emit_Symbol_Ref(cg, array_sym);
             Emit(cg, ", i64 0\n");
         } else {
-            /* Fallback for complex expressions - shouldn't happen often */
+            /* ??? Fallback for complex expressions */
             base = Generate_Expression(cg, node->apply.prefix);
         }
 
@@ -10673,7 +10684,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                  (long long)Type_Bound_Value(prefix_type->low_bound),
                  (int)attr.length, attr.data);
         } else {
-            /* Fallback: prefix_type is NULL - emit 0 */
+            /* ??? Fallback: prefix_type is NULL - emit 0 */
             Emit(cg, "  %%t%u = add i64 0, 0  ; %.*s'FIRST (no type)\n", t,
                  (int)attr.length, attr.data);
         }
@@ -10703,7 +10714,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                  (long long)Type_Bound_Value(prefix_type->high_bound),
                  (int)attr.length, attr.data);
         } else {
-            /* Fallback: prefix_type is NULL - emit 0 */
+            /* ??? Fallback: prefix_type is NULL - emit 0 */
             Emit(cg, "  %%t%u = add i64 0, 0  ; %.*s'LAST (no type)\n", t,
                  (int)attr.length, attr.data);
         }
@@ -11827,7 +11838,7 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
                 low_val = high_val = 0;
             }
         } else {
-            /* Fallback */
+            /* ??? */
             low_val = Generate_Expression(cg, range);
             high_val = low_val;
         }
@@ -11856,7 +11867,7 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "  %%t%u = add i64 0, %lld  ; subtype high\n", high_val,
                      (long long)Type_Bound_Value(subtype->high_bound));
             } else {
-                /* Use 0 as fallback if no type info */
+                /* ??? Use 0 as fallback if no type info */
                 low_val = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = add i64 0, 0  ; no type info\n", low_val);
                 high_val = low_val;
