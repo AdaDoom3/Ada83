@@ -5651,7 +5651,7 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
         }
 
         /* ─── Case 2: Type Conversion or Constrained Subtype ─── */
-        if (prefix_sym->kind == SYMBOL_TYPE) {
+        if (prefix_sym->kind == SYMBOL_TYPE || prefix_sym->kind == SYMBOL_SUBTYPE) {
             Type_Info *base_type = prefix_sym->type;
 
             /* Check for constrained subtype indication: STRING(1..5) */
@@ -8815,6 +8815,16 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         return t;
     }
 
+    /* Type conversion: Type_Name(Expression) */
+    if (sym && (sym->kind == SYMBOL_TYPE || sym->kind == SYMBOL_SUBTYPE)) {
+        /* For scalar types, type conversion is just evaluating the expression.
+         * The type system ensures semantic correctness; runtime range checks
+         * would go here in a more complete implementation. */
+        if (node->apply.arguments.count == 1) {
+            return Generate_Expression(cg, node->apply.arguments.items[0]);
+        }
+    }
+
     return 0;
 }
 
@@ -10514,6 +10524,19 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 /* String/character array initialization - copy fat pointer data */
                 uint32_t fat_ptr = Generate_Expression(cg, node->object_decl.init);
                 Emit_Fat_Pointer_Copy_To_Name(cg, fat_ptr, sym);
+            } else if (ty && ty->kind == TYPE_FIXED &&
+                       node->object_decl.init->kind == NK_REAL) {
+                /* Fixed-point initialization from real literal:
+                 * Convert real value to scaled integer at compile time */
+                double real_val = node->object_decl.init->real_lit.value;
+                double small = ty->fixed.small > 0 ? ty->fixed.small : ty->fixed.delta;
+                int64_t scaled_val = (int64_t)(real_val / small + 0.5);  /* Round */
+                uint32_t init = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add i64 0, %lld  ; fixed-point %.6f / %.9f\n",
+                     init, (long long)scaled_val, real_val, small);
+                Emit(cg, "  store i64 %%t%u, ptr %%", init);
+                Emit_Symbol_Name(cg, sym);
+                Emit(cg, "\n");
             } else if (!is_array && !is_record) {
                 uint32_t init = Generate_Expression(cg, node->object_decl.init);
                 /* Truncate from i64 computation to storage type */
