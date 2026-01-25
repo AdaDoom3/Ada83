@@ -6746,9 +6746,108 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
             }
             break;
 
+        case NK_TASK_SPEC:
+            {
+                /* Task declaration creates a task type and optionally an object */
+                Symbol *type_sym = Symbol_New(SYMBOL_TYPE, node->task_spec.name, node->location);
+                Type_Info *type = Type_New(TYPE_TASK, node->task_spec.name);
+                type_sym->type = type;
+                type->defining_symbol = type_sym;
+                type_sym->declaration = node;
+                Symbol_Add(sm, type_sym);
+                node->symbol = type_sym;
+
+                /* If not a task TYPE, also create an object of that type */
+                if (!node->task_spec.is_type) {
+                    Symbol *obj_sym = Symbol_New(SYMBOL_VARIABLE, node->task_spec.name, node->location);
+                    obj_sym->type = type;
+                    obj_sym->declaration = node;
+                    /* Add the object symbol - it will shadow the type for normal lookups */
+                    Symbol_Add(sm, obj_sym);
+                }
+
+                /* Push scope for task entries */
+                Symbol_Manager_Push_Scope(sm, type_sym);
+
+                /* Resolve and add entry declarations */
+                for (uint32_t i = 0; i < node->task_spec.entries.count; i++) {
+                    Syntax_Node *entry = node->task_spec.entries.items[i];
+                    if (entry->kind == NK_ENTRY_DECL) {
+                        Symbol *entry_sym = Symbol_New(SYMBOL_ENTRY,
+                            entry->entry_decl.name, entry->location);
+                        entry_sym->declaration = entry;
+                        entry_sym->parent = type_sym;
+
+                        /* Count entry parameters */
+                        uint32_t param_count = 0;
+                        for (uint32_t j = 0; j < entry->entry_decl.parameters.count; j++) {
+                            Syntax_Node *ps = entry->entry_decl.parameters.items[j];
+                            if (ps->kind == NK_PARAM_SPEC) {
+                                param_count += ps->param_spec.names.count;
+                            }
+                        }
+                        entry_sym->parameter_count = param_count;
+                        if (param_count > 0) {
+                            entry_sym->parameters = Arena_Allocate(param_count * sizeof(Parameter_Info));
+                            uint32_t pi = 0;
+                            for (uint32_t j = 0; j < entry->entry_decl.parameters.count; j++) {
+                                Syntax_Node *ps = entry->entry_decl.parameters.items[j];
+                                if (ps->kind == NK_PARAM_SPEC) {
+                                    if (ps->param_spec.param_type) {
+                                        Resolve_Expression(sm, ps->param_spec.param_type);
+                                    }
+                                    for (uint32_t k = 0; k < ps->param_spec.names.count; k++) {
+                                        entry_sym->parameters[pi].name = ps->param_spec.names.items[k]->string_val.text;
+                                        entry_sym->parameters[pi].param_type = ps->param_spec.param_type ?
+                                            ps->param_spec.param_type->type : NULL;
+                                        entry_sym->parameters[pi].mode = (Parameter_Mode)ps->param_spec.mode;
+                                        pi++;
+                                    }
+                                }
+                            }
+                        }
+                        Symbol_Add(sm, entry_sym);
+                        entry->symbol = entry_sym;
+
+                        /* Add entry to type's exported symbols */
+                        if (type_sym->exported_count < 100) {
+                            if (!type_sym->exported) {
+                                type_sym->exported = Arena_Allocate(100 * sizeof(Symbol*));
+                            }
+                            type_sym->exported[type_sym->exported_count++] = entry_sym;
+                        }
+                    }
+                }
+                Symbol_Manager_Pop_Scope(sm);
+            }
+            break;
+
+        case NK_TASK_BODY:
+            {
+                /* Find the task spec symbol */
+                Symbol *task_sym = Symbol_Find(sm, node->task_body.name);
+                node->symbol = task_sym;
+
+                /* Push scope for task body */
+                Symbol_Manager_Push_Scope(sm, task_sym);
+
+                /* Resolve declarations and statements */
+                Resolve_Declaration_List(sm, &node->task_body.declarations);
+                Resolve_Statement_List(sm, &node->task_body.statements);
+
+                /* Resolve exception handlers */
+                for (uint32_t i = 0; i < node->task_body.handlers.count; i++) {
+                    Resolve_Statement(sm, node->task_body.handlers.items[i]);
+                }
+
+                Symbol_Manager_Pop_Scope(sm);
+            }
+            break;
+
         case NK_PACKAGE_SPEC:
             {
                 Symbol *sym = Symbol_New(SYMBOL_PACKAGE, node->package_spec.name, node->location);
+                sym->declaration = node;  /* Store declaration for body to find */
                 Symbol_Add(sm, sym);
                 node->symbol = sym;
 
@@ -6786,6 +6885,100 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                     node->symbol = pkg_sym;
                 }
                 Symbol_Manager_Push_Scope(sm, pkg_sym);
+
+                /* Install visible and private declarations from package spec
+                 * into the body's scope (RM 7.1, 7.2) */
+                Syntax_Node *spec = NULL;
+
+                /* Handle generic packages: formals and unit are in the generic declaration */
+                if (pkg_sym && pkg_sym->kind == SYMBOL_GENERIC) {
+                    /* Install generic formal parameters first */
+                    if (pkg_sym->declaration &&
+                        pkg_sym->declaration->kind == NK_GENERIC_DECL) {
+                        Node_List *formals = &pkg_sym->declaration->generic_decl.formals;
+                        for (uint32_t i = 0; i < formals->count; i++) {
+                            Syntax_Node *formal = formals->items[i];
+                            if (formal->symbol) {
+                                Symbol_Add(sm, formal->symbol);
+                            }
+                            /* For generic type parameters, create/install a type symbol */
+                            if (formal->kind == NK_GENERIC_TYPE_PARAM && !formal->symbol) {
+                                Symbol *type_sym = Symbol_New(SYMBOL_TYPE,
+                                    formal->generic_type_param.name, formal->location);
+                                Type_Info *type = Type_New(TYPE_PRIVATE,
+                                    formal->generic_type_param.name);
+                                type_sym->type = type;
+                                formal->symbol = type_sym;
+                                Symbol_Add(sm, type_sym);
+                            }
+                        }
+                    }
+                    /* Get the package spec from the generic unit */
+                    spec = pkg_sym->generic_unit;
+
+                    /* For generic package body, resolve the spec first if not done */
+                    if (spec && spec->kind == NK_PACKAGE_SPEC) {
+                        /* Resolve visible declarations (with formals now visible) */
+                        Resolve_Declaration_List(sm, &spec->package_spec.visible_decls);
+                        /* Resolve private declarations */
+                        Resolve_Declaration_List(sm, &spec->package_spec.private_decls);
+                    }
+                } else if (pkg_sym && pkg_sym->declaration &&
+                           pkg_sym->declaration->kind == NK_PACKAGE_SPEC) {
+                    spec = pkg_sym->declaration;
+                }
+
+                if (spec && spec->kind == NK_PACKAGE_SPEC) {
+
+                    /* Install visible declarations */
+                    for (uint32_t i = 0; i < spec->package_spec.visible_decls.count; i++) {
+                        Syntax_Node *decl = spec->package_spec.visible_decls.items[i];
+                        if (decl->symbol) {
+                            Symbol_Add(sm, decl->symbol);
+                        }
+                        /* Also install names from object declarations */
+                        if (decl->kind == NK_OBJECT_DECL) {
+                            for (uint32_t j = 0; j < decl->object_decl.names.count; j++) {
+                                Syntax_Node *name = decl->object_decl.names.items[j];
+                                if (name->symbol) Symbol_Add(sm, name->symbol);
+                            }
+                        }
+                        /* Install enum literals */
+                        if (decl->kind == NK_TYPE_DECL && decl->type_decl.definition &&
+                            decl->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
+                            Node_List *lits = &decl->type_decl.definition->enum_type.literals;
+                            for (uint32_t j = 0; j < lits->count; j++) {
+                                if (lits->items[j]->symbol) {
+                                    Symbol_Add(sm, lits->items[j]->symbol);
+                                }
+                            }
+                        }
+                    }
+
+                    /* Install private declarations */
+                    for (uint32_t i = 0; i < spec->package_spec.private_decls.count; i++) {
+                        Syntax_Node *decl = spec->package_spec.private_decls.items[i];
+                        if (decl->symbol) {
+                            Symbol_Add(sm, decl->symbol);
+                        }
+                        if (decl->kind == NK_OBJECT_DECL) {
+                            for (uint32_t j = 0; j < decl->object_decl.names.count; j++) {
+                                Syntax_Node *name = decl->object_decl.names.items[j];
+                                if (name->symbol) Symbol_Add(sm, name->symbol);
+                            }
+                        }
+                        if (decl->kind == NK_TYPE_DECL && decl->type_decl.definition &&
+                            decl->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
+                            Node_List *lits = &decl->type_decl.definition->enum_type.literals;
+                            for (uint32_t j = 0; j < lits->count; j++) {
+                                if (lits->items[j]->symbol) {
+                                    Symbol_Add(sm, lits->items[j]->symbol);
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Resolve_Declaration_List(sm, &node->package_body.declarations);
                 /* Freeze all types at end of declarative part (RM 13.14) */
                 Freeze_Declaration_List(&node->package_body.declarations);
