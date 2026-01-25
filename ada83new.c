@@ -712,8 +712,8 @@ static Big_Integer *Big_Integer_From_Decimal_SIMD(const char *str) {
  *   significand = 314159265358979 (Big_Integer)
  *   exponent = -14 (decimal point position)
  *
- * This allows exact representation of literals like Pi to any precision,
- * enabling compile-time evaluation without floating-point rounding errors.
+ * This allows exact representation of literals like Pi to any precision.
+ * The rounding error is in the conversion, not the representation.
  */
 
 typedef struct {
@@ -2225,6 +2225,8 @@ static Token Scan_String_Literal(Lexer *lex) {
 
 /* ─────────────────────────────────────────────────────────────────────────
  * §7.5 Main Lexer Entry Point
+ *
+ * The lexer is an iterator; each call advances the stream by one token.
  * ───────────────────────────────────────────────────────────────────────── */
 
 static Token Lexer_Next_Token(Lexer *lex) {
@@ -5959,6 +5961,8 @@ static const char *Type_To_Llvm(Type_Info *t) {
 
 /* ─────────────────────────────────────────────────────────────────────────
  * §11.1 Symbol Kinds
+ *
+ * Eighteen kinds; the RM defines most, the implementation adds two.
  * ───────────────────────────────────────────────────────────────────────── */
 
 typedef enum {
@@ -6118,6 +6122,8 @@ struct Symbol {
 
 /* ─────────────────────────────────────────────────────────────────────────
  * §11.3 Scope Structure
+ *
+ * Hash table per scope; 1024 buckets covers most programs without probing far.
  * ───────────────────────────────────────────────────────────────────────── */
 
 #define SYMBOL_TABLE_SIZE 1024
@@ -9692,6 +9698,7 @@ static uint32_t Emit_Load_Fat_Pointer(Code_Generator *cg, Symbol *sym) {
  * §13.3 Expression Code Generation
  *
  * Returns the LLVM SSA value ID holding the expression result.
+ * Every expression yields a value; every value has exactly one definition.
  * ───────────────────────────────────────────────────────────────────────── */
 
 static uint32_t Generate_Expression(Code_Generator *cg, Syntax_Node *node);
@@ -11455,6 +11462,8 @@ static uint32_t Generate_Expression(Code_Generator *cg, Syntax_Node *node) {
 
 /* ─────────────────────────────────────────────────────────────────────────
  * §13.4 Statement Code Generation
+ *
+ * Statements modify state; expressions compute values. The distinction is Ada's.
  * ───────────────────────────────────────────────────────────────────────── */
 
 static void Generate_Statement(Code_Generator *cg, Syntax_Node *node);
@@ -11945,6 +11954,8 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
 
 /* ─────────────────────────────────────────────────────────────────────────
  * §13.4.8 Exception Handling
+ *
+ * Exceptions are non-local transfer; the stack unwinder knows where we came from.
  * ───────────────────────────────────────────────────────────────────────── */
 
 /* Forward declarations */
@@ -12419,6 +12430,8 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
 
 /* ─────────────────────────────────────────────────────────────────────────
  * §13.5 Declaration Code Generation
+ *
+ * Declarations bind names; the binding is the artifact.
  * ───────────────────────────────────────────────────────────────────────── */
 
 static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node);
@@ -13130,6 +13143,7 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
  *
  * Generate equality functions for composite types at freeze points.
  * Per RM 4.5.2, equality is predefined for all non-limited types.
+ * The RM specifies semantics; the compiler provides implementation.
  * ───────────────────────────────────────────────────────────────────────── */
 
 static void Generate_Type_Equality_Function(Code_Generator *cg, Type_Info *t) {
@@ -13385,6 +13399,8 @@ static void Generate_Extern_Declarations(Code_Generator *cg, Syntax_Node *node) 
 
 /* ─────────────────────────────────────────────────────────────────────────
  * §13.7 Compilation Unit Code Generation
+ *
+ * A compilation unit is the quantum of separate compilation.
  * ───────────────────────────────────────────────────────────────────────── */
 
 static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
