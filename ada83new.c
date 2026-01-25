@@ -652,7 +652,7 @@ static Token Scan_Number(Lexer *lex) {
 
         if (To_Lower(Lexer_Peek(lex, 0)) == 'e') {
             has_exponent = true;
-            is_real = is_real || true; /* E without dot is still considered for real context */
+            /* Note: exponent alone doesn't make it real - 12E1 is integer 120 */
             Lexer_Advance(lex);
             if (Lexer_Peek(lex, 0) == '+' || Lexer_Peek(lex, 0) == '-')
                 Lexer_Advance(lex);
@@ -683,13 +683,58 @@ static Token Scan_Number(Lexer *lex) {
             int64_t v;
             if (Big_Integer_Fits_Int64(tok.big_integer, &v))
                 tok.integer_value = v;
-        } else {
-            /* Based integer: parse in given base */
-            int64_t value = 0;
+        } else if (base == 10 && has_exponent) {
+            /* Decimal integer with exponent (e.g., 12E1 = 120) */
+            int64_t mantissa = 0;
+            int exp = 0;
+            bool in_exp = false;
+            bool exp_neg = false;
             for (int i = 0; clean[i]; i++) {
-                int d = Digit_Value(clean[i]);
-                if (d >= 0 && d < base) value = value * base + d;
+                char c = clean[i];
+                if (To_Lower(c) == 'e') {
+                    in_exp = true;
+                } else if (in_exp) {
+                    if (c == '-') exp_neg = true;
+                    else if (c == '+') continue;
+                    else if (Is_Digit(c)) exp = exp * 10 + (c - '0');
+                } else if (Is_Digit(c)) {
+                    mantissa = mantissa * 10 + (c - '0');
+                }
             }
+            if (exp_neg) {
+                /* Negative exponent in integer literal is unusual but handle it */
+                for (int i = 0; i < exp; i++) mantissa /= 10;
+            } else {
+                for (int i = 0; i < exp; i++) mantissa *= 10;
+            }
+            tok.integer_value = mantissa;
+        } else {
+            /* Based integer: parse from original string (e.g., 16#E#E1 = 14*16 = 224) */
+            /* Structure: base#mantissa#exponent or base#mantissa# */
+            int64_t value = 0;
+            int exp = 0;
+            int state = 0; /* 0=base, 1=mantissa, 2=exponent */
+            for (const char *p = start; p < lex->current; p++) {
+                char c = *p;
+                if (c == '_') continue;
+                if (c == '#' || c == ':') {
+                    state++;
+                    continue;
+                }
+                if (state == 0) {
+                    /* Skip base part - already parsed */
+                } else if (state == 1) {
+                    /* Mantissa in given base */
+                    int d = Digit_Value(c);
+                    if (d >= 0 && d < base) value = value * base + d;
+                } else if (state == 2) {
+                    /* Exponent (always decimal, after second delimiter) */
+                    if (To_Lower(c) == 'e') continue; /* skip the 'e' marker */
+                    if (c == '+') continue;
+                    if (Is_Digit(c)) exp = exp * 10 + (c - '0');
+                }
+            }
+            for (int i = 0; i < exp; i++) value *= base;
             tok.integer_value = value;
         }
     }
@@ -774,10 +819,15 @@ static Token Lexer_Next_Token(Lexer *lex) {
 
     /* Character literal: 'X' where X is any graphic character */
     /* Need to check for printable character (not just alpha) since '1' etc. are valid */
+    /* Special case: ''' is a character literal containing single quote */
     {
         char middle = Lexer_Peek(lex, 1);
-        if (c == '\'' && middle != '\'' && middle >= ' ' && Lexer_Peek(lex, 2) == '\'')
+        char third = Lexer_Peek(lex, 2);
+        if (c == '\'' && middle >= ' ' && third == '\'') {
+            /* Check it's not something like FOO''ATTR (two ticks in a row) */
+            /* For ''', the middle is ', and it's a valid character literal */
             return Scan_Character_Literal(lex);
+        }
     }
 
     /* String literal */
@@ -5260,8 +5310,47 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
             if (node->attribute.argument) {
                 Resolve_Expression(sm, node->attribute.argument);
             }
-            /* Attribute type depends on attribute name */
-            node->type = sm->type_integer;  /* Simplified */
+            /* Attribute type depends on attribute name and prefix type */
+            {
+                Type_Info *prefix_type = node->attribute.prefix->type;
+                String_Slice attr = node->attribute.name;
+                /* FIRST, LAST return the index type for arrays, base type for scalars */
+                if (Slice_Equal_Ignore_Case(attr, S("FIRST")) ||
+                    Slice_Equal_Ignore_Case(attr, S("LAST"))) {
+                    if (prefix_type && (prefix_type->kind == TYPE_ARRAY ||
+                                       prefix_type->kind == TYPE_STRING)) {
+                        /* For arrays, FIRST/LAST return the index type */
+                        node->type = sm->type_integer;  /* Index type is integer */
+                    } else {
+                        /* For scalar types, return the type itself */
+                        node->type = prefix_type ? prefix_type : sm->type_integer;
+                    }
+                }
+                /* VAL, SUCC, PRED return the base type (for scalar types) */
+                else if (Slice_Equal_Ignore_Case(attr, S("VAL")) ||
+                         Slice_Equal_Ignore_Case(attr, S("SUCC")) ||
+                         Slice_Equal_Ignore_Case(attr, S("PRED"))) {
+                    node->type = prefix_type ? prefix_type : sm->type_integer;
+                }
+                /* POS returns universal integer */
+                else if (Slice_Equal_Ignore_Case(attr, S("POS"))) {
+                    node->type = sm->type_universal_integer;
+                }
+                /* IMAGE returns STRING */
+                else if (Slice_Equal_Ignore_Case(attr, S("IMAGE"))) {
+                    node->type = sm->type_string;
+                }
+                /* SIZE, LENGTH, COUNT return integer */
+                else if (Slice_Equal_Ignore_Case(attr, S("SIZE")) ||
+                         Slice_Equal_Ignore_Case(attr, S("LENGTH")) ||
+                         Slice_Equal_Ignore_Case(attr, S("COUNT"))) {
+                    node->type = sm->type_integer;
+                }
+                /* Default to integer for unhandled attributes */
+                else {
+                    node->type = sm->type_integer;
+                }
+            }
             return node->type;
 
         case NK_QUALIFIED:
@@ -5303,7 +5392,8 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
         case NK_RANGE:
             if (node->range.low) Resolve_Expression(sm, node->range.low);
             if (node->range.high) Resolve_Expression(sm, node->range.high);
-            return node->range.low ? node->range.low->type : NULL;
+            node->type = node->range.low ? node->range.low->type : NULL;
+            return node->type;
 
         case NK_ASSOCIATION:
             for (uint32_t i = 0; i < node->association.choices.count; i++) {
@@ -5733,16 +5823,19 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
                     Symbol *enclosing_owner = sm->current_scope->owner;
                     Symbol_Manager_Push_Scope(sm, enclosing_owner);
                     Syntax_Node *loop_id = iter->binary.left;
+                    /* Resolve range expression FIRST to get its type */
+                    Resolve_Expression(sm, iter->binary.right);
                     if (loop_id && loop_id->kind == NK_IDENTIFIER) {
                         Symbol *loop_var = Symbol_New(SYMBOL_VARIABLE,
                                                       loop_id->string_val.text,
                                                       loop_id->location);
-                        loop_var->type = sm->type_integer;
+                        /* Loop variable type comes from the range expression.
+                         * For X IN A..B, the range's type is the type of the bounds */
+                        Type_Info *range_type = iter->binary.right->type;
+                        loop_var->type = range_type ? range_type : sm->type_integer;
                         Symbol_Add(sm, loop_var);
                         loop_id->symbol = loop_var;
                     }
-                    /* Resolve range expression */
-                    Resolve_Expression(sm, iter->binary.right);
                     Resolve_Statement_List(sm, &node->loop_stmt.statements);
                     Symbol_Manager_Pop_Scope(sm);
                 } else {

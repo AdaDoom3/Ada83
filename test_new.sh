@@ -25,8 +25,8 @@ test_file() {
     [[ $n =~ [0-9]$ && ! $n =~ m$ ]] && return
     [[ $class == [fF] ]] && return  # Foundation support code
 
-    ((OLD[total]++))
-    ((NEW[total]++))
+    ((++OLD[total]))
+    ((++NEW[total]))
 
     local old_compile=0 new_compile=0
     local old_link=0 new_link=0
@@ -35,7 +35,7 @@ test_file() {
     # Test with old compiler (ada83)
     if timeout 0.5 ./ada83 -Iacats -Irts "$f" > test_results_old/$n.ll 2>acats_logs_old/$n.err; then
         old_compile=1
-        if timeout 0.5 llvm-link -o test_results_old/$n.bc test_results_old/$n.ll rts/report.ll 2>/dev/null; then
+        if timeout 0.5 llvm-link -o test_results_old/$n.bc test_results_old/$n.ll rts/report_old.ll 2>/dev/null; then
             old_link=1
             if timeout 1 lli test_results_old/$n.bc > acats_logs_old/$n.out 2>&1; then
                 grep -q PASSED acats_logs_old/$n.out 2>/dev/null && old_run=1
@@ -46,7 +46,7 @@ test_file() {
     # Test with new compiler (ada83new)
     if timeout 0.5 ./ada83new -Iacats -Irts "$f" > test_results_new/$n.ll 2>acats_logs_new/$n.err; then
         new_compile=1
-        if timeout 0.5 llvm-link -o test_results_new/$n.bc test_results_new/$n.ll rts/report.ll 2>/dev/null; then
+        if timeout 0.5 llvm-link -o test_results_new/$n.bc test_results_new/$n.ll rts/report_new.ll 2>/dev/null; then
             new_link=1
             if timeout 1 lli test_results_new/$n.bc > acats_logs_new/$n.out 2>&1; then
                 grep -q PASSED acats_logs_new/$n.out 2>/dev/null && new_run=1
@@ -56,14 +56,14 @@ test_file() {
 
     # Determine pass/fail for B-tests (should reject)
     if [[ $class == [bB] ]]; then
-        ((old_compile == 0)) && ((OLD[pass]++)) || ((OLD[fail]++))
-        ((new_compile == 0)) && ((NEW[pass]++)) || ((NEW[fail]++))
+        if ((old_compile == 0)); then OLD[pass]=$((OLD[pass]+1)); else OLD[fail]=$((OLD[fail]+1)); fi
+        if ((new_compile == 0)); then NEW[pass]=$((NEW[pass]+1)); else NEW[fail]=$((NEW[fail]+1)); fi
         local old_status=$([[ $old_compile == 0 ]] && echo "REJECT" || echo "WRONG")
         local new_status=$([[ $new_compile == 0 ]] && echo "REJECT" || echo "WRONG")
     else
         # For other tests, need to compile, link, and pass
-        if ((old_run)); then ((OLD[pass]++)); else ((OLD[fail]++)); fi
-        if ((new_run)); then ((NEW[pass]++)); else ((NEW[fail]++)); fi
+        if ((old_run)); then OLD[pass]=$((OLD[pass]+1)); else OLD[fail]=$((OLD[fail]+1)); fi
+        if ((new_run)); then NEW[pass]=$((NEW[pass]+1)); else NEW[fail]=$((NEW[fail]+1)); fi
         local old_status=$([[ $old_run == 1 ]] && echo "PASS" || echo "FAIL")
         local new_status=$([[ $new_run == 1 ]] && echo "PASS" || echo "FAIL")
     fi
@@ -81,11 +81,15 @@ test_file() {
     printf "  %-16s  OLD: %-6s  NEW: %-6s  %b\n" "$n" "$old_status" "$new_status" "$comp_mark"
 }
 
-# Build report.ll if needed
+# Build report.ll files if needed (one for each compiler since they use different symbol naming)
 build_report() {
-    if [[ ! -f rts/report.ll || rts/report.adb -nt rts/report.ll ]]; then
-        echo "Building rts/report.ll..."
-        ./ada83 -Iacats -Irts rts/report.adb > rts/report.ll 2>/dev/null || true
+    if [[ ! -f rts/report_old.ll || rts/report.adb -nt rts/report_old.ll ]]; then
+        echo "Building rts/report_old.ll (old compiler)..."
+        ./ada83 -Iacats -Irts rts/report.adb > rts/report_old.ll 2>/dev/null || true
+    fi
+    if [[ ! -f rts/report_new.ll || rts/report.adb -nt rts/report_new.ll ]]; then
+        echo "Building rts/report_new.ll (new compiler)..."
+        ./ada83new -Iacats -Irts rts/report.adb > rts/report_new.ll 2>/dev/null || true
     fi
 }
 
@@ -139,7 +143,7 @@ quick_test() {
     build_report
 
     # Test a sample from each class
-    for f in acats/a21001a.ada acats/b22001a.ada acats/c23003a.ada acats/c32001a.ada; do
+    for f in acats/a21001a.ada acats/b22001a.ada acats/c23001a.ada acats/c32001a.ada acats/c34001a.ada; do
         [[ -f $f ]] && test_file "$f"
     done
 
