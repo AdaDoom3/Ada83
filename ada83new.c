@@ -7546,11 +7546,30 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         case TK_GT:
         case TK_GE:
             {
-                /* Check operand type (not result type) for float comparisons */
-                bool cmp_float = left_type && (left_type->kind == TYPE_FLOAT ||
-                                               left_type->kind == TYPE_UNIVERSAL_REAL);
+                /* Check operand types for float comparisons */
+                Type_Info *right_type = node->binary.right ? node->binary.right->type : NULL;
+                bool left_is_float = left_type && (left_type->kind == TYPE_FLOAT ||
+                                                   left_type->kind == TYPE_UNIVERSAL_REAL);
+                bool right_is_float = right_type && (right_type->kind == TYPE_FLOAT ||
+                                                     right_type->kind == TYPE_UNIVERSAL_REAL);
+
+                /* Convert operands to same type if needed */
+                if (left_is_float && !right_is_float) {
+                    /* Convert right to float */
+                    uint32_t conv = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = sitofp i64 %%t%u to double\n", conv, right);
+                    right = conv;
+                    right_is_float = true;
+                } else if (!left_is_float && right_is_float) {
+                    /* Convert right float to integer for fixed-point comparison */
+                    uint32_t conv = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = fptosi double %%t%u to i64\n", conv, right);
+                    right = conv;
+                    right_is_float = false;
+                }
+
                 const char *cmp_op;
-                if (cmp_float) {
+                if (left_is_float && right_is_float) {
                     switch (node->binary.op) {
                         case TK_EQ: cmp_op = "fcmp oeq double"; break;
                         case TK_NE: cmp_op = "fcmp une double"; break;
@@ -8582,8 +8601,31 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
                       var_owner != cg->current_function;
 
     const char *type_str = Type_To_Llvm(ty);
-    /* Truncate from i64 computation to actual storage type */
-    value = Emit_Convert(cg, value, "i64", type_str);
+
+    /* Determine source type from the value expression */
+    Type_Info *value_type = node->assignment.value->type;
+    bool is_src_float = value_type && (value_type->kind == TYPE_FLOAT ||
+                                        value_type->kind == TYPE_UNIVERSAL_REAL);
+    bool is_dst_float = ty && (ty->kind == TYPE_FLOAT ||
+                               ty->kind == TYPE_UNIVERSAL_REAL);
+
+    /* Convert between float and integer if needed */
+    if (is_src_float && !is_dst_float) {
+        /* Float to integer: use fptosi */
+        uint32_t t = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = fptosi double %%t%u to %s\n", t, value, type_str);
+        value = t;
+    } else if (!is_src_float && is_dst_float) {
+        /* Integer to float: use sitofp */
+        uint32_t t = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = sitofp i64 %%t%u to double\n", t, value);
+        value = t;
+    } else if (is_src_float && is_dst_float) {
+        /* Float to float: no conversion needed, both are double */
+    } else {
+        /* Integer to integer: truncate from i64 to actual storage type */
+        value = Emit_Convert(cg, value, "i64", type_str);
+    }
 
     /* Check if package-level global (parent is NULL or SYMBOL_PACKAGE) */
     bool is_global = !target_sym->parent || target_sym->parent->kind == SYMBOL_PACKAGE;
