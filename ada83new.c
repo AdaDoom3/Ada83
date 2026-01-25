@@ -54,11 +54,11 @@
 
 /* Runtime CPU feature detection for x86-64 */
 #ifdef SIMD_X86_64
-static int simd_has_avx512 = -1;  /* -1 = unchecked, 0 = no, 1 = yes */
-static int simd_has_avx2 = -1;
+static int Simd_Has_Avx512 = -1;  /* -1 = unchecked, 0 = no, 1 = yes */
+static int Simd_Has_Avx2 = -1;
 
-static void simd_detect_features(void) {
-    if (simd_has_avx512 >= 0) return;  /* Already detected */
+static void Simd_Detect_Features(void) {
+    if (Simd_Has_Avx512 >= 0) return;  /* Already detected */
 
     uint32_t eax, ebx, ecx, edx;
 
@@ -71,11 +71,11 @@ static void simd_detect_features(void) {
         :
         : "memory"
     );
-    simd_has_avx2 = (ebx >> 5) & 1;
+    Simd_Has_Avx2 = (ebx >> 5) & 1;
 
     /* Check for AVX-512F: CPUID.07H:EBX.AVX512F[bit 16] */
     /* Also check AVX-512BW for byte operations: CPUID.07H:EBX.AVX512BW[bit 30] */
-    simd_has_avx512 = ((ebx >> 16) & 1) && ((ebx >> 30) & 1);
+    Simd_Has_Avx512 = ((ebx >> 16) & 1) && ((ebx >> 30) & 1);
 }
 #endif
 
@@ -612,8 +612,8 @@ static Big_Integer *Big_Integer_From_Decimal_SIMD(const char *str) {
     while (*end >= '0' && *end <= '9') end++;
 
 #ifdef SIMD_X86_64
-    simd_detect_features();
-    if (simd_has_avx2) {
+    Simd_Detect_Features();
+    if (Simd_Has_Avx2) {
         /* Initialize bigint with first chunk */
         bi->limbs[0] = 0;
         bi->count = 1;
@@ -658,6 +658,120 @@ static Big_Integer *Big_Integer_From_Decimal_SIMD(const char *str) {
     }
     Big_Integer_Normalize(bi);
     return bi;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §6.2 BIG_REAL — Arbitrary Precision Real Numbers
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * Represents real literals with arbitrary precision per Ada LRM §2.4.1.
+ * Structure: significand × 10^exponent
+ *
+ * Example: 3.14159_26535_89793 is stored as:
+ *   significand = 314159265358979 (Big_Integer)
+ *   exponent = -14 (decimal point position)
+ *
+ * This allows exact representation of literals like Pi to any precision,
+ * enabling compile-time evaluation without floating-point rounding errors.
+ */
+
+typedef struct {
+    Big_Integer *significand;  /* All digits without decimal point */
+    int32_t      exponent;     /* Power of 10 (negative for fractional) */
+} Big_Real;
+
+static Big_Real *Big_Real_New(void) {
+    Big_Real *br = Arena_Allocate(sizeof(Big_Real));
+    br->significand = Big_Integer_New(4);
+    br->exponent = 0;
+    return br;
+}
+
+/* Parse a real literal into arbitrary precision Big_Real
+ * Handles: 3.14, 3.14E-10, 3.14159_26535_89793_23846_26433_83279
+ */
+static Big_Real *Big_Real_From_String(const char *str) {
+    Big_Real *br = Big_Real_New();
+    br->significand->is_negative = (*str == '-');
+    if (*str == '-' || *str == '+') str++;
+
+    /* Collect all digits (ignoring decimal point and underscores) */
+    char clean[512];
+    int clean_len = 0;
+    int decimal_pos = -1;  /* Position of decimal point in digit sequence */
+    int digit_count = 0;
+
+    while (*str && *str != 'E' && *str != 'e') {
+        if (*str == '.') {
+            decimal_pos = digit_count;
+        } else if (*str >= '0' && *str <= '9') {
+            if (clean_len < (int)sizeof(clean) - 1) {
+                clean[clean_len++] = *str;
+            }
+            digit_count++;
+        }
+        /* Skip underscores */
+        str++;
+    }
+    clean[clean_len] = '\0';
+
+    /* Parse exponent if present */
+    int exp = 0;
+    if (*str == 'E' || *str == 'e') {
+        str++;
+        int exp_sign = 1;
+        if (*str == '-') { exp_sign = -1; str++; }
+        else if (*str == '+') str++;
+        while (*str >= '0' && *str <= '9') {
+            exp = exp * 10 + (*str - '0');
+            str++;
+        }
+        exp *= exp_sign;
+    }
+
+    /* Calculate final exponent:
+     * If decimal at position 3 in "314159" (for 3.14159), exponent = 3 - 6 = -3
+     * Then add any explicit exponent
+     */
+    if (decimal_pos >= 0) {
+        br->exponent = exp + (decimal_pos - digit_count);
+    } else {
+        br->exponent = exp;
+    }
+
+    /* Parse significand digits using existing Big_Integer parsing */
+    br->significand = Big_Integer_From_Decimal_SIMD(clean);
+    return br;
+}
+
+/* Convert Big_Real to double (for compatibility with existing code) */
+static double Big_Real_To_Double(const Big_Real *br) {
+    if (br->significand->count == 0) return 0.0;
+
+    /* Extract significand as double */
+    double sig = 0.0;
+    for (int i = (int)br->significand->count - 1; i >= 0; i--) {
+        sig = sig * 18446744073709551616.0 + (double)br->significand->limbs[i];
+    }
+    if (br->significand->is_negative) sig = -sig;
+
+    /* Apply exponent */
+    if (br->exponent > 0) {
+        for (int i = 0; i < br->exponent; i++) sig *= 10.0;
+    } else if (br->exponent < 0) {
+        for (int i = 0; i < -br->exponent; i++) sig /= 10.0;
+    }
+    return sig;
+}
+
+/* Check if Big_Real fits in a double without precision loss
+ * Returns true if the significand has <= 15 significant digits
+ */
+static bool Big_Real_Fits_Double(const Big_Real *br) {
+    if (br->significand->count == 0) return true;
+    if (br->significand->count > 1) return false;
+    /* 15 decimal digits fit in a double's 53-bit mantissa */
+    return br->significand->limbs[0] < 1000000000000000ULL;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -781,6 +895,7 @@ typedef struct {
         int64_t      integer_value;
         double       float_value;
         Big_Integer *big_integer;
+        Big_Real    *big_real;     /* Arbitrary precision real literal */
     };
 } Token;
 
@@ -821,20 +936,20 @@ static Lexer Lexer_New(const char *source, size_t length, const char *filename) 
  *   - BMI2 TZCNT for fast trailing zero count (find first non-match)
  *
  * Architecture:
- *   - simd_skip_whitespace: Skip space (0x20) and C0 controls (0x09-0x0D)
- *   - simd_find_char_x86: Generic single-character search (newline, quotes)
- *   - simd_scan_identifier: Match [a-zA-Z0-9_] character class
- *   - simd_scan_digits: Match [0-9_] for numeric literals
+ *   - Simd_Skip_Whitespace: Skip space (0x20) and C0 controls (0x09-0x0D)
+ *   - Simd_Find_Char_X86: Generic single-character search (newline, quotes)
+ *   - Simd_Scan_Identifier: Match [a-zA-Z0-9_] character class
+ *   - Simd_Scan_Digits: Match [0-9_] for numeric literals
  * ───────────────────────────────────────────────────────────────────────────── */
 
 /* Raw assembly bit-scan helpers - BMI2 TZCNT instruction */
-static inline uint32_t tzcnt32(uint32_t v) {
+static inline uint32_t Tzcnt32(uint32_t v) {
     uint32_t r;
     __asm__ ("tzcntl %1, %0" : "=r" (r) : "r" (v));
     return r;
 }
 
-static inline uint64_t tzcnt64(uint64_t v) {
+static inline uint64_t Tzcnt64(uint64_t v) {
     uint64_t r;
     __asm__ ("tzcntq %1, %0" : "=r" (r) : "r" (v));
     return r;
@@ -846,7 +961,7 @@ static inline uint64_t tzcnt64(uint64_t v) {
  * Processes 64 bytes at a time using k-mask registers.
  * Matches: space (0x20) OR range 0x09-0x0D (tab, LF, VT, FF, CR)
  * ───────────────────────────────────────────────────────────────────────────── */
-static inline const char *simd_skip_whitespace_avx512(const char *p, const char *end) {
+static inline const char *Simd_Skip_Whitespace_Avx512(const char *p, const char *end) {
     while (p + 64 <= end) {
         uint64_t mask;
         __asm__ volatile (
@@ -883,7 +998,7 @@ static inline const char *simd_skip_whitespace_avx512(const char *p, const char 
  * Processes 64 bytes (2x32) per iteration for better throughput.
  * Falls back to single 32-byte chunks for remaining data.
  * ───────────────────────────────────────────────────────────────────────────── */
-static inline const char *simd_skip_whitespace_avx2(const char *p, const char *end) {
+static inline const char *Simd_Skip_Whitespace_Avx2(const char *p, const char *end) {
     /* 2x unrolled: process 64 bytes per iteration */
     while (p + 64 <= end) {
         uint32_t m0, m1;
@@ -922,8 +1037,8 @@ static inline const char *simd_skip_whitespace_avx2(const char *p, const char *e
             : "ymm0", "ymm1", "ymm2", "ymm3", "ymm5", "ymm6", "ymm7",
               "ymm8", "ymm9", "ymm10", "ymm11", "memory"
         );
-        if (m0 != 0xFFFFFFFF) return p + tzcnt32(~m0);
-        if (m1 != 0xFFFFFFFF) return p + 32 + tzcnt32(~m1);
+        if (m0 != 0xFFFFFFFF) return p + Tzcnt32(~m0);
+        if (m1 != 0xFFFFFFFF) return p + 32 + Tzcnt32(~m1);
         p += 64;
     }
     /* Handle remaining 32-byte chunk */
@@ -949,7 +1064,7 @@ static inline const char *simd_skip_whitespace_avx2(const char *p, const char *e
               [lo] "r" ((uint32_t)0x08), [hi] "r" ((uint32_t)0x0E)
             : "ymm0", "ymm1", "ymm2", "ymm3", "ymm5", "ymm6", "ymm7", "memory"
         );
-        if (mask != 0xFFFFFFFF) return p + tzcnt32(~mask);
+        if (mask != 0xFFFFFFFF) return p + Tzcnt32(~mask);
         p += 32;
     }
     return p;
@@ -961,13 +1076,13 @@ static inline const char *simd_skip_whitespace_avx2(const char *p, const char *e
  * Selects best SIMD path at runtime based on CPU features.
  * Falls through to scalar loop for remaining bytes.
  * ───────────────────────────────────────────────────────────────────────────── */
-static inline const char *simd_skip_whitespace(const char *p, const char *end) {
-    simd_detect_features();
-    if (simd_has_avx512 && (end - p) >= 64) {
-        p = simd_skip_whitespace_avx512(p, end);
+static inline const char *Simd_Skip_Whitespace(const char *p, const char *end) {
+    Simd_Detect_Features();
+    if (Simd_Has_Avx512 && (end - p) >= 64) {
+        p = Simd_Skip_Whitespace_Avx512(p, end);
     }
-    if (simd_has_avx2 && (end - p) >= 32) {
-        p = simd_skip_whitespace_avx2(p, end);
+    if (Simd_Has_Avx2 && (end - p) >= 32) {
+        p = Simd_Skip_Whitespace_Avx2(p, end);
     }
     /* Scalar tail for remaining bytes */
     while (p < end) {
@@ -982,9 +1097,9 @@ static inline const char *simd_skip_whitespace(const char *p, const char *end) {
  * Generic Single-Character Search
  *
  * Searches for a specific character (newline, quote, etc.).
- * Used as building block for simd_find_newline, simd_find_quote, etc.
+ * Used as building block for Simd_Find_Newline, Simd_Find_Quote, etc.
  * ───────────────────────────────────────────────────────────────────────────── */
-static inline const char *simd_find_char_x86(const char *p, const char *end, char ch) {
+static inline const char *Simd_Find_Char_X86(const char *p, const char *end, char ch) {
     /* Fast path: scalar check for first 16 bytes (covers most short comments/strings)
      * Avoids SIMD setup cost which dominates for short scans. Benchmarked 2x faster. */
     for (int i = 0; i < 16 && p + i < end; i++) {
@@ -998,9 +1113,9 @@ static inline const char *simd_find_char_x86(const char *p, const char *end, cha
     }
     p += 16;  /* Fast path didn't find it, continue with SIMD */
 
-    simd_detect_features();
+    Simd_Detect_Features();
     /* AVX-512: 64 bytes at a time */
-    if (simd_has_avx512) {
+    if (Simd_Has_Avx512) {
         while (p + 64 <= end) {
             uint64_t mask;
             __asm__ volatile (
@@ -1033,7 +1148,7 @@ static inline const char *simd_find_char_x86(const char *p, const char *end, cha
             : [src] "r" (p), [c] "r" ((uint32_t)ch)
             : "ymm0", "ymm1", "memory"
         );
-        if (mask) return p + tzcnt32(mask);
+        if (mask) return p + Tzcnt32(mask);
         p += 32;
     }
     /* Scalar tail */
@@ -1042,16 +1157,16 @@ static inline const char *simd_find_char_x86(const char *p, const char *end, cha
 }
 
 /* Convenience wrappers for common character searches */
-static inline const char *simd_find_newline(const char *p, const char *end) {
-    return simd_find_char_x86(p, end, '\n');
+static inline const char *Simd_Find_Newline(const char *p, const char *end) {
+    return Simd_Find_Char_X86(p, end, '\n');
 }
 
-static inline const char *simd_find_quote(const char *p, const char *end) {
-    return simd_find_char_x86(p, end, '\'');
+static inline const char *Simd_Find_Quote(const char *p, const char *end) {
+    return Simd_Find_Char_X86(p, end, '\'');
 }
 
-static inline const char *simd_find_double_quote(const char *p, const char *end) {
-    return simd_find_char_x86(p, end, '"');
+static inline const char *Simd_Find_Double_Quote(const char *p, const char *end) {
+    return Simd_Find_Char_X86(p, end, '"');
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -1060,7 +1175,7 @@ static inline const char *simd_find_double_quote(const char *p, const char *end)
  * Uses fast table lookup for first 8 chars (covers most identifiers),
  * then SIMD only for long identifiers. Benchmarked 50% faster than pure SIMD.
  * ───────────────────────────────────────────────────────────────────────────── */
-static inline const char *simd_scan_identifier(const char *p, const char *end) {
+static inline const char *Simd_Scan_Identifier(const char *p, const char *end) {
     /* Fast path: unrolled table lookup for first 8 chars (covers most identifiers) */
     if (p >= end || !Is_Id_Char(*p)) return p;
     if (p + 1 >= end || !Is_Id_Char(p[1])) return p + 1;
@@ -1083,10 +1198,10 @@ static inline const char *simd_scan_identifier(const char *p, const char *end) {
  * Matches [0-9_] - digits with optional underscores (Ada numeric syntax).
  * Returns pointer to first non-digit character.
  * ───────────────────────────────────────────────────────────────────────────── */
-static inline const char *simd_scan_digits(const char *p, const char *end) {
-    simd_detect_features();
+static inline const char *Simd_Scan_Digits(const char *p, const char *end) {
+    Simd_Detect_Features();
     /* AVX-512 path */
-    if (simd_has_avx512) {
+    if (Simd_Has_Avx512) {
         while (p + 64 <= end) {
             uint64_t mask;
             __asm__ volatile (
@@ -1139,7 +1254,7 @@ static inline const char *simd_scan_digits(const char *p, const char *end) {
               [u] "r" ((uint32_t)'_')
             : "ymm0", "ymm1", "ymm2", "ymm3", "ymm4", "ymm5", "memory"
         );
-        if (mask != 0xFFFFFFFF) return p + tzcnt32(~mask);
+        if (mask != 0xFFFFFFFF) return p + Tzcnt32(~mask);
         p += 32;
     }
     /* Scalar tail */
@@ -1152,7 +1267,7 @@ static inline const char *simd_scan_digits(const char *p, const char *end) {
  * ARM64 NEON Implementation (raw inline assembly)
  * ───────────────────────────────────────────────────────────────────────── */
 
-static inline const char *simd_skip_whitespace(const char *p, const char *end) {
+static inline const char *Simd_Skip_Whitespace(const char *p, const char *end) {
     while (p + 16 <= end) {
         uint64_t lo, hi;
         __asm__ volatile (
@@ -1175,8 +1290,8 @@ static inline const char *simd_skip_whitespace(const char *p, const char *end) {
             : [src] "r" (p)
             : "v0", "v1", "v2", "v3", "v5", "v6", "v7", "memory"
         );
-        if (lo) return p + (tzcnt64(lo) >> 3);
-        if (hi) return p + 8 + (tzcnt64(hi) >> 3);
+        if (lo) return p + (Tzcnt64(lo) >> 3);
+        if (hi) return p + 8 + (Tzcnt64(hi) >> 3);
         p += 16;
     }
     /* Scalar tail: check all isspace() characters */
@@ -1188,7 +1303,7 @@ static inline const char *simd_skip_whitespace(const char *p, const char *end) {
     return p;
 }
 
-static inline const char *simd_find_newline(const char *p, const char *end) {
+static inline const char *Simd_Find_Newline(const char *p, const char *end) {
     while (p + 16 <= end) {
         uint64_t lo, hi;
         __asm__ volatile (
@@ -1201,15 +1316,15 @@ static inline const char *simd_find_newline(const char *p, const char *end) {
             : [src] "r" (p)
             : "v0", "v1", "memory"
         );
-        if (lo) return p + (tzcnt64(lo) >> 3);
-        if (hi) return p + 8 + (tzcnt64(hi) >> 3);
+        if (lo) return p + (Tzcnt64(lo) >> 3);
+        if (hi) return p + 8 + (Tzcnt64(hi) >> 3);
         p += 16;
     }
     while (p < end && *p != '\n') p++;
     return p;
 }
 
-static inline const char *simd_scan_identifier(const char *p, const char *end) {
+static inline const char *Simd_Scan_Identifier(const char *p, const char *end) {
     while (p + 16 <= end) {
         uint64_t lo, hi;
         __asm__ volatile (
@@ -1246,8 +1361,8 @@ static inline const char *simd_scan_identifier(const char *p, const char *end) {
             : [src] "r" (p)
             : "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v16", "memory"
         );
-        if (lo) return p + (tzcnt64(lo) >> 3);
-        if (hi) return p + 8 + (tzcnt64(hi) >> 3);
+        if (lo) return p + (Tzcnt64(lo) >> 3);
+        if (hi) return p + 8 + (Tzcnt64(hi) >> 3);
         p += 16;
     }
     while (p < end) {
@@ -1260,7 +1375,7 @@ static inline const char *simd_scan_identifier(const char *p, const char *end) {
     return p;
 }
 
-static inline const char *simd_find_quote(const char *p, const char *end) {
+static inline const char *Simd_Find_Quote(const char *p, const char *end) {
     while (p + 16 <= end) {
         uint64_t lo, hi;
         __asm__ volatile (
@@ -1273,15 +1388,15 @@ static inline const char *simd_find_quote(const char *p, const char *end) {
             : [src] "r" (p)
             : "v0", "v1", "memory"
         );
-        if (lo) return p + (tzcnt64(lo) >> 3);
-        if (hi) return p + 8 + (tzcnt64(hi) >> 3);
+        if (lo) return p + (Tzcnt64(lo) >> 3);
+        if (hi) return p + 8 + (Tzcnt64(hi) >> 3);
         p += 16;
     }
     while (p < end && *p != '\'') p++;
     return p;
 }
 
-static inline const char *simd_find_double_quote(const char *p, const char *end) {
+static inline const char *Simd_Find_Double_Quote(const char *p, const char *end) {
     while (p + 16 <= end) {
         uint64_t lo, hi;
         __asm__ volatile (
@@ -1294,15 +1409,15 @@ static inline const char *simd_find_double_quote(const char *p, const char *end)
             : [src] "r" (p)
             : "v0", "v1", "memory"
         );
-        if (lo) return p + (tzcnt64(lo) >> 3);
-        if (hi) return p + 8 + (tzcnt64(hi) >> 3);
+        if (lo) return p + (Tzcnt64(lo) >> 3);
+        if (hi) return p + 8 + (Tzcnt64(hi) >> 3);
         p += 16;
     }
     while (p < end && *p != '"') p++;
     return p;
 }
 
-static inline const char *simd_scan_digits(const char *p, const char *end) {
+static inline const char *Simd_Scan_Digits(const char *p, const char *end) {
     while (p + 16 <= end) {
         uint64_t lo, hi;
         __asm__ volatile (
@@ -1325,8 +1440,8 @@ static inline const char *simd_scan_digits(const char *p, const char *end) {
             : [src] "r" (p)
             : "v0", "v1", "v2", "v3", "v4", "v5", "v6", "memory"
         );
-        if (lo) return p + (tzcnt64(lo) >> 3);
-        if (hi) return p + 8 + (tzcnt64(hi) >> 3);
+        if (lo) return p + (Tzcnt64(lo) >> 3);
+        if (hi) return p + 8 + (Tzcnt64(hi) >> 3);
         p += 16;
     }
     while (p < end && ((*p >= '0' && *p <= '9') || *p == '_')) p++;
@@ -1338,7 +1453,7 @@ static inline const char *simd_scan_digits(const char *p, const char *end) {
  * Generic Scalar Implementation
  * ───────────────────────────────────────────────────────────────────────── */
 
-static inline const char *simd_skip_whitespace(const char *p, const char *end) {
+static inline const char *Simd_Skip_Whitespace(const char *p, const char *end) {
     /* Handle all isspace() characters: space (0x20), tab (0x09), LF (0x0A), VT (0x0B), FF (0x0C), CR (0x0D) */
     while (p < end) {
         unsigned char c = (unsigned char)*p;
@@ -1348,12 +1463,12 @@ static inline const char *simd_skip_whitespace(const char *p, const char *end) {
     return p;
 }
 
-static inline const char *simd_find_newline(const char *p, const char *end) {
+static inline const char *Simd_Find_Newline(const char *p, const char *end) {
     while (p < end && *p != '\n') p++;
     return p;
 }
 
-static inline const char *simd_scan_identifier(const char *p, const char *end) {
+static inline const char *Simd_Scan_Identifier(const char *p, const char *end) {
     while (p < end) {
         char c = *p;
         if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
@@ -1364,17 +1479,17 @@ static inline const char *simd_scan_identifier(const char *p, const char *end) {
     return p;
 }
 
-static inline const char *simd_find_quote(const char *p, const char *end) {
+static inline const char *Simd_Find_Quote(const char *p, const char *end) {
     while (p < end && *p != '\'') p++;
     return p;
 }
 
-static inline const char *simd_find_double_quote(const char *p, const char *end) {
+static inline const char *Simd_Find_Double_Quote(const char *p, const char *end) {
     while (p < end && *p != '"') p++;
     return p;
 }
 
-static inline const char *simd_scan_digits(const char *p, const char *end) {
+static inline const char *Simd_Scan_Digits(const char *p, const char *end) {
     while (p < end && ((*p >= '0' && *p <= '9') || *p == '_')) p++;
     return p;
 }
@@ -1400,7 +1515,7 @@ static inline char Lexer_Advance(Lexer *lex) {
 static void Lexer_Skip_Whitespace_And_Comments(Lexer *lex) {
     for (;;) {
         /* Use SIMD to find first non-whitespace */
-        const char *end_ws = simd_skip_whitespace(lex->current, lex->source_end);
+        const char *end_ws = Simd_Skip_Whitespace(lex->current, lex->source_end);
         /* Update line/column by scanning for newlines in skipped region */
         while (lex->current < end_ws) {
             if (*lex->current == '\n') { lex->line++; lex->column = 1; }
@@ -1412,7 +1527,7 @@ static void Lexer_Skip_Whitespace_And_Comments(Lexer *lex) {
         if (lex->current + 1 < lex->source_end &&
             lex->current[0] == '-' && lex->current[1] == '-') {
             /* Use SIMD to find newline */
-            const char *end_comment = simd_find_newline(lex->current, lex->source_end);
+            const char *end_comment = Simd_Find_Newline(lex->current, lex->source_end);
             lex->column += (uint32_t)(end_comment - lex->current);
             lex->current = end_comment;
         } else break;
@@ -1432,7 +1547,7 @@ static Token Scan_Identifier(Lexer *lex) {
     const char *start = lex->current;
 
     /* Use SIMD to find end of identifier */
-    const char *end_id = simd_scan_identifier(lex->current, lex->source_end);
+    const char *end_id = Simd_Scan_Identifier(lex->current, lex->source_end);
     lex->column += (uint32_t)(end_id - lex->current);
     lex->current = end_id;
 
@@ -1527,7 +1642,10 @@ static Token Scan_Number(Lexer *lex) {
 
     if (is_real) {
         if (!is_based) {
-            tok.float_value = strtod(clean, NULL);
+            /* Parse into Big_Real for arbitrary precision */
+            tok.big_real = Big_Real_From_String(clean);
+            /* Also compute double for compatibility */
+            tok.float_value = Big_Real_To_Double(tok.big_real);
         } else {
             /* Based real: parse mantissa in base, apply exponent as power of base */
             /* Format: base#integer.fraction#exponent */
@@ -1558,6 +1676,7 @@ static Token Scan_Number(Lexer *lex) {
             for (int i = 0; i < (exp > 0 ? exp : -exp); i++)
                 value = exp > 0 ? value * base : value / base;
             tok.float_value = value;
+            tok.big_real = NULL;  /* Based reals use double precision only */
         }
     } else {
         if (!is_based && !has_exponent) {
@@ -1862,8 +1981,8 @@ struct Syntax_Node {
         /* NK_INTEGER */
         struct { int64_t value; Big_Integer *big_value; } integer_lit;
 
-        /* NK_REAL */
-        struct { double value; } real_lit;
+        /* NK_REAL - arbitrary precision with double for compatibility */
+        struct { double value; Big_Real *big_value; } real_lit;
 
         /* NK_STRING, NK_CHARACTER, NK_IDENTIFIER */
         struct { String_Slice text; } string_val;
@@ -2385,10 +2504,11 @@ static Syntax_Node *Parse_Primary(Parser *p) {
         return node;
     }
 
-    /* Real literal */
+    /* Real literal - store both double and Big_Real for arbitrary precision */
     if (Parser_At(p, TK_REAL)) {
         Syntax_Node *node = Node_New(NK_REAL, loc);
         node->real_lit.value = p->current_token.float_value;
+        node->real_lit.big_value = p->current_token.big_real;
         Parser_Advance(p);
         return node;
     }
