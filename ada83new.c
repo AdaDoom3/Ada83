@@ -4785,6 +4785,8 @@ static void Symbol_Add(Symbol_Manager *sm, Symbol *sym) {
                 (sym->kind == SYMBOL_PROCEDURE || sym->kind == SYMBOL_FUNCTION)) {
                 sym->next_overload = existing->next_overload;
                 existing->next_overload = sym;
+                /* Set parent before returning - needed for proper name mangling */
+                sym->parent = scope->owner;
                 return;
             }
             /* Otherwise: redefinition error (would report here) */
