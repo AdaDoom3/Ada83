@@ -2048,30 +2048,50 @@ static Syntax_Node *Parse_Range(Parser *p) {
 static Syntax_Node *Parse_Subtype_Indication(Parser *p) {
     Source_Location loc = Parser_Location(p);
 
-    Syntax_Node *subtype_mark = Parse_Name(p);
+    /* Parse_Name may consume (args) as NK_APPLY - we need to unwrap it for constraints */
+    Syntax_Node *name_or_apply = Parse_Name(p);
 
-    /* Check for constraint */
+    /* If Parse_Name returned NK_APPLY, the parenthesized part might be a constraint */
+    if (name_or_apply->kind == NK_APPLY) {
+        Syntax_Node *subtype_mark = name_or_apply->apply.prefix;
+        Node_List *items = &name_or_apply->apply.arguments;
+
+        /* Classify: if any item is a named association, it's a discriminant constraint */
+        bool is_discriminant = false;
+        for (uint32_t i = 0; i < items->count; i++) {
+            Syntax_Node *item = items->items[i];
+            if (item->kind == NK_ASSOCIATION) {
+                is_discriminant = true;
+                break;
+            }
+        }
+
+        /* Create NK_SUBTYPE_INDICATION with appropriate constraint */
+        Syntax_Node *ind = Node_New(NK_SUBTYPE_INDICATION, loc);
+        ind->subtype_ind.subtype_mark = subtype_mark;
+
+        if (is_discriminant) {
+            Syntax_Node *constraint = Node_New(NK_DISCRIMINANT_CONSTRAINT, loc);
+            constraint->discriminant_constraint.associations = *items;
+            ind->subtype_ind.constraint = constraint;
+        } else {
+            Syntax_Node *constraint = Node_New(NK_INDEX_CONSTRAINT, loc);
+            constraint->index_constraint.ranges = *items;
+            ind->subtype_ind.constraint = constraint;
+        }
+
+        return ind;
+    }
+
+    Syntax_Node *subtype_mark = name_or_apply;
+
+    /* Check for RANGE constraint */
     if (Parser_Match(p, TK_RANGE)) {
         Syntax_Node *ind = Node_New(NK_SUBTYPE_INDICATION, loc);
         ind->subtype_ind.subtype_mark = subtype_mark;
 
         Syntax_Node *constraint = Node_New(NK_RANGE_CONSTRAINT, loc);
         constraint->range_constraint.range = Parse_Range(p);
-        ind->subtype_ind.constraint = constraint;
-        return ind;
-    }
-
-    if (Parser_Match(p, TK_LPAREN)) {
-        /* Index or discriminant constraint */
-        Syntax_Node *ind = Node_New(NK_SUBTYPE_INDICATION, loc);
-        ind->subtype_ind.subtype_mark = subtype_mark;
-
-        Syntax_Node *constraint = Node_New(NK_INDEX_CONSTRAINT, loc);
-        do {
-            Node_List_Push(&constraint->index_constraint.ranges, Parse_Range(p));
-        } while (Parser_Match(p, TK_COMMA));
-        Parser_Expect(p, TK_RPAREN);
-
         ind->subtype_ind.constraint = constraint;
         return ind;
     }
@@ -2236,9 +2256,9 @@ static Syntax_Node *Parse_Case_Statement(Parser *p) {
 
         Syntax_Node *alt = Node_New(NK_ASSOCIATION, alt_loc);
 
-        /* Parse choices */
+        /* Parse choices - use Parse_Choice to handle ranges and OTHERS */
         do {
-            Node_List_Push(&alt->association.choices, Parse_Expression(p));
+            Node_List_Push(&alt->association.choices, Parse_Choice(p));
         } while (Parser_Match(p, TK_BAR));
 
         Parser_Expect(p, TK_ARROW);
@@ -2449,7 +2469,19 @@ static Syntax_Node *Parse_Statement(Parser *p) {
         /* Label attaches to next statement */
     } else if (Parser_At(p, TK_IDENTIFIER)) {
         /* Lookahead for "identifier :" (label) vs assignment/call */
-        /* This requires 2-token lookahead which we handle by trying */
+        Token saved = p->current_token;
+        Lexer saved_lexer = p->lexer;
+        String_Slice id = Parser_Identifier(p);
+
+        if (Parser_Match(p, TK_COLON)) {
+            /* This is a label */
+            label = id;
+            loc = Parser_Location(p);  /* Update location to after label */
+        } else {
+            /* Not a label - restore and let assignment/call handle it */
+            p->current_token = saved;
+            p->lexer = saved_lexer;
+        }
     }
 
     /* Null statement */
@@ -5843,6 +5875,23 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                     }
                 }
 
+                /* Check for discriminant constraint (REC(A => E1, B => E2) style)
+                 * Discriminant constraints use named associations where the choices
+                 * are discriminant names - they should NOT be resolved as identifiers.
+                 * Only the value expressions should be resolved. */
+                if (constraint && constraint->kind == NK_DISCRIMINANT_CONSTRAINT) {
+                    for (uint32_t i = 0; i < constraint->discriminant_constraint.associations.count; i++) {
+                        Syntax_Node *assoc = constraint->discriminant_constraint.associations.items[i];
+                        if (assoc->kind == NK_ASSOCIATION && assoc->association.expression) {
+                            /* Only resolve the value expression, not the choices */
+                            Resolve_Expression(sm, assoc->association.expression);
+                        }
+                    }
+                    /* Return the base type */
+                    node->type = base_type;
+                    return base_type;
+                }
+
                 /* Otherwise just use base type */
                 node->type = base_type;
                 return base_type;
@@ -6232,6 +6281,33 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                 Symbol_Add(sm, sym);
                 node->symbol = sym;
 
+                /* For discriminated types, add discriminant symbols to scope first
+                 * so they can be referenced in the type definition (e.g., CASE A IS) */
+                bool has_discriminants = node->type_decl.discriminants.count > 0;
+                if (has_discriminants) {
+                    Symbol_Manager_Push_Scope(sm, sym);
+                    for (uint32_t i = 0; i < node->type_decl.discriminants.count; i++) {
+                        Syntax_Node *disc_spec = node->type_decl.discriminants.items[i];
+                        if (disc_spec->kind == NK_DISCRIMINANT_SPEC) {
+                            /* Resolve discriminant type first */
+                            Type_Info *disc_type = sm->type_integer;
+                            if (disc_spec->discriminant.disc_type) {
+                                disc_type = Resolve_Expression(sm, disc_spec->discriminant.disc_type);
+                            }
+                            /* Add each discriminant name as a symbol */
+                            for (uint32_t j = 0; j < disc_spec->discriminant.names.count; j++) {
+                                Syntax_Node *name_node = disc_spec->discriminant.names.items[j];
+                                Symbol *disc_sym = Symbol_New(SYMBOL_VARIABLE, name_node->string_val.text,
+                                                              name_node->location);
+                                disc_sym->type = disc_type;
+                                disc_sym->parent = sym;
+                                Symbol_Add(sm, disc_sym);
+                                name_node->symbol = disc_sym;
+                            }
+                        }
+                    }
+                }
+
                 /* Resolve definition and copy type info */
                 if (node->type_decl.definition) {
                     Type_Info *def_type = Resolve_Expression(sm, node->type_decl.definition);
@@ -6268,6 +6344,11 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                             }
                         }
                     }
+                }
+
+                /* Pop discriminant scope if we pushed one */
+                if (has_discriminants) {
+                    Symbol_Manager_Pop_Scope(sm);
                 }
             }
             break;
