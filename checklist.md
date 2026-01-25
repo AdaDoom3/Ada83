@@ -2679,8 +2679,8 @@ Make `Symbol.parent` either:
 
 ## Line Count Progress
 - Original ada83.c: 18,746 lines
-- Current ada83new.c: 12,536 lines
-- **Reduction: 6,210 lines (33%)**
+- Current ada83new.c: 12,480 lines
+- **Reduction: 6,266 lines (33.4%)**
 
 ## Issues Fixed in ada83new.c (verified 2026-01-25)
 
@@ -2698,6 +2698,13 @@ Make `Symbol.parent` either:
 ### Additional Fixes Verified ✅
 - [x] OUT/IN OUT parameters — Correct by-reference: callee aliases caller storage via GEP
 - [x] String literal storage — Uses `@.str.N = private unnamed_addr constant` (GNAT-like)
+
+### Code Consolidation (2026-01-25 session)
+- [x] Symbol_Is_Global helper — replaces 4+ inline `!sym->parent || sym->parent->kind == SYMBOL_PACKAGE` checks
+- [x] Emit_Symbol_Ref helper — correct @ or % prefix for global/local symbols
+- [x] Type_Is_Array_Like helper — replaces 15+ verbose `TYPE_ARRAY || TYPE_STRING` checks
+- [x] Fixed global variable handling bugs — several places hardcoded % that would fail for globals
+- [x] Removed unused variables (id_token, right_is_int) — clean build with -Wall -Wextra
 
 ### Remaining Work (for A-series ACATS)
 
