@@ -2226,7 +2226,7 @@ static Token Scan_String_Literal(Lexer *lex) {
 /* ─────────────────────────────────────────────────────────────────────────
  * §7.5 Main Lexer Entry Point
  *
- * The lexer is an iterator; each call advances the stream by one token.
+ * The lexer works as an iterator where each call advances the stream by one token.
  * ───────────────────────────────────────────────────────────────────────── */
 
 static Token Lexer_Next_Token(Lexer *lex) {
@@ -2718,7 +2718,7 @@ static Syntax_Node *Node_New(Node_Kind kind, Source_Location loc) {
  * §9. PARSER — Recursive Descent with Unified Postfix Handling
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * Recursive descent mirrors the grammar; the grammar is the invariant.
+ * Recursive descent mirrors the grammar, making the grammar itself the invariant.
  *
  * Key design decisions:
  *
@@ -2904,7 +2904,7 @@ static void Parser_Check_End_Name(Parser *p, String_Slice expected_name) {
 /* ─────────────────────────────────────────────────────────────────────────
  * §9.5 Expression Parsing — Operator Precedence
  *
- * Precedence is in the grammar; associativity is in the recursion direction.
+ * The grammar encodes precedence while recursion direction determines associativity.
  *
  * Ada precedence (highest to lowest):
  *   ** (right associative)
@@ -3336,7 +3336,7 @@ static void Parse_Association_List(Parser *p, Node_List *list) {
 /* ─────────────────────────────────────────────────────────────────────────
  * §9.8 Binary Expression Parsing — Precedence Climbing
  *
- * Climb up from low precedence; consume equal-or-higher before returning.
+ * Climbing starts at low precedence and consumes equal-or-higher before returning.
  * ───────────────────────────────────────────────────────────────────────── */
 
 /* Precedence levels */
@@ -3505,7 +3505,7 @@ static Syntax_Node *Parse_Range(Parser *p) {
 /* ─────────────────────────────────────────────────────────────────────────
  * §9.10 Subtype Indication Parsing
  *
- * A subtype is a type plus a constraint; the constraint narrows the range.
+ * A subtype is a type with a constraint that narrows the range of valid values.
  * ───────────────────────────────────────────────────────────────────────── */
 
 static Syntax_Node *Parse_Subtype_Indication(Parser *p) {
@@ -3600,7 +3600,7 @@ static Syntax_Node *Parse_Subtype_Indication(Parser *p) {
  * §9.11 Statement Parsing
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * Statements are sequenced; expressions are nested. Parsing reflects this.
+ * Statements run in sequence while expressions form a tree, and parsing reflects this.
  */
 
 /* Forward declarations */
@@ -3870,7 +3870,7 @@ static Syntax_Node *Parse_Block_Statement(Parser *p, String_Slice label) {
 /* ─────────────────────────────────────────────────────────────────────────
  * §9.11.6 Accept Statement
  *
- * ACCEPT is the server side of rendezvous; the caller is blocked until accepted.
+ * ACCEPT is the server side of rendezvous where the caller blocks until accepted.
  * ───────────────────────────────────────────────────────────────────────── */
 
 static Syntax_Node *Parse_Accept_Statement(Parser *p) {
@@ -3932,7 +3932,7 @@ static Syntax_Node *Parse_Accept_Statement(Parser *p) {
 /* ─────────────────────────────────────────────────────────────────────────
  * §9.11.7 Select Statement
  *
- * SELECT is nondeterministic choice; the runtime picks among open alternatives.
+ * SELECT makes a nondeterministic choice among open alternatives at runtime.
  * ───────────────────────────────────────────────────────────────────────── */
 
 static Syntax_Node *Parse_Select_Statement(Parser *p) {
@@ -4087,7 +4087,7 @@ static void Parse_Statement_Sequence(Parser *p, Node_List *list) {
 /* ─────────────────────────────────────────────────────────────────────────
  * §9.12.1 Object Declaration (variables, constants)
  *
- * Multiple names share one type; each gets its own symbol.
+ * Multiple names can share one type declaration but each gets its own symbol.
  * ───────────────────────────────────────────────────────────────────────── */
 
 static Syntax_Node *Parse_Object_Declaration(Parser *p) {
@@ -4149,7 +4149,7 @@ static Syntax_Node *Parse_Object_Declaration(Parser *p) {
 /* ─────────────────────────────────────────────────────────────────────────
  * §9.12.2 Type Declaration
  *
- * Discriminants parameterize the type; their values are fixed at object creation.
+ * Discriminants parameterize the type with values fixed when the object is created.
  * ───────────────────────────────────────────────────────────────────────── */
 
 static Syntax_Node *Parse_Discriminant_Part(Parser *p) {
@@ -4231,7 +4231,7 @@ static Syntax_Node *Parse_Subtype_Declaration(Parser *p) {
 /* ─────────────────────────────────────────────────────────────────────────
  * §9.12.3 Type Definitions
  *
- * Parsing the definition establishes structure; elaboration establishes meaning.
+ * Parsing establishes structure while elaboration establishes meaning.
  * ───────────────────────────────────────────────────────────────────────── */
 
 static Syntax_Node *Parse_Enumeration_Type(Parser *p) {
@@ -4564,7 +4564,7 @@ static Syntax_Node *Parse_Type_Definition(Parser *p) {
  * §9.13 Subprogram Declarations and Bodies
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * Spec declares the interface; body provides the implementation.
+ * The spec declares the interface while the body provides the implementation.
  */
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -4801,7 +4801,7 @@ static Syntax_Node *Parse_Package_Body(Parser *p) {
  * §9.15 Generic Units
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * Generics are templates; instantiation is substitution plus type checking.
+ * Generics are templates where instantiation means substitution with type checking.
  */
 
 static void Parse_Generic_Formal_Part(Parser *p, Node_List *formals) {
@@ -5546,7 +5546,7 @@ static void Parse_Declarative_Part(Parser *p, Node_List *list) {
  * §9.21 Compilation Unit
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * WITH establishes dependencies; USE imports names into the current namespace.
+ * WITH establishes dependencies while USE imports names into the current namespace.
  */
 
 static Syntax_Node *Parse_Context_Clause(Parser *p) {
@@ -5599,7 +5599,7 @@ static Syntax_Node *Parse_Compilation_Unit(Parser *p) {
  * §10. TYPE SYSTEM — Ada Type Semantics
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * A type is name, range, and representation; the three are orthogonal.
+ * A type combines name, range, and representation as three orthogonal concerns.
  *
  * INVARIANT: All sizes are stored in BYTES, not bits.
  */
@@ -5930,7 +5930,7 @@ static void Freeze_Type(Type_Info *t) {
 /* ─────────────────────────────────────────────────────────────────────────
  * §10.7 LLVM Type Mapping
  *
- * The source type is semantic; the target type is representational.
+ * The source type is semantic while the target type is representational.
  * ───────────────────────────────────────────────────────────────────────── */
 
 /* Forward declarations for array helpers (defined after Type_Bound_Value) */
@@ -5988,7 +5988,7 @@ static const char *Type_To_Llvm(Type_Info *t) {
 /* ─────────────────────────────────────────────────────────────────────────
  * §11.1 Symbol Kinds
  *
- * Eighteen kinds; the RM defines most, the implementation adds two.
+ * Eighteen kinds where the RM defines most and the implementation adds two.
  * ───────────────────────────────────────────────────────────────────────── */
 
 typedef enum {
@@ -6016,7 +6016,7 @@ typedef enum {
 /* ─────────────────────────────────────────────────────────────────────────
  * §11.2 Symbol Structure
  *
- * The symbol table is an index from names to meanings; the scope provides context.
+ * The symbol table maps names to meanings while the scope stack provides context.
  * ───────────────────────────────────────────────────────────────────────── */
 
 typedef struct Symbol Symbol;
@@ -6149,7 +6149,7 @@ struct Symbol {
 /* ─────────────────────────────────────────────────────────────────────────
  * §11.3 Scope Structure
  *
- * Hash table per scope; 1024 buckets covers most programs without probing far.
+ * Each scope has its own hash table with 1024 buckets, which covers most programs.
  * ───────────────────────────────────────────────────────────────────────── */
 
 #define SYMBOL_TABLE_SIZE 1024
@@ -6337,7 +6337,7 @@ static Symbol *Symbol_Find_With_Arity(Symbol_Manager *sm, String_Slice name, uin
  *
  * "type Interp is record Nam, Typ, Opnd_Typ..."
  * We store interpretations in a contiguous array during resolution.
- * Sixty-four suffices; deeper ambiguity signals a pathological program.
+ * Sixty-four interpretations suffices since deeper ambiguity signals a pathological program.
  * ───────────────────────────────────────────────────────────────────────── */
 
 #define MAX_INTERPRETATIONS 64
@@ -6572,7 +6572,7 @@ static void Filter_By_Arguments(Interp_List *interps, Argument_Info *args) {
 /* ─────────────────────────────────────────────────────────────────────────
  * §11.6.5 Disambiguation
  *
- * Nearer scope wins; exact type wins; user definition wins over predefined.
+ * Nearer scope, exact type match, and user definitions all take priority.
  * ───────────────────────────────────────────────────────────────────────── */
 
 /* Check if sym1 hides sym2 (user-defined hiding predefined, or inner scope) */
@@ -6858,7 +6858,7 @@ static Symbol_Manager *Symbol_Manager_New(void) {
  * §12. SEMANTIC ANALYSIS — Type Checking and Resolution
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * The parser accepts; the type checker rejects.
+ * A permissive parser gives the type checker material to work with.
  *
  * Semantic analysis performs:
  * - Name resolution: bind identifiers to symbols
@@ -9217,7 +9217,7 @@ static void Resolve_Compilation_Unit(Symbol_Manager *sm, Syntax_Node *node) {
  * §13. LLVM IR CODE GENERATION
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * The AST is semantic; the IR is operational. Translation bridges the gap.
+ * The AST is semantic and the IR is operational, with translation bridging the gap.
  *
  * Generate LLVM IR from the resolved AST. Key principles:
  *
@@ -9713,7 +9713,7 @@ static uint32_t Emit_Load_Fat_Pointer(Code_Generator *cg, Symbol *sym) {
  * §13.3 Expression Code Generation
  *
  * Returns the LLVM SSA value ID holding the expression result.
- * Every expression yields a value; every value has exactly one definition.
+ * Every expression yields a value, and in SSA form every value has one definition.
  * ───────────────────────────────────────────────────────────────────────── */
 
 static uint32_t Generate_Expression(Code_Generator *cg, Syntax_Node *node);
@@ -11478,7 +11478,7 @@ static uint32_t Generate_Expression(Code_Generator *cg, Syntax_Node *node) {
 /* ─────────────────────────────────────────────────────────────────────────
  * §13.4 Statement Code Generation
  *
- * Statements modify state; expressions compute values. The distinction is Ada's.
+ * Statements modify state while expressions compute values, a distinction Ada enforces.
  * ───────────────────────────────────────────────────────────────────────── */
 
 static void Generate_Statement(Code_Generator *cg, Syntax_Node *node);
@@ -11970,7 +11970,7 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
 /* ─────────────────────────────────────────────────────────────────────────
  * §13.4.8 Exception Handling
  *
- * Exceptions are non-local transfer; the stack unwinder knows where we came from.
+ * The stack unwinder's memory is what makes exceptions possible.
  * ───────────────────────────────────────────────────────────────────────── */
 
 /* Forward declarations */
@@ -12446,7 +12446,7 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
 /* ─────────────────────────────────────────────────────────────────────────
  * §13.5 Declaration Code Generation
  *
- * Declarations bind names; the binding is the artifact.
+ * Names get bound to meanings, and those bindings are what we generate.
  * ───────────────────────────────────────────────────────────────────────── */
 
 static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node);
@@ -13158,7 +13158,7 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
  *
  * Generate equality functions for composite types at freeze points.
  * Per RM 4.5.2, equality is predefined for all non-limited types.
- * The RM specifies semantics; the compiler provides implementation.
+ * The RM specifies the semantics and the compiler provides the implementation.
  * ───────────────────────────────────────────────────────────────────────── */
 
 static void Generate_Type_Equality_Function(Code_Generator *cg, Type_Info *t) {
