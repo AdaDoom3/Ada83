@@ -2493,6 +2493,7 @@ struct Syntax_Node {
         /* NK_LOOP */
         struct {
             String_Slice label;
+            Symbol *label_symbol;           /* Pre-registered label for GOTO */
             Syntax_Node *iteration_scheme;  /* for/while condition */
             Node_List statements;
             bool is_reverse;
@@ -2501,6 +2502,7 @@ struct Syntax_Node {
         /* NK_BLOCK */
         struct {
             String_Slice label;
+            Symbol *label_symbol;           /* Pre-registered label for GOTO */
             Node_List declarations;
             Node_List statements;
             Node_List handlers;
@@ -8159,17 +8161,41 @@ static void Resolve_Declaration_List(Symbol_Manager *sm, Node_List *list);
 static void Freeze_Declaration_List(Node_List *list);
 static void Populate_Package_Exports(Symbol *pkg_sym, Syntax_Node *pkg_spec);
 
-/* Pre-register labels in a statement list to allow forward gotos */
+/* Pre-register labels in a statement list to allow forward gotos.
+ * Labels can appear as:
+ *   1. NK_LABEL nodes wrapping other statements
+ *   2. The .label field of NK_BLOCK or NK_LOOP nodes (Ada allows naming blocks/loops) */
 static void Preregister_Labels(Symbol_Manager *sm, Node_List *list) {
     for (uint32_t i = 0; i < list->count; i++) {
         Syntax_Node *node = list->items[i];
-        if (node && node->kind == NK_LABEL) {
-            Symbol *label_sym = Symbol_New(SYMBOL_LABEL,
-                                           node->label_node.name,
-                                           node->location);
+        if (!node) continue;
+
+        String_Slice label_name = Empty_Slice;
+        Source_Location label_loc = node->location;
+        Symbol **label_sym_ptr = NULL;
+
+        switch (node->kind) {
+            case NK_LABEL:
+                label_name = node->label_node.name;
+                label_sym_ptr = &node->label_node.symbol;
+                break;
+            case NK_BLOCK:
+                label_name = node->block_stmt.label;
+                label_sym_ptr = &node->block_stmt.label_symbol;
+                break;
+            case NK_LOOP:
+                label_name = node->loop_stmt.label;
+                label_sym_ptr = &node->loop_stmt.label_symbol;
+                break;
+            default:
+                break;
+        }
+
+        if (label_name.data && label_name.length > 0) {
+            Symbol *label_sym = Symbol_New(SYMBOL_LABEL, label_name, label_loc);
             label_sym->type = sm->type_address;
             Symbol_Add(sm, label_sym);
-            node->label_node.symbol = label_sym;
+            if (label_sym_ptr) *label_sym_ptr = label_sym;
         }
     }
 }
@@ -8423,6 +8449,8 @@ static void Populate_Package_Exports(Symbol *pkg_sym, Syntax_Node *pkg_spec) {
             count += (uint32_t)decl->exception_decl.names.count;
         } else if (decl->kind == NK_PACKAGE_SPEC) {
             count++;  /* Nested packages */
+        } else if (decl->kind == NK_GENERIC_DECL) {
+            count++;  /* Nested generics (e.g., TEXT_IO.INTEGER_IO) */
         }
     }
 
@@ -8467,6 +8495,9 @@ static void Populate_Package_Exports(Symbol *pkg_sym, Syntax_Node *pkg_spec) {
             }
         } else if (decl->kind == NK_PACKAGE_SPEC && decl->symbol) {
             pkg_sym->exported[pkg_sym->exported_count++] = decl->symbol;
+        } else if (decl->kind == NK_GENERIC_DECL && decl->symbol) {
+            /* Export nested generic packages/subprograms (e.g., TEXT_IO.INTEGER_IO) */
+            pkg_sym->exported[pkg_sym->exported_count++] = decl->symbol;
         }
     }
 }
@@ -8486,24 +8517,10 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
             }
             /* Resolve initializer/renamed object - propagate type to aggregates first */
             if (node->object_decl.init) {
+                /* Propagate type to aggregate initializer from declared type */
                 if (node->object_decl.init->kind == NK_AGGREGATE &&
                     node->object_decl.object_type && node->object_decl.object_type->type) {
                     node->object_decl.init->type = node->object_decl.object_type->type;
-                    fprintf(stderr, "DEBUG2: Set init aggregate type from object_type to %.*s\n",
-                            (int)node->object_decl.init->type->name.length,
-                            node->object_decl.init->type->name.data);
-                } else if (node->object_decl.init->kind == NK_AGGREGATE) {
-                    fprintf(stderr, "DEBUG2: Aggregate init without object_type->type, object_type=%p kind=%d type=%p\n",
-                            (void*)node->object_decl.object_type,
-                            node->object_decl.object_type ? node->object_decl.object_type->kind : -1,
-                            node->object_decl.object_type ? (void*)node->object_decl.object_type->type : NULL);
-                    if (node->object_decl.object_type && node->object_decl.object_type->kind == NK_SELECTED) {
-                        Symbol *prefix_sym = node->object_decl.object_type->selected.prefix->symbol;
-                        fprintf(stderr, "DEBUG2: Selected prefix symbol=%p kind=%d exported_count=%u\n",
-                                (void*)prefix_sym,
-                                prefix_sym ? prefix_sym->kind : -1,
-                                prefix_sym ? prefix_sym->exported_count : 0);
-                    }
                 }
                 Resolve_Expression(sm, node->object_decl.init);
             }
@@ -12529,7 +12546,24 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node);
 
 static void Generate_Statement_List(Code_Generator *cg, Node_List *list) {
     for (uint32_t i = 0; i < list->count; i++) {
-        Generate_Statement(cg, list->items[i]);
+        Syntax_Node *stmt = list->items[i];
+        if (!stmt) continue;
+
+        /* After a terminator (ret/br), we need a new basic block.
+         * Labeled statements (NK_LABEL, NK_BLOCK with label, NK_LOOP with label)
+         * emit their own labels. For unlabeled statements, emit a fresh label. */
+        if (cg->block_terminated) {
+            bool will_emit_label = stmt->kind == NK_LABEL ||
+                (stmt->kind == NK_BLOCK && stmt->block_stmt.label_symbol) ||
+                (stmt->kind == NK_LOOP && stmt->loop_stmt.label_symbol);
+            if (!will_emit_label) {
+                uint32_t dead_label = cg->label_id++;
+                Emit(cg, "L%u:  ; unreachable\n", dead_label);
+                cg->block_terminated = false;
+            }
+        }
+
+        Generate_Statement(cg, stmt);
     }
 }
 
@@ -12899,6 +12933,18 @@ static void Generate_If_Statement(Code_Generator *cg, Syntax_Node *node) {
 }
 
 static void Generate_Loop_Statement(Code_Generator *cg, Syntax_Node *node) {
+    /* Emit LLVM label for Ada label (enables GOTO targeting this loop) */
+    Symbol *label_sym = node->loop_stmt.label_symbol;
+    if (label_sym) {
+        if (label_sym->llvm_label_id == 0)
+            label_sym->llvm_label_id = cg->label_id++;
+        if (!cg->block_terminated)
+            Emit(cg, "  br label %%L%u\n", label_sym->llvm_label_id);
+        Emit(cg, "L%u:  ; %.*s\n", label_sym->llvm_label_id,
+             (int)node->loop_stmt.label.length, node->loop_stmt.label.data);
+        cg->block_terminated = false;  /* New block started */
+    }
+
     uint32_t loop_start = Emit_Label(cg);
     uint32_t loop_body = Emit_Label(cg);
     uint32_t loop_end = Emit_Label(cg);
@@ -13024,15 +13070,15 @@ static void Generate_Case_Statement(Code_Generator *cg, Syntax_Node *node) {
     /* Generate alternative bodies - expression is a block with statements */
     for (uint32_t i = 0; i < num_alts; i++) {
         Syntax_Node *alt = node->case_stmt.alternatives.items[i];
-        Emit(cg, "L%u:\n", alt_labels[i]);
+        Emit_Label_Here(cg, alt_labels[i]);
         if (alt->association.expression &&
             alt->association.expression->kind == NK_BLOCK) {
             Generate_Statement_List(cg, &alt->association.expression->block_stmt.statements);
         }
-        Emit(cg, "  br label %%L%u\n", end_label);
+        Emit_Branch_If_Needed(cg, end_label);
     }
 
-    Emit(cg, "L%u:\n", end_label);
+    Emit_Label_Here(cg, end_label);
 }
 
 static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
@@ -13238,6 +13284,18 @@ static void Generate_Raise_Statement(Code_Generator *cg, Syntax_Node *node) {
 }
 
 static void Generate_Block_Statement(Code_Generator *cg, Syntax_Node *node) {
+    /* Emit LLVM label for Ada label (enables GOTO targeting this block) */
+    Symbol *label_sym = node->block_stmt.label_symbol;
+    if (label_sym) {
+        if (label_sym->llvm_label_id == 0)
+            label_sym->llvm_label_id = cg->label_id++;
+        if (!cg->block_terminated)
+            Emit(cg, "  br label %%L%u\n", label_sym->llvm_label_id);
+        Emit(cg, "L%u:  ; %.*s\n", label_sym->llvm_label_id,
+             (int)node->block_stmt.label.length, node->block_stmt.label.data);
+        cg->block_terminated = false;  /* New block started */
+    }
+
     /* Block with optional declarations and exception handlers */
     bool has_handlers = node->block_stmt.handlers.count > 0;
 
@@ -13718,14 +13776,15 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                 /* Ada label - allocate LLVM label ID and emit label */
                 Symbol *label_sym = node->label_node.symbol;
                 if (label_sym) {
-                    if (label_sym->llvm_label_id == 0) {
+                    if (label_sym->llvm_label_id == 0)
                         label_sym->llvm_label_id = cg->label_id++;
-                    }
-                    /* Need a branch to the label to terminate previous block */
-                    Emit(cg, "  br label %%L%u\n", label_sym->llvm_label_id);
+                    /* Need a branch to the label to terminate previous block (if not already) */
+                    if (!cg->block_terminated)
+                        Emit(cg, "  br label %%L%u\n", label_sym->llvm_label_id);
                     Emit(cg, "L%u:  ; %.*s\n", label_sym->llvm_label_id,
                          (int)node->label_node.name.length,
                          node->label_node.name.data);
+                    cg->block_terminated = false;  /* New block started */
                 }
                 /* Generate the labeled statement */
                 if (node->label_node.statement) {
