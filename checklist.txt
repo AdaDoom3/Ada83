@@ -148,15 +148,15 @@ A-SERIES ACATS TEST RESULTS (2026-01-26)
 
  CLASS                    pass   fail   skip  total    rate
  ---------------------- ------ ------ ------ ------ -------
- A  Acceptance              94      0     46    140     67%
+ A  Acceptance              97      0     43    140     69%
 
 Notes:
 - 0 FAILURES - all non-passing tests are SKIPs
 - Fixed USE clause to properly export named numbers (e.g., USE SYSTEM)
+- Added predefined ASCII package with all character constants
 - SKIPs are mostly due to:
   * Missing standard library packages (SEQUENTIAL_IO, DIRECT_IO)
   * Missing implicit access dereference for array indexing
-  * Missing predefined ASCII package (should be child of STANDARD)
   * UNCHECKED_DEALLOCATION visibility issues
 - Core language features are working correctly
 - SIMD code now portable (AVX-512 compile-time guarded)
