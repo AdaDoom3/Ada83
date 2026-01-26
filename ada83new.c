@@ -2509,8 +2509,11 @@ struct Syntax_Node {
         /* NK_EXIT */
         struct { String_Slice loop_name; Syntax_Node *condition; } exit_stmt;
 
-        /* NK_GOTO, NK_LABEL */
-        struct { String_Slice name; } label_ref;
+        /* NK_GOTO */
+        struct { String_Slice name; Symbol *target; } goto_stmt;
+
+        /* NK_LABEL */
+        struct { String_Slice name; Syntax_Node *statement; Symbol *symbol; } label_node;
 
         /* NK_RAISE */
         struct { Syntax_Node *exception_name; } raise_stmt;
@@ -3654,7 +3657,7 @@ static Syntax_Node *Parse_Goto_Statement(Parser *p) {
     Parser_Expect(p, TK_GOTO);
 
     Syntax_Node *node = Node_New(NK_GOTO, loc);
-    node->label_ref.name = Parser_Identifier(p);
+    node->goto_stmt.name = Parser_Identifier(p);
     return node;
 }
 
@@ -3984,6 +3987,7 @@ static Syntax_Node *Parse_Select_Statement(Parser *p) {
 
 static Syntax_Node *Parse_Statement(Parser *p) {
     Source_Location loc = Parser_Location(p);
+    Source_Location label_loc = loc;
 
     /* Check for label(s): <<label>> or identifier:
      * Ada allows multiple labels before a statement: <<L1>> <<L2>> stmt; */
@@ -3994,6 +3998,7 @@ static Syntax_Node *Parse_Statement(Parser *p) {
            (Parser_At(p, TK_IDENTIFIER) && Parser_Peek_At(p, TK_COLON))) {
 
         if (Parser_Match(p, TK_LSHIFT)) {
+            if (label.length == 0) label_loc = loc;  /* Save first label location */
             label = Parser_Identifier(p);
             Parser_Expect(p, TK_RSHIFT);
         } else if (Parser_At(p, TK_IDENTIFIER)) {
@@ -4004,6 +4009,7 @@ static Syntax_Node *Parse_Statement(Parser *p) {
 
             if (Parser_Match(p, TK_COLON)) {
                 /* This is a label */
+                if (label.length == 0) label_loc = loc;  /* Save first label location */
                 label = id;
             } else {
                 /* Not a label - restore and let assignment/call handle it */
@@ -4015,35 +4021,46 @@ static Syntax_Node *Parse_Statement(Parser *p) {
         loc = Parser_Location(p);  /* Update location to after labels */
     }
 
+    Syntax_Node *stmt = NULL;
+
     /* Null statement */
     if (Parser_Match(p, TK_NULL)) {
         /* Semicolon is handled by Parse_Statement_Sequence */
-        return Node_New(NK_NULL_STMT, loc);
+        stmt = Node_New(NK_NULL_STMT, loc);
+    }
+    /* Compound statements - loops and blocks handle labels as names */
+    else if (Parser_At(p, TK_LOOP) || Parser_At(p, TK_WHILE) || Parser_At(p, TK_FOR)) {
+        return Parse_Loop_Statement(p, label);  /* Loop keeps label as name */
+    }
+    else if (Parser_At(p, TK_DECLARE) || Parser_At(p, TK_BEGIN)) {
+        return Parse_Block_Statement(p, label);  /* Block keeps label as name */
+    }
+    else if (Parser_At(p, TK_IF)) stmt = Parse_If_Statement(p);
+    else if (Parser_At(p, TK_CASE)) stmt = Parse_Case_Statement(p);
+    else if (Parser_At(p, TK_ACCEPT)) stmt = Parse_Accept_Statement(p);
+    else if (Parser_At(p, TK_SELECT)) stmt = Parse_Select_Statement(p);
+    /* Simple statements */
+    else if (Parser_At(p, TK_RETURN)) stmt = Parse_Return_Statement(p);
+    else if (Parser_At(p, TK_EXIT)) stmt = Parse_Exit_Statement(p);
+    else if (Parser_At(p, TK_GOTO)) stmt = Parse_Goto_Statement(p);
+    else if (Parser_At(p, TK_RAISE)) stmt = Parse_Raise_Statement(p);
+    else if (Parser_At(p, TK_DELAY)) stmt = Parse_Delay_Statement(p);
+    else if (Parser_At(p, TK_ABORT)) stmt = Parse_Abort_Statement(p);
+    /* Pragma in statement sequence (Ada 83 RM 2.8) */
+    else if (Parser_At(p, TK_PRAGMA)) stmt = Parse_Pragma(p);
+    /* Assignment or procedure call */
+    else stmt = Parse_Assignment_Or_Call(p);
+
+    /* Wrap in NK_LABEL if a label was present (except for loop/block which handle labels) */
+    if (label.length > 0 && stmt != NULL) {
+        Syntax_Node *label_node = Node_New(NK_LABEL, label_loc);
+        label_node->label_node.name = label;
+        label_node->label_node.statement = stmt;
+        label_node->label_node.symbol = NULL;  /* Set during resolution */
+        return label_node;
     }
 
-    /* Compound statements */
-    if (Parser_At(p, TK_IF)) return Parse_If_Statement(p);
-    if (Parser_At(p, TK_CASE)) return Parse_Case_Statement(p);
-    if (Parser_At(p, TK_LOOP) || Parser_At(p, TK_WHILE) || Parser_At(p, TK_FOR))
-        return Parse_Loop_Statement(p, label);
-    if (Parser_At(p, TK_DECLARE) || Parser_At(p, TK_BEGIN))
-        return Parse_Block_Statement(p, label);
-    if (Parser_At(p, TK_ACCEPT)) return Parse_Accept_Statement(p);
-    if (Parser_At(p, TK_SELECT)) return Parse_Select_Statement(p);
-
-    /* Simple statements */
-    if (Parser_At(p, TK_RETURN)) return Parse_Return_Statement(p);
-    if (Parser_At(p, TK_EXIT)) return Parse_Exit_Statement(p);
-    if (Parser_At(p, TK_GOTO)) return Parse_Goto_Statement(p);
-    if (Parser_At(p, TK_RAISE)) return Parse_Raise_Statement(p);
-    if (Parser_At(p, TK_DELAY)) return Parse_Delay_Statement(p);
-    if (Parser_At(p, TK_ABORT)) return Parse_Abort_Statement(p);
-
-    /* Pragma in statement sequence (Ada 83 RM 2.8) */
-    if (Parser_At(p, TK_PRAGMA)) return Parse_Pragma(p);
-
-    /* Assignment or procedure call */
-    return Parse_Assignment_Or_Call(p);
+    return stmt;
 }
 
 static void Parse_Statement_Sequence(Parser *p, Node_List *list) {
@@ -6114,6 +6131,9 @@ struct Symbol {
     bool            is_named_number;     /* Named number (constant without explicit type) */
     bool            is_overloaded;       /* Part of an overload set (needs unique_id suffix) */
 
+    /* LLVM label ID for SYMBOL_LABEL */
+    uint32_t        llvm_label_id;       /* 0 = not yet assigned */
+
     /* For RENAMES: pointer to the renamed object's AST node */
     Syntax_Node    *renamed_object;
 
@@ -8139,7 +8159,25 @@ static void Resolve_Declaration_List(Symbol_Manager *sm, Node_List *list);
 static void Freeze_Declaration_List(Node_List *list);
 static void Populate_Package_Exports(Symbol *pkg_sym, Syntax_Node *pkg_spec);
 
+/* Pre-register labels in a statement list to allow forward gotos */
+static void Preregister_Labels(Symbol_Manager *sm, Node_List *list) {
+    for (uint32_t i = 0; i < list->count; i++) {
+        Syntax_Node *node = list->items[i];
+        if (node && node->kind == NK_LABEL) {
+            Symbol *label_sym = Symbol_New(SYMBOL_LABEL,
+                                           node->label_node.name,
+                                           node->location);
+            label_sym->type = sm->type_address;
+            Symbol_Add(sm, label_sym);
+            node->label_node.symbol = label_sym;
+        }
+    }
+}
+
 static void Resolve_Statement_List(Symbol_Manager *sm, Node_List *list) {
+    /* First pass: register all labels to allow forward gotos */
+    Preregister_Labels(sm, list);
+    /* Second pass: resolve all statements */
     for (uint32_t i = 0; i < list->count; i++) {
         Resolve_Statement(sm, list->items[i]);
     }
@@ -8274,6 +8312,35 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
                     Resolve_Statement(sm, node->association.expression);
                 } else {
                     Resolve_Expression(sm, node->association.expression);
+                }
+            }
+            break;
+
+        case NK_LABEL:
+            {
+                /* Label symbol was pre-registered by Preregister_Labels.
+                 * Just resolve the labeled statement. */
+                if (node->label_node.statement) {
+                    Resolve_Statement(sm, node->label_node.statement);
+                }
+            }
+            break;
+
+        case NK_GOTO:
+            {
+                /* Look up the target label */
+                Symbol *label = Symbol_Find(sm, node->goto_stmt.name);
+                if (!label) {
+                    Report_Error(node->location, "undefined label '%.*s'",
+                                (int)node->goto_stmt.name.length,
+                                node->goto_stmt.name.data);
+                } else if (label->kind != SYMBOL_LABEL && label->kind != SYMBOL_LOOP) {
+                    Report_Error(node->location, "'%.*s' is not a label",
+                                (int)node->goto_stmt.name.length,
+                                node->goto_stmt.name.data);
+                } else {
+                    /* Store resolved label for code generation */
+                    node->goto_stmt.target = label;
                 }
             }
             break;
@@ -11774,9 +11841,21 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         /* Generate address of prefix object */
         Symbol *sym = node->attribute.prefix->symbol;
         if (sym) {
-            Emit(cg, "  %%t%u = ptrtoint ptr ", t);
-            Emit_Symbol_Ref(cg, sym);
-            Emit(cg, " to i64  ; 'ADDRESS\n");
+            if (sym->kind == SYMBOL_LABEL) {
+                /* Label address - use blockaddress for code location */
+                if (sym->llvm_label_id == 0) {
+                    sym->llvm_label_id = cg->label_id++;
+                }
+                Emit(cg, "  %%t%u = ptrtoint ptr blockaddress(@", t);
+                Emit_Symbol_Name(cg, cg->current_function);
+                Emit(cg, ", %%L%u) to i64  ; '%.*s'ADDRESS\n",
+                     sym->llvm_label_id,
+                     (int)sym->name.length, sym->name.data);
+            } else {
+                Emit(cg, "  %%t%u = ptrtoint ptr ", t);
+                Emit_Symbol_Ref(cg, sym);
+                Emit(cg, " to i64  ; 'ADDRESS\n");
+            }
         } else {
             Emit(cg, "  %%t%u = add i64 0, 0  ; 'ADDRESS (no symbol)\n", t);
         }
@@ -13631,6 +13710,48 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                 Syntax_Node *task_name = node->abort_stmt.task_names.items[i];
                 uint32_t task_ptr = Generate_Expression(cg, task_name);
                 Emit(cg, "  call void @__ada_task_abort(ptr %%t%u)\n", task_ptr);
+            }
+            break;
+
+        case NK_LABEL:
+            {
+                /* Ada label - allocate LLVM label ID and emit label */
+                Symbol *label_sym = node->label_node.symbol;
+                if (label_sym) {
+                    if (label_sym->llvm_label_id == 0) {
+                        label_sym->llvm_label_id = cg->label_id++;
+                    }
+                    /* Need a branch to the label to terminate previous block */
+                    Emit(cg, "  br label %%L%u\n", label_sym->llvm_label_id);
+                    Emit(cg, "L%u:  ; %.*s\n", label_sym->llvm_label_id,
+                         (int)node->label_node.name.length,
+                         node->label_node.name.data);
+                }
+                /* Generate the labeled statement */
+                if (node->label_node.statement) {
+                    Generate_Statement(cg, node->label_node.statement);
+                }
+            }
+            break;
+
+        case NK_GOTO:
+            {
+                /* GOTO statement - use resolved target label and branch */
+                Symbol *label_sym = node->goto_stmt.target;
+                if (label_sym) {
+                    if (label_sym->llvm_label_id == 0) {
+                        label_sym->llvm_label_id = cg->label_id++;
+                    }
+                    Emit(cg, "  br label %%L%u  ; goto %.*s\n",
+                         label_sym->llvm_label_id,
+                         (int)node->goto_stmt.name.length,
+                         node->goto_stmt.name.data);
+                    cg->block_terminated = true;  /* br is a terminator */
+                } else {
+                    Emit(cg, "  ; ERROR: undefined label %.*s\n",
+                         (int)node->goto_stmt.name.length,
+                         node->goto_stmt.name.data);
+                }
             }
             break;
 
