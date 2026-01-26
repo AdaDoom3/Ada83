@@ -139,8 +139,8 @@ LINE COUNT COMPARISON
 ===============================================================================
 
 Original ada83.c:    18,746 lines
-Rewritten ada83new.c: 14,417 lines (with STANDARD/ASCII packages)
-Reduction:            4,329 lines (23% smaller)
+Rewritten ada83new.c: 14,533 lines (with renames + variant records)
+Reduction:            4,213 lines (22% smaller)
 
 ===============================================================================
 A-SERIES ACATS TEST RESULTS (2026-01-26)
@@ -148,15 +148,17 @@ A-SERIES ACATS TEST RESULTS (2026-01-26)
 
  CLASS                    pass   fail   skip  total    rate
  ---------------------- ------ ------ ------ ------ -------
- A  Acceptance              97      0     43    140     69%
+ A  Acceptance              98      0     42    140     70%
 
 Notes:
 - 0 FAILURES - all non-passing tests are SKIPs
 - Fixed USE clause to properly export named numbers (e.g., USE SYSTEM)
 - Added predefined ASCII package with all character constants
+- Added object and subprogram renames support
+- Added variant record component lookup
 - SKIPs are mostly due to:
   * Missing standard library packages (SEQUENTIAL_IO, DIRECT_IO)
-  * Missing implicit access dereference for array indexing
+  * Generic formal subprogram visibility
   * UNCHECKED_DEALLOCATION visibility issues
 - Core language features are working correctly
 - SIMD code now portable (AVX-512 compile-time guarded)
