@@ -139,8 +139,8 @@ LINE COUNT COMPARISON
 ===============================================================================
 
 Original ada83.c:    18,746 lines
-Rewritten ada83new.c: 14,358 lines (after USE clause fix)
-Reduction:            4,388 lines (23% smaller)
+Rewritten ada83new.c: 14,417 lines (with STANDARD/ASCII packages)
+Reduction:            4,329 lines (23% smaller)
 
 ===============================================================================
 A-SERIES ACATS TEST RESULTS (2026-01-26)
