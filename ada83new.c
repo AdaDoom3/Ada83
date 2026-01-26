@@ -2536,9 +2536,10 @@ struct Syntax_Node {
         struct {
             Node_List names;
             Syntax_Node *object_type;
-            Syntax_Node *init;
+            Syntax_Node *init;       /* For renames, this is the renamed object */
             bool is_constant;
             bool is_aliased;
+            bool is_rename;          /* True for RENAMES declarations */
         } object_decl;
 
         /* NK_TYPE_DECL, NK_SUBTYPE_DECL */
@@ -4115,9 +4116,9 @@ static Syntax_Node *Parse_Object_Declaration(Parser *p) {
         }
     }
 
-    /* Renames */
+    /* Renames: X : T RENAMES Y */
     if (Parser_Match(p, TK_RENAMES)) {
-        node->kind = NK_SUBPROGRAM_RENAMING;  /* Repurpose for object renames */
+        node->object_decl.is_rename = true;
         node->object_decl.init = Parse_Name(p);
         return node;
     }
@@ -6106,6 +6107,9 @@ struct Symbol {
     /* Code generation flags */
     bool            extern_emitted;      /* Extern declaration already emitted */
     bool            is_named_number;     /* Named number (constant without explicit type) */
+
+    /* For RENAMES: pointer to the renamed object's AST node */
+    Syntax_Node    *renamed_object;
 
     /* ─────────────────────────────────────────────────────────────────────
      * Generic Support
@@ -8190,7 +8194,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                     Freeze_Type(node->object_decl.object_type->type);
                 }
             }
-            /* Resolve initializer - propagate type to aggregates first */
+            /* Resolve initializer/renamed object - propagate type to aggregates first */
             if (node->object_decl.init) {
                 if (node->object_decl.init->kind == NK_AGGREGATE &&
                     node->object_decl.object_type && node->object_decl.object_type->type) {
@@ -8205,8 +8209,14 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                     node->object_decl.is_constant ? SYMBOL_CONSTANT : SYMBOL_VARIABLE,
                     name_node->string_val.text,
                     name_node->location);
+                /* Object renames: type comes from renamed object */
+                if (node->object_decl.is_rename && node->object_decl.init) {
+                    sym->type = node->object_decl.init->type;
+                    sym->renamed_object = node->object_decl.init;  /* Point to renamed */
+                    sym->is_named_number = false;
+                }
                 /* For named numbers (constant without type mark), use init expression's type */
-                if (node->object_decl.object_type) {
+                else if (node->object_decl.object_type) {
                     sym->type = node->object_decl.object_type->type;
                     sym->is_named_number = false;
                 } else if (node->object_decl.is_constant && node->object_decl.init) {
@@ -8362,6 +8372,69 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                 if (node->subprogram_spec.return_type) {
                     Resolve_Expression(sm, node->subprogram_spec.return_type);
                     sym->return_type = node->subprogram_spec.return_type->type;
+                }
+                Symbol_Add(sm, sym);
+                node->symbol = sym;
+            }
+            break;
+
+        case NK_SUBPROGRAM_RENAMING:
+            /* PROCEDURE P RENAMES Q; or FUNCTION F RENAMES G; */
+            {
+                /* Resolve the renamed subprogram */
+                if (node->subprogram_spec.renamed) {
+                    Resolve_Expression(sm, node->subprogram_spec.renamed);
+                }
+                Symbol *renamed_sym = node->subprogram_spec.renamed ?
+                                      node->subprogram_spec.renamed->symbol : NULL;
+
+                /* Create new symbol for the rename */
+                bool is_proc = !node->subprogram_spec.return_type;
+                Symbol *sym = Symbol_New(
+                    is_proc ? SYMBOL_PROCEDURE : SYMBOL_FUNCTION,
+                    node->subprogram_spec.name, node->location);
+
+                /* Copy info from renamed subprogram if available */
+                if (renamed_sym) {
+                    sym->parameters = renamed_sym->parameters;
+                    sym->parameter_count = renamed_sym->parameter_count;
+                    sym->return_type = renamed_sym->return_type;
+                    sym->renamed_object = (Syntax_Node *)renamed_sym;  /* Store reference */
+                } else {
+                    /* Build parameter info from our own spec */
+                    Node_List *param_list = &node->subprogram_spec.parameters;
+                    uint32_t total_params = 0;
+                    for (uint32_t i = 0; i < param_list->count; i++) {
+                        Syntax_Node *ps = param_list->items[i];
+                        if (ps->kind == NK_PARAM_SPEC)
+                            total_params += ps->param_spec.names.count;
+                    }
+                    sym->parameter_count = total_params;
+                    if (total_params > 0) {
+                        sym->parameters = Arena_Allocate(total_params * sizeof(Parameter_Info));
+                        uint32_t idx = 0;
+                        for (uint32_t i = 0; i < param_list->count; i++) {
+                            Syntax_Node *ps = param_list->items[i];
+                            if (ps->kind == NK_PARAM_SPEC) {
+                                if (ps->param_spec.param_type)
+                                    Resolve_Expression(sm, ps->param_spec.param_type);
+                                Type_Info *pt = ps->param_spec.param_type ?
+                                              ps->param_spec.param_type->type : NULL;
+                                for (uint32_t j = 0; j < ps->param_spec.names.count; j++) {
+                                    Syntax_Node *nm = ps->param_spec.names.items[j];
+                                    sym->parameters[idx].name = nm->string_val.text;
+                                    sym->parameters[idx].param_type = pt;
+                                    sym->parameters[idx].mode = (Parameter_Mode)ps->param_spec.mode;
+                                    sym->parameters[idx].default_value = ps->param_spec.default_expr;
+                                    idx++;
+                                }
+                            }
+                        }
+                    }
+                    if (node->subprogram_spec.return_type) {
+                        Resolve_Expression(sm, node->subprogram_spec.return_type);
+                        sym->return_type = node->subprogram_spec.return_type->type;
+                    }
                 }
                 Symbol_Add(sm, sym);
                 node->symbol = sym;
@@ -9839,6 +9912,11 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
     if (!sym) {
         Report_Error(node->location, "unresolved identifier in codegen");
         return 0;
+    }
+
+    /* For RENAMES: redirect to the renamed object */
+    if (sym->renamed_object) {
+        return Generate_Expression(cg, sym->renamed_object);
     }
 
     uint32_t t = Emit_Temp(cg);
@@ -11563,6 +11641,11 @@ static void Generate_Statement_List(Code_Generator *cg, Node_List *list) {
 
 static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
     Syntax_Node *target = node->assignment.target;
+
+    /* For RENAMES: redirect to the renamed object */
+    if (target->kind == NK_IDENTIFIER && target->symbol && target->symbol->renamed_object) {
+        target = target->symbol->renamed_object;
+    }
 
     /* Handle indexed component target (array element assignment) */
     if (target->kind == NK_APPLY) {
