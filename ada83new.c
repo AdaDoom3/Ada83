@@ -6828,12 +6828,25 @@ static void Symbol_Manager_Init_Predefined(Symbol_Manager *sm) {
     sm->type_address->alignment = 8;
     sm->type_address->base_type = sm->type_integer;
 
+    /* STANDARD package (RM 8.6) - the implicit library containing predefined types
+     * All visible entities are implicitly declared here */
+    Symbol *pkg_standard = Symbol_New(SYMBOL_PACKAGE, S("STANDARD"), No_Location);
+    Type_Info *pkg_standard_type = Type_New(TYPE_PACKAGE, S("STANDARD"));
+    pkg_standard->type = pkg_standard_type;
+    Symbol_Add(sm, pkg_standard);
+
     /* ASCII package (RM C.3) - predefined character constants
      * In Ada 83, ASCII is a package in STANDARD, always visible */
     Symbol *pkg_ascii = Symbol_New(SYMBOL_PACKAGE, S("ASCII"), No_Location);
     Type_Info *pkg_ascii_type = Type_New(TYPE_PACKAGE, S("ASCII"));
     pkg_ascii->type = pkg_ascii_type;
+    pkg_ascii->parent = pkg_standard;  /* Child of STANDARD */
     Symbol_Add(sm, pkg_ascii);
+
+    /* STANDARD exports ASCII */
+    pkg_standard->exported = Arena_Allocate(1 * sizeof(Symbol*));
+    pkg_standard->exported_count = 1;
+    pkg_standard->exported[0] = pkg_ascii;
 
     /* ASCII control characters and named constants */
     static const struct { const char *name; uint8_t val; } ascii_chars[] = {
