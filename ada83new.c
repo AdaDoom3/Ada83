@@ -10454,8 +10454,9 @@ static uint32_t Generate_String_Literal(Code_Generator *cg, Syntax_Node *node) {
     uint32_t str_id = cg->string_id++;
     uint32_t len = node->string_val.text.length;
 
-    /* Generate global constant to buffer (without null terminator for Ada strings) */
-    Emit_String_Const(cg, "@.str%u = private unnamed_addr constant [%u x i8] c\"", str_id, len);
+    /* Generate global constant to buffer (without null terminator for Ada strings)
+     * Use linkonce_odr to allow merging of duplicate string constants across units */
+    Emit_String_Const(cg, "@.str%u = linkonce_odr unnamed_addr constant [%u x i8] c\"", str_id, len);
     for (uint32_t i = 0; i < len; i++) {
         char c = node->string_val.text.data[i];
         if (c >= 32 && c < 127 && c != '"' && c != '\\') {
@@ -15165,6 +15166,7 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
         Emit(cg, "\n; String constants\n");
         fprintf(cg->output, "%s", cg->string_const_buffer);
         Emit(cg, "\n");
+        cg->string_const_size = 0;  /* Reset buffer for next compilation unit */
     }
 
     /* Generate main function if this is a main program (library-level procedure).
