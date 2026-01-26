@@ -1,12 +1,9 @@
--- TEXT_IO Package Body - Ada 83 Runtime Support
--- Full implementation with actual file I/O
-
 with SYSTEM;
 
 package body TEXT_IO is
 
    -- C runtime imports
-   procedure C_Putchar(C : Integer);
+   function C_Putchar(C : Integer) return Integer;
    pragma Import(C, C_Putchar, "putchar");
 
    function C_Getchar return Integer;
@@ -939,8 +936,6 @@ package body TEXT_IO is
       PUT_LINE(FILE_TYPE(Current_Out_Idx), ITEM);
    end PUT_LINE;
 
-   -- INTEGER_IO generic package body
-   -- Standalone implementation for nested generic instantiation
    package body INTEGER_IO is
       procedure GET(FILE : in FILE_TYPE; ITEM : out NUM; WIDTH : in FIELD := 0) is
          W : FIELD := WIDTH;  -- Use parameter to avoid warning
@@ -988,7 +983,6 @@ package body TEXT_IO is
       end PUT;
    end INTEGER_IO;
 
-   -- FLOAT_IO generic package body (stub for basic compatibility)
    package body FLOAT_IO is
       procedure GET(FILE : in FILE_TYPE; ITEM : out NUM; WIDTH : in FIELD := 0) is
       begin
@@ -1017,7 +1011,6 @@ package body TEXT_IO is
       end PUT;
    end FLOAT_IO;
 
-   -- FIXED_IO generic package body (stub for basic compatibility)
    package body FIXED_IO is
       procedure GET(FILE : in FILE_TYPE; ITEM : out NUM; WIDTH : in FIELD := 0) is
       begin
@@ -1046,7 +1039,6 @@ package body TEXT_IO is
       end PUT;
    end FIXED_IO;
 
-   -- ENUMERATION_IO generic package body (stub for basic compatibility)
    package body ENUMERATION_IO is
       procedure GET(FILE : in FILE_TYPE; ITEM : out ENUM) is
       begin
