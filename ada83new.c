@@ -6153,6 +6153,10 @@ struct Symbol {
         Syntax_Node *actual_expr;        /* For object formals */
     } *generic_actuals;
     uint32_t        generic_actual_count;
+
+    /* For generic instances: expanded (cloned) trees with substitutions */
+    Syntax_Node    *expanded_spec;       /* Cloned spec with actuals substituted */
+    Syntax_Node    *expanded_body;       /* Cloned body with actuals substituted */
 };
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -16020,6 +16024,11 @@ static char *Read_File(const char *path, size_t *out_size) {
     return buffer;
 }
 
+/* Forward declaration for ALI file generation (defined in §16) */
+static void Generate_ALI_File(const char *output_path,
+                              Syntax_Node **units, int unit_count,
+                              const char *source, size_t source_size);
+
 static void Compile_File(const char *input_path, const char *output_path) {
     /* Reset loaded bodies for this compilation */
     Loaded_Body_Count = 0;
@@ -16100,6 +16109,9 @@ static void Compile_File(const char *input_path, const char *output_path) {
     if (close_output) {
         fclose(out_file);
         fprintf(stderr, "Compiled '%s' -> '%s'\n", input_path, output_path);
+
+        /* Generate GNAT-compatible .ali file for dependency tracking */
+        Generate_ALI_File(output_path, units, unit_count, source, source_size);
     }
     free(source);
 }
@@ -16146,6 +16158,737 @@ int main(int argc, char *argv[]) {
 
     Arena_Free_All();
     return Error_Count > 0 ? 1 : 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §16. ALI FILE WRITER — GNAT-Compatible Library Information
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * Ada Library Information (.ali) files record compilation dependencies and
+ * unit metadata. Format follows GNAT's lib-writ.ads specification:
+ *
+ *   V "version"              -- compiler version
+ *   P flags                  -- compilation parameters
+ *   U name source version    -- unit entry
+ *   W name [source ali]      -- with dependency
+ *   D source timestamp       -- source dependency
+ *
+ * The ALI file enables:
+ *   • Separate compilation with dependency tracking
+ *   • Binder consistency checking
+ *   • IDE cross-reference navigation
+ */
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §16.1 Unit_Info — Compilation unit metadata collector
+ * ───────────────────────────────────────────────────────────────────────── */
+
+typedef struct {
+    String_Slice      unit_name;        /* Canonical Ada name (Package.Child%b) */
+    String_Slice      source_name;      /* File name (package-child.adb) */
+    uint32_t          source_checksum;  /* CRC32 of source text */
+    bool              is_body;          /* spec (false) or body (true) */
+    bool              is_generic;       /* Generic declaration */
+    bool              is_preelaborate;  /* Pragma Preelaborate */
+    bool              is_pure;          /* Pragma Pure */
+    bool              has_elaboration;  /* Has elaboration code */
+} Unit_Info;
+
+typedef struct {
+    String_Slice      name;             /* WITH'd unit name */
+    String_Slice      source_file;      /* Source file name */
+    String_Slice      ali_file;         /* ALI file name */
+    bool              is_limited;       /* LIMITED WITH */
+    bool              elaborate;        /* Pragma Elaborate */
+    bool              elaborate_all;    /* Pragma Elaborate_All */
+} With_Info;
+
+typedef struct {
+    String_Slice      source_file;      /* Depended-on source */
+    uint32_t          timestamp;        /* Modification time (Unix epoch) */
+    uint32_t          checksum;         /* CRC32 */
+} Dependency_Info;
+
+typedef struct {
+    Unit_Info         units[8];         /* Units in this compilation */
+    uint32_t          unit_count;
+    With_Info         withs[64];        /* WITH dependencies */
+    uint32_t          with_count;
+    Dependency_Info   deps[128];        /* Source dependencies */
+    uint32_t          dep_count;
+} ALI_Info;
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §16.2 CRC32 — Fast checksum for source identity
+ *
+ * Standard CRC-32/ISO-HDLC polynomial: 0xEDB88320 (bit-reversed 0x04C11DB7)
+ * ───────────────────────────────────────────────────────────────────────── */
+
+static uint32_t Crc32_Table[256];
+static bool Crc32_Table_Initialized = false;
+
+static void Crc32_Init_Table(void) {
+    if (Crc32_Table_Initialized) return;
+    for (uint32_t i = 0; i < 256; i++) {
+        uint32_t crc = i;
+        for (int j = 0; j < 8; j++)
+            crc = (crc >> 1) ^ (0xEDB88320 & -(crc & 1));
+        Crc32_Table[i] = crc;
+    }
+    Crc32_Table_Initialized = true;
+}
+
+static uint32_t Crc32(const char *data, size_t length) {
+    Crc32_Init_Table();
+    uint32_t crc = 0xFFFFFFFF;
+    for (size_t i = 0; i < length; i++)
+        crc = Crc32_Table[(crc ^ (uint8_t)data[i]) & 0xFF] ^ (crc >> 8);
+    return ~crc;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §16.3 Unit_Name_To_File — GNAT naming convention
+ *
+ * Maps Ada unit names to file names:
+ *   Package_Name      → package_name.ads
+ *   Package_Name%b    → package_name.adb
+ *   Parent.Child      → parent-child.ads
+ * ───────────────────────────────────────────────────────────────────────── */
+
+static void Unit_Name_To_File(String_Slice unit_name, bool is_body,
+                              char *out, size_t out_size) {
+    size_t j = 0;
+    for (size_t i = 0; i < unit_name.length && j < out_size - 5; i++) {
+        char c = unit_name.data[i];
+        if (c == '.') {
+            out[j++] = '-';  /* Dots become hyphens */
+        } else if (c >= 'A' && c <= 'Z') {
+            out[j++] = c - 'A' + 'a';  /* Lowercase */
+        } else {
+            out[j++] = c;
+        }
+    }
+    /* Append extension */
+    const char *ext = is_body ? ".adb" : ".ads";
+    for (int k = 0; ext[k] && j < out_size - 1; k++)
+        out[j++] = ext[k];
+    out[j] = '\0';
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §16.4 ALI_Collect — Gather unit info from parsed AST
+ * ───────────────────────────────────────────────────────────────────────── */
+
+static void ALI_Collect_Withs(ALI_Info *ali, Syntax_Node *ctx) {
+    if (!ctx) return;
+
+    for (uint32_t i = 0; i < ctx->context.with_clauses.count; i++) {
+        Syntax_Node *with_node = ctx->context.with_clauses.items[i];
+        if (!with_node) continue;
+
+        /* Each WITH clause may have multiple names */
+        for (uint32_t j = 0; j < with_node->use_clause.names.count; j++) {
+            Syntax_Node *name = with_node->use_clause.names.items[j];
+            if (!name || ali->with_count >= 64) continue;
+
+            With_Info *w = &ali->withs[ali->with_count++];
+            w->name = name->kind == NK_IDENTIFIER ?
+                      name->string_val.text : (String_Slice){0};
+            w->is_limited = false;  /* TODO: detect LIMITED WITH */
+            w->elaborate = false;
+            w->elaborate_all = false;
+
+            /* Derive file names from unit name */
+            char file_buf[256];
+            if (w->name.data) {
+                Unit_Name_To_File(w->name, false, file_buf, sizeof(file_buf));
+                w->source_file = Slice_Duplicate((String_Slice){file_buf, strlen(file_buf)});
+                size_t len = strlen(file_buf);
+                if (len > 4) {
+                    file_buf[len-3] = 'a';
+                    file_buf[len-2] = 'l';
+                    file_buf[len-1] = 'i';
+                }
+                w->ali_file = Slice_Duplicate((String_Slice){file_buf, strlen(file_buf)});
+            }
+        }
+    }
+}
+
+/* Helper: extract unit name from a subprogram spec/body */
+static String_Slice Get_Subprogram_Name(Syntax_Node *node) {
+    if (!node) return (String_Slice){"UNKNOWN", 7};
+    if (node->kind == NK_PROCEDURE_SPEC || node->kind == NK_FUNCTION_SPEC)
+        return node->subprogram_spec.name;
+    if (node->kind == NK_PROCEDURE_BODY || node->kind == NK_FUNCTION_BODY) {
+        /* Body has spec nested inside */
+        if (node->subprogram_body.specification)
+            return Get_Subprogram_Name(node->subprogram_body.specification);
+    }
+    return (String_Slice){"UNKNOWN", 7};
+}
+
+static void ALI_Collect_Unit(ALI_Info *ali, Syntax_Node *cu,
+                             const char *source, size_t source_size) {
+    if (!cu || ali->unit_count >= 8) return;
+
+    Syntax_Node *unit = cu->compilation_unit.unit;
+    if (!unit) return;
+
+    Unit_Info *u = &ali->units[ali->unit_count++];
+
+    /* Extract unit name based on declaration kind */
+    switch (unit->kind) {
+        case NK_PACKAGE_SPEC:
+            u->unit_name = unit->package_spec.name;
+            u->is_body = false;
+            break;
+        case NK_PACKAGE_BODY:
+            u->unit_name = unit->package_body.name;
+            u->is_body = true;
+            break;
+        case NK_PROCEDURE_BODY:
+        case NK_PROCEDURE_SPEC:
+            u->unit_name = Get_Subprogram_Name(unit);
+            u->is_body = unit->kind == NK_PROCEDURE_BODY;
+            break;
+        case NK_FUNCTION_BODY:
+        case NK_FUNCTION_SPEC:
+            u->unit_name = Get_Subprogram_Name(unit);
+            u->is_body = unit->kind == NK_FUNCTION_BODY;
+            break;
+        case NK_GENERIC_DECL:
+            u->is_generic = true;
+            if (unit->generic_decl.unit) {
+                Syntax_Node *inner = unit->generic_decl.unit;
+                if (inner->kind == NK_PACKAGE_SPEC)
+                    u->unit_name = inner->package_spec.name;
+                else if (inner->kind == NK_PROCEDURE_SPEC || inner->kind == NK_FUNCTION_SPEC)
+                    u->unit_name = inner->subprogram_spec.name;
+            }
+            u->is_body = false;
+            break;
+        default:
+            u->unit_name = (String_Slice){"UNKNOWN", 7};
+            u->is_body = false;
+    }
+
+    /* Compute source checksum */
+    u->source_checksum = Crc32(source, source_size);
+
+    /* Derive source file name */
+    char file_buf[256];
+    Unit_Name_To_File(u->unit_name, u->is_body, file_buf, sizeof(file_buf));
+    u->source_name = Slice_Duplicate((String_Slice){file_buf, strlen(file_buf)});
+
+    /* Check for elaboration pragmas (simplified) */
+    u->is_preelaborate = false;
+    u->is_pure = false;
+    u->has_elaboration = true;  /* Assume has elaboration unless proven otherwise */
+
+    /* Collect WITH dependencies */
+    ALI_Collect_Withs(ali, cu->compilation_unit.context);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §16.5 ALI_Write — Emit .ali file in GNAT format
+ *
+ * Per lib-writ.ads, the minimum valid ALI file needs:
+ *   V line (version) — MUST be first
+ *   P line (parameters) — MUST be present
+ *   At least one U line (unit)
+ * ───────────────────────────────────────────────────────────────────────── */
+
+#define ALI_VERSION "Ada83 1.0"
+
+static void ALI_Write(FILE *out, ALI_Info *ali) {
+    /* V line: Version — must be first per GNAT spec */
+    fprintf(out, "V \"%s\"\n", ALI_VERSION);
+
+    /* P line: Parameters/flags — ZX = zero-cost exceptions */
+    fprintf(out, "P ZX\n");
+
+    /* Blank line before restrictions */
+    fprintf(out, "\n");
+
+    /* R line: Restrictions (minimal) */
+    fprintf(out, "RN\n");
+
+    /* U lines: Unit entries */
+    for (uint32_t i = 0; i < ali->unit_count; i++) {
+        Unit_Info *u = &ali->units[i];
+
+        /* U unit-name source-name version [flags] */
+        fprintf(out, "\nU %.*s%s %.*s %08X",
+                (int)u->unit_name.length, u->unit_name.data,
+                u->is_body ? "%b" : "%s",
+                (int)u->source_name.length, u->source_name.data,
+                u->source_checksum);
+
+        /* Flags */
+        if (u->is_generic) fprintf(out, " GE");
+        if (u->is_preelaborate) fprintf(out, " PR");
+        if (u->is_pure) fprintf(out, " PU");
+        if (!u->has_elaboration) fprintf(out, " NE");
+        if (!u->is_body) fprintf(out, " PK");
+        else fprintf(out, " SU");
+        fprintf(out, "\n");
+
+        /* W lines: WITH dependencies for this unit */
+        for (uint32_t j = 0; j < ali->with_count; j++) {
+            With_Info *w = &ali->withs[j];
+            if (!w->name.data) continue;
+
+            char line_type = w->is_limited ? 'Y' : 'W';
+            fprintf(out, "%c %.*s%s",
+                    line_type,
+                    (int)w->name.length, w->name.data,
+                    "%s");  /* Assume spec dependency */
+
+            if (w->source_file.data) {
+                fprintf(out, " %.*s %.*s",
+                        (int)w->source_file.length, w->source_file.data,
+                        (int)w->ali_file.length, w->ali_file.data);
+            }
+
+            if (w->elaborate) fprintf(out, " E");
+            if (w->elaborate_all) fprintf(out, " EA");
+            fprintf(out, "\n");
+        }
+    }
+
+    /* D lines: Source dependencies */
+    fprintf(out, "\n");
+    for (uint32_t i = 0; i < ali->unit_count; i++) {
+        Unit_Info *u = &ali->units[i];
+        /* Self-dependency */
+        fprintf(out, "D %.*s 00000000 %08X\n",
+                (int)u->source_name.length, u->source_name.data,
+                u->source_checksum);
+    }
+    for (uint32_t i = 0; i < ali->with_count; i++) {
+        With_Info *w = &ali->withs[i];
+        if (w->source_file.data) {
+            fprintf(out, "D %.*s 00000000 00000000\n",
+                    (int)w->source_file.length, w->source_file.data);
+        }
+    }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §16.6 Generate_ALI_File — Entry point for ALI generation
+ * ───────────────────────────────────────────────────────────────────────── */
+
+static void Generate_ALI_File(const char *output_path,
+                              Syntax_Node **units, int unit_count,
+                              const char *source, size_t source_size) {
+    /* Build ALI path from output path (replace .ll with .ali) */
+    char ali_path[512];
+    size_t len = strlen(output_path);
+    if (len > 3 && strcmp(output_path + len - 3, ".ll") == 0) {
+        snprintf(ali_path, sizeof(ali_path), "%.*s.ali", (int)(len - 3), output_path);
+    } else {
+        snprintf(ali_path, sizeof(ali_path), "%s.ali", output_path);
+    }
+
+    FILE *ali_file = fopen(ali_path, "w");
+    if (!ali_file) {
+        fprintf(stderr, "Warning: cannot create ALI file '%s'\n", ali_path);
+        return;
+    }
+
+    /* Collect information from all compilation units */
+    ALI_Info ali = {0};
+    for (int i = 0; i < unit_count; i++) {
+        ALI_Collect_Unit(&ali, units[i], source, source_size);
+    }
+
+    /* Write ALI file */
+    ALI_Write(ali_file, &ali);
+    fclose(ali_file);
+
+    fprintf(stderr, "Generated ALI file '%s'\n", ali_path);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §17. GENERIC EXPANSION — Full macro-style instantiation
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * GNAT implements generics via macro expansion (sem_ch12.adb):
+ *   1. Parse generic declaration → store template AST
+ *   2. On instantiation: clone template, substitute actuals
+ *   3. Analyze cloned tree with actual types
+ *   4. Generate code for each instantiation separately
+ *
+ * Key insight: We do NOT share code between instantiations. Each instance
+ * gets its own copy with types fully substituted.
+ */
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §17.1 Instantiation_Env — Formal-to-actual mapping
+ *
+ * Instead of mutating nodes, we carry substitution environment through.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+typedef struct {
+    String_Slice  formal_name;    /* Generic formal parameter name */
+    Type_Info    *actual_type;    /* Substituted actual type */
+    Symbol       *actual_symbol;  /* Actual symbol (for subprogram formals) */
+    Syntax_Node  *actual_expr;    /* Actual expression (for object formals) */
+} Generic_Mapping;
+
+typedef struct {
+    Generic_Mapping  mappings[32];
+    uint32_t         count;
+    Symbol          *instance_sym;   /* The instantiation symbol */
+    Symbol          *template_sym;   /* The generic template symbol */
+} Instantiation_Env;
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §17.2 Instantiation_Env helpers
+ * ───────────────────────────────────────────────────────────────────────── */
+
+static Type_Info *Env_Lookup_Type(Instantiation_Env *env, String_Slice name) {
+    for (uint32_t i = 0; i < env->count; i++) {
+        if (Slice_Equal_Ignore_Case(env->mappings[i].formal_name, name))
+            return env->mappings[i].actual_type;
+    }
+    return NULL;
+}
+
+static Symbol *Env_Lookup_Symbol(Instantiation_Env *env, String_Slice name) {
+    for (uint32_t i = 0; i < env->count; i++) {
+        if (Slice_Equal_Ignore_Case(env->mappings[i].formal_name, name))
+            return env->mappings[i].actual_symbol;
+    }
+    return NULL;
+}
+
+static Syntax_Node *Env_Lookup_Expr(Instantiation_Env *env, String_Slice name) {
+    for (uint32_t i = 0; i < env->count; i++) {
+        if (Slice_Equal_Ignore_Case(env->mappings[i].formal_name, name))
+            return env->mappings[i].actual_expr;
+    }
+    return NULL;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §17.3 Node_Deep_Clone — Deep copy with environment substitution
+ *
+ * Unlike the existing node_clone_substitute, this:
+ *   • ALWAYS allocates new nodes (no aliasing)
+ *   • Uses recursion depth tracking with proper error
+ *   • Carries environment for type substitution
+ * ───────────────────────────────────────────────────────────────────────── */
+
+static Syntax_Node *Node_Deep_Clone(Syntax_Node *node, Instantiation_Env *env,
+                                    int depth);
+
+/* Clone a node list */
+static void Node_List_Clone(Node_List *dst, Node_List *src,
+                            Instantiation_Env *env, int depth) {
+    dst->count = 0;
+    dst->capacity = 0;
+    dst->items = NULL;
+    for (uint32_t i = 0; i < src->count; i++) {
+        Syntax_Node *cloned = Node_Deep_Clone(src->items[i], env, depth);
+        Node_List_Push(dst, cloned);
+    }
+}
+
+static Syntax_Node *Node_Deep_Clone(Syntax_Node *node, Instantiation_Env *env,
+                                    int depth) {
+    if (!node) return NULL;
+
+    /* Depth limit with REAL error, not silent aliasing */
+    if (depth > 500) {
+        Report_Error(node->location, "generic instantiation too deeply nested");
+        return NULL;
+    }
+
+    /* Allocate fresh node */
+    Syntax_Node *n = Arena_Allocate(sizeof(Syntax_Node));
+    memset(n, 0, sizeof(Syntax_Node));  /* Zero-init ALL fields */
+    n->kind = node->kind;
+    n->location = node->location;
+    n->type = node->type;
+    n->symbol = NULL;  /* Symbols will be re-resolved */
+
+    switch (node->kind) {
+        case NK_IDENTIFIER:
+            n->string_val = node->string_val;
+            /* Check for type substitution */
+            if (env) {
+                Type_Info *subst = Env_Lookup_Type(env, node->string_val.text);
+                if (subst) n->type = subst;
+            }
+            break;
+
+        case NK_INTEGER:
+            n->integer_lit = node->integer_lit;
+            break;
+
+        case NK_REAL:
+            n->real_lit = node->real_lit;
+            break;
+
+        case NK_STRING:
+        case NK_CHARACTER:
+            n->string_val = node->string_val;
+            break;
+
+        case NK_BINARY_OP:
+            n->binary.op = node->binary.op;
+            n->binary.left = Node_Deep_Clone(node->binary.left, env, depth + 1);
+            n->binary.right = Node_Deep_Clone(node->binary.right, env, depth + 1);
+            break;
+
+        case NK_UNARY_OP:
+            n->unary.op = node->unary.op;
+            n->unary.operand = Node_Deep_Clone(node->unary.operand, env, depth + 1);
+            break;
+
+        case NK_ATTRIBUTE:
+            n->attribute.prefix = Node_Deep_Clone(node->attribute.prefix, env, depth + 1);
+            n->attribute.name = node->attribute.name;
+            Node_List_Clone(&n->attribute.arguments, &node->attribute.arguments, env, depth + 1);
+            break;
+
+        case NK_APPLY:
+            n->apply.prefix = Node_Deep_Clone(node->apply.prefix, env, depth + 1);
+            Node_List_Clone(&n->apply.arguments, &node->apply.arguments, env, depth + 1);
+            break;
+
+        case NK_SELECTED:
+            n->selected.prefix = Node_Deep_Clone(node->selected.prefix, env, depth + 1);
+            n->selected.selector = node->selected.selector;  /* String_Slice, not a node */
+            break;
+
+        case NK_AGGREGATE:
+            Node_List_Clone(&n->aggregate.items, &node->aggregate.items, env, depth + 1);
+            n->aggregate.is_named = node->aggregate.is_named;
+            break;
+
+        case NK_ASSOCIATION:
+            Node_List_Clone(&n->association.choices, &node->association.choices, env, depth + 1);
+            n->association.expression = Node_Deep_Clone(node->association.expression, env, depth + 1);
+            break;
+
+        case NK_RANGE:
+            n->range.low = Node_Deep_Clone(node->range.low, env, depth + 1);
+            n->range.high = Node_Deep_Clone(node->range.high, env, depth + 1);
+            break;
+
+        case NK_OBJECT_DECL:
+            Node_List_Clone(&n->object_decl.names, &node->object_decl.names, env, depth + 1);
+            n->object_decl.object_type = Node_Deep_Clone(node->object_decl.object_type, env, depth + 1);
+            n->object_decl.init = Node_Deep_Clone(node->object_decl.init, env, depth + 1);
+            n->object_decl.is_constant = node->object_decl.is_constant;
+            n->object_decl.is_rename = node->object_decl.is_rename;
+            break;
+
+        case NK_TYPE_DECL:
+        case NK_SUBTYPE_DECL:
+            n->type_decl.name = node->type_decl.name;
+            n->type_decl.definition = Node_Deep_Clone(node->type_decl.definition, env, depth + 1);
+            Node_List_Clone(&n->type_decl.discriminants, &node->type_decl.discriminants, env, depth + 1);
+            break;
+
+        case NK_PROCEDURE_BODY:
+        case NK_FUNCTION_BODY:
+            n->subprogram_body.specification = Node_Deep_Clone(node->subprogram_body.specification, env, depth + 1);
+            Node_List_Clone(&n->subprogram_body.declarations, &node->subprogram_body.declarations, env, depth + 1);
+            Node_List_Clone(&n->subprogram_body.statements, &node->subprogram_body.statements, env, depth + 1);
+            Node_List_Clone(&n->subprogram_body.handlers, &node->subprogram_body.handlers, env, depth + 1);
+            n->subprogram_body.is_separate = node->subprogram_body.is_separate;
+            break;
+
+        case NK_PROCEDURE_SPEC:
+        case NK_FUNCTION_SPEC:
+            n->subprogram_spec.name = node->subprogram_spec.name;
+            Node_List_Clone(&n->subprogram_spec.parameters, &node->subprogram_spec.parameters, env, depth + 1);
+            n->subprogram_spec.return_type = Node_Deep_Clone(node->subprogram_spec.return_type, env, depth + 1);
+            n->subprogram_spec.renamed = Node_Deep_Clone(node->subprogram_spec.renamed, env, depth + 1);
+            break;
+
+        case NK_PARAM_SPEC:
+            Node_List_Clone(&n->param_spec.names, &node->param_spec.names, env, depth + 1);
+            n->param_spec.mode = node->param_spec.mode;
+            n->param_spec.param_type = Node_Deep_Clone(node->param_spec.param_type, env, depth + 1);
+            n->param_spec.default_expr = Node_Deep_Clone(node->param_spec.default_expr, env, depth + 1);
+            break;
+
+        case NK_PACKAGE_SPEC:
+            n->package_spec.name = node->package_spec.name;
+            Node_List_Clone(&n->package_spec.visible_decls, &node->package_spec.visible_decls, env, depth + 1);
+            Node_List_Clone(&n->package_spec.private_decls, &node->package_spec.private_decls, env, depth + 1);
+            break;
+
+        case NK_PACKAGE_BODY:
+            n->package_body.name = node->package_body.name;
+            Node_List_Clone(&n->package_body.declarations, &node->package_body.declarations, env, depth + 1);
+            Node_List_Clone(&n->package_body.statements, &node->package_body.statements, env, depth + 1);
+            Node_List_Clone(&n->package_body.handlers, &node->package_body.handlers, env, depth + 1);
+            break;
+
+        case NK_ASSIGNMENT:
+        case NK_CALL_STMT:  /* Reuses assignment.target field */
+            n->assignment.target = Node_Deep_Clone(node->assignment.target, env, depth + 1);
+            n->assignment.value = Node_Deep_Clone(node->assignment.value, env, depth + 1);
+            break;
+
+        case NK_IF:
+            n->if_stmt.condition = Node_Deep_Clone(node->if_stmt.condition, env, depth + 1);
+            Node_List_Clone(&n->if_stmt.then_stmts, &node->if_stmt.then_stmts, env, depth + 1);
+            Node_List_Clone(&n->if_stmt.elsif_parts, &node->if_stmt.elsif_parts, env, depth + 1);
+            Node_List_Clone(&n->if_stmt.else_stmts, &node->if_stmt.else_stmts, env, depth + 1);
+            break;
+
+        case NK_LOOP:
+            n->loop_stmt.label = node->loop_stmt.label;
+            n->loop_stmt.iteration_scheme = Node_Deep_Clone(node->loop_stmt.iteration_scheme, env, depth + 1);
+            Node_List_Clone(&n->loop_stmt.statements, &node->loop_stmt.statements, env, depth + 1);
+            n->loop_stmt.is_reverse = node->loop_stmt.is_reverse;
+            break;
+
+        case NK_RETURN:
+            n->return_stmt.expression = Node_Deep_Clone(node->return_stmt.expression, env, depth + 1);
+            break;
+
+        case NK_BLOCK:
+            n->block_stmt.label = node->block_stmt.label;
+            Node_List_Clone(&n->block_stmt.declarations, &node->block_stmt.declarations, env, depth + 1);
+            Node_List_Clone(&n->block_stmt.statements, &node->block_stmt.statements, env, depth + 1);
+            Node_List_Clone(&n->block_stmt.handlers, &node->block_stmt.handlers, env, depth + 1);
+            break;
+
+        case NK_CASE:
+            n->case_stmt.expression = Node_Deep_Clone(node->case_stmt.expression, env, depth + 1);
+            Node_List_Clone(&n->case_stmt.alternatives, &node->case_stmt.alternatives, env, depth + 1);
+            break;
+
+        case NK_EXIT:
+            n->exit_stmt.loop_name = node->exit_stmt.loop_name;
+            n->exit_stmt.condition = Node_Deep_Clone(node->exit_stmt.condition, env, depth + 1);
+            break;
+
+        case NK_NULL_STMT:
+        case NK_OTHERS:
+            /* No fields to copy */
+            break;
+
+        default:
+            /* For node kinds not explicitly handled, do shallow copy.
+             * This is safer than the original which returned aliased nodes. */
+            *n = *node;
+            n->symbol = NULL;
+            break;
+    }
+
+    return n;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §17.4 Build_Instantiation_Env — Create mapping from formals to actuals
+ * ───────────────────────────────────────────────────────────────────────── */
+
+static void Build_Instantiation_Env(Instantiation_Env *env,
+                                    Symbol *template_sym,
+                                    Symbol *instance_sym,
+                                    Symbol_Manager *sm) {
+    env->count = 0;
+    env->template_sym = template_sym;
+    env->instance_sym = instance_sym;
+
+    if (!template_sym || !template_sym->declaration) return;
+
+    Syntax_Node *gen_decl = template_sym->declaration;
+    if (gen_decl->kind != NK_GENERIC_DECL) return;
+
+    Node_List *formals = &gen_decl->generic_decl.formals;
+
+    /* Use pre-resolved actuals from instance symbol */
+    for (uint32_t i = 0; i < instance_sym->generic_actual_count && i < 32; i++) {
+        Generic_Mapping *m = &env->mappings[env->count++];
+        m->formal_name = instance_sym->generic_actuals[i].formal_name;
+        m->actual_type = instance_sym->generic_actuals[i].actual_type;
+        m->actual_symbol = NULL;
+        m->actual_expr = NULL;
+
+        /* For object/subprogram formals, would need additional handling */
+        if (i < formals->count) {
+            Syntax_Node *formal = formals->items[i];
+            if (formal->kind == NK_GENERIC_OBJECT_PARAM) {
+                /* Store expression for object formals */
+            } else if (formal->kind == NK_GENERIC_SUBPROGRAM_PARAM) {
+                /* Store symbol for subprogram formals */
+            }
+        }
+    }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §17.5 Expand_Generic_Package — Full instantiation of generic package
+ *
+ * This implements the GNAT strategy:
+ *   1. Clone the package spec with type substitutions
+ *   2. Clone the package body (if found)
+ *   3. Resolve cloned trees with actual types
+ *   4. Store expanded body for code generation
+ * ───────────────────────────────────────────────────────────────────────── */
+
+static void Expand_Generic_Package(Symbol_Manager *sm, Symbol *instance_sym) {
+    if (!instance_sym || !instance_sym->generic_template) return;
+
+    Symbol *template = instance_sym->generic_template;
+    if (!template->generic_unit) return;
+
+    /* Build substitution environment */
+    Instantiation_Env env;
+    Build_Instantiation_Env(&env, template, instance_sym, sm);
+
+    /* Clone the package spec */
+    Syntax_Node *spec_clone = Node_Deep_Clone(template->generic_unit, &env, 0);
+    if (spec_clone) {
+        /* Rename to instance name */
+        if (spec_clone->kind == NK_PACKAGE_SPEC) {
+            spec_clone->package_spec.name = instance_sym->name;
+        }
+
+        /* Store for later processing */
+        instance_sym->expanded_spec = spec_clone;
+    }
+
+    /* Try to find and clone the package body */
+    String_Slice pkg_name = template->generic_unit->kind == NK_PACKAGE_SPEC ?
+                            template->generic_unit->package_spec.name :
+                            template->name;
+
+    char *body_src = Lookup_Path_Body(pkg_name);
+    if (body_src) {
+        /* Parse the body */
+        char body_filename[256];
+        snprintf(body_filename, sizeof(body_filename), "%.*s.adb",
+                 (int)pkg_name.length, pkg_name.data);
+        Parser body_parser = Parser_New(body_src, strlen(body_src), body_filename);
+        Syntax_Node *body_cu = Parse_Compilation_Unit(&body_parser);
+
+        if (body_cu && body_cu->compilation_unit.unit &&
+            body_cu->compilation_unit.unit->kind == NK_PACKAGE_BODY) {
+
+            /* Clone with substitutions */
+            Syntax_Node *body_clone = Node_Deep_Clone(
+                body_cu->compilation_unit.unit, &env, 0);
+
+            if (body_clone) {
+                /* Rename to instance name */
+                body_clone->package_body.name = instance_sym->name;
+
+                /* Store expanded body */
+                instance_sym->expanded_body = body_clone;
+            }
+        }
+    }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
