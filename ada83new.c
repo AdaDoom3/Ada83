@@ -9108,6 +9108,26 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                 formal->symbol = type_sym;
                                 Symbol_Add(sm, type_sym);
                             }
+                            /* For generic object parameters, create/install object symbols */
+                            if (formal->kind == NK_GENERIC_OBJECT_PARAM) {
+                                /* Resolve the object type */
+                                Type_Info *obj_type = NULL;
+                                if (formal->generic_object_param.object_type) {
+                                    Resolve_Expression(sm, formal->generic_object_param.object_type);
+                                    obj_type = formal->generic_object_param.object_type->type;
+                                }
+                                /* Create symbols for each name */
+                                for (uint32_t j = 0; j < formal->generic_object_param.names.count; j++) {
+                                    Syntax_Node *name_node = formal->generic_object_param.names.items[j];
+                                    if (name_node && name_node->kind == NK_IDENTIFIER) {
+                                        Symbol *obj_sym = Symbol_New(SYMBOL_CONSTANT,
+                                            name_node->string_val.text, name_node->location);
+                                        obj_sym->type = obj_type;
+                                        name_node->symbol = obj_sym;
+                                        Symbol_Add(sm, obj_sym);
+                                    }
+                                }
+                            }
                         }
                     }
                     /* Get the package spec from the generic unit */
