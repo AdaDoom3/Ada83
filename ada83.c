@@ -8482,10 +8482,18 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
             break;
 
         case NK_ACCEPT:
-            /* ACCEPT statement for task entry - resolve index and parameters */
+            /* ACCEPT statement for task entry - resolve index and parameters.
+             * Each accept statement has its own scope for parameters to avoid
+             * naming conflicts with parameters from other accept statements
+             * in the same selective wait (e.g., multiple accepts with param X). */
             if (node->accept_stmt.index) {
                 Resolve_Expression(sm, node->accept_stmt.index);
             }
+            /* Push new scope for accept parameters - use current scope owner
+             * so parameters are considered local (not global) for naming.
+             * Each accept statement needs its own scope because multiple accepts
+             * in a selective wait may have parameters with the same name. */
+            Symbol_Manager_Push_Scope(sm, sm->current_scope->owner);
             /* Resolve accept parameters */
             for (uint32_t i = 0; i < node->accept_stmt.parameters.count; i++) {
                 Syntax_Node *param = node->accept_stmt.parameters.items[i];
@@ -8509,6 +8517,8 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
             }
             /* Resolve accept body statements */
             Resolve_Statement_List(sm, &node->accept_stmt.statements);
+            /* Pop accept scope */
+            Symbol_Manager_Pop_Scope(sm);
             break;
 
         case NK_SELECT:
@@ -15867,8 +15877,19 @@ static void Generate_Task_Body(Code_Generator *cg, Syntax_Node *node) {
          (int)node->task_body.name.length, node->task_body.name.data);
 
     /* Generate task entry point function - receives parent frame pointer
-     * for uplevel variable access (task bodies access enclosing scope) */
-    Emit(cg, "define void @task_%.*s(ptr %%__parent_frame) {\n",
+     * for uplevel variable access (task bodies access enclosing scope).
+     * For task bodies inside generic instances, prefix with instance name
+     * to make the function name unique across multiple instantiations. */
+    Emit(cg, "define void @task_");
+    if (cg->current_instance && cg->current_instance->generic_template) {
+        /* Emit instance name prefix for unique task body function */
+        String_Slice inst_mangled = Symbol_Mangle_Name(cg->current_instance);
+        for (uint32_t i = 0; i < inst_mangled.length; i++) {
+            fputc(inst_mangled.data[i], cg->output);
+        }
+        Emit(cg, "__");
+    }
+    Emit(cg, "%.*s(ptr %%__parent_frame) {\n",
          (int)node->task_body.name.length, node->task_body.name.data);
     Emit(cg, "entry:\n");
 
