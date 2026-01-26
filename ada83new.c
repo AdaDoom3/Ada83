@@ -7627,6 +7627,22 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                 /* Create record type info from syntax node */
                 Type_Info *record_type = Type_New(TYPE_RECORD, S(""));
 
+                /* Helper: count components in a variant part recursively */
+                uint32_t Count_Variant_Components(Syntax_Node *vp) {
+                    if (!vp) return 0;
+                    uint32_t count = 0;
+                    for (uint32_t i = 0; i < vp->variant_part.variants.count; i++) {
+                        Syntax_Node *v = vp->variant_part.variants.items[i];
+                        for (uint32_t j = 0; j < v->variant.components.count; j++) {
+                            Syntax_Node *c = v->variant.components.items[j];
+                            if (c->kind == NK_COMPONENT_DECL)
+                                count += (uint32_t)c->component.names.count;
+                        }
+                        count += Count_Variant_Components(v->variant.variant_part);
+                    }
+                    return count;
+                }
+
                 /* Count total components (each decl may have multiple names) */
                 uint32_t total_comps = 0;
                 for (uint32_t i = 0; i < node->record_type.components.count; i++) {
@@ -7635,6 +7651,8 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                         total_comps += (uint32_t)comp->component.names.count;
                     }
                 }
+                /* Also count components in variant parts */
+                total_comps += Count_Variant_Components(node->record_type.variant_part);
 
                 record_type->record.component_count = total_comps;
                 if (total_comps > 0) {
@@ -7643,28 +7661,43 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
 
                     uint32_t offset = 0;
                     uint32_t comp_idx = 0;
-                    for (uint32_t i = 0; i < node->record_type.components.count; i++) {
-                        Syntax_Node *comp = node->record_type.components.items[i];
 
-                        if (comp->kind == NK_COMPONENT_DECL) {
-                            /* Resolve component type once for all names */
-                            Resolve_Expression(sm, comp->component.component_type);
-                            Type_Info *comp_type = comp->component.component_type ?
-                                                   comp->component.component_type->type : sm->type_integer;
-                            uint32_t comp_size = comp_type ? comp_type->size : 8;
-
-                            /* Create entry for each name in the declaration */
-                            for (uint32_t j = 0; j < comp->component.names.count; j++) {
-                                Component_Info *info = &record_type->record.components[comp_idx++];
-                                info->name = comp->component.names.items[j]->string_val.text;
-                                info->component_type = comp_type;
-                                info->byte_offset = offset;
-                                info->bit_offset = 0;
-                                info->bit_size = comp_type ? comp_type->size * 8 : 64;
-                                offset += comp_size;
-                            }
+                    /* Helper: add component to list */
+                    void Add_Component(Syntax_Node *comp) {
+                        if (comp->kind != NK_COMPONENT_DECL) return;
+                        Resolve_Expression(sm, comp->component.component_type);
+                        Type_Info *comp_type = comp->component.component_type ?
+                                               comp->component.component_type->type : sm->type_integer;
+                        uint32_t comp_size = comp_type ? comp_type->size : 8;
+                        for (uint32_t j = 0; j < comp->component.names.count; j++) {
+                            Component_Info *info = &record_type->record.components[comp_idx++];
+                            info->name = comp->component.names.items[j]->string_val.text;
+                            info->component_type = comp_type;
+                            info->byte_offset = offset;
+                            info->bit_offset = 0;
+                            info->bit_size = comp_type ? comp_type->size * 8 : 64;
+                            offset += comp_size;
                         }
                     }
+
+                    /* Helper: add components from variant part recursively */
+                    void Add_Variant_Components(Syntax_Node *vp) {
+                        if (!vp) return;
+                        for (uint32_t i = 0; i < vp->variant_part.variants.count; i++) {
+                            Syntax_Node *v = vp->variant_part.variants.items[i];
+                            for (uint32_t j = 0; j < v->variant.components.count; j++)
+                                Add_Component(v->variant.components.items[j]);
+                            Add_Variant_Components(v->variant.variant_part);
+                        }
+                    }
+
+                    /* Process regular components */
+                    for (uint32_t i = 0; i < node->record_type.components.count; i++) {
+                        Add_Component(node->record_type.components.items[i]);
+                    }
+                    /* Process variant part components */
+                    Add_Variant_Components(node->record_type.variant_part);
+
                     record_type->size = offset;
                     record_type->alignment = 8;
                 }
