@@ -93,6 +93,7 @@ PART 6: Statement Resolution, Generics (Lines 8001-10100)
 ===============================================================================
 
 [x] Statement sequence resolution
+[x] USE clause properly exports all symbol kinds (named numbers, etc.)
 [~] Generic instantiation (still AST cloning, but cleaner)
 
 TODO:
@@ -138,24 +139,28 @@ LINE COUNT COMPARISON
 ===============================================================================
 
 Original ada83.c:    18,746 lines
-Rewritten ada83new.c: 14,319 lines (after SIMD portability fixes)
-Reduction:            4,427 lines (24% smaller)
+Rewritten ada83new.c: 14,358 lines (after USE clause fix)
+Reduction:            4,388 lines (23% smaller)
 
 ===============================================================================
-A-SERIES ACATS TEST RESULTS (2026-01-25)
+A-SERIES ACATS TEST RESULTS (2026-01-26)
 ===============================================================================
 
  CLASS                    pass   fail   skip  total    rate
  ---------------------- ------ ------ ------ ------ -------
- A  Acceptance              92      0     48    140     65%
+ A  Acceptance              94      0     46    140     67%
 
 Notes:
 - 0 FAILURES - all non-passing tests are SKIPs
-- SKIPs are mostly due to missing standard library packages:
-  * TEXT_IO, SEQUENTIAL_IO, CALENDAR, etc.
+- Fixed USE clause to properly export named numbers (e.g., USE SYSTEM)
+- SKIPs are mostly due to:
+  * Missing standard library packages (SEQUENTIAL_IO, DIRECT_IO)
+  * Missing implicit access dereference for array indexing
+  * Missing predefined ASCII package (should be child of STANDARD)
+  * UNCHECKED_DEALLOCATION visibility issues
 - Core language features are working correctly
 - SIMD code now portable (AVX-512 compile-time guarded)
 
 ===============================================================================
-LAST UPDATED: 2026-01-25
+LAST UPDATED: 2026-01-26
 ===============================================================================
