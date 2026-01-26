@@ -8529,9 +8529,18 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
         case NK_PROCEDURE_SPEC:
         case NK_FUNCTION_SPEC:
             {
-                Symbol *sym = Symbol_New(
-                    node->kind == NK_PROCEDURE_SPEC ? SYMBOL_PROCEDURE : SYMBOL_FUNCTION,
-                    node->subprogram_spec.name, node->location);
+                /* Check if there's already a matching symbol from package spec.
+                 * This happens when resolving a subprogram body that completes a spec. */
+                Symbol *sym = Symbol_Find(sm, node->subprogram_spec.name);
+                Symbol_Kind expected_kind = node->kind == NK_PROCEDURE_SPEC ?
+                                           SYMBOL_PROCEDURE : SYMBOL_FUNCTION;
+                if (sym && sym->kind == expected_kind) {
+                    /* Use existing symbol from spec */
+                    node->symbol = sym;
+                    break;
+                }
+
+                sym = Symbol_New(expected_kind, node->subprogram_spec.name, node->location);
 
                 /* Count total parameters (each param_spec can have multiple names) */
                 Node_List *param_list = &node->subprogram_spec.parameters;
@@ -14674,33 +14683,62 @@ static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src) 
     }
 
     /* Resolve the package declarations */
-    if (cu->compilation_unit.unit &&
-        cu->compilation_unit.unit->kind == NK_PACKAGE_SPEC) {
+    if (cu->compilation_unit.unit) {
+        Syntax_Node *unit = cu->compilation_unit.unit;
 
-        Syntax_Node *pkg = cu->compilation_unit.unit;
+        if (unit->kind == NK_PACKAGE_SPEC) {
+            Syntax_Node *pkg = unit;
 
-        /* Create package symbol */
-        Symbol *pkg_sym = Symbol_New(SYMBOL_PACKAGE, pkg->package_spec.name,
-                                     pkg->location);
-        Type_Info *pkg_type = Type_New(TYPE_PACKAGE, pkg->package_spec.name);
-        pkg_sym->type = pkg_type;
-        pkg_sym->declaration = pkg;
-        Symbol_Add(sm, pkg_sym);
-        pkg->symbol = pkg_sym;
+            /* Create package symbol */
+            Symbol *pkg_sym = Symbol_New(SYMBOL_PACKAGE, pkg->package_spec.name,
+                                         pkg->location);
+            Type_Info *pkg_type = Type_New(TYPE_PACKAGE, pkg->package_spec.name);
+            pkg_sym->type = pkg_type;
+            pkg_sym->declaration = pkg;
+            Symbol_Add(sm, pkg_sym);
+            pkg->symbol = pkg_sym;
 
-        /* Push package scope */
-        Symbol_Manager_Push_Scope(sm, pkg_sym);
+            /* Push package scope */
+            Symbol_Manager_Push_Scope(sm, pkg_sym);
 
-        /* Resolve visible declarations */
-        Resolve_Declaration_List(sm, &pkg->package_spec.visible_decls);
+            /* Resolve visible declarations */
+            Resolve_Declaration_List(sm, &pkg->package_spec.visible_decls);
 
-        /* Populate package exports for qualified access (e.g., SYSTEM.MAX_INT) */
-        Populate_Package_Exports(pkg_sym, pkg);
+            /* Populate package exports for qualified access (e.g., SYSTEM.MAX_INT) */
+            Populate_Package_Exports(pkg_sym, pkg);
 
-        /* Resolve private declarations */
-        Resolve_Declaration_List(sm, &pkg->package_spec.private_decls);
+            /* Resolve private declarations */
+            Resolve_Declaration_List(sm, &pkg->package_spec.private_decls);
 
-        Symbol_Manager_Pop_Scope(sm);
+            Symbol_Manager_Pop_Scope(sm);
+        }
+        else if (unit->kind == NK_GENERIC_DECL) {
+            /* Generic unit: create SYMBOL_GENERIC with the inner spec */
+            Syntax_Node *inner = unit->generic_decl.unit;
+            String_Slice unit_name = {0};
+
+            if (inner && inner->kind == NK_PACKAGE_SPEC) {
+                unit_name = inner->package_spec.name;
+            } else if (inner && (inner->kind == NK_PROCEDURE_SPEC ||
+                                 inner->kind == NK_FUNCTION_SPEC)) {
+                unit_name = inner->subprogram_spec.name;
+            }
+
+            if (unit_name.data) {
+                /* Create generic symbol */
+                Symbol *sym = Symbol_New(SYMBOL_GENERIC, unit_name, unit->location);
+                sym->declaration = unit;
+                sym->generic_unit = inner;
+
+                /* Store formals list for later instantiation */
+                if (unit->generic_decl.formals.count > 0) {
+                    sym->generic_formals = unit->generic_decl.formals.items[0];
+                }
+
+                Symbol_Add(sm, sym);
+                unit->symbol = sym;
+            }
+        }
     }
 
     /* Done loading this package */
