@@ -7626,6 +7626,23 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                 return derived;
             }
 
+        case NK_ACCESS_TYPE:
+            {
+                /* Create access type pointing to designated type */
+                Type_Info *access_type = Type_New(TYPE_ACCESS, S(""));
+                access_type->size = 8;  /* Pointer size */
+                access_type->alignment = 8;
+
+                /* Resolve designated subtype */
+                if (node->access_type.designated) {
+                    Resolve_Expression(sm, node->access_type.designated);
+                    access_type->access.designated_type = node->access_type.designated->type;
+                }
+
+                node->type = access_type;
+                return access_type;
+            }
+
         case NK_RECORD_TYPE:
             {
                 /* Create record type info from syntax node */
@@ -8029,6 +8046,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
 static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node);
 static void Resolve_Declaration_List(Symbol_Manager *sm, Node_List *list);
 static void Freeze_Declaration_List(Node_List *list);
+static void Populate_Package_Exports(Symbol *pkg_sym, Syntax_Node *pkg_spec);
 
 static void Resolve_Statement_List(Symbol_Manager *sm, Node_List *list) {
     for (uint32_t i = 0; i < list->count; i++) {
@@ -8218,6 +8236,83 @@ static void Freeze_Declaration_List(Node_List *list) {
     }
 }
 
+/* Populate a package symbol's exported[] array from its visible declarations.
+ * This must be called after all visible declarations are resolved so that
+ * decl->symbol pointers are valid. Used by both inline packages and loaded specs. */
+static void Populate_Package_Exports(Symbol *pkg_sym, Syntax_Node *pkg_spec) {
+    if (!pkg_sym || !pkg_spec || pkg_spec->kind != NK_PACKAGE_SPEC) return;
+
+    Node_List *visible = &pkg_spec->package_spec.visible_decls;
+
+    /* Count exports including nested items (enum literals, multiple object names) */
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < visible->count; i++) {
+        Syntax_Node *decl = visible->items[i];
+        if (!decl) continue;
+        if (decl->kind == NK_OBJECT_DECL) {
+            count += (uint32_t)decl->object_decl.names.count;
+        } else if (decl->kind == NK_TYPE_DECL || decl->kind == NK_SUBTYPE_DECL) {
+            count++;
+            /* Enumeration literals */
+            if (decl->type_decl.definition &&
+                decl->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
+                count += (uint32_t)decl->type_decl.definition->enum_type.literals.count;
+            }
+        } else if (decl->kind == NK_PROCEDURE_SPEC || decl->kind == NK_FUNCTION_SPEC ||
+                   decl->kind == NK_PROCEDURE_BODY || decl->kind == NK_FUNCTION_BODY) {
+            count++;
+        } else if (decl->kind == NK_EXCEPTION_DECL) {
+            count += (uint32_t)decl->exception_decl.names.count;
+        } else if (decl->kind == NK_PACKAGE_SPEC) {
+            count++;  /* Nested packages */
+        }
+    }
+
+    if (count == 0) return;
+
+    /* Allocate and fill */
+    pkg_sym->exported = Arena_Allocate(count * sizeof(Symbol*));
+    pkg_sym->exported_count = 0;
+
+    for (uint32_t i = 0; i < visible->count; i++) {
+        Syntax_Node *decl = visible->items[i];
+        if (!decl) continue;
+
+        if (decl->kind == NK_OBJECT_DECL) {
+            for (uint32_t j = 0; j < decl->object_decl.names.count; j++) {
+                Syntax_Node *name_node = decl->object_decl.names.items[j];
+                if (name_node->symbol) {
+                    pkg_sym->exported[pkg_sym->exported_count++] = name_node->symbol;
+                }
+            }
+        } else if ((decl->kind == NK_TYPE_DECL || decl->kind == NK_SUBTYPE_DECL) && decl->symbol) {
+            pkg_sym->exported[pkg_sym->exported_count++] = decl->symbol;
+            /* Enumeration literals */
+            if (decl->type_decl.definition &&
+                decl->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
+                Node_List *lits = &decl->type_decl.definition->enum_type.literals;
+                for (uint32_t j = 0; j < lits->count; j++) {
+                    if (lits->items[j]->symbol) {
+                        pkg_sym->exported[pkg_sym->exported_count++] = lits->items[j]->symbol;
+                    }
+                }
+            }
+        } else if ((decl->kind == NK_PROCEDURE_SPEC || decl->kind == NK_FUNCTION_SPEC ||
+                    decl->kind == NK_PROCEDURE_BODY || decl->kind == NK_FUNCTION_BODY) && decl->symbol) {
+            pkg_sym->exported[pkg_sym->exported_count++] = decl->symbol;
+        } else if (decl->kind == NK_EXCEPTION_DECL) {
+            for (uint32_t j = 0; j < decl->exception_decl.names.count; j++) {
+                Syntax_Node *name_node = decl->exception_decl.names.items[j];
+                if (name_node->symbol) {
+                    pkg_sym->exported[pkg_sym->exported_count++] = name_node->symbol;
+                }
+            }
+        } else if (decl->kind == NK_PACKAGE_SPEC && decl->symbol) {
+            pkg_sym->exported[pkg_sym->exported_count++] = decl->symbol;
+        }
+    }
+}
+
 static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
     if (!node) return;
 
@@ -8272,11 +8367,26 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
 
         case NK_TYPE_DECL:
             {
-                Symbol *sym = Symbol_New(SYMBOL_TYPE, node->type_decl.name, node->location);
-                Type_Info *type = Type_New(TYPE_UNKNOWN, node->type_decl.name);
-                sym->type = type;
-                type->defining_symbol = sym;
-                Symbol_Add(sm, sym);
+                /* Check for existing incomplete type to complete (RM 3.8.1)
+                 * Must be in same declarative region (current scope) */
+                Symbol *existing = Symbol_Find(sm, node->type_decl.name);
+                Symbol *sym;
+                Type_Info *type;
+                if (existing && existing->kind == SYMBOL_TYPE &&
+                    existing->type && existing->type->kind == TYPE_UNKNOWN &&
+                    existing->defining_scope == sm->current_scope &&
+                    node->type_decl.definition) {
+                    /* Complete the existing incomplete type */
+                    sym = existing;
+                    type = sym->type;
+                } else {
+                    /* Create new type symbol */
+                    sym = Symbol_New(SYMBOL_TYPE, node->type_decl.name, node->location);
+                    type = Type_New(TYPE_UNKNOWN, node->type_decl.name);
+                    sym->type = type;
+                    type->defining_symbol = sym;
+                    Symbol_Add(sm, sym);
+                }
                 node->symbol = sym;
 
                 /* For discriminated types, add discriminant symbols to scope first
@@ -8671,6 +8781,8 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                 /* End of package spec freezes all declared entities (RM 13.14) */
                 Freeze_Declaration_List(&node->package_spec.visible_decls);
                 Freeze_Declaration_List(&node->package_spec.private_decls);
+                /* Populate exports for nested/inline package access (e.g., INNER.ACC) */
+                Populate_Package_Exports(sym, node);
                 Symbol_Manager_Pop_Scope(sm);
             }
             break;
@@ -10679,16 +10791,36 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         return 0;
     }
 
-    /* Array indexing */
+    /* Array indexing (with implicit access dereference per RM 4.1(3)) */
     Type_Info *prefix_type = node->apply.prefix->type;
-    if (Type_Is_Array_Like(prefix_type)) {
+    Type_Info *array_type = prefix_type;  /* Type to use for indexing */
+    bool implicit_deref = false;
+
+    /* Handle implicit dereference: A(I) where A is access-to-array */
+    if (prefix_type && prefix_type->kind == TYPE_ACCESS && prefix_type->access.designated_type) {
+        array_type = prefix_type->access.designated_type;
+        implicit_deref = true;
+    }
+
+    if (Type_Is_Array_Like(array_type)) {
         Symbol *array_sym = node->apply.prefix->symbol;
         uint32_t base;
         uint32_t low_bound_val = 0;
         bool has_dynamic_low = false;
 
+        if (implicit_deref) {
+            /* Load the access value (pointer to array) then use as base */
+            if (array_sym) {
+                base = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load ptr, ptr ", base);
+                Emit_Symbol_Ref(cg, array_sym);
+                Emit(cg, "  ; implicit dereference of access\n");
+            } else {
+                base = Generate_Expression(cg, node->apply.prefix);
+            }
+        }
         /* Check if unconstrained array needing fat pointer handling */
-        if (Type_Is_Unconstrained_Array(prefix_type) && array_sym &&
+        else if (Type_Is_Unconstrained_Array(array_type) && array_sym &&
             (array_sym->kind == SYMBOL_PARAMETER || array_sym->kind == SYMBOL_VARIABLE)) {
             /* Load fat pointer and extract data pointer and low bound */
             uint32_t fat = Emit_Load_Fat_Pointer(cg, array_sym);
@@ -10717,7 +10849,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                  adj, idx, low_bound_val);
             idx = adj;
         } else {
-            int64_t low_bound = Array_Low_Bound(prefix_type);
+            int64_t low_bound = Array_Low_Bound(array_type);
             if (low_bound != 0) {
                 uint32_t adj = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = sub i64 %%t%u, %lld\n", adj, idx, (long long)low_bound);
@@ -10726,7 +10858,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         }
 
         /* Get pointer to element and load */
-        const char *elem_type = Type_To_Llvm(prefix_type->array.element_type);
+        const char *elem_type = Type_To_Llvm(array_type->array.element_type);
         uint32_t ptr = Emit_Temp(cg);
         uint32_t t = Emit_Temp(cg);
 
@@ -14333,69 +14465,8 @@ static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src) 
         /* Resolve visible declarations */
         Resolve_Declaration_List(sm, &pkg->package_spec.visible_decls);
 
-        /* Collect exported symbols from visible declarations */
-        /* Count symbols first */
-        uint32_t export_count = 0;
-        for (uint32_t i = 0; i < pkg->package_spec.visible_decls.count; i++) {
-            Syntax_Node *decl = pkg->package_spec.visible_decls.items[i];
-            if (decl->kind == NK_OBJECT_DECL) {
-                export_count += decl->object_decl.names.count;
-            } else if (decl->kind == NK_TYPE_DECL || decl->kind == NK_SUBTYPE_DECL) {
-                if (decl->symbol) export_count++;
-                /* For enumeration types, count the literals too */
-                if (decl->type_decl.definition &&
-                    decl->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
-                    export_count += decl->type_decl.definition->enum_type.literals.count;
-                }
-            } else if (decl->kind == NK_PROCEDURE_SPEC || decl->kind == NK_FUNCTION_SPEC ||
-                       decl->kind == NK_PROCEDURE_BODY || decl->kind == NK_FUNCTION_BODY) {
-                if (decl->symbol) export_count++;
-            } else if (decl->kind == NK_EXCEPTION_DECL) {
-                export_count += decl->exception_decl.names.count;
-            }
-        }
-
-        /* Allocate and fill exported array */
-        if (export_count > 0) {
-            pkg_sym->exported = Arena_Allocate(export_count * sizeof(Symbol*));
-            pkg_sym->exported_count = 0;
-
-            for (uint32_t i = 0; i < pkg->package_spec.visible_decls.count; i++) {
-                Syntax_Node *decl = pkg->package_spec.visible_decls.items[i];
-                if (decl->kind == NK_OBJECT_DECL) {
-                    for (uint32_t j = 0; j < decl->object_decl.names.count; j++) {
-                        Syntax_Node *name_node = decl->object_decl.names.items[j];
-                        if (name_node->symbol) {
-                            pkg_sym->exported[pkg_sym->exported_count++] = name_node->symbol;
-                        }
-                    }
-                } else if ((decl->kind == NK_TYPE_DECL || decl->kind == NK_SUBTYPE_DECL) &&
-                           decl->symbol) {
-                    pkg_sym->exported[pkg_sym->exported_count++] = decl->symbol;
-                    /* For enumeration types, export the literals too */
-                    if (decl->type_decl.definition &&
-                        decl->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
-                        Node_List *lits = &decl->type_decl.definition->enum_type.literals;
-                        for (uint32_t j = 0; j < lits->count; j++) {
-                            if (lits->items[j]->symbol) {
-                                pkg_sym->exported[pkg_sym->exported_count++] = lits->items[j]->symbol;
-                            }
-                        }
-                    }
-                } else if ((decl->kind == NK_PROCEDURE_SPEC || decl->kind == NK_FUNCTION_SPEC ||
-                            decl->kind == NK_PROCEDURE_BODY || decl->kind == NK_FUNCTION_BODY) &&
-                           decl->symbol) {
-                    pkg_sym->exported[pkg_sym->exported_count++] = decl->symbol;
-                } else if (decl->kind == NK_EXCEPTION_DECL) {
-                    for (uint32_t j = 0; j < decl->exception_decl.names.count; j++) {
-                        Syntax_Node *name_node = decl->exception_decl.names.items[j];
-                        if (name_node->symbol) {
-                            pkg_sym->exported[pkg_sym->exported_count++] = name_node->symbol;
-                        }
-                    }
-                }
-            }
-        }
+        /* Populate package exports for qualified access (e.g., SYSTEM.MAX_INT) */
+        Populate_Package_Exports(pkg_sym, pkg);
 
         /* Resolve private declarations */
         Resolve_Declaration_List(sm, &pkg->package_spec.private_decls);

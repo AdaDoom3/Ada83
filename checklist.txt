@@ -148,7 +148,7 @@ A-SERIES ACATS TEST RESULTS (2026-01-26)
 
  CLASS                    pass   fail   skip  total    rate
  ---------------------- ------ ------ ------ ------ -------
- A  Acceptance              98      0     42    140     70%
+ A  Acceptance             102      0     38    140     72%
 
 Notes:
 - 0 FAILURES - all non-passing tests are SKIPs
@@ -156,10 +156,12 @@ Notes:
 - Added predefined ASCII package with all character constants
 - Added object and subprogram renames support
 - Added variant record component lookup
+- Fixed control flow termination (ret/br after gotos)
+- Fixed overloaded subprogram mangling (unique_id only for overloads)
 - SKIPs are mostly due to:
   * Missing standard library packages (SEQUENTIAL_IO, DIRECT_IO)
-  * Generic formal subprogram visibility
-  * UNCHECKED_DEALLOCATION visibility issues
+  * Nested package visibility issues
+  * 'VALUE attribute (needs runtime support)
 - Core language features are working correctly
 - SIMD code now portable (AVX-512 compile-time guarded)
 
