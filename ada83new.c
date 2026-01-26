@@ -2686,7 +2686,11 @@ struct Syntax_Node {
         struct { Node_List with_clauses; Node_List use_clauses; } context;
 
         /* NK_COMPILATION_UNIT */
-        struct { Syntax_Node *context; Syntax_Node *unit; } compilation_unit;
+        struct {
+            Syntax_Node *context;
+            Syntax_Node *unit;
+            Syntax_Node *separate_parent;  /* Parent name for SEPARATE subunits */
+        } compilation_unit;
     };
 };
 
@@ -5344,6 +5348,7 @@ static Syntax_Node *Parse_Declaration(Parser *p) {
             Parser_Expect(p, TK_IS);
 
             if (Parser_Match(p, TK_SEPARATE)) {
+                node->task_body.is_separate = true;
                 Parser_Expect(p, TK_SEMICOLON);
                 return node;
             }
@@ -5569,9 +5574,9 @@ static Syntax_Node *Parse_Compilation_Unit(Parser *p) {
     /* Separate unit */
     if (Parser_Match(p, TK_SEPARATE)) {
         Parser_Expect(p, TK_LPAREN);
-        Parse_Name(p);  /* Parent unit name */
+        node->compilation_unit.separate_parent = Parse_Name(p);
         Parser_Expect(p, TK_RPAREN);
-        /* Parse the actual subunit */
+        /* Parse the actual subunit below */
     }
 
     /* Main unit - Parse_Declaration now consumes its trailing semicolon */
@@ -6197,6 +6202,14 @@ static void Symbol_Manager_Push_Scope(Symbol_Manager *sm, Symbol *owner) {
 static void Symbol_Manager_Pop_Scope(Symbol_Manager *sm) {
     if (sm->current_scope->parent) {
         sm->current_scope = sm->current_scope->parent;
+    }
+}
+
+/* Push an existing scope (used for separate subunits to reuse parent's scope) */
+static void Symbol_Manager_Push_Existing_Scope(Symbol_Manager *sm, Scope *scope) {
+    if (scope) {
+        scope->parent = sm->current_scope;
+        sm->current_scope = scope;
     }
 }
 
@@ -8857,6 +8870,29 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                 /* Push scope for task body */
                 Symbol_Manager_Push_Scope(sm, task_sym);
 
+                /* Import entries from task spec into body scope (RM 9.1)
+                 * Entries declared in the task spec are visible inside the task body.
+                 * For single tasks, task_sym is SYMBOL_VARIABLE with TYPE_TASK;
+                 * the entries are on the type's defining_symbol. */
+                Symbol *type_sym = NULL;
+                if (task_sym->kind == SYMBOL_TYPE && task_sym->type &&
+                    task_sym->type->kind == TYPE_TASK) {
+                    /* task_sym is the type symbol directly (task type declaration) */
+                    type_sym = task_sym;
+                } else if (task_sym->type && task_sym->type->kind == TYPE_TASK &&
+                           task_sym->type->defining_symbol) {
+                    /* task_sym is the variable; get the type's defining symbol */
+                    type_sym = task_sym->type->defining_symbol;
+                }
+                if (type_sym && type_sym->exported) {
+                    for (uint32_t i = 0; i < type_sym->exported_count; i++) {
+                        Symbol *entry_sym = type_sym->exported[i];
+                        if (entry_sym) {
+                            Symbol_Add(sm, entry_sym);
+                        }
+                    }
+                }
+
                 /* Resolve declarations and statements */
                 Resolve_Declaration_List(sm, &node->task_body.declarations);
                 Resolve_Statement_List(sm, &node->task_body.statements);
@@ -9887,9 +9923,35 @@ static void Resolve_Compilation_Unit(Symbol_Manager *sm, Syntax_Node *node) {
         }
     }
 
+    /* Handle separate subunits (SEPARATE (parent) ...) */
+    Symbol *parent_sym = NULL;
+    if (node->compilation_unit.separate_parent) {
+        Syntax_Node *parent = node->compilation_unit.separate_parent;
+        String_Slice parent_name = {0};
+        if (parent->kind == NK_IDENTIFIER) {
+            parent_name = parent->string_val.text;
+        } else if (parent->kind == NK_SELECTED) {
+            /* Handle qualified names like A.B - use the selector (rightmost part) */
+            parent_name = parent->selected.selector;
+        }
+        if (parent_name.length > 0) {
+            parent_sym = Symbol_Find(sm, parent_name);
+            if (parent_sym && parent_sym->scope) {
+                /* Push the parent's actual scope so we can find the stub symbol.
+                 * This reuses the scope where the stub was declared. */
+                Symbol_Manager_Push_Existing_Scope(sm, parent_sym->scope);
+            }
+        }
+    }
+
     /* Resolve main unit */
     if (node->compilation_unit.unit) {
         Resolve_Declaration(sm, node->compilation_unit.unit);
+    }
+
+    /* Pop parent scope if we pushed it */
+    if (parent_sym && parent_sym->scope) {
+        Symbol_Manager_Pop_Scope(sm);
     }
 }
 
@@ -13767,9 +13829,19 @@ static bool Has_Nested_Subprograms(Node_List *declarations, Node_List *statement
 }
 
 static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
+    /* Skip stub bodies (PROCEDURE X IS SEPARATE;) - the actual body
+     * will be provided by a separate subunit compilation */
+    if (node->subprogram_body.is_separate) {
+        return;
+    }
+
     Syntax_Node *spec = node->subprogram_body.specification;
     Symbol *sym = spec ? spec->symbol : NULL;
     if (!sym) return;
+
+    /* Mark this symbol as having been defined - prevents duplicate
+     * 'declare' statements for functions defined in the same file */
+    sym->extern_emitted = true;
 
     bool is_function = sym->kind == SYMBOL_FUNCTION;
     uint32_t saved_deferred_count = cg->deferred_count;
@@ -14136,6 +14208,14 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
 }
 
 static void Generate_Task_Body(Code_Generator *cg, Syntax_Node *node) {
+    /* Skip stub bodies (TASK BODY X IS SEPARATE;) - the actual body
+     * will be provided by a separate subunit compilation */
+    if (node->task_body.is_separate) {
+        Emit(cg, "\n; Task body stub: %.*s (defined in separate subunit)\n",
+             (int)node->task_body.name.length, node->task_body.name.data);
+        return;
+    }
+
     Emit(cg, "\n; Task body: %.*s\n",
          (int)node->task_body.name.length, node->task_body.name.data);
 
