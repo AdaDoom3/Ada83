@@ -6132,6 +6132,7 @@ struct Symbol {
     bool            extern_emitted;      /* Extern declaration already emitted */
     bool            is_named_number;     /* Named number (constant without explicit type) */
     bool            is_overloaded;       /* Part of an overload set (needs unique_id suffix) */
+    bool            body_claimed;        /* Body has been matched to this spec (for homographs) */
 
     /* LLVM label ID for SYMBOL_LABEL */
     uint32_t        llvm_label_id;       /* 0 = not yet assigned */
@@ -8667,20 +8668,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
         case NK_PROCEDURE_SPEC:
         case NK_FUNCTION_SPEC:
             {
-                /* Check if there's already a matching symbol from package spec.
-                 * This happens when resolving a subprogram body that completes a spec. */
-                Symbol *sym = Symbol_Find(sm, node->subprogram_spec.name);
-                Symbol_Kind expected_kind = node->kind == NK_PROCEDURE_SPEC ?
-                                           SYMBOL_PROCEDURE : SYMBOL_FUNCTION;
-                if (sym && sym->kind == expected_kind) {
-                    /* Use existing symbol from spec */
-                    node->symbol = sym;
-                    break;
-                }
-
-                sym = Symbol_New(expected_kind, node->subprogram_spec.name, node->location);
-
-                /* Count total parameters (each param_spec can have multiple names) */
+                /* Count total parameters first (needed for overload matching) */
                 Node_List *param_list = &node->subprogram_spec.parameters;
                 uint32_t total_params = 0;
                 for (uint32_t i = 0; i < param_list->count; i++) {
@@ -8690,6 +8678,50 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                     }
                 }
 
+                /* Check if there's already a matching symbol from package spec.
+                 * This happens when resolving a subprogram body that completes a spec.
+                 * For overloaded subprograms, must match parameter count AND types. */
+                Symbol_Kind expected_kind = node->kind == NK_PROCEDURE_SPEC ?
+                                           SYMBOL_PROCEDURE : SYMBOL_FUNCTION;
+                Symbol *sym = Symbol_Find(sm, node->subprogram_spec.name);
+                while (sym) {
+                    if (sym->kind == expected_kind && sym->parameter_count == total_params) {
+                        /* Check parameter types match */
+                        bool types_match = true;
+                        uint32_t param_idx = 0;
+                        for (uint32_t i = 0; i < param_list->count && types_match; i++) {
+                            Syntax_Node *ps = param_list->items[i];
+                            if (ps->kind == NK_PARAM_SPEC) {
+                                /* Resolve param type first */
+                                if (ps->param_spec.param_type) {
+                                    Resolve_Expression(sm, ps->param_spec.param_type);
+                                }
+                                Type_Info *body_type = ps->param_spec.param_type ?
+                                                       ps->param_spec.param_type->type : NULL;
+                                for (uint32_t j = 0; j < ps->param_spec.names.count; j++) {
+                                    if (param_idx < sym->parameter_count) {
+                                        Type_Info *spec_type = sym->parameters[param_idx].param_type;
+                                        if (body_type != spec_type) {
+                                            types_match = false;
+                                            break;
+                                        }
+                                    }
+                                    param_idx++;
+                                }
+                            }
+                        }
+                        /* Found matching spec - check it's not already claimed */
+                        if (types_match && !sym->body_claimed) {
+                            sym->body_claimed = true;
+                            node->symbol = sym;
+                            goto spec_matched;
+                        }
+                    }
+                    sym = sym->next_overload;
+                }
+
+                /* No matching spec found - create new symbol */
+                sym = Symbol_New(expected_kind, node->subprogram_spec.name, node->location);
                 sym->parameter_count = total_params;
                 if (total_params > 0) {
                     sym->parameters = Arena_Allocate(total_params * sizeof(Parameter_Info));
@@ -8721,6 +8753,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                 }
                 Symbol_Add(sm, sym);
                 node->symbol = sym;
+            spec_matched:;
             }
             break;
 
@@ -9040,6 +9073,9 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
 
                 /* Handle generic packages: formals and unit are in the generic declaration */
                 if (pkg_sym && pkg_sym->kind == SYMBOL_GENERIC) {
+                    /* Store this body as the generic's body for later instantiation */
+                    pkg_sym->generic_body = node;
+
                     /* Install generic formal parameters first */
                     if (pkg_sym->declaration &&
                         pkg_sym->declaration->kind == NK_GENERIC_DECL) {
@@ -9540,11 +9576,6 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                 if (!expr->type || expr->kind == NK_AGGREGATE) {
                                     expr->type = obj_type;
                                 }
-                                fprintf(stderr, "DEBUG: Set aggregate type to %.*s\n",
-                                        (int)obj_type->name.length, obj_type->name.data);
-                            } else {
-                                fprintf(stderr, "DEBUG: No obj_type found, actual=%p obj_type=%p\n",
-                                        (void*)actual, (void*)obj_type);
                             }
                         }
                     }
@@ -9746,11 +9777,13 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                 }
                                 else if (decl->kind == NK_PROCEDURE_SPEC ||
                                          decl->kind == NK_FUNCTION_SPEC) {
-                                    /* Create subprogram symbol with instantiated types */
+                                    /* Create subprogram symbol with instantiated types.
+                                     * Assign unique_id immediately so homographs get distinct IDs. */
                                     String_Slice name = decl->subprogram_spec.name;
                                     Symbol_Kind sk = (decl->kind == NK_PROCEDURE_SPEC) ?
                                                      SYMBOL_PROCEDURE : SYMBOL_FUNCTION;
                                     Symbol *exp = Symbol_New(sk, name, decl->location);
+                                    exp->unique_id = sm->next_unique_id++;
                                     exp->declaration = decl;
                                     exp->parent = inst_sym;
                                     exp->generic_template = template;
@@ -14349,6 +14382,48 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
                                            Syntax_Node *template_body) {
     if (!inst_sym || !template_body) return;
 
+    /* Handle package instantiation specially: iterate through exported
+     * subprograms and generate each one with its own symbol. */
+    if (inst_sym->kind == SYMBOL_PACKAGE && template_body->kind == NK_PACKAGE_BODY) {
+        for (uint32_t i = 0; i < inst_sym->exported_count; i++) {
+            Symbol *exp = inst_sym->exported[i];
+            if (!exp) continue;
+            if (exp->kind != SYMBOL_FUNCTION && exp->kind != SYMBOL_PROCEDURE)
+                continue;
+
+            /* Count which Nth homograph this is in the export list */
+            uint32_t homograph_idx = 0;
+            for (uint32_t k = 0; k < i; k++) {
+                Symbol *prev = inst_sym->exported[k];
+                if (prev && (prev->kind == SYMBOL_FUNCTION || prev->kind == SYMBOL_PROCEDURE) &&
+                    Slice_Equal_Ignore_Case(prev->name, exp->name)) {
+                    homograph_idx++;
+                }
+            }
+
+            /* Find the Nth body with this name */
+            Syntax_Node *subp_body = NULL;
+            uint32_t body_homograph_idx = 0;
+            for (uint32_t j = 0; j < template_body->package_body.declarations.count; j++) {
+                Syntax_Node *decl = template_body->package_body.declarations.items[j];
+                if (!decl) continue;
+                if (decl->kind == NK_PROCEDURE_BODY || decl->kind == NK_FUNCTION_BODY) {
+                    if (Slice_Equal_Ignore_Case(decl->subprogram_body.specification->subprogram_spec.name, exp->name)) {
+                        if (body_homograph_idx == homograph_idx) {
+                            subp_body = decl;
+                            break;
+                        }
+                        body_homograph_idx++;
+                    }
+                }
+            }
+            if (subp_body) {
+                Generate_Generic_Instance_Body(cg, exp, subp_body);
+            }
+        }
+        return;
+    }
+
     bool is_function = inst_sym->kind == SYMBOL_FUNCTION;
     uint32_t saved_deferred_count = cg->deferred_count;
 
@@ -14540,8 +14615,13 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
         case NK_PACKAGE_BODY:
             /* First, emit package spec's object declarations (constants, variables) */
             {
-                String_Slice pkg_name = node->package_body.name;
-                Symbol *pkg_sym = Symbol_Find(cg->sm, pkg_name);
+                Symbol *pkg_sym = node->symbol;  /* Use symbol from semantic analysis */
+
+                /* Skip generic package bodies - code is generated only for instances */
+                if (pkg_sym && pkg_sym->kind == SYMBOL_GENERIC) {
+                    break;
+                }
+
                 if (pkg_sym && pkg_sym->kind == SYMBOL_PACKAGE && pkg_sym->declaration) {
                     Syntax_Node *spec = pkg_sym->declaration;
                     if (spec->kind == NK_PACKAGE_SPEC) {
@@ -14587,6 +14667,49 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 if (cg->current_function && cg->deferred_count < 64) {
                     /* Defer nested generic instance - emit after enclosing function */
                     cg->deferred_bodies[cg->deferred_count++] = node;
+                } else if (inst_sym->kind == SYMBOL_PACKAGE) {
+                    /* Generic PACKAGE instantiation: iterate exported subprograms
+                     * and generate each one using its own symbol (with unique_id).
+                     * Match by counting which Nth homograph this is in the export list,
+                     * then finding the Nth body with the same name. */
+                    if (generic_body->kind == NK_PACKAGE_BODY) {
+                        for (uint32_t i = 0; i < inst_sym->exported_count; i++) {
+                            Symbol *exp = inst_sym->exported[i];
+                            if (!exp) continue;
+                            if (exp->kind != SYMBOL_FUNCTION && exp->kind != SYMBOL_PROCEDURE)
+                                continue;
+
+                            /* Count how many times this name appeared before in exports */
+                            uint32_t homograph_idx = 0;
+                            for (uint32_t k = 0; k < i; k++) {
+                                Symbol *prev = inst_sym->exported[k];
+                                if (prev && (prev->kind == SYMBOL_FUNCTION || prev->kind == SYMBOL_PROCEDURE) &&
+                                    Slice_Equal_Ignore_Case(prev->name, exp->name)) {
+                                    homograph_idx++;
+                                }
+                            }
+
+                            /* Find the Nth body with this name */
+                            Syntax_Node *subp_body = NULL;
+                            uint32_t body_homograph_idx = 0;
+                            for (uint32_t j = 0; j < generic_body->package_body.declarations.count; j++) {
+                                Syntax_Node *decl = generic_body->package_body.declarations.items[j];
+                                if (!decl) continue;
+                                if (decl->kind == NK_PROCEDURE_BODY || decl->kind == NK_FUNCTION_BODY) {
+                                    if (Slice_Equal_Ignore_Case(decl->subprogram_body.specification->subprogram_spec.name, exp->name)) {
+                                        if (body_homograph_idx == homograph_idx) {
+                                            subp_body = decl;
+                                            break;
+                                        }
+                                        body_homograph_idx++;
+                                    }
+                                }
+                            }
+                            if (subp_body) {
+                                Generate_Generic_Instance_Body(cg, exp, subp_body);
+                            }
+                        }
+                    }
                 } else {
                     Generate_Generic_Instance_Body(cg, inst_sym, generic_body);
                 }
@@ -15022,11 +15145,11 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
 
     /* Standard exceptions (RM 11.1) */
     Emit(cg, "; Standard exception identities\n");
-    Emit(cg, "@.ex.CONSTRAINT_ERROR = linkonce_odr constant i64 1\n");
-    Emit(cg, "@.ex.NUMERIC_ERROR = linkonce_odr constant i64 2\n");
-    Emit(cg, "@.ex.PROGRAM_ERROR = linkonce_odr constant i64 3\n");
-    Emit(cg, "@.ex.STORAGE_ERROR = linkonce_odr constant i64 4\n");
-    Emit(cg, "@.ex.TASKING_ERROR = linkonce_odr constant i64 5\n\n");
+    Emit(cg, "@__exc.CONSTRAINT_ERROR = linkonce_odr constant i64 1\n");
+    Emit(cg, "@__exc.NUMERIC_ERROR = linkonce_odr constant i64 2\n");
+    Emit(cg, "@__exc.PROGRAM_ERROR = linkonce_odr constant i64 3\n");
+    Emit(cg, "@__exc.STORAGE_ERROR = linkonce_odr constant i64 4\n");
+    Emit(cg, "@__exc.TASKING_ERROR = linkonce_odr constant i64 5\n\n");
 
     /* Secondary stack initialization */
     Emit(cg, "; Secondary stack runtime\n");
