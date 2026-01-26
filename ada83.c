@@ -6226,8 +6226,12 @@ static Scope *Scope_New(Scope *parent) {
     Scope *scope = Arena_Allocate(sizeof(Scope));
     scope->parent = parent;
     scope->nesting_level = parent ? parent->nesting_level + 1 : 0;
+    /* Inherit frame_size from parent so nested scope variables get unique offsets.
+     * This ensures variables in DECLARE blocks don't overlap with outer variables. */
+    scope->frame_size = parent ? parent->frame_size : 0;
     return scope;
 }
+
 
 static void Symbol_Manager_Push_Scope(Symbol_Manager *sm, Symbol *owner) {
     Scope *scope = Scope_New(sm->current_scope);
@@ -6237,6 +6241,11 @@ static void Symbol_Manager_Push_Scope(Symbol_Manager *sm, Symbol *owner) {
 
 static void Symbol_Manager_Pop_Scope(Symbol_Manager *sm) {
     if (sm->current_scope->parent) {
+        /* Propagate frame_size up to parent - parent needs to allocate enough
+         * space for all variables, including those in nested blocks. */
+        if (sm->current_scope->frame_size > sm->current_scope->parent->frame_size) {
+            sm->current_scope->parent->frame_size = sm->current_scope->frame_size;
+        }
         sm->current_scope = sm->current_scope->parent;
     }
 }
@@ -12301,14 +12310,21 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
 
     /* Generic formal subprogram substitution: if calling a formal subprogram
      * inside a generic instantiation, substitute with the actual subprogram
-     * or generate inline code for built-in operators. */
-    if (sym && cg->current_instance && cg->current_instance->generic_actuals) {
-        for (uint32_t i = 0; i < cg->current_instance->generic_actual_count; i++) {
+     * or generate inline code for built-in operators.
+     * For subprograms exported from generic packages, the actuals are on the
+     * parent package instance, not on the subprogram itself. */
+    Symbol *actuals_holder = cg->current_instance;
+    if (actuals_holder && !actuals_holder->generic_actuals && actuals_holder->parent &&
+        actuals_holder->parent->kind == SYMBOL_PACKAGE && actuals_holder->parent->generic_actuals) {
+        actuals_holder = actuals_holder->parent;  /* Use package's generic_actuals */
+    }
+    if (sym && actuals_holder && actuals_holder->generic_actuals) {
+        for (uint32_t i = 0; i < actuals_holder->generic_actual_count; i++) {
             if (Slice_Equal_Ignore_Case(sym->name,
-                    cg->current_instance->generic_actuals[i].formal_name)) {
-                if (cg->current_instance->generic_actuals[i].actual_subprogram) {
-                    sym = cg->current_instance->generic_actuals[i].actual_subprogram;
-                } else if (cg->current_instance->generic_actuals[i].builtin_operator) {
+                    actuals_holder->generic_actuals[i].formal_name)) {
+                if (actuals_holder->generic_actuals[i].actual_subprogram) {
+                    sym = actuals_holder->generic_actuals[i].actual_subprogram;
+                } else if (actuals_holder->generic_actuals[i].builtin_operator) {
                     /* Built-in operator - generate inline */
                     Token_Kind op = cg->current_instance->generic_actuals[i].builtin_operator;
                     if (op == TK_AMPERSAND && node->apply.arguments.count == 2) {
@@ -12327,19 +12343,19 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                             sym->parameters[1].param_type : right_arg->type;
 
                         /* Substitute generic formal types with actual types */
-                        if (cg->current_instance && cg->current_instance->generic_actuals) {
-                            for (uint32_t k = 0; k < cg->current_instance->generic_actual_count; k++) {
+                        if (actuals_holder && actuals_holder->generic_actuals) {
+                            for (uint32_t k = 0; k < actuals_holder->generic_actual_count; k++) {
                                 if (left_type && left_type->name.data &&
                                     Slice_Equal_Ignore_Case(left_type->name,
-                                        cg->current_instance->generic_actuals[k].formal_name) &&
-                                    cg->current_instance->generic_actuals[k].actual_type) {
-                                    left_type = cg->current_instance->generic_actuals[k].actual_type;
+                                        actuals_holder->generic_actuals[k].formal_name) &&
+                                    actuals_holder->generic_actuals[k].actual_type) {
+                                    left_type = actuals_holder->generic_actuals[k].actual_type;
                                 }
                                 if (right_type && right_type->name.data &&
                                     Slice_Equal_Ignore_Case(right_type->name,
-                                        cg->current_instance->generic_actuals[k].formal_name) &&
-                                    cg->current_instance->generic_actuals[k].actual_type) {
-                                    right_type = cg->current_instance->generic_actuals[k].actual_type;
+                                        actuals_holder->generic_actuals[k].formal_name) &&
+                                    actuals_holder->generic_actuals[k].actual_type) {
+                                    right_type = actuals_holder->generic_actuals[k].actual_type;
                                 }
                             }
                         }
