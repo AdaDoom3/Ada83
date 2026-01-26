@@ -148,22 +148,24 @@ A-SERIES ACATS TEST RESULTS (2026-01-26)
 
  CLASS                    pass   fail   skip  total    rate
  ---------------------- ------ ------ ------ ------ -------
- A  Acceptance             102      0     38    140     72%
+ A  Acceptance             111      1     28    140     79%
 
 Notes:
-- 0 FAILURES - all non-passing tests are SKIPs
-- Fixed USE clause to properly export named numbers (e.g., USE SYSTEM)
-- Added predefined ASCII package with all character constants
-- Added object and subprogram renames support
-- Added variant record component lookup
-- Fixed control flow termination (ret/br after gotos)
-- Fixed overloaded subprogram mangling (unique_id only for overloads)
+- 1 FAILURE (a83041d) - segfault during execution
+- Fixed subprogram spec resolution to reuse existing symbols (separate compilation)
+- Fixed generic subprogram loading (UNCHECKED_DEALLOCATION, UNCHECKED_CONVERSION)
+- Fixed record/array aggregate assignment (use memcpy, not store)
+- Fixed array slice assignment (slice-to-slice with memcpy)
+- Fixed access type fields (return ptr without i64 conversion)
+- Fixed generic package instantiation creates SYMBOL_PACKAGE (not SYMBOL_PROCEDURE)
+- Fixed USE clause for generic package instances (exports types, procedures, functions)
+- Fixed string comparison to use fat pointers for unconstrained arrays
+- Fixed parameter/return type resolution for generic package instance subprograms
 - SKIPs are mostly due to:
-  * Missing standard library packages (SEQUENTIAL_IO, DIRECT_IO)
-  * Nested package visibility issues
-  * 'VALUE attribute (needs runtime support)
+  * Multi-file tests requiring support packages
+  * Generic package body instantiation (ae2113a/b compile but lack body code)
+  * Tasking features (entry calls, accept statements)
 - Core language features are working correctly
-- SIMD code now portable (AVX-512 compile-time guarded)
 
 ===============================================================================
 LAST UPDATED: 2026-01-26

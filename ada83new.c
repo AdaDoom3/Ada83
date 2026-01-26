@@ -9302,8 +9302,13 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                 }
 
                 /* Create instance symbol */
-                Symbol_Kind inst_kind = (node->generic_inst.unit_kind == TK_FUNCTION) ?
-                                        SYMBOL_FUNCTION : SYMBOL_PROCEDURE;
+                Symbol_Kind inst_kind;
+                if (node->generic_inst.unit_kind == TK_FUNCTION)
+                    inst_kind = SYMBOL_FUNCTION;
+                else if (node->generic_inst.unit_kind == TK_PACKAGE)
+                    inst_kind = SYMBOL_PACKAGE;
+                else
+                    inst_kind = SYMBOL_PROCEDURE;
                 Symbol *inst_sym = Symbol_New(inst_kind,
                                               node->generic_inst.instance_name,
                                               node->location);
@@ -9399,6 +9404,211 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                     break;
                                 }
                             }
+                        }
+                    }
+                }
+
+                /* For package instantiations, copy and instantiate exported symbols */
+                if (node->generic_inst.unit_kind == TK_PACKAGE) {
+                    /* Look for exports from the template's generic_unit (package spec) */
+                    Syntax_Node *pkg_spec = template->generic_unit;
+                    if (pkg_spec && pkg_spec->kind == NK_PACKAGE_SPEC) {
+                        /* Count visible declarations */
+                        uint32_t export_count = 0;
+                        for (uint32_t i = 0; i < pkg_spec->package_spec.visible_decls.count; i++) {
+                            Syntax_Node *decl = pkg_spec->package_spec.visible_decls.items[i];
+                            if (!decl) continue;
+                            if (decl->kind == NK_TYPE_DECL || decl->kind == NK_SUBTYPE_DECL) {
+                                export_count++;
+                                /* Count enum literals too */
+                                if (decl->type_decl.definition &&
+                                    decl->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
+                                    export_count += decl->type_decl.definition->enum_type.literals.count;
+                                }
+                            }
+                            else if (decl->kind == NK_PROCEDURE_SPEC || decl->kind == NK_FUNCTION_SPEC)
+                                export_count++;
+                            else if (decl->kind == NK_EXCEPTION_DECL)
+                                export_count += decl->exception_decl.names.count;
+                        }
+
+                        if (export_count > 0) {
+                            inst_sym->exported = Arena_Allocate(export_count * sizeof(Symbol*));
+                            inst_sym->exported_count = 0;
+
+                            /* Helper: substitute generic formals with actuals in a type */
+                            #define SUBSTITUTE_TYPE(ty) do { \
+                                if (ty && ty->name.data) { \
+                                    for (uint32_t k = 0; k < inst_sym->generic_actual_count; k++) { \
+                                        if (Slice_Equal_Ignore_Case(ty->name, \
+                                                      inst_sym->generic_actuals[k].formal_name)) { \
+                                            ty = inst_sym->generic_actuals[k].actual_type; \
+                                            break; \
+                                        } \
+                                    } \
+                                } \
+                            } while(0)
+
+                            for (uint32_t i = 0; i < pkg_spec->package_spec.visible_decls.count; i++) {
+                                Syntax_Node *decl = pkg_spec->package_spec.visible_decls.items[i];
+                                if (!decl) continue;
+
+                                if (decl->kind == NK_TYPE_DECL || decl->kind == NK_SUBTYPE_DECL) {
+                                    /* Create type symbol for the instance */
+                                    String_Slice name = decl->type_decl.name;
+                                    Symbol *exp = Symbol_New(SYMBOL_TYPE, name, decl->location);
+                                    exp->type = decl->type;
+                                    if (!exp->type && decl->type_decl.definition)
+                                        exp->type = decl->type_decl.definition->type;
+                                    /* Create Type_Info for unresolved enum/range types */
+                                    if (!exp->type && decl->type_decl.definition) {
+                                        Syntax_Node *def = decl->type_decl.definition;
+                                        if (def->kind == NK_ENUMERATION_TYPE) {
+                                            Type_Info *ti = Type_New(TYPE_ENUMERATION, name);
+                                            ti->size = 4;
+                                            uint32_t lit_count = def->enum_type.literals.count;
+                                            ti->enumeration.literal_count = lit_count;
+                                            if (lit_count > 0) {
+                                                ti->enumeration.literals = Arena_Allocate(
+                                                    lit_count * sizeof(String_Slice));
+                                                for (uint32_t j = 0; j < lit_count; j++) {
+                                                    Syntax_Node *lit = def->enum_type.literals.items[j];
+                                                    if (lit && lit->kind == NK_IDENTIFIER)
+                                                        ti->enumeration.literals[j] = lit->string_val.text;
+                                                }
+                                            }
+                                            exp->type = ti;
+                                            def->type = ti;
+                                            decl->type = ti;
+                                        } else if (def->kind == NK_RANGE) {
+                                            /* Integer type with range constraint */
+                                            Type_Info *ti = Type_New(TYPE_INTEGER, name);
+                                            ti->size = 4;
+                                            exp->type = ti;
+                                            def->type = ti;
+                                            decl->type = ti;
+                                        }
+                                    }
+                                    exp->declaration = decl;
+                                    exp->parent = inst_sym;
+                                    inst_sym->exported[inst_sym->exported_count++] = exp;
+
+                                    /* Also export enum literals */
+                                    if (decl->type_decl.definition &&
+                                        decl->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
+                                        Node_List *lits = &decl->type_decl.definition->enum_type.literals;
+                                        for (uint32_t j = 0; j < lits->count; j++) {
+                                            Syntax_Node *lit = lits->items[j];
+                                            if (lit && lit->kind == NK_IDENTIFIER) {
+                                                Symbol *lit_sym = Symbol_New(SYMBOL_LITERAL,
+                                                    lit->string_val.text, lit->location);
+                                                lit_sym->type = exp->type;
+                                                lit_sym->parent = inst_sym;
+                                                inst_sym->exported[inst_sym->exported_count++] = lit_sym;
+                                            }
+                                        }
+                                    }
+                                }
+                                else if (decl->kind == NK_PROCEDURE_SPEC ||
+                                         decl->kind == NK_FUNCTION_SPEC) {
+                                    /* Create subprogram symbol with instantiated types */
+                                    String_Slice name = decl->subprogram_spec.name;
+                                    Symbol_Kind sk = (decl->kind == NK_PROCEDURE_SPEC) ?
+                                                     SYMBOL_PROCEDURE : SYMBOL_FUNCTION;
+                                    Symbol *exp = Symbol_New(sk, name, decl->location);
+                                    exp->declaration = decl;
+                                    exp->parent = inst_sym;
+                                    exp->generic_template = template;
+
+                                    /* Copy and substitute parameter types */
+                                    Node_List *params = &decl->subprogram_spec.parameters;
+                                    uint32_t total_params = 0;
+                                    for (uint32_t j = 0; j < params->count; j++) {
+                                        Syntax_Node *ps = params->items[j];
+                                        if (ps->kind == NK_PARAM_SPEC)
+                                            total_params += ps->param_spec.names.count;
+                                    }
+                                    exp->parameter_count = total_params;
+                                    if (total_params > 0) {
+                                        exp->parameters = Arena_Allocate(
+                                            total_params * sizeof(Parameter_Info));
+                                        uint32_t idx = 0;
+                                        for (uint32_t j = 0; j < params->count; j++) {
+                                            Syntax_Node *ps = params->items[j];
+                                            if (ps->kind == NK_PARAM_SPEC) {
+                                                Type_Info *ptype = ps->param_spec.param_type ?
+                                                    ps->param_spec.param_type->type : NULL;
+                                                /* If type not resolved, look up by name */
+                                                if (!ptype && ps->param_spec.param_type &&
+                                                    ps->param_spec.param_type->kind == NK_IDENTIFIER) {
+                                                    String_Slice pt_name = ps->param_spec.param_type->string_val.text;
+                                                    /* First try instance's own exports */
+                                                    for (uint32_t k = 0; k < inst_sym->exported_count; k++) {
+                                                        Symbol *es = inst_sym->exported[k];
+                                                        if (es && es->kind == SYMBOL_TYPE &&
+                                                            Slice_Equal_Ignore_Case(es->name, pt_name)) {
+                                                            ptype = es->type;
+                                                            break;
+                                                        }
+                                                    }
+                                                    /* Then try global symbol table */
+                                                    if (!ptype) {
+                                                        Symbol *tsym = Symbol_Find(sm, pt_name);
+                                                        if (tsym) ptype = tsym->type;
+                                                    }
+                                                }
+                                                SUBSTITUTE_TYPE(ptype);
+                                                for (uint32_t m = 0; m < ps->param_spec.names.count; m++) {
+                                                    exp->parameters[idx].name =
+                                                        ps->param_spec.names.items[m]->string_val.text;
+                                                    exp->parameters[idx].param_type = ptype;
+                                                    exp->parameters[idx].mode =
+                                                        (Parameter_Mode)ps->param_spec.mode;
+                                                    idx++;
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    /* Handle return type */
+                                    if (decl->kind == NK_FUNCTION_SPEC &&
+                                        decl->subprogram_spec.return_type) {
+                                        Type_Info *rtype = decl->subprogram_spec.return_type->type;
+                                        /* If return type not resolved, look up by name */
+                                        if (!rtype && decl->subprogram_spec.return_type->kind == NK_IDENTIFIER) {
+                                            String_Slice rt_name = decl->subprogram_spec.return_type->string_val.text;
+                                            /* First try instance's own exports (for types like FILE_MODE) */
+                                            for (uint32_t k = 0; k < inst_sym->exported_count; k++) {
+                                                Symbol *es = inst_sym->exported[k];
+                                                if (es && es->kind == SYMBOL_TYPE &&
+                                                    Slice_Equal_Ignore_Case(es->name, rt_name)) {
+                                                    rtype = es->type;
+                                                    break;
+                                                }
+                                            }
+                                            /* Then try global symbol table */
+                                            if (!rtype) {
+                                                Symbol *tsym = Symbol_Find(sm, rt_name);
+                                                if (tsym) rtype = tsym->type;
+                                            }
+                                        }
+                                        SUBSTITUTE_TYPE(rtype);
+                                        exp->return_type = rtype;
+                                    }
+
+                                    inst_sym->exported[inst_sym->exported_count++] = exp;
+                                }
+                                else if (decl->kind == NK_EXCEPTION_DECL) {
+                                    for (uint32_t j = 0; j < decl->exception_decl.names.count; j++) {
+                                        Syntax_Node *nm = decl->exception_decl.names.items[j];
+                                        Symbol *exp = Symbol_New(SYMBOL_EXCEPTION,
+                                            nm->string_val.text, nm->location);
+                                        exp->parent = inst_sym;
+                                        inst_sym->exported[inst_sym->exported_count++] = exp;
+                                    }
+                                }
+                            }
+                            #undef SUBSTITUTE_TYPE
                         }
                     }
                 }
@@ -10448,15 +10658,27 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
 
     if ((node->binary.op == TK_EQ || node->binary.op == TK_NE) &&
         left_type && Type_Is_Composite(left_type)) {
-        /* Composite type comparison - get addresses, not loaded values */
-        uint32_t left_ptr = Generate_Composite_Address(cg, node->binary.left);
-        uint32_t right_ptr = Generate_Composite_Address(cg, node->binary.right);
+        /* Composite type comparison */
+        uint32_t left_ptr, right_ptr;
+        bool is_unconstrained = Type_Is_Unconstrained_Array(left_type) ||
+                                left_type->kind == TYPE_STRING;
+        if (is_unconstrained) {
+            /* Unconstrained arrays: use fat pointer values directly */
+            left_ptr = Generate_Expression(cg, node->binary.left);
+            right_ptr = Generate_Expression(cg, node->binary.right);
+        } else {
+            /* Constrained arrays/records: get addresses */
+            left_ptr = Generate_Composite_Address(cg, node->binary.left);
+            right_ptr = Generate_Composite_Address(cg, node->binary.right);
+        }
         uint32_t eq_result = Emit_Temp(cg);
 
         if (left_type->equality_func_name) {
             /* Call the generated equality function */
-            Emit(cg, "  %%t%u = call i1 @%s(ptr %%t%u, ptr %%t%u)\n",
-                 eq_result, left_type->equality_func_name, left_ptr, right_ptr);
+            /* Use fat pointers for unconstrained arrays/strings */
+            const char *arg_type = Type_To_Llvm(left_type);
+            Emit(cg, "  %%t%u = call i1 @%s(%s %%t%u, %s %%t%u)\n",
+                 eq_result, left_type->equality_func_name, arg_type, left_ptr, arg_type, right_ptr);
         } else {
             /* ??? Fallback: inline comparison (type wasn't frozen properly) */
             if (left_type->kind == TYPE_RECORD) {
