@@ -2564,6 +2564,7 @@ struct Syntax_Node {
             Node_List statements;
             Node_List handlers;
             bool is_separate;
+            bool code_generated;  /* Prevents duplicate code generation */
         } subprogram_body;
 
         /* NK_PACKAGE_SPEC */
@@ -6130,6 +6131,7 @@ struct Symbol {
 
     /* Code generation flags */
     bool            extern_emitted;      /* Extern declaration already emitted */
+    bool            body_emitted;        /* Function/procedure body already emitted */
     bool            is_named_number;     /* Named number (constant without explicit type) */
     bool            is_overloaded;       /* Part of an overload set (needs unique_id suffix) */
     bool            body_claimed;        /* Body has been matched to this spec (for homographs) */
@@ -6161,6 +6163,7 @@ struct Symbol {
         Type_Info   *actual_type;        /* For type formals */
         Symbol      *actual_subprogram;  /* For subprogram formals */
         Syntax_Node *actual_expr;        /* For object formals */
+        Token_Kind   builtin_operator;   /* For built-in operators as subprogram actuals */
     } *generic_actuals;
     uint32_t        generic_actual_count;
 
@@ -8455,6 +8458,51 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
             }
             break;
 
+        case NK_ACCEPT:
+            /* ACCEPT statement for task entry - resolve index and parameters */
+            if (node->accept_stmt.index) {
+                Resolve_Expression(sm, node->accept_stmt.index);
+            }
+            /* Resolve accept parameters */
+            for (uint32_t i = 0; i < node->accept_stmt.parameters.count; i++) {
+                Syntax_Node *param = node->accept_stmt.parameters.items[i];
+                if (param && param->kind == NK_PARAM_SPEC) {
+                    if (param->param_spec.param_type) {
+                        Resolve_Expression(sm, param->param_spec.param_type);
+                    }
+                    /* Add parameter names to scope for the accept body */
+                    for (uint32_t j = 0; j < param->param_spec.names.count; j++) {
+                        Syntax_Node *name = param->param_spec.names.items[j];
+                        if (name && name->kind == NK_IDENTIFIER) {
+                            Symbol *param_sym = Symbol_New(SYMBOL_PARAMETER,
+                                name->string_val.text, name->location);
+                            if (param->param_spec.param_type)
+                                param_sym->type = param->param_spec.param_type->type;
+                            Symbol_Add(sm, param_sym);
+                            name->symbol = param_sym;
+                        }
+                    }
+                }
+            }
+            /* Resolve accept body statements */
+            Resolve_Statement_List(sm, &node->accept_stmt.statements);
+            break;
+
+        case NK_SELECT:
+            /* SELECT statement - resolve alternatives */
+            for (uint32_t i = 0; i < node->select_stmt.alternatives.count; i++) {
+                Syntax_Node *alt = node->select_stmt.alternatives.items[i];
+                if (alt) Resolve_Statement(sm, alt);
+            }
+            break;
+
+        case NK_DELAY:
+            /* DELAY statement - resolve delay expression */
+            if (node->delay_stmt.expression) {
+                Resolve_Expression(sm, node->delay_stmt.expression);
+            }
+            break;
+
         default:
             break;
     }
@@ -8945,6 +8993,40 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                     Symbol_Kind sk = formal->generic_subprog_param.is_function ?
                                                      SYMBOL_FUNCTION : SYMBOL_PROCEDURE;
                                     Symbol *subprog_sym = Symbol_New(sk, name, formal->location);
+
+                                    /* Set up parameter info */
+                                    Node_List *fparams = &formal->generic_subprog_param.parameters;
+                                    uint32_t total_params = 0;
+                                    for (uint32_t j = 0; j < fparams->count; j++) {
+                                        Syntax_Node *ps = fparams->items[j];
+                                        if (ps && ps->kind == NK_PARAM_SPEC)
+                                            total_params += ps->param_spec.names.count;
+                                    }
+                                    subprog_sym->parameter_count = total_params;
+                                    if (total_params > 0) {
+                                        subprog_sym->parameters = Arena_Allocate(
+                                            total_params * sizeof(Parameter_Info));
+                                        uint32_t idx = 0;
+                                        for (uint32_t j = 0; j < fparams->count; j++) {
+                                            Syntax_Node *ps = fparams->items[j];
+                                            if (ps && ps->kind == NK_PARAM_SPEC) {
+                                                Type_Info *pt = NULL;
+                                                if (ps->param_spec.param_type) {
+                                                    Resolve_Expression(sm, ps->param_spec.param_type);
+                                                    pt = ps->param_spec.param_type->type;
+                                                }
+                                                for (uint32_t k = 0; k < ps->param_spec.names.count; k++) {
+                                                    Syntax_Node *pn = ps->param_spec.names.items[k];
+                                                    subprog_sym->parameters[idx].name = pn->string_val.text;
+                                                    subprog_sym->parameters[idx].param_type = pt;
+                                                    subprog_sym->parameters[idx].mode =
+                                                        (Parameter_Mode)ps->param_spec.mode;
+                                                    idx++;
+                                                }
+                                            }
+                                        }
+                                    }
+
                                     /* Set return type for functions */
                                     if (formal->generic_subprog_param.is_function &&
                                         formal->generic_subprog_param.return_type) {
@@ -9891,6 +9973,20 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                         if (op && (op->kind == SYMBOL_FUNCTION || op->kind == SYMBOL_PROCEDURE)) {
                                             name_node->symbol = op;
                                             inst_sym->generic_actuals[i].actual_subprogram = op;
+                                        } else {
+                                            /* Check for built-in operators */
+                                            /* String lexer strips quotes: "&" becomes just & */
+                                            String_Slice s = name_node->string_val.text;
+                                            if (s.length == 1 && s.data[0] == '&')
+                                                inst_sym->generic_actuals[i].builtin_operator = TK_AMPERSAND;
+                                            else if (s.length == 1 && s.data[0] == '+')
+                                                inst_sym->generic_actuals[i].builtin_operator = TK_PLUS;
+                                            else if (s.length == 1 && s.data[0] == '-')
+                                                inst_sym->generic_actuals[i].builtin_operator = TK_MINUS;
+                                            else if (s.length == 1 && s.data[0] == '*')
+                                                inst_sym->generic_actuals[i].builtin_operator = TK_STAR;
+                                            else if (s.length == 1 && s.data[0] == '/')
+                                                inst_sym->generic_actuals[i].builtin_operator = TK_SLASH;
                                         }
                                     }
                                 }
@@ -10520,6 +10616,10 @@ typedef struct {
     /* Address markers needed for 'ADDRESS on packages/generics */
     Symbol       *address_markers[256];
     uint32_t      address_marker_count;
+
+    /* Track emitted function unique_ids to prevent duplicate definitions */
+    uint32_t      emitted_func_ids[1024];
+    uint32_t      emitted_func_count;
 } Code_Generator;
 
 static Code_Generator *Code_Generator_New(FILE *output, Symbol_Manager *sm) {
@@ -11359,6 +11459,10 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
  * types (records, arrays), equality is defined component-wise.
  * ───────────────────────────────────────────────────────────────────────── */
 
+/* Forward declaration for mutual recursion */
+static uint32_t Generate_Array_Equality(Code_Generator *cg, uint32_t left_ptr,
+                                        uint32_t right_ptr, Type_Info *array_type);
+
 /* Generate equality comparison for record types (component-by-component) */
 static uint32_t Generate_Record_Equality(Code_Generator *cg, uint32_t left_ptr,
                                          uint32_t right_ptr, Type_Info *record_type) {
@@ -11383,20 +11487,65 @@ static uint32_t Generate_Record_Equality(Code_Generator *cg, uint32_t left_ptr,
         Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
              right_gep, right_ptr, comp->byte_offset);
 
-        /* Load component values */
-        uint32_t left_val = Emit_Temp(cg);
-        uint32_t right_val = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", left_val, comp_llvm_type, left_gep);
-        Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", right_val, comp_llvm_type, right_gep);
+        /* Compare component - handle arrays/strings specially */
+        uint32_t cmp;
+        Type_Info *ct = comp->component_type;
+        bool is_fat_ptr_access = ct && ct->kind == TYPE_ACCESS &&
+            ct->access.designated_type &&
+            (ct->access.designated_type->kind == TYPE_STRING ||
+             (ct->access.designated_type->kind == TYPE_ARRAY &&
+              !ct->access.designated_type->array.is_constrained));
 
-        /* Compare */
-        uint32_t cmp = Emit_Temp(cg);
-        if (Type_Is_Float_Representation(comp->component_type)) {
-            Emit(cg, "  %%t%u = fcmp oeq %s %%t%u, %%t%u\n",
-                 cmp, comp_llvm_type, left_val, right_val);
+        if (ct && (ct->kind == TYPE_STRING ||
+                   (ct->kind == TYPE_ARRAY && !ct->array.is_constrained))) {
+            /* Unconstrained array/string - use array equality on the fat pointers */
+            cmp = Generate_Array_Equality(cg, left_gep, right_gep, ct);
+        } else if (ct && ct->kind == TYPE_ARRAY && ct->array.is_constrained) {
+            /* Constrained array - use array equality directly on pointers */
+            cmp = Generate_Array_Equality(cg, left_gep, right_gep, ct);
+        } else if (ct && ct->kind == TYPE_RECORD) {
+            /* Nested record - recurse */
+            cmp = Generate_Record_Equality(cg, left_gep, right_gep, ct);
+        } else if (is_fat_ptr_access) {
+            /* ACCESS to unconstrained array - compare fat pointer components
+             * Fat pointer: { ptr data, { i64 low, i64 high } }
+             * Access equality compares pointer identity (same object) */
+            uint32_t left_val = Emit_Temp(cg);
+            uint32_t right_val = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", left_val, left_gep);
+            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", right_val, right_gep);
+            uint32_t lp = Emit_Temp(cg), rp = Emit_Temp(cg);
+            uint32_t ll = Emit_Temp(cg), rl = Emit_Temp(cg);
+            uint32_t lh = Emit_Temp(cg), rh = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n", lp, left_val);
+            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n", rp, right_val);
+            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 0\n", ll, left_val);
+            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 0\n", rl, right_val);
+            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 1\n", lh, left_val);
+            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 1\n", rh, right_val);
+            uint32_t cmp_p = Emit_Temp(cg), cmp_l = Emit_Temp(cg), cmp_h = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = icmp eq ptr %%t%u, %%t%u\n", cmp_p, lp, rp);
+            Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", cmp_l, ll, rl);
+            Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", cmp_h, lh, rh);
+            uint32_t and1 = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", and1, cmp_p, cmp_l);
+            cmp = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", cmp, and1, cmp_h);
         } else {
-            Emit(cg, "  %%t%u = icmp eq %s %%t%u, %%t%u\n",
-                 cmp, comp_llvm_type, left_val, right_val);
+            /* Scalar type - load and compare */
+            uint32_t left_val = Emit_Temp(cg);
+            uint32_t right_val = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", left_val, comp_llvm_type, left_gep);
+            Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", right_val, comp_llvm_type, right_gep);
+
+            cmp = Emit_Temp(cg);
+            if (Type_Is_Float_Representation(ct)) {
+                Emit(cg, "  %%t%u = fcmp oeq %s %%t%u, %%t%u\n",
+                     cmp, comp_llvm_type, left_val, right_val);
+            } else {
+                Emit(cg, "  %%t%u = icmp eq %s %%t%u, %%t%u\n",
+                     cmp, comp_llvm_type, left_val, right_val);
+            }
         }
 
         /* AND with previous results */
@@ -11919,13 +12068,147 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
     }
 
     /* Generic formal subprogram substitution: if calling a formal subprogram
-     * inside a generic instantiation, substitute with the actual subprogram. */
+     * inside a generic instantiation, substitute with the actual subprogram
+     * or generate inline code for built-in operators. */
     if (sym && cg->current_instance && cg->current_instance->generic_actuals) {
         for (uint32_t i = 0; i < cg->current_instance->generic_actual_count; i++) {
-            if (cg->current_instance->generic_actuals[i].actual_subprogram &&
-                Slice_Equal_Ignore_Case(sym->name,
+            if (Slice_Equal_Ignore_Case(sym->name,
                     cg->current_instance->generic_actuals[i].formal_name)) {
-                sym = cg->current_instance->generic_actuals[i].actual_subprogram;
+                if (cg->current_instance->generic_actuals[i].actual_subprogram) {
+                    sym = cg->current_instance->generic_actuals[i].actual_subprogram;
+                } else if (cg->current_instance->generic_actuals[i].builtin_operator) {
+                    /* Built-in operator - generate inline */
+                    Token_Kind op = cg->current_instance->generic_actuals[i].builtin_operator;
+                    if (op == TK_AMPERSAND && node->apply.arguments.count == 2) {
+                        /* String/array concatenation */
+                        Syntax_Node *left_arg = node->apply.arguments.items[0];
+                        Syntax_Node *right_arg = node->apply.arguments.items[1];
+                        if (left_arg->kind == NK_ASSOCIATION)
+                            left_arg = left_arg->association.expression;
+                        if (right_arg->kind == NK_ASSOCIATION)
+                            right_arg = right_arg->association.expression;
+
+                        /* Get parameter types from formal subprogram symbol */
+                        Type_Info *left_type = (sym && sym->parameter_count > 0) ?
+                            sym->parameters[0].param_type : left_arg->type;
+                        Type_Info *right_type = (sym && sym->parameter_count > 1) ?
+                            sym->parameters[1].param_type : right_arg->type;
+
+                        /* Substitute generic formal types with actual types */
+                        if (cg->current_instance && cg->current_instance->generic_actuals) {
+                            for (uint32_t k = 0; k < cg->current_instance->generic_actual_count; k++) {
+                                if (left_type && left_type->name.data &&
+                                    Slice_Equal_Ignore_Case(left_type->name,
+                                        cg->current_instance->generic_actuals[k].formal_name) &&
+                                    cg->current_instance->generic_actuals[k].actual_type) {
+                                    left_type = cg->current_instance->generic_actuals[k].actual_type;
+                                }
+                                if (right_type && right_type->name.data &&
+                                    Slice_Equal_Ignore_Case(right_type->name,
+                                        cg->current_instance->generic_actuals[k].formal_name) &&
+                                    cg->current_instance->generic_actuals[k].actual_type) {
+                                    right_type = cg->current_instance->generic_actuals[k].actual_type;
+                                }
+                            }
+                        }
+
+                        /* Check if first arg is CHARACTER (single byte) */
+                        bool left_is_char = left_type && left_type->kind == TYPE_CHARACTER;
+                        bool right_is_string = right_type &&
+                            (right_type->kind == TYPE_STRING ||
+                             (right_type->kind == TYPE_ARRAY && !right_type->array.is_constrained));
+
+                        uint32_t left_val = Generate_Expression(cg, left_arg);
+                        uint32_t right_val = Generate_Expression(cg, right_arg);
+
+                        if (left_is_char && right_is_string) {
+                            /* CHARACTER & STRING concatenation */
+                            /* Wrap character in single-element fat pointer */
+                            uint32_t char_alloc = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = alloca i8\n", char_alloc);
+                            uint32_t char_trunc = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = trunc i64 %%t%u to i8\n", char_trunc, left_val);
+                            Emit(cg, "  store i8 %%t%u, ptr %%t%u\n", char_trunc, char_alloc);
+                            uint32_t one = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add i64 0, 1\n", one);
+                            uint32_t left_fat = Emit_Fat_Pointer_Dynamic(cg, char_alloc, one, one);
+
+                            /* Extract right string bounds and data */
+                            uint32_t right_data = Emit_Fat_Pointer_Data(cg, right_val);
+                            uint32_t right_low = Emit_Fat_Pointer_Low(cg, right_val);
+                            uint32_t right_high = Emit_Fat_Pointer_High(cg, right_val);
+
+                            uint32_t right_len = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", right_len, right_high, right_low);
+                            uint32_t right_len1 = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", right_len1, right_len);
+
+                            /* Total length = 1 + right_len */
+                            uint32_t total_len = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add i64 1, %%t%u\n", total_len, right_len1);
+
+                            /* Allocate result buffer */
+                            uint32_t result_data = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = call ptr @__ada_sec_stack_alloc(i64 %%t%u)\n",
+                                 result_data, total_len);
+
+                            /* Store character at first position */
+                            Emit(cg, "  store i8 %%t%u, ptr %%t%u\n", char_trunc, result_data);
+
+                            /* Copy right string after character */
+                            uint32_t dest = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 1\n", dest, result_data);
+                            Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
+                                 dest, right_data, right_len1);
+
+                            /* Return fat pointer */
+                            return Emit_Fat_Pointer_Dynamic(cg, result_data, one, total_len);
+                        } else {
+                            /* STRING & STRING concatenation */
+                            uint32_t left_fat = left_val;
+                            uint32_t right_fat = right_val;
+
+                            uint32_t left_data = Emit_Fat_Pointer_Data(cg, left_fat);
+                            uint32_t left_low = Emit_Fat_Pointer_Low(cg, left_fat);
+                            uint32_t left_high = Emit_Fat_Pointer_High(cg, left_fat);
+
+                            uint32_t right_data = Emit_Fat_Pointer_Data(cg, right_fat);
+                            uint32_t right_low = Emit_Fat_Pointer_Low(cg, right_fat);
+                            uint32_t right_high = Emit_Fat_Pointer_High(cg, right_fat);
+
+                            uint32_t left_len = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", left_len, left_high, left_low);
+                            uint32_t left_len1 = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", left_len1, left_len);
+
+                            uint32_t right_len = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", right_len, right_high, right_low);
+                            uint32_t right_len1 = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", right_len1, right_len);
+
+                            uint32_t total_len = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add i64 %%t%u, %%t%u\n", total_len, left_len1, right_len1);
+
+                            uint32_t result_data = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = call ptr @__ada_sec_stack_alloc(i64 %%t%u)\n",
+                                 result_data, total_len);
+
+                            Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
+                                 result_data, left_data, left_len1);
+
+                            uint32_t right_dest = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n",
+                                 right_dest, result_data, left_len1);
+
+                            Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
+                                 right_dest, right_data, right_len1);
+
+                            uint32_t one = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add i64 0, 1\n", one);
+                            return Emit_Fat_Pointer_Dynamic(cg, result_data, one, total_len);
+                        }
+                    }
+                }
                 break;
             }
         }
@@ -13658,6 +13941,18 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
 
     Type_Info *ty = target_sym->type;
 
+    /* Substitute generic formal types with actual types in generic instances */
+    if (cg->current_instance && cg->current_instance->generic_actuals && ty && ty->name.data) {
+        for (uint32_t k = 0; k < cg->current_instance->generic_actual_count; k++) {
+            if (Slice_Equal_Ignore_Case(ty->name,
+                    cg->current_instance->generic_actuals[k].formal_name) &&
+                cg->current_instance->generic_actuals[k].actual_type) {
+                ty = cg->current_instance->generic_actuals[k].actual_type;
+                break;
+            }
+        }
+    }
+
     /* Handle record assignment (use memcpy, not store) */
     if (ty && ty->kind == TYPE_RECORD) {
         uint32_t src_ptr = Generate_Expression(cg, node->assignment.value);
@@ -14438,16 +14733,34 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "  %%t%u = call ptr @__ada_accept_wait(i64 %%t%u)\n",
                      caller_ptr, entry_idx);
 
-                /* Generate parameters - copy from caller's parameter block */
+                /* Generate parameters - allocate space and copy from caller's parameter block */
+                uint32_t param_idx = 0;
                 for (uint32_t i = 0; i < node->accept_stmt.parameters.count; i++) {
                     Syntax_Node *param = node->accept_stmt.parameters.items[i];
-                    if (param && param->symbol) {
-                        uint32_t param_ptr = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = getelementptr i64, ptr %%t%u, i64 %u\n",
-                             param_ptr, caller_ptr, i);
-                        Emit(cg, "  %%");
-                        Emit_Symbol_Name(cg, param->symbol);
-                        Emit(cg, " = load i64, ptr %%t%u\n", param_ptr);
+                    if (param && param->kind == NK_PARAM_SPEC) {
+                        for (uint32_t j = 0; j < param->param_spec.names.count; j++) {
+                            Syntax_Node *name = param->param_spec.names.items[j];
+                            if (name && name->symbol) {
+                                /* Allocate space for the parameter */
+                                Emit(cg, "  %%");
+                                Emit_Symbol_Name(cg, name->symbol);
+                                Emit(cg, " = alloca i64, align 8\n");
+
+                                /* Load value from caller's parameter block */
+                                uint32_t param_ptr = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = getelementptr i64, ptr %%t%u, i64 %u\n",
+                                     param_ptr, caller_ptr, param_idx);
+                                uint32_t param_val = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = load i64, ptr %%t%u\n", param_val, param_ptr);
+
+                                /* Store to allocated space */
+                                Emit(cg, "  store i64 %%t%u, ptr %%", param_val);
+                                Emit_Symbol_Name(cg, name->symbol);
+                                Emit(cg, "\n");
+
+                                param_idx++;
+                            }
+                        }
                     }
                 }
 
@@ -14531,15 +14844,33 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                                 Emit(cg, "L%u:\n", cg->label_id++);
 
                                 /* Load parameters from caller */
-                                for (uint32_t j = 0; j < alt->accept_stmt.parameters.count; j++) {
-                                    Syntax_Node *param = alt->accept_stmt.parameters.items[j];
-                                    if (param && param->symbol) {
-                                        uint32_t param_ptr = Emit_Temp(cg);
-                                        Emit(cg, "  %%t%u = getelementptr i64, ptr %%t%u, i64 %u\n",
-                                             param_ptr, caller_ptr, j);
-                                        Emit(cg, "  %%");
-                                        Emit_Symbol_Name(cg, param->symbol);
-                                        Emit(cg, " = load i64, ptr %%t%u\n", param_ptr);
+                                uint32_t sel_param_idx = 0;
+                                for (uint32_t pi = 0; pi < alt->accept_stmt.parameters.count; pi++) {
+                                    Syntax_Node *param = alt->accept_stmt.parameters.items[pi];
+                                    if (param && param->kind == NK_PARAM_SPEC) {
+                                        for (uint32_t pj = 0; pj < param->param_spec.names.count; pj++) {
+                                            Syntax_Node *pname = param->param_spec.names.items[pj];
+                                            if (pname && pname->symbol) {
+                                                /* Allocate space for the parameter */
+                                                Emit(cg, "  %%");
+                                                Emit_Symbol_Name(cg, pname->symbol);
+                                                Emit(cg, " = alloca i64, align 8\n");
+
+                                                /* Load value from caller's parameter block */
+                                                uint32_t param_ptr = Emit_Temp(cg);
+                                                Emit(cg, "  %%t%u = getelementptr i64, ptr %%t%u, i64 %u\n",
+                                                     param_ptr, caller_ptr, sel_param_idx);
+                                                uint32_t param_val = Emit_Temp(cg);
+                                                Emit(cg, "  %%t%u = load i64, ptr %%t%u\n", param_val, param_ptr);
+
+                                                /* Store to allocated space */
+                                                Emit(cg, "  store i64 %%t%u, ptr %%", param_val);
+                                                Emit_Symbol_Name(cg, pname->symbol);
+                                                Emit(cg, "\n");
+
+                                                sel_param_idx++;
+                                            }
+                                        }
                                     }
                                 }
 
@@ -14697,6 +15028,18 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
         if (!sym) continue;
 
         Type_Info *ty = sym->type;
+
+        /* Substitute generic formal types with actual types in generic instances */
+        if (cg->current_instance && cg->current_instance->generic_actuals && ty && ty->name.data) {
+            for (uint32_t k = 0; k < cg->current_instance->generic_actual_count; k++) {
+                if (Slice_Equal_Ignore_Case(ty->name,
+                        cg->current_instance->generic_actuals[k].formal_name) &&
+                    cg->current_instance->generic_actuals[k].actual_type) {
+                    ty = cg->current_instance->generic_actuals[k].actual_type;
+                    break;
+                }
+            }
+        }
 
         /* Named numbers (constants without explicit type) don't need storage.
          * They are compile-time values that get inlined when referenced.
@@ -14929,6 +15272,10 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
     if (node->subprogram_body.is_separate) {
         return;
     }
+
+    /* Skip if code already generated for this body (prevents duplicates) */
+    if (node->subprogram_body.code_generated) return;
+    node->subprogram_body.code_generated = true;
 
     Syntax_Node *spec = node->subprogram_body.specification;
     Symbol *sym = spec ? spec->symbol : NULL;
@@ -15476,8 +15823,20 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
         case NK_PROCEDURE_BODY:
         case NK_FUNCTION_BODY:
             /* Defer nested subprogram bodies - emit after enclosing function */
+            /* Skip if already generated (prevents duplicates from re-processing) */
+            if (node->subprogram_body.code_generated) break;
             if (cg->current_function && cg->deferred_count < 64) {
-                cg->deferred_bodies[cg->deferred_count++] = node;
+                /* Check for duplicate in deferred list */
+                bool already_deferred = false;
+                for (uint32_t d = 0; d < cg->deferred_count; d++) {
+                    if (cg->deferred_bodies[d] == node) {
+                        already_deferred = true;
+                        break;
+                    }
+                }
+                if (!already_deferred) {
+                    cg->deferred_bodies[cg->deferred_count++] = node;
+                }
             } else {
                 Generate_Subprogram_Body(cg, node);
             }
@@ -15683,22 +16042,65 @@ static void Generate_Type_Equality_Function(Code_Generator *cg, Type_Info *t) {
                 Emit(cg, "  %%t%u = getelementptr i8, ptr %%1, i64 %u\n",
                      right_gep, comp->byte_offset);
 
-                /* Load component values */
-                uint32_t left_val = Emit_Temp(cg);
-                uint32_t right_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
-                     left_val, comp_llvm_type, left_gep);
-                Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
-                     right_val, comp_llvm_type, right_gep);
+                /* Compare component - handle arrays/strings specially */
+                uint32_t cmp;
+                Type_Info *ct = comp->component_type;
+                bool is_fat_ptr_access = ct && ct->kind == TYPE_ACCESS &&
+                    ct->access.designated_type &&
+                    (ct->access.designated_type->kind == TYPE_STRING ||
+                     (ct->access.designated_type->kind == TYPE_ARRAY &&
+                      !ct->access.designated_type->array.is_constrained));
 
-                /* Compare */
-                uint32_t cmp = Emit_Temp(cg);
-                if (Type_Is_Float_Representation(comp->component_type)) {
-                    Emit(cg, "  %%t%u = fcmp oeq %s %%t%u, %%t%u\n",
-                         cmp, comp_llvm_type, left_val, right_val);
+                if (ct && (ct->kind == TYPE_STRING ||
+                           (ct->kind == TYPE_ARRAY && !ct->array.is_constrained))) {
+                    /* Unconstrained array/string - use array equality */
+                    cmp = Generate_Array_Equality(cg, left_gep, right_gep, ct);
+                } else if (ct && ct->kind == TYPE_ARRAY && ct->array.is_constrained) {
+                    /* Constrained array - use array equality */
+                    cmp = Generate_Array_Equality(cg, left_gep, right_gep, ct);
+                } else if (ct && ct->kind == TYPE_RECORD) {
+                    /* Nested record - recurse */
+                    cmp = Generate_Record_Equality(cg, left_gep, right_gep, ct);
+                } else if (is_fat_ptr_access) {
+                    /* ACCESS to unconstrained array - compare fat pointer components */
+                    uint32_t left_val = Emit_Temp(cg);
+                    uint32_t right_val = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", left_val, left_gep);
+                    Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", right_val, right_gep);
+                    uint32_t lp = Emit_Temp(cg), rp = Emit_Temp(cg);
+                    uint32_t ll = Emit_Temp(cg), rl = Emit_Temp(cg);
+                    uint32_t lh = Emit_Temp(cg), rh = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n", lp, left_val);
+                    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n", rp, right_val);
+                    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 0\n", ll, left_val);
+                    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 0\n", rl, right_val);
+                    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 1\n", lh, left_val);
+                    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 1\n", rh, right_val);
+                    uint32_t cmp_p = Emit_Temp(cg), cmp_l = Emit_Temp(cg), cmp_h = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = icmp eq ptr %%t%u, %%t%u\n", cmp_p, lp, rp);
+                    Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", cmp_l, ll, rl);
+                    Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", cmp_h, lh, rh);
+                    uint32_t and1 = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", and1, cmp_p, cmp_l);
+                    cmp = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", cmp, and1, cmp_h);
                 } else {
-                    Emit(cg, "  %%t%u = icmp eq %s %%t%u, %%t%u\n",
-                         cmp, comp_llvm_type, left_val, right_val);
+                    /* Scalar type - load and compare */
+                    uint32_t left_val = Emit_Temp(cg);
+                    uint32_t right_val = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
+                         left_val, comp_llvm_type, left_gep);
+                    Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
+                         right_val, comp_llvm_type, right_gep);
+
+                    cmp = Emit_Temp(cg);
+                    if (Type_Is_Float_Representation(ct)) {
+                        Emit(cg, "  %%t%u = fcmp oeq %s %%t%u, %%t%u\n",
+                             cmp, comp_llvm_type, left_val, right_val);
+                    } else {
+                        Emit(cg, "  %%t%u = icmp eq %s %%t%u, %%t%u\n",
+                             cmp, comp_llvm_type, left_val, right_val);
+                    }
                 }
 
                 /* AND with previous results */
