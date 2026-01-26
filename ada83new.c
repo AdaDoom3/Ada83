@@ -8384,6 +8384,8 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
 static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node);
 static char *Lookup_Path(String_Slice name);
 static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src);
+static bool Body_Already_Loaded(String_Slice name);
+static void Mark_Body_Loaded(String_Slice name);
 
 static void Resolve_Declaration_List(Symbol_Manager *sm, Node_List *list) {
     for (uint32_t i = 0; i < list->count; i++) {
@@ -14980,6 +14982,10 @@ static void Generate_Extern_Declarations(Code_Generator *cg, Syntax_Node *node) 
             if (!pkg_sym || pkg_sym->kind != SYMBOL_PACKAGE) continue;
             if (!pkg_sym->declaration) continue;
 
+            /* Skip extern declarations for packages whose bodies will be code-generated.
+             * Those symbols will be defined, not external. */
+            if (Body_Already_Loaded(pkg_sym->name)) continue;
+
             Syntax_Node *pkg_decl = pkg_sym->declaration;
             if (pkg_decl->kind != NK_PACKAGE_SPEC) continue;
 
@@ -15637,6 +15643,30 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
 static const char *Include_Paths[32];
 static int Include_Path_Count = 0;
 
+/* Track loaded package bodies for code generation */
+static Syntax_Node *Loaded_Package_Bodies[128];
+static int Loaded_Body_Count = 0;
+
+/* Track which package bodies have already been loaded (to avoid duplicates) */
+static String_Slice Loaded_Body_Names[128];
+static int Loaded_Body_Names_Count = 0;
+
+static bool Body_Already_Loaded(String_Slice name) {
+    for (int i = 0; i < Loaded_Body_Names_Count; i++) {
+        if (Loaded_Body_Names[i].length == name.length &&
+            strncasecmp(Loaded_Body_Names[i].data, name.data, name.length) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void Mark_Body_Loaded(String_Slice name) {
+    if (Loaded_Body_Names_Count < 128) {
+        Loaded_Body_Names[Loaded_Body_Names_Count++] = name;
+    }
+}
+
 /* Track packages currently being loaded to detect cycles */
 typedef struct {
     String_Slice names[64];
@@ -15710,6 +15740,49 @@ static char *Lookup_Path(String_Slice name) {
 
         /* Try .ads extension */
         snprintf(full_path, sizeof(full_path), "%s.ads", path);
+        char *src = Read_File_Simple(full_path);
+        if (src) return src;
+    }
+    return NULL;
+}
+
+/* Check if a precompiled .ll file exists for a package in include paths */
+static bool Has_Precompiled_LL(String_Slice name) {
+    char path[512], full_path[520];
+    for (int i = 0; i < Include_Path_Count; i++) {
+        size_t base_len = strlen(Include_Paths[i]);
+        snprintf(path, sizeof(path), "%s%s%.*s",
+                 Include_Paths[i],
+                 (base_len > 0 && Include_Paths[i][base_len-1] != '/') ? "/" : "",
+                 (int)name.length, name.data);
+        for (char *p = path + base_len; *p; p++) {
+            if (*p >= 'A' && *p <= 'Z') *p = *p - 'A' + 'a';
+        }
+        snprintf(full_path, sizeof(full_path), "%s.ll", path);
+        FILE *f = fopen(full_path, "r");
+        if (f) { fclose(f); return true; }
+    }
+    return false;
+}
+
+/* Find a package body source file in include paths */
+static char *Lookup_Path_Body(String_Slice name) {
+    char path[512], full_path[520];
+
+    for (int i = 0; i < Include_Path_Count; i++) {
+        size_t base_len = strlen(Include_Paths[i]);
+        snprintf(path, sizeof(path), "%s%s%.*s",
+                 Include_Paths[i],
+                 (base_len > 0 && Include_Paths[i][base_len-1] != '/') ? "/" : "",
+                 (int)name.length, name.data);
+
+        /* Lowercase the filename part */
+        for (char *p = path + base_len; *p; p++) {
+            if (*p >= 'A' && *p <= 'Z') *p = *p - 'A' + 'a';
+        }
+
+        /* Try .adb extension */
+        snprintf(full_path, sizeof(full_path), "%s.adb", path);
         char *src = Read_File_Simple(full_path);
         if (src) return src;
     }
@@ -15827,6 +15900,106 @@ static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src) 
 
     /* Done loading this package */
     Loading_Set_Remove(name);
+
+    /* Also try to load the package body if available.
+     * Skip if a precompiled .ll file exists (package provided externally). */
+    if (Body_Already_Loaded(name)) {
+        return;  /* Body already loaded */
+    }
+    if (Has_Precompiled_LL(name)) {
+        return;  /* Precompiled version will be linked in */
+    }
+    char *body_src = Lookup_Path_Body(name);
+    if (body_src && Loaded_Body_Count < 128) {
+        Mark_Body_Loaded(name);
+        /* Parse the body */
+        char body_filename[256];
+        snprintf(body_filename, sizeof(body_filename), "%.*s.adb", (int)name.length, name.data);
+        Parser body_parser = Parser_New(body_src, strlen(body_src), body_filename);
+        Syntax_Node *body_cu = Parse_Compilation_Unit(&body_parser);
+
+        if (body_cu && body_cu->compilation_unit.unit) {
+            Syntax_Node *body_unit = body_cu->compilation_unit.unit;
+
+            /* Recursively load WITH'd packages from body */
+            if (body_cu->compilation_unit.context) {
+                Node_List *withs = &body_cu->compilation_unit.context->context.with_clauses;
+                for (uint32_t i = 0; i < withs->count; i++) {
+                    Syntax_Node *with_node = withs->items[i];
+                    for (uint32_t j = 0; j < with_node->use_clause.names.count; j++) {
+                        Syntax_Node *pkg_name = with_node->use_clause.names.items[j];
+                        if (pkg_name->kind == NK_IDENTIFIER) {
+                            char *pkg_src = Lookup_Path(pkg_name->string_val.text);
+                            if (pkg_src) {
+                                Load_Package_Spec(sm, pkg_name->string_val.text, pkg_src);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (body_unit->kind == NK_PACKAGE_BODY) {
+                /* Look up the package symbol */
+                String_Slice body_name = body_unit->package_body.name;
+                Symbol *pkg_sym = Symbol_Find(sm, body_name);
+
+                if (pkg_sym && pkg_sym->kind == SYMBOL_PACKAGE) {
+                    /* Link body to spec */
+                    body_unit->symbol = pkg_sym;
+
+                    /* Resolve the body within package scope */
+                    Symbol_Manager_Push_Scope(sm, pkg_sym);
+
+                    /* Install visible and private declarations from package spec
+                     * into the body's scope (RM 7.1, 7.2) */
+                    Syntax_Node *spec = pkg_sym->declaration;
+                    if (spec && spec->kind == NK_PACKAGE_SPEC) {
+                        /* Helper: install symbols from a declaration */
+                        #define INSTALL_DECL_SYMBOLS(decl) do { \
+                            if ((decl)->symbol) Symbol_Add(sm, (decl)->symbol); \
+                            if ((decl)->kind == NK_OBJECT_DECL) { \
+                                for (uint32_t k = 0; k < (decl)->object_decl.names.count; k++) { \
+                                    Syntax_Node *n = (decl)->object_decl.names.items[k]; \
+                                    if (n->symbol) Symbol_Add(sm, n->symbol); \
+                                } \
+                            } \
+                            if ((decl)->kind == NK_EXCEPTION_DECL) { \
+                                for (uint32_t k = 0; k < (decl)->exception_decl.names.count; k++) { \
+                                    Syntax_Node *n = (decl)->exception_decl.names.items[k]; \
+                                    if (n->symbol) Symbol_Add(sm, n->symbol); \
+                                } \
+                            } \
+                            if ((decl)->kind == NK_TYPE_DECL && (decl)->type_decl.definition && \
+                                (decl)->type_decl.definition->kind == NK_ENUMERATION_TYPE) { \
+                                Node_List *lits = &(decl)->type_decl.definition->enum_type.literals; \
+                                for (uint32_t k = 0; k < lits->count; k++) { \
+                                    if (lits->items[k]->symbol) Symbol_Add(sm, lits->items[k]->symbol); \
+                                } \
+                            } \
+                        } while(0)
+
+                        /* Install visible declarations */
+                        for (uint32_t i = 0; i < spec->package_spec.visible_decls.count; i++) {
+                            Syntax_Node *decl = spec->package_spec.visible_decls.items[i];
+                            INSTALL_DECL_SYMBOLS(decl);
+                        }
+                        /* Install private declarations */
+                        for (uint32_t i = 0; i < spec->package_spec.private_decls.count; i++) {
+                            Syntax_Node *decl = spec->package_spec.private_decls.items[i];
+                            INSTALL_DECL_SYMBOLS(decl);
+                        }
+                        #undef INSTALL_DECL_SYMBOLS
+                    }
+
+                    Resolve_Declaration_List(sm, &body_unit->package_body.declarations);
+                    Symbol_Manager_Pop_Scope(sm);
+
+                    /* Store for code generation */
+                    Loaded_Package_Bodies[Loaded_Body_Count++] = body_cu;
+                }
+            }
+        }
+    }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -15856,6 +16029,10 @@ static char *Read_File(const char *path, size_t *out_size) {
 }
 
 static void Compile_File(const char *input_path, const char *output_path) {
+    /* Reset loaded bodies for this compilation */
+    Loaded_Body_Count = 0;
+    Loaded_Body_Names_Count = 0;
+
     size_t source_size;
     char *source = Read_File(input_path, &source_size);
 
@@ -15910,6 +16087,11 @@ static void Compile_File(const char *input_path, const char *output_path) {
     Code_Generator *cg = Code_Generator_New(out_file, sm);
     for (int i = 0; i < unit_count; i++) {
         Generate_Compilation_Unit(cg, units[i]);
+    }
+
+    /* Generate code for loaded package bodies (e.g., TEXT_IO) */
+    for (int i = 0; i < Loaded_Body_Count; i++) {
+        Generate_Compilation_Unit(cg, Loaded_Package_Bodies[i]);
     }
 
     /* Emit @main() for the last parameterless library-level procedure */
