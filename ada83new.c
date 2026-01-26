@@ -9873,6 +9873,13 @@ static inline const char *Expression_Llvm_Type(Syntax_Node *node) {
     if (node && node->type && node->type->kind == TYPE_ACCESS) return "ptr";
     if (node && node->kind == NK_ALLOCATOR) return "ptr";
     if (node && node->kind == NK_NULL) return "ptr";
+    /* Record types and aggregates return pointers (alloca addresses) */
+    if (node && node->type && node->type->kind == TYPE_RECORD) return "ptr";
+    if (node && node->kind == NK_AGGREGATE && node->type &&
+        node->type->kind == TYPE_RECORD) return "ptr";
+    /* Constrained array aggregates also return pointers (alloca addresses) */
+    if (node && node->kind == NK_AGGREGATE && node->type &&
+        node->type->kind == TYPE_ARRAY && node->type->array.is_constrained) return "ptr";
     /* Check for string literals and string types (generate fat pointers) */
     if (node && node->kind == NK_STRING) return "{ ptr, { i64, i64 } }";
     if (node && node->type && node->type->kind == TYPE_STRING) return "{ ptr, { i64, i64 } }";
@@ -11061,8 +11068,16 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
         Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
              ptr, base_ptr, byte_offset);
 
-        if (field_type && field_type->kind == TYPE_RECORD) {
-            return ptr;
+        if (field_type && (field_type->kind == TYPE_RECORD ||
+                           field_type->kind == TYPE_ACCESS)) {
+            /* For record and access fields, return pointer or load ptr as-is */
+            if (field_type->kind == TYPE_RECORD) {
+                return ptr;  /* Record: return address */
+            }
+            /* Access: load and return ptr without converting to i64 */
+            uint32_t t = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = load ptr, ptr %%t%u\n", t, ptr);
+            return t;
         }
         uint32_t t = Emit_Temp(cg);
         Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, field_llvm_type, ptr);
@@ -11081,6 +11096,12 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
         if (field_type && field_type->kind == TYPE_RECORD) {
             return ptr;
         }
+        /* For access-type components, load ptr without converting to i64 */
+        if (field_type && field_type->kind == TYPE_ACCESS) {
+            uint32_t t = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = load ptr, ptr %%t%u\n", t, ptr);
+            return t;
+        }
         uint32_t t = Emit_Temp(cg);
         Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, field_llvm_type, ptr);
         /* Widen to i64 for computation if narrower type */
@@ -11097,6 +11118,12 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
     /* For record-type components, return pointer; otherwise load value */
     if (field_type && field_type->kind == TYPE_RECORD) {
         return ptr;
+    }
+    /* For access-type components, load ptr without converting to i64 */
+    if (field_type && field_type->kind == TYPE_ACCESS) {
+        uint32_t t = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = load ptr, ptr %%t%u\n", t, ptr);
+        return t;
     }
     uint32_t t = Emit_Temp(cg);
     Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, field_llvm_type, ptr);
@@ -11999,14 +12026,87 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
         target = target->symbol->renamed_object;
     }
 
-    /* Handle indexed component target (array element assignment) */
+    /* Handle indexed component target (array element or slice assignment) */
     if (target->kind == NK_APPLY) {
         Type_Info *prefix_type = target->apply.prefix->type;
         if (prefix_type && prefix_type->kind == TYPE_ARRAY) {
-            /* Array element assignment: DATA(I) := value */
             Symbol *array_sym = target->apply.prefix->symbol;
             if (!array_sym) return;
 
+            Syntax_Node *arg = target->apply.arguments.items[0];
+
+            /* Check for slice assignment: ARR(low .. high) := source */
+            if (arg->kind == NK_RANGE) {
+                /* Array slice assignment using memcpy */
+                int64_t low_bound = Array_Low_Bound(prefix_type);
+                Type_Info *elem_type = prefix_type->array.element_type;
+                uint32_t elem_size = elem_type ? elem_type->size : 1;
+                if (elem_size == 0) elem_size = 1;
+
+                /* Get destination base address */
+                uint32_t dest_base = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = getelementptr i8, ptr ", dest_base);
+                Emit_Symbol_Ref(cg, array_sym);
+                Emit(cg, ", i64 0\n");
+
+                /* Calculate destination start offset from slice low bound */
+                uint32_t dest_low = Generate_Expression(cg, arg->range.low);
+                if (low_bound != 0) {
+                    uint32_t adj = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = sub i64 %%t%u, %lld\n", adj, dest_low, (long long)low_bound);
+                    dest_low = adj;
+                }
+                uint32_t dest_ptr = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n",
+                     dest_ptr, dest_base, dest_low);
+
+                /* Generate source slice (also NK_APPLY with NK_RANGE) */
+                Syntax_Node *src = node->assignment.value;
+                if (src->kind == NK_APPLY && src->apply.arguments.count > 0 &&
+                    src->apply.arguments.items[0]->kind == NK_RANGE) {
+                    Symbol *src_sym = src->apply.prefix->symbol;
+                    Type_Info *src_type = src->apply.prefix->type;
+                    Syntax_Node *src_range = src->apply.arguments.items[0];
+
+                    if (src_sym && src_type && src_type->kind == TYPE_ARRAY) {
+                        int64_t src_low_bound = Array_Low_Bound(src_type);
+
+                        /* Get source base address */
+                        uint32_t src_base = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = getelementptr i8, ptr ", src_base);
+                        Emit_Symbol_Ref(cg, src_sym);
+                        Emit(cg, ", i64 0\n");
+
+                        /* Calculate source start offset */
+                        uint32_t src_start = Generate_Expression(cg, src_range->range.low);
+                        if (src_low_bound != 0) {
+                            uint32_t adj = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = sub i64 %%t%u, %lld\n", adj, src_start, (long long)src_low_bound);
+                            src_start = adj;
+                        }
+                        uint32_t src_ptr = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n",
+                             src_ptr, src_base, src_start);
+
+                        /* Calculate copy length in bytes */
+                        uint32_t dest_high = Generate_Expression(cg, arg->range.high);
+                        uint32_t length = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", length, dest_high, dest_low);
+                        uint32_t len_plus_one = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", len_plus_one, length);
+                        uint32_t byte_len = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", byte_len, len_plus_one, elem_size);
+
+                        /* memcpy from source to dest */
+                        Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)  ; slice assignment\n",
+                             dest_ptr, src_ptr, byte_len);
+                        return;
+                    }
+                }
+                return;  /* Unsupported source for slice assignment */
+            }
+
+            /* Array element assignment: DATA(I) := value */
             /* Get array base address (not loaded value) */
             uint32_t base = Emit_Temp(cg);
             Emit(cg, "  %%t%u = getelementptr i8, ptr ", base);
@@ -12014,7 +12114,7 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, ", i64 0\n");
 
             /* Generate index expression */
-            uint32_t idx = Generate_Expression(cg, target->apply.arguments.items[0]);
+            uint32_t idx = Generate_Expression(cg, arg);
 
             /* Adjust for array low bound (Ada arrays can start at any index) */
             int64_t low_bound = Array_Low_Bound(prefix_type);
@@ -12025,16 +12125,16 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
             }
 
             /* Get pointer to element */
-            const char *elem_type = Type_To_Llvm(prefix_type->array.element_type);
+            const char *elem_type_str = Type_To_Llvm(prefix_type->array.element_type);
             uint32_t ptr = Emit_Temp(cg);
             Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %%t%u\n",
-                 ptr, elem_type, base, idx);
+                 ptr, elem_type_str, base, idx);
 
             /* Generate value and store */
             uint32_t value = Generate_Expression(cg, node->assignment.value);
             const char *value_type = Expression_Llvm_Type(node->assignment.value);
-            value = Emit_Convert(cg, value, value_type, elem_type);
-            Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, value, ptr);
+            value = Emit_Convert(cg, value, value_type, elem_type_str);
+            Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type_str, value, ptr);
             return;
         }
     }
@@ -12159,12 +12259,36 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
 
     Type_Info *ty = target_sym->type;
 
-    /* Handle constrained string/character array assignment */
-    if (ty && ty->kind == TYPE_ARRAY && ty->array.is_constrained &&
-        ty->array.element_type && ty->array.element_type->kind == TYPE_CHARACTER) {
-        /* The value is a fat pointer - copy data to target variable */
-        uint32_t fat_ptr = Generate_Expression(cg, node->assignment.value);
-        Emit_Fat_Pointer_Copy_To_Name(cg, fat_ptr, target_sym);
+    /* Handle record assignment (use memcpy, not store) */
+    if (ty && ty->kind == TYPE_RECORD) {
+        uint32_t src_ptr = Generate_Expression(cg, node->assignment.value);
+        uint32_t record_size = ty->size > 0 ? ty->size : 8;
+        Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr ");
+        Emit_Symbol_Ref(cg, target_sym);
+        Emit(cg, ", ptr %%t%u, i64 %u, i1 false)  ; record assignment\n",
+             src_ptr, record_size);
+        return;
+    }
+
+    /* Handle constrained array assignment (use memcpy, not store) */
+    if (ty && ty->kind == TYPE_ARRAY && ty->array.is_constrained) {
+        /* Check if source is unconstrained (fat pointer) or constrained (ptr) */
+        Type_Info *src_type = node->assignment.value->type;
+        bool src_is_fat_ptr = (src_type && src_type->kind == TYPE_STRING) ||
+                              (src_type && src_type->kind == TYPE_ARRAY && !src_type->array.is_constrained) ||
+                              (node->assignment.value->kind == NK_STRING);
+        uint32_t src_ptr = Generate_Expression(cg, node->assignment.value);
+        if (src_is_fat_ptr) {
+            /* Source is unconstrained/string - extract data pointer from fat pointer */
+            Emit_Fat_Pointer_Copy_To_Name(cg, src_ptr, target_sym);
+        } else {
+            /* Source is constrained - memcpy directly */
+            uint32_t array_size = ty->size > 0 ? ty->size : 8;
+            Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr ");
+            Emit_Symbol_Ref(cg, target_sym);
+            Emit(cg, ", ptr %%t%u, i64 %u, i1 false)  ; array assignment\n",
+                 src_ptr, array_size);
+        }
         return;
     }
 
