@@ -6938,12 +6938,27 @@ static Type_Info *Resolve_Selected(Symbol_Manager *sm, Syntax_Node *node) {
     /* Resolve prefix first */
     Type_Info *prefix_type = Resolve_Expression(sm, node->selected.prefix);
 
-    if (prefix_type && prefix_type->kind == TYPE_RECORD) {
+    /* Handle .ALL for explicit dereference (RM 4.1) */
+    if (prefix_type && prefix_type->kind == TYPE_ACCESS &&
+        Slice_Equal_Ignore_Case(node->selected.selector, S("ALL"))) {
+        node->type = prefix_type->access.designated_type;
+        return node->type;
+    }
+
+    /* Get effective type for record component lookup (handle implicit dereference) */
+    Type_Info *record_type = prefix_type;
+    if (prefix_type && prefix_type->kind == TYPE_ACCESS &&
+        prefix_type->access.designated_type &&
+        prefix_type->access.designated_type->kind == TYPE_RECORD) {
+        record_type = prefix_type->access.designated_type;
+    }
+
+    if (record_type && record_type->kind == TYPE_RECORD) {
         /* Look up component */
-        for (uint32_t i = 0; i < prefix_type->record.component_count; i++) {
-            if (Slice_Equal_Ignore_Case(prefix_type->record.components[i].name,
+        for (uint32_t i = 0; i < record_type->record.component_count; i++) {
+            if (Slice_Equal_Ignore_Case(record_type->record.components[i].name,
                                         node->selected.selector)) {
-                node->type = prefix_type->record.components[i].component_type;
+                node->type = record_type->record.components[i].component_type;
                 return node->type;
             }
         }
@@ -7313,6 +7328,12 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
             node->type = Resolve_Expression(sm, node->unary.operand);
             if (node->unary.op == TK_NOT) {
                 node->type = sm->type_boolean;
+            } else if (node->unary.op == TK_ALL) {
+                /* .ALL dereference: result is the designated type (RM 4.1) */
+                Type_Info *operand_type = node->unary.operand->type;
+                if (operand_type && operand_type->kind == TYPE_ACCESS) {
+                    node->type = operand_type->access.designated_type;
+                }
             }
             return node->type;
 
@@ -7328,6 +7349,14 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
             {
                 Type_Info *prefix_type = node->attribute.prefix->type;
                 String_Slice attr = node->attribute.name;
+
+                /* Implicit dereference for access types (RM 4.1(3))
+                 * A1'FIRST where A1 is access-to-array is equivalent to A1.ALL'FIRST */
+                if (prefix_type && prefix_type->kind == TYPE_ACCESS &&
+                    prefix_type->access.designated_type) {
+                    prefix_type = prefix_type->access.designated_type;
+                }
+
                 /* FIRST, LAST return the index type for arrays, base type for scalars */
                 if (Slice_Equal_Ignore_Case(attr, S("FIRST")) ||
                     Slice_Equal_Ignore_Case(attr, S("LAST"))) {
@@ -7404,7 +7433,14 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
             return node->type;
 
         case NK_QUALIFIED:
+            /* Resolve subtype mark first to get the type */
             Resolve_Expression(sm, node->qualified.subtype_mark);
+            /* Propagate type to expression (critical for aggregates) */
+            if (node->qualified.expression &&
+                node->qualified.expression->kind == NK_AGGREGATE &&
+                node->qualified.subtype_mark->type) {
+                node->qualified.expression->type = node->qualified.subtype_mark->type;
+            }
             Resolve_Expression(sm, node->qualified.expression);
             node->type = node->qualified.subtype_mark->type;
             return node->type;
@@ -7459,12 +7495,28 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
             }
 
         case NK_ALLOCATOR:
+            /* Resolve subtype mark first to get allocated type */
             Resolve_Expression(sm, node->allocator.subtype_mark);
             if (node->allocator.expression) {
+                /* Propagate type to initializer (critical for aggregates).
+                 * Parser destructures T'(agg) so expression is directly the aggregate */
+                if (node->allocator.expression->kind == NK_AGGREGATE &&
+                    node->allocator.subtype_mark &&
+                    node->allocator.subtype_mark->type) {
+                    node->allocator.expression->type = node->allocator.subtype_mark->type;
+                }
                 Resolve_Expression(sm, node->allocator.expression);
             }
-            /* Create access type to subtype_mark's type */
-            node->type = Type_New(TYPE_ACCESS, S(""));
+            /* Create access type pointing to allocated type */
+            {
+                Type_Info *access_type = Type_New(TYPE_ACCESS, S(""));
+                access_type->size = 8;
+                access_type->alignment = 8;
+                if (node->allocator.subtype_mark && node->allocator.subtype_mark->type) {
+                    access_type->access.designated_type = node->allocator.subtype_mark->type;
+                }
+                node->type = access_type;
+            }
             return node->type;
 
         case NK_RANGE:
@@ -9658,9 +9710,20 @@ static void Emit_Branch_If_Needed(Code_Generator *cg, uint32_t label) {
     }
 }
 
-/* Check if symbol is package-level (global storage with @ prefix in LLVM) */
+/* Check if symbol is package-level (global storage with @ prefix in LLVM).
+ * A symbol is global only if it's at package level AND no ancestor is a subprogram.
+ * This handles nested packages inside subprogram bodies correctly. */
 static inline bool Symbol_Is_Global(Symbol *sym) {
-    return !sym->parent || sym->parent->kind == SYMBOL_PACKAGE;
+    if (!sym->parent) return true;  /* Top-level */
+    /* Walk up parent chain - if any ancestor is a subprogram, symbol is local */
+    Symbol *p = sym->parent;
+    while (p) {
+        if (p->kind == SYMBOL_FUNCTION || p->kind == SYMBOL_PROCEDURE) {
+            return false;  /* Inside a subprogram - use local (%) prefix */
+        }
+        p = p->parent;
+    }
+    return true;  /* No subprogram ancestor - use global (@) prefix */
 }
 
 /* Encode symbol name for LLVM identifier */
@@ -10648,6 +10711,22 @@ static uint32_t Generate_Unary_Op(Code_Generator *cg, Syntax_Node *node) {
                      t, cmp, neg, operand);
             }
             break;
+        case TK_ALL:
+            {
+                /* .ALL dereference: operand is pointer, load the value */
+                Type_Info *designated = node->type;  /* Set by resolution */
+                if (designated && (designated->kind == TYPE_RECORD ||
+                                  designated->kind == TYPE_ARRAY)) {
+                    /* For composite types, pointer is the value */
+                    return operand;
+                }
+                /* For scalar types, load the value from the pointer */
+                const char *type_str = Type_To_Llvm(designated);
+                Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; .ALL dereference\n",
+                     t, type_str, operand);
+                t = Emit_Convert(cg, t, type_str, "i64");
+            }
+            break;
         default:
             return operand;
     }
@@ -10887,8 +10966,49 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
 static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
     /* Generate code for A.B (selected component) */
     Type_Info *prefix_type = node->selected.prefix->type;
+    Type_Info *record_type = prefix_type;
+    bool implicit_deref = false;
 
-    if (!prefix_type || prefix_type->kind != TYPE_RECORD) {
+    /* Handle explicit .ALL dereference (RM 4.1) */
+    if (prefix_type && prefix_type->kind == TYPE_ACCESS &&
+        Slice_Equal_Ignore_Case(node->selected.selector, S("ALL"))) {
+        Type_Info *designated = prefix_type->access.designated_type;
+        Symbol *access_sym = node->selected.prefix->symbol;
+
+        /* Load the pointer */
+        uint32_t ptr;
+        if (access_sym) {
+            ptr = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = load ptr, ptr ", ptr);
+            Emit_Symbol_Ref(cg, access_sym);
+            Emit(cg, "  ; explicit .ALL dereference\n");
+        } else {
+            ptr = Generate_Expression(cg, node->selected.prefix);
+        }
+
+        /* For composite types (records, arrays), return pointer */
+        if (designated && (designated->kind == TYPE_RECORD ||
+                          designated->kind == TYPE_ARRAY)) {
+            return ptr;
+        }
+
+        /* For scalar types, load the value */
+        const char *type_str = Type_To_Llvm(designated);
+        uint32_t t = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; load via .ALL\n", t, type_str, ptr);
+        t = Emit_Convert(cg, t, type_str, "i64");
+        return t;
+    }
+
+    /* Handle implicit dereference: R.C where R is access-to-record (RM 4.1(3)) */
+    if (prefix_type && prefix_type->kind == TYPE_ACCESS &&
+        prefix_type->access.designated_type &&
+        prefix_type->access.designated_type->kind == TYPE_RECORD) {
+        record_type = prefix_type->access.designated_type;
+        implicit_deref = true;
+    }
+
+    if (!record_type || record_type->kind != TYPE_RECORD) {
         /* Package-qualified name - use the resolved symbol via Generate_Identifier
          * This handles named numbers, constants, variables, and literals properly */
         Symbol *sym = node->symbol;
@@ -10904,11 +11024,11 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
     /* Record field access - find component by name */
     uint32_t byte_offset = 0;
     Type_Info *field_type = NULL;
-    for (uint32_t i = 0; i < prefix_type->record.component_count; i++) {
+    for (uint32_t i = 0; i < record_type->record.component_count; i++) {
         if (Slice_Equal_Ignore_Case(
-                prefix_type->record.components[i].name, node->selected.selector)) {
-            byte_offset = prefix_type->record.components[i].byte_offset;
-            field_type = prefix_type->record.components[i].component_type;
+                record_type->record.components[i].name, node->selected.selector)) {
+            byte_offset = record_type->record.components[i].byte_offset;
+            field_type = record_type->record.components[i].component_type;
             break;
         }
     }
@@ -10916,6 +11036,30 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
     /* Get base address of record variable */
     Symbol *record_sym = node->selected.prefix->symbol;
     const char *field_llvm_type = Type_To_Llvm(field_type);
+
+    if (implicit_deref) {
+        /* Access-to-record: load pointer then compute field offset */
+        uint32_t base_ptr;
+        if (record_sym) {
+            base_ptr = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = load ptr, ptr ", base_ptr);
+            Emit_Symbol_Ref(cg, record_sym);
+            Emit(cg, "  ; implicit dereference of access-to-record\n");
+        } else {
+            base_ptr = Generate_Expression(cg, node->selected.prefix);
+        }
+        uint32_t ptr = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
+             ptr, base_ptr, byte_offset);
+
+        if (field_type && field_type->kind == TYPE_RECORD) {
+            return ptr;
+        }
+        uint32_t t = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, field_llvm_type, ptr);
+        t = Emit_Convert(cg, t, field_llvm_type, "i64");
+        return t;
+    }
 
     if (!record_sym) {
         /* Handle nested selection (e.g., A.B.C) by generating prefix expression */
@@ -10997,6 +11141,16 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     Syntax_Node *first_arg = node->attribute.arguments.count > 0
                            ? node->attribute.arguments.items[0] : NULL;
     uint32_t dim = Get_Dimension_Index(first_arg);
+
+    /* ─────────────────────────────────────────────────────────────────────
+     * Implicit dereference for access types (RM 4.1(3))
+     * A1'FIRST where A1 is access-to-array is equivalent to A1.ALL'FIRST
+     * ───────────────────────────────────────────────────────────────────── */
+
+    if (prefix_type && prefix_type->kind == TYPE_ACCESS &&
+        prefix_type->access.designated_type) {
+        prefix_type = prefix_type->access.designated_type;
+    }
 
     /* ─────────────────────────────────────────────────────────────────────
      * Check if prefix is an unconstrained array that needs runtime bounds
@@ -11876,35 +12030,110 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
         }
     }
 
-    /* Handle selected component target (record field assignment) */
+    /* Handle .ALL dereference assignment (NK_UNARY_OP with TK_ALL) */
+    if (target->kind == NK_UNARY_OP && target->unary.op == TK_ALL) {
+        Syntax_Node *operand = target->unary.operand;
+        Type_Info *operand_type = operand->type;
+
+        if (operand_type && operand_type->kind == TYPE_ACCESS) {
+            Type_Info *designated = operand_type->access.designated_type;
+            const char *dest_type = Type_To_Llvm(designated);
+
+            /* Get the pointer value */
+            uint32_t ptr = Generate_Expression(cg, operand);
+
+            /* Generate value and store through the pointer */
+            uint32_t value = Generate_Expression(cg, node->assignment.value);
+            const char *value_type = Expression_Llvm_Type(node->assignment.value);
+            value = Emit_Convert(cg, value, value_type, dest_type);
+            Emit(cg, "  store %s %%t%u, ptr %%t%u  ; .ALL assignment\n",
+                 dest_type, value, ptr);
+            return;
+        }
+    }
+
+    /* Handle selected component target (record field assignment or .ALL) */
     if (target->kind == NK_SELECTED) {
         Syntax_Node *prefix = target->selected.prefix;
         Type_Info *prefix_type = prefix->type;
 
-        if (prefix_type && prefix_type->kind == TYPE_RECORD) {
+        /* Handle explicit .ALL dereference assignment */
+        if (prefix_type && prefix_type->kind == TYPE_ACCESS &&
+            Slice_Equal_Ignore_Case(target->selected.selector, S("ALL"))) {
+            Type_Info *designated = prefix_type->access.designated_type;
+            Symbol *access_sym = prefix->symbol;
+            const char *dest_type = Type_To_Llvm(designated);
+
+            /* Load the access pointer value */
+            uint32_t ptr;
+            if (access_sym) {
+                ptr = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load ptr, ptr ", ptr);
+                Emit_Symbol_Ref(cg, access_sym);
+                Emit(cg, "  ; load access for .ALL assignment\n");
+            } else {
+                ptr = Generate_Expression(cg, prefix);
+            }
+
+            /* Generate value and store through the pointer */
+            uint32_t value = Generate_Expression(cg, node->assignment.value);
+            const char *value_type = Expression_Llvm_Type(node->assignment.value);
+            value = Emit_Convert(cg, value, value_type, dest_type);
+            Emit(cg, "  store %s %%t%u, ptr %%t%u  ; store via .ALL\n", dest_type, value, ptr);
+            return;
+        }
+
+        /* Determine effective record type (handle implicit dereference) */
+        Type_Info *record_type = prefix_type;
+        bool implicit_deref = false;
+        if (prefix_type && prefix_type->kind == TYPE_ACCESS &&
+            prefix_type->access.designated_type &&
+            prefix_type->access.designated_type->kind == TYPE_RECORD) {
+            record_type = prefix_type->access.designated_type;
+            implicit_deref = true;
+        }
+
+        if (record_type && record_type->kind == TYPE_RECORD) {
             /* Find component offset */
             uint32_t offset = 0;
             Type_Info *comp_type = NULL;
-            for (uint32_t i = 0; i < prefix_type->record.component_count; i++) {
-                if (Slice_Equal_Ignore_Case(prefix_type->record.components[i].name,
+            for (uint32_t i = 0; i < record_type->record.component_count; i++) {
+                if (Slice_Equal_Ignore_Case(record_type->record.components[i].name,
                                             target->selected.selector)) {
-                    offset = prefix_type->record.components[i].byte_offset;
-                    comp_type = prefix_type->record.components[i].component_type;
+                    offset = record_type->record.components[i].byte_offset;
+                    comp_type = record_type->record.components[i].component_type;
                     break;
                 }
             }
 
             const char *comp_llvm_type = Type_To_Llvm(comp_type);
 
-            /* Get base address of record variable */
+            /* Get base address of record */
             Symbol *record_sym = prefix->symbol;
-            if (!record_sym) return;
+            uint32_t base_ptr;
+
+            if (implicit_deref) {
+                /* Load access value to get record pointer */
+                if (record_sym) {
+                    base_ptr = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = load ptr, ptr ", base_ptr);
+                    Emit_Symbol_Ref(cg, record_sym);
+                    Emit(cg, "  ; implicit deref for field assignment\n");
+                } else {
+                    base_ptr = Generate_Expression(cg, prefix);
+                }
+            } else {
+                if (!record_sym) return;
+                base_ptr = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = getelementptr i8, ptr ", base_ptr);
+                Emit_Symbol_Ref(cg, record_sym);
+                Emit(cg, ", i64 0\n");
+            }
 
             /* Calculate address of field */
             uint32_t field_ptr = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = getelementptr i8, ptr ", field_ptr);
-            Emit_Symbol_Ref(cg, record_sym);
-            Emit(cg, ", i64 %u\n", offset);
+            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
+                 field_ptr, base_ptr, offset);
 
             /* Generate value and store */
             uint32_t value = Generate_Expression(cg, node->assignment.value);
