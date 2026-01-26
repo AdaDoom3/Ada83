@@ -11153,6 +11153,18 @@ static uint32_t Generate_Unary_Op(Code_Generator *cg, Syntax_Node *node) {
 static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
     Symbol *sym = node->apply.prefix->symbol;
 
+    /* Follow rename chain to get actual target symbol for code generation.
+     * Renames don't generate their own function body - they call the target. */
+    while (sym && sym->renamed_object &&
+           (sym->kind == SYMBOL_FUNCTION || sym->kind == SYMBOL_PROCEDURE)) {
+        Symbol *target = (Symbol *)sym->renamed_object;
+        if (target->kind == SYMBOL_FUNCTION || target->kind == SYMBOL_PROCEDURE) {
+            sym = target;
+        } else {
+            break;
+        }
+    }
+
     if (sym && (sym->kind == SYMBOL_FUNCTION || sym->kind == SYMBOL_PROCEDURE)) {
         /* Function call - generate arguments
          * For OUT/IN OUT parameters, we need to pass the ADDRESS, not the value */
@@ -11209,10 +11221,21 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         Emit_Symbol_Name(cg, sym);
         Emit(cg, "(");
 
-        /* If calling nested function from its parent, pass frame pointer first */
-        if (callee_is_nested && cg->current_function == sym->parent) {
-            Emit(cg, "ptr %%__frame_base");
-            if (node->apply.arguments.count > 0) Emit(cg, ", ");
+        /* Pass frame pointer to nested functions:
+         * - If current function IS the callee's parent: pass our %__frame_base
+         * - If current function is a sibling (same parent): pass %__parent_frame
+         * - Otherwise no frame pointer needed */
+        if (callee_is_nested) {
+            if (cg->current_function == sym->parent) {
+                /* Calling child: pass our frame */
+                Emit(cg, "ptr %%__frame_base");
+                if (node->apply.arguments.count > 0) Emit(cg, ", ");
+            } else if (cg->is_nested && cg->current_function &&
+                       cg->current_function->parent == sym->parent) {
+                /* Calling sibling (same parent): pass parent's frame */
+                Emit(cg, "ptr %%__parent_frame");
+                if (node->apply.arguments.count > 0) Emit(cg, ", ");
+            }
         }
 
         for (uint32_t i = 0; i < node->apply.arguments.count; i++) {
@@ -13277,7 +13300,21 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                 Generate_Expression(cg, target);
             } else if (target->kind == NK_IDENTIFIER) {
                 /* Parameterless procedure/function call */
-                Symbol *proc = target->symbol;
+                Symbol *original_sym = target->symbol;  /* Keep for defaults */
+                Symbol *proc = original_sym;
+
+                /* Follow rename chain to get actual target for function name */
+                while (proc && proc->renamed_object &&
+                       (proc->kind == SYMBOL_FUNCTION || proc->kind == SYMBOL_PROCEDURE)) {
+                    Symbol *renamed_target = (Symbol *)proc->renamed_object;
+                    if (renamed_target->kind == SYMBOL_FUNCTION ||
+                        renamed_target->kind == SYMBOL_PROCEDURE) {
+                        proc = renamed_target;
+                    } else {
+                        break;
+                    }
+                }
+
                 if (proc && (proc->kind == SYMBOL_PROCEDURE || proc->kind == SYMBOL_FUNCTION)) {
                     /* Check if calling a nested function of current scope */
                     bool callee_is_nested = proc->parent &&
@@ -13290,13 +13327,39 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                         Emit(cg, "  call void @");
                     }
                     Emit_Symbol_Name(cg, proc);
+                    Emit(cg, "(");
 
-                    if (callee_is_nested && cg->current_function == proc->parent) {
-                        /* Nested call from parent - pass address of first local variable as frame */
-                        Emit(cg, "(ptr %%__frame_base)\n");
-                    } else {
-                        Emit(cg, "()\n");
+                    /* Pass frame pointer to nested functions */
+                    bool frame_emitted = false;
+                    if (callee_is_nested) {
+                        if (cg->current_function == proc->parent) {
+                            Emit(cg, "ptr %%__frame_base");
+                            frame_emitted = true;
+                        } else if (cg->is_nested && cg->current_function &&
+                                   cg->current_function->parent == proc->parent) {
+                            Emit(cg, "ptr %%__parent_frame");
+                            frame_emitted = true;
+                        }
                     }
+
+                    /* Generate default arguments from original symbol (for renames) */
+                    if (original_sym->parameter_count > 0) {
+                        for (uint32_t i = 0; i < original_sym->parameter_count; i++) {
+                            if (frame_emitted || i > 0) Emit(cg, ", ");
+                            if (original_sym->parameters[i].default_value) {
+                                uint32_t val = Generate_Expression(cg,
+                                    original_sym->parameters[i].default_value);
+                                const char *param_type = original_sym->parameters[i].param_type ?
+                                    Type_To_Llvm(original_sym->parameters[i].param_type) : "i64";
+                                val = Emit_Convert(cg, val, "i64", param_type);
+                                Emit(cg, "%s %%t%u", param_type, val);
+                            } else {
+                                /* No default - emit zero (shouldn't happen) */
+                                Emit(cg, "i64 0");
+                            }
+                        }
+                    }
+                    Emit(cg, ")\n");
                 }
             }
         } break;
