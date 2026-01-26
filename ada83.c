@@ -2931,11 +2931,12 @@ static Syntax_Node *Parse_Primary(Parser *p) {
         return node;
     }
 
-    /* Character literal */
+    /* Character literal - store only the text (e.g., "'X'"), extract char value when needed.
+     * NOTE: Do not set integer_lit.value here - it overlaps with string_val.text.data
+     * in the union and would corrupt the text pointer. */
     if (Parser_At(p, TK_CHARACTER)) {
         Syntax_Node *node = Node_New(NK_CHARACTER, loc);
         node->string_val.text = Slice_Duplicate(p->current_token.text);
-        node->integer_lit.value = p->current_token.integer_value;
         Parser_Advance(p);
         return node;
     }
@@ -7520,7 +7521,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                          Slice_Equal_Ignore_Case(attr, S("FORE"))) {
                     node->type = sm->type_universal_integer;
                 }
-                /* Floating-point type attributes returning universal_real */
+                /* Floating-point type attributes returning universal_real (RM 3.5.8) */
                 else if (Slice_Equal_Ignore_Case(attr, S("EPSILON")) ||
                          Slice_Equal_Ignore_Case(attr, S("SMALL")) ||
                          Slice_Equal_Ignore_Case(attr, S("LARGE")) ||
@@ -7528,13 +7529,13 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                          Slice_Equal_Ignore_Case(attr, S("SAFE_LARGE")) ||
                          Slice_Equal_Ignore_Case(attr, S("DELTA")) ||
                          Slice_Equal_Ignore_Case(attr, S("MODEL_EPSILON")) ||
-                         Slice_Equal_Ignore_Case(attr, S("MODEL_SMALL")) ||
-                         Slice_Equal_Ignore_Case(attr, S("MACHINE_OVERFLOWS")) ||
-                         Slice_Equal_Ignore_Case(attr, S("MACHINE_ROUNDS"))) {
+                         Slice_Equal_Ignore_Case(attr, S("MODEL_SMALL"))) {
                     node->type = sm->type_universal_real;
                 }
-                /* Boolean attributes */
-                else if (Slice_Equal_Ignore_Case(attr, S("CONSTRAINED")) ||
+                /* Boolean attributes (RM 3.5.8, 3.7.1, 9.9) */
+                else if (Slice_Equal_Ignore_Case(attr, S("MACHINE_OVERFLOWS")) ||
+                         Slice_Equal_Ignore_Case(attr, S("MACHINE_ROUNDS")) ||
+                         Slice_Equal_Ignore_Case(attr, S("CONSTRAINED")) ||
                          Slice_Equal_Ignore_Case(attr, S("CALLABLE")) ||
                          Slice_Equal_Ignore_Case(attr, S("TERMINATED"))) {
                     node->type = sm->type_boolean;
@@ -8914,10 +8915,93 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
 
                 Symbol *matching_generic = Symbol_Find(sm, body_name);
                 if (matching_generic && matching_generic->kind == SYMBOL_GENERIC) {
-                    /* This body completes a generic - store it and don't process further */
+                    /* This body completes a generic - store it and resolve it.
+                     * Push scope with generic formals so T, F etc. are visible. */
                     matching_generic->generic_body = node;
                     node->symbol = matching_generic;
-                    break;  /* Don't resolve body now - will be resolved during instantiation */
+
+                    /* Push scope for generic body resolution */
+                    Symbol_Manager_Push_Scope(sm, matching_generic);
+
+                    /* Add generic formal parameters (types, objects, subprograms) to scope */
+                    if (matching_generic->declaration &&
+                        matching_generic->declaration->kind == NK_GENERIC_DECL) {
+                        Node_List *formals = &matching_generic->declaration->generic_decl.formals;
+                        for (uint32_t i = 0; i < formals->count; i++) {
+                            Syntax_Node *formal = formals->items[i];
+                            if (!formal) continue;
+                            if (formal->kind == NK_GENERIC_TYPE_PARAM) {
+                                /* Add formal type as a type symbol (use PRIVATE as placeholder) */
+                                Symbol *type_sym = Symbol_New(SYMBOL_TYPE,
+                                    formal->generic_type_param.name, formal->location);
+                                type_sym->type = Type_New(TYPE_PRIVATE,
+                                    formal->generic_type_param.name);
+                                Symbol_Add(sm, type_sym);
+                                formal->symbol = type_sym;
+                            } else if (formal->kind == NK_GENERIC_SUBPROGRAM_PARAM) {
+                                /* Create and add formal subprogram symbol if not exists */
+                                if (!formal->symbol) {
+                                    String_Slice name = formal->generic_subprog_param.name;
+                                    Symbol_Kind sk = formal->generic_subprog_param.is_function ?
+                                                     SYMBOL_FUNCTION : SYMBOL_PROCEDURE;
+                                    Symbol *subprog_sym = Symbol_New(sk, name, formal->location);
+                                    /* Set return type for functions */
+                                    if (formal->generic_subprog_param.is_function &&
+                                        formal->generic_subprog_param.return_type) {
+                                        Resolve_Expression(sm, formal->generic_subprog_param.return_type);
+                                        subprog_sym->type = formal->generic_subprog_param.return_type->type;
+                                        subprog_sym->return_type = subprog_sym->type;
+                                    }
+                                    formal->symbol = subprog_sym;
+                                }
+                                Symbol_Add(sm, formal->symbol);
+                            } else if (formal->kind == NK_GENERIC_OBJECT_PARAM) {
+                                /* Add formal object(s) as variable(s) */
+                                for (uint32_t j = 0; j < formal->generic_object_param.names.count; j++) {
+                                    Syntax_Node *name_node = formal->generic_object_param.names.items[j];
+                                    Symbol *obj_sym = Symbol_New(SYMBOL_VARIABLE,
+                                        name_node->string_val.text, formal->location);
+                                    Symbol_Add(sm, obj_sym);
+                                    name_node->symbol = obj_sym;
+                                }
+                            }
+                        }
+                    }
+
+                    /* Add body parameters to scope */
+                    if (spec) {
+                        Node_List *params = &spec->subprogram_spec.parameters;
+                        for (uint32_t i = 0; i < params->count; i++) {
+                            Syntax_Node *param = params->items[i];
+                            if (param && param->kind == NK_PARAM_SPEC) {
+                                /* Resolve parameter type (may reference generic formals) */
+                                if (param->param_spec.param_type)
+                                    Resolve_Expression(sm, param->param_spec.param_type);
+                                /* Add each parameter name as a symbol */
+                                for (uint32_t j = 0; j < param->param_spec.names.count; j++) {
+                                    Syntax_Node *name = param->param_spec.names.items[j];
+                                    Symbol *param_sym = Symbol_New(SYMBOL_PARAMETER,
+                                        name->string_val.text, name->location);
+                                    if (param->param_spec.param_type)
+                                        param_sym->type = param->param_spec.param_type->type;
+                                    Symbol_Add(sm, param_sym);
+                                    name->symbol = param_sym;
+                                }
+                            }
+                        }
+                    }
+
+                    /* Resolve declarations and statements in the generic body */
+                    Resolve_Declaration_List(sm, &node->subprogram_body.declarations);
+                    Resolve_Statement_List(sm, &node->subprogram_body.statements);
+
+                    /* Resolve exception handlers */
+                    for (uint32_t i = 0; i < node->subprogram_body.handlers.count; i++) {
+                        Resolve_Statement(sm, node->subprogram_body.handlers.items[i]);
+                    }
+
+                    Symbol_Manager_Pop_Scope(sm);
+                    break;
                 }
 
                 /* Resolve spec if present */
@@ -9213,6 +9297,61 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                         Symbol_Add(sm, obj_sym);
                                     }
                                 }
+                            }
+                            /* For generic subprogram parameters, create procedure/function symbols
+                             * so calls to formal subprograms resolve during generic body analysis */
+                            if (formal->kind == NK_GENERIC_SUBPROGRAM_PARAM) {
+                                String_Slice name = formal->generic_subprog_param.name;
+                                Symbol_Kind sk = formal->generic_subprog_param.is_function ?
+                                                 SYMBOL_FUNCTION : SYMBOL_PROCEDURE;
+                                Symbol *subprog_sym = Symbol_New(sk, name, formal->location);
+
+                                /* Count total parameters */
+                                Node_List *params = &formal->generic_subprog_param.parameters;
+                                uint32_t total_params = 0;
+                                for (uint32_t j = 0; j < params->count; j++) {
+                                    Syntax_Node *ps = params->items[j];
+                                    if (ps->kind == NK_PARAM_SPEC) {
+                                        total_params += ps->param_spec.names.count;
+                                    }
+                                }
+
+                                /* Allocate and fill parameter info */
+                                subprog_sym->parameter_count = total_params;
+                                if (total_params > 0) {
+                                    subprog_sym->parameters = Arena_Allocate(
+                                        total_params * sizeof(Parameter_Info));
+                                    uint32_t idx = 0;
+                                    for (uint32_t j = 0; j < params->count; j++) {
+                                        Syntax_Node *ps = params->items[j];
+                                        if (ps->kind == NK_PARAM_SPEC) {
+                                            /* Resolve param type - may reference earlier formal types */
+                                            Type_Info *pt = NULL;
+                                            if (ps->param_spec.param_type) {
+                                                Resolve_Expression(sm, ps->param_spec.param_type);
+                                                pt = ps->param_spec.param_type->type;
+                                            }
+                                            for (uint32_t k = 0; k < ps->param_spec.names.count; k++) {
+                                                Syntax_Node *pn = ps->param_spec.names.items[k];
+                                                subprog_sym->parameters[idx].name = pn->string_val.text;
+                                                subprog_sym->parameters[idx].param_type = pt;
+                                                subprog_sym->parameters[idx].mode =
+                                                    (Parameter_Mode)ps->param_spec.mode;
+                                                idx++;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                /* For functions, set return type */
+                                if (formal->generic_subprog_param.is_function &&
+                                    formal->generic_subprog_param.return_type) {
+                                    Resolve_Expression(sm, formal->generic_subprog_param.return_type);
+                                    subprog_sym->type = formal->generic_subprog_param.return_type->type;
+                                }
+
+                                formal->symbol = subprog_sym;
+                                Symbol_Add(sm, subprog_sym);
                             }
                         }
                     }
@@ -9699,18 +9838,79 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                     }
                                 }
                             }
-                            /* Propagate type to actual expression (e.g. aggregate) */
-                            if (actual && obj_type) {
+                            /* Propagate type to actual expression and store for substitution */
+                            if (actual) {
                                 Syntax_Node *expr = actual;
                                 if (actual->kind == NK_ASSOCIATION) {
                                     expr = actual->association.expression;
                                 }
-                                /* Set type before and after resolve to handle aggregates */
-                                expr->type = obj_type;
-                                Resolve_Expression(sm, expr);
-                                /* Ensure type stays set for aggregates */
-                                if (!expr->type || expr->kind == NK_AGGREGATE) {
+                                if (obj_type) {
+                                    /* Set type before and after resolve to handle aggregates */
                                     expr->type = obj_type;
+                                    Resolve_Expression(sm, expr);
+                                    /* Ensure type stays set for aggregates */
+                                    if (!expr->type || expr->kind == NK_AGGREGATE) {
+                                        expr->type = obj_type;
+                                    }
+                                } else {
+                                    Resolve_Expression(sm, expr);
+                                }
+                                /* Store the actual expression for substitution during clone */
+                                inst_sym->generic_actuals[i].actual_expr = expr;
+                                /* Store formal name (first name in list) */
+                                if (formal->generic_object_param.names.count > 0) {
+                                    Syntax_Node *fname = formal->generic_object_param.names.items[0];
+                                    if (fname)
+                                        inst_sym->generic_actuals[i].formal_name = fname->string_val.text;
+                                }
+                            }
+                        }
+                    }
+                    /* Third pass: resolve subprogram formals to actual subprograms */
+                    for (uint32_t i = 0; i < formals->count; i++) {
+                        Syntax_Node *formal = formals->items[i];
+                        Syntax_Node *actual = (i < actuals->count) ? actuals->items[i] : NULL;
+
+                        if (formal->kind == NK_GENERIC_SUBPROGRAM_PARAM) {
+                            inst_sym->generic_actuals[i].formal_name =
+                                formal->generic_subprog_param.name;
+
+                            /* Resolve actual subprogram name */
+                            if (actual) {
+                                Syntax_Node *name_node = actual;
+                                if (actual->kind == NK_ASSOCIATION) {
+                                    name_node = actual->association.expression;
+                                }
+                                if (!name_node) continue;
+
+                                /* Handle operator designators: "&" is the "&" operator */
+                                if (name_node->kind == NK_STRING) {
+                                    /* Look up operator by name */
+                                    if (name_node->string_val.text.data) {
+                                        Symbol *op = Symbol_Find(sm, name_node->string_val.text);
+                                        if (op && (op->kind == SYMBOL_FUNCTION || op->kind == SYMBOL_PROCEDURE)) {
+                                            name_node->symbol = op;
+                                            inst_sym->generic_actuals[i].actual_subprogram = op;
+                                        }
+                                    }
+                                }
+                                /* Handle character literals as enum literals: '&' from ADD_OPS */
+                                else if (name_node->kind == NK_CHARACTER) {
+                                    /* Character literal as enum literal (parameterless function) */
+                                    if (name_node->string_val.text.data) {
+                                        Symbol *lit = Symbol_Find(sm, name_node->string_val.text);
+                                        if (lit && lit->kind == SYMBOL_LITERAL) {
+                                            name_node->symbol = lit;
+                                            inst_sym->generic_actuals[i].actual_subprogram = lit;
+                                        }
+                                    }
+                                }
+                                else {
+                                    /* Look up the actual subprogram symbol */
+                                    Resolve_Expression(sm, name_node);
+                                    if (name_node->symbol) {
+                                        inst_sym->generic_actuals[i].actual_subprogram = name_node->symbol;
+                                    }
                                 }
                             }
                         }
@@ -9736,18 +9936,24 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                         for (uint32_t i = 0; i < params->count; i++) {
                             Syntax_Node *ps = params->items[i];
                             if (ps->kind == NK_PARAM_SPEC) {
-                                /* Resolve param type and substitute */
+                                /* Resolve param type and substitute formals with actuals */
                                 Type_Info *param_type = NULL;
                                 if (ps->param_spec.param_type) {
                                     Syntax_Node *pt = ps->param_spec.param_type;
                                     if (pt->kind == NK_IDENTIFIER) {
-                                        /* Check if this is a formal type parameter */
+                                        /* First check if formal type parameter → substitute */
                                         for (uint32_t k = 0; k < inst_sym->generic_actual_count; k++) {
                                             if (Slice_Equal_Ignore_Case(pt->string_val.text,
                                                           inst_sym->generic_actuals[k].formal_name)) {
                                                 param_type = inst_sym->generic_actuals[k].actual_type;
                                                 break;
                                             }
+                                        }
+                                        /* If not a formal, resolve actual type (e.g. STRING) */
+                                        if (!param_type) {
+                                            Symbol *type_sym = Symbol_Find(sm, pt->string_val.text);
+                                            if (type_sym && type_sym->type)
+                                                param_type = type_sym->type;
                                         }
                                     }
                                 }
@@ -9801,6 +10007,8 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                 export_count++;
                             else if (decl->kind == NK_EXCEPTION_DECL)
                                 export_count += decl->exception_decl.names.count;
+                            else if (decl->kind == NK_OBJECT_DECL)
+                                export_count += decl->object_decl.names.count;
                         }
 
                         if (export_count > 0) {
@@ -10021,6 +10229,28 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                         Symbol *exp = Symbol_New(SYMBOL_EXCEPTION,
                                             nm->string_val.text, nm->location);
                                         exp->parent = inst_sym;
+                                        inst_sym->exported[inst_sym->exported_count++] = exp;
+                                    }
+                                }
+                                else if (decl->kind == NK_OBJECT_DECL) {
+                                    /* Export object declarations (including renames) */
+                                    Type_Info *obj_type = NULL;
+                                    if (decl->object_decl.object_type) {
+                                        obj_type = decl->object_decl.object_type->type;
+                                        /* Substitute generic formals with actuals */
+                                        SUBSTITUTE_TYPE(obj_type);
+                                    }
+                                    for (uint32_t j = 0; j < decl->object_decl.names.count; j++) {
+                                        Syntax_Node *nm = decl->object_decl.names.items[j];
+                                        Symbol_Kind sk = decl->object_decl.is_constant ?
+                                            SYMBOL_CONSTANT : SYMBOL_VARIABLE;
+                                        Symbol *exp = Symbol_New(sk, nm->string_val.text, nm->location);
+                                        exp->type = obj_type;
+                                        exp->parent = inst_sym;
+                                        /* For renames, store the renamed object expression */
+                                        if (decl->object_decl.is_rename && decl->object_decl.init) {
+                                            exp->renamed_object = decl->object_decl.init;
+                                        }
                                         inst_sym->exported[inst_sym->exported_count++] = exp;
                                     }
                                 }
@@ -10920,6 +11150,19 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
         return 0;
     }
 
+    /* Generic formal object substitution: if this is a formal object inside
+     * a generic instantiation, generate code for the actual expression. */
+    if (cg->current_instance && cg->current_instance->generic_actuals) {
+        for (uint32_t i = 0; i < cg->current_instance->generic_actual_count; i++) {
+            if (cg->current_instance->generic_actuals[i].actual_expr &&
+                Slice_Equal_Ignore_Case(sym->name,
+                    cg->current_instance->generic_actuals[i].formal_name)) {
+                return Generate_Expression(cg,
+                    cg->current_instance->generic_actuals[i].actual_expr);
+            }
+        }
+    }
+
     /* For RENAMES: redirect to the renamed object */
     if (sym->renamed_object) {
         return Generate_Expression(cg, sym->renamed_object);
@@ -10954,10 +11197,12 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
 
             /* Check if this is an uplevel (outer scope) variable access
              * A variable is "uplevel" if its defining scope's owner is different
-             * from the current function */
+             * from the current function. For generic instances, the variable's
+             * owner is the template, not the instance, so also check that. */
             Symbol *var_owner = sym->defining_scope ? sym->defining_scope->owner : NULL;
             bool is_uplevel = cg->current_function && var_owner &&
-                              var_owner != cg->current_function;
+                              var_owner != cg->current_function &&
+                              var_owner != cg->current_function->generic_template;
 
             const char *type_str = Type_To_Llvm(ty);
             if (is_uplevel && cg->is_nested) {
@@ -11038,6 +11283,66 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "  %%t%u = add i64 0, 0  ; unknown literal\n", t);
             }
             break;
+
+        case SYMBOL_FUNCTION: {
+            /* Parameterless function call: F is syntactically an identifier
+             * but semantically a function call with zero arguments.
+             * Generic formal subprogram substitution: if this is a formal subprogram
+             * inside a generic instantiation, substitute with actual. */
+            Symbol *actual = sym;
+            if (cg->current_instance && cg->current_instance->generic_actuals) {
+                for (uint32_t i = 0; i < cg->current_instance->generic_actual_count; i++) {
+                    if (cg->current_instance->generic_actuals[i].actual_subprogram &&
+                        Slice_Equal_Ignore_Case(sym->name,
+                            cg->current_instance->generic_actuals[i].formal_name)) {
+                        actual = cg->current_instance->generic_actuals[i].actual_subprogram;
+                        break;
+                    }
+                }
+            }
+
+            /* Check if actual is an enumeration literal (e.g., RED, YELLOW) */
+            if (actual->kind == SYMBOL_LITERAL &&
+                actual->type && actual->type->kind == TYPE_ENUMERATION) {
+                int64_t pos = 0;
+                for (uint32_t i = 0; i < actual->type->enumeration.literal_count; i++) {
+                    if (Slice_Equal_Ignore_Case(actual->type->enumeration.literals[i],
+                                                actual->name)) {
+                        pos = i;
+                        break;
+                    }
+                }
+                Emit(cg, "  %%t%u = add i64 0, %lld  ; enum literal as function\n",
+                     t, (long long)pos);
+            } else if (actual->kind == SYMBOL_FUNCTION) {
+                /* Generate actual function call */
+                const char *ret_type = actual->return_type ?
+                    Type_To_Llvm(actual->return_type) : "i64";
+                Emit(cg, "  %%t%u = call %s @", t, ret_type);
+                Emit_Symbol_Name(cg, actual);
+                /* Handle nested function: pass parent frame if needed */
+                bool callee_is_nested = actual->parent &&
+                    (actual->parent->kind == SYMBOL_FUNCTION ||
+                     actual->parent->kind == SYMBOL_PROCEDURE);
+                if (callee_is_nested) {
+                    if (cg->current_function == actual->parent) {
+                        Emit(cg, "(ptr %%__frame_base)\n");
+                    } else if (cg->is_nested && cg->current_function &&
+                               cg->current_function->parent == actual->parent) {
+                        Emit(cg, "(ptr %%__parent_frame)\n");
+                    } else {
+                        Emit(cg, "(ptr null)\n");
+                    }
+                } else {
+                    Emit(cg, "()\n");
+                }
+                /* Convert to i64 if narrower */
+                t = Emit_Convert(cg, t, ret_type, "i64");
+            } else {
+                /* Fallback for other symbol kinds */
+                Emit(cg, "  %%t%u = add i64 0, 0  ; unhandled function symbol\n", t);
+            }
+        } break;
 
         default:
             /* ??? */
@@ -11482,12 +11787,14 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         case TK_GT:
         case TK_GE:
             {
-                /* Check operand types for float comparisons */
+                /* Check operand types for typed comparisons */
                 Type_Info *right_type = node->binary.right ? node->binary.right->type : NULL;
                 bool left_is_float = left_type && (left_type->kind == TYPE_FLOAT ||
                                                    left_type->kind == TYPE_UNIVERSAL_REAL);
                 bool right_is_float = right_type && (right_type->kind == TYPE_FLOAT ||
                                                      right_type->kind == TYPE_UNIVERSAL_REAL);
+                bool left_is_bool = left_type && left_type->kind == TYPE_BOOLEAN;
+                bool right_is_bool = right_type && right_type->kind == TYPE_BOOLEAN;
 
                 /* Convert operands to same type if needed */
                 if (left_is_float && !right_is_float) {
@@ -11514,6 +11821,13 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                         case TK_GT: cmp_op = "fcmp ogt double"; break;
                         case TK_GE: cmp_op = "fcmp oge double"; break;
                         default: cmp_op = "icmp eq i64"; break;
+                    }
+                } else if (left_is_bool && right_is_bool) {
+                    /* Boolean comparisons use i1 */
+                    switch (node->binary.op) {
+                        case TK_EQ: cmp_op = "icmp eq i1"; break;
+                        case TK_NE: cmp_op = "icmp ne i1"; break;
+                        default: cmp_op = "icmp eq i1"; break;
                     }
                 } else {
                     switch (node->binary.op) {
@@ -11604,6 +11918,19 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         }
     }
 
+    /* Generic formal subprogram substitution: if calling a formal subprogram
+     * inside a generic instantiation, substitute with the actual subprogram. */
+    if (sym && cg->current_instance && cg->current_instance->generic_actuals) {
+        for (uint32_t i = 0; i < cg->current_instance->generic_actual_count; i++) {
+            if (cg->current_instance->generic_actuals[i].actual_subprogram &&
+                Slice_Equal_Ignore_Case(sym->name,
+                    cg->current_instance->generic_actuals[i].formal_name)) {
+                sym = cg->current_instance->generic_actuals[i].actual_subprogram;
+                break;
+            }
+        }
+    }
+
     if (sym && (sym->kind == SYMBOL_FUNCTION || sym->kind == SYMBOL_PROCEDURE)) {
         /* Function call - generate arguments
          * For OUT/IN OUT parameters, we need to pass the ADDRESS, not the value */
@@ -11653,11 +11980,13 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                 }
             } else {
                 args[i] = Generate_Expression(cg, arg);
-                /* Truncate to actual parameter type (if parameter info available) */
+                /* Convert to actual parameter type (if parameter info available)
+                 * Use actual expression type, not assumed i64 — fat pointers! */
                 if (sym->parameters && param_idx < sym->parameter_count &&
                     sym->parameters[param_idx].param_type) {
                     const char *param_type = Type_To_Llvm(sym->parameters[param_idx].param_type);
-                    args[i] = Emit_Convert(cg, args[i], "i64", param_type);
+                    const char *arg_type = Expression_Llvm_Type(arg);
+                    args[i] = Emit_Convert(cg, args[i], arg_type, param_type);
                 }
             }
         }
@@ -12652,6 +12981,24 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     }
 
     /* ─────────────────────────────────────────────────────────────────────
+     * Floating-Point Boolean Attributes (RM 3.5.8)
+     * ───────────────────────────────────────────────────────────────────── */
+
+    if (Slice_Equal_Ignore_Case(attr, S("MACHINE_ROUNDS"))) {
+        /* T'MACHINE_ROUNDS - does the hardware round? (RM 3.5.8)
+         * IEEE 754 hardware rounds, so return TRUE */
+        Emit(cg, "  %%t%u = add i1 0, 1  ; 'MACHINE_ROUNDS (IEEE rounds)\n", t);
+        return t;
+    }
+
+    if (Slice_Equal_Ignore_Case(attr, S("MACHINE_OVERFLOWS"))) {
+        /* T'MACHINE_OVERFLOWS - does the hardware raise on overflow? (RM 3.5.8)
+         * IEEE 754 generates infinity on overflow (doesn't trap), return FALSE */
+        Emit(cg, "  %%t%u = add i1 0, 0  ; 'MACHINE_OVERFLOWS (IEEE no trap)\n", t);
+        return t;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────────
      * Object Attributes (RM 3.7.1, 9.9)
      * ───────────────────────────────────────────────────────────────────── */
 
@@ -13007,7 +13354,13 @@ static uint32_t Generate_Expression(Code_Generator *cg, Syntax_Node *node) {
         case NK_INTEGER:    return Generate_Integer_Literal(cg, node);
         case NK_REAL:       return Generate_Real_Literal(cg, node);
         case NK_STRING:     return Generate_String_Literal(cg, node);
-        case NK_CHARACTER:  return Generate_Integer_Literal(cg, node);  /* Char as int */
+        case NK_CHARACTER:  {   /* Character literal - extract char from text "'X'" */
+                             uint32_t t = Emit_Temp(cg);
+                             int64_t ch = 0;
+                             if (node->string_val.text.length >= 2)
+                                 ch = (unsigned char)node->string_val.text.data[1];
+                             Emit(cg, "  %%t%u = add i64 0, %lld\n", t, (long long)ch);
+                             return t; }
         case NK_NULL:       { uint32_t t = Emit_Temp(cg);
                              Emit(cg, "  %%t%u = inttoptr i64 0 to ptr\n", t);
                              return t; }
@@ -13351,10 +13704,12 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
 
     uint32_t value = Generate_Expression(cg, node->assignment.value);
 
-    /* Check if this is an uplevel (outer scope) variable access */
+    /* Check if this is an uplevel (outer scope) variable access.
+     * For generic instances, the variable's owner is the template. */
     Symbol *var_owner = target_sym->defining_scope ? target_sym->defining_scope->owner : NULL;
     bool is_uplevel = cg->current_function && var_owner &&
-                      var_owner != cg->current_function;
+                      var_owner != cg->current_function &&
+                      var_owner != cg->current_function->generic_template;
 
     const char *type_str = Type_To_Llvm(ty);
 
@@ -14909,6 +15264,10 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
     bool is_function = inst_sym->kind == SYMBOL_FUNCTION;
     uint32_t saved_deferred_count = cg->deferred_count;
 
+    /* Set current instance for formal subprogram substitution during codegen */
+    Symbol *saved_current_instance = cg->current_instance;
+    cg->current_instance = inst_sym;
+
     /* For generic instances, determine nesting from instance parent */
     Symbol *saved_enclosing = cg->enclosing_function;
     bool saved_is_nested = cg->is_nested;
@@ -15015,6 +15374,7 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
     cg->current_function = saved_current_function;
     cg->is_nested = saved_is_nested;
     cg->enclosing_function = saved_enclosing;
+    cg->current_instance = saved_current_instance;
 
     /* Process deferred bodies */
     while (cg->deferred_count > saved_deferred_count) {
@@ -17961,6 +18321,15 @@ static Syntax_Node *Node_Deep_Clone(Syntax_Node *node, Instantiation_Env *env,
 
     switch (node->kind) {
         case NK_IDENTIFIER:
+            /* Check for expression substitution (formal object parameters) */
+            if (env) {
+                Syntax_Node *expr_subst = Env_Lookup_Expr(env, node->string_val.text);
+                if (expr_subst) {
+                    /* Return a clone of the actual expression instead.
+                     * The 'n' node becomes garbage but arena will reclaim it. */
+                    return Node_Deep_Clone(expr_subst, env, depth + 1);
+                }
+            }
             n->string_val = node->string_val;
             /* Check for type substitution */
             if (env) {
@@ -18160,13 +18529,15 @@ static void Build_Instantiation_Env(Instantiation_Env *env,
         m->actual_symbol = NULL;
         m->actual_expr = NULL;
 
-        /* For object/subprogram formals, would need additional handling */
+        /* For object/subprogram formals, populate additional fields */
         if (i < formals->count) {
             Syntax_Node *formal = formals->items[i];
             if (formal->kind == NK_GENERIC_OBJECT_PARAM) {
                 /* Store expression for object formals */
+                m->actual_expr = instance_sym->generic_actuals[i].actual_expr;
             } else if (formal->kind == NK_GENERIC_SUBPROGRAM_PARAM) {
-                /* Store symbol for subprogram formals */
+                /* Store actual subprogram symbol for substitution during clone */
+                m->actual_symbol = instance_sym->generic_actuals[i].actual_subprogram;
             }
         }
     }
