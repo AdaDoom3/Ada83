@@ -111,12 +111,10 @@ static void Simd_Detect_Features(void) {
 
 /* Safe ctype: C library requires unsigned char to avoid UB on signed char */
 static inline int  Is_Alpha(char c)   { return isalpha((unsigned char)c); }
-static inline int  Is_Alnum(char c)   { return isalnum((unsigned char)c); }
 static inline int  Is_Digit(char c)   { return isdigit((unsigned char)c); }
 static inline int  Is_Xdigit(char c)  { return isxdigit((unsigned char)c); }
 static inline int  Is_Space(char c)   { return isspace((unsigned char)c); }
 static inline char To_Lower(char c)   { return (char)tolower((unsigned char)c); }
-static inline char To_Upper(char c)   { return (char)toupper((unsigned char)c); }
 
 /* Fast identifier character lookup table per Ada LRM
  * ASCII: [A-Za-z0-9_]
@@ -10007,10 +10005,6 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
  * §12.4 Compilation Unit Resolution
  * ───────────────────────────────────────────────────────────────────────── */
 
-/* Forward declarations for WITH clause loading */
-static char *Lookup_Path(String_Slice name);
-static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src);
-
 static void Resolve_Compilation_Unit(Symbol_Manager *sm, Syntax_Node *node) {
     if (!node) return;
 
@@ -17247,25 +17241,6 @@ static void ALI_Load_Symbols(Symbol_Manager *sm, ALI_Cache_Entry *entry) {
     }
 
     Symbol_Manager_Pop_Scope(sm);
-}
-
-/* Try to use cached ALI instead of parsing source */
-static bool ALI_Use_Cached(Symbol_Manager *sm, String_Slice unit_name,
-                           const char *source_path) {
-    char *ali_path = ALI_Find(unit_name);
-    if (!ali_path) return false;
-
-    /* Check if ALI is current */
-    if (!ALI_Is_Current(ali_path, source_path)) {
-        return false;  /* ALI is stale - need to recompile */
-    }
-
-    /* Load symbols from cached ALI */
-    ALI_Cache_Entry *entry = ALI_Read(ali_path);
-    if (!entry) return false;
-
-    ALI_Load_Symbols(sm, entry);
-    return true;
 }
 
 /* Try_Load_From_ALI — Called by Load_Package_Spec to attempt ALI-based loading
