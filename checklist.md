@@ -2592,3 +2592,49 @@ Make `Symbol.parent` either:
 * always valid `Symbol*` (set at creation), or
 * always null for top-level,
   and assert it. Stop guessing in emission.
+
+---
+
+# Progress Log
+
+## 2026-01-26 Session
+
+**A-series ACATS Test Results: 121/140 (86%)**
+
+### Issues Fixed
+
+1. **CASE statement code generation terminators**
+   - Problem: After RETURN in case alternatives, unconditional `br` was emitted creating invalid IR
+   - Also: Two consecutive labels without instruction between them
+   - Fix: Changed `Generate_Case_Statement` to use `Emit_Label_Here` and `Emit_Branch_If_Needed`
+   - Affected test: a83a08a (label forward references) now passes
+
+2. **Debug output polluting .ll files**
+   - Problem: `DEBUG2: ...` fprintf statements were going to stderr but polluting output
+   - Fix: Removed debug fprintf statements from object declaration handling
+   - Affected tests: a83c01g, ad7206a (now fail for different reason)
+
+3. **Nested generic exports (TEXT_IO.INTEGER_IO)**
+   - Problem: `USE TEXT_IO;` didn't make `INTEGER_IO` visible
+   - Root cause: `Populate_Package_Exports` didn't handle `NK_GENERIC_DECL` nodes
+   - Fix: Added `NK_GENERIC_DECL` to both count and export loops
+   - Affected test: ae3702a now passes
+
+### Remaining Issues (19 tests skipped)
+
+1. **Generic instantiation bodies not generated** (ae3709a, ae2113a, ae2113b, ae3101a)
+   - Generic subprogram bodies are not being generated for instantiations
+   - Calls to instantiated functions result in unresolved symbols
+
+2. **Duplicate function definitions in generic instantiation** (a83009a, a83009b)
+   - When T1=T2 in generic parameters, homograph functions get same name
+
+3. **Undefined local variable references** (a83c01g, ad7201a, ad7206a)
+   - Various issues with symbol resolution for local variables
+   - Includes 'ADDRESS attribute on packages and generic units
+
+### Test Categories
+
+- **120 → 121 PASS**: Base tests + label fix + INTEGER_IO export
+- **0 FAIL**: No runtime failures
+- **20 → 19 SKIP**: Compile or bind errors (mostly generic instantiation)
