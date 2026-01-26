@@ -3,7 +3,7 @@
 CC = gcc
 CFLAGS = -O2 -Wall
 LLC = llc
-ADA83 = ./ada83
+ADA83 = ./ada83new
 
 RUNTIME_LIBS = -lm
 
@@ -14,8 +14,8 @@ all: compiler
 compiler: ada83
 
 # Build the compiler
-ada83: ada83.c
-	$(CC) $(CFLAGS) -o ada83 ada83.c -lm
+ada83: ada83new.c
+	$(CC) $(CFLAGS) -o ada83 ada83new.c -lm -march=native
 
 # Pattern rules for compiling Ada programs
 %.ll: %.adb $(ADA83)
@@ -29,7 +29,7 @@ ada83: ada83.c
 
 # Clean build artifacts (NOT source files!)
 clean:
-	rm -f ada83 *.o *.ll *.s *.exe
+	rm -f ada83new *.o *.ll *.s *.exe
 	rm -f a.out core
 	@echo "Clean complete"
 
