@@ -8634,34 +8634,63 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                     pkg_sym = pkg_name_node->symbol;
                 }
 
-                /* Make visible declarations from package accessible */
-                if (pkg_sym && pkg_sym->kind == SYMBOL_PACKAGE && pkg_sym->declaration) {
-                    Syntax_Node *pkg_decl = pkg_sym->declaration;
-                    if (pkg_decl->kind == NK_PACKAGE_SPEC) {
-                        /* Iterate visible declarations and add to current scope */
+                if (pkg_sym && pkg_sym->kind == SYMBOL_PACKAGE) {
+                    /* Helper macro: add use-visible alias for a symbol */
+                    #define ADD_USE_ALIAS(orig) do { \
+                        if (orig) { \
+                            Symbol *alias = Symbol_New((orig)->kind, (orig)->name, (orig)->location); \
+                            alias->type = (orig)->type; \
+                            alias->declaration = (orig)->declaration; \
+                            alias->visibility = VIS_USE_VISIBLE; \
+                            alias->parameter_count = (orig)->parameter_count; \
+                            alias->parameters = (orig)->parameters; \
+                            alias->return_type = (orig)->return_type; \
+                            alias->is_named_number = (orig)->is_named_number; \
+                            Symbol_Add(sm, alias); \
+                            alias->parent = (orig)->parent; \
+                            alias->unique_id = (orig)->unique_id; \
+                        } \
+                    } while(0)
+
+                    /* For loaded packages with exported array, use it */
+                    if (pkg_sym->exported_count > 0) {
+                        for (uint32_t j = 0; j < pkg_sym->exported_count; j++)
+                            ADD_USE_ALIAS(pkg_sym->exported[j]);
+                    }
+                    /* For inline packages, iterate visible declarations */
+                    else if (pkg_sym->declaration && pkg_sym->declaration->kind == NK_PACKAGE_SPEC) {
+                        Syntax_Node *pkg_decl = pkg_sym->declaration;
                         for (uint32_t j = 0; j < pkg_decl->package_spec.visible_decls.count; j++) {
                             Syntax_Node *decl = pkg_decl->package_spec.visible_decls.items[j];
-                            if (decl && decl->symbol) {
-                                /* Create a use-visible alias in current scope */
-                                Symbol *alias = Symbol_New(decl->symbol->kind,
-                                                           decl->symbol->name,
-                                                           decl->symbol->location);
-                                alias->type = decl->symbol->type;
-                                alias->declaration = decl->symbol->declaration;
-                                alias->visibility = VIS_USE_VISIBLE;
-                                alias->parameter_count = decl->symbol->parameter_count;
-                                alias->parameters = decl->symbol->parameters;
-                                alias->return_type = decl->symbol->return_type;
-                                Symbol_Add(sm, alias);
-                                /* Restore original symbol's identity for name mangling.
-                                 * Symbol_Add sets parent/unique_id to local scope values,
-                                 * but USE-visible symbols must retain original identity
-                                 * so @REPORT__TEST_S5 not @A21001A__TEST_S99 is emitted */
-                                alias->parent = decl->symbol->parent;
-                                alias->unique_id = decl->symbol->unique_id;
+                            if (!decl) continue;
+                            if (decl->symbol) ADD_USE_ALIAS(decl->symbol);
+                            /* Handle object_decl names (constants, variables) */
+                            if (decl->kind == NK_OBJECT_DECL) {
+                                for (uint32_t k = 0; k < decl->object_decl.names.count; k++) {
+                                    Syntax_Node *nm = decl->object_decl.names.items[k];
+                                    if (nm && nm->symbol) ADD_USE_ALIAS(nm->symbol);
+                                }
+                            }
+                            /* Handle enumeration literals */
+                            if ((decl->kind == NK_TYPE_DECL || decl->kind == NK_SUBTYPE_DECL) &&
+                                decl->type_decl.definition &&
+                                decl->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
+                                Node_List *lits = &decl->type_decl.definition->enum_type.literals;
+                                for (uint32_t k = 0; k < lits->count; k++) {
+                                    if (lits->items[k] && lits->items[k]->symbol)
+                                        ADD_USE_ALIAS(lits->items[k]->symbol);
+                                }
+                            }
+                            /* Handle exception declarations */
+                            if (decl->kind == NK_EXCEPTION_DECL) {
+                                for (uint32_t k = 0; k < decl->exception_decl.names.count; k++) {
+                                    Syntax_Node *nm = decl->exception_decl.names.items[k];
+                                    if (nm && nm->symbol) ADD_USE_ALIAS(nm->symbol);
+                                }
                             }
                         }
                     }
+                    #undef ADD_USE_ALIAS
                 }
             }
             break;
