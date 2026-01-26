@@ -11,11 +11,11 @@ RUNTIME_LIBS = -lm
 
 all: compiler
 
-compiler: ada83
+compiler: ada83new
 
 # Build the compiler
-ada83: ada83new.c
-	$(CC) $(CFLAGS) -o ada83 ada83new.c -lm -march=native
+ada83new: ada83new.c
+	$(CC) $(CFLAGS) -o ada83new ada83new.c -lm -march=native
 
 # Pattern rules for compiling Ada programs
 %.ll: %.adb $(ADA83)
