@@ -7298,16 +7298,32 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
         }
     }
 
-    /* ─── Case 3: Array Indexing (with implicit access dereference) ─── */
+    /* ─── Case 3: Array Indexing/Slicing (with implicit access dereference) ─── */
     /* Per RM 4.1(3), A(I) where A is access-to-array is equivalent to A.ALL(I) */
     Type_Info *indexed_type = prefix_type;
     if (prefix_type && prefix_type->kind == TYPE_ACCESS && prefix_type->access.designated_type) {
         indexed_type = prefix_type->access.designated_type;  /* Implicit dereference */
     }
     if (Type_Is_Array_Like(indexed_type)) {
-        node->type = indexed_type->array.element_type;
-        if (!node->type && indexed_type->kind == TYPE_STRING) {
-            node->type = sm->type_character;
+        /* Check if this is a slice (range argument) vs indexing (scalar argument) */
+        bool is_slice = false;
+        for (uint32_t i = 0; i < arg_count; i++) {
+            Syntax_Node *arg = node->apply.arguments.items[i];
+            if (arg && arg->kind == NK_RANGE) {
+                is_slice = true;
+                break;
+            }
+        }
+
+        if (is_slice) {
+            /* Slice: result type is the same array/string type */
+            node->type = indexed_type;
+        } else {
+            /* Indexing: result type is the element type */
+            node->type = indexed_type->array.element_type;
+            if (!node->type && indexed_type->kind == TYPE_STRING) {
+                node->type = sm->type_character;
+            }
         }
         return node->type;
     }
@@ -8380,6 +8396,7 @@ static char *Lookup_Path(String_Slice name);
 static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src);
 static bool Body_Already_Loaded(String_Slice name);
 static void Mark_Body_Loaded(String_Slice name);
+static void Expand_Generic_Package(Symbol_Manager *sm, Symbol *instance_sym);
 
 static void Resolve_Declaration_List(Symbol_Manager *sm, Node_List *list) {
     for (uint32_t i = 0; i < list->count; i++) {
@@ -9879,7 +9896,12 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
 
                 Symbol_Add(sm, inst_sym);
                 node->symbol = inst_sym;
-                /* Body resolution deferred to code generation */
+
+                /* For package instantiations, expand the generic now
+                 * so we have expanded_spec/expanded_body for codegen */
+                if (node->generic_inst.unit_kind == TK_PACKAGE) {
+                    Expand_Generic_Package(sm, inst_sym);
+                }
             }
             break;
 
@@ -14729,7 +14751,11 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 if (!inst_sym || !inst_sym->generic_template) break;
 
                 Symbol *template = inst_sym->generic_template;
-                Syntax_Node *generic_body = template->generic_body;
+
+                /* Prefer expanded_body (with substitutions already applied)
+                 * over template->generic_body (requires runtime substitution) */
+                Syntax_Node *generic_body = inst_sym->expanded_body;
+                if (!generic_body) generic_body = template->generic_body;
                 if (!generic_body) break;
 
                 /* Store current instance for type substitution during codegen */
