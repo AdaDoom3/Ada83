@@ -6290,6 +6290,13 @@ static void Symbol_Add(Symbol_Manager *sm, Symbol *sym) {
                 sym->parent = scope->owner;
                 return;
             }
+            /* Allow variable to shadow type with same name (single task declaration).
+             * Per RM 9.1, a single task declaration creates both a task type and
+             * an anonymous object of that type with the same name. The object
+             * shadows the type for normal name lookups. */
+            if (sym->kind == SYMBOL_VARIABLE && existing->kind == SYMBOL_TYPE) {
+                break;  /* Proceed to add the variable - it will shadow the type */
+            }
             /* Same symbol already exists at this scope - skip */
             return;
         }
@@ -7070,6 +7077,22 @@ static Type_Info *Resolve_Selected(Symbol_Manager *sm, Syntax_Node *node) {
         }
         Report_Error(node->location, "no component '%.*s' in record type",
                     node->selected.selector.length, node->selected.selector.data);
+    } else if (prefix_type && prefix_type->kind == TYPE_TASK) {
+        /* Task entry selection: T.E1 where T is a task object (RM 9.5)
+         * Look up entry in the task type's defining_symbol exported list */
+        Symbol *type_sym = prefix_type->defining_symbol;
+        if (type_sym) {
+            for (uint32_t i = 0; i < type_sym->exported_count; i++) {
+                if (Slice_Equal_Ignore_Case(type_sym->exported[i]->name,
+                                           node->selected.selector)) {
+                    node->symbol = type_sym->exported[i];
+                    node->type = type_sym->exported[i]->type;
+                    return node->type;
+                }
+            }
+        }
+        Report_Error(node->location, "no entry '%.*s' in task type",
+                    (int)node->selected.selector.length, node->selected.selector.data);
     } else {
         /* Could be package selection - look up in prefix's exported symbols */
         Symbol *prefix_sym = node->selected.prefix->symbol;
@@ -10846,8 +10869,14 @@ static void Emit_Symbol_Name(Code_Generator *cg, Symbol *sym) {
      * collisions when multiple instances of the same generic are created.
      * Do NOT prefix exceptions, types, or subprograms. */
     if (cg->current_instance && sym->kind == SYMBOL_VARIABLE && Symbol_Is_Global(sym)) {
-        /* Check if this symbol's parent is the generic template (not the instance) */
+        /* Find the package instance - current_instance might be a procedure
+         * within a package, in which case use the procedure's parent package */
         Symbol *inst = cg->current_instance;
+        if ((inst->kind == SYMBOL_FUNCTION || inst->kind == SYMBOL_PROCEDURE) &&
+            inst->parent && inst->parent->kind == SYMBOL_PACKAGE &&
+            inst->parent->generic_template) {
+            inst = inst->parent;  /* Use owning package instance for globals */
+        }
         Symbol *tmpl = inst->generic_template;
         if (tmpl && sym->parent && sym->parent != inst &&
             (sym->parent == tmpl || sym->parent->kind == SYMBOL_GENERIC)) {
@@ -11317,8 +11346,12 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                 Emit_Symbol_Ref(cg, sym);
                 Emit(cg, "\n");
             }
-            /* Widen to i64 for computation if narrower type */
-            t = Emit_Convert(cg, t, type_str, "i64");
+            /* Widen to i64 for computation if narrower type.
+             * But keep ptr types as ptr - they're used for dereference (.ALL)
+             * and implicit dereference operations. */
+            if (strcmp(type_str, "ptr") != 0) {
+                t = Emit_Convert(cg, t, type_str, "i64");
+            }
         } break;
 
         case SYMBOL_CONSTANT:
@@ -11659,14 +11692,53 @@ static uint32_t Generate_Composite_Address(Code_Generator *cg, Syntax_Node *node
     if (node->kind == NK_SELECTED) {
         /* Field access: Rec.Field - compute address of field */
         Type_Info *prefix_type = node->selected.prefix ? node->selected.prefix->type : NULL;
-        if (prefix_type && prefix_type->kind == TYPE_RECORD) {
-            uint32_t base = Generate_Composite_Address(cg, node->selected.prefix);
+
+        /* Handle implicit dereference: U.A where U is access-to-record.
+         * First load the pointer, then compute field address. */
+        Type_Info *record_type = prefix_type;
+        bool implicit_deref = false;
+        if (prefix_type && prefix_type->kind == TYPE_ACCESS &&
+            prefix_type->access.designated_type &&
+            prefix_type->access.designated_type->kind == TYPE_RECORD) {
+            record_type = prefix_type->access.designated_type;
+            implicit_deref = true;
+        }
+
+        if (record_type && record_type->kind == TYPE_RECORD) {
+            uint32_t base;
+            if (implicit_deref) {
+                /* Load the access value (pointer to record) */
+                Symbol *access_sym = node->selected.prefix->symbol;
+                base = Emit_Temp(cg);
+                if (access_sym) {
+                    /* Check for uplevel access (variable in outer scope) */
+                    Symbol *var_owner = access_sym->defining_scope
+                                       ? access_sym->defining_scope->owner : NULL;
+                    bool is_uplevel = cg->current_function && var_owner &&
+                                      var_owner != cg->current_function &&
+                                      var_owner != cg->current_function->generic_template;
+                    if (is_uplevel && cg->is_nested) {
+                        Emit(cg, "  %%t%u = load ptr, ptr %%__frame.", base);
+                        Emit_Symbol_Name(cg, access_sym);
+                        Emit(cg, "  ; uplevel implicit deref for field address\n");
+                    } else {
+                        Emit(cg, "  %%t%u = load ptr, ptr ", base);
+                        Emit_Symbol_Ref(cg, access_sym);
+                        Emit(cg, "  ; implicit deref for field address\n");
+                    }
+                } else {
+                    uint32_t ptr = Generate_Expression(cg, node->selected.prefix);
+                    base = ptr;  /* Already a ptr from access expr */
+                }
+            } else {
+                base = Generate_Composite_Address(cg, node->selected.prefix);
+            }
             /* Find field offset */
             uint32_t offset = 0;
-            for (uint32_t i = 0; i < prefix_type->record.component_count; i++) {
+            for (uint32_t i = 0; i < record_type->record.component_count; i++) {
                 if (Slice_Equal_Ignore_Case(
-                        prefix_type->record.components[i].name, node->selected.selector)) {
-                    offset = prefix_type->record.components[i].byte_offset;
+                        record_type->record.components[i].name, node->selected.selector)) {
+                    offset = record_type->record.components[i].byte_offset;
                     break;
                 }
             }
@@ -11944,6 +12016,17 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                                                      right_type->kind == TYPE_UNIVERSAL_REAL);
                 bool left_is_bool = left_type && left_type->kind == TYPE_BOOLEAN;
                 bool right_is_bool = right_type && right_type->kind == TYPE_BOOLEAN;
+                bool left_is_access = left_type && left_type->kind == TYPE_ACCESS;
+                bool right_is_access = right_type && right_type->kind == TYPE_ACCESS;
+
+                /* Access types need to be converted to i64 for comparison
+                 * (they are kept as ptr for dereference operations) */
+                if (left_is_access) {
+                    left = Emit_Convert(cg, left, "ptr", "i64");
+                }
+                if (right_is_access) {
+                    right = Emit_Convert(cg, right, "ptr", "i64");
+                }
 
                 /* Convert operands to same type if needed */
                 if (left_is_float && !right_is_float) {
@@ -12359,10 +12442,23 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         uint32_t task_ptr = 0;
         Syntax_Node *prefix = node->apply.prefix;
         if (prefix->kind == NK_SELECTED && prefix->selected.prefix->symbol) {
+            Symbol *task_sym = prefix->selected.prefix->symbol;
             task_ptr = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = getelementptr i8, ptr ", task_ptr);
-            Emit_Symbol_Ref(cg, prefix->selected.prefix->symbol);
-            Emit(cg, ", i64 0  ; task object\n");
+            /* Check for uplevel access (task variable in outer scope) */
+            Symbol *var_owner = task_sym->defining_scope
+                               ? task_sym->defining_scope->owner : NULL;
+            bool is_uplevel = cg->current_function && var_owner &&
+                              var_owner != cg->current_function &&
+                              var_owner != cg->current_function->generic_template;
+            if (is_uplevel && cg->is_nested) {
+                Emit(cg, "  %%t%u = getelementptr i8, ptr %%__frame.", task_ptr);
+                Emit_Symbol_Name(cg, task_sym);
+                Emit(cg, ", i64 0  ; uplevel task object\n");
+            } else {
+                Emit(cg, "  %%t%u = getelementptr i8, ptr ", task_ptr);
+                Emit_Symbol_Ref(cg, task_sym);
+                Emit(cg, ", i64 0  ; task object\n");
+            }
         } else {
             task_ptr = Emit_Temp(cg);
             Emit(cg, "  %%t%u = inttoptr i64 0 to ptr  ; current task\n", task_ptr);
@@ -13907,9 +14003,21 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
                 /* Load access value to get record pointer */
                 if (record_sym) {
                     base_ptr = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = load ptr, ptr ", base_ptr);
-                    Emit_Symbol_Ref(cg, record_sym);
-                    Emit(cg, "  ; implicit deref for field assignment\n");
+                    /* Check for uplevel access (variable in outer scope) */
+                    Symbol *var_owner = record_sym->defining_scope
+                                       ? record_sym->defining_scope->owner : NULL;
+                    bool is_uplevel = cg->current_function && var_owner &&
+                                      var_owner != cg->current_function &&
+                                      var_owner != cg->current_function->generic_template;
+                    if (is_uplevel && cg->is_nested) {
+                        Emit(cg, "  %%t%u = load ptr, ptr %%__frame.", base_ptr);
+                        Emit_Symbol_Name(cg, record_sym);
+                        Emit(cg, "  ; uplevel implicit deref for field assignment\n");
+                    } else {
+                        Emit(cg, "  %%t%u = load ptr, ptr ", base_ptr);
+                        Emit_Symbol_Ref(cg, record_sym);
+                        Emit(cg, "  ; implicit deref for field assignment\n");
+                    }
                 } else {
                     base_ptr = Generate_Expression(cg, prefix);
                 }
@@ -15253,11 +15361,15 @@ static bool Has_Nested_In_Statements(Node_List *statements) {
 }
 
 static bool Has_Nested_Subprograms(Node_List *declarations, Node_List *statements) {
-    /* Check declarations for procedure/function bodies */
+    /* Check declarations for procedure/function/task bodies.
+     * Task bodies access enclosing scope variables just like nested
+     * subprograms (RM 9.1), so the enclosing scope needs frame allocation. */
     if (declarations) {
         for (uint32_t i = 0; i < declarations->count; i++) {
             Syntax_Node *decl = declarations->items[i];
-            if (decl && (decl->kind == NK_PROCEDURE_BODY || decl->kind == NK_FUNCTION_BODY)) {
+            if (decl && (decl->kind == NK_PROCEDURE_BODY ||
+                         decl->kind == NK_FUNCTION_BODY ||
+                         decl->kind == NK_TASK_BODY)) {
                 return true;
             }
         }
@@ -15754,18 +15866,43 @@ static void Generate_Task_Body(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "\n; Task body: %.*s\n",
          (int)node->task_body.name.length, node->task_body.name.data);
 
-    /* Generate task entry point function */
-    Emit(cg, "define void @task_%.*s(ptr %%_unused_arg) {\n",
+    /* Generate task entry point function - receives parent frame pointer
+     * for uplevel variable access (task bodies access enclosing scope) */
+    Emit(cg, "define void @task_%.*s(ptr %%__parent_frame) {\n",
          (int)node->task_body.name.length, node->task_body.name.data);
     Emit(cg, "entry:\n");
 
-    /* Save and set context - task body is like a function body */
+    /* Save and set context - task body is like a nested function */
     Symbol *saved_current_function = cg->current_function;
+    bool saved_is_nested = cg->is_nested;
+    Symbol *saved_enclosing = cg->enclosing_function;
     cg->current_function = node->symbol;
+    cg->is_nested = true;  /* Task bodies are nested in enclosing scope */
+    cg->enclosing_function = saved_current_function;  /* Access parent's vars */
 
     /* Reset temp counter for new function */
     uint32_t saved_temp = cg->temp_id;
     cg->temp_id = 1;
+
+    /* Create frame aliases for accessing enclosing scope variables.
+     * Task bodies can reference variables from the enclosing subprogram
+     * (RM 9.1). The parent passed %__parent_frame pointing to its frame.
+     * Use the task symbol's parent to find the enclosing function since
+     * the task body is generated deferred (cg->current_function is NULL). */
+    Symbol *parent_owner = node->symbol ? node->symbol->parent : NULL;
+    if (parent_owner && parent_owner->scope) {
+        Scope *parent_scope = parent_owner->scope;
+        for (uint32_t i = 0; i < parent_scope->symbol_count; i++) {
+            Symbol *var = parent_scope->symbols[i];
+            if (var && (var->kind == SYMBOL_VARIABLE || var->kind == SYMBOL_PARAMETER)) {
+                /* Create a GEP alias: %__frame.VAR = getelementptr ptr %__parent_frame, offset */
+                Emit(cg, "  %%__frame.");
+                Emit_Symbol_Name(cg, var);
+                Emit(cg, " = getelementptr i8, ptr %%__parent_frame, i64 %lld\n",
+                     (long long)(var->frame_offset));
+            }
+        }
+    }
 
     /* Push exception handler for task */
     uint32_t jmp_buf = Emit_Temp(cg);
@@ -15802,6 +15939,8 @@ static void Generate_Task_Body(Code_Generator *cg, Syntax_Node *node) {
     /* Restore context */
     cg->temp_id = saved_temp;
     cg->current_function = saved_current_function;
+    cg->is_nested = saved_is_nested;
+    cg->enclosing_function = saved_enclosing;
 }
 
 static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
@@ -15962,20 +16101,27 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                  (int)node->task_spec.name.length, node->task_spec.name.data);
             /* For single tasks (not task types), allocate task control block storage */
             if (!node->task_spec.is_type && node->symbol) {
-                /* Find the variable symbol (created during resolution) */
+                /* Find the variable symbol in the type symbol's defining scope.
+                 * The type and variable were both added to the same scope during
+                 * semantic analysis. Use defining_scope instead of sm->current_scope
+                 * since current_scope may have changed during code generation. */
                 Symbol *obj_sym = NULL;
-                Symbol_Manager *sm = cg->sm;
-                for (uint32_t i = 0; i < sm->current_scope->symbol_count; i++) {
-                    Symbol *s = sm->current_scope->symbols[i];
-                    if (s && s->kind == SYMBOL_VARIABLE &&
-                        s->type && s->type->kind == TYPE_TASK &&
-                        Slice_Equal_Ignore_Case(s->name, node->task_spec.name)) {
-                        obj_sym = s;
-                        break;
+                Scope *scope = node->symbol->defining_scope;
+                if (scope) {
+                    for (uint32_t i = 0; i < scope->symbol_count; i++) {
+                        Symbol *s = scope->symbols[i];
+                        if (s && s->kind == SYMBOL_VARIABLE &&
+                            s->type && s->type->kind == TYPE_TASK &&
+                            Slice_Equal_Ignore_Case(s->name, node->task_spec.name)) {
+                            obj_sym = s;
+                            break;
+                        }
                     }
                 }
-                if (obj_sym && obj_sym->unique_id == 0) {
-                    obj_sym->unique_id = sm->next_unique_id++;
+                if (obj_sym) {
+                    if (obj_sym->unique_id == 0) {
+                        obj_sym->unique_id = cg->sm->next_unique_id++;
+                    }
                     Emit(cg, "  %%");
                     Emit_Symbol_Name(cg, obj_sym);
                     Emit(cg, " = alloca ptr  ; task control block\n");
