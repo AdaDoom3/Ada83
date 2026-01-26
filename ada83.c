@@ -9136,6 +9136,12 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                     node->symbol = spec->symbol;
                 }
 
+                /* For stubs (IS SEPARATE), don't claim the symbol - the separate
+                 * subunit will provide the actual body and should claim it. */
+                if (node->subprogram_body.is_separate && node->symbol) {
+                    node->symbol->body_claimed = false;
+                }
+
                 /* Push scope for body */
                 Symbol_Manager_Push_Scope(sm, node->symbol);
 
@@ -9366,6 +9372,12 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                     node->symbol = pkg_sym;
                 }
                 Symbol_Manager_Push_Scope(sm, pkg_sym);
+
+                /* Set package symbol's scope for separate subunit resolution.
+                 * This allows SEPARATE (Parent) subunits to find stub symbols. */
+                if (pkg_sym) {
+                    pkg_sym->scope = sm->current_scope;
+                }
 
                 /* Install visible and private declarations from package spec
                  * into the body's scope (RM 7.1, 7.2) */
