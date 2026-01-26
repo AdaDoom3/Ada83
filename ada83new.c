@@ -6107,6 +6107,7 @@ struct Symbol {
     /* Code generation flags */
     bool            extern_emitted;      /* Extern declaration already emitted */
     bool            is_named_number;     /* Named number (constant without explicit type) */
+    bool            is_overloaded;       /* Part of an overload set (needs unique_id suffix) */
 
     /* For RENAMES: pointer to the renamed object's AST node */
     Syntax_Node    *renamed_object;
@@ -6230,6 +6231,9 @@ static void Symbol_Add(Symbol_Manager *sm, Symbol *sym) {
             /* Overloading: add to chain if subprograms */
             if ((existing->kind == SYMBOL_PROCEDURE || existing->kind == SYMBOL_FUNCTION) &&
                 (sym->kind == SYMBOL_PROCEDURE || sym->kind == SYMBOL_FUNCTION)) {
+                sym->unique_id = sm->next_unique_id++;  /* Assign unique ID for mangling */
+                sym->is_overloaded = true;
+                existing->is_overloaded = true;  /* Mark first decl as overloaded too */
                 sym->next_overload = existing->next_overload;
                 existing->next_overload = sym;
                 sym->parent = scope->owner;
@@ -9432,6 +9436,7 @@ typedef struct {
 
     /* Function exit tracking */
     bool          has_return;
+    bool          block_terminated;  /* True if current block has a terminator (ret/br) */
 
     /* Module header tracking for multi-unit files */
     bool          header_emitted;
@@ -9527,6 +9532,20 @@ static void Emit(Code_Generator *cg, const char *format, ...) {
     va_end(args);
 }
 
+/* Emit a label and reset block termination state */
+static void Emit_Label_Here(Code_Generator *cg, uint32_t label) {
+    Emit(cg, "L%u:\n", label);
+    cg->block_terminated = false;
+}
+
+/* Emit a branch only if block is not already terminated */
+static void Emit_Branch_If_Needed(Code_Generator *cg, uint32_t label) {
+    if (!cg->block_terminated) {
+        Emit(cg, "  br label %%L%u\n", label);
+        cg->block_terminated = true;
+    }
+}
+
 /* Check if symbol is package-level (global storage with @ prefix in LLVM) */
 static inline bool Symbol_Is_Global(Symbol *sym) {
     return !sym->parent || sym->parent->kind == SYMBOL_PACKAGE;
@@ -9571,10 +9590,10 @@ static void Emit_Symbol_Name(Code_Generator *cg, Symbol *sym) {
         }
     }
 
-    /* Only add unique_id suffix for local/nested symbols, not package-level.
-     * Package-level symbols use just the qualified name for cross-compilation
-     * linking. Local symbols need unique_id to disambiguate nested scopes. */
-    if (!Symbol_Is_Global(sym)) {
+    /* Add unique_id suffix for local/nested symbols and overloaded subprograms.
+     * Package-level variables and non-overloaded subprograms use just the
+     * qualified name for cross-compilation linking. */
+    if (!Symbol_Is_Global(sym) || sym->is_overloaded) {
         Emit(cg, "_S%u", sym->unique_id);
     }
 }
@@ -11844,18 +11863,19 @@ static void Generate_If_Statement(Code_Generator *cg, Syntax_Node *node) {
     const char *cond_type = Expression_Llvm_Type(node->if_stmt.condition);
     cond = Emit_Convert(cg, cond, cond_type, "i1");
     Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cond, then_label, else_label);
+    cg->block_terminated = true;
 
-    Emit(cg, "L%u:\n", then_label);
+    Emit_Label_Here(cg, then_label);
     Generate_Statement_List(cg, &node->if_stmt.then_stmts);
-    Emit(cg, "  br label %%L%u\n", end_label);
+    Emit_Branch_If_Needed(cg, end_label);
 
-    Emit(cg, "L%u:\n", else_label);
+    Emit_Label_Here(cg, else_label);
     if (node->if_stmt.else_stmts.count > 0) {
         Generate_Statement_List(cg, &node->if_stmt.else_stmts);
     }
-    Emit(cg, "  br label %%L%u\n", end_label);
+    Emit_Branch_If_Needed(cg, end_label);
 
-    Emit(cg, "L%u:\n", end_label);
+    Emit_Label_Here(cg, end_label);
 }
 
 static void Generate_Loop_Statement(Code_Generator *cg, Syntax_Node *node) {
@@ -11868,8 +11888,8 @@ static void Generate_Loop_Statement(Code_Generator *cg, Syntax_Node *node) {
     cg->loop_exit_label = loop_end;
     cg->loop_continue_label = loop_start;
 
-    Emit(cg, "  br label %%L%u\n", loop_start);
-    Emit(cg, "L%u:\n", loop_start);
+    Emit_Branch_If_Needed(cg, loop_start);
+    Emit_Label_Here(cg, loop_start);
 
     /* Condition check for WHILE loops */
     if (node->loop_stmt.iteration_scheme &&
@@ -11880,15 +11900,16 @@ static void Generate_Loop_Statement(Code_Generator *cg, Syntax_Node *node) {
         const char *cond_type = Expression_Llvm_Type(scheme);
         cond = Emit_Convert(cg, cond, cond_type, "i1");
         Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cond, loop_body, loop_end);
+        cg->block_terminated = true;
     } else {
-        Emit(cg, "  br label %%L%u\n", loop_body);
+        Emit_Branch_If_Needed(cg, loop_body);
     }
 
-    Emit(cg, "L%u:\n", loop_body);
+    Emit_Label_Here(cg, loop_body);
     Generate_Statement_List(cg, &node->loop_stmt.statements);
-    Emit(cg, "  br label %%L%u\n", loop_start);
+    Emit_Branch_If_Needed(cg, loop_start);
 
-    Emit(cg, "L%u:\n", loop_end);
+    Emit_Label_Here(cg, loop_end);
 
     cg->loop_exit_label = saved_exit;
     cg->loop_continue_label = saved_cont;
@@ -11896,6 +11917,7 @@ static void Generate_Loop_Statement(Code_Generator *cg, Syntax_Node *node) {
 
 static void Generate_Return_Statement(Code_Generator *cg, Syntax_Node *node) {
     cg->has_return = true;
+    cg->block_terminated = true;  /* ret is a terminator */
     if (node->return_stmt.expression) {
         Syntax_Node *expr = node->return_stmt.expression;
         uint32_t value = Generate_Expression(cg, expr);
@@ -12886,6 +12908,7 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
     Symbol *saved_current_function = cg->current_function;
     cg->current_function = sym;
     cg->has_return = false;
+    cg->block_terminated = false;  /* Reset for new function */
 
     /* Check if this function has nested subprograms (in declarations or DECLARE blocks) */
     bool has_nested = Has_Nested_Subprograms(&node->subprogram_body.declarations,
@@ -13065,10 +13088,11 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
         Generate_Statement_List(cg, &node->subprogram_body.statements);
     }
 
-    /* Default return if no explicit return was emitted */
-    if (!cg->has_return) {
+    /* Default return if block is not terminated */
+    if (!cg->block_terminated) {
         if (is_function) {
-            Emit(cg, "  ret %s 0\n", Type_To_Llvm(sym->return_type));
+            /* Emit unreachable - control shouldn't reach here in well-formed function */
+            Emit(cg, "  unreachable\n");
         } else {
             Emit(cg, "  ret void\n");
         }
@@ -13141,6 +13165,7 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
     Symbol *saved_current_function = cg->current_function;
     cg->current_function = inst_sym;
     cg->has_return = false;
+    cg->block_terminated = false;  /* Reset for new function */
 
     /* Allocate parameters using symbol names for consistent access */
     for (uint32_t i = 0; i < inst_sym->parameter_count; i++) {
@@ -13171,15 +13196,10 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
         }
     }
 
-    /* Default return if no explicit return */
-    if (!cg->has_return) {
+    /* Default return if block is not terminated */
+    if (!cg->block_terminated) {
         if (is_function) {
-            /* For function, return parameter 0 (this is simplified - real implementation
-               would need to evaluate the return expression with substitution) */
-            const char *ret_type = Type_To_Llvm(inst_sym->return_type);
-            uint32_t t = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = load %s, ptr %%param0\n", t, ret_type);
-            Emit(cg, "  ret %s %%t%u\n", ret_type, t);
+            Emit(cg, "  unreachable\n");
         } else {
             Emit(cg, "  ret void\n");
         }

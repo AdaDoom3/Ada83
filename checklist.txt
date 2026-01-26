@@ -139,8 +139,8 @@ LINE COUNT COMPARISON
 ===============================================================================
 
 Original ada83.c:    18,746 lines
-Rewritten ada83new.c: 14,533 lines (with renames + variant records)
-Reduction:            4,213 lines (22% smaller)
+Rewritten ada83new.c: 14,538 lines (with named param association fix)
+Reduction:            4,208 lines (22% smaller)
 
 ===============================================================================
 A-SERIES ACATS TEST RESULTS (2026-01-26)
