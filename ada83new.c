@@ -5953,6 +5953,15 @@ static const char *Type_To_Llvm(Type_Info *t) {
         case TYPE_UNIVERSAL_REAL:
             return Llvm_Float_Type((uint32_t)To_Bits(t->size));
         case TYPE_ACCESS:
+            /* Access to unconstrained array/STRING needs fat pointer representation */
+            if (t->access.designated_type) {
+                Type_Info *d = t->access.designated_type;
+                if (d->kind == TYPE_STRING ||
+                    (d->kind == TYPE_ARRAY && !d->array.is_constrained)) {
+                    return "{ ptr, { i64, i64 } }";
+                }
+            }
+            return "ptr";
         case TYPE_RECORD:
         case TYPE_TASK:
             return "ptr";
@@ -6123,6 +6132,8 @@ struct Symbol {
     bool            is_named_number;     /* Named number (constant without explicit type) */
     bool            is_overloaded;       /* Part of an overload set (needs unique_id suffix) */
     bool            body_claimed;        /* Body has been matched to this spec (for homographs) */
+    bool            is_predefined;       /* Predefined operator from STANDARD */
+    bool            needs_address_marker; /* Needs @__addr.X global for 'ADDRESS */
 
     /* LLVM label ID for SYMBOL_LABEL */
     uint32_t        llvm_label_id;       /* 0 = not yet assigned */
@@ -6261,6 +6272,12 @@ static void Symbol_Add(Symbol_Manager *sm, Symbol *sym) {
             /* Overloading: add to chain if subprograms */
             if ((existing->kind == SYMBOL_PROCEDURE || existing->kind == SYMBOL_FUNCTION) &&
                 (sym->kind == SYMBOL_PROCEDURE || sym->kind == SYMBOL_FUNCTION)) {
+                /* Check if sym is already in the overload chain (prevents cycles) */
+                Symbol *chain = existing;
+                while (chain) {
+                    if (chain == sym) return;  /* Already in chain */
+                    chain = chain->next_overload;
+                }
                 sym->unique_id = sm->next_unique_id++;  /* Assign unique ID for mangling */
                 sym->is_overloaded = true;
                 existing->is_overloaded = true;  /* Mark first decl as overloaded too */
@@ -6453,6 +6470,22 @@ static bool Type_Covers(Type_Info *expected, Type_Info *actual) {
         return true;
     }
 
+    /* Enumeration types from generic instantiation: same name means compatible.
+     * This handles the case where instantiation creates new type objects
+     * that should be compatible with the original generic spec's types. */
+    if (expected->kind == TYPE_ENUMERATION && actual->kind == TYPE_ENUMERATION &&
+        expected->name.data && actual->name.data &&
+        Slice_Equal_Ignore_Case(expected->name, actual->name)) {
+        return true;
+    }
+
+    /* Integer/derived types from generic instantiation: same name means compatible */
+    if (expected->kind == TYPE_INTEGER && actual->kind == TYPE_INTEGER &&
+        expected->name.data && actual->name.data &&
+        Slice_Equal_Ignore_Case(expected->name, actual->name)) {
+        return true;
+    }
+
     return false;
 }
 
@@ -6476,27 +6509,17 @@ typedef struct {
 static bool Arguments_Match_Profile(Symbol *sym, Argument_Info *args) {
     if (!sym) return false;
 
-    /* Check arity first */
-    uint32_t required_params = 0;
-    uint32_t optional_params = 0;
-
+    /* Track which formal parameters are covered by arguments */
+    bool *param_covered = Arena_Allocate(sym->parameter_count * sizeof(bool));
     for (uint32_t i = 0; i < sym->parameter_count; i++) {
-        if (sym->parameters[i].default_value) {
-            optional_params++;
-        } else {
-            required_params++;
-        }
+        param_covered[i] = false;
     }
 
-    if (args->count < required_params ||
-        args->count > sym->parameter_count) {
-        return false;
-    }
-
-    /* Check type compatibility for each argument */
+    /* Check type compatibility for each argument and mark params covered */
     for (uint32_t i = 0; i < args->count; i++) {
         Type_Info *arg_type = args->types[i];
         Type_Info *param_type = NULL;
+        uint32_t param_idx = i;
 
         /* Handle named association */
         if (args->names && args->names[i].data) {
@@ -6504,6 +6527,7 @@ static bool Arguments_Match_Profile(Symbol *sym, Argument_Info *args) {
             for (uint32_t j = 0; j < sym->parameter_count; j++) {
                 if (Slice_Equal_Ignore_Case(sym->parameters[j].name, args->names[i])) {
                     param_type = sym->parameters[j].param_type;
+                    param_idx = j;
                     found = true;
                     break;
                 }
@@ -6515,8 +6539,20 @@ static bool Arguments_Match_Profile(Symbol *sym, Argument_Info *args) {
             param_type = sym->parameters[i].param_type;
         }
 
+        /* Mark this parameter as covered */
+        if (param_idx < sym->parameter_count) {
+            param_covered[param_idx] = true;
+        }
+
         if (!Type_Covers(param_type, arg_type)) {
             return false;
+        }
+    }
+
+    /* Verify all required parameters (no default value) are covered */
+    for (uint32_t i = 0; i < sym->parameter_count; i++) {
+        if (!param_covered[i] && !sym->parameters[i].default_value) {
+            return false;  /* Required parameter not provided */
         }
     }
 
@@ -6918,6 +6954,42 @@ static void Symbol_Manager_Init_Predefined(Symbol_Manager *sm) {
         ch->is_named_number = true;  /* Treat as compile-time constant */
         Symbol_Add(sm, ch);
         pkg_ascii->exported[i] = ch;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────────────
+     * Predefined Operators (RM 4.5) — Needed for operator renaming
+     *
+     * Per LRM 4.5.3-4.5.6, predefined operators exist for all numeric types.
+     * We add symbols for these so RENAMES "+" etc. can resolve them.
+     * ───────────────────────────────────────────────────────────────────────── */
+    static const struct { const char *name; bool is_binary; bool returns_bool; } predef_ops[] = {
+        {"+", true, false}, {"-", true, false}, {"*", true, false},
+        {"/", true, false}, {"mod", true, false}, {"rem", true, false},
+        {"**", true, false}, {"abs", false, false},
+        {"=", true, true}, {"/=", true, true},
+        {"<", true, true}, {"<=", true, true},
+        {">", true, true}, {">=", true, true},
+    };
+    Type_Info *num_types[] = { sm->type_integer, sm->type_float };
+    for (uint32_t ti = 0; ti < 2; ti++) {
+        Type_Info *ty = num_types[ti];
+        for (uint32_t i = 0; i < sizeof(predef_ops)/sizeof(predef_ops[0]); i++) {
+            String_Slice op_name = { predef_ops[i].name, strlen(predef_ops[i].name) };
+            Symbol *op_sym = Symbol_New(SYMBOL_FUNCTION, op_name, No_Location);
+            op_sym->is_predefined = true;
+            op_sym->return_type = predef_ops[i].returns_bool ? sm->type_boolean : ty;
+            if (predef_ops[i].is_binary) {
+                op_sym->parameter_count = 2;
+                op_sym->parameters = Arena_Allocate(2 * sizeof(Parameter_Info));
+                op_sym->parameters[0] = (Parameter_Info){S("LEFT"), ty, PARAM_IN, NULL};
+                op_sym->parameters[1] = (Parameter_Info){S("RIGHT"), ty, PARAM_IN, NULL};
+            } else {
+                op_sym->parameter_count = 1;
+                op_sym->parameters = Arena_Allocate(1 * sizeof(Parameter_Info));
+                op_sym->parameters[0] = (Parameter_Info){S("RIGHT"), ty, PARAM_IN, NULL};
+            }
+            Symbol_Add(sm, op_sym);
+        }
     }
 }
 
@@ -9061,6 +9133,11 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                 Symbol *pkg_sym = NULL;
                 String_Slice pkg_name = node->package_body.name;
                 if (pkg_name.length > 0) {
+                    /* Mark this body as loaded BEFORE trying to load the spec.
+                     * This prevents Load_Package_Spec from recursively loading
+                     * the same body when we're compiling a .adb file directly. */
+                    Mark_Body_Loaded(pkg_name);
+
                     pkg_sym = Symbol_Find(sm, pkg_name);
                     if (!pkg_sym) {
                         /* Try to load corresponding package spec first.
@@ -9102,8 +9179,17 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                             if (formal->kind == NK_GENERIC_TYPE_PARAM && !formal->symbol) {
                                 Symbol *type_sym = Symbol_New(SYMBOL_TYPE,
                                     formal->generic_type_param.name, formal->location);
-                                Type_Info *type = Type_New(TYPE_PRIVATE,
-                                    formal->generic_type_param.name);
+                                /* Map def_kind to appropriate Type_Kind:
+                                 * 0=PRIVATE, 1=LIMITED_PRIVATE, 2=DISCRETE, 3=INTEGER, 4=FLOAT, 5=FIXED */
+                                Type_Kind tk = TYPE_PRIVATE;
+                                switch (formal->generic_type_param.def_kind) {
+                                    case 2: tk = TYPE_ENUMERATION; break; /* DISCRETE */
+                                    case 3: tk = TYPE_INTEGER; break;     /* INTEGER (range <>) */
+                                    case 4: tk = TYPE_FLOAT; break;       /* FLOAT (digits <>) */
+                                    case 5: tk = TYPE_FIXED; break;       /* FIXED (delta <>) */
+                                    default: tk = TYPE_PRIVATE; break;
+                                }
+                                Type_Info *type = Type_New(tk, formal->generic_type_param.name);
                                 type_sym->type = type;
                                 formal->symbol = type_sym;
                                 Symbol_Add(sm, type_sym);
@@ -9154,6 +9240,13 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                 if (name->symbol) Symbol_Add(sm, name->symbol);
                             }
                         }
+                        /* Install exception symbols (similar to object decls) */
+                        if (decl->kind == NK_EXCEPTION_DECL) {
+                            for (uint32_t j = 0; j < decl->exception_decl.names.count; j++) {
+                                Syntax_Node *name = decl->exception_decl.names.items[j];
+                                if (name->symbol) Symbol_Add(sm, name->symbol);
+                            }
+                        }
                         if (decl->kind == NK_TYPE_DECL && decl->type_decl.definition &&
                             decl->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
                             Node_List *lits = &decl->type_decl.definition->enum_type.literals;
@@ -9169,6 +9262,13 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                         if (decl->kind == NK_OBJECT_DECL) {
                             for (uint32_t j = 0; j < decl->object_decl.names.count; j++) {
                                 Syntax_Node *name = decl->object_decl.names.items[j];
+                                if (name->symbol) Symbol_Add(sm, name->symbol);
+                            }
+                        }
+                        /* Install exception symbols */
+                        if (decl->kind == NK_EXCEPTION_DECL) {
+                            for (uint32_t j = 0; j < decl->exception_decl.names.count; j++) {
+                                Syntax_Node *name = decl->exception_decl.names.items[j];
                                 if (name->symbol) Symbol_Add(sm, name->symbol);
                             }
                         }
@@ -9218,6 +9318,9 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                             alias->parameters = (orig)->parameters; \
                             alias->return_type = (orig)->return_type; \
                             alias->is_named_number = (orig)->is_named_number; \
+                            alias->generic_unit = (orig)->generic_unit; \
+                            alias->generic_body = (orig)->generic_body; \
+                            alias->generic_formals = (orig)->generic_formals; \
                             Symbol_Add(sm, alias); \
                             alias->parent = (orig)->parent; \
                             alias->unique_id = (orig)->unique_id; \
@@ -9725,8 +9828,12 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                     /* Create type symbol for the instance */
                                     String_Slice name = decl->type_decl.name;
                                     Symbol *exp = Symbol_New(SYMBOL_TYPE, name, decl->location);
-                                    exp->type = decl->type;
-                                    if (!exp->type && decl->type_decl.definition)
+                                    /* Use the symbol's type (has the named type) if available */
+                                    if (decl->symbol && decl->symbol->type)
+                                        exp->type = decl->symbol->type;
+                                    else if (decl->type)
+                                        exp->type = decl->type;
+                                    else if (decl->type_decl.definition)
                                         exp->type = decl->type_decl.definition->type;
                                     /* For subtypes, substitute formal type with actual */
                                     if (!exp->type && decl->kind == NK_SUBTYPE_DECL &&
@@ -9860,11 +9967,20 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                                 }
                                                 SUBSTITUTE_TYPE(ptype);
                                                 for (uint32_t m = 0; m < ps->param_spec.names.count; m++) {
-                                                    exp->parameters[idx].name =
-                                                        ps->param_spec.names.items[m]->string_val.text;
+                                                    Syntax_Node *pname = ps->param_spec.names.items[m];
+                                                    exp->parameters[idx].name = pname->string_val.text;
                                                     exp->parameters[idx].param_type = ptype;
                                                     exp->parameters[idx].mode =
                                                         (Parameter_Mode)ps->param_spec.mode;
+                                                    /* Create param symbol if not present (specs don't have symbols) */
+                                                    if (!pname->symbol) {
+                                                        Symbol *ps_sym = Symbol_New(SYMBOL_PARAMETER,
+                                                            pname->string_val.text, pname->location);
+                                                        ps_sym->type = ptype;
+                                                        ps_sym->unique_id = sm->next_unique_id++;
+                                                        pname->symbol = ps_sym;
+                                                    }
+                                                    exp->parameters[idx].param_sym = pname->symbol;
                                                     idx++;
                                                 }
                                             }
@@ -10170,6 +10286,10 @@ typedef struct {
     char         *string_const_buffer;
     size_t        string_const_size;
     size_t        string_const_capacity;
+
+    /* Address markers needed for 'ADDRESS on packages/generics */
+    Symbol       *address_markers[256];
+    uint32_t      address_marker_count;
 } Code_Generator;
 
 static Code_Generator *Code_Generator_New(FILE *output, Symbol_Manager *sm) {
@@ -10389,6 +10509,32 @@ static void Emit_Symbol_Name(Code_Generator *cg, Symbol *sym) {
             fputc(name.data[i], cg->output);
         }
         return;
+    }
+
+    /* For generic instance code generation: prefix global OBJECT symbols
+     * (variables) from the template body with the instance name to avoid
+     * collisions when multiple instances of the same generic are created.
+     * Do NOT prefix exceptions, types, or subprograms. */
+    if (cg->current_instance && sym->kind == SYMBOL_VARIABLE && Symbol_Is_Global(sym)) {
+        /* Check if this symbol's parent is the generic template (not the instance) */
+        Symbol *inst = cg->current_instance;
+        Symbol *tmpl = inst->generic_template;
+        if (tmpl && sym->parent && sym->parent != inst &&
+            (sym->parent == tmpl || sym->parent->kind == SYMBOL_GENERIC)) {
+            /* Emit instance name prefix */
+            String_Slice inst_mangled = Symbol_Mangle_Name(inst);
+            for (uint32_t i = 0; i < inst_mangled.length; i++) {
+                fputc(inst_mangled.data[i], cg->output);
+            }
+            Emit(cg, "__");
+            /* Emit just the symbol name (not parent chain) */
+            for (uint32_t i = 0; i < sym->name.length; i++) {
+                char c = sym->name.data[i];
+                if (c >= 'A' && c <= 'Z') c = c - 'A' + 'a';
+                fputc(c, cg->output);
+            }
+            return;
+        }
     }
 
     /* Use unified mangling (lowercase, parent__name format, _sN suffix) */
@@ -11044,10 +11190,10 @@ static uint32_t Generate_Array_Equality(Code_Generator *cg, uint32_t left_ptr,
 
 /* Generate the address of a composite type expression (for equality comparison) */
 static uint32_t Generate_Composite_Address(Code_Generator *cg, Syntax_Node *node) {
+    /* Generate the ADDRESS of an lvalue (identifier, selected, indexed) */
     if (node->kind == NK_IDENTIFIER) {
         Symbol *sym = node->symbol;
         if (sym) {
-            /* For composite variables, the symbol's address IS the pointer to the data */
             uint32_t t = Emit_Temp(cg);
             Emit(cg, "  %%t%u = getelementptr i8, ptr ", t);
             Emit_Symbol_Ref(cg, sym);
@@ -11055,7 +11201,71 @@ static uint32_t Generate_Composite_Address(Code_Generator *cg, Syntax_Node *node
             return t;
         }
     }
-    /* ??? Fallback: generate as expression (may be incorrect for some cases) */
+
+    if (node->kind == NK_SELECTED) {
+        /* Field access: Rec.Field - compute address of field */
+        Type_Info *prefix_type = node->selected.prefix ? node->selected.prefix->type : NULL;
+        if (prefix_type && prefix_type->kind == TYPE_RECORD) {
+            uint32_t base = Generate_Composite_Address(cg, node->selected.prefix);
+            /* Find field offset */
+            uint32_t offset = 0;
+            for (uint32_t i = 0; i < prefix_type->record.component_count; i++) {
+                if (Slice_Equal_Ignore_Case(
+                        prefix_type->record.components[i].name, node->selected.selector)) {
+                    offset = prefix_type->record.components[i].byte_offset;
+                    break;
+                }
+            }
+            uint32_t addr = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n", addr, base, offset);
+            return addr;
+        }
+    }
+
+    if (node->kind == NK_APPLY && node->apply.arguments.count == 1) {
+        /* Array indexing: Arr(I) - compute address of element */
+        Type_Info *prefix_type = node->apply.prefix ? node->apply.prefix->type : NULL;
+        if (prefix_type && prefix_type->kind == TYPE_ARRAY) {
+            uint32_t elem_size = prefix_type->array.element_type
+                                 ? prefix_type->array.element_type->size : 1;
+            if (elem_size == 0) elem_size = 1;
+            int64_t low = Array_Low_Bound(prefix_type);
+
+            uint32_t base = Generate_Composite_Address(cg, node->apply.prefix);
+            uint32_t idx = Generate_Expression(cg, node->apply.arguments.items[0]);
+
+            /* Adjust index: byte_offset = (idx - low) * elem_size */
+            uint32_t adj_idx = idx;
+            if (low != 0) {
+                adj_idx = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = sub i64 %%t%u, %lld\n", adj_idx, idx, (long long)low);
+            }
+            uint32_t byte_off = Emit_Temp(cg);
+            if (elem_size == 1) {
+                byte_off = adj_idx;
+            } else {
+                Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", byte_off, adj_idx, elem_size);
+            }
+            uint32_t addr = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n", addr, base, byte_off);
+            return addr;
+        }
+        /* Handle unconstrained arrays passed as fat pointers */
+        if (prefix_type && prefix_type->kind == TYPE_STRING) {
+            /* Fat pointer - extract data and compute element address */
+            uint32_t fat = Generate_Expression(cg, node->apply.prefix);
+            uint32_t data = Emit_Fat_Pointer_Data(cg, fat);
+            uint32_t low = Emit_Fat_Pointer_Low(cg, fat);
+            uint32_t idx = Generate_Expression(cg, node->apply.arguments.items[0]);
+            uint32_t adj_idx = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", adj_idx, idx, low);
+            uint32_t addr = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n", addr, data, adj_idx);
+            return addr;
+        }
+    }
+
+    /* Fallback: for expressions that return a pointer (like composite values) */
     return Generate_Expression(cg, node);
 }
 
@@ -11401,16 +11611,32 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         bool *is_byref = Arena_Allocate(node->apply.arguments.count * sizeof(bool));
 
         for (uint32_t i = 0; i < node->apply.arguments.count; i++) {
-            /* For ALI-loaded symbols, parameters may be NULL - default to pass by value */
-            bool byref = sym->parameters && i < sym->parameter_count &&
-                         Param_Is_By_Reference(sym->parameters[i].mode);
-            is_byref[i] = byref;
+            Syntax_Node *arg_node = node->apply.arguments.items[i];
+            Syntax_Node *arg = arg_node;  /* Actual expression to evaluate */
+            uint32_t param_idx = i;  /* Index into sym->parameters[] */
 
-            /* Extract actual expression from named association (FILE => FILE1) */
-            Syntax_Node *arg = node->apply.arguments.items[i];
-            if (arg->kind == NK_ASSOCIATION) {
-                arg = arg->association.expression;
+            /* Handle named association: PARAM_NAME => expression */
+            if (arg_node->kind == NK_ASSOCIATION) {
+                arg = arg_node->association.expression;
+                /* Look up formal parameter by name to get correct index */
+                if (arg_node->association.choices.count > 0 && sym->parameters) {
+                    Syntax_Node *name_node = arg_node->association.choices.items[0];
+                    if (name_node && name_node->kind == NK_IDENTIFIER) {
+                        String_Slice param_name = name_node->string_val.text;
+                        for (uint32_t p = 0; p < sym->parameter_count; p++) {
+                            if (Slice_Equal_Ignore_Case(sym->parameters[p].name, param_name)) {
+                                param_idx = p;
+                                break;
+                            }
+                        }
+                    }
+                }
             }
+
+            /* For ALI-loaded symbols, parameters may be NULL - default to pass by value */
+            bool byref = sym->parameters && param_idx < sym->parameter_count &&
+                         Param_Is_By_Reference(sym->parameters[param_idx].mode);
+            is_byref[i] = byref;
 
             if (byref) {
                 /* For OUT/IN OUT: pass the address of the variable
@@ -11428,9 +11654,9 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             } else {
                 args[i] = Generate_Expression(cg, arg);
                 /* Truncate to actual parameter type (if parameter info available) */
-                if (sym->parameters && i < sym->parameter_count &&
-                    sym->parameters[i].param_type) {
-                    const char *param_type = Type_To_Llvm(sym->parameters[i].param_type);
+                if (sym->parameters && param_idx < sym->parameter_count &&
+                    sym->parameters[param_idx].param_type) {
+                    const char *param_type = Type_To_Llvm(sym->parameters[param_idx].param_type);
                     args[i] = Emit_Convert(cg, args[i], "i64", param_type);
                 }
             }
@@ -11584,12 +11810,56 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             Emit_Symbol_Ref(cg, array_sym);
             Emit(cg, ", i64 0\n");
         } else {
-            /* ??? Fallback for complex expressions */
+            /* Complex prefix (e.g., array field of indexed record) */
             base = Generate_Expression(cg, node->apply.prefix);
         }
 
+        /* Check for slice: ARR(low..high) */
+        Syntax_Node *arg0 = node->apply.arguments.items[0];
+        if (arg0->kind == NK_RANGE) {
+            /* Array slice - return fat pointer {ptr, {low, high}}
+             * Slice bounds are absolute indices into the source array.
+             * The fat pointer stores: {data_ptr_at_slice_start, {slice_low, slice_high}} */
+            Type_Info *elem_type = array_type->array.element_type;
+            uint32_t elem_size = elem_type ? elem_type->size : 1;
+            if (elem_size == 0) elem_size = 1;
+
+            /* Generate slice bounds (these are the logical bounds of the slice) */
+            uint32_t slice_low = Generate_Expression(cg, arg0->range.low);
+            uint32_t slice_high = Generate_Expression(cg, arg0->range.high);
+
+            /* Compute zero-based offset for slice start
+             * offset = (slice_low - array_low_bound) * elem_size */
+            uint32_t offset;
+            int64_t array_low = Array_Low_Bound(array_type);
+            if (has_dynamic_low) {
+                offset = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", offset, slice_low, low_bound_val);
+            } else if (array_low != 0) {
+                offset = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = sub i64 %%t%u, %lld\n", offset, slice_low, (long long)array_low);
+            } else {
+                offset = slice_low;
+            }
+
+            /* Compute data pointer at slice start */
+            uint32_t data_ptr = Emit_Temp(cg);
+            if (elem_size == 1) {
+                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n",
+                     data_ptr, base, offset);
+            } else {
+                uint32_t byte_off = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", byte_off, offset, elem_size);
+                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n",
+                     data_ptr, base, byte_off);
+            }
+
+            /* Build fat pointer with slice bounds using helper */
+            return Emit_Fat_Pointer_Dynamic(cg, data_ptr, slice_low, slice_high);
+        }
+
         /* Generate index expression */
-        uint32_t idx = Generate_Expression(cg, node->apply.arguments.items[0]);
+        uint32_t idx = Generate_Expression(cg, arg0);
 
         /* Adjust for array low bound (Ada arrays can start at any index) */
         if (has_dynamic_low) {
@@ -11736,13 +12006,13 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
         Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
              ptr, base_ptr, byte_offset);
 
+        /* For composite components (records, arrays), return pointer to data */
         if (field_type && (field_type->kind == TYPE_RECORD ||
-                           field_type->kind == TYPE_ACCESS)) {
-            /* For record and access fields, return pointer or load ptr as-is */
-            if (field_type->kind == TYPE_RECORD) {
-                return ptr;  /* Record: return address */
-            }
-            /* Access: load and return ptr without converting to i64 */
+                           field_type->kind == TYPE_ARRAY)) {
+            return ptr;
+        }
+        /* For access-type components, load ptr without converting to i64 */
+        if (field_type && field_type->kind == TYPE_ACCESS) {
             uint32_t t = Emit_Temp(cg);
             Emit(cg, "  %%t%u = load ptr, ptr %%t%u\n", t, ptr);
             return t;
@@ -11760,8 +12030,9 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
         Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
              ptr, base_ptr, byte_offset);
 
-        /* For record-type components, return pointer; otherwise load value */
-        if (field_type && field_type->kind == TYPE_RECORD) {
+        /* For composite components (records, arrays), return pointer to data */
+        if (field_type && (field_type->kind == TYPE_RECORD ||
+                           field_type->kind == TYPE_ARRAY)) {
             return ptr;
         }
         /* For access-type components, load ptr without converting to i64 */
@@ -11783,8 +12054,9 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
     Emit_Symbol_Ref(cg, record_sym);
     Emit(cg, ", i64 %u\n", byte_offset);
 
-    /* For record-type components, return pointer; otherwise load value */
-    if (field_type && field_type->kind == TYPE_RECORD) {
+    /* For composite components (records, arrays), return pointer to data */
+    if (field_type && (field_type->kind == TYPE_RECORD ||
+                       field_type->kind == TYPE_ARRAY)) {
         return ptr;
     }
     /* For access-type components, load ptr without converting to i64 */
@@ -12016,7 +12288,41 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, ", %%L%u) to i64  ; '%.*s'ADDRESS\n",
                      sym->llvm_label_id,
                      (int)sym->name.length, sym->name.data);
+            } else if (sym->kind == SYMBOL_FUNCTION || sym->kind == SYMBOL_PROCEDURE) {
+                /* Subprogram address - use function pointer directly */
+                Emit(cg, "  %%t%u = ptrtoint ptr @", t);
+                Emit_Symbol_Name(cg, sym);
+                Emit(cg, " to i64  ; '%.*s'ADDRESS (subprogram)\n",
+                     (int)sym->name.length, sym->name.data);
+            } else if (sym->kind == SYMBOL_PACKAGE || sym->kind == SYMBOL_GENERIC) {
+                /* Package/generic address - use a global marker */
+                Emit(cg, "  %%t%u = ptrtoint ptr @__addr.", t);
+                Emit_Symbol_Name(cg, sym);
+                Emit(cg, " to i64  ; '%.*s'ADDRESS (package/generic)\n",
+                     (int)sym->name.length, sym->name.data);
+                /* Mark that we need to emit this global marker */
+                if (!sym->needs_address_marker && cg->address_marker_count < 256) {
+                    sym->needs_address_marker = true;
+                    cg->address_markers[cg->address_marker_count++] = sym;
+                }
+            } else if (sym->kind == SYMBOL_TYPE && sym->type && sym->type->kind == TYPE_TASK) {
+                /* Task type address - use a global marker */
+                Emit(cg, "  %%t%u = ptrtoint ptr @__addr.", t);
+                Emit_Symbol_Name(cg, sym);
+                Emit(cg, " to i64  ; '%.*s'ADDRESS (task type)\n",
+                     (int)sym->name.length, sym->name.data);
+                if (!sym->needs_address_marker && cg->address_marker_count < 256) {
+                    sym->needs_address_marker = true;
+                    cg->address_markers[cg->address_marker_count++] = sym;
+                }
+            } else if (sym->kind == SYMBOL_VARIABLE && sym->type && sym->type->kind == TYPE_TASK) {
+                /* Task variable (single task) address - use task control block */
+                Emit(cg, "  %%t%u = ptrtoint ptr ", t);
+                Emit_Symbol_Ref(cg, sym);
+                Emit(cg, " to i64  ; '%.*s'ADDRESS (task)\n",
+                     (int)sym->name.length, sym->name.data);
             } else {
+                /* Regular variable */
                 Emit(cg, "  %%t%u = ptrtoint ptr ", t);
                 Emit_Symbol_Ref(cg, sym);
                 Emit(cg, " to i64  ; 'ADDRESS\n");
@@ -12637,21 +12943,58 @@ static uint32_t Generate_Qualified(Code_Generator *cg, Syntax_Node *node) {
 
 static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
     /* new T or new T'(value) */
-    Type_Info *alloc_type = node->type;
-    uint32_t t = Emit_Temp(cg);
+    Type_Info *access_type = node->type;  /* The access type being created */
 
-    if (!alloc_type) {
+    if (!access_type) {
+        uint32_t t = Emit_Temp(cg);
         Emit(cg, "  %%t%u = call ptr @malloc(i64 8)\n", t);
         return t;
     }
 
-    uint64_t size = alloc_type->size > 0 ? alloc_type->size : 8;
+    /* Check if this is an access to unconstrained array/STRING (fat pointer) */
+    Type_Info *designated = access_type->kind == TYPE_ACCESS ?
+                            access_type->access.designated_type : NULL;
+    bool is_fat_ptr = designated &&
+                      (designated->kind == TYPE_STRING ||
+                       (designated->kind == TYPE_ARRAY && !designated->array.is_constrained));
+
+    if (is_fat_ptr && node->allocator.expression) {
+        /* Access to unconstrained array with initializer:
+         * 1. Generate initializer (returns fat pointer VALUE with data + bounds)
+         * 2. Extract length, allocate heap space for array data
+         * 3. Copy data from initializer to allocated space
+         * 4. Return fat pointer with allocated data ptr + original bounds */
+        uint32_t init_fat = Generate_Expression(cg, node->allocator.expression);
+
+        /* Extract data pointer, low bound, high bound from fat pointer value */
+        uint32_t src_data = Emit_Fat_Pointer_Data(cg, init_fat);
+        uint32_t low_t = Emit_Fat_Pointer_Low(cg, init_fat);
+        uint32_t high_t = Emit_Fat_Pointer_High(cg, init_fat);
+
+        /* Compute length: high - low + 1 */
+        uint32_t len_t = Emit_Fat_Pointer_Length(cg, init_fat);
+
+        /* Allocate heap space for array data */
+        uint32_t heap_ptr = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = call ptr @malloc(i64 %%t%u)\n", heap_ptr, len_t);
+
+        /* Copy data: memcpy(heap_ptr, src_data, length) */
+        Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
+             heap_ptr, src_data, len_t);
+
+        /* Build result fat pointer with allocated data */
+        return Emit_Fat_Pointer_Dynamic(cg, heap_ptr, low_t, high_t);
+    }
+
+    /* Simple allocation (constrained types or no initializer) */
+    uint64_t size = access_type->size > 0 ? access_type->size : 8;
+    uint32_t t = Emit_Temp(cg);
     Emit(cg, "  %%t%u = call ptr @malloc(i64 %llu)\n", t, (unsigned long long)size);
 
     /* If there's an initializer, store it */
     if (node->allocator.expression) {
         uint32_t val = Generate_Expression(cg, node->allocator.expression);
-        Emit(cg, "  store %s %%t%u, ptr %%t%u\n", Type_To_Llvm(alloc_type), val, t);
+        Emit(cg, "  store %s %%t%u, ptr %%t%u\n", Type_To_Llvm(access_type), val, t);
     }
 
     return t;
@@ -12705,8 +13048,14 @@ static void Generate_Statement_List(Code_Generator *cg, Node_List *list) {
                 (stmt->kind == NK_BLOCK && stmt->block_stmt.label_symbol) ||
                 (stmt->kind == NK_LOOP && stmt->loop_stmt.label_symbol);
             if (!will_emit_label) {
+                /* Emit a fresh basic block for unreachable code. The subsequent
+                 * statement will generate instructions that fill this block. */
                 uint32_t dead_label = cg->label_id++;
-                Emit(cg, "L%u:  ; unreachable\n", dead_label);
+                Emit(cg, "L%u:\n", dead_label);
+                cg->block_terminated = false;
+            } else {
+                /* The next statement emits its own label - reset block_terminated
+                 * so it adds an instruction to its label block properly */
                 cg->block_terminated = false;
             }
         }
@@ -14497,9 +14846,27 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
                                            Syntax_Node *template_body) {
     if (!inst_sym || !template_body) return;
 
-    /* Handle package instantiation specially: iterate through exported
-     * subprograms and generate each one with its own symbol. */
+    /* Handle package instantiation specially: generate package body declarations
+     * (global variables), then iterate through exported subprograms. */
     if (inst_sym->kind == SYMBOL_PACKAGE && template_body->kind == NK_PACKAGE_BODY) {
+        /* Set current instance so names are prefixed with instance name */
+        Symbol *saved_instance = cg->current_instance;
+        cg->current_instance = inst_sym;
+
+        /* First, emit any global declarations from the package body
+         * (e.g., FILES, BUFFERS, NEXT_FD in DIRECT_IO). These need unique names
+         * based on the instance to avoid collisions. */
+        for (uint32_t i = 0; i < template_body->package_body.declarations.count; i++) {
+            Syntax_Node *decl = template_body->package_body.declarations.items[i];
+            if (!decl) continue;
+            /* Only generate non-subprogram declarations (variables, types) */
+            if (decl->kind != NK_PROCEDURE_BODY && decl->kind != NK_FUNCTION_BODY &&
+                decl->kind != NK_PROCEDURE_SPEC && decl->kind != NK_FUNCTION_SPEC) {
+                Generate_Declaration(cg, decl);
+            }
+        }
+
+        /* Then generate the subprogram bodies */
         for (uint32_t i = 0; i < inst_sym->exported_count; i++) {
             Symbol *exp = inst_sym->exported[i];
             if (!exp) continue;
@@ -14564,10 +14931,15 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
         if (inst_sym->parameter_count > 0) Emit(cg, ", ");
     }
 
-    /* Parameters - use instance symbol's types (already substituted) */
+    /* Parameters - use instance symbol's types (already substituted)
+     * OUT/IN OUT params are passed by reference (ptr) */
     for (uint32_t i = 0; i < inst_sym->parameter_count; i++) {
         if (i > 0) Emit(cg, ", ");
-        Emit(cg, "%s %%p%u", Type_To_Llvm(inst_sym->parameters[i].param_type), i);
+        if (Param_Is_By_Reference(inst_sym->parameters[i].mode)) {
+            Emit(cg, "ptr %%p%u", i);
+        } else {
+            Emit(cg, "%s %%p%u", Type_To_Llvm(inst_sym->parameters[i].param_type), i);
+        }
     }
 
     Emit(cg, ") {\n");
@@ -14578,18 +14950,41 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
     cg->has_return = false;
     cg->block_terminated = false;  /* Reset for new function */
 
-    /* Allocate parameters using symbol names for consistent access */
-    for (uint32_t i = 0; i < inst_sym->parameter_count; i++) {
-        Symbol *param_sym = inst_sym->parameters[i].param_sym;
-        if (param_sym) {
-            const char *type_str = Type_To_Llvm(inst_sym->parameters[i].param_type);
-            /* Allocate parameter with its symbol name */
-            Emit(cg, "  %%");
-            Emit_Symbol_Name(cg, param_sym);
-            Emit(cg, " = alloca %s\n", type_str);
-            Emit(cg, "  store %s %%p%u, ptr %%", type_str, i);
-            Emit_Symbol_Name(cg, param_sym);
-            Emit(cg, "\n");
+    /* Get parameter symbols from template body's specification (they have
+     * the unique_ids that match the body's code references) */
+    Syntax_Node *body_spec = template_body->subprogram_body.specification;
+    uint32_t param_idx = 0;
+    if (body_spec) {
+        Node_List *params = &body_spec->subprogram_spec.parameters;
+        for (uint32_t i = 0; i < params->count && param_idx < inst_sym->parameter_count; i++) {
+            Syntax_Node *ps = params->items[i];
+            if (ps && ps->kind == NK_PARAM_SPEC) {
+                for (uint32_t j = 0; j < ps->param_spec.names.count && param_idx < inst_sym->parameter_count; j++) {
+                    Syntax_Node *pname = ps->param_spec.names.items[j];
+                    Symbol *param_sym = pname->symbol;
+                    if (param_sym) {
+                        const char *type_str = Type_To_Llvm(inst_sym->parameters[param_idx].param_type);
+                        Parameter_Mode mode = inst_sym->parameters[param_idx].mode;
+
+                        if (Param_Is_By_Reference(mode)) {
+                            /* OUT/IN OUT: %p is already a pointer to caller's variable
+                             * Create an alias so the parameter name points to caller's storage */
+                            Emit(cg, "  %%");
+                            Emit_Symbol_Name(cg, param_sym);
+                            Emit(cg, " = getelementptr i8, ptr %%p%u, i64 0  ; by-ref param\n", param_idx);
+                        } else {
+                            /* IN param: allocate local and copy value */
+                            Emit(cg, "  %%");
+                            Emit_Symbol_Name(cg, param_sym);
+                            Emit(cg, " = alloca %s\n", type_str);
+                            Emit(cg, "  store %s %%p%u, ptr %%", type_str, param_idx);
+                            Emit_Symbol_Name(cg, param_sym);
+                            Emit(cg, "\n");
+                        }
+                    }
+                    param_idx++;
+                }
+            }
         }
     }
 
@@ -14683,6 +15078,7 @@ static void Generate_Task_Body(Code_Generator *cg, Syntax_Node *node) {
 
     /* Normal execution path */
     Emit(cg, "L%u:\n", body_label);
+    cg->block_terminated = false;  /* Reset after br target label */
     Generate_Declaration_List(cg, &node->task_body.declarations);
     Generate_Statement_List(cg, &node->task_body.statements);
     Emit(cg, "  call void @__ada_pop_handler()\n");
@@ -14845,6 +15241,27 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
             /* Task type/object specification - record entry points */
             Emit(cg, "; Task spec: %.*s (entries registered at runtime)\n",
                  (int)node->task_spec.name.length, node->task_spec.name.data);
+            /* For single tasks (not task types), allocate task control block storage */
+            if (!node->task_spec.is_type && node->symbol) {
+                /* Find the variable symbol (created during resolution) */
+                Symbol *obj_sym = NULL;
+                Symbol_Manager *sm = cg->sm;
+                for (uint32_t i = 0; i < sm->current_scope->symbol_count; i++) {
+                    Symbol *s = sm->current_scope->symbols[i];
+                    if (s && s->kind == SYMBOL_VARIABLE &&
+                        s->type && s->type->kind == TYPE_TASK &&
+                        Slice_Equal_Ignore_Case(s->name, node->task_spec.name)) {
+                        obj_sym = s;
+                        break;
+                    }
+                }
+                if (obj_sym && obj_sym->unique_id == 0) {
+                    obj_sym->unique_id = sm->next_unique_id++;
+                    Emit(cg, "  %%");
+                    Emit_Symbol_Name(cg, obj_sym);
+                    Emit(cg, " = alloca ptr  ; task control block\n");
+                }
+            }
             break;
 
         case NK_TASK_BODY:
@@ -15018,7 +15435,7 @@ static void Generate_Exception_Globals(Code_Generator *cg) {
     }
 }
 
-/* Check if external name is a builtin text_io function (already defined) */
+/* Check if external name is a builtin/runtime function (already defined) */
 static bool Is_Builtin_Function(String_Slice name) {
     /* Strip quotes if present */
     if (name.length >= 2 && name.data[0] == '"' && name.data[name.length-1] == '"') {
@@ -15026,9 +15443,17 @@ static bool Is_Builtin_Function(String_Slice name) {
         name.length -= 2;
     }
     const char *builtins[] = {
+        /* Custom text_io helpers */
         "__text_io_new_line", "__text_io_put_char", "__text_io_put",
         "__text_io_put_line", "__text_io_put_int", "__text_io_put_float",
-        "__text_io_get_char", "__text_io_get_line", NULL
+        "__text_io_get_char", "__text_io_get_line",
+        /* Standard C library functions (declared in runtime preamble) */
+        "memcmp", "setjmp", "longjmp", "exit", "malloc", "realloc", "free",
+        "usleep", "printf", "putchar", "strtod", "snprintf", "strlen",
+        "fputc", "fputs", "fgetc", "fgets", "fprintf",
+        "fopen", "fclose", "fflush", "feof", "ftell", "fseek",
+        "ungetc", "remove", "getchar",
+        NULL
     };
     for (int i = 0; builtins[i]; i++) {
         if (name.length == strlen(builtins[i]) &&
@@ -15202,6 +15627,18 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "declare i32 @usleep(i32)\n");
     Emit(cg, "declare i32 @printf(ptr, ...)\n");
     Emit(cg, "declare i32 @putchar(i32)\n");
+    Emit(cg, "declare i32 @getchar()\n");
+    /* C file I/O (for TEXT_IO pragma Import) */
+    Emit(cg, "declare ptr @fopen(ptr, ptr)\n");
+    Emit(cg, "declare i32 @fclose(ptr)\n");
+    Emit(cg, "declare i32 @fputc(i32, ptr)\n");
+    Emit(cg, "declare i32 @fgetc(ptr)\n");
+    Emit(cg, "declare i32 @ungetc(i32, ptr)\n");
+    Emit(cg, "declare i32 @feof(ptr)\n");
+    Emit(cg, "declare i32 @fflush(ptr)\n");
+    Emit(cg, "declare i32 @remove(ptr)\n");
+    Emit(cg, "declare i64 @ftell(ptr)\n");
+    Emit(cg, "declare i32 @fseek(ptr, i64, i32)\n");
     Emit(cg, "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)\n");
     Emit(cg, "declare double @llvm.pow.f64(double, double)\n\n");
 
@@ -15298,13 +15735,13 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "@__entry_queue = linkonce_odr global ptr null\n");
     Emit(cg, "@.fmt_ue = linkonce_odr constant [27 x i8] c\"Unhandled exception: %%lld\\0A\\00\"\n\n");
 
-    /* Standard exceptions (RM 11.1) */
+    /* Standard exceptions (RM 11.1) — names lowercase to match mangled symbols */
     Emit(cg, "; Standard exception identities\n");
-    Emit(cg, "@__exc.CONSTRAINT_ERROR = linkonce_odr constant i64 1\n");
-    Emit(cg, "@__exc.NUMERIC_ERROR = linkonce_odr constant i64 2\n");
-    Emit(cg, "@__exc.PROGRAM_ERROR = linkonce_odr constant i64 3\n");
-    Emit(cg, "@__exc.STORAGE_ERROR = linkonce_odr constant i64 4\n");
-    Emit(cg, "@__exc.TASKING_ERROR = linkonce_odr constant i64 5\n\n");
+    Emit(cg, "@__exc.constraint_error = linkonce_odr constant i64 1\n");
+    Emit(cg, "@__exc.numeric_error = linkonce_odr constant i64 2\n");
+    Emit(cg, "@__exc.program_error = linkonce_odr constant i64 3\n");
+    Emit(cg, "@__exc.storage_error = linkonce_odr constant i64 4\n");
+    Emit(cg, "@__exc.tasking_error = linkonce_odr constant i64 5\n\n");
 
     /* Secondary stack initialization */
     Emit(cg, "; Secondary stack runtime\n");
@@ -15592,9 +16029,8 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "@stdin = external global ptr\n");
     Emit(cg, "@stdout = external global ptr\n");
     Emit(cg, "@stderr = external global ptr\n");
-    Emit(cg, "declare i32 @fputc(i32, ptr)\n");
+    /* Note: fputc, fgetc declared in main preamble; add remaining here */
     Emit(cg, "declare i32 @fputs(ptr, ptr)\n");
-    Emit(cg, "declare i32 @fgetc(ptr)\n");
     Emit(cg, "declare ptr @fgets(ptr, i32, ptr)\n");
     Emit(cg, "declare i32 @fprintf(ptr, ptr, ...)\n");
     Emit(cg, "@.fmt_d = linkonce_odr constant [5 x i8] c\"%%lld\\00\"\n");
@@ -16052,6 +16488,47 @@ static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src) 
 
                 Symbol_Add(sm, sym);
                 unit->symbol = sym;
+
+                /* Resolve the generic package spec's declarations so type/exception
+                 * names are available when the body is parsed. Push scope, install
+                 * generic formals, then resolve visible/private declarations. */
+                if (inner && inner->kind == NK_PACKAGE_SPEC) {
+                    Symbol_Manager_Push_Scope(sm, sym);
+
+                    /* Install generic formal parameters */
+                    Node_List *formals = &unit->generic_decl.formals;
+                    for (uint32_t i = 0; i < formals->count; i++) {
+                        Syntax_Node *formal = formals->items[i];
+                        if (formal->kind == NK_GENERIC_TYPE_PARAM) {
+                            Symbol *type_sym = Symbol_New(SYMBOL_TYPE,
+                                formal->generic_type_param.name, formal->location);
+                            /* Map def_kind to appropriate Type_Kind */
+                            Type_Kind tk = TYPE_PRIVATE;
+                            switch (formal->generic_type_param.def_kind) {
+                                case 2: tk = TYPE_ENUMERATION; break; /* DISCRETE */
+                                case 3: tk = TYPE_INTEGER; break;     /* INTEGER */
+                                case 4: tk = TYPE_FLOAT; break;       /* FLOAT */
+                                case 5: tk = TYPE_FIXED; break;       /* FIXED */
+                                default: tk = TYPE_PRIVATE; break;
+                            }
+                            Type_Info *type = Type_New(tk, formal->generic_type_param.name);
+                            type_sym->type = type;
+                            formal->symbol = type_sym;
+                            Symbol_Add(sm, type_sym);
+                        }
+                    }
+
+                    /* Resolve visible declarations */
+                    Resolve_Declaration_List(sm, &inner->package_spec.visible_decls);
+
+                    /* Populate package exports for qualified access */
+                    Populate_Package_Exports(sym, inner);
+
+                    /* Resolve private declarations */
+                    Resolve_Declaration_List(sm, &inner->package_spec.private_decls);
+
+                    Symbol_Manager_Pop_Scope(sm);
+                }
             }
         }
     }
@@ -16101,9 +16578,14 @@ static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src) 
                 String_Slice body_name = body_unit->package_body.name;
                 Symbol *pkg_sym = Symbol_Find(sm, body_name);
 
-                if (pkg_sym && pkg_sym->kind == SYMBOL_PACKAGE) {
+                if (pkg_sym && (pkg_sym->kind == SYMBOL_PACKAGE || pkg_sym->kind == SYMBOL_GENERIC)) {
                     /* Link body to spec */
                     body_unit->symbol = pkg_sym;
+
+                    /* For generic packages, store the body for later instantiation */
+                    if (pkg_sym->kind == SYMBOL_GENERIC) {
+                        pkg_sym->generic_body = body_unit;
+                    }
 
                     /* Resolve the body within package scope */
                     Symbol_Manager_Push_Scope(sm, pkg_sym);
@@ -16111,6 +16593,33 @@ static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src) 
                     /* Install visible and private declarations from package spec
                      * into the body's scope (RM 7.1, 7.2) */
                     Syntax_Node *spec = pkg_sym->declaration;
+                    /* For generics, install formals first, then look at the unit */
+                    if (spec && spec->kind == NK_GENERIC_DECL) {
+                        Node_List *formals = &spec->generic_decl.formals;
+                        for (uint32_t i = 0; i < formals->count; i++) {
+                            Syntax_Node *formal = formals->items[i];
+                            if (formal->symbol) Symbol_Add(sm, formal->symbol);
+                            /* For generic type parameters, create type symbol if needed */
+                            if (formal->kind == NK_GENERIC_TYPE_PARAM && !formal->symbol) {
+                                Symbol *type_sym = Symbol_New(SYMBOL_TYPE,
+                                    formal->generic_type_param.name, formal->location);
+                                /* Map def_kind to appropriate Type_Kind */
+                                Type_Kind tk = TYPE_PRIVATE;
+                                switch (formal->generic_type_param.def_kind) {
+                                    case 2: tk = TYPE_ENUMERATION; break; /* DISCRETE */
+                                    case 3: tk = TYPE_INTEGER; break;     /* INTEGER */
+                                    case 4: tk = TYPE_FLOAT; break;       /* FLOAT */
+                                    case 5: tk = TYPE_FIXED; break;       /* FIXED */
+                                    default: tk = TYPE_PRIVATE; break;
+                                }
+                                Type_Info *type = Type_New(tk, formal->generic_type_param.name);
+                                type_sym->type = type;
+                                formal->symbol = type_sym;
+                                Symbol_Add(sm, type_sym);
+                            }
+                        }
+                        spec = spec->generic_decl.unit;
+                    }
                     if (spec && spec->kind == NK_PACKAGE_SPEC) {
                         /* Helper: install symbols from a declaration */
                         #define INSTALL_DECL_SYMBOLS(decl) do { \
@@ -16255,6 +16764,14 @@ static void Compile_File(const char *input_path, const char *output_path) {
     /* Generate code for loaded package bodies (e.g., TEXT_IO) */
     for (int i = 0; i < Loaded_Body_Count; i++) {
         Generate_Compilation_Unit(cg, Loaded_Package_Bodies[i]);
+    }
+
+    /* Emit address marker globals for 'ADDRESS attribute on packages/generics */
+    for (uint32_t i = 0; i < cg->address_marker_count; i++) {
+        Symbol *sym = cg->address_markers[i];
+        Emit(cg, "@__addr.");
+        Emit_Symbol_Name(cg, sym);
+        Emit(cg, " = linkonce_odr constant i8 0\n");
     }
 
     /* Emit @main() for the last parameterless library-level procedure */

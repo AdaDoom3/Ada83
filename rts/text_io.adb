@@ -6,7 +6,7 @@ with SYSTEM;
 package body TEXT_IO is
 
    -- C runtime imports
-   procedure C_Putchar(C : Integer);
+   function C_Putchar(C : Integer) return Integer;
    pragma Import(C, C_Putchar, "putchar");
 
    function C_Getchar return Integer;
