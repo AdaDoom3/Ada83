@@ -10538,10 +10538,15 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                          Param_Is_By_Reference(sym->parameters[i].mode);
             is_byref[i] = byref;
 
+            /* Extract actual expression from named association (FILE => FILE1) */
+            Syntax_Node *arg = node->apply.arguments.items[i];
+            if (arg->kind == NK_ASSOCIATION) {
+                arg = arg->association.expression;
+            }
+
             if (byref) {
                 /* For OUT/IN OUT: pass the address of the variable
                  * The argument must be an lvalue (identifier, selected, indexed) */
-                Syntax_Node *arg = node->apply.arguments.items[i];
                 if (arg->kind == NK_IDENTIFIER && arg->symbol) {
                     /* Simple variable - emit address */
                     args[i] = Emit_Temp(cg);
@@ -10553,7 +10558,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                     args[i] = Generate_Composite_Address(cg, arg);
                 }
             } else {
-                args[i] = Generate_Expression(cg, node->apply.arguments.items[i]);
+                args[i] = Generate_Expression(cg, arg);
                 /* Truncate to actual parameter type */
                 if (i < sym->parameter_count && sym->parameters[i].param_type) {
                     const char *param_type = Type_To_Llvm(sym->parameters[i].param_type);
