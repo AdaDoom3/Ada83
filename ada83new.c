@@ -12499,6 +12499,17 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
         bool src_is_fat_ptr = (src_type && src_type->kind == TYPE_STRING) ||
                               (src_type && src_type->kind == TYPE_ARRAY && !src_type->array.is_constrained) ||
                               (node->assignment.value->kind == NK_STRING);
+        /* Also check if source is an identifier of constrained char array (generates fat ptr) */
+        if (!src_is_fat_ptr && node->assignment.value->kind == NK_IDENTIFIER &&
+            src_type && src_type->kind == TYPE_ARRAY && src_type->array.is_constrained &&
+            src_type->array.element_type && src_type->array.element_type->kind == TYPE_CHARACTER) {
+            src_is_fat_ptr = true;
+        }
+        /* Concatenation always returns fat pointer */
+        if (!src_is_fat_ptr && node->assignment.value->kind == NK_BINARY_OP &&
+            node->assignment.value->binary.op == TK_AMPERSAND) {
+            src_is_fat_ptr = true;
+        }
         uint32_t src_ptr = Generate_Expression(cg, node->assignment.value);
         if (src_is_fat_ptr) {
             /* Source is unconstrained/string - extract data pointer from fat pointer */
