@@ -6827,6 +6827,47 @@ static void Symbol_Manager_Init_Predefined(Symbol_Manager *sm) {
     sm->type_address->size = 8;  /* 64-bit addresses */
     sm->type_address->alignment = 8;
     sm->type_address->base_type = sm->type_integer;
+
+    /* ASCII package (RM C.3) - predefined character constants
+     * In Ada 83, ASCII is a package in STANDARD, always visible */
+    Symbol *pkg_ascii = Symbol_New(SYMBOL_PACKAGE, S("ASCII"), No_Location);
+    Type_Info *pkg_ascii_type = Type_New(TYPE_PACKAGE, S("ASCII"));
+    pkg_ascii->type = pkg_ascii_type;
+    Symbol_Add(sm, pkg_ascii);
+
+    /* ASCII control characters and named constants */
+    static const struct { const char *name; uint8_t val; } ascii_chars[] = {
+        {"NUL",0},{"SOH",1},{"STX",2},{"ETX",3},{"EOT",4},{"ENQ",5},{"ACK",6},{"BEL",7},
+        {"BS",8},{"HT",9},{"LF",10},{"VT",11},{"FF",12},{"CR",13},{"SO",14},{"SI",15},
+        {"DLE",16},{"DC1",17},{"DC2",18},{"DC3",19},{"DC4",20},{"NAK",21},{"SYN",22},
+        {"ETB",23},{"CAN",24},{"EM",25},{"SUB",26},{"ESC",27},{"FS",28},{"GS",29},
+        {"RS",30},{"US",31},{"DEL",127},
+        /* Named punctuation */
+        {"EXCLAM",'!'},{"QUOTATION",'"'},{"SHARP",'#'},{"DOLLAR",'$'},{"PERCENT",'%'},
+        {"AMPERSAND",'&'},{"COLON",':'},{"SEMICOLON",';'},{"QUERY",'?'},{"AT_SIGN",'@'},
+        {"L_BRACKET",'['},{"BACK_SLASH",'\\'},{"R_BRACKET",']'},{"CIRCUMFLEX",'^'},
+        {"UNDERLINE",'_'},{"GRAVE",'`'},{"L_BRACE",'{'},{"BAR",'|'},{"R_BRACE",'}'},
+        {"TILDE",'~'},
+        /* Lowercase letters */
+        {"LC_A",'a'},{"LC_B",'b'},{"LC_C",'c'},{"LC_D",'d'},{"LC_E",'e'},{"LC_F",'f'},
+        {"LC_G",'g'},{"LC_H",'h'},{"LC_I",'i'},{"LC_J",'j'},{"LC_K",'k'},{"LC_L",'l'},
+        {"LC_M",'m'},{"LC_N",'n'},{"LC_O",'o'},{"LC_P",'p'},{"LC_Q",'q'},{"LC_R",'r'},
+        {"LC_S",'s'},{"LC_T",'t'},{"LC_U",'u'},{"LC_V",'v'},{"LC_W",'w'},{"LC_X",'x'},
+        {"LC_Y",'y'},{"LC_Z",'z'},
+    };
+    uint32_t ascii_count = sizeof(ascii_chars) / sizeof(ascii_chars[0]);
+    pkg_ascii->exported = Arena_Allocate(ascii_count * sizeof(Symbol*));
+    pkg_ascii->exported_count = ascii_count;
+    for (uint32_t i = 0; i < ascii_count; i++) {
+        String_Slice name = { ascii_chars[i].name, strlen(ascii_chars[i].name) };
+        Symbol *ch = Symbol_New(SYMBOL_CONSTANT, name, No_Location);
+        ch->type = sm->type_character;
+        ch->parent = pkg_ascii;
+        ch->frame_offset = ascii_chars[i].val;  /* Store char value */
+        ch->is_named_number = true;  /* Treat as compile-time constant */
+        Symbol_Add(sm, ch);
+        pkg_ascii->exported[i] = ch;
+    }
 }
 
 static Symbol_Manager *Symbol_Manager_New(void) {
@@ -7191,10 +7232,15 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
         }
     }
 
-    /* ─── Case 3: Array Indexing ─── */
-    if (Type_Is_Array_Like(prefix_type)) {
-        node->type = prefix_type->array.element_type;
-        if (!node->type && prefix_type->kind == TYPE_STRING) {
+    /* ─── Case 3: Array Indexing (with implicit access dereference) ─── */
+    /* Per RM 4.1(3), A(I) where A is access-to-array is equivalent to A.ALL(I) */
+    Type_Info *indexed_type = prefix_type;
+    if (prefix_type && prefix_type->kind == TYPE_ACCESS && prefix_type->access.designated_type) {
+        indexed_type = prefix_type->access.designated_type;  /* Implicit dereference */
+    }
+    if (Type_Is_Array_Like(indexed_type)) {
+        node->type = indexed_type->array.element_type;
+        if (!node->type && indexed_type->kind == TYPE_STRING) {
             node->type = sm->type_character;
         }
         return node->type;
