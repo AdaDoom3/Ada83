@@ -2516,6 +2516,7 @@ struct Syntax_Node {
             Syntax_Node *index;
             Node_List parameters;
             Node_List statements;
+            Symbol *entry_sym;      /* Resolved entry symbol (for entry_index) */
         } accept_stmt;
 
         /* NK_SELECT */
@@ -6141,6 +6142,9 @@ struct Symbol {
     /* LLVM label ID for SYMBOL_LABEL */
     uint32_t        llvm_label_id;       /* 0 = not yet assigned */
 
+    /* Entry index within task (for SYMBOL_ENTRY) */
+    uint32_t        entry_index;         /* 0-based index for entry matching */
+
     /* For RENAMES: pointer to the renamed object's AST node */
     Syntax_Node    *renamed_object;
 
@@ -8486,6 +8490,10 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
              * Each accept statement has its own scope for parameters to avoid
              * naming conflicts with parameters from other accept statements
              * in the same selective wait (e.g., multiple accepts with param X). */
+
+            /* Look up the entry symbol by name - it should be in the task's scope */
+            node->accept_stmt.entry_sym = Symbol_Find(sm, node->accept_stmt.entry_name);
+
             if (node->accept_stmt.index) {
                 Resolve_Expression(sm, node->accept_stmt.index);
             }
@@ -9221,6 +9229,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                 Symbol_Manager_Push_Scope(sm, type_sym);
 
                 /* Resolve and add entry declarations */
+                uint32_t entry_idx_counter = 0;  /* Counter for unique entry indices */
                 for (uint32_t i = 0; i < node->task_spec.entries.count; i++) {
                     Syntax_Node *entry = node->task_spec.entries.items[i];
                     if (entry->kind == NK_ENTRY_DECL) {
@@ -9228,6 +9237,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                             entry->entry_decl.name, entry->location);
                         entry_sym->declaration = entry;
                         entry_sym->parent = type_sym;
+                        entry_sym->entry_index = entry_idx_counter++;  /* Assign unique entry index */
 
                         /* Count entry parameters */
                         uint32_t param_count = 0;
@@ -12558,8 +12568,20 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         Emit(cg, "  ; Entry call: %.*s\n",
              (int)sym->name.length, sym->name.data);
 
-        /* Allocate parameter block */
-        uint32_t param_count = node->apply.arguments.count;
+        /* Check if this is an entry family - first argument is family index, not a parameter */
+        bool is_entry_family = sym->declaration && sym->declaration->kind == NK_ENTRY_DECL &&
+                               sym->declaration->entry_decl.index_constraints.count > 0;
+        uint32_t family_idx_temp = 0;
+        uint32_t first_param_idx = 0;  /* Index of first actual parameter in arguments */
+
+        if (is_entry_family && node->apply.arguments.count > 0) {
+            /* First argument is the family index */
+            family_idx_temp = Generate_Expression(cg, node->apply.arguments.items[0]);
+            first_param_idx = 1;  /* Skip family index when processing parameters */
+        }
+
+        /* Allocate parameter block (excluding family index for entry families) */
+        uint32_t param_count = node->apply.arguments.count - first_param_idx;
         uint32_t param_block = Emit_Temp(cg);
         if (param_count > 0) {
             Emit(cg, "  %%t%u = alloca [%u x i64]  ; entry call parameters\n",
@@ -12568,12 +12590,12 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, "  %%t%u = inttoptr i64 0 to ptr  ; no parameters\n", param_block);
         }
 
-        /* Store arguments into parameter block */
-        for (uint32_t i = 0; i < param_count; i++) {
+        /* Store arguments into parameter block (skip family index for entry families) */
+        for (uint32_t i = first_param_idx; i < node->apply.arguments.count; i++) {
             uint32_t arg_val = Generate_Expression(cg, node->apply.arguments.items[i]);
             uint32_t arg_ptr = Emit_Temp(cg);
             Emit(cg, "  %%t%u = getelementptr [%u x i64], ptr %%t%u, i64 0, i64 %u\n",
-                 arg_ptr, param_count, param_block, i);
+                 arg_ptr, param_count, param_block, i - first_param_idx);
             Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", arg_val, arg_ptr);
         }
 
@@ -12603,9 +12625,16 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, "  %%t%u = inttoptr i64 0 to ptr  ; current task\n", task_ptr);
         }
 
-        /* Get entry index (for entry families) */
+        /* Get entry index - combine base index with family index for entry families.
+         * Formula: entry_idx = base * 1000 + family_arg (matching accept side) */
         uint32_t entry_idx = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = add i64 0, 0  ; entry index\n", entry_idx);
+        if (is_entry_family && family_idx_temp) {
+            Emit(cg, "  %%t%u = add i64 %u, %%t%u  ; entry index (base + family)\n",
+                 entry_idx, sym->entry_index * 1000, family_idx_temp);
+        } else {
+            Emit(cg, "  %%t%u = add i64 0, %u  ; entry index (simple entry)\n",
+                 entry_idx, sym->entry_index * 1000);
+        }
 
         /* Call runtime entry call function - blocks until rendezvous completes */
         Emit(cg, "  call void @__ada_entry_call(ptr %%t%u, i64 %%t%u, ptr %%t%u)\n",
@@ -14845,10 +14874,58 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
             break;
 
         case NK_CALL_STMT: {
-            /* Procedure call - might be NK_APPLY or NK_IDENTIFIER (no args) */
+            /* Procedure call - might be NK_APPLY, NK_IDENTIFIER (no args), or
+             * NK_SELECTED (for entry calls like Task.Entry without args) */
             Syntax_Node *target = node->assignment.target;
             if (target->kind == NK_APPLY) {
                 Generate_Expression(cg, target);
+            } else if (target->kind == NK_SELECTED) {
+                /* Selected component - might be a parameterless entry call like T.E1 */
+                Symbol *entry_sym = target->symbol;
+                if (entry_sym && entry_sym->kind == SYMBOL_ENTRY) {
+                    /* Entry call without parameters - generate rendezvous */
+                    Emit(cg, "  ; Entry call (no params): %.*s\n",
+                         (int)entry_sym->name.length, entry_sym->name.data);
+
+                    /* Allocate empty parameter block */
+                    uint32_t param_block = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = inttoptr i64 0 to ptr  ; no parameters\n", param_block);
+
+                    /* Get task object from prefix */
+                    uint32_t task_ptr = Emit_Temp(cg);
+                    Symbol *task_sym = target->selected.prefix->symbol;
+                    if (task_sym) {
+                        Symbol *var_owner = task_sym->defining_scope
+                                           ? task_sym->defining_scope->owner : NULL;
+                        bool is_uplevel = cg->current_function && var_owner &&
+                                          var_owner != cg->current_function &&
+                                          var_owner != cg->current_function->generic_template;
+                        if (is_uplevel && cg->is_nested) {
+                            Emit(cg, "  %%t%u = getelementptr i8, ptr %%__frame.", task_ptr);
+                            Emit_Symbol_Name(cg, task_sym);
+                            Emit(cg, ", i64 0  ; uplevel task object\n");
+                        } else {
+                            Emit(cg, "  %%t%u = getelementptr i8, ptr ", task_ptr);
+                            Emit_Symbol_Ref(cg, task_sym);
+                            Emit(cg, ", i64 0  ; task object\n");
+                        }
+                    } else {
+                        Emit(cg, "  %%t%u = inttoptr i64 0 to ptr  ; no task\n", task_ptr);
+                    }
+
+                    /* Get entry index (simple entry, not family) */
+                    uint32_t entry_idx = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = add i64 0, %u  ; entry index (simple entry)\n",
+                         entry_idx, entry_sym->entry_index * 1000);
+
+                    /* Call runtime entry call function */
+                    Emit(cg, "  call void @__ada_entry_call(ptr %%t%u, i64 %%t%u, ptr %%t%u)\n",
+                         task_ptr, entry_idx, param_block);
+                } else if (entry_sym && (entry_sym->kind == SYMBOL_PROCEDURE ||
+                                         entry_sym->kind == SYMBOL_FUNCTION)) {
+                    /* Qualified procedure call like Pkg.Proc */
+                    Generate_Expression(cg, target);
+                }
             } else if (target->kind == NK_IDENTIFIER) {
                 /* Parameterless procedure/function call */
                 Symbol *original_sym = target->symbol;  /* Keep for defaults */
@@ -14986,13 +15063,19 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                      (int)node->accept_stmt.entry_name.length,
                      node->accept_stmt.entry_name.data);
 
-                /* Get entry index (for entry families, or 0 for simple entries) */
+                /* Get entry index - combine entry_sym's base index with family offset.
+                 * For entry families: entry_idx = base * 1000 + family_arg
+                 * For simple entries: entry_idx = base * 1000 */
                 uint32_t entry_idx = Emit_Temp(cg);
+                uint32_t base_idx = node->accept_stmt.entry_sym ?
+                                    node->accept_stmt.entry_sym->entry_index : 0;
                 if (node->accept_stmt.index) {
                     uint32_t idx_val = Generate_Expression(cg, node->accept_stmt.index);
-                    Emit(cg, "  %%t%u = add i64 0, %%t%u  ; entry index\n", entry_idx, idx_val);
+                    Emit(cg, "  %%t%u = add i64 %u, %%t%u  ; entry index (base + family)\n",
+                         entry_idx, base_idx * 1000, idx_val);
                 } else {
-                    Emit(cg, "  %%t%u = add i64 0, 0  ; entry index\n", entry_idx);
+                    Emit(cg, "  %%t%u = add i64 0, %u  ; entry index (simple entry)\n",
+                         entry_idx, base_idx * 1000);
                 }
 
                 /* Wait for entry call - blocks until a caller arrives */
@@ -15090,13 +15173,18 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                                      (int)alt->accept_stmt.entry_name.length,
                                      alt->accept_stmt.entry_name.data);
 
-                                /* Get entry index */
+                                /* Get entry index - combine base index with family index.
+                                 * Formula: entry_idx = base * 1000 + family_arg */
                                 uint32_t entry_idx = Emit_Temp(cg);
+                                uint32_t sel_base_idx = alt->accept_stmt.entry_sym ?
+                                                        alt->accept_stmt.entry_sym->entry_index : 0;
                                 if (alt->accept_stmt.index) {
                                     uint32_t idx_val = Generate_Expression(cg, alt->accept_stmt.index);
-                                    Emit(cg, "  %%t%u = add i64 0, %%t%u\n", entry_idx, idx_val);
+                                    Emit(cg, "  %%t%u = add i64 %u, %%t%u  ; entry index (base + family)\n",
+                                         entry_idx, sel_base_idx * 1000, idx_val);
                                 } else {
-                                    Emit(cg, "  %%t%u = add i64 0, %u\n", entry_idx, i);
+                                    Emit(cg, "  %%t%u = add i64 0, %u  ; entry index (simple entry)\n",
+                                         entry_idx, sel_base_idx * 1000);
                                 }
 
                                 /* Check if entry call is pending (non-blocking) */
@@ -15423,6 +15511,33 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, " = alloca %s\n", type_str);
         }
 
+        /* Start task if this is a task type object */
+        if (ty && ty->kind == TYPE_TASK) {
+            /* Task objects are started immediately at elaboration.
+             * The task body function is named @task_TYPENAME where TYPENAME
+             * is the task type name (not the object name).
+             * For task types defined outside the generic, no instance prefix.
+             * For single tasks inside generics, the body has an instance prefix. */
+            String_Slice task_type_name = ty->name;
+            uint32_t handle_tmp = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = call ptr @__ada_task_start(ptr @task_",
+                 handle_tmp);
+            /* Don't add instance prefix for task types - they're defined separately.
+             * The instance prefix is only for single tasks declared inside the generic. */
+            Emit(cg, "%.*s, ", (int)task_type_name.length, task_type_name.data);
+            /* Pass parent frame for uplevel access, or null if at package level.
+             * use_frame indicates the parent is using frame-based allocation. */
+            if (use_frame) {
+                Emit(cg, "ptr %%__frame_base)\n");
+            } else {
+                Emit(cg, "ptr null)\n");
+            }
+            /* Store thread handle in task object for later join/abort */
+            Emit(cg, "  store ptr %%t%u, ptr %%", handle_tmp);
+            Emit_Symbol_Name(cg, sym);
+            Emit(cg, "\n");
+        }
+
         /* Initialize if provided */
         if (node->object_decl.init) {
             if (is_array && ty->array.element_type == cg->sm->type_character) {
@@ -15666,11 +15781,12 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
         }
     }
 
-    /* Generate local declarations, passing has_nested flag via cg for frame allocation */
+    /* Generate local declarations, passing has_nested flag via cg for frame allocation.
+     * Keep has_nested active for statements too (DECLARE blocks need it). */
     bool saved_has_nested = cg->current_nesting_level > 0;  /* Repurpose field temporarily */
     cg->current_nesting_level = has_nested ? 1 : 0;
     Generate_Declaration_List(cg, &node->subprogram_body.declarations);
-    cg->current_nesting_level = saved_has_nested;
+    /* Don't reset yet - statements may have DECLARE blocks with tasks needing frame */
 
     /* Check if subprogram has exception handlers */
     bool has_exc_handlers = node->subprogram_body.handlers.count > 0;
@@ -15778,6 +15894,9 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
         /* Generate statements without exception handling */
         Generate_Statement_List(cg, &node->subprogram_body.statements);
     }
+
+    /* Restore nesting level now that all code for this subprogram is generated */
+    cg->current_nesting_level = saved_has_nested ? 1 : 0;
 
     /* Default return if block is not terminated */
     if (!cg->block_terminated) {
@@ -16055,13 +16174,12 @@ static void Generate_Task_Body(Code_Generator *cg, Syntax_Node *node) {
     cg->temp_id = 1;
 
     /* Create frame aliases for accessing enclosing scope variables.
-     * Task bodies can reference variables from the enclosing subprogram
+     * Task bodies can reference variables from the enclosing scope
      * (RM 9.1). The parent passed %__parent_frame pointing to its frame.
-     * Use the task symbol's parent to find the enclosing function since
-     * the task body is generated deferred (cg->current_function is NULL). */
-    Symbol *parent_owner = node->symbol ? node->symbol->parent : NULL;
-    if (parent_owner && parent_owner->scope) {
-        Scope *parent_scope = parent_owner->scope;
+     * Use the task symbol's defining_scope to get the correct scope
+     * (important for tasks in DECLARE blocks which have their own scope). */
+    Scope *parent_scope = node->symbol ? node->symbol->defining_scope : NULL;
+    if (parent_scope) {
         for (uint32_t i = 0; i < parent_scope->symbol_count; i++) {
             Symbol *var = parent_scope->symbols[i];
             if (var && (var->kind == SYMBOL_VARIABLE || var->kind == SYMBOL_PARAMETER)) {
@@ -16269,7 +16387,8 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
             /* Task type/object specification - record entry points */
             Emit(cg, "; Task spec: %.*s (entries registered at runtime)\n",
                  (int)node->task_spec.name.length, node->task_spec.name.data);
-            /* For single tasks (not task types), allocate task control block storage */
+            /* For single tasks (not task types), allocate task control block storage
+             * and start the task body in a separate thread */
             if (!node->task_spec.is_type && node->symbol) {
                 /* Find the variable symbol in the type symbol's defining scope.
                  * The type and variable were both added to the same scope during
@@ -16292,9 +16411,45 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     if (obj_sym->unique_id == 0) {
                         obj_sym->unique_id = cg->sm->next_unique_id++;
                     }
-                    Emit(cg, "  %%");
+                    /* Allocate task object - use frame if nested, else stack */
+                    bool use_frame = cg->current_nesting_level > 0;
+                    if (use_frame) {
+                        Emit(cg, "  %%");
+                        Emit_Symbol_Name(cg, obj_sym);
+                        Emit(cg, " = getelementptr i8, ptr %%__frame_base, i64 %lld  ; task in frame\n",
+                             (long long)obj_sym->frame_offset);
+                    } else {
+                        Emit(cg, "  %%");
+                        Emit_Symbol_Name(cg, obj_sym);
+                        Emit(cg, " = alloca ptr  ; task control block\n");
+                    }
+
+                    /* Start the task body in a separate thread.
+                     * Pass frame_base if nested, or null if at module level. */
+                    uint32_t handle_tmp = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = call ptr @__ada_task_start(ptr @task_",
+                         handle_tmp);
+                    if (cg->current_instance && cg->current_instance->generic_template) {
+                        /* Emit instance name prefix for unique task body function */
+                        String_Slice inst_mangled = Symbol_Mangle_Name(cg->current_instance);
+                        for (uint32_t i = 0; i < inst_mangled.length; i++) {
+                            fputc(inst_mangled.data[i], cg->output);
+                        }
+                        Emit(cg, "__");
+                    }
+                    Emit(cg, "%.*s, ", (int)node->task_spec.name.length,
+                         node->task_spec.name.data);
+                    /* Pass parent frame for uplevel access, or null if at module level.
+                     * Use frame_base only if the current function has nested subprograms. */
+                    if (cg->current_nesting_level > 0) {
+                        Emit(cg, "ptr %%__frame_base)\n");
+                    } else {
+                        Emit(cg, "ptr null)\n");
+                    }
+                    /* Store thread handle in task control block */
+                    Emit(cg, "  store ptr %%t%u, ptr %%", handle_tmp);
                     Emit_Symbol_Name(cg, obj_sym);
-                    Emit(cg, " = alloca ptr  ; task control block\n");
+                    Emit(cg, "\n");
                 }
             }
             break;
@@ -16703,6 +16858,8 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "declare ptr @realloc(ptr, i64)\n");
     Emit(cg, "declare void @free(ptr)\n");
     Emit(cg, "declare i32 @usleep(i32)\n");
+    Emit(cg, "declare i32 @pthread_create(ptr, ptr, ptr, ptr)\n");
+    Emit(cg, "declare i32 @pthread_join(ptr, ptr)\n");
     Emit(cg, "declare i32 @printf(ptr, ...)\n");
     Emit(cg, "declare i32 @putchar(i32)\n");
     Emit(cg, "declare i32 @getchar()\n");
@@ -16977,6 +17134,18 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "  ; Check if master task is complete, if so exit\n");
     Emit(cg, "  call void @exit(i32 0)\n");
     Emit(cg, "  unreachable\n");
+    Emit(cg, "}\n\n");
+
+    /* Task start: spawn a thread to run the task body.
+     * Returns thread handle that can be used for join/abort.
+     * The task_func is a pointer to void(ptr) which is close enough
+     * to pthread's void*(void*) signature to work via bitcast. */
+    Emit(cg, "define linkonce_odr ptr @__ada_task_start(ptr %%task_func, ptr %%parent_frame) {\n");
+    Emit(cg, "entry:\n");
+    Emit(cg, "  %%tid = alloca ptr\n");
+    Emit(cg, "  %%_rc = call i32 @pthread_create(ptr %%tid, ptr null, ptr %%task_func, ptr %%parent_frame)\n");
+    Emit(cg, "  %%handle = load ptr, ptr %%tid\n");
+    Emit(cg, "  ret ptr %%handle\n");
     Emit(cg, "}\n\n");
 
     /* Entry call: caller side of rendezvous (blocks until accept completes) */
