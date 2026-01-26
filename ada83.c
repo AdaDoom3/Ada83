@@ -8877,6 +8877,17 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                 }
                             }
                         }
+                        /* For functions, also check return type matches (allows
+                         * overloading on return type per Ada RM 6.6) */
+                        if (types_match && expected_kind == SYMBOL_FUNCTION) {
+                            if (node->subprogram_spec.return_type) {
+                                Resolve_Expression(sm, node->subprogram_spec.return_type);
+                                Type_Info *body_return = node->subprogram_spec.return_type->type;
+                                if (body_return != sym->return_type) {
+                                    types_match = false;
+                                }
+                            }
+                        }
                         /* Found matching spec - check it's not already claimed */
                         if (types_match && !sym->body_claimed) {
                             sym->body_claimed = true;
@@ -11850,6 +11861,112 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         return eq_result;
     }
 
+    /* Array relational comparisons (lexicographic) */
+    if ((node->binary.op == TK_LT || node->binary.op == TK_LE ||
+         node->binary.op == TK_GT || node->binary.op == TK_GE) &&
+        left_type && (left_type->kind == TYPE_ARRAY || left_type->kind == TYPE_STRING)) {
+        /* Get addresses of both arrays for comparison */
+        uint32_t left_ptr, right_ptr;
+        bool is_unconstrained = Type_Is_Unconstrained_Array(left_type) ||
+                                left_type->kind == TYPE_STRING;
+        if (is_unconstrained) {
+            left_ptr = Generate_Expression(cg, node->binary.left);
+            right_ptr = Generate_Expression(cg, node->binary.right);
+        } else {
+            left_ptr = Generate_Composite_Address(cg, node->binary.left);
+            right_ptr = Generate_Composite_Address(cg, node->binary.right);
+        }
+
+        uint32_t memcmp_result, cmp_result;
+
+        if (left_type->array.is_constrained) {
+            /* Constrained array: same size, use memcmp directly */
+            int64_t count = Array_Element_Count(left_type);
+            uint32_t elem_size = left_type->array.element_type ?
+                                 left_type->array.element_type->size : 1;
+            int64_t total_size = count * elem_size;
+
+            memcmp_result = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = call i32 @memcmp(ptr %%t%u, ptr %%t%u, i64 %lld)\n",
+                 memcmp_result, left_ptr, right_ptr, (long long)total_size);
+        } else {
+            /* Unconstrained array: compare min length, handle different lengths.
+             * For lexicographic: compare common prefix, shorter array is "less" if prefix equal. */
+            uint32_t left_low = Emit_Fat_Pointer_Low(cg, left_ptr);
+            uint32_t left_high = Emit_Fat_Pointer_High(cg, left_ptr);
+            uint32_t right_low = Emit_Fat_Pointer_Low(cg, right_ptr);
+            uint32_t right_high = Emit_Fat_Pointer_High(cg, right_ptr);
+
+            /* Compute lengths */
+            uint32_t left_len = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", left_len, left_high, left_low);
+            uint32_t left_len1 = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", left_len1, left_len);
+
+            uint32_t right_len = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", right_len, right_high, right_low);
+            uint32_t right_len1 = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", right_len1, right_len);
+
+            /* Get min length for comparison */
+            uint32_t len_cmp = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = icmp slt i64 %%t%u, %%t%u\n", len_cmp, left_len1, right_len1);
+            uint32_t min_len = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = select i1 %%t%u, i64 %%t%u, i64 %%t%u\n",
+                 min_len, len_cmp, left_len1, right_len1);
+
+            /* Get data pointers */
+            uint32_t left_data = Emit_Fat_Pointer_Data(cg, left_ptr);
+            uint32_t right_data = Emit_Fat_Pointer_Data(cg, right_ptr);
+
+            /* Compute byte size for memcmp */
+            uint32_t elem_size = left_type->array.element_type ?
+                                 left_type->array.element_type->size : 1;
+            uint32_t byte_size = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", byte_size, min_len, elem_size);
+
+            /* Compare common prefix */
+            uint32_t prefix_cmp = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = call i32 @memcmp(ptr %%t%u, ptr %%t%u, i64 %%t%u)\n",
+                 prefix_cmp, left_data, right_data, byte_size);
+
+            /* If prefix equal, compare lengths:
+             * left < right if prefix equal and left shorter
+             * Encode as: prefix_cmp != 0 ? prefix_cmp : (left_len - right_len) clamped to -1/0/1 */
+            uint32_t len_diff = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", len_diff, left_len1, right_len1);
+            uint32_t len_diff32 = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = trunc i64 %%t%u to i32\n", len_diff32, len_diff);
+
+            uint32_t prefix_zero = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", prefix_zero, prefix_cmp);
+
+            memcmp_result = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = select i1 %%t%u, i32 %%t%u, i32 %%t%u\n",
+                 memcmp_result, prefix_zero, len_diff32, prefix_cmp);
+        }
+
+        /* Compare memcmp result with 0 based on operator */
+        cmp_result = Emit_Temp(cg);
+        switch (node->binary.op) {
+            case TK_LT:
+                Emit(cg, "  %%t%u = icmp slt i32 %%t%u, 0\n", cmp_result, memcmp_result);
+                break;
+            case TK_LE:
+                Emit(cg, "  %%t%u = icmp sle i32 %%t%u, 0\n", cmp_result, memcmp_result);
+                break;
+            case TK_GT:
+                Emit(cg, "  %%t%u = icmp sgt i32 %%t%u, 0\n", cmp_result, memcmp_result);
+                break;
+            case TK_GE:
+                Emit(cg, "  %%t%u = icmp sge i32 %%t%u, 0\n", cmp_result, memcmp_result);
+                break;
+            default:
+                Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", cmp_result, memcmp_result);
+        }
+        return cmp_result;
+    }
+
     /* String/array concatenation */
     if (node->binary.op == TK_AMPERSAND && Type_Is_Array_Like(left_type)) {
 
@@ -13034,15 +13151,35 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                     cg->address_markers[cg->address_marker_count++] = sym;
                 }
             } else if (sym->kind == SYMBOL_VARIABLE && sym->type && sym->type->kind == TYPE_TASK) {
-                /* Task variable (single task) address - use task control block */
+                /* Task variable (single task) address - use task control block.
+                 * Must handle uplevel access when task is in enclosing scope. */
+                Symbol *var_owner = sym->defining_scope ? sym->defining_scope->owner : NULL;
+                bool is_uplevel = cg->current_function && var_owner &&
+                                  var_owner != cg->current_function &&
+                                  var_owner != cg->current_function->generic_template;
                 Emit(cg, "  %%t%u = ptrtoint ptr ", t);
-                Emit_Symbol_Ref(cg, sym);
+                if (is_uplevel && cg->is_nested) {
+                    /* Uplevel access through frame pointer */
+                    Emit(cg, "%%__frame.");
+                    Emit_Symbol_Name(cg, sym);
+                } else {
+                    Emit_Symbol_Ref(cg, sym);
+                }
                 Emit(cg, " to i64  ; '%.*s'ADDRESS (task)\n",
                      (int)sym->name.length, sym->name.data);
             } else {
-                /* Regular variable */
+                /* Regular variable - also handle uplevel access */
+                Symbol *var_owner = sym->defining_scope ? sym->defining_scope->owner : NULL;
+                bool is_uplevel = cg->current_function && var_owner &&
+                                  var_owner != cg->current_function &&
+                                  var_owner != cg->current_function->generic_template;
                 Emit(cg, "  %%t%u = ptrtoint ptr ", t);
-                Emit_Symbol_Ref(cg, sym);
+                if (is_uplevel && cg->is_nested) {
+                    Emit(cg, "%%__frame.");
+                    Emit_Symbol_Name(cg, sym);
+                } else {
+                    Emit_Symbol_Ref(cg, sym);
+                }
                 Emit(cg, " to i64  ; 'ADDRESS\n");
             }
         } else {
