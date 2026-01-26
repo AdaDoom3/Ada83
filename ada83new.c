@@ -7488,6 +7488,19 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                         }
                         Resolve_Expression(sm, item);
                     } else {
+                        /* For array aggregates, propagate element type to nested aggregates */
+                        Type_Info *elem_type = NULL;
+                        if (agg_type && agg_type->kind == TYPE_ARRAY && agg_type->array.element_type) {
+                            elem_type = agg_type->array.element_type;
+                        }
+                        if (elem_type && item->kind == NK_ASSOCIATION && item->association.expression) {
+                            Syntax_Node *expr = item->association.expression;
+                            if (expr->kind == NK_AGGREGATE) {
+                                expr->type = elem_type;
+                            }
+                        } else if (elem_type && item->kind == NK_AGGREGATE) {
+                            item->type = elem_type;
+                        }
                         Resolve_Expression(sm, item);
                     }
                 }
@@ -7558,18 +7571,31 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                         Index_Info *info = &array_type->array.indices[i];
                         info->index_type = sm->type_integer;
 
-                        /* Extract bounds from range node */
-                        if (idx->kind == NK_RANGE && idx->range.low && idx->range.high) {
-                            if (idx->range.low->kind == NK_INTEGER) {
+                        /* Extract bounds from range or subtype indication */
+                        Syntax_Node *range_node = NULL;
+                        if (idx->kind == NK_RANGE) {
+                            range_node = idx;
+                        } else if (idx->kind == NK_SUBTYPE_INDICATION &&
+                                   idx->subtype_ind.constraint &&
+                                   idx->subtype_ind.constraint->kind == NK_RANGE_CONSTRAINT) {
+                            range_node = idx->subtype_ind.constraint->range_constraint.range;
+                            /* Also use the subtype mark's type for index type */
+                            if (idx->subtype_ind.subtype_mark && idx->subtype_ind.subtype_mark->type) {
+                                info->index_type = idx->subtype_ind.subtype_mark->type;
+                            }
+                        }
+                        if (range_node && range_node->kind == NK_RANGE &&
+                            range_node->range.low && range_node->range.high) {
+                            if (range_node->range.low->kind == NK_INTEGER) {
                                 info->low_bound = (Type_Bound){
                                     .kind = BOUND_INTEGER,
-                                    .int_value = idx->range.low->integer_lit.value
+                                    .int_value = range_node->range.low->integer_lit.value
                                 };
                             }
-                            if (idx->range.high->kind == NK_INTEGER) {
+                            if (range_node->range.high->kind == NK_INTEGER) {
                                 info->high_bound = (Type_Bound){
                                     .kind = BOUND_INTEGER,
-                                    .int_value = idx->range.high->integer_lit.value
+                                    .int_value = range_node->range.high->integer_lit.value
                                 };
                             }
                         }
@@ -8383,6 +8409,21 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                 if (node->object_decl.init->kind == NK_AGGREGATE &&
                     node->object_decl.object_type && node->object_decl.object_type->type) {
                     node->object_decl.init->type = node->object_decl.object_type->type;
+                    fprintf(stderr, "DEBUG2: Set init aggregate type from object_type to %.*s\n",
+                            (int)node->object_decl.init->type->name.length,
+                            node->object_decl.init->type->name.data);
+                } else if (node->object_decl.init->kind == NK_AGGREGATE) {
+                    fprintf(stderr, "DEBUG2: Aggregate init without object_type->type, object_type=%p kind=%d type=%p\n",
+                            (void*)node->object_decl.object_type,
+                            node->object_decl.object_type ? node->object_decl.object_type->kind : -1,
+                            node->object_decl.object_type ? (void*)node->object_decl.object_type->type : NULL);
+                    if (node->object_decl.object_type && node->object_decl.object_type->kind == NK_SELECTED) {
+                        Symbol *prefix_sym = node->object_decl.object_type->selected.prefix->symbol;
+                        fprintf(stderr, "DEBUG2: Selected prefix symbol=%p kind=%d exported_count=%u\n",
+                                (void*)prefix_sym,
+                                prefix_sym ? prefix_sym->kind : -1,
+                                prefix_sym ? prefix_sym->exported_count : 0);
+                    }
                 }
                 Resolve_Expression(sm, node->object_decl.init);
             }
@@ -9324,6 +9365,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                     inst_sym->generic_actuals = Arena_Allocate(
                         formals->count * sizeof(*inst_sym->generic_actuals));
 
+                    /* First pass: resolve type formals */
                     for (uint32_t i = 0; i < formals->count; i++) {
                         Syntax_Node *formal = formals->items[i];
                         Syntax_Node *actual = (i < actuals->count) ? actuals->items[i] : NULL;
@@ -9341,6 +9383,48 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                 }
                                 Resolve_Expression(sm, type_node);
                                 inst_sym->generic_actuals[i].actual_type = type_node->type;
+                            }
+                        }
+                    }
+                    /* Second pass: resolve object formals with substituted types */
+                    for (uint32_t i = 0; i < formals->count; i++) {
+                        Syntax_Node *formal = formals->items[i];
+                        Syntax_Node *actual = (i < actuals->count) ? actuals->items[i] : NULL;
+
+                        if (formal->kind == NK_GENERIC_OBJECT_PARAM) {
+                            /* Look up the formal's type, substituting any type formals */
+                            Syntax_Node *obj_type_node = formal->generic_object_param.object_type;
+                            Type_Info *obj_type = NULL;
+                            if (obj_type_node && obj_type_node->kind == NK_IDENTIFIER) {
+                                /* Check if it's a type formal by searching earlier formals */
+                                for (uint32_t k = 0; k < i; k++) {
+                                    Syntax_Node *earlier = formals->items[k];
+                                    if (earlier->kind == NK_GENERIC_TYPE_PARAM &&
+                                        Slice_Equal_Ignore_Case(obj_type_node->string_val.text,
+                                                  earlier->generic_type_param.name)) {
+                                        obj_type = inst_sym->generic_actuals[k].actual_type;
+                                        break;
+                                    }
+                                }
+                            }
+                            /* Propagate type to actual expression (e.g. aggregate) */
+                            if (actual && obj_type) {
+                                Syntax_Node *expr = actual;
+                                if (actual->kind == NK_ASSOCIATION) {
+                                    expr = actual->association.expression;
+                                }
+                                /* Set type before and after resolve to handle aggregates */
+                                expr->type = obj_type;
+                                Resolve_Expression(sm, expr);
+                                /* Ensure type stays set for aggregates */
+                                if (!expr->type || expr->kind == NK_AGGREGATE) {
+                                    expr->type = obj_type;
+                                }
+                                fprintf(stderr, "DEBUG: Set aggregate type to %.*s\n",
+                                        (int)obj_type->name.length, obj_type->name.data);
+                            } else {
+                                fprintf(stderr, "DEBUG: No obj_type found, actual=%p obj_type=%p\n",
+                                        (void*)actual, (void*)obj_type);
                             }
                         }
                     }
@@ -9460,6 +9544,37 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                     exp->type = decl->type;
                                     if (!exp->type && decl->type_decl.definition)
                                         exp->type = decl->type_decl.definition->type;
+                                    /* For subtypes, substitute formal type with actual */
+                                    if (!exp->type && decl->kind == NK_SUBTYPE_DECL &&
+                                        decl->type_decl.definition) {
+                                        Syntax_Node *def = decl->type_decl.definition;
+                                        String_Slice def_name = {0};
+                                        /* Handle plain identifier: SUBTYPE X IS GEN */
+                                        if (def->kind == NK_IDENTIFIER) {
+                                            def_name = def->string_val.text;
+                                        }
+                                        /* Handle constrained: SUBTYPE X IS GEN(4) */
+                                        else if (def->kind == NK_APPLY && def->apply.prefix &&
+                                                 def->apply.prefix->kind == NK_IDENTIFIER) {
+                                            def_name = def->apply.prefix->string_val.text;
+                                        }
+                                        /* Handle subtype indication: SUBTYPE X IS GEN RANGE ... */
+                                        else if (def->kind == NK_SUBTYPE_INDICATION &&
+                                                 def->subtype_ind.subtype_mark &&
+                                                 def->subtype_ind.subtype_mark->kind == NK_IDENTIFIER) {
+                                            def_name = def->subtype_ind.subtype_mark->string_val.text;
+                                        }
+                                        if (def_name.data) {
+                                            for (uint32_t k = 0; k < inst_sym->generic_actual_count; k++) {
+                                                Syntax_Node *formal_k = formals->items[k];
+                                                if (formal_k->kind == NK_GENERIC_TYPE_PARAM &&
+                                                    Slice_Equal_Ignore_Case(def_name, formal_k->generic_type_param.name)) {
+                                                    exp->type = inst_sym->generic_actuals[k].actual_type;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
                                     /* Create Type_Info for unresolved enum/range types */
                                     if (!exp->type && decl->type_decl.definition) {
                                         Syntax_Node *def = decl->type_decl.definition;
@@ -11175,17 +11290,30 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         }
 
         /* Get pointer to element and load */
-        const char *elem_type = Type_To_Llvm(array_type->array.element_type);
+        Type_Info *elem_type_info = array_type->array.element_type;
+        bool elem_is_composite = elem_type_info &&
+            (elem_type_info->kind == TYPE_RECORD ||
+             (elem_type_info->kind == TYPE_ARRAY && elem_type_info->array.is_constrained));
+        uint32_t elem_size = elem_type_info ? elem_type_info->size : 8;
+        const char *elem_type = Type_To_Llvm(elem_type_info);
         uint32_t ptr = Emit_Temp(cg);
-        uint32_t t = Emit_Temp(cg);
+        uint32_t t;
 
-        Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %%t%u\n",
-             ptr, elem_type, base, idx);
-        Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, elem_type, ptr);
-
-        /* Widen to i64 for computation */
-        t = Emit_Convert(cg, t, elem_type, "i64");
-        return t;
+        if (elem_is_composite && elem_size > 0) {
+            /* Composite element - use byte array for getelementptr */
+            Emit(cg, "  %%t%u = getelementptr [%u x i8], ptr %%t%u, i64 %%t%u\n",
+                 ptr, elem_size, base, idx);
+            /* Return pointer to composite element (don't load) */
+            return ptr;
+        } else {
+            t = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %%t%u\n",
+                 ptr, elem_type, base, idx);
+            Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, elem_type, ptr);
+            /* Widen to i64 for computation */
+            t = Emit_Convert(cg, t, elem_type, "i64");
+            return t;
+        }
     }
 
     /* Type conversion: Type_Name(Expression) */
@@ -13424,7 +13552,20 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
         /* Check if this is a constrained array */
         bool is_array = ty && ty->kind == TYPE_ARRAY && ty->array.is_constrained;
         int64_t array_count = is_array ? Array_Element_Count(ty) : 0;
-        const char *elem_type = is_array ? Type_To_Llvm(ty->array.element_type) : NULL;
+        const char *elem_type = NULL;
+        uint32_t elem_size = 0;
+        bool elem_is_composite = false;
+        if (is_array && ty->array.element_type) {
+            Type_Info *et = ty->array.element_type;
+            /* Check if element is record or another constrained array */
+            if (et->kind == TYPE_RECORD ||
+                (et->kind == TYPE_ARRAY && et->array.is_constrained)) {
+                elem_is_composite = true;
+                elem_size = et->size;
+            } else {
+                elem_type = Type_To_Llvm(et);
+            }
+        }
 
         /* Check if this is a record type */
         bool is_record = ty && ty->kind == TYPE_RECORD;
@@ -13442,11 +13583,43 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                          (long long)node->object_decl.init->integer_lit.value);
                     continue;
                 }
+                /* String constant - emit fat pointer global */
+                if (node->object_decl.init->kind == NK_STRING) {
+                    String_Slice str = node->object_decl.init->string_val.text;
+                    int64_t str_len = (int64_t)str.length;
+                    /* Emit string data first: @SYMNAME.data = ... */
+                    Emit(cg, ".data = linkonce_odr constant [%lld x i8] c\"",
+                         (long long)str_len);
+                    /* Emit escaped string contents */
+                    for (uint32_t j = 0; j < str.length; j++) {
+                        char c = str.data[j];
+                        if (c >= 32 && c < 127 && c != '"' && c != '\\') {
+                            Emit(cg, "%c", c);
+                        } else {
+                            Emit(cg, "\\%02X", (unsigned char)c);
+                        }
+                    }
+                    Emit(cg, "\"\n");
+                    /* Now emit fat pointer global with data ptr and bounds */
+                    Emit(cg, "@");
+                    Emit_Symbol_Name(cg, sym);
+                    Emit(cg, " = linkonce_odr constant { ptr, { i64, i64 } } "
+                         "{ ptr @");
+                    Emit_Symbol_Name(cg, sym);
+                    Emit(cg, ".data, { i64, i64 } { i64 1, i64 %lld } }\n",
+                         (long long)str_len);
+                    continue;
+                }
             }
             /* Variable - emit as global with default init */
             if (is_array && array_count > 0) {
-                Emit(cg, " = linkonce_odr global [%lld x %s] zeroinitializer\n",
-                     (long long)array_count, elem_type);
+                if (elem_is_composite && elem_size > 0) {
+                    Emit(cg, " = linkonce_odr global [%lld x [%u x i8]] zeroinitializer\n",
+                         (long long)array_count, elem_size);
+                } else {
+                    Emit(cg, " = linkonce_odr global [%lld x %s] zeroinitializer\n",
+                         (long long)array_count, elem_type);
+                }
             } else if (is_record && record_size > 0) {
                 Emit(cg, " = linkonce_odr global [%u x i8] zeroinitializer\n", record_size);
             } else {
@@ -13465,7 +13638,12 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             /* Constrained array: allocate [N x element_type] */
             Emit(cg, "  %%");
             Emit_Symbol_Name(cg, sym);
-            Emit(cg, " = alloca [%lld x %s]\n", (long long)array_count, elem_type);
+            if (elem_is_composite && elem_size > 0) {
+                /* Element is record or constrained array - use byte array */
+                Emit(cg, " = alloca [%lld x [%u x i8]]\n", (long long)array_count, elem_size);
+            } else {
+                Emit(cg, " = alloca [%lld x %s]\n", (long long)array_count, elem_type);
+            }
         } else if (is_record && record_size > 0) {
             /* Record type: allocate [N x i8] for the record size */
             Emit(cg, "  %%");
@@ -14036,6 +14214,30 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
             break;
 
         case NK_PACKAGE_BODY:
+            /* First, emit package spec's object declarations (constants, variables) */
+            {
+                String_Slice pkg_name = node->package_body.name;
+                Symbol *pkg_sym = Symbol_Find(cg->sm, pkg_name);
+                if (pkg_sym && pkg_sym->kind == SYMBOL_PACKAGE && pkg_sym->declaration) {
+                    Syntax_Node *spec = pkg_sym->declaration;
+                    if (spec->kind == NK_PACKAGE_SPEC) {
+                        /* Emit visible object declarations from spec */
+                        for (uint32_t i = 0; i < spec->package_spec.visible_decls.count; i++) {
+                            Syntax_Node *decl = spec->package_spec.visible_decls.items[i];
+                            if (decl && decl->kind == NK_OBJECT_DECL) {
+                                Generate_Object_Declaration(cg, decl);
+                            }
+                        }
+                        /* Emit private object declarations from spec */
+                        for (uint32_t i = 0; i < spec->package_spec.private_decls.count; i++) {
+                            Syntax_Node *decl = spec->package_spec.private_decls.items[i];
+                            if (decl && decl->kind == NK_OBJECT_DECL) {
+                                Generate_Object_Declaration(cg, decl);
+                            }
+                        }
+                    }
+                }
+            }
             Generate_Declaration_List(cg, &node->package_body.declarations);
             /* Generate initialization sequence if present */
             if (node->package_body.statements.count > 0) {
@@ -14334,7 +14536,7 @@ static void Generate_Extern_Declarations(Code_Generator *cg, Syntax_Node *node) 
             Syntax_Node *pkg_decl = pkg_sym->declaration;
             if (pkg_decl->kind != NK_PACKAGE_SPEC) continue;
 
-            /* Emit extern for each subprogram in the package */
+            /* Emit extern for each subprogram and object in the package */
             for (uint32_t k = 0; k < pkg_decl->package_spec.visible_decls.count; k++) {
                 Syntax_Node *decl = pkg_decl->package_spec.visible_decls.items[k];
                 if (!decl) continue;
@@ -14345,6 +14547,25 @@ static void Generate_Extern_Declarations(Code_Generator *cg, Syntax_Node *node) 
                         emitted_header = true;
                     }
                     Emit_Extern_Subprogram(cg, decl->symbol);
+                }
+                /* Emit extern for object declarations (constants/variables) */
+                if (decl->kind == NK_OBJECT_DECL) {
+                    for (uint32_t m = 0; m < decl->object_decl.names.count; m++) {
+                        Syntax_Node *name = decl->object_decl.names.items[m];
+                        Symbol *sym = name ? name->symbol : NULL;
+                        if (!sym || sym->is_named_number) continue;
+                        Type_Info *ty = sym->type;
+                        const char *type_str = Type_To_Llvm(ty);
+                        /* String constants use fat pointer type */
+                        bool is_string = ty && (ty->kind == TYPE_STRING ||
+                            (ty->kind == TYPE_ARRAY && !ty->array.is_constrained &&
+                             ty->array.element_type &&
+                             ty->array.element_type->kind == TYPE_CHARACTER));
+                        if (is_string) type_str = "{ ptr, { i64, i64 } }";
+                        Emit(cg, "@");
+                        Emit_Symbol_Name(cg, sym);
+                        Emit(cg, " = external global %s\n", type_str);
+                    }
                 }
             }
         }
@@ -14381,6 +14602,64 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "declare i32 @putchar(i32)\n");
     Emit(cg, "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)\n");
     Emit(cg, "declare double @llvm.pow.f64(double, double)\n\n");
+
+    /* Integer'VALUE - parse string to integer */
+    Emit(cg, "; Integer'VALUE helper\n");
+    Emit(cg, "define linkonce_odr i64 @__ada_integer_value({ ptr, { i64, i64 } } %%str) {\n");
+    Emit(cg, "entry:\n");
+    Emit(cg, "  %%data = extractvalue { ptr, { i64, i64 } } %%str, 0\n");
+    Emit(cg, "  %%low = extractvalue { ptr, { i64, i64 } } %%str, 1, 0\n");
+    Emit(cg, "  %%high = extractvalue { ptr, { i64, i64 } } %%str, 1, 1\n");
+    Emit(cg, "  br label %%loop\n");
+    Emit(cg, "loop:\n");
+    Emit(cg, "  %%result = phi i64 [ 0, %%entry ], [ %%next_result, %%cont ]\n");
+    Emit(cg, "  %%idx = phi i64 [ %%low, %%entry ], [ %%next_idx, %%cont ]\n");
+    Emit(cg, "  %%neg = phi i1 [ false, %%entry ], [ %%next_neg, %%cont ]\n");
+    Emit(cg, "  %%done = icmp sgt i64 %%idx, %%high\n");
+    Emit(cg, "  br i1 %%done, label %%finish, label %%body\n");
+    Emit(cg, "body:\n");
+    Emit(cg, "  %%adj_idx = sub i64 %%idx, %%low\n");
+    Emit(cg, "  %%ptr = getelementptr i8, ptr %%data, i64 %%adj_idx\n");
+    Emit(cg, "  %%ch = load i8, ptr %%ptr\n");
+    Emit(cg, "  %%is_minus = icmp eq i8 %%ch, 45  ; '-'\n");
+    Emit(cg, "  br i1 %%is_minus, label %%set_neg, label %%check_digit\n");
+    Emit(cg, "set_neg:\n");
+    Emit(cg, "  br label %%cont_neg\n");
+    Emit(cg, "check_digit:\n");
+    Emit(cg, "  %%is_digit = icmp uge i8 %%ch, 48  ; '0'\n");
+    Emit(cg, "  %%is_digit2 = icmp ule i8 %%ch, 57  ; '9'\n");
+    Emit(cg, "  %%is_dig_both = and i1 %%is_digit, %%is_digit2\n");
+    Emit(cg, "  br i1 %%is_dig_both, label %%add_digit, label %%cont\n");
+    Emit(cg, "add_digit:\n");
+    Emit(cg, "  %%digit = sub i8 %%ch, 48\n");
+    Emit(cg, "  %%digit64 = zext i8 %%digit to i64\n");
+    Emit(cg, "  %%mul = mul i64 %%result, 10\n");
+    Emit(cg, "  %%new_val = add i64 %%mul, %%digit64\n");
+    Emit(cg, "  br label %%cont\n");
+    Emit(cg, "cont_neg:\n");
+    Emit(cg, "  %%next_neg_v = phi i1 [ true, %%set_neg ]\n");
+    Emit(cg, "  br label %%cont\n");
+    Emit(cg, "cont:\n");
+    Emit(cg, "  %%next_result = phi i64 [ %%result, %%check_digit ], [ %%new_val, %%add_digit ], [ %%result, %%cont_neg ]\n");
+    Emit(cg, "  %%next_neg = phi i1 [ %%neg, %%check_digit ], [ %%neg, %%add_digit ], [ %%next_neg_v, %%cont_neg ]\n");
+    Emit(cg, "  %%next_idx = add i64 %%idx, 1\n");
+    Emit(cg, "  br label %%loop\n");
+    Emit(cg, "finish:\n");
+    Emit(cg, "  %%final = select i1 %%neg, i64 0, i64 %%result\n");
+    Emit(cg, "  %%neg_result = sub i64 0, %%result\n");
+    Emit(cg, "  %%ret = select i1 %%neg, i64 %%neg_result, i64 %%result\n");
+    Emit(cg, "  ret i64 %%ret\n");
+    Emit(cg, "}\n\n");
+
+    /* Float'VALUE - declare as external for now (can be implemented similarly) */
+    Emit(cg, "; Float'VALUE declaration (to be implemented)\n");
+    Emit(cg, "declare double @strtod(ptr, ptr)\n");
+    Emit(cg, "define linkonce_odr double @__ada_float_value({ ptr, { i64, i64 } } %%str) {\n");
+    Emit(cg, "entry:\n");
+    Emit(cg, "  %%data = extractvalue { ptr, { i64, i64 } } %%str, 0\n");
+    Emit(cg, "  %%result = call double @strtod(ptr %%data, ptr null)\n");
+    Emit(cg, "  ret double %%result\n");
+    Emit(cg, "}\n\n");
 
     /* Integer power function (base ** exponent for integer operands) */
     Emit(cg, "; Integer exponentiation helper\n");
