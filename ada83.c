@@ -6340,9 +6340,12 @@ static void Symbol_Add(Symbol_Manager *sm, Symbol *sym) {
         if (existing == sym) return;  /* Already added */
         if (existing->defining_scope == scope &&
             Slice_Equal_Ignore_Case(existing->name, sym->name)) {
-            /* Overloading: add to chain if subprograms */
-            if ((existing->kind == SYMBOL_PROCEDURE || existing->kind == SYMBOL_FUNCTION) &&
-                (sym->kind == SYMBOL_PROCEDURE || sym->kind == SYMBOL_FUNCTION)) {
+            /* Overloading: add to chain if subprograms or enumeration literals */
+            /* Per RM 8.6, enumeration literals are overloadable like functions */
+            if ((existing->kind == SYMBOL_PROCEDURE || existing->kind == SYMBOL_FUNCTION ||
+                 existing->kind == SYMBOL_LITERAL) &&
+                (sym->kind == SYMBOL_PROCEDURE || sym->kind == SYMBOL_FUNCTION ||
+                 sym->kind == SYMBOL_LITERAL)) {
                 /* Check if sym is already in the overload chain (prevents cycles) */
                 Symbol *chain = existing;
                 while (chain) {
@@ -6426,6 +6429,35 @@ static Symbol *Symbol_Find_With_Arity(Symbol_Manager *sm, String_Slice name, uin
     }
 
     return NULL;
+}
+
+/* Find symbol by name and type (for enumeration literal disambiguation) */
+static Symbol *Symbol_Find_By_Type(Symbol_Manager *sm, String_Slice name, Type_Info *expected_type) {
+    if (!expected_type) return Symbol_Find(sm, name);
+    /* Get base type for matching (handles derived types) */
+    Type_Info *base_expected = expected_type;
+    while (base_expected && base_expected->parent_type)
+        base_expected = base_expected->parent_type;
+
+    uint32_t hash = Symbol_Hash_Name(name);
+    for (Scope *scope = sm->current_scope; scope; scope = scope->parent) {
+        for (Symbol *sym = scope->buckets[hash]; sym; sym = sym->next_in_bucket) {
+            if (Slice_Equal_Ignore_Case(sym->name, name) &&
+                sym->visibility >= VIS_IMMEDIATELY_VISIBLE) {
+                /* Search through overload chain (for enumeration literals) */
+                for (Symbol *ovl = sym; ovl; ovl = ovl->next_overload) {
+                    /* Check if type matches (either directly or via base type) */
+                    Type_Info *sym_base = ovl->type;
+                    while (sym_base && sym_base->parent_type)
+                        sym_base = sym_base->parent_type;
+                    if (sym_base == base_expected) {
+                        return ovl;
+                    }
+                }
+            }
+        }
+    }
+    return NULL;  /* No matching symbol found */
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -7261,6 +7293,40 @@ static String_Slice Operator_Name(Token_Kind op) {
     }
 }
 
+/* Resolve a character literal as an enumeration literal given a context type.
+ * Used for comparisons and assignments where a character literal should be
+ * interpreted as an enumeration value. Returns true if resolved. */
+static bool Resolve_Char_As_Enum(Symbol_Manager *sm, Syntax_Node *char_node, Type_Info *enum_type) {
+    if (!char_node || char_node->kind != NK_CHARACTER || !enum_type)
+        return false;
+    /* Find base enumeration type */
+    Type_Info *base_enum = enum_type;
+    while (base_enum && base_enum->parent_type)
+        base_enum = base_enum->parent_type;
+    if (!base_enum || base_enum->kind != TYPE_ENUMERATION || !base_enum->enumeration.literals)
+        return false;
+    /* Get the character from the literal (format: 'X') */
+    String_Slice lit_text = char_node->string_val.text;
+    char ch = lit_text.length >= 2 ? lit_text.data[1] : 0;
+    /* Look for matching character literal in enum */
+    for (uint32_t j = 0; j < base_enum->enumeration.literal_count; j++) {
+        String_Slice lit_name = base_enum->enumeration.literals[j];
+        if (lit_name.length == 3 &&
+            lit_name.data[0] == '\'' &&
+            lit_name.data[1] == ch &&
+            lit_name.data[2] == '\'') {
+            /* Found matching enum literal - find symbol with matching type */
+            Symbol *lit_sym = Symbol_Find_By_Type(sm, lit_name, base_enum);
+            if (lit_sym && lit_sym->kind == SYMBOL_LITERAL) {
+                char_node->symbol = lit_sym;
+                char_node->type = enum_type;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
     Type_Info *left_type = Resolve_Expression(sm, node->binary.left);
     Type_Info *right_type = Resolve_Expression(sm, node->binary.right);
@@ -7336,6 +7402,23 @@ static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
 
         case TK_EQ: case TK_NE: case TK_LT: case TK_LE: case TK_GT: case TK_GE:
             /* Comparison operators */
+            /* Handle character literals that should be enum literals */
+            if (left_type && (left_type->kind == TYPE_ENUMERATION ||
+                (left_type->parent_type && left_type->parent_type->kind == TYPE_ENUMERATION))) {
+                if (node->binary.right->kind == NK_CHARACTER) {
+                    if (Resolve_Char_As_Enum(sm, node->binary.right, left_type)) {
+                        right_type = node->binary.right->type;
+                    }
+                }
+            }
+            if (right_type && (right_type->kind == TYPE_ENUMERATION ||
+                (right_type->parent_type && right_type->parent_type->kind == TYPE_ENUMERATION))) {
+                if (node->binary.left->kind == NK_CHARACTER) {
+                    if (Resolve_Char_As_Enum(sm, node->binary.left, right_type)) {
+                        left_type = node->binary.left->type;
+                    }
+                }
+            }
             if (!Type_Covers(left_type, right_type) && !Type_Covers(right_type, left_type)) {
                 Report_Error(node->location, "incompatible types for comparison");
             }
@@ -7438,6 +7521,20 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
         if (prefix_sym->kind == SYMBOL_FUNCTION || prefix_sym->kind == SYMBOL_PROCEDURE) {
             node->symbol = prefix_sym;
             node->type = prefix_sym->return_type;  /* NULL for procedures */
+            /* Re-resolve character literal arguments based on parameter types.
+             * This handles cases like FN('A') where 'A' must be resolved as
+             * the enumeration literal for the parameter's type, not ASCII. */
+            for (uint32_t i = 0; i < arg_count && i < prefix_sym->parameter_count; i++) {
+                Syntax_Node *arg = node->apply.arguments.items[i];
+                /* Handle named associations */
+                if (arg->kind == NK_ASSOCIATION && arg->association.expression) {
+                    arg = arg->association.expression;
+                }
+                if (arg->kind == NK_CHARACTER) {
+                    Type_Info *param_type = prefix_sym->parameters[i].param_type;
+                    Resolve_Char_As_Enum(sm, arg, param_type);
+                }
+            }
             return node->type;
         }
 
@@ -7611,8 +7708,59 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
 
         case NK_ATTRIBUTE:
             Resolve_Expression(sm, node->attribute.prefix);
-            for (uint32_t i = 0; i < node->attribute.arguments.count; i++) {
-                Resolve_Expression(sm, node->attribute.arguments.items[i]);
+            /* Resolve attribute arguments with type context for certain attributes */
+            {
+                Type_Info *prefix_type = node->attribute.prefix->type;
+                String_Slice attr = node->attribute.name;
+
+                /* For POS, SUCC, PRED, IMAGE - argument should be of prefix type */
+                bool needs_enum_context = prefix_type &&
+                    (prefix_type->kind == TYPE_ENUMERATION ||
+                     (prefix_type->parent_type &&
+                      prefix_type->parent_type->kind == TYPE_ENUMERATION)) &&
+                    (Slice_Equal_Ignore_Case(attr, S("POS")) ||
+                     Slice_Equal_Ignore_Case(attr, S("SUCC")) ||
+                     Slice_Equal_Ignore_Case(attr, S("PRED")) ||
+                     Slice_Equal_Ignore_Case(attr, S("IMAGE")));
+
+                for (uint32_t i = 0; i < node->attribute.arguments.count; i++) {
+                    Syntax_Node *arg = node->attribute.arguments.items[i];
+                    bool resolved_as_enum = false;
+                    /* Check if character literal should be resolved as enum literal */
+                    if (needs_enum_context && arg && arg->kind == NK_CHARACTER) {
+                        /* Get the character from the literal (format: 'X') */
+                        String_Slice lit_text = arg->string_val.text;
+                        char ch = lit_text.length >= 2 ? lit_text.data[1] : 0;
+                        /* Find enum type (handle derived types) */
+                        Type_Info *enum_type = prefix_type;
+                        while (enum_type && enum_type->parent_type)
+                            enum_type = enum_type->parent_type;
+                        /* Look for matching character literal in enum */
+                        if (enum_type && enum_type->kind == TYPE_ENUMERATION &&
+                            enum_type->enumeration.literals) {
+                            for (uint32_t j = 0; j < enum_type->enumeration.literal_count; j++) {
+                                String_Slice lit_name = enum_type->enumeration.literals[j];
+                                if (lit_name.length == 3 &&
+                                    lit_name.data[0] == '\'' &&
+                                    lit_name.data[1] == ch &&
+                                    lit_name.data[2] == '\'') {
+                                    /* Found matching enum literal - set symbol with type match */
+                                    Symbol *lit_sym = Symbol_Find_By_Type(sm, lit_name, enum_type);
+                                    if (lit_sym && lit_sym->kind == SYMBOL_LITERAL) {
+                                        arg->symbol = lit_sym;
+                                        arg->type = prefix_type;
+                                        resolved_as_enum = true;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    /* Only resolve if not already resolved as enum literal */
+                    if (!resolved_as_enum) {
+                        Resolve_Expression(sm, arg);
+                    }
+                }
             }
             /* Attribute type depends on attribute name and prefix type */
             {
@@ -8093,6 +8241,70 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
 
         case NK_SUBTYPE_INDICATION:
             {
+                /* Helper: Try to extract a static integer value from a bound expression.
+                 * Returns true if value was extracted, false otherwise. */
+                bool Try_Static_Bound(Syntax_Node *expr, int64_t *out_val) {
+                    if (!expr) return false;
+                    if (expr->kind == NK_INTEGER) {
+                        *out_val = expr->integer_lit.value;
+                        return true;
+                    }
+                    if (expr->kind == NK_UNARY_OP && expr->unary.operand &&
+                        expr->unary.operand->kind == NK_INTEGER) {
+                        int64_t val = expr->unary.operand->integer_lit.value;
+                        if (expr->unary.op == TK_MINUS) val = -val;
+                        *out_val = val;
+                        return true;
+                    }
+                    if (expr->symbol && expr->symbol->kind == SYMBOL_LITERAL) {
+                        *out_val = expr->symbol->frame_offset;
+                        return true;
+                    }
+                    /* Handle TYPE'POS(X) or TYPE'VAL(N) as NK_APPLY */
+                    if (expr->kind == NK_APPLY && expr->apply.prefix &&
+                        expr->apply.prefix->kind == NK_ATTRIBUTE) {
+                        Syntax_Node *attr = expr->apply.prefix;
+                        String_Slice attr_name = attr->attribute.name;
+                        if (Slice_Equal_Ignore_Case(attr_name, S("POS")) &&
+                            expr->apply.arguments.count == 1) {
+                            Syntax_Node *arg = expr->apply.arguments.items[0];
+                            if (arg && arg->symbol && arg->symbol->kind == SYMBOL_LITERAL) {
+                                *out_val = arg->symbol->frame_offset;
+                                return true;
+                            }
+                        }
+                        /* Handle TYPE'VAL(N) where N is static */
+                        if (Slice_Equal_Ignore_Case(attr_name, S("VAL")) &&
+                            expr->apply.arguments.count == 1) {
+                            Syntax_Node *arg = expr->apply.arguments.items[0];
+                            int64_t inner_val;
+                            if (Try_Static_Bound(arg, &inner_val)) {
+                                *out_val = inner_val;
+                                return true;
+                            }
+                        }
+                    }
+                    /* Handle TYPE'VAL(...) or TYPE'POS(...) as NK_ATTRIBUTE with arguments */
+                    if (expr->kind == NK_ATTRIBUTE && expr->attribute.arguments.count == 1) {
+                        String_Slice attr_name = expr->attribute.name;
+                        Syntax_Node *arg = expr->attribute.arguments.items[0];
+                        if (Slice_Equal_Ignore_Case(attr_name, S("VAL"))) {
+                            int64_t inner_val;
+                            if (Try_Static_Bound(arg, &inner_val)) {
+                                *out_val = inner_val;
+                                return true;
+                            }
+                        }
+                        if (Slice_Equal_Ignore_Case(attr_name, S("POS"))) {
+                            if (arg && arg->symbol && arg->symbol->kind == SYMBOL_LITERAL) {
+                                *out_val = arg->symbol->frame_offset;
+                                return true;
+                            }
+                        }
+                    }
+                    return false;
+                }
+
                 /* Resolve the base type */
                 Resolve_Expression(sm, node->subtype_ind.subtype_mark);
                 Type_Info *base_type = node->subtype_ind.subtype_mark->type;
@@ -8178,53 +8390,20 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                             constrained->enumeration = base_type->enumeration;
                         }
 
-                        /* Set bounds from range */
+                        /* Set bounds from range using static evaluation */
                         if (range->kind == NK_RANGE) {
                             Syntax_Node *lo = range->range.low;
                             Syntax_Node *hi = range->range.high;
-                            if (lo) {
-                                if (lo->kind == NK_INTEGER) {
-                                    constrained->low_bound = (Type_Bound){
-                                        .kind = BOUND_INTEGER,
-                                        .int_value = lo->integer_lit.value
-                                    };
-                                } else if (lo->kind == NK_UNARY_OP && lo->unary.operand &&
-                                           lo->unary.operand->kind == NK_INTEGER) {
-                                    int64_t val = lo->unary.operand->integer_lit.value;
-                                    if (lo->unary.op == TK_MINUS) val = -val;
-                                    constrained->low_bound = (Type_Bound){
-                                        .kind = BOUND_INTEGER,
-                                        .int_value = val
-                                    };
-                                } else if (lo->symbol) {
-                                    /* Enumeration literal */
-                                    constrained->low_bound = (Type_Bound){
-                                        .kind = BOUND_INTEGER,
-                                        .int_value = lo->symbol->frame_offset
-                                    };
-                                }
+                            int64_t val;
+                            if (lo && Try_Static_Bound(lo, &val)) {
+                                constrained->low_bound = (Type_Bound){
+                                    .kind = BOUND_INTEGER, .int_value = val
+                                };
                             }
-                            if (hi) {
-                                if (hi->kind == NK_INTEGER) {
-                                    constrained->high_bound = (Type_Bound){
-                                        .kind = BOUND_INTEGER,
-                                        .int_value = hi->integer_lit.value
-                                    };
-                                } else if (hi->kind == NK_UNARY_OP && hi->unary.operand &&
-                                           hi->unary.operand->kind == NK_INTEGER) {
-                                    int64_t val = hi->unary.operand->integer_lit.value;
-                                    if (hi->unary.op == TK_MINUS) val = -val;
-                                    constrained->high_bound = (Type_Bound){
-                                        .kind = BOUND_INTEGER,
-                                        .int_value = val
-                                    };
-                                } else if (hi->symbol) {
-                                    /* Enumeration literal */
-                                    constrained->high_bound = (Type_Bound){
-                                        .kind = BOUND_INTEGER,
-                                        .int_value = hi->symbol->frame_offset
-                                    };
-                                }
+                            if (hi && Try_Static_Bound(hi, &val)) {
+                                constrained->high_bound = (Type_Bound){
+                                    .kind = BOUND_INTEGER, .int_value = val
+                                };
                             }
                         }
 
@@ -14138,8 +14317,12 @@ static uint32_t Generate_Expression(Code_Generator *cg, Syntax_Node *node) {
         case NK_CHARACTER:  {   /* Character literal - extract char from text "'X'" */
                              uint32_t t = Emit_Temp(cg);
                              int64_t ch = 0;
-                             if (node->string_val.text.length >= 2)
+                             /* Check if resolved as enumeration literal */
+                             if (node->symbol && node->symbol->kind == SYMBOL_LITERAL) {
+                                 ch = node->symbol->frame_offset;
+                             } else if (node->string_val.text.length >= 2) {
                                  ch = (unsigned char)node->string_val.text.data[1];
+                             }
                              Emit(cg, "  %%t%u = add i64 0, %lld\n", t, (long long)ch);
                              return t; }
         case NK_NULL:       { uint32_t t = Emit_Temp(cg);
