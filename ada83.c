@@ -17590,6 +17590,11 @@ static char *Lookup_Path(String_Slice name) {
         snprintf(full_path, sizeof(full_path), "%s.ads", path);
         char *src = Read_File_Simple(full_path);
         if (src) return src;
+
+        /* Try .ada extension (ACATS naming convention) */
+        snprintf(full_path, sizeof(full_path), "%s.ada", path);
+        src = Read_File_Simple(full_path);
+        if (src) return src;
     }
     return NULL;
 }
@@ -17632,6 +17637,11 @@ static char *Lookup_Path_Body(String_Slice name) {
         /* Try .adb extension */
         snprintf(full_path, sizeof(full_path), "%s.adb", path);
         char *src = Read_File_Simple(full_path);
+        if (src) return src;
+
+        /* Try .ada extension (ACATS uses .ada for both specs and bodies) */
+        snprintf(full_path, sizeof(full_path), "%s.ada", path);
+        src = Read_File_Simple(full_path);
         if (src) return src;
     }
     return NULL;
