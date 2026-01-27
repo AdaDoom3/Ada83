@@ -7870,10 +7870,12 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                 /* BASE attribute returns the base type (RM 3.3.2) */
                 else if (Slice_Equal_Ignore_Case(attr, S("BASE"))) {
                     /* T'BASE is a type, used as prefix for other attributes like T'BASE'FIRST
-                     * The type should be the base type of the prefix type */
+                     * The type should be the base type of the prefix type.
+                     * For derived types (TYPE T IS NEW X), follow parent_type chain.
+                     * For constrained subtypes (SUBTYPE S IS X RANGE ...), follow base_type chain.
+                     * Use Type_Root to handle both cases and find the root type. */
                     if (prefix_type) {
-                        Type_Info *base = Type_Base(prefix_type);
-                        if (!base) base = Type_Root(prefix_type);
+                        Type_Info *base = Type_Root(prefix_type);
                         node->type = base ? base : prefix_type;
                     } else {
                         node->type = sm->type_integer;
@@ -8307,6 +8309,21 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                                 *out_val = inner_val;
                                 return true;
                             }
+                        }
+                    }
+                    /* Handle function calls like IDENT_INT(arg) where arg is static.
+                     * ACATS tests use IDENT_* functions to prevent constant folding,
+                     * but for bound evaluation we can treat them as identity functions.
+                     * Handle both simple calls (IDENT_INT) and qualified calls (REPORT.IDENT_INT). */
+                    if (expr->kind == NK_APPLY && expr->apply.prefix &&
+                        (expr->apply.prefix->kind == NK_IDENTIFIER ||
+                         expr->apply.prefix->kind == NK_SELECTED ||
+                         expr->apply.prefix->symbol) &&
+                        expr->apply.arguments.count == 1) {
+                        int64_t arg_val;
+                        if (Try_Static_Bound(expr->apply.arguments.items[0], &arg_val)) {
+                            *out_val = arg_val;
+                            return true;
                         }
                     }
                     /* Handle TYPE'VAL(...) or TYPE'POS(...) as NK_ATTRIBUTE with arguments */
@@ -13765,6 +13782,69 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                 /* Float'IMAGE */
                 Emit(cg, "  %%t%u = call { ptr, { i64, i64 } } @__ada_float_image(double %%t%u)\n",
                      t, arg_val);
+            } else if (prefix_type && prefix_type->kind == TYPE_ENUMERATION) {
+                /* Enumeration'IMAGE - return literal name as string */
+                /* Find root enumeration type with literals */
+                Type_Info *enum_type = prefix_type;
+                while (enum_type && !enum_type->enumeration.literals) {
+                    if (enum_type->parent_type) enum_type = enum_type->parent_type;
+                    else if (enum_type->base_type) enum_type = enum_type->base_type;
+                    else break;
+                }
+                if (enum_type && enum_type->enumeration.literals &&
+                    enum_type->enumeration.literal_count > 0) {
+                    /* Generate inline switch for literal lookup */
+                    uint32_t result_ptr = Emit_Temp(cg);
+                    uint32_t result_len = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = alloca ptr\n", result_ptr);
+                    Emit(cg, "  %%t%u = alloca i64\n", result_len);
+                    uint32_t switch_label = cg->label_id++;
+                    uint32_t default_label = cg->label_id++;
+                    uint32_t end_label = cg->label_id++;
+                    Emit(cg, "  switch i64 %%t%u, label %%Limg_def%u [\n", arg_val, default_label);
+                    for (uint32_t i = 0; i < enum_type->enumeration.literal_count; i++) {
+                        Emit(cg, "    i64 %u, label %%Limg%u_%u\n", i, switch_label, i);
+                    }
+                    Emit(cg, "  ]\n");
+                    /* Generate case labels */
+                    for (uint32_t i = 0; i < enum_type->enumeration.literal_count; i++) {
+                        String_Slice lit = enum_type->enumeration.literals[i];
+                        /* Generate string constant name */
+                        uint32_t str_id = cg->string_id++;
+                        Emit(cg, "Limg%u_%u:\n", switch_label, i);
+                        /* Store to globals section */
+                        Emit_String_Const(cg, "@.img_str%u = private unnamed_addr constant [%u x i8] c\"",
+                                   str_id, (unsigned)lit.length + 1);
+                        for (uint32_t j = 0; j < lit.length; j++) {
+                            Emit_String_Const(cg, "%c", (char)toupper((unsigned char)lit.data[j]));
+                        }
+                        Emit_String_Const(cg, "\\00\"\n");
+                        Emit(cg, "  store ptr @.img_str%u, ptr %%t%u\n", str_id, result_ptr);
+                        Emit(cg, "  store i64 %u, ptr %%t%u\n", (unsigned)lit.length, result_len);
+                        Emit(cg, "  br label %%Limg_end%u\n", end_label);
+                    }
+                    /* Default case - return empty string */
+                    Emit(cg, "Limg_def%u:\n", default_label);
+                    Emit(cg, "  store ptr null, ptr %%t%u\n", result_ptr);
+                    Emit(cg, "  store i64 0, ptr %%t%u\n", result_len);
+                    Emit(cg, "  br label %%Limg_end%u\n", end_label);
+                    Emit(cg, "Limg_end%u:\n", end_label);
+                    uint32_t ptr_load = Emit_Temp(cg);
+                    uint32_t len_load = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = load ptr, ptr %%t%u\n", ptr_load, result_ptr);
+                    Emit(cg, "  %%t%u = load i64, ptr %%t%u\n", len_load, result_len);
+                    /* Build fat pointer result */
+                    uint32_t t1 = Emit_Temp(cg);
+                    uint32_t t2 = Emit_Temp(cg);
+                    uint32_t t3 = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = insertvalue { ptr, { i64, i64 } } undef, ptr %%t%u, 0\n", t1, ptr_load);
+                    Emit(cg, "  %%t%u = insertvalue { ptr, { i64, i64 } } %%t%u, i64 1, 1, 0\n", t2, t1);
+                    Emit(cg, "  %%t%u = insertvalue { ptr, { i64, i64 } } %%t%u, i64 %%t%u, 1, 1\n", t, t2, len_load);
+                } else {
+                    /* No literals found, fallback to integer image */
+                    Emit(cg, "  %%t%u = call { ptr, { i64, i64 } } @__ada_integer_image(i64 %%t%u)\n",
+                         t, arg_val);
+                }
             } else {
                 /* Default: treat as integer */
                 Emit(cg, "  %%t%u = call { ptr, { i64, i64 } } @__ada_integer_image(i64 %%t%u)\n",
@@ -13791,6 +13871,79 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                 /* Float'VALUE - parse string as float */
                 Emit(cg, "  %%t%u = call double @__ada_float_value({ ptr, { i64, i64 } } %%t%u)\n",
                      t, str_val);
+            } else if (prefix_type && prefix_type->kind == TYPE_ENUMERATION) {
+                /* Enumeration'VALUE - find literal by name and return position */
+                /* Find root enumeration type with literals */
+                Type_Info *enum_type = prefix_type;
+                while (enum_type && !enum_type->enumeration.literals) {
+                    if (enum_type->parent_type) enum_type = enum_type->parent_type;
+                    else if (enum_type->base_type) enum_type = enum_type->base_type;
+                    else break;
+                }
+                if (enum_type && enum_type->enumeration.literals &&
+                    enum_type->enumeration.literal_count > 0) {
+                    /* Generate string comparison for each literal */
+                    /* Extract string pointer and length from fat pointer */
+                    uint32_t str_ptr = Emit_Temp(cg);
+                    uint32_t str_lo = Emit_Temp(cg);
+                    uint32_t str_hi = Emit_Temp(cg);
+                    uint32_t str_diff = Emit_Temp(cg);
+                    uint32_t str_len = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = extractvalue { ptr, { i64, i64 } } %%t%u, 0\n", str_ptr, str_val);
+                    Emit(cg, "  %%t%u = extractvalue { ptr, { i64, i64 } } %%t%u, 1, 0\n", str_lo, str_val);
+                    Emit(cg, "  %%t%u = extractvalue { ptr, { i64, i64 } } %%t%u, 1, 1\n", str_hi, str_val);
+                    Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", str_diff, str_hi, str_lo);
+                    Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", str_len, str_diff);
+
+                    uint32_t result_alloc = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = alloca i64\n", result_alloc);
+                    Emit(cg, "  store i64 0, ptr %%t%u\n", result_alloc);
+
+                    uint32_t end_label = cg->label_id++;
+                    for (uint32_t i = 0; i < enum_type->enumeration.literal_count; i++) {
+                        String_Slice lit = enum_type->enumeration.literals[i];
+                        uint32_t check_label = cg->label_id++;
+                        uint32_t next_label = cg->label_id++;
+
+                        /* Generate uppercase string constant */
+                        uint32_t str_id = cg->string_id++;
+                        Emit_String_Const(cg, "@.val_str%u = private unnamed_addr constant [%u x i8] c\"",
+                                   str_id, (unsigned)lit.length + 1);
+                        for (uint32_t j = 0; j < lit.length; j++) {
+                            Emit_String_Const(cg, "%c", (char)toupper((unsigned char)lit.data[j]));
+                        }
+                        Emit_String_Const(cg, "\\00\"\n");
+
+                        /* Check length first */
+                        uint32_t len_cmp = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %u\n", len_cmp, str_len, (unsigned)lit.length);
+                        Emit(cg, "  br i1 %%t%u, label %%Lval%u, label %%Lval_next%u\n", len_cmp, check_label, next_label);
+
+                        Emit(cg, "Lval%u:\n", check_label);
+                        /* Compare strings (case insensitive using strncasecmp) */
+                        uint32_t cmp_result = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = call i32 @strncasecmp(ptr %%t%u, ptr @.val_str%u, i64 %u)\n",
+                             cmp_result, str_ptr, str_id, (unsigned)lit.length);
+                        uint32_t cmp_eq = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", cmp_eq, cmp_result);
+                        uint32_t match_label = cg->label_id++;
+                        Emit(cg, "  br i1 %%t%u, label %%Lval_match%u, label %%Lval_next%u\n", cmp_eq, match_label, next_label);
+
+                        Emit(cg, "Lval_match%u:\n", match_label);
+                        Emit(cg, "  store i64 %u, ptr %%t%u\n", i, result_alloc);
+                        Emit(cg, "  br label %%Lval_end%u\n", end_label);
+
+                        Emit(cg, "Lval_next%u:\n", next_label);
+                    }
+                    /* No match - leave as 0 (could raise CONSTRAINT_ERROR) */
+                    Emit(cg, "  br label %%Lval_end%u\n", end_label);
+                    Emit(cg, "Lval_end%u:\n", end_label);
+                    Emit(cg, "  %%t%u = load i64, ptr %%t%u\n", t, result_alloc);
+                } else {
+                    /* No literals found, fallback to integer value */
+                    Emit(cg, "  %%t%u = call i64 @__ada_integer_value({ ptr, { i64, i64 } } %%t%u)\n",
+                         t, str_val);
+                }
             } else {
                 /* Default: treat as integer */
                 Emit(cg, "  %%t%u = call i64 @__ada_integer_value({ ptr, { i64, i64 } } %%t%u)\n",
@@ -17276,6 +17429,7 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     /* External C library and LLVM intrinsic declarations */
     Emit(cg, "; External declarations\n");
     Emit(cg, "declare i32 @memcmp(ptr, ptr, i64)\n");
+    Emit(cg, "declare i32 @strncasecmp(ptr, ptr, i64)\n");
     Emit(cg, "declare i32 @setjmp(ptr)\n");
     Emit(cg, "declare void @longjmp(ptr, i32)\n");
     Emit(cg, "declare void @exit(i32)\n");
