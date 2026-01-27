@@ -2516,6 +2516,7 @@ struct Syntax_Node {
             Syntax_Node *index;
             Node_List parameters;
             Node_List statements;
+            Symbol *entry_sym;      /* Resolved entry symbol (for entry_index) */
         } accept_stmt;
 
         /* NK_SELECT */
@@ -2564,6 +2565,7 @@ struct Syntax_Node {
             Node_List statements;
             Node_List handlers;
             bool is_separate;
+            bool code_generated;  /* Prevents duplicate code generation */
         } subprogram_body;
 
         /* NK_PACKAGE_SPEC */
@@ -2931,11 +2933,12 @@ static Syntax_Node *Parse_Primary(Parser *p) {
         return node;
     }
 
-    /* Character literal */
+    /* Character literal - store only the text (e.g., "'X'"), extract char value when needed.
+     * NOTE: Do not set integer_lit.value here - it overlaps with string_val.text.data
+     * in the union and would corrupt the text pointer. */
     if (Parser_At(p, TK_CHARACTER)) {
         Syntax_Node *node = Node_New(NK_CHARACTER, loc);
         node->string_val.text = Slice_Duplicate(p->current_token.text);
-        node->integer_lit.value = p->current_token.integer_value;
         Parser_Advance(p);
         return node;
     }
@@ -6129,6 +6132,7 @@ struct Symbol {
 
     /* Code generation flags */
     bool            extern_emitted;      /* Extern declaration already emitted */
+    bool            body_emitted;        /* Function/procedure body already emitted */
     bool            is_named_number;     /* Named number (constant without explicit type) */
     bool            is_overloaded;       /* Part of an overload set (needs unique_id suffix) */
     bool            body_claimed;        /* Body has been matched to this spec (for homographs) */
@@ -6137,6 +6141,9 @@ struct Symbol {
 
     /* LLVM label ID for SYMBOL_LABEL */
     uint32_t        llvm_label_id;       /* 0 = not yet assigned */
+
+    /* Entry index within task (for SYMBOL_ENTRY) */
+    uint32_t        entry_index;         /* 0-based index for entry matching */
 
     /* For RENAMES: pointer to the renamed object's AST node */
     Syntax_Node    *renamed_object;
@@ -6160,6 +6167,7 @@ struct Symbol {
         Type_Info   *actual_type;        /* For type formals */
         Symbol      *actual_subprogram;  /* For subprogram formals */
         Syntax_Node *actual_expr;        /* For object formals */
+        Token_Kind   builtin_operator;   /* For built-in operators as subprogram actuals */
     } *generic_actuals;
     uint32_t        generic_actual_count;
 
@@ -6218,8 +6226,12 @@ static Scope *Scope_New(Scope *parent) {
     Scope *scope = Arena_Allocate(sizeof(Scope));
     scope->parent = parent;
     scope->nesting_level = parent ? parent->nesting_level + 1 : 0;
+    /* Inherit frame_size from parent so nested scope variables get unique offsets.
+     * This ensures variables in DECLARE blocks don't overlap with outer variables. */
+    scope->frame_size = parent ? parent->frame_size : 0;
     return scope;
 }
+
 
 static void Symbol_Manager_Push_Scope(Symbol_Manager *sm, Symbol *owner) {
     Scope *scope = Scope_New(sm->current_scope);
@@ -6229,6 +6241,11 @@ static void Symbol_Manager_Push_Scope(Symbol_Manager *sm, Symbol *owner) {
 
 static void Symbol_Manager_Pop_Scope(Symbol_Manager *sm) {
     if (sm->current_scope->parent) {
+        /* Propagate frame_size up to parent - parent needs to allocate enough
+         * space for all variables, including those in nested blocks. */
+        if (sm->current_scope->frame_size > sm->current_scope->parent->frame_size) {
+            sm->current_scope->parent->frame_size = sm->current_scope->frame_size;
+        }
         sm->current_scope = sm->current_scope->parent;
     }
 }
@@ -6285,6 +6302,13 @@ static void Symbol_Add(Symbol_Manager *sm, Symbol *sym) {
                 existing->next_overload = sym;
                 sym->parent = scope->owner;
                 return;
+            }
+            /* Allow variable to shadow type with same name (single task declaration).
+             * Per RM 9.1, a single task declaration creates both a task type and
+             * an anonymous object of that type with the same name. The object
+             * shadows the type for normal name lookups. */
+            if (sym->kind == SYMBOL_VARIABLE && existing->kind == SYMBOL_TYPE) {
+                break;  /* Proceed to add the variable - it will shadow the type */
             }
             /* Same symbol already exists at this scope - skip */
             return;
@@ -7066,6 +7090,22 @@ static Type_Info *Resolve_Selected(Symbol_Manager *sm, Syntax_Node *node) {
         }
         Report_Error(node->location, "no component '%.*s' in record type",
                     node->selected.selector.length, node->selected.selector.data);
+    } else if (prefix_type && prefix_type->kind == TYPE_TASK) {
+        /* Task entry selection: T.E1 where T is a task object (RM 9.5)
+         * Look up entry in the task type's defining_symbol exported list */
+        Symbol *type_sym = prefix_type->defining_symbol;
+        if (type_sym) {
+            for (uint32_t i = 0; i < type_sym->exported_count; i++) {
+                if (Slice_Equal_Ignore_Case(type_sym->exported[i]->name,
+                                           node->selected.selector)) {
+                    node->symbol = type_sym->exported[i];
+                    node->type = type_sym->exported[i]->type;
+                    return node->type;
+                }
+            }
+        }
+        Report_Error(node->location, "no entry '%.*s' in task type",
+                    (int)node->selected.selector.length, node->selected.selector.data);
     } else {
         /* Could be package selection - look up in prefix's exported symbols */
         Symbol *prefix_sym = node->selected.prefix->symbol;
@@ -7520,7 +7560,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                          Slice_Equal_Ignore_Case(attr, S("FORE"))) {
                     node->type = sm->type_universal_integer;
                 }
-                /* Floating-point type attributes returning universal_real */
+                /* Floating-point type attributes returning universal_real (RM 3.5.8) */
                 else if (Slice_Equal_Ignore_Case(attr, S("EPSILON")) ||
                          Slice_Equal_Ignore_Case(attr, S("SMALL")) ||
                          Slice_Equal_Ignore_Case(attr, S("LARGE")) ||
@@ -7528,13 +7568,13 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                          Slice_Equal_Ignore_Case(attr, S("SAFE_LARGE")) ||
                          Slice_Equal_Ignore_Case(attr, S("DELTA")) ||
                          Slice_Equal_Ignore_Case(attr, S("MODEL_EPSILON")) ||
-                         Slice_Equal_Ignore_Case(attr, S("MODEL_SMALL")) ||
-                         Slice_Equal_Ignore_Case(attr, S("MACHINE_OVERFLOWS")) ||
-                         Slice_Equal_Ignore_Case(attr, S("MACHINE_ROUNDS"))) {
+                         Slice_Equal_Ignore_Case(attr, S("MODEL_SMALL"))) {
                     node->type = sm->type_universal_real;
                 }
-                /* Boolean attributes */
-                else if (Slice_Equal_Ignore_Case(attr, S("CONSTRAINED")) ||
+                /* Boolean attributes (RM 3.5.8, 3.7.1, 9.9) */
+                else if (Slice_Equal_Ignore_Case(attr, S("MACHINE_OVERFLOWS")) ||
+                         Slice_Equal_Ignore_Case(attr, S("MACHINE_ROUNDS")) ||
+                         Slice_Equal_Ignore_Case(attr, S("CONSTRAINED")) ||
                          Slice_Equal_Ignore_Case(attr, S("CALLABLE")) ||
                          Slice_Equal_Ignore_Case(attr, S("TERMINATED"))) {
                     node->type = sm->type_boolean;
@@ -8454,6 +8494,65 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
             }
             break;
 
+        case NK_ACCEPT:
+            /* ACCEPT statement for task entry - resolve index and parameters.
+             * Each accept statement has its own scope for parameters to avoid
+             * naming conflicts with parameters from other accept statements
+             * in the same selective wait (e.g., multiple accepts with param X). */
+
+            /* Look up the entry symbol by name - it should be in the task's scope */
+            node->accept_stmt.entry_sym = Symbol_Find(sm, node->accept_stmt.entry_name);
+
+            if (node->accept_stmt.index) {
+                Resolve_Expression(sm, node->accept_stmt.index);
+            }
+            /* Push new scope for accept parameters - use current scope owner
+             * so parameters are considered local (not global) for naming.
+             * Each accept statement needs its own scope because multiple accepts
+             * in a selective wait may have parameters with the same name. */
+            Symbol_Manager_Push_Scope(sm, sm->current_scope->owner);
+            /* Resolve accept parameters */
+            for (uint32_t i = 0; i < node->accept_stmt.parameters.count; i++) {
+                Syntax_Node *param = node->accept_stmt.parameters.items[i];
+                if (param && param->kind == NK_PARAM_SPEC) {
+                    if (param->param_spec.param_type) {
+                        Resolve_Expression(sm, param->param_spec.param_type);
+                    }
+                    /* Add parameter names to scope for the accept body */
+                    for (uint32_t j = 0; j < param->param_spec.names.count; j++) {
+                        Syntax_Node *name = param->param_spec.names.items[j];
+                        if (name && name->kind == NK_IDENTIFIER) {
+                            Symbol *param_sym = Symbol_New(SYMBOL_PARAMETER,
+                                name->string_val.text, name->location);
+                            if (param->param_spec.param_type)
+                                param_sym->type = param->param_spec.param_type->type;
+                            Symbol_Add(sm, param_sym);
+                            name->symbol = param_sym;
+                        }
+                    }
+                }
+            }
+            /* Resolve accept body statements */
+            Resolve_Statement_List(sm, &node->accept_stmt.statements);
+            /* Pop accept scope */
+            Symbol_Manager_Pop_Scope(sm);
+            break;
+
+        case NK_SELECT:
+            /* SELECT statement - resolve alternatives */
+            for (uint32_t i = 0; i < node->select_stmt.alternatives.count; i++) {
+                Syntax_Node *alt = node->select_stmt.alternatives.items[i];
+                if (alt) Resolve_Statement(sm, alt);
+            }
+            break;
+
+        case NK_DELAY:
+            /* DELAY statement - resolve delay expression */
+            if (node->delay_stmt.expression) {
+                Resolve_Expression(sm, node->delay_stmt.expression);
+            }
+            break;
+
         default:
             break;
     }
@@ -8795,6 +8894,17 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                 }
                             }
                         }
+                        /* For functions, also check return type matches (allows
+                         * overloading on return type per Ada RM 6.6) */
+                        if (types_match && expected_kind == SYMBOL_FUNCTION) {
+                            if (node->subprogram_spec.return_type) {
+                                Resolve_Expression(sm, node->subprogram_spec.return_type);
+                                Type_Info *body_return = node->subprogram_spec.return_type->type;
+                                if (body_return != sym->return_type) {
+                                    types_match = false;
+                                }
+                            }
+                        }
                         /* Found matching spec - check it's not already claimed */
                         if (types_match && !sym->body_claimed) {
                             sym->body_claimed = true;
@@ -8914,16 +9024,139 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
 
                 Symbol *matching_generic = Symbol_Find(sm, body_name);
                 if (matching_generic && matching_generic->kind == SYMBOL_GENERIC) {
-                    /* This body completes a generic - store it and don't process further */
+                    /* This body completes a generic - store it and resolve it.
+                     * Push scope with generic formals so T, F etc. are visible. */
                     matching_generic->generic_body = node;
                     node->symbol = matching_generic;
-                    break;  /* Don't resolve body now - will be resolved during instantiation */
+
+                    /* Push scope for generic body resolution */
+                    Symbol_Manager_Push_Scope(sm, matching_generic);
+
+                    /* Add generic formal parameters (types, objects, subprograms) to scope */
+                    if (matching_generic->declaration &&
+                        matching_generic->declaration->kind == NK_GENERIC_DECL) {
+                        Node_List *formals = &matching_generic->declaration->generic_decl.formals;
+                        for (uint32_t i = 0; i < formals->count; i++) {
+                            Syntax_Node *formal = formals->items[i];
+                            if (!formal) continue;
+                            if (formal->kind == NK_GENERIC_TYPE_PARAM) {
+                                /* Add formal type as a type symbol (use PRIVATE as placeholder) */
+                                Symbol *type_sym = Symbol_New(SYMBOL_TYPE,
+                                    formal->generic_type_param.name, formal->location);
+                                type_sym->type = Type_New(TYPE_PRIVATE,
+                                    formal->generic_type_param.name);
+                                Symbol_Add(sm, type_sym);
+                                formal->symbol = type_sym;
+                            } else if (formal->kind == NK_GENERIC_SUBPROGRAM_PARAM) {
+                                /* Create and add formal subprogram symbol if not exists */
+                                if (!formal->symbol) {
+                                    String_Slice name = formal->generic_subprog_param.name;
+                                    Symbol_Kind sk = formal->generic_subprog_param.is_function ?
+                                                     SYMBOL_FUNCTION : SYMBOL_PROCEDURE;
+                                    Symbol *subprog_sym = Symbol_New(sk, name, formal->location);
+
+                                    /* Set up parameter info */
+                                    Node_List *fparams = &formal->generic_subprog_param.parameters;
+                                    uint32_t total_params = 0;
+                                    for (uint32_t j = 0; j < fparams->count; j++) {
+                                        Syntax_Node *ps = fparams->items[j];
+                                        if (ps && ps->kind == NK_PARAM_SPEC)
+                                            total_params += ps->param_spec.names.count;
+                                    }
+                                    subprog_sym->parameter_count = total_params;
+                                    if (total_params > 0) {
+                                        subprog_sym->parameters = Arena_Allocate(
+                                            total_params * sizeof(Parameter_Info));
+                                        uint32_t idx = 0;
+                                        for (uint32_t j = 0; j < fparams->count; j++) {
+                                            Syntax_Node *ps = fparams->items[j];
+                                            if (ps && ps->kind == NK_PARAM_SPEC) {
+                                                Type_Info *pt = NULL;
+                                                if (ps->param_spec.param_type) {
+                                                    Resolve_Expression(sm, ps->param_spec.param_type);
+                                                    pt = ps->param_spec.param_type->type;
+                                                }
+                                                for (uint32_t k = 0; k < ps->param_spec.names.count; k++) {
+                                                    Syntax_Node *pn = ps->param_spec.names.items[k];
+                                                    subprog_sym->parameters[idx].name = pn->string_val.text;
+                                                    subprog_sym->parameters[idx].param_type = pt;
+                                                    subprog_sym->parameters[idx].mode =
+                                                        (Parameter_Mode)ps->param_spec.mode;
+                                                    idx++;
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    /* Set return type for functions */
+                                    if (formal->generic_subprog_param.is_function &&
+                                        formal->generic_subprog_param.return_type) {
+                                        Resolve_Expression(sm, formal->generic_subprog_param.return_type);
+                                        subprog_sym->type = formal->generic_subprog_param.return_type->type;
+                                        subprog_sym->return_type = subprog_sym->type;
+                                    }
+                                    formal->symbol = subprog_sym;
+                                }
+                                Symbol_Add(sm, formal->symbol);
+                            } else if (formal->kind == NK_GENERIC_OBJECT_PARAM) {
+                                /* Add formal object(s) as variable(s) */
+                                for (uint32_t j = 0; j < formal->generic_object_param.names.count; j++) {
+                                    Syntax_Node *name_node = formal->generic_object_param.names.items[j];
+                                    Symbol *obj_sym = Symbol_New(SYMBOL_VARIABLE,
+                                        name_node->string_val.text, formal->location);
+                                    Symbol_Add(sm, obj_sym);
+                                    name_node->symbol = obj_sym;
+                                }
+                            }
+                        }
+                    }
+
+                    /* Add body parameters to scope */
+                    if (spec) {
+                        Node_List *params = &spec->subprogram_spec.parameters;
+                        for (uint32_t i = 0; i < params->count; i++) {
+                            Syntax_Node *param = params->items[i];
+                            if (param && param->kind == NK_PARAM_SPEC) {
+                                /* Resolve parameter type (may reference generic formals) */
+                                if (param->param_spec.param_type)
+                                    Resolve_Expression(sm, param->param_spec.param_type);
+                                /* Add each parameter name as a symbol */
+                                for (uint32_t j = 0; j < param->param_spec.names.count; j++) {
+                                    Syntax_Node *name = param->param_spec.names.items[j];
+                                    Symbol *param_sym = Symbol_New(SYMBOL_PARAMETER,
+                                        name->string_val.text, name->location);
+                                    if (param->param_spec.param_type)
+                                        param_sym->type = param->param_spec.param_type->type;
+                                    Symbol_Add(sm, param_sym);
+                                    name->symbol = param_sym;
+                                }
+                            }
+                        }
+                    }
+
+                    /* Resolve declarations and statements in the generic body */
+                    Resolve_Declaration_List(sm, &node->subprogram_body.declarations);
+                    Resolve_Statement_List(sm, &node->subprogram_body.statements);
+
+                    /* Resolve exception handlers */
+                    for (uint32_t i = 0; i < node->subprogram_body.handlers.count; i++) {
+                        Resolve_Statement(sm, node->subprogram_body.handlers.items[i]);
+                    }
+
+                    Symbol_Manager_Pop_Scope(sm);
+                    break;
                 }
 
                 /* Resolve spec if present */
                 if (spec) {
                     Resolve_Declaration(sm, spec);
                     node->symbol = spec->symbol;
+                }
+
+                /* For stubs (IS SEPARATE), don't claim the symbol - the separate
+                 * subunit will provide the actual body and should claim it. */
+                if (node->subprogram_body.is_separate && node->symbol) {
+                    node->symbol->body_claimed = false;
                 }
 
                 /* Push scope for body */
@@ -9005,6 +9238,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                 Symbol_Manager_Push_Scope(sm, type_sym);
 
                 /* Resolve and add entry declarations */
+                uint32_t entry_idx_counter = 0;  /* Counter for unique entry indices */
                 for (uint32_t i = 0; i < node->task_spec.entries.count; i++) {
                     Syntax_Node *entry = node->task_spec.entries.items[i];
                     if (entry->kind == NK_ENTRY_DECL) {
@@ -9012,6 +9246,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                             entry->entry_decl.name, entry->location);
                         entry_sym->declaration = entry;
                         entry_sym->parent = type_sym;
+                        entry_sym->entry_index = entry_idx_counter++;  /* Assign unique entry index */
 
                         /* Count entry parameters */
                         uint32_t param_count = 0;
@@ -9157,6 +9392,12 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                 }
                 Symbol_Manager_Push_Scope(sm, pkg_sym);
 
+                /* Set package symbol's scope for separate subunit resolution.
+                 * This allows SEPARATE (Parent) subunits to find stub symbols. */
+                if (pkg_sym) {
+                    pkg_sym->scope = sm->current_scope;
+                }
+
                 /* Install visible and private declarations from package spec
                  * into the body's scope (RM 7.1, 7.2) */
                 Syntax_Node *spec = NULL;
@@ -9213,6 +9454,61 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                         Symbol_Add(sm, obj_sym);
                                     }
                                 }
+                            }
+                            /* For generic subprogram parameters, create procedure/function symbols
+                             * so calls to formal subprograms resolve during generic body analysis */
+                            if (formal->kind == NK_GENERIC_SUBPROGRAM_PARAM) {
+                                String_Slice name = formal->generic_subprog_param.name;
+                                Symbol_Kind sk = formal->generic_subprog_param.is_function ?
+                                                 SYMBOL_FUNCTION : SYMBOL_PROCEDURE;
+                                Symbol *subprog_sym = Symbol_New(sk, name, formal->location);
+
+                                /* Count total parameters */
+                                Node_List *params = &formal->generic_subprog_param.parameters;
+                                uint32_t total_params = 0;
+                                for (uint32_t j = 0; j < params->count; j++) {
+                                    Syntax_Node *ps = params->items[j];
+                                    if (ps->kind == NK_PARAM_SPEC) {
+                                        total_params += ps->param_spec.names.count;
+                                    }
+                                }
+
+                                /* Allocate and fill parameter info */
+                                subprog_sym->parameter_count = total_params;
+                                if (total_params > 0) {
+                                    subprog_sym->parameters = Arena_Allocate(
+                                        total_params * sizeof(Parameter_Info));
+                                    uint32_t idx = 0;
+                                    for (uint32_t j = 0; j < params->count; j++) {
+                                        Syntax_Node *ps = params->items[j];
+                                        if (ps->kind == NK_PARAM_SPEC) {
+                                            /* Resolve param type - may reference earlier formal types */
+                                            Type_Info *pt = NULL;
+                                            if (ps->param_spec.param_type) {
+                                                Resolve_Expression(sm, ps->param_spec.param_type);
+                                                pt = ps->param_spec.param_type->type;
+                                            }
+                                            for (uint32_t k = 0; k < ps->param_spec.names.count; k++) {
+                                                Syntax_Node *pn = ps->param_spec.names.items[k];
+                                                subprog_sym->parameters[idx].name = pn->string_val.text;
+                                                subprog_sym->parameters[idx].param_type = pt;
+                                                subprog_sym->parameters[idx].mode =
+                                                    (Parameter_Mode)ps->param_spec.mode;
+                                                idx++;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                /* For functions, set return type */
+                                if (formal->generic_subprog_param.is_function &&
+                                    formal->generic_subprog_param.return_type) {
+                                    Resolve_Expression(sm, formal->generic_subprog_param.return_type);
+                                    subprog_sym->type = formal->generic_subprog_param.return_type->type;
+                                }
+
+                                formal->symbol = subprog_sym;
+                                Symbol_Add(sm, subprog_sym);
                             }
                         }
                     }
@@ -9699,18 +9995,93 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                     }
                                 }
                             }
-                            /* Propagate type to actual expression (e.g. aggregate) */
-                            if (actual && obj_type) {
+                            /* Propagate type to actual expression and store for substitution */
+                            if (actual) {
                                 Syntax_Node *expr = actual;
                                 if (actual->kind == NK_ASSOCIATION) {
                                     expr = actual->association.expression;
                                 }
-                                /* Set type before and after resolve to handle aggregates */
-                                expr->type = obj_type;
-                                Resolve_Expression(sm, expr);
-                                /* Ensure type stays set for aggregates */
-                                if (!expr->type || expr->kind == NK_AGGREGATE) {
+                                if (obj_type) {
+                                    /* Set type before and after resolve to handle aggregates */
                                     expr->type = obj_type;
+                                    Resolve_Expression(sm, expr);
+                                    /* Ensure type stays set for aggregates */
+                                    if (!expr->type || expr->kind == NK_AGGREGATE) {
+                                        expr->type = obj_type;
+                                    }
+                                } else {
+                                    Resolve_Expression(sm, expr);
+                                }
+                                /* Store the actual expression for substitution during clone */
+                                inst_sym->generic_actuals[i].actual_expr = expr;
+                                /* Store formal name (first name in list) */
+                                if (formal->generic_object_param.names.count > 0) {
+                                    Syntax_Node *fname = formal->generic_object_param.names.items[0];
+                                    if (fname)
+                                        inst_sym->generic_actuals[i].formal_name = fname->string_val.text;
+                                }
+                            }
+                        }
+                    }
+                    /* Third pass: resolve subprogram formals to actual subprograms */
+                    for (uint32_t i = 0; i < formals->count; i++) {
+                        Syntax_Node *formal = formals->items[i];
+                        Syntax_Node *actual = (i < actuals->count) ? actuals->items[i] : NULL;
+
+                        if (formal->kind == NK_GENERIC_SUBPROGRAM_PARAM) {
+                            inst_sym->generic_actuals[i].formal_name =
+                                formal->generic_subprog_param.name;
+
+                            /* Resolve actual subprogram name */
+                            if (actual) {
+                                Syntax_Node *name_node = actual;
+                                if (actual->kind == NK_ASSOCIATION) {
+                                    name_node = actual->association.expression;
+                                }
+                                if (!name_node) continue;
+
+                                /* Handle operator designators: "&" is the "&" operator */
+                                if (name_node->kind == NK_STRING) {
+                                    /* Look up operator by name */
+                                    if (name_node->string_val.text.data) {
+                                        Symbol *op = Symbol_Find(sm, name_node->string_val.text);
+                                        if (op && (op->kind == SYMBOL_FUNCTION || op->kind == SYMBOL_PROCEDURE)) {
+                                            name_node->symbol = op;
+                                            inst_sym->generic_actuals[i].actual_subprogram = op;
+                                        } else {
+                                            /* Check for built-in operators */
+                                            /* String lexer strips quotes: "&" becomes just & */
+                                            String_Slice s = name_node->string_val.text;
+                                            if (s.length == 1 && s.data[0] == '&')
+                                                inst_sym->generic_actuals[i].builtin_operator = TK_AMPERSAND;
+                                            else if (s.length == 1 && s.data[0] == '+')
+                                                inst_sym->generic_actuals[i].builtin_operator = TK_PLUS;
+                                            else if (s.length == 1 && s.data[0] == '-')
+                                                inst_sym->generic_actuals[i].builtin_operator = TK_MINUS;
+                                            else if (s.length == 1 && s.data[0] == '*')
+                                                inst_sym->generic_actuals[i].builtin_operator = TK_STAR;
+                                            else if (s.length == 1 && s.data[0] == '/')
+                                                inst_sym->generic_actuals[i].builtin_operator = TK_SLASH;
+                                        }
+                                    }
+                                }
+                                /* Handle character literals as enum literals: '&' from ADD_OPS */
+                                else if (name_node->kind == NK_CHARACTER) {
+                                    /* Character literal as enum literal (parameterless function) */
+                                    if (name_node->string_val.text.data) {
+                                        Symbol *lit = Symbol_Find(sm, name_node->string_val.text);
+                                        if (lit && lit->kind == SYMBOL_LITERAL) {
+                                            name_node->symbol = lit;
+                                            inst_sym->generic_actuals[i].actual_subprogram = lit;
+                                        }
+                                    }
+                                }
+                                else {
+                                    /* Look up the actual subprogram symbol */
+                                    Resolve_Expression(sm, name_node);
+                                    if (name_node->symbol) {
+                                        inst_sym->generic_actuals[i].actual_subprogram = name_node->symbol;
+                                    }
                                 }
                             }
                         }
@@ -9736,18 +10107,24 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                         for (uint32_t i = 0; i < params->count; i++) {
                             Syntax_Node *ps = params->items[i];
                             if (ps->kind == NK_PARAM_SPEC) {
-                                /* Resolve param type and substitute */
+                                /* Resolve param type and substitute formals with actuals */
                                 Type_Info *param_type = NULL;
                                 if (ps->param_spec.param_type) {
                                     Syntax_Node *pt = ps->param_spec.param_type;
                                     if (pt->kind == NK_IDENTIFIER) {
-                                        /* Check if this is a formal type parameter */
+                                        /* First check if formal type parameter → substitute */
                                         for (uint32_t k = 0; k < inst_sym->generic_actual_count; k++) {
                                             if (Slice_Equal_Ignore_Case(pt->string_val.text,
                                                           inst_sym->generic_actuals[k].formal_name)) {
                                                 param_type = inst_sym->generic_actuals[k].actual_type;
                                                 break;
                                             }
+                                        }
+                                        /* If not a formal, resolve actual type (e.g. STRING) */
+                                        if (!param_type) {
+                                            Symbol *type_sym = Symbol_Find(sm, pt->string_val.text);
+                                            if (type_sym && type_sym->type)
+                                                param_type = type_sym->type;
                                         }
                                     }
                                 }
@@ -9801,6 +10178,8 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                 export_count++;
                             else if (decl->kind == NK_EXCEPTION_DECL)
                                 export_count += decl->exception_decl.names.count;
+                            else if (decl->kind == NK_OBJECT_DECL)
+                                export_count += decl->object_decl.names.count;
                         }
 
                         if (export_count > 0) {
@@ -10021,6 +10400,28 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                         Symbol *exp = Symbol_New(SYMBOL_EXCEPTION,
                                             nm->string_val.text, nm->location);
                                         exp->parent = inst_sym;
+                                        inst_sym->exported[inst_sym->exported_count++] = exp;
+                                    }
+                                }
+                                else if (decl->kind == NK_OBJECT_DECL) {
+                                    /* Export object declarations (including renames) */
+                                    Type_Info *obj_type = NULL;
+                                    if (decl->object_decl.object_type) {
+                                        obj_type = decl->object_decl.object_type->type;
+                                        /* Substitute generic formals with actuals */
+                                        SUBSTITUTE_TYPE(obj_type);
+                                    }
+                                    for (uint32_t j = 0; j < decl->object_decl.names.count; j++) {
+                                        Syntax_Node *nm = decl->object_decl.names.items[j];
+                                        Symbol_Kind sk = decl->object_decl.is_constant ?
+                                            SYMBOL_CONSTANT : SYMBOL_VARIABLE;
+                                        Symbol *exp = Symbol_New(sk, nm->string_val.text, nm->location);
+                                        exp->type = obj_type;
+                                        exp->parent = inst_sym;
+                                        /* For renames, store the renamed object expression */
+                                        if (decl->object_decl.is_rename && decl->object_decl.init) {
+                                            exp->renamed_object = decl->object_decl.init;
+                                        }
                                         inst_sym->exported[inst_sym->exported_count++] = exp;
                                     }
                                 }
@@ -10290,6 +10691,10 @@ typedef struct {
     /* Address markers needed for 'ADDRESS on packages/generics */
     Symbol       *address_markers[256];
     uint32_t      address_marker_count;
+
+    /* Track emitted function unique_ids to prevent duplicate definitions */
+    uint32_t      emitted_func_ids[1024];
+    uint32_t      emitted_func_count;
 } Code_Generator;
 
 static Code_Generator *Code_Generator_New(FILE *output, Symbol_Manager *sm) {
@@ -10516,8 +10921,14 @@ static void Emit_Symbol_Name(Code_Generator *cg, Symbol *sym) {
      * collisions when multiple instances of the same generic are created.
      * Do NOT prefix exceptions, types, or subprograms. */
     if (cg->current_instance && sym->kind == SYMBOL_VARIABLE && Symbol_Is_Global(sym)) {
-        /* Check if this symbol's parent is the generic template (not the instance) */
+        /* Find the package instance - current_instance might be a procedure
+         * within a package, in which case use the procedure's parent package */
         Symbol *inst = cg->current_instance;
+        if ((inst->kind == SYMBOL_FUNCTION || inst->kind == SYMBOL_PROCEDURE) &&
+            inst->parent && inst->parent->kind == SYMBOL_PACKAGE &&
+            inst->parent->generic_template) {
+            inst = inst->parent;  /* Use owning package instance for globals */
+        }
         Symbol *tmpl = inst->generic_template;
         if (tmpl && sym->parent && sym->parent != inst &&
             (sym->parent == tmpl || sym->parent->kind == SYMBOL_GENERIC)) {
@@ -10920,6 +11331,19 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
         return 0;
     }
 
+    /* Generic formal object substitution: if this is a formal object inside
+     * a generic instantiation, generate code for the actual expression. */
+    if (cg->current_instance && cg->current_instance->generic_actuals) {
+        for (uint32_t i = 0; i < cg->current_instance->generic_actual_count; i++) {
+            if (cg->current_instance->generic_actuals[i].actual_expr &&
+                Slice_Equal_Ignore_Case(sym->name,
+                    cg->current_instance->generic_actuals[i].formal_name)) {
+                return Generate_Expression(cg,
+                    cg->current_instance->generic_actuals[i].actual_expr);
+            }
+        }
+    }
+
     /* For RENAMES: redirect to the renamed object */
     if (sym->renamed_object) {
         return Generate_Expression(cg, sym->renamed_object);
@@ -10954,10 +11378,12 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
 
             /* Check if this is an uplevel (outer scope) variable access
              * A variable is "uplevel" if its defining scope's owner is different
-             * from the current function */
+             * from the current function. For generic instances, the variable's
+             * owner is the template, not the instance, so also check that. */
             Symbol *var_owner = sym->defining_scope ? sym->defining_scope->owner : NULL;
             bool is_uplevel = cg->current_function && var_owner &&
-                              var_owner != cg->current_function;
+                              var_owner != cg->current_function &&
+                              var_owner != cg->current_function->generic_template;
 
             const char *type_str = Type_To_Llvm(ty);
             if (is_uplevel && cg->is_nested) {
@@ -10972,8 +11398,12 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                 Emit_Symbol_Ref(cg, sym);
                 Emit(cg, "\n");
             }
-            /* Widen to i64 for computation if narrower type */
-            t = Emit_Convert(cg, t, type_str, "i64");
+            /* Widen to i64 for computation if narrower type.
+             * But keep ptr types as ptr - they're used for dereference (.ALL)
+             * and implicit dereference operations. */
+            if (strcmp(type_str, "ptr") != 0) {
+                t = Emit_Convert(cg, t, type_str, "i64");
+            }
         } break;
 
         case SYMBOL_CONSTANT:
@@ -11039,6 +11469,66 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
             }
             break;
 
+        case SYMBOL_FUNCTION: {
+            /* Parameterless function call: F is syntactically an identifier
+             * but semantically a function call with zero arguments.
+             * Generic formal subprogram substitution: if this is a formal subprogram
+             * inside a generic instantiation, substitute with actual. */
+            Symbol *actual = sym;
+            if (cg->current_instance && cg->current_instance->generic_actuals) {
+                for (uint32_t i = 0; i < cg->current_instance->generic_actual_count; i++) {
+                    if (cg->current_instance->generic_actuals[i].actual_subprogram &&
+                        Slice_Equal_Ignore_Case(sym->name,
+                            cg->current_instance->generic_actuals[i].formal_name)) {
+                        actual = cg->current_instance->generic_actuals[i].actual_subprogram;
+                        break;
+                    }
+                }
+            }
+
+            /* Check if actual is an enumeration literal (e.g., RED, YELLOW) */
+            if (actual->kind == SYMBOL_LITERAL &&
+                actual->type && actual->type->kind == TYPE_ENUMERATION) {
+                int64_t pos = 0;
+                for (uint32_t i = 0; i < actual->type->enumeration.literal_count; i++) {
+                    if (Slice_Equal_Ignore_Case(actual->type->enumeration.literals[i],
+                                                actual->name)) {
+                        pos = i;
+                        break;
+                    }
+                }
+                Emit(cg, "  %%t%u = add i64 0, %lld  ; enum literal as function\n",
+                     t, (long long)pos);
+            } else if (actual->kind == SYMBOL_FUNCTION) {
+                /* Generate actual function call */
+                const char *ret_type = actual->return_type ?
+                    Type_To_Llvm(actual->return_type) : "i64";
+                Emit(cg, "  %%t%u = call %s @", t, ret_type);
+                Emit_Symbol_Name(cg, actual);
+                /* Handle nested function: pass parent frame if needed */
+                bool callee_is_nested = actual->parent &&
+                    (actual->parent->kind == SYMBOL_FUNCTION ||
+                     actual->parent->kind == SYMBOL_PROCEDURE);
+                if (callee_is_nested) {
+                    if (cg->current_function == actual->parent) {
+                        Emit(cg, "(ptr %%__frame_base)\n");
+                    } else if (cg->is_nested && cg->current_function &&
+                               cg->current_function->parent == actual->parent) {
+                        Emit(cg, "(ptr %%__parent_frame)\n");
+                    } else {
+                        Emit(cg, "(ptr null)\n");
+                    }
+                } else {
+                    Emit(cg, "()\n");
+                }
+                /* Convert to i64 if narrower */
+                t = Emit_Convert(cg, t, ret_type, "i64");
+            } else {
+                /* Fallback for other symbol kinds */
+                Emit(cg, "  %%t%u = add i64 0, 0  ; unhandled function symbol\n", t);
+            }
+        } break;
+
         default:
             /* ??? */
             Emit(cg, "  %%t%u = add i64 0, 0  ; unhandled symbol kind\n", t);
@@ -11053,6 +11543,10 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
  * Ada requires equality operators for all non-limited types. For composite
  * types (records, arrays), equality is defined component-wise.
  * ───────────────────────────────────────────────────────────────────────── */
+
+/* Forward declaration for mutual recursion */
+static uint32_t Generate_Array_Equality(Code_Generator *cg, uint32_t left_ptr,
+                                        uint32_t right_ptr, Type_Info *array_type);
 
 /* Generate equality comparison for record types (component-by-component) */
 static uint32_t Generate_Record_Equality(Code_Generator *cg, uint32_t left_ptr,
@@ -11078,20 +11572,65 @@ static uint32_t Generate_Record_Equality(Code_Generator *cg, uint32_t left_ptr,
         Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
              right_gep, right_ptr, comp->byte_offset);
 
-        /* Load component values */
-        uint32_t left_val = Emit_Temp(cg);
-        uint32_t right_val = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", left_val, comp_llvm_type, left_gep);
-        Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", right_val, comp_llvm_type, right_gep);
+        /* Compare component - handle arrays/strings specially */
+        uint32_t cmp;
+        Type_Info *ct = comp->component_type;
+        bool is_fat_ptr_access = ct && ct->kind == TYPE_ACCESS &&
+            ct->access.designated_type &&
+            (ct->access.designated_type->kind == TYPE_STRING ||
+             (ct->access.designated_type->kind == TYPE_ARRAY &&
+              !ct->access.designated_type->array.is_constrained));
 
-        /* Compare */
-        uint32_t cmp = Emit_Temp(cg);
-        if (Type_Is_Float_Representation(comp->component_type)) {
-            Emit(cg, "  %%t%u = fcmp oeq %s %%t%u, %%t%u\n",
-                 cmp, comp_llvm_type, left_val, right_val);
+        if (ct && (ct->kind == TYPE_STRING ||
+                   (ct->kind == TYPE_ARRAY && !ct->array.is_constrained))) {
+            /* Unconstrained array/string - use array equality on the fat pointers */
+            cmp = Generate_Array_Equality(cg, left_gep, right_gep, ct);
+        } else if (ct && ct->kind == TYPE_ARRAY && ct->array.is_constrained) {
+            /* Constrained array - use array equality directly on pointers */
+            cmp = Generate_Array_Equality(cg, left_gep, right_gep, ct);
+        } else if (ct && ct->kind == TYPE_RECORD) {
+            /* Nested record - recurse */
+            cmp = Generate_Record_Equality(cg, left_gep, right_gep, ct);
+        } else if (is_fat_ptr_access) {
+            /* ACCESS to unconstrained array - compare fat pointer components
+             * Fat pointer: { ptr data, { i64 low, i64 high } }
+             * Access equality compares pointer identity (same object) */
+            uint32_t left_val = Emit_Temp(cg);
+            uint32_t right_val = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", left_val, left_gep);
+            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", right_val, right_gep);
+            uint32_t lp = Emit_Temp(cg), rp = Emit_Temp(cg);
+            uint32_t ll = Emit_Temp(cg), rl = Emit_Temp(cg);
+            uint32_t lh = Emit_Temp(cg), rh = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n", lp, left_val);
+            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n", rp, right_val);
+            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 0\n", ll, left_val);
+            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 0\n", rl, right_val);
+            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 1\n", lh, left_val);
+            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 1\n", rh, right_val);
+            uint32_t cmp_p = Emit_Temp(cg), cmp_l = Emit_Temp(cg), cmp_h = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = icmp eq ptr %%t%u, %%t%u\n", cmp_p, lp, rp);
+            Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", cmp_l, ll, rl);
+            Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", cmp_h, lh, rh);
+            uint32_t and1 = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", and1, cmp_p, cmp_l);
+            cmp = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", cmp, and1, cmp_h);
         } else {
-            Emit(cg, "  %%t%u = icmp eq %s %%t%u, %%t%u\n",
-                 cmp, comp_llvm_type, left_val, right_val);
+            /* Scalar type - load and compare */
+            uint32_t left_val = Emit_Temp(cg);
+            uint32_t right_val = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", left_val, comp_llvm_type, left_gep);
+            Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", right_val, comp_llvm_type, right_gep);
+
+            cmp = Emit_Temp(cg);
+            if (Type_Is_Float_Representation(ct)) {
+                Emit(cg, "  %%t%u = fcmp oeq %s %%t%u, %%t%u\n",
+                     cmp, comp_llvm_type, left_val, right_val);
+            } else {
+                Emit(cg, "  %%t%u = icmp eq %s %%t%u, %%t%u\n",
+                     cmp, comp_llvm_type, left_val, right_val);
+            }
         }
 
         /* AND with previous results */
@@ -11205,14 +11744,53 @@ static uint32_t Generate_Composite_Address(Code_Generator *cg, Syntax_Node *node
     if (node->kind == NK_SELECTED) {
         /* Field access: Rec.Field - compute address of field */
         Type_Info *prefix_type = node->selected.prefix ? node->selected.prefix->type : NULL;
-        if (prefix_type && prefix_type->kind == TYPE_RECORD) {
-            uint32_t base = Generate_Composite_Address(cg, node->selected.prefix);
+
+        /* Handle implicit dereference: U.A where U is access-to-record.
+         * First load the pointer, then compute field address. */
+        Type_Info *record_type = prefix_type;
+        bool implicit_deref = false;
+        if (prefix_type && prefix_type->kind == TYPE_ACCESS &&
+            prefix_type->access.designated_type &&
+            prefix_type->access.designated_type->kind == TYPE_RECORD) {
+            record_type = prefix_type->access.designated_type;
+            implicit_deref = true;
+        }
+
+        if (record_type && record_type->kind == TYPE_RECORD) {
+            uint32_t base;
+            if (implicit_deref) {
+                /* Load the access value (pointer to record) */
+                Symbol *access_sym = node->selected.prefix->symbol;
+                base = Emit_Temp(cg);
+                if (access_sym) {
+                    /* Check for uplevel access (variable in outer scope) */
+                    Symbol *var_owner = access_sym->defining_scope
+                                       ? access_sym->defining_scope->owner : NULL;
+                    bool is_uplevel = cg->current_function && var_owner &&
+                                      var_owner != cg->current_function &&
+                                      var_owner != cg->current_function->generic_template;
+                    if (is_uplevel && cg->is_nested) {
+                        Emit(cg, "  %%t%u = load ptr, ptr %%__frame.", base);
+                        Emit_Symbol_Name(cg, access_sym);
+                        Emit(cg, "  ; uplevel implicit deref for field address\n");
+                    } else {
+                        Emit(cg, "  %%t%u = load ptr, ptr ", base);
+                        Emit_Symbol_Ref(cg, access_sym);
+                        Emit(cg, "  ; implicit deref for field address\n");
+                    }
+                } else {
+                    uint32_t ptr = Generate_Expression(cg, node->selected.prefix);
+                    base = ptr;  /* Already a ptr from access expr */
+                }
+            } else {
+                base = Generate_Composite_Address(cg, node->selected.prefix);
+            }
             /* Find field offset */
             uint32_t offset = 0;
-            for (uint32_t i = 0; i < prefix_type->record.component_count; i++) {
+            for (uint32_t i = 0; i < record_type->record.component_count; i++) {
                 if (Slice_Equal_Ignore_Case(
-                        prefix_type->record.components[i].name, node->selected.selector)) {
-                    offset = prefix_type->record.components[i].byte_offset;
+                        record_type->record.components[i].name, node->selected.selector)) {
+                    offset = record_type->record.components[i].byte_offset;
                     break;
                 }
             }
@@ -11312,6 +11890,112 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             return ne_result;
         }
         return eq_result;
+    }
+
+    /* Array relational comparisons (lexicographic) */
+    if ((node->binary.op == TK_LT || node->binary.op == TK_LE ||
+         node->binary.op == TK_GT || node->binary.op == TK_GE) &&
+        left_type && (left_type->kind == TYPE_ARRAY || left_type->kind == TYPE_STRING)) {
+        /* Get addresses of both arrays for comparison */
+        uint32_t left_ptr, right_ptr;
+        bool is_unconstrained = Type_Is_Unconstrained_Array(left_type) ||
+                                left_type->kind == TYPE_STRING;
+        if (is_unconstrained) {
+            left_ptr = Generate_Expression(cg, node->binary.left);
+            right_ptr = Generate_Expression(cg, node->binary.right);
+        } else {
+            left_ptr = Generate_Composite_Address(cg, node->binary.left);
+            right_ptr = Generate_Composite_Address(cg, node->binary.right);
+        }
+
+        uint32_t memcmp_result, cmp_result;
+
+        if (left_type->array.is_constrained) {
+            /* Constrained array: same size, use memcmp directly */
+            int64_t count = Array_Element_Count(left_type);
+            uint32_t elem_size = left_type->array.element_type ?
+                                 left_type->array.element_type->size : 1;
+            int64_t total_size = count * elem_size;
+
+            memcmp_result = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = call i32 @memcmp(ptr %%t%u, ptr %%t%u, i64 %lld)\n",
+                 memcmp_result, left_ptr, right_ptr, (long long)total_size);
+        } else {
+            /* Unconstrained array: compare min length, handle different lengths.
+             * For lexicographic: compare common prefix, shorter array is "less" if prefix equal. */
+            uint32_t left_low = Emit_Fat_Pointer_Low(cg, left_ptr);
+            uint32_t left_high = Emit_Fat_Pointer_High(cg, left_ptr);
+            uint32_t right_low = Emit_Fat_Pointer_Low(cg, right_ptr);
+            uint32_t right_high = Emit_Fat_Pointer_High(cg, right_ptr);
+
+            /* Compute lengths */
+            uint32_t left_len = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", left_len, left_high, left_low);
+            uint32_t left_len1 = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", left_len1, left_len);
+
+            uint32_t right_len = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", right_len, right_high, right_low);
+            uint32_t right_len1 = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", right_len1, right_len);
+
+            /* Get min length for comparison */
+            uint32_t len_cmp = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = icmp slt i64 %%t%u, %%t%u\n", len_cmp, left_len1, right_len1);
+            uint32_t min_len = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = select i1 %%t%u, i64 %%t%u, i64 %%t%u\n",
+                 min_len, len_cmp, left_len1, right_len1);
+
+            /* Get data pointers */
+            uint32_t left_data = Emit_Fat_Pointer_Data(cg, left_ptr);
+            uint32_t right_data = Emit_Fat_Pointer_Data(cg, right_ptr);
+
+            /* Compute byte size for memcmp */
+            uint32_t elem_size = left_type->array.element_type ?
+                                 left_type->array.element_type->size : 1;
+            uint32_t byte_size = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", byte_size, min_len, elem_size);
+
+            /* Compare common prefix */
+            uint32_t prefix_cmp = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = call i32 @memcmp(ptr %%t%u, ptr %%t%u, i64 %%t%u)\n",
+                 prefix_cmp, left_data, right_data, byte_size);
+
+            /* If prefix equal, compare lengths:
+             * left < right if prefix equal and left shorter
+             * Encode as: prefix_cmp != 0 ? prefix_cmp : (left_len - right_len) clamped to -1/0/1 */
+            uint32_t len_diff = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", len_diff, left_len1, right_len1);
+            uint32_t len_diff32 = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = trunc i64 %%t%u to i32\n", len_diff32, len_diff);
+
+            uint32_t prefix_zero = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", prefix_zero, prefix_cmp);
+
+            memcmp_result = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = select i1 %%t%u, i32 %%t%u, i32 %%t%u\n",
+                 memcmp_result, prefix_zero, len_diff32, prefix_cmp);
+        }
+
+        /* Compare memcmp result with 0 based on operator */
+        cmp_result = Emit_Temp(cg);
+        switch (node->binary.op) {
+            case TK_LT:
+                Emit(cg, "  %%t%u = icmp slt i32 %%t%u, 0\n", cmp_result, memcmp_result);
+                break;
+            case TK_LE:
+                Emit(cg, "  %%t%u = icmp sle i32 %%t%u, 0\n", cmp_result, memcmp_result);
+                break;
+            case TK_GT:
+                Emit(cg, "  %%t%u = icmp sgt i32 %%t%u, 0\n", cmp_result, memcmp_result);
+                break;
+            case TK_GE:
+                Emit(cg, "  %%t%u = icmp sge i32 %%t%u, 0\n", cmp_result, memcmp_result);
+                break;
+            default:
+                Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", cmp_result, memcmp_result);
+        }
+        return cmp_result;
     }
 
     /* String/array concatenation */
@@ -11482,12 +12166,25 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         case TK_GT:
         case TK_GE:
             {
-                /* Check operand types for float comparisons */
+                /* Check operand types for typed comparisons */
                 Type_Info *right_type = node->binary.right ? node->binary.right->type : NULL;
                 bool left_is_float = left_type && (left_type->kind == TYPE_FLOAT ||
                                                    left_type->kind == TYPE_UNIVERSAL_REAL);
                 bool right_is_float = right_type && (right_type->kind == TYPE_FLOAT ||
                                                      right_type->kind == TYPE_UNIVERSAL_REAL);
+                bool left_is_bool = left_type && left_type->kind == TYPE_BOOLEAN;
+                bool right_is_bool = right_type && right_type->kind == TYPE_BOOLEAN;
+                bool left_is_access = left_type && left_type->kind == TYPE_ACCESS;
+                bool right_is_access = right_type && right_type->kind == TYPE_ACCESS;
+
+                /* Access types need to be converted to i64 for comparison
+                 * (they are kept as ptr for dereference operations) */
+                if (left_is_access) {
+                    left = Emit_Convert(cg, left, "ptr", "i64");
+                }
+                if (right_is_access) {
+                    right = Emit_Convert(cg, right, "ptr", "i64");
+                }
 
                 /* Convert operands to same type if needed */
                 if (left_is_float && !right_is_float) {
@@ -11514,6 +12211,13 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                         case TK_GT: cmp_op = "fcmp ogt double"; break;
                         case TK_GE: cmp_op = "fcmp oge double"; break;
                         default: cmp_op = "icmp eq i64"; break;
+                    }
+                } else if (left_is_bool && right_is_bool) {
+                    /* Boolean comparisons use i1 */
+                    switch (node->binary.op) {
+                        case TK_EQ: cmp_op = "icmp eq i1"; break;
+                        case TK_NE: cmp_op = "icmp ne i1"; break;
+                        default: cmp_op = "icmp eq i1"; break;
                     }
                 } else {
                     switch (node->binary.op) {
@@ -11604,6 +12308,160 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         }
     }
 
+    /* Generic formal subprogram substitution: if calling a formal subprogram
+     * inside a generic instantiation, substitute with the actual subprogram
+     * or generate inline code for built-in operators.
+     * For subprograms exported from generic packages, the actuals are on the
+     * parent package instance, not on the subprogram itself. */
+    Symbol *actuals_holder = cg->current_instance;
+    if (actuals_holder && !actuals_holder->generic_actuals && actuals_holder->parent &&
+        actuals_holder->parent->kind == SYMBOL_PACKAGE && actuals_holder->parent->generic_actuals) {
+        actuals_holder = actuals_holder->parent;  /* Use package's generic_actuals */
+    }
+    if (sym && actuals_holder && actuals_holder->generic_actuals) {
+        for (uint32_t i = 0; i < actuals_holder->generic_actual_count; i++) {
+            if (Slice_Equal_Ignore_Case(sym->name,
+                    actuals_holder->generic_actuals[i].formal_name)) {
+                if (actuals_holder->generic_actuals[i].actual_subprogram) {
+                    sym = actuals_holder->generic_actuals[i].actual_subprogram;
+                } else if (actuals_holder->generic_actuals[i].builtin_operator) {
+                    /* Built-in operator - generate inline */
+                    Token_Kind op = cg->current_instance->generic_actuals[i].builtin_operator;
+                    if (op == TK_AMPERSAND && node->apply.arguments.count == 2) {
+                        /* String/array concatenation */
+                        Syntax_Node *left_arg = node->apply.arguments.items[0];
+                        Syntax_Node *right_arg = node->apply.arguments.items[1];
+                        if (left_arg->kind == NK_ASSOCIATION)
+                            left_arg = left_arg->association.expression;
+                        if (right_arg->kind == NK_ASSOCIATION)
+                            right_arg = right_arg->association.expression;
+
+                        /* Get parameter types from formal subprogram symbol */
+                        Type_Info *left_type = (sym && sym->parameter_count > 0) ?
+                            sym->parameters[0].param_type : left_arg->type;
+                        Type_Info *right_type = (sym && sym->parameter_count > 1) ?
+                            sym->parameters[1].param_type : right_arg->type;
+
+                        /* Substitute generic formal types with actual types */
+                        if (actuals_holder && actuals_holder->generic_actuals) {
+                            for (uint32_t k = 0; k < actuals_holder->generic_actual_count; k++) {
+                                if (left_type && left_type->name.data &&
+                                    Slice_Equal_Ignore_Case(left_type->name,
+                                        actuals_holder->generic_actuals[k].formal_name) &&
+                                    actuals_holder->generic_actuals[k].actual_type) {
+                                    left_type = actuals_holder->generic_actuals[k].actual_type;
+                                }
+                                if (right_type && right_type->name.data &&
+                                    Slice_Equal_Ignore_Case(right_type->name,
+                                        actuals_holder->generic_actuals[k].formal_name) &&
+                                    actuals_holder->generic_actuals[k].actual_type) {
+                                    right_type = actuals_holder->generic_actuals[k].actual_type;
+                                }
+                            }
+                        }
+
+                        /* Check if first arg is CHARACTER (single byte) */
+                        bool left_is_char = left_type && left_type->kind == TYPE_CHARACTER;
+                        bool right_is_string = right_type &&
+                            (right_type->kind == TYPE_STRING ||
+                             (right_type->kind == TYPE_ARRAY && !right_type->array.is_constrained));
+
+                        uint32_t left_val = Generate_Expression(cg, left_arg);
+                        uint32_t right_val = Generate_Expression(cg, right_arg);
+
+                        if (left_is_char && right_is_string) {
+                            /* CHARACTER & STRING concatenation */
+                            /* Wrap character in single-element fat pointer */
+                            uint32_t char_alloc = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = alloca i8\n", char_alloc);
+                            uint32_t char_trunc = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = trunc i64 %%t%u to i8\n", char_trunc, left_val);
+                            Emit(cg, "  store i8 %%t%u, ptr %%t%u\n", char_trunc, char_alloc);
+                            uint32_t one = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add i64 0, 1\n", one);
+                            uint32_t left_fat = Emit_Fat_Pointer_Dynamic(cg, char_alloc, one, one);
+
+                            /* Extract right string bounds and data */
+                            uint32_t right_data = Emit_Fat_Pointer_Data(cg, right_val);
+                            uint32_t right_low = Emit_Fat_Pointer_Low(cg, right_val);
+                            uint32_t right_high = Emit_Fat_Pointer_High(cg, right_val);
+
+                            uint32_t right_len = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", right_len, right_high, right_low);
+                            uint32_t right_len1 = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", right_len1, right_len);
+
+                            /* Total length = 1 + right_len */
+                            uint32_t total_len = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add i64 1, %%t%u\n", total_len, right_len1);
+
+                            /* Allocate result buffer */
+                            uint32_t result_data = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = call ptr @__ada_sec_stack_alloc(i64 %%t%u)\n",
+                                 result_data, total_len);
+
+                            /* Store character at first position */
+                            Emit(cg, "  store i8 %%t%u, ptr %%t%u\n", char_trunc, result_data);
+
+                            /* Copy right string after character */
+                            uint32_t dest = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 1\n", dest, result_data);
+                            Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
+                                 dest, right_data, right_len1);
+
+                            /* Return fat pointer */
+                            return Emit_Fat_Pointer_Dynamic(cg, result_data, one, total_len);
+                        } else {
+                            /* STRING & STRING concatenation */
+                            uint32_t left_fat = left_val;
+                            uint32_t right_fat = right_val;
+
+                            uint32_t left_data = Emit_Fat_Pointer_Data(cg, left_fat);
+                            uint32_t left_low = Emit_Fat_Pointer_Low(cg, left_fat);
+                            uint32_t left_high = Emit_Fat_Pointer_High(cg, left_fat);
+
+                            uint32_t right_data = Emit_Fat_Pointer_Data(cg, right_fat);
+                            uint32_t right_low = Emit_Fat_Pointer_Low(cg, right_fat);
+                            uint32_t right_high = Emit_Fat_Pointer_High(cg, right_fat);
+
+                            uint32_t left_len = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", left_len, left_high, left_low);
+                            uint32_t left_len1 = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", left_len1, left_len);
+
+                            uint32_t right_len = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", right_len, right_high, right_low);
+                            uint32_t right_len1 = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", right_len1, right_len);
+
+                            uint32_t total_len = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add i64 %%t%u, %%t%u\n", total_len, left_len1, right_len1);
+
+                            uint32_t result_data = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = call ptr @__ada_sec_stack_alloc(i64 %%t%u)\n",
+                                 result_data, total_len);
+
+                            Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
+                                 result_data, left_data, left_len1);
+
+                            uint32_t right_dest = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n",
+                                 right_dest, result_data, left_len1);
+
+                            Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
+                                 right_dest, right_data, right_len1);
+
+                            uint32_t one = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add i64 0, 1\n", one);
+                            return Emit_Fat_Pointer_Dynamic(cg, result_data, one, total_len);
+                        }
+                    }
+                }
+                break;
+            }
+        }
+    }
+
     if (sym && (sym->kind == SYMBOL_FUNCTION || sym->kind == SYMBOL_PROCEDURE)) {
         /* Function call - generate arguments
          * For OUT/IN OUT parameters, we need to pass the ADDRESS, not the value */
@@ -11653,11 +12511,13 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                 }
             } else {
                 args[i] = Generate_Expression(cg, arg);
-                /* Truncate to actual parameter type (if parameter info available) */
+                /* Convert to actual parameter type (if parameter info available)
+                 * Use actual expression type, not assumed i64 — fat pointers! */
                 if (sym->parameters && param_idx < sym->parameter_count &&
                     sym->parameters[param_idx].param_type) {
                     const char *param_type = Type_To_Llvm(sym->parameters[param_idx].param_type);
-                    args[i] = Emit_Convert(cg, args[i], "i64", param_type);
+                    const char *arg_type = Expression_Llvm_Type(arg);
+                    args[i] = Emit_Convert(cg, args[i], arg_type, param_type);
                 }
             }
         }
@@ -11724,8 +12584,20 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         Emit(cg, "  ; Entry call: %.*s\n",
              (int)sym->name.length, sym->name.data);
 
-        /* Allocate parameter block */
-        uint32_t param_count = node->apply.arguments.count;
+        /* Check if this is an entry family - first argument is family index, not a parameter */
+        bool is_entry_family = sym->declaration && sym->declaration->kind == NK_ENTRY_DECL &&
+                               sym->declaration->entry_decl.index_constraints.count > 0;
+        uint32_t family_idx_temp = 0;
+        uint32_t first_param_idx = 0;  /* Index of first actual parameter in arguments */
+
+        if (is_entry_family && node->apply.arguments.count > 0) {
+            /* First argument is the family index */
+            family_idx_temp = Generate_Expression(cg, node->apply.arguments.items[0]);
+            first_param_idx = 1;  /* Skip family index when processing parameters */
+        }
+
+        /* Allocate parameter block (excluding family index for entry families) */
+        uint32_t param_count = node->apply.arguments.count - first_param_idx;
         uint32_t param_block = Emit_Temp(cg);
         if (param_count > 0) {
             Emit(cg, "  %%t%u = alloca [%u x i64]  ; entry call parameters\n",
@@ -11734,12 +12606,12 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, "  %%t%u = inttoptr i64 0 to ptr  ; no parameters\n", param_block);
         }
 
-        /* Store arguments into parameter block */
-        for (uint32_t i = 0; i < param_count; i++) {
+        /* Store arguments into parameter block (skip family index for entry families) */
+        for (uint32_t i = first_param_idx; i < node->apply.arguments.count; i++) {
             uint32_t arg_val = Generate_Expression(cg, node->apply.arguments.items[i]);
             uint32_t arg_ptr = Emit_Temp(cg);
             Emit(cg, "  %%t%u = getelementptr [%u x i64], ptr %%t%u, i64 0, i64 %u\n",
-                 arg_ptr, param_count, param_block, i);
+                 arg_ptr, param_count, param_block, i - first_param_idx);
             Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", arg_val, arg_ptr);
         }
 
@@ -11747,18 +12619,38 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         uint32_t task_ptr = 0;
         Syntax_Node *prefix = node->apply.prefix;
         if (prefix->kind == NK_SELECTED && prefix->selected.prefix->symbol) {
+            Symbol *task_sym = prefix->selected.prefix->symbol;
             task_ptr = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = getelementptr i8, ptr ", task_ptr);
-            Emit_Symbol_Ref(cg, prefix->selected.prefix->symbol);
-            Emit(cg, ", i64 0  ; task object\n");
+            /* Check for uplevel access (task variable in outer scope) */
+            Symbol *var_owner = task_sym->defining_scope
+                               ? task_sym->defining_scope->owner : NULL;
+            bool is_uplevel = cg->current_function && var_owner &&
+                              var_owner != cg->current_function &&
+                              var_owner != cg->current_function->generic_template;
+            if (is_uplevel && cg->is_nested) {
+                Emit(cg, "  %%t%u = getelementptr i8, ptr %%__frame.", task_ptr);
+                Emit_Symbol_Name(cg, task_sym);
+                Emit(cg, ", i64 0  ; uplevel task object\n");
+            } else {
+                Emit(cg, "  %%t%u = getelementptr i8, ptr ", task_ptr);
+                Emit_Symbol_Ref(cg, task_sym);
+                Emit(cg, ", i64 0  ; task object\n");
+            }
         } else {
             task_ptr = Emit_Temp(cg);
             Emit(cg, "  %%t%u = inttoptr i64 0 to ptr  ; current task\n", task_ptr);
         }
 
-        /* Get entry index (for entry families) */
+        /* Get entry index - combine base index with family index for entry families.
+         * Formula: entry_idx = base * 1000 + family_arg (matching accept side) */
         uint32_t entry_idx = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = add i64 0, 0  ; entry index\n", entry_idx);
+        if (is_entry_family && family_idx_temp) {
+            Emit(cg, "  %%t%u = add i64 %u, %%t%u  ; entry index (base + family)\n",
+                 entry_idx, sym->entry_index * 1000, family_idx_temp);
+        } else {
+            Emit(cg, "  %%t%u = add i64 0, %u  ; entry index (simple entry)\n",
+                 entry_idx, sym->entry_index * 1000);
+        }
 
         /* Call runtime entry call function - blocks until rendezvous completes */
         Emit(cg, "  call void @__ada_entry_call(ptr %%t%u, i64 %%t%u, ptr %%t%u)\n",
@@ -12316,15 +13208,35 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                     cg->address_markers[cg->address_marker_count++] = sym;
                 }
             } else if (sym->kind == SYMBOL_VARIABLE && sym->type && sym->type->kind == TYPE_TASK) {
-                /* Task variable (single task) address - use task control block */
+                /* Task variable (single task) address - use task control block.
+                 * Must handle uplevel access when task is in enclosing scope. */
+                Symbol *var_owner = sym->defining_scope ? sym->defining_scope->owner : NULL;
+                bool is_uplevel = cg->current_function && var_owner &&
+                                  var_owner != cg->current_function &&
+                                  var_owner != cg->current_function->generic_template;
                 Emit(cg, "  %%t%u = ptrtoint ptr ", t);
-                Emit_Symbol_Ref(cg, sym);
+                if (is_uplevel && cg->is_nested) {
+                    /* Uplevel access through frame pointer */
+                    Emit(cg, "%%__frame.");
+                    Emit_Symbol_Name(cg, sym);
+                } else {
+                    Emit_Symbol_Ref(cg, sym);
+                }
                 Emit(cg, " to i64  ; '%.*s'ADDRESS (task)\n",
                      (int)sym->name.length, sym->name.data);
             } else {
-                /* Regular variable */
+                /* Regular variable - also handle uplevel access */
+                Symbol *var_owner = sym->defining_scope ? sym->defining_scope->owner : NULL;
+                bool is_uplevel = cg->current_function && var_owner &&
+                                  var_owner != cg->current_function &&
+                                  var_owner != cg->current_function->generic_template;
                 Emit(cg, "  %%t%u = ptrtoint ptr ", t);
-                Emit_Symbol_Ref(cg, sym);
+                if (is_uplevel && cg->is_nested) {
+                    Emit(cg, "%%__frame.");
+                    Emit_Symbol_Name(cg, sym);
+                } else {
+                    Emit_Symbol_Ref(cg, sym);
+                }
                 Emit(cg, " to i64  ; 'ADDRESS\n");
             }
         } else {
@@ -12648,6 +13560,24 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
             delta = prefix_type->fixed.delta > 0 ? prefix_type->fixed.delta : 1.0;
         }
         Emit(cg, "  %%t%u = fadd double 0.0, %e  ; 'DELTA\n", t, delta);
+        return t;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────────
+     * Floating-Point Boolean Attributes (RM 3.5.8)
+     * ───────────────────────────────────────────────────────────────────── */
+
+    if (Slice_Equal_Ignore_Case(attr, S("MACHINE_ROUNDS"))) {
+        /* T'MACHINE_ROUNDS - does the hardware round? (RM 3.5.8)
+         * IEEE 754 hardware rounds, so return TRUE */
+        Emit(cg, "  %%t%u = add i1 0, 1  ; 'MACHINE_ROUNDS (IEEE rounds)\n", t);
+        return t;
+    }
+
+    if (Slice_Equal_Ignore_Case(attr, S("MACHINE_OVERFLOWS"))) {
+        /* T'MACHINE_OVERFLOWS - does the hardware raise on overflow? (RM 3.5.8)
+         * IEEE 754 generates infinity on overflow (doesn't trap), return FALSE */
+        Emit(cg, "  %%t%u = add i1 0, 0  ; 'MACHINE_OVERFLOWS (IEEE no trap)\n", t);
         return t;
     }
 
@@ -13007,7 +13937,13 @@ static uint32_t Generate_Expression(Code_Generator *cg, Syntax_Node *node) {
         case NK_INTEGER:    return Generate_Integer_Literal(cg, node);
         case NK_REAL:       return Generate_Real_Literal(cg, node);
         case NK_STRING:     return Generate_String_Literal(cg, node);
-        case NK_CHARACTER:  return Generate_Integer_Literal(cg, node);  /* Char as int */
+        case NK_CHARACTER:  {   /* Character literal - extract char from text "'X'" */
+                             uint32_t t = Emit_Temp(cg);
+                             int64_t ch = 0;
+                             if (node->string_val.text.length >= 2)
+                                 ch = (unsigned char)node->string_val.text.data[1];
+                             Emit(cg, "  %%t%u = add i64 0, %lld\n", t, (long long)ch);
+                             return t; }
         case NK_NULL:       { uint32_t t = Emit_Temp(cg);
                              Emit(cg, "  %%t%u = inttoptr i64 0 to ptr\n", t);
                              return t; }
@@ -13271,9 +14207,21 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
                 /* Load access value to get record pointer */
                 if (record_sym) {
                     base_ptr = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = load ptr, ptr ", base_ptr);
-                    Emit_Symbol_Ref(cg, record_sym);
-                    Emit(cg, "  ; implicit deref for field assignment\n");
+                    /* Check for uplevel access (variable in outer scope) */
+                    Symbol *var_owner = record_sym->defining_scope
+                                       ? record_sym->defining_scope->owner : NULL;
+                    bool is_uplevel = cg->current_function && var_owner &&
+                                      var_owner != cg->current_function &&
+                                      var_owner != cg->current_function->generic_template;
+                    if (is_uplevel && cg->is_nested) {
+                        Emit(cg, "  %%t%u = load ptr, ptr %%__frame.", base_ptr);
+                        Emit_Symbol_Name(cg, record_sym);
+                        Emit(cg, "  ; uplevel implicit deref for field assignment\n");
+                    } else {
+                        Emit(cg, "  %%t%u = load ptr, ptr ", base_ptr);
+                        Emit_Symbol_Ref(cg, record_sym);
+                        Emit(cg, "  ; implicit deref for field assignment\n");
+                    }
                 } else {
                     base_ptr = Generate_Expression(cg, prefix);
                 }
@@ -13304,6 +14252,18 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
     if (!target_sym) return;
 
     Type_Info *ty = target_sym->type;
+
+    /* Substitute generic formal types with actual types in generic instances */
+    if (cg->current_instance && cg->current_instance->generic_actuals && ty && ty->name.data) {
+        for (uint32_t k = 0; k < cg->current_instance->generic_actual_count; k++) {
+            if (Slice_Equal_Ignore_Case(ty->name,
+                    cg->current_instance->generic_actuals[k].formal_name) &&
+                cg->current_instance->generic_actuals[k].actual_type) {
+                ty = cg->current_instance->generic_actuals[k].actual_type;
+                break;
+            }
+        }
+    }
 
     /* Handle record assignment (use memcpy, not store) */
     if (ty && ty->kind == TYPE_RECORD) {
@@ -13351,10 +14311,12 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
 
     uint32_t value = Generate_Expression(cg, node->assignment.value);
 
-    /* Check if this is an uplevel (outer scope) variable access */
+    /* Check if this is an uplevel (outer scope) variable access.
+     * For generic instances, the variable's owner is the template. */
     Symbol *var_owner = target_sym->defining_scope ? target_sym->defining_scope->owner : NULL;
     bool is_uplevel = cg->current_function && var_owner &&
-                      var_owner != cg->current_function;
+                      var_owner != cg->current_function &&
+                      var_owner != cg->current_function->generic_template;
 
     const char *type_str = Type_To_Llvm(ty);
 
@@ -13928,10 +14890,58 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
             break;
 
         case NK_CALL_STMT: {
-            /* Procedure call - might be NK_APPLY or NK_IDENTIFIER (no args) */
+            /* Procedure call - might be NK_APPLY, NK_IDENTIFIER (no args), or
+             * NK_SELECTED (for entry calls like Task.Entry without args) */
             Syntax_Node *target = node->assignment.target;
             if (target->kind == NK_APPLY) {
                 Generate_Expression(cg, target);
+            } else if (target->kind == NK_SELECTED) {
+                /* Selected component - might be a parameterless entry call like T.E1 */
+                Symbol *entry_sym = target->symbol;
+                if (entry_sym && entry_sym->kind == SYMBOL_ENTRY) {
+                    /* Entry call without parameters - generate rendezvous */
+                    Emit(cg, "  ; Entry call (no params): %.*s\n",
+                         (int)entry_sym->name.length, entry_sym->name.data);
+
+                    /* Allocate empty parameter block */
+                    uint32_t param_block = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = inttoptr i64 0 to ptr  ; no parameters\n", param_block);
+
+                    /* Get task object from prefix */
+                    uint32_t task_ptr = Emit_Temp(cg);
+                    Symbol *task_sym = target->selected.prefix->symbol;
+                    if (task_sym) {
+                        Symbol *var_owner = task_sym->defining_scope
+                                           ? task_sym->defining_scope->owner : NULL;
+                        bool is_uplevel = cg->current_function && var_owner &&
+                                          var_owner != cg->current_function &&
+                                          var_owner != cg->current_function->generic_template;
+                        if (is_uplevel && cg->is_nested) {
+                            Emit(cg, "  %%t%u = getelementptr i8, ptr %%__frame.", task_ptr);
+                            Emit_Symbol_Name(cg, task_sym);
+                            Emit(cg, ", i64 0  ; uplevel task object\n");
+                        } else {
+                            Emit(cg, "  %%t%u = getelementptr i8, ptr ", task_ptr);
+                            Emit_Symbol_Ref(cg, task_sym);
+                            Emit(cg, ", i64 0  ; task object\n");
+                        }
+                    } else {
+                        Emit(cg, "  %%t%u = inttoptr i64 0 to ptr  ; no task\n", task_ptr);
+                    }
+
+                    /* Get entry index (simple entry, not family) */
+                    uint32_t entry_idx = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = add i64 0, %u  ; entry index (simple entry)\n",
+                         entry_idx, entry_sym->entry_index * 1000);
+
+                    /* Call runtime entry call function */
+                    Emit(cg, "  call void @__ada_entry_call(ptr %%t%u, i64 %%t%u, ptr %%t%u)\n",
+                         task_ptr, entry_idx, param_block);
+                } else if (entry_sym && (entry_sym->kind == SYMBOL_PROCEDURE ||
+                                         entry_sym->kind == SYMBOL_FUNCTION)) {
+                    /* Qualified procedure call like Pkg.Proc */
+                    Generate_Expression(cg, target);
+                }
             } else if (target->kind == NK_IDENTIFIER) {
                 /* Parameterless procedure/function call */
                 Symbol *original_sym = target->symbol;  /* Keep for defaults */
@@ -14069,13 +15079,19 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                      (int)node->accept_stmt.entry_name.length,
                      node->accept_stmt.entry_name.data);
 
-                /* Get entry index (for entry families, or 0 for simple entries) */
+                /* Get entry index - combine entry_sym's base index with family offset.
+                 * For entry families: entry_idx = base * 1000 + family_arg
+                 * For simple entries: entry_idx = base * 1000 */
                 uint32_t entry_idx = Emit_Temp(cg);
+                uint32_t base_idx = node->accept_stmt.entry_sym ?
+                                    node->accept_stmt.entry_sym->entry_index : 0;
                 if (node->accept_stmt.index) {
                     uint32_t idx_val = Generate_Expression(cg, node->accept_stmt.index);
-                    Emit(cg, "  %%t%u = add i64 0, %%t%u  ; entry index\n", entry_idx, idx_val);
+                    Emit(cg, "  %%t%u = add i64 %u, %%t%u  ; entry index (base + family)\n",
+                         entry_idx, base_idx * 1000, idx_val);
                 } else {
-                    Emit(cg, "  %%t%u = add i64 0, 0  ; entry index\n", entry_idx);
+                    Emit(cg, "  %%t%u = add i64 0, %u  ; entry index (simple entry)\n",
+                         entry_idx, base_idx * 1000);
                 }
 
                 /* Wait for entry call - blocks until a caller arrives */
@@ -14083,16 +15099,34 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "  %%t%u = call ptr @__ada_accept_wait(i64 %%t%u)\n",
                      caller_ptr, entry_idx);
 
-                /* Generate parameters - copy from caller's parameter block */
+                /* Generate parameters - allocate space and copy from caller's parameter block */
+                uint32_t param_idx = 0;
                 for (uint32_t i = 0; i < node->accept_stmt.parameters.count; i++) {
                     Syntax_Node *param = node->accept_stmt.parameters.items[i];
-                    if (param && param->symbol) {
-                        uint32_t param_ptr = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = getelementptr i64, ptr %%t%u, i64 %u\n",
-                             param_ptr, caller_ptr, i);
-                        Emit(cg, "  %%");
-                        Emit_Symbol_Name(cg, param->symbol);
-                        Emit(cg, " = load i64, ptr %%t%u\n", param_ptr);
+                    if (param && param->kind == NK_PARAM_SPEC) {
+                        for (uint32_t j = 0; j < param->param_spec.names.count; j++) {
+                            Syntax_Node *name = param->param_spec.names.items[j];
+                            if (name && name->symbol) {
+                                /* Allocate space for the parameter */
+                                Emit(cg, "  %%");
+                                Emit_Symbol_Name(cg, name->symbol);
+                                Emit(cg, " = alloca i64, align 8\n");
+
+                                /* Load value from caller's parameter block */
+                                uint32_t param_ptr = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = getelementptr i64, ptr %%t%u, i64 %u\n",
+                                     param_ptr, caller_ptr, param_idx);
+                                uint32_t param_val = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = load i64, ptr %%t%u\n", param_val, param_ptr);
+
+                                /* Store to allocated space */
+                                Emit(cg, "  store i64 %%t%u, ptr %%", param_val);
+                                Emit_Symbol_Name(cg, name->symbol);
+                                Emit(cg, "\n");
+
+                                param_idx++;
+                            }
+                        }
                     }
                 }
 
@@ -14155,13 +15189,18 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                                      (int)alt->accept_stmt.entry_name.length,
                                      alt->accept_stmt.entry_name.data);
 
-                                /* Get entry index */
+                                /* Get entry index - combine base index with family index.
+                                 * Formula: entry_idx = base * 1000 + family_arg */
                                 uint32_t entry_idx = Emit_Temp(cg);
+                                uint32_t sel_base_idx = alt->accept_stmt.entry_sym ?
+                                                        alt->accept_stmt.entry_sym->entry_index : 0;
                                 if (alt->accept_stmt.index) {
                                     uint32_t idx_val = Generate_Expression(cg, alt->accept_stmt.index);
-                                    Emit(cg, "  %%t%u = add i64 0, %%t%u\n", entry_idx, idx_val);
+                                    Emit(cg, "  %%t%u = add i64 %u, %%t%u  ; entry index (base + family)\n",
+                                         entry_idx, sel_base_idx * 1000, idx_val);
                                 } else {
-                                    Emit(cg, "  %%t%u = add i64 0, %u\n", entry_idx, i);
+                                    Emit(cg, "  %%t%u = add i64 0, %u  ; entry index (simple entry)\n",
+                                         entry_idx, sel_base_idx * 1000);
                                 }
 
                                 /* Check if entry call is pending (non-blocking) */
@@ -14176,15 +15215,33 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                                 Emit(cg, "L%u:\n", cg->label_id++);
 
                                 /* Load parameters from caller */
-                                for (uint32_t j = 0; j < alt->accept_stmt.parameters.count; j++) {
-                                    Syntax_Node *param = alt->accept_stmt.parameters.items[j];
-                                    if (param && param->symbol) {
-                                        uint32_t param_ptr = Emit_Temp(cg);
-                                        Emit(cg, "  %%t%u = getelementptr i64, ptr %%t%u, i64 %u\n",
-                                             param_ptr, caller_ptr, j);
-                                        Emit(cg, "  %%");
-                                        Emit_Symbol_Name(cg, param->symbol);
-                                        Emit(cg, " = load i64, ptr %%t%u\n", param_ptr);
+                                uint32_t sel_param_idx = 0;
+                                for (uint32_t pi = 0; pi < alt->accept_stmt.parameters.count; pi++) {
+                                    Syntax_Node *param = alt->accept_stmt.parameters.items[pi];
+                                    if (param && param->kind == NK_PARAM_SPEC) {
+                                        for (uint32_t pj = 0; pj < param->param_spec.names.count; pj++) {
+                                            Syntax_Node *pname = param->param_spec.names.items[pj];
+                                            if (pname && pname->symbol) {
+                                                /* Allocate space for the parameter */
+                                                Emit(cg, "  %%");
+                                                Emit_Symbol_Name(cg, pname->symbol);
+                                                Emit(cg, " = alloca i64, align 8\n");
+
+                                                /* Load value from caller's parameter block */
+                                                uint32_t param_ptr = Emit_Temp(cg);
+                                                Emit(cg, "  %%t%u = getelementptr i64, ptr %%t%u, i64 %u\n",
+                                                     param_ptr, caller_ptr, sel_param_idx);
+                                                uint32_t param_val = Emit_Temp(cg);
+                                                Emit(cg, "  %%t%u = load i64, ptr %%t%u\n", param_val, param_ptr);
+
+                                                /* Store to allocated space */
+                                                Emit(cg, "  store i64 %%t%u, ptr %%", param_val);
+                                                Emit_Symbol_Name(cg, pname->symbol);
+                                                Emit(cg, "\n");
+
+                                                sel_param_idx++;
+                                            }
+                                        }
                                     }
                                 }
 
@@ -14343,6 +15400,18 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
 
         Type_Info *ty = sym->type;
 
+        /* Substitute generic formal types with actual types in generic instances */
+        if (cg->current_instance && cg->current_instance->generic_actuals && ty && ty->name.data) {
+            for (uint32_t k = 0; k < cg->current_instance->generic_actual_count; k++) {
+                if (Slice_Equal_Ignore_Case(ty->name,
+                        cg->current_instance->generic_actuals[k].formal_name) &&
+                    cg->current_instance->generic_actuals[k].actual_type) {
+                    ty = cg->current_instance->generic_actuals[k].actual_type;
+                    break;
+                }
+            }
+        }
+
         /* Named numbers (constants without explicit type) don't need storage.
          * They are compile-time values that get inlined when referenced.
          * Per RM 3.2.2: Named numbers are not objects and have no storage. */
@@ -14458,6 +15527,33 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, " = alloca %s\n", type_str);
         }
 
+        /* Start task if this is a task type object */
+        if (ty && ty->kind == TYPE_TASK) {
+            /* Task objects are started immediately at elaboration.
+             * The task body function is named @task_TYPENAME where TYPENAME
+             * is the task type name (not the object name).
+             * For task types defined outside the generic, no instance prefix.
+             * For single tasks inside generics, the body has an instance prefix. */
+            String_Slice task_type_name = ty->name;
+            uint32_t handle_tmp = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = call ptr @__ada_task_start(ptr @task_",
+                 handle_tmp);
+            /* Don't add instance prefix for task types - they're defined separately.
+             * The instance prefix is only for single tasks declared inside the generic. */
+            Emit(cg, "%.*s, ", (int)task_type_name.length, task_type_name.data);
+            /* Pass parent frame for uplevel access, or null if at package level.
+             * use_frame indicates the parent is using frame-based allocation. */
+            if (use_frame) {
+                Emit(cg, "ptr %%__frame_base)\n");
+            } else {
+                Emit(cg, "ptr null)\n");
+            }
+            /* Store thread handle in task object for later join/abort */
+            Emit(cg, "  store ptr %%t%u, ptr %%", handle_tmp);
+            Emit_Symbol_Name(cg, sym);
+            Emit(cg, "\n");
+        }
+
         /* Initialize if provided */
         if (node->object_decl.init) {
             if (is_array && ty->array.element_type == cg->sm->type_character) {
@@ -14555,11 +15651,15 @@ static bool Has_Nested_In_Statements(Node_List *statements) {
 }
 
 static bool Has_Nested_Subprograms(Node_List *declarations, Node_List *statements) {
-    /* Check declarations for procedure/function bodies */
+    /* Check declarations for procedure/function/task bodies.
+     * Task bodies access enclosing scope variables just like nested
+     * subprograms (RM 9.1), so the enclosing scope needs frame allocation. */
     if (declarations) {
         for (uint32_t i = 0; i < declarations->count; i++) {
             Syntax_Node *decl = declarations->items[i];
-            if (decl && (decl->kind == NK_PROCEDURE_BODY || decl->kind == NK_FUNCTION_BODY)) {
+            if (decl && (decl->kind == NK_PROCEDURE_BODY ||
+                         decl->kind == NK_FUNCTION_BODY ||
+                         decl->kind == NK_TASK_BODY)) {
                 return true;
             }
         }
@@ -14574,6 +15674,10 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
     if (node->subprogram_body.is_separate) {
         return;
     }
+
+    /* Skip if code already generated for this body (prevents duplicates) */
+    if (node->subprogram_body.code_generated) return;
+    node->subprogram_body.code_generated = true;
 
     Syntax_Node *spec = node->subprogram_body.specification;
     Symbol *sym = spec ? spec->symbol : NULL;
@@ -14693,11 +15797,12 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
         }
     }
 
-    /* Generate local declarations, passing has_nested flag via cg for frame allocation */
+    /* Generate local declarations, passing has_nested flag via cg for frame allocation.
+     * Keep has_nested active for statements too (DECLARE blocks need it). */
     bool saved_has_nested = cg->current_nesting_level > 0;  /* Repurpose field temporarily */
     cg->current_nesting_level = has_nested ? 1 : 0;
     Generate_Declaration_List(cg, &node->subprogram_body.declarations);
-    cg->current_nesting_level = saved_has_nested;
+    /* Don't reset yet - statements may have DECLARE blocks with tasks needing frame */
 
     /* Check if subprogram has exception handlers */
     bool has_exc_handlers = node->subprogram_body.handlers.count > 0;
@@ -14806,6 +15911,9 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
         Generate_Statement_List(cg, &node->subprogram_body.statements);
     }
 
+    /* Restore nesting level now that all code for this subprogram is generated */
+    cg->current_nesting_level = saved_has_nested ? 1 : 0;
+
     /* Default return if block is not terminated */
     if (!cg->block_terminated) {
         if (is_function) {
@@ -14908,6 +16016,10 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
 
     bool is_function = inst_sym->kind == SYMBOL_FUNCTION;
     uint32_t saved_deferred_count = cg->deferred_count;
+
+    /* Set current instance for formal subprogram substitution during codegen */
+    Symbol *saved_current_instance = cg->current_instance;
+    cg->current_instance = inst_sym;
 
     /* For generic instances, determine nesting from instance parent */
     Symbol *saved_enclosing = cg->enclosing_function;
@@ -15015,6 +16127,7 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
     cg->current_function = saved_current_function;
     cg->is_nested = saved_is_nested;
     cg->enclosing_function = saved_enclosing;
+    cg->current_instance = saved_current_instance;
 
     /* Process deferred bodies */
     while (cg->deferred_count > saved_deferred_count) {
@@ -15047,18 +16160,53 @@ static void Generate_Task_Body(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "\n; Task body: %.*s\n",
          (int)node->task_body.name.length, node->task_body.name.data);
 
-    /* Generate task entry point function */
-    Emit(cg, "define void @task_%.*s(ptr %%_unused_arg) {\n",
+    /* Generate task entry point function - receives parent frame pointer
+     * for uplevel variable access (task bodies access enclosing scope).
+     * For task bodies inside generic instances, prefix with instance name
+     * to make the function name unique across multiple instantiations. */
+    Emit(cg, "define void @task_");
+    if (cg->current_instance && cg->current_instance->generic_template) {
+        /* Emit instance name prefix for unique task body function */
+        String_Slice inst_mangled = Symbol_Mangle_Name(cg->current_instance);
+        for (uint32_t i = 0; i < inst_mangled.length; i++) {
+            fputc(inst_mangled.data[i], cg->output);
+        }
+        Emit(cg, "__");
+    }
+    Emit(cg, "%.*s(ptr %%__parent_frame) {\n",
          (int)node->task_body.name.length, node->task_body.name.data);
     Emit(cg, "entry:\n");
 
-    /* Save and set context - task body is like a function body */
+    /* Save and set context - task body is like a nested function */
     Symbol *saved_current_function = cg->current_function;
+    bool saved_is_nested = cg->is_nested;
+    Symbol *saved_enclosing = cg->enclosing_function;
     cg->current_function = node->symbol;
+    cg->is_nested = true;  /* Task bodies are nested in enclosing scope */
+    cg->enclosing_function = saved_current_function;  /* Access parent's vars */
 
     /* Reset temp counter for new function */
     uint32_t saved_temp = cg->temp_id;
     cg->temp_id = 1;
+
+    /* Create frame aliases for accessing enclosing scope variables.
+     * Task bodies can reference variables from the enclosing scope
+     * (RM 9.1). The parent passed %__parent_frame pointing to its frame.
+     * Use the task symbol's defining_scope to get the correct scope
+     * (important for tasks in DECLARE blocks which have their own scope). */
+    Scope *parent_scope = node->symbol ? node->symbol->defining_scope : NULL;
+    if (parent_scope) {
+        for (uint32_t i = 0; i < parent_scope->symbol_count; i++) {
+            Symbol *var = parent_scope->symbols[i];
+            if (var && (var->kind == SYMBOL_VARIABLE || var->kind == SYMBOL_PARAMETER)) {
+                /* Create a GEP alias: %__frame.VAR = getelementptr ptr %__parent_frame, offset */
+                Emit(cg, "  %%__frame.");
+                Emit_Symbol_Name(cg, var);
+                Emit(cg, " = getelementptr i8, ptr %%__parent_frame, i64 %lld\n",
+                     (long long)(var->frame_offset));
+            }
+        }
+    }
 
     /* Push exception handler for task */
     uint32_t jmp_buf = Emit_Temp(cg);
@@ -15095,6 +16243,8 @@ static void Generate_Task_Body(Code_Generator *cg, Syntax_Node *node) {
     /* Restore context */
     cg->temp_id = saved_temp;
     cg->current_function = saved_current_function;
+    cg->is_nested = saved_is_nested;
+    cg->enclosing_function = saved_enclosing;
 }
 
 static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
@@ -15116,8 +16266,20 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
         case NK_PROCEDURE_BODY:
         case NK_FUNCTION_BODY:
             /* Defer nested subprogram bodies - emit after enclosing function */
+            /* Skip if already generated (prevents duplicates from re-processing) */
+            if (node->subprogram_body.code_generated) break;
             if (cg->current_function && cg->deferred_count < 64) {
-                cg->deferred_bodies[cg->deferred_count++] = node;
+                /* Check for duplicate in deferred list */
+                bool already_deferred = false;
+                for (uint32_t d = 0; d < cg->deferred_count; d++) {
+                    if (cg->deferred_bodies[d] == node) {
+                        already_deferred = true;
+                        break;
+                    }
+                }
+                if (!already_deferred) {
+                    cg->deferred_bodies[cg->deferred_count++] = node;
+                }
             } else {
                 Generate_Subprogram_Body(cg, node);
             }
@@ -15241,25 +16403,69 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
             /* Task type/object specification - record entry points */
             Emit(cg, "; Task spec: %.*s (entries registered at runtime)\n",
                  (int)node->task_spec.name.length, node->task_spec.name.data);
-            /* For single tasks (not task types), allocate task control block storage */
+            /* For single tasks (not task types), allocate task control block storage
+             * and start the task body in a separate thread */
             if (!node->task_spec.is_type && node->symbol) {
-                /* Find the variable symbol (created during resolution) */
+                /* Find the variable symbol in the type symbol's defining scope.
+                 * The type and variable were both added to the same scope during
+                 * semantic analysis. Use defining_scope instead of sm->current_scope
+                 * since current_scope may have changed during code generation. */
                 Symbol *obj_sym = NULL;
-                Symbol_Manager *sm = cg->sm;
-                for (uint32_t i = 0; i < sm->current_scope->symbol_count; i++) {
-                    Symbol *s = sm->current_scope->symbols[i];
-                    if (s && s->kind == SYMBOL_VARIABLE &&
-                        s->type && s->type->kind == TYPE_TASK &&
-                        Slice_Equal_Ignore_Case(s->name, node->task_spec.name)) {
-                        obj_sym = s;
-                        break;
+                Scope *scope = node->symbol->defining_scope;
+                if (scope) {
+                    for (uint32_t i = 0; i < scope->symbol_count; i++) {
+                        Symbol *s = scope->symbols[i];
+                        if (s && s->kind == SYMBOL_VARIABLE &&
+                            s->type && s->type->kind == TYPE_TASK &&
+                            Slice_Equal_Ignore_Case(s->name, node->task_spec.name)) {
+                            obj_sym = s;
+                            break;
+                        }
                     }
                 }
-                if (obj_sym && obj_sym->unique_id == 0) {
-                    obj_sym->unique_id = sm->next_unique_id++;
-                    Emit(cg, "  %%");
+                if (obj_sym) {
+                    if (obj_sym->unique_id == 0) {
+                        obj_sym->unique_id = cg->sm->next_unique_id++;
+                    }
+                    /* Allocate task object - use frame if nested, else stack */
+                    bool use_frame = cg->current_nesting_level > 0;
+                    if (use_frame) {
+                        Emit(cg, "  %%");
+                        Emit_Symbol_Name(cg, obj_sym);
+                        Emit(cg, " = getelementptr i8, ptr %%__frame_base, i64 %lld  ; task in frame\n",
+                             (long long)obj_sym->frame_offset);
+                    } else {
+                        Emit(cg, "  %%");
+                        Emit_Symbol_Name(cg, obj_sym);
+                        Emit(cg, " = alloca ptr  ; task control block\n");
+                    }
+
+                    /* Start the task body in a separate thread.
+                     * Pass frame_base if nested, or null if at module level. */
+                    uint32_t handle_tmp = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = call ptr @__ada_task_start(ptr @task_",
+                         handle_tmp);
+                    if (cg->current_instance && cg->current_instance->generic_template) {
+                        /* Emit instance name prefix for unique task body function */
+                        String_Slice inst_mangled = Symbol_Mangle_Name(cg->current_instance);
+                        for (uint32_t i = 0; i < inst_mangled.length; i++) {
+                            fputc(inst_mangled.data[i], cg->output);
+                        }
+                        Emit(cg, "__");
+                    }
+                    Emit(cg, "%.*s, ", (int)node->task_spec.name.length,
+                         node->task_spec.name.data);
+                    /* Pass parent frame for uplevel access, or null if at module level.
+                     * Use frame_base only if the current function has nested subprograms. */
+                    if (cg->current_nesting_level > 0) {
+                        Emit(cg, "ptr %%__frame_base)\n");
+                    } else {
+                        Emit(cg, "ptr null)\n");
+                    }
+                    /* Store thread handle in task control block */
+                    Emit(cg, "  store ptr %%t%u, ptr %%", handle_tmp);
                     Emit_Symbol_Name(cg, obj_sym);
-                    Emit(cg, " = alloca ptr  ; task control block\n");
+                    Emit(cg, "\n");
                 }
             }
             break;
@@ -15323,22 +16529,65 @@ static void Generate_Type_Equality_Function(Code_Generator *cg, Type_Info *t) {
                 Emit(cg, "  %%t%u = getelementptr i8, ptr %%1, i64 %u\n",
                      right_gep, comp->byte_offset);
 
-                /* Load component values */
-                uint32_t left_val = Emit_Temp(cg);
-                uint32_t right_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
-                     left_val, comp_llvm_type, left_gep);
-                Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
-                     right_val, comp_llvm_type, right_gep);
+                /* Compare component - handle arrays/strings specially */
+                uint32_t cmp;
+                Type_Info *ct = comp->component_type;
+                bool is_fat_ptr_access = ct && ct->kind == TYPE_ACCESS &&
+                    ct->access.designated_type &&
+                    (ct->access.designated_type->kind == TYPE_STRING ||
+                     (ct->access.designated_type->kind == TYPE_ARRAY &&
+                      !ct->access.designated_type->array.is_constrained));
 
-                /* Compare */
-                uint32_t cmp = Emit_Temp(cg);
-                if (Type_Is_Float_Representation(comp->component_type)) {
-                    Emit(cg, "  %%t%u = fcmp oeq %s %%t%u, %%t%u\n",
-                         cmp, comp_llvm_type, left_val, right_val);
+                if (ct && (ct->kind == TYPE_STRING ||
+                           (ct->kind == TYPE_ARRAY && !ct->array.is_constrained))) {
+                    /* Unconstrained array/string - use array equality */
+                    cmp = Generate_Array_Equality(cg, left_gep, right_gep, ct);
+                } else if (ct && ct->kind == TYPE_ARRAY && ct->array.is_constrained) {
+                    /* Constrained array - use array equality */
+                    cmp = Generate_Array_Equality(cg, left_gep, right_gep, ct);
+                } else if (ct && ct->kind == TYPE_RECORD) {
+                    /* Nested record - recurse */
+                    cmp = Generate_Record_Equality(cg, left_gep, right_gep, ct);
+                } else if (is_fat_ptr_access) {
+                    /* ACCESS to unconstrained array - compare fat pointer components */
+                    uint32_t left_val = Emit_Temp(cg);
+                    uint32_t right_val = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", left_val, left_gep);
+                    Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", right_val, right_gep);
+                    uint32_t lp = Emit_Temp(cg), rp = Emit_Temp(cg);
+                    uint32_t ll = Emit_Temp(cg), rl = Emit_Temp(cg);
+                    uint32_t lh = Emit_Temp(cg), rh = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n", lp, left_val);
+                    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n", rp, right_val);
+                    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 0\n", ll, left_val);
+                    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 0\n", rl, right_val);
+                    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 1\n", lh, left_val);
+                    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 1\n", rh, right_val);
+                    uint32_t cmp_p = Emit_Temp(cg), cmp_l = Emit_Temp(cg), cmp_h = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = icmp eq ptr %%t%u, %%t%u\n", cmp_p, lp, rp);
+                    Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", cmp_l, ll, rl);
+                    Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", cmp_h, lh, rh);
+                    uint32_t and1 = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", and1, cmp_p, cmp_l);
+                    cmp = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", cmp, and1, cmp_h);
                 } else {
-                    Emit(cg, "  %%t%u = icmp eq %s %%t%u, %%t%u\n",
-                         cmp, comp_llvm_type, left_val, right_val);
+                    /* Scalar type - load and compare */
+                    uint32_t left_val = Emit_Temp(cg);
+                    uint32_t right_val = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
+                         left_val, comp_llvm_type, left_gep);
+                    Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
+                         right_val, comp_llvm_type, right_gep);
+
+                    cmp = Emit_Temp(cg);
+                    if (Type_Is_Float_Representation(ct)) {
+                        Emit(cg, "  %%t%u = fcmp oeq %s %%t%u, %%t%u\n",
+                             cmp, comp_llvm_type, left_val, right_val);
+                    } else {
+                        Emit(cg, "  %%t%u = icmp eq %s %%t%u, %%t%u\n",
+                             cmp, comp_llvm_type, left_val, right_val);
+                    }
                 }
 
                 /* AND with previous results */
@@ -15625,6 +16874,8 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "declare ptr @realloc(ptr, i64)\n");
     Emit(cg, "declare void @free(ptr)\n");
     Emit(cg, "declare i32 @usleep(i32)\n");
+    Emit(cg, "declare i32 @pthread_create(ptr, ptr, ptr, ptr)\n");
+    Emit(cg, "declare i32 @pthread_join(ptr, ptr)\n");
     Emit(cg, "declare i32 @printf(ptr, ...)\n");
     Emit(cg, "declare i32 @putchar(i32)\n");
     Emit(cg, "declare i32 @getchar()\n");
@@ -15899,6 +17150,18 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "  ; Check if master task is complete, if so exit\n");
     Emit(cg, "  call void @exit(i32 0)\n");
     Emit(cg, "  unreachable\n");
+    Emit(cg, "}\n\n");
+
+    /* Task start: spawn a thread to run the task body.
+     * Returns thread handle that can be used for join/abort.
+     * The task_func is a pointer to void(ptr) which is close enough
+     * to pthread's void*(void*) signature to work via bitcast. */
+    Emit(cg, "define linkonce_odr ptr @__ada_task_start(ptr %%task_func, ptr %%parent_frame) {\n");
+    Emit(cg, "entry:\n");
+    Emit(cg, "  %%tid = alloca ptr\n");
+    Emit(cg, "  %%_rc = call i32 @pthread_create(ptr %%tid, ptr null, ptr %%task_func, ptr %%parent_frame)\n");
+    Emit(cg, "  %%handle = load ptr, ptr %%tid\n");
+    Emit(cg, "  ret ptr %%handle\n");
     Emit(cg, "}\n\n");
 
     /* Entry call: caller side of rendezvous (blocks until accept completes) */
@@ -17961,6 +19224,15 @@ static Syntax_Node *Node_Deep_Clone(Syntax_Node *node, Instantiation_Env *env,
 
     switch (node->kind) {
         case NK_IDENTIFIER:
+            /* Check for expression substitution (formal object parameters) */
+            if (env) {
+                Syntax_Node *expr_subst = Env_Lookup_Expr(env, node->string_val.text);
+                if (expr_subst) {
+                    /* Return a clone of the actual expression instead.
+                     * The 'n' node becomes garbage but arena will reclaim it. */
+                    return Node_Deep_Clone(expr_subst, env, depth + 1);
+                }
+            }
             n->string_val = node->string_val;
             /* Check for type substitution */
             if (env) {
@@ -18160,13 +19432,15 @@ static void Build_Instantiation_Env(Instantiation_Env *env,
         m->actual_symbol = NULL;
         m->actual_expr = NULL;
 
-        /* For object/subprogram formals, would need additional handling */
+        /* For object/subprogram formals, populate additional fields */
         if (i < formals->count) {
             Syntax_Node *formal = formals->items[i];
             if (formal->kind == NK_GENERIC_OBJECT_PARAM) {
                 /* Store expression for object formals */
+                m->actual_expr = instance_sym->generic_actuals[i].actual_expr;
             } else if (formal->kind == NK_GENERIC_SUBPROGRAM_PARAM) {
-                /* Store symbol for subprogram formals */
+                /* Store actual subprogram symbol for substitution during clone */
+                m->actual_symbol = instance_sym->generic_actuals[i].actual_subprogram;
             }
         }
     }
