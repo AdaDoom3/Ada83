@@ -6393,8 +6393,9 @@ static void Symbol_Add(Symbol_Manager *sm, Symbol *sym) {
     }
     scope->symbols[scope->symbol_count++] = sym;
 
-    /* Track frame offset for variables/parameters */
-    if (sym->kind == SYMBOL_VARIABLE || sym->kind == SYMBOL_PARAMETER) {
+    /* Track frame offset for variables/parameters/constants */
+    if (sym->kind == SYMBOL_VARIABLE || sym->kind == SYMBOL_PARAMETER ||
+        sym->kind == SYMBOL_CONSTANT) {
         sym->frame_offset = scope->frame_size;
         uint32_t var_size = sym->type ? sym->type->size : 8;
         if (var_size == 0) var_size = 8;
@@ -6434,12 +6435,21 @@ static Symbol *Symbol_Find_With_Arity(Symbol_Manager *sm, String_Slice name, uin
 /* Find symbol by name and type (for enumeration literal disambiguation) */
 static Symbol *Symbol_Find_By_Type(Symbol_Manager *sm, String_Slice name, Type_Info *expected_type) {
     if (!expected_type) return Symbol_Find(sm, name);
-    /* Get base type for matching (handles derived types) */
+    /* Get base type for matching (handles derived types and constrained subtypes).
+     * Follow both parent_type (derived types) and base_type (constrained subtypes). */
     Type_Info *base_expected = expected_type;
-    while (base_expected && base_expected->parent_type)
-        base_expected = base_expected->parent_type;
+    while (base_expected) {
+        if (base_expected->parent_type)
+            base_expected = base_expected->parent_type;
+        else if (base_expected->base_type)
+            base_expected = base_expected->base_type;
+        else
+            break;
+    }
 
     uint32_t hash = Symbol_Hash_Name(name);
+    /* Search all scopes for a matching symbol - don't stop at first name match,
+     * keep searching if the type doesn't match (for enumeration literal overloading) */
     for (Scope *scope = sm->current_scope; scope; scope = scope->parent) {
         for (Symbol *sym = scope->buckets[hash]; sym; sym = sym->next_in_bucket) {
             if (Slice_Equal_Ignore_Case(sym->name, name) &&
@@ -6448,12 +6458,19 @@ static Symbol *Symbol_Find_By_Type(Symbol_Manager *sm, String_Slice name, Type_I
                 for (Symbol *ovl = sym; ovl; ovl = ovl->next_overload) {
                     /* Check if type matches (either directly or via base type) */
                     Type_Info *sym_base = ovl->type;
-                    while (sym_base && sym_base->parent_type)
-                        sym_base = sym_base->parent_type;
+                    while (sym_base) {
+                        if (sym_base->parent_type)
+                            sym_base = sym_base->parent_type;
+                        else if (sym_base->base_type)
+                            sym_base = sym_base->base_type;
+                        else
+                            break;
+                    }
                     if (sym_base == base_expected) {
                         return ovl;
                     }
                 }
+                /* Type didn't match in this scope - continue to parent scopes */
             }
         }
     }
@@ -7299,10 +7316,18 @@ static String_Slice Operator_Name(Token_Kind op) {
 static bool Resolve_Char_As_Enum(Symbol_Manager *sm, Syntax_Node *char_node, Type_Info *enum_type) {
     if (!char_node || char_node->kind != NK_CHARACTER || !enum_type)
         return false;
-    /* Find base enumeration type */
+    /* Find base enumeration type by following both parent_type and base_type chains.
+     * parent_type is used for derived types (TYPE T IS NEW X)
+     * base_type is used for constrained subtypes (SUBTYPE S IS X RANGE ...) */
     Type_Info *base_enum = enum_type;
-    while (base_enum && base_enum->parent_type)
-        base_enum = base_enum->parent_type;
+    while (base_enum) {
+        if (base_enum->parent_type)
+            base_enum = base_enum->parent_type;
+        else if (base_enum->base_type)
+            base_enum = base_enum->base_type;
+        else
+            break;
+    }
     if (!base_enum || base_enum->kind != TYPE_ENUMERATION || !base_enum->enumeration.literals)
         return false;
     /* Get the character from the literal (format: 'X') */
