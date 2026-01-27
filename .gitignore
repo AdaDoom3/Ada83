@@ -3,6 +3,7 @@ ada83
 a83
 ada83_debug
 ada83_dbg
+ada83_test
 
 # Backup files
 *.backup
