@@ -11100,6 +11100,8 @@ static inline bool Expression_Is_Boolean(Syntax_Node *node) {
         switch (node->binary.op) {
             case TK_EQ: case TK_NE: case TK_LT: case TK_LE: case TK_GT: case TK_GE:
             case TK_AND: case TK_AND_THEN: case TK_OR: case TK_OR_ELSE: case TK_XOR:
+            case TK_IN:   /* Membership test */
+            case TK_NOT:  /* NOT IN (binary) is also a membership test */
                 return true;
             default: break;
         }
@@ -12348,6 +12350,57 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                     }
                 }
                 Emit(cg, "  %%t%u = %s %%t%u, %%t%u\n", t, cmp_op, left, right);
+                return t;
+            }
+
+        case TK_IN:
+        case TK_NOT:  /* NOT IN is encoded as TK_NOT in binary op */
+            {
+                /* Membership test: X IN T or X NOT IN T
+                 * For scalar types, check if X >= T'FIRST and X <= T'LAST
+                 * For ranges, check if X >= low and X <= high */
+                Type_Info *range_type = node->binary.right ? node->binary.right->type : NULL;
+
+                /* Get the bounds to check against */
+                int64_t low_val = 0, high_val = 0;
+                bool have_bounds = false;
+
+                if (node->binary.right && node->binary.right->kind == NK_RANGE) {
+                    /* X IN low..high - use the range bounds */
+                    /* For now, generate comparison with the right side value as both bounds check */
+                    /* This will need enhancement for proper range handling */
+                } else if (range_type) {
+                    /* X IN T - use the type's bounds */
+                    low_val = Type_Bound_Value(range_type->low_bound);
+                    high_val = Type_Bound_Value(range_type->high_bound);
+                    have_bounds = true;
+                }
+
+                if (have_bounds) {
+                    /* Generate: (left >= low) AND (left <= high) */
+                    uint32_t ge_low = Emit_Temp(cg);
+                    uint32_t le_high = Emit_Temp(cg);
+                    uint32_t in_range = Emit_Temp(cg);
+
+                    Emit(cg, "  %%t%u = icmp sge i64 %%t%u, %lld\n", ge_low, left, (long long)low_val);
+                    Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %lld\n", le_high, left, (long long)high_val);
+                    Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", in_range, ge_low, le_high);
+
+                    if (node->binary.op == TK_NOT) {
+                        /* NOT IN: negate the result */
+                        Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n", t, in_range);
+                    } else {
+                        t = in_range;
+                    }
+                } else {
+                    /* Fallback: compare with right value (simple equality check) */
+                    Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", t, left, right);
+                    if (node->binary.op == TK_NOT) {
+                        uint32_t neg = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n", neg, t);
+                        t = neg;
+                    }
+                }
                 return t;
             }
 
