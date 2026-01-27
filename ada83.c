@@ -1049,6 +1049,7 @@ typedef struct {
     const char *filename;
     uint32_t    line;
     uint32_t    column;
+    Token_Kind  prev_token_kind;  /* Track previous token for context-sensitive lexing */
 } Lexer;
 
 static Lexer Lexer_New(const char *source, size_t length, const char *filename) {
@@ -2222,13 +2223,21 @@ static Token Lexer_Next_Token(Lexer *lex) {
     /* Character literal: 'X' where X is any graphic character */
     /* Need to check for printable character (not just alpha) since '1' etc. are valid */
     /* Special case: ''' is a character literal containing single quote */
+    /* Context check: After identifier or RPAREN, '( could be tick+lparen (qualified expr) */
     {
         char middle = Lexer_Peek(lex, 1);
         char third = Lexer_Peek(lex, 2);
         if (c == '\'' && middle >= ' ' && third == '\'') {
-            /* Check it's not something like FOO''ATTR (two ticks in a row) */
-            /* For ''', the middle is ', and it's a valid character literal */
-            return Scan_Character_Literal(lex);
+            /* Check for qualified expression context: TYPE'(expr)
+             * If previous token was identifier/RPAREN and middle is '(',
+             * this is tick+lparen, not a character literal */
+            if (middle == '(' &&
+                (lex->prev_token_kind == TK_IDENTIFIER ||
+                 lex->prev_token_kind == TK_RPAREN)) {
+                /* Not a character literal - fall through to tick handling */
+            } else {
+                return Scan_Character_Literal(lex);
+            }
         }
     }
 
@@ -2762,6 +2771,8 @@ static bool Parser_Peek_At(Parser *p, Token_Kind kind) {
     Token saved = p->current_token;
     Lexer saved_lexer = p->lexer;
 
+    /* Update prev_token_kind for context-sensitive lexing during lookahead */
+    p->lexer.prev_token_kind = p->current_token.kind;
     p->current_token = Lexer_Next_Token(&p->lexer);
     bool result = p->current_token.kind == kind;
 
@@ -2772,14 +2783,18 @@ static bool Parser_Peek_At(Parser *p, Token_Kind kind) {
 
 static Token Parser_Advance(Parser *p) {
     p->previous_token = p->current_token;
+    /* Update lexer's prev_token_kind before getting next token (for context-sensitive lexing) */
+    p->lexer.prev_token_kind = p->current_token.kind;
     p->current_token = Lexer_Next_Token(&p->lexer);
 
     /* Handle compound keywords: AND THEN, OR ELSE */
     if (p->previous_token.kind == TK_AND && Parser_At(p, TK_THEN)) {
         p->previous_token.kind = TK_AND_THEN;
+        p->lexer.prev_token_kind = TK_AND_THEN;
         p->current_token = Lexer_Next_Token(&p->lexer);
     } else if (p->previous_token.kind == TK_OR && Parser_At(p, TK_ELSE)) {
         p->previous_token.kind = TK_OR_ELSE;
+        p->lexer.prev_token_kind = TK_OR_ELSE;
         p->current_token = Lexer_Next_Token(&p->lexer);
     }
 
@@ -9723,20 +9738,33 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                     /* Helper macro: add use-visible alias for a symbol */
                     #define ADD_USE_ALIAS(orig) do { \
                         if (orig) { \
-                            Symbol *alias = Symbol_New((orig)->kind, (orig)->name, (orig)->location); \
-                            alias->type = (orig)->type; \
-                            alias->declaration = (orig)->declaration; \
-                            alias->visibility = VIS_USE_VISIBLE; \
-                            alias->parameter_count = (orig)->parameter_count; \
-                            alias->parameters = (orig)->parameters; \
-                            alias->return_type = (orig)->return_type; \
-                            alias->is_named_number = (orig)->is_named_number; \
-                            alias->generic_unit = (orig)->generic_unit; \
-                            alias->generic_body = (orig)->generic_body; \
-                            alias->generic_formals = (orig)->generic_formals; \
-                            Symbol_Add(sm, alias); \
-                            alias->parent = (orig)->parent; \
-                            alias->unique_id = (orig)->unique_id; \
+                            /* Check if alias already exists for this symbol */ \
+                            uint32_t _hash = Symbol_Hash_Name((orig)->name); \
+                            bool _already_aliased = false; \
+                            for (Symbol *_ex = sm->current_scope->buckets[_hash]; _ex; _ex = _ex->next_in_bucket) { \
+                                if (Slice_Equal_Ignore_Case(_ex->name, (orig)->name) && \
+                                    _ex->visibility == VIS_USE_VISIBLE && \
+                                    _ex->unique_id == (orig)->unique_id) { \
+                                    _already_aliased = true; \
+                                    break; \
+                                } \
+                            } \
+                            if (!_already_aliased) { \
+                                Symbol *alias = Symbol_New((orig)->kind, (orig)->name, (orig)->location); \
+                                alias->type = (orig)->type; \
+                                alias->declaration = (orig)->declaration; \
+                                alias->visibility = VIS_USE_VISIBLE; \
+                                alias->parameter_count = (orig)->parameter_count; \
+                                alias->parameters = (orig)->parameters; \
+                                alias->return_type = (orig)->return_type; \
+                                alias->is_named_number = (orig)->is_named_number; \
+                                alias->generic_unit = (orig)->generic_unit; \
+                                alias->generic_body = (orig)->generic_body; \
+                                alias->generic_formals = (orig)->generic_formals; \
+                                Symbol_Add(sm, alias); \
+                                alias->parent = (orig)->parent; \
+                                alias->unique_id = (orig)->unique_id; \
+                            } \
                         } \
                     } while(0)
 
@@ -16960,7 +16988,8 @@ static void Generate_Extern_Declarations(Code_Generator *cg, Syntax_Node *node) 
                         }
                         Emit_Extern_Subprogram(cg, sym);
                     } else if (sym->kind == SYMBOL_VARIABLE || sym->kind == SYMBOL_CONSTANT) {
-                        if (!sym->is_named_number) {
+                        if (!sym->is_named_number && !sym->extern_emitted) {
+                            sym->extern_emitted = true;
                             Type_Info *ty = sym->type;
                             const char *type_str = Type_To_Llvm(ty);
                             bool is_string = ty && (ty->kind == TYPE_STRING ||
@@ -17000,6 +17029,8 @@ static void Generate_Extern_Declarations(Code_Generator *cg, Syntax_Node *node) 
                         Syntax_Node *name = decl->object_decl.names.items[m];
                         Symbol *sym = name ? name->symbol : NULL;
                         if (!sym || sym->is_named_number) continue;
+                        if (sym->extern_emitted) continue;
+                        sym->extern_emitted = true;
                         Type_Info *ty = sym->type;
                         const char *type_str = Type_To_Llvm(ty);
                         /* String constants use fat pointer type */
