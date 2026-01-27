@@ -3268,7 +3268,7 @@ static Syntax_Node *Parse_Simple_Name(Parser *p) {
  * cannot tell them apart; semantic analysis can.
  * ───────────────────────────────────────────────────────────────────────── */
 
-/* Helper to parse a choice (expression or range) */
+/* Helper to parse a choice (expression, range, or discrete_subtype_indication) */
 static Syntax_Node *Parse_Choice(Parser *p) {
     Source_Location loc = Parser_Location(p);
 
@@ -3285,6 +3285,29 @@ static Syntax_Node *Parse_Choice(Parser *p) {
         range->range.low = expr;
         range->range.high = Parse_Expression(p);
         return range;
+    }
+
+    /* Check for subtype_mark RANGE low..high (discrete_subtype_indication)
+     * This handles index constraints like: INTEGER RANGE 1..10 */
+    if (Parser_Match(p, TK_RANGE)) {
+        Syntax_Node *ind = Node_New(NK_SUBTYPE_INDICATION, loc);
+        ind->subtype_ind.subtype_mark = expr;
+
+        Syntax_Node *constraint = Node_New(NK_RANGE_CONSTRAINT, loc);
+        Syntax_Node *range_low = Parse_Expression(p);
+
+        if (Parser_Match(p, TK_DOTDOT)) {
+            Syntax_Node *range_node = Node_New(NK_RANGE, loc);
+            range_node->range.low = range_low;
+            range_node->range.high = Parse_Expression(p);
+            constraint->range_constraint.range = range_node;
+        } else {
+            /* Just a range attribute or name */
+            constraint->range_constraint.range = range_low;
+        }
+
+        ind->subtype_ind.constraint = constraint;
+        return ind;
     }
 
     return expr;
@@ -5827,11 +5850,27 @@ static inline bool Type_Is_Unconstrained_Array(const Type_Info *t) {
  * §10.5 Base Type Traversal
  *
  * Per RM 3.3.1: The base type of a type is the ultimate ancestor.
- * For subtypes, follow base_type links to find the original type.
+ * For subtypes, follow base_type links; for derived types, follow parent_type.
  * ───────────────────────────────────────────────────────────────────────── */
 
 static Type_Info *Type_Base(Type_Info *t) {
     while (t && t->base_type) t = t->base_type;
+    return t;
+}
+
+/* Type_Root: Follow both base_type and parent_type chains to find the root
+ * ancestor type. This is used for derived type compatibility checking where
+ * we need to find the ultimate parent enumeration/integer type. */
+static Type_Info *Type_Root(Type_Info *t) {
+    while (t) {
+        if (t->base_type) {
+            t = t->base_type;
+        } else if (t->parent_type) {
+            t = t->parent_type;
+        } else {
+            break;
+        }
+    }
     return t;
 }
 
@@ -6458,6 +6497,14 @@ static bool Type_Covers(Type_Info *expected, Type_Info *actual) {
     if (base_exp == base_act) return true;
     if (base_exp == actual || expected == base_act) return true;
 
+    /* For derived types, check if they share the same root type (RM 3.4).
+     * This handles enumeration/integer literals from parent types being
+     * compatible with derived types. E.g., if T is new PARENT, then
+     * enumeration literal E4 from PARENT is compatible with T. */
+    Type_Info *root_exp = Type_Root(expected);
+    Type_Info *root_act = Type_Root(actual);
+    if (root_exp && root_act && root_exp == root_act) return true;
+
     /* SYSTEM.ADDRESS compatibility (RM 13.7): all ADDRESS types are interoperable
      * This handles the case where 'ADDRESS attribute returns a built-in ADDRESS
      * type but the target is declared as SYSTEM.ADDRESS from the package */
@@ -6508,6 +6555,46 @@ static bool Type_Covers(Type_Info *expected, Type_Info *actual) {
         expected->name.data && actual->name.data &&
         Slice_Equal_Ignore_Case(expected->name, actual->name)) {
         return true;
+    }
+
+    /* Character literals as enumeration literals (RM 3.5.1):
+     * An enumeration type can define character literals (e.g., TYPE T IS ('A', 'B');).
+     * When comparing, CHARACTER type should be compatible with such enumerations.
+     * Check by looking for literals that start with single quote. */
+    {
+        Type_Info *char_type = NULL;
+        Type_Info *enum_type = NULL;
+        if (expected->kind == TYPE_CHARACTER && actual->kind == TYPE_ENUMERATION) {
+            char_type = expected;
+            enum_type = actual;
+        } else if (actual->kind == TYPE_CHARACTER && expected->kind == TYPE_ENUMERATION) {
+            char_type = actual;
+            enum_type = expected;
+        }
+        /* Also check derived enumeration types via root */
+        if (!enum_type && expected->kind == TYPE_CHARACTER) {
+            Type_Info *act_root = Type_Root(actual);
+            if (act_root && act_root->kind == TYPE_ENUMERATION) {
+                enum_type = act_root;
+                char_type = expected;
+            }
+        }
+        if (!enum_type && actual->kind == TYPE_CHARACTER) {
+            Type_Info *exp_root = Type_Root(expected);
+            if (exp_root && exp_root->kind == TYPE_ENUMERATION) {
+                enum_type = exp_root;
+                char_type = actual;
+            }
+        }
+        if (char_type && enum_type && enum_type->enumeration.literals) {
+            /* Check if enum has any character literals */
+            for (uint32_t i = 0; i < enum_type->enumeration.literal_count; i++) {
+                String_Slice lit = enum_type->enumeration.literals[i];
+                if (lit.length > 0 && lit.data[0] == '\'') {
+                    return true;  /* Enum has character literals */
+                }
+            }
+        }
     }
 
     return false;
@@ -7056,6 +7143,14 @@ static Type_Info *Resolve_Identifier(Symbol_Manager *sm, Syntax_Node *node) {
     }
 
     node->symbol = sym;
+
+    /* For parameterless functions, the result type is the return type.
+     * In Ada, a function name without parentheses is a valid call. */
+    if (sym->kind == SYMBOL_FUNCTION && sym->return_type) {
+        node->type = sym->return_type;
+        return sym->return_type;
+    }
+
     node->type = sym->type;
     return sym->type;
 }
@@ -7233,6 +7328,7 @@ static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
             break;
 
         case TK_IN:
+        case TK_NOT:  /* NOT IN is encoded as TK_NOT in binary op */
             /* Membership test */
             node->type = sm->type_boolean;
             break;
@@ -7582,6 +7678,23 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                 /* ADDRESS attribute returns SYSTEM.ADDRESS (RM 13.7.2) */
                 else if (Slice_Equal_Ignore_Case(attr, S("ADDRESS"))) {
                     node->type = sm->type_address;
+                }
+                /* BASE attribute returns the base type (RM 3.3.2) */
+                else if (Slice_Equal_Ignore_Case(attr, S("BASE"))) {
+                    /* T'BASE is a type, used as prefix for other attributes like T'BASE'FIRST
+                     * The type should be the base type of the prefix type */
+                    if (prefix_type) {
+                        Type_Info *base = Type_Base(prefix_type);
+                        if (!base) base = Type_Root(prefix_type);
+                        node->type = base ? base : prefix_type;
+                    } else {
+                        node->type = sm->type_integer;
+                    }
+                }
+                /* VALUE attribute returns the type itself (converts string to type) */
+                else if (Slice_Equal_Ignore_Case(attr, S("VALUE"))) {
+                    /* T'VALUE(S) returns a value of type T */
+                    node->type = prefix_type ? prefix_type : sm->type_integer;
                 }
                 /* Default to integer for unhandled attributes */
                 else {
@@ -8801,6 +8914,10 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                         type->alignment = def_type->alignment;
                         type->low_bound = def_type->low_bound;
                         type->high_bound = def_type->high_bound;
+
+                        /* For derived and subtype types, preserve base/parent chain */
+                        type->base_type = def_type->base_type;
+                        type->parent_type = def_type->parent_type;
 
                         if (def_type->kind == TYPE_ARRAY) {
                             type->array = def_type->array;
