@@ -11821,7 +11821,13 @@ static uint32_t Emit_Convert(Code_Generator *cg, uint32_t src, const char *src_t
         /* integer conversions */
         if (src_bits == dst_bits) return src;
         if (dst_bits > src_bits) {
-            Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", t, src_type, src, dst_type);
+            /* Use zext for boolean (i1) to preserve 0/1 semantics,
+             * sext for other integer extensions */
+            if (src_bits == 1) {
+                Emit(cg, "  %%t%u = zext %s %%t%u to %s\n", t, src_type, src, dst_type);
+            } else {
+                Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", t, src_type, src, dst_type);
+            }
         } else if (dst_bits == 1) {
             /* Boolean: icmp ne 0 preserves semantics (any non-zero → true) */
             Emit(cg, "  %%t%u = icmp ne %s %%t%u, 0\n", t, src_type, src);
@@ -12041,6 +12047,34 @@ static uint32_t Emit_Load_Fat_Pointer(Code_Generator *cg, Symbol *sym) {
  * ───────────────────────────────────────────────────────────────────────── */
 
 static uint32_t Generate_Expression(Code_Generator *cg, Syntax_Node *node);
+
+/* Generate code to evaluate a type bound at runtime.
+ * Returns the temp register containing the bound value.
+ * Per GNAT exp_imgv.adb, when bounds are not compile-time known,
+ * we must generate code to evaluate them at runtime. */
+static uint32_t Generate_Bound_Value(Code_Generator *cg, Type_Bound b) {
+    uint32_t t = cg->temp_id++;
+    if (b.kind == BOUND_INTEGER) {
+        Emit(cg, "  %%t%u = add i64 0, %lld  ; bound (integer)\n", t, (long long)b.int_value);
+        return t;
+    }
+    if (b.kind == BOUND_FLOAT) {
+        Emit(cg, "  %%t%u = fptosi double %e to i64  ; bound (float)\n", t, b.float_value);
+        return t;
+    }
+    if (b.kind == BOUND_EXPR && b.expr) {
+        /* First try compile-time evaluation */
+        double val = Eval_Const_Numeric(b.expr);
+        if (val == val) {  /* Not NaN */
+            Emit(cg, "  %%t%u = add i64 0, %lld  ; bound (const expr)\n", t, (long long)val);
+            return t;
+        }
+        /* Must evaluate expression at runtime */
+        return Generate_Expression(cg, b.expr);
+    }
+    Emit(cg, "  %%t%u = add i64 0, 0  ; bound (unknown)\n", t);
+    return t;
+}
 
 static uint32_t Generate_Integer_Literal(Code_Generator *cg, Syntax_Node *node) {
     uint32_t t = Emit_Temp(cg);
@@ -14001,6 +14035,20 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
     return t;
 }
 
+/* Check if a type bound can be evaluated at compile time.
+ * Returns true if the bound is compile-time known, false otherwise.
+ * Per GNAT's sem_eval.ads, compile-time known is broader than static -
+ * it includes values that can be determined at compile time even if
+ * they technically involve non-static expressions. */
+static bool Type_Bound_Is_Compile_Time_Known(Type_Bound b) {
+    if (b.kind == BOUND_INTEGER || b.kind == BOUND_FLOAT) return true;
+    if (b.kind == BOUND_EXPR && b.expr) {
+        double val = Eval_Const_Numeric(b.expr);
+        return val == val;  /* Returns true if not NaN */
+    }
+    return false;
+}
+
 static int64_t Type_Bound_Value(Type_Bound b) {
     if (b.kind == BOUND_INTEGER) return b.int_value;
     if (b.kind == BOUND_FLOAT) return (int64_t)b.float_value;
@@ -14064,20 +14112,27 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
      * ───────────────────────────────────────────────────────────────────── */
 
     if (prefix_type && cg->current_instance) {
-        Symbol *actuals_holder = cg->current_instance;
-        /* If current instance is a subprogram within a package, use the package's actuals */
-        if (actuals_holder && !actuals_holder->generic_actuals && actuals_holder->parent &&
-            actuals_holder->parent->kind == SYMBOL_PACKAGE && actuals_holder->parent->generic_actuals) {
-            actuals_holder = actuals_holder->parent;
-        }
-        if (actuals_holder && actuals_holder->generic_actuals) {
-            /* Look up prefix type name in generic actuals */
-            for (uint32_t i = 0; i < actuals_holder->generic_actual_count; i++) {
-                if (actuals_holder->generic_actuals[i].actual_type &&
-                    Slice_Equal_Ignore_Case(prefix_type->name,
-                        actuals_holder->generic_actuals[i].formal_name)) {
-                    prefix_type = actuals_holder->generic_actuals[i].actual_type;
-                    break;
+        /* Only substitute if prefix_type is the formal type itself, not a subtype.
+         * Constrained subtypes (like NOCHAR IS CH RANGE 1..0) must keep their
+         * own bounds, not be substituted with the actual type's bounds.
+         * A type with base_type set is a constrained subtype of the formal. */
+        bool is_constrained_subtype = prefix_type->base_type != NULL;
+        if (!is_constrained_subtype) {
+            Symbol *actuals_holder = cg->current_instance;
+            /* If current instance is a subprogram within a package, use the package's actuals */
+            if (actuals_holder && !actuals_holder->generic_actuals && actuals_holder->parent &&
+                actuals_holder->parent->kind == SYMBOL_PACKAGE && actuals_holder->parent->generic_actuals) {
+                actuals_holder = actuals_holder->parent;
+            }
+            if (actuals_holder && actuals_holder->generic_actuals) {
+                /* Look up prefix type name in generic actuals */
+                for (uint32_t i = 0; i < actuals_holder->generic_actual_count; i++) {
+                    if (actuals_holder->generic_actuals[i].actual_type &&
+                        Slice_Equal_Ignore_Case(prefix_type->name,
+                            actuals_holder->generic_actuals[i].formal_name)) {
+                        prefix_type = actuals_holder->generic_actuals[i].actual_type;
+                        break;
+                    }
                 }
             }
         }
@@ -14149,9 +14204,15 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                  Type_Bound_Float_Value(prefix_type->low_bound),
                  (int)attr.length, attr.data);
         } else if (prefix_type) {
-            Emit(cg, "  %%t%u = add i64 0, %lld  ; %.*s'FIRST\n", t,
-                 (long long)Type_Bound_Value(prefix_type->low_bound),
-                 (int)attr.length, attr.data);
+            /* Scalar type - check if bound is compile-time known */
+            if (Type_Bound_Is_Compile_Time_Known(prefix_type->low_bound)) {
+                Emit(cg, "  %%t%u = add i64 0, %lld  ; %.*s'FIRST\n", t,
+                     (long long)Type_Bound_Value(prefix_type->low_bound),
+                     (int)attr.length, attr.data);
+            } else {
+                /* Generate runtime evaluation of bound expression */
+                return Generate_Bound_Value(cg, prefix_type->low_bound);
+            }
         } else {
             /* ??? Fallback: prefix_type is NULL - emit 0 */
             Emit(cg, "  %%t%u = add i64 0, 0  ; %.*s'FIRST (no type)\n", t,
@@ -14185,9 +14246,15 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                  Type_Bound_Float_Value(prefix_type->high_bound),
                  (int)attr.length, attr.data);
         } else if (prefix_type) {
-            Emit(cg, "  %%t%u = add i64 0, %lld  ; %.*s'LAST\n", t,
-                 (long long)Type_Bound_Value(prefix_type->high_bound),
-                 (int)attr.length, attr.data);
+            /* Scalar type - check if bound is compile-time known */
+            if (Type_Bound_Is_Compile_Time_Known(prefix_type->high_bound)) {
+                Emit(cg, "  %%t%u = add i64 0, %lld  ; %.*s'LAST\n", t,
+                     (long long)Type_Bound_Value(prefix_type->high_bound),
+                     (int)attr.length, attr.data);
+            } else {
+                /* Generate runtime evaluation of bound expression */
+                return Generate_Bound_Value(cg, prefix_type->high_bound);
+            }
         } else {
             /* ??? Fallback: prefix_type is NULL - emit 0 */
             Emit(cg, "  %%t%u = add i64 0, 0  ; %.*s'LAST (no type)\n", t,
@@ -14700,12 +14767,18 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("WIDTH"))) {
-        /* T'WIDTH - maximum image width for type (RM 3.5.5) */
+        /* T'WIDTH - maximum image width for type (RM 3.5.5)
+         * Per GNAT exp_imgv.adb Expand_Width_Attribute:
+         * - For null range (FIRST > LAST), WIDTH is 0
+         * - For enumeration: max length of literal names in range
+         * - For integer: max width of first/last images
+         * - For boolean: max("FALSE", "TRUE") = 5
+         * - For character: 3 ('X')
+         *
+         * When bounds are not compile-time known, generate runtime code. */
         if (prefix_type) {
-            int64_t width = 0;
-            /* Use Type_Bound_Value to handle BOUND_INTEGER, BOUND_FLOAT, and BOUND_EXPR */
-            int64_t lo = Type_Bound_Value(prefix_type->low_bound);
-            int64_t hi = Type_Bound_Value(prefix_type->high_bound);
+            bool lo_known = Type_Bound_Is_Compile_Time_Known(prefix_type->low_bound);
+            bool hi_known = Type_Bound_Is_Compile_Time_Known(prefix_type->high_bound);
 
             /* Find root enumeration type (traversing base_type and parent_type chains) */
             Type_Info *root_enum = NULL;
@@ -14717,36 +14790,144 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                 if (!ti->base_type && !ti->parent_type) break;
             }
 
-            if (hi < lo) {
-                /* Empty range - width is 0 */
-                width = 0;
-            } else if (root_enum) {
-                /* Enumeration: max length of literal names in range */
-                for (int64_t i = lo; i <= hi && i < (int64_t)root_enum->enumeration.literal_count; i++) {
-                    if (i >= 0) {
-                        uint32_t len = root_enum->enumeration.literals[i].length;
-                        if (len > (uint32_t)width) width = (int64_t)len;
+            if (lo_known && hi_known) {
+                /* Both bounds are compile-time known - compute WIDTH statically */
+                int64_t width = 0;
+                int64_t lo = Type_Bound_Value(prefix_type->low_bound);
+                int64_t hi = Type_Bound_Value(prefix_type->high_bound);
+
+                if (hi < lo) {
+                    /* Empty range - width is 0 */
+                    width = 0;
+                } else if (root_enum) {
+                    /* Enumeration: max length of literal names in range */
+                    for (int64_t i = lo; i <= hi && i < (int64_t)root_enum->enumeration.literal_count; i++) {
+                        if (i >= 0) {
+                            uint32_t len = root_enum->enumeration.literals[i].length;
+                            if (len > (uint32_t)width) width = (int64_t)len;
+                        }
                     }
+                } else if (prefix_type->kind == TYPE_BOOLEAN ||
+                           (prefix_type->base_type && prefix_type->base_type->kind == TYPE_BOOLEAN)) {
+                    /* Boolean: "FALSE" is 5, "TRUE" is 4 */
+                    width = (lo <= 0 && hi >= 0) ? 5 : (lo <= 1 && hi >= 1) ? 4 : 0;
+                } else if (prefix_type->kind == TYPE_CHARACTER ||
+                           (prefix_type->base_type && prefix_type->base_type->kind == TYPE_CHARACTER)) {
+                    /* Character: 'X' is 3 chars */
+                    width = 3;
+                } else {
+                    /* Integer types: max width of first/last images */
+                    /* Width includes leading space for non-negative */
+                    int64_t abs_lo = lo < 0 ? -lo : lo;
+                    int64_t abs_hi = hi < 0 ? -hi : hi;
+                    int64_t max_abs = abs_lo > abs_hi ? abs_lo : abs_hi;
+                    int digits = 1;
+                    while (max_abs >= 10) { digits++; max_abs /= 10; }
+                    width = digits + 1;  /* +1 for leading space or minus sign */
                 }
-            } else if (prefix_type->kind == TYPE_BOOLEAN ||
-                       (prefix_type->base_type && prefix_type->base_type->kind == TYPE_BOOLEAN)) {
-                /* Boolean: "FALSE" is 5, "TRUE" is 4 */
-                width = (lo <= 0 && hi >= 0) ? 5 : (lo <= 1 && hi >= 1) ? 4 : 0;
-            } else if (prefix_type->kind == TYPE_CHARACTER ||
-                       (prefix_type->base_type && prefix_type->base_type->kind == TYPE_CHARACTER)) {
-                /* Character: 'X' is 3 chars */
-                width = 3;
+                Emit(cg, "  %%t%u = add i64 0, %lld  ; 'WIDTH\n", t, (long long)width);
             } else {
-                /* Integer types: max width of first/last images */
-                /* Width includes leading space for non-negative */
-                int64_t abs_lo = lo < 0 ? -lo : lo;
-                int64_t abs_hi = hi < 0 ? -hi : hi;
-                int64_t max_abs = abs_lo > abs_hi ? abs_lo : abs_hi;
-                int digits = 1;
-                while (max_abs >= 10) { digits++; max_abs /= 10; }
-                width = digits + 1;  /* +1 for leading space or minus sign */
+                /* Bounds not compile-time known - generate runtime code.
+                 * Per GNAT exp_imgv.adb: generate if FIRST > LAST then 0 else <width>
+                 * For enumeration types with runtime bounds, we compute the full-range
+                 * width at compile time (since literals are known) and use 0 for null range. */
+                uint32_t lo_val = Generate_Bound_Value(cg, prefix_type->low_bound);
+                uint32_t hi_val = Generate_Bound_Value(cg, prefix_type->high_bound);
+
+                /* Compare: is_null = (lo > hi) */
+                uint32_t cmp = cg->temp_id++;
+                Emit(cg, "  %%t%u = icmp sgt i64 %%t%u, %%t%u  ; FIRST > LAST?\n", cmp, lo_val, hi_val);
+
+                /* Compute the width for non-null range at compile time */
+                int64_t full_width = 0;
+                if (root_enum) {
+                    /* For enumeration: compute max width over full base type range */
+                    for (uint32_t i = 0; i < root_enum->enumeration.literal_count; i++) {
+                        uint32_t len = root_enum->enumeration.literals[i].length;
+                        if (len > (uint32_t)full_width) full_width = (int64_t)len;
+                    }
+                } else if (prefix_type->kind == TYPE_BOOLEAN ||
+                           (prefix_type->base_type && prefix_type->base_type->kind == TYPE_BOOLEAN)) {
+                    /* Boolean: WIDTH depends on which values are in range.
+                     * FALSE=0 has width 5, TRUE=1 has width 4.
+                     * If lo <= 0 (FALSE is in range): width = 5
+                     * Otherwise (only TRUE in range): width = 4
+                     * Generate: select (lo <= 0), 5, 4 */
+                    uint32_t has_false = cg->temp_id++;
+                    Emit(cg, "  %%t%u = icmp sle i64 %%t%u, 0  ; has FALSE?\n", has_false, lo_val);
+                    uint32_t bool_width = cg->temp_id++;
+                    Emit(cg, "  %%t%u = select i1 %%t%u, i64 5, i64 4  ; FALSE=5, TRUE=4\n", bool_width, has_false);
+
+                    /* Select: if is_null then 0 else bool_width */
+                    Emit(cg, "  %%t%u = select i1 %%t%u, i64 0, i64 %%t%u  ; 'WIDTH (runtime bool)\n",
+                         t, cmp, bool_width);
+                    return t;
+                } else if (prefix_type->kind == TYPE_CHARACTER ||
+                           (prefix_type->base_type && prefix_type->base_type->kind == TYPE_CHARACTER)) {
+                    full_width = 3;  /* 'X' */
+                } else {
+                    /* Integer: compute WIDTH based on actual runtime bounds.
+                     * WIDTH = max(digits(abs(lo)), digits(abs(hi))) + 1
+                     * Generate runtime code to compute this. */
+
+                    /* Compute abs(lo): if lo < 0 then -lo else lo */
+                    uint32_t neg_lo = cg->temp_id++;
+                    Emit(cg, "  %%t%u = sub i64 0, %%t%u\n", neg_lo, lo_val);
+                    uint32_t is_neg_lo = cg->temp_id++;
+                    Emit(cg, "  %%t%u = icmp slt i64 %%t%u, 0\n", is_neg_lo, lo_val);
+                    uint32_t abs_lo = cg->temp_id++;
+                    Emit(cg, "  %%t%u = select i1 %%t%u, i64 %%t%u, i64 %%t%u\n", abs_lo, is_neg_lo, neg_lo, lo_val);
+
+                    /* Compute abs(hi): if hi < 0 then -hi else hi */
+                    uint32_t neg_hi = cg->temp_id++;
+                    Emit(cg, "  %%t%u = sub i64 0, %%t%u\n", neg_hi, hi_val);
+                    uint32_t is_neg_hi = cg->temp_id++;
+                    Emit(cg, "  %%t%u = icmp slt i64 %%t%u, 0\n", is_neg_hi, hi_val);
+                    uint32_t abs_hi = cg->temp_id++;
+                    Emit(cg, "  %%t%u = select i1 %%t%u, i64 %%t%u, i64 %%t%u\n", abs_hi, is_neg_hi, neg_hi, hi_val);
+
+                    /* max_abs = max(abs_lo, abs_hi) */
+                    uint32_t cmp_abs = cg->temp_id++;
+                    Emit(cg, "  %%t%u = icmp ugt i64 %%t%u, %%t%u\n", cmp_abs, abs_lo, abs_hi);
+                    uint32_t max_abs = cg->temp_id++;
+                    Emit(cg, "  %%t%u = select i1 %%t%u, i64 %%t%u, i64 %%t%u\n", max_abs, cmp_abs, abs_lo, abs_hi);
+
+                    /* Count digits using comparison chain (for i64, max 19 digits) */
+                    /* digits = 1 if < 10, 2 if < 100, ..., 19 if < 10^19 */
+                    uint32_t prev = max_abs;
+                    uint32_t digits_val = cg->temp_id++;
+                    Emit(cg, "  %%t%u = add i64 0, 1  ; initial digits\n", digits_val);
+
+                    int64_t thresholds[] = {10, 100, 1000, 10000, 100000, 1000000, 10000000,
+                                           100000000, 1000000000, 10000000000LL, 100000000000LL,
+                                           1000000000000LL, 10000000000000LL, 100000000000000LL,
+                                           1000000000000000LL, 10000000000000000LL,
+                                           100000000000000000LL, 1000000000000000000LL};
+                    for (int d = 0; d < 18; d++) {
+                        uint32_t cmp_d = cg->temp_id++;
+                        Emit(cg, "  %%t%u = icmp uge i64 %%t%u, %lld\n", cmp_d, max_abs, (long long)thresholds[d]);
+                        uint32_t next_digits = cg->temp_id++;
+                        Emit(cg, "  %%t%u = select i1 %%t%u, i64 %d, i64 %%t%u\n",
+                             next_digits, cmp_d, d + 2, digits_val);
+                        digits_val = next_digits;
+                    }
+
+                    /* width = digits + 1 (for leading space or minus sign) */
+                    uint32_t width_val = cg->temp_id++;
+                    Emit(cg, "  %%t%u = add i64 %%t%u, 1  ; +1 for sign/space\n", width_val, digits_val);
+
+                    full_width = 0;  /* Not used - we have runtime value */
+
+                    /* Select: if is_null then 0 else width_val */
+                    Emit(cg, "  %%t%u = select i1 %%t%u, i64 0, i64 %%t%u  ; 'WIDTH (runtime)\n",
+                         t, cmp, width_val);
+                    return t;
+                }
+
+                /* Select: if is_null then 0 else full_width */
+                Emit(cg, "  %%t%u = select i1 %%t%u, i64 0, i64 %lld  ; 'WIDTH (runtime)\n",
+                     t, cmp, (long long)full_width);
             }
-            Emit(cg, "  %%t%u = add i64 0, %lld  ; 'WIDTH\n", t, (long long)width);
             return t;
         }
     }
