@@ -11606,6 +11606,65 @@ static uint32_t Emit_Convert(Code_Generator *cg, uint32_t src, const char *src_t
     return t;
 }
 
+/* Forward declaration for use in bound evaluation */
+static uint32_t Generate_Expression(Code_Generator *cg, Syntax_Node *node);
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §13.1.2 Constraint Checks
+ *
+ * Per RM 3.5.4: CONSTRAINT_ERROR raised when value falls outside subtype range.
+ * Handles both static (BOUND_INTEGER) and dynamic (BOUND_EXPR) bounds.
+ * Generates: if (val < low || val > high) __ada_raise(CONSTRAINT_ERROR)
+ * ───────────────────────────────────────────────────────────────────────── */
+static uint32_t Emit_Bound_Value(Code_Generator *cg, Type_Bound *bound) {
+    if (bound->kind == BOUND_INTEGER) {
+        uint32_t t = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = add i64 0, %lld  ; literal bound\n", t, (long long)bound->int_value);
+        return t;
+    } else if (bound->kind == BOUND_EXPR && bound->expr) {
+        return Generate_Expression(cg, bound->expr);
+    }
+    return 0;  /* Cannot determine bound */
+}
+
+static uint32_t Emit_Constraint_Check(Code_Generator *cg, uint32_t val, Type_Info *target) {
+    if (!target) return val;
+    /* Only check scalar types */
+    if (target->kind != TYPE_INTEGER && target->kind != TYPE_ENUMERATION &&
+        target->kind != TYPE_CHARACTER) return val;
+    /* Need either static or dynamic bounds */
+    if ((target->low_bound.kind != BOUND_INTEGER && target->low_bound.kind != BOUND_EXPR) ||
+        (target->high_bound.kind != BOUND_INTEGER && target->high_bound.kind != BOUND_EXPR))
+        return val;
+
+    uint32_t lo = Emit_Bound_Value(cg, &target->low_bound);
+    uint32_t hi = Emit_Bound_Value(cg, &target->high_bound);
+    if (!lo || !hi) return val;  /* Skip if bounds unavailable */
+
+    uint32_t ok_label = cg->label_id++, raise_label = cg->label_id++, cont_label = cg->label_id++;
+
+    /* val < low? */
+    uint32_t cmp_lo = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp slt i64 %%t%u, %%t%u\n", cmp_lo, val, lo);
+    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp_lo, raise_label, ok_label);
+
+    Emit(cg, "L%u:\n", ok_label);
+    /* val > high? */
+    uint32_t cmp_hi = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp sgt i64 %%t%u, %%t%u\n", cmp_hi, val, hi);
+    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp_hi, raise_label, cont_label);
+
+    Emit(cg, "L%u:  ; raise CONSTRAINT_ERROR\n", raise_label);
+    uint32_t exc_id = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = ptrtoint ptr @__exc.constraint_error to i64\n", exc_id);
+    Emit(cg, "  call void @__ada_raise(i64 %%t%u)\n", exc_id);
+    Emit(cg, "  unreachable\n");
+
+    Emit(cg, "L%u:\n", cont_label);
+    cg->block_terminated = false;
+    return val;
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
  * §13.2.1 Fat Pointer Support for Unconstrained Arrays
  *
@@ -13078,24 +13137,37 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             is_byref[i] = byref;
 
             if (byref) {
-                /* For OUT/IN OUT: pass the address of the variable
-                 * The argument must be an lvalue (identifier, selected, indexed) */
+                /* OUT/IN OUT: pass address of variable */
+                Parameter_Mode pmode = sym->parameters[param_idx].mode;
+                Type_Info *formal_type = sym->parameters[param_idx].param_type;
                 if (arg->kind == NK_IDENTIFIER && arg->symbol) {
-                    /* Simple variable - emit address */
                     args[i] = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = getelementptr i8, ptr %%", args[i]);
                     Emit_Symbol_Name(cg, arg->symbol);
                     Emit(cg, ", i64 0  ; address for OUT/IN OUT\n");
+
+                    /* IN OUT: check actual value fits formal constraint before call */
+                    if (pmode == PARAM_IN_OUT && formal_type) {
+                        uint32_t cur_val = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = load i64, ptr %%t%u\n", cur_val, args[i]);
+                        Emit_Constraint_Check(cg, cur_val, formal_type);
+                    }
                 } else {
-                    /* Complex lvalue - generate address (fallback) */
                     args[i] = Generate_Composite_Address(cg, arg);
+                    if (pmode == PARAM_IN_OUT && formal_type) {
+                        uint32_t cur_val = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = load i64, ptr %%t%u\n", cur_val, args[i]);
+                        Emit_Constraint_Check(cg, cur_val, formal_type);
+                    }
                 }
             } else {
                 args[i] = Generate_Expression(cg, arg);
-                /* Convert to actual parameter type (if parameter info available)
-                 * Use actual expression type, not assumed i64 — fat pointers! */
+                /* IN parameter: check constraint before call (RM 4.6) */
                 if (sym->parameters && param_idx < sym->parameter_count &&
                     sym->parameters[param_idx].param_type) {
+                    args[i] = Emit_Constraint_Check(cg, args[i],
+                        sym->parameters[param_idx].param_type);
+                    /* Convert to actual parameter type - fat pointers stay fat */
                     const char *param_type = Type_To_Llvm(sym->parameters[param_idx].param_type);
                     const char *arg_type = Expression_Llvm_Type(arg);
                     args[i] = Emit_Convert(cg, args[i], arg_type, param_type);
@@ -13150,6 +13222,19 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         }
 
         Emit(cg, ")\n");
+
+        /* OUT/IN OUT: check returned value fits actual's constraint (RM 6.2) */
+        for (uint32_t i = 0; i < node->apply.arguments.count; i++) {
+            if (!is_byref[i]) continue;
+            Syntax_Node *arg_node = node->apply.arguments.items[i];
+            Syntax_Node *arg = (arg_node->kind == NK_ASSOCIATION) ?
+                arg_node->association.expression : arg_node;
+            Type_Info *actual_type = arg->type;  /* Actual variable's subtype */
+            if (!actual_type) continue;
+            uint32_t ret_val = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = load i64, ptr %%t%u  ; OUT/INOUT result\n", ret_val, args[i]);
+            Emit_Constraint_Check(cg, ret_val, actual_type);
+        }
 
         /* Widen return value to i64 for computation */
         if (sym->return_type) {
@@ -15978,18 +16063,21 @@ static void Generate_Block_Statement(Code_Generator *cg, Syntax_Node *node) {
 
     if (has_handlers) {
         /* Setup exception handling using setjmp/longjmp */
-        uint32_t jmp_buf = Emit_Temp(cg);
+        uint32_t handler_frame = Emit_Temp(cg);
         uint32_t handler_label = Emit_Label(cg);
         uint32_t normal_label = Emit_Label(cg);
         uint32_t end_label = Emit_Label(cg);
 
-        /* Allocate jmp_buf (200 bytes for safety) */
-        Emit(cg, "  %%t%u = alloca [200 x i8], align 16  ; jmp_buf\n", jmp_buf);
+        /* Allocate handler frame: { ptr prev, [200 x i8] jmp_buf } */
+        Emit(cg, "  %%t%u = alloca { ptr, [200 x i8] }, align 16  ; handler frame\n", handler_frame);
 
         /* Push exception handler */
-        Emit(cg, "  call void @__ada_push_handler(ptr %%t%u)\n", jmp_buf);
+        Emit(cg, "  call void @__ada_push_handler(ptr %%t%u)\n", handler_frame);
 
-        /* Call setjmp */
+        /* Call setjmp on the jmp_buf field (field 1) */
+        uint32_t jmp_buf = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = getelementptr { ptr, [200 x i8] }, ptr %%t%u, i32 0, i32 1\n",
+             jmp_buf, handler_frame);
         uint32_t setjmp_result = Emit_Temp(cg);
         Emit(cg, "  %%t%u = call i32 @setjmp(ptr %%t%u)\n", setjmp_result, jmp_buf);
 
@@ -17190,18 +17278,21 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
 
     if (has_exc_handlers) {
         /* Setup exception handling using setjmp/longjmp */
-        uint32_t jmp_buf = Emit_Temp(cg);
+        uint32_t handler_frame = Emit_Temp(cg);
         uint32_t handler_label = Emit_Label(cg);
         uint32_t normal_label = Emit_Label(cg);
         uint32_t end_label = Emit_Label(cg);
 
-        /* Allocate jmp_buf (200 bytes for safety) */
-        Emit(cg, "  %%t%u = alloca [200 x i8], align 16  ; jmp_buf\n", jmp_buf);
+        /* Allocate handler frame: { ptr prev, [200 x i8] jmp_buf } */
+        Emit(cg, "  %%t%u = alloca { ptr, [200 x i8] }, align 16  ; handler frame\n", handler_frame);
 
         /* Push exception handler */
-        Emit(cg, "  call void @__ada_push_handler(ptr %%t%u)\n", jmp_buf);
+        Emit(cg, "  call void @__ada_push_handler(ptr %%t%u)\n", handler_frame);
 
-        /* Call setjmp */
+        /* Call setjmp on the jmp_buf field (field 1) */
+        uint32_t jmp_buf = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = getelementptr { ptr, [200 x i8] }, ptr %%t%u, i32 0, i32 1\n",
+             jmp_buf, handler_frame);
         uint32_t setjmp_result = Emit_Temp(cg);
         Emit(cg, "  %%t%u = call i32 @setjmp(ptr %%t%u)\n", setjmp_result, jmp_buf);
 
@@ -17589,15 +17680,15 @@ static void Generate_Task_Body(Code_Generator *cg, Syntax_Node *node) {
         }
     }
 
-    /* Push exception handler for task */
+    /* Push exception handler for task: { ptr prev, [200 x i8] jmp_buf } */
+    uint32_t handler_frame = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = alloca { ptr, [200 x i8] }, align 16  ; handler frame\n", handler_frame);
+    Emit(cg, "  call void @__ada_push_handler(ptr %%t%u)\n", handler_frame);
     uint32_t jmp_buf = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = alloca [200 x i8]\n", jmp_buf);
-    uint32_t jmp_ptr = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = getelementptr [200 x i8], ptr %%t%u, i64 0, i64 0\n",
-         jmp_ptr, jmp_buf);
-    Emit(cg, "  call void @__ada_push_handler(ptr %%t%u)\n", jmp_ptr);
+    Emit(cg, "  %%t%u = getelementptr { ptr, [200 x i8] }, ptr %%t%u, i32 0, i32 1\n",
+         jmp_buf, handler_frame);
     uint32_t setjmp_result = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = call i32 @setjmp(ptr %%t%u)\n", setjmp_result, jmp_ptr);
+    Emit(cg, "  %%t%u = call i32 @setjmp(ptr %%t%u)\n", setjmp_result, jmp_buf);
     uint32_t is_zero = Emit_Temp(cg);
     Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", is_zero, setjmp_result);
     uint32_t body_label = Emit_Label(cg);
@@ -18433,23 +18524,28 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "  ret ptr %%13\n");
     Emit(cg, "}\n\n");
 
-    /* Exception handling: push handler */
+    /* Exception handling: push handler
+     * Handler frame structure: { ptr prev, [200 x i8] jmp_buf }
+     * Field 0 = link to previous handler
+     * Field 1 = jmp_buf for setjmp/longjmp */
     Emit(cg, "; Exception handling runtime\n");
     Emit(cg, "define linkonce_odr void @__ada_push_handler(ptr %%h) {\n");
-    Emit(cg, "  %%1 = load ptr, ptr @__eh_cur\n");
-    Emit(cg, "  store ptr %%1, ptr %%h\n");
+    Emit(cg, "  %%old = load ptr, ptr @__eh_cur\n");
+    Emit(cg, "  %%link = getelementptr { ptr, [200 x i8] }, ptr %%h, i32 0, i32 0\n");
+    Emit(cg, "  store ptr %%old, ptr %%link\n");
     Emit(cg, "  store ptr %%h, ptr @__eh_cur\n");
     Emit(cg, "  ret void\n");
     Emit(cg, "}\n\n");
 
     /* Exception handling: pop handler */
     Emit(cg, "define linkonce_odr void @__ada_pop_handler() {\n");
-    Emit(cg, "  %%1 = load ptr, ptr @__eh_cur\n");
-    Emit(cg, "  %%2 = icmp eq ptr %%1, null\n");
-    Emit(cg, "  br i1 %%2, label %%done, label %%pop\n");
+    Emit(cg, "  %%cur = load ptr, ptr @__eh_cur\n");
+    Emit(cg, "  %%is_null = icmp eq ptr %%cur, null\n");
+    Emit(cg, "  br i1 %%is_null, label %%done, label %%pop\n");
     Emit(cg, "pop:\n");
-    Emit(cg, "  %%3 = load ptr, ptr %%1\n");
-    Emit(cg, "  store ptr %%3, ptr @__eh_cur\n");
+    Emit(cg, "  %%link = getelementptr { ptr, [200 x i8] }, ptr %%cur, i32 0, i32 0\n");
+    Emit(cg, "  %%prev = load ptr, ptr %%link\n");
+    Emit(cg, "  store ptr %%prev, ptr @__eh_cur\n");
     Emit(cg, "  br label %%done\n");
     Emit(cg, "done:\n");
     Emit(cg, "  ret void\n");
@@ -18458,15 +18554,16 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     /* Exception handling: raise */
     Emit(cg, "define linkonce_odr void @__ada_raise(i64 %%exc_id) {\n");
     Emit(cg, "  store i64 %%exc_id, ptr @__ex_cur\n");
-    Emit(cg, "  %%jb = load ptr, ptr @__eh_cur\n");
-    Emit(cg, "  %%is_null = icmp eq ptr %%jb, null\n");
+    Emit(cg, "  %%frame = load ptr, ptr @__eh_cur\n");
+    Emit(cg, "  %%is_null = icmp eq ptr %%frame, null\n");
     Emit(cg, "  br i1 %%is_null, label %%unhandled, label %%jump\n");
     Emit(cg, "jump:\n");
+    Emit(cg, "  %%jb = getelementptr { ptr, [200 x i8] }, ptr %%frame, i32 0, i32 1\n");
     Emit(cg, "  call void @longjmp(ptr %%jb, i32 1)\n");
     Emit(cg, "  unreachable\n");
     Emit(cg, "unhandled:\n");
     Emit(cg, "  call i32 (ptr, ...) @printf(ptr @.fmt_ue, i64 %%exc_id)\n");
-    Emit(cg, "  call void @longjmp(ptr null, i32 1)\n");
+    Emit(cg, "  call void @exit(i32 1)\n");
     Emit(cg, "  unreachable\n");
     Emit(cg, "}\n\n");
 
