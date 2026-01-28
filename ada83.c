@@ -7422,26 +7422,29 @@ static Type_Info *Resolve_Selected(Symbol_Manager *sm, Syntax_Node *node) {
 
 /* Get the operator name string for a token kind */
 static String_Slice Operator_Name(Token_Kind op) {
+    /* Return bare (unquoted) operator designators.  The lexer strips quotes
+     * from operator symbol declarations (RM 6.1), so symbol table entries
+     * store bare names like +, mod, **.  Match that convention here. */
     switch (op) {
-        case TK_PLUS:      return S("\"+\"");
-        case TK_MINUS:     return S("\"-\"");
-        case TK_STAR:      return S("\"*\"");
-        case TK_SLASH:     return S("\"/\"");
-        case TK_MOD:       return S("\"mod\"");
-        case TK_REM:       return S("\"rem\"");
-        case TK_EXPON:     return S("\"**\"");
-        case TK_AMPERSAND: return S("\"&\"");
-        case TK_AND:       return S("\"and\"");
-        case TK_OR:        return S("\"or\"");
-        case TK_XOR:       return S("\"xor\"");
-        case TK_EQ:        return S("\"=\"");
-        case TK_NE:        return S("\"/=\"");
-        case TK_LT:        return S("\"<\"");
-        case TK_LE:        return S("\"<=\"");
-        case TK_GT:        return S("\">\"");
-        case TK_GE:        return S("\">=\"");
-        case TK_NOT:       return S("\"not\"");
-        case TK_ABS:       return S("\"abs\"");
+        case TK_PLUS:      return S("+");
+        case TK_MINUS:     return S("-");
+        case TK_STAR:      return S("*");
+        case TK_SLASH:     return S("/");
+        case TK_MOD:       return S("mod");
+        case TK_REM:       return S("rem");
+        case TK_EXPON:     return S("**");
+        case TK_AMPERSAND: return S("&");
+        case TK_AND:       return S("and");
+        case TK_OR:        return S("or");
+        case TK_XOR:       return S("xor");
+        case TK_EQ:        return S("=");
+        case TK_NE:        return S("/=");
+        case TK_LT:        return S("<");
+        case TK_LE:        return S("<=");
+        case TK_GT:        return S(">");
+        case TK_GE:        return S(">=");
+        case TK_NOT:       return S("not");
+        case TK_ABS:       return S("abs");
         default:           return S("");
     }
 }
@@ -7942,11 +7945,41 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
             }
         }
         /* Unary operators with one argument */
-        if (name.length == 1 && arg_count == 1) {
-            char op_char = name.data[0];
-            if (op_char == '+' || op_char == '-') {
+        if (arg_count == 1) {
+            if (name.length == 1) {
+                char op_char = name.data[0];
+                if (op_char == '+' || op_char == '-') {
+                    node->type = Resolve_Expression(sm, node->apply.arguments.items[0]);
+                    return node->type;
+                }
+            }
+            /* Unary word operators: "NOT"(X), "ABS"(X) (RM 4.5.6, 4.5.7) */
+            if (Slice_Equal_Ignore_Case(name, S("not"))) {
                 Syntax_Node *operand = node->apply.arguments.items[0];
-                node->type = Resolve_Expression(sm, operand);
+                Type_Info *ot = Resolve_Expression(sm, operand);
+                /* NOT preserves boolean array type */
+                if (ot && Type_Is_Array_Like(ot) && ot->array.element_type &&
+                    ot->array.element_type->kind == TYPE_BOOLEAN)
+                    node->type = ot;
+                else
+                    node->type = sm->type_boolean;
+                return node->type;
+            }
+            if (Slice_Equal_Ignore_Case(name, S("abs"))) {
+                node->type = Resolve_Expression(sm, node->apply.arguments.items[0]);
+                return node->type;
+            }
+        }
+        /* Binary word operators: "AND"/"OR"/"XOR"/"MOD"/"REM"(L,R) (RM 4.5) */
+        if (arg_count == 2) {
+            if (Slice_Equal_Ignore_Case(name, S("and")) ||
+                Slice_Equal_Ignore_Case(name, S("or"))  ||
+                Slice_Equal_Ignore_Case(name, S("xor")) ||
+                Slice_Equal_Ignore_Case(name, S("mod")) ||
+                Slice_Equal_Ignore_Case(name, S("rem"))) {
+                Type_Info *lt = Resolve_Expression(sm, node->apply.arguments.items[0]);
+                Resolve_Expression(sm, node->apply.arguments.items[1]);
+                node->type = lt;
                 return node->type;
             }
         }
@@ -8178,7 +8211,16 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
         case NK_UNARY_OP:
             node->type = Resolve_Expression(sm, node->unary.operand);
             if (node->unary.op == TK_NOT) {
-                node->type = sm->type_boolean;
+                /* NOT preserves array-of-BOOLEAN type (RM 4.5.6);
+                 * for scalar operands it returns BOOLEAN. */
+                Type_Info *ot = node->unary.operand ? node->unary.operand->type : NULL;
+                if (ot && Type_Is_Array_Like(ot) &&
+                    ot->array.element_type &&
+                    ot->array.element_type->kind == TYPE_BOOLEAN) {
+                    node->type = ot;  /* boolean array → boolean array */
+                } else {
+                    node->type = sm->type_boolean;
+                }
             } else if (node->unary.op == TK_ALL) {
                 /* .ALL dereference: result is the designated type (RM 4.1) */
                 Type_Info *operand_type = node->unary.operand->type;
