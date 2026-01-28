@@ -3130,6 +3130,20 @@ static Syntax_Node *Parse_Name(Parser *p) {
                 deref->unary.op = TK_ALL;
                 deref->unary.operand = node;
                 node = deref;
+            } else if (Parser_At(p, TK_CHARACTER)) {
+                /* P.'C' — character literal as enum member (RM 4.1.3) */
+                Syntax_Node *sel = Node_New(NK_SELECTED, postfix_loc);
+                sel->selected.prefix = node;
+                sel->selected.selector = Slice_Duplicate(p->current_token.text);
+                Parser_Advance(p);
+                node = sel;
+            } else if (Parser_At(p, TK_STRING)) {
+                /* P."+" — operator symbol (RM 6.1) */
+                Syntax_Node *sel = Node_New(NK_SELECTED, postfix_loc);
+                sel->selected.prefix = node;
+                sel->selected.selector = Slice_Duplicate(p->current_token.text);
+                Parser_Advance(p);
+                node = sel;
             } else {
                 /* Selection: prefix.component */
                 Syntax_Node *sel = Node_New(NK_SELECTED, postfix_loc);
@@ -3268,7 +3282,13 @@ static Syntax_Node *Parse_Simple_Name(Parser *p) {
             Source_Location sel_loc = Parser_Location(p);
             Syntax_Node *sel = Node_New(NK_SELECTED, sel_loc);
             sel->selected.prefix = node;
-            sel->selected.selector = Parser_Identifier(p);
+            /* Accept character literal ('C') or operator string ("+") after dot */
+            if (Parser_At(p, TK_CHARACTER) || Parser_At(p, TK_STRING)) {
+                sel->selected.selector = Slice_Duplicate(p->current_token.text);
+                Parser_Advance(p);
+            } else {
+                sel->selected.selector = Parser_Identifier(p);
+            }
             node = sel;
             continue;
         }
@@ -3437,13 +3457,20 @@ static Syntax_Node *Parse_Expression_Precedence(Parser *p, Precedence min_prec) 
             op = p->previous_token.kind;
         }
 
-        /* Handle NOT IN specially */
+        /* Handle NOT IN specially — mirrors IN range handling below (RM 4.4) */
         if (op == TK_NOT && Parser_At(p, TK_IN)) {
             Parser_Advance(p);
+            Syntax_Node *right = Parse_Expression_Precedence(p, prec + 1);
+            if (Parser_Match(p, TK_DOTDOT)) {
+                Syntax_Node *range = Node_New(NK_RANGE, loc);
+                range->range.low = right;
+                range->range.high = Parse_Expression_Precedence(p, prec + 1);
+                right = range;
+            }
             Syntax_Node *node = Node_New(NK_BINARY_OP, loc);
-            node->binary.op = TK_NOT;  /* NOT IN encoded as NOT with IN semantics */
+            node->binary.op = TK_NOT;
             node->binary.left = left;
-            node->binary.right = Parse_Expression_Precedence(p, prec + 1);
+            node->binary.right = right;
             left = node;
             continue;
         }
@@ -13415,7 +13442,9 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
     }
 
     uint32_t left = Generate_Expression(cg, node->binary.left);
-    uint32_t right = Generate_Expression(cg, node->binary.right);
+    /* NK_RANGE right operand is generated inside the IN/NOT IN handler */
+    bool right_is_range = node->binary.right && node->binary.right->kind == NK_RANGE;
+    uint32_t right = right_is_range ? 0 : Generate_Expression(cg, node->binary.right);
     uint32_t t = Emit_Temp(cg);
 
     const char *op;
@@ -13718,51 +13747,44 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             }
 
         case TK_IN:
-        case TK_NOT:  /* NOT IN is encoded as TK_NOT in binary op */
+        case TK_NOT:  /* NOT IN encoded as TK_NOT binary (RM 4.4) */
             {
-                /* Membership test: X IN T or X NOT IN T
-                 * For scalar types, check if X >= T'FIRST and X <= T'LAST
-                 * For ranges, check if X >= low and X <= high */
-                Type_Info *range_type = node->binary.right ? node->binary.right->type : NULL;
-
-                /* Get the bounds to check against */
-                int64_t low_val = 0, high_val = 0;
-                bool have_bounds = false;
+                /* Membership test — two forms:
+                 *   X IN  low .. high   →  low <= X <= high
+                 *   X IN  T             →  T'FIRST <= X <= T'LAST */
+                bool negate = (node->binary.op == TK_NOT);
 
                 if (node->binary.right && node->binary.right->kind == NK_RANGE) {
-                    /* X IN low..high - use the range bounds */
-                    /* For now, generate comparison with the right side value as both bounds check */
-                    /* This will need enhancement for proper range handling */
-                } else if (range_type) {
-                    /* X IN T - use the type's bounds */
-                    low_val = Type_Bound_Value(range_type->low_bound);
-                    high_val = Type_Bound_Value(range_type->high_bound);
-                    have_bounds = true;
-                }
-
-                if (have_bounds) {
-                    /* Generate: (left >= low) AND (left <= high) */
-                    uint32_t ge_low = Emit_Temp(cg);
-                    uint32_t le_high = Emit_Temp(cg);
-                    uint32_t in_range = Emit_Temp(cg);
-
-                    Emit(cg, "  %%t%u = icmp sge i64 %%t%u, %lld\n", ge_low, left, (long long)low_val);
-                    Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %lld\n", le_high, left, (long long)high_val);
-                    Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", in_range, ge_low, le_high);
-
-                    if (node->binary.op == TK_NOT) {
-                        /* NOT IN: negate the result */
-                        Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n", t, in_range);
-                    } else {
-                        t = in_range;
-                    }
+                    /* Dynamic range: generate both bounds from AST */
+                    uint32_t lo = Generate_Expression(cg, node->binary.right->range.low);
+                    uint32_t hi = Generate_Expression(cg, node->binary.right->range.high);
+                    uint32_t ge = Emit_Temp(cg), le = Emit_Temp(cg), in_range = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = icmp sge i64 %%t%u, %%t%u\n", ge, left, lo);
+                    Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", le, left, hi);
+                    Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", in_range, ge, le);
+                    if (negate) { Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n", t, in_range); }
+                    else        { t = in_range; }
                 } else {
-                    /* Fallback: compare with right value (simple equality check) */
-                    Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", t, left, right);
-                    if (node->binary.op == TK_NOT) {
-                        uint32_t neg = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n", neg, t);
-                        t = neg;
+                    /* Type or subtype name: generate bounds at runtime (RM 4.4) */
+                    Type_Info *rt = node->binary.right ? node->binary.right->type : NULL;
+                    if (rt && (rt->low_bound.kind == BOUND_INTEGER || rt->low_bound.kind == BOUND_EXPR) &&
+                              (rt->high_bound.kind == BOUND_INTEGER || rt->high_bound.kind == BOUND_EXPR)) {
+                        uint32_t lo = Emit_Bound_Value(cg, &rt->low_bound);
+                        uint32_t hi = Emit_Bound_Value(cg, &rt->high_bound);
+                        uint32_t ge = Emit_Temp(cg), le = Emit_Temp(cg), in_range = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = icmp sge i64 %%t%u, %%t%u\n", ge, left, lo);
+                        Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", le, left, hi);
+                        Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", in_range, ge, le);
+                        if (negate) { Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n", t, in_range); }
+                        else        { t = in_range; }
+                    } else {
+                        /* Fallback: equality with right operand value */
+                        Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", t, left, right);
+                        if (negate) {
+                            uint32_t neg = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n", neg, t);
+                            t = neg;
+                        }
                     }
                 }
                 return t;
@@ -14410,6 +14432,12 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
 
                 if (strcmp(src_llvm, dst_llvm) != 0) {
                     result = Emit_Convert(cg, result, src_llvm, dst_llvm);
+                }
+                /* Widen narrow integer scalars back to i64 computation width.
+                 * Float/ptr/fat-pointer results keep their native type. (RM 4.6) */
+                if (!Is_Float_Type(dst_llvm) && strcmp(dst_llvm, "ptr") != 0 &&
+                    !strstr(dst_llvm, "{")) {
+                    result = Emit_Convert(cg, result, dst_llvm, "i64");
                 }
             }
             return result;
@@ -18435,7 +18463,8 @@ static bool Has_Nested_Subprograms(Node_List *declarations, Node_List *statement
             Syntax_Node *decl = declarations->items[i];
             if (decl && (decl->kind == NK_PROCEDURE_BODY ||
                          decl->kind == NK_FUNCTION_BODY ||
-                         decl->kind == NK_TASK_BODY)) {
+                         decl->kind == NK_TASK_BODY ||
+                         decl->kind == NK_GENERIC_INST)) {
                 return true;
             }
         }
