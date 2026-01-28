@@ -12749,7 +12749,7 @@ static uint32_t Generate_Record_Equality(Code_Generator *cg, uint32_t left_ptr,
         record_type->record.component_count == 0) {
         /* Empty record or invalid - always equal */
         uint32_t t = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = add i1 0, 1  ; empty record equality\n", t);
+        Emit(cg, "  %%t%u = add i64 0, 1  ; empty record equality\n", t);
         return t;
     }
 
@@ -12845,7 +12845,7 @@ static uint32_t Generate_Array_Equality(Code_Generator *cg, uint32_t left_ptr,
                                         uint32_t right_ptr, Type_Info *array_type) {
     if (!array_type || (array_type->kind != TYPE_ARRAY && array_type->kind != TYPE_STRING)) {
         uint32_t t = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = add i1 0, 1  ; invalid array equality\n", t);
+        Emit(cg, "  %%t%u = add i64 0, 1  ; invalid array equality\n", t);
         return t;
     }
 
@@ -15699,14 +15699,14 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     if (Slice_Equal_Ignore_Case(attr, S("MACHINE_ROUNDS"))) {
         /* T'MACHINE_ROUNDS - does the hardware round? (RM 3.5.8)
          * IEEE 754 hardware rounds, so return TRUE */
-        Emit(cg, "  %%t%u = add i1 0, 1  ; 'MACHINE_ROUNDS (IEEE rounds)\n", t);
+        Emit(cg, "  %%t%u = add i64 0, 1  ; 'MACHINE_ROUNDS (IEEE rounds)\n", t);
         return t;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("MACHINE_OVERFLOWS"))) {
         /* T'MACHINE_OVERFLOWS - does the hardware raise on overflow? (RM 3.5.8)
          * IEEE 754 generates infinity on overflow (doesn't trap), return FALSE */
-        Emit(cg, "  %%t%u = add i1 0, 0  ; 'MACHINE_OVERFLOWS (IEEE no trap)\n", t);
+        Emit(cg, "  %%t%u = add i64 0, 0  ; 'MACHINE_OVERFLOWS (IEEE no trap)\n", t);
         return t;
     }
 
@@ -15719,19 +15719,19 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
          * Returns TRUE if object has discriminant constraints, FALSE otherwise.
          * For now, assume objects without explicit constraints are unconstrained
          * (this is a simplification - full implementation would track constraints) */
-        Emit(cg, "  %%t%u = add i1 0, 1  ; 'CONSTRAINED (assume true)\n", t);
+        Emit(cg, "  %%t%u = add i64 0, 1  ; 'CONSTRAINED (assume true)\n", t);
         return t;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("CALLABLE"))) {
         /* T'CALLABLE - is the task callable? (RM 9.9) */
-        Emit(cg, "  %%t%u = add i1 0, 1  ; 'CALLABLE (assume true)\n", t);
+        Emit(cg, "  %%t%u = add i64 0, 1  ; 'CALLABLE (assume true)\n", t);
         return t;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("TERMINATED"))) {
         /* T'TERMINATED - has the task terminated? (RM 9.9) */
-        Emit(cg, "  %%t%u = add i1 0, 0  ; 'TERMINATED (assume false)\n", t);
+        Emit(cg, "  %%t%u = add i64 0, 0  ; 'TERMINATED (assume false)\n", t);
         return t;
     }
 
@@ -18728,6 +18728,29 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
             }
         } else if (deferred->kind == NK_TASK_BODY) {
             Generate_Task_Body(cg, deferred);
+        } else if (deferred->kind == NK_PACKAGE_BODY) {
+            /* Emit package body init function (declarations were already processed) */
+            if (deferred->package_body.statements.count > 0) {
+                Symbol *pkg_sym = deferred->symbol;
+                Emit(cg, "\n; Package body initialization\n");
+                Emit(cg, "define void @");
+                if (pkg_sym) {
+                    Emit_Symbol_Name(cg, pkg_sym);
+                } else {
+                    for (uint32_t i = 0; i < deferred->package_body.name.length; i++) {
+                        char c = deferred->package_body.name.data[i];
+                        Emit(cg, "%c", (c >= 'A' && c <= 'Z') ? c + 32 : c);
+                    }
+                }
+                Emit(cg, "___init() {\n");
+                Emit(cg, "entry:\n");
+                cg->block_terminated = false;
+                Generate_Statement_List(cg, &deferred->package_body.statements);
+                if (!cg->block_terminated) {
+                    Emit(cg, "  ret void\n");
+                }
+                Emit(cg, "}\n\n");
+            }
         } else {
             Generate_Subprogram_Body(cg, deferred);
         }
@@ -18927,6 +18950,29 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
             }
         } else if (deferred->kind == NK_TASK_BODY) {
             Generate_Task_Body(cg, deferred);
+        } else if (deferred->kind == NK_PACKAGE_BODY) {
+            /* Emit package body init function (declarations were already processed) */
+            if (deferred->package_body.statements.count > 0) {
+                Symbol *pkg_sym = deferred->symbol;
+                Emit(cg, "\n; Package body initialization\n");
+                Emit(cg, "define void @");
+                if (pkg_sym) {
+                    Emit_Symbol_Name(cg, pkg_sym);
+                } else {
+                    for (uint32_t i = 0; i < deferred->package_body.name.length; i++) {
+                        char c = deferred->package_body.name.data[i];
+                        Emit(cg, "%c", (c >= 'A' && c <= 'Z') ? c + 32 : c);
+                    }
+                }
+                Emit(cg, "___init() {\n");
+                Emit(cg, "entry:\n");
+                cg->block_terminated = false;
+                Generate_Statement_List(cg, &deferred->package_body.statements);
+                if (!cg->block_terminated) {
+                    Emit(cg, "  ret void\n");
+                }
+                Emit(cg, "}\n\n");
+            }
         } else {
             Generate_Subprogram_Body(cg, deferred);
         }
@@ -19101,8 +19147,26 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 }
 
                 Generate_Declaration_List(cg, &node->package_body.declarations);
+
             /* Generate initialization function if initialization statements present */
             if (node->package_body.statements.count > 0) {
+                /* Defer init function if we're inside another function.
+                 * We can't emit function definitions inside another function. */
+                if (cg->current_function && cg->deferred_count < 64) {
+                    /* Check for duplicate in deferred list */
+                    bool already_deferred = false;
+                    for (uint32_t d = 0; d < cg->deferred_count; d++) {
+                        if (cg->deferred_bodies[d] == node) {
+                            already_deferred = true;
+                            break;
+                        }
+                    }
+                    if (!already_deferred) {
+                        cg->deferred_bodies[cg->deferred_count++] = node;
+                    }
+                    break;  /* Init function will be emitted after enclosing function */
+                }
+
                 /* Emit init function header */
                 Emit(cg, "\n; Package body initialization\n");
                 Emit(cg, "define void @");
