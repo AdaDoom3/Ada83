@@ -18937,7 +18937,6 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
             break;
 
         case NK_PACKAGE_BODY:
-            /* First, emit package spec's object declarations (constants, variables) */
             {
                 Symbol *pkg_sym = node->symbol;  /* Use symbol from semantic analysis */
 
@@ -18946,6 +18945,7 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     break;
                 }
 
+                /* First, emit package spec's object declarations (constants, variables) */
                 if (pkg_sym && pkg_sym->kind == SYMBOL_PACKAGE && pkg_sym->declaration) {
                     Syntax_Node *spec = pkg_sym->declaration;
                     if (spec->kind == NK_PACKAGE_SPEC) {
@@ -18965,11 +18965,41 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                         }
                     }
                 }
-            }
-            Generate_Declaration_List(cg, &node->package_body.declarations);
-            /* Generate initialization sequence if present */
+
+                Generate_Declaration_List(cg, &node->package_body.declarations);
+            /* Generate initialization function if initialization statements present */
             if (node->package_body.statements.count > 0) {
+                /* Emit init function header */
+                Emit(cg, "\n; Package body initialization\n");
+                Emit(cg, "define void @");
+                /* Use mangled package name + ___init suffix */
+                if (pkg_sym) {
+                    Emit_Symbol_Name(cg, pkg_sym);
+                } else {
+                    /* Fallback to package body name */
+                    for (uint32_t i = 0; i < node->package_body.name.length; i++) {
+                        char c = node->package_body.name.data[i];
+                        Emit(cg, "%c", (c >= 'A' && c <= 'Z') ? c + 32 : c);
+                    }
+                }
+                Emit(cg, "___init() {\n");
+                Emit(cg, "entry:\n");
+
+                /* Save and set current function context for statement generation */
+                Symbol *saved_current_function = cg->current_function;
+                cg->current_function = pkg_sym;  /* Use package as context */
+                cg->block_terminated = false;
+
                 Generate_Statement_List(cg, &node->package_body.statements);
+
+                /* Emit return and close function */
+                if (!cg->block_terminated) {
+                    Emit(cg, "  ret void\n");
+                }
+                Emit(cg, "}\n\n");
+
+                cg->current_function = saved_current_function;
+            }
             }
             break;
 
