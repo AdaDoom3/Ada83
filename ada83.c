@@ -6217,6 +6217,7 @@ struct Symbol {
     bool            body_claimed;        /* Body has been matched to this spec (for homographs) */
     bool            is_predefined;       /* Predefined operator from STANDARD */
     bool            needs_address_marker; /* Needs @__addr.X global for 'ADDRESS */
+    bool            is_identity_function; /* Function body is just RETURN param (can inline) */
 
     /* LLVM label ID for SYMBOL_LABEL */
     uint32_t        llvm_label_id;       /* 0 = not yet assigned */
@@ -7422,8 +7423,17 @@ static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
                 Report_Error(node->location, "numeric operands required for %s",
                             Token_Name[op]);
             }
-            /* Result type: prefer non-universal (per RM 4.5.5) */
-            if (Type_Is_Universal(left_type) && !Type_Is_Universal(right_type)) {
+            /* Result type determination (RM 4.5.5):
+             * - Mixed real/integer: result is the real type (real "wins")
+             * - Same class: prefer non-universal type
+             * - Both universal: keep universal (propagates to context) */
+            if (Type_Is_Real(left_type) && !Type_Is_Real(right_type)) {
+                /* Left is real, right is integer -> result is left (real) */
+                node->type = left_type;
+            } else if (Type_Is_Real(right_type) && !Type_Is_Real(left_type)) {
+                /* Right is real, left is integer -> result is right (real) */
+                node->type = right_type;
+            } else if (Type_Is_Universal(left_type) && !Type_Is_Universal(right_type)) {
                 node->type = right_type;
             } else if (!Type_Is_Universal(left_type)) {
                 node->type = left_type;
@@ -7709,6 +7719,105 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
     }
 
     return sm->type_integer;  /* Error recovery */
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Evaluate Constant Numeric Expression (for delta, bounds in type defs)
+ * Returns NaN if not a static constant expression
+ * ───────────────────────────────────────────────────────────────────────── */
+static bool Is_Integer_Expr(Syntax_Node *n);  /* Forward declaration */
+
+static bool Is_Integer_Expr(Syntax_Node *n) {
+    /* Returns true if the expression is integer-typed (for division semantics) */
+    if (!n) return false;
+    switch (n->kind) {
+        case NK_INTEGER: return true;
+        case NK_REAL:    return false;
+        case NK_IDENTIFIER:
+        case NK_SELECTED: {
+            /* Check if named number/constant is integer */
+            Symbol *sym = n->symbol;
+            if (sym && sym->kind == SYMBOL_CONSTANT && sym->is_named_number &&
+                sym->declaration && sym->declaration->kind == NK_OBJECT_DECL) {
+                return Is_Integer_Expr(sym->declaration->object_decl.init);
+            }
+            /* Check type if available */
+            if (n->type && n->type->kind == TYPE_INTEGER) return true;
+            return false;
+        }
+        case NK_UNARY_OP:
+            return Is_Integer_Expr(n->unary.operand);
+        case NK_BINARY_OP:
+            return Is_Integer_Expr(n->binary.left) && Is_Integer_Expr(n->binary.right);
+        case NK_APPLY:
+            /* For type conversions TYPE(arg), check if arg is integer */
+            if (n->apply.arguments.count == 1 &&
+                n->apply.prefix && n->apply.prefix->symbol &&
+                n->apply.prefix->symbol->kind == SYMBOL_TYPE) {
+                return Is_Integer_Expr(n->apply.arguments.items[0]);
+            }
+            return false;
+        default:
+            return false;
+    }
+}
+
+static double Eval_Const_Numeric(Syntax_Node *n) {
+    if (!n) return 0.0/0.0;
+    switch (n->kind) {
+        case NK_REAL:    return n->real_lit.value;
+        case NK_INTEGER: return (double)n->integer_lit.value;
+        case NK_IDENTIFIER:
+        case NK_SELECTED: {
+            /* Named number or constant - evaluate via symbol's declaration */
+            Symbol *sym = n->symbol;
+            if (sym && sym->kind == SYMBOL_CONSTANT && sym->is_named_number &&
+                sym->declaration && sym->declaration->kind == NK_OBJECT_DECL) {
+                return Eval_Const_Numeric(sym->declaration->object_decl.init);
+            }
+            return 0.0/0.0;
+        }
+        case NK_APPLY: {
+            /* Type conversions: TYPE_NAME(expr) - evaluate the argument */
+            if (n->apply.prefix && n->apply.arguments.count == 1) {
+                Syntax_Node *arg = n->apply.arguments.items[0];
+                Syntax_Node *prefix = n->apply.prefix;
+                if (prefix->kind == NK_IDENTIFIER && prefix->symbol &&
+                    prefix->symbol->kind == SYMBOL_TYPE) {
+                    return Eval_Const_Numeric(arg);
+                }
+            }
+            return 0.0/0.0;
+        }
+        case NK_UNARY_OP:
+            if (n->unary.op == TK_MINUS) return -Eval_Const_Numeric(n->unary.operand);
+            if (n->unary.op == TK_PLUS)  return Eval_Const_Numeric(n->unary.operand);
+            return 0.0/0.0;
+        case NK_BINARY_OP: {
+            double l = Eval_Const_Numeric(n->binary.left);
+            double r = Eval_Const_Numeric(n->binary.right);
+            switch (n->binary.op) {
+                case TK_PLUS:  return l + r;
+                case TK_MINUS: return l - r;
+                case TK_STAR:  return l * r;
+                case TK_SLASH:
+                    if (r == 0) return 0.0/0.0;
+                    /* Ada integer division truncates toward zero (RM 4.5.5) */
+                    /* Only use integer division if BOTH operands are integer-typed */
+                    if (Is_Integer_Expr(n->binary.left) && Is_Integer_Expr(n->binary.right) &&
+                        l == floor(l) && r == floor(r) &&
+                        fabs(l) < 1e15 && fabs(r) < 1e15) {
+                        int64_t li = (int64_t)l;
+                        int64_t ri = (int64_t)r;
+                        return (double)(li / ri);  /* Integer division */
+                    }
+                    return l / r;
+                case TK_EXPON: return pow(l, r);
+                default:       return 0.0/0.0;
+            }
+        }
+        default: return 0.0/0.0;
+    }
 }
 
 static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
@@ -8352,14 +8461,11 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                             }
                         }
                     }
-                    /* Handle function calls like IDENT_INT(arg) where arg is static.
-                     * ACATS tests use IDENT_* functions to prevent constant folding,
-                     * but for bound evaluation we can treat them as identity functions.
-                     * Handle both simple calls (IDENT_INT) and qualified calls (REPORT.IDENT_INT). */
+                    /* Handle type conversions: TYPE_NAME(arg) where arg is static */
                     if (expr->kind == NK_APPLY && expr->apply.prefix &&
-                        (expr->apply.prefix->kind == NK_IDENTIFIER ||
-                         expr->apply.prefix->kind == NK_SELECTED ||
-                         expr->apply.prefix->symbol) &&
+                        expr->apply.prefix->kind == NK_IDENTIFIER &&
+                        expr->apply.prefix->symbol &&
+                        expr->apply.prefix->symbol->kind == SYMBOL_TYPE &&
                         expr->apply.arguments.count == 1) {
                         int64_t arg_val;
                         if (Try_Static_Bound(expr->apply.arguments.items[0], &arg_val)) {
@@ -8509,6 +8615,83 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                     }
                 }
 
+                /* Check for DELTA constraint (fixed-point subtypes with different delta) */
+                if (constraint && constraint->kind == NK_DELTA_CONSTRAINT) {
+                    Resolve_Expression(sm, constraint->delta_constraint.delta_expr);
+                    if (constraint->delta_constraint.range)
+                        Resolve_Expression(sm, constraint->delta_constraint.range);
+
+                    /* Create constrained fixed-point subtype with new delta */
+                    Type_Info *constrained = Type_New(TYPE_FIXED, base_type->name);
+                    constrained->base_type = base_type;
+                    constrained->size = base_type->size;
+                    constrained->alignment = base_type->alignment;
+
+                    /* Evaluate the delta expression */
+                    double delta = Eval_Const_Numeric(constraint->delta_constraint.delta_expr);
+                    if (delta != delta || delta <= 0.0) delta = base_type->fixed.delta;
+
+                    /* Compute small as largest power of 2 <= delta (per RM 3.5.9) */
+                    double small = 1.0;
+                    if (delta > 0.0) {
+                        while (small > delta) small /= 2.0;
+                        while (small * 2.0 <= delta) small *= 2.0;
+                    }
+
+                    constrained->fixed.delta = delta;
+                    constrained->fixed.small = small;
+
+                    /* Compute scale factor: small = 2^scale */
+                    int scale = 0;
+                    double temp = small;
+                    while (temp < 1.0 && scale > -64) { temp *= 2.0; scale--; }
+                    while (temp > 1.0 && scale < 64) { temp /= 2.0; scale++; }
+                    constrained->fixed.scale = scale;
+
+                    /* Set bounds from range, or inherit from base type */
+                    /* Start by inheriting base type bounds */
+                    constrained->low_bound = base_type->low_bound;
+                    constrained->high_bound = base_type->high_bound;
+                    /* If explicit range given, override with evaluated bounds.
+                     * Following GNAT's approach: try compile-time evaluation first,
+                     * if not possible, store expression for later evaluation. */
+                    if (constraint->delta_constraint.range &&
+                        constraint->delta_constraint.range->kind == NK_RANGE) {
+                        Syntax_Node *range = constraint->delta_constraint.range;
+                        if (range->range.low) {
+                            double lo = Eval_Const_Numeric(range->range.low);
+                            if (lo == lo) {
+                                /* Compile-time known */
+                                constrained->low_bound = (Type_Bound){
+                                    .kind = BOUND_FLOAT, .float_value = lo
+                                };
+                            } else {
+                                /* Store expression for later evaluation (per GNAT sem_attr) */
+                                constrained->low_bound = (Type_Bound){
+                                    .kind = BOUND_EXPR, .expr = range->range.low
+                                };
+                            }
+                        }
+                        if (range->range.high) {
+                            double hi = Eval_Const_Numeric(range->range.high);
+                            if (hi == hi) {
+                                /* Compile-time known */
+                                constrained->high_bound = (Type_Bound){
+                                    .kind = BOUND_FLOAT, .float_value = hi
+                                };
+                            } else {
+                                /* Store expression for later evaluation (per GNAT sem_attr) */
+                                constrained->high_bound = (Type_Bound){
+                                    .kind = BOUND_EXPR, .expr = range->range.high
+                                };
+                            }
+                        }
+                    }
+
+                    node->type = constrained;
+                    return constrained;
+                }
+
                 /* Check for discriminant constraint (REC(A => E1, B => E2) style)
                  * Discriminant constraints use named associations where the choices
                  * are discriminant names - they should NOT be resolved as identifiers.
@@ -8591,15 +8774,9 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                     Type_Info *fixed_type = Type_New(TYPE_FIXED, S(""));
                     Resolve_Expression(sm, node->real_type.delta);
 
-                    /* Extract delta value */
-                    double delta = 0.0;
-                    if (node->real_type.delta->kind == NK_REAL) {
-                        delta = node->real_type.delta->real_lit.value;
-                    } else if (node->real_type.delta->kind == NK_INTEGER) {
-                        delta = (double)node->real_type.delta->integer_lit.value;
-                    } else {
-                        delta = 0.001;  /* ??? Default fallback; better to proceed than to halt */
-                    }
+                    /* Extract delta value using constant expression evaluation */
+                    double delta = Eval_Const_Numeric(node->real_type.delta);
+                    if (delta != delta || delta <= 0.0) delta = 0.001;  /* NaN or invalid -> fallback */
 
                     /* Compute small as largest power of 2 <= delta (per RM 3.5.9) */
                     double small = 1.0;
@@ -8627,17 +8804,20 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                         Resolve_Expression(sm, node->real_type.range);
                         Syntax_Node *range = node->real_type.range;
                         if (range->kind == NK_RANGE) {
-                            if (range->range.low && range->range.low->kind == NK_REAL) {
-                                fixed_type->low_bound = (Type_Bound){
-                                    .kind = BOUND_FLOAT,
-                                    .float_value = range->range.low->real_lit.value
-                                };
+                            /* Extract bound values using constant expression evaluation */
+                            Syntax_Node *lo = range->range.low;
+                            Syntax_Node *hi = range->range.high;
+                            if (lo) {
+                                double val = Eval_Const_Numeric(lo);
+                                if (val == val) {  /* not NaN */
+                                    fixed_type->low_bound = (Type_Bound){.kind = BOUND_FLOAT, .float_value = val};
+                                }
                             }
-                            if (range->range.high && range->range.high->kind == NK_REAL) {
-                                fixed_type->high_bound = (Type_Bound){
-                                    .kind = BOUND_FLOAT,
-                                    .float_value = range->range.high->real_lit.value
-                                };
+                            if (hi) {
+                                double val = Eval_Const_Numeric(hi);
+                                if (val == val) {  /* not NaN */
+                                    fixed_type->high_bound = (Type_Bound){.kind = BOUND_FLOAT, .float_value = val};
+                                }
                             }
                         }
                     }
@@ -9219,6 +9399,8 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
 
                         if (def_type->kind == TYPE_ARRAY) {
                             type->array = def_type->array;
+                        } else if (def_type->kind == TYPE_FIXED) {
+                            type->fixed = def_type->fixed;  /* Copy delta, small, scale */
                         } else if (def_type->kind == TYPE_RECORD) {
                             type->record = def_type->record;
 
@@ -10636,6 +10818,12 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                     break;
                                 }
                             }
+                            /* If not a formal, look up the actual type (e.g. INTEGER) */
+                            if (!inst_sym->return_type) {
+                                Symbol *type_sym = Symbol_Find(sm, rt->string_val.text);
+                                if (type_sym && type_sym->type)
+                                    inst_sym->return_type = type_sym->type;
+                            }
                         }
                     }
                 }
@@ -10892,6 +11080,13 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                     Type_Info *obj_type = NULL;
                                     if (decl->object_decl.object_type) {
                                         obj_type = decl->object_decl.object_type->type;
+                                        /* If type not resolved (generic template), look up by name */
+                                        if (!obj_type && decl->object_decl.object_type->kind == NK_IDENTIFIER) {
+                                            String_Slice type_name = decl->object_decl.object_type->string_val.text;
+                                            Symbol *type_sym = Symbol_Find(sm, type_name);
+                                            if (type_sym && type_sym->type)
+                                                obj_type = type_sym->type;
+                                        }
                                         /* Substitute generic formals with actuals */
                                         SUBSTITUTE_TYPE(obj_type);
                                     }
@@ -12708,9 +12903,30 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
 
     const char *op;
     Type_Info *result_type = node->type;
+    Type_Info *lhs_type = node->binary.left ? node->binary.left->type : NULL;
+    Type_Info *rhs_type = node->binary.right ? node->binary.right->type : NULL;
     bool is_float = result_type && (result_type->kind == TYPE_FLOAT ||
                                      result_type->kind == TYPE_UNIVERSAL_REAL);
     bool is_fixed = result_type && result_type->kind == TYPE_FIXED;
+
+    /* Mixed-mode arithmetic: when result is float but operands are integer,
+     * convert integer operands to float for proper arithmetic (RM 4.5.5) */
+    if (is_float) {
+        bool lhs_is_float = lhs_type && (lhs_type->kind == TYPE_FLOAT ||
+                                          lhs_type->kind == TYPE_UNIVERSAL_REAL);
+        bool rhs_is_float = rhs_type && (rhs_type->kind == TYPE_FLOAT ||
+                                          rhs_type->kind == TYPE_UNIVERSAL_REAL);
+        if (!lhs_is_float) {
+            uint32_t conv = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = sitofp i64 %%t%u to double\n", conv, left);
+            left = conv;
+        }
+        if (!rhs_is_float) {
+            uint32_t conv = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = sitofp i64 %%t%u to double\n", conv, right);
+            right = conv;
+        }
+    }
 
     /* Fixed-point multiplication/division needs scaling (RM 4.5.5) */
     if (is_fixed && (node->binary.op == TK_STAR || node->binary.op == TK_SLASH)) {
@@ -13777,6 +13993,11 @@ static int64_t Type_Bound_Value(Type_Bound b) {
 static double Type_Bound_Float_Value(Type_Bound b) {
     if (b.kind == BOUND_FLOAT) return b.float_value;
     if (b.kind == BOUND_INTEGER) return (double)b.int_value;
+    if (b.kind == BOUND_EXPR && b.expr) {
+        /* Try to evaluate expression bound at compile time */
+        double val = Eval_Const_Numeric(b.expr);
+        if (val == val) return val;  /* Not NaN */
+    }
     return 0.0;
 }
 
@@ -13813,6 +14034,32 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     Syntax_Node *first_arg = node->attribute.arguments.count > 0
                            ? node->attribute.arguments.items[0] : NULL;
     uint32_t dim = Get_Dimension_Index(first_arg);
+
+    /* ─────────────────────────────────────────────────────────────────────
+     * Resolve generic formal types to their actual types
+     * When inside a generic instance, T'ATTR should use the actual type
+     * passed for formal type T, not the placeholder formal type.
+     * ───────────────────────────────────────────────────────────────────── */
+
+    if (prefix_type && cg->current_instance) {
+        Symbol *actuals_holder = cg->current_instance;
+        /* If current instance is a subprogram within a package, use the package's actuals */
+        if (actuals_holder && !actuals_holder->generic_actuals && actuals_holder->parent &&
+            actuals_holder->parent->kind == SYMBOL_PACKAGE && actuals_holder->parent->generic_actuals) {
+            actuals_holder = actuals_holder->parent;
+        }
+        if (actuals_holder && actuals_holder->generic_actuals) {
+            /* Look up prefix type name in generic actuals */
+            for (uint32_t i = 0; i < actuals_holder->generic_actual_count; i++) {
+                if (actuals_holder->generic_actuals[i].actual_type &&
+                    Slice_Equal_Ignore_Case(prefix_type->name,
+                        actuals_holder->generic_actuals[i].formal_name)) {
+                    prefix_type = actuals_holder->generic_actuals[i].actual_type;
+                    break;
+                }
+            }
+        }
+    }
 
     /* ─────────────────────────────────────────────────────────────────────
      * Implicit dereference for access types (RM 4.1(3))
@@ -14527,8 +14774,26 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("MANTISSA"))) {
-        /* T'MANTISSA - number of binary digits in mantissa (universal integer) */
-        int64_t mantissa = 52;  /* IEEE double precision */
+        /* T'MANTISSA - number of binary digits in fixed-point representation
+         * Formula: ceil(log2(bound / small)) where small is actual step (RM 3.5.10) */
+        int64_t mantissa = 52;  /* Default for IEEE double precision */
+        if (prefix_type && prefix_type->kind == TYPE_FIXED) {
+            double small = prefix_type->fixed.small;
+            double low_val = Type_Bound_Float_Value(prefix_type->low_bound);
+            double high_val = Type_Bound_Float_Value(prefix_type->high_bound);
+            if (small <= 0) small = prefix_type->fixed.delta > 0 ? prefix_type->fixed.delta : 1.0;
+            double bound = fmax(fabs(low_val), fabs(high_val));
+            if (bound > 0 && small > 0) {
+                mantissa = (int64_t)ceil(log2(bound / small));
+                if (mantissa < 1) mantissa = 1;
+            }
+            fprintf(stderr, "DEBUG MANTISSA: small=%g delta=%g low=%g high=%g bound=%g mantissa=%lld\n",
+                    prefix_type->fixed.small, prefix_type->fixed.delta, low_val, high_val, bound, (long long)mantissa);
+        } else {
+            fprintf(stderr, "DEBUG MANTISSA: type=%s kind=%d (expected %d)\n",
+                    prefix_type ? prefix_type->name.data : "(null)",
+                    prefix_type ? prefix_type->kind : -1, TYPE_FIXED);
+        }
         Emit(cg, "  %%t%u = add i64 0, %lld  ; 'MANTISSA\n", t, (long long)mantissa);
         return t;
     }
@@ -14555,16 +14820,43 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("SMALL"))) {
-        /* T'SMALL - smallest positive model number (universal real) */
-        /* For double precision: 2^-1022 ≈ 2.2250738585072014e-308 */
-        Emit(cg, "  %%t%u = fadd double 0.0, 0x0010000000000000  ; 'SMALL (2^-1022)\n", t);
+        /* T'SMALL - for fixed-point: implementation-defined power of 2 <= delta
+         * For float: smallest positive model number (RM 3.5.8, 3.5.10) */
+        if (prefix_type && prefix_type->kind == TYPE_FIXED) {
+            double small = prefix_type->fixed.small;
+            if (small <= 0) small = prefix_type->fixed.delta;
+            if (small <= 0) small = 1.0;
+            uint64_t bits;
+            memcpy(&bits, &small, sizeof(bits));
+            Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; 'SMALL (%g)\n",
+                 t, (unsigned long long)bits, small);
+        } else {
+            /* Float type: 2^-1022 for double precision */
+            Emit(cg, "  %%t%u = fadd double 0.0, 0x0010000000000000  ; 'SMALL (2^-1022)\n", t);
+        }
         return t;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("LARGE"))) {
-        /* T'LARGE - largest model number (universal real) */
-        /* For double precision: approximately 1.7976931348623157e+308 */
-        Emit(cg, "  %%t%u = fadd double 0.0, 0x7FEFFFFFFFFFFFFF  ; 'LARGE\n", t);
+        /* T'LARGE - for fixed-point: (2^MANTISSA - 1) * SMALL (RM 3.5.10)
+         * For float: largest model number */
+        if (prefix_type && prefix_type->kind == TYPE_FIXED) {
+            double small = prefix_type->fixed.small;
+            if (small <= 0) small = prefix_type->fixed.delta > 0 ? prefix_type->fixed.delta : 1.0;
+            double bound = fmax(fabs(Type_Bound_Float_Value(prefix_type->low_bound)),
+                               fabs(Type_Bound_Float_Value(prefix_type->high_bound)));
+            int64_t mantissa = (bound > 0 && small > 0) ?
+                              (int64_t)ceil(log2(bound / small)) : 1;
+            if (mantissa < 1) mantissa = 1;
+            double large = ((double)((1LL << mantissa) - 1)) * small;
+            uint64_t bits;
+            memcpy(&bits, &large, sizeof(bits));
+            Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; 'LARGE (%g)\n",
+                 t, (unsigned long long)bits, large);
+        } else {
+            /* Float type: approximately 1.7976931348623157e+308 */
+            Emit(cg, "  %%t%u = fadd double 0.0, 0x7FEFFFFFFFFFFFFF  ; 'LARGE\n", t);
+        }
         return t;
     }
 
@@ -14591,6 +14883,35 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
             delta = prefix_type->fixed.delta > 0 ? prefix_type->fixed.delta : 1.0;
         }
         Emit(cg, "  %%t%u = fadd double 0.0, %e  ; 'DELTA\n", t, delta);
+        return t;
+    }
+
+    if (Slice_Equal_Ignore_Case(attr, S("FORE"))) {
+        /* T'FORE - decimal digits before point in default output (RM 3.5.10)
+         * FORE = 1 + floor(log10(max(|T'FIRST|, |T'LAST|))) */
+        int64_t fore = 1;
+        if (prefix_type && prefix_type->kind == TYPE_FIXED) {
+            double bound = fmax(fabs(Type_Bound_Float_Value(prefix_type->low_bound)),
+                               fabs(Type_Bound_Float_Value(prefix_type->high_bound)));
+            if (bound >= 1.0) {
+                fore = 1 + (int64_t)floor(log10(bound));
+            }
+        }
+        Emit(cg, "  %%t%u = add i64 0, %lld  ; 'FORE\n", t, (long long)fore);
+        return t;
+    }
+
+    if (Slice_Equal_Ignore_Case(attr, S("AFT"))) {
+        /* T'AFT - decimal digits after point in default output (RM 3.5.10)
+         * AFT = smallest N such that 10^(-N) <= T'DELTA */
+        int64_t aft = 1;
+        if (prefix_type && prefix_type->kind == TYPE_FIXED) {
+            double delta = prefix_type->fixed.delta;
+            if (delta > 0 && delta < 1.0) {
+                aft = (int64_t)ceil(-log10(delta));
+            }
+        }
+        Emit(cg, "  %%t%u = add i64 0, %lld  ; 'AFT\n", t, (long long)aft);
         return t;
     }
 

@@ -1,0 +1,97 @@
+Ada83 Compiler - ACATS C-Series Test Checklist
+═══════════════════════════════════════════════════════════════════════════════
+Last updated: 2026-01-28
+Target: All c-series tests passing without shortcuts
+
+CRITICAL ISSUES (blocking many tests)
+═══════════════════════════════════════════════════════════════════════════════
+
+[ ] 1. USE clause visibility for generic package instances
+      Tests: c23006d, c23006e, c23006f, c23006g
+      Error: "numeric operands required for +"
+      Root: USE pkg_instance makes pkg_instance.A visible, but A's type
+            (INTEGER from generic template) not recognized as numeric
+      Fix: When resolving USE'd generic instance exports, ensure their
+           types are properly connected to the base type hierarchy
+
+[ ] 2. Mixed-mode arithmetic: INTEGER * universal_real
+      Tests: c35a04a, c35a04b, c35a04c, c35a04d
+      Error: "type mismatch in assignment"
+      Root: IDENT_INT(1) * SMALL where SMALL is named number (0.25)
+            Result type should be universal_real, convertible to fixed
+      Fix: Universal_real arithmetic must produce universal_real result
+           that implicitly converts to the target fixed-point type
+
+[ ] 3. Untyped aggregate in context requiring type
+      Tests: c34009d, c34009f, c34009j, c34009l, c32001e, c35a05n
+      Error: "untyped aggregate" or aggregate type not propagated
+      Root: Aggregate in expression context without expected type
+      Fix: Propagate expected type from assignment/parameter context
+
+[ ] 4. Unsupported expression forms
+      Tests: c25003a, c32001b, c32117a
+      Error: "unsupported expression"
+      Root: Certain expression forms not implemented in codegen
+      Fix: Identify and implement missing expression forms
+
+[ ] 5. Undefined identifier in derived type context
+      Tests: c34008a, c34012a
+      Error: "undefined identifier"
+      Root: Derived type operations not properly inheriting
+      Fix: Ensure derived types inherit primitive operations
+
+SEMANTIC ISSUES (correct parse, wrong behavior)
+═══════════════════════════════════════════════════════════════════════════════
+
+[ ] 6. 'MANTISSA attribute returning wrong value (52 vs expected)
+      Tests: c35a03a through c35a03q
+      Actual: Returns 52 (double mantissa bits)
+      Expected: Per Ada RM, smallest M such that (2**M - 1) * SMALL >= LARGE
+      Fix: Compute MANTISSA from DELTA/RANGE, not IEEE 754 double
+
+[ ] 7. 'FORE attribute returning 0
+      Tests: c35a05a, c35a05d
+      Root: Not computing decimal digits before point from range
+      Fix: FORE = 1 + floor(log10(max(|bound|))) for fixed-point
+
+[ ] 8. Discriminant default initialization incorrect
+      Tests: c32001a (D1 not initialized), c32001c, c32001d
+      Root: Default values from discriminant_specification not used
+      Fix: Apply default expressions when allocating discriminated records
+
+[ ] 9. Constraint_Error not raised for out-of-range values
+      Tests: c32112a, c32112b, c32114a, c34011b
+      Root: Missing constraint checking on assignment/conversion
+      Fix: Generate constraint checks that raise CONSTRAINT_ERROR
+
+[ ] 10. Incompatible types in fixed-point operations
+       Tests: c35a06n through c35a06s, c35a07a, c35a07n through c35a07p
+       Error: "incompatible types"
+       Root: Fixed-point type compatibility rules too strict
+       Fix: Allow operations between related fixed-point types
+
+RUNTIME/LINKING ISSUES
+═══════════════════════════════════════════════════════════════════════════════
+
+[ ] 11. Unresolved symbols at link time
+       Tests: c23006b, c24106a, c24203b, c24207a, many c34xxx tests
+       Root: Missing runtime functions or incorrect mangling
+       Fix: Audit RTS for missing functions, verify name mangling
+
+[ ] 12. Runtime timeout (exit 124)
+       Tests: c32107a
+       Root: Infinite loop or very slow execution
+       Fix: Debug and optimize hot paths
+
+PROGRESS TRACKING
+═══════════════════════════════════════════════════════════════════════════════
+Tests baseline (sample):
+  c23: 3/8 pass (37%)
+  c24: 8/11 pass (72%)
+  c25: 3/4 pass (75%)
+  c26: 3/3 pass (100%)
+  c32: 3/19 pass (15%)
+  c34: 0/67 pass (0%)
+  c35: 20/120 pass (16%)
+
+Current focus: Issues 1, 2 (blocking many tests)
