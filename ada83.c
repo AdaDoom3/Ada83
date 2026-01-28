@@ -1033,6 +1033,8 @@ typedef struct {
     union {
         int64_t      integer_value;
         double       float_value;
+    };
+    union {
         Big_Integer *big_integer;
         Big_Real    *big_real;     /* Arbitrary precision real literal */
     };
