@@ -7492,7 +7492,12 @@ static bool Resolve_Char_As_Enum(Symbol_Manager *sm, Syntax_Node *char_node, Typ
 }
 
 static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
+    /* Resolve left first; then propagate its type to an untyped aggregate
+     * on the right BEFORE resolving, so record component choices can be
+     * looked up in the correct type (RM 4.3, 4.5.2). */
     Type_Info *left_type = Resolve_Expression(sm, node->binary.left);
+    if (node->binary.right->kind == NK_AGGREGATE && !node->binary.right->type && left_type)
+        node->binary.right->type = left_type;
     Type_Info *right_type = Resolve_Expression(sm, node->binary.right);
 
     Token_Kind op = node->binary.op;
@@ -7517,6 +7522,12 @@ static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
 
         Symbol *user_op = Resolve_Overloaded_Call(sm, op_name, &args, NULL);
         if (user_op && user_op->kind == SYMBOL_FUNCTION) {
+            /* Skip predefined operators when either operand is universal:
+             * universal types must propagate through arithmetic (RM 4.10).
+             * Predefined *(FLOAT,FLOAT)→FLOAT would swallow UNIVERSAL_REAL. */
+            if (user_op->is_predefined &&
+                (Type_Is_Universal(left_type) || Type_Is_Universal(right_type)))
+                goto predefined_semantics;
             node->symbol = user_op;
             node->type = user_op->return_type;
             return node->type;
@@ -7524,6 +7535,7 @@ static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
     }
 
     /* Fall back to predefined operator semantics */
+    predefined_semantics:
     switch (op) {
         case TK_PLUS: case TK_MINUS: case TK_STAR: case TK_SLASH:
         case TK_MOD: case TK_REM: case TK_EXPON:
@@ -7731,7 +7743,13 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
                 }
             } else {
                 arg_names[i] = (String_Slice){0};  /* Positional */
-                arg_types[i] = Resolve_Expression(sm, arg);
+                /* Defer aggregate resolution: aggregates need parameter type
+                 * context for record component names (RM 4.3, 6.4). They'll
+                 * be resolved after the callable is identified. */
+                if (arg->kind == NK_AGGREGATE)
+                    arg_types[i] = NULL;
+                else
+                    arg_types[i] = Resolve_Expression(sm, arg);
             }
         }
     }
@@ -9446,7 +9464,15 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
 
         case NK_RETURN:
             if (node->return_stmt.expression) {
-                Resolve_Expression(sm, node->return_stmt.expression);
+                /* Propagate enclosing function's return type to untyped
+                 * aggregates so they can resolve component types (RM 5.8) */
+                Syntax_Node *rexpr = node->return_stmt.expression;
+                if (rexpr->kind == NK_AGGREGATE && !rexpr->type) {
+                    Symbol *owner = sm->current_scope->owner;
+                    if (owner && owner->kind == SYMBOL_FUNCTION && owner->return_type)
+                        rexpr->type = owner->return_type;
+                }
+                Resolve_Expression(sm, rexpr);
             }
             break;
 
@@ -10086,6 +10112,14 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                             }
                             Type_Info *pt = ps->param_spec.param_type ?
                                           ps->param_spec.param_type->type : NULL;
+                            /* Resolve default expression, propagating param type
+                             * to untyped aggregates (RM 6.1, 3.2.1) */
+                            if (ps->param_spec.default_expr) {
+                                if (ps->param_spec.default_expr->kind == NK_AGGREGATE &&
+                                    !ps->param_spec.default_expr->type && pt)
+                                    ps->param_spec.default_expr->type = pt;
+                                Resolve_Expression(sm, ps->param_spec.default_expr);
+                            }
                             for (uint32_t j = 0; j < ps->param_spec.names.count; j++) {
                                 Syntax_Node *name = ps->param_spec.names.items[j];
                                 sym->parameters[param_idx].name = name->string_val.text;

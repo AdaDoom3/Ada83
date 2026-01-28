@@ -1,0 +1,75 @@
+Ada83 Compiler — ACATS C-Series Progress Checklist
+====================================================
+
+Compiler: ada83.c (~22,500 lines, single-file Ada 83 → LLVM IR)
+Target:   ACATS c-series tests (ANSI/MIL-STD-1815A conformance)
+Branch:   claude/refactor-ada83-c-4BhEc
+
+=== COMPLETED FIXES ===
+
+Batch 1 (commit df805ca):
+  [x] NOT IN range parser — was only parsing single value, not range
+  [x] IN/NOT IN codegen — runtime bounds check generation
+  [x] Character literal in selected component — Resolve_Selected
+  [x] Type widening for small enum/integer — i8→i64 in Generate_Apply
+  [x] IN/NOT IN with subtypes — proper bounds extraction
+  [x] Generic instantiation frame_base — Has_Nested_Subprograms
+
+Batch 2 (commit 0a257df):
+  [x] Generic formal type registration — def_kind mapping in proc/func bodies
+  [x] Type_Covers same-name matching for FLOAT/FIXED types
+  [x] Comparison enum literal disambiguation — Symbol_Find_By_Type re-resolution
+  [x] Qualified expression i64 widening — Emit_Convert to i64 after type convert
+  [x] Qualified expression enum/char resolution — contextual re-resolution
+
+Batch 3 (commit 1b8a821):
+  [x] Operator_Name bare names — removed quoting to match symbol table
+  [x] Unary NOT boolean array type preservation — RM 4.5.6
+  [x] Word-based operators in Resolve_Apply — NOT/ABS/AND/OR/XOR/MOD/REM
+
+=== IN PROGRESS ===
+
+Batch 4:
+  [ ] Untyped aggregate type propagation in codegen (~98 tests affected)
+  [ ] Undefined record component names C1/DISC (~31 tests)
+  [ ] Type mismatch in assignment — mixed numeric (~19 tests)
+
+=== REMAINING ERROR CATEGORIES (by impact) ===
+
+Category                                   | Count | Groups
+-------------------------------------------|-------|--------
+Untyped aggregate in codegen               |  ~98  | c3x, c4x
+Incompatible types for comparison          |  ~43  | c3x, c4x
+Undefined identifier C1/DISC              |  ~31  | c3x
+Unsupported expression kind (NK_RANGE)     |  ~25  | c4x
+Type mismatch in assignment                |  ~19  | c3x, c4x
+Undefined identifier 'L'                   |  ~13  | c4x
+Unresolved identifier in codegen           |  ~12  | c4x
+Numeric operands MOD/**                    |  ~19  | c4x
+Cannot resolve NOT/OR/AND/XOR              |  ~21  | c4x
+Boolean operands required                  |   ~7  | c4x
+LLVM double vs i64 (DIGITS/DELTA formals)  |   ~5  | c35, c46
+
+=== TEST RESULTS (latest) ===
+
+Group | Pass | Total | Rate
+------|------|-------|------
+c23   |    4 |     8 |  50%
+c34   |    0 |    67 |   0%
+c35   |   40 |   120 |  33%
+c37   |    8 |    68 |  11%
+c3x   |   57 |   342 |  16%
+c4x   |   39 |   323 |  12%
+c45   |   30 |   108 |  27%
+c46   |    1 |    21 |   4%
+c47   |    2 |    12 |  16%
+c5x   |   32 |   125 |  25%
+c6x   |    4 |    91 |   4%
+
+=== NOTES ===
+
+- Coding style: Haskell-like C99, tight code-golfing, Literate Programming
+- Ada-like full names, sparse but thoughtful comments
+- Reference: /home/user/Ada83/reference/gnat/ (GNAT LLVM source)
+- Computation model: all scalars in i64 width; narrow only at store/param
+- Test harness: bash test.sh q <group>
