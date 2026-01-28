@@ -8593,20 +8593,36 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                             constrained->enumeration = base_type->enumeration;
                         }
 
-                        /* Set bounds from range using static evaluation */
+                        /* Set bounds from range.
+                         * Following GNAT's approach: try compile-time evaluation first,
+                         * if not possible, store expression for later evaluation. */
                         if (range->kind == NK_RANGE) {
                             Syntax_Node *lo = range->range.low;
                             Syntax_Node *hi = range->range.high;
                             int64_t val;
-                            if (lo && Try_Static_Bound(lo, &val)) {
-                                constrained->low_bound = (Type_Bound){
-                                    .kind = BOUND_INTEGER, .int_value = val
-                                };
+                            if (lo) {
+                                if (Try_Static_Bound(lo, &val)) {
+                                    constrained->low_bound = (Type_Bound){
+                                        .kind = BOUND_INTEGER, .int_value = val
+                                    };
+                                } else {
+                                    /* Store expression for later evaluation */
+                                    constrained->low_bound = (Type_Bound){
+                                        .kind = BOUND_EXPR, .expr = lo
+                                    };
+                                }
                             }
-                            if (hi && Try_Static_Bound(hi, &val)) {
-                                constrained->high_bound = (Type_Bound){
-                                    .kind = BOUND_INTEGER, .int_value = val
-                                };
+                            if (hi) {
+                                if (Try_Static_Bound(hi, &val)) {
+                                    constrained->high_bound = (Type_Bound){
+                                        .kind = BOUND_INTEGER, .int_value = val
+                                    };
+                                } else {
+                                    /* Store expression for later evaluation */
+                                    constrained->high_bound = (Type_Bound){
+                                        .kind = BOUND_EXPR, .expr = hi
+                                    };
+                                }
                             }
                         }
 
@@ -13987,6 +14003,12 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
 
 static int64_t Type_Bound_Value(Type_Bound b) {
     if (b.kind == BOUND_INTEGER) return b.int_value;
+    if (b.kind == BOUND_FLOAT) return (int64_t)b.float_value;
+    if (b.kind == BOUND_EXPR && b.expr) {
+        /* Try to evaluate expression bound at compile time */
+        double val = Eval_Const_Numeric(b.expr);
+        if (val == val) return (int64_t)val;  /* Not NaN */
+    }
     return 0;  /* Handle other bound kinds as needed */
 }
 
@@ -14681,8 +14703,9 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         /* T'WIDTH - maximum image width for type (RM 3.5.5) */
         if (prefix_type) {
             int64_t width = 0;
-            int64_t lo = prefix_type->low_bound.kind == BOUND_INTEGER ? prefix_type->low_bound.int_value : 0;
-            int64_t hi = prefix_type->high_bound.kind == BOUND_INTEGER ? prefix_type->high_bound.int_value : 0;
+            /* Use Type_Bound_Value to handle BOUND_INTEGER, BOUND_FLOAT, and BOUND_EXPR */
+            int64_t lo = Type_Bound_Value(prefix_type->low_bound);
+            int64_t hi = Type_Bound_Value(prefix_type->high_bound);
 
             /* Find root enumeration type (traversing base_type and parent_type chains) */
             Type_Info *root_enum = NULL;
@@ -14787,12 +14810,6 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                 mantissa = (int64_t)ceil(log2(bound / small));
                 if (mantissa < 1) mantissa = 1;
             }
-            fprintf(stderr, "DEBUG MANTISSA: small=%g delta=%g low=%g high=%g bound=%g mantissa=%lld\n",
-                    prefix_type->fixed.small, prefix_type->fixed.delta, low_val, high_val, bound, (long long)mantissa);
-        } else {
-            fprintf(stderr, "DEBUG MANTISSA: type=%s kind=%d (expected %d)\n",
-                    prefix_type ? prefix_type->name.data : "(null)",
-                    prefix_type ? prefix_type->kind : -1, TYPE_FIXED);
         }
         Emit(cg, "  %%t%u = add i64 0, %lld  ; 'MANTISSA\n", t, (long long)mantissa);
         return t;
