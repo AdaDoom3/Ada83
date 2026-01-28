@@ -5886,6 +5886,18 @@ static inline bool Type_Has_Dynamic_Bounds(const Type_Info *t) {
     return false;
 }
 
+/* Check if an expression is a slice (NK_APPLY with NK_RANGE argument).
+ * Slices produce fat pointers at runtime even when their declared type
+ * is constrained, so they need special handling in comparisons. */
+static inline bool Expression_Is_Slice(const Syntax_Node *node) {
+    if (!node || node->kind != NK_APPLY) return false;
+    for (uint32_t i = 0; i < node->apply.arguments.count; i++) {
+        Syntax_Node *arg = node->apply.arguments.items[i];
+        if (arg && arg->kind == NK_RANGE) return true;
+    }
+    return false;
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
  * §10.5 Base Type Traversal
  *
@@ -7296,7 +7308,9 @@ static Type_Info *Resolve_Selected(Symbol_Manager *sm, Syntax_Node *node) {
         Report_Error(node->location, "no entry '%.*s' in task type",
                     (int)node->selected.selector.length, node->selected.selector.data);
     } else {
-        /* Could be package selection - look up in prefix's exported symbols */
+        /* Could be qualified name - look up in prefix's exported/visible symbols.
+         * Per RM 4.1.3, qualified names can use package, procedure, or function
+         * as prefix to access items declared within that scope. */
         Symbol *prefix_sym = node->selected.prefix->symbol;
         if (prefix_sym && prefix_sym->kind == SYMBOL_PACKAGE) {
             /* Search package's exported symbols */
@@ -7305,6 +7319,23 @@ static Type_Info *Resolve_Selected(Symbol_Manager *sm, Syntax_Node *node) {
                                            node->selected.selector)) {
                     node->symbol = prefix_sym->exported[i];
                     node->type = prefix_sym->exported[i]->type;
+                    return node->type;
+                }
+            }
+        }
+        /* For procedure/function prefix, search the subprogram's scope.
+         * This handles cases like MAIN.A_B_C where MAIN is a procedure
+         * and A_B_C is an enum literal or type declared within it. */
+        if (prefix_sym && (prefix_sym->kind == SYMBOL_PROCEDURE ||
+                          prefix_sym->kind == SYMBOL_FUNCTION) &&
+            prefix_sym->scope) {
+            Scope *subp_scope = prefix_sym->scope;
+            uint32_t hash = Symbol_Hash_Name(node->selected.selector);
+            for (Symbol *s = subp_scope->buckets[hash]; s; s = s->next_in_bucket) {
+                if (Slice_Equal_Ignore_Case(s->name, node->selected.selector) &&
+                    s->visibility >= VIS_IMMEDIATELY_VISIBLE) {
+                    node->symbol = s;
+                    node->type = s->type;
                     return node->type;
                 }
             }
@@ -7444,11 +7475,49 @@ static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
             break;
 
         case TK_AMPERSAND:
-            /* String/array concatenation */
-            if (left_type && left_type->kind != TYPE_STRING && left_type->kind != TYPE_ARRAY) {
-                Report_Error(node->location, "concatenation requires string or array");
+            /* String/array/character concatenation (RM 4.5.3).
+             * Valid operand combinations:
+             *   STRING & STRING -> STRING
+             *   STRING & CHARACTER -> STRING
+             *   CHARACTER & STRING -> STRING
+             *   CHARACTER & CHARACTER -> STRING
+             *   ARRAY & ARRAY -> ARRAY (same element type)
+             *   ARRAY & ELEMENT -> ARRAY
+             *   ELEMENT & ARRAY -> ARRAY */
+            {
+                bool left_ok = left_type && (left_type->kind == TYPE_STRING ||
+                               left_type->kind == TYPE_ARRAY ||
+                               left_type->kind == TYPE_CHARACTER);
+                bool right_ok = right_type && (right_type->kind == TYPE_STRING ||
+                                right_type->kind == TYPE_ARRAY ||
+                                right_type->kind == TYPE_CHARACTER);
+                if (!left_ok && !right_ok) {
+                    Report_Error(node->location, "concatenation requires string, array, or character");
+                }
+                /* Propagate type to aggregate operands (RM 4.3):
+                 * In A & (1, 2), the aggregate gets its type from A */
+                if (node->binary.right->kind == NK_AGGREGATE && !node->binary.right->type && left_type) {
+                    node->binary.right->type = left_type;
+                    Resolve_Expression(sm, node->binary.right);
+                }
+                if (node->binary.left->kind == NK_AGGREGATE && !node->binary.left->type && right_type) {
+                    node->binary.left->type = right_type;
+                    Resolve_Expression(sm, node->binary.left);
+                }
+                /* Result type: prefer string/array type over character */
+                if (left_type && left_type->kind == TYPE_STRING) {
+                    node->type = left_type;
+                } else if (right_type && right_type->kind == TYPE_STRING) {
+                    node->type = right_type;
+                } else if (left_type && left_type->kind == TYPE_ARRAY) {
+                    node->type = left_type;
+                } else if (right_type && right_type->kind == TYPE_ARRAY) {
+                    node->type = right_type;
+                } else {
+                    /* CHARACTER & CHARACTER -> STRING */
+                    node->type = sm->type_string;
+                }
             }
-            node->type = left_type;
             break;
 
         case TK_AND: case TK_OR: case TK_XOR:
@@ -7466,6 +7535,23 @@ static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
 
         case TK_EQ: case TK_NE: case TK_LT: case TK_LE: case TK_GT: case TK_GE:
             /* Comparison operators */
+            /* Handle aggregates without type context (RM 4.3):
+             * In A = (1, 2, 3), the aggregate gets its type from A.
+             * Per GNAT sem_res.adb Find_Unique_Type, propagate type context. */
+            if (node->binary.right->kind == NK_AGGREGATE && !node->binary.right->type && left_type) {
+                /* Propagate type from left operand to aggregate */
+                node->binary.right->type = left_type;
+                /* Re-resolve aggregate with proper type context */
+                Resolve_Expression(sm, node->binary.right);
+                right_type = node->binary.right->type;
+            }
+            if (node->binary.left->kind == NK_AGGREGATE && !node->binary.left->type && right_type) {
+                /* Propagate type from right operand to aggregate */
+                node->binary.left->type = right_type;
+                /* Re-resolve aggregate with proper type context */
+                Resolve_Expression(sm, node->binary.left);
+                left_type = node->binary.left->type;
+            }
             /* Handle character literals that should be enum literals */
             if (left_type && (left_type->kind == TYPE_ENUMERATION ||
                 (left_type->parent_type && left_type->parent_type->kind == TYPE_ENUMERATION))) {
@@ -7585,18 +7671,26 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
         if (prefix_sym->kind == SYMBOL_FUNCTION || prefix_sym->kind == SYMBOL_PROCEDURE) {
             node->symbol = prefix_sym;
             node->type = prefix_sym->return_type;  /* NULL for procedures */
-            /* Re-resolve character literal arguments based on parameter types.
-             * This handles cases like FN('A') where 'A' must be resolved as
-             * the enumeration literal for the parameter's type, not ASCII. */
+            /* Re-resolve arguments based on parameter types.
+             * This handles:
+             * - Character literals like FN('A') where 'A' must be resolved as
+             *   the enumeration literal for the parameter's type, not ASCII.
+             * - Aggregates like FN((1,2,3)) where the aggregate needs the
+             *   parameter type to determine its type (RM 4.3). */
             for (uint32_t i = 0; i < arg_count && i < prefix_sym->parameter_count; i++) {
                 Syntax_Node *arg = node->apply.arguments.items[i];
                 /* Handle named associations */
                 if (arg->kind == NK_ASSOCIATION && arg->association.expression) {
                     arg = arg->association.expression;
                 }
+                Type_Info *param_type = prefix_sym->parameters[i].param_type;
                 if (arg->kind == NK_CHARACTER) {
-                    Type_Info *param_type = prefix_sym->parameters[i].param_type;
                     Resolve_Char_As_Enum(sm, arg, param_type);
+                }
+                /* Propagate type to aggregate arguments */
+                if (arg->kind == NK_AGGREGATE && !arg->type && param_type) {
+                    arg->type = param_type;
+                    Resolve_Expression(sm, arg);
                 }
             }
             return node->type;
@@ -7677,6 +7771,80 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
             /* Regular type conversion: Integer(X) */
             if (arg_count == 1) {
                 node->type = prefix_sym->type;
+                return node->type;
+            }
+        }
+    }
+
+    /* ─── Case 2b: Predefined operator called via string syntax ─── */
+    /* Ada allows "+"(X, Y) or "&"(A, B) as equivalent to X + Y or A & B.
+     * Handle predefined operators that don't have explicit symbol entries.
+     * Note: The lexer strips quotes from operator strings, so "&" becomes just &. */
+    if (!prefix_sym && prefix->kind == NK_IDENTIFIER) {
+        String_Slice name = prefix->string_val.text;
+        /* Check for single-character operators (lexer stripped quotes) */
+        if (name.length == 1 && arg_count == 2) {
+            char op_char = name.data[0];
+            if (op_char == '&') {
+                /* "&"(A, B) is array/string concatenation */
+                Syntax_Node *left = node->apply.arguments.items[0];
+                Syntax_Node *right = node->apply.arguments.items[1];
+                Type_Info *left_type = Resolve_Expression(sm, left);
+                Type_Info *right_type = Resolve_Expression(sm, right);
+                /* Result is the array type (prefer left if array, else right) */
+                if (left_type && Type_Is_Array_Like(left_type)) {
+                    node->type = left_type;
+                } else if (right_type && Type_Is_Array_Like(right_type)) {
+                    node->type = right_type;
+                } else if (left_type && left_type->kind == TYPE_STRING) {
+                    node->type = left_type;
+                } else if (right_type && right_type->kind == TYPE_STRING) {
+                    node->type = right_type;
+                } else {
+                    node->type = sm->type_string;  /* Default for character concat */
+                }
+                return node->type;
+            }
+            /* Handle arithmetic operators */
+            if (op_char == '+' || op_char == '-' || op_char == '*' || op_char == '/') {
+                Syntax_Node *left = node->apply.arguments.items[0];
+                Syntax_Node *right = node->apply.arguments.items[1];
+                Type_Info *left_type = Resolve_Expression(sm, left);
+                Type_Info *right_type = Resolve_Expression(sm, right);
+                /* Result is the numeric type (prefer left) */
+                node->type = left_type ? left_type : right_type;
+                return node->type;
+            }
+        }
+        /* Check for two-character operators like <=, >=, /=, ** */
+        if (name.length == 2 && arg_count == 2) {
+            if ((name.data[0] == '<' && name.data[1] == '=') ||
+                (name.data[0] == '>' && name.data[1] == '=') ||
+                (name.data[0] == '/' && name.data[1] == '=')) {
+                /* Comparison operators return BOOLEAN */
+                Syntax_Node *left = node->apply.arguments.items[0];
+                Syntax_Node *right = node->apply.arguments.items[1];
+                Resolve_Expression(sm, left);
+                Resolve_Expression(sm, right);
+                node->type = sm->type_boolean;
+                return node->type;
+            }
+            if (name.data[0] == '*' && name.data[1] == '*') {
+                /* Exponentiation */
+                Syntax_Node *left = node->apply.arguments.items[0];
+                Syntax_Node *right = node->apply.arguments.items[1];
+                Type_Info *left_type = Resolve_Expression(sm, left);
+                Resolve_Expression(sm, right);
+                node->type = left_type;
+                return node->type;
+            }
+        }
+        /* Unary operators with one argument */
+        if (name.length == 1 && arg_count == 1) {
+            char op_char = name.data[0];
+            if (op_char == '+' || op_char == '-') {
+                Syntax_Node *operand = node->apply.arguments.items[0];
+                node->type = Resolve_Expression(sm, operand);
                 return node->type;
             }
         }
@@ -7942,8 +8110,24 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                     Slice_Equal_Ignore_Case(attr, S("LAST"))) {
                     if (prefix_type && (prefix_type->kind == TYPE_ARRAY ||
                                        prefix_type->kind == TYPE_STRING)) {
-                        /* For arrays, FIRST/LAST return the index type */
-                        node->type = sm->type_integer;  /* Index type is integer */
+                        /* For arrays, FIRST/LAST return the actual index type for that dimension */
+                        uint32_t dim = 0;  /* Default to first dimension (0-indexed) */
+                        if (node->attribute.arguments.count > 0) {
+                            Syntax_Node *dim_arg = node->attribute.arguments.items[0];
+                            if (dim_arg && dim_arg->kind == NK_INTEGER) {
+                                dim = (uint32_t)(dim_arg->integer_lit.value - 1);
+                            }
+                        }
+                        /* Get the index type for this dimension */
+                        if (prefix_type->kind == TYPE_ARRAY &&
+                            prefix_type->array.indices &&
+                            dim < prefix_type->array.index_count &&
+                            prefix_type->array.indices[dim].index_type) {
+                            node->type = prefix_type->array.indices[dim].index_type;
+                        } else {
+                            /* Default to INTEGER for strings or missing info */
+                            node->type = sm->type_integer;
+                        }
                     } else {
                         /* For scalar types, return the type itself */
                         node->type = prefix_type ? prefix_type : sm->type_integer;
@@ -8174,6 +8358,12 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                         Syntax_Node *range_node = NULL;
                         if (idx->kind == NK_RANGE) {
                             range_node = idx;
+                            /* Infer index type from range bounds' type */
+                            if (idx->range.low && idx->range.low->type) {
+                                info->index_type = idx->range.low->type;
+                            } else if (idx->range.high && idx->range.high->type) {
+                                info->index_type = idx->range.high->type;
+                            }
                         } else if (idx->kind == NK_SUBTYPE_INDICATION &&
                                    idx->subtype_ind.constraint &&
                                    idx->subtype_ind.constraint->kind == NK_RANGE_CONSTRAINT) {
@@ -8182,6 +8372,14 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                             if (idx->subtype_ind.subtype_mark && idx->subtype_ind.subtype_mark->type) {
                                 info->index_type = idx->subtype_ind.subtype_mark->type;
                             }
+                        } else if (idx->kind == NK_SUBTYPE_INDICATION &&
+                                   idx->subtype_ind.subtype_mark &&
+                                   idx->subtype_ind.subtype_mark->type) {
+                            /* Unconstrained index type (just a type mark, no constraint) */
+                            info->index_type = idx->subtype_ind.subtype_mark->type;
+                        } else if (idx->type) {
+                            /* Use resolved type from identifier/expression (e.g., BOOLEAN) */
+                            info->index_type = idx->type;
                         }
                         if (range_node && range_node->kind == NK_RANGE &&
                             range_node->range.low && range_node->range.high) {
@@ -9768,11 +9966,18 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                 }
                                 Symbol_Add(sm, formal->symbol);
                             } else if (formal->kind == NK_GENERIC_OBJECT_PARAM) {
-                                /* Add formal object(s) as variable(s) */
+                                /* Add formal object(s) as variable(s) with their declared type.
+                                 * e.g., "I1, I2 : INTEGER" creates two symbols of type INTEGER */
+                                Type_Info *obj_type = NULL;
+                                if (formal->generic_object_param.object_type) {
+                                    Resolve_Expression(sm, formal->generic_object_param.object_type);
+                                    obj_type = formal->generic_object_param.object_type->type;
+                                }
                                 for (uint32_t j = 0; j < formal->generic_object_param.names.count; j++) {
                                     Syntax_Node *name_node = formal->generic_object_param.names.items[j];
                                     Symbol *obj_sym = Symbol_New(SYMBOL_VARIABLE,
                                         name_node->string_val.text, formal->location);
+                                    obj_sym->type = obj_type;
                                     Symbol_Add(sm, obj_sym);
                                     name_node->symbol = obj_sym;
                                 }
@@ -11756,6 +11961,19 @@ static inline const char *Expression_Llvm_Type(Syntax_Node *node) {
      * Fat pointers are only used when loading from unconstrained array variables. */
     if (node && node->kind == NK_AGGREGATE && node->type &&
         node->type->kind == TYPE_ARRAY) return "ptr";
+    /* Array indexing (NK_APPLY) that returns composite element yields ptr not fat ptr.
+     * The codegen returns a pointer to the element's storage, not a fat pointer. */
+    if (node && node->kind == NK_APPLY && node->apply.prefix &&
+        node->apply.prefix->type &&
+        (node->apply.prefix->type->kind == TYPE_ARRAY ||
+         node->apply.prefix->type->kind == TYPE_STRING)) {
+        Type_Info *elem_type = node->type;
+        if (elem_type && (elem_type->kind == TYPE_RECORD ||
+            elem_type->kind == TYPE_STRING ||
+            (elem_type->kind == TYPE_ARRAY && elem_type->array.is_constrained))) {
+            return "ptr";  /* Composite elements return ptr */
+        }
+    }
     /* Check for string literals and string types (generate fat pointers) */
     if (node && node->kind == NK_STRING) return "{ ptr, { i64, i64 } }";
     if (node && node->type && node->type->kind == TYPE_STRING) return "{ ptr, { i64, i64 } }";
@@ -12673,32 +12891,109 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
     if ((node->binary.op == TK_EQ || node->binary.op == TK_NE) &&
         left_type && Type_Is_Composite(left_type)) {
         /* Composite type comparison */
-        uint32_t left_ptr, right_ptr;
+        uint32_t eq_result;
+
+        bool left_is_slice = Expression_Is_Slice(node->binary.left);
+        bool right_is_slice = Expression_Is_Slice(node->binary.right);
         bool is_unconstrained = Type_Is_Unconstrained_Array(left_type) ||
                                 left_type->kind == TYPE_STRING;
-        if (is_unconstrained) {
-            /* Unconstrained arrays: use fat pointer values directly */
-            left_ptr = Generate_Expression(cg, node->binary.left);
-            right_ptr = Generate_Expression(cg, node->binary.right);
-        } else {
-            /* Constrained arrays/records: get addresses */
-            left_ptr = Generate_Composite_Address(cg, node->binary.left);
-            right_ptr = Generate_Composite_Address(cg, node->binary.right);
-        }
-        uint32_t eq_result = Emit_Temp(cg);
 
-        if (left_type->equality_func_name) {
-            /* Call the generated equality function */
-            /* Use fat pointers for unconstrained arrays/strings */
-            const char *arg_type = Type_To_Llvm(left_type);
-            Emit(cg, "  %%t%u = call i1 @%s(%s %%t%u, %s %%t%u)\n",
-                 eq_result, left_type->equality_func_name, arg_type, left_ptr, arg_type, right_ptr);
-        } else {
-            /* ??? Fallback: inline comparison (type wasn't frozen properly) */
-            if (left_type->kind == TYPE_RECORD) {
-                eq_result = Generate_Record_Equality(cg, left_ptr, right_ptr, left_type);
+        /* Handle slice comparisons specially - they have mixed representations */
+        if ((left_is_slice || right_is_slice) && !is_unconstrained) {
+            /* At least one slice with constrained type - generate inline comparison */
+            uint32_t left_data, right_data;
+            uint32_t left_low, left_high, right_low, right_high;
+            uint32_t elem_size = left_type->array.element_type ?
+                                 left_type->array.element_type->size : 8;
+
+            /* Generate left operand */
+            if (left_is_slice) {
+                uint32_t left_fat = Generate_Expression(cg, node->binary.left);
+                left_data = Emit_Fat_Pointer_Data(cg, left_fat);
+                left_low = Emit_Fat_Pointer_Low(cg, left_fat);
+                left_high = Emit_Fat_Pointer_High(cg, left_fat);
             } else {
-                eq_result = Generate_Array_Equality(cg, left_ptr, right_ptr, left_type);
+                left_data = Generate_Composite_Address(cg, node->binary.left);
+                /* Get static bounds from type */
+                int64_t low_val = Type_Bound_Value(left_type->array.indices[0].low_bound);
+                int64_t high_val = Type_Bound_Value(left_type->array.indices[0].high_bound);
+                left_low = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add i64 0, %lld\n", left_low, (long long)low_val);
+                left_high = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add i64 0, %lld\n", left_high, (long long)high_val);
+            }
+
+            /* Generate right operand */
+            if (right_is_slice) {
+                uint32_t right_fat = Generate_Expression(cg, node->binary.right);
+                right_data = Emit_Fat_Pointer_Data(cg, right_fat);
+                right_low = Emit_Fat_Pointer_Low(cg, right_fat);
+                right_high = Emit_Fat_Pointer_High(cg, right_fat);
+            } else {
+                right_data = Generate_Composite_Address(cg, node->binary.right);
+                /* Get static bounds from type - use right type if available */
+                Type_Info *rtype = node->binary.right->type ? node->binary.right->type : left_type;
+                int64_t low_val = 1, high_val = 1;
+                if (rtype && (rtype->kind == TYPE_ARRAY || rtype->kind == TYPE_STRING) &&
+                    rtype->array.index_count > 0) {
+                    low_val = Type_Bound_Value(rtype->array.indices[0].low_bound);
+                    high_val = Type_Bound_Value(rtype->array.indices[0].high_bound);
+                }
+                right_low = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add i64 0, %lld\n", right_low, (long long)low_val);
+                right_high = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add i64 0, %lld\n", right_high, (long long)high_val);
+            }
+
+            /* Compute lengths */
+            uint32_t left_len = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", left_len, left_high, left_low);
+            uint32_t left_len1 = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", left_len1, left_len);
+
+            uint32_t right_len = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", right_len, right_high, right_low);
+            uint32_t right_len1 = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", right_len1, right_len);
+
+            /* Compare lengths */
+            uint32_t len_eq = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", len_eq, left_len1, right_len1);
+
+            /* Compare data with memcmp */
+            uint32_t byte_size = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", byte_size, left_len1, elem_size);
+            uint32_t memcmp_result = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = call i32 @memcmp(ptr %%t%u, ptr %%t%u, i64 %%t%u)\n",
+                 memcmp_result, left_data, right_data, byte_size);
+            uint32_t data_eq = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", data_eq, memcmp_result);
+
+            /* Result: lengths match AND data matches */
+            eq_result = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", eq_result, len_eq, data_eq);
+        } else {
+            /* Standard path: both operands have same representation */
+            uint32_t left_ptr, right_ptr;
+            if (is_unconstrained) {
+                left_ptr = Generate_Expression(cg, node->binary.left);
+                right_ptr = Generate_Expression(cg, node->binary.right);
+            } else {
+                left_ptr = Generate_Composite_Address(cg, node->binary.left);
+                right_ptr = Generate_Composite_Address(cg, node->binary.right);
+            }
+            eq_result = Emit_Temp(cg);
+
+            if (left_type->equality_func_name) {
+                const char *arg_type = Type_To_Llvm(left_type);
+                Emit(cg, "  %%t%u = call i1 @%s(%s %%t%u, %s %%t%u)\n",
+                     eq_result, left_type->equality_func_name, arg_type, left_ptr, arg_type, right_ptr);
+            } else {
+                if (left_type->kind == TYPE_RECORD) {
+                    eq_result = Generate_Record_Equality(cg, left_ptr, right_ptr, left_type);
+                } else {
+                    eq_result = Generate_Array_Equality(cg, left_ptr, right_ptr, left_type);
+                }
             }
         }
 
@@ -12717,8 +13012,11 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         left_type && (left_type->kind == TYPE_ARRAY || left_type->kind == TYPE_STRING)) {
         /* Get addresses of both arrays for comparison */
         uint32_t left_ptr, right_ptr;
+        /* Slices produce fat pointers at runtime even with constrained type */
         bool is_unconstrained = Type_Is_Unconstrained_Array(left_type) ||
-                                left_type->kind == TYPE_STRING;
+                                left_type->kind == TYPE_STRING ||
+                                Expression_Is_Slice(node->binary.left) ||
+                                Expression_Is_Slice(node->binary.right);
         if (is_unconstrained) {
             left_ptr = Generate_Expression(cg, node->binary.left);
             right_ptr = Generate_Expression(cg, node->binary.right);
@@ -13156,11 +13454,13 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                     snprintf(cmp_buf, sizeof(cmp_buf), "fcmp %s %s", fcmp_op, float_type);
                     cmp_op = cmp_buf;
                 } else if (left_is_bool && right_is_bool) {
-                    /* Boolean comparisons use i1 */
+                    /* Boolean comparisons use i64 since values may come from
+                     * different sources (i1 functions extended to i64, or i64 fat ptrs).
+                     * This avoids type mismatches in LLVM IR. */
                     switch (node->binary.op) {
-                        case TK_EQ: cmp_op = "icmp eq i1"; break;
-                        case TK_NE: cmp_op = "icmp ne i1"; break;
-                        default: cmp_op = "icmp eq i1"; break;
+                        case TK_EQ: cmp_op = "icmp eq i64"; break;
+                        case TK_NE: cmp_op = "icmp ne i64"; break;
+                        default: cmp_op = "icmp eq i64"; break;
                     }
                 } else {
                     switch (node->binary.op) {
@@ -13968,10 +14268,23 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
         Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
              ptr, base_ptr, byte_offset);
 
-        /* For composite components (records, arrays), return pointer to data */
+        /* For composite components, handle based on constrained vs unconstrained */
         if (field_type && (field_type->kind == TYPE_RECORD ||
                            field_type->kind == TYPE_ARRAY)) {
+            /* Unconstrained or dynamic-bound arrays are stored as fat pointers */
+            if (field_type->kind == TYPE_ARRAY &&
+                (!field_type->array.is_constrained || Type_Has_Dynamic_Bounds(field_type))) {
+                uint32_t fat = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u  ; load array field with dynamic bounds\n", fat, ptr);
+                return fat;
+            }
             return ptr;
+        }
+        /* STRING fields (unconstrained or dynamic-bound) - load fat pointer */
+        if (field_type && field_type->kind == TYPE_STRING) {
+            uint32_t fat = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u  ; load STRING field\n", fat, ptr);
+            return fat;
         }
         /* For access-type components, load ptr without converting to i64 */
         if (field_type && field_type->kind == TYPE_ACCESS) {
@@ -13992,10 +14305,23 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
         Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
              ptr, base_ptr, byte_offset);
 
-        /* For composite components (records, arrays), return pointer to data */
+        /* For composite components, handle based on constrained vs unconstrained */
         if (field_type && (field_type->kind == TYPE_RECORD ||
                            field_type->kind == TYPE_ARRAY)) {
+            /* Unconstrained or dynamic-bound arrays are stored as fat pointers */
+            if (field_type->kind == TYPE_ARRAY &&
+                (!field_type->array.is_constrained || Type_Has_Dynamic_Bounds(field_type))) {
+                uint32_t fat = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u  ; load array field with dynamic bounds\n", fat, ptr);
+                return fat;
+            }
             return ptr;
+        }
+        /* STRING fields (unconstrained or dynamic-bound) - load fat pointer */
+        if (field_type && field_type->kind == TYPE_STRING) {
+            uint32_t fat = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u  ; load STRING field\n", fat, ptr);
+            return fat;
         }
         /* For access-type components, load ptr without converting to i64 */
         if (field_type && field_type->kind == TYPE_ACCESS) {
@@ -14016,10 +14342,23 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
     Emit_Symbol_Ref(cg, record_sym);
     Emit(cg, ", i64 %u\n", byte_offset);
 
-    /* For composite components (records, arrays), return pointer to data */
+    /* For composite components, handle based on constrained vs unconstrained */
     if (field_type && (field_type->kind == TYPE_RECORD ||
                        field_type->kind == TYPE_ARRAY)) {
+        /* Unconstrained or dynamic-bound arrays are stored as fat pointers */
+        if (field_type->kind == TYPE_ARRAY &&
+            (!field_type->array.is_constrained || Type_Has_Dynamic_Bounds(field_type))) {
+            uint32_t fat = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u  ; load array field with dynamic bounds\n", fat, ptr);
+            return fat;
+        }
         return ptr;
+    }
+    /* STRING fields (unconstrained or dynamic-bound) - load fat pointer */
+    if (field_type && field_type->kind == TYPE_STRING) {
+        uint32_t fat = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u  ; load STRING field\n", fat, ptr);
+        return fat;
     }
     /* For access-type components, load ptr without converting to i64 */
     if (field_type && field_type->kind == TYPE_ACCESS) {
