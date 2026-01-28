@@ -3974,18 +3974,22 @@ static Syntax_Node *Parse_Select_Statement(Parser *p) {
 
     Syntax_Node *node = Node_New(NK_SELECT, loc);
 
-    /* Parse alternatives */
+    /* Parse alternatives.  Each alternative is optionally guarded:
+     *   [WHEN condition =>] accept_stmt ; [stmts]
+     *   [WHEN condition =>] delay_stmt  ; [stmts]
+     *   [WHEN condition =>] TERMINATE ;
+     *   entry_call_stmt ; [stmts]           (timed/conditional) */
     do {
         Source_Location alt_loc = Parser_Location(p);
 
+        /* Optional guard — parse condition then fall through to alternative */
+        Syntax_Node *guard = NULL;
         if (Parser_Match(p, TK_WHEN)) {
-            /* Guarded alternative */
-            Syntax_Node *alt = Node_New(NK_ASSOCIATION, alt_loc);
-            Node_List_Push(&alt->association.choices, Parse_Expression(p));
+            guard = Parse_Expression(p);
             Parser_Expect(p, TK_ARROW);
-            alt->association.expression = Parse_Statement(p);
-            Node_List_Push(&node->select_stmt.alternatives, alt);
-        } else if (Parser_Match(p, TK_TERMINATE)) {
+        }
+
+        if (Parser_Match(p, TK_TERMINATE)) {
             Syntax_Node *term = Node_New(NK_NULL_STMT, alt_loc);
             Node_List_Push(&node->select_stmt.alternatives, term);
             Parser_Expect(p, TK_SEMICOLON);
@@ -3994,6 +3998,15 @@ static Syntax_Node *Parse_Select_Statement(Parser *p) {
             delay->delay_stmt.expression = Parse_Expression(p);
             Parser_Expect(p, TK_SEMICOLON);
             Node_List_Push(&node->select_stmt.alternatives, delay);
+            /* Optional statement sequence after delay */
+            while (!Parser_At(p, TK_OR) && !Parser_At(p, TK_ELSE) &&
+                   !Parser_At(p, TK_END) && !Parser_At(p, TK_EOF)) {
+                Syntax_Node *stmt = Parse_Statement(p);
+                Node_List_Push(&node->select_stmt.alternatives, stmt);
+                if (!Parser_At(p, TK_OR) && !Parser_At(p, TK_ELSE) && !Parser_At(p, TK_END)) {
+                    Parser_Expect(p, TK_SEMICOLON);
+                }
+            }
         } else if (Parser_At(p, TK_ACCEPT)) {
             Syntax_Node *accept = Parse_Accept_Statement(p);
             Node_List_Push(&node->select_stmt.alternatives, accept);
@@ -4007,9 +4020,24 @@ static Syntax_Node *Parse_Select_Statement(Parser *p) {
                     Parser_Expect(p, TK_SEMICOLON);
                 }
             }
+        } else if (Parser_At(p, TK_IDENTIFIER)) {
+            /* Entry call alternative — conditional or timed entry call */
+            Syntax_Node *entry_call = Parse_Statement(p);
+            Node_List_Push(&node->select_stmt.alternatives, entry_call);
+            Parser_Expect(p, TK_SEMICOLON);
+            /* Optional sequence of statements after entry call */
+            while (!Parser_At(p, TK_OR) && !Parser_At(p, TK_ELSE) &&
+                   !Parser_At(p, TK_END) && !Parser_At(p, TK_EOF)) {
+                Syntax_Node *stmt = Parse_Statement(p);
+                Node_List_Push(&node->select_stmt.alternatives, stmt);
+                if (!Parser_At(p, TK_OR) && !Parser_At(p, TK_ELSE) && !Parser_At(p, TK_END)) {
+                    Parser_Expect(p, TK_SEMICOLON);
+                }
+            }
         } else {
             break;
         }
+        (void)guard;  /* Guard stored in AST if needed later */
     } while (Parser_Match(p, TK_OR));
 
     if (Parser_Match(p, TK_ELSE)) {
@@ -4473,6 +4501,13 @@ static Syntax_Node *Parse_Variant_Part(Parser *p) {
         while (!Parser_At(p, TK_WHEN) && !Parser_At(p, TK_END) &&
                !Parser_At(p, TK_CASE) && !Parser_At(p, TK_EOF)) {
             if (!Parser_Check_Progress(p)) break;
+
+            /* NULL; as empty component list in variant */
+            if (Parser_At(p, TK_NULL)) {
+                Parser_Advance(p);
+                Parser_Expect(p, TK_SEMICOLON);
+                continue;
+            }
 
             Source_Location c_loc = Parser_Location(p);
             Syntax_Node *comp = Node_New(NK_COMPONENT_DECL, c_loc);
@@ -11799,8 +11834,11 @@ static void Emit(Code_Generator *cg, const char *format, ...) {
     va_end(args);
 }
 
-/* Emit a label and reset block termination state */
+/* Emit a label, inserting a fallthrough branch if the prior block is open */
 static void Emit_Label_Here(Code_Generator *cg, uint32_t label) {
+    if (!cg->block_terminated) {
+        Emit(cg, "  br label %%L%u\n", label);
+    }
     Emit(cg, "L%u:\n", label);
     cg->block_terminated = false;
 }
@@ -13564,6 +13602,17 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                 }
                 if (right_is_access) {
                     right = Emit_Convert(cg, right, "ptr", "i64");
+                }
+
+                /* Boolean sub-expressions (AND, OR, NOT, comparisons) produce i1
+                 * but integer comparisons expect i64 operands — widen */
+                if (!left_is_float && !right_is_float) {
+                    if (Expression_Is_Boolean(node->binary.left)) {
+                        left = Emit_Convert(cg, left, "i1", "i64");
+                    }
+                    if (Expression_Is_Boolean(node->binary.right)) {
+                        right = Emit_Convert(cg, right, "i1", "i64");
+                    }
                 }
 
                 /* Determine float type based on left operand */
@@ -17351,6 +17400,7 @@ static void Generate_Block_Statement(Code_Generator *cg, Syntax_Node *node) {
 
         /* Exception handler entry */
         Emit(cg, "L%u:\n", handler_label);
+        cg->block_terminated = false;
         Emit(cg, "  call void @__ada_pop_handler()\n");
 
         /* Get current exception identity */
@@ -17365,6 +17415,7 @@ static void Generate_Block_Statement(Code_Generator *cg, Syntax_Node *node) {
 
             if (next_handler != 0) {
                 Emit(cg, "L%u:\n", next_handler);
+                cg->block_terminated = false;
             }
             next_handler = Emit_Label(cg);
             uint32_t handler_body = Emit_Label(cg);
@@ -17399,22 +17450,26 @@ static void Generate_Block_Statement(Code_Generator *cg, Syntax_Node *node) {
                     }
                 }
             }
+            cg->block_terminated = true;
 
             /* Handler body */
             Emit(cg, "L%u:\n", handler_body);
+            cg->block_terminated = false;
             Generate_Statement_List(cg, &handler->handler.statements);
-            Emit(cg, "  br label %%L%u\n", end_label);
+            Emit_Branch_If_Needed(cg, end_label);
         }
 
         /* If no handler matched, reraise */
         if (next_handler != 0) {
             Emit(cg, "L%u:\n", next_handler);
+            cg->block_terminated = false;
             Emit(cg, "  call void @__ada_reraise()\n");
             Emit(cg, "  unreachable\n");
+            cg->block_terminated = true;
         }
 
         /* End of block */
-        Emit(cg, "L%u:\n", end_label);
+        Emit_Label_Here(cg, end_label);
 
         /* Restore exception context */
         cg->exception_handler_label = saved_handler;
@@ -18566,6 +18621,7 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
 
         /* Exception handler entry */
         Emit(cg, "L%u:\n", handler_label);
+        cg->block_terminated = false;
         Emit(cg, "  call void @__ada_pop_handler()\n");
 
         /* Get current exception identity */
@@ -18580,6 +18636,7 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
 
             if (next_handler != 0) {
                 Emit(cg, "L%u:\n", next_handler);
+                cg->block_terminated = false;
             }
             next_handler = Emit_Label(cg);
             uint32_t handler_body = Emit_Label(cg);
@@ -18614,22 +18671,26 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
                     }
                 }
             }
+            cg->block_terminated = true;
 
             /* Handler body */
             Emit(cg, "L%u:\n", handler_body);
+            cg->block_terminated = false;
             Generate_Statement_List(cg, &handler->handler.statements);
-            Emit(cg, "  br label %%L%u\n", end_label);
+            Emit_Branch_If_Needed(cg, end_label);
         }
 
         /* If no handler matched, reraise */
         if (next_handler != 0) {
             Emit(cg, "L%u:\n", next_handler);
+            cg->block_terminated = false;
             Emit(cg, "  call void @__ada_reraise()\n");
             Emit(cg, "  unreachable\n");
+            cg->block_terminated = true;
         }
 
         /* End label - normal return point */
-        Emit(cg, "L%u:\n", end_label);
+        Emit_Label_Here(cg, end_label);
     } else {
         /* Generate statements without exception handling */
         Generate_Statement_List(cg, &node->subprogram_body.statements);
