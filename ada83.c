@@ -3431,6 +3431,12 @@ static Syntax_Node *Parse_Expression_Precedence(Parser *p, Precedence min_prec) 
         Source_Location loc = Parser_Location(p);
         Parser_Advance(p);
 
+        /* After advance, check for compound keywords (AND THEN, OR ELSE)
+         * that were detected in Parser_Advance */
+        if (p->previous_token.kind == TK_AND_THEN || p->previous_token.kind == TK_OR_ELSE) {
+            op = p->previous_token.kind;
+        }
+
         /* Handle NOT IN specially */
         if (op == TK_NOT && Parser_At(p, TK_IN)) {
             Parser_Advance(p);
@@ -9204,6 +9210,13 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                         type->base_type = def_type->base_type;
                         type->parent_type = def_type->parent_type;
 
+                        /* For user-defined integer types (TYPE T IS RANGE L..R), the declared
+                         * type is the "first subtype" and needs a base type (RM 3.5.4).
+                         * Use INTEGER as the base type for constraint checking in 'PRED/'SUCC. */
+                        if (def_type->kind == TYPE_INTEGER && type->base_type == NULL) {
+                            type->base_type = sm->type_integer;
+                        }
+
                         if (def_type->kind == TYPE_ARRAY) {
                             type->array = def_type->array;
                         } else if (def_type->kind == TYPE_RECORD) {
@@ -12559,6 +12572,79 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         return cmp_result;
     }
 
+    /* Short-circuit boolean operators: AND THEN, OR ELSE
+     * These must NOT evaluate the right operand if the left operand
+     * determines the result (Ada RM 4.5.1). */
+    if (node->binary.op == TK_AND_THEN) {
+        /* AND THEN: if left is false, result is false (don't evaluate right)
+         *           if left is true, result is right */
+        uint32_t left = Generate_Expression(cg, node->binary.left);
+        const char *left_llvm = Expression_Llvm_Type(node->binary.left);
+        uint32_t left_i1 = Emit_Convert(cg, left, left_llvm, "i1");
+
+        uint32_t eval_right_label = cg->label_id++;
+        uint32_t done_label = cg->label_id++;
+        uint32_t left_block_label = cg->label_id++;
+
+        /* Save current block for phi */
+        Emit(cg, "  br label %%Landthen_check%u\n", left_block_label);
+        Emit(cg, "Landthen_check%u:\n", left_block_label);
+        Emit(cg, "  br i1 %%t%u, label %%Landthen_right%u, label %%Landthen_done%u\n",
+             left_i1, eval_right_label, done_label);
+
+        /* Evaluate right if left was true */
+        Emit(cg, "Landthen_right%u:\n", eval_right_label);
+        uint32_t right = Generate_Expression(cg, node->binary.right);
+        const char *right_llvm = Expression_Llvm_Type(node->binary.right);
+        uint32_t right_i1 = Emit_Convert(cg, right, right_llvm, "i1");
+        uint32_t right_done_label = cg->label_id++;
+        Emit(cg, "  br label %%Landthen_merge%u\n", right_done_label);
+        Emit(cg, "Landthen_merge%u:\n", right_done_label);
+        Emit(cg, "  br label %%Landthen_done%u\n", done_label);
+
+        /* Merge point */
+        Emit(cg, "Landthen_done%u:\n", done_label);
+        uint32_t t = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = phi i1 [ false, %%Landthen_check%u ], [ %%t%u, %%Landthen_merge%u ]\n",
+             t, left_block_label, right_i1, right_done_label);
+        return t;
+    }
+
+    if (node->binary.op == TK_OR_ELSE) {
+        /* OR ELSE: if left is true, result is true (don't evaluate right)
+         *          if left is false, result is right */
+        uint32_t left = Generate_Expression(cg, node->binary.left);
+        const char *left_llvm = Expression_Llvm_Type(node->binary.left);
+        uint32_t left_i1 = Emit_Convert(cg, left, left_llvm, "i1");
+
+        uint32_t eval_right_label = cg->label_id++;
+        uint32_t done_label = cg->label_id++;
+        uint32_t left_block_label = cg->label_id++;
+
+        /* Save current block for phi */
+        Emit(cg, "  br label %%Lorelse_check%u\n", left_block_label);
+        Emit(cg, "Lorelse_check%u:\n", left_block_label);
+        Emit(cg, "  br i1 %%t%u, label %%Lorelse_done%u, label %%Lorelse_right%u\n",
+             left_i1, done_label, eval_right_label);
+
+        /* Evaluate right if left was false */
+        Emit(cg, "Lorelse_right%u:\n", eval_right_label);
+        uint32_t right = Generate_Expression(cg, node->binary.right);
+        const char *right_llvm = Expression_Llvm_Type(node->binary.right);
+        uint32_t right_i1 = Emit_Convert(cg, right, right_llvm, "i1");
+        uint32_t right_done_label = cg->label_id++;
+        Emit(cg, "  br label %%Lorelse_merge%u\n", right_done_label);
+        Emit(cg, "Lorelse_merge%u:\n", right_done_label);
+        Emit(cg, "  br label %%Lorelse_done%u\n", done_label);
+
+        /* Merge point */
+        Emit(cg, "Lorelse_done%u:\n", done_label);
+        uint32_t t = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = phi i1 [ true, %%Lorelse_check%u ], [ %%t%u, %%Lorelse_merge%u ]\n",
+             t, left_block_label, right_i1, right_done_label);
+        return t;
+    }
+
     /* String/array concatenation */
     if (node->binary.op == TK_AMPERSAND && Type_Is_Array_Like(left_type)) {
 
@@ -14018,6 +14104,36 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         if (first_arg) {
             uint32_t val = Generate_Expression(cg, first_arg);
             Emit(cg, "  %%t%u = add i64 %%t%u, 1  ; 'SUCC\n", t, val);
+            /* Check against BASE TYPE's high bound - CONSTRAINT_ERROR if exceeded.
+             * Per Ada RM 3.5.5: 'SUCC operates on the base type, not the subtype.
+             * For generic instantiations, substitute formal types with actuals. */
+            Type_Info *base = Type_Base(prefix_type);
+            /* Generic formal type substitution: if base type is a formal, use actual */
+            if (cg->current_instance && cg->current_instance->generic_actuals && base && base->name.data) {
+                for (uint32_t k = 0; k < cg->current_instance->generic_actual_count; k++) {
+                    if (Slice_Equal_Ignore_Case(base->name,
+                            cg->current_instance->generic_actuals[k].formal_name) &&
+                        cg->current_instance->generic_actuals[k].actual_type) {
+                        base = Type_Base(cg->current_instance->generic_actuals[k].actual_type);
+                        break;
+                    }
+                }
+            }
+            if (base && base->high_bound.kind == BOUND_INTEGER) {
+                uint32_t ok_label = cg->label_id++;
+                uint32_t raise_label = cg->label_id++;
+                uint32_t cmp = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp sgt i64 %%t%u, %lld\n", cmp, t,
+                     (long long)base->high_bound.int_value);
+                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp, raise_label, ok_label);
+                Emit(cg, "L%u:  ; raise CONSTRAINT_ERROR for 'SUCC\n", raise_label);
+                uint32_t exc_id = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = ptrtoint ptr @__exc.constraint_error to i64\n", exc_id);
+                Emit(cg, "  call void @__ada_raise(i64 %%t%u)\n", exc_id);
+                Emit(cg, "  unreachable\n");
+                Emit(cg, "L%u:\n", ok_label);
+                cg->block_terminated = false;
+            }
             return t;
         }
     }
@@ -14026,6 +14142,36 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         if (first_arg) {
             uint32_t val = Generate_Expression(cg, first_arg);
             Emit(cg, "  %%t%u = sub i64 %%t%u, 1  ; 'PRED\n", t, val);
+            /* Check against BASE TYPE's low bound - CONSTRAINT_ERROR if below.
+             * Per Ada RM 3.5.5: 'PRED operates on the base type, not the subtype.
+             * For generic instantiations, substitute formal types with actuals. */
+            Type_Info *base = Type_Base(prefix_type);
+            /* Generic formal type substitution: if base type is a formal, use actual */
+            if (cg->current_instance && cg->current_instance->generic_actuals && base && base->name.data) {
+                for (uint32_t k = 0; k < cg->current_instance->generic_actual_count; k++) {
+                    if (Slice_Equal_Ignore_Case(base->name,
+                            cg->current_instance->generic_actuals[k].formal_name) &&
+                        cg->current_instance->generic_actuals[k].actual_type) {
+                        base = Type_Base(cg->current_instance->generic_actuals[k].actual_type);
+                        break;
+                    }
+                }
+            }
+            if (base && base->low_bound.kind == BOUND_INTEGER) {
+                uint32_t ok_label = cg->label_id++;
+                uint32_t raise_label = cg->label_id++;
+                uint32_t cmp = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp slt i64 %%t%u, %lld\n", cmp, t,
+                     (long long)base->low_bound.int_value);
+                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp, raise_label, ok_label);
+                Emit(cg, "L%u:  ; raise CONSTRAINT_ERROR for 'PRED\n", raise_label);
+                uint32_t exc_id = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = ptrtoint ptr @__exc.constraint_error to i64\n", exc_id);
+                Emit(cg, "  call void @__ada_raise(i64 %%t%u)\n", exc_id);
+                Emit(cg, "  unreachable\n");
+                Emit(cg, "L%u:\n", ok_label);
+                cg->block_terminated = false;
+            }
             return t;
         }
     }
@@ -16064,14 +16210,22 @@ static void Generate_Block_Statement(Code_Generator *cg, Syntax_Node *node) {
     bool has_handlers = node->block_stmt.handlers.count > 0;
 
     if (has_handlers) {
-        /* Setup exception handling using setjmp/longjmp */
+        /* Per Ada RM: Exception handlers only cover the statement part,
+         * NOT the declarative part. Exceptions in declarations propagate
+         * to the enclosing block's handler. */
+
+        /* Allocate handler frame first (needed for stack allocation order) */
         uint32_t handler_frame = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = alloca { ptr, [200 x i8] }, align 16  ; handler frame\n", handler_frame);
+
+        /* Generate declarations BEFORE setting up the exception handler.
+         * This ensures exceptions in declarative part propagate outward. */
+        Generate_Declaration_List(cg, &node->block_stmt.declarations);
+
+        /* Now setup exception handling for the statement part only */
         uint32_t handler_label = Emit_Label(cg);
         uint32_t normal_label = Emit_Label(cg);
         uint32_t end_label = Emit_Label(cg);
-
-        /* Allocate handler frame: { ptr prev, [200 x i8] jmp_buf } */
-        Emit(cg, "  %%t%u = alloca { ptr, [200 x i8] }, align 16  ; handler frame\n", handler_frame);
 
         /* Push exception handler */
         Emit(cg, "  call void @__ada_push_handler(ptr %%t%u)\n", handler_frame);
@@ -16101,10 +16255,7 @@ static void Generate_Block_Statement(Code_Generator *cg, Syntax_Node *node) {
         cg->exception_jmp_buf = jmp_buf;
         cg->in_exception_region = true;
 
-        /* Generate block declarations */
-        Generate_Declaration_List(cg, &node->block_stmt.declarations);
-
-        /* Generate block statements */
+        /* Generate block statements (handler covers only this part) */
         Generate_Statement_List(cg, &node->block_stmt.statements);
 
         /* Pop handler on normal exit */
