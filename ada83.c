@@ -6725,6 +6725,18 @@ static bool Type_Covers(Type_Info *expected, Type_Info *actual) {
         return true;
     }
 
+    /* Float/fixed-point types: same name means compatible (RM 12.3) */
+    if (expected->kind == TYPE_FLOAT && actual->kind == TYPE_FLOAT &&
+        expected->name.data && actual->name.data &&
+        Slice_Equal_Ignore_Case(expected->name, actual->name)) {
+        return true;
+    }
+    if (expected->kind == TYPE_FIXED && actual->kind == TYPE_FIXED &&
+        expected->name.data && actual->name.data &&
+        Slice_Equal_Ignore_Case(expected->name, actual->name)) {
+        return true;
+    }
+
     /* Character literals as enumeration literals (RM 3.5.1):
      * An enumeration type can define character literals (e.g., TYPE T IS ('A', 'B');).
      * When comparing, CHARACTER type should be compatible with such enumerations.
@@ -7632,6 +7644,33 @@ static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
                     }
                 }
             }
+            /* Disambiguate overloaded enum literals using comparison context
+             * (RM 8.6): if types mismatch and one operand is a literal, re-resolve
+             * it against the other operand's type via Symbol_Find_By_Type. */
+            if (!Type_Covers(left_type, right_type) && !Type_Covers(right_type, left_type)) {
+                if (node->binary.right->kind == NK_IDENTIFIER &&
+                    node->binary.right->symbol &&
+                    node->binary.right->symbol->kind == SYMBOL_LITERAL && left_type) {
+                    Symbol *s = Symbol_Find_By_Type(sm,
+                        node->binary.right->string_val.text, left_type);
+                    if (s) {
+                        node->binary.right->symbol = s;
+                        node->binary.right->type = s->type ? s->type : left_type;
+                        right_type = node->binary.right->type;
+                    }
+                }
+                if (node->binary.left->kind == NK_IDENTIFIER &&
+                    node->binary.left->symbol &&
+                    node->binary.left->symbol->kind == SYMBOL_LITERAL && right_type) {
+                    Symbol *s = Symbol_Find_By_Type(sm,
+                        node->binary.left->string_val.text, right_type);
+                    if (s) {
+                        node->binary.left->symbol = s;
+                        node->binary.left->type = s->type ? s->type : right_type;
+                        left_type = node->binary.left->type;
+                    }
+                }
+            }
             if (!Type_Covers(left_type, right_type) && !Type_Covers(right_type, left_type)) {
                 Report_Error(node->location, "incompatible types for comparison");
             }
@@ -8340,6 +8379,21 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                 node->qualified.expression->type = node->qualified.subtype_mark->type;
             }
             Resolve_Expression(sm, node->qualified.expression);
+            /* Re-resolve overloaded literals against qualifying type (RM 4.7):
+             * WEEKEND'(SAT) must pick WEEKEND.SAT, not WEEK.SAT;
+             * CHAR'('B') must use CHAR position, not ASCII code. */
+            if (node->qualified.expression && node->qualified.subtype_mark->type) {
+                Type_Info *qt = node->qualified.subtype_mark->type;
+                Syntax_Node *inner = node->qualified.expression;
+                if (inner->kind == NK_IDENTIFIER) {
+                    if (!Type_Covers(qt, inner->type) && !Type_Covers(inner->type, qt)) {
+                        Symbol *s = Symbol_Find_By_Type(sm, inner->string_val.text, qt);
+                        if (s) { inner->symbol = s; inner->type = s->type ? s->type : qt; }
+                    }
+                } else if (inner->kind == NK_CHARACTER) {
+                    Resolve_Char_As_Enum(sm, inner, qt);
+                }
+            }
             node->type = node->qualified.subtype_mark->type;
             return node->type;
 
@@ -10100,10 +10154,21 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                             Syntax_Node *formal = formals->items[i];
                             if (!formal) continue;
                             if (formal->kind == NK_GENERIC_TYPE_PARAM) {
-                                /* Add formal type as a type symbol (use PRIVATE as placeholder) */
+                                /* Map def_kind → Type_Kind so numeric formals
+                                 * are recognised by Type_Is_Numeric (RM 12.1.2):
+                                 * 0=PRIVATE, 1=LIMITED, 2=DISCRETE, 3=INTEGER,
+                                 * 4=FLOAT, 5=FIXED */
+                                Type_Kind tk = TYPE_PRIVATE;
+                                switch (formal->generic_type_param.def_kind) {
+                                    case 2: tk = TYPE_ENUMERATION; break;
+                                    case 3: tk = TYPE_INTEGER;     break;
+                                    case 4: tk = TYPE_FLOAT;       break;
+                                    case 5: tk = TYPE_FIXED;       break;
+                                    default: break;
+                                }
                                 Symbol *type_sym = Symbol_New(SYMBOL_TYPE,
                                     formal->generic_type_param.name, formal->location);
-                                type_sym->type = Type_New(TYPE_PRIVATE,
+                                type_sym->type = Type_New(tk,
                                     formal->generic_type_param.name);
                                 Symbol_Add(sm, type_sym);
                                 formal->symbol = type_sym;
@@ -16298,6 +16363,12 @@ static uint32_t Generate_Qualified(Code_Generator *cg, Syntax_Node *node) {
 
     if (strcmp(src_llvm, dst_llvm) != 0) {
         result = Emit_Convert(cg, result, src_llvm, dst_llvm);
+    }
+    /* Widen narrow integer scalars back to i64 computation width.
+     * Mirrors the same fix in Generate_Apply (RM 4.6). */
+    if (!Is_Float_Type(dst_llvm) && strcmp(dst_llvm, "ptr") != 0 &&
+        !strstr(dst_llvm, "{")) {
+        result = Emit_Convert(cg, result, dst_llvm, "i64");
     }
 
     return result;
