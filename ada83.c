@@ -9159,6 +9159,55 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                             type->array = def_type->array;
                         } else if (def_type->kind == TYPE_RECORD) {
                             type->record = def_type->record;
+
+                            /* Add discriminants as accessible record components (RM 3.7.1)
+                             * Discriminants can be accessed like normal components: R.D1 */
+                            if (has_discriminants) {
+                                /* Count total discriminant names */
+                                uint32_t disc_count = 0;
+                                for (uint32_t i = 0; i < node->type_decl.discriminants.count; i++) {
+                                    Syntax_Node *disc_spec = node->type_decl.discriminants.items[i];
+                                    if (disc_spec->kind == NK_DISCRIMINANT_SPEC) {
+                                        disc_count += disc_spec->discriminant.names.count;
+                                    }
+                                }
+
+                                /* Create new components array with discriminants at the start */
+                                uint32_t old_count = type->record.component_count;
+                                uint32_t new_count = old_count + disc_count;
+                                Component_Info *new_comps = Arena_Allocate(
+                                    new_count * sizeof(Component_Info));
+
+                                /* Add discriminants first (they come before other components) */
+                                uint32_t disc_idx = 0;
+                                for (uint32_t i = 0; i < node->type_decl.discriminants.count; i++) {
+                                    Syntax_Node *disc_spec = node->type_decl.discriminants.items[i];
+                                    if (disc_spec->kind == NK_DISCRIMINANT_SPEC) {
+                                        Type_Info *disc_type = sm->type_integer;
+                                        if (disc_spec->discriminant.disc_type &&
+                                            disc_spec->discriminant.disc_type->type) {
+                                            disc_type = disc_spec->discriminant.disc_type->type;
+                                        }
+                                        for (uint32_t j = 0; j < disc_spec->discriminant.names.count; j++) {
+                                            Syntax_Node *name_node = disc_spec->discriminant.names.items[j];
+                                            new_comps[disc_idx].name = name_node->string_val.text;
+                                            new_comps[disc_idx].component_type = disc_type;
+                                            new_comps[disc_idx].byte_offset = 0; /* Offset computed later */
+                                            new_comps[disc_idx].bit_offset = 0;
+                                            new_comps[disc_idx].bit_size = disc_type ? disc_type->size * 8 : 64;
+                                            disc_idx++;
+                                        }
+                                    }
+                                }
+
+                                /* Copy existing components after discriminants */
+                                for (uint32_t i = 0; i < old_count; i++) {
+                                    new_comps[disc_count + i] = type->record.components[i];
+                                }
+
+                                type->record.components = new_comps;
+                                type->record.component_count = new_count;
+                            }
                         } else if (def_type->kind == TYPE_ACCESS) {
                             type->access = def_type->access;
                         } else if (def_type->kind == TYPE_ENUMERATION) {
@@ -11830,7 +11879,11 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "  %%t%u = load %s, ptr ", t, type_str);
                 Emit_Symbol_Ref(cg, sym);
                 Emit(cg, "\n");
-                t = Emit_Convert(cg, t, type_str, "i64");
+                /* Widen to i64 for computation if narrower type.
+                 * But keep ptr types as ptr - records/access need pointers. */
+                if (strcmp(type_str, "ptr") != 0) {
+                    t = Emit_Convert(cg, t, type_str, "i64");
+                }
             } else {
                 /* ??? Unknown literal type - emit 0 as fallback */
                 Emit(cg, "  %%t%u = add i64 0, 0  ; unknown literal\n", t);
