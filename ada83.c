@@ -7935,16 +7935,68 @@ static double Eval_Const_Numeric(Syntax_Node *n) {
     switch (n->kind) {
         case NK_REAL:    return n->real_lit.value;
         case NK_INTEGER: return (double)n->integer_lit.value;
+        case NK_CHARACTER:
+            /* Character literals have position value in symbol->frame_offset */
+            if (n->symbol && n->symbol->kind == SYMBOL_LITERAL) {
+                return (double)n->symbol->frame_offset;
+            }
+            /* Fallback: use ASCII code - character literals store their value in string_val.text */
+            /* Format is 'X' (length 3) - extract the middle character at index 1 */
+            if (n->string_val.text.length >= 2) {
+                return (double)(unsigned char)n->string_val.text.data[1];
+            }
+            if (n->string_val.text.length == 1) {
+                return (double)(unsigned char)n->string_val.text.data[0];
+            }
+            return 0.0/0.0;
         case NK_IDENTIFIER:
         case NK_SELECTED: {
-            /* Named number or constant - evaluate via symbol's declaration */
+            /* Check for character/enum literal first */
             Symbol *sym = n->symbol;
+            if (sym && sym->kind == SYMBOL_LITERAL) {
+                return (double)sym->frame_offset;
+            }
+            /* Named number or constant - evaluate via symbol's declaration */
             if (sym && sym->kind == SYMBOL_CONSTANT && sym->is_named_number &&
                 sym->declaration && sym->declaration->kind == NK_OBJECT_DECL) {
                 return Eval_Const_Numeric(sym->declaration->object_decl.init);
             }
             return 0.0/0.0;
         }
+        case NK_QUALIFIED:
+            /* Qualified expression: TYPE'(expr) - evaluate the inner expression */
+            if (n->qualified.expression) {
+                Syntax_Node *inner = n->qualified.expression;
+                /* Handle character literal inside qualified expression:
+                 * look up in the qualifying type's enumeration literals */
+                if (inner->kind == NK_CHARACTER && n->qualified.subtype_mark &&
+                    n->qualified.subtype_mark->type) {
+                    Type_Info *qual_type = n->qualified.subtype_mark->type;
+                    /* Walk up to find the base enumeration type with literals */
+                    while (qual_type && qual_type->kind == TYPE_ENUMERATION &&
+                           !qual_type->enumeration.literals) {
+                        qual_type = qual_type->base_type ? qual_type->base_type : qual_type->parent_type;
+                    }
+                    if (qual_type && qual_type->kind == TYPE_ENUMERATION &&
+                        qual_type->enumeration.literals) {
+                        /* Extract the character from 'X' format */
+                        String_Slice lit_text = inner->string_val.text;
+                        char ch = lit_text.length >= 2 ? lit_text.data[1] : 0;
+                        /* Look for matching character literal in enum */
+                        for (uint32_t j = 0; j < qual_type->enumeration.literal_count; j++) {
+                            String_Slice lit_name = qual_type->enumeration.literals[j];
+                            if (lit_name.length == 3 &&
+                                lit_name.data[0] == '\'' &&
+                                lit_name.data[1] == ch &&
+                                lit_name.data[2] == '\'') {
+                                return (double)j;  /* Position in enumeration */
+                            }
+                        }
+                    }
+                }
+                return Eval_Const_Numeric(inner);
+            }
+            return 0.0/0.0;
         case NK_APPLY: {
             /* Type conversions: TYPE_NAME(expr) - evaluate the argument */
             if (n->apply.prefix && n->apply.arguments.count == 1) {
@@ -8383,25 +8435,96 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                         }
                         if (range_node && range_node->kind == NK_RANGE &&
                             range_node->range.low && range_node->range.high) {
-                            if (range_node->range.low->kind == NK_INTEGER) {
+                            /* Helper to extract static integer from various expression forms */
+                            bool extract_static_bound(Syntax_Node *expr, int64_t *out) {
+                                if (!expr) return false;
+                                /* Integer literal */
+                                if (expr->kind == NK_INTEGER) {
+                                    *out = expr->integer_lit.value;
+                                    return true;
+                                }
+                                /* Character/enum literal (symbol with frame_offset as position) */
+                                if (expr->symbol && expr->symbol->kind == SYMBOL_LITERAL) {
+                                    *out = expr->symbol->frame_offset;
+                                    return true;
+                                }
+                                /* Qualified expression: TYPE'(expr) - evaluate inner expression */
+                                if (expr->kind == NK_QUALIFIED && expr->qualified.expression) {
+                                    Syntax_Node *inner = expr->qualified.expression;
+                                    if (inner->kind == NK_INTEGER) {
+                                        *out = inner->integer_lit.value;
+                                        return true;
+                                    }
+                                    if (inner->symbol && inner->symbol->kind == SYMBOL_LITERAL) {
+                                        *out = inner->symbol->frame_offset;
+                                        return true;
+                                    }
+                                    /* Handle character literal inside qualified expression:
+                                     * look up in the qualifying type's enumeration literals */
+                                    if (inner->kind == NK_CHARACTER && expr->qualified.subtype_mark) {
+                                        /* First resolve the subtype_mark to get its type */
+                                        if (!expr->qualified.subtype_mark->type) {
+                                            Resolve_Expression(sm, expr->qualified.subtype_mark);
+                                        }
+                                        Type_Info *qual_type = expr->qualified.subtype_mark->type;
+                                        /* Walk up to find the base enumeration type with literals */
+                                        while (qual_type && qual_type->kind == TYPE_ENUMERATION &&
+                                               !qual_type->enumeration.literals) {
+                                            qual_type = qual_type->base_type ? qual_type->base_type : qual_type->parent_type;
+                                        }
+                                        if (qual_type && qual_type->kind == TYPE_ENUMERATION &&
+                                            qual_type->enumeration.literals) {
+                                            /* Extract the character from 'X' format */
+                                            String_Slice lit_text = inner->string_val.text;
+                                            char ch = lit_text.length >= 2 ? lit_text.data[1] : 0;
+                                            /* Look for matching character literal in enum */
+                                            for (uint32_t j = 0; j < qual_type->enumeration.literal_count; j++) {
+                                                String_Slice lit_name = qual_type->enumeration.literals[j];
+                                                if (lit_name.length == 3 &&
+                                                    lit_name.data[0] == '\'' &&
+                                                    lit_name.data[1] == ch &&
+                                                    lit_name.data[2] == '\'') {
+                                                    *out = (int64_t)j;  /* Position in enumeration */
+                                                    return true;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    /* Try constant evaluation for other inner expressions */
+                                    double val = Eval_Const_Numeric(inner);
+                                    if (val == val) {  /* Not NaN */
+                                        *out = (int64_t)val;
+                                        return true;
+                                    }
+                                }
+                                /* Try general constant evaluation */
+                                double val = Eval_Const_Numeric(expr);
+                                if (val == val) {  /* Not NaN */
+                                    *out = (int64_t)val;
+                                    return true;
+                                }
+                                return false;
+                            }
+                            int64_t low_val, high_val;
+                            if (extract_static_bound(range_node->range.low, &low_val)) {
                                 info->low_bound = (Type_Bound){
                                     .kind = BOUND_INTEGER,
-                                    .int_value = range_node->range.low->integer_lit.value
+                                    .int_value = low_val
                                 };
                             } else {
-                                /* Non-literal bound - store expression reference */
+                                /* Non-static bound - store expression reference */
                                 info->low_bound = (Type_Bound){
                                     .kind = BOUND_EXPR,
                                     .expr = range_node->range.low
                                 };
                             }
-                            if (range_node->range.high->kind == NK_INTEGER) {
+                            if (extract_static_bound(range_node->range.high, &high_val)) {
                                 info->high_bound = (Type_Bound){
                                     .kind = BOUND_INTEGER,
-                                    .int_value = range_node->range.high->integer_lit.value
+                                    .int_value = high_val
                                 };
                             } else {
-                                /* Non-literal bound - store expression reference */
+                                /* Non-static bound - store expression reference */
                                 info->high_bound = (Type_Bound){
                                     .kind = BOUND_EXPR,
                                     .expr = range_node->range.high
@@ -8731,29 +8854,36 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                             info->index_type = sm->type_integer;
 
                             if (range->kind == NK_RANGE) {
-                                if (range->range.low && range->range.low->kind == NK_INTEGER) {
-                                    info->low_bound = (Type_Bound){
-                                        .kind = BOUND_INTEGER,
-                                        .int_value = range->range.low->integer_lit.value
-                                    };
-                                } else if (range->range.low) {
-                                    /* Non-literal bound - store expression reference */
-                                    info->low_bound = (Type_Bound){
-                                        .kind = BOUND_EXPR,
-                                        .expr = range->range.low
-                                    };
+                                /* Try to evaluate bounds as static constants */
+                                if (range->range.low) {
+                                    double val = Eval_Const_Numeric(range->range.low);
+                                    if (val == val) {  /* Not NaN - static value */
+                                        info->low_bound = (Type_Bound){
+                                            .kind = BOUND_INTEGER,
+                                            .int_value = (int64_t)val
+                                        };
+                                    } else {
+                                        /* Non-static bound - store expression reference */
+                                        info->low_bound = (Type_Bound){
+                                            .kind = BOUND_EXPR,
+                                            .expr = range->range.low
+                                        };
+                                    }
                                 }
-                                if (range->range.high && range->range.high->kind == NK_INTEGER) {
-                                    info->high_bound = (Type_Bound){
-                                        .kind = BOUND_INTEGER,
-                                        .int_value = range->range.high->integer_lit.value
-                                    };
-                                } else if (range->range.high) {
-                                    /* Non-literal bound - store expression reference */
-                                    info->high_bound = (Type_Bound){
-                                        .kind = BOUND_EXPR,
-                                        .expr = range->range.high
-                                    };
+                                if (range->range.high) {
+                                    double val = Eval_Const_Numeric(range->range.high);
+                                    if (val == val) {  /* Not NaN - static value */
+                                        info->high_bound = (Type_Bound){
+                                            .kind = BOUND_INTEGER,
+                                            .int_value = (int64_t)val
+                                        };
+                                    } else {
+                                        /* Non-static bound - store expression reference */
+                                        info->high_bound = (Type_Bound){
+                                            .kind = BOUND_EXPR,
+                                            .expr = range->range.high
+                                        };
+                                    }
                                 }
                             }
                         }
@@ -15550,6 +15680,12 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "  %%t%u = add i64 0, %lld\n", low_val, (long long)low_bound.int_value);
             } else if (low_bound.kind == BOUND_EXPR && low_bound.expr) {
                 low_val = Generate_Expression(cg, low_bound.expr);
+                /* Extend to i64 if narrower type (e.g., ENUM bounds return i8) */
+                const char *low_llvm = Expression_Llvm_Type(low_bound.expr);
+                if (strcmp(low_llvm, "i64") != 0 && strcmp(low_llvm, "ptr") != 0 &&
+                    strcmp(low_llvm, "double") != 0 && strcmp(low_llvm, "float") != 0) {
+                    low_val = Emit_Convert(cg, low_val, low_llvm, "i64");
+                }
             } else {
                 low_val = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = add i64 0, 1\n", low_val);
@@ -15561,6 +15697,12 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "  %%t%u = add i64 0, %lld\n", high_val, (long long)high_bound.int_value);
             } else if (high_bound.kind == BOUND_EXPR && high_bound.expr) {
                 high_val = Generate_Expression(cg, high_bound.expr);
+                /* Extend to i64 if narrower type (e.g., ENUM bounds return i8) */
+                const char *high_llvm = Expression_Llvm_Type(high_bound.expr);
+                if (strcmp(high_llvm, "i64") != 0 && strcmp(high_llvm, "ptr") != 0 &&
+                    strcmp(high_llvm, "double") != 0 && strcmp(high_llvm, "float") != 0) {
+                    high_val = Emit_Convert(cg, high_val, high_llvm, "i64");
+                }
             } else {
                 high_val = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = add i64 0, 1\n", high_val);
@@ -16152,7 +16294,14 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
                      (long long)subtype->array.indices[0].low_bound.int_value);
             } else if (subtype->array.indices[0].low_bound.kind == BOUND_EXPR &&
                        subtype->array.indices[0].low_bound.expr) {
-                low_t = Generate_Expression(cg, subtype->array.indices[0].low_bound.expr);
+                Syntax_Node *low_expr = subtype->array.indices[0].low_bound.expr;
+                low_t = Generate_Expression(cg, low_expr);
+                /* Extend to i64 if narrower type (e.g., ENUM bounds return i8) */
+                const char *low_llvm = Expression_Llvm_Type(low_expr);
+                if (strcmp(low_llvm, "i64") != 0 && strcmp(low_llvm, "ptr") != 0 &&
+                    strcmp(low_llvm, "double") != 0 && strcmp(low_llvm, "float") != 0) {
+                    low_t = Emit_Convert(cg, low_t, low_llvm, "i64");
+                }
             } else {
                 low_t = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = add i64 0, 1\n", low_t);
@@ -16164,7 +16313,14 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
                      (long long)subtype->array.indices[0].high_bound.int_value);
             } else if (subtype->array.indices[0].high_bound.kind == BOUND_EXPR &&
                        subtype->array.indices[0].high_bound.expr) {
-                high_t = Generate_Expression(cg, subtype->array.indices[0].high_bound.expr);
+                Syntax_Node *high_expr = subtype->array.indices[0].high_bound.expr;
+                high_t = Generate_Expression(cg, high_expr);
+                /* Extend to i64 if narrower type (e.g., ENUM bounds return i8) */
+                const char *high_llvm = Expression_Llvm_Type(high_expr);
+                if (strcmp(high_llvm, "i64") != 0 && strcmp(high_llvm, "ptr") != 0 &&
+                    strcmp(high_llvm, "double") != 0 && strcmp(high_llvm, "float") != 0) {
+                    high_t = Emit_Convert(cg, high_t, high_llvm, "i64");
+                }
             } else {
                 high_t = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = add i64 0, 1\n", high_t);
@@ -18037,6 +18193,12 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "  %%t%u = add i64 0, %lld\n", low_val, (long long)low_b.int_value);
             } else if (low_b.kind == BOUND_EXPR && low_b.expr) {
                 low_val = Generate_Expression(cg, low_b.expr);
+                /* Extend to i64 if narrower type (e.g., ENUM'('B') returns i8) */
+                const char *low_llvm = Expression_Llvm_Type(low_b.expr);
+                if (strcmp(low_llvm, "i64") != 0 && strcmp(low_llvm, "ptr") != 0 &&
+                    strcmp(low_llvm, "double") != 0 && strcmp(low_llvm, "float") != 0) {
+                    low_val = Emit_Convert(cg, low_val, low_llvm, "i64");
+                }
             } else {
                 low_val = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = add i64 0, 1\n", low_val);
@@ -18048,6 +18210,12 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "  %%t%u = add i64 0, %lld\n", high_val, (long long)high_b.int_value);
             } else if (high_b.kind == BOUND_EXPR && high_b.expr) {
                 high_val = Generate_Expression(cg, high_b.expr);
+                /* Extend to i64 if narrower type (e.g., ENUM'('D') returns i8) */
+                const char *high_llvm = Expression_Llvm_Type(high_b.expr);
+                if (strcmp(high_llvm, "i64") != 0 && strcmp(high_llvm, "ptr") != 0 &&
+                    strcmp(high_llvm, "double") != 0 && strcmp(high_llvm, "float") != 0) {
+                    high_val = Emit_Convert(cg, high_val, high_llvm, "i64");
+                }
             } else {
                 high_val = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = add i64 0, 0\n", high_val);
