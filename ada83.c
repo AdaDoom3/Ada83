@@ -7039,6 +7039,7 @@ static void Symbol_Manager_Init_Predefined(Symbol_Manager *sm) {
 
     sm->type_universal_integer = Type_New(TYPE_UNIVERSAL_INTEGER, S("universal_integer"));
     sm->type_universal_real = Type_New(TYPE_UNIVERSAL_REAL, S("universal_real"));
+    sm->type_universal_real->size = 8;  /* 64 bits / double precision */
 
     /* Add predefined type symbols to global scope */
     Symbol *sym_boolean = Symbol_New(SYMBOL_TYPE, S("BOOLEAN"), No_Location);
@@ -13399,10 +13400,48 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, "  %%t%u = sitofp i64 %%t%u to double\n", conv, left);
             left = conv;
         }
-        if (!rhs_is_float) {
+        /* For exponentiation, skip RHS conversion - TK_EXPON handles it */
+        if (!rhs_is_float && node->binary.op != TK_EXPON) {
             uint32_t conv = Emit_Temp(cg);
             Emit(cg, "  %%t%u = sitofp i64 %%t%u to double\n", conv, right);
             right = conv;
+        }
+    }
+
+    /* Mixed fixed-point / universal_real arithmetic (RM 4.5.5, 4.10):
+     * When result is fixed-point but an operand is universal_real, convert
+     * the universal_real to the fixed-point's scaled integer representation.
+     * For fixed type with small S, value V converts to: floor(V / S)
+     * Skip for exponentiation which has its own special handling. */
+    if (is_fixed && node->binary.op != TK_EXPON) {
+        double small = result_type->fixed.small;
+        if (small <= 0) small = result_type->fixed.delta > 0 ? result_type->fixed.delta : 1.0;
+
+        if (rhs_type && rhs_type->kind == TYPE_UNIVERSAL_REAL) {
+            /* Convert double to scaled integer: fptosi(V / small) */
+            uint32_t scaled = Emit_Temp(cg);
+            uint64_t small_bits;
+            memcpy(&small_bits, &small, sizeof(small_bits));
+            uint32_t small_val = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; small=%g\n",
+                 small_val, (unsigned long long)small_bits, small);
+            uint32_t divided = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = fdiv double %%t%u, %%t%u\n", divided, right, small_val);
+            Emit(cg, "  %%t%u = fptosi double %%t%u to i64\n", scaled, divided);
+            right = scaled;
+        }
+        if (lhs_type && lhs_type->kind == TYPE_UNIVERSAL_REAL) {
+            /* Convert double to scaled integer */
+            uint32_t scaled = Emit_Temp(cg);
+            uint64_t small_bits;
+            memcpy(&small_bits, &small, sizeof(small_bits));
+            uint32_t small_val = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; small=%g\n",
+                 small_val, (unsigned long long)small_bits, small);
+            uint32_t divided = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = fdiv double %%t%u, %%t%u\n", divided, left, small_val);
+            Emit(cg, "  %%t%u = fptosi double %%t%u to i64\n", scaled, divided);
+            left = scaled;
         }
     }
 
@@ -13543,13 +13582,35 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
 
                 /* Convert operands to same type if needed */
                 if (left_is_float && !right_is_float) {
-                    /* Convert right integer to float */
+                    /* Convert right to float. If it's fixed-point, multiply by SMALL */
                     uint32_t conv = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = sitofp i64 %%t%u to %s\n", conv, right, float_type);
                     right = conv;
+                    if (right_type && right_type->kind == TYPE_FIXED) {
+                        /* Fixed-point: scale by SMALL to get actual value */
+                        double small = right_type->fixed.small;
+                        if (small <= 0) small = right_type->fixed.delta > 0 ? right_type->fixed.delta : 1.0;
+                        uint64_t bits; memcpy(&bits, &small, sizeof(bits));
+                        uint32_t small_t = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = fadd %s 0.0, 0x%016llX\n", small_t, float_type, (unsigned long long)bits);
+                        uint32_t scaled = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = fmul %s %%t%u, %%t%u\n", scaled, float_type, right, small_t);
+                        right = scaled;
+                    }
                     right_is_float = true;
                 } else if (!left_is_float && right_is_float) {
-                    /* Convert right float to integer for fixed-point comparison */
+                    /* Convert right float to integer for fixed-point comparison.
+                     * If left is fixed-point, divide by SMALL first */
+                    if (left_type && left_type->kind == TYPE_FIXED) {
+                        double small = left_type->fixed.small;
+                        if (small <= 0) small = left_type->fixed.delta > 0 ? left_type->fixed.delta : 1.0;
+                        uint64_t bits; memcpy(&bits, &small, sizeof(bits));
+                        uint32_t small_t = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = fadd %s 0.0, 0x%016llX\n", small_t, right_float_type, (unsigned long long)bits);
+                        uint32_t div_t = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = fdiv %s %%t%u, %%t%u\n", div_t, right_float_type, right, small_t);
+                        right = div_t;
+                    }
                     uint32_t conv = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = fptosi %s %%t%u to i64\n", conv, right_float_type, right);
                     right = conv;
@@ -16794,7 +16855,19 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
 
     /* Convert between float and integer if needed */
     if (is_src_float && !is_dst_float) {
-        /* Float to integer: use fptosi */
+        /* Float to integer: use fptosi. For fixed-point targets, divide by
+         * SMALL first to get the scaled integer representation (RM 4.5.5) */
+        if (ty && ty->kind == TYPE_FIXED) {
+            double small = ty->fixed.small;
+            if (small <= 0) small = ty->fixed.delta > 0 ? ty->fixed.delta : 1.0;
+            uint64_t bits; memcpy(&bits, &small, sizeof(bits));
+            uint32_t small_t = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; small=%g\n",
+                 small_t, (unsigned long long)bits, small);
+            uint32_t div_t = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = fdiv double %%t%u, %%t%u\n", div_t, value, small_t);
+            value = div_t;
+        }
         uint32_t t = Emit_Temp(cg);
         Emit(cg, "  %%t%u = fptosi double %%t%u to %s\n", t, value, type_str);
         value = t;
