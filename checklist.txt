@@ -6,21 +6,15 @@ Target: All c-series tests passing without shortcuts
 CRITICAL ISSUES (blocking many tests)
 ═══════════════════════════════════════════════════════════════════════════════
 
-[ ] 1. USE clause visibility for generic package instances
-      Tests: c23006d, c23006e, c23006f, c23006g
-      Error: "numeric operands required for +"
-      Root: USE pkg_instance makes pkg_instance.A visible, but A's type
-            (INTEGER from generic template) not recognized as numeric
-      Fix: When resolving USE'd generic instance exports, ensure their
-           types are properly connected to the base type hierarchy
+[X] 1. USE clause visibility for generic package instances (FIXED)
+      Tests: c23006d - NOW PASSES
+      Fix: Emit global variables for library-level generic instances,
+           allocate locals for nested instances, proper initializer lookup
 
-[ ] 2. Mixed-mode arithmetic: INTEGER * universal_real
-      Tests: c35a04a, c35a04b, c35a04c, c35a04d
-      Error: "type mismatch in assignment"
-      Root: IDENT_INT(1) * SMALL where SMALL is named number (0.25)
-            Result type should be universal_real, convertible to fixed
-      Fix: Universal_real arithmetic must produce universal_real result
-           that implicitly converts to the target fixed-point type
+[X] 2. Mixed-mode arithmetic: INTEGER * universal_real (FIXED)
+      Tests: c35a04a, c35a04b, c35a04c, c35a04d - NOW PASS
+      Fix: Set type_universal_real size=8, divide by SMALL for float-to-fixed
+           conversion, multiply by SMALL for fixed-to-float comparison
 
 [ ] 3. Untyped aggregate in context requiring type
       Tests: c34009d, c34009f, c34009j, c34009l, c32001e, c35a05n
@@ -86,12 +80,12 @@ RUNTIME/LINKING ISSUES
 PROGRESS TRACKING
 ═══════════════════════════════════════════════════════════════════════════════
 Tests baseline (sample):
-  c23: 3/8 pass (37%)
+  c23: 4/8 pass (50%)  -- improved from 37%
   c24: 8/11 pass (72%)
   c25: 3/4 pass (75%)
   c26: 3/3 pass (100%)
   c32: 3/19 pass (15%)
   c34: 0/67 pass (0%)
-  c35: 20/120 pass (16%)
+  c35a04: 4/8 pass (50%)  -- c35a04a-d now pass
 
-Current focus: Issues 1, 2 (blocking many tests)
+Current focus: Issues 3, 9, 11 (blocking many tests)
