@@ -6415,6 +6415,10 @@ static void Symbol_Add(Symbol_Manager *sm, Symbol *sym) {
         sym->kind == SYMBOL_CONSTANT) {
         sym->frame_offset = scope->frame_size;
         uint32_t var_size = sym->type ? sym->type->size : 8;
+        /* Fat pointers for dynamic/unconstrained arrays need 24 bytes { ptr, { i64, i64 } } */
+        if (sym->type && (Type_Has_Dynamic_Bounds(sym->type) || Type_Is_Unconstrained_Array(sym->type))) {
+            var_size = 24;
+        }
         if (var_size == 0) var_size = 8;
         scope->frame_size += var_size;
     }
@@ -8070,10 +8074,10 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                                     .int_value = range_node->range.low->integer_lit.value
                                 };
                             } else {
-                                /* Non-literal bound - mark as dynamic expression */
+                                /* Non-literal bound - store expression reference */
                                 info->low_bound = (Type_Bound){
                                     .kind = BOUND_EXPR,
-                                    .int_value = 0
+                                    .expr = range_node->range.low
                                 };
                             }
                             if (range_node->range.high->kind == NK_INTEGER) {
@@ -8082,10 +8086,10 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                                     .int_value = range_node->range.high->integer_lit.value
                                 };
                             } else {
-                                /* Non-literal bound - mark as dynamic expression */
+                                /* Non-literal bound - store expression reference */
                                 info->high_bound = (Type_Bound){
                                     .kind = BOUND_EXPR,
-                                    .int_value = 0
+                                    .expr = range_node->range.high
                                 };
                             }
                         }
@@ -9223,6 +9227,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
 
                                 /* Add discriminants first (they come before other components) */
                                 uint32_t disc_idx = 0;
+                                uint32_t disc_offset = 0;  /* Running offset for discriminants */
                                 for (uint32_t i = 0; i < node->type_decl.discriminants.count; i++) {
                                     Syntax_Node *disc_spec = node->type_decl.discriminants.items[i];
                                     if (disc_spec->kind == NK_DISCRIMINANT_SPEC) {
@@ -9231,22 +9236,28 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                             disc_spec->discriminant.disc_type->type) {
                                             disc_type = disc_spec->discriminant.disc_type->type;
                                         }
+                                        uint32_t disc_size = disc_type ? disc_type->size : 8;
                                         for (uint32_t j = 0; j < disc_spec->discriminant.names.count; j++) {
                                             Syntax_Node *name_node = disc_spec->discriminant.names.items[j];
                                             new_comps[disc_idx].name = name_node->string_val.text;
                                             new_comps[disc_idx].component_type = disc_type;
-                                            new_comps[disc_idx].byte_offset = 0; /* Offset computed later */
+                                            new_comps[disc_idx].byte_offset = disc_offset;
                                             new_comps[disc_idx].bit_offset = 0;
-                                            new_comps[disc_idx].bit_size = disc_type ? disc_type->size * 8 : 64;
+                                            new_comps[disc_idx].bit_size = disc_size * 8;
+                                            disc_offset += disc_size;
                                             disc_idx++;
                                         }
                                     }
                                 }
 
-                                /* Copy existing components after discriminants */
+                                /* Copy existing components after discriminants, adjusting offsets */
                                 for (uint32_t i = 0; i < old_count; i++) {
                                     new_comps[disc_count + i] = type->record.components[i];
+                                    new_comps[disc_count + i].byte_offset += disc_offset;
                                 }
+
+                                /* Update record size to include discriminants */
+                                type->size += disc_offset;
 
                                 type->record.components = new_comps;
                                 type->record.component_count = new_count;
@@ -14428,11 +14439,252 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
 
     if (agg_type->kind == TYPE_ARRAY && agg_type->array.index_count > 0) {
         /* Array aggregate - allocate on stack and initialize */
-        uint32_t base = Emit_Temp(cg);
-        int64_t low = Type_Bound_Value(agg_type->array.indices[0].low_bound);
-        int64_t high = Type_Bound_Value(agg_type->array.indices[0].high_bound);
-        int64_t count = high - low + 1;
         const char *elem_type = Type_To_Llvm(agg_type->array.element_type);
+        uint32_t elem_size = agg_type->array.element_type ?
+                             agg_type->array.element_type->size : 8;
+        if (elem_size == 0) elem_size = 8;
+
+        /* Check if bounds are dynamic */
+        Type_Bound low_bound = agg_type->array.indices[0].low_bound;
+        Type_Bound high_bound = agg_type->array.indices[0].high_bound;
+        bool dynamic_bounds = (low_bound.kind == BOUND_EXPR) || (high_bound.kind == BOUND_EXPR);
+
+        if (dynamic_bounds) {
+            /* Dynamic bounds: generate runtime allocation and loop-based init */
+            uint32_t low_val, high_val;
+
+            /* Generate low bound */
+            if (low_bound.kind == BOUND_INTEGER) {
+                low_val = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add i64 0, %lld\n", low_val, (long long)low_bound.int_value);
+            } else if (low_bound.kind == BOUND_EXPR && low_bound.expr) {
+                low_val = Generate_Expression(cg, low_bound.expr);
+            } else {
+                low_val = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add i64 0, 1\n", low_val);
+            }
+
+            /* Generate high bound */
+            if (high_bound.kind == BOUND_INTEGER) {
+                high_val = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add i64 0, %lld\n", high_val, (long long)high_bound.int_value);
+            } else if (high_bound.kind == BOUND_EXPR && high_bound.expr) {
+                high_val = Generate_Expression(cg, high_bound.expr);
+            } else {
+                high_val = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add i64 0, 1\n", high_val);
+            }
+
+            /* Calculate count and byte size */
+            uint32_t count_val = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", count_val, high_val, low_val);
+            uint32_t count_plus1 = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", count_plus1, count_val);
+            uint32_t byte_size = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", byte_size, count_plus1, elem_size);
+
+            /* Dynamic stack allocation */
+            uint32_t base = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = alloca i8, i64 %%t%u  ; dynamic array aggregate\n", base, byte_size);
+
+            /* Find "others" clause and generate value */
+            uint32_t others_val = 0;
+            bool has_others = false;
+            for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
+                Syntax_Node *item = node->aggregate.items.items[i];
+                if (item->kind == NK_ASSOCIATION && item->association.choices.count > 0) {
+                    if (Is_Others_Choice(item->association.choices.items[0])) {
+                        others_val = Generate_Expression(cg, item->association.expression);
+                        const char *src_type = Expression_Llvm_Type(item->association.expression);
+                        others_val = Emit_Convert(cg, others_val, src_type, elem_type);
+                        has_others = true;
+                        break;
+                    }
+                }
+            }
+
+            /* For dynamic aggregates with named range association (1..H1 => val),
+             * generate a loop to initialize all elements */
+            for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
+                Syntax_Node *item = node->aggregate.items.items[i];
+                if (item->kind == NK_ASSOCIATION && item->association.choices.count > 0) {
+                    Syntax_Node *choice = item->association.choices.items[0];
+                    if (Is_Others_Choice(choice)) continue;
+
+                    if (choice->kind == NK_RANGE) {
+                        /* Generate loop bounds */
+                        uint32_t rng_low_val, rng_high_val;
+                        if (choice->range.low->kind == NK_INTEGER) {
+                            rng_low_val = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add i64 0, %lld\n", rng_low_val,
+                                 (long long)choice->range.low->integer_lit.value);
+                        } else {
+                            rng_low_val = Generate_Expression(cg, choice->range.low);
+                        }
+                        if (choice->range.high->kind == NK_INTEGER) {
+                            rng_high_val = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add i64 0, %lld\n", rng_high_val,
+                                 (long long)choice->range.high->integer_lit.value);
+                        } else {
+                            rng_high_val = Generate_Expression(cg, choice->range.high);
+                        }
+
+                        /* Generate the value expression */
+                        uint32_t val = Generate_Expression(cg, item->association.expression);
+
+                        /* Check if element is composite (record or constrained array) */
+                        Type_Info *elem_ti = agg_type->array.element_type;
+                        bool elem_is_composite = elem_ti &&
+                            (elem_ti->kind == TYPE_RECORD ||
+                             (elem_ti->kind == TYPE_ARRAY && elem_ti->array.is_constrained));
+
+                        if (!elem_is_composite) {
+                            const char *src_type = Expression_Llvm_Type(item->association.expression);
+                            val = Emit_Convert(cg, val, src_type, elem_type);
+                        }
+
+                        /* Generate initialization loop */
+                        uint32_t loop_var = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = alloca i64\n", loop_var);
+                        Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", rng_low_val, loop_var);
+
+                        uint32_t loop_start = cg->label_id++;
+                        uint32_t loop_body = cg->label_id++;
+                        uint32_t loop_end = cg->label_id++;
+
+                        Emit(cg, "  br label %%L%u\n", loop_start);
+                        Emit(cg, "L%u:\n", loop_start);
+
+                        uint32_t cur_idx = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = load i64, ptr %%t%u\n", cur_idx, loop_var);
+                        uint32_t cmp = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", cmp, cur_idx, rng_high_val);
+                        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp, loop_body, loop_end);
+
+                        Emit(cg, "L%u:\n", loop_body);
+                        /* Calculate array index: (cur_idx - low_val) */
+                        uint32_t arr_idx = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", arr_idx, cur_idx, low_val);
+
+                        if (elem_is_composite) {
+                            /* Composite element: use byte-based indexing and memcpy */
+                            uint32_t byte_off = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", byte_off, arr_idx, elem_size);
+                            uint32_t ptr = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n",
+                                 ptr, base, byte_off);
+                            Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
+                                 ptr, val, elem_size);
+                        } else {
+                            /* Scalar element: use typed indexing and store */
+                            uint32_t ptr = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %%t%u\n",
+                                 ptr, elem_type, base, arr_idx);
+                            Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, val, ptr);
+                        }
+
+                        /* Increment and loop */
+                        uint32_t next_idx = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", next_idx, cur_idx);
+                        Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", next_idx, loop_var);
+                        Emit(cg, "  br label %%L%u\n", loop_start);
+
+                        Emit(cg, "L%u:\n", loop_end);
+                        cg->block_terminated = false;
+                    }
+                }
+            }
+
+            /* If "others" clause, fill remaining with loop (already handled by range above
+             * for typical cases like (1..H1 => val), but add fallback if needed) */
+            if (has_others) {
+                /* Check if element is composite */
+                Type_Info *elem_ti = agg_type->array.element_type;
+                bool elem_is_composite = elem_ti &&
+                    (elem_ti->kind == TYPE_RECORD ||
+                     (elem_ti->kind == TYPE_ARRAY && elem_ti->array.is_constrained));
+
+                /* Generate loop from low to high */
+                uint32_t loop_var = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = alloca i64\n", loop_var);
+                Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", low_val, loop_var);
+
+                uint32_t loop_start = cg->label_id++;
+                uint32_t loop_body = cg->label_id++;
+                uint32_t loop_end = cg->label_id++;
+
+                Emit(cg, "  br label %%L%u\n", loop_start);
+                Emit(cg, "L%u:\n", loop_start);
+
+                uint32_t cur_idx = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load i64, ptr %%t%u\n", cur_idx, loop_var);
+                uint32_t cmp = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", cmp, cur_idx, high_val);
+                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp, loop_body, loop_end);
+
+                Emit(cg, "L%u:\n", loop_body);
+                uint32_t arr_idx = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", arr_idx, cur_idx, low_val);
+
+                if (elem_is_composite) {
+                    /* Composite element: use byte-based indexing and memcpy */
+                    uint32_t byte_off = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", byte_off, arr_idx, elem_size);
+                    uint32_t ptr = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n",
+                         ptr, base, byte_off);
+                    Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
+                         ptr, others_val, elem_size);
+                } else {
+                    /* Scalar element: use typed indexing and store */
+                    uint32_t ptr = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %%t%u\n",
+                         ptr, elem_type, base, arr_idx);
+                    Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, others_val, ptr);
+                }
+
+                uint32_t next_idx = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", next_idx, cur_idx);
+                Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", next_idx, loop_var);
+                Emit(cg, "  br label %%L%u\n", loop_start);
+
+                Emit(cg, "L%u:\n", loop_end);
+                cg->block_terminated = false;
+            }
+
+            /* For dynamic bounds arrays, return a fat pointer { ptr, { i64, i64 } }
+             * so the bounds don't need to be re-evaluated (which would be wrong for
+             * bound expressions with side effects like function calls). */
+            uint32_t fat_ptr = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = alloca { ptr, { i64, i64 } }  ; dynamic array fat ptr\n", fat_ptr);
+
+            /* Store data pointer */
+            uint32_t data_slot = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = getelementptr { ptr, { i64, i64 } }, ptr %%t%u, i32 0, i32 0\n",
+                 data_slot, fat_ptr);
+            Emit(cg, "  store ptr %%t%u, ptr %%t%u\n", base, data_slot);
+
+            /* Store low bound */
+            uint32_t low_slot = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = getelementptr { ptr, { i64, i64 } }, ptr %%t%u, i32 0, i32 1, i32 0\n",
+                 low_slot, fat_ptr);
+            Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", low_val, low_slot);
+
+            /* Store high bound */
+            uint32_t high_slot = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = getelementptr { ptr, { i64, i64 } }, ptr %%t%u, i32 0, i32 1, i32 1\n",
+                 high_slot, fat_ptr);
+            Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", high_val, high_slot);
+
+            return fat_ptr;
+        }
+
+        /* Static bounds: use compile-time allocation and unrolled initialization */
+        uint32_t base = Emit_Temp(cg);
+        int64_t low = Type_Bound_Value(low_bound);
+        int64_t high = Type_Bound_Value(high_bound);
+        int64_t count = high - low + 1;
+        if (count < 1) count = 1;  /* Ensure at least 1 element for safety */
 
         Emit(cg, "  %%t%u = alloca [%lld x %s]  ; array aggregate\n",
              base, (long long)count, elem_type);
@@ -16566,9 +16818,67 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             } else if (is_any_array && node->object_decl.init->kind == NK_AGGREGATE) {
                 /* Array aggregate initialization - copy from aggregate to variable.
                  * Works for both constrained and unconstrained arrays with aggregate initializers.
-                 * For arrays with dynamic bounds (size=0), compute size at runtime. */
+                 * For arrays with dynamic bounds, the aggregate already returns a fat pointer. */
+                Type_Info *agg_type = node->object_decl.init->type;
+                bool dest_needs_fat = Type_Has_Dynamic_Bounds(ty) || Type_Is_Unconstrained_Array(ty);
+                bool agg_has_dynamic = agg_type && agg_type->array.index_count > 0 &&
+                    ((agg_type->array.indices[0].low_bound.kind == BOUND_EXPR) ||
+                     (agg_type->array.indices[0].high_bound.kind == BOUND_EXPR));
+
                 uint32_t agg_ptr = Generate_Expression(cg, node->object_decl.init);
-                if (ty->size > 0) {
+
+                if (dest_needs_fat && agg_has_dynamic) {
+                    /* Aggregate with dynamic bounds already returns a fat pointer.
+                     * Just copy the fat pointer structure (24 bytes: ptr + 2*i64).
+                     * This avoids re-evaluating bound expressions that may have side effects. */
+                    Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%");
+                    Emit_Symbol_Name(cg, sym);
+                    Emit(cg, ", ptr %%t%u, i64 24, i1 false)  ; copy fat ptr\n", agg_ptr);
+                } else if (dest_needs_fat && agg_type && agg_type->array.index_count > 0) {
+                    /* Destination needs a fat pointer { ptr, { i64, i64 } }.
+                     * agg_ptr is the data pointer (static bounds), construct the fat pointer. */
+                    Type_Bound low_b = agg_type->array.indices[0].low_bound;
+                    Type_Bound high_b = agg_type->array.indices[0].high_bound;
+
+                    uint32_t low_val, high_val;
+
+                    /* Get low bound (must be static since we checked for dynamic above) */
+                    if (low_b.kind == BOUND_INTEGER) {
+                        low_val = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = add i64 0, %lld\n", low_val, (long long)low_b.int_value);
+                    } else {
+                        low_val = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = add i64 0, 1\n", low_val);  /* Default low = 1 */
+                    }
+
+                    /* Get high bound (must be static) */
+                    if (high_b.kind == BOUND_INTEGER) {
+                        high_val = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = add i64 0, %lld\n", high_val, (long long)high_b.int_value);
+                    } else {
+                        high_val = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = add i64 0, 0\n", high_val);  /* Default high = 0 */
+                    }
+
+                    /* Construct fat pointer: store data ptr at offset 0, low at 8, high at 16 */
+                    uint32_t data_slot = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = getelementptr { ptr, { i64, i64 } }, ptr %%", data_slot);
+                    Emit_Symbol_Name(cg, sym);
+                    Emit(cg, ", i32 0, i32 0\n");
+                    Emit(cg, "  store ptr %%t%u, ptr %%t%u  ; fat ptr data\n", agg_ptr, data_slot);
+
+                    uint32_t low_slot = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = getelementptr { ptr, { i64, i64 } }, ptr %%", low_slot);
+                    Emit_Symbol_Name(cg, sym);
+                    Emit(cg, ", i32 0, i32 1, i32 0\n");
+                    Emit(cg, "  store i64 %%t%u, ptr %%t%u  ; fat ptr low\n", low_val, low_slot);
+
+                    uint32_t high_slot = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = getelementptr { ptr, { i64, i64 } }, ptr %%", high_slot);
+                    Emit_Symbol_Name(cg, sym);
+                    Emit(cg, ", i32 0, i32 1, i32 1\n");
+                    Emit(cg, "  store i64 %%t%u, ptr %%t%u  ; fat ptr high\n", high_val, high_slot);
+                } else if (ty->size > 0) {
                     /* Static size known at compile time */
                     Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%");
                     Emit_Symbol_Name(cg, sym);
@@ -16580,7 +16890,6 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     if (elem_sz == 0) elem_sz = 8;
 
                     /* Get bounds from aggregate type if available */
-                    Type_Info *agg_type = node->object_decl.init->type;
                     if (agg_type && agg_type->array.index_count > 0 &&
                         agg_type->array.indices[0].low_bound.kind == BOUND_INTEGER &&
                         agg_type->array.indices[0].high_bound.kind == BOUND_INTEGER) {
@@ -16614,6 +16923,70 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 Emit_Symbol_Name(cg, sym);
                 Emit(cg, "\n");
             }
+        } else if (is_any_array && Type_Has_Dynamic_Bounds(ty) && ty->array.index_count > 0) {
+            /* Uninitialized array with dynamic bounds - still need to set up fat pointer.
+             * The array contents are uninitialized but bounds are known from the type.
+             * This handles cases like: A2 : ARR1 (1 .. F * 1000); */
+            Type_Bound low_b = ty->array.indices[0].low_bound;
+            Type_Bound high_b = ty->array.indices[0].high_bound;
+
+            uint32_t low_val, high_val;
+
+            /* Get low bound */
+            if (low_b.kind == BOUND_INTEGER) {
+                low_val = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add i64 0, %lld\n", low_val, (long long)low_b.int_value);
+            } else if (low_b.kind == BOUND_EXPR && low_b.expr) {
+                low_val = Generate_Expression(cg, low_b.expr);
+            } else {
+                low_val = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add i64 0, 1\n", low_val);
+            }
+
+            /* Get high bound */
+            if (high_b.kind == BOUND_INTEGER) {
+                high_val = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add i64 0, %lld\n", high_val, (long long)high_b.int_value);
+            } else if (high_b.kind == BOUND_EXPR && high_b.expr) {
+                high_val = Generate_Expression(cg, high_b.expr);
+            } else {
+                high_val = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add i64 0, 0\n", high_val);
+            }
+
+            /* Allocate array data with dynamic size */
+            uint32_t elem_sz = elem_size > 0 ? elem_size :
+                               (ty->array.element_type ? ty->array.element_type->size : 8);
+            if (elem_sz == 0) elem_sz = 8;
+
+            uint32_t count_val = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", count_val, high_val, low_val);
+            uint32_t count_plus1 = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", count_plus1, count_val);
+            uint32_t byte_size = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", byte_size, count_plus1, elem_sz);
+
+            uint32_t data_ptr = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = alloca i8, i64 %%t%u  ; dynamic uninit array\n", data_ptr, byte_size);
+
+            /* Construct fat pointer: store data ptr, low, high */
+            uint32_t data_slot = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = getelementptr { ptr, { i64, i64 } }, ptr %%", data_slot);
+            Emit_Symbol_Name(cg, sym);
+            Emit(cg, ", i32 0, i32 0\n");
+            Emit(cg, "  store ptr %%t%u, ptr %%t%u  ; fat ptr data\n", data_ptr, data_slot);
+
+            uint32_t low_slot = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = getelementptr { ptr, { i64, i64 } }, ptr %%", low_slot);
+            Emit_Symbol_Name(cg, sym);
+            Emit(cg, ", i32 0, i32 1, i32 0\n");
+            Emit(cg, "  store i64 %%t%u, ptr %%t%u  ; fat ptr low\n", low_val, low_slot);
+
+            uint32_t high_slot = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = getelementptr { ptr, { i64, i64 } }, ptr %%", high_slot);
+            Emit_Symbol_Name(cg, sym);
+            Emit(cg, ", i32 0, i32 1, i32 1\n");
+            Emit(cg, "  store i64 %%t%u, ptr %%t%u  ; fat ptr high\n", high_val, high_slot);
         }
     }
 }
