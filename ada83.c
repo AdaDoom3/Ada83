@@ -13175,7 +13175,7 @@ static uint32_t Generate_Composite_Address(Code_Generator *cg, Syntax_Node *node
     }
 
     if (node->kind == NK_APPLY && node->apply.arguments.count == 1) {
-        /* Array indexing: Arr(I) - compute address of element */
+        /* Array indexing or slice: Arr(I) or Arr(low..high) */
         Type_Info *prefix_type = node->apply.prefix ? node->apply.prefix->type : NULL;
         if (prefix_type && prefix_type->kind == TYPE_ARRAY) {
             uint32_t elem_size = prefix_type->array.element_type
@@ -13183,8 +13183,28 @@ static uint32_t Generate_Composite_Address(Code_Generator *cg, Syntax_Node *node
             if (elem_size == 0) elem_size = 1;
             int64_t low = Array_Low_Bound(prefix_type);
 
+            /* Slice: ARR(low..high) — return address at slice start (RM 4.1.2) */
+            Syntax_Node *arg0 = node->apply.arguments.items[0];
+            if (arg0->kind == NK_RANGE) {
+                uint32_t base = Generate_Composite_Address(cg, node->apply.prefix);
+                uint32_t slice_low = Generate_Expression(cg, arg0->range.low);
+                uint32_t adj = slice_low;
+                if (low != 0) {
+                    adj = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = sub i64 %%t%u, %lld\n", adj, slice_low, (long long)low);
+                }
+                uint32_t byte_off = adj;
+                if (elem_size != 1) {
+                    byte_off = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", byte_off, adj, elem_size);
+                }
+                uint32_t addr = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n", addr, base, byte_off);
+                return addr;
+            }
+
             uint32_t base = Generate_Composite_Address(cg, node->apply.prefix);
-            uint32_t idx = Generate_Expression(cg, node->apply.arguments.items[0]);
+            uint32_t idx = Generate_Expression(cg, arg0);
 
             /* Adjust index: byte_offset = (idx - low) * elem_size */
             uint32_t adj_idx = idx;
@@ -14156,6 +14176,116 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                 }
                 break;
             }
+        }
+    }
+
+    /* Slice on expression result: prefix(low..high).  NK_RANGE as argument
+     * ALWAYS means slice in Ada — never a function parameter (RM 4.1.2).
+     * Resolve array type, obtain ptr to array data, compute fat pointer.
+     *
+     * Generate_Expression returns different LLVM types for different sources:
+     *   variable/param of ptr type → ptr  (not widened)
+     *   function call returning ptr → i64 (ptrtoint)
+     *   fat pointer (unconstrained) → { ptr, { i64, i64 } }
+     * We use Generate_Composite_Address (returns ptr) for lvalues and
+     * Generate_Expression + inttoptr for function-call results. */
+    if (node->apply.arguments.count > 0 &&
+        node->apply.arguments.items[0]->kind == NK_RANGE) {
+        Type_Info *at = node->apply.prefix->type;
+
+        /* Fallback type resolution for overloaded functions (RM 6.6) */
+        if (!at && sym && sym->kind == SYMBOL_FUNCTION) at = sym->return_type;
+        if (!at) at = node->type;
+
+        /* Implicit dereference: access-to-array (RM 4.1(3)) */
+        bool access_deref = false;
+        if (at && at->kind == TYPE_ACCESS && at->access.designated_type &&
+            Type_Is_Array_Like(at->access.designated_type)) {
+            at = at->access.designated_type;
+            access_deref = true;
+        }
+
+        if (at && Type_Is_Array_Like(at)) {
+            Syntax_Node *rng = node->apply.arguments.items[0];
+            uint32_t base, low_bound_val = 0;
+            bool dyn_low = false;
+
+            const char *repr = Type_To_Llvm(at);
+            bool is_fat = (strstr(repr, "{ ptr,") != NULL);
+
+            if (access_deref) {
+                /* Access-to-array: evaluate prefix → access value (i64) → ptr */
+                uint32_t access_val = Generate_Expression(cg, node->apply.prefix);
+                uint32_t ptr = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = inttoptr i64 %%t%u to ptr\n",
+                     ptr, access_val);
+                if (is_fat) {
+                    /* Unconstrained designated: load fat pointer from heap */
+                    uint32_t fat = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = load { ptr, { i64, i64 } }, ptr %%t%u\n",
+                         fat, ptr);
+                    base = Emit_Fat_Pointer_Data(cg, fat);
+                    low_bound_val = Emit_Fat_Pointer_Low(cg, fat);
+                    dyn_low = true;
+                } else {
+                    base = ptr;
+                }
+            } else if (is_fat) {
+                /* Unconstrained/string: Generate_Expression → fat pointer */
+                uint32_t pv = Generate_Expression(cg, node->apply.prefix);
+                base = Emit_Fat_Pointer_Data(cg, pv);
+                low_bound_val = Emit_Fat_Pointer_Low(cg, pv);
+                dyn_low = true;
+            } else {
+                /* Constrained array: need ptr to array data.
+                 * For lvalues (variable, param, field) use Generate_Composite_Address
+                 * which always returns ptr.  For function results, Generate_Expression
+                 * returns i64 (ptrtoint from ptr), so convert back. */
+                bool is_lvalue = false;
+                if (node->apply.prefix->kind == NK_IDENTIFIER) {
+                    Symbol *ps = node->apply.prefix->symbol;
+                    is_lvalue = ps && ps->kind != SYMBOL_FUNCTION;
+                } else if (node->apply.prefix->kind == NK_SELECTED) {
+                    is_lvalue = true;
+                }
+
+                if (is_lvalue) {
+                    base = Generate_Composite_Address(cg, node->apply.prefix);
+                } else {
+                    uint32_t pv = Generate_Expression(cg, node->apply.prefix);
+                    base = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = inttoptr i64 %%t%u to ptr\n",
+                         base, pv);
+                }
+            }
+
+            Type_Info *elem = at->array.element_type;
+            uint32_t esz = elem ? elem->size : 1;
+            if (esz == 0) esz = 1;
+
+            uint32_t slo = Generate_Expression(cg, rng->range.low);
+            uint32_t shi = Generate_Expression(cg, rng->range.high);
+
+            uint32_t off;
+            if (dyn_low) {
+                off = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", off, slo, low_bound_val);
+            } else {
+                int64_t al = Array_Low_Bound(at);
+                if (al != 0) {
+                    off = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = sub i64 %%t%u, %lld\n", off, slo, (long long)al);
+                } else off = slo;
+            }
+            uint32_t dp = Emit_Temp(cg);
+            if (esz == 1) {
+                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n", dp, base, off);
+            } else {
+                uint32_t bo = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", bo, off, esz);
+                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n", dp, base, bo);
+            }
+            return Emit_Fat_Pointer_Dynamic(cg, dp, slo, shi);
         }
     }
 
@@ -16678,7 +16808,8 @@ static uint32_t Generate_Expression(Code_Generator *cg, Syntax_Node *node) {
         case NK_ALLOCATOR:  return Generate_Allocator(cg, node);
 
         default:
-            Report_Error(node->location, "unsupported expression kind in codegen");
+            Report_Error(node->location, "unsupported expression kind %d in codegen",
+                         (int)node->kind);
             return 0;
     }
 }
@@ -17253,6 +17384,45 @@ static void Generate_Case_Statement(Code_Generator *cg, Syntax_Node *node) {
                 uint32_t cmp2 = Emit_Temp(cg);
                 uint32_t both = Emit_Temp(cg);
 
+                Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", cmp1, low, selector);
+                Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", cmp2, selector, high);
+                Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", both, cmp1, cmp2);
+
+                uint32_t next_choice = (j + 1 < alt->association.choices.count) ?
+                                       Emit_Label(cg) : next_check;
+                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                     both, alt_labels[i], next_choice);
+
+                if (j + 1 < alt->association.choices.count) {
+                    Emit(cg, "L%u:\n", next_choice);
+                }
+            } else if (choice->kind == NK_SUBTYPE_INDICATION) {
+                /* Subtype range: WHEN T RANGE low..high => (RM 5.4) */
+                uint32_t low, high;
+                Syntax_Node *constraint = choice->subtype_ind.constraint;
+                if (constraint && constraint->kind == NK_RANGE_CONSTRAINT &&
+                    constraint->range_constraint.range &&
+                    constraint->range_constraint.range->kind == NK_RANGE) {
+                    low = Generate_Expression(cg, constraint->range_constraint.range->range.low);
+                    high = Generate_Expression(cg, constraint->range_constraint.range->range.high);
+                } else {
+                    /* Bare subtype name: WHEN SUBTYPE => use declared bounds */
+                    Type_Info *st = choice->type;
+                    low = Emit_Temp(cg);
+                    high = Emit_Temp(cg);
+                    if (st && st->low_bound.kind == BOUND_INTEGER) {
+                        Emit(cg, "  %%t%u = add i64 0, %lld\n", low,
+                             (long long)Type_Bound_Value(st->low_bound));
+                        Emit(cg, "  %%t%u = add i64 0, %lld\n", high,
+                             (long long)Type_Bound_Value(st->high_bound));
+                    } else {
+                        Emit(cg, "  %%t%u = add i64 0, 0\n", low);
+                        Emit(cg, "  %%t%u = add i64 0, 0\n", high);
+                    }
+                }
+                uint32_t cmp1 = Emit_Temp(cg);
+                uint32_t cmp2 = Emit_Temp(cg);
+                uint32_t both = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", cmp1, low, selector);
                 Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", cmp2, selector, high);
                 Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", both, cmp1, cmp2);
