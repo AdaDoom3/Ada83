@@ -19004,32 +19004,139 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
             break;
 
         case NK_GENERIC_INST:
-            /* Generate the instantiated generic body */
+            /* Generate code for generic instantiation. Per Ada RM 12.3: "The
+             * elaboration of a generic instantiation declares an instance" */
             {
                 Symbol *inst_sym = node->symbol;
                 if (!inst_sym || !inst_sym->generic_template) break;
 
                 Symbol *template = inst_sym->generic_template;
+                Symbol *saved_instance = cg->current_instance;
+                cg->current_instance = inst_sym;
+
+                /* For library-level package instances, emit global variables for
+                 * exported objects REGARDLESS of whether there's a body. Generic
+                 * packages may have just a spec with object declarations. */
+                if (!cg->current_function && inst_sym->kind == SYMBOL_PACKAGE) {
+                    /* Find the generic spec to get initializers */
+                    Syntax_Node *gen_spec = template->generic_unit;
+
+                    for (uint32_t i = 0; i < inst_sym->exported_count; i++) {
+                        Symbol *exp = inst_sym->exported[i];
+                        if (!exp) continue;
+                        if (exp->kind != SYMBOL_VARIABLE && exp->kind != SYMBOL_CONSTANT)
+                            continue;
+                        Type_Info *ty = exp->type;
+                        const char *type_str = Type_To_Llvm(ty);
+                        bool is_array = ty && ty->kind == TYPE_ARRAY && ty->array.is_constrained;
+                        bool is_record = ty && ty->kind == TYPE_RECORD;
+
+                        /* Look for initializer in the generic spec's visible declarations */
+                        int64_t init_val = 0;
+                        bool has_init = false;
+                        if (gen_spec && gen_spec->kind == NK_PACKAGE_SPEC) {
+                            for (uint32_t j = 0; j < gen_spec->package_spec.visible_decls.count; j++) {
+                                Syntax_Node *decl = gen_spec->package_spec.visible_decls.items[j];
+                                if (!decl || decl->kind != NK_OBJECT_DECL) continue;
+                                for (uint32_t k = 0; k < decl->object_decl.names.count; k++) {
+                                    Syntax_Node *nm = decl->object_decl.names.items[k];
+                                    if (nm && Slice_Equal_Ignore_Case(nm->string_val.text, exp->name)) {
+                                        if (decl->object_decl.init &&
+                                            decl->object_decl.init->kind == NK_INTEGER) {
+                                            init_val = decl->object_decl.init->integer_lit.value;
+                                            has_init = true;
+                                        }
+                                        break;
+                                    }
+                                }
+                                if (has_init) break;
+                            }
+                        }
+
+                        Emit(cg, "@");
+                        Emit_Symbol_Name(cg, exp);
+                        if (is_array) {
+                            int64_t cnt = Array_Element_Count(ty);
+                            const char *elem_type = Type_To_Llvm(ty->array.element_type);
+                            Emit(cg, " = linkonce_odr global [%lld x %s] zeroinitializer\n",
+                                 (long long)cnt, elem_type);
+                        } else if (is_record) {
+                            Emit(cg, " = linkonce_odr global [%u x i8] zeroinitializer\n", ty->size);
+                        } else {
+                            Emit(cg, " = linkonce_odr global %s %lld\n", type_str,
+                                 (long long)init_val);
+                        }
+                    }
+                }
 
                 /* Prefer expanded_body (with substitutions already applied)
                  * over template->generic_body (requires runtime substitution) */
                 Syntax_Node *generic_body = inst_sym->expanded_body;
                 if (!generic_body) generic_body = template->generic_body;
-                if (!generic_body) break;
-
-                /* Store current instance for type substitution during codegen */
-                Symbol *saved_instance = cg->current_instance;
-                cg->current_instance = inst_sym;
+                if (!generic_body) {
+                    cg->current_instance = saved_instance;
+                    break;  /* No body: globals already emitted above */
+                }
 
                 /* Generate instantiated body using the instance's symbol */
-                if (cg->current_function && cg->deferred_count < 64) {
-                    /* Defer nested generic instance - emit after enclosing function */
+                if (cg->current_function && inst_sym->kind == SYMBOL_PACKAGE) {
+                    /* Local generic package instance: allocate storage for exported
+                     * variables/constants NOW (as local allocas), but defer subprogram
+                     * bodies for later. Per Ada RM 12.3: "The elaboration of a generic
+                     * instantiation declares an instance... and elaborates the instance" */
+                    for (uint32_t i = 0; i < inst_sym->exported_count; i++) {
+                        Symbol *exp = inst_sym->exported[i];
+                        if (!exp) continue;
+                        if (exp->kind == SYMBOL_VARIABLE || exp->kind == SYMBOL_CONSTANT) {
+                            /* Allocate local storage for package variable */
+                            Type_Info *ty = exp->type;
+                            const char *type_str = Type_To_Llvm(ty);
+                            bool is_array = ty && ty->kind == TYPE_ARRAY && ty->array.is_constrained;
+                            bool is_record = ty && ty->kind == TYPE_RECORD;
+                            Emit(cg, "  %%");
+                            Emit_Symbol_Name(cg, exp);
+                            if (is_array) {
+                                int64_t cnt = Array_Element_Count(ty);
+                                const char *elem_type = Type_To_Llvm(ty->array.element_type);
+                                Emit(cg, " = alloca [%lld x %s]  ; local pkg var\n", (long long)cnt, elem_type);
+                            } else if (is_record) {
+                                Emit(cg, " = alloca [%u x i8]  ; local pkg record\n", ty->size);
+                            } else {
+                                Emit(cg, " = alloca %s  ; local pkg var\n", type_str);
+                            }
+                            /* Initialize from package body if present */
+                            if (generic_body && generic_body->kind == NK_PACKAGE_BODY) {
+                                /* Look for assignment in BEGIN..END section targeting this var.
+                                 * Compare by name since body symbol differs from exported symbol. */
+                                for (uint32_t j = 0; j < generic_body->package_body.statements.count; j++) {
+                                    Syntax_Node *stmt = generic_body->package_body.statements.items[j];
+                                    if (!stmt || stmt->kind != NK_ASSIGNMENT) continue;
+                                    Syntax_Node *tgt = stmt->assignment.target;
+                                    if (!tgt) continue;
+                                    String_Slice tgt_name = {0};
+                                    if (tgt->kind == NK_IDENTIFIER)
+                                        tgt_name = tgt->string_val.text;
+                                    else if (tgt->symbol)
+                                        tgt_name = tgt->symbol->name;
+                                    if (tgt_name.data && Slice_Equal_Ignore_Case(tgt_name, exp->name)) {
+                                        /* Redirect target to use local exported symbol */
+                                        tgt->symbol = exp;
+                                        Generate_Statement(cg, stmt);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    /* Defer subprogram bodies for later */
+                    if (cg->deferred_count < 64)
+                        cg->deferred_bodies[cg->deferred_count++] = node;
+                } else if (cg->current_function && cg->deferred_count < 64) {
+                    /* Defer nested generic subprogram instance */
                     cg->deferred_bodies[cg->deferred_count++] = node;
                 } else if (inst_sym->kind == SYMBOL_PACKAGE) {
-                    /* Generic PACKAGE instantiation: iterate exported subprograms
-                     * and generate each one using its own symbol (with unique_id).
-                     * Match by counting which Nth homograph this is in the export list,
-                     * then finding the Nth body with the same name. */
+                    /* Global variables already emitted above. Now generate subprogram
+                     * bodies, matching by homograph index. */
                     if (generic_body->kind == NK_PACKAGE_BODY) {
                         for (uint32_t i = 0; i < inst_sym->exported_count; i++) {
                             Symbol *exp = inst_sym->exported[i];
