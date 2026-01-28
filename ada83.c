@@ -11458,7 +11458,11 @@ static inline bool Expression_Is_Float(Syntax_Node *node) {
 /* Get LLVM type string for expression result */
 static inline const char *Expression_Llvm_Type(Syntax_Node *node) {
     if (Expression_Is_Boolean(node)) return "i1";
-    if (Expression_Is_Float(node)) return "double";
+    /* For float types, return the correct LLVM type based on actual size */
+    if (node && node->type && (node->type->kind == TYPE_FLOAT ||
+                                node->type->kind == TYPE_UNIVERSAL_REAL)) {
+        return Llvm_Float_Type((uint32_t)To_Bits(node->type->size));
+    }
     /* Check for pointer/access types */
     if (node && node->type && node->type->kind == TYPE_ACCESS) return "ptr";
     if (node && node->kind == NK_ALLOCATOR) return "ptr";
@@ -11815,10 +11819,13 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                 Emit_Symbol_Ref(cg, sym);
                 Emit(cg, "\n");
             }
-            /* Widen to i64 for computation if narrower type.
+            /* Widen to i64 for computation if narrower integer type.
              * But keep ptr types as ptr - they're used for dereference (.ALL)
-             * and implicit dereference operations. */
-            if (strcmp(type_str, "ptr") != 0) {
+             * and implicit dereference operations.
+             * Also keep float types as their native type (float/double). */
+            if (strcmp(type_str, "ptr") != 0 &&
+                strcmp(type_str, "float") != 0 &&
+                strcmp(type_str, "double") != 0) {
                 t = Emit_Convert(cg, t, type_str, "i64");
             }
         } break;
@@ -11879,9 +11886,12 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "  %%t%u = load %s, ptr ", t, type_str);
                 Emit_Symbol_Ref(cg, sym);
                 Emit(cg, "\n");
-                /* Widen to i64 for computation if narrower type.
-                 * But keep ptr types as ptr - records/access need pointers. */
-                if (strcmp(type_str, "ptr") != 0) {
+                /* Widen to i64 for computation if narrower integer type.
+                 * But keep ptr types as ptr - records/access need pointers.
+                 * Also keep float types as their native type (float/double). */
+                if (strcmp(type_str, "ptr") != 0 &&
+                    strcmp(type_str, "float") != 0 &&
+                    strcmp(type_str, "double") != 0) {
                     t = Emit_Convert(cg, t, type_str, "i64");
                 }
             } else {
@@ -12154,9 +12164,21 @@ static uint32_t Generate_Composite_Address(Code_Generator *cg, Syntax_Node *node
     if (node->kind == NK_IDENTIFIER) {
         Symbol *sym = node->symbol;
         if (sym) {
+            /* Check if this is an uplevel (outer scope) variable access */
+            Symbol *var_owner = sym->defining_scope ? sym->defining_scope->owner : NULL;
+            bool is_uplevel = cg->current_function && var_owner &&
+                              var_owner != cg->current_function &&
+                              var_owner != cg->current_function->generic_template;
+
             uint32_t t = Emit_Temp(cg);
             Emit(cg, "  %%t%u = getelementptr i8, ptr ", t);
-            Emit_Symbol_Ref(cg, sym);
+            if (is_uplevel && cg->is_nested) {
+                /* Uplevel access through frame pointer */
+                Emit(cg, "%%__frame.");
+                Emit_Symbol_Name(cg, sym);
+            } else {
+                Emit_Symbol_Ref(cg, sym);
+            }
             Emit(cg, ", i64 0\n");
             return t;
         }
@@ -12607,32 +12629,62 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                     right = Emit_Convert(cg, right, "ptr", "i64");
                 }
 
+                /* Determine float type based on left operand */
+                const char *float_type = "double";
+                if (left_type && (left_type->kind == TYPE_FLOAT ||
+                                  left_type->kind == TYPE_UNIVERSAL_REAL)) {
+                    float_type = Llvm_Float_Type((uint32_t)To_Bits(left_type->size));
+                }
+
+                /* Get the right operand's float type (if it is float) */
+                const char *right_float_type = "double";
+                if (right_type && right_type->kind == TYPE_FLOAT) {
+                    right_float_type = Llvm_Float_Type((uint32_t)To_Bits(right_type->size));
+                }
+                /* UNIVERSAL_REAL always uses double (Generate_Real_Literal produces double) */
+
                 /* Convert operands to same type if needed */
                 if (left_is_float && !right_is_float) {
-                    /* Convert right to float */
+                    /* Convert right integer to float */
                     uint32_t conv = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = sitofp i64 %%t%u to double\n", conv, right);
+                    Emit(cg, "  %%t%u = sitofp i64 %%t%u to %s\n", conv, right, float_type);
                     right = conv;
                     right_is_float = true;
                 } else if (!left_is_float && right_is_float) {
                     /* Convert right float to integer for fixed-point comparison */
                     uint32_t conv = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = fptosi double %%t%u to i64\n", conv, right);
+                    Emit(cg, "  %%t%u = fptosi %s %%t%u to i64\n", conv, right_float_type, right);
                     right = conv;
                     right_is_float = false;
+                } else if (left_is_float && right_is_float &&
+                           strcmp(float_type, right_float_type) != 0) {
+                    /* Both floats but different sizes - convert right to match left */
+                    uint32_t conv = Emit_Temp(cg);
+                    if (strcmp(float_type, "float") == 0) {
+                        /* double -> float */
+                        Emit(cg, "  %%t%u = fptrunc double %%t%u to float\n", conv, right);
+                    } else {
+                        /* float -> double */
+                        Emit(cg, "  %%t%u = fpext float %%t%u to double\n", conv, right);
+                    }
+                    right = conv;
                 }
 
                 const char *cmp_op;
+                char cmp_buf[32];
                 if (left_is_float && right_is_float) {
+                    const char *fcmp_op;
                     switch (node->binary.op) {
-                        case TK_EQ: cmp_op = "fcmp oeq double"; break;
-                        case TK_NE: cmp_op = "fcmp une double"; break;
-                        case TK_LT: cmp_op = "fcmp olt double"; break;
-                        case TK_LE: cmp_op = "fcmp ole double"; break;
-                        case TK_GT: cmp_op = "fcmp ogt double"; break;
-                        case TK_GE: cmp_op = "fcmp oge double"; break;
-                        default: cmp_op = "icmp eq i64"; break;
+                        case TK_EQ: fcmp_op = "oeq"; break;
+                        case TK_NE: fcmp_op = "une"; break;
+                        case TK_LT: fcmp_op = "olt"; break;
+                        case TK_LE: fcmp_op = "ole"; break;
+                        case TK_GT: fcmp_op = "ogt"; break;
+                        case TK_GE: fcmp_op = "oge"; break;
+                        default: fcmp_op = "oeq"; break;
                     }
+                    snprintf(cmp_buf, sizeof(cmp_buf), "fcmp %s %s", fcmp_op, float_type);
+                    cmp_op = cmp_buf;
                 } else if (left_is_bool && right_is_bool) {
                     /* Boolean comparisons use i1 */
                     switch (node->binary.op) {
@@ -13148,12 +13200,24 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         uint32_t low_bound_val = 0;
         bool has_dynamic_low = false;
 
+        /* Check if this is an uplevel (outer scope) array access */
+        Symbol *var_owner = array_sym && array_sym->defining_scope
+                           ? array_sym->defining_scope->owner : NULL;
+        bool is_uplevel = array_sym && cg->current_function && var_owner &&
+                          var_owner != cg->current_function &&
+                          var_owner != cg->current_function->generic_template;
+
         if (implicit_deref) {
             /* Load the access value (pointer to array) then use as base */
             if (array_sym) {
                 base = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = load ptr, ptr ", base);
-                Emit_Symbol_Ref(cg, array_sym);
+                if (is_uplevel && cg->is_nested) {
+                    Emit(cg, "%%__frame.");
+                    Emit_Symbol_Name(cg, array_sym);
+                } else {
+                    Emit_Symbol_Ref(cg, array_sym);
+                }
                 Emit(cg, "  ; implicit dereference of access\n");
             } else {
                 base = Generate_Expression(cg, node->apply.prefix);
@@ -13171,7 +13235,12 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             /* Constrained array - get direct pointer to data */
             base = Emit_Temp(cg);
             Emit(cg, "  %%t%u = getelementptr i8, ptr ", base);
-            Emit_Symbol_Ref(cg, array_sym);
+            if (is_uplevel && cg->is_nested) {
+                Emit(cg, "%%__frame.");
+                Emit_Symbol_Name(cg, array_sym);
+            } else {
+                Emit_Symbol_Ref(cg, array_sym);
+            }
             Emit(cg, ", i64 0\n");
         } else {
             /* Complex prefix (e.g., array field of indexed record) */
@@ -13270,11 +13339,26 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
 
     /* Type conversion: Type_Name(Expression) */
     if (sym && (sym->kind == SYMBOL_TYPE || sym->kind == SYMBOL_SUBTYPE)) {
-        /* For scalar types, type conversion is just evaluating the expression.
-         * The type system ensures semantic correctness; runtime range checks
-         * would go here in a more complete implementation. */
+        /* For scalar types, type conversion evaluates the expression and converts
+         * to the target type. This handles INTEGER→FLOAT, FLOAT→INTEGER, etc. */
         if (node->apply.arguments.count == 1) {
-            return Generate_Expression(cg, node->apply.arguments.items[0]);
+            Syntax_Node *arg = node->apply.arguments.items[0];
+            uint32_t result = Generate_Expression(cg, arg);
+
+            /* Get source and destination types */
+            Type_Info *src_type = arg->type;
+            Type_Info *dst_type = sym->type;
+
+            if (src_type && dst_type && src_type != dst_type) {
+                /* Types differ - need to convert */
+                const char *src_llvm = Expression_Llvm_Type(arg);
+                const char *dst_llvm = Type_To_Llvm(dst_type);
+
+                if (strcmp(src_llvm, dst_llvm) != 0) {
+                    result = Emit_Convert(cg, result, src_llvm, dst_llvm);
+                }
+            }
+            return result;
         }
     }
 
@@ -14475,8 +14559,26 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
 }
 
 static uint32_t Generate_Qualified(Code_Generator *cg, Syntax_Node *node) {
-    /* Type'(expression) - just generate the expression, no runtime conversion */
-    return Generate_Expression(cg, node->qualified.expression);
+    /* Type'(expression) - generate expression and convert to target type if needed */
+    uint32_t result = Generate_Expression(cg, node->qualified.expression);
+
+    /* Get source and destination types */
+    Type_Info *src_type = node->qualified.expression ? node->qualified.expression->type : NULL;
+    Type_Info *dst_type = node->qualified.subtype_mark ? node->qualified.subtype_mark->type : NULL;
+
+    if (!src_type || !dst_type || src_type == dst_type) {
+        return result;
+    }
+
+    /* Check if type conversion is needed (e.g., INTEGER to FLOAT) */
+    const char *src_llvm = Expression_Llvm_Type(node->qualified.expression);
+    const char *dst_llvm = Type_To_Llvm(dst_type);
+
+    if (strcmp(src_llvm, dst_llvm) != 0) {
+        result = Emit_Convert(cg, result, src_llvm, dst_llvm);
+    }
+
+    return result;
 }
 
 static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
@@ -14638,9 +14740,19 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
                 if (elem_size == 0) elem_size = 1;
 
                 /* Get destination base address */
+                /* Check for uplevel (outer scope) access */
+                Symbol *dest_owner = array_sym->defining_scope ? array_sym->defining_scope->owner : NULL;
+                bool dest_is_uplevel = cg->current_function && dest_owner &&
+                                       dest_owner != cg->current_function &&
+                                       dest_owner != cg->current_function->generic_template;
                 uint32_t dest_base = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = getelementptr i8, ptr ", dest_base);
-                Emit_Symbol_Ref(cg, array_sym);
+                if (dest_is_uplevel && cg->is_nested) {
+                    Emit(cg, "%%__frame.");
+                    Emit_Symbol_Name(cg, array_sym);
+                } else {
+                    Emit_Symbol_Ref(cg, array_sym);
+                }
                 Emit(cg, ", i64 0\n");
 
                 /* Calculate destination start offset from slice low bound */
@@ -14666,9 +14778,19 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
                         int64_t src_low_bound = Array_Low_Bound(src_type);
 
                         /* Get source base address */
+                        /* Check for uplevel (outer scope) access */
+                        Symbol *src_owner = src_sym->defining_scope ? src_sym->defining_scope->owner : NULL;
+                        bool src_is_uplevel = cg->current_function && src_owner &&
+                                              src_owner != cg->current_function &&
+                                              src_owner != cg->current_function->generic_template;
                         uint32_t src_base = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = getelementptr i8, ptr ", src_base);
-                        Emit_Symbol_Ref(cg, src_sym);
+                        if (src_is_uplevel && cg->is_nested) {
+                            Emit(cg, "%%__frame.");
+                            Emit_Symbol_Name(cg, src_sym);
+                        } else {
+                            Emit_Symbol_Ref(cg, src_sym);
+                        }
                         Emit(cg, ", i64 0\n");
 
                         /* Calculate source start offset */
@@ -14702,9 +14824,19 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
 
             /* Array element assignment: DATA(I) := value */
             /* Get array base address (not loaded value) */
+            /* Check for uplevel (outer scope) access */
+            Symbol *elem_owner = array_sym->defining_scope ? array_sym->defining_scope->owner : NULL;
+            bool elem_is_uplevel = cg->current_function && elem_owner &&
+                                   elem_owner != cg->current_function &&
+                                   elem_owner != cg->current_function->generic_template;
             uint32_t base = Emit_Temp(cg);
             Emit(cg, "  %%t%u = getelementptr i8, ptr ", base);
-            Emit_Symbol_Ref(cg, array_sym);
+            if (elem_is_uplevel && cg->is_nested) {
+                Emit(cg, "%%__frame.");
+                Emit_Symbol_Name(cg, array_sym);
+            } else {
+                Emit_Symbol_Ref(cg, array_sym);
+            }
             Emit(cg, ", i64 0\n");
 
             /* Generate index expression */
