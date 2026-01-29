@@ -14215,6 +14215,12 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                  * get the actual type each operand produces. */
                 const char *left_llvm_type = Expression_Llvm_Type(node->binary.left);
                 const char *right_llvm_type = Expression_Llvm_Type(node->binary.right);
+                /* Also detect float from LLVM types — derived types of float
+                 * may not have TYPE_FLOAT kind but generate float/double values */
+                if (!left_is_float && Is_Float_Type(left_llvm_type))
+                    left_is_float = true;
+                if (!right_is_float && Is_Float_Type(right_llvm_type))
+                    right_is_float = true;
 
                 /* Boolean sub-expressions may produce i1 (raw comparisons) or
                  * i64 (widened booleans).  Use actual expression type to avoid
@@ -14258,17 +14264,23 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                     /* Both i64: will use icmp eq i64 below (default) */
                 }
 
-                /* Determine float type based on left operand */
+                /* Determine float type based on left operand.
+                 * Use LLVM type for accuracy (handles derived float types). */
                 const char *float_type = "double";
-                if (left_type && (left_type->kind == TYPE_FLOAT ||
-                                  left_type->kind == TYPE_UNIVERSAL_REAL)) {
-                    float_type = Llvm_Float_Type((uint32_t)To_Bits(left_type->size));
+                if (left_is_float) {
+                    if (Is_Float_Type(left_llvm_type))
+                        float_type = left_llvm_type;
+                    else if (left_type && left_type->kind == TYPE_FLOAT)
+                        float_type = Llvm_Float_Type((uint32_t)To_Bits(left_type->size));
                 }
 
                 /* Get the right operand's float type (if it is float) */
                 const char *right_float_type = "double";
-                if (right_type && right_type->kind == TYPE_FLOAT) {
-                    right_float_type = Llvm_Float_Type((uint32_t)To_Bits(right_type->size));
+                if (right_is_float) {
+                    if (Is_Float_Type(right_llvm_type))
+                        right_float_type = right_llvm_type;
+                    else if (right_type && right_type->kind == TYPE_FLOAT)
+                        right_float_type = Llvm_Float_Type((uint32_t)To_Bits(right_type->size));
                 }
                 /* UNIVERSAL_REAL always uses double (Generate_Real_Literal produces double) */
 
@@ -14400,6 +14412,14 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                 if (lhs_type && lhs_type->kind == TYPE_FLOAT) {
                     mem_float_type = Llvm_Float_Type((uint32_t)To_Bits(lhs_type->size));
                 }
+                /* Also detect float from LLVM types — derived types or
+                 * resolved expressions may produce float/double values even
+                 * when the Ada type kind is not TYPE_FLOAT */
+                const char *left_mem_llvm = Expression_Llvm_Type(node->binary.left);
+                if (!left_is_flt && Is_Float_Type(left_mem_llvm)) {
+                    left_is_flt = true;
+                    mem_float_type = left_mem_llvm;
+                }
 
                 if (node->binary.right && node->binary.right->kind == NK_RANGE) {
                     /* Dynamic range: generate both bounds from AST */
@@ -14422,6 +14442,18 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                         Emit(cg, "  %%t%u = fcmp oge %s %%t%u, %%t%u\n", ge, mem_float_type, left, lo);
                         Emit(cg, "  %%t%u = fcmp ole %s %%t%u, %%t%u\n", le, mem_float_type, left, hi);
                     } else {
+                        /* Ensure operands are all i64 — convert ptr operands if needed */
+                        const char *lo_llvm = Expression_Llvm_Type(node->binary.right->range.low);
+                        const char *hi_llvm = Expression_Llvm_Type(node->binary.right->range.high);
+                        if (strcmp(left_mem_llvm, "ptr") == 0) {
+                            left = Emit_Convert(cg, left, "ptr", "i64");
+                        }
+                        if (strcmp(lo_llvm, "ptr") == 0) {
+                            lo = Emit_Convert(cg, lo, "ptr", "i64");
+                        }
+                        if (strcmp(hi_llvm, "ptr") == 0) {
+                            hi = Emit_Convert(cg, hi, "ptr", "i64");
+                        }
                         Emit(cg, "  %%t%u = icmp sge i64 %%t%u, %%t%u\n", ge, left, lo);
                         Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", le, left, hi);
                     }
@@ -14458,6 +14490,20 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                             Emit(cg, "  %%t%u = fcmp oge %s %%t%u, %%t%u\n", ge, mem_float_type, left, lo_f);
                             Emit(cg, "  %%t%u = fcmp ole %s %%t%u, %%t%u\n", le, mem_float_type, left, hi_f);
                         } else {
+                            /* Ensure operands are all i64 — convert ptr operands */
+                            if (strcmp(left_mem_llvm, "ptr") == 0) {
+                                left = Emit_Convert(cg, left, "ptr", "i64");
+                            }
+                            const char *lo_src2 = (rt->low_bound.kind == BOUND_EXPR && rt->low_bound.expr)
+                                ? Expression_Llvm_Type(rt->low_bound.expr) : "i64";
+                            const char *hi_src2 = (rt->high_bound.kind == BOUND_EXPR && rt->high_bound.expr)
+                                ? Expression_Llvm_Type(rt->high_bound.expr) : "i64";
+                            if (strcmp(lo_src2, "ptr") == 0) {
+                                lo = Emit_Convert(cg, lo, "ptr", "i64");
+                            }
+                            if (strcmp(hi_src2, "ptr") == 0) {
+                                hi = Emit_Convert(cg, hi, "ptr", "i64");
+                            }
                             Emit(cg, "  %%t%u = icmp sge i64 %%t%u, %%t%u\n", ge, left, lo);
                             Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", le, left, hi);
                         }
