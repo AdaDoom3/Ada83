@@ -12645,9 +12645,14 @@ static inline const char *Expression_Llvm_Type(Syntax_Node *node) {
                                 node->type->kind == TYPE_UNIVERSAL_REAL)) {
         return Llvm_Float_Type((uint32_t)To_Bits(node->type->size));
     }
-    /* Check for pointer/access types */
-    if (node && node->type && node->type->kind == TYPE_ACCESS) return "ptr";
-    if (node && node->kind == NK_ALLOCATOR) return "ptr";
+    /* Check for pointer/access types.
+     * Access-to-unconstrained arrays use fat pointer { ptr, { i64, i64 } }.
+     * Access-to-constrained or scalar types use plain ptr.
+     * Use Type_To_Llvm to get the correct representation. */
+    if (node && node->type && node->type->kind == TYPE_ACCESS)
+        return Type_To_Llvm(node->type);
+    if (node && node->kind == NK_ALLOCATOR && node->type)
+        return Type_To_Llvm(node->type);
     if (node && node->kind == NK_NULL) return "ptr";
     /* Record types and aggregates return pointers (alloca addresses) */
     if (node && node->type && node->type->kind == TYPE_RECORD) return "ptr";
@@ -14204,30 +14209,53 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                                                      right_type->kind == TYPE_UNIVERSAL_REAL);
                 bool left_is_bool = left_type && left_type->kind == TYPE_BOOLEAN;
                 bool right_is_bool = right_type && right_type->kind == TYPE_BOOLEAN;
-                bool left_is_access = left_type && left_type->kind == TYPE_ACCESS;
-                bool right_is_access = right_type && right_type->kind == TYPE_ACCESS;
-
-                /* Access types need to be converted to i64 for comparison
-                 * (they are kept as ptr for dereference operations) */
-                if (left_is_access) {
-                    left = Emit_Convert(cg, left, "ptr", "i64");
-                }
-                if (right_is_access) {
-                    right = Emit_Convert(cg, right, "ptr", "i64");
-                }
+                /* Determine actual LLVM types of operands for type-safe comparison.
+                 * Access types produce ptr, arrays produce ptr or fat_ptr,
+                 * integers/enums produce i64. Use Expression_Llvm_Type to
+                 * get the actual type each operand produces. */
+                const char *left_llvm_type = Expression_Llvm_Type(node->binary.left);
+                const char *right_llvm_type = Expression_Llvm_Type(node->binary.right);
 
                 /* Boolean sub-expressions may produce i1 (raw comparisons) or
                  * i64 (widened booleans).  Use actual expression type to avoid
                  * double-widening when the value is already i64. */
                 if (!left_is_float && !right_is_float) {
                     if (Expression_Is_Boolean(node->binary.left)) {
-                        const char *lt = Expression_Llvm_Type(node->binary.left);
-                        left = Emit_Convert(cg, left, lt, "i64");
+                        left = Emit_Convert(cg, left, left_llvm_type, "i64");
+                        left_llvm_type = "i64";
                     }
                     if (Expression_Is_Boolean(node->binary.right)) {
-                        const char *rt = Expression_Llvm_Type(node->binary.right);
-                        right = Emit_Convert(cg, right, rt, "i64");
+                        right = Emit_Convert(cg, right, right_llvm_type, "i64");
+                        right_llvm_type = "i64";
                     }
+                }
+
+                /* For non-float, non-boolean: ensure operands are same type.
+                 * If one is ptr and other is i64, convert to common type.
+                 * Fat pointers: extract data pointer for comparison. */
+                if (!left_is_float && !right_is_float &&
+                    !left_is_bool && !right_is_bool) {
+                    /* Handle fat pointer operands - extract data pointer */
+                    if (strstr(left_llvm_type, "{ ptr,")) {
+                        left = Emit_Convert(cg, left, left_llvm_type, "ptr");
+                        left_llvm_type = "ptr";
+                    }
+                    if (strstr(right_llvm_type, "{ ptr,")) {
+                        right = Emit_Convert(cg, right, right_llvm_type, "ptr");
+                        right_llvm_type = "ptr";
+                    }
+                    /* Normalize: if one is ptr and other is i64, convert to i64 */
+                    if (strcmp(left_llvm_type, "ptr") == 0 &&
+                        strcmp(right_llvm_type, "i64") == 0) {
+                        left = Emit_Convert(cg, left, "ptr", "i64");
+                        left_llvm_type = "i64";
+                    } else if (strcmp(left_llvm_type, "i64") == 0 &&
+                               strcmp(right_llvm_type, "ptr") == 0) {
+                        right = Emit_Convert(cg, right, "ptr", "i64");
+                        right_llvm_type = "i64";
+                    }
+                    /* Both ptr: will use icmp eq ptr below */
+                    /* Both i64: will use icmp eq i64 below (default) */
                 }
 
                 /* Determine float type based on left operand */
@@ -14320,6 +14348,26 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                         case TK_EQ: cmp_op = "icmp eq i64"; break;
                         case TK_NE: cmp_op = "icmp ne i64"; break;
                         default: cmp_op = "icmp eq i64"; break;
+                    }
+                } else if (strcmp(left_llvm_type, "ptr") == 0 &&
+                           strcmp(right_llvm_type, "ptr") == 0) {
+                    /* Pointer comparison (access types, record/array ptrs).
+                     * Only equality/inequality are meaningful for pointers. */
+                    switch (node->binary.op) {
+                        case TK_EQ: cmp_op = "icmp eq ptr"; break;
+                        case TK_NE: cmp_op = "icmp ne ptr"; break;
+                        /* Ordered comparisons on pointers: convert to i64 first */
+                        default: {
+                            left = Emit_Convert(cg, left, "ptr", "i64");
+                            right = Emit_Convert(cg, right, "ptr", "i64");
+                            switch (node->binary.op) {
+                                case TK_LT: cmp_op = "icmp slt i64"; break;
+                                case TK_LE: cmp_op = "icmp sle i64"; break;
+                                case TK_GT: cmp_op = "icmp sgt i64"; break;
+                                case TK_GE: cmp_op = "icmp sge i64"; break;
+                                default: cmp_op = "icmp eq i64"; break;
+                            }
+                        } break;
                     }
                 } else {
                     switch (node->binary.op) {
@@ -17393,21 +17441,10 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
                       (designated->kind == TYPE_STRING ||
                        (designated->kind == TYPE_ARRAY && !designated->array.is_constrained));
 
-    /* Also check if the designated array type's base type is unconstrained.
-     * This handles cases like NEW ARR(bounds) where bounds makes a constrained
-     * subtype of an unconstrained array - we still need a fat pointer. */
-    if (!is_fat_ptr && designated && designated->kind == TYPE_ARRAY &&
-        designated->array.is_constrained) {
-        /* Check if the array's base type is unconstrained */
-        Type_Info *arr_base = designated->base_type;
-        while (arr_base) {
-            if (arr_base->kind == TYPE_ARRAY && !arr_base->array.is_constrained) {
-                is_fat_ptr = true;
-                break;
-            }
-            arr_base = arr_base->base_type;
-        }
-    }
+    /* Note: if the designated type is a constrained subtype of an unconstrained
+     * array (e.g., ACCESS ARRAY3(1..5)), we do NOT use fat pointer representation.
+     * The bounds are known from the subtype constraint — plain ptr suffices.
+     * This matches Type_To_Llvm which returns "ptr" for access-to-constrained. */
 
     if (is_fat_ptr && node->allocator.expression) {
         /* Access to unconstrained array with initializer */
@@ -17555,15 +17592,42 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
         }
     }
 
-    /* Simple allocation (constrained types or no initializer) */
-    uint64_t size = access_type->size > 0 ? access_type->size : 8;
+    /* Simple allocation (constrained types, scalar access, or no initializer).
+     * For composite designated types (arrays, records), allocate the designated
+     * type's storage and memcpy the initializer.  For scalar types, use store. */
+    uint64_t alloc_size = 8;  /* Default: pointer-sized */
+    bool designated_is_composite = false;
+    if (designated) {
+        if (designated->kind == TYPE_ARRAY && designated->array.is_constrained) {
+            /* Constrained array: compute actual byte size from element count */
+            int64_t count = Array_Element_Count(designated);
+            uint32_t elem_sz = designated->array.element_type ?
+                               designated->array.element_type->size : 1;
+            if (elem_sz == 0) elem_sz = 8;
+            alloc_size = (uint64_t)(count > 0 ? count : 1) * elem_sz;
+            designated_is_composite = true;
+        } else if (designated->kind == TYPE_RECORD) {
+            alloc_size = designated->size > 0 ? designated->size : 8;
+            designated_is_composite = true;
+        } else {
+            alloc_size = designated->size > 0 ? designated->size : 8;
+        }
+    }
     uint32_t t = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = call ptr @malloc(i64 %llu)\n", t, (unsigned long long)size);
+    Emit(cg, "  %%t%u = call ptr @malloc(i64 %llu)\n", t, (unsigned long long)alloc_size);
 
-    /* If there's an initializer, store it */
+    /* If there's an initializer, copy it into the allocated memory */
     if (node->allocator.expression) {
         uint32_t val = Generate_Expression(cg, node->allocator.expression);
-        Emit(cg, "  store %s %%t%u, ptr %%t%u\n", Type_To_Llvm(access_type), val, t);
+        if (designated_is_composite) {
+            /* Composite type: memcpy from initializer to heap */
+            Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %llu, i1 false)\n",
+                 t, val, (unsigned long long)alloc_size);
+        } else {
+            /* Scalar type: store value */
+            const char *desg_llvm = designated ? Type_To_Llvm(designated) : "i64";
+            Emit(cg, "  store %s %%t%u, ptr %%t%u\n", desg_llvm, val, t);
+        }
     }
 
     return t;
@@ -20244,6 +20308,23 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
             }
             break;
 
+        case NK_PACKAGE_SPEC:
+            /* Nested package spec: emit object declarations for variables and
+             * constants declared in the visible and private parts.
+             * Without this, variables from package specs without bodies
+             * would never be allocated, causing undefined value errors. */
+            {
+                for (uint32_t j = 0; j < node->package_spec.visible_decls.count; j++) {
+                    Syntax_Node *decl = node->package_spec.visible_decls.items[j];
+                    if (decl) Generate_Declaration(cg, decl);
+                }
+                for (uint32_t j = 0; j < node->package_spec.private_decls.count; j++) {
+                    Syntax_Node *decl = node->package_spec.private_decls.items[j];
+                    if (decl) Generate_Declaration(cg, decl);
+                }
+            }
+            break;
+
         case NK_PROCEDURE_BODY:
         case NK_FUNCTION_BODY:
             /* Defer nested subprogram bodies - emit after enclosing function */
@@ -20275,26 +20356,9 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     break;
                 }
 
-                /* First, emit package spec's object declarations (constants, variables) */
-                if (pkg_sym && pkg_sym->kind == SYMBOL_PACKAGE && pkg_sym->declaration) {
-                    Syntax_Node *spec = pkg_sym->declaration;
-                    if (spec->kind == NK_PACKAGE_SPEC) {
-                        /* Emit visible object declarations from spec */
-                        for (uint32_t i = 0; i < spec->package_spec.visible_decls.count; i++) {
-                            Syntax_Node *decl = spec->package_spec.visible_decls.items[i];
-                            if (decl && decl->kind == NK_OBJECT_DECL) {
-                                Generate_Object_Declaration(cg, decl);
-                            }
-                        }
-                        /* Emit private object declarations from spec */
-                        for (uint32_t i = 0; i < spec->package_spec.private_decls.count; i++) {
-                            Syntax_Node *decl = spec->package_spec.private_decls.items[i];
-                            if (decl && decl->kind == NK_OBJECT_DECL) {
-                                Generate_Object_Declaration(cg, decl);
-                            }
-                        }
-                    }
-                }
+                /* Package spec declarations are emitted when the NK_PACKAGE_SPEC
+                 * is processed in Generate_Declaration (appears before the body
+                 * in the declaration list). No need to re-emit here. */
 
                 Generate_Declaration_List(cg, &node->package_body.declarations);
             /* Generate initialization statements if present.
