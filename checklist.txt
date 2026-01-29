@@ -45,6 +45,48 @@ READ GNAT LLVM SOURCES FOR HELP DURING DEVELOPMENT
    - Added prefix_is_call_target check in Resolve_Apply
    - Complex prefix expressions now route to array indexing
 
+8. [x] Floating-point type support and conversions
+   - Float/double LLVM types based on Ada type size
+   - fcmp for float comparisons, sitofp/fptosi conversions
+   - c35 tests: 47 → 54 passing
+
+9. [x] Boolean i1→i64 uniform widening
+   - All boolean results (comparisons, AND/OR/XOR, NOT, membership)
+     widened to i64 for uniform representation
+   - Expression_Is_Boolean/Expression_Llvm_Type updated
+
+10. [x] Fat pointer / ptr type mismatch fixes
+    - Removed constrained CHARACTER array fat pointer hack from
+      Generate_Identifier (was causing double-wrapping)
+    - Fixed record equality callers to load fat pointers from GEP
+    - Improved Emit_Convert: extractvalue for fat_ptr→ptr, load for
+      ptr→fat_ptr, ptrtoint/inttoptr for fat_ptr↔i64
+    - Guard fat pointer values from i64 widening in Generate_Identifier
+    - Fix array element loading to preserve ptr/float/fat_ptr types
+
+11. [x] Character array initialization fat_ptr/ptr dispatch
+    - NK_STRING and unconstrained arrays → fat pointer copy
+    - Constrained arrays → direct memcpy with known bounds
+    - Fixed c36 regression (BIND 21→15)
+
+12. [x] Function return value type preservation
+    - Preserve ptr and fat_ptr types from function return widening
+    - Previously incorrectly converted to i64 via ptrtoint/extractvalue
+
+13. [x] Nested package body inline initialization (RM 7.2)
+    - Nested packages emit init statements inline in enclosing function
+    - Library-level packages use separate __init function
+    - Fixes 128+ "expected instruction opcode" BIND errors
+
+14. [x] Private/limited private type LLVM resolution
+    - Type_To_Llvm follows parent_type chain for private types
+    - Prevents private float/access types defaulting to i64
+
+15. [x] Boolean double-widening fix in comparisons
+    - Use Expression_Llvm_Type instead of assuming i1 for boolean
+      sub-expressions (NOT, AND, OR already widen to i64)
+    - c45 pass 28→37 (+9)
+
 === IN PROGRESS ===
 
 Element concatenation (C & 3.0):
@@ -52,26 +94,29 @@ Element concatenation (C & 3.0):
   - Required for c34005a and similar tests
   - Need to infer array type from context
 
-=== REMAINING ERROR CATEGORIES (by impact) ===
+=== REMAINING ERROR CATEGORIES (by impact, BIND failures) ===
 
 Category                                   | Count | Groups
 -------------------------------------------|-------|--------
-Derived ops inheritance (wrappers)         |  ~40  | c34
-Incompatible types for comparison          |  ~43  | c3x, c4x
-Undefined identifier C1/DISC              |  ~31  | c3x
-Unsupported expression kind (NK_RANGE)     |  ~25  | c4x
-Type mismatch in assignment                |  ~19  | c3x, c4x
-Discriminant constraint checking           |  ~20  | c37
+fat_ptr/scalar mismatch                    | ~357  | c3x, c4x
+Undefined values (I/O exceptions + SSA)    | ~278  | ce, c3x
+ptr/i64 mismatch                           | ~146  | c3x, c4x
+Expected instruction opcode (malformed IR) | ~128  | c3x (mostly fixed)
+double/float vs i64 (derived float ops)    |  ~51  | c34, c35
+i64/i1 boolean mismatch                    |  ~42  | c34, c37 (partially fixed)
 
 === TEST RESULTS (latest) ===
 
 Group | Pass | Total | Rate  | Change
 ------|------|-------|-------|--------
-c34   |    3 |    67 |   4%  | +3 (GNAT-style derived ops)
-c35   |   47 |   120 |  39%  | stable
-c37   |    9 |    68 |  13%  | stable
-c45   |   28 |   108 |  25%  | stable
-ALL C |  239 | 1979  |  12%  | (full C-series)
+c32   |    2 |    19 |  10%  | baseline
+c34   |    4 |    67 |   5%  | +1 (return widening fix)
+c35   |   54 |   120 |  45%  | +7 (float support)
+c36   |    4 |    33 |  12%  | BIND 21→15
+c37   |   10 |    68 |  14%  | +1, BIND 35→33
+c43   |    3 |    53 |   5%  | BIND 43→42
+c45   |   37 |   108 |  34%  | +9 (boolean widening fix)
+c48   |    1 |    31 |   3%  | stable
 
 === NOTES ===
 
