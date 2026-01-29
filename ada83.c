@@ -6142,6 +6142,13 @@ static int64_t Array_Low_Bound(Type_Info *t);
 static const char *Type_To_Llvm(Type_Info *t) {
     if (!t) return "i64";
 
+    /* For private/limited private/incomplete types, resolve through parent_type
+     * chain to find the actual representation type (Ada RM 7.4.1, 3.4). */
+    if ((t->kind == TYPE_PRIVATE || t->kind == TYPE_LIMITED_PRIVATE ||
+         t->kind == TYPE_INCOMPLETE) && t->parent_type) {
+        return Type_To_Llvm(t->parent_type);
+    }
+
     switch (t->kind) {
         case TYPE_BOOLEAN:    return "i1";
         case TYPE_CHARACTER:  return "i8";
@@ -12651,8 +12658,8 @@ static inline const char *Expression_Llvm_Type(Syntax_Node *node) {
      * Fat pointers are only used when loading from unconstrained array variables. */
     if (node && node->kind == NK_AGGREGATE && node->type &&
         node->type->kind == TYPE_ARRAY) return "ptr";
-    /* Array indexing (NK_APPLY) that returns composite element yields ptr not fat ptr.
-     * The codegen returns a pointer to the element's storage, not a fat pointer. */
+    /* Array indexing (NK_APPLY) that returns non-i64 element types.
+     * The codegen preserves the native type for composite, access, and float elements. */
     if (node && node->kind == NK_APPLY && node->apply.prefix &&
         node->apply.prefix->type &&
         (node->apply.prefix->type->kind == TYPE_ARRAY ||
@@ -12662,6 +12669,13 @@ static inline const char *Expression_Llvm_Type(Syntax_Node *node) {
             elem_type->kind == TYPE_STRING ||
             (elem_type->kind == TYPE_ARRAY && elem_type->array.is_constrained))) {
             return "ptr";  /* Composite elements return ptr */
+        }
+        if (elem_type && elem_type->kind == TYPE_ACCESS) {
+            return "ptr";  /* Access elements loaded as ptr, not widened to i64 */
+        }
+        if (elem_type && (elem_type->kind == TYPE_FLOAT ||
+            elem_type->kind == TYPE_UNIVERSAL_REAL)) {
+            return Llvm_Float_Type((uint32_t)To_Bits(elem_type->size));
         }
     }
     /* Check for string literals and string types (generate fat pointers) */
@@ -12714,16 +12728,24 @@ static uint32_t Emit_Convert(Code_Generator *cg, uint32_t src, const char *src_t
         return src;
     } else if (strstr(src_type, "{ ptr,") && strcmp(dst_type, "ptr") == 0) {
         /* fat pointer → ptr: extract data pointer (field 0) */
-        /* Note: this loses bounds information, used when assigning to access type */
-        uint32_t fat_alloca = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = alloca %s\n", fat_alloca, src_type);
-        Emit(cg, "  store %s %%t%u, ptr %%t%u\n", src_type, src, fat_alloca);
-        Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 0\n", t, src_type, fat_alloca);
-        uint32_t data_ptr = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = load ptr, ptr %%t%u\n", data_ptr, t);
-        return data_ptr;
+        /* Note: this loses bounds information, used when passing to constrained params
+         * or assigning to access types */
+        Emit(cg, "  %%t%u = extractvalue %s %%t%u, 0\n", t, src_type, src);
+    } else if (strcmp(src_type, "ptr") == 0 && strstr(dst_type, "{ ptr,")) {
+        /* ptr → fat pointer: pointer to unconstrained array storage, load it */
+        Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, dst_type, src);
+    } else if (strstr(src_type, "{ ptr,") && strcmp(dst_type, "i64") == 0) {
+        /* fat pointer → i64: extract data pointer then ptrtoint */
+        uint32_t data = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = extractvalue %s %%t%u, 0\n", data, src_type, src);
+        Emit(cg, "  %%t%u = ptrtoint ptr %%t%u to i64\n", t, data);
+    } else if (strcmp(src_type, "i64") == 0 && strstr(dst_type, "{ ptr,")) {
+        /* i64 → fat pointer: likely an access value, inttoptr then load */
+        uint32_t p = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = inttoptr i64 %%t%u to ptr\n", p, src);
+        Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, dst_type, p);
     } else if (strstr(src_type, "{ ptr,") || strstr(dst_type, "{ ptr,")) {
-        /* One is fat pointer, other is something else - can't convert, return as-is */
+        /* One is fat pointer, other is something else - best effort */
         return src;
     } else {
         /* integer conversions */
@@ -13060,27 +13082,6 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
     switch (sym->kind) {
         case SYMBOL_VARIABLE:
         case SYMBOL_PARAMETER: {
-            /* Check for constrained string/array - return fat pointer */
-            if (ty && ty->kind == TYPE_ARRAY && ty->array.is_constrained &&
-                ty->array.element_type && ty->array.element_type->kind == TYPE_CHARACTER) {
-
-                /* Get bounds from type */
-                int64_t low = 1, high = 0;
-                if (ty->array.index_count > 0) {
-                    low = Type_Bound_Value(ty->array.indices[0].low_bound);
-                    high = Type_Bound_Value(ty->array.indices[0].high_bound);
-                }
-
-                /* Get pointer to array data */
-                uint32_t data_ptr = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = getelementptr i8, ptr ", data_ptr);
-                Emit_Symbol_Ref(cg, sym);
-                Emit(cg, ", i64 0\n");
-
-                /* Create fat pointer with bounds */
-                return Emit_Fat_Pointer(cg, data_ptr, low, high);
-            }
-
             /* Check if this is an uplevel (outer scope) variable access
              * A variable is "uplevel" if its defining scope's owner is different
              * from the current function. For generic instances, the variable's
@@ -13109,7 +13110,8 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
              * Also keep float types as their native type (float/double). */
             if (strcmp(type_str, "ptr") != 0 &&
                 strcmp(type_str, "float") != 0 &&
-                strcmp(type_str, "double") != 0) {
+                strcmp(type_str, "double") != 0 &&
+                !strstr(type_str, "{ ptr,")) {
                 t = Emit_Convert(cg, t, type_str, "i64");
             }
         } break;
@@ -13134,23 +13136,13 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
             } else if (ty && ty->kind == TYPE_CHARACTER) {
                 /* Character literal - already handled as NK_CHARACTER, but safety check */
                 Emit(cg, "  %%t%u = add i64 0, 0  ; character literal\n", t);
-            } else if (ty && ty->kind == TYPE_ARRAY && ty->array.is_constrained &&
-                       ty->array.element_type && ty->array.element_type->kind == TYPE_CHARACTER) {
-                /* Constant string/character array - return fat pointer like variable */
-                int64_t low = 1, high = 0;
-                if (ty->array.index_count > 0) {
-                    low = Type_Bound_Value(ty->array.indices[0].low_bound);
-                    high = Type_Bound_Value(ty->array.indices[0].high_bound);
-                }
-
-                /* Get pointer to constant array data */
-                uint32_t data_ptr = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = getelementptr i8, ptr ", data_ptr);
+            } else if (ty && ty->kind == TYPE_ARRAY && ty->array.is_constrained) {
+                /* Constrained array constant - return pointer to data.
+                 * Fat pointer wrapping is handled at call sites when needed. */
+                Emit(cg, "  %%t%u = getelementptr i8, ptr ", t);
                 Emit_Symbol_Ref(cg, sym);
                 Emit(cg, ", i64 0\n");
-
-                /* Create fat pointer with bounds */
-                return Emit_Fat_Pointer(cg, data_ptr, low, high);
+                return t;
             } else if (sym->kind == SYMBOL_CONSTANT && sym->is_named_number) {
                 /* Named number (constant without explicit type) - evaluate initializer
                  * Named numbers in Ada are compile-time constants with no storage.
@@ -13300,8 +13292,14 @@ static uint32_t Generate_Record_Equality(Code_Generator *cg, uint32_t left_ptr,
 
         if (ct && (ct->kind == TYPE_STRING ||
                    (ct->kind == TYPE_ARRAY && !ct->array.is_constrained))) {
-            /* Unconstrained array/string - use array equality on the fat pointers */
-            cmp = Generate_Array_Equality(cg, left_gep, right_gep, ct);
+            /* Unconstrained array/string - load fat pointer values from storage,
+             * since left_gep/right_gep are pointers TO fat pointer fields,
+             * but Generate_Array_Equality expects fat pointer VALUES. */
+            uint32_t left_fat = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", left_fat, left_gep);
+            uint32_t right_fat = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", right_fat, right_gep);
+            cmp = Generate_Array_Equality(cg, left_fat, right_fat, ct);
         } else if (ct && ct->kind == TYPE_ARRAY && ct->array.is_constrained) {
             /* Constrained array - use array equality directly on pointers */
             cmp = Generate_Array_Equality(cg, left_gep, right_gep, ct);
@@ -13397,6 +13395,12 @@ static uint32_t Generate_Array_Equality(Code_Generator *cg, uint32_t left_ptr,
      *
      * For fat pointers: compare lengths, then data if lengths match.
      * Use select instead of phi to avoid block label complications.
+     */
+
+    /*
+     * For unconstrained arrays, left_ptr/right_ptr are fat pointer VALUES
+     * (not pointers to storage).  All callers must ensure they pass loaded
+     * fat pointer values: { ptr, { i64, i64 } }.
      */
 
     /* Extract bounds from fat pointer structures */
@@ -14212,14 +14216,17 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                     right = Emit_Convert(cg, right, "ptr", "i64");
                 }
 
-                /* Boolean sub-expressions (AND, OR, NOT, comparisons) produce i1
-                 * but integer comparisons expect i64 operands — widen */
+                /* Boolean sub-expressions may produce i1 (raw comparisons) or
+                 * i64 (widened booleans).  Use actual expression type to avoid
+                 * double-widening when the value is already i64. */
                 if (!left_is_float && !right_is_float) {
                     if (Expression_Is_Boolean(node->binary.left)) {
-                        left = Emit_Convert(cg, left, "i1", "i64");
+                        const char *lt = Expression_Llvm_Type(node->binary.left);
+                        left = Emit_Convert(cg, left, lt, "i64");
                     }
                     if (Expression_Is_Boolean(node->binary.right)) {
-                        right = Emit_Convert(cg, right, "i1", "i64");
+                        const char *rt = Expression_Llvm_Type(node->binary.right);
+                        right = Emit_Convert(cg, right, rt, "i64");
                     }
                 }
 
@@ -14865,6 +14872,9 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                         actual_type->kind == TYPE_ARRAY && actual_type->array.is_constrained &&
                         actual_type->array.index_count > 0;
                     if (formal_needs_fat && actual_is_constrained) {
+                        /* Constrained array to unconstrained formal: build fat pointer.
+                         * Generate_Expression returns ptr for constrained arrays; wrap
+                         * with the type's static bounds for the unconstrained formal. */
                         int64_t lo = Type_Bound_Value(actual_type->array.indices[0].low_bound);
                         int64_t hi = Type_Bound_Value(actual_type->array.indices[0].high_bound);
                         args[i] = Emit_Fat_Pointer(cg, args[i], lo, hi);
@@ -14944,10 +14954,13 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             Emit_Constraint_Check(cg, ret_val, actual_type);
         }
 
-        /* Widen return value to i64 for computation (but not floats) */
+        /* Widen return value to i64 for computation.
+         * Preserve native types: floats, pointers, fat pointers. */
         if (sym->return_type) {
             const char *ret_llvm = Type_To_Llvm(sym->return_type);
-            if (!Is_Float_Type(ret_llvm)) {
+            if (!Is_Float_Type(ret_llvm) &&
+                strcmp(ret_llvm, "ptr") != 0 &&
+                !strstr(ret_llvm, "{ ptr,")) {
                 t = Emit_Convert(cg, t, ret_llvm, "i64");
             }
             return t;
@@ -15202,8 +15215,13 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %%t%u\n",
                  ptr, elem_type, base, idx);
             Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, elem_type, ptr);
-            /* Widen to i64 for computation */
-            t = Emit_Convert(cg, t, elem_type, "i64");
+            /* Widen to i64 for computation, but keep ptr/float/fat_ptr as-is */
+            if (strcmp(elem_type, "ptr") != 0 &&
+                strcmp(elem_type, "float") != 0 &&
+                strcmp(elem_type, "double") != 0 &&
+                !strstr(elem_type, "{ ptr,")) {
+                t = Emit_Convert(cg, t, elem_type, "i64");
+            }
             return t;
         }
     }
@@ -17939,12 +17957,6 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
         bool src_is_fat_ptr = (src_type && src_type->kind == TYPE_STRING) ||
                               (src_type && src_type->kind == TYPE_ARRAY && !src_type->array.is_constrained) ||
                               (node->assignment.value->kind == NK_STRING);
-        /* Also check if source is an identifier of constrained char array (generates fat ptr) */
-        if (!src_is_fat_ptr && node->assignment.value->kind == NK_IDENTIFIER &&
-            src_type && src_type->kind == TYPE_ARRAY && src_type->array.is_constrained &&
-            src_type->array.element_type && src_type->array.element_type->kind == TYPE_CHARACTER) {
-            src_is_fat_ptr = true;
-        }
         /* Concatenation always returns fat pointer */
         if (!src_is_fat_ptr && node->assignment.value->kind == NK_BINARY_OP &&
             node->assignment.value->binary.op == TK_AMPERSAND) {
@@ -19284,9 +19296,30 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
         /* Initialize if provided */
         if (node->object_decl.init) {
             if (is_any_array && ty->array.element_type == cg->sm->type_character) {
-                /* String/character array initialization - copy fat pointer data */
-                uint32_t fat_ptr = Generate_Expression(cg, node->object_decl.init);
-                Emit_Fat_Pointer_Copy_To_Name(cg, fat_ptr, sym);
+                /* String/character array initialization.
+                 * NK_STRING always yields a fat pointer.
+                 * Unconstrained array identifiers yield fat pointer values.
+                 * Constrained array identifiers yield plain ptr — use memcpy. */
+                Syntax_Node *init = node->object_decl.init;
+                Type_Info *init_ty = init->type;
+                int init_is_constrained = (init_ty && init_ty->kind == TYPE_ARRAY &&
+                                           init_ty->array.is_constrained);
+                if (init->kind == NK_STRING || !init_is_constrained) {
+                    /* Source produces a fat pointer value */
+                    uint32_t fat_ptr = Generate_Expression(cg, init);
+                    Emit_Fat_Pointer_Copy_To_Name(cg, fat_ptr, sym);
+                } else {
+                    /* Source is a constrained character array — plain ptr.
+                     * Compute byte length from target type bounds and memcpy. */
+                    uint32_t src_ptr = Generate_Expression(cg, init);
+                    int64_t lo = Type_Bound_Value(ty->array.indices[0].low_bound);
+                    int64_t hi = Type_Bound_Value(ty->array.indices[0].high_bound);
+                    int64_t byte_len = (hi >= lo) ? (hi - lo + 1) : 0;
+                    Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%");
+                    Emit_Symbol_Name(cg, sym);
+                    Emit(cg, ", ptr %%t%u, i64 %lld, i1 false)\n",
+                         src_ptr, (long long)byte_len);
+                }
             } else if (ty && ty->kind == TYPE_FIXED &&
                        node->object_decl.init->kind == NK_REAL) {
                 /* Fixed-point initialization from real literal:
@@ -20264,38 +20297,44 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 }
 
                 Generate_Declaration_List(cg, &node->package_body.declarations);
-            /* Generate initialization function if initialization statements present */
+            /* Generate initialization statements if present.
+             * For nested packages (inside a function), emit statements inline
+             * in the enclosing function — Ada RM 7.2: elaboration occurs at the
+             * point of the package body in the enclosing declarative region.
+             * For library-level packages, create a separate __init function. */
             if (node->package_body.statements.count > 0) {
-                /* Emit init function header */
-                Emit(cg, "\n; Package body initialization\n");
-                Emit(cg, "define void @");
-                /* Use mangled package name + ___init suffix */
-                if (pkg_sym) {
-                    Emit_Symbol_Name(cg, pkg_sym);
+                if (cg->current_function) {
+                    /* Nested package: emit initialization inline */
+                    Emit(cg, "  ; Package body initialization (inline)\n");
+                    Generate_Statement_List(cg, &node->package_body.statements);
                 } else {
-                    /* Fallback to package body name */
-                    for (uint32_t i = 0; i < node->package_body.name.length; i++) {
-                        char c = node->package_body.name.data[i];
-                        Emit(cg, "%c", (c >= 'A' && c <= 'Z') ? c + 32 : c);
+                    /* Library-level package: emit __init function */
+                    Emit(cg, "\n; Package body initialization\n");
+                    Emit(cg, "define void @");
+                    if (pkg_sym) {
+                        Emit_Symbol_Name(cg, pkg_sym);
+                    } else {
+                        for (uint32_t i = 0; i < node->package_body.name.length; i++) {
+                            char c = node->package_body.name.data[i];
+                            Emit(cg, "%c", (c >= 'A' && c <= 'Z') ? c + 32 : c);
+                        }
                     }
+                    Emit(cg, "___init() {\n");
+                    Emit(cg, "entry:\n");
+
+                    Symbol *saved_current_function = cg->current_function;
+                    cg->current_function = pkg_sym;
+                    cg->block_terminated = false;
+
+                    Generate_Statement_List(cg, &node->package_body.statements);
+
+                    if (!cg->block_terminated) {
+                        Emit(cg, "  ret void\n");
+                    }
+                    Emit(cg, "}\n\n");
+
+                    cg->current_function = saved_current_function;
                 }
-                Emit(cg, "___init() {\n");
-                Emit(cg, "entry:\n");
-
-                /* Save and set current function context for statement generation */
-                Symbol *saved_current_function = cg->current_function;
-                cg->current_function = pkg_sym;  /* Use package as context */
-                cg->block_terminated = false;
-
-                Generate_Statement_List(cg, &node->package_body.statements);
-
-                /* Emit return and close function */
-                if (!cg->block_terminated) {
-                    Emit(cg, "  ret void\n");
-                }
-                Emit(cg, "}\n\n");
-
-                cg->current_function = saved_current_function;
             }
             }
             break;
@@ -20625,8 +20664,12 @@ static void Generate_Type_Equality_Function(Code_Generator *cg, Type_Info *t) {
 
                 if (ct && (ct->kind == TYPE_STRING ||
                            (ct->kind == TYPE_ARRAY && !ct->array.is_constrained))) {
-                    /* Unconstrained array/string - use array equality */
-                    cmp = Generate_Array_Equality(cg, left_gep, right_gep, ct);
+                    /* Unconstrained array/string - load fat pointer values from storage */
+                    uint32_t left_fat = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", left_fat, left_gep);
+                    uint32_t right_fat = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", right_fat, right_gep);
+                    cmp = Generate_Array_Equality(cg, left_fat, right_fat, ct);
                 } else if (ct && ct->kind == TYPE_ARRAY && ct->array.is_constrained) {
                     /* Constrained array - use array equality */
                     cmp = Generate_Array_Equality(cg, left_gep, right_gep, ct);
