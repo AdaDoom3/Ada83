@@ -3130,6 +3130,20 @@ static Syntax_Node *Parse_Name(Parser *p) {
                 deref->unary.op = TK_ALL;
                 deref->unary.operand = node;
                 node = deref;
+            } else if (Parser_At(p, TK_CHARACTER)) {
+                /* P.'C' — character literal as enum member (RM 4.1.3) */
+                Syntax_Node *sel = Node_New(NK_SELECTED, postfix_loc);
+                sel->selected.prefix = node;
+                sel->selected.selector = Slice_Duplicate(p->current_token.text);
+                Parser_Advance(p);
+                node = sel;
+            } else if (Parser_At(p, TK_STRING)) {
+                /* P."+" — operator symbol (RM 6.1) */
+                Syntax_Node *sel = Node_New(NK_SELECTED, postfix_loc);
+                sel->selected.prefix = node;
+                sel->selected.selector = Slice_Duplicate(p->current_token.text);
+                Parser_Advance(p);
+                node = sel;
             } else {
                 /* Selection: prefix.component */
                 Syntax_Node *sel = Node_New(NK_SELECTED, postfix_loc);
@@ -3268,7 +3282,13 @@ static Syntax_Node *Parse_Simple_Name(Parser *p) {
             Source_Location sel_loc = Parser_Location(p);
             Syntax_Node *sel = Node_New(NK_SELECTED, sel_loc);
             sel->selected.prefix = node;
-            sel->selected.selector = Parser_Identifier(p);
+            /* Accept character literal ('C') or operator string ("+") after dot */
+            if (Parser_At(p, TK_CHARACTER) || Parser_At(p, TK_STRING)) {
+                sel->selected.selector = Slice_Duplicate(p->current_token.text);
+                Parser_Advance(p);
+            } else {
+                sel->selected.selector = Parser_Identifier(p);
+            }
             node = sel;
             continue;
         }
@@ -3437,13 +3457,20 @@ static Syntax_Node *Parse_Expression_Precedence(Parser *p, Precedence min_prec) 
             op = p->previous_token.kind;
         }
 
-        /* Handle NOT IN specially */
+        /* Handle NOT IN specially — mirrors IN range handling below (RM 4.4) */
         if (op == TK_NOT && Parser_At(p, TK_IN)) {
             Parser_Advance(p);
+            Syntax_Node *right = Parse_Expression_Precedence(p, prec + 1);
+            if (Parser_Match(p, TK_DOTDOT)) {
+                Syntax_Node *range = Node_New(NK_RANGE, loc);
+                range->range.low = right;
+                range->range.high = Parse_Expression_Precedence(p, prec + 1);
+                right = range;
+            }
             Syntax_Node *node = Node_New(NK_BINARY_OP, loc);
-            node->binary.op = TK_NOT;  /* NOT IN encoded as NOT with IN semantics */
+            node->binary.op = TK_NOT;
             node->binary.left = left;
-            node->binary.right = Parse_Expression_Precedence(p, prec + 1);
+            node->binary.right = right;
             left = node;
             continue;
         }
@@ -6698,6 +6725,18 @@ static bool Type_Covers(Type_Info *expected, Type_Info *actual) {
         return true;
     }
 
+    /* Float/fixed-point types: same name means compatible (RM 12.3) */
+    if (expected->kind == TYPE_FLOAT && actual->kind == TYPE_FLOAT &&
+        expected->name.data && actual->name.data &&
+        Slice_Equal_Ignore_Case(expected->name, actual->name)) {
+        return true;
+    }
+    if (expected->kind == TYPE_FIXED && actual->kind == TYPE_FIXED &&
+        expected->name.data && actual->name.data &&
+        Slice_Equal_Ignore_Case(expected->name, actual->name)) {
+        return true;
+    }
+
     /* Character literals as enumeration literals (RM 3.5.1):
      * An enumeration type can define character literals (e.g., TYPE T IS ('A', 'B');).
      * When comparing, CHARACTER type should be compatible with such enumerations.
@@ -7383,26 +7422,29 @@ static Type_Info *Resolve_Selected(Symbol_Manager *sm, Syntax_Node *node) {
 
 /* Get the operator name string for a token kind */
 static String_Slice Operator_Name(Token_Kind op) {
+    /* Return bare (unquoted) operator designators.  The lexer strips quotes
+     * from operator symbol declarations (RM 6.1), so symbol table entries
+     * store bare names like +, mod, **.  Match that convention here. */
     switch (op) {
-        case TK_PLUS:      return S("\"+\"");
-        case TK_MINUS:     return S("\"-\"");
-        case TK_STAR:      return S("\"*\"");
-        case TK_SLASH:     return S("\"/\"");
-        case TK_MOD:       return S("\"mod\"");
-        case TK_REM:       return S("\"rem\"");
-        case TK_EXPON:     return S("\"**\"");
-        case TK_AMPERSAND: return S("\"&\"");
-        case TK_AND:       return S("\"and\"");
-        case TK_OR:        return S("\"or\"");
-        case TK_XOR:       return S("\"xor\"");
-        case TK_EQ:        return S("\"=\"");
-        case TK_NE:        return S("\"/=\"");
-        case TK_LT:        return S("\"<\"");
-        case TK_LE:        return S("\"<=\"");
-        case TK_GT:        return S("\">\"");
-        case TK_GE:        return S("\">=\"");
-        case TK_NOT:       return S("\"not\"");
-        case TK_ABS:       return S("\"abs\"");
+        case TK_PLUS:      return S("+");
+        case TK_MINUS:     return S("-");
+        case TK_STAR:      return S("*");
+        case TK_SLASH:     return S("/");
+        case TK_MOD:       return S("mod");
+        case TK_REM:       return S("rem");
+        case TK_EXPON:     return S("**");
+        case TK_AMPERSAND: return S("&");
+        case TK_AND:       return S("and");
+        case TK_OR:        return S("or");
+        case TK_XOR:       return S("xor");
+        case TK_EQ:        return S("=");
+        case TK_NE:        return S("/=");
+        case TK_LT:        return S("<");
+        case TK_LE:        return S("<=");
+        case TK_GT:        return S(">");
+        case TK_GE:        return S(">=");
+        case TK_NOT:       return S("not");
+        case TK_ABS:       return S("abs");
         default:           return S("");
     }
 }
@@ -7450,7 +7492,12 @@ static bool Resolve_Char_As_Enum(Symbol_Manager *sm, Syntax_Node *char_node, Typ
 }
 
 static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
+    /* Resolve left first; then propagate its type to an untyped aggregate
+     * on the right BEFORE resolving, so record component choices can be
+     * looked up in the correct type (RM 4.3, 4.5.2). */
     Type_Info *left_type = Resolve_Expression(sm, node->binary.left);
+    if (node->binary.right->kind == NK_AGGREGATE && !node->binary.right->type && left_type)
+        node->binary.right->type = left_type;
     Type_Info *right_type = Resolve_Expression(sm, node->binary.right);
 
     Token_Kind op = node->binary.op;
@@ -7475,6 +7522,12 @@ static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
 
         Symbol *user_op = Resolve_Overloaded_Call(sm, op_name, &args, NULL);
         if (user_op && user_op->kind == SYMBOL_FUNCTION) {
+            /* Skip predefined operators when either operand is universal:
+             * universal types must propagate through arithmetic (RM 4.10).
+             * Predefined *(FLOAT,FLOAT)→FLOAT would swallow UNIVERSAL_REAL. */
+            if (user_op->is_predefined &&
+                (Type_Is_Universal(left_type) || Type_Is_Universal(right_type)))
+                goto predefined_semantics;
             node->symbol = user_op;
             node->type = user_op->return_type;
             return node->type;
@@ -7482,6 +7535,7 @@ static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
     }
 
     /* Fall back to predefined operator semantics */
+    predefined_semantics:
     switch (op) {
         case TK_PLUS: case TK_MINUS: case TK_STAR: case TK_SLASH:
         case TK_MOD: case TK_REM: case TK_EXPON:
@@ -7605,6 +7659,33 @@ static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
                     }
                 }
             }
+            /* Disambiguate overloaded enum literals using comparison context
+             * (RM 8.6): if types mismatch and one operand is a literal, re-resolve
+             * it against the other operand's type via Symbol_Find_By_Type. */
+            if (!Type_Covers(left_type, right_type) && !Type_Covers(right_type, left_type)) {
+                if (node->binary.right->kind == NK_IDENTIFIER &&
+                    node->binary.right->symbol &&
+                    node->binary.right->symbol->kind == SYMBOL_LITERAL && left_type) {
+                    Symbol *s = Symbol_Find_By_Type(sm,
+                        node->binary.right->string_val.text, left_type);
+                    if (s) {
+                        node->binary.right->symbol = s;
+                        node->binary.right->type = s->type ? s->type : left_type;
+                        right_type = node->binary.right->type;
+                    }
+                }
+                if (node->binary.left->kind == NK_IDENTIFIER &&
+                    node->binary.left->symbol &&
+                    node->binary.left->symbol->kind == SYMBOL_LITERAL && right_type) {
+                    Symbol *s = Symbol_Find_By_Type(sm,
+                        node->binary.left->string_val.text, right_type);
+                    if (s) {
+                        node->binary.left->symbol = s;
+                        node->binary.left->type = s->type ? s->type : right_type;
+                        left_type = node->binary.left->type;
+                    }
+                }
+            }
             if (!Type_Covers(left_type, right_type) && !Type_Covers(right_type, left_type)) {
                 Report_Error(node->location, "incompatible types for comparison");
             }
@@ -7662,7 +7743,13 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
                 }
             } else {
                 arg_names[i] = (String_Slice){0};  /* Positional */
-                arg_types[i] = Resolve_Expression(sm, arg);
+                /* Defer aggregate resolution: aggregates need parameter type
+                 * context for record component names (RM 4.3, 6.4). They'll
+                 * be resolved after the callable is identified. */
+                if (arg->kind == NK_AGGREGATE)
+                    arg_types[i] = NULL;
+                else
+                    arg_types[i] = Resolve_Expression(sm, arg);
             }
         }
     }
@@ -7876,11 +7963,41 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
             }
         }
         /* Unary operators with one argument */
-        if (name.length == 1 && arg_count == 1) {
-            char op_char = name.data[0];
-            if (op_char == '+' || op_char == '-') {
+        if (arg_count == 1) {
+            if (name.length == 1) {
+                char op_char = name.data[0];
+                if (op_char == '+' || op_char == '-') {
+                    node->type = Resolve_Expression(sm, node->apply.arguments.items[0]);
+                    return node->type;
+                }
+            }
+            /* Unary word operators: "NOT"(X), "ABS"(X) (RM 4.5.6, 4.5.7) */
+            if (Slice_Equal_Ignore_Case(name, S("not"))) {
                 Syntax_Node *operand = node->apply.arguments.items[0];
-                node->type = Resolve_Expression(sm, operand);
+                Type_Info *ot = Resolve_Expression(sm, operand);
+                /* NOT preserves boolean array type */
+                if (ot && Type_Is_Array_Like(ot) && ot->array.element_type &&
+                    ot->array.element_type->kind == TYPE_BOOLEAN)
+                    node->type = ot;
+                else
+                    node->type = sm->type_boolean;
+                return node->type;
+            }
+            if (Slice_Equal_Ignore_Case(name, S("abs"))) {
+                node->type = Resolve_Expression(sm, node->apply.arguments.items[0]);
+                return node->type;
+            }
+        }
+        /* Binary word operators: "AND"/"OR"/"XOR"/"MOD"/"REM"(L,R) (RM 4.5) */
+        if (arg_count == 2) {
+            if (Slice_Equal_Ignore_Case(name, S("and")) ||
+                Slice_Equal_Ignore_Case(name, S("or"))  ||
+                Slice_Equal_Ignore_Case(name, S("xor")) ||
+                Slice_Equal_Ignore_Case(name, S("mod")) ||
+                Slice_Equal_Ignore_Case(name, S("rem"))) {
+                Type_Info *lt = Resolve_Expression(sm, node->apply.arguments.items[0]);
+                Resolve_Expression(sm, node->apply.arguments.items[1]);
+                node->type = lt;
                 return node->type;
             }
         }
@@ -8112,7 +8229,16 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
         case NK_UNARY_OP:
             node->type = Resolve_Expression(sm, node->unary.operand);
             if (node->unary.op == TK_NOT) {
-                node->type = sm->type_boolean;
+                /* NOT preserves array-of-BOOLEAN type (RM 4.5.6);
+                 * for scalar operands it returns BOOLEAN. */
+                Type_Info *ot = node->unary.operand ? node->unary.operand->type : NULL;
+                if (ot && Type_Is_Array_Like(ot) &&
+                    ot->array.element_type &&
+                    ot->array.element_type->kind == TYPE_BOOLEAN) {
+                    node->type = ot;  /* boolean array → boolean array */
+                } else {
+                    node->type = sm->type_boolean;
+                }
             } else if (node->unary.op == TK_ALL) {
                 /* .ALL dereference: result is the designated type (RM 4.1) */
                 Type_Info *operand_type = node->unary.operand->type;
@@ -8313,6 +8439,21 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                 node->qualified.expression->type = node->qualified.subtype_mark->type;
             }
             Resolve_Expression(sm, node->qualified.expression);
+            /* Re-resolve overloaded literals against qualifying type (RM 4.7):
+             * WEEKEND'(SAT) must pick WEEKEND.SAT, not WEEK.SAT;
+             * CHAR'('B') must use CHAR position, not ASCII code. */
+            if (node->qualified.expression && node->qualified.subtype_mark->type) {
+                Type_Info *qt = node->qualified.subtype_mark->type;
+                Syntax_Node *inner = node->qualified.expression;
+                if (inner->kind == NK_IDENTIFIER) {
+                    if (!Type_Covers(qt, inner->type) && !Type_Covers(inner->type, qt)) {
+                        Symbol *s = Symbol_Find_By_Type(sm, inner->string_val.text, qt);
+                        if (s) { inner->symbol = s; inner->type = s->type ? s->type : qt; }
+                    }
+                } else if (inner->kind == NK_CHARACTER) {
+                    Resolve_Char_As_Enum(sm, inner, qt);
+                }
+            }
             node->type = node->qualified.subtype_mark->type;
             return node->type;
 
@@ -9323,7 +9464,15 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
 
         case NK_RETURN:
             if (node->return_stmt.expression) {
-                Resolve_Expression(sm, node->return_stmt.expression);
+                /* Propagate enclosing function's return type to untyped
+                 * aggregates so they can resolve component types (RM 5.8) */
+                Syntax_Node *rexpr = node->return_stmt.expression;
+                if (rexpr->kind == NK_AGGREGATE && !rexpr->type) {
+                    Symbol *owner = sm->current_scope->owner;
+                    if (owner && owner->kind == SYMBOL_FUNCTION && owner->return_type)
+                        rexpr->type = owner->return_type;
+                }
+                Resolve_Expression(sm, rexpr);
             }
             break;
 
@@ -9963,6 +10112,14 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                             }
                             Type_Info *pt = ps->param_spec.param_type ?
                                           ps->param_spec.param_type->type : NULL;
+                            /* Resolve default expression, propagating param type
+                             * to untyped aggregates (RM 6.1, 3.2.1) */
+                            if (ps->param_spec.default_expr) {
+                                if (ps->param_spec.default_expr->kind == NK_AGGREGATE &&
+                                    !ps->param_spec.default_expr->type && pt)
+                                    ps->param_spec.default_expr->type = pt;
+                                Resolve_Expression(sm, ps->param_spec.default_expr);
+                            }
                             for (uint32_t j = 0; j < ps->param_spec.names.count; j++) {
                                 Syntax_Node *name = ps->param_spec.names.items[j];
                                 sym->parameters[param_idx].name = name->string_val.text;
@@ -10073,10 +10230,21 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                             Syntax_Node *formal = formals->items[i];
                             if (!formal) continue;
                             if (formal->kind == NK_GENERIC_TYPE_PARAM) {
-                                /* Add formal type as a type symbol (use PRIVATE as placeholder) */
+                                /* Map def_kind → Type_Kind so numeric formals
+                                 * are recognised by Type_Is_Numeric (RM 12.1.2):
+                                 * 0=PRIVATE, 1=LIMITED, 2=DISCRETE, 3=INTEGER,
+                                 * 4=FLOAT, 5=FIXED */
+                                Type_Kind tk = TYPE_PRIVATE;
+                                switch (formal->generic_type_param.def_kind) {
+                                    case 2: tk = TYPE_ENUMERATION; break;
+                                    case 3: tk = TYPE_INTEGER;     break;
+                                    case 4: tk = TYPE_FLOAT;       break;
+                                    case 5: tk = TYPE_FIXED;       break;
+                                    default: break;
+                                }
                                 Symbol *type_sym = Symbol_New(SYMBOL_TYPE,
                                     formal->generic_type_param.name, formal->location);
-                                type_sym->type = Type_New(TYPE_PRIVATE,
+                                type_sym->type = Type_New(tk,
                                     formal->generic_type_param.name);
                                 Symbol_Add(sm, type_sym);
                                 formal->symbol = type_sym;
@@ -13007,7 +13175,7 @@ static uint32_t Generate_Composite_Address(Code_Generator *cg, Syntax_Node *node
     }
 
     if (node->kind == NK_APPLY && node->apply.arguments.count == 1) {
-        /* Array indexing: Arr(I) - compute address of element */
+        /* Array indexing or slice: Arr(I) or Arr(low..high) */
         Type_Info *prefix_type = node->apply.prefix ? node->apply.prefix->type : NULL;
         if (prefix_type && prefix_type->kind == TYPE_ARRAY) {
             uint32_t elem_size = prefix_type->array.element_type
@@ -13015,8 +13183,28 @@ static uint32_t Generate_Composite_Address(Code_Generator *cg, Syntax_Node *node
             if (elem_size == 0) elem_size = 1;
             int64_t low = Array_Low_Bound(prefix_type);
 
+            /* Slice: ARR(low..high) — return address at slice start (RM 4.1.2) */
+            Syntax_Node *arg0 = node->apply.arguments.items[0];
+            if (arg0->kind == NK_RANGE) {
+                uint32_t base = Generate_Composite_Address(cg, node->apply.prefix);
+                uint32_t slice_low = Generate_Expression(cg, arg0->range.low);
+                uint32_t adj = slice_low;
+                if (low != 0) {
+                    adj = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = sub i64 %%t%u, %lld\n", adj, slice_low, (long long)low);
+                }
+                uint32_t byte_off = adj;
+                if (elem_size != 1) {
+                    byte_off = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", byte_off, adj, elem_size);
+                }
+                uint32_t addr = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n", addr, base, byte_off);
+                return addr;
+            }
+
             uint32_t base = Generate_Composite_Address(cg, node->apply.prefix);
-            uint32_t idx = Generate_Expression(cg, node->apply.arguments.items[0]);
+            uint32_t idx = Generate_Expression(cg, arg0);
 
             /* Adjust index: byte_offset = (idx - low) * elem_size */
             uint32_t adj_idx = idx;
@@ -13415,7 +13603,9 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
     }
 
     uint32_t left = Generate_Expression(cg, node->binary.left);
-    uint32_t right = Generate_Expression(cg, node->binary.right);
+    /* NK_RANGE right operand is generated inside the IN/NOT IN handler */
+    bool right_is_range = node->binary.right && node->binary.right->kind == NK_RANGE;
+    uint32_t right = right_is_range ? 0 : Generate_Expression(cg, node->binary.right);
     uint32_t t = Emit_Temp(cg);
 
     const char *op;
@@ -13718,51 +13908,44 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             }
 
         case TK_IN:
-        case TK_NOT:  /* NOT IN is encoded as TK_NOT in binary op */
+        case TK_NOT:  /* NOT IN encoded as TK_NOT binary (RM 4.4) */
             {
-                /* Membership test: X IN T or X NOT IN T
-                 * For scalar types, check if X >= T'FIRST and X <= T'LAST
-                 * For ranges, check if X >= low and X <= high */
-                Type_Info *range_type = node->binary.right ? node->binary.right->type : NULL;
-
-                /* Get the bounds to check against */
-                int64_t low_val = 0, high_val = 0;
-                bool have_bounds = false;
+                /* Membership test — two forms:
+                 *   X IN  low .. high   →  low <= X <= high
+                 *   X IN  T             →  T'FIRST <= X <= T'LAST */
+                bool negate = (node->binary.op == TK_NOT);
 
                 if (node->binary.right && node->binary.right->kind == NK_RANGE) {
-                    /* X IN low..high - use the range bounds */
-                    /* For now, generate comparison with the right side value as both bounds check */
-                    /* This will need enhancement for proper range handling */
-                } else if (range_type) {
-                    /* X IN T - use the type's bounds */
-                    low_val = Type_Bound_Value(range_type->low_bound);
-                    high_val = Type_Bound_Value(range_type->high_bound);
-                    have_bounds = true;
-                }
-
-                if (have_bounds) {
-                    /* Generate: (left >= low) AND (left <= high) */
-                    uint32_t ge_low = Emit_Temp(cg);
-                    uint32_t le_high = Emit_Temp(cg);
-                    uint32_t in_range = Emit_Temp(cg);
-
-                    Emit(cg, "  %%t%u = icmp sge i64 %%t%u, %lld\n", ge_low, left, (long long)low_val);
-                    Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %lld\n", le_high, left, (long long)high_val);
-                    Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", in_range, ge_low, le_high);
-
-                    if (node->binary.op == TK_NOT) {
-                        /* NOT IN: negate the result */
-                        Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n", t, in_range);
-                    } else {
-                        t = in_range;
-                    }
+                    /* Dynamic range: generate both bounds from AST */
+                    uint32_t lo = Generate_Expression(cg, node->binary.right->range.low);
+                    uint32_t hi = Generate_Expression(cg, node->binary.right->range.high);
+                    uint32_t ge = Emit_Temp(cg), le = Emit_Temp(cg), in_range = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = icmp sge i64 %%t%u, %%t%u\n", ge, left, lo);
+                    Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", le, left, hi);
+                    Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", in_range, ge, le);
+                    if (negate) { Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n", t, in_range); }
+                    else        { t = in_range; }
                 } else {
-                    /* Fallback: compare with right value (simple equality check) */
-                    Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", t, left, right);
-                    if (node->binary.op == TK_NOT) {
-                        uint32_t neg = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n", neg, t);
-                        t = neg;
+                    /* Type or subtype name: generate bounds at runtime (RM 4.4) */
+                    Type_Info *rt = node->binary.right ? node->binary.right->type : NULL;
+                    if (rt && (rt->low_bound.kind == BOUND_INTEGER || rt->low_bound.kind == BOUND_EXPR) &&
+                              (rt->high_bound.kind == BOUND_INTEGER || rt->high_bound.kind == BOUND_EXPR)) {
+                        uint32_t lo = Emit_Bound_Value(cg, &rt->low_bound);
+                        uint32_t hi = Emit_Bound_Value(cg, &rt->high_bound);
+                        uint32_t ge = Emit_Temp(cg), le = Emit_Temp(cg), in_range = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = icmp sge i64 %%t%u, %%t%u\n", ge, left, lo);
+                        Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", le, left, hi);
+                        Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", in_range, ge, le);
+                        if (negate) { Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n", t, in_range); }
+                        else        { t = in_range; }
+                    } else {
+                        /* Fallback: equality with right operand value */
+                        Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", t, left, right);
+                        if (negate) {
+                            uint32_t neg = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n", neg, t);
+                            t = neg;
+                        }
                     }
                 }
                 return t;
@@ -13993,6 +14176,116 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                 }
                 break;
             }
+        }
+    }
+
+    /* Slice on expression result: prefix(low..high).  NK_RANGE as argument
+     * ALWAYS means slice in Ada — never a function parameter (RM 4.1.2).
+     * Resolve array type, obtain ptr to array data, compute fat pointer.
+     *
+     * Generate_Expression returns different LLVM types for different sources:
+     *   variable/param of ptr type → ptr  (not widened)
+     *   function call returning ptr → i64 (ptrtoint)
+     *   fat pointer (unconstrained) → { ptr, { i64, i64 } }
+     * We use Generate_Composite_Address (returns ptr) for lvalues and
+     * Generate_Expression + inttoptr for function-call results. */
+    if (node->apply.arguments.count > 0 &&
+        node->apply.arguments.items[0]->kind == NK_RANGE) {
+        Type_Info *at = node->apply.prefix->type;
+
+        /* Fallback type resolution for overloaded functions (RM 6.6) */
+        if (!at && sym && sym->kind == SYMBOL_FUNCTION) at = sym->return_type;
+        if (!at) at = node->type;
+
+        /* Implicit dereference: access-to-array (RM 4.1(3)) */
+        bool access_deref = false;
+        if (at && at->kind == TYPE_ACCESS && at->access.designated_type &&
+            Type_Is_Array_Like(at->access.designated_type)) {
+            at = at->access.designated_type;
+            access_deref = true;
+        }
+
+        if (at && Type_Is_Array_Like(at)) {
+            Syntax_Node *rng = node->apply.arguments.items[0];
+            uint32_t base, low_bound_val = 0;
+            bool dyn_low = false;
+
+            const char *repr = Type_To_Llvm(at);
+            bool is_fat = (strstr(repr, "{ ptr,") != NULL);
+
+            if (access_deref) {
+                /* Access-to-array: evaluate prefix → access value (i64) → ptr */
+                uint32_t access_val = Generate_Expression(cg, node->apply.prefix);
+                uint32_t ptr = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = inttoptr i64 %%t%u to ptr\n",
+                     ptr, access_val);
+                if (is_fat) {
+                    /* Unconstrained designated: load fat pointer from heap */
+                    uint32_t fat = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = load { ptr, { i64, i64 } }, ptr %%t%u\n",
+                         fat, ptr);
+                    base = Emit_Fat_Pointer_Data(cg, fat);
+                    low_bound_val = Emit_Fat_Pointer_Low(cg, fat);
+                    dyn_low = true;
+                } else {
+                    base = ptr;
+                }
+            } else if (is_fat) {
+                /* Unconstrained/string: Generate_Expression → fat pointer */
+                uint32_t pv = Generate_Expression(cg, node->apply.prefix);
+                base = Emit_Fat_Pointer_Data(cg, pv);
+                low_bound_val = Emit_Fat_Pointer_Low(cg, pv);
+                dyn_low = true;
+            } else {
+                /* Constrained array: need ptr to array data.
+                 * For lvalues (variable, param, field) use Generate_Composite_Address
+                 * which always returns ptr.  For function results, Generate_Expression
+                 * returns i64 (ptrtoint from ptr), so convert back. */
+                bool is_lvalue = false;
+                if (node->apply.prefix->kind == NK_IDENTIFIER) {
+                    Symbol *ps = node->apply.prefix->symbol;
+                    is_lvalue = ps && ps->kind != SYMBOL_FUNCTION;
+                } else if (node->apply.prefix->kind == NK_SELECTED) {
+                    is_lvalue = true;
+                }
+
+                if (is_lvalue) {
+                    base = Generate_Composite_Address(cg, node->apply.prefix);
+                } else {
+                    uint32_t pv = Generate_Expression(cg, node->apply.prefix);
+                    base = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = inttoptr i64 %%t%u to ptr\n",
+                         base, pv);
+                }
+            }
+
+            Type_Info *elem = at->array.element_type;
+            uint32_t esz = elem ? elem->size : 1;
+            if (esz == 0) esz = 1;
+
+            uint32_t slo = Generate_Expression(cg, rng->range.low);
+            uint32_t shi = Generate_Expression(cg, rng->range.high);
+
+            uint32_t off;
+            if (dyn_low) {
+                off = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", off, slo, low_bound_val);
+            } else {
+                int64_t al = Array_Low_Bound(at);
+                if (al != 0) {
+                    off = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = sub i64 %%t%u, %lld\n", off, slo, (long long)al);
+                } else off = slo;
+            }
+            uint32_t dp = Emit_Temp(cg);
+            if (esz == 1) {
+                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n", dp, base, off);
+            } else {
+                uint32_t bo = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", bo, off, esz);
+                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n", dp, base, bo);
+            }
+            return Emit_Fat_Pointer_Dynamic(cg, dp, slo, shi);
         }
     }
 
@@ -14410,6 +14703,12 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
 
                 if (strcmp(src_llvm, dst_llvm) != 0) {
                     result = Emit_Convert(cg, result, src_llvm, dst_llvm);
+                }
+                /* Widen narrow integer scalars back to i64 computation width.
+                 * Float/ptr/fat-pointer results keep their native type. (RM 4.6) */
+                if (!Is_Float_Type(dst_llvm) && strcmp(dst_llvm, "ptr") != 0 &&
+                    !strstr(dst_llvm, "{")) {
+                    result = Emit_Convert(cg, result, dst_llvm, "i64");
                 }
             }
             return result;
@@ -16271,6 +16570,12 @@ static uint32_t Generate_Qualified(Code_Generator *cg, Syntax_Node *node) {
     if (strcmp(src_llvm, dst_llvm) != 0) {
         result = Emit_Convert(cg, result, src_llvm, dst_llvm);
     }
+    /* Widen narrow integer scalars back to i64 computation width.
+     * Mirrors the same fix in Generate_Apply (RM 4.6). */
+    if (!Is_Float_Type(dst_llvm) && strcmp(dst_llvm, "ptr") != 0 &&
+        !strstr(dst_llvm, "{")) {
+        result = Emit_Convert(cg, result, dst_llvm, "i64");
+    }
 
     return result;
 }
@@ -16503,7 +16808,8 @@ static uint32_t Generate_Expression(Code_Generator *cg, Syntax_Node *node) {
         case NK_ALLOCATOR:  return Generate_Allocator(cg, node);
 
         default:
-            Report_Error(node->location, "unsupported expression kind in codegen");
+            Report_Error(node->location, "unsupported expression kind %d in codegen",
+                         (int)node->kind);
             return 0;
     }
 }
@@ -17078,6 +17384,45 @@ static void Generate_Case_Statement(Code_Generator *cg, Syntax_Node *node) {
                 uint32_t cmp2 = Emit_Temp(cg);
                 uint32_t both = Emit_Temp(cg);
 
+                Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", cmp1, low, selector);
+                Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", cmp2, selector, high);
+                Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", both, cmp1, cmp2);
+
+                uint32_t next_choice = (j + 1 < alt->association.choices.count) ?
+                                       Emit_Label(cg) : next_check;
+                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                     both, alt_labels[i], next_choice);
+
+                if (j + 1 < alt->association.choices.count) {
+                    Emit(cg, "L%u:\n", next_choice);
+                }
+            } else if (choice->kind == NK_SUBTYPE_INDICATION) {
+                /* Subtype range: WHEN T RANGE low..high => (RM 5.4) */
+                uint32_t low, high;
+                Syntax_Node *constraint = choice->subtype_ind.constraint;
+                if (constraint && constraint->kind == NK_RANGE_CONSTRAINT &&
+                    constraint->range_constraint.range &&
+                    constraint->range_constraint.range->kind == NK_RANGE) {
+                    low = Generate_Expression(cg, constraint->range_constraint.range->range.low);
+                    high = Generate_Expression(cg, constraint->range_constraint.range->range.high);
+                } else {
+                    /* Bare subtype name: WHEN SUBTYPE => use declared bounds */
+                    Type_Info *st = choice->type;
+                    low = Emit_Temp(cg);
+                    high = Emit_Temp(cg);
+                    if (st && st->low_bound.kind == BOUND_INTEGER) {
+                        Emit(cg, "  %%t%u = add i64 0, %lld\n", low,
+                             (long long)Type_Bound_Value(st->low_bound));
+                        Emit(cg, "  %%t%u = add i64 0, %lld\n", high,
+                             (long long)Type_Bound_Value(st->high_bound));
+                    } else {
+                        Emit(cg, "  %%t%u = add i64 0, 0\n", low);
+                        Emit(cg, "  %%t%u = add i64 0, 0\n", high);
+                    }
+                }
+                uint32_t cmp1 = Emit_Temp(cg);
+                uint32_t cmp2 = Emit_Temp(cg);
+                uint32_t both = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", cmp1, low, selector);
                 Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", cmp2, selector, high);
                 Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", both, cmp1, cmp2);
@@ -18435,7 +18780,8 @@ static bool Has_Nested_Subprograms(Node_List *declarations, Node_List *statement
             Syntax_Node *decl = declarations->items[i];
             if (decl && (decl->kind == NK_PROCEDURE_BODY ||
                          decl->kind == NK_FUNCTION_BODY ||
-                         decl->kind == NK_TASK_BODY)) {
+                         decl->kind == NK_TASK_BODY ||
+                         decl->kind == NK_GENERIC_INST)) {
                 return true;
             }
         }
