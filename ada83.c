@@ -5781,6 +5781,7 @@ typedef struct {
     uint32_t      byte_offset;
     uint32_t      bit_offset;    /* For representation clauses */
     uint32_t      bit_size;
+    Syntax_Node  *default_expr;  /* Default initialization expression (RM 3.7) */
 } Component_Info;
 
 /* Index information for arrays */
@@ -7492,6 +7493,18 @@ static bool Resolve_Char_As_Enum(Symbol_Manager *sm, Syntax_Node *char_node, Typ
 }
 
 static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
+    Token_Kind op = node->binary.op;
+    /* Membership tests (RM 4.4): X IN T, where X can be an aggregate.
+     * Resolve type name first, propagate type to left aggregate (RM 4.3.3).
+     * Must resolve right BEFORE left so type can propagate to aggregate. */
+    if ((op == TK_IN || op == TK_NOT) && node->binary.left->kind == NK_AGGREGATE &&
+        !node->binary.left->type && node->binary.right) {
+        Syntax_Node *type_name = node->binary.right;
+        /* Resolve right (type name) first to get its symbol */
+        Resolve_Expression(sm, type_name);
+        if (type_name->symbol && type_name->symbol->kind == SYMBOL_TYPE)
+            node->binary.left->type = type_name->symbol->type;
+    }
     /* Resolve left first; then propagate its type to an untyped aggregate
      * on the right BEFORE resolving, so record component choices can be
      * looked up in the correct type (RM 4.3, 4.5.2). */
@@ -7499,8 +7512,6 @@ static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
     if (node->binary.right->kind == NK_AGGREGATE && !node->binary.right->type && left_type)
         node->binary.right->type = left_type;
     Type_Info *right_type = Resolve_Expression(sm, node->binary.right);
-
-    Token_Kind op = node->binary.op;
 
     /*
      * Per RM 4.5: Binary operators can be user-defined. We first check for
@@ -8877,6 +8888,10 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                         Type_Info *comp_type = comp->component.component_type ?
                                                comp->component.component_type->type : sm->type_integer;
                         uint32_t comp_size = comp_type ? comp_type->size : 8;
+                        /* Resolve default expression if present (RM 3.7) */
+                        if (comp->component.init) {
+                            Resolve_Expression(sm, comp->component.init);
+                        }
                         for (uint32_t j = 0; j < comp->component.names.count; j++) {
                             Component_Info *info = &record_type->record.components[comp_idx++];
                             info->name = comp->component.names.items[j]->string_val.text;
@@ -8884,6 +8899,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                             info->byte_offset = offset;
                             info->bit_offset = 0;
                             info->bit_size = comp_type ? comp_type->size * 8 : 64;
+                            info->default_expr = comp->component.init;  /* Store default */
                             offset += comp_size;
                         }
                     }
@@ -13603,9 +13619,17 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
     }
 
     uint32_t left = Generate_Expression(cg, node->binary.left);
-    /* NK_RANGE right operand is generated inside the IN/NOT IN handler */
+    /* NK_RANGE right operand is generated inside the IN/NOT IN handler.
+     * For membership tests (IN/NOT IN), type names are also handled specially
+     * and should not be evaluated as expressions. */
     bool right_is_range = node->binary.right && node->binary.right->kind == NK_RANGE;
-    uint32_t right = right_is_range ? 0 : Generate_Expression(cg, node->binary.right);
+    bool is_membership = (node->binary.op == TK_IN) ||
+                         (node->binary.op == TK_NOT && node->binary.right &&
+                          (node->binary.right->kind == NK_IDENTIFIER ||
+                           node->binary.right->kind == NK_QUALIFIED) &&
+                          node->binary.right->symbol &&
+                          node->binary.right->symbol->kind == SYMBOL_TYPE);
+    uint32_t right = (right_is_range || is_membership) ? 0 : Generate_Expression(cg, node->binary.right);
     uint32_t t = Emit_Temp(cg);
 
     const char *op;
@@ -14352,12 +14376,27 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                 /* IN parameter: check constraint before call (RM 4.6) */
                 if (sym->parameters && param_idx < sym->parameter_count &&
                     sym->parameters[param_idx].param_type) {
-                    args[i] = Emit_Constraint_Check(cg, args[i],
-                        sym->parameters[param_idx].param_type);
-                    /* Convert to actual parameter type - fat pointers stay fat */
-                    const char *param_type = Type_To_Llvm(sym->parameters[param_idx].param_type);
-                    const char *arg_type = Expression_Llvm_Type(arg);
-                    args[i] = Emit_Convert(cg, args[i], arg_type, param_type);
+                    Type_Info *formal_type = sym->parameters[param_idx].param_type;
+                    Type_Info *actual_type = arg->type;
+                    args[i] = Emit_Constraint_Check(cg, args[i], formal_type);
+                    /* Constrained array → unconstrained formal: build fat pointer (RM 6.4.1)
+                     * When passing a constrained array to an unconstrained formal, we must
+                     * create a fat pointer with the constrained type's bounds. */
+                    bool formal_needs_fat = formal_type &&
+                        ((formal_type->kind == TYPE_ARRAY && !formal_type->array.is_constrained) ||
+                         formal_type->kind == TYPE_STRING);
+                    bool actual_is_constrained = actual_type &&
+                        actual_type->kind == TYPE_ARRAY && actual_type->array.is_constrained &&
+                        actual_type->array.index_count > 0;
+                    if (formal_needs_fat && actual_is_constrained) {
+                        int64_t lo = Type_Bound_Value(actual_type->array.indices[0].low_bound);
+                        int64_t hi = Type_Bound_Value(actual_type->array.indices[0].high_bound);
+                        args[i] = Emit_Fat_Pointer(cg, args[i], lo, hi);
+                    } else {
+                        const char *param_type = Type_To_Llvm(formal_type);
+                        const char *arg_type = Expression_Llvm_Type(arg);
+                        args[i] = Emit_Convert(cg, args[i], arg_type, param_type);
+                    }
                 }
             }
         }
@@ -15307,9 +15346,44 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("VAL"))) {
-        /* T'VAL(n) - enumeration value at position n */
+        /* T'VAL(n) - value at position n (RM 3.5.5)
+         * Raises CONSTRAINT_ERROR if n is outside T'POS(T'FIRST)..T'POS(T'LAST) */
         if (first_arg) {
-            return Generate_Expression(cg, first_arg);
+            uint32_t val = Generate_Expression(cg, first_arg);
+            /* Get bounds for range check */
+            int64_t lo = 0, hi = 0;
+            bool have_bounds = false;
+            if (prefix_type->kind == TYPE_ENUMERATION &&
+                prefix_type->enumeration.literal_count > 0) {
+                lo = 0;
+                hi = (int64_t)(prefix_type->enumeration.literal_count - 1);
+                have_bounds = true;
+            } else if (prefix_type->low_bound.kind == BOUND_INTEGER &&
+                       prefix_type->high_bound.kind == BOUND_INTEGER) {
+                lo = prefix_type->low_bound.int_value;
+                hi = prefix_type->high_bound.int_value;
+                have_bounds = true;
+            }
+            if (have_bounds) {
+                uint32_t lo_ok = cg->label_id++;
+                uint32_t hi_ok = cg->label_id++;
+                uint32_t raise_label = cg->label_id++;
+                uint32_t cmp_lo = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp slt i64 %%t%u, %lld\n", cmp_lo, val, (long long)lo);
+                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp_lo, raise_label, lo_ok);
+                Emit(cg, "L%u:\n", lo_ok);
+                uint32_t cmp_hi = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp sgt i64 %%t%u, %lld\n", cmp_hi, val, (long long)hi);
+                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp_hi, raise_label, hi_ok);
+                Emit(cg, "L%u:  ; raise CONSTRAINT_ERROR for 'VAL\n", raise_label);
+                uint32_t exc_id = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = ptrtoint ptr @__exc.constraint_error to i64\n", exc_id);
+                Emit(cg, "  call void @__ada_raise(i64 %%t%u)\n", exc_id);
+                Emit(cg, "  unreachable\n");
+                Emit(cg, "L%u:\n", hi_ok);
+                cg->block_terminated = false;
+            }
+            return val;
         }
         return 0;
     }
@@ -18727,6 +18801,45 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             Emit_Symbol_Name(cg, sym);
             Emit(cg, ", i32 0, i32 1, i32 1\n");
             Emit(cg, "  store i64 %%t%u, ptr %%t%u  ; fat ptr high\n", high_val, high_slot);
+        } else if (is_record && ty && ty->kind == TYPE_RECORD && ty->record.component_count > 0) {
+            /* Record without explicit initializer: apply component defaults (RM 3.7)
+             * Each component with a default_expr gets initialized from that expression */
+            bool has_any_default = false;
+            for (uint32_t ci = 0; ci < ty->record.component_count; ci++) {
+                if (ty->record.components[ci].default_expr) {
+                    has_any_default = true;
+                    break;
+                }
+            }
+            if (has_any_default) {
+                for (uint32_t ci = 0; ci < ty->record.component_count; ci++) {
+                    Component_Info *comp = &ty->record.components[ci];
+                    if (!comp->default_expr) continue;
+
+                    /* Generate value for default expression */
+                    uint32_t val = Generate_Expression(cg, comp->default_expr);
+
+                    /* Get pointer to component within record */
+                    uint32_t comp_ptr = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = getelementptr i8, ptr %%", comp_ptr);
+                    Emit_Symbol_Name(cg, sym);
+                    Emit(cg, ", i64 %u  ; %.*s default\n", comp->byte_offset,
+                         (int)comp->name.length, comp->name.data);
+
+                    /* Store based on component type */
+                    Type_Info *comp_type = comp->component_type;
+                    const char *val_type = Expression_Llvm_Type(comp->default_expr);
+                    if (comp_type && comp_type->kind == TYPE_FLOAT) {
+                        val = Emit_Convert(cg, val, val_type, "double");
+                        Emit(cg, "  store double %%t%u, ptr %%t%u\n", val, comp_ptr);
+                    } else if (comp_type && comp_type->kind == TYPE_BOOLEAN) {
+                        val = Emit_Convert(cg, val, val_type, "i1");
+                        Emit(cg, "  store i1 %%t%u, ptr %%t%u\n", val, comp_ptr);
+                    } else {
+                        Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", val, comp_ptr);
+                    }
+                }
+            }
         }
     }
 }

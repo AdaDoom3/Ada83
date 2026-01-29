@@ -1,50 +1,64 @@
 Ada83 Compiler — ACATS C-Series Progress Checklist
 ====================================================
 
-Compiler: ada83.c (~22,500 lines, single-file Ada 83 → LLVM IR)
+Compiler: ada83.c (~22,600 lines, single-file Ada 83 → LLVM IR)
 Target:   ACATS c-series tests (ANSI/MIL-STD-1815A conformance)
-Branch:   claude/refactor-ada83-c-4BhEc
+Branch:   claude/refactor-ada83-c-mfxAj
 
 READ GNAT LLVM SOURCES FOR HELP DURING DEVELOPMENT
 
+=== COMPLETED (this session) ===
+
+1. [x] Record component default expressions (RM 3.7)
+   - Added default_expr field to Component_Info
+   - Store defaults when parsing record type definitions
+   - Generate initialization code for records without explicit init
+
+2. [x] T'VAL range checking (RM 3.5.5)
+   - VAL now raises CONSTRAINT_ERROR if n outside valid positions
+   - Works for enumeration types (0..count-1) and scalar types
+
+3. [x] Membership test for type names (M IN DT)
+   - Fixed evaluation of right operand when it's a type name
+   - Type bounds now properly extracted for range check
+
+4. [x] Constrained → unconstrained array parameter passing (RM 6.4.1)
+   - When passing constrained array to unconstrained formal, build fat pointer
+   - Extract bounds from constrained type's Type_Info
+   - Uses Emit_Fat_Pointer(cg, data_ptr, lo, hi)
+
+5. [x] Aggregate type propagation in membership tests (RM 4.4)
+   - For AGG IN T: resolve T first, propagate type to aggregate
+   - Fixed: resolve right operand (type name) before left aggregate
+   - Enables aggregate components to be properly typed
+
 === IN PROGRESS ===
 
-Batch 4:
-  [ ] Untyped aggregate type propagation in codegen (~98 tests affected)
-  [ ] Undefined record component names C1/DISC (~31 tests)
-  [ ] Type mismatch in assignment — mixed numeric (~19 tests)
+Derived type operations inheritance (RM 3.4):
+  - Derived types T IS NEW PARENT should inherit primitive ops
+  - Wrapper functions needed to convert types on call/return
+  - Root cause of c34 BIND "unresolved symbols" (c34009a, etc.)
+  - Symbols created during resolution but bodies not generated
 
 === REMAINING ERROR CATEGORIES (by impact) ===
 
 Category                                   | Count | Groups
 -------------------------------------------|-------|--------
-Untyped aggregate in codegen               |  ~98  | c3x, c4x
+Derived ops inheritance (wrappers)         |  ~40  | c34
 Incompatible types for comparison          |  ~43  | c3x, c4x
 Undefined identifier C1/DISC              |  ~31  | c3x
 Unsupported expression kind (NK_RANGE)     |  ~25  | c4x
 Type mismatch in assignment                |  ~19  | c3x, c4x
-Undefined identifier 'L'                   |  ~13  | c4x
-Unresolved identifier in codegen           |  ~12  | c4x
-Numeric operands MOD/**                    |  ~19  | c4x
-Cannot resolve NOT/OR/AND/XOR              |  ~21  | c4x
-Boolean operands required                  |   ~7  | c4x
-LLVM double vs i64 (DIGITS/DELTA formals)  |   ~5  | c35, c46
+Discriminant constraint checking           |  ~20  | c37
 
 === TEST RESULTS (latest) ===
 
-Group | Pass | Total | Rate
-------|------|-------|------
-c23   |    4 |     8 |  50%
-c34   |    0 |    67 |   0%
-c35   |   40 |   120 |  33%
-c37   |    8 |    68 |  11%
-c3x   |   57 |   342 |  16%
-c4x   |   39 |   323 |  12%
-c45   |   30 |   108 |  27%
-c46   |    1 |    21 |   4%
-c47   |    2 |    12 |  16%
-c5x   |   32 |   125 |  25%
-c6x   |    4 |    91 |   4%
+Group | Pass | Total | Rate  | Change
+------|------|-------|-------|--------
+c34   |    0 |    67 |   0%  | (derived ops missing)
+c35   |   47 |   120 |  39%  | stable
+c37   |    9 |    68 |  13%  | stable
+c45   |   28 |   108 |  25%  | stable
 
 === NOTES ===
 
