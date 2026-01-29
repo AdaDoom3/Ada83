@@ -6294,6 +6294,10 @@ struct Symbol {
     bool            needs_address_marker; /* Needs @__addr.X global for 'ADDRESS */
     bool            is_identity_function; /* Function body is just RETURN param (can inline) */
 
+    /* Derived type operations (RM 3.4) */
+    Symbol         *parent_operation;    /* Parent operation that implements this derived op */
+    Type_Info      *derived_from_type;   /* The derived type this op is for */
+
     /* LLVM label ID for SYMBOL_LABEL */
     uint32_t        llvm_label_id;       /* 0 = not yet assigned */
 
@@ -6369,6 +6373,11 @@ typedef struct {
 
     /* Unique ID counter for symbol mangling */
     uint32_t   next_unique_id;
+
+    /* Derived operations for wrapper generation (RM 3.4) */
+    Symbol   **derived_ops;
+    uint32_t   derived_op_count;
+    uint32_t   derived_op_capacity;
 } Symbol_Manager;
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -6453,7 +6462,10 @@ static void Symbol_Add(Symbol_Manager *sm, Symbol *sym) {
                     if (chain == sym) return;  /* Already in chain */
                     chain = chain->next_overload;
                 }
-                sym->unique_id = sm->next_unique_id++;  /* Assign unique ID for mangling */
+                /* Only assign unique_id if not already set (symbol may have been
+                 * added to another scope already) */
+                if (sym->unique_id == 0)
+                    sym->unique_id = sm->next_unique_id++;
                 sym->is_overloaded = true;
                 existing->is_overloaded = true;  /* Mark first decl as overloaded too */
                 sym->next_overload = existing->next_overload;
@@ -6474,7 +6486,9 @@ static void Symbol_Add(Symbol_Manager *sm, Symbol *sym) {
         existing = existing->next_in_bucket;
     }
 
-    sym->unique_id = sm->next_unique_id++;
+    /* Only assign unique_id if not already set */
+    if (sym->unique_id == 0)
+        sym->unique_id = sm->next_unique_id++;
     sym->defining_scope = scope;
     sym->nesting_level = scope->nesting_level;
 
@@ -6964,6 +6978,13 @@ static int32_t Score_Interpretation(Interpretation *interp,
     /* Prefer exact context type match */
     if (context_type && interp->typ == context_type) {
         score += 500;
+    }
+
+    /* Prefer immediately visible over USE-visible (RM 8.4).
+     * Derived type operations are immediately visible while parent
+     * operations via USE clause are use-visible. */
+    if (sym && sym->visibility == VIS_IMMEDIATELY_VISIBLE) {
+        score += 200;
     }
 
     /* Prefer inner scopes (user-defined over predefined) */
@@ -9816,6 +9837,145 @@ static void Populate_Package_Exports(Symbol *pkg_sym, Syntax_Node *pkg_spec) {
     }
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+ * §12.4.1 Derived Type Operation Inheritance (RM 3.4)
+ *
+ * When TYPE T IS NEW PARENT is declared, T inherits primitive operations of
+ * PARENT. A primitive operation is a subprogram declared in the same scope as
+ * the type, with a parameter or return type of that type.
+ *
+ * The inherited operation has T substituted for PARENT in its profile. We create
+ * a new symbol that wraps the parent's implementation with type conversions.
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+/* Check if two types represent the same named type.
+ * Handles private types where partial (visible) and full (private) views
+ * have different Type_Info pointers but represent the same type. */
+static bool Types_Same_Named(Type_Info *t1, Type_Info *t2) {
+    if (!t1 || !t2) return false;
+    if (t1 == t2) return true;
+    /* For private types, partial and full views have same name but different Type_Info. */
+    if (t1->name.data && t2->name.data &&
+        Slice_Equal_Ignore_Case(t1->name, t2->name)) {
+        /* Same name: check if they share a defining symbol */
+        if (t1->defining_symbol && t2->defining_symbol &&
+            t1->defining_symbol == t2->defining_symbol) return true;
+        /* For types declared in the same package, same name = same type */
+        if (t1->defining_symbol && t2->defining_symbol &&
+            t1->defining_symbol->defining_scope == t2->defining_symbol->defining_scope)
+            return true;
+    }
+    return false;
+}
+
+/* Check if a subprogram has the given type in its profile (parameter or return) */
+static bool Subprogram_Is_Primitive_Of(Symbol *sub, Type_Info *type) {
+    if (!sub || !type) return false;
+    if (sub->kind != SYMBOL_FUNCTION && sub->kind != SYMBOL_PROCEDURE) return false;
+
+    /* Check return type for functions */
+    if (sub->kind == SYMBOL_FUNCTION && Types_Same_Named(sub->return_type, type)) return true;
+
+    /* Check parameter types */
+    for (uint32_t i = 0; i < sub->parameter_count; i++) {
+        if (Types_Same_Named(sub->parameters[i].param_type, type)) return true;
+    }
+    return false;
+}
+
+/* Helper to create a derived operation from a parent operation */
+static void Create_Derived_Operation(Symbol_Manager *sm, Symbol *sub,
+                                     Type_Info *derived_type, Type_Info *parent_type,
+                                     Symbol *type_sym) {
+    Symbol *derived_sub = Symbol_New(sub->kind, sub->name, sub->location);
+    derived_sub->parameter_count = sub->parameter_count;
+    derived_sub->parent_operation = sub;  /* Link to parent's implementation */
+    derived_sub->derived_from_type = derived_type;
+    derived_sub->is_overloaded = true;  /* Needs unique_id suffix */
+
+    /* Copy and adjust parameters - substitute derived_type for parent_type */
+    if (sub->parameter_count > 0) {
+        derived_sub->parameters = Arena_Allocate(sub->parameter_count * sizeof(Parameter_Info));
+        for (uint32_t j = 0; j < sub->parameter_count; j++) {
+            derived_sub->parameters[j] = sub->parameters[j];
+            if (Types_Same_Named(sub->parameters[j].param_type, parent_type)) {
+                derived_sub->parameters[j].param_type = derived_type;
+            }
+        }
+    }
+
+    /* Adjust return type for functions */
+    if (sub->kind == SYMBOL_FUNCTION) {
+        derived_sub->return_type = Types_Same_Named(sub->return_type, parent_type)
+                                   ? derived_type : sub->return_type;
+    }
+
+    /* Make visible so overload resolution can find it */
+    derived_sub->visibility = VIS_IMMEDIATELY_VISIBLE;
+
+    /* Add to current scope */
+    Symbol_Add(sm, derived_sub);
+
+    /* Set parent to match the parent operation's parent for proper name mangling
+     * and to avoid false nested function detection. The derived operation
+     * wraps the parent operation so should be at the same nesting level.
+     * Done AFTER Symbol_Add since it overwrites parent. */
+    derived_sub->parent = sub->parent;
+
+    /* Register in derived_ops list for wrapper generation later */
+    if (sm->derived_op_count >= sm->derived_op_capacity) {
+        uint32_t new_cap = sm->derived_op_capacity ? sm->derived_op_capacity * 2 : 32;
+        Symbol **new_arr = Arena_Allocate(new_cap * sizeof(Symbol*));
+        if (sm->derived_ops && sm->derived_op_count > 0) {
+            memcpy(new_arr, sm->derived_ops, sm->derived_op_count * sizeof(Symbol*));
+        }
+        sm->derived_ops = new_arr;
+        sm->derived_op_capacity = new_cap;
+    }
+    sm->derived_ops[sm->derived_op_count++] = derived_sub;
+}
+
+/* Create inherited operations for a derived type (RM 3.4) */
+static void Derive_Subprograms(Symbol_Manager *sm, Type_Info *derived_type,
+                               Type_Info *parent_type, Symbol *type_sym) {
+    if (!derived_type || !parent_type || !type_sym) return;
+
+    /* Find the parent type's symbol and its owning scope/package */
+    Symbol *parent_sym = parent_type->defining_symbol;
+    if (!parent_sym) return;
+
+    /* For private types in packages, look at the package's exported symbols.
+     * The parent of the type symbol is the enclosing package/scope. */
+    Symbol *pkg = parent_sym->parent;
+    if (pkg && pkg->kind == SYMBOL_PACKAGE && pkg->exported_count > 0) {
+        /* Search package exports for primitive operations */
+        for (uint32_t i = 0; i < pkg->exported_count; i++) {
+            Symbol *sub = pkg->exported[i];
+            if (!sub) continue;
+            if (sub->kind != SYMBOL_FUNCTION && sub->kind != SYMBOL_PROCEDURE) continue;
+            if (!Subprogram_Is_Primitive_Of(sub, parent_type)) continue;
+            Create_Derived_Operation(sm, sub, derived_type, parent_type, type_sym);
+        }
+        return;
+    }
+
+    /* Fallback: search the scope where the parent type is declared.
+     * Iterate through hash buckets to find all symbols including overloads. */
+    Scope *parent_scope = parent_sym->defining_scope;
+    if (!parent_scope) return;
+
+    for (uint32_t h = 0; h < SYMBOL_TABLE_SIZE; h++) {
+        for (Symbol *sym = parent_scope->buckets[h]; sym; sym = sym->next_in_bucket) {
+            /* Check this symbol and all in its overload chain */
+            for (Symbol *sub = sym; sub; sub = sub->next_overload) {
+                if (sub->kind != SYMBOL_FUNCTION && sub->kind != SYMBOL_PROCEDURE) continue;
+                if (!Subprogram_Is_Primitive_Of(sub, parent_type)) continue;
+                Create_Derived_Operation(sm, sub, derived_type, parent_type, type_sym);
+            }
+        }
+    }
+}
+
 static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
     if (!node) return;
 
@@ -10027,6 +10187,12 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                     }
                 }
 
+                /* For derived types (TYPE T IS NEW PARENT), inherit primitive
+                 * subprograms from the parent type (RM 3.4) */
+                if (type->parent_type) {
+                    Derive_Subprograms(sm, type, type->parent_type, sym);
+                }
+
                 /* Pop discriminant scope if we pushed one */
                 if (has_discriminants) {
                     Symbol_Manager_Pop_Scope(sm);
@@ -10083,7 +10249,8 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                 for (uint32_t j = 0; j < ps->param_spec.names.count; j++) {
                                     if (param_idx < sym->parameter_count) {
                                         Type_Info *spec_type = sym->parameters[param_idx].param_type;
-                                        if (body_type != spec_type) {
+                                        /* Use Types_Same_Named for private type partial/full views */
+                                        if (!Types_Same_Named(body_type, spec_type)) {
                                             types_match = false;
                                             break;
                                         }
@@ -10098,7 +10265,8 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                             if (node->subprogram_spec.return_type) {
                                 Resolve_Expression(sm, node->subprogram_spec.return_type);
                                 Type_Info *body_return = node->subprogram_spec.return_type->type;
-                                if (body_return != sym->return_type) {
+                                /* Use Types_Same_Named for private type partial/full views */
+                                if (!Types_Same_Named(body_return, sym->return_type)) {
                                     types_match = false;
                                 }
                             }
@@ -19193,6 +19361,68 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
     }
 }
 
+/* Generate wrapper function for a derived type operation (RM 3.4).
+ * Derived types inherit primitive operations from parent type.
+ * The wrapper has the derived type signature and calls the parent operation. */
+static void Generate_Derived_Operation_Wrapper(Code_Generator *cg, Symbol *derived_op) {
+    if (!derived_op || !derived_op->parent_operation) return;
+
+    /* Skip if already emitted */
+    if (derived_op->body_emitted) return;
+    derived_op->body_emitted = true;
+
+    Symbol *parent_op = derived_op->parent_operation;
+    bool is_function = derived_op->kind == SYMBOL_FUNCTION;
+
+    /* Function header */
+    Emit(cg, "; Derived operation wrapper\n");
+    Emit(cg, "define %s @", is_function ? Type_To_Llvm(derived_op->return_type) : "void");
+    Emit_Symbol_Name(cg, derived_op);
+    Emit(cg, "(");
+
+    /* Parameters - same types as parent since derived types have same representation */
+    for (uint32_t i = 0; i < derived_op->parameter_count; i++) {
+        if (i > 0) Emit(cg, ", ");
+        if (Param_Is_By_Reference(derived_op->parameters[i].mode)) {
+            Emit(cg, "ptr %%p%u", i);
+        } else {
+            Emit(cg, "%s %%p%u", Type_To_Llvm(derived_op->parameters[i].param_type), i);
+        }
+    }
+
+    Emit(cg, ") {\n");
+    Emit(cg, "entry:\n");
+
+    /* Call parent operation with same arguments */
+    if (is_function) {
+        Emit(cg, "  %%result = call %s @", Type_To_Llvm(parent_op->return_type));
+    } else {
+        Emit(cg, "  call void @");
+    }
+    Emit_Symbol_Name(cg, parent_op);
+    Emit(cg, "(");
+
+    for (uint32_t i = 0; i < derived_op->parameter_count; i++) {
+        if (i > 0) Emit(cg, ", ");
+        if (Param_Is_By_Reference(derived_op->parameters[i].mode)) {
+            Emit(cg, "ptr %%p%u", i);
+        } else {
+            Emit(cg, "%s %%p%u", Type_To_Llvm(derived_op->parameters[i].param_type), i);
+        }
+    }
+
+    Emit(cg, ")\n");
+
+    /* Return result for functions */
+    if (is_function) {
+        Emit(cg, "  ret %s %%result\n", Type_To_Llvm(derived_op->return_type));
+    } else {
+        Emit(cg, "  ret void\n");
+    }
+
+    Emit(cg, "}\n\n");
+}
+
 /* Generate code for a generic instance body */
 static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
                                            Syntax_Node *template_body) {
@@ -21428,6 +21658,11 @@ static void Compile_File(const char *input_path, const char *output_path) {
     /* Generate code for loaded package bodies (e.g., TEXT_IO) */
     for (int i = 0; i < Loaded_Body_Count; i++) {
         Generate_Compilation_Unit(cg, Loaded_Package_Bodies[i]);
+    }
+
+    /* Generate wrapper functions for derived type operations (RM 3.4) */
+    for (uint32_t i = 0; i < sm->derived_op_count; i++) {
+        Generate_Derived_Operation_Wrapper(cg, sm->derived_ops[i]);
     }
 
     /* Emit address marker globals for 'ADDRESS attribute on packages/generics */
