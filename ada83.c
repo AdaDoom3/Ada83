@@ -6373,11 +6373,6 @@ typedef struct {
 
     /* Unique ID counter for symbol mangling */
     uint32_t   next_unique_id;
-
-    /* Derived operations for wrapper generation (RM 3.4) */
-    Symbol   **derived_ops;
-    uint32_t   derived_op_count;
-    uint32_t   derived_op_capacity;
 } Symbol_Manager;
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -9921,18 +9916,6 @@ static void Create_Derived_Operation(Symbol_Manager *sm, Symbol *sub,
      * wraps the parent operation so should be at the same nesting level.
      * Done AFTER Symbol_Add since it overwrites parent. */
     derived_sub->parent = sub->parent;
-
-    /* Register in derived_ops list for wrapper generation later */
-    if (sm->derived_op_count >= sm->derived_op_capacity) {
-        uint32_t new_cap = sm->derived_op_capacity ? sm->derived_op_capacity * 2 : 32;
-        Symbol **new_arr = Arena_Allocate(new_cap * sizeof(Symbol*));
-        if (sm->derived_ops && sm->derived_op_count > 0) {
-            memcpy(new_arr, sm->derived_ops, sm->derived_op_count * sizeof(Symbol*));
-        }
-        sm->derived_ops = new_arr;
-        sm->derived_op_capacity = new_cap;
-    }
-    sm->derived_ops[sm->derived_op_count++] = derived_sub;
 }
 
 /* Create inherited operations for a derived type (RM 3.4) */
@@ -14569,10 +14552,16 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             }
         }
 
+        /* For derived type operations (RM 3.4), emit direct call to parent.
+         * Derived types have identical representation to parent in Ada 83,
+         * so no wrapper needed - just call the parent's implementation directly.
+         * This is the GNAT-style optimization. */
+        Symbol *call_target = sym->parent_operation ? sym->parent_operation : sym;
+
         /* Check if calling a nested function of current scope */
-        bool callee_is_nested = sym->parent &&
-            (sym->parent->kind == SYMBOL_FUNCTION ||
-             sym->parent->kind == SYMBOL_PROCEDURE);
+        bool callee_is_nested = call_target->parent &&
+            (call_target->parent->kind == SYMBOL_FUNCTION ||
+             call_target->parent->kind == SYMBOL_PROCEDURE);
 
         uint32_t t = Emit_Temp(cg);
 
@@ -14582,7 +14571,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, "  call void @");
         }
 
-        Emit_Symbol_Name(cg, sym);
+        Emit_Symbol_Name(cg, call_target);
         Emit(cg, "(");
 
         /* Pass frame pointer to nested functions:
@@ -14590,12 +14579,12 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
          * - If current function is a sibling (same parent): pass %__parent_frame
          * - Otherwise no frame pointer needed */
         if (callee_is_nested) {
-            if (cg->current_function == sym->parent) {
+            if (cg->current_function == call_target->parent) {
                 /* Calling child: pass our frame */
                 Emit(cg, "ptr %%__frame_base");
                 if (node->apply.arguments.count > 0) Emit(cg, ", ");
             } else if (cg->is_nested && cg->current_function &&
-                       cg->current_function->parent == sym->parent) {
+                       cg->current_function->parent == call_target->parent) {
                 /* Calling sibling (same parent): pass parent's frame */
                 Emit(cg, "ptr %%__parent_frame");
                 if (node->apply.arguments.count > 0) Emit(cg, ", ");
@@ -19361,68 +19350,6 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
     }
 }
 
-/* Generate wrapper function for a derived type operation (RM 3.4).
- * Derived types inherit primitive operations from parent type.
- * The wrapper has the derived type signature and calls the parent operation. */
-static void Generate_Derived_Operation_Wrapper(Code_Generator *cg, Symbol *derived_op) {
-    if (!derived_op || !derived_op->parent_operation) return;
-
-    /* Skip if already emitted */
-    if (derived_op->body_emitted) return;
-    derived_op->body_emitted = true;
-
-    Symbol *parent_op = derived_op->parent_operation;
-    bool is_function = derived_op->kind == SYMBOL_FUNCTION;
-
-    /* Function header */
-    Emit(cg, "; Derived operation wrapper\n");
-    Emit(cg, "define %s @", is_function ? Type_To_Llvm(derived_op->return_type) : "void");
-    Emit_Symbol_Name(cg, derived_op);
-    Emit(cg, "(");
-
-    /* Parameters - same types as parent since derived types have same representation */
-    for (uint32_t i = 0; i < derived_op->parameter_count; i++) {
-        if (i > 0) Emit(cg, ", ");
-        if (Param_Is_By_Reference(derived_op->parameters[i].mode)) {
-            Emit(cg, "ptr %%p%u", i);
-        } else {
-            Emit(cg, "%s %%p%u", Type_To_Llvm(derived_op->parameters[i].param_type), i);
-        }
-    }
-
-    Emit(cg, ") {\n");
-    Emit(cg, "entry:\n");
-
-    /* Call parent operation with same arguments */
-    if (is_function) {
-        Emit(cg, "  %%result = call %s @", Type_To_Llvm(parent_op->return_type));
-    } else {
-        Emit(cg, "  call void @");
-    }
-    Emit_Symbol_Name(cg, parent_op);
-    Emit(cg, "(");
-
-    for (uint32_t i = 0; i < derived_op->parameter_count; i++) {
-        if (i > 0) Emit(cg, ", ");
-        if (Param_Is_By_Reference(derived_op->parameters[i].mode)) {
-            Emit(cg, "ptr %%p%u", i);
-        } else {
-            Emit(cg, "%s %%p%u", Type_To_Llvm(derived_op->parameters[i].param_type), i);
-        }
-    }
-
-    Emit(cg, ")\n");
-
-    /* Return result for functions */
-    if (is_function) {
-        Emit(cg, "  ret %s %%result\n", Type_To_Llvm(derived_op->return_type));
-    } else {
-        Emit(cg, "  ret void\n");
-    }
-
-    Emit(cg, "}\n\n");
-}
-
 /* Generate code for a generic instance body */
 static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
                                            Syntax_Node *template_body) {
@@ -21660,10 +21587,11 @@ static void Compile_File(const char *input_path, const char *output_path) {
         Generate_Compilation_Unit(cg, Loaded_Package_Bodies[i]);
     }
 
-    /* Generate wrapper functions for derived type operations (RM 3.4) */
-    for (uint32_t i = 0; i < sm->derived_op_count; i++) {
-        Generate_Derived_Operation_Wrapper(cg, sm->derived_ops[i]);
-    }
+    /* Note: Derived type operations (RM 3.4) don't need wrapper functions.
+     * Derived types have identical representation to parent types in Ada 83,
+     * so calls to derived operations are emitted directly to the parent's
+     * implementation (GNAT-style optimization). See call_target handling
+     * in Generate_Apply(). */
 
     /* Emit address marker globals for 'ADDRESS attribute on packages/generics */
     for (uint32_t i = 0; i < cg->address_marker_count; i++) {
