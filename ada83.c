@@ -4587,7 +4587,48 @@ static Syntax_Node *Parse_Derived_Type(Parser *p) {
     Syntax_Node *node = Node_New(NK_DERIVED_TYPE, loc);
     node->derived_type.parent_type = Parse_Subtype_Indication(p);
 
-    if (Parser_At(p, TK_RANGE) || Parser_At(p, TK_LPAREN)) {
+    /* Parse_Subtype_Indication may have incorrectly consumed DIGITS/DELTA
+     * constraints as part of the parent type. For derived types, these
+     * constraints belong to the derived type definition, not the parent.
+     * Extract them if present. */
+    Syntax_Node *parent = node->derived_type.parent_type;
+    if (parent && parent->kind == NK_SUBTYPE_INDICATION &&
+        parent->subtype_ind.constraint) {
+        Syntax_Node *c = parent->subtype_ind.constraint;
+        if (c->kind == NK_DIGITS_CONSTRAINT || c->kind == NK_DELTA_CONSTRAINT) {
+            /* Move constraint from parent to derived type */
+            Syntax_Node *constraint = Node_New(NK_REAL_TYPE, c->location);
+            if (c->kind == NK_DIGITS_CONSTRAINT) {
+                constraint->real_type.precision = c->digits_constraint.digits_expr;
+                constraint->real_type.range = c->digits_constraint.range;
+            } else {
+                constraint->real_type.delta = c->delta_constraint.delta_expr;
+                constraint->real_type.range = c->delta_constraint.range;
+            }
+            node->derived_type.constraint = constraint;
+            /* Remove constraint from parent - use just the subtype mark */
+            node->derived_type.parent_type = parent->subtype_ind.subtype_mark;
+        }
+    }
+
+    /* Handle any remaining accuracy constraint (DIGITS or DELTA).
+     * Ada RM 3.5.7: derived_type_definition ::=
+     *   new subtype_indication [accuracy_constraint] [range_constraint]
+     * accuracy_constraint ::= DIGITS expression | DELTA expression */
+    if (Parser_At(p, TK_DIGITS) || Parser_At(p, TK_DELTA)) {
+        /* Parse as NK_REAL_TYPE to reuse real type constraint handling */
+        Syntax_Node *constraint = Node_New(NK_REAL_TYPE, Parser_Location(p));
+        if (Parser_Match(p, TK_DIGITS)) {
+            constraint->real_type.precision = Parse_Expression(p);
+        } else {
+            Parser_Advance(p);  /* Skip DELTA */
+            constraint->real_type.delta = Parse_Expression(p);
+        }
+        if (Parser_Match(p, TK_RANGE)) {
+            constraint->real_type.range = Parse_Range(p);
+        }
+        node->derived_type.constraint = constraint;
+    } else if (Parser_At(p, TK_RANGE) || Parser_At(p, TK_LPAREN)) {
         node->derived_type.constraint = Parse_Subtype_Indication(p);
     }
 
@@ -5766,7 +5807,7 @@ typedef struct Symbol Symbol;
 
 /* Bound representation: explicit tagged union to avoid bitcast */
 typedef struct {
-    enum { BOUND_INTEGER, BOUND_FLOAT, BOUND_EXPR } kind;
+    enum { BOUND_NONE, BOUND_INTEGER, BOUND_FLOAT, BOUND_EXPR } kind;
     union {
         int64_t      int_value;
         double       float_value;
@@ -5840,6 +5881,10 @@ struct Type_Info {
             double small;   /* Implementation small: power of 2 <= delta */
             int    scale;   /* Scale factor: value = mantissa * 2^scale */
         } fixed;
+
+        struct {  /* TYPE_FLOAT */
+            int digits;     /* Declared DIGITS value (RM 3.5.7) */
+        } flt;
     };
 
     /* Runtime check suppression */
@@ -7115,6 +7160,7 @@ static void Symbol_Manager_Init_Predefined(Symbol_Manager *sm) {
 
     sm->type_float = Type_New(TYPE_FLOAT, S("FLOAT"));
     sm->type_float->size = 8;  /* double precision */
+    sm->type_float->flt.digits = 15;  /* IEEE double: ~15 decimal digits */
 
     sm->type_character = Type_New(TYPE_CHARACTER, S("CHARACTER"));
     sm->type_character->size = 1;
@@ -7816,9 +7862,15 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
 
     /* Handle based on what the prefix resolves to */
     if (prefix_sym) {
-        
+
         /* ─── Case 1: Function/Procedure Call ─── */
-        if (prefix_sym->kind == SYMBOL_FUNCTION || prefix_sym->kind == SYMBOL_PROCEDURE) {
+        /* Only treat as a call if prefix is an identifier referring to a callable.
+         * If prefix is a complex expression (e.g., func(...)), it's already resolved
+         * and we should check its result type for indexing instead. */
+        bool prefix_is_call_target = (prefix->kind == NK_IDENTIFIER ||
+                                      prefix->kind == NK_SELECTED);
+        if (prefix_is_call_target &&
+            (prefix_sym->kind == SYMBOL_FUNCTION || prefix_sym->kind == SYMBOL_PROCEDURE)) {
             node->symbol = prefix_sym;
             node->type = prefix_sym->return_type;  /* NULL for procedures */
             /* Re-resolve arguments based on parameter types.
@@ -8828,12 +8880,56 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                     derived->access = parent->access;
                 } else if (parent->kind == TYPE_FIXED) {
                     derived->fixed = parent->fixed;
+                } else if (parent->kind == TYPE_FLOAT) {
+                    derived->flt = parent->flt;  /* Copy DIGITS from parent */
                 }
 
                 /* Apply constraint if present */
                 if (node->derived_type.constraint) {
                     Resolve_Expression(sm, node->derived_type.constraint);
-                    /* Constraint would override bounds - handled in subtype_indication */
+
+                    /* Handle real type constraints (DIGITS/DELTA with optional RANGE) */
+                    Syntax_Node *c = node->derived_type.constraint;
+                    if (c->kind == NK_REAL_TYPE && derived->kind == TYPE_FLOAT) {
+                        /* Apply DIGITS constraint */
+                        if (c->real_type.precision &&
+                            c->real_type.precision->kind == NK_INTEGER) {
+                            int digits = (int)c->real_type.precision->integer_lit.value;
+                            derived->flt.digits = digits;
+                            /* Adjust size if needed */
+                            derived->size = (digits <= 6) ? 4 : 8;
+                            derived->alignment = derived->size;
+                        }
+                        /* Apply RANGE constraint */
+                        if (c->real_type.range && c->real_type.range->kind == NK_RANGE) {
+                            Syntax_Node *range = c->real_type.range;
+                            if (range->range.low) {
+                                double lo = Eval_Const_Numeric(range->range.low);
+                                if (lo == lo) {
+                                    derived->low_bound = (Type_Bound){
+                                        .kind = BOUND_FLOAT, .float_value = lo
+                                    };
+                                } else {
+                                    derived->low_bound = (Type_Bound){
+                                        .kind = BOUND_EXPR, .expr = range->range.low
+                                    };
+                                }
+                            }
+                            if (range->range.high) {
+                                double hi = Eval_Const_Numeric(range->range.high);
+                                if (hi == hi) {
+                                    derived->high_bound = (Type_Bound){
+                                        .kind = BOUND_FLOAT, .float_value = hi
+                                    };
+                                } else {
+                                    derived->high_bound = (Type_Bound){
+                                        .kind = BOUND_EXPR, .expr = range->range.high
+                                    };
+                                }
+                            }
+                        }
+                    }
+                    /* Other constraint types handled in subtype_indication */
                 }
 
                 node->type = derived;
@@ -9245,6 +9341,61 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                     return constrained;
                 }
 
+                /* Check for DIGITS constraint (floating-point subtypes) */
+                if (constraint && constraint->kind == NK_DIGITS_CONSTRAINT) {
+                    Resolve_Expression(sm, constraint->digits_constraint.digits_expr);
+                    if (constraint->digits_constraint.range)
+                        Resolve_Expression(sm, constraint->digits_constraint.range);
+
+                    /* Create constrained floating-point subtype with specified DIGITS */
+                    Type_Info *constrained = Type_New(TYPE_FLOAT, base_type->name);
+                    constrained->base_type = base_type;
+                    constrained->size = base_type->size;
+                    constrained->alignment = base_type->alignment;
+
+                    /* Evaluate the digits expression */
+                    double digits_val = Eval_Const_Numeric(constraint->digits_constraint.digits_expr);
+                    if (digits_val != digits_val || digits_val < 1) digits_val = base_type->flt.digits;
+                    constrained->flt.digits = (int)digits_val;
+
+                    /* Set bounds from range, or inherit from base type */
+                    constrained->low_bound = base_type->low_bound;
+                    constrained->high_bound = base_type->high_bound;
+
+                    /* If explicit range given, override with evaluated bounds */
+                    if (constraint->digits_constraint.range &&
+                        constraint->digits_constraint.range->kind == NK_RANGE) {
+                        Syntax_Node *range = constraint->digits_constraint.range;
+                        if (range->range.low) {
+                            double lo = Eval_Const_Numeric(range->range.low);
+                            if (lo == lo) {
+                                constrained->low_bound = (Type_Bound){
+                                    .kind = BOUND_FLOAT, .float_value = lo
+                                };
+                            } else {
+                                constrained->low_bound = (Type_Bound){
+                                    .kind = BOUND_EXPR, .expr = range->range.low
+                                };
+                            }
+                        }
+                        if (range->range.high) {
+                            double hi = Eval_Const_Numeric(range->range.high);
+                            if (hi == hi) {
+                                constrained->high_bound = (Type_Bound){
+                                    .kind = BOUND_FLOAT, .float_value = hi
+                                };
+                            } else {
+                                constrained->high_bound = (Type_Bound){
+                                    .kind = BOUND_EXPR, .expr = range->range.high
+                                };
+                            }
+                        }
+                    }
+
+                    node->type = constrained;
+                    return constrained;
+                }
+
                 /* Check for discriminant constraint (REC(A => E1, B => E2) style)
                  * Discriminant constraints use named associations where the choices
                  * are discriminant names - they should NOT be resolved as identifiers.
@@ -9400,8 +9551,39 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                         node->real_type.precision->kind == NK_INTEGER) {
                         digits = (int)node->real_type.precision->integer_lit.value;
                     }
+                    float_type->flt.digits = digits;  /* Store declared DIGITS */
                     float_type->size = (digits <= 6) ? 4 : 8;
                     float_type->alignment = float_type->size;
+
+                    /* Set bounds from range constraint if present */
+                    if (node->real_type.range && node->real_type.range->kind == NK_RANGE) {
+                        Syntax_Node *range = node->real_type.range;
+                        if (range->range.low) {
+                            double lo = Eval_Const_Numeric(range->range.low);
+                            if (lo == lo) {
+                                float_type->low_bound = (Type_Bound){
+                                    .kind = BOUND_FLOAT, .float_value = lo
+                                };
+                            } else {
+                                float_type->low_bound = (Type_Bound){
+                                    .kind = BOUND_EXPR, .expr = range->range.low
+                                };
+                            }
+                        }
+                        if (range->range.high) {
+                            double hi = Eval_Const_Numeric(range->range.high);
+                            if (hi == hi) {
+                                float_type->high_bound = (Type_Bound){
+                                    .kind = BOUND_FLOAT, .float_value = hi
+                                };
+                            } else {
+                                float_type->high_bound = (Type_Bound){
+                                    .kind = BOUND_EXPR, .expr = range->range.high
+                                };
+                            }
+                        }
+                    }
+
                     node->type = float_type;
                     return float_type;
                 }
@@ -10089,6 +10271,8 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                             type->array = def_type->array;
                         } else if (def_type->kind == TYPE_FIXED) {
                             type->fixed = def_type->fixed;  /* Copy delta, small, scale */
+                        } else if (def_type->kind == TYPE_FLOAT) {
+                            type->flt = def_type->flt;  /* Copy DIGITS */
                         } else if (def_type->kind == TYPE_RECORD) {
                             type->record = def_type->record;
 
@@ -13050,8 +13234,10 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                 } else {
                     Emit(cg, "()\n");
                 }
-                /* Convert to i64 if narrower */
-                t = Emit_Convert(cg, t, ret_type, "i64");
+                /* Convert to i64 if narrower, but not for floats */
+                if (!Is_Float_Type(ret_type)) {
+                    t = Emit_Convert(cg, t, ret_type, "i64");
+                }
             } else {
                 /* Fallback for other symbol kinds */
                 Emit(cg, "  %%t%u = add i64 0, 0  ; unhandled function symbol\n", t);
@@ -13791,6 +13977,12 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                                      result_type->kind == TYPE_UNIVERSAL_REAL);
     bool is_fixed = result_type && result_type->kind == TYPE_FIXED;
 
+    /* Determine LLVM float type from result type (float vs double) */
+    const char *float_type_str = "double";  /* default for UNIVERSAL_REAL */
+    if (result_type && result_type->kind == TYPE_FLOAT) {
+        float_type_str = Llvm_Float_Type((uint32_t)To_Bits(result_type->size));
+    }
+
     /* Mixed-mode arithmetic: when result is float but operands are integer,
      * convert integer operands to float for proper arithmetic (RM 4.5.5) */
     if (is_float) {
@@ -13798,16 +13990,33 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                                           lhs_type->kind == TYPE_UNIVERSAL_REAL);
         bool rhs_is_float = rhs_type && (rhs_type->kind == TYPE_FLOAT ||
                                           rhs_type->kind == TYPE_UNIVERSAL_REAL);
+        /* Determine actual types for left and right operands */
+        const char *lhs_float_type = "double";
+        if (lhs_type && lhs_type->kind == TYPE_FLOAT) {
+            lhs_float_type = Llvm_Float_Type((uint32_t)To_Bits(lhs_type->size));
+        }
+        const char *rhs_float_type = "double";
+        if (rhs_type && rhs_type->kind == TYPE_FLOAT) {
+            rhs_float_type = Llvm_Float_Type((uint32_t)To_Bits(rhs_type->size));
+        }
+
         if (!lhs_is_float) {
             uint32_t conv = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sitofp i64 %%t%u to double\n", conv, left);
+            Emit(cg, "  %%t%u = sitofp i64 %%t%u to %s\n", conv, left, float_type_str);
             left = conv;
+        } else if (strcmp(lhs_float_type, float_type_str) != 0) {
+            /* Convert left operand to result float type */
+            left = Emit_Convert(cg, left, lhs_float_type, float_type_str);
         }
         /* For exponentiation, skip RHS conversion - TK_EXPON handles it */
         if (!rhs_is_float && node->binary.op != TK_EXPON) {
             uint32_t conv = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sitofp i64 %%t%u to double\n", conv, right);
+            Emit(cg, "  %%t%u = sitofp i64 %%t%u to %s\n", conv, right, float_type_str);
             right = conv;
+        } else if (rhs_is_float && strcmp(rhs_float_type, float_type_str) != 0 &&
+                   node->binary.op != TK_EXPON) {
+            /* Convert right operand to result float type */
+            right = Emit_Convert(cg, right, rhs_float_type, float_type_str);
         }
     }
 
@@ -13890,17 +14099,33 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
 
         case TK_EXPON:
             /* Exponentiation: base ** exponent
-             * For floating-point: use llvm.pow intrinsic
+             * For floating-point: use llvm.pow.f64 intrinsic (requires double)
              * For integer: use __ada_integer_pow */
             {
                 bool left_is_float = left_type && (left_type->kind == TYPE_FLOAT ||
                                                     left_type->kind == TYPE_UNIVERSAL_REAL);
                 if (left_is_float) {
-                    /* Float ** Integer: use pow intrinsic with converted exponent */
+                    /* Float ** Integer: use pow intrinsic with converted exponent.
+                     * llvm.pow.f64 requires double operands, so convert if needed. */
+                    const char *lhs_ftype = "double";
+                    if (left_type->kind == TYPE_FLOAT) {
+                        lhs_ftype = Llvm_Float_Type((uint32_t)To_Bits(left_type->size));
+                    }
+                    uint32_t left_d = left;
+                    if (strcmp(lhs_ftype, "double") != 0) {
+                        left_d = Emit_Convert(cg, left, lhs_ftype, "double");
+                    }
                     uint32_t exp_float = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = sitofp i64 %%t%u to double\n", exp_float, right);
+                    uint32_t pow_result = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = call double @llvm.pow.f64(double %%t%u, double %%t%u)\n",
-                         t, left, exp_float);
+                         pow_result, left_d, exp_float);
+                    /* Convert result back to original float type if needed */
+                    if (strcmp(lhs_ftype, "double") != 0) {
+                        Emit(cg, "  %%t%u = fptrunc double %%t%u to %s\n", t, pow_result, lhs_ftype);
+                    } else {
+                        t = pow_result;
+                    }
                 } else {
                     /* Integer ** Integer: use integer power function */
                     Emit(cg, "  %%t%u = call i64 @__ada_integer_pow(i64 %%t%u, i64 %%t%u)\n",
@@ -14029,18 +14254,22 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                     Emit(cg, "  %%t%u = fptosi %s %%t%u to i64\n", conv, right_float_type, right);
                     right = conv;
                     right_is_float = false;
-                } else if (left_is_float && right_is_float &&
-                           strcmp(float_type, right_float_type) != 0) {
-                    /* Both floats but different sizes - convert right to match left */
-                    uint32_t conv = Emit_Temp(cg);
-                    if (strcmp(float_type, "float") == 0) {
+                } else if (left_is_float && right_is_float) {
+                    /* Both floats - convert right to match left if sizes differ.
+                     * Explicitly check both types to avoid incorrect conversions
+                     * when type detection defaults to "double". */
+                    if (strcmp(float_type, "float") == 0 && strcmp(right_float_type, "double") == 0) {
                         /* double -> float */
+                        uint32_t conv = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = fptrunc double %%t%u to float\n", conv, right);
-                    } else {
+                        right = conv;
+                    } else if (strcmp(float_type, "double") == 0 && strcmp(right_float_type, "float") == 0) {
                         /* float -> double */
+                        uint32_t conv = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = fpext float %%t%u to double\n", conv, right);
+                        right = conv;
                     }
-                    right = conv;
+                    /* If both same type (float/float or double/double), no conversion needed */
                 }
 
                 const char *cmp_op;
@@ -14089,14 +14318,37 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                  *   X IN  low .. high   →  low <= X <= high
                  *   X IN  T             →  T'FIRST <= X <= T'LAST */
                 bool negate = (node->binary.op == TK_NOT);
+                bool left_is_flt = lhs_type && (lhs_type->kind == TYPE_FLOAT ||
+                                                lhs_type->kind == TYPE_UNIVERSAL_REAL);
+                const char *mem_float_type = "double";
+                if (lhs_type && lhs_type->kind == TYPE_FLOAT) {
+                    mem_float_type = Llvm_Float_Type((uint32_t)To_Bits(lhs_type->size));
+                }
 
                 if (node->binary.right && node->binary.right->kind == NK_RANGE) {
                     /* Dynamic range: generate both bounds from AST */
                     uint32_t lo = Generate_Expression(cg, node->binary.right->range.low);
                     uint32_t hi = Generate_Expression(cg, node->binary.right->range.high);
                     uint32_t ge = Emit_Temp(cg), le = Emit_Temp(cg), in_range = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = icmp sge i64 %%t%u, %%t%u\n", ge, left, lo);
-                    Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", le, left, hi);
+                    if (left_is_flt) {
+                        /* Ensure all operands have the same float type.
+                         * Use Expression_Llvm_Type to get the actual LLVM type, which
+                         * accounts for any conversions done during expression generation. */
+                        const char *lo_ftype = Expression_Llvm_Type(node->binary.right->range.low);
+                        const char *hi_ftype = Expression_Llvm_Type(node->binary.right->range.high);
+                        /* Convert bounds to match left operand type if different */
+                        if (strcmp(lo_ftype, mem_float_type) != 0) {
+                            lo = Emit_Convert(cg, lo, lo_ftype, mem_float_type);
+                        }
+                        if (strcmp(hi_ftype, mem_float_type) != 0) {
+                            hi = Emit_Convert(cg, hi, hi_ftype, mem_float_type);
+                        }
+                        Emit(cg, "  %%t%u = fcmp oge %s %%t%u, %%t%u\n", ge, mem_float_type, left, lo);
+                        Emit(cg, "  %%t%u = fcmp ole %s %%t%u, %%t%u\n", le, mem_float_type, left, hi);
+                    } else {
+                        Emit(cg, "  %%t%u = icmp sge i64 %%t%u, %%t%u\n", ge, left, lo);
+                        Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", le, left, hi);
+                    }
                     Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", in_range, ge, le);
                     if (negate) { Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n", t, in_range); }
                     else        { t = in_range; }
@@ -14108,14 +14360,41 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                         uint32_t lo = Emit_Bound_Value(cg, &rt->low_bound);
                         uint32_t hi = Emit_Bound_Value(cg, &rt->high_bound);
                         uint32_t ge = Emit_Temp(cg), le = Emit_Temp(cg), in_range = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = icmp sge i64 %%t%u, %%t%u\n", ge, left, lo);
-                        Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", le, left, hi);
+                        if (left_is_flt) {
+                            /* For float membership tests, determine bound types and convert if needed.
+                             * BOUND_INTEGER produces i64, BOUND_EXPR for float types produces float. */
+                            const char *lo_src_type = "i64";  /* Default for BOUND_INTEGER */
+                            const char *hi_src_type = "i64";
+                            if (rt->low_bound.kind == BOUND_EXPR && rt->low_bound.expr) {
+                                lo_src_type = Expression_Llvm_Type(rt->low_bound.expr);
+                            }
+                            if (rt->high_bound.kind == BOUND_EXPR && rt->high_bound.expr) {
+                                hi_src_type = Expression_Llvm_Type(rt->high_bound.expr);
+                            }
+                            /* Convert bounds to match left operand's float type */
+                            uint32_t lo_f = lo, hi_f = hi;
+                            if (strcmp(lo_src_type, mem_float_type) != 0) {
+                                lo_f = Emit_Convert(cg, lo, lo_src_type, mem_float_type);
+                            }
+                            if (strcmp(hi_src_type, mem_float_type) != 0) {
+                                hi_f = Emit_Convert(cg, hi, hi_src_type, mem_float_type);
+                            }
+                            Emit(cg, "  %%t%u = fcmp oge %s %%t%u, %%t%u\n", ge, mem_float_type, left, lo_f);
+                            Emit(cg, "  %%t%u = fcmp ole %s %%t%u, %%t%u\n", le, mem_float_type, left, hi_f);
+                        } else {
+                            Emit(cg, "  %%t%u = icmp sge i64 %%t%u, %%t%u\n", ge, left, lo);
+                            Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", le, left, hi);
+                        }
                         Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", in_range, ge, le);
                         if (negate) { Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n", t, in_range); }
                         else        { t = in_range; }
                     } else {
                         /* Fallback: equality with right operand value */
-                        Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", t, left, right);
+                        if (left_is_flt) {
+                            Emit(cg, "  %%t%u = fcmp oeq %s %%t%u, %%t%u\n", t, mem_float_type, left, right);
+                        } else {
+                            Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", t, left, right);
+                        }
                         if (negate) {
                             uint32_t neg = Emit_Temp(cg);
                             Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n", neg, t);
@@ -14130,17 +14409,28 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
     }
 
     Emit(cg, "  %%t%u = %s %s %%t%u, %%t%u\n", t, op,
-         is_float ? "double" : "i64", left, right);
+         is_float ? float_type_str : "i64", left, right);
     return t;
 }
 
 static uint32_t Generate_Unary_Op(Code_Generator *cg, Syntax_Node *node) {
     uint32_t operand = Generate_Expression(cg, node->unary.operand);
     uint32_t t = Emit_Temp(cg);
+    Type_Info *op_type_info = node->unary.operand->type;
+    bool is_float = Type_Is_Real(op_type_info);
+
+    /* Determine LLVM float type from operand type */
+    const char *float_type = "double";  /* default for UNIVERSAL_REAL */
+    if (op_type_info && op_type_info->kind == TYPE_FLOAT) {
+        float_type = Llvm_Float_Type((uint32_t)To_Bits(op_type_info->size));
+    }
 
     switch (node->unary.op) {
         case TK_MINUS:
-            Emit(cg, "  %%t%u = sub i64 0, %%t%u\n", t, operand);
+            if (is_float)
+                Emit(cg, "  %%t%u = fsub %s 0.0, %%t%u\n", t, float_type, operand);
+            else
+                Emit(cg, "  %%t%u = sub i64 0, %%t%u\n", t, operand);
             break;
         case TK_PLUS:
             return operand;
@@ -14156,10 +14446,17 @@ static uint32_t Generate_Unary_Op(Code_Generator *cg, Syntax_Node *node) {
             {
                 uint32_t neg = Emit_Temp(cg);
                 uint32_t cmp = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = sub i64 0, %%t%u\n", neg, operand);
-                Emit(cg, "  %%t%u = icmp slt i64 %%t%u, 0\n", cmp, operand);
-                Emit(cg, "  %%t%u = select i1 %%t%u, i64 %%t%u, i64 %%t%u\n",
-                     t, cmp, neg, operand);
+                if (is_float) {
+                    Emit(cg, "  %%t%u = fsub %s 0.0, %%t%u\n", neg, float_type, operand);
+                    Emit(cg, "  %%t%u = fcmp olt %s %%t%u, 0.0\n", cmp, float_type, operand);
+                    Emit(cg, "  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n",
+                         t, cmp, float_type, neg, float_type, operand);
+                } else {
+                    Emit(cg, "  %%t%u = sub i64 0, %%t%u\n", neg, operand);
+                    Emit(cg, "  %%t%u = icmp slt i64 %%t%u, 0\n", cmp, operand);
+                    Emit(cg, "  %%t%u = select i1 %%t%u, i64 %%t%u, i64 %%t%u\n",
+                         t, cmp, neg, operand);
+                }
             }
             break;
         case TK_ALL:
@@ -14619,9 +14916,12 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             Emit_Constraint_Check(cg, ret_val, actual_type);
         }
 
-        /* Widen return value to i64 for computation */
+        /* Widen return value to i64 for computation (but not floats) */
         if (sym->return_type) {
-            t = Emit_Convert(cg, t, Type_To_Llvm(sym->return_type), "i64");
+            const char *ret_llvm = Type_To_Llvm(sym->return_type);
+            if (!Is_Float_Type(ret_llvm)) {
+                t = Emit_Convert(cg, t, ret_llvm, "i64");
+            }
             return t;
         }
         return 0;
@@ -14893,6 +15193,38 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             Type_Info *dst_type = sym->type;
 
             if (src_type && dst_type && src_type != dst_type) {
+                /* Special handling for fixed-point conversions (RM 4.6)
+                 * Fixed-point uses scaled integer representation: value = integer * SMALL */
+                if (src_type->kind == TYPE_FIXED &&
+                    (dst_type->kind == TYPE_FLOAT || dst_type->kind == TYPE_UNIVERSAL_REAL)) {
+                    /* Fixed → Float: convert integer to float, multiply by SMALL */
+                    const char *dst_llvm = Type_To_Llvm(dst_type);
+                    double small = src_type->fixed.small;
+                    if (small <= 0) small = src_type->fixed.delta > 0 ? src_type->fixed.delta : 1.0;
+                    uint32_t t1 = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = sitofp i64 %%t%u to %s  ; fixed→float\n", t1, result, dst_llvm);
+                    uint32_t t2 = Emit_Temp(cg);
+                    uint64_t small_bits;
+                    memcpy(&small_bits, &small, sizeof(small_bits));
+                    Emit(cg, "  %%t%u = fmul %s %%t%u, 0x%016llX  ; scale by SMALL\n",
+                         t2, dst_llvm, t1, (unsigned long long)small_bits);
+                    return t2;
+                } else if ((src_type->kind == TYPE_FLOAT || src_type->kind == TYPE_UNIVERSAL_REAL) &&
+                           dst_type->kind == TYPE_FIXED) {
+                    /* Float → Fixed: divide by SMALL, convert to integer */
+                    const char *src_llvm = Expression_Llvm_Type(arg);
+                    double small = dst_type->fixed.small;
+                    if (small <= 0) small = dst_type->fixed.delta > 0 ? dst_type->fixed.delta : 1.0;
+                    uint32_t t1 = Emit_Temp(cg);
+                    uint64_t small_bits;
+                    memcpy(&small_bits, &small, sizeof(small_bits));
+                    Emit(cg, "  %%t%u = fdiv %s %%t%u, 0x%016llX  ; divide by SMALL\n",
+                         t1, src_llvm, result, (unsigned long long)small_bits);
+                    uint32_t t2 = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = fptosi %s %%t%u to i64  ; float→fixed\n", t2, src_llvm, t1);
+                    return t2;
+                }
+
                 /* Types differ - need to convert */
                 const char *src_llvm = Expression_Llvm_Type(arg);
                 const char *dst_llvm = Type_To_Llvm(dst_type);
@@ -15145,6 +15477,40 @@ static double Type_Bound_Float_Value(Type_Bound b) {
     return 0.0;
 }
 
+/* Check if a type bound is explicitly set (not default/unset) */
+static bool Type_Bound_Is_Set(Type_Bound b) {
+    return b.kind == BOUND_INTEGER || b.kind == BOUND_FLOAT ||
+           (b.kind == BOUND_EXPR && b.expr != NULL);
+}
+
+/* Emit implementation-defined minimum value for a floating-point type.
+ * Per Ada RM 3.5.7, for unconstrained types this is at least -SAFE_LARGE.
+ * Uses 64-bit double hex format as required by LLVM IR. */
+static void Emit_Float_Type_Min(Code_Generator *cg, uint32_t t, Type_Info *type, const char *attr_ftype, String_Slice attr) {
+    if (type && type->size <= 4) {
+        /* float: -FLT_MAX in 64-bit double hex format (LLVM requirement) */
+        Emit(cg, "  %%t%u = fadd float 0.0, 0xC7EFFFFFE0000000  ; %.*s'FIRST (unconstrained)\n",
+             t, (int)attr.length, attr.data);
+    } else {
+        /* double: -DBL_MAX in 64-bit hex format */
+        Emit(cg, "  %%t%u = fadd double 0.0, 0xFFEFFFFFFFFFFFFF  ; %.*s'FIRST (unconstrained)\n",
+             t, (int)attr.length, attr.data);
+    }
+}
+
+/* Emit implementation-defined maximum value for a floating-point type. */
+static void Emit_Float_Type_Max(Code_Generator *cg, uint32_t t, Type_Info *type, const char *attr_ftype, String_Slice attr) {
+    if (type && type->size <= 4) {
+        /* float: FLT_MAX in 64-bit double hex format (LLVM requirement) */
+        Emit(cg, "  %%t%u = fadd float 0.0, 0x47EFFFFFE0000000  ; %.*s'LAST (unconstrained)\n",
+             t, (int)attr.length, attr.data);
+    } else {
+        /* double: DBL_MAX in 64-bit hex format */
+        Emit(cg, "  %%t%u = fadd double 0.0, 0x7FEFFFFFFFFFFFFF  ; %.*s'LAST (unconstrained)\n",
+             t, (int)attr.length, attr.data);
+    }
+}
+
 /* Get array element count for constrained arrays, 0 for unconstrained */
 static int64_t Array_Element_Count(Type_Info *t) {
     if (!t || t->kind != TYPE_ARRAY || !t->array.is_constrained)
@@ -15273,10 +15639,32 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                    (prefix_type->kind == TYPE_FLOAT ||
                     prefix_type->kind == TYPE_UNIVERSAL_REAL ||
                     prefix_type->low_bound.kind == BOUND_FLOAT)) {
-            /* Floating-point type - return double (not fixed-point) */
-            Emit(cg, "  %%t%u = fadd double 0.0, %e  ; %.*s'FIRST\n", t,
-                 Type_Bound_Float_Value(prefix_type->low_bound),
-                 (int)attr.length, attr.data);
+            /* Floating-point type - use the correct LLVM float type */
+            const char *attr_ftype = "double";
+            if (prefix_type->kind == TYPE_FLOAT) {
+                attr_ftype = Llvm_Float_Type((uint32_t)To_Bits(prefix_type->size));
+            }
+            /* Check if bound needs runtime evaluation */
+            if (prefix_type->low_bound.kind == BOUND_EXPR && prefix_type->low_bound.expr) {
+                /* Bound expression returns a float value directly - no conversion needed */
+                uint32_t bound_val = Generate_Expression(cg, prefix_type->low_bound.expr);
+                /* Assign to result temp (may need precision conversion) */
+                if (strcmp(attr_ftype, "double") == 0) {
+                    Emit(cg, "  %%t%u = fadd double %%t%u, 0.0  ; %.*s'FIRST (runtime)\n",
+                         t, bound_val, (int)attr.length, attr.data);
+                } else {
+                    Emit(cg, "  %%t%u = fadd float %%t%u, 0.0  ; %.*s'FIRST (runtime)\n",
+                         t, bound_val, (int)attr.length, attr.data);
+                }
+            } else if (Type_Bound_Is_Set(prefix_type->low_bound)) {
+                /* Explicit bound - use the value */
+                Emit(cg, "  %%t%u = fadd %s 0.0, %e  ; %.*s'FIRST\n", t, attr_ftype,
+                     Type_Bound_Float_Value(prefix_type->low_bound),
+                     (int)attr.length, attr.data);
+            } else {
+                /* Unconstrained float type - use implementation limit */
+                Emit_Float_Type_Min(cg, t, prefix_type, attr_ftype, attr);
+            }
         } else if (prefix_type) {
             /* Scalar type - check if bound is compile-time known */
             if (Type_Bound_Is_Compile_Time_Known(prefix_type->low_bound)) {
@@ -15315,10 +15703,32 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                    (prefix_type->kind == TYPE_FLOAT ||
                     prefix_type->kind == TYPE_UNIVERSAL_REAL ||
                     prefix_type->high_bound.kind == BOUND_FLOAT)) {
-            /* Floating-point type - return double (not fixed-point) */
-            Emit(cg, "  %%t%u = fadd double 0.0, %e  ; %.*s'LAST\n", t,
-                 Type_Bound_Float_Value(prefix_type->high_bound),
-                 (int)attr.length, attr.data);
+            /* Floating-point type - use the correct LLVM float type */
+            const char *attr_ftype = "double";
+            if (prefix_type->kind == TYPE_FLOAT) {
+                attr_ftype = Llvm_Float_Type((uint32_t)To_Bits(prefix_type->size));
+            }
+            /* Check if bound needs runtime evaluation */
+            if (prefix_type->high_bound.kind == BOUND_EXPR && prefix_type->high_bound.expr) {
+                /* Bound expression returns a float value directly - no conversion needed */
+                uint32_t bound_val = Generate_Expression(cg, prefix_type->high_bound.expr);
+                /* Assign to result temp (may need precision conversion) */
+                if (strcmp(attr_ftype, "double") == 0) {
+                    Emit(cg, "  %%t%u = fadd double %%t%u, 0.0  ; %.*s'LAST (runtime)\n",
+                         t, bound_val, (int)attr.length, attr.data);
+                } else {
+                    Emit(cg, "  %%t%u = fadd float %%t%u, 0.0  ; %.*s'LAST (runtime)\n",
+                         t, bound_val, (int)attr.length, attr.data);
+                }
+            } else if (Type_Bound_Is_Set(prefix_type->high_bound)) {
+                /* Explicit bound - use the value */
+                Emit(cg, "  %%t%u = fadd %s 0.0, %e  ; %.*s'LAST\n", t, attr_ftype,
+                     Type_Bound_Float_Value(prefix_type->high_bound),
+                     (int)attr.length, attr.data);
+            } else {
+                /* Unconstrained float type - use implementation limit */
+                Emit_Float_Type_Max(cg, t, prefix_type, attr_ftype, attr);
+            }
         } else if (prefix_type) {
             /* Scalar type - check if bound is compile-time known */
             if (Type_Bound_Is_Compile_Time_Known(prefix_type->high_bound)) {
@@ -16077,20 +16487,35 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
      * ───────────────────────────────────────────────────────────────────── */
 
     if (Slice_Equal_Ignore_Case(attr, S("DIGITS"))) {
-        /* T'DIGITS - number of significant decimal digits (universal integer) */
-        int64_t digits = 15;  /* Default for double precision (8 bytes) */
-        if (prefix_type && prefix_type->size <= 4) {
-            digits = 6;  /* Single precision float */
+        /* T'DIGITS - number of significant decimal digits (RM 3.5.7)
+         * Returns the declared DIGITS value, not the machine precision. */
+        int64_t digits = 15;  /* Default for double precision */
+        if (prefix_type && prefix_type->kind == TYPE_FLOAT) {
+            if (prefix_type->flt.digits > 0) {
+                digits = prefix_type->flt.digits;
+            } else if (prefix_type->size <= 4) {
+                digits = 6;  /* Single precision float */
+            }
         }
         Emit(cg, "  %%t%u = add i64 0, %lld  ; 'DIGITS\n", t, (long long)digits);
         return t;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("MANTISSA"))) {
-        /* T'MANTISSA - number of binary digits in fixed-point representation
-         * Formula: ceil(log2(bound / small)) where small is actual step (RM 3.5.10) */
+        /* T'MANTISSA - number of binary digits (RM 3.5.8, 3.5.10)
+         * For floating-point: ceiling(D * log(10)/log(2)) + 1 where D is DIGITS
+         * For fixed-point: ceiling(log2(bound / small)) */
         int64_t mantissa = 52;  /* Default for IEEE double precision */
-        if (prefix_type && prefix_type->kind == TYPE_FIXED) {
+        if (prefix_type && prefix_type->kind == TYPE_FLOAT) {
+            /* Floating-point mantissa from DIGITS */
+            int digits = prefix_type->flt.digits;
+            if (digits <= 0) {
+                /* Default based on size */
+                digits = (prefix_type->size <= 4) ? 6 : 15;
+            }
+            /* Formula: ceiling(D * log(10)/log(2)) + 1 */
+            mantissa = (int64_t)ceil(digits * 3.321928094887362) + 1;
+        } else if (prefix_type && prefix_type->kind == TYPE_FIXED) {
             double small = prefix_type->fixed.small;
             double low_val = Type_Bound_Float_Value(prefix_type->low_bound);
             double high_val = Type_Bound_Float_Value(prefix_type->high_bound);
@@ -16106,47 +16531,73 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("EMAX"))) {
-        /* T'EMAX - maximum binary exponent (universal integer) */
-        int64_t emax = 1023;  /* IEEE double precision */
+        /* T'EMAX - maximum binary exponent (RM 3.5.8)
+         * For model numbers: EMAX = 4 * MANTISSA */
+        int64_t emax = 1023;  /* Default for IEEE double precision */
+        if (prefix_type && prefix_type->kind == TYPE_FLOAT) {
+            int digits = prefix_type->flt.digits;
+            if (digits <= 0) digits = (prefix_type->size <= 4) ? 6 : 15;
+            int64_t mantissa = (int64_t)ceil(digits * 3.321928094887362) + 1;
+            emax = 4 * mantissa;  /* RM 3.5.8(8) */
+        }
         Emit(cg, "  %%t%u = add i64 0, %lld  ; 'EMAX\n", t, (long long)emax);
         return t;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("SAFE_EMAX"))) {
-        /* T'SAFE_EMAX - safe maximum exponent (universal integer) */
-        int64_t safe_emax = 1021;  /* Conservative for IEEE double */
+        /* T'SAFE_EMAX - safe maximum exponent (RM 3.5.8)
+         * The largest exponent such that all model numbers are safe.
+         * For IEEE: MACHINE_EMAX - 1 = 1023 for double, 127 for float */
+        int64_t safe_emax = 1023;  /* IEEE double: 1024 - 1 */
+        if (prefix_type && prefix_type->kind == TYPE_FLOAT && prefix_type->size <= 4) {
+            safe_emax = 127;  /* IEEE float: 128 - 1 */
+        }
         Emit(cg, "  %%t%u = add i64 0, %lld  ; 'SAFE_EMAX\n", t, (long long)safe_emax);
         return t;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("EPSILON"))) {
-        /* T'EPSILON - machine epsilon (universal real) */
-        /* For double precision: 2^-52 ≈ 2.220446049250313e-16 */
-        Emit(cg, "  %%t%u = fadd double 0.0, 0x3CB0000000000000  ; 'EPSILON (2^-52)\n", t);
+        /* T'EPSILON - model epsilon (RM 3.5.8(9))
+         * For model numbers: EPSILON = 2^(1 - MANTISSA) */
+        double epsilon = 2.220446049250313e-16;  /* Default 2^-52 */
+        if (prefix_type && prefix_type->kind == TYPE_FLOAT) {
+            int digits = prefix_type->flt.digits;
+            if (digits <= 0) digits = (prefix_type->size <= 4) ? 6 : 15;
+            int64_t mantissa = (int64_t)ceil(digits * 3.321928094887362) + 1;
+            epsilon = pow(2.0, 1 - mantissa);
+        }
+        uint64_t bits;
+        memcpy(&bits, &epsilon, sizeof(bits));
+        Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; 'EPSILON\n", t, (unsigned long long)bits);
         return t;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("SMALL"))) {
         /* T'SMALL - for fixed-point: implementation-defined power of 2 <= delta
-         * For float: smallest positive model number (RM 3.5.8, 3.5.10) */
+         * For float: 2^(-EMAX - 1) = 2^(-(EMAX+1)) - smallest positive model number
+         * Per test c34003a: T'SMALL /= 2.0 ** (-T'EMAX - 1) */
+        double small_val = 2.2250738585072014e-308;  /* Default 2^-1022 */
         if (prefix_type && prefix_type->kind == TYPE_FIXED) {
-            double small = prefix_type->fixed.small;
-            if (small <= 0) small = prefix_type->fixed.delta;
-            if (small <= 0) small = 1.0;
-            uint64_t bits;
-            memcpy(&bits, &small, sizeof(bits));
-            Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; 'SMALL (%g)\n",
-                 t, (unsigned long long)bits, small);
-        } else {
-            /* Float type: 2^-1022 for double precision */
-            Emit(cg, "  %%t%u = fadd double 0.0, 0x0010000000000000  ; 'SMALL (2^-1022)\n", t);
+            small_val = prefix_type->fixed.small;
+            if (small_val <= 0) small_val = prefix_type->fixed.delta;
+            if (small_val <= 0) small_val = 1.0;
+        } else if (prefix_type && prefix_type->kind == TYPE_FLOAT) {
+            int digits = prefix_type->flt.digits;
+            if (digits <= 0) digits = (prefix_type->size <= 4) ? 6 : 15;
+            int64_t mantissa = (int64_t)ceil(digits * 3.321928094887362) + 1;
+            int64_t emax = 4 * mantissa;
+            small_val = pow(2.0, -(emax + 1));  /* 2^(-EMAX - 1) */
         }
+        uint64_t bits;
+        memcpy(&bits, &small_val, sizeof(bits));
+        Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; 'SMALL\n", t, (unsigned long long)bits);
         return t;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("LARGE"))) {
         /* T'LARGE - for fixed-point: (2^MANTISSA - 1) * SMALL (RM 3.5.10)
-         * For float: largest model number */
+         * For float: 2^EMAX * (1 - 2^(-MANTISSA)) (RM 3.5.8(10)) */
+        double large_val = 1.7976931348623157e+308;  /* Default IEEE max */
         if (prefix_type && prefix_type->kind == TYPE_FIXED) {
             double small = prefix_type->fixed.small;
             if (small <= 0) small = prefix_type->fixed.delta > 0 ? prefix_type->fixed.delta : 1.0;
@@ -16155,27 +16606,47 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
             int64_t mantissa = (bound > 0 && small > 0) ?
                               (int64_t)ceil(log2(bound / small)) : 1;
             if (mantissa < 1) mantissa = 1;
-            double large = ((double)((1LL << mantissa) - 1)) * small;
-            uint64_t bits;
-            memcpy(&bits, &large, sizeof(bits));
-            Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; 'LARGE (%g)\n",
-                 t, (unsigned long long)bits, large);
-        } else {
-            /* Float type: approximately 1.7976931348623157e+308 */
-            Emit(cg, "  %%t%u = fadd double 0.0, 0x7FEFFFFFFFFFFFFF  ; 'LARGE\n", t);
+            large_val = ((double)((1LL << mantissa) - 1)) * small;
+        } else if (prefix_type && prefix_type->kind == TYPE_FLOAT) {
+            int digits = prefix_type->flt.digits;
+            if (digits <= 0) digits = (prefix_type->size <= 4) ? 6 : 15;
+            int64_t mantissa = (int64_t)ceil(digits * 3.321928094887362) + 1;
+            int64_t emax = 4 * mantissa;
+            /* LARGE = 2^EMAX * (1 - 2^(-MANTISSA)) */
+            large_val = pow(2.0, emax) * (1.0 - pow(2.0, -mantissa));
         }
+        uint64_t bits;
+        memcpy(&bits, &large_val, sizeof(bits));
+        Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; 'LARGE\n", t, (unsigned long long)bits);
         return t;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("SAFE_SMALL"))) {
-        /* T'SAFE_SMALL - safe minimum value (universal real) */
-        Emit(cg, "  %%t%u = fadd double 0.0, 0x0040000000000000  ; 'SAFE_SMALL (2^-1021)\n", t);
+        /* T'SAFE_SMALL - 2^(-SAFE_EMAX) (RM 3.5.8)
+         * The smallest positive value in the safe range.
+         * For IEEE: 2^(-1022) for double, 2^(-126) for float */
+        double safe_small = 2.2250738585072014e-308;  /* 2^-1022 for double */
+        if (prefix_type && prefix_type->kind == TYPE_FLOAT && prefix_type->size <= 4) {
+            safe_small = 1.1754943508222875e-38;  /* 2^-126 for float */
+        }
+        uint64_t bits;
+        memcpy(&bits, &safe_small, sizeof(bits));
+        Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; 'SAFE_SMALL\n", t, (unsigned long long)bits);
         return t;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("SAFE_LARGE"))) {
-        /* T'SAFE_LARGE - safe maximum value (universal real) */
-        Emit(cg, "  %%t%u = fadd double 0.0, 0x7FD0000000000000  ; 'SAFE_LARGE (2^1021)\n", t);
+        /* T'SAFE_LARGE - 2^SAFE_EMAX * (1 - 2^(-MACHINE_MANTISSA)) (RM 3.5.8)
+         * The largest value in the safe range.
+         * For IEEE double: 2^1023 * (1 - 2^-53) ~ 8.988e307
+         * For IEEE float: 2^127 * (1 - 2^-24) ~ 1.701e38 */
+        double safe_large = 8.98846567431158e+307;  /* 2^1023 * (1 - 2^-53) */
+        if (prefix_type && prefix_type->kind == TYPE_FLOAT && prefix_type->size <= 4) {
+            safe_large = 1.7014118346046923e+38;  /* 2^127 * (1 - 2^-24) */
+        }
+        uint64_t bits;
+        memcpy(&bits, &safe_large, sizeof(bits));
+        Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; 'SAFE_LARGE\n", t, (unsigned long long)bits);
         return t;
     }
 
@@ -16228,15 +16699,57 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
 
     if (Slice_Equal_Ignore_Case(attr, S("MACHINE_ROUNDS"))) {
         /* T'MACHINE_ROUNDS - does the hardware round? (RM 3.5.8)
-         * IEEE 754 hardware rounds, so return TRUE */
-        Emit(cg, "  %%t%u = add i1 0, 1  ; 'MACHINE_ROUNDS (IEEE rounds)\n", t);
+         * IEEE 754 hardware rounds, so return TRUE.
+         * Use i64 for consistency with Boolean storage/comparison. */
+        Emit(cg, "  %%t%u = add i64 0, 1  ; 'MACHINE_ROUNDS (IEEE rounds)\n", t);
         return t;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("MACHINE_OVERFLOWS"))) {
         /* T'MACHINE_OVERFLOWS - does the hardware raise on overflow? (RM 3.5.8)
-         * IEEE 754 generates infinity on overflow (doesn't trap), return FALSE */
-        Emit(cg, "  %%t%u = add i1 0, 0  ; 'MACHINE_OVERFLOWS (IEEE no trap)\n", t);
+         * IEEE 754 generates infinity on overflow (doesn't trap), return FALSE.
+         * Use i64 for consistency with Boolean storage/comparison. */
+        Emit(cg, "  %%t%u = add i64 0, 0  ; 'MACHINE_OVERFLOWS (IEEE no trap)\n", t);
+        return t;
+    }
+
+    if (Slice_Equal_Ignore_Case(attr, S("MACHINE_RADIX"))) {
+        /* T'MACHINE_RADIX - hardware floating-point radix (RM 3.5.8)
+         * IEEE 754 uses radix 2 */
+        Emit(cg, "  %%t%u = add i64 0, 2  ; 'MACHINE_RADIX (IEEE binary)\n", t);
+        return t;
+    }
+
+    if (Slice_Equal_Ignore_Case(attr, S("MACHINE_MANTISSA"))) {
+        /* T'MACHINE_MANTISSA - hardware mantissa bits (RM 3.5.8)
+         * IEEE 754 double: 53 bits, float: 24 bits */
+        int64_t machine_mantissa = 53;  /* double */
+        if (prefix_type && prefix_type->kind == TYPE_FLOAT && prefix_type->size <= 4) {
+            machine_mantissa = 24;  /* float */
+        }
+        Emit(cg, "  %%t%u = add i64 0, %lld  ; 'MACHINE_MANTISSA\n", t, (long long)machine_mantissa);
+        return t;
+    }
+
+    if (Slice_Equal_Ignore_Case(attr, S("MACHINE_EMAX"))) {
+        /* T'MACHINE_EMAX - hardware max exponent (RM 3.5.8)
+         * IEEE 754 double: 1024, float: 128 */
+        int64_t machine_emax = 1024;  /* double */
+        if (prefix_type && prefix_type->kind == TYPE_FLOAT && prefix_type->size <= 4) {
+            machine_emax = 128;  /* float */
+        }
+        Emit(cg, "  %%t%u = add i64 0, %lld  ; 'MACHINE_EMAX\n", t, (long long)machine_emax);
+        return t;
+    }
+
+    if (Slice_Equal_Ignore_Case(attr, S("MACHINE_EMIN"))) {
+        /* T'MACHINE_EMIN - hardware min exponent (RM 3.5.8)
+         * IEEE 754 double: -1021, float: -125 */
+        int64_t machine_emin = -1021;  /* double */
+        if (prefix_type && prefix_type->kind == TYPE_FLOAT && prefix_type->size <= 4) {
+            machine_emin = -125;  /* float */
+        }
+        Emit(cg, "  %%t%u = add i64 0, %lld  ; 'MACHINE_EMIN\n", t, (long long)machine_emin);
         return t;
     }
 
@@ -16248,20 +16761,23 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         /* X'CONSTRAINED - is the object constrained? (RM 3.7.1)
          * Returns TRUE if object has discriminant constraints, FALSE otherwise.
          * For now, assume objects without explicit constraints are unconstrained
-         * (this is a simplification - full implementation would track constraints) */
-        Emit(cg, "  %%t%u = add i1 0, 1  ; 'CONSTRAINED (assume true)\n", t);
+         * (this is a simplification - full implementation would track constraints).
+         * Use i64 for consistency with Boolean storage/comparison. */
+        Emit(cg, "  %%t%u = add i64 0, 1  ; 'CONSTRAINED (assume true)\n", t);
         return t;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("CALLABLE"))) {
-        /* T'CALLABLE - is the task callable? (RM 9.9) */
-        Emit(cg, "  %%t%u = add i1 0, 1  ; 'CALLABLE (assume true)\n", t);
+        /* T'CALLABLE - is the task callable? (RM 9.9)
+         * Use i64 for consistency with Boolean storage/comparison. */
+        Emit(cg, "  %%t%u = add i64 0, 1  ; 'CALLABLE (assume true)\n", t);
         return t;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("TERMINATED"))) {
-        /* T'TERMINATED - has the task terminated? (RM 9.9) */
-        Emit(cg, "  %%t%u = add i1 0, 0  ; 'TERMINATED (assume false)\n", t);
+        /* T'TERMINATED - has the task terminated? (RM 9.9)
+         * Use i64 for consistency with Boolean storage/comparison. */
+        Emit(cg, "  %%t%u = add i64 0, 0  ; 'TERMINATED (assume false)\n", t);
         return t;
     }
 
@@ -17463,9 +17979,12 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
         Emit(cg, "  %%t%u = sitofp i64 %%t%u to double\n", t, value);
         value = t;
     } else if (is_src_float && is_dst_float) {
-        /* Float to float: may need conversion if sizes differ
-         * Source expressions generate double, target may be float (32-bit) */
-        const char *src_ftype = "double";  /* expression result is always double */
+        /* Float to float: may need conversion if sizes differ.
+         * Determine actual source float type from the expression's type info. */
+        const char *src_ftype = "double";  /* default for UNIVERSAL_REAL */
+        if (value_type && value_type->kind == TYPE_FLOAT) {
+            src_ftype = Llvm_Float_Type((uint32_t)To_Bits(value_type->size));
+        }
         const char *dst_ftype = type_str;  /* actual storage type */
         if (strcmp(src_ftype, dst_ftype) != 0) {
             value = Emit_Convert(cg, value, src_ftype, dst_ftype);

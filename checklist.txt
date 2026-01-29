@@ -32,13 +32,25 @@ READ GNAT LLVM SOURCES FOR HELP DURING DEVELOPMENT
    - Fixed: resolve right operand (type name) before left aggregate
    - Enables aggregate components to be properly typed
 
+6. [x] Derived type operation inheritance (RM 3.4) - GNAT-style
+   - Emit direct calls to parent operation instead of wrappers
+   - Added parent_operation field to Symbol struct
+   - Derive_Subprograms creates symbols with return/param type substitution
+   - Code gen: call_target = sym->parent_operation ?: sym
+   - Identical representation in Ada 83 = no conversion needed
+   - c34 tests: 0 → 3 passing (c34001a, c34009a, c34009g)
+
+7. [x] Function result indexing (func(...)(i))
+   - Fixed: CREATE(X)(2) was treated as second function call
+   - Added prefix_is_call_target check in Resolve_Apply
+   - Complex prefix expressions now route to array indexing
+
 === IN PROGRESS ===
 
-Derived type operations inheritance (RM 3.4):
-  - Derived types T IS NEW PARENT should inherit primitive ops
-  - Wrapper functions needed to convert types on call/return
-  - Root cause of c34 BIND "unresolved symbols" (c34009a, etc.)
-  - Symbols created during resolution but bodies not generated
+Element concatenation (C & 3.0):
+  - Scalar & Scalar should produce array when in context
+  - Required for c34005a and similar tests
+  - Need to infer array type from context
 
 === REMAINING ERROR CATEGORIES (by impact) ===
 
@@ -55,10 +67,11 @@ Discriminant constraint checking           |  ~20  | c37
 
 Group | Pass | Total | Rate  | Change
 ------|------|-------|-------|--------
-c34   |    0 |    67 |   0%  | (derived ops missing)
+c34   |    3 |    67 |   4%  | +3 (GNAT-style derived ops)
 c35   |   47 |   120 |  39%  | stable
 c37   |    9 |    68 |  13%  | stable
 c45   |   28 |   108 |  25%  | stable
+ALL C |  239 | 1979  |  12%  | (full C-series)
 
 === NOTES ===
 
