@@ -12630,7 +12630,9 @@ static inline bool Expression_Is_Float(Syntax_Node *node) {
 
 /* Get LLVM type string for expression result */
 static inline const char *Expression_Llvm_Type(Syntax_Node *node) {
-    if (Expression_Is_Boolean(node)) return "i1";
+    /* Boolean expressions now produce i64 (comparisons, AND/OR/XOR, NOT, membership
+     * are widened to i64 with zext for uniform representation) */
+    if (Expression_Is_Boolean(node)) return "i64";
     /* For float types, return the correct LLVM type based on actual size */
     if (node && node->type && (node->type->kind == TYPE_FLOAT ||
                                 node->type->kind == TYPE_UNIVERSAL_REAL)) {
@@ -13711,9 +13713,12 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         if (node->binary.op == TK_NE) {
             uint32_t ne_result = Emit_Temp(cg);
             Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n", ne_result, eq_result);
-            return ne_result;
+            eq_result = ne_result;
         }
-        return eq_result;
+        /* Widen i1 to i64 for uniform Boolean representation */
+        uint32_t eq_wide = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = zext i1 %%t%u to i64\n", eq_wide, eq_result);
+        return eq_wide;
     }
 
     /* Array relational comparisons (lexicographic) */
@@ -13822,7 +13827,10 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             default:
                 Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", cmp_result, memcmp_result);
         }
-        return cmp_result;
+        /* Widen i1 to i64 for uniform Boolean representation */
+        uint32_t cmp_wide = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = zext i1 %%t%u to i64\n", cmp_wide, cmp_result);
+        return cmp_wide;
     }
 
     /* Short-circuit boolean operators: AND THEN, OR ELSE
@@ -13857,9 +13865,11 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
 
         /* Merge point */
         Emit(cg, "Landthen_done%u:\n", done_label);
-        uint32_t t = Emit_Temp(cg);
+        uint32_t phi = Emit_Temp(cg);
         Emit(cg, "  %%t%u = phi i1 [ false, %%Landthen_check%u ], [ %%t%u, %%Landthen_merge%u ]\n",
-             t, left_block_label, right_i1, right_done_label);
+             phi, left_block_label, right_i1, right_done_label);
+        uint32_t t = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = zext i1 %%t%u to i64\n", t, phi);
         return t;
     }
 
@@ -13892,9 +13902,11 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
 
         /* Merge point */
         Emit(cg, "Lorelse_done%u:\n", done_label);
-        uint32_t t = Emit_Temp(cg);
+        uint32_t phi = Emit_Temp(cg);
         Emit(cg, "  %%t%u = phi i1 [ true, %%Lorelse_check%u ], [ %%t%u, %%Lorelse_merge%u ]\n",
-             t, left_block_label, right_i1, right_done_label);
+             phi, left_block_label, right_i1, right_done_label);
+        uint32_t t = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = zext i1 %%t%u to i64\n", t, phi);
         return t;
     }
 
@@ -14143,8 +14155,10 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                 left = Emit_Convert(cg, left, left_llvm, "i1");
                 right = Emit_Convert(cg, right, right_llvm, "i1");
                 Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", t, left, right);
+                uint32_t and_w = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = zext i1 %%t%u to i64\n", and_w, t);
+                return and_w;
             }
-            return t;
         case TK_OR:
         case TK_OR_ELSE:
             /* Boolean OR: convert operands to i1 */
@@ -14154,8 +14168,10 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                 left = Emit_Convert(cg, left, left_llvm, "i1");
                 right = Emit_Convert(cg, right, right_llvm, "i1");
                 Emit(cg, "  %%t%u = or i1 %%t%u, %%t%u\n", t, left, right);
+                uint32_t or_w = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = zext i1 %%t%u to i64\n", or_w, t);
+                return or_w;
             }
-            return t;
         case TK_XOR:
             /* Boolean XOR: convert operands to i1 */
             {
@@ -14164,8 +14180,10 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                 left = Emit_Convert(cg, left, left_llvm, "i1");
                 right = Emit_Convert(cg, right, right_llvm, "i1");
                 Emit(cg, "  %%t%u = xor i1 %%t%u, %%t%u\n", t, left, right);
+                uint32_t xor_w = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = zext i1 %%t%u to i64\n", xor_w, t);
+                return xor_w;
             }
-            return t;
 
         case TK_EQ:
         case TK_NE:
@@ -14308,7 +14326,10 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                     }
                 }
                 Emit(cg, "  %%t%u = %s %%t%u, %%t%u\n", t, cmp_op, left, right);
-                return t;
+                /* Widen i1 comparison result to i64 for uniform Boolean representation */
+                uint32_t wide = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = zext i1 %%t%u to i64\n", wide, t);
+                return wide;
             }
 
         case TK_IN:
@@ -14402,7 +14423,10 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                         }
                     }
                 }
-                return t;
+                /* Widen i1 membership result to i64 */
+                uint32_t mem_wide = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = zext i1 %%t%u to i64\n", mem_wide, t);
+                return mem_wide;
             }
 
         default: op = "add"; break;
@@ -14440,6 +14464,10 @@ static uint32_t Generate_Unary_Op(Code_Generator *cg, Syntax_Node *node) {
                 const char *op_type = Expression_Llvm_Type(node->unary.operand);
                 operand = Emit_Convert(cg, operand, op_type, "i1");
                 Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n", t, operand);
+                /* Widen back to i64 for uniform Boolean representation */
+                uint32_t not_w = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = zext i1 %%t%u to i64\n", not_w, t);
+                t = not_w;
             }
             break;
         case TK_ABS:
