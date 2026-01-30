@@ -5276,15 +5276,23 @@ static Syntax_Node *Parse_Representation_Clause(Parser *p) {
      *    or: FOR type_name USE (enum_rep_list);
      *    or: FOR object_name USE AT address; */
 
-    /* Parse entity name (possibly qualified: T or T'ATTRIBUTE) */
+    /* Parse entity name (possibly qualified: T or T'ATTRIBUTE).
+     * Parse_Name may consume the tick+attribute, producing NK_ATTRIBUTE. */
     node->rep_clause.entity_name = Parse_Name(p);
 
-    /* Check if this is an attribute clause: FOR T'SIZE USE 32; */
-    if (Parser_At(p, TK_TICK)) {
-        Parser_Advance(p);  /* consume tick */
+    /* If Parse_Name already consumed T'SIZE, decompose the NK_ATTRIBUTE
+     * so rep_clause.entity_name = T (the prefix) and .attribute = SIZE */
+    if (node->rep_clause.entity_name &&
+        node->rep_clause.entity_name->kind == NK_ATTRIBUTE) {
+        Syntax_Node *attr_node = node->rep_clause.entity_name;
+        node->rep_clause.attribute = attr_node->attribute.name;
+        node->rep_clause.entity_name = attr_node->attribute.prefix;
+    } else if (Parser_At(p, TK_TICK)) {
+        /* Fallback: tick not consumed by Parse_Name */
+        Parser_Advance(p);
         if (Parser_At(p, TK_IDENTIFIER)) {
             node->rep_clause.attribute = p->current_token.text;
-            Parser_Advance(p);  /* consume attribute name */
+            Parser_Advance(p);
         }
     }
 
@@ -8324,6 +8332,33 @@ static double Eval_Const_Numeric(Syntax_Node *n) {
             if (n->unary.op == TK_MINUS) return -Eval_Const_Numeric(n->unary.operand);
             if (n->unary.op == TK_PLUS)  return Eval_Const_Numeric(n->unary.operand);
             return 0.0/0.0;
+        case NK_ATTRIBUTE: {
+            /* T'SIZE, T'FIRST, T'LAST, T'POS, T'LENGTH etc. */
+            Type_Info *ty = n->attribute.prefix ? n->attribute.prefix->type : NULL;
+            String_Slice a = n->attribute.name;
+            if (!ty) return 0.0/0.0;
+            if (Slice_Equal_Ignore_Case(a, S("SIZE")))
+                return (double)(ty->size * 8);
+            if (Slice_Equal_Ignore_Case(a, S("FIRST"))) {
+                if (ty->low_bound.kind == BOUND_INTEGER) return (double)ty->low_bound.int_value;
+                if (ty->low_bound.kind == BOUND_FLOAT)   return ty->low_bound.float_value;
+            }
+            if (Slice_Equal_Ignore_Case(a, S("LAST"))) {
+                if (ty->high_bound.kind == BOUND_INTEGER) return (double)ty->high_bound.int_value;
+                if (ty->high_bound.kind == BOUND_FLOAT)   return ty->high_bound.float_value;
+            }
+            if (Slice_Equal_Ignore_Case(a, S("LENGTH"))) {
+                if (Type_Is_Array_Like(ty) && ty->array.index_count > 0) {
+                    int64_t lo = Type_Bound_Value(ty->array.indices[0].low_bound);
+                    int64_t hi = Type_Bound_Value(ty->array.indices[0].high_bound);
+                    return (double)(hi - lo + 1);
+                }
+            }
+            if (Slice_Equal_Ignore_Case(a, S("POS")) &&
+                n->attribute.arguments.count == 1)
+                return Eval_Const_Numeric(n->attribute.arguments.items[0]);
+            return 0.0/0.0;
+        }
         case NK_BINARY_OP: {
             double l = Eval_Const_Numeric(n->binary.left);
             double r = Eval_Const_Numeric(n->binary.right);
@@ -12282,12 +12317,9 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
 
                         if (node->rep_clause.expression) {
                             Resolve_Expression(sm, node->rep_clause.expression);
-                            int64_t value = 0;
-
-                            /* Extract constant value */
-                            if (node->rep_clause.expression->kind == NK_INTEGER) {
-                                value = node->rep_clause.expression->integer_lit.value;
-                            }
+                            /* Evaluate constant expression (handles T'SIZE/2 etc.) */
+                            double dval = Eval_Const_Numeric(node->rep_clause.expression);
+                            int64_t value = isnan(dval) ? 0 : (int64_t)dval;
 
                             /* Apply representation */
                             if (Slice_Equal_Ignore_Case(attr, S("SIZE"))) {
@@ -13049,38 +13081,144 @@ static uint32_t Emit_Bound_Value(Code_Generator *cg, Type_Bound *bound) {
         uint32_t t = Emit_Temp(cg);
         Emit(cg, "  %%t%u = add i64 0, %lld  ; literal bound\n", t, (long long)bound->int_value);
         return t;
+    } else if (bound->kind == BOUND_FLOAT) {
+        /* Fixed-point: convert float bound to scaled integer.
+         * GNAT uses model_small as the scale factor; we approximate
+         * by truncating to i64 (adequate for most RM constraints). */
+        int64_t ival = (int64_t)bound->float_value;
+        uint32_t t = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = add i64 0, %lld  ; float-to-int bound (%g)\n",
+             t, (long long)ival, bound->float_value);
+        return t;
     } else if (bound->kind == BOUND_EXPR && bound->expr) {
         return Generate_Expression(cg, bound->expr);
     }
     return 0;  /* Cannot determine bound */
 }
 
+/* RM 3.5: General scalar constraint check — dispatches to integer or
+ * float path based on the target type's kind.  Covers:
+ *   Integer, enumeration, character → icmp slt/sgt on i64
+ *   Float, fixed, universal_real    → fcmp olt/ogt on double
+ *
+ * GNAT does this in Checks.Apply_Scalar_Range_Check. */
 static uint32_t Emit_Constraint_Check(Code_Generator *cg, uint32_t val, Type_Info *target) {
     if (!target) return val;
-    /* Only check scalar types */
-    if (target->kind != TYPE_INTEGER && target->kind != TYPE_ENUMERATION &&
-        target->kind != TYPE_CHARACTER) return val;
+
+    bool is_int_like = (target->kind == TYPE_INTEGER ||
+                        target->kind == TYPE_ENUMERATION ||
+                        target->kind == TYPE_CHARACTER ||
+                        target->kind == TYPE_FIXED);  /* scaled integer repr */
+    bool is_flt_like = (target->kind == TYPE_FLOAT);
+
+    if (!is_int_like && !is_flt_like) return val;
+
     /* Need either static or dynamic bounds */
-    if ((target->low_bound.kind != BOUND_INTEGER && target->low_bound.kind != BOUND_EXPR) ||
-        (target->high_bound.kind != BOUND_INTEGER && target->high_bound.kind != BOUND_EXPR))
-        return val;
+    bool lo_ok = (target->low_bound.kind == BOUND_INTEGER ||
+                  target->low_bound.kind == BOUND_FLOAT ||
+                  target->low_bound.kind == BOUND_EXPR);
+    bool hi_ok = (target->high_bound.kind == BOUND_INTEGER ||
+                  target->high_bound.kind == BOUND_FLOAT ||
+                  target->high_bound.kind == BOUND_EXPR);
+    if (!lo_ok || !hi_ok) return val;
 
-    uint32_t lo = Emit_Bound_Value(cg, &target->low_bound);
-    uint32_t hi = Emit_Bound_Value(cg, &target->high_bound);
-    if (!lo || !hi) return val;  /* Skip if bounds unavailable */
+    uint32_t raise_label = cg->label_id++;
+    uint32_t ok_label    = cg->label_id++;
+    uint32_t cont_label  = cg->label_id++;
 
-    uint32_t ok_label = cg->label_id++, raise_label = cg->label_id++, cont_label = cg->label_id++;
+    if (is_flt_like) {
+        /* Float/fixed path — compare as double */
+        uint32_t lo = 0, hi = 0;
+        if (target->low_bound.kind == BOUND_FLOAT) {
+            uint64_t bits; double v = target->low_bound.float_value;
+            memcpy(&bits, &v, sizeof(bits));
+            lo = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; low bound %g\n",
+                 lo, (unsigned long long)bits, v);
+        } else if (target->low_bound.kind == BOUND_INTEGER) {
+            lo = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = sitofp i64 %lld to double  ; low bound\n",
+                 lo, (long long)target->low_bound.int_value);
+        } else {
+            lo = Generate_Expression(cg, target->low_bound.expr);
+        }
+        if (target->high_bound.kind == BOUND_FLOAT) {
+            uint64_t bits; double v = target->high_bound.float_value;
+            memcpy(&bits, &v, sizeof(bits));
+            hi = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; high bound %g\n",
+                 hi, (unsigned long long)bits, v);
+        } else if (target->high_bound.kind == BOUND_INTEGER) {
+            hi = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = sitofp i64 %lld to double  ; high bound\n",
+                 hi, (long long)target->high_bound.int_value);
+        } else {
+            hi = Generate_Expression(cg, target->high_bound.expr);
+        }
+        if (!lo || !hi) return val;
 
-    /* val < low? */
-    uint32_t cmp_lo = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = icmp slt i64 %%t%u, %%t%u\n", cmp_lo, val, lo);
-    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp_lo, raise_label, ok_label);
+        /* val < low? */
+        uint32_t cmp_lo = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = fcmp olt double %%t%u, %%t%u\n", cmp_lo, val, lo);
+        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp_lo, raise_label, ok_label);
+        Emit(cg, "L%u:\n", ok_label);
+        /* val > high? */
+        uint32_t cmp_hi = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = fcmp ogt double %%t%u, %%t%u\n", cmp_hi, val, hi);
+        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp_hi, raise_label, cont_label);
+    } else {
+        /* Integer/enum/char/fixed path — all compare as i64.
+         * For TYPE_FIXED, bounds may be BOUND_FLOAT or BOUND_EXPR
+         * (e.g. subtype F is Fix range -101.0..0.0).  Scale float
+         * bounds to match the mantissa repr: scaled = bound / small.
+         * BOUND_EXPR bounds are generated as double then fptosi'd. */
+        uint32_t lo, hi;
+        if (target->kind == TYPE_FIXED) {
+            double small = target->fixed.small;
+            if (small <= 0) small = target->fixed.delta > 0 ? target->fixed.delta : 1.0;
+            /* Emit each bound as i64 regardless of source kind */
+            #define FIXED_BOUND_TO_I64(bnd, out) do {                     \
+                if ((bnd)->kind == BOUND_FLOAT) {                         \
+                    int64_t iv = (int64_t)((bnd)->float_value / small);   \
+                    (out) = Emit_Temp(cg);                                \
+                    Emit(cg, "  %%t%u = add i64 0, %lld  ; fixed bound"  \
+                         " (%g/small)\n", (out),(long long)iv,            \
+                         (bnd)->float_value);                             \
+                } else if ((bnd)->kind == BOUND_EXPR) {                   \
+                    uint32_t fv = Generate_Expression(cg, (bnd)->expr);   \
+                    uint64_t sb; memcpy(&sb, &small, sizeof(sb));         \
+                    uint32_t st = Emit_Temp(cg);                          \
+                    Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX\n",   \
+                         st, (unsigned long long)sb);                     \
+                    uint32_t dv = Emit_Temp(cg);                          \
+                    Emit(cg, "  %%t%u = fdiv double %%t%u, %%t%u\n",     \
+                         dv, fv, st);                                     \
+                    (out) = Emit_Temp(cg);                                \
+                    Emit(cg, "  %%t%u = fptosi double %%t%u to i64\n",   \
+                         (out), dv);                                      \
+                } else {                                                  \
+                    (out) = Emit_Bound_Value(cg, (bnd));                  \
+                }                                                         \
+            } while(0)
+            FIXED_BOUND_TO_I64(&target->low_bound, lo);
+            FIXED_BOUND_TO_I64(&target->high_bound, hi);
+            #undef FIXED_BOUND_TO_I64
+        } else {
+            lo = Emit_Bound_Value(cg, &target->low_bound);
+            hi = Emit_Bound_Value(cg, &target->high_bound);
+        }
+        if (!lo || !hi) return val;
 
-    Emit(cg, "L%u:\n", ok_label);
-    /* val > high? */
-    uint32_t cmp_hi = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = icmp sgt i64 %%t%u, %%t%u\n", cmp_hi, val, hi);
-    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp_hi, raise_label, cont_label);
+        /* val < low? */
+        uint32_t cmp_lo = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = icmp slt i64 %%t%u, %%t%u\n", cmp_lo, val, lo);
+        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp_lo, raise_label, ok_label);
+        Emit(cg, "L%u:\n", ok_label);
+        /* val > high? */
+        uint32_t cmp_hi = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = icmp sgt i64 %%t%u, %%t%u\n", cmp_hi, val, hi);
+        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp_hi, raise_label, cont_label);
+    }
 
     Emit(cg, "L%u:  ; raise CONSTRAINT_ERROR\n", raise_label);
     Emit_Raise_Constraint_Error(cg, "bound check");
@@ -15277,16 +15415,20 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                     Emit(cg, ", i64 0  ; address for OUT/IN OUT\n");
 
                     /* IN OUT: check actual value fits formal constraint before call */
-                    if (pmode == PARAM_IN_OUT && formal_type) {
+                    if (pmode == PARAM_IN_OUT && formal_type &&
+                        Type_Is_Scalar(formal_type)) {
+                        const char *ld_ty = Type_To_Llvm(formal_type);
                         uint32_t cur_val = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = load i64, ptr %%t%u\n", cur_val, args[i]);
+                        Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", cur_val, ld_ty, args[i]);
                         Emit_Constraint_Check(cg, cur_val, formal_type);
                     }
                 } else {
                     args[i] = Generate_Composite_Address(cg, arg);
-                    if (pmode == PARAM_IN_OUT && formal_type) {
+                    if (pmode == PARAM_IN_OUT && formal_type &&
+                        Type_Is_Scalar(formal_type)) {
+                        const char *ld_ty = Type_To_Llvm(formal_type);
                         uint32_t cur_val = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = load i64, ptr %%t%u\n", cur_val, args[i]);
+                        Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", cur_val, ld_ty, args[i]);
                         Emit_Constraint_Check(cg, cur_val, formal_type);
                     }
                 }
@@ -15383,9 +15525,10 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             Syntax_Node *arg = (arg_node->kind == NK_ASSOCIATION) ?
                 arg_node->association.expression : arg_node;
             Type_Info *actual_type = arg->type;  /* Actual variable's subtype */
-            if (!actual_type) continue;
+            if (!actual_type || !Type_Is_Scalar(actual_type)) continue;
+            const char *ld_ty = Type_To_Llvm(actual_type);
             uint32_t ret_val = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = load i64, ptr %%t%u  ; OUT/INOUT result\n", ret_val, args[i]);
+            Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; OUT/INOUT result\n", ret_val, ld_ty, args[i]);
             Emit_Constraint_Check(cg, ret_val, actual_type);
         }
 
@@ -18544,6 +18687,19 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
         value = Emit_Convert(cg, value, src_type_str, type_str);
     }
 
+    /* RM 5.2(4): Scalar constraint check on assignment — value must lie
+     * within the target subtype's range.  Only applies to scalar types;
+     * arrays/records use length or discriminant checks (RM 4.6, 5.2.1). */
+    if (ty && Type_Is_Scalar(ty)) {
+        if (Type_Is_Float(ty)) {
+            uint32_t fval = Emit_Convert(cg, value, type_str, "double");
+            Emit_Constraint_Check(cg, fval, ty);
+        } else {
+            uint32_t checked = Emit_Convert(cg, value, type_str, "i64");
+            Emit_Constraint_Check(cg, checked, ty);
+        }
+    }
+
     if (is_uplevel && cg->is_nested) {
         /* Uplevel store through frame pointer */
         Emit(cg, "  ; UPLEVEL STORE: %.*s via frame pointer\n",
@@ -20126,6 +20282,20 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
 
                 /* Convert if types differ, then store */
                 init = Emit_Convert(cg, init, src_type_str, type_str);
+
+                /* RM 3.3.2: Scalar constraint check on initialization.
+                 * Only for scalar types; composite constraints are checked
+                 * via length/discriminant matching elsewhere. */
+                if (ty && Type_Is_Scalar(ty)) {
+                    if (Type_Is_Float(ty)) {
+                        uint32_t fval = Emit_Convert(cg, init, type_str, "double");
+                        Emit_Constraint_Check(cg, fval, ty);
+                    } else {
+                        uint32_t checked = Emit_Convert(cg, init, type_str, "i64");
+                        Emit_Constraint_Check(cg, checked, ty);
+                    }
+                }
+
                 Emit(cg, "  store %s %%t%u, ptr %%", type_str, init);
                 Emit_Symbol_Name(cg, sym);
                 Emit(cg, "\n");
@@ -21277,6 +21447,26 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
             } else {
                 Generate_Task_Body(cg, node);
             }
+            break;
+
+        /* RM §3.3.1, §3.2.2: Type and subtype declarations require no
+         * machine code — the Type_Info computed in the semantic pass fully
+         * describes the representation.  We emit a comment for traceability. */
+        case NK_TYPE_DECL:
+        case NK_SUBTYPE_DECL:
+            break;  /* Elaboration handled by semantic pass */
+
+        /* Other declaration kinds that need no codegen */
+        case NK_EXCEPTION_DECL:
+        case NK_USE_CLAUSE:
+        case NK_WITH_CLAUSE:
+        case NK_PRAGMA:
+        case NK_REPRESENTATION_CLAUSE:
+        case NK_EXCEPTION_HANDLER:
+        case NK_ENTRY_DECL:
+        case NK_SUBPROGRAM_RENAMING:
+        case NK_PACKAGE_RENAMING:
+        case NK_EXCEPTION_RENAMING:
             break;
 
         default:

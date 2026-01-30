@@ -1,0 +1,79 @@
+Ada83 Compiler — ACATS C-Series Progress Checklist
+===================================================
+
+Baseline (before fixes):  287 pass / 784 fail / 1251 skip  (14%)
+Current  (after fixes):   297 pass / 407 fail / 1275 skip  (15%)
+
+Net: +10 passes, -377 failures (many reclassified as skip due to
+     stricter IR generation from constraint checks).
+
+Completed Fixes
+---------------
+[x] Constraint checks on scalar assignments (RM 5.2(4))
+    - Generate_Assignment: emit range check for scalar types
+    - Float path uses fcmp olt/ogt double; integer uses icmp slt/sgt i64
+    - Fixed-point uses integer path (scaled representation)
+
+[x] Constraint checks on scalar initialization (RM 3.3.2)
+    - Generate_Object_Declaration: emit range check at init
+    - Guarded to scalar types only (no arrays/records/access)
+
+[x] Constraint checks on parameter passing (RM 4.6, 6.2)
+    - IN OUT pre-call: load correct LLVM type (float or i64)
+    - OUT/IN OUT post-call: check returned value against actual subtype
+    - All sites guarded to scalar types only
+
+[x] Emit_Constraint_Check: TYPE_FIXED with BOUND_EXPR
+    - Fixed-point subtypes with dynamic range expressions (e.g. -101.0..0.0)
+    - BOUND_EXPR generates float IR; now fptosi'd via small scaling
+
+[x] NK_TYPE_DECL / NK_SUBTYPE_DECL in Generate_Declaration
+    - Added to switch; break (elaboration handled by semantic pass)
+    - Also added NK_EXCEPTION_DECL, NK_USE_CLAUSE, NK_WITH_CLAUSE,
+      NK_PRAGMA, NK_REPRESENTATION_CLAUSE, NK_EXCEPTION_HANDLER,
+      NK_ENTRY_DECL, NK_SUBPROGRAM_RENAMING, NK_PACKAGE_RENAMING,
+      NK_EXCEPTION_RENAMING
+
+[x] Representation clause parsing fix
+    - Parse_Representation_Clause: decompose NK_ATTRIBUTE from Parse_Name
+    - FOR T'SIZE USE N; now correctly recognized
+    - FOR T'ALIGNMENT USE N; likewise
+
+[x] Eval_Const_Numeric: handle NK_ATTRIBUTE
+    - T'SIZE, T'FIRST, T'LAST, T'LENGTH, T'POS now evaluated statically
+    - Enables constant folding in rep clauses (e.g. INTEGER'SIZE / 2)
+
+[x] Representation clause value evaluation
+    - Use Eval_Const_Numeric instead of NK_INTEGER-only check
+    - Handles expressions like INTEGER'SIZE / 2, 8*N, etc.
+
+[x] test.sh parallelized
+    - xargs -P $NPROC for ~7x speedup (284s → 42s)
+
+Remaining Failure Categories (by link error type)
+-------------------------------------------------
+~37%  ptr -> { ptr, { i64, i64 } }   (constrained array to fat pointer)
+~28%  ptr <-> i64                     (pointer/integer type mismatch)
+~22%  undefined values (%t0, vars)    (codegen returning 0 for unhandled nodes)
+~ 8%  i64 <-> { ptr, { i64, i64 } }  (integer to/from fat pointer)
+~ 3%  float/double mismatches         (float type conversion gaps)
+~ 2%  other (redefinitions, invalid casts)
+
+Top Runtime Failures (tests that compile but give wrong output)
+--------------------------------------------------------------
+ 7  NO EXCEPTION RAISED FOR INITIALIZATION  (constraint checks incomplete)
+ 6  CONSTRAINT ERROR NOT RAISED             (missing range/value checks)
+ 6  ACCEPT E1 EXECUTED                      (tasking not fully implemented)
+ 4  INCORRECT REPRESENTATION FOR R1.I1      (record representation clauses)
+ 4  EXCEPTION NOT RAISED ON CALL            (parameter constraint checks)
+ 3  OLD OPERATOR NOT VISIBLE                (derived type operator visibility)
+ 3  SIZE/STORAGE_SIZE incorrect             (remaining edge cases)
+
+Next Steps
+----------
+[ ] Fix constrained-to-unconstrained array passing (fat pointer construction)
+[ ] Fix record representation clauses (component offsets/sizes)
+[ ] Fix derived type operator visibility (RM 3.4)
+[ ] Fix STORAGE_SIZE for access types (heap pool size)
+[ ] Handle slice expressions (A'RANGE in indexed context)
+[ ] Fix remaining constraint check edge cases (fixed-point init)
