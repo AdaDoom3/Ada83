@@ -1,0 +1,47 @@
+Fat Pointer / Pointer Logic Refactoring Checklist
+===================================================
+
+Goal: Remove hardcoded i32/i64 from fat pointer bounds logic.
+      Match GNAT LLVM's design: bounds struct uses the NATIVE index type
+      (e.g. i32 for STRING/POSITIVE, i8 for CHARACTER, etc.) rather than
+      always normalizing to i64.
+
+Reference: gnatllvm-arrays-create.adb:684-707
+  - Create_Array_Bounds_Type_Internal builds { bt, bt } from native type
+  - Create_Array_Fat_Pointer_Type_Internal builds { P_DATA ptr, P_BOUNDS ptr }
+  - Bounds use Type_Of(IB.Bound_Sub_GT), i.e. the native index type
+
+Design Principle (GNAT LLVM):
+  Fat pointer = { ptr, ptr } (data pointer, bounds pointer)
+  Bounds struct = { bt, bt } where bt = native LLVM type of the index
+  No normalization to i64 -- bounds are stored and loaded in their native type.
+  Widening to i64 only happens at USE SITES (GEP offsets, memcpy lengths).
+
+Current Problem:
+  Bounds_Type_For() ignores bt and always returns "{ i64, i64 }"
+  Bounds_Alloc_Size() ignores bt and always returns 16
+  All store/load in fat pointer helpers hardcode "i64"
+  Emit_Widen_To_I64/Emit_Narrow_From_I64 are used on EVERY access
+
+Refactoring Steps:
+==================
+
+[x] 1. Refactor Bounds_Type_For(bt) to return "{ bt, bt }" using native type
+[x] 2. Refactor Bounds_Alloc_Size(bt) to compute size from bt
+[x] 3. Refactor Emit_Fat_Pointer() - store bounds in native bt, not i64
+[x] 4. Refactor Emit_Fat_Pointer_Low() - load native bt, no narrow
+[x] 5. Refactor Emit_Fat_Pointer_High() - load native bt, no narrow
+[x] 6. Refactor Emit_Fat_Pointer_Dynamic() - store native bt, remove widen
+[x] 7. Refactor Emit_Store_Fat_Pointer_Fields_To_Symbol() - native bt
+[x] 8. Refactor Emit_Store_Fat_Pointer_Fields_To_Temp() - native bt
+[x] 9. Refactor Emit_Fat_Pointer_From_Temps() - native bt
+[x] 10. Refactor Emit_Fat_Pointer_Insertvalue_Named() - native bt
+[x] 11. Refactor Emit_Fat_Pointer_Extractvalue_Named() - native bt
+[x] 12. Update RTS functions (IMAGE, GET_LINE, VALUE) to use native bt
+[x] 13. Audit all Emit_Widen_To_I64 / Emit_Narrow_From_I64 call sites:
+        - Remove from fat pointer store/load paths
+        - Keep ONLY at use sites needing i64 (GEP offsets, memcpy length, etc.)
+[x] 14. Audit all call sites passing bt to fat pointer helpers
+[x] 15. Build and run ACATS a-series tests
+
+Status: IN PROGRESS

@@ -12,6 +12,15 @@ NPROC=${NPROC:-$(nproc 32>/dev/null || echo 32)}
 START_MS=$(date +%s%3N)
 mkdir -p test_results acats_logs
 
+# ── Build ACATS report package if needed ──────────────────────────────────
+
+if [[ ! -f rts/report.ll ]] || [[ acats/report.ads -nt rts/report.ll ]] || [[ acats/report.adb -nt rts/report.ll ]]; then
+    echo "Building ACATS report package..."
+    ./ada83 acats/report.ads acats/report.adb
+    cp acats/report.ll rts/report.ll
+    echo "Done."
+fi
+
 # ── Helpers ───────────────────────────────────────────────────────────────
 
 pct(){ ((${2:-0}>0)) && printf %d $((100*$1/$2)) || printf 0; }
