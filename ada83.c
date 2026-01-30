@@ -7455,11 +7455,13 @@ static void Symbol_Manager_Init_Predefined(Symbol_Manager *sm) {
     Symbol_Add(sm, sym_tasking_error);
 
     /* SYSTEM.ADDRESS (RM 13.7) - implementation-defined private type
-     * In our implementation, ADDRESS is an integer type (derived from INTEGER) */
+     * In our implementation, ADDRESS is a 64-bit integer type.
+     * Bounds cover full i64 range so ptrtoint values always pass checks. */
     sm->type_address = Type_New(TYPE_INTEGER, S("ADDRESS"));
     sm->type_address->size = 8;  /* 64-bit addresses */
     sm->type_address->alignment = 8;
-    sm->type_address->base_type = sm->type_integer;
+    sm->type_address->low_bound  = (Type_Bound){.kind = BOUND_INTEGER, .int_value = INT64_MIN};
+    sm->type_address->high_bound = (Type_Bound){.kind = BOUND_INTEGER, .int_value = INT64_MAX};
 
     /* STANDARD package (RM 8.6) - the implicit library containing predefined types
      * All visible entities are implicitly declared here */
@@ -9796,15 +9798,19 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
 
                             /* Match association to discriminant by position or name */
                             if (assoc->association.choices.count > 0) {
-                                /* Named: find discriminant index by name */
-                                Syntax_Node *choice = assoc->association.choices.items[0];
-                                if (choice->kind == NK_IDENTIFIER) {
-                                    for (uint32_t di = 0; di < dc; di++) {
-                                        if (Slice_Equal_Ignore_Case(
-                                                constrained->record.components[di].name,
-                                                choice->string_val.text)) {
-                                            constrained->record.disc_constraint_values[di] = val;
-                                            break;
+                                /* Named: find discriminant index by name for ALL choices.
+                                 * Handles A|B => E2 (or A!B => E2) where multiple
+                                 * discriminants share the same constraint value. */
+                                for (uint32_t ci = 0; ci < assoc->association.choices.count; ci++) {
+                                    Syntax_Node *choice = assoc->association.choices.items[ci];
+                                    if (choice->kind == NK_IDENTIFIER) {
+                                        for (uint32_t di = 0; di < dc; di++) {
+                                            if (Slice_Equal_Ignore_Case(
+                                                    constrained->record.components[di].name,
+                                                    choice->string_val.text)) {
+                                                constrained->record.disc_constraint_values[di] = val;
+                                                break;
+                                            }
                                         }
                                     }
                                 }
@@ -13725,6 +13731,18 @@ static uint32_t Generate_Lvalue(Code_Generator *cg, Syntax_Node *node) {
                  field_ptr, base, byte_offset);
             return field_ptr;
         }
+
+        /* Package-qualified name: return lvalue (address) of the resolved symbol.
+         * E.g. PACK1.ARG1 where PACK1 is a package and ARG1 is a variable inside it.
+         * We must NOT fall through to Generate_Expression which would load the value. */
+        if (node->symbol) {
+            uint32_t t = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = getelementptr i8, ptr ", t);
+            Emit_Symbol_Storage(cg, node->symbol);
+            Emit(cg, ", i64 0  ; lvalue of pkg-qualified %.*s\n",
+                 (int)node->symbol->name.length, node->symbol->name.data);
+            return t;
+        }
     }
 
     /* NK_UNARY_OP with TK_ALL: .ALL dereference — load the pointer value */
@@ -13903,6 +13921,11 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
 
     uint32_t t = Emit_Temp(cg);
     Type_Info *ty = sym->type;
+
+    /* Resolve generic formal types to their actuals for correct LLVM type sizing.
+     * E.g. generic formal T (<>) mapped to COLOR (i8) — must load as i8, not i32. */
+    if (cg->current_instance && ty)
+        ty = Resolve_Generic_Actual_Type(cg, ty);
 
     switch (sym->kind) {
         case SYMBOL_VARIABLE:
@@ -16612,7 +16635,16 @@ static uint32_t Emit_Bound_Attribute(Code_Generator *cg, uint32_t t,
         }
     } else if (prefix_type) {
         Type_Bound b = is_low ? prefix_type->low_bound : prefix_type->high_bound;
-        if (Type_Bound_Is_Compile_Time_Known(b)) {
+        if (Type_Is_Fixed_Point(prefix_type)) {
+            /* Fixed-point FIRST/LAST must return scaled integer representation.
+             * Internal repr = abstract_value / SMALL. */
+            double small = prefix_type->fixed.small;
+            if (small <= 0) small = prefix_type->fixed.delta > 0 ? prefix_type->fixed.delta : 1.0;
+            double fval = Type_Bound_Float_Value(b);
+            int64_t scaled = (int64_t)(fval / small);
+            Emit(cg, "  %%t%u = add i64 0, %lld  ; %.*s'%s (fixed scaled %g/small)\n", t,
+                 (long long)scaled, (int)attr.length, attr.data, tag, fval);
+        } else if (Type_Bound_Is_Compile_Time_Known(b)) {
             Emit(cg, "  %%t%u = add i64 0, %lld  ; %.*s'%s\n", t,
                  (long long)Type_Bound_Value(b), (int)attr.length, attr.data, tag);
         } else {
@@ -17638,6 +17670,14 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         return t;
     }
 
+    if (Slice_Equal_Ignore_Case(attr, S("STORAGE_SIZE"))) {
+        /* T'STORAGE_SIZE (RM 13.7.1) — implementation-defined.
+         * For access types, return a reasonable collection size. */
+        Emit(cg, "  %%t%u = add i64 0, %lld  ; 'STORAGE_SIZE\n", t,
+             (long long)(prefix_type ? prefix_type->size * 8 : 0));
+        return t;
+    }
+
     /* Unhandled attribute */
     fprintf(stderr, "warning: unhandled attribute '%.*s'\n",
             (int)attr.length, attr.data);
@@ -17917,8 +17957,22 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
         int64_t count = high - low + 1;
         if (count < 1) count = 1;  /* Ensure at least 1 element for safety */
 
-        Emit(cg, "  %%t%u = alloca [%lld x %s]  ; array aggregate\n",
-             base, (long long)count, elem_type);
+        /* Check if element type is composite (record or constrained array).
+         * For composite elements, Generate_Expression returns a ptr to an alloca,
+         * so we must use memcpy to copy element data instead of store. */
+        Type_Info *elem_ti = agg_type->array.element_type;
+        bool elem_is_composite = elem_ti && (Type_Is_Record(elem_ti) ||
+            Type_Is_Constrained_Array(elem_ti));
+
+        if (elem_is_composite) {
+            /* Allocate as byte array so the size matches the actual data layout */
+            int64_t total_bytes = count * (int64_t)elem_size;
+            Emit(cg, "  %%t%u = alloca [%lld x i8]  ; array aggregate (composite elems)\n",
+                 base, (long long)total_bytes);
+        } else {
+            Emit(cg, "  %%t%u = alloca [%lld x %s]  ; array aggregate\n",
+                 base, (long long)count, elem_type);
+        }
 
         /* Track which elements are initialized (for others clause) */
         bool *initialized = Arena_Allocate((size_t)count * sizeof(bool));
@@ -17934,8 +17988,10 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             if (item->kind == NK_ASSOCIATION && item->association.choices.count > 0) {
                 if (Is_Others_Choice(item->association.choices.items[0])) {
                     others_val = Generate_Expression(cg, item->association.expression);
-                    const char *src_type = Expression_Llvm_Type(item->association.expression);
-                    others_val = Emit_Convert(cg, others_val, src_type, elem_type);
+                    if (!elem_is_composite) {
+                        const char *src_type = Expression_Llvm_Type(item->association.expression);
+                        others_val = Emit_Convert(cg, others_val, src_type, elem_type);
+                    }
                     has_others = true;
                     break;
                 }
@@ -17963,16 +18019,25 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         int64_t rng_high = choice->range.high->kind == NK_INTEGER ?
                                            choice->range.high->integer_lit.value : high;
                         uint32_t val = Generate_Expression(cg, item->association.expression);
-                        const char *src_type = Expression_Llvm_Type(item->association.expression);
-                        val = Emit_Convert(cg, val, src_type, elem_type);
+                        if (!elem_is_composite) {
+                            const char *src_type = Expression_Llvm_Type(item->association.expression);
+                            val = Emit_Convert(cg, val, src_type, elem_type);
+                        }
 
                         for (int64_t idx = rng_low; idx <= rng_high; idx++) {
                             int64_t arr_idx = idx - low;
                             if (arr_idx >= 0 && arr_idx < count) {
                                 uint32_t ptr = Emit_Temp(cg);
-                                Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %lld\n",
-                                     ptr, elem_type, base, (long long)arr_idx);
-                                Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, val, ptr);
+                                if (elem_is_composite) {
+                                    Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %lld\n",
+                                         ptr, base, (long long)(arr_idx * elem_size));
+                                    Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
+                                         ptr, val, elem_size);
+                                } else {
+                                    Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %lld\n",
+                                         ptr, elem_type, base, (long long)arr_idx);
+                                    Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, val, ptr);
+                                }
                                 initialized[arr_idx] = true;
                             }
                         }
@@ -17981,12 +18046,19 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         int64_t idx = choice->integer_lit.value - low;
                         if (idx >= 0 && idx < count) {
                             uint32_t val = Generate_Expression(cg, item->association.expression);
-                            const char *src_type = Expression_Llvm_Type(item->association.expression);
-                            val = Emit_Convert(cg, val, src_type, elem_type);
                             uint32_t ptr = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %lld\n",
-                                 ptr, elem_type, base, (long long)idx);
-                            Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, val, ptr);
+                            if (elem_is_composite) {
+                                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %lld\n",
+                                     ptr, base, (long long)(idx * elem_size));
+                                Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
+                                     ptr, val, elem_size);
+                            } else {
+                                const char *src_type = Expression_Llvm_Type(item->association.expression);
+                                val = Emit_Convert(cg, val, src_type, elem_type);
+                                Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %lld\n",
+                                     ptr, elem_type, base, (long long)idx);
+                                Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, val, ptr);
+                            }
                             initialized[idx] = true;
                         }
                     }
@@ -17995,12 +18067,19 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                 /* Positional association */
                 if (positional_idx < (uint32_t)count) {
                     uint32_t val = Generate_Expression(cg, item);
-                    const char *src_type = Expression_Llvm_Type(item);
-                    val = Emit_Convert(cg, val, src_type, elem_type);
                     uint32_t ptr = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %u\n",
-                         ptr, elem_type, base, positional_idx);
-                    Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, val, ptr);
+                    if (elem_is_composite) {
+                        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %lld\n",
+                             ptr, base, (long long)((int64_t)positional_idx * elem_size));
+                        Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
+                             ptr, val, elem_size);
+                    } else {
+                        const char *src_type = Expression_Llvm_Type(item);
+                        val = Emit_Convert(cg, val, src_type, elem_type);
+                        Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %u\n",
+                             ptr, elem_type, base, positional_idx);
+                        Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, val, ptr);
+                    }
                     initialized[positional_idx] = true;
                     positional_idx++;
                 }
@@ -18012,9 +18091,16 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             for (int64_t idx = 0; idx < count; idx++) {
                 if (!initialized[idx]) {
                     uint32_t ptr = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %lld\n",
-                         ptr, elem_type, base, (long long)idx);
-                    Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, others_val, ptr);
+                    if (elem_is_composite) {
+                        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %lld\n",
+                             ptr, base, (long long)(idx * elem_size));
+                        Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
+                             ptr, others_val, elem_size);
+                    } else {
+                        Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %lld\n",
+                             ptr, elem_type, base, (long long)idx);
+                        Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, others_val, ptr);
+                    }
                 }
             }
         }
@@ -19455,7 +19541,9 @@ static void Generate_Block_Statement(Code_Generator *cg, Syntax_Node *node) {
                 /* WHEN OTHERS => catches all */
                 Emit(cg, "  br label %%L%u\n", handler_body);
             } else {
-                /* Check against specific exceptions */
+                /* Check against specific exceptions.
+                 * For multiple choices (WHEN E1 | E2 =>), chain comparisons:
+                 * if not E1, branch to next check; if not E2, branch to next_handler. */
                 for (uint32_t j = 0; j < handler->handler.exceptions.count; j++) {
                     Syntax_Node *exc_name = handler->handler.exceptions.items[j];
                     if (exc_name->symbol) {
@@ -19466,8 +19554,17 @@ static void Generate_Block_Statement(Code_Generator *cg, Syntax_Node *node) {
                         uint32_t match = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n",
                              match, exc_id, exc_ptr);
+                        bool is_last = true;
+                        for (uint32_t k = j + 1; k < handler->handler.exceptions.count; k++) {
+                            if (handler->handler.exceptions.items[k]->symbol) { is_last = false; break; }
+                        }
+                        uint32_t fail_label = is_last ? next_handler : Emit_Label(cg);
                         Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
-                             match, handler_body, next_handler);
+                             match, handler_body, fail_label);
+                        if (!is_last) {
+                            Emit(cg, "L%u:\n", fail_label);
+                            cg->block_terminated = false;
+                        }
                     }
                 }
             }
@@ -20938,7 +21035,8 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
                 /* WHEN OTHERS => catches all */
                 Emit(cg, "  br label %%L%u\n", handler_body);
             } else {
-                /* Check against specific exceptions */
+                /* Check against specific exceptions.
+                 * For multiple choices (WHEN E1 | E2 =>), chain comparisons. */
                 for (uint32_t j = 0; j < handler->handler.exceptions.count; j++) {
                     Syntax_Node *exc_name = handler->handler.exceptions.items[j];
                     if (exc_name->symbol) {
@@ -20949,8 +21047,17 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
                         uint32_t match = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n",
                              match, exc_id, exc_ptr);
+                        bool is_last = true;
+                        for (uint32_t k = j + 1; k < handler->handler.exceptions.count; k++) {
+                            if (handler->handler.exceptions.items[k]->symbol) { is_last = false; break; }
+                        }
+                        uint32_t fail_label = is_last ? next_handler : Emit_Label(cg);
                         Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
-                             match, handler_body, next_handler);
+                             match, handler_body, fail_label);
+                        if (!is_last) {
+                            Emit(cg, "L%u:\n", fail_label);
+                            cg->block_terminated = false;
+                        }
                     }
                 }
             }
