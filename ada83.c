@@ -12867,6 +12867,20 @@ static inline bool Is_Uplevel_Access(const Code_Generator *cg, const Symbol *sym
            owner != cg->current_function->generic_template;
 }
 
+/* Emit the storage location for a symbol, automatically handling uplevel
+ * access through __frame.  This replaces 20+ manual Is_Uplevel_Access checks.
+ * Emits either "%__frame.<name>" (uplevel) or the normal "%<name>"/"@<name>".
+ * GNAT LLVM analogy: GL_Value encapsulates storage location; callers don't
+ * care whether it's a frame slot or local alloca. */
+static void Emit_Symbol_Storage(Code_Generator *cg, Symbol *sym) {
+    if (Is_Uplevel_Access(cg, sym)) {
+        Emit(cg, "%%__frame.");
+        Emit_Symbol_Name(cg, sym);
+    } else {
+        Emit_Symbol_Ref(cg, sym);
+    }
+}
+
 /* Resolve generic formal type → actual type within an instance.
  * Called from attribute codegen, SUCC/PRED, and elsewhere.
  * Returns the substituted type, or the original if no match. */
@@ -13399,7 +13413,7 @@ static void Emit_Fat_Pointer_Copy_To_Ptr(Code_Generator *cg, uint32_t fat_ptr, u
 static uint32_t Emit_Load_Fat_Pointer(Code_Generator *cg, Symbol *sym) {
     uint32_t fat = Emit_Temp(cg);
     Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr ", fat);
-    Emit_Symbol_Ref(cg, sym);
+    Emit_Symbol_Storage(cg, sym);
     Emit(cg, "\n");
     return fat;
 }
@@ -13411,19 +13425,11 @@ static uint32_t Emit_Load_Fat_Pointer_From_Temp(Code_Generator *cg, uint32_t ptr
     return fat;
 }
 
-/* Load fat pointer from %%__frame.<sym> — for uplevel (nested scope) access */
-static uint32_t Emit_Load_Fat_Pointer_Frame(Code_Generator *cg, Symbol *sym) {
-    uint32_t fat = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%__frame.", fat);
-    Emit_Symbol_Name(cg, sym);
-    Emit(cg, "\n");
-    return fat;
-}
 
 /* Store a fat pointer value into a symbol's storage */
 static void Emit_Store_Fat_Pointer_To_Symbol(Code_Generator *cg, uint32_t fat_val, Symbol *sym) {
-    Emit(cg, "  store " FAT_PTR_TYPE " %%t%u, ptr %%", fat_val);
-    Emit_Symbol_Name(cg, sym);
+    Emit(cg, "  store " FAT_PTR_TYPE " %%t%u, ptr ", fat_val);
+    Emit_Symbol_Storage(cg, sym);
     Emit(cg, "\n");
 }
 
@@ -13433,20 +13439,20 @@ static void Emit_Store_Fat_Pointer_Fields_To_Symbol(Code_Generator *cg,
     uint32_t data_ptr, uint32_t low_temp, uint32_t high_temp, Symbol *sym)
 {
     uint32_t data_slot = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr %%", data_slot);
-    Emit_Symbol_Name(cg, sym);
+    Emit(cg, "  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr ", data_slot);
+    Emit_Symbol_Storage(cg, sym);
     Emit(cg, ", i32 0, i32 0\n");
     Emit(cg, "  store ptr %%t%u, ptr %%t%u  ; fat ptr data\n", data_ptr, data_slot);
 
     uint32_t low_slot = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr %%", low_slot);
-    Emit_Symbol_Name(cg, sym);
+    Emit(cg, "  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr ", low_slot);
+    Emit_Symbol_Storage(cg, sym);
     Emit(cg, ", i32 0, i32 1, i32 0\n");
     Emit(cg, "  store i64 %%t%u, ptr %%t%u  ; fat ptr low\n", low_temp, low_slot);
 
     uint32_t high_slot = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr %%", high_slot);
-    Emit_Symbol_Name(cg, sym);
+    Emit(cg, "  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr ", high_slot);
+    Emit_Symbol_Storage(cg, sym);
     Emit(cg, ", i32 0, i32 1, i32 1\n");
     Emit(cg, "  store i64 %%t%u, ptr %%t%u  ; fat ptr high\n", high_temp, high_slot);
 }
@@ -13506,6 +13512,167 @@ static uint32_t Emit_Fat_Pointer_Compare(Code_Generator *cg,
  * ───────────────────────────────────────────────────────────────────────── */
 
 static uint32_t Generate_Expression(Code_Generator *cg, Syntax_Node *node);
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Generate_Lvalue — Return a ptr to the storage location of an lvalue.
+ *
+ * GNAT LLVM analogy: GL_Value with GL_Relationship = Reference.
+ * This cleanly separates "compute the address" from "load the value",
+ * eliminating duplicated address computation in Generate_Expression
+ * vs Generate_Assignment.
+ *
+ * Handles:
+ *   NK_IDENTIFIER   — symbol storage (local, global, or uplevel)
+ *   NK_SELECTED     — record field offset from base address
+ *   NK_APPLY        — array element address (indexed component)
+ *   NK_UNARY_OP/ALL — .ALL dereference (load pointer value)
+ *
+ * Returns a temp holding ptr to the storage.  Caller can then:
+ *   - load from it  (expression context)
+ *   - store to it   (assignment context)
+ * ───────────────────────────────────────────────────────────────────────── */
+static uint32_t Generate_Lvalue(Code_Generator *cg, Syntax_Node *node) {
+    if (!node) return 0;
+
+    /* NK_IDENTIFIER: return ptr to the symbol's storage */
+    if (node->kind == NK_IDENTIFIER) {
+        Symbol *sym = node->symbol;
+        if (!sym) return 0;
+
+        /* For RENAMES: redirect to renamed object */
+        if (sym->renamed_object) {
+            return Generate_Lvalue(cg, sym->renamed_object);
+        }
+
+        uint32_t t = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = getelementptr i8, ptr ", t);
+        Emit_Symbol_Storage(cg, sym);
+        Emit(cg, ", i64 0  ; lvalue of %.*s\n",
+             (int)sym->name.length, sym->name.data);
+        return t;
+    }
+
+    /* NK_SELECTED: record field access — compute base + field offset */
+    if (node->kind == NK_SELECTED) {
+        Type_Info *prefix_type = node->selected.prefix ? node->selected.prefix->type : NULL;
+
+        /* Explicit .ALL dereference: load pointer value */
+        if (Type_Is_Access(prefix_type) &&
+            Slice_Equal_Ignore_Case(node->selected.selector, S("ALL"))) {
+            /* The pointer IS the lvalue target */
+            uint32_t ptr = Generate_Expression(cg, node->selected.prefix);
+            return ptr;
+        }
+
+        /* Determine effective record type (handle implicit dereference) */
+        Type_Info *record_type = prefix_type;
+        bool implicit_deref = false;
+        if (Type_Is_Access(prefix_type) &&
+            Type_Is_Record(prefix_type->access.designated_type)) {
+            record_type = prefix_type->access.designated_type;
+            implicit_deref = true;
+        }
+
+        if (Type_Is_Record(record_type)) {
+            /* Find field offset */
+            uint32_t byte_offset = 0;
+            for (uint32_t i = 0; i < record_type->record.component_count; i++) {
+                if (Slice_Equal_Ignore_Case(
+                        record_type->record.components[i].name,
+                        node->selected.selector)) {
+                    byte_offset = record_type->record.components[i].byte_offset;
+                    break;
+                }
+            }
+
+            /* Get base pointer */
+            uint32_t base;
+            if (implicit_deref) {
+                /* Load access value to get record pointer */
+                base = Generate_Expression(cg, node->selected.prefix);
+            } else {
+                base = Generate_Lvalue(cg, node->selected.prefix);
+            }
+
+            /* GEP to field offset */
+            uint32_t field_ptr = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u  ; field lvalue\n",
+                 field_ptr, base, byte_offset);
+            return field_ptr;
+        }
+    }
+
+    /* NK_UNARY_OP with TK_ALL: .ALL dereference — load the pointer value */
+    if (node->kind == NK_UNARY_OP && node->unary.op == TK_ALL) {
+        uint32_t ptr = Generate_Expression(cg, node->unary.operand);
+        return ptr;
+    }
+
+    /* NK_APPLY: array indexed component — compute element address */
+    if (node->kind == NK_APPLY && node->apply.prefix) {
+        Type_Info *prefix_type = node->apply.prefix->type;
+        if (Type_Is_Access(prefix_type) && prefix_type->access.designated_type) {
+            prefix_type = prefix_type->access.designated_type;
+        }
+        if (prefix_type && (prefix_type->kind == TYPE_ARRAY ||
+                            prefix_type->kind == TYPE_STRING)) {
+            /* Get array base pointer */
+            Symbol *array_sym = node->apply.prefix->symbol;
+            uint32_t base;
+            bool has_dynamic_low = false;
+            uint32_t dynamic_low = 0;
+
+            if (array_sym && (Type_Is_Unconstrained_Array(prefix_type) ||
+                              Type_Has_Dynamic_Bounds(prefix_type))) {
+                /* Unconstrained array: load fat pointer, extract data ptr */
+                uint32_t fat = Emit_Load_Fat_Pointer(cg, array_sym);
+                base = Emit_Fat_Pointer_Data(cg, fat);
+                dynamic_low = Emit_Fat_Pointer_Low(cg, fat);
+                has_dynamic_low = true;
+            } else if (array_sym) {
+                base = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = getelementptr i8, ptr ", base);
+                Emit_Symbol_Storage(cg, array_sym);
+                Emit(cg, ", i64 0  ; array base\n");
+            } else {
+                base = Generate_Expression(cg, node->apply.prefix);
+            }
+
+            /* Generate index expression */
+            if (node->apply.arguments.count > 0) {
+                Syntax_Node *arg = node->apply.arguments.items[0];
+                uint32_t idx = Generate_Expression(cg, arg);
+
+                /* Adjust for low bound */
+                if (has_dynamic_low) {
+                    uint32_t adj = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", adj, idx, dynamic_low);
+                    idx = adj;
+                } else {
+                    int64_t low_bound = Array_Low_Bound(prefix_type);
+                    if (low_bound != 0) {
+                        uint32_t adj = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = sub i64 %%t%u, %lld\n",
+                             adj, idx, (long long)low_bound);
+                        idx = adj;
+                    }
+                }
+
+                /* Compute element address */
+                Type_Info *elem_type_info = prefix_type->array.element_type;
+                const char *elem_type = Type_To_Llvm(elem_type_info);
+                uint32_t ptr = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %%t%u  ; elem lvalue\n",
+                     ptr, elem_type, base, idx);
+                return ptr;
+            }
+        }
+    }
+
+    /* Fallback: treat expression result as pointer (for composite types
+     * that Generate_Expression already returns as ptr) */
+    return Generate_Expression(cg, node);
+}
 
 /* Generate code to evaluate a type bound at runtime.
  * Returns the temp register containing the bound value.
@@ -13613,18 +13780,9 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
         case SYMBOL_PARAMETER:
         case SYMBOL_DISCRIMINANT: {
             const char *type_str = Type_To_Llvm(ty);
-            if (Is_Uplevel_Access(cg, sym)) {
-                /* Uplevel access through frame pointer parameter */
-                Emit(cg, "  ; UPLEVEL ACCESS: %.*s via frame pointer\n",
-                     (int)sym->name.length, sym->name.data);
-                Emit(cg, "  %%t%u = load %s, ptr %%__frame.", t, type_str);
-                Emit_Symbol_Name(cg, sym);
-                Emit(cg, "\n");
-            } else {
-                Emit(cg, "  %%t%u = load %s, ptr ", t, type_str);
-                Emit_Symbol_Ref(cg, sym);
-                Emit(cg, "\n");
-            }
+            Emit(cg, "  %%t%u = load %s, ptr ", t, type_str);
+            Emit_Symbol_Storage(cg, sym);
+            Emit(cg, "\n");
             /* Widen to i64 for computation if narrower integer type.
              * But keep ptr types as ptr - they're used for dereference (.ALL)
              * and implicit dereference operations.
@@ -13953,13 +14111,7 @@ static uint32_t Generate_Composite_Address(Code_Generator *cg, Syntax_Node *node
         if (sym) {
             uint32_t t = Emit_Temp(cg);
             Emit(cg, "  %%t%u = getelementptr i8, ptr ", t);
-            if (Is_Uplevel_Access(cg, sym)) {
-                /* Uplevel access through frame pointer */
-                Emit(cg, "%%__frame.");
-                Emit_Symbol_Name(cg, sym);
-            } else {
-                Emit_Symbol_Ref(cg, sym);
-            }
+            Emit_Symbol_Storage(cg, sym);
             Emit(cg, ", i64 0\n");
             return t;
         }
@@ -13986,15 +14138,9 @@ static uint32_t Generate_Composite_Address(Code_Generator *cg, Syntax_Node *node
                 Symbol *access_sym = node->selected.prefix->symbol;
                 base = Emit_Temp(cg);
                 if (access_sym) {
-                    if (Is_Uplevel_Access(cg, access_sym)) {
-                        Emit(cg, "  %%t%u = load ptr, ptr %%__frame.", base);
-                        Emit_Symbol_Name(cg, access_sym);
-                        Emit(cg, "  ; uplevel implicit deref for field address\n");
-                    } else {
-                        Emit(cg, "  %%t%u = load ptr, ptr ", base);
-                        Emit_Symbol_Ref(cg, access_sym);
-                        Emit(cg, "  ; implicit deref for field address\n");
-                    }
+                    Emit(cg, "  %%t%u = load ptr, ptr ", base);
+                    Emit_Symbol_Storage(cg, access_sym);
+                    Emit(cg, "  ; implicit deref for field address\n");
                 } else {
                     uint32_t ptr = Generate_Expression(cg, node->selected.prefix);
                     base = ptr;  /* Already a ptr from access expr */
@@ -15693,15 +15839,9 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         if (prefix->kind == NK_SELECTED && prefix->selected.prefix->symbol) {
             Symbol *task_sym = prefix->selected.prefix->symbol;
             task_ptr = Emit_Temp(cg);
-            if (Is_Uplevel_Access(cg, task_sym)) {
-                Emit(cg, "  %%t%u = getelementptr i8, ptr %%__frame.", task_ptr);
-                Emit_Symbol_Name(cg, task_sym);
-                Emit(cg, ", i64 0  ; uplevel task object\n");
-            } else {
-                Emit(cg, "  %%t%u = getelementptr i8, ptr ", task_ptr);
-                Emit_Symbol_Ref(cg, task_sym);
-                Emit(cg, ", i64 0  ; task object\n");
-            }
+            Emit(cg, "  %%t%u = getelementptr i8, ptr ", task_ptr);
+            Emit_Symbol_Storage(cg, task_sym);
+            Emit(cg, ", i64 0  ; task object\n");
         } else {
             task_ptr = Emit_Temp(cg);
             Emit(cg, "  %%t%u = inttoptr i64 0 to ptr  ; current task\n", task_ptr);
@@ -15742,19 +15882,12 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         uint32_t low_bound_val = 0;
         bool has_dynamic_low = false;
 
-        bool is_uplevel = Is_Uplevel_Access(cg, array_sym);
-
         if (implicit_deref) {
             /* Load the access value (pointer to array) then use as base */
             if (array_sym) {
                 base = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = load ptr, ptr ", base);
-                if (is_uplevel) {
-                    Emit(cg, "%%__frame.");
-                    Emit_Symbol_Name(cg, array_sym);
-                } else {
-                    Emit_Symbol_Ref(cg, array_sym);
-                }
+                Emit_Symbol_Storage(cg, array_sym);
                 Emit(cg, "  ; implicit dereference of access\n");
             } else {
                 base = Generate_Expression(cg, node->apply.prefix);
@@ -15777,12 +15910,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, "  ; DEBUG ARRAY INDEX: using constrained path (sym_kind=%d)\n", array_sym->kind);
             base = Emit_Temp(cg);
             Emit(cg, "  %%t%u = getelementptr i8, ptr ", base);
-            if (is_uplevel && cg->is_nested) {
-                Emit(cg, "%%__frame.");
-                Emit_Symbol_Name(cg, array_sym);
-            } else {
-                Emit_Symbol_Ref(cg, array_sym);
-            }
+            Emit_Symbol_Storage(cg, array_sym);
             Emit(cg, ", i64 0\n");
         } else {
             /* Complex prefix (e.g., array field of indexed record) */
@@ -15973,18 +16101,9 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
     if (Type_Is_Access(prefix_type) &&
         Slice_Equal_Ignore_Case(node->selected.selector, S("ALL"))) {
         Type_Info *designated = prefix_type->access.designated_type;
-        Symbol *access_sym = node->selected.prefix->symbol;
 
-        /* Load the pointer */
-        uint32_t ptr;
-        if (access_sym) {
-            ptr = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = load ptr, ptr ", ptr);
-            Emit_Symbol_Ref(cg, access_sym);
-            Emit(cg, "  ; explicit .ALL dereference\n");
-        } else {
-            ptr = Generate_Expression(cg, node->selected.prefix);
-        }
+        /* Generate_Lvalue returns the loaded pointer (address of designated) */
+        uint32_t ptr = Generate_Lvalue(cg, node);
 
         /* For composite types (records, arrays), return pointer */
         if (Type_Is_Composite(designated)) {
@@ -16036,8 +16155,6 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
         }
     }
 
-    /* Get base address of record variable */
-    Symbol *record_sym = node->selected.prefix->symbol;
     const char *field_llvm_type = Type_To_Llvm(field_type);
 
     /* Runtime discriminant check for variant component access (RM 3.7.3)
@@ -16052,16 +16169,18 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
         uint32_t disc_offset = disc_comp->byte_offset;
         const char *disc_llvm = Type_To_Llvm(disc_comp->component_type);
 
-        uint32_t disc_ptr = Emit_Temp(cg);
-        if (record_sym) {
-            Emit(cg, "  %%t%u = getelementptr i8, ptr ", disc_ptr);
-            Emit_Symbol_Ref(cg, record_sym);
-            Emit(cg, ", i64 %u  ; discriminant addr\n", disc_offset);
+        /* Get base address of record for discriminant check.
+         * For implicit dereference, load the pointer to get the record address.
+         * For direct records, get the storage address via Generate_Lvalue. */
+        uint32_t rec_base;
+        if (implicit_deref) {
+            rec_base = Generate_Expression(cg, node->selected.prefix);
         } else {
-            uint32_t base = Generate_Expression(cg, node->selected.prefix);
-            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u  ; discriminant addr\n",
-                 disc_ptr, base, disc_offset);
+            rec_base = Generate_Lvalue(cg, node->selected.prefix);
         }
+        uint32_t disc_ptr = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u  ; discriminant addr\n",
+             disc_ptr, rec_base, disc_offset);
         uint32_t disc_val = Emit_Temp(cg);
         Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; load discriminant\n",
              disc_val, disc_llvm, disc_ptr);
@@ -16083,72 +16202,12 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
         /* For WHEN OTHERS variant, any discriminant value is valid - no check needed */
     }
 
-    if (implicit_deref) {
-        /* Access-to-record: load pointer then compute field offset */
-        uint32_t base_ptr;
-        if (record_sym) {
-            base_ptr = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = load ptr, ptr ", base_ptr);
-            Emit_Symbol_Ref(cg, record_sym);
-            Emit(cg, "  ; implicit dereference of access-to-record\n");
-        } else {
-            base_ptr = Generate_Expression(cg, node->selected.prefix);
-        }
-        uint32_t ptr = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
-             ptr, base_ptr, byte_offset);
+    /* Use Generate_Lvalue to compute field address — handles all three paths:
+     * implicit dereference, nested selection, and direct symbol access.
+     * This eliminates duplicated address computation (GNAT LLVM GL_Relationship). */
+    uint32_t ptr = Generate_Lvalue(cg, node);
 
-        /* Fat pointer fields: unconstrained/dynamic arrays and STRING */
-        if (Type_Needs_Fat_Pointer_Load(field_type))
-            return Emit_Load_Fat_Pointer_From_Temp(cg, ptr);
-        /* Other composite types (records, constrained arrays) return ptr */
-        if (Type_Is_Record(field_type) || (field_type && field_type->kind == TYPE_ARRAY))
-            return ptr;
-        /* For access-type components, load ptr without converting to i64 */
-        if (Type_Is_Access(field_type)) {
-            uint32_t t = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = load ptr, ptr %%t%u\n", t, ptr);
-            return t;
-        }
-        uint32_t t = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, field_llvm_type, ptr);
-        t = Emit_Convert(cg, t, field_llvm_type, "i64");
-        return t;
-    }
-
-    if (!record_sym) {
-        /* Handle nested selection (e.g., A.B.C) by generating prefix expression */
-        uint32_t base_ptr = Generate_Expression(cg, node->selected.prefix);
-        uint32_t ptr = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
-             ptr, base_ptr, byte_offset);
-
-        /* Fat pointer fields: unconstrained/dynamic arrays and STRING */
-        if (Type_Needs_Fat_Pointer_Load(field_type))
-            return Emit_Load_Fat_Pointer_From_Temp(cg, ptr);
-        /* Other composite types (records, constrained arrays) return ptr */
-        if (Type_Is_Record(field_type) || (field_type && field_type->kind == TYPE_ARRAY))
-            return ptr;
-        /* For access-type components, load ptr without converting to i64 */
-        if (Type_Is_Access(field_type)) {
-            uint32_t t = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = load ptr, ptr %%t%u\n", t, ptr);
-            return t;
-        }
-        uint32_t t = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, field_llvm_type, ptr);
-        /* Widen to i64 for computation if narrower type */
-        t = Emit_Convert(cg, t, field_llvm_type, "i64");
-        return t;
-    }
-
-    /* Calculate address of field */
-    uint32_t ptr = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = getelementptr i8, ptr ", ptr);
-    Emit_Symbol_Ref(cg, record_sym);
-    Emit(cg, ", i64 %u\n", byte_offset);
-
-    /* Fat pointer fields: unconstrained/dynamic arrays and STRING */
+    /* Type-specific load from field address */
     if (Type_Needs_Fat_Pointer_Load(field_type))
         return Emit_Load_Fat_Pointer_From_Temp(cg, ptr);
     /* Other composite types (records, constrained arrays) return ptr */
@@ -16162,9 +16221,7 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
     }
     uint32_t t = Emit_Temp(cg);
     Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, field_llvm_type, ptr);
-    /* Widen to i64 for computation if narrower type */
     t = Emit_Convert(cg, t, field_llvm_type, "i64");
-
     return t;
 }
 
@@ -16472,12 +16529,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
             } else {
                 /* Variable/task address — emit via uplevel predicate */
                 Emit(cg, "  %%t%u = ptrtoint ptr ", t);
-                if (Is_Uplevel_Access(cg, sym)) {
-                    Emit(cg, "%%__frame.");
-                    Emit_Symbol_Name(cg, sym);
-                } else {
-                    Emit_Symbol_Ref(cg, sym);
-                }
+                Emit_Symbol_Storage(cg, sym);
                 Emit(cg, " to i64  ; 'ADDRESS\n");
             }
         } else {
@@ -18173,9 +18225,7 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
                 int64_t low_bound;
                 if (target_is_uncon) {
                     /* Load fat pointer, extract data ptr and low bound */
-                    uint32_t fat = Is_Uplevel_Access(cg, array_sym)
-                        ? Emit_Load_Fat_Pointer_Frame(cg, array_sym)
-                        : Emit_Load_Fat_Pointer(cg, array_sym);
+                    uint32_t fat = Emit_Load_Fat_Pointer(cg, array_sym);
                     dest_base = Emit_Fat_Pointer_Data(cg, fat);
                     /* Low bound comes from the fat pointer at runtime */
                     low_bound = 0;  /* We'll use dynamic low below */
@@ -18227,12 +18277,7 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
                 /* Get destination base address */
                 dest_base = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = getelementptr i8, ptr ", dest_base);
-                if (Is_Uplevel_Access(cg, array_sym)) {
-                    Emit(cg, "%%__frame.");
-                    Emit_Symbol_Name(cg, array_sym);
-                } else {
-                    Emit_Symbol_Ref(cg, array_sym);
-                }
+                Emit_Symbol_Storage(cg, array_sym);
                 Emit(cg, ", i64 0\n");
 
                 /* Calculate destination start offset from slice low bound */
@@ -18264,20 +18309,13 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
                         bool src_is_uncon = Type_Is_String(src_type) ||
                                             Type_Is_Unconstrained_Array(src_type);
                         if (src_is_uncon) {
-                            uint32_t sfat = Is_Uplevel_Access(cg, src_sym)
-                                ? Emit_Load_Fat_Pointer_Frame(cg, src_sym)
-                                : Emit_Load_Fat_Pointer(cg, src_sym);
+                            uint32_t sfat = Emit_Load_Fat_Pointer(cg, src_sym);
                             src_base = Emit_Fat_Pointer_Data(cg, sfat);
                             src_fat_low = Emit_Fat_Pointer_Low(cg, sfat);
                         } else {
                             src_base = Emit_Temp(cg);
                             Emit(cg, "  %%t%u = getelementptr i8, ptr ", src_base);
-                            if (Is_Uplevel_Access(cg, src_sym)) {
-                                Emit(cg, "%%__frame.");
-                                Emit_Symbol_Name(cg, src_sym);
-                            } else {
-                                Emit_Symbol_Ref(cg, src_sym);
-                            }
+                            Emit_Symbol_Storage(cg, src_sym);
                             Emit(cg, ", i64 0\n");
                         }
 
@@ -18318,74 +18356,16 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
                 return;  /* Unsupported source for slice assignment */
             }
 
-            /* Array element assignment: DATA(I) := value */
-            uint32_t base;
-            int64_t low_bound;
-            if (target_is_uncon) {
-                /* Load fat pointer to get data pointer and low bound */
-                uint32_t fat = Is_Uplevel_Access(cg, array_sym)
-                    ? Emit_Load_Fat_Pointer_Frame(cg, array_sym)
-                    : Emit_Load_Fat_Pointer(cg, array_sym);
-                base = Emit_Fat_Pointer_Data(cg, fat);
-                /* Use dynamic low bound from fat pointer */
-                uint32_t fat_low = Emit_Fat_Pointer_Low(cg, fat);
-
-                /* Generate index expression */
-                uint32_t idx = Generate_Expression(cg, arg);
-
-                /* Adjust index by dynamic low bound */
-                uint32_t adj_idx = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u"
-                     "  ; adjust for dynamic low\n", adj_idx, idx, fat_low);
-
-                /* Get pointer to element */
-                const char *elem_type_str = Type_To_Llvm(prefix_type->array.element_type);
-                uint32_t ptr = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %%t%u\n",
-                     ptr, elem_type_str, base, adj_idx);
-
-                /* Generate value and store */
-                uint32_t value = Generate_Expression(cg, node->assignment.value);
-                const char *value_type = Expression_Llvm_Type(node->assignment.value);
-                value = Emit_Convert(cg, value, value_type, elem_type_str);
-                Emit(cg, "  store %s %%t%u, ptr %%t%u"
-                     "  ; uncon element assign\n", elem_type_str, value, ptr);
-                return;
-            }
-
-            /* Constrained array element assignment */
-            base = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = getelementptr i8, ptr ", base);
-            if (Is_Uplevel_Access(cg, array_sym)) {
-                Emit(cg, "%%__frame.");
-                Emit_Symbol_Name(cg, array_sym);
-            } else {
-                Emit_Symbol_Ref(cg, array_sym);
-            }
-            Emit(cg, ", i64 0\n");
-
-            /* Generate index expression */
-            uint32_t idx = Generate_Expression(cg, arg);
-
-            /* Adjust for array low bound (Ada arrays can start at any index) */
-            low_bound = Array_Low_Bound(prefix_type);
-            if (low_bound != 0) {
-                uint32_t adj = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = sub i64 %%t%u, %lld\n", adj, idx, (long long)low_bound);
-                idx = adj;
-            }
-
-            /* Get pointer to element */
+            /* Array element assignment: DATA(I) := value
+             * Generate_Lvalue handles both unconstrained (fat pointer) and
+             * constrained arrays — computes element address in one call. */
             const char *elem_type_str = Type_To_Llvm(prefix_type->array.element_type);
-            uint32_t ptr = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %%t%u\n",
-                 ptr, elem_type_str, base, idx);
-
-            /* Generate value and store */
+            uint32_t elem_ptr = Generate_Lvalue(cg, target);
             uint32_t value = Generate_Expression(cg, node->assignment.value);
             const char *value_type = Expression_Llvm_Type(node->assignment.value);
             value = Emit_Convert(cg, value, value_type, elem_type_str);
-            Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type_str, value, ptr);
+            Emit(cg, "  store %s %%t%u, ptr %%t%u  ; array element assign\n",
+                 elem_type_str, value, elem_ptr);
             return;
         }
     }
@@ -18399,10 +18379,8 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
             Type_Info *designated = operand_type->access.designated_type;
             const char *dest_type = Type_To_Llvm(designated);
 
-            /* Get the pointer value */
-            uint32_t ptr = Generate_Expression(cg, operand);
-
-            /* Generate value and store through the pointer */
+            /* Generate_Lvalue loads the pointer value (the storage address) */
+            uint32_t ptr = Generate_Lvalue(cg, target);
             uint32_t value = Generate_Expression(cg, node->assignment.value);
             const char *value_type = Expression_Llvm_Type(node->assignment.value);
             value = Emit_Convert(cg, value, value_type, dest_type);
@@ -18412,101 +18390,48 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
         }
     }
 
-    /* Handle selected component target (record field assignment or .ALL) */
+    /* Handle selected component target (record field assignment or .ALL)
+     * Generate_Lvalue computes the storage address — we just determine
+     * the store type and let Generate_Lvalue handle address computation. */
     if (target->kind == NK_SELECTED) {
         Syntax_Node *prefix = target->selected.prefix;
         Type_Info *prefix_type = prefix->type;
 
-        /* Handle explicit .ALL dereference assignment */
+        /* Determine the type being stored */
+        const char *store_type;
         if (Type_Is_Access(prefix_type) &&
             Slice_Equal_Ignore_Case(target->selected.selector, S("ALL"))) {
-            Type_Info *designated = prefix_type->access.designated_type;
-            Symbol *access_sym = prefix->symbol;
-            const char *dest_type = Type_To_Llvm(designated);
-
-            /* Load the access pointer value */
-            uint32_t ptr;
-            if (access_sym) {
-                ptr = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = load ptr, ptr ", ptr);
-                Emit_Symbol_Ref(cg, access_sym);
-                Emit(cg, "  ; load access for .ALL assignment\n");
-            } else {
-                ptr = Generate_Expression(cg, prefix);
+            /* .ALL dereference: store designated type */
+            store_type = Type_To_Llvm(prefix_type->access.designated_type);
+        } else {
+            /* Record field: find component type */
+            Type_Info *record_type = prefix_type;
+            if (Type_Is_Access(prefix_type) &&
+                Type_Is_Record(prefix_type->access.designated_type)) {
+                record_type = prefix_type->access.designated_type;
             }
-
-            /* Generate value and store through the pointer */
-            uint32_t value = Generate_Expression(cg, node->assignment.value);
-            const char *value_type = Expression_Llvm_Type(node->assignment.value);
-            value = Emit_Convert(cg, value, value_type, dest_type);
-            Emit(cg, "  store %s %%t%u, ptr %%t%u  ; store via .ALL\n", dest_type, value, ptr);
-            return;
-        }
-
-        /* Determine effective record type (handle implicit dereference) */
-        Type_Info *record_type = prefix_type;
-        bool implicit_deref = false;
-        if (Type_Is_Access(prefix_type) &&
-            Type_Is_Record(prefix_type->access.designated_type)) {
-            record_type = prefix_type->access.designated_type;
-            implicit_deref = true;
-        }
-
-        if (Type_Is_Record(record_type)) {
-            /* Find component offset */
-            uint32_t offset = 0;
             Type_Info *comp_type = NULL;
-            for (uint32_t i = 0; i < record_type->record.component_count; i++) {
-                if (Slice_Equal_Ignore_Case(record_type->record.components[i].name,
-                                            target->selected.selector)) {
-                    offset = record_type->record.components[i].byte_offset;
-                    comp_type = record_type->record.components[i].component_type;
-                    break;
-                }
-            }
-
-            const char *comp_llvm_type = Type_To_Llvm(comp_type);
-
-            /* Get base address of record */
-            Symbol *record_sym = prefix->symbol;
-            uint32_t base_ptr;
-
-            if (implicit_deref) {
-                /* Load access value to get record pointer */
-                if (record_sym) {
-                    base_ptr = Emit_Temp(cg);
-                    if (Is_Uplevel_Access(cg, record_sym)) {
-                        Emit(cg, "  %%t%u = load ptr, ptr %%__frame.", base_ptr);
-                        Emit_Symbol_Name(cg, record_sym);
-                        Emit(cg, "  ; uplevel implicit deref for field assignment\n");
-                    } else {
-                        Emit(cg, "  %%t%u = load ptr, ptr ", base_ptr);
-                        Emit_Symbol_Ref(cg, record_sym);
-                        Emit(cg, "  ; implicit deref for field assignment\n");
+            if (Type_Is_Record(record_type)) {
+                for (uint32_t i = 0; i < record_type->record.component_count; i++) {
+                    if (Slice_Equal_Ignore_Case(record_type->record.components[i].name,
+                                                target->selected.selector)) {
+                        comp_type = record_type->record.components[i].component_type;
+                        break;
                     }
-                } else {
-                    base_ptr = Generate_Expression(cg, prefix);
                 }
-            } else {
-                if (!record_sym) return;
-                base_ptr = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = getelementptr i8, ptr ", base_ptr);
-                Emit_Symbol_Ref(cg, record_sym);
-                Emit(cg, ", i64 0\n");
             }
-
-            /* Calculate address of field */
-            uint32_t field_ptr = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
-                 field_ptr, base_ptr, offset);
-
-            /* Generate value and store */
-            uint32_t value = Generate_Expression(cg, node->assignment.value);
-            const char *value_type = Expression_Llvm_Type(node->assignment.value);
-            value = Emit_Convert(cg, value, value_type, comp_llvm_type);
-            Emit(cg, "  store %s %%t%u, ptr %%t%u\n", comp_llvm_type, value, field_ptr);
-            return;
+            store_type = Type_To_Llvm(comp_type);
         }
+
+        /* Generate_Lvalue handles .ALL dereference, implicit dereference,
+         * and direct field offset — all address computation is unified. */
+        uint32_t addr = Generate_Lvalue(cg, target);
+        uint32_t value = Generate_Expression(cg, node->assignment.value);
+        const char *value_type = Expression_Llvm_Type(node->assignment.value);
+        value = Emit_Convert(cg, value, value_type, store_type);
+        Emit(cg, "  store %s %%t%u, ptr %%t%u  ; selected assign\n",
+             store_type, value, addr);
+        return;
     }
 
     /* Simple variable target */
@@ -18623,10 +18548,7 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
         bool src_is_fat = Expression_Produces_Fat_Pointer(src, src_type);
 
         /* Load existing fat pointer from the target variable */
-        bool is_uplevel = Is_Uplevel_Access(cg, target_sym);
-        uint32_t existing_fat = (is_uplevel && cg->is_nested)
-            ? Emit_Load_Fat_Pointer_Frame(cg, target_sym)
-            : Emit_Load_Fat_Pointer(cg, target_sym);
+        uint32_t existing_fat = Emit_Load_Fat_Pointer(cg, target_sym);
         uint32_t dest_data = Emit_Fat_Pointer_Data(cg, existing_fat);
         uint32_t dest_len  = Emit_Fat_Pointer_Length(cg, existing_fat);
 
@@ -18651,7 +18573,6 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
 
     uint32_t value = Generate_Expression(cg, node->assignment.value);
 
-    bool is_uplevel = Is_Uplevel_Access(cg, target_sym);
     const char *type_str = Type_To_Llvm(ty);
 
     /* Determine source type from the value expression */
@@ -18712,18 +18633,9 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
         }
     }
 
-    if (is_uplevel && cg->is_nested) {
-        /* Uplevel store through frame pointer */
-        Emit(cg, "  ; UPLEVEL STORE: %.*s via frame pointer\n",
-             (int)target_sym->name.length, target_sym->name.data);
-        Emit(cg, "  store %s %%t%u, ptr %%__frame.", type_str, value);
-        Emit_Symbol_Name(cg, target_sym);
-        Emit(cg, "\n");
-    } else {
-        Emit(cg, "  store %s %%t%u, ptr ", type_str, value);
-        Emit_Symbol_Ref(cg, target_sym);
-        Emit(cg, "\n");
-    }
+    Emit(cg, "  store %s %%t%u, ptr ", type_str, value);
+    Emit_Symbol_Storage(cg, target_sym);
+    Emit(cg, "\n");
 }
 
 static void Generate_If_Statement(Code_Generator *cg, Syntax_Node *node) {
@@ -19326,15 +19238,9 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                     uint32_t task_ptr = Emit_Temp(cg);
                     Symbol *task_sym = target->selected.prefix->symbol;
                     if (task_sym) {
-                        if (Is_Uplevel_Access(cg, task_sym)) {
-                            Emit(cg, "  %%t%u = getelementptr i8, ptr %%__frame.", task_ptr);
-                            Emit_Symbol_Name(cg, task_sym);
-                            Emit(cg, ", i64 0  ; uplevel task object\n");
-                        } else {
-                            Emit(cg, "  %%t%u = getelementptr i8, ptr ", task_ptr);
-                            Emit_Symbol_Ref(cg, task_sym);
-                            Emit(cg, ", i64 0  ; task object\n");
-                        }
+                        Emit(cg, "  %%t%u = getelementptr i8, ptr ", task_ptr);
+                        Emit_Symbol_Storage(cg, task_sym);
+                        Emit(cg, ", i64 0  ; task object\n");
                     } else {
                         Emit(cg, "  %%t%u = inttoptr i64 0 to ptr  ; no task\n", task_ptr);
                     }

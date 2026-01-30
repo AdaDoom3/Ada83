@@ -1,96 +1,191 @@
-Fat Pointer / Pointer Refactoring Checklist — ada83.c
-=====================================================
-Inspired by GNAT LLVM's approach (gnatllvm-glvalue.ads, gnatllvm-arrays.ads):
-  - Fat pointers are a first-class relationship type (GL_Relationship.Fat_Pointer)
-  - All operations go through typed helpers (Get_Array_Bound, Bounds_To_Length, etc.)
-  - Predicates like Contains_Bounds, Type_Needs_Bounds centralize decisions
-  - No raw extractvalue/insertvalue/GEP of fat pointer fields in codegen logic
-
-Our refactoring consolidates all raw FAT_PTR_TYPE manipulations into helpers.
+GNAT LLVM-Style Refactoring Checklist — Phase 2: ada83.c
+========================================================
+Three architectural issues to consolidate, inspired by GNAT LLVM's
+GL_Value / GL_Relationship design.
 
 ═══════════════════════════════════════════════════════════════════════════
-A. NEW HELPERS (added to §13.2.1 Fat Pointer Support section)
+A. ELIMINATE i64-AS-INTERMEDIATE FOR INTEGER TYPES
 ═══════════════════════════════════════════════════════════════════════════
 
-[x] A1. Emit_Load_Fat_Pointer_From_Temp(cg, temp_id)
-      — load FAT_PTR_TYPE from %%t<N>, vs existing Emit_Load_Fat_Pointer which
-        loads from a Symbol. Covers lines: 13691, 13693, 13707, 13708,
-        16003, 16011, 16039, 16047, 16075, 16083, 21536, 21538, 21550, 21551
+Problem: Every integer load site does `Emit_Convert(t, type_str, "i64")`
+immediately after loading, then every store/use site narrows back with
+`Emit_Convert(value, "i64", target_type)`.  This generates thousands of
+pointless sext/trunc pairs in the LLVM IR.
 
-[x] A2. Emit_Store_Fat_Pointer_To_Symbol(cg, fat_val, sym)
-      — store FAT_PTR_TYPE value into a named symbol.
-        Covers lines: 20008, 20046, 20252, 20265, 20271
+GNAT LLVM approach: values preserve their native LLVM type (i1, i8, i16,
+i32, i64) throughout.  Conversions happen only at actual type boundaries
+(assignments, calls, comparisons between different widths).
 
-[x] A3. Emit_Store_Fat_Pointer_Fields_To_Symbol(cg, data_ptr, low, high, sym)
-      — GEP into named symbol + store data/low/high fields.
-        Covers lines: 20159-20176, 20361-20378
+Strategy: Remove the "widen to i64" from load sites.  Instead, the
+*consumer* of the value does the conversion when needed via Emit_Convert.
+This is already how float/ptr/fat_ptr types work — they aren't widened.
 
-[x] A4. Emit_Store_Fat_Pointer_Fields_To_Temp(cg, data_ptr, low, high, temp_alloca)
-      — Same as A3 but target is %%t<N>. Covers lines: 17515-17534
+The key insight: Expression_Llvm_Type() already returns "i64" for booleans
+and most integer expressions.  We need it to return the *actual* native
+type instead — which is what Type_To_Llvm() returns.
 
-[x] A5. Emit_Fat_Pointer_Compare(cg, left_fat, right_fat)
-      — Compare two fat pointers for identity (ptr + low + high).
-        Returns i1 temp. Covers lines: 13701-13725, 21546-21568
+[ ] A1. Expression_Llvm_Type: return Type_To_Llvm(node->type) for integer
+      types instead of hardcoded "i64".  Keep special cases for booleans
+      (Expression_Is_Boolean returns "i64" because comparisons produce i64;
+      but the underlying i1 type should be used), floats, ptrs, fat ptrs.
+      NOTE: This is a careful change — Expression_Llvm_Type is used in 30+
+      places to determine what type a Generate_Expression result has.
 
-═══════════════════════════════════════════════════════════════════════════
-B. NEW PREDICATES (added to §10 Type System predicates)
-═══════════════════════════════════════════════════════════════════════════
+[ ] A2. Generate_Identifier (line 13636): Remove the i64 widening for
+      SYMBOL_VARIABLE / SYMBOL_PARAMETER / SYMBOL_DISCRIMINANT.
+      Before: load type_str then Emit_Convert(t, type_str, "i64")
+      After:  load type_str and return it as-is.
 
-[x] B1. Expression_Produces_Fat_Pointer(node, type)
-      — Centralizes the "src_is_fat_ptr" logic repeated at line 18557-18569.
-        Returns true for STRING, unconstrained arrays, slices, concat results.
+[ ] A3. Generate_Identifier (line 13694): Same removal for SYMBOL_CONSTANT.
 
-[x] B2. Type_Needs_Fat_Pointer_Load(type)
-      — Centralizes the field-load decision repeated 3x at lines 15997-16013,
-        16033-16049, 16069-16085: "is this an unconstrained/dynamic array
-        or STRING that should be loaded as FAT_PTR_TYPE from a record field?"
+[ ] A4. Generate_Identifier (line 13755): Same removal for function call
+      return value widening.
 
-═══════════════════════════════════════════════════════════════════════════
-C. CALL-SITE REFACTORING (replace inline patterns with helpers)
-═══════════════════════════════════════════════════════════════════════════
+[ ] A5. Generate_Selected_Component (line 16115): Remove i64 widening
+      after loading record field in implicit_deref path.
 
-[x] C1. Record equality — 13686-13694: use Emit_Load_Fat_Pointer_From_Temp
-[x] C2. Record equality — 13701-13725: use Emit_Fat_Pointer_Compare
-[x] C3. Record equality (dup) — 21533-21539: use Emit_Load_Fat_Pointer_From_Temp
-[x] C4. Record equality (dup) — 21546-21568: use Emit_Fat_Pointer_Compare
-[x] C5. Record field load — 15997-16013 (first copy): use Type_Needs_Fat_Pointer_Load
-[x] C6. Record field load — 16033-16049 (second copy): use Type_Needs_Fat_Pointer_Load
-[x] C7. Record field load — 16069-16085 (third copy): use Type_Needs_Fat_Pointer_Load
-[x] C8. Dynamic array aggregate — 17515-17536: use Emit_Store_Fat_Pointer_Fields_To_Temp
-[x] C9. Array init fat ptr construction — 20159-20176: use Emit_Store_Fat_Pointer_Fields_To_Symbol
-[x] C10. Uninit array fat ptr construction — 20361-20378: use Emit_Store_Fat_Pointer_Fields_To_Symbol
-[x] C11. Store fat ptr to symbol — ~20008: use Emit_Store_Fat_Pointer_To_Symbol
-[x] C12. Store fat ptr to symbol — ~20046: use Emit_Store_Fat_Pointer_To_Symbol
-[x] C13. Store fat ptr to symbol — ~20252: use Emit_Store_Fat_Pointer_To_Symbol
-[x] C14. Store fat ptr to symbol — ~20265: use Emit_Store_Fat_Pointer_To_Symbol
-[x] C15. Store fat ptr to symbol — ~20271: use Emit_Store_Fat_Pointer_To_Symbol
-[x] C16. src_is_fat_ptr detection — ~18557: use Expression_Produces_Fat_Pointer
-[x] C17. Load fat ptr from __frame — ~18126: use Emit_Load_Fat_Pointer (frame variant)
-[x] C18. Load fat ptr from __frame — ~18289: use Emit_Load_Fat_Pointer (frame variant)
-[x] C19. Load fat ptr from __frame — ~18611: use Emit_Load_Fat_Pointer (frame variant)
+[ ] A6. Generate_Selected_Component (line 16141): Same for nested-selection
+      path.
 
-═══════════════════════════════════════════════════════════════════════════
-D. ADDITIONAL CONSOLIDATION (bonus items found during audit)
-═══════════════════════════════════════════════════════════════════════════
+[ ] A7. Generate_Selected_Component (line 16166): Same for direct
+      symbol-based path.
 
-[x] D1. Emit_Load_Fat_Pointer_Frame(cg, sym)
-      — Load fat pointer from %%__frame.<sym> for uplevel/nested scope access.
-        Covers 4 inline patterns at ~18126, ~18269, ~18289, ~18611.
+[ ] A8. Array indexing (line 15893): Remove i64 widening after loading
+      array element.
 
-[x] D2. Move FAT_PTR_TYPE macro from §13.2.1 to file header (line 42)
-      — All 9 sites using raw "{ ptr, { i64, i64 } }" string now use the macro.
+[ ] A9. .ALL dereference (line 15188): Remove i64 widening after loading
+      via pointer.
 
-[x] D3. Replace ~35 raw "{ ptr, { i64, i64 } }" occurrences in Emit() format
-      strings with FAT_PTR_TYPE macro via C string concatenation.
-      Covers runtime helper definitions, attribute codegen, constant init, etc.
+[ ] A10. .ALL explicit dereference in selected component (line 15998):
+       Remove i64 widening.
 
-[x] D4. Additional src_is_fat detection site (line ~18629) refactored to use
-      Expression_Produces_Fat_Pointer.
+[ ] A11. Function return value (line 15646): Remove i64 widening of call
+       return values.
+
+[ ] A12. Discriminant load (line 16069): Remove i64 widening.
+
+[ ] A13. Binary operations (lines 14518, 14545, 14846, 14850, etc.):
+       Update arithmetic to use actual types instead of assuming i64.
+       Key: binary ops should Emit_Convert both operands to a common type.
+
+[ ] A14. Unary NOT (line 15151): Already handles i1 correctly — no change.
+
+[ ] A15. Assignment stores (line 18699): Already does Emit_Convert from
+       src to dest type — should work correctly with native types.
+
+[ ] A16. Boolean/comparison results: comparisons produce i1. Currently
+       we zext to i64. With native types, we should keep as i1 and let
+       consumers convert.  UPDATE: This requires more thought since
+       "and i1" vs "and i64" changes semantics. DEFER this sub-item.
 
 ═══════════════════════════════════════════════════════════════════════════
-E. VERIFICATION
+B. CONSOLIDATE UPLEVEL ACCESS INTO Emit_Symbol_Ref / Emit_Load_Symbol
 ═══════════════════════════════════════════════════════════════════════════
 
-[x] E1. Build with gcc -Wall -Wextra (clean, same pre-existing warnings)
-[x] E2. Run test suite (test.sh g c) — 297 pass, unchanged
-[x] E3. Run test suite (test.sh g b) — 1350 processed, unchanged
+Problem: 20+ call sites manually check Is_Uplevel_Access() and then emit
+either `%__frame.SYM` or `%SYM` with duplicated if/else blocks.
+
+GNAT LLVM approach: the GL_Value abstraction encapsulates the storage
+location.  The caller doesn't care if it's a frame slot or local alloca.
+
+Strategy: Enhance Emit_Symbol_Ref to automatically handle uplevel access.
+Then callers just call Emit_Symbol_Ref(cg, sym) without checking.
+
+[ ] B1. Create Emit_Symbol_Ref_Auto(cg, sym) or modify Emit_Symbol_Ref
+      to check Is_Uplevel_Access internally and emit the correct form:
+        if (Is_Uplevel_Access(cg, sym))
+          emit "%%__frame." + name
+        else
+          emit "%" + name or "@" + name as appropriate
+      NOTE: Can't just modify Emit_Symbol_Ref blindly — it's used in many
+      contexts including function declarations where %__frame doesn't apply.
+      Better: create Emit_Symbol_Storage(cg, sym) for load/store targets.
+
+[ ] B2. Generate_Identifier (line 13616-13627): Replace the Is_Uplevel
+      if/else with a call to Emit_Symbol_Storage.
+
+[ ] B3. Generate_Composite_Address (line 13951-13963): Replace uplevel
+      check with Emit_Symbol_Storage.
+
+[ ] B4. Generate_Composite_Address implicit deref (line 13988-13997):
+      Replace uplevel check with Emit_Symbol_Storage.
+
+[ ] B5. Assignment scalar store (line 18715-18725): Replace uplevel
+      if/else with Emit_Symbol_Storage for the store target.
+
+[ ] B6. Assignment record field (line 18478-18486): Replace uplevel
+      check with Emit_Symbol_Storage.
+
+[ ] B7. Task pointer uplevel access (line 15696-15698): Replace.
+
+[ ] B8. Array symbol uplevel (line 15745-15781): Replace the multiple
+      uplevel checks in slice/array indexing.
+
+[ ] B9. Fat pointer load sites (line 18176, 18267, 18326): Already
+      partially refactored — use Emit_Load_Fat_Pointer_Frame ternary.
+      Can simplify further with Emit_Symbol_Storage.
+
+[ ] B10. Selected component field assignment (line 18478-18486):
+       Already identified in B6.
+
+[ ] B11. Loop variable assignment uplevel (line 16475-16476): Replace.
+
+[ ] B12. Assignment to uplevel variable (line 18626, 18654): Replace.
+
+═══════════════════════════════════════════════════════════════════════════
+C. SEPARATE LVALUE (ADDRESS) vs RVALUE (LOADED VALUE) PATHS
+═══════════════════════════════════════════════════════════════════════════
+
+Problem: Generate_Expression returns a loaded i64 for scalars but a ptr
+for composites.  Callers must "guess" what they got.  Assignment code
+generates the address of its target completely differently from how
+expression code generates addresses (e.g., no shared Generate_Lvalue).
+
+GNAT LLVM approach: GL_Value carries a GL_Relationship tag that says
+whether the value is Reference (pointer to storage), Value (loaded),
+Fat_Pointer, etc.  Code converts between relationships explicitly.
+
+Strategy: Add Generate_Lvalue(cg, node) → returns ptr to storage.
+Refactor assignment LHS to use it.  Generate_Expression uses
+Generate_Lvalue internally for identifiers/selected/indexed.
+
+[ ] C1. Add Generate_Lvalue(cg, node) function:
+      — NK_IDENTIFIER: return ptr to symbol storage (via Emit_Symbol_Storage)
+      — NK_SELECTED: return ptr to record field (GEP from base)
+      — NK_APPLY (indexed): return ptr to array element
+      — NK_UNARY_OP TK_ALL: return ptr from .ALL dereference
+      Returns the ADDRESS of the storage, never a loaded value.
+
+[ ] C2. Refactor Generate_Identifier to call Generate_Lvalue + load:
+      addr = Generate_Lvalue(cg, node);
+      t = load type_str, ptr addr;
+      This eliminates the duplicated Is_Uplevel_Access check.
+
+[ ] C3. Refactor assignment target code to call Generate_Lvalue:
+      Currently Generate_Assignment has ~100 lines of inline address
+      computation for record fields, array elements, .ALL dereferences.
+      Replace with: addr = Generate_Lvalue(cg, target); store value, addr;
+
+[ ] C4. Refactor Generate_Selected_Component: use Generate_Lvalue for
+      getting base address, then add field offset.
+
+[ ] C5. Refactor array indexing: use Generate_Lvalue for getting base
+      array pointer.
+
+═══════════════════════════════════════════════════════════════════════════
+D. VERIFICATION
+═══════════════════════════════════════════════════════════════════════════
+
+[ ] D1. Build with gcc -Wall -Wextra (clean, same pre-existing warnings)
+[ ] D2. Run test suite (test.sh g c) — compare pass/fail/skip counts
+[ ] D3. Run test suite (test.sh g b) — compare processed count
+
+═══════════════════════════════════════════════════════════════════════════
+IMPLEMENTATION ORDER
+═══════════════════════════════════════════════════════════════════════════
+
+Phase 1: B (uplevel consolidation) — lowest risk, most mechanical
+Phase 2: C (LValue/RValue separation) — medium risk, enables Phase 3
+Phase 3: A (native types) — highest risk, most pervasive
+
+Each phase: implement → build → test → commit before moving to next.
