@@ -5815,6 +5815,15 @@ typedef struct {
     };
 } Type_Bound;
 
+/* Variant information for discriminated records (RM 3.7.3) */
+typedef struct {
+    int64_t  disc_value;         /* Discriminant value selecting this variant */
+    bool     is_others;          /* WHEN OTHERS variant */
+    uint32_t first_component;    /* Index of first component in this variant */
+    uint32_t component_count;    /* Number of components in this variant */
+    uint32_t variant_size;       /* Size of this variant's components in bytes */
+} Variant_Info;
+
 /* Component information for records */
 typedef struct {
     String_Slice  name;
@@ -5823,6 +5832,8 @@ typedef struct {
     uint32_t      bit_offset;    /* For representation clauses */
     uint32_t      bit_size;
     Syntax_Node  *default_expr;  /* Default initialization expression (RM 3.7) */
+    bool          is_discriminant;   /* True if this is a discriminant (RM 3.7.1) */
+    int32_t       variant_index;     /* Which variant this belongs to (-1 = fixed part) */
 } Component_Info;
 
 /* Index information for arrays */
@@ -5862,7 +5873,23 @@ struct Type_Info {
         struct {  /* TYPE_RECORD */
             Component_Info *components;
             uint32_t        component_count;
-            /* Discriminant info would go here */
+
+            /* Discriminant tracking (RM 3.7) */
+            uint32_t        discriminant_count;  /* Number of discriminant components */
+            bool            has_discriminants;    /* Type has discriminant part */
+            bool            all_defaults;         /* All discriminants have defaults (mutable) */
+            bool            is_constrained;       /* Object/subtype is constrained */
+
+            /* Variant part tracking (RM 3.7.3) */
+            Variant_Info   *variants;
+            uint32_t        variant_count;
+            uint32_t        variant_offset;       /* Byte offset where variant part begins */
+            uint32_t        max_variant_size;     /* Max size across all variants */
+            Syntax_Node    *variant_part_node;    /* AST node for variant part */
+
+            /* Discriminant constraint values (for constrained subtypes) */
+            int64_t        *disc_constraint_values;  /* Array [discriminant_count] */
+            bool            has_disc_constraints;
         } record;
 
         struct {  /* TYPE_ACCESS */
@@ -6391,6 +6418,9 @@ struct Symbol {
     bool            needs_address_marker; /* Needs @__addr.X global for 'ADDRESS */
     bool            is_identity_function; /* Function body is just RETURN param (can inline) */
 
+    /* Discriminant constraint (RM 3.7.2) */
+    bool            is_disc_constrained;  /* Object has discriminant constraints */
+
     /* Derived type operations (RM 3.4) */
     Symbol         *parent_operation;    /* Parent operation that implements this derived op */
     Type_Info      *derived_from_type;   /* The derived type this op is for */
@@ -6600,9 +6630,9 @@ static void Symbol_Add(Symbol_Manager *sm, Symbol *sym) {
     }
     scope->symbols[scope->symbol_count++] = sym;
 
-    /* Track frame offset for variables/parameters/constants */
+    /* Track frame offset for variables/parameters/constants/discriminants */
     if (sym->kind == SYMBOL_VARIABLE || sym->kind == SYMBOL_PARAMETER ||
-        sym->kind == SYMBOL_CONSTANT) {
+        sym->kind == SYMBOL_CONSTANT || sym->kind == SYMBOL_DISCRIMINANT) {
         sym->frame_offset = scope->frame_size;
         uint32_t var_size = sym->type ? sym->type->size : 8;
         /* Fat pointers for dynamic/unconstrained arrays need 24 bytes { ptr, { i64, i64 } } */
@@ -8987,7 +9017,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
 
         case NK_RECORD_TYPE:
             {
-                /* Create record type info from syntax node */
+                /* Create record type info from syntax node (RM 3.7, 3.7.3) */
                 Type_Info *record_type = Type_New(TYPE_RECORD, S(""));
 
                 /* Helper: count components in a variant part recursively */
@@ -9006,6 +9036,12 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                     return count;
                 }
 
+                /* Helper: count variants (top-level only) */
+                uint32_t Count_Variants(Syntax_Node *vp) {
+                    if (!vp) return 0;
+                    return (uint32_t)vp->variant_part.variants.count;
+                }
+
                 /* Count total components (each decl may have multiple names) */
                 uint32_t total_comps = 0;
                 for (uint32_t i = 0; i < node->record_type.components.count; i++) {
@@ -9017,6 +9053,9 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                 /* Also count components in variant parts */
                 total_comps += Count_Variant_Components(node->record_type.variant_part);
 
+                bool has_variant_part = node->record_type.variant_part != NULL;
+                uint32_t num_variants = Count_Variants(node->record_type.variant_part);
+
                 record_type->record.component_count = total_comps;
                 if (total_comps > 0) {
                     record_type->record.components = Arena_Allocate(
@@ -9025,14 +9064,13 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                     uint32_t offset = 0;
                     uint32_t comp_idx = 0;
 
-                    /* Helper: add component to list */
-                    void Add_Component(Syntax_Node *comp) {
+                    /* Helper: add a fixed-part component to the list */
+                    void Add_Fixed_Component(Syntax_Node *comp) {
                         if (comp->kind != NK_COMPONENT_DECL) return;
                         Resolve_Expression(sm, comp->component.component_type);
                         Type_Info *comp_type = comp->component.component_type ?
                                                comp->component.component_type->type : sm->type_integer;
                         uint32_t comp_size = comp_type ? comp_type->size : 8;
-                        /* Resolve default expression if present (RM 3.7) */
                         if (comp->component.init) {
                             Resolve_Expression(sm, comp->component.init);
                         }
@@ -9043,30 +9081,141 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                             info->byte_offset = offset;
                             info->bit_offset = 0;
                             info->bit_size = comp_type ? comp_type->size * 8 : 64;
-                            info->default_expr = comp->component.init;  /* Store default */
+                            info->default_expr = comp->component.init;
+                            info->is_discriminant = false;
+                            info->variant_index = -1;  /* Fixed part */
                             offset += comp_size;
                         }
                     }
 
-                    /* Helper: add components from variant part recursively */
-                    void Add_Variant_Components(Syntax_Node *vp) {
-                        if (!vp) return;
-                        for (uint32_t i = 0; i < vp->variant_part.variants.count; i++) {
-                            Syntax_Node *v = vp->variant_part.variants.items[i];
-                            for (uint32_t j = 0; j < v->variant.components.count; j++)
-                                Add_Component(v->variant.components.items[j]);
-                            Add_Variant_Components(v->variant.variant_part);
-                        }
-                    }
-
-                    /* Process regular components */
+                    /* Process fixed (non-variant) components */
                     for (uint32_t i = 0; i < node->record_type.components.count; i++) {
-                        Add_Component(node->record_type.components.items[i]);
+                        Add_Fixed_Component(node->record_type.components.items[i]);
                     }
-                    /* Process variant part components */
-                    Add_Variant_Components(node->record_type.variant_part);
 
-                    record_type->size = offset;
+                    /* Record the variant_offset = end of fixed part */
+                    uint32_t variant_offset = offset;
+                    record_type->record.variant_offset = variant_offset;
+
+                    /* Process variant part: all variants OVERLAP at variant_offset (RM 3.7.3)
+                     * Record size = fixed_part + MAX(variant_sizes), not SUM */
+                    if (has_variant_part) {
+                        Syntax_Node *vp = node->record_type.variant_part;
+                        record_type->record.variant_part_node = vp;
+
+                        /* Allocate variant info array */
+                        record_type->record.variant_count = num_variants;
+                        record_type->record.variants = Arena_Allocate(
+                            num_variants * sizeof(Variant_Info));
+
+                        uint32_t max_variant_size = 0;
+
+                        for (uint32_t vi = 0; vi < vp->variant_part.variants.count; vi++) {
+                            Syntax_Node *v = vp->variant_part.variants.items[vi];
+                            Variant_Info *vinfo = &record_type->record.variants[vi];
+
+                            /* Extract discriminant value from first choice */
+                            vinfo->disc_value = 0;
+                            vinfo->is_others = false;
+                            if (v->variant.choices.count > 0) {
+                                Syntax_Node *choice = v->variant.choices.items[0];
+                                if (choice->kind == NK_INTEGER) {
+                                    vinfo->disc_value = choice->integer_lit.value;
+                                } else if (choice->kind == NK_IDENTIFIER) {
+                                    /* Enumeration literal or named number */
+                                    Resolve_Expression(sm, choice);
+                                    if (choice->symbol && choice->symbol->type &&
+                                        Type_Is_Enumeration(choice->symbol->type)) {
+                                        /* Find enum position value */
+                                        Type_Info *et = choice->symbol->type;
+                                        for (uint32_t li = 0; li < et->enumeration.literal_count; li++) {
+                                            if (Slice_Equal_Ignore_Case(et->enumeration.literals[li],
+                                                                        choice->string_val.text)) {
+                                                vinfo->disc_value = (int64_t)li;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                } else if (choice->kind == NK_OTHERS) {
+                                    vinfo->is_others = true;
+                                }
+                            }
+
+                            vinfo->first_component = comp_idx;
+
+                            /* Add variant components - all start at variant_offset */
+                            uint32_t var_local_offset = 0;
+                            uint32_t var_comp_count = 0;
+                            for (uint32_t j = 0; j < v->variant.components.count; j++) {
+                                Syntax_Node *vc = v->variant.components.items[j];
+                                if (vc->kind != NK_COMPONENT_DECL) continue;
+                                Resolve_Expression(sm, vc->component.component_type);
+                                Type_Info *comp_type = vc->component.component_type ?
+                                                       vc->component.component_type->type : sm->type_integer;
+                                uint32_t comp_size = comp_type ? comp_type->size : 8;
+                                if (vc->component.init) {
+                                    Resolve_Expression(sm, vc->component.init);
+                                }
+                                for (uint32_t k = 0; k < vc->component.names.count; k++) {
+                                    Component_Info *info = &record_type->record.components[comp_idx++];
+                                    info->name = vc->component.names.items[k]->string_val.text;
+                                    info->component_type = comp_type;
+                                    info->byte_offset = variant_offset + var_local_offset;
+                                    info->bit_offset = 0;
+                                    info->bit_size = comp_type ? comp_type->size * 8 : 64;
+                                    info->default_expr = vc->component.init;
+                                    info->is_discriminant = false;
+                                    info->variant_index = (int32_t)vi;
+                                    var_local_offset += comp_size;
+                                    var_comp_count++;
+                                }
+                            }
+
+                            /* Handle nested variant parts recursively (simple flattening) */
+                            if (v->variant.variant_part) {
+                                Syntax_Node *nvp = v->variant.variant_part;
+                                for (uint32_t ni = 0; ni < nvp->variant_part.variants.count; ni++) {
+                                    Syntax_Node *nv = nvp->variant_part.variants.items[ni];
+                                    for (uint32_t nj = 0; nj < nv->variant.components.count; nj++) {
+                                        Syntax_Node *nc = nv->variant.components.items[nj];
+                                        if (nc->kind != NK_COMPONENT_DECL) continue;
+                                        Resolve_Expression(sm, nc->component.component_type);
+                                        Type_Info *comp_type = nc->component.component_type ?
+                                                               nc->component.component_type->type : sm->type_integer;
+                                        uint32_t comp_size = comp_type ? comp_type->size : 8;
+                                        if (nc->component.init) {
+                                            Resolve_Expression(sm, nc->component.init);
+                                        }
+                                        for (uint32_t k = 0; k < nc->component.names.count; k++) {
+                                            Component_Info *info = &record_type->record.components[comp_idx++];
+                                            info->name = nc->component.names.items[k]->string_val.text;
+                                            info->component_type = comp_type;
+                                            info->byte_offset = variant_offset + var_local_offset;
+                                            info->bit_offset = 0;
+                                            info->bit_size = comp_type ? comp_type->size * 8 : 64;
+                                            info->default_expr = nc->component.init;
+                                            info->is_discriminant = false;
+                                            info->variant_index = (int32_t)vi;
+                                            var_local_offset += comp_size;
+                                            var_comp_count++;
+                                        }
+                                    }
+                                }
+                            }
+
+                            vinfo->component_count = var_comp_count;
+                            vinfo->variant_size = var_local_offset;
+                            if (var_local_offset > max_variant_size) {
+                                max_variant_size = var_local_offset;
+                            }
+                        }
+
+                        record_type->record.max_variant_size = max_variant_size;
+                        /* Record size = fixed part + maximum variant size (RM 3.7.3) */
+                        record_type->size = variant_offset + max_variant_size;
+                    } else {
+                        record_type->size = offset;
+                    }
                     record_type->alignment = 8;
                 }
 
@@ -9431,16 +9580,79 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                 /* Check for discriminant constraint (REC(A => E1, B => E2) style)
                  * Discriminant constraints use named associations where the choices
                  * are discriminant names - they should NOT be resolved as identifiers.
-                 * Only the value expressions should be resolved. */
+                 * Only the value expressions should be resolved. (RM 3.7.2) */
                 if (constraint && constraint->kind == NK_DISCRIMINANT_CONSTRAINT) {
-                    for (uint32_t i = 0; i < constraint->discriminant_constraint.associations.count; i++) {
+                    uint32_t assoc_count = constraint->discriminant_constraint.associations.count;
+                    for (uint32_t i = 0; i < assoc_count; i++) {
                         Syntax_Node *assoc = constraint->discriminant_constraint.associations.items[i];
                         if (assoc->kind == NK_ASSOCIATION && assoc->association.expression) {
                             /* Only resolve the value expression, not the choices */
                             Resolve_Expression(sm, assoc->association.expression);
                         }
                     }
-                    /* Return the base type */
+
+                    /* Create a constrained subtype with discriminant values stored */
+                    if (Type_Is_Record(base_type) && base_type->record.has_discriminants) {
+                        Type_Info *constrained = Type_New(TYPE_RECORD, base_type->name);
+                        *constrained = *base_type;  /* Copy all fields */
+                        constrained->base_type = base_type;
+                        constrained->record.is_constrained = true;
+                        constrained->record.has_disc_constraints = true;
+
+                        /* Allocate and fill constraint value array */
+                        uint32_t dc = base_type->record.discriminant_count;
+                        constrained->record.disc_constraint_values = Arena_Allocate(
+                            dc * sizeof(int64_t));
+                        for (uint32_t ci = 0; ci < dc; ci++) {
+                            constrained->record.disc_constraint_values[ci] = 0;
+                        }
+
+                        /* Extract static discriminant values from associations */
+                        for (uint32_t i = 0; i < assoc_count; i++) {
+                            Syntax_Node *assoc = constraint->discriminant_constraint.associations.items[i];
+                            if (assoc->kind != NK_ASSOCIATION) continue;
+                            Syntax_Node *expr = assoc->association.expression;
+                            int64_t val = 0;
+                            if (expr && expr->kind == NK_INTEGER) {
+                                val = expr->integer_lit.value;
+                            } else if (expr && expr->kind == NK_IDENTIFIER && expr->symbol &&
+                                       expr->symbol->type && Type_Is_Enumeration(expr->symbol->type)) {
+                                /* Enum literal: find position */
+                                Type_Info *et = expr->symbol->type;
+                                for (uint32_t li = 0; li < et->enumeration.literal_count; li++) {
+                                    if (Slice_Equal_Ignore_Case(et->enumeration.literals[li],
+                                                                expr->string_val.text)) {
+                                        val = (int64_t)li;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            /* Match association to discriminant by position or name */
+                            if (assoc->association.choices.count > 0) {
+                                /* Named: find discriminant index by name */
+                                Syntax_Node *choice = assoc->association.choices.items[0];
+                                if (choice->kind == NK_IDENTIFIER) {
+                                    for (uint32_t di = 0; di < dc; di++) {
+                                        if (Slice_Equal_Ignore_Case(
+                                                constrained->record.components[di].name,
+                                                choice->string_val.text)) {
+                                            constrained->record.disc_constraint_values[di] = val;
+                                            break;
+                                        }
+                                    }
+                                }
+                            } else if (i < dc) {
+                                /* Positional */
+                                constrained->record.disc_constraint_values[i] = val;
+                            }
+                        }
+
+                        node->type = constrained;
+                        return constrained;
+                    }
+
+                    /* Fallback: return base type if not a discriminated record */
                     node->type = base_type;
                     return base_type;
                 }
@@ -10263,10 +10475,10 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                             if (disc_spec->discriminant.disc_type) {
                                 disc_type = Resolve_Expression(sm, disc_spec->discriminant.disc_type);
                             }
-                            /* Add each discriminant name as a symbol */
+                            /* Add each discriminant name as a symbol (RM 3.7.1) */
                             for (uint32_t j = 0; j < disc_spec->discriminant.names.count; j++) {
                                 Syntax_Node *name_node = disc_spec->discriminant.names.items[j];
-                                Symbol *disc_sym = Symbol_New(SYMBOL_VARIABLE, name_node->string_val.text,
+                                Symbol *disc_sym = Symbol_New(SYMBOL_DISCRIMINANT, name_node->string_val.text,
                                                               name_node->location);
                                 disc_sym->type = disc_type;
                                 disc_sym->parent = sym;
@@ -10311,12 +10523,16 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                             /* Add discriminants as accessible record components (RM 3.7.1)
                              * Discriminants can be accessed like normal components: R.D1 */
                             if (has_discriminants) {
-                                /* Count total discriminant names */
+                                /* Count total discriminant names and check for defaults */
                                 uint32_t disc_count = 0;
+                                bool all_have_defaults = true;
                                 for (uint32_t i = 0; i < node->type_decl.discriminants.count; i++) {
                                     Syntax_Node *disc_spec = node->type_decl.discriminants.items[i];
                                     if (disc_spec->kind == NK_DISCRIMINANT_SPEC) {
                                         disc_count += disc_spec->discriminant.names.count;
+                                        if (!disc_spec->discriminant.default_expr) {
+                                            all_have_defaults = false;
+                                        }
                                     }
                                 }
 
@@ -10345,6 +10561,9 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                             new_comps[disc_idx].byte_offset = disc_offset;
                                             new_comps[disc_idx].bit_offset = 0;
                                             new_comps[disc_idx].bit_size = disc_size * 8;
+                                            new_comps[disc_idx].default_expr = disc_spec->discriminant.default_expr;
+                                            new_comps[disc_idx].is_discriminant = true;
+                                            new_comps[disc_idx].variant_index = -1;  /* Fixed part */
                                             disc_offset += disc_size;
                                             disc_idx++;
                                         }
@@ -10357,11 +10576,25 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                     new_comps[disc_count + i].byte_offset += disc_offset;
                                 }
 
+                                /* Adjust variant_offset to account for discriminant size */
+                                if (type->record.variant_count > 0) {
+                                    type->record.variant_offset += disc_offset;
+                                    /* Also adjust variant component offsets */
+                                    for (uint32_t i = 0; i < type->record.variant_count; i++) {
+                                        type->record.variants[i].first_component += disc_count;
+                                    }
+                                }
+
                                 /* Update record size to include discriminants */
                                 type->size += disc_offset;
 
                                 type->record.components = new_comps;
                                 type->record.component_count = new_count;
+
+                                /* Set discriminant tracking fields */
+                                type->record.has_discriminants = true;
+                                type->record.discriminant_count = disc_count;
+                                type->record.all_defaults = all_have_defaults;
                             }
                         } else if (Type_Is_Access(def_type)) {
                             type->access = def_type->access;
@@ -13095,7 +13328,8 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
 
     switch (sym->kind) {
         case SYMBOL_VARIABLE:
-        case SYMBOL_PARAMETER: {
+        case SYMBOL_PARAMETER:
+        case SYMBOL_DISCRIMINANT: {
             const char *type_str = Type_To_Llvm(ty);
             if (Is_Uplevel_Access(cg, sym)) {
                 /* Uplevel access through frame pointer parameter */
@@ -15250,7 +15484,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
          * needing fat pointer handling. Both are stored as fat pointers. */
         else if ((Type_Is_Unconstrained_Array(array_type) || Type_Has_Dynamic_Bounds(array_type)) &&
             array_sym && (array_sym->kind == SYMBOL_PARAMETER || array_sym->kind == SYMBOL_VARIABLE ||
-                          array_sym->kind == SYMBOL_CONSTANT)) {
+                          array_sym->kind == SYMBOL_CONSTANT || array_sym->kind == SYMBOL_DISCRIMINANT)) {
             /* Load fat pointer and extract data pointer and low bound */
             Emit(cg, "  ; DEBUG ARRAY INDEX: using fat pointer path (unconstrained=%d, dynamic=%d)\n",
                  Type_Is_Unconstrained_Array(array_type), Type_Has_Dynamic_Bounds(array_type));
@@ -15504,11 +15738,13 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
     /* Record field access - find component by name */
     uint32_t byte_offset = 0;
     Type_Info *field_type = NULL;
+    int32_t field_variant_index = -1;
     for (uint32_t i = 0; i < record_type->record.component_count; i++) {
         if (Slice_Equal_Ignore_Case(
                 record_type->record.components[i].name, node->selected.selector)) {
             byte_offset = record_type->record.components[i].byte_offset;
             field_type = record_type->record.components[i].component_type;
+            field_variant_index = record_type->record.components[i].variant_index;
             break;
         }
     }
@@ -15516,6 +15752,49 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
     /* Get base address of record variable */
     Symbol *record_sym = node->selected.prefix->symbol;
     const char *field_llvm_type = Type_To_Llvm(field_type);
+
+    /* Runtime discriminant check for variant component access (RM 3.7.3)
+     * If accessing a component that belongs to a variant, verify the
+     * discriminant value matches the variant's expected value. */
+    if (field_variant_index >= 0 && record_type->record.has_discriminants &&
+        record_type->record.variant_count > 0 &&
+        (uint32_t)field_variant_index < record_type->record.variant_count) {
+        Variant_Info *vinfo = &record_type->record.variants[field_variant_index];
+        /* Load discriminant value from the first discriminant component */
+        Component_Info *disc_comp = &record_type->record.components[0];
+        uint32_t disc_offset = disc_comp->byte_offset;
+        const char *disc_llvm = Type_To_Llvm(disc_comp->component_type);
+
+        uint32_t disc_ptr = Emit_Temp(cg);
+        if (record_sym) {
+            Emit(cg, "  %%t%u = getelementptr i8, ptr ", disc_ptr);
+            Emit_Symbol_Ref(cg, record_sym);
+            Emit(cg, ", i64 %u  ; discriminant addr\n", disc_offset);
+        } else {
+            uint32_t base = Generate_Expression(cg, node->selected.prefix);
+            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u  ; discriminant addr\n",
+                 disc_ptr, base, disc_offset);
+        }
+        uint32_t disc_val = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; load discriminant\n",
+             disc_val, disc_llvm, disc_ptr);
+        if (strcmp(disc_llvm, "i64") != 0) {
+            disc_val = Emit_Convert(cg, disc_val, disc_llvm, "i64");
+        }
+
+        if (!vinfo->is_others) {
+            uint32_t cmp = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %lld  ; check variant discriminant\n",
+                 cmp, disc_val, (long long)vinfo->disc_value);
+            uint32_t lbl_ok = cg->label_id++;
+            uint32_t lbl_fail = cg->label_id++;
+            Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp, lbl_ok, lbl_fail);
+            Emit(cg, "L%u:\n", lbl_fail);
+            Emit_Raise_Constraint_Error(cg, "variant component access");
+            Emit(cg, "L%u:\n", lbl_ok);
+        }
+        /* For WHEN OTHERS variant, any discriminant value is valid - no check needed */
+    }
 
     if (implicit_deref) {
         /* Access-to-record: load pointer then compute field offset */
@@ -15800,7 +16079,8 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     if (prefix_type &&
         (Type_Is_Unconstrained_Array(prefix_type) || Type_Has_Dynamic_Bounds(prefix_type)))
         if (!prefix_sym || prefix_sym->kind == SYMBOL_PARAMETER ||
-            prefix_sym->kind == SYMBOL_VARIABLE || prefix_sym->kind == SYMBOL_CONSTANT)
+            prefix_sym->kind == SYMBOL_VARIABLE || prefix_sym->kind == SYMBOL_CONSTANT ||
+            prefix_sym->kind == SYMBOL_DISCRIMINANT)
             needs_runtime_bounds = true;
 
     /* ─── Array/Scalar Bound Attributes: unified FIRST/LAST ─── */
@@ -16736,11 +17016,26 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
 
     if (Slice_Equal_Ignore_Case(attr, S("CONSTRAINED"))) {
         /* X'CONSTRAINED - is the object constrained? (RM 3.7.1)
-         * Returns TRUE if object has discriminant constraints, FALSE otherwise.
-         * For now, assume objects without explicit constraints are unconstrained
-         * (this is a simplification - full implementation would track constraints).
+         * Returns TRUE if:
+         *   - Object type has no discriminants (always constrained)
+         *   - Object was declared with explicit discriminant constraint
+         *   - Object type has no default discriminant values (immutable)
+         * Returns FALSE if:
+         *   - Object type has discriminants with defaults and no explicit constraint
          * Use i64 for consistency with Boolean storage/comparison. */
-        Emit(cg, "  %%t%u = add i64 0, 1  ; 'CONSTRAINED (assume true)\n", t);
+        Symbol *obj_sym = node->attribute.prefix ? node->attribute.prefix->symbol : NULL;
+        Type_Info *obj_type = node->attribute.prefix ? node->attribute.prefix->type : NULL;
+        bool is_constrained = true;  /* Default: constrained */
+        if (obj_type && Type_Is_Record(obj_type) && obj_type->record.has_discriminants) {
+            if (obj_type->record.is_constrained) {
+                is_constrained = true;  /* Explicitly constrained subtype */
+            } else if (obj_sym && obj_sym->is_disc_constrained) {
+                is_constrained = true;  /* Object declared with constraint */
+            } else if (obj_type->record.all_defaults) {
+                is_constrained = false;  /* Mutable: defaults, no constraint */
+            }
+        }
+        Emit(cg, "  %%t%u = add i64 0, %d  ; 'CONSTRAINED\n", t, is_constrained ? 1 : 0);
         return t;
     }
 
@@ -17986,10 +18281,57 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
     if (cg->current_instance)
         ty = Resolve_Generic_Actual_Type(cg, ty);
 
-    /* Handle record assignment (use memcpy, not store) */
+    /* Handle record assignment (use memcpy) (RM 5.2, 3.7.2) */
     if (Type_Is_Record(ty)) {
         uint32_t src_ptr = Generate_Expression(cg, node->assignment.value);
         uint32_t record_size = ty->size > 0 ? ty->size : 8;
+
+        /* For constrained discriminated records, verify source discriminants match
+         * target constraints before assignment (Constraint_Error if mismatch).
+         * Mutable records (all_defaults, no constraint) allow discriminant change. */
+        if (ty->record.has_discriminants && target_sym->is_disc_constrained) {
+            /* Load each discriminant from source and compare with target */
+            for (uint32_t di = 0; di < ty->record.discriminant_count; di++) {
+                Component_Info *dc = &ty->record.components[di];
+                const char *dt = Type_To_Llvm(dc->component_type);
+
+                /* Load source discriminant */
+                uint32_t src_dp = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
+                     src_dp, src_ptr, dc->byte_offset);
+                uint32_t src_dv = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; src disc %.*s\n",
+                     src_dv, dt, src_dp, (int)dc->name.length, dc->name.data);
+                if (strcmp(dt, "i64") != 0) {
+                    src_dv = Emit_Convert(cg, src_dv, dt, "i64");
+                }
+
+                /* Load target discriminant */
+                uint32_t tgt_dp = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = getelementptr i8, ptr ", tgt_dp);
+                Emit_Symbol_Ref(cg, target_sym);
+                Emit(cg, ", i64 %u\n", dc->byte_offset);
+                uint32_t tgt_dv = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; tgt disc %.*s\n",
+                     tgt_dv, dt, tgt_dp, (int)dc->name.length, dc->name.data);
+                if (strcmp(dt, "i64") != 0) {
+                    tgt_dv = Emit_Convert(cg, tgt_dv, dt, "i64");
+                }
+
+                /* Compare and raise Constraint_Error on mismatch */
+                uint32_t cmp = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u  ; disc match?\n",
+                     cmp, src_dv, tgt_dv);
+                uint32_t lbl_ok = cg->label_id++;
+                uint32_t lbl_fail = cg->label_id++;
+                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp, lbl_ok, lbl_fail);
+                Emit(cg, "L%u:\n", lbl_fail);
+                Emit_Raise_Constraint_Error(cg, "discriminant mismatch in assignment");
+                Emit(cg, "L%u:\n", lbl_ok);
+            }
+        }
+
+        /* Copy record data (whole record for mutable, or non-discriminant part for constrained) */
         Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr ");
         Emit_Symbol_Ref(cg, target_sym);
         Emit(cg, ", ptr %%t%u, i64 %u, i1 false)  ; record assignment\n",
@@ -18404,7 +18746,8 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
         /* Check if this is an unconstrained array needing runtime bounds */
         if (prefix_type && Type_Is_Unconstrained_Array(prefix_type) &&
             prefix_sym && (prefix_sym->kind == SYMBOL_PARAMETER ||
-                           prefix_sym->kind == SYMBOL_VARIABLE)) {
+                           prefix_sym->kind == SYMBOL_VARIABLE ||
+                           prefix_sym->kind == SYMBOL_DISCRIMINANT)) {
             uint32_t fat = Emit_Load_Fat_Pointer(cg, prefix_sym);
             low_val = Emit_Fat_Pointer_Low(cg, fat);
             high_val = Emit_Fat_Pointer_High(cg, fat);
@@ -19523,6 +19866,23 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%");
                 Emit_Symbol_Name(cg, sym);
                 Emit(cg, ", ptr %%t%u, i64 %u, i1 false)\n", agg_ptr, record_size);
+
+                /* If the type has discriminant constraints, store constraint values (RM 3.7.2)
+                 * This ensures discriminant fields are correctly set even after aggregate copy */
+                if (ty->record.has_disc_constraints && ty->record.disc_constraint_values) {
+                    for (uint32_t di = 0; di < ty->record.discriminant_count; di++) {
+                        Component_Info *dc = &ty->record.components[di];
+                        uint32_t dp = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = getelementptr i8, ptr %%", dp);
+                        Emit_Symbol_Name(cg, sym);
+                        Emit(cg, ", i64 %u  ; disc %.*s\n", dc->byte_offset,
+                             (int)dc->name.length, dc->name.data);
+                        const char *dt = Type_To_Llvm(dc->component_type);
+                        Emit(cg, "  store %s %lld, ptr %%t%u\n", dt,
+                             (long long)ty->record.disc_constraint_values[di], dp);
+                    }
+                    sym->is_disc_constrained = true;
+                }
             } else if (is_any_array && node->object_decl.init->kind == NK_AGGREGATE) {
                 /* Array aggregate initialization - copy from aggregate to variable.
                  * Works for both constrained and unconstrained arrays with aggregate initializers.
@@ -19775,8 +20135,28 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, ", i32 0, i32 1, i32 1\n");
             Emit(cg, "  store i64 %%t%u, ptr %%t%u  ; fat ptr high\n", high_val, high_slot);
         } else if (is_record && ty->record.component_count > 0) {
-            /* Record without explicit initializer: apply component defaults (RM 3.7)
-             * Each component with a default_expr gets initialized from that expression */
+            /* Record without explicit initializer (RM 3.7):
+             * 1. If constrained subtype, initialize discriminants from constraints
+             * 2. Apply component defaults for discriminants and regular components */
+
+            /* Initialize discriminant constraints if type is constrained (RM 3.7.2) */
+            if (ty->record.has_disc_constraints && ty->record.disc_constraint_values) {
+                for (uint32_t di = 0; di < ty->record.discriminant_count; di++) {
+                    Component_Info *dc = &ty->record.components[di];
+                    uint32_t dp = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = getelementptr i8, ptr %%", dp);
+                    Emit_Symbol_Name(cg, sym);
+                    Emit(cg, ", i64 %u  ; disc %.*s init\n", dc->byte_offset,
+                         (int)dc->name.length, dc->name.data);
+                    const char *dt = Type_To_Llvm(dc->component_type);
+                    Emit(cg, "  store %s %lld, ptr %%t%u\n", dt,
+                         (long long)ty->record.disc_constraint_values[di], dp);
+                }
+                sym->is_disc_constrained = true;
+            }
+
+            /* Apply component defaults (RM 3.7) - includes discriminant defaults
+             * for mutable records (all discriminants have defaults, no explicit constraint) */
             bool has_any_default = false;
             for (uint32_t ci = 0; ci < ty->record.component_count; ci++) {
                 if (ty->record.components[ci].default_expr) {
@@ -19788,6 +20168,9 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 for (uint32_t ci = 0; ci < ty->record.component_count; ci++) {
                     Component_Info *comp = &ty->record.components[ci];
                     if (!comp->default_expr) continue;
+
+                    /* Skip discriminant defaults if constraint values already set */
+                    if (comp->is_discriminant && ty->record.has_disc_constraints) continue;
 
                     /* Generate value for default expression */
                     uint32_t val = Generate_Expression(cg, comp->default_expr);
@@ -20013,7 +20396,8 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
         Scope *parent_scope = parent_owner->scope;
         for (uint32_t i = 0; i < parent_scope->symbol_count; i++) {
             Symbol *var = parent_scope->symbols[i];
-            if (var && (var->kind == SYMBOL_VARIABLE || var->kind == SYMBOL_PARAMETER)) {
+            if (var && (var->kind == SYMBOL_VARIABLE || var->kind == SYMBOL_PARAMETER ||
+                        var->kind == SYMBOL_DISCRIMINANT)) {
                 /* Create a GEP alias:  %__frame.VAR = getelementptr i8, ptr %__parent_frame, i64 offset */
                 Emit(cg, "  %%__frame.");
                 Emit_Symbol_Name(cg, var);
@@ -20422,7 +20806,8 @@ static void Generate_Task_Body(Code_Generator *cg, Syntax_Node *node) {
     if (parent_scope) {
         for (uint32_t i = 0; i < parent_scope->symbol_count; i++) {
             Symbol *var = parent_scope->symbols[i];
-            if (var && (var->kind == SYMBOL_VARIABLE || var->kind == SYMBOL_PARAMETER)) {
+            if (var && (var->kind == SYMBOL_VARIABLE || var->kind == SYMBOL_PARAMETER ||
+                        var->kind == SYMBOL_DISCRIMINANT)) {
                 /* Create a GEP alias: %__frame.VAR = getelementptr ptr %__parent_frame, offset */
                 Emit(cg, "  %%__frame.");
                 Emit_Symbol_Name(cg, var);
