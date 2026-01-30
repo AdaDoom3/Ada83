@@ -6378,22 +6378,30 @@ static const char *Array_Bound_Llvm_Type(const Type_Info *t) {
  * e.g., Bounds_Type_For("i32") → "{ i32, i32 }".
  * Used when allocating/loading/storing the bounds struct behind
  * the second pointer in a { ptr, ptr } fat pointer. */
-static const char *Bounds_Type_For(const char *bound_type) {
-    /* All bounds are normalized to i64 to avoid type mismatches.
-     * In the old { ptr, { bt, bt } } layout, the bound type was embedded
-     * in the fat pointer type.  With { ptr, ptr }, the bounds struct lives
-     * behind a generic pointer, so we must use a uniform type.
-     * i64 matches Ada INTEGER and avoids truncation issues. */
-    (void)bound_type;
-    return "{ i64, i64 }";
+static const char *Bounds_Type_For(const char *bt) {
+    /* GNAT LLVM style: bounds struct uses the NATIVE index type.
+     * e.g. Bounds_Type_For("i32") → "{ i32, i32 }"
+     * See gnatllvm-arrays-create.adb:586-636. */
+    if (!bt) return "{ i32, i32 }";
+    if (strcmp(bt, "i8")  == 0) return "{ i8, i8 }";
+    if (strcmp(bt, "i16") == 0) return "{ i16, i16 }";
+    if (strcmp(bt, "i32") == 0) return "{ i32, i32 }";
+    if (strcmp(bt, "i64") == 0) return "{ i64, i64 }";
+    /* Fallback for unknown types — use i32 (Ada INTEGER default) */
+    return "{ i32, i32 }";
 }
 
 /* Return the allocation size in bytes for a bounds struct { bt, bt }.
  * Used when allocating bounds on the secondary stack (for returned fat ptrs). */
 static int Bounds_Alloc_Size(const char *bt) {
-    /* All bounds normalized to { i64, i64 } = 16 bytes. */
-    (void)bt;
-    return 16;
+    /* GNAT LLVM style: size depends on native index type.
+     * { i8, i8 } = 2, { i16, i16 } = 4, { i32, i32 } = 8, { i64, i64 } = 16. */
+    if (!bt) return 8;
+    if (strcmp(bt, "i8")  == 0) return 2;
+    if (strcmp(bt, "i16") == 0) return 4;
+    if (strcmp(bt, "i32") == 0) return 8;
+    if (strcmp(bt, "i64") == 0) return 16;
+    return 8;
 }
 
 
@@ -13405,23 +13413,22 @@ static uint32_t Emit_Constraint_Check(Code_Generator *cg, uint32_t val, Type_Inf
  * Allocates bounds struct on stack, stores lo/hi, builds { ptr, ptr }. */
 static uint32_t Emit_Fat_Pointer(Code_Generator *cg, uint32_t data_ptr,
                                   int64_t low, int64_t high, const char *bt) {
-    (void)bt;  /* bounds always normalized to i64 */
     const char *bst = Bounds_Type_For(bt);
-    /* Allocate bounds struct { i64, i64 } on stack */
+    /* Allocate bounds struct { bt, bt } on stack — native type */
     uint32_t bounds_alloca = Emit_Temp(cg);
     Emit(cg, "  %%t%u = alloca %s\n", bounds_alloca, bst);
 
-    /* Store low bound (always i64) */
+    /* Store low bound in native bt */
     uint32_t low_gep = Emit_Temp(cg);
     Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 0\n",
          low_gep, bst, bounds_alloca);
-    Emit(cg, "  store i64 %lld, ptr %%t%u\n", (long long)low, low_gep);
+    Emit(cg, "  store %s %lld, ptr %%t%u\n", bt, (long long)low, low_gep);
 
-    /* Store high bound (always i64) */
+    /* Store high bound in native bt */
     uint32_t high_gep = Emit_Temp(cg);
     Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 1\n",
          high_gep, bst, bounds_alloca);
-    Emit(cg, "  store i64 %lld, ptr %%t%u\n", (long long)high, high_gep);
+    Emit(cg, "  store %s %lld, ptr %%t%u\n", bt, (long long)high, high_gep);
 
     /* Build fat pointer { ptr, ptr } via insertvalue */
     uint32_t t1 = Emit_Temp(cg);
@@ -13462,7 +13469,7 @@ static uint32_t Emit_Fat_Pointer_Data(Code_Generator *cg, uint32_t fat_ptr,
 }
 
 /* Extract low bound from fat pointer.
- * Bounds are stored as { i64, i64 }; loads i64, narrows to bt for callers. */
+ * GNAT LLVM style: bounds stored in native bt; loads bt directly. */
 static uint32_t Emit_Fat_Pointer_Low(Code_Generator *cg, uint32_t fat_ptr,
                                       const char *bt) {
     const char *bst = Bounds_Type_For(bt);
@@ -13472,12 +13479,12 @@ static uint32_t Emit_Fat_Pointer_Low(Code_Generator *cg, uint32_t fat_ptr,
     Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 0\n",
          gep, bst, bptr);
     uint32_t val = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = load i64, ptr %%t%u\n", val, gep);
-    return Emit_Narrow_From_I64(cg, val, bt);
+    Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", val, bt, gep);
+    return val;
 }
 
 /* Extract high bound from fat pointer.
- * Bounds are stored as { i64, i64 }; loads i64, narrows to bt for callers. */
+ * GNAT LLVM style: bounds stored in native bt; loads bt directly. */
 static uint32_t Emit_Fat_Pointer_High(Code_Generator *cg, uint32_t fat_ptr,
                                        const char *bt) {
     const char *bst = Bounds_Type_For(bt);
@@ -13487,34 +13494,32 @@ static uint32_t Emit_Fat_Pointer_High(Code_Generator *cg, uint32_t fat_ptr,
     Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 1\n",
          gep, bst, bptr);
     uint32_t val = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = load i64, ptr %%t%u\n", val, gep);
-    return Emit_Narrow_From_I64(cg, val, bt);
+    Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", val, bt, gep);
+    return val;
 }
 
 /* Create a fat pointer from data pointer and dynamic bounds (temp IDs).
- * bt = bound LLVM type of the input temps.
- * Allocates bounds struct on stack, widens to i64, builds { ptr, ptr }. */
+ * bt = bound LLVM type of the input temps (already in native type).
+ * Allocates bounds struct on stack, stores in native bt, builds { ptr, ptr }. */
 static uint32_t Emit_Fat_Pointer_Dynamic(Code_Generator *cg, uint32_t data_ptr,
                                           uint32_t low_temp, uint32_t high_temp,
                                           const char *bt) {
     const char *bst = Bounds_Type_For(bt);
-    uint32_t low_i64 = Emit_Widen_To_I64(cg, low_temp, bt);
-    uint32_t high_i64 = Emit_Widen_To_I64(cg, high_temp, bt);
-    /* Allocate bounds struct { i64, i64 } */
+    /* Allocate bounds struct { bt, bt } — native type */
     uint32_t bounds_alloca = Emit_Temp(cg);
     Emit(cg, "  %%t%u = alloca %s\n", bounds_alloca, bst);
 
-    /* Store low */
+    /* Store low in native bt */
     uint32_t low_gep = Emit_Temp(cg);
     Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 0\n",
          low_gep, bst, bounds_alloca);
-    Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", low_i64, low_gep);
+    Emit(cg, "  store %s %%t%u, ptr %%t%u\n", bt, low_temp, low_gep);
 
-    /* Store high */
+    /* Store high in native bt */
     uint32_t high_gep = Emit_Temp(cg);
     Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 1\n",
          high_gep, bst, bounds_alloca);
-    Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", high_i64, high_gep);
+    Emit(cg, "  store %s %%t%u, ptr %%t%u\n", bt, high_temp, high_gep);
 
     /* Build fat pointer { ptr, ptr } */
     uint32_t t1 = Emit_Temp(cg);
@@ -13603,21 +13608,19 @@ static void Emit_Store_Fat_Pointer_Fields_To_Symbol(Code_Generator *cg,
     const char *bt)
 {
     const char *bst = Bounds_Type_For(bt);
-    uint32_t low_i64 = Emit_Widen_To_I64(cg, low_temp, bt);
-    uint32_t high_i64 = Emit_Widen_To_I64(cg, high_temp, bt);
-    /* Allocate and fill bounds struct { i64, i64 } */
+    /* Allocate and fill bounds struct { bt, bt } — native type */
     uint32_t bounds_alloca = Emit_Temp(cg);
     Emit(cg, "  %%t%u = alloca %s\n", bounds_alloca, bst);
 
     uint32_t low_gep = Emit_Temp(cg);
     Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 0\n",
          low_gep, bst, bounds_alloca);
-    Emit(cg, "  store i64 %%t%u, ptr %%t%u  ; fat ptr low\n", low_i64, low_gep);
+    Emit(cg, "  store %s %%t%u, ptr %%t%u  ; fat ptr low\n", bt, low_temp, low_gep);
 
     uint32_t high_gep = Emit_Temp(cg);
     Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 1\n",
          high_gep, bst, bounds_alloca);
-    Emit(cg, "  store i64 %%t%u, ptr %%t%u  ; fat ptr high\n", high_i64, high_gep);
+    Emit(cg, "  store %s %%t%u, ptr %%t%u  ; fat ptr high\n", bt, high_temp, high_gep);
 
     /* Store data ptr (field 0 of { ptr, ptr }) */
     uint32_t data_slot = Emit_Temp(cg);
@@ -13641,21 +13644,19 @@ static void Emit_Store_Fat_Pointer_Fields_To_Temp(Code_Generator *cg,
     uint32_t fat_alloca, const char *bt)
 {
     const char *bst = Bounds_Type_For(bt);
-    uint32_t low_i64 = Emit_Widen_To_I64(cg, low_temp, bt);
-    uint32_t high_i64 = Emit_Widen_To_I64(cg, high_temp, bt);
-    /* Allocate and fill bounds struct { i64, i64 } */
+    /* Allocate and fill bounds struct { bt, bt } — native type */
     uint32_t bounds_alloca = Emit_Temp(cg);
     Emit(cg, "  %%t%u = alloca %s\n", bounds_alloca, bst);
 
     uint32_t low_gep = Emit_Temp(cg);
     Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 0\n",
          low_gep, bst, bounds_alloca);
-    Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", low_i64, low_gep);
+    Emit(cg, "  store %s %%t%u, ptr %%t%u\n", bt, low_temp, low_gep);
 
     uint32_t high_gep = Emit_Temp(cg);
     Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 1\n",
          high_gep, bst, bounds_alloca);
-    Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", high_i64, high_gep);
+    Emit(cg, "  store %s %%t%u, ptr %%t%u\n", bt, high_temp, high_gep);
 
     /* Store data ptr (field 0 of { ptr, ptr }) */
     uint32_t data_slot = Emit_Temp(cg);
@@ -13722,14 +13723,14 @@ static void Emit_Fat_Pointer_Insertvalue_Named(Code_Generator *cg,
     const char *low_expr, const char *high_expr, const char *bt)
 {
     const char *bst = Bounds_Type_For(bt);
-    /* Allocate bounds struct on secondary stack (survives function return) */
+    /* Allocate bounds struct { bt, bt } on secondary stack (survives function return) */
     Emit(cg, "  %%%s_bnd = call ptr @__ada_sec_stack_alloc(i64 %d)\n",
          prefix, Bounds_Alloc_Size(bt));
-    /* Store low bound */
+    /* Store low bound in native bt */
     Emit(cg, "  %%%s_lo_gep = getelementptr %s, ptr %%%s_bnd, i32 0, i32 0\n",
          prefix, bst, prefix);
     Emit(cg, "  store %s, ptr %%%s_lo_gep\n", low_expr, prefix);
-    /* Store high bound */
+    /* Store high bound in native bt */
     Emit(cg, "  %%%s_hi_gep = getelementptr %s, ptr %%%s_bnd, i32 0, i32 1\n",
          prefix, bst, prefix);
     Emit(cg, "  store %s, ptr %%%s_hi_gep\n", high_expr, prefix);
@@ -13756,14 +13757,14 @@ static void Emit_Fat_Pointer_Extractvalue_Named(Code_Generator *cg,
     Emit(cg, "  %%%s = extractvalue " FAT_PTR_TYPE " %%%s, 0\n", data_name, src_name);
     /* Extract bounds pointer (field 1) */
     Emit(cg, "  %%%s_bptr = extractvalue " FAT_PTR_TYPE " %%%s, 1\n", src_name, src_name);
-    /* GEP + load low bound */
+    /* GEP + load low bound in native bt */
     Emit(cg, "  %%%s_gep = getelementptr %s, ptr %%%s_bptr, i32 0, i32 0\n",
          low_name, bst, src_name);
-    Emit(cg, "  %%%s = load i64, ptr %%%s_gep\n", low_name, low_name);
-    /* GEP + load high bound */
+    Emit(cg, "  %%%s = load %s, ptr %%%s_gep\n", low_name, bt, low_name);
+    /* GEP + load high bound in native bt */
     Emit(cg, "  %%%s_gep = getelementptr %s, ptr %%%s_bptr, i32 0, i32 1\n",
          high_name, bst, src_name);
-    Emit(cg, "  %%%s = load i64, ptr %%%s_gep\n", high_name, high_name);
+    Emit(cg, "  %%%s = load %s, ptr %%%s_gep\n", high_name, bt, high_name);
 }
 
 /* Build a null fat pointer value: { ptr null, ptr null }.
@@ -13789,23 +13790,21 @@ static uint32_t Emit_Fat_Pointer_From_Temps(Code_Generator *cg,
     const char *bt)
 {
     const char *bst = Bounds_Type_For(bt);
-    uint32_t low_i64 = Emit_Widen_To_I64(cg, low_temp, bt);
-    uint32_t high_i64 = Emit_Widen_To_I64(cg, high_temp, bt);
-    /* Allocate bounds struct */
+    /* Allocate bounds struct { bt, bt } — native type */
     uint32_t bounds_alloca = Emit_Temp(cg);
     Emit(cg, "  %%t%u = alloca %s\n", bounds_alloca, bst);
 
-    /* Store low */
+    /* Store low in native bt */
     uint32_t low_gep = Emit_Temp(cg);
     Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 0\n",
          low_gep, bst, bounds_alloca);
-    Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", low_i64, low_gep);
+    Emit(cg, "  store %s %%t%u, ptr %%t%u\n", bt, low_temp, low_gep);
 
-    /* Store high */
+    /* Store high in native bt */
     uint32_t high_gep = Emit_Temp(cg);
     Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 1\n",
          high_gep, bst, bounds_alloca);
-    Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", high_i64, high_gep);
+    Emit(cg, "  store %s %%t%u, ptr %%t%u\n", bt, high_temp, high_gep);
 
     /* Build fat pointer { ptr, ptr } */
     uint32_t t1 = Emit_Temp(cg);
@@ -22066,27 +22065,32 @@ static void Generate_Type_Equality_Function(Code_Generator *cg, Type_Info *t) {
             Emit(cg, "  %%left_bptr = extractvalue " FAT_PTR_TYPE " %%0, 1\n");
             Emit(cg, "  %%right_bptr = extractvalue " FAT_PTR_TYPE " %%1, 1\n");
 
-            /* Load bounds from left fat pointer (bounds normalized to i64) */
+            /* Load bounds from left fat pointer in native bt */
             Emit(cg, "  %%left_lo_gep = getelementptr %s, ptr %%left_bptr, i32 0, i32 0\n", eq_bst);
-            Emit(cg, "  %%left_low = load i64, ptr %%left_lo_gep\n");
+            Emit(cg, "  %%left_low = load %s, ptr %%left_lo_gep\n", eq_bt);
             Emit(cg, "  %%left_hi_gep = getelementptr %s, ptr %%left_bptr, i32 0, i32 1\n", eq_bst);
-            Emit(cg, "  %%left_high = load i64, ptr %%left_hi_gep\n");
-            Emit(cg, "  %%left_len = sub i64 %%left_high, %%left_low\n");
-            Emit(cg, "  %%left_len1 = add i64 %%left_len, 1\n");
+            Emit(cg, "  %%left_high = load %s, ptr %%left_hi_gep\n", eq_bt);
+            Emit(cg, "  %%left_len = sub %s %%left_high, %%left_low\n", eq_bt);
+            Emit(cg, "  %%left_len1 = add %s %%left_len, 1\n", eq_bt);
 
-            /* Load bounds from right fat pointer */
+            /* Load bounds from right fat pointer in native bt */
             Emit(cg, "  %%right_lo_gep = getelementptr %s, ptr %%right_bptr, i32 0, i32 0\n", eq_bst);
-            Emit(cg, "  %%right_low = load i64, ptr %%right_lo_gep\n");
+            Emit(cg, "  %%right_low = load %s, ptr %%right_lo_gep\n", eq_bt);
             Emit(cg, "  %%right_hi_gep = getelementptr %s, ptr %%right_bptr, i32 0, i32 1\n", eq_bst);
-            Emit(cg, "  %%right_high = load i64, ptr %%right_hi_gep\n");
-            Emit(cg, "  %%right_len = sub i64 %%right_high, %%right_low\n");
-            Emit(cg, "  %%right_len1 = add i64 %%right_len, 1\n");
+            Emit(cg, "  %%right_high = load %s, ptr %%right_hi_gep\n", eq_bt);
+            Emit(cg, "  %%right_len = sub %s %%right_high, %%right_low\n", eq_bt);
+            Emit(cg, "  %%right_len1 = add %s %%right_len, 1\n", eq_bt);
 
-            /* Compare lengths */
-            Emit(cg, "  %%len_eq = icmp eq i64 %%left_len1, %%right_len1\n");
+            /* Compare lengths in native bt */
+            Emit(cg, "  %%len_eq = icmp eq %s %%left_len1, %%right_len1\n", eq_bt);
 
-            /* Compute byte size for memcmp */
-            Emit(cg, "  %%byte_size = mul i64 %%left_len1, %u\n", elem_size);
+            /* Widen to i64 for memcmp byte size computation */
+            if (strcmp(eq_bt, "i64") != 0) {
+                Emit(cg, "  %%left_len1_64 = sext %s %%left_len1 to i64\n", eq_bt);
+                Emit(cg, "  %%byte_size = mul i64 %%left_len1_64, %u\n", elem_size);
+            } else {
+                Emit(cg, "  %%byte_size = mul i64 %%left_len1, %u\n", elem_size);
+            }
             Emit(cg, "  %%memcmp_res = call i32 @memcmp(ptr %%left_data, ptr %%right_data, i64 %%byte_size)\n");
             Emit(cg, "  %%data_eq = icmp eq i32 %%memcmp_res, 0\n");
 
@@ -22341,7 +22345,9 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "; Integer'VALUE helper\n");
     Emit(cg, "define linkonce_odr i64 @__ada_integer_value(" FAT_PTR_TYPE " %%str) {\n");
     Emit(cg, "entry:\n");
-    Emit_Fat_Pointer_Extractvalue_Named(cg, "str", "data", "low", "high", "i64");
+    Emit_Fat_Pointer_Extractvalue_Named(cg, "str", "data", "low32", "high32", "i32");
+    Emit(cg, "  %%low = sext i32 %%low32 to i64\n");
+    Emit(cg, "  %%high = sext i32 %%high32 to i64\n");
     Emit(cg, "  br label %%loop\n");
     Emit(cg, "loop:\n");
     Emit(cg, "  %%result = phi i64 [ 0, %%entry ], [ %%next_result, %%cont ]\n");
@@ -22388,7 +22394,7 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "declare double @strtod(ptr, ptr)\n");
     Emit(cg, "define linkonce_odr double @__ada_float_value(" FAT_PTR_TYPE " %%str) {\n");
     Emit(cg, "entry:\n");
-    Emit_Fat_Pointer_Extractvalue_Named(cg, "str", "data", "fv_low", "fv_high", "i64");
+    Emit_Fat_Pointer_Extractvalue_Named(cg, "str", "data", "fv_low", "fv_high", "i32");
     Emit(cg, "  %%result = call double @strtod(ptr %%data, ptr null)\n");
     Emit(cg, "  ret double %%result\n");
     Emit(cg, "}\n\n");
@@ -22764,19 +22770,20 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "  ret void\n");
     Emit(cg, "}\n\n");
 
-    /* PUT: output string (ptr + bounds) */
-    Emit(cg, "define linkonce_odr void @__text_io_put(ptr %%data, i64 %%lo, i64 %%hi) {\n");
+    /* PUT: output string (ptr + bounds in native i32) */
+    Emit(cg, "define linkonce_odr void @__text_io_put(ptr %%data, i32 %%lo, i32 %%hi) {\n");
     Emit(cg, "entry:\n");
     Emit(cg, "  %%out = load ptr, ptr @stdout\n");
-    Emit(cg, "  %%i.init = sub i64 %%lo, 1\n");
+    Emit(cg, "  %%i.init = sub i32 %%lo, 1\n");
     Emit(cg, "  br label %%loop\n");
     Emit(cg, "loop:\n");
-    Emit(cg, "  %%i = phi i64 [ %%i.init, %%entry ], [ %%i.next, %%body ]\n");
-    Emit(cg, "  %%i.next = add i64 %%i, 1\n");
-    Emit(cg, "  %%done = icmp sgt i64 %%i.next, %%hi\n");
+    Emit(cg, "  %%i = phi i32 [ %%i.init, %%entry ], [ %%i.next, %%body ]\n");
+    Emit(cg, "  %%i.next = add i32 %%i, 1\n");
+    Emit(cg, "  %%done = icmp sgt i32 %%i.next, %%hi\n");
     Emit(cg, "  br i1 %%done, label %%exit, label %%body\n");
     Emit(cg, "body:\n");
-    Emit(cg, "  %%idx = sub i64 %%i.next, %%lo\n");
+    Emit(cg, "  %%idx32 = sub i32 %%i.next, %%lo\n");
+    Emit(cg, "  %%idx = sext i32 %%idx32 to i64\n");
     Emit(cg, "  %%ptr = getelementptr i8, ptr %%data, i64 %%idx\n");
     Emit(cg, "  %%ch = load i8, ptr %%ptr\n");
     Emit(cg, "  %%chi = zext i8 %%ch to i32\n");
@@ -22787,8 +22794,8 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "}\n\n");
 
     /* PUT_LINE: output string followed by newline */
-    Emit(cg, "define linkonce_odr void @__text_io_put_line(ptr %%data, i64 %%lo, i64 %%hi) {\n");
-    Emit(cg, "  call void @__text_io_put(ptr %%data, i64 %%lo, i64 %%hi)\n");
+    Emit(cg, "define linkonce_odr void @__text_io_put_line(ptr %%data, i32 %%lo, i32 %%hi) {\n");
+    Emit(cg, "  call void @__text_io_put(ptr %%data, i32 %%lo, i32 %%hi)\n");
     Emit(cg, "  call void @__text_io_new_line()\n");
     Emit(cg, "  ret void\n");
     Emit(cg, "}\n\n");
@@ -22824,7 +22831,7 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "  %%iseof = icmp eq ptr %%res, null\n");
     Emit(cg, "  br i1 %%iseof, label %%empty, label %%gotline\n");
     Emit(cg, "empty:\n");
-    Emit_Fat_Pointer_Insertvalue_Named(cg, "e", "ptr %buf", "i64 1", "i64 0", "i64");
+    Emit_Fat_Pointer_Insertvalue_Named(cg, "e", "ptr %buf", "i32 1", "i32 0", "i32");
     Emit(cg, "  ret " FAT_PTR_TYPE " %%e2\n");
     Emit(cg, "gotline:\n");
     Emit(cg, "  %%len = call i64 @strlen(ptr %%buf)\n");
@@ -22834,7 +22841,8 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "  %%lastch = load i8, ptr %%lastptr\n");
     Emit(cg, "  %%isnl = icmp eq i8 %%lastch, 10\n");
     Emit(cg, "  %%adjlen = select i1 %%isnl, i64 %%lastidx, i64 %%len\n");
-    Emit_Fat_Pointer_Insertvalue_Named(cg, "f", "ptr %buf", "i64 1", "i64 %adjlen", "i64");
+    Emit(cg, "  %%adjlen32 = trunc i64 %%adjlen to i32\n");
+    Emit_Fat_Pointer_Insertvalue_Named(cg, "f", "ptr %buf", "i32 1", "i32 %adjlen32", "i32");
     Emit(cg, "  ret " FAT_PTR_TYPE " %%f2\n");
     Emit(cg, "}\n\n");
 
@@ -22851,8 +22859,7 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "entry:\n");
     Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 24)\n");
     Emit(cg, "  %%len32 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %%buf, i64 24, ptr @.img_fmt_d, i64 %%val)\n");
-    Emit(cg, "  %%len = sext i32 %%len32 to i64\n");
-    Emit_Fat_Pointer_Insertvalue_Named(cg, "fat", "ptr %buf", "i64 1", "i64 %len", "i64");
+    Emit_Fat_Pointer_Insertvalue_Named(cg, "fat", "ptr %buf", "i32 1", "i32 %len32", "i32");
     Emit(cg, "  ret " FAT_PTR_TYPE " %%fat2\n");
     Emit(cg, "}\n\n");
 
@@ -22866,7 +22873,7 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "  store i8 %%val, ptr %%p1\n");
     Emit(cg, "  %%p2 = getelementptr i8, ptr %%buf, i64 2\n");
     Emit(cg, "  store i8 39, ptr %%p2  ; single quote\n");
-    Emit_Fat_Pointer_Insertvalue_Named(cg, "fat", "ptr %buf", "i64 1", "i64 3", "i64");
+    Emit_Fat_Pointer_Insertvalue_Named(cg, "fat", "ptr %buf", "i32 1", "i32 3", "i32");
     Emit(cg, "  ret " FAT_PTR_TYPE " %%fat2\n");
     Emit(cg, "}\n\n");
 
@@ -22875,8 +22882,7 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "entry:\n");
     Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 32)\n");
     Emit(cg, "  %%len32 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %%buf, i64 32, ptr @.img_fmt_f, double %%val)\n");
-    Emit(cg, "  %%len = sext i32 %%len32 to i64\n");
-    Emit_Fat_Pointer_Insertvalue_Named(cg, "fat", "ptr %buf", "i64 1", "i64 %len", "i64");
+    Emit_Fat_Pointer_Insertvalue_Named(cg, "fat", "ptr %buf", "i32 1", "i32 %len32", "i32");
     Emit(cg, "  ret " FAT_PTR_TYPE " %%fat2\n");
     Emit(cg, "}\n\n");
 
