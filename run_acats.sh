@@ -12,15 +12,6 @@ NPROC=${NPROC:-$(nproc 32>/dev/null || echo 32)}
 START_MS=$(date +%s%3N)
 mkdir -p test_results acats_logs
 
-# ── Build ACATS report package if needed ──────────────────────────────────
-
-if [[ ! -f rts/report.ll ]] || [[ acats/report.ads -nt rts/report.ll ]] || [[ acats/report.adb -nt rts/report.ll ]]; then
-    echo "Building ACATS report package..."
-    ./ada83 acats/report.ads acats/report.adb
-    cp acats/report.ll rts/report.ll
-    echo "Done."
-fi
-
 # ── Helpers ───────────────────────────────────────────────────────────────
 
 pct(){ ((${2:-0}>0)) && printf %d $((100*$1/$2)) || printf 0; }
@@ -45,7 +36,7 @@ run_one(){
             echo "c skip $n COMPILE:$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)"
             return
         fi
-        if ! timeout 0.5 llvm-link -o test_results/$n.bc test_results/$n.ll rts/report.ll 2>acats_logs/$n.link; then
+        if ! timeout 0.5 llvm-link -o test_results/$n.bc test_results/$n.ll 2>acats_logs/$n.link; then
             echo "c skip $n BIND:unresolved_symbols"
             return
         fi
@@ -67,7 +58,7 @@ run_one(){
     a)
         if ! timeout 0.5 ./ada83 "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
             echo "a skip $n COMPILE:$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)"; return; fi
-        if ! timeout 0.5 llvm-link -o test_results/$n.bc test_results/$n.ll rts/report.ll 2>acats_logs/$n.link; then
+        if ! timeout 0.5 llvm-link -o test_results/$n.bc test_results/$n.ll 2>acats_logs/$n.link; then
             echo "a skip $n BIND:unresolved_symbols"; return; fi
         if timeout 2 lli test_results/$n.bc > acats_logs/$n.out 2>&1; then
             echo "a pass $n PASSED"
@@ -96,7 +87,7 @@ run_one(){
     d)
         if ! timeout 0.5 ./ada83 "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
             echo "d skip $n COMPILE:$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)"; return; fi
-        if ! timeout 0.5 llvm-link -o test_results/$n.bc test_results/$n.ll rts/report.ll 2>/dev/null; then
+        if ! timeout 0.5 llvm-link -o test_results/$n.bc test_results/$n.ll 2>/dev/null; then
             echo "d skip $n BIND"; return; fi
         if timeout 2 lli test_results/$n.bc > acats_logs/$n.out 2>&1 && grep -q PASSED acats_logs/$n.out; then
             echo "d pass $n PASSED"
@@ -107,7 +98,7 @@ run_one(){
     e)
         if ! timeout 0.5 ./ada83 "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
             echo "e skip $n COMPILE:$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)"; return; fi
-        if ! timeout 0.5 llvm-link -o test_results/$n.bc test_results/$n.ll rts/report.ll 2>/dev/null; then
+        if ! timeout 0.5 llvm-link -o test_results/$n.bc test_results/$n.ll 2>/dev/null; then
             echo "e skip $n BIND"; return; fi
         timeout 2 lli test_results/$n.bc > acats_logs/$n.out 2>&1 || true
         if grep -q "TENTATIVELY PASSED" acats_logs/$n.out 2>/dev/null; then
@@ -120,7 +111,7 @@ run_one(){
         ;;
     l)
         if timeout 0.5 ./ada83 "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
-            if timeout 0.5 llvm-link -o test_results/$n.bc test_results/$n.ll rts/report.ll 2>acats_logs/$n.link; then
+            if timeout 0.5 llvm-link -o test_results/$n.bc test_results/$n.ll 2>acats_logs/$n.link; then
                 if timeout 1 lli test_results/$n.bc > acats_logs/$n.out 2>&1; then
                     echo "l fail $n WRONG_EXEC:should_not_execute"
                 else
