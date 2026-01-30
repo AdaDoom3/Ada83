@@ -5030,6 +5030,7 @@ static void Parse_Generic_Formal_Part(Parser *p, Node_List *formals) {
                 formal->generic_type_param.def_detail = Parse_Subtype_Indication(p);
             } else {
                 /* Unknown form - error recovery: skip to semicolon */
+                Report_Error(formal->location, "unrecognized generic type definition form");
                 formal->generic_type_param.def_kind = 0;
                 while (!Parser_At(p, TK_SEMICOLON) && !Parser_At(p, TK_EOF)) {
                     Parser_Advance(p);
@@ -5148,6 +5149,8 @@ static Syntax_Node *Parse_Generic_Declaration(Parser *p) {
     } else if (Parser_At(p, TK_PACKAGE)) {
         Parser_Advance(p);  /* consume PACKAGE */
         node->generic_decl.unit = Parse_Package_Specification(p);
+    } else {
+        Report_Error(node->location, "expected PROCEDURE, FUNCTION, or PACKAGE after generic formals");
     }
 
     return node;
@@ -6214,7 +6217,10 @@ static int64_t Array_Element_Count(Type_Info *t);
 static int64_t Array_Low_Bound(Type_Info *t);
 
 static const char *Type_To_Llvm(Type_Info *t) {
-    if (!t) return "i64";
+    if (!t) {
+        fprintf(stderr, "warning: Type_To_Llvm called with NULL type, defaulting to i64\n");
+        return "i64";
+    }
 
     /* For private/limited private/incomplete types, resolve through parent_type
      * chain to find the actual representation type (Ada RM 7.4.1, 3.4). */
@@ -6253,6 +6259,8 @@ static const char *Type_To_Llvm(Type_Info *t) {
             /* STRING is always unconstrained array of CHARACTER */
             return "{ ptr, { i64, i64 } }";
         default:
+            fprintf(stderr, "warning: Type_To_Llvm unhandled type kind %d for '%.*s', defaulting to i64\n",
+                    t->kind, (int)t->name.length, t->name.data);
             return "i64";
     }
 }
@@ -6639,7 +6647,11 @@ static void Symbol_Add(Symbol_Manager *sm, Symbol *sym) {
         if (sym->type && (Type_Has_Dynamic_Bounds(sym->type) || Type_Is_Unconstrained_Array(sym->type))) {
             var_size = 24;
         }
-        if (var_size == 0) var_size = 8;
+        if (var_size == 0) {
+            fprintf(stderr, "warning: variable '%.*s' has zero size, defaulting to 8 bytes\n",
+                    (int)sym->name.length, sym->name.data);
+            var_size = 8;
+        }
         scope->frame_size += var_size;
     }
 }
@@ -7546,6 +7558,8 @@ static Type_Info *Resolve_Selected(Symbol_Manager *sm, Syntax_Node *node) {
         }
     }
 
+    Report_Error(node->location, "cannot resolve selected component '%.*s'",
+                 (int)node->selected.selector.length, node->selected.selector.data);
     return sm->type_integer;  /* Error recovery */
 }
 
@@ -7836,6 +7850,7 @@ static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
             break;
 
         default:
+            Report_Error(node->location, "unhandled binary operator in type resolution");
             node->type = sm->type_integer;
     }
 
@@ -10134,6 +10149,7 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
  * ───────────────────────────────────────────────────────────────────────── */
 
 static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node);
+static void Install_Declaration_Symbols(Symbol_Manager *sm, Node_List *decls);
 static char *Lookup_Path(String_Slice name);
 static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src);
 static bool Body_Already_Loaded(String_Slice name);
@@ -13503,6 +13519,8 @@ static uint32_t Generate_Record_Equality(Code_Generator *cg, uint32_t left_ptr,
     if (!Type_Is_Record(record_type) ||
         record_type->record.component_count == 0) {
         /* Empty record or invalid - always equal */
+        if (!Type_Is_Record(record_type))
+            fprintf(stderr, "warning: record equality called on non-record type\n");
         uint32_t t = Emit_Temp(cg);
         Emit(cg, "  %%t%u = add i1 0, 1  ; empty record equality\n", t);
         return t;
@@ -13601,6 +13619,7 @@ static uint32_t Generate_Record_Equality(Code_Generator *cg, uint32_t left_ptr,
 static uint32_t Generate_Array_Equality(Code_Generator *cg, uint32_t left_ptr,
                                         uint32_t right_ptr, Type_Info *array_type) {
     if (!Type_Is_Array_Like(array_type)) {
+        fprintf(stderr, "warning: array equality called on non-array type\n");
         uint32_t t = Emit_Temp(cg);
         Emit(cg, "  %%t%u = add i1 0, 1  ; invalid array equality\n", t);
         return t;
@@ -14144,6 +14163,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "  %%t%u = icmp sge i32 %%t%u, 0\n", cmp_result, memcmp_result);
                 break;
             default:
+                fprintf(stderr, "warning: unhandled array comparison operator, defaulting to equality\n");
                 Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", cmp_result, memcmp_result);
         }
         /* Widen i1 to i64 for uniform Boolean representation */
@@ -14695,7 +14715,9 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                         case TK_LE: fcmp_op = "ole"; break;
                         case TK_GT: fcmp_op = "ogt"; break;
                         case TK_GE: fcmp_op = "oge"; break;
-                        default: fcmp_op = "oeq"; break;
+                        default:
+                            fprintf(stderr, "warning: unhandled float comparison operator, defaulting to oeq\n");
+                            fcmp_op = "oeq"; break;
                     }
                     snprintf(cmp_buf, sizeof(cmp_buf), "fcmp %s %s", fcmp_op, float_type);
                     cmp_op = cmp_buf;
@@ -14706,7 +14728,9 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                     switch (node->binary.op) {
                         case TK_EQ: cmp_op = "icmp eq i64"; break;
                         case TK_NE: cmp_op = "icmp ne i64"; break;
-                        default: cmp_op = "icmp eq i64"; break;
+                        default:
+                            fprintf(stderr, "warning: unhandled boolean comparison operator, defaulting to equality\n");
+                            cmp_op = "icmp eq i64"; break;
                     }
                 } else if (strcmp(left_llvm_type, "ptr") == 0 &&
                            strcmp(right_llvm_type, "ptr") == 0) {
@@ -14724,7 +14748,9 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                                 case TK_LE: cmp_op = "icmp sle i64"; break;
                                 case TK_GT: cmp_op = "icmp sgt i64"; break;
                                 case TK_GE: cmp_op = "icmp sge i64"; break;
-                                default: cmp_op = "icmp eq i64"; break;
+                                default:
+                                    fprintf(stderr, "warning: unhandled pointer comparison operator, defaulting to equality\n");
+                                    cmp_op = "icmp eq i64"; break;
                             }
                         } break;
                     }
@@ -14736,7 +14762,9 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                         case TK_LE: cmp_op = "icmp sle i64"; break;
                         case TK_GT: cmp_op = "icmp sgt i64"; break;
                         case TK_GE: cmp_op = "icmp sge i64"; break;
-                        default: cmp_op = "icmp eq i64"; break;
+                        default:
+                            fprintf(stderr, "warning: unhandled integer comparison operator, defaulting to equality\n");
+                            cmp_op = "icmp eq i64"; break;
                     }
                 }
                 Emit(cg, "  %%t%u = %s %%t%u, %%t%u\n", t, cmp_op, left, right);
@@ -14842,7 +14870,10 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                 return mem_wide;
             }
 
-        default: op = "add"; break;
+        default:
+            fprintf(stderr, "warning: unhandled binary operator %d, defaulting to 'add'\n",
+                    node->binary.op);
+            op = "add"; break;
     }
 
     Emit(cg, "  %%t%u = %s %s %%t%u, %%t%u\n", t, op,
@@ -14916,6 +14947,8 @@ static uint32_t Generate_Unary_Op(Code_Generator *cg, Syntax_Node *node) {
             }
             break;
         default:
+            fprintf(stderr, "warning: unhandled unary operator %d, returning operand unchanged\n",
+                    node->unary.op);
             return operand;
     }
 
@@ -15677,6 +15710,9 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         }
     }
 
+    fprintf(stderr, "warning: Generate_Apply: unhandled call expression at %s:%u\n",
+            node->location.filename ? node->location.filename : "<unknown>",
+            node->location.line);
     return 0;
 }
 
@@ -15732,6 +15768,10 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
             tmp_id.type = sym->type;
             return Generate_Identifier(cg, &tmp_id);
         }
+        fprintf(stderr, "warning: Generate_Selected: '%.*s' not found in package at %s:%u\n",
+                (int)node->selected.selector.length, node->selected.selector.data,
+                node->location.filename ? node->location.filename : "<unknown>",
+                node->location.line);
         return 0;
     }
 
@@ -16049,6 +16089,8 @@ static uint32_t Emit_Bound_Attribute(Code_Generator *cg, uint32_t t,
             return Generate_Bound_Value(cg, b);
         }
     } else {
+        fprintf(stderr, "warning: attribute '%.*s'%s has no type, defaulting to 0\n",
+                (int)attr.length, attr.data, tag);
         Emit(cg, "  %%t%u = add i64 0, 0  ; %.*s'%s (no type)\n", t,
              (int)attr.length, attr.data, tag);
     }
@@ -16142,12 +16184,16 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
 
     if (Slice_Equal_Ignore_Case(attr, S("SIZE"))) {
         /* 'SIZE returns size in bits */
+        if (!prefix_type)
+            fprintf(stderr, "warning: 'SIZE attribute applied to expression with no type\n");
         Emit(cg, "  %%t%u = add i64 0, %lld  ; 'SIZE in bits\n", t,
              (long long)(prefix_type ? prefix_type->size * 8 : 0));
         return t;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("ALIGNMENT"))) {
+        if (!prefix_type)
+            fprintf(stderr, "warning: 'ALIGNMENT attribute applied to expression with no type\n");
         Emit(cg, "  %%t%u = add i64 0, %lld  ; 'ALIGNMENT\n", t,
              (long long)(prefix_type ? prefix_type->alignment : 8));
         return t;
@@ -16158,6 +16204,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, "  %%t%u = add i64 0, %lld  ; 'COMPONENT_SIZE\n", t,
                  (long long)(prefix_type->array.element_type->size * 8));
         } else {
+            fprintf(stderr, "warning: 'COMPONENT_SIZE applied to non-array type, returning 0\n");
             Emit(cg, "  %%t%u = add i64 0, 0\n", t);
         }
         return t;
@@ -16220,6 +16267,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, " to i64  ; 'ADDRESS\n");
             }
         } else {
+            fprintf(stderr, "warning: 'ADDRESS attribute applied to expression with no symbol\n");
             Emit(cg, "  %%t%u = add i64 0, 0  ; 'ADDRESS (no symbol)\n", t);
         }
         return t;
@@ -16234,6 +16282,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         if (first_arg) {
             return Generate_Expression(cg, first_arg);
         }
+        fprintf(stderr, "warning: 'POS attribute requires an argument\n");
         return 0;
     }
 
@@ -16274,6 +16323,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
             }
             return val;
         }
+        fprintf(stderr, "warning: 'VAL attribute requires an argument\n");
         return 0;
     }
 
@@ -16323,6 +16373,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, "  %%t%u = select i1 %%t%u, i64 %%t%u, i64 %%t%u  ; 'MIN\n", t, cmp, a, b);
             return t;
         }
+        fprintf(stderr, "warning: 'MIN attribute requires two arguments\n");
         return 0;
     }
 
@@ -16337,6 +16388,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, "  %%t%u = select i1 %%t%u, i64 %%t%u, i64 %%t%u  ; 'MAX\n", t, cmp, a, b);
             return t;
         }
+        fprintf(stderr, "warning: 'MAX attribute requires two arguments\n");
         return 0;
     }
 
@@ -16733,6 +16785,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
             Emit_Symbol_Ref(cg, sym);
             Emit(cg, ", i64 0  ; '%.*s\n", (int)attr.length, attr.data);
         } else {
+            fprintf(stderr, "warning: 'ACCESS attribute applied to expression with no symbol\n");
             Emit(cg, "  %%t%u = add i64 0, 0\n", t);
         }
         return t;
@@ -17054,6 +17107,8 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     }
 
     /* Unhandled attribute */
+    fprintf(stderr, "warning: unhandled attribute '%.*s'\n",
+            (int)attr.length, attr.data);
     Emit(cg, "  %%t%u = add i64 0, 0  ; unhandled '%.*s\n", t,
          (int)attr.length, attr.data);
     return t;
@@ -17565,6 +17620,9 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
         return base;
     }
 
+    fprintf(stderr, "warning: Generate_Aggregate: unhandled aggregate type at %s:%u\n",
+            node->location.filename ? node->location.filename : "<unknown>",
+            node->location.line);
     return 0;
 }
 
@@ -18071,6 +18129,9 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
                         return;
                     }
                 }
+                fprintf(stderr, "warning: unsupported source for slice assignment at %s:%u\n",
+                        target->location.filename ? target->location.filename : "<unknown>",
+                        target->location.line);
                 return;  /* Unsupported source for slice assignment */
             }
 
@@ -18274,7 +18335,12 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
 
     /* Simple variable target */
     Symbol *target_sym = target->symbol;
-    if (!target_sym) return;
+    if (!target_sym) {
+        fprintf(stderr, "warning: assignment target has no symbol at %s:%u\n",
+                target->location.filename ? target->location.filename : "<unknown>",
+                target->location.line);
+        return;
+    }
 
     Type_Info *ty = target_sym->type;
 
@@ -18764,6 +18830,7 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "  %%t%u = add i64 0, %lld  ; 'RANGE high\n", high_val,
                      (long long)Type_Bound_Value(prefix_type->array.indices[dim].high_bound));
             } else {
+                fprintf(stderr, "warning: FOR loop RANGE attribute dimension out of bounds, defaulting to 0\n");
                 low_val = high_val = 0;
             }
         } else {
@@ -18796,7 +18863,7 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "  %%t%u = add i64 0, %lld  ; subtype high\n", high_val,
                      (long long)Type_Bound_Value(subtype->high_bound));
             } else {
-                /* ??? Use 0 as fallback if no type info */
+                fprintf(stderr, "warning: FOR loop subtype has no bounds, defaulting to 0\n");
                 low_val = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = add i64 0, 0  ; no type info\n", low_val);
                 high_val = low_val;
@@ -18813,6 +18880,7 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, "  %%t%u = add i64 0, %lld  ; type high\n", high_val,
                  (long long)Type_Bound_Value(type->high_bound));
         } else {
+            fprintf(stderr, "warning: FOR loop type has no bounds, defaulting to 0\n");
             low_val = Emit_Temp(cg);
             Emit(cg, "  %%t%u = add i64 0, 0  ; no type bounds\n", low_val);
             high_val = low_val;
@@ -19543,6 +19611,10 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
             break;
 
         default:
+            fprintf(stderr, "warning: unhandled statement kind %d at %s:%u\n",
+                    node->kind,
+                    node->location.filename ? node->location.filename : "<unknown>",
+                    node->location.line);
             break;
     }
 }
@@ -21208,6 +21280,10 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
             break;
 
         default:
+            fprintf(stderr, "warning: unhandled declaration kind %d at %s:%u\n",
+                    node->kind,
+                    node->location.filename ? node->location.filename : "<unknown>",
+                    node->location.line);
             break;
     }
 }
@@ -21384,6 +21460,8 @@ static void Generate_Type_Equality_Function(Code_Generator *cg, Type_Info *t) {
         }
     } else {
         /* Unknown composite type - return true */
+        fprintf(stderr, "warning: equality for unknown composite type '%.*s', assuming always equal\n",
+                (int)t->name.length, t->name.data);
         Emit(cg, "  ret i1 1\n");
     }
 
