@@ -2737,7 +2737,61 @@ static Syntax_Node *Parse_Simple_Name(Parser *p);  /* identifier or dotted, no p
 static Syntax_Node *Parse_Subtype_Indication(Parser *p);
 static Syntax_Node *Parse_Array_Type(Parser *p);
 static void Parse_Association_List(Parser *p, Node_List *list);
-static void Parse_Parameter_List(Parser *p, Node_List *params);
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §9.13 Subprogram Declarations and Bodies
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * The spec declares the interface while the body provides the implementation.
+ */
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §9.13.1 Parameter Specification
+ *
+ * IN copies in, OUT copies out, IN OUT does both. Access avoids the copy.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+static void Parse_Parameter_List(Parser *p, Node_List *params) {
+    if (not Parser_Match(p, TK_LPAREN)) return;
+
+    do {
+        Source_Location loc = Parser_Location(p);
+        Syntax_Node *param = Node_New(NK_PARAM_SPEC, loc);
+
+        /* Identifier list */
+        do {
+            Syntax_Node *id = Node_New(NK_IDENTIFIER, Parser_Location(p));
+            id->string_val.text = Parser_Identifier(p);
+            Node_List_Push(&param->param_spec.names, id);
+        } while (Parser_Match(p, TK_COMMA));
+
+        Parser_Expect(p, TK_COLON);
+
+        /* Mode */
+        if (Parser_Match(p, TK_IN)) {
+            if (Parser_Match(p, TK_OUT)) {
+                param->param_spec.mode = MODE_IN_OUT;
+            } else {
+                param->param_spec.mode = MODE_IN;
+            }
+        } else if (Parser_Match(p, TK_OUT)) {
+            param->param_spec.mode = MODE_OUT;
+        } else {
+            param->param_spec.mode = MODE_IN;  /* Default */
+        }
+
+        param->param_spec.param_type = Parse_Subtype_Indication(p);
+
+        /* Default expression */
+        if (Parser_Match(p, TK_ASSIGN)) {
+            param->param_spec.default_expr = Parse_Expression(p);
+        }
+
+        Node_List_Push(params, param);
+    } while (Parser_Match(p, TK_SEMICOLON));
+
+    Parser_Expect(p, TK_RPAREN);
+}
+
 
 /* Parse primary: literals, names, aggregates, allocators, parenthesized */
 static Syntax_Node *Parse_Primary(Parser *p) {
@@ -3479,11 +3533,104 @@ static Syntax_Node *Parse_Statement(Parser *p);
 static void Parse_Statement_Sequence(Parser *p, Node_List *list);
 static void Parse_Declarative_Part(Parser *p, Node_List *list);
 static Syntax_Node *Parse_Declaration(Parser *p);
-static Syntax_Node *Parse_Type_Definition(Parser *p);
+static Syntax_Node *Parse_Type_Definition(Parser *p) {
+    Source_Location loc = Parser_Location(p);
+
+    /* Enumeration type */
+    if (Parser_At(p, TK_LPAREN)) {
+        return Parse_Enumeration_Type(p);
+    }
+
+    /* Array type */
+    if (Parser_At(p, TK_ARRAY)) {
+        return Parse_Array_Type(p);
+    }
+
+    /* Record type: RECORD ... END RECORD or NULL RECORD */
+    if (Parser_At(p, TK_RECORD)) {
+        return Parse_Record_Type(p);
+    }
+
+    /* Null record type: NULL RECORD */
+    if (Parser_Match(p, TK_NULL)) {
+        Parser_Expect(p, TK_RECORD);
+        Syntax_Node *node = Node_New(NK_RECORD_TYPE, loc);
+        node->record_type.is_null = true;
+        return node;
+    }
+
+    /* Access type */
+    if (Parser_At(p, TK_ACCESS)) {
+        return Parse_Access_Type(p);
+    }
+
+    /* Derived type */
+    if (Parser_At(p, TK_NEW)) {
+        return Parse_Derived_Type(p);
+    }
+
+    /* Integer types: range, mod */
+    if (Parser_Match(p, TK_RANGE)) {
+        Syntax_Node *node = Node_New(NK_INTEGER_TYPE, loc);
+        node->integer_type.range = Parse_Range(p);
+        return node;
+    }
+
+    if (Parser_Match(p, TK_MOD)) {
+        Syntax_Node *node = Node_New(NK_INTEGER_TYPE, loc);
+        Syntax_Node *mod_expr = Parse_Expression(p);
+        /* Store modulus as integer value if constant */
+        node->integer_type.modulus = 0;  /* Will be evaluated during semantic analysis */
+        node->integer_type.range = mod_expr;
+        return node;
+    }
+
+    /* Real types: digits, delta */
+    if (Parser_Match(p, TK_DIGITS)) {
+        Syntax_Node *node = Node_New(NK_REAL_TYPE, loc);
+        node->real_type.precision = Parse_Expression(p);
+        if (Parser_Match(p, TK_RANGE)) {
+            node->real_type.range = Parse_Range(p);
+        }
+        return node;
+    }
+
+    if (Parser_Match(p, TK_DELTA)) {
+        Syntax_Node *node = Node_New(NK_REAL_TYPE, loc);
+        node->real_type.delta = Parse_Expression(p);
+        if (Parser_Match(p, TK_RANGE)) {
+            node->real_type.range = Parse_Range(p);
+        }
+        return node;
+    }
+
+    Parser_Error(p, "expected type definition");
+    return Node_New(NK_INTEGER_TYPE, loc);
+}
+
 static Syntax_Node *Parse_Subprogram_Body(Parser *p, Syntax_Node *spec);
 static Syntax_Node *Parse_Block_Statement(Parser *p, String_Slice label);
 static Syntax_Node *Parse_Loop_Statement(Parser *p, String_Slice label);
-static Syntax_Node *Parse_Pragma(Parser *p);
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §9.17 Pragmas
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+
+static Syntax_Node *Parse_Pragma(Parser *p) {
+    Source_Location loc = Parser_Location(p);
+    Parser_Expect(p, TK_PRAGMA);
+
+    Syntax_Node *node = Node_New(NK_PRAGMA, loc);
+    node->pragma_node.name = Parser_Identifier(p);
+
+    if (Parser_Match(p, TK_LPAREN)) {
+        Parse_Association_List(p, &node->pragma_node.arguments);
+        Parser_Expect(p, TK_RPAREN);
+    }
+
+    return node;
+}
+
 
 /* ─────────────────────────────────────────────────────────────────────────
  * §9.11.1 Simple Statements
@@ -4446,136 +4593,6 @@ static Syntax_Node *Parse_Derived_Type(Parser *p) {
     return node;
 }
 
-static Syntax_Node *Parse_Type_Definition(Parser *p) {
-    Source_Location loc = Parser_Location(p);
-
-    /* Enumeration type */
-    if (Parser_At(p, TK_LPAREN)) {
-        return Parse_Enumeration_Type(p);
-    }
-
-    /* Array type */
-    if (Parser_At(p, TK_ARRAY)) {
-        return Parse_Array_Type(p);
-    }
-
-    /* Record type: RECORD ... END RECORD or NULL RECORD */
-    if (Parser_At(p, TK_RECORD)) {
-        return Parse_Record_Type(p);
-    }
-
-    /* Null record type: NULL RECORD */
-    if (Parser_Match(p, TK_NULL)) {
-        Parser_Expect(p, TK_RECORD);
-        Syntax_Node *node = Node_New(NK_RECORD_TYPE, loc);
-        node->record_type.is_null = true;
-        return node;
-    }
-
-    /* Access type */
-    if (Parser_At(p, TK_ACCESS)) {
-        return Parse_Access_Type(p);
-    }
-
-    /* Derived type */
-    if (Parser_At(p, TK_NEW)) {
-        return Parse_Derived_Type(p);
-    }
-
-    /* Integer types: range, mod */
-    if (Parser_Match(p, TK_RANGE)) {
-        Syntax_Node *node = Node_New(NK_INTEGER_TYPE, loc);
-        node->integer_type.range = Parse_Range(p);
-        return node;
-    }
-
-    if (Parser_Match(p, TK_MOD)) {
-        Syntax_Node *node = Node_New(NK_INTEGER_TYPE, loc);
-        Syntax_Node *mod_expr = Parse_Expression(p);
-        /* Store modulus as integer value if constant */
-        node->integer_type.modulus = 0;  /* Will be evaluated during semantic analysis */
-        node->integer_type.range = mod_expr;
-        return node;
-    }
-
-    /* Real types: digits, delta */
-    if (Parser_Match(p, TK_DIGITS)) {
-        Syntax_Node *node = Node_New(NK_REAL_TYPE, loc);
-        node->real_type.precision = Parse_Expression(p);
-        if (Parser_Match(p, TK_RANGE)) {
-            node->real_type.range = Parse_Range(p);
-        }
-        return node;
-    }
-
-    if (Parser_Match(p, TK_DELTA)) {
-        Syntax_Node *node = Node_New(NK_REAL_TYPE, loc);
-        node->real_type.delta = Parse_Expression(p);
-        if (Parser_Match(p, TK_RANGE)) {
-            node->real_type.range = Parse_Range(p);
-        }
-        return node;
-    }
-
-    Parser_Error(p, "expected type definition");
-    return Node_New(NK_INTEGER_TYPE, loc);
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════
- * §9.13 Subprogram Declarations and Bodies
- * ═══════════════════════════════════════════════════════════════════════════
- *
- * The spec declares the interface while the body provides the implementation.
- */
-
-/* ─────────────────────────────────────────────────────────────────────────
- * §9.13.1 Parameter Specification
- *
- * IN copies in, OUT copies out, IN OUT does both. Access avoids the copy.
- * ───────────────────────────────────────────────────────────────────────── */
-
-static void Parse_Parameter_List(Parser *p, Node_List *params) {
-    if (not Parser_Match(p, TK_LPAREN)) return;
-
-    do {
-        Source_Location loc = Parser_Location(p);
-        Syntax_Node *param = Node_New(NK_PARAM_SPEC, loc);
-
-        /* Identifier list */
-        do {
-            Syntax_Node *id = Node_New(NK_IDENTIFIER, Parser_Location(p));
-            id->string_val.text = Parser_Identifier(p);
-            Node_List_Push(&param->param_spec.names, id);
-        } while (Parser_Match(p, TK_COMMA));
-
-        Parser_Expect(p, TK_COLON);
-
-        /* Mode */
-        if (Parser_Match(p, TK_IN)) {
-            if (Parser_Match(p, TK_OUT)) {
-                param->param_spec.mode = MODE_IN_OUT;
-            } else {
-                param->param_spec.mode = MODE_IN;
-            }
-        } else if (Parser_Match(p, TK_OUT)) {
-            param->param_spec.mode = MODE_OUT;
-        } else {
-            param->param_spec.mode = MODE_IN;  /* Default */
-        }
-
-        param->param_spec.param_type = Parse_Subtype_Indication(p);
-
-        /* Default expression */
-        if (Parser_Match(p, TK_ASSIGN)) {
-            param->param_spec.default_expr = Parse_Expression(p);
-        }
-
-        Node_List_Push(params, param);
-    } while (Parser_Match(p, TK_SEMICOLON));
-
-    Parser_Expect(p, TK_RPAREN);
-}
-
 /* ─────────────────────────────────────────────────────────────────────────
  * §9.13.2 Procedure/Function Specification
  * ───────────────────────────────────────────────────────────────────────── */
@@ -5017,26 +5034,6 @@ static Syntax_Node *Parse_With_Clause(Parser *p) {
     do {
         Node_List_Push(&node->use_clause.names, Parse_Name(p));
     } while (Parser_Match(p, TK_COMMA));
-
-    return node;
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════
- * §9.17 Pragmas
- * ═══════════════════════════════════════════════════════════════════════════
- */
-
-static Syntax_Node *Parse_Pragma(Parser *p) {
-    Source_Location loc = Parser_Location(p);
-    Parser_Expect(p, TK_PRAGMA);
-
-    Syntax_Node *node = Node_New(NK_PRAGMA, loc);
-    node->pragma_node.name = Parser_Identifier(p);
-
-    if (Parser_Match(p, TK_LPAREN)) {
-        Parse_Association_List(p, &node->pragma_node.arguments);
-        Parser_Expect(p, TK_RPAREN);
-    }
 
     return node;
 }
@@ -6074,9 +6071,6 @@ static void Freeze_Type(Type_Info *t) {
  * ───────────────────────────────────────────────────────────────────────── */
 
 /* Forward declarations for array helpers (defined after Type_Bound_Value) */
-static int64_t Type_Bound_Value(Type_Bound b);
-static int64_t Array_Element_Count(Type_Info *t);
-static int64_t Array_Low_Bound(Type_Info *t);
 static const char *Type_To_Llvm(Type_Info *t) {
     if (not t) {
         fprintf(stderr, "error: Type_To_Llvm called with NULL type\n");
@@ -6879,7 +6873,6 @@ static bool Type_Covers(Type_Info *expected, Type_Info *actual) {
  * ───────────────────────────────────────────────────────────────────────── */
 
 /* Forward declaration for Resolve_Expression - needed for argument resolution */
-static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node);
 
 typedef struct {
     Type_Info **types;       /* Array of argument types */
@@ -8344,6 +8337,35 @@ static double Eval_Const_Numeric(Syntax_Node *n) {
         }
         default: return 0.0/0.0;
     }
+}
+
+static int64_t Type_Bound_Value(Type_Bound b) {
+    if (b.kind == BOUND_INTEGER) return b.int_value;
+    if (b.kind == BOUND_FLOAT) return (int64_t)b.float_value;
+    if (b.kind == BOUND_EXPR and b.expr) {
+        /* Try to evaluate expression bound at compile time */
+        double val = Eval_Const_Numeric(b.expr);
+        if (val == val) return (int64_t)val;  /* Not NaN */
+    }
+    return 0;  /* Handle other bound kinds as needed */
+}
+
+/* Get array element count for constrained arrays, 0 for unconstrained */
+static int64_t Array_Element_Count(Type_Info *t) {
+    if (not t or t->kind != TYPE_ARRAY or not t->array.is_constrained)
+        return 0;
+    if (t->array.index_count == 0)
+        return 0;
+    int64_t low = Type_Bound_Value(t->array.indices[0].low_bound);
+    int64_t high = Type_Bound_Value(t->array.indices[0].high_bound);
+    return high - low + 1;
+}
+
+/* Get array low bound for index adjustment */
+static int64_t Array_Low_Bound(Type_Info *t) {
+    if (not t or t->kind != TYPE_ARRAY or t->array.index_count == 0)
+        return 0;
+    return Type_Bound_Value(t->array.indices[0].low_bound);
 }
 
 static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
@@ -9856,10 +9878,119 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
  * §12.2 Statement Resolution
  * ───────────────────────────────────────────────────────────────────────── */
 
-static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node);
 static void Resolve_Declaration_List(Symbol_Manager *sm, Node_List *list);
-static void Freeze_Declaration_List(Node_List *list);
-static void Populate_Package_Exports(Symbol *pkg_sym, Syntax_Node *pkg_spec);
+/* Freeze all types declared in a list
+ * Per RM 13.14: At the end of a declarative part, all entities are frozen */
+static void Freeze_Declaration_List(Node_List *list) {
+    for (uint32_t i = 0; i < list->count; i++) {
+        Syntax_Node *node = list->items[i];
+        if (not node) continue;
+
+        switch (node->kind) {
+            case NK_TYPE_DECL:
+            case NK_SUBTYPE_DECL:
+                if (node->symbol and node->symbol->type) {
+                    Freeze_Type(node->symbol->type);
+                }
+                break;
+
+            case NK_OBJECT_DECL:
+                /* Objects already freeze their type at declaration */
+                break;
+
+            case NK_PROCEDURE_BODY:
+            case NK_FUNCTION_BODY:
+                /* Subprogram bodies freeze all visible entities */
+                break;
+
+            default:
+                break;
+        }
+    }
+}
+
+/* Populate a package symbol's exported[] array from its visible declarations.
+ * This must be called after all visible declarations are resolved so that
+ * decl->symbol pointers are valid. Used by both inline packages and loaded specs. */
+static void Populate_Package_Exports(Symbol *pkg_sym, Syntax_Node *pkg_spec) {
+    if (not pkg_sym or not pkg_spec or pkg_spec->kind != NK_PACKAGE_SPEC) return;
+
+    Node_List *visible = &pkg_spec->package_spec.visible_decls;
+
+    /* Count exports including nested items (enum literals, multiple object names) */
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < visible->count; i++) {
+        Syntax_Node *decl = visible->items[i];
+        if (not decl) continue;
+        if (decl->kind == NK_OBJECT_DECL) {
+            count += (uint32_t)decl->object_decl.names.count;
+        } else if (decl->kind == NK_TYPE_DECL or decl->kind == NK_SUBTYPE_DECL) {
+            count++;
+            /* Enumeration literals */
+            if (decl->type_decl.definition and
+                decl->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
+                count += (uint32_t)decl->type_decl.definition->enum_type.literals.count;
+            }
+        } else if (decl->kind == NK_PROCEDURE_SPEC or decl->kind == NK_FUNCTION_SPEC or
+                   decl->kind == NK_PROCEDURE_BODY or decl->kind == NK_FUNCTION_BODY) {
+            count++;
+        } else if (decl->kind == NK_EXCEPTION_DECL) {
+            count += (uint32_t)decl->exception_decl.names.count;
+        } else if (decl->kind == NK_PACKAGE_SPEC) {
+            count++;  /* Nested packages */
+        } else if (decl->kind == NK_GENERIC_DECL) {
+            count++;  /* Nested generics (e.g., TEXT_IO.INTEGER_IO) */
+        }
+    }
+
+    if (count == 0) return;
+
+    /* Allocate and fill */
+    pkg_sym->exported = Arena_Allocate(count * sizeof(Symbol*));
+    pkg_sym->exported_count = 0;
+
+    for (uint32_t i = 0; i < visible->count; i++) {
+        Syntax_Node *decl = visible->items[i];
+        if (not decl) continue;
+
+        if (decl->kind == NK_OBJECT_DECL) {
+            for (uint32_t j = 0; j < decl->object_decl.names.count; j++) {
+                Syntax_Node *name_node = decl->object_decl.names.items[j];
+                if (name_node->symbol) {
+                    pkg_sym->exported[pkg_sym->exported_count++] = name_node->symbol;
+                }
+            }
+        } else if ((decl->kind == NK_TYPE_DECL or decl->kind == NK_SUBTYPE_DECL) and decl->symbol) {
+            pkg_sym->exported[pkg_sym->exported_count++] = decl->symbol;
+            /* Enumeration literals */
+            if (decl->type_decl.definition and
+                decl->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
+                Node_List *lits = &decl->type_decl.definition->enum_type.literals;
+                for (uint32_t j = 0; j < lits->count; j++) {
+                    if (lits->items[j]->symbol) {
+                        pkg_sym->exported[pkg_sym->exported_count++] = lits->items[j]->symbol;
+                    }
+                }
+            }
+        } else if ((decl->kind == NK_PROCEDURE_SPEC or decl->kind == NK_FUNCTION_SPEC or
+                    decl->kind == NK_PROCEDURE_BODY or decl->kind == NK_FUNCTION_BODY) and decl->symbol) {
+            pkg_sym->exported[pkg_sym->exported_count++] = decl->symbol;
+        } else if (decl->kind == NK_EXCEPTION_DECL) {
+            for (uint32_t j = 0; j < decl->exception_decl.names.count; j++) {
+                Syntax_Node *name_node = decl->exception_decl.names.items[j];
+                if (name_node->symbol) {
+                    pkg_sym->exported[pkg_sym->exported_count++] = name_node->symbol;
+                }
+            }
+        } else if (decl->kind == NK_PACKAGE_SPEC and decl->symbol) {
+            pkg_sym->exported[pkg_sym->exported_count++] = decl->symbol;
+        } else if (decl->kind == NK_GENERIC_DECL and decl->symbol) {
+            /* Export nested generic packages/subprograms (e.g., TEXT_IO.INTEGER_IO) */
+            pkg_sym->exported[pkg_sym->exported_count++] = decl->symbol;
+        }
+    }
+}
+
 
 /* Pre-register labels in a statement list to allow forward gotos.
  * Labels can appear as:
@@ -10148,128 +10279,200 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
  * ───────────────────────────────────────────────────────────────────────── */
 
 static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node);
-static void Install_Declaration_Symbols(Symbol_Manager *sm, Node_List *decls);
-static char *Lookup_Path(String_Slice name);
+/* Install all exported symbols from a declaration list into the symbol table.
+ * Handles objects, exceptions, and enumeration literals uniformly.
+ * Extracted from two identical visible/private installation blocks. */
+static void Install_Declaration_Symbols(Symbol_Manager *sm, Node_List *decls) {
+    for (uint32_t i = 0; i < decls->count; i++) {
+        Syntax_Node *decl = decls->items[i];
+        if (decl->symbol) Symbol_Add(sm, decl->symbol);
+        /* Multi-name object declarations: install each named symbol */
+        if (decl->kind == NK_OBJECT_DECL)
+            for (uint32_t j = 0; j < decl->object_decl.names.count; j++) {
+                Syntax_Node *name = decl->object_decl.names.items[j];
+                if (name->symbol) Symbol_Add(sm, name->symbol);
+            }
+        /* Exception declarations: same multi-name pattern */
+        if (decl->kind == NK_EXCEPTION_DECL)
+            for (uint32_t j = 0; j < decl->exception_decl.names.count; j++) {
+                Syntax_Node *name = decl->exception_decl.names.items[j];
+                if (name->symbol) Symbol_Add(sm, name->symbol);
+            }
+        /* Enumeration type: install each literal as a separate symbol */
+        if (decl->kind == NK_TYPE_DECL and decl->type_decl.definition and
+            decl->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
+            Node_List *lits = &decl->type_decl.definition->enum_type.literals;
+            for (uint32_t j = 0; j < lits->count; j++)
+                if (lits->items[j]->symbol) Symbol_Add(sm, lits->items[j]->symbol);
+        }
+    }
+}
+
+static const char *Include_Paths[32];
+static int Include_Path_Count = 0;
+
+/* Track loaded package bodies for code generation */
+static Syntax_Node *Loaded_Package_Bodies[128];
+static int Loaded_Body_Count = 0;
+
+/* Track which package bodies have already been loaded (to avoid duplicates) */
+static String_Slice Loaded_Body_Names[128];
+static int Loaded_Body_Names_Count = 0;
+
+static bool Body_Already_Loaded(String_Slice name) {
+    for (int i = 0; i < Loaded_Body_Names_Count; i++) {
+        if (Loaded_Body_Names[i].length == name.length and
+            strncasecmp(Loaded_Body_Names[i].data, name.data, name.length) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void Mark_Body_Loaded(String_Slice name) {
+    if (Loaded_Body_Names_Count < 128) {
+        Loaded_Body_Names[Loaded_Body_Names_Count++] = name;
+    }
+}
+
+/* Track packages currently being loaded to detect cycles */
+typedef struct {
+    String_Slice names[64];
+    int count;
+} Loading_Set;
+
+static Loading_Set Loading_Packages = {0};
+
+static bool Loading_Set_Contains(String_Slice name) {
+    for (int i = 0; i < Loading_Packages.count; i++) {
+        if (Loading_Packages.names[i].length == name.length and
+            strncasecmp(Loading_Packages.names[i].data, name.data, name.length) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void Loading_Set_Add(String_Slice name) {
+    if (Loading_Packages.count < 64) {
+        Loading_Packages.names[Loading_Packages.count++] = name;
+    }
+}
+
+static void Loading_Set_Remove(String_Slice name) {
+    for (int i = 0; i < Loading_Packages.count; i++) {
+        if (Loading_Packages.names[i].length == name.length and
+            strncasecmp(Loading_Packages.names[i].data, name.data, name.length) == 0) {
+            /* Swap with last and decrement count */
+            Loading_Packages.names[i] = Loading_Packages.names[--Loading_Packages.count];
+            return;
+        }
+    }
+}
+
+static char *Read_File_Simple(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (not f) return NULL;
+
+    fseek(f, 0, SEEK_END);
+    long fsize = ftell(f);
+    if (fsize < 0) { fclose(f); return NULL; }
+    size_t size = (size_t)fsize;
+    fseek(f, 0, SEEK_SET);
+
+    char *buffer = malloc(size + 1);
+    if (not buffer) { fclose(f); return NULL; }
+
+    size_t read_size = fread(buffer, 1, size, f);
+    fclose(f);
+    buffer[read_size] = '\0';
+    return buffer;
+}
+
+/* Find a package source file in include paths */
+static char *Lookup_Path(String_Slice name) {
+    char path[512], full_path[520];  /* full_path larger for .ads extension */
+
+    for (int i = 0; i < Include_Path_Count; i++) {
+        /* Build lowercase filename */
+        size_t base_len = strlen(Include_Paths[i]);
+        snprintf(path, sizeof(path), "%s%s%.*s",
+                 Include_Paths[i],
+                 (base_len > 0 and Include_Paths[i][base_len-1] != '/') ? "/" : "",
+                 (int)name.length, name.data);
+
+        /* Lowercase the filename part */
+        for (char *p = path + base_len; *p; p++) {
+            if (*p >= 'A' and *p <= 'Z') *p = *p - 'A' + 'a';
+        }
+
+        /* Try .ads extension */
+        snprintf(full_path, sizeof(full_path), "%s.ads", path);
+        char *src = Read_File_Simple(full_path);
+        if (src) return src;
+
+        /* Try .ada extension (ACATS naming convention) */
+        snprintf(full_path, sizeof(full_path), "%s.ada", path);
+        src = Read_File_Simple(full_path);
+        if (src) return src;
+    }
+    return NULL;
+}
+
+/* Check if a precompiled .ll file exists for a package in include paths */
+static bool Has_Precompiled_LL(String_Slice name) {
+    char path[512], full_path[520];
+    for (int i = 0; i < Include_Path_Count; i++) {
+        size_t base_len = strlen(Include_Paths[i]);
+        snprintf(path, sizeof(path), "%s%s%.*s",
+                 Include_Paths[i],
+                 (base_len > 0 and Include_Paths[i][base_len-1] != '/') ? "/" : "",
+                 (int)name.length, name.data);
+        for (char *p = path + base_len; *p; p++) {
+            if (*p >= 'A' and *p <= 'Z') *p = *p - 'A' + 'a';
+        }
+        snprintf(full_path, sizeof(full_path), "%s.ll", path);
+        FILE *f = fopen(full_path, "r");
+        if (f) { fclose(f); return true; }
+    }
+    return false;
+}
+
+/* Find a package body source file in include paths */
+static char *Lookup_Path_Body(String_Slice name) {
+    char path[512], full_path[520];
+
+    for (int i = 0; i < Include_Path_Count; i++) {
+        size_t base_len = strlen(Include_Paths[i]);
+        snprintf(path, sizeof(path), "%s%s%.*s",
+                 Include_Paths[i],
+                 (base_len > 0 and Include_Paths[i][base_len-1] != '/') ? "/" : "",
+                 (int)name.length, name.data);
+
+        /* Lowercase the filename part */
+        for (char *p = path + base_len; *p; p++) {
+            if (*p >= 'A' and *p <= 'Z') *p = *p - 'A' + 'a';
+        }
+
+        /* Try .adb extension */
+        snprintf(full_path, sizeof(full_path), "%s.adb", path);
+        char *src = Read_File_Simple(full_path);
+        if (src) return src;
+
+        /* Try .ada extension (ACATS uses .ada for both specs and bodies) */
+        snprintf(full_path, sizeof(full_path), "%s.ada", path);
+        src = Read_File_Simple(full_path);
+        if (src) return src;
+    }
+    return NULL;
+}
+
 static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src);
-static bool Body_Already_Loaded(String_Slice name);
-static void Mark_Body_Loaded(String_Slice name);
 static void Expand_Generic_Package(Symbol_Manager *sm, Symbol *instance_sym);
 
 static void Resolve_Declaration_List(Symbol_Manager *sm, Node_List *list) {
     for (uint32_t i = 0; i < list->count; i++) {
         Resolve_Declaration(sm, list->items[i]);
-    }
-}
-
-/* Freeze all types declared in a list
- * Per RM 13.14: At the end of a declarative part, all entities are frozen */
-static void Freeze_Declaration_List(Node_List *list) {
-    for (uint32_t i = 0; i < list->count; i++) {
-        Syntax_Node *node = list->items[i];
-        if (not node) continue;
-
-        switch (node->kind) {
-            case NK_TYPE_DECL:
-            case NK_SUBTYPE_DECL:
-                if (node->symbol and node->symbol->type) {
-                    Freeze_Type(node->symbol->type);
-                }
-                break;
-
-            case NK_OBJECT_DECL:
-                /* Objects already freeze their type at declaration */
-                break;
-
-            case NK_PROCEDURE_BODY:
-            case NK_FUNCTION_BODY:
-                /* Subprogram bodies freeze all visible entities */
-                break;
-
-            default:
-                break;
-        }
-    }
-}
-
-/* Populate a package symbol's exported[] array from its visible declarations.
- * This must be called after all visible declarations are resolved so that
- * decl->symbol pointers are valid. Used by both inline packages and loaded specs. */
-static void Populate_Package_Exports(Symbol *pkg_sym, Syntax_Node *pkg_spec) {
-    if (not pkg_sym or not pkg_spec or pkg_spec->kind != NK_PACKAGE_SPEC) return;
-
-    Node_List *visible = &pkg_spec->package_spec.visible_decls;
-
-    /* Count exports including nested items (enum literals, multiple object names) */
-    uint32_t count = 0;
-    for (uint32_t i = 0; i < visible->count; i++) {
-        Syntax_Node *decl = visible->items[i];
-        if (not decl) continue;
-        if (decl->kind == NK_OBJECT_DECL) {
-            count += (uint32_t)decl->object_decl.names.count;
-        } else if (decl->kind == NK_TYPE_DECL or decl->kind == NK_SUBTYPE_DECL) {
-            count++;
-            /* Enumeration literals */
-            if (decl->type_decl.definition and
-                decl->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
-                count += (uint32_t)decl->type_decl.definition->enum_type.literals.count;
-            }
-        } else if (decl->kind == NK_PROCEDURE_SPEC or decl->kind == NK_FUNCTION_SPEC or
-                   decl->kind == NK_PROCEDURE_BODY or decl->kind == NK_FUNCTION_BODY) {
-            count++;
-        } else if (decl->kind == NK_EXCEPTION_DECL) {
-            count += (uint32_t)decl->exception_decl.names.count;
-        } else if (decl->kind == NK_PACKAGE_SPEC) {
-            count++;  /* Nested packages */
-        } else if (decl->kind == NK_GENERIC_DECL) {
-            count++;  /* Nested generics (e.g., TEXT_IO.INTEGER_IO) */
-        }
-    }
-
-    if (count == 0) return;
-
-    /* Allocate and fill */
-    pkg_sym->exported = Arena_Allocate(count * sizeof(Symbol*));
-    pkg_sym->exported_count = 0;
-
-    for (uint32_t i = 0; i < visible->count; i++) {
-        Syntax_Node *decl = visible->items[i];
-        if (not decl) continue;
-
-        if (decl->kind == NK_OBJECT_DECL) {
-            for (uint32_t j = 0; j < decl->object_decl.names.count; j++) {
-                Syntax_Node *name_node = decl->object_decl.names.items[j];
-                if (name_node->symbol) {
-                    pkg_sym->exported[pkg_sym->exported_count++] = name_node->symbol;
-                }
-            }
-        } else if ((decl->kind == NK_TYPE_DECL or decl->kind == NK_SUBTYPE_DECL) and decl->symbol) {
-            pkg_sym->exported[pkg_sym->exported_count++] = decl->symbol;
-            /* Enumeration literals */
-            if (decl->type_decl.definition and
-                decl->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
-                Node_List *lits = &decl->type_decl.definition->enum_type.literals;
-                for (uint32_t j = 0; j < lits->count; j++) {
-                    if (lits->items[j]->symbol) {
-                        pkg_sym->exported[pkg_sym->exported_count++] = lits->items[j]->symbol;
-                    }
-                }
-            }
-        } else if ((decl->kind == NK_PROCEDURE_SPEC or decl->kind == NK_FUNCTION_SPEC or
-                    decl->kind == NK_PROCEDURE_BODY or decl->kind == NK_FUNCTION_BODY) and decl->symbol) {
-            pkg_sym->exported[pkg_sym->exported_count++] = decl->symbol;
-        } else if (decl->kind == NK_EXCEPTION_DECL) {
-            for (uint32_t j = 0; j < decl->exception_decl.names.count; j++) {
-                Syntax_Node *name_node = decl->exception_decl.names.items[j];
-                if (name_node->symbol) {
-                    pkg_sym->exported[pkg_sym->exported_count++] = name_node->symbol;
-                }
-            }
-        } else if (decl->kind == NK_PACKAGE_SPEC and decl->symbol) {
-            pkg_sym->exported[pkg_sym->exported_count++] = decl->symbol;
-        } else if (decl->kind == NK_GENERIC_DECL and decl->symbol) {
-            /* Export nested generic packages/subprograms (e.g., TEXT_IO.INTEGER_IO) */
-            pkg_sym->exported[pkg_sym->exported_count++] = decl->symbol;
-        }
     }
 }
 
@@ -13726,7 +13929,6 @@ static uint32_t Emit_Fat_Pointer_From_Temps(Code_Generator *cg,
  * Every expression yields a value, and in SSA form every value has one definition.
  * ───────────────────────────────────────────────────────────────────────── */
 
-static uint32_t Generate_Expression(Code_Generator *cg, Syntax_Node *node);
 
 /* ─────────────────────────────────────────────────────────────────────────
  * Generate_Lvalue — Return a ptr to the storage location of an lvalue.
@@ -16636,17 +16838,6 @@ static bool Type_Bound_Is_Compile_Time_Known(Type_Bound b) {
     return false;
 }
 
-static int64_t Type_Bound_Value(Type_Bound b) {
-    if (b.kind == BOUND_INTEGER) return b.int_value;
-    if (b.kind == BOUND_FLOAT) return (int64_t)b.float_value;
-    if (b.kind == BOUND_EXPR and b.expr) {
-        /* Try to evaluate expression bound at compile time */
-        double val = Eval_Const_Numeric(b.expr);
-        if (val == val) return (int64_t)val;  /* Not NaN */
-    }
-    return 0;  /* Handle other bound kinds as needed */
-}
-
 static double Type_Bound_Float_Value(Type_Bound b) {
     if (b.kind == BOUND_FLOAT) return b.float_value;
     if (b.kind == BOUND_INTEGER) return (double)b.int_value;
@@ -16679,24 +16870,6 @@ static void Emit_Float_Type_Limit(Code_Generator *cg, uint32_t t, Type_Info *typ
     Emit(cg, "  %%t%u = fadd %s 0.0, %s  ; %.*s'%s (unconstrained)\n",
          t, is_float ? "float" : "double", val,
          (int)attr.length, attr.data, is_low ? "FIRST" : "LAST");
-}
-
-/* Get array element count for constrained arrays, 0 for unconstrained */
-static int64_t Array_Element_Count(Type_Info *t) {
-    if (not t or t->kind != TYPE_ARRAY or not t->array.is_constrained)
-        return 0;
-    if (t->array.index_count == 0)
-        return 0;
-    int64_t low = Type_Bound_Value(t->array.indices[0].low_bound);
-    int64_t high = Type_Bound_Value(t->array.indices[0].high_bound);
-    return high - low + 1;
-}
-
-/* Get array low bound for index adjustment */
-static int64_t Array_Low_Bound(Type_Info *t) {
-    if (not t or t->kind != TYPE_ARRAY or t->array.index_count == 0)
-        return 0;
-    return Type_Bound_Value(t->array.indices[0].low_bound);
 }
 
 /* Get dimension index from attribute argument (1-based, default 1) */
@@ -20222,7 +20395,79 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
  * ───────────────────────────────────────────────────────────────────────── */
 
 static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node);
-static void Emit_Extern_Subprogram(Code_Generator *cg, Symbol *sym);
+/* Check if external name is a builtin/runtime function (already defined) */
+static bool Is_Builtin_Function(String_Slice name) {
+    /* Strip quotes if present */
+    if (name.length >= 2 and name.data[0] == '"' and name.data[name.length-1] == '"') {
+        name.data++;
+        name.length -= 2;
+    }
+    const char *builtins[] = {
+        /* Custom text_io helpers */
+        "__text_io_new_line", "__text_io_put_char", "__text_io_put",
+        "__text_io_put_line", "__text_io_put_int", "__text_io_put_float",
+        "__text_io_get_char", "__text_io_get_line",
+        /* Standard C library functions (declared in runtime preamble) */
+        "memcmp", "setjmp", "longjmp", "exit", "malloc", "realloc", "free",
+        "usleep", "printf", "putchar", "strtod", "snprintf", "strlen",
+        "fputc", "fputs", "fgetc", "fgets", "fprintf",
+        "fopen", "fclose", "fflush", "feof", "ftell", "fseek",
+        "ungetc", "remove", "getchar",
+        NULL
+    };
+    for (int i = 0; builtins[i]; i++) {
+        if (name.length == strlen(builtins[i]) and
+            memcmp(name.data, builtins[i], name.length) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Emit function signature for extern declaration */
+static void Emit_Extern_Subprogram(Code_Generator *cg, Symbol *sym) {
+    if (not sym) return;
+    if (sym->kind != SYMBOL_FUNCTION and sym->kind != SYMBOL_PROCEDURE) return;
+
+    /* Skip if already emitted */
+    if (sym->extern_emitted) return;
+    sym->extern_emitted = true;
+
+    /* Skip if this is a builtin function that we've already defined */
+    if (sym->is_imported and sym->external_name.length > 0) {
+        if (Is_Builtin_Function(sym->external_name)) {
+            return;
+        }
+    }
+
+    /* Get return type */
+    const char *ret_type = sym->return_type ? Type_To_Llvm(sym->return_type) : "void";
+
+    Emit(cg, "declare %s @", ret_type);
+    Emit_Symbol_Name(cg, sym);
+    Emit(cg, "(");
+
+    /* Emit parameter types */
+    for (uint32_t i = 0; i < sym->parameter_count; i++) {
+        if (i > 0) Emit(cg, ", ");
+        /* Handle ALI-loaded symbols without full parameter info */
+        Type_Info *ty = (sym->parameters and i < sym->parameter_count)
+                        ? sym->parameters[i].param_type : NULL;
+        if (ty) {
+            /* Unconstrained arrays pass as fat pointers */
+            if (Type_Is_Unconstrained_Array(ty) or
+                (not Type_Is_Constrained_Array(ty) and Type_Is_String(ty))) {
+                Emit(cg, FAT_PTR_TYPE);
+            } else {
+                Emit(cg, "%s", Type_To_Llvm(ty));
+            }
+        } else {
+            Emit(cg, "%s", Integer_Arith_Type(cg));  /* Derive from INTEGER for missing param types */
+        }
+    }
+    Emit(cg, ")\n");
+}
+
 
 static void Generate_Declaration_List(Code_Generator *cg, Node_List *list) {
     for (uint32_t i = 0; i < list->count; i++) {
@@ -20929,35 +21174,6 @@ static void Emit_Function_Header(Code_Generator *cg, Symbol *sym, bool is_nested
             Emit(cg, "%s %%p%u", Type_To_Llvm(sym->parameters[i].param_type), i);
     }
     Emit(cg, ") {\nentry:\n");
-}
-
-/* Install all exported symbols from a declaration list into the symbol table.
- * Handles objects, exceptions, and enumeration literals uniformly.
- * Extracted from two identical visible/private installation blocks. */
-static void Install_Declaration_Symbols(Symbol_Manager *sm, Node_List *decls) {
-    for (uint32_t i = 0; i < decls->count; i++) {
-        Syntax_Node *decl = decls->items[i];
-        if (decl->symbol) Symbol_Add(sm, decl->symbol);
-        /* Multi-name object declarations: install each named symbol */
-        if (decl->kind == NK_OBJECT_DECL)
-            for (uint32_t j = 0; j < decl->object_decl.names.count; j++) {
-                Syntax_Node *name = decl->object_decl.names.items[j];
-                if (name->symbol) Symbol_Add(sm, name->symbol);
-            }
-        /* Exception declarations: same multi-name pattern */
-        if (decl->kind == NK_EXCEPTION_DECL)
-            for (uint32_t j = 0; j < decl->exception_decl.names.count; j++) {
-                Syntax_Node *name = decl->exception_decl.names.items[j];
-                if (name->symbol) Symbol_Add(sm, name->symbol);
-            }
-        /* Enumeration type: install each literal as a separate symbol */
-        if (decl->kind == NK_TYPE_DECL and decl->type_decl.definition and
-            decl->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
-            Node_List *lits = &decl->type_decl.definition->enum_type.literals;
-            for (uint32_t j = 0; j < lits->count; j++)
-                if (lits->items[j]->symbol) Symbol_Add(sm, lits->items[j]->symbol);
-        }
-    }
 }
 
 /* Find the Nth homograph body matching export name in a package body.
@@ -22098,79 +22314,6 @@ static void Generate_Exception_Globals(Code_Generator *cg) {
     }
 }
 
-/* Check if external name is a builtin/runtime function (already defined) */
-static bool Is_Builtin_Function(String_Slice name) {
-    /* Strip quotes if present */
-    if (name.length >= 2 and name.data[0] == '"' and name.data[name.length-1] == '"') {
-        name.data++;
-        name.length -= 2;
-    }
-    const char *builtins[] = {
-        /* Custom text_io helpers */
-        "__text_io_new_line", "__text_io_put_char", "__text_io_put",
-        "__text_io_put_line", "__text_io_put_int", "__text_io_put_float",
-        "__text_io_get_char", "__text_io_get_line",
-        /* Standard C library functions (declared in runtime preamble) */
-        "memcmp", "setjmp", "longjmp", "exit", "malloc", "realloc", "free",
-        "usleep", "printf", "putchar", "strtod", "snprintf", "strlen",
-        "fputc", "fputs", "fgetc", "fgets", "fprintf",
-        "fopen", "fclose", "fflush", "feof", "ftell", "fseek",
-        "ungetc", "remove", "getchar",
-        NULL
-    };
-    for (int i = 0; builtins[i]; i++) {
-        if (name.length == strlen(builtins[i]) and
-            memcmp(name.data, builtins[i], name.length) == 0) {
-            return true;
-        }
-    }
-    return false;
-}
-
-/* Emit function signature for extern declaration */
-static void Emit_Extern_Subprogram(Code_Generator *cg, Symbol *sym) {
-    if (not sym) return;
-    if (sym->kind != SYMBOL_FUNCTION and sym->kind != SYMBOL_PROCEDURE) return;
-
-    /* Skip if already emitted */
-    if (sym->extern_emitted) return;
-    sym->extern_emitted = true;
-
-    /* Skip if this is a builtin function that we've already defined */
-    if (sym->is_imported and sym->external_name.length > 0) {
-        if (Is_Builtin_Function(sym->external_name)) {
-            return;
-        }
-    }
-
-    /* Get return type */
-    const char *ret_type = sym->return_type ? Type_To_Llvm(sym->return_type) : "void";
-
-    Emit(cg, "declare %s @", ret_type);
-    Emit_Symbol_Name(cg, sym);
-    Emit(cg, "(");
-
-    /* Emit parameter types */
-    for (uint32_t i = 0; i < sym->parameter_count; i++) {
-        if (i > 0) Emit(cg, ", ");
-        /* Handle ALI-loaded symbols without full parameter info */
-        Type_Info *ty = (sym->parameters and i < sym->parameter_count)
-                        ? sym->parameters[i].param_type : NULL;
-        if (ty) {
-            /* Unconstrained arrays pass as fat pointers */
-            if (Type_Is_Unconstrained_Array(ty) or
-                (not Type_Is_Constrained_Array(ty) and Type_Is_String(ty))) {
-                Emit(cg, FAT_PTR_TYPE);
-            } else {
-                Emit(cg, "%s", Type_To_Llvm(ty));
-            }
-        } else {
-            Emit(cg, "%s", Integer_Arith_Type(cg));  /* Derive from INTEGER for missing param types */
-        }
-    }
-    Emit(cg, ")\n");
-}
-
 /* Generate extern declarations for all loaded package specs */
 static void Generate_Extern_Declarations(Code_Generator *cg, Syntax_Node *node) {
     if (not node or not node->compilation_unit.context) return;
@@ -22929,171 +23072,55 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
  * ═══════════════════════════════════════════════════════════════════════════
  */
 
-static const char *Include_Paths[32];
-static int Include_Path_Count = 0;
+/* Try_Load_From_ALI — Called by Load_Package_Spec to attempt ALI-based loading
+ *
+ * This is the entry point for ALI-based separate compilation:
+ *   1. Look for ALI file in include paths
+ *   2. Verify checksum against source
+ *   3. Load symbols directly from ALI X lines
+ *
+ * Returns true if successful (caller should skip parsing).
+ */
+static bool Try_Load_From_ALI(Symbol_Manager *sm, String_Slice name) {
+    char *ali_path = ALI_Find(name);
+    if (not ali_path) return false;
 
-/* Track loaded package bodies for code generation */
-static Syntax_Node *Loaded_Package_Bodies[128];
-static int Loaded_Body_Count = 0;
-
-/* Track which package bodies have already been loaded (to avoid duplicates) */
-static String_Slice Loaded_Body_Names[128];
-static int Loaded_Body_Names_Count = 0;
-
-static bool Body_Already_Loaded(String_Slice name) {
-    for (int i = 0; i < Loaded_Body_Names_Count; i++) {
-        if (Loaded_Body_Names[i].length == name.length and
-            strncasecmp(Loaded_Body_Names[i].data, name.data, name.length) == 0) {
-            return true;
-        }
+    /* Build source path from unit name */
+    char source_file[256];
+    size_t j = 0;
+    for (size_t i = 0; i < name.length and j < sizeof(source_file) - 5; i++) {
+        char c = name.data[i];
+        if (c == '.') source_file[j++] = '-';
+        else if (c >= 'A' and c <= 'Z') source_file[j++] = c - 'A' + 'a';
+        else source_file[j++] = c;
     }
-    return false;
-}
+    strcpy(source_file + j, ".ads");
 
-static void Mark_Body_Loaded(String_Slice name) {
-    if (Loaded_Body_Names_Count < 128) {
-        Loaded_Body_Names[Loaded_Body_Names_Count++] = name;
+    /* Find full source path in include paths */
+    char full_source_path[512] = {0};
+    for (uint32_t i = 0; i < Include_Path_Count; i++) {
+        snprintf(full_source_path, sizeof(full_source_path), "%s/%s",
+                 Include_Paths[i], source_file);
+        if (access(full_source_path, R_OK) == 0) break;
+        full_source_path[0] = '\0';
     }
-}
 
-/* Track packages currently being loaded to detect cycles */
-typedef struct {
-    String_Slice names[64];
-    int count;
-} Loading_Set;
+    if (not full_source_path[0]) return false;
 
-static Loading_Set Loading_Packages = {0};
-
-static bool Loading_Set_Contains(String_Slice name) {
-    for (int i = 0; i < Loading_Packages.count; i++) {
-        if (Loading_Packages.names[i].length == name.length and
-            strncasecmp(Loading_Packages.names[i].data, name.data, name.length) == 0) {
-            return true;
-        }
+    /* Check if ALI is current */
+    if (not ALI_Is_Current(ali_path, full_source_path)) {
+        return false;  /* Stale - need to recompile */
     }
-    return false;
+
+    /* Read ALI and check for exports */
+    ALI_Cache_Entry *entry = ALI_Read(ali_path);
+    if (not entry or entry->export_count == 0) return false;
+
+    /* Load symbols from ALI */
+    ALI_Load_Symbols(sm, entry);
+    return true;
 }
 
-static void Loading_Set_Add(String_Slice name) {
-    if (Loading_Packages.count < 64) {
-        Loading_Packages.names[Loading_Packages.count++] = name;
-    }
-}
-
-static void Loading_Set_Remove(String_Slice name) {
-    for (int i = 0; i < Loading_Packages.count; i++) {
-        if (Loading_Packages.names[i].length == name.length and
-            strncasecmp(Loading_Packages.names[i].data, name.data, name.length) == 0) {
-            /* Swap with last and decrement count */
-            Loading_Packages.names[i] = Loading_Packages.names[--Loading_Packages.count];
-            return;
-        }
-    }
-}
-
-static char *Read_File_Simple(const char *path) {
-    FILE *f = fopen(path, "rb");
-    if (not f) return NULL;
-
-    fseek(f, 0, SEEK_END);
-    long fsize = ftell(f);
-    if (fsize < 0) { fclose(f); return NULL; }
-    size_t size = (size_t)fsize;
-    fseek(f, 0, SEEK_SET);
-
-    char *buffer = malloc(size + 1);
-    if (not buffer) { fclose(f); return NULL; }
-
-    size_t read_size = fread(buffer, 1, size, f);
-    fclose(f);
-    buffer[read_size] = '\0';
-    return buffer;
-}
-
-/* Find a package source file in include paths */
-static char *Lookup_Path(String_Slice name) {
-    char path[512], full_path[520];  /* full_path larger for .ads extension */
-
-    for (int i = 0; i < Include_Path_Count; i++) {
-        /* Build lowercase filename */
-        size_t base_len = strlen(Include_Paths[i]);
-        snprintf(path, sizeof(path), "%s%s%.*s",
-                 Include_Paths[i],
-                 (base_len > 0 and Include_Paths[i][base_len-1] != '/') ? "/" : "",
-                 (int)name.length, name.data);
-
-        /* Lowercase the filename part */
-        for (char *p = path + base_len; *p; p++) {
-            if (*p >= 'A' and *p <= 'Z') *p = *p - 'A' + 'a';
-        }
-
-        /* Try .ads extension */
-        snprintf(full_path, sizeof(full_path), "%s.ads", path);
-        char *src = Read_File_Simple(full_path);
-        if (src) return src;
-
-        /* Try .ada extension (ACATS naming convention) */
-        snprintf(full_path, sizeof(full_path), "%s.ada", path);
-        src = Read_File_Simple(full_path);
-        if (src) return src;
-    }
-    return NULL;
-}
-
-/* Check if a precompiled .ll file exists for a package in include paths */
-static bool Has_Precompiled_LL(String_Slice name) {
-    char path[512], full_path[520];
-    for (int i = 0; i < Include_Path_Count; i++) {
-        size_t base_len = strlen(Include_Paths[i]);
-        snprintf(path, sizeof(path), "%s%s%.*s",
-                 Include_Paths[i],
-                 (base_len > 0 and Include_Paths[i][base_len-1] != '/') ? "/" : "",
-                 (int)name.length, name.data);
-        for (char *p = path + base_len; *p; p++) {
-            if (*p >= 'A' and *p <= 'Z') *p = *p - 'A' + 'a';
-        }
-        snprintf(full_path, sizeof(full_path), "%s.ll", path);
-        FILE *f = fopen(full_path, "r");
-        if (f) { fclose(f); return true; }
-    }
-    return false;
-}
-
-/* Find a package body source file in include paths */
-static char *Lookup_Path_Body(String_Slice name) {
-    char path[512], full_path[520];
-
-    for (int i = 0; i < Include_Path_Count; i++) {
-        size_t base_len = strlen(Include_Paths[i]);
-        snprintf(path, sizeof(path), "%s%s%.*s",
-                 Include_Paths[i],
-                 (base_len > 0 and Include_Paths[i][base_len-1] != '/') ? "/" : "",
-                 (int)name.length, name.data);
-
-        /* Lowercase the filename part */
-        for (char *p = path + base_len; *p; p++) {
-            if (*p >= 'A' and *p <= 'Z') *p = *p - 'A' + 'a';
-        }
-
-        /* Try .adb extension */
-        snprintf(full_path, sizeof(full_path), "%s.adb", path);
-        char *src = Read_File_Simple(full_path);
-        if (src) return src;
-
-        /* Try .ada extension (ACATS uses .ada for both specs and bodies) */
-        snprintf(full_path, sizeof(full_path), "%s.ada", path);
-        src = Read_File_Simple(full_path);
-        if (src) return src;
-    }
-    return NULL;
-}
-
-/* Forward declarations for package loading */
-static Syntax_Node *Parse_Compilation_Unit(Parser *p);
-static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node);
-
-/* Forward declaration for ALI-based loading (defined in §16.7) */
-static bool Try_Load_From_ALI(Symbol_Manager *sm, String_Slice name);
 
 /* Load and resolve a package specification */
 static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src) {
@@ -23569,93 +23596,6 @@ static String_Slice Get_Subprogram_Name(Syntax_Node *node) {
 }
 
 /* Forward declaration */
-static void ALI_Collect_Exports(ALI_Info *ali, Syntax_Node *unit, Symbol_Manager *sm);
-
-static void ALI_Collect_Unit(ALI_Info *ali, Syntax_Node *cu,
-                             const char *source, size_t source_size,
-                             Symbol_Manager *sm) {
-    if (not cu or ali->unit_count >= 8) return;
-
-    Syntax_Node *unit = cu->compilation_unit.unit;
-    if (not unit) return;
-
-    Unit_Info *u = &ali->units[ali->unit_count++];
-
-    /* Extract unit name based on declaration kind */
-    switch (unit->kind) {
-        case NK_PACKAGE_SPEC:
-            u->unit_name = unit->package_spec.name;
-            u->is_body = false;
-            break;
-        case NK_PACKAGE_BODY:
-            u->unit_name = unit->package_body.name;
-            u->is_body = true;
-            break;
-        case NK_PROCEDURE_BODY:
-        case NK_PROCEDURE_SPEC:
-            u->unit_name = Get_Subprogram_Name(unit);
-            u->is_body = unit->kind == NK_PROCEDURE_BODY;
-            break;
-        case NK_FUNCTION_BODY:
-        case NK_FUNCTION_SPEC:
-            u->unit_name = Get_Subprogram_Name(unit);
-            u->is_body = unit->kind == NK_FUNCTION_BODY;
-            break;
-        case NK_GENERIC_DECL:
-            u->is_generic = true;
-            if (unit->generic_decl.unit) {
-                Syntax_Node *inner = unit->generic_decl.unit;
-                if (inner->kind == NK_PACKAGE_SPEC)
-                    u->unit_name = inner->package_spec.name;
-                else if (inner->kind == NK_PROCEDURE_SPEC or inner->kind == NK_FUNCTION_SPEC)
-                    u->unit_name = inner->subprogram_spec.name;
-            }
-            u->is_body = false;
-            break;
-        default:
-            u->unit_name = (String_Slice){"UNKNOWN", 7};
-            u->is_body = false;
-    }
-
-    /* Compute source checksum */
-    u->source_checksum = Crc32(source, source_size);
-
-    /* Derive source file name */
-    char file_buf[256];
-    Unit_Name_To_File(u->unit_name, u->is_body, file_buf, sizeof(file_buf));
-    u->source_name = Slice_Duplicate((String_Slice){file_buf, strlen(file_buf)});
-
-    /* Check for elaboration pragmas (simplified) */
-    u->is_preelaborate = false;
-    u->is_pure = false;
-    u->has_elaboration = true;  /* Assume has elaboration unless proven otherwise */
-
-    /* Collect WITH dependencies */
-    ALI_Collect_Withs(ali, cu->compilation_unit.context);
-
-    /* Collect exported symbols from package specs */
-    if (unit and unit->kind == NK_PACKAGE_SPEC) {
-        ALI_Collect_Exports(ali, unit, sm);
-    }
-}
-
-/* LLVM type signature derived from the type system via Symbol_Manager.
- * Looks up the Ada type name in the symbol table and uses Type_To_Llvm
- * to get the correct LLVM representation. */
-static String_Slice LLVM_Type_Basic(Symbol_Manager *sm, String_Slice ada_type) {
-    /* Look up in the symbol table for proper type-system derivation */
-    Symbol *sym = Symbol_Find(sm, ada_type);
-    if (sym and sym->type) {
-        const char *llvm = Type_To_Llvm(sym->type);
-        return (String_Slice){llvm, strlen(llvm)};
-    }
-    /* Error: type not found in symbol table */
-    fprintf(stderr, "error: LLVM_Type_Basic: type '%.*s' not found in symbol table\n",
-            (int)ada_type.length, ada_type.data);
-    const char *fallback = Llvm_Int_Type((uint32_t)To_Bits(sm->type_integer->size));
-    return (String_Slice){fallback, strlen(fallback)};
-}
-
 /* ─────────────────────────────────────────────────────────────────────────
  * §15.4.2 ALI_Collect_Exports — Gather exported symbols from package spec
  * ───────────────────────────────────────────────────────────────────────── */
@@ -23781,6 +23721,92 @@ static void ALI_Collect_Exports(ALI_Info *ali, Syntax_Node *unit, Symbol_Manager
                 break;
         }
     }
+}
+
+
+static void ALI_Collect_Unit(ALI_Info *ali, Syntax_Node *cu,
+                             const char *source, size_t source_size,
+                             Symbol_Manager *sm) {
+    if (not cu or ali->unit_count >= 8) return;
+
+    Syntax_Node *unit = cu->compilation_unit.unit;
+    if (not unit) return;
+
+    Unit_Info *u = &ali->units[ali->unit_count++];
+
+    /* Extract unit name based on declaration kind */
+    switch (unit->kind) {
+        case NK_PACKAGE_SPEC:
+            u->unit_name = unit->package_spec.name;
+            u->is_body = false;
+            break;
+        case NK_PACKAGE_BODY:
+            u->unit_name = unit->package_body.name;
+            u->is_body = true;
+            break;
+        case NK_PROCEDURE_BODY:
+        case NK_PROCEDURE_SPEC:
+            u->unit_name = Get_Subprogram_Name(unit);
+            u->is_body = unit->kind == NK_PROCEDURE_BODY;
+            break;
+        case NK_FUNCTION_BODY:
+        case NK_FUNCTION_SPEC:
+            u->unit_name = Get_Subprogram_Name(unit);
+            u->is_body = unit->kind == NK_FUNCTION_BODY;
+            break;
+        case NK_GENERIC_DECL:
+            u->is_generic = true;
+            if (unit->generic_decl.unit) {
+                Syntax_Node *inner = unit->generic_decl.unit;
+                if (inner->kind == NK_PACKAGE_SPEC)
+                    u->unit_name = inner->package_spec.name;
+                else if (inner->kind == NK_PROCEDURE_SPEC or inner->kind == NK_FUNCTION_SPEC)
+                    u->unit_name = inner->subprogram_spec.name;
+            }
+            u->is_body = false;
+            break;
+        default:
+            u->unit_name = (String_Slice){"UNKNOWN", 7};
+            u->is_body = false;
+    }
+
+    /* Compute source checksum */
+    u->source_checksum = Crc32(source, source_size);
+
+    /* Derive source file name */
+    char file_buf[256];
+    Unit_Name_To_File(u->unit_name, u->is_body, file_buf, sizeof(file_buf));
+    u->source_name = Slice_Duplicate((String_Slice){file_buf, strlen(file_buf)});
+
+    /* Check for elaboration pragmas (simplified) */
+    u->is_preelaborate = false;
+    u->is_pure = false;
+    u->has_elaboration = true;  /* Assume has elaboration unless proven otherwise */
+
+    /* Collect WITH dependencies */
+    ALI_Collect_Withs(ali, cu->compilation_unit.context);
+
+    /* Collect exported symbols from package specs */
+    if (unit and unit->kind == NK_PACKAGE_SPEC) {
+        ALI_Collect_Exports(ali, unit, sm);
+    }
+}
+
+/* LLVM type signature derived from the type system via Symbol_Manager.
+ * Looks up the Ada type name in the symbol table and uses Type_To_Llvm
+ * to get the correct LLVM representation. */
+static String_Slice LLVM_Type_Basic(Symbol_Manager *sm, String_Slice ada_type) {
+    /* Look up in the symbol table for proper type-system derivation */
+    Symbol *sym = Symbol_Find(sm, ada_type);
+    if (sym and sym->type) {
+        const char *llvm = Type_To_Llvm(sym->type);
+        return (String_Slice){llvm, strlen(llvm)};
+    }
+    /* Error: type not found in symbol table */
+    fprintf(stderr, "error: LLVM_Type_Basic: type '%.*s' not found in symbol table\n",
+            (int)ada_type.length, ada_type.data);
+    const char *fallback = Llvm_Int_Type((uint32_t)To_Bits(sm->type_integer->size));
+    return (String_Slice){fallback, strlen(fallback)};
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -24379,55 +24405,6 @@ static void ALI_Load_Symbols(Symbol_Manager *sm, ALI_Cache_Entry *entry) {
     }
 
     Symbol_Manager_Pop_Scope(sm);
-}
-
-/* Try_Load_From_ALI — Called by Load_Package_Spec to attempt ALI-based loading
- *
- * This is the entry point for ALI-based separate compilation:
- *   1. Look for ALI file in include paths
- *   2. Verify checksum against source
- *   3. Load symbols directly from ALI X lines
- *
- * Returns true if successful (caller should skip parsing).
- */
-static bool Try_Load_From_ALI(Symbol_Manager *sm, String_Slice name) {
-    char *ali_path = ALI_Find(name);
-    if (not ali_path) return false;
-
-    /* Build source path from unit name */
-    char source_file[256];
-    size_t j = 0;
-    for (size_t i = 0; i < name.length and j < sizeof(source_file) - 5; i++) {
-        char c = name.data[i];
-        if (c == '.') source_file[j++] = '-';
-        else if (c >= 'A' and c <= 'Z') source_file[j++] = c - 'A' + 'a';
-        else source_file[j++] = c;
-    }
-    strcpy(source_file + j, ".ads");
-
-    /* Find full source path in include paths */
-    char full_source_path[512] = {0};
-    for (uint32_t i = 0; i < Include_Path_Count; i++) {
-        snprintf(full_source_path, sizeof(full_source_path), "%s/%s",
-                 Include_Paths[i], source_file);
-        if (access(full_source_path, R_OK) == 0) break;
-        full_source_path[0] = '\0';
-    }
-
-    if (not full_source_path[0]) return false;
-
-    /* Check if ALI is current */
-    if (not ALI_Is_Current(ali_path, full_source_path)) {
-        return false;  /* Stale - need to recompile */
-    }
-
-    /* Read ALI and check for exports */
-    ALI_Cache_Entry *entry = ALI_Read(ali_path);
-    if (not entry or entry->export_count == 0) return false;
-
-    /* Load symbols from ALI */
-    ALI_Load_Symbols(sm, entry);
-    return true;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
