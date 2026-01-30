@@ -1,0 +1,96 @@
+Fat Pointer / Pointer Refactoring Checklist — ada83.c
+=====================================================
+Inspired by GNAT LLVM's approach (gnatllvm-glvalue.ads, gnatllvm-arrays.ads):
+  - Fat pointers are a first-class relationship type (GL_Relationship.Fat_Pointer)
+  - All operations go through typed helpers (Get_Array_Bound, Bounds_To_Length, etc.)
+  - Predicates like Contains_Bounds, Type_Needs_Bounds centralize decisions
+  - No raw extractvalue/insertvalue/GEP of fat pointer fields in codegen logic
+
+Our refactoring consolidates all raw FAT_PTR_TYPE manipulations into helpers.
+
+═══════════════════════════════════════════════════════════════════════════
+A. NEW HELPERS (added to §13.2.1 Fat Pointer Support section)
+═══════════════════════════════════════════════════════════════════════════
+
+[x] A1. Emit_Load_Fat_Pointer_From_Temp(cg, temp_id)
+      — load FAT_PTR_TYPE from %%t<N>, vs existing Emit_Load_Fat_Pointer which
+        loads from a Symbol. Covers lines: 13691, 13693, 13707, 13708,
+        16003, 16011, 16039, 16047, 16075, 16083, 21536, 21538, 21550, 21551
+
+[x] A2. Emit_Store_Fat_Pointer_To_Symbol(cg, fat_val, sym)
+      — store FAT_PTR_TYPE value into a named symbol.
+        Covers lines: 20008, 20046, 20252, 20265, 20271
+
+[x] A3. Emit_Store_Fat_Pointer_Fields_To_Symbol(cg, data_ptr, low, high, sym)
+      — GEP into named symbol + store data/low/high fields.
+        Covers lines: 20159-20176, 20361-20378
+
+[x] A4. Emit_Store_Fat_Pointer_Fields_To_Temp(cg, data_ptr, low, high, temp_alloca)
+      — Same as A3 but target is %%t<N>. Covers lines: 17515-17534
+
+[x] A5. Emit_Fat_Pointer_Compare(cg, left_fat, right_fat)
+      — Compare two fat pointers for identity (ptr + low + high).
+        Returns i1 temp. Covers lines: 13701-13725, 21546-21568
+
+═══════════════════════════════════════════════════════════════════════════
+B. NEW PREDICATES (added to §10 Type System predicates)
+═══════════════════════════════════════════════════════════════════════════
+
+[x] B1. Expression_Produces_Fat_Pointer(node, type)
+      — Centralizes the "src_is_fat_ptr" logic repeated at line 18557-18569.
+        Returns true for STRING, unconstrained arrays, slices, concat results.
+
+[x] B2. Type_Needs_Fat_Pointer_Load(type)
+      — Centralizes the field-load decision repeated 3x at lines 15997-16013,
+        16033-16049, 16069-16085: "is this an unconstrained/dynamic array
+        or STRING that should be loaded as FAT_PTR_TYPE from a record field?"
+
+═══════════════════════════════════════════════════════════════════════════
+C. CALL-SITE REFACTORING (replace inline patterns with helpers)
+═══════════════════════════════════════════════════════════════════════════
+
+[x] C1. Record equality — 13686-13694: use Emit_Load_Fat_Pointer_From_Temp
+[x] C2. Record equality — 13701-13725: use Emit_Fat_Pointer_Compare
+[x] C3. Record equality (dup) — 21533-21539: use Emit_Load_Fat_Pointer_From_Temp
+[x] C4. Record equality (dup) — 21546-21568: use Emit_Fat_Pointer_Compare
+[x] C5. Record field load — 15997-16013 (first copy): use Type_Needs_Fat_Pointer_Load
+[x] C6. Record field load — 16033-16049 (second copy): use Type_Needs_Fat_Pointer_Load
+[x] C7. Record field load — 16069-16085 (third copy): use Type_Needs_Fat_Pointer_Load
+[x] C8. Dynamic array aggregate — 17515-17536: use Emit_Store_Fat_Pointer_Fields_To_Temp
+[x] C9. Array init fat ptr construction — 20159-20176: use Emit_Store_Fat_Pointer_Fields_To_Symbol
+[x] C10. Uninit array fat ptr construction — 20361-20378: use Emit_Store_Fat_Pointer_Fields_To_Symbol
+[x] C11. Store fat ptr to symbol — ~20008: use Emit_Store_Fat_Pointer_To_Symbol
+[x] C12. Store fat ptr to symbol — ~20046: use Emit_Store_Fat_Pointer_To_Symbol
+[x] C13. Store fat ptr to symbol — ~20252: use Emit_Store_Fat_Pointer_To_Symbol
+[x] C14. Store fat ptr to symbol — ~20265: use Emit_Store_Fat_Pointer_To_Symbol
+[x] C15. Store fat ptr to symbol — ~20271: use Emit_Store_Fat_Pointer_To_Symbol
+[x] C16. src_is_fat_ptr detection — ~18557: use Expression_Produces_Fat_Pointer
+[x] C17. Load fat ptr from __frame — ~18126: use Emit_Load_Fat_Pointer (frame variant)
+[x] C18. Load fat ptr from __frame — ~18289: use Emit_Load_Fat_Pointer (frame variant)
+[x] C19. Load fat ptr from __frame — ~18611: use Emit_Load_Fat_Pointer (frame variant)
+
+═══════════════════════════════════════════════════════════════════════════
+D. ADDITIONAL CONSOLIDATION (bonus items found during audit)
+═══════════════════════════════════════════════════════════════════════════
+
+[x] D1. Emit_Load_Fat_Pointer_Frame(cg, sym)
+      — Load fat pointer from %%__frame.<sym> for uplevel/nested scope access.
+        Covers 4 inline patterns at ~18126, ~18269, ~18289, ~18611.
+
+[x] D2. Move FAT_PTR_TYPE macro from §13.2.1 to file header (line 42)
+      — All 9 sites using raw "{ ptr, { i64, i64 } }" string now use the macro.
+
+[x] D3. Replace ~35 raw "{ ptr, { i64, i64 } }" occurrences in Emit() format
+      strings with FAT_PTR_TYPE macro via C string concatenation.
+      Covers runtime helper definitions, attribute codegen, constant init, etc.
+
+[x] D4. Additional src_is_fat detection site (line ~18629) refactored to use
+      Expression_Produces_Fat_Pointer.
+
+═══════════════════════════════════════════════════════════════════════════
+E. VERIFICATION
+═══════════════════════════════════════════════════════════════════════════
+
+[x] E1. Build with gcc -Wall -Wextra (clean, same pre-existing warnings)
+[x] E2. Run test suite (test.sh g c) — 297 pass, unchanged
+[x] E3. Run test suite (test.sh g b) — 1350 processed, unchanged

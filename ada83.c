@@ -37,6 +37,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+/* Fat pointer LLVM IR type — { data_ptr, { low_bound, high_bound } }
+ * Used throughout codegen for unconstrained arrays and STRING. */
+#define FAT_PTR_TYPE "{ ptr, { i64, i64 } }"
+
 /* ═══════════════════════════════════════════════════════════════════════════
  * SIMD Optimizations
  * ═══════════════════════════════════════════════════════════════════════════
@@ -6091,6 +6095,39 @@ static inline bool Expression_Is_Slice(const Syntax_Node *node) {
     return false;
 }
 
+/* Check if an expression will produce a fat pointer value at runtime.
+ * This centralizes the "src_is_fat_ptr" detection pattern used in assignments
+ * and comparisons: STRING, unconstrained arrays, slices, and concatenations
+ * all produce fat pointer values { ptr, { i64, i64 } }. */
+static inline bool Expression_Produces_Fat_Pointer(const Syntax_Node *node,
+                                                    const Type_Info *type) {
+    if (type && (Type_Is_String(type) || Type_Is_Unconstrained_Array(type)))
+        return true;
+    if (!node) return false;
+    /* String literals always produce fat pointers */
+    if (node->kind == NK_STRING)
+        return true;
+    /* Concatenation always returns fat pointer */
+    if (node->kind == NK_BINARY_OP && node->binary.op == TK_AMPERSAND)
+        return true;
+    /* Slices always produce fat pointers even with constrained declared type */
+    if (Expression_Is_Slice(node))
+        return true;
+    return false;
+}
+
+/* Check if a record field type requires loading as a fat pointer.
+ * Unconstrained arrays, dynamic-bound arrays, and STRING fields
+ * are stored as fat pointers { ptr, { i64, i64 } } in records. */
+static inline bool Type_Needs_Fat_Pointer_Load(const Type_Info *t) {
+    if (!t) return false;
+    if (Type_Is_String(t)) return true;
+    if (t->kind == TYPE_ARRAY &&
+        (!t->array.is_constrained || Type_Has_Dynamic_Bounds(t)))
+        return true;
+    return false;
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
  * §10.5 Base Type Traversal
  *
@@ -6253,7 +6290,7 @@ static const char *Type_To_Llvm(Type_Info *t) {
             if (t->access.designated_type) {
                 Type_Info *d = t->access.designated_type;
                 if (Type_Is_String(d) || Type_Is_Unconstrained_Array(d)) {
-                    return "{ ptr, { i64, i64 } }";
+                    return FAT_PTR_TYPE;
                 }
             }
             return "ptr";
@@ -6262,10 +6299,10 @@ static const char *Type_To_Llvm(Type_Info *t) {
             return "ptr";
         case TYPE_ARRAY:
             /* Unconstrained arrays use fat pointers, constrained use ptr */
-            return (t->array.is_constrained) ? "ptr" : "{ ptr, { i64, i64 } }";
+            return (t->array.is_constrained) ? "ptr" : FAT_PTR_TYPE;
         case TYPE_STRING:
             /* STRING is always unconstrained array of CHARACTER */
-            return "{ ptr, { i64, i64 } }";
+            return FAT_PTR_TYPE;
         default:
             fprintf(stderr, "warning: Type_To_Llvm unhandled type kind %d for '%.*s', defaulting to i64\n",
                     t->kind, (int)t->name.length, t->name.data);
@@ -12959,7 +12996,7 @@ static inline const char *Expression_Llvm_Type(Syntax_Node *node) {
         (node->type->kind == TYPE_ARRAY || node->type->kind == TYPE_STRING)) return "ptr";
     /* Slices always produce fat pointers regardless of declared type.
      * Must check before array indexing since both are NK_APPLY. */
-    if (node && Expression_Is_Slice(node)) return "{ ptr, { i64, i64 } }";
+    if (node && Expression_Is_Slice(node)) return FAT_PTR_TYPE;
     /* Array indexing (NK_APPLY) that returns non-i64 element types.
      * The codegen preserves the native type for composite, access, and float elements. */
     if (node && node->kind == NK_APPLY && node->apply.prefix &&
@@ -12978,12 +13015,12 @@ static inline const char *Expression_Llvm_Type(Syntax_Node *node) {
         }
     }
     /* Check for string literals and string types (generate fat pointers) */
-    if (node && node->kind == NK_STRING) return "{ ptr, { i64, i64 } }";
-    if (node && Type_Is_String(node->type)) return "{ ptr, { i64, i64 } }";
+    if (node && node->kind == NK_STRING) return FAT_PTR_TYPE;
+    if (node && Type_Is_String(node->type)) return FAT_PTR_TYPE;
     /* Check for unconstrained array types (fat pointers) - for variable references */
     if (node && node->kind != NK_AGGREGATE &&
         Type_Is_Unconstrained_Array(node->type)) {
-        return "{ ptr, { i64, i64 } }";
+        return FAT_PTR_TYPE;
     }
     return "i64";
 }
@@ -13241,9 +13278,6 @@ static uint32_t Emit_Constraint_Check(Code_Generator *cg, uint32_t val, Type_Inf
  * This allows passing arrays without knowing their bounds at compile time.
  * ───────────────────────────────────────────────────────────────────────── */
 
-/* Fat pointer type name */
-#define FAT_PTR_TYPE "{ ptr, { i64, i64 } }"
-
 /* Create a fat pointer from data pointer and bounds
  * Returns the temp ID of the fat pointer struct */
 static uint32_t Emit_Fat_Pointer(Code_Generator *cg, uint32_t data_ptr,
@@ -13368,6 +13402,100 @@ static uint32_t Emit_Load_Fat_Pointer(Code_Generator *cg, Symbol *sym) {
     Emit_Symbol_Ref(cg, sym);
     Emit(cg, "\n");
     return fat;
+}
+
+/* Load fat pointer from a temp pointer (%%t<N>) — for record fields, GEPs, etc. */
+static uint32_t Emit_Load_Fat_Pointer_From_Temp(Code_Generator *cg, uint32_t ptr_temp) {
+    uint32_t fat = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", fat, ptr_temp);
+    return fat;
+}
+
+/* Load fat pointer from %%__frame.<sym> — for uplevel (nested scope) access */
+static uint32_t Emit_Load_Fat_Pointer_Frame(Code_Generator *cg, Symbol *sym) {
+    uint32_t fat = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%__frame.", fat);
+    Emit_Symbol_Name(cg, sym);
+    Emit(cg, "\n");
+    return fat;
+}
+
+/* Store a fat pointer value into a symbol's storage */
+static void Emit_Store_Fat_Pointer_To_Symbol(Code_Generator *cg, uint32_t fat_val, Symbol *sym) {
+    Emit(cg, "  store " FAT_PTR_TYPE " %%t%u, ptr %%", fat_val);
+    Emit_Symbol_Name(cg, sym);
+    Emit(cg, "\n");
+}
+
+/* Store fat pointer fields (data ptr, low, high) into a symbol using GEP+store.
+ * This is the "construct fat pointer in-place" pattern for named storage. */
+static void Emit_Store_Fat_Pointer_Fields_To_Symbol(Code_Generator *cg,
+    uint32_t data_ptr, uint32_t low_temp, uint32_t high_temp, Symbol *sym)
+{
+    uint32_t data_slot = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr %%", data_slot);
+    Emit_Symbol_Name(cg, sym);
+    Emit(cg, ", i32 0, i32 0\n");
+    Emit(cg, "  store ptr %%t%u, ptr %%t%u  ; fat ptr data\n", data_ptr, data_slot);
+
+    uint32_t low_slot = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr %%", low_slot);
+    Emit_Symbol_Name(cg, sym);
+    Emit(cg, ", i32 0, i32 1, i32 0\n");
+    Emit(cg, "  store i64 %%t%u, ptr %%t%u  ; fat ptr low\n", low_temp, low_slot);
+
+    uint32_t high_slot = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr %%", high_slot);
+    Emit_Symbol_Name(cg, sym);
+    Emit(cg, ", i32 0, i32 1, i32 1\n");
+    Emit(cg, "  store i64 %%t%u, ptr %%t%u  ; fat ptr high\n", high_temp, high_slot);
+}
+
+/* Store fat pointer fields (data ptr, low, high) into a temp alloca using GEP+store.
+ * Returns the alloca temp (not loaded — caller can load if needed). */
+static void Emit_Store_Fat_Pointer_Fields_To_Temp(Code_Generator *cg,
+    uint32_t data_ptr, uint32_t low_temp, uint32_t high_temp, uint32_t fat_alloca)
+{
+    uint32_t data_slot = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr %%t%u, i32 0, i32 0\n",
+         data_slot, fat_alloca);
+    Emit(cg, "  store ptr %%t%u, ptr %%t%u\n", data_ptr, data_slot);
+
+    uint32_t low_slot = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr %%t%u, i32 0, i32 1, i32 0\n",
+         low_slot, fat_alloca);
+    Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", low_temp, low_slot);
+
+    uint32_t high_slot = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr %%t%u, i32 0, i32 1, i32 1\n",
+         high_slot, fat_alloca);
+    Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", high_temp, high_slot);
+}
+
+/* Compare two fat pointers for identity equality (data ptr + both bounds).
+ * Returns temp ID holding i1 result. Used for ACCESS-to-unconstrained equality. */
+static uint32_t Emit_Fat_Pointer_Compare(Code_Generator *cg,
+    uint32_t left_fat, uint32_t right_fat)
+{
+    uint32_t lp = Emit_Fat_Pointer_Data(cg, left_fat);
+    uint32_t rp = Emit_Fat_Pointer_Data(cg, right_fat);
+    uint32_t ll = Emit_Fat_Pointer_Low(cg, left_fat);
+    uint32_t rl = Emit_Fat_Pointer_Low(cg, right_fat);
+    uint32_t lh = Emit_Fat_Pointer_High(cg, left_fat);
+    uint32_t rh = Emit_Fat_Pointer_High(cg, right_fat);
+
+    uint32_t cmp_p = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp eq ptr %%t%u, %%t%u\n", cmp_p, lp, rp);
+    uint32_t cmp_l = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", cmp_l, ll, rl);
+    uint32_t cmp_h = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", cmp_h, lh, rh);
+
+    uint32_t and1 = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", and1, cmp_p, cmp_l);
+    uint32_t result = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", result, and1, cmp_h);
+    return result;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -13684,13 +13812,9 @@ static uint32_t Generate_Record_Equality(Code_Generator *cg, uint32_t left_ptr,
             Type_Needs_Fat_Pointer(ct);
 
         if (Type_Is_Unconstrained_Array(ct) || Type_Is_String(ct)) {
-            /* Unconstrained array/string - load fat pointer values from storage,
-             * since left_gep/right_gep are pointers TO fat pointer fields,
-             * but Generate_Array_Equality expects fat pointer VALUES. */
-            uint32_t left_fat = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", left_fat, left_gep);
-            uint32_t right_fat = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", right_fat, right_gep);
+            /* Unconstrained array/string - load fat pointer values from storage */
+            uint32_t left_fat = Emit_Load_Fat_Pointer_From_Temp(cg, left_gep);
+            uint32_t right_fat = Emit_Load_Fat_Pointer_From_Temp(cg, right_gep);
             cmp = Generate_Array_Equality(cg, left_fat, right_fat, ct);
         } else if (Type_Is_Constrained_Array(ct)) {
             /* Constrained array - use array equality directly on pointers */
@@ -13699,30 +13823,10 @@ static uint32_t Generate_Record_Equality(Code_Generator *cg, uint32_t left_ptr,
             /* Nested record - recurse */
             cmp = Generate_Record_Equality(cg, left_gep, right_gep, ct);
         } else if (is_fat_ptr_access) {
-            /* ACCESS to unconstrained array - compare fat pointer components
-             * Fat pointer: { ptr data, { i64 low, i64 high } }
-             * Access equality compares pointer identity (same object) */
-            uint32_t left_val = Emit_Temp(cg);
-            uint32_t right_val = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", left_val, left_gep);
-            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", right_val, right_gep);
-            uint32_t lp = Emit_Temp(cg), rp = Emit_Temp(cg);
-            uint32_t ll = Emit_Temp(cg), rl = Emit_Temp(cg);
-            uint32_t lh = Emit_Temp(cg), rh = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n", lp, left_val);
-            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n", rp, right_val);
-            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 0\n", ll, left_val);
-            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 0\n", rl, right_val);
-            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 1\n", lh, left_val);
-            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 1\n", rh, right_val);
-            uint32_t cmp_p = Emit_Temp(cg), cmp_l = Emit_Temp(cg), cmp_h = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = icmp eq ptr %%t%u, %%t%u\n", cmp_p, lp, rp);
-            Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", cmp_l, ll, rl);
-            Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", cmp_h, lh, rh);
-            uint32_t and1 = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", and1, cmp_p, cmp_l);
-            cmp = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", cmp, and1, cmp_h);
+            /* ACCESS to unconstrained array - compare fat pointer identity */
+            uint32_t left_val = Emit_Load_Fat_Pointer_From_Temp(cg, left_gep);
+            uint32_t right_val = Emit_Load_Fat_Pointer_From_Temp(cg, right_gep);
+            cmp = Emit_Fat_Pointer_Compare(cg, left_val, right_val);
         } else {
             /* Scalar type - load and compare */
             uint32_t left_val = Emit_Temp(cg);
@@ -15303,7 +15407,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                 if (is_fat) {
                     /* Unconstrained designated: load fat pointer from heap */
                     uint32_t fat = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = load { ptr, { i64, i64 } }, ptr %%t%u\n",
+                    Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n",
                          fat, ptr);
                     base = Emit_Fat_Pointer_Data(cg, fat);
                     low_bound_val = Emit_Fat_Pointer_Low(cg, fat);
@@ -15994,23 +16098,12 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
         Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
              ptr, base_ptr, byte_offset);
 
-        /* For composite components, handle based on constrained vs unconstrained */
-        if (Type_Is_Record(field_type) || (field_type && field_type->kind == TYPE_ARRAY)) {
-            /* Unconstrained or dynamic-bound arrays are stored as fat pointers */
-            if (field_type->kind == TYPE_ARRAY &&
-                (!field_type->array.is_constrained || Type_Has_Dynamic_Bounds(field_type))) {
-                uint32_t fat = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u  ; load array field with dynamic bounds\n", fat, ptr);
-                return fat;
-            }
+        /* Fat pointer fields: unconstrained/dynamic arrays and STRING */
+        if (Type_Needs_Fat_Pointer_Load(field_type))
+            return Emit_Load_Fat_Pointer_From_Temp(cg, ptr);
+        /* Other composite types (records, constrained arrays) return ptr */
+        if (Type_Is_Record(field_type) || (field_type && field_type->kind == TYPE_ARRAY))
             return ptr;
-        }
-        /* STRING fields (unconstrained or dynamic-bound) - load fat pointer */
-        if (Type_Is_String(field_type)) {
-            uint32_t fat = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u  ; load STRING field\n", fat, ptr);
-            return fat;
-        }
         /* For access-type components, load ptr without converting to i64 */
         if (Type_Is_Access(field_type)) {
             uint32_t t = Emit_Temp(cg);
@@ -16030,23 +16123,12 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
         Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
              ptr, base_ptr, byte_offset);
 
-        /* For composite components, handle based on constrained vs unconstrained */
-        if (Type_Is_Record(field_type) || (field_type && field_type->kind == TYPE_ARRAY)) {
-            /* Unconstrained or dynamic-bound arrays are stored as fat pointers */
-            if (field_type->kind == TYPE_ARRAY &&
-                (!field_type->array.is_constrained || Type_Has_Dynamic_Bounds(field_type))) {
-                uint32_t fat = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u  ; load array field with dynamic bounds\n", fat, ptr);
-                return fat;
-            }
+        /* Fat pointer fields: unconstrained/dynamic arrays and STRING */
+        if (Type_Needs_Fat_Pointer_Load(field_type))
+            return Emit_Load_Fat_Pointer_From_Temp(cg, ptr);
+        /* Other composite types (records, constrained arrays) return ptr */
+        if (Type_Is_Record(field_type) || (field_type && field_type->kind == TYPE_ARRAY))
             return ptr;
-        }
-        /* STRING fields (unconstrained or dynamic-bound) - load fat pointer */
-        if (Type_Is_String(field_type)) {
-            uint32_t fat = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u  ; load STRING field\n", fat, ptr);
-            return fat;
-        }
         /* For access-type components, load ptr without converting to i64 */
         if (Type_Is_Access(field_type)) {
             uint32_t t = Emit_Temp(cg);
@@ -16066,23 +16148,12 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
     Emit_Symbol_Ref(cg, record_sym);
     Emit(cg, ", i64 %u\n", byte_offset);
 
-    /* For composite components, handle based on constrained vs unconstrained */
-    if (Type_Is_Record(field_type) || (field_type && field_type->kind == TYPE_ARRAY)) {
-        /* Unconstrained or dynamic-bound arrays are stored as fat pointers */
-        if (field_type->kind == TYPE_ARRAY &&
-            (!field_type->array.is_constrained || Type_Has_Dynamic_Bounds(field_type))) {
-            uint32_t fat = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u  ; load array field with dynamic bounds\n", fat, ptr);
-            return fat;
-        }
+    /* Fat pointer fields: unconstrained/dynamic arrays and STRING */
+    if (Type_Needs_Fat_Pointer_Load(field_type))
+        return Emit_Load_Fat_Pointer_From_Temp(cg, ptr);
+    /* Other composite types (records, constrained arrays) return ptr */
+    if (Type_Is_Record(field_type) || (field_type && field_type->kind == TYPE_ARRAY))
         return ptr;
-    }
-    /* STRING fields (unconstrained or dynamic-bound) - load fat pointer */
-    if (Type_Is_String(field_type)) {
-        uint32_t fat = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u  ; load STRING field\n", fat, ptr);
-        return fat;
-    }
     /* For access-type components, load ptr without converting to i64 */
     if (Type_Is_Access(field_type)) {
         uint32_t t = Emit_Temp(cg);
@@ -16571,17 +16642,17 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
             if (Type_Is_Integer_Like(prefix_type) ||
                 Type_Is_Universal_Integer(prefix_type)) {
                 /* Integer'IMAGE */
-                Emit(cg, "  %%t%u = call { ptr, { i64, i64 } } @__ada_integer_image(i64 %%t%u)\n",
+                Emit(cg, "  %%t%u = call " FAT_PTR_TYPE " @__ada_integer_image(i64 %%t%u)\n",
                      t, arg_val);
             } else if (Type_Is_Character(prefix_type)) {
                 /* Character'IMAGE */
                 uint32_t char_val = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = trunc i64 %%t%u to i8\n", char_val, arg_val);
-                Emit(cg, "  %%t%u = call { ptr, { i64, i64 } } @__ada_character_image(i8 %%t%u)\n",
+                Emit(cg, "  %%t%u = call " FAT_PTR_TYPE " @__ada_character_image(i8 %%t%u)\n",
                      t, char_val);
             } else if (Type_Is_Float_Representation(prefix_type)) {
                 /* Float'IMAGE */
-                Emit(cg, "  %%t%u = call { ptr, { i64, i64 } } @__ada_float_image(double %%t%u)\n",
+                Emit(cg, "  %%t%u = call " FAT_PTR_TYPE " @__ada_float_image(double %%t%u)\n",
                      t, arg_val);
             } else if (Type_Is_Enumeration(prefix_type)) {
                 /* Enumeration'IMAGE - return literal name as string */
@@ -16638,22 +16709,22 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                     uint32_t t1 = Emit_Temp(cg);
                     uint32_t t2 = Emit_Temp(cg);
                     uint32_t t3 = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = insertvalue { ptr, { i64, i64 } } undef, ptr %%t%u, 0\n", t1, ptr_load);
-                    Emit(cg, "  %%t%u = insertvalue { ptr, { i64, i64 } } %%t%u, i64 1, 1, 0\n", t2, t1);
-                    Emit(cg, "  %%t%u = insertvalue { ptr, { i64, i64 } } %%t%u, i64 %%t%u, 1, 1\n", t, t2, len_load);
+                    Emit(cg, "  %%t%u = insertvalue " FAT_PTR_TYPE " undef, ptr %%t%u, 0\n", t1, ptr_load);
+                    Emit(cg, "  %%t%u = insertvalue " FAT_PTR_TYPE " %%t%u, i64 1, 1, 0\n", t2, t1);
+                    Emit(cg, "  %%t%u = insertvalue " FAT_PTR_TYPE " %%t%u, i64 %%t%u, 1, 1\n", t, t2, len_load);
                 } else {
                     /* No literals found, fallback to integer image */
-                    Emit(cg, "  %%t%u = call { ptr, { i64, i64 } } @__ada_integer_image(i64 %%t%u)\n",
+                    Emit(cg, "  %%t%u = call " FAT_PTR_TYPE " @__ada_integer_image(i64 %%t%u)\n",
                          t, arg_val);
                 }
             } else {
                 /* Default: treat as integer */
-                Emit(cg, "  %%t%u = call { ptr, { i64, i64 } } @__ada_integer_image(i64 %%t%u)\n",
+                Emit(cg, "  %%t%u = call " FAT_PTR_TYPE " @__ada_integer_image(i64 %%t%u)\n",
                      t, arg_val);
             }
             return t;
         }
-        Emit(cg, "  %%t%u = insertvalue { ptr, { i64, i64 } } undef, ptr null, 0  ; 'IMAGE no arg\n", t);
+        Emit(cg, "  %%t%u = insertvalue " FAT_PTR_TYPE " undef, ptr null, 0  ; 'IMAGE no arg\n", t);
         return t;
     }
 
@@ -16664,11 +16735,11 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
             if (Type_Is_Integer_Like(prefix_type) ||
                 Type_Is_Universal_Integer(prefix_type)) {
                 /* Integer'VALUE - parse string as integer */
-                Emit(cg, "  %%t%u = call i64 @__ada_integer_value({ ptr, { i64, i64 } } %%t%u)\n",
+                Emit(cg, "  %%t%u = call i64 @__ada_integer_value(" FAT_PTR_TYPE " %%t%u)\n",
                      t, str_val);
             } else if (Type_Is_Float_Representation(prefix_type)) {
                 /* Float'VALUE - parse string as float */
-                Emit(cg, "  %%t%u = call double @__ada_float_value({ ptr, { i64, i64 } } %%t%u)\n",
+                Emit(cg, "  %%t%u = call double @__ada_float_value(" FAT_PTR_TYPE " %%t%u)\n",
                      t, str_val);
             } else if (Type_Is_Enumeration(prefix_type)) {
                 /* Enumeration'VALUE - find literal by name and return position */
@@ -16688,9 +16759,9 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                     uint32_t str_hi = Emit_Temp(cg);
                     uint32_t str_diff = Emit_Temp(cg);
                     uint32_t str_len = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = extractvalue { ptr, { i64, i64 } } %%t%u, 0\n", str_ptr, str_val);
-                    Emit(cg, "  %%t%u = extractvalue { ptr, { i64, i64 } } %%t%u, 1, 0\n", str_lo, str_val);
-                    Emit(cg, "  %%t%u = extractvalue { ptr, { i64, i64 } } %%t%u, 1, 1\n", str_hi, str_val);
+                    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n", str_ptr, str_val);
+                    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 0\n", str_lo, str_val);
+                    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 1\n", str_hi, str_val);
                     Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", str_diff, str_hi, str_lo);
                     Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", str_len, str_diff);
 
@@ -16740,12 +16811,12 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                     Emit(cg, "  %%t%u = load i64, ptr %%t%u\n", t, result_alloc);
                 } else {
                     /* No literals found, fallback to integer value */
-                    Emit(cg, "  %%t%u = call i64 @__ada_integer_value({ ptr, { i64, i64 } } %%t%u)\n",
+                    Emit(cg, "  %%t%u = call i64 @__ada_integer_value(" FAT_PTR_TYPE " %%t%u)\n",
                          t, str_val);
                 }
             } else {
                 /* Default: treat as integer */
-                Emit(cg, "  %%t%u = call i64 @__ada_integer_value({ ptr, { i64, i64 } } %%t%u)\n",
+                Emit(cg, "  %%t%u = call i64 @__ada_integer_value(" FAT_PTR_TYPE " %%t%u)\n",
                      t, str_val);
             }
             return t;
@@ -17513,26 +17584,8 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
              * so the bounds don't need to be re-evaluated (which would be wrong for
              * bound expressions with side effects like function calls). */
             uint32_t fat_ptr = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = alloca { ptr, { i64, i64 } }  ; dynamic array fat ptr\n", fat_ptr);
-
-            /* Store data pointer */
-            uint32_t data_slot = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = getelementptr { ptr, { i64, i64 } }, ptr %%t%u, i32 0, i32 0\n",
-                 data_slot, fat_ptr);
-            Emit(cg, "  store ptr %%t%u, ptr %%t%u\n", base, data_slot);
-
-            /* Store low bound */
-            uint32_t low_slot = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = getelementptr { ptr, { i64, i64 } }, ptr %%t%u, i32 0, i32 1, i32 0\n",
-                 low_slot, fat_ptr);
-            Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", low_val, low_slot);
-
-            /* Store high bound */
-            uint32_t high_slot = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = getelementptr { ptr, { i64, i64 } }, ptr %%t%u, i32 0, i32 1, i32 1\n",
-                 high_slot, fat_ptr);
-            Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", high_val, high_slot);
-
+            Emit(cg, "  %%t%u = alloca " FAT_PTR_TYPE "  ; dynamic array fat ptr\n", fat_ptr);
+            Emit_Store_Fat_Pointer_Fields_To_Temp(cg, base, low_val, high_val, fat_ptr);
             return fat_ptr;
         }
 
@@ -18120,15 +18173,9 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
                 int64_t low_bound;
                 if (target_is_uncon) {
                     /* Load fat pointer, extract data ptr and low bound */
-                    uint32_t fat;
-                    if (Is_Uplevel_Access(cg, array_sym)) {
-                        fat = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%__frame.", fat);
-                        Emit_Symbol_Name(cg, array_sym);
-                        Emit(cg, "\n");
-                    } else {
-                        fat = Emit_Load_Fat_Pointer(cg, array_sym);
-                    }
+                    uint32_t fat = Is_Uplevel_Access(cg, array_sym)
+                        ? Emit_Load_Fat_Pointer_Frame(cg, array_sym)
+                        : Emit_Load_Fat_Pointer(cg, array_sym);
                     dest_base = Emit_Fat_Pointer_Data(cg, fat);
                     /* Low bound comes from the fat pointer at runtime */
                     low_bound = 0;  /* We'll use dynamic low below */
@@ -18217,16 +18264,9 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
                         bool src_is_uncon = Type_Is_String(src_type) ||
                                             Type_Is_Unconstrained_Array(src_type);
                         if (src_is_uncon) {
-                            uint32_t sfat;
-                            if (Is_Uplevel_Access(cg, src_sym)) {
-                                sfat = Emit_Temp(cg);
-                                Emit(cg, "  %%t%u = load " FAT_PTR_TYPE
-                                     ", ptr %%__frame.", sfat);
-                                Emit_Symbol_Name(cg, src_sym);
-                                Emit(cg, "\n");
-                            } else {
-                                sfat = Emit_Load_Fat_Pointer(cg, src_sym);
-                            }
+                            uint32_t sfat = Is_Uplevel_Access(cg, src_sym)
+                                ? Emit_Load_Fat_Pointer_Frame(cg, src_sym)
+                                : Emit_Load_Fat_Pointer(cg, src_sym);
                             src_base = Emit_Fat_Pointer_Data(cg, sfat);
                             src_fat_low = Emit_Fat_Pointer_Low(cg, sfat);
                         } else {
@@ -18283,16 +18323,9 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
             int64_t low_bound;
             if (target_is_uncon) {
                 /* Load fat pointer to get data pointer and low bound */
-                uint32_t fat;
-                if (Is_Uplevel_Access(cg, array_sym)) {
-                    fat = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%__frame.",
-                         fat);
-                    Emit_Symbol_Name(cg, array_sym);
-                    Emit(cg, "\n");
-                } else {
-                    fat = Emit_Load_Fat_Pointer(cg, array_sym);
-                }
+                uint32_t fat = Is_Uplevel_Access(cg, array_sym)
+                    ? Emit_Load_Fat_Pointer_Frame(cg, array_sym)
+                    : Emit_Load_Fat_Pointer(cg, array_sym);
                 base = Emit_Fat_Pointer_Data(cg, fat);
                 /* Use dynamic low bound from fat pointer */
                 uint32_t fat_low = Emit_Fat_Pointer_Low(cg, fat);
@@ -18554,18 +18587,8 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
          * Fat pointer sources: STRING type, unconstrained arrays, string literals,
          * concatenation results, and slice expressions. */
         Type_Info *src_type = node->assignment.value->type;
-        bool src_is_fat_ptr = Type_Is_String(src_type) ||
-                              Type_Is_Unconstrained_Array(src_type) ||
-                              (node->assignment.value->kind == NK_STRING);
-        /* Concatenation always returns fat pointer */
-        if (!src_is_fat_ptr && node->assignment.value->kind == NK_BINARY_OP &&
-            node->assignment.value->binary.op == TK_AMPERSAND) {
-            src_is_fat_ptr = true;
-        }
-        /* Slices always produce fat pointers even with constrained declared type */
-        if (!src_is_fat_ptr && Expression_Is_Slice(node->assignment.value)) {
-            src_is_fat_ptr = true;
-        }
+        bool src_is_fat_ptr = Expression_Produces_Fat_Pointer(
+            node->assignment.value, src_type);
         uint32_t src_ptr = Generate_Expression(cg, node->assignment.value);
         if (src_is_fat_ptr) {
             /* Source is unconstrained/string - extract data pointer from fat pointer */
@@ -18597,24 +18620,13 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
     if (Type_Is_String(ty) || Type_Is_Unconstrained_Array(ty)) {
         Syntax_Node *src = node->assignment.value;
         Type_Info *src_type = src->type;
-        bool src_is_fat = Type_Is_String(src_type) ||
-                          Type_Is_Unconstrained_Array(src_type) ||
-                          src->kind == NK_STRING ||
-                          Expression_Is_Slice(src) ||
-                          (src->kind == NK_BINARY_OP && src->binary.op == TK_AMPERSAND);
+        bool src_is_fat = Expression_Produces_Fat_Pointer(src, src_type);
 
         /* Load existing fat pointer from the target variable */
-        uint32_t existing_fat;
         bool is_uplevel = Is_Uplevel_Access(cg, target_sym);
-        if (is_uplevel && cg->is_nested) {
-            existing_fat = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%__frame.",
-                 existing_fat);
-            Emit_Symbol_Name(cg, target_sym);
-            Emit(cg, "\n");
-        } else {
-            existing_fat = Emit_Load_Fat_Pointer(cg, target_sym);
-        }
+        uint32_t existing_fat = (is_uplevel && cg->is_nested)
+            ? Emit_Load_Fat_Pointer_Frame(cg, target_sym)
+            : Emit_Load_Fat_Pointer(cg, target_sym);
         uint32_t dest_data = Emit_Fat_Pointer_Data(cg, existing_fat);
         uint32_t dest_len  = Emit_Fat_Pointer_Length(cg, existing_fat);
 
@@ -19871,7 +19883,7 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     /* Now emit fat pointer global with data ptr and bounds */
                     Emit(cg, "@");
                     Emit_Symbol_Name(cg, sym);
-                    Emit(cg, " = linkonce_odr constant { ptr, { i64, i64 } } "
+                    Emit(cg, " = linkonce_odr constant " FAT_PTR_TYPE " "
                          "{ ptr @");
                     Emit_Symbol_Name(cg, sym);
                     Emit(cg, ".data, { i64, i64 } { i64 1, i64 %lld } }\n",
@@ -20005,10 +20017,7 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                             local_data, src_low, src_high);
 
                         /* Store fat pointer into variable */
-                        Emit(cg, "  store " FAT_PTR_TYPE " %%t%u, ptr %%",
-                             new_fat);
-                        Emit_Symbol_Name(cg, sym);
-                        Emit(cg, "\n");
+                        Emit_Store_Fat_Pointer_To_Symbol(cg, new_fat, sym);
                     } else {
                         /* Destination is constrained — just copy data bytes */
                         Emit_Fat_Pointer_Copy_To_Name(cg, fat_ptr, sym);
@@ -20043,10 +20052,7 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                             local_data, lo, hi);
 
                         /* Store fat pointer into variable */
-                        Emit(cg, "  store " FAT_PTR_TYPE " %%t%u, ptr %%",
-                             new_fat);
-                        Emit_Symbol_Name(cg, sym);
-                        Emit(cg, "\n");
+                        Emit_Store_Fat_Pointer_To_Symbol(cg, new_fat, sym);
                     } else {
                         /* Both constrained — simple memcpy using target bounds */
                         int64_t lo = Type_Bound_Value(
@@ -20156,24 +20162,8 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                         Emit(cg, "  %%t%u = add i64 0, 0\n", high_val);  /* Default high = 0 */
                     }
 
-                    /* Construct fat pointer: store data ptr at offset 0, low at 8, high at 16 */
-                    uint32_t data_slot = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = getelementptr { ptr, { i64, i64 } }, ptr %%", data_slot);
-                    Emit_Symbol_Name(cg, sym);
-                    Emit(cg, ", i32 0, i32 0\n");
-                    Emit(cg, "  store ptr %%t%u, ptr %%t%u  ; fat ptr data\n", agg_ptr, data_slot);
-
-                    uint32_t low_slot = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = getelementptr { ptr, { i64, i64 } }, ptr %%", low_slot);
-                    Emit_Symbol_Name(cg, sym);
-                    Emit(cg, ", i32 0, i32 1, i32 0\n");
-                    Emit(cg, "  store i64 %%t%u, ptr %%t%u  ; fat ptr low\n", low_val, low_slot);
-
-                    uint32_t high_slot = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = getelementptr { ptr, { i64, i64 } }, ptr %%", high_slot);
-                    Emit_Symbol_Name(cg, sym);
-                    Emit(cg, ", i32 0, i32 1, i32 1\n");
-                    Emit(cg, "  store i64 %%t%u, ptr %%t%u  ; fat ptr high\n", high_val, high_slot);
+                    /* Construct fat pointer in-place */
+                    Emit_Store_Fat_Pointer_Fields_To_Symbol(cg, agg_ptr, low_val, high_val, sym);
                 } else if (ty->size > 0) {
                     /* Static size known at compile time */
                     Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%");
@@ -20249,10 +20239,7 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     uint32_t new_fat = Emit_Fat_Pointer_Dynamic(cg,
                         local_data, src_low, src_high);
 
-                    Emit(cg, "  store " FAT_PTR_TYPE " %%t%u, ptr %%",
-                         new_fat);
-                    Emit_Symbol_Name(cg, sym);
-                    Emit(cg, "\n");
+                    Emit_Store_Fat_Pointer_To_Symbol(cg, new_fat, sym);
                 } else {
                     /* Source is ptr (constrained) — wrap with bounds */
                     Type_Info *init_ty = node->object_decl.init->type;
@@ -20262,16 +20249,10 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                         int64_t hi = Type_Bound_Value(
                             init_ty->array.indices[0].high_bound);
                         uint32_t new_fat = Emit_Fat_Pointer(cg, fat_ptr, lo, hi);
-                        Emit(cg, "  store " FAT_PTR_TYPE " %%t%u, ptr %%",
-                             new_fat);
-                        Emit_Symbol_Name(cg, sym);
-                        Emit(cg, "\n");
+                        Emit_Store_Fat_Pointer_To_Symbol(cg, new_fat, sym);
                     } else {
                         /* Fallback: store as fat pointer with unknown bounds */
-                        Emit(cg, "  store " FAT_PTR_TYPE " %%t%u, ptr %%",
-                             fat_ptr);
-                        Emit_Symbol_Name(cg, sym);
-                        Emit(cg, "\n");
+                        Emit_Store_Fat_Pointer_To_Symbol(cg, fat_ptr, sym);
                     }
                 }
             } else if (!is_any_array && !is_record) {
@@ -20358,24 +20339,8 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             uint32_t data_ptr = Emit_Temp(cg);
             Emit(cg, "  %%t%u = alloca i8, i64 %%t%u  ; dynamic uninit array\n", data_ptr, byte_size);
 
-            /* Construct fat pointer: store data ptr, low, high */
-            uint32_t data_slot = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = getelementptr { ptr, { i64, i64 } }, ptr %%", data_slot);
-            Emit_Symbol_Name(cg, sym);
-            Emit(cg, ", i32 0, i32 0\n");
-            Emit(cg, "  store ptr %%t%u, ptr %%t%u  ; fat ptr data\n", data_ptr, data_slot);
-
-            uint32_t low_slot = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = getelementptr { ptr, { i64, i64 } }, ptr %%", low_slot);
-            Emit_Symbol_Name(cg, sym);
-            Emit(cg, ", i32 0, i32 1, i32 0\n");
-            Emit(cg, "  store i64 %%t%u, ptr %%t%u  ; fat ptr low\n", low_val, low_slot);
-
-            uint32_t high_slot = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = getelementptr { ptr, { i64, i64 } }, ptr %%", high_slot);
-            Emit_Symbol_Name(cg, sym);
-            Emit(cg, ", i32 0, i32 1, i32 1\n");
-            Emit(cg, "  store i64 %%t%u, ptr %%t%u  ; fat ptr high\n", high_val, high_slot);
+            /* Construct fat pointer in-place */
+            Emit_Store_Fat_Pointer_Fields_To_Symbol(cg, data_ptr, low_val, high_val, sym);
         } else if (is_record && ty->record.component_count > 0) {
             /* Record without explicit initializer (RM 3.7):
              * 1. If constrained subtype, initialize discriminants from constraints
@@ -21532,10 +21497,8 @@ static void Generate_Type_Equality_Function(Code_Generator *cg, Type_Info *t) {
 
                 if (Type_Is_String(ct) || Type_Is_Unconstrained_Array(ct)) {
                     /* Unconstrained array/string - load fat pointer values from storage */
-                    uint32_t left_fat = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", left_fat, left_gep);
-                    uint32_t right_fat = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", right_fat, right_gep);
+                    uint32_t left_fat = Emit_Load_Fat_Pointer_From_Temp(cg, left_gep);
+                    uint32_t right_fat = Emit_Load_Fat_Pointer_From_Temp(cg, right_gep);
                     cmp = Generate_Array_Equality(cg, left_fat, right_fat, ct);
                 } else if (Type_Is_Constrained_Array(ct)) {
                     /* Constrained array - use array equality */
@@ -21544,28 +21507,10 @@ static void Generate_Type_Equality_Function(Code_Generator *cg, Type_Info *t) {
                     /* Nested record - recurse */
                     cmp = Generate_Record_Equality(cg, left_gep, right_gep, ct);
                 } else if (is_fat_ptr_access) {
-                    /* ACCESS to unconstrained array - compare fat pointer components */
-                    uint32_t left_val = Emit_Temp(cg);
-                    uint32_t right_val = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", left_val, left_gep);
-                    Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", right_val, right_gep);
-                    uint32_t lp = Emit_Temp(cg), rp = Emit_Temp(cg);
-                    uint32_t ll = Emit_Temp(cg), rl = Emit_Temp(cg);
-                    uint32_t lh = Emit_Temp(cg), rh = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n", lp, left_val);
-                    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n", rp, right_val);
-                    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 0\n", ll, left_val);
-                    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 0\n", rl, right_val);
-                    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 1\n", lh, left_val);
-                    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 1\n", rh, right_val);
-                    uint32_t cmp_p = Emit_Temp(cg), cmp_l = Emit_Temp(cg), cmp_h = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = icmp eq ptr %%t%u, %%t%u\n", cmp_p, lp, rp);
-                    Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", cmp_l, ll, rl);
-                    Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", cmp_h, lh, rh);
-                    uint32_t and1 = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", and1, cmp_p, cmp_l);
-                    cmp = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", cmp, and1, cmp_h);
+                    /* ACCESS to unconstrained array - compare fat pointer identity */
+                    uint32_t left_val = Emit_Load_Fat_Pointer_From_Temp(cg, left_gep);
+                    uint32_t right_val = Emit_Load_Fat_Pointer_From_Temp(cg, right_gep);
+                    cmp = Emit_Fat_Pointer_Compare(cg, left_val, right_val);
                 } else {
                     /* Scalar type - load and compare */
                     uint32_t left_val = Emit_Temp(cg);
@@ -21793,7 +21738,7 @@ static void Generate_Extern_Declarations(Code_Generator *cg, Syntax_Node *node) 
                             bool is_string = Type_Is_String(ty) ||
                                 (Type_Is_Unconstrained_Array(ty) &&
                                  Type_Is_Character(ty->array.element_type));
-                            if (is_string) type_str = "{ ptr, { i64, i64 } }";
+                            if (is_string) type_str = FAT_PTR_TYPE;
                             Emit(cg, "@");
                             Emit_Symbol_Name(cg, sym);
                             Emit(cg, " = external global %s\n", type_str);
@@ -21834,7 +21779,7 @@ static void Generate_Extern_Declarations(Code_Generator *cg, Syntax_Node *node) 
                         bool is_string = Type_Is_String(ty) ||
                             (Type_Is_Unconstrained_Array(ty) &&
                              Type_Is_Character(ty->array.element_type));
-                        if (is_string) type_str = "{ ptr, { i64, i64 } }";
+                        if (is_string) type_str = FAT_PTR_TYPE;
                         Emit(cg, "@");
                         Emit_Symbol_Name(cg, sym);
                         Emit(cg, " = external global %s\n", type_str);
@@ -21893,11 +21838,11 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
 
     /* Integer'VALUE - parse string to integer */
     Emit(cg, "; Integer'VALUE helper\n");
-    Emit(cg, "define linkonce_odr i64 @__ada_integer_value({ ptr, { i64, i64 } } %%str) {\n");
+    Emit(cg, "define linkonce_odr i64 @__ada_integer_value(" FAT_PTR_TYPE " %%str) {\n");
     Emit(cg, "entry:\n");
-    Emit(cg, "  %%data = extractvalue { ptr, { i64, i64 } } %%str, 0\n");
-    Emit(cg, "  %%low = extractvalue { ptr, { i64, i64 } } %%str, 1, 0\n");
-    Emit(cg, "  %%high = extractvalue { ptr, { i64, i64 } } %%str, 1, 1\n");
+    Emit(cg, "  %%data = extractvalue " FAT_PTR_TYPE " %%str, 0\n");
+    Emit(cg, "  %%low = extractvalue " FAT_PTR_TYPE " %%str, 1, 0\n");
+    Emit(cg, "  %%high = extractvalue " FAT_PTR_TYPE " %%str, 1, 1\n");
     Emit(cg, "  br label %%loop\n");
     Emit(cg, "loop:\n");
     Emit(cg, "  %%result = phi i64 [ 0, %%entry ], [ %%next_result, %%cont ]\n");
@@ -21942,9 +21887,9 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     /* Float'VALUE - declare as external for now (can be implemented similarly) */
     Emit(cg, "; Float'VALUE declaration (to be implemented)\n");
     Emit(cg, "declare double @strtod(ptr, ptr)\n");
-    Emit(cg, "define linkonce_odr double @__ada_float_value({ ptr, { i64, i64 } } %%str) {\n");
+    Emit(cg, "define linkonce_odr double @__ada_float_value(" FAT_PTR_TYPE " %%str) {\n");
     Emit(cg, "entry:\n");
-    Emit(cg, "  %%data = extractvalue { ptr, { i64, i64 } } %%str, 0\n");
+    Emit(cg, "  %%data = extractvalue " FAT_PTR_TYPE " %%str, 0\n");
     Emit(cg, "  %%result = call double @strtod(ptr %%data, ptr null)\n");
     Emit(cg, "  ret double %%result\n");
     Emit(cg, "}\n\n");
@@ -22372,7 +22317,7 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "}\n\n");
 
     /* GET_LINE: read line into buffer, return fat pointer */
-    Emit(cg, "define linkonce_odr { ptr, { i64, i64 } } @__text_io_get_line() {\n");
+    Emit(cg, "define linkonce_odr " FAT_PTR_TYPE " @__text_io_get_line() {\n");
     Emit(cg, "entry:\n");
     Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 256)\n");
     Emit(cg, "  %%inp = load ptr, ptr @stdin\n");
@@ -22380,10 +22325,10 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "  %%iseof = icmp eq ptr %%res, null\n");
     Emit(cg, "  br i1 %%iseof, label %%empty, label %%gotline\n");
     Emit(cg, "empty:\n");
-    Emit(cg, "  %%e1 = insertvalue { ptr, { i64, i64 } } undef, ptr %%buf, 0\n");
-    Emit(cg, "  %%e2 = insertvalue { ptr, { i64, i64 } } %%e1, i64 1, 1, 0\n");
-    Emit(cg, "  %%e3 = insertvalue { ptr, { i64, i64 } } %%e2, i64 0, 1, 1\n");
-    Emit(cg, "  ret { ptr, { i64, i64 } } %%e3\n");
+    Emit(cg, "  %%e1 = insertvalue " FAT_PTR_TYPE " undef, ptr %%buf, 0\n");
+    Emit(cg, "  %%e2 = insertvalue " FAT_PTR_TYPE " %%e1, i64 1, 1, 0\n");
+    Emit(cg, "  %%e3 = insertvalue " FAT_PTR_TYPE " %%e2, i64 0, 1, 1\n");
+    Emit(cg, "  ret " FAT_PTR_TYPE " %%e3\n");
     Emit(cg, "gotline:\n");
     Emit(cg, "  %%len = call i64 @strlen(ptr %%buf)\n");
     Emit(cg, "  ; Strip trailing newline if present\n");
@@ -22392,10 +22337,10 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "  %%lastch = load i8, ptr %%lastptr\n");
     Emit(cg, "  %%isnl = icmp eq i8 %%lastch, 10\n");
     Emit(cg, "  %%adjlen = select i1 %%isnl, i64 %%lastidx, i64 %%len\n");
-    Emit(cg, "  %%f1 = insertvalue { ptr, { i64, i64 } } undef, ptr %%buf, 0\n");
-    Emit(cg, "  %%f2 = insertvalue { ptr, { i64, i64 } } %%f1, i64 1, 1, 0\n");
-    Emit(cg, "  %%f3 = insertvalue { ptr, { i64, i64 } } %%f2, i64 %%adjlen, 1, 1\n");
-    Emit(cg, "  ret { ptr, { i64, i64 } } %%f3\n");
+    Emit(cg, "  %%f1 = insertvalue " FAT_PTR_TYPE " undef, ptr %%buf, 0\n");
+    Emit(cg, "  %%f2 = insertvalue " FAT_PTR_TYPE " %%f1, i64 1, 1, 0\n");
+    Emit(cg, "  %%f3 = insertvalue " FAT_PTR_TYPE " %%f2, i64 %%adjlen, 1, 1\n");
+    Emit(cg, "  ret " FAT_PTR_TYPE " %%f3\n");
     Emit(cg, "}\n\n");
 
     /* 'IMAGE runtime: Integer'IMAGE(x) returns string representation */
@@ -22407,20 +22352,20 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "@.img_fmt_f = linkonce_odr constant [5 x i8] c\"%%.6g\\00\"\n\n");
 
     /* Integer'IMAGE - convert integer to string fat pointer */
-    Emit(cg, "define linkonce_odr { ptr, { i64, i64 } } @__ada_integer_image(i64 %%val) {\n");
+    Emit(cg, "define linkonce_odr " FAT_PTR_TYPE " @__ada_integer_image(i64 %%val) {\n");
     Emit(cg, "entry:\n");
     Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 24)\n");
     Emit(cg, "  %%len = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %%buf, i64 24, ptr @.img_fmt_d, i64 %%val)\n");
     Emit(cg, "  %%len64 = sext i32 %%len to i64\n");
     Emit(cg, "  %%high = sub i64 %%len64, 1\n");
-    Emit(cg, "  %%fat1 = insertvalue { ptr, { i64, i64 } } undef, ptr %%buf, 0\n");
-    Emit(cg, "  %%fat2 = insertvalue { ptr, { i64, i64 } } %%fat1, i64 1, 1, 0\n");
-    Emit(cg, "  %%fat3 = insertvalue { ptr, { i64, i64 } } %%fat2, i64 %%len64, 1, 1\n");
-    Emit(cg, "  ret { ptr, { i64, i64 } } %%fat3\n");
+    Emit(cg, "  %%fat1 = insertvalue " FAT_PTR_TYPE " undef, ptr %%buf, 0\n");
+    Emit(cg, "  %%fat2 = insertvalue " FAT_PTR_TYPE " %%fat1, i64 1, 1, 0\n");
+    Emit(cg, "  %%fat3 = insertvalue " FAT_PTR_TYPE " %%fat2, i64 %%len64, 1, 1\n");
+    Emit(cg, "  ret " FAT_PTR_TYPE " %%fat3\n");
     Emit(cg, "}\n\n");
 
     /* Character'IMAGE - single char to string (3 chars: 'x') */
-    Emit(cg, "define linkonce_odr { ptr, { i64, i64 } } @__ada_character_image(i8 %%val) {\n");
+    Emit(cg, "define linkonce_odr " FAT_PTR_TYPE " @__ada_character_image(i8 %%val) {\n");
     Emit(cg, "entry:\n");
     Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 4)\n");
     Emit(cg, "  %%p0 = getelementptr i8, ptr %%buf, i64 0\n");
@@ -22429,22 +22374,22 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "  store i8 %%val, ptr %%p1\n");
     Emit(cg, "  %%p2 = getelementptr i8, ptr %%buf, i64 2\n");
     Emit(cg, "  store i8 39, ptr %%p2  ; single quote\n");
-    Emit(cg, "  %%fat1 = insertvalue { ptr, { i64, i64 } } undef, ptr %%buf, 0\n");
-    Emit(cg, "  %%fat2 = insertvalue { ptr, { i64, i64 } } %%fat1, i64 1, 1, 0\n");
-    Emit(cg, "  %%fat3 = insertvalue { ptr, { i64, i64 } } %%fat2, i64 3, 1, 1\n");
-    Emit(cg, "  ret { ptr, { i64, i64 } } %%fat3\n");
+    Emit(cg, "  %%fat1 = insertvalue " FAT_PTR_TYPE " undef, ptr %%buf, 0\n");
+    Emit(cg, "  %%fat2 = insertvalue " FAT_PTR_TYPE " %%fat1, i64 1, 1, 0\n");
+    Emit(cg, "  %%fat3 = insertvalue " FAT_PTR_TYPE " %%fat2, i64 3, 1, 1\n");
+    Emit(cg, "  ret " FAT_PTR_TYPE " %%fat3\n");
     Emit(cg, "}\n\n");
 
     /* Float'IMAGE - convert float to string */
-    Emit(cg, "define linkonce_odr { ptr, { i64, i64 } } @__ada_float_image(double %%val) {\n");
+    Emit(cg, "define linkonce_odr " FAT_PTR_TYPE " @__ada_float_image(double %%val) {\n");
     Emit(cg, "entry:\n");
     Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 32)\n");
     Emit(cg, "  %%len = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %%buf, i64 32, ptr @.img_fmt_f, double %%val)\n");
     Emit(cg, "  %%len64 = sext i32 %%len to i64\n");
-    Emit(cg, "  %%fat1 = insertvalue { ptr, { i64, i64 } } undef, ptr %%buf, 0\n");
-    Emit(cg, "  %%fat2 = insertvalue { ptr, { i64, i64 } } %%fat1, i64 1, 1, 0\n");
-    Emit(cg, "  %%fat3 = insertvalue { ptr, { i64, i64 } } %%fat2, i64 %%len64, 1, 1\n");
-    Emit(cg, "  ret { ptr, { i64, i64 } } %%fat3\n");
+    Emit(cg, "  %%fat1 = insertvalue " FAT_PTR_TYPE " undef, ptr %%buf, 0\n");
+    Emit(cg, "  %%fat2 = insertvalue " FAT_PTR_TYPE " %%fat1, i64 1, 1, 0\n");
+    Emit(cg, "  %%fat3 = insertvalue " FAT_PTR_TYPE " %%fat2, i64 %%len64, 1, 1\n");
+    Emit(cg, "  ret " FAT_PTR_TYPE " %%fat3\n");
     Emit(cg, "}\n\n");
 
     /* Generate exception identity globals */
