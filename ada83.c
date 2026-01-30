@@ -12675,7 +12675,10 @@ static inline const char *Expression_Llvm_Type(Syntax_Node *node) {
      * The aggregate creates stack storage and returns its address.
      * Fat pointers are only used when loading from unconstrained array variables. */
     if (node && node->kind == NK_AGGREGATE && node->type &&
-        node->type->kind == TYPE_ARRAY) return "ptr";
+        (node->type->kind == TYPE_ARRAY || node->type->kind == TYPE_STRING)) return "ptr";
+    /* Slices always produce fat pointers regardless of declared type.
+     * Must check before array indexing since both are NK_APPLY. */
+    if (node && Expression_Is_Slice(node)) return "{ ptr, { i64, i64 } }";
     /* Array indexing (NK_APPLY) that returns non-i64 element types.
      * The codegen preserves the native type for composite, access, and float elements. */
     if (node && node->kind == NK_APPLY && node->apply.prefix &&
@@ -13166,10 +13169,12 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "\n");
                 /* Widen to i64 for computation if narrower integer type.
                  * But keep ptr types as ptr - records/access need pointers.
-                 * Also keep float types as their native type (float/double). */
+                 * Also keep float types as their native type (float/double).
+                 * Keep fat pointers as-is for unconstrained arrays/STRING. */
                 if (strcmp(type_str, "ptr") != 0 &&
                     strcmp(type_str, "float") != 0 &&
-                    strcmp(type_str, "double") != 0) {
+                    strcmp(type_str, "double") != 0 &&
+                    !strstr(type_str, "{ ptr,")) {
                     t = Emit_Convert(cg, t, type_str, "i64");
                 }
             } else {
@@ -13595,8 +13600,20 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
 
         bool left_is_slice = Expression_Is_Slice(node->binary.left);
         bool right_is_slice = Expression_Is_Slice(node->binary.right);
+        Type_Info *right_type = node->binary.right ? node->binary.right->type : NULL;
         bool is_unconstrained = Type_Is_Unconstrained_Array(left_type) ||
-                                Type_Is_String(left_type);
+                                Type_Is_String(left_type) ||
+                                Type_Is_Unconstrained_Array(right_type) ||
+                                Type_Is_String(right_type);
+        /* String literals and concatenation always produce fat pointers */
+        bool left_is_fat = is_unconstrained || left_is_slice ||
+                           node->binary.left->kind == NK_STRING ||
+                           (node->binary.left->kind == NK_BINARY_OP &&
+                            node->binary.left->binary.op == TK_AMPERSAND);
+        bool right_is_fat = is_unconstrained || right_is_slice ||
+                            (node->binary.right && node->binary.right->kind == NK_STRING) ||
+                            (node->binary.right && node->binary.right->kind == NK_BINARY_OP &&
+                             node->binary.right->binary.op == TK_AMPERSAND);
 
         /* Handle slice comparisons specially - they have mixed representations */
         if ((left_is_slice || right_is_slice) && !is_unconstrained) {
@@ -13672,16 +13689,51 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             /* Result: lengths match AND data matches */
             eq_result = Emit_Temp(cg);
             Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", eq_result, len_eq, data_eq);
-        } else {
-            /* Standard path: both operands have same representation */
-            uint32_t left_ptr, right_ptr;
-            if (is_unconstrained) {
-                left_ptr = Generate_Expression(cg, node->binary.left);
-                right_ptr = Generate_Expression(cg, node->binary.right);
+        } else if (left_is_fat || right_is_fat) {
+            /* At least one operand produces a fat pointer.
+             * Normalize both to fat pointers for uniform comparison. */
+            uint32_t left_val, right_val;
+
+            /* Generate left operand */
+            if (left_is_fat) {
+                left_val = Generate_Expression(cg, node->binary.left);
             } else {
-                left_ptr = Generate_Composite_Address(cg, node->binary.left);
-                right_ptr = Generate_Composite_Address(cg, node->binary.right);
+                uint32_t lptr = Generate_Composite_Address(cg, node->binary.left);
+                int64_t lo = 1, hi = 0;
+                if (Type_Is_Array_Like(left_type) && left_type->array.index_count > 0) {
+                    lo = Type_Bound_Value(left_type->array.indices[0].low_bound);
+                    hi = Type_Bound_Value(left_type->array.indices[0].high_bound);
+                }
+                left_val = Emit_Fat_Pointer(cg, lptr, lo, hi);
             }
+
+            /* Generate right operand */
+            if (right_is_fat) {
+                right_val = Generate_Expression(cg, node->binary.right);
+            } else {
+                uint32_t rptr = Generate_Composite_Address(cg, node->binary.right);
+                Type_Info *rtype = node->binary.right->type ? node->binary.right->type : left_type;
+                int64_t lo = 1, hi = 0;
+                if (Type_Is_Array_Like(rtype) && rtype->array.index_count > 0) {
+                    lo = Type_Bound_Value(rtype->array.indices[0].low_bound);
+                    hi = Type_Bound_Value(rtype->array.indices[0].high_bound);
+                }
+                right_val = Emit_Fat_Pointer(cg, rptr, lo, hi);
+            }
+
+            /* Use the unconstrained array equality path (compares lengths then data) */
+            Type_Info *cmp_type = left_type;
+            if (Type_Is_Constrained_Array(cmp_type) && (Type_Is_String(right_type) ||
+                Type_Is_Unconstrained_Array(right_type))) {
+                cmp_type = right_type;  /* Use unconstrained type for comparison */
+            }
+            /* Ensure comparison uses unconstrained path */
+            eq_result = Generate_Array_Equality(cg, left_val, right_val, cmp_type);
+        } else {
+            /* Standard path: both operands are constrained (same representation) */
+            uint32_t left_ptr, right_ptr;
+            left_ptr = Generate_Composite_Address(cg, node->binary.left);
+            right_ptr = Generate_Composite_Address(cg, node->binary.right);
             eq_result = Emit_Temp(cg);
 
             if (left_type->equality_func_name) {
@@ -13715,14 +13767,59 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         Type_Is_Array_Like(left_type)) {
         /* Get addresses of both arrays for comparison */
         uint32_t left_ptr, right_ptr;
-        /* Slices produce fat pointers at runtime even with constrained type */
+        Type_Info *rhs_cmp_type = node->binary.right ? node->binary.right->type : NULL;
+        /* Detect any operand producing fat pointers: unconstrained types, slices,
+         * string literals, and concatenation results. */
         bool is_unconstrained = Type_Is_Unconstrained_Array(left_type) ||
                                 Type_Is_String(left_type) ||
+                                Type_Is_Unconstrained_Array(rhs_cmp_type) ||
+                                Type_Is_String(rhs_cmp_type) ||
                                 Expression_Is_Slice(node->binary.left) ||
-                                Expression_Is_Slice(node->binary.right);
+                                Expression_Is_Slice(node->binary.right) ||
+                                node->binary.left->kind == NK_STRING ||
+                                (node->binary.right && node->binary.right->kind == NK_STRING) ||
+                                (node->binary.left->kind == NK_BINARY_OP &&
+                                 node->binary.left->binary.op == TK_AMPERSAND) ||
+                                (node->binary.right && node->binary.right->kind == NK_BINARY_OP &&
+                                 node->binary.right->binary.op == TK_AMPERSAND);
         if (is_unconstrained) {
-            left_ptr = Generate_Expression(cg, node->binary.left);
-            right_ptr = Generate_Expression(cg, node->binary.right);
+            /* Generate each operand as fat pointer, wrapping constrained if needed */
+            bool l_fat = Type_Is_String(left_type) ||
+                         Type_Is_Unconstrained_Array(left_type) ||
+                         Expression_Is_Slice(node->binary.left) ||
+                         node->binary.left->kind == NK_STRING ||
+                         (node->binary.left->kind == NK_BINARY_OP &&
+                          node->binary.left->binary.op == TK_AMPERSAND);
+            bool r_fat = Type_Is_String(rhs_cmp_type) ||
+                         Type_Is_Unconstrained_Array(rhs_cmp_type) ||
+                         Expression_Is_Slice(node->binary.right) ||
+                         (node->binary.right && node->binary.right->kind == NK_STRING) ||
+                         (node->binary.right && node->binary.right->kind == NK_BINARY_OP &&
+                          node->binary.right->binary.op == TK_AMPERSAND);
+
+            if (l_fat) {
+                left_ptr = Generate_Expression(cg, node->binary.left);
+            } else {
+                uint32_t lp = Generate_Composite_Address(cg, node->binary.left);
+                int64_t lo = 1, hi = 0;
+                if (left_type->array.index_count > 0) {
+                    lo = Type_Bound_Value(left_type->array.indices[0].low_bound);
+                    hi = Type_Bound_Value(left_type->array.indices[0].high_bound);
+                }
+                left_ptr = Emit_Fat_Pointer(cg, lp, lo, hi);
+            }
+            if (r_fat) {
+                right_ptr = Generate_Expression(cg, node->binary.right);
+            } else {
+                uint32_t rp = Generate_Composite_Address(cg, node->binary.right);
+                int64_t lo = 1, hi = 0;
+                if (rhs_cmp_type && Type_Is_Array_Like(rhs_cmp_type) &&
+                    rhs_cmp_type->array.index_count > 0) {
+                    lo = Type_Bound_Value(rhs_cmp_type->array.indices[0].low_bound);
+                    hi = Type_Bound_Value(rhs_cmp_type->array.indices[0].high_bound);
+                }
+                right_ptr = Emit_Fat_Pointer(cg, rp, lo, hi);
+            }
         } else {
             left_ptr = Generate_Composite_Address(cg, node->binary.left);
             right_ptr = Generate_Composite_Address(cg, node->binary.right);
@@ -13730,7 +13827,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
 
         uint32_t memcmp_result, cmp_result;
 
-        if (left_type->array.is_constrained) {
+        if (left_type->array.is_constrained && !is_unconstrained) {
             /* Constrained array: same size, use memcmp directly */
             int64_t count = Array_Element_Count(left_type);
             uint32_t elem_size = left_type->array.element_type ?
@@ -13901,9 +13998,65 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
     /* String/array concatenation */
     if (node->binary.op == TK_AMPERSAND && Type_Is_Array_Like(left_type)) {
 
-        /* Generate both operands - they return fat pointers */
-        uint32_t left_fat = Generate_Expression(cg, node->binary.left);
-        uint32_t right_fat = Generate_Expression(cg, node->binary.right);
+        /* Generate both operands.
+         * Each operand may be: fat pointer (STRING/unconstrained/literal/slice/concat),
+         * ptr (constrained array), or i64 (CHARACTER).
+         * We normalize each to a fat pointer before proceeding. */
+        uint32_t left_raw = Generate_Expression(cg, node->binary.left);
+        uint32_t right_raw = Generate_Expression(cg, node->binary.right);
+
+        /* Normalize left operand to fat pointer */
+        uint32_t left_fat;
+        bool left_already_fat = Type_Is_String(left_type) ||
+                                Type_Is_Unconstrained_Array(left_type) ||
+                                node->binary.left->kind == NK_STRING ||
+                                Expression_Is_Slice(node->binary.left) ||
+                                (node->binary.left->kind == NK_BINARY_OP &&
+                                 node->binary.left->binary.op == TK_AMPERSAND);
+        if (left_already_fat) {
+            left_fat = left_raw;
+        } else if (Type_Is_Character(left_type)) {
+            /* Single character: alloca, store, wrap as {ptr, {1, 1}} */
+            uint32_t ca = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = alloca i8\n", ca);
+            uint32_t ct = Emit_Convert(cg, left_raw, "i64", "i8");
+            Emit(cg, "  store i8 %%t%u, ptr %%t%u\n", ct, ca);
+            left_fat = Emit_Fat_Pointer(cg, ca, 1, 1);
+        } else if (Type_Is_Constrained_Array(left_type) &&
+                   left_type->array.index_count > 0) {
+            int64_t lo = Type_Bound_Value(left_type->array.indices[0].low_bound);
+            int64_t hi = Type_Bound_Value(left_type->array.indices[0].high_bound);
+            left_fat = Emit_Fat_Pointer(cg, left_raw, lo, hi);
+        } else {
+            left_fat = left_raw;  /* Assume already fat */
+        }
+
+        /* Normalize right operand to fat pointer */
+        Type_Info *rhs_type = node->binary.right ? node->binary.right->type : NULL;
+        uint32_t right_fat;
+        bool right_already_fat = Type_Is_String(rhs_type) ||
+                                 Type_Is_Unconstrained_Array(rhs_type) ||
+                                 node->binary.right->kind == NK_STRING ||
+                                 Expression_Is_Slice(node->binary.right) ||
+                                 (node->binary.right->kind == NK_BINARY_OP &&
+                                  node->binary.right->binary.op == TK_AMPERSAND);
+        if (right_already_fat) {
+            right_fat = right_raw;
+        } else if (Type_Is_Character(rhs_type)) {
+            /* Single character: alloca, store, wrap as {ptr, {1, 1}} */
+            uint32_t ca = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = alloca i8\n", ca);
+            uint32_t ct = Emit_Convert(cg, right_raw, "i64", "i8");
+            Emit(cg, "  store i8 %%t%u, ptr %%t%u\n", ct, ca);
+            right_fat = Emit_Fat_Pointer(cg, ca, 1, 1);
+        } else if (Type_Is_Constrained_Array(rhs_type) &&
+                   rhs_type->array.index_count > 0) {
+            int64_t lo = Type_Bound_Value(rhs_type->array.indices[0].low_bound);
+            int64_t hi = Type_Bound_Value(rhs_type->array.indices[0].high_bound);
+            right_fat = Emit_Fat_Pointer(cg, right_raw, lo, hi);
+        } else {
+            right_fat = right_raw;  /* Assume already fat */
+        }
 
         /* Extract data pointers and bounds */
         uint32_t left_data = Emit_Fat_Pointer_Data(cg, left_fat);
@@ -17709,7 +17862,9 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
 
     /* Handle constrained array assignment (use memcpy, not store) */
     if (Type_Is_Constrained_Array(ty)) {
-        /* Check if source is unconstrained (fat pointer) or constrained (ptr) */
+        /* Check if source is unconstrained (fat pointer) or constrained (ptr).
+         * Fat pointer sources: STRING type, unconstrained arrays, string literals,
+         * concatenation results, and slice expressions. */
         Type_Info *src_type = node->assignment.value->type;
         bool src_is_fat_ptr = Type_Is_String(src_type) ||
                               Type_Is_Unconstrained_Array(src_type) ||
@@ -17717,6 +17872,10 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
         /* Concatenation always returns fat pointer */
         if (!src_is_fat_ptr && node->assignment.value->kind == NK_BINARY_OP &&
             node->assignment.value->binary.op == TK_AMPERSAND) {
+            src_is_fat_ptr = true;
+        }
+        /* Slices always produce fat pointers even with constrained declared type */
+        if (!src_is_fat_ptr && Expression_Is_Slice(node->assignment.value)) {
             src_is_fat_ptr = true;
         }
         uint32_t src_ptr = Generate_Expression(cg, node->assignment.value);
@@ -17730,6 +17889,50 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
             Emit_Symbol_Ref(cg, target_sym);
             Emit(cg, ", ptr %%t%u, i64 %u, i1 false)  ; array assignment\n",
                  src_ptr, array_size);
+        }
+        return;
+    }
+
+    /* Handle unconstrained array/STRING variable assignment.
+     * These variables store a fat pointer { ptr, { i64, i64 } }.
+     * The source may be a fat pointer (string literal, unconstrained var, concat, slice)
+     * or a constrained array (ptr) that needs wrapping. */
+    if (Type_Is_String(ty) || Type_Is_Unconstrained_Array(ty)) {
+        Syntax_Node *src = node->assignment.value;
+        Type_Info *src_type = src->type;
+        bool src_is_fat = Type_Is_String(src_type) ||
+                          Type_Is_Unconstrained_Array(src_type) ||
+                          src->kind == NK_STRING ||
+                          Expression_Is_Slice(src) ||
+                          (src->kind == NK_BINARY_OP && src->binary.op == TK_AMPERSAND);
+        uint32_t fat_val;
+        if (src_is_fat) {
+            /* Source produces fat pointer - store directly */
+            fat_val = Generate_Expression(cg, src);
+        } else if (Type_Is_Constrained_Array(src_type) &&
+                   src_type->array.index_count > 0) {
+            /* Constrained source: wrap ptr in fat pointer with static bounds */
+            uint32_t src_ptr = Generate_Expression(cg, src);
+            int64_t lo = Type_Bound_Value(src_type->array.indices[0].low_bound);
+            int64_t hi = Type_Bound_Value(src_type->array.indices[0].high_bound);
+            fat_val = Emit_Fat_Pointer(cg, src_ptr, lo, hi);
+        } else {
+            /* Fallback - generate and convert */
+            fat_val = Generate_Expression(cg, src);
+            const char *src_llvm = Expression_Llvm_Type(src);
+            if (strcmp(src_llvm, "{ ptr, { i64, i64 } }") != 0) {
+                fat_val = Emit_Convert(cg, fat_val, src_llvm, "{ ptr, { i64, i64 } }");
+            }
+        }
+        bool is_uplevel = Is_Uplevel_Access(cg, target_sym);
+        if (is_uplevel && cg->is_nested) {
+            Emit(cg, "  store " FAT_PTR_TYPE " %%t%u, ptr %%__frame.", fat_val);
+            Emit_Symbol_Name(cg, target_sym);
+            Emit(cg, "\n");
+        } else {
+            Emit(cg, "  store " FAT_PTR_TYPE " %%t%u, ptr ", fat_val);
+            Emit_Symbol_Ref(cg, target_sym);
+            Emit(cg, "\n");
         }
         return;
     }
@@ -18892,9 +19095,10 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
         const char *type_str = Type_To_Llvm(ty);
 
         /* Check if this is an array type (constrained or unconstrained).
-         * is_any_array: true for any array, used for aggregate initialization
+         * is_any_array: true for any array-like type INCLUDING TYPE_STRING,
+         * used for aggregate/string initialization.
          * is_constrained_array: true only for constrained, used for allocation */
-        bool is_any_array = ty && ty->kind == TYPE_ARRAY;
+        bool is_any_array = ty && (ty->kind == TYPE_ARRAY || ty->kind == TYPE_STRING);
         bool is_constrained_array = is_any_array && ty->array.is_constrained;
         int64_t array_count = is_constrained_array ? Array_Element_Count(ty) : 0;
         const char *elem_type = NULL;
