@@ -20,12 +20,6 @@ elapsed(){
     printf %.3f "$(bc<<<"scale=4;($(date +%s%3N)-${START_MS})/1000")"
 }
 
-# Pre-compile the report package once
-compile_report(){
-    [[ ! -f rts/report.ll || rts/report.adb -nt rts/report.ll ]] \
-        && ./ada83 rts/report.adb > rts/report.ll 2>/dev/null || true
-}
-
 # ── Single-test runner (called in subprocess) ─────────────────────────────
 # Outputs exactly one line: CLASS RESULT NAME DETAIL
 # CLASS:  a/b/c/d/e/l
@@ -186,7 +180,6 @@ tally_results(){
 run_parallel(){
     local pattern=$1
     local tmpfile=$(mktemp)
-    compile_report
 
     printf "\n========================================\n%s\n========================================\n\n" "$2"
 
