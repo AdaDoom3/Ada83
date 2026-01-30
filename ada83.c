@@ -10274,6 +10274,1759 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
     }
 }
 
+static char *Read_File(const char *path, size_t *out_size) {
+    FILE *f = fopen(path, "rb");
+    if (not f) return NULL;
+
+    fseek(f, 0, SEEK_END);
+    long fsize = ftell(f);
+    if (fsize < 0) { fclose(f); return NULL; }
+    size_t size = (size_t)fsize;
+    fseek(f, 0, SEEK_SET);
+
+    char *buffer = malloc(size + 1);
+    if (not buffer) { fclose(f); return NULL; }
+
+    size_t read = fread(buffer, 1, size, f);
+    fclose(f);
+
+    buffer[read] = '\0';
+    *out_size = read;
+    return buffer;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §15. ALI FILE WRITER — GNAT-Compatible Library Information
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * Ada Library Information (.ali) files record compilation dependencies and
+ * unit metadata. Format follows GNAT's lib-writ.ads specification:
+ *
+ *   V "version"              -- compiler version
+ *   P flags                  -- compilation parameters
+ *   U name source version    -- unit entry
+ *   W name [source ali]      -- with dependency
+ *   D source timestamp       -- source dependency
+ *
+ * The ALI file enables:
+ *   • Separate compilation with dependency tracking
+ *   • Binder consistency checking
+ *   • IDE cross-reference navigation
+ */
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §15.1 Unit_Info — Compilation unit metadata collector
+ * ───────────────────────────────────────────────────────────────────────── */
+
+typedef struct {
+    String_Slice      unit_name;        /* Canonical Ada name (Package.Child%b) */
+    String_Slice      source_name;      /* File name (package-child.adb) */
+    uint32_t          source_checksum;  /* CRC32 of source text */
+    bool              is_body;          /* spec (false) or body (true) */
+    bool              is_generic;       /* Generic declaration */
+    bool              is_preelaborate;  /* Pragma Preelaborate */
+    bool              is_pure;          /* Pragma Pure */
+    bool              has_elaboration;  /* Has elaboration code */
+} Unit_Info;
+
+typedef struct {
+    String_Slice      name;             /* WITH'd unit name */
+    String_Slice      source_file;      /* Source file name */
+    String_Slice      ali_file;         /* ALI file name */
+    bool              is_limited;       /* LIMITED WITH */
+    bool              elaborate;        /* Pragma Elaborate */
+    bool              elaborate_all;    /* Pragma Elaborate_All */
+} With_Info;
+
+typedef struct {
+    String_Slice      source_file;      /* Depended-on source */
+    uint32_t          timestamp;        /* Modification time (Unix epoch) */
+    uint32_t          checksum;         /* CRC32 */
+} Dependency_Info;
+
+/* Exported symbol info for X lines */
+typedef struct {
+    String_Slice      name;             /* Ada name */
+    String_Slice      mangled_name;     /* LLVM symbol name */
+    char              kind;             /* T=type, S=subtype, V=variable, C=constant, P=procedure, F=function, E=exception */
+    uint32_t          line;             /* Declaration line number */
+    String_Slice      type_name;        /* Type name (for typed symbols) */
+    String_Slice      llvm_type;        /* LLVM type signature (e.g., "i64", "ptr", "void (i64)") */
+    uint32_t          param_count;      /* Parameter count (for subprograms) */
+} Export_Info;
+
+typedef struct {
+    Unit_Info         units[8];         /* Units in this compilation */
+    uint32_t          unit_count;
+    With_Info         withs[64];        /* WITH dependencies */
+    uint32_t          with_count;
+    Dependency_Info   deps[128];        /* Source dependencies */
+    uint32_t          dep_count;
+    Export_Info       exports[256];     /* Exported symbols */
+    uint32_t          export_count;
+} ALI_Info;
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §15.2 CRC32 — Fast checksum for source identity
+ *
+ * Standard CRC-32/ISO-HDLC polynomial: 0xEDB88320 (bit-reversed 0x04C11DB7)
+ * ───────────────────────────────────────────────────────────────────────── */
+
+static uint32_t Crc32_Table[256];
+static bool Crc32_Table_Initialized = false;
+
+static void Crc32_Init_Table(void) {
+    if (Crc32_Table_Initialized) return;
+    for (uint32_t i = 0; i < 256; i++) {
+        uint32_t crc = i;
+        for (int j = 0; j < 8; j++)
+            crc = (crc >> 1) ^ (0xEDB88320 & -(crc & 1));
+        Crc32_Table[i] = crc;
+    }
+    Crc32_Table_Initialized = true;
+}
+
+static uint32_t Crc32(const char *data, size_t length) {
+    Crc32_Init_Table();
+    uint32_t crc = 0xFFFFFFFF;
+    for (size_t i = 0; i < length; i++)
+        crc = Crc32_Table[(crc ^ (uint8_t)data[i]) & 0xFF] ^ (crc >> 8);
+    return ~crc;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §15.3 Unit_Name_To_File — GNAT naming convention
+ *
+ * Maps Ada unit names to file names:
+ *   Package_Name      → package_name.ads
+ *   Package_Name%b    → package_name.adb
+ *   Parent.Child      → parent-child.ads
+ * ───────────────────────────────────────────────────────────────────────── */
+
+static void Unit_Name_To_File(String_Slice unit_name, bool is_body,
+                              char *out, size_t out_size) {
+    size_t j = 0;
+    for (size_t i = 0; i < unit_name.length and j < out_size - 5; i++) {
+        char c = unit_name.data[i];
+        if (c == '.') {
+            out[j++] = '-';  /* Dots become hyphens */
+        } else if (c >= 'A' and c <= 'Z') {
+            out[j++] = c - 'A' + 'a';  /* Lowercase */
+        } else {
+            out[j++] = c;
+        }
+    }
+    /* Append extension */
+    const char *ext = is_body ? ".adb" : ".ads";
+    for (int k = 0; ext[k] and j < out_size - 1; k++)
+        out[j++] = ext[k];
+    out[j] = '\0';
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §15.4 ALI_Collect — Gather unit info from parsed AST
+ * ───────────────────────────────────────────────────────────────────────── */
+
+static void ALI_Collect_Withs(ALI_Info *ali, Syntax_Node *ctx) {
+    if (not ctx) return;
+
+    for (uint32_t i = 0; i < ctx->context.with_clauses.count; i++) {
+        Syntax_Node *with_node = ctx->context.with_clauses.items[i];
+        if (not with_node) continue;
+
+        /* Each WITH clause may have multiple names */
+        for (uint32_t j = 0; j < with_node->use_clause.names.count; j++) {
+            Syntax_Node *name = with_node->use_clause.names.items[j];
+            if (not name or ali->with_count >= 64) continue;
+
+            With_Info *w = &ali->withs[ali->with_count++];
+            w->name = name->kind == NK_IDENTIFIER ?
+                      name->string_val.text : (String_Slice){0};
+            w->is_limited = false;  /* TODO: detect LIMITED WITH */
+            w->elaborate = false;
+            w->elaborate_all = false;
+
+            /* Derive file names from unit name */
+            char file_buf[256];
+            if (w->name.data) {
+                Unit_Name_To_File(w->name, false, file_buf, sizeof(file_buf));
+                w->source_file = Slice_Duplicate((String_Slice){file_buf, strlen(file_buf)});
+                size_t len = strlen(file_buf);
+                if (len > 4) {
+                    file_buf[len-3] = 'a';
+                    file_buf[len-2] = 'l';
+                    file_buf[len-1] = 'i';
+                }
+                w->ali_file = Slice_Duplicate((String_Slice){file_buf, strlen(file_buf)});
+            }
+        }
+    }
+}
+
+/* Helper: extract unit name from a subprogram spec/body */
+static String_Slice Get_Subprogram_Name(Syntax_Node *node) {
+    if (not node) return (String_Slice){"UNKNOWN", 7};
+    if (node->kind == NK_PROCEDURE_SPEC or node->kind == NK_FUNCTION_SPEC)
+        return node->subprogram_spec.name;
+    if (node->kind == NK_PROCEDURE_BODY or node->kind == NK_FUNCTION_BODY) {
+        /* Body has spec nested inside */
+        if (node->subprogram_body.specification)
+            return Get_Subprogram_Name(node->subprogram_body.specification);
+    }
+    return (String_Slice){"UNKNOWN", 7};
+}
+
+/* Forward declaration */
+/* ─────────────────────────────────────────────────────────────────────────
+ * §15.4.2 ALI_Collect_Exports — Gather exported symbols from package spec
+ * ───────────────────────────────────────────────────────────────────────── */
+
+static void ALI_Collect_Exports(ALI_Info *ali, Syntax_Node *unit, Symbol_Manager *sm) {
+    if (not unit or unit->kind != NK_PACKAGE_SPEC) return;
+
+    String_Slice pkg_name = unit->package_spec.name;
+    Node_List *decls = &unit->package_spec.visible_decls;
+
+    for (uint32_t i = 0; i < decls->count and ali->export_count < 256; i++) {
+        Syntax_Node *decl = decls->items[i];
+        if (not decl) continue;
+
+        Export_Info *exp = &ali->exports[ali->export_count];
+        exp->line = decl->location.line;
+        exp->param_count = 0;
+        exp->type_name = (String_Slice){0};
+        exp->mangled_name = (String_Slice){0};
+        exp->llvm_type = (String_Slice){0};
+
+        switch (decl->kind) {
+            case NK_TYPE_DECL:
+                exp->name = decl->type_decl.name;
+                exp->kind = 'T';
+                exp->mangled_name = Mangle_Qualified_Name(pkg_name, exp->name);
+                exp->llvm_type = LLVM_Type_Basic(sm, exp->name);
+                ali->export_count++;
+                break;
+
+            case NK_SUBTYPE_DECL:
+                exp->name = decl->type_decl.name;
+                exp->kind = 'S';
+                exp->mangled_name = Mangle_Qualified_Name(pkg_name, exp->name);
+                if (decl->type_decl.definition) {
+                    Syntax_Node *def = decl->type_decl.definition;
+                    if (def->kind == NK_IDENTIFIER) {
+                        exp->type_name = def->string_val.text;
+                        exp->llvm_type = LLVM_Type_Basic(sm, exp->type_name);
+                    } else if (def->kind == NK_SUBTYPE_INDICATION and def->subtype_ind.subtype_mark) {
+                        if (def->subtype_ind.subtype_mark->kind == NK_IDENTIFIER) {
+                            exp->type_name = def->subtype_ind.subtype_mark->string_val.text;
+                            exp->llvm_type = LLVM_Type_Basic(sm, exp->type_name);
+                        }
+                    }
+                }
+                if (not exp->llvm_type.data) {
+                    const char *int_t = Llvm_Int_Type((uint32_t)To_Bits(sm->type_integer->size));
+                    exp->llvm_type = (String_Slice){int_t, strlen(int_t)};
+                }
+                ali->export_count++;
+                break;
+
+            case NK_OBJECT_DECL:
+                for (uint32_t j = 0; j < decl->object_decl.names.count and ali->export_count < 256; j++) {
+                    Syntax_Node *name = decl->object_decl.names.items[j];
+                    if (name and name->kind == NK_IDENTIFIER) {
+                        exp = &ali->exports[ali->export_count];
+                        exp->name = name->string_val.text;
+                        exp->kind = decl->object_decl.is_constant ? 'C' : 'V';
+                        exp->line = name->location.line;
+                        exp->mangled_name = Mangle_Qualified_Name(pkg_name, exp->name);
+                        if (decl->object_decl.object_type and decl->object_decl.object_type->kind == NK_IDENTIFIER) {
+                            exp->type_name = decl->object_decl.object_type->string_val.text;
+                            exp->llvm_type = LLVM_Type_Basic(sm, exp->type_name);
+                        } else {
+                            const char *int_t = Llvm_Int_Type((uint32_t)To_Bits(sm->type_integer->size));
+                            exp->llvm_type = (String_Slice){int_t, strlen(int_t)};
+                        }
+                        ali->export_count++;
+                    }
+                }
+                break;
+
+            case NK_PROCEDURE_SPEC:
+                exp->name = decl->subprogram_spec.name;
+                exp->kind = 'P';
+                exp->mangled_name = Mangle_Qualified_Name(pkg_name, exp->name);
+                for (uint32_t j = 0; j < decl->subprogram_spec.parameters.count; j++) {
+                    Syntax_Node *ps = decl->subprogram_spec.parameters.items[j];
+                    if (ps and ps->kind == NK_PARAM_SPEC)
+                        exp->param_count += ps->param_spec.names.count;
+                }
+                exp->llvm_type = (String_Slice){"void", 4};
+                ali->export_count++;
+                break;
+
+            case NK_FUNCTION_SPEC:
+                exp->name = decl->subprogram_spec.name;
+                exp->kind = 'F';
+                exp->mangled_name = Mangle_Qualified_Name(pkg_name, exp->name);
+                for (uint32_t j = 0; j < decl->subprogram_spec.parameters.count; j++) {
+                    Syntax_Node *ps = decl->subprogram_spec.parameters.items[j];
+                    if (ps and ps->kind == NK_PARAM_SPEC)
+                        exp->param_count += ps->param_spec.names.count;
+                }
+                if (decl->subprogram_spec.return_type and decl->subprogram_spec.return_type->kind == NK_IDENTIFIER) {
+                    exp->type_name = decl->subprogram_spec.return_type->string_val.text;
+                    exp->llvm_type = LLVM_Type_Basic(sm, exp->type_name);
+                } else {
+                    const char *int_t = Llvm_Int_Type((uint32_t)To_Bits(sm->type_integer->size));
+                    exp->llvm_type = (String_Slice){int_t, strlen(int_t)};
+                }
+                ali->export_count++;
+                break;
+
+            case NK_EXCEPTION_DECL:
+                for (uint32_t j = 0; j < decl->exception_decl.names.count and ali->export_count < 256; j++) {
+                    Syntax_Node *name = decl->exception_decl.names.items[j];
+                    if (name and name->kind == NK_IDENTIFIER) {
+                        exp = &ali->exports[ali->export_count];
+                        exp->name = name->string_val.text;
+                        exp->kind = 'E';
+                        exp->line = name->location.line;
+                        exp->mangled_name = Mangle_Qualified_Name(pkg_name, exp->name);
+                        exp->llvm_type = (String_Slice){"i8", 2};  /* Exception identity */
+                        ali->export_count++;
+                    }
+                }
+                break;
+
+            default:
+                break;
+        }
+    }
+}
+
+
+static void ALI_Collect_Unit(ALI_Info *ali, Syntax_Node *cu,
+                             const char *source, size_t source_size,
+                             Symbol_Manager *sm) {
+    if (not cu or ali->unit_count >= 8) return;
+
+    Syntax_Node *unit = cu->compilation_unit.unit;
+    if (not unit) return;
+
+    Unit_Info *u = &ali->units[ali->unit_count++];
+
+    /* Extract unit name based on declaration kind */
+    switch (unit->kind) {
+        case NK_PACKAGE_SPEC:
+            u->unit_name = unit->package_spec.name;
+            u->is_body = false;
+            break;
+        case NK_PACKAGE_BODY:
+            u->unit_name = unit->package_body.name;
+            u->is_body = true;
+            break;
+        case NK_PROCEDURE_BODY:
+        case NK_PROCEDURE_SPEC:
+            u->unit_name = Get_Subprogram_Name(unit);
+            u->is_body = unit->kind == NK_PROCEDURE_BODY;
+            break;
+        case NK_FUNCTION_BODY:
+        case NK_FUNCTION_SPEC:
+            u->unit_name = Get_Subprogram_Name(unit);
+            u->is_body = unit->kind == NK_FUNCTION_BODY;
+            break;
+        case NK_GENERIC_DECL:
+            u->is_generic = true;
+            if (unit->generic_decl.unit) {
+                Syntax_Node *inner = unit->generic_decl.unit;
+                if (inner->kind == NK_PACKAGE_SPEC)
+                    u->unit_name = inner->package_spec.name;
+                else if (inner->kind == NK_PROCEDURE_SPEC or inner->kind == NK_FUNCTION_SPEC)
+                    u->unit_name = inner->subprogram_spec.name;
+            }
+            u->is_body = false;
+            break;
+        default:
+            u->unit_name = (String_Slice){"UNKNOWN", 7};
+            u->is_body = false;
+    }
+
+    /* Compute source checksum */
+    u->source_checksum = Crc32(source, source_size);
+
+    /* Derive source file name */
+    char file_buf[256];
+    Unit_Name_To_File(u->unit_name, u->is_body, file_buf, sizeof(file_buf));
+    u->source_name = Slice_Duplicate((String_Slice){file_buf, strlen(file_buf)});
+
+    /* Check for elaboration pragmas (simplified) */
+    u->is_preelaborate = false;
+    u->is_pure = false;
+    u->has_elaboration = true;  /* Assume has elaboration unless proven otherwise */
+
+    /* Collect WITH dependencies */
+    ALI_Collect_Withs(ali, cu->compilation_unit.context);
+
+    /* Collect exported symbols from package specs */
+    if (unit and unit->kind == NK_PACKAGE_SPEC) {
+        ALI_Collect_Exports(ali, unit, sm);
+    }
+}
+
+/* LLVM type signature derived from the type system via Symbol_Manager.
+ * Looks up the Ada type name in the symbol table and uses Type_To_Llvm
+ * to get the correct LLVM representation. */
+static String_Slice LLVM_Type_Basic(Symbol_Manager *sm, String_Slice ada_type) {
+    /* Look up in the symbol table for proper type-system derivation */
+    Symbol *sym = Symbol_Find(sm, ada_type);
+    if (sym and sym->type) {
+        const char *llvm = Type_To_Llvm(sym->type);
+        return (String_Slice){llvm, strlen(llvm)};
+    }
+    /* Error: type not found in symbol table */
+    fprintf(stderr, "error: LLVM_Type_Basic: type '%.*s' not found in symbol table\n",
+            (int)ada_type.length, ada_type.data);
+    const char *fallback = Llvm_Int_Type((uint32_t)To_Bits(sm->type_integer->size));
+    return (String_Slice){fallback, strlen(fallback)};
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §15.5 ALI_Write — Emit .ali file in GNAT format
+ *
+ * Per lib-writ.ads, the minimum valid ALI file needs:
+ *   V line (version) — MUST be first
+ *   P line (parameters) — MUST be present
+ *   At least one U line (unit)
+ * ───────────────────────────────────────────────────────────────────────── */
+
+#define ALI_VERSION "Ada83 1.0 built " __DATE__ " " __TIME__
+
+static void ALI_Write(FILE *out, ALI_Info *ali) {
+    /* V line: Version — must be first per GNAT spec */
+    fprintf(out, "V \"%s\"\n", ALI_VERSION);
+
+    /* P line: Parameters/flags — ZX = zero-cost exceptions */
+    fprintf(out, "P ZX\n");
+
+    /* Blank line before restrictions */
+    fprintf(out, "\n");
+
+    /* R line: Restrictions (minimal) */
+    fprintf(out, "RN\n");
+
+    /* U lines: Unit entries */
+    for (uint32_t i = 0; i < ali->unit_count; i++) {
+        Unit_Info *u = &ali->units[i];
+
+        /* U unit-name source-name version [flags] */
+        fprintf(out, "\nU %.*s%s %.*s %08X",
+                (int)u->unit_name.length, u->unit_name.data,
+                u->is_body ? "%b" : "%s",
+                (int)u->source_name.length, u->source_name.data,
+                u->source_checksum);
+
+        /* Flags */
+        if (u->is_generic) fprintf(out, " GE");
+        if (u->is_preelaborate) fprintf(out, " PR");
+        if (u->is_pure) fprintf(out, " PU");
+        if (not u->has_elaboration) fprintf(out, " NE");
+        if (not u->is_body) fprintf(out, " PK");
+        else fprintf(out, " SU");
+        fprintf(out, "\n");
+
+        /* W lines: WITH dependencies for this unit */
+        for (uint32_t j = 0; j < ali->with_count; j++) {
+            With_Info *w = &ali->withs[j];
+            if (not w->name.data) continue;
+
+            char line_type = w->is_limited ? 'Y' : 'W';
+            fprintf(out, "%c %.*s%s",
+                    line_type,
+                    (int)w->name.length, w->name.data,
+                    "%s");  /* Assume spec dependency */
+
+            if (w->source_file.data) {
+                fprintf(out, " %.*s %.*s",
+                        (int)w->source_file.length, w->source_file.data,
+                        (int)w->ali_file.length, w->ali_file.data);
+            }
+
+            if (w->elaborate) fprintf(out, " E");
+            if (w->elaborate_all) fprintf(out, " EA");
+            fprintf(out, "\n");
+        }
+    }
+
+    /* D lines: Source dependencies */
+    fprintf(out, "\n");
+    for (uint32_t i = 0; i < ali->unit_count; i++) {
+        Unit_Info *u = &ali->units[i];
+        /* Self-dependency */
+        fprintf(out, "D %.*s 00000000 %08X\n",
+                (int)u->source_name.length, u->source_name.data,
+                u->source_checksum);
+    }
+    for (uint32_t i = 0; i < ali->with_count; i++) {
+        With_Info *w = &ali->withs[i];
+        if (w->source_file.data) {
+            fprintf(out, "D %.*s 00000000 00000000\n",
+                    (int)w->source_file.length, w->source_file.data);
+        }
+    }
+
+    /* X lines: Exported symbols (extended format for Ada83 separate compilation)
+     *
+     * Format: X kind name:line llvm_type @mangled [ada_type] [(params)]
+     *
+     *   kind: T=type, S=subtype, V=variable, C=constant, P=procedure, F=function, E=exception
+     *   llvm_type: LLVM IR type signature (i64, double, void, ptr, etc.)
+     *   @mangled: LLVM symbol name for linking
+     *   ada_type: Ada type name for typed symbols
+     *   (params): Parameter count for subprograms
+     *
+     * This provides everything needed to compile against the package without source:
+     *   - Type checking via ada_type
+     *   - Code generation via llvm_type and @mangled
+     *   - Linking via @mangled symbol references
+     */
+    if (ali->export_count > 0) {
+        fprintf(out, "\n");
+        for (uint32_t i = 0; i < ali->export_count; i++) {
+            Export_Info *x = &ali->exports[i];
+
+            /* X kind name:line */
+            fprintf(out, "X %c %.*s:%u",
+                    x->kind,
+                    (int)x->name.length, x->name.data,
+                    x->line);
+
+            /* llvm_type */
+            if (x->llvm_type.data) {
+                fprintf(out, " %.*s", (int)x->llvm_type.length, x->llvm_type.data);
+            } else {
+                fprintf(out, " i64");
+            }
+
+            /* @mangled */
+            if (x->mangled_name.data) {
+                fprintf(out, " @%.*s", (int)x->mangled_name.length, x->mangled_name.data);
+            }
+
+            /* ada_type (for typed symbols) */
+            if (x->type_name.data) {
+                fprintf(out, " %.*s", (int)x->type_name.length, x->type_name.data);
+            }
+
+            /* (params) for subprograms */
+            if (x->param_count > 0) {
+                fprintf(out, " (%u)", x->param_count);
+            }
+
+            fprintf(out, "\n");
+        }
+    }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §15.6 Generate_ALI_File — Entry point for ALI generation
+ * ───────────────────────────────────────────────────────────────────────── */
+
+static void Generate_ALI_File(const char *output_path,
+                              Syntax_Node **units, int unit_count,
+                              const char *source, size_t source_size,
+                              Symbol_Manager *sm) {
+    /* Build ALI path from output path (replace .ll with .ali) */
+    char ali_path[512];
+    size_t len = strlen(output_path);
+    if (len > 3 and strcmp(output_path + len - 3, ".ll") == 0) {
+        snprintf(ali_path, sizeof(ali_path), "%.*s.ali", (int)(len - 3), output_path);
+    } else {
+        snprintf(ali_path, sizeof(ali_path), "%s.ali", output_path);
+    }
+
+    FILE *ali_file = fopen(ali_path, "w");
+    if (not ali_file) {
+        fprintf(stderr, "Warning: cannot create ALI file '%s'\n", ali_path);
+        return;
+    }
+
+    /* Collect information from all compilation units */
+    ALI_Info ali = {0};
+    for (int i = 0; i < unit_count; i++) {
+        ALI_Collect_Unit(&ali, units[i], source, source_size, sm);
+    }
+
+    /* Write ALI file */
+    ALI_Write(ali_file, &ali);
+    fclose(ali_file);
+
+    fprintf(stderr, "Generated ALI file '%s'\n", ali_path);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §15.7 ALI_Reader — Parse .ali files for dependency management
+ *
+ * We read ALI files to:
+ *   1. Skip recompilation of unchanged units (checksum match)
+ *   2. Load exported symbols from precompiled packages
+ *   3. Track dependencies for elaboration ordering
+ *   4. Find generic templates for instantiation
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/* Parsed export from X line */
+typedef struct {
+    char            kind;            /* T/S/V/C/P/F/E */
+    char           *name;            /* Ada symbol name */
+    char           *mangled_name;    /* LLVM symbol name for linking */
+    char           *llvm_type;       /* LLVM type signature */
+    uint32_t        line;            /* Source line */
+    char           *type_name;       /* Ada type name (or NULL) */
+    uint32_t        param_count;     /* For subprograms */
+} ALI_Export;
+
+/* Cached ALI information for loaded units
+ * ALI_Cache_Entry is forward declared as ALI_Cache_Entry_Forward in the
+ * Load_Package_Spec forward declarations section. */
+typedef struct ALI_Cache_Entry_Forward {
+    char           *unit_name;       /* Canonical name (e.g., "text_io") */
+    char           *source_file;     /* Source file name */
+    char           *ali_file;        /* ALI file path */
+    uint32_t        checksum;        /* Source checksum from ALI */
+    bool            is_spec;         /* true = spec, false = body */
+    bool            is_generic;      /* Generic unit */
+    bool            is_preelaborate; /* Has Preelaborate pragma */
+    bool            is_pure;         /* Has Pure pragma */
+    bool            loaded;          /* Symbols already loaded */
+
+    /* With dependencies */
+    char           *withs[64];       /* WITH'd unit names */
+    uint32_t        with_count;
+
+    /* Exported symbols from X lines */
+    ALI_Export      exports[256];
+    uint32_t        export_count;
+} ALI_Cache_Entry;
+
+/* Global ALI cache */
+static ALI_Cache_Entry ALI_Cache[256];
+static uint32_t        ALI_Cache_Count = 0;
+
+/* Skip whitespace */
+static const char *ALI_Skip_Ws(const char *p) {
+    while (*p == ' ' or *p == '\t') p++;
+    return p;
+}
+
+/* Read until whitespace or newline, return end pointer */
+static const char *ALI_Read_Token(const char *p, char *buf, size_t bufsize) {
+    p = ALI_Skip_Ws(p);
+    size_t i = 0;
+    while (*p and *p != ' ' and *p != '\t' and *p != '\n' and i < bufsize - 1) {
+        buf[i++] = *p++;
+    }
+    buf[i] = '\0';
+    return p;
+}
+
+/* Parse a hex value */
+static uint32_t ALI_Parse_Hex(const char *s) {
+    uint32_t val = 0;
+    while (*s) {
+        char c = *s++;
+        if (c >= '0' and c <= '9') val = (val << 4) | (c - '0');
+        else if (c >= 'A' and c <= 'F') val = (val << 4) | (c - 'A' + 10);
+        else if (c >= 'a' and c <= 'f') val = (val << 4) | (c - 'a' + 10);
+        else break;
+    }
+    return val;
+}
+
+/* Read and parse an ALI file, returning cache entry or NULL */
+static ALI_Cache_Entry *ALI_Read(const char *ali_path) {
+    /* Check if already cached */
+    for (uint32_t i = 0; i < ALI_Cache_Count; i++) {
+        if (ALI_Cache[i].ali_file and strcmp(ALI_Cache[i].ali_file, ali_path) == 0) {
+            return &ALI_Cache[i];
+        }
+    }
+
+    /* Read ALI file */
+    FILE *f = fopen(ali_path, "r");
+    if (not f) return NULL;
+
+    /* Allocate cache entry */
+    if (ALI_Cache_Count >= 256) {
+        fclose(f);
+        return NULL;
+    }
+    ALI_Cache_Entry *entry = &ALI_Cache[ALI_Cache_Count++];
+    memset(entry, 0, sizeof(*entry));
+    entry->ali_file = strdup(ali_path);
+
+    char line[1024];
+    char token[256];
+
+    while (fgets(line, sizeof(line), f)) {
+        const char *p = line;
+
+        if (line[0] == 'V') {
+            /* Version line: V "version" — reject if compiler build differs.
+             * This ensures stale ALI files from an older compiler rebuild
+             * are not reused; the unit will be reparsed from source. */
+            char ver[256] = {0};
+            const char *q = strchr(line, '"');
+            if (q) {
+                q++;
+                const char *end = strchr(q, '"');
+                if (end and (size_t)(end - q) < sizeof(ver)) {
+                    memcpy(ver, q, (size_t)(end - q));
+                    ver[end - q] = '\0';
+                }
+            }
+            if (strcmp(ver, ALI_VERSION) != 0) {
+                /* ALI was produced by a different compiler build — stale */
+                fclose(f);
+                ALI_Cache_Count--;  /* release the cache slot */
+                return NULL;
+            }
+            continue;
+        }
+        else if (line[0] == 'P') {
+            /* Parameters line: P flags */
+            continue;
+        }
+        else if (line[0] == 'U') {
+            /* Unit line: U name source checksum [flags] */
+            p = ALI_Read_Token(p + 1, token, sizeof(token));  /* Skip 'U' */
+
+            /* Unit name (with %s/%b suffix) */
+            char *pct = strchr(token, '%');
+            if (pct) {
+                entry->is_spec = (pct[1] == 's');
+                *pct = '\0';
+            }
+            entry->unit_name = strdup(token);
+
+            /* Source file */
+            p = ALI_Read_Token(p, token, sizeof(token));
+            entry->source_file = strdup(token);
+
+            /* Checksum */
+            p = ALI_Read_Token(p, token, sizeof(token));
+            entry->checksum = ALI_Parse_Hex(token);
+
+            /* Parse flags */
+            while (*p and *p != '\n') {
+                p = ALI_Read_Token(p, token, sizeof(token));
+                if (strcmp(token, "GE") == 0) entry->is_generic = true;
+                else if (strcmp(token, "PR") == 0) entry->is_preelaborate = true;
+                else if (strcmp(token, "PU") == 0) entry->is_pure = true;
+            }
+        }
+        else if (line[0] == 'W' or line[0] == 'Y' or line[0] == 'Z') {
+            /* With line: W/Y/Z name [source ali] [flags] */
+            p = ALI_Read_Token(p + 1, token, sizeof(token));
+
+            /* Strip %s/%b suffix */
+            char *pct = strchr(token, '%');
+            if (pct) *pct = '\0';
+
+            if (entry->with_count < 64) {
+                entry->withs[entry->with_count++] = strdup(token);
+            }
+        }
+        else if (line[0] == 'D') {
+            /* Dependency line: D source timestamp checksum — informational */
+            continue;
+        }
+        else if (line[0] == 'X') {
+            /* Export line: X kind name:line llvm_type @mangled [ada_type] [(params)]
+             *
+             * Example: X F Get_Value:9 i64 @test_exports__get_value Counter
+             */
+            if (entry->export_count >= 256) continue;
+
+            ALI_Export *exp = &entry->exports[entry->export_count];
+            memset(exp, 0, sizeof(*exp));
+
+            p = ALI_Skip_Ws(p + 1);  /* Skip 'X' */
+
+            /* Kind (single char: T/S/V/C/P/F/E) */
+            exp->kind = *p++;
+            p = ALI_Skip_Ws(p);
+
+            /* Name:line */
+            p = ALI_Read_Token(p, token, sizeof(token));
+            char *colon = strchr(token, ':');
+            if (colon) {
+                *colon = '\0';
+                exp->name = strdup(token);
+                exp->line = (uint32_t)atoi(colon + 1);
+            } else {
+                exp->name = strdup(token);
+                exp->line = 0;
+            }
+
+            /* llvm_type */
+            p = ALI_Skip_Ws(p);
+            if (*p and *p != '\n') {
+                p = ALI_Read_Token(p, token, sizeof(token));
+                if (token[0]) exp->llvm_type = strdup(token);
+            }
+
+            /* @mangled */
+            p = ALI_Skip_Ws(p);
+            if (*p == '@') {
+                p++;  /* Skip '@' */
+                p = ALI_Read_Token(p, token, sizeof(token));
+                if (token[0]) exp->mangled_name = strdup(token);
+            }
+
+            /* Remaining tokens: ada_type and/or (params) */
+            while (*p and *p != '\n') {
+                p = ALI_Skip_Ws(p);
+                if (*p == '(') {
+                    /* (params) */
+                    p = ALI_Read_Token(p, token, sizeof(token));
+                    exp->param_count = (uint32_t)atoi(token + 1);
+                } else if (*p and *p != '\n') {
+                    /* ada_type */
+                    p = ALI_Read_Token(p, token, sizeof(token));
+                    if (token[0] and token[0] != '(') {
+                        if (exp->type_name) free(exp->type_name);
+                        exp->type_name = strdup(token);
+                    }
+                }
+            }
+
+            entry->export_count++;
+        }
+    }
+
+    fclose(f);
+    return entry;
+}
+
+/* Check if an ALI file is up-to-date with its source */
+static bool ALI_Is_Current(const char *ali_path, const char *source_path) {
+    ALI_Cache_Entry *entry = ALI_Read(ali_path);
+    if (not entry) return false;
+
+    /* Read source and compute checksum */
+    size_t source_size;
+    char *source = Read_File(source_path, &source_size);
+    if (not source) return false;
+
+    uint32_t current_checksum = Crc32(source, source_size);
+    free(source);
+
+    return (current_checksum == entry->checksum);
+}
+
+/* Find ALI file for a unit name in include paths */
+static char *ALI_Find(String_Slice unit_name) {
+    static char path_buf[512];
+    char file_buf[256];
+
+    /* Convert unit name to file name (lowercase, dots to hyphens) */
+    size_t j = 0;
+    for (size_t i = 0; i < unit_name.length and j < sizeof(file_buf) - 5; i++) {
+        char c = unit_name.data[i];
+        if (c == '.') file_buf[j++] = '-';
+        else if (c >= 'A' and c <= 'Z') file_buf[j++] = c - 'A' + 'a';
+        else file_buf[j++] = c;
+    }
+    file_buf[j] = '\0';
+
+    /* Try each include path */
+    for (uint32_t i = 0; i < Include_Path_Count; i++) {
+        snprintf(path_buf, sizeof(path_buf), "%s/%s.ali", Include_Paths[i], file_buf);
+        if (access(path_buf, R_OK) == 0) {
+            return path_buf;
+        }
+    }
+
+    return NULL;
+}
+
+/* Load symbols from an ALI file into the symbol manager */
+static void ALI_Load_Symbols(Symbol_Manager *sm, ALI_Cache_Entry *entry) {
+    if (not entry or entry->loaded) return;
+    entry->loaded = true;
+
+    /* Recursively load dependencies first */
+    for (uint32_t i = 0; i < entry->with_count; i++) {
+        char *dep_ali = ALI_Find((String_Slice){entry->withs[i], strlen(entry->withs[i])});
+        if (dep_ali) {
+            ALI_Cache_Entry *dep = ALI_Read(dep_ali);
+            if (dep) ALI_Load_Symbols(sm, dep);
+        }
+    }
+
+    /* For specs, create package symbol and exports */
+    if (not entry->is_spec or entry->export_count == 0) return;
+
+    String_Slice pkg_name = {entry->unit_name, strlen(entry->unit_name)};
+
+    /* Check if package already exists */
+    Symbol *pkg_sym = Symbol_Find(sm, pkg_name);
+    if (pkg_sym) return;
+
+    /* Create package symbol */
+    Source_Location loc = {entry->source_file, 1, 1};
+    pkg_sym = Symbol_New(SYMBOL_PACKAGE, pkg_name, loc);
+    pkg_sym->type = Type_New(TYPE_PACKAGE, pkg_name);
+    Symbol_Add(sm, pkg_sym);
+
+    /* Allocate exported array for qualified access */
+    if (entry->export_count > 0) {
+        pkg_sym->exported = Arena_Allocate(entry->export_count * sizeof(Symbol*));
+        pkg_sym->exported_count = 0;
+    }
+
+    /* Push package scope to add exports */
+    Symbol_Manager_Push_Scope(sm, pkg_sym);
+
+    /* Create symbols from exports
+     *
+     * The mangled_name from ALI becomes external_name on Symbol,
+     * enabling direct LLVM references without re-mangling.
+     */
+    for (uint32_t i = 0; i < entry->export_count; i++) {
+        ALI_Export *exp = &entry->exports[i];
+        String_Slice name = {exp->name, strlen(exp->name)};
+        String_Slice mangled = exp->mangled_name ?
+            (String_Slice){exp->mangled_name, strlen(exp->mangled_name)} : (String_Slice){0};
+        Source_Location exp_loc = {entry->source_file, exp->line, 1};
+
+        Symbol *sym = NULL;
+        switch (exp->kind) {
+            case 'T': {
+                /* Type: create type symbol with proper bounds later */
+                sym = Symbol_New(SYMBOL_TYPE, name, exp_loc);
+                Type_Info *t = Type_New(TYPE_INTEGER, name);
+                sym->type = t;
+                break;
+            }
+            case 'S': {
+                /* Subtype: link to base type */
+                sym = Symbol_New(SYMBOL_SUBTYPE, name, exp_loc);
+                if (exp->type_name) {
+                    String_Slice base = {exp->type_name, strlen(exp->type_name)};
+                    Symbol *base_sym = Symbol_Find(sm, base);
+                    sym->type = base_sym ? base_sym->type : Type_New(TYPE_INTEGER, base);
+                } else {
+                    sym->type = Type_New(TYPE_INTEGER, name);
+                }
+                break;
+            }
+            case 'V': {
+                /* Variable: external reference */
+                sym = Symbol_New(SYMBOL_VARIABLE, name, exp_loc);
+                sym->is_imported = true;
+                sym->external_name = mangled;
+                if (exp->type_name) {
+                    String_Slice tn = {exp->type_name, strlen(exp->type_name)};
+                    Symbol *ts = Symbol_Find(sm, tn);
+                    sym->type = ts ? ts->type : Type_New(TYPE_INTEGER, tn);
+                }
+                break;
+            }
+            case 'C': {
+                /* Constant: external reference */
+                sym = Symbol_New(SYMBOL_CONSTANT, name, exp_loc);
+                sym->is_imported = true;
+                sym->external_name = mangled;
+                if (exp->type_name) {
+                    String_Slice tn = {exp->type_name, strlen(exp->type_name)};
+                    Symbol *ts = Symbol_Find(sm, tn);
+                    sym->type = ts ? ts->type : Type_New(TYPE_INTEGER, tn);
+                }
+                break;
+            }
+            case 'P': {
+                /* Procedure: external subprogram declaration */
+                sym = Symbol_New(SYMBOL_PROCEDURE, name, exp_loc);
+                sym->is_imported = true;
+                sym->external_name = mangled;
+                sym->parameter_count = exp->param_count;
+                break;
+            }
+            case 'F': {
+                /* Function: external subprogram declaration */
+                sym = Symbol_New(SYMBOL_FUNCTION, name, exp_loc);
+                sym->is_imported = true;
+                sym->external_name = mangled;
+                sym->parameter_count = exp->param_count;
+                if (exp->type_name) {
+                    String_Slice tn = {exp->type_name, strlen(exp->type_name)};
+                    Symbol *ts = Symbol_Find(sm, tn);
+                    sym->return_type = ts ? ts->type : Type_New(TYPE_INTEGER, tn);
+                    sym->type = sym->return_type;  /* For consistency */
+                }
+                break;
+            }
+            case 'E': {
+                /* Exception: external exception identity */
+                sym = Symbol_New(SYMBOL_EXCEPTION, name, exp_loc);
+                sym->is_imported = true;
+                sym->external_name = mangled;
+                break;
+            }
+        }
+
+        if (sym) {
+            sym->parent = pkg_sym;  /* Set parent for proper scoping */
+            Symbol_Add(sm, sym);
+            /* Also add to package exported list for qualified access */
+            if (pkg_sym->exported_count < 256) {
+                pkg_sym->exported[pkg_sym->exported_count++] = sym;
+            }
+        }
+    }
+
+    Symbol_Manager_Pop_Scope(sm);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §14. INCLUDE PATH & PACKAGE LOADING
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+
+/* Try_Load_From_ALI — Called by Load_Package_Spec to attempt ALI-based loading
+ *
+ * This is the entry point for ALI-based separate compilation:
+ *   1. Look for ALI file in include paths
+ *   2. Verify checksum against source
+ *   3. Load symbols directly from ALI X lines
+ *
+ * Returns true if successful (caller should skip parsing).
+ */
+static bool Try_Load_From_ALI(Symbol_Manager *sm, String_Slice name) {
+    char *ali_path = ALI_Find(name);
+    if (not ali_path) return false;
+
+    /* Build source path from unit name */
+    char source_file[256];
+    size_t j = 0;
+    for (size_t i = 0; i < name.length and j < sizeof(source_file) - 5; i++) {
+        char c = name.data[i];
+        if (c == '.') source_file[j++] = '-';
+        else if (c >= 'A' and c <= 'Z') source_file[j++] = c - 'A' + 'a';
+        else source_file[j++] = c;
+    }
+    strcpy(source_file + j, ".ads");
+
+    /* Find full source path in include paths */
+    char full_source_path[512] = {0};
+    for (uint32_t i = 0; i < Include_Path_Count; i++) {
+        snprintf(full_source_path, sizeof(full_source_path), "%s/%s",
+                 Include_Paths[i], source_file);
+        if (access(full_source_path, R_OK) == 0) break;
+        full_source_path[0] = '\0';
+    }
+
+    if (not full_source_path[0]) return false;
+
+    /* Check if ALI is current */
+    if (not ALI_Is_Current(ali_path, full_source_path)) {
+        return false;  /* Stale - need to recompile */
+    }
+
+    /* Read ALI and check for exports */
+    ALI_Cache_Entry *entry = ALI_Read(ali_path);
+    if (not entry or entry->export_count == 0) return false;
+
+    /* Load symbols from ALI */
+    ALI_Load_Symbols(sm, entry);
+    return true;
+}
+
+
+/* Load and resolve a package specification */
+static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src) {
+    if (not src) return;
+
+    /* Check if already loaded */
+    Symbol *existing = Symbol_Find(sm, name);
+    if (existing and existing->kind == SYMBOL_PACKAGE and existing->declaration) {
+        return;  /* Already loaded */
+    }
+
+    /* Check for circular dependency (package currently being loaded) */
+    if (Loading_Set_Contains(name)) {
+        return;  /* Break cycle - package will be available when outer load completes */
+    }
+
+    /* Try to load from cached ALI file first.
+     * If successful, we skip parsing entirely. */
+    if (Try_Load_From_ALI(sm, name)) {
+        return;
+    }
+
+    /* Mark package as loading to detect cycles */
+    Loading_Set_Add(name);
+
+    /* Parse the package (ALI not available or stale) */
+    char filename[256];
+    snprintf(filename, sizeof(filename), "%.*s.ads", (int)name.length, name.data);
+    Parser p = Parser_New(src, strlen(src), filename);
+    Syntax_Node *cu = Parse_Compilation_Unit(&p);
+
+    if (not cu) {
+        Loading_Set_Remove(name);
+        return;
+    }
+
+    /* Recursively load WITH'd packages */
+    if (cu->compilation_unit.context) {
+        Node_List *withs = &cu->compilation_unit.context->context.with_clauses;
+        for (uint32_t i = 0; i < withs->count; i++) {
+            Syntax_Node *with_node = withs->items[i];
+            for (uint32_t j = 0; j < with_node->use_clause.names.count; j++) {
+                Syntax_Node *pkg_name = with_node->use_clause.names.items[j];
+                if (pkg_name->kind == NK_IDENTIFIER) {
+                    char *pkg_src = Lookup_Path(pkg_name->string_val.text);
+                    if (pkg_src) {
+                        Load_Package_Spec(sm, pkg_name->string_val.text, pkg_src);
+                    }
+                }
+            }
+        }
+    }
+
+    /* Resolve the package declarations */
+    if (cu->compilation_unit.unit) {
+        Syntax_Node *unit = cu->compilation_unit.unit;
+
+        if (unit->kind == NK_PACKAGE_SPEC) {
+            Syntax_Node *pkg = unit;
+
+            /* Create package symbol */
+            Symbol *pkg_sym = Symbol_New(SYMBOL_PACKAGE, pkg->package_spec.name,
+                                         pkg->location);
+            Type_Info *pkg_type = Type_New(TYPE_PACKAGE, pkg->package_spec.name);
+            pkg_sym->type = pkg_type;
+            pkg_sym->declaration = pkg;
+            Symbol_Add(sm, pkg_sym);
+            pkg->symbol = pkg_sym;
+
+            /* Push package scope */
+            Symbol_Manager_Push_Scope(sm, pkg_sym);
+
+            /* Resolve visible declarations */
+            Resolve_Declaration_List(sm, &pkg->package_spec.visible_decls);
+
+            /* Populate package exports for qualified access (e.g., SYSTEM.MAX_INT) */
+            Populate_Package_Exports(pkg_sym, pkg);
+
+            /* Resolve private declarations */
+            Resolve_Declaration_List(sm, &pkg->package_spec.private_decls);
+
+            Symbol_Manager_Pop_Scope(sm);
+        }
+        else if (unit->kind == NK_GENERIC_DECL) {
+            /* Generic unit: create SYMBOL_GENERIC with the inner spec */
+            Syntax_Node *inner = unit->generic_decl.unit;
+            String_Slice unit_name = {0};
+
+            if (inner and inner->kind == NK_PACKAGE_SPEC) {
+                unit_name = inner->package_spec.name;
+            } else if (inner and (inner->kind == NK_PROCEDURE_SPEC or
+                                 inner->kind == NK_FUNCTION_SPEC)) {
+                unit_name = inner->subprogram_spec.name;
+            }
+
+            if (unit_name.data) {
+                /* Create generic symbol */
+                Symbol *sym = Symbol_New(SYMBOL_GENERIC, unit_name, unit->location);
+                sym->declaration = unit;
+                sym->generic_unit = inner;
+
+                /* Store formals list for later instantiation */
+                if (unit->generic_decl.formals.count > 0) {
+                    sym->generic_formals = unit->generic_decl.formals.items[0];
+                }
+
+                Symbol_Add(sm, sym);
+                unit->symbol = sym;
+
+                /* Resolve the generic package spec's declarations so type/exception
+                 * names are available when the body is parsed. Push scope, install
+                 * generic formals, then resolve visible/private declarations. */
+                if (inner and inner->kind == NK_PACKAGE_SPEC) {
+                    Symbol_Manager_Push_Scope(sm, sym);
+
+                    /* Install generic formal parameters */
+                    Node_List *formals = &unit->generic_decl.formals;
+                    for (uint32_t i = 0; i < formals->count; i++) {
+                        Syntax_Node *formal = formals->items[i];
+                        if (formal->kind == NK_GENERIC_TYPE_PARAM) {
+                            Symbol *type_sym = Symbol_New(SYMBOL_TYPE,
+                                formal->generic_type_param.name, formal->location);
+                            /* Map def_kind to appropriate Type_Kind */
+                            Type_Kind tk = TYPE_PRIVATE;
+                            switch (formal->generic_type_param.def_kind) {
+                                case 2: tk = TYPE_ENUMERATION; break; /* DISCRETE */
+                                case 3: tk = TYPE_INTEGER; break;     /* INTEGER */
+                                case 4: tk = TYPE_FLOAT; break;       /* FLOAT */
+                                case 5: tk = TYPE_FIXED; break;       /* FIXED */
+                                case 6: tk = TYPE_ARRAY; break;       /* ARRAY */
+                                case 7: tk = TYPE_ACCESS; break;      /* ACCESS */
+                                default: tk = TYPE_PRIVATE; break;
+                            }
+                            Type_Info *type = Type_New(tk, formal->generic_type_param.name);
+                            type_sym->type = type;
+                            formal->symbol = type_sym;
+                            Symbol_Add(sm, type_sym);
+                        }
+                    }
+
+                    /* Resolve visible declarations */
+                    Resolve_Declaration_List(sm, &inner->package_spec.visible_decls);
+
+                    /* Populate package exports for qualified access */
+                    Populate_Package_Exports(sym, inner);
+
+                    /* Resolve private declarations */
+                    Resolve_Declaration_List(sm, &inner->package_spec.private_decls);
+
+                    Symbol_Manager_Pop_Scope(sm);
+                }
+            }
+        }
+    }
+
+    /* Done loading this package */
+    Loading_Set_Remove(name);
+
+    /* Also try to load the package body if available.
+     * Skip if a precompiled .ll file exists (package provided externally). */
+    if (Body_Already_Loaded(name)) {
+        return;  /* Body already loaded */
+    }
+    if (Has_Precompiled_LL(name)) {
+        return;  /* Precompiled version will be linked in */
+    }
+    char *body_src = Lookup_Path_Body(name);
+    if (body_src and Loaded_Body_Count < 128) {
+        Mark_Body_Loaded(name);
+        /* Parse the body */
+        char body_filename[256];
+        snprintf(body_filename, sizeof(body_filename), "%.*s.adb", (int)name.length, name.data);
+        Parser body_parser = Parser_New(body_src, strlen(body_src), body_filename);
+        Syntax_Node *body_cu = Parse_Compilation_Unit(&body_parser);
+
+        if (body_cu and body_cu->compilation_unit.unit) {
+            Syntax_Node *body_unit = body_cu->compilation_unit.unit;
+
+            /* Recursively load WITH'd packages from body */
+            if (body_cu->compilation_unit.context) {
+                Node_List *withs = &body_cu->compilation_unit.context->context.with_clauses;
+                for (uint32_t i = 0; i < withs->count; i++) {
+                    Syntax_Node *with_node = withs->items[i];
+                    for (uint32_t j = 0; j < with_node->use_clause.names.count; j++) {
+                        Syntax_Node *pkg_name = with_node->use_clause.names.items[j];
+                        if (pkg_name->kind == NK_IDENTIFIER) {
+                            char *pkg_src = Lookup_Path(pkg_name->string_val.text);
+                            if (pkg_src) {
+                                Load_Package_Spec(sm, pkg_name->string_val.text, pkg_src);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (body_unit->kind == NK_PACKAGE_BODY) {
+                /* Look up the package symbol */
+                String_Slice body_name = body_unit->package_body.name;
+                Symbol *pkg_sym = Symbol_Find(sm, body_name);
+
+                if (pkg_sym and (pkg_sym->kind == SYMBOL_PACKAGE or pkg_sym->kind == SYMBOL_GENERIC)) {
+                    /* Link body to spec */
+                    body_unit->symbol = pkg_sym;
+
+                    /* For generic packages, store the body for later instantiation */
+                    if (pkg_sym->kind == SYMBOL_GENERIC) {
+                        pkg_sym->generic_body = body_unit;
+                    }
+
+                    /* Resolve the body within package scope */
+                    Symbol_Manager_Push_Scope(sm, pkg_sym);
+
+                    /* Install visible and private declarations from package spec
+                     * into the body's scope (RM 7.1, 7.2) */
+                    Syntax_Node *spec = pkg_sym->declaration;
+                    /* For generics, install formals first, then look at the unit */
+                    if (spec and spec->kind == NK_GENERIC_DECL) {
+                        Node_List *formals = &spec->generic_decl.formals;
+                        for (uint32_t i = 0; i < formals->count; i++) {
+                            Syntax_Node *formal = formals->items[i];
+                            if (formal->symbol) Symbol_Add(sm, formal->symbol);
+                            /* For generic type parameters, create type symbol if needed */
+                            if (formal->kind == NK_GENERIC_TYPE_PARAM and not formal->symbol) {
+                                Symbol *type_sym = Symbol_New(SYMBOL_TYPE,
+                                    formal->generic_type_param.name, formal->location);
+                                /* Map def_kind to appropriate Type_Kind */
+                                Type_Kind tk = TYPE_PRIVATE;
+                                switch (formal->generic_type_param.def_kind) {
+                                    case 2: tk = TYPE_ENUMERATION; break; /* DISCRETE */
+                                    case 3: tk = TYPE_INTEGER; break;     /* INTEGER */
+                                    case 4: tk = TYPE_FLOAT; break;       /* FLOAT */
+                                    case 5: tk = TYPE_FIXED; break;       /* FIXED */
+                                    case 6: tk = TYPE_ARRAY; break;       /* ARRAY */
+                                    case 7: tk = TYPE_ACCESS; break;      /* ACCESS */
+                                    default: tk = TYPE_PRIVATE; break;
+                                }
+                                Type_Info *type = Type_New(tk, formal->generic_type_param.name);
+                                type_sym->type = type;
+                                formal->symbol = type_sym;
+                                Symbol_Add(sm, type_sym);
+                            }
+                        }
+                        spec = spec->generic_decl.unit;
+                    }
+                    if (spec and spec->kind == NK_PACKAGE_SPEC) {
+                        /* Helper: install symbols from a declaration */
+                        #define INSTALL_DECL_SYMBOLS(decl) do { \
+                            if ((decl)->symbol) Symbol_Add(sm, (decl)->symbol); \
+                            if ((decl)->kind == NK_OBJECT_DECL) { \
+                                for (uint32_t k = 0; k < (decl)->object_decl.names.count; k++) { \
+                                    Syntax_Node *n = (decl)->object_decl.names.items[k]; \
+                                    if (n->symbol) Symbol_Add(sm, n->symbol); \
+                                } \
+                            } \
+                            if ((decl)->kind == NK_EXCEPTION_DECL) { \
+                                for (uint32_t k = 0; k < (decl)->exception_decl.names.count; k++) { \
+                                    Syntax_Node *n = (decl)->exception_decl.names.items[k]; \
+                                    if (n->symbol) Symbol_Add(sm, n->symbol); \
+                                } \
+                            } \
+                            if ((decl)->kind == NK_TYPE_DECL and (decl)->type_decl.definition and \
+                                (decl)->type_decl.definition->kind == NK_ENUMERATION_TYPE) { \
+                                Node_List *lits = &(decl)->type_decl.definition->enum_type.literals; \
+                                for (uint32_t k = 0; k < lits->count; k++) { \
+                                    if (lits->items[k]->symbol) Symbol_Add(sm, lits->items[k]->symbol); \
+                                } \
+                            } \
+                        } while(0)
+
+                        /* Install visible declarations */
+                        for (uint32_t i = 0; i < spec->package_spec.visible_decls.count; i++) {
+                            Syntax_Node *decl = spec->package_spec.visible_decls.items[i];
+                            INSTALL_DECL_SYMBOLS(decl);
+                        }
+                        /* Install private declarations */
+                        for (uint32_t i = 0; i < spec->package_spec.private_decls.count; i++) {
+                            Syntax_Node *decl = spec->package_spec.private_decls.items[i];
+                            INSTALL_DECL_SYMBOLS(decl);
+                        }
+                        #undef INSTALL_DECL_SYMBOLS
+                    }
+
+                    Resolve_Declaration_List(sm, &body_unit->package_body.declarations);
+                    Symbol_Manager_Pop_Scope(sm);
+
+                    /* Store for code generation */
+                    Loaded_Package_Bodies[Loaded_Body_Count++] = body_cu;
+                }
+            }
+        }
+    }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §16. GENERIC EXPANSION - Macro-style instantiation
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * GNAT implements generics via macro expansion (sem_ch12.adb):
+ *   1. Parse generic declaration → store template AST
+ *   2. On instantiation: clone template, substitute actuals
+ *   3. Analyze cloned tree with actual types
+ *   4. Generate code for each instantiation separately
+ *
+ * Key insight: We do NOT share code between instantiations. Each instance
+ * gets its own copy with types fully substituted.
+ */
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §16.1 Instantiation_Env — Formal-to-actual mapping
+ *
+ * Instead of mutating nodes, we carry substitution environment through.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+typedef struct {
+    String_Slice  formal_name;    /* Generic formal parameter name */
+    Type_Info    *actual_type;    /* Substituted actual type */
+    Symbol       *actual_symbol;  /* Actual symbol (for subprogram formals) */
+    Syntax_Node  *actual_expr;    /* Actual expression (for object formals) */
+} Generic_Mapping;
+
+typedef struct {
+    Generic_Mapping  mappings[32];
+    uint32_t         count;
+    Symbol          *instance_sym;   /* The instantiation symbol */
+    Symbol          *template_sym;   /* The generic template symbol */
+} Instantiation_Env;
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §16.2 Instantiation_Env helpers
+ * ───────────────────────────────────────────────────────────────────────── */
+
+static Type_Info *Env_Lookup_Type(Instantiation_Env *env, String_Slice name) {
+    for (uint32_t i = 0; i < env->count; i++) {
+        if (Slice_Equal_Ignore_Case(env->mappings[i].formal_name, name))
+            return env->mappings[i].actual_type;
+    }
+    return NULL;
+}
+
+static Symbol *Env_Lookup_Symbol(Instantiation_Env *env, String_Slice name) {
+    for (uint32_t i = 0; i < env->count; i++) {
+        if (Slice_Equal_Ignore_Case(env->mappings[i].formal_name, name))
+            return env->mappings[i].actual_symbol;
+    }
+    return NULL;
+}
+
+static Syntax_Node *Env_Lookup_Expr(Instantiation_Env *env, String_Slice name) {
+    for (uint32_t i = 0; i < env->count; i++) {
+        if (Slice_Equal_Ignore_Case(env->mappings[i].formal_name, name))
+            return env->mappings[i].actual_expr;
+    }
+    return NULL;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §16.3 Node_Deep_Clone — Deep copy with environment substitution
+ *
+ * Unlike the existing node_clone_substitute, this:
+ *   • ALWAYS allocates new nodes (no aliasing)
+ *   • Uses recursion depth tracking with proper error
+ *   • Carries environment for type substitution
+ * ───────────────────────────────────────────────────────────────────────── */
+
+static Syntax_Node *Node_Deep_Clone(Syntax_Node *node, Instantiation_Env *env,
+                                    int depth);
+
+/* Clone a node list */
+static void Node_List_Clone(Node_List *dst, Node_List *src,
+                            Instantiation_Env *env, int depth) {
+    dst->count = 0;
+    dst->capacity = 0;
+    dst->items = NULL;
+    for (uint32_t i = 0; i < src->count; i++) {
+        Syntax_Node *cloned = Node_Deep_Clone(src->items[i], env, depth);
+        Node_List_Push(dst, cloned);
+    }
+}
+
+static Syntax_Node *Node_Deep_Clone(Syntax_Node *node, Instantiation_Env *env,
+                                    int depth) {
+    if (not node) return NULL;
+
+    /* Depth limit with REAL error, not silent aliasing */
+    if (depth > 500) {
+        Report_Error(node->location, "generic instantiation too deeply nested");
+        return NULL;
+    }
+
+    /* Allocate fresh node */
+    Syntax_Node *n = Arena_Allocate(sizeof(Syntax_Node));
+    memset(n, 0, sizeof(Syntax_Node));  /* Zero-init ALL fields */
+    n->kind = node->kind;
+    n->location = node->location;
+    n->type = node->type;
+    n->symbol = NULL;  /* Symbols will be re-resolved */
+
+    switch (node->kind) {
+        case NK_IDENTIFIER:
+            /* Check for expression substitution (formal object parameters) */
+            if (env) {
+                Syntax_Node *expr_subst = Env_Lookup_Expr(env, node->string_val.text);
+                if (expr_subst) {
+                    /* Return a clone of the actual expression instead.
+                     * The 'n' node becomes garbage but arena will reclaim it. */
+                    return Node_Deep_Clone(expr_subst, env, depth + 1);
+                }
+            }
+            n->string_val = node->string_val;
+            /* Check for type substitution */
+            if (env) {
+                Type_Info *subst = Env_Lookup_Type(env, node->string_val.text);
+                if (subst) n->type = subst;
+            }
+            break;
+
+        case NK_INTEGER:
+            n->integer_lit = node->integer_lit;
+            break;
+
+        case NK_REAL:
+            n->real_lit = node->real_lit;
+            break;
+
+        case NK_STRING:
+        case NK_CHARACTER:
+            n->string_val = node->string_val;
+            break;
+
+        case NK_BINARY_OP:
+            n->binary.op = node->binary.op;
+            n->binary.left = Node_Deep_Clone(node->binary.left, env, depth + 1);
+            n->binary.right = Node_Deep_Clone(node->binary.right, env, depth + 1);
+            break;
+
+        case NK_UNARY_OP:
+            n->unary.op = node->unary.op;
+            n->unary.operand = Node_Deep_Clone(node->unary.operand, env, depth + 1);
+            break;
+
+        case NK_ATTRIBUTE:
+            n->attribute.prefix = Node_Deep_Clone(node->attribute.prefix, env, depth + 1);
+            n->attribute.name = node->attribute.name;
+            Node_List_Clone(&n->attribute.arguments, &node->attribute.arguments, env, depth + 1);
+            break;
+
+        case NK_APPLY:
+            n->apply.prefix = Node_Deep_Clone(node->apply.prefix, env, depth + 1);
+            Node_List_Clone(&n->apply.arguments, &node->apply.arguments, env, depth + 1);
+            break;
+
+        case NK_SELECTED:
+            n->selected.prefix = Node_Deep_Clone(node->selected.prefix, env, depth + 1);
+            n->selected.selector = node->selected.selector;  /* String_Slice, not a node */
+            break;
+
+        case NK_AGGREGATE:
+            Node_List_Clone(&n->aggregate.items, &node->aggregate.items, env, depth + 1);
+            n->aggregate.is_named = node->aggregate.is_named;
+            break;
+
+        case NK_ASSOCIATION:
+            Node_List_Clone(&n->association.choices, &node->association.choices, env, depth + 1);
+            n->association.expression = Node_Deep_Clone(node->association.expression, env, depth + 1);
+            break;
+
+        case NK_RANGE:
+            n->range.low = Node_Deep_Clone(node->range.low, env, depth + 1);
+            n->range.high = Node_Deep_Clone(node->range.high, env, depth + 1);
+            break;
+
+        case NK_OBJECT_DECL:
+            Node_List_Clone(&n->object_decl.names, &node->object_decl.names, env, depth + 1);
+            n->object_decl.object_type = Node_Deep_Clone(node->object_decl.object_type, env, depth + 1);
+            n->object_decl.init = Node_Deep_Clone(node->object_decl.init, env, depth + 1);
+            n->object_decl.is_constant = node->object_decl.is_constant;
+            n->object_decl.is_rename = node->object_decl.is_rename;
+            break;
+
+        case NK_TYPE_DECL:
+        case NK_SUBTYPE_DECL:
+            n->type_decl.name = node->type_decl.name;
+            n->type_decl.definition = Node_Deep_Clone(node->type_decl.definition, env, depth + 1);
+            Node_List_Clone(&n->type_decl.discriminants, &node->type_decl.discriminants, env, depth + 1);
+            break;
+
+        case NK_PROCEDURE_BODY:
+        case NK_FUNCTION_BODY:
+            n->subprogram_body.specification = Node_Deep_Clone(node->subprogram_body.specification, env, depth + 1);
+            Node_List_Clone(&n->subprogram_body.declarations, &node->subprogram_body.declarations, env, depth + 1);
+            Node_List_Clone(&n->subprogram_body.statements, &node->subprogram_body.statements, env, depth + 1);
+            Node_List_Clone(&n->subprogram_body.handlers, &node->subprogram_body.handlers, env, depth + 1);
+            n->subprogram_body.is_separate = node->subprogram_body.is_separate;
+            break;
+
+        case NK_PROCEDURE_SPEC:
+        case NK_FUNCTION_SPEC:
+            n->subprogram_spec.name = node->subprogram_spec.name;
+            Node_List_Clone(&n->subprogram_spec.parameters, &node->subprogram_spec.parameters, env, depth + 1);
+            n->subprogram_spec.return_type = Node_Deep_Clone(node->subprogram_spec.return_type, env, depth + 1);
+            n->subprogram_spec.renamed = Node_Deep_Clone(node->subprogram_spec.renamed, env, depth + 1);
+            break;
+
+        case NK_PARAM_SPEC:
+            Node_List_Clone(&n->param_spec.names, &node->param_spec.names, env, depth + 1);
+            n->param_spec.mode = node->param_spec.mode;
+            n->param_spec.param_type = Node_Deep_Clone(node->param_spec.param_type, env, depth + 1);
+            n->param_spec.default_expr = Node_Deep_Clone(node->param_spec.default_expr, env, depth + 1);
+            break;
+
+        case NK_PACKAGE_SPEC:
+            n->package_spec.name = node->package_spec.name;
+            Node_List_Clone(&n->package_spec.visible_decls, &node->package_spec.visible_decls, env, depth + 1);
+            Node_List_Clone(&n->package_spec.private_decls, &node->package_spec.private_decls, env, depth + 1);
+            break;
+
+        case NK_PACKAGE_BODY:
+            n->package_body.name = node->package_body.name;
+            Node_List_Clone(&n->package_body.declarations, &node->package_body.declarations, env, depth + 1);
+            Node_List_Clone(&n->package_body.statements, &node->package_body.statements, env, depth + 1);
+            Node_List_Clone(&n->package_body.handlers, &node->package_body.handlers, env, depth + 1);
+            break;
+
+        case NK_ASSIGNMENT:
+        case NK_CALL_STMT:  /* Reuses assignment.target field */
+            n->assignment.target = Node_Deep_Clone(node->assignment.target, env, depth + 1);
+            n->assignment.value = Node_Deep_Clone(node->assignment.value, env, depth + 1);
+            break;
+
+        case NK_IF:
+            n->if_stmt.condition = Node_Deep_Clone(node->if_stmt.condition, env, depth + 1);
+            Node_List_Clone(&n->if_stmt.then_stmts, &node->if_stmt.then_stmts, env, depth + 1);
+            Node_List_Clone(&n->if_stmt.elsif_parts, &node->if_stmt.elsif_parts, env, depth + 1);
+            Node_List_Clone(&n->if_stmt.else_stmts, &node->if_stmt.else_stmts, env, depth + 1);
+            break;
+
+        case NK_LOOP:
+            n->loop_stmt.label = node->loop_stmt.label;
+            n->loop_stmt.iteration_scheme = Node_Deep_Clone(node->loop_stmt.iteration_scheme, env, depth + 1);
+            Node_List_Clone(&n->loop_stmt.statements, &node->loop_stmt.statements, env, depth + 1);
+            n->loop_stmt.is_reverse = node->loop_stmt.is_reverse;
+            break;
+
+        case NK_RETURN:
+            n->return_stmt.expression = Node_Deep_Clone(node->return_stmt.expression, env, depth + 1);
+            break;
+
+        case NK_BLOCK:
+            n->block_stmt.label = node->block_stmt.label;
+            Node_List_Clone(&n->block_stmt.declarations, &node->block_stmt.declarations, env, depth + 1);
+            Node_List_Clone(&n->block_stmt.statements, &node->block_stmt.statements, env, depth + 1);
+            Node_List_Clone(&n->block_stmt.handlers, &node->block_stmt.handlers, env, depth + 1);
+            break;
+
+        case NK_CASE:
+            n->case_stmt.expression = Node_Deep_Clone(node->case_stmt.expression, env, depth + 1);
+            Node_List_Clone(&n->case_stmt.alternatives, &node->case_stmt.alternatives, env, depth + 1);
+            break;
+
+        case NK_EXIT:
+            n->exit_stmt.loop_name = node->exit_stmt.loop_name;
+            n->exit_stmt.condition = Node_Deep_Clone(node->exit_stmt.condition, env, depth + 1);
+            break;
+
+        case NK_NULL_STMT:
+        case NK_OTHERS:
+            /* No fields to copy */
+            break;
+
+        default:
+            /* For node kinds not explicitly handled, do shallow copy.
+             * This is safer than the original which returned aliased nodes. */
+            *n = *node;
+            n->symbol = NULL;
+            break;
+    }
+
+    return n;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §16.4 Build_Instantiation_Env — Create mapping from formals to actuals
+ * ───────────────────────────────────────────────────────────────────────── */
+
+static void Build_Instantiation_Env(Instantiation_Env *env,
+                                    Symbol *template_sym,
+                                    Symbol *instance_sym,
+                                    Symbol_Manager *sm) {
+    env->count = 0;
+    env->template_sym = template_sym;
+    env->instance_sym = instance_sym;
+
+    if (not template_sym or not template_sym->declaration) return;
+
+    Syntax_Node *gen_decl = template_sym->declaration;
+    if (gen_decl->kind != NK_GENERIC_DECL) return;
+
+    Node_List *formals = &gen_decl->generic_decl.formals;
+
+    /* Use pre-resolved actuals from instance symbol */
+    for (uint32_t i = 0; i < instance_sym->generic_actual_count and i < 32; i++) {
+        Generic_Mapping *m = &env->mappings[env->count++];
+        m->formal_name = instance_sym->generic_actuals[i].formal_name;
+        m->actual_type = instance_sym->generic_actuals[i].actual_type;
+        m->actual_symbol = NULL;
+        m->actual_expr = NULL;
+
+        /* For object/subprogram formals, populate additional fields */
+        if (i < formals->count) {
+            Syntax_Node *formal = formals->items[i];
+            if (formal->kind == NK_GENERIC_OBJECT_PARAM) {
+                /* Store expression for object formals */
+                m->actual_expr = instance_sym->generic_actuals[i].actual_expr;
+            } else if (formal->kind == NK_GENERIC_SUBPROGRAM_PARAM) {
+                /* Store actual subprogram symbol for substitution during clone */
+                m->actual_symbol = instance_sym->generic_actuals[i].actual_subprogram;
+            }
+        }
+    }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §16.5 Expand_Generic_Package — Full instantiation of generic package
+ *
+ * This implements the GNAT strategy:
+ *   1. Clone the package spec with type substitutions
+ *   2. Clone the package body (if found)
+ *   3. Resolve cloned trees with actual types
+ *   4. Store expanded body for code generation
+ * ───────────────────────────────────────────────────────────────────────── */
+
+static void Expand_Generic_Package(Symbol_Manager *sm, Symbol *instance_sym) {
+    if (not instance_sym or not instance_sym->generic_template) return;
+
+    Symbol *template = instance_sym->generic_template;
+    if (not template->generic_unit) return;
+
+    /* Build substitution environment */
+    Instantiation_Env env;
+    Build_Instantiation_Env(&env, template, instance_sym, sm);
+
+    /* Clone the package spec */
+    Syntax_Node *spec_clone = Node_Deep_Clone(template->generic_unit, &env, 0);
+    if (spec_clone) {
+        /* Rename to instance name */
+        if (spec_clone->kind == NK_PACKAGE_SPEC) {
+            spec_clone->package_spec.name = instance_sym->name;
+        }
+
+        /* Store for later processing */
+        instance_sym->expanded_spec = spec_clone;
+    }
+
+    /* Try to find and clone the package body */
+    String_Slice pkg_name = template->generic_unit->kind == NK_PACKAGE_SPEC ?
+                            template->generic_unit->package_spec.name :
+                            template->name;
+
+    char *body_src = Lookup_Path_Body(pkg_name);
+    if (body_src) {
+        /* Parse the body */
+        char body_filename[256];
+        snprintf(body_filename, sizeof(body_filename), "%.*s.adb",
+                 (int)pkg_name.length, pkg_name.data);
+        Parser body_parser = Parser_New(body_src, strlen(body_src), body_filename);
+        Syntax_Node *body_cu = Parse_Compilation_Unit(&body_parser);
+
+        if (body_cu and body_cu->compilation_unit.unit and
+            body_cu->compilation_unit.unit->kind == NK_PACKAGE_BODY) {
+
+            /* Clone with substitutions */
+            Syntax_Node *body_clone = Node_Deep_Clone(
+                body_cu->compilation_unit.unit, &env, 0);
+
+            if (body_clone) {
+                /* Rename to instance name */
+                body_clone->package_body.name = instance_sym->name;
+
+                /* Store expanded body */
+                instance_sym->expanded_body = body_clone;
+            }
+        }
+    }
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
  * §12.3 Declaration Resolution
  * ───────────────────────────────────────────────────────────────────────── */
@@ -10466,9 +12219,6 @@ static char *Lookup_Path_Body(String_Slice name) {
     }
     return NULL;
 }
-
-static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src);
-static void Expand_Generic_Package(Symbol_Manager *sm, Symbol *instance_sym);
 
 static void Resolve_Declaration_List(Symbol_Manager *sm, Node_List *list) {
     for (uint32_t i = 0; i < list->count; i++) {
@@ -23068,1762 +24818,9 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * §14. INCLUDE PATH & PACKAGE LOADING
- * ═══════════════════════════════════════════════════════════════════════════
- */
-
-/* Try_Load_From_ALI — Called by Load_Package_Spec to attempt ALI-based loading
- *
- * This is the entry point for ALI-based separate compilation:
- *   1. Look for ALI file in include paths
- *   2. Verify checksum against source
- *   3. Load symbols directly from ALI X lines
- *
- * Returns true if successful (caller should skip parsing).
- */
-static bool Try_Load_From_ALI(Symbol_Manager *sm, String_Slice name) {
-    char *ali_path = ALI_Find(name);
-    if (not ali_path) return false;
-
-    /* Build source path from unit name */
-    char source_file[256];
-    size_t j = 0;
-    for (size_t i = 0; i < name.length and j < sizeof(source_file) - 5; i++) {
-        char c = name.data[i];
-        if (c == '.') source_file[j++] = '-';
-        else if (c >= 'A' and c <= 'Z') source_file[j++] = c - 'A' + 'a';
-        else source_file[j++] = c;
-    }
-    strcpy(source_file + j, ".ads");
-
-    /* Find full source path in include paths */
-    char full_source_path[512] = {0};
-    for (uint32_t i = 0; i < Include_Path_Count; i++) {
-        snprintf(full_source_path, sizeof(full_source_path), "%s/%s",
-                 Include_Paths[i], source_file);
-        if (access(full_source_path, R_OK) == 0) break;
-        full_source_path[0] = '\0';
-    }
-
-    if (not full_source_path[0]) return false;
-
-    /* Check if ALI is current */
-    if (not ALI_Is_Current(ali_path, full_source_path)) {
-        return false;  /* Stale - need to recompile */
-    }
-
-    /* Read ALI and check for exports */
-    ALI_Cache_Entry *entry = ALI_Read(ali_path);
-    if (not entry or entry->export_count == 0) return false;
-
-    /* Load symbols from ALI */
-    ALI_Load_Symbols(sm, entry);
-    return true;
-}
-
-
-/* Load and resolve a package specification */
-static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src) {
-    if (not src) return;
-
-    /* Check if already loaded */
-    Symbol *existing = Symbol_Find(sm, name);
-    if (existing and existing->kind == SYMBOL_PACKAGE and existing->declaration) {
-        return;  /* Already loaded */
-    }
-
-    /* Check for circular dependency (package currently being loaded) */
-    if (Loading_Set_Contains(name)) {
-        return;  /* Break cycle - package will be available when outer load completes */
-    }
-
-    /* Try to load from cached ALI file first.
-     * If successful, we skip parsing entirely. */
-    if (Try_Load_From_ALI(sm, name)) {
-        return;
-    }
-
-    /* Mark package as loading to detect cycles */
-    Loading_Set_Add(name);
-
-    /* Parse the package (ALI not available or stale) */
-    char filename[256];
-    snprintf(filename, sizeof(filename), "%.*s.ads", (int)name.length, name.data);
-    Parser p = Parser_New(src, strlen(src), filename);
-    Syntax_Node *cu = Parse_Compilation_Unit(&p);
-
-    if (not cu) {
-        Loading_Set_Remove(name);
-        return;
-    }
-
-    /* Recursively load WITH'd packages */
-    if (cu->compilation_unit.context) {
-        Node_List *withs = &cu->compilation_unit.context->context.with_clauses;
-        for (uint32_t i = 0; i < withs->count; i++) {
-            Syntax_Node *with_node = withs->items[i];
-            for (uint32_t j = 0; j < with_node->use_clause.names.count; j++) {
-                Syntax_Node *pkg_name = with_node->use_clause.names.items[j];
-                if (pkg_name->kind == NK_IDENTIFIER) {
-                    char *pkg_src = Lookup_Path(pkg_name->string_val.text);
-                    if (pkg_src) {
-                        Load_Package_Spec(sm, pkg_name->string_val.text, pkg_src);
-                    }
-                }
-            }
-        }
-    }
-
-    /* Resolve the package declarations */
-    if (cu->compilation_unit.unit) {
-        Syntax_Node *unit = cu->compilation_unit.unit;
-
-        if (unit->kind == NK_PACKAGE_SPEC) {
-            Syntax_Node *pkg = unit;
-
-            /* Create package symbol */
-            Symbol *pkg_sym = Symbol_New(SYMBOL_PACKAGE, pkg->package_spec.name,
-                                         pkg->location);
-            Type_Info *pkg_type = Type_New(TYPE_PACKAGE, pkg->package_spec.name);
-            pkg_sym->type = pkg_type;
-            pkg_sym->declaration = pkg;
-            Symbol_Add(sm, pkg_sym);
-            pkg->symbol = pkg_sym;
-
-            /* Push package scope */
-            Symbol_Manager_Push_Scope(sm, pkg_sym);
-
-            /* Resolve visible declarations */
-            Resolve_Declaration_List(sm, &pkg->package_spec.visible_decls);
-
-            /* Populate package exports for qualified access (e.g., SYSTEM.MAX_INT) */
-            Populate_Package_Exports(pkg_sym, pkg);
-
-            /* Resolve private declarations */
-            Resolve_Declaration_List(sm, &pkg->package_spec.private_decls);
-
-            Symbol_Manager_Pop_Scope(sm);
-        }
-        else if (unit->kind == NK_GENERIC_DECL) {
-            /* Generic unit: create SYMBOL_GENERIC with the inner spec */
-            Syntax_Node *inner = unit->generic_decl.unit;
-            String_Slice unit_name = {0};
-
-            if (inner and inner->kind == NK_PACKAGE_SPEC) {
-                unit_name = inner->package_spec.name;
-            } else if (inner and (inner->kind == NK_PROCEDURE_SPEC or
-                                 inner->kind == NK_FUNCTION_SPEC)) {
-                unit_name = inner->subprogram_spec.name;
-            }
-
-            if (unit_name.data) {
-                /* Create generic symbol */
-                Symbol *sym = Symbol_New(SYMBOL_GENERIC, unit_name, unit->location);
-                sym->declaration = unit;
-                sym->generic_unit = inner;
-
-                /* Store formals list for later instantiation */
-                if (unit->generic_decl.formals.count > 0) {
-                    sym->generic_formals = unit->generic_decl.formals.items[0];
-                }
-
-                Symbol_Add(sm, sym);
-                unit->symbol = sym;
-
-                /* Resolve the generic package spec's declarations so type/exception
-                 * names are available when the body is parsed. Push scope, install
-                 * generic formals, then resolve visible/private declarations. */
-                if (inner and inner->kind == NK_PACKAGE_SPEC) {
-                    Symbol_Manager_Push_Scope(sm, sym);
-
-                    /* Install generic formal parameters */
-                    Node_List *formals = &unit->generic_decl.formals;
-                    for (uint32_t i = 0; i < formals->count; i++) {
-                        Syntax_Node *formal = formals->items[i];
-                        if (formal->kind == NK_GENERIC_TYPE_PARAM) {
-                            Symbol *type_sym = Symbol_New(SYMBOL_TYPE,
-                                formal->generic_type_param.name, formal->location);
-                            /* Map def_kind to appropriate Type_Kind */
-                            Type_Kind tk = TYPE_PRIVATE;
-                            switch (formal->generic_type_param.def_kind) {
-                                case 2: tk = TYPE_ENUMERATION; break; /* DISCRETE */
-                                case 3: tk = TYPE_INTEGER; break;     /* INTEGER */
-                                case 4: tk = TYPE_FLOAT; break;       /* FLOAT */
-                                case 5: tk = TYPE_FIXED; break;       /* FIXED */
-                                case 6: tk = TYPE_ARRAY; break;       /* ARRAY */
-                                case 7: tk = TYPE_ACCESS; break;      /* ACCESS */
-                                default: tk = TYPE_PRIVATE; break;
-                            }
-                            Type_Info *type = Type_New(tk, formal->generic_type_param.name);
-                            type_sym->type = type;
-                            formal->symbol = type_sym;
-                            Symbol_Add(sm, type_sym);
-                        }
-                    }
-
-                    /* Resolve visible declarations */
-                    Resolve_Declaration_List(sm, &inner->package_spec.visible_decls);
-
-                    /* Populate package exports for qualified access */
-                    Populate_Package_Exports(sym, inner);
-
-                    /* Resolve private declarations */
-                    Resolve_Declaration_List(sm, &inner->package_spec.private_decls);
-
-                    Symbol_Manager_Pop_Scope(sm);
-                }
-            }
-        }
-    }
-
-    /* Done loading this package */
-    Loading_Set_Remove(name);
-
-    /* Also try to load the package body if available.
-     * Skip if a precompiled .ll file exists (package provided externally). */
-    if (Body_Already_Loaded(name)) {
-        return;  /* Body already loaded */
-    }
-    if (Has_Precompiled_LL(name)) {
-        return;  /* Precompiled version will be linked in */
-    }
-    char *body_src = Lookup_Path_Body(name);
-    if (body_src and Loaded_Body_Count < 128) {
-        Mark_Body_Loaded(name);
-        /* Parse the body */
-        char body_filename[256];
-        snprintf(body_filename, sizeof(body_filename), "%.*s.adb", (int)name.length, name.data);
-        Parser body_parser = Parser_New(body_src, strlen(body_src), body_filename);
-        Syntax_Node *body_cu = Parse_Compilation_Unit(&body_parser);
-
-        if (body_cu and body_cu->compilation_unit.unit) {
-            Syntax_Node *body_unit = body_cu->compilation_unit.unit;
-
-            /* Recursively load WITH'd packages from body */
-            if (body_cu->compilation_unit.context) {
-                Node_List *withs = &body_cu->compilation_unit.context->context.with_clauses;
-                for (uint32_t i = 0; i < withs->count; i++) {
-                    Syntax_Node *with_node = withs->items[i];
-                    for (uint32_t j = 0; j < with_node->use_clause.names.count; j++) {
-                        Syntax_Node *pkg_name = with_node->use_clause.names.items[j];
-                        if (pkg_name->kind == NK_IDENTIFIER) {
-                            char *pkg_src = Lookup_Path(pkg_name->string_val.text);
-                            if (pkg_src) {
-                                Load_Package_Spec(sm, pkg_name->string_val.text, pkg_src);
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (body_unit->kind == NK_PACKAGE_BODY) {
-                /* Look up the package symbol */
-                String_Slice body_name = body_unit->package_body.name;
-                Symbol *pkg_sym = Symbol_Find(sm, body_name);
-
-                if (pkg_sym and (pkg_sym->kind == SYMBOL_PACKAGE or pkg_sym->kind == SYMBOL_GENERIC)) {
-                    /* Link body to spec */
-                    body_unit->symbol = pkg_sym;
-
-                    /* For generic packages, store the body for later instantiation */
-                    if (pkg_sym->kind == SYMBOL_GENERIC) {
-                        pkg_sym->generic_body = body_unit;
-                    }
-
-                    /* Resolve the body within package scope */
-                    Symbol_Manager_Push_Scope(sm, pkg_sym);
-
-                    /* Install visible and private declarations from package spec
-                     * into the body's scope (RM 7.1, 7.2) */
-                    Syntax_Node *spec = pkg_sym->declaration;
-                    /* For generics, install formals first, then look at the unit */
-                    if (spec and spec->kind == NK_GENERIC_DECL) {
-                        Node_List *formals = &spec->generic_decl.formals;
-                        for (uint32_t i = 0; i < formals->count; i++) {
-                            Syntax_Node *formal = formals->items[i];
-                            if (formal->symbol) Symbol_Add(sm, formal->symbol);
-                            /* For generic type parameters, create type symbol if needed */
-                            if (formal->kind == NK_GENERIC_TYPE_PARAM and not formal->symbol) {
-                                Symbol *type_sym = Symbol_New(SYMBOL_TYPE,
-                                    formal->generic_type_param.name, formal->location);
-                                /* Map def_kind to appropriate Type_Kind */
-                                Type_Kind tk = TYPE_PRIVATE;
-                                switch (formal->generic_type_param.def_kind) {
-                                    case 2: tk = TYPE_ENUMERATION; break; /* DISCRETE */
-                                    case 3: tk = TYPE_INTEGER; break;     /* INTEGER */
-                                    case 4: tk = TYPE_FLOAT; break;       /* FLOAT */
-                                    case 5: tk = TYPE_FIXED; break;       /* FIXED */
-                                    case 6: tk = TYPE_ARRAY; break;       /* ARRAY */
-                                    case 7: tk = TYPE_ACCESS; break;      /* ACCESS */
-                                    default: tk = TYPE_PRIVATE; break;
-                                }
-                                Type_Info *type = Type_New(tk, formal->generic_type_param.name);
-                                type_sym->type = type;
-                                formal->symbol = type_sym;
-                                Symbol_Add(sm, type_sym);
-                            }
-                        }
-                        spec = spec->generic_decl.unit;
-                    }
-                    if (spec and spec->kind == NK_PACKAGE_SPEC) {
-                        /* Helper: install symbols from a declaration */
-                        #define INSTALL_DECL_SYMBOLS(decl) do { \
-                            if ((decl)->symbol) Symbol_Add(sm, (decl)->symbol); \
-                            if ((decl)->kind == NK_OBJECT_DECL) { \
-                                for (uint32_t k = 0; k < (decl)->object_decl.names.count; k++) { \
-                                    Syntax_Node *n = (decl)->object_decl.names.items[k]; \
-                                    if (n->symbol) Symbol_Add(sm, n->symbol); \
-                                } \
-                            } \
-                            if ((decl)->kind == NK_EXCEPTION_DECL) { \
-                                for (uint32_t k = 0; k < (decl)->exception_decl.names.count; k++) { \
-                                    Syntax_Node *n = (decl)->exception_decl.names.items[k]; \
-                                    if (n->symbol) Symbol_Add(sm, n->symbol); \
-                                } \
-                            } \
-                            if ((decl)->kind == NK_TYPE_DECL and (decl)->type_decl.definition and \
-                                (decl)->type_decl.definition->kind == NK_ENUMERATION_TYPE) { \
-                                Node_List *lits = &(decl)->type_decl.definition->enum_type.literals; \
-                                for (uint32_t k = 0; k < lits->count; k++) { \
-                                    if (lits->items[k]->symbol) Symbol_Add(sm, lits->items[k]->symbol); \
-                                } \
-                            } \
-                        } while(0)
-
-                        /* Install visible declarations */
-                        for (uint32_t i = 0; i < spec->package_spec.visible_decls.count; i++) {
-                            Syntax_Node *decl = spec->package_spec.visible_decls.items[i];
-                            INSTALL_DECL_SYMBOLS(decl);
-                        }
-                        /* Install private declarations */
-                        for (uint32_t i = 0; i < spec->package_spec.private_decls.count; i++) {
-                            Syntax_Node *decl = spec->package_spec.private_decls.items[i];
-                            INSTALL_DECL_SYMBOLS(decl);
-                        }
-                        #undef INSTALL_DECL_SYMBOLS
-                    }
-
-                    Resolve_Declaration_List(sm, &body_unit->package_body.declarations);
-                    Symbol_Manager_Pop_Scope(sm);
-
-                    /* Store for code generation */
-                    Loaded_Package_Bodies[Loaded_Body_Count++] = body_cu;
-                }
-            }
-        }
-    }
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════
- * §15. ALI FILE WRITER — GNAT-Compatible Library Information
- * ═══════════════════════════════════════════════════════════════════════════
- *
- * Ada Library Information (.ali) files record compilation dependencies and
- * unit metadata. Format follows GNAT's lib-writ.ads specification:
- *
- *   V "version"              -- compiler version
- *   P flags                  -- compilation parameters
- *   U name source version    -- unit entry
- *   W name [source ali]      -- with dependency
- *   D source timestamp       -- source dependency
- *
- * The ALI file enables:
- *   • Separate compilation with dependency tracking
- *   • Binder consistency checking
- *   • IDE cross-reference navigation
- */
-
-/* ─────────────────────────────────────────────────────────────────────────
- * §15.1 Unit_Info — Compilation unit metadata collector
- * ───────────────────────────────────────────────────────────────────────── */
-
-typedef struct {
-    String_Slice      unit_name;        /* Canonical Ada name (Package.Child%b) */
-    String_Slice      source_name;      /* File name (package-child.adb) */
-    uint32_t          source_checksum;  /* CRC32 of source text */
-    bool              is_body;          /* spec (false) or body (true) */
-    bool              is_generic;       /* Generic declaration */
-    bool              is_preelaborate;  /* Pragma Preelaborate */
-    bool              is_pure;          /* Pragma Pure */
-    bool              has_elaboration;  /* Has elaboration code */
-} Unit_Info;
-
-typedef struct {
-    String_Slice      name;             /* WITH'd unit name */
-    String_Slice      source_file;      /* Source file name */
-    String_Slice      ali_file;         /* ALI file name */
-    bool              is_limited;       /* LIMITED WITH */
-    bool              elaborate;        /* Pragma Elaborate */
-    bool              elaborate_all;    /* Pragma Elaborate_All */
-} With_Info;
-
-typedef struct {
-    String_Slice      source_file;      /* Depended-on source */
-    uint32_t          timestamp;        /* Modification time (Unix epoch) */
-    uint32_t          checksum;         /* CRC32 */
-} Dependency_Info;
-
-/* Exported symbol info for X lines */
-typedef struct {
-    String_Slice      name;             /* Ada name */
-    String_Slice      mangled_name;     /* LLVM symbol name */
-    char              kind;             /* T=type, S=subtype, V=variable, C=constant, P=procedure, F=function, E=exception */
-    uint32_t          line;             /* Declaration line number */
-    String_Slice      type_name;        /* Type name (for typed symbols) */
-    String_Slice      llvm_type;        /* LLVM type signature (e.g., "i64", "ptr", "void (i64)") */
-    uint32_t          param_count;      /* Parameter count (for subprograms) */
-} Export_Info;
-
-typedef struct {
-    Unit_Info         units[8];         /* Units in this compilation */
-    uint32_t          unit_count;
-    With_Info         withs[64];        /* WITH dependencies */
-    uint32_t          with_count;
-    Dependency_Info   deps[128];        /* Source dependencies */
-    uint32_t          dep_count;
-    Export_Info       exports[256];     /* Exported symbols */
-    uint32_t          export_count;
-} ALI_Info;
-
-/* ─────────────────────────────────────────────────────────────────────────
- * §15.2 CRC32 — Fast checksum for source identity
- *
- * Standard CRC-32/ISO-HDLC polynomial: 0xEDB88320 (bit-reversed 0x04C11DB7)
- * ───────────────────────────────────────────────────────────────────────── */
-
-static uint32_t Crc32_Table[256];
-static bool Crc32_Table_Initialized = false;
-
-static void Crc32_Init_Table(void) {
-    if (Crc32_Table_Initialized) return;
-    for (uint32_t i = 0; i < 256; i++) {
-        uint32_t crc = i;
-        for (int j = 0; j < 8; j++)
-            crc = (crc >> 1) ^ (0xEDB88320 & -(crc & 1));
-        Crc32_Table[i] = crc;
-    }
-    Crc32_Table_Initialized = true;
-}
-
-static uint32_t Crc32(const char *data, size_t length) {
-    Crc32_Init_Table();
-    uint32_t crc = 0xFFFFFFFF;
-    for (size_t i = 0; i < length; i++)
-        crc = Crc32_Table[(crc ^ (uint8_t)data[i]) & 0xFF] ^ (crc >> 8);
-    return ~crc;
-}
-
-/* ─────────────────────────────────────────────────────────────────────────
- * §15.3 Unit_Name_To_File — GNAT naming convention
- *
- * Maps Ada unit names to file names:
- *   Package_Name      → package_name.ads
- *   Package_Name%b    → package_name.adb
- *   Parent.Child      → parent-child.ads
- * ───────────────────────────────────────────────────────────────────────── */
-
-static void Unit_Name_To_File(String_Slice unit_name, bool is_body,
-                              char *out, size_t out_size) {
-    size_t j = 0;
-    for (size_t i = 0; i < unit_name.length and j < out_size - 5; i++) {
-        char c = unit_name.data[i];
-        if (c == '.') {
-            out[j++] = '-';  /* Dots become hyphens */
-        } else if (c >= 'A' and c <= 'Z') {
-            out[j++] = c - 'A' + 'a';  /* Lowercase */
-        } else {
-            out[j++] = c;
-        }
-    }
-    /* Append extension */
-    const char *ext = is_body ? ".adb" : ".ads";
-    for (int k = 0; ext[k] and j < out_size - 1; k++)
-        out[j++] = ext[k];
-    out[j] = '\0';
-}
-
-/* ─────────────────────────────────────────────────────────────────────────
- * §15.4 ALI_Collect — Gather unit info from parsed AST
- * ───────────────────────────────────────────────────────────────────────── */
-
-static void ALI_Collect_Withs(ALI_Info *ali, Syntax_Node *ctx) {
-    if (not ctx) return;
-
-    for (uint32_t i = 0; i < ctx->context.with_clauses.count; i++) {
-        Syntax_Node *with_node = ctx->context.with_clauses.items[i];
-        if (not with_node) continue;
-
-        /* Each WITH clause may have multiple names */
-        for (uint32_t j = 0; j < with_node->use_clause.names.count; j++) {
-            Syntax_Node *name = with_node->use_clause.names.items[j];
-            if (not name or ali->with_count >= 64) continue;
-
-            With_Info *w = &ali->withs[ali->with_count++];
-            w->name = name->kind == NK_IDENTIFIER ?
-                      name->string_val.text : (String_Slice){0};
-            w->is_limited = false;  /* TODO: detect LIMITED WITH */
-            w->elaborate = false;
-            w->elaborate_all = false;
-
-            /* Derive file names from unit name */
-            char file_buf[256];
-            if (w->name.data) {
-                Unit_Name_To_File(w->name, false, file_buf, sizeof(file_buf));
-                w->source_file = Slice_Duplicate((String_Slice){file_buf, strlen(file_buf)});
-                size_t len = strlen(file_buf);
-                if (len > 4) {
-                    file_buf[len-3] = 'a';
-                    file_buf[len-2] = 'l';
-                    file_buf[len-1] = 'i';
-                }
-                w->ali_file = Slice_Duplicate((String_Slice){file_buf, strlen(file_buf)});
-            }
-        }
-    }
-}
-
-/* Helper: extract unit name from a subprogram spec/body */
-static String_Slice Get_Subprogram_Name(Syntax_Node *node) {
-    if (not node) return (String_Slice){"UNKNOWN", 7};
-    if (node->kind == NK_PROCEDURE_SPEC or node->kind == NK_FUNCTION_SPEC)
-        return node->subprogram_spec.name;
-    if (node->kind == NK_PROCEDURE_BODY or node->kind == NK_FUNCTION_BODY) {
-        /* Body has spec nested inside */
-        if (node->subprogram_body.specification)
-            return Get_Subprogram_Name(node->subprogram_body.specification);
-    }
-    return (String_Slice){"UNKNOWN", 7};
-}
-
-/* Forward declaration */
-/* ─────────────────────────────────────────────────────────────────────────
- * §15.4.2 ALI_Collect_Exports — Gather exported symbols from package spec
- * ───────────────────────────────────────────────────────────────────────── */
-
-static void ALI_Collect_Exports(ALI_Info *ali, Syntax_Node *unit, Symbol_Manager *sm) {
-    if (not unit or unit->kind != NK_PACKAGE_SPEC) return;
-
-    String_Slice pkg_name = unit->package_spec.name;
-    Node_List *decls = &unit->package_spec.visible_decls;
-
-    for (uint32_t i = 0; i < decls->count and ali->export_count < 256; i++) {
-        Syntax_Node *decl = decls->items[i];
-        if (not decl) continue;
-
-        Export_Info *exp = &ali->exports[ali->export_count];
-        exp->line = decl->location.line;
-        exp->param_count = 0;
-        exp->type_name = (String_Slice){0};
-        exp->mangled_name = (String_Slice){0};
-        exp->llvm_type = (String_Slice){0};
-
-        switch (decl->kind) {
-            case NK_TYPE_DECL:
-                exp->name = decl->type_decl.name;
-                exp->kind = 'T';
-                exp->mangled_name = Mangle_Qualified_Name(pkg_name, exp->name);
-                exp->llvm_type = LLVM_Type_Basic(sm, exp->name);
-                ali->export_count++;
-                break;
-
-            case NK_SUBTYPE_DECL:
-                exp->name = decl->type_decl.name;
-                exp->kind = 'S';
-                exp->mangled_name = Mangle_Qualified_Name(pkg_name, exp->name);
-                if (decl->type_decl.definition) {
-                    Syntax_Node *def = decl->type_decl.definition;
-                    if (def->kind == NK_IDENTIFIER) {
-                        exp->type_name = def->string_val.text;
-                        exp->llvm_type = LLVM_Type_Basic(sm, exp->type_name);
-                    } else if (def->kind == NK_SUBTYPE_INDICATION and def->subtype_ind.subtype_mark) {
-                        if (def->subtype_ind.subtype_mark->kind == NK_IDENTIFIER) {
-                            exp->type_name = def->subtype_ind.subtype_mark->string_val.text;
-                            exp->llvm_type = LLVM_Type_Basic(sm, exp->type_name);
-                        }
-                    }
-                }
-                if (not exp->llvm_type.data) {
-                    const char *int_t = Llvm_Int_Type((uint32_t)To_Bits(sm->type_integer->size));
-                    exp->llvm_type = (String_Slice){int_t, strlen(int_t)};
-                }
-                ali->export_count++;
-                break;
-
-            case NK_OBJECT_DECL:
-                for (uint32_t j = 0; j < decl->object_decl.names.count and ali->export_count < 256; j++) {
-                    Syntax_Node *name = decl->object_decl.names.items[j];
-                    if (name and name->kind == NK_IDENTIFIER) {
-                        exp = &ali->exports[ali->export_count];
-                        exp->name = name->string_val.text;
-                        exp->kind = decl->object_decl.is_constant ? 'C' : 'V';
-                        exp->line = name->location.line;
-                        exp->mangled_name = Mangle_Qualified_Name(pkg_name, exp->name);
-                        if (decl->object_decl.object_type and decl->object_decl.object_type->kind == NK_IDENTIFIER) {
-                            exp->type_name = decl->object_decl.object_type->string_val.text;
-                            exp->llvm_type = LLVM_Type_Basic(sm, exp->type_name);
-                        } else {
-                            const char *int_t = Llvm_Int_Type((uint32_t)To_Bits(sm->type_integer->size));
-                            exp->llvm_type = (String_Slice){int_t, strlen(int_t)};
-                        }
-                        ali->export_count++;
-                    }
-                }
-                break;
-
-            case NK_PROCEDURE_SPEC:
-                exp->name = decl->subprogram_spec.name;
-                exp->kind = 'P';
-                exp->mangled_name = Mangle_Qualified_Name(pkg_name, exp->name);
-                for (uint32_t j = 0; j < decl->subprogram_spec.parameters.count; j++) {
-                    Syntax_Node *ps = decl->subprogram_spec.parameters.items[j];
-                    if (ps and ps->kind == NK_PARAM_SPEC)
-                        exp->param_count += ps->param_spec.names.count;
-                }
-                exp->llvm_type = (String_Slice){"void", 4};
-                ali->export_count++;
-                break;
-
-            case NK_FUNCTION_SPEC:
-                exp->name = decl->subprogram_spec.name;
-                exp->kind = 'F';
-                exp->mangled_name = Mangle_Qualified_Name(pkg_name, exp->name);
-                for (uint32_t j = 0; j < decl->subprogram_spec.parameters.count; j++) {
-                    Syntax_Node *ps = decl->subprogram_spec.parameters.items[j];
-                    if (ps and ps->kind == NK_PARAM_SPEC)
-                        exp->param_count += ps->param_spec.names.count;
-                }
-                if (decl->subprogram_spec.return_type and decl->subprogram_spec.return_type->kind == NK_IDENTIFIER) {
-                    exp->type_name = decl->subprogram_spec.return_type->string_val.text;
-                    exp->llvm_type = LLVM_Type_Basic(sm, exp->type_name);
-                } else {
-                    const char *int_t = Llvm_Int_Type((uint32_t)To_Bits(sm->type_integer->size));
-                    exp->llvm_type = (String_Slice){int_t, strlen(int_t)};
-                }
-                ali->export_count++;
-                break;
-
-            case NK_EXCEPTION_DECL:
-                for (uint32_t j = 0; j < decl->exception_decl.names.count and ali->export_count < 256; j++) {
-                    Syntax_Node *name = decl->exception_decl.names.items[j];
-                    if (name and name->kind == NK_IDENTIFIER) {
-                        exp = &ali->exports[ali->export_count];
-                        exp->name = name->string_val.text;
-                        exp->kind = 'E';
-                        exp->line = name->location.line;
-                        exp->mangled_name = Mangle_Qualified_Name(pkg_name, exp->name);
-                        exp->llvm_type = (String_Slice){"i8", 2};  /* Exception identity */
-                        ali->export_count++;
-                    }
-                }
-                break;
-
-            default:
-                break;
-        }
-    }
-}
-
-
-static void ALI_Collect_Unit(ALI_Info *ali, Syntax_Node *cu,
-                             const char *source, size_t source_size,
-                             Symbol_Manager *sm) {
-    if (not cu or ali->unit_count >= 8) return;
-
-    Syntax_Node *unit = cu->compilation_unit.unit;
-    if (not unit) return;
-
-    Unit_Info *u = &ali->units[ali->unit_count++];
-
-    /* Extract unit name based on declaration kind */
-    switch (unit->kind) {
-        case NK_PACKAGE_SPEC:
-            u->unit_name = unit->package_spec.name;
-            u->is_body = false;
-            break;
-        case NK_PACKAGE_BODY:
-            u->unit_name = unit->package_body.name;
-            u->is_body = true;
-            break;
-        case NK_PROCEDURE_BODY:
-        case NK_PROCEDURE_SPEC:
-            u->unit_name = Get_Subprogram_Name(unit);
-            u->is_body = unit->kind == NK_PROCEDURE_BODY;
-            break;
-        case NK_FUNCTION_BODY:
-        case NK_FUNCTION_SPEC:
-            u->unit_name = Get_Subprogram_Name(unit);
-            u->is_body = unit->kind == NK_FUNCTION_BODY;
-            break;
-        case NK_GENERIC_DECL:
-            u->is_generic = true;
-            if (unit->generic_decl.unit) {
-                Syntax_Node *inner = unit->generic_decl.unit;
-                if (inner->kind == NK_PACKAGE_SPEC)
-                    u->unit_name = inner->package_spec.name;
-                else if (inner->kind == NK_PROCEDURE_SPEC or inner->kind == NK_FUNCTION_SPEC)
-                    u->unit_name = inner->subprogram_spec.name;
-            }
-            u->is_body = false;
-            break;
-        default:
-            u->unit_name = (String_Slice){"UNKNOWN", 7};
-            u->is_body = false;
-    }
-
-    /* Compute source checksum */
-    u->source_checksum = Crc32(source, source_size);
-
-    /* Derive source file name */
-    char file_buf[256];
-    Unit_Name_To_File(u->unit_name, u->is_body, file_buf, sizeof(file_buf));
-    u->source_name = Slice_Duplicate((String_Slice){file_buf, strlen(file_buf)});
-
-    /* Check for elaboration pragmas (simplified) */
-    u->is_preelaborate = false;
-    u->is_pure = false;
-    u->has_elaboration = true;  /* Assume has elaboration unless proven otherwise */
-
-    /* Collect WITH dependencies */
-    ALI_Collect_Withs(ali, cu->compilation_unit.context);
-
-    /* Collect exported symbols from package specs */
-    if (unit and unit->kind == NK_PACKAGE_SPEC) {
-        ALI_Collect_Exports(ali, unit, sm);
-    }
-}
-
-/* LLVM type signature derived from the type system via Symbol_Manager.
- * Looks up the Ada type name in the symbol table and uses Type_To_Llvm
- * to get the correct LLVM representation. */
-static String_Slice LLVM_Type_Basic(Symbol_Manager *sm, String_Slice ada_type) {
-    /* Look up in the symbol table for proper type-system derivation */
-    Symbol *sym = Symbol_Find(sm, ada_type);
-    if (sym and sym->type) {
-        const char *llvm = Type_To_Llvm(sym->type);
-        return (String_Slice){llvm, strlen(llvm)};
-    }
-    /* Error: type not found in symbol table */
-    fprintf(stderr, "error: LLVM_Type_Basic: type '%.*s' not found in symbol table\n",
-            (int)ada_type.length, ada_type.data);
-    const char *fallback = Llvm_Int_Type((uint32_t)To_Bits(sm->type_integer->size));
-    return (String_Slice){fallback, strlen(fallback)};
-}
-
-/* ─────────────────────────────────────────────────────────────────────────
- * §15.5 ALI_Write — Emit .ali file in GNAT format
- *
- * Per lib-writ.ads, the minimum valid ALI file needs:
- *   V line (version) — MUST be first
- *   P line (parameters) — MUST be present
- *   At least one U line (unit)
- * ───────────────────────────────────────────────────────────────────────── */
-
-#define ALI_VERSION "Ada83 1.0 built " __DATE__ " " __TIME__
-
-static void ALI_Write(FILE *out, ALI_Info *ali) {
-    /* V line: Version — must be first per GNAT spec */
-    fprintf(out, "V \"%s\"\n", ALI_VERSION);
-
-    /* P line: Parameters/flags — ZX = zero-cost exceptions */
-    fprintf(out, "P ZX\n");
-
-    /* Blank line before restrictions */
-    fprintf(out, "\n");
-
-    /* R line: Restrictions (minimal) */
-    fprintf(out, "RN\n");
-
-    /* U lines: Unit entries */
-    for (uint32_t i = 0; i < ali->unit_count; i++) {
-        Unit_Info *u = &ali->units[i];
-
-        /* U unit-name source-name version [flags] */
-        fprintf(out, "\nU %.*s%s %.*s %08X",
-                (int)u->unit_name.length, u->unit_name.data,
-                u->is_body ? "%b" : "%s",
-                (int)u->source_name.length, u->source_name.data,
-                u->source_checksum);
-
-        /* Flags */
-        if (u->is_generic) fprintf(out, " GE");
-        if (u->is_preelaborate) fprintf(out, " PR");
-        if (u->is_pure) fprintf(out, " PU");
-        if (not u->has_elaboration) fprintf(out, " NE");
-        if (not u->is_body) fprintf(out, " PK");
-        else fprintf(out, " SU");
-        fprintf(out, "\n");
-
-        /* W lines: WITH dependencies for this unit */
-        for (uint32_t j = 0; j < ali->with_count; j++) {
-            With_Info *w = &ali->withs[j];
-            if (not w->name.data) continue;
-
-            char line_type = w->is_limited ? 'Y' : 'W';
-            fprintf(out, "%c %.*s%s",
-                    line_type,
-                    (int)w->name.length, w->name.data,
-                    "%s");  /* Assume spec dependency */
-
-            if (w->source_file.data) {
-                fprintf(out, " %.*s %.*s",
-                        (int)w->source_file.length, w->source_file.data,
-                        (int)w->ali_file.length, w->ali_file.data);
-            }
-
-            if (w->elaborate) fprintf(out, " E");
-            if (w->elaborate_all) fprintf(out, " EA");
-            fprintf(out, "\n");
-        }
-    }
-
-    /* D lines: Source dependencies */
-    fprintf(out, "\n");
-    for (uint32_t i = 0; i < ali->unit_count; i++) {
-        Unit_Info *u = &ali->units[i];
-        /* Self-dependency */
-        fprintf(out, "D %.*s 00000000 %08X\n",
-                (int)u->source_name.length, u->source_name.data,
-                u->source_checksum);
-    }
-    for (uint32_t i = 0; i < ali->with_count; i++) {
-        With_Info *w = &ali->withs[i];
-        if (w->source_file.data) {
-            fprintf(out, "D %.*s 00000000 00000000\n",
-                    (int)w->source_file.length, w->source_file.data);
-        }
-    }
-
-    /* X lines: Exported symbols (extended format for Ada83 separate compilation)
-     *
-     * Format: X kind name:line llvm_type @mangled [ada_type] [(params)]
-     *
-     *   kind: T=type, S=subtype, V=variable, C=constant, P=procedure, F=function, E=exception
-     *   llvm_type: LLVM IR type signature (i64, double, void, ptr, etc.)
-     *   @mangled: LLVM symbol name for linking
-     *   ada_type: Ada type name for typed symbols
-     *   (params): Parameter count for subprograms
-     *
-     * This provides everything needed to compile against the package without source:
-     *   - Type checking via ada_type
-     *   - Code generation via llvm_type and @mangled
-     *   - Linking via @mangled symbol references
-     */
-    if (ali->export_count > 0) {
-        fprintf(out, "\n");
-        for (uint32_t i = 0; i < ali->export_count; i++) {
-            Export_Info *x = &ali->exports[i];
-
-            /* X kind name:line */
-            fprintf(out, "X %c %.*s:%u",
-                    x->kind,
-                    (int)x->name.length, x->name.data,
-                    x->line);
-
-            /* llvm_type */
-            if (x->llvm_type.data) {
-                fprintf(out, " %.*s", (int)x->llvm_type.length, x->llvm_type.data);
-            } else {
-                fprintf(out, " i64");
-            }
-
-            /* @mangled */
-            if (x->mangled_name.data) {
-                fprintf(out, " @%.*s", (int)x->mangled_name.length, x->mangled_name.data);
-            }
-
-            /* ada_type (for typed symbols) */
-            if (x->type_name.data) {
-                fprintf(out, " %.*s", (int)x->type_name.length, x->type_name.data);
-            }
-
-            /* (params) for subprograms */
-            if (x->param_count > 0) {
-                fprintf(out, " (%u)", x->param_count);
-            }
-
-            fprintf(out, "\n");
-        }
-    }
-}
-
-/* ─────────────────────────────────────────────────────────────────────────
- * §15.6 Generate_ALI_File — Entry point for ALI generation
- * ───────────────────────────────────────────────────────────────────────── */
-
-static void Generate_ALI_File(const char *output_path,
-                              Syntax_Node **units, int unit_count,
-                              const char *source, size_t source_size,
-                              Symbol_Manager *sm) {
-    /* Build ALI path from output path (replace .ll with .ali) */
-    char ali_path[512];
-    size_t len = strlen(output_path);
-    if (len > 3 and strcmp(output_path + len - 3, ".ll") == 0) {
-        snprintf(ali_path, sizeof(ali_path), "%.*s.ali", (int)(len - 3), output_path);
-    } else {
-        snprintf(ali_path, sizeof(ali_path), "%s.ali", output_path);
-    }
-
-    FILE *ali_file = fopen(ali_path, "w");
-    if (not ali_file) {
-        fprintf(stderr, "Warning: cannot create ALI file '%s'\n", ali_path);
-        return;
-    }
-
-    /* Collect information from all compilation units */
-    ALI_Info ali = {0};
-    for (int i = 0; i < unit_count; i++) {
-        ALI_Collect_Unit(&ali, units[i], source, source_size, sm);
-    }
-
-    /* Write ALI file */
-    ALI_Write(ali_file, &ali);
-    fclose(ali_file);
-
-    fprintf(stderr, "Generated ALI file '%s'\n", ali_path);
-}
-
-/* ─────────────────────────────────────────────────────────────────────────
- * §15.7 ALI_Reader — Parse .ali files for dependency management
- *
- * We read ALI files to:
- *   1. Skip recompilation of unchanged units (checksum match)
- *   2. Load exported symbols from precompiled packages
- *   3. Track dependencies for elaboration ordering
- *   4. Find generic templates for instantiation
- * ───────────────────────────────────────────────────────────────────────── */
-
-/* Parsed export from X line */
-typedef struct {
-    char            kind;            /* T/S/V/C/P/F/E */
-    char           *name;            /* Ada symbol name */
-    char           *mangled_name;    /* LLVM symbol name for linking */
-    char           *llvm_type;       /* LLVM type signature */
-    uint32_t        line;            /* Source line */
-    char           *type_name;       /* Ada type name (or NULL) */
-    uint32_t        param_count;     /* For subprograms */
-} ALI_Export;
-
-/* Cached ALI information for loaded units
- * ALI_Cache_Entry is forward declared as ALI_Cache_Entry_Forward in the
- * Load_Package_Spec forward declarations section. */
-typedef struct ALI_Cache_Entry_Forward {
-    char           *unit_name;       /* Canonical name (e.g., "text_io") */
-    char           *source_file;     /* Source file name */
-    char           *ali_file;        /* ALI file path */
-    uint32_t        checksum;        /* Source checksum from ALI */
-    bool            is_spec;         /* true = spec, false = body */
-    bool            is_generic;      /* Generic unit */
-    bool            is_preelaborate; /* Has Preelaborate pragma */
-    bool            is_pure;         /* Has Pure pragma */
-    bool            loaded;          /* Symbols already loaded */
-
-    /* With dependencies */
-    char           *withs[64];       /* WITH'd unit names */
-    uint32_t        with_count;
-
-    /* Exported symbols from X lines */
-    ALI_Export      exports[256];
-    uint32_t        export_count;
-} ALI_Cache_Entry;
-
-/* Global ALI cache */
-static ALI_Cache_Entry ALI_Cache[256];
-static uint32_t        ALI_Cache_Count = 0;
-
-/* Skip whitespace */
-static const char *ALI_Skip_Ws(const char *p) {
-    while (*p == ' ' or *p == '\t') p++;
-    return p;
-}
-
-/* Read until whitespace or newline, return end pointer */
-static const char *ALI_Read_Token(const char *p, char *buf, size_t bufsize) {
-    p = ALI_Skip_Ws(p);
-    size_t i = 0;
-    while (*p and *p != ' ' and *p != '\t' and *p != '\n' and i < bufsize - 1) {
-        buf[i++] = *p++;
-    }
-    buf[i] = '\0';
-    return p;
-}
-
-/* Parse a hex value */
-static uint32_t ALI_Parse_Hex(const char *s) {
-    uint32_t val = 0;
-    while (*s) {
-        char c = *s++;
-        if (c >= '0' and c <= '9') val = (val << 4) | (c - '0');
-        else if (c >= 'A' and c <= 'F') val = (val << 4) | (c - 'A' + 10);
-        else if (c >= 'a' and c <= 'f') val = (val << 4) | (c - 'a' + 10);
-        else break;
-    }
-    return val;
-}
-
-/* Read and parse an ALI file, returning cache entry or NULL */
-static ALI_Cache_Entry *ALI_Read(const char *ali_path) {
-    /* Check if already cached */
-    for (uint32_t i = 0; i < ALI_Cache_Count; i++) {
-        if (ALI_Cache[i].ali_file and strcmp(ALI_Cache[i].ali_file, ali_path) == 0) {
-            return &ALI_Cache[i];
-        }
-    }
-
-    /* Read ALI file */
-    FILE *f = fopen(ali_path, "r");
-    if (not f) return NULL;
-
-    /* Allocate cache entry */
-    if (ALI_Cache_Count >= 256) {
-        fclose(f);
-        return NULL;
-    }
-    ALI_Cache_Entry *entry = &ALI_Cache[ALI_Cache_Count++];
-    memset(entry, 0, sizeof(*entry));
-    entry->ali_file = strdup(ali_path);
-
-    char line[1024];
-    char token[256];
-
-    while (fgets(line, sizeof(line), f)) {
-        const char *p = line;
-
-        if (line[0] == 'V') {
-            /* Version line: V "version" — reject if compiler build differs.
-             * This ensures stale ALI files from an older compiler rebuild
-             * are not reused; the unit will be reparsed from source. */
-            char ver[256] = {0};
-            const char *q = strchr(line, '"');
-            if (q) {
-                q++;
-                const char *end = strchr(q, '"');
-                if (end and (size_t)(end - q) < sizeof(ver)) {
-                    memcpy(ver, q, (size_t)(end - q));
-                    ver[end - q] = '\0';
-                }
-            }
-            if (strcmp(ver, ALI_VERSION) != 0) {
-                /* ALI was produced by a different compiler build — stale */
-                fclose(f);
-                ALI_Cache_Count--;  /* release the cache slot */
-                return NULL;
-            }
-            continue;
-        }
-        else if (line[0] == 'P') {
-            /* Parameters line: P flags */
-            continue;
-        }
-        else if (line[0] == 'U') {
-            /* Unit line: U name source checksum [flags] */
-            p = ALI_Read_Token(p + 1, token, sizeof(token));  /* Skip 'U' */
-
-            /* Unit name (with %s/%b suffix) */
-            char *pct = strchr(token, '%');
-            if (pct) {
-                entry->is_spec = (pct[1] == 's');
-                *pct = '\0';
-            }
-            entry->unit_name = strdup(token);
-
-            /* Source file */
-            p = ALI_Read_Token(p, token, sizeof(token));
-            entry->source_file = strdup(token);
-
-            /* Checksum */
-            p = ALI_Read_Token(p, token, sizeof(token));
-            entry->checksum = ALI_Parse_Hex(token);
-
-            /* Parse flags */
-            while (*p and *p != '\n') {
-                p = ALI_Read_Token(p, token, sizeof(token));
-                if (strcmp(token, "GE") == 0) entry->is_generic = true;
-                else if (strcmp(token, "PR") == 0) entry->is_preelaborate = true;
-                else if (strcmp(token, "PU") == 0) entry->is_pure = true;
-            }
-        }
-        else if (line[0] == 'W' or line[0] == 'Y' or line[0] == 'Z') {
-            /* With line: W/Y/Z name [source ali] [flags] */
-            p = ALI_Read_Token(p + 1, token, sizeof(token));
-
-            /* Strip %s/%b suffix */
-            char *pct = strchr(token, '%');
-            if (pct) *pct = '\0';
-
-            if (entry->with_count < 64) {
-                entry->withs[entry->with_count++] = strdup(token);
-            }
-        }
-        else if (line[0] == 'D') {
-            /* Dependency line: D source timestamp checksum — informational */
-            continue;
-        }
-        else if (line[0] == 'X') {
-            /* Export line: X kind name:line llvm_type @mangled [ada_type] [(params)]
-             *
-             * Example: X F Get_Value:9 i64 @test_exports__get_value Counter
-             */
-            if (entry->export_count >= 256) continue;
-
-            ALI_Export *exp = &entry->exports[entry->export_count];
-            memset(exp, 0, sizeof(*exp));
-
-            p = ALI_Skip_Ws(p + 1);  /* Skip 'X' */
-
-            /* Kind (single char: T/S/V/C/P/F/E) */
-            exp->kind = *p++;
-            p = ALI_Skip_Ws(p);
-
-            /* Name:line */
-            p = ALI_Read_Token(p, token, sizeof(token));
-            char *colon = strchr(token, ':');
-            if (colon) {
-                *colon = '\0';
-                exp->name = strdup(token);
-                exp->line = (uint32_t)atoi(colon + 1);
-            } else {
-                exp->name = strdup(token);
-                exp->line = 0;
-            }
-
-            /* llvm_type */
-            p = ALI_Skip_Ws(p);
-            if (*p and *p != '\n') {
-                p = ALI_Read_Token(p, token, sizeof(token));
-                if (token[0]) exp->llvm_type = strdup(token);
-            }
-
-            /* @mangled */
-            p = ALI_Skip_Ws(p);
-            if (*p == '@') {
-                p++;  /* Skip '@' */
-                p = ALI_Read_Token(p, token, sizeof(token));
-                if (token[0]) exp->mangled_name = strdup(token);
-            }
-
-            /* Remaining tokens: ada_type and/or (params) */
-            while (*p and *p != '\n') {
-                p = ALI_Skip_Ws(p);
-                if (*p == '(') {
-                    /* (params) */
-                    p = ALI_Read_Token(p, token, sizeof(token));
-                    exp->param_count = (uint32_t)atoi(token + 1);
-                } else if (*p and *p != '\n') {
-                    /* ada_type */
-                    p = ALI_Read_Token(p, token, sizeof(token));
-                    if (token[0] and token[0] != '(') {
-                        if (exp->type_name) free(exp->type_name);
-                        exp->type_name = strdup(token);
-                    }
-                }
-            }
-
-            entry->export_count++;
-        }
-    }
-
-    fclose(f);
-    return entry;
-}
-
-/* Check if an ALI file is up-to-date with its source */
-static bool ALI_Is_Current(const char *ali_path, const char *source_path) {
-    ALI_Cache_Entry *entry = ALI_Read(ali_path);
-    if (not entry) return false;
-
-    /* Read source and compute checksum */
-    size_t source_size;
-    char *source = Read_File(source_path, &source_size);
-    if (not source) return false;
-
-    uint32_t current_checksum = Crc32(source, source_size);
-    free(source);
-
-    return (current_checksum == entry->checksum);
-}
-
-/* Find ALI file for a unit name in include paths */
-static char *ALI_Find(String_Slice unit_name) {
-    static char path_buf[512];
-    char file_buf[256];
-
-    /* Convert unit name to file name (lowercase, dots to hyphens) */
-    size_t j = 0;
-    for (size_t i = 0; i < unit_name.length and j < sizeof(file_buf) - 5; i++) {
-        char c = unit_name.data[i];
-        if (c == '.') file_buf[j++] = '-';
-        else if (c >= 'A' and c <= 'Z') file_buf[j++] = c - 'A' + 'a';
-        else file_buf[j++] = c;
-    }
-    file_buf[j] = '\0';
-
-    /* Try each include path */
-    for (uint32_t i = 0; i < Include_Path_Count; i++) {
-        snprintf(path_buf, sizeof(path_buf), "%s/%s.ali", Include_Paths[i], file_buf);
-        if (access(path_buf, R_OK) == 0) {
-            return path_buf;
-        }
-    }
-
-    return NULL;
-}
-
-/* Load symbols from an ALI file into the symbol manager */
-static void ALI_Load_Symbols(Symbol_Manager *sm, ALI_Cache_Entry *entry) {
-    if (not entry or entry->loaded) return;
-    entry->loaded = true;
-
-    /* Recursively load dependencies first */
-    for (uint32_t i = 0; i < entry->with_count; i++) {
-        char *dep_ali = ALI_Find((String_Slice){entry->withs[i], strlen(entry->withs[i])});
-        if (dep_ali) {
-            ALI_Cache_Entry *dep = ALI_Read(dep_ali);
-            if (dep) ALI_Load_Symbols(sm, dep);
-        }
-    }
-
-    /* For specs, create package symbol and exports */
-    if (not entry->is_spec or entry->export_count == 0) return;
-
-    String_Slice pkg_name = {entry->unit_name, strlen(entry->unit_name)};
-
-    /* Check if package already exists */
-    Symbol *pkg_sym = Symbol_Find(sm, pkg_name);
-    if (pkg_sym) return;
-
-    /* Create package symbol */
-    Source_Location loc = {entry->source_file, 1, 1};
-    pkg_sym = Symbol_New(SYMBOL_PACKAGE, pkg_name, loc);
-    pkg_sym->type = Type_New(TYPE_PACKAGE, pkg_name);
-    Symbol_Add(sm, pkg_sym);
-
-    /* Allocate exported array for qualified access */
-    if (entry->export_count > 0) {
-        pkg_sym->exported = Arena_Allocate(entry->export_count * sizeof(Symbol*));
-        pkg_sym->exported_count = 0;
-    }
-
-    /* Push package scope to add exports */
-    Symbol_Manager_Push_Scope(sm, pkg_sym);
-
-    /* Create symbols from exports
-     *
-     * The mangled_name from ALI becomes external_name on Symbol,
-     * enabling direct LLVM references without re-mangling.
-     */
-    for (uint32_t i = 0; i < entry->export_count; i++) {
-        ALI_Export *exp = &entry->exports[i];
-        String_Slice name = {exp->name, strlen(exp->name)};
-        String_Slice mangled = exp->mangled_name ?
-            (String_Slice){exp->mangled_name, strlen(exp->mangled_name)} : (String_Slice){0};
-        Source_Location exp_loc = {entry->source_file, exp->line, 1};
-
-        Symbol *sym = NULL;
-        switch (exp->kind) {
-            case 'T': {
-                /* Type: create type symbol with proper bounds later */
-                sym = Symbol_New(SYMBOL_TYPE, name, exp_loc);
-                Type_Info *t = Type_New(TYPE_INTEGER, name);
-                sym->type = t;
-                break;
-            }
-            case 'S': {
-                /* Subtype: link to base type */
-                sym = Symbol_New(SYMBOL_SUBTYPE, name, exp_loc);
-                if (exp->type_name) {
-                    String_Slice base = {exp->type_name, strlen(exp->type_name)};
-                    Symbol *base_sym = Symbol_Find(sm, base);
-                    sym->type = base_sym ? base_sym->type : Type_New(TYPE_INTEGER, base);
-                } else {
-                    sym->type = Type_New(TYPE_INTEGER, name);
-                }
-                break;
-            }
-            case 'V': {
-                /* Variable: external reference */
-                sym = Symbol_New(SYMBOL_VARIABLE, name, exp_loc);
-                sym->is_imported = true;
-                sym->external_name = mangled;
-                if (exp->type_name) {
-                    String_Slice tn = {exp->type_name, strlen(exp->type_name)};
-                    Symbol *ts = Symbol_Find(sm, tn);
-                    sym->type = ts ? ts->type : Type_New(TYPE_INTEGER, tn);
-                }
-                break;
-            }
-            case 'C': {
-                /* Constant: external reference */
-                sym = Symbol_New(SYMBOL_CONSTANT, name, exp_loc);
-                sym->is_imported = true;
-                sym->external_name = mangled;
-                if (exp->type_name) {
-                    String_Slice tn = {exp->type_name, strlen(exp->type_name)};
-                    Symbol *ts = Symbol_Find(sm, tn);
-                    sym->type = ts ? ts->type : Type_New(TYPE_INTEGER, tn);
-                }
-                break;
-            }
-            case 'P': {
-                /* Procedure: external subprogram declaration */
-                sym = Symbol_New(SYMBOL_PROCEDURE, name, exp_loc);
-                sym->is_imported = true;
-                sym->external_name = mangled;
-                sym->parameter_count = exp->param_count;
-                break;
-            }
-            case 'F': {
-                /* Function: external subprogram declaration */
-                sym = Symbol_New(SYMBOL_FUNCTION, name, exp_loc);
-                sym->is_imported = true;
-                sym->external_name = mangled;
-                sym->parameter_count = exp->param_count;
-                if (exp->type_name) {
-                    String_Slice tn = {exp->type_name, strlen(exp->type_name)};
-                    Symbol *ts = Symbol_Find(sm, tn);
-                    sym->return_type = ts ? ts->type : Type_New(TYPE_INTEGER, tn);
-                    sym->type = sym->return_type;  /* For consistency */
-                }
-                break;
-            }
-            case 'E': {
-                /* Exception: external exception identity */
-                sym = Symbol_New(SYMBOL_EXCEPTION, name, exp_loc);
-                sym->is_imported = true;
-                sym->external_name = mangled;
-                break;
-            }
-        }
-
-        if (sym) {
-            sym->parent = pkg_sym;  /* Set parent for proper scoping */
-            Symbol_Add(sm, sym);
-            /* Also add to package exported list for qualified access */
-            if (pkg_sym->exported_count < 256) {
-                pkg_sym->exported[pkg_sym->exported_count++] = sym;
-            }
-        }
-    }
-
-    Symbol_Manager_Pop_Scope(sm);
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════
- * §16. GENERIC EXPANSION - Macro-style instantiation
- * ═══════════════════════════════════════════════════════════════════════════
- *
- * GNAT implements generics via macro expansion (sem_ch12.adb):
- *   1. Parse generic declaration → store template AST
- *   2. On instantiation: clone template, substitute actuals
- *   3. Analyze cloned tree with actual types
- *   4. Generate code for each instantiation separately
- *
- * Key insight: We do NOT share code between instantiations. Each instance
- * gets its own copy with types fully substituted.
- */
-
-/* ─────────────────────────────────────────────────────────────────────────
- * §16.1 Instantiation_Env — Formal-to-actual mapping
- *
- * Instead of mutating nodes, we carry substitution environment through.
- * ───────────────────────────────────────────────────────────────────────── */
-
-typedef struct {
-    String_Slice  formal_name;    /* Generic formal parameter name */
-    Type_Info    *actual_type;    /* Substituted actual type */
-    Symbol       *actual_symbol;  /* Actual symbol (for subprogram formals) */
-    Syntax_Node  *actual_expr;    /* Actual expression (for object formals) */
-} Generic_Mapping;
-
-typedef struct {
-    Generic_Mapping  mappings[32];
-    uint32_t         count;
-    Symbol          *instance_sym;   /* The instantiation symbol */
-    Symbol          *template_sym;   /* The generic template symbol */
-} Instantiation_Env;
-
-/* ─────────────────────────────────────────────────────────────────────────
- * §16.2 Instantiation_Env helpers
- * ───────────────────────────────────────────────────────────────────────── */
-
-static Type_Info *Env_Lookup_Type(Instantiation_Env *env, String_Slice name) {
-    for (uint32_t i = 0; i < env->count; i++) {
-        if (Slice_Equal_Ignore_Case(env->mappings[i].formal_name, name))
-            return env->mappings[i].actual_type;
-    }
-    return NULL;
-}
-
-static Symbol *Env_Lookup_Symbol(Instantiation_Env *env, String_Slice name) {
-    for (uint32_t i = 0; i < env->count; i++) {
-        if (Slice_Equal_Ignore_Case(env->mappings[i].formal_name, name))
-            return env->mappings[i].actual_symbol;
-    }
-    return NULL;
-}
-
-static Syntax_Node *Env_Lookup_Expr(Instantiation_Env *env, String_Slice name) {
-    for (uint32_t i = 0; i < env->count; i++) {
-        if (Slice_Equal_Ignore_Case(env->mappings[i].formal_name, name))
-            return env->mappings[i].actual_expr;
-    }
-    return NULL;
-}
-
-/* ─────────────────────────────────────────────────────────────────────────
- * §16.3 Node_Deep_Clone — Deep copy with environment substitution
- *
- * Unlike the existing node_clone_substitute, this:
- *   • ALWAYS allocates new nodes (no aliasing)
- *   • Uses recursion depth tracking with proper error
- *   • Carries environment for type substitution
- * ───────────────────────────────────────────────────────────────────────── */
-
-static Syntax_Node *Node_Deep_Clone(Syntax_Node *node, Instantiation_Env *env,
-                                    int depth);
-
-/* Clone a node list */
-static void Node_List_Clone(Node_List *dst, Node_List *src,
-                            Instantiation_Env *env, int depth) {
-    dst->count = 0;
-    dst->capacity = 0;
-    dst->items = NULL;
-    for (uint32_t i = 0; i < src->count; i++) {
-        Syntax_Node *cloned = Node_Deep_Clone(src->items[i], env, depth);
-        Node_List_Push(dst, cloned);
-    }
-}
-
-static Syntax_Node *Node_Deep_Clone(Syntax_Node *node, Instantiation_Env *env,
-                                    int depth) {
-    if (not node) return NULL;
-
-    /* Depth limit with REAL error, not silent aliasing */
-    if (depth > 500) {
-        Report_Error(node->location, "generic instantiation too deeply nested");
-        return NULL;
-    }
-
-    /* Allocate fresh node */
-    Syntax_Node *n = Arena_Allocate(sizeof(Syntax_Node));
-    memset(n, 0, sizeof(Syntax_Node));  /* Zero-init ALL fields */
-    n->kind = node->kind;
-    n->location = node->location;
-    n->type = node->type;
-    n->symbol = NULL;  /* Symbols will be re-resolved */
-
-    switch (node->kind) {
-        case NK_IDENTIFIER:
-            /* Check for expression substitution (formal object parameters) */
-            if (env) {
-                Syntax_Node *expr_subst = Env_Lookup_Expr(env, node->string_val.text);
-                if (expr_subst) {
-                    /* Return a clone of the actual expression instead.
-                     * The 'n' node becomes garbage but arena will reclaim it. */
-                    return Node_Deep_Clone(expr_subst, env, depth + 1);
-                }
-            }
-            n->string_val = node->string_val;
-            /* Check for type substitution */
-            if (env) {
-                Type_Info *subst = Env_Lookup_Type(env, node->string_val.text);
-                if (subst) n->type = subst;
-            }
-            break;
-
-        case NK_INTEGER:
-            n->integer_lit = node->integer_lit;
-            break;
-
-        case NK_REAL:
-            n->real_lit = node->real_lit;
-            break;
-
-        case NK_STRING:
-        case NK_CHARACTER:
-            n->string_val = node->string_val;
-            break;
-
-        case NK_BINARY_OP:
-            n->binary.op = node->binary.op;
-            n->binary.left = Node_Deep_Clone(node->binary.left, env, depth + 1);
-            n->binary.right = Node_Deep_Clone(node->binary.right, env, depth + 1);
-            break;
-
-        case NK_UNARY_OP:
-            n->unary.op = node->unary.op;
-            n->unary.operand = Node_Deep_Clone(node->unary.operand, env, depth + 1);
-            break;
-
-        case NK_ATTRIBUTE:
-            n->attribute.prefix = Node_Deep_Clone(node->attribute.prefix, env, depth + 1);
-            n->attribute.name = node->attribute.name;
-            Node_List_Clone(&n->attribute.arguments, &node->attribute.arguments, env, depth + 1);
-            break;
-
-        case NK_APPLY:
-            n->apply.prefix = Node_Deep_Clone(node->apply.prefix, env, depth + 1);
-            Node_List_Clone(&n->apply.arguments, &node->apply.arguments, env, depth + 1);
-            break;
-
-        case NK_SELECTED:
-            n->selected.prefix = Node_Deep_Clone(node->selected.prefix, env, depth + 1);
-            n->selected.selector = node->selected.selector;  /* String_Slice, not a node */
-            break;
-
-        case NK_AGGREGATE:
-            Node_List_Clone(&n->aggregate.items, &node->aggregate.items, env, depth + 1);
-            n->aggregate.is_named = node->aggregate.is_named;
-            break;
-
-        case NK_ASSOCIATION:
-            Node_List_Clone(&n->association.choices, &node->association.choices, env, depth + 1);
-            n->association.expression = Node_Deep_Clone(node->association.expression, env, depth + 1);
-            break;
-
-        case NK_RANGE:
-            n->range.low = Node_Deep_Clone(node->range.low, env, depth + 1);
-            n->range.high = Node_Deep_Clone(node->range.high, env, depth + 1);
-            break;
-
-        case NK_OBJECT_DECL:
-            Node_List_Clone(&n->object_decl.names, &node->object_decl.names, env, depth + 1);
-            n->object_decl.object_type = Node_Deep_Clone(node->object_decl.object_type, env, depth + 1);
-            n->object_decl.init = Node_Deep_Clone(node->object_decl.init, env, depth + 1);
-            n->object_decl.is_constant = node->object_decl.is_constant;
-            n->object_decl.is_rename = node->object_decl.is_rename;
-            break;
-
-        case NK_TYPE_DECL:
-        case NK_SUBTYPE_DECL:
-            n->type_decl.name = node->type_decl.name;
-            n->type_decl.definition = Node_Deep_Clone(node->type_decl.definition, env, depth + 1);
-            Node_List_Clone(&n->type_decl.discriminants, &node->type_decl.discriminants, env, depth + 1);
-            break;
-
-        case NK_PROCEDURE_BODY:
-        case NK_FUNCTION_BODY:
-            n->subprogram_body.specification = Node_Deep_Clone(node->subprogram_body.specification, env, depth + 1);
-            Node_List_Clone(&n->subprogram_body.declarations, &node->subprogram_body.declarations, env, depth + 1);
-            Node_List_Clone(&n->subprogram_body.statements, &node->subprogram_body.statements, env, depth + 1);
-            Node_List_Clone(&n->subprogram_body.handlers, &node->subprogram_body.handlers, env, depth + 1);
-            n->subprogram_body.is_separate = node->subprogram_body.is_separate;
-            break;
-
-        case NK_PROCEDURE_SPEC:
-        case NK_FUNCTION_SPEC:
-            n->subprogram_spec.name = node->subprogram_spec.name;
-            Node_List_Clone(&n->subprogram_spec.parameters, &node->subprogram_spec.parameters, env, depth + 1);
-            n->subprogram_spec.return_type = Node_Deep_Clone(node->subprogram_spec.return_type, env, depth + 1);
-            n->subprogram_spec.renamed = Node_Deep_Clone(node->subprogram_spec.renamed, env, depth + 1);
-            break;
-
-        case NK_PARAM_SPEC:
-            Node_List_Clone(&n->param_spec.names, &node->param_spec.names, env, depth + 1);
-            n->param_spec.mode = node->param_spec.mode;
-            n->param_spec.param_type = Node_Deep_Clone(node->param_spec.param_type, env, depth + 1);
-            n->param_spec.default_expr = Node_Deep_Clone(node->param_spec.default_expr, env, depth + 1);
-            break;
-
-        case NK_PACKAGE_SPEC:
-            n->package_spec.name = node->package_spec.name;
-            Node_List_Clone(&n->package_spec.visible_decls, &node->package_spec.visible_decls, env, depth + 1);
-            Node_List_Clone(&n->package_spec.private_decls, &node->package_spec.private_decls, env, depth + 1);
-            break;
-
-        case NK_PACKAGE_BODY:
-            n->package_body.name = node->package_body.name;
-            Node_List_Clone(&n->package_body.declarations, &node->package_body.declarations, env, depth + 1);
-            Node_List_Clone(&n->package_body.statements, &node->package_body.statements, env, depth + 1);
-            Node_List_Clone(&n->package_body.handlers, &node->package_body.handlers, env, depth + 1);
-            break;
-
-        case NK_ASSIGNMENT:
-        case NK_CALL_STMT:  /* Reuses assignment.target field */
-            n->assignment.target = Node_Deep_Clone(node->assignment.target, env, depth + 1);
-            n->assignment.value = Node_Deep_Clone(node->assignment.value, env, depth + 1);
-            break;
-
-        case NK_IF:
-            n->if_stmt.condition = Node_Deep_Clone(node->if_stmt.condition, env, depth + 1);
-            Node_List_Clone(&n->if_stmt.then_stmts, &node->if_stmt.then_stmts, env, depth + 1);
-            Node_List_Clone(&n->if_stmt.elsif_parts, &node->if_stmt.elsif_parts, env, depth + 1);
-            Node_List_Clone(&n->if_stmt.else_stmts, &node->if_stmt.else_stmts, env, depth + 1);
-            break;
-
-        case NK_LOOP:
-            n->loop_stmt.label = node->loop_stmt.label;
-            n->loop_stmt.iteration_scheme = Node_Deep_Clone(node->loop_stmt.iteration_scheme, env, depth + 1);
-            Node_List_Clone(&n->loop_stmt.statements, &node->loop_stmt.statements, env, depth + 1);
-            n->loop_stmt.is_reverse = node->loop_stmt.is_reverse;
-            break;
-
-        case NK_RETURN:
-            n->return_stmt.expression = Node_Deep_Clone(node->return_stmt.expression, env, depth + 1);
-            break;
-
-        case NK_BLOCK:
-            n->block_stmt.label = node->block_stmt.label;
-            Node_List_Clone(&n->block_stmt.declarations, &node->block_stmt.declarations, env, depth + 1);
-            Node_List_Clone(&n->block_stmt.statements, &node->block_stmt.statements, env, depth + 1);
-            Node_List_Clone(&n->block_stmt.handlers, &node->block_stmt.handlers, env, depth + 1);
-            break;
-
-        case NK_CASE:
-            n->case_stmt.expression = Node_Deep_Clone(node->case_stmt.expression, env, depth + 1);
-            Node_List_Clone(&n->case_stmt.alternatives, &node->case_stmt.alternatives, env, depth + 1);
-            break;
-
-        case NK_EXIT:
-            n->exit_stmt.loop_name = node->exit_stmt.loop_name;
-            n->exit_stmt.condition = Node_Deep_Clone(node->exit_stmt.condition, env, depth + 1);
-            break;
-
-        case NK_NULL_STMT:
-        case NK_OTHERS:
-            /* No fields to copy */
-            break;
-
-        default:
-            /* For node kinds not explicitly handled, do shallow copy.
-             * This is safer than the original which returned aliased nodes. */
-            *n = *node;
-            n->symbol = NULL;
-            break;
-    }
-
-    return n;
-}
-
-/* ─────────────────────────────────────────────────────────────────────────
- * §16.4 Build_Instantiation_Env — Create mapping from formals to actuals
- * ───────────────────────────────────────────────────────────────────────── */
-
-static void Build_Instantiation_Env(Instantiation_Env *env,
-                                    Symbol *template_sym,
-                                    Symbol *instance_sym,
-                                    Symbol_Manager *sm) {
-    env->count = 0;
-    env->template_sym = template_sym;
-    env->instance_sym = instance_sym;
-
-    if (not template_sym or not template_sym->declaration) return;
-
-    Syntax_Node *gen_decl = template_sym->declaration;
-    if (gen_decl->kind != NK_GENERIC_DECL) return;
-
-    Node_List *formals = &gen_decl->generic_decl.formals;
-
-    /* Use pre-resolved actuals from instance symbol */
-    for (uint32_t i = 0; i < instance_sym->generic_actual_count and i < 32; i++) {
-        Generic_Mapping *m = &env->mappings[env->count++];
-        m->formal_name = instance_sym->generic_actuals[i].formal_name;
-        m->actual_type = instance_sym->generic_actuals[i].actual_type;
-        m->actual_symbol = NULL;
-        m->actual_expr = NULL;
-
-        /* For object/subprogram formals, populate additional fields */
-        if (i < formals->count) {
-            Syntax_Node *formal = formals->items[i];
-            if (formal->kind == NK_GENERIC_OBJECT_PARAM) {
-                /* Store expression for object formals */
-                m->actual_expr = instance_sym->generic_actuals[i].actual_expr;
-            } else if (formal->kind == NK_GENERIC_SUBPROGRAM_PARAM) {
-                /* Store actual subprogram symbol for substitution during clone */
-                m->actual_symbol = instance_sym->generic_actuals[i].actual_subprogram;
-            }
-        }
-    }
-}
-
-/* ─────────────────────────────────────────────────────────────────────────
- * §16.5 Expand_Generic_Package — Full instantiation of generic package
- *
- * This implements the GNAT strategy:
- *   1. Clone the package spec with type substitutions
- *   2. Clone the package body (if found)
- *   3. Resolve cloned trees with actual types
- *   4. Store expanded body for code generation
- * ───────────────────────────────────────────────────────────────────────── */
-
-static void Expand_Generic_Package(Symbol_Manager *sm, Symbol *instance_sym) {
-    if (not instance_sym or not instance_sym->generic_template) return;
-
-    Symbol *template = instance_sym->generic_template;
-    if (not template->generic_unit) return;
-
-    /* Build substitution environment */
-    Instantiation_Env env;
-    Build_Instantiation_Env(&env, template, instance_sym, sm);
-
-    /* Clone the package spec */
-    Syntax_Node *spec_clone = Node_Deep_Clone(template->generic_unit, &env, 0);
-    if (spec_clone) {
-        /* Rename to instance name */
-        if (spec_clone->kind == NK_PACKAGE_SPEC) {
-            spec_clone->package_spec.name = instance_sym->name;
-        }
-
-        /* Store for later processing */
-        instance_sym->expanded_spec = spec_clone;
-    }
-
-    /* Try to find and clone the package body */
-    String_Slice pkg_name = template->generic_unit->kind == NK_PACKAGE_SPEC ?
-                            template->generic_unit->package_spec.name :
-                            template->name;
-
-    char *body_src = Lookup_Path_Body(pkg_name);
-    if (body_src) {
-        /* Parse the body */
-        char body_filename[256];
-        snprintf(body_filename, sizeof(body_filename), "%.*s.adb",
-                 (int)pkg_name.length, pkg_name.data);
-        Parser body_parser = Parser_New(body_src, strlen(body_src), body_filename);
-        Syntax_Node *body_cu = Parse_Compilation_Unit(&body_parser);
-
-        if (body_cu and body_cu->compilation_unit.unit and
-            body_cu->compilation_unit.unit->kind == NK_PACKAGE_BODY) {
-
-            /* Clone with substitutions */
-            Syntax_Node *body_clone = Node_Deep_Clone(
-                body_cu->compilation_unit.unit, &env, 0);
-
-            if (body_clone) {
-                /* Rename to instance name */
-                body_clone->package_body.name = instance_sym->name;
-
-                /* Store expanded body */
-                instance_sym->expanded_body = body_clone;
-            }
-        }
-    }
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════
  * §17. MAIN DRIVER
  * ═══════════════════════════════════════════════════════════════════════════
  */
-
-static char *Read_File(const char *path, size_t *out_size) {
-    FILE *f = fopen(path, "rb");
-    if (not f) return NULL;
-
-    fseek(f, 0, SEEK_END);
-    long fsize = ftell(f);
-    if (fsize < 0) { fclose(f); return NULL; }
-    size_t size = (size_t)fsize;
-    fseek(f, 0, SEEK_SET);
-
-    char *buffer = malloc(size + 1);
-    if (not buffer) { fclose(f); return NULL; }
-
-    size_t read = fread(buffer, 1, size, f);
-    fclose(f);
-
-    buffer[read] = '\0';
-    *out_size = read;
-    return buffer;
-}
 
 static void Compile_File(const char *input_path, const char *output_path) {
     /* Reset loaded bodies for this compilation */
