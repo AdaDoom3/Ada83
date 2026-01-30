@@ -49,6 +49,30 @@
 /* Fat pointer size in bytes: ptr(8) + ptr(8) = 16 always. */
 #define FAT_PTR_ALLOC_SIZE  16
 
+/* ─── Configurable default bound type for STRING ───────────────────────
+ *
+ * GNAT LLVM derives the bound type from the index subtype's base type
+ * (see Index_Bounds.Bound_Sub_GT in gnatllvm-arrays.ads).  For STRING,
+ * the index type is POSITIVE whose base is Standard.INTEGER.
+ *
+ * At runtime the primary path derives the bound type from the type system
+ * via Array_Bound_Llvm_Type() → Type_To_Llvm(index_type).  These macros
+ * exist ONLY as a compile-time backstop for the RTS preamble (emitted
+ * before the type system is consulted) and for safety-net fallbacks
+ * where the type is genuinely unavailable.
+ *
+ * The values MUST match Type_To_Llvm(Standard.INTEGER).  With 8-byte
+ * INTEGER (64-bit), the bound type is i64.  To switch to 32-bit
+ * INTEGER, change type_integer->size to 4 AND these four macros.
+ *
+ * Array types whose index type is NOT INTEGER derive their bound type
+ * dynamically via Array_Bound_Llvm_Type().
+ */
+#define STRING_BOUND_TYPE   "i64"            /* LLVM IR type for STRING bounds  */
+#define STRING_BOUND_WIDTH  64               /* Width in bits                    */
+#define STRING_BOUNDS_STRUCT "{ i64, i64 }"  /* Bounds struct for STRING        */
+#define STRING_BOUNDS_ALLOC 16               /* sizeof(STRING bounds struct)     */
+
 /* Check if an LLVM type string represents a fat pointer type.
  * With the uniform { ptr, ptr } layout, this is an exact match. */
 static inline bool Llvm_Type_Is_Fat_Pointer(const char *ty) {
@@ -6337,7 +6361,7 @@ static const char *Type_To_Llvm(Type_Info *t) {
 static const char *Array_Bound_Llvm_Type(const Type_Info *t) {
     if (!t) {
         fprintf(stderr, "BUG: Array_Bound_Llvm_Type called with NULL\n");
-        return "i32";  /* safety net only */
+        return STRING_BOUND_TYPE;  /* safety net — default STRING bound type */
     }
     /* Access → designated type */
     if (t->kind == TYPE_ACCESS && t->access.designated_type)
@@ -6345,14 +6369,21 @@ static const char *Array_Bound_Llvm_Type(const Type_Info *t) {
     /* Private/incomplete → parent */
     if ((Type_Is_Private(t) || t->kind == TYPE_INCOMPLETE) && t->parent_type)
         return Array_Bound_Llvm_Type(t->parent_type);
-    /* STRING → POSITIVE index → INTEGER (i32) */
-    if (t->kind == TYPE_STRING) return "i32";
+    /* STRING → derive bound type from index type (POSITIVE → INTEGER).
+     * GNAT LLVM style: Bound_Sub_GT from index subtype's base type. */
+    if (t->kind == TYPE_STRING) {
+        if (t->array.index_count > 0 && t->array.indices &&
+            t->array.indices[0].index_type) {
+            return Type_To_Llvm(t->array.indices[0].index_type);
+        }
+        return STRING_BOUND_TYPE;  /* pre-init fallback only */
+    }
     if (t->kind != TYPE_ARRAY) {
         fprintf(stderr, "BUG: Array_Bound_Llvm_Type: non-array kind %d '%.*s'\n",
                 t->kind, (int)t->name.length, t->name.data);
-        return "i32";  /* safety net only */
+        return STRING_BOUND_TYPE;  /* safety net — default STRING bound type */
     }
-    /* Resolve from index_type */
+    /* Resolve from index_type — GNAT LLVM style: use Bound_Sub_GT */
     if (t->array.index_count > 0 && t->array.indices &&
         t->array.indices[0].index_type) {
         return Type_To_Llvm(t->array.indices[0].index_type);
@@ -6368,10 +6399,10 @@ static const char *Array_Bound_Llvm_Type(const Type_Info *t) {
             return Llvm_Int_Type(Bits_For_Range(lb.int_value, hb.int_value));
         }
     }
-    /* Last resort: INTEGER is the standard index type in Ada83 */
+    /* Last resort: INTEGER is the standard index type in Ada 83 */
     fprintf(stderr, "note: Array_Bound_Llvm_Type: no index type for '%.*s'\n",
             (int)t->name.length, t->name.data);
-    return "i32";
+    return STRING_BOUND_TYPE;
 }
 
 /* Get the LLVM bounds struct type string for a given bound type.
@@ -6382,13 +6413,13 @@ static const char *Bounds_Type_For(const char *bt) {
     /* GNAT LLVM style: bounds struct uses the NATIVE index type.
      * e.g. Bounds_Type_For("i32") → "{ i32, i32 }"
      * See gnatllvm-arrays-create.adb:586-636. */
-    if (!bt) return "{ i32, i32 }";
+    if (!bt) return STRING_BOUNDS_STRUCT;  /* default STRING bound type */
     if (strcmp(bt, "i8")  == 0) return "{ i8, i8 }";
     if (strcmp(bt, "i16") == 0) return "{ i16, i16 }";
     if (strcmp(bt, "i32") == 0) return "{ i32, i32 }";
     if (strcmp(bt, "i64") == 0) return "{ i64, i64 }";
-    /* Fallback for unknown types — use i32 (Ada INTEGER default) */
-    return "{ i32, i32 }";
+    /* Fallback for unknown types — use configurable STRING default */
+    return STRING_BOUNDS_STRUCT;
 }
 
 /* Return the allocation size in bytes for a bounds struct { bt, bt }.
@@ -6396,12 +6427,12 @@ static const char *Bounds_Type_For(const char *bt) {
 static int Bounds_Alloc_Size(const char *bt) {
     /* GNAT LLVM style: size depends on native index type.
      * { i8, i8 } = 2, { i16, i16 } = 4, { i32, i32 } = 8, { i64, i64 } = 16. */
-    if (!bt) return 8;
+    if (!bt) return STRING_BOUNDS_ALLOC;  /* default STRING bound type */
     if (strcmp(bt, "i8")  == 0) return 2;
     if (strcmp(bt, "i16") == 0) return 4;
     if (strcmp(bt, "i32") == 0) return 8;
     if (strcmp(bt, "i64") == 0) return 16;
-    return 8;
+    return STRING_BOUNDS_ALLOC;  /* default STRING bound type */
 }
 
 
@@ -7387,6 +7418,11 @@ static void Symbol_Manager_Init_Predefined(Symbol_Manager *sm) {
     sm->type_string = Type_New(TYPE_STRING, S("STRING"));
     sm->type_string->size = 16;  /* Fat pointer: ptr + length */
     sm->type_string->array.element_type = sm->type_character;  /* STRING is array of CHARACTER */
+    /* STRING's index type is POSITIVE (RM 3.6.3).  Wire it into the type
+     * system so Array_Bound_Llvm_Type can derive the bound type from the
+     * index, exactly as GNAT LLVM's Bound_Sub_GT is derived from the index
+     * subtype's base type (see gnatllvm-arrays-create.adb).
+     * NOTE: type_positive is allocated below; we back-patch after it exists. */
 
     /* DURATION is a predefined fixed-point type for time intervals */
     sm->type_duration = Type_New(TYPE_FIXED, S("DURATION"));
@@ -7427,6 +7463,17 @@ static void Symbol_Manager_Init_Predefined(Symbol_Manager *sm) {
     type_positive->high_bound = sm->type_integer->high_bound;
     sym_positive->type = type_positive;
     Symbol_Add(sm, sym_positive);
+
+    /* Back-patch STRING's index type to POSITIVE (deferred from above).
+     * This makes Array_Bound_Llvm_Type derive STRING's bound type from
+     * POSITIVE's base type (INTEGER), matching GNAT LLVM's Bound_Sub_GT. */
+    sm->type_string->array.indices = Arena_Allocate(sizeof(Index_Info));
+    sm->type_string->array.index_count = 1;
+    sm->type_string->array.indices[0].index_type = type_positive;
+    sm->type_string->array.indices[0].low_bound =
+        (Type_Bound){ .kind = BOUND_INTEGER, .int_value = 1 };
+    sm->type_string->array.indices[0].high_bound =
+        sm->type_integer->high_bound;
 
     Symbol *sym_float = Symbol_New(SYMBOL_TYPE, S("FLOAT"), No_Location);
     sym_float->type = sm->type_float;
@@ -12699,6 +12746,39 @@ static Code_Generator *Code_Generator_New(FILE *output, Symbol_Manager *sm) {
     return cg;
 }
 
+/* ─────────────────────────────────────────────────────────────────────────
+ * §13.1.1 Type-Derived Codegen Helpers
+ *
+ * GNAT LLVM never hardcodes type widths — it derives them from the front-end
+ * type system (see GL_Type, Bound_Sub_GT).  These helpers do the same: they
+ * query cg->sm to derive LLVM IR types from the Ada type system at the point
+ * of emission, so every codegen site gets its types from a single source.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/* Derive the LLVM bound type for STRING from the type system.
+ * Follows: STRING → index_type (POSITIVE) → Type_To_Llvm → Llvm_Int_Type.
+ * This is GNAT LLVM's Bound_Sub_GT path. */
+static inline const char *String_Bound_Type(const Code_Generator *cg) {
+    return Array_Bound_Llvm_Type(cg->sm->type_string);
+}
+
+/* Derive the LLVM bounds struct type for STRING: "{ bt, bt }". */
+static inline const char *String_Bounds_Struct(const Code_Generator *cg) {
+    return Bounds_Type_For(String_Bound_Type(cg));
+}
+
+/* Derive the LLVM allocation size for STRING bounds struct. */
+static inline int String_Bounds_Alloc(const Code_Generator *cg) {
+    return Bounds_Alloc_Size(String_Bound_Type(cg));
+}
+
+/* Derive the LLVM type for Standard.INTEGER (the universal arithmetic type).
+ * In GNAT LLVM, integer computation uses the GL_Type of Standard.Integer.
+ * This replaces hardcoded "i64" in expression evaluation paths. */
+static inline const char *Integer_Arith_Type(const Code_Generator *cg) {
+    return Type_To_Llvm(cg->sm->type_integer);
+}
+
 /* Emit to string constant buffer instead of main output */
 static void Emit_String_Const(Code_Generator *cg, const char *format, ...) {
     va_list args;
@@ -13765,6 +13845,37 @@ static void Emit_Fat_Pointer_Extractvalue_Named(Code_Generator *cg,
     Emit(cg, "  %%%s_gep = getelementptr %s, ptr %%%s_bptr, i32 0, i32 1\n",
          high_name, bst, src_name);
     Emit(cg, "  %%%s = load %s, ptr %%%s_gep\n", high_name, bt, high_name);
+}
+
+/* Emit a named-SSA widen from bound type to i64.
+ * If bt is already "i64", emits a no-op copy (bitcast or alias).
+ * src_name:  name of the source SSA value (in bt)
+ * dst_name:  name for the widened i64 value
+ * bt:        the bound type string */
+static void Emit_Widen_Named_To_I64(Code_Generator *cg,
+    const char *src_name, const char *dst_name, const char *bt)
+{
+    if (strcmp(bt, "i64") == 0) {
+        /* Already i64 — emit a trivial add-0 to create the alias */
+        Emit(cg, "  %%%s = add i64 %%%s, 0\n", dst_name, src_name);
+    } else {
+        Emit(cg, "  %%%s = sext %s %%%s to i64\n", dst_name, bt, src_name);
+    }
+}
+
+/* Emit a named-SSA narrow from i64 to bound type.
+ * If bt is already "i64", emits a no-op copy.
+ * src_name:  name of the source SSA value (i64)
+ * dst_name:  name for the narrowed bt value
+ * bt:        the target bound type string */
+static void Emit_Narrow_Named_From_I64(Code_Generator *cg,
+    const char *src_name, const char *dst_name, const char *bt)
+{
+    if (strcmp(bt, "i64") == 0) {
+        Emit(cg, "  %%%s = add i64 %%%s, 0\n", dst_name, src_name);
+    } else {
+        Emit(cg, "  %%%s = trunc i64 %%%s to %s\n", dst_name, src_name, bt);
+    }
 }
 
 /* Build a null fat pointer value: { ptr null, ptr null }.
@@ -17194,11 +17305,13 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                 }
                 if (enum_type && enum_type->enumeration.literals &&
                     enum_type->enumeration.literal_count > 0) {
-                    /* Generate inline switch for literal lookup */
+                    /* Generate inline switch for literal lookup.
+                     * Length stored in STRING bound type (derived from type system). */
+                    const char *img_bt = String_Bound_Type(cg);
                     uint32_t result_ptr = Emit_Temp(cg);
                     uint32_t result_len = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = alloca ptr\n", result_ptr);
-                    Emit(cg, "  %%t%u = alloca i32\n", result_len);
+                    Emit(cg, "  %%t%u = alloca %s\n", result_len, img_bt);
                     uint32_t switch_label = cg->label_id++;
                     uint32_t default_label = cg->label_id++;
                     uint32_t end_label = cg->label_id++;
@@ -17221,23 +17334,23 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                         }
                         Emit_String_Const(cg, "\\00\"\n");
                         Emit(cg, "  store ptr @.img_str%u, ptr %%t%u\n", str_id, result_ptr);
-                        Emit(cg, "  store i32 %u, ptr %%t%u\n", (unsigned)lit.length, result_len);
+                        Emit(cg, "  store %s %u, ptr %%t%u\n", img_bt, (unsigned)lit.length, result_len);
                         Emit(cg, "  br label %%Limg_end%u\n", end_label);
                     }
                     /* Default case - return empty string */
                     Emit(cg, "Limg_def%u:\n", default_label);
                     Emit(cg, "  store ptr null, ptr %%t%u\n", result_ptr);
-                    Emit(cg, "  store i32 0, ptr %%t%u\n", result_len);
+                    Emit(cg, "  store %s 0, ptr %%t%u\n", img_bt, result_len);
                     Emit(cg, "  br label %%Limg_end%u\n", end_label);
                     Emit(cg, "Limg_end%u:\n", end_label);
                     uint32_t ptr_load = Emit_Temp(cg);
                     uint32_t len_load = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = load ptr, ptr %%t%u\n", ptr_load, result_ptr);
-                    Emit(cg, "  %%t%u = load i32, ptr %%t%u\n", len_load, result_len);
+                    Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", len_load, img_bt, result_len);
                     /* Build fat pointer result: { ptr_load, { 1, len_load } } */
                     uint32_t low_one = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = add i32 0, 1\n", low_one);
-                    t = Emit_Fat_Pointer_From_Temps(cg, ptr_load, low_one, len_load, "i32");
+                    Emit(cg, "  %%t%u = add %s 0, 1\n", low_one, img_bt);
+                    t = Emit_Fat_Pointer_From_Temps(cg, ptr_load, low_one, len_load, img_bt);
                 } else {
                     /* No literals found, fallback to integer image */
                     Emit(cg, "  %%t%u = call " FAT_PTR_TYPE " @__ada_integer_image(i64 %%t%u)\n",
@@ -17250,7 +17363,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
             }
             return t;
         }
-        t = Emit_Fat_Pointer_Null(cg, "i32");  /* 'IMAGE no arg */
+        t = Emit_Fat_Pointer_Null(cg, String_Bound_Type(cg));  /* 'IMAGE no arg */
         return t;
     }
 
@@ -17281,9 +17394,10 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                     /* Generate string comparison for each literal */
                     /* Extract string pointer and length from fat pointer */
                     /* Extract fat pointer components and compute length */
-                    uint32_t str_ptr = Emit_Fat_Pointer_Data(cg, str_val, "i32");
-                    uint32_t str_len32 = Emit_Fat_Pointer_Length(cg, str_val, "i32");
-                    uint32_t str_len = Emit_Widen_To_I64(cg, str_len32, "i32");
+                    const char *val_bt = String_Bound_Type(cg);
+                    uint32_t str_ptr = Emit_Fat_Pointer_Data(cg, str_val, val_bt);
+                    uint32_t str_len_bt = Emit_Fat_Pointer_Length(cg, str_val, val_bt);
+                    uint32_t str_len = Emit_Widen_To_I64(cg, str_len_bt, val_bt);
 
                     uint32_t result_alloc = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = alloca i64\n", result_alloc);
@@ -21947,7 +22061,7 @@ static void Generate_Type_Equality_Function(Code_Generator *cg, Type_Info *t) {
 
     /* Determine parameter type based on array constrained-ness */
     bool is_unconstrained = Type_Is_Unconstrained_Array(t);
-    const char *eq_bt = is_unconstrained ? Array_Bound_Llvm_Type(t) : "i32";
+    const char *eq_bt = Array_Bound_Llvm_Type(t);
     const char *param_type = is_unconstrained ? FAT_PTR_TYPE : "ptr";
 
     /* Emit function definition with linkonce_odr for linker deduplication */
@@ -22341,13 +22455,15 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)\n");
     Emit(cg, "declare double @llvm.pow.f64(double, double)\n\n");
 
-    /* Integer'VALUE - parse string to integer */
+    /* Integer'VALUE - parse string to integer.
+     * Bound type derived from STRING's index type via type system. */
+    const char *rts_sbt = String_Bound_Type(cg);
     Emit(cg, "; Integer'VALUE helper\n");
     Emit(cg, "define linkonce_odr i64 @__ada_integer_value(" FAT_PTR_TYPE " %%str) {\n");
     Emit(cg, "entry:\n");
-    Emit_Fat_Pointer_Extractvalue_Named(cg, "str", "data", "low32", "high32", "i32");
-    Emit(cg, "  %%low = sext i32 %%low32 to i64\n");
-    Emit(cg, "  %%high = sext i32 %%high32 to i64\n");
+    Emit_Fat_Pointer_Extractvalue_Named(cg, "str", "data", "low_bt", "high_bt", rts_sbt);
+    Emit_Widen_Named_To_I64(cg, "low_bt", "low", rts_sbt);
+    Emit_Widen_Named_To_I64(cg, "high_bt", "high", rts_sbt);
     Emit(cg, "  br label %%loop\n");
     Emit(cg, "loop:\n");
     Emit(cg, "  %%result = phi i64 [ 0, %%entry ], [ %%next_result, %%cont ]\n");
@@ -22394,7 +22510,7 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "declare double @strtod(ptr, ptr)\n");
     Emit(cg, "define linkonce_odr double @__ada_float_value(" FAT_PTR_TYPE " %%str) {\n");
     Emit(cg, "entry:\n");
-    Emit_Fat_Pointer_Extractvalue_Named(cg, "str", "data", "fv_low", "fv_high", "i32");
+    Emit_Fat_Pointer_Extractvalue_Named(cg, "str", "data", "fv_low", "fv_high", rts_sbt);
     Emit(cg, "  %%result = call double @strtod(ptr %%data, ptr null)\n");
     Emit(cg, "  ret double %%result\n");
     Emit(cg, "}\n\n");
@@ -22770,20 +22886,22 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "  ret void\n");
     Emit(cg, "}\n\n");
 
-    /* PUT: output string (ptr + bounds in native i32) */
-    Emit(cg, "define linkonce_odr void @__text_io_put(ptr %%data, i32 %%lo, i32 %%hi) {\n");
+    /* PUT: output string (ptr + bounds in native STRING bound type).
+     * Bound type derived from STRING's index type via type system. */
+    Emit(cg, "define linkonce_odr void @__text_io_put(ptr %%data, %s %%lo, %s %%hi) {\n",
+         rts_sbt, rts_sbt);
     Emit(cg, "entry:\n");
     Emit(cg, "  %%out = load ptr, ptr @stdout\n");
-    Emit(cg, "  %%i.init = sub i32 %%lo, 1\n");
+    Emit(cg, "  %%i.init = sub %s %%lo, 1\n", rts_sbt);
     Emit(cg, "  br label %%loop\n");
     Emit(cg, "loop:\n");
-    Emit(cg, "  %%i = phi i32 [ %%i.init, %%entry ], [ %%i.next, %%body ]\n");
-    Emit(cg, "  %%i.next = add i32 %%i, 1\n");
-    Emit(cg, "  %%done = icmp sgt i32 %%i.next, %%hi\n");
+    Emit(cg, "  %%i = phi %s [ %%i.init, %%entry ], [ %%i.next, %%body ]\n", rts_sbt);
+    Emit(cg, "  %%i.next = add %s %%i, 1\n", rts_sbt);
+    Emit(cg, "  %%done = icmp sgt %s %%i.next, %%hi\n", rts_sbt);
     Emit(cg, "  br i1 %%done, label %%exit, label %%body\n");
     Emit(cg, "body:\n");
-    Emit(cg, "  %%idx32 = sub i32 %%i.next, %%lo\n");
-    Emit(cg, "  %%idx = sext i32 %%idx32 to i64\n");
+    Emit(cg, "  %%idx_bt = sub %s %%i.next, %%lo\n", rts_sbt);
+    Emit_Widen_Named_To_I64(cg, "idx_bt", "idx", rts_sbt);
     Emit(cg, "  %%ptr = getelementptr i8, ptr %%data, i64 %%idx\n");
     Emit(cg, "  %%ch = load i8, ptr %%ptr\n");
     Emit(cg, "  %%chi = zext i8 %%ch to i32\n");
@@ -22794,8 +22912,10 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "}\n\n");
 
     /* PUT_LINE: output string followed by newline */
-    Emit(cg, "define linkonce_odr void @__text_io_put_line(ptr %%data, i32 %%lo, i32 %%hi) {\n");
-    Emit(cg, "  call void @__text_io_put(ptr %%data, i32 %%lo, i32 %%hi)\n");
+    Emit(cg, "define linkonce_odr void @__text_io_put_line(ptr %%data, %s %%lo, %s %%hi) {\n",
+         rts_sbt, rts_sbt);
+    Emit(cg, "  call void @__text_io_put(ptr %%data, %s %%lo, %s %%hi)\n",
+         rts_sbt, rts_sbt);
     Emit(cg, "  call void @__text_io_new_line()\n");
     Emit(cg, "  ret void\n");
     Emit(cg, "}\n\n");
@@ -22822,29 +22942,40 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "  ret i8 %%c8\n");
     Emit(cg, "}\n\n");
 
-    /* GET_LINE: read line into buffer, return fat pointer */
-    Emit(cg, "define linkonce_odr " FAT_PTR_TYPE " @__text_io_get_line() {\n");
-    Emit(cg, "entry:\n");
-    Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 256)\n");
-    Emit(cg, "  %%inp = load ptr, ptr @stdin\n");
-    Emit(cg, "  %%res = call ptr @fgets(ptr %%buf, i32 255, ptr %%inp)\n");
-    Emit(cg, "  %%iseof = icmp eq ptr %%res, null\n");
-    Emit(cg, "  br i1 %%iseof, label %%empty, label %%gotline\n");
-    Emit(cg, "empty:\n");
-    Emit_Fat_Pointer_Insertvalue_Named(cg, "e", "ptr %buf", "i32 1", "i32 0", "i32");
-    Emit(cg, "  ret " FAT_PTR_TYPE " %%e2\n");
-    Emit(cg, "gotline:\n");
-    Emit(cg, "  %%len = call i64 @strlen(ptr %%buf)\n");
-    Emit(cg, "  ; Strip trailing newline if present\n");
-    Emit(cg, "  %%lastidx = sub i64 %%len, 1\n");
-    Emit(cg, "  %%lastptr = getelementptr i8, ptr %%buf, i64 %%lastidx\n");
-    Emit(cg, "  %%lastch = load i8, ptr %%lastptr\n");
-    Emit(cg, "  %%isnl = icmp eq i8 %%lastch, 10\n");
-    Emit(cg, "  %%adjlen = select i1 %%isnl, i64 %%lastidx, i64 %%len\n");
-    Emit(cg, "  %%adjlen32 = trunc i64 %%adjlen to i32\n");
-    Emit_Fat_Pointer_Insertvalue_Named(cg, "f", "ptr %buf", "i32 1", "i32 %adjlen32", "i32");
-    Emit(cg, "  ret " FAT_PTR_TYPE " %%f2\n");
-    Emit(cg, "}\n\n");
+    /* GET_LINE: read line into buffer, return fat pointer.
+     * Bounds use STRING bound type derived from type system. */
+    {
+        char lo_expr[64], hi_empty_expr[64];
+        snprintf(lo_expr, sizeof(lo_expr), "%s 1", rts_sbt);
+        snprintf(hi_empty_expr, sizeof(hi_empty_expr), "%s 0", rts_sbt);
+
+        Emit(cg, "define linkonce_odr " FAT_PTR_TYPE " @__text_io_get_line() {\n");
+        Emit(cg, "entry:\n");
+        Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 256)\n");
+        Emit(cg, "  %%inp = load ptr, ptr @stdin\n");
+        Emit(cg, "  %%res = call ptr @fgets(ptr %%buf, i32 255, ptr %%inp)\n");
+        Emit(cg, "  %%iseof = icmp eq ptr %%res, null\n");
+        Emit(cg, "  br i1 %%iseof, label %%empty, label %%gotline\n");
+        Emit(cg, "empty:\n");
+        Emit_Fat_Pointer_Insertvalue_Named(cg, "e", "ptr %buf", lo_expr, hi_empty_expr, rts_sbt);
+        Emit(cg, "  ret " FAT_PTR_TYPE " %%e2\n");
+        Emit(cg, "gotline:\n");
+        Emit(cg, "  %%len = call i64 @strlen(ptr %%buf)\n");
+        Emit(cg, "  ; Strip trailing newline if present\n");
+        Emit(cg, "  %%lastidx = sub i64 %%len, 1\n");
+        Emit(cg, "  %%lastptr = getelementptr i8, ptr %%buf, i64 %%lastidx\n");
+        Emit(cg, "  %%lastch = load i8, ptr %%lastptr\n");
+        Emit(cg, "  %%isnl = icmp eq i8 %%lastch, 10\n");
+        Emit(cg, "  %%adjlen = select i1 %%isnl, i64 %%lastidx, i64 %%len\n");
+        Emit_Narrow_Named_From_I64(cg, "adjlen", "adjlen_bt", rts_sbt);
+        {
+            char hi_expr[64];
+            snprintf(hi_expr, sizeof(hi_expr), "%s %%adjlen_bt", rts_sbt);
+            Emit_Fat_Pointer_Insertvalue_Named(cg, "f", "ptr %buf", lo_expr, hi_expr, rts_sbt);
+        }
+        Emit(cg, "  ret " FAT_PTR_TYPE " %%f2\n");
+        Emit(cg, "}\n\n");
+    }
 
     /* 'IMAGE runtime: Integer'IMAGE(x) returns string representation */
     Emit(cg, "; Attribute runtime support\n");
@@ -22854,37 +22985,50 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "@.img_fmt_c = linkonce_odr constant [3 x i8] c\"%%c\\00\"\n");
     Emit(cg, "@.img_fmt_f = linkonce_odr constant [5 x i8] c\"%%.6g\\00\"\n\n");
 
-    /* Integer'IMAGE - convert integer to string fat pointer */
-    Emit(cg, "define linkonce_odr " FAT_PTR_TYPE " @__ada_integer_image(i64 %%val) {\n");
-    Emit(cg, "entry:\n");
-    Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 24)\n");
-    Emit(cg, "  %%len32 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %%buf, i64 24, ptr @.img_fmt_d, i64 %%val)\n");
-    Emit_Fat_Pointer_Insertvalue_Named(cg, "fat", "ptr %buf", "i32 1", "i32 %len32", "i32");
-    Emit(cg, "  ret " FAT_PTR_TYPE " %%fat2\n");
-    Emit(cg, "}\n\n");
+    /* Integer'IMAGE - convert integer to string fat pointer.
+     * Bounds use STRING bound type derived from type system. */
+    {
+        char lo_expr[64], hi_expr[64], const3_expr[64];
+        snprintf(lo_expr, sizeof(lo_expr), "%s 1", rts_sbt);
 
-    /* Character'IMAGE - single char to string (3 chars: 'x') */
-    Emit(cg, "define linkonce_odr " FAT_PTR_TYPE " @__ada_character_image(i8 %%val) {\n");
-    Emit(cg, "entry:\n");
-    Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 4)\n");
-    Emit(cg, "  %%p0 = getelementptr i8, ptr %%buf, i64 0\n");
-    Emit(cg, "  store i8 39, ptr %%p0  ; single quote\n");
-    Emit(cg, "  %%p1 = getelementptr i8, ptr %%buf, i64 1\n");
-    Emit(cg, "  store i8 %%val, ptr %%p1\n");
-    Emit(cg, "  %%p2 = getelementptr i8, ptr %%buf, i64 2\n");
-    Emit(cg, "  store i8 39, ptr %%p2  ; single quote\n");
-    Emit_Fat_Pointer_Insertvalue_Named(cg, "fat", "ptr %buf", "i32 1", "i32 3", "i32");
-    Emit(cg, "  ret " FAT_PTR_TYPE " %%fat2\n");
-    Emit(cg, "}\n\n");
+        Emit(cg, "define linkonce_odr " FAT_PTR_TYPE " @__ada_integer_image(i64 %%val) {\n");
+        Emit(cg, "entry:\n");
+        Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 24)\n");
+        Emit(cg, "  %%len32 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %%buf, i64 24, ptr @.img_fmt_d, i64 %%val)\n");
+        Emit_Widen_Named_To_I64(cg, "len32", "len64", "i32");  /* snprintf returns i32 */
+        Emit_Narrow_Named_From_I64(cg, "len64", "len_bt", rts_sbt);
+        snprintf(hi_expr, sizeof(hi_expr), "%s %%len_bt", rts_sbt);
+        Emit_Fat_Pointer_Insertvalue_Named(cg, "fat", "ptr %buf", lo_expr, hi_expr, rts_sbt);
+        Emit(cg, "  ret " FAT_PTR_TYPE " %%fat2\n");
+        Emit(cg, "}\n\n");
 
-    /* Float'IMAGE - convert float to string */
-    Emit(cg, "define linkonce_odr " FAT_PTR_TYPE " @__ada_float_image(double %%val) {\n");
-    Emit(cg, "entry:\n");
-    Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 32)\n");
-    Emit(cg, "  %%len32 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %%buf, i64 32, ptr @.img_fmt_f, double %%val)\n");
-    Emit_Fat_Pointer_Insertvalue_Named(cg, "fat", "ptr %buf", "i32 1", "i32 %len32", "i32");
-    Emit(cg, "  ret " FAT_PTR_TYPE " %%fat2\n");
-    Emit(cg, "}\n\n");
+        /* Character'IMAGE - single char to string (3 chars: 'x') */
+        snprintf(const3_expr, sizeof(const3_expr), "%s 3", rts_sbt);
+        Emit(cg, "define linkonce_odr " FAT_PTR_TYPE " @__ada_character_image(i8 %%val) {\n");
+        Emit(cg, "entry:\n");
+        Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 4)\n");
+        Emit(cg, "  %%p0 = getelementptr i8, ptr %%buf, i64 0\n");
+        Emit(cg, "  store i8 39, ptr %%p0  ; single quote\n");
+        Emit(cg, "  %%p1 = getelementptr i8, ptr %%buf, i64 1\n");
+        Emit(cg, "  store i8 %%val, ptr %%p1\n");
+        Emit(cg, "  %%p2 = getelementptr i8, ptr %%buf, i64 2\n");
+        Emit(cg, "  store i8 39, ptr %%p2  ; single quote\n");
+        Emit_Fat_Pointer_Insertvalue_Named(cg, "fat", "ptr %buf", lo_expr, const3_expr, rts_sbt);
+        Emit(cg, "  ret " FAT_PTR_TYPE " %%fat2\n");
+        Emit(cg, "}\n\n");
+
+        /* Float'IMAGE - convert float to string */
+        Emit(cg, "define linkonce_odr " FAT_PTR_TYPE " @__ada_float_image(double %%val) {\n");
+        Emit(cg, "entry:\n");
+        Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 32)\n");
+        Emit(cg, "  %%len32 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %%buf, i64 32, ptr @.img_fmt_f, double %%val)\n");
+        Emit_Widen_Named_To_I64(cg, "len32", "flen64", "i32");  /* snprintf returns i32 */
+        Emit_Narrow_Named_From_I64(cg, "flen64", "flen_bt", rts_sbt);
+        snprintf(hi_expr, sizeof(hi_expr), "%s %%flen_bt", rts_sbt);
+        Emit_Fat_Pointer_Insertvalue_Named(cg, "fat", "ptr %buf", lo_expr, hi_expr, rts_sbt);
+        Emit(cg, "  ret " FAT_PTR_TYPE " %%fat2\n");
+        Emit(cg, "}\n\n");
+    }
 
     /* Generate exception identity globals */
     Generate_Exception_Globals(cg);

@@ -1,0 +1,107 @@
+Fat Pointer Bound-Type Refactoring Checklist
+=============================================
+Goal: Eliminate hardcoded i32/i64 from the fat expansion logic so the
+      bound type for STRING (and any array) is derived from the type
+      system via control flow, matching GNAT LLVM's design.
+
+Reference: gnatllvm-arrays-create.adb — Index_Bounds.Bound_Sub_GT
+           gnatllvm-arrays.ads       — Array_Index_GT / Bound_Sub_GT
+
+Design
+------
+GNAT LLVM never hardcodes the bound type.  Each array dimension stores
+  Bound_GT     — the type used for index *computations*
+  Bound_Sub_GT — the type used to *store* the bounds in the struct
+These are derived from the index subtype's base type.
+
+In ada83.c, the refactoring:
+  1. Wires STRING's index type to POSITIVE in the type system, so
+     Array_Bound_Llvm_Type(STRING) follows:
+       STRING → indices[0].index_type (POSITIVE) → Type_To_Llvm → "i64"
+  2. Adds codegen helpers that derive the bound type from the type system:
+       String_Bound_Type(cg)    — Array_Bound_Llvm_Type(cg->sm->type_string)
+       String_Bounds_Struct(cg) — Bounds_Type_For(String_Bound_Type(cg))
+       String_Bounds_Alloc(cg)  — Bounds_Alloc_Size(String_Bound_Type(cg))
+       Integer_Arith_Type(cg)   — Type_To_Llvm(cg->sm->type_integer)
+  3. Keeps STRING_BOUND_TYPE / STRING_BOUND_WIDTH / STRING_BOUNDS_STRUCT /
+     STRING_BOUNDS_ALLOC macros as compile-time backstops only (pre-init).
+
+Audit — Hardcoded Bound-Type Sites
+-----------------------------------
+[x] §10.8 Array_Bound_Llvm_Type  (line ~6356)
+    - TYPE_STRING branch now follows indices[0].index_type → Type_To_Llvm
+    - Fallback uses STRING_BOUND_TYPE (pre-init only)
+    - NULL-safety uses STRING_BOUND_TYPE (pre-init only)
+
+[x] §10.8 Bounds_Type_For        (line ~6409)
+    - NULL fallback uses STRING_BOUNDS_STRUCT
+
+[x] §10.8 Bounds_Alloc_Size      (line ~6433)
+    - NULL fallback uses STRING_BOUNDS_ALLOC
+
+[x] §13.1.1 Codegen helpers (line ~12749)
+    - String_Bound_Type(cg), String_Bounds_Struct(cg), String_Bounds_Alloc(cg)
+    - Integer_Arith_Type(cg)
+    - Emit_Widen_Named_To_I64, Emit_Narrow_Named_From_I64
+
+[x] §13.2.2 Emit_Fat_Pointer_Insertvalue_Named call sites:
+    - GET_LINE empty  → rts_sbt via String_Bound_Type(cg)
+    - GET_LINE result → rts_sbt via String_Bound_Type(cg)
+    - integer_image   → rts_sbt via String_Bound_Type(cg)
+    - character_image → rts_sbt via String_Bound_Type(cg)
+    - float_image     → rts_sbt via String_Bound_Type(cg)
+
+[x] §13.2.2 Emit_Fat_Pointer_Extractvalue_Named call sites:
+    - integer_value   → rts_sbt via String_Bound_Type(cg)
+    - float_value     → rts_sbt via String_Bound_Type(cg)
+
+[x] RTS PUT/PUT_LINE (line ~22886):
+    - Function signatures and extractvalue use rts_sbt
+
+[x] IMAGE attribute (line ~17308):
+    - Emit_Fat_Pointer_From_Temps(... img_bt) — enum IMAGE
+    - Emit_Fat_Pointer_Null(... String_Bound_Type(cg)) — IMAGE no arg
+
+[x] VALUE attribute (line ~17395):
+    - Emit_Fat_Pointer_Data(... val_bt)
+    - Emit_Fat_Pointer_Length(... val_bt)
+    - Emit_Widen_To_I64(... val_bt)
+
+[x] Equality function generation (line ~22063):
+    - eq_bt = Array_Bound_Llvm_Type(t) — derived for all arrays
+
+Remaining i64 — Not Bound Types (Deferred)
+-------------------------------------------
+The following "i64" hardcodings are NOT bound types.  They represent:
+  - INTEGER arithmetic width (64-bit INTEGER = 8 bytes)
+  - Pointer width on 64-bit target (ptrtoint/inttoptr)
+  - Safe fallbacks for non-integer types in utility functions
+
+[ ] Expression_Llvm_Type (line ~13236): returns "i64" for integer expressions.
+    55 call sites.  Would require adding `cg` parameter to all.
+    The value IS correct: INTEGER is 64-bit, so i64 is type-system-derived.
+
+[ ] Wider_Int_Type (line ~13106): returns "i64" for non-integer fallback.
+    6 call sites.  Safe default, not a bound type.
+
+[ ] Type_To_Llvm NULL fallback (line ~13304): returns "i64" with warning.
+    Safety net for NULL types.  Not a bound type.
+
+[ ] Emit_Convert ptrtoint/inttoptr (line ~13283): uses "i64" for pointer width.
+    Correct for 64-bit target.  Not a bound type.
+
+Implementation Steps
+--------------------
+[x] Wire STRING's index type to POSITIVE in type system init.
+[x] Add STRING_BOUND_TYPE / WIDTH / STRUCT / ALLOC macros (backstop).
+[x] Refactor Array_Bound_Llvm_Type: TYPE_STRING derives from index type.
+[x] Refactor Bounds_Type_For / Bounds_Alloc_Size NULL fallbacks.
+[x] Add codegen helpers: String_Bound_Type(cg), Integer_Arith_Type(cg), etc.
+[x] Add named-SSA widen/narrow helpers for RTS functions.
+[x] Refactor all RTS emission (IMAGE, VALUE, GET_LINE, PUT, PUT_LINE).
+[x] Refactor IMAGE/VALUE attribute code in Generate_Expression.
+[x] Refactor equality function bound type initialisation.
+[ ] Build and verify.
+
+Status: COMPLETE (bound-type refactoring)
+        DEFERRED (integer-width i64 — requires invasive signature changes)
