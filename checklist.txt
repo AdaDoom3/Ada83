@@ -1,0 +1,98 @@
+Fat Pointer / Pointer Logic Refactoring Checklist
+==================================================
+Following GNAT LLVM design: centralize fat pointer operations behind
+a small set of helpers.  Every raw insertvalue/extractvalue/strstr
+on fat pointer types must go through the helper layer.
+
+Baseline: ACATS a-series 117/140 pass (83%)
+
+PHASE 1 — New Helpers
+----------------------------------------------------------------------
+[x] 1.  Llvm_Type_Is_Fat_Pointer(const char *ty)
+        Replace all strstr(x, "{ ptr,") with this predicate.
+        Locations: lines 13178-13201, 15789, 16045, 18633, 20206, 20513
+
+[x] 2.  FAT_PTR_ALLOC_SIZE macro  (currently hardcoded 24 at line 6770)
+        Centralise sizeof { ptr, { bound, bound } } = ptr(8) + 2*bound.
+
+[x] 3.  Emit_Fat_Pointer_Null(cg, bt)
+        Build { ptr null, { bt 0, bt 0 } } via insertvalue.
+        Replaces inline at line 17075.
+
+[x] 4.  Emit_Fat_Pointer_Insertvalue_Named(cg, prefix, data_name,
+             low_name, high_name, bt)
+        For RTS functions that use named SSA (%fat1, %fat2, %fat3).
+        Replaces inline blocks at lines:
+          22652-22654 (get_line empty)
+          22665-22667 (get_line gotline)
+          22684-22686 (__ada_integer_image)
+          22700-22702 (__ada_character_image)
+          22711-22713 (__ada_float_image)
+          17060-17062 (enum IMAGE)
+
+[x] 5.  Emit_Fat_Pointer_Extractvalue_Named(cg, prefix, src_name,
+             out_data, out_low, out_high, bt)
+        For RTS functions that extract from named SSA (%str → %data, etc.).
+        Replaces inline blocks at lines:
+          22165-22167 (__ada_integer_value)
+          22216       (__ada_float_value)
+          17111-17113 (enum VALUE)
+          21886-21902 (equality function — already uses helpers)
+
+PHASE 2 — Refactor Call Sites
+----------------------------------------------------------------------
+[x] 6.  Emit_Convert (lines 13178-13201)
+        - fat→fat: use identity check via Llvm_Type_Is_Fat_Pointer
+        - fat→ptr: use Emit_Fat_Pointer_Data via extractvalue helper
+        - fat→i64: use Emit_Fat_Pointer_Data + ptrtoint
+        - i64→fat: keep (inttoptr then load is correct)
+        - fat→other: use Llvm_Type_Is_Fat_Pointer
+
+[x] 7.  IMAGE attribute (lines 17056-17075)
+        Replace 3-line insertvalue with Emit_Fat_Pointer_From_Temps.
+        Null case replaced with Emit_Fat_Pointer_Null.
+
+[x] 8.  VALUE attribute (lines 17104-17116)
+        Replace 3-line extractvalue + length calc with
+        Emit_Fat_Pointer_Data + Emit_Fat_Pointer_Length + Emit_Widen_To_I64.
+
+[x] 9.  Slice detection (line 15789)
+        strstr(repr, "{ ptr,") → Llvm_Type_Is_Fat_Pointer(repr)
+
+[x] 10. Return widening (line 16045)
+        strstr(ret_llvm, "{ ptr,") → Llvm_Type_Is_Fat_Pointer(ret_llvm)
+
+[x] 11. Slice assignment (line 18633)
+        strstr(src_llvm, "{ ptr,") → Llvm_Type_Is_Fat_Pointer(src_llvm)
+
+[x] 12. Global init (line 20206)
+        strstr(type_str, "{ ptr,") → Llvm_Type_Is_Fat_Pointer(type_str)
+
+[x] 13. Unconstrained init (line 20513)
+        strstr(src_llvm, "{ ptr,") → Llvm_Type_Is_Fat_Pointer(src_llvm)
+
+[x] 14. Access ptr comparison (lines 15198, 15202)
+        strstr on left/right llvm type → Llvm_Type_Is_Fat_Pointer
+
+[x] 15. Frame size (line 6770)
+        Hardcoded 24 → FAT_PTR_ALLOC_SIZE
+
+[x] 16. Duplicate fat-ptr-access check (line 21809-21811)
+        Replace inline logic with Type_Needs_Fat_Pointer(ct)
+
+PHASE 3 — RTS Function Bodies
+----------------------------------------------------------------------
+[x] 17. __text_io_get_line  — use Emit_Fat_Pointer_Insertvalue_Named
+[x] 18. __ada_integer_image — use Emit_Fat_Pointer_Insertvalue_Named
+[x] 19. __ada_character_image — use Emit_Fat_Pointer_Insertvalue_Named
+[x] 20. __ada_float_image   — use Emit_Fat_Pointer_Insertvalue_Named
+[x] 21. __ada_integer_value — use Emit_Fat_Pointer_Extractvalue_Named
+[x] 22. __ada_float_value   — use Emit_Fat_Pointer_Extractvalue_Named
+[x] 23. Generate_Type_Equality_Function — already uses helper functions
+        (Emit_Load_Fat_Pointer_From_Temp, Emit_Fat_Pointer_Compare)
+
+PHASE 4 — Verification
+----------------------------------------------------------------------
+[x] 24. Build compiler (clean, no new warnings)
+[x] 25. Run ACATS a-series — pass rate 117/140 (83%) ✓ matches baseline
+[x] 26. Commit and push
