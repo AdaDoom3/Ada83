@@ -23,7 +23,7 @@ elapsed(){
 # Pre-compile the report package once
 compile_report(){
     [[ ! -f rts/report.ll || rts/report.adb -nt rts/report.ll ]] \
-        && ./ada83 -Iacats -Irts rts/report.adb > rts/report.ll 2>/dev/null || true
+        && ./ada83 rts/report.adb > rts/report.ll 2>/dev/null || true
 }
 
 # ── Single-test runner (called in subprocess) ─────────────────────────────
@@ -38,7 +38,7 @@ run_one(){
 
     case ${q,,} in
     c)
-        if ! timeout 0.5 ./ada83 -Iacats -Irts "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
+        if ! timeout 0.5 ./ada83 "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
             echo "c skip $n COMPILE:$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)"
             return
         fi
@@ -62,7 +62,7 @@ run_one(){
         fi
         ;;
     a)
-        if ! timeout 0.5 ./ada83 -Iacats -Irts "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
+        if ! timeout 0.5 ./ada83 "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
             echo "a skip $n COMPILE:$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)"; return; fi
         if ! timeout 0.5 llvm-link -o test_results/$n.bc test_results/$n.ll rts/report.ll 2>acats_logs/$n.link; then
             echo "a skip $n BIND:unresolved_symbols"; return; fi
@@ -73,13 +73,13 @@ run_one(){
         fi
         ;;
     b)
-        if timeout 0.5 ./ada83 -Iacats -Irts "$f" > acats_logs/$n.ll 2>acats_logs/$n.err; then
+        if timeout 0.5 ./ada83 "$f" > acats_logs/$n.ll 2>acats_logs/$n.err; then
             echo "b fail $n WRONG_ACCEPT:compiled_when_should_reject"
         else
             # Count error coverage
             local -a expected=() actual=(); local i=0 hits=0
             while IFS= read -r l; do ((++i)); [[ $l =~ --\ ERROR ]] && expected+=($i); done < "$f"
-            while IFS=: read -r _ m _; do actual+=($m); done < <(./ada83 -Iacats -Irts "$f" 2>&1|grep "^[^:]*:[0-9]")
+            while IFS=: read -r _ m _; do actual+=($m); done < <(./ada83 "$f" 2>&1|grep "^[^:]*:[0-9]")
             for e in ${expected[@]+"${expected[@]}"}; do
                 for v in ${actual[@]+"${actual[@]}"}; do
                     ((v>=e-1&&v<=e+1)) && { ((++hits)); break; }
@@ -91,7 +91,7 @@ run_one(){
         fi
         ;;
     d)
-        if ! timeout 0.5 ./ada83 -Iacats -Irts "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
+        if ! timeout 0.5 ./ada83 "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
             echo "d skip $n COMPILE:$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)"; return; fi
         if ! timeout 0.5 llvm-link -o test_results/$n.bc test_results/$n.ll rts/report.ll 2>/dev/null; then
             echo "d skip $n BIND"; return; fi
@@ -102,7 +102,7 @@ run_one(){
         fi
         ;;
     e)
-        if ! timeout 0.5 ./ada83 -Iacats -Irts "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
+        if ! timeout 0.5 ./ada83 "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
             echo "e skip $n COMPILE:$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)"; return; fi
         if ! timeout 0.5 llvm-link -o test_results/$n.bc test_results/$n.ll rts/report.ll 2>/dev/null; then
             echo "e skip $n BIND"; return; fi
@@ -116,7 +116,7 @@ run_one(){
         fi
         ;;
     l)
-        if timeout 0.5 ./ada83 -Iacats -Irts "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
+        if timeout 0.5 ./ada83 "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
             if timeout 0.5 llvm-link -o test_results/$n.bc test_results/$n.ll rts/report.ll 2>acats_logs/$n.link; then
                 if timeout 1 lli test_results/$n.bc > acats_logs/$n.out 2>&1; then
                     echo "l fail $n WRONG_EXEC:should_not_execute"

@@ -34,7 +34,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <pthread.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 /* Fat pointer LLVM IR type — GNAT LLVM style: { data_ptr, bounds_ptr }.
@@ -23509,48 +23511,181 @@ static void Compile_File(const char *input_path, const char *output_path) {
     free(source);
 }
 
+/* ─────────────────────────────────────────────────────────────────────────
+ * Derive output .ll path from input path by replacing extension.
+ * Writes into caller-supplied buffer.
+ * ───────────────────────────────────────────────────────────────────────── */
+static void Derive_Output_Path(const char *input, char *out, size_t out_size) {
+    strncpy(out, input, out_size - 1);
+    out[out_size - 1] = '\0';
+    char *dot = strrchr(out, '.');
+    char *slash = strrchr(out, '/');
+    /* Only replace if the dot is after the last slash (i.e., part of filename) */
+    if (dot && (!slash || dot > slash))
+        strcpy(dot, ".ll");
+    else
+        strncat(out, ".ll", out_size - strlen(out) - 1);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Parallel compilation — fork-based worker called from a pthread.
+ *
+ * Each thread forks a child process that compiles one file.  fork() gives
+ * complete isolation of all global state (arena, error count, loaded
+ * packages, etc.) without refactoring Compile_File.
+ * ───────────────────────────────────────────────────────────────────────── */
+typedef struct {
+    const char *input_path;
+    const char *output_path;  /* NULL → derive from input */
+    int         exit_status;  /* 0 = success, 1 = failure */
+} Compile_Job;
+
+static void *Compile_Worker(void *arg) {
+    Compile_Job *job = (Compile_Job *)arg;
+
+    char derived[512];
+    const char *out = job->output_path;
+    if (!out) {
+        Derive_Output_Path(job->input_path, derived, sizeof(derived));
+        out = derived;
+    }
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        /* Child — compile and exit */
+        Compile_File(job->input_path, out);
+        _exit(Error_Count > 0 ? 1 : 0);
+    } else if (pid > 0) {
+        int status;
+        waitpid(pid, &status, 0);
+        job->exit_status = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+    } else {
+        perror("fork");
+        job->exit_status = 1;
+    }
+    return NULL;
+}
+
 int main(int argc, char *argv[]) {
     if (argc < 2) {
-        fprintf(stderr, "Usage: %s [-I path] <input.ada> [-o output.ll]\n", argv[0]);
+        fprintf(stderr,
+            "Usage: %s [-I path] <input.ada ...> [-o output.ll]\n", argv[0]);
         return 1;
     }
 
-    const char *input = NULL;
-    const char *output = NULL;  /* NULL means stdout */
+    const char *inputs[256];
+    int input_count = 0;
+    const char *output = NULL;  /* NULL means derive from input name */
 
     /* Parse command-line arguments */
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-I") == 0 && i + 1 < argc) {
-            /* Add include path */
-            if (Include_Path_Count < 32) {
+            if (Include_Path_Count < 32)
                 Include_Paths[Include_Path_Count++] = argv[++i];
-            }
         } else if (strncmp(argv[i], "-I", 2) == 0) {
-            /* -Ipath format (no space) */
-            if (Include_Path_Count < 32) {
+            if (Include_Path_Count < 32)
                 Include_Paths[Include_Path_Count++] = argv[i] + 2;
-            }
         } else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
             output = argv[++i];
         } else if (argv[i][0] != '-') {
-            input = argv[i];
+            if (input_count < 256)
+                inputs[input_count++] = argv[i];
         }
     }
 
-    if (!input) {
+    if (input_count == 0) {
         fprintf(stderr, "Error: no input file specified\n");
         return 1;
     }
 
-    /* Add current directory to include paths by default */
-    if (Include_Path_Count < 32) {
-        Include_Paths[Include_Path_Count++] = ".";
+    if (output && input_count > 1) {
+        fprintf(stderr, "Error: -o cannot be used with multiple input files\n");
+        return 1;
     }
 
-    Compile_File(input, output);
+    /* ── Auto-discover rts path from executable location ──────────────── */
+    {
+        char exe_path[PATH_MAX];
+        ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+        if (len > 0) {
+            exe_path[len] = '\0';
+        } else {
+            /* Fallback: use argv[0] */
+            strncpy(exe_path, argv[0], sizeof(exe_path) - 1);
+            exe_path[sizeof(exe_path) - 1] = '\0';
+        }
+        char *slash = strrchr(exe_path, '/');
+        if (slash) {
+            *slash = '\0';
+            static char rts_path[PATH_MAX + 8];
+            snprintf(rts_path, sizeof(rts_path), "%s/rts", exe_path);
+            struct stat st;
+            if (stat(rts_path, &st) == 0 && S_ISDIR(st.st_mode)) {
+                if (Include_Path_Count < 32)
+                    Include_Paths[Include_Path_Count++] = rts_path;
+            }
+        }
+    }
 
-    Arena_Free_All();
-    return Error_Count > 0 ? 1 : 0;
+    /* ── Auto-discover input file's directory as include path ─────────── */
+    {
+        const char *slash = strrchr(inputs[0], '/');
+        if (slash) {
+            static char input_dir[PATH_MAX];
+            size_t dir_len = (size_t)(slash - inputs[0]);
+            if (dir_len >= sizeof(input_dir)) dir_len = sizeof(input_dir) - 1;
+            memcpy(input_dir, inputs[0], dir_len);
+            input_dir[dir_len] = '\0';
+            if (Include_Path_Count < 32)
+                Include_Paths[Include_Path_Count++] = input_dir;
+        }
+    }
+
+    /* Add current directory to include paths by default */
+    if (Include_Path_Count < 32)
+        Include_Paths[Include_Path_Count++] = ".";
+
+    /* ── Compile ──────────────────────────────────────────────────────── */
+    if (input_count == 1) {
+        /* Single file — existing sequential behaviour */
+        Compile_File(inputs[0], output);
+        Arena_Free_All();
+        return Error_Count > 0 ? 1 : 0;
+    }
+
+    /* Multiple files — parallel compilation using pthreads + fork */
+    long nprocs = sysconf(_SC_NPROCESSORS_ONLN);
+    if (nprocs < 1) nprocs = 1;
+    int nthreads = (input_count < (int)nprocs) ? input_count : (int)nprocs;
+
+    Compile_Job jobs[256];
+    pthread_t threads[256];
+
+    for (int base = 0; base < input_count; base += nthreads) {
+        int batch = input_count - base;
+        if (batch > nthreads) batch = nthreads;
+
+        for (int i = 0; i < batch; i++) {
+            jobs[base + i].input_path = inputs[base + i];
+            jobs[base + i].output_path = NULL;  /* derive from input */
+            jobs[base + i].exit_status = 0;
+            pthread_create(&threads[i], NULL, Compile_Worker,
+                           &jobs[base + i]);
+        }
+        for (int i = 0; i < batch; i++) {
+            pthread_join(threads[i], NULL);
+        }
+    }
+
+    int failed = 0;
+    for (int i = 0; i < input_count; i++) {
+        if (jobs[i].exit_status != 0) failed++;
+    }
+
+    if (failed > 0)
+        fprintf(stderr, "%d of %d compilations failed\n", failed, input_count);
+
+    return failed > 0 ? 1 : 0;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -23950,7 +24085,7 @@ static void ALI_Collect_Exports(ALI_Info *ali, Syntax_Node *unit) {
  *   At least one U line (unit)
  * ───────────────────────────────────────────────────────────────────────── */
 
-#define ALI_VERSION "Ada83 1.0"
+#define ALI_VERSION "Ada83 1.0 built " __DATE__ " " __TIME__
 
 static void ALI_Write(FILE *out, ALI_Info *ali) {
     /* V line: Version — must be first per GNAT spec */
