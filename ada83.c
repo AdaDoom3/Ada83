@@ -49,6 +49,30 @@
 /* Fat pointer size in bytes: ptr(8) + ptr(8) = 16 always. */
 #define FAT_PTR_ALLOC_SIZE  16
 
+/* ─── Configurable default bound type for STRING ───────────────────────
+ *
+ * GNAT LLVM derives the bound type from the index subtype's base type
+ * (see Index_Bounds.Bound_Sub_GT in gnatllvm-arrays.ads).  For STRING,
+ * the index type is POSITIVE whose base is Standard.INTEGER.
+ *
+ * At runtime the primary path derives the bound type from the type system
+ * via Array_Bound_Llvm_Type() → Type_To_Llvm(index_type).  These macros
+ * exist ONLY as a compile-time backstop for the RTS preamble (emitted
+ * before the type system is consulted) and for safety-net fallbacks
+ * where the type is genuinely unavailable.
+ *
+ * The values MUST match Type_To_Llvm(Standard.INTEGER).  With 8-byte
+ * INTEGER (64-bit), the bound type is i64.  To switch to 32-bit
+ * INTEGER, change type_integer->size to 4 AND these four macros.
+ *
+ * Array types whose index type is NOT INTEGER derive their bound type
+ * dynamically via Array_Bound_Llvm_Type().
+ */
+#define STRING_BOUND_TYPE   "i64"            /* LLVM IR type for STRING bounds  */
+#define STRING_BOUND_WIDTH  64               /* Width in bits                    */
+#define STRING_BOUNDS_STRUCT "{ i64, i64 }"  /* Bounds struct for STRING        */
+#define STRING_BOUNDS_ALLOC 16               /* sizeof(STRING bounds struct)     */
+
 /* Check if an LLVM type string represents a fat pointer type.
  * With the uniform { ptr, ptr } layout, this is an exact match. */
 static inline bool Llvm_Type_Is_Fat_Pointer(const char *ty) {
@@ -6063,9 +6087,10 @@ static inline bool Type_Is_Unconstrained_Array(const Type_Info *t) {
            !t->array.is_constrained;
 }
 
-/* Constrained array: TYPE_ARRAY with static bounds (not string, not unconstrained) */
+/* Constrained array: TYPE_ARRAY or TYPE_STRING with static bounds */
 static inline bool Type_Is_Constrained_Array(const Type_Info *t) {
-    return t && t->kind == TYPE_ARRAY && t->array.is_constrained;
+    return t && (t->kind == TYPE_ARRAY || t->kind == TYPE_STRING) &&
+           t->array.is_constrained;
 }
 
 /* Universal numeric types: compile-time only, no storage */
@@ -6115,26 +6140,35 @@ static inline bool Expression_Is_Slice(const Syntax_Node *node) {
  * all produce fat pointer values { ptr, { bound, bound } }. */
 static inline bool Expression_Produces_Fat_Pointer(const Syntax_Node *node,
                                                     const Type_Info *type) {
+    /* Operation-specific checks FIRST: these operations always produce fat
+     * pointers at runtime regardless of the expression's declared type.
+     * E.g., concatenation of two constrained STRINGs still builds { ptr, ptr }. */
+    if (node) {
+        /* String literals always produce fat pointers */
+        if (node->kind == NK_STRING)
+            return true;
+        /* Concatenation always returns fat pointer */
+        if (node->kind == NK_BINARY_OP && node->binary.op == TK_AMPERSAND)
+            return true;
+        /* Slices always produce fat pointers even with constrained declared type */
+        if (Expression_Is_Slice(node))
+            return true;
+    }
+    /* Type-based checks: constrained arrays are flat, unconstrained use fat ptrs */
+    if (type && Type_Is_Constrained_Array(type))
+        return false;
     if (type && (Type_Is_String(type) || Type_Is_Unconstrained_Array(type)))
-        return true;
-    if (!node) return false;
-    /* String literals always produce fat pointers */
-    if (node->kind == NK_STRING)
-        return true;
-    /* Concatenation always returns fat pointer */
-    if (node->kind == NK_BINARY_OP && node->binary.op == TK_AMPERSAND)
-        return true;
-    /* Slices always produce fat pointers even with constrained declared type */
-    if (Expression_Is_Slice(node))
         return true;
     return false;
 }
 
 /* Check if a record field type requires loading as a fat pointer.
- * Unconstrained arrays, dynamic-bound arrays, and STRING fields
- * are stored as fat pointers { ptr, { bound, bound } } in records. */
+ * Unconstrained arrays, dynamic-bound arrays, and unconstrained STRING fields
+ * are stored as fat pointers { ptr, { bound, bound } } in records.
+ * Constrained STRING subtypes (e.g., STRING(1..6)) are flat arrays. */
 static inline bool Type_Needs_Fat_Pointer_Load(const Type_Info *t) {
     if (!t) return false;
+    if (Type_Is_Constrained_Array(t)) return false;
     if (Type_Is_String(t)) return true;
     if (t->kind == TYPE_ARRAY &&
         (!t->array.is_constrained || Type_Has_Dynamic_Bounds(t)))
@@ -6276,8 +6310,8 @@ static int64_t Array_Element_Count(Type_Info *t);
 static int64_t Array_Low_Bound(Type_Info *t);
 static const char *Type_To_Llvm(Type_Info *t) {
     if (!t) {
-        fprintf(stderr, "warning: Type_To_Llvm called with NULL type, defaulting to i64\n");
-        return "i64";
+        fprintf(stderr, "error: Type_To_Llvm called with NULL type\n");
+        return Llvm_Int_Type(64);  /* ERROR path — caller bug */
     }
 
     /* For private/limited private/incomplete types, resolve through parent_type
@@ -6315,12 +6349,13 @@ static const char *Type_To_Llvm(Type_Info *t) {
             /* Unconstrained arrays use fat pointers { ptr, ptr } */
             return (t->array.is_constrained) ? "ptr" : FAT_PTR_TYPE;
         case TYPE_STRING:
-            /* STRING → fat pointer { ptr, ptr } */
-            return FAT_PTR_TYPE;
+            /* Unconstrained STRING → fat pointer { ptr, ptr }
+             * Constrained STRING (e.g., STRING(1..6)) → ptr to flat array */
+            return (t->array.is_constrained) ? "ptr" : FAT_PTR_TYPE;
         default:
-            fprintf(stderr, "warning: Type_To_Llvm unhandled type kind %d for '%.*s', defaulting to i64\n",
+            fprintf(stderr, "error: Type_To_Llvm unhandled type kind %d for '%.*s'\n",
                     t->kind, (int)t->name.length, t->name.data);
-            return "i64";
+            return Llvm_Int_Type((uint32_t)To_Bits(t->size));  /* ERROR path — derive from size */
     }
 }
 
@@ -6337,7 +6372,7 @@ static const char *Type_To_Llvm(Type_Info *t) {
 static const char *Array_Bound_Llvm_Type(const Type_Info *t) {
     if (!t) {
         fprintf(stderr, "BUG: Array_Bound_Llvm_Type called with NULL\n");
-        return "i32";  /* safety net only */
+        return STRING_BOUND_TYPE;  /* safety net — default STRING bound type */
     }
     /* Access → designated type */
     if (t->kind == TYPE_ACCESS && t->access.designated_type)
@@ -6345,14 +6380,21 @@ static const char *Array_Bound_Llvm_Type(const Type_Info *t) {
     /* Private/incomplete → parent */
     if ((Type_Is_Private(t) || t->kind == TYPE_INCOMPLETE) && t->parent_type)
         return Array_Bound_Llvm_Type(t->parent_type);
-    /* STRING → POSITIVE index → INTEGER (i32) */
-    if (t->kind == TYPE_STRING) return "i32";
+    /* STRING → derive bound type from index type (POSITIVE → INTEGER).
+     * GNAT LLVM style: Bound_Sub_GT from index subtype's base type. */
+    if (t->kind == TYPE_STRING) {
+        if (t->array.index_count > 0 && t->array.indices &&
+            t->array.indices[0].index_type) {
+            return Type_To_Llvm(t->array.indices[0].index_type);
+        }
+        return STRING_BOUND_TYPE;  /* pre-init fallback only */
+    }
     if (t->kind != TYPE_ARRAY) {
         fprintf(stderr, "BUG: Array_Bound_Llvm_Type: non-array kind %d '%.*s'\n",
                 t->kind, (int)t->name.length, t->name.data);
-        return "i32";  /* safety net only */
+        return STRING_BOUND_TYPE;  /* safety net — default STRING bound type */
     }
-    /* Resolve from index_type */
+    /* Resolve from index_type — GNAT LLVM style: use Bound_Sub_GT */
     if (t->array.index_count > 0 && t->array.indices &&
         t->array.indices[0].index_type) {
         return Type_To_Llvm(t->array.indices[0].index_type);
@@ -6368,10 +6410,10 @@ static const char *Array_Bound_Llvm_Type(const Type_Info *t) {
             return Llvm_Int_Type(Bits_For_Range(lb.int_value, hb.int_value));
         }
     }
-    /* Last resort: INTEGER is the standard index type in Ada83 */
+    /* Last resort: INTEGER is the standard index type in Ada 83 */
     fprintf(stderr, "note: Array_Bound_Llvm_Type: no index type for '%.*s'\n",
             (int)t->name.length, t->name.data);
-    return "i32";
+    return STRING_BOUND_TYPE;
 }
 
 /* Get the LLVM bounds struct type string for a given bound type.
@@ -6382,13 +6424,13 @@ static const char *Bounds_Type_For(const char *bt) {
     /* GNAT LLVM style: bounds struct uses the NATIVE index type.
      * e.g. Bounds_Type_For("i32") → "{ i32, i32 }"
      * See gnatllvm-arrays-create.adb:586-636. */
-    if (!bt) return "{ i32, i32 }";
+    if (!bt) return STRING_BOUNDS_STRUCT;  /* default STRING bound type */
     if (strcmp(bt, "i8")  == 0) return "{ i8, i8 }";
     if (strcmp(bt, "i16") == 0) return "{ i16, i16 }";
     if (strcmp(bt, "i32") == 0) return "{ i32, i32 }";
     if (strcmp(bt, "i64") == 0) return "{ i64, i64 }";
-    /* Fallback for unknown types — use i32 (Ada INTEGER default) */
-    return "{ i32, i32 }";
+    /* Fallback for unknown types — use configurable STRING default */
+    return STRING_BOUNDS_STRUCT;
 }
 
 /* Return the allocation size in bytes for a bounds struct { bt, bt }.
@@ -6396,12 +6438,12 @@ static const char *Bounds_Type_For(const char *bt) {
 static int Bounds_Alloc_Size(const char *bt) {
     /* GNAT LLVM style: size depends on native index type.
      * { i8, i8 } = 2, { i16, i16 } = 4, { i32, i32 } = 8, { i64, i64 } = 16. */
-    if (!bt) return 8;
+    if (!bt) return STRING_BOUNDS_ALLOC;  /* default STRING bound type */
     if (strcmp(bt, "i8")  == 0) return 2;
     if (strcmp(bt, "i16") == 0) return 4;
     if (strcmp(bt, "i32") == 0) return 8;
     if (strcmp(bt, "i64") == 0) return 16;
-    return 8;
+    return STRING_BOUNDS_ALLOC;  /* default STRING bound type */
 }
 
 
@@ -7387,6 +7429,11 @@ static void Symbol_Manager_Init_Predefined(Symbol_Manager *sm) {
     sm->type_string = Type_New(TYPE_STRING, S("STRING"));
     sm->type_string->size = 16;  /* Fat pointer: ptr + length */
     sm->type_string->array.element_type = sm->type_character;  /* STRING is array of CHARACTER */
+    /* STRING's index type is POSITIVE (RM 3.6.3).  Wire it into the type
+     * system so Array_Bound_Llvm_Type can derive the bound type from the
+     * index, exactly as GNAT LLVM's Bound_Sub_GT is derived from the index
+     * subtype's base type (see gnatllvm-arrays-create.adb).
+     * NOTE: type_positive is allocated below; we back-patch after it exists. */
 
     /* DURATION is a predefined fixed-point type for time intervals */
     sm->type_duration = Type_New(TYPE_FIXED, S("DURATION"));
@@ -7427,6 +7474,17 @@ static void Symbol_Manager_Init_Predefined(Symbol_Manager *sm) {
     type_positive->high_bound = sm->type_integer->high_bound;
     sym_positive->type = type_positive;
     Symbol_Add(sm, sym_positive);
+
+    /* Back-patch STRING's index type to POSITIVE (deferred from above).
+     * This makes Array_Bound_Llvm_Type derive STRING's bound type from
+     * POSITIVE's base type (INTEGER), matching GNAT LLVM's Bound_Sub_GT. */
+    sm->type_string->array.indices = Arena_Allocate(sizeof(Index_Info));
+    sm->type_string->array.index_count = 1;
+    sm->type_string->array.indices[0].index_type = type_positive;
+    sm->type_string->array.indices[0].low_bound =
+        (Type_Bound){ .kind = BOUND_INTEGER, .int_value = 1 };
+    sm->type_string->array.indices[0].high_bound =
+        sm->type_integer->high_bound;
 
     Symbol *sym_float = Symbol_New(SYMBOL_TYPE, S("FLOAT"), No_Location);
     sym_float->type = sm->type_float;
@@ -11037,13 +11095,15 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                 /* Map def_kind → Type_Kind so numeric formals
                                  * are recognised by Type_Is_Numeric (RM 12.1.2):
                                  * 0=PRIVATE, 1=LIMITED, 2=DISCRETE, 3=INTEGER,
-                                 * 4=FLOAT, 5=FIXED */
+                                 * 4=FLOAT, 5=FIXED, 6=ARRAY, 7=ACCESS */
                                 Type_Kind tk = TYPE_PRIVATE;
                                 switch (formal->generic_type_param.def_kind) {
                                     case 2: tk = TYPE_ENUMERATION; break;
                                     case 3: tk = TYPE_INTEGER;     break;
                                     case 4: tk = TYPE_FLOAT;       break;
                                     case 5: tk = TYPE_FIXED;       break;
+                                    case 6: tk = TYPE_ARRAY;       break;
+                                    case 7: tk = TYPE_ACCESS;      break;
                                     default: break;
                                 }
                                 Symbol *type_sym = Symbol_New(SYMBOL_TYPE,
@@ -11432,13 +11492,16 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                 Symbol *type_sym = Symbol_New(SYMBOL_TYPE,
                                     formal->generic_type_param.name, formal->location);
                                 /* Map def_kind to appropriate Type_Kind:
-                                 * 0=PRIVATE, 1=LIMITED_PRIVATE, 2=DISCRETE, 3=INTEGER, 4=FLOAT, 5=FIXED */
+                                 * 0=PRIVATE, 1=LIMITED_PRIVATE, 2=DISCRETE, 3=INTEGER,
+                                 * 4=FLOAT, 5=FIXED, 6=ARRAY, 7=ACCESS */
                                 Type_Kind tk = TYPE_PRIVATE;
                                 switch (formal->generic_type_param.def_kind) {
                                     case 2: tk = TYPE_ENUMERATION; break; /* DISCRETE */
                                     case 3: tk = TYPE_INTEGER; break;     /* INTEGER (range <>) */
                                     case 4: tk = TYPE_FLOAT; break;       /* FLOAT (digits <>) */
                                     case 5: tk = TYPE_FIXED; break;       /* FIXED (delta <>) */
+                                    case 6: tk = TYPE_ARRAY; break;       /* ARRAY */
+                                    case 7: tk = TYPE_ACCESS; break;      /* ACCESS */
                                     default: tk = TYPE_PRIVATE; break;
                                 }
                                 Type_Info *type = Type_New(tk, formal->generic_type_param.name);
@@ -12699,6 +12762,39 @@ static Code_Generator *Code_Generator_New(FILE *output, Symbol_Manager *sm) {
     return cg;
 }
 
+/* ─────────────────────────────────────────────────────────────────────────
+ * §13.1.1 Type-Derived Codegen Helpers
+ *
+ * GNAT LLVM never hardcodes type widths — it derives them from the front-end
+ * type system (see GL_Type, Bound_Sub_GT).  These helpers do the same: they
+ * query cg->sm to derive LLVM IR types from the Ada type system at the point
+ * of emission, so every codegen site gets its types from a single source.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/* Derive the LLVM bound type for STRING from the type system.
+ * Follows: STRING → index_type (POSITIVE) → Type_To_Llvm → Llvm_Int_Type.
+ * This is GNAT LLVM's Bound_Sub_GT path. */
+static inline const char *String_Bound_Type(const Code_Generator *cg) {
+    return Array_Bound_Llvm_Type(cg->sm->type_string);
+}
+
+/* Derive the LLVM bounds struct type for STRING: "{ bt, bt }". */
+static inline const char *String_Bounds_Struct(const Code_Generator *cg) {
+    return Bounds_Type_For(String_Bound_Type(cg));
+}
+
+/* Derive the LLVM allocation size for STRING bounds struct. */
+static inline int String_Bounds_Alloc(const Code_Generator *cg) {
+    return Bounds_Alloc_Size(String_Bound_Type(cg));
+}
+
+/* Derive the LLVM type for Standard.INTEGER (the universal arithmetic type).
+ * In GNAT LLVM, integer computation uses the GL_Type of Standard.Integer.
+ * This replaces hardcoded "i64" in expression evaluation paths. */
+static inline const char *Integer_Arith_Type(const Code_Generator *cg) {
+    return Type_To_Llvm(cg->sm->type_integer);
+}
+
 /* Emit to string constant buffer instead of main output */
 static void Emit_String_Const(Code_Generator *cg, const char *format, ...) {
     va_list args;
@@ -13019,11 +13115,15 @@ static inline int Type_Bits(const char *ty) {
 /* Return the wider of two integer LLVM types.
  * Used for binary operations: both operands are widened to the wider type.
  * Example: Wider_Int_Type("i8", "i32") → "i32".
- * Non-integer types (ptr, float, fat ptr) return "i64" as a safe fallback. */
-static inline const char *Wider_Int_Type(const char *a, const char *b) {
+ * Both arguments MUST be integer types (i1, i8, i32, i64, etc.).
+ * Non-integer types are a bug — use Integer_Arith_Type(cg) at call site. */
+static inline const char *Wider_Int_Type(const Code_Generator *cg, const char *a, const char *b) {
+    /* Non-integer types must not reach here; derive from INTEGER as error path */
+    if (a[0] != 'i' || b[0] != 'i') {
+        fprintf(stderr, "error: Wider_Int_Type called with non-integer type: \"%s\", \"%s\"\n", a, b);
+        return Integer_Arith_Type(cg);
+    }
     int ab = Type_Bits(a), bb = Type_Bits(b);
-    /* If either is not an integer type, fall back to i64 */
-    if (a[0] != 'i' || b[0] != 'i') return "i64";
     return (ab >= bb) ? a : b;
 }
 
@@ -13094,12 +13194,10 @@ static inline bool Expression_Is_Float(Syntax_Node *node) {
 }
 
 /* Get LLVM type string for expression result */
-static inline const char *Expression_Llvm_Type(Syntax_Node *node) {
-    /* Boolean expressions produce i64 (comparisons, AND/OR/XOR, NOT, membership
-     * are widened to i64 with zext for uniform representation).
-     * NOTE: Boolean widening to i64 is preserved — changing to i1 would
-     * affect semantics of boolean AND/OR vs bitwise AND/OR (deferred). */
-    if (Expression_Is_Boolean(node)) return "i64";
+static inline const char *Expression_Llvm_Type(const Code_Generator *cg, Syntax_Node *node) {
+    /* Boolean expressions are widened to INTEGER width with zext for uniform
+     * representation.  Derive the width from the type system (INTEGER). */
+    if (Expression_Is_Boolean(node)) return Integer_Arith_Type(cg);
     /* For float types, return the correct LLVM type based on actual size */
     if (node && Type_Is_Float_Representation(node->type)) {
         return Llvm_Float_Type((uint32_t)To_Bits(node->type->size));
@@ -13141,19 +13239,20 @@ static inline const char *Expression_Llvm_Type(Syntax_Node *node) {
         }
         if (elem_type) return Type_To_Llvm(elem_type);
     }
-    /* Check for string literals and string types (generate fat pointers) */
+    /* Check for string literals and unconstrained string types (fat pointers).
+     * Constrained STRING subtypes (e.g., STRING(1..6)) are flat arrays → ptr. */
     if (node && node->kind == NK_STRING) return FAT_PTR_TYPE;
-    if (node && Type_Is_String(node->type)) return FAT_PTR_TYPE;
+    if (node && Type_Is_String(node->type) && !Type_Is_Constrained_Array(node->type))
+        return FAT_PTR_TYPE;
     /* Check for unconstrained array types (fat pointers) - for variable references */
     if (node && node->kind != NK_AGGREGATE &&
         Type_Is_Unconstrained_Array(node->type)) {
         return FAT_PTR_TYPE;
     }
-    /* Integer types: return "i64" because Generate_Expression still produces
-     * i64 for most integer operations (arithmetic, attributes, literals, etc.).
-     * Native-type preservation (Phase 3/A) was not completed, so i64 remains
-     * the uniform integer representation for expressions. */
-    return "i64";
+    /* Integer types: derive from the type system's INTEGER width.
+     * Generate_Expression uses INTEGER's width for all integer operations
+     * (arithmetic, attributes, literals, etc.) as the uniform representation. */
+    return Integer_Arith_Type(cg);
 }
 
 /* Emit type conversion if needed */
@@ -13183,12 +13282,12 @@ static uint32_t Emit_Convert(Code_Generator *cg, uint32_t src, const char *src_t
     } else if (strcmp(src_type, "ptr") == 0 && strcmp(dst_type, "ptr") == 0) {
         /* ptr → ptr: no conversion needed */
         return src;
-    } else if (strcmp(src_type, "ptr") == 0 && strcmp(dst_type, "i64") == 0) {
-        /* ptr → i64: ptrtoint */
-        Emit(cg, "  %%t%u = ptrtoint ptr %%t%u to i64\n", t, src);
-    } else if (strcmp(src_type, "i64") == 0 && strcmp(dst_type, "ptr") == 0) {
-        /* i64 → ptr: inttoptr */
-        Emit(cg, "  %%t%u = inttoptr i64 %%t%u to ptr\n", t, src);
+    } else if (strcmp(src_type, "ptr") == 0 && dst_type[0] == 'i') {
+        /* ptr → integer: ptrtoint */
+        Emit(cg, "  %%t%u = ptrtoint ptr %%t%u to %s\n", t, src, dst_type);
+    } else if (src_type[0] == 'i' && strcmp(dst_type, "ptr") == 0) {
+        /* integer → ptr: inttoptr */
+        Emit(cg, "  %%t%u = inttoptr %s %%t%u to ptr\n", t, src_type, src);
     } else if (Llvm_Type_Is_Fat_Pointer(src_type) && Llvm_Type_Is_Fat_Pointer(dst_type)) {
         /* fat pointer → fat pointer: no conversion needed */
         return src;
@@ -13200,15 +13299,15 @@ static uint32_t Emit_Convert(Code_Generator *cg, uint32_t src, const char *src_t
     } else if (strcmp(src_type, "ptr") == 0 && Llvm_Type_Is_Fat_Pointer(dst_type)) {
         /* ptr → fat pointer: pointer to unconstrained array storage, load it */
         Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, dst_type, src);
-    } else if (Llvm_Type_Is_Fat_Pointer(src_type) && strcmp(dst_type, "i64") == 0) {
-        /* fat pointer → i64: extract data pointer then ptrtoint */
+    } else if (Llvm_Type_Is_Fat_Pointer(src_type) && dst_type[0] == 'i') {
+        /* fat pointer → integer: extract data pointer then ptrtoint */
         uint32_t data = Emit_Temp(cg);
         Emit(cg, "  %%t%u = extractvalue %s %%t%u, 0\n", data, src_type, src);
-        Emit(cg, "  %%t%u = ptrtoint ptr %%t%u to i64\n", t, data);
-    } else if (strcmp(src_type, "i64") == 0 && Llvm_Type_Is_Fat_Pointer(dst_type)) {
-        /* i64 → fat pointer: likely an access value, inttoptr then load */
+        Emit(cg, "  %%t%u = ptrtoint ptr %%t%u to %s\n", t, data, dst_type);
+    } else if (src_type[0] == 'i' && Llvm_Type_Is_Fat_Pointer(dst_type)) {
+        /* integer → fat pointer: likely an access value, inttoptr then load */
         uint32_t p = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = inttoptr i64 %%t%u to ptr\n", p, src);
+        Emit(cg, "  %%t%u = inttoptr %s %%t%u to ptr\n", p, src_type, src);
         Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, dst_type, p);
     } else if (Llvm_Type_Is_Fat_Pointer(src_type) || Llvm_Type_Is_Fat_Pointer(dst_type)) {
         /* One is fat pointer, other is something else - best effort */
@@ -13440,21 +13539,23 @@ static uint32_t Emit_Fat_Pointer(Code_Generator *cg, uint32_t data_ptr,
     return t2;
 }
 
-/* Widen a bound-type value to i64 via sext.  No-op if already i64. */
+/* Widen a bound-type value to INTEGER width via sext.  No-op if already at INTEGER width. */
 static uint32_t Emit_Widen_To_I64(Code_Generator *cg, uint32_t val,
                                     const char *from_type) {
-    if (strcmp(from_type, "i64") == 0) return val;
+    const char *iat = Integer_Arith_Type(cg);
+    if (strcmp(from_type, iat) == 0) return val;
     uint32_t w = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = sext %s %%t%u to i64\n", w, from_type, val);
+    Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", w, from_type, val, iat);
     return w;
 }
 
-/* Narrow an i64 value to a smaller type via trunc.  No-op if already i64. */
+/* Narrow an INTEGER-width value to a smaller type via trunc.  No-op if already at target width. */
 static uint32_t Emit_Narrow_From_I64(Code_Generator *cg, uint32_t val,
                                       const char *to_type) {
-    if (strcmp(to_type, "i64") == 0) return val;
+    const char *iat = Integer_Arith_Type(cg);
+    if (strcmp(to_type, iat) == 0) return val;
     uint32_t t = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = trunc i64 %%t%u to %s\n", t, val, to_type);
+    Emit(cg, "  %%t%u = trunc %s %%t%u to %s\n", t, iat, val, to_type);
     return t;
 }
 
@@ -13765,6 +13866,39 @@ static void Emit_Fat_Pointer_Extractvalue_Named(Code_Generator *cg,
     Emit(cg, "  %%%s_gep = getelementptr %s, ptr %%%s_bptr, i32 0, i32 1\n",
          high_name, bst, src_name);
     Emit(cg, "  %%%s = load %s, ptr %%%s_gep\n", high_name, bt, high_name);
+}
+
+/* Emit a named-SSA widen from bound type to INTEGER width.
+ * If bt is already at INTEGER width, emits a no-op copy (add 0).
+ * src_name:  name of the source SSA value (in bt)
+ * dst_name:  name for the widened value
+ * bt:        the bound type string */
+static void Emit_Widen_Named_To_I64(Code_Generator *cg,
+    const char *src_name, const char *dst_name, const char *bt)
+{
+    const char *iat = Integer_Arith_Type(cg);
+    if (strcmp(bt, iat) == 0) {
+        /* Already at INTEGER width — emit a trivial add-0 to create the alias */
+        Emit(cg, "  %%%s = add %s %%%s, 0\n", dst_name, iat, src_name);
+    } else {
+        Emit(cg, "  %%%s = sext %s %%%s to %s\n", dst_name, bt, src_name, iat);
+    }
+}
+
+/* Emit a named-SSA narrow from INTEGER width to bound type.
+ * If bt is already at INTEGER width, emits a no-op copy.
+ * src_name:  name of the source SSA value (INTEGER width)
+ * dst_name:  name for the narrowed bt value
+ * bt:        the target bound type string */
+static void Emit_Narrow_Named_From_I64(Code_Generator *cg,
+    const char *src_name, const char *dst_name, const char *bt)
+{
+    const char *iat = Integer_Arith_Type(cg);
+    if (strcmp(bt, iat) == 0) {
+        Emit(cg, "  %%%s = add %s %%%s, 0\n", dst_name, iat, src_name);
+    } else {
+        Emit(cg, "  %%%s = trunc %s %%%s to %s\n", dst_name, iat, src_name, bt);
+    }
 }
 
 /* Build a null fat pointer value: { ptr null, ptr null }.
@@ -14112,18 +14246,29 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
         case SYMBOL_VARIABLE:
         case SYMBOL_PARAMETER:
         case SYMBOL_DISCRIMINANT: {
+            /* Constrained arrays (including constrained STRING) are flat allocas.
+             * The alloca address IS the value — no load needed. */
+            if (Type_Is_Constrained_Array(ty)) {
+                /* Return pointer to the alloca directly (no load) */
+                Emit(cg, "  %%t%u = getelementptr i8, ptr ", t);
+                Emit_Symbol_Storage(cg, sym);
+                Emit(cg, ", i64 0  ; constrained array ref\n");
+                break;
+            }
             const char *type_str = Type_To_Llvm(ty);
             Emit(cg, "  %%t%u = load %s, ptr ", t, type_str);
             Emit_Symbol_Storage(cg, sym);
             Emit(cg, "\n");
-            /* Widen sub-i64 integer loads to i64 for uniform expression type.
+            /* Widen sub-INTEGER integer loads to INTEGER width for uniform expression type.
              * Fat pointers, ptrs, and floats are NOT widened. */
-            if (type_str[0] == 'i' && strcmp(type_str, "i64") != 0 &&
+            {   const char *iat_var = Integer_Arith_Type(cg);
+            if (type_str[0] == 'i' && strcmp(type_str, iat_var) != 0 &&
                 !Type_Is_Access(ty) && !Type_Is_Float_Representation(ty) &&
                 !Type_Is_Unconstrained_Array(ty) && !Type_Is_String(ty)) {
                 uint32_t w = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = sext %s %%t%u to i64\n", w, type_str, t);
+                Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", w, type_str, t, iat_var);
                 t = w;
+            }
             }
         } break;
 
@@ -14173,17 +14318,19 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "  %%t%u = load %s, ptr ", t, type_str);
                 Emit_Symbol_Ref(cg, sym);
                 Emit(cg, "\n");
-                /* Widen sub-i64 integer loads to i64 */
-                if (type_str[0] == 'i' && strcmp(type_str, "i64") != 0 &&
+                /* Widen sub-INTEGER integer loads to INTEGER width */
+                {   const char *iat_const = Integer_Arith_Type(cg);
+                if (type_str[0] == 'i' && strcmp(type_str, iat_const) != 0 &&
                     !Type_Is_Access(ty) && !Type_Is_Float_Representation(ty) &&
                     !Type_Is_Unconstrained_Array(ty) && !Type_Is_String(ty)) {
                     uint32_t w = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = sext %s %%t%u to i64\n", w, type_str, t);
+                    Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", w, type_str, t, iat_const);
                     t = w;
+                }
                 }
             } else {
                 /* ??? Unknown literal type - emit 0 as fallback */
-                Emit(cg, "  %%t%u = add i64 0, 0  ; unknown literal\n", t);
+                Emit(cg, "  %%t%u = add %s 0, 0  ; unknown literal\n", t, Integer_Arith_Type(cg));
             }
             break;
 
@@ -14219,7 +14366,7 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
             } else if (actual->kind == SYMBOL_FUNCTION) {
                 /* Generate actual function call */
                 const char *ret_type = actual->return_type ?
-                    Type_To_Llvm(actual->return_type) : "i64";
+                    Type_To_Llvm(actual->return_type) : Integer_Arith_Type(cg);
                 Emit(cg, "  %%t%u = call %s @", t, ret_type);
                 Emit_Symbol_Name(cg, actual);
                 /* Handle nested function: pass parent frame if needed */
@@ -14238,20 +14385,22 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                 } else {
                     Emit(cg, "()\n");
                 }
-                /* Widen sub-i64 integer return values to i64 */
+                /* Widen sub-INTEGER integer return values to INTEGER width */
+                {   const char *iat_ret = Integer_Arith_Type(cg);
                 if (actual->return_type && ret_type[0] == 'i' &&
-                    strcmp(ret_type, "i64") != 0 &&
+                    strcmp(ret_type, iat_ret) != 0 &&
                     !Type_Is_Access(actual->return_type) &&
                     !Type_Is_Float_Representation(actual->return_type) &&
                     !Type_Is_Unconstrained_Array(actual->return_type) &&
                     !Type_Is_String(actual->return_type)) {
                     uint32_t w = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = sext %s %%t%u to i64\n", w, ret_type, t);
+                    Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", w, ret_type, t, iat_ret);
                     t = w;
+                }
                 }
             } else {
                 /* Fallback for other symbol kinds */
-                Emit(cg, "  %%t%u = add i64 0, 0  ; unhandled function symbol\n", t);
+                Emit(cg, "  %%t%u = add %s 0, 0  ; unhandled function symbol\n", t, Integer_Arith_Type(cg));
             }
         } break;
 
@@ -14306,7 +14455,8 @@ static uint32_t Generate_Record_Equality(Code_Generator *cg, uint32_t left_ptr,
         bool is_fat_ptr_access = Type_Is_Access(ct) &&
             Type_Needs_Fat_Pointer(ct);
 
-        if (Type_Is_Unconstrained_Array(ct) || Type_Is_String(ct)) {
+        if (Type_Is_Unconstrained_Array(ct) ||
+            (!Type_Is_Constrained_Array(ct) && Type_Is_String(ct))) {
             /* Unconstrained array/string - load fat pointer values from storage */
             const char *ct_bt = Array_Bound_Llvm_Type(ct);
             uint32_t left_fat = Emit_Load_Fat_Pointer_From_Temp(cg, left_gep, ct_bt);
@@ -14553,7 +14703,7 @@ static uint32_t Generate_Composite_Address(Code_Generator *cg, Syntax_Node *node
             return addr;
         }
         /* Handle unconstrained arrays passed as fat pointers */
-        if (Type_Is_String(prefix_type)) {
+        if (!Type_Is_Constrained_Array(prefix_type) && Type_Is_String(prefix_type)) {
             /* Fat pointer - extract data and compute element address */
             const char *str_bt = Array_Bound_Llvm_Type(prefix_type);
             uint32_t fat = Generate_Expression(cg, node->apply.prefix);
@@ -14586,9 +14736,9 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         bool right_is_slice = Expression_Is_Slice(node->binary.right);
         Type_Info *right_type = node->binary.right ? node->binary.right->type : NULL;
         bool is_unconstrained = Type_Is_Unconstrained_Array(left_type) ||
-                                Type_Is_String(left_type) ||
+                                (!Type_Is_Constrained_Array(left_type) && Type_Is_String(left_type)) ||
                                 Type_Is_Unconstrained_Array(right_type) ||
-                                Type_Is_String(right_type);
+                                (!Type_Is_Constrained_Array(right_type) && Type_Is_String(right_type));
         /* String literals and concatenation always produce fat pointers */
         bool left_is_fat = is_unconstrained || left_is_slice ||
                            node->binary.left->kind == NK_STRING ||
@@ -14758,9 +14908,9 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         /* Detect any operand producing fat pointers: unconstrained types, slices,
          * string literals, and concatenation results. */
         bool is_unconstrained = Type_Is_Unconstrained_Array(left_type) ||
-                                Type_Is_String(left_type) ||
+                                (!Type_Is_Constrained_Array(left_type) && Type_Is_String(left_type)) ||
                                 Type_Is_Unconstrained_Array(rhs_cmp_type) ||
-                                Type_Is_String(rhs_cmp_type) ||
+                                (!Type_Is_Constrained_Array(rhs_cmp_type) && Type_Is_String(rhs_cmp_type)) ||
                                 Expression_Is_Slice(node->binary.left) ||
                                 Expression_Is_Slice(node->binary.right) ||
                                 node->binary.left->kind == NK_STRING ||
@@ -14772,13 +14922,13 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         const char *rel_bt = Array_Bound_Llvm_Type(left_type);
         if (is_unconstrained) {
             /* Generate each operand as fat pointer, wrapping constrained if needed */
-            bool l_fat = Type_Is_String(left_type) ||
+            bool l_fat = (!Type_Is_Constrained_Array(left_type) && Type_Is_String(left_type)) ||
                          Type_Is_Unconstrained_Array(left_type) ||
                          Expression_Is_Slice(node->binary.left) ||
                          node->binary.left->kind == NK_STRING ||
                          (node->binary.left->kind == NK_BINARY_OP &&
                           node->binary.left->binary.op == TK_AMPERSAND);
-            bool r_fat = Type_Is_String(rhs_cmp_type) ||
+            bool r_fat = (!Type_Is_Constrained_Array(rhs_cmp_type) && Type_Is_String(rhs_cmp_type)) ||
                          Type_Is_Unconstrained_Array(rhs_cmp_type) ||
                          Expression_Is_Slice(node->binary.right) ||
                          (node->binary.right && node->binary.right->kind == NK_STRING) ||
@@ -14915,7 +15065,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         /* AND THEN: if left is false, result is false (don't evaluate right)
          *           if left is true, result is right */
         uint32_t left = Generate_Expression(cg, node->binary.left);
-        const char *left_llvm = Expression_Llvm_Type(node->binary.left);
+        const char *left_llvm = Expression_Llvm_Type(cg, node->binary.left);
         uint32_t left_i1 = Emit_Convert(cg, left, left_llvm, "i1");
 
         uint32_t eval_right_label = cg->label_id++;
@@ -14931,7 +15081,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         /* Evaluate right if left was true */
         Emit(cg, "Landthen_right%u:\n", eval_right_label);
         uint32_t right = Generate_Expression(cg, node->binary.right);
-        const char *right_llvm = Expression_Llvm_Type(node->binary.right);
+        const char *right_llvm = Expression_Llvm_Type(cg, node->binary.right);
         uint32_t right_i1 = Emit_Convert(cg, right, right_llvm, "i1");
         uint32_t right_done_label = cg->label_id++;
         Emit(cg, "  br label %%Landthen_merge%u\n", right_done_label);
@@ -14952,7 +15102,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         /* OR ELSE: if left is true, result is true (don't evaluate right)
          *          if left is false, result is right */
         uint32_t left = Generate_Expression(cg, node->binary.left);
-        const char *left_llvm = Expression_Llvm_Type(node->binary.left);
+        const char *left_llvm = Expression_Llvm_Type(cg, node->binary.left);
         uint32_t left_i1 = Emit_Convert(cg, left, left_llvm, "i1");
 
         uint32_t eval_right_label = cg->label_id++;
@@ -14968,7 +15118,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         /* Evaluate right if left was false */
         Emit(cg, "Lorelse_right%u:\n", eval_right_label);
         uint32_t right = Generate_Expression(cg, node->binary.right);
-        const char *right_llvm = Expression_Llvm_Type(node->binary.right);
+        const char *right_llvm = Expression_Llvm_Type(cg, node->binary.right);
         uint32_t right_i1 = Emit_Convert(cg, right, right_llvm, "i1");
         uint32_t right_done_label = cg->label_id++;
         Emit(cg, "  br label %%Lorelse_merge%u\n", right_done_label);
@@ -14997,7 +15147,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
 
         /* Normalize left operand to fat pointer */
         uint32_t left_fat;
-        bool left_already_fat = Type_Is_String(left_type) ||
+        bool left_already_fat = (!Type_Is_Constrained_Array(left_type) && Type_Is_String(left_type)) ||
                                 Type_Is_Unconstrained_Array(left_type) ||
                                 node->binary.left->kind == NK_STRING ||
                                 Expression_Is_Slice(node->binary.left) ||
@@ -15010,7 +15160,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             /* Single character: alloca, store, wrap as {ptr, {1, 1}} */
             uint32_t ca = Emit_Temp(cg);
             Emit(cg, "  %%t%u = alloca i8\n", ca);
-            uint32_t ct = Emit_Convert(cg, left_raw, "i64", "i8");
+            uint32_t ct = Emit_Convert(cg, left_raw, Integer_Arith_Type(cg), "i8");
             Emit(cg, "  store i8 %%t%u, ptr %%t%u\n", ct, ca);
             left_fat = Emit_Fat_Pointer(cg, ca, 1, 1, cat_bt);
         } else if (Type_Is_Constrained_Array(left_type) &&
@@ -15025,7 +15175,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         /* Normalize right operand to fat pointer */
         Type_Info *rhs_type = node->binary.right ? node->binary.right->type : NULL;
         uint32_t right_fat;
-        bool right_already_fat = Type_Is_String(rhs_type) ||
+        bool right_already_fat = (!Type_Is_Constrained_Array(rhs_type) && Type_Is_String(rhs_type)) ||
                                  Type_Is_Unconstrained_Array(rhs_type) ||
                                  node->binary.right->kind == NK_STRING ||
                                  Expression_Is_Slice(node->binary.right) ||
@@ -15037,7 +15187,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             /* Single character: alloca, store, wrap as {ptr, {1, 1}} */
             uint32_t ca = Emit_Temp(cg);
             Emit(cg, "  %%t%u = alloca i8\n", ca);
-            uint32_t ct = Emit_Convert(cg, right_raw, "i64", "i8");
+            uint32_t ct = Emit_Convert(cg, right_raw, Integer_Arith_Type(cg), "i8");
             Emit(cg, "  store i8 %%t%u, ptr %%t%u\n", ct, ca);
             right_fat = Emit_Fat_Pointer(cg, ca, 1, 1, cat_bt);
         } else if (Type_Is_Constrained_Array(rhs_type) &&
@@ -15122,9 +15272,9 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
     Type_Info *result_type = node->type;
 
     /* GNAT LLVM: track actual LLVM types for native-width integer operations. */
-    const char *left_int_type = Expression_Llvm_Type(node->binary.left);
-    const char *right_int_type = (right_is_range || is_membership) ? "i64" :
-                                  Expression_Llvm_Type(node->binary.right);
+    const char *left_int_type = Expression_Llvm_Type(cg, node->binary.left);
+    const char *right_int_type = (right_is_range || is_membership) ? Integer_Arith_Type(cg) :
+                                  Expression_Llvm_Type(cg, node->binary.right);
     Type_Info *lhs_type = node->binary.left ? node->binary.left->type : NULL;
     Type_Info *rhs_type = node->binary.right ? node->binary.right->type : NULL;
     bool is_float = Type_Is_Float_Representation(result_type);
@@ -15174,11 +15324,12 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
     /* GNAT LLVM: Fixed-point uses i64-width scaled integer representation.
      * Widen native-type integer operands to i64 before fixed-point math. */
     if (is_fixed && !is_float) {
-        left = Emit_Convert(cg, left, left_int_type, "i64");
+        const char *fixed_arith = Integer_Arith_Type(cg);
+        left = Emit_Convert(cg, left, left_int_type, fixed_arith);
         if (!right_is_range && !is_membership)
-            right = Emit_Convert(cg, right, right_int_type, "i64");
-        left_int_type = "i64";
-        right_int_type = "i64";
+            right = Emit_Convert(cg, right, right_int_type, fixed_arith);
+        left_int_type = fixed_arith;
+        right_int_type = fixed_arith;
     }
 
     /* Mixed fixed-point / universal_real arithmetic (RM 4.5.5, 4.10):
@@ -15288,11 +15439,12 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                     }
                 } else {
                     /* Integer ** Integer: use integer power function.
-                     * __ada_integer_pow takes i64 — widen native types. */
-                    left = Emit_Convert(cg, left, left_int_type, "i64");
-                    right = Emit_Convert(cg, right, right_int_type, "i64");
-                    Emit(cg, "  %%t%u = call i64 @__ada_integer_pow(i64 %%t%u, i64 %%t%u)\n",
-                         t, left, right);
+                     * __ada_integer_pow takes INTEGER width — widen native types. */
+                    const char *iat = Integer_Arith_Type(cg);
+                    left = Emit_Convert(cg, left, left_int_type, iat);
+                    right = Emit_Convert(cg, right, right_int_type, iat);
+                    Emit(cg, "  %%t%u = call %s @__ada_integer_pow(%s %%t%u, %s %%t%u)\n",
+                         t, iat, iat, left, iat, right);
                 }
                 return t;
             }
@@ -15301,8 +15453,8 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         case TK_AND_THEN:
             /* Boolean AND: convert operands to i1 (may have been widened from load) */
             {
-                const char *left_llvm = Expression_Llvm_Type(node->binary.left);
-                const char *right_llvm = Expression_Llvm_Type(node->binary.right);
+                const char *left_llvm = Expression_Llvm_Type(cg, node->binary.left);
+                const char *right_llvm = Expression_Llvm_Type(cg, node->binary.right);
                 left = Emit_Convert(cg, left, left_llvm, "i1");
                 right = Emit_Convert(cg, right, right_llvm, "i1");
                 Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", t, left, right);
@@ -15314,8 +15466,8 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         case TK_OR_ELSE:
             /* Boolean OR: convert operands to i1 */
             {
-                const char *left_llvm = Expression_Llvm_Type(node->binary.left);
-                const char *right_llvm = Expression_Llvm_Type(node->binary.right);
+                const char *left_llvm = Expression_Llvm_Type(cg, node->binary.left);
+                const char *right_llvm = Expression_Llvm_Type(cg, node->binary.right);
                 left = Emit_Convert(cg, left, left_llvm, "i1");
                 right = Emit_Convert(cg, right, right_llvm, "i1");
                 Emit(cg, "  %%t%u = or i1 %%t%u, %%t%u\n", t, left, right);
@@ -15326,8 +15478,8 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         case TK_XOR:
             /* Boolean XOR: convert operands to i1 */
             {
-                const char *left_llvm = Expression_Llvm_Type(node->binary.left);
-                const char *right_llvm = Expression_Llvm_Type(node->binary.right);
+                const char *left_llvm = Expression_Llvm_Type(cg, node->binary.left);
+                const char *right_llvm = Expression_Llvm_Type(cg, node->binary.right);
                 left = Emit_Convert(cg, left, left_llvm, "i1");
                 right = Emit_Convert(cg, right, right_llvm, "i1");
                 Emit(cg, "  %%t%u = xor i1 %%t%u, %%t%u\n", t, left, right);
@@ -15353,20 +15505,21 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                  * Access types produce ptr, arrays produce ptr or fat_ptr,
                  * integers/enums produce i64. Use Expression_Llvm_Type to
                  * get the actual type each operand produces. */
-                const char *left_llvm_type = Expression_Llvm_Type(node->binary.left);
-                const char *right_llvm_type = Expression_Llvm_Type(node->binary.right);
+                const char *left_llvm_type = Expression_Llvm_Type(cg, node->binary.left);
+                const char *right_llvm_type = Expression_Llvm_Type(cg, node->binary.right);
 
                 /* Boolean sub-expressions may produce i1 (raw comparisons) or
                  * i64 (widened booleans).  Use actual expression type to avoid
                  * double-widening when the value is already i64. */
                 if (!left_is_float && !right_is_float) {
+                    const char *int_arith = Integer_Arith_Type(cg);
                     if (Expression_Is_Boolean(node->binary.left)) {
-                        left = Emit_Convert(cg, left, left_llvm_type, "i64");
-                        left_llvm_type = "i64";
+                        left = Emit_Convert(cg, left, left_llvm_type, int_arith);
+                        left_llvm_type = int_arith;
                     }
                     if (Expression_Is_Boolean(node->binary.right)) {
-                        right = Emit_Convert(cg, right, right_llvm_type, "i64");
-                        right_llvm_type = "i64";
+                        right = Emit_Convert(cg, right, right_llvm_type, int_arith);
+                        right_llvm_type = int_arith;
                     }
                 }
 
@@ -15384,16 +15537,18 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                         right = Emit_Convert(cg, right, right_llvm_type, "ptr");
                         right_llvm_type = "ptr";
                     }
-                    /* Normalize: if one is ptr and other is integer, convert ptr to i64.
+                    /* Normalize: if one is ptr and other is integer, convert ptr to integer.
                      * GNAT LLVM: integer side may be native type (i8/i16/i32/i64). */
                     if (strcmp(left_llvm_type, "ptr") == 0 &&
                         right_llvm_type[0] == 'i') {
-                        left = Emit_Convert(cg, left, "ptr", "i64");
-                        left_llvm_type = "i64";
+                        const char *ptr_int = Integer_Arith_Type(cg);
+                        left = Emit_Convert(cg, left, "ptr", ptr_int);
+                        left_llvm_type = ptr_int;
                     } else if (left_llvm_type[0] == 'i' &&
                                strcmp(right_llvm_type, "ptr") == 0) {
-                        right = Emit_Convert(cg, right, "ptr", "i64");
-                        right_llvm_type = "i64";
+                        const char *ptr_int = Integer_Arith_Type(cg);
+                        right = Emit_Convert(cg, right, "ptr", ptr_int);
+                        right_llvm_type = ptr_int;
                     }
                     /* Both ptr: will use icmp eq ptr below */
                     /* Both integer: will use common type below */
@@ -15445,10 +15600,10 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                         right = div_t;
                     }
                     uint32_t conv = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = fptosi %s %%t%u to i64\n", conv, right_float_type, right);
+                    Emit(cg, "  %%t%u = fptosi %s %%t%u to %s\n", conv, right_float_type, right, Integer_Arith_Type(cg));
                     right = conv;
                     right_is_float = false;
-                    right_llvm_type = "i64";
+                    right_llvm_type = Integer_Arith_Type(cg);
                 } else if (left_is_float && right_is_float) {
                     /* Both floats - convert right to match left if sizes differ.
                      * Explicitly check both types to avoid incorrect conversions
@@ -15502,24 +15657,30 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                     switch (node->binary.op) {
                         case TK_EQ: cmp_op = "icmp eq ptr"; break;
                         case TK_NE: cmp_op = "icmp ne ptr"; break;
-                        /* Ordered comparisons on pointers: convert to i64 first */
+                        /* Ordered comparisons on pointers: convert to integer first */
                         default: {
-                            left = Emit_Convert(cg, left, "ptr", "i64");
-                            right = Emit_Convert(cg, right, "ptr", "i64");
+                            const char *iat = Integer_Arith_Type(cg);
+                            left = Emit_Convert(cg, left, "ptr", iat);
+                            right = Emit_Convert(cg, right, "ptr", iat);
+                            /* Build cmp_op strings with type-system-derived integer type */
+                            static char cmp_buf[64];
+                            const char *cmp_kind = NULL;
                             switch (node->binary.op) {
-                                case TK_LT: cmp_op = "icmp slt i64"; break;
-                                case TK_LE: cmp_op = "icmp sle i64"; break;
-                                case TK_GT: cmp_op = "icmp sgt i64"; break;
-                                case TK_GE: cmp_op = "icmp sge i64"; break;
+                                case TK_LT: cmp_kind = "slt"; break;
+                                case TK_LE: cmp_kind = "sle"; break;
+                                case TK_GT: cmp_kind = "sgt"; break;
+                                case TK_GE: cmp_kind = "sge"; break;
                                 default:
                                     fprintf(stderr, "warning: unhandled pointer comparison operator, defaulting to equality\n");
-                                    cmp_op = "icmp eq i64"; break;
+                                    cmp_kind = "eq"; break;
                             }
+                            snprintf(cmp_buf, sizeof(cmp_buf), "icmp %s %s", cmp_kind, iat);
+                            cmp_op = cmp_buf;
                         } break;
                     }
                 } else {
                     /* GNAT LLVM: integer comparison using common native type. */
-                    const char *cmp_int_t = Wider_Int_Type(left_llvm_type, right_llvm_type);
+                    const char *cmp_int_t = Wider_Int_Type(cg, left_llvm_type, right_llvm_type);
                     left = Emit_Convert(cg, left, left_llvm_type, cmp_int_t);
                     right = Emit_Convert(cg, right, right_llvm_type, cmp_int_t);
                     const char *icmp_pred;
@@ -15566,8 +15727,8 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                         /* Ensure all operands have the same float type.
                          * Use Expression_Llvm_Type to get the actual LLVM type, which
                          * accounts for any conversions done during expression generation. */
-                        const char *lo_ftype = Expression_Llvm_Type(node->binary.right->range.low);
-                        const char *hi_ftype = Expression_Llvm_Type(node->binary.right->range.high);
+                        const char *lo_ftype = Expression_Llvm_Type(cg, node->binary.right->range.low);
+                        const char *hi_ftype = Expression_Llvm_Type(cg, node->binary.right->range.high);
                         /* Convert bounds to match left operand type if different */
                         if (strcmp(lo_ftype, mem_float_type) != 0) {
                             lo = Emit_Convert(cg, lo, lo_ftype, mem_float_type);
@@ -15579,9 +15740,9 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                         Emit(cg, "  %%t%u = fcmp ole %s %%t%u, %%t%u\n", le, mem_float_type, left, hi);
                     } else {
                         /* GNAT LLVM: use common native type for integer membership. */
-                        const char *lo_type = Expression_Llvm_Type(node->binary.right->range.low);
-                        const char *hi_type = Expression_Llvm_Type(node->binary.right->range.high);
-                        const char *mem_ct = Wider_Int_Type(left_int_type, Wider_Int_Type(lo_type, hi_type));
+                        const char *lo_type = Expression_Llvm_Type(cg, node->binary.right->range.low);
+                        const char *hi_type = Expression_Llvm_Type(cg, node->binary.right->range.high);
+                        const char *mem_ct = Wider_Int_Type(cg, left_int_type, Wider_Int_Type(cg, lo_type, hi_type));
                         uint32_t ml = Emit_Convert(cg, left, left_int_type, mem_ct);
                         lo = Emit_Convert(cg, lo, lo_type, mem_ct);
                         hi = Emit_Convert(cg, hi, hi_type, mem_ct);
@@ -15602,13 +15763,13 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                         if (left_is_flt) {
                             /* For float membership tests, determine bound types and convert if needed.
                              * BOUND_INTEGER produces i64, BOUND_EXPR for float types produces float. */
-                            const char *lo_src_type = "i64";  /* Default for BOUND_INTEGER */
-                            const char *hi_src_type = "i64";
+                            const char *lo_src_type = Integer_Arith_Type(cg);  /* Derived for BOUND_INTEGER */
+                            const char *hi_src_type = Integer_Arith_Type(cg);
                             if (rt->low_bound.kind == BOUND_EXPR && rt->low_bound.expr) {
-                                lo_src_type = Expression_Llvm_Type(rt->low_bound.expr);
+                                lo_src_type = Expression_Llvm_Type(cg, rt->low_bound.expr);
                             }
                             if (rt->high_bound.kind == BOUND_EXPR && rt->high_bound.expr) {
-                                hi_src_type = Expression_Llvm_Type(rt->high_bound.expr);
+                                hi_src_type = Expression_Llvm_Type(cg, rt->high_bound.expr);
                             }
                             /* Convert bounds to match left operand's float type */
                             uint32_t lo_f = lo, hi_f = hi;
@@ -15621,11 +15782,12 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                             Emit(cg, "  %%t%u = fcmp oge %s %%t%u, %%t%u\n", ge, mem_float_type, left, lo_f);
                             Emit(cg, "  %%t%u = fcmp ole %s %%t%u, %%t%u\n", le, mem_float_type, left, hi_f);
                         } else {
-                            /* GNAT LLVM: widen left to i64 for bound comparison.
-                             * Emit_Bound_Value produces i64. */
-                            uint32_t ml = Emit_Convert(cg, left, left_int_type, "i64");
-                            Emit(cg, "  %%t%u = icmp sge i64 %%t%u, %%t%u\n", ge, ml, lo);
-                            Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", le, ml, hi);
+                            /* GNAT LLVM: widen left to INTEGER width for bound comparison.
+                             * Emit_Bound_Value produces INTEGER width. */
+                            const char *iat = Integer_Arith_Type(cg);
+                            uint32_t ml = Emit_Convert(cg, left, left_int_type, iat);
+                            Emit(cg, "  %%t%u = icmp sge %s %%t%u, %%t%u\n", ge, iat, ml, lo);
+                            Emit(cg, "  %%t%u = icmp sle %s %%t%u, %%t%u\n", le, iat, ml, hi);
                         }
                         Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", in_range, ge, le);
                         if (negate) { Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n", t, in_range); }
@@ -15636,7 +15798,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                             Emit(cg, "  %%t%u = fcmp oeq %s %%t%u, %%t%u\n", t, mem_float_type, left, right);
                         } else {
                             /* GNAT LLVM: use common native type for equality. */
-                            const char *fb_ct = Wider_Int_Type(left_int_type, right_int_type);
+                            const char *fb_ct = Wider_Int_Type(cg, left_int_type, right_int_type);
                             uint32_t ml = Emit_Convert(cg, left, left_int_type, fb_ct);
                             uint32_t mr = Emit_Convert(cg, right, right_int_type, fb_ct);
                             Emit(cg, "  %%t%u = icmp eq %s %%t%u, %%t%u\n", t, fb_ct, ml, mr);
@@ -15662,7 +15824,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
 
     if (!is_float) {
         /* GNAT LLVM: use common native integer type for arithmetic. */
-        const char *common_t = Wider_Int_Type(left_int_type, right_int_type);
+        const char *common_t = Wider_Int_Type(cg, left_int_type, right_int_type);
         left = Emit_Convert(cg, left, left_int_type, common_t);
         right = Emit_Convert(cg, right, right_int_type, common_t);
         Emit(cg, "  %%t%u = %s %s %%t%u, %%t%u\n", t, op, common_t, left, right);
@@ -15685,7 +15847,7 @@ static uint32_t Generate_Unary_Op(Code_Generator *cg, Syntax_Node *node) {
     }
 
     /* GNAT LLVM: determine native integer type for unary operations. */
-    const char *unary_int_type = is_float ? "i64" : Expression_Llvm_Type(node->unary.operand);
+    const char *unary_int_type = is_float ? Integer_Arith_Type(cg) : Expression_Llvm_Type(cg, node->unary.operand);
 
     switch (node->unary.op) {
         case TK_MINUS:
@@ -15699,7 +15861,7 @@ static uint32_t Generate_Unary_Op(Code_Generator *cg, Syntax_Node *node) {
         case TK_NOT:
             {
                 /* Convert operand to i1 if needed (loaded booleans are widened to i64) */
-                const char *op_type = Expression_Llvm_Type(node->unary.operand);
+                const char *op_type = Expression_Llvm_Type(cg, node->unary.operand);
                 operand = Emit_Convert(cg, operand, op_type, "i1");
                 Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n", t, operand);
                 /* Widen back to i64 for uniform Boolean representation */
@@ -15738,13 +15900,15 @@ static uint32_t Generate_Unary_Op(Code_Generator *cg, Syntax_Node *node) {
                 const char *type_str = Type_To_Llvm(designated);
                 Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; .ALL dereference\n",
                      t, type_str, operand);
-                /* Widen sub-i64 integer loads to i64 */
-                if (type_str[0] == 'i' && strcmp(type_str, "i64") != 0 &&
-                    !Type_Is_Access(designated) && !Type_Is_Float_Representation(designated) &&
-                    !Type_Is_Unconstrained_Array(designated) && !Type_Is_String(designated)) {
-                    uint32_t w = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = sext %s %%t%u to i64\n", w, type_str, t);
-                    t = w;
+                /* Widen sub-INTEGER integer loads to INTEGER width */
+                {   const char *iat_unary = Integer_Arith_Type(cg);
+                    if (type_str[0] == 'i' && strcmp(type_str, iat_unary) != 0 &&
+                        !Type_Is_Access(designated) && !Type_Is_Float_Representation(designated) &&
+                        !Type_Is_Unconstrained_Array(designated) && !Type_Is_String(designated)) {
+                        uint32_t w = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", w, type_str, t, iat_unary);
+                        t = w;
+                    }
                 }
             }
             break;
@@ -15827,7 +15991,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                         /* Check if first arg is CHARACTER (single byte) */
                         bool left_is_char = Type_Is_Character(left_type);
                         bool right_is_string = Type_Is_Unconstrained_Array(right_type) ||
-                                               Type_Is_String(right_type);
+                                               (!Type_Is_Constrained_Array(right_type) && Type_Is_String(right_type));
 
                         uint32_t left_val = Generate_Expression(cg, left_arg);
                         uint32_t right_val = Generate_Expression(cg, right_arg);
@@ -16043,13 +16207,14 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n", dp, base, off);
             } else {
                 uint32_t bo = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", bo, off, esz);
-                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n", dp, base, bo);
+                const char *iat_gep = Integer_Arith_Type(cg);
+                Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", bo, iat_gep, off, esz);
+                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u\n", dp, base, iat_gep, bo);
             }
             {
                 const char *slice_bt = Array_Bound_Llvm_Type(at);
-                uint32_t slo_bt = Emit_Convert(cg, slo, "i64", slice_bt);
-                uint32_t shi_bt = Emit_Convert(cg, shi, "i64", slice_bt);
+                uint32_t slo_bt = Emit_Convert(cg, slo, Integer_Arith_Type(cg), slice_bt);
+                uint32_t shi_bt = Emit_Convert(cg, shi, Integer_Arith_Type(cg), slice_bt);
                 return Emit_Fat_Pointer_Dynamic(cg, dp, slo_bt, shi_bt, slice_bt);
             }
         }
@@ -16142,7 +16307,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                         args[i] = Emit_Fat_Pointer(cg, args[i], lo, hi, Array_Bound_Llvm_Type(actual_type));
                     } else {
                         const char *param_type = Type_To_Llvm(formal_type);
-                        const char *arg_type = Expression_Llvm_Type(arg);
+                        const char *arg_type = Expression_Llvm_Type(cg, arg);
                         args[i] = Emit_Convert(cg, args[i], arg_type, param_type);
                     }
                 }
@@ -16196,7 +16361,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             } else {
                 const char *param_type = (sym->parameters && i < sym->parameter_count &&
                                           sym->parameters[i].param_type)
-                    ? Type_To_Llvm(sym->parameters[i].param_type) : "i64";
+                    ? Type_To_Llvm(sym->parameters[i].param_type) : Integer_Arith_Type(cg);
                 Emit(cg, "%s %%t%u", param_type, args[i]);
             }
         }
@@ -16217,14 +16382,14 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             Emit_Constraint_Check(cg, ret_val, actual_type);
         }
 
-        /* Widen return value to i64 for computation.
+        /* Widen return value to INTEGER width for computation.
          * Preserve native types: floats, pointers, fat pointers. */
         if (sym->return_type) {
             const char *ret_llvm = Type_To_Llvm(sym->return_type);
             if (!Is_Float_Type(ret_llvm) &&
                 strcmp(ret_llvm, "ptr") != 0 &&
                 !Llvm_Type_Is_Fat_Pointer(ret_llvm)) {
-                t = Emit_Convert(cg, t, ret_llvm, "i64");
+                t = Emit_Convert(cg, t, ret_llvm, Integer_Arith_Type(cg));
             }
             return t;
         }
@@ -16414,8 +16579,8 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             /* Build fat pointer with slice bounds using helper */
             {
                 const char *sl_bt = Array_Bound_Llvm_Type(array_type);
-                uint32_t sl_low_bt = Emit_Convert(cg, slice_low, "i64", sl_bt);
-                uint32_t sl_high_bt = Emit_Convert(cg, slice_high, "i64", sl_bt);
+                uint32_t sl_low_bt = Emit_Convert(cg, slice_low, Integer_Arith_Type(cg), sl_bt);
+                uint32_t sl_high_bt = Emit_Convert(cg, slice_high, Integer_Arith_Type(cg), sl_bt);
                 return Emit_Fat_Pointer_Dynamic(cg, data_ptr, sl_low_bt, sl_high_bt, sl_bt);
             }
         }
@@ -16425,7 +16590,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
 
         /* Adjust for array low bound (Ada arrays can start at any index) */
         if (has_dynamic_low) {
-            /* Dynamic low bound from fat pointer — widen to i64 for GEP */
+            /* Dynamic low bound from fat pointer — widen to INTEGER width for GEP */
             uint32_t low_bound_64 = Emit_Widen_To_I64(cg, low_bound_val, dyn_bt);
             uint32_t adj = Emit_Temp(cg);
             Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u  ; adjust for dynamic low bound\n",
@@ -16457,14 +16622,15 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             return ptr;
         } else {
             t = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %%t%u\n",
-                 ptr, elem_type, base, idx);
+            const char *iat_idx = Integer_Arith_Type(cg);
+            Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, %s %%t%u\n",
+                 ptr, elem_type, base, iat_idx, idx);
             Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, elem_type, ptr);
-            /* Widen sub-i64 integer loads to i64 */
-            if (elem_type[0] == 'i' && strcmp(elem_type, "i64") != 0 &&
+            /* Widen sub-INTEGER integer loads to INTEGER width */
+            if (elem_type[0] == 'i' && strcmp(elem_type, iat_idx) != 0 &&
                 !Type_Is_Access(elem_type_info) && !Type_Is_Float_Representation(elem_type_info)) {
                 uint32_t w = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = sext %s %%t%u to i64\n", w, elem_type, t);
+                Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", w, elem_type, t, iat_idx);
                 return w;
             }
             return t;
@@ -16501,7 +16667,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                     return t2;
                 } else if (Type_Is_Float_Representation(src_type) && Type_Is_Fixed_Point(dst_type)) {
                     /* Float → Fixed: divide by SMALL, convert to integer */
-                    const char *src_llvm = Expression_Llvm_Type(arg);
+                    const char *src_llvm = Expression_Llvm_Type(cg, arg);
                     double small = dst_type->fixed.small;
                     if (small <= 0) small = dst_type->fixed.delta > 0 ? dst_type->fixed.delta : 1.0;
                     uint32_t t1 = Emit_Temp(cg);
@@ -16515,17 +16681,17 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                 }
 
                 /* Types differ - need to convert */
-                const char *src_llvm = Expression_Llvm_Type(arg);
+                const char *src_llvm = Expression_Llvm_Type(cg, arg);
                 const char *dst_llvm = Type_To_Llvm(dst_type);
 
                 if (strcmp(src_llvm, dst_llvm) != 0) {
                     result = Emit_Convert(cg, result, src_llvm, dst_llvm);
                 }
-                /* Widen narrow integer scalars back to i64 computation width.
+                /* Widen narrow integer scalars back to INTEGER computation width.
                  * Float/ptr/fat-pointer results keep their native type. (RM 4.6) */
                 if (!Is_Float_Type(dst_llvm) && strcmp(dst_llvm, "ptr") != 0 &&
                     !strstr(dst_llvm, "{")) {
-                    result = Emit_Convert(cg, result, dst_llvm, "i64");
+                    result = Emit_Convert(cg, result, dst_llvm, Integer_Arith_Type(cg));
                 }
             }
             return result;
@@ -16561,11 +16727,12 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
         const char *type_str = Type_To_Llvm(designated);
         uint32_t t = Emit_Temp(cg);
         Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; load via .ALL\n", t, type_str, ptr);
-        /* Widen sub-i64 integer loads to i64 */
-        if (type_str[0] == 'i' && strcmp(type_str, "i64") != 0 &&
+        /* Widen sub-INTEGER integer loads to INTEGER width */
+        const char *iat_deref = Integer_Arith_Type(cg);
+        if (type_str[0] == 'i' && strcmp(type_str, iat_deref) != 0 &&
             !Type_Is_Access(designated) && !Type_Is_Float_Representation(designated)) {
             uint32_t w = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sext %s %%t%u to i64\n", w, type_str, t);
+            Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", w, type_str, t, iat_deref);
             return w;
         }
         return t;
@@ -16637,14 +16804,15 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
         uint32_t disc_val = Emit_Temp(cg);
         Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; load discriminant\n",
              disc_val, disc_llvm, disc_ptr);
-        if (strcmp(disc_llvm, "i64") != 0) {
-            disc_val = Emit_Convert(cg, disc_val, disc_llvm, "i64");
+        const char *iat_disc = Integer_Arith_Type(cg);
+        if (strcmp(disc_llvm, iat_disc) != 0) {
+            disc_val = Emit_Convert(cg, disc_val, disc_llvm, iat_disc);
         }
 
         if (!vinfo->is_others) {
             uint32_t cmp = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %lld  ; check variant discriminant\n",
-                 cmp, disc_val, (long long)vinfo->disc_value);
+            Emit(cg, "  %%t%u = icmp eq %s %%t%u, %lld  ; check variant discriminant\n",
+                 cmp, iat_disc, disc_val, (long long)vinfo->disc_value);
             uint32_t lbl_ok = cg->label_id++;
             uint32_t lbl_fail = cg->label_id++;
             Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp, lbl_ok, lbl_fail);
@@ -16674,11 +16842,12 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
     }
     uint32_t t = Emit_Temp(cg);
     Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, field_llvm_type, ptr);
-    /* Widen sub-i64 integer loads to i64 */
-    if (field_llvm_type[0] == 'i' && strcmp(field_llvm_type, "i64") != 0 &&
+    /* Widen sub-INTEGER integer loads to INTEGER width */
+    const char *iat_field = Integer_Arith_Type(cg);
+    if (field_llvm_type[0] == 'i' && strcmp(field_llvm_type, iat_field) != 0 &&
         !Type_Is_Access(field_type) && !Type_Is_Float_Representation(field_type)) {
         uint32_t w = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = sext %s %%t%u to i64\n", w, field_llvm_type, t);
+        Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", w, field_llvm_type, t, iat_field);
         return w;
     }
     return t;
@@ -16806,6 +16975,16 @@ static uint32_t Emit_Bound_Attribute(Code_Generator *cg, uint32_t t,
         Type_Bound b = is_low ? prefix_type->low_bound : prefix_type->high_bound;
         if (b.kind == BOUND_EXPR && b.expr) {
             uint32_t v = Generate_Expression(cg, b.expr);
+            /* Convert bound expression to target float type if needed */
+            const char *expr_fty = Expression_Llvm_Type(cg, b.expr);
+            if (strcmp(expr_fty, fty) != 0) {
+                uint32_t conv = Emit_Temp(cg);
+                if (strcmp(fty, "float") == 0 && strcmp(expr_fty, "double") == 0)
+                    Emit(cg, "  %%t%u = fptrunc double %%t%u to float\n", conv, v);
+                else
+                    Emit(cg, "  %%t%u = fpext %s %%t%u to %s\n", conv, expr_fty, v, fty);
+                v = conv;
+            }
             Emit(cg, "  %%t%u = fadd %s %%t%u, 0.0  ; %.*s'%s (runtime)\n",
                  t, fty, v, (int)attr.length, attr.data, tag);
         } else if (Type_Bound_Is_Set(b)) {
@@ -17194,11 +17373,13 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                 }
                 if (enum_type && enum_type->enumeration.literals &&
                     enum_type->enumeration.literal_count > 0) {
-                    /* Generate inline switch for literal lookup */
+                    /* Generate inline switch for literal lookup.
+                     * Length stored in STRING bound type (derived from type system). */
+                    const char *img_bt = String_Bound_Type(cg);
                     uint32_t result_ptr = Emit_Temp(cg);
                     uint32_t result_len = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = alloca ptr\n", result_ptr);
-                    Emit(cg, "  %%t%u = alloca i32\n", result_len);
+                    Emit(cg, "  %%t%u = alloca %s\n", result_len, img_bt);
                     uint32_t switch_label = cg->label_id++;
                     uint32_t default_label = cg->label_id++;
                     uint32_t end_label = cg->label_id++;
@@ -17221,23 +17402,23 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                         }
                         Emit_String_Const(cg, "\\00\"\n");
                         Emit(cg, "  store ptr @.img_str%u, ptr %%t%u\n", str_id, result_ptr);
-                        Emit(cg, "  store i32 %u, ptr %%t%u\n", (unsigned)lit.length, result_len);
+                        Emit(cg, "  store %s %u, ptr %%t%u\n", img_bt, (unsigned)lit.length, result_len);
                         Emit(cg, "  br label %%Limg_end%u\n", end_label);
                     }
                     /* Default case - return empty string */
                     Emit(cg, "Limg_def%u:\n", default_label);
                     Emit(cg, "  store ptr null, ptr %%t%u\n", result_ptr);
-                    Emit(cg, "  store i32 0, ptr %%t%u\n", result_len);
+                    Emit(cg, "  store %s 0, ptr %%t%u\n", img_bt, result_len);
                     Emit(cg, "  br label %%Limg_end%u\n", end_label);
                     Emit(cg, "Limg_end%u:\n", end_label);
                     uint32_t ptr_load = Emit_Temp(cg);
                     uint32_t len_load = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = load ptr, ptr %%t%u\n", ptr_load, result_ptr);
-                    Emit(cg, "  %%t%u = load i32, ptr %%t%u\n", len_load, result_len);
+                    Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", len_load, img_bt, result_len);
                     /* Build fat pointer result: { ptr_load, { 1, len_load } } */
                     uint32_t low_one = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = add i32 0, 1\n", low_one);
-                    t = Emit_Fat_Pointer_From_Temps(cg, ptr_load, low_one, len_load, "i32");
+                    Emit(cg, "  %%t%u = add %s 0, 1\n", low_one, img_bt);
+                    t = Emit_Fat_Pointer_From_Temps(cg, ptr_load, low_one, len_load, img_bt);
                 } else {
                     /* No literals found, fallback to integer image */
                     Emit(cg, "  %%t%u = call " FAT_PTR_TYPE " @__ada_integer_image(i64 %%t%u)\n",
@@ -17250,7 +17431,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
             }
             return t;
         }
-        t = Emit_Fat_Pointer_Null(cg, "i32");  /* 'IMAGE no arg */
+        t = Emit_Fat_Pointer_Null(cg, String_Bound_Type(cg));  /* 'IMAGE no arg */
         return t;
     }
 
@@ -17281,9 +17462,10 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                     /* Generate string comparison for each literal */
                     /* Extract string pointer and length from fat pointer */
                     /* Extract fat pointer components and compute length */
-                    uint32_t str_ptr = Emit_Fat_Pointer_Data(cg, str_val, "i32");
-                    uint32_t str_len32 = Emit_Fat_Pointer_Length(cg, str_val, "i32");
-                    uint32_t str_len = Emit_Widen_To_I64(cg, str_len32, "i32");
+                    const char *val_bt = String_Bound_Type(cg);
+                    uint32_t str_ptr = Emit_Fat_Pointer_Data(cg, str_val, val_bt);
+                    uint32_t str_len_bt = Emit_Fat_Pointer_Length(cg, str_val, val_bt);
+                    uint32_t str_len = Emit_Widen_To_I64(cg, str_len_bt, val_bt);
 
                     uint32_t result_alloc = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = alloca i64\n", result_alloc);
@@ -17900,50 +18082,51 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             uint32_t low_val, high_val;
 
             /* Generate low bound */
+            const char *iat_bnd = Integer_Arith_Type(cg);
             if (low_bound.kind == BOUND_INTEGER) {
                 low_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add i64 0, %lld\n", low_val, (long long)low_bound.int_value);
+                Emit(cg, "  %%t%u = add %s 0, %lld\n", low_val, iat_bnd, (long long)low_bound.int_value);
             } else if (low_bound.kind == BOUND_EXPR && low_bound.expr) {
                 low_val = Generate_Expression(cg, low_bound.expr);
-                /* Extend to i64 if narrower type (e.g., ENUM bounds return i8) */
-                const char *low_llvm = Expression_Llvm_Type(low_bound.expr);
-                if (strcmp(low_llvm, "i64") != 0 && strcmp(low_llvm, "ptr") != 0 &&
+                /* Extend to INTEGER width if narrower type (e.g., ENUM bounds return i8) */
+                const char *low_llvm = Expression_Llvm_Type(cg, low_bound.expr);
+                if (strcmp(low_llvm, iat_bnd) != 0 && strcmp(low_llvm, "ptr") != 0 &&
                     strcmp(low_llvm, "double") != 0 && strcmp(low_llvm, "float") != 0) {
-                    low_val = Emit_Convert(cg, low_val, low_llvm, "i64");
+                    low_val = Emit_Convert(cg, low_val, low_llvm, iat_bnd);
                 }
             } else {
                 low_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add i64 0, 1\n", low_val);
+                Emit(cg, "  %%t%u = add %s 0, 1\n", low_val, iat_bnd);
             }
 
             /* Generate high bound */
             if (high_bound.kind == BOUND_INTEGER) {
                 high_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add i64 0, %lld\n", high_val, (long long)high_bound.int_value);
+                Emit(cg, "  %%t%u = add %s 0, %lld\n", high_val, iat_bnd, (long long)high_bound.int_value);
             } else if (high_bound.kind == BOUND_EXPR && high_bound.expr) {
                 high_val = Generate_Expression(cg, high_bound.expr);
-                /* Extend to i64 if narrower type (e.g., ENUM bounds return i8) */
-                const char *high_llvm = Expression_Llvm_Type(high_bound.expr);
-                if (strcmp(high_llvm, "i64") != 0 && strcmp(high_llvm, "ptr") != 0 &&
+                /* Extend to INTEGER width if narrower type (e.g., ENUM bounds return i8) */
+                const char *high_llvm = Expression_Llvm_Type(cg, high_bound.expr);
+                if (strcmp(high_llvm, iat_bnd) != 0 && strcmp(high_llvm, "ptr") != 0 &&
                     strcmp(high_llvm, "double") != 0 && strcmp(high_llvm, "float") != 0) {
-                    high_val = Emit_Convert(cg, high_val, high_llvm, "i64");
+                    high_val = Emit_Convert(cg, high_val, high_llvm, iat_bnd);
                 }
             } else {
                 high_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add i64 0, 1\n", high_val);
+                Emit(cg, "  %%t%u = add %s 0, 1\n", high_val, iat_bnd);
             }
 
             /* Calculate count and byte size */
             uint32_t count_val = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", count_val, high_val, low_val);
+            Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", count_val, iat_bnd, high_val, low_val);
             uint32_t count_plus1 = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", count_plus1, count_val);
+            Emit(cg, "  %%t%u = add %s %%t%u, 1\n", count_plus1, iat_bnd, count_val);
             uint32_t byte_size = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", byte_size, count_plus1, elem_size);
+            Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", byte_size, iat_bnd, count_plus1, elem_size);
 
             /* Dynamic stack allocation */
             uint32_t base = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = alloca i8, i64 %%t%u  ; dynamic array aggregate\n", base, byte_size);
+            Emit(cg, "  %%t%u = alloca i8, %s %%t%u  ; dynamic array aggregate\n", base, iat_bnd, byte_size);
 
             /* Find "others" clause and generate value */
             uint32_t others_val = 0;
@@ -17953,7 +18136,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                 if (item->kind == NK_ASSOCIATION && item->association.choices.count > 0) {
                     if (Is_Others_Choice(item->association.choices.items[0])) {
                         others_val = Generate_Expression(cg, item->association.expression);
-                        const char *src_type = Expression_Llvm_Type(item->association.expression);
+                        const char *src_type = Expression_Llvm_Type(cg, item->association.expression);
                         others_val = Emit_Convert(cg, others_val, src_type, elem_type);
                         has_others = true;
                         break;
@@ -17996,7 +18179,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                             Type_Is_Constrained_Array(elem_ti);
 
                         if (!elem_is_composite) {
-                            const char *src_type = Expression_Llvm_Type(item->association.expression);
+                            const char *src_type = Expression_Llvm_Type(cg, item->association.expression);
                             val = Emit_Convert(cg, val, src_type, elem_type);
                         }
 
@@ -18159,7 +18342,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                 if (Is_Others_Choice(item->association.choices.items[0])) {
                     others_val = Generate_Expression(cg, item->association.expression);
                     if (!elem_is_composite) {
-                        const char *src_type = Expression_Llvm_Type(item->association.expression);
+                        const char *src_type = Expression_Llvm_Type(cg, item->association.expression);
                         others_val = Emit_Convert(cg, others_val, src_type, elem_type);
                     }
                     has_others = true;
@@ -18190,7 +18373,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                                            choice->range.high->integer_lit.value : high;
                         uint32_t val = Generate_Expression(cg, item->association.expression);
                         if (!elem_is_composite) {
-                            const char *src_type = Expression_Llvm_Type(item->association.expression);
+                            const char *src_type = Expression_Llvm_Type(cg, item->association.expression);
                             val = Emit_Convert(cg, val, src_type, elem_type);
                         }
 
@@ -18223,7 +18406,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                                 Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
                                      ptr, val, elem_size);
                             } else {
-                                const char *src_type = Expression_Llvm_Type(item->association.expression);
+                                const char *src_type = Expression_Llvm_Type(cg, item->association.expression);
                                 val = Emit_Convert(cg, val, src_type, elem_type);
                                 Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %lld\n",
                                      ptr, elem_type, base, (long long)idx);
@@ -18244,7 +18427,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
                              ptr, val, elem_size);
                     } else {
-                        const char *src_type = Expression_Llvm_Type(item);
+                        const char *src_type = Expression_Llvm_Type(cg, item);
                         val = Emit_Convert(cg, val, src_type, elem_type);
                         Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %u\n",
                              ptr, elem_type, base, positional_idx);
@@ -18338,7 +18521,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                                      ptr, val, comp_size);
                             } else {
                                 const char *comp_type = Type_To_Llvm(comp_ti);
-                                const char *src_type = Expression_Llvm_Type(item->association.expression);
+                                const char *src_type = Expression_Llvm_Type(cg, item->association.expression);
                                 val = Emit_Convert(cg, val, src_type, comp_type);
                                 Emit(cg, "  store %s %%t%u, ptr %%t%u\n", comp_type, val, ptr);
                             }
@@ -18364,7 +18547,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                              ptr, val, comp_size);
                     } else {
                         const char *comp_type = Type_To_Llvm(comp_ti);
-                        const char *src_type = Expression_Llvm_Type(item);
+                        const char *src_type = Expression_Llvm_Type(cg, item);
                         val = Emit_Convert(cg, val, src_type, comp_type);
                         Emit(cg, "  store %s %%t%u, ptr %%t%u\n", comp_type, val, ptr);
                     }
@@ -18380,7 +18563,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                 if (!initialized[idx]) {
                     Component_Info *comp = &agg_type->record.components[idx];
                     const char *comp_type = Type_To_Llvm(comp->component_type);
-                    uint32_t converted = Emit_Convert(cg, others_val, "i64", comp_type);
+                    uint32_t converted = Emit_Convert(cg, others_val, Integer_Arith_Type(cg), comp_type);
 
                     uint32_t ptr = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
@@ -18412,17 +18595,17 @@ static uint32_t Generate_Qualified(Code_Generator *cg, Syntax_Node *node) {
     }
 
     /* Check if type conversion is needed (e.g., INTEGER to FLOAT) */
-    const char *src_llvm = Expression_Llvm_Type(node->qualified.expression);
+    const char *src_llvm = Expression_Llvm_Type(cg, node->qualified.expression);
     const char *dst_llvm = Type_To_Llvm(dst_type);
 
     if (strcmp(src_llvm, dst_llvm) != 0) {
         result = Emit_Convert(cg, result, src_llvm, dst_llvm);
     }
-    /* Widen narrow integer scalars back to i64 computation width.
+    /* Widen narrow integer scalars back to INTEGER computation width.
      * Mirrors the same fix in Generate_Apply (RM 4.6). */
     if (!Is_Float_Type(dst_llvm) && strcmp(dst_llvm, "ptr") != 0 &&
         !strstr(dst_llvm, "{")) {
-        result = Emit_Convert(cg, result, dst_llvm, "i64");
+        result = Emit_Convert(cg, result, dst_llvm, Integer_Arith_Type(cg));
     }
 
     return result;
@@ -18444,7 +18627,8 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
      * subtypes of unconstrained access types). */
     Type_Info *designated = Type_Is_Access(access_type) ?
                             access_type->access.designated_type : NULL;
-    bool is_fat_ptr = Type_Is_String(designated) || Type_Is_Unconstrained_Array(designated);
+    bool is_fat_ptr = (!Type_Is_Constrained_Array(designated) && Type_Is_String(designated)) ||
+                      Type_Is_Unconstrained_Array(designated);
 
     /* Note: if the designated type is a constrained subtype of an unconstrained
      * array (e.g., ACCESS ARRAY3(1..5)), we do NOT use fat pointer representation.
@@ -18462,7 +18646,7 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
         if (inner_expr->kind == NK_QUALIFIED && inner_expr->qualified.expression) {
             inner_expr = inner_expr->qualified.expression;
         }
-        const char *expr_llvm_type = Expression_Llvm_Type(inner_expr);
+        const char *expr_llvm_type = Expression_Llvm_Type(cg, inner_expr);
         bool init_returns_ptr = strcmp(expr_llvm_type, "ptr") == 0;
 
         /* Also check if the aggregate is constrained */
@@ -18559,7 +18743,7 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
                 Syntax_Node *low_expr = subtype->array.indices[0].low_bound.expr;
                 low_t = Generate_Expression(cg, low_expr);
                 /* Convert to bt if needed */
-                const char *low_llvm = Expression_Llvm_Type(low_expr);
+                const char *low_llvm = Expression_Llvm_Type(cg, low_expr);
                 if (strcmp(low_llvm, new_bt) != 0 && strcmp(low_llvm, "ptr") != 0 &&
                     strcmp(low_llvm, "double") != 0 && strcmp(low_llvm, "float") != 0) {
                     low_t = Emit_Convert(cg, low_t, low_llvm, new_bt);
@@ -18578,7 +18762,7 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
                 Syntax_Node *high_expr = subtype->array.indices[0].high_bound.expr;
                 high_t = Generate_Expression(cg, high_expr);
                 /* Convert to bt if needed */
-                const char *high_llvm = Expression_Llvm_Type(high_expr);
+                const char *high_llvm = Expression_Llvm_Type(cg, high_expr);
                 if (strcmp(high_llvm, new_bt) != 0 && strcmp(high_llvm, "ptr") != 0 &&
                     strcmp(high_llvm, "double") != 0 && strcmp(high_llvm, "float") != 0) {
                     high_t = Emit_Convert(cg, high_t, high_llvm, new_bt);
@@ -18644,7 +18828,7 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
                  t, val, (unsigned long long)alloc_size);
         } else {
             /* Scalar type: store value */
-            const char *desg_llvm = designated ? Type_To_Llvm(designated) : "i64";
+            const char *desg_llvm = designated ? Type_To_Llvm(designated) : Integer_Arith_Type(cg);
             Emit(cg, "  store %s %%t%u, ptr %%t%u\n", desg_llvm, val, t);
         }
     }
@@ -18748,7 +18932,8 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
             /* For unconstrained (STRING / unconstrained array) the variable
              * holds a fat pointer — we must load it and extract the data ptr.
              * For constrained arrays the variable IS the data pointer. */
-            bool target_is_uncon = Type_Is_String(prefix_type) ||
+            bool target_is_uncon = (!Type_Is_Constrained_Array(prefix_type) &&
+                                    Type_Is_String(prefix_type)) ||
                                    Type_Is_Unconstrained_Array(prefix_type);
 
             Syntax_Node *arg = target->apply.arguments.items[0];
@@ -18798,7 +18983,7 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
 
                     /* Get source data */
                     uint32_t src_val = Generate_Expression(cg, src);
-                    const char *src_llvm = Expression_Llvm_Type(src);
+                    const char *src_llvm = Expression_Llvm_Type(cg, src);
                     uint32_t src_data;
                     if (Llvm_Type_Is_Fat_Pointer(src_llvm)) {
                         src_data = Emit_Fat_Pointer_Data(cg, src_val, Array_Bound_Llvm_Type(prefix_type));
@@ -18849,7 +19034,7 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
                         uint32_t src_base;
                         uint32_t src_fat_low = 0;
                         const char *ssb = NULL;
-                        bool src_is_uncon = Type_Is_String(src_type) ||
+                        bool src_is_uncon = (!Type_Is_Constrained_Array(src_type) && Type_Is_String(src_type)) ||
                                             Type_Is_Unconstrained_Array(src_type);
                         if (src_is_uncon) {
                             ssb = Array_Bound_Llvm_Type(src_type);
@@ -18907,7 +19092,7 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
             const char *elem_type_str = Type_To_Llvm(prefix_type->array.element_type);
             uint32_t elem_ptr = Generate_Lvalue(cg, target);
             uint32_t value = Generate_Expression(cg, node->assignment.value);
-            const char *value_type = Expression_Llvm_Type(node->assignment.value);
+            const char *value_type = Expression_Llvm_Type(cg, node->assignment.value);
             value = Emit_Convert(cg, value, value_type, elem_type_str);
             Emit(cg, "  store %s %%t%u, ptr %%t%u  ; array element assign\n",
                  elem_type_str, value, elem_ptr);
@@ -18927,7 +19112,7 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
             /* Generate_Lvalue loads the pointer value (the storage address) */
             uint32_t ptr = Generate_Lvalue(cg, target);
             uint32_t value = Generate_Expression(cg, node->assignment.value);
-            const char *value_type = Expression_Llvm_Type(node->assignment.value);
+            const char *value_type = Expression_Llvm_Type(cg, node->assignment.value);
             value = Emit_Convert(cg, value, value_type, dest_type);
             Emit(cg, "  store %s %%t%u, ptr %%t%u  ; .ALL assignment\n",
                  dest_type, value, ptr);
@@ -18972,7 +19157,7 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
          * and direct field offset — all address computation is unified. */
         uint32_t addr = Generate_Lvalue(cg, target);
         uint32_t value = Generate_Expression(cg, node->assignment.value);
-        const char *value_type = Expression_Llvm_Type(node->assignment.value);
+        const char *value_type = Expression_Llvm_Type(cg, node->assignment.value);
         value = Emit_Convert(cg, value, value_type, store_type);
         Emit(cg, "  store %s %%t%u, ptr %%t%u  ; selected assign\n",
              store_type, value, addr);
@@ -19008,32 +19193,33 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
                 const char *dt = Type_To_Llvm(dc->component_type);
 
                 /* Load source discriminant */
+                const char *iat_dc = Integer_Arith_Type(cg);
                 uint32_t src_dp = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
-                     src_dp, src_ptr, dc->byte_offset);
+                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, %s %u\n",
+                     src_dp, src_ptr, iat_dc, dc->byte_offset);
                 uint32_t src_dv = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; src disc %.*s\n",
                      src_dv, dt, src_dp, (int)dc->name.length, dc->name.data);
-                if (strcmp(dt, "i64") != 0) {
-                    src_dv = Emit_Convert(cg, src_dv, dt, "i64");
+                if (strcmp(dt, iat_dc) != 0) {
+                    src_dv = Emit_Convert(cg, src_dv, dt, iat_dc);
                 }
 
                 /* Load target discriminant */
                 uint32_t tgt_dp = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = getelementptr i8, ptr ", tgt_dp);
                 Emit_Symbol_Ref(cg, target_sym);
-                Emit(cg, ", i64 %u\n", dc->byte_offset);
+                Emit(cg, ", %s %u\n", iat_dc, dc->byte_offset);
                 uint32_t tgt_dv = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; tgt disc %.*s\n",
                      tgt_dv, dt, tgt_dp, (int)dc->name.length, dc->name.data);
-                if (strcmp(dt, "i64") != 0) {
-                    tgt_dv = Emit_Convert(cg, tgt_dv, dt, "i64");
+                if (strcmp(dt, iat_dc) != 0) {
+                    tgt_dv = Emit_Convert(cg, tgt_dv, dt, iat_dc);
                 }
 
                 /* Compare and raise Constraint_Error on mismatch */
                 uint32_t cmp = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u  ; disc match?\n",
-                     cmp, src_dv, tgt_dv);
+                Emit(cg, "  %%t%u = icmp eq %s %%t%u, %%t%u  ; disc match?\n",
+                     cmp, iat_dc, src_dv, tgt_dv);
                 uint32_t lbl_ok = cg->label_id++;
                 uint32_t lbl_fail = cg->label_id++;
                 Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp, lbl_ok, lbl_fail);
@@ -19057,6 +19243,8 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
          * Fat pointer sources: STRING type, unconstrained arrays, string literals,
          * concatenation results, and slice expressions. */
         Type_Info *src_type = node->assignment.value->type;
+        if (cg->current_instance)
+            src_type = Resolve_Generic_Actual_Type(cg, src_type);
         bool src_is_fat_ptr = Expression_Produces_Fat_Pointer(
             node->assignment.value, src_type);
         uint32_t src_ptr = Generate_Expression(cg, node->assignment.value);
@@ -19087,9 +19275,12 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
      *   2. Generate source expression
      *   3. Extract source data pointer (from fat ptr or constrained ptr)
      *   4. memcpy source data to existing data storage */
-    if (Type_Is_String(ty) || Type_Is_Unconstrained_Array(ty)) {
+    if ((!Type_Is_Constrained_Array(ty) && Type_Is_String(ty)) ||
+        Type_Is_Unconstrained_Array(ty)) {
         Syntax_Node *src = node->assignment.value;
         Type_Info *src_type = src->type;
+        if (cg->current_instance)
+            src_type = Resolve_Generic_Actual_Type(cg, src_type);
         bool src_is_fat = Expression_Produces_Fat_Pointer(src, src_type);
 
         /* Load existing fat pointer from the target variable */
@@ -19163,7 +19354,7 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
         }
     } else {
         /* Integer/boolean to target type: use actual expression type */
-        const char *src_type_str = Expression_Llvm_Type(node->assignment.value);
+        const char *src_type_str = Expression_Llvm_Type(cg, node->assignment.value);
         value = Emit_Convert(cg, value, src_type_str, type_str);
     }
 
@@ -19175,7 +19366,7 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
             uint32_t fval = Emit_Convert(cg, value, type_str, "double");
             Emit_Constraint_Check(cg, fval, ty);
         } else {
-            uint32_t checked = Emit_Convert(cg, value, type_str, "i64");
+            uint32_t checked = Emit_Convert(cg, value, type_str, Integer_Arith_Type(cg));
             Emit_Constraint_Check(cg, checked, ty);
         }
     }
@@ -19192,7 +19383,7 @@ static void Generate_If_Statement(Code_Generator *cg, Syntax_Node *node) {
     uint32_t end_label = Emit_Label(cg);
 
     /* Convert condition to i1 for branch (use actual expression type) */
-    const char *cond_type = Expression_Llvm_Type(node->if_stmt.condition);
+    const char *cond_type = Expression_Llvm_Type(cg, node->if_stmt.condition);
     cond = Emit_Convert(cg, cond, cond_type, "i1");
     Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cond, then_label, else_label);
     cg->block_terminated = true;
@@ -19241,7 +19432,7 @@ static void Generate_Loop_Statement(Code_Generator *cg, Syntax_Node *node) {
         /* WHILE loop */
         Syntax_Node *scheme = node->loop_stmt.iteration_scheme;
         uint32_t cond = Generate_Expression(cg, scheme);
-        const char *cond_type = Expression_Llvm_Type(scheme);
+        const char *cond_type = Expression_Llvm_Type(cg, scheme);
         cond = Emit_Convert(cg, cond, cond_type, "i1");
         Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cond, loop_body, loop_end);
         cg->block_terminated = true;
@@ -19266,9 +19457,9 @@ static void Generate_Return_Statement(Code_Generator *cg, Syntax_Node *node) {
         Syntax_Node *expr = node->return_stmt.expression;
         uint32_t value = Generate_Expression(cg, expr);
         const char *type_str = cg->current_function && cg->current_function->return_type
-            ? Type_To_Llvm(cg->current_function->return_type) : "i64";
+            ? Type_To_Llvm(cg->current_function->return_type) : Integer_Arith_Type(cg);
         /* Convert from expression type to return type */
-        const char *expr_type = Expression_Llvm_Type(expr);
+        const char *expr_type = Expression_Llvm_Type(cg, expr);
         value = Emit_Convert(cg, value, expr_type, type_str);
         Emit(cg, "  ret %s %%t%u\n", type_str, value);
     } else {
@@ -19872,12 +20063,12 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                                 uint32_t val = Generate_Expression(cg,
                                     original_sym->parameters[i].default_value);
                                 const char *param_type = original_sym->parameters[i].param_type ?
-                                    Type_To_Llvm(original_sym->parameters[i].param_type) : "i64";
-                                val = Emit_Convert(cg, val, "i64", param_type);
+                                    Type_To_Llvm(original_sym->parameters[i].param_type) : Integer_Arith_Type(cg);
+                                val = Emit_Convert(cg, val, Integer_Arith_Type(cg), param_type);
                                 Emit(cg, "%s %%t%u", param_type, val);
                             } else {
                                 /* No default - emit zero (shouldn't happen) */
-                                Emit(cg, "i64 0");
+                                Emit(cg, "%s 0", Integer_Arith_Type(cg));
                             }
                         }
                     }
@@ -19912,7 +20103,7 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
             if (node->exit_stmt.condition) {
                 Syntax_Node *exit_cond = node->exit_stmt.condition;
                 uint32_t cond = Generate_Expression(cg, exit_cond);
-                const char *cond_type = Expression_Llvm_Type(exit_cond);
+                const char *cond_type = Expression_Llvm_Type(cg, exit_cond);
                 cond = Emit_Convert(cg, cond, cond_type, "i1");
                 uint32_t cont = Emit_Label(cg);
                 Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
@@ -20049,7 +20240,7 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                             {
                                 Syntax_Node *guard_expr = alt->association.choices.items[0];
                                 uint32_t guard = Generate_Expression(cg, guard_expr);
-                                const char *guard_type = Expression_Llvm_Type(guard_expr);
+                                const char *guard_type = Expression_Llvm_Type(cg, guard_expr);
                                 guard = Emit_Convert(cg, guard, guard_type, "i1");
                                 Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
                                      guard, cg->label_id, next_label);
@@ -20381,6 +20572,8 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                  * use zeroinitializer since '0' is invalid for struct types */
                 if (Llvm_Type_Is_Fat_Pointer(type_str)) {
                     Emit(cg, " = linkonce_odr global %s zeroinitializer\n", type_str);
+                } else if (strcmp(type_str, "double") == 0 || strcmp(type_str, "float") == 0) {
+                    Emit(cg, " = linkonce_odr global %s 0.0\n", type_str);
                 } else {
                     Emit(cg, " = linkonce_odr global %s 0\n", type_str);
                 }
@@ -20683,7 +20876,7 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                  * 3. Build new fat pointer with local data
                  * 4. Store fat pointer into variable */
                 uint32_t fat_ptr = Generate_Expression(cg, node->object_decl.init);
-                const char *src_llvm = Expression_Llvm_Type(node->object_decl.init);
+                const char *src_llvm = Expression_Llvm_Type(cg, node->object_decl.init);
 
                 const char *uai_bt = Array_Bound_Llvm_Type(ty);
                 if (Llvm_Type_Is_Fat_Pointer(src_llvm)) {
@@ -20738,7 +20931,7 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 uint32_t init = Generate_Expression(cg, node->object_decl.init);
                 /* Use Expression_Llvm_Type to get correct type for all expressions
                  * including pointers, floats, and integers */
-                const char *src_type_str = Expression_Llvm_Type(node->object_decl.init);
+                const char *src_type_str = Expression_Llvm_Type(cg, node->object_decl.init);
 
                 /* Convert if types differ, then store */
                 init = Emit_Convert(cg, init, src_type_str, type_str);
@@ -20751,7 +20944,7 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                         uint32_t fval = Emit_Convert(cg, init, type_str, "double");
                         Emit_Constraint_Check(cg, fval, ty);
                     } else {
-                        uint32_t checked = Emit_Convert(cg, init, type_str, "i64");
+                        uint32_t checked = Emit_Convert(cg, init, type_str, Integer_Arith_Type(cg));
                         Emit_Constraint_Check(cg, checked, ty);
                     }
                 }
@@ -20770,37 +20963,38 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             uint32_t low_val, high_val;
 
             /* Get low bound */
+            const char *iat_decl = Integer_Arith_Type(cg);
             if (low_b.kind == BOUND_INTEGER) {
                 low_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add i64 0, %lld\n", low_val, (long long)low_b.int_value);
+                Emit(cg, "  %%t%u = add %s 0, %lld\n", low_val, iat_decl, (long long)low_b.int_value);
             } else if (low_b.kind == BOUND_EXPR && low_b.expr) {
                 low_val = Generate_Expression(cg, low_b.expr);
-                /* Extend to i64 if narrower type (e.g., ENUM'('B') returns i8) */
-                const char *low_llvm = Expression_Llvm_Type(low_b.expr);
-                if (strcmp(low_llvm, "i64") != 0 && strcmp(low_llvm, "ptr") != 0 &&
+                /* Extend to INTEGER width if narrower type (e.g., ENUM'('B') returns i8) */
+                const char *low_llvm = Expression_Llvm_Type(cg, low_b.expr);
+                if (strcmp(low_llvm, iat_decl) != 0 && strcmp(low_llvm, "ptr") != 0 &&
                     strcmp(low_llvm, "double") != 0 && strcmp(low_llvm, "float") != 0) {
-                    low_val = Emit_Convert(cg, low_val, low_llvm, "i64");
+                    low_val = Emit_Convert(cg, low_val, low_llvm, iat_decl);
                 }
             } else {
                 low_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add i64 0, 1\n", low_val);
+                Emit(cg, "  %%t%u = add %s 0, 1\n", low_val, iat_decl);
             }
 
             /* Get high bound */
             if (high_b.kind == BOUND_INTEGER) {
                 high_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add i64 0, %lld\n", high_val, (long long)high_b.int_value);
+                Emit(cg, "  %%t%u = add %s 0, %lld\n", high_val, iat_decl, (long long)high_b.int_value);
             } else if (high_b.kind == BOUND_EXPR && high_b.expr) {
                 high_val = Generate_Expression(cg, high_b.expr);
-                /* Extend to i64 if narrower type (e.g., ENUM'('D') returns i8) */
-                const char *high_llvm = Expression_Llvm_Type(high_b.expr);
-                if (strcmp(high_llvm, "i64") != 0 && strcmp(high_llvm, "ptr") != 0 &&
+                /* Extend to INTEGER width if narrower type (e.g., ENUM'('D') returns i8) */
+                const char *high_llvm = Expression_Llvm_Type(cg, high_b.expr);
+                if (strcmp(high_llvm, iat_decl) != 0 && strcmp(high_llvm, "ptr") != 0 &&
                     strcmp(high_llvm, "double") != 0 && strcmp(high_llvm, "float") != 0) {
-                    high_val = Emit_Convert(cg, high_val, high_llvm, "i64");
+                    high_val = Emit_Convert(cg, high_val, high_llvm, iat_decl);
                 }
             } else {
                 high_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add i64 0, 0\n", high_val);
+                Emit(cg, "  %%t%u = add %s 0, 0\n", high_val, iat_decl);
             }
 
             /* Allocate array data with dynamic size */
@@ -20809,14 +21003,14 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             if (elem_sz == 0) elem_sz = 8;
 
             uint32_t count_val = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", count_val, high_val, low_val);
+            Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", count_val, iat_decl, high_val, low_val);
             uint32_t count_plus1 = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", count_plus1, count_val);
+            Emit(cg, "  %%t%u = add %s %%t%u, 1\n", count_plus1, iat_decl, count_val);
             uint32_t byte_size = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", byte_size, count_plus1, elem_sz);
+            Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", byte_size, iat_decl, count_plus1, elem_sz);
 
             uint32_t data_ptr = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = alloca i8, i64 %%t%u  ; dynamic uninit array\n", data_ptr, byte_size);
+            Emit(cg, "  %%t%u = alloca i8, %s %%t%u  ; dynamic uninit array\n", data_ptr, iat_decl, byte_size);
 
             /* Construct fat pointer in-place */
             Emit_Store_Fat_Pointer_Fields_To_Symbol(cg, data_ptr, low_val, high_val, sym, Array_Bound_Llvm_Type(ty));
@@ -20870,7 +21064,7 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
 
                     /* Store based on component type */
                     Type_Info *comp_type = comp->component_type;
-                    const char *val_type = Expression_Llvm_Type(comp->default_expr);
+                    const char *val_type = Expression_Llvm_Type(cg, comp->default_expr);
                     if (Type_Is_Float(comp_type)) {
                         val = Emit_Convert(cg, val, val_type, "double");
                         Emit(cg, "  store double %%t%u, ptr %%t%u\n", val, comp_ptr);
@@ -21722,6 +21916,8 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                                  (long long)cnt, elem_type);
                         } else if (is_record) {
                             Emit(cg, " = linkonce_odr global [%u x i8] zeroinitializer\n", ty->size);
+                        } else if (strcmp(type_str, "double") == 0 || strcmp(type_str, "float") == 0) {
+                            Emit(cg, " = linkonce_odr global %s 0.0\n", type_str);
                         } else {
                             Emit(cg, " = linkonce_odr global %s %lld\n", type_str,
                                  (long long)init_val);
@@ -21947,7 +22143,7 @@ static void Generate_Type_Equality_Function(Code_Generator *cg, Type_Info *t) {
 
     /* Determine parameter type based on array constrained-ness */
     bool is_unconstrained = Type_Is_Unconstrained_Array(t);
-    const char *eq_bt = is_unconstrained ? Array_Bound_Llvm_Type(t) : "i32";
+    const char *eq_bt = Array_Bound_Llvm_Type(t);
     const char *param_type = is_unconstrained ? FAT_PTR_TYPE : "ptr";
 
     /* Emit function definition with linkonce_odr for linker deduplication */
@@ -21983,7 +22179,8 @@ static void Generate_Type_Equality_Function(Code_Generator *cg, Type_Info *t) {
                 Type_Info *ct = comp->component_type;
                 bool is_fat_ptr_access = Type_Needs_Fat_Pointer(ct);
 
-                if (Type_Is_String(ct) || Type_Is_Unconstrained_Array(ct)) {
+                if (Type_Is_Unconstrained_Array(ct) ||
+                    (!Type_Is_Constrained_Array(ct) && Type_Is_String(ct))) {
                     /* Unconstrained array/string - load fat pointer values from storage */
                     const char *eqf_bt = Array_Bound_Llvm_Type(ct);
                     uint32_t left_fat = Emit_Load_Fat_Pointer_From_Temp(cg, left_gep, eqf_bt);
@@ -22084,14 +22281,15 @@ static void Generate_Type_Equality_Function(Code_Generator *cg, Type_Info *t) {
             /* Compare lengths in native bt */
             Emit(cg, "  %%len_eq = icmp eq %s %%left_len1, %%right_len1\n", eq_bt);
 
-            /* Widen to i64 for memcmp byte size computation */
-            if (strcmp(eq_bt, "i64") != 0) {
-                Emit(cg, "  %%left_len1_64 = sext %s %%left_len1 to i64\n", eq_bt);
-                Emit(cg, "  %%byte_size = mul i64 %%left_len1_64, %u\n", elem_size);
+            /* Widen to INTEGER width for memcmp byte size computation */
+            const char *iat_eq = Integer_Arith_Type(cg);
+            if (strcmp(eq_bt, iat_eq) != 0) {
+                Emit(cg, "  %%left_len1_w = sext %s %%left_len1 to %s\n", eq_bt, iat_eq);
+                Emit(cg, "  %%byte_size = mul %s %%left_len1_w, %u\n", iat_eq, elem_size);
             } else {
-                Emit(cg, "  %%byte_size = mul i64 %%left_len1, %u\n", elem_size);
+                Emit(cg, "  %%byte_size = mul %s %%left_len1, %u\n", iat_eq, elem_size);
             }
-            Emit(cg, "  %%memcmp_res = call i32 @memcmp(ptr %%left_data, ptr %%right_data, i64 %%byte_size)\n");
+            Emit(cg, "  %%memcmp_res = call i32 @memcmp(ptr %%left_data, ptr %%right_data, %s %%byte_size)\n", iat_eq);
             Emit(cg, "  %%data_eq = icmp eq i32 %%memcmp_res, 0\n");
 
             /* Result: lengths match AND data matches */
@@ -22191,13 +22389,14 @@ static void Emit_Extern_Subprogram(Code_Generator *cg, Symbol *sym) {
                         ? sym->parameters[i].param_type : NULL;
         if (ty) {
             /* Unconstrained arrays pass as fat pointers */
-            if (Type_Is_Unconstrained_Array(ty) || Type_Is_String(ty)) {
+            if (Type_Is_Unconstrained_Array(ty) ||
+                (!Type_Is_Constrained_Array(ty) && Type_Is_String(ty))) {
                 Emit(cg, FAT_PTR_TYPE);
             } else {
                 Emit(cg, "%s", Type_To_Llvm(ty));
             }
         } else {
-            Emit(cg, "i64");  /* Default to i64 for unknown/missing parameter types */
+            Emit(cg, "%s", Integer_Arith_Type(cg));  /* Derive from INTEGER for missing param types */
         }
     }
     Emit(cg, ")\n");
@@ -22240,7 +22439,7 @@ static void Generate_Extern_Declarations(Code_Generator *cg, Syntax_Node *node) 
                             sym->extern_emitted = true;
                             Type_Info *ty = sym->type;
                             const char *type_str = Type_To_Llvm(ty);
-                            bool is_string = Type_Is_String(ty) ||
+                            bool is_string = (!Type_Is_Constrained_Array(ty) && Type_Is_String(ty)) ||
                                 (Type_Is_Unconstrained_Array(ty) &&
                                  Type_Is_Character(ty->array.element_type));
                             if (is_string) type_str = FAT_PTR_TYPE;
@@ -22281,7 +22480,7 @@ static void Generate_Extern_Declarations(Code_Generator *cg, Syntax_Node *node) 
                         Type_Info *ty = sym->type;
                         const char *type_str = Type_To_Llvm(ty);
                         /* String constants use fat pointer type */
-                        bool is_string = Type_Is_String(ty) ||
+                        bool is_string = (!Type_Is_Constrained_Array(ty) && Type_Is_String(ty)) ||
                             (Type_Is_Unconstrained_Array(ty) &&
                              Type_Is_Character(ty->array.element_type));
                         if (is_string) type_str = FAT_PTR_TYPE;
@@ -22341,13 +22540,15 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)\n");
     Emit(cg, "declare double @llvm.pow.f64(double, double)\n\n");
 
-    /* Integer'VALUE - parse string to integer */
+    /* Integer'VALUE - parse string to integer.
+     * Bound type derived from STRING's index type via type system. */
+    const char *rts_sbt = String_Bound_Type(cg);
     Emit(cg, "; Integer'VALUE helper\n");
     Emit(cg, "define linkonce_odr i64 @__ada_integer_value(" FAT_PTR_TYPE " %%str) {\n");
     Emit(cg, "entry:\n");
-    Emit_Fat_Pointer_Extractvalue_Named(cg, "str", "data", "low32", "high32", "i32");
-    Emit(cg, "  %%low = sext i32 %%low32 to i64\n");
-    Emit(cg, "  %%high = sext i32 %%high32 to i64\n");
+    Emit_Fat_Pointer_Extractvalue_Named(cg, "str", "data", "low_bt", "high_bt", rts_sbt);
+    Emit_Widen_Named_To_I64(cg, "low_bt", "low", rts_sbt);
+    Emit_Widen_Named_To_I64(cg, "high_bt", "high", rts_sbt);
     Emit(cg, "  br label %%loop\n");
     Emit(cg, "loop:\n");
     Emit(cg, "  %%result = phi i64 [ 0, %%entry ], [ %%next_result, %%cont ]\n");
@@ -22394,7 +22595,7 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "declare double @strtod(ptr, ptr)\n");
     Emit(cg, "define linkonce_odr double @__ada_float_value(" FAT_PTR_TYPE " %%str) {\n");
     Emit(cg, "entry:\n");
-    Emit_Fat_Pointer_Extractvalue_Named(cg, "str", "data", "fv_low", "fv_high", "i32");
+    Emit_Fat_Pointer_Extractvalue_Named(cg, "str", "data", "fv_low", "fv_high", rts_sbt);
     Emit(cg, "  %%result = call double @strtod(ptr %%data, ptr null)\n");
     Emit(cg, "  ret double %%result\n");
     Emit(cg, "}\n\n");
@@ -22770,20 +22971,22 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "  ret void\n");
     Emit(cg, "}\n\n");
 
-    /* PUT: output string (ptr + bounds in native i32) */
-    Emit(cg, "define linkonce_odr void @__text_io_put(ptr %%data, i32 %%lo, i32 %%hi) {\n");
+    /* PUT: output string (ptr + bounds in native STRING bound type).
+     * Bound type derived from STRING's index type via type system. */
+    Emit(cg, "define linkonce_odr void @__text_io_put(ptr %%data, %s %%lo, %s %%hi) {\n",
+         rts_sbt, rts_sbt);
     Emit(cg, "entry:\n");
     Emit(cg, "  %%out = load ptr, ptr @stdout\n");
-    Emit(cg, "  %%i.init = sub i32 %%lo, 1\n");
+    Emit(cg, "  %%i.init = sub %s %%lo, 1\n", rts_sbt);
     Emit(cg, "  br label %%loop\n");
     Emit(cg, "loop:\n");
-    Emit(cg, "  %%i = phi i32 [ %%i.init, %%entry ], [ %%i.next, %%body ]\n");
-    Emit(cg, "  %%i.next = add i32 %%i, 1\n");
-    Emit(cg, "  %%done = icmp sgt i32 %%i.next, %%hi\n");
+    Emit(cg, "  %%i = phi %s [ %%i.init, %%entry ], [ %%i.next, %%body ]\n", rts_sbt);
+    Emit(cg, "  %%i.next = add %s %%i, 1\n", rts_sbt);
+    Emit(cg, "  %%done = icmp sgt %s %%i.next, %%hi\n", rts_sbt);
     Emit(cg, "  br i1 %%done, label %%exit, label %%body\n");
     Emit(cg, "body:\n");
-    Emit(cg, "  %%idx32 = sub i32 %%i.next, %%lo\n");
-    Emit(cg, "  %%idx = sext i32 %%idx32 to i64\n");
+    Emit(cg, "  %%idx_bt = sub %s %%i.next, %%lo\n", rts_sbt);
+    Emit_Widen_Named_To_I64(cg, "idx_bt", "idx", rts_sbt);
     Emit(cg, "  %%ptr = getelementptr i8, ptr %%data, i64 %%idx\n");
     Emit(cg, "  %%ch = load i8, ptr %%ptr\n");
     Emit(cg, "  %%chi = zext i8 %%ch to i32\n");
@@ -22794,8 +22997,10 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "}\n\n");
 
     /* PUT_LINE: output string followed by newline */
-    Emit(cg, "define linkonce_odr void @__text_io_put_line(ptr %%data, i32 %%lo, i32 %%hi) {\n");
-    Emit(cg, "  call void @__text_io_put(ptr %%data, i32 %%lo, i32 %%hi)\n");
+    Emit(cg, "define linkonce_odr void @__text_io_put_line(ptr %%data, %s %%lo, %s %%hi) {\n",
+         rts_sbt, rts_sbt);
+    Emit(cg, "  call void @__text_io_put(ptr %%data, %s %%lo, %s %%hi)\n",
+         rts_sbt, rts_sbt);
     Emit(cg, "  call void @__text_io_new_line()\n");
     Emit(cg, "  ret void\n");
     Emit(cg, "}\n\n");
@@ -22822,29 +23027,40 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "  ret i8 %%c8\n");
     Emit(cg, "}\n\n");
 
-    /* GET_LINE: read line into buffer, return fat pointer */
-    Emit(cg, "define linkonce_odr " FAT_PTR_TYPE " @__text_io_get_line() {\n");
-    Emit(cg, "entry:\n");
-    Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 256)\n");
-    Emit(cg, "  %%inp = load ptr, ptr @stdin\n");
-    Emit(cg, "  %%res = call ptr @fgets(ptr %%buf, i32 255, ptr %%inp)\n");
-    Emit(cg, "  %%iseof = icmp eq ptr %%res, null\n");
-    Emit(cg, "  br i1 %%iseof, label %%empty, label %%gotline\n");
-    Emit(cg, "empty:\n");
-    Emit_Fat_Pointer_Insertvalue_Named(cg, "e", "ptr %buf", "i32 1", "i32 0", "i32");
-    Emit(cg, "  ret " FAT_PTR_TYPE " %%e2\n");
-    Emit(cg, "gotline:\n");
-    Emit(cg, "  %%len = call i64 @strlen(ptr %%buf)\n");
-    Emit(cg, "  ; Strip trailing newline if present\n");
-    Emit(cg, "  %%lastidx = sub i64 %%len, 1\n");
-    Emit(cg, "  %%lastptr = getelementptr i8, ptr %%buf, i64 %%lastidx\n");
-    Emit(cg, "  %%lastch = load i8, ptr %%lastptr\n");
-    Emit(cg, "  %%isnl = icmp eq i8 %%lastch, 10\n");
-    Emit(cg, "  %%adjlen = select i1 %%isnl, i64 %%lastidx, i64 %%len\n");
-    Emit(cg, "  %%adjlen32 = trunc i64 %%adjlen to i32\n");
-    Emit_Fat_Pointer_Insertvalue_Named(cg, "f", "ptr %buf", "i32 1", "i32 %adjlen32", "i32");
-    Emit(cg, "  ret " FAT_PTR_TYPE " %%f2\n");
-    Emit(cg, "}\n\n");
+    /* GET_LINE: read line into buffer, return fat pointer.
+     * Bounds use STRING bound type derived from type system. */
+    {
+        char lo_expr[64], hi_empty_expr[64];
+        snprintf(lo_expr, sizeof(lo_expr), "%s 1", rts_sbt);
+        snprintf(hi_empty_expr, sizeof(hi_empty_expr), "%s 0", rts_sbt);
+
+        Emit(cg, "define linkonce_odr " FAT_PTR_TYPE " @__text_io_get_line() {\n");
+        Emit(cg, "entry:\n");
+        Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 256)\n");
+        Emit(cg, "  %%inp = load ptr, ptr @stdin\n");
+        Emit(cg, "  %%res = call ptr @fgets(ptr %%buf, i32 255, ptr %%inp)\n");
+        Emit(cg, "  %%iseof = icmp eq ptr %%res, null\n");
+        Emit(cg, "  br i1 %%iseof, label %%empty, label %%gotline\n");
+        Emit(cg, "empty:\n");
+        Emit_Fat_Pointer_Insertvalue_Named(cg, "e", "ptr %buf", lo_expr, hi_empty_expr, rts_sbt);
+        Emit(cg, "  ret " FAT_PTR_TYPE " %%e2\n");
+        Emit(cg, "gotline:\n");
+        Emit(cg, "  %%len = call i64 @strlen(ptr %%buf)\n");
+        Emit(cg, "  ; Strip trailing newline if present\n");
+        Emit(cg, "  %%lastidx = sub i64 %%len, 1\n");
+        Emit(cg, "  %%lastptr = getelementptr i8, ptr %%buf, i64 %%lastidx\n");
+        Emit(cg, "  %%lastch = load i8, ptr %%lastptr\n");
+        Emit(cg, "  %%isnl = icmp eq i8 %%lastch, 10\n");
+        Emit(cg, "  %%adjlen = select i1 %%isnl, i64 %%lastidx, i64 %%len\n");
+        Emit_Narrow_Named_From_I64(cg, "adjlen", "adjlen_bt", rts_sbt);
+        {
+            char hi_expr[64];
+            snprintf(hi_expr, sizeof(hi_expr), "%s %%adjlen_bt", rts_sbt);
+            Emit_Fat_Pointer_Insertvalue_Named(cg, "f", "ptr %buf", lo_expr, hi_expr, rts_sbt);
+        }
+        Emit(cg, "  ret " FAT_PTR_TYPE " %%f2\n");
+        Emit(cg, "}\n\n");
+    }
 
     /* 'IMAGE runtime: Integer'IMAGE(x) returns string representation */
     Emit(cg, "; Attribute runtime support\n");
@@ -22854,37 +23070,50 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "@.img_fmt_c = linkonce_odr constant [3 x i8] c\"%%c\\00\"\n");
     Emit(cg, "@.img_fmt_f = linkonce_odr constant [5 x i8] c\"%%.6g\\00\"\n\n");
 
-    /* Integer'IMAGE - convert integer to string fat pointer */
-    Emit(cg, "define linkonce_odr " FAT_PTR_TYPE " @__ada_integer_image(i64 %%val) {\n");
-    Emit(cg, "entry:\n");
-    Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 24)\n");
-    Emit(cg, "  %%len32 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %%buf, i64 24, ptr @.img_fmt_d, i64 %%val)\n");
-    Emit_Fat_Pointer_Insertvalue_Named(cg, "fat", "ptr %buf", "i32 1", "i32 %len32", "i32");
-    Emit(cg, "  ret " FAT_PTR_TYPE " %%fat2\n");
-    Emit(cg, "}\n\n");
+    /* Integer'IMAGE - convert integer to string fat pointer.
+     * Bounds use STRING bound type derived from type system. */
+    {
+        char lo_expr[64], hi_expr[64], const3_expr[64];
+        snprintf(lo_expr, sizeof(lo_expr), "%s 1", rts_sbt);
 
-    /* Character'IMAGE - single char to string (3 chars: 'x') */
-    Emit(cg, "define linkonce_odr " FAT_PTR_TYPE " @__ada_character_image(i8 %%val) {\n");
-    Emit(cg, "entry:\n");
-    Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 4)\n");
-    Emit(cg, "  %%p0 = getelementptr i8, ptr %%buf, i64 0\n");
-    Emit(cg, "  store i8 39, ptr %%p0  ; single quote\n");
-    Emit(cg, "  %%p1 = getelementptr i8, ptr %%buf, i64 1\n");
-    Emit(cg, "  store i8 %%val, ptr %%p1\n");
-    Emit(cg, "  %%p2 = getelementptr i8, ptr %%buf, i64 2\n");
-    Emit(cg, "  store i8 39, ptr %%p2  ; single quote\n");
-    Emit_Fat_Pointer_Insertvalue_Named(cg, "fat", "ptr %buf", "i32 1", "i32 3", "i32");
-    Emit(cg, "  ret " FAT_PTR_TYPE " %%fat2\n");
-    Emit(cg, "}\n\n");
+        Emit(cg, "define linkonce_odr " FAT_PTR_TYPE " @__ada_integer_image(i64 %%val) {\n");
+        Emit(cg, "entry:\n");
+        Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 24)\n");
+        Emit(cg, "  %%len32 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %%buf, i64 24, ptr @.img_fmt_d, i64 %%val)\n");
+        Emit_Widen_Named_To_I64(cg, "len32", "len64", "i32");  /* snprintf returns i32 */
+        Emit_Narrow_Named_From_I64(cg, "len64", "len_bt", rts_sbt);
+        snprintf(hi_expr, sizeof(hi_expr), "%s %%len_bt", rts_sbt);
+        Emit_Fat_Pointer_Insertvalue_Named(cg, "fat", "ptr %buf", lo_expr, hi_expr, rts_sbt);
+        Emit(cg, "  ret " FAT_PTR_TYPE " %%fat2\n");
+        Emit(cg, "}\n\n");
 
-    /* Float'IMAGE - convert float to string */
-    Emit(cg, "define linkonce_odr " FAT_PTR_TYPE " @__ada_float_image(double %%val) {\n");
-    Emit(cg, "entry:\n");
-    Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 32)\n");
-    Emit(cg, "  %%len32 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %%buf, i64 32, ptr @.img_fmt_f, double %%val)\n");
-    Emit_Fat_Pointer_Insertvalue_Named(cg, "fat", "ptr %buf", "i32 1", "i32 %len32", "i32");
-    Emit(cg, "  ret " FAT_PTR_TYPE " %%fat2\n");
-    Emit(cg, "}\n\n");
+        /* Character'IMAGE - single char to string (3 chars: 'x') */
+        snprintf(const3_expr, sizeof(const3_expr), "%s 3", rts_sbt);
+        Emit(cg, "define linkonce_odr " FAT_PTR_TYPE " @__ada_character_image(i8 %%val) {\n");
+        Emit(cg, "entry:\n");
+        Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 4)\n");
+        Emit(cg, "  %%p0 = getelementptr i8, ptr %%buf, i64 0\n");
+        Emit(cg, "  store i8 39, ptr %%p0  ; single quote\n");
+        Emit(cg, "  %%p1 = getelementptr i8, ptr %%buf, i64 1\n");
+        Emit(cg, "  store i8 %%val, ptr %%p1\n");
+        Emit(cg, "  %%p2 = getelementptr i8, ptr %%buf, i64 2\n");
+        Emit(cg, "  store i8 39, ptr %%p2  ; single quote\n");
+        Emit_Fat_Pointer_Insertvalue_Named(cg, "fat", "ptr %buf", lo_expr, const3_expr, rts_sbt);
+        Emit(cg, "  ret " FAT_PTR_TYPE " %%fat2\n");
+        Emit(cg, "}\n\n");
+
+        /* Float'IMAGE - convert float to string */
+        Emit(cg, "define linkonce_odr " FAT_PTR_TYPE " @__ada_float_image(double %%val) {\n");
+        Emit(cg, "entry:\n");
+        Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 32)\n");
+        Emit(cg, "  %%len32 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %%buf, i64 32, ptr @.img_fmt_f, double %%val)\n");
+        Emit_Widen_Named_To_I64(cg, "len32", "flen64", "i32");  /* snprintf returns i32 */
+        Emit_Narrow_Named_From_I64(cg, "flen64", "flen_bt", rts_sbt);
+        snprintf(hi_expr, sizeof(hi_expr), "%s %%flen_bt", rts_sbt);
+        Emit_Fat_Pointer_Insertvalue_Named(cg, "fat", "ptr %buf", lo_expr, hi_expr, rts_sbt);
+        Emit(cg, "  ret " FAT_PTR_TYPE " %%fat2\n");
+        Emit(cg, "}\n\n");
+    }
 
     /* Generate exception identity globals */
     Generate_Exception_Globals(cg);
@@ -23225,6 +23454,8 @@ static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src) 
                                 case 3: tk = TYPE_INTEGER; break;     /* INTEGER */
                                 case 4: tk = TYPE_FLOAT; break;       /* FLOAT */
                                 case 5: tk = TYPE_FIXED; break;       /* FIXED */
+                                case 6: tk = TYPE_ARRAY; break;       /* ARRAY */
+                                case 7: tk = TYPE_ACCESS; break;      /* ACCESS */
                                 default: tk = TYPE_PRIVATE; break;
                             }
                             Type_Info *type = Type_New(tk, formal->generic_type_param.name);
@@ -23326,6 +23557,8 @@ static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src) 
                                     case 3: tk = TYPE_INTEGER; break;     /* INTEGER */
                                     case 4: tk = TYPE_FLOAT; break;       /* FLOAT */
                                     case 5: tk = TYPE_FIXED; break;       /* FIXED */
+                                    case 6: tk = TYPE_ARRAY; break;       /* ARRAY */
+                                    case 7: tk = TYPE_ACCESS; break;      /* ACCESS */
                                     default: tk = TYPE_PRIVATE; break;
                                 }
                                 Type_Info *type = Type_New(tk, formal->generic_type_param.name);
@@ -23414,7 +23647,8 @@ static char *Read_File(const char *path, size_t *out_size) {
 /* Forward declaration for ALI file generation (defined in §16) */
 static void Generate_ALI_File(const char *output_path,
                               Syntax_Node **units, int unit_count,
-                              const char *source, size_t source_size);
+                              const char *source, size_t source_size,
+                              Symbol_Manager *sm);
 
 static void Compile_File(const char *input_path, const char *output_path) {
     /* Reset loaded bodies for this compilation */
@@ -23512,7 +23746,7 @@ static void Compile_File(const char *input_path, const char *output_path) {
         fprintf(stderr, "Compiled '%s' -> '%s'\n", input_path, output_path);
 
         /* Generate GNAT-compatible .ali file for dependency tracking */
-        Generate_ALI_File(output_path, units, unit_count, source, source_size);
+        Generate_ALI_File(output_path, units, unit_count, source, source_size, sm);
     }
     free(source);
 }
@@ -23876,10 +24110,11 @@ static String_Slice Get_Subprogram_Name(Syntax_Node *node) {
 }
 
 /* Forward declaration */
-static void ALI_Collect_Exports(ALI_Info *ali, Syntax_Node *unit);
+static void ALI_Collect_Exports(ALI_Info *ali, Syntax_Node *unit, Symbol_Manager *sm);
 
 static void ALI_Collect_Unit(ALI_Info *ali, Syntax_Node *cu,
-                             const char *source, size_t source_size) {
+                             const char *source, size_t source_size,
+                             Symbol_Manager *sm) {
     if (!cu || ali->unit_count >= 8) return;
 
     Syntax_Node *unit = cu->compilation_unit.unit;
@@ -23941,30 +24176,32 @@ static void ALI_Collect_Unit(ALI_Info *ali, Syntax_Node *cu,
 
     /* Collect exported symbols from package specs */
     if (unit && unit->kind == NK_PACKAGE_SPEC) {
-        ALI_Collect_Exports(ali, unit);
+        ALI_Collect_Exports(ali, unit, sm);
     }
 }
 
-/* Basic LLVM type signature (minimal for now) */
-static String_Slice LLVM_Type_Basic(String_Slice ada_type) {
-    /* Standard types */
-    if (Slice_Equal_Ignore_Case(ada_type, (String_Slice){"integer", 7})) return (String_Slice){"i64", 3};
-    if (Slice_Equal_Ignore_Case(ada_type, (String_Slice){"natural", 7})) return (String_Slice){"i64", 3};
-    if (Slice_Equal_Ignore_Case(ada_type, (String_Slice){"positive", 8})) return (String_Slice){"i64", 3};
-    if (Slice_Equal_Ignore_Case(ada_type, (String_Slice){"boolean", 7})) return (String_Slice){"i1", 2};
-    if (Slice_Equal_Ignore_Case(ada_type, (String_Slice){"character", 9})) return (String_Slice){"i8", 2};
-    if (Slice_Equal_Ignore_Case(ada_type, (String_Slice){"float", 5})) return (String_Slice){"double", 6};
-    if (Slice_Equal_Ignore_Case(ada_type, (String_Slice){"long_float", 10})) return (String_Slice){"double", 6};
-    if (Slice_Equal_Ignore_Case(ada_type, (String_Slice){"string", 6})) return (String_Slice){"{ptr,{i64,i64}}", 15};
-    /* Default: treat as integer type */
-    return (String_Slice){"i64", 3};
+/* LLVM type signature derived from the type system via Symbol_Manager.
+ * Looks up the Ada type name in the symbol table and uses Type_To_Llvm
+ * to get the correct LLVM representation. */
+static String_Slice LLVM_Type_Basic(Symbol_Manager *sm, String_Slice ada_type) {
+    /* Look up in the symbol table for proper type-system derivation */
+    Symbol *sym = Symbol_Find(sm, ada_type);
+    if (sym && sym->type) {
+        const char *llvm = Type_To_Llvm(sym->type);
+        return (String_Slice){llvm, strlen(llvm)};
+    }
+    /* Error: type not found in symbol table */
+    fprintf(stderr, "error: LLVM_Type_Basic: type '%.*s' not found in symbol table\n",
+            (int)ada_type.length, ada_type.data);
+    const char *fallback = Llvm_Int_Type((uint32_t)To_Bits(sm->type_integer->size));
+    return (String_Slice){fallback, strlen(fallback)};
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
  * §16.4.2 ALI_Collect_Exports — Gather exported symbols from package spec
  * ───────────────────────────────────────────────────────────────────────── */
 
-static void ALI_Collect_Exports(ALI_Info *ali, Syntax_Node *unit) {
+static void ALI_Collect_Exports(ALI_Info *ali, Syntax_Node *unit, Symbol_Manager *sm) {
     if (!unit || unit->kind != NK_PACKAGE_SPEC) return;
 
     String_Slice pkg_name = unit->package_spec.name;
@@ -23986,7 +24223,7 @@ static void ALI_Collect_Exports(ALI_Info *ali, Syntax_Node *unit) {
                 exp->name = decl->type_decl.name;
                 exp->kind = 'T';
                 exp->mangled_name = Mangle_Qualified_Name(pkg_name, exp->name);
-                exp->llvm_type = (String_Slice){"i64", 3};  /* Default integer representation */
+                exp->llvm_type = LLVM_Type_Basic(sm, exp->name);
                 ali->export_count++;
                 break;
 
@@ -23998,15 +24235,18 @@ static void ALI_Collect_Exports(ALI_Info *ali, Syntax_Node *unit) {
                     Syntax_Node *def = decl->type_decl.definition;
                     if (def->kind == NK_IDENTIFIER) {
                         exp->type_name = def->string_val.text;
-                        exp->llvm_type = LLVM_Type_Basic(exp->type_name);
+                        exp->llvm_type = LLVM_Type_Basic(sm, exp->type_name);
                     } else if (def->kind == NK_SUBTYPE_INDICATION && def->subtype_ind.subtype_mark) {
                         if (def->subtype_ind.subtype_mark->kind == NK_IDENTIFIER) {
                             exp->type_name = def->subtype_ind.subtype_mark->string_val.text;
-                            exp->llvm_type = LLVM_Type_Basic(exp->type_name);
+                            exp->llvm_type = LLVM_Type_Basic(sm, exp->type_name);
                         }
                     }
                 }
-                if (!exp->llvm_type.data) exp->llvm_type = (String_Slice){"i64", 3};
+                if (!exp->llvm_type.data) {
+                    const char *int_t = Llvm_Int_Type((uint32_t)To_Bits(sm->type_integer->size));
+                    exp->llvm_type = (String_Slice){int_t, strlen(int_t)};
+                }
                 ali->export_count++;
                 break;
 
@@ -24021,9 +24261,10 @@ static void ALI_Collect_Exports(ALI_Info *ali, Syntax_Node *unit) {
                         exp->mangled_name = Mangle_Qualified_Name(pkg_name, exp->name);
                         if (decl->object_decl.object_type && decl->object_decl.object_type->kind == NK_IDENTIFIER) {
                             exp->type_name = decl->object_decl.object_type->string_val.text;
-                            exp->llvm_type = LLVM_Type_Basic(exp->type_name);
+                            exp->llvm_type = LLVM_Type_Basic(sm, exp->type_name);
                         } else {
-                            exp->llvm_type = (String_Slice){"i64", 3};
+                            const char *int_t = Llvm_Int_Type((uint32_t)To_Bits(sm->type_integer->size));
+                            exp->llvm_type = (String_Slice){int_t, strlen(int_t)};
                         }
                         ali->export_count++;
                     }
@@ -24054,9 +24295,10 @@ static void ALI_Collect_Exports(ALI_Info *ali, Syntax_Node *unit) {
                 }
                 if (decl->subprogram_spec.return_type && decl->subprogram_spec.return_type->kind == NK_IDENTIFIER) {
                     exp->type_name = decl->subprogram_spec.return_type->string_val.text;
-                    exp->llvm_type = LLVM_Type_Basic(exp->type_name);
+                    exp->llvm_type = LLVM_Type_Basic(sm, exp->type_name);
                 } else {
-                    exp->llvm_type = (String_Slice){"i64", 3};
+                    const char *int_t = Llvm_Int_Type((uint32_t)To_Bits(sm->type_integer->size));
+                    exp->llvm_type = (String_Slice){int_t, strlen(int_t)};
                 }
                 ali->export_count++;
                 break;
@@ -24225,7 +24467,8 @@ static void ALI_Write(FILE *out, ALI_Info *ali) {
 
 static void Generate_ALI_File(const char *output_path,
                               Syntax_Node **units, int unit_count,
-                              const char *source, size_t source_size) {
+                              const char *source, size_t source_size,
+                              Symbol_Manager *sm) {
     /* Build ALI path from output path (replace .ll with .ali) */
     char ali_path[512];
     size_t len = strlen(output_path);
@@ -24244,7 +24487,7 @@ static void Generate_ALI_File(const char *output_path,
     /* Collect information from all compilation units */
     ALI_Info ali = {0};
     for (int i = 0; i < unit_count; i++) {
-        ALI_Collect_Unit(&ali, units[i], source, source_size);
+        ALI_Collect_Unit(&ali, units[i], source, source_size, sm);
     }
 
     /* Write ALI file */
