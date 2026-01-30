@@ -37,6 +37,18 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+/* Fat pointer LLVM IR type — { data_ptr, { low_bound, high_bound } }
+ * GNAT LLVM style: bounds use the native index type, not hardcoded i64.
+ * FAT_PTR_TYPE is the legacy default (STRING uses i32 bounds since POSITIVE
+ * is a subtype of INTEGER which is 32-bit).
+ * Use Fat_Ptr_Type_With_Bounds(bound_type) for type-specific fat pointers. */
+#define FAT_PTR_TYPE_I64 "{ ptr, { i64, i64 } }"
+#define FAT_PTR_TYPE_I32 "{ ptr, { i32, i32 } }"
+#define FAT_PTR_TYPE_I16 "{ ptr, { i16, i16 } }"
+#define FAT_PTR_TYPE_I8  "{ ptr, { i8, i8 } }"
+#define FAT_PTR_TYPE_I1  "{ ptr, { i1, i1 } }"
+#define FAT_PTR_TYPE     FAT_PTR_TYPE_I32  /* Default: INTEGER-indexed */
+
 /* ═══════════════════════════════════════════════════════════════════════════
  * SIMD Optimizations
  * ═══════════════════════════════════════════════════════════════════════════
@@ -6030,7 +6042,7 @@ static inline bool Type_Is_Boolean(const Type_Info *t) { return t && t->kind == 
 static inline bool Type_Is_Character(const Type_Info *t) { return t && t->kind == TYPE_CHARACTER; }
 static inline bool Type_Is_String(const Type_Info *t)  { return t && t->kind == TYPE_STRING; }
 
-/* Needs fat pointer { ptr, { i64, i64 } } for unconstrained array or access thereto */
+/* Needs fat pointer { ptr, { bound, bound } } for unconstrained array or access thereto */
 static inline bool Type_Needs_Fat_Pointer(const Type_Info *t) {
     if (!t) return false;
     if (Type_Is_Access(t) && t->access.designated_type)
@@ -6088,6 +6100,39 @@ static inline bool Expression_Is_Slice(const Syntax_Node *node) {
         Syntax_Node *arg = node->apply.arguments.items[i];
         if (arg && arg->kind == NK_RANGE) return true;
     }
+    return false;
+}
+
+/* Check if an expression will produce a fat pointer value at runtime.
+ * This centralizes the "src_is_fat_ptr" detection pattern used in assignments
+ * and comparisons: STRING, unconstrained arrays, slices, and concatenations
+ * all produce fat pointer values { ptr, { bound, bound } }. */
+static inline bool Expression_Produces_Fat_Pointer(const Syntax_Node *node,
+                                                    const Type_Info *type) {
+    if (type && (Type_Is_String(type) || Type_Is_Unconstrained_Array(type)))
+        return true;
+    if (!node) return false;
+    /* String literals always produce fat pointers */
+    if (node->kind == NK_STRING)
+        return true;
+    /* Concatenation always returns fat pointer */
+    if (node->kind == NK_BINARY_OP && node->binary.op == TK_AMPERSAND)
+        return true;
+    /* Slices always produce fat pointers even with constrained declared type */
+    if (Expression_Is_Slice(node))
+        return true;
+    return false;
+}
+
+/* Check if a record field type requires loading as a fat pointer.
+ * Unconstrained arrays, dynamic-bound arrays, and STRING fields
+ * are stored as fat pointers { ptr, { bound, bound } } in records. */
+static inline bool Type_Needs_Fat_Pointer_Load(const Type_Info *t) {
+    if (!t) return false;
+    if (Type_Is_String(t)) return true;
+    if (t->kind == TYPE_ARRAY &&
+        (!t->array.is_constrained || Type_Has_Dynamic_Bounds(t)))
+        return true;
     return false;
 }
 
@@ -6223,6 +6268,8 @@ static void Freeze_Type(Type_Info *t) {
 static int64_t Type_Bound_Value(Type_Bound b);
 static int64_t Array_Element_Count(Type_Info *t);
 static int64_t Array_Low_Bound(Type_Info *t);
+/* Forward declaration for fat pointer type helpers (defined after Type_To_Llvm) */
+static const char *Fat_Ptr_Type_For(const Type_Info *array_type);
 
 static const char *Type_To_Llvm(Type_Info *t) {
     if (!t) {
@@ -6249,11 +6296,12 @@ static const char *Type_To_Llvm(Type_Info *t) {
         case TYPE_UNIVERSAL_REAL:
             return Llvm_Float_Type((uint32_t)To_Bits(t->size));
         case TYPE_ACCESS:
-            /* Access to unconstrained array/STRING needs fat pointer representation */
+            /* Access to unconstrained array/STRING needs fat pointer representation.
+             * GNAT LLVM: fat pointer bounds use native index type. */
             if (t->access.designated_type) {
                 Type_Info *d = t->access.designated_type;
                 if (Type_Is_String(d) || Type_Is_Unconstrained_Array(d)) {
-                    return "{ ptr, { i64, i64 } }";
+                    return Fat_Ptr_Type_For(d);
                 }
             }
             return "ptr";
@@ -6261,16 +6309,84 @@ static const char *Type_To_Llvm(Type_Info *t) {
         case TYPE_TASK:
             return "ptr";
         case TYPE_ARRAY:
-            /* Unconstrained arrays use fat pointers, constrained use ptr */
-            return (t->array.is_constrained) ? "ptr" : "{ ptr, { i64, i64 } }";
+            /* Unconstrained arrays use fat pointers with native-type bounds */
+            return (t->array.is_constrained) ? "ptr" : Fat_Ptr_Type_For(t);
         case TYPE_STRING:
-            /* STRING is always unconstrained array of CHARACTER */
-            return "{ ptr, { i64, i64 } }";
+            /* STRING indexed by POSITIVE (INTEGER subtype) → i32 bounds */
+            return FAT_PTR_TYPE;  /* FAT_PTR_TYPE == FAT_PTR_TYPE_I32 */
         default:
             fprintf(stderr, "warning: Type_To_Llvm unhandled type kind %d for '%.*s', defaulting to i64\n",
                     t->kind, (int)t->name.length, t->name.data);
             return "i64";
     }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §10.8 GNAT LLVM-Style Fat Pointer Type Helpers
+ *
+ * GNAT LLVM uses native index types for array bounds in fat pointers.
+ * Instead of always i64, STRING (indexed by POSITIVE/INTEGER) uses i32,
+ * CHARACTER-indexed arrays use i8, etc.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/* Get the native LLVM type for array bounds based on the index type.
+ * Every call site MUST supply an actual array/string/access-to-array type. */
+static const char *Array_Bound_Llvm_Type(const Type_Info *t) {
+    if (!t) {
+        fprintf(stderr, "BUG: Array_Bound_Llvm_Type called with NULL\n");
+        return "i32";  /* safety net only */
+    }
+    /* Access → designated type */
+    if (t->kind == TYPE_ACCESS && t->access.designated_type)
+        t = t->access.designated_type;
+    /* Private/incomplete → parent */
+    if ((Type_Is_Private(t) || t->kind == TYPE_INCOMPLETE) && t->parent_type)
+        return Array_Bound_Llvm_Type(t->parent_type);
+    /* STRING → POSITIVE index → INTEGER (i32) */
+    if (t->kind == TYPE_STRING) return "i32";
+    if (t->kind != TYPE_ARRAY) {
+        fprintf(stderr, "BUG: Array_Bound_Llvm_Type: non-array kind %d '%.*s'\n",
+                t->kind, (int)t->name.length, t->name.data);
+        return "i32";  /* safety net only */
+    }
+    /* Resolve from index_type */
+    if (t->array.index_count > 0 && t->array.indices &&
+        t->array.indices[0].index_type) {
+        return Type_To_Llvm(t->array.indices[0].index_type);
+    }
+    /* No index type info — infer from array context.
+     * This can happen for dynamically constrained arrays. */
+    if (t->array.index_count > 0 && t->array.indices) {
+        /* Try to infer from bound values */
+        Type_Bound lb = t->array.indices[0].low_bound;
+        Type_Bound hb = t->array.indices[0].high_bound;
+        if (lb.kind == BOUND_INTEGER && hb.kind == BOUND_INTEGER) {
+            /* Static bounds — use minimum width that fits */
+            return Llvm_Int_Type(Bits_For_Range(lb.int_value, hb.int_value));
+        }
+    }
+    /* Last resort: INTEGER is the standard index type in Ada83 */
+    fprintf(stderr, "note: Array_Bound_Llvm_Type: no index type for '%.*s'\n",
+            (int)t->name.length, t->name.data);
+    return "i32";
+}
+
+/* Get the fat pointer LLVM type string for a given bound type.
+ * Returns a compile-time constant string for known types. */
+static const char *Fat_Ptr_Type_With_Bounds(const char *bound_type) {
+    if (!bound_type) return FAT_PTR_TYPE;
+    if (strcmp(bound_type, "i64") == 0) return FAT_PTR_TYPE_I64;
+    if (strcmp(bound_type, "i32") == 0) return FAT_PTR_TYPE_I32;
+    if (strcmp(bound_type, "i16") == 0) return FAT_PTR_TYPE_I16;
+    if (strcmp(bound_type, "i8") == 0)  return FAT_PTR_TYPE_I8;
+    if (strcmp(bound_type, "i1") == 0)  return FAT_PTR_TYPE_I1;
+    return FAT_PTR_TYPE;  /* Fallback */
+}
+
+/* Get the fat pointer LLVM type string for an array type.
+ * Combines Array_Bound_Llvm_Type + Fat_Ptr_Type_With_Bounds. */
+static const char *Fat_Ptr_Type_For(const Type_Info *array_type) {
+    return Fat_Ptr_Type_With_Bounds(Array_Bound_Llvm_Type(array_type));
 }
 
 
@@ -6651,7 +6767,7 @@ static void Symbol_Add(Symbol_Manager *sm, Symbol *sym) {
         sym->kind == SYMBOL_CONSTANT || sym->kind == SYMBOL_DISCRIMINANT) {
         sym->frame_offset = scope->frame_size;
         uint32_t var_size = sym->type ? sym->type->size : 8;
-        /* Fat pointers for dynamic/unconstrained arrays need 24 bytes { ptr, { i64, i64 } } */
+        /* Fat pointers for dynamic/unconstrained arrays need 24 bytes { ptr, { bound, bound } } */
         if (sym->type && (Type_Has_Dynamic_Bounds(sym->type) || Type_Is_Unconstrained_Array(sym->type))) {
             var_size = 24;
         }
@@ -7339,11 +7455,13 @@ static void Symbol_Manager_Init_Predefined(Symbol_Manager *sm) {
     Symbol_Add(sm, sym_tasking_error);
 
     /* SYSTEM.ADDRESS (RM 13.7) - implementation-defined private type
-     * In our implementation, ADDRESS is an integer type (derived from INTEGER) */
+     * In our implementation, ADDRESS is a 64-bit integer type.
+     * Bounds cover full i64 range so ptrtoint values always pass checks. */
     sm->type_address = Type_New(TYPE_INTEGER, S("ADDRESS"));
     sm->type_address->size = 8;  /* 64-bit addresses */
     sm->type_address->alignment = 8;
-    sm->type_address->base_type = sm->type_integer;
+    sm->type_address->low_bound  = (Type_Bound){.kind = BOUND_INTEGER, .int_value = INT64_MIN};
+    sm->type_address->high_bound = (Type_Bound){.kind = BOUND_INTEGER, .int_value = INT64_MAX};
 
     /* STANDARD package (RM 8.6) - the implicit library containing predefined types
      * All visible entities are implicitly declared here */
@@ -9680,15 +9798,19 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
 
                             /* Match association to discriminant by position or name */
                             if (assoc->association.choices.count > 0) {
-                                /* Named: find discriminant index by name */
-                                Syntax_Node *choice = assoc->association.choices.items[0];
-                                if (choice->kind == NK_IDENTIFIER) {
-                                    for (uint32_t di = 0; di < dc; di++) {
-                                        if (Slice_Equal_Ignore_Case(
-                                                constrained->record.components[di].name,
-                                                choice->string_val.text)) {
-                                            constrained->record.disc_constraint_values[di] = val;
-                                            break;
+                                /* Named: find discriminant index by name for ALL choices.
+                                 * Handles A|B => E2 (or A!B => E2) where multiple
+                                 * discriminants share the same constraint value. */
+                                for (uint32_t ci = 0; ci < assoc->association.choices.count; ci++) {
+                                    Syntax_Node *choice = assoc->association.choices.items[ci];
+                                    if (choice->kind == NK_IDENTIFIER) {
+                                        for (uint32_t di = 0; di < dc; di++) {
+                                            if (Slice_Equal_Ignore_Case(
+                                                    constrained->record.components[di].name,
+                                                    choice->string_val.text)) {
+                                                constrained->record.disc_constraint_values[di] = val;
+                                                break;
+                                            }
                                         }
                                     }
                                 }
@@ -12830,6 +12952,20 @@ static inline bool Is_Uplevel_Access(const Code_Generator *cg, const Symbol *sym
            owner != cg->current_function->generic_template;
 }
 
+/* Emit the storage location for a symbol, automatically handling uplevel
+ * access through __frame.  This replaces 20+ manual Is_Uplevel_Access checks.
+ * Emits either "%__frame.<name>" (uplevel) or the normal "%<name>"/"@<name>".
+ * GNAT LLVM analogy: GL_Value encapsulates storage location; callers don't
+ * care whether it's a frame slot or local alloca. */
+static void Emit_Symbol_Storage(Code_Generator *cg, Symbol *sym) {
+    if (Is_Uplevel_Access(cg, sym)) {
+        Emit(cg, "%%__frame.");
+        Emit_Symbol_Name(cg, sym);
+    } else {
+        Emit_Symbol_Ref(cg, sym);
+    }
+}
+
 /* Resolve generic formal type → actual type within an instance.
  * Called from attribute codegen, SUCC/PRED, and elsewhere.
  * Returns the substituted type, or the original if no match. */
@@ -12863,6 +12999,17 @@ static inline int Type_Bits(const char *ty) {
     if (strcmp(ty, "float") == 0) return 32;
     if (strcmp(ty, "double") == 0) return 64;
     return 64;
+}
+
+/* Return the wider of two integer LLVM types.
+ * Used for binary operations: both operands are widened to the wider type.
+ * Example: Wider_Int_Type("i8", "i32") → "i32".
+ * Non-integer types (ptr, float, fat ptr) return "i64" as a safe fallback. */
+static inline const char *Wider_Int_Type(const char *a, const char *b) {
+    int ab = Type_Bits(a), bb = Type_Bits(b);
+    /* If either is not an integer type, fall back to i64 */
+    if (a[0] != 'i' || b[0] != 'i') return "i64";
+    return (ab >= bb) ? a : b;
 }
 
 /* Check if LLVM type is floating-point */
@@ -12933,15 +13080,17 @@ static inline bool Expression_Is_Float(Syntax_Node *node) {
 
 /* Get LLVM type string for expression result */
 static inline const char *Expression_Llvm_Type(Syntax_Node *node) {
-    /* Boolean expressions now produce i64 (comparisons, AND/OR/XOR, NOT, membership
-     * are widened to i64 with zext for uniform representation) */
+    /* Boolean expressions produce i64 (comparisons, AND/OR/XOR, NOT, membership
+     * are widened to i64 with zext for uniform representation).
+     * NOTE: Boolean widening to i64 is preserved — changing to i1 would
+     * affect semantics of boolean AND/OR vs bitwise AND/OR (deferred). */
     if (Expression_Is_Boolean(node)) return "i64";
     /* For float types, return the correct LLVM type based on actual size */
     if (node && Type_Is_Float_Representation(node->type)) {
         return Llvm_Float_Type((uint32_t)To_Bits(node->type->size));
     }
     /* Check for pointer/access types.
-     * Access-to-unconstrained arrays use fat pointer { ptr, { i64, i64 } }.
+     * Access-to-unconstrained arrays use fat pointer { ptr, { bound, bound } }.
      * Access-to-constrained or scalar types use plain ptr.
      * Use Type_To_Llvm to get the correct representation. */
     if (node && Type_Is_Access(node->type))
@@ -12959,9 +13108,12 @@ static inline const char *Expression_Llvm_Type(Syntax_Node *node) {
         (node->type->kind == TYPE_ARRAY || node->type->kind == TYPE_STRING)) return "ptr";
     /* Slices always produce fat pointers regardless of declared type.
      * Must check before array indexing since both are NK_APPLY. */
-    if (node && Expression_Is_Slice(node)) return "{ ptr, { i64, i64 } }";
+    if (node && Expression_Is_Slice(node)) {
+        Type_Info *arr_type = node->apply.prefix ? node->apply.prefix->type : node->type;
+        return Fat_Ptr_Type_For(arr_type);
+    }
     /* Array indexing (NK_APPLY) that returns non-i64 element types.
-     * The codegen preserves the native type for composite, access, and float elements. */
+     * Now preserves native types for ALL element types, not just composites. */
     if (node && node->kind == NK_APPLY && node->apply.prefix &&
         node->apply.prefix->type &&
         Type_Is_Array_Like(node->apply.prefix->type)) {
@@ -12971,20 +13123,22 @@ static inline const char *Expression_Llvm_Type(Syntax_Node *node) {
             return "ptr";  /* Composite elements return ptr */
         }
         if (Type_Is_Access(elem_type)) {
-            return "ptr";  /* Access elements loaded as ptr, not widened to i64 */
+            return "ptr";  /* Access elements loaded as ptr */
         }
-        if (Type_Is_Float_Representation(elem_type)) {
-            return Llvm_Float_Type((uint32_t)To_Bits(elem_type->size));
-        }
+        if (elem_type) return Type_To_Llvm(elem_type);
     }
     /* Check for string literals and string types (generate fat pointers) */
-    if (node && node->kind == NK_STRING) return "{ ptr, { i64, i64 } }";
-    if (node && Type_Is_String(node->type)) return "{ ptr, { i64, i64 } }";
+    if (node && node->kind == NK_STRING) return Fat_Ptr_Type_For(node->type);
+    if (node && Type_Is_String(node->type)) return Fat_Ptr_Type_For(node->type);
     /* Check for unconstrained array types (fat pointers) - for variable references */
     if (node && node->kind != NK_AGGREGATE &&
         Type_Is_Unconstrained_Array(node->type)) {
-        return "{ ptr, { i64, i64 } }";
+        return Fat_Ptr_Type_For(node->type);
     }
+    /* Integer types: return "i64" because Generate_Expression still produces
+     * i64 for most integer operations (arithmetic, attributes, literals, etc.).
+     * Native-type preservation (Phase 3/A) was not completed, so i64 remains
+     * the uniform integer representation for expressions. */
     return "i64";
 }
 
@@ -13231,143 +13385,254 @@ static uint32_t Emit_Constraint_Check(Code_Generator *cg, uint32_t val, Type_Inf
 /* ─────────────────────────────────────────────────────────────────────────
  * §13.2.1 Fat Pointer Support for Unconstrained Arrays
  *
- * Unconstrained arrays use a "fat pointer" representation:
- *   %fat_ptr = type { ptr, { i64, i64 } }
+ * GNAT LLVM style: fat pointers use native index types for bounds.
+ *   STRING (POSITIVE index): { ptr, { i32, i32 } }
+ *   ARRAY(Integer range <>): { ptr, { i32, i32 } }
+ *   ARRAY(Character range <>): { ptr, { i8, i8 } }
  *
- * Where:
- *   - Field 0: pointer to array data
- *   - Field 1: bounds struct { low_bound, high_bound }
- *
- * This allows passing arrays without knowing their bounds at compile time.
+ * All helpers take a `bt` (bound type) parameter — the LLVM type string
+ * for the bounds (e.g., "i32", "i8").  The `ft` (fat type) is derived
+ * from bt via Fat_Ptr_Type_With_Bounds().
  * ───────────────────────────────────────────────────────────────────────── */
 
-/* Fat pointer type name */
-#define FAT_PTR_TYPE "{ ptr, { i64, i64 } }"
-
-/* Create a fat pointer from data pointer and bounds
- * Returns the temp ID of the fat pointer struct */
+/* Create a fat pointer from data pointer and constant bounds.
+ * bt = bound LLVM type (e.g., "i32"). */
 static uint32_t Emit_Fat_Pointer(Code_Generator *cg, uint32_t data_ptr,
-                                  int64_t low, int64_t high) {
-    /* Allocate fat pointer struct on stack */
+                                  int64_t low, int64_t high, const char *bt) {
+    const char *ft = Fat_Ptr_Type_With_Bounds(bt);
     uint32_t fat_alloca = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = alloca " FAT_PTR_TYPE "\n", fat_alloca);
+    Emit(cg, "  %%t%u = alloca %s\n", fat_alloca, ft);
 
-    /* Store data pointer */
     uint32_t data_gep = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr %%t%u, i32 0, i32 0\n",
-         data_gep, fat_alloca);
+    Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 0\n",
+         data_gep, ft, fat_alloca);
     Emit(cg, "  store ptr %%t%u, ptr %%t%u\n", data_ptr, data_gep);
 
-    /* Store low bound */
     uint32_t low_gep = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr %%t%u, i32 0, i32 1, i32 0\n",
-         low_gep, fat_alloca);
-    Emit(cg, "  store i64 %lld, ptr %%t%u\n", (long long)low, low_gep);
+    Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 1, i32 0\n",
+         low_gep, ft, fat_alloca);
+    Emit(cg, "  store %s %lld, ptr %%t%u\n", bt, (long long)low, low_gep);
 
-    /* Store high bound */
     uint32_t high_gep = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr %%t%u, i32 0, i32 1, i32 1\n",
-         high_gep, fat_alloca);
-    Emit(cg, "  store i64 %lld, ptr %%t%u\n", (long long)high, high_gep);
+    Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 1, i32 1\n",
+         high_gep, ft, fat_alloca);
+    Emit(cg, "  store %s %lld, ptr %%t%u\n", bt, (long long)high, high_gep);
 
-    /* Load and return the fat pointer struct */
     uint32_t fat_val = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", fat_val, fat_alloca);
+    Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", fat_val, ft, fat_alloca);
     return fat_val;
 }
 
 /* Extract data pointer from fat pointer */
-static uint32_t Emit_Fat_Pointer_Data(Code_Generator *cg, uint32_t fat_ptr) {
+static uint32_t Emit_Fat_Pointer_Data(Code_Generator *cg, uint32_t fat_ptr,
+                                       const char *bt) {
+    const char *ft = Fat_Ptr_Type_With_Bounds(bt);
     uint32_t t = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n", t, fat_ptr);
+    Emit(cg, "  %%t%u = extractvalue %s %%t%u, 0\n", t, ft, fat_ptr);
     return t;
 }
 
-/* Extract low bound from fat pointer */
-static uint32_t Emit_Fat_Pointer_Low(Code_Generator *cg, uint32_t fat_ptr) {
+/* Extract low bound from fat pointer.
+ * Returns value in native bound type (bt). */
+static uint32_t Emit_Fat_Pointer_Low(Code_Generator *cg, uint32_t fat_ptr,
+                                      const char *bt) {
+    const char *ft = Fat_Ptr_Type_With_Bounds(bt);
     uint32_t t = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 0\n", t, fat_ptr);
+    Emit(cg, "  %%t%u = extractvalue %s %%t%u, 1, 0\n", t, ft, fat_ptr);
     return t;
 }
 
-/* Extract high bound from fat pointer */
-static uint32_t Emit_Fat_Pointer_High(Code_Generator *cg, uint32_t fat_ptr) {
+/* Extract high bound from fat pointer.
+ * Returns value in native bound type (bt). */
+static uint32_t Emit_Fat_Pointer_High(Code_Generator *cg, uint32_t fat_ptr,
+                                       const char *bt) {
+    const char *ft = Fat_Ptr_Type_With_Bounds(bt);
     uint32_t t = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 1\n", t, fat_ptr);
+    Emit(cg, "  %%t%u = extractvalue %s %%t%u, 1, 1\n", t, ft, fat_ptr);
     return t;
 }
 
-/* Create a fat pointer from data pointer and dynamic bounds (temp IDs)
- * Returns the temp ID of the fat pointer struct */
+/* Create a fat pointer from data pointer and dynamic bounds (temp IDs).
+ * bt = bound LLVM type. */
 static uint32_t Emit_Fat_Pointer_Dynamic(Code_Generator *cg, uint32_t data_ptr,
-                                          uint32_t low_temp, uint32_t high_temp) {
-    /* Allocate fat pointer struct on stack */
+                                          uint32_t low_temp, uint32_t high_temp,
+                                          const char *bt) {
+    const char *ft = Fat_Ptr_Type_With_Bounds(bt);
     uint32_t fat_alloca = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = alloca " FAT_PTR_TYPE "\n", fat_alloca);
+    Emit(cg, "  %%t%u = alloca %s\n", fat_alloca, ft);
 
-    /* Store data pointer */
     uint32_t data_gep = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr %%t%u, i32 0, i32 0\n",
-         data_gep, fat_alloca);
+    Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 0\n",
+         data_gep, ft, fat_alloca);
     Emit(cg, "  store ptr %%t%u, ptr %%t%u\n", data_ptr, data_gep);
 
-    /* Store low bound */
     uint32_t low_gep = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr %%t%u, i32 0, i32 1, i32 0\n",
-         low_gep, fat_alloca);
-    Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", low_temp, low_gep);
+    Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 1, i32 0\n",
+         low_gep, ft, fat_alloca);
+    Emit(cg, "  store %s %%t%u, ptr %%t%u\n", bt, low_temp, low_gep);
 
-    /* Store high bound */
     uint32_t high_gep = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr %%t%u, i32 0, i32 1, i32 1\n",
-         high_gep, fat_alloca);
-    Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", high_temp, high_gep);
+    Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 1, i32 1\n",
+         high_gep, ft, fat_alloca);
+    Emit(cg, "  store %s %%t%u, ptr %%t%u\n", bt, high_temp, high_gep);
 
-    /* Load and return the fat pointer struct */
     uint32_t fat_val = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", fat_val, fat_alloca);
+    Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", fat_val, ft, fat_alloca);
     return fat_val;
 }
 
 /* Compute length from fat pointer bounds: high - low + 1
- * Returns temp ID holding the i64 length */
-static uint32_t Emit_Fat_Pointer_Length(Code_Generator *cg, uint32_t fat_ptr) {
-    uint32_t low = Emit_Fat_Pointer_Low(cg, fat_ptr);
-    uint32_t high = Emit_Fat_Pointer_High(cg, fat_ptr);
+ * Returns temp ID holding the length in native bound type (bt). */
+static uint32_t Emit_Fat_Pointer_Length(Code_Generator *cg, uint32_t fat_ptr,
+                                         const char *bt) {
+    uint32_t low = Emit_Fat_Pointer_Low(cg, fat_ptr, bt);
+    uint32_t high = Emit_Fat_Pointer_High(cg, fat_ptr, bt);
     uint32_t diff = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", diff, high, low);
+    Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", diff, bt, high, low);
     uint32_t len = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", len, diff);
+    Emit(cg, "  %%t%u = add %s %%t%u, 1\n", len, bt, diff);
     return len;
 }
 
-/* Copy data from fat pointer to a named destination
- * Emits: memcpy(dst, src_data, length) */
-static void Emit_Fat_Pointer_Copy_To_Name(Code_Generator *cg, uint32_t fat_ptr, Symbol *dst) {
-    uint32_t src_ptr = Emit_Fat_Pointer_Data(cg, fat_ptr);
-    uint32_t len = Emit_Fat_Pointer_Length(cg, fat_ptr);
+/* Widen a bound-type length to i64 for memcpy. */
+static uint32_t Emit_Widen_To_I64(Code_Generator *cg, uint32_t val,
+                                    const char *from_type) {
+    if (strcmp(from_type, "i64") == 0) return val;
+    uint32_t w = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = sext %s %%t%u to i64\n", w, from_type, val);
+    return w;
+}
+
+/* Copy data from fat pointer to a named destination.
+ * Emits: memcpy(dst, src_data, length).  bt = bound type. */
+static void Emit_Fat_Pointer_Copy_To_Name(Code_Generator *cg, uint32_t fat_ptr,
+                                            Symbol *dst, const char *bt) {
+    uint32_t src_ptr = Emit_Fat_Pointer_Data(cg, fat_ptr, bt);
+    uint32_t len = Emit_Fat_Pointer_Length(cg, fat_ptr, bt);
+    uint32_t len64 = Emit_Widen_To_I64(cg, len, bt);
     Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%");
     Emit_Symbol_Name(cg, dst);
-    Emit(cg, ", ptr %%t%u, i64 %%t%u, i1 false)\n", src_ptr, len);
+    Emit(cg, ", ptr %%t%u, i64 %%t%u, i1 false)\n", src_ptr, len64);
 }
 
-/* Copy data from fat pointer to a temp pointer destination
- * Emits: memcpy(dst_ptr, src_data, length) */
+/* Copy data from fat pointer to a temp pointer destination.
+ * Emits: memcpy(dst_ptr, src_data, length).  bt = bound type. */
 __attribute__((unused))
-static void Emit_Fat_Pointer_Copy_To_Ptr(Code_Generator *cg, uint32_t fat_ptr, uint32_t dst_ptr) {
-    uint32_t src_ptr = Emit_Fat_Pointer_Data(cg, fat_ptr);
-    uint32_t len = Emit_Fat_Pointer_Length(cg, fat_ptr);
+static void Emit_Fat_Pointer_Copy_To_Ptr(Code_Generator *cg, uint32_t fat_ptr,
+                                           uint32_t dst_ptr, const char *bt) {
+    uint32_t src_ptr = Emit_Fat_Pointer_Data(cg, fat_ptr, bt);
+    uint32_t len = Emit_Fat_Pointer_Length(cg, fat_ptr, bt);
+    uint32_t len64 = Emit_Widen_To_I64(cg, len, bt);
     Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
-         dst_ptr, src_ptr, len);
+         dst_ptr, src_ptr, len64);
 }
 
-/* Load fat pointer from a symbol's storage — consolidates common pattern */
-static uint32_t Emit_Load_Fat_Pointer(Code_Generator *cg, Symbol *sym) {
+/* Load fat pointer from a symbol's storage.  bt = bound type. */
+static uint32_t Emit_Load_Fat_Pointer(Code_Generator *cg, Symbol *sym,
+                                       const char *bt) {
+    const char *ft = Fat_Ptr_Type_With_Bounds(bt);
     uint32_t fat = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr ", fat);
-    Emit_Symbol_Ref(cg, sym);
+    Emit(cg, "  %%t%u = load %s, ptr ", fat, ft);
+    Emit_Symbol_Storage(cg, sym);
     Emit(cg, "\n");
     return fat;
+}
+
+/* Load fat pointer from a temp pointer (%%t<N>).  bt = bound type. */
+static uint32_t Emit_Load_Fat_Pointer_From_Temp(Code_Generator *cg,
+                                                  uint32_t ptr_temp,
+                                                  const char *bt) {
+    const char *ft = Fat_Ptr_Type_With_Bounds(bt);
+    uint32_t fat = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", fat, ft, ptr_temp);
+    return fat;
+}
+
+
+/* Store a fat pointer value into a symbol's storage.  bt = bound type. */
+static void Emit_Store_Fat_Pointer_To_Symbol(Code_Generator *cg,
+                                              uint32_t fat_val, Symbol *sym,
+                                              const char *bt) {
+    const char *ft = Fat_Ptr_Type_With_Bounds(bt);
+    Emit(cg, "  store %s %%t%u, ptr ", ft, fat_val);
+    Emit_Symbol_Storage(cg, sym);
+    Emit(cg, "\n");
+}
+
+/* Store fat pointer fields (data ptr, low, high) into a symbol using GEP+store.
+ * This is the "construct fat pointer in-place" pattern for named storage.
+ * bt = bound type. */
+static void Emit_Store_Fat_Pointer_Fields_To_Symbol(Code_Generator *cg,
+    uint32_t data_ptr, uint32_t low_temp, uint32_t high_temp, Symbol *sym,
+    const char *bt)
+{
+    const char *ft = Fat_Ptr_Type_With_Bounds(bt);
+    uint32_t data_slot = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = getelementptr %s, ptr ", data_slot, ft);
+    Emit_Symbol_Storage(cg, sym);
+    Emit(cg, ", i32 0, i32 0\n");
+    Emit(cg, "  store ptr %%t%u, ptr %%t%u  ; fat ptr data\n", data_ptr, data_slot);
+
+    uint32_t low_slot = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = getelementptr %s, ptr ", low_slot, ft);
+    Emit_Symbol_Storage(cg, sym);
+    Emit(cg, ", i32 0, i32 1, i32 0\n");
+    Emit(cg, "  store %s %%t%u, ptr %%t%u  ; fat ptr low\n", bt, low_temp, low_slot);
+
+    uint32_t high_slot = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = getelementptr %s, ptr ", high_slot, ft);
+    Emit_Symbol_Storage(cg, sym);
+    Emit(cg, ", i32 0, i32 1, i32 1\n");
+    Emit(cg, "  store %s %%t%u, ptr %%t%u  ; fat ptr high\n", bt, high_temp, high_slot);
+}
+
+/* Store fat pointer fields (data ptr, low, high) into a temp alloca using GEP+store.
+ * bt = bound type. */
+static void Emit_Store_Fat_Pointer_Fields_To_Temp(Code_Generator *cg,
+    uint32_t data_ptr, uint32_t low_temp, uint32_t high_temp,
+    uint32_t fat_alloca, const char *bt)
+{
+    const char *ft = Fat_Ptr_Type_With_Bounds(bt);
+    uint32_t data_slot = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 0\n",
+         data_slot, ft, fat_alloca);
+    Emit(cg, "  store ptr %%t%u, ptr %%t%u\n", data_ptr, data_slot);
+
+    uint32_t low_slot = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 1, i32 0\n",
+         low_slot, ft, fat_alloca);
+    Emit(cg, "  store %s %%t%u, ptr %%t%u\n", bt, low_temp, low_slot);
+
+    uint32_t high_slot = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 1, i32 1\n",
+         high_slot, ft, fat_alloca);
+    Emit(cg, "  store %s %%t%u, ptr %%t%u\n", bt, high_temp, high_slot);
+}
+
+/* Compare two fat pointers for identity equality (data ptr + both bounds).
+ * Returns temp ID holding i1 result.  bt = bound type. */
+static uint32_t Emit_Fat_Pointer_Compare(Code_Generator *cg,
+    uint32_t left_fat, uint32_t right_fat, const char *bt)
+{
+    uint32_t lp = Emit_Fat_Pointer_Data(cg, left_fat, bt);
+    uint32_t rp = Emit_Fat_Pointer_Data(cg, right_fat, bt);
+    uint32_t ll = Emit_Fat_Pointer_Low(cg, left_fat, bt);
+    uint32_t rl = Emit_Fat_Pointer_Low(cg, right_fat, bt);
+    uint32_t lh = Emit_Fat_Pointer_High(cg, left_fat, bt);
+    uint32_t rh = Emit_Fat_Pointer_High(cg, right_fat, bt);
+
+    uint32_t cmp_p = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp eq ptr %%t%u, %%t%u\n", cmp_p, lp, rp);
+    uint32_t cmp_l = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp eq %s %%t%u, %%t%u\n", cmp_l, bt, ll, rl);
+    uint32_t cmp_h = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp eq %s %%t%u, %%t%u\n", cmp_h, bt, lh, rh);
+
+    uint32_t and1 = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", and1, cmp_p, cmp_l);
+    uint32_t result = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", result, and1, cmp_h);
+    return result;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -13378,6 +13643,183 @@ static uint32_t Emit_Load_Fat_Pointer(Code_Generator *cg, Symbol *sym) {
  * ───────────────────────────────────────────────────────────────────────── */
 
 static uint32_t Generate_Expression(Code_Generator *cg, Syntax_Node *node);
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Generate_Lvalue — Return a ptr to the storage location of an lvalue.
+ *
+ * GNAT LLVM analogy: GL_Value with GL_Relationship = Reference.
+ * This cleanly separates "compute the address" from "load the value",
+ * eliminating duplicated address computation in Generate_Expression
+ * vs Generate_Assignment.
+ *
+ * Handles:
+ *   NK_IDENTIFIER   — symbol storage (local, global, or uplevel)
+ *   NK_SELECTED     — record field offset from base address
+ *   NK_APPLY        — array element address (indexed component)
+ *   NK_UNARY_OP/ALL — .ALL dereference (load pointer value)
+ *
+ * Returns a temp holding ptr to the storage.  Caller can then:
+ *   - load from it  (expression context)
+ *   - store to it   (assignment context)
+ * ───────────────────────────────────────────────────────────────────────── */
+static uint32_t Generate_Lvalue(Code_Generator *cg, Syntax_Node *node) {
+    if (!node) return 0;
+
+    /* NK_IDENTIFIER: return ptr to the symbol's storage */
+    if (node->kind == NK_IDENTIFIER) {
+        Symbol *sym = node->symbol;
+        if (!sym) return 0;
+
+        /* For RENAMES: redirect to renamed object */
+        if (sym->renamed_object) {
+            return Generate_Lvalue(cg, sym->renamed_object);
+        }
+
+        uint32_t t = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = getelementptr i8, ptr ", t);
+        Emit_Symbol_Storage(cg, sym);
+        Emit(cg, ", i64 0  ; lvalue of %.*s\n",
+             (int)sym->name.length, sym->name.data);
+        return t;
+    }
+
+    /* NK_SELECTED: record field access — compute base + field offset */
+    if (node->kind == NK_SELECTED) {
+        Type_Info *prefix_type = node->selected.prefix ? node->selected.prefix->type : NULL;
+
+        /* Explicit .ALL dereference: load pointer value */
+        if (Type_Is_Access(prefix_type) &&
+            Slice_Equal_Ignore_Case(node->selected.selector, S("ALL"))) {
+            /* The pointer IS the lvalue target */
+            uint32_t ptr = Generate_Expression(cg, node->selected.prefix);
+            return ptr;
+        }
+
+        /* Determine effective record type (handle implicit dereference) */
+        Type_Info *record_type = prefix_type;
+        bool implicit_deref = false;
+        if (Type_Is_Access(prefix_type) &&
+            Type_Is_Record(prefix_type->access.designated_type)) {
+            record_type = prefix_type->access.designated_type;
+            implicit_deref = true;
+        }
+
+        if (Type_Is_Record(record_type)) {
+            /* Find field offset */
+            uint32_t byte_offset = 0;
+            for (uint32_t i = 0; i < record_type->record.component_count; i++) {
+                if (Slice_Equal_Ignore_Case(
+                        record_type->record.components[i].name,
+                        node->selected.selector)) {
+                    byte_offset = record_type->record.components[i].byte_offset;
+                    break;
+                }
+            }
+
+            /* Get base pointer */
+            uint32_t base;
+            if (implicit_deref) {
+                /* Load access value to get record pointer */
+                base = Generate_Expression(cg, node->selected.prefix);
+            } else {
+                base = Generate_Lvalue(cg, node->selected.prefix);
+            }
+
+            /* GEP to field offset */
+            uint32_t field_ptr = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u  ; field lvalue\n",
+                 field_ptr, base, byte_offset);
+            return field_ptr;
+        }
+
+        /* Package-qualified name: return lvalue (address) of the resolved symbol.
+         * E.g. PACK1.ARG1 where PACK1 is a package and ARG1 is a variable inside it.
+         * We must NOT fall through to Generate_Expression which would load the value. */
+        if (node->symbol) {
+            uint32_t t = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = getelementptr i8, ptr ", t);
+            Emit_Symbol_Storage(cg, node->symbol);
+            Emit(cg, ", i64 0  ; lvalue of pkg-qualified %.*s\n",
+                 (int)node->symbol->name.length, node->symbol->name.data);
+            return t;
+        }
+    }
+
+    /* NK_UNARY_OP with TK_ALL: .ALL dereference — load the pointer value */
+    if (node->kind == NK_UNARY_OP && node->unary.op == TK_ALL) {
+        uint32_t ptr = Generate_Expression(cg, node->unary.operand);
+        return ptr;
+    }
+
+    /* NK_APPLY: array indexed component — compute element address */
+    if (node->kind == NK_APPLY && node->apply.prefix) {
+        Type_Info *prefix_type = node->apply.prefix->type;
+        if (Type_Is_Access(prefix_type) && prefix_type->access.designated_type) {
+            prefix_type = prefix_type->access.designated_type;
+        }
+        if (prefix_type && (prefix_type->kind == TYPE_ARRAY ||
+                            prefix_type->kind == TYPE_STRING)) {
+            /* Get array base pointer */
+            Symbol *array_sym = node->apply.prefix->symbol;
+            uint32_t base;
+            bool has_dynamic_low = false;
+            uint32_t dynamic_low = 0;
+            const char *dyn_lv_bt = NULL;
+
+            if (array_sym && (Type_Is_Unconstrained_Array(prefix_type) ||
+                              Type_Has_Dynamic_Bounds(prefix_type))) {
+                /* Unconstrained array: load fat pointer, extract data ptr */
+                const char *bt = Array_Bound_Llvm_Type(prefix_type);
+                dyn_lv_bt = bt;
+                uint32_t fat = Emit_Load_Fat_Pointer(cg, array_sym, bt);
+                base = Emit_Fat_Pointer_Data(cg, fat, bt);
+                dynamic_low = Emit_Fat_Pointer_Low(cg, fat, bt);
+                has_dynamic_low = true;
+            } else if (array_sym) {
+                base = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = getelementptr i8, ptr ", base);
+                Emit_Symbol_Storage(cg, array_sym);
+                Emit(cg, ", i64 0  ; array base\n");
+            } else {
+                base = Generate_Expression(cg, node->apply.prefix);
+            }
+
+            /* Generate index expression */
+            if (node->apply.arguments.count > 0) {
+                Syntax_Node *arg = node->apply.arguments.items[0];
+                uint32_t idx = Generate_Expression(cg, arg);
+
+                /* Adjust for low bound */
+                if (has_dynamic_low) {
+                    uint32_t dynamic_low_64 = Emit_Widen_To_I64(cg, dynamic_low, dyn_lv_bt);
+                    uint32_t adj = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", adj, idx, dynamic_low_64);
+                    idx = adj;
+                } else {
+                    int64_t low_bound = Array_Low_Bound(prefix_type);
+                    if (low_bound != 0) {
+                        uint32_t adj = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = sub i64 %%t%u, %lld\n",
+                             adj, idx, (long long)low_bound);
+                        idx = adj;
+                    }
+                }
+
+                /* Compute element address */
+                Type_Info *elem_type_info = prefix_type->array.element_type;
+                const char *elem_type = Type_To_Llvm(elem_type_info);
+                uint32_t ptr = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %%t%u  ; elem lvalue\n",
+                     ptr, elem_type, base, idx);
+                return ptr;
+            }
+        }
+    }
+
+    /* Fallback: treat expression result as pointer (for composite types
+     * that Generate_Expression already returns as ptr) */
+    return Generate_Expression(cg, node);
+}
 
 /* Generate code to evaluate a type bound at runtime.
  * Returns the temp register containing the bound value.
@@ -13449,7 +13891,7 @@ static uint32_t Generate_String_Literal(Code_Generator *cg, Syntax_Node *node) {
          data_ptr, len, str_id);
 
     /* Return fat pointer with Ada STRING bounds (1..length) */
-    return Emit_Fat_Pointer(cg, data_ptr, 1, (int64_t)len);
+    return Emit_Fat_Pointer(cg, data_ptr, 1, (int64_t)len, Array_Bound_Llvm_Type(node->type));
 }
 
 static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
@@ -13480,32 +13922,27 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
     uint32_t t = Emit_Temp(cg);
     Type_Info *ty = sym->type;
 
+    /* Resolve generic formal types to their actuals for correct LLVM type sizing.
+     * E.g. generic formal T (<>) mapped to COLOR (i8) — must load as i8, not i32. */
+    if (cg->current_instance && ty)
+        ty = Resolve_Generic_Actual_Type(cg, ty);
+
     switch (sym->kind) {
         case SYMBOL_VARIABLE:
         case SYMBOL_PARAMETER:
         case SYMBOL_DISCRIMINANT: {
             const char *type_str = Type_To_Llvm(ty);
-            if (Is_Uplevel_Access(cg, sym)) {
-                /* Uplevel access through frame pointer parameter */
-                Emit(cg, "  ; UPLEVEL ACCESS: %.*s via frame pointer\n",
-                     (int)sym->name.length, sym->name.data);
-                Emit(cg, "  %%t%u = load %s, ptr %%__frame.", t, type_str);
-                Emit_Symbol_Name(cg, sym);
-                Emit(cg, "\n");
-            } else {
-                Emit(cg, "  %%t%u = load %s, ptr ", t, type_str);
-                Emit_Symbol_Ref(cg, sym);
-                Emit(cg, "\n");
-            }
-            /* Widen to i64 for computation if narrower integer type.
-             * But keep ptr types as ptr - they're used for dereference (.ALL)
-             * and implicit dereference operations.
-             * Also keep float types as their native type (float/double). */
-            if (strcmp(type_str, "ptr") != 0 &&
-                strcmp(type_str, "float") != 0 &&
-                strcmp(type_str, "double") != 0 &&
-                !strstr(type_str, "{ ptr,")) {
-                t = Emit_Convert(cg, t, type_str, "i64");
+            Emit(cg, "  %%t%u = load %s, ptr ", t, type_str);
+            Emit_Symbol_Storage(cg, sym);
+            Emit(cg, "\n");
+            /* Widen sub-i64 integer loads to i64 for uniform expression type.
+             * Fat pointers, ptrs, and floats are NOT widened. */
+            if (type_str[0] == 'i' && strcmp(type_str, "i64") != 0 &&
+                !Type_Is_Access(ty) && !Type_Is_Float_Representation(ty) &&
+                !Type_Is_Unconstrained_Array(ty) && !Type_Is_String(ty)) {
+                uint32_t w = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = sext %s %%t%u to i64\n", w, type_str, t);
+                t = w;
             }
         } break;
 
@@ -13555,15 +13992,13 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "  %%t%u = load %s, ptr ", t, type_str);
                 Emit_Symbol_Ref(cg, sym);
                 Emit(cg, "\n");
-                /* Widen to i64 for computation if narrower integer type.
-                 * But keep ptr types as ptr - records/access need pointers.
-                 * Also keep float types as their native type (float/double).
-                 * Keep fat pointers as-is for unconstrained arrays/STRING. */
-                if (strcmp(type_str, "ptr") != 0 &&
-                    strcmp(type_str, "float") != 0 &&
-                    strcmp(type_str, "double") != 0 &&
-                    !strstr(type_str, "{ ptr,")) {
-                    t = Emit_Convert(cg, t, type_str, "i64");
+                /* Widen sub-i64 integer loads to i64 */
+                if (type_str[0] == 'i' && strcmp(type_str, "i64") != 0 &&
+                    !Type_Is_Access(ty) && !Type_Is_Float_Representation(ty) &&
+                    !Type_Is_Unconstrained_Array(ty) && !Type_Is_String(ty)) {
+                    uint32_t w = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = sext %s %%t%u to i64\n", w, type_str, t);
+                    t = w;
                 }
             } else {
                 /* ??? Unknown literal type - emit 0 as fallback */
@@ -13622,9 +14057,16 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                 } else {
                     Emit(cg, "()\n");
                 }
-                /* Convert to i64 if narrower, but not for floats */
-                if (!Is_Float_Type(ret_type)) {
-                    t = Emit_Convert(cg, t, ret_type, "i64");
+                /* Widen sub-i64 integer return values to i64 */
+                if (actual->return_type && ret_type[0] == 'i' &&
+                    strcmp(ret_type, "i64") != 0 &&
+                    !Type_Is_Access(actual->return_type) &&
+                    !Type_Is_Float_Representation(actual->return_type) &&
+                    !Type_Is_Unconstrained_Array(actual->return_type) &&
+                    !Type_Is_String(actual->return_type)) {
+                    uint32_t w = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = sext %s %%t%u to i64\n", w, ret_type, t);
+                    t = w;
                 }
             } else {
                 /* Fallback for other symbol kinds */
@@ -13684,13 +14126,10 @@ static uint32_t Generate_Record_Equality(Code_Generator *cg, uint32_t left_ptr,
             Type_Needs_Fat_Pointer(ct);
 
         if (Type_Is_Unconstrained_Array(ct) || Type_Is_String(ct)) {
-            /* Unconstrained array/string - load fat pointer values from storage,
-             * since left_gep/right_gep are pointers TO fat pointer fields,
-             * but Generate_Array_Equality expects fat pointer VALUES. */
-            uint32_t left_fat = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", left_fat, left_gep);
-            uint32_t right_fat = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", right_fat, right_gep);
+            /* Unconstrained array/string - load fat pointer values from storage */
+            const char *ct_bt = Array_Bound_Llvm_Type(ct);
+            uint32_t left_fat = Emit_Load_Fat_Pointer_From_Temp(cg, left_gep, ct_bt);
+            uint32_t right_fat = Emit_Load_Fat_Pointer_From_Temp(cg, right_gep, ct_bt);
             cmp = Generate_Array_Equality(cg, left_fat, right_fat, ct);
         } else if (Type_Is_Constrained_Array(ct)) {
             /* Constrained array - use array equality directly on pointers */
@@ -13699,30 +14138,11 @@ static uint32_t Generate_Record_Equality(Code_Generator *cg, uint32_t left_ptr,
             /* Nested record - recurse */
             cmp = Generate_Record_Equality(cg, left_gep, right_gep, ct);
         } else if (is_fat_ptr_access) {
-            /* ACCESS to unconstrained array - compare fat pointer components
-             * Fat pointer: { ptr data, { i64 low, i64 high } }
-             * Access equality compares pointer identity (same object) */
-            uint32_t left_val = Emit_Temp(cg);
-            uint32_t right_val = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", left_val, left_gep);
-            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", right_val, right_gep);
-            uint32_t lp = Emit_Temp(cg), rp = Emit_Temp(cg);
-            uint32_t ll = Emit_Temp(cg), rl = Emit_Temp(cg);
-            uint32_t lh = Emit_Temp(cg), rh = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n", lp, left_val);
-            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n", rp, right_val);
-            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 0\n", ll, left_val);
-            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 0\n", rl, right_val);
-            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 1\n", lh, left_val);
-            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 1\n", rh, right_val);
-            uint32_t cmp_p = Emit_Temp(cg), cmp_l = Emit_Temp(cg), cmp_h = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = icmp eq ptr %%t%u, %%t%u\n", cmp_p, lp, rp);
-            Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", cmp_l, ll, rl);
-            Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", cmp_h, lh, rh);
-            uint32_t and1 = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", and1, cmp_p, cmp_l);
-            cmp = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", cmp, and1, cmp_h);
+            /* ACCESS to unconstrained array - compare fat pointer identity */
+            const char *acc_bt = Array_Bound_Llvm_Type(ct->access.designated_type);
+            uint32_t left_val = Emit_Load_Fat_Pointer_From_Temp(cg, left_gep, acc_bt);
+            uint32_t right_val = Emit_Load_Fat_Pointer_From_Temp(cg, right_gep, acc_bt);
+            cmp = Emit_Fat_Pointer_Compare(cg, left_val, right_val, acc_bt);
         } else {
             /* Scalar type - load and compare */
             uint32_t left_val = Emit_Temp(cg);
@@ -13793,39 +14213,41 @@ static uint32_t Generate_Array_Equality(Code_Generator *cg, uint32_t left_ptr,
     /*
      * For unconstrained arrays, left_ptr/right_ptr are fat pointer VALUES
      * (not pointers to storage).  All callers must ensure they pass loaded
-     * fat pointer values: { ptr, { i64, i64 } }.
+     * fat pointer values: { ptr, { bound, bound } }.
      */
 
     /* Extract bounds from fat pointer structures */
-    uint32_t left_low = Emit_Fat_Pointer_Low(cg, left_ptr);
-    uint32_t left_high = Emit_Fat_Pointer_High(cg, left_ptr);
-    uint32_t right_low = Emit_Fat_Pointer_Low(cg, right_ptr);
-    uint32_t right_high = Emit_Fat_Pointer_High(cg, right_ptr);
+    const char *aeq_bt = Array_Bound_Llvm_Type(array_type);
+    uint32_t left_low = Emit_Fat_Pointer_Low(cg, left_ptr, aeq_bt);
+    uint32_t left_high = Emit_Fat_Pointer_High(cg, left_ptr, aeq_bt);
+    uint32_t right_low = Emit_Fat_Pointer_Low(cg, right_ptr, aeq_bt);
+    uint32_t right_high = Emit_Fat_Pointer_High(cg, right_ptr, aeq_bt);
 
     /* Compute lengths: high - low + 1 */
     uint32_t left_len = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", left_len, left_high, left_low);
+    Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", left_len, aeq_bt, left_high, left_low);
     uint32_t left_len1 = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", left_len1, left_len);
+    Emit(cg, "  %%t%u = add %s %%t%u, 1\n", left_len1, aeq_bt, left_len);
 
     uint32_t right_len = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", right_len, right_high, right_low);
+    Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", right_len, aeq_bt, right_high, right_low);
     uint32_t right_len1 = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", right_len1, right_len);
+    Emit(cg, "  %%t%u = add %s %%t%u, 1\n", right_len1, aeq_bt, right_len);
 
     /* Compare lengths */
     uint32_t len_eq = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", len_eq, left_len1, right_len1);
+    Emit(cg, "  %%t%u = icmp eq %s %%t%u, %%t%u\n", len_eq, aeq_bt, left_len1, right_len1);
 
     /* Extract data pointers */
-    uint32_t left_data = Emit_Fat_Pointer_Data(cg, left_ptr);
-    uint32_t right_data = Emit_Fat_Pointer_Data(cg, right_ptr);
+    uint32_t left_data = Emit_Fat_Pointer_Data(cg, left_ptr, aeq_bt);
+    uint32_t right_data = Emit_Fat_Pointer_Data(cg, right_ptr, aeq_bt);
 
-    /* Compute byte size for memcmp */
+    /* Compute byte size for memcmp — widen length to i64 */
     uint32_t elem_size = array_type->array.element_type ?
                          array_type->array.element_type->size : 1;
+    uint32_t left_len1_64 = Emit_Widen_To_I64(cg, left_len1, aeq_bt);
     uint32_t byte_size = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", byte_size, left_len1, elem_size);
+    Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", byte_size, left_len1_64, elem_size);
 
     /* Call memcmp */
     uint32_t memcmp_result = Emit_Temp(cg);
@@ -13849,13 +14271,7 @@ static uint32_t Generate_Composite_Address(Code_Generator *cg, Syntax_Node *node
         if (sym) {
             uint32_t t = Emit_Temp(cg);
             Emit(cg, "  %%t%u = getelementptr i8, ptr ", t);
-            if (Is_Uplevel_Access(cg, sym)) {
-                /* Uplevel access through frame pointer */
-                Emit(cg, "%%__frame.");
-                Emit_Symbol_Name(cg, sym);
-            } else {
-                Emit_Symbol_Ref(cg, sym);
-            }
+            Emit_Symbol_Storage(cg, sym);
             Emit(cg, ", i64 0\n");
             return t;
         }
@@ -13882,15 +14298,9 @@ static uint32_t Generate_Composite_Address(Code_Generator *cg, Syntax_Node *node
                 Symbol *access_sym = node->selected.prefix->symbol;
                 base = Emit_Temp(cg);
                 if (access_sym) {
-                    if (Is_Uplevel_Access(cg, access_sym)) {
-                        Emit(cg, "  %%t%u = load ptr, ptr %%__frame.", base);
-                        Emit_Symbol_Name(cg, access_sym);
-                        Emit(cg, "  ; uplevel implicit deref for field address\n");
-                    } else {
-                        Emit(cg, "  %%t%u = load ptr, ptr ", base);
-                        Emit_Symbol_Ref(cg, access_sym);
-                        Emit(cg, "  ; implicit deref for field address\n");
-                    }
+                    Emit(cg, "  %%t%u = load ptr, ptr ", base);
+                    Emit_Symbol_Storage(cg, access_sym);
+                    Emit(cg, "  ; implicit deref for field address\n");
                 } else {
                     uint32_t ptr = Generate_Expression(cg, node->selected.prefix);
                     base = ptr;  /* Already a ptr from access expr */
@@ -13964,12 +14374,14 @@ static uint32_t Generate_Composite_Address(Code_Generator *cg, Syntax_Node *node
         /* Handle unconstrained arrays passed as fat pointers */
         if (Type_Is_String(prefix_type)) {
             /* Fat pointer - extract data and compute element address */
+            const char *str_bt = Array_Bound_Llvm_Type(prefix_type);
             uint32_t fat = Generate_Expression(cg, node->apply.prefix);
-            uint32_t data = Emit_Fat_Pointer_Data(cg, fat);
-            uint32_t low = Emit_Fat_Pointer_Low(cg, fat);
+            uint32_t data = Emit_Fat_Pointer_Data(cg, fat, str_bt);
+            uint32_t low = Emit_Fat_Pointer_Low(cg, fat, str_bt);
+            uint32_t low_64 = Emit_Widen_To_I64(cg, low, str_bt);
             uint32_t idx = Generate_Expression(cg, node->apply.arguments.items[0]);
             uint32_t adj_idx = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", adj_idx, idx, low);
+            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", adj_idx, idx, low_64);
             uint32_t addr = Emit_Temp(cg);
             Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n", addr, data, adj_idx);
             return addr;
@@ -14014,29 +14426,30 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             uint32_t elem_size = left_type->array.element_type ?
                                  left_type->array.element_type->size : 8;
 
+            const char *slice_bt = Array_Bound_Llvm_Type(left_type);
             /* Generate left operand */
             if (left_is_slice) {
                 uint32_t left_fat = Generate_Expression(cg, node->binary.left);
-                left_data = Emit_Fat_Pointer_Data(cg, left_fat);
-                left_low = Emit_Fat_Pointer_Low(cg, left_fat);
-                left_high = Emit_Fat_Pointer_High(cg, left_fat);
+                left_data = Emit_Fat_Pointer_Data(cg, left_fat, slice_bt);
+                left_low = Emit_Fat_Pointer_Low(cg, left_fat, slice_bt);
+                left_high = Emit_Fat_Pointer_High(cg, left_fat, slice_bt);
             } else {
                 left_data = Generate_Composite_Address(cg, node->binary.left);
                 /* Get static bounds from type */
                 int64_t low_val = Type_Bound_Value(left_type->array.indices[0].low_bound);
                 int64_t high_val = Type_Bound_Value(left_type->array.indices[0].high_bound);
                 left_low = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add i64 0, %lld\n", left_low, (long long)low_val);
+                Emit(cg, "  %%t%u = add %s 0, %lld\n", left_low, slice_bt, (long long)low_val);
                 left_high = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add i64 0, %lld\n", left_high, (long long)high_val);
+                Emit(cg, "  %%t%u = add %s 0, %lld\n", left_high, slice_bt, (long long)high_val);
             }
 
             /* Generate right operand */
             if (right_is_slice) {
                 uint32_t right_fat = Generate_Expression(cg, node->binary.right);
-                right_data = Emit_Fat_Pointer_Data(cg, right_fat);
-                right_low = Emit_Fat_Pointer_Low(cg, right_fat);
-                right_high = Emit_Fat_Pointer_High(cg, right_fat);
+                right_data = Emit_Fat_Pointer_Data(cg, right_fat, slice_bt);
+                right_low = Emit_Fat_Pointer_Low(cg, right_fat, slice_bt);
+                right_high = Emit_Fat_Pointer_High(cg, right_fat, slice_bt);
             } else {
                 right_data = Generate_Composite_Address(cg, node->binary.right);
                 /* Get static bounds from type - use right type if available */
@@ -14048,29 +14461,30 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                     high_val = Type_Bound_Value(rtype->array.indices[0].high_bound);
                 }
                 right_low = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add i64 0, %lld\n", right_low, (long long)low_val);
+                Emit(cg, "  %%t%u = add %s 0, %lld\n", right_low, slice_bt, (long long)low_val);
                 right_high = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add i64 0, %lld\n", right_high, (long long)high_val);
+                Emit(cg, "  %%t%u = add %s 0, %lld\n", right_high, slice_bt, (long long)high_val);
             }
 
             /* Compute lengths */
             uint32_t left_len = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", left_len, left_high, left_low);
+            Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", left_len, slice_bt, left_high, left_low);
             uint32_t left_len1 = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", left_len1, left_len);
+            Emit(cg, "  %%t%u = add %s %%t%u, 1\n", left_len1, slice_bt, left_len);
 
             uint32_t right_len = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", right_len, right_high, right_low);
+            Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", right_len, slice_bt, right_high, right_low);
             uint32_t right_len1 = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", right_len1, right_len);
+            Emit(cg, "  %%t%u = add %s %%t%u, 1\n", right_len1, slice_bt, right_len);
 
             /* Compare lengths */
             uint32_t len_eq = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", len_eq, left_len1, right_len1);
+            Emit(cg, "  %%t%u = icmp eq %s %%t%u, %%t%u\n", len_eq, slice_bt, left_len1, right_len1);
 
-            /* Compare data with memcmp */
+            /* Compare data with memcmp — widen length to i64 */
+            uint32_t left_len1_64 = Emit_Widen_To_I64(cg, left_len1, slice_bt);
             uint32_t byte_size = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", byte_size, left_len1, elem_size);
+            Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", byte_size, left_len1_64, elem_size);
             uint32_t memcmp_result = Emit_Temp(cg);
             Emit(cg, "  %%t%u = call i32 @memcmp(ptr %%t%u, ptr %%t%u, i64 %%t%u)\n",
                  memcmp_result, left_data, right_data, byte_size);
@@ -14085,6 +14499,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
              * Normalize both to fat pointers for uniform comparison. */
             uint32_t left_val, right_val;
 
+            const char *eq_bt = Array_Bound_Llvm_Type(left_type);
             /* Generate left operand */
             if (left_is_fat) {
                 left_val = Generate_Expression(cg, node->binary.left);
@@ -14095,7 +14510,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                     lo = Type_Bound_Value(left_type->array.indices[0].low_bound);
                     hi = Type_Bound_Value(left_type->array.indices[0].high_bound);
                 }
-                left_val = Emit_Fat_Pointer(cg, lptr, lo, hi);
+                left_val = Emit_Fat_Pointer(cg, lptr, lo, hi, eq_bt);
             }
 
             /* Generate right operand */
@@ -14109,7 +14524,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                     lo = Type_Bound_Value(rtype->array.indices[0].low_bound);
                     hi = Type_Bound_Value(rtype->array.indices[0].high_bound);
                 }
-                right_val = Emit_Fat_Pointer(cg, rptr, lo, hi);
+                right_val = Emit_Fat_Pointer(cg, rptr, lo, hi, eq_bt);
             }
 
             /* Use the unconstrained array equality path (compares lengths then data) */
@@ -14173,6 +14588,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                                  node->binary.left->binary.op == TK_AMPERSAND) ||
                                 (node->binary.right && node->binary.right->kind == NK_BINARY_OP &&
                                  node->binary.right->binary.op == TK_AMPERSAND);
+        const char *rel_bt = Array_Bound_Llvm_Type(left_type);
         if (is_unconstrained) {
             /* Generate each operand as fat pointer, wrapping constrained if needed */
             bool l_fat = Type_Is_String(left_type) ||
@@ -14197,7 +14613,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                     lo = Type_Bound_Value(left_type->array.indices[0].low_bound);
                     hi = Type_Bound_Value(left_type->array.indices[0].high_bound);
                 }
-                left_ptr = Emit_Fat_Pointer(cg, lp, lo, hi);
+                left_ptr = Emit_Fat_Pointer(cg, lp, lo, hi, rel_bt);
             }
             if (r_fat) {
                 right_ptr = Generate_Expression(cg, node->binary.right);
@@ -14209,7 +14625,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                     lo = Type_Bound_Value(rhs_cmp_type->array.indices[0].low_bound);
                     hi = Type_Bound_Value(rhs_cmp_type->array.indices[0].high_bound);
                 }
-                right_ptr = Emit_Fat_Pointer(cg, rp, lo, hi);
+                right_ptr = Emit_Fat_Pointer(cg, rp, lo, hi, rel_bt);
             }
         } else {
             left_ptr = Generate_Composite_Address(cg, node->binary.left);
@@ -14231,38 +14647,39 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         } else {
             /* Unconstrained array: compare min length, handle different lengths.
              * For lexicographic: compare common prefix, shorter array is "less" if prefix equal. */
-            uint32_t left_low = Emit_Fat_Pointer_Low(cg, left_ptr);
-            uint32_t left_high = Emit_Fat_Pointer_High(cg, left_ptr);
-            uint32_t right_low = Emit_Fat_Pointer_Low(cg, right_ptr);
-            uint32_t right_high = Emit_Fat_Pointer_High(cg, right_ptr);
+            uint32_t left_low = Emit_Fat_Pointer_Low(cg, left_ptr, rel_bt);
+            uint32_t left_high = Emit_Fat_Pointer_High(cg, left_ptr, rel_bt);
+            uint32_t right_low = Emit_Fat_Pointer_Low(cg, right_ptr, rel_bt);
+            uint32_t right_high = Emit_Fat_Pointer_High(cg, right_ptr, rel_bt);
 
             /* Compute lengths */
             uint32_t left_len = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", left_len, left_high, left_low);
+            Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", left_len, rel_bt, left_high, left_low);
             uint32_t left_len1 = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", left_len1, left_len);
+            Emit(cg, "  %%t%u = add %s %%t%u, 1\n", left_len1, rel_bt, left_len);
 
             uint32_t right_len = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", right_len, right_high, right_low);
+            Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", right_len, rel_bt, right_high, right_low);
             uint32_t right_len1 = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", right_len1, right_len);
+            Emit(cg, "  %%t%u = add %s %%t%u, 1\n", right_len1, rel_bt, right_len);
 
             /* Get min length for comparison */
             uint32_t len_cmp = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = icmp slt i64 %%t%u, %%t%u\n", len_cmp, left_len1, right_len1);
+            Emit(cg, "  %%t%u = icmp slt %s %%t%u, %%t%u\n", len_cmp, rel_bt, left_len1, right_len1);
             uint32_t min_len = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = select i1 %%t%u, i64 %%t%u, i64 %%t%u\n",
-                 min_len, len_cmp, left_len1, right_len1);
+            Emit(cg, "  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n",
+                 min_len, len_cmp, rel_bt, left_len1, rel_bt, right_len1);
 
             /* Get data pointers */
-            uint32_t left_data = Emit_Fat_Pointer_Data(cg, left_ptr);
-            uint32_t right_data = Emit_Fat_Pointer_Data(cg, right_ptr);
+            uint32_t left_data = Emit_Fat_Pointer_Data(cg, left_ptr, rel_bt);
+            uint32_t right_data = Emit_Fat_Pointer_Data(cg, right_ptr, rel_bt);
 
-            /* Compute byte size for memcmp */
+            /* Compute byte size for memcmp — widen to i64 */
             uint32_t elem_size = left_type->array.element_type ?
                                  left_type->array.element_type->size : 1;
+            uint32_t min_len_64 = Emit_Widen_To_I64(cg, min_len, rel_bt);
             uint32_t byte_size = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", byte_size, min_len, elem_size);
+            Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", byte_size, min_len_64, elem_size);
 
             /* Compare common prefix */
             uint32_t prefix_cmp = Emit_Temp(cg);
@@ -14273,9 +14690,9 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
              * left < right if prefix equal and left shorter
              * Encode as: prefix_cmp != 0 ? prefix_cmp : (left_len - right_len) clamped to -1/0/1 */
             uint32_t len_diff = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", len_diff, left_len1, right_len1);
+            Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", len_diff, rel_bt, left_len1, right_len1);
             uint32_t len_diff32 = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = trunc i64 %%t%u to i32\n", len_diff32, len_diff);
+            Emit(cg, "  %%t%u = trunc %s %%t%u to i32\n", len_diff32, rel_bt, len_diff);
 
             uint32_t prefix_zero = Emit_Temp(cg);
             Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", prefix_zero, prefix_cmp);
@@ -14405,6 +14822,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                                 Expression_Is_Slice(node->binary.left) ||
                                 (node->binary.left->kind == NK_BINARY_OP &&
                                  node->binary.left->binary.op == TK_AMPERSAND);
+        const char *cat_bt = Array_Bound_Llvm_Type(left_type);
         if (left_already_fat) {
             left_fat = left_raw;
         } else if (Type_Is_Character(left_type)) {
@@ -14413,12 +14831,12 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, "  %%t%u = alloca i8\n", ca);
             uint32_t ct = Emit_Convert(cg, left_raw, "i64", "i8");
             Emit(cg, "  store i8 %%t%u, ptr %%t%u\n", ct, ca);
-            left_fat = Emit_Fat_Pointer(cg, ca, 1, 1);
+            left_fat = Emit_Fat_Pointer(cg, ca, 1, 1, cat_bt);
         } else if (Type_Is_Constrained_Array(left_type) &&
                    left_type->array.index_count > 0) {
             int64_t lo = Type_Bound_Value(left_type->array.indices[0].low_bound);
             int64_t hi = Type_Bound_Value(left_type->array.indices[0].high_bound);
-            left_fat = Emit_Fat_Pointer(cg, left_raw, lo, hi);
+            left_fat = Emit_Fat_Pointer(cg, left_raw, lo, hi, cat_bt);
         } else {
             left_fat = left_raw;  /* Assume already fat */
         }
@@ -14440,64 +14858,69 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, "  %%t%u = alloca i8\n", ca);
             uint32_t ct = Emit_Convert(cg, right_raw, "i64", "i8");
             Emit(cg, "  store i8 %%t%u, ptr %%t%u\n", ct, ca);
-            right_fat = Emit_Fat_Pointer(cg, ca, 1, 1);
+            right_fat = Emit_Fat_Pointer(cg, ca, 1, 1, cat_bt);
         } else if (Type_Is_Constrained_Array(rhs_type) &&
                    rhs_type->array.index_count > 0) {
             int64_t lo = Type_Bound_Value(rhs_type->array.indices[0].low_bound);
             int64_t hi = Type_Bound_Value(rhs_type->array.indices[0].high_bound);
-            right_fat = Emit_Fat_Pointer(cg, right_raw, lo, hi);
+            right_fat = Emit_Fat_Pointer(cg, right_raw, lo, hi, cat_bt);
         } else {
             right_fat = right_raw;  /* Assume already fat */
         }
 
         /* Extract data pointers and bounds */
-        uint32_t left_data = Emit_Fat_Pointer_Data(cg, left_fat);
-        uint32_t left_low = Emit_Fat_Pointer_Low(cg, left_fat);
-        uint32_t left_high = Emit_Fat_Pointer_High(cg, left_fat);
+        uint32_t left_data = Emit_Fat_Pointer_Data(cg, left_fat, cat_bt);
+        uint32_t left_low = Emit_Fat_Pointer_Low(cg, left_fat, cat_bt);
+        uint32_t left_high = Emit_Fat_Pointer_High(cg, left_fat, cat_bt);
 
-        uint32_t right_data = Emit_Fat_Pointer_Data(cg, right_fat);
-        uint32_t right_low = Emit_Fat_Pointer_Low(cg, right_fat);
-        uint32_t right_high = Emit_Fat_Pointer_High(cg, right_fat);
+        uint32_t right_data = Emit_Fat_Pointer_Data(cg, right_fat, cat_bt);
+        uint32_t right_low = Emit_Fat_Pointer_Low(cg, right_fat, cat_bt);
+        uint32_t right_high = Emit_Fat_Pointer_High(cg, right_fat, cat_bt);
 
         /* Calculate lengths: high - low + 1 */
         uint32_t left_len = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", left_len, left_high, left_low);
+        Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", left_len, cat_bt, left_high, left_low);
         uint32_t left_len1 = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", left_len1, left_len);
+        Emit(cg, "  %%t%u = add %s %%t%u, 1\n", left_len1, cat_bt, left_len);
 
         uint32_t right_len = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", right_len, right_high, right_low);
+        Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", right_len, cat_bt, right_high, right_low);
         uint32_t right_len1 = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", right_len1, right_len);
+        Emit(cg, "  %%t%u = add %s %%t%u, 1\n", right_len1, cat_bt, right_len);
 
         /* Total length */
         uint32_t total_len = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = add i64 %%t%u, %%t%u\n", total_len, left_len1, right_len1);
+        Emit(cg, "  %%t%u = add %s %%t%u, %%t%u\n", total_len, cat_bt, left_len1, right_len1);
+
+        /* Widen to i64 for system calls */
+        uint32_t total_len_64 = Emit_Widen_To_I64(cg, total_len, cat_bt);
+        uint32_t left_len1_64 = Emit_Widen_To_I64(cg, left_len1, cat_bt);
+        uint32_t right_len1_64 = Emit_Widen_To_I64(cg, right_len1, cat_bt);
 
         /* Allocate space on secondary stack */
         uint32_t result_data = Emit_Temp(cg);
         Emit(cg, "  %%t%u = call ptr @__ada_sec_stack_alloc(i64 %%t%u)\n",
-             result_data, total_len);
+             result_data, total_len_64);
 
         /* Copy left string using llvm.memcpy */
         Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
-             result_data, left_data, left_len1);
+             result_data, left_data, left_len1_64);
 
         /* Calculate destination for right string */
         uint32_t right_dest = Emit_Temp(cg);
         Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n",
-             right_dest, result_data, left_len1);
+             right_dest, result_data, left_len1_64);
 
         /* Copy right string */
         Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
-             right_dest, right_data, right_len1);
+             right_dest, right_data, right_len1_64);
 
         /* Result bounds: 1..total_len (Ada STRING convention) */
         uint32_t one = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = add i64 0, 1\n", one);
+        Emit(cg, "  %%t%u = add %s 0, 1\n", one, cat_bt);
 
         /* Return fat pointer to result */
-        return Emit_Fat_Pointer_Dynamic(cg, result_data, one, total_len);
+        return Emit_Fat_Pointer_Dynamic(cg, result_data, one, total_len, cat_bt);
     }
 
     uint32_t left = Generate_Expression(cg, node->binary.left);
@@ -14516,6 +14939,11 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
 
     const char *op;
     Type_Info *result_type = node->type;
+
+    /* GNAT LLVM: track actual LLVM types for native-width integer operations. */
+    const char *left_int_type = Expression_Llvm_Type(node->binary.left);
+    const char *right_int_type = (right_is_range || is_membership) ? "i64" :
+                                  Expression_Llvm_Type(node->binary.right);
     Type_Info *lhs_type = node->binary.left ? node->binary.left->type : NULL;
     Type_Info *rhs_type = node->binary.right ? node->binary.right->type : NULL;
     bool is_float = Type_Is_Float_Representation(result_type);
@@ -14544,7 +14972,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
 
         if (!lhs_is_float) {
             uint32_t conv = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sitofp i64 %%t%u to %s\n", conv, left, float_type_str);
+            Emit(cg, "  %%t%u = sitofp %s %%t%u to %s\n", conv, left_int_type, left, float_type_str);
             left = conv;
         } else if (strcmp(lhs_float_type, float_type_str) != 0) {
             /* Convert left operand to result float type */
@@ -14553,13 +14981,23 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         /* For exponentiation, skip RHS conversion - TK_EXPON handles it */
         if (!rhs_is_float && node->binary.op != TK_EXPON) {
             uint32_t conv = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sitofp i64 %%t%u to %s\n", conv, right, float_type_str);
+            Emit(cg, "  %%t%u = sitofp %s %%t%u to %s\n", conv, right_int_type, right, float_type_str);
             right = conv;
         } else if (rhs_is_float && strcmp(rhs_float_type, float_type_str) != 0 &&
                    node->binary.op != TK_EXPON) {
             /* Convert right operand to result float type */
             right = Emit_Convert(cg, right, rhs_float_type, float_type_str);
         }
+    }
+
+    /* GNAT LLVM: Fixed-point uses i64-width scaled integer representation.
+     * Widen native-type integer operands to i64 before fixed-point math. */
+    if (is_fixed && !is_float) {
+        left = Emit_Convert(cg, left, left_int_type, "i64");
+        if (!right_is_range && !is_membership)
+            right = Emit_Convert(cg, right, right_int_type, "i64");
+        left_int_type = "i64";
+        right_int_type = "i64";
     }
 
     /* Mixed fixed-point / universal_real arithmetic (RM 4.5.5, 4.10):
@@ -14657,7 +15095,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                         left_d = Emit_Convert(cg, left, lhs_ftype, "double");
                     }
                     uint32_t exp_float = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = sitofp i64 %%t%u to double\n", exp_float, right);
+                    Emit(cg, "  %%t%u = sitofp %s %%t%u to double\n", exp_float, right_int_type, right);
                     uint32_t pow_result = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = call double @llvm.pow.f64(double %%t%u, double %%t%u)\n",
                          pow_result, left_d, exp_float);
@@ -14668,7 +15106,10 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                         t = pow_result;
                     }
                 } else {
-                    /* Integer ** Integer: use integer power function */
+                    /* Integer ** Integer: use integer power function.
+                     * __ada_integer_pow takes i64 — widen native types. */
+                    left = Emit_Convert(cg, left, left_int_type, "i64");
+                    right = Emit_Convert(cg, right, right_int_type, "i64");
                     Emit(cg, "  %%t%u = call i64 @__ada_integer_pow(i64 %%t%u, i64 %%t%u)\n",
                          t, left, right);
                 }
@@ -14762,18 +15203,19 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                         right = Emit_Convert(cg, right, right_llvm_type, "ptr");
                         right_llvm_type = "ptr";
                     }
-                    /* Normalize: if one is ptr and other is i64, convert to i64 */
+                    /* Normalize: if one is ptr and other is integer, convert ptr to i64.
+                     * GNAT LLVM: integer side may be native type (i8/i16/i32/i64). */
                     if (strcmp(left_llvm_type, "ptr") == 0 &&
-                        strcmp(right_llvm_type, "i64") == 0) {
+                        right_llvm_type[0] == 'i') {
                         left = Emit_Convert(cg, left, "ptr", "i64");
                         left_llvm_type = "i64";
-                    } else if (strcmp(left_llvm_type, "i64") == 0 &&
+                    } else if (left_llvm_type[0] == 'i' &&
                                strcmp(right_llvm_type, "ptr") == 0) {
                         right = Emit_Convert(cg, right, "ptr", "i64");
                         right_llvm_type = "i64";
                     }
                     /* Both ptr: will use icmp eq ptr below */
-                    /* Both i64: will use icmp eq i64 below (default) */
+                    /* Both integer: will use common type below */
                 }
 
                 /* Determine float type based on left operand */
@@ -14791,9 +15233,10 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
 
                 /* Convert operands to same type if needed */
                 if (left_is_float && !right_is_float) {
-                    /* Convert right to float. If it's fixed-point, multiply by SMALL */
+                    /* Convert right to float. If it's fixed-point, multiply by SMALL.
+                     * GNAT LLVM: use actual integer type for sitofp. */
                     uint32_t conv = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = sitofp i64 %%t%u to %s\n", conv, right, float_type);
+                    Emit(cg, "  %%t%u = sitofp %s %%t%u to %s\n", conv, right_llvm_type, right, float_type);
                     right = conv;
                     if (Type_Is_Fixed_Point(right_type)) {
                         /* Fixed-point: scale by SMALL to get actual value */
@@ -14824,6 +15267,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                     Emit(cg, "  %%t%u = fptosi %s %%t%u to i64\n", conv, right_float_type, right);
                     right = conv;
                     right_is_float = false;
+                    right_llvm_type = "i64";
                 } else if (left_is_float && right_is_float) {
                     /* Both floats - convert right to match left if sizes differ.
                      * Explicitly check both types to avoid incorrect conversions
@@ -14893,17 +15337,24 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                         } break;
                     }
                 } else {
+                    /* GNAT LLVM: integer comparison using common native type. */
+                    const char *cmp_int_t = Wider_Int_Type(left_llvm_type, right_llvm_type);
+                    left = Emit_Convert(cg, left, left_llvm_type, cmp_int_t);
+                    right = Emit_Convert(cg, right, right_llvm_type, cmp_int_t);
+                    const char *icmp_pred;
                     switch (node->binary.op) {
-                        case TK_EQ: cmp_op = "icmp eq i64"; break;
-                        case TK_NE: cmp_op = "icmp ne i64"; break;
-                        case TK_LT: cmp_op = "icmp slt i64"; break;
-                        case TK_LE: cmp_op = "icmp sle i64"; break;
-                        case TK_GT: cmp_op = "icmp sgt i64"; break;
-                        case TK_GE: cmp_op = "icmp sge i64"; break;
+                        case TK_EQ: icmp_pred = "eq"; break;
+                        case TK_NE: icmp_pred = "ne"; break;
+                        case TK_LT: icmp_pred = "slt"; break;
+                        case TK_LE: icmp_pred = "sle"; break;
+                        case TK_GT: icmp_pred = "sgt"; break;
+                        case TK_GE: icmp_pred = "sge"; break;
                         default:
                             fprintf(stderr, "warning: unhandled integer comparison operator, defaulting to equality\n");
-                            cmp_op = "icmp eq i64"; break;
+                            icmp_pred = "eq"; break;
                     }
+                    snprintf(cmp_buf, sizeof(cmp_buf), "icmp %s %s", icmp_pred, cmp_int_t);
+                    cmp_op = cmp_buf;
                 }
                 Emit(cg, "  %%t%u = %s %%t%u, %%t%u\n", t, cmp_op, left, right);
                 /* Widen i1 comparison result to i64 for uniform Boolean representation */
@@ -14946,8 +15397,15 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                         Emit(cg, "  %%t%u = fcmp oge %s %%t%u, %%t%u\n", ge, mem_float_type, left, lo);
                         Emit(cg, "  %%t%u = fcmp ole %s %%t%u, %%t%u\n", le, mem_float_type, left, hi);
                     } else {
-                        Emit(cg, "  %%t%u = icmp sge i64 %%t%u, %%t%u\n", ge, left, lo);
-                        Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", le, left, hi);
+                        /* GNAT LLVM: use common native type for integer membership. */
+                        const char *lo_type = Expression_Llvm_Type(node->binary.right->range.low);
+                        const char *hi_type = Expression_Llvm_Type(node->binary.right->range.high);
+                        const char *mem_ct = Wider_Int_Type(left_int_type, Wider_Int_Type(lo_type, hi_type));
+                        uint32_t ml = Emit_Convert(cg, left, left_int_type, mem_ct);
+                        lo = Emit_Convert(cg, lo, lo_type, mem_ct);
+                        hi = Emit_Convert(cg, hi, hi_type, mem_ct);
+                        Emit(cg, "  %%t%u = icmp sge %s %%t%u, %%t%u\n", ge, mem_ct, ml, lo);
+                        Emit(cg, "  %%t%u = icmp sle %s %%t%u, %%t%u\n", le, mem_ct, ml, hi);
                     }
                     Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", in_range, ge, le);
                     if (negate) { Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n", t, in_range); }
@@ -14982,8 +15440,11 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                             Emit(cg, "  %%t%u = fcmp oge %s %%t%u, %%t%u\n", ge, mem_float_type, left, lo_f);
                             Emit(cg, "  %%t%u = fcmp ole %s %%t%u, %%t%u\n", le, mem_float_type, left, hi_f);
                         } else {
-                            Emit(cg, "  %%t%u = icmp sge i64 %%t%u, %%t%u\n", ge, left, lo);
-                            Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", le, left, hi);
+                            /* GNAT LLVM: widen left to i64 for bound comparison.
+                             * Emit_Bound_Value produces i64. */
+                            uint32_t ml = Emit_Convert(cg, left, left_int_type, "i64");
+                            Emit(cg, "  %%t%u = icmp sge i64 %%t%u, %%t%u\n", ge, ml, lo);
+                            Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", le, ml, hi);
                         }
                         Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", in_range, ge, le);
                         if (negate) { Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n", t, in_range); }
@@ -14993,7 +15454,11 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                         if (left_is_flt) {
                             Emit(cg, "  %%t%u = fcmp oeq %s %%t%u, %%t%u\n", t, mem_float_type, left, right);
                         } else {
-                            Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", t, left, right);
+                            /* GNAT LLVM: use common native type for equality. */
+                            const char *fb_ct = Wider_Int_Type(left_int_type, right_int_type);
+                            uint32_t ml = Emit_Convert(cg, left, left_int_type, fb_ct);
+                            uint32_t mr = Emit_Convert(cg, right, right_int_type, fb_ct);
+                            Emit(cg, "  %%t%u = icmp eq %s %%t%u, %%t%u\n", t, fb_ct, ml, mr);
                         }
                         if (negate) {
                             uint32_t neg = Emit_Temp(cg);
@@ -15014,8 +15479,15 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             op = "add"; break;
     }
 
-    Emit(cg, "  %%t%u = %s %s %%t%u, %%t%u\n", t, op,
-         is_float ? float_type_str : "i64", left, right);
+    if (!is_float) {
+        /* GNAT LLVM: use common native integer type for arithmetic. */
+        const char *common_t = Wider_Int_Type(left_int_type, right_int_type);
+        left = Emit_Convert(cg, left, left_int_type, common_t);
+        right = Emit_Convert(cg, right, right_int_type, common_t);
+        Emit(cg, "  %%t%u = %s %s %%t%u, %%t%u\n", t, op, common_t, left, right);
+    } else {
+        Emit(cg, "  %%t%u = %s %s %%t%u, %%t%u\n", t, op, float_type_str, left, right);
+    }
     return t;
 }
 
@@ -15031,12 +15503,15 @@ static uint32_t Generate_Unary_Op(Code_Generator *cg, Syntax_Node *node) {
         float_type = Llvm_Float_Type((uint32_t)To_Bits(op_type_info->size));
     }
 
+    /* GNAT LLVM: determine native integer type for unary operations. */
+    const char *unary_int_type = is_float ? "i64" : Expression_Llvm_Type(node->unary.operand);
+
     switch (node->unary.op) {
         case TK_MINUS:
             if (is_float)
                 Emit(cg, "  %%t%u = fsub %s 0.0, %%t%u\n", t, float_type, operand);
             else
-                Emit(cg, "  %%t%u = sub i64 0, %%t%u\n", t, operand);
+                Emit(cg, "  %%t%u = sub %s 0, %%t%u\n", t, unary_int_type, operand);
             break;
         case TK_PLUS:
             return operand;
@@ -15062,10 +15537,11 @@ static uint32_t Generate_Unary_Op(Code_Generator *cg, Syntax_Node *node) {
                     Emit(cg, "  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n",
                          t, cmp, float_type, neg, float_type, operand);
                 } else {
-                    Emit(cg, "  %%t%u = sub i64 0, %%t%u\n", neg, operand);
-                    Emit(cg, "  %%t%u = icmp slt i64 %%t%u, 0\n", cmp, operand);
-                    Emit(cg, "  %%t%u = select i1 %%t%u, i64 %%t%u, i64 %%t%u\n",
-                         t, cmp, neg, operand);
+                    /* GNAT LLVM: use native integer type for abs. */
+                    Emit(cg, "  %%t%u = sub %s 0, %%t%u\n", neg, unary_int_type, operand);
+                    Emit(cg, "  %%t%u = icmp slt %s %%t%u, 0\n", cmp, unary_int_type, operand);
+                    Emit(cg, "  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n",
+                         t, cmp, unary_int_type, neg, unary_int_type, operand);
                 }
             }
             break;
@@ -15081,7 +15557,14 @@ static uint32_t Generate_Unary_Op(Code_Generator *cg, Syntax_Node *node) {
                 const char *type_str = Type_To_Llvm(designated);
                 Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; .ALL dereference\n",
                      t, type_str, operand);
-                t = Emit_Convert(cg, t, type_str, "i64");
+                /* Widen sub-i64 integer loads to i64 */
+                if (type_str[0] == 'i' && strcmp(type_str, "i64") != 0 &&
+                    !Type_Is_Access(designated) && !Type_Is_Float_Representation(designated) &&
+                    !Type_Is_Unconstrained_Array(designated) && !Type_Is_String(designated)) {
+                    uint32_t w = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = sext %s %%t%u to i64\n", w, type_str, t);
+                    t = w;
+                }
             }
             break;
         default:
@@ -15168,6 +15651,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                         uint32_t left_val = Generate_Expression(cg, left_arg);
                         uint32_t right_val = Generate_Expression(cg, right_arg);
 
+                        const char *concat_bt = Array_Bound_Llvm_Type(right_type);
                         if (left_is_char && right_is_string) {
                             /* CHARACTER & STRING concatenation */
                             /* Wrap character in single-element fat pointer */
@@ -15177,27 +15661,31 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                             Emit(cg, "  %%t%u = trunc i64 %%t%u to i8\n", char_trunc, left_val);
                             Emit(cg, "  store i8 %%t%u, ptr %%t%u\n", char_trunc, char_alloc);
                             uint32_t one = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = add i64 0, 1\n", one);
-                            uint32_t left_fat = Emit_Fat_Pointer_Dynamic(cg, char_alloc, one, one);
+                            Emit(cg, "  %%t%u = add %s 0, 1\n", one, concat_bt);
+                            uint32_t left_fat = Emit_Fat_Pointer_Dynamic(cg, char_alloc, one, one, concat_bt);
 
                             /* Extract right string bounds and data */
-                            uint32_t right_data = Emit_Fat_Pointer_Data(cg, right_val);
-                            uint32_t right_low = Emit_Fat_Pointer_Low(cg, right_val);
-                            uint32_t right_high = Emit_Fat_Pointer_High(cg, right_val);
+                            uint32_t right_data = Emit_Fat_Pointer_Data(cg, right_val, concat_bt);
+                            uint32_t right_low = Emit_Fat_Pointer_Low(cg, right_val, concat_bt);
+                            uint32_t right_high = Emit_Fat_Pointer_High(cg, right_val, concat_bt);
 
                             uint32_t right_len = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", right_len, right_high, right_low);
+                            Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", right_len, concat_bt, right_high, right_low);
                             uint32_t right_len1 = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", right_len1, right_len);
+                            Emit(cg, "  %%t%u = add %s %%t%u, 1\n", right_len1, concat_bt, right_len);
 
                             /* Total length = 1 + right_len */
                             uint32_t total_len = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = add i64 1, %%t%u\n", total_len, right_len1);
+                            Emit(cg, "  %%t%u = add %s 1, %%t%u\n", total_len, concat_bt, right_len1);
+
+                            /* Widen to i64 for system calls */
+                            uint32_t total_len_64 = Emit_Widen_To_I64(cg, total_len, concat_bt);
+                            uint32_t right_len1_64 = Emit_Widen_To_I64(cg, right_len1, concat_bt);
 
                             /* Allocate result buffer */
                             uint32_t result_data = Emit_Temp(cg);
                             Emit(cg, "  %%t%u = call ptr @__ada_sec_stack_alloc(i64 %%t%u)\n",
-                                 result_data, total_len);
+                                 result_data, total_len_64);
 
                             /* Store character at first position */
                             Emit(cg, "  store i8 %%t%u, ptr %%t%u\n", char_trunc, result_data);
@@ -15206,53 +15694,58 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                             uint32_t dest = Emit_Temp(cg);
                             Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 1\n", dest, result_data);
                             Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
-                                 dest, right_data, right_len1);
+                                 dest, right_data, right_len1_64);
 
                             /* Return fat pointer */
-                            return Emit_Fat_Pointer_Dynamic(cg, result_data, one, total_len);
+                            return Emit_Fat_Pointer_Dynamic(cg, result_data, one, total_len, concat_bt);
                         } else {
                             /* STRING & STRING concatenation */
                             uint32_t left_fat = left_val;
                             uint32_t right_fat = right_val;
 
-                            uint32_t left_data = Emit_Fat_Pointer_Data(cg, left_fat);
-                            uint32_t left_low = Emit_Fat_Pointer_Low(cg, left_fat);
-                            uint32_t left_high = Emit_Fat_Pointer_High(cg, left_fat);
+                            uint32_t left_data = Emit_Fat_Pointer_Data(cg, left_fat, concat_bt);
+                            uint32_t left_low = Emit_Fat_Pointer_Low(cg, left_fat, concat_bt);
+                            uint32_t left_high = Emit_Fat_Pointer_High(cg, left_fat, concat_bt);
 
-                            uint32_t right_data = Emit_Fat_Pointer_Data(cg, right_fat);
-                            uint32_t right_low = Emit_Fat_Pointer_Low(cg, right_fat);
-                            uint32_t right_high = Emit_Fat_Pointer_High(cg, right_fat);
+                            uint32_t right_data = Emit_Fat_Pointer_Data(cg, right_fat, concat_bt);
+                            uint32_t right_low = Emit_Fat_Pointer_Low(cg, right_fat, concat_bt);
+                            uint32_t right_high = Emit_Fat_Pointer_High(cg, right_fat, concat_bt);
 
                             uint32_t left_len = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", left_len, left_high, left_low);
+                            Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", left_len, concat_bt, left_high, left_low);
                             uint32_t left_len1 = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", left_len1, left_len);
+                            Emit(cg, "  %%t%u = add %s %%t%u, 1\n", left_len1, concat_bt, left_len);
 
                             uint32_t right_len = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", right_len, right_high, right_low);
+                            Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", right_len, concat_bt, right_high, right_low);
                             uint32_t right_len1 = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", right_len1, right_len);
+                            Emit(cg, "  %%t%u = add %s %%t%u, 1\n", right_len1, concat_bt, right_len);
 
                             uint32_t total_len = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = add i64 %%t%u, %%t%u\n", total_len, left_len1, right_len1);
+                            Emit(cg, "  %%t%u = add %s %%t%u, %%t%u\n", total_len, concat_bt, left_len1, right_len1);
+
+                            /* Widen to i64 for system calls */
+                            uint32_t total_len_64 = Emit_Widen_To_I64(cg, total_len, concat_bt);
+                            uint32_t left_len1_64 = Emit_Widen_To_I64(cg, left_len1, concat_bt);
+                            uint32_t right_len1_64 = Emit_Widen_To_I64(cg, right_len1, concat_bt);
 
                             uint32_t result_data = Emit_Temp(cg);
                             Emit(cg, "  %%t%u = call ptr @__ada_sec_stack_alloc(i64 %%t%u)\n",
-                                 result_data, total_len);
+                                 result_data, total_len_64);
 
                             Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
-                                 result_data, left_data, left_len1);
+                                 result_data, left_data, left_len1_64);
 
                             uint32_t right_dest = Emit_Temp(cg);
                             Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n",
-                                 right_dest, result_data, left_len1);
+                                 right_dest, result_data, left_len1_64);
 
                             Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
-                                 right_dest, right_data, right_len1);
+                                 right_dest, right_data, right_len1_64);
 
                             uint32_t one = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = add i64 0, 1\n", one);
-                            return Emit_Fat_Pointer_Dynamic(cg, result_data, one, total_len);
+                            Emit(cg, "  %%t%u = add %s 0, 1\n", one, concat_bt);
+                            return Emit_Fat_Pointer_Dynamic(cg, result_data, one, total_len, concat_bt);
                         }
                     }
                 }
@@ -15268,7 +15761,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
      * Generate_Expression returns different LLVM types for different sources:
      *   variable/param of ptr type → ptr  (not widened)
      *   function call returning ptr → i64 (ptrtoint)
-     *   fat pointer (unconstrained) → { ptr, { i64, i64 } }
+     *   fat pointer (unconstrained) → { ptr, { bound, bound } }
      * We use Generate_Composite_Address (returns ptr) for lvalues and
      * Generate_Expression + inttoptr for function-call results. */
     if (node->apply.arguments.count > 0 &&
@@ -15290,6 +15783,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             Syntax_Node *rng = node->apply.arguments.items[0];
             uint32_t base, low_bound_val = 0;
             bool dyn_low = false;
+            const char *dyn_low_bt = NULL;
 
             const char *repr = Type_To_Llvm(at);
             bool is_fat = (strstr(repr, "{ ptr,") != NULL);
@@ -15300,23 +15794,27 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                 uint32_t ptr = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = inttoptr i64 %%t%u to ptr\n",
                      ptr, access_val);
+                const char *at_bt = Array_Bound_Llvm_Type(at);
                 if (is_fat) {
                     /* Unconstrained designated: load fat pointer from heap */
                     uint32_t fat = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = load { ptr, { i64, i64 } }, ptr %%t%u\n",
-                         fat, ptr);
-                    base = Emit_Fat_Pointer_Data(cg, fat);
-                    low_bound_val = Emit_Fat_Pointer_Low(cg, fat);
+                    Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
+                         fat, Fat_Ptr_Type_With_Bounds(at_bt), ptr);
+                    base = Emit_Fat_Pointer_Data(cg, fat, at_bt);
+                    low_bound_val = Emit_Fat_Pointer_Low(cg, fat, at_bt);
                     dyn_low = true;
+                    dyn_low_bt = at_bt;
                 } else {
                     base = ptr;
                 }
             } else if (is_fat) {
+                const char *at_bt = Array_Bound_Llvm_Type(at);
                 /* Unconstrained/string: Generate_Expression → fat pointer */
                 uint32_t pv = Generate_Expression(cg, node->apply.prefix);
-                base = Emit_Fat_Pointer_Data(cg, pv);
-                low_bound_val = Emit_Fat_Pointer_Low(cg, pv);
+                base = Emit_Fat_Pointer_Data(cg, pv, at_bt);
+                low_bound_val = Emit_Fat_Pointer_Low(cg, pv, at_bt);
                 dyn_low = true;
+                dyn_low_bt = at_bt;
             } else {
                 /* Constrained array: need ptr to array data.
                  * For lvalues (variable, param, field) use Generate_Composite_Address
@@ -15349,8 +15847,9 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
 
             uint32_t off;
             if (dyn_low) {
+                uint32_t low_bound_64 = Emit_Widen_To_I64(cg, low_bound_val, dyn_low_bt);
                 off = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", off, slo, low_bound_val);
+                Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", off, slo, low_bound_64);
             } else {
                 int64_t al = Array_Low_Bound(at);
                 if (al != 0) {
@@ -15366,7 +15865,12 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", bo, off, esz);
                 Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n", dp, base, bo);
             }
-            return Emit_Fat_Pointer_Dynamic(cg, dp, slo, shi);
+            {
+                const char *slice_bt = Array_Bound_Llvm_Type(at);
+                uint32_t slo_bt = Emit_Convert(cg, slo, "i64", slice_bt);
+                uint32_t shi_bt = Emit_Convert(cg, shi, "i64", slice_bt);
+                return Emit_Fat_Pointer_Dynamic(cg, dp, slo_bt, shi_bt, slice_bt);
+            }
         }
     }
 
@@ -15454,7 +15958,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                          * with the type's static bounds for the unconstrained formal. */
                         int64_t lo = Type_Bound_Value(actual_type->array.indices[0].low_bound);
                         int64_t hi = Type_Bound_Value(actual_type->array.indices[0].high_bound);
-                        args[i] = Emit_Fat_Pointer(cg, args[i], lo, hi);
+                        args[i] = Emit_Fat_Pointer(cg, args[i], lo, hi, Array_Bound_Llvm_Type(actual_type));
                     } else {
                         const char *param_type = Type_To_Llvm(formal_type);
                         const char *arg_type = Expression_Llvm_Type(arg);
@@ -15589,15 +16093,9 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         if (prefix->kind == NK_SELECTED && prefix->selected.prefix->symbol) {
             Symbol *task_sym = prefix->selected.prefix->symbol;
             task_ptr = Emit_Temp(cg);
-            if (Is_Uplevel_Access(cg, task_sym)) {
-                Emit(cg, "  %%t%u = getelementptr i8, ptr %%__frame.", task_ptr);
-                Emit_Symbol_Name(cg, task_sym);
-                Emit(cg, ", i64 0  ; uplevel task object\n");
-            } else {
-                Emit(cg, "  %%t%u = getelementptr i8, ptr ", task_ptr);
-                Emit_Symbol_Ref(cg, task_sym);
-                Emit(cg, ", i64 0  ; task object\n");
-            }
+            Emit(cg, "  %%t%u = getelementptr i8, ptr ", task_ptr);
+            Emit_Symbol_Storage(cg, task_sym);
+            Emit(cg, ", i64 0  ; task object\n");
         } else {
             task_ptr = Emit_Temp(cg);
             Emit(cg, "  %%t%u = inttoptr i64 0 to ptr  ; current task\n", task_ptr);
@@ -15637,20 +16135,14 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         uint32_t base;
         uint32_t low_bound_val = 0;
         bool has_dynamic_low = false;
-
-        bool is_uplevel = Is_Uplevel_Access(cg, array_sym);
+        const char *dyn_bt = NULL;  /* bound type when has_dynamic_low */
 
         if (implicit_deref) {
             /* Load the access value (pointer to array) then use as base */
             if (array_sym) {
                 base = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = load ptr, ptr ", base);
-                if (is_uplevel) {
-                    Emit(cg, "%%__frame.");
-                    Emit_Symbol_Name(cg, array_sym);
-                } else {
-                    Emit_Symbol_Ref(cg, array_sym);
-                }
+                Emit_Symbol_Storage(cg, array_sym);
                 Emit(cg, "  ; implicit dereference of access\n");
             } else {
                 base = Generate_Expression(cg, node->apply.prefix);
@@ -15664,34 +16156,33 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             /* Load fat pointer and extract data pointer and low bound */
             Emit(cg, "  ; DEBUG ARRAY INDEX: using fat pointer path (unconstrained=%d, dynamic=%d)\n",
                  Type_Is_Unconstrained_Array(array_type), Type_Has_Dynamic_Bounds(array_type));
-            uint32_t fat = Emit_Load_Fat_Pointer(cg, array_sym);
-            base = Emit_Fat_Pointer_Data(cg, fat);
-            low_bound_val = Emit_Fat_Pointer_Low(cg, fat);
+            const char *idx_bt = Array_Bound_Llvm_Type(array_type);
+            uint32_t fat = Emit_Load_Fat_Pointer(cg, array_sym, idx_bt);
+            base = Emit_Fat_Pointer_Data(cg, fat, idx_bt);
+            low_bound_val = Emit_Fat_Pointer_Low(cg, fat, idx_bt);
             has_dynamic_low = true;
+            dyn_bt = idx_bt;
         } else if (array_sym) {
             /* Constrained array - get direct pointer to data */
             Emit(cg, "  ; DEBUG ARRAY INDEX: using constrained path (sym_kind=%d)\n", array_sym->kind);
             base = Emit_Temp(cg);
             Emit(cg, "  %%t%u = getelementptr i8, ptr ", base);
-            if (is_uplevel && cg->is_nested) {
-                Emit(cg, "%%__frame.");
-                Emit_Symbol_Name(cg, array_sym);
-            } else {
-                Emit_Symbol_Ref(cg, array_sym);
-            }
+            Emit_Symbol_Storage(cg, array_sym);
             Emit(cg, ", i64 0\n");
         } else {
             /* Complex prefix (e.g., array field of indexed record) */
             uint32_t prefix_val = Generate_Expression(cg, node->apply.prefix);
 
             /* If the array is unconstrained or has dynamic bounds, the expression
-             * returns a fat pointer struct { ptr, { i64, i64 } }. We need to extract
+             * returns a fat pointer struct { ptr, { bound, bound } }. We need to extract
              * the data pointer and low bound from it. */
             if (Type_Is_Unconstrained_Array(array_type) || Type_Has_Dynamic_Bounds(array_type)) {
                 /* Extract data pointer from fat pointer value */
-                base = Emit_Fat_Pointer_Data(cg, prefix_val);
-                low_bound_val = Emit_Fat_Pointer_Low(cg, prefix_val);
+                const char *pfx_bt = Array_Bound_Llvm_Type(array_type);
+                base = Emit_Fat_Pointer_Data(cg, prefix_val, pfx_bt);
+                low_bound_val = Emit_Fat_Pointer_Low(cg, prefix_val, pfx_bt);
                 has_dynamic_low = true;
+                dyn_bt = pfx_bt;
             } else {
                 /* Constrained array - the expression result is the base pointer */
                 base = prefix_val;
@@ -15717,8 +16208,9 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             uint32_t offset;
             int64_t array_low = Array_Low_Bound(array_type);
             if (has_dynamic_low) {
+                uint32_t low_bound_64 = Emit_Widen_To_I64(cg, low_bound_val, dyn_bt);
                 offset = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", offset, slice_low, low_bound_val);
+                Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", offset, slice_low, low_bound_64);
             } else if (array_low != 0) {
                 offset = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = sub i64 %%t%u, %lld\n", offset, slice_low, (long long)array_low);
@@ -15739,7 +16231,12 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             }
 
             /* Build fat pointer with slice bounds using helper */
-            return Emit_Fat_Pointer_Dynamic(cg, data_ptr, slice_low, slice_high);
+            {
+                const char *sl_bt = Array_Bound_Llvm_Type(array_type);
+                uint32_t sl_low_bt = Emit_Convert(cg, slice_low, "i64", sl_bt);
+                uint32_t sl_high_bt = Emit_Convert(cg, slice_high, "i64", sl_bt);
+                return Emit_Fat_Pointer_Dynamic(cg, data_ptr, sl_low_bt, sl_high_bt, sl_bt);
+            }
         }
 
         /* Generate index expression */
@@ -15747,10 +16244,11 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
 
         /* Adjust for array low bound (Ada arrays can start at any index) */
         if (has_dynamic_low) {
-            /* Dynamic low bound from fat pointer */
+            /* Dynamic low bound from fat pointer — widen to i64 for GEP */
+            uint32_t low_bound_64 = Emit_Widen_To_I64(cg, low_bound_val, dyn_bt);
             uint32_t adj = Emit_Temp(cg);
             Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u  ; adjust for dynamic low bound\n",
-                 adj, idx, low_bound_val);
+                 adj, idx, low_bound_64);
             idx = adj;
         } else {
             int64_t low_bound = Array_Low_Bound(array_type);
@@ -15781,12 +16279,12 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %%t%u\n",
                  ptr, elem_type, base, idx);
             Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, elem_type, ptr);
-            /* Widen to i64 for computation, but keep ptr/float/fat_ptr as-is */
-            if (strcmp(elem_type, "ptr") != 0 &&
-                strcmp(elem_type, "float") != 0 &&
-                strcmp(elem_type, "double") != 0 &&
-                !strstr(elem_type, "{ ptr,")) {
-                t = Emit_Convert(cg, t, elem_type, "i64");
+            /* Widen sub-i64 integer loads to i64 */
+            if (elem_type[0] == 'i' && strcmp(elem_type, "i64") != 0 &&
+                !Type_Is_Access(elem_type_info) && !Type_Is_Float_Representation(elem_type_info)) {
+                uint32_t w = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = sext %s %%t%u to i64\n", w, elem_type, t);
+                return w;
             }
             return t;
         }
@@ -15869,18 +16367,9 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
     if (Type_Is_Access(prefix_type) &&
         Slice_Equal_Ignore_Case(node->selected.selector, S("ALL"))) {
         Type_Info *designated = prefix_type->access.designated_type;
-        Symbol *access_sym = node->selected.prefix->symbol;
 
-        /* Load the pointer */
-        uint32_t ptr;
-        if (access_sym) {
-            ptr = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = load ptr, ptr ", ptr);
-            Emit_Symbol_Ref(cg, access_sym);
-            Emit(cg, "  ; explicit .ALL dereference\n");
-        } else {
-            ptr = Generate_Expression(cg, node->selected.prefix);
-        }
+        /* Generate_Lvalue returns the loaded pointer (address of designated) */
+        uint32_t ptr = Generate_Lvalue(cg, node);
 
         /* For composite types (records, arrays), return pointer */
         if (Type_Is_Composite(designated)) {
@@ -15891,7 +16380,13 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
         const char *type_str = Type_To_Llvm(designated);
         uint32_t t = Emit_Temp(cg);
         Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; load via .ALL\n", t, type_str, ptr);
-        t = Emit_Convert(cg, t, type_str, "i64");
+        /* Widen sub-i64 integer loads to i64 */
+        if (type_str[0] == 'i' && strcmp(type_str, "i64") != 0 &&
+            !Type_Is_Access(designated) && !Type_Is_Float_Representation(designated)) {
+            uint32_t w = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = sext %s %%t%u to i64\n", w, type_str, t);
+            return w;
+        }
         return t;
     }
 
@@ -15932,8 +16427,6 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
         }
     }
 
-    /* Get base address of record variable */
-    Symbol *record_sym = node->selected.prefix->symbol;
     const char *field_llvm_type = Type_To_Llvm(field_type);
 
     /* Runtime discriminant check for variant component access (RM 3.7.3)
@@ -15948,16 +16441,18 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
         uint32_t disc_offset = disc_comp->byte_offset;
         const char *disc_llvm = Type_To_Llvm(disc_comp->component_type);
 
-        uint32_t disc_ptr = Emit_Temp(cg);
-        if (record_sym) {
-            Emit(cg, "  %%t%u = getelementptr i8, ptr ", disc_ptr);
-            Emit_Symbol_Ref(cg, record_sym);
-            Emit(cg, ", i64 %u  ; discriminant addr\n", disc_offset);
+        /* Get base address of record for discriminant check.
+         * For implicit dereference, load the pointer to get the record address.
+         * For direct records, get the storage address via Generate_Lvalue. */
+        uint32_t rec_base;
+        if (implicit_deref) {
+            rec_base = Generate_Expression(cg, node->selected.prefix);
         } else {
-            uint32_t base = Generate_Expression(cg, node->selected.prefix);
-            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u  ; discriminant addr\n",
-                 disc_ptr, base, disc_offset);
+            rec_base = Generate_Lvalue(cg, node->selected.prefix);
         }
+        uint32_t disc_ptr = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u  ; discriminant addr\n",
+             disc_ptr, rec_base, disc_offset);
         uint32_t disc_val = Emit_Temp(cg);
         Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; load discriminant\n",
              disc_val, disc_llvm, disc_ptr);
@@ -15979,110 +16474,17 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
         /* For WHEN OTHERS variant, any discriminant value is valid - no check needed */
     }
 
-    if (implicit_deref) {
-        /* Access-to-record: load pointer then compute field offset */
-        uint32_t base_ptr;
-        if (record_sym) {
-            base_ptr = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = load ptr, ptr ", base_ptr);
-            Emit_Symbol_Ref(cg, record_sym);
-            Emit(cg, "  ; implicit dereference of access-to-record\n");
-        } else {
-            base_ptr = Generate_Expression(cg, node->selected.prefix);
-        }
-        uint32_t ptr = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
-             ptr, base_ptr, byte_offset);
+    /* Use Generate_Lvalue to compute field address — handles all three paths:
+     * implicit dereference, nested selection, and direct symbol access.
+     * This eliminates duplicated address computation (GNAT LLVM GL_Relationship). */
+    uint32_t ptr = Generate_Lvalue(cg, node);
 
-        /* For composite components, handle based on constrained vs unconstrained */
-        if (Type_Is_Record(field_type) || (field_type && field_type->kind == TYPE_ARRAY)) {
-            /* Unconstrained or dynamic-bound arrays are stored as fat pointers */
-            if (field_type->kind == TYPE_ARRAY &&
-                (!field_type->array.is_constrained || Type_Has_Dynamic_Bounds(field_type))) {
-                uint32_t fat = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u  ; load array field with dynamic bounds\n", fat, ptr);
-                return fat;
-            }
-            return ptr;
-        }
-        /* STRING fields (unconstrained or dynamic-bound) - load fat pointer */
-        if (Type_Is_String(field_type)) {
-            uint32_t fat = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u  ; load STRING field\n", fat, ptr);
-            return fat;
-        }
-        /* For access-type components, load ptr without converting to i64 */
-        if (Type_Is_Access(field_type)) {
-            uint32_t t = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = load ptr, ptr %%t%u\n", t, ptr);
-            return t;
-        }
-        uint32_t t = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, field_llvm_type, ptr);
-        t = Emit_Convert(cg, t, field_llvm_type, "i64");
-        return t;
-    }
-
-    if (!record_sym) {
-        /* Handle nested selection (e.g., A.B.C) by generating prefix expression */
-        uint32_t base_ptr = Generate_Expression(cg, node->selected.prefix);
-        uint32_t ptr = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
-             ptr, base_ptr, byte_offset);
-
-        /* For composite components, handle based on constrained vs unconstrained */
-        if (Type_Is_Record(field_type) || (field_type && field_type->kind == TYPE_ARRAY)) {
-            /* Unconstrained or dynamic-bound arrays are stored as fat pointers */
-            if (field_type->kind == TYPE_ARRAY &&
-                (!field_type->array.is_constrained || Type_Has_Dynamic_Bounds(field_type))) {
-                uint32_t fat = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u  ; load array field with dynamic bounds\n", fat, ptr);
-                return fat;
-            }
-            return ptr;
-        }
-        /* STRING fields (unconstrained or dynamic-bound) - load fat pointer */
-        if (Type_Is_String(field_type)) {
-            uint32_t fat = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u  ; load STRING field\n", fat, ptr);
-            return fat;
-        }
-        /* For access-type components, load ptr without converting to i64 */
-        if (Type_Is_Access(field_type)) {
-            uint32_t t = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = load ptr, ptr %%t%u\n", t, ptr);
-            return t;
-        }
-        uint32_t t = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, field_llvm_type, ptr);
-        /* Widen to i64 for computation if narrower type */
-        t = Emit_Convert(cg, t, field_llvm_type, "i64");
-        return t;
-    }
-
-    /* Calculate address of field */
-    uint32_t ptr = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = getelementptr i8, ptr ", ptr);
-    Emit_Symbol_Ref(cg, record_sym);
-    Emit(cg, ", i64 %u\n", byte_offset);
-
-    /* For composite components, handle based on constrained vs unconstrained */
-    if (Type_Is_Record(field_type) || (field_type && field_type->kind == TYPE_ARRAY)) {
-        /* Unconstrained or dynamic-bound arrays are stored as fat pointers */
-        if (field_type->kind == TYPE_ARRAY &&
-            (!field_type->array.is_constrained || Type_Has_Dynamic_Bounds(field_type))) {
-            uint32_t fat = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u  ; load array field with dynamic bounds\n", fat, ptr);
-            return fat;
-        }
+    /* Type-specific load from field address */
+    if (Type_Needs_Fat_Pointer_Load(field_type))
+        return Emit_Load_Fat_Pointer_From_Temp(cg, ptr, Array_Bound_Llvm_Type(field_type));
+    /* Other composite types (records, constrained arrays) return ptr */
+    if (Type_Is_Record(field_type) || (field_type && field_type->kind == TYPE_ARRAY))
         return ptr;
-    }
-    /* STRING fields (unconstrained or dynamic-bound) - load fat pointer */
-    if (Type_Is_String(field_type)) {
-        uint32_t fat = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u  ; load STRING field\n", fat, ptr);
-        return fat;
-    }
     /* For access-type components, load ptr without converting to i64 */
     if (Type_Is_Access(field_type)) {
         uint32_t t = Emit_Temp(cg);
@@ -16091,9 +16493,13 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
     }
     uint32_t t = Emit_Temp(cg);
     Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, field_llvm_type, ptr);
-    /* Widen to i64 for computation if narrower type */
-    t = Emit_Convert(cg, t, field_llvm_type, "i64");
-
+    /* Widen sub-i64 integer loads to i64 */
+    if (field_llvm_type[0] == 'i' && strcmp(field_llvm_type, "i64") != 0 &&
+        !Type_Is_Access(field_type) && !Type_Is_Float_Representation(field_type)) {
+        uint32_t w = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = sext %s %%t%u to i64\n", w, field_llvm_type, t);
+        return w;
+    }
     return t;
 }
 
@@ -16193,11 +16599,15 @@ static uint32_t Emit_Bound_Attribute(Code_Generator *cg, uint32_t t,
 
     if (Type_Is_Array_Like(prefix_type)) {
         if (needs_runtime_bounds && dim == 0) {
+            const char *attr_bt = Array_Bound_Llvm_Type(prefix_type);
             uint32_t fat = prefix_sym
-                ? Emit_Load_Fat_Pointer(cg, prefix_sym)
+                ? Emit_Load_Fat_Pointer(cg, prefix_sym, attr_bt)
                 : Generate_Expression(cg, prefix_expr);
-            return is_low ? Emit_Fat_Pointer_Low(cg, fat)
-                          : Emit_Fat_Pointer_High(cg, fat);
+            {
+                uint32_t bound = is_low ? Emit_Fat_Pointer_Low(cg, fat, attr_bt)
+                                        : Emit_Fat_Pointer_High(cg, fat, attr_bt);
+                return Emit_Widen_To_I64(cg, bound, attr_bt);
+            }
         } else if (dim < prefix_type->array.index_count) {
             Type_Bound b = is_low ? prefix_type->array.indices[dim].low_bound
                                   : prefix_type->array.indices[dim].high_bound;
@@ -16225,7 +16635,16 @@ static uint32_t Emit_Bound_Attribute(Code_Generator *cg, uint32_t t,
         }
     } else if (prefix_type) {
         Type_Bound b = is_low ? prefix_type->low_bound : prefix_type->high_bound;
-        if (Type_Bound_Is_Compile_Time_Known(b)) {
+        if (Type_Is_Fixed_Point(prefix_type)) {
+            /* Fixed-point FIRST/LAST must return scaled integer representation.
+             * Internal repr = abstract_value / SMALL. */
+            double small = prefix_type->fixed.small;
+            if (small <= 0) small = prefix_type->fixed.delta > 0 ? prefix_type->fixed.delta : 1.0;
+            double fval = Type_Bound_Float_Value(b);
+            int64_t scaled = (int64_t)(fval / small);
+            Emit(cg, "  %%t%u = add i64 0, %lld  ; %.*s'%s (fixed scaled %g/small)\n", t,
+                 (long long)scaled, (int)attr.length, attr.data, tag, fval);
+        } else if (Type_Bound_Is_Compile_Time_Known(b)) {
             Emit(cg, "  %%t%u = add i64 0, %lld  ; %.*s'%s\n", t,
                  (long long)Type_Bound_Value(b), (int)attr.length, attr.data, tag);
         } else {
@@ -16281,14 +16700,18 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     if (Slice_Equal_Ignore_Case(attr, S("LENGTH"))) {
         if (Type_Is_Array_Like(prefix_type)) {
             if (needs_runtime_bounds && dim == 0) {
+                const char *len_bt = Array_Bound_Llvm_Type(prefix_type);
                 uint32_t fat;
                 if (prefix_sym) {
-                    fat = Emit_Load_Fat_Pointer(cg, prefix_sym);
+                    fat = Emit_Load_Fat_Pointer(cg, prefix_sym, len_bt);
                 } else {
                     /* Complex prefix expression - generate it to get fat pointer value */
                     fat = Generate_Expression(cg, node->attribute.prefix);
                 }
-                return Emit_Fat_Pointer_Length(cg, fat);
+                {
+                    uint32_t len = Emit_Fat_Pointer_Length(cg, fat, len_bt);
+                    return Emit_Widen_To_I64(cg, len, len_bt);
+                }
             } else if (dim < prefix_type->array.index_count) {
                 int64_t low = Type_Bound_Value(prefix_type->array.indices[dim].low_bound);
                 int64_t high = Type_Bound_Value(prefix_type->array.indices[dim].high_bound);
@@ -16304,14 +16727,15 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
          * For loops handle RANGE specially in Generate_For_Loop. */
         if (Type_Is_Array_Like(prefix_type)) {
             if (needs_runtime_bounds && dim == 0) {
+                const char *rng_bt = Array_Bound_Llvm_Type(prefix_type);
                 uint32_t fat;
                 if (prefix_sym) {
-                    fat = Emit_Load_Fat_Pointer(cg, prefix_sym);
+                    fat = Emit_Load_Fat_Pointer(cg, prefix_sym, rng_bt);
                 } else {
                     /* Complex prefix expression - generate it to get fat pointer value */
                     fat = Generate_Expression(cg, node->attribute.prefix);
                 }
-                return Emit_Fat_Pointer_Low(cg, fat);
+                return Emit_Widen_To_I64(cg, Emit_Fat_Pointer_Low(cg, fat, rng_bt), rng_bt);
             } else if (dim < prefix_type->array.index_count) {
                 Emit(cg, "  %%t%u = add i64 0, %lld  ; 'RANGE(%u) low\n", t,
                      (long long)Type_Bound_Value(prefix_type->array.indices[dim].low_bound),
@@ -16401,12 +16825,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
             } else {
                 /* Variable/task address — emit via uplevel predicate */
                 Emit(cg, "  %%t%u = ptrtoint ptr ", t);
-                if (Is_Uplevel_Access(cg, sym)) {
-                    Emit(cg, "%%__frame.");
-                    Emit_Symbol_Name(cg, sym);
-                } else {
-                    Emit_Symbol_Ref(cg, sym);
-                }
+                Emit_Symbol_Storage(cg, sym);
                 Emit(cg, " to i64  ; 'ADDRESS\n");
             }
         } else {
@@ -16571,17 +16990,17 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
             if (Type_Is_Integer_Like(prefix_type) ||
                 Type_Is_Universal_Integer(prefix_type)) {
                 /* Integer'IMAGE */
-                Emit(cg, "  %%t%u = call { ptr, { i64, i64 } } @__ada_integer_image(i64 %%t%u)\n",
+                Emit(cg, "  %%t%u = call " FAT_PTR_TYPE " @__ada_integer_image(i64 %%t%u)\n",
                      t, arg_val);
             } else if (Type_Is_Character(prefix_type)) {
                 /* Character'IMAGE */
                 uint32_t char_val = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = trunc i64 %%t%u to i8\n", char_val, arg_val);
-                Emit(cg, "  %%t%u = call { ptr, { i64, i64 } } @__ada_character_image(i8 %%t%u)\n",
+                Emit(cg, "  %%t%u = call " FAT_PTR_TYPE " @__ada_character_image(i8 %%t%u)\n",
                      t, char_val);
             } else if (Type_Is_Float_Representation(prefix_type)) {
                 /* Float'IMAGE */
-                Emit(cg, "  %%t%u = call { ptr, { i64, i64 } } @__ada_float_image(double %%t%u)\n",
+                Emit(cg, "  %%t%u = call " FAT_PTR_TYPE " @__ada_float_image(double %%t%u)\n",
                      t, arg_val);
             } else if (Type_Is_Enumeration(prefix_type)) {
                 /* Enumeration'IMAGE - return literal name as string */
@@ -16598,7 +17017,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                     uint32_t result_ptr = Emit_Temp(cg);
                     uint32_t result_len = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = alloca ptr\n", result_ptr);
-                    Emit(cg, "  %%t%u = alloca i64\n", result_len);
+                    Emit(cg, "  %%t%u = alloca i32\n", result_len);
                     uint32_t switch_label = cg->label_id++;
                     uint32_t default_label = cg->label_id++;
                     uint32_t end_label = cg->label_id++;
@@ -16621,39 +17040,39 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                         }
                         Emit_String_Const(cg, "\\00\"\n");
                         Emit(cg, "  store ptr @.img_str%u, ptr %%t%u\n", str_id, result_ptr);
-                        Emit(cg, "  store i64 %u, ptr %%t%u\n", (unsigned)lit.length, result_len);
+                        Emit(cg, "  store i32 %u, ptr %%t%u\n", (unsigned)lit.length, result_len);
                         Emit(cg, "  br label %%Limg_end%u\n", end_label);
                     }
                     /* Default case - return empty string */
                     Emit(cg, "Limg_def%u:\n", default_label);
                     Emit(cg, "  store ptr null, ptr %%t%u\n", result_ptr);
-                    Emit(cg, "  store i64 0, ptr %%t%u\n", result_len);
+                    Emit(cg, "  store i32 0, ptr %%t%u\n", result_len);
                     Emit(cg, "  br label %%Limg_end%u\n", end_label);
                     Emit(cg, "Limg_end%u:\n", end_label);
                     uint32_t ptr_load = Emit_Temp(cg);
                     uint32_t len_load = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = load ptr, ptr %%t%u\n", ptr_load, result_ptr);
-                    Emit(cg, "  %%t%u = load i64, ptr %%t%u\n", len_load, result_len);
+                    Emit(cg, "  %%t%u = load i32, ptr %%t%u\n", len_load, result_len);
                     /* Build fat pointer result */
                     uint32_t t1 = Emit_Temp(cg);
                     uint32_t t2 = Emit_Temp(cg);
                     uint32_t t3 = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = insertvalue { ptr, { i64, i64 } } undef, ptr %%t%u, 0\n", t1, ptr_load);
-                    Emit(cg, "  %%t%u = insertvalue { ptr, { i64, i64 } } %%t%u, i64 1, 1, 0\n", t2, t1);
-                    Emit(cg, "  %%t%u = insertvalue { ptr, { i64, i64 } } %%t%u, i64 %%t%u, 1, 1\n", t, t2, len_load);
+                    Emit(cg, "  %%t%u = insertvalue " FAT_PTR_TYPE " undef, ptr %%t%u, 0\n", t1, ptr_load);
+                    Emit(cg, "  %%t%u = insertvalue " FAT_PTR_TYPE " %%t%u, i32 1, 1, 0\n", t2, t1);
+                    Emit(cg, "  %%t%u = insertvalue " FAT_PTR_TYPE " %%t%u, i32 %%t%u, 1, 1\n", t, t2, len_load);
                 } else {
                     /* No literals found, fallback to integer image */
-                    Emit(cg, "  %%t%u = call { ptr, { i64, i64 } } @__ada_integer_image(i64 %%t%u)\n",
+                    Emit(cg, "  %%t%u = call " FAT_PTR_TYPE " @__ada_integer_image(i64 %%t%u)\n",
                          t, arg_val);
                 }
             } else {
                 /* Default: treat as integer */
-                Emit(cg, "  %%t%u = call { ptr, { i64, i64 } } @__ada_integer_image(i64 %%t%u)\n",
+                Emit(cg, "  %%t%u = call " FAT_PTR_TYPE " @__ada_integer_image(i64 %%t%u)\n",
                      t, arg_val);
             }
             return t;
         }
-        Emit(cg, "  %%t%u = insertvalue { ptr, { i64, i64 } } undef, ptr null, 0  ; 'IMAGE no arg\n", t);
+        Emit(cg, "  %%t%u = insertvalue " FAT_PTR_TYPE " undef, ptr null, 0  ; 'IMAGE no arg\n", t);
         return t;
     }
 
@@ -16664,11 +17083,11 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
             if (Type_Is_Integer_Like(prefix_type) ||
                 Type_Is_Universal_Integer(prefix_type)) {
                 /* Integer'VALUE - parse string as integer */
-                Emit(cg, "  %%t%u = call i64 @__ada_integer_value({ ptr, { i64, i64 } } %%t%u)\n",
+                Emit(cg, "  %%t%u = call i64 @__ada_integer_value(" FAT_PTR_TYPE " %%t%u)\n",
                      t, str_val);
             } else if (Type_Is_Float_Representation(prefix_type)) {
                 /* Float'VALUE - parse string as float */
-                Emit(cg, "  %%t%u = call double @__ada_float_value({ ptr, { i64, i64 } } %%t%u)\n",
+                Emit(cg, "  %%t%u = call double @__ada_float_value(" FAT_PTR_TYPE " %%t%u)\n",
                      t, str_val);
             } else if (Type_Is_Enumeration(prefix_type)) {
                 /* Enumeration'VALUE - find literal by name and return position */
@@ -16684,15 +17103,17 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                     /* Generate string comparison for each literal */
                     /* Extract string pointer and length from fat pointer */
                     uint32_t str_ptr = Emit_Temp(cg);
-                    uint32_t str_lo = Emit_Temp(cg);
-                    uint32_t str_hi = Emit_Temp(cg);
+                    uint32_t str_lo32 = Emit_Temp(cg);
+                    uint32_t str_hi32 = Emit_Temp(cg);
                     uint32_t str_diff = Emit_Temp(cg);
+                    uint32_t str_len32 = Emit_Temp(cg);
                     uint32_t str_len = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = extractvalue { ptr, { i64, i64 } } %%t%u, 0\n", str_ptr, str_val);
-                    Emit(cg, "  %%t%u = extractvalue { ptr, { i64, i64 } } %%t%u, 1, 0\n", str_lo, str_val);
-                    Emit(cg, "  %%t%u = extractvalue { ptr, { i64, i64 } } %%t%u, 1, 1\n", str_hi, str_val);
-                    Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", str_diff, str_hi, str_lo);
-                    Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", str_len, str_diff);
+                    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n", str_ptr, str_val);
+                    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 0\n", str_lo32, str_val);
+                    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 1\n", str_hi32, str_val);
+                    Emit(cg, "  %%t%u = sub i32 %%t%u, %%t%u\n", str_diff, str_hi32, str_lo32);
+                    Emit(cg, "  %%t%u = add i32 %%t%u, 1\n", str_len32, str_diff);
+                    Emit(cg, "  %%t%u = sext i32 %%t%u to i64\n", str_len, str_len32);
 
                     uint32_t result_alloc = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = alloca i64\n", result_alloc);
@@ -16740,12 +17161,12 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                     Emit(cg, "  %%t%u = load i64, ptr %%t%u\n", t, result_alloc);
                 } else {
                     /* No literals found, fallback to integer value */
-                    Emit(cg, "  %%t%u = call i64 @__ada_integer_value({ ptr, { i64, i64 } } %%t%u)\n",
+                    Emit(cg, "  %%t%u = call i64 @__ada_integer_value(" FAT_PTR_TYPE " %%t%u)\n",
                          t, str_val);
                 }
             } else {
                 /* Default: treat as integer */
-                Emit(cg, "  %%t%u = call i64 @__ada_integer_value({ ptr, { i64, i64 } } %%t%u)\n",
+                Emit(cg, "  %%t%u = call i64 @__ada_integer_value(" FAT_PTR_TYPE " %%t%u)\n",
                      t, str_val);
             }
             return t;
@@ -17249,6 +17670,14 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         return t;
     }
 
+    if (Slice_Equal_Ignore_Case(attr, S("STORAGE_SIZE"))) {
+        /* T'STORAGE_SIZE (RM 13.7.1) — implementation-defined.
+         * For access types, return a reasonable collection size. */
+        Emit(cg, "  %%t%u = add i64 0, %lld  ; 'STORAGE_SIZE\n", t,
+             (long long)(prefix_type ? prefix_type->size * 8 : 0));
+        return t;
+    }
+
     /* Unhandled attribute */
     fprintf(stderr, "warning: unhandled attribute '%.*s'\n",
             (int)attr.length, attr.data);
@@ -17509,30 +17938,15 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                 cg->block_terminated = false;
             }
 
-            /* For dynamic bounds arrays, return a fat pointer { ptr, { i64, i64 } }
+            /* For dynamic bounds arrays, return a fat pointer { ptr, { bound, bound } }
              * so the bounds don't need to be re-evaluated (which would be wrong for
              * bound expressions with side effects like function calls). */
             uint32_t fat_ptr = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = alloca { ptr, { i64, i64 } }  ; dynamic array fat ptr\n", fat_ptr);
-
-            /* Store data pointer */
-            uint32_t data_slot = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = getelementptr { ptr, { i64, i64 } }, ptr %%t%u, i32 0, i32 0\n",
-                 data_slot, fat_ptr);
-            Emit(cg, "  store ptr %%t%u, ptr %%t%u\n", base, data_slot);
-
-            /* Store low bound */
-            uint32_t low_slot = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = getelementptr { ptr, { i64, i64 } }, ptr %%t%u, i32 0, i32 1, i32 0\n",
-                 low_slot, fat_ptr);
-            Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", low_val, low_slot);
-
-            /* Store high bound */
-            uint32_t high_slot = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = getelementptr { ptr, { i64, i64 } }, ptr %%t%u, i32 0, i32 1, i32 1\n",
-                 high_slot, fat_ptr);
-            Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", high_val, high_slot);
-
+            {
+                const char *agg_bt = Array_Bound_Llvm_Type(agg_type);
+                Emit(cg, "  %%t%u = alloca %s  ; dynamic array fat ptr\n", fat_ptr, Fat_Ptr_Type_With_Bounds(agg_bt));
+                Emit_Store_Fat_Pointer_Fields_To_Temp(cg, base, low_val, high_val, fat_ptr, agg_bt);
+            }
             return fat_ptr;
         }
 
@@ -17543,8 +17957,22 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
         int64_t count = high - low + 1;
         if (count < 1) count = 1;  /* Ensure at least 1 element for safety */
 
-        Emit(cg, "  %%t%u = alloca [%lld x %s]  ; array aggregate\n",
-             base, (long long)count, elem_type);
+        /* Check if element type is composite (record or constrained array).
+         * For composite elements, Generate_Expression returns a ptr to an alloca,
+         * so we must use memcpy to copy element data instead of store. */
+        Type_Info *elem_ti = agg_type->array.element_type;
+        bool elem_is_composite = elem_ti && (Type_Is_Record(elem_ti) ||
+            Type_Is_Constrained_Array(elem_ti));
+
+        if (elem_is_composite) {
+            /* Allocate as byte array so the size matches the actual data layout */
+            int64_t total_bytes = count * (int64_t)elem_size;
+            Emit(cg, "  %%t%u = alloca [%lld x i8]  ; array aggregate (composite elems)\n",
+                 base, (long long)total_bytes);
+        } else {
+            Emit(cg, "  %%t%u = alloca [%lld x %s]  ; array aggregate\n",
+                 base, (long long)count, elem_type);
+        }
 
         /* Track which elements are initialized (for others clause) */
         bool *initialized = Arena_Allocate((size_t)count * sizeof(bool));
@@ -17560,8 +17988,10 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             if (item->kind == NK_ASSOCIATION && item->association.choices.count > 0) {
                 if (Is_Others_Choice(item->association.choices.items[0])) {
                     others_val = Generate_Expression(cg, item->association.expression);
-                    const char *src_type = Expression_Llvm_Type(item->association.expression);
-                    others_val = Emit_Convert(cg, others_val, src_type, elem_type);
+                    if (!elem_is_composite) {
+                        const char *src_type = Expression_Llvm_Type(item->association.expression);
+                        others_val = Emit_Convert(cg, others_val, src_type, elem_type);
+                    }
                     has_others = true;
                     break;
                 }
@@ -17589,16 +18019,25 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         int64_t rng_high = choice->range.high->kind == NK_INTEGER ?
                                            choice->range.high->integer_lit.value : high;
                         uint32_t val = Generate_Expression(cg, item->association.expression);
-                        const char *src_type = Expression_Llvm_Type(item->association.expression);
-                        val = Emit_Convert(cg, val, src_type, elem_type);
+                        if (!elem_is_composite) {
+                            const char *src_type = Expression_Llvm_Type(item->association.expression);
+                            val = Emit_Convert(cg, val, src_type, elem_type);
+                        }
 
                         for (int64_t idx = rng_low; idx <= rng_high; idx++) {
                             int64_t arr_idx = idx - low;
                             if (arr_idx >= 0 && arr_idx < count) {
                                 uint32_t ptr = Emit_Temp(cg);
-                                Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %lld\n",
-                                     ptr, elem_type, base, (long long)arr_idx);
-                                Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, val, ptr);
+                                if (elem_is_composite) {
+                                    Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %lld\n",
+                                         ptr, base, (long long)(arr_idx * elem_size));
+                                    Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
+                                         ptr, val, elem_size);
+                                } else {
+                                    Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %lld\n",
+                                         ptr, elem_type, base, (long long)arr_idx);
+                                    Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, val, ptr);
+                                }
                                 initialized[arr_idx] = true;
                             }
                         }
@@ -17607,12 +18046,19 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         int64_t idx = choice->integer_lit.value - low;
                         if (idx >= 0 && idx < count) {
                             uint32_t val = Generate_Expression(cg, item->association.expression);
-                            const char *src_type = Expression_Llvm_Type(item->association.expression);
-                            val = Emit_Convert(cg, val, src_type, elem_type);
                             uint32_t ptr = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %lld\n",
-                                 ptr, elem_type, base, (long long)idx);
-                            Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, val, ptr);
+                            if (elem_is_composite) {
+                                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %lld\n",
+                                     ptr, base, (long long)(idx * elem_size));
+                                Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
+                                     ptr, val, elem_size);
+                            } else {
+                                const char *src_type = Expression_Llvm_Type(item->association.expression);
+                                val = Emit_Convert(cg, val, src_type, elem_type);
+                                Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %lld\n",
+                                     ptr, elem_type, base, (long long)idx);
+                                Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, val, ptr);
+                            }
                             initialized[idx] = true;
                         }
                     }
@@ -17621,12 +18067,19 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                 /* Positional association */
                 if (positional_idx < (uint32_t)count) {
                     uint32_t val = Generate_Expression(cg, item);
-                    const char *src_type = Expression_Llvm_Type(item);
-                    val = Emit_Convert(cg, val, src_type, elem_type);
                     uint32_t ptr = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %u\n",
-                         ptr, elem_type, base, positional_idx);
-                    Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, val, ptr);
+                    if (elem_is_composite) {
+                        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %lld\n",
+                             ptr, base, (long long)((int64_t)positional_idx * elem_size));
+                        Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
+                             ptr, val, elem_size);
+                    } else {
+                        const char *src_type = Expression_Llvm_Type(item);
+                        val = Emit_Convert(cg, val, src_type, elem_type);
+                        Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %u\n",
+                             ptr, elem_type, base, positional_idx);
+                        Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, val, ptr);
+                    }
                     initialized[positional_idx] = true;
                     positional_idx++;
                 }
@@ -17638,9 +18091,16 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             for (int64_t idx = 0; idx < count; idx++) {
                 if (!initialized[idx]) {
                     uint32_t ptr = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %lld\n",
-                         ptr, elem_type, base, (long long)idx);
-                    Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, others_val, ptr);
+                    if (elem_is_composite) {
+                        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %lld\n",
+                             ptr, base, (long long)(idx * elem_size));
+                        Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
+                             ptr, others_val, elem_size);
+                    } else {
+                        Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %lld\n",
+                             ptr, elem_type, base, (long long)idx);
+                        Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, others_val, ptr);
+                    }
                 }
             }
         }
@@ -17851,16 +18311,19 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
              * Extract bounds from the type and use the ptr directly. */
             src_data = init_val;  /* Already a pointer to array data */
 
-            /* Get bounds from the constrained type */
+            /* Get bounds from the constrained type.
+             * Bounds must be in the designated type's bt for Emit_Fat_Pointer_Dynamic.
+             * len_t stays as i64 since it's used for malloc/memcpy. */
+            const char *con_bt = Array_Bound_Llvm_Type(designated);
             if (init_type->array.index_count > 0 &&
                 init_type->array.indices[0].low_bound.kind == BOUND_INTEGER &&
                 init_type->array.indices[0].high_bound.kind == BOUND_INTEGER) {
                 int64_t lo = init_type->array.indices[0].low_bound.int_value;
                 int64_t hi = init_type->array.indices[0].high_bound.int_value;
                 low_t = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add i64 0, %lld\n", low_t, (long long)lo);
+                Emit(cg, "  %%t%u = add %s 0, %lld\n", low_t, con_bt, (long long)lo);
                 high_t = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add i64 0, %lld\n", high_t, (long long)hi);
+                Emit(cg, "  %%t%u = add %s 0, %lld\n", high_t, con_bt, (long long)hi);
                 len_t = Emit_Temp(cg);
                 int64_t length = hi - lo + 1;
                 uint32_t elem_size = init_type->array.element_type ?
@@ -17870,9 +18333,9 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
             } else {
                 /* Dynamic bounds - use 1-based defaults */
                 low_t = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add i64 0, 1\n", low_t);
+                Emit(cg, "  %%t%u = add %s 0, 1\n", low_t, con_bt);
                 high_t = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add i64 0, 1\n", high_t);
+                Emit(cg, "  %%t%u = add %s 0, 1\n", high_t, con_bt);
                 len_t = Emit_Temp(cg);
                 uint32_t elem_size = init_type->array.element_type ?
                                      init_type->array.element_type->size : 1;
@@ -17881,22 +18344,31 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
             }
         } else {
             /* Unconstrained array or string: returns fat pointer VALUE */
-            src_data = Emit_Fat_Pointer_Data(cg, init_val);
-            low_t = Emit_Fat_Pointer_Low(cg, init_val);
-            high_t = Emit_Fat_Pointer_High(cg, init_val);
-            len_t = Emit_Fat_Pointer_Length(cg, init_val);
+            const char *alloc_bt = Array_Bound_Llvm_Type(designated);
+            src_data = Emit_Fat_Pointer_Data(cg, init_val, alloc_bt);
+            low_t = Emit_Fat_Pointer_Low(cg, init_val, alloc_bt);
+            high_t = Emit_Fat_Pointer_High(cg, init_val, alloc_bt);
+            len_t = Emit_Fat_Pointer_Length(cg, init_val, alloc_bt);
+        }
+
+        /* Widen len to i64 for system calls (malloc/memcpy) */
+        const char *new_bt = Array_Bound_Llvm_Type(designated);
+        uint32_t len_t_64 = len_t;
+        if (!init_returns_ptr && !init_is_constrained) {
+            /* len_t is in new_bt (native bound type) from Emit_Fat_Pointer_Length */
+            len_t_64 = Emit_Widen_To_I64(cg, len_t, new_bt);
         }
 
         /* Allocate heap space for array data */
         uint32_t heap_ptr = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = call ptr @malloc(i64 %%t%u)\n", heap_ptr, len_t);
+        Emit(cg, "  %%t%u = call ptr @malloc(i64 %%t%u)\n", heap_ptr, len_t_64);
 
         /* Copy data: memcpy(heap_ptr, src_data, length) */
         Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
-             heap_ptr, src_data, len_t);
+             heap_ptr, src_data, len_t_64);
 
         /* Build result fat pointer with allocated data */
-        return Emit_Fat_Pointer_Dynamic(cg, heap_ptr, low_t, high_t);
+        return Emit_Fat_Pointer_Dynamic(cg, heap_ptr, low_t, high_t, new_bt);
     }
 
     /* Handle NEW T(bounds) without initializer - allocate unconstrained array */
@@ -17904,54 +18376,57 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
         /* Get bounds from the subtype mark's type */
         Type_Info *subtype = node->allocator.subtype_mark->type;
         if (subtype && subtype->kind == TYPE_ARRAY && subtype->array.index_count > 0) {
-            /* Generate bound values */
+            /* Generate bound values in the designated type's bt */
+            const char *new_bt = Array_Bound_Llvm_Type(designated);
             uint32_t low_t, high_t;
 
             if (subtype->array.indices[0].low_bound.kind == BOUND_INTEGER) {
                 low_t = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add i64 0, %lld\n", low_t,
+                Emit(cg, "  %%t%u = add %s 0, %lld\n", low_t, new_bt,
                      (long long)subtype->array.indices[0].low_bound.int_value);
             } else if (subtype->array.indices[0].low_bound.kind == BOUND_EXPR &&
                        subtype->array.indices[0].low_bound.expr) {
                 Syntax_Node *low_expr = subtype->array.indices[0].low_bound.expr;
                 low_t = Generate_Expression(cg, low_expr);
-                /* Extend to i64 if narrower type (e.g., ENUM bounds return i8) */
+                /* Convert to bt if needed */
                 const char *low_llvm = Expression_Llvm_Type(low_expr);
-                if (strcmp(low_llvm, "i64") != 0 && strcmp(low_llvm, "ptr") != 0 &&
+                if (strcmp(low_llvm, new_bt) != 0 && strcmp(low_llvm, "ptr") != 0 &&
                     strcmp(low_llvm, "double") != 0 && strcmp(low_llvm, "float") != 0) {
-                    low_t = Emit_Convert(cg, low_t, low_llvm, "i64");
+                    low_t = Emit_Convert(cg, low_t, low_llvm, new_bt);
                 }
             } else {
                 low_t = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add i64 0, 1\n", low_t);
+                Emit(cg, "  %%t%u = add %s 0, 1\n", low_t, new_bt);
             }
 
             if (subtype->array.indices[0].high_bound.kind == BOUND_INTEGER) {
                 high_t = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add i64 0, %lld\n", high_t,
+                Emit(cg, "  %%t%u = add %s 0, %lld\n", high_t, new_bt,
                      (long long)subtype->array.indices[0].high_bound.int_value);
             } else if (subtype->array.indices[0].high_bound.kind == BOUND_EXPR &&
                        subtype->array.indices[0].high_bound.expr) {
                 Syntax_Node *high_expr = subtype->array.indices[0].high_bound.expr;
                 high_t = Generate_Expression(cg, high_expr);
-                /* Extend to i64 if narrower type (e.g., ENUM bounds return i8) */
+                /* Convert to bt if needed */
                 const char *high_llvm = Expression_Llvm_Type(high_expr);
-                if (strcmp(high_llvm, "i64") != 0 && strcmp(high_llvm, "ptr") != 0 &&
+                if (strcmp(high_llvm, new_bt) != 0 && strcmp(high_llvm, "ptr") != 0 &&
                     strcmp(high_llvm, "double") != 0 && strcmp(high_llvm, "float") != 0) {
-                    high_t = Emit_Convert(cg, high_t, high_llvm, "i64");
+                    high_t = Emit_Convert(cg, high_t, high_llvm, new_bt);
                 }
             } else {
                 high_t = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add i64 0, 1\n", high_t);
+                Emit(cg, "  %%t%u = add %s 0, 1\n", high_t, new_bt);
             }
 
-            /* Calculate size: (high - low + 1) * elem_size */
+            /* Calculate size in i64: (high - low + 1) * elem_size */
             uint32_t elem_size = subtype->array.element_type ?
                                  subtype->array.element_type->size : 8;
             if (elem_size == 0) elem_size = 8;
 
+            uint32_t high_64 = Emit_Widen_To_I64(cg, high_t, new_bt);
+            uint32_t low_64 = Emit_Widen_To_I64(cg, low_t, new_bt);
             uint32_t len_t = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", len_t, high_t, low_t);
+            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", len_t, high_64, low_64);
             uint32_t len_plus1 = Emit_Temp(cg);
             Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", len_plus1, len_t);
             uint32_t byte_size = Emit_Temp(cg);
@@ -17962,7 +18437,7 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, "  %%t%u = call ptr @malloc(i64 %%t%u)\n", heap_ptr, byte_size);
 
             /* Return fat pointer with bounds */
-            return Emit_Fat_Pointer_Dynamic(cg, heap_ptr, low_t, high_t);
+            return Emit_Fat_Pointer_Dynamic(cg, heap_ptr, low_t, high_t, new_bt);
         }
     }
 
@@ -18120,19 +18595,13 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
                 int64_t low_bound;
                 if (target_is_uncon) {
                     /* Load fat pointer, extract data ptr and low bound */
-                    uint32_t fat;
-                    if (Is_Uplevel_Access(cg, array_sym)) {
-                        fat = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%__frame.", fat);
-                        Emit_Symbol_Name(cg, array_sym);
-                        Emit(cg, "\n");
-                    } else {
-                        fat = Emit_Load_Fat_Pointer(cg, array_sym);
-                    }
-                    dest_base = Emit_Fat_Pointer_Data(cg, fat);
+                    const char *sa_bt = Array_Bound_Llvm_Type(prefix_type);
+                    uint32_t fat = Emit_Load_Fat_Pointer(cg, array_sym, sa_bt);
+                    dest_base = Emit_Fat_Pointer_Data(cg, fat, sa_bt);
                     /* Low bound comes from the fat pointer at runtime */
                     low_bound = 0;  /* We'll use dynamic low below */
-                    uint32_t fat_low = Emit_Fat_Pointer_Low(cg, fat);
+                    uint32_t fat_low = Emit_Fat_Pointer_Low(cg, fat, sa_bt);
+                    uint32_t fat_low_64 = Emit_Widen_To_I64(cg, fat_low, sa_bt);
 
                     /* Calculate destination start offset from slice low bound */
                     uint32_t dest_low_expr = Generate_Expression(cg, arg->range.low);
@@ -18140,7 +18609,7 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
                     uint32_t adj = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u"
                          "  ; adjust for dynamic low bound\n",
-                         adj, dest_low_expr, fat_low);
+                         adj, dest_low_expr, fat_low_64);
                     uint32_t dest_ptr = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n",
                          dest_ptr, dest_base, adj);
@@ -18162,7 +18631,7 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
                     const char *src_llvm = Expression_Llvm_Type(src);
                     uint32_t src_data;
                     if (strstr(src_llvm, "{ ptr,")) {
-                        src_data = Emit_Fat_Pointer_Data(cg, src_val);
+                        src_data = Emit_Fat_Pointer_Data(cg, src_val, Array_Bound_Llvm_Type(prefix_type));
                     } else {
                         src_data = src_val;
                     }
@@ -18180,12 +18649,7 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
                 /* Get destination base address */
                 dest_base = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = getelementptr i8, ptr ", dest_base);
-                if (Is_Uplevel_Access(cg, array_sym)) {
-                    Emit(cg, "%%__frame.");
-                    Emit_Symbol_Name(cg, array_sym);
-                } else {
-                    Emit_Symbol_Ref(cg, array_sym);
-                }
+                Emit_Symbol_Storage(cg, array_sym);
                 Emit(cg, ", i64 0\n");
 
                 /* Calculate destination start offset from slice low bound */
@@ -18214,39 +18678,28 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
                         /* Get source base address — handle unconstrained source */
                         uint32_t src_base;
                         uint32_t src_fat_low = 0;
+                        const char *ssb = NULL;
                         bool src_is_uncon = Type_Is_String(src_type) ||
                                             Type_Is_Unconstrained_Array(src_type);
                         if (src_is_uncon) {
-                            uint32_t sfat;
-                            if (Is_Uplevel_Access(cg, src_sym)) {
-                                sfat = Emit_Temp(cg);
-                                Emit(cg, "  %%t%u = load " FAT_PTR_TYPE
-                                     ", ptr %%__frame.", sfat);
-                                Emit_Symbol_Name(cg, src_sym);
-                                Emit(cg, "\n");
-                            } else {
-                                sfat = Emit_Load_Fat_Pointer(cg, src_sym);
-                            }
-                            src_base = Emit_Fat_Pointer_Data(cg, sfat);
-                            src_fat_low = Emit_Fat_Pointer_Low(cg, sfat);
+                            ssb = Array_Bound_Llvm_Type(src_type);
+                            uint32_t sfat = Emit_Load_Fat_Pointer(cg, src_sym, ssb);
+                            src_base = Emit_Fat_Pointer_Data(cg, sfat, ssb);
+                            src_fat_low = Emit_Fat_Pointer_Low(cg, sfat, ssb);
                         } else {
                             src_base = Emit_Temp(cg);
                             Emit(cg, "  %%t%u = getelementptr i8, ptr ", src_base);
-                            if (Is_Uplevel_Access(cg, src_sym)) {
-                                Emit(cg, "%%__frame.");
-                                Emit_Symbol_Name(cg, src_sym);
-                            } else {
-                                Emit_Symbol_Ref(cg, src_sym);
-                            }
+                            Emit_Symbol_Storage(cg, src_sym);
                             Emit(cg, ", i64 0\n");
                         }
 
                         /* Calculate source start offset */
                         uint32_t src_start = Generate_Expression(cg, src_range->range.low);
                         if (src_is_uncon) {
+                            uint32_t src_fat_low_64 = Emit_Widen_To_I64(cg, src_fat_low, ssb);
                             uint32_t adj = Emit_Temp(cg);
                             Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n",
-                                 adj, src_start, src_fat_low);
+                                 adj, src_start, src_fat_low_64);
                             src_start = adj;
                         } else if (src_low_bound != 0) {
                             uint32_t adj = Emit_Temp(cg);
@@ -18278,81 +18731,16 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
                 return;  /* Unsupported source for slice assignment */
             }
 
-            /* Array element assignment: DATA(I) := value */
-            uint32_t base;
-            int64_t low_bound;
-            if (target_is_uncon) {
-                /* Load fat pointer to get data pointer and low bound */
-                uint32_t fat;
-                if (Is_Uplevel_Access(cg, array_sym)) {
-                    fat = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%__frame.",
-                         fat);
-                    Emit_Symbol_Name(cg, array_sym);
-                    Emit(cg, "\n");
-                } else {
-                    fat = Emit_Load_Fat_Pointer(cg, array_sym);
-                }
-                base = Emit_Fat_Pointer_Data(cg, fat);
-                /* Use dynamic low bound from fat pointer */
-                uint32_t fat_low = Emit_Fat_Pointer_Low(cg, fat);
-
-                /* Generate index expression */
-                uint32_t idx = Generate_Expression(cg, arg);
-
-                /* Adjust index by dynamic low bound */
-                uint32_t adj_idx = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u"
-                     "  ; adjust for dynamic low\n", adj_idx, idx, fat_low);
-
-                /* Get pointer to element */
-                const char *elem_type_str = Type_To_Llvm(prefix_type->array.element_type);
-                uint32_t ptr = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %%t%u\n",
-                     ptr, elem_type_str, base, adj_idx);
-
-                /* Generate value and store */
-                uint32_t value = Generate_Expression(cg, node->assignment.value);
-                const char *value_type = Expression_Llvm_Type(node->assignment.value);
-                value = Emit_Convert(cg, value, value_type, elem_type_str);
-                Emit(cg, "  store %s %%t%u, ptr %%t%u"
-                     "  ; uncon element assign\n", elem_type_str, value, ptr);
-                return;
-            }
-
-            /* Constrained array element assignment */
-            base = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = getelementptr i8, ptr ", base);
-            if (Is_Uplevel_Access(cg, array_sym)) {
-                Emit(cg, "%%__frame.");
-                Emit_Symbol_Name(cg, array_sym);
-            } else {
-                Emit_Symbol_Ref(cg, array_sym);
-            }
-            Emit(cg, ", i64 0\n");
-
-            /* Generate index expression */
-            uint32_t idx = Generate_Expression(cg, arg);
-
-            /* Adjust for array low bound (Ada arrays can start at any index) */
-            low_bound = Array_Low_Bound(prefix_type);
-            if (low_bound != 0) {
-                uint32_t adj = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = sub i64 %%t%u, %lld\n", adj, idx, (long long)low_bound);
-                idx = adj;
-            }
-
-            /* Get pointer to element */
+            /* Array element assignment: DATA(I) := value
+             * Generate_Lvalue handles both unconstrained (fat pointer) and
+             * constrained arrays — computes element address in one call. */
             const char *elem_type_str = Type_To_Llvm(prefix_type->array.element_type);
-            uint32_t ptr = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %%t%u\n",
-                 ptr, elem_type_str, base, idx);
-
-            /* Generate value and store */
+            uint32_t elem_ptr = Generate_Lvalue(cg, target);
             uint32_t value = Generate_Expression(cg, node->assignment.value);
             const char *value_type = Expression_Llvm_Type(node->assignment.value);
             value = Emit_Convert(cg, value, value_type, elem_type_str);
-            Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type_str, value, ptr);
+            Emit(cg, "  store %s %%t%u, ptr %%t%u  ; array element assign\n",
+                 elem_type_str, value, elem_ptr);
             return;
         }
     }
@@ -18366,10 +18754,8 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
             Type_Info *designated = operand_type->access.designated_type;
             const char *dest_type = Type_To_Llvm(designated);
 
-            /* Get the pointer value */
-            uint32_t ptr = Generate_Expression(cg, operand);
-
-            /* Generate value and store through the pointer */
+            /* Generate_Lvalue loads the pointer value (the storage address) */
+            uint32_t ptr = Generate_Lvalue(cg, target);
             uint32_t value = Generate_Expression(cg, node->assignment.value);
             const char *value_type = Expression_Llvm_Type(node->assignment.value);
             value = Emit_Convert(cg, value, value_type, dest_type);
@@ -18379,101 +18765,48 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
         }
     }
 
-    /* Handle selected component target (record field assignment or .ALL) */
+    /* Handle selected component target (record field assignment or .ALL)
+     * Generate_Lvalue computes the storage address — we just determine
+     * the store type and let Generate_Lvalue handle address computation. */
     if (target->kind == NK_SELECTED) {
         Syntax_Node *prefix = target->selected.prefix;
         Type_Info *prefix_type = prefix->type;
 
-        /* Handle explicit .ALL dereference assignment */
+        /* Determine the type being stored */
+        const char *store_type;
         if (Type_Is_Access(prefix_type) &&
             Slice_Equal_Ignore_Case(target->selected.selector, S("ALL"))) {
-            Type_Info *designated = prefix_type->access.designated_type;
-            Symbol *access_sym = prefix->symbol;
-            const char *dest_type = Type_To_Llvm(designated);
-
-            /* Load the access pointer value */
-            uint32_t ptr;
-            if (access_sym) {
-                ptr = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = load ptr, ptr ", ptr);
-                Emit_Symbol_Ref(cg, access_sym);
-                Emit(cg, "  ; load access for .ALL assignment\n");
-            } else {
-                ptr = Generate_Expression(cg, prefix);
+            /* .ALL dereference: store designated type */
+            store_type = Type_To_Llvm(prefix_type->access.designated_type);
+        } else {
+            /* Record field: find component type */
+            Type_Info *record_type = prefix_type;
+            if (Type_Is_Access(prefix_type) &&
+                Type_Is_Record(prefix_type->access.designated_type)) {
+                record_type = prefix_type->access.designated_type;
             }
-
-            /* Generate value and store through the pointer */
-            uint32_t value = Generate_Expression(cg, node->assignment.value);
-            const char *value_type = Expression_Llvm_Type(node->assignment.value);
-            value = Emit_Convert(cg, value, value_type, dest_type);
-            Emit(cg, "  store %s %%t%u, ptr %%t%u  ; store via .ALL\n", dest_type, value, ptr);
-            return;
-        }
-
-        /* Determine effective record type (handle implicit dereference) */
-        Type_Info *record_type = prefix_type;
-        bool implicit_deref = false;
-        if (Type_Is_Access(prefix_type) &&
-            Type_Is_Record(prefix_type->access.designated_type)) {
-            record_type = prefix_type->access.designated_type;
-            implicit_deref = true;
-        }
-
-        if (Type_Is_Record(record_type)) {
-            /* Find component offset */
-            uint32_t offset = 0;
             Type_Info *comp_type = NULL;
-            for (uint32_t i = 0; i < record_type->record.component_count; i++) {
-                if (Slice_Equal_Ignore_Case(record_type->record.components[i].name,
-                                            target->selected.selector)) {
-                    offset = record_type->record.components[i].byte_offset;
-                    comp_type = record_type->record.components[i].component_type;
-                    break;
-                }
-            }
-
-            const char *comp_llvm_type = Type_To_Llvm(comp_type);
-
-            /* Get base address of record */
-            Symbol *record_sym = prefix->symbol;
-            uint32_t base_ptr;
-
-            if (implicit_deref) {
-                /* Load access value to get record pointer */
-                if (record_sym) {
-                    base_ptr = Emit_Temp(cg);
-                    if (Is_Uplevel_Access(cg, record_sym)) {
-                        Emit(cg, "  %%t%u = load ptr, ptr %%__frame.", base_ptr);
-                        Emit_Symbol_Name(cg, record_sym);
-                        Emit(cg, "  ; uplevel implicit deref for field assignment\n");
-                    } else {
-                        Emit(cg, "  %%t%u = load ptr, ptr ", base_ptr);
-                        Emit_Symbol_Ref(cg, record_sym);
-                        Emit(cg, "  ; implicit deref for field assignment\n");
+            if (Type_Is_Record(record_type)) {
+                for (uint32_t i = 0; i < record_type->record.component_count; i++) {
+                    if (Slice_Equal_Ignore_Case(record_type->record.components[i].name,
+                                                target->selected.selector)) {
+                        comp_type = record_type->record.components[i].component_type;
+                        break;
                     }
-                } else {
-                    base_ptr = Generate_Expression(cg, prefix);
                 }
-            } else {
-                if (!record_sym) return;
-                base_ptr = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = getelementptr i8, ptr ", base_ptr);
-                Emit_Symbol_Ref(cg, record_sym);
-                Emit(cg, ", i64 0\n");
             }
-
-            /* Calculate address of field */
-            uint32_t field_ptr = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
-                 field_ptr, base_ptr, offset);
-
-            /* Generate value and store */
-            uint32_t value = Generate_Expression(cg, node->assignment.value);
-            const char *value_type = Expression_Llvm_Type(node->assignment.value);
-            value = Emit_Convert(cg, value, value_type, comp_llvm_type);
-            Emit(cg, "  store %s %%t%u, ptr %%t%u\n", comp_llvm_type, value, field_ptr);
-            return;
+            store_type = Type_To_Llvm(comp_type);
         }
+
+        /* Generate_Lvalue handles .ALL dereference, implicit dereference,
+         * and direct field offset — all address computation is unified. */
+        uint32_t addr = Generate_Lvalue(cg, target);
+        uint32_t value = Generate_Expression(cg, node->assignment.value);
+        const char *value_type = Expression_Llvm_Type(node->assignment.value);
+        value = Emit_Convert(cg, value, value_type, store_type);
+        Emit(cg, "  store %s %%t%u, ptr %%t%u  ; selected assign\n",
+             store_type, value, addr);
+        return;
     }
 
     /* Simple variable target */
@@ -18554,22 +18887,12 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
          * Fat pointer sources: STRING type, unconstrained arrays, string literals,
          * concatenation results, and slice expressions. */
         Type_Info *src_type = node->assignment.value->type;
-        bool src_is_fat_ptr = Type_Is_String(src_type) ||
-                              Type_Is_Unconstrained_Array(src_type) ||
-                              (node->assignment.value->kind == NK_STRING);
-        /* Concatenation always returns fat pointer */
-        if (!src_is_fat_ptr && node->assignment.value->kind == NK_BINARY_OP &&
-            node->assignment.value->binary.op == TK_AMPERSAND) {
-            src_is_fat_ptr = true;
-        }
-        /* Slices always produce fat pointers even with constrained declared type */
-        if (!src_is_fat_ptr && Expression_Is_Slice(node->assignment.value)) {
-            src_is_fat_ptr = true;
-        }
+        bool src_is_fat_ptr = Expression_Produces_Fat_Pointer(
+            node->assignment.value, src_type);
         uint32_t src_ptr = Generate_Expression(cg, node->assignment.value);
         if (src_is_fat_ptr) {
             /* Source is unconstrained/string - extract data pointer from fat pointer */
-            Emit_Fat_Pointer_Copy_To_Name(cg, src_ptr, target_sym);
+            Emit_Fat_Pointer_Copy_To_Name(cg, src_ptr, target_sym, Array_Bound_Llvm_Type(ty));
         } else {
             /* Source is constrained - memcpy directly */
             uint32_t array_size = ty->size > 0 ? ty->size : 8;
@@ -18582,7 +18905,7 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
     }
 
     /* Handle unconstrained array/STRING variable assignment.
-     * These variables store a fat pointer { ptr, { i64, i64 } }.
+     * These variables store a fat pointer { ptr, { bound, bound } }.
      * IMPORTANT: In Ada, unconstrained objects have fixed constraints
      * after elaboration.  Assignment copies data INTO the existing
      * data storage — it does NOT replace the fat pointer.
@@ -18597,49 +18920,36 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
     if (Type_Is_String(ty) || Type_Is_Unconstrained_Array(ty)) {
         Syntax_Node *src = node->assignment.value;
         Type_Info *src_type = src->type;
-        bool src_is_fat = Type_Is_String(src_type) ||
-                          Type_Is_Unconstrained_Array(src_type) ||
-                          src->kind == NK_STRING ||
-                          Expression_Is_Slice(src) ||
-                          (src->kind == NK_BINARY_OP && src->binary.op == TK_AMPERSAND);
+        bool src_is_fat = Expression_Produces_Fat_Pointer(src, src_type);
 
         /* Load existing fat pointer from the target variable */
-        uint32_t existing_fat;
-        bool is_uplevel = Is_Uplevel_Access(cg, target_sym);
-        if (is_uplevel && cg->is_nested) {
-            existing_fat = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%__frame.",
-                 existing_fat);
-            Emit_Symbol_Name(cg, target_sym);
-            Emit(cg, "\n");
-        } else {
-            existing_fat = Emit_Load_Fat_Pointer(cg, target_sym);
-        }
-        uint32_t dest_data = Emit_Fat_Pointer_Data(cg, existing_fat);
-        uint32_t dest_len  = Emit_Fat_Pointer_Length(cg, existing_fat);
+        const char *ua_bt = Array_Bound_Llvm_Type(ty);
+        uint32_t existing_fat = Emit_Load_Fat_Pointer(cg, target_sym, ua_bt);
+        uint32_t dest_data = Emit_Fat_Pointer_Data(cg, existing_fat, ua_bt);
+        uint32_t dest_len  = Emit_Fat_Pointer_Length(cg, existing_fat, ua_bt);
+        uint32_t dest_len_64 = Emit_Widen_To_I64(cg, dest_len, ua_bt);
 
         /* Generate source and copy data to existing storage */
         uint32_t src_val = Generate_Expression(cg, src);
         if (src_is_fat) {
             /* Source is fat pointer — extract data pointer, copy */
-            uint32_t src_data = Emit_Fat_Pointer_Data(cg, src_val);
+            uint32_t src_data = Emit_Fat_Pointer_Data(cg, src_val, ua_bt);
             Emit(cg, "  call void @llvm.memcpy.p0.p0.i64("
                  "ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)"
                  "  ; uncon array assign\n",
-                 dest_data, src_data, dest_len);
+                 dest_data, src_data, dest_len_64);
         } else {
             /* Source is constrained (ptr) — memcpy directly */
             Emit(cg, "  call void @llvm.memcpy.p0.p0.i64("
                  "ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)"
                  "  ; uncon array assign from constrained\n",
-                 dest_data, src_val, dest_len);
+                 dest_data, src_val, dest_len_64);
         }
         return;
     }
 
     uint32_t value = Generate_Expression(cg, node->assignment.value);
 
-    bool is_uplevel = Is_Uplevel_Access(cg, target_sym);
     const char *type_str = Type_To_Llvm(ty);
 
     /* Determine source type from the value expression */
@@ -18700,18 +19010,9 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
         }
     }
 
-    if (is_uplevel && cg->is_nested) {
-        /* Uplevel store through frame pointer */
-        Emit(cg, "  ; UPLEVEL STORE: %.*s via frame pointer\n",
-             (int)target_sym->name.length, target_sym->name.data);
-        Emit(cg, "  store %s %%t%u, ptr %%__frame.", type_str, value);
-        Emit_Symbol_Name(cg, target_sym);
-        Emit(cg, "\n");
-    } else {
-        Emit(cg, "  store %s %%t%u, ptr ", type_str, value);
-        Emit_Symbol_Ref(cg, target_sym);
-        Emit(cg, "\n");
-    }
+    Emit(cg, "  store %s %%t%u, ptr ", type_str, value);
+    Emit_Symbol_Storage(cg, target_sym);
+    Emit(cg, "\n");
 }
 
 static void Generate_If_Statement(Code_Generator *cg, Syntax_Node *node) {
@@ -18970,9 +19271,13 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
             prefix_sym && (prefix_sym->kind == SYMBOL_PARAMETER ||
                            prefix_sym->kind == SYMBOL_VARIABLE ||
                            prefix_sym->kind == SYMBOL_DISCRIMINANT)) {
-            uint32_t fat = Emit_Load_Fat_Pointer(cg, prefix_sym);
-            low_val = Emit_Fat_Pointer_Low(cg, fat);
-            high_val = Emit_Fat_Pointer_High(cg, fat);
+            const char *loop_bt = Array_Bound_Llvm_Type(prefix_type);
+            uint32_t fat = Emit_Load_Fat_Pointer(cg, prefix_sym, loop_bt);
+            low_val = Emit_Fat_Pointer_Low(cg, fat, loop_bt);
+            high_val = Emit_Fat_Pointer_High(cg, fat, loop_bt);
+            /* Loop variable is i64 — widen bounds from native bt */
+            low_val = Emit_Widen_To_I64(cg, low_val, loop_bt);
+            high_val = Emit_Widen_To_I64(cg, high_val, loop_bt);
         } else if (Type_Is_Array_Like(prefix_type)) {
             /* Constrained array - use compile-time bounds */
             Syntax_Node *range_arg = range->attribute.arguments.count > 0
@@ -19236,7 +19541,9 @@ static void Generate_Block_Statement(Code_Generator *cg, Syntax_Node *node) {
                 /* WHEN OTHERS => catches all */
                 Emit(cg, "  br label %%L%u\n", handler_body);
             } else {
-                /* Check against specific exceptions */
+                /* Check against specific exceptions.
+                 * For multiple choices (WHEN E1 | E2 =>), chain comparisons:
+                 * if not E1, branch to next check; if not E2, branch to next_handler. */
                 for (uint32_t j = 0; j < handler->handler.exceptions.count; j++) {
                     Syntax_Node *exc_name = handler->handler.exceptions.items[j];
                     if (exc_name->symbol) {
@@ -19247,8 +19554,17 @@ static void Generate_Block_Statement(Code_Generator *cg, Syntax_Node *node) {
                         uint32_t match = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n",
                              match, exc_id, exc_ptr);
+                        bool is_last = true;
+                        for (uint32_t k = j + 1; k < handler->handler.exceptions.count; k++) {
+                            if (handler->handler.exceptions.items[k]->symbol) { is_last = false; break; }
+                        }
+                        uint32_t fail_label = is_last ? next_handler : Emit_Label(cg);
                         Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
-                             match, handler_body, next_handler);
+                             match, handler_body, fail_label);
+                        if (!is_last) {
+                            Emit(cg, "L%u:\n", fail_label);
+                            cg->block_terminated = false;
+                        }
                     }
                 }
             }
@@ -19314,15 +19630,9 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                     uint32_t task_ptr = Emit_Temp(cg);
                     Symbol *task_sym = target->selected.prefix->symbol;
                     if (task_sym) {
-                        if (Is_Uplevel_Access(cg, task_sym)) {
-                            Emit(cg, "  %%t%u = getelementptr i8, ptr %%__frame.", task_ptr);
-                            Emit_Symbol_Name(cg, task_sym);
-                            Emit(cg, ", i64 0  ; uplevel task object\n");
-                        } else {
-                            Emit(cg, "  %%t%u = getelementptr i8, ptr ", task_ptr);
-                            Emit_Symbol_Ref(cg, task_sym);
-                            Emit(cg, ", i64 0  ; task object\n");
-                        }
+                        Emit(cg, "  %%t%u = getelementptr i8, ptr ", task_ptr);
+                        Emit_Symbol_Storage(cg, task_sym);
+                        Emit(cg, ", i64 0  ; task object\n");
                     } else {
                         Emit(cg, "  %%t%u = inttoptr i64 0 to ptr  ; no task\n", task_ptr);
                     }
@@ -19871,11 +20181,11 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     /* Now emit fat pointer global with data ptr and bounds */
                     Emit(cg, "@");
                     Emit_Symbol_Name(cg, sym);
-                    Emit(cg, " = linkonce_odr constant { ptr, { i64, i64 } } "
+                    Emit(cg, " = linkonce_odr constant " FAT_PTR_TYPE " "
                          "{ ptr @");
                     Emit_Symbol_Name(cg, sym);
-                    Emit(cg, ".data, { i64, i64 } { i64 1, i64 %lld } }\n",
-                         (long long)str_len);
+                    Emit(cg, ".data, { i32, i32 } { i32 1, i32 %d } }\n",
+                         (int)str_len);
                     continue;
                 }
             }
@@ -19965,7 +20275,7 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                  * Constrained array identifiers yield plain ptr — use memcpy.
                  *
                  * CRITICAL: When the destination is unconstrained (STRING variable),
-                 * the alloca holds a fat pointer descriptor { ptr, { i64, i64 } }.
+                 * the alloca holds a fat pointer descriptor { ptr, { bound, bound } }.
                  * We must NOT memcpy data into that descriptor.  Instead:
                  *   1. Allocate separate local data storage (dynamic alloca)
                  *   2. Copy data from source to local storage
@@ -19980,38 +20290,37 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 if (init->kind == NK_STRING || !init_is_constrained) {
                     /* Source produces a fat pointer value */
                     uint32_t fat_ptr = Generate_Expression(cg, init);
+                    const char *init_bt = Array_Bound_Llvm_Type(ty);
 
                     if (dest_is_unconstrained) {
                         /* Destination is unconstrained STRING / array variable.
-                         * Storage is { ptr, { i64, i64 } }.  We need separate
+                         * Storage is { ptr, { bound, bound } }.  We need separate
                          * data storage on the stack, then store the fat pointer. */
-                        uint32_t src_data = Emit_Fat_Pointer_Data(cg, fat_ptr);
-                        uint32_t src_low  = Emit_Fat_Pointer_Low(cg, fat_ptr);
-                        uint32_t src_high = Emit_Fat_Pointer_High(cg, fat_ptr);
-                        uint32_t len      = Emit_Fat_Pointer_Length(cg, fat_ptr);
+                        uint32_t src_data = Emit_Fat_Pointer_Data(cg, fat_ptr, init_bt);
+                        uint32_t src_low  = Emit_Fat_Pointer_Low(cg, fat_ptr, init_bt);
+                        uint32_t src_high = Emit_Fat_Pointer_High(cg, fat_ptr, init_bt);
+                        uint32_t len      = Emit_Fat_Pointer_Length(cg, fat_ptr, init_bt);
+                        uint32_t len_64   = Emit_Widen_To_I64(cg, len, init_bt);
 
                         /* Allocate local data storage sized by source bounds */
                         uint32_t local_data = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = alloca i8, i64 %%t%u"
-                             "  ; constrained-by-init data\n", local_data, len);
+                             "  ; constrained-by-init data\n", local_data, len_64);
 
                         /* Copy source data to local storage */
                         Emit(cg, "  call void @llvm.memcpy.p0.p0.i64("
                              "ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
-                             local_data, src_data, len);
+                             local_data, src_data, len_64);
 
                         /* Build fat pointer pointing to local data with source bounds */
                         uint32_t new_fat = Emit_Fat_Pointer_Dynamic(cg,
-                            local_data, src_low, src_high);
+                            local_data, src_low, src_high, init_bt);
 
                         /* Store fat pointer into variable */
-                        Emit(cg, "  store " FAT_PTR_TYPE " %%t%u, ptr %%",
-                             new_fat);
-                        Emit_Symbol_Name(cg, sym);
-                        Emit(cg, "\n");
+                        Emit_Store_Fat_Pointer_To_Symbol(cg, new_fat, sym, init_bt);
                     } else {
                         /* Destination is constrained — just copy data bytes */
-                        Emit_Fat_Pointer_Copy_To_Name(cg, fat_ptr, sym);
+                        Emit_Fat_Pointer_Copy_To_Name(cg, fat_ptr, sym, init_bt);
                     }
                 } else {
                     /* Source is a constrained character array — plain ptr. */
@@ -20039,14 +20348,12 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                              local_data, src_ptr, (long long)byte_len);
 
                         /* Build fat pointer */
+                        const char *ci_bt = Array_Bound_Llvm_Type(ty);
                         uint32_t new_fat = Emit_Fat_Pointer(cg,
-                            local_data, lo, hi);
+                            local_data, lo, hi, ci_bt);
 
                         /* Store fat pointer into variable */
-                        Emit(cg, "  store " FAT_PTR_TYPE " %%t%u, ptr %%",
-                             new_fat);
-                        Emit_Symbol_Name(cg, sym);
-                        Emit(cg, "\n");
+                        Emit_Store_Fat_Pointer_To_Symbol(cg, new_fat, sym, ci_bt);
                     } else {
                         /* Both constrained — simple memcpy using target bounds */
                         int64_t lo = Type_Bound_Value(
@@ -20131,7 +20438,7 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     Emit_Symbol_Name(cg, sym);
                     Emit(cg, ", ptr %%t%u, i64 24, i1 false)  ; copy fat ptr\n", agg_ptr);
                 } else if (dest_needs_fat && agg_type && agg_type->array.index_count > 0) {
-                    /* Destination needs a fat pointer { ptr, { i64, i64 } }.
+                    /* Destination needs a fat pointer { ptr, { bound, bound } }.
                      * agg_ptr is the data pointer (static bounds), construct the fat pointer. */
                     Type_Bound low_b = agg_type->array.indices[0].low_bound;
                     Type_Bound high_b = agg_type->array.indices[0].high_bound;
@@ -20156,24 +20463,8 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                         Emit(cg, "  %%t%u = add i64 0, 0\n", high_val);  /* Default high = 0 */
                     }
 
-                    /* Construct fat pointer: store data ptr at offset 0, low at 8, high at 16 */
-                    uint32_t data_slot = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = getelementptr { ptr, { i64, i64 } }, ptr %%", data_slot);
-                    Emit_Symbol_Name(cg, sym);
-                    Emit(cg, ", i32 0, i32 0\n");
-                    Emit(cg, "  store ptr %%t%u, ptr %%t%u  ; fat ptr data\n", agg_ptr, data_slot);
-
-                    uint32_t low_slot = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = getelementptr { ptr, { i64, i64 } }, ptr %%", low_slot);
-                    Emit_Symbol_Name(cg, sym);
-                    Emit(cg, ", i32 0, i32 1, i32 0\n");
-                    Emit(cg, "  store i64 %%t%u, ptr %%t%u  ; fat ptr low\n", low_val, low_slot);
-
-                    uint32_t high_slot = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = getelementptr { ptr, { i64, i64 } }, ptr %%", high_slot);
-                    Emit_Symbol_Name(cg, sym);
-                    Emit(cg, ", i32 0, i32 1, i32 1\n");
-                    Emit(cg, "  store i64 %%t%u, ptr %%t%u  ; fat ptr high\n", high_val, high_slot);
+                    /* Construct fat pointer in-place */
+                    Emit_Store_Fat_Pointer_Fields_To_Symbol(cg, agg_ptr, low_val, high_val, sym, Array_Bound_Llvm_Type(ty));
                 } else if (ty->size > 0) {
                     /* Static size known at compile time */
                     Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%");
@@ -20218,24 +20509,26 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 uint32_t fat_ptr = Generate_Expression(cg, node->object_decl.init);
                 const char *src_llvm = Expression_Llvm_Type(node->object_decl.init);
 
+                const char *uai_bt = Array_Bound_Llvm_Type(ty);
                 if (strstr(src_llvm, "{ ptr,")) {
                     /* Source is fat pointer — unpack, alloca, copy, rebuild */
-                    uint32_t src_data = Emit_Fat_Pointer_Data(cg, fat_ptr);
-                    uint32_t src_low  = Emit_Fat_Pointer_Low(cg, fat_ptr);
-                    uint32_t src_high = Emit_Fat_Pointer_High(cg, fat_ptr);
-                    uint32_t len      = Emit_Fat_Pointer_Length(cg, fat_ptr);
+                    uint32_t src_data = Emit_Fat_Pointer_Data(cg, fat_ptr, uai_bt);
+                    uint32_t src_low  = Emit_Fat_Pointer_Low(cg, fat_ptr, uai_bt);
+                    uint32_t src_high = Emit_Fat_Pointer_High(cg, fat_ptr, uai_bt);
+                    uint32_t len      = Emit_Fat_Pointer_Length(cg, fat_ptr, uai_bt);
 
                     uint32_t e_sz = elem_size > 0 ? elem_size :
                         (ty->array.element_type ? ty->array.element_type->size : 1);
                     if (e_sz == 0) e_sz = 1;
 
+                    uint32_t len_64 = Emit_Widen_To_I64(cg, len, uai_bt);
                     uint32_t byte_len = Emit_Temp(cg);
                     if (e_sz == 1) {
                         Emit(cg, "  %%t%u = add i64 %%t%u, 0  ; byte_len\n",
-                             byte_len, len);
+                             byte_len, len_64);
                     } else {
                         Emit(cg, "  %%t%u = mul i64 %%t%u, %u  ; byte_len\n",
-                             byte_len, len, e_sz);
+                             byte_len, len_64, e_sz);
                     }
 
                     uint32_t local_data = Emit_Temp(cg);
@@ -20247,12 +20540,9 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                          local_data, src_data, byte_len);
 
                     uint32_t new_fat = Emit_Fat_Pointer_Dynamic(cg,
-                        local_data, src_low, src_high);
+                        local_data, src_low, src_high, uai_bt);
 
-                    Emit(cg, "  store " FAT_PTR_TYPE " %%t%u, ptr %%",
-                         new_fat);
-                    Emit_Symbol_Name(cg, sym);
-                    Emit(cg, "\n");
+                    Emit_Store_Fat_Pointer_To_Symbol(cg, new_fat, sym, uai_bt);
                 } else {
                     /* Source is ptr (constrained) — wrap with bounds */
                     Type_Info *init_ty = node->object_decl.init->type;
@@ -20261,17 +20551,11 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                             init_ty->array.indices[0].low_bound);
                         int64_t hi = Type_Bound_Value(
                             init_ty->array.indices[0].high_bound);
-                        uint32_t new_fat = Emit_Fat_Pointer(cg, fat_ptr, lo, hi);
-                        Emit(cg, "  store " FAT_PTR_TYPE " %%t%u, ptr %%",
-                             new_fat);
-                        Emit_Symbol_Name(cg, sym);
-                        Emit(cg, "\n");
+                        uint32_t new_fat = Emit_Fat_Pointer(cg, fat_ptr, lo, hi, uai_bt);
+                        Emit_Store_Fat_Pointer_To_Symbol(cg, new_fat, sym, uai_bt);
                     } else {
                         /* Fallback: store as fat pointer with unknown bounds */
-                        Emit(cg, "  store " FAT_PTR_TYPE " %%t%u, ptr %%",
-                             fat_ptr);
-                        Emit_Symbol_Name(cg, sym);
-                        Emit(cg, "\n");
+                        Emit_Store_Fat_Pointer_To_Symbol(cg, fat_ptr, sym, uai_bt);
                     }
                 }
             } else if (!is_any_array && !is_record) {
@@ -20358,24 +20642,8 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             uint32_t data_ptr = Emit_Temp(cg);
             Emit(cg, "  %%t%u = alloca i8, i64 %%t%u  ; dynamic uninit array\n", data_ptr, byte_size);
 
-            /* Construct fat pointer: store data ptr, low, high */
-            uint32_t data_slot = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = getelementptr { ptr, { i64, i64 } }, ptr %%", data_slot);
-            Emit_Symbol_Name(cg, sym);
-            Emit(cg, ", i32 0, i32 0\n");
-            Emit(cg, "  store ptr %%t%u, ptr %%t%u  ; fat ptr data\n", data_ptr, data_slot);
-
-            uint32_t low_slot = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = getelementptr { ptr, { i64, i64 } }, ptr %%", low_slot);
-            Emit_Symbol_Name(cg, sym);
-            Emit(cg, ", i32 0, i32 1, i32 0\n");
-            Emit(cg, "  store i64 %%t%u, ptr %%t%u  ; fat ptr low\n", low_val, low_slot);
-
-            uint32_t high_slot = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = getelementptr { ptr, { i64, i64 } }, ptr %%", high_slot);
-            Emit_Symbol_Name(cg, sym);
-            Emit(cg, ", i32 0, i32 1, i32 1\n");
-            Emit(cg, "  store i64 %%t%u, ptr %%t%u  ; fat ptr high\n", high_val, high_slot);
+            /* Construct fat pointer in-place */
+            Emit_Store_Fat_Pointer_Fields_To_Symbol(cg, data_ptr, low_val, high_val, sym, Array_Bound_Llvm_Type(ty));
         } else if (is_record && ty->record.component_count > 0) {
             /* Record without explicit initializer (RM 3.7):
              * 1. If constrained subtype, initialize discriminants from constraints
@@ -20767,7 +21035,8 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
                 /* WHEN OTHERS => catches all */
                 Emit(cg, "  br label %%L%u\n", handler_body);
             } else {
-                /* Check against specific exceptions */
+                /* Check against specific exceptions.
+                 * For multiple choices (WHEN E1 | E2 =>), chain comparisons. */
                 for (uint32_t j = 0; j < handler->handler.exceptions.count; j++) {
                     Syntax_Node *exc_name = handler->handler.exceptions.items[j];
                     if (exc_name->symbol) {
@@ -20778,8 +21047,17 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
                         uint32_t match = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n",
                              match, exc_id, exc_ptr);
+                        bool is_last = true;
+                        for (uint32_t k = j + 1; k < handler->handler.exceptions.count; k++) {
+                            if (handler->handler.exceptions.items[k]->symbol) { is_last = false; break; }
+                        }
+                        uint32_t fail_label = is_last ? next_handler : Emit_Label(cg);
                         Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
-                             match, handler_body, next_handler);
+                             match, handler_body, fail_label);
+                        if (!is_last) {
+                            Emit(cg, "L%u:\n", fail_label);
+                            cg->block_terminated = false;
+                        }
                     }
                 }
             }
@@ -21493,7 +21771,9 @@ static void Generate_Type_Equality_Function(Code_Generator *cg, Type_Info *t) {
 
     /* Determine parameter type based on array constrained-ness */
     bool is_unconstrained = Type_Is_Unconstrained_Array(t);
-    const char *param_type = is_unconstrained ? FAT_PTR_TYPE : "ptr";
+    const char *eq_bt = is_unconstrained ? Array_Bound_Llvm_Type(t) : "i32";
+    const char *eq_fpt = is_unconstrained ? Fat_Ptr_Type_With_Bounds(eq_bt) : NULL;
+    const char *param_type = is_unconstrained ? eq_fpt : "ptr";
 
     /* Emit function definition with linkonce_odr for linker deduplication */
     Emit(cg, "\n; Implicit equality for type %.*s\n",
@@ -21532,10 +21812,9 @@ static void Generate_Type_Equality_Function(Code_Generator *cg, Type_Info *t) {
 
                 if (Type_Is_String(ct) || Type_Is_Unconstrained_Array(ct)) {
                     /* Unconstrained array/string - load fat pointer values from storage */
-                    uint32_t left_fat = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", left_fat, left_gep);
-                    uint32_t right_fat = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", right_fat, right_gep);
+                    const char *eqf_bt = Array_Bound_Llvm_Type(ct);
+                    uint32_t left_fat = Emit_Load_Fat_Pointer_From_Temp(cg, left_gep, eqf_bt);
+                    uint32_t right_fat = Emit_Load_Fat_Pointer_From_Temp(cg, right_gep, eqf_bt);
                     cmp = Generate_Array_Equality(cg, left_fat, right_fat, ct);
                 } else if (Type_Is_Constrained_Array(ct)) {
                     /* Constrained array - use array equality */
@@ -21544,28 +21823,11 @@ static void Generate_Type_Equality_Function(Code_Generator *cg, Type_Info *t) {
                     /* Nested record - recurse */
                     cmp = Generate_Record_Equality(cg, left_gep, right_gep, ct);
                 } else if (is_fat_ptr_access) {
-                    /* ACCESS to unconstrained array - compare fat pointer components */
-                    uint32_t left_val = Emit_Temp(cg);
-                    uint32_t right_val = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", left_val, left_gep);
-                    Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", right_val, right_gep);
-                    uint32_t lp = Emit_Temp(cg), rp = Emit_Temp(cg);
-                    uint32_t ll = Emit_Temp(cg), rl = Emit_Temp(cg);
-                    uint32_t lh = Emit_Temp(cg), rh = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n", lp, left_val);
-                    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n", rp, right_val);
-                    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 0\n", ll, left_val);
-                    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 0\n", rl, right_val);
-                    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 1\n", lh, left_val);
-                    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1, 1\n", rh, right_val);
-                    uint32_t cmp_p = Emit_Temp(cg), cmp_l = Emit_Temp(cg), cmp_h = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = icmp eq ptr %%t%u, %%t%u\n", cmp_p, lp, rp);
-                    Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", cmp_l, ll, rl);
-                    Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", cmp_h, lh, rh);
-                    uint32_t and1 = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", and1, cmp_p, cmp_l);
-                    cmp = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", cmp, and1, cmp_h);
+                    /* ACCESS to unconstrained array - compare fat pointer identity */
+                    const char *acc_eqf_bt = Array_Bound_Llvm_Type(ct->access.designated_type);
+                    uint32_t left_val = Emit_Load_Fat_Pointer_From_Temp(cg, left_gep, acc_eqf_bt);
+                    uint32_t right_val = Emit_Load_Fat_Pointer_From_Temp(cg, right_gep, acc_eqf_bt);
+                    cmp = Emit_Fat_Pointer_Compare(cg, left_val, right_val, acc_eqf_bt);
                 } else {
                     /* Scalar type - load and compare */
                     uint32_t left_val = Emit_Temp(cg);
@@ -21614,33 +21876,38 @@ static void Generate_Type_Equality_Function(Code_Generator *cg, Type_Info *t) {
         } else {
             /*
              * Unconstrained array equality (per RM 4.5.2):
-             * Fat pointer layout: { ptr data, { i64 low, i64 high } }
+             * Fat pointer layout: { ptr data, { bound low, bound high } }
              * Compare lengths first, then data if lengths match.
              */
             uint32_t elem_size = t->array.element_type ?
                                  t->array.element_type->size : 1;
 
-            /* Extract bounds from first fat pointer (%0) */
-            Emit(cg, "  %%left_low = extractvalue " FAT_PTR_TYPE " %%0, 1, 0\n");
-            Emit(cg, "  %%left_high = extractvalue " FAT_PTR_TYPE " %%0, 1, 1\n");
-            Emit(cg, "  %%left_len = sub i64 %%left_high, %%left_low\n");
-            Emit(cg, "  %%left_len1 = add i64 %%left_len, 1\n");
+            /* Extract bounds from first fat pointer (%0) — arithmetic in native bt */
+            Emit(cg, "  %%left_low = extractvalue %s %%0, 1, 0\n", eq_fpt);
+            Emit(cg, "  %%left_high = extractvalue %s %%0, 1, 1\n", eq_fpt);
+            Emit(cg, "  %%left_len = sub %s %%left_high, %%left_low\n", eq_bt);
+            Emit(cg, "  %%left_len1 = add %s %%left_len, 1\n", eq_bt);
 
             /* Extract bounds from second fat pointer (%1) */
-            Emit(cg, "  %%right_low = extractvalue " FAT_PTR_TYPE " %%1, 1, 0\n");
-            Emit(cg, "  %%right_high = extractvalue " FAT_PTR_TYPE " %%1, 1, 1\n");
-            Emit(cg, "  %%right_len = sub i64 %%right_high, %%right_low\n");
-            Emit(cg, "  %%right_len1 = add i64 %%right_len, 1\n");
+            Emit(cg, "  %%right_low = extractvalue %s %%1, 1, 0\n", eq_fpt);
+            Emit(cg, "  %%right_high = extractvalue %s %%1, 1, 1\n", eq_fpt);
+            Emit(cg, "  %%right_len = sub %s %%right_high, %%right_low\n", eq_bt);
+            Emit(cg, "  %%right_len1 = add %s %%right_len, 1\n", eq_bt);
 
             /* Compare lengths */
-            Emit(cg, "  %%len_eq = icmp eq i64 %%left_len1, %%right_len1\n");
+            Emit(cg, "  %%len_eq = icmp eq %s %%left_len1, %%right_len1\n", eq_bt);
 
             /* Extract data pointers */
-            Emit(cg, "  %%left_data = extractvalue " FAT_PTR_TYPE " %%0, 0\n");
-            Emit(cg, "  %%right_data = extractvalue " FAT_PTR_TYPE " %%1, 0\n");
+            Emit(cg, "  %%left_data = extractvalue %s %%0, 0\n", eq_fpt);
+            Emit(cg, "  %%right_data = extractvalue %s %%1, 0\n", eq_fpt);
 
-            /* Compute byte size and call memcmp */
-            Emit(cg, "  %%byte_size = mul i64 %%left_len1, %u\n", elem_size);
+            /* Widen length to i64 for memcmp byte size */
+            if (strcmp(eq_bt, "i64") != 0) {
+                Emit(cg, "  %%left_len1_64 = sext %s %%left_len1 to i64\n", eq_bt);
+                Emit(cg, "  %%byte_size = mul i64 %%left_len1_64, %u\n", elem_size);
+            } else {
+                Emit(cg, "  %%byte_size = mul i64 %%left_len1, %u\n", elem_size);
+            }
             Emit(cg, "  %%memcmp_res = call i32 @memcmp(ptr %%left_data, ptr %%right_data, i64 %%byte_size)\n");
             Emit(cg, "  %%data_eq = icmp eq i32 %%memcmp_res, 0\n");
 
@@ -21793,7 +22060,7 @@ static void Generate_Extern_Declarations(Code_Generator *cg, Syntax_Node *node) 
                             bool is_string = Type_Is_String(ty) ||
                                 (Type_Is_Unconstrained_Array(ty) &&
                                  Type_Is_Character(ty->array.element_type));
-                            if (is_string) type_str = "{ ptr, { i64, i64 } }";
+                            if (is_string) type_str = FAT_PTR_TYPE;
                             Emit(cg, "@");
                             Emit_Symbol_Name(cg, sym);
                             Emit(cg, " = external global %s\n", type_str);
@@ -21834,7 +22101,7 @@ static void Generate_Extern_Declarations(Code_Generator *cg, Syntax_Node *node) 
                         bool is_string = Type_Is_String(ty) ||
                             (Type_Is_Unconstrained_Array(ty) &&
                              Type_Is_Character(ty->array.element_type));
-                        if (is_string) type_str = "{ ptr, { i64, i64 } }";
+                        if (is_string) type_str = FAT_PTR_TYPE;
                         Emit(cg, "@");
                         Emit_Symbol_Name(cg, sym);
                         Emit(cg, " = external global %s\n", type_str);
@@ -21893,11 +22160,13 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
 
     /* Integer'VALUE - parse string to integer */
     Emit(cg, "; Integer'VALUE helper\n");
-    Emit(cg, "define linkonce_odr i64 @__ada_integer_value({ ptr, { i64, i64 } } %%str) {\n");
+    Emit(cg, "define linkonce_odr i64 @__ada_integer_value(" FAT_PTR_TYPE " %%str) {\n");
     Emit(cg, "entry:\n");
-    Emit(cg, "  %%data = extractvalue { ptr, { i64, i64 } } %%str, 0\n");
-    Emit(cg, "  %%low = extractvalue { ptr, { i64, i64 } } %%str, 1, 0\n");
-    Emit(cg, "  %%high = extractvalue { ptr, { i64, i64 } } %%str, 1, 1\n");
+    Emit(cg, "  %%data = extractvalue " FAT_PTR_TYPE " %%str, 0\n");
+    Emit(cg, "  %%low32 = extractvalue " FAT_PTR_TYPE " %%str, 1, 0\n");
+    Emit(cg, "  %%high32 = extractvalue " FAT_PTR_TYPE " %%str, 1, 1\n");
+    Emit(cg, "  %%low = sext i32 %%low32 to i64\n");
+    Emit(cg, "  %%high = sext i32 %%high32 to i64\n");
     Emit(cg, "  br label %%loop\n");
     Emit(cg, "loop:\n");
     Emit(cg, "  %%result = phi i64 [ 0, %%entry ], [ %%next_result, %%cont ]\n");
@@ -21942,9 +22211,9 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     /* Float'VALUE - declare as external for now (can be implemented similarly) */
     Emit(cg, "; Float'VALUE declaration (to be implemented)\n");
     Emit(cg, "declare double @strtod(ptr, ptr)\n");
-    Emit(cg, "define linkonce_odr double @__ada_float_value({ ptr, { i64, i64 } } %%str) {\n");
+    Emit(cg, "define linkonce_odr double @__ada_float_value(" FAT_PTR_TYPE " %%str) {\n");
     Emit(cg, "entry:\n");
-    Emit(cg, "  %%data = extractvalue { ptr, { i64, i64 } } %%str, 0\n");
+    Emit(cg, "  %%data = extractvalue " FAT_PTR_TYPE " %%str, 0\n");
     Emit(cg, "  %%result = call double @strtod(ptr %%data, ptr null)\n");
     Emit(cg, "  ret double %%result\n");
     Emit(cg, "}\n\n");
@@ -22372,7 +22641,7 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "}\n\n");
 
     /* GET_LINE: read line into buffer, return fat pointer */
-    Emit(cg, "define linkonce_odr { ptr, { i64, i64 } } @__text_io_get_line() {\n");
+    Emit(cg, "define linkonce_odr " FAT_PTR_TYPE " @__text_io_get_line() {\n");
     Emit(cg, "entry:\n");
     Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 256)\n");
     Emit(cg, "  %%inp = load ptr, ptr @stdin\n");
@@ -22380,10 +22649,10 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "  %%iseof = icmp eq ptr %%res, null\n");
     Emit(cg, "  br i1 %%iseof, label %%empty, label %%gotline\n");
     Emit(cg, "empty:\n");
-    Emit(cg, "  %%e1 = insertvalue { ptr, { i64, i64 } } undef, ptr %%buf, 0\n");
-    Emit(cg, "  %%e2 = insertvalue { ptr, { i64, i64 } } %%e1, i64 1, 1, 0\n");
-    Emit(cg, "  %%e3 = insertvalue { ptr, { i64, i64 } } %%e2, i64 0, 1, 1\n");
-    Emit(cg, "  ret { ptr, { i64, i64 } } %%e3\n");
+    Emit(cg, "  %%e1 = insertvalue " FAT_PTR_TYPE " undef, ptr %%buf, 0\n");
+    Emit(cg, "  %%e2 = insertvalue " FAT_PTR_TYPE " %%e1, i32 1, 1, 0\n");
+    Emit(cg, "  %%e3 = insertvalue " FAT_PTR_TYPE " %%e2, i32 0, 1, 1\n");
+    Emit(cg, "  ret " FAT_PTR_TYPE " %%e3\n");
     Emit(cg, "gotline:\n");
     Emit(cg, "  %%len = call i64 @strlen(ptr %%buf)\n");
     Emit(cg, "  ; Strip trailing newline if present\n");
@@ -22392,10 +22661,11 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "  %%lastch = load i8, ptr %%lastptr\n");
     Emit(cg, "  %%isnl = icmp eq i8 %%lastch, 10\n");
     Emit(cg, "  %%adjlen = select i1 %%isnl, i64 %%lastidx, i64 %%len\n");
-    Emit(cg, "  %%f1 = insertvalue { ptr, { i64, i64 } } undef, ptr %%buf, 0\n");
-    Emit(cg, "  %%f2 = insertvalue { ptr, { i64, i64 } } %%f1, i64 1, 1, 0\n");
-    Emit(cg, "  %%f3 = insertvalue { ptr, { i64, i64 } } %%f2, i64 %%adjlen, 1, 1\n");
-    Emit(cg, "  ret { ptr, { i64, i64 } } %%f3\n");
+    Emit(cg, "  %%adjlen32 = trunc i64 %%adjlen to i32\n");
+    Emit(cg, "  %%f1 = insertvalue " FAT_PTR_TYPE " undef, ptr %%buf, 0\n");
+    Emit(cg, "  %%f2 = insertvalue " FAT_PTR_TYPE " %%f1, i32 1, 1, 0\n");
+    Emit(cg, "  %%f3 = insertvalue " FAT_PTR_TYPE " %%f2, i32 %%adjlen32, 1, 1\n");
+    Emit(cg, "  ret " FAT_PTR_TYPE " %%f3\n");
     Emit(cg, "}\n\n");
 
     /* 'IMAGE runtime: Integer'IMAGE(x) returns string representation */
@@ -22407,20 +22677,18 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "@.img_fmt_f = linkonce_odr constant [5 x i8] c\"%%.6g\\00\"\n\n");
 
     /* Integer'IMAGE - convert integer to string fat pointer */
-    Emit(cg, "define linkonce_odr { ptr, { i64, i64 } } @__ada_integer_image(i64 %%val) {\n");
+    Emit(cg, "define linkonce_odr " FAT_PTR_TYPE " @__ada_integer_image(i64 %%val) {\n");
     Emit(cg, "entry:\n");
     Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 24)\n");
     Emit(cg, "  %%len = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %%buf, i64 24, ptr @.img_fmt_d, i64 %%val)\n");
-    Emit(cg, "  %%len64 = sext i32 %%len to i64\n");
-    Emit(cg, "  %%high = sub i64 %%len64, 1\n");
-    Emit(cg, "  %%fat1 = insertvalue { ptr, { i64, i64 } } undef, ptr %%buf, 0\n");
-    Emit(cg, "  %%fat2 = insertvalue { ptr, { i64, i64 } } %%fat1, i64 1, 1, 0\n");
-    Emit(cg, "  %%fat3 = insertvalue { ptr, { i64, i64 } } %%fat2, i64 %%len64, 1, 1\n");
-    Emit(cg, "  ret { ptr, { i64, i64 } } %%fat3\n");
+    Emit(cg, "  %%fat1 = insertvalue " FAT_PTR_TYPE " undef, ptr %%buf, 0\n");
+    Emit(cg, "  %%fat2 = insertvalue " FAT_PTR_TYPE " %%fat1, i32 1, 1, 0\n");
+    Emit(cg, "  %%fat3 = insertvalue " FAT_PTR_TYPE " %%fat2, i32 %%len, 1, 1\n");
+    Emit(cg, "  ret " FAT_PTR_TYPE " %%fat3\n");
     Emit(cg, "}\n\n");
 
     /* Character'IMAGE - single char to string (3 chars: 'x') */
-    Emit(cg, "define linkonce_odr { ptr, { i64, i64 } } @__ada_character_image(i8 %%val) {\n");
+    Emit(cg, "define linkonce_odr " FAT_PTR_TYPE " @__ada_character_image(i8 %%val) {\n");
     Emit(cg, "entry:\n");
     Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 4)\n");
     Emit(cg, "  %%p0 = getelementptr i8, ptr %%buf, i64 0\n");
@@ -22429,22 +22697,21 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "  store i8 %%val, ptr %%p1\n");
     Emit(cg, "  %%p2 = getelementptr i8, ptr %%buf, i64 2\n");
     Emit(cg, "  store i8 39, ptr %%p2  ; single quote\n");
-    Emit(cg, "  %%fat1 = insertvalue { ptr, { i64, i64 } } undef, ptr %%buf, 0\n");
-    Emit(cg, "  %%fat2 = insertvalue { ptr, { i64, i64 } } %%fat1, i64 1, 1, 0\n");
-    Emit(cg, "  %%fat3 = insertvalue { ptr, { i64, i64 } } %%fat2, i64 3, 1, 1\n");
-    Emit(cg, "  ret { ptr, { i64, i64 } } %%fat3\n");
+    Emit(cg, "  %%fat1 = insertvalue " FAT_PTR_TYPE " undef, ptr %%buf, 0\n");
+    Emit(cg, "  %%fat2 = insertvalue " FAT_PTR_TYPE " %%fat1, i32 1, 1, 0\n");
+    Emit(cg, "  %%fat3 = insertvalue " FAT_PTR_TYPE " %%fat2, i32 3, 1, 1\n");
+    Emit(cg, "  ret " FAT_PTR_TYPE " %%fat3\n");
     Emit(cg, "}\n\n");
 
     /* Float'IMAGE - convert float to string */
-    Emit(cg, "define linkonce_odr { ptr, { i64, i64 } } @__ada_float_image(double %%val) {\n");
+    Emit(cg, "define linkonce_odr " FAT_PTR_TYPE " @__ada_float_image(double %%val) {\n");
     Emit(cg, "entry:\n");
     Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 32)\n");
     Emit(cg, "  %%len = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %%buf, i64 32, ptr @.img_fmt_f, double %%val)\n");
-    Emit(cg, "  %%len64 = sext i32 %%len to i64\n");
-    Emit(cg, "  %%fat1 = insertvalue { ptr, { i64, i64 } } undef, ptr %%buf, 0\n");
-    Emit(cg, "  %%fat2 = insertvalue { ptr, { i64, i64 } } %%fat1, i64 1, 1, 0\n");
-    Emit(cg, "  %%fat3 = insertvalue { ptr, { i64, i64 } } %%fat2, i64 %%len64, 1, 1\n");
-    Emit(cg, "  ret { ptr, { i64, i64 } } %%fat3\n");
+    Emit(cg, "  %%fat1 = insertvalue " FAT_PTR_TYPE " undef, ptr %%buf, 0\n");
+    Emit(cg, "  %%fat2 = insertvalue " FAT_PTR_TYPE " %%fat1, i32 1, 1, 0\n");
+    Emit(cg, "  %%fat3 = insertvalue " FAT_PTR_TYPE " %%fat2, i32 %%len, 1, 1\n");
+    Emit(cg, "  ret " FAT_PTR_TYPE " %%fat3\n");
     Emit(cg, "}\n\n");
 
     /* Generate exception identity globals */
