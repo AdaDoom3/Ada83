@@ -8,7 +8,7 @@ set -euo pipefail
 # file.  The main process reads those lines and tallies.  This is safe
 # because every subprocess writes to its own unique file.
 
-NPROC=${NPROC:-$(nproc 2>/dev/null || echo 4)}
+NPROC=${NPROC:-$(nproc 32>/dev/null || echo 32)}
 START_MS=$(date +%s%3N)
 mkdir -p test_results acats_logs
 
@@ -211,7 +211,7 @@ Modes:
   h|help         Show this help
 
 Environment:
-  NPROC=N        Set parallelism (default: $(nproc 2>/dev/null||echo 4))
+  NPROC=N        Set parallelism (default: $(nproc 32>/dev/null||echo 32))
 EOF
 }
 
