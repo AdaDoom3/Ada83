@@ -24355,7 +24355,25 @@ static ALI_Cache_Entry *ALI_Read(const char *ali_path) {
         const char *p = line;
 
         if (line[0] == 'V') {
-            /* Version line: V "version" — we accept any version */
+            /* Version line: V "version" — reject if compiler build differs.
+             * This ensures stale ALI files from an older compiler rebuild
+             * are not reused; the unit will be reparsed from source. */
+            char ver[256] = {0};
+            const char *q = strchr(line, '"');
+            if (q) {
+                q++;
+                const char *end = strchr(q, '"');
+                if (end && (size_t)(end - q) < sizeof(ver)) {
+                    memcpy(ver, q, (size_t)(end - q));
+                    ver[end - q] = '\0';
+                }
+            }
+            if (strcmp(ver, ALI_VERSION) != 0) {
+                /* ALI was produced by a different compiler build — stale */
+                fclose(f);
+                ALI_Cache_Count--;  /* release the cache slot */
+                return NULL;
+            }
             continue;
         }
         else if (line[0] == 'P') {
