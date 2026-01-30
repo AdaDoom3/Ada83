@@ -16,6 +16,10 @@
  * §11 Symbol_Table       - Scoped name resolution
  * §12 Semantic_Pass      - Type checking and resolution
  * §13 Code_Generator     - LLVM IR emission
+ * §14 Include_Path       - Package loading & search paths
+ * §15 ALI_Writer         - GNAT-compatible library info
+ * §16 Generic_Expansion  - Macro-style instantiation
+ * §17 Main_Driver        - Command-line entry point
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -76,7 +80,7 @@
 /* Check if an LLVM type string represents a fat pointer type.
  * With the uniform { ptr, ptr } layout, this is an exact match. */
 static inline bool Llvm_Type_Is_Fat_Pointer(const char *ty) {
-    return ty && strcmp(ty, "{ ptr, ptr }") == 0;
+    return ty and strcmp(ty, "{ ptr, ptr }") == 0;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -86,7 +90,6 @@ static inline bool Llvm_Type_Is_Fat_Pointer(const char *ty) {
  * Architectures:
  *  x86-64  - AVX-512BW (64B), AVX2 (32B), SSE4.2 (16B)                  
  *  ARM64   - NEON/ASIMD (16B), SVE (128-2048b, runtime detected)        
- *  RISC-V  - V extension (VLEN=128-1024, runtime detected)              
  *  Generic - Scalar fallback with loop unrolling      
  *
  * NOTE: Every SIMD path has an equivalent scalar fallback
@@ -98,10 +101,6 @@ static inline bool Llvm_Type_Is_Fat_Pointer(const char *ty) {
     #define SIMD_X86_64 1
 #elif defined(__aarch64__) || defined(_M_ARM64)
     #define SIMD_ARM64 1
-#elif defined(__riscv) && defined(__riscv_v)
-    #define SIMD_RISCV_V 1
-#elif defined(__riscv)
-    #define SIMD_RISCV_SCALAR 1
 #else
     #define SIMD_GENERIC 1
 #endif
@@ -135,7 +134,7 @@ static void Simd_Detect_Features(void) {
 
 #ifdef __AVX512BW__
     /* Check for AVX-512F and AVX-512BW at runtime (only if compiled with support) */
-    Simd_Has_Avx512 = ((ebx >> 16) & 1) && ((ebx >> 30) & 1);
+    Simd_Has_Avx512 = ((ebx >> 16) & 1) and ((ebx >> 30) & 1);
 #endif
 }
 #endif
@@ -259,12 +258,12 @@ static inline const char *Llvm_Float_Type(uint32_t bits) {
 static inline bool Fits_In_Signed(int64_t lo, int64_t hi, uint32_t bits) {
     if (bits >= 64) return true;
     int64_t min = -(1LL << (bits - 1)), max = (1LL << (bits - 1)) - 1;
-    return lo >= min && hi <= max;
+    return lo >= min and hi <= max;
 }
 
 static inline bool Fits_In_Unsigned(int64_t lo, int64_t hi, uint32_t bits) {
     if (bits >= 64) return lo >= 0;
-    return lo >= 0 && (uint64_t)hi < (1ULL << bits);
+    return lo >= 0 and (uint64_t)hi < (1ULL << bits);
 }
 
 static inline uint32_t Bits_For_Range(int64_t lo, int64_t hi) {
@@ -307,12 +306,12 @@ enum { Default_Chunk_Size = 1 << 24 };  /* 16 MiB chunks */
 static void *Arena_Allocate(size_t size) {
     size = Align_To(size, 8);
 
-    if (!Global_Arena.head || Global_Arena.head->current + size > Global_Arena.head->end) {
+    if (not Global_Arena.head or Global_Arena.head->current + size > Global_Arena.head->end) {
         size_t chunk_size = Default_Chunk_Size;
         if (size > chunk_size) chunk_size = size + sizeof(Arena_Chunk);
 
         Arena_Chunk *chunk = malloc(sizeof(Arena_Chunk) + chunk_size);
-        if (!chunk) { fprintf(stderr, "Out of memory\n"); exit(1); }
+        if (not chunk) { fprintf(stderr, "Out of memory\n"); exit(1); }
 
         chunk->previous = Global_Arena.head;
         chunk->base = chunk->current = (char*)(chunk + 1);
@@ -356,7 +355,7 @@ static inline String_Slice Slice_From_Cstring(const char *s) {
 }
 
 static String_Slice Slice_Duplicate(String_Slice s) {
-    if (!s.length) return Empty_Slice;
+    if (not s.length) return Empty_Slice;
     char *copy = Arena_Allocate(s.length + 1);
     memcpy(copy, s.data, s.length);
     return (String_Slice){copy, s.length};
@@ -382,7 +381,7 @@ static uint64_t Slice_Hash(String_Slice s) {
  * O(nm) is acceptable; identifiers are short, and errors are infrequent. */
 __attribute__((unused))
 static int Edit_Distance(String_Slice a, String_Slice b) {
-    if (a.length > 20 || b.length > 20) return 100;
+    if (a.length > 20 or b.length > 20) return 100;
     int d[21][21];
     for (uint32_t i = 0; i <= a.length; i++) d[i][0] = (int)i;
     for (uint32_t j = 0; j <= b.length; j++) d[0][j] = (int)j;
@@ -479,7 +478,7 @@ static void Big_Integer_Ensure_Capacity(Big_Integer *bi, uint32_t needed) {
 
 /* Normalize: remove leading zero limbs, ensure zero is non-negative */
 static void Big_Integer_Normalize(Big_Integer *bi) {
-    while (bi->count > 0 && bi->limbs[bi->count - 1] == 0) bi->count--;
+    while (bi->count > 0 and bi->limbs[bi->count - 1] == 0) bi->count--;
     if (bi->count == 0) bi->is_negative = false;
 }
 
@@ -587,7 +586,7 @@ static inline int simd_parse_digits_avx2(const char *p, const char *end, uint64_
         /* Fall back to scalar for small counts */
         uint64_t v = 0;
         int i = 0;
-        while (i < len && p[i] >= '0' && p[i] <= '9') {
+        while (i < len and p[i] >= '0' and p[i] <= '9') {
             v = v * 10 + (p[i] - '0');
             i++;
         }
@@ -617,7 +616,7 @@ static inline int simd_parse_digits_avx2(const char *p, const char *end, uint64_
         /* Not all 8 are digits, fall back to scalar */
         uint64_t v = 0;
         int i = 0;
-        while (i < len && p[i] >= '0' && p[i] <= '9') {
+        while (i < len and p[i] >= '0' and p[i] <= '9') {
             v = v * 10 + (p[i] - '0');
             i++;
         }
@@ -663,11 +662,11 @@ static inline int simd_parse_digits_avx2(const char *p, const char *end, uint64_
 static Big_Integer *Big_Integer_From_Decimal_SIMD(const char *str) {
     Big_Integer *bi = Big_Integer_New(4);
     bi->is_negative = (*str == '-');
-    if (*str == '-' || *str == '+') str++;
+    if (*str == '-' or *str == '+') str++;
 
     /* Skip leading zeros */
     while (*str == '0') str++;
-    if (*str == '\0' || (*str < '0' || *str > '9')) {
+    if (*str == '\0' or (*str < '0' or *str > '9')) {
         bi->limbs[0] = 0;
         bi->count = 1;
         Big_Integer_Normalize(bi);
@@ -676,7 +675,7 @@ static Big_Integer *Big_Integer_From_Decimal_SIMD(const char *str) {
 
     /* Find end of digit string */
     const char *end = str;
-    while (*end >= '0' && *end <= '9') end++;
+    while (*end >= '0' and *end <= '9') end++;
 
 #ifdef SIMD_X86_64
     Simd_Detect_Features();
@@ -760,7 +759,7 @@ static Big_Real *Big_Real_New(void) {
 static Big_Real *Big_Real_From_String(const char *str) {
     Big_Real *br = Big_Real_New();
     br->significand->is_negative = (*str == '-');
-    if (*str == '-' || *str == '+') str++;
+    if (*str == '-' or *str == '+') str++;
 
     /* Collect all digits (ignoring decimal point and underscores) */
     char clean[512];
@@ -768,10 +767,10 @@ static Big_Real *Big_Real_From_String(const char *str) {
     int decimal_pos = -1;  /* Position of decimal point in digit sequence */
     int digit_count = 0;
 
-    while (*str && *str != 'E' && *str != 'e') {
+    while (*str and *str != 'E' and *str != 'e') {
         if (*str == '.') {
             decimal_pos = digit_count;
-        } else if (*str >= '0' && *str <= '9') {
+        } else if (*str >= '0' and *str <= '9') {
             if (clean_len < (int)sizeof(clean) - 1) {
                 clean[clean_len++] = *str;
             }
@@ -784,12 +783,12 @@ static Big_Real *Big_Real_From_String(const char *str) {
 
     /* Parse exponent if present */
     int exp = 0;
-    if (*str == 'E' || *str == 'e') {
+    if (*str == 'E' or *str == 'e') {
         str++;
         int exp_sign = 1;
         if (*str == '-') { exp_sign = -1; str++; }
         else if (*str == '+') str++;
-        while (*str >= '0' && *str <= '9') {
+        while (*str >= '0' and *str <= '9') {
             exp = exp * 10 + (*str - '0');
             str++;
         }
@@ -847,7 +846,7 @@ static bool Big_Real_Fits_Double(const Big_Real *br) {
  * This preserves full precision unlike %f format
  */
 static void Big_Real_To_Hex(const Big_Real *br, char *buf, size_t bufsize) {
-    if (!br || br->significand->count == 0) {
+    if (not br or br->significand->count == 0) {
         snprintf(buf, bufsize, "0.0");
         return;
     }
@@ -860,7 +859,7 @@ static void Big_Real_To_Hex(const Big_Real *br, char *buf, size_t bufsize) {
 
 /* Compare two Big_Real values: returns -1, 0, or 1 */
 static int Big_Real_Compare(const Big_Real *a, const Big_Real *b) {
-    if (!a || !b) return 0;
+    if (not a or not b) return 0;
 
     /* Normalize to same exponent and compare significands */
     /* For now, use double comparison - sufficient for most cases */
@@ -873,7 +872,7 @@ static int Big_Real_Compare(const Big_Real *a, const Big_Real *b) {
 
 /* Multiply Big_Real by power of 10 (for exponent adjustment) */
 static Big_Real *Big_Real_Scale(const Big_Real *br, int32_t scale) {
-    if (!br) return NULL;
+    if (not br) return NULL;
     Big_Real *result = Big_Real_New();
     result->significand = Big_Integer_New(br->significand->capacity);
     result->significand->count = br->significand->count;
@@ -889,7 +888,7 @@ static Big_Real *Big_Real_Scale(const Big_Real *br, int32_t scale) {
  * Uses arbitrary precision for intermediate calculation
  */
 static Big_Real *Big_Real_Divide_Int(const Big_Real *a, int64_t divisor) {
-    if (!a || divisor == 0) return NULL;
+    if (not a or divisor == 0) return NULL;
     /* For exact division: multiply significand precision and divide */
     /* Result = (significand * 10^precision) / divisor × 10^(exponent-precision) */
     int precision = 30;  /* Extra decimal places for precision */
@@ -925,7 +924,7 @@ static Big_Real *Big_Real_Divide_Int(const Big_Real *a, int64_t divisor) {
  * Result = a × b with full precision
  */
 static Big_Real *Big_Real_Multiply(const Big_Real *a, const Big_Real *b) {
-    if (!a || !b) return NULL;
+    if (not a or not b) return NULL;
 
     Big_Real *result = Big_Real_New();
     uint32_t new_count = a->significand->count + b->significand->count;
@@ -945,7 +944,7 @@ static Big_Real *Big_Real_Multiply(const Big_Real *a, const Big_Real *b) {
             result->significand->limbs[i + j] = (uint64_t)prod;
             carry = prod >> 64;
         }
-        if (carry && i + b->significand->count < new_count) {
+        if (carry and i + b->significand->count < new_count) {
             result->significand->limbs[i + b->significand->count] = (uint64_t)carry;
         }
     }
@@ -1269,17 +1268,17 @@ static inline const char *Simd_Skip_Whitespace_Avx2(const char *p, const char *e
 static inline const char *Simd_Skip_Whitespace(const char *p, const char *end) {
     Simd_Detect_Features();
 #ifdef __AVX512BW__
-    if (Simd_Has_Avx512 && (end - p) >= 64) {
+    if (Simd_Has_Avx512 and (end - p) >= 64) {
         p = Simd_Skip_Whitespace_Avx512(p, end);
     }
 #endif
-    if (Simd_Has_Avx2 && (end - p) >= 32) {
+    if (Simd_Has_Avx2 and (end - p) >= 32) {
         p = Simd_Skip_Whitespace_Avx2(p, end);
     }
     /* Scalar tail for remaining bytes */
     while (p < end) {
         unsigned char c = (unsigned char)*p;
-        if (c != ' ' && (c < 0x09 || c > 0x0D)) break;
+        if (c != ' ' and (c < 0x09 or c > 0x0D)) break;
         p++;
     }
     return p;
@@ -1294,13 +1293,13 @@ static inline const char *Simd_Skip_Whitespace(const char *p, const char *end) {
 static inline const char *Simd_Find_Char_X86(const char *p, const char *end, char ch) {
 
     /* Fast path: scalar check for first 16 bytes (covers most short comments/strings) */
-    for (int i = 0; i < 16 && p + i < end; i++) {
+    for (int i = 0; i < 16 and p + i < end; i++) {
         if (p[i] == ch) return p + i;
     }
     if (p + 16 >= end) {
         /* Short remaining buffer - finish with scalar */
         p += 16;
-        while (p < end && *p != ch) p++;
+        while (p < end and *p != ch) p++;
         return p;
     }
     p += 16;  /* Fast path didn't find it, continue with SIMD */
@@ -1346,7 +1345,7 @@ static inline const char *Simd_Find_Char_X86(const char *p, const char *end, cha
         p += 32;
     }
     /* Scalar tail */
-    while (p < end && *p != ch) p++;
+    while (p < end and *p != ch) p++;
     return p;
 }
 
@@ -1371,18 +1370,18 @@ static inline const char *Simd_Find_Double_Quote(const char *p, const char *end)
  * ───────────────────────────────────────────────────────────────────────────── */
 static inline const char *Simd_Scan_Identifier(const char *p, const char *end) {
     /* Fast path: unrolled table lookup for first 8 chars (covers most identifiers) */
-    if (p >= end || !Is_Id_Char(*p)) return p;
-    if (p + 1 >= end || !Is_Id_Char(p[1])) return p + 1;
-    if (p + 2 >= end || !Is_Id_Char(p[2])) return p + 2;
-    if (p + 3 >= end || !Is_Id_Char(p[3])) return p + 3;
-    if (p + 4 >= end || !Is_Id_Char(p[4])) return p + 4;
-    if (p + 5 >= end || !Is_Id_Char(p[5])) return p + 5;
-    if (p + 6 >= end || !Is_Id_Char(p[6])) return p + 6;
-    if (p + 7 >= end || !Is_Id_Char(p[7])) return p + 7;
+    if (p >= end or not Is_Id_Char(*p)) return p;
+    if (p + 1 >= end or not Is_Id_Char(p[1])) return p + 1;
+    if (p + 2 >= end or not Is_Id_Char(p[2])) return p + 2;
+    if (p + 3 >= end or not Is_Id_Char(p[3])) return p + 3;
+    if (p + 4 >= end or not Is_Id_Char(p[4])) return p + 4;
+    if (p + 5 >= end or not Is_Id_Char(p[5])) return p + 5;
+    if (p + 6 >= end or not Is_Id_Char(p[6])) return p + 6;
+    if (p + 7 >= end or not Is_Id_Char(p[7])) return p + 7;
 
     /* Long identifier (> 8 chars) - continue with table lookup */
     p += 8;
-    while (p < end && Is_Id_Char(*p)) p++;
+    while (p < end and Is_Id_Char(*p)) p++;
     return p;
 }
 
@@ -1454,7 +1453,7 @@ static inline const char *Simd_Scan_Digits(const char *p, const char *end) {
         p += 32;
     }
     /* Scalar tail */
-    while (p < end && ((*p >= '0' && *p <= '9') || *p == '_')) p++;
+    while (p < end and ((*p >= '0' and *p <= '9') or *p == '_')) p++;
     return p;
 }
 
@@ -1471,7 +1470,7 @@ static inline const char *Simd_Skip_Whitespace(const char *p, const char *end) {
             /* Check for space (0x20) */
             "movi v1.16b, #0x20\n\t"
             "cmeq v5.16b, v0.16b, v1.16b\n\t"
-            /* Check range 0x09-0x0D: c > 0x08 && c < 0x0E */
+            /* Check range 0x09-0x0D: c > 0x08 and c < 0x0E */
             "movi v2.16b, #0x08\n\t"              /* lo-1 */
             "movi v3.16b, #0x0E\n\t"              /* hi+1 */
             "cmhi v6.16b, v0.16b, v2.16b\n\t"     /* c > 0x08 */
@@ -1493,7 +1492,7 @@ static inline const char *Simd_Skip_Whitespace(const char *p, const char *end) {
     /* Scalar tail: check all isspace() characters */
     while (p < end) {
         unsigned char c = (unsigned char)*p;
-        if (c != ' ' && (c < 0x09 || c > 0x0D)) break;
+        if (c != ' ' and (c < 0x09 or c > 0x0D)) break;
         p++;
     }
     return p;
@@ -1516,7 +1515,7 @@ static inline const char *Simd_Find_Newline(const char *p, const char *end) {
         if (hi) return p + 8 + (Tzcnt64(hi) >> 3);
         p += 16;
     }
-    while (p < end && *p != '\n') p++;
+    while (p < end and *p != '\n') p++;
     return p;
 }
 
@@ -1525,7 +1524,7 @@ static inline const char *Simd_Scan_Identifier(const char *p, const char *end) {
         uint64_t lo, hi;
         __asm__ volatile (
             "ldr q0, [%[src]]\n\t"
-            /* Check a-z: c >= 'a' && c <= 'z' */
+            /* Check a-z: c >= 'a' and c <= 'z' */
             "movi v1.16b, #0x60\n\t"              /* 'a' - 1 = 0x60 */
             "movi v2.16b, #0x7B\n\t"              /* 'z' + 1 = 0x7B */
             "cmhi v3.16b, v0.16b, v1.16b\n\t"     /* c > 'a'-1 */
@@ -1563,8 +1562,8 @@ static inline const char *Simd_Scan_Identifier(const char *p, const char *end) {
     }
     while (p < end) {
         char c = *p;
-        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-              (c >= '0' && c <= '9') || c == '_'))
+        if (not ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+              (c >= '0' and c <= '9') or c == '_'))
             break;
         p++;
     }
@@ -1588,7 +1587,7 @@ static inline const char *Simd_Find_Quote(const char *p, const char *end) {
         if (hi) return p + 8 + (Tzcnt64(hi) >> 3);
         p += 16;
     }
-    while (p < end && *p != '\'') p++;
+    while (p < end and *p != '\'') p++;
     return p;
 }
 
@@ -1609,7 +1608,7 @@ static inline const char *Simd_Find_Double_Quote(const char *p, const char *end)
         if (hi) return p + 8 + (Tzcnt64(hi) >> 3);
         p += 16;
     }
-    while (p < end && *p != '"') p++;
+    while (p < end and *p != '"') p++;
     return p;
 }
 
@@ -1640,252 +1639,7 @@ static inline const char *Simd_Scan_Digits(const char *p, const char *end) {
         if (hi) return p + 8 + (Tzcnt64(hi) >> 3);
         p += 16;
     }
-    while (p < end && ((*p >= '0' && *p <= '9') || *p == '_')) p++;
-    return p;
-}
-
-#elif defined(SIMD_RISCV_V)
-/* ─────────────────────────────────────────────────────────────────────────────
- * RISC-V Vector Extension Implementation
- * ─────────────────────────────────────────────────────────────────────────────
- *
- * The RISC-V V extension provides scalable vector processing with:
- *   - VLEN: Vector register length (128-1024 bits, implementation-defined)
- *   - vsetvli: Set vector length based on available elements
- *   - Predicated execution via mask registers (v0.t suffix)
- *
- * IMPORTANT: RISC-V V is "length-agnostic" - code works across all VLENs.
- * The vsetvli instruction dynamically sets the vector length (VL) based on:
- *   - Application Vector Length (AVL): elements we want to process
- *   - VLEN: hardware vector register size
- *   - SEW: Selected Element Width (8 bits for byte operations)
- *
- * Reference: RISC-V "V" Vector Extension Specification v1.0
- *            https://github.com/riscv/riscv-v-spec
- * ───────────────────────────────────────────────────────────────────────────── */
-
-/* Runtime VLEN detection - returns maximum bytes per vector register */
-static int Riscv_Vlen_Bytes = -1;  /* -1 = unchecked */
-
-static void Riscv_Detect_Vlen(void) {
-    if (Riscv_Vlen_Bytes >= 0) return;
-    /* Query VLEN by setting maximum vector length for 8-bit elements
-     * Godbolt: vsetvli a0, zero, e8, m1, ta, ma */
-    size_t vl;
-    __asm__ volatile (
-        "vsetvli %0, zero, e8, m1, ta, ma"
-        : "=r" (vl)
-        :
-        :
-    );
-    Riscv_Vlen_Bytes = (int)vl;
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────
- * RISC-V V Whitespace Skip
- *
- * Algorithm: Load VLEN bytes, compare for space and control chars, find first
- * non-match position using vfirst.m instruction.
- * ───────────────────────────────────────────────────────────────────────────── */
-static inline const char *Simd_Skip_Whitespace(const char *p, const char *end) {
-    Riscv_Detect_Vlen();
-    size_t avl = (size_t)(end - p);
-
-    while (avl >= (size_t)Riscv_Vlen_Bytes) {
-        size_t vl;
-        long first_non_ws;
-        __asm__ volatile (
-            /* Set vector length for byte elements */
-            "vsetvli %[vl], %[avl], e8, m1, ta, ma\n\t"
-            /* Load vector of bytes */
-            "vle8.v v8, (%[src])\n\t"
-            /* Check for space (0x20) */
-            "vmseq.vi v0, v8, 0x20\n\t"
-            /* Check range 0x09-0x0D (tab, LF, VT, FF, CR) */
-            "li t0, 0x08\n\t"
-            "vmsgtu.vx v1, v8, t0\n\t"      /* v8 > 0x08 */
-            "li t0, 0x0E\n\t"
-            "vmsltu.vx v2, v8, t0\n\t"      /* v8 < 0x0E */
-            "vmand.mm v1, v1, v2\n\t"       /* in range [0x09,0x0D] */
-            /* Combine: whitespace = space OR control_range */
-            "vmor.mm v0, v0, v1\n\t"
-            /* Invert: find non-whitespace */
-            "vmnot.m v0, v0\n\t"
-            /* Find first set bit (first non-whitespace) */
-            "vfirst.m %[first], v0\n\t"
-            : [vl] "=r" (vl), [first] "=r" (first_non_ws)
-            : [avl] "r" (avl), [src] "r" (p)
-            : "v0", "v1", "v2", "v8", "t0", "memory"
-        );
-
-        if (first_non_ws >= 0) {
-            return p + first_non_ws;
-        }
-        p += vl;
-        avl = (size_t)(end - p);
-    }
-
-    /* Scalar tail */
-    while (p < end) {
-        unsigned char c = (unsigned char)*p;
-        if (c != ' ' && (c < 0x09 || c > 0x0D)) break;
-        p++;
-    }
-    return p;
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────
- * RISC-V V Single Character Search
- * ───────────────────────────────────────────────────────────────────────────── */
-static inline const char *Simd_Find_Char_Riscv(const char *p, const char *end, char ch) {
-    Riscv_Detect_Vlen();
-    size_t avl = (size_t)(end - p);
-
-    while (avl >= (size_t)Riscv_Vlen_Bytes) {
-        size_t vl;
-        long first_match;
-        __asm__ volatile (
-            "vsetvli %[vl], %[avl], e8, m1, ta, ma\n\t"
-            "vle8.v v8, (%[src])\n\t"
-            "vmseq.vx v0, v8, %[ch]\n\t"
-            "vfirst.m %[first], v0\n\t"
-            : [vl] "=r" (vl), [first] "=r" (first_match)
-            : [avl] "r" (avl), [src] "r" (p), [ch] "r" ((int)(unsigned char)ch)
-            : "v0", "v8", "memory"
-        );
-
-        if (first_match >= 0) {
-            return p + first_match;
-        }
-        p += vl;
-        avl = (size_t)(end - p);
-    }
-
-    /* Scalar tail */
-    while (p < end && *p != ch) p++;
-    return p;
-}
-
-static inline const char *Simd_Find_Newline(const char *p, const char *end) {
-    return Simd_Find_Char_Riscv(p, end, '\n');
-}
-
-static inline const char *Simd_Find_Quote(const char *p, const char *end) {
-    return Simd_Find_Char_Riscv(p, end, '\'');
-}
-
-static inline const char *Simd_Find_Double_Quote(const char *p, const char *end) {
-    return Simd_Find_Char_Riscv(p, end, '"');
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────
- * RISC-V V Identifier Scanner
- *
- * Matches [A-Za-z0-9_] using range comparisons and OR reduction.
- * ───────────────────────────────────────────────────────────────────────────── */
-static inline const char *Simd_Scan_Identifier(const char *p, const char *end) {
-    Riscv_Detect_Vlen();
-    size_t avl = (size_t)(end - p);
-
-    while (avl >= (size_t)Riscv_Vlen_Bytes) {
-        size_t vl;
-        long first_invalid;
-        __asm__ volatile (
-            "vsetvli %[vl], %[avl], e8, m1, ta, ma\n\t"
-            "vle8.v v8, (%[src])\n\t"
-            /* Check a-z: c > 0x60 && c < 0x7B */
-            "li t0, 0x60\n\t"
-            "vmsgtu.vx v1, v8, t0\n\t"
-            "li t0, 0x7B\n\t"
-            "vmsltu.vx v2, v8, t0\n\t"
-            "vmand.mm v3, v1, v2\n\t"       /* lowercase */
-            /* Check A-Z: c > 0x40 && c < 0x5B */
-            "li t0, 0x40\n\t"
-            "vmsgtu.vx v1, v8, t0\n\t"
-            "li t0, 0x5B\n\t"
-            "vmsltu.vx v2, v8, t0\n\t"
-            "vmand.mm v4, v1, v2\n\t"       /* uppercase */
-            /* Check 0-9: c > 0x2F && c < 0x3A */
-            "li t0, 0x2F\n\t"
-            "vmsgtu.vx v1, v8, t0\n\t"
-            "li t0, 0x3A\n\t"
-            "vmsltu.vx v2, v8, t0\n\t"
-            "vmand.mm v5, v1, v2\n\t"       /* digit */
-            /* Check underscore (0x5F) */
-            "li t0, 0x5F\n\t"
-            "vmseq.vx v6, v8, t0\n\t"       /* underscore */
-            /* Combine: valid = lower | upper | digit | underscore */
-            "vmor.mm v0, v3, v4\n\t"
-            "vmor.mm v0, v0, v5\n\t"
-            "vmor.mm v0, v0, v6\n\t"
-            /* Invert to find invalid chars */
-            "vmnot.m v0, v0\n\t"
-            "vfirst.m %[first], v0\n\t"
-            : [vl] "=r" (vl), [first] "=r" (first_invalid)
-            : [avl] "r" (avl), [src] "r" (p)
-            : "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v8", "t0", "memory"
-        );
-
-        if (first_invalid >= 0) {
-            return p + first_invalid;
-        }
-        p += vl;
-        avl = (size_t)(end - p);
-    }
-
-    /* Scalar tail */
-    while (p < end) {
-        char c = *p;
-        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-              (c >= '0' && c <= '9') || c == '_'))
-            break;
-        p++;
-    }
-    return p;
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────
- * RISC-V V Digit Scanner
- *
- * Matches [0-9_] for Ada numeric literals.
- * ───────────────────────────────────────────────────────────────────────────── */
-static inline const char *Simd_Scan_Digits(const char *p, const char *end) {
-    Riscv_Detect_Vlen();
-    size_t avl = (size_t)(end - p);
-
-    while (avl >= (size_t)Riscv_Vlen_Bytes) {
-        size_t vl;
-        long first_non_digit;
-        __asm__ volatile (
-            "vsetvli %[vl], %[avl], e8, m1, ta, ma\n\t"
-            "vle8.v v8, (%[src])\n\t"
-            /* Check 0-9: c > 0x2F && c < 0x3A */
-            "li t0, 0x2F\n\t"
-            "vmsgtu.vx v1, v8, t0\n\t"
-            "li t0, 0x3A\n\t"
-            "vmsltu.vx v2, v8, t0\n\t"
-            "vmand.mm v3, v1, v2\n\t"       /* digit */
-            /* Check underscore */
-            "li t0, 0x5F\n\t"
-            "vmseq.vx v4, v8, t0\n\t"
-            /* Combine and invert */
-            "vmor.mm v0, v3, v4\n\t"
-            "vmnot.m v0, v0\n\t"
-            "vfirst.m %[first], v0\n\t"
-            : [vl] "=r" (vl), [first] "=r" (first_non_digit)
-            : [avl] "r" (avl), [src] "r" (p)
-            : "v0", "v1", "v2", "v3", "v4", "v8", "t0", "memory"
-        );
-
-        if (first_non_digit >= 0) {
-            return p + first_non_digit;
-        }
-        p += vl;
-        avl = (size_t)(end - p);
-    }
-
-    /* Scalar tail */
-    while (p < end && ((*p >= '0' && *p <= '9') || *p == '_')) p++;
+    while (p < end and ((*p >= '0' and *p <= '9') or *p == '_')) p++;
     return p;
 }
 
@@ -1901,22 +1655,22 @@ static inline const char *Simd_Scan_Digits(const char *p, const char *end) {
 static inline const char *Simd_Skip_Whitespace(const char *p, const char *end) {
     while (p < end) {
         unsigned char c = (unsigned char)*p;
-        if (c != ' ' && (c < 0x09 || c > 0x0D)) break;
+        if (c != ' ' and (c < 0x09 or c > 0x0D)) break;
         p++;
     }
     return p;
 }
 
 static inline const char *Simd_Find_Newline(const char *p, const char *end) {
-    while (p < end && *p != '\n') p++;
+    while (p < end and *p != '\n') p++;
     return p;
 }
 
 static inline const char *Simd_Scan_Identifier(const char *p, const char *end) {
     while (p < end) {
         char c = *p;
-        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-              (c >= '0' && c <= '9') || c == '_'))
+        if (not ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+              (c >= '0' and c <= '9') or c == '_'))
             break;
         p++;
     }
@@ -1924,17 +1678,17 @@ static inline const char *Simd_Scan_Identifier(const char *p, const char *end) {
 }
 
 static inline const char *Simd_Find_Quote(const char *p, const char *end) {
-    while (p < end && *p != '\'') p++;
+    while (p < end and *p != '\'') p++;
     return p;
 }
 
 static inline const char *Simd_Find_Double_Quote(const char *p, const char *end) {
-    while (p < end && *p != '"') p++;
+    while (p < end and *p != '"') p++;
     return p;
 }
 
 static inline const char *Simd_Scan_Digits(const char *p, const char *end) {
-    while (p < end && ((*p >= '0' && *p <= '9') || *p == '_')) p++;
+    while (p < end and ((*p >= '0' and *p <= '9') or *p == '_')) p++;
     return p;
 }
 
@@ -1968,8 +1722,8 @@ static void Lexer_Skip_Whitespace_And_Comments(Lexer *lex) {
         }
 
         /* Ada comment: -- to end of line */
-        if (lex->current + 1 < lex->source_end &&
-            lex->current[0] == '-' && lex->current[1] == '-') {
+        if (lex->current + 1 < lex->source_end and
+            lex->current[0] == '-' and lex->current[1] == '-') {
             /* Use SIMD to find newline */
             const char *end_comment = Simd_Find_Newline(lex->current, lex->source_end);
             lex->column += (uint32_t)(end_comment - lex->current);
@@ -2002,9 +1756,9 @@ static Token Scan_Identifier(Lexer *lex) {
 
 /* Parse digit value in any base up to 16 */
 static inline int Digit_Value(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= '0' and c <= '9') return c - '0';
+    if (c >= 'A' and c <= 'F') return c - 'A' + 10;
+    if (c >= 'a' and c <= 'f') return c - 'a' + 10;
     return -1;
 }
 
@@ -2015,32 +1769,32 @@ static Token Scan_Number(Lexer *lex) {
     bool is_real = false, has_exponent = false, is_based = false;
 
     /* Scan integer part (possibly base specifier) */
-    while (Is_Digit(Lexer_Peek(lex, 0)) || Lexer_Peek(lex, 0) == '_')
+    while (Is_Digit(Lexer_Peek(lex, 0)) or Lexer_Peek(lex, 0) == '_')
         Lexer_Advance(lex);
 
     /* Based literal: 16#FFFF# or 2#1010# */
-    if (Lexer_Peek(lex, 0) == '#' ||
-        (Lexer_Peek(lex, 0) == ':' && Is_Xdigit(Lexer_Peek(lex, 1)))) {
+    if (Lexer_Peek(lex, 0) == '#' or
+        (Lexer_Peek(lex, 0) == ':' and Is_Xdigit(Lexer_Peek(lex, 1)))) {
         is_based = true;
         char delim = Lexer_Peek(lex, 0);
 
         /* Parse base from what we've scanned so far */
         char base_buf[16] = {0};
         int bi = 0;
-        for (const char *p = start; p < lex->current && bi < 15; p++)
+        for (const char *p = start; p < lex->current and bi < 15; p++)
             if (*p != '_') base_buf[bi++] = *p;
         base = atoi(base_buf);
 
         Lexer_Advance(lex); /* consume # or : */
 
         /* Scan mantissa */
-        while (Is_Xdigit(Lexer_Peek(lex, 0)) || Lexer_Peek(lex, 0) == '_')
+        while (Is_Xdigit(Lexer_Peek(lex, 0)) or Lexer_Peek(lex, 0) == '_')
             Lexer_Advance(lex);
 
         if (Lexer_Peek(lex, 0) == '.') {
             is_real = true;
             Lexer_Advance(lex);
-            while (Is_Xdigit(Lexer_Peek(lex, 0)) || Lexer_Peek(lex, 0) == '_')
+            while (Is_Xdigit(Lexer_Peek(lex, 0)) or Lexer_Peek(lex, 0) == '_')
                 Lexer_Advance(lex);
         }
 
@@ -2049,17 +1803,17 @@ static Token Scan_Number(Lexer *lex) {
         if (To_Lower(Lexer_Peek(lex, 0)) == 'e') {
             has_exponent = true;
             Lexer_Advance(lex);
-            if (Lexer_Peek(lex, 0) == '+' || Lexer_Peek(lex, 0) == '-')
+            if (Lexer_Peek(lex, 0) == '+' or Lexer_Peek(lex, 0) == '-')
                 Lexer_Advance(lex);
-            while (Is_Digit(Lexer_Peek(lex, 0)) || Lexer_Peek(lex, 0) == '_')
+            while (Is_Digit(Lexer_Peek(lex, 0)) or Lexer_Peek(lex, 0) == '_')
                 Lexer_Advance(lex);
         }
     } else {
         /* Decimal literal with optional fraction and exponent */
-        if (Lexer_Peek(lex, 0) == '.' && Lexer_Peek(lex, 1) != '.' && !Is_Alpha(Lexer_Peek(lex, 1))) {
+        if (Lexer_Peek(lex, 0) == '.' and Lexer_Peek(lex, 1) != '.' and not Is_Alpha(Lexer_Peek(lex, 1))) {
             is_real = true;
             Lexer_Advance(lex);
-            while (Is_Digit(Lexer_Peek(lex, 0)) || Lexer_Peek(lex, 0) == '_')
+            while (Is_Digit(Lexer_Peek(lex, 0)) or Lexer_Peek(lex, 0) == '_')
                 Lexer_Advance(lex);
         }
 
@@ -2067,9 +1821,9 @@ static Token Scan_Number(Lexer *lex) {
             has_exponent = true;
             /* Note: exponent alone doesn't make it real - 12E1 is integer 120 */
             Lexer_Advance(lex);
-            if (Lexer_Peek(lex, 0) == '+' || Lexer_Peek(lex, 0) == '-')
+            if (Lexer_Peek(lex, 0) == '+' or Lexer_Peek(lex, 0) == '-')
                 Lexer_Advance(lex);
-            while (Is_Digit(Lexer_Peek(lex, 0)) || Lexer_Peek(lex, 0) == '_')
+            while (Is_Digit(Lexer_Peek(lex, 0)) or Lexer_Peek(lex, 0) == '_')
                 Lexer_Advance(lex);
         }
     }
@@ -2080,12 +1834,12 @@ static Token Scan_Number(Lexer *lex) {
     /* Convert to value: strip underscores, parse with base */
     char clean[512];
     int ci = 0;
-    for (const char *p = start; p < lex->current && ci < 510; p++)
-        if (*p != '_' && *p != '#' && *p != ':') clean[ci++] = *p;
+    for (const char *p = start; p < lex->current and ci < 510; p++)
+        if (*p != '_' and *p != '#' and *p != ':') clean[ci++] = *p;
     clean[ci] = '\0';
 
     if (is_real) {
-        if (!is_based) {
+        if (not is_based) {
             /* Parse into Big_Real for arbitrary precision */
             tok.big_real = Big_Real_From_String(clean);
             /* Also compute double for compatibility */
@@ -2101,15 +1855,15 @@ static Token Scan_Number(Lexer *lex) {
             for (const char *p = start; p < lex->current; p++) {
                 char c = *p;
                 if (c == '_') continue;
-                if (c == '#' || c == ':') { state++; continue; }
+                if (c == '#' or c == ':') { state++; continue; }
                 if (c == '.') { state = 2; continue; }
                 if (To_Lower(c) == 'e') { state = 3; continue; }
                 if (state == 1) {
                     int d = Digit_Value(c);
-                    if (d >= 0 && d < base) value = value * base + d;
+                    if (d >= 0 and d < base) value = value * base + d;
                 } else if (state == 2) {
                     int d = Digit_Value(c);
-                    if (d >= 0 && d < base) { value += d * frac_mult; frac_mult /= base; }
+                    if (d >= 0 and d < base) { value += d * frac_mult; frac_mult /= base; }
                 } else if (state == 3) {
                     if (c == '-') exp_neg = true;
                     else if (c == '+') continue;
@@ -2123,12 +1877,12 @@ static Token Scan_Number(Lexer *lex) {
             tok.big_real = NULL;  /* Based reals use double precision only */
         }
     } else {
-        if (!is_based && !has_exponent) {
+        if (not is_based and not has_exponent) {
             tok.big_integer = Big_Integer_From_Decimal_SIMD(clean);
             int64_t v;
             if (Big_Integer_Fits_Int64(tok.big_integer, &v))
                 tok.integer_value = v;
-        } else if (!is_based && has_exponent) {
+        } else if (not is_based and has_exponent) {
             /* Decimal integer with exponent (e.g., 12E1 = 120) */
             int64_t mantissa = 0;
             int exp = 0;
@@ -2162,7 +1916,7 @@ static Token Scan_Number(Lexer *lex) {
             for (const char *p = start; p < lex->current; p++) {
                 char c = *p;
                 if (c == '_') continue;
-                if (c == '#' || c == ':') {
+                if (c == '#' or c == ':') {
                     state++;
                     continue;
                 }
@@ -2171,7 +1925,7 @@ static Token Scan_Number(Lexer *lex) {
                 } else if (state == 1) {
                     /* Mantissa in given base */
                     int d = Digit_Value(c);
-                    if (d >= 0 && d < base) value = value * base + d;
+                    if (d >= 0 and d < base) value = value * base + d;
                 } else if (state == 2) {
                     /* Exponent (always decimal, after second delimiter) */
                     if (To_Lower(c) == 'e') continue; /* skip the 'e' marker */
@@ -2271,12 +2025,12 @@ static Token Lexer_Next_Token(Lexer *lex) {
     {
         char middle = Lexer_Peek(lex, 1);
         char third = Lexer_Peek(lex, 2);
-        if (c == '\'' && middle >= ' ' && third == '\'') {
+        if (c == '\'' and middle >= ' ' and third == '\'') {
             /* Check for qualified expression context: TYPE'(expr)
              * If previous token was identifier/RPAREN and middle is '(',
              * this is tick+lparen, not a character literal */
-            if (middle == '(' &&
-                (lex->prev_token_kind == TK_IDENTIFIER ||
+            if (middle == '(' and
+                (lex->prev_token_kind == TK_IDENTIFIER or
                  lex->prev_token_kind == TK_RPAREN)) {
                 /* Not a character literal - fall through to tick handling */
             } else {
@@ -2688,10 +2442,21 @@ struct Syntax_Node {
             Token_Kind unit_kind;  /* TK_PROCEDURE, TK_FUNCTION, or TK_PACKAGE */
         } generic_inst;
 
+        /* Generic type definition kinds (RM 12.1) */
         /* NK_GENERIC_TYPE_PARAM: type T is ... */
         struct {
             String_Slice name;
-            int def_kind;  /* 0=PRIVATE, 1=LIMITED_PRIVATE, 2=DISCRETE, 3=INTEGER, 4=FLOAT, 5=FIXED */
+            enum {
+                GEN_DEF_PRIVATE = 0,      /* type T is private */
+                GEN_DEF_LIMITED_PRIVATE,   /* type T is limited private */
+                GEN_DEF_DISCRETE,          /* type T is (<>) */
+                GEN_DEF_INTEGER,           /* type T is range <> */
+                GEN_DEF_FLOAT,             /* type T is digits <> */
+                GEN_DEF_FIXED,             /* type T is delta <> */
+                GEN_DEF_ARRAY,             /* type T is array (...) of ... */
+                GEN_DEF_ACCESS,            /* type T is access ... */
+                GEN_DEF_DERIVED            /* type T is new ... */
+            } def_kind;
             Syntax_Node *def_detail;
         } generic_type_param;
 
@@ -2700,7 +2465,11 @@ struct Syntax_Node {
             Node_List names;
             Syntax_Node *object_type;
             Syntax_Node *default_expr;
-            int mode;  /* GEN_MODE_IN, GEN_MODE_IN_OUT */
+            enum {
+                GEN_MODE_IN = 0,     /* in (default) */
+                GEN_MODE_OUT,        /* out */
+                GEN_MODE_IN_OUT      /* in out */
+            } mode;
         } generic_object_param;
 
         /* NK_GENERIC_SUBPROGRAM_PARAM: with procedure/function spec [is name|<>] */
@@ -2807,7 +2576,7 @@ static inline bool Parser_At(Parser *p, Token_Kind kind) {
 }
 
 static inline bool Parser_At_Any(Parser *p, Token_Kind k1, Token_Kind k2) {
-    return Parser_At(p, k1) || Parser_At(p, k2);
+    return Parser_At(p, k1) or Parser_At(p, k2);
 }
 
 /* Lookahead: check if the NEXT token (after current) is of the given kind */
@@ -2832,11 +2601,11 @@ static Token Parser_Advance(Parser *p) {
     p->current_token = Lexer_Next_Token(&p->lexer);
 
     /* Handle compound keywords: AND THEN, OR ELSE */
-    if (p->previous_token.kind == TK_AND && Parser_At(p, TK_THEN)) {
+    if (p->previous_token.kind == TK_AND and Parser_At(p, TK_THEN)) {
         p->previous_token.kind = TK_AND_THEN;
         p->lexer.prev_token_kind = TK_AND_THEN;
         p->current_token = Lexer_Next_Token(&p->lexer);
-    } else if (p->previous_token.kind == TK_OR && Parser_At(p, TK_ELSE)) {
+    } else if (p->previous_token.kind == TK_OR and Parser_At(p, TK_ELSE)) {
         p->previous_token.kind = TK_OR_ELSE;
         p->lexer.prev_token_kind = TK_OR_ELSE;
         p->current_token = Lexer_Next_Token(&p->lexer);
@@ -2846,7 +2615,7 @@ static Token Parser_Advance(Parser *p) {
 }
 
 static bool Parser_Match(Parser *p, Token_Kind kind) {
-    if (!Parser_At(p, kind)) return false;
+    if (not Parser_At(p, kind)) return false;
     Parser_Advance(p);
     return true;
 }
@@ -2878,7 +2647,7 @@ static void Parser_Error_At_Current(Parser *p, const char *expected) {
 static void Parser_Synchronize(Parser *p) {
     p->panic_mode = false;
 
-    while (!Parser_At(p, TK_EOF)) {
+    while (not Parser_At(p, TK_EOF)) {
         if (p->previous_token.kind == TK_SEMICOLON) return;
 
         switch (p->current_token.kind) {
@@ -2896,8 +2665,8 @@ static void Parser_Synchronize(Parser *p) {
 
 /* Check for parser progress — detect stuck parsing loops */
 static bool Parser_Check_Progress(Parser *p) {
-    if (p->current_token.location.line == p->last_line &&
-        p->current_token.location.column == p->last_column &&
+    if (p->current_token.location.line == p->last_line and
+        p->current_token.location.column == p->last_column and
         p->current_token.kind == p->last_kind) {
         Parser_Advance(p);
         return false;
@@ -2923,7 +2692,7 @@ static bool Parser_Expect(Parser *p, Token_Kind kind) {
  * ───────────────────────────────────────────────────────────────────────── */
 
 static String_Slice Parser_Identifier(Parser *p) {
-    if (!Parser_At(p, TK_IDENTIFIER)) {
+    if (not Parser_At(p, TK_IDENTIFIER)) {
         Parser_Error_At_Current(p, "identifier");
         return Empty_Slice;
     }
@@ -2934,9 +2703,9 @@ static String_Slice Parser_Identifier(Parser *p) {
 
 /* Check END identifier matches expected name (also handles operator strings) */
 static void Parser_Check_End_Name(Parser *p, String_Slice expected_name) {
-    if (Parser_At(p, TK_IDENTIFIER) || Parser_At(p, TK_STRING)) {
+    if (Parser_At(p, TK_IDENTIFIER) or Parser_At(p, TK_STRING)) {
         String_Slice end_name = p->current_token.text;
-        if (!Slice_Equal_Ignore_Case(end_name, expected_name)) {
+        if (not Slice_Equal_Ignore_Case(end_name, expected_name)) {
             Report_Error(p->current_token.location,
                         "END name does not match (expected '%.*s', got '%.*s')",
                         expected_name.length, expected_name.data,
@@ -3008,8 +2777,8 @@ static Syntax_Node *Parse_Primary(Parser *p) {
      * to Parse_Name which handles operator names and function calls. */
     if (Parser_At(p, TK_STRING)) {
         String_Slice text = p->current_token.text;
-        bool is_operator_call = (text.length <= 3) && Parser_Peek_At(p, TK_LPAREN);
-        if (!is_operator_call) {
+        bool is_operator_call = (text.length <= 3) and Parser_Peek_At(p, TK_LPAREN);
+        if (not is_operator_call) {
             Syntax_Node *node = Node_New(NK_STRING, loc);
             node->string_val.text = Slice_Duplicate(text);
             Parser_Advance(p);
@@ -3045,7 +2814,7 @@ static Syntax_Node *Parse_Primary(Parser *p) {
     }
 
     /* Unary operators: NOT, ABS, +, - */
-    if (Parser_At_Any(p, TK_NOT, TK_ABS) ||
+    if (Parser_At_Any(p, TK_NOT, TK_ABS) or
         Parser_At_Any(p, TK_PLUS, TK_MINUS)) {
         Token_Kind op = p->current_token.kind;
         Parser_Advance(p);
@@ -3060,8 +2829,8 @@ static Syntax_Node *Parse_Primary(Parser *p) {
         Syntax_Node *expr = Parse_Expression(p);
 
         /* Check for aggregate indicators */
-        if (Parser_At(p, TK_COMMA) || Parser_At(p, TK_ARROW) ||
-            Parser_At(p, TK_BAR) || Parser_At(p, TK_WITH) ||
+        if (Parser_At(p, TK_COMMA) or Parser_At(p, TK_ARROW) or
+            Parser_At(p, TK_BAR) or Parser_At(p, TK_WITH) or
             Parser_At(p, TK_DOTDOT)) {
             /* This is an aggregate */
             Syntax_Node *node = Node_New(NK_AGGREGATE, loc);
@@ -3079,7 +2848,7 @@ static Syntax_Node *Parse_Primary(Parser *p) {
                 range->range.high = Parse_Expression(p);
 
                 /* Check for choice list or named association */
-                if (Parser_At(p, TK_BAR) || Parser_At(p, TK_ARROW)) {
+                if (Parser_At(p, TK_BAR) or Parser_At(p, TK_ARROW)) {
                     Syntax_Node *assoc = Node_New(NK_ASSOCIATION, loc);
                     Node_List_Push(&assoc->association.choices, range);
 
@@ -3097,7 +2866,7 @@ static Syntax_Node *Parse_Primary(Parser *p) {
                 if (Parser_Match(p, TK_COMMA)) {
                     Parse_Association_List(p, &node->aggregate.items);
                 }
-            } else if (Parser_At(p, TK_BAR) || Parser_At(p, TK_ARROW)) {
+            } else if (Parser_At(p, TK_BAR) or Parser_At(p, TK_ARROW)) {
                 /* First element is part of a choice list */
                 Syntax_Node *assoc = Node_New(NK_ASSOCIATION, loc);
                 Node_List_Push(&assoc->association.choices, expr);
@@ -3205,8 +2974,8 @@ static Syntax_Node *Parse_Name(Parser *p) {
 
                 /* Parse expression or aggregate */
                 Syntax_Node *expr = Parse_Expression(p);
-                if (Parser_At(p, TK_COMMA) || Parser_At(p, TK_ARROW) ||
-                    Parser_At(p, TK_BAR) || Parser_At(p, TK_DOTDOT)) {
+                if (Parser_At(p, TK_COMMA) or Parser_At(p, TK_ARROW) or
+                    Parser_At(p, TK_BAR) or Parser_At(p, TK_DOTDOT)) {
                     /* Aggregate */
                     Syntax_Node *agg = Node_New(NK_AGGREGATE, postfix_loc);
                     if (Parser_At(p, TK_DOTDOT)) {
@@ -3215,7 +2984,7 @@ static Syntax_Node *Parse_Name(Parser *p) {
                         range->range.low = expr;
                         Parser_Advance(p);
                         range->range.high = Parse_Expression(p);
-                        if (Parser_At(p, TK_BAR) || Parser_At(p, TK_ARROW)) {
+                        if (Parser_At(p, TK_BAR) or Parser_At(p, TK_ARROW)) {
                             Syntax_Node *assoc = Node_New(NK_ASSOCIATION, postfix_loc);
                             Node_List_Push(&assoc->association.choices, range);
                             while (Parser_Match(p, TK_BAR)) {
@@ -3231,7 +3000,7 @@ static Syntax_Node *Parse_Name(Parser *p) {
                         if (Parser_Match(p, TK_COMMA)) {
                             Parse_Association_List(p, &agg->aggregate.items);
                         }
-                    } else if (Parser_At(p, TK_BAR) || Parser_At(p, TK_ARROW)) {
+                    } else if (Parser_At(p, TK_BAR) or Parser_At(p, TK_ARROW)) {
                         Syntax_Node *assoc = Node_New(NK_ASSOCIATION, postfix_loc);
                         Node_List_Push(&assoc->association.choices, expr);
                         while (Parser_Match(p, TK_BAR)) {
@@ -3263,8 +3032,8 @@ static Syntax_Node *Parse_Name(Parser *p) {
                 /* Attribute name can be reserved word or identifier */
                 if (Parser_At(p, TK_IDENTIFIER)) {
                     attr->attribute.name = Parser_Identifier(p);
-                } else if (Parser_At(p, TK_RANGE) || Parser_At(p, TK_DIGITS) ||
-                           Parser_At(p, TK_DELTA) || Parser_At(p, TK_ACCESS) ||
+                } else if (Parser_At(p, TK_RANGE) or Parser_At(p, TK_DIGITS) or
+                           Parser_At(p, TK_DELTA) or Parser_At(p, TK_ACCESS) or
                            Parser_At(p, TK_MOD)) {
                     attr->attribute.name = Slice_Duplicate(p->current_token.text);
                     Parser_Advance(p);
@@ -3325,7 +3094,7 @@ static Syntax_Node *Parse_Simple_Name(Parser *p) {
             Syntax_Node *sel = Node_New(NK_SELECTED, sel_loc);
             sel->selected.prefix = node;
             /* Accept character literal ('C') or operator string ("+") after dot */
-            if (Parser_At(p, TK_CHARACTER) || Parser_At(p, TK_STRING)) {
+            if (Parser_At(p, TK_CHARACTER) or Parser_At(p, TK_STRING)) {
                 sel->selected.selector = Slice_Duplicate(p->current_token.text);
                 Parser_Advance(p);
             } else {
@@ -3400,7 +3169,7 @@ static void Parse_Association_List(Parser *p, Node_List *list) {
         Syntax_Node *first = Parse_Choice(p);
 
         /* Check for choice list with | or named association with => */
-        if (Parser_At(p, TK_BAR) || Parser_At(p, TK_ARROW)) {
+        if (Parser_At(p, TK_BAR) or Parser_At(p, TK_ARROW)) {
             Syntax_Node *assoc = Node_New(NK_ASSOCIATION, loc);
             Node_List_Push(&assoc->association.choices, first);
 
@@ -3468,7 +3237,7 @@ static Syntax_Node *Parse_Expression_Precedence(Parser *p, Precedence min_prec);
 static Syntax_Node *Parse_Unary(Parser *p) {
     Source_Location loc = Parser_Location(p);
 
-    if (Parser_At_Any(p, TK_PLUS, TK_MINUS) ||
+    if (Parser_At_Any(p, TK_PLUS, TK_MINUS) or
         Parser_At_Any(p, TK_NOT, TK_ABS)) {
         Token_Kind op = p->current_token.kind;
         Parser_Advance(p);
@@ -3495,12 +3264,12 @@ static Syntax_Node *Parse_Expression_Precedence(Parser *p, Precedence min_prec) 
 
         /* After advance, check for compound keywords (AND THEN, OR ELSE)
          * that were detected in Parser_Advance */
-        if (p->previous_token.kind == TK_AND_THEN || p->previous_token.kind == TK_OR_ELSE) {
+        if (p->previous_token.kind == TK_AND_THEN or p->previous_token.kind == TK_OR_ELSE) {
             op = p->previous_token.kind;
         }
 
         /* Handle NOT IN specially — mirrors IN range handling below (RM 4.4) */
-        if (op == TK_NOT && Parser_At(p, TK_IN)) {
+        if (op == TK_NOT and Parser_At(p, TK_IN)) {
             Parser_Advance(p);
             Syntax_Node *right = Parse_Expression_Precedence(p, prec + 1);
             if (Parser_Match(p, TK_DOTDOT)) {
@@ -3742,7 +3511,7 @@ static Syntax_Node *Parse_Return_Statement(Parser *p) {
     Parser_Expect(p, TK_RETURN);
 
     Syntax_Node *node = Node_New(NK_RETURN, loc);
-    if (!Parser_At(p, TK_SEMICOLON)) {
+    if (not Parser_At(p, TK_SEMICOLON)) {
         node->return_stmt.expression = Parse_Expression(p);
     }
     return node;
@@ -3915,7 +3684,7 @@ static Syntax_Node *Parse_Loop_Statement(Parser *p, String_Slice label) {
     Parser_Expect(p, TK_END);
     Parser_Expect(p, TK_LOOP);
 
-    if (label.data && Parser_At(p, TK_IDENTIFIER)) {
+    if (label.data and Parser_At(p, TK_IDENTIFIER)) {
         Parser_Check_End_Name(p, label);
     }
 
@@ -3962,7 +3731,7 @@ static Syntax_Node *Parse_Block_Statement(Parser *p, String_Slice label) {
     }
 
     Parser_Expect(p, TK_END);
-    if (label.data && Parser_At(p, TK_IDENTIFIER)) {
+    if (label.data and Parser_At(p, TK_IDENTIFIER)) {
         Parser_Check_End_Name(p, label);
     }
 
@@ -3996,7 +3765,7 @@ static Syntax_Node *Parse_Accept_Statement(Parser *p) {
         if (Parser_At(p, TK_IDENTIFIER)) {
             Parser_Advance(p);  /* past identifier */
             /* If followed by : or ,, it's a parameter list */
-            is_parameter_list = Parser_At(p, TK_COLON) || Parser_At(p, TK_COMMA);
+            is_parameter_list = Parser_At(p, TK_COLON) or Parser_At(p, TK_COMMA);
         }
 
         /* Restore and parse correctly */
@@ -4068,11 +3837,11 @@ static Syntax_Node *Parse_Select_Statement(Parser *p) {
             Parser_Expect(p, TK_SEMICOLON);
             Node_List_Push(&node->select_stmt.alternatives, delay);
             /* Optional statement sequence after delay */
-            while (!Parser_At(p, TK_OR) && !Parser_At(p, TK_ELSE) &&
-                   !Parser_At(p, TK_END) && !Parser_At(p, TK_EOF)) {
+            while (not Parser_At(p, TK_OR) and not Parser_At(p, TK_ELSE) and
+                   not Parser_At(p, TK_END) and not Parser_At(p, TK_EOF)) {
                 Syntax_Node *stmt = Parse_Statement(p);
                 Node_List_Push(&node->select_stmt.alternatives, stmt);
-                if (!Parser_At(p, TK_OR) && !Parser_At(p, TK_ELSE) && !Parser_At(p, TK_END)) {
+                if (not Parser_At(p, TK_OR) and not Parser_At(p, TK_ELSE) and not Parser_At(p, TK_END)) {
                     Parser_Expect(p, TK_SEMICOLON);
                 }
             }
@@ -4081,11 +3850,11 @@ static Syntax_Node *Parse_Select_Statement(Parser *p) {
             Node_List_Push(&node->select_stmt.alternatives, accept);
             Parser_Expect(p, TK_SEMICOLON);
             /* Optional sequence of statements after accept in select */
-            while (!Parser_At(p, TK_OR) && !Parser_At(p, TK_ELSE) &&
-                   !Parser_At(p, TK_END) && !Parser_At(p, TK_EOF)) {
+            while (not Parser_At(p, TK_OR) and not Parser_At(p, TK_ELSE) and
+                   not Parser_At(p, TK_END) and not Parser_At(p, TK_EOF)) {
                 Syntax_Node *stmt = Parse_Statement(p);
                 Node_List_Push(&accept->accept_stmt.statements, stmt);
-                if (!Parser_At(p, TK_OR) && !Parser_At(p, TK_ELSE) && !Parser_At(p, TK_END)) {
+                if (not Parser_At(p, TK_OR) and not Parser_At(p, TK_ELSE) and not Parser_At(p, TK_END)) {
                     Parser_Expect(p, TK_SEMICOLON);
                 }
             }
@@ -4095,11 +3864,11 @@ static Syntax_Node *Parse_Select_Statement(Parser *p) {
             Node_List_Push(&node->select_stmt.alternatives, entry_call);
             Parser_Expect(p, TK_SEMICOLON);
             /* Optional sequence of statements after entry call */
-            while (!Parser_At(p, TK_OR) && !Parser_At(p, TK_ELSE) &&
-                   !Parser_At(p, TK_END) && !Parser_At(p, TK_EOF)) {
+            while (not Parser_At(p, TK_OR) and not Parser_At(p, TK_ELSE) and
+                   not Parser_At(p, TK_END) and not Parser_At(p, TK_EOF)) {
                 Syntax_Node *stmt = Parse_Statement(p);
                 Node_List_Push(&node->select_stmt.alternatives, stmt);
-                if (!Parser_At(p, TK_OR) && !Parser_At(p, TK_ELSE) && !Parser_At(p, TK_END)) {
+                if (not Parser_At(p, TK_OR) and not Parser_At(p, TK_ELSE) and not Parser_At(p, TK_END)) {
                     Parser_Expect(p, TK_SEMICOLON);
                 }
             }
@@ -4132,8 +3901,8 @@ static Syntax_Node *Parse_Statement(Parser *p) {
     String_Slice label = Empty_Slice;
 
     /* Handle multiple consecutive labels */
-    while (Parser_At(p, TK_LSHIFT) ||
-           (Parser_At(p, TK_IDENTIFIER) && Parser_Peek_At(p, TK_COLON))) {
+    while (Parser_At(p, TK_LSHIFT) or
+           (Parser_At(p, TK_IDENTIFIER) and Parser_Peek_At(p, TK_COLON))) {
 
         if (Parser_Match(p, TK_LSHIFT)) {
             if (label.length == 0) label_loc = loc;  /* Save first label location */
@@ -4167,10 +3936,10 @@ static Syntax_Node *Parse_Statement(Parser *p) {
         stmt = Node_New(NK_NULL_STMT, loc);
     }
     /* Compound statements - loops and blocks handle labels as names */
-    else if (Parser_At(p, TK_LOOP) || Parser_At(p, TK_WHILE) || Parser_At(p, TK_FOR)) {
+    else if (Parser_At(p, TK_LOOP) or Parser_At(p, TK_WHILE) or Parser_At(p, TK_FOR)) {
         return Parse_Loop_Statement(p, label);  /* Loop keeps label as name */
     }
-    else if (Parser_At(p, TK_DECLARE) || Parser_At(p, TK_BEGIN)) {
+    else if (Parser_At(p, TK_DECLARE) or Parser_At(p, TK_BEGIN)) {
         return Parse_Block_Statement(p, label);  /* Block keeps label as name */
     }
     else if (Parser_At(p, TK_IF)) stmt = Parse_If_Statement(p);
@@ -4190,7 +3959,7 @@ static Syntax_Node *Parse_Statement(Parser *p) {
     else stmt = Parse_Assignment_Or_Call(p);
 
     /* Wrap in NK_LABEL if a label was present (except for loop/block which handle labels) */
-    if (label.length > 0 && stmt != NULL) {
+    if (label.length > 0 and stmt != NULL) {
         Syntax_Node *label_node = Node_New(NK_LABEL, label_loc);
         label_node->label_node.name = label;
         label_node->label_node.statement = stmt;
@@ -4202,22 +3971,22 @@ static Syntax_Node *Parse_Statement(Parser *p) {
 }
 
 static void Parse_Statement_Sequence(Parser *p, Node_List *list) {
-    while (!Parser_At(p, TK_EOF) &&
-           !Parser_At(p, TK_END) &&
-           !Parser_At(p, TK_ELSE) &&
-           !Parser_At(p, TK_ELSIF) &&
-           !Parser_At(p, TK_WHEN) &&
-           !Parser_At(p, TK_EXCEPTION) &&
-           !Parser_At(p, TK_OR)) {
+    while (not Parser_At(p, TK_EOF) and
+           not Parser_At(p, TK_END) and
+           not Parser_At(p, TK_ELSE) and
+           not Parser_At(p, TK_ELSIF) and
+           not Parser_At(p, TK_WHEN) and
+           not Parser_At(p, TK_EXCEPTION) and
+           not Parser_At(p, TK_OR)) {
 
-        if (!Parser_Check_Progress(p)) break;
+        if (not Parser_Check_Progress(p)) break;
 
         Syntax_Node *stmt = Parse_Statement(p);
         Node_List_Push(list, stmt);
 
-        if (!Parser_At(p, TK_END) && !Parser_At(p, TK_ELSE) &&
-            !Parser_At(p, TK_ELSIF) && !Parser_At(p, TK_WHEN) &&
-            !Parser_At(p, TK_EXCEPTION) && !Parser_At(p, TK_OR)) {
+        if (not Parser_At(p, TK_END) and not Parser_At(p, TK_ELSE) and
+            not Parser_At(p, TK_ELSIF) and not Parser_At(p, TK_WHEN) and
+            not Parser_At(p, TK_EXCEPTION) and not Parser_At(p, TK_OR)) {
             Parser_Expect(p, TK_SEMICOLON);
         }
     }
@@ -4266,7 +4035,7 @@ static Syntax_Node *Parse_Object_Declaration(Parser *p) {
 
     /* Named number (number declaration): identifier : CONSTANT := static_expression; */
     /* No type specified, goes directly to := */
-    if (!node->object_decl.is_constant || !Parser_At(p, TK_ASSIGN)) {
+    if (not node->object_decl.is_constant or not Parser_At(p, TK_ASSIGN)) {
         /* Check for anonymous array type: ARRAY (...) OF ... */
         if (Parser_At(p, TK_ARRAY)) {
             node->object_decl.object_type = Parse_Array_Type(p);
@@ -4297,7 +4066,7 @@ static Syntax_Node *Parse_Object_Declaration(Parser *p) {
  * ───────────────────────────────────────────────────────────────────────── */
 
 static Syntax_Node *Parse_Discriminant_Part(Parser *p) {
-    if (!Parser_Match(p, TK_LPAREN)) return NULL;
+    if (not Parser_Match(p, TK_LPAREN)) return NULL;
 
     Source_Location loc = Parser_Location(p);
     Syntax_Node *disc_list = Node_New(NK_BLOCK, loc);  /* Container for discriminants */
@@ -4352,7 +4121,7 @@ static Syntax_Node *Parse_Type_Declaration(Parser *p) {
     node->type_decl.is_limited = Parser_Match(p, TK_LIMITED);
     node->type_decl.is_private = Parser_Match(p, TK_PRIVATE);
 
-    if (!node->type_decl.is_private) {
+    if (not node->type_decl.is_private) {
         node->type_decl.definition = Parse_Type_Definition(p);
     }
 
@@ -4428,7 +4197,7 @@ static Syntax_Node *Parse_Array_Type(Parser *p) {
     for (size_t i = 0; i < node->array_type.indices.count; i++) {
         Syntax_Node *idx = node->array_type.indices.items[i];
         /* Just a type name without constraint = unconstrained */
-        if (idx->kind == NK_IDENTIFIER || idx->kind == NK_SELECTED) {
+        if (idx->kind == NK_IDENTIFIER or idx->kind == NK_SELECTED) {
             node->array_type.is_constrained = false;
             break;
         }
@@ -4446,7 +4215,7 @@ static Syntax_Node *Parse_Discrete_Range(Parser *p) {
     Source_Location loc = Parser_Location(p);
 
     /* Check if this starts with an integer literal (anonymous range) */
-    if (Parser_At(p, TK_INTEGER) || Parser_At(p, TK_CHARACTER)) {
+    if (Parser_At(p, TK_INTEGER) or Parser_At(p, TK_CHARACTER)) {
         Syntax_Node *range = Node_New(NK_RANGE, loc);
         range->range.low = Parse_Expression(p);
         if (Parser_Match(p, TK_DOTDOT)) {
@@ -4503,8 +4272,8 @@ static Syntax_Node *Parse_Record_Type(Parser *p) {
     /* Skip this check - NULL inside record body is handled in the loop below */
 
     /* Component list */
-    while (!Parser_At(p, TK_END) && !Parser_At(p, TK_CASE) && !Parser_At(p, TK_EOF)) {
-        if (!Parser_Check_Progress(p)) break;
+    while (not Parser_At(p, TK_END) and not Parser_At(p, TK_CASE) and not Parser_At(p, TK_EOF)) {
+        if (not Parser_Check_Progress(p)) break;
 
         /* NULL; as empty component list */
         if (Parser_At(p, TK_NULL)) {
@@ -4567,9 +4336,9 @@ static Syntax_Node *Parse_Variant_Part(Parser *p) {
         Parser_Expect(p, TK_ARROW);
 
         /* Components in this variant */
-        while (!Parser_At(p, TK_WHEN) && !Parser_At(p, TK_END) &&
-               !Parser_At(p, TK_CASE) && !Parser_At(p, TK_EOF)) {
-            if (!Parser_Check_Progress(p)) break;
+        while (not Parser_At(p, TK_WHEN) and not Parser_At(p, TK_END) and
+               not Parser_At(p, TK_CASE) and not Parser_At(p, TK_EOF)) {
+            if (not Parser_Check_Progress(p)) break;
 
             /* NULL; as empty component list in variant */
             if (Parser_At(p, TK_NULL)) {
@@ -4634,10 +4403,10 @@ static Syntax_Node *Parse_Derived_Type(Parser *p) {
      * constraints belong to the derived type definition, not the parent.
      * Extract them if present. */
     Syntax_Node *parent = node->derived_type.parent_type;
-    if (parent && parent->kind == NK_SUBTYPE_INDICATION &&
+    if (parent and parent->kind == NK_SUBTYPE_INDICATION and
         parent->subtype_ind.constraint) {
         Syntax_Node *c = parent->subtype_ind.constraint;
-        if (c->kind == NK_DIGITS_CONSTRAINT || c->kind == NK_DELTA_CONSTRAINT) {
+        if (c->kind == NK_DIGITS_CONSTRAINT or c->kind == NK_DELTA_CONSTRAINT) {
             /* Move constraint from parent to derived type */
             Syntax_Node *constraint = Node_New(NK_REAL_TYPE, c->location);
             if (c->kind == NK_DIGITS_CONSTRAINT) {
@@ -4657,7 +4426,7 @@ static Syntax_Node *Parse_Derived_Type(Parser *p) {
      * Ada RM 3.5.7: derived_type_definition ::=
      *   new subtype_indication [accuracy_constraint] [range_constraint]
      * accuracy_constraint ::= DIGITS expression | DELTA expression */
-    if (Parser_At(p, TK_DIGITS) || Parser_At(p, TK_DELTA)) {
+    if (Parser_At(p, TK_DIGITS) or Parser_At(p, TK_DELTA)) {
         /* Parse as NK_REAL_TYPE to reuse real type constraint handling */
         Syntax_Node *constraint = Node_New(NK_REAL_TYPE, Parser_Location(p));
         if (Parser_Match(p, TK_DIGITS)) {
@@ -4670,7 +4439,7 @@ static Syntax_Node *Parse_Derived_Type(Parser *p) {
             constraint->real_type.range = Parse_Range(p);
         }
         node->derived_type.constraint = constraint;
-    } else if (Parser_At(p, TK_RANGE) || Parser_At(p, TK_LPAREN)) {
+    } else if (Parser_At(p, TK_RANGE) or Parser_At(p, TK_LPAREN)) {
         node->derived_type.constraint = Parse_Subtype_Indication(p);
     }
 
@@ -4766,7 +4535,7 @@ static Syntax_Node *Parse_Type_Definition(Parser *p) {
  * ───────────────────────────────────────────────────────────────────────── */
 
 static void Parse_Parameter_List(Parser *p, Node_List *params) {
-    if (!Parser_Match(p, TK_LPAREN)) return;
+    if (not Parser_Match(p, TK_LPAREN)) return;
 
     do {
         Source_Location loc = Parser_Location(p);
@@ -4859,7 +4628,7 @@ static Syntax_Node *Parse_Function_Specification(Parser *p) {
 
 static Syntax_Node *Parse_Subprogram_Body(Parser *p, Syntax_Node *spec) {
     Source_Location loc = spec ? spec->location : Parser_Location(p);
-    bool is_function = spec && spec->kind == NK_FUNCTION_SPEC;
+    bool is_function = spec and spec->kind == NK_FUNCTION_SPEC;
 
     Syntax_Node *node = Node_New(is_function ? NK_FUNCTION_BODY : NK_PROCEDURE_BODY, loc);
     node->subprogram_body.specification = spec;
@@ -4900,7 +4669,7 @@ static Syntax_Node *Parse_Subprogram_Body(Parser *p, Syntax_Node *spec) {
     }
 
     Parser_Expect(p, TK_END);
-    if (spec && (Parser_At(p, TK_IDENTIFIER) || Parser_At(p, TK_STRING))) {
+    if (spec and (Parser_At(p, TK_IDENTIFIER) or Parser_At(p, TK_STRING))) {
         /* Check end name - handle both identifier and operator string */
         Parser_Check_End_Name(p, spec->subprogram_spec.name);
     }
@@ -4997,10 +4766,10 @@ static Syntax_Node *Parse_Package_Body(Parser *p) {
  */
 
 static void Parse_Generic_Formal_Part(Parser *p, Node_List *formals) {
-    while (!Parser_At(p, TK_PROCEDURE) && !Parser_At(p, TK_FUNCTION) &&
-           !Parser_At(p, TK_PACKAGE) && !Parser_At(p, TK_EOF)) {
+    while (not Parser_At(p, TK_PROCEDURE) and not Parser_At(p, TK_FUNCTION) and
+           not Parser_At(p, TK_PACKAGE) and not Parser_At(p, TK_EOF)) {
 
-        if (!Parser_Check_Progress(p)) break;
+        if (not Parser_Check_Progress(p)) break;
 
         Source_Location loc = Parser_Location(p);
 
@@ -5015,7 +4784,7 @@ static void Parse_Generic_Formal_Part(Parser *p, Node_List *formals) {
             if (Parser_Match(p, TK_LPAREN)) {
                 /* Skip discriminant specifications until closing paren */
                 int depth = 1;
-                while (depth > 0 && !Parser_At(p, TK_EOF)) {
+                while (depth > 0 and not Parser_At(p, TK_EOF)) {
                     if (Parser_At(p, TK_LPAREN)) depth++;
                     else if (Parser_At(p, TK_RPAREN)) depth--;
                     if (depth > 0) Parser_Advance(p);
@@ -5028,29 +4797,29 @@ static void Parse_Generic_Formal_Part(Parser *p, Node_List *formals) {
             /* Parse type definition form */
             if (Parser_Match(p, TK_LIMITED)) {
                 Parser_Expect(p, TK_PRIVATE);
-                formal->generic_type_param.def_kind = 1;  /* LIMITED_PRIVATE */
+                formal->generic_type_param.def_kind = GEN_DEF_LIMITED_PRIVATE;
             } else if (Parser_Match(p, TK_PRIVATE)) {
-                formal->generic_type_param.def_kind = 0;  /* PRIVATE */
+                formal->generic_type_param.def_kind = GEN_DEF_PRIVATE;
             } else if (Parser_Match(p, TK_LPAREN)) {
                 /* (<>) for discrete types */
                 Parser_Expect(p, TK_BOX);
                 Parser_Expect(p, TK_RPAREN);
-                formal->generic_type_param.def_kind = 2;  /* DISCRETE */
+                formal->generic_type_param.def_kind = GEN_DEF_DISCRETE;
             } else if (Parser_Match(p, TK_RANGE)) {
                 /* range <> for integer types */
                 Parser_Expect(p, TK_BOX);
-                formal->generic_type_param.def_kind = 3;  /* INTEGER */
+                formal->generic_type_param.def_kind = GEN_DEF_INTEGER;
             } else if (Parser_Match(p, TK_DIGITS)) {
                 /* digits <> for float types */
                 Parser_Expect(p, TK_BOX);
-                formal->generic_type_param.def_kind = 4;  /* FLOAT */
+                formal->generic_type_param.def_kind = GEN_DEF_FLOAT;
             } else if (Parser_Match(p, TK_DELTA)) {
                 /* delta <> for fixed types */
                 Parser_Expect(p, TK_BOX);
-                formal->generic_type_param.def_kind = 5;  /* FIXED */
+                formal->generic_type_param.def_kind = GEN_DEF_FIXED;
             } else if (Parser_Match(p, TK_ARRAY)) {
                 /* array (index {, index}) of element_type for array types */
-                formal->generic_type_param.def_kind = 6;  /* ARRAY */
+                formal->generic_type_param.def_kind = GEN_DEF_ARRAY;
                 Parser_Expect(p, TK_LPAREN);
                 /* Parse index subtypes: subtype_mark RANGE <> */
                 do {
@@ -5063,18 +4832,18 @@ static void Parse_Generic_Formal_Part(Parser *p, Node_List *formals) {
                 formal->generic_type_param.def_detail = Parse_Subtype_Indication(p);
             } else if (Parser_Match(p, TK_ACCESS)) {
                 /* access type_name for access types */
-                formal->generic_type_param.def_kind = 7;  /* ACCESS */
+                formal->generic_type_param.def_kind = GEN_DEF_ACCESS;
                 formal->generic_type_param.def_detail = Parse_Subtype_Indication(p);
             } else if (Parser_At(p, TK_NEW)) {
                 /* new parent_type for derived types - skip NEW, parse parent */
                 Parser_Advance(p);
-                formal->generic_type_param.def_kind = 8;  /* DERIVED */
+                formal->generic_type_param.def_kind = GEN_DEF_DERIVED;
                 formal->generic_type_param.def_detail = Parse_Subtype_Indication(p);
             } else {
                 /* Unknown form - error recovery: skip to semicolon */
                 Report_Error(formal->location, "unrecognized generic type definition form");
-                formal->generic_type_param.def_kind = 0;
-                while (!Parser_At(p, TK_SEMICOLON) && !Parser_At(p, TK_EOF)) {
+                formal->generic_type_param.def_kind = GEN_DEF_PRIVATE;
+                while (not Parser_At(p, TK_SEMICOLON) and not Parser_At(p, TK_EOF)) {
                     Parser_Advance(p);
                 }
             }
@@ -5098,15 +4867,15 @@ static void Parse_Generic_Formal_Part(Parser *p, Node_List *formals) {
             Parser_Expect(p, TK_COLON);
 
             /* Parse mode: IN (default), OUT, or IN OUT */
-            formal->generic_object_param.mode = 0;  /* Default: IN */
+            formal->generic_object_param.mode = GEN_MODE_IN;
             if (Parser_Match(p, TK_IN)) {
                 if (Parser_Match(p, TK_OUT)) {
-                    formal->generic_object_param.mode = 2;  /* IN OUT */
+                    formal->generic_object_param.mode = GEN_MODE_IN_OUT;
                 } else {
-                    formal->generic_object_param.mode = 0;  /* IN */
+                    formal->generic_object_param.mode = GEN_MODE_IN;
                 }
             } else if (Parser_Match(p, TK_OUT)) {
-                formal->generic_object_param.mode = 1;  /* OUT */
+                formal->generic_object_param.mode = GEN_MODE_OUT;
             }
 
             /* Parse subtype mark */
@@ -5324,7 +5093,7 @@ static Syntax_Node *Parse_Representation_Clause(Parser *p) {
 
     /* If Parse_Name already consumed T'SIZE, decompose the NK_ATTRIBUTE
      * so rep_clause.entity_name = T (the prefix) and .attribute = SIZE */
-    if (node->rep_clause.entity_name &&
+    if (node->rep_clause.entity_name and
         node->rep_clause.entity_name->kind == NK_ATTRIBUTE) {
         Syntax_Node *attr_node = node->rep_clause.entity_name;
         node->rep_clause.attribute = attr_node->attribute.name;
@@ -5353,7 +5122,7 @@ static Syntax_Node *Parse_Representation_Clause(Parser *p) {
         }
 
         /* Parse component clauses: component_name AT position RANGE first_bit..last_bit; */
-        while (!Parser_At(p, TK_END) && !Parser_At(p, TK_EOF)) {
+        while (not Parser_At(p, TK_END) and not Parser_At(p, TK_EOF)) {
             Syntax_Node *comp_clause = Node_New(NK_ASSOCIATION, Parser_Location(p));
             Node_List_Push(&comp_clause->association.choices, Parse_Name(p));
             Parser_Expect(p, TK_AT);
@@ -5401,7 +5170,7 @@ static Syntax_Node *Parse_Declaration(Parser *p) {
     }
 
     /* Procedure/Function - could be spec, body, or generic instantiation */
-    if (Parser_At(p, TK_PROCEDURE) || Parser_At(p, TK_FUNCTION)) {
+    if (Parser_At(p, TK_PROCEDURE) or Parser_At(p, TK_FUNCTION)) {
         Token_Kind kind = p->current_token.kind;
         Parser_Advance(p);  /* consume PROCEDURE/FUNCTION */
 
@@ -5528,15 +5297,15 @@ static Syntax_Node *Parse_Declaration(Parser *p) {
         Syntax_Node *spec = Node_New(NK_PACKAGE_SPEC, loc);
         spec->package_spec.name = pkg_name;
         /* Parse visible declarations (each declaration consumes its own semicolon) */
-        while (!Parser_At(p, TK_PRIVATE) && !Parser_At(p, TK_END) && !Parser_At(p, TK_EOF)) {
-            if (!Parser_Check_Progress(p)) break;
+        while (not Parser_At(p, TK_PRIVATE) and not Parser_At(p, TK_END) and not Parser_At(p, TK_EOF)) {
+            if (not Parser_Check_Progress(p)) break;
             Syntax_Node *decl = Parse_Declaration(p);
             Node_List_Push(&spec->package_spec.visible_decls, decl);
         }
         /* Parse private declarations */
         if (Parser_Match(p, TK_PRIVATE)) {
-            while (!Parser_At(p, TK_END) && !Parser_At(p, TK_EOF)) {
-                if (!Parser_Check_Progress(p)) break;
+            while (not Parser_At(p, TK_END) and not Parser_At(p, TK_EOF)) {
+                if (not Parser_Check_Progress(p)) break;
                 Syntax_Node *decl = Parse_Declaration(p);
                 Node_List_Push(&spec->package_spec.private_decls, decl);
             }
@@ -5608,8 +5377,8 @@ static Syntax_Node *Parse_Declaration(Parser *p) {
 
         if (Parser_Match(p, TK_IS)) {
             /* Task spec with entries */
-            while (!Parser_At(p, TK_END) && !Parser_At(p, TK_EOF)) {
-                if (!Parser_Check_Progress(p)) break;
+            while (not Parser_At(p, TK_END) and not Parser_At(p, TK_EOF)) {
+                if (not Parser_Check_Progress(p)) break;
 
                 if (Parser_Match(p, TK_ENTRY)) {
                     Source_Location e_loc = Parser_Location(p);
@@ -5629,7 +5398,7 @@ static Syntax_Node *Parse_Declaration(Parser *p) {
                         Parser_Advance(p);  /* consume ( for lookahead */
 
                         bool is_family_index = false;
-                        if (!Parser_At(p, TK_IDENTIFIER)) {
+                        if (not Parser_At(p, TK_IDENTIFIER)) {
                             /* Not starting with identifier - must be family index */
                             is_family_index = true;
                         } else {
@@ -5637,7 +5406,7 @@ static Syntax_Node *Parse_Declaration(Parser *p) {
                             Token saved2 = p->current_token;
                             Lexer saved_lexer2 = p->lexer;
                             Parser_Advance(p);  /* past identifier */
-                            is_family_index = !Parser_At(p, TK_COLON) && !Parser_At(p, TK_COMMA);
+                            is_family_index = not Parser_At(p, TK_COLON) and not Parser_At(p, TK_COMMA);
                             p->current_token = saved2;
                             p->lexer = saved_lexer2;
                         }
@@ -5687,7 +5456,7 @@ static Syntax_Node *Parse_Declaration(Parser *p) {
     if (Parser_At(p, TK_TYPE)) {
         Syntax_Node *type_decl = Parse_Type_Declaration(p);
         /* Incomplete type declaration (no definition, not private/limited) already consumed semicolon */
-        if (type_decl->type_decl.definition || type_decl->type_decl.is_private ||
+        if (type_decl->type_decl.definition or type_decl->type_decl.is_private or
             type_decl->type_decl.is_limited) {
             Parser_Expect(p, TK_SEMICOLON);
         }
@@ -5735,10 +5504,10 @@ static Syntax_Node *Parse_Declaration(Parser *p) {
 }
 
 static void Parse_Declarative_Part(Parser *p, Node_List *list) {
-    while (!Parser_At(p, TK_BEGIN) && !Parser_At(p, TK_END) &&
-           !Parser_At(p, TK_PRIVATE) && !Parser_At(p, TK_EOF)) {
+    while (not Parser_At(p, TK_BEGIN) and not Parser_At(p, TK_END) and
+           not Parser_At(p, TK_PRIVATE) and not Parser_At(p, TK_EOF)) {
 
-        if (!Parser_Check_Progress(p)) break;
+        if (not Parser_Check_Progress(p)) break;
 
         Syntax_Node *decl = Parse_Declaration(p);
         Node_List_Push(list, decl);
@@ -5757,7 +5526,7 @@ static Syntax_Node *Parse_Context_Clause(Parser *p) {
     Source_Location loc = Parser_Location(p);
     Syntax_Node *node = Node_New(NK_CONTEXT_CLAUSE, loc);
 
-    while (Parser_At(p, TK_WITH) || Parser_At(p, TK_USE) || Parser_At(p, TK_PRAGMA)) {
+    while (Parser_At(p, TK_WITH) or Parser_At(p, TK_USE) or Parser_At(p, TK_PRAGMA)) {
         if (Parser_At(p, TK_WITH)) {
             Node_List_Push(&node->context.with_clauses, Parse_With_Clause(p));
             Parser_Expect(p, TK_SEMICOLON);
@@ -5901,7 +5670,7 @@ struct Type_Info {
     String_Slice name;
     Symbol      *defining_symbol;
 
-    /* Size and alignment in BYTES (not bits!) */
+    /* Size and alignment in BYTES (not bitsnot ) */
     uint32_t     size;
     uint32_t     alignment;
 
@@ -6012,109 +5781,109 @@ static Type_Info *Type_New(Type_Kind kind, String_Slice name) {
  * ───────────────────────────────────────────────────────────────────────── */
 
 static inline bool Type_Is_Scalar(const Type_Info *t) {
-    return t && t->kind >= TYPE_BOOLEAN && t->kind <= TYPE_FIXED;
+    return t and t->kind >= TYPE_BOOLEAN and t->kind <= TYPE_FIXED;
 }
 
 static inline bool Type_Is_Discrete(const Type_Info *t) {
-    return t && (t->kind == TYPE_BOOLEAN || t->kind == TYPE_CHARACTER ||
-                 t->kind == TYPE_INTEGER || t->kind == TYPE_MODULAR ||
+    return t and (t->kind == TYPE_BOOLEAN or t->kind == TYPE_CHARACTER or
+                 t->kind == TYPE_INTEGER or t->kind == TYPE_MODULAR or
                  t->kind == TYPE_ENUMERATION);
 }
 
 static inline bool Type_Is_Numeric(const Type_Info *t) {
-    return t && (t->kind == TYPE_INTEGER || t->kind == TYPE_MODULAR ||
-                 t->kind == TYPE_FLOAT || t->kind == TYPE_FIXED ||
-                 t->kind == TYPE_UNIVERSAL_INTEGER || t->kind == TYPE_UNIVERSAL_REAL);
+    return t and (t->kind == TYPE_INTEGER or t->kind == TYPE_MODULAR or
+                 t->kind == TYPE_FLOAT or t->kind == TYPE_FIXED or
+                 t->kind == TYPE_UNIVERSAL_INTEGER or t->kind == TYPE_UNIVERSAL_REAL);
 }
 
 static inline bool Type_Is_Real(const Type_Info *t) {
-    return t && (t->kind == TYPE_FLOAT || t->kind == TYPE_FIXED ||
+    return t and (t->kind == TYPE_FLOAT or t->kind == TYPE_FIXED or
                  t->kind == TYPE_UNIVERSAL_REAL);
 }
 
 /* Type uses floating-point LLVM representation (for codegen, not semantic analysis).
  * Fixed-point types are NOT included as they use integer representation. */
 static inline bool Type_Is_Float_Representation(const Type_Info *t) {
-    return t && (t->kind == TYPE_FLOAT || t->kind == TYPE_UNIVERSAL_REAL);
+    return t and (t->kind == TYPE_FLOAT or t->kind == TYPE_UNIVERSAL_REAL);
 }
 
 static inline bool Type_Is_Array_Like(const Type_Info *t) {
-    return t && (t->kind == TYPE_ARRAY || t->kind == TYPE_STRING);
+    return t and (t->kind == TYPE_ARRAY or t->kind == TYPE_STRING);
 }
 
 static inline bool Type_Is_Composite(const Type_Info *t) {
-    return t && (t->kind == TYPE_ARRAY || t->kind == TYPE_RECORD ||
+    return t and (t->kind == TYPE_ARRAY or t->kind == TYPE_RECORD or
                  t->kind == TYPE_STRING);
 }
 
 static inline bool Type_Is_Access(const Type_Info *t) {
-    return t && t->kind == TYPE_ACCESS;
+    return t and t->kind == TYPE_ACCESS;
 }
 
 /* Per GNAT sem_util.ads — systematic predicates for every type class */
-static inline bool Type_Is_Record(const Type_Info *t)    { return t && t->kind == TYPE_RECORD; }
-static inline bool Type_Is_Task(const Type_Info *t)      { return t && t->kind == TYPE_TASK; }
-static inline bool Type_Is_Float(const Type_Info *t)     { return t && t->kind == TYPE_FLOAT; }
-static inline bool Type_Is_Fixed_Point(const Type_Info *t) { return t && t->kind == TYPE_FIXED; }
+static inline bool Type_Is_Record(const Type_Info *t)    { return t and t->kind == TYPE_RECORD; }
+static inline bool Type_Is_Task(const Type_Info *t)      { return t and t->kind == TYPE_TASK; }
+static inline bool Type_Is_Float(const Type_Info *t)     { return t and t->kind == TYPE_FLOAT; }
+static inline bool Type_Is_Fixed_Point(const Type_Info *t) { return t and t->kind == TYPE_FIXED; }
 static inline bool Type_Is_Private(const Type_Info *t) {
-    return t && (t->kind == TYPE_PRIVATE || t->kind == TYPE_LIMITED_PRIVATE);
+    return t and (t->kind == TYPE_PRIVATE or t->kind == TYPE_LIMITED_PRIVATE);
 }
 static inline bool Type_Is_Limited(const Type_Info *t) {
-    return t && (t->kind == TYPE_LIMITED_PRIVATE || t->kind == TYPE_TASK);
+    return t and (t->kind == TYPE_LIMITED_PRIVATE or t->kind == TYPE_TASK);
 }
 static inline bool Type_Is_Integer_Like(const Type_Info *t) {
-    return t && (t->kind == TYPE_INTEGER || t->kind == TYPE_MODULAR);
+    return t and (t->kind == TYPE_INTEGER or t->kind == TYPE_MODULAR);
 }
 static inline bool Type_Is_Enumeration(const Type_Info *t) {
-    return t && t->kind == TYPE_ENUMERATION;
+    return t and t->kind == TYPE_ENUMERATION;
 }
-static inline bool Type_Is_Boolean(const Type_Info *t) { return t && t->kind == TYPE_BOOLEAN; }
-static inline bool Type_Is_Character(const Type_Info *t) { return t && t->kind == TYPE_CHARACTER; }
-static inline bool Type_Is_String(const Type_Info *t)  { return t && t->kind == TYPE_STRING; }
+static inline bool Type_Is_Boolean(const Type_Info *t) { return t and t->kind == TYPE_BOOLEAN; }
+static inline bool Type_Is_Character(const Type_Info *t) { return t and t->kind == TYPE_CHARACTER; }
+static inline bool Type_Is_String(const Type_Info *t)  { return t and t->kind == TYPE_STRING; }
 
 /* Needs fat pointer { ptr, { bound, bound } } for unconstrained array or access thereto */
 static inline bool Type_Needs_Fat_Pointer(const Type_Info *t) {
-    if (!t) return false;
-    if (Type_Is_Access(t) && t->access.designated_type)
-        return Type_Is_Array_Like(t->access.designated_type) &&
-               !t->access.designated_type->array.is_constrained;
-    return Type_Is_Array_Like(t) && !t->array.is_constrained;
+    if (not t) return false;
+    if (Type_Is_Access(t) and t->access.designated_type)
+        return Type_Is_Array_Like(t->access.designated_type) and
+               not t->access.designated_type->array.is_constrained;
+    return Type_Is_Array_Like(t) and not t->array.is_constrained;
 }
 
 /* Check if array type is unconstrained (needs fat pointer representation) */
 static inline bool Type_Is_Unconstrained_Array(const Type_Info *t) {
-    return t && (t->kind == TYPE_ARRAY || t->kind == TYPE_STRING) &&
-           !t->array.is_constrained;
+    return t and (t->kind == TYPE_ARRAY or t->kind == TYPE_STRING) and
+           not t->array.is_constrained;
 }
 
 /* Constrained array: TYPE_ARRAY or TYPE_STRING with static bounds */
 static inline bool Type_Is_Constrained_Array(const Type_Info *t) {
-    return t && (t->kind == TYPE_ARRAY || t->kind == TYPE_STRING) &&
+    return t and (t->kind == TYPE_ARRAY or t->kind == TYPE_STRING) and
            t->array.is_constrained;
 }
 
 /* Universal numeric types: compile-time only, no storage */
 static inline bool Type_Is_Universal_Integer(const Type_Info *t) {
-    return t && t->kind == TYPE_UNIVERSAL_INTEGER;
+    return t and t->kind == TYPE_UNIVERSAL_INTEGER;
 }
 static inline bool Type_Is_Universal_Real(const Type_Info *t) {
-    return t && t->kind == TYPE_UNIVERSAL_REAL;
+    return t and t->kind == TYPE_UNIVERSAL_REAL;
 }
 static inline bool Type_Is_Universal(const Type_Info *t) {
-    return t && (t->kind == TYPE_UNIVERSAL_INTEGER ||
+    return t and (t->kind == TYPE_UNIVERSAL_INTEGER or
                  t->kind == TYPE_UNIVERSAL_REAL);
 }
 
 /* Check if array type has dynamic bounds (BOUND_EXPR) that need runtime access.
  * This includes constrained arrays like ARRAY(1..G) where G is a variable. */
 static inline bool Type_Has_Dynamic_Bounds(const Type_Info *t) {
-    if (!t || (t->kind != TYPE_ARRAY && t->kind != TYPE_STRING))
+    if (not t or (t->kind != TYPE_ARRAY and t->kind != TYPE_STRING))
         return false;
     if (t->array.index_count == 0)
         return false;
     /* Check if any bound is a runtime expression */
     for (uint32_t i = 0; i < t->array.index_count; i++) {
-        if (t->array.indices[i].low_bound.kind == BOUND_EXPR ||
+        if (t->array.indices[i].low_bound.kind == BOUND_EXPR or
             t->array.indices[i].high_bound.kind == BOUND_EXPR) {
             return true;
         }
@@ -6126,10 +5895,10 @@ static inline bool Type_Has_Dynamic_Bounds(const Type_Info *t) {
  * Slices produce fat pointers at runtime even when their declared type
  * is constrained, so they need special handling in comparisons. */
 static inline bool Expression_Is_Slice(const Syntax_Node *node) {
-    if (!node || node->kind != NK_APPLY) return false;
+    if (not node or node->kind != NK_APPLY) return false;
     for (uint32_t i = 0; i < node->apply.arguments.count; i++) {
         Syntax_Node *arg = node->apply.arguments.items[i];
-        if (arg && arg->kind == NK_RANGE) return true;
+        if (arg and arg->kind == NK_RANGE) return true;
     }
     return false;
 }
@@ -6148,16 +5917,16 @@ static inline bool Expression_Produces_Fat_Pointer(const Syntax_Node *node,
         if (node->kind == NK_STRING)
             return true;
         /* Concatenation always returns fat pointer */
-        if (node->kind == NK_BINARY_OP && node->binary.op == TK_AMPERSAND)
+        if (node->kind == NK_BINARY_OP and node->binary.op == TK_AMPERSAND)
             return true;
         /* Slices always produce fat pointers even with constrained declared type */
         if (Expression_Is_Slice(node))
             return true;
     }
     /* Type-based checks: constrained arrays are flat, unconstrained use fat ptrs */
-    if (type && Type_Is_Constrained_Array(type))
+    if (type and Type_Is_Constrained_Array(type))
         return false;
-    if (type && (Type_Is_String(type) || Type_Is_Unconstrained_Array(type)))
+    if (type and (Type_Is_String(type) or Type_Is_Unconstrained_Array(type)))
         return true;
     return false;
 }
@@ -6167,11 +5936,11 @@ static inline bool Expression_Produces_Fat_Pointer(const Syntax_Node *node,
  * are stored as fat pointers { ptr, { bound, bound } } in records.
  * Constrained STRING subtypes (e.g., STRING(1..6)) are flat arrays. */
 static inline bool Type_Needs_Fat_Pointer_Load(const Type_Info *t) {
-    if (!t) return false;
+    if (not t) return false;
     if (Type_Is_Constrained_Array(t)) return false;
     if (Type_Is_String(t)) return true;
-    if (t->kind == TYPE_ARRAY &&
-        (!t->array.is_constrained || Type_Has_Dynamic_Bounds(t)))
+    if (t->kind == TYPE_ARRAY and
+        (not t->array.is_constrained or Type_Has_Dynamic_Bounds(t)))
         return true;
     return false;
 }
@@ -6184,7 +5953,7 @@ static inline bool Type_Needs_Fat_Pointer_Load(const Type_Info *t) {
  * ───────────────────────────────────────────────────────────────────────── */
 
 static Type_Info *Type_Base(Type_Info *t) {
-    while (t && t->base_type) t = t->base_type;
+    while (t and t->base_type) t = t->base_type;
     return t;
 }
 
@@ -6233,7 +6002,7 @@ typedef struct Symbol Symbol;
 /* Freeze a type and all its dependencies
  * Per RM 13.14: When a type is frozen, its representation is fixed */
 static void Freeze_Type(Type_Info *t) {
-    if (!t || t->is_frozen) return;
+    if (not t or t->is_frozen) return;
 
     /* Mark as frozen first to prevent infinite recursion */
     t->is_frozen = true;
@@ -6285,7 +6054,7 @@ static void Freeze_Type(Type_Info *t) {
 
     /* Register composite types for implicit equality function generation
      * Per RM 4.5.2: Equality is predefined for all non-limited types */
-    if (Type_Is_Composite(t) && Frozen_Composite_Count < 256) {
+    if (Type_Is_Composite(t) and Frozen_Composite_Count < 256) {
         Frozen_Composite_Types[Frozen_Composite_Count++] = t;
 
         /* Generate a unique function name for this type's equality */
@@ -6309,14 +6078,14 @@ static int64_t Type_Bound_Value(Type_Bound b);
 static int64_t Array_Element_Count(Type_Info *t);
 static int64_t Array_Low_Bound(Type_Info *t);
 static const char *Type_To_Llvm(Type_Info *t) {
-    if (!t) {
+    if (not t) {
         fprintf(stderr, "error: Type_To_Llvm called with NULL type\n");
         return Llvm_Int_Type(64);  /* ERROR path — caller bug */
     }
 
     /* For private/limited private/incomplete types, resolve through parent_type
      * chain to find the actual representation type (Ada RM 7.4.1, 3.4). */
-    if ((Type_Is_Private(t) || t->kind == TYPE_INCOMPLETE) && t->parent_type) {
+    if ((Type_Is_Private(t) or t->kind == TYPE_INCOMPLETE) and t->parent_type) {
         return Type_To_Llvm(t->parent_type);
     }
 
@@ -6337,7 +6106,7 @@ static const char *Type_To_Llvm(Type_Info *t) {
              * GNAT LLVM style: fat pointer is always { ptr, ptr }. */
             if (t->access.designated_type) {
                 Type_Info *d = t->access.designated_type;
-                if (Type_Is_String(d) || Type_Is_Unconstrained_Array(d)) {
+                if (Type_Is_String(d) or Type_Is_Unconstrained_Array(d)) {
                     return FAT_PTR_TYPE;
                 }
             }
@@ -6370,20 +6139,20 @@ static const char *Type_To_Llvm(Type_Info *t) {
 /* Get the native LLVM type for array bounds based on the index type.
  * Every call site MUST supply an actual array/string/access-to-array type. */
 static const char *Array_Bound_Llvm_Type(const Type_Info *t) {
-    if (!t) {
+    if (not t) {
         fprintf(stderr, "BUG: Array_Bound_Llvm_Type called with NULL\n");
         return STRING_BOUND_TYPE;  /* safety net — default STRING bound type */
     }
     /* Access → designated type */
-    if (t->kind == TYPE_ACCESS && t->access.designated_type)
+    if (t->kind == TYPE_ACCESS and t->access.designated_type)
         t = t->access.designated_type;
     /* Private/incomplete → parent */
-    if ((Type_Is_Private(t) || t->kind == TYPE_INCOMPLETE) && t->parent_type)
+    if ((Type_Is_Private(t) or t->kind == TYPE_INCOMPLETE) and t->parent_type)
         return Array_Bound_Llvm_Type(t->parent_type);
     /* STRING → derive bound type from index type (POSITIVE → INTEGER).
      * GNAT LLVM style: Bound_Sub_GT from index subtype's base type. */
     if (t->kind == TYPE_STRING) {
-        if (t->array.index_count > 0 && t->array.indices &&
+        if (t->array.index_count > 0 and t->array.indices and
             t->array.indices[0].index_type) {
             return Type_To_Llvm(t->array.indices[0].index_type);
         }
@@ -6395,17 +6164,17 @@ static const char *Array_Bound_Llvm_Type(const Type_Info *t) {
         return STRING_BOUND_TYPE;  /* safety net — default STRING bound type */
     }
     /* Resolve from index_type — GNAT LLVM style: use Bound_Sub_GT */
-    if (t->array.index_count > 0 && t->array.indices &&
+    if (t->array.index_count > 0 and t->array.indices and
         t->array.indices[0].index_type) {
         return Type_To_Llvm(t->array.indices[0].index_type);
     }
     /* No index type info — infer from array context.
      * This can happen for dynamically constrained arrays. */
-    if (t->array.index_count > 0 && t->array.indices) {
+    if (t->array.index_count > 0 and t->array.indices) {
         /* Try to infer from bound values */
         Type_Bound lb = t->array.indices[0].low_bound;
         Type_Bound hb = t->array.indices[0].high_bound;
-        if (lb.kind == BOUND_INTEGER && hb.kind == BOUND_INTEGER) {
+        if (lb.kind == BOUND_INTEGER and hb.kind == BOUND_INTEGER) {
             /* Static bounds — use minimum width that fits */
             return Llvm_Int_Type(Bits_For_Range(lb.int_value, hb.int_value));
         }
@@ -6424,7 +6193,7 @@ static const char *Bounds_Type_For(const char *bt) {
     /* GNAT LLVM style: bounds struct uses the NATIVE index type.
      * e.g. Bounds_Type_For("i32") → "{ i32, i32 }"
      * See gnatllvm-arrays-create.adb:586-636. */
-    if (!bt) return STRING_BOUNDS_STRUCT;  /* default STRING bound type */
+    if (not bt) return STRING_BOUNDS_STRUCT;  /* default STRING bound type */
     if (strcmp(bt, "i8")  == 0) return "{ i8, i8 }";
     if (strcmp(bt, "i16") == 0) return "{ i16, i16 }";
     if (strcmp(bt, "i32") == 0) return "{ i32, i32 }";
@@ -6438,7 +6207,7 @@ static const char *Bounds_Type_For(const char *bt) {
 static int Bounds_Alloc_Size(const char *bt) {
     /* GNAT LLVM style: size depends on native index type.
      * { i8, i8 } = 2, { i16, i16 } = 4, { i32, i32 } = 8, { i64, i64 } = 16. */
-    if (!bt) return STRING_BOUNDS_ALLOC;  /* default STRING bound type */
+    if (not bt) return STRING_BOUNDS_ALLOC;  /* default STRING bound type */
     if (strcmp(bt, "i8")  == 0) return 2;
     if (strcmp(bt, "i16") == 0) return 4;
     if (strcmp(bt, "i32") == 0) return 8;
@@ -6518,7 +6287,7 @@ typedef struct {
 
 /* Check if parameter mode requires pass-by-reference (OUT or IN OUT) */
 static inline bool Param_Is_By_Reference(Parameter_Mode mode) {
-    return mode == PARAM_OUT || mode == PARAM_IN_OUT;
+    return mode == PARAM_OUT or mode == PARAM_IN_OUT;
 }
 
 struct Symbol {
@@ -6759,13 +6528,13 @@ static void Symbol_Add(Symbol_Manager *sm, Symbol *sym) {
     /* Check if symbol is already in this bucket (avoid self-cycle) */
     while (existing) {
         if (existing == sym) return;  /* Already added */
-        if (existing->defining_scope == scope &&
+        if (existing->defining_scope == scope and
             Slice_Equal_Ignore_Case(existing->name, sym->name)) {
             /* Overloading: add to chain if subprograms or enumeration literals */
             /* Per RM 8.6, enumeration literals are overloadable like functions */
-            if ((existing->kind == SYMBOL_PROCEDURE || existing->kind == SYMBOL_FUNCTION ||
-                 existing->kind == SYMBOL_LITERAL) &&
-                (sym->kind == SYMBOL_PROCEDURE || sym->kind == SYMBOL_FUNCTION ||
+            if ((existing->kind == SYMBOL_PROCEDURE or existing->kind == SYMBOL_FUNCTION or
+                 existing->kind == SYMBOL_LITERAL) and
+                (sym->kind == SYMBOL_PROCEDURE or sym->kind == SYMBOL_FUNCTION or
                  sym->kind == SYMBOL_LITERAL)) {
                 /* Check if sym is already in the overload chain (prevents cycles) */
                 Symbol *chain = existing;
@@ -6788,7 +6557,7 @@ static void Symbol_Add(Symbol_Manager *sm, Symbol *sym) {
              * Per RM 9.1, a single task declaration creates both a task type and
              * an anonymous object of that type with the same name. The object
              * shadows the type for normal name lookups. */
-            if (sym->kind == SYMBOL_VARIABLE && existing->kind == SYMBOL_TYPE) {
+            if (sym->kind == SYMBOL_VARIABLE and existing->kind == SYMBOL_TYPE) {
                 break;  /* Proceed to add the variable - it will shadow the type */
             }
             /* Same symbol already exists at this scope - skip */
@@ -6820,12 +6589,12 @@ static void Symbol_Add(Symbol_Manager *sm, Symbol *sym) {
     scope->symbols[scope->symbol_count++] = sym;
 
     /* Track frame offset for variables/parameters/constants/discriminants */
-    if (sym->kind == SYMBOL_VARIABLE || sym->kind == SYMBOL_PARAMETER ||
-        sym->kind == SYMBOL_CONSTANT || sym->kind == SYMBOL_DISCRIMINANT) {
+    if (sym->kind == SYMBOL_VARIABLE or sym->kind == SYMBOL_PARAMETER or
+        sym->kind == SYMBOL_CONSTANT or sym->kind == SYMBOL_DISCRIMINANT) {
         sym->frame_offset = scope->frame_size;
         uint32_t var_size = sym->type ? sym->type->size : 8;
         /* Fat pointers for dynamic/unconstrained arrays need { ptr, { bound, bound } } */
-        if (sym->type && (Type_Has_Dynamic_Bounds(sym->type) || Type_Is_Unconstrained_Array(sym->type))) {
+        if (sym->type and (Type_Has_Dynamic_Bounds(sym->type) or Type_Is_Unconstrained_Array(sym->type))) {
             var_size = FAT_PTR_ALLOC_SIZE;
         }
         if (var_size == 0) {
@@ -6843,7 +6612,7 @@ static Symbol *Symbol_Find(Symbol_Manager *sm, String_Slice name) {
 
     for (Scope *scope = sm->current_scope; scope; scope = scope->parent) {
         for (Symbol *sym = scope->buckets[hash]; sym; sym = sym->next_in_bucket) {
-            if (Slice_Equal_Ignore_Case(sym->name, name) &&
+            if (Slice_Equal_Ignore_Case(sym->name, name) and
                 sym->visibility >= VIS_IMMEDIATELY_VISIBLE) {
                 return sym;
             }
@@ -6868,7 +6637,7 @@ static Symbol *Symbol_Find_With_Arity(Symbol_Manager *sm, String_Slice name, uin
 
 /* Find symbol by name and type (for enumeration literal disambiguation) */
 static Symbol *Symbol_Find_By_Type(Symbol_Manager *sm, String_Slice name, Type_Info *expected_type) {
-    if (!expected_type) return Symbol_Find(sm, name);
+    if (not expected_type) return Symbol_Find(sm, name);
     /* Get base type for matching (handles derived types and constrained subtypes).
      * Follow both parent_type (derived types) and base_type (constrained subtypes). */
     Type_Info *base_expected = expected_type;
@@ -6886,7 +6655,7 @@ static Symbol *Symbol_Find_By_Type(Symbol_Manager *sm, String_Slice name, Type_I
      * keep searching if the type doesn't match (for enumeration literal overloading) */
     for (Scope *scope = sm->current_scope; scope; scope = scope->parent) {
         for (Symbol *sym = scope->buckets[hash]; sym; sym = sym->next_in_bucket) {
-            if (Slice_Equal_Ignore_Case(sym->name, name) &&
+            if (Slice_Equal_Ignore_Case(sym->name, name) and
                 sym->visibility >= VIS_IMMEDIATELY_VISIBLE) {
                 /* Search through overload chain (for enumeration literals) */
                 for (Symbol *ovl = sym; ovl; ovl = ovl->next_overload) {
@@ -6968,7 +6737,7 @@ typedef struct {
 
 static bool Type_Covers(Type_Info *expected, Type_Info *actual) {
     /* Null types are permissive (incomplete analysis) */
-    if (!expected || !actual) return true;
+    if (not expected or not actual) return true;
 
     /* Same type always covers */
     if (expected == actual) return true;
@@ -6985,7 +6754,7 @@ static bool Type_Covers(Type_Info *expected, Type_Info *actual) {
     Type_Info *base_exp = Type_Base(expected);
     Type_Info *base_act = Type_Base(actual);
     if (base_exp == base_act) return true;
-    if (base_exp == actual || expected == base_act) return true;
+    if (base_exp == actual or expected == base_act) return true;
 
     /* For derived types, check if they share the same root type (RM 3.4).
      * This handles enumeration/integer literals from parent types being
@@ -6993,24 +6762,24 @@ static bool Type_Covers(Type_Info *expected, Type_Info *actual) {
      * enumeration literal E4 from PARENT is compatible with T. */
     Type_Info *root_exp = Type_Root(expected);
     Type_Info *root_act = Type_Root(actual);
-    if (root_exp && root_act && root_exp == root_act) return true;
+    if (root_exp and root_act and root_exp == root_act) return true;
 
     /* SYSTEM.ADDRESS compatibility (RM 13.7): all ADDRESS types are interoperable
      * This handles the case where 'ADDRESS attribute returns a built-in ADDRESS
      * type but the target is declared as SYSTEM.ADDRESS from the package */
-    if (Slice_Equal_Ignore_Case(expected->name, S("ADDRESS")) &&
+    if (Slice_Equal_Ignore_Case(expected->name, S("ADDRESS")) and
         Slice_Equal_Ignore_Case(actual->name, S("ADDRESS"))) {
         return true;
     }
 
     /* Array/string compatibility: same structure */
-    if (Type_Is_Array_Like(expected) && Type_Is_Array_Like(actual)) {
+    if (Type_Is_Array_Like(expected) and Type_Is_Array_Like(actual)) {
         /* STRING is compatible with CHARACTER arrays */
-        if (Type_Is_String(expected) || Type_Is_String(actual)) {
+        if (Type_Is_String(expected) or Type_Is_String(actual)) {
             return true;
         }
         /* Arrays with same element type */
-        if (expected->array.element_type && actual->array.element_type) {
+        if (expected->array.element_type and actual->array.element_type) {
             return Type_Covers(expected->array.element_type,
                               actual->array.element_type);
         }
@@ -7018,8 +6787,8 @@ static bool Type_Covers(Type_Info *expected, Type_Info *actual) {
     }
 
     /* Access types: check designated type compatibility */
-    if (Type_Is_Access(expected) && Type_Is_Access(actual)) {
-        if (expected->access.designated_type && actual->access.designated_type) {
+    if (Type_Is_Access(expected) and Type_Is_Access(actual)) {
+        if (expected->access.designated_type and actual->access.designated_type) {
             return Type_Covers(expected->access.designated_type,
                               actual->access.designated_type);
         }
@@ -7027,34 +6796,34 @@ static bool Type_Covers(Type_Info *expected, Type_Info *actual) {
     }
 
     /* NULL literal covers any access type */
-    if (Type_Is_Access(expected) && !actual) {
+    if (Type_Is_Access(expected) and not actual) {
         return true;
     }
 
     /* Enumeration types from generic instantiation: same name means compatible.
      * This handles the case where instantiation creates new type objects
      * that should be compatible with the original generic spec's types. */
-    if (Type_Is_Enumeration(expected) && Type_Is_Enumeration(actual) &&
-        expected->name.data && actual->name.data &&
+    if (Type_Is_Enumeration(expected) and Type_Is_Enumeration(actual) and
+        expected->name.data and actual->name.data and
         Slice_Equal_Ignore_Case(expected->name, actual->name)) {
         return true;
     }
 
     /* Integer/derived types from generic instantiation: same name means compatible */
-    if (expected->kind == TYPE_INTEGER && actual->kind == TYPE_INTEGER &&
-        expected->name.data && actual->name.data &&
+    if (expected->kind == TYPE_INTEGER and actual->kind == TYPE_INTEGER and
+        expected->name.data and actual->name.data and
         Slice_Equal_Ignore_Case(expected->name, actual->name)) {
         return true;
     }
 
     /* Float/fixed-point types: same name means compatible (RM 12.3) */
-    if (Type_Is_Float(expected) && Type_Is_Float(actual) &&
-        expected->name.data && actual->name.data &&
+    if (Type_Is_Float(expected) and Type_Is_Float(actual) and
+        expected->name.data and actual->name.data and
         Slice_Equal_Ignore_Case(expected->name, actual->name)) {
         return true;
     }
-    if (Type_Is_Fixed_Point(expected) && Type_Is_Fixed_Point(actual) &&
-        expected->name.data && actual->name.data &&
+    if (Type_Is_Fixed_Point(expected) and Type_Is_Fixed_Point(actual) and
+        expected->name.data and actual->name.data and
         Slice_Equal_Ignore_Case(expected->name, actual->name)) {
         return true;
     }
@@ -7066,33 +6835,33 @@ static bool Type_Covers(Type_Info *expected, Type_Info *actual) {
     {
         Type_Info *char_type = NULL;
         Type_Info *enum_type = NULL;
-        if (Type_Is_Character(expected) && Type_Is_Enumeration(actual)) {
+        if (Type_Is_Character(expected) and Type_Is_Enumeration(actual)) {
             char_type = expected;
             enum_type = actual;
-        } else if (Type_Is_Character(actual) && Type_Is_Enumeration(expected)) {
+        } else if (Type_Is_Character(actual) and Type_Is_Enumeration(expected)) {
             char_type = actual;
             enum_type = expected;
         }
         /* Also check derived enumeration types via root */
-        if (!enum_type && Type_Is_Character(expected)) {
+        if (not enum_type and Type_Is_Character(expected)) {
             Type_Info *act_root = Type_Root(actual);
             if (Type_Is_Enumeration(act_root)) {
                 enum_type = act_root;
                 char_type = expected;
             }
         }
-        if (!enum_type && Type_Is_Character(actual)) {
+        if (not enum_type and Type_Is_Character(actual)) {
             Type_Info *exp_root = Type_Root(expected);
             if (Type_Is_Enumeration(exp_root)) {
                 enum_type = exp_root;
                 char_type = actual;
             }
         }
-        if (char_type && enum_type && enum_type->enumeration.literals) {
+        if (char_type and enum_type and enum_type->enumeration.literals) {
             /* Check if enum has any character literals */
             for (uint32_t i = 0; i < enum_type->enumeration.literal_count; i++) {
                 String_Slice lit = enum_type->enumeration.literals[i];
-                if (lit.length > 0 && lit.data[0] == '\'') {
+                if (lit.length > 0 and lit.data[0] == '\'') {
                     return true;  /* Enum has character literals */
                 }
             }
@@ -7120,7 +6889,7 @@ typedef struct {
 
 /* Check if arguments match a symbol's parameter profile */
 static bool Arguments_Match_Profile(Symbol *sym, Argument_Info *args) {
-    if (!sym) return false;
+    if (not sym) return false;
 
     /* Track which formal parameters are covered by arguments */
     bool *param_covered = Arena_Allocate(sym->parameter_count * sizeof(bool));
@@ -7135,7 +6904,7 @@ static bool Arguments_Match_Profile(Symbol *sym, Argument_Info *args) {
         uint32_t param_idx = i;
 
         /* Handle named association */
-        if (args->names && args->names[i].data) {
+        if (args->names and args->names[i].data) {
             bool found = false;
             for (uint32_t j = 0; j < sym->parameter_count; j++) {
                 if (Slice_Equal_Ignore_Case(sym->parameters[j].name, args->names[i])) {
@@ -7145,7 +6914,7 @@ static bool Arguments_Match_Profile(Symbol *sym, Argument_Info *args) {
                     break;
                 }
             }
-            if (!found) return false;
+            if (not found) return false;
         } else {
             /* Positional: use i-th parameter */
             if (i >= sym->parameter_count) return false;
@@ -7157,14 +6926,14 @@ static bool Arguments_Match_Profile(Symbol *sym, Argument_Info *args) {
             param_covered[param_idx] = true;
         }
 
-        if (!Type_Covers(param_type, arg_type)) {
+        if (not Type_Covers(param_type, arg_type)) {
             return false;
         }
     }
 
     /* Verify all required parameters (no default value) are covered */
     for (uint32_t i = 0; i < sym->parameter_count; i++) {
-        if (!param_covered[i] && !sym->parameters[i].default_value) {
+        if (not param_covered[i] and not sym->parameters[i].default_value) {
             return false;  /* Required parameter not provided */
         }
     }
@@ -7187,12 +6956,12 @@ static void Collect_Interpretations(Symbol_Manager *sm, String_Slice name,
     /* Search all enclosing scopes */
     for (Scope *scope = sm->current_scope; scope; scope = scope->parent) {
         for (Symbol *sym = scope->buckets[hash]; sym; sym = sym->next_in_bucket) {
-            if (!Slice_Equal_Ignore_Case(sym->name, name)) continue;
+            if (not Slice_Equal_Ignore_Case(sym->name, name)) continue;
             if (sym->visibility < VIS_IMMEDIATELY_VISIBLE) continue;
 
             /* Add this interpretation and all overloads */
             Symbol *s = sym;
-            while (s && interps->count < MAX_INTERPRETATIONS) {
+            while (s and interps->count < MAX_INTERPRETATIONS) {
                 /* Check if we already have this interpretation */
                 bool duplicate = false;
                 for (uint32_t i = 0; i < interps->count; i++) {
@@ -7202,7 +6971,7 @@ static void Collect_Interpretations(Symbol_Manager *sm, String_Slice name,
                     }
                 }
 
-                if (!duplicate) {
+                if (not duplicate) {
                     interps->items[interps->count++] = (Interpretation){
                         .nam = s,
                         .typ = (s->kind == SYMBOL_FUNCTION) ? s->return_type : s->type,
@@ -7226,7 +6995,7 @@ static void Filter_By_Arguments(Interp_List *interps, Argument_Info *args) {
         Symbol *sym = interps->items[i].nam;
 
         /* Non-callable symbols don't filter by arguments */
-        if (sym->kind != SYMBOL_FUNCTION && sym->kind != SYMBOL_PROCEDURE) {
+        if (sym->kind != SYMBOL_FUNCTION and sym->kind != SYMBOL_PROCEDURE) {
             interps->items[write_idx++] = interps->items[i];
             continue;
         }
@@ -7248,10 +7017,10 @@ static void Filter_By_Arguments(Interp_List *interps, Argument_Info *args) {
 
 /* Check if sym1 hides sym2 (user-defined hiding predefined, or inner scope) */
 static bool Symbol_Hides(Symbol *sym1, Symbol *sym2) {
-    if (!sym1 || !sym2) return false;
+    if (not sym1 or not sym2) return false;
 
     /* User-defined function can hide predefined operator */
-    if ((sym1->kind == SYMBOL_FUNCTION || sym1->kind == SYMBOL_PROCEDURE) &&
+    if ((sym1->kind == SYMBOL_FUNCTION or sym1->kind == SYMBOL_PROCEDURE) and
         sym2->nesting_level == 0) {  /* Predefined are at level 0 */
         return true;
     }
@@ -7272,19 +7041,19 @@ static int32_t Score_Interpretation(Interpretation *interp,
     Symbol *sym = interp->nam;
 
     /* Prefer non-universal interpretations */
-    if (!Type_Is_Universal(interp->typ)) {
+    if (not Type_Is_Universal(interp->typ)) {
         score += 1000;
     }
 
     /* Prefer exact context type match */
-    if (context_type && interp->typ == context_type) {
+    if (context_type and interp->typ == context_type) {
         score += 500;
     }
 
     /* Prefer immediately visible over USE-visible (RM 8.4).
      * Derived type operations are immediately visible while parent
      * operations via USE clause are use-visible. */
-    if (sym && sym->visibility == VIS_IMMEDIATELY_VISIBLE) {
+    if (sym and sym->visibility == VIS_IMMEDIATELY_VISIBLE) {
         score += 200;
     }
 
@@ -7292,8 +7061,8 @@ static int32_t Score_Interpretation(Interpretation *interp,
     score += (int32_t)(interp->scope_depth * 10);
 
     /* For functions: prefer exact argument type matches */
-    if (sym && (sym->kind == SYMBOL_FUNCTION || sym->kind == SYMBOL_PROCEDURE) && args) {
-        for (uint32_t i = 0; i < args->count && i < sym->parameter_count; i++) {
+    if (sym and (sym->kind == SYMBOL_FUNCTION or sym->kind == SYMBOL_PROCEDURE) and args) {
+        for (uint32_t i = 0; i < args->count and i < sym->parameter_count; i++) {
             Type_Info *arg_type = args->types[i];
             Type_Info *param_type = sym->parameters[i].param_type;
 
@@ -7331,14 +7100,14 @@ static Symbol *Disambiguate(Interp_List *interps, Type_Info *context_type,
             /* Check hiding rules */
             if (Symbol_Hides(interps->items[i].nam, best)) {
                 best = interps->items[i].nam;
-            } else if (!Symbol_Hides(best, interps->items[i].nam)) {
+            } else if (not Symbol_Hides(best, interps->items[i].nam)) {
                 tied_count++;
             }
         }
     }
 
     /* If still tied, check for universal vs specific preference */
-    if (tied_count > 1 && context_type) {
+    if (tied_count > 1 and context_type) {
         /* Prefer interpretation matching context exactly */
         for (uint32_t i = 0; i < interps->count; i++) {
             if (interps->items[i].typ == context_type) {
@@ -7348,7 +7117,7 @@ static Symbol *Disambiguate(Interp_List *interps, Type_Info *context_type,
 
         /* Prefer non-universal */
         for (uint32_t i = 0; i < interps->count; i++) {
-            if (!Type_Is_Universal(interps->items[i].typ)) {
+            if (not Type_Is_Universal(interps->items[i].typ)) {
                 return interps->items[i].nam;
             }
         }
@@ -7377,7 +7146,7 @@ static Symbol *Resolve_Overloaded_Call(Symbol_Manager *sm,
     }
 
     /* Phase 2: Filter by argument compatibility */
-    if (args && args->count > 0) {
+    if (args and args->count > 0) {
         Filter_By_Arguments(&interps, args);
 
         if (interps.count == 0) {
@@ -7386,7 +7155,7 @@ static Symbol *Resolve_Overloaded_Call(Symbol_Manager *sm,
     }
 
     /* Phase 3: Apply context type filtering if provided */
-    if (context_type && interps.count > 1) {
+    if (context_type and interps.count > 1) {
         uint32_t write_idx = 0;
         for (uint32_t i = 0; i < interps.count; i++) {
             if (Type_Covers(context_type, interps.items[i].typ)) {
@@ -7659,7 +7428,7 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node);
 static Type_Info *Resolve_Identifier(Symbol_Manager *sm, Syntax_Node *node) {
     Symbol *sym = Symbol_Find(sm, node->string_val.text);
 
-    if (!sym) {
+    if (not sym) {
         Report_Error(node->location, "undefined identifier '%.*s'",
                     node->string_val.text.length, node->string_val.text.data);
         return sm->type_integer;  /* ??? Continue; one error is better than ten. */
@@ -7669,7 +7438,7 @@ static Type_Info *Resolve_Identifier(Symbol_Manager *sm, Syntax_Node *node) {
 
     /* For parameterless functions, the result type is the return type.
      * In Ada, a function name without parentheses is a valid call. */
-    if (sym->kind == SYMBOL_FUNCTION && sym->return_type) {
+    if (sym->kind == SYMBOL_FUNCTION and sym->return_type) {
         node->type = sym->return_type;
         return sym->return_type;
     }
@@ -7683,7 +7452,7 @@ static Type_Info *Resolve_Selected(Symbol_Manager *sm, Syntax_Node *node) {
     Type_Info *prefix_type = Resolve_Expression(sm, node->selected.prefix);
 
     /* Handle .ALL for explicit dereference (RM 4.1) */
-    if (Type_Is_Access(prefix_type) &&
+    if (Type_Is_Access(prefix_type) and
         Slice_Equal_Ignore_Case(node->selected.selector, S("ALL"))) {
         node->type = prefix_type->access.designated_type;
         return node->type;
@@ -7691,7 +7460,7 @@ static Type_Info *Resolve_Selected(Symbol_Manager *sm, Syntax_Node *node) {
 
     /* Get effective type for record component lookup (handle implicit dereference) */
     Type_Info *record_type = prefix_type;
-    if (Type_Is_Access(prefix_type) && Type_Is_Record(prefix_type->access.designated_type)) {
+    if (Type_Is_Access(prefix_type) and Type_Is_Record(prefix_type->access.designated_type)) {
         record_type = prefix_type->access.designated_type;
     }
 
@@ -7727,7 +7496,7 @@ static Type_Info *Resolve_Selected(Symbol_Manager *sm, Syntax_Node *node) {
          * Per RM 4.1.3, qualified names can use package, procedure, or function
          * as prefix to access items declared within that scope. */
         Symbol *prefix_sym = node->selected.prefix->symbol;
-        if (prefix_sym && prefix_sym->kind == SYMBOL_PACKAGE) {
+        if (prefix_sym and prefix_sym->kind == SYMBOL_PACKAGE) {
             /* Search package's exported symbols */
             for (uint32_t i = 0; i < prefix_sym->exported_count; i++) {
                 if (Slice_Equal_Ignore_Case(prefix_sym->exported[i]->name,
@@ -7741,13 +7510,13 @@ static Type_Info *Resolve_Selected(Symbol_Manager *sm, Syntax_Node *node) {
         /* For procedure/function prefix, search the subprogram's scope.
          * This handles cases like MAIN.A_B_C where MAIN is a procedure
          * and A_B_C is an enum literal or type declared within it. */
-        if (prefix_sym && (prefix_sym->kind == SYMBOL_PROCEDURE ||
-                          prefix_sym->kind == SYMBOL_FUNCTION) &&
+        if (prefix_sym and (prefix_sym->kind == SYMBOL_PROCEDURE or
+                          prefix_sym->kind == SYMBOL_FUNCTION) and
             prefix_sym->scope) {
             Scope *subp_scope = prefix_sym->scope;
             uint32_t hash = Symbol_Hash_Name(node->selected.selector);
             for (Symbol *s = subp_scope->buckets[hash]; s; s = s->next_in_bucket) {
-                if (Slice_Equal_Ignore_Case(s->name, node->selected.selector) &&
+                if (Slice_Equal_Ignore_Case(s->name, node->selected.selector) and
                     s->visibility >= VIS_IMMEDIATELY_VISIBLE) {
                     node->symbol = s;
                     node->type = s->type;
@@ -7795,7 +7564,7 @@ static String_Slice Operator_Name(Token_Kind op) {
  * Used for comparisons and assignments where a character literal should be
  * interpreted as an enumeration value. Returns true if resolved. */
 static bool Resolve_Char_As_Enum(Symbol_Manager *sm, Syntax_Node *char_node, Type_Info *enum_type) {
-    if (!char_node || char_node->kind != NK_CHARACTER || !enum_type)
+    if (not char_node or char_node->kind != NK_CHARACTER or not enum_type)
         return false;
     /* Find base enumeration type by following both parent_type and base_type chains.
      * parent_type is used for derived types (TYPE T IS NEW X)
@@ -7809,7 +7578,7 @@ static bool Resolve_Char_As_Enum(Symbol_Manager *sm, Syntax_Node *char_node, Typ
         else
             break;
     }
-    if (!base_enum || base_enum->kind != TYPE_ENUMERATION || !base_enum->enumeration.literals)
+    if (not base_enum or base_enum->kind != TYPE_ENUMERATION or not base_enum->enumeration.literals)
         return false;
     /* Get the character from the literal (format: 'X') */
     String_Slice lit_text = char_node->string_val.text;
@@ -7817,13 +7586,13 @@ static bool Resolve_Char_As_Enum(Symbol_Manager *sm, Syntax_Node *char_node, Typ
     /* Look for matching character literal in enum */
     for (uint32_t j = 0; j < base_enum->enumeration.literal_count; j++) {
         String_Slice lit_name = base_enum->enumeration.literals[j];
-        if (lit_name.length == 3 &&
-            lit_name.data[0] == '\'' &&
-            lit_name.data[1] == ch &&
+        if (lit_name.length == 3 and
+            lit_name.data[0] == '\'' and
+            lit_name.data[1] == ch and
             lit_name.data[2] == '\'') {
             /* Found matching enum literal - find symbol with matching type */
             Symbol *lit_sym = Symbol_Find_By_Type(sm, lit_name, base_enum);
-            if (lit_sym && lit_sym->kind == SYMBOL_LITERAL) {
+            if (lit_sym and lit_sym->kind == SYMBOL_LITERAL) {
                 char_node->symbol = lit_sym;
                 char_node->type = enum_type;
                 return true;
@@ -7838,19 +7607,19 @@ static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
     /* Membership tests (RM 4.4): X IN T, where X can be an aggregate.
      * Resolve type name first, propagate type to left aggregate (RM 4.3.3).
      * Must resolve right BEFORE left so type can propagate to aggregate. */
-    if ((op == TK_IN || op == TK_NOT) && node->binary.left->kind == NK_AGGREGATE &&
-        !node->binary.left->type && node->binary.right) {
+    if ((op == TK_IN or op == TK_NOT) and node->binary.left->kind == NK_AGGREGATE and
+        not node->binary.left->type and node->binary.right) {
         Syntax_Node *type_name = node->binary.right;
         /* Resolve right (type name) first to get its symbol */
         Resolve_Expression(sm, type_name);
-        if (type_name->symbol && type_name->symbol->kind == SYMBOL_TYPE)
+        if (type_name->symbol and type_name->symbol->kind == SYMBOL_TYPE)
             node->binary.left->type = type_name->symbol->type;
     }
     /* Resolve left first; then propagate its type to an untyped aggregate
      * on the right BEFORE resolving, so record component choices can be
      * looked up in the correct type (RM 4.3, 4.5.2). */
     Type_Info *left_type = Resolve_Expression(sm, node->binary.left);
-    if (node->binary.right->kind == NK_AGGREGATE && !node->binary.right->type && left_type)
+    if (node->binary.right->kind == NK_AGGREGATE and not node->binary.right->type and left_type)
         node->binary.right->type = left_type;
     Type_Info *right_type = Resolve_Expression(sm, node->binary.right);
 
@@ -7873,12 +7642,12 @@ static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
         };
 
         Symbol *user_op = Resolve_Overloaded_Call(sm, op_name, &args, NULL);
-        if (user_op && user_op->kind == SYMBOL_FUNCTION) {
+        if (user_op and user_op->kind == SYMBOL_FUNCTION) {
             /* Skip predefined operators when either operand is universal:
              * universal types must propagate through arithmetic (RM 4.10).
              * Predefined *(FLOAT,FLOAT)→FLOAT would swallow UNIVERSAL_REAL. */
-            if (user_op->is_predefined &&
-                (Type_Is_Universal(left_type) || Type_Is_Universal(right_type)))
+            if (user_op->is_predefined and
+                (Type_Is_Universal(left_type) or Type_Is_Universal(right_type)))
                 goto predefined_semantics;
             node->symbol = user_op;
             node->type = user_op->return_type;
@@ -7892,7 +7661,7 @@ static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
         case TK_PLUS: case TK_MINUS: case TK_STAR: case TK_SLASH:
         case TK_MOD: case TK_REM: case TK_EXPON:
             /* Numeric operators */
-            if (!Type_Is_Numeric(left_type) || !Type_Is_Numeric(right_type)) {
+            if (not Type_Is_Numeric(left_type) or not Type_Is_Numeric(right_type)) {
                 Report_Error(node->location, "numeric operands required for %s",
                             Token_Name[op]);
             }
@@ -7900,15 +7669,15 @@ static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
              * - Mixed real/integer: result is the real type (real "wins")
              * - Same class: prefer non-universal type
              * - Both universal: keep universal (propagates to context) */
-            if (Type_Is_Real(left_type) && !Type_Is_Real(right_type)) {
+            if (Type_Is_Real(left_type) and not Type_Is_Real(right_type)) {
                 /* Left is real, right is integer -> result is left (real) */
                 node->type = left_type;
-            } else if (Type_Is_Real(right_type) && !Type_Is_Real(left_type)) {
+            } else if (Type_Is_Real(right_type) and not Type_Is_Real(left_type)) {
                 /* Right is real, left is integer -> result is right (real) */
                 node->type = right_type;
-            } else if (Type_Is_Universal(left_type) && !Type_Is_Universal(right_type)) {
+            } else if (Type_Is_Universal(left_type) and not Type_Is_Universal(right_type)) {
                 node->type = right_type;
-            } else if (!Type_Is_Universal(left_type)) {
+            } else if (not Type_Is_Universal(left_type)) {
                 node->type = left_type;
             } else {
                 /* Both universal - result is universal */
@@ -7927,20 +7696,20 @@ static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
              *   ARRAY & ELEMENT -> ARRAY
              *   ELEMENT & ARRAY -> ARRAY */
             {
-                bool left_ok = Type_Is_Array_Like(left_type) ||
+                bool left_ok = Type_Is_Array_Like(left_type) or
                                Type_Is_Character(left_type);
-                bool right_ok = Type_Is_Array_Like(right_type) ||
+                bool right_ok = Type_Is_Array_Like(right_type) or
                                 Type_Is_Character(right_type);
-                if (!left_ok && !right_ok) {
+                if (not left_ok and not right_ok) {
                     Report_Error(node->location, "concatenation requires string, array, or character");
                 }
                 /* Propagate type to aggregate operands (RM 4.3):
                  * In A & (1, 2), the aggregate gets its type from A */
-                if (node->binary.right->kind == NK_AGGREGATE && !node->binary.right->type && left_type) {
+                if (node->binary.right->kind == NK_AGGREGATE and not node->binary.right->type and left_type) {
                     node->binary.right->type = left_type;
                     Resolve_Expression(sm, node->binary.right);
                 }
-                if (node->binary.left->kind == NK_AGGREGATE && !node->binary.left->type && right_type) {
+                if (node->binary.left->kind == NK_AGGREGATE and not node->binary.left->type and right_type) {
                     node->binary.left->type = right_type;
                     Resolve_Expression(sm, node->binary.left);
                 }
@@ -7963,9 +7732,9 @@ static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
         case TK_AND: case TK_OR: case TK_XOR:
         case TK_AND_THEN: case TK_OR_ELSE:
             /* Boolean operators - can also operate on arrays of Boolean */
-            if (left_type && left_type->kind != TYPE_BOOLEAN) {
-                if (left_type->kind != TYPE_ARRAY ||
-                    !left_type->array.element_type ||
+            if (left_type and left_type->kind != TYPE_BOOLEAN) {
+                if (left_type->kind != TYPE_ARRAY or
+                    not left_type->array.element_type or
                     left_type->array.element_type->kind != TYPE_BOOLEAN) {
                     Report_Error(node->location, "Boolean operands required");
                 }
@@ -7978,14 +7747,14 @@ static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
             /* Handle aggregates without type context (RM 4.3):
              * In A = (1, 2, 3), the aggregate gets its type from A.
              * Per GNAT sem_res.adb Find_Unique_Type, propagate type context. */
-            if (node->binary.right->kind == NK_AGGREGATE && !node->binary.right->type && left_type) {
+            if (node->binary.right->kind == NK_AGGREGATE and not node->binary.right->type and left_type) {
                 /* Propagate type from left operand to aggregate */
                 node->binary.right->type = left_type;
                 /* Re-resolve aggregate with proper type context */
                 Resolve_Expression(sm, node->binary.right);
                 right_type = node->binary.right->type;
             }
-            if (node->binary.left->kind == NK_AGGREGATE && !node->binary.left->type && right_type) {
+            if (node->binary.left->kind == NK_AGGREGATE and not node->binary.left->type and right_type) {
                 /* Propagate type from right operand to aggregate */
                 node->binary.left->type = right_type;
                 /* Re-resolve aggregate with proper type context */
@@ -7993,7 +7762,7 @@ static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
                 left_type = node->binary.left->type;
             }
             /* Handle character literals that should be enum literals */
-            if (Type_Is_Enumeration(left_type) ||
+            if (Type_Is_Enumeration(left_type) or
                 Type_Is_Enumeration(left_type ? left_type->parent_type : NULL)) {
                 if (node->binary.right->kind == NK_CHARACTER) {
                     if (Resolve_Char_As_Enum(sm, node->binary.right, left_type)) {
@@ -8001,7 +7770,7 @@ static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
                     }
                 }
             }
-            if (Type_Is_Enumeration(right_type) ||
+            if (Type_Is_Enumeration(right_type) or
                 Type_Is_Enumeration(right_type ? right_type->parent_type : NULL)) {
                 if (node->binary.left->kind == NK_CHARACTER) {
                     if (Resolve_Char_As_Enum(sm, node->binary.left, right_type)) {
@@ -8012,10 +7781,10 @@ static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
             /* Disambiguate overloaded enum literals using comparison context
              * (RM 8.6): if types mismatch and one operand is a literal, re-resolve
              * it against the other operand's type via Symbol_Find_By_Type. */
-            if (!Type_Covers(left_type, right_type) && !Type_Covers(right_type, left_type)) {
-                if (node->binary.right->kind == NK_IDENTIFIER &&
-                    node->binary.right->symbol &&
-                    node->binary.right->symbol->kind == SYMBOL_LITERAL && left_type) {
+            if (not Type_Covers(left_type, right_type) and not Type_Covers(right_type, left_type)) {
+                if (node->binary.right->kind == NK_IDENTIFIER and
+                    node->binary.right->symbol and
+                    node->binary.right->symbol->kind == SYMBOL_LITERAL and left_type) {
                     Symbol *s = Symbol_Find_By_Type(sm,
                         node->binary.right->string_val.text, left_type);
                     if (s) {
@@ -8024,9 +7793,9 @@ static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
                         right_type = node->binary.right->type;
                     }
                 }
-                if (node->binary.left->kind == NK_IDENTIFIER &&
-                    node->binary.left->symbol &&
-                    node->binary.left->symbol->kind == SYMBOL_LITERAL && right_type) {
+                if (node->binary.left->kind == NK_IDENTIFIER and
+                    node->binary.left->symbol and
+                    node->binary.left->symbol->kind == SYMBOL_LITERAL and right_type) {
                     Symbol *s = Symbol_Find_By_Type(sm,
                         node->binary.left->string_val.text, right_type);
                     if (s) {
@@ -8036,7 +7805,7 @@ static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
                     }
                 }
             }
-            if (!Type_Covers(left_type, right_type) && !Type_Covers(right_type, left_type)) {
+            if (not Type_Covers(left_type, right_type) and not Type_Covers(right_type, left_type)) {
                 Report_Error(node->location, "incompatible types for comparison");
             }
             node->type = sm->type_boolean;
@@ -8083,7 +7852,7 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
             Syntax_Node *arg = node->apply.arguments.items[i];
 
             /* Handle named associations: Name => Value */
-            if (arg->kind == NK_ASSOCIATION && arg->association.choices.count == 1) {
+            if (arg->kind == NK_ASSOCIATION and arg->association.choices.count == 1) {
                 Syntax_Node *name_node = arg->association.choices.items[0];
                 if (name_node->kind == NK_IDENTIFIER) {
                     arg_names[i] = name_node->string_val.text;
@@ -8145,10 +7914,10 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
         /* Only treat as a call if prefix is an identifier referring to a callable.
          * If prefix is a complex expression (e.g., func(...)), it's already resolved
          * and we should check its result type for indexing instead. */
-        bool prefix_is_call_target = (prefix->kind == NK_IDENTIFIER ||
+        bool prefix_is_call_target = (prefix->kind == NK_IDENTIFIER or
                                       prefix->kind == NK_SELECTED);
-        if (prefix_is_call_target &&
-            (prefix_sym->kind == SYMBOL_FUNCTION || prefix_sym->kind == SYMBOL_PROCEDURE)) {
+        if (prefix_is_call_target and
+            (prefix_sym->kind == SYMBOL_FUNCTION or prefix_sym->kind == SYMBOL_PROCEDURE)) {
             node->symbol = prefix_sym;
             node->type = prefix_sym->return_type;  /* NULL for procedures */
             /* Re-resolve arguments based on parameter types.
@@ -8157,10 +7926,10 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
              *   the enumeration literal for the parameter's type, not ASCII.
              * - Aggregates like FN((1,2,3)) where the aggregate needs the
              *   parameter type to determine its type (RM 4.3). */
-            for (uint32_t i = 0; i < arg_count && i < prefix_sym->parameter_count; i++) {
+            for (uint32_t i = 0; i < arg_count and i < prefix_sym->parameter_count; i++) {
                 Syntax_Node *arg = node->apply.arguments.items[i];
                 /* Handle named associations */
-                if (arg->kind == NK_ASSOCIATION && arg->association.expression) {
+                if (arg->kind == NK_ASSOCIATION and arg->association.expression) {
                     arg = arg->association.expression;
                 }
                 Type_Info *param_type = prefix_sym->parameters[i].param_type;
@@ -8168,7 +7937,7 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
                     Resolve_Char_As_Enum(sm, arg, param_type);
                 }
                 /* Propagate type to aggregate arguments */
-                if (arg->kind == NK_AGGREGATE && !arg->type && param_type) {
+                if (arg->kind == NK_AGGREGATE and not arg->type and param_type) {
                     arg->type = param_type;
                     Resolve_Expression(sm, arg);
                 }
@@ -8177,7 +7946,7 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
         }
 
         /* ─── Case 2: Type Conversion or Constrained Subtype ─── */
-        if (prefix_sym->kind == SYMBOL_TYPE || prefix_sym->kind == SYMBOL_SUBTYPE) {
+        if (prefix_sym->kind == SYMBOL_TYPE or prefix_sym->kind == SYMBOL_SUBTYPE) {
             Type_Info *base_type = prefix_sym->type;
 
             /* Check for constrained subtype indication: STRING(1..5) */
@@ -8216,13 +7985,13 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
                             info->index_type = sm->type_integer;
 
                             if (arg->kind == NK_RANGE) {
-                                if (arg->range.low && arg->range.low->kind == NK_INTEGER) {
+                                if (arg->range.low and arg->range.low->kind == NK_INTEGER) {
                                     info->low_bound = (Type_Bound){
                                         .kind = BOUND_INTEGER,
                                         .int_value = arg->range.low->integer_lit.value
                                     };
                                 }
-                                if (arg->range.high && arg->range.high->kind == NK_INTEGER) {
+                                if (arg->range.high and arg->range.high->kind == NK_INTEGER) {
                                     info->high_bound = (Type_Bound){
                                         .kind = BOUND_INTEGER,
                                         .int_value = arg->range.high->integer_lit.value
@@ -8260,10 +8029,10 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
     /* Ada allows "+"(X, Y) or "&"(A, B) as equivalent to X + Y or A & B.
      * Handle predefined operators that don't have explicit symbol entries.
      * Note: The lexer strips quotes from operator strings, so "&" becomes just &. */
-    if (!prefix_sym && prefix->kind == NK_IDENTIFIER) {
+    if (not prefix_sym and prefix->kind == NK_IDENTIFIER) {
         String_Slice name = prefix->string_val.text;
         /* Check for single-character operators (lexer stripped quotes) */
-        if (name.length == 1 && arg_count == 2) {
+        if (name.length == 1 and arg_count == 2) {
             char op_char = name.data[0];
             if (op_char == '&') {
                 /* "&"(A, B) is array/string concatenation */
@@ -8272,9 +8041,9 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
                 Type_Info *left_type = Resolve_Expression(sm, left);
                 Type_Info *right_type = Resolve_Expression(sm, right);
                 /* Result is the array type (prefer left if array, else right) */
-                if (left_type && Type_Is_Array_Like(left_type)) {
+                if (left_type and Type_Is_Array_Like(left_type)) {
                     node->type = left_type;
-                } else if (right_type && Type_Is_Array_Like(right_type)) {
+                } else if (right_type and Type_Is_Array_Like(right_type)) {
                     node->type = right_type;
                 } else if (Type_Is_String(left_type)) {
                     node->type = left_type;
@@ -8286,7 +8055,7 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
                 return node->type;
             }
             /* Handle arithmetic operators */
-            if (op_char == '+' || op_char == '-' || op_char == '*' || op_char == '/') {
+            if (op_char == '+' or op_char == '-' or op_char == '*' or op_char == '/') {
                 Syntax_Node *left = node->apply.arguments.items[0];
                 Syntax_Node *right = node->apply.arguments.items[1];
                 Type_Info *left_type = Resolve_Expression(sm, left);
@@ -8297,10 +8066,10 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
             }
         }
         /* Check for two-character operators like <=, >=, /=, ** */
-        if (name.length == 2 && arg_count == 2) {
-            if ((name.data[0] == '<' && name.data[1] == '=') ||
-                (name.data[0] == '>' && name.data[1] == '=') ||
-                (name.data[0] == '/' && name.data[1] == '=')) {
+        if (name.length == 2 and arg_count == 2) {
+            if ((name.data[0] == '<' and name.data[1] == '=') or
+                (name.data[0] == '>' and name.data[1] == '=') or
+                (name.data[0] == '/' and name.data[1] == '=')) {
                 /* Comparison operators return BOOLEAN */
                 Syntax_Node *left = node->apply.arguments.items[0];
                 Syntax_Node *right = node->apply.arguments.items[1];
@@ -8309,7 +8078,7 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
                 node->type = sm->type_boolean;
                 return node->type;
             }
-            if (name.data[0] == '*' && name.data[1] == '*') {
+            if (name.data[0] == '*' and name.data[1] == '*') {
                 /* Exponentiation */
                 Syntax_Node *left = node->apply.arguments.items[0];
                 Syntax_Node *right = node->apply.arguments.items[1];
@@ -8323,7 +8092,7 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
         if (arg_count == 1) {
             if (name.length == 1) {
                 char op_char = name.data[0];
-                if (op_char == '+' || op_char == '-') {
+                if (op_char == '+' or op_char == '-') {
                     node->type = Resolve_Expression(sm, node->apply.arguments.items[0]);
                     return node->type;
                 }
@@ -8333,7 +8102,7 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
                 Syntax_Node *operand = node->apply.arguments.items[0];
                 Type_Info *ot = Resolve_Expression(sm, operand);
                 /* NOT preserves boolean array type */
-                if (ot && Type_Is_Array_Like(ot) && ot->array.element_type &&
+                if (ot and Type_Is_Array_Like(ot) and ot->array.element_type and
                     Type_Is_Boolean(ot->array.element_type))
                     node->type = ot;
                 else
@@ -8347,10 +8116,10 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
         }
         /* Binary word operators: "AND"/"OR"/"XOR"/"MOD"/"REM"(L,R) (RM 4.5) */
         if (arg_count == 2) {
-            if (Slice_Equal_Ignore_Case(name, S("and")) ||
-                Slice_Equal_Ignore_Case(name, S("or"))  ||
-                Slice_Equal_Ignore_Case(name, S("xor")) ||
-                Slice_Equal_Ignore_Case(name, S("mod")) ||
+            if (Slice_Equal_Ignore_Case(name, S("and")) or
+                Slice_Equal_Ignore_Case(name, S("or"))  or
+                Slice_Equal_Ignore_Case(name, S("xor")) or
+                Slice_Equal_Ignore_Case(name, S("mod")) or
                 Slice_Equal_Ignore_Case(name, S("rem"))) {
                 Type_Info *lt = Resolve_Expression(sm, node->apply.arguments.items[0]);
                 Resolve_Expression(sm, node->apply.arguments.items[1]);
@@ -8363,7 +8132,7 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
     /* ─── Case 3: Array Indexing/Slicing (with implicit access dereference) ─── */
     /* Per RM 4.1(3), A(I) where A is access-to-array is equivalent to A.ALL(I) */
     Type_Info *indexed_type = prefix_type;
-    if (Type_Is_Access(prefix_type) && prefix_type->access.designated_type) {
+    if (Type_Is_Access(prefix_type) and prefix_type->access.designated_type) {
         indexed_type = prefix_type->access.designated_type;  /* Implicit dereference */
     }
     if (Type_Is_Array_Like(indexed_type)) {
@@ -8371,7 +8140,7 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
         bool is_slice = false;
         for (uint32_t i = 0; i < arg_count; i++) {
             Syntax_Node *arg = node->apply.arguments.items[i];
-            if (arg && arg->kind == NK_RANGE) {
+            if (arg and arg->kind == NK_RANGE) {
                 is_slice = true;
                 break;
             }
@@ -8383,7 +8152,7 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
         } else {
             /* Indexing: result type is the element type */
             node->type = indexed_type->array.element_type;
-            if (!node->type && Type_Is_String(indexed_type)) {
+            if (not node->type and Type_Is_String(indexed_type)) {
                 node->type = sm->type_character;
             }
         }
@@ -8407,7 +8176,7 @@ static bool Is_Integer_Expr(Syntax_Node *n);  /* Forward declaration */
 
 static bool Is_Integer_Expr(Syntax_Node *n) {
     /* Returns true if the expression is integer-typed (for division semantics) */
-    if (!n) return false;
+    if (not n) return false;
     switch (n->kind) {
         case NK_INTEGER: return true;
         case NK_REAL:    return false;
@@ -8415,8 +8184,8 @@ static bool Is_Integer_Expr(Syntax_Node *n) {
         case NK_SELECTED: {
             /* Check if named number/constant is integer */
             Symbol *sym = n->symbol;
-            if (sym && sym->kind == SYMBOL_CONSTANT && sym->is_named_number &&
-                sym->declaration && sym->declaration->kind == NK_OBJECT_DECL) {
+            if (sym and sym->kind == SYMBOL_CONSTANT and sym->is_named_number and
+                sym->declaration and sym->declaration->kind == NK_OBJECT_DECL) {
                 return Is_Integer_Expr(sym->declaration->object_decl.init);
             }
             /* Check type if available */
@@ -8426,11 +8195,11 @@ static bool Is_Integer_Expr(Syntax_Node *n) {
         case NK_UNARY_OP:
             return Is_Integer_Expr(n->unary.operand);
         case NK_BINARY_OP:
-            return Is_Integer_Expr(n->binary.left) && Is_Integer_Expr(n->binary.right);
+            return Is_Integer_Expr(n->binary.left) and Is_Integer_Expr(n->binary.right);
         case NK_APPLY:
             /* For type conversions TYPE(arg), check if arg is integer */
-            if (n->apply.arguments.count == 1 &&
-                n->apply.prefix && n->apply.prefix->symbol &&
+            if (n->apply.arguments.count == 1 and
+                n->apply.prefix and n->apply.prefix->symbol and
                 n->apply.prefix->symbol->kind == SYMBOL_TYPE) {
                 return Is_Integer_Expr(n->apply.arguments.items[0]);
             }
@@ -8441,13 +8210,13 @@ static bool Is_Integer_Expr(Syntax_Node *n) {
 }
 
 static double Eval_Const_Numeric(Syntax_Node *n) {
-    if (!n) return 0.0/0.0;
+    if (not n) return 0.0/0.0;
     switch (n->kind) {
         case NK_REAL:    return n->real_lit.value;
         case NK_INTEGER: return (double)n->integer_lit.value;
         case NK_CHARACTER:
             /* Character literals have position value in symbol->frame_offset */
-            if (n->symbol && n->symbol->kind == SYMBOL_LITERAL) {
+            if (n->symbol and n->symbol->kind == SYMBOL_LITERAL) {
                 return (double)n->symbol->frame_offset;
             }
             /* Fallback: use ASCII code - character literals store their value in string_val.text */
@@ -8463,12 +8232,12 @@ static double Eval_Const_Numeric(Syntax_Node *n) {
         case NK_SELECTED: {
             /* Check for character/enum literal first */
             Symbol *sym = n->symbol;
-            if (sym && sym->kind == SYMBOL_LITERAL) {
+            if (sym and sym->kind == SYMBOL_LITERAL) {
                 return (double)sym->frame_offset;
             }
             /* Named number or constant - evaluate via symbol's declaration */
-            if (sym && sym->kind == SYMBOL_CONSTANT && sym->is_named_number &&
-                sym->declaration && sym->declaration->kind == NK_OBJECT_DECL) {
+            if (sym and sym->kind == SYMBOL_CONSTANT and sym->is_named_number and
+                sym->declaration and sym->declaration->kind == NK_OBJECT_DECL) {
                 return Eval_Const_Numeric(sym->declaration->object_decl.init);
             }
             return 0.0/0.0;
@@ -8479,15 +8248,15 @@ static double Eval_Const_Numeric(Syntax_Node *n) {
                 Syntax_Node *inner = n->qualified.expression;
                 /* Handle character literal inside qualified expression:
                  * look up in the qualifying type's enumeration literals */
-                if (inner->kind == NK_CHARACTER && n->qualified.subtype_mark &&
+                if (inner->kind == NK_CHARACTER and n->qualified.subtype_mark and
                     n->qualified.subtype_mark->type) {
                     Type_Info *qual_type = n->qualified.subtype_mark->type;
                     /* Walk up to find the base enumeration type with literals */
-                    while (Type_Is_Enumeration(qual_type) &&
-                           !qual_type->enumeration.literals) {
+                    while (Type_Is_Enumeration(qual_type) and
+                           not qual_type->enumeration.literals) {
                         qual_type = qual_type->base_type ? qual_type->base_type : qual_type->parent_type;
                     }
-                    if (Type_Is_Enumeration(qual_type) &&
+                    if (Type_Is_Enumeration(qual_type) and
                         qual_type->enumeration.literals) {
                         /* Extract the character from 'X' format */
                         String_Slice lit_text = inner->string_val.text;
@@ -8495,9 +8264,9 @@ static double Eval_Const_Numeric(Syntax_Node *n) {
                         /* Look for matching character literal in enum */
                         for (uint32_t j = 0; j < qual_type->enumeration.literal_count; j++) {
                             String_Slice lit_name = qual_type->enumeration.literals[j];
-                            if (lit_name.length == 3 &&
-                                lit_name.data[0] == '\'' &&
-                                lit_name.data[1] == ch &&
+                            if (lit_name.length == 3 and
+                                lit_name.data[0] == '\'' and
+                                lit_name.data[1] == ch and
                                 lit_name.data[2] == '\'') {
                                 return (double)j;  /* Position in enumeration */
                             }
@@ -8509,10 +8278,10 @@ static double Eval_Const_Numeric(Syntax_Node *n) {
             return 0.0/0.0;
         case NK_APPLY: {
             /* Type conversions: TYPE_NAME(expr) - evaluate the argument */
-            if (n->apply.prefix && n->apply.arguments.count == 1) {
+            if (n->apply.prefix and n->apply.arguments.count == 1) {
                 Syntax_Node *arg = n->apply.arguments.items[0];
                 Syntax_Node *prefix = n->apply.prefix;
-                if (prefix->kind == NK_IDENTIFIER && prefix->symbol &&
+                if (prefix->kind == NK_IDENTIFIER and prefix->symbol and
                     prefix->symbol->kind == SYMBOL_TYPE) {
                     return Eval_Const_Numeric(arg);
                 }
@@ -8527,7 +8296,7 @@ static double Eval_Const_Numeric(Syntax_Node *n) {
             /* T'SIZE, T'FIRST, T'LAST, T'POS, T'LENGTH etc. */
             Type_Info *ty = n->attribute.prefix ? n->attribute.prefix->type : NULL;
             String_Slice a = n->attribute.name;
-            if (!ty) return 0.0/0.0;
+            if (not ty) return 0.0/0.0;
             if (Slice_Equal_Ignore_Case(a, S("SIZE")))
                 return (double)(ty->size * 8);
             if (Slice_Equal_Ignore_Case(a, S("FIRST"))) {
@@ -8539,13 +8308,13 @@ static double Eval_Const_Numeric(Syntax_Node *n) {
                 if (ty->high_bound.kind == BOUND_FLOAT)   return ty->high_bound.float_value;
             }
             if (Slice_Equal_Ignore_Case(a, S("LENGTH"))) {
-                if (Type_Is_Array_Like(ty) && ty->array.index_count > 0) {
+                if (Type_Is_Array_Like(ty) and ty->array.index_count > 0) {
                     int64_t lo = Type_Bound_Value(ty->array.indices[0].low_bound);
                     int64_t hi = Type_Bound_Value(ty->array.indices[0].high_bound);
                     return (double)(hi - lo + 1);
                 }
             }
-            if (Slice_Equal_Ignore_Case(a, S("POS")) &&
+            if (Slice_Equal_Ignore_Case(a, S("POS")) and
                 n->attribute.arguments.count == 1)
                 return Eval_Const_Numeric(n->attribute.arguments.items[0]);
             return 0.0/0.0;
@@ -8561,9 +8330,9 @@ static double Eval_Const_Numeric(Syntax_Node *n) {
                     if (r == 0) return 0.0/0.0;
                     /* Ada integer division truncates toward zero (RM 4.5.5) */
                     /* Only use integer division if BOTH operands are integer-typed */
-                    if (Is_Integer_Expr(n->binary.left) && Is_Integer_Expr(n->binary.right) &&
-                        l == floor(l) && r == floor(r) &&
-                        fabs(l) < 1e15 && fabs(r) < 1e15) {
+                    if (Is_Integer_Expr(n->binary.left) and Is_Integer_Expr(n->binary.right) and
+                        l == floor(l) and r == floor(r) and
+                        fabs(l) < 1e15 and fabs(r) < 1e15) {
                         int64_t li = (int64_t)l;
                         int64_t ri = (int64_t)r;
                         return (double)(li / ri);  /* Integer division */
@@ -8578,7 +8347,7 @@ static double Eval_Const_Numeric(Syntax_Node *n) {
 }
 
 static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
-    if (!node) return NULL;
+    if (not node) return NULL;
 
     switch (node->kind) {
         case NK_INTEGER:
@@ -8616,8 +8385,8 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                 /* NOT preserves array-of-BOOLEAN type (RM 4.5.6);
                  * for scalar operands it returns BOOLEAN. */
                 Type_Info *ot = node->unary.operand ? node->unary.operand->type : NULL;
-                if (ot && Type_Is_Array_Like(ot) &&
-                    ot->array.element_type &&
+                if (ot and Type_Is_Array_Like(ot) and
+                    ot->array.element_type and
                     Type_Is_Boolean(ot->array.element_type)) {
                     node->type = ot;  /* boolean array → boolean array */
                 } else {
@@ -8644,37 +8413,37 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
 
                 /* For POS, SUCC, PRED, IMAGE - argument should be of prefix type */
                 bool needs_enum_context =
-                    (Type_Is_Enumeration(prefix_type) ||
-                     Type_Is_Enumeration(prefix_type ? prefix_type->parent_type : NULL)) &&
-                    (Slice_Equal_Ignore_Case(attr, S("POS")) ||
-                     Slice_Equal_Ignore_Case(attr, S("SUCC")) ||
-                     Slice_Equal_Ignore_Case(attr, S("PRED")) ||
+                    (Type_Is_Enumeration(prefix_type) or
+                     Type_Is_Enumeration(prefix_type ? prefix_type->parent_type : NULL)) and
+                    (Slice_Equal_Ignore_Case(attr, S("POS")) or
+                     Slice_Equal_Ignore_Case(attr, S("SUCC")) or
+                     Slice_Equal_Ignore_Case(attr, S("PRED")) or
                      Slice_Equal_Ignore_Case(attr, S("IMAGE")));
 
                 for (uint32_t i = 0; i < node->attribute.arguments.count; i++) {
                     Syntax_Node *arg = node->attribute.arguments.items[i];
                     bool resolved_as_enum = false;
                     /* Check if character literal should be resolved as enum literal */
-                    if (needs_enum_context && arg && arg->kind == NK_CHARACTER) {
+                    if (needs_enum_context and arg and arg->kind == NK_CHARACTER) {
                         /* Get the character from the literal (format: 'X') */
                         String_Slice lit_text = arg->string_val.text;
                         char ch = lit_text.length >= 2 ? lit_text.data[1] : 0;
                         /* Find enum type (handle derived types) */
                         Type_Info *enum_type = prefix_type;
-                        while (enum_type && enum_type->parent_type)
+                        while (enum_type and enum_type->parent_type)
                             enum_type = enum_type->parent_type;
                         /* Look for matching character literal in enum */
-                        if (Type_Is_Enumeration(enum_type) &&
+                        if (Type_Is_Enumeration(enum_type) and
                             enum_type->enumeration.literals) {
                             for (uint32_t j = 0; j < enum_type->enumeration.literal_count; j++) {
                                 String_Slice lit_name = enum_type->enumeration.literals[j];
-                                if (lit_name.length == 3 &&
-                                    lit_name.data[0] == '\'' &&
-                                    lit_name.data[1] == ch &&
+                                if (lit_name.length == 3 and
+                                    lit_name.data[0] == '\'' and
+                                    lit_name.data[1] == ch and
                                     lit_name.data[2] == '\'') {
                                     /* Found matching enum literal - set symbol with type match */
                                     Symbol *lit_sym = Symbol_Find_By_Type(sm, lit_name, enum_type);
-                                    if (lit_sym && lit_sym->kind == SYMBOL_LITERAL) {
+                                    if (lit_sym and lit_sym->kind == SYMBOL_LITERAL) {
                                         arg->symbol = lit_sym;
                                         arg->type = prefix_type;
                                         resolved_as_enum = true;
@@ -8685,7 +8454,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                         }
                     }
                     /* Only resolve if not already resolved as enum literal */
-                    if (!resolved_as_enum) {
+                    if (not resolved_as_enum) {
                         Resolve_Expression(sm, arg);
                     }
                 }
@@ -8697,27 +8466,27 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
 
                 /* Implicit dereference for access types (RM 4.1(3))
                  * A1'FIRST where A1 is access-to-array is equivalent to A1.ALL'FIRST */
-                if (Type_Is_Access(prefix_type) &&
+                if (Type_Is_Access(prefix_type) and
                     prefix_type->access.designated_type) {
                     prefix_type = prefix_type->access.designated_type;
                 }
 
                 /* FIRST, LAST return the index type for arrays, base type for scalars */
-                if (Slice_Equal_Ignore_Case(attr, S("FIRST")) ||
+                if (Slice_Equal_Ignore_Case(attr, S("FIRST")) or
                     Slice_Equal_Ignore_Case(attr, S("LAST"))) {
                     if (Type_Is_Array_Like(prefix_type)) {
                         /* For arrays, FIRST/LAST return the actual index type for that dimension */
                         uint32_t dim = 0;  /* Default to first dimension (0-indexed) */
                         if (node->attribute.arguments.count > 0) {
                             Syntax_Node *dim_arg = node->attribute.arguments.items[0];
-                            if (dim_arg && dim_arg->kind == NK_INTEGER) {
+                            if (dim_arg and dim_arg->kind == NK_INTEGER) {
                                 dim = (uint32_t)(dim_arg->integer_lit.value - 1);
                             }
                         }
                         /* Get the index type for this dimension */
-                        if (prefix_type->kind == TYPE_ARRAY &&
-                            prefix_type->array.indices &&
-                            dim < prefix_type->array.index_count &&
+                        if (prefix_type->kind == TYPE_ARRAY and
+                            prefix_type->array.indices and
+                            dim < prefix_type->array.index_count and
                             prefix_type->array.indices[dim].index_type) {
                             node->type = prefix_type->array.indices[dim].index_type;
                         } else {
@@ -8730,8 +8499,8 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                     }
                 }
                 /* VAL, SUCC, PRED return the base type (for scalar types) */
-                else if (Slice_Equal_Ignore_Case(attr, S("VAL")) ||
-                         Slice_Equal_Ignore_Case(attr, S("SUCC")) ||
+                else if (Slice_Equal_Ignore_Case(attr, S("VAL")) or
+                         Slice_Equal_Ignore_Case(attr, S("SUCC")) or
                          Slice_Equal_Ignore_Case(attr, S("PRED"))) {
                     node->type = prefix_type ? prefix_type : sm->type_integer;
                 }
@@ -8744,40 +8513,40 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                     node->type = sm->type_string;
                 }
                 /* SIZE, LENGTH, COUNT, WIDTH, MANTISSA, etc. return universal integer */
-                else if (Slice_Equal_Ignore_Case(attr, S("SIZE")) ||
-                         Slice_Equal_Ignore_Case(attr, S("LENGTH")) ||
-                         Slice_Equal_Ignore_Case(attr, S("COUNT")) ||
-                         Slice_Equal_Ignore_Case(attr, S("WIDTH")) ||
-                         Slice_Equal_Ignore_Case(attr, S("MANTISSA")) ||
-                         Slice_Equal_Ignore_Case(attr, S("MACHINE_MANTISSA")) ||
-                         Slice_Equal_Ignore_Case(attr, S("DIGITS")) ||
-                         Slice_Equal_Ignore_Case(attr, S("EMAX")) ||
-                         Slice_Equal_Ignore_Case(attr, S("MACHINE_EMAX")) ||
-                         Slice_Equal_Ignore_Case(attr, S("MACHINE_EMIN")) ||
-                         Slice_Equal_Ignore_Case(attr, S("MACHINE_RADIX")) ||
-                         Slice_Equal_Ignore_Case(attr, S("SAFE_EMAX")) ||
-                         Slice_Equal_Ignore_Case(attr, S("STORAGE_SIZE")) ||
-                         Slice_Equal_Ignore_Case(attr, S("MODULUS")) ||
-                         Slice_Equal_Ignore_Case(attr, S("AFT")) ||
+                else if (Slice_Equal_Ignore_Case(attr, S("SIZE")) or
+                         Slice_Equal_Ignore_Case(attr, S("LENGTH")) or
+                         Slice_Equal_Ignore_Case(attr, S("COUNT")) or
+                         Slice_Equal_Ignore_Case(attr, S("WIDTH")) or
+                         Slice_Equal_Ignore_Case(attr, S("MANTISSA")) or
+                         Slice_Equal_Ignore_Case(attr, S("MACHINE_MANTISSA")) or
+                         Slice_Equal_Ignore_Case(attr, S("DIGITS")) or
+                         Slice_Equal_Ignore_Case(attr, S("EMAX")) or
+                         Slice_Equal_Ignore_Case(attr, S("MACHINE_EMAX")) or
+                         Slice_Equal_Ignore_Case(attr, S("MACHINE_EMIN")) or
+                         Slice_Equal_Ignore_Case(attr, S("MACHINE_RADIX")) or
+                         Slice_Equal_Ignore_Case(attr, S("SAFE_EMAX")) or
+                         Slice_Equal_Ignore_Case(attr, S("STORAGE_SIZE")) or
+                         Slice_Equal_Ignore_Case(attr, S("MODULUS")) or
+                         Slice_Equal_Ignore_Case(attr, S("AFT")) or
                          Slice_Equal_Ignore_Case(attr, S("FORE"))) {
                     node->type = sm->type_universal_integer;
                 }
                 /* Floating-point type attributes returning universal_real (RM 3.5.8) */
-                else if (Slice_Equal_Ignore_Case(attr, S("EPSILON")) ||
-                         Slice_Equal_Ignore_Case(attr, S("SMALL")) ||
-                         Slice_Equal_Ignore_Case(attr, S("LARGE")) ||
-                         Slice_Equal_Ignore_Case(attr, S("SAFE_SMALL")) ||
-                         Slice_Equal_Ignore_Case(attr, S("SAFE_LARGE")) ||
-                         Slice_Equal_Ignore_Case(attr, S("DELTA")) ||
-                         Slice_Equal_Ignore_Case(attr, S("MODEL_EPSILON")) ||
+                else if (Slice_Equal_Ignore_Case(attr, S("EPSILON")) or
+                         Slice_Equal_Ignore_Case(attr, S("SMALL")) or
+                         Slice_Equal_Ignore_Case(attr, S("LARGE")) or
+                         Slice_Equal_Ignore_Case(attr, S("SAFE_SMALL")) or
+                         Slice_Equal_Ignore_Case(attr, S("SAFE_LARGE")) or
+                         Slice_Equal_Ignore_Case(attr, S("DELTA")) or
+                         Slice_Equal_Ignore_Case(attr, S("MODEL_EPSILON")) or
                          Slice_Equal_Ignore_Case(attr, S("MODEL_SMALL"))) {
                     node->type = sm->type_universal_real;
                 }
                 /* Boolean attributes (RM 3.5.8, 3.7.1, 9.9) */
-                else if (Slice_Equal_Ignore_Case(attr, S("MACHINE_OVERFLOWS")) ||
-                         Slice_Equal_Ignore_Case(attr, S("MACHINE_ROUNDS")) ||
-                         Slice_Equal_Ignore_Case(attr, S("CONSTRAINED")) ||
-                         Slice_Equal_Ignore_Case(attr, S("CALLABLE")) ||
+                else if (Slice_Equal_Ignore_Case(attr, S("MACHINE_OVERFLOWS")) or
+                         Slice_Equal_Ignore_Case(attr, S("MACHINE_ROUNDS")) or
+                         Slice_Equal_Ignore_Case(attr, S("CONSTRAINED")) or
+                         Slice_Equal_Ignore_Case(attr, S("CALLABLE")) or
                          Slice_Equal_Ignore_Case(attr, S("TERMINATED"))) {
                     node->type = sm->type_boolean;
                 }
@@ -8815,8 +8584,8 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
             /* Resolve subtype mark first to get the type */
             Resolve_Expression(sm, node->qualified.subtype_mark);
             /* Propagate type to expression (critical for aggregates) */
-            if (node->qualified.expression &&
-                node->qualified.expression->kind == NK_AGGREGATE &&
+            if (node->qualified.expression and
+                node->qualified.expression->kind == NK_AGGREGATE and
                 node->qualified.subtype_mark->type) {
                 node->qualified.expression->type = node->qualified.subtype_mark->type;
             }
@@ -8824,11 +8593,11 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
             /* Re-resolve overloaded literals against qualifying type (RM 4.7):
              * WEEKEND'(SAT) must pick WEEKEND.SAT, not WEEK.SAT;
              * CHAR'('B') must use CHAR position, not ASCII code. */
-            if (node->qualified.expression && node->qualified.subtype_mark->type) {
+            if (node->qualified.expression and node->qualified.subtype_mark->type) {
                 Type_Info *qt = node->qualified.subtype_mark->type;
                 Syntax_Node *inner = node->qualified.expression;
                 if (inner->kind == NK_IDENTIFIER) {
-                    if (!Type_Covers(qt, inner->type) && !Type_Covers(inner->type, qt)) {
+                    if (not Type_Covers(qt, inner->type) and not Type_Covers(inner->type, qt)) {
                         Symbol *s = Symbol_Find_By_Type(sm, inner->string_val.text, qt);
                         if (s) { inner->symbol = s; inner->type = s->type ? s->type : qt; }
                     }
@@ -8848,7 +8617,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                 for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
                     Syntax_Node *item = node->aggregate.items.items[i];
 
-                    if (is_record_agg && item->kind == NK_ASSOCIATION) {
+                    if (is_record_agg and item->kind == NK_ASSOCIATION) {
                         /* For record aggregates, choices are field names - don't resolve as variables */
                         /* Find component type from first choice for nested aggregates */
                         Type_Info *comp_type = NULL;
@@ -8866,7 +8635,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                         }
                         /* Propagate component type to nested aggregates */
                         if (item->association.expression) {
-                            if (item->association.expression->kind == NK_AGGREGATE && comp_type) {
+                            if (item->association.expression->kind == NK_AGGREGATE and comp_type) {
                                 item->association.expression->type = comp_type;
                             }
                             Resolve_Expression(sm, item->association.expression);
@@ -8875,7 +8644,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                         /* Positional item in record aggregate - propagate component type */
                         if (positional_idx < agg_type->record.component_count) {
                             Type_Info *comp_type = agg_type->record.components[positional_idx].component_type;
-                            if (item->kind == NK_AGGREGATE && comp_type) {
+                            if (item->kind == NK_AGGREGATE and comp_type) {
                                 item->type = comp_type;
                             }
                             positional_idx++;
@@ -8884,15 +8653,15 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                     } else {
                         /* For array aggregates, propagate element type to nested aggregates */
                         Type_Info *elem_type = NULL;
-                        if (Type_Is_Array_Like(agg_type) && agg_type->array.element_type) {
+                        if (Type_Is_Array_Like(agg_type) and agg_type->array.element_type) {
                             elem_type = agg_type->array.element_type;
                         }
-                        if (elem_type && item->kind == NK_ASSOCIATION && item->association.expression) {
+                        if (elem_type and item->kind == NK_ASSOCIATION and item->association.expression) {
                             Syntax_Node *expr = item->association.expression;
                             if (expr->kind == NK_AGGREGATE) {
                                 expr->type = elem_type;
                             }
-                        } else if (elem_type && item->kind == NK_AGGREGATE) {
+                        } else if (elem_type and item->kind == NK_AGGREGATE) {
                             item->type = elem_type;
                         }
                         Resolve_Expression(sm, item);
@@ -8907,8 +8676,8 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
             if (node->allocator.expression) {
                 /* Propagate type to initializer (critical for aggregates).
                  * Parser destructures T'(agg) so expression is directly the aggregate */
-                if (node->allocator.expression->kind == NK_AGGREGATE &&
-                    node->allocator.subtype_mark &&
+                if (node->allocator.expression->kind == NK_AGGREGATE and
+                    node->allocator.subtype_mark and
                     node->allocator.subtype_mark->type) {
                     node->allocator.expression->type = node->allocator.subtype_mark->type;
                 }
@@ -8919,7 +8688,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                 Type_Info *access_type = Type_New(TYPE_ACCESS, S(""));
                 access_type->size = 8;
                 access_type->alignment = 8;
-                if (node->allocator.subtype_mark && node->allocator.subtype_mark->type) {
+                if (node->allocator.subtype_mark and node->allocator.subtype_mark->type) {
                     access_type->access.designated_type = node->allocator.subtype_mark->type;
                 }
                 node->type = access_type;
@@ -8970,21 +8739,21 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                         if (idx->kind == NK_RANGE) {
                             range_node = idx;
                             /* Infer index type from range bounds' type */
-                            if (idx->range.low && idx->range.low->type) {
+                            if (idx->range.low and idx->range.low->type) {
                                 info->index_type = idx->range.low->type;
-                            } else if (idx->range.high && idx->range.high->type) {
+                            } else if (idx->range.high and idx->range.high->type) {
                                 info->index_type = idx->range.high->type;
                             }
-                        } else if (idx->kind == NK_SUBTYPE_INDICATION &&
-                                   idx->subtype_ind.constraint &&
+                        } else if (idx->kind == NK_SUBTYPE_INDICATION and
+                                   idx->subtype_ind.constraint and
                                    idx->subtype_ind.constraint->kind == NK_RANGE_CONSTRAINT) {
                             range_node = idx->subtype_ind.constraint->range_constraint.range;
                             /* Also use the subtype mark's type for index type */
-                            if (idx->subtype_ind.subtype_mark && idx->subtype_ind.subtype_mark->type) {
+                            if (idx->subtype_ind.subtype_mark and idx->subtype_ind.subtype_mark->type) {
                                 info->index_type = idx->subtype_ind.subtype_mark->type;
                             }
-                        } else if (idx->kind == NK_SUBTYPE_INDICATION &&
-                                   idx->subtype_ind.subtype_mark &&
+                        } else if (idx->kind == NK_SUBTYPE_INDICATION and
+                                   idx->subtype_ind.subtype_mark and
                                    idx->subtype_ind.subtype_mark->type) {
                             /* Unconstrained index type (just a type mark, no constraint) */
                             info->index_type = idx->subtype_ind.subtype_mark->type;
@@ -8992,46 +8761,46 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                             /* Use resolved type from identifier/expression (e.g., BOOLEAN) */
                             info->index_type = idx->type;
                         }
-                        if (range_node && range_node->kind == NK_RANGE &&
-                            range_node->range.low && range_node->range.high) {
+                        if (range_node and range_node->kind == NK_RANGE and
+                            range_node->range.low and range_node->range.high) {
                             /* Helper to extract static integer from various expression forms */
                             bool extract_static_bound(Syntax_Node *expr, int64_t *out) {
-                                if (!expr) return false;
+                                if (not expr) return false;
                                 /* Integer literal */
                                 if (expr->kind == NK_INTEGER) {
                                     *out = expr->integer_lit.value;
                                     return true;
                                 }
                                 /* Character/enum literal (symbol with frame_offset as position) */
-                                if (expr->symbol && expr->symbol->kind == SYMBOL_LITERAL) {
+                                if (expr->symbol and expr->symbol->kind == SYMBOL_LITERAL) {
                                     *out = expr->symbol->frame_offset;
                                     return true;
                                 }
                                 /* Qualified expression: TYPE'(expr) - evaluate inner expression */
-                                if (expr->kind == NK_QUALIFIED && expr->qualified.expression) {
+                                if (expr->kind == NK_QUALIFIED and expr->qualified.expression) {
                                     Syntax_Node *inner = expr->qualified.expression;
                                     if (inner->kind == NK_INTEGER) {
                                         *out = inner->integer_lit.value;
                                         return true;
                                     }
-                                    if (inner->symbol && inner->symbol->kind == SYMBOL_LITERAL) {
+                                    if (inner->symbol and inner->symbol->kind == SYMBOL_LITERAL) {
                                         *out = inner->symbol->frame_offset;
                                         return true;
                                     }
                                     /* Handle character literal inside qualified expression:
                                      * look up in the qualifying type's enumeration literals */
-                                    if (inner->kind == NK_CHARACTER && expr->qualified.subtype_mark) {
+                                    if (inner->kind == NK_CHARACTER and expr->qualified.subtype_mark) {
                                         /* First resolve the subtype_mark to get its type */
-                                        if (!expr->qualified.subtype_mark->type) {
+                                        if (not expr->qualified.subtype_mark->type) {
                                             Resolve_Expression(sm, expr->qualified.subtype_mark);
                                         }
                                         Type_Info *qual_type = expr->qualified.subtype_mark->type;
                                         /* Walk up to find the base enumeration type with literals */
-                                        while (Type_Is_Enumeration(qual_type) &&
-                                               !qual_type->enumeration.literals) {
+                                        while (Type_Is_Enumeration(qual_type) and
+                                               not qual_type->enumeration.literals) {
                                             qual_type = qual_type->base_type ? qual_type->base_type : qual_type->parent_type;
                                         }
-                                        if (Type_Is_Enumeration(qual_type) &&
+                                        if (Type_Is_Enumeration(qual_type) and
                                             qual_type->enumeration.literals) {
                                             /* Extract the character from 'X' format */
                                             String_Slice lit_text = inner->string_val.text;
@@ -9039,9 +8808,9 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                                             /* Look for matching character literal in enum */
                                             for (uint32_t j = 0; j < qual_type->enumeration.literal_count; j++) {
                                                 String_Slice lit_name = qual_type->enumeration.literals[j];
-                                                if (lit_name.length == 3 &&
-                                                    lit_name.data[0] == '\'' &&
-                                                    lit_name.data[1] == ch &&
+                                                if (lit_name.length == 3 and
+                                                    lit_name.data[0] == '\'' and
+                                                    lit_name.data[1] == ch and
                                                     lit_name.data[2] == '\'') {
                                                     *out = (int64_t)j;  /* Position in enumeration */
                                                     return true;
@@ -9102,7 +8871,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                 }
 
                 /* Compute size */
-                if (array_type->array.is_constrained && array_type->array.index_count > 0) {
+                if (array_type->array.is_constrained and array_type->array.index_count > 0) {
                     int64_t count = 1;
                     for (uint32_t i = 0; i < array_type->array.index_count; i++) {
                         int64_t lo = Type_Bound_Value(array_type->array.indices[i].low_bound);
@@ -9159,7 +8928,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                 Resolve_Expression(sm, node->derived_type.parent_type);
                 Type_Info *parent = node->derived_type.parent_type ?
                                     node->derived_type.parent_type->type : NULL;
-                if (!parent) {
+                if (not parent) {
                     node->type = NULL;
                     return NULL;
                 }
@@ -9193,9 +8962,9 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
 
                     /* Handle real type constraints (DIGITS/DELTA with optional RANGE) */
                     Syntax_Node *c = node->derived_type.constraint;
-                    if (c->kind == NK_REAL_TYPE && Type_Is_Float(derived)) {
+                    if (c->kind == NK_REAL_TYPE and Type_Is_Float(derived)) {
                         /* Apply DIGITS constraint */
-                        if (c->real_type.precision &&
+                        if (c->real_type.precision and
                             c->real_type.precision->kind == NK_INTEGER) {
                             int digits = (int)c->real_type.precision->integer_lit.value;
                             derived->flt.digits = digits;
@@ -9204,7 +8973,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                             derived->alignment = derived->size;
                         }
                         /* Apply RANGE constraint */
-                        if (c->real_type.range && c->real_type.range->kind == NK_RANGE) {
+                        if (c->real_type.range and c->real_type.range->kind == NK_RANGE) {
                             Syntax_Node *range = c->real_type.range;
                             if (range->range.low) {
                                 double lo = Eval_Const_Numeric(range->range.low);
@@ -9263,7 +9032,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
 
                 /* Helper: count components in a variant part recursively */
                 uint32_t Count_Variant_Components(Syntax_Node *vp) {
-                    if (!vp) return 0;
+                    if (not vp) return 0;
                     uint32_t count = 0;
                     for (uint32_t i = 0; i < vp->variant_part.variants.count; i++) {
                         Syntax_Node *v = vp->variant_part.variants.items[i];
@@ -9279,7 +9048,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
 
                 /* Helper: count variants (top-level only) */
                 uint32_t Count_Variants(Syntax_Node *vp) {
-                    if (!vp) return 0;
+                    if (not vp) return 0;
                     return (uint32_t)vp->variant_part.variants.count;
                 }
 
@@ -9365,7 +9134,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                                 } else if (choice->kind == NK_IDENTIFIER) {
                                     /* Enumeration literal or named number */
                                     Resolve_Expression(sm, choice);
-                                    if (choice->symbol && choice->symbol->type &&
+                                    if (choice->symbol and choice->symbol->type and
                                         Type_Is_Enumeration(choice->symbol->type)) {
                                         /* Find enum position value */
                                         Type_Info *et = choice->symbol->type;
@@ -9469,37 +9238,37 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                 /* Helper: Try to extract a static integer value from a bound expression.
                  * Returns true if value was extracted, false otherwise. */
                 bool Try_Static_Bound(Syntax_Node *expr, int64_t *out_val) {
-                    if (!expr) return false;
+                    if (not expr) return false;
                     if (expr->kind == NK_INTEGER) {
                         *out_val = expr->integer_lit.value;
                         return true;
                     }
-                    if (expr->kind == NK_UNARY_OP && expr->unary.operand &&
+                    if (expr->kind == NK_UNARY_OP and expr->unary.operand and
                         expr->unary.operand->kind == NK_INTEGER) {
                         int64_t val = expr->unary.operand->integer_lit.value;
                         if (expr->unary.op == TK_MINUS) val = -val;
                         *out_val = val;
                         return true;
                     }
-                    if (expr->symbol && expr->symbol->kind == SYMBOL_LITERAL) {
+                    if (expr->symbol and expr->symbol->kind == SYMBOL_LITERAL) {
                         *out_val = expr->symbol->frame_offset;
                         return true;
                     }
                     /* Handle TYPE'POS(X) or TYPE'VAL(N) as NK_APPLY */
-                    if (expr->kind == NK_APPLY && expr->apply.prefix &&
+                    if (expr->kind == NK_APPLY and expr->apply.prefix and
                         expr->apply.prefix->kind == NK_ATTRIBUTE) {
                         Syntax_Node *attr = expr->apply.prefix;
                         String_Slice attr_name = attr->attribute.name;
-                        if (Slice_Equal_Ignore_Case(attr_name, S("POS")) &&
+                        if (Slice_Equal_Ignore_Case(attr_name, S("POS")) and
                             expr->apply.arguments.count == 1) {
                             Syntax_Node *arg = expr->apply.arguments.items[0];
-                            if (arg && arg->symbol && arg->symbol->kind == SYMBOL_LITERAL) {
+                            if (arg and arg->symbol and arg->symbol->kind == SYMBOL_LITERAL) {
                                 *out_val = arg->symbol->frame_offset;
                                 return true;
                             }
                         }
                         /* Handle TYPE'VAL(N) where N is static */
-                        if (Slice_Equal_Ignore_Case(attr_name, S("VAL")) &&
+                        if (Slice_Equal_Ignore_Case(attr_name, S("VAL")) and
                             expr->apply.arguments.count == 1) {
                             Syntax_Node *arg = expr->apply.arguments.items[0];
                             int64_t inner_val;
@@ -9510,10 +9279,10 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                         }
                     }
                     /* Handle type conversions: TYPE_NAME(arg) where arg is static */
-                    if (expr->kind == NK_APPLY && expr->apply.prefix &&
-                        expr->apply.prefix->kind == NK_IDENTIFIER &&
-                        expr->apply.prefix->symbol &&
-                        expr->apply.prefix->symbol->kind == SYMBOL_TYPE &&
+                    if (expr->kind == NK_APPLY and expr->apply.prefix and
+                        expr->apply.prefix->kind == NK_IDENTIFIER and
+                        expr->apply.prefix->symbol and
+                        expr->apply.prefix->symbol->kind == SYMBOL_TYPE and
                         expr->apply.arguments.count == 1) {
                         int64_t arg_val;
                         if (Try_Static_Bound(expr->apply.arguments.items[0], &arg_val)) {
@@ -9522,7 +9291,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                         }
                     }
                     /* Handle TYPE'VAL(...) or TYPE'POS(...) as NK_ATTRIBUTE with arguments */
-                    if (expr->kind == NK_ATTRIBUTE && expr->attribute.arguments.count == 1) {
+                    if (expr->kind == NK_ATTRIBUTE and expr->attribute.arguments.count == 1) {
                         String_Slice attr_name = expr->attribute.name;
                         Syntax_Node *arg = expr->attribute.arguments.items[0];
                         if (Slice_Equal_Ignore_Case(attr_name, S("VAL"))) {
@@ -9533,7 +9302,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                             }
                         }
                         if (Slice_Equal_Ignore_Case(attr_name, S("POS"))) {
-                            if (arg && arg->symbol && arg->symbol->kind == SYMBOL_LITERAL) {
+                            if (arg and arg->symbol and arg->symbol->kind == SYMBOL_LITERAL) {
                                 *out_val = arg->symbol->frame_offset;
                                 return true;
                             }
@@ -9546,13 +9315,13 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                 Resolve_Expression(sm, node->subtype_ind.subtype_mark);
                 Type_Info *base_type = node->subtype_ind.subtype_mark->type;
 
-                if (!base_type) {
+                if (not base_type) {
                     return NULL;
                 }
 
                 /* Check for index constraint (STRING(1..5) style) */
                 Syntax_Node *constraint = node->subtype_ind.constraint;
-                if (constraint && constraint->kind == NK_INDEX_CONSTRAINT &&
+                if (constraint and constraint->kind == NK_INDEX_CONSTRAINT and
                     Type_Is_Array_Like(base_type)) {
                     /* Create constrained array type */
                     Type_Info *constrained = Type_New(TYPE_ARRAY, base_type->name);
@@ -9632,7 +9401,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                 }
 
                 /* Check for scalar range constraint (ENUM RANGE A..B or INTEGER RANGE X..Y) */
-                if (constraint && constraint->kind == NK_RANGE_CONSTRAINT) {
+                if (constraint and constraint->kind == NK_RANGE_CONSTRAINT) {
                     Syntax_Node *range = constraint->range_constraint.range;
                     if (range) {
                         Resolve_Expression(sm, range);
@@ -9687,7 +9456,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                 }
 
                 /* Check for DELTA constraint (fixed-point subtypes with different delta) */
-                if (constraint && constraint->kind == NK_DELTA_CONSTRAINT) {
+                if (constraint and constraint->kind == NK_DELTA_CONSTRAINT) {
                     Resolve_Expression(sm, constraint->delta_constraint.delta_expr);
                     if (constraint->delta_constraint.range)
                         Resolve_Expression(sm, constraint->delta_constraint.range);
@@ -9700,7 +9469,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
 
                     /* Evaluate the delta expression */
                     double delta = Eval_Const_Numeric(constraint->delta_constraint.delta_expr);
-                    if (delta != delta || delta <= 0.0) delta = base_type->fixed.delta;
+                    if (delta != delta or delta <= 0.0) delta = base_type->fixed.delta;
 
                     /* Compute small as largest power of 2 <= delta (per RM 3.5.9) */
                     double small = 1.0;
@@ -9715,8 +9484,8 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                     /* Compute scale factor: small = 2^scale */
                     int scale = 0;
                     double temp = small;
-                    while (temp < 1.0 && scale > -64) { temp *= 2.0; scale--; }
-                    while (temp > 1.0 && scale < 64) { temp /= 2.0; scale++; }
+                    while (temp < 1.0 and scale > -64) { temp *= 2.0; scale--; }
+                    while (temp > 1.0 and scale < 64) { temp /= 2.0; scale++; }
                     constrained->fixed.scale = scale;
 
                     /* Set bounds from range, or inherit from base type */
@@ -9726,7 +9495,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                     /* If explicit range given, override with evaluated bounds.
                      * Following GNAT's approach: try compile-time evaluation first,
                      * if not possible, store expression for later evaluation. */
-                    if (constraint->delta_constraint.range &&
+                    if (constraint->delta_constraint.range and
                         constraint->delta_constraint.range->kind == NK_RANGE) {
                         Syntax_Node *range = constraint->delta_constraint.range;
                         if (range->range.low) {
@@ -9764,7 +9533,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                 }
 
                 /* Check for DIGITS constraint (floating-point subtypes) */
-                if (constraint && constraint->kind == NK_DIGITS_CONSTRAINT) {
+                if (constraint and constraint->kind == NK_DIGITS_CONSTRAINT) {
                     Resolve_Expression(sm, constraint->digits_constraint.digits_expr);
                     if (constraint->digits_constraint.range)
                         Resolve_Expression(sm, constraint->digits_constraint.range);
@@ -9777,7 +9546,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
 
                     /* Evaluate the digits expression */
                     double digits_val = Eval_Const_Numeric(constraint->digits_constraint.digits_expr);
-                    if (digits_val != digits_val || digits_val < 1) digits_val = base_type->flt.digits;
+                    if (digits_val != digits_val or digits_val < 1) digits_val = base_type->flt.digits;
                     constrained->flt.digits = (int)digits_val;
 
                     /* Set bounds from range, or inherit from base type */
@@ -9785,7 +9554,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                     constrained->high_bound = base_type->high_bound;
 
                     /* If explicit range given, override with evaluated bounds */
-                    if (constraint->digits_constraint.range &&
+                    if (constraint->digits_constraint.range and
                         constraint->digits_constraint.range->kind == NK_RANGE) {
                         Syntax_Node *range = constraint->digits_constraint.range;
                         if (range->range.low) {
@@ -9822,18 +9591,18 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                  * Discriminant constraints use named associations where the choices
                  * are discriminant names - they should NOT be resolved as identifiers.
                  * Only the value expressions should be resolved. (RM 3.7.2) */
-                if (constraint && constraint->kind == NK_DISCRIMINANT_CONSTRAINT) {
+                if (constraint and constraint->kind == NK_DISCRIMINANT_CONSTRAINT) {
                     uint32_t assoc_count = constraint->discriminant_constraint.associations.count;
                     for (uint32_t i = 0; i < assoc_count; i++) {
                         Syntax_Node *assoc = constraint->discriminant_constraint.associations.items[i];
-                        if (assoc->kind == NK_ASSOCIATION && assoc->association.expression) {
+                        if (assoc->kind == NK_ASSOCIATION and assoc->association.expression) {
                             /* Only resolve the value expression, not the choices */
                             Resolve_Expression(sm, assoc->association.expression);
                         }
                     }
 
                     /* Create a constrained subtype with discriminant values stored */
-                    if (Type_Is_Record(base_type) && base_type->record.has_discriminants) {
+                    if (Type_Is_Record(base_type) and base_type->record.has_discriminants) {
                         Type_Info *constrained = Type_New(TYPE_RECORD, base_type->name);
                         *constrained = *base_type;  /* Copy all fields */
                         constrained->base_type = base_type;
@@ -9854,10 +9623,10 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                             if (assoc->kind != NK_ASSOCIATION) continue;
                             Syntax_Node *expr = assoc->association.expression;
                             int64_t val = 0;
-                            if (expr && expr->kind == NK_INTEGER) {
+                            if (expr and expr->kind == NK_INTEGER) {
                                 val = expr->integer_lit.value;
-                            } else if (expr && expr->kind == NK_IDENTIFIER && expr->symbol &&
-                                       expr->symbol->type && Type_Is_Enumeration(expr->symbol->type)) {
+                            } else if (expr and expr->kind == NK_IDENTIFIER and expr->symbol and
+                                       expr->symbol->type and Type_Is_Enumeration(expr->symbol->type)) {
                                 /* Enum literal: find position */
                                 Type_Info *et = expr->symbol->type;
                                 for (uint32_t li = 0; li < et->enumeration.literal_count; li++) {
@@ -9872,7 +9641,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                             /* Match association to discriminant by position or name */
                             if (assoc->association.choices.count > 0) {
                                 /* Named: find discriminant index by name for ALL choices.
-                                 * Handles A|B => E2 (or A!B => E2) where multiple
+                                 * Handles A|B => E2 (or Anot B => E2) where multiple
                                  * discriminants share the same constraint value. */
                                 for (uint32_t ci = 0; ci < assoc->association.choices.count; ci++) {
                                     Syntax_Node *choice = assoc->association.choices.items[ci];
@@ -9916,7 +9685,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                 if (node->integer_type.range) {
                     Resolve_Expression(sm, node->integer_type.range);
                     Syntax_Node *range = node->integer_type.range;
-                    if (range->kind == NK_RANGE && range->range.low && range->range.high) {
+                    if (range->kind == NK_RANGE and range->range.low and range->range.high) {
                         /* Extract low bound - handle integer literals and unary minus */
                         Syntax_Node *lo = range->range.low;
                         if (lo->kind == NK_INTEGER) {
@@ -9924,7 +9693,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                                 .kind = BOUND_INTEGER,
                                 .int_value = lo->integer_lit.value
                             };
-                        } else if (lo->kind == NK_UNARY_OP && lo->unary.operand &&
+                        } else if (lo->kind == NK_UNARY_OP and lo->unary.operand and
                                    lo->unary.operand->kind == NK_INTEGER) {
                             int64_t val = lo->unary.operand->integer_lit.value;
                             if (lo->unary.op == TK_MINUS) val = -val;
@@ -9940,7 +9709,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                                 .kind = BOUND_INTEGER,
                                 .int_value = hi->integer_lit.value
                             };
-                        } else if (hi->kind == NK_UNARY_OP && hi->unary.operand &&
+                        } else if (hi->kind == NK_UNARY_OP and hi->unary.operand and
                                    hi->unary.operand->kind == NK_INTEGER) {
                             int64_t val = hi->unary.operand->integer_lit.value;
                             if (hi->unary.op == TK_MINUS) val = -val;
@@ -9969,7 +9738,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
 
                     /* Extract delta value using constant expression evaluation */
                     double delta = Eval_Const_Numeric(node->real_type.delta);
-                    if (delta != delta || delta <= 0.0) delta = 0.001;  /* NaN or invalid -> fallback */
+                    if (delta != delta or delta <= 0.0) delta = 0.001;  /* NaN or invalid -> fallback */
 
                     /* Compute small as largest power of 2 <= delta (per RM 3.5.9) */
                     double small = 1.0;
@@ -10036,7 +9805,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
 
                     /* Size based on digits: <=6 = float, >6 = double */
                     int digits = 15;  /* Default double precision */
-                    if (node->real_type.precision &&
+                    if (node->real_type.precision and
                         node->real_type.precision->kind == NK_INTEGER) {
                         digits = (int)node->real_type.precision->integer_lit.value;
                     }
@@ -10045,7 +9814,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                     float_type->alignment = float_type->size;
 
                     /* Set bounds from range constraint if present */
-                    if (node->real_type.range && node->real_type.range->kind == NK_RANGE) {
+                    if (node->real_type.range and node->real_type.range->kind == NK_RANGE) {
                         Syntax_Node *range = node->real_type.range;
                         if (range->range.low) {
                             double lo = Eval_Const_Numeric(range->range.low);
@@ -10099,7 +9868,7 @@ static void Populate_Package_Exports(Symbol *pkg_sym, Syntax_Node *pkg_spec);
 static void Preregister_Labels(Symbol_Manager *sm, Node_List *list) {
     for (uint32_t i = 0; i < list->count; i++) {
         Syntax_Node *node = list->items[i];
-        if (!node) continue;
+        if (not node) continue;
 
         String_Slice label_name = Empty_Slice;
         Source_Location label_loc = node->location;
@@ -10122,7 +9891,7 @@ static void Preregister_Labels(Symbol_Manager *sm, Node_List *list) {
                 break;
         }
 
-        if (label_name.data && label_name.length > 0) {
+        if (label_name.data and label_name.length > 0) {
             Symbol *label_sym = Symbol_New(SYMBOL_LABEL, label_name, label_loc);
             label_sym->type = sm->type_address;
             Symbol_Add(sm, label_sym);
@@ -10141,20 +9910,20 @@ static void Resolve_Statement_List(Symbol_Manager *sm, Node_List *list) {
 }
 
 static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
-    if (!node) return;
+    if (not node) return;
 
     switch (node->kind) {
         case NK_ASSIGNMENT:
             Resolve_Expression(sm, node->assignment.target);
             /* Propagate target type to aggregate values for context-dependent typing */
-            if (node->assignment.value->kind == NK_AGGREGATE &&
+            if (node->assignment.value->kind == NK_AGGREGATE and
                 node->assignment.target->type) {
                 node->assignment.value->type = node->assignment.target->type;
             }
             Resolve_Expression(sm, node->assignment.value);
             /* Type check: value must be compatible with target */
-            if (node->assignment.target->type && node->assignment.value->type) {
-                if (!Type_Covers(node->assignment.target->type,
+            if (node->assignment.target->type and node->assignment.value->type) {
+                if (not Type_Covers(node->assignment.target->type,
                                 node->assignment.value->type)) {
                     Report_Error(node->location, "type mismatch in assignment");
                 }
@@ -10170,9 +9939,9 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
                 /* Propagate enclosing function's return type to untyped
                  * aggregates so they can resolve component types (RM 5.8) */
                 Syntax_Node *rexpr = node->return_stmt.expression;
-                if (rexpr->kind == NK_AGGREGATE && !rexpr->type) {
+                if (rexpr->kind == NK_AGGREGATE and not rexpr->type) {
                     Symbol *owner = sm->current_scope->owner;
-                    if (owner && owner->kind == SYMBOL_FUNCTION && owner->return_type)
+                    if (owner and owner->kind == SYMBOL_FUNCTION and owner->return_type)
                         rexpr->type = owner->return_type;
                 }
                 Resolve_Expression(sm, rexpr);
@@ -10198,7 +9967,7 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
         case NK_LOOP:
             {
                 Syntax_Node *iter = node->loop_stmt.iteration_scheme;
-                bool is_for_loop = iter && iter->kind == NK_BINARY_OP &&
+                bool is_for_loop = iter and iter->kind == NK_BINARY_OP and
                                    iter->binary.op == TK_IN;
                 if (is_for_loop) {
                     /* FOR loop - create loop variable in new scope.
@@ -10208,7 +9977,7 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
                     Syntax_Node *loop_id = iter->binary.left;
                     /* Resolve range expression FIRST to get its type */
                     Resolve_Expression(sm, iter->binary.right);
-                    if (loop_id && loop_id->kind == NK_IDENTIFIER) {
+                    if (loop_id and loop_id->kind == NK_IDENTIFIER) {
                         Symbol *loop_var = Symbol_New(SYMBOL_VARIABLE,
                                                       loop_id->string_val.text,
                                                       loop_id->location);
@@ -10260,7 +10029,7 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
             /* Resolve exception names */
             for (uint32_t i = 0; i < node->handler.exceptions.count; i++) {
                 Syntax_Node *exc = node->handler.exceptions.items[i];
-                if (exc && exc->kind != NK_OTHERS) {
+                if (exc and exc->kind != NK_OTHERS) {
                     Resolve_Expression(sm, exc);
                 }
             }
@@ -10295,11 +10064,11 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
             {
                 /* Look up the target label */
                 Symbol *label = Symbol_Find(sm, node->goto_stmt.name);
-                if (!label) {
+                if (not label) {
                     Report_Error(node->location, "undefined label '%.*s'",
                                 (int)node->goto_stmt.name.length,
                                 node->goto_stmt.name.data);
-                } else if (label->kind != SYMBOL_LABEL && label->kind != SYMBOL_LOOP) {
+                } else if (label->kind != SYMBOL_LABEL and label->kind != SYMBOL_LOOP) {
                     Report_Error(node->location, "'%.*s' is not a label",
                                 (int)node->goto_stmt.name.length,
                                 node->goto_stmt.name.data);
@@ -10330,14 +10099,14 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
             /* Resolve accept parameters */
             for (uint32_t i = 0; i < node->accept_stmt.parameters.count; i++) {
                 Syntax_Node *param = node->accept_stmt.parameters.items[i];
-                if (param && param->kind == NK_PARAM_SPEC) {
+                if (param and param->kind == NK_PARAM_SPEC) {
                     if (param->param_spec.param_type) {
                         Resolve_Expression(sm, param->param_spec.param_type);
                     }
                     /* Add parameter names to scope for the accept body */
                     for (uint32_t j = 0; j < param->param_spec.names.count; j++) {
                         Syntax_Node *name = param->param_spec.names.items[j];
-                        if (name && name->kind == NK_IDENTIFIER) {
+                        if (name and name->kind == NK_IDENTIFIER) {
                             Symbol *param_sym = Symbol_New(SYMBOL_PARAMETER,
                                 name->string_val.text, name->location);
                             if (param->param_spec.param_type)
@@ -10397,12 +10166,12 @@ static void Resolve_Declaration_List(Symbol_Manager *sm, Node_List *list) {
 static void Freeze_Declaration_List(Node_List *list) {
     for (uint32_t i = 0; i < list->count; i++) {
         Syntax_Node *node = list->items[i];
-        if (!node) continue;
+        if (not node) continue;
 
         switch (node->kind) {
             case NK_TYPE_DECL:
             case NK_SUBTYPE_DECL:
-                if (node->symbol && node->symbol->type) {
+                if (node->symbol and node->symbol->type) {
                     Freeze_Type(node->symbol->type);
                 }
                 break;
@@ -10426,7 +10195,7 @@ static void Freeze_Declaration_List(Node_List *list) {
  * This must be called after all visible declarations are resolved so that
  * decl->symbol pointers are valid. Used by both inline packages and loaded specs. */
 static void Populate_Package_Exports(Symbol *pkg_sym, Syntax_Node *pkg_spec) {
-    if (!pkg_sym || !pkg_spec || pkg_spec->kind != NK_PACKAGE_SPEC) return;
+    if (not pkg_sym or not pkg_spec or pkg_spec->kind != NK_PACKAGE_SPEC) return;
 
     Node_List *visible = &pkg_spec->package_spec.visible_decls;
 
@@ -10434,18 +10203,18 @@ static void Populate_Package_Exports(Symbol *pkg_sym, Syntax_Node *pkg_spec) {
     uint32_t count = 0;
     for (uint32_t i = 0; i < visible->count; i++) {
         Syntax_Node *decl = visible->items[i];
-        if (!decl) continue;
+        if (not decl) continue;
         if (decl->kind == NK_OBJECT_DECL) {
             count += (uint32_t)decl->object_decl.names.count;
-        } else if (decl->kind == NK_TYPE_DECL || decl->kind == NK_SUBTYPE_DECL) {
+        } else if (decl->kind == NK_TYPE_DECL or decl->kind == NK_SUBTYPE_DECL) {
             count++;
             /* Enumeration literals */
-            if (decl->type_decl.definition &&
+            if (decl->type_decl.definition and
                 decl->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
                 count += (uint32_t)decl->type_decl.definition->enum_type.literals.count;
             }
-        } else if (decl->kind == NK_PROCEDURE_SPEC || decl->kind == NK_FUNCTION_SPEC ||
-                   decl->kind == NK_PROCEDURE_BODY || decl->kind == NK_FUNCTION_BODY) {
+        } else if (decl->kind == NK_PROCEDURE_SPEC or decl->kind == NK_FUNCTION_SPEC or
+                   decl->kind == NK_PROCEDURE_BODY or decl->kind == NK_FUNCTION_BODY) {
             count++;
         } else if (decl->kind == NK_EXCEPTION_DECL) {
             count += (uint32_t)decl->exception_decl.names.count;
@@ -10464,7 +10233,7 @@ static void Populate_Package_Exports(Symbol *pkg_sym, Syntax_Node *pkg_spec) {
 
     for (uint32_t i = 0; i < visible->count; i++) {
         Syntax_Node *decl = visible->items[i];
-        if (!decl) continue;
+        if (not decl) continue;
 
         if (decl->kind == NK_OBJECT_DECL) {
             for (uint32_t j = 0; j < decl->object_decl.names.count; j++) {
@@ -10473,10 +10242,10 @@ static void Populate_Package_Exports(Symbol *pkg_sym, Syntax_Node *pkg_spec) {
                     pkg_sym->exported[pkg_sym->exported_count++] = name_node->symbol;
                 }
             }
-        } else if ((decl->kind == NK_TYPE_DECL || decl->kind == NK_SUBTYPE_DECL) && decl->symbol) {
+        } else if ((decl->kind == NK_TYPE_DECL or decl->kind == NK_SUBTYPE_DECL) and decl->symbol) {
             pkg_sym->exported[pkg_sym->exported_count++] = decl->symbol;
             /* Enumeration literals */
-            if (decl->type_decl.definition &&
+            if (decl->type_decl.definition and
                 decl->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
                 Node_List *lits = &decl->type_decl.definition->enum_type.literals;
                 for (uint32_t j = 0; j < lits->count; j++) {
@@ -10485,8 +10254,8 @@ static void Populate_Package_Exports(Symbol *pkg_sym, Syntax_Node *pkg_spec) {
                     }
                 }
             }
-        } else if ((decl->kind == NK_PROCEDURE_SPEC || decl->kind == NK_FUNCTION_SPEC ||
-                    decl->kind == NK_PROCEDURE_BODY || decl->kind == NK_FUNCTION_BODY) && decl->symbol) {
+        } else if ((decl->kind == NK_PROCEDURE_SPEC or decl->kind == NK_FUNCTION_SPEC or
+                    decl->kind == NK_PROCEDURE_BODY or decl->kind == NK_FUNCTION_BODY) and decl->symbol) {
             pkg_sym->exported[pkg_sym->exported_count++] = decl->symbol;
         } else if (decl->kind == NK_EXCEPTION_DECL) {
             for (uint32_t j = 0; j < decl->exception_decl.names.count; j++) {
@@ -10495,9 +10264,9 @@ static void Populate_Package_Exports(Symbol *pkg_sym, Syntax_Node *pkg_spec) {
                     pkg_sym->exported[pkg_sym->exported_count++] = name_node->symbol;
                 }
             }
-        } else if (decl->kind == NK_PACKAGE_SPEC && decl->symbol) {
+        } else if (decl->kind == NK_PACKAGE_SPEC and decl->symbol) {
             pkg_sym->exported[pkg_sym->exported_count++] = decl->symbol;
-        } else if (decl->kind == NK_GENERIC_DECL && decl->symbol) {
+        } else if (decl->kind == NK_GENERIC_DECL and decl->symbol) {
             /* Export nested generic packages/subprograms (e.g., TEXT_IO.INTEGER_IO) */
             pkg_sym->exported[pkg_sym->exported_count++] = decl->symbol;
         }
@@ -10519,16 +10288,16 @@ static void Populate_Package_Exports(Symbol *pkg_sym, Syntax_Node *pkg_spec) {
  * Handles private types where partial (visible) and full (private) views
  * have different Type_Info pointers but represent the same type. */
 static bool Types_Same_Named(Type_Info *t1, Type_Info *t2) {
-    if (!t1 || !t2) return false;
+    if (not t1 or not t2) return false;
     if (t1 == t2) return true;
     /* For private types, partial and full views have same name but different Type_Info. */
-    if (t1->name.data && t2->name.data &&
+    if (t1->name.data and t2->name.data and
         Slice_Equal_Ignore_Case(t1->name, t2->name)) {
         /* Same name: check if they share a defining symbol */
-        if (t1->defining_symbol && t2->defining_symbol &&
+        if (t1->defining_symbol and t2->defining_symbol and
             t1->defining_symbol == t2->defining_symbol) return true;
         /* For types declared in the same package, same name = same type */
-        if (t1->defining_symbol && t2->defining_symbol &&
+        if (t1->defining_symbol and t2->defining_symbol and
             t1->defining_symbol->defining_scope == t2->defining_symbol->defining_scope)
             return true;
     }
@@ -10537,11 +10306,11 @@ static bool Types_Same_Named(Type_Info *t1, Type_Info *t2) {
 
 /* Check if a subprogram has the given type in its profile (parameter or return) */
 static bool Subprogram_Is_Primitive_Of(Symbol *sub, Type_Info *type) {
-    if (!sub || !type) return false;
-    if (sub->kind != SYMBOL_FUNCTION && sub->kind != SYMBOL_PROCEDURE) return false;
+    if (not sub or not type) return false;
+    if (sub->kind != SYMBOL_FUNCTION and sub->kind != SYMBOL_PROCEDURE) return false;
 
     /* Check return type for functions */
-    if (sub->kind == SYMBOL_FUNCTION && Types_Same_Named(sub->return_type, type)) return true;
+    if (sub->kind == SYMBOL_FUNCTION and Types_Same_Named(sub->return_type, type)) return true;
 
     /* Check parameter types */
     for (uint32_t i = 0; i < sub->parameter_count; i++) {
@@ -10593,22 +10362,22 @@ static void Create_Derived_Operation(Symbol_Manager *sm, Symbol *sub,
 /* Create inherited operations for a derived type (RM 3.4) */
 static void Derive_Subprograms(Symbol_Manager *sm, Type_Info *derived_type,
                                Type_Info *parent_type, Symbol *type_sym) {
-    if (!derived_type || !parent_type || !type_sym) return;
+    if (not derived_type or not parent_type or not type_sym) return;
 
     /* Find the parent type's symbol and its owning scope/package */
     Symbol *parent_sym = parent_type->defining_symbol;
-    if (!parent_sym) return;
+    if (not parent_sym) return;
 
     /* For private types in packages, look at the package's exported symbols.
      * The parent of the type symbol is the enclosing package/scope. */
     Symbol *pkg = parent_sym->parent;
-    if (pkg && pkg->kind == SYMBOL_PACKAGE && pkg->exported_count > 0) {
+    if (pkg and pkg->kind == SYMBOL_PACKAGE and pkg->exported_count > 0) {
         /* Search package exports for primitive operations */
         for (uint32_t i = 0; i < pkg->exported_count; i++) {
             Symbol *sub = pkg->exported[i];
-            if (!sub) continue;
-            if (sub->kind != SYMBOL_FUNCTION && sub->kind != SYMBOL_PROCEDURE) continue;
-            if (!Subprogram_Is_Primitive_Of(sub, parent_type)) continue;
+            if (not sub) continue;
+            if (sub->kind != SYMBOL_FUNCTION and sub->kind != SYMBOL_PROCEDURE) continue;
+            if (not Subprogram_Is_Primitive_Of(sub, parent_type)) continue;
             Create_Derived_Operation(sm, sub, derived_type, parent_type, type_sym);
         }
         return;
@@ -10617,14 +10386,14 @@ static void Derive_Subprograms(Symbol_Manager *sm, Type_Info *derived_type,
     /* Fallback: search the scope where the parent type is declared.
      * Iterate through hash buckets to find all symbols including overloads. */
     Scope *parent_scope = parent_sym->defining_scope;
-    if (!parent_scope) return;
+    if (not parent_scope) return;
 
     for (uint32_t h = 0; h < SYMBOL_TABLE_SIZE; h++) {
         for (Symbol *sym = parent_scope->buckets[h]; sym; sym = sym->next_in_bucket) {
             /* Check this symbol and all in its overload chain */
             for (Symbol *sub = sym; sub; sub = sub->next_overload) {
-                if (sub->kind != SYMBOL_FUNCTION && sub->kind != SYMBOL_PROCEDURE) continue;
-                if (!Subprogram_Is_Primitive_Of(sub, parent_type)) continue;
+                if (sub->kind != SYMBOL_FUNCTION and sub->kind != SYMBOL_PROCEDURE) continue;
+                if (not Subprogram_Is_Primitive_Of(sub, parent_type)) continue;
                 Create_Derived_Operation(sm, sub, derived_type, parent_type, type_sym);
             }
         }
@@ -10632,7 +10401,7 @@ static void Derive_Subprograms(Symbol_Manager *sm, Type_Info *derived_type,
 }
 
 static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
-    if (!node) return;
+    if (not node) return;
 
     switch (node->kind) {
         case NK_OBJECT_DECL:
@@ -10647,8 +10416,8 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
             /* Resolve initializer/renamed object - propagate type to aggregates first */
             if (node->object_decl.init) {
                 /* Propagate type to aggregate initializer from declared type */
-                if (node->object_decl.init->kind == NK_AGGREGATE &&
-                    node->object_decl.object_type && node->object_decl.object_type->type) {
+                if (node->object_decl.init->kind == NK_AGGREGATE and
+                    node->object_decl.object_type and node->object_decl.object_type->type) {
                     node->object_decl.init->type = node->object_decl.object_type->type;
                 }
                 Resolve_Expression(sm, node->object_decl.init);
@@ -10661,7 +10430,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                     name_node->string_val.text,
                     name_node->location);
                 /* Object renames: type comes from renamed object */
-                if (node->object_decl.is_rename && node->object_decl.init) {
+                if (node->object_decl.is_rename and node->object_decl.init) {
                     sym->type = node->object_decl.init->type;
                     sym->renamed_object = node->object_decl.init;  /* Point to renamed */
                     sym->is_named_number = false;
@@ -10670,13 +10439,13 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                 else if (node->object_decl.object_type) {
                     sym->type = node->object_decl.object_type->type;
                     sym->is_named_number = false;
-                } else if (node->object_decl.is_constant && node->object_decl.init) {
+                } else if (node->object_decl.is_constant and node->object_decl.init) {
                     /* Named number: use universal type from init expression */
                     sym->type = node->object_decl.init->type;
                     sym->is_named_number = true;  /* Mark as named number for inline generation */
                 } else {
                     sym->type = NULL;
-                    sym->is_named_number = node->object_decl.is_constant && !node->object_decl.object_type;
+                    sym->is_named_number = node->object_decl.is_constant and not node->object_decl.object_type;
                 }
                 sym->declaration = node;
                 Symbol_Add(sm, sym);
@@ -10691,9 +10460,9 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                 Symbol *existing = Symbol_Find(sm, node->type_decl.name);
                 Symbol *sym;
                 Type_Info *type;
-                if (existing && existing->kind == SYMBOL_TYPE &&
-                    existing->type && existing->type->kind == TYPE_UNKNOWN &&
-                    existing->defining_scope == sm->current_scope &&
+                if (existing and existing->kind == SYMBOL_TYPE and
+                    existing->type and existing->type->kind == TYPE_UNKNOWN and
+                    existing->defining_scope == sm->current_scope and
                     node->type_decl.definition) {
                     /* Complete the existing incomplete type */
                     sym = existing;
@@ -10753,7 +10522,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                         /* For user-defined integer types (TYPE T IS RANGE L..R), the declared
                          * type is the "first subtype" and needs a base type (RM 3.5.4).
                          * Use INTEGER as the base type for constraint checking in 'PRED/'SUCC. */
-                        if (def_type->kind == TYPE_INTEGER && type->base_type == NULL) {
+                        if (def_type->kind == TYPE_INTEGER and type->base_type == NULL) {
                             type->base_type = sm->type_integer;
                         }
 
@@ -10776,7 +10545,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                     Syntax_Node *disc_spec = node->type_decl.discriminants.items[i];
                                     if (disc_spec->kind == NK_DISCRIMINANT_SPEC) {
                                         disc_count += disc_spec->discriminant.names.count;
-                                        if (!disc_spec->discriminant.default_expr) {
+                                        if (not disc_spec->discriminant.default_expr) {
                                             all_have_defaults = false;
                                         }
                                     }
@@ -10795,7 +10564,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                     Syntax_Node *disc_spec = node->type_decl.discriminants.items[i];
                                     if (disc_spec->kind == NK_DISCRIMINANT_SPEC) {
                                         Type_Info *disc_type = sm->type_integer;
-                                        if (disc_spec->discriminant.disc_type &&
+                                        if (disc_spec->discriminant.disc_type and
                                             disc_spec->discriminant.disc_type->type) {
                                             disc_type = disc_spec->discriminant.disc_type->type;
                                         }
@@ -10849,7 +10618,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
 
                             /* Create symbols for enumeration literals
                              * They must reference the named type (type), not the anonymous def_type */
-                            if (node->type_decl.definition &&
+                            if (node->type_decl.definition and
                                 node->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
                                 Node_List *lits = &node->type_decl.definition->enum_type.literals;
                                 for (uint32_t i = 0; i < lits->count; i++) {
@@ -10911,11 +10680,11 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                            SYMBOL_PROCEDURE : SYMBOL_FUNCTION;
                 Symbol *sym = Symbol_Find(sm, node->subprogram_spec.name);
                 while (sym) {
-                    if (sym->kind == expected_kind && sym->parameter_count == total_params) {
+                    if (sym->kind == expected_kind and sym->parameter_count == total_params) {
                         /* Check parameter types match */
                         bool types_match = true;
                         uint32_t param_idx = 0;
-                        for (uint32_t i = 0; i < param_list->count && types_match; i++) {
+                        for (uint32_t i = 0; i < param_list->count and types_match; i++) {
                             Syntax_Node *ps = param_list->items[i];
                             if (ps->kind == NK_PARAM_SPEC) {
                                 /* Resolve param type first */
@@ -10928,7 +10697,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                     if (param_idx < sym->parameter_count) {
                                         Type_Info *spec_type = sym->parameters[param_idx].param_type;
                                         /* Use Types_Same_Named for private type partial/full views */
-                                        if (!Types_Same_Named(body_type, spec_type)) {
+                                        if (not Types_Same_Named(body_type, spec_type)) {
                                             types_match = false;
                                             break;
                                         }
@@ -10939,18 +10708,18 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                         }
                         /* For functions, also check return type matches (allows
                          * overloading on return type per Ada RM 6.6) */
-                        if (types_match && expected_kind == SYMBOL_FUNCTION) {
+                        if (types_match and expected_kind == SYMBOL_FUNCTION) {
                             if (node->subprogram_spec.return_type) {
                                 Resolve_Expression(sm, node->subprogram_spec.return_type);
                                 Type_Info *body_return = node->subprogram_spec.return_type->type;
                                 /* Use Types_Same_Named for private type partial/full views */
-                                if (!Types_Same_Named(body_return, sym->return_type)) {
+                                if (not Types_Same_Named(body_return, sym->return_type)) {
                                     types_match = false;
                                 }
                             }
                         }
                         /* Found matching spec - check it's not already claimed */
-                        if (types_match && !sym->body_claimed) {
+                        if (types_match and not sym->body_claimed) {
                             sym->body_claimed = true;
                             node->symbol = sym;
                             goto spec_matched;
@@ -10977,8 +10746,8 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                             /* Resolve default expression, propagating param type
                              * to untyped aggregates (RM 6.1, 3.2.1) */
                             if (ps->param_spec.default_expr) {
-                                if (ps->param_spec.default_expr->kind == NK_AGGREGATE &&
-                                    !ps->param_spec.default_expr->type && pt)
+                                if (ps->param_spec.default_expr->kind == NK_AGGREGATE and
+                                    not ps->param_spec.default_expr->type and pt)
                                     ps->param_spec.default_expr->type = pt;
                                 Resolve_Expression(sm, ps->param_spec.default_expr);
                             }
@@ -11015,7 +10784,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                       node->subprogram_spec.renamed->symbol : NULL;
 
                 /* Create new symbol for the rename */
-                bool is_proc = !node->subprogram_spec.return_type;
+                bool is_proc = not node->subprogram_spec.return_type;
                 Symbol *sym = Symbol_New(
                     is_proc ? SYMBOL_PROCEDURE : SYMBOL_FUNCTION,
                     node->subprogram_spec.name, node->location);
@@ -11075,7 +10844,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                 String_Slice body_name = spec ? spec->subprogram_spec.name : (String_Slice){0};
 
                 Symbol *matching_generic = Symbol_Find(sm, body_name);
-                if (matching_generic && matching_generic->kind == SYMBOL_GENERIC) {
+                if (matching_generic and matching_generic->kind == SYMBOL_GENERIC) {
                     /* This body completes a generic - store it and resolve it.
                      * Push scope with generic formals so T, F etc. are visible. */
                     matching_generic->generic_body = node;
@@ -11085,12 +10854,12 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                     Symbol_Manager_Push_Scope(sm, matching_generic);
 
                     /* Add generic formal parameters (types, objects, subprograms) to scope */
-                    if (matching_generic->declaration &&
+                    if (matching_generic->declaration and
                         matching_generic->declaration->kind == NK_GENERIC_DECL) {
                         Node_List *formals = &matching_generic->declaration->generic_decl.formals;
                         for (uint32_t i = 0; i < formals->count; i++) {
                             Syntax_Node *formal = formals->items[i];
-                            if (!formal) continue;
+                            if (not formal) continue;
                             if (formal->kind == NK_GENERIC_TYPE_PARAM) {
                                 /* Map def_kind → Type_Kind so numeric formals
                                  * are recognised by Type_Is_Numeric (RM 12.1.2):
@@ -11114,7 +10883,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                 formal->symbol = type_sym;
                             } else if (formal->kind == NK_GENERIC_SUBPROGRAM_PARAM) {
                                 /* Create and add formal subprogram symbol if not exists */
-                                if (!formal->symbol) {
+                                if (not formal->symbol) {
                                     String_Slice name = formal->generic_subprog_param.name;
                                     Symbol_Kind sk = formal->generic_subprog_param.is_function ?
                                                      SYMBOL_FUNCTION : SYMBOL_PROCEDURE;
@@ -11125,7 +10894,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                     uint32_t total_params = 0;
                                     for (uint32_t j = 0; j < fparams->count; j++) {
                                         Syntax_Node *ps = fparams->items[j];
-                                        if (ps && ps->kind == NK_PARAM_SPEC)
+                                        if (ps and ps->kind == NK_PARAM_SPEC)
                                             total_params += ps->param_spec.names.count;
                                     }
                                     subprog_sym->parameter_count = total_params;
@@ -11135,7 +10904,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                         uint32_t idx = 0;
                                         for (uint32_t j = 0; j < fparams->count; j++) {
                                             Syntax_Node *ps = fparams->items[j];
-                                            if (ps && ps->kind == NK_PARAM_SPEC) {
+                                            if (ps and ps->kind == NK_PARAM_SPEC) {
                                                 Type_Info *pt = NULL;
                                                 if (ps->param_spec.param_type) {
                                                     Resolve_Expression(sm, ps->param_spec.param_type);
@@ -11154,7 +10923,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                     }
 
                                     /* Set return type for functions */
-                                    if (formal->generic_subprog_param.is_function &&
+                                    if (formal->generic_subprog_param.is_function and
                                         formal->generic_subprog_param.return_type) {
                                         Resolve_Expression(sm, formal->generic_subprog_param.return_type);
                                         subprog_sym->type = formal->generic_subprog_param.return_type->type;
@@ -11188,7 +10957,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                         Node_List *params = &spec->subprogram_spec.parameters;
                         for (uint32_t i = 0; i < params->count; i++) {
                             Syntax_Node *param = params->items[i];
-                            if (param && param->kind == NK_PARAM_SPEC) {
+                            if (param and param->kind == NK_PARAM_SPEC) {
                                 /* Resolve parameter type (may reference generic formals) */
                                 if (param->param_spec.param_type)
                                     Resolve_Expression(sm, param->param_spec.param_type);
@@ -11227,7 +10996,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
 
                 /* For stubs (IS SEPARATE), don't claim the symbol - the separate
                  * subunit will provide the actual body and should claim it. */
-                if (node->subprogram_body.is_separate && node->symbol) {
+                if (node->subprogram_body.is_separate and node->symbol) {
                     node->symbol->body_claimed = false;
                 }
 
@@ -11262,7 +11031,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                 Symbol_Add(sm, param_sym);
                                 name->symbol = param_sym;
                                 /* Link to Parameter_Info for code generation */
-                                if (func_sym && param_idx < func_sym->parameter_count) {
+                                if (func_sym and param_idx < func_sym->parameter_count) {
                                     func_sym->parameters[param_idx].param_sym = param_sym;
                                 }
                                 param_idx++;
@@ -11298,7 +11067,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                 node->symbol = type_sym;
 
                 /* If not a task TYPE, also create an object of that type */
-                if (!node->task_spec.is_type) {
+                if (not node->task_spec.is_type) {
                     Symbol *obj_sym = Symbol_New(SYMBOL_VARIABLE, node->task_spec.name, node->location);
                     obj_sym->type = type;
                     obj_sym->declaration = node;
@@ -11353,7 +11122,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
 
                         /* Add entry to type's exported symbols */
                         if (type_sym->exported_count < 100) {
-                            if (!type_sym->exported) {
+                            if (not type_sym->exported) {
                                 type_sym->exported = Arena_Allocate(100 * sizeof(Symbol*));
                             }
                             type_sym->exported[type_sym->exported_count++] = entry_sym;
@@ -11368,7 +11137,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
             {
                 /* Find the task spec symbol */
                 Symbol *task_sym = Symbol_Find(sm, node->task_body.name);
-                if (!task_sym) {
+                if (not task_sym) {
                     /* Create a symbol for the task body if spec wasn't found */
                     task_sym = Symbol_New(SYMBOL_PROCEDURE, node->task_body.name, node->location);
                     task_sym->declaration = node;
@@ -11384,15 +11153,15 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                  * For single tasks, task_sym is SYMBOL_VARIABLE with TYPE_TASK;
                  * the entries are on the type's defining_symbol. */
                 Symbol *type_sym = NULL;
-                if (task_sym->kind == SYMBOL_TYPE && Type_Is_Task(task_sym->type)) {
+                if (task_sym->kind == SYMBOL_TYPE and Type_Is_Task(task_sym->type)) {
                     /* task_sym is the type symbol directly (task type declaration) */
                     type_sym = task_sym;
-                } else if (Type_Is_Task(task_sym->type) &&
+                } else if (Type_Is_Task(task_sym->type) and
                            task_sym->type->defining_symbol) {
                     /* task_sym is the variable; get the type's defining symbol */
                     type_sym = task_sym->type->defining_symbol;
                 }
-                if (type_sym && type_sym->exported) {
+                if (type_sym and type_sym->exported) {
                     for (uint32_t i = 0; i < type_sym->exported_count; i++) {
                         Symbol *entry_sym = type_sym->exported[i];
                         if (entry_sym) {
@@ -11445,7 +11214,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                     Mark_Body_Loaded(pkg_name);
 
                     pkg_sym = Symbol_Find(sm, pkg_name);
-                    if (!pkg_sym) {
+                    if (not pkg_sym) {
                         /* Try to load corresponding package spec first.
                          * This ensures body uses same symbol IDs as spec */
                         char *spec_src = Lookup_Path(pkg_name);
@@ -11453,7 +11222,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                             Load_Package_Spec(sm, pkg_name, spec_src);
                             pkg_sym = Symbol_Find(sm, pkg_name);
                         }
-                        if (!pkg_sym) {
+                        if (not pkg_sym) {
                             /* Create package symbol if spec not found */
                             pkg_sym = Symbol_New(SYMBOL_PACKAGE, pkg_name, node->location);
                             Symbol_Add(sm, pkg_sym);
@@ -11474,12 +11243,12 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                 Syntax_Node *spec = NULL;
 
                 /* Handle generic packages: formals and unit are in the generic declaration */
-                if (pkg_sym && pkg_sym->kind == SYMBOL_GENERIC) {
+                if (pkg_sym and pkg_sym->kind == SYMBOL_GENERIC) {
                     /* Store this body as the generic's body for later instantiation */
                     pkg_sym->generic_body = node;
 
                     /* Install generic formal parameters first */
-                    if (pkg_sym->declaration &&
+                    if (pkg_sym->declaration and
                         pkg_sym->declaration->kind == NK_GENERIC_DECL) {
                         Node_List *formals = &pkg_sym->declaration->generic_decl.formals;
                         for (uint32_t i = 0; i < formals->count; i++) {
@@ -11488,7 +11257,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                 Symbol_Add(sm, formal->symbol);
                             }
                             /* For generic type parameters, create/install a type symbol */
-                            if (formal->kind == NK_GENERIC_TYPE_PARAM && !formal->symbol) {
+                            if (formal->kind == NK_GENERIC_TYPE_PARAM and not formal->symbol) {
                                 Symbol *type_sym = Symbol_New(SYMBOL_TYPE,
                                     formal->generic_type_param.name, formal->location);
                                 /* Map def_kind to appropriate Type_Kind:
@@ -11520,7 +11289,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                 /* Create symbols for each name */
                                 for (uint32_t j = 0; j < formal->generic_object_param.names.count; j++) {
                                     Syntax_Node *name_node = formal->generic_object_param.names.items[j];
-                                    if (name_node && name_node->kind == NK_IDENTIFIER) {
+                                    if (name_node and name_node->kind == NK_IDENTIFIER) {
                                         Symbol *obj_sym = Symbol_New(SYMBOL_CONSTANT,
                                             name_node->string_val.text, name_node->location);
                                         obj_sym->type = obj_type;
@@ -11575,7 +11344,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                 }
 
                                 /* For functions, set return type */
-                                if (formal->generic_subprog_param.is_function &&
+                                if (formal->generic_subprog_param.is_function and
                                     formal->generic_subprog_param.return_type) {
                                     Resolve_Expression(sm, formal->generic_subprog_param.return_type);
                                     subprog_sym->type = formal->generic_subprog_param.return_type->type;
@@ -11590,16 +11359,16 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                     spec = pkg_sym->generic_unit;
 
                     /* For generic package body, resolve the spec first if not done */
-                    if (spec && spec->kind == NK_PACKAGE_SPEC) {
+                    if (spec and spec->kind == NK_PACKAGE_SPEC) {
                         Resolve_Declaration_List(sm, &spec->package_spec.visible_decls);
                         Resolve_Declaration_List(sm, &spec->package_spec.private_decls);
                     }
-                } else if (pkg_sym && pkg_sym->declaration &&
+                } else if (pkg_sym and pkg_sym->declaration and
                            pkg_sym->declaration->kind == NK_PACKAGE_SPEC) {
                     spec = pkg_sym->declaration;
                 }
 
-                if (spec && spec->kind == NK_PACKAGE_SPEC) {
+                if (spec and spec->kind == NK_PACKAGE_SPEC) {
                     Install_Declaration_Symbols(sm, &spec->package_spec.visible_decls);
                     Install_Declaration_Symbols(sm, &spec->package_spec.private_decls);
                 }
@@ -11628,7 +11397,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                     pkg_sym = pkg_name_node->symbol;
                 }
 
-                if (pkg_sym && pkg_sym->kind == SYMBOL_PACKAGE) {
+                if (pkg_sym and pkg_sym->kind == SYMBOL_PACKAGE) {
                     /* Helper macro: add use-visible alias for a symbol */
                     #define ADD_USE_ALIAS(orig) do { \
                         if (orig) { \
@@ -11636,14 +11405,14 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                             uint32_t _hash = Symbol_Hash_Name((orig)->name); \
                             bool _already_aliased = false; \
                             for (Symbol *_ex = sm->current_scope->buckets[_hash]; _ex; _ex = _ex->next_in_bucket) { \
-                                if (Slice_Equal_Ignore_Case(_ex->name, (orig)->name) && \
-                                    _ex->visibility == VIS_USE_VISIBLE && \
+                                if (Slice_Equal_Ignore_Case(_ex->name, (orig)->name) and \
+                                    _ex->visibility == VIS_USE_VISIBLE and \
                                     _ex->unique_id == (orig)->unique_id) { \
                                     _already_aliased = true; \
                                     break; \
                                 } \
                             } \
-                            if (!_already_aliased) { \
+                            if (not _already_aliased) { \
                                 Symbol *alias = Symbol_New((orig)->kind, (orig)->name, (orig)->location); \
                                 alias->type = (orig)->type; \
                                 alias->declaration = (orig)->declaration; \
@@ -11668,26 +11437,26 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                             ADD_USE_ALIAS(pkg_sym->exported[j]);
                     }
                     /* For inline packages, iterate visible declarations */
-                    else if (pkg_sym->declaration && pkg_sym->declaration->kind == NK_PACKAGE_SPEC) {
+                    else if (pkg_sym->declaration and pkg_sym->declaration->kind == NK_PACKAGE_SPEC) {
                         Syntax_Node *pkg_decl = pkg_sym->declaration;
                         for (uint32_t j = 0; j < pkg_decl->package_spec.visible_decls.count; j++) {
                             Syntax_Node *decl = pkg_decl->package_spec.visible_decls.items[j];
-                            if (!decl) continue;
+                            if (not decl) continue;
                             if (decl->symbol) ADD_USE_ALIAS(decl->symbol);
                             /* Handle object_decl names (constants, variables) */
                             if (decl->kind == NK_OBJECT_DECL) {
                                 for (uint32_t k = 0; k < decl->object_decl.names.count; k++) {
                                     Syntax_Node *nm = decl->object_decl.names.items[k];
-                                    if (nm && nm->symbol) ADD_USE_ALIAS(nm->symbol);
+                                    if (nm and nm->symbol) ADD_USE_ALIAS(nm->symbol);
                                 }
                             }
                             /* Handle enumeration literals */
-                            if ((decl->kind == NK_TYPE_DECL || decl->kind == NK_SUBTYPE_DECL) &&
-                                decl->type_decl.definition &&
+                            if ((decl->kind == NK_TYPE_DECL or decl->kind == NK_SUBTYPE_DECL) and
+                                decl->type_decl.definition and
                                 decl->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
                                 Node_List *lits = &decl->type_decl.definition->enum_type.literals;
                                 for (uint32_t k = 0; k < lits->count; k++) {
-                                    if (lits->items[k] && lits->items[k]->symbol)
+                                    if (lits->items[k] and lits->items[k]->symbol)
                                         ADD_USE_ALIAS(lits->items[k]->symbol);
                                 }
                             }
@@ -11695,7 +11464,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                             if (decl->kind == NK_EXCEPTION_DECL) {
                                 for (uint32_t k = 0; k < decl->exception_decl.names.count; k++) {
                                     Syntax_Node *nm = decl->exception_decl.names.items[k];
-                                    if (nm && nm->symbol) ADD_USE_ALIAS(nm->symbol);
+                                    if (nm and nm->symbol) ADD_USE_ALIAS(nm->symbol);
                                 }
                             }
                         }
@@ -11716,9 +11485,9 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                         Syntax_Node *arg = node->pragma_node.arguments.items[i];
                         Syntax_Node *name_node = (arg->kind == NK_ASSOCIATION) ?
                                                   arg->association.expression : arg;
-                        if (name_node && name_node->kind == NK_IDENTIFIER) {
+                        if (name_node and name_node->kind == NK_IDENTIFIER) {
                             Symbol *sym = Symbol_Find(sm, name_node->string_val.text);
-                            if (sym && (sym->kind == SYMBOL_PROCEDURE ||
+                            if (sym and (sym->kind == SYMBOL_PROCEDURE or
                                         sym->kind == SYMBOL_FUNCTION)) {
                                 sym->is_inline = true;
                             }
@@ -11732,9 +11501,9 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                         Syntax_Node *arg = node->pragma_node.arguments.items[0];
                         Syntax_Node *name_node = (arg->kind == NK_ASSOCIATION) ?
                                                   arg->association.expression : arg;
-                        if (name_node && name_node->kind == NK_IDENTIFIER) {
+                        if (name_node and name_node->kind == NK_IDENTIFIER) {
                             Symbol *sym = Symbol_Find(sm, name_node->string_val.text);
-                            if (sym && sym->type) {
+                            if (sym and sym->type) {
                                 sym->type->is_packed = true;
                             }
                         }
@@ -11748,7 +11517,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                         Syntax_Node *arg = node->pragma_node.arguments.items[0];
                         Syntax_Node *check_node = (arg->kind == NK_ASSOCIATION) ?
                                                    arg->association.expression : arg;
-                        if (check_node && check_node->kind == NK_IDENTIFIER) {
+                        if (check_node and check_node->kind == NK_IDENTIFIER) {
                             String_Slice check = check_node->string_val.text;
                             if (Slice_Equal_Ignore_Case(check, S("RANGE_CHECK")))
                                 check_bit = 1;
@@ -11768,7 +11537,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                         Syntax_Node *arg = node->pragma_node.arguments.items[1];
                         Syntax_Node *entity = (arg->kind == NK_ASSOCIATION) ?
                                                arg->association.expression : arg;
-                        if (entity && entity->kind == NK_IDENTIFIER) {
+                        if (entity and entity->kind == NK_IDENTIFIER) {
                             Symbol *sym = Symbol_Find(sm, entity->string_val.text);
                             if (sym) sym->suppressed_checks |= check_bit;
                         }
@@ -11789,13 +11558,13 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                         Syntax_Node *ent_node = (ent_arg->kind == NK_ASSOCIATION) ?
                                                  ent_arg->association.expression : ent_arg;
 
-                        if (ent_node && ent_node->kind == NK_IDENTIFIER) {
+                        if (ent_node and ent_node->kind == NK_IDENTIFIER) {
                             Symbol *sym = Symbol_Find(sm, ent_node->string_val.text);
                             if (sym) {
                                 sym->is_imported = true;
 
                                 /* Set convention */
-                                if (conv_node && conv_node->kind == NK_IDENTIFIER) {
+                                if (conv_node and conv_node->kind == NK_IDENTIFIER) {
                                     String_Slice conv = conv_node->string_val.text;
                                     if (Slice_Equal_Ignore_Case(conv, S("C")))
                                         sym->convention = CONVENTION_C;
@@ -11810,7 +11579,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                     Syntax_Node *name_arg = node->pragma_node.arguments.items[2];
                                     Syntax_Node *name_node = (name_arg->kind == NK_ASSOCIATION) ?
                                                               name_arg->association.expression : name_arg;
-                                    if (name_node && name_node->kind == NK_STRING) {
+                                    if (name_node and name_node->kind == NK_STRING) {
                                         sym->external_name = name_node->string_val.text;
                                     }
                                 }
@@ -11830,12 +11599,12 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                         Syntax_Node *ent_node = (ent_arg->kind == NK_ASSOCIATION) ?
                                                  ent_arg->association.expression : ent_arg;
 
-                        if (ent_node && ent_node->kind == NK_IDENTIFIER) {
+                        if (ent_node and ent_node->kind == NK_IDENTIFIER) {
                             Symbol *sym = Symbol_Find(sm, ent_node->string_val.text);
                             if (sym) {
                                 sym->is_exported = true;
 
-                                if (conv_node && conv_node->kind == NK_IDENTIFIER) {
+                                if (conv_node and conv_node->kind == NK_IDENTIFIER) {
                                     String_Slice conv = conv_node->string_val.text;
                                     if (Slice_Equal_Ignore_Case(conv, S("C")))
                                         sym->convention = CONVENTION_C;
@@ -11845,7 +11614,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                     Syntax_Node *name_arg = node->pragma_node.arguments.items[2];
                                     Syntax_Node *name_node = (name_arg->kind == NK_ASSOCIATION) ?
                                                               name_arg->association.expression : name_arg;
-                                    if (name_node && name_node->kind == NK_STRING) {
+                                    if (name_node and name_node->kind == NK_STRING) {
                                         sym->external_name = name_node->string_val.text;
                                     }
                                 }
@@ -11860,7 +11629,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                         Syntax_Node *arg = node->pragma_node.arguments.items[i];
                         Syntax_Node *name_node = (arg->kind == NK_ASSOCIATION) ?
                                                   arg->association.expression : arg;
-                        if (name_node && name_node->kind == NK_IDENTIFIER) {
+                        if (name_node and name_node->kind == NK_IDENTIFIER) {
                             Symbol *sym = Symbol_Find(sm, name_node->string_val.text);
                             if (sym) sym->is_unreferenced = true;
                         }
@@ -11878,9 +11647,9 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                         Syntax_Node *ent_node = (ent_arg->kind == NK_ASSOCIATION) ?
                                                  ent_arg->association.expression : ent_arg;
 
-                        if (ent_node && ent_node->kind == NK_IDENTIFIER) {
+                        if (ent_node and ent_node->kind == NK_IDENTIFIER) {
                             Symbol *sym = Symbol_Find(sm, ent_node->string_val.text);
-                            if (sym && conv_node && conv_node->kind == NK_IDENTIFIER) {
+                            if (sym and conv_node and conv_node->kind == NK_IDENTIFIER) {
                                 String_Slice conv = conv_node->string_val.text;
                                 if (Slice_Equal_Ignore_Case(conv, S("C")))
                                     sym->convention = CONVENTION_C;
@@ -11901,7 +11670,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
             /* Exception declaration: E : exception; */
             for (uint32_t i = 0; i < node->exception_decl.names.count; i++) {
                 Syntax_Node *name_node = node->exception_decl.names.items[i];
-                if (name_node && name_node->kind == NK_IDENTIFIER) {
+                if (name_node and name_node->kind == NK_IDENTIFIER) {
                     Symbol *sym = Symbol_New(SYMBOL_EXCEPTION,
                                              name_node->string_val.text,
                                              name_node->location);
@@ -11919,11 +11688,11 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
             /* Generic declaration: generic ... procedure/function/package spec */
             {
                 Syntax_Node *unit = node->generic_decl.unit;
-                if (!unit) break;
+                if (not unit) break;
 
                 /* Get name from the unit */
                 String_Slice name = {0};
-                if (unit->kind == NK_PROCEDURE_SPEC || unit->kind == NK_FUNCTION_SPEC) {
+                if (unit->kind == NK_PROCEDURE_SPEC or unit->kind == NK_FUNCTION_SPEC) {
                     name = unit->subprogram_spec.name;
                 } else if (unit->kind == NK_PACKAGE_SPEC) {
                     name = unit->package_spec.name;
@@ -11952,7 +11721,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
             {
                 /* Find the generic template */
                 Syntax_Node *gen_name = node->generic_inst.generic_name;
-                if (!gen_name) {
+                if (not gen_name) {
                     Report_Error(node->location, "expected a generic unit name");
                     break;
                 }
@@ -11964,7 +11733,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                     template = Symbol_Find(sm, gen_name->string_val.text);
                 }
 
-                if (!template || template->kind != SYMBOL_GENERIC) {
+                if (not template or template->kind != SYMBOL_GENERIC) {
                     Report_Error(node->location, "expected a generic unit name");
                     break;
                 }
@@ -12022,11 +11791,11 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                             /* Look up the formal's type, substituting any type formals */
                             Syntax_Node *obj_type_node = formal->generic_object_param.object_type;
                             Type_Info *obj_type = NULL;
-                            if (obj_type_node && obj_type_node->kind == NK_IDENTIFIER) {
+                            if (obj_type_node and obj_type_node->kind == NK_IDENTIFIER) {
                                 /* Check if it's a type formal by searching earlier formals */
                                 for (uint32_t k = 0; k < i; k++) {
                                     Syntax_Node *earlier = formals->items[k];
-                                    if (earlier->kind == NK_GENERIC_TYPE_PARAM &&
+                                    if (earlier->kind == NK_GENERIC_TYPE_PARAM and
                                         Slice_Equal_Ignore_Case(obj_type_node->string_val.text,
                                                   earlier->generic_type_param.name)) {
                                         obj_type = inst_sym->generic_actuals[k].actual_type;
@@ -12045,7 +11814,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                     expr->type = obj_type;
                                     Resolve_Expression(sm, expr);
                                     /* Ensure type stays set for aggregates */
-                                    if (!expr->type || expr->kind == NK_AGGREGATE) {
+                                    if (not expr->type or expr->kind == NK_AGGREGATE) {
                                         expr->type = obj_type;
                                     }
                                 } else {
@@ -12077,29 +11846,29 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                 if (actual->kind == NK_ASSOCIATION) {
                                     name_node = actual->association.expression;
                                 }
-                                if (!name_node) continue;
+                                if (not name_node) continue;
 
                                 /* Handle operator designators: "&" is the "&" operator */
                                 if (name_node->kind == NK_STRING) {
                                     /* Look up operator by name */
                                     if (name_node->string_val.text.data) {
                                         Symbol *op = Symbol_Find(sm, name_node->string_val.text);
-                                        if (op && (op->kind == SYMBOL_FUNCTION || op->kind == SYMBOL_PROCEDURE)) {
+                                        if (op and (op->kind == SYMBOL_FUNCTION or op->kind == SYMBOL_PROCEDURE)) {
                                             name_node->symbol = op;
                                             inst_sym->generic_actuals[i].actual_subprogram = op;
                                         } else {
                                             /* Check for built-in operators */
                                             /* String lexer strips quotes: "&" becomes just & */
                                             String_Slice s = name_node->string_val.text;
-                                            if (s.length == 1 && s.data[0] == '&')
+                                            if (s.length == 1 and s.data[0] == '&')
                                                 inst_sym->generic_actuals[i].builtin_operator = TK_AMPERSAND;
-                                            else if (s.length == 1 && s.data[0] == '+')
+                                            else if (s.length == 1 and s.data[0] == '+')
                                                 inst_sym->generic_actuals[i].builtin_operator = TK_PLUS;
-                                            else if (s.length == 1 && s.data[0] == '-')
+                                            else if (s.length == 1 and s.data[0] == '-')
                                                 inst_sym->generic_actuals[i].builtin_operator = TK_MINUS;
-                                            else if (s.length == 1 && s.data[0] == '*')
+                                            else if (s.length == 1 and s.data[0] == '*')
                                                 inst_sym->generic_actuals[i].builtin_operator = TK_STAR;
-                                            else if (s.length == 1 && s.data[0] == '/')
+                                            else if (s.length == 1 and s.data[0] == '/')
                                                 inst_sym->generic_actuals[i].builtin_operator = TK_SLASH;
                                         }
                                     }
@@ -12109,7 +11878,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                     /* Character literal as enum literal (parameterless function) */
                                     if (name_node->string_val.text.data) {
                                         Symbol *lit = Symbol_Find(sm, name_node->string_val.text);
-                                        if (lit && lit->kind == SYMBOL_LITERAL) {
+                                        if (lit and lit->kind == SYMBOL_LITERAL) {
                                             name_node->symbol = lit;
                                             inst_sym->generic_actuals[i].actual_subprogram = lit;
                                         }
@@ -12129,7 +11898,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
 
                 /* Copy parameter info from template unit */
                 Syntax_Node *unit = template->generic_unit;
-                if (unit && (unit->kind == NK_FUNCTION_SPEC || unit->kind == NK_PROCEDURE_SPEC)) {
+                if (unit and (unit->kind == NK_FUNCTION_SPEC or unit->kind == NK_PROCEDURE_SPEC)) {
                     Node_List *params = &unit->subprogram_spec.parameters;
                     uint32_t total_params = 0;
                     for (uint32_t i = 0; i < params->count; i++) {
@@ -12160,9 +11929,9 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                             }
                                         }
                                         /* If not a formal, resolve actual type (e.g. STRING) */
-                                        if (!param_type) {
+                                        if (not param_type) {
                                             Symbol *type_sym = Symbol_Find(sm, pt->string_val.text);
-                                            if (type_sym && type_sym->type)
+                                            if (type_sym and type_sym->type)
                                                 param_type = type_sym->type;
                                         }
                                     }
@@ -12180,7 +11949,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                     }
 
                     /* Handle return type for functions */
-                    if (unit->kind == NK_FUNCTION_SPEC && unit->subprogram_spec.return_type) {
+                    if (unit->kind == NK_FUNCTION_SPEC and unit->subprogram_spec.return_type) {
                         Syntax_Node *rt = unit->subprogram_spec.return_type;
                         if (rt->kind == NK_IDENTIFIER) {
                             /* Check if return type is a formal type parameter */
@@ -12192,9 +11961,9 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                 }
                             }
                             /* If not a formal, look up the actual type (e.g. INTEGER) */
-                            if (!inst_sym->return_type) {
+                            if (not inst_sym->return_type) {
                                 Symbol *type_sym = Symbol_Find(sm, rt->string_val.text);
-                                if (type_sym && type_sym->type)
+                                if (type_sym and type_sym->type)
                                     inst_sym->return_type = type_sym->type;
                             }
                         }
@@ -12205,21 +11974,21 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                 if (node->generic_inst.unit_kind == TK_PACKAGE) {
                     /* Look for exports from the template's generic_unit (package spec) */
                     Syntax_Node *pkg_spec = template->generic_unit;
-                    if (pkg_spec && pkg_spec->kind == NK_PACKAGE_SPEC) {
+                    if (pkg_spec and pkg_spec->kind == NK_PACKAGE_SPEC) {
                         /* Count visible declarations */
                         uint32_t export_count = 0;
                         for (uint32_t i = 0; i < pkg_spec->package_spec.visible_decls.count; i++) {
                             Syntax_Node *decl = pkg_spec->package_spec.visible_decls.items[i];
-                            if (!decl) continue;
-                            if (decl->kind == NK_TYPE_DECL || decl->kind == NK_SUBTYPE_DECL) {
+                            if (not decl) continue;
+                            if (decl->kind == NK_TYPE_DECL or decl->kind == NK_SUBTYPE_DECL) {
                                 export_count++;
                                 /* Count enum literals too */
-                                if (decl->type_decl.definition &&
+                                if (decl->type_decl.definition and
                                     decl->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
                                     export_count += decl->type_decl.definition->enum_type.literals.count;
                                 }
                             }
-                            else if (decl->kind == NK_PROCEDURE_SPEC || decl->kind == NK_FUNCTION_SPEC)
+                            else if (decl->kind == NK_PROCEDURE_SPEC or decl->kind == NK_FUNCTION_SPEC)
                                 export_count++;
                             else if (decl->kind == NK_EXCEPTION_DECL)
                                 export_count += decl->exception_decl.names.count;
@@ -12233,7 +12002,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
 
                             /* Helper: substitute generic formals with actuals in a type */
                             #define SUBSTITUTE_TYPE(ty) do { \
-                                if (ty && ty->name.data) { \
+                                if (ty and ty->name.data) { \
                                     for (uint32_t k = 0; k < inst_sym->generic_actual_count; k++) { \
                                         if (Slice_Equal_Ignore_Case(ty->name, \
                                                       inst_sym->generic_actuals[k].formal_name)) { \
@@ -12246,21 +12015,21 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
 
                             for (uint32_t i = 0; i < pkg_spec->package_spec.visible_decls.count; i++) {
                                 Syntax_Node *decl = pkg_spec->package_spec.visible_decls.items[i];
-                                if (!decl) continue;
+                                if (not decl) continue;
 
-                                if (decl->kind == NK_TYPE_DECL || decl->kind == NK_SUBTYPE_DECL) {
+                                if (decl->kind == NK_TYPE_DECL or decl->kind == NK_SUBTYPE_DECL) {
                                     /* Create type symbol for the instance */
                                     String_Slice name = decl->type_decl.name;
                                     Symbol *exp = Symbol_New(SYMBOL_TYPE, name, decl->location);
                                     /* Use the symbol's type (has the named type) if available */
-                                    if (decl->symbol && decl->symbol->type)
+                                    if (decl->symbol and decl->symbol->type)
                                         exp->type = decl->symbol->type;
                                     else if (decl->type)
                                         exp->type = decl->type;
                                     else if (decl->type_decl.definition)
                                         exp->type = decl->type_decl.definition->type;
                                     /* For subtypes, substitute formal type with actual */
-                                    if (!exp->type && decl->kind == NK_SUBTYPE_DECL &&
+                                    if (not exp->type and decl->kind == NK_SUBTYPE_DECL and
                                         decl->type_decl.definition) {
                                         Syntax_Node *def = decl->type_decl.definition;
                                         String_Slice def_name = {0};
@@ -12269,20 +12038,20 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                             def_name = def->string_val.text;
                                         }
                                         /* Handle constrained: SUBTYPE X IS GEN(4) */
-                                        else if (def->kind == NK_APPLY && def->apply.prefix &&
+                                        else if (def->kind == NK_APPLY and def->apply.prefix and
                                                  def->apply.prefix->kind == NK_IDENTIFIER) {
                                             def_name = def->apply.prefix->string_val.text;
                                         }
                                         /* Handle subtype indication: SUBTYPE X IS GEN RANGE ... */
-                                        else if (def->kind == NK_SUBTYPE_INDICATION &&
-                                                 def->subtype_ind.subtype_mark &&
+                                        else if (def->kind == NK_SUBTYPE_INDICATION and
+                                                 def->subtype_ind.subtype_mark and
                                                  def->subtype_ind.subtype_mark->kind == NK_IDENTIFIER) {
                                             def_name = def->subtype_ind.subtype_mark->string_val.text;
                                         }
                                         if (def_name.data) {
                                             for (uint32_t k = 0; k < inst_sym->generic_actual_count; k++) {
                                                 Syntax_Node *formal_k = formals->items[k];
-                                                if (formal_k->kind == NK_GENERIC_TYPE_PARAM &&
+                                                if (formal_k->kind == NK_GENERIC_TYPE_PARAM and
                                                     Slice_Equal_Ignore_Case(def_name, formal_k->generic_type_param.name)) {
                                                     exp->type = inst_sym->generic_actuals[k].actual_type;
                                                     break;
@@ -12291,7 +12060,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                         }
                                     }
                                     /* Create Type_Info for unresolved enum/range types */
-                                    if (!exp->type && decl->type_decl.definition) {
+                                    if (not exp->type and decl->type_decl.definition) {
                                         Syntax_Node *def = decl->type_decl.definition;
                                         if (def->kind == NK_ENUMERATION_TYPE) {
                                             Type_Info *ti = Type_New(TYPE_ENUMERATION, name);
@@ -12303,7 +12072,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                                     lit_count * sizeof(String_Slice));
                                                 for (uint32_t j = 0; j < lit_count; j++) {
                                                     Syntax_Node *lit = def->enum_type.literals.items[j];
-                                                    if (lit && lit->kind == NK_IDENTIFIER)
+                                                    if (lit and lit->kind == NK_IDENTIFIER)
                                                         ti->enumeration.literals[j] = lit->string_val.text;
                                                 }
                                             }
@@ -12324,12 +12093,12 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                     inst_sym->exported[inst_sym->exported_count++] = exp;
 
                                     /* Also export enum literals */
-                                    if (decl->type_decl.definition &&
+                                    if (decl->type_decl.definition and
                                         decl->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
                                         Node_List *lits = &decl->type_decl.definition->enum_type.literals;
                                         for (uint32_t j = 0; j < lits->count; j++) {
                                             Syntax_Node *lit = lits->items[j];
-                                            if (lit && lit->kind == NK_IDENTIFIER) {
+                                            if (lit and lit->kind == NK_IDENTIFIER) {
                                                 Symbol *lit_sym = Symbol_New(SYMBOL_LITERAL,
                                                     lit->string_val.text, lit->location);
                                                 lit_sym->type = exp->type;
@@ -12339,7 +12108,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                         }
                                     }
                                 }
-                                else if (decl->kind == NK_PROCEDURE_SPEC ||
+                                else if (decl->kind == NK_PROCEDURE_SPEC or
                                          decl->kind == NK_FUNCTION_SPEC) {
                                     /* Create subprogram symbol with instantiated types.
                                      * Assign unique_id immediately so homographs get distinct IDs. */
@@ -12371,20 +12140,20 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                                 Type_Info *ptype = ps->param_spec.param_type ?
                                                     ps->param_spec.param_type->type : NULL;
                                                 /* If type not resolved, look up by name */
-                                                if (!ptype && ps->param_spec.param_type &&
+                                                if (not ptype and ps->param_spec.param_type and
                                                     ps->param_spec.param_type->kind == NK_IDENTIFIER) {
                                                     String_Slice pt_name = ps->param_spec.param_type->string_val.text;
                                                     /* First try instance's own exports */
                                                     for (uint32_t k = 0; k < inst_sym->exported_count; k++) {
                                                         Symbol *es = inst_sym->exported[k];
-                                                        if (es && es->kind == SYMBOL_TYPE &&
+                                                        if (es and es->kind == SYMBOL_TYPE and
                                                             Slice_Equal_Ignore_Case(es->name, pt_name)) {
                                                             ptype = es->type;
                                                             break;
                                                         }
                                                     }
                                                     /* Then try global symbol table */
-                                                    if (!ptype) {
+                                                    if (not ptype) {
                                                         Symbol *tsym = Symbol_Find(sm, pt_name);
                                                         if (tsym) ptype = tsym->type;
                                                     }
@@ -12397,7 +12166,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                                     exp->parameters[idx].mode =
                                                         (Parameter_Mode)ps->param_spec.mode;
                                                     /* Create param symbol if not present (specs don't have symbols) */
-                                                    if (!pname->symbol) {
+                                                    if (not pname->symbol) {
                                                         Symbol *ps_sym = Symbol_New(SYMBOL_PARAMETER,
                                                             pname->string_val.text, pname->location);
                                                         ps_sym->type = ptype;
@@ -12412,23 +12181,23 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                     }
 
                                     /* Handle return type */
-                                    if (decl->kind == NK_FUNCTION_SPEC &&
+                                    if (decl->kind == NK_FUNCTION_SPEC and
                                         decl->subprogram_spec.return_type) {
                                         Type_Info *rtype = decl->subprogram_spec.return_type->type;
                                         /* If return type not resolved, look up by name */
-                                        if (!rtype && decl->subprogram_spec.return_type->kind == NK_IDENTIFIER) {
+                                        if (not rtype and decl->subprogram_spec.return_type->kind == NK_IDENTIFIER) {
                                             String_Slice rt_name = decl->subprogram_spec.return_type->string_val.text;
                                             /* First try instance's own exports (for types like FILE_MODE) */
                                             for (uint32_t k = 0; k < inst_sym->exported_count; k++) {
                                                 Symbol *es = inst_sym->exported[k];
-                                                if (es && es->kind == SYMBOL_TYPE &&
+                                                if (es and es->kind == SYMBOL_TYPE and
                                                     Slice_Equal_Ignore_Case(es->name, rt_name)) {
                                                     rtype = es->type;
                                                     break;
                                                 }
                                             }
                                             /* Then try global symbol table */
-                                            if (!rtype) {
+                                            if (not rtype) {
                                                 Symbol *tsym = Symbol_Find(sm, rt_name);
                                                 if (tsym) rtype = tsym->type;
                                             }
@@ -12454,10 +12223,10 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                     if (decl->object_decl.object_type) {
                                         obj_type = decl->object_decl.object_type->type;
                                         /* If type not resolved (generic template), look up by name */
-                                        if (!obj_type && decl->object_decl.object_type->kind == NK_IDENTIFIER) {
+                                        if (not obj_type and decl->object_decl.object_type->kind == NK_IDENTIFIER) {
                                             String_Slice type_name = decl->object_decl.object_type->string_val.text;
                                             Symbol *type_sym = Symbol_Find(sm, type_name);
-                                            if (type_sym && type_sym->type)
+                                            if (type_sym and type_sym->type)
                                                 obj_type = type_sym->type;
                                         }
                                         /* Substitute generic formals with actuals */
@@ -12471,7 +12240,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                         exp->type = obj_type;
                                         exp->parent = inst_sym;
                                         /* For renames, store the renamed object expression */
-                                        if (decl->object_decl.is_rename && decl->object_decl.init) {
+                                        if (decl->object_decl.is_rename and decl->object_decl.init) {
                                             exp->renamed_object = decl->object_decl.init;
                                         }
                                         inst_sym->exported[inst_sym->exported_count++] = exp;
@@ -12512,7 +12281,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                     Type_Info *target_type = target_sym ? target_sym->type : NULL;
 
                     /* Process attribute clauses: FOR T'SIZE USE 32; */
-                    if (node->rep_clause.attribute.data && target_type) {
+                    if (node->rep_clause.attribute.data and target_type) {
                         String_Slice attr = node->rep_clause.attribute;
 
                         if (node->rep_clause.expression) {
@@ -12532,7 +12301,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                 /* Would store in target_sym or target_type */
                             } else if (Slice_Equal_Ignore_Case(attr, S("SMALL"))) {
                                 /* For fixed-point: set small value */
-                                if (Type_Is_Fixed_Point(target_type) &&
+                                if (Type_Is_Fixed_Point(target_type) and
                                     node->rep_clause.expression->kind == NK_REAL) {
                                     target_type->fixed.small =
                                         node->rep_clause.expression->real_lit.value;
@@ -12542,7 +12311,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                     }
 
                     /* Process record representation: FOR T USE RECORD ... */
-                    if (node->rep_clause.is_record_rep &&
+                    if (node->rep_clause.is_record_rep and
                         Type_Is_Record(target_type)) {
                         /* Process alignment clause */
                         if (node->rep_clause.expression) {
@@ -12557,9 +12326,9 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                          * Each clause: component_name AT byte_position [RANGE bits]; */
                         for (uint32_t i = 0; i < node->rep_clause.component_clauses.count; i++) {
                             Syntax_Node *cc = node->rep_clause.component_clauses.items[i];
-                            if (cc->kind == NK_ASSOCIATION && cc->association.choices.count > 0) {
+                            if (cc->kind == NK_ASSOCIATION and cc->association.choices.count > 0) {
                                 Syntax_Node *name_node = cc->association.choices.items[0];
-                                if (name_node && name_node->kind == NK_IDENTIFIER) {
+                                if (name_node and name_node->kind == NK_IDENTIFIER) {
                                     String_Slice comp_name = name_node->string_val.text;
                                     /* Find matching component in record type */
                                     for (uint32_t j = 0; j < target_type->record.component_count; j++) {
@@ -12567,7 +12336,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                         if (Slice_Equal_Ignore_Case(comp->name, comp_name)) {
                                             /* Get byte offset from expression */
                                             Syntax_Node *pos_expr = cc->association.expression;
-                                            if (pos_expr && pos_expr->kind == NK_INTEGER) {
+                                            if (pos_expr and pos_expr->kind == NK_INTEGER) {
                                                 comp->byte_offset = (uint32_t)pos_expr->integer_lit.value;
                                             }
                                             break;
@@ -12579,18 +12348,18 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                     }
 
                     /* Process enumeration representation: FOR T USE (val0, val1, ...); */
-                    if (node->rep_clause.is_enum_rep &&
+                    if (node->rep_clause.is_enum_rep and
                         Type_Is_Enumeration(target_type)) {
                         /* Store internal representation values for enum literals
                          * The component_clauses list contains the values in order */
                         uint32_t val_count = node->rep_clause.component_clauses.count;
-                        if (val_count > 0 && val_count <= target_type->enumeration.literal_count) {
+                        if (val_count > 0 and val_count <= target_type->enumeration.literal_count) {
                             /* Allocate array for representation values */
                             target_type->enumeration.rep_values =
                                 Arena_Allocate(val_count * sizeof(int64_t));
                             for (uint32_t i = 0; i < val_count; i++) {
                                 Syntax_Node *val_node = node->rep_clause.component_clauses.items[i];
-                                if (val_node && val_node->kind == NK_INTEGER) {
+                                if (val_node and val_node->kind == NK_INTEGER) {
                                     target_type->enumeration.rep_values[i] =
                                         val_node->integer_lit.value;
                                 } else {
@@ -12614,7 +12383,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
  * ───────────────────────────────────────────────────────────────────────── */
 
 static void Resolve_Compilation_Unit(Symbol_Manager *sm, Syntax_Node *node) {
-    if (!node) return;
+    if (not node) return;
 
     /* Load WITH'd packages from include paths */
     if (node->compilation_unit.context) {
@@ -12653,7 +12422,7 @@ static void Resolve_Compilation_Unit(Symbol_Manager *sm, Syntax_Node *node) {
         }
         if (parent_name.length > 0) {
             parent_sym = Symbol_Find(sm, parent_name);
-            if (parent_sym && parent_sym->scope) {
+            if (parent_sym and parent_sym->scope) {
                 /* Push the parent's actual scope so we can find the stub symbol.
                  * This reuses the scope where the stub was declared. */
                 Symbol_Manager_Push_Existing_Scope(sm, parent_sym->scope);
@@ -12667,7 +12436,7 @@ static void Resolve_Compilation_Unit(Symbol_Manager *sm, Syntax_Node *node) {
     }
 
     /* Pop parent scope if we pushed it */
-    if (parent_sym && parent_sym->scope) {
+    if (parent_sym and parent_sym->scope) {
         Symbol_Manager_Pop_Scope(sm);
     }
 }
@@ -12852,7 +12621,7 @@ static void Emit(Code_Generator *cg, const char *format, ...) {
 
 /* Emit a label, inserting a fallthrough branch if the prior block is open */
 static void Emit_Label_Here(Code_Generator *cg, uint32_t label) {
-    if (!cg->block_terminated) {
+    if (not cg->block_terminated) {
         Emit(cg, "  br label %%L%u\n", label);
     }
     Emit(cg, "L%u:\n", label);
@@ -12861,7 +12630,7 @@ static void Emit_Label_Here(Code_Generator *cg, uint32_t label) {
 
 /* Emit a branch only if block is not already terminated */
 static void Emit_Branch_If_Needed(Code_Generator *cg, uint32_t label) {
-    if (!cg->block_terminated) {
+    if (not cg->block_terminated) {
         Emit(cg, "  br label %%L%u\n", label);
         cg->block_terminated = true;
     }
@@ -12871,11 +12640,11 @@ static void Emit_Branch_If_Needed(Code_Generator *cg, uint32_t label) {
  * A symbol is global only if it's at package level AND no ancestor is a subprogram.
  * This handles nested packages inside subprogram bodies correctly. */
 static inline bool Symbol_Is_Global(Symbol *sym) {
-    if (!sym->parent) return true;  /* Top-level */
+    if (not sym->parent) return true;  /* Top-level */
     /* Walk up parent chain - if any ancestor is a subprogram, symbol is local */
     Symbol *p = sym->parent;
     while (p) {
-        if (p->kind == SYMBOL_FUNCTION || p->kind == SYMBOL_PROCEDURE) {
+        if (p->kind == SYMBOL_FUNCTION or p->kind == SYMBOL_PROCEDURE) {
             return false;  /* Inside a subprogram - use local (%) prefix */
         }
         p = p->parent;
@@ -12898,19 +12667,19 @@ static inline bool Symbol_Is_Global(Symbol *sym) {
 
 /* Internal recursive helper */
 static size_t Mangle_Into_Buffer(char *buf, size_t pos, size_t max, Symbol *sym) {
-    if (!sym) return pos;
+    if (not sym) return pos;
 
     /* Recursively mangle parent first */
-    if (sym->parent && sym->parent->kind == SYMBOL_PACKAGE) {
+    if (sym->parent and sym->parent->kind == SYMBOL_PACKAGE) {
         pos = Mangle_Into_Buffer(buf, pos, max, sym->parent);
         if (pos + 2 < max) { buf[pos++] = '_'; buf[pos++] = '_'; }
     }
 
     /* Mangle this symbol's name: lowercase + escape special chars */
-    for (uint32_t i = 0; i < sym->name.length && pos < max - 4; i++) {
+    for (uint32_t i = 0; i < sym->name.length and pos < max - 4; i++) {
         char c = sym->name.data[i];
-        if (c >= 'A' && c <= 'Z') c = c - 'A' + 'a';  /* Lowercase */
-        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_') {
+        if (c >= 'A' and c <= 'Z') c = c - 'A' + 'a';  /* Lowercase */
+        if ((c >= 'a' and c <= 'z') or (c >= '0' and c <= '9') or c == '_') {
             buf[pos++] = c;
         } else if (c == '"') {
             /* Operator symbols */
@@ -12940,7 +12709,7 @@ static String_Slice Symbol_Mangle_Name(Symbol *sym) {
     pos = Mangle_Into_Buffer(buf, 0, 510, sym);
 
     /* Add unique_id suffix for local/overloaded symbols */
-    if (sym && (!Symbol_Is_Global(sym) || sym->is_overloaded)) {
+    if (sym and (not Symbol_Is_Global(sym) or sym->is_overloaded)) {
         pos += snprintf(buf + pos, 512 - pos, "_s%u", sym->unique_id);
     }
 
@@ -12957,10 +12726,10 @@ static String_Slice Mangle_Qualified_Name(String_Slice parent, String_Slice name
     size_t pos = 0;
 
     /* Parent prefix (lowercased) */
-    for (size_t i = 0; i < parent.length && pos < 500; i++) {
+    for (size_t i = 0; i < parent.length and pos < 500; i++) {
         char c = parent.data[i];
-        if (c >= 'A' && c <= 'Z') c = c - 'A' + 'a';
-        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_')
+        if (c >= 'A' and c <= 'Z') c = c - 'A' + 'a';
+        if ((c >= 'a' and c <= 'z') or (c >= '0' and c <= '9') or c == '_')
             buf[pos++] = c;
         else { buf[pos++] = '_'; buf[pos++] = "0123456789abcdef"[(c>>4)&0xF]; buf[pos++] = "0123456789abcdef"[c&0xF]; }
     }
@@ -12968,10 +12737,10 @@ static String_Slice Mangle_Qualified_Name(String_Slice parent, String_Slice name
     if (parent.length > 0) { buf[pos++] = '_'; buf[pos++] = '_'; }
 
     /* Name (lowercased) */
-    for (size_t i = 0; i < name.length && pos < 508; i++) {
+    for (size_t i = 0; i < name.length and pos < 508; i++) {
         char c = name.data[i];
-        if (c >= 'A' && c <= 'Z') c = c - 'A' + 'a';
-        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_')
+        if (c >= 'A' and c <= 'Z') c = c - 'A' + 'a';
+        if ((c >= 'a' and c <= 'z') or (c >= '0' and c <= '9') or c == '_')
             buf[pos++] = c;
         else { buf[pos++] = '_'; buf[pos++] = "0123456789abcdef"[(c>>4)&0xF]; buf[pos++] = "0123456789abcdef"[c&0xF]; }
     }
@@ -12982,16 +12751,16 @@ static String_Slice Mangle_Qualified_Name(String_Slice parent, String_Slice name
 
 /* Emit symbol name for LLVM identifier (uses unified Symbol_Mangle_Name) */
 static void Emit_Symbol_Name(Code_Generator *cg, Symbol *sym) {
-    if (!sym) {
+    if (not sym) {
         Emit(cg, "unknown");
         return;
     }
 
     /* For imported symbols with external name, use that directly */
-    if (sym->is_imported && sym->external_name.length > 0) {
+    if (sym->is_imported and sym->external_name.length > 0) {
         String_Slice name = sym->external_name;
         /* Strip quotes if present (from pragma Import) */
-        if (name.length >= 2 && name.data[0] == '"' && name.data[name.length-1] == '"') {
+        if (name.length >= 2 and name.data[0] == '"' and name.data[name.length-1] == '"') {
             name.data++;
             name.length -= 2;
         }
@@ -13005,18 +12774,18 @@ static void Emit_Symbol_Name(Code_Generator *cg, Symbol *sym) {
      * (variables) from the template body with the instance name to avoid
      * collisions when multiple instances of the same generic are created.
      * Do NOT prefix exceptions, types, or subprograms. */
-    if (cg->current_instance && sym->kind == SYMBOL_VARIABLE && Symbol_Is_Global(sym)) {
+    if (cg->current_instance and sym->kind == SYMBOL_VARIABLE and Symbol_Is_Global(sym)) {
         /* Find the package instance - current_instance might be a procedure
          * within a package, in which case use the procedure's parent package */
         Symbol *inst = cg->current_instance;
-        if ((inst->kind == SYMBOL_FUNCTION || inst->kind == SYMBOL_PROCEDURE) &&
-            inst->parent && inst->parent->kind == SYMBOL_PACKAGE &&
+        if ((inst->kind == SYMBOL_FUNCTION or inst->kind == SYMBOL_PROCEDURE) and
+            inst->parent and inst->parent->kind == SYMBOL_PACKAGE and
             inst->parent->generic_template) {
             inst = inst->parent;  /* Use owning package instance for globals */
         }
         Symbol *tmpl = inst->generic_template;
-        if (tmpl && sym->parent && sym->parent != inst &&
-            (sym->parent == tmpl || sym->parent->kind == SYMBOL_GENERIC)) {
+        if (tmpl and sym->parent and sym->parent != inst and
+            (sym->parent == tmpl or sym->parent->kind == SYMBOL_GENERIC)) {
             /* Emit instance name prefix */
             String_Slice inst_mangled = Symbol_Mangle_Name(inst);
             for (uint32_t i = 0; i < inst_mangled.length; i++) {
@@ -13026,7 +12795,7 @@ static void Emit_Symbol_Name(Code_Generator *cg, Symbol *sym) {
             /* Emit just the symbol name (not parent chain) */
             for (uint32_t i = 0; i < sym->name.length; i++) {
                 char c = sym->name.data[i];
-                if (c >= 'A' && c <= 'Z') c = c - 'A' + 'a';
+                if (c >= 'A' and c <= 'Z') c = c - 'A' + 'a';
                 fputc(c, cg->output);
             }
             return;
@@ -13056,10 +12825,10 @@ static void Emit_Symbol_Ref(Code_Generator *cg, Symbol *sym) {
 /* Is sym an uplevel reference requiring access through __parent_frame?
  * This 4-line pattern previously appeared 10+ times throughout codegen. */
 static inline bool Is_Uplevel_Access(const Code_Generator *cg, const Symbol *sym) {
-    if (!cg->current_function || !sym) return false;
+    if (not cg->current_function or not sym) return false;
     Symbol *owner = sym->defining_scope ? sym->defining_scope->owner : NULL;
-    return cg->is_nested && owner &&
-           owner != cg->current_function &&
+    return cg->is_nested and owner and
+           owner != cg->current_function and
            owner != cg->current_function->generic_template;
 }
 
@@ -13081,15 +12850,15 @@ static void Emit_Symbol_Storage(Code_Generator *cg, Symbol *sym) {
  * Called from attribute codegen, SUCC/PRED, and elsewhere.
  * Returns the substituted type, or the original if no match. */
 static Type_Info *Resolve_Generic_Actual_Type(const Code_Generator *cg, Type_Info *type) {
-    if (!type || !type->name.data) return type;
+    if (not type or not type->name.data) return type;
     Symbol *holder = cg->current_instance;
     /* Walk up: subprogram inside generic package uses package's actuals */
-    if (holder && !holder->generic_actuals && holder->parent &&
-        holder->parent->kind == SYMBOL_PACKAGE && holder->parent->generic_actuals)
+    if (holder and not holder->generic_actuals and holder->parent and
+        holder->parent->kind == SYMBOL_PACKAGE and holder->parent->generic_actuals)
         holder = holder->parent;
-    if (!holder || !holder->generic_actuals) return type;
+    if (not holder or not holder->generic_actuals) return type;
     for (uint32_t i = 0; i < holder->generic_actual_count; i++)
-        if (holder->generic_actuals[i].actual_type &&
+        if (holder->generic_actuals[i].actual_type and
             Slice_Equal_Ignore_Case(type->name, holder->generic_actuals[i].formal_name))
             return holder->generic_actuals[i].actual_type;
     return type;
@@ -13119,7 +12888,7 @@ static inline int Type_Bits(const char *ty) {
  * Non-integer types are a bug — use Integer_Arith_Type(cg) at call site. */
 static inline const char *Wider_Int_Type(const Code_Generator *cg, const char *a, const char *b) {
     /* Non-integer types must not reach here; derive from INTEGER as error path */
-    if (a[0] != 'i' || b[0] != 'i') {
+    if (a[0] != 'i' or b[0] != 'i') {
         fprintf(stderr, "error: Wider_Int_Type called with non-integer type: \"%s\", \"%s\"\n", a, b);
         return Integer_Arith_Type(cg);
     }
@@ -13129,14 +12898,14 @@ static inline const char *Wider_Int_Type(const Code_Generator *cg, const char *a
 
 /* Check if LLVM type is floating-point */
 static inline bool Is_Float_Type(const char *ty) {
-    return strcmp(ty, "float") == 0 || strcmp(ty, "double") == 0;
+    return strcmp(ty, "float") == 0 or strcmp(ty, "double") == 0;
 }
 
 /* Check if expression produces boolean (i1) result directly.
  * Only comparisons and logical operators produce i1 - loaded variables
  * are widened to i64 even for BOOLEAN type. */
 static inline bool Expression_Is_Boolean(Syntax_Node *node) {
-    if (!node) return false;
+    if (not node) return false;
     if (node->kind == NK_BINARY_OP) {
         switch (node->binary.op) {
             case TK_EQ: case TK_NE: case TK_LT: case TK_LE: case TK_GT: case TK_GE:
@@ -13147,15 +12916,15 @@ static inline bool Expression_Is_Boolean(Syntax_Node *node) {
             default: break;
         }
     }
-    if (node->kind == NK_UNARY_OP && node->unary.op == TK_NOT) {
+    if (node->kind == NK_UNARY_OP and node->unary.op == TK_NOT) {
         Type_Info *ty = node->unary.operand ? node->unary.operand->type : NULL;
         if (Type_Is_Boolean(ty)) return true;
     }
     /* Attributes that return boolean (i1) */
     if (node->kind == NK_ATTRIBUTE) {
         String_Slice attr = node->attribute.name;
-        if (Slice_Equal_Ignore_Case(attr, S("CONSTRAINED")) ||
-            Slice_Equal_Ignore_Case(attr, S("CALLABLE")) ||
+        if (Slice_Equal_Ignore_Case(attr, S("CONSTRAINED")) or
+            Slice_Equal_Ignore_Case(attr, S("CALLABLE")) or
             Slice_Equal_Ignore_Case(attr, S("TERMINATED"))) {
             return true;
         }
@@ -13165,25 +12934,25 @@ static inline bool Expression_Is_Boolean(Syntax_Node *node) {
 
 /* Check if expression produces float result */
 static inline bool Expression_Is_Float(Syntax_Node *node) {
-    if (!node) return false;
+    if (not node) return false;
     /* Attributes that return floating-point (double) */
     if (node->kind == NK_ATTRIBUTE) {
         String_Slice attr = node->attribute.name;
-        if (Slice_Equal_Ignore_Case(attr, S("EPSILON")) ||
-            Slice_Equal_Ignore_Case(attr, S("SMALL")) ||
-            Slice_Equal_Ignore_Case(attr, S("LARGE")) ||
-            Slice_Equal_Ignore_Case(attr, S("SAFE_SMALL")) ||
-            Slice_Equal_Ignore_Case(attr, S("SAFE_LARGE")) ||
+        if (Slice_Equal_Ignore_Case(attr, S("EPSILON")) or
+            Slice_Equal_Ignore_Case(attr, S("SMALL")) or
+            Slice_Equal_Ignore_Case(attr, S("LARGE")) or
+            Slice_Equal_Ignore_Case(attr, S("SAFE_SMALL")) or
+            Slice_Equal_Ignore_Case(attr, S("SAFE_LARGE")) or
             Slice_Equal_Ignore_Case(attr, S("DELTA"))) {
             return true;
         }
         /* FIRST/LAST with float prefix type (not fixed-point) */
-        if (Slice_Equal_Ignore_Case(attr, S("FIRST")) ||
+        if (Slice_Equal_Ignore_Case(attr, S("FIRST")) or
             Slice_Equal_Ignore_Case(attr, S("LAST"))) {
             Syntax_Node *prefix = node->attribute.prefix;
-            if (prefix && prefix->type &&
-                !Type_Is_Fixed_Point(prefix->type) &&
-                (Type_Is_Float_Representation(prefix->type) ||
+            if (prefix and prefix->type and
+                not Type_Is_Fixed_Point(prefix->type) and
+                (Type_Is_Float_Representation(prefix->type) or
                  prefix->type->low_bound.kind == BOUND_FLOAT)) {
                 return true;
             }
@@ -13199,38 +12968,38 @@ static inline const char *Expression_Llvm_Type(const Code_Generator *cg, Syntax_
      * representation.  Derive the width from the type system (INTEGER). */
     if (Expression_Is_Boolean(node)) return Integer_Arith_Type(cg);
     /* For float types, return the correct LLVM type based on actual size */
-    if (node && Type_Is_Float_Representation(node->type)) {
+    if (node and Type_Is_Float_Representation(node->type)) {
         return Llvm_Float_Type((uint32_t)To_Bits(node->type->size));
     }
     /* Check for pointer/access types.
      * Access-to-unconstrained arrays use fat pointer { ptr, { bound, bound } }.
      * Access-to-constrained or scalar types use plain ptr.
      * Use Type_To_Llvm to get the correct representation. */
-    if (node && Type_Is_Access(node->type))
+    if (node and Type_Is_Access(node->type))
         return Type_To_Llvm(node->type);
-    if (node && node->kind == NK_ALLOCATOR && node->type)
+    if (node and node->kind == NK_ALLOCATOR and node->type)
         return Type_To_Llvm(node->type);
-    if (node && node->kind == NK_NULL) return "ptr";
+    if (node and node->kind == NK_NULL) return "ptr";
     /* Record types and aggregates return pointers (alloca addresses) */
-    if (node && Type_Is_Record(node->type)) return "ptr";
-    if (node && node->kind == NK_AGGREGATE && Type_Is_Record(node->type)) return "ptr";
+    if (node and Type_Is_Record(node->type)) return "ptr";
+    if (node and node->kind == NK_AGGREGATE and Type_Is_Record(node->type)) return "ptr";
     /* ALL array aggregates return ptr (alloca address), not fat pointers.
      * The aggregate creates stack storage and returns its address.
      * Fat pointers are only used when loading from unconstrained array variables. */
-    if (node && node->kind == NK_AGGREGATE && node->type &&
-        (node->type->kind == TYPE_ARRAY || node->type->kind == TYPE_STRING)) return "ptr";
+    if (node and node->kind == NK_AGGREGATE and node->type and
+        (node->type->kind == TYPE_ARRAY or node->type->kind == TYPE_STRING)) return "ptr";
     /* Slices always produce fat pointers regardless of declared type.
      * Must check before array indexing since both are NK_APPLY. */
-    if (node && Expression_Is_Slice(node)) {
+    if (node and Expression_Is_Slice(node)) {
         return FAT_PTR_TYPE;  /* Slices always produce fat pointers */
     }
     /* Array indexing (NK_APPLY) that returns non-i64 element types.
      * Now preserves native types for ALL element types, not just composites. */
-    if (node && node->kind == NK_APPLY && node->apply.prefix &&
-        node->apply.prefix->type &&
+    if (node and node->kind == NK_APPLY and node->apply.prefix and
+        node->apply.prefix->type and
         Type_Is_Array_Like(node->apply.prefix->type)) {
         Type_Info *elem_type = node->type;
-        if (Type_Is_Record(elem_type) || Type_Is_String(elem_type) ||
+        if (Type_Is_Record(elem_type) or Type_Is_String(elem_type) or
             Type_Is_Constrained_Array(elem_type)) {
             return "ptr";  /* Composite elements return ptr */
         }
@@ -13241,11 +13010,11 @@ static inline const char *Expression_Llvm_Type(const Code_Generator *cg, Syntax_
     }
     /* Check for string literals and unconstrained string types (fat pointers).
      * Constrained STRING subtypes (e.g., STRING(1..6)) are flat arrays → ptr. */
-    if (node && node->kind == NK_STRING) return FAT_PTR_TYPE;
-    if (node && Type_Is_String(node->type) && !Type_Is_Constrained_Array(node->type))
+    if (node and node->kind == NK_STRING) return FAT_PTR_TYPE;
+    if (node and Type_Is_String(node->type) and not Type_Is_Constrained_Array(node->type))
         return FAT_PTR_TYPE;
     /* Check for unconstrained array types (fat pointers) - for variable references */
-    if (node && node->kind != NK_AGGREGATE &&
+    if (node and node->kind != NK_AGGREGATE and
         Type_Is_Unconstrained_Array(node->type)) {
         return FAT_PTR_TYPE;
     }
@@ -13266,50 +13035,50 @@ static uint32_t Emit_Convert(Code_Generator *cg, uint32_t src, const char *src_t
 
     uint32_t t = Emit_Temp(cg);
 
-    if (src_is_float && dst_is_float) {
+    if (src_is_float and dst_is_float) {
         /* float ↔ double */
         if (dst_bits > src_bits) {
             Emit(cg, "  %%t%u = fpext %s %%t%u to %s\n", t, src_type, src, dst_type);
         } else {
             Emit(cg, "  %%t%u = fptrunc %s %%t%u to %s\n", t, src_type, src, dst_type);
         }
-    } else if (src_is_float && !dst_is_float) {
+    } else if (src_is_float and not dst_is_float) {
         /* float/double → integer */
         Emit(cg, "  %%t%u = fptosi %s %%t%u to %s\n", t, src_type, src, dst_type);
-    } else if (!src_is_float && dst_is_float) {
+    } else if (not src_is_float and dst_is_float) {
         /* integer → float/double */
         Emit(cg, "  %%t%u = sitofp %s %%t%u to %s\n", t, src_type, src, dst_type);
-    } else if (strcmp(src_type, "ptr") == 0 && strcmp(dst_type, "ptr") == 0) {
+    } else if (strcmp(src_type, "ptr") == 0 and strcmp(dst_type, "ptr") == 0) {
         /* ptr → ptr: no conversion needed */
         return src;
-    } else if (strcmp(src_type, "ptr") == 0 && dst_type[0] == 'i') {
+    } else if (strcmp(src_type, "ptr") == 0 and dst_type[0] == 'i') {
         /* ptr → integer: ptrtoint */
         Emit(cg, "  %%t%u = ptrtoint ptr %%t%u to %s\n", t, src, dst_type);
-    } else if (src_type[0] == 'i' && strcmp(dst_type, "ptr") == 0) {
+    } else if (src_type[0] == 'i' and strcmp(dst_type, "ptr") == 0) {
         /* integer → ptr: inttoptr */
         Emit(cg, "  %%t%u = inttoptr %s %%t%u to ptr\n", t, src_type, src);
-    } else if (Llvm_Type_Is_Fat_Pointer(src_type) && Llvm_Type_Is_Fat_Pointer(dst_type)) {
+    } else if (Llvm_Type_Is_Fat_Pointer(src_type) and Llvm_Type_Is_Fat_Pointer(dst_type)) {
         /* fat pointer → fat pointer: no conversion needed */
         return src;
-    } else if (Llvm_Type_Is_Fat_Pointer(src_type) && strcmp(dst_type, "ptr") == 0) {
+    } else if (Llvm_Type_Is_Fat_Pointer(src_type) and strcmp(dst_type, "ptr") == 0) {
         /* fat pointer → ptr: extract data pointer (field 0).
          * Note: this loses bounds information, used when passing to constrained params
          * or assigning to access types */
         Emit(cg, "  %%t%u = extractvalue %s %%t%u, 0\n", t, src_type, src);
-    } else if (strcmp(src_type, "ptr") == 0 && Llvm_Type_Is_Fat_Pointer(dst_type)) {
+    } else if (strcmp(src_type, "ptr") == 0 and Llvm_Type_Is_Fat_Pointer(dst_type)) {
         /* ptr → fat pointer: pointer to unconstrained array storage, load it */
         Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, dst_type, src);
-    } else if (Llvm_Type_Is_Fat_Pointer(src_type) && dst_type[0] == 'i') {
+    } else if (Llvm_Type_Is_Fat_Pointer(src_type) and dst_type[0] == 'i') {
         /* fat pointer → integer: extract data pointer then ptrtoint */
         uint32_t data = Emit_Temp(cg);
         Emit(cg, "  %%t%u = extractvalue %s %%t%u, 0\n", data, src_type, src);
         Emit(cg, "  %%t%u = ptrtoint ptr %%t%u to %s\n", t, data, dst_type);
-    } else if (src_type[0] == 'i' && Llvm_Type_Is_Fat_Pointer(dst_type)) {
+    } else if (src_type[0] == 'i' and Llvm_Type_Is_Fat_Pointer(dst_type)) {
         /* integer → fat pointer: likely an access value, inttoptr then load */
         uint32_t p = Emit_Temp(cg);
         Emit(cg, "  %%t%u = inttoptr %s %%t%u to ptr\n", p, src_type, src);
         Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, dst_type, p);
-    } else if (Llvm_Type_Is_Fat_Pointer(src_type) || Llvm_Type_Is_Fat_Pointer(dst_type)) {
+    } else if (Llvm_Type_Is_Fat_Pointer(src_type) or Llvm_Type_Is_Fat_Pointer(dst_type)) {
         /* One is fat pointer, other is something else - best effort */
         return src;
     } else {
@@ -13341,7 +13110,7 @@ static uint32_t Generate_Expression(Code_Generator *cg, Syntax_Node *node);
  *
  * Per RM 3.5.4: CONSTRAINT_ERROR raised when value falls outside subtype range.
  * Handles both static (BOUND_INTEGER) and dynamic (BOUND_EXPR) bounds.
- * Generates: if (val < low || val > high) __ada_raise(CONSTRAINT_ERROR)
+ * Generates: if (val < low or val > high) __ada_raise(CONSTRAINT_ERROR)
  * ───────────────────────────────────────────────────────────────────────── */
 static uint32_t Emit_Bound_Value(Code_Generator *cg, Type_Bound *bound) {
     if (bound->kind == BOUND_INTEGER) {
@@ -13357,7 +13126,7 @@ static uint32_t Emit_Bound_Value(Code_Generator *cg, Type_Bound *bound) {
         Emit(cg, "  %%t%u = add i64 0, %lld  ; float-to-int bound (%g)\n",
              t, (long long)ival, bound->float_value);
         return t;
-    } else if (bound->kind == BOUND_EXPR && bound->expr) {
+    } else if (bound->kind == BOUND_EXPR and bound->expr) {
         return Generate_Expression(cg, bound->expr);
     }
     return 0;  /* Cannot determine bound */
@@ -13370,24 +13139,24 @@ static uint32_t Emit_Bound_Value(Code_Generator *cg, Type_Bound *bound) {
  *
  * GNAT does this in Checks.Apply_Scalar_Range_Check. */
 static uint32_t Emit_Constraint_Check(Code_Generator *cg, uint32_t val, Type_Info *target) {
-    if (!target) return val;
+    if (not target) return val;
 
-    bool is_int_like = (target->kind == TYPE_INTEGER ||
-                        target->kind == TYPE_ENUMERATION ||
-                        target->kind == TYPE_CHARACTER ||
+    bool is_int_like = (target->kind == TYPE_INTEGER or
+                        target->kind == TYPE_ENUMERATION or
+                        target->kind == TYPE_CHARACTER or
                         target->kind == TYPE_FIXED);  /* scaled integer repr */
     bool is_flt_like = (target->kind == TYPE_FLOAT);
 
-    if (!is_int_like && !is_flt_like) return val;
+    if (not is_int_like and not is_flt_like) return val;
 
     /* Need either static or dynamic bounds */
-    bool lo_ok = (target->low_bound.kind == BOUND_INTEGER ||
-                  target->low_bound.kind == BOUND_FLOAT ||
+    bool lo_ok = (target->low_bound.kind == BOUND_INTEGER or
+                  target->low_bound.kind == BOUND_FLOAT or
                   target->low_bound.kind == BOUND_EXPR);
-    bool hi_ok = (target->high_bound.kind == BOUND_INTEGER ||
-                  target->high_bound.kind == BOUND_FLOAT ||
+    bool hi_ok = (target->high_bound.kind == BOUND_INTEGER or
+                  target->high_bound.kind == BOUND_FLOAT or
                   target->high_bound.kind == BOUND_EXPR);
-    if (!lo_ok || !hi_ok) return val;
+    if (not lo_ok or not hi_ok) return val;
 
     uint32_t raise_label = cg->label_id++;
     uint32_t ok_label    = cg->label_id++;
@@ -13422,7 +13191,7 @@ static uint32_t Emit_Constraint_Check(Code_Generator *cg, uint32_t val, Type_Inf
         } else {
             hi = Generate_Expression(cg, target->high_bound.expr);
         }
-        if (!lo || !hi) return val;
+        if (not lo or not hi) return val;
 
         /* val < low? */
         uint32_t cmp_lo = Emit_Temp(cg);
@@ -13474,7 +13243,7 @@ static uint32_t Emit_Constraint_Check(Code_Generator *cg, uint32_t val, Type_Inf
             lo = Emit_Bound_Value(cg, &target->low_bound);
             hi = Emit_Bound_Value(cg, &target->high_bound);
         }
-        if (!lo || !hi) return val;
+        if (not lo or not hi) return val;
 
         /* val < low? */
         uint32_t cmp_lo = Emit_Temp(cg);
@@ -13810,7 +13579,7 @@ static uint32_t Emit_Fat_Pointer_Compare(Code_Generator *cg,
  * ───────────────────────────────────────────────────────────────────────── */
 
 /* Build a fat pointer { ptr, ptr } from named SSA values.
- * Allocates a bounds struct on the secondary stack (not alloca!) so the
+ * Allocates a bounds struct on the secondary stack (not allocanot ) so the
  * bounds pointer remains valid after the function returns.  This is critical
  * for RTS functions that return fat pointers.
  * Emits: %<prefix>_bnd = call ptr @__ada_sec_stack_alloc(i64 N)
@@ -13978,12 +13747,12 @@ static uint32_t Generate_Expression(Code_Generator *cg, Syntax_Node *node);
  *   - store to it   (assignment context)
  * ───────────────────────────────────────────────────────────────────────── */
 static uint32_t Generate_Lvalue(Code_Generator *cg, Syntax_Node *node) {
-    if (!node) return 0;
+    if (not node) return 0;
 
     /* NK_IDENTIFIER: return ptr to the symbol's storage */
     if (node->kind == NK_IDENTIFIER) {
         Symbol *sym = node->symbol;
-        if (!sym) return 0;
+        if (not sym) return 0;
 
         /* For RENAMES: redirect to renamed object */
         if (sym->renamed_object) {
@@ -14003,7 +13772,7 @@ static uint32_t Generate_Lvalue(Code_Generator *cg, Syntax_Node *node) {
         Type_Info *prefix_type = node->selected.prefix ? node->selected.prefix->type : NULL;
 
         /* Explicit .ALL dereference: load pointer value */
-        if (Type_Is_Access(prefix_type) &&
+        if (Type_Is_Access(prefix_type) and
             Slice_Equal_Ignore_Case(node->selected.selector, S("ALL"))) {
             /* The pointer IS the lvalue target */
             uint32_t ptr = Generate_Expression(cg, node->selected.prefix);
@@ -14013,7 +13782,7 @@ static uint32_t Generate_Lvalue(Code_Generator *cg, Syntax_Node *node) {
         /* Determine effective record type (handle implicit dereference) */
         Type_Info *record_type = prefix_type;
         bool implicit_deref = false;
-        if (Type_Is_Access(prefix_type) &&
+        if (Type_Is_Access(prefix_type) and
             Type_Is_Record(prefix_type->access.designated_type)) {
             record_type = prefix_type->access.designated_type;
             implicit_deref = true;
@@ -14061,18 +13830,18 @@ static uint32_t Generate_Lvalue(Code_Generator *cg, Syntax_Node *node) {
     }
 
     /* NK_UNARY_OP with TK_ALL: .ALL dereference — load the pointer value */
-    if (node->kind == NK_UNARY_OP && node->unary.op == TK_ALL) {
+    if (node->kind == NK_UNARY_OP and node->unary.op == TK_ALL) {
         uint32_t ptr = Generate_Expression(cg, node->unary.operand);
         return ptr;
     }
 
     /* NK_APPLY: array indexed component — compute element address */
-    if (node->kind == NK_APPLY && node->apply.prefix) {
+    if (node->kind == NK_APPLY and node->apply.prefix) {
         Type_Info *prefix_type = node->apply.prefix->type;
-        if (Type_Is_Access(prefix_type) && prefix_type->access.designated_type) {
+        if (Type_Is_Access(prefix_type) and prefix_type->access.designated_type) {
             prefix_type = prefix_type->access.designated_type;
         }
-        if (prefix_type && (prefix_type->kind == TYPE_ARRAY ||
+        if (prefix_type and (prefix_type->kind == TYPE_ARRAY or
                             prefix_type->kind == TYPE_STRING)) {
             /* Get array base pointer */
             Symbol *array_sym = node->apply.prefix->symbol;
@@ -14081,7 +13850,7 @@ static uint32_t Generate_Lvalue(Code_Generator *cg, Syntax_Node *node) {
             uint32_t dynamic_low = 0;
             const char *dyn_lv_bt = NULL;
 
-            if (array_sym && (Type_Is_Unconstrained_Array(prefix_type) ||
+            if (array_sym and (Type_Is_Unconstrained_Array(prefix_type) or
                               Type_Has_Dynamic_Bounds(prefix_type))) {
                 /* Unconstrained array: load fat pointer, extract data ptr */
                 const char *bt = Array_Bound_Llvm_Type(prefix_type);
@@ -14150,7 +13919,7 @@ static uint32_t Generate_Bound_Value(Code_Generator *cg, Type_Bound b) {
         Emit(cg, "  %%t%u = fptosi double %e to i64  ; bound (float)\n", t, b.float_value);
         return t;
     }
-    if (b.kind == BOUND_EXPR && b.expr) {
+    if (b.kind == BOUND_EXPR and b.expr) {
         /* First try compile-time evaluation */
         double val = Eval_Const_Numeric(b.expr);
         if (val == val) {  /* Not NaN */
@@ -14192,7 +13961,7 @@ static uint32_t Generate_String_Literal(Code_Generator *cg, Syntax_Node *node) {
     Emit_String_Const(cg, "@.str%u = linkonce_odr unnamed_addr constant [%u x i8] c\"", str_id, len);
     for (uint32_t i = 0; i < len; i++) {
         char c = node->string_val.text.data[i];
-        if (c >= 32 && c < 127 && c != '"' && c != '\\') {
+        if (c >= 32 and c < 127 and c != '"' and c != '\\') {
             Emit_String_Const_Char(cg, c);
         } else {
             Emit_String_Const(cg, "\\%02X", (unsigned char)c);
@@ -14211,16 +13980,16 @@ static uint32_t Generate_String_Literal(Code_Generator *cg, Syntax_Node *node) {
 
 static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
     Symbol *sym = node->symbol;
-    if (!sym) {
+    if (not sym) {
         Report_Error(node->location, "unresolved identifier in codegen");
         return 0;
     }
 
     /* Generic formal object substitution: if this is a formal object inside
      * a generic instantiation, generate code for the actual expression. */
-    if (cg->current_instance && cg->current_instance->generic_actuals) {
+    if (cg->current_instance and cg->current_instance->generic_actuals) {
         for (uint32_t i = 0; i < cg->current_instance->generic_actual_count; i++) {
-            if (cg->current_instance->generic_actuals[i].actual_expr &&
+            if (cg->current_instance->generic_actuals[i].actual_expr and
                 Slice_Equal_Ignore_Case(sym->name,
                     cg->current_instance->generic_actuals[i].formal_name)) {
                 return Generate_Expression(cg,
@@ -14239,7 +14008,7 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
 
     /* Resolve generic formal types to their actuals for correct LLVM type sizing.
      * E.g. generic formal T (<>) mapped to COLOR (i8) — must load as i8, not i32. */
-    if (cg->current_instance && ty)
+    if (cg->current_instance and ty)
         ty = Resolve_Generic_Actual_Type(cg, ty);
 
     switch (sym->kind) {
@@ -14262,9 +14031,9 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
             /* Widen sub-INTEGER integer loads to INTEGER width for uniform expression type.
              * Fat pointers, ptrs, and floats are NOT widened. */
             {   const char *iat_var = Integer_Arith_Type(cg);
-            if (type_str[0] == 'i' && strcmp(type_str, iat_var) != 0 &&
-                !Type_Is_Access(ty) && !Type_Is_Float_Representation(ty) &&
-                !Type_Is_Unconstrained_Array(ty) && !Type_Is_String(ty)) {
+            if (type_str[0] == 'i' and strcmp(type_str, iat_var) != 0 and
+                not Type_Is_Access(ty) and not Type_Is_Float_Representation(ty) and
+                not Type_Is_Unconstrained_Array(ty) and not Type_Is_String(ty)) {
                 uint32_t w = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", w, type_str, t, iat_var);
                 t = w;
@@ -14299,20 +14068,20 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                 Emit_Symbol_Ref(cg, sym);
                 Emit(cg, ", i64 0\n");
                 return t;
-            } else if (sym->kind == SYMBOL_CONSTANT && sym->is_named_number) {
+            } else if (sym->kind == SYMBOL_CONSTANT and sym->is_named_number) {
                 /* Named number (constant without explicit type) - evaluate initializer
                  * Named numbers in Ada are compile-time constants with no storage.
                  * Per RM 3.2.2: "A named number provides a name for a numeric value
                  * known at compile time." */
                 Syntax_Node *decl = sym->declaration;
-                if (decl && decl->kind == NK_OBJECT_DECL && decl->object_decl.init) {
+                if (decl and decl->kind == NK_OBJECT_DECL and decl->object_decl.init) {
                     /* Generate code for the initializer expression */
                     return Generate_Expression(cg, decl->object_decl.init);
                 } else {
                     /* ??? Fallback if no initializer found */
                     Emit(cg, "  %%t%u = add i64 0, 0  ; named number without init\n", t);
                 }
-            } else if (sym->kind == SYMBOL_CONSTANT && !sym->is_named_number) {
+            } else if (sym->kind == SYMBOL_CONSTANT and not sym->is_named_number) {
                 /* Typed constant - load value from storage like variable */
                 const char *type_str = Type_To_Llvm(ty);
                 Emit(cg, "  %%t%u = load %s, ptr ", t, type_str);
@@ -14320,9 +14089,9 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "\n");
                 /* Widen sub-INTEGER integer loads to INTEGER width */
                 {   const char *iat_const = Integer_Arith_Type(cg);
-                if (type_str[0] == 'i' && strcmp(type_str, iat_const) != 0 &&
-                    !Type_Is_Access(ty) && !Type_Is_Float_Representation(ty) &&
-                    !Type_Is_Unconstrained_Array(ty) && !Type_Is_String(ty)) {
+                if (type_str[0] == 'i' and strcmp(type_str, iat_const) != 0 and
+                    not Type_Is_Access(ty) and not Type_Is_Float_Representation(ty) and
+                    not Type_Is_Unconstrained_Array(ty) and not Type_Is_String(ty)) {
                     uint32_t w = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", w, type_str, t, iat_const);
                     t = w;
@@ -14340,9 +14109,9 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
              * Generic formal subprogram substitution: if this is a formal subprogram
              * inside a generic instantiation, substitute with actual. */
             Symbol *actual = sym;
-            if (cg->current_instance && cg->current_instance->generic_actuals) {
+            if (cg->current_instance and cg->current_instance->generic_actuals) {
                 for (uint32_t i = 0; i < cg->current_instance->generic_actual_count; i++) {
-                    if (cg->current_instance->generic_actuals[i].actual_subprogram &&
+                    if (cg->current_instance->generic_actuals[i].actual_subprogram and
                         Slice_Equal_Ignore_Case(sym->name,
                             cg->current_instance->generic_actuals[i].formal_name)) {
                         actual = cg->current_instance->generic_actuals[i].actual_subprogram;
@@ -14352,7 +14121,7 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
             }
 
             /* Check if actual is an enumeration literal (e.g., RED, YELLOW) */
-            if (actual->kind == SYMBOL_LITERAL && Type_Is_Enumeration(actual->type)) {
+            if (actual->kind == SYMBOL_LITERAL and Type_Is_Enumeration(actual->type)) {
                 int64_t pos = 0;
                 for (uint32_t i = 0; i < actual->type->enumeration.literal_count; i++) {
                     if (Slice_Equal_Ignore_Case(actual->type->enumeration.literals[i],
@@ -14370,13 +14139,13 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "  %%t%u = call %s @", t, ret_type);
                 Emit_Symbol_Name(cg, actual);
                 /* Handle nested function: pass parent frame if needed */
-                bool callee_is_nested = actual->parent &&
-                    (actual->parent->kind == SYMBOL_FUNCTION ||
+                bool callee_is_nested = actual->parent and
+                    (actual->parent->kind == SYMBOL_FUNCTION or
                      actual->parent->kind == SYMBOL_PROCEDURE);
                 if (callee_is_nested) {
                     if (cg->current_function == actual->parent) {
                         Emit(cg, "(ptr %%__frame_base)\n");
-                    } else if (cg->is_nested && cg->current_function &&
+                    } else if (cg->is_nested and cg->current_function and
                                cg->current_function->parent == actual->parent) {
                         Emit(cg, "(ptr %%__parent_frame)\n");
                     } else {
@@ -14387,12 +14156,12 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                 }
                 /* Widen sub-INTEGER integer return values to INTEGER width */
                 {   const char *iat_ret = Integer_Arith_Type(cg);
-                if (actual->return_type && ret_type[0] == 'i' &&
-                    strcmp(ret_type, iat_ret) != 0 &&
-                    !Type_Is_Access(actual->return_type) &&
-                    !Type_Is_Float_Representation(actual->return_type) &&
-                    !Type_Is_Unconstrained_Array(actual->return_type) &&
-                    !Type_Is_String(actual->return_type)) {
+                if (actual->return_type and ret_type[0] == 'i' and
+                    strcmp(ret_type, iat_ret) != 0 and
+                    not Type_Is_Access(actual->return_type) and
+                    not Type_Is_Float_Representation(actual->return_type) and
+                    not Type_Is_Unconstrained_Array(actual->return_type) and
+                    not Type_Is_String(actual->return_type)) {
                     uint32_t w = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", w, ret_type, t, iat_ret);
                     t = w;
@@ -14426,10 +14195,10 @@ static uint32_t Generate_Array_Equality(Code_Generator *cg, uint32_t left_ptr,
 /* Generate equality comparison for record types (component-by-component) */
 static uint32_t Generate_Record_Equality(Code_Generator *cg, uint32_t left_ptr,
                                          uint32_t right_ptr, Type_Info *record_type) {
-    if (!Type_Is_Record(record_type) ||
+    if (not Type_Is_Record(record_type) or
         record_type->record.component_count == 0) {
         /* Empty record or invalid - always equal */
-        if (!Type_Is_Record(record_type))
+        if (not Type_Is_Record(record_type))
             fprintf(stderr, "warning: record equality called on non-record type\n");
         uint32_t t = Emit_Temp(cg);
         Emit(cg, "  %%t%u = add i1 0, 1  ; empty record equality\n", t);
@@ -14452,11 +14221,11 @@ static uint32_t Generate_Record_Equality(Code_Generator *cg, uint32_t left_ptr,
         /* Compare component - handle arrays/strings specially */
         uint32_t cmp;
         Type_Info *ct = comp->component_type;
-        bool is_fat_ptr_access = Type_Is_Access(ct) &&
+        bool is_fat_ptr_access = Type_Is_Access(ct) and
             Type_Needs_Fat_Pointer(ct);
 
-        if (Type_Is_Unconstrained_Array(ct) ||
-            (!Type_Is_Constrained_Array(ct) && Type_Is_String(ct))) {
+        if (Type_Is_Unconstrained_Array(ct) or
+            (not Type_Is_Constrained_Array(ct) and Type_Is_String(ct))) {
             /* Unconstrained array/string - load fat pointer values from storage */
             const char *ct_bt = Array_Bound_Llvm_Type(ct);
             uint32_t left_fat = Emit_Load_Fat_Pointer_From_Temp(cg, left_gep, ct_bt);
@@ -14507,7 +14276,7 @@ static uint32_t Generate_Record_Equality(Code_Generator *cg, uint32_t left_ptr,
 /* Generate equality comparison for constrained array types (element-by-element) */
 static uint32_t Generate_Array_Equality(Code_Generator *cg, uint32_t left_ptr,
                                         uint32_t right_ptr, Type_Info *array_type) {
-    if (!Type_Is_Array_Like(array_type)) {
+    if (not Type_Is_Array_Like(array_type)) {
         fprintf(stderr, "warning: array equality called on non-array type\n");
         uint32_t t = Emit_Temp(cg);
         Emit(cg, "  %%t%u = add i1 0, 1  ; invalid array equality\n", t);
@@ -14616,7 +14385,7 @@ static uint32_t Generate_Composite_Address(Code_Generator *cg, Syntax_Node *node
          * First load the pointer, then compute field address. */
         Type_Info *record_type = prefix_type;
         bool implicit_deref = false;
-        if (Type_Is_Access(prefix_type) &&
+        if (Type_Is_Access(prefix_type) and
             Type_Is_Record(prefix_type->access.designated_type)) {
             record_type = prefix_type->access.designated_type;
             implicit_deref = true;
@@ -14654,10 +14423,10 @@ static uint32_t Generate_Composite_Address(Code_Generator *cg, Syntax_Node *node
         }
     }
 
-    if (node->kind == NK_APPLY && node->apply.arguments.count == 1) {
+    if (node->kind == NK_APPLY and node->apply.arguments.count == 1) {
         /* Array indexing or slice: Arr(I) or Arr(low..high) */
         Type_Info *prefix_type = node->apply.prefix ? node->apply.prefix->type : NULL;
-        if (prefix_type && prefix_type->kind == TYPE_ARRAY) {
+        if (prefix_type and prefix_type->kind == TYPE_ARRAY) {
             uint32_t elem_size = prefix_type->array.element_type
                                  ? prefix_type->array.element_type->size : 1;
             if (elem_size == 0) elem_size = 1;
@@ -14703,7 +14472,7 @@ static uint32_t Generate_Composite_Address(Code_Generator *cg, Syntax_Node *node
             return addr;
         }
         /* Handle unconstrained arrays passed as fat pointers */
-        if (!Type_Is_Constrained_Array(prefix_type) && Type_Is_String(prefix_type)) {
+        if (not Type_Is_Constrained_Array(prefix_type) and Type_Is_String(prefix_type)) {
             /* Fat pointer - extract data and compute element address */
             const char *str_bt = Array_Bound_Llvm_Type(prefix_type);
             uint32_t fat = Generate_Expression(cg, node->apply.prefix);
@@ -14727,30 +14496,30 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
     /* Check if this is equality/inequality on composite types */
     Type_Info *left_type = node->binary.left ? node->binary.left->type : NULL;
 
-    if ((node->binary.op == TK_EQ || node->binary.op == TK_NE) &&
-        left_type && Type_Is_Composite(left_type)) {
+    if ((node->binary.op == TK_EQ or node->binary.op == TK_NE) and
+        left_type and Type_Is_Composite(left_type)) {
         /* Composite type comparison */
         uint32_t eq_result;
 
         bool left_is_slice = Expression_Is_Slice(node->binary.left);
         bool right_is_slice = Expression_Is_Slice(node->binary.right);
         Type_Info *right_type = node->binary.right ? node->binary.right->type : NULL;
-        bool is_unconstrained = Type_Is_Unconstrained_Array(left_type) ||
-                                (!Type_Is_Constrained_Array(left_type) && Type_Is_String(left_type)) ||
-                                Type_Is_Unconstrained_Array(right_type) ||
-                                (!Type_Is_Constrained_Array(right_type) && Type_Is_String(right_type));
+        bool is_unconstrained = Type_Is_Unconstrained_Array(left_type) or
+                                (not Type_Is_Constrained_Array(left_type) and Type_Is_String(left_type)) or
+                                Type_Is_Unconstrained_Array(right_type) or
+                                (not Type_Is_Constrained_Array(right_type) and Type_Is_String(right_type));
         /* String literals and concatenation always produce fat pointers */
-        bool left_is_fat = is_unconstrained || left_is_slice ||
-                           node->binary.left->kind == NK_STRING ||
-                           (node->binary.left->kind == NK_BINARY_OP &&
+        bool left_is_fat = is_unconstrained or left_is_slice or
+                           node->binary.left->kind == NK_STRING or
+                           (node->binary.left->kind == NK_BINARY_OP and
                             node->binary.left->binary.op == TK_AMPERSAND);
-        bool right_is_fat = is_unconstrained || right_is_slice ||
-                            (node->binary.right && node->binary.right->kind == NK_STRING) ||
-                            (node->binary.right && node->binary.right->kind == NK_BINARY_OP &&
+        bool right_is_fat = is_unconstrained or right_is_slice or
+                            (node->binary.right and node->binary.right->kind == NK_STRING) or
+                            (node->binary.right and node->binary.right->kind == NK_BINARY_OP and
                              node->binary.right->binary.op == TK_AMPERSAND);
 
         /* Handle slice comparisons specially - they have mixed representations */
-        if ((left_is_slice || right_is_slice) && !is_unconstrained) {
+        if ((left_is_slice or right_is_slice) and not is_unconstrained) {
             /* At least one slice with constrained type - generate inline comparison */
             uint32_t left_data, right_data;
             uint32_t left_low, left_high, right_low, right_high;
@@ -14786,7 +14555,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                 /* Get static bounds from type - use right type if available */
                 Type_Info *rtype = node->binary.right->type ? node->binary.right->type : left_type;
                 int64_t low_val = 1, high_val = 1;
-                if (Type_Is_Array_Like(rtype) &&
+                if (Type_Is_Array_Like(rtype) and
                     rtype->array.index_count > 0) {
                     low_val = Type_Bound_Value(rtype->array.indices[0].low_bound);
                     high_val = Type_Bound_Value(rtype->array.indices[0].high_bound);
@@ -14825,7 +14594,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             /* Result: lengths match AND data matches */
             eq_result = Emit_Temp(cg);
             Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", eq_result, len_eq, data_eq);
-        } else if (left_is_fat || right_is_fat) {
+        } else if (left_is_fat or right_is_fat) {
             /* At least one operand produces a fat pointer.
              * Normalize both to fat pointers for uniform comparison. */
             uint32_t left_val, right_val;
@@ -14837,7 +14606,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             } else {
                 uint32_t lptr = Generate_Composite_Address(cg, node->binary.left);
                 int64_t lo = 1, hi = 0;
-                if (Type_Is_Array_Like(left_type) && left_type->array.index_count > 0) {
+                if (Type_Is_Array_Like(left_type) and left_type->array.index_count > 0) {
                     lo = Type_Bound_Value(left_type->array.indices[0].low_bound);
                     hi = Type_Bound_Value(left_type->array.indices[0].high_bound);
                 }
@@ -14851,7 +14620,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                 uint32_t rptr = Generate_Composite_Address(cg, node->binary.right);
                 Type_Info *rtype = node->binary.right->type ? node->binary.right->type : left_type;
                 int64_t lo = 1, hi = 0;
-                if (Type_Is_Array_Like(rtype) && rtype->array.index_count > 0) {
+                if (Type_Is_Array_Like(rtype) and rtype->array.index_count > 0) {
                     lo = Type_Bound_Value(rtype->array.indices[0].low_bound);
                     hi = Type_Bound_Value(rtype->array.indices[0].high_bound);
                 }
@@ -14860,7 +14629,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
 
             /* Use the unconstrained array equality path (compares lengths then data) */
             Type_Info *cmp_type = left_type;
-            if (Type_Is_Constrained_Array(cmp_type) && (Type_Is_String(right_type) ||
+            if (Type_Is_Constrained_Array(cmp_type) and (Type_Is_String(right_type) or
                 Type_Is_Unconstrained_Array(right_type))) {
                 cmp_type = right_type;  /* Use unconstrained type for comparison */
             }
@@ -14899,40 +14668,40 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
     }
 
     /* Array relational comparisons (lexicographic) */
-    if ((node->binary.op == TK_LT || node->binary.op == TK_LE ||
-         node->binary.op == TK_GT || node->binary.op == TK_GE) &&
+    if ((node->binary.op == TK_LT or node->binary.op == TK_LE or
+         node->binary.op == TK_GT or node->binary.op == TK_GE) and
         Type_Is_Array_Like(left_type)) {
         /* Get addresses of both arrays for comparison */
         uint32_t left_ptr, right_ptr;
         Type_Info *rhs_cmp_type = node->binary.right ? node->binary.right->type : NULL;
         /* Detect any operand producing fat pointers: unconstrained types, slices,
          * string literals, and concatenation results. */
-        bool is_unconstrained = Type_Is_Unconstrained_Array(left_type) ||
-                                (!Type_Is_Constrained_Array(left_type) && Type_Is_String(left_type)) ||
-                                Type_Is_Unconstrained_Array(rhs_cmp_type) ||
-                                (!Type_Is_Constrained_Array(rhs_cmp_type) && Type_Is_String(rhs_cmp_type)) ||
-                                Expression_Is_Slice(node->binary.left) ||
-                                Expression_Is_Slice(node->binary.right) ||
-                                node->binary.left->kind == NK_STRING ||
-                                (node->binary.right && node->binary.right->kind == NK_STRING) ||
-                                (node->binary.left->kind == NK_BINARY_OP &&
-                                 node->binary.left->binary.op == TK_AMPERSAND) ||
-                                (node->binary.right && node->binary.right->kind == NK_BINARY_OP &&
+        bool is_unconstrained = Type_Is_Unconstrained_Array(left_type) or
+                                (not Type_Is_Constrained_Array(left_type) and Type_Is_String(left_type)) or
+                                Type_Is_Unconstrained_Array(rhs_cmp_type) or
+                                (not Type_Is_Constrained_Array(rhs_cmp_type) and Type_Is_String(rhs_cmp_type)) or
+                                Expression_Is_Slice(node->binary.left) or
+                                Expression_Is_Slice(node->binary.right) or
+                                node->binary.left->kind == NK_STRING or
+                                (node->binary.right and node->binary.right->kind == NK_STRING) or
+                                (node->binary.left->kind == NK_BINARY_OP and
+                                 node->binary.left->binary.op == TK_AMPERSAND) or
+                                (node->binary.right and node->binary.right->kind == NK_BINARY_OP and
                                  node->binary.right->binary.op == TK_AMPERSAND);
         const char *rel_bt = Array_Bound_Llvm_Type(left_type);
         if (is_unconstrained) {
             /* Generate each operand as fat pointer, wrapping constrained if needed */
-            bool l_fat = (!Type_Is_Constrained_Array(left_type) && Type_Is_String(left_type)) ||
-                         Type_Is_Unconstrained_Array(left_type) ||
-                         Expression_Is_Slice(node->binary.left) ||
-                         node->binary.left->kind == NK_STRING ||
-                         (node->binary.left->kind == NK_BINARY_OP &&
+            bool l_fat = (not Type_Is_Constrained_Array(left_type) and Type_Is_String(left_type)) or
+                         Type_Is_Unconstrained_Array(left_type) or
+                         Expression_Is_Slice(node->binary.left) or
+                         node->binary.left->kind == NK_STRING or
+                         (node->binary.left->kind == NK_BINARY_OP and
                           node->binary.left->binary.op == TK_AMPERSAND);
-            bool r_fat = (!Type_Is_Constrained_Array(rhs_cmp_type) && Type_Is_String(rhs_cmp_type)) ||
-                         Type_Is_Unconstrained_Array(rhs_cmp_type) ||
-                         Expression_Is_Slice(node->binary.right) ||
-                         (node->binary.right && node->binary.right->kind == NK_STRING) ||
-                         (node->binary.right && node->binary.right->kind == NK_BINARY_OP &&
+            bool r_fat = (not Type_Is_Constrained_Array(rhs_cmp_type) and Type_Is_String(rhs_cmp_type)) or
+                         Type_Is_Unconstrained_Array(rhs_cmp_type) or
+                         Expression_Is_Slice(node->binary.right) or
+                         (node->binary.right and node->binary.right->kind == NK_STRING) or
+                         (node->binary.right and node->binary.right->kind == NK_BINARY_OP and
                           node->binary.right->binary.op == TK_AMPERSAND);
 
             if (l_fat) {
@@ -14951,7 +14720,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             } else {
                 uint32_t rp = Generate_Composite_Address(cg, node->binary.right);
                 int64_t lo = 1, hi = 0;
-                if (rhs_cmp_type && Type_Is_Array_Like(rhs_cmp_type) &&
+                if (rhs_cmp_type and Type_Is_Array_Like(rhs_cmp_type) and
                     rhs_cmp_type->array.index_count > 0) {
                     lo = Type_Bound_Value(rhs_cmp_type->array.indices[0].low_bound);
                     hi = Type_Bound_Value(rhs_cmp_type->array.indices[0].high_bound);
@@ -14965,7 +14734,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
 
         uint32_t memcmp_result, cmp_result;
 
-        if (left_type->array.is_constrained && !is_unconstrained) {
+        if (left_type->array.is_constrained and not is_unconstrained) {
             /* Constrained array: same size, use memcmp directly */
             int64_t count = Array_Element_Count(left_type);
             uint32_t elem_size = left_type->array.element_type ?
@@ -15136,7 +14905,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
     }
 
     /* String/array concatenation */
-    if (node->binary.op == TK_AMPERSAND && Type_Is_Array_Like(left_type)) {
+    if (node->binary.op == TK_AMPERSAND and Type_Is_Array_Like(left_type)) {
 
         /* Generate both operands.
          * Each operand may be: fat pointer (STRING/unconstrained/literal/slice/concat),
@@ -15147,11 +14916,11 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
 
         /* Normalize left operand to fat pointer */
         uint32_t left_fat;
-        bool left_already_fat = (!Type_Is_Constrained_Array(left_type) && Type_Is_String(left_type)) ||
-                                Type_Is_Unconstrained_Array(left_type) ||
-                                node->binary.left->kind == NK_STRING ||
-                                Expression_Is_Slice(node->binary.left) ||
-                                (node->binary.left->kind == NK_BINARY_OP &&
+        bool left_already_fat = (not Type_Is_Constrained_Array(left_type) and Type_Is_String(left_type)) or
+                                Type_Is_Unconstrained_Array(left_type) or
+                                node->binary.left->kind == NK_STRING or
+                                Expression_Is_Slice(node->binary.left) or
+                                (node->binary.left->kind == NK_BINARY_OP and
                                  node->binary.left->binary.op == TK_AMPERSAND);
         const char *cat_bt = Array_Bound_Llvm_Type(left_type);
         if (left_already_fat) {
@@ -15163,7 +14932,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             uint32_t ct = Emit_Convert(cg, left_raw, Integer_Arith_Type(cg), "i8");
             Emit(cg, "  store i8 %%t%u, ptr %%t%u\n", ct, ca);
             left_fat = Emit_Fat_Pointer(cg, ca, 1, 1, cat_bt);
-        } else if (Type_Is_Constrained_Array(left_type) &&
+        } else if (Type_Is_Constrained_Array(left_type) and
                    left_type->array.index_count > 0) {
             int64_t lo = Type_Bound_Value(left_type->array.indices[0].low_bound);
             int64_t hi = Type_Bound_Value(left_type->array.indices[0].high_bound);
@@ -15175,11 +14944,11 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         /* Normalize right operand to fat pointer */
         Type_Info *rhs_type = node->binary.right ? node->binary.right->type : NULL;
         uint32_t right_fat;
-        bool right_already_fat = (!Type_Is_Constrained_Array(rhs_type) && Type_Is_String(rhs_type)) ||
-                                 Type_Is_Unconstrained_Array(rhs_type) ||
-                                 node->binary.right->kind == NK_STRING ||
-                                 Expression_Is_Slice(node->binary.right) ||
-                                 (node->binary.right->kind == NK_BINARY_OP &&
+        bool right_already_fat = (not Type_Is_Constrained_Array(rhs_type) and Type_Is_String(rhs_type)) or
+                                 Type_Is_Unconstrained_Array(rhs_type) or
+                                 node->binary.right->kind == NK_STRING or
+                                 Expression_Is_Slice(node->binary.right) or
+                                 (node->binary.right->kind == NK_BINARY_OP and
                                   node->binary.right->binary.op == TK_AMPERSAND);
         if (right_already_fat) {
             right_fat = right_raw;
@@ -15190,7 +14959,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             uint32_t ct = Emit_Convert(cg, right_raw, Integer_Arith_Type(cg), "i8");
             Emit(cg, "  store i8 %%t%u, ptr %%t%u\n", ct, ca);
             right_fat = Emit_Fat_Pointer(cg, ca, 1, 1, cat_bt);
-        } else if (Type_Is_Constrained_Array(rhs_type) &&
+        } else if (Type_Is_Constrained_Array(rhs_type) and
                    rhs_type->array.index_count > 0) {
             int64_t lo = Type_Bound_Value(rhs_type->array.indices[0].low_bound);
             int64_t hi = Type_Bound_Value(rhs_type->array.indices[0].high_bound);
@@ -15258,14 +15027,14 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
     /* NK_RANGE right operand is generated inside the IN/NOT IN handler.
      * For membership tests (IN/NOT IN), type names are also handled specially
      * and should not be evaluated as expressions. */
-    bool right_is_range = node->binary.right && node->binary.right->kind == NK_RANGE;
-    bool is_membership = (node->binary.op == TK_IN) ||
-                         (node->binary.op == TK_NOT && node->binary.right &&
-                          (node->binary.right->kind == NK_IDENTIFIER ||
-                           node->binary.right->kind == NK_QUALIFIED) &&
-                          node->binary.right->symbol &&
+    bool right_is_range = node->binary.right and node->binary.right->kind == NK_RANGE;
+    bool is_membership = (node->binary.op == TK_IN) or
+                         (node->binary.op == TK_NOT and node->binary.right and
+                          (node->binary.right->kind == NK_IDENTIFIER or
+                           node->binary.right->kind == NK_QUALIFIED) and
+                          node->binary.right->symbol and
                           node->binary.right->symbol->kind == SYMBOL_TYPE);
-    uint32_t right = (right_is_range || is_membership) ? 0 : Generate_Expression(cg, node->binary.right);
+    uint32_t right = (right_is_range or is_membership) ? 0 : Generate_Expression(cg, node->binary.right);
     uint32_t t = Emit_Temp(cg);
 
     const char *op;
@@ -15273,7 +15042,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
 
     /* GNAT LLVM: track actual LLVM types for native-width integer operations. */
     const char *left_int_type = Expression_Llvm_Type(cg, node->binary.left);
-    const char *right_int_type = (right_is_range || is_membership) ? Integer_Arith_Type(cg) :
+    const char *right_int_type = (right_is_range or is_membership) ? Integer_Arith_Type(cg) :
                                   Expression_Llvm_Type(cg, node->binary.right);
     Type_Info *lhs_type = node->binary.left ? node->binary.left->type : NULL;
     Type_Info *rhs_type = node->binary.right ? node->binary.right->type : NULL;
@@ -15301,7 +15070,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             rhs_float_type = Llvm_Float_Type((uint32_t)To_Bits(rhs_type->size));
         }
 
-        if (!lhs_is_float) {
+        if (not lhs_is_float) {
             uint32_t conv = Emit_Temp(cg);
             Emit(cg, "  %%t%u = sitofp %s %%t%u to %s\n", conv, left_int_type, left, float_type_str);
             left = conv;
@@ -15310,11 +15079,11 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             left = Emit_Convert(cg, left, lhs_float_type, float_type_str);
         }
         /* For exponentiation, skip RHS conversion - TK_EXPON handles it */
-        if (!rhs_is_float && node->binary.op != TK_EXPON) {
+        if (not rhs_is_float and node->binary.op != TK_EXPON) {
             uint32_t conv = Emit_Temp(cg);
             Emit(cg, "  %%t%u = sitofp %s %%t%u to %s\n", conv, right_int_type, right, float_type_str);
             right = conv;
-        } else if (rhs_is_float && strcmp(rhs_float_type, float_type_str) != 0 &&
+        } else if (rhs_is_float and strcmp(rhs_float_type, float_type_str) != 0 and
                    node->binary.op != TK_EXPON) {
             /* Convert right operand to result float type */
             right = Emit_Convert(cg, right, rhs_float_type, float_type_str);
@@ -15323,10 +15092,10 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
 
     /* GNAT LLVM: Fixed-point uses i64-width scaled integer representation.
      * Widen native-type integer operands to i64 before fixed-point math. */
-    if (is_fixed && !is_float) {
+    if (is_fixed and not is_float) {
         const char *fixed_arith = Integer_Arith_Type(cg);
         left = Emit_Convert(cg, left, left_int_type, fixed_arith);
-        if (!right_is_range && !is_membership)
+        if (not right_is_range and not is_membership)
             right = Emit_Convert(cg, right, right_int_type, fixed_arith);
         left_int_type = fixed_arith;
         right_int_type = fixed_arith;
@@ -15337,7 +15106,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
      * the universal_real to the fixed-point's scaled integer representation.
      * For fixed type with small S, value V converts to: floor(V / S)
      * Skip for exponentiation which has its own special handling. */
-    if (is_fixed && node->binary.op != TK_EXPON) {
+    if (is_fixed and node->binary.op != TK_EXPON) {
         double small = result_type->fixed.small;
         if (small <= 0) small = result_type->fixed.delta > 0 ? result_type->fixed.delta : 1.0;
 
@@ -15370,7 +15139,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
     }
 
     /* Fixed-point multiplication/division needs scaling (RM 4.5.5) */
-    if (is_fixed && (node->binary.op == TK_STAR || node->binary.op == TK_SLASH)) {
+    if (is_fixed and (node->binary.op == TK_STAR or node->binary.op == TK_SLASH)) {
         int scale = result_type->fixed.scale;
         if (node->binary.op == TK_STAR) {
             /* Fixed * Fixed: result = (a * b) >> abs(scale) */
@@ -15511,7 +15280,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                 /* Boolean sub-expressions may produce i1 (raw comparisons) or
                  * i64 (widened booleans).  Use actual expression type to avoid
                  * double-widening when the value is already i64. */
-                if (!left_is_float && !right_is_float) {
+                if (not left_is_float and not right_is_float) {
                     const char *int_arith = Integer_Arith_Type(cg);
                     if (Expression_Is_Boolean(node->binary.left)) {
                         left = Emit_Convert(cg, left, left_llvm_type, int_arith);
@@ -15526,8 +15295,8 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                 /* For non-float, non-boolean: ensure operands are same type.
                  * If one is ptr and other is i64, convert to common type.
                  * Fat pointers: extract data pointer for comparison. */
-                if (!left_is_float && !right_is_float &&
-                    !left_is_bool && !right_is_bool) {
+                if (not left_is_float and not right_is_float and
+                    not left_is_bool and not right_is_bool) {
                     /* Handle fat pointer operands - extract data pointer */
                     if (Llvm_Type_Is_Fat_Pointer(left_llvm_type)) {
                         left = Emit_Convert(cg, left, left_llvm_type, "ptr");
@@ -15539,12 +15308,12 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                     }
                     /* Normalize: if one is ptr and other is integer, convert ptr to integer.
                      * GNAT LLVM: integer side may be native type (i8/i16/i32/i64). */
-                    if (strcmp(left_llvm_type, "ptr") == 0 &&
+                    if (strcmp(left_llvm_type, "ptr") == 0 and
                         right_llvm_type[0] == 'i') {
                         const char *ptr_int = Integer_Arith_Type(cg);
                         left = Emit_Convert(cg, left, "ptr", ptr_int);
                         left_llvm_type = ptr_int;
-                    } else if (left_llvm_type[0] == 'i' &&
+                    } else if (left_llvm_type[0] == 'i' and
                                strcmp(right_llvm_type, "ptr") == 0) {
                         const char *ptr_int = Integer_Arith_Type(cg);
                         right = Emit_Convert(cg, right, "ptr", ptr_int);
@@ -15568,7 +15337,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                 /* UNIVERSAL_REAL always uses double (Generate_Real_Literal produces double) */
 
                 /* Convert operands to same type if needed */
-                if (left_is_float && !right_is_float) {
+                if (left_is_float and not right_is_float) {
                     /* Convert right to float. If it's fixed-point, multiply by SMALL.
                      * GNAT LLVM: use actual integer type for sitofp. */
                     uint32_t conv = Emit_Temp(cg);
@@ -15586,7 +15355,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                         right = scaled;
                     }
                     right_is_float = true;
-                } else if (!left_is_float && right_is_float) {
+                } else if (not left_is_float and right_is_float) {
                     /* Convert right float to integer for fixed-point comparison.
                      * If left is fixed-point, divide by SMALL first */
                     if (Type_Is_Fixed_Point(left_type)) {
@@ -15604,16 +15373,16 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                     right = conv;
                     right_is_float = false;
                     right_llvm_type = Integer_Arith_Type(cg);
-                } else if (left_is_float && right_is_float) {
+                } else if (left_is_float and right_is_float) {
                     /* Both floats - convert right to match left if sizes differ.
                      * Explicitly check both types to avoid incorrect conversions
                      * when type detection defaults to "double". */
-                    if (strcmp(float_type, "float") == 0 && strcmp(right_float_type, "double") == 0) {
+                    if (strcmp(float_type, "float") == 0 and strcmp(right_float_type, "double") == 0) {
                         /* double -> float */
                         uint32_t conv = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = fptrunc double %%t%u to float\n", conv, right);
                         right = conv;
-                    } else if (strcmp(float_type, "double") == 0 && strcmp(right_float_type, "float") == 0) {
+                    } else if (strcmp(float_type, "double") == 0 and strcmp(right_float_type, "float") == 0) {
                         /* float -> double */
                         uint32_t conv = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = fpext float %%t%u to double\n", conv, right);
@@ -15624,7 +15393,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
 
                 const char *cmp_op;
                 char cmp_buf[32];
-                if (left_is_float && right_is_float) {
+                if (left_is_float and right_is_float) {
                     const char *fcmp_op;
                     switch (node->binary.op) {
                         case TK_EQ: fcmp_op = "oeq"; break;
@@ -15639,7 +15408,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                     }
                     snprintf(cmp_buf, sizeof(cmp_buf), "fcmp %s %s", fcmp_op, float_type);
                     cmp_op = cmp_buf;
-                } else if (left_is_bool && right_is_bool) {
+                } else if (left_is_bool and right_is_bool) {
                     /* Boolean comparisons use i64 since values may come from
                      * different sources (i1 functions extended to i64, or i64 fat ptrs).
                      * This avoids type mismatches in LLVM IR. */
@@ -15650,7 +15419,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                             fprintf(stderr, "warning: unhandled boolean comparison operator, defaulting to equality\n");
                             cmp_op = "icmp eq i64"; break;
                     }
-                } else if (strcmp(left_llvm_type, "ptr") == 0 &&
+                } else if (strcmp(left_llvm_type, "ptr") == 0 and
                            strcmp(right_llvm_type, "ptr") == 0) {
                     /* Pointer comparison (access types, record/array ptrs).
                      * Only equality/inequality are meaningful for pointers. */
@@ -15718,7 +15487,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                     mem_float_type = Llvm_Float_Type((uint32_t)To_Bits(lhs_type->size));
                 }
 
-                if (node->binary.right && node->binary.right->kind == NK_RANGE) {
+                if (node->binary.right and node->binary.right->kind == NK_RANGE) {
                     /* Dynamic range: generate both bounds from AST */
                     uint32_t lo = Generate_Expression(cg, node->binary.right->range.low);
                     uint32_t hi = Generate_Expression(cg, node->binary.right->range.high);
@@ -15755,8 +15524,8 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                 } else {
                     /* Type or subtype name: generate bounds at runtime (RM 4.4) */
                     Type_Info *rt = node->binary.right ? node->binary.right->type : NULL;
-                    if (rt && (rt->low_bound.kind == BOUND_INTEGER || rt->low_bound.kind == BOUND_EXPR) &&
-                              (rt->high_bound.kind == BOUND_INTEGER || rt->high_bound.kind == BOUND_EXPR)) {
+                    if (rt and (rt->low_bound.kind == BOUND_INTEGER or rt->low_bound.kind == BOUND_EXPR) and
+                              (rt->high_bound.kind == BOUND_INTEGER or rt->high_bound.kind == BOUND_EXPR)) {
                         uint32_t lo = Emit_Bound_Value(cg, &rt->low_bound);
                         uint32_t hi = Emit_Bound_Value(cg, &rt->high_bound);
                         uint32_t ge = Emit_Temp(cg), le = Emit_Temp(cg), in_range = Emit_Temp(cg);
@@ -15765,10 +15534,10 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                              * BOUND_INTEGER produces i64, BOUND_EXPR for float types produces float. */
                             const char *lo_src_type = Integer_Arith_Type(cg);  /* Derived for BOUND_INTEGER */
                             const char *hi_src_type = Integer_Arith_Type(cg);
-                            if (rt->low_bound.kind == BOUND_EXPR && rt->low_bound.expr) {
+                            if (rt->low_bound.kind == BOUND_EXPR and rt->low_bound.expr) {
                                 lo_src_type = Expression_Llvm_Type(cg, rt->low_bound.expr);
                             }
-                            if (rt->high_bound.kind == BOUND_EXPR && rt->high_bound.expr) {
+                            if (rt->high_bound.kind == BOUND_EXPR and rt->high_bound.expr) {
                                 hi_src_type = Expression_Llvm_Type(cg, rt->high_bound.expr);
                             }
                             /* Convert bounds to match left operand's float type */
@@ -15822,7 +15591,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             op = "add"; break;
     }
 
-    if (!is_float) {
+    if (not is_float) {
         /* GNAT LLVM: use common native integer type for arithmetic. */
         const char *common_t = Wider_Int_Type(cg, left_int_type, right_int_type);
         left = Emit_Convert(cg, left, left_int_type, common_t);
@@ -15902,9 +15671,9 @@ static uint32_t Generate_Unary_Op(Code_Generator *cg, Syntax_Node *node) {
                      t, type_str, operand);
                 /* Widen sub-INTEGER integer loads to INTEGER width */
                 {   const char *iat_unary = Integer_Arith_Type(cg);
-                    if (type_str[0] == 'i' && strcmp(type_str, iat_unary) != 0 &&
-                        !Type_Is_Access(designated) && !Type_Is_Float_Representation(designated) &&
-                        !Type_Is_Unconstrained_Array(designated) && !Type_Is_String(designated)) {
+                    if (type_str[0] == 'i' and strcmp(type_str, iat_unary) != 0 and
+                        not Type_Is_Access(designated) and not Type_Is_Float_Representation(designated) and
+                        not Type_Is_Unconstrained_Array(designated) and not Type_Is_String(designated)) {
                         uint32_t w = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", w, type_str, t, iat_unary);
                         t = w;
@@ -15926,10 +15695,10 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
 
     /* Follow rename chain to get actual target symbol for code generation.
      * Renames don't generate their own function body - they call the target. */
-    while (sym && sym->renamed_object &&
-           (sym->kind == SYMBOL_FUNCTION || sym->kind == SYMBOL_PROCEDURE)) {
+    while (sym and sym->renamed_object and
+           (sym->kind == SYMBOL_FUNCTION or sym->kind == SYMBOL_PROCEDURE)) {
         Symbol *target = (Symbol *)sym->renamed_object;
-        if (target->kind == SYMBOL_FUNCTION || target->kind == SYMBOL_PROCEDURE) {
+        if (target->kind == SYMBOL_FUNCTION or target->kind == SYMBOL_PROCEDURE) {
             sym = target;
         } else {
             break;
@@ -15942,11 +15711,11 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
      * For subprograms exported from generic packages, the actuals are on the
      * parent package instance, not on the subprogram itself. */
     Symbol *actuals_holder = cg->current_instance;
-    if (actuals_holder && !actuals_holder->generic_actuals && actuals_holder->parent &&
-        actuals_holder->parent->kind == SYMBOL_PACKAGE && actuals_holder->parent->generic_actuals) {
+    if (actuals_holder and not actuals_holder->generic_actuals and actuals_holder->parent and
+        actuals_holder->parent->kind == SYMBOL_PACKAGE and actuals_holder->parent->generic_actuals) {
         actuals_holder = actuals_holder->parent;  /* Use package's generic_actuals */
     }
-    if (sym && actuals_holder && actuals_holder->generic_actuals) {
+    if (sym and actuals_holder and actuals_holder->generic_actuals) {
         for (uint32_t i = 0; i < actuals_holder->generic_actual_count; i++) {
             if (Slice_Equal_Ignore_Case(sym->name,
                     actuals_holder->generic_actuals[i].formal_name)) {
@@ -15955,7 +15724,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                 } else if (actuals_holder->generic_actuals[i].builtin_operator) {
                     /* Built-in operator - generate inline */
                     Token_Kind op = cg->current_instance->generic_actuals[i].builtin_operator;
-                    if (op == TK_AMPERSAND && node->apply.arguments.count == 2) {
+                    if (op == TK_AMPERSAND and node->apply.arguments.count == 2) {
                         /* String/array concatenation */
                         Syntax_Node *left_arg = node->apply.arguments.items[0];
                         Syntax_Node *right_arg = node->apply.arguments.items[1];
@@ -15965,23 +15734,23 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                             right_arg = right_arg->association.expression;
 
                         /* Get parameter types from formal subprogram symbol */
-                        Type_Info *left_type = (sym && sym->parameter_count > 0) ?
+                        Type_Info *left_type = (sym and sym->parameter_count > 0) ?
                             sym->parameters[0].param_type : left_arg->type;
-                        Type_Info *right_type = (sym && sym->parameter_count > 1) ?
+                        Type_Info *right_type = (sym and sym->parameter_count > 1) ?
                             sym->parameters[1].param_type : right_arg->type;
 
                         /* Substitute generic formal types with actual types */
-                        if (actuals_holder && actuals_holder->generic_actuals) {
+                        if (actuals_holder and actuals_holder->generic_actuals) {
                             for (uint32_t k = 0; k < actuals_holder->generic_actual_count; k++) {
-                                if (left_type && left_type->name.data &&
+                                if (left_type and left_type->name.data and
                                     Slice_Equal_Ignore_Case(left_type->name,
-                                        actuals_holder->generic_actuals[k].formal_name) &&
+                                        actuals_holder->generic_actuals[k].formal_name) and
                                     actuals_holder->generic_actuals[k].actual_type) {
                                     left_type = actuals_holder->generic_actuals[k].actual_type;
                                 }
-                                if (right_type && right_type->name.data &&
+                                if (right_type and right_type->name.data and
                                     Slice_Equal_Ignore_Case(right_type->name,
-                                        actuals_holder->generic_actuals[k].formal_name) &&
+                                        actuals_holder->generic_actuals[k].formal_name) and
                                     actuals_holder->generic_actuals[k].actual_type) {
                                     right_type = actuals_holder->generic_actuals[k].actual_type;
                                 }
@@ -15990,14 +15759,14 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
 
                         /* Check if first arg is CHARACTER (single byte) */
                         bool left_is_char = Type_Is_Character(left_type);
-                        bool right_is_string = Type_Is_Unconstrained_Array(right_type) ||
-                                               (!Type_Is_Constrained_Array(right_type) && Type_Is_String(right_type));
+                        bool right_is_string = Type_Is_Unconstrained_Array(right_type) or
+                                               (not Type_Is_Constrained_Array(right_type) and Type_Is_String(right_type));
 
                         uint32_t left_val = Generate_Expression(cg, left_arg);
                         uint32_t right_val = Generate_Expression(cg, right_arg);
 
                         const char *concat_bt = Array_Bound_Llvm_Type(right_type);
-                        if (left_is_char && right_is_string) {
+                        if (left_is_char and right_is_string) {
                             /* CHARACTER & STRING concatenation */
                             /* Wrap character in single-element fat pointer */
                             uint32_t char_alloc = Emit_Temp(cg);
@@ -16109,22 +15878,22 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
      *   fat pointer (unconstrained) → { ptr, { bound, bound } }
      * We use Generate_Composite_Address (returns ptr) for lvalues and
      * Generate_Expression + inttoptr for function-call results. */
-    if (node->apply.arguments.count > 0 &&
+    if (node->apply.arguments.count > 0 and
         node->apply.arguments.items[0]->kind == NK_RANGE) {
         Type_Info *at = node->apply.prefix->type;
 
         /* Fallback type resolution for overloaded functions (RM 6.6) */
-        if (!at && sym && sym->kind == SYMBOL_FUNCTION) at = sym->return_type;
-        if (!at) at = node->type;
+        if (not at and sym and sym->kind == SYMBOL_FUNCTION) at = sym->return_type;
+        if (not at) at = node->type;
 
         /* Implicit dereference: access-to-array (RM 4.1(3)) */
         bool access_deref = false;
-        if (Type_Is_Access(at) && Type_Is_Array_Like(at->access.designated_type)) {
+        if (Type_Is_Access(at) and Type_Is_Array_Like(at->access.designated_type)) {
             at = at->access.designated_type;
             access_deref = true;
         }
 
-        if (at && Type_Is_Array_Like(at)) {
+        if (at and Type_Is_Array_Like(at)) {
             Syntax_Node *rng = node->apply.arguments.items[0];
             uint32_t base, low_bound_val = 0;
             bool dyn_low = false;
@@ -16168,7 +15937,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                 bool is_lvalue = false;
                 if (node->apply.prefix->kind == NK_IDENTIFIER) {
                     Symbol *ps = node->apply.prefix->symbol;
-                    is_lvalue = ps && ps->kind != SYMBOL_FUNCTION;
+                    is_lvalue = ps and ps->kind != SYMBOL_FUNCTION;
                 } else if (node->apply.prefix->kind == NK_SELECTED) {
                     is_lvalue = true;
                 }
@@ -16220,7 +15989,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         }
     }
 
-    if (sym && (sym->kind == SYMBOL_FUNCTION || sym->kind == SYMBOL_PROCEDURE)) {
+    if (sym and (sym->kind == SYMBOL_FUNCTION or sym->kind == SYMBOL_PROCEDURE)) {
         /* Function call - generate arguments
          * For OUT/IN OUT parameters, we need to pass the ADDRESS, not the value */
         uint32_t *args = Arena_Allocate(node->apply.arguments.count * sizeof(uint32_t));
@@ -16235,9 +16004,9 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             if (arg_node->kind == NK_ASSOCIATION) {
                 arg = arg_node->association.expression;
                 /* Look up formal parameter by name to get correct index */
-                if (arg_node->association.choices.count > 0 && sym->parameters) {
+                if (arg_node->association.choices.count > 0 and sym->parameters) {
                     Syntax_Node *name_node = arg_node->association.choices.items[0];
-                    if (name_node && name_node->kind == NK_IDENTIFIER) {
+                    if (name_node and name_node->kind == NK_IDENTIFIER) {
                         String_Slice param_name = name_node->string_val.text;
                         for (uint32_t p = 0; p < sym->parameter_count; p++) {
                             if (Slice_Equal_Ignore_Case(sym->parameters[p].name, param_name)) {
@@ -16250,7 +16019,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             }
 
             /* For ALI-loaded symbols, parameters may be NULL - default to pass by value */
-            bool byref = sym->parameters && param_idx < sym->parameter_count &&
+            bool byref = sym->parameters and param_idx < sym->parameter_count and
                          Param_Is_By_Reference(sym->parameters[param_idx].mode);
             is_byref[i] = byref;
 
@@ -16258,14 +16027,14 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                 /* OUT/IN OUT: pass address of variable */
                 Parameter_Mode pmode = sym->parameters[param_idx].mode;
                 Type_Info *formal_type = sym->parameters[param_idx].param_type;
-                if (arg->kind == NK_IDENTIFIER && arg->symbol) {
+                if (arg->kind == NK_IDENTIFIER and arg->symbol) {
                     args[i] = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = getelementptr i8, ptr %%", args[i]);
                     Emit_Symbol_Name(cg, arg->symbol);
                     Emit(cg, ", i64 0  ; address for OUT/IN OUT\n");
 
                     /* IN OUT: check actual value fits formal constraint before call */
-                    if (pmode == PARAM_IN_OUT && formal_type &&
+                    if (pmode == PARAM_IN_OUT and formal_type and
                         Type_Is_Scalar(formal_type)) {
                         const char *ld_ty = Type_To_Llvm(formal_type);
                         uint32_t cur_val = Emit_Temp(cg);
@@ -16274,7 +16043,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                     }
                 } else {
                     args[i] = Generate_Composite_Address(cg, arg);
-                    if (pmode == PARAM_IN_OUT && formal_type &&
+                    if (pmode == PARAM_IN_OUT and formal_type and
                         Type_Is_Scalar(formal_type)) {
                         const char *ld_ty = Type_To_Llvm(formal_type);
                         uint32_t cur_val = Emit_Temp(cg);
@@ -16285,7 +16054,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             } else {
                 args[i] = Generate_Expression(cg, arg);
                 /* IN parameter: check constraint before call (RM 4.6) */
-                if (sym->parameters && param_idx < sym->parameter_count &&
+                if (sym->parameters and param_idx < sym->parameter_count and
                     sym->parameters[param_idx].param_type) {
                     Type_Info *formal_type = sym->parameters[param_idx].param_type;
                     Type_Info *actual_type = arg->type;
@@ -16293,12 +16062,12 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                     /* Constrained array → unconstrained formal: build fat pointer (RM 6.4.1)
                      * When passing a constrained array to an unconstrained formal, we must
                      * create a fat pointer with the constrained type's bounds. */
-                    bool formal_needs_fat = Type_Is_Unconstrained_Array(formal_type) ||
+                    bool formal_needs_fat = Type_Is_Unconstrained_Array(formal_type) or
                                             Type_Is_String(formal_type);
                     bool actual_is_constrained =
-                        Type_Is_Constrained_Array(actual_type) &&
+                        Type_Is_Constrained_Array(actual_type) and
                         actual_type->array.index_count > 0;
-                    if (formal_needs_fat && actual_is_constrained) {
+                    if (formal_needs_fat and actual_is_constrained) {
                         /* Constrained array to unconstrained formal: build fat pointer.
                          * Generate_Expression returns ptr for constrained arrays; wrap
                          * with the type's static bounds for the unconstrained formal. */
@@ -16321,8 +16090,8 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         Symbol *call_target = sym->parent_operation ? sym->parent_operation : sym;
 
         /* Check if calling a nested function of current scope */
-        bool callee_is_nested = call_target->parent &&
-            (call_target->parent->kind == SYMBOL_FUNCTION ||
+        bool callee_is_nested = call_target->parent and
+            (call_target->parent->kind == SYMBOL_FUNCTION or
              call_target->parent->kind == SYMBOL_PROCEDURE);
 
         uint32_t t = Emit_Temp(cg);
@@ -16345,7 +16114,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                 /* Calling child: pass our frame */
                 Emit(cg, "ptr %%__frame_base");
                 if (node->apply.arguments.count > 0) Emit(cg, ", ");
-            } else if (cg->is_nested && cg->current_function &&
+            } else if (cg->is_nested and cg->current_function and
                        cg->current_function->parent == call_target->parent) {
                 /* Calling sibling (same parent): pass parent's frame */
                 Emit(cg, "ptr %%__parent_frame");
@@ -16359,7 +16128,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                 /* OUT/IN OUT: pass as pointer */
                 Emit(cg, "ptr %%t%u", args[i]);
             } else {
-                const char *param_type = (sym->parameters && i < sym->parameter_count &&
+                const char *param_type = (sym->parameters and i < sym->parameter_count and
                                           sym->parameters[i].param_type)
                     ? Type_To_Llvm(sym->parameters[i].param_type) : Integer_Arith_Type(cg);
                 Emit(cg, "%s %%t%u", param_type, args[i]);
@@ -16370,12 +16139,12 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
 
         /* OUT/IN OUT: check returned value fits actual's constraint (RM 6.2) */
         for (uint32_t i = 0; i < node->apply.arguments.count; i++) {
-            if (!is_byref[i]) continue;
+            if (not is_byref[i]) continue;
             Syntax_Node *arg_node = node->apply.arguments.items[i];
             Syntax_Node *arg = (arg_node->kind == NK_ASSOCIATION) ?
                 arg_node->association.expression : arg_node;
             Type_Info *actual_type = arg->type;  /* Actual variable's subtype */
-            if (!actual_type || !Type_Is_Scalar(actual_type)) continue;
+            if (not actual_type or not Type_Is_Scalar(actual_type)) continue;
             const char *ld_ty = Type_To_Llvm(actual_type);
             uint32_t ret_val = Emit_Temp(cg);
             Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; OUT/INOUT result\n", ret_val, ld_ty, args[i]);
@@ -16386,9 +16155,9 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
          * Preserve native types: floats, pointers, fat pointers. */
         if (sym->return_type) {
             const char *ret_llvm = Type_To_Llvm(sym->return_type);
-            if (!Is_Float_Type(ret_llvm) &&
-                strcmp(ret_llvm, "ptr") != 0 &&
-                !Llvm_Type_Is_Fat_Pointer(ret_llvm)) {
+            if (not Is_Float_Type(ret_llvm) and
+                strcmp(ret_llvm, "ptr") != 0 and
+                not Llvm_Type_Is_Fat_Pointer(ret_llvm)) {
                 t = Emit_Convert(cg, t, ret_llvm, Integer_Arith_Type(cg));
             }
             return t;
@@ -16397,18 +16166,18 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
     }
 
     /* Entry call (task rendezvous) */
-    if (sym && sym->kind == SYMBOL_ENTRY) {
+    if (sym and sym->kind == SYMBOL_ENTRY) {
         /* Entry call: pack parameters, call entry, wait for accept completion */
         Emit(cg, "  ; Entry call: %.*s\n",
              (int)sym->name.length, sym->name.data);
 
         /* Check if this is an entry family - first argument is family index, not a parameter */
-        bool is_entry_family = sym->declaration && sym->declaration->kind == NK_ENTRY_DECL &&
+        bool is_entry_family = sym->declaration and sym->declaration->kind == NK_ENTRY_DECL and
                                sym->declaration->entry_decl.index_constraints.count > 0;
         uint32_t family_idx_temp = 0;
         uint32_t first_param_idx = 0;  /* Index of first actual parameter in arguments */
 
-        if (is_entry_family && node->apply.arguments.count > 0) {
+        if (is_entry_family and node->apply.arguments.count > 0) {
             /* First argument is the family index */
             family_idx_temp = Generate_Expression(cg, node->apply.arguments.items[0]);
             first_param_idx = 1;  /* Skip family index when processing parameters */
@@ -16436,7 +16205,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         /* Get task object (from prefix if it's a selected component like Task_Obj.Entry) */
         uint32_t task_ptr = 0;
         Syntax_Node *prefix = node->apply.prefix;
-        if (prefix->kind == NK_SELECTED && prefix->selected.prefix->symbol) {
+        if (prefix->kind == NK_SELECTED and prefix->selected.prefix->symbol) {
             Symbol *task_sym = prefix->selected.prefix->symbol;
             task_ptr = Emit_Temp(cg);
             Emit(cg, "  %%t%u = getelementptr i8, ptr ", task_ptr);
@@ -16450,7 +16219,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         /* Get entry index - combine base index with family index for entry families.
          * Formula: entry_idx = base * 1000 + family_arg (matching accept side) */
         uint32_t entry_idx = Emit_Temp(cg);
-        if (is_entry_family && family_idx_temp) {
+        if (is_entry_family and family_idx_temp) {
             Emit(cg, "  %%t%u = add i64 %u, %%t%u  ; entry index (base + family)\n",
                  entry_idx, sym->entry_index * 1000, family_idx_temp);
         } else {
@@ -16471,7 +16240,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
     bool implicit_deref = false;
 
     /* Handle implicit dereference: A(I) where A is access-to-array */
-    if (Type_Is_Access(prefix_type) && prefix_type->access.designated_type) {
+    if (Type_Is_Access(prefix_type) and prefix_type->access.designated_type) {
         array_type = prefix_type->access.designated_type;
         implicit_deref = true;
     }
@@ -16496,9 +16265,9 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         }
         /* Check if unconstrained array OR constrained array with dynamic bounds
          * needing fat pointer handling. Both are stored as fat pointers. */
-        else if ((Type_Is_Unconstrained_Array(array_type) || Type_Has_Dynamic_Bounds(array_type)) &&
-            array_sym && (array_sym->kind == SYMBOL_PARAMETER || array_sym->kind == SYMBOL_VARIABLE ||
-                          array_sym->kind == SYMBOL_CONSTANT || array_sym->kind == SYMBOL_DISCRIMINANT)) {
+        else if ((Type_Is_Unconstrained_Array(array_type) or Type_Has_Dynamic_Bounds(array_type)) and
+            array_sym and (array_sym->kind == SYMBOL_PARAMETER or array_sym->kind == SYMBOL_VARIABLE or
+                          array_sym->kind == SYMBOL_CONSTANT or array_sym->kind == SYMBOL_DISCRIMINANT)) {
             /* Load fat pointer and extract data pointer and low bound */
             Emit(cg, "  ; DEBUG ARRAY INDEX: using fat pointer path (unconstrained=%d, dynamic=%d)\n",
                  Type_Is_Unconstrained_Array(array_type), Type_Has_Dynamic_Bounds(array_type));
@@ -16522,7 +16291,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             /* If the array is unconstrained or has dynamic bounds, the expression
              * returns a fat pointer struct { ptr, { bound, bound } }. We need to extract
              * the data pointer and low bound from it. */
-            if (Type_Is_Unconstrained_Array(array_type) || Type_Has_Dynamic_Bounds(array_type)) {
+            if (Type_Is_Unconstrained_Array(array_type) or Type_Has_Dynamic_Bounds(array_type)) {
                 /* Extract data pointer from fat pointer value */
                 const char *pfx_bt = Array_Bound_Llvm_Type(array_type);
                 base = Emit_Fat_Pointer_Data(cg, prefix_val, pfx_bt);
@@ -16607,14 +16376,14 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
 
         /* Get pointer to element and load */
         Type_Info *elem_type_info = array_type->array.element_type;
-        bool elem_is_composite = Type_Is_Record(elem_type_info) ||
+        bool elem_is_composite = Type_Is_Record(elem_type_info) or
             Type_Is_Constrained_Array(elem_type_info);
         uint32_t elem_size = elem_type_info ? elem_type_info->size : 8;
         const char *elem_type = Type_To_Llvm(elem_type_info);
         uint32_t ptr = Emit_Temp(cg);
         uint32_t t;
 
-        if (elem_is_composite && elem_size > 0) {
+        if (elem_is_composite and elem_size > 0) {
             /* Composite element - use byte array for getelementptr */
             Emit(cg, "  %%t%u = getelementptr [%u x i8], ptr %%t%u, i64 %%t%u\n",
                  ptr, elem_size, base, idx);
@@ -16627,8 +16396,8 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                  ptr, elem_type, base, iat_idx, idx);
             Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, elem_type, ptr);
             /* Widen sub-INTEGER integer loads to INTEGER width */
-            if (elem_type[0] == 'i' && strcmp(elem_type, iat_idx) != 0 &&
-                !Type_Is_Access(elem_type_info) && !Type_Is_Float_Representation(elem_type_info)) {
+            if (elem_type[0] == 'i' and strcmp(elem_type, iat_idx) != 0 and
+                not Type_Is_Access(elem_type_info) and not Type_Is_Float_Representation(elem_type_info)) {
                 uint32_t w = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", w, elem_type, t, iat_idx);
                 return w;
@@ -16638,7 +16407,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
     }
 
     /* Type conversion: Type_Name(Expression) */
-    if (sym && (sym->kind == SYMBOL_TYPE || sym->kind == SYMBOL_SUBTYPE)) {
+    if (sym and (sym->kind == SYMBOL_TYPE or sym->kind == SYMBOL_SUBTYPE)) {
         /* For scalar types, type conversion evaluates the expression and converts
          * to the target type. This handles INTEGER→FLOAT, FLOAT→INTEGER, etc. */
         if (node->apply.arguments.count == 1) {
@@ -16649,10 +16418,10 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             Type_Info *src_type = arg->type;
             Type_Info *dst_type = sym->type;
 
-            if (src_type && dst_type && src_type != dst_type) {
+            if (src_type and dst_type and src_type != dst_type) {
                 /* Special handling for fixed-point conversions (RM 4.6)
                  * Fixed-point uses scaled integer representation: value = integer * SMALL */
-                if (Type_Is_Fixed_Point(src_type) && Type_Is_Float_Representation(dst_type)) {
+                if (Type_Is_Fixed_Point(src_type) and Type_Is_Float_Representation(dst_type)) {
                     /* Fixed → Float: convert integer to float, multiply by SMALL */
                     const char *dst_llvm = Type_To_Llvm(dst_type);
                     double small = src_type->fixed.small;
@@ -16665,7 +16434,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                     Emit(cg, "  %%t%u = fmul %s %%t%u, 0x%016llX  ; scale by SMALL\n",
                          t2, dst_llvm, t1, (unsigned long long)small_bits);
                     return t2;
-                } else if (Type_Is_Float_Representation(src_type) && Type_Is_Fixed_Point(dst_type)) {
+                } else if (Type_Is_Float_Representation(src_type) and Type_Is_Fixed_Point(dst_type)) {
                     /* Float → Fixed: divide by SMALL, convert to integer */
                     const char *src_llvm = Expression_Llvm_Type(cg, arg);
                     double small = dst_type->fixed.small;
@@ -16689,8 +16458,8 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                 }
                 /* Widen narrow integer scalars back to INTEGER computation width.
                  * Float/ptr/fat-pointer results keep their native type. (RM 4.6) */
-                if (!Is_Float_Type(dst_llvm) && strcmp(dst_llvm, "ptr") != 0 &&
-                    !strstr(dst_llvm, "{")) {
+                if (not Is_Float_Type(dst_llvm) and strcmp(dst_llvm, "ptr") != 0 and
+                    not strstr(dst_llvm, "{")) {
                     result = Emit_Convert(cg, result, dst_llvm, Integer_Arith_Type(cg));
                 }
             }
@@ -16711,7 +16480,7 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
     bool implicit_deref = false;
 
     /* Handle explicit .ALL dereference (RM 4.1) */
-    if (Type_Is_Access(prefix_type) &&
+    if (Type_Is_Access(prefix_type) and
         Slice_Equal_Ignore_Case(node->selected.selector, S("ALL"))) {
         Type_Info *designated = prefix_type->access.designated_type;
 
@@ -16729,8 +16498,8 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
         Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; load via .ALL\n", t, type_str, ptr);
         /* Widen sub-INTEGER integer loads to INTEGER width */
         const char *iat_deref = Integer_Arith_Type(cg);
-        if (type_str[0] == 'i' && strcmp(type_str, iat_deref) != 0 &&
-            !Type_Is_Access(designated) && !Type_Is_Float_Representation(designated)) {
+        if (type_str[0] == 'i' and strcmp(type_str, iat_deref) != 0 and
+            not Type_Is_Access(designated) and not Type_Is_Float_Representation(designated)) {
             uint32_t w = Emit_Temp(cg);
             Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", w, type_str, t, iat_deref);
             return w;
@@ -16739,12 +16508,12 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
     }
 
     /* Handle implicit dereference: R.C where R is access-to-record (RM 4.1(3)) */
-    if (Type_Is_Access(prefix_type) && Type_Is_Record(prefix_type->access.designated_type)) {
+    if (Type_Is_Access(prefix_type) and Type_Is_Record(prefix_type->access.designated_type)) {
         record_type = prefix_type->access.designated_type;
         implicit_deref = true;
     }
 
-    if (!Type_Is_Record(record_type)) {
+    if (not Type_Is_Record(record_type)) {
         /* Package-qualified name - use the resolved symbol via Generate_Identifier
          * This handles named numbers, constants, variables, and literals properly */
         Symbol *sym = node->symbol;
@@ -16780,8 +16549,8 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
     /* Runtime discriminant check for variant component access (RM 3.7.3)
      * If accessing a component that belongs to a variant, verify the
      * discriminant value matches the variant's expected value. */
-    if (field_variant_index >= 0 && record_type->record.has_discriminants &&
-        record_type->record.variant_count > 0 &&
+    if (field_variant_index >= 0 and record_type->record.has_discriminants and
+        record_type->record.variant_count > 0 and
         (uint32_t)field_variant_index < record_type->record.variant_count) {
         Variant_Info *vinfo = &record_type->record.variants[field_variant_index];
         /* Load discriminant value from the first discriminant component */
@@ -16809,7 +16578,7 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
             disc_val = Emit_Convert(cg, disc_val, disc_llvm, iat_disc);
         }
 
-        if (!vinfo->is_others) {
+        if (not vinfo->is_others) {
             uint32_t cmp = Emit_Temp(cg);
             Emit(cg, "  %%t%u = icmp eq %s %%t%u, %lld  ; check variant discriminant\n",
                  cmp, iat_disc, disc_val, (long long)vinfo->disc_value);
@@ -16832,7 +16601,7 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
     if (Type_Needs_Fat_Pointer_Load(field_type))
         return Emit_Load_Fat_Pointer_From_Temp(cg, ptr, Array_Bound_Llvm_Type(field_type));
     /* Other composite types (records, constrained arrays) return ptr */
-    if (Type_Is_Record(field_type) || (field_type && field_type->kind == TYPE_ARRAY))
+    if (Type_Is_Record(field_type) or (field_type and field_type->kind == TYPE_ARRAY))
         return ptr;
     /* For access-type components, load ptr without converting to i64 */
     if (Type_Is_Access(field_type)) {
@@ -16844,8 +16613,8 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, field_llvm_type, ptr);
     /* Widen sub-INTEGER integer loads to INTEGER width */
     const char *iat_field = Integer_Arith_Type(cg);
-    if (field_llvm_type[0] == 'i' && strcmp(field_llvm_type, iat_field) != 0 &&
-        !Type_Is_Access(field_type) && !Type_Is_Float_Representation(field_type)) {
+    if (field_llvm_type[0] == 'i' and strcmp(field_llvm_type, iat_field) != 0 and
+        not Type_Is_Access(field_type) and not Type_Is_Float_Representation(field_type)) {
         uint32_t w = Emit_Temp(cg);
         Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", w, field_llvm_type, t, iat_field);
         return w;
@@ -16859,8 +16628,8 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
  * it includes values that can be determined at compile time even if
  * they technically involve non-static expressions. */
 static bool Type_Bound_Is_Compile_Time_Known(Type_Bound b) {
-    if (b.kind == BOUND_INTEGER || b.kind == BOUND_FLOAT) return true;
-    if (b.kind == BOUND_EXPR && b.expr) {
+    if (b.kind == BOUND_INTEGER or b.kind == BOUND_FLOAT) return true;
+    if (b.kind == BOUND_EXPR and b.expr) {
         double val = Eval_Const_Numeric(b.expr);
         return val == val;  /* Returns true if not NaN */
     }
@@ -16870,7 +16639,7 @@ static bool Type_Bound_Is_Compile_Time_Known(Type_Bound b) {
 static int64_t Type_Bound_Value(Type_Bound b) {
     if (b.kind == BOUND_INTEGER) return b.int_value;
     if (b.kind == BOUND_FLOAT) return (int64_t)b.float_value;
-    if (b.kind == BOUND_EXPR && b.expr) {
+    if (b.kind == BOUND_EXPR and b.expr) {
         /* Try to evaluate expression bound at compile time */
         double val = Eval_Const_Numeric(b.expr);
         if (val == val) return (int64_t)val;  /* Not NaN */
@@ -16881,7 +16650,7 @@ static int64_t Type_Bound_Value(Type_Bound b) {
 static double Type_Bound_Float_Value(Type_Bound b) {
     if (b.kind == BOUND_FLOAT) return b.float_value;
     if (b.kind == BOUND_INTEGER) return (double)b.int_value;
-    if (b.kind == BOUND_EXPR && b.expr) {
+    if (b.kind == BOUND_EXPR and b.expr) {
         /* Try to evaluate expression bound at compile time */
         double val = Eval_Const_Numeric(b.expr);
         if (val == val) return val;  /* Not NaN */
@@ -16891,8 +16660,8 @@ static double Type_Bound_Float_Value(Type_Bound b) {
 
 /* Check if a type bound is explicitly set (not default/unset) */
 static bool Type_Bound_Is_Set(Type_Bound b) {
-    return b.kind == BOUND_INTEGER || b.kind == BOUND_FLOAT ||
-           (b.kind == BOUND_EXPR && b.expr != NULL);
+    return b.kind == BOUND_INTEGER or b.kind == BOUND_FLOAT or
+           (b.kind == BOUND_EXPR and b.expr != NULL);
 }
 
 /* Emit implementation-defined float limit: is_low=true → -FLT/DBL_MAX, else +FLT/DBL_MAX.
@@ -16905,8 +16674,8 @@ static void Emit_Float_Type_Limit(Code_Generator *cg, uint32_t t, Type_Info *typ
         "0xC7EFFFFFE0000000", "0x47EFFFFFE0000000",
         "0xFFEFFFFFFFFFFFFF", "0x7FEFFFFFFFFFFFFF"
     };
-    bool is_float = type && type->size <= 4;
-    const char *val = hex[(!is_float) * 2 + !is_low];
+    bool is_float = type and type->size <= 4;
+    const char *val = hex[(not is_float) * 2 + not is_low];
     Emit(cg, "  %%t%u = fadd %s 0.0, %s  ; %.*s'%s (unconstrained)\n",
          t, is_float ? "float" : "double", val,
          (int)attr.length, attr.data, is_low ? "FIRST" : "LAST");
@@ -16914,7 +16683,7 @@ static void Emit_Float_Type_Limit(Code_Generator *cg, uint32_t t, Type_Info *typ
 
 /* Get array element count for constrained arrays, 0 for unconstrained */
 static int64_t Array_Element_Count(Type_Info *t) {
-    if (!t || t->kind != TYPE_ARRAY || !t->array.is_constrained)
+    if (not t or t->kind != TYPE_ARRAY or not t->array.is_constrained)
         return 0;
     if (t->array.index_count == 0)
         return 0;
@@ -16925,14 +16694,14 @@ static int64_t Array_Element_Count(Type_Info *t) {
 
 /* Get array low bound for index adjustment */
 static int64_t Array_Low_Bound(Type_Info *t) {
-    if (!t || t->kind != TYPE_ARRAY || t->array.index_count == 0)
+    if (not t or t->kind != TYPE_ARRAY or t->array.index_count == 0)
         return 0;
     return Type_Bound_Value(t->array.indices[0].low_bound);
 }
 
 /* Get dimension index from attribute argument (1-based, default 1) */
 static uint32_t Get_Dimension_Index(Syntax_Node *arg) {
-    if (!arg) return 0;  /* Default to first dimension */
+    if (not arg) return 0;  /* Default to first dimension */
     if (arg->kind == NK_INTEGER) return (uint32_t)(arg->integer_lit.value - 1);
     return 0;
 }
@@ -16948,7 +16717,7 @@ static uint32_t Emit_Bound_Attribute(Code_Generator *cg, uint32_t t,
     const char *tag = is_low ? "FIRST" : "LAST";
 
     if (Type_Is_Array_Like(prefix_type)) {
-        if (needs_runtime_bounds && dim == 0) {
+        if (needs_runtime_bounds and dim == 0) {
             const char *attr_bt = Array_Bound_Llvm_Type(prefix_type);
             uint32_t fat = prefix_sym
                 ? Emit_Load_Fat_Pointer(cg, prefix_sym, attr_bt)
@@ -16964,22 +16733,22 @@ static uint32_t Emit_Bound_Attribute(Code_Generator *cg, uint32_t t,
             Emit(cg, "  %%t%u = add i64 0, %lld  ; %.*s'%s(%u)\n", t,
                  (long long)Type_Bound_Value(b), (int)attr.length, attr.data, tag, dim+1);
         }
-    } else if (prefix_type && !Type_Is_Fixed_Point(prefix_type) &&
-               (Type_Is_Float(prefix_type) ||
-                Type_Is_Universal_Real(prefix_type) ||
+    } else if (prefix_type and not Type_Is_Fixed_Point(prefix_type) and
+               (Type_Is_Float(prefix_type) or
+                Type_Is_Universal_Real(prefix_type) or
                 (is_low  ? prefix_type->low_bound.kind  == BOUND_FLOAT
                          : prefix_type->high_bound.kind == BOUND_FLOAT))) {
         /* Float type — determine LLVM type, then emit bound */
         const char *fty = Type_Is_Float(prefix_type)
             ? Llvm_Float_Type((uint32_t)To_Bits(prefix_type->size)) : "double";
         Type_Bound b = is_low ? prefix_type->low_bound : prefix_type->high_bound;
-        if (b.kind == BOUND_EXPR && b.expr) {
+        if (b.kind == BOUND_EXPR and b.expr) {
             uint32_t v = Generate_Expression(cg, b.expr);
             /* Convert bound expression to target float type if needed */
             const char *expr_fty = Expression_Llvm_Type(cg, b.expr);
             if (strcmp(expr_fty, fty) != 0) {
                 uint32_t conv = Emit_Temp(cg);
-                if (strcmp(fty, "float") == 0 && strcmp(expr_fty, "double") == 0)
+                if (strcmp(fty, "float") == 0 and strcmp(expr_fty, "double") == 0)
                     Emit(cg, "  %%t%u = fptrunc double %%t%u to float\n", conv, v);
                 else
                     Emit(cg, "  %%t%u = fpext %s %%t%u to %s\n", conv, expr_fty, v, fty);
@@ -17028,22 +16797,22 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     uint32_t dim = Get_Dimension_Index(first_arg);
 
     /* Resolve generic formal type → actual (RM 12.3), but preserve constrained subtypes */
-    if (prefix_type && cg->current_instance && !prefix_type->base_type)
+    if (prefix_type and cg->current_instance and not prefix_type->base_type)
         prefix_type = Resolve_Generic_Actual_Type(cg, prefix_type);
 
     /* Implicit dereference for access-to-array (RM 4.1(3)) */
-    if (Type_Is_Access(prefix_type) && prefix_type->access.designated_type)
+    if (Type_Is_Access(prefix_type) and prefix_type->access.designated_type)
         prefix_type = prefix_type->access.designated_type;
 
     /* Determine if prefix needs runtime bounds (fat pointer) */
     bool needs_runtime_bounds = false;
     Symbol *prefix_sym = node->attribute.prefix->symbol;
-    if (!prefix_type && prefix_sym && prefix_sym->type)
+    if (not prefix_type and prefix_sym and prefix_sym->type)
         prefix_type = prefix_sym->type;
-    if (prefix_type &&
-        (Type_Is_Unconstrained_Array(prefix_type) || Type_Has_Dynamic_Bounds(prefix_type)))
-        if (!prefix_sym || prefix_sym->kind == SYMBOL_PARAMETER ||
-            prefix_sym->kind == SYMBOL_VARIABLE || prefix_sym->kind == SYMBOL_CONSTANT ||
+    if (prefix_type and
+        (Type_Is_Unconstrained_Array(prefix_type) or Type_Has_Dynamic_Bounds(prefix_type)))
+        if (not prefix_sym or prefix_sym->kind == SYMBOL_PARAMETER or
+            prefix_sym->kind == SYMBOL_VARIABLE or prefix_sym->kind == SYMBOL_CONSTANT or
             prefix_sym->kind == SYMBOL_DISCRIMINANT)
             needs_runtime_bounds = true;
 
@@ -17059,7 +16828,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
 
     if (Slice_Equal_Ignore_Case(attr, S("LENGTH"))) {
         if (Type_Is_Array_Like(prefix_type)) {
-            if (needs_runtime_bounds && dim == 0) {
+            if (needs_runtime_bounds and dim == 0) {
                 const char *len_bt = Array_Bound_Llvm_Type(prefix_type);
                 uint32_t fat;
                 if (prefix_sym) {
@@ -17086,7 +16855,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         /* Range attribute - for general expression contexts, return low bound.
          * For loops handle RANGE specially in Generate_For_Loop. */
         if (Type_Is_Array_Like(prefix_type)) {
-            if (needs_runtime_bounds && dim == 0) {
+            if (needs_runtime_bounds and dim == 0) {
                 const char *rng_bt = Array_Bound_Llvm_Type(prefix_type);
                 uint32_t fat;
                 if (prefix_sym) {
@@ -17111,7 +16880,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
 
     if (Slice_Equal_Ignore_Case(attr, S("SIZE"))) {
         /* 'SIZE returns size in bits */
-        if (!prefix_type)
+        if (not prefix_type)
             fprintf(stderr, "warning: 'SIZE attribute applied to expression with no type\n");
         Emit(cg, "  %%t%u = add i64 0, %lld  ; 'SIZE in bits\n", t,
              (long long)(prefix_type ? prefix_type->size * 8 : 0));
@@ -17119,7 +16888,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("ALIGNMENT"))) {
-        if (!prefix_type)
+        if (not prefix_type)
             fprintf(stderr, "warning: 'ALIGNMENT attribute applied to expression with no type\n");
         Emit(cg, "  %%t%u = add i64 0, %lld  ; 'ALIGNMENT\n", t,
              (long long)(prefix_type ? prefix_type->alignment : 8));
@@ -17127,7 +16896,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("COMPONENT_SIZE"))) {
-        if (Type_Is_Array_Like(prefix_type) && prefix_type->array.element_type) {
+        if (Type_Is_Array_Like(prefix_type) and prefix_type->array.element_type) {
             Emit(cg, "  %%t%u = add i64 0, %lld  ; 'COMPONENT_SIZE\n", t,
                  (long long)(prefix_type->array.element_type->size * 8));
         } else {
@@ -17155,30 +16924,30 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, ", %%L%u) to i64  ; '%.*s'ADDRESS\n",
                      sym->llvm_label_id,
                      (int)sym->name.length, sym->name.data);
-            } else if (sym->kind == SYMBOL_FUNCTION || sym->kind == SYMBOL_PROCEDURE) {
+            } else if (sym->kind == SYMBOL_FUNCTION or sym->kind == SYMBOL_PROCEDURE) {
                 /* Subprogram address - use function pointer directly */
                 Emit(cg, "  %%t%u = ptrtoint ptr @", t);
                 Emit_Symbol_Name(cg, sym);
                 Emit(cg, " to i64  ; '%.*s'ADDRESS (subprogram)\n",
                      (int)sym->name.length, sym->name.data);
-            } else if (sym->kind == SYMBOL_PACKAGE || sym->kind == SYMBOL_GENERIC) {
+            } else if (sym->kind == SYMBOL_PACKAGE or sym->kind == SYMBOL_GENERIC) {
                 /* Package/generic address - use a global marker */
                 Emit(cg, "  %%t%u = ptrtoint ptr @__addr.", t);
                 Emit_Symbol_Name(cg, sym);
                 Emit(cg, " to i64  ; '%.*s'ADDRESS (package/generic)\n",
                      (int)sym->name.length, sym->name.data);
                 /* Mark that we need to emit this global marker */
-                if (!sym->needs_address_marker && cg->address_marker_count < 256) {
+                if (not sym->needs_address_marker and cg->address_marker_count < 256) {
                     sym->needs_address_marker = true;
                     cg->address_markers[cg->address_marker_count++] = sym;
                 }
-            } else if (sym->kind == SYMBOL_TYPE && Type_Is_Task(sym->type)) {
+            } else if (sym->kind == SYMBOL_TYPE and Type_Is_Task(sym->type)) {
                 /* Task type address - use a global marker */
                 Emit(cg, "  %%t%u = ptrtoint ptr @__addr.", t);
                 Emit_Symbol_Name(cg, sym);
                 Emit(cg, " to i64  ; '%.*s'ADDRESS (task type)\n",
                      (int)sym->name.length, sym->name.data);
-                if (!sym->needs_address_marker && cg->address_marker_count < 256) {
+                if (not sym->needs_address_marker and cg->address_marker_count < 256) {
                     sym->needs_address_marker = true;
                     cg->address_markers[cg->address_marker_count++] = sym;
                 }
@@ -17216,12 +16985,12 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
             /* Get bounds for range check */
             int64_t lo = 0, hi = 0;
             bool have_bounds = false;
-            if (Type_Is_Enumeration(prefix_type) &&
+            if (Type_Is_Enumeration(prefix_type) and
                 prefix_type->enumeration.literal_count > 0) {
                 lo = 0;
                 hi = (int64_t)(prefix_type->enumeration.literal_count - 1);
                 have_bounds = true;
-            } else if (prefix_type->low_bound.kind == BOUND_INTEGER &&
+            } else if (prefix_type->low_bound.kind == BOUND_INTEGER and
                        prefix_type->high_bound.kind == BOUND_INTEGER) {
                 lo = prefix_type->low_bound.int_value;
                 hi = prefix_type->high_bound.int_value;
@@ -17251,9 +17020,9 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
 
     /* T'SUCC(x) / T'PRED(x) — RM 3.5.5: operates on base type.
      * SUCC adds 1 and checks against high bound; PRED subtracts 1 and checks low. */
-    if (Slice_Equal_Ignore_Case(attr, S("SUCC")) ||
+    if (Slice_Equal_Ignore_Case(attr, S("SUCC")) or
         Slice_Equal_Ignore_Case(attr, S("PRED"))) {
-        bool is_succ = (attr.data[0] == 'S' || attr.data[0] == 's');
+        bool is_succ = (attr.data[0] == 'S' or attr.data[0] == 's');
         if (first_arg) {
             uint32_t val = Generate_Expression(cg, first_arg);
             Emit(cg, "  %%t%u = %s i64 %%t%u, 1  ; '%s\n",
@@ -17264,7 +17033,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                 base = Type_Base(Resolve_Generic_Actual_Type(cg, base));
             /* Bound check: SUCC vs high, PRED vs low */
             Type_Bound limit = is_succ ? base->high_bound : base->low_bound;
-            if (base && limit.kind == BOUND_INTEGER) {
+            if (base and limit.kind == BOUND_INTEGER) {
                 uint32_t ok_label = cg->label_id++, raise_label = cg->label_id++;
                 uint32_t cmp = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = icmp %s i64 %%t%u, %lld\n", cmp,
@@ -17330,7 +17099,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
 
     if (Slice_Equal_Ignore_Case(attr, S("MOD"))) {
         /* Modular arithmetic attribute */
-        if (prefix_type && prefix_type->modulus > 0) {
+        if (prefix_type and prefix_type->modulus > 0) {
             Emit(cg, "  %%t%u = add i64 0, %lld  ; 'MOD\n", t,
                  (long long)prefix_type->modulus);
             return t;
@@ -17347,7 +17116,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         if (first_arg) {
             uint32_t arg_val = Generate_Expression(cg, first_arg);
 
-            if (Type_Is_Integer_Like(prefix_type) ||
+            if (Type_Is_Integer_Like(prefix_type) or
                 Type_Is_Universal_Integer(prefix_type)) {
                 /* Integer'IMAGE */
                 Emit(cg, "  %%t%u = call " FAT_PTR_TYPE " @__ada_integer_image(i64 %%t%u)\n",
@@ -17366,12 +17135,12 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                 /* Enumeration'IMAGE - return literal name as string */
                 /* Find root enumeration type with literals */
                 Type_Info *enum_type = prefix_type;
-                while (enum_type && !enum_type->enumeration.literals) {
+                while (enum_type and not enum_type->enumeration.literals) {
                     if (enum_type->parent_type) enum_type = enum_type->parent_type;
                     else if (enum_type->base_type) enum_type = enum_type->base_type;
                     else break;
                 }
-                if (enum_type && enum_type->enumeration.literals &&
+                if (enum_type and enum_type->enumeration.literals and
                     enum_type->enumeration.literal_count > 0) {
                     /* Generate inline switch for literal lookup.
                      * Length stored in STRING bound type (derived from type system). */
@@ -17439,7 +17208,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         /* T'VALUE(s) - parse string to type (RM 3.5.5) */
         if (first_arg) {
             uint32_t str_val = Generate_Expression(cg, first_arg);
-            if (Type_Is_Integer_Like(prefix_type) ||
+            if (Type_Is_Integer_Like(prefix_type) or
                 Type_Is_Universal_Integer(prefix_type)) {
                 /* Integer'VALUE - parse string as integer */
                 Emit(cg, "  %%t%u = call i64 @__ada_integer_value(" FAT_PTR_TYPE " %%t%u)\n",
@@ -17452,12 +17221,12 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                 /* Enumeration'VALUE - find literal by name and return position */
                 /* Find root enumeration type with literals */
                 Type_Info *enum_type = prefix_type;
-                while (enum_type && !enum_type->enumeration.literals) {
+                while (enum_type and not enum_type->enumeration.literals) {
                     if (enum_type->parent_type) enum_type = enum_type->parent_type;
                     else if (enum_type->base_type) enum_type = enum_type->base_type;
                     else break;
                 }
-                if (enum_type && enum_type->enumeration.literals &&
+                if (enum_type and enum_type->enumeration.literals and
                     enum_type->enumeration.literal_count > 0) {
                     /* Generate string comparison for each literal */
                     /* Extract string pointer and length from fat pointer */
@@ -17543,14 +17312,14 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
             /* Find root enumeration type (traversing base_type and parent_type chains) */
             Type_Info *root_enum = NULL;
             for (Type_Info *ti = prefix_type; ti; ti = ti->base_type ? ti->base_type : ti->parent_type) {
-                if (Type_Is_Enumeration(ti) && ti->enumeration.literals) {
+                if (Type_Is_Enumeration(ti) and ti->enumeration.literals) {
                     root_enum = ti;
                     break;
                 }
-                if (!ti->base_type && !ti->parent_type) break;
+                if (not ti->base_type and not ti->parent_type) break;
             }
 
-            if (lo_known && hi_known) {
+            if (lo_known and hi_known) {
                 /* Both bounds are compile-time known - compute WIDTH statically */
                 int64_t width = 0;
                 int64_t lo = Type_Bound_Value(prefix_type->low_bound);
@@ -17561,16 +17330,16 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                     width = 0;
                 } else if (root_enum) {
                     /* Enumeration: max length of literal names in range */
-                    for (int64_t i = lo; i <= hi && i < (int64_t)root_enum->enumeration.literal_count; i++) {
+                    for (int64_t i = lo; i <= hi and i < (int64_t)root_enum->enumeration.literal_count; i++) {
                         if (i >= 0) {
                             uint32_t len = root_enum->enumeration.literals[i].length;
                             if (len > (uint32_t)width) width = (int64_t)len;
                         }
                     }
-                } else if (Type_Is_Boolean(prefix_type) || Type_Is_Boolean(prefix_type->base_type)) {
+                } else if (Type_Is_Boolean(prefix_type) or Type_Is_Boolean(prefix_type->base_type)) {
                     /* Boolean: "FALSE" is 5, "TRUE" is 4 */
-                    width = (lo <= 0 && hi >= 0) ? 5 : (lo <= 1 && hi >= 1) ? 4 : 0;
-                } else if (Type_Is_Character(prefix_type) || Type_Is_Character(prefix_type->base_type)) {
+                    width = (lo <= 0 and hi >= 0) ? 5 : (lo <= 1 and hi >= 1) ? 4 : 0;
+                } else if (Type_Is_Character(prefix_type) or Type_Is_Character(prefix_type->base_type)) {
                     /* Character: 'X' is 3 chars */
                     width = 3;
                 } else {
@@ -17604,7 +17373,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                         uint32_t len = root_enum->enumeration.literals[i].length;
                         if (len > (uint32_t)full_width) full_width = (int64_t)len;
                     }
-                } else if (Type_Is_Boolean(prefix_type) || Type_Is_Boolean(prefix_type->base_type)) {
+                } else if (Type_Is_Boolean(prefix_type) or Type_Is_Boolean(prefix_type->base_type)) {
                     /* Boolean: WIDTH depends on which values are in range.
                      * FALSE=0 has width 5, TRUE=1 has width 4.
                      * If lo <= 0 (FALSE is in range): width = 5
@@ -17619,7 +17388,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                     Emit(cg, "  %%t%u = select i1 %%t%u, i64 0, i64 %%t%u  ; 'WIDTH (runtime bool)\n",
                          t, cmp, bool_width);
                     return t;
-                } else if (Type_Is_Character(prefix_type) || Type_Is_Character(prefix_type->base_type)) {
+                } else if (Type_Is_Character(prefix_type) or Type_Is_Character(prefix_type->base_type)) {
                     full_width = 3;  /* 'X' */
                 } else {
                     /* Integer: compute WIDTH based on actual runtime bounds.
@@ -17693,7 +17462,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
      * ───────────────────────────────────────────────────────────────────── */
 
     /* X'ACCESS / X'UNCHECKED_ACCESS — identical codegen (RM 3.10.2) */
-    if (Slice_Equal_Ignore_Case(attr, S("ACCESS")) ||
+    if (Slice_Equal_Ignore_Case(attr, S("ACCESS")) or
         Slice_Equal_Ignore_Case(attr, S("UNCHECKED_ACCESS"))) {
         Symbol *sym = node->attribute.prefix->symbol;
         if (sym) {
@@ -17747,7 +17516,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
             double high_val = Type_Bound_Float_Value(prefix_type->high_bound);
             if (small <= 0) small = prefix_type->fixed.delta > 0 ? prefix_type->fixed.delta : 1.0;
             double bound = fmax(fabs(low_val), fabs(high_val));
-            if (bound > 0 && small > 0) {
+            if (bound > 0 and small > 0) {
                 mantissa = (int64_t)ceil(log2(bound / small));
                 if (mantissa < 1) mantissa = 1;
             }
@@ -17775,7 +17544,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
          * The largest exponent such that all model numbers are safe.
          * For IEEE: MACHINE_EMAX - 1 = 1023 for double, 127 for float */
         int64_t safe_emax = 1023;  /* IEEE double: 1024 - 1 */
-        if (Type_Is_Float(prefix_type) && prefix_type->size <= 4) {
+        if (Type_Is_Float(prefix_type) and prefix_type->size <= 4) {
             safe_emax = 127;  /* IEEE float: 128 - 1 */
         }
         Emit(cg, "  %%t%u = add i64 0, %lld  ; 'SAFE_EMAX\n", t, (long long)safe_emax);
@@ -17829,7 +17598,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
             if (small <= 0) small = prefix_type->fixed.delta > 0 ? prefix_type->fixed.delta : 1.0;
             double bound = fmax(fabs(Type_Bound_Float_Value(prefix_type->low_bound)),
                                fabs(Type_Bound_Float_Value(prefix_type->high_bound)));
-            int64_t mantissa = (bound > 0 && small > 0) ?
+            int64_t mantissa = (bound > 0 and small > 0) ?
                               (int64_t)ceil(log2(bound / small)) : 1;
             if (mantissa < 1) mantissa = 1;
             large_val = ((double)((1LL << mantissa) - 1)) * small;
@@ -17852,7 +17621,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
          * The smallest positive value in the safe range.
          * For IEEE: 2^(-1022) for double, 2^(-126) for float */
         double safe_small = 2.2250738585072014e-308;  /* 2^-1022 for double */
-        if (Type_Is_Float(prefix_type) && prefix_type->size <= 4) {
+        if (Type_Is_Float(prefix_type) and prefix_type->size <= 4) {
             safe_small = 1.1754943508222875e-38;  /* 2^-126 for float */
         }
         uint64_t bits;
@@ -17867,7 +17636,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
          * For IEEE double: 2^1023 * (1 - 2^-53) ~ 8.988e307
          * For IEEE float: 2^127 * (1 - 2^-24) ~ 1.701e38 */
         double safe_large = 8.98846567431158e+307;  /* 2^1023 * (1 - 2^-53) */
-        if (Type_Is_Float(prefix_type) && prefix_type->size <= 4) {
+        if (Type_Is_Float(prefix_type) and prefix_type->size <= 4) {
             safe_large = 1.7014118346046923e+38;  /* 2^127 * (1 - 2^-24) */
         }
         uint64_t bits;
@@ -17911,7 +17680,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         int64_t aft = 1;
         if (Type_Is_Fixed_Point(prefix_type)) {
             double delta = prefix_type->fixed.delta;
-            if (delta > 0 && delta < 1.0) {
+            if (delta > 0 and delta < 1.0) {
                 aft = (int64_t)ceil(-log10(delta));
             }
         }
@@ -17950,7 +17719,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         /* T'MACHINE_MANTISSA - hardware mantissa bits (RM 3.5.8)
          * IEEE 754 double: 53 bits, float: 24 bits */
         int64_t machine_mantissa = 53;  /* double */
-        if (Type_Is_Float(prefix_type) && prefix_type->size <= 4) {
+        if (Type_Is_Float(prefix_type) and prefix_type->size <= 4) {
             machine_mantissa = 24;  /* float */
         }
         Emit(cg, "  %%t%u = add i64 0, %lld  ; 'MACHINE_MANTISSA\n", t, (long long)machine_mantissa);
@@ -17961,7 +17730,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         /* T'MACHINE_EMAX - hardware max exponent (RM 3.5.8)
          * IEEE 754 double: 1024, float: 128 */
         int64_t machine_emax = 1024;  /* double */
-        if (Type_Is_Float(prefix_type) && prefix_type->size <= 4) {
+        if (Type_Is_Float(prefix_type) and prefix_type->size <= 4) {
             machine_emax = 128;  /* float */
         }
         Emit(cg, "  %%t%u = add i64 0, %lld  ; 'MACHINE_EMAX\n", t, (long long)machine_emax);
@@ -17972,7 +17741,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         /* T'MACHINE_EMIN - hardware min exponent (RM 3.5.8)
          * IEEE 754 double: -1021, float: -125 */
         int64_t machine_emin = -1021;  /* double */
-        if (Type_Is_Float(prefix_type) && prefix_type->size <= 4) {
+        if (Type_Is_Float(prefix_type) and prefix_type->size <= 4) {
             machine_emin = -125;  /* float */
         }
         Emit(cg, "  %%t%u = add i64 0, %lld  ; 'MACHINE_EMIN\n", t, (long long)machine_emin);
@@ -17995,10 +17764,10 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         Symbol *obj_sym = node->attribute.prefix ? node->attribute.prefix->symbol : NULL;
         Type_Info *obj_type = node->attribute.prefix ? node->attribute.prefix->type : NULL;
         bool is_constrained = true;  /* Default: constrained */
-        if (obj_type && Type_Is_Record(obj_type) && obj_type->record.has_discriminants) {
+        if (obj_type and Type_Is_Record(obj_type) and obj_type->record.has_discriminants) {
             if (obj_type->record.is_constrained) {
                 is_constrained = true;  /* Explicitly constrained subtype */
-            } else if (obj_sym && obj_sym->is_disc_constrained) {
+            } else if (obj_sym and obj_sym->is_disc_constrained) {
                 is_constrained = true;  /* Object declared with constraint */
             } else if (obj_type->record.all_defaults) {
                 is_constrained = false;  /* Mutable: defaults, no constraint */
@@ -18040,7 +17809,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
 
 /* Helper: Find component index by name in record type */
 static int32_t Find_Record_Component(Type_Info *record_type, String_Slice name) {
-    if (!Type_Is_Record(record_type)) return -1;
+    if (not Type_Is_Record(record_type)) return -1;
     for (uint32_t i = 0; i < record_type->record.component_count; i++) {
         if (Slice_Equal_Ignore_Case(record_type->record.components[i].name, name)) {
             return (int32_t)i;
@@ -18051,7 +17820,7 @@ static int32_t Find_Record_Component(Type_Info *record_type, String_Slice name) 
 
 /* Check if a choice is "others" */
 static bool Is_Others_Choice(Syntax_Node *choice) {
-    return choice && choice->kind == NK_IDENTIFIER &&
+    return choice and choice->kind == NK_IDENTIFIER and
            Slice_Equal_Ignore_Case(choice->string_val.text, S("others"));
 }
 
@@ -18060,12 +17829,12 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
      * Supports: positional, named associations, others clause, ranges */
     Type_Info *agg_type = node->type;
 
-    if (!agg_type) {
+    if (not agg_type) {
         Report_Error(node->location, "untyped aggregate in codegen");
         return 0;
     }
 
-    if (agg_type->kind == TYPE_ARRAY && agg_type->array.index_count > 0) {
+    if (agg_type->kind == TYPE_ARRAY and agg_type->array.index_count > 0) {
         /* Array aggregate - allocate on stack and initialize */
         const char *elem_type = Type_To_Llvm(agg_type->array.element_type);
         uint32_t elem_size = agg_type->array.element_type ?
@@ -18075,7 +17844,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
         /* Check if bounds are dynamic */
         Type_Bound low_bound = agg_type->array.indices[0].low_bound;
         Type_Bound high_bound = agg_type->array.indices[0].high_bound;
-        bool dynamic_bounds = (low_bound.kind == BOUND_EXPR) || (high_bound.kind == BOUND_EXPR);
+        bool dynamic_bounds = (low_bound.kind == BOUND_EXPR) or (high_bound.kind == BOUND_EXPR);
 
         if (dynamic_bounds) {
             /* Dynamic bounds: generate runtime allocation and loop-based init */
@@ -18086,12 +17855,12 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             if (low_bound.kind == BOUND_INTEGER) {
                 low_val = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = add %s 0, %lld\n", low_val, iat_bnd, (long long)low_bound.int_value);
-            } else if (low_bound.kind == BOUND_EXPR && low_bound.expr) {
+            } else if (low_bound.kind == BOUND_EXPR and low_bound.expr) {
                 low_val = Generate_Expression(cg, low_bound.expr);
                 /* Extend to INTEGER width if narrower type (e.g., ENUM bounds return i8) */
                 const char *low_llvm = Expression_Llvm_Type(cg, low_bound.expr);
-                if (strcmp(low_llvm, iat_bnd) != 0 && strcmp(low_llvm, "ptr") != 0 &&
-                    strcmp(low_llvm, "double") != 0 && strcmp(low_llvm, "float") != 0) {
+                if (strcmp(low_llvm, iat_bnd) != 0 and strcmp(low_llvm, "ptr") != 0 and
+                    strcmp(low_llvm, "double") != 0 and strcmp(low_llvm, "float") != 0) {
                     low_val = Emit_Convert(cg, low_val, low_llvm, iat_bnd);
                 }
             } else {
@@ -18103,12 +17872,12 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             if (high_bound.kind == BOUND_INTEGER) {
                 high_val = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = add %s 0, %lld\n", high_val, iat_bnd, (long long)high_bound.int_value);
-            } else if (high_bound.kind == BOUND_EXPR && high_bound.expr) {
+            } else if (high_bound.kind == BOUND_EXPR and high_bound.expr) {
                 high_val = Generate_Expression(cg, high_bound.expr);
                 /* Extend to INTEGER width if narrower type (e.g., ENUM bounds return i8) */
                 const char *high_llvm = Expression_Llvm_Type(cg, high_bound.expr);
-                if (strcmp(high_llvm, iat_bnd) != 0 && strcmp(high_llvm, "ptr") != 0 &&
-                    strcmp(high_llvm, "double") != 0 && strcmp(high_llvm, "float") != 0) {
+                if (strcmp(high_llvm, iat_bnd) != 0 and strcmp(high_llvm, "ptr") != 0 and
+                    strcmp(high_llvm, "double") != 0 and strcmp(high_llvm, "float") != 0) {
                     high_val = Emit_Convert(cg, high_val, high_llvm, iat_bnd);
                 }
             } else {
@@ -18133,7 +17902,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             bool has_others = false;
             for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
                 Syntax_Node *item = node->aggregate.items.items[i];
-                if (item->kind == NK_ASSOCIATION && item->association.choices.count > 0) {
+                if (item->kind == NK_ASSOCIATION and item->association.choices.count > 0) {
                     if (Is_Others_Choice(item->association.choices.items[0])) {
                         others_val = Generate_Expression(cg, item->association.expression);
                         const char *src_type = Expression_Llvm_Type(cg, item->association.expression);
@@ -18148,7 +17917,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
              * generate a loop to initialize all elements */
             for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
                 Syntax_Node *item = node->aggregate.items.items[i];
-                if (item->kind == NK_ASSOCIATION && item->association.choices.count > 0) {
+                if (item->kind == NK_ASSOCIATION and item->association.choices.count > 0) {
                     Syntax_Node *choice = item->association.choices.items[0];
                     if (Is_Others_Choice(choice)) continue;
 
@@ -18175,10 +17944,10 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
 
                         /* Check if element is composite (record or constrained array) */
                         Type_Info *elem_ti = agg_type->array.element_type;
-                        bool elem_is_composite = Type_Is_Record(elem_ti) ||
+                        bool elem_is_composite = Type_Is_Record(elem_ti) or
                             Type_Is_Constrained_Array(elem_ti);
 
-                        if (!elem_is_composite) {
+                        if (not elem_is_composite) {
                             const char *src_type = Expression_Llvm_Type(cg, item->association.expression);
                             val = Emit_Convert(cg, val, src_type, elem_type);
                         }
@@ -18240,7 +18009,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             if (has_others) {
                 /* Check if element is composite */
                 Type_Info *elem_ti = agg_type->array.element_type;
-                bool elem_is_composite = Type_Is_Record(elem_ti) ||
+                bool elem_is_composite = Type_Is_Record(elem_ti) or
                     Type_Is_Constrained_Array(elem_ti);
 
                 /* Generate loop from low to high */
@@ -18314,7 +18083,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
          * For composite elements, Generate_Expression returns a ptr to an alloca,
          * so we must use memcpy to copy element data instead of store. */
         Type_Info *elem_ti = agg_type->array.element_type;
-        bool elem_is_composite = elem_ti && (Type_Is_Record(elem_ti) ||
+        bool elem_is_composite = elem_ti and (Type_Is_Record(elem_ti) or
             Type_Is_Constrained_Array(elem_ti));
 
         if (elem_is_composite) {
@@ -18338,10 +18107,10 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
         /* First pass: find "others" clause */
         for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
             Syntax_Node *item = node->aggregate.items.items[i];
-            if (item->kind == NK_ASSOCIATION && item->association.choices.count > 0) {
+            if (item->kind == NK_ASSOCIATION and item->association.choices.count > 0) {
                 if (Is_Others_Choice(item->association.choices.items[0])) {
                     others_val = Generate_Expression(cg, item->association.expression);
-                    if (!elem_is_composite) {
+                    if (not elem_is_composite) {
                         const char *src_type = Expression_Llvm_Type(cg, item->association.expression);
                         others_val = Emit_Convert(cg, others_val, src_type, elem_type);
                     }
@@ -18372,14 +18141,14 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         int64_t rng_high = choice->range.high->kind == NK_INTEGER ?
                                            choice->range.high->integer_lit.value : high;
                         uint32_t val = Generate_Expression(cg, item->association.expression);
-                        if (!elem_is_composite) {
+                        if (not elem_is_composite) {
                             const char *src_type = Expression_Llvm_Type(cg, item->association.expression);
                             val = Emit_Convert(cg, val, src_type, elem_type);
                         }
 
                         for (int64_t idx = rng_low; idx <= rng_high; idx++) {
                             int64_t arr_idx = idx - low;
-                            if (arr_idx >= 0 && arr_idx < count) {
+                            if (arr_idx >= 0 and arr_idx < count) {
                                 uint32_t ptr = Emit_Temp(cg);
                                 if (elem_is_composite) {
                                     Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %lld\n",
@@ -18397,7 +18166,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                     } else if (choice->kind == NK_INTEGER) {
                         /* Single index: 3 => value */
                         int64_t idx = choice->integer_lit.value - low;
-                        if (idx >= 0 && idx < count) {
+                        if (idx >= 0 and idx < count) {
                             uint32_t val = Generate_Expression(cg, item->association.expression);
                             uint32_t ptr = Emit_Temp(cg);
                             if (elem_is_composite) {
@@ -18442,7 +18211,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
         /* Third pass: fill uninitialized with "others" value */
         if (has_others) {
             for (int64_t idx = 0; idx < count; idx++) {
-                if (!initialized[idx]) {
+                if (not initialized[idx]) {
                     uint32_t ptr = Emit_Temp(cg);
                     if (elem_is_composite) {
                         Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %lld\n",
@@ -18480,7 +18249,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
         /* First pass: find "others" clause */
         for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
             Syntax_Node *item = node->aggregate.items.items[i];
-            if (item->kind == NK_ASSOCIATION && item->association.choices.count > 0) {
+            if (item->kind == NK_ASSOCIATION and item->association.choices.count > 0) {
                 if (Is_Others_Choice(item->association.choices.items[0])) {
                     others_val = Generate_Expression(cg, item->association.expression);
                     has_others = true;
@@ -18560,7 +18329,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
         /* Third pass: fill uninitialized with "others" value (uncommon for records) */
         if (has_others) {
             for (uint32_t idx = 0; idx < comp_count; idx++) {
-                if (!initialized[idx]) {
+                if (not initialized[idx]) {
                     Component_Info *comp = &agg_type->record.components[idx];
                     const char *comp_type = Type_To_Llvm(comp->component_type);
                     uint32_t converted = Emit_Convert(cg, others_val, Integer_Arith_Type(cg), comp_type);
@@ -18590,7 +18359,7 @@ static uint32_t Generate_Qualified(Code_Generator *cg, Syntax_Node *node) {
     Type_Info *src_type = node->qualified.expression ? node->qualified.expression->type : NULL;
     Type_Info *dst_type = node->qualified.subtype_mark ? node->qualified.subtype_mark->type : NULL;
 
-    if (!src_type || !dst_type || src_type == dst_type) {
+    if (not src_type or not dst_type or src_type == dst_type) {
         return result;
     }
 
@@ -18603,8 +18372,8 @@ static uint32_t Generate_Qualified(Code_Generator *cg, Syntax_Node *node) {
     }
     /* Widen narrow integer scalars back to INTEGER computation width.
      * Mirrors the same fix in Generate_Apply (RM 4.6). */
-    if (!Is_Float_Type(dst_llvm) && strcmp(dst_llvm, "ptr") != 0 &&
-        !strstr(dst_llvm, "{")) {
+    if (not Is_Float_Type(dst_llvm) and strcmp(dst_llvm, "ptr") != 0 and
+        not strstr(dst_llvm, "{")) {
         result = Emit_Convert(cg, result, dst_llvm, Integer_Arith_Type(cg));
     }
 
@@ -18615,7 +18384,7 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
     /* new T or new T'(value) */
     Type_Info *access_type = node->type;  /* The access type being created */
 
-    if (!access_type) {
+    if (not access_type) {
         uint32_t t = Emit_Temp(cg);
         Emit(cg, "  %%t%u = call ptr @malloc(i64 8)\n", t);
         return t;
@@ -18627,7 +18396,7 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
      * subtypes of unconstrained access types). */
     Type_Info *designated = Type_Is_Access(access_type) ?
                             access_type->access.designated_type : NULL;
-    bool is_fat_ptr = (!Type_Is_Constrained_Array(designated) && Type_Is_String(designated)) ||
+    bool is_fat_ptr = (not Type_Is_Constrained_Array(designated) and Type_Is_String(designated)) or
                       Type_Is_Unconstrained_Array(designated);
 
     /* Note: if the designated type is a constrained subtype of an unconstrained
@@ -18635,7 +18404,7 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
      * The bounds are known from the subtype constraint — plain ptr suffices.
      * This matches Type_To_Llvm which returns "ptr" for access-to-constrained. */
 
-    if (is_fat_ptr && node->allocator.expression) {
+    if (is_fat_ptr and node->allocator.expression) {
         /* Access to unconstrained array with initializer */
         Type_Info *init_type = node->allocator.expression->type;
 
@@ -18643,7 +18412,7 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
          * Constrained array aggregates return ptr, unconstrained return fat pointer.
          * For qualified expressions, look at the inner expression. */
         Syntax_Node *inner_expr = node->allocator.expression;
-        if (inner_expr->kind == NK_QUALIFIED && inner_expr->qualified.expression) {
+        if (inner_expr->kind == NK_QUALIFIED and inner_expr->qualified.expression) {
             inner_expr = inner_expr->qualified.expression;
         }
         const char *expr_llvm_type = Expression_Llvm_Type(cg, inner_expr);
@@ -18651,7 +18420,7 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
 
         /* Also check if the aggregate is constrained */
         Type_Info *agg_type = inner_expr->type;
-        if (!agg_type && inner_expr->kind == NK_AGGREGATE) {
+        if (not agg_type and inner_expr->kind == NK_AGGREGATE) {
             agg_type = node->allocator.expression->type;  /* Use outer type */
         }
         bool init_is_constrained = Type_Is_Constrained_Array(agg_type);
@@ -18660,7 +18429,7 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
 
         uint32_t src_data, low_t, high_t, len_t;
 
-        if (init_returns_ptr || init_is_constrained) {
+        if (init_returns_ptr or init_is_constrained) {
             /* Constrained array initializer: returns ptr, not fat pointer.
              * Extract bounds from the type and use the ptr directly. */
             src_data = init_val;  /* Already a pointer to array data */
@@ -18669,8 +18438,8 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
              * Bounds must be in the designated type's bt for Emit_Fat_Pointer_Dynamic.
              * len_t stays as i64 since it's used for malloc/memcpy. */
             const char *con_bt = Array_Bound_Llvm_Type(designated);
-            if (init_type->array.index_count > 0 &&
-                init_type->array.indices[0].low_bound.kind == BOUND_INTEGER &&
+            if (init_type->array.index_count > 0 and
+                init_type->array.indices[0].low_bound.kind == BOUND_INTEGER and
                 init_type->array.indices[0].high_bound.kind == BOUND_INTEGER) {
                 int64_t lo = init_type->array.indices[0].low_bound.int_value;
                 int64_t hi = init_type->array.indices[0].high_bound.int_value;
@@ -18708,7 +18477,7 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
         /* Widen len to i64 for system calls (malloc/memcpy) */
         const char *new_bt = Array_Bound_Llvm_Type(designated);
         uint32_t len_t_64 = len_t;
-        if (!init_returns_ptr && !init_is_constrained) {
+        if (not init_returns_ptr and not init_is_constrained) {
             /* len_t is in new_bt (native bound type) from Emit_Fat_Pointer_Length */
             len_t_64 = Emit_Widen_To_I64(cg, len_t, new_bt);
         }
@@ -18726,10 +18495,10 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
     }
 
     /* Handle NEW T(bounds) without initializer - allocate unconstrained array */
-    if (is_fat_ptr && !node->allocator.expression && node->allocator.subtype_mark) {
+    if (is_fat_ptr and not node->allocator.expression and node->allocator.subtype_mark) {
         /* Get bounds from the subtype mark's type */
         Type_Info *subtype = node->allocator.subtype_mark->type;
-        if (subtype && subtype->kind == TYPE_ARRAY && subtype->array.index_count > 0) {
+        if (subtype and subtype->kind == TYPE_ARRAY and subtype->array.index_count > 0) {
             /* Generate bound values in the designated type's bt */
             const char *new_bt = Array_Bound_Llvm_Type(designated);
             uint32_t low_t, high_t;
@@ -18738,14 +18507,14 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
                 low_t = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = add %s 0, %lld\n", low_t, new_bt,
                      (long long)subtype->array.indices[0].low_bound.int_value);
-            } else if (subtype->array.indices[0].low_bound.kind == BOUND_EXPR &&
+            } else if (subtype->array.indices[0].low_bound.kind == BOUND_EXPR and
                        subtype->array.indices[0].low_bound.expr) {
                 Syntax_Node *low_expr = subtype->array.indices[0].low_bound.expr;
                 low_t = Generate_Expression(cg, low_expr);
                 /* Convert to bt if needed */
                 const char *low_llvm = Expression_Llvm_Type(cg, low_expr);
-                if (strcmp(low_llvm, new_bt) != 0 && strcmp(low_llvm, "ptr") != 0 &&
-                    strcmp(low_llvm, "double") != 0 && strcmp(low_llvm, "float") != 0) {
+                if (strcmp(low_llvm, new_bt) != 0 and strcmp(low_llvm, "ptr") != 0 and
+                    strcmp(low_llvm, "double") != 0 and strcmp(low_llvm, "float") != 0) {
                     low_t = Emit_Convert(cg, low_t, low_llvm, new_bt);
                 }
             } else {
@@ -18757,14 +18526,14 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
                 high_t = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = add %s 0, %lld\n", high_t, new_bt,
                      (long long)subtype->array.indices[0].high_bound.int_value);
-            } else if (subtype->array.indices[0].high_bound.kind == BOUND_EXPR &&
+            } else if (subtype->array.indices[0].high_bound.kind == BOUND_EXPR and
                        subtype->array.indices[0].high_bound.expr) {
                 Syntax_Node *high_expr = subtype->array.indices[0].high_bound.expr;
                 high_t = Generate_Expression(cg, high_expr);
                 /* Convert to bt if needed */
                 const char *high_llvm = Expression_Llvm_Type(cg, high_expr);
-                if (strcmp(high_llvm, new_bt) != 0 && strcmp(high_llvm, "ptr") != 0 &&
-                    strcmp(high_llvm, "double") != 0 && strcmp(high_llvm, "float") != 0) {
+                if (strcmp(high_llvm, new_bt) != 0 and strcmp(high_llvm, "ptr") != 0 and
+                    strcmp(high_llvm, "double") != 0 and strcmp(high_llvm, "float") != 0) {
                     high_t = Emit_Convert(cg, high_t, high_llvm, new_bt);
                 }
             } else {
@@ -18837,7 +18606,7 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
 }
 
 static uint32_t Generate_Expression(Code_Generator *cg, Syntax_Node *node) {
-    if (!node) return 0;
+    if (not node) return 0;
 
     switch (node->kind) {
         case NK_INTEGER:    return Generate_Integer_Literal(cg, node);
@@ -18847,7 +18616,7 @@ static uint32_t Generate_Expression(Code_Generator *cg, Syntax_Node *node) {
                              uint32_t t = Emit_Temp(cg);
                              int64_t ch = 0;
                              /* Check if resolved as enumeration literal */
-                             if (node->symbol && node->symbol->kind == SYMBOL_LITERAL) {
+                             if (node->symbol and node->symbol->kind == SYMBOL_LITERAL) {
                                  ch = node->symbol->frame_offset;
                              } else if (node->string_val.text.length >= 2) {
                                  ch = (unsigned char)node->string_val.text.data[1];
@@ -18885,16 +18654,16 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node);
 static void Generate_Statement_List(Code_Generator *cg, Node_List *list) {
     for (uint32_t i = 0; i < list->count; i++) {
         Syntax_Node *stmt = list->items[i];
-        if (!stmt) continue;
+        if (not stmt) continue;
 
         /* After a terminator (ret/br), we need a new basic block.
          * Labeled statements (NK_LABEL, NK_BLOCK with label, NK_LOOP with label)
          * emit their own labels. For unlabeled statements, emit a fresh label. */
         if (cg->block_terminated) {
-            bool will_emit_label = stmt->kind == NK_LABEL ||
-                (stmt->kind == NK_BLOCK && stmt->block_stmt.label_symbol) ||
-                (stmt->kind == NK_LOOP && stmt->loop_stmt.label_symbol);
-            if (!will_emit_label) {
+            bool will_emit_label = stmt->kind == NK_LABEL or
+                (stmt->kind == NK_BLOCK and stmt->block_stmt.label_symbol) or
+                (stmt->kind == NK_LOOP and stmt->loop_stmt.label_symbol);
+            if (not will_emit_label) {
                 /* Emit a fresh basic block for unreachable code. The subsequent
                  * statement will generate instructions that fill this block. */
                 uint32_t dead_label = cg->label_id++;
@@ -18915,25 +18684,25 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
     Syntax_Node *target = node->assignment.target;
 
     /* For RENAMES: redirect to the renamed object */
-    if (target->kind == NK_IDENTIFIER && target->symbol && target->symbol->renamed_object) {
+    if (target->kind == NK_IDENTIFIER and target->symbol and target->symbol->renamed_object) {
         target = target->symbol->renamed_object;
     }
 
     /* Handle indexed component target (array element or slice assignment) */
     if (target->kind == NK_APPLY) {
         Type_Info *prefix_type = target->apply.prefix->type;
-        bool is_array_target = prefix_type &&
-            (prefix_type->kind == TYPE_ARRAY || prefix_type->kind == TYPE_STRING);
+        bool is_array_target = prefix_type and
+            (prefix_type->kind == TYPE_ARRAY or prefix_type->kind == TYPE_STRING);
 
         if (is_array_target) {
             Symbol *array_sym = target->apply.prefix->symbol;
-            if (!array_sym) return;
+            if (not array_sym) return;
 
             /* For unconstrained (STRING / unconstrained array) the variable
              * holds a fat pointer — we must load it and extract the data ptr.
              * For constrained arrays the variable IS the data pointer. */
-            bool target_is_uncon = (!Type_Is_Constrained_Array(prefix_type) &&
-                                    Type_Is_String(prefix_type)) ||
+            bool target_is_uncon = (not Type_Is_Constrained_Array(prefix_type) and
+                                    Type_Is_String(prefix_type)) or
                                    Type_Is_Unconstrained_Array(prefix_type);
 
             Syntax_Node *arg = target->apply.arguments.items[0];
@@ -19020,21 +18789,21 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
 
                 /* Generate source slice (also NK_APPLY with NK_RANGE) */
                 Syntax_Node *src = node->assignment.value;
-                if (src->kind == NK_APPLY && src->apply.arguments.count > 0 &&
+                if (src->kind == NK_APPLY and src->apply.arguments.count > 0 and
                     src->apply.arguments.items[0]->kind == NK_RANGE) {
                     Symbol *src_sym = src->apply.prefix->symbol;
                     Type_Info *src_type = src->apply.prefix->type;
                     Syntax_Node *src_range = src->apply.arguments.items[0];
 
-                    if (src_sym && src_type &&
-                        (src_type->kind == TYPE_ARRAY || src_type->kind == TYPE_STRING)) {
+                    if (src_sym and src_type and
+                        (src_type->kind == TYPE_ARRAY or src_type->kind == TYPE_STRING)) {
                         int64_t src_low_bound = Array_Low_Bound(src_type);
 
                         /* Get source base address — handle unconstrained source */
                         uint32_t src_base;
                         uint32_t src_fat_low = 0;
                         const char *ssb = NULL;
-                        bool src_is_uncon = (!Type_Is_Constrained_Array(src_type) && Type_Is_String(src_type)) ||
+                        bool src_is_uncon = (not Type_Is_Constrained_Array(src_type) and Type_Is_String(src_type)) or
                                             Type_Is_Unconstrained_Array(src_type);
                         if (src_is_uncon) {
                             ssb = Array_Bound_Llvm_Type(src_type);
@@ -19101,7 +18870,7 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
     }
 
     /* Handle .ALL dereference assignment (NK_UNARY_OP with TK_ALL) */
-    if (target->kind == NK_UNARY_OP && target->unary.op == TK_ALL) {
+    if (target->kind == NK_UNARY_OP and target->unary.op == TK_ALL) {
         Syntax_Node *operand = target->unary.operand;
         Type_Info *operand_type = operand->type;
 
@@ -19129,14 +18898,14 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
 
         /* Determine the type being stored */
         const char *store_type;
-        if (Type_Is_Access(prefix_type) &&
+        if (Type_Is_Access(prefix_type) and
             Slice_Equal_Ignore_Case(target->selected.selector, S("ALL"))) {
             /* .ALL dereference: store designated type */
             store_type = Type_To_Llvm(prefix_type->access.designated_type);
         } else {
             /* Record field: find component type */
             Type_Info *record_type = prefix_type;
-            if (Type_Is_Access(prefix_type) &&
+            if (Type_Is_Access(prefix_type) and
                 Type_Is_Record(prefix_type->access.designated_type)) {
                 record_type = prefix_type->access.designated_type;
             }
@@ -19166,7 +18935,7 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
 
     /* Simple variable target */
     Symbol *target_sym = target->symbol;
-    if (!target_sym) {
+    if (not target_sym) {
         fprintf(stderr, "warning: assignment target has no symbol at %s:%u\n",
                 target->location.filename ? target->location.filename : "<unknown>",
                 target->location.line);
@@ -19186,7 +18955,7 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
         /* For constrained discriminated records, verify source discriminants match
          * target constraints before assignment (Constraint_Error if mismatch).
          * Mutable records (all_defaults, no constraint) allow discriminant change. */
-        if (ty->record.has_discriminants && target_sym->is_disc_constrained) {
+        if (ty->record.has_discriminants and target_sym->is_disc_constrained) {
             /* Load each discriminant from source and compare with target */
             for (uint32_t di = 0; di < ty->record.discriminant_count; di++) {
                 Component_Info *dc = &ty->record.components[di];
@@ -19275,7 +19044,7 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
      *   2. Generate source expression
      *   3. Extract source data pointer (from fat ptr or constrained ptr)
      *   4. memcpy source data to existing data storage */
-    if ((!Type_Is_Constrained_Array(ty) && Type_Is_String(ty)) ||
+    if ((not Type_Is_Constrained_Array(ty) and Type_Is_String(ty)) or
         Type_Is_Unconstrained_Array(ty)) {
         Syntax_Node *src = node->assignment.value;
         Type_Info *src_type = src->type;
@@ -19319,7 +19088,7 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
     bool is_dst_float = Type_Is_Float_Representation(ty);
 
     /* Convert between float and integer if needed */
-    if (is_src_float && !is_dst_float) {
+    if (is_src_float and not is_dst_float) {
         /* Float to integer: use fptosi. For fixed-point targets, divide by
          * SMALL first to get the scaled integer representation (RM 4.5.5) */
         if (Type_Is_Fixed_Point(ty)) {
@@ -19336,12 +19105,12 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
         uint32_t t = Emit_Temp(cg);
         Emit(cg, "  %%t%u = fptosi double %%t%u to %s\n", t, value, type_str);
         value = t;
-    } else if (!is_src_float && is_dst_float) {
+    } else if (not is_src_float and is_dst_float) {
         /* Integer to float: use sitofp */
         uint32_t t = Emit_Temp(cg);
         Emit(cg, "  %%t%u = sitofp i64 %%t%u to double\n", t, value);
         value = t;
-    } else if (is_src_float && is_dst_float) {
+    } else if (is_src_float and is_dst_float) {
         /* Float to float: may need conversion if sizes differ.
          * Determine actual source float type from the expression's type info. */
         const char *src_ftype = "double";  /* default for UNIVERSAL_REAL */
@@ -19361,7 +19130,7 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
     /* RM 5.2(4): Scalar constraint check on assignment — value must lie
      * within the target subtype's range.  Only applies to scalar types;
      * arrays/records use length or discriminant checks (RM 4.6, 5.2.1). */
-    if (ty && Type_Is_Scalar(ty)) {
+    if (ty and Type_Is_Scalar(ty)) {
         if (Type_Is_Float(ty)) {
             uint32_t fval = Emit_Convert(cg, value, type_str, "double");
             Emit_Constraint_Check(cg, fval, ty);
@@ -19407,7 +19176,7 @@ static void Generate_Loop_Statement(Code_Generator *cg, Syntax_Node *node) {
     if (label_sym) {
         if (label_sym->llvm_label_id == 0)
             label_sym->llvm_label_id = cg->label_id++;
-        if (!cg->block_terminated)
+        if (not cg->block_terminated)
             Emit(cg, "  br label %%L%u\n", label_sym->llvm_label_id);
         Emit(cg, "L%u:  ; %.*s\n", label_sym->llvm_label_id,
              (int)node->loop_stmt.label.length, node->loop_stmt.label.data);
@@ -19427,7 +19196,7 @@ static void Generate_Loop_Statement(Code_Generator *cg, Syntax_Node *node) {
     Emit_Label_Here(cg, loop_start);
 
     /* Condition check for WHILE loops */
-    if (node->loop_stmt.iteration_scheme &&
+    if (node->loop_stmt.iteration_scheme and
         node->loop_stmt.iteration_scheme->kind != NK_BINARY_OP) {
         /* WHILE loop */
         Syntax_Node *scheme = node->loop_stmt.iteration_scheme;
@@ -19456,7 +19225,7 @@ static void Generate_Return_Statement(Code_Generator *cg, Syntax_Node *node) {
     if (node->return_stmt.expression) {
         Syntax_Node *expr = node->return_stmt.expression;
         uint32_t value = Generate_Expression(cg, expr);
-        const char *type_str = cg->current_function && cg->current_function->return_type
+        const char *type_str = cg->current_function and cg->current_function->return_type
             ? Type_To_Llvm(cg->current_function->return_type) : Integer_Arith_Type(cg);
         /* Convert from expression type to return type */
         const char *expr_type = Expression_Llvm_Type(cg, expr);
@@ -19517,8 +19286,8 @@ static void Generate_Case_Statement(Code_Generator *cg, Syntax_Node *node) {
                 /* Subtype range: WHEN T RANGE low..high => (RM 5.4) */
                 uint32_t low, high;
                 Syntax_Node *constraint = choice->subtype_ind.constraint;
-                if (constraint && constraint->kind == NK_RANGE_CONSTRAINT &&
-                    constraint->range_constraint.range &&
+                if (constraint and constraint->kind == NK_RANGE_CONSTRAINT and
+                    constraint->range_constraint.range and
                     constraint->range_constraint.range->kind == NK_RANGE) {
                     low = Generate_Expression(cg, constraint->range_constraint.range->range.low);
                     high = Generate_Expression(cg, constraint->range_constraint.range->range.high);
@@ -19527,7 +19296,7 @@ static void Generate_Case_Statement(Code_Generator *cg, Syntax_Node *node) {
                     Type_Info *st = choice->type;
                     low = Emit_Temp(cg);
                     high = Emit_Temp(cg);
-                    if (st && st->low_bound.kind == BOUND_INTEGER) {
+                    if (st and st->low_bound.kind == BOUND_INTEGER) {
                         Emit(cg, "  %%t%u = add i64 0, %lld\n", low,
                              (long long)Type_Bound_Value(st->low_bound));
                         Emit(cg, "  %%t%u = add i64 0, %lld\n", high,
@@ -19579,7 +19348,7 @@ static void Generate_Case_Statement(Code_Generator *cg, Syntax_Node *node) {
     for (uint32_t i = 0; i < num_alts; i++) {
         Syntax_Node *alt = node->case_stmt.alternatives.items[i];
         Emit_Label_Here(cg, alt_labels[i]);
-        if (alt->association.expression &&
+        if (alt->association.expression and
             alt->association.expression->kind == NK_BLOCK) {
             Generate_Statement_List(cg, &alt->association.expression->block_stmt.statements);
         }
@@ -19592,7 +19361,7 @@ static void Generate_Case_Statement(Code_Generator *cg, Syntax_Node *node) {
 static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
     /* FOR loop with iteration variable - iteration_scheme is NK_BINARY_OP TK_IN */
     Syntax_Node *iter = node->loop_stmt.iteration_scheme;
-    if (!iter || iter->kind != NK_BINARY_OP || iter->binary.op != TK_IN) {
+    if (not iter or iter->kind != NK_BINARY_OP or iter->binary.op != TK_IN) {
         /* Not a FOR loop - fall back to simple loop */
         return;
     }
@@ -19618,19 +19387,19 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
 
     /* Get range bounds */
     uint32_t low_val, high_val;
-    if (range && range->kind == NK_RANGE) {
+    if (range and range->kind == NK_RANGE) {
         low_val = Generate_Expression(cg, range->range.low);
         high_val = Generate_Expression(cg, range->range.high);
-    } else if (range && range->kind == NK_ATTRIBUTE &&
+    } else if (range and range->kind == NK_ATTRIBUTE and
                Slice_Equal_Ignore_Case(range->attribute.name, S("RANGE"))) {
         /* X'RANGE attribute - need to generate both 'FIRST and 'LAST */
         Type_Info *prefix_type = range->attribute.prefix->type;
         Symbol *prefix_sym = range->attribute.prefix->symbol;
 
         /* Check if this is an unconstrained array needing runtime bounds */
-        if (prefix_type && Type_Is_Unconstrained_Array(prefix_type) &&
-            prefix_sym && (prefix_sym->kind == SYMBOL_PARAMETER ||
-                           prefix_sym->kind == SYMBOL_VARIABLE ||
+        if (prefix_type and Type_Is_Unconstrained_Array(prefix_type) and
+            prefix_sym and (prefix_sym->kind == SYMBOL_PARAMETER or
+                           prefix_sym->kind == SYMBOL_VARIABLE or
                            prefix_sym->kind == SYMBOL_DISCRIMINANT)) {
             const char *loop_bt = Array_Bound_Llvm_Type(prefix_type);
             uint32_t fat = Emit_Load_Fat_Pointer(cg, prefix_sym, loop_bt);
@@ -19660,10 +19429,10 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
             low_val = Generate_Expression(cg, range);
             high_val = low_val;
         }
-    } else if (range && range->kind == NK_SUBTYPE_INDICATION) {
+    } else if (range and range->kind == NK_SUBTYPE_INDICATION) {
         /* Subtype indication with constraint: SUBTYPE_NAME RANGE low..high */
         Syntax_Node *constraint = range->subtype_ind.constraint;
-        if (constraint && constraint->kind == NK_RANGE_CONSTRAINT &&
+        if (constraint and constraint->kind == NK_RANGE_CONSTRAINT and
             constraint->range_constraint.range) {
             Syntax_Node *actual_range = constraint->range_constraint.range;
             if (actual_range->kind == NK_RANGE) {
@@ -19677,7 +19446,7 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
         } else {
             /* No range constraint - use the subtype's type bounds */
             Type_Info *subtype = range->type;
-            if (subtype && subtype->low_bound.kind == BOUND_INTEGER) {
+            if (subtype and subtype->low_bound.kind == BOUND_INTEGER) {
                 low_val = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = add i64 0, %lld  ; subtype low\n", low_val,
                      (long long)Type_Bound_Value(subtype->low_bound));
@@ -19691,10 +19460,10 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
                 high_val = low_val;
             }
         }
-    } else if (range && range->kind == NK_IDENTIFIER) {
+    } else if (range and range->kind == NK_IDENTIFIER) {
         /* Just a type name: FOR I IN TYPE_NAME LOOP - iterate over type's range */
         Type_Info *type = range->type;
-        if (type && type->low_bound.kind == BOUND_INTEGER) {
+        if (type and type->low_bound.kind == BOUND_INTEGER) {
             low_val = Emit_Temp(cg);
             Emit(cg, "  %%t%u = add i64 0, %lld  ; type low\n", low_val,
                  (long long)Type_Bound_Value(type->low_bound));
@@ -19803,7 +19572,7 @@ static void Generate_Block_Statement(Code_Generator *cg, Syntax_Node *node) {
     if (label_sym) {
         if (label_sym->llvm_label_id == 0)
             label_sym->llvm_label_id = cg->label_id++;
-        if (!cg->block_terminated)
+        if (not cg->block_terminated)
             Emit(cg, "  br label %%L%u\n", label_sym->llvm_label_id);
         Emit(cg, "L%u:  ; %.*s\n", label_sym->llvm_label_id,
              (int)node->block_stmt.label.length, node->block_stmt.label.data);
@@ -19879,7 +19648,7 @@ static void Generate_Block_Statement(Code_Generator *cg, Syntax_Node *node) {
         uint32_t next_handler = 0;
         for (uint32_t i = 0; i < node->block_stmt.handlers.count; i++) {
             Syntax_Node *handler = node->block_stmt.handlers.items[i];
-            if (!handler) continue;
+            if (not handler) continue;
 
             if (next_handler != 0) {
                 Emit(cg, "L%u:\n", next_handler);
@@ -19922,7 +19691,7 @@ static void Generate_Block_Statement(Code_Generator *cg, Syntax_Node *node) {
                         uint32_t fail_label = is_last ? next_handler : Emit_Label(cg);
                         Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
                              match, handler_body, fail_label);
-                        if (!is_last) {
+                        if (not is_last) {
                             Emit(cg, "L%u:\n", fail_label);
                             cg->block_terminated = false;
                         }
@@ -19962,7 +19731,7 @@ static void Generate_Block_Statement(Code_Generator *cg, Syntax_Node *node) {
 }
 
 static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
-    if (!node) return;
+    if (not node) return;
 
     switch (node->kind) {
         case NK_ASSIGNMENT:
@@ -19978,7 +19747,7 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
             } else if (target->kind == NK_SELECTED) {
                 /* Selected component - might be a parameterless entry call like T.E1 */
                 Symbol *entry_sym = target->symbol;
-                if (entry_sym && entry_sym->kind == SYMBOL_ENTRY) {
+                if (entry_sym and entry_sym->kind == SYMBOL_ENTRY) {
                     /* Entry call without parameters - generate rendezvous */
                     Emit(cg, "  ; Entry call (no params): %.*s\n",
                          (int)entry_sym->name.length, entry_sym->name.data);
@@ -20006,7 +19775,7 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                     /* Call runtime entry call function */
                     Emit(cg, "  call void @__ada_entry_call(ptr %%t%u, i64 %%t%u, ptr %%t%u)\n",
                          task_ptr, entry_idx, param_block);
-                } else if (entry_sym && (entry_sym->kind == SYMBOL_PROCEDURE ||
+                } else if (entry_sym and (entry_sym->kind == SYMBOL_PROCEDURE or
                                          entry_sym->kind == SYMBOL_FUNCTION)) {
                     /* Qualified procedure call like Pkg.Proc */
                     Generate_Expression(cg, target);
@@ -20017,10 +19786,10 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                 Symbol *proc = original_sym;
 
                 /* Follow rename chain to get actual target for function name */
-                while (proc && proc->renamed_object &&
-                       (proc->kind == SYMBOL_FUNCTION || proc->kind == SYMBOL_PROCEDURE)) {
+                while (proc and proc->renamed_object and
+                       (proc->kind == SYMBOL_FUNCTION or proc->kind == SYMBOL_PROCEDURE)) {
                     Symbol *renamed_target = (Symbol *)proc->renamed_object;
-                    if (renamed_target->kind == SYMBOL_FUNCTION ||
+                    if (renamed_target->kind == SYMBOL_FUNCTION or
                         renamed_target->kind == SYMBOL_PROCEDURE) {
                         proc = renamed_target;
                     } else {
@@ -20028,10 +19797,10 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                     }
                 }
 
-                if (proc && (proc->kind == SYMBOL_PROCEDURE || proc->kind == SYMBOL_FUNCTION)) {
+                if (proc and (proc->kind == SYMBOL_PROCEDURE or proc->kind == SYMBOL_FUNCTION)) {
                     /* Check if calling a nested function of current scope */
-                    bool callee_is_nested = proc->parent &&
-                        (proc->parent->kind == SYMBOL_FUNCTION ||
+                    bool callee_is_nested = proc->parent and
+                        (proc->parent->kind == SYMBOL_FUNCTION or
                          proc->parent->kind == SYMBOL_PROCEDURE);
 
                     if (proc->return_type) {
@@ -20048,7 +19817,7 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                         if (cg->current_function == proc->parent) {
                             Emit(cg, "ptr %%__frame_base");
                             frame_emitted = true;
-                        } else if (cg->is_nested && cg->current_function &&
+                        } else if (cg->is_nested and cg->current_function and
                                    cg->current_function->parent == proc->parent) {
                             Emit(cg, "ptr %%__parent_frame");
                             frame_emitted = true;
@@ -20058,7 +19827,7 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                     /* Generate default arguments from original symbol (for renames) */
                     if (original_sym->parameter_count > 0) {
                         for (uint32_t i = 0; i < original_sym->parameter_count; i++) {
-                            if (frame_emitted || i > 0) Emit(cg, ", ");
+                            if (frame_emitted or i > 0) Emit(cg, ", ");
                             if (original_sym->parameters[i].default_value) {
                                 uint32_t val = Generate_Expression(cg,
                                     original_sym->parameters[i].default_value);
@@ -20086,8 +19855,8 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
             break;
 
         case NK_LOOP:
-            if (node->loop_stmt.iteration_scheme &&
-                node->loop_stmt.iteration_scheme->kind == NK_BINARY_OP &&
+            if (node->loop_stmt.iteration_scheme and
+                node->loop_stmt.iteration_scheme->kind == NK_BINARY_OP and
                 node->loop_stmt.iteration_scheme->binary.op == TK_IN) {
                 Generate_For_Loop(cg, node);
             } else {
@@ -20172,10 +19941,10 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                 uint32_t param_idx = 0;
                 for (uint32_t i = 0; i < node->accept_stmt.parameters.count; i++) {
                     Syntax_Node *param = node->accept_stmt.parameters.items[i];
-                    if (param && param->kind == NK_PARAM_SPEC) {
+                    if (param and param->kind == NK_PARAM_SPEC) {
                         for (uint32_t j = 0; j < param->param_spec.names.count; j++) {
                             Syntax_Node *name = param->param_spec.names.items[j];
-                            if (name && name->symbol) {
+                            if (name and name->symbol) {
                                 /* Allocate space for the parameter */
                                 Emit(cg, "  %%");
                                 Emit_Symbol_Name(cg, name->symbol);
@@ -20287,10 +20056,10 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                                 uint32_t sel_param_idx = 0;
                                 for (uint32_t pi = 0; pi < alt->accept_stmt.parameters.count; pi++) {
                                     Syntax_Node *param = alt->accept_stmt.parameters.items[pi];
-                                    if (param && param->kind == NK_PARAM_SPEC) {
+                                    if (param and param->kind == NK_PARAM_SPEC) {
                                         for (uint32_t pj = 0; pj < param->param_spec.names.count; pj++) {
                                             Syntax_Node *pname = param->param_spec.names.items[pj];
-                                            if (pname && pname->symbol) {
+                                            if (pname and pname->symbol) {
                                                 /* Allocate space for the parameter */
                                                 Emit(cg, "  %%");
                                                 Emit_Symbol_Name(cg, pname->symbol);
@@ -20327,7 +20096,7 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                             /* Delay alternative - only emit code once for multiple delays.
                              * In Ada, multiple delays would pick the shortest, but we simplify
                              * by using the first delay's duration for all. */
-                            if (!delay_label_emitted) {
+                            if (not delay_label_emitted) {
                                 Emit(cg, "L%u:  ; delay alternative\n", delay_label);
                                 delay_label_emitted = true;
                                 {
@@ -20357,16 +20126,16 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                     }
                     /* For skipped delay alternatives, don't emit next_label since
                      * we've already branched to delay_label and this would be unreachable */
-                    if (!skipped_delay) {
+                    if (not skipped_delay) {
                         /* Emit the next_label for branches that skip this alternative */
                         Emit(cg, "L%u:\n", next_label);
                         /* If this isn't the last alternative, fall through to next;
                          * otherwise go to delay or done */
                         bool is_last = (i == node->select_stmt.alternatives.count - 1);
-                        if (!is_last) {
+                        if (not is_last) {
                             /* Check if next alternative is delay - branch to delay_label instead */
                             Syntax_Node *next_alt = node->select_stmt.alternatives.items[i + 1];
-                            if (next_alt && next_alt->kind == NK_DELAY && has_delay) {
+                            if (next_alt and next_alt->kind == NK_DELAY and has_delay) {
                                 Emit(cg, "  br label %%L%u\n", delay_label);
                             }
                             /* Otherwise fall through (no br needed, will hit next iteration's code) */
@@ -20402,7 +20171,7 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                     if (label_sym->llvm_label_id == 0)
                         label_sym->llvm_label_id = cg->label_id++;
                     /* Need a branch to the label to terminate previous block (if not already) */
-                    if (!cg->block_terminated)
+                    if (not cg->block_terminated)
                         Emit(cg, "  br label %%L%u\n", label_sym->llvm_label_id);
                     Emit(cg, "L%u:  ; %.*s\n", label_sym->llvm_label_id,
                          (int)node->label_node.name.length,
@@ -20469,7 +20238,7 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
     for (uint32_t i = 0; i < node->object_decl.names.count; i++) {
         Syntax_Node *name = node->object_decl.names.items[i];
         Symbol *sym = name->symbol;
-        if (!sym) continue;
+        if (not sym) continue;
 
         Type_Info *ty = sym->type;
 
@@ -20489,16 +20258,16 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
          * is_any_array: true for any array-like type INCLUDING TYPE_STRING,
          * used for aggregate/string initialization.
          * is_constrained_array: true only for constrained, used for allocation */
-        bool is_any_array = ty && (ty->kind == TYPE_ARRAY || ty->kind == TYPE_STRING);
-        bool is_constrained_array = is_any_array && ty->array.is_constrained;
+        bool is_any_array = ty and (ty->kind == TYPE_ARRAY or ty->kind == TYPE_STRING);
+        bool is_constrained_array = is_any_array and ty->array.is_constrained;
         int64_t array_count = is_constrained_array ? Array_Element_Count(ty) : 0;
         const char *elem_type = NULL;
         uint32_t elem_size = 0;
         bool elem_is_composite = false;
-        if (is_any_array && ty->array.element_type) {
+        if (is_any_array and ty->array.element_type) {
             Type_Info *et = ty->array.element_type;
             /* Check if element is record or another constrained array */
-            if (Type_Is_Record(et) || Type_Is_Constrained_Array(et)) {
+            if (Type_Is_Record(et) or Type_Is_Constrained_Array(et)) {
                 elem_is_composite = true;
                 elem_size = et->size;
             } else {
@@ -20515,7 +20284,7 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             /* Global variable at package level */
             Emit(cg, "@");
             Emit_Symbol_Name(cg, sym);
-            if (node->object_decl.is_constant && node->object_decl.init) {
+            if (node->object_decl.is_constant and node->object_decl.init) {
                 /* Constant with initializer - emit as constant */
                 if (node->object_decl.init->kind == NK_INTEGER) {
                     Emit(cg, " = linkonce_odr constant %s %lld\n", type_str,
@@ -20532,7 +20301,7 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     /* Emit escaped string contents */
                     for (uint32_t j = 0; j < str.length; j++) {
                         char c = str.data[j];
-                        if (c >= 32 && c < 127 && c != '"' && c != '\\') {
+                        if (c >= 32 and c < 127 and c != '"' and c != '\\') {
                             Emit(cg, "%c", c);
                         } else {
                             Emit(cg, "\\%02X", (unsigned char)c);
@@ -20557,22 +20326,22 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 }
             }
             /* Variable - emit as global with default init */
-            if (is_constrained_array && array_count > 0) {
-                if (elem_is_composite && elem_size > 0) {
+            if (is_constrained_array and array_count > 0) {
+                if (elem_is_composite and elem_size > 0) {
                     Emit(cg, " = linkonce_odr global [%lld x [%u x i8]] zeroinitializer\n",
                          (long long)array_count, elem_size);
                 } else {
                     Emit(cg, " = linkonce_odr global [%lld x %s] zeroinitializer\n",
                          (long long)array_count, elem_type);
                 }
-            } else if (is_record && record_size > 0) {
+            } else if (is_record and record_size > 0) {
                 Emit(cg, " = linkonce_odr global [%u x i8] zeroinitializer\n", record_size);
             } else {
                 /* For fat pointer types (unconstrained arrays/STRING),
                  * use zeroinitializer since '0' is invalid for struct types */
                 if (Llvm_Type_Is_Fat_Pointer(type_str)) {
                     Emit(cg, " = linkonce_odr global %s zeroinitializer\n", type_str);
-                } else if (strcmp(type_str, "double") == 0 || strcmp(type_str, "float") == 0) {
+                } else if (strcmp(type_str, "double") == 0 or strcmp(type_str, "float") == 0) {
                     Emit(cg, " = linkonce_odr global %s 0.0\n", type_str);
                 } else {
                     Emit(cg, " = linkonce_odr global %s 0\n", type_str);
@@ -20587,17 +20356,17 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             Emit_Symbol_Name(cg, sym);
             Emit(cg, " = getelementptr i8, ptr %%__frame_base, i64 %lld\n",
                  (long long)sym->frame_offset);
-        } else if (is_constrained_array && array_count > 0) {
+        } else if (is_constrained_array and array_count > 0) {
             /* Constrained array with static bounds: allocate [N x element_type] */
             Emit(cg, "  %%");
             Emit_Symbol_Name(cg, sym);
-            if (elem_is_composite && elem_size > 0) {
+            if (elem_is_composite and elem_size > 0) {
                 /* Element is record or constrained array - use byte array */
                 Emit(cg, " = alloca [%lld x [%u x i8]]\n", (long long)array_count, elem_size);
             } else {
                 Emit(cg, " = alloca [%lld x %s]\n", (long long)array_count, elem_type);
             }
-        } else if (is_record && record_size > 0) {
+        } else if (is_record and record_size > 0) {
             /* Record type: allocate [N x i8] for the record size */
             Emit(cg, "  %%");
             Emit_Symbol_Name(cg, sym);
@@ -20637,7 +20406,7 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
 
         /* Initialize if provided */
         if (node->object_decl.init) {
-            if (is_any_array && ty->array.element_type == cg->sm->type_character) {
+            if (is_any_array and ty->array.element_type == cg->sm->type_character) {
                 /* String/character array initialization.
                  * NK_STRING always yields a fat pointer.
                  * Unconstrained array identifiers yield fat pointer values.
@@ -20654,9 +20423,9 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 Syntax_Node *init = node->object_decl.init;
                 Type_Info *init_ty = init->type;
                 int init_is_constrained = Type_Is_Constrained_Array(init_ty);
-                bool dest_is_unconstrained = !is_constrained_array;
+                bool dest_is_unconstrained = not is_constrained_array;
 
-                if (init->kind == NK_STRING || !init_is_constrained) {
+                if (init->kind == NK_STRING or not init_is_constrained) {
                     /* Source produces a fat pointer value */
                     uint32_t fat_ptr = Generate_Expression(cg, init);
                     const char *init_bt = Array_Bound_Llvm_Type(ty);
@@ -20695,7 +20464,7 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     /* Source is a constrained character array — plain ptr. */
                     uint32_t src_ptr = Generate_Expression(cg, init);
 
-                    if (dest_is_unconstrained && init_ty &&
+                    if (dest_is_unconstrained and init_ty and
                         init_ty->array.index_count > 0) {
                         /* Dest is unconstrained but source is constrained.
                          * Build fat pointer from source's static bounds. */
@@ -20736,7 +20505,7 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                              src_ptr, (long long)byte_len);
                     }
                 }
-            } else if (Type_Is_Fixed_Point(ty) &&
+            } else if (Type_Is_Fixed_Point(ty) and
                        node->object_decl.init->kind == NK_REAL) {
                 /* Fixed-point initialization from real literal:
                  * Convert real value to scaled integer at compile time
@@ -20745,7 +20514,7 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 double small = ty->fixed.small > 0 ? ty->fixed.small : ty->fixed.delta;
                 int64_t scaled_val;
                 Big_Real *big_val = node->object_decl.init->real_lit.big_value;
-                if (big_val && small != 0) {
+                if (big_val and small != 0) {
                     /* Precise scaling: scaled = significand * 10^exponent / small
                      * For best precision, compute in arbitrary precision then round */
                     Big_Real *small_br = Big_Real_New();
@@ -20764,7 +20533,7 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "  store i64 %%t%u, ptr %%", init);
                 Emit_Symbol_Name(cg, sym);
                 Emit(cg, "\n");
-            } else if (is_record && node->object_decl.init->kind == NK_AGGREGATE) {
+            } else if (is_record and node->object_decl.init->kind == NK_AGGREGATE) {
                 /* Record aggregate initialization - copy from aggregate to variable */
                 uint32_t agg_ptr = Generate_Expression(cg, node->object_decl.init);
                 Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%");
@@ -20773,7 +20542,7 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
 
                 /* If the type has discriminant constraints, store constraint values (RM 3.7.2)
                  * This ensures discriminant fields are correctly set even after aggregate copy */
-                if (ty->record.has_disc_constraints && ty->record.disc_constraint_values) {
+                if (ty->record.has_disc_constraints and ty->record.disc_constraint_values) {
                     for (uint32_t di = 0; di < ty->record.discriminant_count; di++) {
                         Component_Info *dc = &ty->record.components[di];
                         uint32_t dp = Emit_Temp(cg);
@@ -20787,26 +20556,26 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     }
                     sym->is_disc_constrained = true;
                 }
-            } else if (is_any_array && node->object_decl.init->kind == NK_AGGREGATE) {
+            } else if (is_any_array and node->object_decl.init->kind == NK_AGGREGATE) {
                 /* Array aggregate initialization - copy from aggregate to variable.
                  * Works for both constrained and unconstrained arrays with aggregate initializers.
                  * For arrays with dynamic bounds, the aggregate already returns a fat pointer. */
                 Type_Info *agg_type = node->object_decl.init->type;
-                bool dest_needs_fat = Type_Has_Dynamic_Bounds(ty) || Type_Is_Unconstrained_Array(ty);
-                bool agg_has_dynamic = agg_type && agg_type->array.index_count > 0 &&
-                    ((agg_type->array.indices[0].low_bound.kind == BOUND_EXPR) ||
+                bool dest_needs_fat = Type_Has_Dynamic_Bounds(ty) or Type_Is_Unconstrained_Array(ty);
+                bool agg_has_dynamic = agg_type and agg_type->array.index_count > 0 and
+                    ((agg_type->array.indices[0].low_bound.kind == BOUND_EXPR) or
                      (agg_type->array.indices[0].high_bound.kind == BOUND_EXPR));
 
                 uint32_t agg_ptr = Generate_Expression(cg, node->object_decl.init);
 
-                if (dest_needs_fat && agg_has_dynamic) {
+                if (dest_needs_fat and agg_has_dynamic) {
                     /* Aggregate with dynamic bounds already returns a fat pointer.
                      * Just copy the fat pointer structure (24 bytes: ptr + 2*i64).
                      * This avoids re-evaluating bound expressions that may have side effects. */
                     Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%");
                     Emit_Symbol_Name(cg, sym);
                     Emit(cg, ", ptr %%t%u, i64 24, i1 false)  ; copy fat ptr\n", agg_ptr);
-                } else if (dest_needs_fat && agg_type && agg_type->array.index_count > 0) {
+                } else if (dest_needs_fat and agg_type and agg_type->array.index_count > 0) {
                     /* Destination needs a fat pointer { ptr, { bound, bound } }.
                      * agg_ptr is the data pointer (static bounds), construct the fat pointer. */
                     Type_Bound low_b = agg_type->array.indices[0].low_bound;
@@ -20846,8 +20615,8 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     if (elem_sz == 0) elem_sz = 8;
 
                     /* Get bounds from aggregate type if available */
-                    if (agg_type && agg_type->array.index_count > 0 &&
-                        agg_type->array.indices[0].low_bound.kind == BOUND_INTEGER &&
+                    if (agg_type and agg_type->array.index_count > 0 and
+                        agg_type->array.indices[0].low_bound.kind == BOUND_INTEGER and
                         agg_type->array.indices[0].high_bound.kind == BOUND_INTEGER) {
                         /* Bounds are static integers in the aggregate */
                         int64_t lo = agg_type->array.indices[0].low_bound.int_value;
@@ -20867,7 +20636,7 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                              agg_ptr, elem_sz);
                     }
                 }
-            } else if (is_any_array && !is_constrained_array &&
+            } else if (is_any_array and not is_constrained_array and
                        node->object_decl.init->kind != NK_AGGREGATE) {
                 /* Unconstrained non-character array init from expression (e.g. function call).
                  * The source produces a fat pointer.  We need to:
@@ -20915,7 +20684,7 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 } else {
                     /* Source is ptr (constrained) — wrap with bounds */
                     Type_Info *init_ty = node->object_decl.init->type;
-                    if (init_ty && init_ty->array.index_count > 0) {
+                    if (init_ty and init_ty->array.index_count > 0) {
                         int64_t lo = Type_Bound_Value(
                             init_ty->array.indices[0].low_bound);
                         int64_t hi = Type_Bound_Value(
@@ -20927,7 +20696,7 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                         Emit_Store_Fat_Pointer_To_Symbol(cg, fat_ptr, sym, uai_bt);
                     }
                 }
-            } else if (!is_any_array && !is_record) {
+            } else if (not is_any_array and not is_record) {
                 uint32_t init = Generate_Expression(cg, node->object_decl.init);
                 /* Use Expression_Llvm_Type to get correct type for all expressions
                  * including pointers, floats, and integers */
@@ -20939,7 +20708,7 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 /* RM 3.3.2: Scalar constraint check on initialization.
                  * Only for scalar types; composite constraints are checked
                  * via length/discriminant matching elsewhere. */
-                if (ty && Type_Is_Scalar(ty)) {
+                if (ty and Type_Is_Scalar(ty)) {
                     if (Type_Is_Float(ty)) {
                         uint32_t fval = Emit_Convert(cg, init, type_str, "double");
                         Emit_Constraint_Check(cg, fval, ty);
@@ -20953,7 +20722,7 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 Emit_Symbol_Name(cg, sym);
                 Emit(cg, "\n");
             }
-        } else if (is_any_array && Type_Has_Dynamic_Bounds(ty) && ty->array.index_count > 0) {
+        } else if (is_any_array and Type_Has_Dynamic_Bounds(ty) and ty->array.index_count > 0) {
             /* Uninitialized array with dynamic bounds - still need to set up fat pointer.
              * The array contents are uninitialized but bounds are known from the type.
              * This handles cases like: A2 : ARR1 (1 .. F * 1000); */
@@ -20967,12 +20736,12 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             if (low_b.kind == BOUND_INTEGER) {
                 low_val = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = add %s 0, %lld\n", low_val, iat_decl, (long long)low_b.int_value);
-            } else if (low_b.kind == BOUND_EXPR && low_b.expr) {
+            } else if (low_b.kind == BOUND_EXPR and low_b.expr) {
                 low_val = Generate_Expression(cg, low_b.expr);
                 /* Extend to INTEGER width if narrower type (e.g., ENUM'('B') returns i8) */
                 const char *low_llvm = Expression_Llvm_Type(cg, low_b.expr);
-                if (strcmp(low_llvm, iat_decl) != 0 && strcmp(low_llvm, "ptr") != 0 &&
-                    strcmp(low_llvm, "double") != 0 && strcmp(low_llvm, "float") != 0) {
+                if (strcmp(low_llvm, iat_decl) != 0 and strcmp(low_llvm, "ptr") != 0 and
+                    strcmp(low_llvm, "double") != 0 and strcmp(low_llvm, "float") != 0) {
                     low_val = Emit_Convert(cg, low_val, low_llvm, iat_decl);
                 }
             } else {
@@ -20984,12 +20753,12 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             if (high_b.kind == BOUND_INTEGER) {
                 high_val = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = add %s 0, %lld\n", high_val, iat_decl, (long long)high_b.int_value);
-            } else if (high_b.kind == BOUND_EXPR && high_b.expr) {
+            } else if (high_b.kind == BOUND_EXPR and high_b.expr) {
                 high_val = Generate_Expression(cg, high_b.expr);
                 /* Extend to INTEGER width if narrower type (e.g., ENUM'('D') returns i8) */
                 const char *high_llvm = Expression_Llvm_Type(cg, high_b.expr);
-                if (strcmp(high_llvm, iat_decl) != 0 && strcmp(high_llvm, "ptr") != 0 &&
-                    strcmp(high_llvm, "double") != 0 && strcmp(high_llvm, "float") != 0) {
+                if (strcmp(high_llvm, iat_decl) != 0 and strcmp(high_llvm, "ptr") != 0 and
+                    strcmp(high_llvm, "double") != 0 and strcmp(high_llvm, "float") != 0) {
                     high_val = Emit_Convert(cg, high_val, high_llvm, iat_decl);
                 }
             } else {
@@ -21014,13 +20783,13 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
 
             /* Construct fat pointer in-place */
             Emit_Store_Fat_Pointer_Fields_To_Symbol(cg, data_ptr, low_val, high_val, sym, Array_Bound_Llvm_Type(ty));
-        } else if (is_record && ty->record.component_count > 0) {
+        } else if (is_record and ty->record.component_count > 0) {
             /* Record without explicit initializer (RM 3.7):
              * 1. If constrained subtype, initialize discriminants from constraints
              * 2. Apply component defaults for discriminants and regular components */
 
             /* Initialize discriminant constraints if type is constrained (RM 3.7.2) */
-            if (ty->record.has_disc_constraints && ty->record.disc_constraint_values) {
+            if (ty->record.has_disc_constraints and ty->record.disc_constraint_values) {
                 for (uint32_t di = 0; di < ty->record.discriminant_count; di++) {
                     Component_Info *dc = &ty->record.components[di];
                     uint32_t dp = Emit_Temp(cg);
@@ -21047,10 +20816,10 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             if (has_any_default) {
                 for (uint32_t ci = 0; ci < ty->record.component_count; ci++) {
                     Component_Info *comp = &ty->record.components[ci];
-                    if (!comp->default_expr) continue;
+                    if (not comp->default_expr) continue;
 
                     /* Skip discriminant defaults if constraint values already set */
-                    if (comp->is_discriminant && ty->record.has_disc_constraints) continue;
+                    if (comp->is_discriminant and ty->record.has_disc_constraints) continue;
 
                     /* Generate value for default expression */
                     uint32_t val = Generate_Expression(cg, comp->default_expr);
@@ -21084,10 +20853,10 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
 static bool Has_Nested_Subprograms(Node_List *declarations, Node_List *statements);
 
 static bool Has_Nested_In_Statements(Node_List *statements) {
-    if (!statements) return false;
+    if (not statements) return false;
     for (uint32_t i = 0; i < statements->count; i++) {
         Syntax_Node *stmt = statements->items[i];
-        if (!stmt) continue;
+        if (not stmt) continue;
         if (stmt->kind == NK_BLOCK) {
             /* DECLARE block - check its declarations and nested statements */
             if (Has_Nested_Subprograms(&stmt->block_stmt.declarations,
@@ -21099,7 +20868,7 @@ static bool Has_Nested_In_Statements(Node_List *statements) {
             if (Has_Nested_In_Statements(&stmt->if_stmt.then_stmts)) return true;
             for (uint32_t j = 0; j < stmt->if_stmt.elsif_parts.count; j++) {
                 Syntax_Node *elsif = stmt->if_stmt.elsif_parts.items[j];
-                if (elsif && Has_Nested_In_Statements(&elsif->if_stmt.then_stmts)) return true;
+                if (elsif and Has_Nested_In_Statements(&elsif->if_stmt.then_stmts)) return true;
             }
             if (Has_Nested_In_Statements(&stmt->if_stmt.else_stmts)) return true;
         } else if (stmt->kind == NK_LOOP) {
@@ -21107,8 +20876,8 @@ static bool Has_Nested_In_Statements(Node_List *statements) {
         } else if (stmt->kind == NK_CASE) {
             for (uint32_t j = 0; j < stmt->case_stmt.alternatives.count; j++) {
                 Syntax_Node *alt = stmt->case_stmt.alternatives.items[j];
-                if (alt && alt->kind == NK_ASSOCIATION &&
-                    alt->association.expression &&
+                if (alt and alt->kind == NK_ASSOCIATION and
+                    alt->association.expression and
                     alt->association.expression->kind == NK_BLOCK) {
                     if (Has_Nested_In_Statements(&alt->association.expression->block_stmt.statements)) {
                         return true;
@@ -21127,9 +20896,9 @@ static bool Has_Nested_Subprograms(Node_List *declarations, Node_List *statement
     if (declarations) {
         for (uint32_t i = 0; i < declarations->count; i++) {
             Syntax_Node *decl = declarations->items[i];
-            if (decl && (decl->kind == NK_PROCEDURE_BODY ||
-                         decl->kind == NK_FUNCTION_BODY ||
-                         decl->kind == NK_TASK_BODY ||
+            if (decl and (decl->kind == NK_PROCEDURE_BODY or
+                         decl->kind == NK_FUNCTION_BODY or
+                         decl->kind == NK_TASK_BODY or
                          decl->kind == NK_GENERIC_INST)) {
                 return true;
             }
@@ -21182,7 +20951,7 @@ static void Install_Declaration_Symbols(Symbol_Manager *sm, Node_List *decls) {
                 if (name->symbol) Symbol_Add(sm, name->symbol);
             }
         /* Enumeration type: install each literal as a separate symbol */
-        if (decl->kind == NK_TYPE_DECL && decl->type_decl.definition &&
+        if (decl->kind == NK_TYPE_DECL and decl->type_decl.definition and
             decl->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
             Node_List *lits = &decl->type_decl.definition->enum_type.literals;
             for (uint32_t j = 0; j < lits->count; j++)
@@ -21199,7 +20968,7 @@ static Syntax_Node *Find_Homograph_Body(Symbol **exports, uint32_t idx,
     uint32_t homograph_idx = 0;
     for (uint32_t k = 0; k < idx; k++) {
         Symbol *prev = exports[k];
-        if (prev && (prev->kind == SYMBOL_FUNCTION || prev->kind == SYMBOL_PROCEDURE) &&
+        if (prev and (prev->kind == SYMBOL_FUNCTION or prev->kind == SYMBOL_PROCEDURE) and
             Slice_Equal_Ignore_Case(prev->name, name))
             homograph_idx++;
     }
@@ -21207,8 +20976,8 @@ static Syntax_Node *Find_Homograph_Body(Symbol **exports, uint32_t idx,
     uint32_t body_idx = 0;
     for (uint32_t j = 0; j < body_decls->count; j++) {
         Syntax_Node *decl = body_decls->items[j];
-        if (!decl) continue;
-        if (decl->kind == NK_PROCEDURE_BODY || decl->kind == NK_FUNCTION_BODY)
+        if (not decl) continue;
+        if (decl->kind == NK_PROCEDURE_BODY or decl->kind == NK_FUNCTION_BODY)
             if (Slice_Equal_Ignore_Case(
                     decl->subprogram_body.specification->subprogram_spec.name, name))
                 if (body_idx++ == homograph_idx) return decl;
@@ -21229,7 +20998,7 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
 
     Syntax_Node *spec = node->subprogram_body.specification;
     Symbol *sym = spec ? spec->symbol : NULL;
-    if (!sym) return;
+    if (not sym) return;
 
     /* Mark this symbol as having been defined - prevents duplicate
      * 'declare' statements for functions defined in the same file */
@@ -21244,8 +21013,8 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
     Symbol *parent_owner = sym->parent;
 
     /* Determine if nested: parent is a function/procedure */
-    bool is_nested = parent_owner &&
-                     (parent_owner->kind == SYMBOL_FUNCTION ||
+    bool is_nested = parent_owner and
+                     (parent_owner->kind == SYMBOL_FUNCTION or
                       parent_owner->kind == SYMBOL_PROCEDURE);
     cg->is_nested = is_nested;
     cg->enclosing_function = is_nested ? parent_owner : NULL;
@@ -21264,19 +21033,19 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
     /* If this function has nested subprograms, allocate a frame base
      * This is the address that will be passed to nested functions */
     if (has_nested) {
-        int64_t frame_size = (sym->scope && sym->scope->frame_size > 0)
+        int64_t frame_size = (sym->scope and sym->scope->frame_size > 0)
             ? sym->scope->frame_size : 8;  /* At least 8 bytes for frame pointer */
         Emit(cg, "  ; Frame for nested function access\n");
         Emit(cg, "  %%__frame_base = alloca i8, i64 %lld\n", (long long)frame_size);
     }
 
     /* If nested, create aliases for accessing enclosing scope variables via frame */
-    if (is_nested && parent_owner && parent_owner->scope) {
+    if (is_nested and parent_owner and parent_owner->scope) {
         /* Create pointer aliases to parent scope variables */
         Scope *parent_scope = parent_owner->scope;
         for (uint32_t i = 0; i < parent_scope->symbol_count; i++) {
             Symbol *var = parent_scope->symbols[i];
-            if (var && (var->kind == SYMBOL_VARIABLE || var->kind == SYMBOL_PARAMETER ||
+            if (var and (var->kind == SYMBOL_VARIABLE or var->kind == SYMBOL_PARAMETER or
                         var->kind == SYMBOL_DISCRIMINANT)) {
                 /* Create a GEP alias:  %__frame.VAR = getelementptr i8, ptr %__parent_frame, i64 offset */
                 Emit(cg, "  %%__frame.");
@@ -21302,7 +21071,7 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "  %%");
                 Emit_Symbol_Name(cg, param_sym);
                 Emit(cg, " = getelementptr i8, ptr %%p%u, i64 0  ; by-ref param\n", i);
-            } else if (has_nested && sym->scope) {
+            } else if (has_nested and sym->scope) {
                 /* IN param with nested functions: allocate in frame */
                 Emit(cg, "  %%");
                 Emit_Symbol_Name(cg, param_sym);
@@ -21382,7 +21151,7 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
         uint32_t next_handler = 0;
         for (uint32_t i = 0; i < node->subprogram_body.handlers.count; i++) {
             Syntax_Node *handler = node->subprogram_body.handlers.items[i];
-            if (!handler) continue;
+            if (not handler) continue;
 
             if (next_handler != 0) {
                 Emit(cg, "L%u:\n", next_handler);
@@ -21424,7 +21193,7 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
                         uint32_t fail_label = is_last ? next_handler : Emit_Label(cg);
                         Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
                              match, handler_body, fail_label);
-                        if (!is_last) {
+                        if (not is_last) {
                             Emit(cg, "L%u:\n", fail_label);
                             cg->block_terminated = false;
                         }
@@ -21460,7 +21229,7 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
     cg->current_nesting_level = saved_has_nested ? 1 : 0;
 
     /* Default return if block is not terminated */
-    if (!cg->block_terminated) {
+    if (not cg->block_terminated) {
         if (is_function) {
             /* Emit unreachable - control shouldn't reach here in well-formed function */
             Emit(cg, "  unreachable\n");
@@ -21480,7 +21249,7 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
         if (deferred->kind == NK_GENERIC_INST) {
             /* Handle deferred generic instance */
             Symbol *inst = deferred->symbol;
-            if (inst && inst->generic_template && inst->generic_template->generic_body) {
+            if (inst and inst->generic_template and inst->generic_template->generic_body) {
                 Symbol *saved = cg->current_instance;
                 cg->current_instance = inst;
                 Generate_Generic_Instance_Body(cg, inst, inst->generic_template->generic_body);
@@ -21497,11 +21266,11 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
 /* Generate code for a generic instance body */
 static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
                                            Syntax_Node *template_body) {
-    if (!inst_sym || !template_body) return;
+    if (not inst_sym or not template_body) return;
 
     /* Handle package instantiation specially: generate package body declarations
      * (global variables), then iterate through exported subprograms. */
-    if (inst_sym->kind == SYMBOL_PACKAGE && template_body->kind == NK_PACKAGE_BODY) {
+    if (inst_sym->kind == SYMBOL_PACKAGE and template_body->kind == NK_PACKAGE_BODY) {
         /* Set current instance so names are prefixed with instance name */
         Symbol *saved_instance = cg->current_instance;
         cg->current_instance = inst_sym;
@@ -21511,10 +21280,10 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
          * based on the instance to avoid collisions. */
         for (uint32_t i = 0; i < template_body->package_body.declarations.count; i++) {
             Syntax_Node *decl = template_body->package_body.declarations.items[i];
-            if (!decl) continue;
+            if (not decl) continue;
             /* Only generate non-subprogram declarations (variables, types) */
-            if (decl->kind != NK_PROCEDURE_BODY && decl->kind != NK_FUNCTION_BODY &&
-                decl->kind != NK_PROCEDURE_SPEC && decl->kind != NK_FUNCTION_SPEC) {
+            if (decl->kind != NK_PROCEDURE_BODY and decl->kind != NK_FUNCTION_BODY and
+                decl->kind != NK_PROCEDURE_SPEC and decl->kind != NK_FUNCTION_SPEC) {
                 Generate_Declaration(cg, decl);
             }
         }
@@ -21522,8 +21291,8 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
         /* Then generate the subprogram bodies */
         for (uint32_t i = 0; i < inst_sym->exported_count; i++) {
             Symbol *exp = inst_sym->exported[i];
-            if (!exp) continue;
-            if (exp->kind != SYMBOL_FUNCTION && exp->kind != SYMBOL_PROCEDURE)
+            if (not exp) continue;
+            if (exp->kind != SYMBOL_FUNCTION and exp->kind != SYMBOL_PROCEDURE)
                 continue;
 
             Syntax_Node *subp_body = Find_Homograph_Body(
@@ -21547,8 +21316,8 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
     bool saved_is_nested = cg->is_nested;
     Symbol *parent_owner = inst_sym->parent;
 
-    bool is_nested = parent_owner &&
-                     (parent_owner->kind == SYMBOL_FUNCTION ||
+    bool is_nested = parent_owner and
+                     (parent_owner->kind == SYMBOL_FUNCTION or
                       parent_owner->kind == SYMBOL_PROCEDURE);
     cg->is_nested = is_nested;
     cg->enclosing_function = is_nested ? parent_owner : NULL;
@@ -21566,10 +21335,10 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
     uint32_t param_idx = 0;
     if (body_spec) {
         Node_List *params = &body_spec->subprogram_spec.parameters;
-        for (uint32_t i = 0; i < params->count && param_idx < inst_sym->parameter_count; i++) {
+        for (uint32_t i = 0; i < params->count and param_idx < inst_sym->parameter_count; i++) {
             Syntax_Node *ps = params->items[i];
-            if (ps && ps->kind == NK_PARAM_SPEC) {
-                for (uint32_t j = 0; j < ps->param_spec.names.count && param_idx < inst_sym->parameter_count; j++) {
+            if (ps and ps->kind == NK_PARAM_SPEC) {
+                for (uint32_t j = 0; j < ps->param_spec.names.count and param_idx < inst_sym->parameter_count; j++) {
                     Syntax_Node *pname = ps->param_spec.names.items[j];
                     Symbol *param_sym = pname->symbol;
                     if (param_sym) {
@@ -21613,7 +21382,7 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
     }
 
     /* Default return if block is not terminated */
-    if (!cg->block_terminated) {
+    if (not cg->block_terminated) {
         if (is_function) {
             Emit(cg, "  unreachable\n");
         } else {
@@ -21632,7 +21401,7 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
         Syntax_Node *deferred = cg->deferred_bodies[--cg->deferred_count];
         if (deferred->kind == NK_GENERIC_INST) {
             Symbol *inst = deferred->symbol;
-            if (inst && inst->generic_template && inst->generic_template->generic_body) {
+            if (inst and inst->generic_template and inst->generic_template->generic_body) {
                 Symbol *saved = cg->current_instance;
                 cg->current_instance = inst;
                 Generate_Generic_Instance_Body(cg, inst, inst->generic_template->generic_body);
@@ -21663,7 +21432,7 @@ static void Generate_Task_Body(Code_Generator *cg, Syntax_Node *node) {
      * For task bodies inside generic instances, prefix with instance name
      * to make the function name unique across multiple instantiations. */
     Emit(cg, "define void @task_");
-    if (cg->current_instance && cg->current_instance->generic_template) {
+    if (cg->current_instance and cg->current_instance->generic_template) {
         /* Emit instance name prefix for unique task body function */
         String_Slice inst_mangled = Symbol_Mangle_Name(cg->current_instance);
         for (uint32_t i = 0; i < inst_mangled.length; i++) {
@@ -21696,7 +21465,7 @@ static void Generate_Task_Body(Code_Generator *cg, Syntax_Node *node) {
     if (parent_scope) {
         for (uint32_t i = 0; i < parent_scope->symbol_count; i++) {
             Symbol *var = parent_scope->symbols[i];
-            if (var && (var->kind == SYMBOL_VARIABLE || var->kind == SYMBOL_PARAMETER ||
+            if (var and (var->kind == SYMBOL_VARIABLE or var->kind == SYMBOL_PARAMETER or
                         var->kind == SYMBOL_DISCRIMINANT)) {
                 /* Create a GEP alias: %__frame.VAR = getelementptr ptr %__parent_frame, offset */
                 Emit(cg, "  %%__frame.");
@@ -21747,7 +21516,7 @@ static void Generate_Task_Body(Code_Generator *cg, Syntax_Node *node) {
 }
 
 static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
-    if (!node) return;
+    if (not node) return;
 
     switch (node->kind) {
         case NK_OBJECT_DECL:
@@ -21757,7 +21526,7 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
         case NK_PROCEDURE_SPEC:
         case NK_FUNCTION_SPEC:
             /* Forward declaration - if imported, emit extern declaration */
-            if (node->symbol && node->symbol->is_imported) {
+            if (node->symbol and node->symbol->is_imported) {
                 Emit_Extern_Subprogram(cg, node->symbol);
             }
             break;
@@ -21784,7 +21553,7 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
             /* Defer nested subprogram bodies - emit after enclosing function */
             /* Skip if already generated (prevents duplicates from re-processing) */
             if (node->subprogram_body.code_generated) break;
-            if (cg->current_function && cg->deferred_count < 64) {
+            if (cg->current_function and cg->deferred_count < 64) {
                 /* Check for duplicate in deferred list */
                 bool already_deferred = false;
                 for (uint32_t d = 0; d < cg->deferred_count; d++) {
@@ -21793,7 +21562,7 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                         break;
                     }
                 }
-                if (!already_deferred) {
+                if (not already_deferred) {
                     cg->deferred_bodies[cg->deferred_count++] = node;
                 }
             } else {
@@ -21806,7 +21575,7 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 Symbol *pkg_sym = node->symbol;  /* Use symbol from semantic analysis */
 
                 /* Skip generic package bodies - code is generated only for instances */
-                if (pkg_sym && pkg_sym->kind == SYMBOL_GENERIC) {
+                if (pkg_sym and pkg_sym->kind == SYMBOL_GENERIC) {
                     break;
                 }
 
@@ -21834,7 +21603,7 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     } else {
                         for (uint32_t i = 0; i < node->package_body.name.length; i++) {
                             char c = node->package_body.name.data[i];
-                            Emit(cg, "%c", (c >= 'A' && c <= 'Z') ? c + 32 : c);
+                            Emit(cg, "%c", (c >= 'A' and c <= 'Z') ? c + 32 : c);
                         }
                     }
                     Emit(cg, "___init() {\n");
@@ -21846,7 +21615,7 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
 
                     Generate_Statement_List(cg, &node->package_body.statements);
 
-                    if (!cg->block_terminated) {
+                    if (not cg->block_terminated) {
                         Emit(cg, "  ret void\n");
                     }
                     Emit(cg, "}\n\n");
@@ -21862,7 +21631,7 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
              * elaboration of a generic instantiation declares an instance" */
             {
                 Symbol *inst_sym = node->symbol;
-                if (!inst_sym || !inst_sym->generic_template) break;
+                if (not inst_sym or not inst_sym->generic_template) break;
 
                 Symbol *template = inst_sym->generic_template;
                 Symbol *saved_instance = cg->current_instance;
@@ -21871,14 +21640,14 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 /* For library-level package instances, emit global variables for
                  * exported objects REGARDLESS of whether there's a body. Generic
                  * packages may have just a spec with object declarations. */
-                if (!cg->current_function && inst_sym->kind == SYMBOL_PACKAGE) {
+                if (not cg->current_function and inst_sym->kind == SYMBOL_PACKAGE) {
                     /* Find the generic spec to get initializers */
                     Syntax_Node *gen_spec = template->generic_unit;
 
                     for (uint32_t i = 0; i < inst_sym->exported_count; i++) {
                         Symbol *exp = inst_sym->exported[i];
-                        if (!exp) continue;
-                        if (exp->kind != SYMBOL_VARIABLE && exp->kind != SYMBOL_CONSTANT)
+                        if (not exp) continue;
+                        if (exp->kind != SYMBOL_VARIABLE and exp->kind != SYMBOL_CONSTANT)
                             continue;
                         Type_Info *ty = exp->type;
                         const char *type_str = Type_To_Llvm(ty);
@@ -21888,14 +21657,14 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                         /* Look for initializer in the generic spec's visible declarations */
                         int64_t init_val = 0;
                         bool has_init = false;
-                        if (gen_spec && gen_spec->kind == NK_PACKAGE_SPEC) {
+                        if (gen_spec and gen_spec->kind == NK_PACKAGE_SPEC) {
                             for (uint32_t j = 0; j < gen_spec->package_spec.visible_decls.count; j++) {
                                 Syntax_Node *decl = gen_spec->package_spec.visible_decls.items[j];
-                                if (!decl || decl->kind != NK_OBJECT_DECL) continue;
+                                if (not decl or decl->kind != NK_OBJECT_DECL) continue;
                                 for (uint32_t k = 0; k < decl->object_decl.names.count; k++) {
                                     Syntax_Node *nm = decl->object_decl.names.items[k];
-                                    if (nm && Slice_Equal_Ignore_Case(nm->string_val.text, exp->name)) {
-                                        if (decl->object_decl.init &&
+                                    if (nm and Slice_Equal_Ignore_Case(nm->string_val.text, exp->name)) {
+                                        if (decl->object_decl.init and
                                             decl->object_decl.init->kind == NK_INTEGER) {
                                             init_val = decl->object_decl.init->integer_lit.value;
                                             has_init = true;
@@ -21916,7 +21685,7 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                                  (long long)cnt, elem_type);
                         } else if (is_record) {
                             Emit(cg, " = linkonce_odr global [%u x i8] zeroinitializer\n", ty->size);
-                        } else if (strcmp(type_str, "double") == 0 || strcmp(type_str, "float") == 0) {
+                        } else if (strcmp(type_str, "double") == 0 or strcmp(type_str, "float") == 0) {
                             Emit(cg, " = linkonce_odr global %s 0.0\n", type_str);
                         } else {
                             Emit(cg, " = linkonce_odr global %s %lld\n", type_str,
@@ -21928,22 +21697,22 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 /* Prefer expanded_body (with substitutions already applied)
                  * over template->generic_body (requires runtime substitution) */
                 Syntax_Node *generic_body = inst_sym->expanded_body;
-                if (!generic_body) generic_body = template->generic_body;
-                if (!generic_body) {
+                if (not generic_body) generic_body = template->generic_body;
+                if (not generic_body) {
                     cg->current_instance = saved_instance;
                     break;  /* No body: globals already emitted above */
                 }
 
                 /* Generate instantiated body using the instance's symbol */
-                if (cg->current_function && inst_sym->kind == SYMBOL_PACKAGE) {
+                if (cg->current_function and inst_sym->kind == SYMBOL_PACKAGE) {
                     /* Local generic package instance: allocate storage for exported
                      * variables/constants NOW (as local allocas), but defer subprogram
                      * bodies for later. Per Ada RM 12.3: "The elaboration of a generic
                      * instantiation declares an instance... and elaborates the instance" */
                     for (uint32_t i = 0; i < inst_sym->exported_count; i++) {
                         Symbol *exp = inst_sym->exported[i];
-                        if (!exp) continue;
-                        if (exp->kind == SYMBOL_VARIABLE || exp->kind == SYMBOL_CONSTANT) {
+                        if (not exp) continue;
+                        if (exp->kind == SYMBOL_VARIABLE or exp->kind == SYMBOL_CONSTANT) {
                             /* Allocate local storage for package variable */
                             Type_Info *ty = exp->type;
                             const char *type_str = Type_To_Llvm(ty);
@@ -21961,20 +21730,20 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                                 Emit(cg, " = alloca %s  ; local pkg var\n", type_str);
                             }
                             /* Initialize from package body if present */
-                            if (generic_body && generic_body->kind == NK_PACKAGE_BODY) {
+                            if (generic_body and generic_body->kind == NK_PACKAGE_BODY) {
                                 /* Look for assignment in BEGIN..END section targeting this var.
                                  * Compare by name since body symbol differs from exported symbol. */
                                 for (uint32_t j = 0; j < generic_body->package_body.statements.count; j++) {
                                     Syntax_Node *stmt = generic_body->package_body.statements.items[j];
-                                    if (!stmt || stmt->kind != NK_ASSIGNMENT) continue;
+                                    if (not stmt or stmt->kind != NK_ASSIGNMENT) continue;
                                     Syntax_Node *tgt = stmt->assignment.target;
-                                    if (!tgt) continue;
+                                    if (not tgt) continue;
                                     String_Slice tgt_name = {0};
                                     if (tgt->kind == NK_IDENTIFIER)
                                         tgt_name = tgt->string_val.text;
                                     else if (tgt->symbol)
                                         tgt_name = tgt->symbol->name;
-                                    if (tgt_name.data && Slice_Equal_Ignore_Case(tgt_name, exp->name)) {
+                                    if (tgt_name.data and Slice_Equal_Ignore_Case(tgt_name, exp->name)) {
                                         /* Redirect target to use local exported symbol */
                                         tgt->symbol = exp;
                                         Generate_Statement(cg, stmt);
@@ -21987,7 +21756,7 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     /* Defer subprogram bodies for later */
                     if (cg->deferred_count < 64)
                         cg->deferred_bodies[cg->deferred_count++] = node;
-                } else if (cg->current_function && cg->deferred_count < 64) {
+                } else if (cg->current_function and cg->deferred_count < 64) {
                     /* Defer nested generic subprogram instance */
                     cg->deferred_bodies[cg->deferred_count++] = node;
                 } else if (inst_sym->kind == SYMBOL_PACKAGE) {
@@ -21996,8 +21765,8 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     if (generic_body->kind == NK_PACKAGE_BODY) {
                         for (uint32_t i = 0; i < inst_sym->exported_count; i++) {
                             Symbol *exp = inst_sym->exported[i];
-                            if (!exp) continue;
-                            if (exp->kind != SYMBOL_FUNCTION && exp->kind != SYMBOL_PROCEDURE)
+                            if (not exp) continue;
+                            if (exp->kind != SYMBOL_FUNCTION and exp->kind != SYMBOL_PROCEDURE)
                                 continue;
 
                             Syntax_Node *subp_body = Find_Homograph_Body(
@@ -22025,7 +21794,7 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                  (int)node->task_spec.name.length, node->task_spec.name.data);
             /* For single tasks (not task types), allocate task control block storage
              * and start the task body in a separate thread */
-            if (!node->task_spec.is_type && node->symbol) {
+            if (not node->task_spec.is_type and node->symbol) {
                 /* Find the variable symbol in the type symbol's defining scope.
                  * The type and variable were both added to the same scope during
                  * semantic analysis. Use defining_scope instead of sm->current_scope
@@ -22035,8 +21804,8 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 if (scope) {
                     for (uint32_t i = 0; i < scope->symbol_count; i++) {
                         Symbol *s = scope->symbols[i];
-                        if (s && s->kind == SYMBOL_VARIABLE &&
-                            Type_Is_Task(s->type) &&
+                        if (s and s->kind == SYMBOL_VARIABLE and
+                            Type_Is_Task(s->type) and
                             Slice_Equal_Ignore_Case(s->name, node->task_spec.name)) {
                             obj_sym = s;
                             break;
@@ -22065,7 +21834,7 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     uint32_t handle_tmp = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = call ptr @__ada_task_start(ptr @task_",
                          handle_tmp);
-                    if (cg->current_instance && cg->current_instance->generic_template) {
+                    if (cg->current_instance and cg->current_instance->generic_template) {
                         /* Emit instance name prefix for unique task body function */
                         String_Slice inst_mangled = Symbol_Mangle_Name(cg->current_instance);
                         for (uint32_t i = 0; i < inst_mangled.length; i++) {
@@ -22092,7 +21861,7 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
 
         case NK_TASK_BODY:
             /* Defer task body generation when inside another function */
-            if (cg->current_function && cg->deferred_count < 64) {
+            if (cg->current_function and cg->deferred_count < 64) {
                 cg->deferred_bodies[cg->deferred_count++] = node;
             } else {
                 Generate_Task_Body(cg, node);
@@ -22137,7 +21906,7 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
  * ───────────────────────────────────────────────────────────────────────── */
 
 static void Generate_Type_Equality_Function(Code_Generator *cg, Type_Info *t) {
-    if (!t || !t->equality_func_name) return;
+    if (not t or not t->equality_func_name) return;
 
     const char *func_name = t->equality_func_name;
 
@@ -22179,8 +21948,8 @@ static void Generate_Type_Equality_Function(Code_Generator *cg, Type_Info *t) {
                 Type_Info *ct = comp->component_type;
                 bool is_fat_ptr_access = Type_Needs_Fat_Pointer(ct);
 
-                if (Type_Is_Unconstrained_Array(ct) ||
-                    (!Type_Is_Constrained_Array(ct) && Type_Is_String(ct))) {
+                if (Type_Is_Unconstrained_Array(ct) or
+                    (not Type_Is_Constrained_Array(ct) and Type_Is_String(ct))) {
                     /* Unconstrained array/string - load fat pointer values from storage */
                     const char *eqf_bt = Array_Bound_Llvm_Type(ct);
                     uint32_t left_fat = Emit_Load_Fat_Pointer_From_Temp(cg, left_gep, eqf_bt);
@@ -22332,7 +22101,7 @@ static void Generate_Exception_Globals(Code_Generator *cg) {
 /* Check if external name is a builtin/runtime function (already defined) */
 static bool Is_Builtin_Function(String_Slice name) {
     /* Strip quotes if present */
-    if (name.length >= 2 && name.data[0] == '"' && name.data[name.length-1] == '"') {
+    if (name.length >= 2 and name.data[0] == '"' and name.data[name.length-1] == '"') {
         name.data++;
         name.length -= 2;
     }
@@ -22350,7 +22119,7 @@ static bool Is_Builtin_Function(String_Slice name) {
         NULL
     };
     for (int i = 0; builtins[i]; i++) {
-        if (name.length == strlen(builtins[i]) &&
+        if (name.length == strlen(builtins[i]) and
             memcmp(name.data, builtins[i], name.length) == 0) {
             return true;
         }
@@ -22360,15 +22129,15 @@ static bool Is_Builtin_Function(String_Slice name) {
 
 /* Emit function signature for extern declaration */
 static void Emit_Extern_Subprogram(Code_Generator *cg, Symbol *sym) {
-    if (!sym) return;
-    if (sym->kind != SYMBOL_FUNCTION && sym->kind != SYMBOL_PROCEDURE) return;
+    if (not sym) return;
+    if (sym->kind != SYMBOL_FUNCTION and sym->kind != SYMBOL_PROCEDURE) return;
 
     /* Skip if already emitted */
     if (sym->extern_emitted) return;
     sym->extern_emitted = true;
 
     /* Skip if this is a builtin function that we've already defined */
-    if (sym->is_imported && sym->external_name.length > 0) {
+    if (sym->is_imported and sym->external_name.length > 0) {
         if (Is_Builtin_Function(sym->external_name)) {
             return;
         }
@@ -22385,12 +22154,12 @@ static void Emit_Extern_Subprogram(Code_Generator *cg, Symbol *sym) {
     for (uint32_t i = 0; i < sym->parameter_count; i++) {
         if (i > 0) Emit(cg, ", ");
         /* Handle ALI-loaded symbols without full parameter info */
-        Type_Info *ty = (sym->parameters && i < sym->parameter_count)
+        Type_Info *ty = (sym->parameters and i < sym->parameter_count)
                         ? sym->parameters[i].param_type : NULL;
         if (ty) {
             /* Unconstrained arrays pass as fat pointers */
-            if (Type_Is_Unconstrained_Array(ty) ||
-                (!Type_Is_Constrained_Array(ty) && Type_Is_String(ty))) {
+            if (Type_Is_Unconstrained_Array(ty) or
+                (not Type_Is_Constrained_Array(ty) and Type_Is_String(ty))) {
                 Emit(cg, FAT_PTR_TYPE);
             } else {
                 Emit(cg, "%s", Type_To_Llvm(ty));
@@ -22404,7 +22173,7 @@ static void Emit_Extern_Subprogram(Code_Generator *cg, Symbol *sym) {
 
 /* Generate extern declarations for all loaded package specs */
 static void Generate_Extern_Declarations(Code_Generator *cg, Syntax_Node *node) {
-    if (!node || !node->compilation_unit.context) return;
+    if (not node or not node->compilation_unit.context) return;
 
     Syntax_Node *ctx = node->compilation_unit.context;
     bool emitted_header = false;
@@ -22417,30 +22186,30 @@ static void Generate_Extern_Declarations(Code_Generator *cg, Syntax_Node *node) 
             if (pkg_name->kind != NK_IDENTIFIER) continue;
 
             Symbol *pkg_sym = pkg_name->symbol;
-            if (!pkg_sym || pkg_sym->kind != SYMBOL_PACKAGE) continue;
+            if (not pkg_sym or pkg_sym->kind != SYMBOL_PACKAGE) continue;
 
             /* Skip extern declarations for packages whose bodies will be code-generated.
              * Those symbols will be defined, not external. */
             if (Body_Already_Loaded(pkg_sym->name)) continue;
 
             /* For ALI-loaded packages without declaration, use exported[] array */
-            if (!pkg_sym->declaration && pkg_sym->exported_count > 0) {
+            if (not pkg_sym->declaration and pkg_sym->exported_count > 0) {
                 for (uint32_t k = 0; k < pkg_sym->exported_count; k++) {
                     Symbol *sym = pkg_sym->exported[k];
-                    if (!sym) continue;
-                    if (sym->kind == SYMBOL_FUNCTION || sym->kind == SYMBOL_PROCEDURE) {
-                        if (!emitted_header) {
+                    if (not sym) continue;
+                    if (sym->kind == SYMBOL_FUNCTION or sym->kind == SYMBOL_PROCEDURE) {
+                        if (not emitted_header) {
                             Emit(cg, "\n; External Ada subprogram declarations\n");
                             emitted_header = true;
                         }
                         Emit_Extern_Subprogram(cg, sym);
-                    } else if (sym->kind == SYMBOL_VARIABLE || sym->kind == SYMBOL_CONSTANT) {
-                        if (!sym->is_named_number && !sym->extern_emitted) {
+                    } else if (sym->kind == SYMBOL_VARIABLE or sym->kind == SYMBOL_CONSTANT) {
+                        if (not sym->is_named_number and not sym->extern_emitted) {
                             sym->extern_emitted = true;
                             Type_Info *ty = sym->type;
                             const char *type_str = Type_To_Llvm(ty);
-                            bool is_string = (!Type_Is_Constrained_Array(ty) && Type_Is_String(ty)) ||
-                                (Type_Is_Unconstrained_Array(ty) &&
+                            bool is_string = (not Type_Is_Constrained_Array(ty) and Type_Is_String(ty)) or
+                                (Type_Is_Unconstrained_Array(ty) and
                                  Type_Is_Character(ty->array.element_type));
                             if (is_string) type_str = FAT_PTR_TYPE;
                             Emit(cg, "@");
@@ -22452,7 +22221,7 @@ static void Generate_Extern_Declarations(Code_Generator *cg, Syntax_Node *node) 
                 continue;  /* Done with this package */
             }
 
-            if (!pkg_sym->declaration) continue;
+            if (not pkg_sym->declaration) continue;
 
             Syntax_Node *pkg_decl = pkg_sym->declaration;
             if (pkg_decl->kind != NK_PACKAGE_SPEC) continue;
@@ -22460,10 +22229,10 @@ static void Generate_Extern_Declarations(Code_Generator *cg, Syntax_Node *node) 
             /* Emit extern for each subprogram and object in the package */
             for (uint32_t k = 0; k < pkg_decl->package_spec.visible_decls.count; k++) {
                 Syntax_Node *decl = pkg_decl->package_spec.visible_decls.items[k];
-                if (!decl) continue;
+                if (not decl) continue;
 
-                if (decl->kind == NK_PROCEDURE_SPEC || decl->kind == NK_FUNCTION_SPEC) {
-                    if (!emitted_header) {
+                if (decl->kind == NK_PROCEDURE_SPEC or decl->kind == NK_FUNCTION_SPEC) {
+                    if (not emitted_header) {
                         Emit(cg, "\n; External Ada subprogram declarations\n");
                         emitted_header = true;
                     }
@@ -22474,14 +22243,14 @@ static void Generate_Extern_Declarations(Code_Generator *cg, Syntax_Node *node) 
                     for (uint32_t m = 0; m < decl->object_decl.names.count; m++) {
                         Syntax_Node *name = decl->object_decl.names.items[m];
                         Symbol *sym = name ? name->symbol : NULL;
-                        if (!sym || sym->is_named_number) continue;
+                        if (not sym or sym->is_named_number) continue;
                         if (sym->extern_emitted) continue;
                         sym->extern_emitted = true;
                         Type_Info *ty = sym->type;
                         const char *type_str = Type_To_Llvm(ty);
                         /* String constants use fat pointer type */
-                        bool is_string = (!Type_Is_Constrained_Array(ty) && Type_Is_String(ty)) ||
-                            (Type_Is_Unconstrained_Array(ty) &&
+                        bool is_string = (not Type_Is_Constrained_Array(ty) and Type_Is_String(ty)) or
+                            (Type_Is_Unconstrained_Array(ty) and
                              Type_Is_Character(ty->array.element_type));
                         if (is_string) type_str = FAT_PTR_TYPE;
                         Emit(cg, "@");
@@ -22502,10 +22271,10 @@ static void Generate_Extern_Declarations(Code_Generator *cg, Syntax_Node *node) 
  * ───────────────────────────────────────────────────────────────────────── */
 
 static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
-    if (!node) return;
+    if (not node) return;
 
     /* Generate LLVM module header (only once per file) */
-    if (!cg->header_emitted) {
+    if (not cg->header_emitted) {
     Emit(cg, "; Ada83 Compiler Output\n");
     Emit(cg, "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128\"\n");
     Emit(cg, "target triple = \"x86_64-pc-linux-gnu\"\n\n");
@@ -23145,11 +22914,11 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
      * Emit @main() for the LAST parameterless library-level procedure in the file.
      * We track main_candidate and emit at end of Compile_File instead. */
     Syntax_Node *unit = node->compilation_unit.unit;
-    if (unit && unit->kind == NK_PROCEDURE_BODY && unit->symbol) {
+    if (unit and unit->kind == NK_PROCEDURE_BODY and unit->symbol) {
         Symbol *main_sym = unit->symbol;
         /* Check if this is a library-level procedure (no parameters)
          * and NOT a SEPARATE subunit */
-        if (main_sym->parameter_count == 0 && !unit->subprogram_body.is_separate) {
+        if (main_sym->parameter_count == 0 and not unit->subprogram_body.is_separate) {
             cg->main_candidate = main_sym;
         }
     }
@@ -23173,7 +22942,7 @@ static int Loaded_Body_Names_Count = 0;
 
 static bool Body_Already_Loaded(String_Slice name) {
     for (int i = 0; i < Loaded_Body_Names_Count; i++) {
-        if (Loaded_Body_Names[i].length == name.length &&
+        if (Loaded_Body_Names[i].length == name.length and
             strncasecmp(Loaded_Body_Names[i].data, name.data, name.length) == 0) {
             return true;
         }
@@ -23197,7 +22966,7 @@ static Loading_Set Loading_Packages = {0};
 
 static bool Loading_Set_Contains(String_Slice name) {
     for (int i = 0; i < Loading_Packages.count; i++) {
-        if (Loading_Packages.names[i].length == name.length &&
+        if (Loading_Packages.names[i].length == name.length and
             strncasecmp(Loading_Packages.names[i].data, name.data, name.length) == 0) {
             return true;
         }
@@ -23213,7 +22982,7 @@ static void Loading_Set_Add(String_Slice name) {
 
 static void Loading_Set_Remove(String_Slice name) {
     for (int i = 0; i < Loading_Packages.count; i++) {
-        if (Loading_Packages.names[i].length == name.length &&
+        if (Loading_Packages.names[i].length == name.length and
             strncasecmp(Loading_Packages.names[i].data, name.data, name.length) == 0) {
             /* Swap with last and decrement count */
             Loading_Packages.names[i] = Loading_Packages.names[--Loading_Packages.count];
@@ -23224,7 +22993,7 @@ static void Loading_Set_Remove(String_Slice name) {
 
 static char *Read_File_Simple(const char *path) {
     FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
+    if (not f) return NULL;
 
     fseek(f, 0, SEEK_END);
     long fsize = ftell(f);
@@ -23233,7 +23002,7 @@ static char *Read_File_Simple(const char *path) {
     fseek(f, 0, SEEK_SET);
 
     char *buffer = malloc(size + 1);
-    if (!buffer) { fclose(f); return NULL; }
+    if (not buffer) { fclose(f); return NULL; }
 
     size_t read_size = fread(buffer, 1, size, f);
     fclose(f);
@@ -23250,12 +23019,12 @@ static char *Lookup_Path(String_Slice name) {
         size_t base_len = strlen(Include_Paths[i]);
         snprintf(path, sizeof(path), "%s%s%.*s",
                  Include_Paths[i],
-                 (base_len > 0 && Include_Paths[i][base_len-1] != '/') ? "/" : "",
+                 (base_len > 0 and Include_Paths[i][base_len-1] != '/') ? "/" : "",
                  (int)name.length, name.data);
 
         /* Lowercase the filename part */
         for (char *p = path + base_len; *p; p++) {
-            if (*p >= 'A' && *p <= 'Z') *p = *p - 'A' + 'a';
+            if (*p >= 'A' and *p <= 'Z') *p = *p - 'A' + 'a';
         }
 
         /* Try .ads extension */
@@ -23278,10 +23047,10 @@ static bool Has_Precompiled_LL(String_Slice name) {
         size_t base_len = strlen(Include_Paths[i]);
         snprintf(path, sizeof(path), "%s%s%.*s",
                  Include_Paths[i],
-                 (base_len > 0 && Include_Paths[i][base_len-1] != '/') ? "/" : "",
+                 (base_len > 0 and Include_Paths[i][base_len-1] != '/') ? "/" : "",
                  (int)name.length, name.data);
         for (char *p = path + base_len; *p; p++) {
-            if (*p >= 'A' && *p <= 'Z') *p = *p - 'A' + 'a';
+            if (*p >= 'A' and *p <= 'Z') *p = *p - 'A' + 'a';
         }
         snprintf(full_path, sizeof(full_path), "%s.ll", path);
         FILE *f = fopen(full_path, "r");
@@ -23298,12 +23067,12 @@ static char *Lookup_Path_Body(String_Slice name) {
         size_t base_len = strlen(Include_Paths[i]);
         snprintf(path, sizeof(path), "%s%s%.*s",
                  Include_Paths[i],
-                 (base_len > 0 && Include_Paths[i][base_len-1] != '/') ? "/" : "",
+                 (base_len > 0 and Include_Paths[i][base_len-1] != '/') ? "/" : "",
                  (int)name.length, name.data);
 
         /* Lowercase the filename part */
         for (char *p = path + base_len; *p; p++) {
-            if (*p >= 'A' && *p <= 'Z') *p = *p - 'A' + 'a';
+            if (*p >= 'A' and *p <= 'Z') *p = *p - 'A' + 'a';
         }
 
         /* Try .adb extension */
@@ -23328,11 +23097,11 @@ static bool Try_Load_From_ALI(Symbol_Manager *sm, String_Slice name);
 
 /* Load and resolve a package specification */
 static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src) {
-    if (!src) return;
+    if (not src) return;
 
     /* Check if already loaded */
     Symbol *existing = Symbol_Find(sm, name);
-    if (existing && existing->kind == SYMBOL_PACKAGE && existing->declaration) {
+    if (existing and existing->kind == SYMBOL_PACKAGE and existing->declaration) {
         return;  /* Already loaded */
     }
 
@@ -23356,7 +23125,7 @@ static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src) 
     Parser p = Parser_New(src, strlen(src), filename);
     Syntax_Node *cu = Parse_Compilation_Unit(&p);
 
-    if (!cu) {
+    if (not cu) {
         Loading_Set_Remove(name);
         return;
     }
@@ -23413,9 +23182,9 @@ static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src) 
             Syntax_Node *inner = unit->generic_decl.unit;
             String_Slice unit_name = {0};
 
-            if (inner && inner->kind == NK_PACKAGE_SPEC) {
+            if (inner and inner->kind == NK_PACKAGE_SPEC) {
                 unit_name = inner->package_spec.name;
-            } else if (inner && (inner->kind == NK_PROCEDURE_SPEC ||
+            } else if (inner and (inner->kind == NK_PROCEDURE_SPEC or
                                  inner->kind == NK_FUNCTION_SPEC)) {
                 unit_name = inner->subprogram_spec.name;
             }
@@ -23437,7 +23206,7 @@ static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src) 
                 /* Resolve the generic package spec's declarations so type/exception
                  * names are available when the body is parsed. Push scope, install
                  * generic formals, then resolve visible/private declarations. */
-                if (inner && inner->kind == NK_PACKAGE_SPEC) {
+                if (inner and inner->kind == NK_PACKAGE_SPEC) {
                     Symbol_Manager_Push_Scope(sm, sym);
 
                     /* Install generic formal parameters */
@@ -23492,7 +23261,7 @@ static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src) 
         return;  /* Precompiled version will be linked in */
     }
     char *body_src = Lookup_Path_Body(name);
-    if (body_src && Loaded_Body_Count < 128) {
+    if (body_src and Loaded_Body_Count < 128) {
         Mark_Body_Loaded(name);
         /* Parse the body */
         char body_filename[256];
@@ -23500,7 +23269,7 @@ static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src) 
         Parser body_parser = Parser_New(body_src, strlen(body_src), body_filename);
         Syntax_Node *body_cu = Parse_Compilation_Unit(&body_parser);
 
-        if (body_cu && body_cu->compilation_unit.unit) {
+        if (body_cu and body_cu->compilation_unit.unit) {
             Syntax_Node *body_unit = body_cu->compilation_unit.unit;
 
             /* Recursively load WITH'd packages from body */
@@ -23525,7 +23294,7 @@ static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src) 
                 String_Slice body_name = body_unit->package_body.name;
                 Symbol *pkg_sym = Symbol_Find(sm, body_name);
 
-                if (pkg_sym && (pkg_sym->kind == SYMBOL_PACKAGE || pkg_sym->kind == SYMBOL_GENERIC)) {
+                if (pkg_sym and (pkg_sym->kind == SYMBOL_PACKAGE or pkg_sym->kind == SYMBOL_GENERIC)) {
                     /* Link body to spec */
                     body_unit->symbol = pkg_sym;
 
@@ -23541,13 +23310,13 @@ static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src) 
                      * into the body's scope (RM 7.1, 7.2) */
                     Syntax_Node *spec = pkg_sym->declaration;
                     /* For generics, install formals first, then look at the unit */
-                    if (spec && spec->kind == NK_GENERIC_DECL) {
+                    if (spec and spec->kind == NK_GENERIC_DECL) {
                         Node_List *formals = &spec->generic_decl.formals;
                         for (uint32_t i = 0; i < formals->count; i++) {
                             Syntax_Node *formal = formals->items[i];
                             if (formal->symbol) Symbol_Add(sm, formal->symbol);
                             /* For generic type parameters, create type symbol if needed */
-                            if (formal->kind == NK_GENERIC_TYPE_PARAM && !formal->symbol) {
+                            if (formal->kind == NK_GENERIC_TYPE_PARAM and not formal->symbol) {
                                 Symbol *type_sym = Symbol_New(SYMBOL_TYPE,
                                     formal->generic_type_param.name, formal->location);
                                 /* Map def_kind to appropriate Type_Kind */
@@ -23569,7 +23338,7 @@ static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src) 
                         }
                         spec = spec->generic_decl.unit;
                     }
-                    if (spec && spec->kind == NK_PACKAGE_SPEC) {
+                    if (spec and spec->kind == NK_PACKAGE_SPEC) {
                         /* Helper: install symbols from a declaration */
                         #define INSTALL_DECL_SYMBOLS(decl) do { \
                             if ((decl)->symbol) Symbol_Add(sm, (decl)->symbol); \
@@ -23585,7 +23354,7 @@ static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src) 
                                     if (n->symbol) Symbol_Add(sm, n->symbol); \
                                 } \
                             } \
-                            if ((decl)->kind == NK_TYPE_DECL && (decl)->type_decl.definition && \
+                            if ((decl)->kind == NK_TYPE_DECL and (decl)->type_decl.definition and \
                                 (decl)->type_decl.definition->kind == NK_ENUMERATION_TYPE) { \
                                 Node_List *lits = &(decl)->type_decl.definition->enum_type.literals; \
                                 for (uint32_t k = 0; k < lits->count; k++) { \
@@ -23619,317 +23388,7 @@ static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src) 
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * §15. MAIN DRIVER
- * ═══════════════════════════════════════════════════════════════════════════
- */
-
-static char *Read_File(const char *path, size_t *out_size) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
-
-    fseek(f, 0, SEEK_END);
-    long fsize = ftell(f);
-    if (fsize < 0) { fclose(f); return NULL; }
-    size_t size = (size_t)fsize;
-    fseek(f, 0, SEEK_SET);
-
-    char *buffer = malloc(size + 1);
-    if (!buffer) { fclose(f); return NULL; }
-
-    size_t read = fread(buffer, 1, size, f);
-    fclose(f);
-
-    buffer[read] = '\0';
-    *out_size = read;
-    return buffer;
-}
-
-/* Forward declaration for ALI file generation (defined in §16) */
-static void Generate_ALI_File(const char *output_path,
-                              Syntax_Node **units, int unit_count,
-                              const char *source, size_t source_size,
-                              Symbol_Manager *sm);
-
-static void Compile_File(const char *input_path, const char *output_path) {
-    /* Reset loaded bodies for this compilation */
-    Loaded_Body_Count = 0;
-    Loaded_Body_Names_Count = 0;
-
-    size_t source_size;
-    char *source = Read_File(input_path, &source_size);
-
-    if (!source) {
-        fprintf(stderr, "Error: cannot read file '%s'\n", input_path);
-        return;
-    }
-
-    /* Parse all compilation units in the file */
-    Parser parser = Parser_New(source, source_size, input_path);
-    Syntax_Node *units[64];
-    int unit_count = 0;
-
-    while (parser.current_token.kind != TK_EOF && unit_count < 64 && !parser.had_error) {
-        units[unit_count++] = Parse_Compilation_Unit(&parser);
-    }
-
-    if (parser.had_error) {
-        fprintf(stderr, "Parsing failed with %d error(s)\n", Error_Count);
-        free(source);
-        return;
-    }
-
-    /* Semantic analysis for all units */
-    Symbol_Manager *sm = Symbol_Manager_New();
-    for (int i = 0; i < unit_count; i++) {
-        Resolve_Compilation_Unit(sm, units[i]);
-    }
-
-    if (Error_Count > 0) {
-        fprintf(stderr, "Semantic analysis failed with %d error(s)\n", Error_Count);
-        free(source);
-        return;
-    }
-
-    /* Code generation */
-    FILE *out_file;
-    bool close_output = false;
-
-    if (output_path) {
-        out_file = fopen(output_path, "w");
-        if (!out_file) {
-            fprintf(stderr, "Error: cannot open output file '%s'\n", output_path);
-            free(source);
-            return;
-        }
-        close_output = true;
-    } else {
-        out_file = stdout;  /* Output to stdout if no -o specified */
-    }
-
-    Code_Generator *cg = Code_Generator_New(out_file, sm);
-    for (int i = 0; i < unit_count; i++) {
-        Generate_Compilation_Unit(cg, units[i]);
-    }
-
-    /* Generate code for loaded package bodies (e.g., TEXT_IO) */
-    for (int i = 0; i < Loaded_Body_Count; i++) {
-        Generate_Compilation_Unit(cg, Loaded_Package_Bodies[i]);
-    }
-
-    /* Note: Derived type operations (RM 3.4) don't need wrapper functions.
-     * Derived types have identical representation to parent types in Ada 83,
-     * so calls to derived operations are emitted directly to the parent's
-     * implementation (GNAT-style optimization). See call_target handling
-     * in Generate_Apply(). */
-
-    /* Emit address marker globals for 'ADDRESS attribute on packages/generics */
-    for (uint32_t i = 0; i < cg->address_marker_count; i++) {
-        Symbol *sym = cg->address_markers[i];
-        Emit(cg, "@__addr.");
-        Emit_Symbol_Name(cg, sym);
-        Emit(cg, " = linkonce_odr constant i8 0\n");
-    }
-
-    /* Emit @main() for the last parameterless library-level procedure */
-    if (cg->main_candidate) {
-        Emit(cg, "\n; C main entry point\n");
-        Emit(cg, "define i32 @main() {\n");
-        Emit(cg, "  call void @");
-        Emit_Symbol_Name(cg, cg->main_candidate);
-        Emit(cg, "()\n");
-        Emit(cg, "  ret i32 0\n");
-        Emit(cg, "}\n");
-    }
-
-    if (close_output) {
-        fclose(out_file);
-        fprintf(stderr, "Compiled '%s' -> '%s'\n", input_path, output_path);
-
-        /* Generate GNAT-compatible .ali file for dependency tracking */
-        Generate_ALI_File(output_path, units, unit_count, source, source_size, sm);
-    }
-    free(source);
-}
-
-/* ─────────────────────────────────────────────────────────────────────────
- * Derive output .ll path from input path by replacing extension.
- * Writes into caller-supplied buffer.
- * ───────────────────────────────────────────────────────────────────────── */
-static void Derive_Output_Path(const char *input, char *out, size_t out_size) {
-    strncpy(out, input, out_size - 1);
-    out[out_size - 1] = '\0';
-    char *dot = strrchr(out, '.');
-    char *slash = strrchr(out, '/');
-    /* Only replace if the dot is after the last slash (i.e., part of filename) */
-    if (dot && (!slash || dot > slash))
-        strcpy(dot, ".ll");
-    else
-        strncat(out, ".ll", out_size - strlen(out) - 1);
-}
-
-/* ─────────────────────────────────────────────────────────────────────────
- * Parallel compilation — fork-based worker called from a pthread.
- *
- * Each thread forks a child process that compiles one file.  fork() gives
- * complete isolation of all global state (arena, error count, loaded
- * packages, etc.) without refactoring Compile_File.
- * ───────────────────────────────────────────────────────────────────────── */
-typedef struct {
-    const char *input_path;
-    const char *output_path;  /* NULL → derive from input */
-    int         exit_status;  /* 0 = success, 1 = failure */
-} Compile_Job;
-
-static void *Compile_Worker(void *arg) {
-    Compile_Job *job = (Compile_Job *)arg;
-
-    char derived[512];
-    const char *out = job->output_path;
-    if (!out) {
-        Derive_Output_Path(job->input_path, derived, sizeof(derived));
-        out = derived;
-    }
-
-    pid_t pid = fork();
-    if (pid == 0) {
-        /* Child — compile and exit */
-        Compile_File(job->input_path, out);
-        _exit(Error_Count > 0 ? 1 : 0);
-    } else if (pid > 0) {
-        int status;
-        waitpid(pid, &status, 0);
-        job->exit_status = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
-    } else {
-        perror("fork");
-        job->exit_status = 1;
-    }
-    return NULL;
-}
-
-int main(int argc, char *argv[]) {
-    if (argc < 2) {
-        fprintf(stderr,
-            "Usage: %s [-I path] <input.ada ...> [-o output.ll]\n", argv[0]);
-        return 1;
-    }
-
-    const char *inputs[256];
-    int input_count = 0;
-    const char *output = NULL;  /* NULL means derive from input name */
-
-    /* Parse command-line arguments */
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-I") == 0 && i + 1 < argc) {
-            if (Include_Path_Count < 32)
-                Include_Paths[Include_Path_Count++] = argv[++i];
-        } else if (strncmp(argv[i], "-I", 2) == 0) {
-            if (Include_Path_Count < 32)
-                Include_Paths[Include_Path_Count++] = argv[i] + 2;
-        } else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
-            output = argv[++i];
-        } else if (argv[i][0] != '-') {
-            if (input_count < 256)
-                inputs[input_count++] = argv[i];
-        }
-    }
-
-    if (input_count == 0) {
-        fprintf(stderr, "Error: no input file specified\n");
-        return 1;
-    }
-
-    if (output && input_count > 1) {
-        fprintf(stderr, "Error: -o cannot be used with multiple input files\n");
-        return 1;
-    }
-
-    /* ── Auto-discover rts path from executable location ──────────────── */
-    {
-        char exe_path[PATH_MAX];
-        ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
-        if (len > 0) {
-            exe_path[len] = '\0';
-        } else {
-            /* Fallback: use argv[0] */
-            strncpy(exe_path, argv[0], sizeof(exe_path) - 1);
-            exe_path[sizeof(exe_path) - 1] = '\0';
-        }
-        char *slash = strrchr(exe_path, '/');
-        if (slash) {
-            *slash = '\0';
-            static char rts_path[PATH_MAX + 8];
-            snprintf(rts_path, sizeof(rts_path), "%s/rts", exe_path);
-            struct stat st;
-            if (stat(rts_path, &st) == 0 && S_ISDIR(st.st_mode)) {
-                if (Include_Path_Count < 32)
-                    Include_Paths[Include_Path_Count++] = rts_path;
-            }
-        }
-    }
-
-    /* ── Auto-discover input file's directory as include path ─────────── */
-    {
-        const char *slash = strrchr(inputs[0], '/');
-        if (slash) {
-            static char input_dir[PATH_MAX];
-            size_t dir_len = (size_t)(slash - inputs[0]);
-            if (dir_len >= sizeof(input_dir)) dir_len = sizeof(input_dir) - 1;
-            memcpy(input_dir, inputs[0], dir_len);
-            input_dir[dir_len] = '\0';
-            if (Include_Path_Count < 32)
-                Include_Paths[Include_Path_Count++] = input_dir;
-        }
-    }
-
-    /* Add current directory to include paths by default */
-    if (Include_Path_Count < 32)
-        Include_Paths[Include_Path_Count++] = ".";
-
-    /* ── Compile ──────────────────────────────────────────────────────── */
-    if (input_count == 1) {
-        /* Single file — existing sequential behaviour */
-        Compile_File(inputs[0], output);
-        Arena_Free_All();
-        return Error_Count > 0 ? 1 : 0;
-    }
-
-    /* Multiple files — parallel compilation using pthreads + fork */
-    long nprocs = sysconf(_SC_NPROCESSORS_ONLN);
-    if (nprocs < 1) nprocs = 1;
-    int nthreads = (input_count < (int)nprocs) ? input_count : (int)nprocs;
-
-    Compile_Job jobs[256];
-    pthread_t threads[256];
-
-    for (int base = 0; base < input_count; base += nthreads) {
-        int batch = input_count - base;
-        if (batch > nthreads) batch = nthreads;
-
-        for (int i = 0; i < batch; i++) {
-            jobs[base + i].input_path = inputs[base + i];
-            jobs[base + i].output_path = NULL;  /* derive from input */
-            jobs[base + i].exit_status = 0;
-            pthread_create(&threads[i], NULL, Compile_Worker,
-                           &jobs[base + i]);
-        }
-        for (int i = 0; i < batch; i++) {
-            pthread_join(threads[i], NULL);
-        }
-    }
-
-    int failed = 0;
-    for (int i = 0; i < input_count; i++) {
-        if (jobs[i].exit_status != 0) failed++;
-    }
-
-    if (failed > 0)
-        fprintf(stderr, "%d of %d compilations failed\n", failed, input_count);
-
-    return failed > 0 ? 1 : 0;
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════
- * §16. ALI FILE WRITER — GNAT-Compatible Library Information
+ * §15. ALI FILE WRITER — GNAT-Compatible Library Information
  * ═══════════════════════════════════════════════════════════════════════════
  *
  * Ada Library Information (.ali) files record compilation dependencies and
@@ -23948,7 +23407,7 @@ int main(int argc, char *argv[]) {
  */
 
 /* ─────────────────────────────────────────────────────────────────────────
- * §16.1 Unit_Info — Compilation unit metadata collector
+ * §15.1 Unit_Info — Compilation unit metadata collector
  * ───────────────────────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -24000,7 +23459,7 @@ typedef struct {
 } ALI_Info;
 
 /* ─────────────────────────────────────────────────────────────────────────
- * §16.2 CRC32 — Fast checksum for source identity
+ * §15.2 CRC32 — Fast checksum for source identity
  *
  * Standard CRC-32/ISO-HDLC polynomial: 0xEDB88320 (bit-reversed 0x04C11DB7)
  * ───────────────────────────────────────────────────────────────────────── */
@@ -24028,7 +23487,7 @@ static uint32_t Crc32(const char *data, size_t length) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
- * §16.3 Unit_Name_To_File — GNAT naming convention
+ * §15.3 Unit_Name_To_File — GNAT naming convention
  *
  * Maps Ada unit names to file names:
  *   Package_Name      → package_name.ads
@@ -24039,11 +23498,11 @@ static uint32_t Crc32(const char *data, size_t length) {
 static void Unit_Name_To_File(String_Slice unit_name, bool is_body,
                               char *out, size_t out_size) {
     size_t j = 0;
-    for (size_t i = 0; i < unit_name.length && j < out_size - 5; i++) {
+    for (size_t i = 0; i < unit_name.length and j < out_size - 5; i++) {
         char c = unit_name.data[i];
         if (c == '.') {
             out[j++] = '-';  /* Dots become hyphens */
-        } else if (c >= 'A' && c <= 'Z') {
+        } else if (c >= 'A' and c <= 'Z') {
             out[j++] = c - 'A' + 'a';  /* Lowercase */
         } else {
             out[j++] = c;
@@ -24051,26 +23510,26 @@ static void Unit_Name_To_File(String_Slice unit_name, bool is_body,
     }
     /* Append extension */
     const char *ext = is_body ? ".adb" : ".ads";
-    for (int k = 0; ext[k] && j < out_size - 1; k++)
+    for (int k = 0; ext[k] and j < out_size - 1; k++)
         out[j++] = ext[k];
     out[j] = '\0';
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
- * §16.4 ALI_Collect — Gather unit info from parsed AST
+ * §15.4 ALI_Collect — Gather unit info from parsed AST
  * ───────────────────────────────────────────────────────────────────────── */
 
 static void ALI_Collect_Withs(ALI_Info *ali, Syntax_Node *ctx) {
-    if (!ctx) return;
+    if (not ctx) return;
 
     for (uint32_t i = 0; i < ctx->context.with_clauses.count; i++) {
         Syntax_Node *with_node = ctx->context.with_clauses.items[i];
-        if (!with_node) continue;
+        if (not with_node) continue;
 
         /* Each WITH clause may have multiple names */
         for (uint32_t j = 0; j < with_node->use_clause.names.count; j++) {
             Syntax_Node *name = with_node->use_clause.names.items[j];
-            if (!name || ali->with_count >= 64) continue;
+            if (not name or ali->with_count >= 64) continue;
 
             With_Info *w = &ali->withs[ali->with_count++];
             w->name = name->kind == NK_IDENTIFIER ?
@@ -24098,10 +23557,10 @@ static void ALI_Collect_Withs(ALI_Info *ali, Syntax_Node *ctx) {
 
 /* Helper: extract unit name from a subprogram spec/body */
 static String_Slice Get_Subprogram_Name(Syntax_Node *node) {
-    if (!node) return (String_Slice){"UNKNOWN", 7};
-    if (node->kind == NK_PROCEDURE_SPEC || node->kind == NK_FUNCTION_SPEC)
+    if (not node) return (String_Slice){"UNKNOWN", 7};
+    if (node->kind == NK_PROCEDURE_SPEC or node->kind == NK_FUNCTION_SPEC)
         return node->subprogram_spec.name;
-    if (node->kind == NK_PROCEDURE_BODY || node->kind == NK_FUNCTION_BODY) {
+    if (node->kind == NK_PROCEDURE_BODY or node->kind == NK_FUNCTION_BODY) {
         /* Body has spec nested inside */
         if (node->subprogram_body.specification)
             return Get_Subprogram_Name(node->subprogram_body.specification);
@@ -24115,10 +23574,10 @@ static void ALI_Collect_Exports(ALI_Info *ali, Syntax_Node *unit, Symbol_Manager
 static void ALI_Collect_Unit(ALI_Info *ali, Syntax_Node *cu,
                              const char *source, size_t source_size,
                              Symbol_Manager *sm) {
-    if (!cu || ali->unit_count >= 8) return;
+    if (not cu or ali->unit_count >= 8) return;
 
     Syntax_Node *unit = cu->compilation_unit.unit;
-    if (!unit) return;
+    if (not unit) return;
 
     Unit_Info *u = &ali->units[ali->unit_count++];
 
@@ -24148,7 +23607,7 @@ static void ALI_Collect_Unit(ALI_Info *ali, Syntax_Node *cu,
                 Syntax_Node *inner = unit->generic_decl.unit;
                 if (inner->kind == NK_PACKAGE_SPEC)
                     u->unit_name = inner->package_spec.name;
-                else if (inner->kind == NK_PROCEDURE_SPEC || inner->kind == NK_FUNCTION_SPEC)
+                else if (inner->kind == NK_PROCEDURE_SPEC or inner->kind == NK_FUNCTION_SPEC)
                     u->unit_name = inner->subprogram_spec.name;
             }
             u->is_body = false;
@@ -24175,7 +23634,7 @@ static void ALI_Collect_Unit(ALI_Info *ali, Syntax_Node *cu,
     ALI_Collect_Withs(ali, cu->compilation_unit.context);
 
     /* Collect exported symbols from package specs */
-    if (unit && unit->kind == NK_PACKAGE_SPEC) {
+    if (unit and unit->kind == NK_PACKAGE_SPEC) {
         ALI_Collect_Exports(ali, unit, sm);
     }
 }
@@ -24186,7 +23645,7 @@ static void ALI_Collect_Unit(ALI_Info *ali, Syntax_Node *cu,
 static String_Slice LLVM_Type_Basic(Symbol_Manager *sm, String_Slice ada_type) {
     /* Look up in the symbol table for proper type-system derivation */
     Symbol *sym = Symbol_Find(sm, ada_type);
-    if (sym && sym->type) {
+    if (sym and sym->type) {
         const char *llvm = Type_To_Llvm(sym->type);
         return (String_Slice){llvm, strlen(llvm)};
     }
@@ -24198,18 +23657,18 @@ static String_Slice LLVM_Type_Basic(Symbol_Manager *sm, String_Slice ada_type) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
- * §16.4.2 ALI_Collect_Exports — Gather exported symbols from package spec
+ * §15.4.2 ALI_Collect_Exports — Gather exported symbols from package spec
  * ───────────────────────────────────────────────────────────────────────── */
 
 static void ALI_Collect_Exports(ALI_Info *ali, Syntax_Node *unit, Symbol_Manager *sm) {
-    if (!unit || unit->kind != NK_PACKAGE_SPEC) return;
+    if (not unit or unit->kind != NK_PACKAGE_SPEC) return;
 
     String_Slice pkg_name = unit->package_spec.name;
     Node_List *decls = &unit->package_spec.visible_decls;
 
-    for (uint32_t i = 0; i < decls->count && ali->export_count < 256; i++) {
+    for (uint32_t i = 0; i < decls->count and ali->export_count < 256; i++) {
         Syntax_Node *decl = decls->items[i];
-        if (!decl) continue;
+        if (not decl) continue;
 
         Export_Info *exp = &ali->exports[ali->export_count];
         exp->line = decl->location.line;
@@ -24236,14 +23695,14 @@ static void ALI_Collect_Exports(ALI_Info *ali, Syntax_Node *unit, Symbol_Manager
                     if (def->kind == NK_IDENTIFIER) {
                         exp->type_name = def->string_val.text;
                         exp->llvm_type = LLVM_Type_Basic(sm, exp->type_name);
-                    } else if (def->kind == NK_SUBTYPE_INDICATION && def->subtype_ind.subtype_mark) {
+                    } else if (def->kind == NK_SUBTYPE_INDICATION and def->subtype_ind.subtype_mark) {
                         if (def->subtype_ind.subtype_mark->kind == NK_IDENTIFIER) {
                             exp->type_name = def->subtype_ind.subtype_mark->string_val.text;
                             exp->llvm_type = LLVM_Type_Basic(sm, exp->type_name);
                         }
                     }
                 }
-                if (!exp->llvm_type.data) {
+                if (not exp->llvm_type.data) {
                     const char *int_t = Llvm_Int_Type((uint32_t)To_Bits(sm->type_integer->size));
                     exp->llvm_type = (String_Slice){int_t, strlen(int_t)};
                 }
@@ -24251,15 +23710,15 @@ static void ALI_Collect_Exports(ALI_Info *ali, Syntax_Node *unit, Symbol_Manager
                 break;
 
             case NK_OBJECT_DECL:
-                for (uint32_t j = 0; j < decl->object_decl.names.count && ali->export_count < 256; j++) {
+                for (uint32_t j = 0; j < decl->object_decl.names.count and ali->export_count < 256; j++) {
                     Syntax_Node *name = decl->object_decl.names.items[j];
-                    if (name && name->kind == NK_IDENTIFIER) {
+                    if (name and name->kind == NK_IDENTIFIER) {
                         exp = &ali->exports[ali->export_count];
                         exp->name = name->string_val.text;
                         exp->kind = decl->object_decl.is_constant ? 'C' : 'V';
                         exp->line = name->location.line;
                         exp->mangled_name = Mangle_Qualified_Name(pkg_name, exp->name);
-                        if (decl->object_decl.object_type && decl->object_decl.object_type->kind == NK_IDENTIFIER) {
+                        if (decl->object_decl.object_type and decl->object_decl.object_type->kind == NK_IDENTIFIER) {
                             exp->type_name = decl->object_decl.object_type->string_val.text;
                             exp->llvm_type = LLVM_Type_Basic(sm, exp->type_name);
                         } else {
@@ -24277,7 +23736,7 @@ static void ALI_Collect_Exports(ALI_Info *ali, Syntax_Node *unit, Symbol_Manager
                 exp->mangled_name = Mangle_Qualified_Name(pkg_name, exp->name);
                 for (uint32_t j = 0; j < decl->subprogram_spec.parameters.count; j++) {
                     Syntax_Node *ps = decl->subprogram_spec.parameters.items[j];
-                    if (ps && ps->kind == NK_PARAM_SPEC)
+                    if (ps and ps->kind == NK_PARAM_SPEC)
                         exp->param_count += ps->param_spec.names.count;
                 }
                 exp->llvm_type = (String_Slice){"void", 4};
@@ -24290,10 +23749,10 @@ static void ALI_Collect_Exports(ALI_Info *ali, Syntax_Node *unit, Symbol_Manager
                 exp->mangled_name = Mangle_Qualified_Name(pkg_name, exp->name);
                 for (uint32_t j = 0; j < decl->subprogram_spec.parameters.count; j++) {
                     Syntax_Node *ps = decl->subprogram_spec.parameters.items[j];
-                    if (ps && ps->kind == NK_PARAM_SPEC)
+                    if (ps and ps->kind == NK_PARAM_SPEC)
                         exp->param_count += ps->param_spec.names.count;
                 }
-                if (decl->subprogram_spec.return_type && decl->subprogram_spec.return_type->kind == NK_IDENTIFIER) {
+                if (decl->subprogram_spec.return_type and decl->subprogram_spec.return_type->kind == NK_IDENTIFIER) {
                     exp->type_name = decl->subprogram_spec.return_type->string_val.text;
                     exp->llvm_type = LLVM_Type_Basic(sm, exp->type_name);
                 } else {
@@ -24304,9 +23763,9 @@ static void ALI_Collect_Exports(ALI_Info *ali, Syntax_Node *unit, Symbol_Manager
                 break;
 
             case NK_EXCEPTION_DECL:
-                for (uint32_t j = 0; j < decl->exception_decl.names.count && ali->export_count < 256; j++) {
+                for (uint32_t j = 0; j < decl->exception_decl.names.count and ali->export_count < 256; j++) {
                     Syntax_Node *name = decl->exception_decl.names.items[j];
-                    if (name && name->kind == NK_IDENTIFIER) {
+                    if (name and name->kind == NK_IDENTIFIER) {
                         exp = &ali->exports[ali->export_count];
                         exp->name = name->string_val.text;
                         exp->kind = 'E';
@@ -24325,7 +23784,7 @@ static void ALI_Collect_Exports(ALI_Info *ali, Syntax_Node *unit, Symbol_Manager
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
- * §16.5 ALI_Write — Emit .ali file in GNAT format
+ * §15.5 ALI_Write — Emit .ali file in GNAT format
  *
  * Per lib-writ.ads, the minimum valid ALI file needs:
  *   V line (version) — MUST be first
@@ -24363,15 +23822,15 @@ static void ALI_Write(FILE *out, ALI_Info *ali) {
         if (u->is_generic) fprintf(out, " GE");
         if (u->is_preelaborate) fprintf(out, " PR");
         if (u->is_pure) fprintf(out, " PU");
-        if (!u->has_elaboration) fprintf(out, " NE");
-        if (!u->is_body) fprintf(out, " PK");
+        if (not u->has_elaboration) fprintf(out, " NE");
+        if (not u->is_body) fprintf(out, " PK");
         else fprintf(out, " SU");
         fprintf(out, "\n");
 
         /* W lines: WITH dependencies for this unit */
         for (uint32_t j = 0; j < ali->with_count; j++) {
             With_Info *w = &ali->withs[j];
-            if (!w->name.data) continue;
+            if (not w->name.data) continue;
 
             char line_type = w->is_limited ? 'Y' : 'W';
             fprintf(out, "%c %.*s%s",
@@ -24462,7 +23921,7 @@ static void ALI_Write(FILE *out, ALI_Info *ali) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
- * §16.6 Generate_ALI_File — Entry point for ALI generation
+ * §15.6 Generate_ALI_File — Entry point for ALI generation
  * ───────────────────────────────────────────────────────────────────────── */
 
 static void Generate_ALI_File(const char *output_path,
@@ -24472,14 +23931,14 @@ static void Generate_ALI_File(const char *output_path,
     /* Build ALI path from output path (replace .ll with .ali) */
     char ali_path[512];
     size_t len = strlen(output_path);
-    if (len > 3 && strcmp(output_path + len - 3, ".ll") == 0) {
+    if (len > 3 and strcmp(output_path + len - 3, ".ll") == 0) {
         snprintf(ali_path, sizeof(ali_path), "%.*s.ali", (int)(len - 3), output_path);
     } else {
         snprintf(ali_path, sizeof(ali_path), "%s.ali", output_path);
     }
 
     FILE *ali_file = fopen(ali_path, "w");
-    if (!ali_file) {
+    if (not ali_file) {
         fprintf(stderr, "Warning: cannot create ALI file '%s'\n", ali_path);
         return;
     }
@@ -24498,7 +23957,7 @@ static void Generate_ALI_File(const char *output_path,
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
- * §16.7 ALI_Reader — Parse .ali files for dependency management
+ * §15.7 ALI_Reader — Parse .ali files for dependency management
  *
  * We read ALI files to:
  *   1. Skip recompilation of unchanged units (checksum match)
@@ -24547,7 +24006,7 @@ static uint32_t        ALI_Cache_Count = 0;
 
 /* Skip whitespace */
 static const char *ALI_Skip_Ws(const char *p) {
-    while (*p == ' ' || *p == '\t') p++;
+    while (*p == ' ' or *p == '\t') p++;
     return p;
 }
 
@@ -24555,7 +24014,7 @@ static const char *ALI_Skip_Ws(const char *p) {
 static const char *ALI_Read_Token(const char *p, char *buf, size_t bufsize) {
     p = ALI_Skip_Ws(p);
     size_t i = 0;
-    while (*p && *p != ' ' && *p != '\t' && *p != '\n' && i < bufsize - 1) {
+    while (*p and *p != ' ' and *p != '\t' and *p != '\n' and i < bufsize - 1) {
         buf[i++] = *p++;
     }
     buf[i] = '\0';
@@ -24567,9 +24026,9 @@ static uint32_t ALI_Parse_Hex(const char *s) {
     uint32_t val = 0;
     while (*s) {
         char c = *s++;
-        if (c >= '0' && c <= '9') val = (val << 4) | (c - '0');
-        else if (c >= 'A' && c <= 'F') val = (val << 4) | (c - 'A' + 10);
-        else if (c >= 'a' && c <= 'f') val = (val << 4) | (c - 'a' + 10);
+        if (c >= '0' and c <= '9') val = (val << 4) | (c - '0');
+        else if (c >= 'A' and c <= 'F') val = (val << 4) | (c - 'A' + 10);
+        else if (c >= 'a' and c <= 'f') val = (val << 4) | (c - 'a' + 10);
         else break;
     }
     return val;
@@ -24579,14 +24038,14 @@ static uint32_t ALI_Parse_Hex(const char *s) {
 static ALI_Cache_Entry *ALI_Read(const char *ali_path) {
     /* Check if already cached */
     for (uint32_t i = 0; i < ALI_Cache_Count; i++) {
-        if (ALI_Cache[i].ali_file && strcmp(ALI_Cache[i].ali_file, ali_path) == 0) {
+        if (ALI_Cache[i].ali_file and strcmp(ALI_Cache[i].ali_file, ali_path) == 0) {
             return &ALI_Cache[i];
         }
     }
 
     /* Read ALI file */
     FILE *f = fopen(ali_path, "r");
-    if (!f) return NULL;
+    if (not f) return NULL;
 
     /* Allocate cache entry */
     if (ALI_Cache_Count >= 256) {
@@ -24612,7 +24071,7 @@ static ALI_Cache_Entry *ALI_Read(const char *ali_path) {
             if (q) {
                 q++;
                 const char *end = strchr(q, '"');
-                if (end && (size_t)(end - q) < sizeof(ver)) {
+                if (end and (size_t)(end - q) < sizeof(ver)) {
                     memcpy(ver, q, (size_t)(end - q));
                     ver[end - q] = '\0';
                 }
@@ -24650,14 +24109,14 @@ static ALI_Cache_Entry *ALI_Read(const char *ali_path) {
             entry->checksum = ALI_Parse_Hex(token);
 
             /* Parse flags */
-            while (*p && *p != '\n') {
+            while (*p and *p != '\n') {
                 p = ALI_Read_Token(p, token, sizeof(token));
                 if (strcmp(token, "GE") == 0) entry->is_generic = true;
                 else if (strcmp(token, "PR") == 0) entry->is_preelaborate = true;
                 else if (strcmp(token, "PU") == 0) entry->is_pure = true;
             }
         }
-        else if (line[0] == 'W' || line[0] == 'Y' || line[0] == 'Z') {
+        else if (line[0] == 'W' or line[0] == 'Y' or line[0] == 'Z') {
             /* With line: W/Y/Z name [source ali] [flags] */
             p = ALI_Read_Token(p + 1, token, sizeof(token));
 
@@ -24703,7 +24162,7 @@ static ALI_Cache_Entry *ALI_Read(const char *ali_path) {
 
             /* llvm_type */
             p = ALI_Skip_Ws(p);
-            if (*p && *p != '\n') {
+            if (*p and *p != '\n') {
                 p = ALI_Read_Token(p, token, sizeof(token));
                 if (token[0]) exp->llvm_type = strdup(token);
             }
@@ -24717,16 +24176,16 @@ static ALI_Cache_Entry *ALI_Read(const char *ali_path) {
             }
 
             /* Remaining tokens: ada_type and/or (params) */
-            while (*p && *p != '\n') {
+            while (*p and *p != '\n') {
                 p = ALI_Skip_Ws(p);
                 if (*p == '(') {
                     /* (params) */
                     p = ALI_Read_Token(p, token, sizeof(token));
                     exp->param_count = (uint32_t)atoi(token + 1);
-                } else if (*p && *p != '\n') {
+                } else if (*p and *p != '\n') {
                     /* ada_type */
                     p = ALI_Read_Token(p, token, sizeof(token));
-                    if (token[0] && token[0] != '(') {
+                    if (token[0] and token[0] != '(') {
                         if (exp->type_name) free(exp->type_name);
                         exp->type_name = strdup(token);
                     }
@@ -24744,12 +24203,12 @@ static ALI_Cache_Entry *ALI_Read(const char *ali_path) {
 /* Check if an ALI file is up-to-date with its source */
 static bool ALI_Is_Current(const char *ali_path, const char *source_path) {
     ALI_Cache_Entry *entry = ALI_Read(ali_path);
-    if (!entry) return false;
+    if (not entry) return false;
 
     /* Read source and compute checksum */
     size_t source_size;
     char *source = Read_File(source_path, &source_size);
-    if (!source) return false;
+    if (not source) return false;
 
     uint32_t current_checksum = Crc32(source, source_size);
     free(source);
@@ -24764,10 +24223,10 @@ static char *ALI_Find(String_Slice unit_name) {
 
     /* Convert unit name to file name (lowercase, dots to hyphens) */
     size_t j = 0;
-    for (size_t i = 0; i < unit_name.length && j < sizeof(file_buf) - 5; i++) {
+    for (size_t i = 0; i < unit_name.length and j < sizeof(file_buf) - 5; i++) {
         char c = unit_name.data[i];
         if (c == '.') file_buf[j++] = '-';
-        else if (c >= 'A' && c <= 'Z') file_buf[j++] = c - 'A' + 'a';
+        else if (c >= 'A' and c <= 'Z') file_buf[j++] = c - 'A' + 'a';
         else file_buf[j++] = c;
     }
     file_buf[j] = '\0';
@@ -24785,7 +24244,7 @@ static char *ALI_Find(String_Slice unit_name) {
 
 /* Load symbols from an ALI file into the symbol manager */
 static void ALI_Load_Symbols(Symbol_Manager *sm, ALI_Cache_Entry *entry) {
-    if (!entry || entry->loaded) return;
+    if (not entry or entry->loaded) return;
     entry->loaded = true;
 
     /* Recursively load dependencies first */
@@ -24798,7 +24257,7 @@ static void ALI_Load_Symbols(Symbol_Manager *sm, ALI_Cache_Entry *entry) {
     }
 
     /* For specs, create package symbol and exports */
-    if (!entry->is_spec || entry->export_count == 0) return;
+    if (not entry->is_spec or entry->export_count == 0) return;
 
     String_Slice pkg_name = {entry->unit_name, strlen(entry->unit_name)};
 
@@ -24933,15 +24392,15 @@ static void ALI_Load_Symbols(Symbol_Manager *sm, ALI_Cache_Entry *entry) {
  */
 static bool Try_Load_From_ALI(Symbol_Manager *sm, String_Slice name) {
     char *ali_path = ALI_Find(name);
-    if (!ali_path) return false;
+    if (not ali_path) return false;
 
     /* Build source path from unit name */
     char source_file[256];
     size_t j = 0;
-    for (size_t i = 0; i < name.length && j < sizeof(source_file) - 5; i++) {
+    for (size_t i = 0; i < name.length and j < sizeof(source_file) - 5; i++) {
         char c = name.data[i];
         if (c == '.') source_file[j++] = '-';
-        else if (c >= 'A' && c <= 'Z') source_file[j++] = c - 'A' + 'a';
+        else if (c >= 'A' and c <= 'Z') source_file[j++] = c - 'A' + 'a';
         else source_file[j++] = c;
     }
     strcpy(source_file + j, ".ads");
@@ -24955,16 +24414,16 @@ static bool Try_Load_From_ALI(Symbol_Manager *sm, String_Slice name) {
         full_source_path[0] = '\0';
     }
 
-    if (!full_source_path[0]) return false;
+    if (not full_source_path[0]) return false;
 
     /* Check if ALI is current */
-    if (!ALI_Is_Current(ali_path, full_source_path)) {
+    if (not ALI_Is_Current(ali_path, full_source_path)) {
         return false;  /* Stale - need to recompile */
     }
 
     /* Read ALI and check for exports */
     ALI_Cache_Entry *entry = ALI_Read(ali_path);
-    if (!entry || entry->export_count == 0) return false;
+    if (not entry or entry->export_count == 0) return false;
 
     /* Load symbols from ALI */
     ALI_Load_Symbols(sm, entry);
@@ -24972,7 +24431,7 @@ static bool Try_Load_From_ALI(Symbol_Manager *sm, String_Slice name) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * §17. GENERIC EXPANSION - Macro-style instantiation
+ * §16. GENERIC EXPANSION - Macro-style instantiation
  * ═══════════════════════════════════════════════════════════════════════════
  *
  * GNAT implements generics via macro expansion (sem_ch12.adb):
@@ -24986,7 +24445,7 @@ static bool Try_Load_From_ALI(Symbol_Manager *sm, String_Slice name) {
  */
 
 /* ─────────────────────────────────────────────────────────────────────────
- * §17.1 Instantiation_Env — Formal-to-actual mapping
+ * §16.1 Instantiation_Env — Formal-to-actual mapping
  *
  * Instead of mutating nodes, we carry substitution environment through.
  * ───────────────────────────────────────────────────────────────────────── */
@@ -25006,7 +24465,7 @@ typedef struct {
 } Instantiation_Env;
 
 /* ─────────────────────────────────────────────────────────────────────────
- * §17.2 Instantiation_Env helpers
+ * §16.2 Instantiation_Env helpers
  * ───────────────────────────────────────────────────────────────────────── */
 
 static Type_Info *Env_Lookup_Type(Instantiation_Env *env, String_Slice name) {
@@ -25034,7 +24493,7 @@ static Syntax_Node *Env_Lookup_Expr(Instantiation_Env *env, String_Slice name) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
- * §17.3 Node_Deep_Clone — Deep copy with environment substitution
+ * §16.3 Node_Deep_Clone — Deep copy with environment substitution
  *
  * Unlike the existing node_clone_substitute, this:
  *   • ALWAYS allocates new nodes (no aliasing)
@@ -25059,7 +24518,7 @@ static void Node_List_Clone(Node_List *dst, Node_List *src,
 
 static Syntax_Node *Node_Deep_Clone(Syntax_Node *node, Instantiation_Env *env,
                                     int depth) {
-    if (!node) return NULL;
+    if (not node) return NULL;
 
     /* Depth limit with REAL error, not silent aliasing */
     if (depth > 500) {
@@ -25259,7 +24718,7 @@ static Syntax_Node *Node_Deep_Clone(Syntax_Node *node, Instantiation_Env *env,
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
- * §17.4 Build_Instantiation_Env — Create mapping from formals to actuals
+ * §16.4 Build_Instantiation_Env — Create mapping from formals to actuals
  * ───────────────────────────────────────────────────────────────────────── */
 
 static void Build_Instantiation_Env(Instantiation_Env *env,
@@ -25270,7 +24729,7 @@ static void Build_Instantiation_Env(Instantiation_Env *env,
     env->template_sym = template_sym;
     env->instance_sym = instance_sym;
 
-    if (!template_sym || !template_sym->declaration) return;
+    if (not template_sym or not template_sym->declaration) return;
 
     Syntax_Node *gen_decl = template_sym->declaration;
     if (gen_decl->kind != NK_GENERIC_DECL) return;
@@ -25278,7 +24737,7 @@ static void Build_Instantiation_Env(Instantiation_Env *env,
     Node_List *formals = &gen_decl->generic_decl.formals;
 
     /* Use pre-resolved actuals from instance symbol */
-    for (uint32_t i = 0; i < instance_sym->generic_actual_count && i < 32; i++) {
+    for (uint32_t i = 0; i < instance_sym->generic_actual_count and i < 32; i++) {
         Generic_Mapping *m = &env->mappings[env->count++];
         m->formal_name = instance_sym->generic_actuals[i].formal_name;
         m->actual_type = instance_sym->generic_actuals[i].actual_type;
@@ -25300,7 +24759,7 @@ static void Build_Instantiation_Env(Instantiation_Env *env,
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
- * §17.5 Expand_Generic_Package — Full instantiation of generic package
+ * §16.5 Expand_Generic_Package — Full instantiation of generic package
  *
  * This implements the GNAT strategy:
  *   1. Clone the package spec with type substitutions
@@ -25310,10 +24769,10 @@ static void Build_Instantiation_Env(Instantiation_Env *env,
  * ───────────────────────────────────────────────────────────────────────── */
 
 static void Expand_Generic_Package(Symbol_Manager *sm, Symbol *instance_sym) {
-    if (!instance_sym || !instance_sym->generic_template) return;
+    if (not instance_sym or not instance_sym->generic_template) return;
 
     Symbol *template = instance_sym->generic_template;
-    if (!template->generic_unit) return;
+    if (not template->generic_unit) return;
 
     /* Build substitution environment */
     Instantiation_Env env;
@@ -25345,7 +24804,7 @@ static void Expand_Generic_Package(Symbol_Manager *sm, Symbol *instance_sym) {
         Parser body_parser = Parser_New(body_src, strlen(body_src), body_filename);
         Syntax_Node *body_cu = Parse_Compilation_Unit(&body_parser);
 
-        if (body_cu && body_cu->compilation_unit.unit &&
+        if (body_cu and body_cu->compilation_unit.unit and
             body_cu->compilation_unit.unit->kind == NK_PACKAGE_BODY) {
 
             /* Clone with substitutions */
@@ -25361,6 +24820,310 @@ static void Expand_Generic_Package(Symbol_Manager *sm, Symbol *instance_sym) {
             }
         }
     }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §17. MAIN DRIVER
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+
+static char *Read_File(const char *path, size_t *out_size) {
+    FILE *f = fopen(path, "rb");
+    if (not f) return NULL;
+
+    fseek(f, 0, SEEK_END);
+    long fsize = ftell(f);
+    if (fsize < 0) { fclose(f); return NULL; }
+    size_t size = (size_t)fsize;
+    fseek(f, 0, SEEK_SET);
+
+    char *buffer = malloc(size + 1);
+    if (not buffer) { fclose(f); return NULL; }
+
+    size_t read = fread(buffer, 1, size, f);
+    fclose(f);
+
+    buffer[read] = '\0';
+    *out_size = read;
+    return buffer;
+}
+
+static void Compile_File(const char *input_path, const char *output_path) {
+    /* Reset loaded bodies for this compilation */
+    Loaded_Body_Count = 0;
+    Loaded_Body_Names_Count = 0;
+
+    size_t source_size;
+    char *source = Read_File(input_path, &source_size);
+
+    if (not source) {
+        fprintf(stderr, "Error: cannot read file '%s'\n", input_path);
+        return;
+    }
+
+    /* Parse all compilation units in the file */
+    Parser parser = Parser_New(source, source_size, input_path);
+    Syntax_Node *units[64];
+    int unit_count = 0;
+
+    while (parser.current_token.kind != TK_EOF and unit_count < 64 and not parser.had_error) {
+        units[unit_count++] = Parse_Compilation_Unit(&parser);
+    }
+
+    if (parser.had_error) {
+        fprintf(stderr, "Parsing failed with %d error(s)\n", Error_Count);
+        free(source);
+        return;
+    }
+
+    /* Semantic analysis for all units */
+    Symbol_Manager *sm = Symbol_Manager_New();
+    for (int i = 0; i < unit_count; i++) {
+        Resolve_Compilation_Unit(sm, units[i]);
+    }
+
+    if (Error_Count > 0) {
+        fprintf(stderr, "Semantic analysis failed with %d error(s)\n", Error_Count);
+        free(source);
+        return;
+    }
+
+    /* Code generation */
+    FILE *out_file;
+    bool close_output = false;
+
+    if (output_path) {
+        out_file = fopen(output_path, "w");
+        if (not out_file) {
+            fprintf(stderr, "Error: cannot open output file '%s'\n", output_path);
+            free(source);
+            return;
+        }
+        close_output = true;
+    } else {
+        out_file = stdout;  /* Output to stdout if no -o specified */
+    }
+
+    Code_Generator *cg = Code_Generator_New(out_file, sm);
+    for (int i = 0; i < unit_count; i++) {
+        Generate_Compilation_Unit(cg, units[i]);
+    }
+
+    /* Generate code for loaded package bodies (e.g., TEXT_IO) */
+    for (int i = 0; i < Loaded_Body_Count; i++) {
+        Generate_Compilation_Unit(cg, Loaded_Package_Bodies[i]);
+    }
+
+    /* Note: Derived type operations (RM 3.4) don't need wrapper functions.
+     * Derived types have identical representation to parent types in Ada 83,
+     * so calls to derived operations are emitted directly to the parent's
+     * implementation (GNAT-style optimization). See call_target handling
+     * in Generate_Apply(). */
+
+    /* Emit address marker globals for 'ADDRESS attribute on packages/generics */
+    for (uint32_t i = 0; i < cg->address_marker_count; i++) {
+        Symbol *sym = cg->address_markers[i];
+        Emit(cg, "@__addr.");
+        Emit_Symbol_Name(cg, sym);
+        Emit(cg, " = linkonce_odr constant i8 0\n");
+    }
+
+    /* Emit @main() for the last parameterless library-level procedure */
+    if (cg->main_candidate) {
+        Emit(cg, "\n; C main entry point\n");
+        Emit(cg, "define i32 @main() {\n");
+        Emit(cg, "  call void @");
+        Emit_Symbol_Name(cg, cg->main_candidate);
+        Emit(cg, "()\n");
+        Emit(cg, "  ret i32 0\n");
+        Emit(cg, "}\n");
+    }
+
+    if (close_output) {
+        fclose(out_file);
+        fprintf(stderr, "Compiled '%s' -> '%s'\n", input_path, output_path);
+
+        /* Generate GNAT-compatible .ali file for dependency tracking */
+        Generate_ALI_File(output_path, units, unit_count, source, source_size, sm);
+    }
+    free(source);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Derive output .ll path from input path by replacing extension.
+ * Writes into caller-supplied buffer.
+ * ───────────────────────────────────────────────────────────────────────── */
+static void Derive_Output_Path(const char *input, char *out, size_t out_size) {
+    strncpy(out, input, out_size - 1);
+    out[out_size - 1] = '\0';
+    char *dot = strrchr(out, '.');
+    char *slash = strrchr(out, '/');
+    /* Only replace if the dot is after the last slash (i.e., part of filename) */
+    if (dot and (not slash or dot > slash))
+        strcpy(dot, ".ll");
+    else
+        strncat(out, ".ll", out_size - strlen(out) - 1);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Parallel compilation — fork-based worker called from a pthread.
+ *
+ * Each thread forks a child process that compiles one file.  fork() gives
+ * complete isolation of all global state (arena, error count, loaded
+ * packages, etc.) without refactoring Compile_File.
+ * ───────────────────────────────────────────────────────────────────────── */
+typedef struct {
+    const char *input_path;
+    const char *output_path;  /* NULL → derive from input */
+    int         exit_status;  /* 0 = success, 1 = failure */
+} Compile_Job;
+
+static void *Compile_Worker(void *arg) {
+    Compile_Job *job = (Compile_Job *)arg;
+
+    char derived[512];
+    const char *out = job->output_path;
+    if (not out) {
+        Derive_Output_Path(job->input_path, derived, sizeof(derived));
+        out = derived;
+    }
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        /* Child — compile and exit */
+        Compile_File(job->input_path, out);
+        _exit(Error_Count > 0 ? 1 : 0);
+    } else if (pid > 0) {
+        int status;
+        waitpid(pid, &status, 0);
+        job->exit_status = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+    } else {
+        perror("fork");
+        job->exit_status = 1;
+    }
+    return NULL;
+}
+
+int main(int argc, char *argv[]) {
+    if (argc < 2) {
+        fprintf(stderr,
+            "Usage: %s [-I path] <input.ada ...> [-o output.ll]\n", argv[0]);
+        return 1;
+    }
+
+    const char *inputs[256];
+    int input_count = 0;
+    const char *output = NULL;  /* NULL means derive from input name */
+
+    /* Parse command-line arguments */
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-I") == 0 and i + 1 < argc) {
+            if (Include_Path_Count < 32)
+                Include_Paths[Include_Path_Count++] = argv[++i];
+        } else if (strncmp(argv[i], "-I", 2) == 0) {
+            if (Include_Path_Count < 32)
+                Include_Paths[Include_Path_Count++] = argv[i] + 2;
+        } else if (strcmp(argv[i], "-o") == 0 and i + 1 < argc) {
+            output = argv[++i];
+        } else if (argv[i][0] != '-') {
+            if (input_count < 256)
+                inputs[input_count++] = argv[i];
+        }
+    }
+
+    if (input_count == 0) {
+        fprintf(stderr, "Error: no input file specified\n");
+        return 1;
+    }
+
+    if (output and input_count > 1) {
+        fprintf(stderr, "Error: -o cannot be used with multiple input files\n");
+        return 1;
+    }
+
+    /* ── Auto-discover rts path from executable location ──────────────── */
+    {
+        char exe_path[PATH_MAX];
+        ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+        if (len > 0) {
+            exe_path[len] = '\0';
+        } else {
+            /* Fallback: use argv[0] */
+            strncpy(exe_path, argv[0], sizeof(exe_path) - 1);
+            exe_path[sizeof(exe_path) - 1] = '\0';
+        }
+        char *slash = strrchr(exe_path, '/');
+        if (slash) {
+            *slash = '\0';
+            static char rts_path[PATH_MAX + 8];
+            snprintf(rts_path, sizeof(rts_path), "%s/rts", exe_path);
+            struct stat st;
+            if (stat(rts_path, &st) == 0 and S_ISDIR(st.st_mode)) {
+                if (Include_Path_Count < 32)
+                    Include_Paths[Include_Path_Count++] = rts_path;
+            }
+        }
+    }
+
+    /* ── Auto-discover input file's directory as include path ─────────── */
+    {
+        const char *slash = strrchr(inputs[0], '/');
+        if (slash) {
+            static char input_dir[PATH_MAX];
+            size_t dir_len = (size_t)(slash - inputs[0]);
+            if (dir_len >= sizeof(input_dir)) dir_len = sizeof(input_dir) - 1;
+            memcpy(input_dir, inputs[0], dir_len);
+            input_dir[dir_len] = '\0';
+            if (Include_Path_Count < 32)
+                Include_Paths[Include_Path_Count++] = input_dir;
+        }
+    }
+
+    /* Add current directory to include paths by default */
+    if (Include_Path_Count < 32)
+        Include_Paths[Include_Path_Count++] = ".";
+
+    /* ── Compile ──────────────────────────────────────────────────────── */
+    if (input_count == 1) {
+        /* Single file — existing sequential behaviour */
+        Compile_File(inputs[0], output);
+        Arena_Free_All();
+        return Error_Count > 0 ? 1 : 0;
+    }
+
+    /* Multiple files — parallel compilation using pthreads + fork */
+    long nprocs = sysconf(_SC_NPROCESSORS_ONLN);
+    if (nprocs < 1) nprocs = 1;
+    int nthreads = (input_count < (int)nprocs) ? input_count : (int)nprocs;
+
+    Compile_Job jobs[256];
+    pthread_t threads[256];
+
+    for (int base = 0; base < input_count; base += nthreads) {
+        int batch = input_count - base;
+        if (batch > nthreads) batch = nthreads;
+
+        for (int i = 0; i < batch; i++) {
+            jobs[base + i].input_path = inputs[base + i];
+            jobs[base + i].output_path = NULL;  /* derive from input */
+            jobs[base + i].exit_status = 0;
+            pthread_create(&threads[i], NULL, Compile_Worker,
+                           &jobs[base + i]);
+        }
+        for (int i = 0; i < batch; i++) {
+            pthread_join(threads[i], NULL);
+        }
+    }
+
+    int failed = 0;
+    for (int i = 0; i < input_count; i++) {
+        if (jobs[i].exit_status != 0) failed++;
+    }
+
+    if (failed > 0)
+        fprintf(stderr, "%d of %d compilations failed\n", failed, input_count);
+
+    return failed > 0 ? 1 : 0;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
