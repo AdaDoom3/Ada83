@@ -6087,9 +6087,10 @@ static inline bool Type_Is_Unconstrained_Array(const Type_Info *t) {
            !t->array.is_constrained;
 }
 
-/* Constrained array: TYPE_ARRAY with static bounds (not string, not unconstrained) */
+/* Constrained array: TYPE_ARRAY or TYPE_STRING with static bounds */
 static inline bool Type_Is_Constrained_Array(const Type_Info *t) {
-    return t && t->kind == TYPE_ARRAY && t->array.is_constrained;
+    return t && (t->kind == TYPE_ARRAY || t->kind == TYPE_STRING) &&
+           t->array.is_constrained;
 }
 
 /* Universal numeric types: compile-time only, no storage */
@@ -6139,26 +6140,35 @@ static inline bool Expression_Is_Slice(const Syntax_Node *node) {
  * all produce fat pointer values { ptr, { bound, bound } }. */
 static inline bool Expression_Produces_Fat_Pointer(const Syntax_Node *node,
                                                     const Type_Info *type) {
+    /* Operation-specific checks FIRST: these operations always produce fat
+     * pointers at runtime regardless of the expression's declared type.
+     * E.g., concatenation of two constrained STRINGs still builds { ptr, ptr }. */
+    if (node) {
+        /* String literals always produce fat pointers */
+        if (node->kind == NK_STRING)
+            return true;
+        /* Concatenation always returns fat pointer */
+        if (node->kind == NK_BINARY_OP && node->binary.op == TK_AMPERSAND)
+            return true;
+        /* Slices always produce fat pointers even with constrained declared type */
+        if (Expression_Is_Slice(node))
+            return true;
+    }
+    /* Type-based checks: constrained arrays are flat, unconstrained use fat ptrs */
+    if (type && Type_Is_Constrained_Array(type))
+        return false;
     if (type && (Type_Is_String(type) || Type_Is_Unconstrained_Array(type)))
-        return true;
-    if (!node) return false;
-    /* String literals always produce fat pointers */
-    if (node->kind == NK_STRING)
-        return true;
-    /* Concatenation always returns fat pointer */
-    if (node->kind == NK_BINARY_OP && node->binary.op == TK_AMPERSAND)
-        return true;
-    /* Slices always produce fat pointers even with constrained declared type */
-    if (Expression_Is_Slice(node))
         return true;
     return false;
 }
 
 /* Check if a record field type requires loading as a fat pointer.
- * Unconstrained arrays, dynamic-bound arrays, and STRING fields
- * are stored as fat pointers { ptr, { bound, bound } } in records. */
+ * Unconstrained arrays, dynamic-bound arrays, and unconstrained STRING fields
+ * are stored as fat pointers { ptr, { bound, bound } } in records.
+ * Constrained STRING subtypes (e.g., STRING(1..6)) are flat arrays. */
 static inline bool Type_Needs_Fat_Pointer_Load(const Type_Info *t) {
     if (!t) return false;
+    if (Type_Is_Constrained_Array(t)) return false;
     if (Type_Is_String(t)) return true;
     if (t->kind == TYPE_ARRAY &&
         (!t->array.is_constrained || Type_Has_Dynamic_Bounds(t)))
@@ -6339,8 +6349,9 @@ static const char *Type_To_Llvm(Type_Info *t) {
             /* Unconstrained arrays use fat pointers { ptr, ptr } */
             return (t->array.is_constrained) ? "ptr" : FAT_PTR_TYPE;
         case TYPE_STRING:
-            /* STRING → fat pointer { ptr, ptr } */
-            return FAT_PTR_TYPE;
+            /* Unconstrained STRING → fat pointer { ptr, ptr }
+             * Constrained STRING (e.g., STRING(1..6)) → ptr to flat array */
+            return (t->array.is_constrained) ? "ptr" : FAT_PTR_TYPE;
         default:
             fprintf(stderr, "error: Type_To_Llvm unhandled type kind %d for '%.*s'\n",
                     t->kind, (int)t->name.length, t->name.data);
@@ -11084,13 +11095,15 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                 /* Map def_kind → Type_Kind so numeric formals
                                  * are recognised by Type_Is_Numeric (RM 12.1.2):
                                  * 0=PRIVATE, 1=LIMITED, 2=DISCRETE, 3=INTEGER,
-                                 * 4=FLOAT, 5=FIXED */
+                                 * 4=FLOAT, 5=FIXED, 6=ARRAY, 7=ACCESS */
                                 Type_Kind tk = TYPE_PRIVATE;
                                 switch (formal->generic_type_param.def_kind) {
                                     case 2: tk = TYPE_ENUMERATION; break;
                                     case 3: tk = TYPE_INTEGER;     break;
                                     case 4: tk = TYPE_FLOAT;       break;
                                     case 5: tk = TYPE_FIXED;       break;
+                                    case 6: tk = TYPE_ARRAY;       break;
+                                    case 7: tk = TYPE_ACCESS;      break;
                                     default: break;
                                 }
                                 Symbol *type_sym = Symbol_New(SYMBOL_TYPE,
@@ -11479,13 +11492,16 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                 Symbol *type_sym = Symbol_New(SYMBOL_TYPE,
                                     formal->generic_type_param.name, formal->location);
                                 /* Map def_kind to appropriate Type_Kind:
-                                 * 0=PRIVATE, 1=LIMITED_PRIVATE, 2=DISCRETE, 3=INTEGER, 4=FLOAT, 5=FIXED */
+                                 * 0=PRIVATE, 1=LIMITED_PRIVATE, 2=DISCRETE, 3=INTEGER,
+                                 * 4=FLOAT, 5=FIXED, 6=ARRAY, 7=ACCESS */
                                 Type_Kind tk = TYPE_PRIVATE;
                                 switch (formal->generic_type_param.def_kind) {
                                     case 2: tk = TYPE_ENUMERATION; break; /* DISCRETE */
                                     case 3: tk = TYPE_INTEGER; break;     /* INTEGER (range <>) */
                                     case 4: tk = TYPE_FLOAT; break;       /* FLOAT (digits <>) */
                                     case 5: tk = TYPE_FIXED; break;       /* FIXED (delta <>) */
+                                    case 6: tk = TYPE_ARRAY; break;       /* ARRAY */
+                                    case 7: tk = TYPE_ACCESS; break;      /* ACCESS */
                                     default: tk = TYPE_PRIVATE; break;
                                 }
                                 Type_Info *type = Type_New(tk, formal->generic_type_param.name);
@@ -13223,9 +13239,11 @@ static inline const char *Expression_Llvm_Type(const Code_Generator *cg, Syntax_
         }
         if (elem_type) return Type_To_Llvm(elem_type);
     }
-    /* Check for string literals and string types (generate fat pointers) */
+    /* Check for string literals and unconstrained string types (fat pointers).
+     * Constrained STRING subtypes (e.g., STRING(1..6)) are flat arrays → ptr. */
     if (node && node->kind == NK_STRING) return FAT_PTR_TYPE;
-    if (node && Type_Is_String(node->type)) return FAT_PTR_TYPE;
+    if (node && Type_Is_String(node->type) && !Type_Is_Constrained_Array(node->type))
+        return FAT_PTR_TYPE;
     /* Check for unconstrained array types (fat pointers) - for variable references */
     if (node && node->kind != NK_AGGREGATE &&
         Type_Is_Unconstrained_Array(node->type)) {
@@ -14228,6 +14246,15 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
         case SYMBOL_VARIABLE:
         case SYMBOL_PARAMETER:
         case SYMBOL_DISCRIMINANT: {
+            /* Constrained arrays (including constrained STRING) are flat allocas.
+             * The alloca address IS the value — no load needed. */
+            if (Type_Is_Constrained_Array(ty)) {
+                /* Return pointer to the alloca directly (no load) */
+                Emit(cg, "  %%t%u = getelementptr i8, ptr ", t);
+                Emit_Symbol_Storage(cg, sym);
+                Emit(cg, ", i64 0  ; constrained array ref\n");
+                break;
+            }
             const char *type_str = Type_To_Llvm(ty);
             Emit(cg, "  %%t%u = load %s, ptr ", t, type_str);
             Emit_Symbol_Storage(cg, sym);
@@ -14428,7 +14455,8 @@ static uint32_t Generate_Record_Equality(Code_Generator *cg, uint32_t left_ptr,
         bool is_fat_ptr_access = Type_Is_Access(ct) &&
             Type_Needs_Fat_Pointer(ct);
 
-        if (Type_Is_Unconstrained_Array(ct) || Type_Is_String(ct)) {
+        if (Type_Is_Unconstrained_Array(ct) ||
+            (!Type_Is_Constrained_Array(ct) && Type_Is_String(ct))) {
             /* Unconstrained array/string - load fat pointer values from storage */
             const char *ct_bt = Array_Bound_Llvm_Type(ct);
             uint32_t left_fat = Emit_Load_Fat_Pointer_From_Temp(cg, left_gep, ct_bt);
@@ -14675,7 +14703,7 @@ static uint32_t Generate_Composite_Address(Code_Generator *cg, Syntax_Node *node
             return addr;
         }
         /* Handle unconstrained arrays passed as fat pointers */
-        if (Type_Is_String(prefix_type)) {
+        if (!Type_Is_Constrained_Array(prefix_type) && Type_Is_String(prefix_type)) {
             /* Fat pointer - extract data and compute element address */
             const char *str_bt = Array_Bound_Llvm_Type(prefix_type);
             uint32_t fat = Generate_Expression(cg, node->apply.prefix);
@@ -14708,9 +14736,9 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         bool right_is_slice = Expression_Is_Slice(node->binary.right);
         Type_Info *right_type = node->binary.right ? node->binary.right->type : NULL;
         bool is_unconstrained = Type_Is_Unconstrained_Array(left_type) ||
-                                Type_Is_String(left_type) ||
+                                (!Type_Is_Constrained_Array(left_type) && Type_Is_String(left_type)) ||
                                 Type_Is_Unconstrained_Array(right_type) ||
-                                Type_Is_String(right_type);
+                                (!Type_Is_Constrained_Array(right_type) && Type_Is_String(right_type));
         /* String literals and concatenation always produce fat pointers */
         bool left_is_fat = is_unconstrained || left_is_slice ||
                            node->binary.left->kind == NK_STRING ||
@@ -14880,9 +14908,9 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         /* Detect any operand producing fat pointers: unconstrained types, slices,
          * string literals, and concatenation results. */
         bool is_unconstrained = Type_Is_Unconstrained_Array(left_type) ||
-                                Type_Is_String(left_type) ||
+                                (!Type_Is_Constrained_Array(left_type) && Type_Is_String(left_type)) ||
                                 Type_Is_Unconstrained_Array(rhs_cmp_type) ||
-                                Type_Is_String(rhs_cmp_type) ||
+                                (!Type_Is_Constrained_Array(rhs_cmp_type) && Type_Is_String(rhs_cmp_type)) ||
                                 Expression_Is_Slice(node->binary.left) ||
                                 Expression_Is_Slice(node->binary.right) ||
                                 node->binary.left->kind == NK_STRING ||
@@ -14894,13 +14922,13 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         const char *rel_bt = Array_Bound_Llvm_Type(left_type);
         if (is_unconstrained) {
             /* Generate each operand as fat pointer, wrapping constrained if needed */
-            bool l_fat = Type_Is_String(left_type) ||
+            bool l_fat = (!Type_Is_Constrained_Array(left_type) && Type_Is_String(left_type)) ||
                          Type_Is_Unconstrained_Array(left_type) ||
                          Expression_Is_Slice(node->binary.left) ||
                          node->binary.left->kind == NK_STRING ||
                          (node->binary.left->kind == NK_BINARY_OP &&
                           node->binary.left->binary.op == TK_AMPERSAND);
-            bool r_fat = Type_Is_String(rhs_cmp_type) ||
+            bool r_fat = (!Type_Is_Constrained_Array(rhs_cmp_type) && Type_Is_String(rhs_cmp_type)) ||
                          Type_Is_Unconstrained_Array(rhs_cmp_type) ||
                          Expression_Is_Slice(node->binary.right) ||
                          (node->binary.right && node->binary.right->kind == NK_STRING) ||
@@ -15119,7 +15147,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
 
         /* Normalize left operand to fat pointer */
         uint32_t left_fat;
-        bool left_already_fat = Type_Is_String(left_type) ||
+        bool left_already_fat = (!Type_Is_Constrained_Array(left_type) && Type_Is_String(left_type)) ||
                                 Type_Is_Unconstrained_Array(left_type) ||
                                 node->binary.left->kind == NK_STRING ||
                                 Expression_Is_Slice(node->binary.left) ||
@@ -15147,7 +15175,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         /* Normalize right operand to fat pointer */
         Type_Info *rhs_type = node->binary.right ? node->binary.right->type : NULL;
         uint32_t right_fat;
-        bool right_already_fat = Type_Is_String(rhs_type) ||
+        bool right_already_fat = (!Type_Is_Constrained_Array(rhs_type) && Type_Is_String(rhs_type)) ||
                                  Type_Is_Unconstrained_Array(rhs_type) ||
                                  node->binary.right->kind == NK_STRING ||
                                  Expression_Is_Slice(node->binary.right) ||
@@ -15963,7 +15991,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                         /* Check if first arg is CHARACTER (single byte) */
                         bool left_is_char = Type_Is_Character(left_type);
                         bool right_is_string = Type_Is_Unconstrained_Array(right_type) ||
-                                               Type_Is_String(right_type);
+                                               (!Type_Is_Constrained_Array(right_type) && Type_Is_String(right_type));
 
                         uint32_t left_val = Generate_Expression(cg, left_arg);
                         uint32_t right_val = Generate_Expression(cg, right_arg);
@@ -16947,6 +16975,16 @@ static uint32_t Emit_Bound_Attribute(Code_Generator *cg, uint32_t t,
         Type_Bound b = is_low ? prefix_type->low_bound : prefix_type->high_bound;
         if (b.kind == BOUND_EXPR && b.expr) {
             uint32_t v = Generate_Expression(cg, b.expr);
+            /* Convert bound expression to target float type if needed */
+            const char *expr_fty = Expression_Llvm_Type(cg, b.expr);
+            if (strcmp(expr_fty, fty) != 0) {
+                uint32_t conv = Emit_Temp(cg);
+                if (strcmp(fty, "float") == 0 && strcmp(expr_fty, "double") == 0)
+                    Emit(cg, "  %%t%u = fptrunc double %%t%u to float\n", conv, v);
+                else
+                    Emit(cg, "  %%t%u = fpext %s %%t%u to %s\n", conv, expr_fty, v, fty);
+                v = conv;
+            }
             Emit(cg, "  %%t%u = fadd %s %%t%u, 0.0  ; %.*s'%s (runtime)\n",
                  t, fty, v, (int)attr.length, attr.data, tag);
         } else if (Type_Bound_Is_Set(b)) {
@@ -18589,7 +18627,8 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
      * subtypes of unconstrained access types). */
     Type_Info *designated = Type_Is_Access(access_type) ?
                             access_type->access.designated_type : NULL;
-    bool is_fat_ptr = Type_Is_String(designated) || Type_Is_Unconstrained_Array(designated);
+    bool is_fat_ptr = (!Type_Is_Constrained_Array(designated) && Type_Is_String(designated)) ||
+                      Type_Is_Unconstrained_Array(designated);
 
     /* Note: if the designated type is a constrained subtype of an unconstrained
      * array (e.g., ACCESS ARRAY3(1..5)), we do NOT use fat pointer representation.
@@ -18893,7 +18932,8 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
             /* For unconstrained (STRING / unconstrained array) the variable
              * holds a fat pointer — we must load it and extract the data ptr.
              * For constrained arrays the variable IS the data pointer. */
-            bool target_is_uncon = Type_Is_String(prefix_type) ||
+            bool target_is_uncon = (!Type_Is_Constrained_Array(prefix_type) &&
+                                    Type_Is_String(prefix_type)) ||
                                    Type_Is_Unconstrained_Array(prefix_type);
 
             Syntax_Node *arg = target->apply.arguments.items[0];
@@ -18994,7 +19034,7 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
                         uint32_t src_base;
                         uint32_t src_fat_low = 0;
                         const char *ssb = NULL;
-                        bool src_is_uncon = Type_Is_String(src_type) ||
+                        bool src_is_uncon = (!Type_Is_Constrained_Array(src_type) && Type_Is_String(src_type)) ||
                                             Type_Is_Unconstrained_Array(src_type);
                         if (src_is_uncon) {
                             ssb = Array_Bound_Llvm_Type(src_type);
@@ -19203,6 +19243,8 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
          * Fat pointer sources: STRING type, unconstrained arrays, string literals,
          * concatenation results, and slice expressions. */
         Type_Info *src_type = node->assignment.value->type;
+        if (cg->current_instance)
+            src_type = Resolve_Generic_Actual_Type(cg, src_type);
         bool src_is_fat_ptr = Expression_Produces_Fat_Pointer(
             node->assignment.value, src_type);
         uint32_t src_ptr = Generate_Expression(cg, node->assignment.value);
@@ -19233,9 +19275,12 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
      *   2. Generate source expression
      *   3. Extract source data pointer (from fat ptr or constrained ptr)
      *   4. memcpy source data to existing data storage */
-    if (Type_Is_String(ty) || Type_Is_Unconstrained_Array(ty)) {
+    if ((!Type_Is_Constrained_Array(ty) && Type_Is_String(ty)) ||
+        Type_Is_Unconstrained_Array(ty)) {
         Syntax_Node *src = node->assignment.value;
         Type_Info *src_type = src->type;
+        if (cg->current_instance)
+            src_type = Resolve_Generic_Actual_Type(cg, src_type);
         bool src_is_fat = Expression_Produces_Fat_Pointer(src, src_type);
 
         /* Load existing fat pointer from the target variable */
@@ -20527,6 +20572,8 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                  * use zeroinitializer since '0' is invalid for struct types */
                 if (Llvm_Type_Is_Fat_Pointer(type_str)) {
                     Emit(cg, " = linkonce_odr global %s zeroinitializer\n", type_str);
+                } else if (strcmp(type_str, "double") == 0 || strcmp(type_str, "float") == 0) {
+                    Emit(cg, " = linkonce_odr global %s 0.0\n", type_str);
                 } else {
                     Emit(cg, " = linkonce_odr global %s 0\n", type_str);
                 }
@@ -21869,6 +21916,8 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                                  (long long)cnt, elem_type);
                         } else if (is_record) {
                             Emit(cg, " = linkonce_odr global [%u x i8] zeroinitializer\n", ty->size);
+                        } else if (strcmp(type_str, "double") == 0 || strcmp(type_str, "float") == 0) {
+                            Emit(cg, " = linkonce_odr global %s 0.0\n", type_str);
                         } else {
                             Emit(cg, " = linkonce_odr global %s %lld\n", type_str,
                                  (long long)init_val);
@@ -22130,7 +22179,8 @@ static void Generate_Type_Equality_Function(Code_Generator *cg, Type_Info *t) {
                 Type_Info *ct = comp->component_type;
                 bool is_fat_ptr_access = Type_Needs_Fat_Pointer(ct);
 
-                if (Type_Is_String(ct) || Type_Is_Unconstrained_Array(ct)) {
+                if (Type_Is_Unconstrained_Array(ct) ||
+                    (!Type_Is_Constrained_Array(ct) && Type_Is_String(ct))) {
                     /* Unconstrained array/string - load fat pointer values from storage */
                     const char *eqf_bt = Array_Bound_Llvm_Type(ct);
                     uint32_t left_fat = Emit_Load_Fat_Pointer_From_Temp(cg, left_gep, eqf_bt);
@@ -22339,7 +22389,8 @@ static void Emit_Extern_Subprogram(Code_Generator *cg, Symbol *sym) {
                         ? sym->parameters[i].param_type : NULL;
         if (ty) {
             /* Unconstrained arrays pass as fat pointers */
-            if (Type_Is_Unconstrained_Array(ty) || Type_Is_String(ty)) {
+            if (Type_Is_Unconstrained_Array(ty) ||
+                (!Type_Is_Constrained_Array(ty) && Type_Is_String(ty))) {
                 Emit(cg, FAT_PTR_TYPE);
             } else {
                 Emit(cg, "%s", Type_To_Llvm(ty));
@@ -22388,7 +22439,7 @@ static void Generate_Extern_Declarations(Code_Generator *cg, Syntax_Node *node) 
                             sym->extern_emitted = true;
                             Type_Info *ty = sym->type;
                             const char *type_str = Type_To_Llvm(ty);
-                            bool is_string = Type_Is_String(ty) ||
+                            bool is_string = (!Type_Is_Constrained_Array(ty) && Type_Is_String(ty)) ||
                                 (Type_Is_Unconstrained_Array(ty) &&
                                  Type_Is_Character(ty->array.element_type));
                             if (is_string) type_str = FAT_PTR_TYPE;
@@ -22429,7 +22480,7 @@ static void Generate_Extern_Declarations(Code_Generator *cg, Syntax_Node *node) 
                         Type_Info *ty = sym->type;
                         const char *type_str = Type_To_Llvm(ty);
                         /* String constants use fat pointer type */
-                        bool is_string = Type_Is_String(ty) ||
+                        bool is_string = (!Type_Is_Constrained_Array(ty) && Type_Is_String(ty)) ||
                             (Type_Is_Unconstrained_Array(ty) &&
                              Type_Is_Character(ty->array.element_type));
                         if (is_string) type_str = FAT_PTR_TYPE;
@@ -23403,6 +23454,8 @@ static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src) 
                                 case 3: tk = TYPE_INTEGER; break;     /* INTEGER */
                                 case 4: tk = TYPE_FLOAT; break;       /* FLOAT */
                                 case 5: tk = TYPE_FIXED; break;       /* FIXED */
+                                case 6: tk = TYPE_ARRAY; break;       /* ARRAY */
+                                case 7: tk = TYPE_ACCESS; break;      /* ACCESS */
                                 default: tk = TYPE_PRIVATE; break;
                             }
                             Type_Info *type = Type_New(tk, formal->generic_type_param.name);
@@ -23504,6 +23557,8 @@ static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src) 
                                     case 3: tk = TYPE_INTEGER; break;     /* INTEGER */
                                     case 4: tk = TYPE_FLOAT; break;       /* FLOAT */
                                     case 5: tk = TYPE_FIXED; break;       /* FIXED */
+                                    case 6: tk = TYPE_ARRAY; break;       /* ARRAY */
+                                    case 7: tk = TYPE_ACCESS; break;      /* ACCESS */
                                     default: tk = TYPE_PRIVATE; break;
                                 }
                                 Type_Info *type = Type_New(tk, formal->generic_type_param.name);
