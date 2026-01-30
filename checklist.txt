@@ -70,25 +70,160 @@ Audit — Hardcoded Bound-Type Sites
 [x] Equality function generation (line ~22063):
     - eq_bt = Array_Bound_Llvm_Type(t) — derived for all arrays
 
-Remaining i64 — Not Bound Types (Deferred)
--------------------------------------------
-The following "i64" hardcodings are NOT bound types.  They represent:
-  - INTEGER arithmetic width (64-bit INTEGER = 8 bytes)
-  - Pointer width on 64-bit target (ptrtoint/inttoptr)
-  - Safe fallbacks for non-integer types in utility functions
+Audit — INTEGER-Width i64 Sites (COMPLETE)
+------------------------------------------
+All former "i64" hardcodings for INTEGER arithmetic width are now derived
+from the type system via Integer_Arith_Type(cg).
 
-[ ] Expression_Llvm_Type (line ~13236): returns "i64" for integer expressions.
-    55 call sites.  Would require adding `cg` parameter to all.
-    The value IS correct: INTEGER is 64-bit, so i64 is type-system-derived.
+[x] Expression_Llvm_Type (line ~13177):
+    - Signature changed to take (cg, node).
+    - Boolean/integer defaults now return Integer_Arith_Type(cg).
+    - All 55 call sites updated.
 
-[ ] Wider_Int_Type (line ~13106): returns "i64" for non-integer fallback.
-    6 call sites.  Safe default, not a bound type.
+[x] Wider_Int_Type (line ~13103):
+    - Signature changed to take (cg, a, b).
+    - Non-integer fallback is now an error + Integer_Arith_Type(cg).
+    - All 6 call sites updated.
 
-[ ] Type_To_Llvm NULL fallback (line ~13304): returns "i64" with warning.
-    Safety net for NULL types.  Not a bound type.
+[x] Type_To_Llvm error paths (line ~6301):
+    - NULL → error + Llvm_Int_Type(64).
+    - Default → error + Llvm_Int_Type(To_Bits(t->size)).
 
-[ ] Emit_Convert ptrtoint/inttoptr (line ~13283): uses "i64" for pointer width.
-    Correct for 64-bit target.  Not a bound type.
+[x] Emit_Convert ptrtoint/inttoptr (line ~13283):
+    - Generalized from hardcoded "i64" to actual dst_type/src_type strings.
+
+[x] Emit_Widen_To_I64 / Emit_Narrow_From_I64 (line ~13524):
+    - Now derive target/source width from Integer_Arith_Type(cg).
+
+[x] Emit_Widen_Named_To_I64 / Emit_Narrow_Named_From_I64 (line ~13858):
+    - Now derive INTEGER width from Integer_Arith_Type(cg).
+
+[x] Variable/constant/discriminant load widening (lines ~14233, ~14289):
+    - sext target derived from Integer_Arith_Type(cg).
+
+[x] Function return value widening (line ~14355):
+    - sext target derived from Integer_Arith_Type(cg).
+
+[x] Concatenation character→fat conversion (lines ~15125, ~15152):
+    - Source type for Emit_Convert derived from Integer_Arith_Type(cg).
+
+[x] Binary expression integer type defaults (line ~15238):
+    - range/membership default → Integer_Arith_Type(cg).
+
+[x] Integer power (__ada_integer_pow) (line ~15405):
+    - Widen args and call signature use Integer_Arith_Type(cg).
+
+[x] Fixed-point widening (lines ~15289):
+    - sext target → Integer_Arith_Type(cg).
+
+[x] Boolean widening (lines ~15476):
+    - zext target → Integer_Arith_Type(cg).
+
+[x] Pointer normalization (lines ~15503):
+    - ptrtoint/inttoptr target → Integer_Arith_Type(cg).
+
+[x] Float-to-integer (fptosi) target (line ~15564):
+    - → Integer_Arith_Type(cg).
+
+[x] Pointer ordered comparison (lines ~15623):
+    - ptrtoint and icmp type derived from Integer_Arith_Type(cg).
+
+[x] BOUND_INTEGER default (lines ~15721):
+    - → Integer_Arith_Type(cg).
+
+[x] Membership/range bound comparison (line ~15742):
+    - Emit_Convert and icmp type derived from Integer_Arith_Type(cg).
+
+[x] Unary integer type default (line ~15804):
+    - Float unary fallback → Integer_Arith_Type(cg).
+
+[x] Unary .ALL dereference widen (line ~15866):
+    - sext target derived from Integer_Arith_Type(cg).
+
+[x] Array indexing GEP + element load widen (line ~16580):
+    - GEP index type and sext target → Integer_Arith_Type(cg).
+
+[x] Slice bound narrowing (lines ~16167, ~16533):
+    - Emit_Convert source → Integer_Arith_Type(cg).
+
+[x] Slice GEP mul + offset (line ~16162):
+    - mul/GEP type → Integer_Arith_Type(cg).
+
+[x] Function return value widen (line ~16343):
+    - Emit_Convert target → Integer_Arith_Type(cg).
+
+[x] Type conversion widen (lines ~16644, ~18544):
+    - Emit_Convert target → Integer_Arith_Type(cg).
+
+[x] Deref .ALL scalar load widen (line ~16681):
+    - sext target → Integer_Arith_Type(cg).
+
+[x] Variant discriminant check (line ~16756):
+    - Emit_Convert target + icmp type → Integer_Arith_Type(cg).
+
+[x] Record field load widen (line ~16794):
+    - sext target → Integer_Arith_Type(cg).
+
+[x] Dynamic array aggregate bounds (line ~18024):
+    - add/sub/mul/alloca type → Integer_Arith_Type(cg).
+
+[x] Record aggregate "others" narrowing (line ~18502):
+    - Emit_Convert source → Integer_Arith_Type(cg).
+
+[x] Discriminant constraint check in assignment (line ~19136):
+    - GEP offset, Emit_Convert, icmp type → Integer_Arith_Type(cg).
+
+[x] Scalar constraint check on assignment (line ~19297):
+    - Emit_Convert target → Integer_Arith_Type(cg).
+
+[x] Scalar constraint check on initialization (line ~20873):
+    - Emit_Convert target → Integer_Arith_Type(cg).
+
+[x] Dynamic uninitialized array bounds (line ~20892):
+    - add/sub/mul/alloca type → Integer_Arith_Type(cg).
+
+[x] Equality memcmp byte size widen (line ~22207):
+    - sext/mul/memcmp size type → Integer_Arith_Type(cg).
+
+[x] ALI pipeline type derivation:
+    - LLVM_Type_Basic now looks up types in the symbol table.
+    - sm threaded through Generate_ALI_File → ALI_Collect_Unit → ALI_Collect_Exports.
+    - All default (String_Slice){"i64",3} replaced with type-system-derived values.
+
+[x] Function return type fallback (line ~14333):
+    - → Integer_Arith_Type(cg).
+
+[x] Parameter type fallback (line ~16311):
+    - → Integer_Arith_Type(cg).
+
+[x] Return statement type fallback (line ~19384):
+    - → Integer_Arith_Type(cg).
+
+[x] Parameter declaration fallback (line ~22315):
+    - → Integer_Arith_Type(cg).
+
+[x] Designated type fallback (line ~18762):
+    - → Integer_Arith_Type(cg).
+
+Remaining Hardcoded Types — Infrastructure Only
+------------------------------------------------
+The following "i64"/"i32" strings remain in the codebase and are legitimate:
+
+  Llvm_Int_Type() (line ~246):
+    Infrastructure function mapping bit widths to type strings.
+    NOT a hardcoded type — it's the type *constructor*.
+
+  STRING_BOUND_TYPE macro (line ~71):
+    Compile-time backstop for pre-initialization code only.
+
+  Bounds_Type_For / Bounds_Alloc_Size (lines ~6420, ~6434):
+    Switch on bt which is ALREADY type-system-derived via Array_Bound_Llvm_Type.
+
+  snprintf return widening (lines ~23031, ~23058):
+    snprintf returns C int (i32). This is C ABI, not Ada type system.
+
+  Comments throughout:
+    Documentation references only.
 
 Implementation Steps
 --------------------
@@ -101,7 +236,16 @@ Implementation Steps
 [x] Refactor all RTS emission (IMAGE, VALUE, GET_LINE, PUT, PUT_LINE).
 [x] Refactor IMAGE/VALUE attribute code in Generate_Expression.
 [x] Refactor equality function bound type initialisation.
-[ ] Build and verify.
+[x] Thread cg through Expression_Llvm_Type (55 call sites).
+[x] Thread cg through Wider_Int_Type (6 call sites).
+[x] Thread sm through ALI pipeline (Generate_ALI_File + dependents).
+[x] Fix Type_To_Llvm error paths (error, not warning).
+[x] Generalize Emit_Convert ptrtoint/inttoptr.
+[x] Replace all INTEGER-width i64 in codegen (~40 sites).
+[x] Update Emit_Widen/Narrow helpers to derive from type system.
+[x] Build and verify.
 
-Status: COMPLETE (bound-type refactoring)
-        DEFERRED (integer-width i64 — requires invasive signature changes)
+Status: COMPLETE
+  All hardcoded i32/i64 in codegen are now derived from the type system.
+  Remaining literal type strings are infrastructure (Llvm_Int_Type constructor,
+  bounds struct lookup, C ABI types, compile-time backstop macros).
