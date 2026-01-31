@@ -6239,6 +6239,15 @@ static void Freeze_Type(Type_Info *t) {
 /* Forward declarations for array helpers (defined after Type_Bound_Value) */
 static int128_t Type_Bound_Value(Type_Bound b);
 
+/* File-scope map of generic formal→actual types for the current instance
+ * being code-generated.  Used by Type_To_Llvm to resolve generic formal
+ * types (TYPE_PRIVATE) to their actual types without requiring a
+ * Code_Generator parameter. */
+static struct {
+    uint32_t count;
+    struct { String_Slice formal_name; Type_Info *actual_type; } mappings[32];
+} g_generic_type_map = {0};
+
 static const char *Type_To_Llvm(Type_Info *t) {
     if (not t) {
         fprintf(stderr, "error: Type_To_Llvm called with NULL type\n");
@@ -6249,6 +6258,21 @@ static const char *Type_To_Llvm(Type_Info *t) {
      * chain to find the actual representation type (Ada RM 7.4.1, 3.4). */
     if ((Type_Is_Private(t) or t->kind == TYPE_INCOMPLETE) and t->parent_type) {
         return Type_To_Llvm(t->parent_type);
+    }
+    /* Unresolved private/limited private types without a full view (parent_type).
+     * This occurs for generic formal type parameters whose actual type was not
+     * propagated through expansion.  Resolve through the current generic
+     * instance's actual type mapping (formal_name → actual_type). */
+    if (Type_Is_Private(t) and not t->parent_type) {
+        if (g_generic_type_map.count > 0 and t->name.data) {
+            for (uint32_t i = 0; i < g_generic_type_map.count; i++) {
+                if (g_generic_type_map.mappings[i].actual_type and
+                    Slice_Equal_Ignore_Case(t->name,
+                                            g_generic_type_map.mappings[i].formal_name))
+                    return Type_To_Llvm(g_generic_type_map.mappings[i].actual_type);
+            }
+        }
+        return "ptr";
     }
 
     switch (t->kind) {
@@ -6581,6 +6605,27 @@ struct Symbol {
     Syntax_Node    *expanded_spec;       /* Cloned spec with actuals substituted */
     Syntax_Node    *expanded_body;       /* Cloned body with actuals substituted */
 };
+
+/* Populate the global type map from a generic instance's actuals.
+ * Called when entering a generic instance codegen context so that
+ * Type_To_Llvm can resolve formal private types to their actuals. */
+static void Set_Generic_Type_Map(Symbol *inst) {
+    g_generic_type_map.count = 0;
+    if (not inst) return;
+    /* Walk up: subprogram inside generic package uses package's actuals */
+    Symbol *holder = inst;
+    if (holder and not holder->generic_actuals and holder->parent and
+        holder->parent->kind == SYMBOL_PACKAGE and holder->parent->generic_actuals)
+        holder = holder->parent;
+    if (not holder or not holder->generic_actuals) return;
+    for (uint32_t i = 0; i < holder->generic_actual_count and i < 32; i++) {
+        g_generic_type_map.mappings[i].formal_name =
+            holder->generic_actuals[i].formal_name;
+        g_generic_type_map.mappings[i].actual_type =
+            holder->generic_actuals[i].actual_type;
+        g_generic_type_map.count++;
+    }
+}
 
 /* ─────────────────────────────────────────────────────────────────────────
  * Check_Is_Suppressed — GNAT-style check suppression query (RM 11.5)
@@ -7680,7 +7725,12 @@ static Type_Info *Resolve_Selected(Symbol_Manager *sm, Syntax_Node *node) {
                 if (Slice_Equal_Ignore_Case(prefix_sym->exported[i]->name,
                                            node->selected.selector)) {
                     node->symbol = prefix_sym->exported[i];
-                    node->type = prefix_sym->exported[i]->type;
+                    /* For function symbols, the expression type is the return
+                     * type (RM 4.1.3).  sym->type may be NULL for locally
+                     * declared functions where only return_type is set. */
+                    Symbol *sel = prefix_sym->exported[i];
+                    node->type = (sel->kind == SYMBOL_FUNCTION and sel->return_type)
+                                 ? sel->return_type : sel->type;
                     return node->type;
                 }
             }
@@ -10310,6 +10360,8 @@ static void Populate_Package_Exports(Symbol *pkg_sym, Syntax_Node *pkg_spec) {
             count++;  /* Nested packages */
         } else if (decl->kind == NK_GENERIC_DECL) {
             count++;  /* Nested generics (e.g., TEXT_IO.INTEGER_IO) */
+        } else if (decl->kind == NK_TASK_SPEC) {
+            count++;  /* Task type/object symbol */
         }
     }
 
@@ -10356,6 +10408,13 @@ static void Populate_Package_Exports(Symbol *pkg_sym, Syntax_Node *pkg_spec) {
             pkg_sym->exported[pkg_sym->exported_count++] = decl->symbol;
         } else if (decl->kind == NK_GENERIC_DECL and decl->symbol) {
             /* Export nested generic packages/subprograms (e.g., TEXT_IO.INTEGER_IO) */
+            pkg_sym->exported[pkg_sym->exported_count++] = decl->symbol;
+        } else if (decl->kind == NK_TASK_SPEC and decl->symbol) {
+            /* Export task type/object symbol.
+             * For single tasks (not task types), decl->symbol is the type symbol
+             * which carries the TYPE_TASK info and exported entries.
+             * RM 9.1: task objects declared in a package spec are visible via
+             * selected component notation (e.g., PKG.TASK_NAME.ENTRY). */
             pkg_sym->exported[pkg_sym->exported_count++] = decl->symbol;
         }
     }
@@ -11646,9 +11705,17 @@ static void ALI_Load_Symbols(Symbol_Manager *sm, ALI_Cache_Entry *entry) {
         Symbol *sym = NULL;
         switch (exp->kind) {
             case 'T': {
-                /* Type: create type symbol with proper bounds later */
+                /* Type: create type symbol with size derived from exported LLVM type.
+                 * Type_New defaults to 4 bytes (i32) which is wrong for smaller
+                 * types like 3-value enumerations (i8).  Use the LLVM type
+                 * signature from the ALI export to set the correct size so that
+                 * cross-compilation-unit type widths are consistent. */
                 sym = Symbol_New(SYMBOL_TYPE, name, exp_loc);
                 Type_Info *t = Type_New(TYPE_INTEGER, name);
+                if (exp->llvm_type and exp->llvm_type[0] == 'i') {
+                    int bits = atoi(exp->llvm_type + 1);
+                    if (bits > 0) t->size = (bits + 7) / 8;
+                }
                 sym->type = t;
                 break;
             }
@@ -12201,6 +12268,17 @@ static Syntax_Node *Node_Deep_Clone(Syntax_Node *node, Instantiation_Env *env,
     n->type = node->type;
     n->symbol = NULL;  /* Symbols will be re-resolved */
 
+    /* Substitute generic formal types throughout the cloned tree.
+     * When a node carries a TYPE_PRIVATE/TYPE_LIMITED_PRIVATE type whose
+     * name matches a generic formal parameter, replace it with the actual
+     * type.  This ensures that expressions, declarations, and statements
+     * all use the concrete type (e.g., FLOAT) rather than the opaque
+     * formal type (e.g., ELEMENT_TYPE). */
+    if (env and n->type and Type_Is_Private(n->type) and n->type->name.data) {
+        Type_Info *subst = Env_Lookup_Type(env, n->type->name);
+        if (subst) n->type = subst;
+    }
+
     switch (node->kind) {
         case NK_IDENTIFIER:
             /* Check for expression substitution (formal object parameters) */
@@ -12500,7 +12578,29 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node);
 static void Install_Declaration_Symbols(Symbol_Manager *sm, Node_List *decls) {
     for (uint32_t i = 0; i < decls->count; i++) {
         Syntax_Node *decl = decls->items[i];
+        /* For single task declarations (RM 9.1), both a type symbol and an
+         * anonymous object variable were created during semantic analysis.
+         * decl->symbol is the type; we must also install the variable so that
+         * codegen can find it for global allocation and task start.
+         * Grab the variable from the type's original defining_scope (the spec
+         * scope) BEFORE Symbol_Add changes defining_scope to the body scope. */
+        Symbol *task_obj_sym = NULL;
+        if (decl->kind == NK_TASK_SPEC and not decl->task_spec.is_type and decl->symbol) {
+            Scope *orig_scope = decl->symbol->defining_scope;
+            if (orig_scope) {
+                for (uint32_t j = 0; j < orig_scope->symbol_count; j++) {
+                    Symbol *s = orig_scope->symbols[j];
+                    if (s and s->kind == SYMBOL_VARIABLE and
+                        Type_Is_Task(s->type) and
+                        Slice_Equal_Ignore_Case(s->name, decl->task_spec.name)) {
+                        task_obj_sym = s;
+                        break;
+                    }
+                }
+            }
+        }
         if (decl->symbol) Symbol_Add(sm, decl->symbol);
+        if (task_obj_sym) Symbol_Add(sm, task_obj_sym);
         /* Multi-name object declarations: install each named symbol */
         if (decl->kind == NK_OBJECT_DECL)
             for (uint32_t j = 0; j < decl->object_decl.names.count; j++) {
@@ -14381,6 +14481,8 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                 export_count += decl->exception_decl.names.count;
                             else if (decl->kind == NK_OBJECT_DECL)
                                 export_count += decl->object_decl.names.count;
+                            else if (decl->kind == NK_TASK_SPEC)
+                                export_count++;
                         }
 
                         if (export_count > 0) {
@@ -14631,6 +14733,46 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                             exp->renamed_object = decl->object_decl.init;
                                         }
                                         inst_sym->exported[inst_sym->exported_count++] = exp;
+                                    }
+                                }
+                                else if (decl->kind == NK_TASK_SPEC) {
+                                    /* Export task declarations from generic instantiation.
+                                     * Create a type symbol with TYPE_TASK and populate its
+                                     * entries from the task spec's entry declarations. */
+                                    String_Slice name = decl->task_spec.name;
+                                    Symbol *exp = Symbol_New(SYMBOL_TYPE, name, decl->location);
+                                    Type_Info *type = Type_New(TYPE_TASK, name);
+                                    exp->type = type;
+                                    type->defining_symbol = exp;
+                                    exp->declaration = decl;
+                                    exp->parent = inst_sym;
+
+                                    /* Add entries to the task type's exported list */
+                                    for (uint32_t j = 0; j < decl->task_spec.entries.count; j++) {
+                                        Syntax_Node *entry = decl->task_spec.entries.items[j];
+                                        if (entry->kind == NK_ENTRY_DECL) {
+                                            Symbol *entry_sym = Symbol_New(SYMBOL_ENTRY,
+                                                entry->entry_decl.name, entry->location);
+                                            entry_sym->declaration = entry;
+                                            entry_sym->parent = exp;
+                                            entry_sym->entry_index = j;
+                                            if (not exp->exported) {
+                                                exp->exported = Arena_Allocate(100 * sizeof(Symbol*));
+                                            }
+                                            exp->exported[exp->exported_count++] = entry_sym;
+                                        }
+                                    }
+                                    inst_sym->exported[inst_sym->exported_count++] = exp;
+
+                                    /* For single task declarations (not task types),
+                                     * also create an object variable (RM 9.1) */
+                                    if (not decl->task_spec.is_type) {
+                                        Symbol *obj = Symbol_New(SYMBOL_VARIABLE,
+                                            name, decl->location);
+                                        obj->type = type;
+                                        obj->declaration = decl;
+                                        obj->parent = inst_sym;
+                                        inst_sym->exported[inst_sym->exported_count++] = obj;
                                     }
                                 }
                             }
@@ -14905,6 +15047,10 @@ typedef struct {
 
     /* Task body context: task entry points return ptr (for pthread compat) */
     bool          in_task_body;
+
+    /* Package elaboration functions to call before main (for task starts etc.) */
+    Symbol       *elab_funcs[64];
+    uint32_t      elab_func_count;
 } Code_Generator;
 
 static Code_Generator *Code_Generator_New(FILE *output, Symbol_Manager *sm) {
@@ -21985,8 +22131,12 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
 
     const char *type_str = Type_To_Llvm(ty);
 
-    /* Determine source type from the value expression */
+    /* Determine source type from the value expression.
+     * Resolve through generic actuals so that a formal TYPE_PRIVATE is
+     * treated as its actual representation (e.g., FLOAT → double). */
     Type_Info *value_type = node->assignment.value->type;
+    if (cg->current_instance)
+        value_type = Resolve_Generic_Actual_Type(cg, value_type);
     bool is_src_float = Type_Is_Float_Representation(value_type);
     bool is_dst_float = Type_Is_Float_Representation(ty);
 
@@ -22912,13 +23062,22 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                 bool has_delay = false;
                 uint32_t delay_label = 0;
 
-                /* Check for delay alternative */
+                /* Check for delay and terminate alternatives */
+                bool has_terminate = false;
+                uint32_t retry_label = 0;
                 for (uint32_t i = 0; i < node->select_stmt.alternatives.count; i++) {
                     if (node->select_stmt.alternatives.items[i]->kind == NK_DELAY) {
                         has_delay = true;
                         delay_label = cg->label_id++;
-                        break;
                     }
+                    if (node->select_stmt.alternatives.items[i]->kind == NK_NULL_STMT) {
+                        has_terminate = true;
+                    }
+                }
+                if (has_terminate) {
+                    retry_label = cg->label_id++;
+                    Emit(cg, "  br label %%L%u\n", retry_label);
+                    Emit(cg, "L%u:  ; selective wait retry\n", retry_label);
                 }
                 bool delay_label_emitted = false;
                 bool skipped_delay = false;  /* Track if current iteration was a skipped delay */
@@ -23045,10 +23204,15 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                             break;
 
                         case NK_NULL_STMT:
-                            /* Terminate alternative */
-                            Emit(cg, "  ; terminate alternative\n");
-                            Emit(cg, "  call void @__ada_task_terminate()\n");
-                            Emit(cg, "  br label %%L%u\n", done_label);
+                            /* Terminate alternative (RM 9.7.1):
+                             * Instead of immediately terminating, loop back
+                             * to re-check accept alternatives.  The task will
+                             * be terminated when the master scope completes
+                             * and calls exit(), ending the process. */
+                            Emit(cg, "  ; terminate alternative - sleep and retry\n");
+                            Emit(cg, "  %%_usel%u = call i32 @usleep(i32 1000)\n",
+                                 cg->label_id);
+                            Emit(cg, "  br label %%L%u\n", retry_label);
                             break;
 
                         default:
@@ -23382,6 +23546,47 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, "  %%");
             Emit_Symbol_Name(cg, sym);
             Emit(cg, " = alloca %s\n", type_str);
+
+            /* For unconstrained array/string variables with explicit index
+             * constraints (e.g. S : STRING(1..N)), allocate data storage
+             * and initialize the fat pointer so it's valid before any use.
+             * Without this, the fat pointer is { null, null } and any
+             * access to bounds causes a crash. (RM 3.6.1) */
+            if (is_any_array and not is_constrained_array and
+                node->object_decl.object_type and
+                node->object_decl.object_type->kind == NK_SUBTYPE_INDICATION and
+                node->object_decl.object_type->subtype_ind.constraint and
+                node->object_decl.object_type->subtype_ind.constraint->kind == NK_INDEX_CONSTRAINT) {
+                Syntax_Node *constraint = node->object_decl.object_type->subtype_ind.constraint;
+                Node_List *ranges = &constraint->index_constraint.ranges;
+                if (ranges->count > 0) {
+                    Syntax_Node *range = ranges->items[0];
+                    /* Range can be NK_RANGE with low/high, or a single expression */
+                    Syntax_Node *low_expr = NULL, *high_expr = NULL;
+                    if (range and range->kind == NK_RANGE) {
+                        low_expr = range->range.low;
+                        high_expr = range->range.high;
+                    }
+                    if (low_expr and high_expr) {
+                        const char *bt = Array_Bound_Llvm_Type(ty);
+                        uint32_t low_t = Generate_Expression(cg, low_expr);
+                        uint32_t high_t = Generate_Expression(cg, high_expr);
+                        /* Compute length = high - low + 1 */
+                        uint32_t diff = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", diff, bt, high_t, low_t);
+                        uint32_t len = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = add %s %%t%u, 1\n", len, bt, diff);
+                        uint32_t len64 = Emit_Extend_To_I64(cg, len, bt);
+                        /* Allocate data storage */
+                        uint32_t data_alloc = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = alloca i8, i64 %%t%u  ; constrained uncon array data\n",
+                             data_alloc, len64);
+                        /* Build and store fat pointer */
+                        uint32_t fat = Emit_Fat_Pointer_Dynamic(cg, data_alloc, low_t, high_t, bt);
+                        Emit_Store_Fat_Pointer_To_Symbol(cg, fat, sym, bt);
+                    }
+                }
+            }
         }
 
         /* Start task if this is a task type object */
@@ -24231,8 +24436,10 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
             if (inst and inst->generic_template and inst->generic_template->generic_body) {
                 Symbol *saved = cg->current_instance;
                 cg->current_instance = inst;
+                Set_Generic_Type_Map(inst);
                 Generate_Generic_Instance_Body(cg, inst, inst->generic_template->generic_body);
                 cg->current_instance = saved;
+                Set_Generic_Type_Map(saved);
             }
         } else if (deferred->kind == NK_TASK_BODY) {
             Generate_Task_Body(cg, deferred);
@@ -24253,6 +24460,7 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
         /* Set current instance so names are prefixed with instance name */
         Symbol *saved_instance = cg->current_instance;
         cg->current_instance = inst_sym;
+        Set_Generic_Type_Map(inst_sym);
 
         /* First, emit any global declarations from the package body
          * (e.g., FILES, BUFFERS, NEXT_FD in DIRECT_IO). These need unique names
@@ -24289,6 +24497,7 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
     /* Set current instance for formal subprogram substitution during codegen */
     Symbol *saved_current_instance = cg->current_instance;
     cg->current_instance = inst_sym;
+    Set_Generic_Type_Map(inst_sym);
 
     /* For generic instances, determine nesting from instance parent */
     Symbol *saved_enclosing = cg->enclosing_function;
@@ -24374,6 +24583,7 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
     cg->is_nested = saved_is_nested;
     cg->enclosing_function = saved_enclosing;
     cg->current_instance = saved_current_instance;
+    Set_Generic_Type_Map(saved_current_instance);
 
     /* Process deferred bodies */
     while (cg->deferred_count > saved_deferred_count) {
@@ -24383,8 +24593,10 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
             if (inst and inst->generic_template and inst->generic_template->generic_body) {
                 Symbol *saved = cg->current_instance;
                 cg->current_instance = inst;
+                Set_Generic_Type_Map(inst);
                 Generate_Generic_Instance_Body(cg, inst, inst->generic_template->generic_body);
                 cg->current_instance = saved;
+                Set_Generic_Type_Map(saved);
             }
         } else if (deferred->kind == NK_TASK_BODY) {
             Generate_Task_Body(cg, deferred);
@@ -24561,48 +24773,123 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     break;
                 }
 
-                /* Package spec declarations are emitted when the NK_PACKAGE_SPEC
-                 * is processed in Generate_Declaration (appears before the body
-                 * in the declaration list). No need to re-emit here. */
+                /* For library-level package bodies (separate compilation), emit the
+                 * associated spec's visible/private declarations as globals.  The spec
+                 * is loaded from a separate .ads file and never visited by codegen,
+                 * so constants like LEGAL_FILE_NAME must be emitted here.
+                 * Skip this for nested packages — their specs are already in the
+                 * enclosing scope's declaration list and have already been emitted. */
+                if (not cg->current_function and pkg_sym and
+                    pkg_sym->declaration and
+                    pkg_sym->declaration->kind == NK_PACKAGE_SPEC) {
+                    Syntax_Node *spec = pkg_sym->declaration;
+                    Generate_Declaration_List(cg, &spec->package_spec.visible_decls);
+                    Generate_Declaration_List(cg, &spec->package_spec.private_decls);
+                }
 
                 Generate_Declaration_List(cg, &node->package_body.declarations);
-            /* Generate initialization statements if present.
+
+            /* Check if the package spec has any single task declarations that
+             * need starting at elaboration (RM 9.2: tasks are activated at the
+             * end of the declarative region containing the task declaration). */
+            bool has_pkg_tasks = false;
+            Syntax_Node *pkg_spec_node = (pkg_sym and pkg_sym->declaration and
+                pkg_sym->declaration->kind == NK_PACKAGE_SPEC) ? pkg_sym->declaration : NULL;
+            if (not cg->current_function and pkg_spec_node) {
+                for (uint32_t ti = 0; ti < pkg_spec_node->package_spec.visible_decls.count; ti++) {
+                    Syntax_Node *d = pkg_spec_node->package_spec.visible_decls.items[ti];
+                    if (d and d->kind == NK_TASK_SPEC and not d->task_spec.is_type) {
+                        has_pkg_tasks = true;
+                        break;
+                    }
+                }
+            }
+
+            /* Generate initialization/elaboration function if the package has
+             * init statements OR package-level tasks that need starting.
              * For nested packages (inside a function), emit statements inline
              * in the enclosing function — Ada RM 7.2: elaboration occurs at the
              * point of the package body in the enclosing declarative region.
-             * For library-level packages, create a separate __init function. */
-            if (node->package_body.statements.count > 0) {
-                if (cg->current_function) {
-                    /* Nested package: emit initialization inline */
-                    Emit(cg, "  ; Package body initialization (inline)\n");
-                    Generate_Statement_List(cg, &node->package_body.statements);
+             * For library-level packages, create a separate __elab function. */
+            bool has_init_stmts = node->package_body.statements.count > 0;
+            if (has_init_stmts and cg->current_function) {
+                /* Nested package: emit initialization inline */
+                Emit(cg, "  ; Package body initialization (inline)\n");
+                Generate_Statement_List(cg, &node->package_body.statements);
+            } else if (not cg->current_function and (has_init_stmts or has_pkg_tasks)) {
+                /* Library-level package: emit elaboration function that starts
+                 * package-level tasks and runs any initialization statements. */
+                Emit(cg, "\n; Package body elaboration\n");
+                Emit(cg, "define void @");
+                if (pkg_sym) {
+                    Emit_Symbol_Name(cg, pkg_sym);
                 } else {
-                    /* Library-level package: emit __init function */
-                    Emit(cg, "\n; Package body initialization\n");
-                    Emit(cg, "define void @");
-                    if (pkg_sym) {
-                        Emit_Symbol_Name(cg, pkg_sym);
-                    } else {
-                        for (uint32_t i = 0; i < node->package_body.name.length; i++) {
-                            char c = node->package_body.name.data[i];
-                            Emit(cg, "%c", (c >= 'A' and c <= 'Z') ? c + 32 : c);
+                    for (uint32_t i = 0; i < node->package_body.name.length; i++) {
+                        char c = node->package_body.name.data[i];
+                        Emit(cg, "%c", (c >= 'A' and c <= 'Z') ? c + 32 : c);
+                    }
+                }
+                Emit(cg, "___elab() {\n");
+                Emit(cg, "entry:\n");
+
+                Symbol *saved_current_function = cg->current_function;
+                uint32_t saved_temp = cg->temp_id;
+                cg->current_function = pkg_sym;
+                cg->block_terminated = false;
+                cg->temp_id = 1;
+
+                /* Start package-level tasks */
+                if (has_pkg_tasks and pkg_spec_node) {
+                    for (uint32_t ti = 0; ti < pkg_spec_node->package_spec.visible_decls.count; ti++) {
+                        Syntax_Node *d = pkg_spec_node->package_spec.visible_decls.items[ti];
+                        if (not d or d->kind != NK_TASK_SPEC or d->task_spec.is_type or not d->symbol)
+                            continue;
+                        /* Find the task object variable symbol */
+                        Symbol *task_obj = NULL;
+                        Scope *tscope = d->symbol->defining_scope;
+                        if (tscope) {
+                            for (uint32_t si = 0; si < tscope->symbol_count; si++) {
+                                Symbol *s = tscope->symbols[si];
+                                if (s and s->kind == SYMBOL_VARIABLE and
+                                    Type_Is_Task(s->type) and
+                                    Slice_Equal_Ignore_Case(s->name, d->task_spec.name)) {
+                                    task_obj = s;
+                                    break;
+                                }
+                            }
                         }
+                        if (not task_obj) continue;
+                        /* Start the task and store handle in the global */
+                        uint32_t handle_tmp = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = call ptr @__ada_task_start(ptr @task_",
+                             handle_tmp);
+                        /* Emit task body function name (original case, matching
+                         * Generate_Task_Body which uses task_body.name as-is) */
+                        Emit(cg, "%.*s", (int)d->task_spec.name.length,
+                             d->task_spec.name.data);
+                        Emit(cg, ", ptr null)\n");
+                        Emit(cg, "  store ptr %%t%u, ptr @", handle_tmp);
+                        Emit_Symbol_Name(cg, task_obj);
+                        Emit(cg, "\n");
                     }
-                    Emit(cg, "___init() {\n");
-                    Emit(cg, "entry:\n");
+                }
 
-                    Symbol *saved_current_function = cg->current_function;
-                    cg->current_function = pkg_sym;
-                    cg->block_terminated = false;
-
+                /* Run initialization statements if any */
+                if (has_init_stmts) {
                     Generate_Statement_List(cg, &node->package_body.statements);
+                }
 
-                    if (not cg->block_terminated) {
-                        Emit(cg, "  ret void\n");
-                    }
-                    Emit(cg, "}\n\n");
+                if (not cg->block_terminated) {
+                    Emit(cg, "  ret void\n");
+                }
+                Emit(cg, "}\n\n");
 
-                    cg->current_function = saved_current_function;
+                cg->temp_id = saved_temp;
+                cg->current_function = saved_current_function;
+
+                /* Track this elaboration function for calling from main */
+                if (pkg_sym and cg->elab_func_count < 64) {
+                    cg->elab_funcs[cg->elab_func_count++] = pkg_sym;
                 }
             }
             }
@@ -24618,6 +24905,7 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 Symbol *template = inst_sym->generic_template;
                 Symbol *saved_instance = cg->current_instance;
                 cg->current_instance = inst_sym;
+                Set_Generic_Type_Map(inst_sym);
 
                 /* For library-level package instances, emit global variables for
                  * exported objects REGARDLESS of whether there's a body. Generic
@@ -24683,6 +24971,7 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 if (not generic_body) generic_body = template->generic_body;
                 if (not generic_body) {
                     cg->current_instance = saved_instance;
+                    Set_Generic_Type_Map(saved_instance);
                     break;  /* No body: globals already emitted above */
                 }
 
@@ -24736,6 +25025,33 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                             }
                         }
                     }
+                    /* Start any task objects declared in the generic spec.
+                     * Task variables (SYMBOL_VARIABLE with TYPE_TASK) need
+                     * __ada_task_start called after their alloca. */
+                    for (uint32_t i = 0; i < inst_sym->exported_count; i++) {
+                        Symbol *exp = inst_sym->exported[i];
+                        if (not exp or exp->kind != SYMBOL_VARIABLE) continue;
+                        if (not Type_Is_Task(exp->type)) continue;
+                        /* Find the task spec declaration to get the task name */
+                        String_Slice task_name = exp->name;
+                        uint32_t handle_tmp = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = call ptr @__ada_task_start(ptr @task_",
+                             handle_tmp);
+                        /* Prefix with instance mangled name for unique function */
+                        String_Slice inst_mangled = Symbol_Mangle_Name(inst_sym);
+                        for (uint32_t j = 0; j < inst_mangled.length; j++) {
+                            fputc(inst_mangled.data[j], cg->output);
+                        }
+                        Emit(cg, "__%.*s, ", (int)task_name.length, task_name.data);
+                        if (cg->current_nesting_level > 0) {
+                            Emit(cg, "ptr %%__frame_base)\n");
+                        } else {
+                            Emit(cg, "ptr null)\n");
+                        }
+                        Emit(cg, "  store ptr %%t%u, ptr %%", handle_tmp);
+                        Emit_Symbol_Name(cg, exp);
+                        Emit(cg, "\n");
+                    }
                     /* Defer subprogram bodies for later */
                     if (cg->deferred_count < 64)
                         cg->deferred_bodies[cg->deferred_count++] = node;
@@ -24764,6 +25080,7 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 }
 
                 cg->current_instance = saved_instance;
+                Set_Generic_Type_Map(saved_instance);
             }
             break;
 
@@ -24799,6 +25116,21 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     if (obj_sym->unique_id == 0) {
                         obj_sym->unique_id = cg->sm->next_unique_id++;
                     }
+
+                    /* Package-level tasks need global storage, not alloca.
+                     * alloca is only valid inside a function.  For package-level
+                     * tasks, emit a global variable here and defer the task_start
+                     * to the package body elaboration function (RM 9.2). */
+                    if (not cg->current_function) {
+                        /* Emit global variable for the task control block (once only) */
+                        if (not obj_sym->extern_emitted) {
+                            obj_sym->extern_emitted = true;
+                            Emit(cg, "@");
+                            Emit_Symbol_Name(cg, obj_sym);
+                            Emit(cg, " = global ptr null  ; package-level task object\n");
+                        }
+                        /* Task start is deferred to package body elaboration */
+                    } else {
                     /* Allocate task object - use frame if nested, else stack */
                     bool use_frame = cg->current_nesting_level > 0;
                     if (use_frame) {
@@ -24838,6 +25170,7 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     Emit(cg, "  store ptr %%t%u, ptr %%", handle_tmp);
                     Emit_Symbol_Name(cg, obj_sym);
                     Emit(cg, "\n");
+                    }
                 }
             }
             break;
@@ -25203,6 +25536,7 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "declare i32 @usleep(i32)\n");
     Emit(cg, "declare i32 @pthread_create(ptr, ptr, ptr, ptr)\n");
     Emit(cg, "declare i32 @pthread_join(ptr, ptr)\n");
+    Emit(cg, "declare void @pthread_exit(ptr)\n");
     Emit(cg, "declare i32 @printf(ptr, ...)\n");
     Emit(cg, "declare i32 @putchar(i32)\n");
     Emit(cg, "declare i32 @getchar()\n");
@@ -25532,10 +25866,12 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "  ret void\n");
     Emit(cg, "}\n\n");
 
-    /* Task terminate: graceful task termination (for terminate alternative) */
+    /* Task terminate: graceful task termination (for terminate alternative).
+     * Per RM 9.7.1: a terminate alternative is selected when the task's
+     * master has completed and all sibling tasks are terminated or waiting
+     * at terminate alternatives.  We terminate just this task's thread. */
     Emit(cg, "define linkonce_odr void @__ada_task_terminate() {\n");
-    Emit(cg, "  ; Check if master task is complete, if so exit\n");
-    Emit(cg, "  call void @exit(i32 0)\n");
+    Emit(cg, "  call void @pthread_exit(ptr null)\n");
     Emit(cg, "  unreachable\n");
     Emit(cg, "}\n\n");
 
@@ -26000,13 +26336,22 @@ static void Compile_File(const char *input_path, const char *output_path) {
         Emit(cg, " = linkonce_odr constant i8 0\n");
     }
 
-    /* Emit @main() for the last parameterless library-level procedure */
+    /* Emit @main() for the last parameterless library-level procedure.
+     * Call package elaboration functions before the main procedure to ensure
+     * package-level tasks are started (RM 10.5: elaboration order). */
     if (cg->main_candidate) {
         Emit(cg, "\n; C main entry point\n");
         Emit(cg, "define i32 @main() {\n");
+        /* Call package elaboration functions (task starts, init statements) */
+        for (uint32_t i = 0; i < cg->elab_func_count; i++) {
+            Emit(cg, "  call void @");
+            Emit_Symbol_Name(cg, cg->elab_funcs[i]);
+            Emit(cg, "___elab()\n");
+        }
         Emit(cg, "  call void @");
         Emit_Symbol_Name(cg, cg->main_candidate);
         Emit(cg, "()\n");
+        Emit(cg, "  call void @exit(i32 0)\n");
         Emit(cg, "  ret i32 0\n");
         Emit(cg, "}\n");
     }
