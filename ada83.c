@@ -16542,6 +16542,9 @@ static uint32_t Generate_Bound_Value(Code_Generator *cg, Type_Bound b) {
         return t;
     }
     if (b.kind == BOUND_FLOAT) {
+        /* Note: "double" here is intentional — %e produces a double-precision
+         * LLVM IR literal, matching the fptosi source type.  This converts a
+         * real-valued bound constant to integer, not a typed expression. */
         Emit(cg, "  %%t%u = fptosi double %e to %s  ; bound (float)\n", t, b.float_value, iat);
         return t;
     }
@@ -17802,27 +17805,17 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             {
                 bool left_is_float = Type_Is_Float_Representation(left_type);
                 if (left_is_float) {
-                    /* Float ** Integer: use pow intrinsic with converted exponent.
-                     * llvm.pow.f64 requires double operands, so convert if needed. */
-                    const char *lhs_ftype = "double";
-                    if (Type_Is_Float(left_type)) {
-                        lhs_ftype = Llvm_Float_Type((uint32_t)To_Bits(left_type->size));
-                    }
-                    uint32_t left_d = left;
-                    if (strcmp(lhs_ftype, "double") != 0) {
-                        left_d = Emit_Convert(cg, left, lhs_ftype, "double");
-                    }
+                    /* Float ** Integer: use native-precision pow intrinsic.
+                     * LLVM provides llvm.pow.f32 and llvm.pow.f64. */
+                    const char *lhs_ftype = Float_Llvm_Type_Of(left_type);
+                    const char *pow_intrinsic = (strcmp(lhs_ftype, "float") == 0)
+                        ? "llvm.pow.f32" : "llvm.pow.f64";
+                    /* Convert integer exponent to matching float type */
                     uint32_t exp_float = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = sitofp %s %%t%u to double\n", exp_float, right_int_type, right);
-                    uint32_t pow_result = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = call double @llvm.pow.f64(double %%t%u, double %%t%u)\n",
-                         pow_result, left_d, exp_float);
-                    /* Convert result back to original float type if needed */
-                    if (strcmp(lhs_ftype, "double") != 0) {
-                        Emit(cg, "  %%t%u = fptrunc double %%t%u to %s\n", t, pow_result, lhs_ftype);
-                    } else {
-                        t = pow_result;
-                    }
+                    Emit(cg, "  %%t%u = sitofp %s %%t%u to %s\n",
+                         exp_float, right_int_type, right, lhs_ftype);
+                    Emit(cg, "  %%t%u = call %s @%s(%s %%t%u, %s %%t%u)\n",
+                         t, lhs_ftype, pow_intrinsic, lhs_ftype, left, lhs_ftype, exp_float);
                 } else {
                     /* Integer ** Integer: use integer power function.
                      * Signed types use overflow-checked __ada_integer_pow.
@@ -18018,21 +18011,11 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                     right_is_float = false;
                     right_llvm_type = Integer_Arith_Type(cg);
                 } else if (left_is_float and right_is_float) {
-                    /* Both floats - convert right to match left if sizes differ.
-                     * Explicitly check both types to avoid incorrect conversions
-                     * when type detection defaults to "double". */
-                    if (strcmp(float_type, "float") == 0 and strcmp(right_float_type, "double") == 0) {
-                        /* double -> float */
-                        uint32_t conv = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = fptrunc double %%t%u to float\n", conv, right);
-                        right = conv;
-                    } else if (strcmp(float_type, "double") == 0 and strcmp(right_float_type, "float") == 0) {
-                        /* float -> double */
-                        uint32_t conv = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = fpext float %%t%u to double\n", conv, right);
-                        right = conv;
+                    /* Both floats — use Emit_Convert which handles fpext/fptrunc
+                     * based on bit widths, no hardcoded type string matching needed */
+                    if (strcmp(float_type, right_float_type) != 0) {
+                        right = Emit_Convert(cg, right, right_float_type, float_type);
                     }
-                    /* If both same type (float/float or double/double), no conversion needed */
                 }
 
                 const char *cmp_op;
@@ -18874,11 +18857,12 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         /* Widen return value to INTEGER width for computation.
          * Preserve native types: floats, pointers, fat pointers. */
         if (sym->return_type) {
-            const char *ret_llvm = Type_To_Llvm(sym->return_type);
-            if (not Is_Float_Type(ret_llvm) and
-                strcmp(ret_llvm, "ptr") != 0 and
-                not Llvm_Type_Is_Fat_Pointer(ret_llvm)) {
-                t = Emit_Convert(cg, t, ret_llvm, Integer_Arith_Type(cg));
+            if (not Type_Is_Float_Representation(sym->return_type)) {
+                const char *ret_llvm = Type_To_Llvm(sym->return_type);
+                if (strcmp(ret_llvm, "ptr") != 0 and
+                    not Llvm_Type_Is_Fat_Pointer(ret_llvm)) {
+                    t = Emit_Convert(cg, t, ret_llvm, Integer_Arith_Type(cg));
+                }
             }
             return t;
         }
@@ -19210,8 +19194,9 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                 }
                 /* Widen narrow integer scalars back to INTEGER computation width.
                  * Float/ptr/fat-pointer results keep their native type. (RM 4.6) */
-                if (not Is_Float_Type(dst_llvm) and strcmp(dst_llvm, "ptr") != 0 and
-                    not strstr(dst_llvm, "{")) {
+                if (not Type_Is_Float_Representation(dst_type) and
+                    strcmp(dst_llvm, "ptr") != 0 and
+                    not Llvm_Type_Is_Fat_Pointer(dst_llvm)) {
                     result = Emit_Convert_Ext(cg, result, dst_llvm, Integer_Arith_Type(cg), conv_unsigned);
                 }
             }
@@ -19464,20 +19449,14 @@ static uint32_t Emit_Bound_Attribute(Code_Generator *cg, uint32_t t,
                 (is_low  ? prefix_type->low_bound.kind  == BOUND_FLOAT
                          : prefix_type->high_bound.kind == BOUND_FLOAT))) {
         /* Float type — determine LLVM type, then emit bound */
-        const char *fty = Type_Is_Float(prefix_type)
-            ? Llvm_Float_Type((uint32_t)To_Bits(prefix_type->size)) : "double";
+        const char *fty = Float_Llvm_Type_Of(prefix_type);
         Type_Bound b = is_low ? prefix_type->low_bound : prefix_type->high_bound;
         if (b.kind == BOUND_EXPR and b.expr) {
             uint32_t v = Generate_Expression(cg, b.expr);
             /* Convert bound expression to target float type if needed */
             const char *expr_fty = Expression_Llvm_Type(cg, b.expr);
             if (strcmp(expr_fty, fty) != 0) {
-                uint32_t conv = Emit_Temp(cg);
-                if (strcmp(fty, "float") == 0 and strcmp(expr_fty, "double") == 0)
-                    Emit(cg, "  %%t%u = fptrunc double %%t%u to float\n", conv, v);
-                else
-                    Emit(cg, "  %%t%u = fpext %s %%t%u to %s\n", conv, expr_fty, v, fty);
-                v = conv;
+                v = Emit_Convert(cg, v, expr_fty, fty);
             }
             Emit(cg, "  %%t%u = fadd %s %%t%u, 0.0  ; %.*s'%s (runtime)\n",
                  t, fty, v, (int)attr.length, attr.data, tag);
@@ -21117,8 +21096,9 @@ static uint32_t Generate_Qualified(Code_Generator *cg, Syntax_Node *node) {
     }
     /* Widen narrow integer scalars back to INTEGER computation width.
      * Mirrors the same fix in Generate_Apply (RM 4.6). */
-    if (not Is_Float_Type(dst_llvm) and strcmp(dst_llvm, "ptr") != 0 and
-        not strstr(dst_llvm, "{")) {
+    if (not Type_Is_Float_Representation(dst_type) and
+        strcmp(dst_llvm, "ptr") != 0 and
+        not Llvm_Type_Is_Fat_Pointer(dst_llvm)) {
         result = Emit_Convert(cg, result, dst_llvm, Integer_Arith_Type(cg));
     }
 
@@ -21870,13 +21850,14 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, "  %%t%u = fdiv double %%t%u, %%t%u\n", div_t, value, small_t);
             value = div_t;
         }
+        const char *src_ftype = Float_Llvm_Type_Of(value_type);
         uint32_t t = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = fptosi double %%t%u to %s\n", t, value, type_str);
+        Emit(cg, "  %%t%u = fptosi %s %%t%u to %s\n", t, src_ftype, value, type_str);
         value = t;
     } else if (not is_src_float and is_dst_float) {
         /* Integer to float: use sitofp — GNAT LLVM: use native src/dst types */
         const char *src_type = Expression_Llvm_Type(cg, node->assignment.value);
-        const char *dst_ftype = Type_Is_Float(ty) ? Llvm_Float_Type((uint32_t)To_Bits(ty->size)) : "double";
+        const char *dst_ftype = Float_Llvm_Type_Of(ty);
         uint32_t t = Emit_Temp(cg);
         Emit(cg, "  %%t%u = sitofp %s %%t%u to %s\n", t, src_type, value, dst_ftype);
         value = t;
