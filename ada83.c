@@ -286,6 +286,30 @@ static inline uint32_t Bits_For_Range(int64_t lo, int64_t hi) {
     /* Note: when 128-bit bounds are needed (via Big_Integer), add Width_128 case. */
 }
 
+/* Determine minimum LLVM integer width for a modular type with given modulus.
+ * Modular types need enough bits to represent values 0 .. modulus-1.
+ * For power-of-2 moduli (the common case), this is exactly log2(modulus) bits.
+ * For non-power-of-2 moduli, we round up to the next standard LLVM width.
+ * Ada RM 3.5.4(9): the range of a modular type is 0 .. modulus-1.
+ *
+ * Examples:
+ *   mod 256     -> 8 bits  (i8)     — u8
+ *   mod 65536   -> 16 bits (i16)    — u16
+ *   mod 2**32   -> 32 bits (i32)    — u32
+ *   mod 2**64   -> 64 bits (i64)    — u64
+ *   mod 2**128  -> 128 bits (i128)  — u128
+ *   mod 100     -> 8 bits  (i8)     — fits in 7 bits, rounds to i8 */
+static inline uint32_t Bits_For_Modulus(uint64_t modulus) {
+    if (modulus == 0) return Width_64;  /* Sentinel: 2**64 overflows uint64_t → 0 */
+    /* Find the number of bits needed: ceil(log2(modulus)) */
+    uint64_t max_val = modulus - 1;
+    return max_val < 256ULL       ? Width_8  :
+           max_val < 65536ULL     ? Width_16 :
+           max_val < 4294967296ULL ? Width_32 : Width_64;
+    /* Note: modulus > 2**64 requires Width_128; handled by special-case
+     * detection when modulus == 0 (overflow sentinel) and is_128 flag. */
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
  * §2. MEMORY ARENA — Bump Allocation for the Compilation Session
  * ═══════════════════════════════════════════════════════════════════════════
@@ -2264,7 +2288,7 @@ struct Syntax_Node {
         struct { Node_List literals; } enum_type;
 
         /* NK_INTEGER_TYPE, NK_REAL_TYPE */
-        struct { Syntax_Node *range; int64_t modulus; } integer_type;
+        struct { Syntax_Node *range; int64_t modulus; bool is_modular; } integer_type;
         struct { Syntax_Node *precision; Syntax_Node *range; Syntax_Node *delta; } real_type;
 
         /* NK_COMPONENT_DECL */
@@ -3588,8 +3612,8 @@ static Syntax_Node *Parse_Type_Definition(Parser *p) {
     if (Parser_Match(p, TK_MOD)) {
         Syntax_Node *node = Node_New(NK_INTEGER_TYPE, loc);
         Syntax_Node *mod_expr = Parse_Expression(p);
-        /* Store modulus as integer value if constant */
-        node->integer_type.modulus = 0;  /* Will be evaluated during semantic analysis */
+        node->integer_type.is_modular = true;
+        node->integer_type.modulus = 0;  /* Evaluated during semantic analysis */
         node->integer_type.range = mod_expr;
         return node;
     }
@@ -8355,6 +8379,68 @@ static double Eval_Const_Numeric(Syntax_Node *n) {
     }
 }
 
+/* Integer-precise constant evaluator for modular type modulus expressions.
+ * Unlike Eval_Const_Numeric (which uses double, losing precision above 2^53),
+ * this evaluates in uint64_t for exact results up to 2^64.
+ * Returns true on success, false if the expression is not a compile-time integer constant.
+ * For 2**64 the result overflows to 0, which Bits_For_Modulus handles as a sentinel. */
+static bool Eval_Const_Uint64(Syntax_Node *n, uint64_t *out) {
+    if (not n) return false;
+    switch (n->kind) {
+        case NK_INTEGER:
+            *out = (uint64_t)n->integer_lit.value;
+            return true;
+        case NK_IDENTIFIER:
+        case NK_SELECTED: {
+            Symbol *sym = n ? n->symbol : NULL;
+            if (sym and sym->kind == SYMBOL_CONSTANT and sym->is_named_number and
+                sym->declaration and sym->declaration->kind == NK_OBJECT_DECL) {
+                return Eval_Const_Uint64(sym->declaration->object_decl.init, out);
+            }
+            return false;
+        }
+        case NK_UNARY_OP:
+            if (n->unary.op == TK_PLUS) return Eval_Const_Uint64(n->unary.operand, out);
+            if (n->unary.op == TK_MINUS) {
+                uint64_t v;
+                if (Eval_Const_Uint64(n->unary.operand, &v)) { *out = (uint64_t)(-(int64_t)v); return true; }
+            }
+            return false;
+        case NK_BINARY_OP: {
+            uint64_t l, r;
+            if (not Eval_Const_Uint64(n->binary.left, &l)) return false;
+            if (not Eval_Const_Uint64(n->binary.right, &r)) return false;
+            switch (n->binary.op) {
+                case TK_PLUS:  *out = l + r; return true;
+                case TK_MINUS: *out = l - r; return true;
+                case TK_STAR:  *out = l * r; return true;
+                case TK_SLASH: if (r == 0) return false; *out = l / r; return true;
+                case TK_EXPON: {
+                    /* Integer exponentiation: l ** r.  For modular type declarations,
+                     * the common case is 2**N.  Overflow (e.g. 2**64) wraps to 0. */
+                    uint64_t result = 1;
+                    for (uint64_t i = 0; i < r; i++) result *= l;
+                    *out = result;
+                    return true;
+                }
+                default: return false;
+            }
+        }
+        case NK_APPLY: {
+            /* Type conversions: TYPE_NAME(expr) */
+            if (n->apply.prefix and n->apply.arguments.count == 1) {
+                Syntax_Node *prefix = n->apply.prefix;
+                if (prefix->kind == NK_IDENTIFIER and prefix->symbol and
+                    prefix->symbol->kind == SYMBOL_TYPE) {
+                    return Eval_Const_Uint64(n->apply.arguments.items[0], out);
+                }
+            }
+            return false;
+        }
+        default: return false;
+    }
+}
+
 static int64_t Type_Bound_Value(Type_Bound b) {
     if (b.kind == BOUND_INTEGER) return b.int_value;
     if (b.kind == BOUND_FLOAT) return (int64_t)b.float_value;
@@ -9716,54 +9802,129 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
 
         case NK_INTEGER_TYPE:
             {
-                /* Integer type definition: range L .. H or mod M */
-                Type_Info *int_type = Type_New(TYPE_INTEGER, S(""));
+                if (node->integer_type.is_modular) {
+                    /* Modular type definition: type T is mod M (RM 3.5.4)
+                     * Range is 0 .. M-1, all arithmetic wraps modulo M.
+                     * The modulus expression is stored in integer_type.range. */
+                    Type_Info *mod_type = Type_New(TYPE_MODULAR, S(""));
 
-                /* Resolve range bounds if present */
-                if (node->integer_type.range) {
                     Resolve_Expression(sm, node->integer_type.range);
-                    Syntax_Node *range = node->integer_type.range;
-                    if (range->kind == NK_RANGE and range->range.low and range->range.high) {
-                        /* Extract low bound - handle integer literals and unary minus */
-                        Syntax_Node *lo = range->range.low;
-                        if (lo->kind == NK_INTEGER) {
-                            int_type->low_bound = (Type_Bound){
-                                .kind = BOUND_INTEGER,
-                                .int_value = lo->integer_lit.value
-                            };
-                        } else if (lo->kind == NK_UNARY_OP and lo->unary.operand and
-                                   lo->unary.operand->kind == NK_INTEGER) {
-                            int64_t val = lo->unary.operand->integer_lit.value;
-                            if (lo->unary.op == TK_MINUS) val = -val;
-                            int_type->low_bound = (Type_Bound){
-                                .kind = BOUND_INTEGER,
-                                .int_value = val
-                            };
+
+                    /* Evaluate modulus using integer-precise evaluator */
+                    uint64_t modulus = 0;
+                    bool is_128 = false;
+                    if (Eval_Const_Uint64(node->integer_type.range, &modulus)) {
+                        /* modulus == 0 means 2**64 overflowed — that's a valid u64 type.
+                         * For 2**128 we need special detection: check if the expression
+                         * is literally 2**128 (base=2, exp=128). */
+                        if (modulus == 0) {
+                            /* Check for 2**128 vs 2**64 */
+                            Syntax_Node *expr = node->integer_type.range;
+                            if (expr->kind == NK_BINARY_OP and expr->binary.op == TK_EXPON) {
+                                uint64_t base, exp;
+                                if (Eval_Const_Uint64(expr->binary.left, &base) and
+                                    Eval_Const_Uint64(expr->binary.right, &exp) and
+                                    base == 2 and exp == 128) {
+                                    is_128 = true;
+                                }
+                            }
                         }
-                        /* Extract high bound - handle integer literals and unary minus */
-                        Syntax_Node *hi = range->range.high;
-                        if (hi->kind == NK_INTEGER) {
-                            int_type->high_bound = (Type_Bound){
-                                .kind = BOUND_INTEGER,
-                                .int_value = hi->integer_lit.value
-                            };
-                        } else if (hi->kind == NK_UNARY_OP and hi->unary.operand and
-                                   hi->unary.operand->kind == NK_INTEGER) {
-                            int64_t val = hi->unary.operand->integer_lit.value;
-                            if (hi->unary.op == TK_MINUS) val = -val;
-                            int_type->high_bound = (Type_Bound){
-                                .kind = BOUND_INTEGER,
-                                .int_value = val
-                            };
+                    } else {
+                        /* Non-constant modulus: use double evaluator as fallback */
+                        double dval = Eval_Const_Numeric(node->integer_type.range);
+                        if (dval == dval and dval > 0) modulus = (uint64_t)dval;
+                    }
+
+                    mod_type->modulus = (int64_t)modulus;
+                    node->integer_type.modulus = (int64_t)modulus;
+
+                    /* Bounds: 0 .. modulus-1 (RM 3.5.4(9)) */
+                    mod_type->low_bound = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = 0 };
+                    if (is_128) {
+                        /* For mod 2**128: high bound is conceptually 2^128-1.
+                         * Store INT64_MAX as a sentinel; codegen uses i128 width. */
+                        mod_type->high_bound = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = INT64_MAX };
+                    } else if (modulus == 0) {
+                        /* mod 2**64: high bound is UINT64_MAX, store as -1 in int64_t */
+                        mod_type->high_bound = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = -1 };
+                    } else {
+                        mod_type->high_bound = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = (int64_t)(modulus - 1) };
+                    }
+
+                    /* Compute size from modulus */
+                    uint32_t bits;
+                    if (is_128) {
+                        bits = Width_128;
+                    } else {
+                        bits = Bits_For_Modulus(modulus);
+                    }
+                    mod_type->size = (uint32_t)(bits / 8);
+                    mod_type->alignment = mod_type->size;
+                    if (mod_type->alignment > 8) mod_type->alignment = 8;  /* Max alignment 8 bytes */
+
+                    node->type = mod_type;
+                    return mod_type;
+
+                } else {
+                    /* Signed integer type definition: range L .. H */
+                    Type_Info *int_type = Type_New(TYPE_INTEGER, S(""));
+
+                    /* Resolve range bounds if present */
+                    if (node->integer_type.range) {
+                        Resolve_Expression(sm, node->integer_type.range);
+                        Syntax_Node *range = node->integer_type.range;
+                        if (range->kind == NK_RANGE and range->range.low and range->range.high) {
+                            /* Extract low bound - handle integer literals and unary minus */
+                            Syntax_Node *lo = range->range.low;
+                            if (lo->kind == NK_INTEGER) {
+                                int_type->low_bound = (Type_Bound){
+                                    .kind = BOUND_INTEGER,
+                                    .int_value = lo->integer_lit.value
+                                };
+                            } else if (lo->kind == NK_UNARY_OP and lo->unary.operand and
+                                       lo->unary.operand->kind == NK_INTEGER) {
+                                int64_t val = lo->unary.operand->integer_lit.value;
+                                if (lo->unary.op == TK_MINUS) val = -val;
+                                int_type->low_bound = (Type_Bound){
+                                    .kind = BOUND_INTEGER,
+                                    .int_value = val
+                                };
+                            }
+                            /* Extract high bound - handle integer literals and unary minus */
+                            Syntax_Node *hi = range->range.high;
+                            if (hi->kind == NK_INTEGER) {
+                                int_type->high_bound = (Type_Bound){
+                                    .kind = BOUND_INTEGER,
+                                    .int_value = hi->integer_lit.value
+                                };
+                            } else if (hi->kind == NK_UNARY_OP and hi->unary.operand and
+                                       hi->unary.operand->kind == NK_INTEGER) {
+                                int64_t val = hi->unary.operand->integer_lit.value;
+                                if (hi->unary.op == TK_MINUS) val = -val;
+                                int_type->high_bound = (Type_Bound){
+                                    .kind = BOUND_INTEGER,
+                                    .int_value = val
+                                };
+                            }
                         }
                     }
-                }
 
-                /* Compute appropriate size */
-                int_type->size = 8;  /* Default to 64-bit */
-                int_type->alignment = 8;
-                node->type = int_type;
-                return int_type;
+                    /* Compute appropriate size from bounds */
+                    if (int_type->low_bound.kind == BOUND_INTEGER and
+                        int_type->high_bound.kind == BOUND_INTEGER) {
+                        uint32_t bits = Bits_For_Range(int_type->low_bound.int_value,
+                                                       int_type->high_bound.int_value);
+                        int_type->size = (uint32_t)(bits / 8);
+                        if (int_type->size == 0) int_type->size = 1;
+                        int_type->alignment = int_type->size;
+                        if (int_type->alignment > 8) int_type->alignment = 8;
+                    } else {
+                        int_type->size = 8;  /* Default to 64-bit */
+                        int_type->alignment = 8;
+                    }
+                    node->type = int_type;
+                    return int_type;
+                }
             }
 
         case NK_REAL_TYPE:
@@ -17231,41 +17392,67 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
 
         case TK_AND:
         case TK_AND_THEN:
-            /* Boolean AND: convert operands to i1 (may have been widened from load) */
             {
-                const char *left_llvm = Expression_Llvm_Type(cg, node->binary.left);
-                const char *right_llvm = Expression_Llvm_Type(cg, node->binary.right);
-                left = Emit_Convert(cg, left, left_llvm, "i1");
-                right = Emit_Convert(cg, right, right_llvm, "i1");
-                Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", t, left, right);
-                uint32_t and_w = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = zext i1 %%t%u to %s\n", and_w, t, Integer_Arith_Type(cg));
-                return and_w;
+                /* For modular types: bitwise AND at native width (RM 4.5.1).
+                 * For boolean types: convert to i1, AND, widen back. */
+                bool mod_and = Type_Is_Unsigned(result_type);
+                if (mod_and) {
+                    const char *common_t = Wider_Int_Type(cg, left_int_type, right_int_type);
+                    left = Emit_Convert_Ext(cg, left, left_int_type, common_t, true);
+                    right = Emit_Convert_Ext(cg, right, right_int_type, common_t, true);
+                    Emit(cg, "  %%t%u = and %s %%t%u, %%t%u\n", t, common_t, left, right);
+                } else {
+                    const char *left_llvm = Expression_Llvm_Type(cg, node->binary.left);
+                    const char *right_llvm = Expression_Llvm_Type(cg, node->binary.right);
+                    left = Emit_Convert(cg, left, left_llvm, "i1");
+                    right = Emit_Convert(cg, right, right_llvm, "i1");
+                    Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", t, left, right);
+                    uint32_t and_w = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = zext i1 %%t%u to %s\n", and_w, t, Integer_Arith_Type(cg));
+                    return and_w;
+                }
+                return t;
             }
         case TK_OR:
         case TK_OR_ELSE:
-            /* Boolean OR: convert operands to i1 */
             {
-                const char *left_llvm = Expression_Llvm_Type(cg, node->binary.left);
-                const char *right_llvm = Expression_Llvm_Type(cg, node->binary.right);
-                left = Emit_Convert(cg, left, left_llvm, "i1");
-                right = Emit_Convert(cg, right, right_llvm, "i1");
-                Emit(cg, "  %%t%u = or i1 %%t%u, %%t%u\n", t, left, right);
-                uint32_t or_w = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = zext i1 %%t%u to %s\n", or_w, t, Integer_Arith_Type(cg));
-                return or_w;
+                bool mod_or = Type_Is_Unsigned(result_type);
+                if (mod_or) {
+                    const char *common_t = Wider_Int_Type(cg, left_int_type, right_int_type);
+                    left = Emit_Convert_Ext(cg, left, left_int_type, common_t, true);
+                    right = Emit_Convert_Ext(cg, right, right_int_type, common_t, true);
+                    Emit(cg, "  %%t%u = or %s %%t%u, %%t%u\n", t, common_t, left, right);
+                } else {
+                    const char *left_llvm = Expression_Llvm_Type(cg, node->binary.left);
+                    const char *right_llvm = Expression_Llvm_Type(cg, node->binary.right);
+                    left = Emit_Convert(cg, left, left_llvm, "i1");
+                    right = Emit_Convert(cg, right, right_llvm, "i1");
+                    Emit(cg, "  %%t%u = or i1 %%t%u, %%t%u\n", t, left, right);
+                    uint32_t or_w = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = zext i1 %%t%u to %s\n", or_w, t, Integer_Arith_Type(cg));
+                    return or_w;
+                }
+                return t;
             }
         case TK_XOR:
-            /* Boolean XOR: convert operands to i1 */
             {
-                const char *left_llvm = Expression_Llvm_Type(cg, node->binary.left);
-                const char *right_llvm = Expression_Llvm_Type(cg, node->binary.right);
-                left = Emit_Convert(cg, left, left_llvm, "i1");
-                right = Emit_Convert(cg, right, right_llvm, "i1");
-                Emit(cg, "  %%t%u = xor i1 %%t%u, %%t%u\n", t, left, right);
-                uint32_t xor_w = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = zext i1 %%t%u to %s\n", xor_w, t, Integer_Arith_Type(cg));
-                return xor_w;
+                bool mod_xor = Type_Is_Unsigned(result_type);
+                if (mod_xor) {
+                    const char *common_t = Wider_Int_Type(cg, left_int_type, right_int_type);
+                    left = Emit_Convert_Ext(cg, left, left_int_type, common_t, true);
+                    right = Emit_Convert_Ext(cg, right, right_int_type, common_t, true);
+                    Emit(cg, "  %%t%u = xor %s %%t%u, %%t%u\n", t, common_t, left, right);
+                } else {
+                    const char *left_llvm = Expression_Llvm_Type(cg, node->binary.left);
+                    const char *right_llvm = Expression_Llvm_Type(cg, node->binary.right);
+                    left = Emit_Convert(cg, left, left_llvm, "i1");
+                    right = Emit_Convert(cg, right, right_llvm, "i1");
+                    Emit(cg, "  %%t%u = xor i1 %%t%u, %%t%u\n", t, left, right);
+                    uint32_t xor_w = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = zext i1 %%t%u to %s\n", xor_w, t, Integer_Arith_Type(cg));
+                    return xor_w;
+                }
+                return t;
             }
 
         case TK_EQ:
@@ -17623,6 +17810,27 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         left = Emit_Convert(cg, left, left_int_type, common_t);
         right = Emit_Convert(cg, right, right_int_type, common_t);
         Emit(cg, "  %%t%u = %s %s %%t%u, %%t%u\n", t, op, common_t, left, right);
+
+        /* Modular wrapping: Ada modular arithmetic wraps modulo M (RM 4.5.3).
+         * For power-of-2 moduli, LLVM's natural integer wrapping suffices.
+         * For non-power-of-2 moduli (e.g. mod 100), emit: urem result, modulus.
+         * Only applies to add, sub, mul — div/rem already produce in-range values. */
+        if (result_type and result_type->kind == TYPE_MODULAR and result_type->modulus > 0) {
+            uint64_t m = (uint64_t)result_type->modulus;
+            /* Check if modulus is a power of 2: if so, no masking needed */
+            if ((m & (m - 1)) != 0) {
+                /* Non-power-of-2 modulus: emit urem */
+                Token_Kind binop = node->binary.op;
+                if (binop == TK_PLUS or binop == TK_MINUS or binop == TK_STAR) {
+                    uint32_t mod_val = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = add %s 0, %llu  ; modulus\n", mod_val, common_t,
+                         (unsigned long long)m);
+                    uint32_t wrapped = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = urem %s %%t%u, %%t%u\n", wrapped, common_t, t, mod_val);
+                    t = wrapped;
+                }
+            }
+        }
     } else {
         Emit(cg, "  %%t%u = %s %s %%t%u, %%t%u\n", t, op, float_type_str, left, right);
     }
@@ -17646,23 +17854,48 @@ static uint32_t Generate_Unary_Op(Code_Generator *cg, Syntax_Node *node) {
 
     switch (node->unary.op) {
         case TK_MINUS:
-            if (is_float)
+            if (is_float) {
                 Emit(cg, "  %%t%u = fsub %s 0.0, %%t%u\n", t, float_type, operand);
-            else
+            } else {
                 Emit(cg, "  %%t%u = sub %s 0, %%t%u\n", t, unary_int_type, operand);
+                /* Modular wrapping for unary minus (RM 4.5.3): -x = modulus - x.
+                 * For power-of-2 moduli, the sub already wraps correctly.
+                 * For non-power-of-2, emit urem to wrap into 0..M-1. */
+                Type_Info *res_type = node->type ? node->type : op_type_info;
+                if (res_type and res_type->kind == TYPE_MODULAR and res_type->modulus > 0) {
+                    uint64_t m = (uint64_t)res_type->modulus;
+                    if ((m & (m - 1)) != 0) {
+                        uint32_t mod_val = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = add %s 0, %llu  ; modulus\n", mod_val, unary_int_type,
+                             (unsigned long long)m);
+                        uint32_t wrapped = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = urem %s %%t%u, %%t%u\n", wrapped, unary_int_type, t, mod_val);
+                        t = wrapped;
+                    }
+                }
+            }
             break;
         case TK_PLUS:
             return operand;
         case TK_NOT:
             {
-                /* Convert operand to i1 if needed (loaded booleans are widened to i64) */
-                const char *op_type = Expression_Llvm_Type(cg, node->unary.operand);
-                operand = Emit_Convert(cg, operand, op_type, "i1");
-                Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n", t, operand);
-                /* GNAT LLVM: widen back to native Boolean type */
-                uint32_t not_w = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = zext i1 %%t%u to %s\n", not_w, t, Integer_Arith_Type(cg));
-                t = not_w;
+                Type_Info *res_type = node->type ? node->type : op_type_info;
+                if (res_type and res_type->kind == TYPE_MODULAR) {
+                    /* Modular NOT is bitwise complement modulo M (RM 4.5.6).
+                     * For power-of-2 moduli: XOR with (M-1) gives correct masking.
+                     * For non-power-of-2: same — XOR with (M-1) is the Ada definition. */
+                    uint64_t mask = (res_type->modulus > 0) ? (uint64_t)res_type->modulus - 1 : ~0ULL;
+                    Emit(cg, "  %%t%u = xor %s %%t%u, %llu  ; modular NOT\n",
+                         t, unary_int_type, operand, (unsigned long long)mask);
+                } else {
+                    /* Boolean NOT: convert to i1, flip, widen back */
+                    const char *op_type = Expression_Llvm_Type(cg, node->unary.operand);
+                    operand = Emit_Convert(cg, operand, op_type, "i1");
+                    Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n", t, operand);
+                    uint32_t not_w = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = zext i1 %%t%u to %s\n", not_w, t, Integer_Arith_Type(cg));
+                    t = not_w;
+                }
             }
             break;
         case TK_ABS:
@@ -19117,10 +19350,11 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("MOD"))) {
-        /* Modular arithmetic attribute */
-        if (prefix_type and prefix_type->modulus > 0) {
-            Emit(cg, "  %%t%u = add %s 0, %lld  ; 'MOD\n", t, Integer_Arith_Type(cg),
-                 (long long)prefix_type->modulus);
+        /* T'MOD — returns the modulus of a modular type (RM 3.5.4(17)) */
+        if (prefix_type and prefix_type->kind == TYPE_MODULAR and prefix_type->modulus > 0) {
+            const char *mod_type = Type_To_Llvm(prefix_type);
+            Emit(cg, "  %%t%u = add %s 0, %llu  ; 'MOD\n", t, mod_type,
+                 (unsigned long long)(uint64_t)prefix_type->modulus);
             return t;
         }
     }

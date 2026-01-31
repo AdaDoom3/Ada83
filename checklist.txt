@@ -255,15 +255,27 @@ actual type creation/parsing is the next step.
 [x] max_digits computation handles width > 64 -> 38 (for i128)
 
 Remaining for next step (actual i128/u128/u64 types):
-[ ] Add TYPE_MODULAR_64 / TYPE_MODULAR_128 or generalize TYPE_MODULAR
-    to carry a width field
-[ ] Parse "type T is mod 2**64" / "type T is mod 2**128" declarations
-[ ] Emit i128 arithmetic (LLVM supports i128 natively on most targets)
+[x] Parser: is_modular flag on integer_type AST node
+[x] Parser: mod expression stored in integer_type.range with is_modular=true
+[x] Semantic analysis: create TYPE_MODULAR with proper modulus, bounds, size
+[x] Eval_Const_Uint64: integer-precise constant evaluator (avoids double precision loss)
+[x] Bits_For_Modulus: compute width from modulus (8/16/32/64, 128 for 2**128)
+[x] Modular wrapping: non-power-of-2 moduli emit urem after add/sub/mul/neg
+[x] Modular NOT: xor with (modulus-1) mask
+[x] Modular AND/OR/XOR: bitwise at native width (not boolean i1)
+[x] 'MOD attribute: uses native Type_To_Llvm, unsigned format
+[x] Signed integer types: compute size from bounds via Bits_For_Range
+[x] 2**64 detection: overflow to 0 handled as sentinel in Bits_For_Modulus
+[x] 2**128 detection: special-case exponent analysis in semantic analysis
+[x] Llvm_Int_Type already handles i128 (bits > 64 → "i128")
+[x] Type_Bits already handles i128 (atoi parses "128")
+[x] Wider_Int_Type already works for i128 (compares bit counts)
+
+Remaining items:
 [ ] Handle i128 literals (may exceed C int64_t — need __int128 or
-    string-based emission)
-[ ] Add i128 to Llvm_Int_Type / Type_Bits / Wider_Int_Type lookups
+    string-based emission for values > 2^63)
 [ ] Add i128 support to Emit_Convert_Ext (sext/zext i64->i128, trunc)
-[ ] u64 (mod 2**64): already works with existing Type_Is_Unsigned +
-    i64 infrastructure — verify with test cases
+    — currently works but untested for i128
 [ ] Test: modular arithmetic wrapping semantics (mod 2**N)
 [ ] Test: mixed signed/unsigned operations and conversions
+[ ] Test: mod 2**64 (u64), mod 2**128 (u128), mod 256 (u8)
