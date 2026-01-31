@@ -203,3 +203,67 @@ ILLEGITIMATE (remove — these are widen-for-computation):
     - __ada_sec_stack_alloc / malloc (ABI: i64 size_t)
     - ptrtoint/inttoptr for address operations
     - Fat pointer field indices (i32 0, i32 1 — these are i32, not i64)
+
+══════════════════════════════════════════════════════════════════════════
+  PHASE 16: Unsigned / modular type correctness  (DONE — infrastructure)
+══════════════════════════════════════════════════════════════════════════
+PRINCIPLE: Ada modular types (TYPE_MODULAR, RM 3.5.4) are unsigned.
+Codegen must use zext (not sext), udiv/urem (not sdiv/srem), unsigned
+comparison predicates (ult/ule/ugt/uge), uitofp/fptoui for float
+conversions, and zext-on-load for dereferences/indexed components.
+
+[x] Add Type_Is_Unsigned(const Type_Info *t) helper (~line 5835)
+[x] Refactor Emit_Convert -> Emit_Convert_Ext with is_unsigned param
+    - zext when unsigned, sext when signed, zext when src_bits==1
+    - uitofp/fptoui when unsigned for float<->int
+    - Backward-compatible Emit_Convert wrapper (signed default)
+[x] Add Emit_Widen_For_Intrinsic_Unsigned (zext variant)
+[x] Add Emit_Widen_Named_For_Intrinsic_Unsigned (zext variant)
+[x] Binary arithmetic: sdiv->udiv, srem->urem for modular types
+[x] Integer comparisons: slt->ult, sle->ule, sgt->ugt, sge->uge
+    for modular types; use Emit_Convert_Ext for comparison operands
+[x] Membership tests: use unsigned predicates for modular types
+[x] Constraint checks: add TYPE_MODULAR to is_int_like; use unsigned
+    comparison predicates (ult/ugt) for unsigned target types
+[x] Mixed-mode float conversions: sitofp->uitofp, fptosi->fptoui
+    for unsigned types in binary ops and comparison handlers
+[x] Type conversion handler: signedness-aware Emit_Convert_Ext
+    using conv_unsigned = Type_Is_Unsigned(src) or Type_Is_Unsigned(dst)
+[x] Load-and-widen sites: .ALL dereference, indexed component,
+    implicit dereference, record field access — use zext for unsigned
+
+──────────────────────────────────────────────────────────────────────────
+  PHASE 17: Generalize hardcoded i32 width assumptions
+──────────────────────────────────────────────────────────────────────────
+[x] sign_shift (~line 19023): replaced strcmp-based i32/i64 check with
+    Type_Bits(abs_type) - 1 — works for any width (i8, i16, i32, i64, i128)
+[x] max_digits (~line 19358): replaced strcmp-based i32 check with
+    width-based computation: <=8->2, <=16->4, <=32->9, <=64->18, >64->38
+
+──────────────────────────────────────────────────────────────────────────
+  PHASE 18: i128 / u128 / u64 infrastructure  (DONE — preparation)
+──────────────────────────────────────────────────────────────────────────
+PRINCIPLE: Ada 2022 adds Long_Long_Long_Integer (128-bit).  Modular
+types can already be any power-of-2 width.  Infrastructure is in place;
+actual type creation/parsing is the next step.
+
+[x] Ada_Long_Long_Long_Integer_Bits = Width_128 in enum (~line 213)
+[x] Bounds_Type_For: "i128" -> "{ i128, i128 }"
+[x] Bounds_Alloc_Size: "i128" -> 32
+[x] Comments updated in Fits_In_Signed, Fits_In_Unsigned, Bits_For_Range
+    noting i128 extension points
+[x] max_digits computation handles width > 64 -> 38 (for i128)
+
+Remaining for next step (actual i128/u128/u64 types):
+[ ] Add TYPE_MODULAR_64 / TYPE_MODULAR_128 or generalize TYPE_MODULAR
+    to carry a width field
+[ ] Parse "type T is mod 2**64" / "type T is mod 2**128" declarations
+[ ] Emit i128 arithmetic (LLVM supports i128 natively on most targets)
+[ ] Handle i128 literals (may exceed C int64_t — need __int128 or
+    string-based emission)
+[ ] Add i128 to Llvm_Int_Type / Type_Bits / Wider_Int_Type lookups
+[ ] Add i128 support to Emit_Convert_Ext (sext/zext i64->i128, trunc)
+[ ] u64 (mod 2**64): already works with existing Type_Is_Unsigned +
+    i64 infrastructure — verify with test cases
+[ ] Test: modular arithmetic wrapping semantics (mod 2**N)
+[ ] Test: mixed signed/unsigned operations and conversions

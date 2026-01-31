@@ -201,13 +201,16 @@ typedef enum {
     Width_Ptr = 64,   Width_Float = 32, Width_Double = 64
 } Bit_Width;
 
-/* Ada standard integer widths per RM §3.5.4 */
+/* Ada standard integer widths per RM §3.5.4.
+ * Long_Long_Long_Integer (128-bit) is an Ada 2022 extension,
+ * included here to prepare for i128/u128 support. */
 typedef enum {
-    Ada_Short_Short_Integer_Bits = Width_8,
-    Ada_Short_Integer_Bits       = Width_16,
-    Ada_Integer_Bits             = Width_32,
-    Ada_Long_Integer_Bits        = Width_64,
-    Ada_Long_Long_Integer_Bits   = Width_64
+    Ada_Short_Short_Integer_Bits      = Width_8,
+    Ada_Short_Integer_Bits            = Width_16,
+    Ada_Integer_Bits                  = Width_32,
+    Ada_Long_Integer_Bits             = Width_64,
+    Ada_Long_Long_Integer_Bits        = Width_64,
+    Ada_Long_Long_Long_Integer_Bits   = Width_128   /* Ada 2022: 128-bit */
 } Ada_Integer_Width;
 
 /* Default metrics when type is unspecified — uses Integer'Size (32 bits) */
@@ -255,25 +258,32 @@ static inline const char *Llvm_Float_Type(uint32_t bits) {
  * ───────────────────────────────────────────────────────────────────────── */
 
 static inline bool Fits_In_Signed(int64_t lo, int64_t hi, uint32_t bits) {
-    if (bits >= 64) return true;
+    if (bits >= 64) return true;  /* i64 holds any int64_t; i128 trivially fits */
     int64_t min = -(1LL << (bits - 1)), max = (1LL << (bits - 1)) - 1;
     return lo >= min and hi <= max;
 }
 
 static inline bool Fits_In_Unsigned(int64_t lo, int64_t hi, uint32_t bits) {
-    if (bits >= 64) return lo >= 0;
+    if (bits >= 64) return lo >= 0;  /* u64 holds any non-negative int64_t; u128 too */
     return lo >= 0 and (uint64_t)hi < (1ULL << bits);
 }
 
+/* Determine minimum LLVM integer width for a range [lo, hi].
+ * Returns Width_8, Width_16, Width_32, Width_64, or Width_128.
+ * Unsigned ranges (lo >= 0) use unsigned analysis. */
 static inline uint32_t Bits_For_Range(int64_t lo, int64_t hi) {
     if (lo >= 0) {
         return (uint64_t)hi < 256ULL       ? Width_8  :
                (uint64_t)hi < 65536ULL     ? Width_16 :
                (uint64_t)hi < 4294967296ULL ? Width_32 : Width_64;
+        /* Note: values > UINT64_MAX require 128 bits, but our bound
+         * representation uses int64_t, so Width_128 is not reached here.
+         * When Big_Integer bounds are added, extend this to Width_128. */
     }
     return Fits_In_Signed(lo, hi, 8)  ? Width_8  :
            Fits_In_Signed(lo, hi, 16) ? Width_16 :
            Fits_In_Signed(lo, hi, 32) ? Width_32 : Width_64;
+    /* Note: when 128-bit bounds are needed (via Big_Integer), add Width_128 case. */
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -5830,6 +5840,11 @@ static inline bool Type_Is_Limited(const Type_Info *t) {
 static inline bool Type_Is_Integer_Like(const Type_Info *t) {
     return t and (t->kind == TYPE_INTEGER or t->kind == TYPE_MODULAR);
 }
+/* Modular types are unsigned in Ada (RM 3.5.4).  This predicate drives
+ * codegen choices: zext vs sext, udiv vs sdiv, unsigned comparisons, etc. */
+static inline bool Type_Is_Unsigned(const Type_Info *t) {
+    return t and t->kind == TYPE_MODULAR;
+}
 static inline bool Type_Is_Enumeration(const Type_Info *t) {
     return t and t->kind == TYPE_ENUMERATION;
 }
@@ -6187,10 +6202,11 @@ static const char *Bounds_Type_For(const char *bt) {
      * e.g. Bounds_Type_For("i32") → "{ i32, i32 }"
      * See gnatllvm-arrays-create.adb:586-636. */
     if (not bt) return STRING_BOUNDS_STRUCT;  /* default STRING bound type */
-    if (strcmp(bt, "i8")  == 0) return "{ i8, i8 }";
-    if (strcmp(bt, "i16") == 0) return "{ i16, i16 }";
-    if (strcmp(bt, "i32") == 0) return "{ i32, i32 }";
-    if (strcmp(bt, "i64") == 0) return "{ i64, i64 }";
+    if (strcmp(bt, "i8")   == 0) return "{ i8, i8 }";
+    if (strcmp(bt, "i16")  == 0) return "{ i16, i16 }";
+    if (strcmp(bt, "i32")  == 0) return "{ i32, i32 }";
+    if (strcmp(bt, "i64")  == 0) return "{ i64, i64 }";
+    if (strcmp(bt, "i128") == 0) return "{ i128, i128 }";
     /* Fallback for unknown types — use configurable STRING default */
     return STRING_BOUNDS_STRUCT;
 }
@@ -6201,10 +6217,11 @@ static int Bounds_Alloc_Size(const char *bt) {
     /* GNAT LLVM style: size depends on native index type.
      * { i8, i8 } = 2, { i16, i16 } = 4, { i32, i32 } = 8, { i64, i64 } = 16. */
     if (not bt) return STRING_BOUNDS_ALLOC;  /* default STRING bound type */
-    if (strcmp(bt, "i8")  == 0) return 2;
-    if (strcmp(bt, "i16") == 0) return 4;
-    if (strcmp(bt, "i32") == 0) return 8;
-    if (strcmp(bt, "i64") == 0) return 16;
+    if (strcmp(bt, "i8")   == 0) return 2;
+    if (strcmp(bt, "i16")  == 0) return 4;
+    if (strcmp(bt, "i32")  == 0) return 8;
+    if (strcmp(bt, "i64")  == 0) return 16;
+    if (strcmp(bt, "i128") == 0) return 32;
     return STRING_BOUNDS_ALLOC;  /* default STRING bound type */
 }
 
@@ -14984,9 +15001,12 @@ static inline const char *Expression_Llvm_Type(const Code_Generator *cg, Syntax_
     return Integer_Arith_Type(cg);
 }
 
-/* Emit type conversion if needed */
-static uint32_t Emit_Convert(Code_Generator *cg, uint32_t src, const char *src_type,
-                            const char *dst_type) {
+/* Emit type conversion if needed.
+ * is_unsigned: when true, integer extensions use zext instead of sext,
+ *              and float↔int conversions use unsigned variants (fptoui/uitofp).
+ *              This is required for Ada modular (unsigned) types (RM 3.5.4). */
+static uint32_t Emit_Convert_Ext(Code_Generator *cg, uint32_t src, const char *src_type,
+                                 const char *dst_type, bool is_unsigned) {
     if (strcmp(src_type, dst_type) == 0) return src;
 
     bool src_is_float = Is_Float_Type(src_type);
@@ -15003,11 +15023,13 @@ static uint32_t Emit_Convert(Code_Generator *cg, uint32_t src, const char *src_t
             Emit(cg, "  %%t%u = fptrunc %s %%t%u to %s\n", t, src_type, src, dst_type);
         }
     } else if (src_is_float and not dst_is_float) {
-        /* float/double → integer */
-        Emit(cg, "  %%t%u = fptosi %s %%t%u to %s\n", t, src_type, src, dst_type);
+        /* float/double → integer: fptosi for signed, fptoui for unsigned */
+        Emit(cg, "  %%t%u = %s %s %%t%u to %s\n", t,
+             is_unsigned ? "fptoui" : "fptosi", src_type, src, dst_type);
     } else if (not src_is_float and dst_is_float) {
-        /* integer → float/double */
-        Emit(cg, "  %%t%u = sitofp %s %%t%u to %s\n", t, src_type, src, dst_type);
+        /* integer → float/double: sitofp for signed, uitofp for unsigned */
+        Emit(cg, "  %%t%u = %s %s %%t%u to %s\n", t,
+             is_unsigned ? "uitofp" : "sitofp", src_type, src, dst_type);
     } else if (strcmp(src_type, "ptr") == 0 and strcmp(dst_type, "ptr") == 0) {
         /* ptr → ptr: no conversion needed */
         return src;
@@ -15045,9 +15067,9 @@ static uint32_t Emit_Convert(Code_Generator *cg, uint32_t src, const char *src_t
         /* integer conversions */
         if (src_bits == dst_bits) return src;
         if (dst_bits > src_bits) {
-            /* Use zext for boolean (i1) to preserve 0/1 semantics,
-             * sext for other integer extensions */
-            if (src_bits == 1) {
+            /* Use zext for boolean (i1) and unsigned/modular types,
+             * sext for signed integer extensions */
+            if (src_bits == 1 or is_unsigned) {
                 Emit(cg, "  %%t%u = zext %s %%t%u to %s\n", t, src_type, src, dst_type);
             } else {
                 Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", t, src_type, src, dst_type);
@@ -15060,6 +15082,12 @@ static uint32_t Emit_Convert(Code_Generator *cg, uint32_t src, const char *src_t
         }
     }
     return t;
+}
+
+/* Signed (default) conversion — backward-compatible wrapper */
+static inline uint32_t Emit_Convert(Code_Generator *cg, uint32_t src,
+                                    const char *src_type, const char *dst_type) {
+    return Emit_Convert_Ext(cg, src, src_type, dst_type, false);
 }
 
 /* Forward declaration for use in bound evaluation */
@@ -15102,6 +15130,7 @@ static uint32_t Emit_Constraint_Check(Code_Generator *cg, uint32_t val, Type_Inf
     if (not target) return val;
 
     bool is_int_like = (target->kind == TYPE_INTEGER or
+                        target->kind == TYPE_MODULAR or
                         target->kind == TYPE_ENUMERATION or
                         target->kind == TYPE_CHARACTER or
                         target->kind == TYPE_FIXED);  /* scaled integer repr */
@@ -15205,15 +15234,19 @@ static uint32_t Emit_Constraint_Check(Code_Generator *cg, uint32_t val, Type_Inf
         }
         if (not lo or not hi) return val;
 
-        /* val < low? — GNAT LLVM: compare at native Integer type width */
+        /* val < low? — GNAT LLVM: compare at native Integer type width.
+         * Modular (unsigned) types use unsigned predicates (RM 3.5.4). */
         const char *chk_type = Integer_Arith_Type(cg);
+        bool chk_unsigned = Type_Is_Unsigned(target);
+        const char *lt_pred = chk_unsigned ? "ult" : "slt";
+        const char *gt_pred = chk_unsigned ? "ugt" : "sgt";
         uint32_t cmp_lo = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = icmp slt %s %%t%u, %%t%u\n", cmp_lo, chk_type, val, lo);
+        Emit(cg, "  %%t%u = icmp %s %s %%t%u, %%t%u\n", cmp_lo, lt_pred, chk_type, val, lo);
         Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp_lo, raise_label, ok_label);
         Emit(cg, "L%u:\n", ok_label);
         /* val > high? */
         uint32_t cmp_hi = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = icmp sgt %s %%t%u, %%t%u\n", cmp_hi, chk_type, val, hi);
+        Emit(cg, "  %%t%u = icmp %s %s %%t%u, %%t%u\n", cmp_hi, gt_pred, chk_type, val, hi);
         Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp_hi, raise_label, cont_label);
     }
 
@@ -15269,8 +15302,9 @@ static uint32_t Emit_Fat_Pointer(Code_Generator *cg, uint32_t data_ptr,
     return t2;
 }
 
-/* Widen a value to INTEGER width (Integer_Arith_Type) via sext, for use at
+/* Widen a value to INTEGER width (Integer_Arith_Type) for use at
  * LLVM intrinsic boundaries (memcpy length, alloca size, malloc size, RTS ABI).
+ * Uses sext for signed types, zext for unsigned (modular) types.
  * No-op if from_type is already at INTEGER width. */
 static uint32_t Emit_Widen_For_Intrinsic(Code_Generator *cg, uint32_t val,
                                     const char *from_type) {
@@ -15278,6 +15312,16 @@ static uint32_t Emit_Widen_For_Intrinsic(Code_Generator *cg, uint32_t val,
     if (strcmp(from_type, iat) == 0) return val;
     uint32_t w = Emit_Temp(cg);
     Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", w, from_type, val, iat);
+    return w;
+}
+
+/* Unsigned variant: widen via zext for modular/unsigned types */
+static uint32_t Emit_Widen_For_Intrinsic_Unsigned(Code_Generator *cg, uint32_t val,
+                                                   const char *from_type) {
+    const char *iat = Integer_Arith_Type(cg);
+    if (strcmp(from_type, iat) == 0) return val;
+    uint32_t w = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = zext %s %%t%u to %s\n", w, from_type, val, iat);
     return w;
 }
 
@@ -15606,7 +15650,8 @@ static void Emit_Fat_Pointer_Extractvalue_Named(Code_Generator *cg,
  * If bt is already at INTEGER width, emits a no-op copy (add 0).
  * src_name:  name of the source SSA value (in bt)
  * dst_name:  name for the widened value
- * bt:        the bound type string */
+ * bt:        the bound type string
+ * Uses sext (signed extension) — for unsigned types use the _Unsigned variant. */
 static void Emit_Widen_Named_For_Intrinsic(Code_Generator *cg,
     const char *src_name, const char *dst_name, const char *bt)
 {
@@ -15616,6 +15661,18 @@ static void Emit_Widen_Named_For_Intrinsic(Code_Generator *cg,
         Emit(cg, "  %%%s = add %s %%%s, 0\n", dst_name, iat, src_name);
     } else {
         Emit(cg, "  %%%s = sext %s %%%s to %s\n", dst_name, bt, src_name, iat);
+    }
+}
+
+/* Unsigned variant: named-SSA widen via zext for modular/unsigned bound types. */
+static void Emit_Widen_Named_For_Intrinsic_Unsigned(Code_Generator *cg,
+    const char *src_name, const char *dst_name, const char *bt)
+{
+    const char *iat = Integer_Arith_Type(cg);
+    if (strcmp(bt, iat) == 0) {
+        Emit(cg, "  %%%s = add %s %%%s, 0\n", dst_name, iat, src_name);
+    } else {
+        Emit(cg, "  %%%s = zext %s %%%s to %s\n", dst_name, bt, src_name, iat);
     }
 }
 
@@ -17015,8 +17072,10 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         }
 
         if (not lhs_is_float) {
+            /* Integer → float: use uitofp for modular (unsigned) types */
             uint32_t conv = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sitofp %s %%t%u to %s\n", conv, left_int_type, left, float_type_str);
+            const char *itof = Type_Is_Unsigned(lhs_type) ? "uitofp" : "sitofp";
+            Emit(cg, "  %%t%u = %s %s %%t%u to %s\n", conv, itof, left_int_type, left, float_type_str);
             left = conv;
         } else if (strcmp(lhs_float_type, float_type_str) != 0) {
             /* Convert left operand to result float type */
@@ -17024,8 +17083,10 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         }
         /* For exponentiation, skip RHS conversion - TK_EXPON handles it */
         if (not rhs_is_float and node->binary.op != TK_EXPON) {
+            /* Integer → float: use uitofp for modular (unsigned) types */
             uint32_t conv = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sitofp %s %%t%u to %s\n", conv, right_int_type, right, float_type_str);
+            const char *itof = Type_Is_Unsigned(rhs_type) ? "uitofp" : "sitofp";
+            Emit(cg, "  %%t%u = %s %s %%t%u to %s\n", conv, itof, right_int_type, right, float_type_str);
             right = conv;
         } else if (rhs_is_float and strcmp(rhs_float_type, float_type_str) != 0 and
                    node->binary.op != TK_EXPON) {
@@ -17115,13 +17176,18 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         }
     }
 
+    /* GNAT LLVM: modular (unsigned) types use unsigned division/remainder.
+     * Ada MOD vs REM differ for signed types (RM 4.5.5), but for modular
+     * types both map to urem since all values are non-negative. */
+    bool lhs_unsigned = Type_Is_Unsigned(lhs_type);
+
     switch (node->binary.op) {
         case TK_PLUS:  op = is_float ? "fadd" : "add"; break;
         case TK_MINUS: op = is_float ? "fsub" : "sub"; break;
         case TK_STAR:  op = is_float ? "fmul" : "mul"; break;
-        case TK_SLASH: op = is_float ? "fdiv" : "sdiv"; break;
-        case TK_MOD:   op = "srem"; break;
-        case TK_REM:   op = "srem"; break;
+        case TK_SLASH: op = is_float ? "fdiv" : (lhs_unsigned ? "udiv" : "sdiv"); break;
+        case TK_MOD:   op = lhs_unsigned ? "urem" : "srem"; break;
+        case TK_REM:   op = lhs_unsigned ? "urem" : "srem"; break;
 
         case TK_EXPON:
             /* Exponentiation: base ** exponent
@@ -17284,9 +17350,10 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                 /* Convert operands to same type if needed */
                 if (left_is_float and not right_is_float) {
                     /* Convert right to float. If it's fixed-point, multiply by SMALL.
-                     * GNAT LLVM: use actual integer type for sitofp. */
+                     * GNAT LLVM: use actual integer type; uitofp for unsigned. */
                     uint32_t conv = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = sitofp %s %%t%u to %s\n", conv, right_llvm_type, right, float_type);
+                    const char *itof_cmp = Type_Is_Unsigned(right_type) ? "uitofp" : "sitofp";
+                    Emit(cg, "  %%t%u = %s %s %%t%u to %s\n", conv, itof_cmp, right_llvm_type, right, float_type);
                     right = conv;
                     if (Type_Is_Fixed_Point(right_type)) {
                         /* Fixed-point: scale by SMALL to get actual value */
@@ -17314,7 +17381,8 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                         right = div_t;
                     }
                     uint32_t conv = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = fptosi %s %%t%u to %s\n", conv, right_float_type, right, Integer_Arith_Type(cg));
+                    const char *ftoi_cmp = Type_Is_Unsigned(left_type) ? "fptoui" : "fptosi";
+                    Emit(cg, "  %%t%u = %s %s %%t%u to %s\n", conv, ftoi_cmp, right_float_type, right, Integer_Arith_Type(cg));
                     right = conv;
                     right_is_float = false;
                     right_llvm_type = Integer_Arith_Type(cg);
@@ -17396,18 +17464,20 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                         } break;
                     }
                 } else {
-                    /* GNAT LLVM: integer comparison using common native type. */
+                    /* GNAT LLVM: integer comparison using common native type.
+                     * Modular (unsigned) types use unsigned predicates (ult/ule/ugt/uge). */
                     const char *cmp_int_t = Wider_Int_Type(cg, left_llvm_type, right_llvm_type);
-                    left = Emit_Convert(cg, left, left_llvm_type, cmp_int_t);
-                    right = Emit_Convert(cg, right, right_llvm_type, cmp_int_t);
+                    bool cmp_unsigned = Type_Is_Unsigned(left_type) or Type_Is_Unsigned(right_type);
+                    left = Emit_Convert_Ext(cg, left, left_llvm_type, cmp_int_t, cmp_unsigned);
+                    right = Emit_Convert_Ext(cg, right, right_llvm_type, cmp_int_t, cmp_unsigned);
                     const char *icmp_pred;
                     switch (node->binary.op) {
                         case TK_EQ: icmp_pred = "eq"; break;
                         case TK_NE: icmp_pred = "ne"; break;
-                        case TK_LT: icmp_pred = "slt"; break;
-                        case TK_LE: icmp_pred = "sle"; break;
-                        case TK_GT: icmp_pred = "sgt"; break;
-                        case TK_GE: icmp_pred = "sge"; break;
+                        case TK_LT: icmp_pred = cmp_unsigned ? "ult" : "slt"; break;
+                        case TK_LE: icmp_pred = cmp_unsigned ? "ule" : "sle"; break;
+                        case TK_GT: icmp_pred = cmp_unsigned ? "ugt" : "sgt"; break;
+                        case TK_GE: icmp_pred = cmp_unsigned ? "uge" : "sge"; break;
                         default:
                             fprintf(stderr, "warning: unhandled integer comparison operator, defaulting to equality\n");
                             icmp_pred = "eq"; break;
@@ -17456,15 +17526,19 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                         Emit(cg, "  %%t%u = fcmp oge %s %%t%u, %%t%u\n", ge, mem_float_type, left, lo);
                         Emit(cg, "  %%t%u = fcmp ole %s %%t%u, %%t%u\n", le, mem_float_type, left, hi);
                     } else {
-                        /* GNAT LLVM: use common native type for integer membership. */
+                        /* GNAT LLVM: use common native type for integer membership.
+                         * Modular (unsigned) types use unsigned predicates. */
+                        bool mem_unsigned = Type_Is_Unsigned(lhs_type);
                         const char *lo_type = Expression_Llvm_Type(cg, node->binary.right->range.low);
                         const char *hi_type = Expression_Llvm_Type(cg, node->binary.right->range.high);
                         const char *mem_ct = Wider_Int_Type(cg, left_int_type, Wider_Int_Type(cg, lo_type, hi_type));
-                        uint32_t ml = Emit_Convert(cg, left, left_int_type, mem_ct);
-                        lo = Emit_Convert(cg, lo, lo_type, mem_ct);
-                        hi = Emit_Convert(cg, hi, hi_type, mem_ct);
-                        Emit(cg, "  %%t%u = icmp sge %s %%t%u, %%t%u\n", ge, mem_ct, ml, lo);
-                        Emit(cg, "  %%t%u = icmp sle %s %%t%u, %%t%u\n", le, mem_ct, ml, hi);
+                        uint32_t ml = Emit_Convert_Ext(cg, left, left_int_type, mem_ct, mem_unsigned);
+                        lo = Emit_Convert_Ext(cg, lo, lo_type, mem_ct, mem_unsigned);
+                        hi = Emit_Convert_Ext(cg, hi, hi_type, mem_ct, mem_unsigned);
+                        const char *ge_pred = mem_unsigned ? "uge" : "sge";
+                        const char *le_pred = mem_unsigned ? "ule" : "sle";
+                        Emit(cg, "  %%t%u = icmp %s %s %%t%u, %%t%u\n", ge, ge_pred, mem_ct, ml, lo);
+                        Emit(cg, "  %%t%u = icmp %s %s %%t%u, %%t%u\n", le, le_pred, mem_ct, ml, hi);
                     }
                     Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", in_range, ge, le);
                     if (negate) { Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n", t, in_range); }
@@ -17500,11 +17574,15 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                             Emit(cg, "  %%t%u = fcmp ole %s %%t%u, %%t%u\n", le, mem_float_type, left, hi_f);
                         } else {
                             /* GNAT LLVM: widen left to INTEGER width for bound comparison.
-                             * Emit_Bound_Value produces INTEGER width. */
+                             * Emit_Bound_Value produces INTEGER width.
+                             * Modular (unsigned) types use unsigned predicates. */
+                            bool mem_u = Type_Is_Unsigned(lhs_type);
                             const char *iat = Integer_Arith_Type(cg);
-                            uint32_t ml = Emit_Convert(cg, left, left_int_type, iat);
-                            Emit(cg, "  %%t%u = icmp sge %s %%t%u, %%t%u\n", ge, iat, ml, lo);
-                            Emit(cg, "  %%t%u = icmp sle %s %%t%u, %%t%u\n", le, iat, ml, hi);
+                            uint32_t ml = Emit_Convert_Ext(cg, left, left_int_type, iat, mem_u);
+                            const char *ge_p = mem_u ? "uge" : "sge";
+                            const char *le_p = mem_u ? "ule" : "sle";
+                            Emit(cg, "  %%t%u = icmp %s %s %%t%u, %%t%u\n", ge, ge_p, iat, ml, lo);
+                            Emit(cg, "  %%t%u = icmp %s %s %%t%u, %%t%u\n", le, le_p, iat, ml, hi);
                         }
                         Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", in_range, ge, le);
                         if (negate) { Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n", t, in_range); }
@@ -17617,13 +17695,15 @@ static uint32_t Generate_Unary_Op(Code_Generator *cg, Syntax_Node *node) {
                 const char *type_str = Type_To_Llvm(designated);
                 Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; .ALL dereference\n",
                      t, type_str, operand);
-                /* Widen sub-INTEGER integer loads to INTEGER width */
+                /* Widen sub-INTEGER integer loads to INTEGER width.
+                 * Use zext for modular (unsigned) types, sext for signed. */
                 {   const char *iat_unary = Integer_Arith_Type(cg);
                     if (type_str[0] == 'i' and strcmp(type_str, iat_unary) != 0 and
                         not Type_Is_Access(designated) and not Type_Is_Float_Representation(designated) and
                         not Type_Is_Unconstrained_Array(designated) and not Type_Is_String(designated)) {
                         uint32_t w = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", w, type_str, t, iat_unary);
+                        const char *ext_op = Type_Is_Unsigned(designated) ? "zext" : "sext";
+                        Emit(cg, "  %%t%u = %s %s %%t%u to %s\n", w, ext_op, type_str, t, iat_unary);
                         t = w;
                     }
                 }
@@ -18348,11 +18428,13 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, %s %%t%u\n",
                  ptr, elem_type, base, iat_idx, idx);
             Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, elem_type, ptr);
-            /* Widen sub-INTEGER integer loads to INTEGER width */
+            /* Widen sub-INTEGER integer loads to INTEGER width.
+             * Use zext for modular (unsigned) element types. */
             if (elem_type[0] == 'i' and strcmp(elem_type, iat_idx) != 0 and
                 not Type_Is_Access(elem_type_info) and not Type_Is_Float_Representation(elem_type_info)) {
                 uint32_t w = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", w, elem_type, t, iat_idx);
+                const char *ext_op = Type_Is_Unsigned(elem_type_info) ? "zext" : "sext";
+                Emit(cg, "  %%t%u = %s %s %%t%u to %s\n", w, ext_op, elem_type, t, iat_idx);
                 return w;
             }
             return t;
@@ -18402,18 +18484,20 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                     return t2;
                 }
 
-                /* Types differ - need to convert */
+                /* Types differ - need to convert.
+                 * Use signedness-aware conversion: zext for unsigned src/dst. */
                 const char *src_llvm = Expression_Llvm_Type(cg, arg);
                 const char *dst_llvm = Type_To_Llvm(dst_type);
+                bool conv_unsigned = Type_Is_Unsigned(src_type) or Type_Is_Unsigned(dst_type);
 
                 if (strcmp(src_llvm, dst_llvm) != 0) {
-                    result = Emit_Convert(cg, result, src_llvm, dst_llvm);
+                    result = Emit_Convert_Ext(cg, result, src_llvm, dst_llvm, conv_unsigned);
                 }
                 /* Widen narrow integer scalars back to INTEGER computation width.
                  * Float/ptr/fat-pointer results keep their native type. (RM 4.6) */
                 if (not Is_Float_Type(dst_llvm) and strcmp(dst_llvm, "ptr") != 0 and
                     not strstr(dst_llvm, "{")) {
-                    result = Emit_Convert(cg, result, dst_llvm, Integer_Arith_Type(cg));
+                    result = Emit_Convert_Ext(cg, result, dst_llvm, Integer_Arith_Type(cg), conv_unsigned);
                 }
             }
             return result;
@@ -18449,12 +18533,14 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
         const char *type_str = Type_To_Llvm(designated);
         uint32_t t = Emit_Temp(cg);
         Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; load via .ALL\n", t, type_str, ptr);
-        /* Widen sub-INTEGER integer loads to INTEGER width */
+        /* Widen sub-INTEGER integer loads to INTEGER width.
+         * Use zext for modular (unsigned) types. */
         const char *iat_deref = Integer_Arith_Type(cg);
         if (type_str[0] == 'i' and strcmp(type_str, iat_deref) != 0 and
             not Type_Is_Access(designated) and not Type_Is_Float_Representation(designated)) {
             uint32_t w = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", w, type_str, t, iat_deref);
+            const char *ext_op = Type_Is_Unsigned(designated) ? "zext" : "sext";
+            Emit(cg, "  %%t%u = %s %s %%t%u to %s\n", w, ext_op, type_str, t, iat_deref);
             return w;
         }
         return t;
@@ -18564,12 +18650,14 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
     }
     uint32_t t = Emit_Temp(cg);
     Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, field_llvm_type, ptr);
-    /* Widen sub-INTEGER integer loads to INTEGER width */
+    /* Widen sub-INTEGER integer loads to INTEGER width.
+     * Use zext for modular (unsigned) field types. */
     const char *iat_field = Integer_Arith_Type(cg);
     if (field_llvm_type[0] == 'i' and strcmp(field_llvm_type, iat_field) != 0 and
         not Type_Is_Access(field_type) and not Type_Is_Float_Representation(field_type)) {
         uint32_t w = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", w, field_llvm_type, t, iat_field);
+        const char *ext_op = Type_Is_Unsigned(field_type) ? "zext" : "sext";
+        Emit(cg, "  %%t%u = %s %s %%t%u to %s\n", w, ext_op, field_llvm_type, t, iat_field);
         return w;
     }
     return t;
@@ -19018,9 +19106,9 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
             uint32_t shift = Emit_Temp(cg);
             uint32_t xored = Emit_Temp(cg);
             /* GNAT LLVM: use native Integer type for ABS computation.
-             * Sign-bit shift amount depends on type width. */
+             * Sign-bit shift amount = type width - 1 (works for i8..i128). */
             const char *abs_type = Integer_Arith_Type(cg);
-            int sign_shift = (strcmp(abs_type, "i32") == 0) ? 31 : 63;
+            int sign_shift = Type_Bits(abs_type) - 1;
             Emit(cg, "  %%t%u = ashr %s %%t%u, %d  ; sign bit\n", shift, abs_type, val, sign_shift);
             Emit(cg, "  %%t%u = xor %s %%t%u, %%t%u\n", xored, abs_type, val, shift);
             Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u  ; 'ABS\n", t, abs_type, xored, shift);
@@ -19354,8 +19442,11 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                     Emit(cg, "  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n", max_abs, cmp_abs, width_type, abs_lo, width_type, abs_hi);
 
                     /* Count digits using comparison chain.
-                     * For i32 max 10 digits, for i64 max 19 digits. */
-                    int max_digits = (strcmp(width_type, "i32") == 0) ? 9 : 18;
+                     * Derive max digits from type width (works for i8..i128):
+                     *   i8: 2, i16: 4, i32: 9, i64: 18, i128: 38 */
+                    int width_bits = Type_Bits(width_type);
+                    int max_digits = (width_bits <= 8) ? 2 : (width_bits <= 16) ? 4 :
+                                     (width_bits <= 32) ? 9 : (width_bits <= 64) ? 18 : 38;
                     uint32_t prev = max_abs;
                     uint32_t digits_val = cg->temp_id++;
                     Emit(cg, "  %%t%u = add %s 0, 1  ; initial digits\n", digits_val, width_type);
