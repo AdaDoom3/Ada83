@@ -15485,6 +15485,34 @@ static inline bool Is_Float_Type(const char *ty) {
     return ty and (ty[0] == 'f' or ty[0] == 'd');
 }
 
+/* Return the LLVM fcmp predicate for a comparison operator.
+ * Uses ordered predicates for relational ops, unordered for NE (IEEE NaN handling). */
+static const char *Float_Cmp_Predicate(int op) {
+    switch (op) {
+        case TK_EQ: return "oeq";
+        case TK_NE: return "une";
+        case TK_LT: return "olt";
+        case TK_LE: return "ole";
+        case TK_GT: return "ogt";
+        case TK_GE: return "oge";
+        default:    return "oeq";
+    }
+}
+
+/* Return the LLVM icmp predicate for a comparison operator.
+ * Selects signed or unsigned predicate based on is_unsigned flag. */
+static const char *Int_Cmp_Predicate(int op, bool is_unsigned) {
+    switch (op) {
+        case TK_EQ: return "eq";
+        case TK_NE: return "ne";
+        case TK_LT: return is_unsigned ? "ult" : "slt";
+        case TK_LE: return is_unsigned ? "ule" : "sle";
+        case TK_GT: return is_unsigned ? "ugt" : "sgt";
+        case TK_GE: return is_unsigned ? "uge" : "sge";
+        default:    return "eq";
+    }
+}
+
 /* Check if expression produces boolean (i1) result directly.
  * Only comparisons and logical operators produce i1 - loaded variables
  * are widened to i64 even for BOOLEAN type. */
@@ -17831,7 +17859,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                     /* Float ** Integer: use native-precision pow intrinsic.
                      * LLVM provides llvm.pow.f32 and llvm.pow.f64. */
                     const char *lhs_ftype = Float_Llvm_Type_Of(left_type);
-                    const char *pow_intrinsic = (strcmp(lhs_ftype, "float") == 0)
+                    const char *pow_intrinsic = (lhs_ftype[0] == 'f')
                         ? "llvm.pow.f32" : "llvm.pow.f64";
                     /* Convert integer exponent to matching float type */
                     uint32_t exp_float = Emit_Temp(cg);
@@ -18042,84 +18070,40 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                 }
 
                 const char *cmp_op;
-                char cmp_buf[32];
+                char cmp_buf[64];
                 if (left_is_float and right_is_float) {
-                    const char *fcmp_op;
-                    switch (node->binary.op) {
-                        case TK_EQ: fcmp_op = "oeq"; break;
-                        case TK_NE: fcmp_op = "une"; break;
-                        case TK_LT: fcmp_op = "olt"; break;
-                        case TK_LE: fcmp_op = "ole"; break;
-                        case TK_GT: fcmp_op = "ogt"; break;
-                        case TK_GE: fcmp_op = "oge"; break;
-                        default:
-                            fprintf(stderr, "warning: unhandled float comparison operator, defaulting to oeq\n");
-                            fcmp_op = "oeq"; break;
-                    }
-                    snprintf(cmp_buf, sizeof(cmp_buf), "fcmp %s %s", fcmp_op, float_type);
+                    snprintf(cmp_buf, sizeof(cmp_buf), "fcmp %s %s",
+                             Float_Cmp_Predicate(node->binary.op), float_type);
                     cmp_op = cmp_buf;
                 } else if (left_is_bool and right_is_bool) {
-                    /* Boolean comparisons use Integer_Arith_Type since values
-                     * are zext'd to native boolean width after Phase 5 refactor. */
-                    const char *bool_cmp_type = Integer_Arith_Type(cg);
-                    const char *bool_pred;
-                    switch (node->binary.op) {
-                        case TK_EQ: bool_pred = "eq"; break;
-                        case TK_NE: bool_pred = "ne"; break;
-                        default:
-                            fprintf(stderr, "warning: unhandled boolean comparison operator, defaulting to equality\n");
-                            bool_pred = "eq"; break;
-                    }
-                    snprintf(cmp_buf, sizeof(cmp_buf), "icmp %s %s", bool_pred, bool_cmp_type);
+                    snprintf(cmp_buf, sizeof(cmp_buf), "icmp %s %s",
+                             Int_Cmp_Predicate(node->binary.op, false),
+                             Integer_Arith_Type(cg));
                     cmp_op = cmp_buf;
                 } else if (Llvm_Type_Is_Pointer(left_llvm_type) and
                            Llvm_Type_Is_Pointer(right_llvm_type)) {
-                    /* Pointer comparison (access types, record/array ptrs).
-                     * Only equality/inequality are meaningful for pointers. */
-                    switch (node->binary.op) {
-                        case TK_EQ: cmp_op = "icmp eq ptr"; break;
-                        case TK_NE: cmp_op = "icmp ne ptr"; break;
+                    if (node->binary.op == TK_EQ or node->binary.op == TK_NE) {
+                        snprintf(cmp_buf, sizeof(cmp_buf), "icmp %s ptr",
+                                 Int_Cmp_Predicate(node->binary.op, false));
+                        cmp_op = cmp_buf;
+                    } else {
                         /* Ordered comparisons on pointers: convert to integer first */
-                        default: {
-                            const char *iat = Integer_Arith_Type(cg);
-                            left = Emit_Convert(cg, left, "ptr", iat);
-                            right = Emit_Convert(cg, right, "ptr", iat);
-                            /* Build cmp_op strings with type-system-derived integer type */
-                            static char cmp_buf[64];
-                            const char *cmp_kind = NULL;
-                            switch (node->binary.op) {
-                                case TK_LT: cmp_kind = "slt"; break;
-                                case TK_LE: cmp_kind = "sle"; break;
-                                case TK_GT: cmp_kind = "sgt"; break;
-                                case TK_GE: cmp_kind = "sge"; break;
-                                default:
-                                    fprintf(stderr, "warning: unhandled pointer comparison operator, defaulting to equality\n");
-                                    cmp_kind = "eq"; break;
-                            }
-                            snprintf(cmp_buf, sizeof(cmp_buf), "icmp %s %s", cmp_kind, iat);
-                            cmp_op = cmp_buf;
-                        } break;
+                        const char *iat = Integer_Arith_Type(cg);
+                        left = Emit_Convert(cg, left, "ptr", iat);
+                        right = Emit_Convert(cg, right, "ptr", iat);
+                        snprintf(cmp_buf, sizeof(cmp_buf), "icmp %s %s",
+                                 Int_Cmp_Predicate(node->binary.op, false), iat);
+                        cmp_op = cmp_buf;
                     }
                 } else {
                     /* GNAT LLVM: integer comparison using common native type.
-                     * Modular (unsigned) types use unsigned predicates (ult/ule/ugt/uge). */
+                     * Modular (unsigned) types use unsigned predicates. */
                     const char *cmp_int_t = Wider_Int_Type(cg, left_llvm_type, right_llvm_type);
                     bool cmp_unsigned = Type_Is_Unsigned(left_type) or Type_Is_Unsigned(right_type);
                     left = Emit_Convert_Ext(cg, left, left_llvm_type, cmp_int_t, cmp_unsigned);
                     right = Emit_Convert_Ext(cg, right, right_llvm_type, cmp_int_t, cmp_unsigned);
-                    const char *icmp_pred;
-                    switch (node->binary.op) {
-                        case TK_EQ: icmp_pred = "eq"; break;
-                        case TK_NE: icmp_pred = "ne"; break;
-                        case TK_LT: icmp_pred = cmp_unsigned ? "ult" : "slt"; break;
-                        case TK_LE: icmp_pred = cmp_unsigned ? "ule" : "sle"; break;
-                        case TK_GT: icmp_pred = cmp_unsigned ? "ugt" : "sgt"; break;
-                        case TK_GE: icmp_pred = cmp_unsigned ? "uge" : "sge"; break;
-                        default:
-                            fprintf(stderr, "warning: unhandled integer comparison operator, defaulting to equality\n");
-                            icmp_pred = "eq"; break;
-                    }
-                    snprintf(cmp_buf, sizeof(cmp_buf), "icmp %s %s", icmp_pred, cmp_int_t);
+                    snprintf(cmp_buf, sizeof(cmp_buf), "icmp %s %s",
+                             Int_Cmp_Predicate(node->binary.op, cmp_unsigned), cmp_int_t);
                     cmp_op = cmp_buf;
                 }
                 Emit(cg, "  %%t%u = %s %%t%u, %%t%u\n", t, cmp_op, left, right);
