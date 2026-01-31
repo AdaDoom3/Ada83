@@ -16039,27 +16039,32 @@ static uint32_t Emit_Fat_Pointer_High(Code_Generator *cg, uint32_t fat_ptr,
 /* Create a fat pointer from data pointer and dynamic bounds (temp IDs).
  * bt = bound LLVM type of the input temps (already in native type).
  * Allocates bounds struct on stack, stores in native bt, builds { ptr, ptr }. */
-static uint32_t Emit_Fat_Pointer_Dynamic(Code_Generator *cg, uint32_t data_ptr,
-                                          uint32_t low_temp, uint32_t high_temp,
-                                          const char *bt) {
+/* Allocate a bounds struct { bt, bt } on the stack and store lo/hi into it.
+ * Returns the alloca temp ID (a ptr to the bounds struct). */
+static uint32_t Emit_Alloc_Bounds_Struct(Code_Generator *cg,
+    uint32_t low_temp, uint32_t high_temp, const char *bt)
+{
     const char *bst = Bounds_Type_For(bt);
-    /* Allocate bounds struct { bt, bt } — native type */
     uint32_t bounds_alloca = Emit_Temp(cg);
     Emit(cg, "  %%t%u = alloca %s\n", bounds_alloca, bst);
 
-    /* Store low in native bt */
     uint32_t low_gep = Emit_Temp(cg);
     Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 0\n",
          low_gep, bst, bounds_alloca);
     Emit(cg, "  store %s %%t%u, ptr %%t%u\n", bt, low_temp, low_gep);
 
-    /* Store high in native bt */
     uint32_t high_gep = Emit_Temp(cg);
     Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 1\n",
          high_gep, bst, bounds_alloca);
     Emit(cg, "  store %s %%t%u, ptr %%t%u\n", bt, high_temp, high_gep);
 
-    /* Build fat pointer { ptr, ptr } */
+    return bounds_alloca;
+}
+
+static uint32_t Emit_Fat_Pointer_Dynamic(Code_Generator *cg, uint32_t data_ptr,
+                                          uint32_t low_temp, uint32_t high_temp,
+                                          const char *bt) {
+    uint32_t bounds_alloca = Emit_Alloc_Bounds_Struct(cg, low_temp, high_temp, bt);
     uint32_t t1 = Emit_Temp(cg);
     Emit(cg, "  %%t%u = insertvalue " FAT_PTR_TYPE " undef, ptr %%t%u, 0\n",
          t1, data_ptr);
@@ -16145,34 +16150,21 @@ static void Emit_Store_Fat_Pointer_Fields_To_Symbol(Code_Generator *cg,
     uint32_t data_ptr, uint32_t low_temp, uint32_t high_temp, Symbol *sym,
     const char *bt)
 {
-    const char *bst = Bounds_Type_For(bt);
-    /* Allocate and fill bounds struct { bt, bt } — native type */
-    uint32_t bounds_alloca = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = alloca %s\n", bounds_alloca, bst);
-
-    uint32_t low_gep = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 0\n",
-         low_gep, bst, bounds_alloca);
-    Emit(cg, "  store %s %%t%u, ptr %%t%u  ; fat ptr low\n", bt, low_temp, low_gep);
-
-    uint32_t high_gep = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 1\n",
-         high_gep, bst, bounds_alloca);
-    Emit(cg, "  store %s %%t%u, ptr %%t%u  ; fat ptr high\n", bt, high_temp, high_gep);
+    uint32_t bounds_alloca = Emit_Alloc_Bounds_Struct(cg, low_temp, high_temp, bt);
 
     /* Store data ptr (field 0 of { ptr, ptr }) */
     uint32_t data_slot = Emit_Temp(cg);
     Emit(cg, "  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr ", data_slot);
     Emit_Symbol_Storage(cg, sym);
     Emit(cg, ", i32 0, i32 0\n");
-    Emit(cg, "  store ptr %%t%u, ptr %%t%u  ; fat ptr data\n", data_ptr, data_slot);
+    Emit(cg, "  store ptr %%t%u, ptr %%t%u\n", data_ptr, data_slot);
 
     /* Store bounds ptr (field 1 of { ptr, ptr }) */
     uint32_t bounds_slot = Emit_Temp(cg);
     Emit(cg, "  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr ", bounds_slot);
     Emit_Symbol_Storage(cg, sym);
     Emit(cg, ", i32 0, i32 1\n");
-    Emit(cg, "  store ptr %%t%u, ptr %%t%u  ; fat ptr bounds\n", bounds_alloca, bounds_slot);
+    Emit(cg, "  store ptr %%t%u, ptr %%t%u\n", bounds_alloca, bounds_slot);
 }
 
 /* Store fat pointer fields (data ptr, low, high) into a temp alloca using GEP+store.
@@ -16181,20 +16173,7 @@ static void Emit_Store_Fat_Pointer_Fields_To_Temp(Code_Generator *cg,
     uint32_t data_ptr, uint32_t low_temp, uint32_t high_temp,
     uint32_t fat_alloca, const char *bt)
 {
-    const char *bst = Bounds_Type_For(bt);
-    /* Allocate and fill bounds struct { bt, bt } — native type */
-    uint32_t bounds_alloca = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = alloca %s\n", bounds_alloca, bst);
-
-    uint32_t low_gep = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 0\n",
-         low_gep, bst, bounds_alloca);
-    Emit(cg, "  store %s %%t%u, ptr %%t%u\n", bt, low_temp, low_gep);
-
-    uint32_t high_gep = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 1\n",
-         high_gep, bst, bounds_alloca);
-    Emit(cg, "  store %s %%t%u, ptr %%t%u\n", bt, high_temp, high_gep);
+    uint32_t bounds_alloca = Emit_Alloc_Bounds_Struct(cg, low_temp, high_temp, bt);
 
     /* Store data ptr (field 0 of { ptr, ptr }) */
     uint32_t data_slot = Emit_Temp(cg);
@@ -16359,44 +16338,6 @@ static uint32_t Emit_Fat_Pointer_Null(Code_Generator *cg, const char *bt) {
     uint32_t t2 = Emit_Temp(cg);
     Emit(cg, "  %%t%u = insertvalue " FAT_PTR_TYPE " undef, ptr null, 0\n", t1);
     Emit(cg, "  %%t%u = insertvalue " FAT_PTR_TYPE " %%t%u, ptr null, 1\n", t2, t1);
-    return t2;
-}
-
-/* Build a fat pointer via alloca from temp-ID data pointer and temp-ID bounds.
- * Allocates bounds struct on stack, stores lo/hi, builds { ptr, ptr }.
- * data_ptr_temp: temp ID holding ptr value
- * low_temp:      temp ID holding low bound in bt
- * high_temp:     temp ID holding high bound in bt
- * bt:            bound type string ("i32", "i64", etc.)
- * Returns temp ID of the constructed fat pointer value. */
-static uint32_t Emit_Fat_Pointer_From_Temps(Code_Generator *cg,
-    uint32_t data_ptr_temp, uint32_t low_temp, uint32_t high_temp,
-    const char *bt)
-{
-    const char *bst = Bounds_Type_For(bt);
-    /* Allocate bounds struct { bt, bt } — native type */
-    uint32_t bounds_alloca = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = alloca %s\n", bounds_alloca, bst);
-
-    /* Store low in native bt */
-    uint32_t low_gep = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 0\n",
-         low_gep, bst, bounds_alloca);
-    Emit(cg, "  store %s %%t%u, ptr %%t%u\n", bt, low_temp, low_gep);
-
-    /* Store high in native bt */
-    uint32_t high_gep = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 1\n",
-         high_gep, bst, bounds_alloca);
-    Emit(cg, "  store %s %%t%u, ptr %%t%u\n", bt, high_temp, high_gep);
-
-    /* Build fat pointer { ptr, ptr } */
-    uint32_t t1 = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = insertvalue " FAT_PTR_TYPE " undef, ptr %%t%u, 0\n",
-         t1, data_ptr_temp);
-    uint32_t t2 = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = insertvalue " FAT_PTR_TYPE " %%t%u, ptr %%t%u, 1\n",
-         t2, t1, bounds_alloca);
     return t2;
 }
 
@@ -19986,7 +19927,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                     /* Build fat pointer result: { ptr_load, { 1, len_load } } */
                     uint32_t low_one = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = add %s 0, 1\n", low_one, img_bt);
-                    t = Emit_Fat_Pointer_From_Temps(cg, ptr_load, low_one, len_load, img_bt);
+                    t = Emit_Fat_Pointer_Dynamic(cg, ptr_load, low_one, len_load, img_bt);
                 } else {
                     /* No literals found, fallback to integer image */
                     Emit(cg, "  %%t%u = call " FAT_PTR_TYPE " @__ada_integer_image(i64 %%t%u)\n",
