@@ -256,6 +256,7 @@ static inline const char *Llvm_Float_Type(uint32_t bits) {
     return bits <= Width_Float ? "float" : "double";
 }
 
+
 /* ─────────────────────────────────────────────────────────────────────────
  * §1.3 Range Predicates — Determining Representation Width
  *
@@ -5920,6 +5921,14 @@ static inline bool Type_Is_Record(const Type_Info *t)    { return t and t->kind 
 static inline bool Type_Is_Task(const Type_Info *t)      { return t and t->kind == TYPE_TASK; }
 static inline bool Type_Is_Float(const Type_Info *t)     { return t and t->kind == TYPE_FLOAT; }
 static inline bool Type_Is_Fixed_Point(const Type_Info *t) { return t and t->kind == TYPE_FIXED; }
+
+/* Derive LLVM float type string from a Type_Info.
+ * Falls back to "double" for UNIVERSAL_REAL or when type info is unavailable. */
+static inline const char *Float_Llvm_Type_Of(const Type_Info *t) {
+    if (t and t->size > 0)
+        return Llvm_Float_Type((uint32_t)To_Bits(t->size));
+    return "double";  /* UNIVERSAL_REAL / unknown → 64-bit */
+}
 static inline bool Type_Is_Private(const Type_Info *t) {
     return t and (t->kind == TYPE_PRIVATE or t->kind == TYPE_LIMITED_PRIVATE);
 }
@@ -15683,15 +15692,10 @@ static uint32_t Emit_Constraint_Check(Code_Generator *cg, uint32_t val,
         /* Float/fixed path — compare at the target's native float type.
          * GNAT LLVM: Apply_Float_Range_Check operates at the expression's
          * actual precision, not always at double. */
-        const char *flt_type = "double";  /* default for fixed-point / UNIVERSAL_REAL */
-        if (target->kind == TYPE_FLOAT and target->size > 0) {
-            flt_type = Llvm_Float_Type((uint32_t)To_Bits(target->size));
-        }
+        const char *flt_type = Float_Llvm_Type_Of(target);
         /* Convert value to comparison type if needed */
         if (source) {
-            const char *src_flt = "double";
-            if (source->kind == TYPE_FLOAT and source->size > 0)
-                src_flt = Llvm_Float_Type((uint32_t)To_Bits(source->size));
+            const char *src_flt = Float_Llvm_Type_Of(source);
             val = Emit_Convert(cg, val, src_flt, flt_type);
         }
         uint32_t lo = 0, hi = 0;
@@ -17662,10 +17666,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
     bool is_fixed = Type_Is_Fixed_Point(result_type);
 
     /* Determine LLVM float type from result type (float vs double) */
-    const char *float_type_str = "double";  /* default for UNIVERSAL_REAL */
-    if (Type_Is_Float(result_type)) {
-        float_type_str = Llvm_Float_Type((uint32_t)To_Bits(result_type->size));
-    }
+    const char *float_type_str = Float_Llvm_Type_Of(result_type);
 
     /* Mixed-mode arithmetic: when result is float but operands are integer,
      * convert integer operands to float for proper arithmetic (RM 4.5.5) */
@@ -17673,14 +17674,8 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         bool lhs_is_float = Type_Is_Float_Representation(lhs_type);
         bool rhs_is_float = Type_Is_Float_Representation(rhs_type);
         /* Determine actual types for left and right operands */
-        const char *lhs_float_type = "double";
-        if (Type_Is_Float(lhs_type)) {
-            lhs_float_type = Llvm_Float_Type((uint32_t)To_Bits(lhs_type->size));
-        }
-        const char *rhs_float_type = "double";
-        if (Type_Is_Float(rhs_type)) {
-            rhs_float_type = Llvm_Float_Type((uint32_t)To_Bits(rhs_type->size));
-        }
+        const char *lhs_float_type = Float_Llvm_Type_Of(lhs_type);
+        const char *rhs_float_type = Float_Llvm_Type_Of(rhs_type);
 
         if (not lhs_is_float) {
             /* Integer → float: use uitofp for modular (unsigned) types */
@@ -17977,16 +17972,10 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                 }
 
                 /* Determine float type based on left operand */
-                const char *float_type = "double";
-                if (Type_Is_Float_Representation(left_type)) {
-                    float_type = Llvm_Float_Type((uint32_t)To_Bits(left_type->size));
-                }
+                const char *float_type = Float_Llvm_Type_Of(left_type);
 
                 /* Get the right operand's float type (if it is float) */
-                const char *right_float_type = "double";
-                if (Type_Is_Float(right_type)) {
-                    right_float_type = Llvm_Float_Type((uint32_t)To_Bits(right_type->size));
-                }
+                const char *right_float_type = Float_Llvm_Type_Of(right_type);
                 /* UNIVERSAL_REAL always uses double (Generate_Real_Literal produces double) */
 
                 /* Convert operands to same type if needed */
@@ -18142,10 +18131,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                  *   X IN  T             →  T'FIRST <= X <= T'LAST */
                 bool negate = (node->binary.op == TK_NOT);
                 bool left_is_flt = Type_Is_Float_Representation(lhs_type);
-                const char *mem_float_type = "double";
-                if (Type_Is_Float(lhs_type)) {
-                    mem_float_type = Llvm_Float_Type((uint32_t)To_Bits(lhs_type->size));
-                }
+                const char *mem_float_type = Float_Llvm_Type_Of(lhs_type);
 
                 if (node->binary.right and node->binary.right->kind == NK_RANGE) {
                     /* Dynamic range: generate both bounds from AST */
@@ -18314,10 +18300,7 @@ static uint32_t Generate_Unary_Op(Code_Generator *cg, Syntax_Node *node) {
     bool is_float = Type_Is_Real(op_type_info);
 
     /* Determine LLVM float type from operand type */
-    const char *float_type = "double";  /* default for UNIVERSAL_REAL */
-    if (Type_Is_Float(op_type_info)) {
-        float_type = Llvm_Float_Type((uint32_t)To_Bits(op_type_info->size));
-    }
+    const char *float_type = Float_Llvm_Type_Of(op_type_info);
 
     /* GNAT LLVM: determine native integer type for unary operations. */
     const char *unary_int_type = is_float ? Integer_Arith_Type(cg) : Expression_Llvm_Type(cg, node->unary.operand);
@@ -20616,10 +20599,11 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             } else if (low_bound.kind == BOUND_EXPR and low_bound.expr) {
                 low_val = Generate_Expression(cg, low_bound.expr);
                 /* Extend to INTEGER width if narrower type (e.g., ENUM bounds return i8) */
-                const char *low_llvm = Expression_Llvm_Type(cg, low_bound.expr);
-                if (strcmp(low_llvm, iat_bnd) != 0 and strcmp(low_llvm, "ptr") != 0 and
-                    strcmp(low_llvm, "double") != 0 and strcmp(low_llvm, "float") != 0) {
-                    low_val = Emit_Convert(cg, low_val, low_llvm, iat_bnd);
+                if (not Type_Is_Float_Representation(low_bound.expr->type)) {
+                    const char *low_llvm = Expression_Llvm_Type(cg, low_bound.expr);
+                    if (strcmp(low_llvm, iat_bnd) != 0 and strcmp(low_llvm, "ptr") != 0) {
+                        low_val = Emit_Convert(cg, low_val, low_llvm, iat_bnd);
+                    }
                 }
             } else {
                 low_val = Emit_Temp(cg);
@@ -20633,10 +20617,11 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             } else if (high_bound.kind == BOUND_EXPR and high_bound.expr) {
                 high_val = Generate_Expression(cg, high_bound.expr);
                 /* Extend to INTEGER width if narrower type (e.g., ENUM bounds return i8) */
-                const char *high_llvm = Expression_Llvm_Type(cg, high_bound.expr);
-                if (strcmp(high_llvm, iat_bnd) != 0 and strcmp(high_llvm, "ptr") != 0 and
-                    strcmp(high_llvm, "double") != 0 and strcmp(high_llvm, "float") != 0) {
-                    high_val = Emit_Convert(cg, high_val, high_llvm, iat_bnd);
+                if (not Type_Is_Float_Representation(high_bound.expr->type)) {
+                    const char *high_llvm = Expression_Llvm_Type(cg, high_bound.expr);
+                    if (strcmp(high_llvm, iat_bnd) != 0 and strcmp(high_llvm, "ptr") != 0) {
+                        high_val = Emit_Convert(cg, high_val, high_llvm, iat_bnd);
+                    }
                 }
             } else {
                 high_val = Emit_Temp(cg);
@@ -21272,10 +21257,11 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
                 Syntax_Node *low_expr = subtype->array.indices[0].low_bound.expr;
                 low_t = Generate_Expression(cg, low_expr);
                 /* Convert to bt if needed */
-                const char *low_llvm = Expression_Llvm_Type(cg, low_expr);
-                if (strcmp(low_llvm, new_bt) != 0 and strcmp(low_llvm, "ptr") != 0 and
-                    strcmp(low_llvm, "double") != 0 and strcmp(low_llvm, "float") != 0) {
-                    low_t = Emit_Convert(cg, low_t, low_llvm, new_bt);
+                if (not Type_Is_Float_Representation(low_expr->type)) {
+                    const char *low_llvm = Expression_Llvm_Type(cg, low_expr);
+                    if (strcmp(low_llvm, new_bt) != 0 and strcmp(low_llvm, "ptr") != 0) {
+                        low_t = Emit_Convert(cg, low_t, low_llvm, new_bt);
+                    }
                 }
             } else {
                 low_t = Emit_Temp(cg);
@@ -21291,10 +21277,11 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
                 Syntax_Node *high_expr = subtype->array.indices[0].high_bound.expr;
                 high_t = Generate_Expression(cg, high_expr);
                 /* Convert to bt if needed */
-                const char *high_llvm = Expression_Llvm_Type(cg, high_expr);
-                if (strcmp(high_llvm, new_bt) != 0 and strcmp(high_llvm, "ptr") != 0 and
-                    strcmp(high_llvm, "double") != 0 and strcmp(high_llvm, "float") != 0) {
-                    high_t = Emit_Convert(cg, high_t, high_llvm, new_bt);
+                if (not Type_Is_Float_Representation(high_expr->type)) {
+                    const char *high_llvm = Expression_Llvm_Type(cg, high_expr);
+                    if (strcmp(high_llvm, new_bt) != 0 and strcmp(high_llvm, "ptr") != 0) {
+                        high_t = Emit_Convert(cg, high_t, high_llvm, new_bt);
+                    }
                 }
             } else {
                 high_t = Emit_Temp(cg);
@@ -21896,10 +21883,7 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
     } else if (is_src_float and is_dst_float) {
         /* Float to float: may need conversion if sizes differ.
          * Determine actual source float type from the expression's type info. */
-        const char *src_ftype = "double";  /* default for UNIVERSAL_REAL */
-        if (Type_Is_Float(value_type)) {
-            src_ftype = Llvm_Float_Type((uint32_t)To_Bits(value_type->size));
-        }
+        const char *src_ftype = Float_Llvm_Type_Of(value_type);
         const char *dst_ftype = type_str;  /* actual storage type */
         if (strcmp(src_ftype, dst_ftype) != 0) {
             value = Emit_Convert(cg, value, src_ftype, dst_ftype);
@@ -23206,7 +23190,7 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                  * use zeroinitializer since '0' is invalid for struct types */
                 if (Llvm_Type_Is_Fat_Pointer(type_str)) {
                     Emit(cg, " = linkonce_odr global %s zeroinitializer\n", type_str);
-                } else if (strcmp(type_str, "double") == 0 or strcmp(type_str, "float") == 0) {
+                } else if (Type_Is_Float_Representation(ty)) {
                     Emit(cg, " = linkonce_odr global %s 0.0\n", type_str);
                 } else {
                     Emit(cg, " = linkonce_odr global %s 0\n", type_str);
@@ -23609,10 +23593,11 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             } else if (low_b.kind == BOUND_EXPR and low_b.expr) {
                 low_val = Generate_Expression(cg, low_b.expr);
                 /* Extend to INTEGER width if narrower type (e.g., ENUM'('B') returns i8) */
-                const char *low_llvm = Expression_Llvm_Type(cg, low_b.expr);
-                if (strcmp(low_llvm, iat_decl) != 0 and strcmp(low_llvm, "ptr") != 0 and
-                    strcmp(low_llvm, "double") != 0 and strcmp(low_llvm, "float") != 0) {
-                    low_val = Emit_Convert(cg, low_val, low_llvm, iat_decl);
+                if (not Type_Is_Float_Representation(low_b.expr->type)) {
+                    const char *low_llvm = Expression_Llvm_Type(cg, low_b.expr);
+                    if (strcmp(low_llvm, iat_decl) != 0 and strcmp(low_llvm, "ptr") != 0) {
+                        low_val = Emit_Convert(cg, low_val, low_llvm, iat_decl);
+                    }
                 }
             } else {
                 low_val = Emit_Temp(cg);
@@ -23626,10 +23611,11 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             } else if (high_b.kind == BOUND_EXPR and high_b.expr) {
                 high_val = Generate_Expression(cg, high_b.expr);
                 /* Extend to INTEGER width if narrower type (e.g., ENUM'('D') returns i8) */
-                const char *high_llvm = Expression_Llvm_Type(cg, high_b.expr);
-                if (strcmp(high_llvm, iat_decl) != 0 and strcmp(high_llvm, "ptr") != 0 and
-                    strcmp(high_llvm, "double") != 0 and strcmp(high_llvm, "float") != 0) {
-                    high_val = Emit_Convert(cg, high_val, high_llvm, iat_decl);
+                if (not Type_Is_Float_Representation(high_b.expr->type)) {
+                    const char *high_llvm = Expression_Llvm_Type(cg, high_b.expr);
+                    if (strcmp(high_llvm, iat_decl) != 0 and strcmp(high_llvm, "ptr") != 0) {
+                        high_val = Emit_Convert(cg, high_val, high_llvm, iat_decl);
+                    }
                 }
             } else {
                 high_val = Emit_Temp(cg);
@@ -24526,7 +24512,7 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                                  I128_Decimal(cnt), elem_type);
                         } else if (is_record) {
                             Emit(cg, " = linkonce_odr global [%u x i8] zeroinitializer\n", ty->size);
-                        } else if (strcmp(type_str, "double") == 0 or strcmp(type_str, "float") == 0) {
+                        } else if (Type_Is_Float_Representation(ty)) {
                             Emit(cg, " = linkonce_odr global %s 0.0\n", type_str);
                         } else {
                             Emit(cg, " = linkonce_odr global %s %lld\n", type_str,
