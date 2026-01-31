@@ -2,7 +2,6 @@
  * Ada83 - An Ada 1983 (ANSI/MIL-STD-1815A) compiler targeting LLVM IR
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * §0  SIMD Optimizations - Assembly setup for big numbers and parsing
  * §1  Type_Metrics       - Representation details
  * §2  Memory_Arena       - Bump allocation for AST nodes
  * §3  String_Slice       - Non-owning string views
@@ -15,10 +14,10 @@
  * §10 Type_System        - Ada type semantics
  * §11 Symbol_Table       - Scoped name resolution
  * §12 Semantic_Pass      - Type checking and resolution
- * §13 Code_Generator     - LLVM IR emission
- * §14 Include_Path       - Package loading & search paths
  * §15 ALI_Writer         - GNAT-compatible library info
+ * §14 Include_Path       - Package loading & search paths
  * §16 Generic_Expansion  - Macro-style instantiation
+ * §13 Code_Generator     - LLVM IR emission
  * §17 Main_Driver        - Command-line entry point
  */
 
