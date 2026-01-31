@@ -3612,6 +3612,10 @@ static Syntax_Node *Parse_Statement(Parser *p);
 static void Parse_Statement_Sequence(Parser *p, Node_List *list);
 static void Parse_Declarative_Part(Parser *p, Node_List *list);
 static Syntax_Node *Parse_Declaration(Parser *p);
+static Syntax_Node *Parse_Enumeration_Type(Parser *p);
+static Syntax_Node *Parse_Record_Type(Parser *p);
+static Syntax_Node *Parse_Access_Type(Parser *p);
+static Syntax_Node *Parse_Derived_Type(Parser *p);
 static Syntax_Node *Parse_Type_Definition(Parser *p) {
     Source_Location loc = Parser_Location(p);
 
@@ -10793,7 +10797,10 @@ static String_Slice Get_Subprogram_Name(Syntax_Node *node) {
     return (String_Slice){"UNKNOWN", 7};
 }
 
-/* Forward declaration */
+/* Forward declarations for functions used by ALI_Collect_Exports */
+static String_Slice Mangle_Qualified_Name(String_Slice parent, String_Slice name);
+static String_Slice LLVM_Type_Basic(Symbol_Manager *sm, String_Slice ada_type);
+
 /* ─────────────────────────────────────────────────────────────────────────
  * §15.4.2 ALI_Collect_Exports — Gather exported symbols from package spec
  * ───────────────────────────────────────────────────────────────────────── */
@@ -11439,6 +11446,77 @@ static bool ALI_Is_Current(const char *ali_path, const char *source_path) {
 
     return (current_checksum == entry->checksum);
 }
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Forward declarations and static variables for package loading
+ * ───────────────────────────────────────────────────────────────────────── */
+
+static const char *Include_Paths[32];
+static int Include_Path_Count = 0;
+
+/* Track loaded package bodies for code generation */
+static Syntax_Node *Loaded_Package_Bodies[128];
+static int Loaded_Body_Count = 0;
+
+/* Track which package bodies have already been loaded (to avoid duplicates) */
+static String_Slice Loaded_Body_Names[128];
+static int Loaded_Body_Names_Count = 0;
+
+static bool Body_Already_Loaded(String_Slice name) {
+    for (int i = 0; i < Loaded_Body_Names_Count; i++) {
+        if (Loaded_Body_Names[i].length == name.length and
+            strncasecmp(Loaded_Body_Names[i].data, name.data, name.length) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void Mark_Body_Loaded(String_Slice name) {
+    if (Loaded_Body_Names_Count < 128) {
+        Loaded_Body_Names[Loaded_Body_Names_Count++] = name;
+    }
+}
+
+/* Track packages currently being loaded to detect cycles */
+typedef struct {
+    String_Slice names[64];
+    int count;
+} Loading_Set;
+
+static Loading_Set Loading_Packages = {0};
+
+static bool Loading_Set_Contains(String_Slice name) {
+    for (int i = 0; i < Loading_Packages.count; i++) {
+        if (Loading_Packages.names[i].length == name.length and
+            strncasecmp(Loading_Packages.names[i].data, name.data, name.length) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void Loading_Set_Add(String_Slice name) {
+    if (Loading_Packages.count < 64) {
+        Loading_Packages.names[Loading_Packages.count++] = name;
+    }
+}
+
+static void Loading_Set_Remove(String_Slice name) {
+    for (int i = 0; i < Loading_Packages.count; i++) {
+        if (Loading_Packages.names[i].length == name.length and
+            strncasecmp(Loading_Packages.names[i].data, name.data, name.length) == 0) {
+            /* Swap with last and decrement count */
+            Loading_Packages.names[i] = Loading_Packages.names[--Loading_Packages.count];
+            return;
+        }
+    }
+}
+
+/* Forward declarations for functions defined after Load_Package_Spec */
+static char *Lookup_Path(String_Slice name);
+static bool Has_Precompiled_LL(String_Slice name);
+static char *Lookup_Path_Body(String_Slice name);
 
 /* Find ALI file for a unit name in include paths */
 static char *ALI_Find(String_Slice unit_name) {
@@ -12374,68 +12452,6 @@ static void Install_Declaration_Symbols(Symbol_Manager *sm, Node_List *decls) {
             Node_List *lits = &decl->type_decl.definition->enum_type.literals;
             for (uint32_t j = 0; j < lits->count; j++)
                 if (lits->items[j]->symbol) Symbol_Add(sm, lits->items[j]->symbol);
-        }
-    }
-}
-
-static const char *Include_Paths[32];
-static int Include_Path_Count = 0;
-
-/* Track loaded package bodies for code generation */
-static Syntax_Node *Loaded_Package_Bodies[128];
-static int Loaded_Body_Count = 0;
-
-/* Track which package bodies have already been loaded (to avoid duplicates) */
-static String_Slice Loaded_Body_Names[128];
-static int Loaded_Body_Names_Count = 0;
-
-static bool Body_Already_Loaded(String_Slice name) {
-    for (int i = 0; i < Loaded_Body_Names_Count; i++) {
-        if (Loaded_Body_Names[i].length == name.length and
-            strncasecmp(Loaded_Body_Names[i].data, name.data, name.length) == 0) {
-            return true;
-        }
-    }
-    return false;
-}
-
-static void Mark_Body_Loaded(String_Slice name) {
-    if (Loaded_Body_Names_Count < 128) {
-        Loaded_Body_Names[Loaded_Body_Names_Count++] = name;
-    }
-}
-
-/* Track packages currently being loaded to detect cycles */
-typedef struct {
-    String_Slice names[64];
-    int count;
-} Loading_Set;
-
-static Loading_Set Loading_Packages = {0};
-
-static bool Loading_Set_Contains(String_Slice name) {
-    for (int i = 0; i < Loading_Packages.count; i++) {
-        if (Loading_Packages.names[i].length == name.length and
-            strncasecmp(Loading_Packages.names[i].data, name.data, name.length) == 0) {
-            return true;
-        }
-    }
-    return false;
-}
-
-static void Loading_Set_Add(String_Slice name) {
-    if (Loading_Packages.count < 64) {
-        Loading_Packages.names[Loading_Packages.count++] = name;
-    }
-}
-
-static void Loading_Set_Remove(String_Slice name) {
-    for (int i = 0; i < Loading_Packages.count; i++) {
-        if (Loading_Packages.names[i].length == name.length and
-            strncasecmp(Loading_Packages.names[i].data, name.data, name.length) == 0) {
-            /* Swap with last and decrement count */
-            Loading_Packages.names[i] = Loading_Packages.names[--Loading_Packages.count];
-            return;
         }
     }
 }
