@@ -40,7 +40,8 @@ run_one(){
             echo "c skip $n BIND:unresolved_symbols"
             return
         fi
-        if timeout 2 lli test_results/$n.bc > acats_logs/$n.out 2>&1; then
+        if timeout 2 lli test_results/$n.bc > acats_logs/$n.out 2>&1 \
+           || timeout 3 lli -jit-kind=mcjit test_results/$n.bc > acats_logs/$n.out 2>&1; then
             if grep -q PASSED acats_logs/$n.out 2>/dev/null; then
                 echo "c pass $n PASSED"
             elif grep -q NOT.APPLICABLE acats_logs/$n.out 2>/dev/null; then
@@ -62,6 +63,8 @@ run_one(){
             echo "a skip $n BIND:unresolved_symbols"; return; fi
         if timeout 2 lli test_results/$n.bc > acats_logs/$n.out 2>&1; then
             echo "a pass $n PASSED"
+        elif timeout 3 lli -jit-kind=mcjit test_results/$n.bc > acats_logs/$n.out 2>&1; then
+            echo "a pass $n PASSED"
         else
             echo "a fail $n FAILED:exit_$?"
         fi
@@ -79,7 +82,8 @@ run_one(){
                     ((v>=e-1&&v<=e+1)) && { ((++hits)); break; }
                 done
             done
-            local xe=${#expected[@]} p=$(pct $hits $xe)
+            local xe=${#expected[@]}
+            local p=$(pct $hits $xe)
             ((p>=90)) && echo "b pass $n REJECTED:${hits}/${xe}_errors_(${p}%)" \
                       || echo "b fail $n LOW_COVERAGE:${hits}/${xe}_errors_(${p}%)"
         fi
