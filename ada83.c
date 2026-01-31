@@ -191,6 +191,11 @@ static const uint8_t Id_Char_Table[256] = {
 };
 #define Is_Id_Char(c) (Id_Char_Table[(uint8_t)(c)])
 
+/* 128-bit integer typedefs — GCC/Clang extension, used for i128/u128 support.
+ * Ada modular types (mod 2**128) and Long_Long_Long_Integer require these. */
+typedef __int128          int128_t;
+typedef unsigned __int128 uint128_t;
+
 /* Universally 8 on modern targets */
 enum { Bits_Per_Unit = 8 };
 
@@ -257,33 +262,39 @@ static inline const char *Llvm_Float_Type(uint32_t bits) {
  * Compute minimum bits needed for a range [lo, hi].
  * ───────────────────────────────────────────────────────────────────────── */
 
-static inline bool Fits_In_Signed(int64_t lo, int64_t hi, uint32_t bits) {
-    if (bits >= 64) return true;  /* i64 holds any int64_t; i128 trivially fits */
-    int64_t min = -(1LL << (bits - 1)), max = (1LL << (bits - 1)) - 1;
+static inline bool Fits_In_Signed(int128_t lo, int128_t hi, uint32_t bits) {
+    if (bits >= 128) return true;
+    if (bits >= 64) {
+        return lo >= (int128_t)INT64_MIN and hi <= (int128_t)INT64_MAX;
+    }
+    int128_t min = -((int128_t)1 << (bits - 1));
+    int128_t max = ((int128_t)1 << (bits - 1)) - 1;
     return lo >= min and hi <= max;
 }
 
-static inline bool Fits_In_Unsigned(int64_t lo, int64_t hi, uint32_t bits) {
-    if (bits >= 64) return lo >= 0;  /* u64 holds any non-negative int64_t; u128 too */
-    return lo >= 0 and (uint64_t)hi < (1ULL << bits);
+static inline bool Fits_In_Unsigned(int128_t lo, int128_t hi, uint32_t bits) {
+    if (lo < 0) return false;
+    if (bits >= 128) return true;
+    if (bits >= 64) return (uint128_t)hi <= UINT64_MAX;
+    return (uint128_t)hi < ((uint128_t)1 << bits);
 }
 
 /* Determine minimum LLVM integer width for a range [lo, hi].
  * Returns Width_8, Width_16, Width_32, Width_64, or Width_128.
- * Unsigned ranges (lo >= 0) use unsigned analysis. */
-static inline uint32_t Bits_For_Range(int64_t lo, int64_t hi) {
+ * Unsigned ranges (lo >= 0) use unsigned analysis.
+ * Bounds are int128_t so the full range of i128/u128 types is covered. */
+static inline uint32_t Bits_For_Range(int128_t lo, int128_t hi) {
     if (lo >= 0) {
-        return (uint64_t)hi < 256ULL       ? Width_8  :
-               (uint64_t)hi < 65536ULL     ? Width_16 :
-               (uint64_t)hi < 4294967296ULL ? Width_32 : Width_64;
-        /* Note: values > UINT64_MAX require 128 bits, but our bound
-         * representation uses int64_t, so Width_128 is not reached here.
-         * When Big_Integer bounds are added, extend this to Width_128. */
+        uint128_t uhi = (uint128_t)hi;
+        return uhi < 256               ? Width_8   :
+               uhi < 65536             ? Width_16  :
+               uhi < (uint128_t)1 << 32 ? Width_32  :
+               uhi <= UINT64_MAX       ? Width_64  : Width_128;
     }
     return Fits_In_Signed(lo, hi, 8)  ? Width_8  :
            Fits_In_Signed(lo, hi, 16) ? Width_16 :
-           Fits_In_Signed(lo, hi, 32) ? Width_32 : Width_64;
-    /* Note: when 128-bit bounds are needed (via Big_Integer), add Width_128 case. */
+           Fits_In_Signed(lo, hi, 32) ? Width_32 :
+           Fits_In_Signed(lo, hi, 64) ? Width_64 : Width_128;
 }
 
 /* Determine minimum LLVM integer width for a modular type with given modulus.
@@ -292,6 +303,9 @@ static inline uint32_t Bits_For_Range(int64_t lo, int64_t hi) {
  * For non-power-of-2 moduli, we round up to the next standard LLVM width.
  * Ada RM 3.5.4(9): the range of a modular type is 0 .. modulus-1.
  *
+ * Modulus is uint128_t so mod 2**64 and mod 2**128 are represented directly
+ * without sentinel values.
+ *
  * Examples:
  *   mod 256     -> 8 bits  (i8)     — u8
  *   mod 65536   -> 16 bits (i16)    — u16
@@ -299,15 +313,13 @@ static inline uint32_t Bits_For_Range(int64_t lo, int64_t hi) {
  *   mod 2**64   -> 64 bits (i64)    — u64
  *   mod 2**128  -> 128 bits (i128)  — u128
  *   mod 100     -> 8 bits  (i8)     — fits in 7 bits, rounds to i8 */
-static inline uint32_t Bits_For_Modulus(uint64_t modulus) {
-    if (modulus == 0) return Width_64;  /* Sentinel: 2**64 overflows uint64_t → 0 */
-    /* Find the number of bits needed: ceil(log2(modulus)) */
-    uint64_t max_val = modulus - 1;
-    return max_val < 256ULL       ? Width_8  :
-           max_val < 65536ULL     ? Width_16 :
-           max_val < 4294967296ULL ? Width_32 : Width_64;
-    /* Note: modulus > 2**64 requires Width_128; handled by special-case
-     * detection when modulus == 0 (overflow sentinel) and is_128 flag. */
+static inline uint32_t Bits_For_Modulus(uint128_t modulus) {
+    if (modulus == 0) return 0;  /* Invalid: modulus must be > 0 */
+    uint128_t max_val = modulus - 1;
+    return max_val < 256               ? Width_8  :
+           max_val < 65536             ? Width_16 :
+           max_val < (uint128_t)1 << 32 ? Width_32 :
+           max_val <= UINT64_MAX       ? Width_64 : Width_128;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -540,6 +552,39 @@ static bool Big_Integer_Fits_Int64(const Big_Integer *bi, int64_t *out) {
     } else {
         if (v > (uint64_t)INT64_MAX) return false;
         *out = (int64_t)v;
+    }
+    return true;
+}
+
+/* Extract a Big_Integer as unsigned 128-bit value.  Returns true if the
+ * value fits in uint128_t (0 .. 2^128-1).  Handles 0, 1, or 2 limbs. */
+static bool Big_Integer_To_Uint128(const Big_Integer *bi, uint128_t *out) {
+    if (bi->is_negative) return false;
+    if (bi->count == 0) { *out = 0; return true; }
+    if (bi->count == 1) { *out = (uint128_t)bi->limbs[0]; return true; }
+    if (bi->count == 2) {
+        *out = ((uint128_t)bi->limbs[1] << 64) | (uint128_t)bi->limbs[0];
+        return true;
+    }
+    return false;  /* > 128 bits */
+}
+
+/* Extract a Big_Integer as signed 128-bit value.  Returns true if the
+ * value fits in int128_t (-2^127 .. 2^127-1). */
+static bool Big_Integer_To_Int128(const Big_Integer *bi, int128_t *out) {
+    uint128_t uval;
+    if (bi->count == 0) { *out = 0; return true; }
+    if (bi->count > 2) return false;
+    if (bi->count == 1) uval = (uint128_t)bi->limbs[0];
+    else uval = ((uint128_t)bi->limbs[1] << 64) | (uint128_t)bi->limbs[0];
+
+    if (bi->is_negative) {
+        /* -(2^127) is the min value; uval must be <= 2^127 */
+        if (uval > ((uint128_t)1 << 127)) return false;
+        *out = -(int128_t)uval;
+    } else {
+        if (uval > (((uint128_t)1 << 127) - 1)) return false;
+        *out = (int128_t)uval;
     }
     return true;
 }
@@ -2288,7 +2333,7 @@ struct Syntax_Node {
         struct { Node_List literals; } enum_type;
 
         /* NK_INTEGER_TYPE, NK_REAL_TYPE */
-        struct { Syntax_Node *range; int64_t modulus; bool is_modular; } integer_type;
+        struct { Syntax_Node *range; uint128_t modulus; bool is_modular; } integer_type;
         struct { Syntax_Node *precision; Syntax_Node *range; Syntax_Node *delta; } real_type;
 
         /* NK_COMPONENT_DECL */
@@ -5657,11 +5702,13 @@ typedef enum {
 typedef struct Type_Info Type_Info;
 typedef struct Symbol Symbol;
 
-/* Bound representation: explicit tagged union to avoid bitcast */
+/* Bound representation: explicit tagged union to avoid bitcast.
+ * int_value is int128_t to support i128/u128 ranges (mod 2**128).
+ * Values that fit in 64 bits are implicitly widened on assignment. */
 typedef struct {
     enum { BOUND_NONE, BOUND_INTEGER, BOUND_FLOAT, BOUND_EXPR } kind;
     union {
-        int64_t      int_value;
+        int128_t     int_value;
         double       float_value;
         Syntax_Node *expr;
     };
@@ -5707,7 +5754,7 @@ struct Type_Info {
     /* Scalar bounds */
     Type_Bound   low_bound;
     Type_Bound   high_bound;
-    int64_t      modulus;        /* For modular types */
+    uint128_t    modulus;        /* For modular types: 0..2^128 */
 
     /* Base/parent type for subtypes and derived types */
     Type_Info   *base_type;
@@ -6109,6 +6156,8 @@ static void Freeze_Type(Type_Info *t) {
  * ───────────────────────────────────────────────────────────────────────── */
 
 /* Forward declarations for array helpers (defined after Type_Bound_Value) */
+static int128_t Type_Bound_Value(Type_Bound b);
+
 static const char *Type_To_Llvm(Type_Info *t) {
     if (not t) {
         fprintf(stderr, "error: Type_To_Llvm called with NULL type\n");
@@ -8034,10 +8083,10 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
                         }
 
                         /* Compute size */
-                        int64_t count = 1;
+                        int128_t count = 1;
                         for (uint32_t i = 0; i < arg_count; i++) {
-                            int64_t lo = Type_Bound_Value(constrained->array.indices[i].low_bound);
-                            int64_t hi = Type_Bound_Value(constrained->array.indices[i].high_bound);
+                            int128_t lo = Type_Bound_Value(constrained->array.indices[i].low_bound);
+                            int128_t hi = Type_Bound_Value(constrained->array.indices[i].high_bound);
                             count *= (hi - lo + 1);
                         }
                         uint32_t elem_size = constrained->array.element_type ?
@@ -8342,8 +8391,8 @@ static double Eval_Const_Numeric(Syntax_Node *n) {
             }
             if (Slice_Equal_Ignore_Case(a, S("LENGTH"))) {
                 if (Type_Is_Array_Like(ty) and ty->array.index_count > 0) {
-                    int64_t lo = Type_Bound_Value(ty->array.indices[0].low_bound);
-                    int64_t hi = Type_Bound_Value(ty->array.indices[0].high_bound);
+                    int128_t lo = Type_Bound_Value(ty->array.indices[0].low_bound);
+                    int128_t hi = Type_Bound_Value(ty->array.indices[0].high_bound);
                     return (double)(hi - lo + 1);
                 }
             }
@@ -8381,35 +8430,43 @@ static double Eval_Const_Numeric(Syntax_Node *n) {
 
 /* Integer-precise constant evaluator for modular type modulus expressions.
  * Unlike Eval_Const_Numeric (which uses double, losing precision above 2^53),
- * this evaluates in uint64_t for exact results up to 2^64.
- * Returns true on success, false if the expression is not a compile-time integer constant.
- * For 2**64 the result overflows to 0, which Bits_For_Modulus handles as a sentinel. */
-static bool Eval_Const_Uint64(Syntax_Node *n, uint64_t *out) {
+ * this evaluates in uint128_t for exact results up to 2^128.
+ * Returns true on success, false if the expression is not a compile-time
+ * integer constant.  Handles 2**64, 2**128, and all intermediate values
+ * without sentinel hacks. */
+static bool Eval_Const_Uint128(Syntax_Node *n, uint128_t *out) {
     if (not n) return false;
     switch (n->kind) {
         case NK_INTEGER:
-            *out = (uint64_t)n->integer_lit.value;
+            /* integer_lit.value is int64_t; for values > INT64_MAX, use big_value */
+            if (n->integer_lit.big_value) {
+                return Big_Integer_To_Uint128(n->integer_lit.big_value, out);
+            }
+            *out = (uint128_t)(uint64_t)n->integer_lit.value;
             return true;
         case NK_IDENTIFIER:
         case NK_SELECTED: {
             Symbol *sym = n ? n->symbol : NULL;
             if (sym and sym->kind == SYMBOL_CONSTANT and sym->is_named_number and
                 sym->declaration and sym->declaration->kind == NK_OBJECT_DECL) {
-                return Eval_Const_Uint64(sym->declaration->object_decl.init, out);
+                return Eval_Const_Uint128(sym->declaration->object_decl.init, out);
             }
             return false;
         }
         case NK_UNARY_OP:
-            if (n->unary.op == TK_PLUS) return Eval_Const_Uint64(n->unary.operand, out);
+            if (n->unary.op == TK_PLUS) return Eval_Const_Uint128(n->unary.operand, out);
             if (n->unary.op == TK_MINUS) {
-                uint64_t v;
-                if (Eval_Const_Uint64(n->unary.operand, &v)) { *out = (uint64_t)(-(int64_t)v); return true; }
+                uint128_t v;
+                if (Eval_Const_Uint128(n->unary.operand, &v)) {
+                    *out = (uint128_t)(-(int128_t)v);
+                    return true;
+                }
             }
             return false;
         case NK_BINARY_OP: {
-            uint64_t l, r;
-            if (not Eval_Const_Uint64(n->binary.left, &l)) return false;
-            if (not Eval_Const_Uint64(n->binary.right, &r)) return false;
+            uint128_t l, r;
+            if (not Eval_Const_Uint128(n->binary.left, &l)) return false;
+            if (not Eval_Const_Uint128(n->binary.right, &r)) return false;
             switch (n->binary.op) {
                 case TK_PLUS:  *out = l + r; return true;
                 case TK_MINUS: *out = l - r; return true;
@@ -8417,9 +8474,18 @@ static bool Eval_Const_Uint64(Syntax_Node *n, uint64_t *out) {
                 case TK_SLASH: if (r == 0) return false; *out = l / r; return true;
                 case TK_EXPON: {
                     /* Integer exponentiation: l ** r.  For modular type declarations,
-                     * the common case is 2**N.  Overflow (e.g. 2**64) wraps to 0. */
-                    uint64_t result = 1;
-                    for (uint64_t i = 0; i < r; i++) result *= l;
+                     * the common case is 2**N.  2**64 and 2**128 compute exactly
+                     * in uint128_t (2**128 wraps to 0, but we cap r at 127 for
+                     * the shift path below). */
+                    if (l == 2 and r <= 128) {
+                        /* Fast path: 2**N via shift.  2**128 = 0 in uint128_t,
+                         * but we return it as 0 which the caller interprets as
+                         * "the 128-bit boundary" for mod types. */
+                        *out = (r == 128) ? (uint128_t)0 : ((uint128_t)1 << r);
+                        return true;
+                    }
+                    uint128_t result = 1;
+                    for (uint128_t i = 0; i < r; i++) result *= l;
                     *out = result;
                     return true;
                 }
@@ -8432,7 +8498,7 @@ static bool Eval_Const_Uint64(Syntax_Node *n, uint64_t *out) {
                 Syntax_Node *prefix = n->apply.prefix;
                 if (prefix->kind == NK_IDENTIFIER and prefix->symbol and
                     prefix->symbol->kind == SYMBOL_TYPE) {
-                    return Eval_Const_Uint64(n->apply.arguments.items[0], out);
+                    return Eval_Const_Uint128(n->apply.arguments.items[0], out);
                 }
             }
             return false;
@@ -8441,30 +8507,59 @@ static bool Eval_Const_Uint64(Syntax_Node *n, uint64_t *out) {
     }
 }
 
-static int64_t Type_Bound_Value(Type_Bound b) {
+/* Return bound value as int128_t.  For most types this fits in 64 bits;
+ * for mod 2**128 the high bound is 2^128-1 which requires the full range. */
+static int128_t Type_Bound_Value(Type_Bound b) {
     if (b.kind == BOUND_INTEGER) return b.int_value;
-    if (b.kind == BOUND_FLOAT) return (int64_t)b.float_value;
+    if (b.kind == BOUND_FLOAT) return (int128_t)b.float_value;
     if (b.kind == BOUND_EXPR and b.expr) {
         /* Try to evaluate expression bound at compile time */
         double val = Eval_Const_Numeric(b.expr);
-        if (val == val) return (int64_t)val;  /* Not NaN */
+        if (val == val) return (int128_t)val;  /* Not NaN */
     }
     return 0;  /* Handle other bound kinds as needed */
 }
 
+/* Format an int128_t as a decimal string.  Returns pointer to a static
+ * thread-local buffer.  Handles the full range -2^127 .. 2^127-1.
+ * Used for emitting i128 constants in LLVM IR (which accepts arbitrary
+ * width decimal literals). */
+static const char *I128_Decimal(int128_t v) {
+    static _Thread_local char buf[42];  /* -170141183460469231731687303715884105728 + NUL */
+    if (v == 0) return "0";
+    char *p = buf + sizeof(buf) - 1;
+    *p = '\0';
+    bool neg = v < 0;
+    uint128_t u = neg ? (uint128_t)(-(v + 1)) + 1 : (uint128_t)v;
+    while (u) { *--p = '0' + (char)(u % 10); u /= 10; }
+    if (neg) *--p = '-';
+    return p;
+}
+
+/* Format a uint128_t as a decimal string.  Returns pointer to a static
+ * thread-local buffer.  Handles 0 .. 2^128-1. */
+static const char *U128_Decimal(uint128_t v) {
+    static _Thread_local char buf[40];  /* 340282366920938463463374607431768211455 + NUL */
+    if (v == 0) return "0";
+    char *p = buf + sizeof(buf) - 1;
+    *p = '\0';
+    while (v) { *--p = '0' + (char)(v % 10); v /= 10; }
+    return p;
+}
+
 /* Get array element count for constrained arrays, 0 for unconstrained */
-static int64_t Array_Element_Count(Type_Info *t) {
+static int128_t Array_Element_Count(Type_Info *t) {
     if (not t or t->kind != TYPE_ARRAY or not t->array.is_constrained)
         return 0;
     if (t->array.index_count == 0)
         return 0;
-    int64_t low = Type_Bound_Value(t->array.indices[0].low_bound);
-    int64_t high = Type_Bound_Value(t->array.indices[0].high_bound);
+    int128_t low = Type_Bound_Value(t->array.indices[0].low_bound);
+    int128_t high = Type_Bound_Value(t->array.indices[0].high_bound);
     return high - low + 1;
 }
 
 /* Get array low bound for index adjustment */
-static int64_t Array_Low_Bound(Type_Info *t) {
+static int128_t Array_Low_Bound(Type_Info *t) {
     if (not t or t->kind != TYPE_ARRAY or t->array.index_count == 0)
         return 0;
     return Type_Bound_Value(t->array.indices[0].low_bound);
@@ -8996,10 +9091,10 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
 
                 /* Compute size */
                 if (array_type->array.is_constrained and array_type->array.index_count > 0) {
-                    int64_t count = 1;
+                    int128_t count = 1;
                     for (uint32_t i = 0; i < array_type->array.index_count; i++) {
-                        int64_t lo = Type_Bound_Value(array_type->array.indices[i].low_bound);
-                        int64_t hi = Type_Bound_Value(array_type->array.indices[i].high_bound);
+                        int128_t lo = Type_Bound_Value(array_type->array.indices[i].low_bound);
+                        int128_t hi = Type_Bound_Value(array_type->array.indices[i].high_bound);
                         count *= (hi - lo + 1);
                     }
                     uint32_t elem_size = array_type->array.element_type ?
@@ -9509,10 +9604,10 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                         }
 
                         /* Compute size */
-                        int64_t count = 1;
+                        int128_t count = 1;
                         for (uint32_t i = 0; i < constrained->array.index_count; i++) {
-                            int64_t lo = Type_Bound_Value(constrained->array.indices[i].low_bound);
-                            int64_t hi = Type_Bound_Value(constrained->array.indices[i].high_bound);
+                            int128_t lo = Type_Bound_Value(constrained->array.indices[i].low_bound);
+                            int128_t hi = Type_Bound_Value(constrained->array.indices[i].high_bound);
                             count *= (hi - lo + 1);
                         }
                         uint32_t elem_size = constrained->array.element_type ?
@@ -9810,57 +9905,59 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
 
                     Resolve_Expression(sm, node->integer_type.range);
 
-                    /* Evaluate modulus using integer-precise evaluator */
-                    uint64_t modulus = 0;
-                    bool is_128 = false;
-                    if (Eval_Const_Uint64(node->integer_type.range, &modulus)) {
-                        /* modulus == 0 means 2**64 overflowed — that's a valid u64 type.
-                         * For 2**128 we need special detection: check if the expression
-                         * is literally 2**128 (base=2, exp=128). */
+                    /* Evaluate modulus using 128-bit-precise evaluator.
+                     * uint128_t handles 2**64 and 2**128 directly — no sentinel
+                     * hacks needed.  2**128 wraps to 0 in uint128_t arithmetic
+                     * (same as 2**64 wraps to 0 in uint64_t), so we detect it
+                     * by checking if the exponent is 128.  For 2**64, the
+                     * evaluator returns (uint128_t)1 << 64 = exact value. */
+                    uint128_t modulus = 0;
+                    bool is_pow2_128 = false;  /* true only for mod 2**128 */
+                    if (Eval_Const_Uint128(node->integer_type.range, &modulus)) {
                         if (modulus == 0) {
-                            /* Check for 2**128 vs 2**64 */
+                            /* 2**128 overflows uint128_t to 0.  Detect it
+                             * explicitly from the AST exponent value. */
                             Syntax_Node *expr = node->integer_type.range;
                             if (expr->kind == NK_BINARY_OP and expr->binary.op == TK_EXPON) {
-                                uint64_t base, exp;
-                                if (Eval_Const_Uint64(expr->binary.left, &base) and
-                                    Eval_Const_Uint64(expr->binary.right, &exp) and
+                                uint128_t base, exp;
+                                if (Eval_Const_Uint128(expr->binary.left, &base) and
+                                    Eval_Const_Uint128(expr->binary.right, &exp) and
                                     base == 2 and exp == 128) {
-                                    is_128 = true;
+                                    is_pow2_128 = true;
                                 }
                             }
                         }
                     } else {
                         /* Non-constant modulus: use double evaluator as fallback */
                         double dval = Eval_Const_Numeric(node->integer_type.range);
-                        if (dval == dval and dval > 0) modulus = (uint64_t)dval;
+                        if (dval == dval and dval > 0) modulus = (uint128_t)dval;
                     }
 
-                    mod_type->modulus = (int64_t)modulus;
-                    node->integer_type.modulus = (int64_t)modulus;
+                    mod_type->modulus = modulus;
+                    node->integer_type.modulus = modulus;
 
-                    /* Bounds: 0 .. modulus-1 (RM 3.5.4(9)) */
+                    /* Bounds: 0 .. modulus-1 (RM 3.5.4(9)).
+                     * int128_t can represent 0 .. 2^127-1 directly.  For
+                     * mod 2**128, the high bound is 2^128-1 which overflows
+                     * int128_t, so we store it as -1 (all bits set). */
                     mod_type->low_bound = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = 0 };
-                    if (is_128) {
-                        /* For mod 2**128: high bound is conceptually 2^128-1.
-                         * Store INT64_MAX as a sentinel; codegen uses i128 width. */
-                        mod_type->high_bound = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = INT64_MAX };
-                    } else if (modulus == 0) {
-                        /* mod 2**64: high bound is UINT64_MAX, store as -1 in int64_t */
-                        mod_type->high_bound = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = -1 };
+                    if (is_pow2_128) {
+                        /* 2^128 - 1 = (int128_t)(-1) — all 128 bits set */
+                        mod_type->high_bound = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = (int128_t)-1 };
                     } else {
-                        mod_type->high_bound = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = (int64_t)(modulus - 1) };
+                        mod_type->high_bound = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = (int128_t)(modulus - 1) };
                     }
 
                     /* Compute size from modulus */
                     uint32_t bits;
-                    if (is_128) {
+                    if (is_pow2_128) {
                         bits = Width_128;
                     } else {
                         bits = Bits_For_Modulus(modulus);
                     }
                     mod_type->size = (uint32_t)(bits / 8);
                     mod_type->alignment = mod_type->size;
-                    if (mod_type->alignment > 8) mod_type->alignment = 8;  /* Max alignment 8 bytes */
+                    if (mod_type->alignment > 16) mod_type->alignment = 16;  /* Max alignment 16 bytes for i128 */
 
                     node->type = mod_type;
                     return mod_type;
@@ -15264,16 +15361,16 @@ static uint32_t Generate_Expression(Code_Generator *cg, Syntax_Node *node);
 static uint32_t Emit_Bound_Value(Code_Generator *cg, Type_Bound *bound) {
     if (bound->kind == BOUND_INTEGER) {
         uint32_t t = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = add %s 0, %lld  ; literal bound\n", t, Integer_Arith_Type(cg), (long long)bound->int_value);
+        Emit(cg, "  %%t%u = add %s 0, %s  ; literal bound\n", t, Integer_Arith_Type(cg), I128_Decimal(bound->int_value));
         return t;
     } else if (bound->kind == BOUND_FLOAT) {
         /* Fixed-point: convert float bound to scaled integer.
          * GNAT uses model_small as the scale factor; we approximate
-         * by truncating to i64 (adequate for most RM constraints). */
-        int64_t ival = (int64_t)bound->float_value;
+         * by truncating to int128 (adequate for most RM constraints). */
+        int128_t ival = (int128_t)bound->float_value;
         uint32_t t = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = add %s 0, %lld  ; float-to-int bound (%g)\n",
-             t, Integer_Arith_Type(cg), (long long)ival, bound->float_value);
+        Emit(cg, "  %%t%u = add %s 0, %s  ; float-to-int bound (%g)\n",
+             t, Integer_Arith_Type(cg), I128_Decimal(ival), bound->float_value);
         return t;
     } else if (bound->kind == BOUND_EXPR and bound->expr) {
         return Generate_Expression(cg, bound->expr);
@@ -15323,8 +15420,8 @@ static uint32_t Emit_Constraint_Check(Code_Generator *cg, uint32_t val, Type_Inf
                  lo, (unsigned long long)bits, v);
         } else if (target->low_bound.kind == BOUND_INTEGER) {
             lo = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sitofp %s %lld to double  ; low bound\n",
-                 lo, Integer_Arith_Type(cg), (long long)target->low_bound.int_value);
+            Emit(cg, "  %%t%u = sitofp %s %s to double  ; low bound\n",
+                 lo, Integer_Arith_Type(cg), I128_Decimal(target->low_bound.int_value));
         } else {
             lo = Generate_Expression(cg, target->low_bound.expr);
         }
@@ -15336,8 +15433,8 @@ static uint32_t Emit_Constraint_Check(Code_Generator *cg, uint32_t val, Type_Inf
                  hi, (unsigned long long)bits, v);
         } else if (target->high_bound.kind == BOUND_INTEGER) {
             hi = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sitofp %s %lld to double  ; high bound\n",
-                 hi, Integer_Arith_Type(cg), (long long)target->high_bound.int_value);
+            Emit(cg, "  %%t%u = sitofp %s %s to double  ; high bound\n",
+                 hi, Integer_Arith_Type(cg), I128_Decimal(target->high_bound.int_value));
         } else {
             hi = Generate_Expression(cg, target->high_bound.expr);
         }
@@ -15365,11 +15462,11 @@ static uint32_t Emit_Constraint_Check(Code_Generator *cg, uint32_t val, Type_Inf
             /* Emit each bound as i64 regardless of source kind */
             #define FIXED_BOUND_TO_I64(bnd, out) do {                     \
                 if ((bnd)->kind == BOUND_FLOAT) {                         \
-                    int64_t iv = (int64_t)((bnd)->float_value / small);   \
+                    int128_t iv = (int128_t)((bnd)->float_value / small); \
                     (out) = Emit_Temp(cg);                                \
-                    Emit(cg, "  %%t%u = add %s 0, %lld  ; fixed bound"   \
+                    Emit(cg, "  %%t%u = add %s 0, %s  ; fixed bound"     \
                          " (%g/small)\n", (out), Integer_Arith_Type(cg),  \
-                         (long long)iv, (bnd)->float_value);              \
+                         I128_Decimal(iv), (bnd)->float_value);           \
                 } else if ((bnd)->kind == BOUND_EXPR) {                   \
                     uint32_t fv = Generate_Expression(cg, (bnd)->expr);   \
                     uint64_t sb; memcpy(&sb, &small, sizeof(sb));         \
@@ -15435,7 +15532,7 @@ static uint32_t Emit_Constraint_Check(Code_Generator *cg, uint32_t val, Type_Inf
  * bt = bound LLVM type (e.g., "i32").
  * Allocates bounds struct on stack, stores lo/hi, builds { ptr, ptr }. */
 static uint32_t Emit_Fat_Pointer(Code_Generator *cg, uint32_t data_ptr,
-                                  int64_t low, int64_t high, const char *bt) {
+                                  int128_t low, int128_t high, const char *bt) {
     const char *bst = Bounds_Type_For(bt);
     /* Allocate bounds struct { bt, bt } on stack — native type */
     uint32_t bounds_alloca = Emit_Temp(cg);
@@ -15445,13 +15542,13 @@ static uint32_t Emit_Fat_Pointer(Code_Generator *cg, uint32_t data_ptr,
     uint32_t low_gep = Emit_Temp(cg);
     Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 0\n",
          low_gep, bst, bounds_alloca);
-    Emit(cg, "  store %s %lld, ptr %%t%u\n", bt, (long long)low, low_gep);
+    Emit(cg, "  store %s %s, ptr %%t%u\n", bt, I128_Decimal(low), low_gep);
 
     /* Store high bound in native bt */
     uint32_t high_gep = Emit_Temp(cg);
     Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 1\n",
          high_gep, bst, bounds_alloca);
-    Emit(cg, "  store %s %lld, ptr %%t%u\n", bt, (long long)high, high_gep);
+    Emit(cg, "  store %s %s, ptr %%t%u\n", bt, I128_Decimal(high), high_gep);
 
     /* Build fat pointer { ptr, ptr } via insertvalue */
     uint32_t t1 = Emit_Temp(cg);
@@ -16063,11 +16160,11 @@ static uint32_t Generate_Lvalue(Code_Generator *cg, Syntax_Node *node) {
                     Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", adj, idx_type, idx, dynamic_low_conv);
                     idx = adj;
                 } else {
-                    int64_t low_bound = Array_Low_Bound(prefix_type);
+                    int128_t low_bound = Array_Low_Bound(prefix_type);
                     if (low_bound != 0) {
                         uint32_t adj = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = sub %s %%t%u, %lld\n",
-                             adj, Integer_Arith_Type(cg), idx, (long long)low_bound);
+                        Emit(cg, "  %%t%u = sub %s %%t%u, %s\n",
+                             adj, Integer_Arith_Type(cg), idx, I128_Decimal(low_bound));
                         idx = adj;
                     }
                 }
@@ -16096,7 +16193,7 @@ static uint32_t Generate_Bound_Value(Code_Generator *cg, Type_Bound b) {
     uint32_t t = cg->temp_id++;
     const char *iat = Integer_Arith_Type(cg);
     if (b.kind == BOUND_INTEGER) {
-        Emit(cg, "  %%t%u = add %s 0, %lld  ; bound (integer)\n", t, iat, (long long)b.int_value);
+        Emit(cg, "  %%t%u = add %s 0, %s  ; bound (integer)\n", t, iat, I128_Decimal(b.int_value));
         return t;
     }
     if (b.kind == BOUND_FLOAT) {
@@ -16121,7 +16218,18 @@ static uint32_t Generate_Integer_Literal(Code_Generator *cg, Syntax_Node *node) 
     uint32_t t = Emit_Temp(cg);
     /* GNAT LLVM: emit literal at the expression's native type width */
     const char *lit_type = node->type ? Type_To_Llvm(node->type) : Integer_Arith_Type(cg);
-    Emit(cg, "  %%t%u = add %s 0, %lld\n", t, lit_type, (long long)node->integer_lit.value);
+    if (node->integer_lit.big_value) {
+        /* Value may exceed int64_t range — use Big_Integer_To_Int128 */
+        int128_t val128;
+        if (Big_Integer_To_Int128(node->integer_lit.big_value, &val128)) {
+            Emit(cg, "  %%t%u = add %s 0, %s\n", t, lit_type, I128_Decimal(val128));
+        } else {
+            /* Value doesn't fit in int128 — fall back to int64 (shouldn't happen) */
+            Emit(cg, "  %%t%u = add %s 0, %lld\n", t, lit_type, (long long)node->integer_lit.value);
+        }
+    } else {
+        Emit(cg, "  %%t%u = add %s 0, %lld\n", t, lit_type, (long long)node->integer_lit.value);
+    }
     return t;
 }
 
@@ -16161,7 +16269,7 @@ static uint32_t Generate_String_Literal(Code_Generator *cg, Syntax_Node *node) {
          data_ptr, len, str_id);
 
     /* Return fat pointer with Ada STRING bounds (1..length) */
-    return Emit_Fat_Pointer(cg, data_ptr, 1, (int64_t)len, Array_Bound_Llvm_Type(node->type));
+    return Emit_Fat_Pointer(cg, data_ptr, 1, (int128_t)len, Array_Bound_Llvm_Type(node->type));
 }
 
 static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
@@ -16442,7 +16550,7 @@ static uint32_t Generate_Array_Equality(Code_Generator *cg, uint32_t left_ptr,
 
     /* For constrained arrays, use memcmp */
     if (array_type->array.is_constrained) {
-        int64_t count = Array_Element_Count(array_type);
+        int128_t count = Array_Element_Count(array_type);
         uint32_t elem_size = array_type->array.element_type ?
                              array_type->array.element_type->size : 4;
         int64_t total_size = count * elem_size;
@@ -16589,7 +16697,7 @@ static uint32_t Generate_Composite_Address(Code_Generator *cg, Syntax_Node *node
             uint32_t elem_size = prefix_type->array.element_type
                                  ? prefix_type->array.element_type->size : 1;
             if (elem_size == 0) elem_size = 1;
-            int64_t low = Array_Low_Bound(prefix_type);
+            int128_t low = Array_Low_Bound(prefix_type);
 
             /* Slice: ARR(low..high) — return address at slice start (RM 4.1.2) */
             Syntax_Node *arg0 = node->apply.arguments.items[0];
@@ -16600,7 +16708,7 @@ static uint32_t Generate_Composite_Address(Code_Generator *cg, Syntax_Node *node
                 const char *slice_idx_t = Integer_Arith_Type(cg);
                 if (low != 0) {
                     adj = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = sub %s %%t%u, %lld\n", adj, slice_idx_t, slice_low, (long long)low);
+                    Emit(cg, "  %%t%u = sub %s %%t%u, %s\n", adj, slice_idx_t, slice_low, I128_Decimal(low));
                 }
                 uint32_t byte_off = adj;
                 if (elem_size != 1) {
@@ -16698,12 +16806,12 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             } else {
                 left_data = Generate_Composite_Address(cg, node->binary.left);
                 /* Get static bounds from type */
-                int64_t low_val = Type_Bound_Value(left_type->array.indices[0].low_bound);
-                int64_t high_val = Type_Bound_Value(left_type->array.indices[0].high_bound);
+                int128_t low_val = Type_Bound_Value(left_type->array.indices[0].low_bound);
+                int128_t high_val = Type_Bound_Value(left_type->array.indices[0].high_bound);
                 left_low = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, %lld\n", left_low, slice_bt, (long long)low_val);
+                Emit(cg, "  %%t%u = add %s 0, %s\n", left_low, slice_bt, I128_Decimal(low_val));
                 left_high = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, %lld\n", left_high, slice_bt, (long long)high_val);
+                Emit(cg, "  %%t%u = add %s 0, %s\n", left_high, slice_bt, I128_Decimal(high_val));
             }
 
             /* Generate right operand */
@@ -16716,16 +16824,16 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                 right_data = Generate_Composite_Address(cg, node->binary.right);
                 /* Get static bounds from type - use right type if available */
                 Type_Info *rtype = node->binary.right->type ? node->binary.right->type : left_type;
-                int64_t low_val = 1, high_val = 1;
+                int128_t low_val = 1, high_val = 1;
                 if (Type_Is_Array_Like(rtype) and
                     rtype->array.index_count > 0) {
                     low_val = Type_Bound_Value(rtype->array.indices[0].low_bound);
                     high_val = Type_Bound_Value(rtype->array.indices[0].high_bound);
                 }
                 right_low = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, %lld\n", right_low, slice_bt, (long long)low_val);
+                Emit(cg, "  %%t%u = add %s 0, %s\n", right_low, slice_bt, I128_Decimal(low_val));
                 right_high = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, %lld\n", right_high, slice_bt, (long long)high_val);
+                Emit(cg, "  %%t%u = add %s 0, %s\n", right_high, slice_bt, I128_Decimal(high_val));
             }
 
             /* Compute lengths */
@@ -16767,7 +16875,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                 left_val = Generate_Expression(cg, node->binary.left);
             } else {
                 uint32_t lptr = Generate_Composite_Address(cg, node->binary.left);
-                int64_t lo = 1, hi = 0;
+                int128_t lo = 1, hi = 0;
                 if (Type_Is_Array_Like(left_type) and left_type->array.index_count > 0) {
                     lo = Type_Bound_Value(left_type->array.indices[0].low_bound);
                     hi = Type_Bound_Value(left_type->array.indices[0].high_bound);
@@ -16781,7 +16889,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             } else {
                 uint32_t rptr = Generate_Composite_Address(cg, node->binary.right);
                 Type_Info *rtype = node->binary.right->type ? node->binary.right->type : left_type;
-                int64_t lo = 1, hi = 0;
+                int128_t lo = 1, hi = 0;
                 if (Type_Is_Array_Like(rtype) and rtype->array.index_count > 0) {
                     lo = Type_Bound_Value(rtype->array.indices[0].low_bound);
                     hi = Type_Bound_Value(rtype->array.indices[0].high_bound);
@@ -16870,7 +16978,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                 left_ptr = Generate_Expression(cg, node->binary.left);
             } else {
                 uint32_t lp = Generate_Composite_Address(cg, node->binary.left);
-                int64_t lo = 1, hi = 0;
+                int128_t lo = 1, hi = 0;
                 if (left_type->array.index_count > 0) {
                     lo = Type_Bound_Value(left_type->array.indices[0].low_bound);
                     hi = Type_Bound_Value(left_type->array.indices[0].high_bound);
@@ -16881,7 +16989,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                 right_ptr = Generate_Expression(cg, node->binary.right);
             } else {
                 uint32_t rp = Generate_Composite_Address(cg, node->binary.right);
-                int64_t lo = 1, hi = 0;
+                int128_t lo = 1, hi = 0;
                 if (rhs_cmp_type and Type_Is_Array_Like(rhs_cmp_type) and
                     rhs_cmp_type->array.index_count > 0) {
                     lo = Type_Bound_Value(rhs_cmp_type->array.indices[0].low_bound);
@@ -16898,7 +17006,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
 
         if (left_type->array.is_constrained and not is_unconstrained) {
             /* Constrained array: same size, use memcmp directly */
-            int64_t count = Array_Element_Count(left_type);
+            int128_t count = Array_Element_Count(left_type);
             uint32_t elem_size = left_type->array.element_type ?
                                  left_type->array.element_type->size : 1;
             int64_t total_size = count * elem_size;
@@ -17096,8 +17204,8 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             left_fat = Emit_Fat_Pointer(cg, ca, 1, 1, cat_bt);
         } else if (Type_Is_Constrained_Array(left_type) and
                    left_type->array.index_count > 0) {
-            int64_t lo = Type_Bound_Value(left_type->array.indices[0].low_bound);
-            int64_t hi = Type_Bound_Value(left_type->array.indices[0].high_bound);
+            int128_t lo = Type_Bound_Value(left_type->array.indices[0].low_bound);
+            int128_t hi = Type_Bound_Value(left_type->array.indices[0].high_bound);
             left_fat = Emit_Fat_Pointer(cg, left_raw, lo, hi, cat_bt);
         } else {
             left_fat = left_raw;  /* Assume already fat */
@@ -17123,8 +17231,8 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             right_fat = Emit_Fat_Pointer(cg, ca, 1, 1, cat_bt);
         } else if (Type_Is_Constrained_Array(rhs_type) and
                    rhs_type->array.index_count > 0) {
-            int64_t lo = Type_Bound_Value(rhs_type->array.indices[0].low_bound);
-            int64_t hi = Type_Bound_Value(rhs_type->array.indices[0].high_bound);
+            int128_t lo = Type_Bound_Value(rhs_type->array.indices[0].low_bound);
+            int128_t hi = Type_Bound_Value(rhs_type->array.indices[0].high_bound);
             right_fat = Emit_Fat_Pointer(cg, right_raw, lo, hi, cat_bt);
         } else {
             right_fat = right_raw;  /* Assume already fat */
@@ -17816,15 +17924,15 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
          * For non-power-of-2 moduli (e.g. mod 100), emit: urem result, modulus.
          * Only applies to add, sub, mul — div/rem already produce in-range values. */
         if (result_type and result_type->kind == TYPE_MODULAR and result_type->modulus > 0) {
-            uint64_t m = (uint64_t)result_type->modulus;
+            uint128_t m = result_type->modulus;
             /* Check if modulus is a power of 2: if so, no masking needed */
             if ((m & (m - 1)) != 0) {
                 /* Non-power-of-2 modulus: emit urem */
                 Token_Kind binop = node->binary.op;
                 if (binop == TK_PLUS or binop == TK_MINUS or binop == TK_STAR) {
                     uint32_t mod_val = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = add %s 0, %llu  ; modulus\n", mod_val, common_t,
-                         (unsigned long long)m);
+                    Emit(cg, "  %%t%u = add %s 0, %s  ; modulus\n", mod_val, common_t,
+                         U128_Decimal(m));
                     uint32_t wrapped = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = urem %s %%t%u, %%t%u\n", wrapped, common_t, t, mod_val);
                     t = wrapped;
@@ -17863,11 +17971,11 @@ static uint32_t Generate_Unary_Op(Code_Generator *cg, Syntax_Node *node) {
                  * For non-power-of-2, emit urem to wrap into 0..M-1. */
                 Type_Info *res_type = node->type ? node->type : op_type_info;
                 if (res_type and res_type->kind == TYPE_MODULAR and res_type->modulus > 0) {
-                    uint64_t m = (uint64_t)res_type->modulus;
+                    uint128_t m = res_type->modulus;
                     if ((m & (m - 1)) != 0) {
                         uint32_t mod_val = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = add %s 0, %llu  ; modulus\n", mod_val, unary_int_type,
-                             (unsigned long long)m);
+                        Emit(cg, "  %%t%u = add %s 0, %s  ; modulus\n", mod_val, unary_int_type,
+                             U128_Decimal(m));
                         uint32_t wrapped = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = urem %s %%t%u, %%t%u\n", wrapped, unary_int_type, t, mod_val);
                         t = wrapped;
@@ -17884,9 +17992,9 @@ static uint32_t Generate_Unary_Op(Code_Generator *cg, Syntax_Node *node) {
                     /* Modular NOT is bitwise complement modulo M (RM 4.5.6).
                      * For power-of-2 moduli: XOR with (M-1) gives correct masking.
                      * For non-power-of-2: same — XOR with (M-1) is the Ada definition. */
-                    uint64_t mask = (res_type->modulus > 0) ? (uint64_t)res_type->modulus - 1 : ~0ULL;
-                    Emit(cg, "  %%t%u = xor %s %%t%u, %llu  ; modular NOT\n",
-                         t, unary_int_type, operand, (unsigned long long)mask);
+                    uint128_t mask = (res_type->modulus > 0) ? res_type->modulus - 1 : (uint128_t)~0ULL;
+                    Emit(cg, "  %%t%u = xor %s %%t%u, %s  ; modular NOT\n",
+                         t, unary_int_type, operand, U128_Decimal(mask));
                 } else {
                     /* Boolean NOT: convert to i1, flip, widen back */
                     const char *op_type = Expression_Llvm_Type(cg, node->unary.operand);
@@ -18227,10 +18335,10 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                 off = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", off, slice_iat, slo, low_bound_conv);
             } else {
-                int64_t al = Array_Low_Bound(at);
+                int128_t al = Array_Low_Bound(at);
                 if (al != 0) {
                     off = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = sub %s %%t%u, %lld\n", off, slice_iat, slo, (long long)al);
+                    Emit(cg, "  %%t%u = sub %s %%t%u, %s\n", off, slice_iat, slo, I128_Decimal(al));
                 } else off = slo;
             }
             uint32_t dp = Emit_Temp(cg);
@@ -18333,8 +18441,8 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                         /* Constrained array to unconstrained formal: build fat pointer.
                          * Generate_Expression returns ptr for constrained arrays; wrap
                          * with the type's static bounds for the unconstrained formal. */
-                        int64_t lo = Type_Bound_Value(actual_type->array.indices[0].low_bound);
-                        int64_t hi = Type_Bound_Value(actual_type->array.indices[0].high_bound);
+                        int128_t lo = Type_Bound_Value(actual_type->array.indices[0].low_bound);
+                        int128_t hi = Type_Bound_Value(actual_type->array.indices[0].high_bound);
                         args[i] = Emit_Fat_Pointer(cg, args[i], lo, hi, Array_Bound_Llvm_Type(actual_type));
                     } else {
                         const char *param_type = Type_To_Llvm(formal_type);
@@ -18586,14 +18694,14 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
              * offset = (slice_low - array_low_bound) * elem_size */
             const char *sl_iat = Integer_Arith_Type(cg);
             uint32_t offset;
-            int64_t array_low = Array_Low_Bound(array_type);
+            int128_t array_low = Array_Low_Bound(array_type);
             if (has_dynamic_low) {
                 uint32_t low_bound_conv = Emit_Convert(cg, low_bound_val, dyn_bt, sl_iat);
                 offset = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", offset, sl_iat, slice_low, low_bound_conv);
             } else if (array_low != 0) {
                 offset = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = sub %s %%t%u, %lld\n", offset, sl_iat, slice_low, (long long)array_low);
+                Emit(cg, "  %%t%u = sub %s %%t%u, %s\n", offset, sl_iat, slice_low, I128_Decimal(array_low));
             } else {
                 offset = slice_low;
             }
@@ -18632,10 +18740,10 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                  adj, idx_iat, idx, low_bound_conv);
             idx = adj;
         } else {
-            int64_t low_bound = Array_Low_Bound(array_type);
+            int128_t low_bound = Array_Low_Bound(array_type);
             if (low_bound != 0) {
                 uint32_t adj = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = sub %s %%t%u, %lld\n", adj, idx_iat, idx, (long long)low_bound);
+                Emit(cg, "  %%t%u = sub %s %%t%u, %s\n", adj, idx_iat, idx, I128_Decimal(low_bound));
                 idx = adj;
             }
         }
@@ -18976,8 +19084,8 @@ static uint32_t Emit_Bound_Attribute(Code_Generator *cg, uint32_t t,
         } else if (dim < prefix_type->array.index_count) {
             Type_Bound b = is_low ? prefix_type->array.indices[dim].low_bound
                                   : prefix_type->array.indices[dim].high_bound;
-            Emit(cg, "  %%t%u = add %s 0, %lld  ; %.*s'%s(%u)\n", t, Integer_Arith_Type(cg),
-                 (long long)Type_Bound_Value(b), (int)attr.length, attr.data, tag, dim+1);
+            Emit(cg, "  %%t%u = add %s 0, %s  ; %.*s'%s(%u)\n", t, Integer_Arith_Type(cg),
+                 I128_Decimal(Type_Bound_Value(b)), (int)attr.length, attr.data, tag, dim+1);
         }
     } else if (prefix_type and not Type_Is_Fixed_Point(prefix_type) and
                (Type_Is_Float(prefix_type) or
@@ -19020,8 +19128,8 @@ static uint32_t Emit_Bound_Attribute(Code_Generator *cg, uint32_t t,
             Emit(cg, "  %%t%u = add %s 0, %lld  ; %.*s'%s (fixed scaled %g/small)\n", t,
                  Integer_Arith_Type(cg), (long long)scaled, (int)attr.length, attr.data, tag, fval);
         } else if (Type_Bound_Is_Compile_Time_Known(b)) {
-            Emit(cg, "  %%t%u = add %s 0, %lld  ; %.*s'%s\n", t,
-                 Integer_Arith_Type(cg), (long long)Type_Bound_Value(b), (int)attr.length, attr.data, tag);
+            Emit(cg, "  %%t%u = add %s 0, %s  ; %.*s'%s\n", t,
+                 Integer_Arith_Type(cg), I128_Decimal(Type_Bound_Value(b)), (int)attr.length, attr.data, tag);
         } else {
             return Generate_Bound_Value(cg, b);
         }
@@ -19089,10 +19197,10 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                     return len;
                 }
             } else if (dim < prefix_type->array.index_count) {
-                int64_t low = Type_Bound_Value(prefix_type->array.indices[dim].low_bound);
-                int64_t high = Type_Bound_Value(prefix_type->array.indices[dim].high_bound);
-                Emit(cg, "  %%t%u = add %s 0, %lld  ; 'LENGTH(%u)\n", t, Integer_Arith_Type(cg),
-                     (long long)(high - low + 1), dim + 1);
+                int128_t low = Type_Bound_Value(prefix_type->array.indices[dim].low_bound);
+                int128_t high = Type_Bound_Value(prefix_type->array.indices[dim].high_bound);
+                Emit(cg, "  %%t%u = add %s 0, %s  ; 'LENGTH(%u)\n", t, Integer_Arith_Type(cg),
+                     I128_Decimal(high - low + 1), dim + 1);
             }
         }
         return t;
@@ -19114,8 +19222,8 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                 /* GNAT LLVM: return RANGE low at native type width, no widening */
                 return Emit_Fat_Pointer_Low(cg, fat, rng_bt);
             } else if (dim < prefix_type->array.index_count) {
-                Emit(cg, "  %%t%u = add %s 0, %lld  ; 'RANGE(%u) low\n", t, Integer_Arith_Type(cg),
-                     (long long)Type_Bound_Value(prefix_type->array.indices[dim].low_bound),
+                Emit(cg, "  %%t%u = add %s 0, %s  ; 'RANGE(%u) low\n", t, Integer_Arith_Type(cg),
+                     I128_Decimal(Type_Bound_Value(prefix_type->array.indices[dim].low_bound)),
                      dim + 1);
             }
         }
@@ -19284,8 +19392,8 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
             if (base and limit.kind == BOUND_INTEGER) {
                 uint32_t ok_label = cg->label_id++, raise_label = cg->label_id++;
                 uint32_t cmp = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = icmp %s %s %%t%u, %lld\n", cmp,
-                     is_succ ? "sgt" : "slt", Integer_Arith_Type(cg), t, (long long)limit.int_value);
+                Emit(cg, "  %%t%u = icmp %s %s %%t%u, %s\n", cmp,
+                     is_succ ? "sgt" : "slt", Integer_Arith_Type(cg), t, I128_Decimal(limit.int_value));
                 Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
                      cmp, raise_label, ok_label);
                 Emit(cg, "L%u:\n", raise_label);
@@ -19353,8 +19461,8 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         /* T'MOD — returns the modulus of a modular type (RM 3.5.4(17)) */
         if (prefix_type and prefix_type->kind == TYPE_MODULAR and prefix_type->modulus > 0) {
             const char *mod_type = Type_To_Llvm(prefix_type);
-            Emit(cg, "  %%t%u = add %s 0, %llu  ; 'MOD\n", t, mod_type,
-                 (unsigned long long)(uint64_t)prefix_type->modulus);
+            Emit(cg, "  %%t%u = add %s 0, %s  ; 'MOD\n", t, mod_type,
+                 U128_Decimal(prefix_type->modulus));
             return t;
         }
     }
@@ -19578,19 +19686,19 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
 
             if (lo_known and hi_known) {
                 /* Both bounds are compile-time known - compute WIDTH statically */
-                int64_t width = 0;
-                int64_t lo = Type_Bound_Value(prefix_type->low_bound);
-                int64_t hi = Type_Bound_Value(prefix_type->high_bound);
+                int128_t width = 0;
+                int128_t lo = Type_Bound_Value(prefix_type->low_bound);
+                int128_t hi = Type_Bound_Value(prefix_type->high_bound);
 
                 if (hi < lo) {
                     /* Empty range - width is 0 */
                     width = 0;
                 } else if (root_enum) {
                     /* Enumeration: max length of literal names in range */
-                    for (int64_t i = lo; i <= hi and i < (int64_t)root_enum->enumeration.literal_count; i++) {
+                    for (int128_t i = lo; i <= hi and i < (int128_t)root_enum->enumeration.literal_count; i++) {
                         if (i >= 0) {
-                            uint32_t len = root_enum->enumeration.literals[i].length;
-                            if (len > (uint32_t)width) width = (int64_t)len;
+                            uint32_t len = root_enum->enumeration.literals[(int64_t)i].length;
+                            if (len > (uint32_t)width) width = (int128_t)len;
                         }
                     }
                 } else if (Type_Is_Boolean(prefix_type) or Type_Is_Boolean(prefix_type->base_type)) {
@@ -19602,14 +19710,14 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                 } else {
                     /* Integer types: max width of first/last images */
                     /* Width includes leading space for non-negative */
-                    int64_t abs_lo = lo < 0 ? -lo : lo;
-                    int64_t abs_hi = hi < 0 ? -hi : hi;
-                    int64_t max_abs = abs_lo > abs_hi ? abs_lo : abs_hi;
+                    int128_t abs_lo = lo < 0 ? -lo : lo;
+                    int128_t abs_hi = hi < 0 ? -hi : hi;
+                    int128_t max_abs = abs_lo > abs_hi ? abs_lo : abs_hi;
                     int digits = 1;
                     while (max_abs >= 10) { digits++; max_abs /= 10; }
                     width = digits + 1;  /* +1 for leading space or minus sign */
                 }
-                Emit(cg, "  %%t%u = add %s 0, %lld  ; 'WIDTH\n", t, Integer_Arith_Type(cg), (long long)width);
+                Emit(cg, "  %%t%u = add %s 0, %s  ; 'WIDTH\n", t, Integer_Arith_Type(cg), I128_Decimal(width));
             } else {
                 /* Bounds not compile-time known - generate runtime code.
                  * Per GNAT exp_imgv.adb: generate if FIRST > LAST then 0 else <width>
@@ -20116,7 +20224,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             const char *iat_bnd = Integer_Arith_Type(cg);
             if (low_bound.kind == BOUND_INTEGER) {
                 low_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, %lld\n", low_val, iat_bnd, (long long)low_bound.int_value);
+                Emit(cg, "  %%t%u = add %s 0, %s\n", low_val, iat_bnd, I128_Decimal(low_bound.int_value));
             } else if (low_bound.kind == BOUND_EXPR and low_bound.expr) {
                 low_val = Generate_Expression(cg, low_bound.expr);
                 /* Extend to INTEGER width if narrower type (e.g., ENUM bounds return i8) */
@@ -20133,7 +20241,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             /* Generate high bound */
             if (high_bound.kind == BOUND_INTEGER) {
                 high_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, %lld\n", high_val, iat_bnd, (long long)high_bound.int_value);
+                Emit(cg, "  %%t%u = add %s 0, %s\n", high_val, iat_bnd, I128_Decimal(high_bound.int_value));
             } else if (high_bound.kind == BOUND_EXPR and high_bound.expr) {
                 high_val = Generate_Expression(cg, high_bound.expr);
                 /* Extend to INTEGER width if narrower type (e.g., ENUM bounds return i8) */
@@ -20338,9 +20446,9 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
 
         /* Static bounds: use compile-time allocation and unrolled initialization */
         uint32_t base = Emit_Temp(cg);
-        int64_t low = Type_Bound_Value(low_bound);
-        int64_t high = Type_Bound_Value(high_bound);
-        int64_t count = high - low + 1;
+        int128_t low = Type_Bound_Value(low_bound);
+        int128_t high = Type_Bound_Value(high_bound);
+        int128_t count = high - low + 1;
         if (count < 1) count = 1;  /* Ensure at least 1 element for safety */
 
         /* Check if element type is composite (record or constrained array).
@@ -20352,17 +20460,17 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
 
         if (elem_is_composite) {
             /* Allocate as byte array so the size matches the actual data layout */
-            int64_t total_bytes = count * (int64_t)elem_size;
-            Emit(cg, "  %%t%u = alloca [%lld x i8]  ; array aggregate (composite elems)\n",
-                 base, (long long)total_bytes);
+            int128_t total_bytes = count * (int128_t)elem_size;
+            Emit(cg, "  %%t%u = alloca [%s x i8]  ; array aggregate (composite elems)\n",
+                 base, I128_Decimal(total_bytes));
         } else {
-            Emit(cg, "  %%t%u = alloca [%lld x %s]  ; array aggregate\n",
-                 base, (long long)count, elem_type);
+            Emit(cg, "  %%t%u = alloca [%s x %s]  ; array aggregate\n",
+                 base, I128_Decimal(count), elem_type);
         }
 
         /* Track which elements are initialized (for others clause) */
         bool *initialized = Arena_Allocate((size_t)count * sizeof(bool));
-        for (int64_t i = 0; i < count; i++) initialized[i] = false;
+        for (int128_t i = 0; i < count; i++) initialized[i] = false;
 
         /* Default value for "others" clause (if any) */
         uint32_t others_val = 0;
@@ -20400,28 +20508,28 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
 
                     if (choice->kind == NK_RANGE) {
                         /* Range choice: 1..5 => value */
-                        int64_t rng_low = choice->range.low->kind == NK_INTEGER ?
-                                          choice->range.low->integer_lit.value : low;
-                        int64_t rng_high = choice->range.high->kind == NK_INTEGER ?
-                                           choice->range.high->integer_lit.value : high;
+                        int128_t rng_low = choice->range.low->kind == NK_INTEGER ?
+                                          (int128_t)choice->range.low->integer_lit.value : low;
+                        int128_t rng_high = choice->range.high->kind == NK_INTEGER ?
+                                           (int128_t)choice->range.high->integer_lit.value : high;
                         uint32_t val = Generate_Expression(cg, item->association.expression);
                         if (not elem_is_composite) {
                             const char *src_type = Expression_Llvm_Type(cg, item->association.expression);
                             val = Emit_Convert(cg, val, src_type, elem_type);
                         }
 
-                        for (int64_t idx = rng_low; idx <= rng_high; idx++) {
-                            int64_t arr_idx = idx - low;
+                        for (int128_t idx = rng_low; idx <= rng_high; idx++) {
+                            int128_t arr_idx = idx - low;
                             if (arr_idx >= 0 and arr_idx < count) {
                                 uint32_t ptr = Emit_Temp(cg);
                                 if (elem_is_composite) {
-                                    Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %lld\n",
-                                         ptr, base, (long long)(arr_idx * elem_size));
+                                    Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %s\n",
+                                         ptr, base, I128_Decimal(arr_idx * (int128_t)elem_size));
                                     Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
                                          ptr, val, elem_size);
                                 } else {
-                                    Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %lld\n",
-                                         ptr, elem_type, base, (long long)arr_idx);
+                                    Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %s\n",
+                                         ptr, elem_type, base, I128_Decimal(arr_idx));
                                     Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, val, ptr);
                                 }
                                 initialized[arr_idx] = true;
@@ -20429,20 +20537,20 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         }
                     } else if (choice->kind == NK_INTEGER) {
                         /* Single index: 3 => value */
-                        int64_t idx = choice->integer_lit.value - low;
+                        int128_t idx = (int128_t)choice->integer_lit.value - low;
                         if (idx >= 0 and idx < count) {
                             uint32_t val = Generate_Expression(cg, item->association.expression);
                             uint32_t ptr = Emit_Temp(cg);
                             if (elem_is_composite) {
-                                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %lld\n",
-                                     ptr, base, (long long)(idx * elem_size));
+                                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %s\n",
+                                     ptr, base, I128_Decimal(idx * (int128_t)elem_size));
                                 Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
                                      ptr, val, elem_size);
                             } else {
                                 const char *src_type = Expression_Llvm_Type(cg, item->association.expression);
                                 val = Emit_Convert(cg, val, src_type, elem_type);
-                                Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %lld\n",
-                                     ptr, elem_type, base, (long long)idx);
+                                Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %s\n",
+                                     ptr, elem_type, base, I128_Decimal(idx));
                                 Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, val, ptr);
                             }
                             initialized[idx] = true;
@@ -20455,8 +20563,8 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                     uint32_t val = Generate_Expression(cg, item);
                     uint32_t ptr = Emit_Temp(cg);
                     if (elem_is_composite) {
-                        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %lld\n",
-                             ptr, base, (long long)((int64_t)positional_idx * elem_size));
+                        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %s\n",
+                             ptr, base, I128_Decimal((int128_t)positional_idx * (int128_t)elem_size));
                         Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
                              ptr, val, elem_size);
                     } else {
@@ -20474,17 +20582,17 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
 
         /* Third pass: fill uninitialized with "others" value */
         if (has_others) {
-            for (int64_t idx = 0; idx < count; idx++) {
+            for (int128_t idx = 0; idx < count; idx++) {
                 if (not initialized[idx]) {
                     uint32_t ptr = Emit_Temp(cg);
                     if (elem_is_composite) {
-                        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %lld\n",
-                             ptr, base, (long long)(idx * elem_size));
+                        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %s\n",
+                             ptr, base, I128_Decimal(idx * (int128_t)elem_size));
                         Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
                              ptr, others_val, elem_size);
                     } else {
-                        Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %lld\n",
-                             ptr, elem_type, base, (long long)idx);
+                        Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %s\n",
+                             ptr, elem_type, base, I128_Decimal(idx));
                         Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, others_val, ptr);
                     }
                 }
@@ -20769,8 +20877,8 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
 
             if (subtype->array.indices[0].low_bound.kind == BOUND_INTEGER) {
                 low_t = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, %lld\n", low_t, new_bt,
-                     (long long)subtype->array.indices[0].low_bound.int_value);
+                Emit(cg, "  %%t%u = add %s 0, %s\n", low_t, new_bt,
+                     I128_Decimal(subtype->array.indices[0].low_bound.int_value));
             } else if (subtype->array.indices[0].low_bound.kind == BOUND_EXPR and
                        subtype->array.indices[0].low_bound.expr) {
                 Syntax_Node *low_expr = subtype->array.indices[0].low_bound.expr;
@@ -20788,8 +20896,8 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
 
             if (subtype->array.indices[0].high_bound.kind == BOUND_INTEGER) {
                 high_t = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, %lld\n", high_t, new_bt,
-                     (long long)subtype->array.indices[0].high_bound.int_value);
+                Emit(cg, "  %%t%u = add %s 0, %s\n", high_t, new_bt,
+                     I128_Decimal(subtype->array.indices[0].high_bound.int_value));
             } else if (subtype->array.indices[0].high_bound.kind == BOUND_EXPR and
                        subtype->array.indices[0].high_bound.expr) {
                 Syntax_Node *high_expr = subtype->array.indices[0].high_bound.expr;
@@ -20838,7 +20946,7 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
     if (designated) {
         if (Type_Is_Constrained_Array(designated)) {
             /* Constrained array: compute actual byte size from element count */
-            int64_t count = Array_Element_Count(designated);
+            int128_t count = Array_Element_Count(designated);
             uint32_t elem_sz = designated->array.element_type ?
                                designated->array.element_type->size : 1;
             if (elem_sz == 0) elem_sz = 8;
@@ -20982,7 +21090,7 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
 
                 /* Get destination base address */
                 uint32_t dest_base;
-                int64_t low_bound;
+                int128_t low_bound;
                 if (target_is_uncon) {
                     /* Load fat pointer, extract data ptr and low bound */
                     const char *sa_bt = Array_Bound_Llvm_Type(prefix_type);
@@ -21049,7 +21157,7 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
                 uint32_t dest_low = Generate_Expression(cg, arg->range.low);
                 if (low_bound != 0) {
                     uint32_t adj = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = sub %s %%t%u, %lld\n", adj, csa_t, dest_low, (long long)low_bound);
+                    Emit(cg, "  %%t%u = sub %s %%t%u, %s\n", adj, csa_t, dest_low, I128_Decimal(low_bound));
                     dest_low = adj;
                 }
                 uint32_t dest_ptr = Emit_Temp(cg);
@@ -21066,7 +21174,7 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
 
                     if (src_sym and src_type and
                         (src_type->kind == TYPE_ARRAY or src_type->kind == TYPE_STRING)) {
-                        int64_t src_low_bound = Array_Low_Bound(src_type);
+                        int128_t src_low_bound = Array_Low_Bound(src_type);
 
                         /* Get source base address — handle unconstrained source */
                         uint32_t src_base;
@@ -21096,7 +21204,7 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
                             src_start = adj;
                         } else if (src_low_bound != 0) {
                             uint32_t adj = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = sub %s %%t%u, %lld\n", adj, csa_t, src_start, (long long)src_low_bound);
+                            Emit(cg, "  %%t%u = sub %s %%t%u, %s\n", adj, csa_t, src_start, I128_Decimal(src_low_bound));
                             src_start = adj;
                         }
                         uint32_t src_ptr = Emit_Temp(cg);
@@ -21570,10 +21678,10 @@ static void Generate_Case_Statement(Code_Generator *cg, Syntax_Node *node) {
                     low = Emit_Temp(cg);
                     high = Emit_Temp(cg);
                     if (st and st->low_bound.kind == BOUND_INTEGER) {
-                        Emit(cg, "  %%t%u = add %s 0, %lld\n", low, Integer_Arith_Type(cg),
-                             (long long)Type_Bound_Value(st->low_bound));
-                        Emit(cg, "  %%t%u = add %s 0, %lld\n", high, Integer_Arith_Type(cg),
-                             (long long)Type_Bound_Value(st->high_bound));
+                        Emit(cg, "  %%t%u = add %s 0, %s\n", low, Integer_Arith_Type(cg),
+                             I128_Decimal(Type_Bound_Value(st->low_bound)));
+                        Emit(cg, "  %%t%u = add %s 0, %s\n", high, Integer_Arith_Type(cg),
+                             I128_Decimal(Type_Bound_Value(st->high_bound)));
                     } else {
                         Emit(cg, "  %%t%u = add %s 0, 0\n", low, Integer_Arith_Type(cg));
                         Emit(cg, "  %%t%u = add %s 0, 0\n", high, Integer_Arith_Type(cg));
@@ -21689,11 +21797,11 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
             uint32_t dim = Get_Dimension_Index(range_arg);
             if (dim < prefix_type->array.index_count) {
                 low_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, %lld  ; 'RANGE low\n", low_val, Integer_Arith_Type(cg),
-                     (long long)Type_Bound_Value(prefix_type->array.indices[dim].low_bound));
+                Emit(cg, "  %%t%u = add %s 0, %s  ; 'RANGE low\n", low_val, Integer_Arith_Type(cg),
+                     I128_Decimal(Type_Bound_Value(prefix_type->array.indices[dim].low_bound)));
                 high_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, %lld  ; 'RANGE high\n", high_val, Integer_Arith_Type(cg),
-                     (long long)Type_Bound_Value(prefix_type->array.indices[dim].high_bound));
+                Emit(cg, "  %%t%u = add %s 0, %s  ; 'RANGE high\n", high_val, Integer_Arith_Type(cg),
+                     I128_Decimal(Type_Bound_Value(prefix_type->array.indices[dim].high_bound)));
             } else {
                 fprintf(stderr, "warning: FOR loop RANGE attribute dimension out of bounds, defaulting to 0\n");
                 low_val = high_val = 0;
@@ -21722,11 +21830,11 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
             Type_Info *subtype = range->type;
             if (subtype and subtype->low_bound.kind == BOUND_INTEGER) {
                 low_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, %lld  ; subtype low\n", low_val, Integer_Arith_Type(cg),
-                     (long long)Type_Bound_Value(subtype->low_bound));
+                Emit(cg, "  %%t%u = add %s 0, %s  ; subtype low\n", low_val, Integer_Arith_Type(cg),
+                     I128_Decimal(Type_Bound_Value(subtype->low_bound)));
                 high_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, %lld  ; subtype high\n", high_val, Integer_Arith_Type(cg),
-                     (long long)Type_Bound_Value(subtype->high_bound));
+                Emit(cg, "  %%t%u = add %s 0, %s  ; subtype high\n", high_val, Integer_Arith_Type(cg),
+                     I128_Decimal(Type_Bound_Value(subtype->high_bound)));
             } else {
                 fprintf(stderr, "warning: FOR loop subtype has no bounds, defaulting to 0\n");
                 low_val = Emit_Temp(cg);
@@ -21739,11 +21847,11 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
         Type_Info *type = range->type;
         if (type and type->low_bound.kind == BOUND_INTEGER) {
             low_val = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = add %s 0, %lld  ; type low\n", low_val, Integer_Arith_Type(cg),
-                 (long long)Type_Bound_Value(type->low_bound));
+            Emit(cg, "  %%t%u = add %s 0, %s  ; type low\n", low_val, Integer_Arith_Type(cg),
+                 I128_Decimal(Type_Bound_Value(type->low_bound)));
             high_val = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = add %s 0, %lld  ; type high\n", high_val, Integer_Arith_Type(cg),
-                 (long long)Type_Bound_Value(type->high_bound));
+            Emit(cg, "  %%t%u = add %s 0, %s  ; type high\n", high_val, Integer_Arith_Type(cg),
+                 I128_Decimal(Type_Bound_Value(type->high_bound)));
         } else {
             fprintf(stderr, "warning: FOR loop type has no bounds, defaulting to 0\n");
             low_val = Emit_Temp(cg);
@@ -22612,7 +22720,7 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
          * is_constrained_array: true only for constrained, used for allocation */
         bool is_any_array = ty and (ty->kind == TYPE_ARRAY or ty->kind == TYPE_STRING);
         bool is_constrained_array = is_any_array and ty->array.is_constrained;
-        int64_t array_count = is_constrained_array ? Array_Element_Count(ty) : 0;
+        int128_t array_count = is_constrained_array ? Array_Element_Count(ty) : 0;
         const char *elem_type = NULL;
         uint32_t elem_size = 0;
         bool elem_is_composite = false;
@@ -22680,11 +22788,11 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             /* Variable - emit as global with default init */
             if (is_constrained_array and array_count > 0) {
                 if (elem_is_composite and elem_size > 0) {
-                    Emit(cg, " = linkonce_odr global [%lld x [%u x i8]] zeroinitializer\n",
-                         (long long)array_count, elem_size);
+                    Emit(cg, " = linkonce_odr global [%s x [%u x i8]] zeroinitializer\n",
+                         I128_Decimal(array_count), elem_size);
                 } else {
-                    Emit(cg, " = linkonce_odr global [%lld x %s] zeroinitializer\n",
-                         (long long)array_count, elem_type);
+                    Emit(cg, " = linkonce_odr global [%s x %s] zeroinitializer\n",
+                         I128_Decimal(array_count), elem_type);
                 }
             } else if (is_record and record_size > 0) {
                 Emit(cg, " = linkonce_odr global [%u x i8] zeroinitializer\n", record_size);
@@ -22714,9 +22822,9 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             Emit_Symbol_Name(cg, sym);
             if (elem_is_composite and elem_size > 0) {
                 /* Element is record or constrained array - use byte array */
-                Emit(cg, " = alloca [%lld x [%u x i8]]\n", (long long)array_count, elem_size);
+                Emit(cg, " = alloca [%s x [%u x i8]]\n", I128_Decimal(array_count), elem_size);
             } else {
-                Emit(cg, " = alloca [%lld x %s]\n", (long long)array_count, elem_type);
+                Emit(cg, " = alloca [%s x %s]\n", I128_Decimal(array_count), elem_type);
             }
         } else if (is_record and record_size > 0) {
             /* Record type: allocate [N x i8] for the record size */
@@ -22820,22 +22928,22 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                         init_ty->array.index_count > 0) {
                         /* Dest is unconstrained but source is constrained.
                          * Build fat pointer from source's static bounds. */
-                        int64_t lo = Type_Bound_Value(
+                        int128_t lo = Type_Bound_Value(
                             init_ty->array.indices[0].low_bound);
-                        int64_t hi = Type_Bound_Value(
+                        int128_t hi = Type_Bound_Value(
                             init_ty->array.indices[0].high_bound);
-                        int64_t byte_len = (hi >= lo) ? (hi - lo + 1) : 0;
+                        int128_t byte_len = (hi >= lo) ? (hi - lo + 1) : 0;
 
                         /* Allocate local data storage */
                         uint32_t local_data = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = alloca i8, i64 %lld"
+                        Emit(cg, "  %%t%u = alloca i8, i64 %s"
                              "  ; con-to-uncon data\n",
-                             local_data, (long long)byte_len);
+                             local_data, I128_Decimal(byte_len));
 
                         /* Copy data */
                         Emit(cg, "  call void @llvm.memcpy.p0.p0.i64("
-                             "ptr %%t%u, ptr %%t%u, i64 %lld, i1 false)\n",
-                             local_data, src_ptr, (long long)byte_len);
+                             "ptr %%t%u, ptr %%t%u, i64 %s, i1 false)\n",
+                             local_data, src_ptr, I128_Decimal(byte_len));
 
                         /* Build fat pointer */
                         const char *ci_bt = Array_Bound_Llvm_Type(ty);
@@ -22846,15 +22954,15 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                         Emit_Store_Fat_Pointer_To_Symbol(cg, new_fat, sym, ci_bt);
                     } else {
                         /* Both constrained — simple memcpy using target bounds */
-                        int64_t lo = Type_Bound_Value(
+                        int128_t lo = Type_Bound_Value(
                             ty->array.indices[0].low_bound);
-                        int64_t hi = Type_Bound_Value(
+                        int128_t hi = Type_Bound_Value(
                             ty->array.indices[0].high_bound);
-                        int64_t byte_len = (hi >= lo) ? (hi - lo + 1) : 0;
+                        int128_t byte_len = (hi >= lo) ? (hi - lo + 1) : 0;
                         Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%");
                         Emit_Symbol_Name(cg, sym);
-                        Emit(cg, ", ptr %%t%u, i64 %lld, i1 false)\n",
-                             src_ptr, (long long)byte_len);
+                        Emit(cg, ", ptr %%t%u, i64 %s, i1 false)\n",
+                             src_ptr, I128_Decimal(byte_len));
                     }
                 }
             } else if (Type_Is_Fixed_Point(ty) and
@@ -22938,7 +23046,7 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     /* Get low bound (must be static since we checked for dynamic above) */
                     if (low_b.kind == BOUND_INTEGER) {
                         low_val = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = add %s 0, %lld\n", low_val, Integer_Arith_Type(cg), (long long)low_b.int_value);
+                        Emit(cg, "  %%t%u = add %s 0, %s\n", low_val, Integer_Arith_Type(cg), I128_Decimal(low_b.int_value));
                     } else {
                         low_val = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = add %s 0, 1\n", low_val, Integer_Arith_Type(cg));  /* Default low = 1 */
@@ -22947,7 +23055,7 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     /* Get high bound (must be static) */
                     if (high_b.kind == BOUND_INTEGER) {
                         high_val = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = add %s 0, %lld\n", high_val, Integer_Arith_Type(cg), (long long)high_b.int_value);
+                        Emit(cg, "  %%t%u = add %s 0, %s\n", high_val, Integer_Arith_Type(cg), I128_Decimal(high_b.int_value));
                     } else {
                         high_val = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = add %s 0, 0\n", high_val, Integer_Arith_Type(cg));  /* Default high = 0 */
@@ -23040,9 +23148,9 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     /* Source is ptr (constrained) — wrap with bounds */
                     Type_Info *init_ty = node->object_decl.init->type;
                     if (init_ty and init_ty->array.index_count > 0) {
-                        int64_t lo = Type_Bound_Value(
+                        int128_t lo = Type_Bound_Value(
                             init_ty->array.indices[0].low_bound);
-                        int64_t hi = Type_Bound_Value(
+                        int128_t hi = Type_Bound_Value(
                             init_ty->array.indices[0].high_bound);
                         uint32_t new_fat = Emit_Fat_Pointer(cg, fat_ptr, lo, hi, uai_bt);
                         Emit_Store_Fat_Pointer_To_Symbol(cg, new_fat, sym, uai_bt);
@@ -23090,7 +23198,7 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             const char *iat_decl = Integer_Arith_Type(cg);
             if (low_b.kind == BOUND_INTEGER) {
                 low_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, %lld\n", low_val, iat_decl, (long long)low_b.int_value);
+                Emit(cg, "  %%t%u = add %s 0, %s\n", low_val, iat_decl, I128_Decimal(low_b.int_value));
             } else if (low_b.kind == BOUND_EXPR and low_b.expr) {
                 low_val = Generate_Expression(cg, low_b.expr);
                 /* Extend to INTEGER width if narrower type (e.g., ENUM'('B') returns i8) */
@@ -23107,7 +23215,7 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             /* Get high bound */
             if (high_b.kind == BOUND_INTEGER) {
                 high_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, %lld\n", high_val, iat_decl, (long long)high_b.int_value);
+                Emit(cg, "  %%t%u = add %s 0, %s\n", high_val, iat_decl, I128_Decimal(high_b.int_value));
             } else if (high_b.kind == BOUND_EXPR and high_b.expr) {
                 high_val = Generate_Expression(cg, high_b.expr);
                 /* Extend to INTEGER width if narrower type (e.g., ENUM'('D') returns i8) */
@@ -24005,10 +24113,10 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                         Emit(cg, "@");
                         Emit_Symbol_Name(cg, exp);
                         if (is_array) {
-                            int64_t cnt = Array_Element_Count(ty);
+                            int128_t cnt = Array_Element_Count(ty);
                             const char *elem_type = Type_To_Llvm(ty->array.element_type);
-                            Emit(cg, " = linkonce_odr global [%lld x %s] zeroinitializer\n",
-                                 (long long)cnt, elem_type);
+                            Emit(cg, " = linkonce_odr global [%s x %s] zeroinitializer\n",
+                                 I128_Decimal(cnt), elem_type);
                         } else if (is_record) {
                             Emit(cg, " = linkonce_odr global [%u x i8] zeroinitializer\n", ty->size);
                         } else if (strcmp(type_str, "double") == 0 or strcmp(type_str, "float") == 0) {
@@ -24047,9 +24155,9 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                             Emit(cg, "  %%");
                             Emit_Symbol_Name(cg, exp);
                             if (is_array) {
-                                int64_t cnt = Array_Element_Count(ty);
+                                int128_t cnt = Array_Element_Count(ty);
                                 const char *elem_type = Type_To_Llvm(ty->array.element_type);
-                                Emit(cg, " = alloca [%lld x %s]  ; local pkg var\n", (long long)cnt, elem_type);
+                                Emit(cg, " = alloca [%s x %s]  ; local pkg var\n", I128_Decimal(cnt), elem_type);
                             } else if (is_record) {
                                 Emit(cg, " = alloca [%u x i8]  ; local pkg record\n", ty->size);
                             } else {
@@ -24327,7 +24435,7 @@ static void Generate_Type_Equality_Function(Code_Generator *cg, Type_Info *t) {
     } else if (Type_Is_Array_Like(t)) {
         if (t->array.is_constrained) {
             /* Constrained array - use memcmp */
-            int64_t count = Array_Element_Count(t);
+            int128_t count = Array_Element_Count(t);
             uint32_t elem_size = t->array.element_type ?
                                  t->array.element_type->size : 4;
             int64_t total_size = count * elem_size;
