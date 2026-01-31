@@ -15680,44 +15680,73 @@ static uint32_t Emit_Constraint_Check(Code_Generator *cg, uint32_t val,
     uint32_t cont_label  = cg->label_id++;
 
     if (is_flt_like) {
-        /* Float/fixed path — compare as double */
+        /* Float/fixed path — compare at the target's native float type.
+         * GNAT LLVM: Apply_Float_Range_Check operates at the expression's
+         * actual precision, not always at double. */
+        const char *flt_type = "double";  /* default for fixed-point / UNIVERSAL_REAL */
+        if (target->kind == TYPE_FLOAT and target->size > 0) {
+            flt_type = Llvm_Float_Type((uint32_t)To_Bits(target->size));
+        }
+        /* Convert value to comparison type if needed */
+        if (source) {
+            const char *src_flt = "double";
+            if (source->kind == TYPE_FLOAT and source->size > 0)
+                src_flt = Llvm_Float_Type((uint32_t)To_Bits(source->size));
+            val = Emit_Convert(cg, val, src_flt, flt_type);
+        }
         uint32_t lo = 0, hi = 0;
         if (target->low_bound.kind == BOUND_FLOAT) {
             uint64_t bits; double v = target->low_bound.float_value;
             memcpy(&bits, &v, sizeof(bits));
             lo = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; low bound %g\n",
-                 lo, (unsigned long long)bits, v);
+            if (strcmp(flt_type, "float") == 0) {
+                float fv = (float)v; uint32_t fb;
+                memcpy(&fb, &fv, sizeof(fb));
+                Emit(cg, "  %%t%u = bitcast i32 %u to float  ; low bound %g\n",
+                     lo, fb, v);
+            } else {
+                Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; low bound %g\n",
+                     lo, (unsigned long long)bits, v);
+            }
         } else if (target->low_bound.kind == BOUND_INTEGER) {
             lo = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sitofp %s %s to double  ; low bound\n",
-                 lo, Integer_Arith_Type(cg), I128_Decimal(target->low_bound.int_value));
+            Emit(cg, "  %%t%u = sitofp %s %s to %s  ; low bound\n",
+                 lo, Integer_Arith_Type(cg), I128_Decimal(target->low_bound.int_value), flt_type);
         } else {
             lo = Generate_Expression(cg, target->low_bound.expr);
+            lo = Emit_Convert(cg, lo, "double", flt_type);
         }
         if (target->high_bound.kind == BOUND_FLOAT) {
             uint64_t bits; double v = target->high_bound.float_value;
             memcpy(&bits, &v, sizeof(bits));
             hi = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; high bound %g\n",
-                 hi, (unsigned long long)bits, v);
+            if (strcmp(flt_type, "float") == 0) {
+                float fv = (float)v; uint32_t fb;
+                memcpy(&fb, &fv, sizeof(fb));
+                Emit(cg, "  %%t%u = bitcast i32 %u to float  ; high bound %g\n",
+                     hi, fb, v);
+            } else {
+                Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; high bound %g\n",
+                     hi, (unsigned long long)bits, v);
+            }
         } else if (target->high_bound.kind == BOUND_INTEGER) {
             hi = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sitofp %s %s to double  ; high bound\n",
-                 hi, Integer_Arith_Type(cg), I128_Decimal(target->high_bound.int_value));
+            Emit(cg, "  %%t%u = sitofp %s %s to %s  ; high bound\n",
+                 hi, Integer_Arith_Type(cg), I128_Decimal(target->high_bound.int_value), flt_type);
         } else {
             hi = Generate_Expression(cg, target->high_bound.expr);
+            hi = Emit_Convert(cg, hi, "double", flt_type);
         }
         if (not lo or not hi) return val;
 
         /* val < low? */
         uint32_t cmp_lo = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = fcmp olt double %%t%u, %%t%u\n", cmp_lo, val, lo);
+        Emit(cg, "  %%t%u = fcmp olt %s %%t%u, %%t%u\n", cmp_lo, flt_type, val, lo);
         Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp_lo, raise_label, ok_label);
         Emit(cg, "L%u:\n", ok_label);
         /* val > high? */
         uint32_t cmp_hi = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = fcmp ogt double %%t%u, %%t%u\n", cmp_hi, val, hi);
+        Emit(cg, "  %%t%u = fcmp ogt %s %%t%u, %%t%u\n", cmp_hi, flt_type, val, hi);
         Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp_hi, raise_label, cont_label);
     } else {
         /* Integer/enum/char/fixed path — all compare as i64.
@@ -21887,8 +21916,9 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
     if (ty and Type_Is_Scalar(ty)) {
         Type_Info *src_type_info = node->assignment.value->type;
         if (Type_Is_Float(ty)) {
-            uint32_t fval = Emit_Convert(cg, value, type_str, "double");
-            Emit_Constraint_Check(cg, fval, ty, src_type_info);
+            /* Pass value at its native float type — Emit_Constraint_Check
+             * handles conversion to target precision internally. */
+            Emit_Constraint_Check(cg, value, ty, src_type_info);
         } else {
             uint32_t checked = Emit_Convert(cg, value, type_str, Integer_Arith_Type(cg));
             Emit_Constraint_Check(cg, checked, ty, src_type_info);
@@ -23549,8 +23579,9 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 if (ty and Type_Is_Scalar(ty)) {
                     Type_Info *init_src_type = node->object_decl.init->type;
                     if (Type_Is_Float(ty)) {
-                        uint32_t fval = Emit_Convert(cg, init, type_str, "double");
-                        Emit_Constraint_Check(cg, fval, ty, init_src_type);
+                        /* Pass value at its native float type — Emit_Constraint_Check
+                         * handles conversion to target precision internally. */
+                        Emit_Constraint_Check(cg, init, ty, init_src_type);
                     } else {
                         uint32_t checked = Emit_Convert(cg, init, type_str, Integer_Arith_Type(cg));
                         Emit_Constraint_Check(cg, checked, ty, init_src_type);
