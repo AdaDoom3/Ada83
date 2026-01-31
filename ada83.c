@@ -15650,7 +15650,8 @@ static uint32_t Emit_Bound_Value(Code_Generator *cg, Type_Bound *bound) {
  *   Float, fixed, universal_real    → fcmp olt/ogt on double
  *
  * GNAT does this in Checks.Apply_Scalar_Range_Check. */
-static uint32_t Emit_Constraint_Check(Code_Generator *cg, uint32_t val, Type_Info *target) {
+static uint32_t Emit_Constraint_Check(Code_Generator *cg, uint32_t val,
+                                       Type_Info *target, Type_Info *source) {
     if (not target) return val;
 
     /* GNAT-style: respect pragma Suppress(Range_Check) on the target type */
@@ -15761,12 +15762,31 @@ static uint32_t Emit_Constraint_Check(Code_Generator *cg, uint32_t val, Type_Inf
         }
         if (not lo or not hi) return val;
 
-        /* val < low? — GNAT LLVM: compare at native Integer type width.
+        /* val < low? — GNAT LLVM: compare at wider of source/target type width.
          * Modular (unsigned) types use unsigned predicates (RM 3.5.4). */
-        const char *chk_type = Integer_Arith_Type(cg);
+        const char *target_llvm = Type_To_Llvm(target);
+        const char *source_llvm = source ? Type_To_Llvm(source) : Integer_Arith_Type(cg);
+        const char *chk_type;
+        if (target_llvm[0] == 'i' and source_llvm[0] == 'i') {
+            chk_type = Wider_Int_Type(cg, target_llvm, source_llvm);
+        } else {
+            chk_type = Integer_Arith_Type(cg);
+        }
         bool chk_unsigned = Type_Is_Unsigned(target);
         const char *lt_pred = chk_unsigned ? "ult" : "slt";
         const char *gt_pred = chk_unsigned ? "ugt" : "sgt";
+        /* Convert val and bounds to the check width if needed */
+        const char *val_type = source_llvm;
+        const char *bound_type = Integer_Arith_Type(cg);  /* Emit_Bound_Value emits at iat */
+        if (chk_unsigned) {
+            val = Emit_Convert_Ext(cg, val, val_type, chk_type, true);
+            lo  = Emit_Convert_Ext(cg, lo, bound_type, chk_type, true);
+            hi  = Emit_Convert_Ext(cg, hi, bound_type, chk_type, true);
+        } else {
+            val = Emit_Convert(cg, val, val_type, chk_type);
+            lo  = Emit_Convert(cg, lo, bound_type, chk_type);
+            hi  = Emit_Convert(cg, hi, bound_type, chk_type);
+        }
         uint32_t cmp_lo = Emit_Temp(cg);
         Emit(cg, "  %%t%u = icmp %s %s %%t%u, %%t%u\n", cmp_lo, lt_pred, chk_type, val, lo);
         Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp_lo, raise_label, ok_label);
@@ -17781,12 +17801,17 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                     }
                 } else {
                     /* Integer ** Integer: use integer power function.
-                     * __ada_integer_pow takes INTEGER width — widen native types. */
+                     * Signed types use overflow-checked __ada_integer_pow.
+                     * Modular types use wrapping __ada_modular_pow (RM 3.5.4). */
                     const char *iat = Integer_Arith_Type(cg);
                     left = Emit_Convert(cg, left, left_int_type, iat);
                     right = Emit_Convert(cg, right, right_int_type, iat);
-                    Emit(cg, "  %%t%u = call %s @__ada_integer_pow(%s %%t%u, %s %%t%u)\n",
-                         t, iat, iat, left, iat, right);
+                    bool pow_unsigned = Type_Is_Unsigned(result_type);
+                    bool pow_suppressed = Check_Is_Suppressed(result_type, NULL, CHK_OVERFLOW);
+                    const char *pow_fn = (pow_unsigned || pow_suppressed)
+                        ? "__ada_modular_pow" : "__ada_integer_pow";
+                    Emit(cg, "  %%t%u = call %s @%s(%s %%t%u, %s %%t%u)\n",
+                         t, iat, pow_fn, iat, left, iat, right);
                 }
                 return t;
             }
@@ -18722,7 +18747,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                         const char *ld_ty = Type_To_Llvm(formal_type);
                         uint32_t cur_val = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", cur_val, ld_ty, args[i]);
-                        Emit_Constraint_Check(cg, cur_val, formal_type);
+                        Emit_Constraint_Check(cg, cur_val, formal_type, arg->type);
                     }
                 } else {
                     args[i] = Generate_Composite_Address(cg, arg);
@@ -18731,7 +18756,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                         const char *ld_ty = Type_To_Llvm(formal_type);
                         uint32_t cur_val = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", cur_val, ld_ty, args[i]);
-                        Emit_Constraint_Check(cg, cur_val, formal_type);
+                        Emit_Constraint_Check(cg, cur_val, formal_type, arg->type);
                     }
                 }
             } else {
@@ -18741,7 +18766,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                     sym->parameters[param_idx].param_type) {
                     Type_Info *formal_type = sym->parameters[param_idx].param_type;
                     Type_Info *actual_type = arg->type;
-                    args[i] = Emit_Constraint_Check(cg, args[i], formal_type);
+                    args[i] = Emit_Constraint_Check(cg, args[i], formal_type, actual_type);
                     /* Constrained array → unconstrained formal: build fat pointer (RM 6.4.1)
                      * When passing a constrained array to an unconstrained formal, we must
                      * create a fat pointer with the constrained type's bounds. */
@@ -18831,7 +18856,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             const char *ld_ty = Type_To_Llvm(actual_type);
             uint32_t ret_val = Emit_Temp(cg);
             Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; OUT/INOUT result\n", ret_val, ld_ty, args[i]);
-            Emit_Constraint_Check(cg, ret_val, actual_type);
+            Emit_Constraint_Check(cg, ret_val, actual_type, NULL);
         }
 
         /* Widen return value to INTEGER width for computation.
@@ -21860,12 +21885,13 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
      * within the target subtype's range.  Only applies to scalar types;
      * arrays/records use length or discriminant checks (RM 4.6, 5.2.1). */
     if (ty and Type_Is_Scalar(ty)) {
+        Type_Info *src_type_info = node->assignment.value->type;
         if (Type_Is_Float(ty)) {
             uint32_t fval = Emit_Convert(cg, value, type_str, "double");
-            Emit_Constraint_Check(cg, fval, ty);
+            Emit_Constraint_Check(cg, fval, ty, src_type_info);
         } else {
             uint32_t checked = Emit_Convert(cg, value, type_str, Integer_Arith_Type(cg));
-            Emit_Constraint_Check(cg, checked, ty);
+            Emit_Constraint_Check(cg, checked, ty, src_type_info);
         }
     }
 
@@ -23521,12 +23547,13 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                  * Only for scalar types; composite constraints are checked
                  * via length/discriminant matching elsewhere. */
                 if (ty and Type_Is_Scalar(ty)) {
+                    Type_Info *init_src_type = node->object_decl.init->type;
                     if (Type_Is_Float(ty)) {
                         uint32_t fval = Emit_Convert(cg, init, type_str, "double");
-                        Emit_Constraint_Check(cg, fval, ty);
+                        Emit_Constraint_Check(cg, fval, ty, init_src_type);
                     } else {
                         uint32_t checked = Emit_Convert(cg, init, type_str, Integer_Arith_Type(cg));
-                        Emit_Constraint_Check(cg, checked, ty);
+                        Emit_Constraint_Check(cg, checked, ty, init_src_type);
                     }
                 }
 
@@ -25098,8 +25125,10 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "  ret double %%result\n");
     Emit(cg, "}\n\n");
 
-    /* Integer power function (base ** exponent for integer operands) */
-    Emit(cg, "; Integer exponentiation helper\n");
+    /* Integer power function — signed, overflow-checked (RM 4.5.6).
+     * Uses llvm.smul.with.overflow.i64 to detect intermediate overflow.
+     * Raises Constraint_Error via __ada_raise on overflow. */
+    Emit(cg, "; Integer exponentiation helper (signed, overflow-checked)\n");
     Emit(cg, "define linkonce_odr i64 @__ada_integer_pow(i64 %%base, i64 %%exp) {\n");
     Emit(cg, "entry:\n");
     Emit(cg, "  %%is_neg = icmp slt i64 %%exp, 0\n");
@@ -25114,6 +25143,34 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "loop:\n");
     Emit(cg, "  %%result = phi i64 [ 1, %%pos_exp ], [ %%new_result, %%loop ]\n");
     Emit(cg, "  %%i = phi i64 [ 0, %%pos_exp ], [ %%next_i, %%loop ]\n");
+    Emit(cg, "  %%pair = call {i64, i1} @llvm.smul.with.overflow.i64(i64 %%result, i64 %%base)\n");
+    Emit(cg, "  %%new_result = extractvalue {i64, i1} %%pair, 0\n");
+    Emit(cg, "  %%ovf = extractvalue {i64, i1} %%pair, 1\n");
+    Emit(cg, "  br i1 %%ovf, label %%overflow, label %%cont\n");
+    Emit(cg, "overflow:\n");
+    Emit(cg, "  %%exc_ptr = ptrtoint ptr @__exc.constraint_error to i64\n");
+    Emit(cg, "  call void @__ada_raise(i64 %%exc_ptr)\n");
+    Emit(cg, "  unreachable\n");
+    Emit(cg, "cont:\n");
+    Emit(cg, "  %%next_i = add i64 %%i, 1\n");
+    Emit(cg, "  %%done = icmp eq i64 %%next_i, %%exp\n");
+    Emit(cg, "  br i1 %%done, label %%exit, label %%loop\n");
+    Emit(cg, "exit:\n");
+    Emit(cg, "  ret i64 %%new_result\n");
+    Emit(cg, "}\n\n");
+
+    /* Modular power function — unsigned, wrapping (RM 3.5.4).
+     * No overflow check: modular types wrap by definition. */
+    Emit(cg, "; Modular exponentiation helper (unsigned, wrapping)\n");
+    Emit(cg, "define linkonce_odr i64 @__ada_modular_pow(i64 %%base, i64 %%exp) {\n");
+    Emit(cg, "entry:\n");
+    Emit(cg, "  %%is_zero = icmp eq i64 %%exp, 0\n");
+    Emit(cg, "  br i1 %%is_zero, label %%ret_one, label %%loop\n");
+    Emit(cg, "ret_one:\n");
+    Emit(cg, "  ret i64 1\n");
+    Emit(cg, "loop:\n");
+    Emit(cg, "  %%result = phi i64 [ 1, %%entry ], [ %%new_result, %%loop ]\n");
+    Emit(cg, "  %%i = phi i64 [ 0, %%entry ], [ %%next_i, %%loop ]\n");
     Emit(cg, "  %%new_result = mul i64 %%result, %%base\n");
     Emit(cg, "  %%next_i = add i64 %%i, 1\n");
     Emit(cg, "  %%done = icmp eq i64 %%next_i, %%exp\n");
