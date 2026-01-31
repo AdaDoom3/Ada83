@@ -16130,18 +16130,6 @@ static void Emit_Fat_Pointer_Copy_To_Name(Code_Generator *cg, uint32_t fat_ptr,
     Emit(cg, ", ptr %%t%u, i64 %%t%u, i1 false)\n", src_ptr, len64);
 }
 
-/* Copy data from fat pointer to a temp pointer destination.
- * Emits: memcpy(dst_ptr, src_data, length).  bt = bound type. */
-__attribute__((unused))
-static void Emit_Fat_Pointer_Copy_To_Ptr(Code_Generator *cg, uint32_t fat_ptr,
-                                           uint32_t dst_ptr, const char *bt) {
-    uint32_t src_ptr = Emit_Fat_Pointer_Data(cg, fat_ptr, bt);
-    uint32_t len = Emit_Fat_Pointer_Length(cg, fat_ptr, bt);
-    uint32_t len64 = Emit_Widen_For_Intrinsic(cg, len, bt);
-    Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
-         dst_ptr, src_ptr, len64);
-}
-
 /* Load fat pointer from a symbol's storage.  bt = bound type (unused for load). */
 static uint32_t Emit_Load_Fat_Pointer(Code_Generator *cg, Symbol *sym,
                                        const char *bt) {
@@ -18230,9 +18218,9 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             }
 
         default:
-            fprintf(stderr, "warning: unhandled binary operator %d, defaulting to 'add'\n",
+            fprintf(stderr, "internal error: unhandled binary operator %d in codegen\n",
                     node->binary.op);
-            op = "add"; break;
+            abort();
     }
 
     if (not is_float) {
@@ -18391,9 +18379,9 @@ static uint32_t Generate_Unary_Op(Code_Generator *cg, Syntax_Node *node) {
             }
             break;
         default:
-            fprintf(stderr, "warning: unhandled unary operator %d, returning operand unchanged\n",
+            fprintf(stderr, "internal error: unhandled unary operator %d in codegen\n",
                     node->unary.op);
-            return operand;
+            abort();
     }
 
     return t;
@@ -24866,10 +24854,11 @@ static void Generate_Type_Equality_Function(Code_Generator *cg, Type_Info *t) {
             Emit(cg, "  ret i1 %%result\n");
         }
     } else {
-        /* Unknown composite type - return true */
-        fprintf(stderr, "warning: equality for unknown composite type '%.*s', assuming always equal\n",
+        /* Unknown composite type - conservatively return false (not equal).
+         * This is safer than the previous "always equal" default. */
+        fprintf(stderr, "warning: equality for unknown composite type '%.*s', assuming not equal\n",
                 (int)t->name.length, t->name.data);
-        Emit(cg, "  ret i1 1\n");
+        Emit(cg, "  ret i1 0\n");
     }
 
     Emit(cg, "}\n");
