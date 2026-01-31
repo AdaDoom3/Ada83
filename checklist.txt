@@ -1,0 +1,205 @@
+═══════════════════════════════════════════════════════════════════════════
+  REFACTORING: Remove "Widen to i64 for computation, truncate for storage"
+  Target: GNAT LLVM approach — operate at native Base_GL_Type width
+═══════════════════════════════════════════════════════════════════════════
+
+PRINCIPLE (from GNAT LLVM gnatllvm-exprs.adb:505-518):
+  Each expression operates at its Base_GL_Type width.  An i8 enum stays i8
+  through arithmetic; an i16 index stays i16.  Conversions happen ONLY at
+  explicit Ada type conversions and at LLVM intrinsic boundaries (memcpy
+  length must be i64, alloc size must be i64).
+
+CURRENT HACK (ada83.c:14404):
+  "1. Widen to i64 for computation, truncate for storage"
+  Every sub-i64 integer load is sext'd to i64, every store truncates back.
+  All literals are emitted as "add i64 0, N".  Boolean results are
+  "zext i1 to i64".  For-loop vars are always i64.
+
+──────────────────────────────────────────────────────────────────────────
+  PHASE 1: Design comment + Expression_Llvm_Type
+──────────────────────────────────────────────────────────────────────────
+[ ] Update §13 header comment (line 14404): remove principle 1, replace
+    with "Operate at native type width; convert only at Ada type
+    conversions and LLVM intrinsic boundaries"
+[ ] Expression_Llvm_Type (line 14918): stop returning Integer_Arith_Type
+    as default for all integers.  Instead return Type_To_Llvm(node->type)
+    when node->type is a discrete/integer type.  Keep existing special
+    cases for boolean, float, access, record, fat pointer, etc.
+
+──────────────────────────────────────────────────────────────────────────
+  PHASE 2: Remove sext widen-on-load (SYMBOL_VARIABLE/PARAMETER)
+──────────────────────────────────────────────────────────────────────────
+[ ] Generate_Identifier case SYMBOL_VARIABLE/SYMBOL_PARAMETER (line 15982-15992):
+    Remove the block that sext's sub-INTEGER loads to INTEGER width.
+    The load already uses Type_To_Llvm(ty) — that IS the native type.
+
+──────────────────────────────────────────────────────────────────────────
+  PHASE 3: Remove sext widen-on-load (SYMBOL_CONSTANT, SYMBOL_FUNCTION ret)
+──────────────────────────────────────────────────────────────────────────
+[ ] SYMBOL_CONSTANT typed constant load (line 16041-16050):
+    Remove sext widen block.
+[ ] SYMBOL_FUNCTION parameterless call return (line 16108-16120):
+    Remove sext widen block.
+
+──────────────────────────────────────────────────────────────────────────
+  PHASE 4: Fix hardcoded "add i64 0," literals
+──────────────────────────────────────────────────────────────────────────
+Lines using "add i64 0, N" that should use the expression's native type:
+
+[ ] Generate_Integer_Literal (15889): use Integer_Arith_Type(cg)
+    instead of hardcoded "i64"
+[ ] Generate_Identifier/SYMBOL_LITERAL enum pos (16007): use
+    Type_To_Llvm(sym->type) for enum storage type
+[ ] Generate_Identifier/SYMBOL_LITERAL boolean (16011): use "i8" or
+    Type_To_Llvm for BOOLEAN type
+[ ] Generate_Identifier/SYMBOL_LITERAL character (16014): use "i8"
+[ ] Named number fallback (16033): use Integer_Arith_Type(cg)
+[ ] Unknown literal fallback (16053): already uses Integer_Arith_Type ✓
+[ ] Enum literal as function (16084): use Type_To_Llvm(actual->type)
+[ ] Unhandled symbol kind (16129): use Integer_Arith_Type(cg)
+[ ] Generate_Bound_Value integer (15866): use Integer_Arith_Type(cg)
+[ ] Generate_Bound_Value float->int (15870): use Integer_Arith_Type(cg)
+[ ] Generate_Bound_Value const expr (15877): use Integer_Arith_Type(cg)
+[ ] Generate_Bound_Value unknown (15883): use Integer_Arith_Type(cg)
+[ ] Attribute codegen: FIRST/LAST (18655/18699): use Integer_Arith_Type
+[ ] Attribute codegen: LENGTH (18769): use Integer_Arith_Type
+[ ] Attribute codegen: SIZE/ALIGNMENT/COMPONENT_SIZE (18807-18826): use iat
+[ ] Attribute codegen: ADDRESS (18884): use Integer_Arith_Type
+[ ] Attribute codegen: 'MOD (19025): use Integer_Arith_Type
+[ ] Attribute codegen: 'WIDTH (19277): use Integer_Arith_Type
+[ ] Attribute codegen: 'DIGITS/'MANTISSA/'EMAX etc (19417-19669): use iat
+[ ] Attribute codegen: 'FORE/'AFT (19595-19609): use Integer_Arith_Type
+[ ] Attribute codegen: 'MACHINE_* (19621-19669): use Integer_Arith_Type
+[ ] Attribute codegen: 'CONSTRAINED/'CALLABLE/'TERMINATED (19698-19712): iat
+[ ] Attribute codegen: 'STORAGE_SIZE (19719): use Integer_Arith_Type
+[ ] Unhandled attribute fallback (19727): use Integer_Arith_Type
+[ ] Case alternative bounds (21222-21228): use selector type or iat
+[ ] For loop static bounds (21340-21398): use Integer_Arith_Type
+[ ] Allocator size (20377/20388): use Integer_Arith_Type
+[ ] Fixed-point literal (22525): use Integer_Arith_Type
+[ ] Array init bounds (22583-22595): use Integer_Arith_Type
+[ ] Entry index (18177, 21694, 21853, 21962): use Integer_Arith_Type
+[ ] Character value in aggregate (20546): use "i8" or iat
+[ ] Various range/loop bound emissions (21331-21332 already widen from
+    loop_bt — review if still needed)
+
+──────────────────────────────────────────────────────────────────────────
+  PHASE 5: Fix boolean widenings (zext i1 to i64)
+──────────────────────────────────────────────────────────────────────────
+GNAT LLVM: Boolean is i8 (Standard.Boolean -> 8 bits).  Comparisons
+return i1 and get zext'd to i8 (the storage type), not i64.
+
+[ ] Composite eq/ne result (16617): zext i1 to iat instead of i64
+[ ] Array relational result (16777): zext i1 to iat
+[ ] AND THEN result (16817): zext i1 to iat
+[ ] OR ELSE result (16854): zext i1 to iat
+[ ] Boolean AND result (17182): zext i1 to iat
+[ ] Boolean OR result (17195): zext i1 to iat
+[ ] Boolean XOR result (17207): zext i1 to iat
+[ ] Scalar comparison result (17424): zext i1 to iat
+[ ] Membership test result (17535): zext i1 to iat
+[ ] NOT result (17589): zext i1 to iat
+
+──────────────────────────────────────────────────────────────────────────
+  PHASE 6: For-loop codegen
+──────────────────────────────────────────────────────────────────────────
+FOR loops currently use hardcoded i64 for the loop variable.  GNAT LLVM
+uses the actual discrete type of the iteration range.
+
+[ ] alloca for loop var (21307): use Integer_Arith_Type(cg) or derive
+    from the range type
+[ ] store initial value (21409): use iat
+[ ] load loop var (21420): use iat
+[ ] icmp condition (21427-21429): use iat
+[ ] add/sub increment (21441-21443): use iat
+[ ] store next value (21445): use iat
+
+──────────────────────────────────────────────────────────────────────────
+  PHASE 7: Case statement codegen
+──────────────────────────────────────────────────────────────────────────
+[ ] case range checks (21195-21196): use iat instead of i64
+[ ] case subtype range checks (21234-21235): use iat
+[ ] case single value check (21251): use iat
+
+──────────────────────────────────────────────────────────────────────────
+  PHASE 8: Emit_Widen_To_I64 call-site audit
+──────────────────────────────────────────────────────────────────────────
+These calls widen a native-type value to i64 for LLVM intrinsic args
+(memcpy length, alloc size).  These are LEGITIMATE and should stay,
+but should be renamed to Emit_Widen_For_Intrinsic for clarity.
+
+LEGITIMATE (keep):
+  - Fat pointer copy memcpy length (15375, 15388)
+  - Array equality memcpy byte size (16299)
+  - Slice comparison memcpy byte size (16536)
+  - Array relational memcpy byte size (16731)
+  - Concatenation sec_stack_alloc + memcpy lengths (16947-16949)
+  - Uncon assign memcpy (17747, 17793-17795, 20982)
+  - Array element addr dynamic low (15829, 17915, 18277, 18314)
+  - Allocator size (20404, 20471-20472)
+  - Array init memcpy (22435, 22656)
+  - RTS functions (24211-24212, 24650, 24716, 24744-24745, 24771-24772)
+
+ILLEGITIMATE (remove — these are widen-for-computation):
+  - Composite_Address string index (16432): should compute in bt
+  - For loop bounds from RANGE (21331-21332): loop should use bt
+  - Attribute FIRST/LAST result (18650): should return bt
+  - Attribute LENGTH result (18764): should return bt or iat
+  - Attribute RANGE low (18789): should return in bt
+  - IMAGE string length (19159): should use bt
+
+──────────────────────────────────────────────────────────────────────────
+  PHASE 9: Generate_Bound_Value + Generate_Integer_Literal
+──────────────────────────────────────────────────────────────────────────
+[ ] Generate_Bound_Value: emit constants as Integer_Arith_Type(cg)
+[ ] Generate_Integer_Literal: use Integer_Arith_Type(cg)
+
+──────────────────────────────────────────────────────────────────────────
+  PHASE 10: Attribute codegen
+──────────────────────────────────────────────────────────────────────────
+[ ] All "add i64 0, N" in attribute handlers -> Integer_Arith_Type(cg)
+[ ] Attribute FIRST/LAST dynamic: return in native bt, not widened
+[ ] Attribute LENGTH dynamic: return in native bt
+[ ] Attribute RANGE dynamic: return in native bt
+
+──────────────────────────────────────────────────────────────────────────
+  PHASE 11: Assignment codegen
+──────────────────────────────────────────────────────────────────────────
+[ ] "sitofp i64" (21033): use Expression_Llvm_Type for src
+[ ] "fptosi double to i64" patterns: use target type_str directly
+[ ] Constraint check widen (21060): already uses Emit_Convert — verify
+
+──────────────────────────────────────────────────────────────────────────
+  PHASE 12: Allocator codegen
+──────────────────────────────────────────────────────────────────────────
+[ ] Audit all "add i64 0, N" in allocator path (20377, 20388)
+[ ] Convert to use Integer_Arith_Type then widen for malloc
+
+──────────────────────────────────────────────────────────────────────────
+  PHASE 13: Object declaration init
+──────────────────────────────────────────────────────────────────────────
+[ ] Audit fixed-point init "add i64 0," (22525)
+[ ] Array init bounds "add i64 0," (22583-22595)
+
+──────────────────────────────────────────────────────────────────────────
+  PHASE 14: Remaining scattered sites
+──────────────────────────────────────────────────────────────────────────
+[ ] Character literals in aggregates (20546): use "i8"
+[ ] Exception identity ptrtoint (21478-21480): i64 is legit for ptr
+[ ] Entry indices (18177, 21694, 21853, 21962): use iat
+[ ] RTS functions: keep i64 for ABI boundaries, rename widen helpers
+
+──────────────────────────────────────────────────────────────────────────
+  PHASE 15: Cleanup
+──────────────────────────────────────────────────────────────────────────
+[ ] Rename Emit_Widen_To_I64 -> Emit_Widen_For_Intrinsic (or similar)
+[ ] Rename Emit_Narrow_From_I64 -> Emit_Narrow_From_Intrinsic
+[ ] Rename Emit_Widen_Named_To_I64 -> Emit_Widen_Named_For_Intrinsic
+[ ] Rename Emit_Narrow_Named_From_I64 -> Emit_Narrow_Named_For_Intrinsic
+[ ] Update all doc comments referencing "i64" to say "intrinsic width"
+[ ] Final grep for remaining hardcoded "i64" — should only appear in:
+    - LLVM intrinsic calls (memcpy, memset, llvm.*)
+    - GEP byte offsets (i64 is LLVM's default GEP index)
+    - __ada_sec_stack_alloc / malloc (ABI: i64 size_t)
+    - ptrtoint/inttoptr for address operations
+    - Fat pointer field indices (i32 0, i32 1 — these are i32, not i64)
