@@ -5933,6 +5933,49 @@ static inline const char *Float_Llvm_Type_Of(const Type_Info *t) {
         return Llvm_Float_Type((uint32_t)To_Bits(t->size));
     return "double";  /* UNIVERSAL_REAL / unknown → 64-bit */
 }
+/* ─────────────────────────────────────────────────────────────────────────
+ * IEEE 754 Named Constants — replaces magic numbers throughout codegen.
+ * Single source of truth for float/double structural parameters.
+ * ───────────────────────────────────────────────────────────────────────── */
+#define IEEE_FLOAT_DIGITS       6
+#define IEEE_DOUBLE_DIGITS      15
+#define IEEE_FLOAT_MANTISSA     24
+#define IEEE_DOUBLE_MANTISSA    53
+#define IEEE_FLOAT_EMAX         128
+#define IEEE_DOUBLE_EMAX        1024
+#define IEEE_FLOAT_EMIN         (-125)
+#define IEEE_DOUBLE_EMIN        (-1021)
+#define IEEE_MACHINE_RADIX      2
+#define IEEE_DOUBLE_MIN_NORMAL  2.2250738585072014e-308   /* 2^(-1022) */
+#define IEEE_FLOAT_MIN_NORMAL   1.1754943508222875e-38    /* 2^(-126)  */
+#define LOG2_OF_10              3.321928094887362
+
+/* Check whether a float type maps to IEEE single precision.
+ * Replaces the ad-hoc `type->size <= 4` test scattered across 13+ sites. */
+static inline bool Float_Is_Single(const Type_Info *t) {
+    return strcmp(Float_Llvm_Type_Of(t), "float") == 0;
+}
+
+/* Resolve effective DIGITS for a float type: uses declared digits if > 0,
+ * else defaults from IEEE precision.  Replaces 5 copy-pasted blocks. */
+static inline int Float_Effective_Digits(const Type_Info *t) {
+    if (t and t->flt.digits > 0) return t->flt.digits;
+    return Float_Is_Single(t) ? IEEE_FLOAT_DIGITS : IEEE_DOUBLE_DIGITS;
+}
+
+/* Compute model parameters for a floating-point type (RM 3.5.8).
+ * mantissa = ceil(DIGITS * log2(10)) + 1
+ * emax     = 4 * mantissa
+ * Used by MANTISSA, EMAX, EPSILON, SMALL, LARGE attributes. */
+static inline void Float_Model_Parameters(const Type_Info *t,
+                                           int64_t *out_mantissa, int64_t *out_emax) {
+    int digits = Float_Effective_Digits(t);
+    int64_t mantissa = (int64_t)ceil(digits * LOG2_OF_10) + 1;
+    int64_t emax = 4 * mantissa;
+    if (out_mantissa) *out_mantissa = mantissa;
+    if (out_emax)     *out_emax = emax;
+}
+
 static inline bool Type_Is_Private(const Type_Info *t) {
     return t and (t->kind == TYPE_PRIVATE or t->kind == TYPE_LIMITED_PRIVATE);
 }
@@ -14934,6 +14977,24 @@ static void Emit_Branch_If_Needed(Code_Generator *cg, uint32_t label) {
     }
 }
 
+/* Emit a floating-point constant at the correct precision for the given
+ * LLVM float type.  For "float" emits bitcast i32; for "double" emits
+ * fadd double 0.0, 0x<hex>.  Replaces scattered hardcoded "fadd double" emissions. */
+static void Emit_Float_Constant(Code_Generator *cg, uint32_t t,
+                                 const char *fty, double value, const char *comment) {
+    if (strcmp(fty, "float") == 0) {
+        float fv = (float)value;
+        uint32_t fb;
+        memcpy(&fb, &fv, sizeof(fb));
+        Emit(cg, "  %%t%u = bitcast i32 %u to float  ; %s\n", t, fb, comment);
+    } else {
+        uint64_t bits;
+        memcpy(&bits, &value, sizeof(bits));
+        Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; %s\n",
+             t, (unsigned long long)bits, comment);
+    }
+}
+
 /* Check if symbol is package-level (global storage with @ prefix in LLVM).
  * A symbol is global only if it's at package level AND no ancestor is a subprogram.
  * This handles nested packages inside subprogram bodies correctly. */
@@ -15734,7 +15795,8 @@ static uint32_t Emit_Constraint_Check(Code_Generator *cg, uint32_t val,
                  lo, Integer_Arith_Type(cg), I128_Decimal(target->low_bound.int_value), flt_type);
         } else {
             lo = Generate_Expression(cg, target->low_bound.expr);
-            lo = Emit_Convert(cg, lo, "double", flt_type);
+            const char *lo_expr_ty = Expression_Llvm_Type(cg, target->low_bound.expr);
+            lo = Emit_Convert(cg, lo, lo_expr_ty, flt_type);
         }
         if (target->high_bound.kind == BOUND_FLOAT) {
             uint64_t bits; double v = target->high_bound.float_value;
@@ -15755,7 +15817,8 @@ static uint32_t Emit_Constraint_Check(Code_Generator *cg, uint32_t val,
                  hi, Integer_Arith_Type(cg), I128_Decimal(target->high_bound.int_value), flt_type);
         } else {
             hi = Generate_Expression(cg, target->high_bound.expr);
-            hi = Emit_Convert(cg, hi, "double", flt_type);
+            const char *hi_expr_ty = Expression_Llvm_Type(cg, target->high_bound.expr);
+            hi = Emit_Convert(cg, hi, hi_expr_ty, flt_type);
         }
         if (not lo or not hi) return val;
 
@@ -19412,16 +19475,24 @@ static bool Type_Bound_Is_Set(Type_Bound b) {
  * LLVM requires 64-bit double hex format for float constants. */
 static void Emit_Float_Type_Limit(Code_Generator *cg, uint32_t t, Type_Info *type,
                                    bool is_low, String_Slice attr) {
-    /* {float_min, float_max, double_min, double_max} in LLVM hex */
-    static const char *hex[] = {
-        "0xC7EFFFFFE0000000", "0x47EFFFFFE0000000",
-        "0xFFEFFFFFFFFFFFFF", "0x7FEFFFFFFFFFFFFF"
-    };
-    bool is_float = type and type->size <= 4;
-    const char *val = hex[(not is_float) * 2 + not is_low];
-    Emit(cg, "  %%t%u = fadd %s 0.0, %s  ; %.*s'%s (unconstrained)\n",
-         t, is_float ? "float" : "double", val,
-         (int)attr.length, attr.data, is_low ? "FIRST" : "LAST");
+    const char *fty = Float_Llvm_Type_Of(type);
+    bool is_single = (strcmp(fty, "float") == 0);
+    if (is_single) {
+        /* Single-precision: emit via bitcast i32 → float */
+        /* -FLT_MAX = 0xFF7FFFFF, +FLT_MAX = 0x7F7FFFFF */
+        uint32_t hex = is_low ? 0xFF7FFFFFu : 0x7F7FFFFFu;
+        Emit(cg, "  %%t%u = bitcast i32 %u to float  ; %.*s'%s (unconstrained)\n",
+             t, hex, (int)attr.length, attr.data, is_low ? "FIRST" : "LAST");
+    } else {
+        /* Double-precision: emit via fadd double 0.0, 0x<hex> */
+        static const char *dbl_hex[] = {
+            "0xFFEFFFFFFFFFFFFF",  /* -DBL_MAX */
+            "0x7FEFFFFFFFFFFFFF"   /* +DBL_MAX */
+        };
+        Emit(cg, "  %%t%u = fadd double 0.0, %s  ; %.*s'%s (unconstrained)\n",
+             t, dbl_hex[not is_low],
+             (int)attr.length, attr.data, is_low ? "FIRST" : "LAST");
+    }
 }
 
 /* Get dimension index from attribute argument (1-based, default 1) */
@@ -20218,34 +20289,21 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
      * ───────────────────────────────────────────────────────────────────── */
 
     if (Slice_Equal_Ignore_Case(attr, S("DIGITS"))) {
-        /* T'DIGITS - number of significant decimal digits (RM 3.5.7)
-         * Returns the declared DIGITS value, not the machine precision. */
-        int64_t digits = 15;  /* Default for double precision */
-        if (Type_Is_Float(prefix_type)) {
-            if (prefix_type->flt.digits > 0) {
-                digits = prefix_type->flt.digits;
-            } else if (prefix_type->size <= 4) {
-                digits = 6;  /* Single precision float */
-            }
-        }
+        /* T'DIGITS - number of significant decimal digits (RM 3.5.7) */
+        int64_t digits = Type_Is_Float(prefix_type)
+            ? Float_Effective_Digits(prefix_type)
+            : IEEE_DOUBLE_DIGITS;
         Emit(cg, "  %%t%u = add %s 0, %lld  ; 'DIGITS\n", t, Integer_Arith_Type(cg), (long long)digits);
         return t;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("MANTISSA"))) {
         /* T'MANTISSA - number of binary digits (RM 3.5.8, 3.5.10)
-         * For floating-point: ceiling(D * log(10)/log(2)) + 1 where D is DIGITS
+         * For floating-point: ceiling(D * log(10)/log(2)) + 1
          * For fixed-point: ceiling(log2(bound / small)) */
-        int64_t mantissa = 52;  /* Default for IEEE double precision */
+        int64_t mantissa = IEEE_DOUBLE_MANTISSA - 1;  /* Default for double */
         if (Type_Is_Float(prefix_type)) {
-            /* Floating-point mantissa from DIGITS */
-            int digits = prefix_type->flt.digits;
-            if (digits <= 0) {
-                /* Default based on size */
-                digits = (prefix_type->size <= 4) ? 6 : 15;
-            }
-            /* Formula: ceiling(D * log(10)/log(2)) + 1 */
-            mantissa = (int64_t)ceil(digits * 3.321928094887362) + 1;
+            Float_Model_Parameters(prefix_type, &mantissa, NULL);
         } else if (Type_Is_Fixed_Point(prefix_type)) {
             double small = prefix_type->fixed.small;
             double low_val = Type_Bound_Float_Value(prefix_type->low_bound);
@@ -20264,12 +20322,9 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     if (Slice_Equal_Ignore_Case(attr, S("EMAX"))) {
         /* T'EMAX - maximum binary exponent (RM 3.5.8)
          * For model numbers: EMAX = 4 * MANTISSA */
-        int64_t emax = 1023;  /* Default for IEEE double precision */
+        int64_t emax = IEEE_DOUBLE_EMAX - 1;  /* Default for double */
         if (Type_Is_Float(prefix_type)) {
-            int digits = prefix_type->flt.digits;
-            if (digits <= 0) digits = (prefix_type->size <= 4) ? 6 : 15;
-            int64_t mantissa = (int64_t)ceil(digits * 3.321928094887362) + 1;
-            emax = 4 * mantissa;  /* RM 3.5.8(8) */
+            Float_Model_Parameters(prefix_type, NULL, &emax);
         }
         Emit(cg, "  %%t%u = add %s 0, %lld  ; 'EMAX\n", t, Integer_Arith_Type(cg), (long long)emax);
         return t;
@@ -20277,58 +20332,50 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
 
     if (Slice_Equal_Ignore_Case(attr, S("SAFE_EMAX"))) {
         /* T'SAFE_EMAX - safe maximum exponent (RM 3.5.8)
-         * The largest exponent such that all model numbers are safe.
-         * For IEEE: MACHINE_EMAX - 1 = 1023 for double, 127 for float */
-        int64_t safe_emax = 1023;  /* IEEE double: 1024 - 1 */
-        if (Type_Is_Float(prefix_type) and prefix_type->size <= 4) {
-            safe_emax = 127;  /* IEEE float: 128 - 1 */
-        }
+         * For IEEE: MACHINE_EMAX - 1 */
+        bool single = Type_Is_Float(prefix_type) and Float_Is_Single(prefix_type);
+        int64_t safe_emax = single ? (IEEE_FLOAT_EMAX - 1) : (IEEE_DOUBLE_EMAX - 1);
         Emit(cg, "  %%t%u = add %s 0, %lld  ; 'SAFE_EMAX\n", t, Integer_Arith_Type(cg), (long long)safe_emax);
         return t;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("EPSILON"))) {
         /* T'EPSILON - model epsilon (RM 3.5.8(9))
-         * For model numbers: EPSILON = 2^(1 - MANTISSA) */
-        double epsilon = 2.220446049250313e-16;  /* Default 2^-52 */
-        if (Type_Is_Float(prefix_type)) {
-            int digits = prefix_type->flt.digits;
-            if (digits <= 0) digits = (prefix_type->size <= 4) ? 6 : 15;
-            int64_t mantissa = (int64_t)ceil(digits * 3.321928094887362) + 1;
-            epsilon = pow(2.0, 1 - mantissa);
-        }
-        uint64_t bits;
-        memcpy(&bits, &epsilon, sizeof(bits));
-        Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; 'EPSILON\n", t, (unsigned long long)bits);
+         * EPSILON = 2^(1 - MANTISSA) */
+        int64_t mantissa = IEEE_DOUBLE_MANTISSA - 1;
+        if (Type_Is_Float(prefix_type))
+            Float_Model_Parameters(prefix_type, &mantissa, NULL);
+        double epsilon = pow(2.0, 1 - mantissa);
+        const char *fty = Type_Is_Float(prefix_type) ? Float_Llvm_Type_Of(prefix_type) : "double";
+        Emit_Float_Constant(cg, t, fty, epsilon, "'EPSILON");
         return t;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("SMALL"))) {
-        /* T'SMALL - for fixed-point: implementation-defined power of 2 <= delta
-         * For float: 2^(-EMAX - 1) = 2^(-(EMAX+1)) - smallest positive model number
-         * Per test c34003a: T'SMALL /= 2.0 ** (-T'EMAX - 1) */
-        double small_val = 2.2250738585072014e-308;  /* Default 2^-1022 */
+        /* T'SMALL - fixed-point: power of 2 <= delta; float: 2^(-EMAX - 1) */
+        double small_val;
+        const char *fty = "double";
         if (Type_Is_Fixed_Point(prefix_type)) {
             small_val = prefix_type->fixed.small;
             if (small_val <= 0) small_val = prefix_type->fixed.delta;
             if (small_val <= 0) small_val = 1.0;
         } else if (Type_Is_Float(prefix_type)) {
-            int digits = prefix_type->flt.digits;
-            if (digits <= 0) digits = (prefix_type->size <= 4) ? 6 : 15;
-            int64_t mantissa = (int64_t)ceil(digits * 3.321928094887362) + 1;
-            int64_t emax = 4 * mantissa;
-            small_val = pow(2.0, -(emax + 1));  /* 2^(-EMAX - 1) */
+            int64_t mantissa, emax;
+            Float_Model_Parameters(prefix_type, &mantissa, &emax);
+            small_val = pow(2.0, -(emax + 1));
+            fty = Float_Llvm_Type_Of(prefix_type);
+        } else {
+            small_val = pow(2.0, -(IEEE_DOUBLE_EMIN));  /* 2^-1022 */
         }
-        uint64_t bits;
-        memcpy(&bits, &small_val, sizeof(bits));
-        Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; 'SMALL\n", t, (unsigned long long)bits);
+        Emit_Float_Constant(cg, t, fty, small_val, "'SMALL");
         return t;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("LARGE"))) {
-        /* T'LARGE - for fixed-point: (2^MANTISSA - 1) * SMALL (RM 3.5.10)
-         * For float: 2^EMAX * (1 - 2^(-MANTISSA)) (RM 3.5.8(10)) */
-        double large_val = 1.7976931348623157e+308;  /* Default IEEE max */
+        /* T'LARGE - fixed-point: (2^MANTISSA - 1) * SMALL (RM 3.5.10)
+         * float: 2^EMAX * (1 - 2^(-MANTISSA)) (RM 3.5.8(10)) */
+        double large_val;
+        const char *fty = "double";
         if (Type_Is_Fixed_Point(prefix_type)) {
             double small = prefix_type->fixed.small;
             if (small <= 0) small = prefix_type->fixed.delta > 0 ? prefix_type->fixed.delta : 1.0;
@@ -20339,45 +20386,44 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
             if (mantissa < 1) mantissa = 1;
             large_val = ((double)((1LL << mantissa) - 1)) * small;
         } else if (Type_Is_Float(prefix_type)) {
-            int digits = prefix_type->flt.digits;
-            if (digits <= 0) digits = (prefix_type->size <= 4) ? 6 : 15;
-            int64_t mantissa = (int64_t)ceil(digits * 3.321928094887362) + 1;
-            int64_t emax = 4 * mantissa;
-            /* LARGE = 2^EMAX * (1 - 2^(-MANTISSA)) */
+            int64_t mantissa, emax;
+            Float_Model_Parameters(prefix_type, &mantissa, &emax);
             large_val = pow(2.0, emax) * (1.0 - pow(2.0, -mantissa));
+            fty = Float_Llvm_Type_Of(prefix_type);
+        } else {
+            large_val = __DBL_MAX__;
         }
-        uint64_t bits;
-        memcpy(&bits, &large_val, sizeof(bits));
-        Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; 'LARGE\n", t, (unsigned long long)bits);
+        Emit_Float_Constant(cg, t, fty, large_val, "'LARGE");
         return t;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("SAFE_SMALL"))) {
-        /* T'SAFE_SMALL - 2^(-SAFE_EMAX) (RM 3.5.8)
-         * The smallest positive value in the safe range.
-         * For IEEE: 2^(-1022) for double, 2^(-126) for float */
-        double safe_small = 2.2250738585072014e-308;  /* 2^-1022 for double */
-        if (Type_Is_Float(prefix_type) and prefix_type->size <= 4) {
-            safe_small = 1.1754943508222875e-38;  /* 2^-126 for float */
+        /* T'SAFE_SMALL - smallest positive safe value (RM 3.5.8)
+         * IEEE double: 2^(-1021) ~ 2.225e-308, float: 2^(-125) ~ 1.175e-38 */
+        const char *fty = "double";
+        double safe_small = IEEE_DOUBLE_MIN_NORMAL;
+        if (Type_Is_Float(prefix_type) and Float_Is_Single(prefix_type)) {
+            safe_small = IEEE_FLOAT_MIN_NORMAL;
+            fty = "float";
         }
-        uint64_t bits;
-        memcpy(&bits, &safe_small, sizeof(bits));
-        Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; 'SAFE_SMALL\n", t, (unsigned long long)bits);
+        Emit_Float_Constant(cg, t, fty, safe_small, "'SAFE_SMALL");
         return t;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("SAFE_LARGE"))) {
-        /* T'SAFE_LARGE - 2^SAFE_EMAX * (1 - 2^(-MACHINE_MANTISSA)) (RM 3.5.8)
-         * The largest value in the safe range.
-         * For IEEE double: 2^1023 * (1 - 2^-53) ~ 8.988e307
-         * For IEEE float: 2^127 * (1 - 2^-24) ~ 1.701e38 */
-        double safe_large = 8.98846567431158e+307;  /* 2^1023 * (1 - 2^-53) */
-        if (Type_Is_Float(prefix_type) and prefix_type->size <= 4) {
-            safe_large = 1.7014118346046923e+38;  /* 2^127 * (1 - 2^-24) */
+        /* T'SAFE_LARGE - largest safe value (RM 3.5.8)
+         * = 2^(EMAX-1) * (1 - 2^(-MACHINE_MANTISSA))
+         * IEEE double: 2^1023 * (1 - 2^-53), float: 2^127 * (1 - 2^-24) */
+        const char *fty = "double";
+        int emax = IEEE_DOUBLE_EMAX;
+        int mantissa = IEEE_DOUBLE_MANTISSA;
+        if (Type_Is_Float(prefix_type) and Float_Is_Single(prefix_type)) {
+            emax = IEEE_FLOAT_EMAX;
+            mantissa = IEEE_FLOAT_MANTISSA;
+            fty = "float";
         }
-        uint64_t bits;
-        memcpy(&bits, &safe_large, sizeof(bits));
-        Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; 'SAFE_LARGE\n", t, (unsigned long long)bits);
+        double safe_large = pow(2.0, emax - 1) * (1.0 - pow(2.0, -mantissa));
+        Emit_Float_Constant(cg, t, fty, safe_large, "'SAFE_LARGE");
         return t;
     }
 
@@ -20447,16 +20493,16 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     if (Slice_Equal_Ignore_Case(attr, S("MACHINE_RADIX"))) {
         /* T'MACHINE_RADIX - hardware floating-point radix (RM 3.5.8)
          * IEEE 754 uses radix 2 */
-        Emit(cg, "  %%t%u = add %s 0, 2  ; 'MACHINE_RADIX (IEEE binary)\n", t, Integer_Arith_Type(cg));
+        Emit(cg, "  %%t%u = add %s 0, %d  ; 'MACHINE_RADIX (IEEE binary)\n", t, Integer_Arith_Type(cg), IEEE_MACHINE_RADIX);
         return t;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("MACHINE_MANTISSA"))) {
         /* T'MACHINE_MANTISSA - hardware mantissa bits (RM 3.5.8)
          * IEEE 754 double: 53 bits, float: 24 bits */
-        int64_t machine_mantissa = 53;  /* double */
-        if (Type_Is_Float(prefix_type) and prefix_type->size <= 4) {
-            machine_mantissa = 24;  /* float */
+        int64_t machine_mantissa = IEEE_DOUBLE_MANTISSA;
+        if (Type_Is_Float(prefix_type) and Float_Is_Single(prefix_type)) {
+            machine_mantissa = IEEE_FLOAT_MANTISSA;
         }
         Emit(cg, "  %%t%u = add %s 0, %lld  ; 'MACHINE_MANTISSA\n", t, Integer_Arith_Type(cg), (long long)machine_mantissa);
         return t;
@@ -20465,9 +20511,9 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     if (Slice_Equal_Ignore_Case(attr, S("MACHINE_EMAX"))) {
         /* T'MACHINE_EMAX - hardware max exponent (RM 3.5.8)
          * IEEE 754 double: 1024, float: 128 */
-        int64_t machine_emax = 1024;  /* double */
-        if (Type_Is_Float(prefix_type) and prefix_type->size <= 4) {
-            machine_emax = 128;  /* float */
+        int64_t machine_emax = IEEE_DOUBLE_EMAX;
+        if (Type_Is_Float(prefix_type) and Float_Is_Single(prefix_type)) {
+            machine_emax = IEEE_FLOAT_EMAX;
         }
         Emit(cg, "  %%t%u = add %s 0, %lld  ; 'MACHINE_EMAX\n", t, Integer_Arith_Type(cg), (long long)machine_emax);
         return t;
@@ -20476,9 +20522,9 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     if (Slice_Equal_Ignore_Case(attr, S("MACHINE_EMIN"))) {
         /* T'MACHINE_EMIN - hardware min exponent (RM 3.5.8)
          * IEEE 754 double: -1021, float: -125 */
-        int64_t machine_emin = -1021;  /* double */
-        if (Type_Is_Float(prefix_type) and prefix_type->size <= 4) {
-            machine_emin = -125;  /* float */
+        int64_t machine_emin = IEEE_DOUBLE_EMIN;
+        if (Type_Is_Float(prefix_type) and Float_Is_Single(prefix_type)) {
+            machine_emin = IEEE_FLOAT_EMIN;
         }
         Emit(cg, "  %%t%u = add %s 0, %lld  ; 'MACHINE_EMIN\n", t, Integer_Arith_Type(cg), (long long)machine_emin);
         return t;
@@ -23688,11 +23734,13 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     Type_Info *comp_type = comp->component_type;
                     const char *val_type = Expression_Llvm_Type(cg, comp->default_expr);
                     if (Type_Is_Float(comp_type)) {
-                        val = Emit_Convert(cg, val, val_type, "double");
-                        Emit(cg, "  store double %%t%u, ptr %%t%u\n", val, comp_ptr);
+                        const char *flt_ty = Float_Llvm_Type_Of(comp_type);
+                        val = Emit_Convert(cg, val, val_type, flt_ty);
+                        Emit(cg, "  store %s %%t%u, ptr %%t%u\n", flt_ty, val, comp_ptr);
                     } else if (Type_Is_Boolean(comp_type)) {
-                        val = Emit_Convert(cg, val, val_type, "i1");
-                        Emit(cg, "  store i1 %%t%u, ptr %%t%u\n", val, comp_ptr);
+                        const char *bool_ty = Type_To_Llvm(comp_type);
+                        val = Emit_Convert(cg, val, val_type, bool_ty);
+                        Emit(cg, "  store %s %%t%u, ptr %%t%u\n", bool_ty, val, comp_ptr);
                     } else {
                         Emit(cg, "  store %s %%t%u, ptr %%t%u\n", val_type, val, comp_ptr);
                     }
