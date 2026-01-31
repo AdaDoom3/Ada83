@@ -2,6 +2,13 @@
 ada83
 a83
 ada83_debug
+ada83_dbg
+ada83_dbg2
+ada83_o0
+ada83_o1
+ada83_o1g
+ada83_o2
+ada83_ubsan
 
 # Backup files
 *.backup
