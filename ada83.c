@@ -5702,6 +5702,24 @@ typedef enum {
 typedef struct Type_Info Type_Info;
 typedef struct Symbol Symbol;
 
+/* ─────────────────────────────────────────────────────────────────────────
+ * Runtime Check Bit Constants (GNAT-style, RM 11.5)
+ *
+ * Each bit controls a check category that can be independently suppressed
+ * via pragma Suppress(Check_Name).  Stored in Type_Info.suppressed_checks
+ * and Symbol.suppressed_checks as a bitmask.
+ * ───────────────────────────────────────────────────────────────────────── */
+#define CHK_RANGE          ((uint32_t)1)
+#define CHK_OVERFLOW       ((uint32_t)2)
+#define CHK_INDEX          ((uint32_t)4)
+#define CHK_LENGTH         ((uint32_t)8)
+#define CHK_DIVISION       ((uint32_t)16)
+#define CHK_ACCESS         ((uint32_t)32)
+#define CHK_DISCRIMINANT   ((uint32_t)64)
+#define CHK_ELABORATION    ((uint32_t)128)
+#define CHK_STORAGE        ((uint32_t)256)
+#define CHK_ALL            ((uint32_t)0xFFFFFFFF)
+
 /* Bound representation: explicit tagged union to avoid bitcast.
  * int_value is int128_t to support i128/u128 ranges (mod 2**128).
  * Values that fit in 64 bits are implicitly widened on assignment. */
@@ -6502,6 +6520,22 @@ struct Symbol {
     Syntax_Node    *expanded_spec;       /* Cloned spec with actuals substituted */
     Syntax_Node    *expanded_body;       /* Cloned body with actuals substituted */
 };
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Check_Is_Suppressed — GNAT-style check suppression query (RM 11.5)
+ *
+ * Consults the suppressed_checks bitmask on:
+ *   1. The target type (if provided)
+ *   2. The target type's base_type (if different)
+ *   3. The symbol (if provided)
+ * Returns true if the specified check_bit is suppressed at any level.
+ * ───────────────────────────────────────────────────────────────────────── */
+static bool Check_Is_Suppressed(Type_Info *type, Symbol *sym, uint32_t check_bit) {
+    if (type && (type->suppressed_checks & check_bit)) return true;
+    if (type && type->base_type && (type->base_type->suppressed_checks & check_bit)) return true;
+    if (sym && (sym->suppressed_checks & check_bit)) return true;
+    return false;
+}
 
 /* ─────────────────────────────────────────────────────────────────────────
  * §11.3 Scope Structure
@@ -13747,15 +13781,25 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                         if (check_node and check_node->kind == NK_IDENTIFIER) {
                             String_Slice check = check_node->string_val.text;
                             if (Slice_Equal_Ignore_Case(check, S("RANGE_CHECK")))
-                                check_bit = 1;
+                                check_bit = CHK_RANGE;
                             else if (Slice_Equal_Ignore_Case(check, S("OVERFLOW_CHECK")))
-                                check_bit = 2;
+                                check_bit = CHK_OVERFLOW;
                             else if (Slice_Equal_Ignore_Case(check, S("INDEX_CHECK")))
-                                check_bit = 4;
+                                check_bit = CHK_INDEX;
                             else if (Slice_Equal_Ignore_Case(check, S("LENGTH_CHECK")))
-                                check_bit = 8;
+                                check_bit = CHK_LENGTH;
+                            else if (Slice_Equal_Ignore_Case(check, S("DIVISION_CHECK")))
+                                check_bit = CHK_DIVISION;
+                            else if (Slice_Equal_Ignore_Case(check, S("ACCESS_CHECK")))
+                                check_bit = CHK_ACCESS;
+                            else if (Slice_Equal_Ignore_Case(check, S("DISCRIMINANT_CHECK")))
+                                check_bit = CHK_DISCRIMINANT;
+                            else if (Slice_Equal_Ignore_Case(check, S("ELABORATION_CHECK")))
+                                check_bit = CHK_ELABORATION;
+                            else if (Slice_Equal_Ignore_Case(check, S("STORAGE_CHECK")))
+                                check_bit = CHK_STORAGE;
                             else if (Slice_Equal_Ignore_Case(check, S("ALL_CHECKS")))
-                                check_bit = 0xFFFFFFFF;
+                                check_bit = CHK_ALL;
                         }
                     }
 
@@ -15102,6 +15146,228 @@ static void Emit_Raise_Constraint_Error(Code_Generator *cg, const char *comment)
     Emit(cg, "  unreachable\n");
 }
 
+/* ─────────────────────────────────────────────────────────────────────────
+ * §13.1.1a GNAT-Style Granular Runtime Check Emission
+ *
+ * Each Emit_*_Check function:
+ *   1. Consults Check_Is_Suppressed() — returns early if suppressed.
+ *   2. Emits the check logic (comparison + conditional branch).
+ *   3. On failure, branches to a block that calls Emit_Raise_Constraint_Error.
+ *   4. On success, falls through to a continuation block.
+ *
+ * LLVM IR pattern for every check:
+ *   %cmp = icmp <pred> <type> %val, <bound>
+ *   br i1 %cmp, label %raise, label %cont
+ *   raise:
+ *     <raise constraint_error>
+ *   cont:
+ *     ; continue execution
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/* Emit_Overflow_Checked_Op — signed integer overflow check via LLVM intrinsics.
+ * Uses llvm.sadd/ssub/smul.with.overflow.iN for signed types.
+ * Modular (unsigned) types are exempt — they wrap (RM 3.5.4).
+ * Returns the temp ID holding the checked result. */
+static uint32_t Emit_Overflow_Checked_Op(
+    Code_Generator *cg,
+    uint32_t left, uint32_t right,
+    const char *op,          /* "add", "sub", "mul" */
+    const char *llvm_type,   /* "i8", "i16", "i32", "i64", "i128" */
+    Type_Info *result_type)
+{
+    bool is_unsigned = Type_Is_Unsigned(result_type);
+    bool suppressed = Check_Is_Suppressed(result_type, NULL, CHK_OVERFLOW);
+
+    if (is_unsigned || suppressed) {
+        /* Plain operation (wraps for modular, or check suppressed) */
+        uint32_t t = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = %s %s %%t%u, %%t%u\n", t, op, llvm_type, left, right);
+        /* Modular non-power-of-2: caller handles urem wrapping */
+        return t;
+    }
+
+    /* Signed overflow check via LLVM intrinsic */
+    const char *intrinsic_op;
+    if      (strcmp(op, "add") == 0) intrinsic_op = "sadd";
+    else if (strcmp(op, "sub") == 0) intrinsic_op = "ssub";
+    else if (strcmp(op, "mul") == 0) intrinsic_op = "smul";
+    else {
+        /* No intrinsic for div/rem — fall back to plain */
+        uint32_t t = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = %s %s %%t%u, %%t%u\n", t, op, llvm_type, left, right);
+        return t;
+    }
+
+    /* Emit: %pair = call {iN, i1} @llvm.sOP.with.overflow.iN(iN %left, iN %right) */
+    uint32_t pair = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = call {%s, i1} @llvm.%s.with.overflow.%s(%s %%t%u, %s %%t%u)\n",
+         pair, llvm_type, intrinsic_op, llvm_type, llvm_type, left, llvm_type, right);
+
+    /* Extract result and overflow flag */
+    uint32_t result = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = extractvalue {%s, i1} %%t%u, 0\n", result, llvm_type, pair);
+    uint32_t ovf = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = extractvalue {%s, i1} %%t%u, 1\n", ovf, llvm_type, pair);
+
+    /* Branch on overflow */
+    uint32_t raise_label = cg->label_id++;
+    uint32_t cont_label = cg->label_id++;
+    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", ovf, raise_label, cont_label);
+    Emit(cg, "L%u:  ; overflow\n", raise_label);
+    Emit_Raise_Constraint_Error(cg, "arithmetic overflow");
+    Emit(cg, "L%u:\n", cont_label);
+    cg->block_terminated = false;
+
+    return result;
+}
+
+/* Emit_Division_Check — division by zero check (RM 4.5.5).
+ * Also checks for signed MIN_INT / -1 overflow on two's complement.
+ * Emits before sdiv/udiv/srem/urem. */
+static void Emit_Division_Check(Code_Generator *cg, uint32_t divisor,
+                                 const char *llvm_type, Type_Info *type) {
+    if (Check_Is_Suppressed(type, NULL, CHK_DIVISION)) return;
+
+    /* Check divisor == 0 */
+    uint32_t cmp = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp eq %s %%t%u, 0\n", cmp, llvm_type, divisor);
+    uint32_t raise_label = cg->label_id++;
+    uint32_t cont_label = cg->label_id++;
+    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp, raise_label, cont_label);
+    Emit(cg, "L%u:\n", raise_label);
+    Emit_Raise_Constraint_Error(cg, "division by zero");
+    Emit(cg, "L%u:\n", cont_label);
+    cg->block_terminated = false;
+}
+
+/* Emit_Signed_Division_Overflow_Check — check for MIN_INT / -1.
+ * Only for signed types: Integer'First / (-1) overflows on two's complement.
+ * Emits after the division-by-zero check, before the actual sdiv. */
+static void Emit_Signed_Division_Overflow_Check(Code_Generator *cg,
+                                                  uint32_t dividend, uint32_t divisor,
+                                                  const char *llvm_type, Type_Info *type) {
+    if (Type_Is_Unsigned(type)) return;
+    if (Check_Is_Suppressed(type, NULL, CHK_OVERFLOW)) return;
+
+    /* Check: divisor == -1 AND dividend == type_min
+     * type_min for iN is -(2^(N-1)) which is the LLVM representation of
+     * the minimum signed value.  We use a two-step check. */
+    int bits = 0;
+    if (llvm_type[0] == 'i') bits = atoi(llvm_type + 1);
+    if (bits == 0) return;
+
+    /* Check divisor == -1 */
+    uint32_t cmp_neg1 = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp eq %s %%t%u, -1\n", cmp_neg1, llvm_type, divisor);
+
+    /* Get type minimum: for iN, min = -(1 << (N-1)).
+     * In LLVM, the min of i32 is -2147483648, i64 is -9223372036854775808.
+     * We compute the min using shl + sign. */
+    uint32_t min_val = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = shl %s 1, %d  ; type min magnitude\n", min_val, llvm_type, bits - 1);
+    uint32_t neg_min = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = sub %s 0, %%t%u  ; negate to get actual min\n", neg_min, llvm_type, min_val);
+
+    /* Check dividend == min */
+    uint32_t cmp_min = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp eq %s %%t%u, %%t%u\n", cmp_min, llvm_type, dividend, neg_min);
+
+    /* Both conditions must be true for overflow */
+    uint32_t both = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", both, cmp_neg1, cmp_min);
+
+    uint32_t raise_label = cg->label_id++;
+    uint32_t cont_label = cg->label_id++;
+    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", both, raise_label, cont_label);
+    Emit(cg, "L%u:\n", raise_label);
+    Emit_Raise_Constraint_Error(cg, "division overflow (MIN_INT / -1)");
+    Emit(cg, "L%u:\n", cont_label);
+    cg->block_terminated = false;
+}
+
+/* Emit_Index_Check — array index bounds check (RM 4.1.1).
+ * Checks index against array low and high bounds.
+ * Bounds are provided as temp IDs (may be static or dynamic). */
+static uint32_t Emit_Index_Check(Code_Generator *cg, uint32_t index,
+                                  uint32_t low_bound, uint32_t high_bound,
+                                  const char *index_type, Type_Info *array_type) {
+    if (Check_Is_Suppressed(array_type, NULL, CHK_INDEX)) return index;
+
+    bool is_unsigned = Type_Is_Unsigned(array_type);
+    const char *lt = is_unsigned ? "ult" : "slt";
+    const char *gt = is_unsigned ? "ugt" : "sgt";
+
+    /* index < low? */
+    uint32_t cmp_lo = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp %s %s %%t%u, %%t%u\n", cmp_lo, lt, index_type, index, low_bound);
+    /* index > high? */
+    uint32_t cmp_hi = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp %s %s %%t%u, %%t%u\n", cmp_hi, gt, index_type, index, high_bound);
+    uint32_t out_of_range = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = or i1 %%t%u, %%t%u\n", out_of_range, cmp_lo, cmp_hi);
+
+    uint32_t raise_label = cg->label_id++;
+    uint32_t cont_label = cg->label_id++;
+    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", out_of_range, raise_label, cont_label);
+    Emit(cg, "L%u:\n", raise_label);
+    Emit_Raise_Constraint_Error(cg, "index check failed");
+    Emit(cg, "L%u:\n", cont_label);
+    cg->block_terminated = false;
+    return index;
+}
+
+/* Emit_Length_Check — array length mismatch check (RM 4.5.2, 5.2.1).
+ * Checks that source and destination arrays have matching lengths. */
+static void Emit_Length_Check(Code_Generator *cg,
+                               uint32_t src_length, uint32_t dst_length,
+                               const char *len_type, Type_Info *array_type) {
+    if (Check_Is_Suppressed(array_type, NULL, CHK_LENGTH)) return;
+
+    uint32_t cmp = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n", cmp, len_type, src_length, dst_length);
+    uint32_t raise_label = cg->label_id++;
+    uint32_t cont_label = cg->label_id++;
+    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp, raise_label, cont_label);
+    Emit(cg, "L%u:\n", raise_label);
+    Emit_Raise_Constraint_Error(cg, "length check failed");
+    Emit(cg, "L%u:\n", cont_label);
+    cg->block_terminated = false;
+}
+
+/* Emit_Access_Check — null pointer dereference check (RM 4.1).
+ * Emits before every .ALL dereference and implicit dereference. */
+static void Emit_Access_Check(Code_Generator *cg, uint32_t ptr_val, Type_Info *acc_type) {
+    if (Check_Is_Suppressed(acc_type, NULL, CHK_ACCESS)) return;
+
+    uint32_t cmp = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp eq ptr %%t%u, null\n", cmp, ptr_val);
+    uint32_t raise_label = cg->label_id++;
+    uint32_t cont_label = cg->label_id++;
+    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp, raise_label, cont_label);
+    Emit(cg, "L%u:\n", raise_label);
+    Emit_Raise_Constraint_Error(cg, "access check (null dereference)");
+    Emit(cg, "L%u:\n", cont_label);
+    cg->block_terminated = false;
+}
+
+/* Emit_Discriminant_Check — variant record discriminant check (RM 3.7.1).
+ * Verifies that a discriminant has the expected value before component access. */
+static void Emit_Discriminant_Check(Code_Generator *cg,
+                                      uint32_t actual, uint32_t expected,
+                                      const char *disc_type, Type_Info *record_type) {
+    if (Check_Is_Suppressed(record_type, NULL, CHK_DISCRIMINANT)) return;
+
+    uint32_t cmp = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n", cmp, disc_type, actual, expected);
+    uint32_t raise_label = cg->label_id++;
+    uint32_t cont_label = cg->label_id++;
+    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp, raise_label, cont_label);
+    Emit(cg, "L%u:\n", raise_label);
+    Emit_Raise_Constraint_Error(cg, "discriminant check failed");
+    Emit(cg, "L%u:\n", cont_label);
+    cg->block_terminated = false;
+}
+
 /* Parse LLVM type width: "i64"→64, "float"→32, "double"→64 */
 static inline int Type_Bits(const char *ty) {
     if (ty[0] == 'i') return atoi(ty + 1);
@@ -15386,6 +15652,9 @@ static uint32_t Emit_Bound_Value(Code_Generator *cg, Type_Bound *bound) {
  * GNAT does this in Checks.Apply_Scalar_Range_Check. */
 static uint32_t Emit_Constraint_Check(Code_Generator *cg, uint32_t val, Type_Info *target) {
     if (not target) return val;
+
+    /* GNAT-style: respect pragma Suppress(Range_Check) on the target type */
+    if (Check_Is_Suppressed(target, NULL, CHK_RANGE)) return val;
 
     bool is_int_like = (target->kind == TYPE_INTEGER or
                         target->kind == TYPE_MODULAR or
@@ -16055,6 +16324,7 @@ static uint32_t Generate_Lvalue(Code_Generator *cg, Syntax_Node *node) {
             Slice_Equal_Ignore_Case(node->selected.selector, S("ALL"))) {
             /* The pointer IS the lvalue target */
             uint32_t ptr = Generate_Expression(cg, node->selected.prefix);
+            Emit_Access_Check(cg, ptr, prefix_type);
             return ptr;
         }
 
@@ -16084,6 +16354,7 @@ static uint32_t Generate_Lvalue(Code_Generator *cg, Syntax_Node *node) {
             if (implicit_deref) {
                 /* Load access value to get record pointer */
                 base = Generate_Expression(cg, node->selected.prefix);
+                Emit_Access_Check(cg, base, prefix_type);
             } else {
                 base = Generate_Lvalue(cg, node->selected.prefix);
             }
@@ -16129,6 +16400,8 @@ static uint32_t Generate_Lvalue(Code_Generator *cg, Syntax_Node *node) {
             uint32_t dynamic_low = 0;
             const char *dyn_lv_bt = NULL;
 
+            uint32_t dynamic_high = 0;
+
             if (array_sym and (Type_Is_Unconstrained_Array(prefix_type) or
                               Type_Has_Dynamic_Bounds(prefix_type))) {
                 /* Unconstrained array: load fat pointer, extract data ptr */
@@ -16137,6 +16410,7 @@ static uint32_t Generate_Lvalue(Code_Generator *cg, Syntax_Node *node) {
                 uint32_t fat = Emit_Load_Fat_Pointer(cg, array_sym, bt);
                 base = Emit_Fat_Pointer_Data(cg, fat, bt);
                 dynamic_low = Emit_Fat_Pointer_Low(cg, fat, bt);
+                dynamic_high = Emit_Fat_Pointer_High(cg, fat, bt);
                 has_dynamic_low = true;
             } else if (array_sym) {
                 base = Emit_Temp(cg);
@@ -16151,6 +16425,24 @@ static uint32_t Generate_Lvalue(Code_Generator *cg, Syntax_Node *node) {
             if (node->apply.arguments.count > 0) {
                 Syntax_Node *arg = node->apply.arguments.items[0];
                 uint32_t idx = Generate_Expression(cg, arg);
+
+                /* Index check: verify index is within array bounds (RM 4.1.1) */
+                const char *idx_lv_iat = Integer_Arith_Type(cg);
+                if (has_dynamic_low and dynamic_high) {
+                    uint32_t lo_chk = Emit_Convert(cg, dynamic_low, dyn_lv_bt, idx_lv_iat);
+                    uint32_t hi_chk = Emit_Convert(cg, dynamic_high, dyn_lv_bt, idx_lv_iat);
+                    Emit_Index_Check(cg, idx, lo_chk, hi_chk, idx_lv_iat, prefix_type);
+                } else if (prefix_type->array.index_count > 0) {
+                    int128_t lo = Type_Bound_Value(prefix_type->array.indices[0].low_bound);
+                    int128_t hi = Type_Bound_Value(prefix_type->array.indices[0].high_bound);
+                    if (lo != hi || lo != 0) {
+                        uint32_t lo_t = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = add %s 0, %s  ; lv low bound\n", lo_t, idx_lv_iat, I128_Decimal(lo));
+                        uint32_t hi_t = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = add %s 0, %s  ; lv high bound\n", hi_t, idx_lv_iat, I128_Decimal(hi));
+                        Emit_Index_Check(cg, idx, lo_t, hi_t, idx_lv_iat, prefix_type);
+                    }
+                }
 
                 /* Adjust for low bound */
                 if (has_dynamic_low) {
@@ -16672,6 +16964,7 @@ static uint32_t Generate_Composite_Address(Code_Generator *cg, Syntax_Node *node
                     uint32_t ptr = Generate_Expression(cg, node->selected.prefix);
                     base = ptr;  /* Already a ptr from access expr */
                 }
+                Emit_Access_Check(cg, base, prefix_type);
             } else {
                 base = Generate_Composite_Address(cg, node->selected.prefix);
             }
@@ -17917,7 +18210,24 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         const char *common_t = Wider_Int_Type(cg, left_int_type, right_int_type);
         left = Emit_Convert(cg, left, left_int_type, common_t);
         right = Emit_Convert(cg, right, right_int_type, common_t);
-        Emit(cg, "  %%t%u = %s %s %%t%u, %%t%u\n", t, op, common_t, left, right);
+
+        /* Division/remainder: emit division-by-zero check and MIN_INT/-1 check
+         * before the actual sdiv/udiv/srem/urem (RM 4.5.5). */
+        Token_Kind binop = node->binary.op;
+        if (binop == TK_SLASH or binop == TK_MOD or binop == TK_REM) {
+            Emit_Division_Check(cg, right, common_t, result_type);
+            if (binop == TK_SLASH and not lhs_unsigned) {
+                Emit_Signed_Division_Overflow_Check(cg, left, right, common_t, result_type);
+            }
+            Emit(cg, "  %%t%u = %s %s %%t%u, %%t%u\n", t, op, common_t, left, right);
+        }
+        /* Add/sub/mul: use overflow-checked intrinsics for signed types (RM 4.5).
+         * Modular types wrap naturally; Emit_Overflow_Checked_Op handles this. */
+        else if (binop == TK_PLUS or binop == TK_MINUS or binop == TK_STAR) {
+            t = Emit_Overflow_Checked_Op(cg, left, right, op, common_t, result_type);
+        } else {
+            Emit(cg, "  %%t%u = %s %s %%t%u, %%t%u\n", t, op, common_t, left, right);
+        }
 
         /* Modular wrapping: Ada modular arithmetic wraps modulo M (RM 4.5.3).
          * For power-of-2 moduli, LLVM's natural integer wrapping suffices.
@@ -17927,8 +18237,6 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             uint128_t m = result_type->modulus;
             /* Check if modulus is a power of 2: if so, no masking needed */
             if ((m & (m - 1)) != 0) {
-                /* Non-power-of-2 modulus: emit urem */
-                Token_Kind binop = node->binary.op;
                 if (binop == TK_PLUS or binop == TK_MINUS or binop == TK_STAR) {
                     uint32_t mod_val = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = add %s 0, %s  ; modulus\n", mod_val, common_t,
@@ -17965,11 +18273,15 @@ static uint32_t Generate_Unary_Op(Code_Generator *cg, Syntax_Node *node) {
             if (is_float) {
                 Emit(cg, "  %%t%u = fsub %s 0.0, %%t%u\n", t, float_type, operand);
             } else {
-                Emit(cg, "  %%t%u = sub %s 0, %%t%u\n", t, unary_int_type, operand);
+                /* Unary negation: 0 - operand.  Overflow check for signed types:
+                 * -Integer'First overflows on two's complement (RM 4.5). */
+                Type_Info *res_type = node->type ? node->type : op_type_info;
+                uint32_t zero = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add %s 0, 0\n", zero, unary_int_type);
+                t = Emit_Overflow_Checked_Op(cg, zero, operand, "sub", unary_int_type, res_type);
                 /* Modular wrapping for unary minus (RM 4.5.3): -x = modulus - x.
                  * For power-of-2 moduli, the sub already wraps correctly.
                  * For non-power-of-2, emit urem to wrap into 0..M-1. */
-                Type_Info *res_type = node->type ? node->type : op_type_info;
                 if (res_type and res_type->kind == TYPE_MODULAR and res_type->modulus > 0) {
                     uint128_t m = res_type->modulus;
                     if ((m & (m - 1)) != 0) {
@@ -18027,6 +18339,7 @@ static uint32_t Generate_Unary_Op(Code_Generator *cg, Syntax_Node *node) {
         case TK_ALL:
             {
                 /* .ALL dereference: operand is pointer, load the value */
+                Emit_Access_Check(cg, operand, node->unary.operand->type);
                 Type_Info *designated = node->type;  /* Set by resolution */
                 if (Type_Is_Composite(designated)) {
                     /* For composite types, pointer is the value */
@@ -18621,6 +18934,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         Symbol *array_sym = node->apply.prefix->symbol;
         uint32_t base;
         uint32_t low_bound_val = 0;
+        uint32_t high_bound_val = 0;  /* For index checks */
         bool has_dynamic_low = false;
         const char *dyn_bt = NULL;  /* bound type when has_dynamic_low */
 
@@ -18634,6 +18948,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             } else {
                 base = Generate_Expression(cg, node->apply.prefix);
             }
+            Emit_Access_Check(cg, base, prefix_type);
         }
         /* Check if unconstrained array OR constrained array with dynamic bounds
          * needing fat pointer handling. Both are stored as fat pointers. */
@@ -18647,6 +18962,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             uint32_t fat = Emit_Load_Fat_Pointer(cg, array_sym, idx_bt);
             base = Emit_Fat_Pointer_Data(cg, fat, idx_bt);
             low_bound_val = Emit_Fat_Pointer_Low(cg, fat, idx_bt);
+            high_bound_val = Emit_Fat_Pointer_High(cg, fat, idx_bt);
             has_dynamic_low = true;
             dyn_bt = idx_bt;
         } else if (array_sym) {
@@ -18668,6 +18984,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                 const char *pfx_bt = Array_Bound_Llvm_Type(array_type);
                 base = Emit_Fat_Pointer_Data(cg, prefix_val, pfx_bt);
                 low_bound_val = Emit_Fat_Pointer_Low(cg, prefix_val, pfx_bt);
+                high_bound_val = Emit_Fat_Pointer_High(cg, prefix_val, pfx_bt);
                 has_dynamic_low = true;
                 dyn_bt = pfx_bt;
             } else {
@@ -18730,8 +19047,28 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         /* Generate index expression */
         uint32_t idx = Generate_Expression(cg, arg0);
 
-        /* Adjust for array low bound (Ada arrays can start at any index) */
+        /* Index check: verify index is within array bounds (RM 4.1.1).
+         * Must check BEFORE the low-bound adjustment (raw index vs array bounds). */
         const char *idx_iat = Integer_Arith_Type(cg);
+        if (has_dynamic_low and high_bound_val) {
+            /* Dynamic bounds from fat pointer — already extracted above */
+            uint32_t low_chk = Emit_Convert(cg, low_bound_val, dyn_bt, idx_iat);
+            uint32_t high_chk = Emit_Convert(cg, high_bound_val, dyn_bt, idx_iat);
+            Emit_Index_Check(cg, idx, low_chk, high_chk, idx_iat, array_type);
+        } else if (array_type->array.index_count > 0) {
+            /* Static bounds from array type */
+            int128_t lo = Type_Bound_Value(array_type->array.indices[0].low_bound);
+            int128_t hi = Type_Bound_Value(array_type->array.indices[0].high_bound);
+            if (lo != hi || lo != 0) {  /* Skip check for degenerate empty arrays */
+                uint32_t lo_t = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add %s 0, %s  ; low bound\n", lo_t, idx_iat, I128_Decimal(lo));
+                uint32_t hi_t = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add %s 0, %s  ; high bound\n", hi_t, idx_iat, I128_Decimal(hi));
+                Emit_Index_Check(cg, idx, lo_t, hi_t, idx_iat, array_type);
+            }
+        }
+
+        /* Adjust for array low bound (Ada arrays can start at any index) */
         if (has_dynamic_low) {
             /* Dynamic low bound from fat pointer — convert to native INTEGER width */
             uint32_t low_bound_conv = Emit_Convert(cg, low_bound_val, dyn_bt, idx_iat);
@@ -18864,6 +19201,7 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
 
         /* Generate_Lvalue returns the loaded pointer (address of designated) */
         uint32_t ptr = Generate_Lvalue(cg, node);
+        Emit_Access_Check(cg, ptr, prefix_type);
 
         /* For composite types (records, arrays), return pointer */
         if (Type_Is_Composite(designated)) {
@@ -18944,6 +19282,7 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
         uint32_t rec_base;
         if (implicit_deref) {
             rec_base = Generate_Expression(cg, node->selected.prefix);
+            Emit_Access_Check(cg, rec_base, prefix_type);
         } else {
             rec_base = Generate_Lvalue(cg, node->selected.prefix);
         }
@@ -18959,15 +19298,10 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
         }
 
         if (not vinfo->is_others) {
-            uint32_t cmp = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = icmp eq %s %%t%u, %lld  ; check variant discriminant\n",
-                 cmp, iat_disc, disc_val, (long long)vinfo->disc_value);
-            uint32_t lbl_ok = cg->label_id++;
-            uint32_t lbl_fail = cg->label_id++;
-            Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp, lbl_ok, lbl_fail);
-            Emit(cg, "L%u:\n", lbl_fail);
-            Emit_Raise_Constraint_Error(cg, "variant component access");
-            Emit(cg, "L%u:\n", lbl_ok);
+            uint32_t expected = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = add %s 0, %lld  ; expected discriminant\n",
+                 expected, iat_disc, (long long)vinfo->disc_value);
+            Emit_Discriminant_Check(cg, disc_val, expected, iat_disc, record_type);
         }
         /* For WHEN OTHERS variant, any discriminant value is valid - no check needed */
     }
@@ -21397,7 +21731,20 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
         uint32_t src_ptr = Generate_Expression(cg, node->assignment.value);
         if (src_is_fat_ptr) {
             /* Source is unconstrained/string - extract data pointer from fat pointer */
-            Emit_Fat_Pointer_Copy_To_Name(cg, src_ptr, target_sym, Array_Bound_Llvm_Type(ty));
+            /* Length check: verify source length matches constrained target length */
+            const char *ca_bt = Array_Bound_Llvm_Type(ty);
+            uint32_t src_len = Emit_Fat_Pointer_Length(cg, src_ptr, ca_bt);
+            if (ty->array.index_count > 0) {
+                int128_t lo = Type_Bound_Value(ty->array.indices[0].low_bound);
+                int128_t hi = Type_Bound_Value(ty->array.indices[0].high_bound);
+                int128_t dst_length = hi - lo + 1;
+                if (dst_length < 0) dst_length = 0;
+                uint32_t dst_len = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add %s 0, %s  ; constrained target length\n",
+                     dst_len, ca_bt, I128_Decimal(dst_length));
+                Emit_Length_Check(cg, src_len, dst_len, ca_bt, ty);
+            }
+            Emit_Fat_Pointer_Copy_To_Name(cg, src_ptr, target_sym, ca_bt);
         } else {
             /* Source is constrained - memcpy directly */
             uint32_t array_size = ty->size > 0 ? ty->size : 8;
@@ -21440,7 +21787,9 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
         /* Generate source and copy data to existing storage */
         uint32_t src_val = Generate_Expression(cg, src);
         if (src_is_fat) {
-            /* Source is fat pointer — extract data pointer, copy */
+            /* Source is fat pointer — extract data pointer, check length, copy */
+            uint32_t src_len = Emit_Fat_Pointer_Length(cg, src_val, ua_bt);
+            Emit_Length_Check(cg, src_len, dest_len, ua_bt, ty);
             uint32_t src_data = Emit_Fat_Pointer_Data(cg, src_val, ua_bt);
             Emit(cg, "  call void @llvm.memcpy.p0.p0.i64("
                  "ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)"
@@ -24669,6 +25018,25 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "declare i32 @fseek(ptr, i64, i32)\n");
     Emit(cg, "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)\n");
     Emit(cg, "declare double @llvm.pow.f64(double, double)\n\n");
+
+    /* LLVM overflow intrinsics for GNAT-style arithmetic overflow checks (RM 4.5).
+     * Signed add/sub/mul with overflow detection at each standard width. */
+    Emit(cg, "; Signed overflow intrinsics\n");
+    Emit(cg, "declare {i8,  i1} @llvm.sadd.with.overflow.i8(i8, i8)\n");
+    Emit(cg, "declare {i8,  i1} @llvm.ssub.with.overflow.i8(i8, i8)\n");
+    Emit(cg, "declare {i8,  i1} @llvm.smul.with.overflow.i8(i8, i8)\n");
+    Emit(cg, "declare {i16, i1} @llvm.sadd.with.overflow.i16(i16, i16)\n");
+    Emit(cg, "declare {i16, i1} @llvm.ssub.with.overflow.i16(i16, i16)\n");
+    Emit(cg, "declare {i16, i1} @llvm.smul.with.overflow.i16(i16, i16)\n");
+    Emit(cg, "declare {i32, i1} @llvm.sadd.with.overflow.i32(i32, i32)\n");
+    Emit(cg, "declare {i32, i1} @llvm.ssub.with.overflow.i32(i32, i32)\n");
+    Emit(cg, "declare {i32, i1} @llvm.smul.with.overflow.i32(i32, i32)\n");
+    Emit(cg, "declare {i64, i1} @llvm.sadd.with.overflow.i64(i64, i64)\n");
+    Emit(cg, "declare {i64, i1} @llvm.ssub.with.overflow.i64(i64, i64)\n");
+    Emit(cg, "declare {i64, i1} @llvm.smul.with.overflow.i64(i64, i64)\n");
+    Emit(cg, "declare {i128, i1} @llvm.sadd.with.overflow.i128(i128, i128)\n");
+    Emit(cg, "declare {i128, i1} @llvm.ssub.with.overflow.i128(i128, i128)\n");
+    Emit(cg, "declare {i128, i1} @llvm.smul.with.overflow.i128(i128, i128)\n\n");
 
     /* Integer'VALUE - parse string to integer.
      * Bound type derived from STRING's index type via type system. */
