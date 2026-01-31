@@ -14401,7 +14401,9 @@ static void Resolve_Compilation_Unit(Symbol_Manager *sm, Syntax_Node *node) {
  *
  * Generate LLVM IR from the resolved AST. Key principles:
  *
- * 1. Widen to i64 for computation, truncate for storage
+ * 1. Operate at native type width (GNAT LLVM Base_GL_Type style);
+ *    convert only at explicit Ada type conversions and LLVM intrinsic
+ *    boundaries (memcpy length, alloc size must be i64)
  * 2. All pointer types use opaque 'ptr' (LLVM 15+)
  * 3. Static links for nested subprogram access
  * 4. Fat pointers for unconstrained arrays (ptr + bounds)
@@ -14916,9 +14918,12 @@ static inline bool Expression_Is_Float(Syntax_Node *node) {
 
 /* Get LLVM type string for expression result */
 static inline const char *Expression_Llvm_Type(const Code_Generator *cg, Syntax_Node *node) {
-    /* Boolean expressions are widened to INTEGER width with zext for uniform
-     * representation.  Derive the width from the type system (INTEGER). */
-    if (Expression_Is_Boolean(node)) return Integer_Arith_Type(cg);
+    /* GNAT LLVM: Boolean stays at its native storage type (i8 for Standard.Boolean).
+     * Comparisons produce i1 and get zext'd to the boolean storage type, not to i64. */
+    if (Expression_Is_Boolean(node)) {
+        if (node and node->type) return Type_To_Llvm(node->type);
+        return Integer_Arith_Type(cg);
+    }
     /* For float types, return the correct LLVM type based on actual size */
     if (node and Type_Is_Float_Representation(node->type)) {
         return Llvm_Float_Type((uint32_t)To_Bits(node->type->size));
@@ -14970,9 +14975,12 @@ static inline const char *Expression_Llvm_Type(const Code_Generator *cg, Syntax_
         Type_Is_Unconstrained_Array(node->type)) {
         return FAT_PTR_TYPE;
     }
-    /* Integer types: derive from the type system's INTEGER width.
-     * Generate_Expression uses INTEGER's width for all integer operations
-     * (arithmetic, attributes, literals, etc.) as the uniform representation. */
+    /* GNAT LLVM style: return the native LLVM type for the node's Ada type.
+     * No widening to INTEGER — expressions stay at their natural width.
+     * Only widen at explicit Ada type conversions and LLVM intrinsic boundaries. */
+    if (node and node->type) {
+        return Type_To_Llvm(node->type);
+    }
     return Integer_Arith_Type(cg);
 }
 
@@ -15067,7 +15075,7 @@ static uint32_t Generate_Expression(Code_Generator *cg, Syntax_Node *node);
 static uint32_t Emit_Bound_Value(Code_Generator *cg, Type_Bound *bound) {
     if (bound->kind == BOUND_INTEGER) {
         uint32_t t = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = add i64 0, %lld  ; literal bound\n", t, (long long)bound->int_value);
+        Emit(cg, "  %%t%u = add %s 0, %lld  ; literal bound\n", t, Integer_Arith_Type(cg), (long long)bound->int_value);
         return t;
     } else if (bound->kind == BOUND_FLOAT) {
         /* Fixed-point: convert float bound to scaled integer.
@@ -15075,8 +15083,8 @@ static uint32_t Emit_Bound_Value(Code_Generator *cg, Type_Bound *bound) {
          * by truncating to i64 (adequate for most RM constraints). */
         int64_t ival = (int64_t)bound->float_value;
         uint32_t t = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = add i64 0, %lld  ; float-to-int bound (%g)\n",
-             t, (long long)ival, bound->float_value);
+        Emit(cg, "  %%t%u = add %s 0, %lld  ; float-to-int bound (%g)\n",
+             t, Integer_Arith_Type(cg), (long long)ival, bound->float_value);
         return t;
     } else if (bound->kind == BOUND_EXPR and bound->expr) {
         return Generate_Expression(cg, bound->expr);
@@ -15086,7 +15094,7 @@ static uint32_t Emit_Bound_Value(Code_Generator *cg, Type_Bound *bound) {
 
 /* RM 3.5: General scalar constraint check — dispatches to integer or
  * float path based on the target type's kind.  Covers:
- *   Integer, enumeration, character → icmp slt/sgt on i64
+ *   Integer, enumeration, character → icmp slt/sgt on native type (Integer_Arith_Type)
  *   Float, fixed, universal_real    → fcmp olt/ogt on double
  *
  * GNAT does this in Checks.Apply_Scalar_Range_Check. */
@@ -15125,8 +15133,8 @@ static uint32_t Emit_Constraint_Check(Code_Generator *cg, uint32_t val, Type_Inf
                  lo, (unsigned long long)bits, v);
         } else if (target->low_bound.kind == BOUND_INTEGER) {
             lo = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sitofp i64 %lld to double  ; low bound\n",
-                 lo, (long long)target->low_bound.int_value);
+            Emit(cg, "  %%t%u = sitofp %s %lld to double  ; low bound\n",
+                 lo, Integer_Arith_Type(cg), (long long)target->low_bound.int_value);
         } else {
             lo = Generate_Expression(cg, target->low_bound.expr);
         }
@@ -15138,8 +15146,8 @@ static uint32_t Emit_Constraint_Check(Code_Generator *cg, uint32_t val, Type_Inf
                  hi, (unsigned long long)bits, v);
         } else if (target->high_bound.kind == BOUND_INTEGER) {
             hi = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sitofp i64 %lld to double  ; high bound\n",
-                 hi, (long long)target->high_bound.int_value);
+            Emit(cg, "  %%t%u = sitofp %s %lld to double  ; high bound\n",
+                 hi, Integer_Arith_Type(cg), (long long)target->high_bound.int_value);
         } else {
             hi = Generate_Expression(cg, target->high_bound.expr);
         }
@@ -15169,9 +15177,9 @@ static uint32_t Emit_Constraint_Check(Code_Generator *cg, uint32_t val, Type_Inf
                 if ((bnd)->kind == BOUND_FLOAT) {                         \
                     int64_t iv = (int64_t)((bnd)->float_value / small);   \
                     (out) = Emit_Temp(cg);                                \
-                    Emit(cg, "  %%t%u = add i64 0, %lld  ; fixed bound"  \
-                         " (%g/small)\n", (out),(long long)iv,            \
-                         (bnd)->float_value);                             \
+                    Emit(cg, "  %%t%u = add %s 0, %lld  ; fixed bound"   \
+                         " (%g/small)\n", (out), Integer_Arith_Type(cg),  \
+                         (long long)iv, (bnd)->float_value);              \
                 } else if ((bnd)->kind == BOUND_EXPR) {                   \
                     uint32_t fv = Generate_Expression(cg, (bnd)->expr);   \
                     uint64_t sb; memcpy(&sb, &small, sizeof(sb));         \
@@ -15182,8 +15190,8 @@ static uint32_t Emit_Constraint_Check(Code_Generator *cg, uint32_t val, Type_Inf
                     Emit(cg, "  %%t%u = fdiv double %%t%u, %%t%u\n",     \
                          dv, fv, st);                                     \
                     (out) = Emit_Temp(cg);                                \
-                    Emit(cg, "  %%t%u = fptosi double %%t%u to i64\n",   \
-                         (out), dv);                                      \
+                    Emit(cg, "  %%t%u = fptosi double %%t%u to %s\n",    \
+                         (out), dv, Integer_Arith_Type(cg));              \
                 } else {                                                  \
                     (out) = Emit_Bound_Value(cg, (bnd));                  \
                 }                                                         \
@@ -15197,14 +15205,15 @@ static uint32_t Emit_Constraint_Check(Code_Generator *cg, uint32_t val, Type_Inf
         }
         if (not lo or not hi) return val;
 
-        /* val < low? */
+        /* val < low? — GNAT LLVM: compare at native Integer type width */
+        const char *chk_type = Integer_Arith_Type(cg);
         uint32_t cmp_lo = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = icmp slt i64 %%t%u, %%t%u\n", cmp_lo, val, lo);
+        Emit(cg, "  %%t%u = icmp slt %s %%t%u, %%t%u\n", cmp_lo, chk_type, val, lo);
         Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp_lo, raise_label, ok_label);
         Emit(cg, "L%u:\n", ok_label);
         /* val > high? */
         uint32_t cmp_hi = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = icmp sgt i64 %%t%u, %%t%u\n", cmp_hi, val, hi);
+        Emit(cg, "  %%t%u = icmp sgt %s %%t%u, %%t%u\n", cmp_hi, chk_type, val, hi);
         Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp_hi, raise_label, cont_label);
     }
 
@@ -15260,8 +15269,10 @@ static uint32_t Emit_Fat_Pointer(Code_Generator *cg, uint32_t data_ptr,
     return t2;
 }
 
-/* Widen a bound-type value to INTEGER width via sext.  No-op if already at INTEGER width. */
-static uint32_t Emit_Widen_To_I64(Code_Generator *cg, uint32_t val,
+/* Widen a value to INTEGER width (Integer_Arith_Type) via sext, for use at
+ * LLVM intrinsic boundaries (memcpy length, alloca size, malloc size, RTS ABI).
+ * No-op if from_type is already at INTEGER width. */
+static uint32_t Emit_Widen_For_Intrinsic(Code_Generator *cg, uint32_t val,
                                     const char *from_type) {
     const char *iat = Integer_Arith_Type(cg);
     if (strcmp(from_type, iat) == 0) return val;
@@ -15270,8 +15281,10 @@ static uint32_t Emit_Widen_To_I64(Code_Generator *cg, uint32_t val,
     return w;
 }
 
-/* Narrow an INTEGER-width value to a smaller type via trunc.  No-op if already at target width. */
-static uint32_t Emit_Narrow_From_I64(Code_Generator *cg, uint32_t val,
+/* Narrow a value from INTEGER width (Integer_Arith_Type) to a smaller type via
+ * trunc, after receiving a result from an intrinsic/RTS call.  No-op if target
+ * is already at INTEGER width. */
+static uint32_t Emit_Narrow_From_Intrinsic(Code_Generator *cg, uint32_t val,
                                       const char *to_type) {
     const char *iat = Integer_Arith_Type(cg);
     if (strcmp(to_type, iat) == 0) return val;
@@ -15372,7 +15385,7 @@ static void Emit_Fat_Pointer_Copy_To_Name(Code_Generator *cg, uint32_t fat_ptr,
                                             Symbol *dst, const char *bt) {
     uint32_t src_ptr = Emit_Fat_Pointer_Data(cg, fat_ptr, bt);
     uint32_t len = Emit_Fat_Pointer_Length(cg, fat_ptr, bt);
-    uint32_t len64 = Emit_Widen_To_I64(cg, len, bt);
+    uint32_t len64 = Emit_Widen_For_Intrinsic(cg, len, bt);
     Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%");
     Emit_Symbol_Name(cg, dst);
     Emit(cg, ", ptr %%t%u, i64 %%t%u, i1 false)\n", src_ptr, len64);
@@ -15385,7 +15398,7 @@ static void Emit_Fat_Pointer_Copy_To_Ptr(Code_Generator *cg, uint32_t fat_ptr,
                                            uint32_t dst_ptr, const char *bt) {
     uint32_t src_ptr = Emit_Fat_Pointer_Data(cg, fat_ptr, bt);
     uint32_t len = Emit_Fat_Pointer_Length(cg, fat_ptr, bt);
-    uint32_t len64 = Emit_Widen_To_I64(cg, len, bt);
+    uint32_t len64 = Emit_Widen_For_Intrinsic(cg, len, bt);
     Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
          dst_ptr, src_ptr, len64);
 }
@@ -15589,12 +15602,12 @@ static void Emit_Fat_Pointer_Extractvalue_Named(Code_Generator *cg,
     Emit(cg, "  %%%s = load %s, ptr %%%s_gep\n", high_name, bt, high_name);
 }
 
-/* Emit a named-SSA widen from bound type to INTEGER width.
+/* Emit a named-SSA widen from bound type to INTEGER width for intrinsic/RTS use.
  * If bt is already at INTEGER width, emits a no-op copy (add 0).
  * src_name:  name of the source SSA value (in bt)
  * dst_name:  name for the widened value
  * bt:        the bound type string */
-static void Emit_Widen_Named_To_I64(Code_Generator *cg,
+static void Emit_Widen_Named_For_Intrinsic(Code_Generator *cg,
     const char *src_name, const char *dst_name, const char *bt)
 {
     const char *iat = Integer_Arith_Type(cg);
@@ -15606,12 +15619,12 @@ static void Emit_Widen_Named_To_I64(Code_Generator *cg,
     }
 }
 
-/* Emit a named-SSA narrow from INTEGER width to bound type.
+/* Emit a named-SSA narrow from INTEGER width to bound type after intrinsic/RTS.
  * If bt is already at INTEGER width, emits a no-op copy.
  * src_name:  name of the source SSA value (INTEGER width)
  * dst_name:  name for the narrowed bt value
  * bt:        the target bound type string */
-static void Emit_Narrow_Named_From_I64(Code_Generator *cg,
+static void Emit_Narrow_Named_From_Intrinsic(Code_Generator *cg,
     const char *src_name, const char *dst_name, const char *bt)
 {
     const char *iat = Integer_Arith_Type(cg);
@@ -15826,16 +15839,17 @@ static uint32_t Generate_Lvalue(Code_Generator *cg, Syntax_Node *node) {
 
                 /* Adjust for low bound */
                 if (has_dynamic_low) {
-                    uint32_t dynamic_low_64 = Emit_Widen_To_I64(cg, dynamic_low, dyn_lv_bt);
+                    const char *idx_type = Integer_Arith_Type(cg);
+                    uint32_t dynamic_low_conv = Emit_Convert(cg, dynamic_low, dyn_lv_bt, idx_type);
                     uint32_t adj = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", adj, idx, dynamic_low_64);
+                    Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", adj, idx_type, idx, dynamic_low_conv);
                     idx = adj;
                 } else {
                     int64_t low_bound = Array_Low_Bound(prefix_type);
                     if (low_bound != 0) {
                         uint32_t adj = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = sub i64 %%t%u, %lld\n",
-                             adj, idx, (long long)low_bound);
+                        Emit(cg, "  %%t%u = sub %s %%t%u, %lld\n",
+                             adj, Integer_Arith_Type(cg), idx, (long long)low_bound);
                         idx = adj;
                     }
                 }
@@ -15844,8 +15858,8 @@ static uint32_t Generate_Lvalue(Code_Generator *cg, Syntax_Node *node) {
                 Type_Info *elem_type_info = prefix_type->array.element_type;
                 const char *elem_type = Type_To_Llvm(elem_type_info);
                 uint32_t ptr = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %%t%u  ; elem lvalue\n",
-                     ptr, elem_type, base, idx);
+                Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, %s %%t%u  ; elem lvalue\n",
+                     ptr, elem_type, base, Integer_Arith_Type(cg), idx);
                 return ptr;
             }
         }
@@ -15862,31 +15876,34 @@ static uint32_t Generate_Lvalue(Code_Generator *cg, Syntax_Node *node) {
  * we must generate code to evaluate them at runtime. */
 static uint32_t Generate_Bound_Value(Code_Generator *cg, Type_Bound b) {
     uint32_t t = cg->temp_id++;
+    const char *iat = Integer_Arith_Type(cg);
     if (b.kind == BOUND_INTEGER) {
-        Emit(cg, "  %%t%u = add i64 0, %lld  ; bound (integer)\n", t, (long long)b.int_value);
+        Emit(cg, "  %%t%u = add %s 0, %lld  ; bound (integer)\n", t, iat, (long long)b.int_value);
         return t;
     }
     if (b.kind == BOUND_FLOAT) {
-        Emit(cg, "  %%t%u = fptosi double %e to i64  ; bound (float)\n", t, b.float_value);
+        Emit(cg, "  %%t%u = fptosi double %e to %s  ; bound (float)\n", t, b.float_value, iat);
         return t;
     }
     if (b.kind == BOUND_EXPR and b.expr) {
         /* First try compile-time evaluation */
         double val = Eval_Const_Numeric(b.expr);
         if (val == val) {  /* Not NaN */
-            Emit(cg, "  %%t%u = add i64 0, %lld  ; bound (const expr)\n", t, (long long)val);
+            Emit(cg, "  %%t%u = add %s 0, %lld  ; bound (const expr)\n", t, iat, (long long)val);
             return t;
         }
         /* Must evaluate expression at runtime */
         return Generate_Expression(cg, b.expr);
     }
-    Emit(cg, "  %%t%u = add i64 0, 0  ; bound (unknown)\n", t);
+    Emit(cg, "  %%t%u = add %s 0, 0  ; bound (unknown)\n", t, iat);
     return t;
 }
 
 static uint32_t Generate_Integer_Literal(Code_Generator *cg, Syntax_Node *node) {
     uint32_t t = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = add i64 0, %lld\n", t, (long long)node->integer_lit.value);
+    /* GNAT LLVM: emit literal at the expression's native type width */
+    const char *lit_type = node->type ? Type_To_Llvm(node->type) : Integer_Arith_Type(cg);
+    Emit(cg, "  %%t%u = add %s 0, %lld\n", t, lit_type, (long long)node->integer_lit.value);
     return t;
 }
 
@@ -15979,17 +15996,9 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, "  %%t%u = load %s, ptr ", t, type_str);
             Emit_Symbol_Storage(cg, sym);
             Emit(cg, "\n");
-            /* Widen sub-INTEGER integer loads to INTEGER width for uniform expression type.
-             * Fat pointers, ptrs, and floats are NOT widened. */
-            {   const char *iat_var = Integer_Arith_Type(cg);
-            if (type_str[0] == 'i' and strcmp(type_str, iat_var) != 0 and
-                not Type_Is_Access(ty) and not Type_Is_Float_Representation(ty) and
-                not Type_Is_Unconstrained_Array(ty) and not Type_Is_String(ty)) {
-                uint32_t w = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", w, type_str, t, iat_var);
-                t = w;
-            }
-            }
+            /* GNAT LLVM: no widening — value stays at native type width.
+             * Expression_Llvm_Type returns the native type, and Emit_Convert
+             * handles any needed conversions at use sites. */
         } break;
 
         case SYMBOL_CONSTANT:
@@ -16004,14 +16013,14 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                         break;
                     }
                 }
-                Emit(cg, "  %%t%u = add i64 0, %lld\n", t, (long long)pos);
+                Emit(cg, "  %%t%u = add %s 0, %lld\n", t, Type_To_Llvm(sym->type), (long long)pos);
             } else if (Type_Is_Boolean(ty)) {
-                /* Boolean literal: TRUE=1, FALSE=0 */
+                /* Boolean literal: TRUE=1, FALSE=0 — native type width */
                 int64_t pos = Slice_Equal_Ignore_Case(sym->name, S("TRUE")) ? 1 : 0;
-                Emit(cg, "  %%t%u = add i64 0, %lld\n", t, (long long)pos);
+                Emit(cg, "  %%t%u = add %s 0, %lld\n", t, Type_To_Llvm(ty), (long long)pos);
             } else if (Type_Is_Character(ty)) {
-                /* Character literal - already handled as NK_CHARACTER, but safety check */
-                Emit(cg, "  %%t%u = add i64 0, 0  ; character literal\n", t);
+                /* Character literal — native type width */
+                Emit(cg, "  %%t%u = add %s 0, 0  ; character literal\n", t, Type_To_Llvm(ty));
             } else if (Type_Is_Constrained_Array(ty)) {
                 /* Constrained array constant - return pointer to data.
                  * Fat pointer wrapping is handled at call sites when needed. */
@@ -16030,7 +16039,7 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                     return Generate_Expression(cg, decl->object_decl.init);
                 } else {
                     /* ??? Fallback if no initializer found */
-                    Emit(cg, "  %%t%u = add i64 0, 0  ; named number without init\n", t);
+                    Emit(cg, "  %%t%u = add %s 0, 0  ; named number without init\n", t, Integer_Arith_Type(cg));
                 }
             } else if (sym->kind == SYMBOL_CONSTANT and not sym->is_named_number) {
                 /* Typed constant - load value from storage like variable */
@@ -16038,16 +16047,7 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "  %%t%u = load %s, ptr ", t, type_str);
                 Emit_Symbol_Ref(cg, sym);
                 Emit(cg, "\n");
-                /* Widen sub-INTEGER integer loads to INTEGER width */
-                {   const char *iat_const = Integer_Arith_Type(cg);
-                if (type_str[0] == 'i' and strcmp(type_str, iat_const) != 0 and
-                    not Type_Is_Access(ty) and not Type_Is_Float_Representation(ty) and
-                    not Type_Is_Unconstrained_Array(ty) and not Type_Is_String(ty)) {
-                    uint32_t w = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", w, type_str, t, iat_const);
-                    t = w;
-                }
-                }
+                /* GNAT LLVM: no widening — value stays at native type width. */
             } else {
                 /* ??? Unknown literal type - emit 0 as fallback */
                 Emit(cg, "  %%t%u = add %s 0, 0  ; unknown literal\n", t, Integer_Arith_Type(cg));
@@ -16081,8 +16081,8 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                         break;
                     }
                 }
-                Emit(cg, "  %%t%u = add i64 0, %lld  ; enum literal as function\n",
-                     t, (long long)pos);
+                Emit(cg, "  %%t%u = add %s 0, %lld  ; enum literal as function\n",
+                     t, Type_To_Llvm(actual->type), (long long)pos);
             } else if (actual->kind == SYMBOL_FUNCTION) {
                 /* Generate actual function call */
                 const char *ret_type = actual->return_type ?
@@ -16105,19 +16105,7 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                 } else {
                     Emit(cg, "()\n");
                 }
-                /* Widen sub-INTEGER integer return values to INTEGER width */
-                {   const char *iat_ret = Integer_Arith_Type(cg);
-                if (actual->return_type and ret_type[0] == 'i' and
-                    strcmp(ret_type, iat_ret) != 0 and
-                    not Type_Is_Access(actual->return_type) and
-                    not Type_Is_Float_Representation(actual->return_type) and
-                    not Type_Is_Unconstrained_Array(actual->return_type) and
-                    not Type_Is_String(actual->return_type)) {
-                    uint32_t w = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", w, ret_type, t, iat_ret);
-                    t = w;
-                }
-                }
+                /* GNAT LLVM: no widening — return value stays at native type width. */
             } else {
                 /* Fallback for other symbol kinds */
                 Emit(cg, "  %%t%u = add %s 0, 0  ; unhandled function symbol\n", t, Integer_Arith_Type(cg));
@@ -16126,7 +16114,7 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
 
         default:
             /* ??? */
-            Emit(cg, "  %%t%u = add i64 0, 0  ; unhandled symbol kind\n", t);
+            Emit(cg, "  %%t%u = add %s 0, 0  ; unhandled symbol kind\n", t, Integer_Arith_Type(cg));
     }
 
     return t;
@@ -16293,17 +16281,19 @@ static uint32_t Generate_Array_Equality(Code_Generator *cg, uint32_t left_ptr,
     uint32_t left_data = Emit_Fat_Pointer_Data(cg, left_ptr, aeq_bt);
     uint32_t right_data = Emit_Fat_Pointer_Data(cg, right_ptr, aeq_bt);
 
-    /* Compute byte size for memcmp — widen length to i64 */
+    /* Compute byte size for memcmp */
+    const char *aeq_iat = Integer_Arith_Type(cg);
     uint32_t elem_size = array_type->array.element_type ?
                          array_type->array.element_type->size : 1;
-    uint32_t left_len1_64 = Emit_Widen_To_I64(cg, left_len1, aeq_bt);
+    uint32_t left_len1_conv = Emit_Convert(cg, left_len1, aeq_bt, aeq_iat);
     uint32_t byte_size = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", byte_size, left_len1_64, elem_size);
+    Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", byte_size, aeq_iat, left_len1_conv, elem_size);
+    uint32_t byte_size_64 = Emit_Widen_For_Intrinsic(cg, byte_size, aeq_iat);
 
     /* Call memcmp */
     uint32_t memcmp_result = Emit_Temp(cg);
     Emit(cg, "  %%t%u = call i32 @memcmp(ptr %%t%u, ptr %%t%u, i64 %%t%u)\n",
-         memcmp_result, left_data, right_data, byte_size);
+         memcmp_result, left_data, right_data, byte_size_64);
     uint32_t data_eq = Emit_Temp(cg);
     Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", data_eq, memcmp_result);
 
@@ -16389,17 +16379,18 @@ static uint32_t Generate_Composite_Address(Code_Generator *cg, Syntax_Node *node
                 uint32_t base = Generate_Composite_Address(cg, node->apply.prefix);
                 uint32_t slice_low = Generate_Expression(cg, arg0->range.low);
                 uint32_t adj = slice_low;
+                const char *slice_idx_t = Integer_Arith_Type(cg);
                 if (low != 0) {
                     adj = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = sub i64 %%t%u, %lld\n", adj, slice_low, (long long)low);
+                    Emit(cg, "  %%t%u = sub %s %%t%u, %lld\n", adj, slice_idx_t, slice_low, (long long)low);
                 }
                 uint32_t byte_off = adj;
                 if (elem_size != 1) {
                     byte_off = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", byte_off, adj, elem_size);
+                    Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", byte_off, slice_idx_t, adj, elem_size);
                 }
                 uint32_t addr = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n", addr, base, byte_off);
+                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u\n", addr, base, slice_idx_t, byte_off);
                 return addr;
             }
 
@@ -16407,19 +16398,20 @@ static uint32_t Generate_Composite_Address(Code_Generator *cg, Syntax_Node *node
             uint32_t idx = Generate_Expression(cg, arg0);
 
             /* Adjust index: byte_offset = (idx - low) * elem_size */
+            const char *comp_idx_t = Integer_Arith_Type(cg);
             uint32_t adj_idx = idx;
             if (low != 0) {
                 adj_idx = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = sub i64 %%t%u, %lld\n", adj_idx, idx, (long long)low);
+                Emit(cg, "  %%t%u = sub %s %%t%u, %lld\n", adj_idx, comp_idx_t, idx, (long long)low);
             }
             uint32_t byte_off = Emit_Temp(cg);
             if (elem_size == 1) {
                 byte_off = adj_idx;
             } else {
-                Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", byte_off, adj_idx, elem_size);
+                Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", byte_off, comp_idx_t, adj_idx, elem_size);
             }
             uint32_t addr = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n", addr, base, byte_off);
+            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u\n", addr, base, comp_idx_t, byte_off);
             return addr;
         }
         /* Handle unconstrained arrays passed as fat pointers */
@@ -16429,12 +16421,13 @@ static uint32_t Generate_Composite_Address(Code_Generator *cg, Syntax_Node *node
             uint32_t fat = Generate_Expression(cg, node->apply.prefix);
             uint32_t data = Emit_Fat_Pointer_Data(cg, fat, str_bt);
             uint32_t low = Emit_Fat_Pointer_Low(cg, fat, str_bt);
-            uint32_t low_64 = Emit_Widen_To_I64(cg, low, str_bt);
+            const char *str_idx_t = Integer_Arith_Type(cg);
+            uint32_t low_conv = Emit_Convert(cg, low, str_bt, str_idx_t);
             uint32_t idx = Generate_Expression(cg, node->apply.arguments.items[0]);
             uint32_t adj_idx = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", adj_idx, idx, low_64);
+            Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", adj_idx, str_idx_t, idx, low_conv);
             uint32_t addr = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n", addr, data, adj_idx);
+            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u\n", addr, data, str_idx_t, adj_idx);
             return addr;
         }
     }
@@ -16532,10 +16525,10 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             uint32_t len_eq = Emit_Temp(cg);
             Emit(cg, "  %%t%u = icmp eq %s %%t%u, %%t%u\n", len_eq, slice_bt, left_len1, right_len1);
 
-            /* Compare data with memcmp — widen length to i64 */
-            uint32_t left_len1_64 = Emit_Widen_To_I64(cg, left_len1, slice_bt);
-            uint32_t byte_size = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", byte_size, left_len1_64, elem_size);
+            /* Compare data with memcmp — compute in slice_bt, widen for intrinsic */
+            uint32_t byte_size_nat = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", byte_size_nat, slice_bt, left_len1, elem_size);
+            uint32_t byte_size = Emit_Widen_For_Intrinsic(cg, byte_size_nat, slice_bt);
             uint32_t memcmp_result = Emit_Temp(cg);
             Emit(cg, "  %%t%u = call i32 @memcmp(ptr %%t%u, ptr %%t%u, i64 %%t%u)\n",
                  memcmp_result, left_data, right_data, byte_size);
@@ -16612,9 +16605,9 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n", ne_result, eq_result);
             eq_result = ne_result;
         }
-        /* Widen i1 to i64 for uniform Boolean representation */
+        /* GNAT LLVM: widen i1 to native Boolean type (Integer_Arith_Type) */
         uint32_t eq_wide = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = zext i1 %%t%u to i64\n", eq_wide, eq_result);
+        Emit(cg, "  %%t%u = zext i1 %%t%u to %s\n", eq_wide, eq_result, Integer_Arith_Type(cg));
         return eq_wide;
     }
 
@@ -16725,12 +16718,12 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             uint32_t left_data = Emit_Fat_Pointer_Data(cg, left_ptr, rel_bt);
             uint32_t right_data = Emit_Fat_Pointer_Data(cg, right_ptr, rel_bt);
 
-            /* Compute byte size for memcmp — widen to i64 */
+            /* Compute byte size for memcmp — compute in rel_bt, widen for intrinsic */
             uint32_t elem_size = left_type->array.element_type ?
                                  left_type->array.element_type->size : 1;
-            uint32_t min_len_64 = Emit_Widen_To_I64(cg, min_len, rel_bt);
-            uint32_t byte_size = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", byte_size, min_len_64, elem_size);
+            uint32_t byte_size_nat = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", byte_size_nat, rel_bt, min_len, elem_size);
+            uint32_t byte_size = Emit_Widen_For_Intrinsic(cg, byte_size_nat, rel_bt);
 
             /* Compare common prefix */
             uint32_t prefix_cmp = Emit_Temp(cg);
@@ -16772,9 +16765,9 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                 fprintf(stderr, "warning: unhandled array comparison operator, defaulting to equality\n");
                 Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", cmp_result, memcmp_result);
         }
-        /* Widen i1 to i64 for uniform Boolean representation */
+        /* GNAT LLVM: widen i1 to native Boolean type (Integer_Arith_Type) */
         uint32_t cmp_wide = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = zext i1 %%t%u to i64\n", cmp_wide, cmp_result);
+        Emit(cg, "  %%t%u = zext i1 %%t%u to %s\n", cmp_wide, cmp_result, Integer_Arith_Type(cg));
         return cmp_wide;
     }
 
@@ -16814,7 +16807,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         Emit(cg, "  %%t%u = phi i1 [ false, %%Landthen_check%u ], [ %%t%u, %%Landthen_merge%u ]\n",
              phi, left_block_label, right_i1, right_done_label);
         uint32_t t = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = zext i1 %%t%u to i64\n", t, phi);
+        Emit(cg, "  %%t%u = zext i1 %%t%u to %s\n", t, phi, Integer_Arith_Type(cg));
         return t;
     }
 
@@ -16851,7 +16844,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         Emit(cg, "  %%t%u = phi i1 [ true, %%Lorelse_check%u ], [ %%t%u, %%Lorelse_merge%u ]\n",
              phi, left_block_label, right_i1, right_done_label);
         uint32_t t = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = zext i1 %%t%u to i64\n", t, phi);
+        Emit(cg, "  %%t%u = zext i1 %%t%u to %s\n", t, phi, Integer_Arith_Type(cg));
         return t;
     }
 
@@ -16944,9 +16937,9 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         Emit(cg, "  %%t%u = add %s %%t%u, %%t%u\n", total_len, cat_bt, left_len1, right_len1);
 
         /* Widen to i64 for system calls */
-        uint32_t total_len_64 = Emit_Widen_To_I64(cg, total_len, cat_bt);
-        uint32_t left_len1_64 = Emit_Widen_To_I64(cg, left_len1, cat_bt);
-        uint32_t right_len1_64 = Emit_Widen_To_I64(cg, right_len1, cat_bt);
+        uint32_t total_len_64 = Emit_Widen_For_Intrinsic(cg, total_len, cat_bt);
+        uint32_t left_len1_64 = Emit_Widen_For_Intrinsic(cg, left_len1, cat_bt);
+        uint32_t right_len1_64 = Emit_Widen_For_Intrinsic(cg, right_len1, cat_bt);
 
         /* Allocate space on secondary stack */
         uint32_t result_data = Emit_Temp(cg);
@@ -16959,8 +16952,8 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
 
         /* Calculate destination for right string */
         uint32_t right_dest = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n",
-             right_dest, result_data, left_len1_64);
+        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u\n",
+             right_dest, result_data, cat_bt, left_len1);
 
         /* Copy right string */
         Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
@@ -17071,7 +17064,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                  small_val, (unsigned long long)small_bits, small);
             uint32_t divided = Emit_Temp(cg);
             Emit(cg, "  %%t%u = fdiv double %%t%u, %%t%u\n", divided, right, small_val);
-            Emit(cg, "  %%t%u = fptosi double %%t%u to i64\n", scaled, divided);
+            Emit(cg, "  %%t%u = fptosi double %%t%u to %s\n", scaled, divided, Integer_Arith_Type(cg));
             right = scaled;
         }
         if (Type_Is_Universal_Real(lhs_type)) {
@@ -17084,24 +17077,25 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                  small_val, (unsigned long long)small_bits, small);
             uint32_t divided = Emit_Temp(cg);
             Emit(cg, "  %%t%u = fdiv double %%t%u, %%t%u\n", divided, left, small_val);
-            Emit(cg, "  %%t%u = fptosi double %%t%u to i64\n", scaled, divided);
+            Emit(cg, "  %%t%u = fptosi double %%t%u to %s\n", scaled, divided, Integer_Arith_Type(cg));
             left = scaled;
         }
     }
 
     /* Fixed-point multiplication/division needs scaling (RM 4.5.5) */
     if (is_fixed and (node->binary.op == TK_STAR or node->binary.op == TK_SLASH)) {
+        const char *fix_type = Integer_Arith_Type(cg);
         int scale = result_type->fixed.scale;
         if (node->binary.op == TK_STAR) {
             /* Fixed * Fixed: result = (a * b) >> abs(scale) */
             uint32_t mul = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = mul i64 %%t%u, %%t%u\n", mul, left, right);
+            Emit(cg, "  %%t%u = mul %s %%t%u, %%t%u\n", mul, fix_type, left, right);
             if (scale < 0) {
                 /* Negative scale = right shift by |scale| */
-                Emit(cg, "  %%t%u = ashr i64 %%t%u, %d\n", t, mul, -scale);
+                Emit(cg, "  %%t%u = ashr %s %%t%u, %d\n", t, fix_type, mul, -scale);
             } else if (scale > 0) {
                 /* Positive scale = left shift (uncommon) */
-                Emit(cg, "  %%t%u = shl i64 %%t%u, %d\n", t, mul, scale);
+                Emit(cg, "  %%t%u = shl %s %%t%u, %d\n", t, fix_type, mul, scale);
             } else {
                 t = mul;
             }
@@ -17110,13 +17104,13 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             /* Fixed / Fixed: result = (a << abs(scale)) / b */
             uint32_t shifted = Emit_Temp(cg);
             if (scale < 0) {
-                Emit(cg, "  %%t%u = shl i64 %%t%u, %d\n", shifted, left, -scale);
+                Emit(cg, "  %%t%u = shl %s %%t%u, %d\n", shifted, fix_type, left, -scale);
             } else if (scale > 0) {
-                Emit(cg, "  %%t%u = ashr i64 %%t%u, %d\n", shifted, left, scale);
+                Emit(cg, "  %%t%u = ashr %s %%t%u, %d\n", shifted, fix_type, left, scale);
             } else {
                 shifted = left;
             }
-            Emit(cg, "  %%t%u = sdiv i64 %%t%u, %%t%u\n", t, shifted, right);
+            Emit(cg, "  %%t%u = sdiv %s %%t%u, %%t%u\n", t, fix_type, shifted, right);
             return t;
         }
     }
@@ -17179,7 +17173,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                 right = Emit_Convert(cg, right, right_llvm, "i1");
                 Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", t, left, right);
                 uint32_t and_w = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = zext i1 %%t%u to i64\n", and_w, t);
+                Emit(cg, "  %%t%u = zext i1 %%t%u to %s\n", and_w, t, Integer_Arith_Type(cg));
                 return and_w;
             }
         case TK_OR:
@@ -17192,7 +17186,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                 right = Emit_Convert(cg, right, right_llvm, "i1");
                 Emit(cg, "  %%t%u = or i1 %%t%u, %%t%u\n", t, left, right);
                 uint32_t or_w = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = zext i1 %%t%u to i64\n", or_w, t);
+                Emit(cg, "  %%t%u = zext i1 %%t%u to %s\n", or_w, t, Integer_Arith_Type(cg));
                 return or_w;
             }
         case TK_XOR:
@@ -17204,7 +17198,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                 right = Emit_Convert(cg, right, right_llvm, "i1");
                 Emit(cg, "  %%t%u = xor i1 %%t%u, %%t%u\n", t, left, right);
                 uint32_t xor_w = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = zext i1 %%t%u to i64\n", xor_w, t);
+                Emit(cg, "  %%t%u = zext i1 %%t%u to %s\n", xor_w, t, Integer_Arith_Type(cg));
                 return xor_w;
             }
 
@@ -17360,16 +17354,19 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                     snprintf(cmp_buf, sizeof(cmp_buf), "fcmp %s %s", fcmp_op, float_type);
                     cmp_op = cmp_buf;
                 } else if (left_is_bool and right_is_bool) {
-                    /* Boolean comparisons use i64 since values may come from
-                     * different sources (i1 functions extended to i64, or i64 fat ptrs).
-                     * This avoids type mismatches in LLVM IR. */
+                    /* Boolean comparisons use Integer_Arith_Type since values
+                     * are zext'd to native boolean width after Phase 5 refactor. */
+                    const char *bool_cmp_type = Integer_Arith_Type(cg);
+                    const char *bool_pred;
                     switch (node->binary.op) {
-                        case TK_EQ: cmp_op = "icmp eq i64"; break;
-                        case TK_NE: cmp_op = "icmp ne i64"; break;
+                        case TK_EQ: bool_pred = "eq"; break;
+                        case TK_NE: bool_pred = "ne"; break;
                         default:
                             fprintf(stderr, "warning: unhandled boolean comparison operator, defaulting to equality\n");
-                            cmp_op = "icmp eq i64"; break;
+                            bool_pred = "eq"; break;
                     }
+                    snprintf(cmp_buf, sizeof(cmp_buf), "icmp %s %s", bool_pred, bool_cmp_type);
+                    cmp_op = cmp_buf;
                 } else if (strcmp(left_llvm_type, "ptr") == 0 and
                            strcmp(right_llvm_type, "ptr") == 0) {
                     /* Pointer comparison (access types, record/array ptrs).
@@ -17419,9 +17416,9 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                     cmp_op = cmp_buf;
                 }
                 Emit(cg, "  %%t%u = %s %%t%u, %%t%u\n", t, cmp_op, left, right);
-                /* Widen i1 comparison result to i64 for uniform Boolean representation */
+                /* GNAT LLVM: widen i1 comparison result to native Boolean type */
                 uint32_t wide = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = zext i1 %%t%u to i64\n", wide, t);
+                Emit(cg, "  %%t%u = zext i1 %%t%u to %s\n", wide, t, Integer_Arith_Type(cg));
                 return wide;
             }
 
@@ -17530,9 +17527,9 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                         }
                     }
                 }
-                /* Widen i1 membership result to i64 */
+                /* GNAT LLVM: widen i1 membership result to native Boolean type */
                 uint32_t mem_wide = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = zext i1 %%t%u to i64\n", mem_wide, t);
+                Emit(cg, "  %%t%u = zext i1 %%t%u to %s\n", mem_wide, t, Integer_Arith_Type(cg));
                 return mem_wide;
             }
 
@@ -17584,9 +17581,9 @@ static uint32_t Generate_Unary_Op(Code_Generator *cg, Syntax_Node *node) {
                 const char *op_type = Expression_Llvm_Type(cg, node->unary.operand);
                 operand = Emit_Convert(cg, operand, op_type, "i1");
                 Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n", t, operand);
-                /* Widen back to i64 for uniform Boolean representation */
+                /* GNAT LLVM: widen back to native Boolean type */
                 uint32_t not_w = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = zext i1 %%t%u to i64\n", not_w, t);
+                Emit(cg, "  %%t%u = zext i1 %%t%u to %s\n", not_w, t, Integer_Arith_Type(cg));
                 t = not_w;
             }
             break;
@@ -17722,8 +17719,8 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                             /* Wrap character in single-element fat pointer */
                             uint32_t char_alloc = Emit_Temp(cg);
                             Emit(cg, "  %%t%u = alloca i8\n", char_alloc);
-                            uint32_t char_trunc = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = trunc i64 %%t%u to i8\n", char_trunc, left_val);
+                            const char *char_src_type = Expression_Llvm_Type(cg, left_arg);
+                            uint32_t char_trunc = Emit_Convert(cg, left_val, char_src_type, "i8");
                             Emit(cg, "  store i8 %%t%u, ptr %%t%u\n", char_trunc, char_alloc);
                             uint32_t one = Emit_Temp(cg);
                             Emit(cg, "  %%t%u = add %s 0, 1\n", one, concat_bt);
@@ -17744,8 +17741,8 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                             Emit(cg, "  %%t%u = add %s 1, %%t%u\n", total_len, concat_bt, right_len1);
 
                             /* Widen to i64 for system calls */
-                            uint32_t total_len_64 = Emit_Widen_To_I64(cg, total_len, concat_bt);
-                            uint32_t right_len1_64 = Emit_Widen_To_I64(cg, right_len1, concat_bt);
+                            uint32_t total_len_64 = Emit_Widen_For_Intrinsic(cg, total_len, concat_bt);
+                            uint32_t right_len1_64 = Emit_Widen_For_Intrinsic(cg, right_len1, concat_bt);
 
                             /* Allocate result buffer */
                             uint32_t result_data = Emit_Temp(cg);
@@ -17790,9 +17787,9 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                             Emit(cg, "  %%t%u = add %s %%t%u, %%t%u\n", total_len, concat_bt, left_len1, right_len1);
 
                             /* Widen to i64 for system calls */
-                            uint32_t total_len_64 = Emit_Widen_To_I64(cg, total_len, concat_bt);
-                            uint32_t left_len1_64 = Emit_Widen_To_I64(cg, left_len1, concat_bt);
-                            uint32_t right_len1_64 = Emit_Widen_To_I64(cg, right_len1, concat_bt);
+                            uint32_t total_len_64 = Emit_Widen_For_Intrinsic(cg, total_len, concat_bt);
+                            uint32_t left_len1_64 = Emit_Widen_For_Intrinsic(cg, left_len1, concat_bt);
+                            uint32_t right_len1_64 = Emit_Widen_For_Intrinsic(cg, right_len1, concat_bt);
 
                             uint32_t result_data = Emit_Temp(cg);
                             Emit(cg, "  %%t%u = call ptr @__ada_sec_stack_alloc(i64 %%t%u)\n",
@@ -17802,8 +17799,8 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                                  result_data, left_data, left_len1_64);
 
                             uint32_t right_dest = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n",
-                                 right_dest, result_data, left_len1_64);
+                            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u\n",
+                                 right_dest, result_data, concat_bt, left_len1);
 
                             Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
                                  right_dest, right_data, right_len1_64);
@@ -17910,21 +17907,22 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             uint32_t slo = Generate_Expression(cg, rng->range.low);
             uint32_t shi = Generate_Expression(cg, rng->range.high);
 
+            const char *slice_iat = Integer_Arith_Type(cg);
             uint32_t off;
             if (dyn_low) {
-                uint32_t low_bound_64 = Emit_Widen_To_I64(cg, low_bound_val, dyn_low_bt);
+                uint32_t low_bound_conv = Emit_Convert(cg, low_bound_val, dyn_low_bt, slice_iat);
                 off = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", off, slo, low_bound_64);
+                Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", off, slice_iat, slo, low_bound_conv);
             } else {
                 int64_t al = Array_Low_Bound(at);
                 if (al != 0) {
                     off = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = sub i64 %%t%u, %lld\n", off, slo, (long long)al);
+                    Emit(cg, "  %%t%u = sub %s %%t%u, %lld\n", off, slice_iat, slo, (long long)al);
                 } else off = slo;
             }
             uint32_t dp = Emit_Temp(cg);
             if (esz == 1) {
-                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n", dp, base, off);
+                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u\n", dp, base, slice_iat, off);
             } else {
                 uint32_t bo = Emit_Temp(cg);
                 const char *iat_gep = Integer_Arith_Type(cg);
@@ -18169,18 +18167,20 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
 
         /* Get entry index - combine base index with family index for entry families.
          * Formula: entry_idx = base * 1000 + family_arg (matching accept side) */
+        const char *eidx_t = Integer_Arith_Type(cg);
         uint32_t entry_idx = Emit_Temp(cg);
         if (is_entry_family and family_idx_temp) {
-            Emit(cg, "  %%t%u = add i64 %u, %%t%u  ; entry index (base + family)\n",
-                 entry_idx, sym->entry_index * 1000, family_idx_temp);
+            Emit(cg, "  %%t%u = add %s %u, %%t%u  ; entry index (base + family)\n",
+                 entry_idx, eidx_t, sym->entry_index * 1000, family_idx_temp);
         } else {
-            Emit(cg, "  %%t%u = add i64 0, %u  ; entry index (simple entry)\n",
-                 entry_idx, sym->entry_index * 1000);
+            Emit(cg, "  %%t%u = add %s 0, %u  ; entry index (simple entry)\n",
+                 entry_idx, eidx_t, sym->entry_index * 1000);
         }
 
-        /* Call runtime entry call function - blocks until rendezvous completes */
+        /* Call runtime entry call function - widen entry index to i64 for RTS ABI */
+        uint32_t entry_idx_64 = Emit_Widen_For_Intrinsic(cg, entry_idx, eidx_t);
         Emit(cg, "  call void @__ada_entry_call(ptr %%t%u, i64 %%t%u, ptr %%t%u)\n",
-             task_ptr, entry_idx, param_block);
+             task_ptr, entry_idx_64, param_block);
 
         return 0;
     }
@@ -18271,15 +18271,16 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
 
             /* Compute zero-based offset for slice start
              * offset = (slice_low - array_low_bound) * elem_size */
+            const char *sl_iat = Integer_Arith_Type(cg);
             uint32_t offset;
             int64_t array_low = Array_Low_Bound(array_type);
             if (has_dynamic_low) {
-                uint32_t low_bound_64 = Emit_Widen_To_I64(cg, low_bound_val, dyn_bt);
+                uint32_t low_bound_conv = Emit_Convert(cg, low_bound_val, dyn_bt, sl_iat);
                 offset = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", offset, slice_low, low_bound_64);
+                Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", offset, sl_iat, slice_low, low_bound_conv);
             } else if (array_low != 0) {
                 offset = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = sub i64 %%t%u, %lld\n", offset, slice_low, (long long)array_low);
+                Emit(cg, "  %%t%u = sub %s %%t%u, %lld\n", offset, sl_iat, slice_low, (long long)array_low);
             } else {
                 offset = slice_low;
             }
@@ -18287,13 +18288,13 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             /* Compute data pointer at slice start */
             uint32_t data_ptr = Emit_Temp(cg);
             if (elem_size == 1) {
-                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n",
-                     data_ptr, base, offset);
+                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u\n",
+                     data_ptr, base, sl_iat, offset);
             } else {
                 uint32_t byte_off = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", byte_off, offset, elem_size);
-                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n",
-                     data_ptr, base, byte_off);
+                Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", byte_off, sl_iat, offset, elem_size);
+                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u\n",
+                     data_ptr, base, sl_iat, byte_off);
             }
 
             /* Build fat pointer with slice bounds using helper */
@@ -18309,18 +18310,19 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         uint32_t idx = Generate_Expression(cg, arg0);
 
         /* Adjust for array low bound (Ada arrays can start at any index) */
+        const char *idx_iat = Integer_Arith_Type(cg);
         if (has_dynamic_low) {
-            /* Dynamic low bound from fat pointer — widen to INTEGER width for GEP */
-            uint32_t low_bound_64 = Emit_Widen_To_I64(cg, low_bound_val, dyn_bt);
+            /* Dynamic low bound from fat pointer — convert to native INTEGER width */
+            uint32_t low_bound_conv = Emit_Convert(cg, low_bound_val, dyn_bt, idx_iat);
             uint32_t adj = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u  ; adjust for dynamic low bound\n",
-                 adj, idx, low_bound_64);
+            Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u  ; adjust for dynamic low bound\n",
+                 adj, idx_iat, idx, low_bound_conv);
             idx = adj;
         } else {
             int64_t low_bound = Array_Low_Bound(array_type);
             if (low_bound != 0) {
                 uint32_t adj = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = sub i64 %%t%u, %lld\n", adj, idx, (long long)low_bound);
+                Emit(cg, "  %%t%u = sub %s %%t%u, %lld\n", adj, idx_iat, idx, (long long)low_bound);
                 idx = adj;
             }
         }
@@ -18336,8 +18338,8 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
 
         if (elem_is_composite and elem_size > 0) {
             /* Composite element - use byte array for getelementptr */
-            Emit(cg, "  %%t%u = getelementptr [%u x i8], ptr %%t%u, i64 %%t%u\n",
-                 ptr, elem_size, base, idx);
+            Emit(cg, "  %%t%u = getelementptr [%u x i8], ptr %%t%u, %s %%t%u\n",
+                 ptr, elem_size, base, idx_iat, idx);
             /* Return pointer to composite element (don't load) */
             return ptr;
         } else {
@@ -18378,7 +18380,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                     double small = src_type->fixed.small;
                     if (small <= 0) small = src_type->fixed.delta > 0 ? src_type->fixed.delta : 1.0;
                     uint32_t t1 = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = sitofp i64 %%t%u to %s  ; fixed→float\n", t1, result, dst_llvm);
+                    Emit(cg, "  %%t%u = sitofp %s %%t%u to %s  ; fixed→float\n", t1, Integer_Arith_Type(cg), result, dst_llvm);
                     uint32_t t2 = Emit_Temp(cg);
                     uint64_t small_bits;
                     memcpy(&small_bits, &small, sizeof(small_bits));
@@ -18396,7 +18398,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                     Emit(cg, "  %%t%u = fdiv %s %%t%u, 0x%016llX  ; divide by SMALL\n",
                          t1, src_llvm, result, (unsigned long long)small_bits);
                     uint32_t t2 = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = fptosi %s %%t%u to i64  ; float→fixed\n", t2, src_llvm, t1);
+                    Emit(cg, "  %%t%u = fptosi %s %%t%u to %s  ; float→fixed\n", t2, src_llvm, t1, Integer_Arith_Type(cg));
                     return t2;
                 }
 
@@ -18645,14 +18647,15 @@ static uint32_t Emit_Bound_Attribute(Code_Generator *cg, uint32_t t,
                 ? Emit_Load_Fat_Pointer(cg, prefix_sym, attr_bt)
                 : Generate_Expression(cg, prefix_expr);
             {
+                /* GNAT LLVM: return bound at native type width, no widening */
                 uint32_t bound = is_low ? Emit_Fat_Pointer_Low(cg, fat, attr_bt)
                                         : Emit_Fat_Pointer_High(cg, fat, attr_bt);
-                return Emit_Widen_To_I64(cg, bound, attr_bt);
+                return bound;
             }
         } else if (dim < prefix_type->array.index_count) {
             Type_Bound b = is_low ? prefix_type->array.indices[dim].low_bound
                                   : prefix_type->array.indices[dim].high_bound;
-            Emit(cg, "  %%t%u = add i64 0, %lld  ; %.*s'%s(%u)\n", t,
+            Emit(cg, "  %%t%u = add %s 0, %lld  ; %.*s'%s(%u)\n", t, Integer_Arith_Type(cg),
                  (long long)Type_Bound_Value(b), (int)attr.length, attr.data, tag, dim+1);
         }
     } else if (prefix_type and not Type_Is_Fixed_Point(prefix_type) and
@@ -18693,19 +18696,19 @@ static uint32_t Emit_Bound_Attribute(Code_Generator *cg, uint32_t t,
             if (small <= 0) small = prefix_type->fixed.delta > 0 ? prefix_type->fixed.delta : 1.0;
             double fval = Type_Bound_Float_Value(b);
             int64_t scaled = (int64_t)(fval / small);
-            Emit(cg, "  %%t%u = add i64 0, %lld  ; %.*s'%s (fixed scaled %g/small)\n", t,
-                 (long long)scaled, (int)attr.length, attr.data, tag, fval);
+            Emit(cg, "  %%t%u = add %s 0, %lld  ; %.*s'%s (fixed scaled %g/small)\n", t,
+                 Integer_Arith_Type(cg), (long long)scaled, (int)attr.length, attr.data, tag, fval);
         } else if (Type_Bound_Is_Compile_Time_Known(b)) {
-            Emit(cg, "  %%t%u = add i64 0, %lld  ; %.*s'%s\n", t,
-                 (long long)Type_Bound_Value(b), (int)attr.length, attr.data, tag);
+            Emit(cg, "  %%t%u = add %s 0, %lld  ; %.*s'%s\n", t,
+                 Integer_Arith_Type(cg), (long long)Type_Bound_Value(b), (int)attr.length, attr.data, tag);
         } else {
             return Generate_Bound_Value(cg, b);
         }
     } else {
         fprintf(stderr, "warning: attribute '%.*s'%s has no type, defaulting to 0\n",
                 (int)attr.length, attr.data, tag);
-        Emit(cg, "  %%t%u = add i64 0, 0  ; %.*s'%s (no type)\n", t,
-             (int)attr.length, attr.data, tag);
+        Emit(cg, "  %%t%u = add %s 0, 0  ; %.*s'%s (no type)\n", t,
+             Integer_Arith_Type(cg), (int)attr.length, attr.data, tag);
     }
     return t;
 }
@@ -18760,13 +18763,14 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                     fat = Generate_Expression(cg, node->attribute.prefix);
                 }
                 {
+                    /* GNAT LLVM: return length at native type width, no widening */
                     uint32_t len = Emit_Fat_Pointer_Length(cg, fat, len_bt);
-                    return Emit_Widen_To_I64(cg, len, len_bt);
+                    return len;
                 }
             } else if (dim < prefix_type->array.index_count) {
                 int64_t low = Type_Bound_Value(prefix_type->array.indices[dim].low_bound);
                 int64_t high = Type_Bound_Value(prefix_type->array.indices[dim].high_bound);
-                Emit(cg, "  %%t%u = add i64 0, %lld  ; 'LENGTH(%u)\n", t,
+                Emit(cg, "  %%t%u = add %s 0, %lld  ; 'LENGTH(%u)\n", t, Integer_Arith_Type(cg),
                      (long long)(high - low + 1), dim + 1);
             }
         }
@@ -18786,9 +18790,10 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                     /* Complex prefix expression - generate it to get fat pointer value */
                     fat = Generate_Expression(cg, node->attribute.prefix);
                 }
-                return Emit_Widen_To_I64(cg, Emit_Fat_Pointer_Low(cg, fat, rng_bt), rng_bt);
+                /* GNAT LLVM: return RANGE low at native type width, no widening */
+                return Emit_Fat_Pointer_Low(cg, fat, rng_bt);
             } else if (dim < prefix_type->array.index_count) {
-                Emit(cg, "  %%t%u = add i64 0, %lld  ; 'RANGE(%u) low\n", t,
+                Emit(cg, "  %%t%u = add %s 0, %lld  ; 'RANGE(%u) low\n", t, Integer_Arith_Type(cg),
                      (long long)Type_Bound_Value(prefix_type->array.indices[dim].low_bound),
                      dim + 1);
             }
@@ -18804,7 +18809,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         /* 'SIZE returns size in bits */
         if (not prefix_type)
             fprintf(stderr, "warning: 'SIZE attribute applied to expression with no type\n");
-        Emit(cg, "  %%t%u = add i64 0, %lld  ; 'SIZE in bits\n", t,
+        Emit(cg, "  %%t%u = add %s 0, %lld  ; 'SIZE in bits\n", t, Integer_Arith_Type(cg),
              (long long)(prefix_type ? prefix_type->size * 8 : 0));
         return t;
     }
@@ -18812,18 +18817,18 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     if (Slice_Equal_Ignore_Case(attr, S("ALIGNMENT"))) {
         if (not prefix_type)
             fprintf(stderr, "warning: 'ALIGNMENT attribute applied to expression with no type\n");
-        Emit(cg, "  %%t%u = add i64 0, %lld  ; 'ALIGNMENT\n", t,
+        Emit(cg, "  %%t%u = add %s 0, %lld  ; 'ALIGNMENT\n", t, Integer_Arith_Type(cg),
              (long long)(prefix_type ? prefix_type->alignment : 8));
         return t;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("COMPONENT_SIZE"))) {
         if (Type_Is_Array_Like(prefix_type) and prefix_type->array.element_type) {
-            Emit(cg, "  %%t%u = add i64 0, %lld  ; 'COMPONENT_SIZE\n", t,
+            Emit(cg, "  %%t%u = add %s 0, %lld  ; 'COMPONENT_SIZE\n", t, Integer_Arith_Type(cg),
                  (long long)(prefix_type->array.element_type->size * 8));
         } else {
             fprintf(stderr, "warning: 'COMPONENT_SIZE applied to non-array type, returning 0\n");
-            Emit(cg, "  %%t%u = add i64 0, 0\n", t);
+            Emit(cg, "  %%t%u = add %s 0, 0\n", t, Integer_Arith_Type(cg));
         }
         return t;
     }
@@ -18881,7 +18886,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
             }
         } else {
             fprintf(stderr, "warning: 'ADDRESS attribute applied to expression with no symbol\n");
-            Emit(cg, "  %%t%u = add i64 0, 0  ; 'ADDRESS (no symbol)\n", t);
+            Emit(cg, "  %%t%u = add %s 0, 0  ; 'ADDRESS (no symbol)\n", t, Integer_Arith_Type(cg));
         }
         return t;
     }
@@ -18923,11 +18928,11 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                 uint32_t hi_ok = cg->label_id++;
                 uint32_t raise_label = cg->label_id++;
                 uint32_t cmp_lo = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = icmp slt i64 %%t%u, %lld\n", cmp_lo, val, (long long)lo);
+                Emit(cg, "  %%t%u = icmp slt %s %%t%u, %lld\n", cmp_lo, Integer_Arith_Type(cg), val, (long long)lo);
                 Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp_lo, raise_label, lo_ok);
                 Emit(cg, "L%u:\n", lo_ok);
                 uint32_t cmp_hi = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = icmp sgt i64 %%t%u, %lld\n", cmp_hi, val, (long long)hi);
+                Emit(cg, "  %%t%u = icmp sgt %s %%t%u, %lld\n", cmp_hi, Integer_Arith_Type(cg), val, (long long)hi);
                 Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp_hi, raise_label, hi_ok);
                 Emit(cg, "L%u:\n", raise_label);
                 Emit_Raise_Constraint_Error(cg, "'VAL");
@@ -18947,8 +18952,8 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         bool is_succ = (attr.data[0] == 'S' or attr.data[0] == 's');
         if (first_arg) {
             uint32_t val = Generate_Expression(cg, first_arg);
-            Emit(cg, "  %%t%u = %s i64 %%t%u, 1  ; '%s\n",
-                 t, is_succ ? "add" : "sub", val, is_succ ? "SUCC" : "PRED");
+            Emit(cg, "  %%t%u = %s %s %%t%u, 1  ; '%s\n",
+                 t, is_succ ? "add" : "sub", Integer_Arith_Type(cg), val, is_succ ? "SUCC" : "PRED");
             /* Resolve base type, substituting generic formals */
             Type_Info *base = Type_Base(prefix_type);
             if (cg->current_instance)
@@ -18958,8 +18963,8 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
             if (base and limit.kind == BOUND_INTEGER) {
                 uint32_t ok_label = cg->label_id++, raise_label = cg->label_id++;
                 uint32_t cmp = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = icmp %s i64 %%t%u, %lld\n", cmp,
-                     is_succ ? "sgt" : "slt", t, (long long)limit.int_value);
+                Emit(cg, "  %%t%u = icmp %s %s %%t%u, %lld\n", cmp,
+                     is_succ ? "sgt" : "slt", Integer_Arith_Type(cg), t, (long long)limit.int_value);
                 Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
                      cmp, raise_label, ok_label);
                 Emit(cg, "L%u:\n", raise_label);
@@ -18982,8 +18987,8 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
             uint32_t b = Generate_Expression(cg, node->attribute.arguments.items[1]);
             /* Select minimum using icmp and select */
             uint32_t cmp = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = icmp slt i64 %%t%u, %%t%u\n", cmp, a, b);
-            Emit(cg, "  %%t%u = select i1 %%t%u, i64 %%t%u, i64 %%t%u  ; 'MIN\n", t, cmp, a, b);
+            Emit(cg, "  %%t%u = icmp slt %s %%t%u, %%t%u\n", cmp, Integer_Arith_Type(cg), a, b);
+            Emit(cg, "  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u  ; 'MIN\n", t, cmp, Integer_Arith_Type(cg), a, Integer_Arith_Type(cg), b);
             return t;
         }
         fprintf(stderr, "warning: 'MIN attribute requires two arguments\n");
@@ -18997,8 +19002,8 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
             uint32_t b = Generate_Expression(cg, node->attribute.arguments.items[1]);
             /* Select maximum using icmp and select */
             uint32_t cmp = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = icmp sgt i64 %%t%u, %%t%u\n", cmp, a, b);
-            Emit(cg, "  %%t%u = select i1 %%t%u, i64 %%t%u, i64 %%t%u  ; 'MAX\n", t, cmp, a, b);
+            Emit(cg, "  %%t%u = icmp sgt %s %%t%u, %%t%u\n", cmp, Integer_Arith_Type(cg), a, b);
+            Emit(cg, "  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u  ; 'MAX\n", t, cmp, Integer_Arith_Type(cg), a, Integer_Arith_Type(cg), b);
             return t;
         }
         fprintf(stderr, "warning: 'MAX attribute requires two arguments\n");
@@ -19012,9 +19017,13 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
             /* Compute abs: (x ^ (x >> 63)) - (x >> 63) for signed */
             uint32_t shift = Emit_Temp(cg);
             uint32_t xored = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = ashr i64 %%t%u, 63  ; sign bit\n", shift, val);
-            Emit(cg, "  %%t%u = xor i64 %%t%u, %%t%u\n", xored, val, shift);
-            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u  ; 'ABS\n", t, xored, shift);
+            /* GNAT LLVM: use native Integer type for ABS computation.
+             * Sign-bit shift amount depends on type width. */
+            const char *abs_type = Integer_Arith_Type(cg);
+            int sign_shift = (strcmp(abs_type, "i32") == 0) ? 31 : 63;
+            Emit(cg, "  %%t%u = ashr %s %%t%u, %d  ; sign bit\n", shift, abs_type, val, sign_shift);
+            Emit(cg, "  %%t%u = xor %s %%t%u, %%t%u\n", xored, abs_type, val, shift);
+            Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u  ; 'ABS\n", t, abs_type, xored, shift);
             return t;
         }
     }
@@ -19022,7 +19031,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     if (Slice_Equal_Ignore_Case(attr, S("MOD"))) {
         /* Modular arithmetic attribute */
         if (prefix_type and prefix_type->modulus > 0) {
-            Emit(cg, "  %%t%u = add i64 0, %lld  ; 'MOD\n", t,
+            Emit(cg, "  %%t%u = add %s 0, %lld  ; 'MOD\n", t, Integer_Arith_Type(cg),
                  (long long)prefix_type->modulus);
             return t;
         }
@@ -19040,13 +19049,14 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
 
             if (Type_Is_Integer_Like(prefix_type) or
                 Type_Is_Universal_Integer(prefix_type)) {
-                /* Integer'IMAGE */
+                /* Integer'IMAGE — widen to i64 for RTS ABI */
+                uint32_t arg_64 = Emit_Widen_For_Intrinsic(cg, arg_val, Expression_Llvm_Type(cg, first_arg));
                 Emit(cg, "  %%t%u = call " FAT_PTR_TYPE " @__ada_integer_image(i64 %%t%u)\n",
-                     t, arg_val);
+                     t, arg_64);
             } else if (Type_Is_Character(prefix_type)) {
-                /* Character'IMAGE */
-                uint32_t char_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = trunc i64 %%t%u to i8\n", char_val, arg_val);
+                /* Character'IMAGE — convert to i8 for RTS ABI */
+                const char *arg_src_type = Expression_Llvm_Type(cg, first_arg);
+                uint32_t char_val = Emit_Convert(cg, arg_val, arg_src_type, "i8");
                 Emit(cg, "  %%t%u = call " FAT_PTR_TYPE " @__ada_character_image(i8 %%t%u)\n",
                      t, char_val);
             } else if (Type_Is_Float_Representation(prefix_type)) {
@@ -19156,11 +19166,12 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                     const char *val_bt = String_Bound_Type(cg);
                     uint32_t str_ptr = Emit_Fat_Pointer_Data(cg, str_val, val_bt);
                     uint32_t str_len_bt = Emit_Fat_Pointer_Length(cg, str_val, val_bt);
-                    uint32_t str_len = Emit_Widen_To_I64(cg, str_len_bt, val_bt);
+                    const char *val_iat = Integer_Arith_Type(cg);
+                    uint32_t str_len = Emit_Convert(cg, str_len_bt, val_bt, val_iat);
 
                     uint32_t result_alloc = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = alloca i64\n", result_alloc);
-                    Emit(cg, "  store i64 0, ptr %%t%u\n", result_alloc);
+                    Emit(cg, "  %%t%u = alloca %s\n", result_alloc, val_iat);
+                    Emit(cg, "  store %s 0, ptr %%t%u\n", val_iat, result_alloc);
 
                     uint32_t end_label = cg->label_id++;
                     for (uint32_t i = 0; i < enum_type->enumeration.literal_count; i++) {
@@ -19179,11 +19190,11 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
 
                         /* Check length first */
                         uint32_t len_cmp = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %u\n", len_cmp, str_len, (unsigned)lit.length);
+                        Emit(cg, "  %%t%u = icmp eq %s %%t%u, %u\n", len_cmp, val_iat, str_len, (unsigned)lit.length);
                         Emit(cg, "  br i1 %%t%u, label %%Lval%u, label %%Lval_next%u\n", len_cmp, check_label, next_label);
 
                         Emit(cg, "Lval%u:\n", check_label);
-                        /* Compare strings (case insensitive using strncasecmp) */
+                        /* Compare strings (case insensitive using strncasecmp) — i64 for C ABI */
                         uint32_t cmp_result = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = call i32 @strncasecmp(ptr %%t%u, ptr @.val_str%u, i64 %u)\n",
                              cmp_result, str_ptr, str_id, (unsigned)lit.length);
@@ -19193,7 +19204,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                         Emit(cg, "  br i1 %%t%u, label %%Lval_match%u, label %%Lval_next%u\n", cmp_eq, match_label, next_label);
 
                         Emit(cg, "Lval_match%u:\n", match_label);
-                        Emit(cg, "  store i64 %u, ptr %%t%u\n", i, result_alloc);
+                        Emit(cg, "  store %s %u, ptr %%t%u\n", val_iat, i, result_alloc);
                         Emit(cg, "  br label %%Lval_end%u\n", end_label);
 
                         Emit(cg, "Lval_next%u:\n", next_label);
@@ -19201,16 +19212,18 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                     /* No match - leave as 0 (could raise CONSTRAINT_ERROR) */
                     Emit(cg, "  br label %%Lval_end%u\n", end_label);
                     Emit(cg, "Lval_end%u:\n", end_label);
-                    Emit(cg, "  %%t%u = load i64, ptr %%t%u\n", t, result_alloc);
+                    Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, val_iat, result_alloc);
                 } else {
-                    /* No literals found, fallback to integer value */
+                    /* No literals found, fallback to integer value (RTS returns i64) */
                     Emit(cg, "  %%t%u = call i64 @__ada_integer_value(" FAT_PTR_TYPE " %%t%u)\n",
                          t, str_val);
+                    return Emit_Convert(cg, t, "i64", Integer_Arith_Type(cg));
                 }
             } else {
-                /* Default: treat as integer */
+                /* Default: treat as integer (RTS returns i64, narrow to iat) */
                 Emit(cg, "  %%t%u = call i64 @__ada_integer_value(" FAT_PTR_TYPE " %%t%u)\n",
                      t, str_val);
+                return Emit_Convert(cg, t, "i64", Integer_Arith_Type(cg));
             }
             return t;
         }
@@ -19274,7 +19287,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                     while (max_abs >= 10) { digits++; max_abs /= 10; }
                     width = digits + 1;  /* +1 for leading space or minus sign */
                 }
-                Emit(cg, "  %%t%u = add i64 0, %lld  ; 'WIDTH\n", t, (long long)width);
+                Emit(cg, "  %%t%u = add %s 0, %lld  ; 'WIDTH\n", t, Integer_Arith_Type(cg), (long long)width);
             } else {
                 /* Bounds not compile-time known - generate runtime code.
                  * Per GNAT exp_imgv.adb: generate if FIRST > LAST then 0 else <width>
@@ -19284,8 +19297,9 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                 uint32_t hi_val = Generate_Bound_Value(cg, prefix_type->high_bound);
 
                 /* Compare: is_null = (lo > hi) */
+                const char *width_type = Integer_Arith_Type(cg);
                 uint32_t cmp = cg->temp_id++;
-                Emit(cg, "  %%t%u = icmp sgt i64 %%t%u, %%t%u  ; FIRST > LAST?\n", cmp, lo_val, hi_val);
+                Emit(cg, "  %%t%u = icmp sgt %s %%t%u, %%t%u  ; FIRST > LAST?\n", cmp, width_type, lo_val, hi_val);
 
                 /* Compute the width for non-null range at compile time */
                 int64_t full_width = 0;
@@ -19302,13 +19316,13 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                      * Otherwise (only TRUE in range): width = 4
                      * Generate: select (lo <= 0), 5, 4 */
                     uint32_t has_false = cg->temp_id++;
-                    Emit(cg, "  %%t%u = icmp sle i64 %%t%u, 0  ; has FALSE?\n", has_false, lo_val);
+                    Emit(cg, "  %%t%u = icmp sle %s %%t%u, 0  ; has FALSE?\n", has_false, width_type, lo_val);
                     uint32_t bool_width = cg->temp_id++;
-                    Emit(cg, "  %%t%u = select i1 %%t%u, i64 5, i64 4  ; FALSE=5, TRUE=4\n", bool_width, has_false);
+                    Emit(cg, "  %%t%u = select i1 %%t%u, %s 5, %s 4  ; FALSE=5, TRUE=4\n", bool_width, has_false, width_type, width_type);
 
                     /* Select: if is_null then 0 else bool_width */
-                    Emit(cg, "  %%t%u = select i1 %%t%u, i64 0, i64 %%t%u  ; 'WIDTH (runtime bool)\n",
-                         t, cmp, bool_width);
+                    Emit(cg, "  %%t%u = select i1 %%t%u, %s 0, %s %%t%u  ; 'WIDTH (runtime bool)\n",
+                         t, cmp, width_type, width_type, bool_width);
                     return t;
                 } else if (Type_Is_Character(prefix_type) or Type_Is_Character(prefix_type->base_type)) {
                     full_width = 3;  /* 'X' */
@@ -19319,61 +19333,62 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
 
                     /* Compute abs(lo): if lo < 0 then -lo else lo */
                     uint32_t neg_lo = cg->temp_id++;
-                    Emit(cg, "  %%t%u = sub i64 0, %%t%u\n", neg_lo, lo_val);
+                    Emit(cg, "  %%t%u = sub %s 0, %%t%u\n", neg_lo, width_type, lo_val);
                     uint32_t is_neg_lo = cg->temp_id++;
-                    Emit(cg, "  %%t%u = icmp slt i64 %%t%u, 0\n", is_neg_lo, lo_val);
+                    Emit(cg, "  %%t%u = icmp slt %s %%t%u, 0\n", is_neg_lo, width_type, lo_val);
                     uint32_t abs_lo = cg->temp_id++;
-                    Emit(cg, "  %%t%u = select i1 %%t%u, i64 %%t%u, i64 %%t%u\n", abs_lo, is_neg_lo, neg_lo, lo_val);
+                    Emit(cg, "  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n", abs_lo, is_neg_lo, width_type, neg_lo, width_type, lo_val);
 
                     /* Compute abs(hi): if hi < 0 then -hi else hi */
                     uint32_t neg_hi = cg->temp_id++;
-                    Emit(cg, "  %%t%u = sub i64 0, %%t%u\n", neg_hi, hi_val);
+                    Emit(cg, "  %%t%u = sub %s 0, %%t%u\n", neg_hi, width_type, hi_val);
                     uint32_t is_neg_hi = cg->temp_id++;
-                    Emit(cg, "  %%t%u = icmp slt i64 %%t%u, 0\n", is_neg_hi, hi_val);
+                    Emit(cg, "  %%t%u = icmp slt %s %%t%u, 0\n", is_neg_hi, width_type, hi_val);
                     uint32_t abs_hi = cg->temp_id++;
-                    Emit(cg, "  %%t%u = select i1 %%t%u, i64 %%t%u, i64 %%t%u\n", abs_hi, is_neg_hi, neg_hi, hi_val);
+                    Emit(cg, "  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n", abs_hi, is_neg_hi, width_type, neg_hi, width_type, hi_val);
 
                     /* max_abs = max(abs_lo, abs_hi) */
                     uint32_t cmp_abs = cg->temp_id++;
-                    Emit(cg, "  %%t%u = icmp ugt i64 %%t%u, %%t%u\n", cmp_abs, abs_lo, abs_hi);
+                    Emit(cg, "  %%t%u = icmp ugt %s %%t%u, %%t%u\n", cmp_abs, width_type, abs_lo, abs_hi);
                     uint32_t max_abs = cg->temp_id++;
-                    Emit(cg, "  %%t%u = select i1 %%t%u, i64 %%t%u, i64 %%t%u\n", max_abs, cmp_abs, abs_lo, abs_hi);
+                    Emit(cg, "  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n", max_abs, cmp_abs, width_type, abs_lo, width_type, abs_hi);
 
-                    /* Count digits using comparison chain (for i64, max 19 digits) */
-                    /* digits = 1 if < 10, 2 if < 100, ..., 19 if < 10^19 */
+                    /* Count digits using comparison chain.
+                     * For i32 max 10 digits, for i64 max 19 digits. */
+                    int max_digits = (strcmp(width_type, "i32") == 0) ? 9 : 18;
                     uint32_t prev = max_abs;
                     uint32_t digits_val = cg->temp_id++;
-                    Emit(cg, "  %%t%u = add i64 0, 1  ; initial digits\n", digits_val);
+                    Emit(cg, "  %%t%u = add %s 0, 1  ; initial digits\n", digits_val, width_type);
 
                     int64_t thresholds[] = {10, 100, 1000, 10000, 100000, 1000000, 10000000,
                                            100000000, 1000000000, 10000000000LL, 100000000000LL,
                                            1000000000000LL, 10000000000000LL, 100000000000000LL,
                                            1000000000000000LL, 10000000000000000LL,
                                            100000000000000000LL, 1000000000000000000LL};
-                    for (int d = 0; d < 18; d++) {
+                    for (int d = 0; d < max_digits; d++) {
                         uint32_t cmp_d = cg->temp_id++;
-                        Emit(cg, "  %%t%u = icmp uge i64 %%t%u, %lld\n", cmp_d, max_abs, (long long)thresholds[d]);
+                        Emit(cg, "  %%t%u = icmp uge %s %%t%u, %lld\n", cmp_d, width_type, max_abs, (long long)thresholds[d]);
                         uint32_t next_digits = cg->temp_id++;
-                        Emit(cg, "  %%t%u = select i1 %%t%u, i64 %d, i64 %%t%u\n",
-                             next_digits, cmp_d, d + 2, digits_val);
+                        Emit(cg, "  %%t%u = select i1 %%t%u, %s %d, %s %%t%u\n",
+                             next_digits, cmp_d, width_type, d + 2, width_type, digits_val);
                         digits_val = next_digits;
                     }
 
                     /* width = digits + 1 (for leading space or minus sign) */
                     uint32_t width_val = cg->temp_id++;
-                    Emit(cg, "  %%t%u = add i64 %%t%u, 1  ; +1 for sign/space\n", width_val, digits_val);
+                    Emit(cg, "  %%t%u = add %s %%t%u, 1  ; +1 for sign/space\n", width_val, width_type, digits_val);
 
                     full_width = 0;  /* Not used - we have runtime value */
 
                     /* Select: if is_null then 0 else width_val */
-                    Emit(cg, "  %%t%u = select i1 %%t%u, i64 0, i64 %%t%u  ; 'WIDTH (runtime)\n",
-                         t, cmp, width_val);
+                    Emit(cg, "  %%t%u = select i1 %%t%u, %s 0, %s %%t%u  ; 'WIDTH (runtime)\n",
+                         t, cmp, width_type, width_type, width_val);
                     return t;
                 }
 
                 /* Select: if is_null then 0 else full_width */
-                Emit(cg, "  %%t%u = select i1 %%t%u, i64 0, i64 %lld  ; 'WIDTH (runtime)\n",
-                     t, cmp, (long long)full_width);
+                Emit(cg, "  %%t%u = select i1 %%t%u, %s 0, %s %lld  ; 'WIDTH (runtime)\n",
+                     t, cmp, width_type, width_type, (long long)full_width);
             }
             return t;
         }
@@ -19393,7 +19408,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, ", i64 0  ; '%.*s\n", (int)attr.length, attr.data);
         } else {
             fprintf(stderr, "warning: 'ACCESS attribute applied to expression with no symbol\n");
-            Emit(cg, "  %%t%u = add i64 0, 0\n", t);
+            Emit(cg, "  %%t%u = add %s 0, 0\n", t, Integer_Arith_Type(cg));
         }
         return t;
     }
@@ -19414,7 +19429,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                 digits = 6;  /* Single precision float */
             }
         }
-        Emit(cg, "  %%t%u = add i64 0, %lld  ; 'DIGITS\n", t, (long long)digits);
+        Emit(cg, "  %%t%u = add %s 0, %lld  ; 'DIGITS\n", t, Integer_Arith_Type(cg), (long long)digits);
         return t;
     }
 
@@ -19443,7 +19458,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                 if (mantissa < 1) mantissa = 1;
             }
         }
-        Emit(cg, "  %%t%u = add i64 0, %lld  ; 'MANTISSA\n", t, (long long)mantissa);
+        Emit(cg, "  %%t%u = add %s 0, %lld  ; 'MANTISSA\n", t, Integer_Arith_Type(cg), (long long)mantissa);
         return t;
     }
 
@@ -19457,7 +19472,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
             int64_t mantissa = (int64_t)ceil(digits * 3.321928094887362) + 1;
             emax = 4 * mantissa;  /* RM 3.5.8(8) */
         }
-        Emit(cg, "  %%t%u = add i64 0, %lld  ; 'EMAX\n", t, (long long)emax);
+        Emit(cg, "  %%t%u = add %s 0, %lld  ; 'EMAX\n", t, Integer_Arith_Type(cg), (long long)emax);
         return t;
     }
 
@@ -19469,7 +19484,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         if (Type_Is_Float(prefix_type) and prefix_type->size <= 4) {
             safe_emax = 127;  /* IEEE float: 128 - 1 */
         }
-        Emit(cg, "  %%t%u = add i64 0, %lld  ; 'SAFE_EMAX\n", t, (long long)safe_emax);
+        Emit(cg, "  %%t%u = add %s 0, %lld  ; 'SAFE_EMAX\n", t, Integer_Arith_Type(cg), (long long)safe_emax);
         return t;
     }
 
@@ -19592,7 +19607,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                 fore = 1 + (int64_t)floor(log10(bound));
             }
         }
-        Emit(cg, "  %%t%u = add i64 0, %lld  ; 'FORE\n", t, (long long)fore);
+        Emit(cg, "  %%t%u = add %s 0, %lld  ; 'FORE\n", t, Integer_Arith_Type(cg), (long long)fore);
         return t;
     }
 
@@ -19606,7 +19621,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                 aft = (int64_t)ceil(-log10(delta));
             }
         }
-        Emit(cg, "  %%t%u = add i64 0, %lld  ; 'AFT\n", t, (long long)aft);
+        Emit(cg, "  %%t%u = add %s 0, %lld  ; 'AFT\n", t, Integer_Arith_Type(cg), (long long)aft);
         return t;
     }
 
@@ -19618,7 +19633,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         /* T'MACHINE_ROUNDS - does the hardware round? (RM 3.5.8)
          * IEEE 754 hardware rounds, so return TRUE.
          * Use i64 for consistency with Boolean storage/comparison. */
-        Emit(cg, "  %%t%u = add i64 0, 1  ; 'MACHINE_ROUNDS (IEEE rounds)\n", t);
+        Emit(cg, "  %%t%u = add %s 0, 1  ; 'MACHINE_ROUNDS (IEEE rounds)\n", t, Integer_Arith_Type(cg));
         return t;
     }
 
@@ -19626,14 +19641,14 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         /* T'MACHINE_OVERFLOWS - does the hardware raise on overflow? (RM 3.5.8)
          * IEEE 754 generates infinity on overflow (doesn't trap), return FALSE.
          * Use i64 for consistency with Boolean storage/comparison. */
-        Emit(cg, "  %%t%u = add i64 0, 0  ; 'MACHINE_OVERFLOWS (IEEE no trap)\n", t);
+        Emit(cg, "  %%t%u = add %s 0, 0  ; 'MACHINE_OVERFLOWS (IEEE no trap)\n", t, Integer_Arith_Type(cg));
         return t;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("MACHINE_RADIX"))) {
         /* T'MACHINE_RADIX - hardware floating-point radix (RM 3.5.8)
          * IEEE 754 uses radix 2 */
-        Emit(cg, "  %%t%u = add i64 0, 2  ; 'MACHINE_RADIX (IEEE binary)\n", t);
+        Emit(cg, "  %%t%u = add %s 0, 2  ; 'MACHINE_RADIX (IEEE binary)\n", t, Integer_Arith_Type(cg));
         return t;
     }
 
@@ -19644,7 +19659,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         if (Type_Is_Float(prefix_type) and prefix_type->size <= 4) {
             machine_mantissa = 24;  /* float */
         }
-        Emit(cg, "  %%t%u = add i64 0, %lld  ; 'MACHINE_MANTISSA\n", t, (long long)machine_mantissa);
+        Emit(cg, "  %%t%u = add %s 0, %lld  ; 'MACHINE_MANTISSA\n", t, Integer_Arith_Type(cg), (long long)machine_mantissa);
         return t;
     }
 
@@ -19655,7 +19670,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         if (Type_Is_Float(prefix_type) and prefix_type->size <= 4) {
             machine_emax = 128;  /* float */
         }
-        Emit(cg, "  %%t%u = add i64 0, %lld  ; 'MACHINE_EMAX\n", t, (long long)machine_emax);
+        Emit(cg, "  %%t%u = add %s 0, %lld  ; 'MACHINE_EMAX\n", t, Integer_Arith_Type(cg), (long long)machine_emax);
         return t;
     }
 
@@ -19666,7 +19681,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         if (Type_Is_Float(prefix_type) and prefix_type->size <= 4) {
             machine_emin = -125;  /* float */
         }
-        Emit(cg, "  %%t%u = add i64 0, %lld  ; 'MACHINE_EMIN\n", t, (long long)machine_emin);
+        Emit(cg, "  %%t%u = add %s 0, %lld  ; 'MACHINE_EMIN\n", t, Integer_Arith_Type(cg), (long long)machine_emin);
         return t;
     }
 
@@ -19695,28 +19710,28 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                 is_constrained = false;  /* Mutable: defaults, no constraint */
             }
         }
-        Emit(cg, "  %%t%u = add i64 0, %d  ; 'CONSTRAINED\n", t, is_constrained ? 1 : 0);
+        Emit(cg, "  %%t%u = add %s 0, %d  ; 'CONSTRAINED\n", t, Integer_Arith_Type(cg), is_constrained ? 1 : 0);
         return t;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("CALLABLE"))) {
         /* T'CALLABLE - is the task callable? (RM 9.9)
          * Use i64 for consistency with Boolean storage/comparison. */
-        Emit(cg, "  %%t%u = add i64 0, 1  ; 'CALLABLE (assume true)\n", t);
+        Emit(cg, "  %%t%u = add %s 0, 1  ; 'CALLABLE (assume true)\n", t, Integer_Arith_Type(cg));
         return t;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("TERMINATED"))) {
         /* T'TERMINATED - has the task terminated? (RM 9.9)
          * Use i64 for consistency with Boolean storage/comparison. */
-        Emit(cg, "  %%t%u = add i64 0, 0  ; 'TERMINATED (assume false)\n", t);
+        Emit(cg, "  %%t%u = add %s 0, 0  ; 'TERMINATED (assume false)\n", t, Integer_Arith_Type(cg));
         return t;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("STORAGE_SIZE"))) {
         /* T'STORAGE_SIZE (RM 13.7.1) — implementation-defined.
          * For access types, return a reasonable collection size. */
-        Emit(cg, "  %%t%u = add i64 0, %lld  ; 'STORAGE_SIZE\n", t,
+        Emit(cg, "  %%t%u = add %s 0, %lld  ; 'STORAGE_SIZE\n", t, Integer_Arith_Type(cg),
              (long long)(prefix_type ? prefix_type->size * 8 : 0));
         return t;
     }
@@ -19724,7 +19739,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     /* Unhandled attribute */
     fprintf(stderr, "warning: unhandled attribute '%.*s'\n",
             (int)attr.length, attr.data);
-    Emit(cg, "  %%t%u = add i64 0, 0  ; unhandled '%.*s\n", t,
+    Emit(cg, "  %%t%u = add %s 0, 0  ; unhandled '%.*s\n", t, Integer_Arith_Type(cg),
          (int)attr.length, attr.data);
     return t;
 }
@@ -19848,14 +19863,14 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         uint32_t rng_low_val, rng_high_val;
                         if (choice->range.low->kind == NK_INTEGER) {
                             rng_low_val = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = add i64 0, %lld\n", rng_low_val,
+                            Emit(cg, "  %%t%u = add %s 0, %lld\n", rng_low_val, Integer_Arith_Type(cg),
                                  (long long)choice->range.low->integer_lit.value);
                         } else {
                             rng_low_val = Generate_Expression(cg, choice->range.low);
                         }
                         if (choice->range.high->kind == NK_INTEGER) {
                             rng_high_val = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = add i64 0, %lld\n", rng_high_val,
+                            Emit(cg, "  %%t%u = add %s 0, %lld\n", rng_high_val, Integer_Arith_Type(cg),
                                  (long long)choice->range.high->integer_lit.value);
                         } else {
                             rng_high_val = Generate_Expression(cg, choice->range.high);
@@ -19875,9 +19890,10 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         }
 
                         /* Generate initialization loop */
+                        const char *agg_idx_type = Integer_Arith_Type(cg);
                         uint32_t loop_var = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = alloca i64\n", loop_var);
-                        Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", rng_low_val, loop_var);
+                        Emit(cg, "  %%t%u = alloca %s\n", loop_var, agg_idx_type);
+                        Emit(cg, "  store %s %%t%u, ptr %%t%u\n", agg_idx_type, rng_low_val, loop_var);
 
                         uint32_t loop_start = cg->label_id++;
                         uint32_t loop_body = cg->label_id++;
@@ -19887,37 +19903,37 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         Emit(cg, "L%u:\n", loop_start);
 
                         uint32_t cur_idx = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = load i64, ptr %%t%u\n", cur_idx, loop_var);
+                        Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", cur_idx, agg_idx_type, loop_var);
                         uint32_t cmp = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", cmp, cur_idx, rng_high_val);
+                        Emit(cg, "  %%t%u = icmp sle %s %%t%u, %%t%u\n", cmp, agg_idx_type, cur_idx, rng_high_val);
                         Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp, loop_body, loop_end);
 
                         Emit(cg, "L%u:\n", loop_body);
                         /* Calculate array index: (cur_idx - low_val) */
                         uint32_t arr_idx = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", arr_idx, cur_idx, low_val);
+                        Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", arr_idx, agg_idx_type, cur_idx, low_val);
 
                         if (elem_is_composite) {
                             /* Composite element: use byte-based indexing and memcpy */
                             uint32_t byte_off = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", byte_off, arr_idx, elem_size);
+                            Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", byte_off, agg_idx_type, arr_idx, elem_size);
                             uint32_t ptr = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n",
-                                 ptr, base, byte_off);
+                            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u\n",
+                                 ptr, base, agg_idx_type, byte_off);
                             Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
                                  ptr, val, elem_size);
                         } else {
                             /* Scalar element: use typed indexing and store */
                             uint32_t ptr = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %%t%u\n",
-                                 ptr, elem_type, base, arr_idx);
+                            Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, %s %%t%u\n",
+                                 ptr, elem_type, base, agg_idx_type, arr_idx);
                             Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, val, ptr);
                         }
 
                         /* Increment and loop */
                         uint32_t next_idx = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", next_idx, cur_idx);
-                        Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", next_idx, loop_var);
+                        Emit(cg, "  %%t%u = add %s %%t%u, 1\n", next_idx, agg_idx_type, cur_idx);
+                        Emit(cg, "  store %s %%t%u, ptr %%t%u\n", agg_idx_type, next_idx, loop_var);
                         Emit(cg, "  br label %%L%u\n", loop_start);
 
                         Emit(cg, "L%u:\n", loop_end);
@@ -19935,9 +19951,10 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                     Type_Is_Constrained_Array(elem_ti);
 
                 /* Generate loop from low to high */
+                const char *oth_idx_type = Integer_Arith_Type(cg);
                 uint32_t loop_var = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = alloca i64\n", loop_var);
-                Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", low_val, loop_var);
+                Emit(cg, "  %%t%u = alloca %s\n", loop_var, oth_idx_type);
+                Emit(cg, "  store %s %%t%u, ptr %%t%u\n", oth_idx_type, low_val, loop_var);
 
                 uint32_t loop_start = cg->label_id++;
                 uint32_t loop_body = cg->label_id++;
@@ -19947,35 +19964,35 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "L%u:\n", loop_start);
 
                 uint32_t cur_idx = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = load i64, ptr %%t%u\n", cur_idx, loop_var);
+                Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", cur_idx, oth_idx_type, loop_var);
                 uint32_t cmp = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", cmp, cur_idx, high_val);
+                Emit(cg, "  %%t%u = icmp sle %s %%t%u, %%t%u\n", cmp, oth_idx_type, cur_idx, high_val);
                 Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp, loop_body, loop_end);
 
                 Emit(cg, "L%u:\n", loop_body);
                 uint32_t arr_idx = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", arr_idx, cur_idx, low_val);
+                Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", arr_idx, oth_idx_type, cur_idx, low_val);
 
                 if (elem_is_composite) {
                     /* Composite element: use byte-based indexing and memcpy */
                     uint32_t byte_off = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", byte_off, arr_idx, elem_size);
+                    Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", byte_off, oth_idx_type, arr_idx, elem_size);
                     uint32_t ptr = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n",
-                         ptr, base, byte_off);
+                    Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u\n",
+                         ptr, base, oth_idx_type, byte_off);
                     Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
                          ptr, others_val, elem_size);
                 } else {
                     /* Scalar element: use typed indexing and store */
                     uint32_t ptr = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %%t%u\n",
-                         ptr, elem_type, base, arr_idx);
+                    Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, %s %%t%u\n",
+                         ptr, elem_type, base, oth_idx_type, arr_idx);
                     Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, others_val, ptr);
                 }
 
                 uint32_t next_idx = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", next_idx, cur_idx);
-                Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", next_idx, loop_var);
+                Emit(cg, "  %%t%u = add %s %%t%u, 1\n", next_idx, oth_idx_type, cur_idx);
+                Emit(cg, "  store %s %%t%u, ptr %%t%u\n", oth_idx_type, next_idx, loop_var);
                 Emit(cg, "  br label %%L%u\n", loop_start);
 
                 Emit(cg, "L%u:\n", loop_end);
@@ -20374,7 +20391,7 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
                 uint32_t elem_size = init_type->array.element_type ?
                                      init_type->array.element_type->size : 1;
                 if (elem_size == 0) elem_size = 1;
-                Emit(cg, "  %%t%u = add i64 0, %lld\n", len_t, (long long)(length * elem_size));
+                Emit(cg, "  %%t%u = add %s 0, %lld\n", len_t, Integer_Arith_Type(cg), (long long)(length * elem_size));
             } else {
                 /* Dynamic bounds - use 1-based defaults */
                 low_t = Emit_Temp(cg);
@@ -20385,7 +20402,7 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
                 uint32_t elem_size = init_type->array.element_type ?
                                      init_type->array.element_type->size : 1;
                 if (elem_size == 0) elem_size = 8;
-                Emit(cg, "  %%t%u = add i64 0, %u\n", len_t, elem_size);
+                Emit(cg, "  %%t%u = add %s 0, %u\n", len_t, Integer_Arith_Type(cg), elem_size);
             }
         } else {
             /* Unconstrained array or string: returns fat pointer VALUE */
@@ -20401,7 +20418,7 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
         uint32_t len_t_64 = len_t;
         if (not init_returns_ptr and not init_is_constrained) {
             /* len_t is in new_bt (native bound type) from Emit_Fat_Pointer_Length */
-            len_t_64 = Emit_Widen_To_I64(cg, len_t, new_bt);
+            len_t_64 = Emit_Widen_For_Intrinsic(cg, len_t, new_bt);
         }
 
         /* Allocate heap space for array data */
@@ -20463,23 +20480,25 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "  %%t%u = add %s 0, 1\n", high_t, new_bt);
             }
 
-            /* Calculate size in i64: (high - low + 1) * elem_size */
+            /* Calculate size: (high - low + 1) * elem_size */
+            const char *alloc_iat = Integer_Arith_Type(cg);
             uint32_t elem_size = subtype->array.element_type ?
                                  subtype->array.element_type->size : 8;
             if (elem_size == 0) elem_size = 8;
 
-            uint32_t high_64 = Emit_Widen_To_I64(cg, high_t, new_bt);
-            uint32_t low_64 = Emit_Widen_To_I64(cg, low_t, new_bt);
+            uint32_t high_conv = Emit_Convert(cg, high_t, new_bt, alloc_iat);
+            uint32_t low_conv = Emit_Convert(cg, low_t, new_bt, alloc_iat);
             uint32_t len_t = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", len_t, high_64, low_64);
+            Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", len_t, alloc_iat, high_conv, low_conv);
             uint32_t len_plus1 = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", len_plus1, len_t);
+            Emit(cg, "  %%t%u = add %s %%t%u, 1\n", len_plus1, alloc_iat, len_t);
             uint32_t byte_size = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", byte_size, len_plus1, elem_size);
+            Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", byte_size, alloc_iat, len_plus1, elem_size);
 
-            /* Allocate heap space */
+            /* Allocate heap space — widen to i64 for malloc ABI */
+            uint32_t byte_size_64 = Emit_Widen_For_Intrinsic(cg, byte_size, alloc_iat);
             uint32_t heap_ptr = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = call ptr @malloc(i64 %%t%u)\n", heap_ptr, byte_size);
+            Emit(cg, "  %%t%u = call ptr @malloc(i64 %%t%u)\n", heap_ptr, byte_size_64);
 
             /* Return fat pointer with bounds */
             return Emit_Fat_Pointer_Dynamic(cg, heap_ptr, low_t, high_t, new_bt);
@@ -20543,7 +20562,7 @@ static uint32_t Generate_Expression(Code_Generator *cg, Syntax_Node *node) {
                              } else if (node->string_val.text.length >= 2) {
                                  ch = (unsigned char)node->string_val.text.data[1];
                              }
-                             Emit(cg, "  %%t%u = add i64 0, %lld\n", t, (long long)ch);
+                             Emit(cg, "  %%t%u = add %s 0, %lld\n", t, Integer_Arith_Type(cg), (long long)ch);
                              return t; }
         case NK_NULL:       { uint32_t t = Emit_Temp(cg);
                              Emit(cg, "  %%t%u = inttoptr i64 0 to ptr\n", t);
@@ -20646,31 +20665,33 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
                     dest_base = Emit_Fat_Pointer_Data(cg, fat, sa_bt);
                     /* Low bound comes from the fat pointer at runtime */
                     low_bound = 0;  /* We'll use dynamic low below */
+                    const char *usa_t = Integer_Arith_Type(cg);
                     uint32_t fat_low = Emit_Fat_Pointer_Low(cg, fat, sa_bt);
-                    uint32_t fat_low_64 = Emit_Widen_To_I64(cg, fat_low, sa_bt);
+                    uint32_t fat_low_conv = Emit_Convert(cg, fat_low, sa_bt, usa_t);
 
                     /* Calculate destination start offset from slice low bound */
                     uint32_t dest_low_expr = Generate_Expression(cg, arg->range.low);
                     /* Subtract dynamic low bound from fat pointer */
                     uint32_t adj = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u"
+                    Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u"
                          "  ; adjust for dynamic low bound\n",
-                         adj, dest_low_expr, fat_low_64);
+                         adj, usa_t, dest_low_expr, fat_low_conv);
                     uint32_t dest_ptr = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n",
-                         dest_ptr, dest_base, adj);
+                    Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u\n",
+                         dest_ptr, dest_base, usa_t, adj);
 
                     /* Generate source and copy */
                     Syntax_Node *src = node->assignment.value;
                     uint32_t dest_high_expr = Generate_Expression(cg, arg->range.high);
                     uint32_t length = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n",
-                         length, dest_high_expr, dest_low_expr);
+                    Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n",
+                         length, usa_t, dest_high_expr, dest_low_expr);
                     uint32_t len_plus_one = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", len_plus_one, length);
-                    uint32_t byte_len = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n",
-                         byte_len, len_plus_one, elem_sz);
+                    Emit(cg, "  %%t%u = add %s %%t%u, 1\n", len_plus_one, usa_t, length);
+                    uint32_t byte_len_nat = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = mul %s %%t%u, %u\n",
+                         byte_len_nat, usa_t, len_plus_one, elem_sz);
+                    uint32_t byte_len = Emit_Widen_For_Intrinsic(cg, byte_len_nat, usa_t);
 
                     /* Get source data */
                     uint32_t src_val = Generate_Expression(cg, src);
@@ -20690,24 +20711,25 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
                 }
 
                 /* Constrained array slice assignment (original code) */
+                const char *csa_t = Integer_Arith_Type(cg);
                 low_bound = Array_Low_Bound(prefix_type);
 
                 /* Get destination base address */
                 dest_base = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = getelementptr i8, ptr ", dest_base);
                 Emit_Symbol_Storage(cg, array_sym);
-                Emit(cg, ", i64 0\n");
+                Emit(cg, ", %s 0\n", csa_t);
 
                 /* Calculate destination start offset from slice low bound */
                 uint32_t dest_low = Generate_Expression(cg, arg->range.low);
                 if (low_bound != 0) {
                     uint32_t adj = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = sub i64 %%t%u, %lld\n", adj, dest_low, (long long)low_bound);
+                    Emit(cg, "  %%t%u = sub %s %%t%u, %lld\n", adj, csa_t, dest_low, (long long)low_bound);
                     dest_low = adj;
                 }
                 uint32_t dest_ptr = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n",
-                     dest_ptr, dest_base, dest_low);
+                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u\n",
+                     dest_ptr, dest_base, csa_t, dest_low);
 
                 /* Generate source slice (also NK_APPLY with NK_RANGE) */
                 Syntax_Node *src = node->assignment.value;
@@ -20736,38 +20758,39 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
                             src_base = Emit_Temp(cg);
                             Emit(cg, "  %%t%u = getelementptr i8, ptr ", src_base);
                             Emit_Symbol_Storage(cg, src_sym);
-                            Emit(cg, ", i64 0\n");
+                            Emit(cg, ", %s 0\n", csa_t);
                         }
 
                         /* Calculate source start offset */
                         uint32_t src_start = Generate_Expression(cg, src_range->range.low);
                         if (src_is_uncon) {
-                            uint32_t src_fat_low_64 = Emit_Widen_To_I64(cg, src_fat_low, ssb);
+                            uint32_t src_fat_cvt = Emit_Convert(cg, src_fat_low, ssb, csa_t);
                             uint32_t adj = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n",
-                                 adj, src_start, src_fat_low_64);
+                            Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n",
+                                 adj, csa_t, src_start, src_fat_cvt);
                             src_start = adj;
                         } else if (src_low_bound != 0) {
                             uint32_t adj = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = sub i64 %%t%u, %lld\n", adj, src_start, (long long)src_low_bound);
+                            Emit(cg, "  %%t%u = sub %s %%t%u, %lld\n", adj, csa_t, src_start, (long long)src_low_bound);
                             src_start = adj;
                         }
                         uint32_t src_ptr = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n",
-                             src_ptr, src_base, src_start);
+                        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u\n",
+                             src_ptr, src_base, csa_t, src_start);
 
                         /* Calculate copy length in bytes */
                         uint32_t dest_high = Generate_Expression(cg, arg->range.high);
                         uint32_t length = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = sub i64 %%t%u, %%t%u\n", length, dest_high, dest_low);
+                        Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", length, csa_t, dest_high, dest_low);
                         uint32_t len_plus_one = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", len_plus_one, length);
+                        Emit(cg, "  %%t%u = add %s %%t%u, 1\n", len_plus_one, csa_t, length);
                         uint32_t byte_len = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = mul i64 %%t%u, %u\n", byte_len, len_plus_one, elem_sz);
+                        Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", byte_len, csa_t, len_plus_one, elem_sz);
 
-                        /* memcpy from source to dest */
+                        /* memcpy from source to dest — widen byte_len to i64 for intrinsic */
+                        uint32_t byte_len_64 = Emit_Widen_For_Intrinsic(cg, byte_len, csa_t);
                         Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)  ; slice assignment\n",
-                             dest_ptr, src_ptr, byte_len);
+                             dest_ptr, src_ptr, byte_len_64);
                         return;
                     }
                 }
@@ -20979,7 +21002,7 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
         uint32_t existing_fat = Emit_Load_Fat_Pointer(cg, target_sym, ua_bt);
         uint32_t dest_data = Emit_Fat_Pointer_Data(cg, existing_fat, ua_bt);
         uint32_t dest_len  = Emit_Fat_Pointer_Length(cg, existing_fat, ua_bt);
-        uint32_t dest_len_64 = Emit_Widen_To_I64(cg, dest_len, ua_bt);
+        uint32_t dest_len_64 = Emit_Widen_For_Intrinsic(cg, dest_len, ua_bt);
 
         /* Generate source and copy data to existing storage */
         uint32_t src_val = Generate_Expression(cg, src);
@@ -21028,9 +21051,11 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
         Emit(cg, "  %%t%u = fptosi double %%t%u to %s\n", t, value, type_str);
         value = t;
     } else if (not is_src_float and is_dst_float) {
-        /* Integer to float: use sitofp */
+        /* Integer to float: use sitofp — GNAT LLVM: use native src/dst types */
+        const char *src_type = Expression_Llvm_Type(cg, node->assignment.value);
+        const char *dst_ftype = Type_Is_Float(ty) ? Llvm_Float_Type((uint32_t)To_Bits(ty->size)) : "double";
         uint32_t t = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = sitofp i64 %%t%u to double\n", t, value);
+        Emit(cg, "  %%t%u = sitofp %s %%t%u to %s\n", t, src_type, value, dst_ftype);
         value = t;
     } else if (is_src_float and is_dst_float) {
         /* Float to float: may need conversion if sizes differ.
@@ -21161,6 +21186,7 @@ static void Generate_Return_Statement(Code_Generator *cg, Syntax_Node *node) {
 static void Generate_Case_Statement(Code_Generator *cg, Syntax_Node *node) {
     /* CASE expr IS WHEN choice => stmts; ... END CASE; */
     uint32_t selector = Generate_Expression(cg, node->case_stmt.expression);
+    const char *case_type = Expression_Llvm_Type(cg, node->case_stmt.expression);
     uint32_t end_label = Emit_Label(cg);
 
     /* Generate switch-like structure using branches */
@@ -21192,8 +21218,8 @@ static void Generate_Case_Statement(Code_Generator *cg, Syntax_Node *node) {
                 uint32_t cmp2 = Emit_Temp(cg);
                 uint32_t both = Emit_Temp(cg);
 
-                Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", cmp1, low, selector);
-                Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", cmp2, selector, high);
+                Emit(cg, "  %%t%u = icmp sle %s %%t%u, %%t%u\n", cmp1, case_type, low, selector);
+                Emit(cg, "  %%t%u = icmp sle %s %%t%u, %%t%u\n", cmp2, case_type, selector, high);
                 Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", both, cmp1, cmp2);
 
                 uint32_t next_choice = (j + 1 < alt->association.choices.count) ?
@@ -21219,20 +21245,20 @@ static void Generate_Case_Statement(Code_Generator *cg, Syntax_Node *node) {
                     low = Emit_Temp(cg);
                     high = Emit_Temp(cg);
                     if (st and st->low_bound.kind == BOUND_INTEGER) {
-                        Emit(cg, "  %%t%u = add i64 0, %lld\n", low,
+                        Emit(cg, "  %%t%u = add %s 0, %lld\n", low, Integer_Arith_Type(cg),
                              (long long)Type_Bound_Value(st->low_bound));
-                        Emit(cg, "  %%t%u = add i64 0, %lld\n", high,
+                        Emit(cg, "  %%t%u = add %s 0, %lld\n", high, Integer_Arith_Type(cg),
                              (long long)Type_Bound_Value(st->high_bound));
                     } else {
-                        Emit(cg, "  %%t%u = add i64 0, 0\n", low);
-                        Emit(cg, "  %%t%u = add i64 0, 0\n", high);
+                        Emit(cg, "  %%t%u = add %s 0, 0\n", low, Integer_Arith_Type(cg));
+                        Emit(cg, "  %%t%u = add %s 0, 0\n", high, Integer_Arith_Type(cg));
                     }
                 }
                 uint32_t cmp1 = Emit_Temp(cg);
                 uint32_t cmp2 = Emit_Temp(cg);
                 uint32_t both = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", cmp1, low, selector);
-                Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", cmp2, selector, high);
+                Emit(cg, "  %%t%u = icmp sle %s %%t%u, %%t%u\n", cmp1, case_type, low, selector);
+                Emit(cg, "  %%t%u = icmp sle %s %%t%u, %%t%u\n", cmp2, case_type, selector, high);
                 Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", both, cmp1, cmp2);
 
                 uint32_t next_choice = (j + 1 < alt->association.choices.count) ?
@@ -21248,7 +21274,7 @@ static void Generate_Case_Statement(Code_Generator *cg, Syntax_Node *node) {
                 uint32_t val = Generate_Expression(cg, choice);
                 uint32_t cmp = Emit_Temp(cg);
 
-                Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", cmp, selector, val);
+                Emit(cg, "  %%t%u = icmp eq %s %%t%u, %%t%u\n", cmp, case_type, selector, val);
 
                 uint32_t next_choice = (j + 1 < alt->association.choices.count) ?
                                        Emit_Label(cg) : next_check;
@@ -21300,11 +21326,12 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
     uint32_t saved_exit = cg->loop_exit_label;
     cg->loop_exit_label = loop_end;
 
-    /* Allocate loop variable if we have a symbol */
+    /* Allocate loop variable — GNAT LLVM: use native Integer type, not i64 */
+    const char *loop_type = Integer_Arith_Type(cg);
     if (loop_var) {
         Emit(cg, "  %%");
         Emit_Symbol_Name(cg, loop_var);
-        Emit(cg, " = alloca i64\n");
+        Emit(cg, " = alloca %s\n", loop_type);
     }
 
     /* Get range bounds */
@@ -21327,9 +21354,9 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
             uint32_t fat = Emit_Load_Fat_Pointer(cg, prefix_sym, loop_bt);
             low_val = Emit_Fat_Pointer_Low(cg, fat, loop_bt);
             high_val = Emit_Fat_Pointer_High(cg, fat, loop_bt);
-            /* Loop variable is i64 — widen bounds from native bt */
-            low_val = Emit_Widen_To_I64(cg, low_val, loop_bt);
-            high_val = Emit_Widen_To_I64(cg, high_val, loop_bt);
+            /* GNAT LLVM: convert bounds from native bt to loop type (no i64 widen) */
+            low_val = Emit_Convert(cg, low_val, loop_bt, loop_type);
+            high_val = Emit_Convert(cg, high_val, loop_bt, loop_type);
         } else if (Type_Is_Array_Like(prefix_type)) {
             /* Constrained array - use compile-time bounds */
             Syntax_Node *range_arg = range->attribute.arguments.count > 0
@@ -21337,10 +21364,10 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
             uint32_t dim = Get_Dimension_Index(range_arg);
             if (dim < prefix_type->array.index_count) {
                 low_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add i64 0, %lld  ; 'RANGE low\n", low_val,
+                Emit(cg, "  %%t%u = add %s 0, %lld  ; 'RANGE low\n", low_val, Integer_Arith_Type(cg),
                      (long long)Type_Bound_Value(prefix_type->array.indices[dim].low_bound));
                 high_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add i64 0, %lld  ; 'RANGE high\n", high_val,
+                Emit(cg, "  %%t%u = add %s 0, %lld  ; 'RANGE high\n", high_val, Integer_Arith_Type(cg),
                      (long long)Type_Bound_Value(prefix_type->array.indices[dim].high_bound));
             } else {
                 fprintf(stderr, "warning: FOR loop RANGE attribute dimension out of bounds, defaulting to 0\n");
@@ -21370,15 +21397,15 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
             Type_Info *subtype = range->type;
             if (subtype and subtype->low_bound.kind == BOUND_INTEGER) {
                 low_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add i64 0, %lld  ; subtype low\n", low_val,
+                Emit(cg, "  %%t%u = add %s 0, %lld  ; subtype low\n", low_val, Integer_Arith_Type(cg),
                      (long long)Type_Bound_Value(subtype->low_bound));
                 high_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add i64 0, %lld  ; subtype high\n", high_val,
+                Emit(cg, "  %%t%u = add %s 0, %lld  ; subtype high\n", high_val, Integer_Arith_Type(cg),
                      (long long)Type_Bound_Value(subtype->high_bound));
             } else {
                 fprintf(stderr, "warning: FOR loop subtype has no bounds, defaulting to 0\n");
                 low_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add i64 0, 0  ; no type info\n", low_val);
+                Emit(cg, "  %%t%u = add %s 0, 0  ; no type info\n", low_val, Integer_Arith_Type(cg));
                 high_val = low_val;
             }
         }
@@ -21387,15 +21414,15 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
         Type_Info *type = range->type;
         if (type and type->low_bound.kind == BOUND_INTEGER) {
             low_val = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = add i64 0, %lld  ; type low\n", low_val,
+            Emit(cg, "  %%t%u = add %s 0, %lld  ; type low\n", low_val, Integer_Arith_Type(cg),
                  (long long)Type_Bound_Value(type->low_bound));
             high_val = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = add i64 0, %lld  ; type high\n", high_val,
+            Emit(cg, "  %%t%u = add %s 0, %lld  ; type high\n", high_val, Integer_Arith_Type(cg),
                  (long long)Type_Bound_Value(type->high_bound));
         } else {
             fprintf(stderr, "warning: FOR loop type has no bounds, defaulting to 0\n");
             low_val = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = add i64 0, 0  ; no type bounds\n", low_val);
+            Emit(cg, "  %%t%u = add %s 0, 0  ; no type bounds\n", low_val, Integer_Arith_Type(cg));
             high_val = low_val;
         }
     } else {
@@ -21406,7 +21433,7 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
 
     /* Initialize loop variable */
     if (loop_var) {
-        Emit(cg, "  store i64 %%t%u, ptr %%", is_reverse ? high_val : low_val);
+        Emit(cg, "  store %s %%t%u, ptr %%", loop_type, is_reverse ? high_val : low_val);
         Emit_Symbol_Name(cg, loop_var);
         Emit(cg, "\n");
     }
@@ -21417,16 +21444,16 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
 
     uint32_t cur = Emit_Temp(cg);
     if (loop_var) {
-        Emit(cg, "  %%t%u = load i64, ptr %%", cur);
+        Emit(cg, "  %%t%u = load %s, ptr %%", cur, loop_type);
         Emit_Symbol_Name(cg, loop_var);
         Emit(cg, "\n");
     }
 
     uint32_t cond = Emit_Temp(cg);
     if (is_reverse) {
-        Emit(cg, "  %%t%u = icmp sge i64 %%t%u, %%t%u\n", cond, cur, low_val);
+        Emit(cg, "  %%t%u = icmp sge %s %%t%u, %%t%u\n", cond, loop_type, cur, low_val);
     } else {
-        Emit(cg, "  %%t%u = icmp sle i64 %%t%u, %%t%u\n", cond, cur, high_val);
+        Emit(cg, "  %%t%u = icmp sle %s %%t%u, %%t%u\n", cond, loop_type, cur, high_val);
     }
     Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cond, loop_body, loop_end);
 
@@ -21438,11 +21465,11 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
     if (loop_var) {
         uint32_t next = Emit_Temp(cg);
         if (is_reverse) {
-            Emit(cg, "  %%t%u = sub i64 %%t%u, 1\n", next, cur);
+            Emit(cg, "  %%t%u = sub %s %%t%u, 1\n", next, loop_type, cur);
         } else {
-            Emit(cg, "  %%t%u = add i64 %%t%u, 1\n", next, cur);
+            Emit(cg, "  %%t%u = add %s %%t%u, 1\n", next, loop_type, cur);
         }
-        Emit(cg, "  store i64 %%t%u, ptr %%", next);
+        Emit(cg, "  store %s %%t%u, ptr %%", loop_type, next);
         Emit_Symbol_Name(cg, loop_var);
         Emit(cg, "\n");
     }
@@ -21690,13 +21717,15 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                     }
 
                     /* Get entry index (simple entry, not family) */
+                    const char *eidx_t2 = Integer_Arith_Type(cg);
                     uint32_t entry_idx = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = add i64 0, %u  ; entry index (simple entry)\n",
-                         entry_idx, entry_sym->entry_index * 1000);
+                    Emit(cg, "  %%t%u = add %s 0, %u  ; entry index (simple entry)\n",
+                         entry_idx, eidx_t2, entry_sym->entry_index * 1000);
 
-                    /* Call runtime entry call function */
+                    /* Call runtime entry call function — widen entry index for RTS ABI */
+                    uint32_t entry_idx_64 = Emit_Widen_For_Intrinsic(cg, entry_idx, eidx_t2);
                     Emit(cg, "  call void @__ada_entry_call(ptr %%t%u, i64 %%t%u, ptr %%t%u)\n",
-                         task_ptr, entry_idx, param_block);
+                         task_ptr, entry_idx_64, param_block);
                 } else if (entry_sym and (entry_sym->kind == SYMBOL_PROCEDURE or
                                          entry_sym->kind == SYMBOL_FUNCTION)) {
                     /* Qualified procedure call like Pkg.Proc */
@@ -21842,22 +21871,24 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                 /* Get entry index - combine entry_sym's base index with family offset.
                  * For entry families: entry_idx = base * 1000 + family_arg
                  * For simple entries: entry_idx = base * 1000 */
+                const char *acc_eidx_t = Integer_Arith_Type(cg);
                 uint32_t entry_idx = Emit_Temp(cg);
                 uint32_t base_idx = node->accept_stmt.entry_sym ?
                                     node->accept_stmt.entry_sym->entry_index : 0;
                 if (node->accept_stmt.index) {
                     uint32_t idx_val = Generate_Expression(cg, node->accept_stmt.index);
-                    Emit(cg, "  %%t%u = add i64 %u, %%t%u  ; entry index (base + family)\n",
-                         entry_idx, base_idx * 1000, idx_val);
+                    Emit(cg, "  %%t%u = add %s %u, %%t%u  ; entry index (base + family)\n",
+                         entry_idx, acc_eidx_t, base_idx * 1000, idx_val);
                 } else {
-                    Emit(cg, "  %%t%u = add i64 0, %u  ; entry index (simple entry)\n",
-                         entry_idx, base_idx * 1000);
+                    Emit(cg, "  %%t%u = add %s 0, %u  ; entry index (simple entry)\n",
+                         entry_idx, acc_eidx_t, base_idx * 1000);
                 }
 
-                /* Wait for entry call - blocks until a caller arrives */
+                /* Wait for entry call — widen entry index for RTS ABI */
+                uint32_t entry_idx_64 = Emit_Widen_For_Intrinsic(cg, entry_idx, acc_eidx_t);
                 uint32_t caller_ptr = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = call ptr @__ada_accept_wait(i64 %%t%u)\n",
-                     caller_ptr, entry_idx);
+                     caller_ptr, entry_idx_64);
 
                 /* Generate parameters - allocate space and copy from caller's parameter block */
                 uint32_t param_idx = 0;
@@ -21951,22 +21982,24 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
 
                                 /* Get entry index - combine base index with family index.
                                  * Formula: entry_idx = base * 1000 + family_arg */
+                                const char *sel_eidx_t = Integer_Arith_Type(cg);
                                 uint32_t entry_idx = Emit_Temp(cg);
                                 uint32_t sel_base_idx = alt->accept_stmt.entry_sym ?
                                                         alt->accept_stmt.entry_sym->entry_index : 0;
                                 if (alt->accept_stmt.index) {
                                     uint32_t idx_val = Generate_Expression(cg, alt->accept_stmt.index);
-                                    Emit(cg, "  %%t%u = add i64 %u, %%t%u  ; entry index (base + family)\n",
-                                         entry_idx, sel_base_idx * 1000, idx_val);
+                                    Emit(cg, "  %%t%u = add %s %u, %%t%u  ; entry index (base + family)\n",
+                                         entry_idx, sel_eidx_t, sel_base_idx * 1000, idx_val);
                                 } else {
-                                    Emit(cg, "  %%t%u = add i64 0, %u  ; entry index (simple entry)\n",
-                                         entry_idx, sel_base_idx * 1000);
+                                    Emit(cg, "  %%t%u = add %s 0, %u  ; entry index (simple entry)\n",
+                                         entry_idx, sel_eidx_t, sel_base_idx * 1000);
                                 }
 
-                                /* Check if entry call is pending (non-blocking) */
+                                /* Check if entry call is pending — widen for RTS ABI */
+                                uint32_t entry_idx_64 = Emit_Widen_For_Intrinsic(cg, entry_idx, sel_eidx_t);
                                 uint32_t caller_ptr = Emit_Temp(cg);
                                 Emit(cg, "  %%t%u = call ptr @__ada_accept_try(i64 %%t%u)\n",
-                                     caller_ptr, entry_idx);
+                                     caller_ptr, entry_idx_64);
                                 uint32_t has_caller = Emit_Temp(cg);
                                 Emit(cg, "  %%t%u = icmp ne ptr %%t%u, null\n",
                                      has_caller, caller_ptr);
@@ -22432,7 +22465,7 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                         uint32_t src_low  = Emit_Fat_Pointer_Low(cg, fat_ptr, init_bt);
                         uint32_t src_high = Emit_Fat_Pointer_High(cg, fat_ptr, init_bt);
                         uint32_t len      = Emit_Fat_Pointer_Length(cg, fat_ptr, init_bt);
-                        uint32_t len_64   = Emit_Widen_To_I64(cg, len, init_bt);
+                        uint32_t len_64   = Emit_Widen_For_Intrinsic(cg, len, init_bt);
 
                         /* Allocate local data storage sized by source bounds */
                         uint32_t local_data = Emit_Temp(cg);
@@ -22522,9 +22555,9 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     scaled_val = (int64_t)(real_val / small + 0.5);  /* Round */
                 }
                 uint32_t init = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add i64 0, %lld  ; fixed-point precise\n",
-                     init, (long long)scaled_val);
-                Emit(cg, "  store i64 %%t%u, ptr %%", init);
+                Emit(cg, "  %%t%u = add %s 0, %lld  ; fixed-point precise\n",
+                     init, Integer_Arith_Type(cg), (long long)scaled_val);
+                Emit(cg, "  store %s %%t%u, ptr %%", Integer_Arith_Type(cg), init);
                 Emit_Symbol_Name(cg, sym);
                 Emit(cg, "\n");
             } else if (is_record and node->object_decl.init->kind == NK_AGGREGATE) {
@@ -22580,19 +22613,19 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     /* Get low bound (must be static since we checked for dynamic above) */
                     if (low_b.kind == BOUND_INTEGER) {
                         low_val = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = add i64 0, %lld\n", low_val, (long long)low_b.int_value);
+                        Emit(cg, "  %%t%u = add %s 0, %lld\n", low_val, Integer_Arith_Type(cg), (long long)low_b.int_value);
                     } else {
                         low_val = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = add i64 0, 1\n", low_val);  /* Default low = 1 */
+                        Emit(cg, "  %%t%u = add %s 0, 1\n", low_val, Integer_Arith_Type(cg));  /* Default low = 1 */
                     }
 
                     /* Get high bound (must be static) */
                     if (high_b.kind == BOUND_INTEGER) {
                         high_val = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = add i64 0, %lld\n", high_val, (long long)high_b.int_value);
+                        Emit(cg, "  %%t%u = add %s 0, %lld\n", high_val, Integer_Arith_Type(cg), (long long)high_b.int_value);
                     } else {
                         high_val = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = add i64 0, 0\n", high_val);  /* Default high = 0 */
+                        Emit(cg, "  %%t%u = add %s 0, 0\n", high_val, Integer_Arith_Type(cg));  /* Default high = 0 */
                     }
 
                     /* Construct fat pointer in-place */
@@ -22653,23 +22686,26 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                         (ty->array.element_type ? ty->array.element_type->size : 1);
                     if (e_sz == 0) e_sz = 1;
 
-                    uint32_t len_64 = Emit_Widen_To_I64(cg, len, uai_bt);
+                    const char *uai_iat = Integer_Arith_Type(cg);
+                    uint32_t len_cvt = Emit_Convert(cg, len, uai_bt, uai_iat);
                     uint32_t byte_len = Emit_Temp(cg);
                     if (e_sz == 1) {
-                        Emit(cg, "  %%t%u = add i64 %%t%u, 0  ; byte_len\n",
-                             byte_len, len_64);
+                        Emit(cg, "  %%t%u = add %s %%t%u, 0  ; byte_len\n",
+                             byte_len, uai_iat, len_cvt);
                     } else {
-                        Emit(cg, "  %%t%u = mul i64 %%t%u, %u  ; byte_len\n",
-                             byte_len, len_64, e_sz);
+                        Emit(cg, "  %%t%u = mul %s %%t%u, %u  ; byte_len\n",
+                             byte_len, uai_iat, len_cvt, e_sz);
                     }
 
+                    /* Widen byte_len to i64 for alloca and memcpy intrinsics */
+                    uint32_t byte_len_64 = Emit_Widen_For_Intrinsic(cg, byte_len, uai_iat);
                     uint32_t local_data = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = alloca i8, i64 %%t%u"
-                         "  ; uncon array init data\n", local_data, byte_len);
+                         "  ; uncon array init data\n", local_data, byte_len_64);
 
                     Emit(cg, "  call void @llvm.memcpy.p0.p0.i64("
                          "ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
-                         local_data, src_data, byte_len);
+                         local_data, src_data, byte_len_64);
 
                     uint32_t new_fat = Emit_Fat_Pointer_Dynamic(cg,
                         local_data, src_low, src_high, uai_bt);
@@ -22835,7 +22871,7 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                         val = Emit_Convert(cg, val, val_type, "i1");
                         Emit(cg, "  store i1 %%t%u, ptr %%t%u\n", val, comp_ptr);
                     } else {
-                        Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", val, comp_ptr);
+                        Emit(cg, "  store %s %%t%u, ptr %%t%u\n", val_type, val, comp_ptr);
                     }
                 }
             }
@@ -24208,8 +24244,8 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "define linkonce_odr i64 @__ada_integer_value(" FAT_PTR_TYPE " %%str) {\n");
     Emit(cg, "entry:\n");
     Emit_Fat_Pointer_Extractvalue_Named(cg, "str", "data", "low_bt", "high_bt", rts_sbt);
-    Emit_Widen_Named_To_I64(cg, "low_bt", "low", rts_sbt);
-    Emit_Widen_Named_To_I64(cg, "high_bt", "high", rts_sbt);
+    Emit_Widen_Named_For_Intrinsic(cg, "low_bt", "low", rts_sbt);
+    Emit_Widen_Named_For_Intrinsic(cg, "high_bt", "high", rts_sbt);
     Emit(cg, "  br label %%loop\n");
     Emit(cg, "loop:\n");
     Emit(cg, "  %%result = phi i64 [ 0, %%entry ], [ %%next_result, %%cont ]\n");
@@ -24647,7 +24683,7 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "  br i1 %%done, label %%exit, label %%body\n");
     Emit(cg, "body:\n");
     Emit(cg, "  %%idx_bt = sub %s %%i.next, %%lo\n", rts_sbt);
-    Emit_Widen_Named_To_I64(cg, "idx_bt", "idx", rts_sbt);
+    Emit_Widen_Named_For_Intrinsic(cg, "idx_bt", "idx", rts_sbt);
     Emit(cg, "  %%ptr = getelementptr i8, ptr %%data, i64 %%idx\n");
     Emit(cg, "  %%ch = load i8, ptr %%ptr\n");
     Emit(cg, "  %%chi = zext i8 %%ch to i32\n");
@@ -24713,7 +24749,7 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
         Emit(cg, "  %%lastch = load i8, ptr %%lastptr\n");
         Emit(cg, "  %%isnl = icmp eq i8 %%lastch, 10\n");
         Emit(cg, "  %%adjlen = select i1 %%isnl, i64 %%lastidx, i64 %%len\n");
-        Emit_Narrow_Named_From_I64(cg, "adjlen", "adjlen_bt", rts_sbt);
+        Emit_Narrow_Named_From_Intrinsic(cg, "adjlen", "adjlen_bt", rts_sbt);
         {
             char hi_expr[64];
             snprintf(hi_expr, sizeof(hi_expr), "%s %%adjlen_bt", rts_sbt);
@@ -24741,8 +24777,8 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
         Emit(cg, "entry:\n");
         Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 24)\n");
         Emit(cg, "  %%len32 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %%buf, i64 24, ptr @.img_fmt_d, i64 %%val)\n");
-        Emit_Widen_Named_To_I64(cg, "len32", "len64", "i32");  /* snprintf returns i32 */
-        Emit_Narrow_Named_From_I64(cg, "len64", "len_bt", rts_sbt);
+        Emit_Widen_Named_For_Intrinsic(cg, "len32", "len64", "i32");  /* snprintf returns i32 */
+        Emit_Narrow_Named_From_Intrinsic(cg, "len64", "len_bt", rts_sbt);
         snprintf(hi_expr, sizeof(hi_expr), "%s %%len_bt", rts_sbt);
         Emit_Fat_Pointer_Insertvalue_Named(cg, "fat", "ptr %buf", lo_expr, hi_expr, rts_sbt);
         Emit(cg, "  ret " FAT_PTR_TYPE " %%fat2\n");
@@ -24768,8 +24804,8 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
         Emit(cg, "entry:\n");
         Emit(cg, "  %%buf = call ptr @__ada_sec_stack_alloc(i64 32)\n");
         Emit(cg, "  %%len32 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %%buf, i64 32, ptr @.img_fmt_f, double %%val)\n");
-        Emit_Widen_Named_To_I64(cg, "len32", "flen64", "i32");  /* snprintf returns i32 */
-        Emit_Narrow_Named_From_I64(cg, "flen64", "flen_bt", rts_sbt);
+        Emit_Widen_Named_For_Intrinsic(cg, "len32", "flen64", "i32");  /* snprintf returns i32 */
+        Emit_Narrow_Named_From_Intrinsic(cg, "flen64", "flen_bt", rts_sbt);
         snprintf(hi_expr, sizeof(hi_expr), "%s %%flen_bt", rts_sbt);
         Emit_Fat_Pointer_Insertvalue_Named(cg, "fat", "ptr %buf", lo_expr, hi_expr, rts_sbt);
         Emit(cg, "  ret " FAT_PTR_TYPE " %%fat2\n");
