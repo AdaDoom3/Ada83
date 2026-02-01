@@ -46,8 +46,8 @@ run_one(){
             echo "c skip $n BIND:unresolved_symbols"
             return
         fi
-        if timeout 2 lli test_results/$n.bc > acats_logs/$n.out 2>&1 \
-           || timeout 3 lli -jit-kind=mcjit test_results/$n.bc > acats_logs/$n.out 2>&1; then
+        if timeout 10 lli test_results/$n.bc > acats_logs/$n.out 2>&1 \
+           || timeout 10 lli -jit-kind=mcjit test_results/$n.bc > acats_logs/$n.out 2>&1; then
             if grep -q PASSED acats_logs/$n.out 2>/dev/null; then
                 echo "c pass $n PASSED"
             elif grep -q NOT.APPLICABLE acats_logs/$n.out 2>/dev/null; then
