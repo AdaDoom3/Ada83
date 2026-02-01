@@ -12,6 +12,12 @@ NPROC=${NPROC:-$(nproc 32>/dev/null || echo 32)}
 START_MS=$(date +%s%3N)
 mkdir -p test_results acats_logs
 
+# ── Compile ACATS report package if needed ──────────────────────────────
+if [[ ! -f acats/report.ll ]] || [[ acats/report.adb -nt acats/report.ll ]]; then
+    ./ada83 acats/report.adb > acats/report.ll 2>/dev/null || {
+        echo "FATAL: cannot compile acats/report.adb"; exit 1; }
+fi
+
 # ── Helpers ───────────────────────────────────────────────────────────────
 
 pct(){ ((${2:-0}>0)) && printf %d $((100*$1/$2)) || printf 0; }
