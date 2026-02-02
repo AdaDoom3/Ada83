@@ -5828,6 +5828,7 @@ struct Type_Info {
 
             /* Discriminant constraint values (for constrained subtypes) */
             int64_t        *disc_constraint_values;  /* Array [discriminant_count] */
+            Syntax_Node   **disc_constraint_exprs;   /* Runtime expr nodes (NULL if static) */
             bool            has_disc_constraints;
         } record;
 
@@ -7879,6 +7880,128 @@ static Type_Info *Resolve_Selected(Symbol_Manager *sm, Syntax_Node *node) {
                     }
                 }
             }
+
+            /* Inherited enum literals for derived types (RM 3.4(12)).
+             * When a package has TYPE T IS NEW BOOLEAN, P.FALSE and P.TRUE
+             * must resolve to literals of T. Find a global literal matching
+             * the selector name whose type is a parent of some exported type. */
+            {
+                String_Slice sel = node->selected.selector;
+                uint32_t h = Symbol_Hash_Name(sel);
+                for (Scope *sc = sm->current_scope; sc; sc = sc->parent) {
+                    for (Symbol *lit = sc->buckets[h]; lit; lit = lit->next_in_bucket) {
+                        if (lit->kind != SYMBOL_LITERAL) continue;
+                        if (!Slice_Equal_Ignore_Case(lit->name, sel)) continue;
+                        Type_Info *lit_type = lit->type;
+                        if (!lit_type) continue;
+                        for (uint32_t i = 0; i < prefix_sym->exported_count; i++) {
+                            Symbol *es = prefix_sym->exported[i];
+                            if (es->kind != SYMBOL_TYPE and es->kind != SYMBOL_SUBTYPE) continue;
+                            Type_Info *et = es->type;
+                            if (!et) continue;
+                            /* Check if exported type == or derives from literal's type.
+                             * Walk both parent_type and base_type chains at each level
+                             * to handle anonymous intermediate types. */
+                            {
+                                Type_Info *anc = et;
+                                int depth = 0;
+                                while (anc and depth < 20) {
+                                    if (anc == lit_type) {
+                                        if (anc == et) {
+                                            node->symbol = lit;
+                                        } else {
+                                            Symbol *new_lit = Symbol_New(SYMBOL_LITERAL, sel, No_Location);
+                                            new_lit->type = et;
+                                            new_lit->frame_offset = lit->frame_offset;
+                                            node->symbol = new_lit;
+                                        }
+                                        node->type = et;
+                                        return node->type;
+                                    }
+                                    /* Try parent_type first, then base_type */
+                                    if (anc->parent_type) anc = anc->parent_type;
+                                    else if (anc->base_type) anc = anc->base_type;
+                                    else break;
+                                    depth++;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            /* Synthesize predefined operators for types declared in the package
+             * (RM 4.5). Every type implicitly declares =, /=, and for ordered
+             * types also <, <=, >, >=. Numeric types add +, -, *, /, etc.
+             * We lazily create these symbols when first referenced via P."op". */
+            {
+                String_Slice sel = node->selected.selector;
+                bool is_comparison = (Slice_Equal_Ignore_Case(sel, S("=")) or
+                                      Slice_Equal_Ignore_Case(sel, S("/=")) or
+                                      Slice_Equal_Ignore_Case(sel, S("<")) or
+                                      Slice_Equal_Ignore_Case(sel, S("<=")) or
+                                      Slice_Equal_Ignore_Case(sel, S(">")) or
+                                      Slice_Equal_Ignore_Case(sel, S(">=")));
+                bool is_logical = (Slice_Equal_Ignore_Case(sel, S("and")) or
+                                   Slice_Equal_Ignore_Case(sel, S("or")) or
+                                   Slice_Equal_Ignore_Case(sel, S("xor")) or
+                                   Slice_Equal_Ignore_Case(sel, S("not")));
+                bool is_arith = (Slice_Equal_Ignore_Case(sel, S("+")) or
+                                 Slice_Equal_Ignore_Case(sel, S("-")) or
+                                 Slice_Equal_Ignore_Case(sel, S("*")) or
+                                 Slice_Equal_Ignore_Case(sel, S("/")) or
+                                 Slice_Equal_Ignore_Case(sel, S("mod")) or
+                                 Slice_Equal_Ignore_Case(sel, S("rem")) or
+                                 Slice_Equal_Ignore_Case(sel, S("**")) or
+                                 Slice_Equal_Ignore_Case(sel, S("abs")));
+                bool is_concat = Slice_Equal_Ignore_Case(sel, S("&"));
+                if (is_comparison or is_arith or is_logical or is_concat) {
+                    /* Find first type in the package's exports */
+                    Type_Info *op_type = NULL;
+                    for (uint32_t i = 0; i < prefix_sym->exported_count; i++) {
+                        Symbol *es = prefix_sym->exported[i];
+                        if (es->kind == SYMBOL_TYPE and es->type) {
+                            bool type_ok = false;
+                            if (is_comparison) type_ok = true;  /* All types have = /= < etc */
+                            else if (is_arith) type_ok = Type_Is_Numeric(es->type);
+                            else if (is_logical) type_ok = Type_Is_Boolean(es->type) or
+                                    (Type_Is_Array_Like(es->type) and es->type->array.element_type and
+                                     Type_Is_Boolean(es->type->array.element_type));
+                            else if (is_concat) type_ok = Type_Is_Array_Like(es->type);
+                            if (type_ok) { op_type = es->type; break; }
+                        }
+                    }
+                    if (op_type) {
+                        bool is_unary = (Slice_Equal_Ignore_Case(sel, S("abs")) or
+                                         Slice_Equal_Ignore_Case(sel, S("not")));
+                        bool returns_bool = is_comparison;
+                        /* Create a synthetic predefined operator symbol */
+                        Symbol *op_sym = Symbol_New(SYMBOL_FUNCTION, sel, No_Location);
+                        op_sym->is_predefined = true;
+                        op_sym->return_type = returns_bool ? sm->type_boolean : op_type;
+                        if (is_unary) {
+                            op_sym->parameter_count = 1;
+                            op_sym->parameters = Arena_Allocate(1 * sizeof(Parameter_Info));
+                            op_sym->parameters[0] = (Parameter_Info){S("RIGHT"), op_type, PARAM_IN, NULL};
+                        } else {
+                            op_sym->parameter_count = 2;
+                            op_sym->parameters = Arena_Allocate(2 * sizeof(Parameter_Info));
+                            op_sym->parameters[0] = (Parameter_Info){S("LEFT"), op_type, PARAM_IN, NULL};
+                            op_sym->parameters[1] = (Parameter_Info){S("RIGHT"), op_type, PARAM_IN, NULL};
+                        }
+                        /* Install in package scope for future lookups */
+                        if (prefix_sym->scope) {
+                            uint32_t h = Symbol_Hash_Name(sel);
+                            op_sym->defining_scope = prefix_sym->scope;
+                            op_sym->next_in_bucket = prefix_sym->scope->buckets[h];
+                            prefix_sym->scope->buckets[h] = op_sym;
+                        }
+                        node->symbol = op_sym;
+                        node->type = op_sym->return_type;
+                        return node->type;
+                    }
+                }
+            }
         }
         /* For procedure/function prefix, search the subprogram's scope.
          * This handles cases like MAIN.A_B_C where MAIN is a procedure
@@ -9623,6 +9746,10 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                                                comp->component.component_type->type : sm->type_integer;
                         uint32_t comp_size = comp_type ? comp_type->size : 8;
                         if (comp->component.init) {
+                            /* Propagate component type to aggregate inits */
+                            if (comp->component.init->kind == NK_AGGREGATE and
+                                not comp->component.init->type and comp_type)
+                                comp->component.init->type = comp_type;
                             Resolve_Expression(sm, comp->component.init);
                         }
                         for (uint32_t j = 0; j < comp->component.names.count; j++) {
@@ -9705,6 +9832,9 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                                                        vc->component.component_type->type : sm->type_integer;
                                 uint32_t comp_size = comp_type ? comp_type->size : 8;
                                 if (vc->component.init) {
+                                    if (vc->component.init->kind == NK_AGGREGATE and
+                                        not vc->component.init->type and comp_type)
+                                        vc->component.init->type = comp_type;
                                     Resolve_Expression(sm, vc->component.init);
                                 }
                                 for (uint32_t k = 0; k < vc->component.names.count; k++) {
@@ -9735,6 +9865,9 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                                                                nc->component.component_type->type : sm->type_integer;
                                         uint32_t comp_size = comp_type ? comp_type->size : 8;
                                         if (nc->component.init) {
+                                            if (nc->component.init->kind == NK_AGGREGATE and
+                                                not nc->component.init->type and comp_type)
+                                                nc->component.init->type = comp_type;
                                             Resolve_Expression(sm, nc->component.init);
                                         }
                                         for (uint32_t k = 0; k < nc->component.names.count; k++) {
@@ -10128,6 +10261,30 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                     return constrained;
                 }
 
+                /* Reclassify NK_INDEX_CONSTRAINT as discriminant constraint
+                 * when the base type is a discriminated record (RM 3.7.2).
+                 * Positional discriminant constraints like R1(IDENT_BOOL(TRUE))
+                 * get parsed as NK_INDEX_CONSTRAINT because they lack named assocs.
+                 * Convert each range item to a positional association. */
+                if (constraint and constraint->kind == NK_INDEX_CONSTRAINT and
+                    Type_Is_Record(base_type) and base_type->record.has_discriminants) {
+                    Syntax_Node *disc_c = Node_New(NK_DISCRIMINANT_CONSTRAINT, constraint->location);
+                    disc_c->discriminant_constraint.associations.count = constraint->index_constraint.ranges.count;
+                    disc_c->discriminant_constraint.associations.capacity = constraint->index_constraint.ranges.capacity;
+                    disc_c->discriminant_constraint.associations.items = Arena_Allocate(
+                        disc_c->discriminant_constraint.associations.count * sizeof(Syntax_Node *));
+                    for (uint32_t i = 0; i < constraint->index_constraint.ranges.count; i++) {
+                        Syntax_Node *expr = constraint->index_constraint.ranges.items[i];
+                        /* Wrap each expression in an association node (positional) */
+                        Syntax_Node *assoc = Node_New(NK_ASSOCIATION, expr->location);
+                        assoc->association.expression = expr;
+                        assoc->association.choices.count = 0;
+                        disc_c->discriminant_constraint.associations.items[i] = assoc;
+                    }
+                    node->subtype_ind.constraint = disc_c;
+                    constraint = disc_c;
+                }
+
                 /* Check for discriminant constraint (REC(A => E1, B => E2) style)
                  * Discriminant constraints use named associations where the choices
                  * are discriminant names - they should NOT be resolved as identifiers.
@@ -10150,22 +10307,29 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                         constrained->record.is_constrained = true;
                         constrained->record.has_disc_constraints = true;
 
-                        /* Allocate and fill constraint value array */
+                        /* Allocate and fill constraint value + expression arrays */
                         uint32_t dc = base_type->record.discriminant_count;
                         constrained->record.disc_constraint_values = Arena_Allocate(
                             dc * sizeof(int64_t));
+                        constrained->record.disc_constraint_exprs = Arena_Allocate(
+                            dc * sizeof(Syntax_Node *));
                         for (uint32_t ci = 0; ci < dc; ci++) {
                             constrained->record.disc_constraint_values[ci] = 0;
+                            constrained->record.disc_constraint_exprs[ci] = NULL;
                         }
 
-                        /* Extract static discriminant values from associations */
+                        /* Extract discriminant values from associations.
+                         * For static values, store the integer. For runtime expressions
+                         * (function calls etc.), store the AST node for codegen evaluation. */
                         for (uint32_t i = 0; i < assoc_count; i++) {
                             Syntax_Node *assoc = constraint->discriminant_constraint.associations.items[i];
                             if (assoc->kind != NK_ASSOCIATION) continue;
                             Syntax_Node *expr = assoc->association.expression;
                             int64_t val = 0;
+                            bool is_static = false;
                             if (expr and expr->kind == NK_INTEGER) {
                                 val = expr->integer_lit.value;
+                                is_static = true;
                             } else if (expr and expr->kind == NK_IDENTIFIER and expr->symbol and
                                        expr->symbol->type and Type_Is_Enumeration(expr->symbol->type)) {
                                 /* Enum literal: find position */
@@ -10177,13 +10341,16 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                                         break;
                                     }
                                 }
+                                is_static = true;
+                            } else if (expr and expr->kind == NK_IDENTIFIER and expr->symbol and
+                                       expr->symbol->kind == SYMBOL_CONSTANT) {
+                                /* Named number or constant */
+                                double cv = Eval_Const_Numeric(expr);
+                                if (cv == cv) { val = (int64_t)cv; is_static = true; }
                             }
 
                             /* Match association to discriminant by position or name */
                             if (assoc->association.choices.count > 0) {
-                                /* Named: find discriminant index by name for ALL choices.
-                                 * Handles A|B => E2 (or Anot B => E2) where multiple
-                                 * discriminants share the same constraint value. */
                                 for (uint32_t ci = 0; ci < assoc->association.choices.count; ci++) {
                                     Syntax_Node *choice = assoc->association.choices.items[ci];
                                     if (choice->kind == NK_IDENTIFIER) {
@@ -10192,6 +10359,8 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                                                     constrained->record.components[di].name,
                                                     choice->string_val.text)) {
                                                 constrained->record.disc_constraint_values[di] = val;
+                                                if (not is_static)
+                                                    constrained->record.disc_constraint_exprs[di] = expr;
                                                 break;
                                             }
                                         }
@@ -10200,6 +10369,8 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                             } else if (i < dc) {
                                 /* Positional */
                                 constrained->record.disc_constraint_values[i] = val;
+                                if (not is_static)
+                                    constrained->record.disc_constraint_exprs[i] = expr;
                             }
                         }
 
@@ -10522,10 +10693,15 @@ static void Populate_Package_Exports(Symbol *pkg_sym, Syntax_Node *pkg_spec) {
             count += (uint32_t)decl->object_decl.names.count;
         } else if (decl->kind == NK_TYPE_DECL or decl->kind == NK_SUBTYPE_DECL) {
             count++;
-            /* Enumeration literals */
+            /* Enumeration literals (direct or inherited from derived type) */
             if (decl->type_decl.definition and
                 decl->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
                 count += (uint32_t)decl->type_decl.definition->enum_type.literals.count;
+            } else if (decl->symbol and decl->symbol->type and
+                       Type_Is_Enumeration(decl->symbol->type) and
+                       decl->symbol->type->enumeration.literal_count > 0) {
+                /* Derived enum type: count inherited literals */
+                count += decl->symbol->type->enumeration.literal_count;
             }
         } else if (decl->kind == NK_PROCEDURE_SPEC or decl->kind == NK_FUNCTION_SPEC or
                    decl->kind == NK_PROCEDURE_BODY or decl->kind == NK_FUNCTION_BODY) {
@@ -10567,6 +10743,34 @@ static void Populate_Package_Exports(Symbol *pkg_sym, Syntax_Node *pkg_spec) {
                 for (uint32_t j = 0; j < lits->count; j++) {
                     if (lits->items[j]->symbol) {
                         pkg_sym->exported[pkg_sym->exported_count++] = lits->items[j]->symbol;
+                    }
+                }
+            } else if (decl->symbol->type and Type_Is_Enumeration(decl->symbol->type) and
+                       decl->symbol->type->enumeration.literal_count > 0) {
+                /* Derived enum type: export inherited literal symbols.
+                 * These were created during NK_TYPE_DECL resolution for NK_DERIVED_TYPE. */
+                Type_Info *etype = decl->symbol->type;
+                for (uint32_t j = 0; j < etype->enumeration.literal_count; j++) {
+                    String_Slice lit_name = etype->enumeration.literals[j];
+                    /* Find the literal symbol with matching name and type in scope */
+                    bool found = false;
+                    if (pkg_sym->scope) {
+                        uint32_t h = Symbol_Hash_Name(lit_name);
+                        for (Symbol *s = pkg_sym->scope->buckets[h]; s; s = s->next_in_bucket) {
+                            if (s->kind == SYMBOL_LITERAL and s->type == etype and
+                                Slice_Equal_Ignore_Case(s->name, lit_name)) {
+                                pkg_sym->exported[pkg_sym->exported_count++] = s;
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                    /* If not found in scope (e.g., overloaded away), create a new symbol */
+                    if (!found) {
+                        Symbol *lit_sym = Symbol_New(SYMBOL_LITERAL, lit_name, decl->location);
+                        lit_sym->type = etype;
+                        lit_sym->frame_offset = (int64_t)j;
+                        pkg_sym->exported[pkg_sym->exported_count++] = lit_sym;
                     }
                 }
             }
@@ -13263,6 +13467,19 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                     lit->symbol = lit_sym;
                                 }
                             }
+                            /* For derived enumeration types (TYPE T IS NEW BOOLEAN),
+                             * create inherited literal symbols (RM 3.4(12)) */
+                            if (node->type_decl.definition and
+                                node->type_decl.definition->kind == NK_DERIVED_TYPE and
+                                type->enumeration.literals and type->enumeration.literal_count > 0) {
+                                for (uint32_t i = 0; i < type->enumeration.literal_count; i++) {
+                                    String_Slice lit_name = type->enumeration.literals[i];
+                                    Symbol *lit_sym = Symbol_New(SYMBOL_LITERAL, lit_name, node->location);
+                                    lit_sym->type = type;
+                                    lit_sym->frame_offset = (int64_t)i;
+                                    Symbol_Add(sm, lit_sym);
+                                }
+                            }
                         }
                     }
                 }
@@ -13824,6 +14041,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                 node->symbol = sym;
 
                 Symbol_Manager_Push_Scope(sm, sym);
+                sym->scope = sm->current_scope;  /* Link scope to symbol for P.X lookups */
                 Resolve_Declaration_List(sm, &node->package_spec.visible_decls);
                 Resolve_Declaration_List(sm, &node->package_spec.private_decls);
                 /* End of package spec freezes all declared entities (RM 13.14) */
@@ -19429,12 +19647,13 @@ static uint32_t Generate_Unary_Op(Code_Generator *cg, Syntax_Node *node) {
     uint32_t operand = Generate_Expression(cg, node->unary.operand);
     uint32_t t = Emit_Temp(cg);
     Type_Info *op_type_info = node->unary.operand->type;
-    bool is_float = Type_Is_Real(op_type_info);
+    bool is_float = Type_Is_Float_Representation(op_type_info);
 
     /* Determine LLVM float type from operand type */
     const char *float_type = Float_Llvm_Type_Of(op_type_info);
 
-    /* GNAT LLVM: determine native integer type for unary operations. */
+    /* GNAT LLVM: determine native integer type for unary operations.
+     * Fixed-point types use integer representation at LLVM level. */
     const char *unary_int_type = is_float ? Integer_Arith_Type(cg) : Expression_Llvm_Type(cg, node->unary.operand);
 
     switch (node->unary.op) {
@@ -19569,6 +19788,102 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         } else {
             break;
         }
+    }
+
+    /* Predefined operator called as function: P."="(X,Y) or P."/="(X,Y) etc.
+     * These have is_predefined set and no body - generate inline operations. */
+    if (sym and sym->is_predefined and node->apply.arguments.count >= 1) {
+        String_Slice op_name = sym->name;
+        uint32_t argc = (uint32_t)node->apply.arguments.count;
+        /* Get first argument */
+        Syntax_Node *arg0 = node->apply.arguments.items[0];
+        if (arg0->kind == NK_ASSOCIATION) arg0 = arg0->association.expression;
+        uint32_t v0 = Generate_Expression(cg, arg0);
+        const char *t0 = Expression_Llvm_Type(cg, arg0);
+        Type_Info *ty0 = arg0->type;
+
+        if (argc == 2) {
+            Syntax_Node *arg1 = node->apply.arguments.items[1];
+            if (arg1->kind == NK_ASSOCIATION) arg1 = arg1->association.expression;
+            uint32_t v1 = Generate_Expression(cg, arg1);
+            const char *t1 = Expression_Llvm_Type(cg, arg1);
+
+            /* Widen to common type */
+            const char *ct = Wider_Int_Type(cg, t0, t1);
+            bool uns = Type_Is_Unsigned(ty0);
+            v0 = Emit_Convert_Ext(cg, v0, t0, ct, uns);
+            v1 = Emit_Convert_Ext(cg, v1, t1, ct, uns);
+
+            /* Comparison operators */
+            int cmp_tk = -1;
+            if (Slice_Equal_Ignore_Case(op_name, S("=")))  cmp_tk = TK_EQ;
+            else if (Slice_Equal_Ignore_Case(op_name, S("/="))) cmp_tk = TK_NE;
+            else if (Slice_Equal_Ignore_Case(op_name, S("<")))  cmp_tk = TK_LT;
+            else if (Slice_Equal_Ignore_Case(op_name, S("<="))) cmp_tk = TK_LE;
+            else if (Slice_Equal_Ignore_Case(op_name, S(">")))  cmp_tk = TK_GT;
+            else if (Slice_Equal_Ignore_Case(op_name, S(">="))) cmp_tk = TK_GE;
+            if (cmp_tk >= 0) {
+                uint32_t r = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp %s %s %%t%u, %%t%u  ; predef %.*s\n",
+                     r, Int_Cmp_Predicate(cmp_tk, uns), ct, v0, v1,
+                     (int)op_name.length, op_name.data);
+                Temp_Set_Type(cg, r, "i1");
+                return r;
+            }
+            /* Arithmetic operators */
+            const char *arith_op = NULL;
+            if (Slice_Equal_Ignore_Case(op_name, S("+")))   arith_op = "add";
+            else if (Slice_Equal_Ignore_Case(op_name, S("-")))   arith_op = "sub";
+            else if (Slice_Equal_Ignore_Case(op_name, S("*")))   arith_op = "mul";
+            else if (Slice_Equal_Ignore_Case(op_name, S("/")))   arith_op = uns ? "udiv" : "sdiv";
+            else if (Slice_Equal_Ignore_Case(op_name, S("mod"))) arith_op = uns ? "urem" : "srem";
+            else if (Slice_Equal_Ignore_Case(op_name, S("rem"))) arith_op = uns ? "urem" : "srem";
+            if (arith_op) {
+                uint32_t r = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = %s %s %%t%u, %%t%u  ; predef %.*s\n",
+                     r, arith_op, ct, v0, v1,
+                     (int)op_name.length, op_name.data);
+                return r;
+            }
+            /* Boolean operators */
+            if (Slice_Equal_Ignore_Case(op_name, S("and")) or
+                Slice_Equal_Ignore_Case(op_name, S("or")) or
+                Slice_Equal_Ignore_Case(op_name, S("xor"))) {
+                const char *bool_op = Slice_Equal_Ignore_Case(op_name, S("and")) ? "and" :
+                                      Slice_Equal_Ignore_Case(op_name, S("or")) ? "or" : "xor";
+                v0 = Emit_Convert(cg, v0, t0, "i1");
+                v1 = Emit_Convert(cg, v1, t1, "i1");
+                uint32_t r = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = %s i1 %%t%u, %%t%u\n", r, bool_op, v0, v1);
+                Temp_Set_Type(cg, r, "i1");
+                return r;
+            }
+        } else if (argc == 1) {
+            /* Unary operators: abs, not, unary - */
+            if (Slice_Equal_Ignore_Case(op_name, S("abs"))) {
+                uint32_t neg = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = sub %s 0, %%t%u\n", neg, t0, v0);
+                uint32_t cmp = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp slt %s %%t%u, 0\n", cmp, t0, v0);
+                uint32_t r = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n",
+                     r, cmp, t0, neg, t0, v0);
+                return r;
+            }
+            if (Slice_Equal_Ignore_Case(op_name, S("not"))) {
+                v0 = Emit_Convert(cg, v0, t0, "i1");
+                uint32_t r = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = xor i1 %%t%u, true\n", r, v0);
+                Temp_Set_Type(cg, r, "i1");
+                return r;
+            }
+            if (Slice_Equal_Ignore_Case(op_name, S("-"))) {
+                uint32_t r = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = sub %s 0, %%t%u\n", r, t0, v0);
+                return r;
+            }
+        }
+        /* Fall through to regular call for unhandled operators */
     }
 
     /* Generic formal subprogram substitution: if calling a formal subprogram
@@ -20405,16 +20720,18 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
 
         if (elem_is_composite and elem_size > 0) {
             /* Composite element - use byte array for getelementptr */
-            Emit(cg, "  %%t%u = getelementptr [%u x i8], ptr %%t%u, %s %%t%u\n",
-                 ptr, elem_size, base, idx_iat, flat_idx);
+            Emit(cg, "  %%t%u = getelementptr [%u x i8], ptr %%t%u, %s %%t%u"
+                 "  ; array[idx] (composite elem, size=%u)\n",
+                 ptr, elem_size, base, idx_iat, flat_idx, elem_size);
             /* Return pointer to composite element (don't load) */
             return ptr;
         } else {
             t = Emit_Temp(cg);
             const char *iat_idx = Integer_Arith_Type(cg);
-            Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, %s %%t%u\n",
-                 ptr, elem_type, base, iat_idx, flat_idx);
-            Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, elem_type, ptr);
+            Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, %s %%t%u"
+                 "  ; &array[idx] (elem_type=%s)\n",
+                 ptr, elem_type, base, iat_idx, flat_idx, elem_type);
+            Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; array[idx]\n", t, elem_type, ptr);
             /* GNAT LLVM: no widening at load — value stays at native type width.
              * Conversions happen at use sites via Emit_Convert. */
             return t;
@@ -20652,11 +20969,13 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
     /* For access-type components, load ptr without converting to i64 */
     if (Type_Is_Access(field_type)) {
         uint32_t t = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = load ptr, ptr %%t%u\n", t, ptr);
+        Emit(cg, "  %%t%u = load ptr, ptr %%t%u  ; .%.*s (access)\n", t, ptr,
+             node->selected.selector.length > 20 ? 20 : (int)node->selected.selector.length, node->selected.selector.data);
         return t;
     }
     uint32_t t = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, field_llvm_type, ptr);
+    Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; .%.*s\n", t, field_llvm_type, ptr,
+         node->selected.selector.length > 20 ? 20 : (int)node->selected.selector.length, node->selected.selector.data);
     /* GNAT LLVM: no widening at load — value stays at native type width.
      * Conversions happen at use sites via Emit_Convert. */
     return t;
@@ -25117,15 +25436,17 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     small_br->significand->limbs[0] = (uint64_t)(small * 1e15 + 0.5);
                     small_br->significand->count = 1;
                     small_br->exponent = -15;
-                    /* Use double for final division - Big_Real provides precise numerator */
-                    scaled_val = (int64_t)(Big_Real_To_Double(big_val) / small + 0.5);
+                    /* Use double for final division - Big_Real provides precise numerator.
+                     * Use round() for correct rounding of negative values. */
+                    scaled_val = (int64_t)round(Big_Real_To_Double(big_val) / small);
                 } else {
-                    scaled_val = (int64_t)(real_val / small + 0.5);  /* Round */
+                    scaled_val = (int64_t)round(real_val / small);
                 }
                 uint32_t init = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, %lld  ; fixed-point precise\n",
-                     init, Integer_Arith_Type(cg), (long long)scaled_val);
-                Emit(cg, "  store %s %%t%u, ptr %%", Integer_Arith_Type(cg), init);
+                const char *fix_store_type = Type_To_Llvm(ty);
+                Emit(cg, "  %%t%u = add %s 0, %lld  ; fixed-point scaled (small=%g)\n",
+                     init, fix_store_type, (long long)scaled_val, small);
+                Emit(cg, "  store %s %%t%u, ptr %%", fix_store_type, init);
                 Emit_Symbol_Name(cg, sym);
                 Emit(cg, "\n");
             } else if (is_record and node->object_decl.init->kind == NK_AGGREGATE) {
@@ -25146,8 +25467,14 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                         Emit(cg, ", i64 %u  ; disc %.*s\n", dc->byte_offset,
                              (int)dc->name.length, dc->name.data);
                         const char *dt = Type_To_Llvm(dc->component_type);
-                        Emit(cg, "  store %s %lld, ptr %%t%u\n", dt,
-                             (long long)ty->record.disc_constraint_values[di], dp);
+                        if (ty->record.disc_constraint_exprs and ty->record.disc_constraint_exprs[di]) {
+                            uint32_t val = Generate_Expression(cg, ty->record.disc_constraint_exprs[di]);
+                            val = Emit_Coerce_Default_Int(cg, val, dt);
+                            Emit(cg, "  store %s %%t%u, ptr %%t%u  ; disc runtime\n", dt, val, dp);
+                        } else {
+                            Emit(cg, "  store %s %lld, ptr %%t%u\n", dt,
+                                 (long long)ty->record.disc_constraint_values[di], dp);
+                        }
                     }
                     sym->is_disc_constrained = true;
                 }
@@ -25325,6 +25652,22 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     Emit_Constraint_Check_With_Type(cg, init, ty, init_src_type, src_type_str);
                 }
 
+                /* Float → fixed-point: scale by SMALL before integer conversion.
+                 * Fixed-point values are stored as scaled integers: val / SMALL.
+                 * Without this, fptosi would just truncate the float value. */
+                if (ty and Type_Is_Fixed_Point(ty) and Is_Float_Type(src_type_str)) {
+                    double small = ty->fixed.small;
+                    if (small <= 0) small = ty->fixed.delta > 0 ? ty->fixed.delta : 1.0;
+                    uint64_t sb; memcpy(&sb, &small, sizeof(sb));
+                    uint32_t small_t = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; small=%g\n",
+                         small_t, (unsigned long long)sb, small);
+                    uint32_t div_t = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = fdiv %s %%t%u, %%t%u  ; float/SMALL for fixed-point\n",
+                         div_t, src_type_str, init, small_t);
+                    init = div_t;
+                }
+
                 /* Convert if types differ, then store */
                 init = Emit_Convert(cg, init, src_type_str, type_str);
 
@@ -25460,8 +25803,15 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     Emit(cg, ", i64 %u  ; disc %.*s init\n", dc->byte_offset,
                          (int)dc->name.length, dc->name.data);
                     const char *dt = Type_To_Llvm(dc->component_type);
-                    Emit(cg, "  store %s %lld, ptr %%t%u\n", dt,
-                         (long long)ty->record.disc_constraint_values[di], dp);
+                    /* Use runtime expression if available, else static value */
+                    if (ty->record.disc_constraint_exprs and ty->record.disc_constraint_exprs[di]) {
+                        uint32_t val = Generate_Expression(cg, ty->record.disc_constraint_exprs[di]);
+                        val = Emit_Coerce_Default_Int(cg, val, dt);
+                        Emit(cg, "  store %s %%t%u, ptr %%t%u  ; disc runtime init\n", dt, val, dp);
+                    } else {
+                        Emit(cg, "  store %s %lld, ptr %%t%u\n", dt,
+                             (long long)ty->record.disc_constraint_values[di], dp);
+                    }
                 }
                 sym->is_disc_constrained = true;
             }
@@ -25760,7 +26110,7 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
     for (uint32_t i = 0; i < sym->parameter_count; i++) {
         Symbol *param_sym = sym->parameters[i].param_sym;
         if (param_sym) {
-            const char *type_str = Type_To_Llvm(sym->parameters[i].param_type);
+            const char *type_str = Type_To_Llvm_Sig(sym->parameters[i].param_type);
             Parameter_Mode mode = sym->parameters[i].mode;
 
             if (Param_Is_By_Reference(mode)) {
@@ -26718,8 +27068,56 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
          * machine code — the Type_Info computed in the semantic pass fully
          * describes the representation.  We emit a comment for traceability. */
         case NK_TYPE_DECL:
+            break;
+
         case NK_SUBTYPE_DECL:
-            break;  /* Elaboration handled by semantic pass */
+        {
+            /* Subtype elaboration constraint check (RM 3.3.2(7)):
+             * For "subtype S is T range L..H", check that L and H are
+             * within T's range. Raise CONSTRAINT_ERROR if not. */
+            Symbol *sub_sym = node->symbol;
+            Type_Info *sub_type = sub_sym ? sub_sym->type : NULL;
+            if (sub_type and sub_type->base_type) {
+                Type_Info *parent = sub_type->base_type;
+                bool is_scalar = (sub_type->kind == TYPE_INTEGER or
+                                  sub_type->kind == TYPE_ENUMERATION or
+                                  sub_type->kind == TYPE_FLOAT or
+                                  sub_type->kind == TYPE_FIXED or
+                                  sub_type->kind == TYPE_CHARACTER or
+                                  sub_type->kind == TYPE_MODULAR);
+                /* Only check scalar subtypes with both bounds known */
+                bool sub_lo_ok = (sub_type->low_bound.kind == BOUND_INTEGER or
+                                  sub_type->low_bound.kind == BOUND_FLOAT);
+                bool sub_hi_ok = (sub_type->high_bound.kind == BOUND_INTEGER or
+                                  sub_type->high_bound.kind == BOUND_FLOAT);
+                bool par_lo_ok = (parent->low_bound.kind == BOUND_INTEGER or
+                                  parent->low_bound.kind == BOUND_FLOAT);
+                bool par_hi_ok = (parent->high_bound.kind == BOUND_INTEGER or
+                                  parent->high_bound.kind == BOUND_FLOAT);
+                if (is_scalar and sub_lo_ok and sub_hi_ok and par_lo_ok and par_hi_ok) {
+                    /* Check if subtype range is a non-null range */
+                    int64_t sub_lo = sub_type->low_bound.kind == BOUND_INTEGER ?
+                        (int64_t)sub_type->low_bound.int_value : (int64_t)sub_type->low_bound.float_value;
+                    int64_t sub_hi = sub_type->high_bound.kind == BOUND_INTEGER ?
+                        (int64_t)sub_type->high_bound.int_value : (int64_t)sub_type->high_bound.float_value;
+                    int64_t par_lo = parent->low_bound.kind == BOUND_INTEGER ?
+                        (int64_t)parent->low_bound.int_value : (int64_t)parent->low_bound.float_value;
+                    int64_t par_hi = parent->high_bound.kind == BOUND_INTEGER ?
+                        (int64_t)parent->high_bound.int_value : (int64_t)parent->high_bound.float_value;
+                    /* Only non-null ranges need checking (RM 3.3.2(8)) */
+                    if (sub_lo <= sub_hi) {
+                        if (sub_lo < par_lo or sub_hi > par_hi) {
+                            /* Static violation: always raise */
+                            Emit_Raise_Constraint_Error(cg, "subtype elaboration check");
+                            uint32_t cont = Emit_Label(cg);
+                            Emit(cg, "L%u:\n", cont);
+                            cg->block_terminated = false;
+                        }
+                    }
+                }
+            }
+            break;
+        }
 
         /* Other declaration kinds that need no codegen */
         case NK_EXCEPTION_DECL:
