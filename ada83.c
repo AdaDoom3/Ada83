@@ -5786,9 +5786,10 @@ struct Type_Info {
     String_Slice name;
     Symbol      *defining_symbol;
 
-    /* Size and alignment in BYTES (not bitsnot ) */
+    /* Size and alignment in BYTES (not bits) */
     uint32_t     size;
     uint32_t     alignment;
+    uint32_t     specified_bit_size;  /* Exact 'SIZE from rep clause (0 = not specified) */
 
     /* Scalar bounds */
     Type_Bound   low_bound;
@@ -6110,6 +6111,13 @@ static inline bool Expression_Produces_Fat_Pointer(const Syntax_Node *node,
         if (Expression_Is_Slice(node))
             return true;
     }
+    /* Identifier-based check: if the node's own type has dynamic bounds or is
+     * unconstrained, Generate_Identifier will load it as a fat pointer value. */
+    if (node and node->kind == NK_IDENTIFIER and node->type) {
+        const Type_Info *nty = node->type;
+        if (Type_Has_Dynamic_Bounds(nty) or Type_Is_Unconstrained_Array(nty))
+            return true;
+    }
     /* Type-based checks: constrained arrays with STATIC bounds are flat allocas.
      * Constrained arrays with DYNAMIC bounds (e.g., STRING(1..F(X))) are stored
      * as fat pointers because their bounds are runtime-determined (RM 3.6.1). */
@@ -6344,6 +6352,15 @@ static const char *Type_To_Llvm(Type_Info *t) {
                     t->kind, (int)t->name.length, t->name.data);
             return Llvm_Int_Type((uint32_t)To_Bits(t->size));  /* ERROR path — derive from size */
     }
+}
+
+/* Like Type_To_Llvm but for function signatures: constrained arrays with
+ * dynamic bounds are passed/returned as fat pointers {ptr, ptr}. */
+static const char *Type_To_Llvm_Sig(Type_Info *t) {
+    if (t and (t->kind == TYPE_ARRAY or t->kind == TYPE_STRING) and
+        t->array.is_constrained and Type_Has_Dynamic_Bounds(t))
+        return FAT_PTR_TYPE;
+    return Type_To_Llvm(t);
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -7129,6 +7146,11 @@ static bool Type_Covers(Type_Info *expected, Type_Info *actual) {
         return true;
     }
 
+    /* Boolean types: both boolean types are always compatible */
+    if (Type_Is_Boolean(expected) and Type_Is_Boolean(actual)) {
+        return true;
+    }
+
     /* Integer/derived types from generic instantiation: same name means compatible */
     if (expected->kind == TYPE_INTEGER and actual->kind == TYPE_INTEGER and
         expected->name.data and actual->name.data and
@@ -7770,6 +7792,16 @@ static Type_Info *Resolve_Identifier(Symbol_Manager *sm, Syntax_Node *node) {
 static Type_Info *Resolve_Selected(Symbol_Manager *sm, Syntax_Node *node) {
     /* Resolve prefix first */
     Type_Info *prefix_type = Resolve_Expression(sm, node->selected.prefix);
+
+    /* Strip quotes from operator selectors: P."/=" → P./= (RM 6.1)
+     * The parser stores string-form operators with quotes, but
+     * the symbol table stores them without quotes. */
+    if (node->selected.selector.length >= 3 and
+        node->selected.selector.data[0] == '"' and
+        node->selected.selector.data[node->selected.selector.length - 1] == '"') {
+        node->selected.selector.data += 1;
+        node->selected.selector.length -= 2;
+    }
 
     /* Handle .ALL for explicit dereference (RM 4.1) */
     if (Type_Is_Access(prefix_type) and
@@ -15004,7 +15036,8 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
 
                             /* Apply representation */
                             if (Slice_Equal_Ignore_Case(attr, S("SIZE"))) {
-                                /* Size in bits - convert to bytes */
+                                /* Size in bits - store exact and convert to bytes */
+                                target_type->specified_bit_size = (uint32_t)value;
                                 target_type->size = (uint32_t)((value + 7) / 8);
                             } else if (Slice_Equal_Ignore_Case(attr, S("ALIGNMENT"))) {
                                 target_type->alignment = (uint32_t)value;
@@ -17670,7 +17703,7 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
             } else if (actual->kind == SYMBOL_FUNCTION) {
                 /* Generate actual function call */
                 const char *ret_type = actual->return_type ?
-                    Type_To_Llvm(actual->return_type) : Integer_Arith_Type(cg);
+                    Type_To_Llvm_Sig(actual->return_type) : Integer_Arith_Type(cg);
                 Emit(cg, "  %%t%u = call %s @", t, ret_type);
                 Emit_Symbol_Name(cg, actual);
                 /* Handle nested function: pass parent frame if needed */
@@ -18063,23 +18096,9 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         bool left_is_slice = Expression_Is_Slice(node->binary.left);
         bool right_is_slice = Expression_Is_Slice(node->binary.right);
         Type_Info *right_type = node->binary.right ? node->binary.right->type : NULL;
-        bool is_unconstrained = (Type_Is_Unconstrained_Array(left_type) and
-                                 not Type_Is_Constrained_Array(left_type)) or
-                                (not Type_Is_Constrained_Array(left_type) and Type_Is_String(left_type)) or
-                                (Type_Is_Unconstrained_Array(right_type) and
-                                 not Type_Is_Constrained_Array(right_type)) or
-                                (not Type_Is_Constrained_Array(right_type) and Type_Is_String(right_type));
-        /* String literals, concatenation, dynamic bounds always produce fat pointers */
-        bool left_is_fat = is_unconstrained or left_is_slice or
-                           Expression_Produces_Fat_Pointer(node->binary.left, left_type) or
-                           node->binary.left->kind == NK_STRING or
-                           (node->binary.left->kind == NK_BINARY_OP and
-                            node->binary.left->binary.op == TK_AMPERSAND);
-        bool right_is_fat = is_unconstrained or right_is_slice or
-                            Expression_Produces_Fat_Pointer(node->binary.right, right_type) or
-                            (node->binary.right and node->binary.right->kind == NK_STRING) or
-                            (node->binary.right and node->binary.right->kind == NK_BINARY_OP and
-                             node->binary.right->binary.op == TK_AMPERSAND);
+        bool left_is_fat = Expression_Produces_Fat_Pointer(node->binary.left, left_type);
+        bool right_is_fat = Expression_Produces_Fat_Pointer(node->binary.right, right_type);
+        bool is_unconstrained = left_is_fat or right_is_fat;
 
         /* Handle slice comparisons specially - they have mixed representations */
         if ((left_is_slice or right_is_slice) and not is_unconstrained) {
@@ -18256,20 +18275,8 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         /* Get addresses of both arrays for comparison */
         uint32_t left_ptr, right_ptr;
         Type_Info *rhs_cmp_type = node->binary.right ? node->binary.right->type : NULL;
-        /* Detect any operand producing fat pointers: unconstrained types, slices,
-         * string literals, and concatenation results. */
-        bool is_unconstrained = Type_Is_Unconstrained_Array(left_type) or
-                                (not Type_Is_Constrained_Array(left_type) and Type_Is_String(left_type)) or
-                                Type_Is_Unconstrained_Array(rhs_cmp_type) or
-                                (not Type_Is_Constrained_Array(rhs_cmp_type) and Type_Is_String(rhs_cmp_type)) or
-                                Expression_Is_Slice(node->binary.left) or
-                                Expression_Is_Slice(node->binary.right) or
-                                node->binary.left->kind == NK_STRING or
-                                (node->binary.right and node->binary.right->kind == NK_STRING) or
-                                (node->binary.left->kind == NK_BINARY_OP and
-                                 node->binary.left->binary.op == TK_AMPERSAND) or
-                                (node->binary.right and node->binary.right->kind == NK_BINARY_OP and
-                                 node->binary.right->binary.op == TK_AMPERSAND);
+        bool is_unconstrained = Expression_Produces_Fat_Pointer(node->binary.left, left_type) or
+                                Expression_Produces_Fat_Pointer(node->binary.right, rhs_cmp_type);
         const char *rel_bt = Array_Bound_Llvm_Type(left_type);
         if (is_unconstrained) {
             /* Generate each operand as fat pointer, wrapping constrained if needed */
@@ -18484,12 +18491,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
 
         /* Normalize left operand to fat pointer */
         uint32_t left_fat;
-        bool left_already_fat = (not Type_Is_Constrained_Array(left_type) and Type_Is_String(left_type)) or
-                                Type_Is_Unconstrained_Array(left_type) or
-                                node->binary.left->kind == NK_STRING or
-                                Expression_Is_Slice(node->binary.left) or
-                                (node->binary.left->kind == NK_BINARY_OP and
-                                 node->binary.left->binary.op == TK_AMPERSAND);
+        bool left_already_fat = Expression_Produces_Fat_Pointer(node->binary.left, left_type);
         const char *cat_bt = Array_Bound_Llvm_Type(left_type);
         if (left_already_fat) {
             left_fat = left_raw;
@@ -18512,12 +18514,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         /* Normalize right operand to fat pointer */
         Type_Info *rhs_type = node->binary.right ? node->binary.right->type : NULL;
         uint32_t right_fat;
-        bool right_already_fat = (not Type_Is_Constrained_Array(rhs_type) and Type_Is_String(rhs_type)) or
-                                 Type_Is_Unconstrained_Array(rhs_type) or
-                                 node->binary.right->kind == NK_STRING or
-                                 Expression_Is_Slice(node->binary.right) or
-                                 (node->binary.right->kind == NK_BINARY_OP and
-                                  node->binary.right->binary.op == TK_AMPERSAND);
+        bool right_already_fat = Expression_Produces_Fat_Pointer(node->binary.right, rhs_type);
         if (right_already_fat) {
             right_fat = right_raw;
         } else if (Type_Is_Character(rhs_type)) {
@@ -19078,6 +19075,23 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                                  Int_Cmp_Predicate(node->binary.op, false), iat);
                         cmp_op = cmp_buf;
                     }
+                } else if (Is_Float_Type(left_llvm_type) or Is_Float_Type(right_llvm_type)) {
+                    /* Float comparison that wasn't caught by left_is_float/right_is_float
+                     * (e.g., derived float types, universal real) */
+                    const char *fty = Is_Float_Type(left_llvm_type) ? left_llvm_type : right_llvm_type;
+                    if (not Is_Float_Type(left_llvm_type)) {
+                        uint32_t cv = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = sitofp %s %%t%u to %s\n", cv, left_llvm_type, left, fty);
+                        left = cv;
+                    }
+                    if (not Is_Float_Type(right_llvm_type)) {
+                        uint32_t cv = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = sitofp %s %%t%u to %s\n", cv, right_llvm_type, right, fty);
+                        right = cv;
+                    }
+                    snprintf(cmp_buf, sizeof(cmp_buf), "fcmp %s %s",
+                             Float_Cmp_Predicate(node->binary.op), fty);
+                    cmp_op = cmp_buf;
                 } else {
                     /* GNAT LLVM: integer comparison using common native type.
                      * Modular (unsigned) types use unsigned predicates. */
@@ -19125,12 +19139,48 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                         }
                         Emit(cg, "  %%t%u = fcmp oge %s %%t%u, %%t%u\n", ge, mem_float_type, left, lo);
                         Emit(cg, "  %%t%u = fcmp ole %s %%t%u, %%t%u\n", le, mem_float_type, left, hi);
+                    } else if (Is_Float_Type(left_int_type)) {
+                        /* Float membership: left is float, use fcmp */
+                        const char *lo_type = Expression_Llvm_Type(cg, node->binary.right->range.low);
+                        const char *hi_type = Expression_Llvm_Type(cg, node->binary.right->range.high);
+                        if (not Is_Float_Type(lo_type)) {
+                            uint32_t cv = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = sitofp %s %%t%u to %s\n", cv, lo_type, lo, left_int_type);
+                            lo = cv;
+                        } else if (strcmp(lo_type, left_int_type) != 0) {
+                            lo = Emit_Convert(cg, lo, lo_type, left_int_type);
+                        }
+                        if (not Is_Float_Type(hi_type)) {
+                            uint32_t cv = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = sitofp %s %%t%u to %s\n", cv, hi_type, hi, left_int_type);
+                            hi = cv;
+                        } else if (strcmp(hi_type, left_int_type) != 0) {
+                            hi = Emit_Convert(cg, hi, hi_type, left_int_type);
+                        }
+                        Emit(cg, "  %%t%u = fcmp oge %s %%t%u, %%t%u\n", ge, left_int_type, left, lo);
+                        Emit(cg, "  %%t%u = fcmp ole %s %%t%u, %%t%u\n", le, left_int_type, left, hi);
                     } else {
                         /* GNAT LLVM: use common native type for integer membership.
                          * Modular (unsigned) types use unsigned predicates. */
                         bool mem_unsigned = Type_Is_Unsigned(lhs_type);
                         const char *lo_type = Expression_Llvm_Type(cg, node->binary.right->range.low);
                         const char *hi_type = Expression_Llvm_Type(cg, node->binary.right->range.high);
+                        /* Guard: if any types are float, convert to integer first */
+                        if (Is_Float_Type(lo_type)) {
+                            uint32_t cv = Emit_Temp(cg); const char *iat2 = Integer_Arith_Type(cg);
+                            Emit(cg, "  %%t%u = fptosi %s %%t%u to %s\n", cv, lo_type, lo, iat2);
+                            lo = cv; lo_type = iat2;
+                        }
+                        if (Is_Float_Type(hi_type)) {
+                            uint32_t cv = Emit_Temp(cg); const char *iat2 = Integer_Arith_Type(cg);
+                            Emit(cg, "  %%t%u = fptosi %s %%t%u to %s\n", cv, hi_type, hi, iat2);
+                            hi = cv; hi_type = iat2;
+                        }
+                        if (Is_Float_Type(left_int_type)) {
+                            uint32_t cv = Emit_Temp(cg); const char *iat2 = Integer_Arith_Type(cg);
+                            Emit(cg, "  %%t%u = fptosi %s %%t%u to %s\n", cv, left_int_type, left, iat2);
+                            left = cv; left_int_type = iat2;
+                        }
                         const char *mem_ct = Wider_Int_Type(cg, left_int_type, Wider_Int_Type(cg, lo_type, hi_type));
                         uint32_t ml = Emit_Convert_Ext(cg, left, left_int_type, mem_ct, mem_unsigned);
                         lo = Emit_Convert_Ext(cg, lo, lo_type, mem_ct, mem_unsigned);
@@ -19309,6 +19359,22 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             abort();
     }
 
+    if (not is_float and (Is_Float_Type(left_int_type) or Is_Float_Type(right_int_type))) {
+        /* Type system said not float, but LLVM types are float (derived float).
+         * Promote to float arithmetic. */
+        is_float = true;
+        float_type_str = Is_Float_Type(left_int_type) ? left_int_type : right_int_type;
+        if (not Is_Float_Type(left_int_type)) {
+            uint32_t cv = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = sitofp %s %%t%u to %s\n", cv, left_int_type, left, float_type_str);
+            left = cv;
+        }
+        if (not Is_Float_Type(right_int_type)) {
+            uint32_t cv = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = sitofp %s %%t%u to %s\n", cv, right_int_type, right, float_type_str);
+            right = cv;
+        }
+    }
     if (not is_float) {
         /* GNAT LLVM: use common native integer type for arithmetic. */
         const char *common_t = Wider_Int_Type(cg, left_int_type, right_int_type);
@@ -19902,9 +19968,12 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                      * When passing a constrained array to an unconstrained formal, we must
                      * create a fat pointer with the constrained type's bounds. */
                     bool formal_needs_fat = Type_Is_Unconstrained_Array(formal_type) or
-                                            Type_Is_String(formal_type);
+                                            Type_Is_String(formal_type) or
+                                            (Type_Is_Constrained_Array(formal_type) and
+                                             Type_Has_Dynamic_Bounds(formal_type));
                     bool actual_is_constrained =
                         Type_Is_Constrained_Array(actual_type) and
+                        not Type_Has_Dynamic_Bounds(actual_type) and
                         actual_type->array.index_count > 0;
                     if (formal_needs_fat and actual_is_constrained) {
                         /* Constrained array to unconstrained formal: build fat pointer.
@@ -19936,7 +20005,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                             }
                         }
                     } else {
-                        const char *param_type = Type_To_Llvm(formal_type);
+                        const char *param_type = Type_To_Llvm_Sig(formal_type);
                         const char *arg_type = Expression_Llvm_Type(cg, arg);
                         args[i] = Emit_Convert(cg, args[i], arg_type, param_type);
                     }
@@ -19958,7 +20027,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         uint32_t t = Emit_Temp(cg);
 
         if (sym->return_type) {
-            Emit(cg, "  %%t%u = call %s @", t, Type_To_Llvm(sym->return_type));
+            Emit(cg, "  %%t%u = call %s @", t, Type_To_Llvm_Sig(sym->return_type));
         } else {
             Emit(cg, "  call void @");
         }
@@ -19991,7 +20060,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             } else {
                 const char *param_type = (sym->parameters and i < sym->parameter_count and
                                           sym->parameters[i].param_type)
-                    ? Type_To_Llvm(sym->parameters[i].param_type) : Integer_Arith_Type(cg);
+                    ? Type_To_Llvm_Sig(sym->parameters[i].param_type) : Integer_Arith_Type(cg);
                 Emit(cg, "%s %%t%u", param_type, args[i]);
             }
         }
@@ -20017,7 +20086,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
          * Track the actual LLVM type of the call result so that Emit_Convert
          * at use sites (e.g. return statements) knows the true generated type. */
         if (sym->return_type) {
-            Temp_Set_Type(cg, t, Type_To_Llvm(sym->return_type));
+            Temp_Set_Type(cg, t, Type_To_Llvm_Sig(sym->return_type));
             return t;
         }
         return 0;
@@ -20938,11 +21007,20 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
      * ───────────────────────────────────────────────────────────────────── */
 
     if (Slice_Equal_Ignore_Case(attr, S("SIZE"))) {
-        /* 'SIZE returns size in bits */
+        /* 'SIZE returns size in bits.
+         * Use specified_bit_size if a SIZE clause was given (exact value),
+         * otherwise compute from byte size. */
         if (not prefix_type)
             fprintf(stderr, "warning: 'SIZE attribute applied to expression with no type\n");
+        int64_t bit_size = 0;
+        if (prefix_type) {
+            if (prefix_type->specified_bit_size > 0)
+                bit_size = prefix_type->specified_bit_size;
+            else
+                bit_size = (int64_t)prefix_type->size * 8;
+        }
         Emit(cg, "  %%t%u = add %s 0, %lld  ; 'SIZE in bits\n", t, Integer_Arith_Type(cg),
-             (long long)(prefix_type ? prefix_type->size * 8 : 0));
+             (long long)bit_size);
         return t;
     }
 
@@ -23487,7 +23565,7 @@ static void Generate_Return_Statement(Code_Generator *cg, Syntax_Node *node) {
         Syntax_Node *expr = node->return_stmt.expression;
         uint32_t value = Generate_Expression(cg, expr);
         const char *type_str = cg->current_function and cg->current_function->return_type
-            ? Type_To_Llvm(cg->current_function->return_type) : Integer_Arith_Type(cg);
+            ? Type_To_Llvm_Sig(cg->current_function->return_type) : Integer_Arith_Type(cg);
         /* Convert from expression type to return type */
         Type_Info *ret_type = cg->current_function ? cg->current_function->return_type : NULL;
         const char *actual_ty = Temp_Get_Type(cg, value);
@@ -24114,7 +24192,7 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                          proc->parent->kind == SYMBOL_PROCEDURE);
 
                     if (proc->return_type) {
-                        Emit(cg, "  call %s @", Type_To_Llvm(proc->return_type));
+                        Emit(cg, "  call %s @", Type_To_Llvm_Sig(proc->return_type));
                     } else {
                         Emit(cg, "  call void @");
                     }
@@ -24628,7 +24706,7 @@ static void Emit_Extern_Subprogram(Code_Generator *cg, Symbol *sym) {
     }
 
     /* Get return type */
-    const char *ret_type = sym->return_type ? Type_To_Llvm(sym->return_type) : "void";
+    const char *ret_type = sym->return_type ? Type_To_Llvm_Sig(sym->return_type) : "void";
 
     Emit(cg, "declare %s @", ret_type);
     Emit_Symbol_Name(cg, sym);
@@ -24641,13 +24719,7 @@ static void Emit_Extern_Subprogram(Code_Generator *cg, Symbol *sym) {
         Type_Info *ty = (sym->parameters and i < sym->parameter_count)
                         ? sym->parameters[i].param_type : NULL;
         if (ty) {
-            /* Unconstrained arrays pass as fat pointers */
-            if (Type_Is_Unconstrained_Array(ty) or
-                (not Type_Is_Constrained_Array(ty) and Type_Is_String(ty))) {
-                Emit(cg, FAT_PTR_TYPE);
-            } else {
-                Emit(cg, "%s", Type_To_Llvm(ty));
-            }
+            Emit(cg, "%s", Type_To_Llvm_Sig(ty));
         } else {
             Emit(cg, "%s", Integer_Arith_Type(cg));  /* Derive from INTEGER for missing param types */
         }
@@ -24661,6 +24733,8 @@ static void Generate_Declaration_List(Code_Generator *cg, Node_List *list) {
         Generate_Declaration(cg, list->items[i]);
     }
 }
+
+static void Emit_Task_Function_Name(Code_Generator *cg, Symbol *task_sym, String_Slice fallback_name);
 
 static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
     /* cg->current_nesting_level is repurposed: 1 = has nested functions, use frame */
@@ -24713,6 +24787,9 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
 
         /* Package-level variables are globals, local variables use alloca */
         if (is_package_level) {
+            /* Skip if global was already emitted (e.g., from spec + body) */
+            if (sym->extern_emitted) continue;
+            sym->extern_emitted = true;
             /* Global variable at package level */
             Emit(cg, "@");
             Emit_Symbol_Name(cg, sym);
@@ -24896,13 +24973,10 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
              * is the task type name (not the object name).
              * For task types defined outside the generic, no instance prefix.
              * For single tasks inside generics, the body has an instance prefix. */
-            String_Slice task_type_name = ty->name;
             uint32_t handle_tmp = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = call ptr @__ada_task_start(ptr @task_",
-                 handle_tmp);
-            /* Don't add instance prefix for task types - they're defined separately.
-             * The instance prefix is only for single tasks declared inside the generic. */
-            Emit(cg, "%.*s, ", (int)task_type_name.length, task_type_name.data);
+            Emit(cg, "  %%t%u = call ptr @__ada_task_start(ptr @", handle_tmp);
+            Emit_Task_Function_Name(cg, ty->defining_symbol, ty->name);
+            Emit(cg, ", ");
             /* Pass parent frame for uplevel access, or null if at package level.
              * use_frame indicates the parent is using frame-based allocation. */
             if (use_frame) {
@@ -25516,7 +25590,7 @@ static bool Has_Nested_Subprograms(Node_List *declarations, Node_List *statement
  * Generate_Generic_Instance_Body, and Generate_Task_Body. */
 static void Emit_Function_Header(Code_Generator *cg, Symbol *sym, bool is_nested) {
     bool is_function = (sym->kind == SYMBOL_FUNCTION);
-    Emit(cg, "define %s @", is_function ? Type_To_Llvm(sym->return_type) : "void");
+    Emit(cg, "define %s @", is_function ? Type_To_Llvm_Sig(sym->return_type) : "void");
     Emit_Symbol_Name(cg, sym);
     Emit(cg, "(");
     if (is_nested) {
@@ -25528,7 +25602,7 @@ static void Emit_Function_Header(Code_Generator *cg, Symbol *sym, bool is_nested
         if (Param_Is_By_Reference(sym->parameters[i].mode))
             Emit(cg, "ptr %%p%u", i);
         else
-            Emit(cg, "%s %%p%u", Type_To_Llvm(sym->parameters[i].param_type), i);
+            Emit(cg, "%s %%p%u", Type_To_Llvm_Sig(sym->parameters[i].param_type), i);
     }
     Emit(cg, ") {\nentry:\n");
 }
@@ -25617,14 +25691,35 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
         /* Create pointer aliases to parent scope variables.
          * Must include all storage-bearing symbol kinds: variables, parameters,
          * discriminants, and constants (non-named-number constants like
-         * "X : INTEGER := 2" have stack storage and can be modified). */
+         * "X : INTEGER := 2" have stack storage and can be modified).
+         * Track emitted names to avoid duplicate definitions when the same
+         * mangled name appears from both symbols[] and frame_vars[]. */
         Scope *parent_scope = parent_owner->scope;
+
+        /* Track emitted frame alias names to prevent duplicates */
+        #define MAX_FRAME_ALIASES 512
+        String_Slice emitted_names[MAX_FRAME_ALIASES];
+        uint32_t emitted_count = 0;
+
         for (uint32_t i = 0; i < parent_scope->symbol_count; i++) {
             Symbol *var = parent_scope->symbols[i];
             if (var and (var->kind == SYMBOL_VARIABLE or var->kind == SYMBOL_PARAMETER or
                         var->kind == SYMBOL_DISCRIMINANT or
                         (var->kind == SYMBOL_CONSTANT and not var->is_named_number))) {
-                /* Create a GEP alias:  %__frame.VAR = getelementptr i8, ptr %__parent_frame, i64 offset */
+                String_Slice mname = Symbol_Mangle_Name(var);
+                /* Check for duplicate mangled name even within symbols[] */
+                bool already_emitted = false;
+                for (uint32_t j = 0; j < emitted_count; j++) {
+                    if (mname.length == emitted_names[j].length and
+                        memcmp(mname.data, emitted_names[j].data, mname.length) == 0) {
+                        already_emitted = true;
+                        break;
+                    }
+                }
+                if (already_emitted) continue;
+                if (emitted_count < MAX_FRAME_ALIASES) {
+                    emitted_names[emitted_count++] = mname;
+                }
                 Emit(cg, "  %%__frame.");
                 Emit_Symbol_Name(cg, var);
                 Emit(cg, " = getelementptr i8, ptr %%__parent_frame, i64 %lld\n",
@@ -25632,16 +25727,31 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
             }
         }
         /* Also create aliases for variables from child scopes (DECLARE blocks, etc.)
-         * that share the same function frame but were in deeper scopes. */
+         * that share the same function frame but were in deeper scopes.
+         * Skip symbols whose mangled name was already emitted above. */
         for (uint32_t i = 0; i < parent_scope->frame_var_count; i++) {
             Symbol *var = parent_scope->frame_vars[i];
-            if (var) {
+            if (not var) continue;
+            String_Slice mname = Symbol_Mangle_Name(var);
+            bool already_emitted = false;
+            for (uint32_t j = 0; j < emitted_count; j++) {
+                if (mname.length == emitted_names[j].length and
+                    memcmp(mname.data, emitted_names[j].data, mname.length) == 0) {
+                    already_emitted = true;
+                    break;
+                }
+            }
+            if (not already_emitted) {
+                if (emitted_count < MAX_FRAME_ALIASES) {
+                    emitted_names[emitted_count++] = mname;
+                }
                 Emit(cg, "  %%__frame.");
                 Emit_Symbol_Name(cg, var);
                 Emit(cg, " = getelementptr i8, ptr %%__parent_frame, i64 %lld\n",
                      (long long)(var->frame_offset));
             }
         }
+        #undef MAX_FRAME_ALIASES
     }
 
     /* Allocate and store parameters to local stack slots
@@ -26010,6 +26120,33 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
     }
 }
 
+/* Emit the task body function name for a task type symbol.
+ * Resolves to the task TYPE's defining_symbol for consistency between
+ * task body definitions and task_start call sites.
+ * The name format is: task_MANGLED_NAME */
+static void Emit_Task_Function_Name(Code_Generator *cg, Symbol *task_sym, String_Slice fallback_name) {
+    Emit(cg, "task_");
+    /* Prefer the task TYPE's defining_symbol for consistency.
+     * The task body's own symbol and the task type's defining_symbol
+     * may have different _sN suffixes; using the type's symbol ensures
+     * the define and call sites match. */
+    Symbol *resolved = NULL;
+    if (task_sym and task_sym->type and task_sym->type->defining_symbol) {
+        resolved = task_sym->type->defining_symbol;
+    } else if (task_sym) {
+        resolved = task_sym;
+    }
+    if (resolved) {
+        Emit_Symbol_Name(cg, resolved);
+    } else {
+        for (uint32_t i = 0; i < fallback_name.length; i++) {
+            char c = fallback_name.data[i];
+            if (c >= 'A' and c <= 'Z') c = c - 'A' + 'a';
+            fputc(c, cg->output);
+        }
+    }
+}
+
 static void Generate_Task_Body(Code_Generator *cg, Syntax_Node *node) {
     /* Skip stub bodies (TASK BODY X IS SEPARATE;) - the actual body
      * will be provided by a separate subunit compilation */
@@ -26026,17 +26163,9 @@ static void Generate_Task_Body(Code_Generator *cg, Syntax_Node *node) {
      * for uplevel variable access (task bodies access enclosing scope).
      * For task bodies inside generic instances, prefix with instance name
      * to make the function name unique across multiple instantiations. */
-    Emit(cg, "define ptr @task_");
-    if (cg->current_instance and cg->current_instance->generic_template) {
-        /* Emit instance name prefix for unique task body function */
-        String_Slice inst_mangled = Symbol_Mangle_Name(cg->current_instance);
-        for (uint32_t i = 0; i < inst_mangled.length; i++) {
-            fputc(inst_mangled.data[i], cg->output);
-        }
-        Emit(cg, "__");
-    }
-    Emit(cg, "%.*s(ptr %%__parent_frame) {\n",
-         (int)node->task_body.name.length, node->task_body.name.data);
+    Emit(cg, "define ptr @");
+    Emit_Task_Function_Name(cg, node->symbol, node->task_body.name);
+    Emit(cg, "(ptr %%__parent_frame) {\n");
     Emit(cg, "entry:\n");
 
     /* Save and set context - task body is like a nested function */
@@ -26279,12 +26408,8 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                         if (not task_obj) continue;
                         /* Start the task and store handle in the global */
                         uint32_t handle_tmp = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = call ptr @__ada_task_start(ptr @task_",
-                             handle_tmp);
-                        /* Emit task body function name (original case, matching
-                         * Generate_Task_Body which uses task_body.name as-is) */
-                        Emit(cg, "%.*s", (int)d->task_spec.name.length,
-                             d->task_spec.name.data);
+                        Emit(cg, "  %%t%u = call ptr @__ada_task_start(ptr @", handle_tmp);
+                        Emit_Task_Function_Name(cg, d->symbol, d->task_spec.name);
                         Emit(cg, ", ptr null)\n");
                         Emit(cg, "  store ptr %%t%u, ptr @", handle_tmp);
                         Emit_Symbol_Name(cg, task_obj);
@@ -26453,14 +26578,10 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                         /* Find the task spec declaration to get the task name */
                         String_Slice task_name = exp->name;
                         uint32_t handle_tmp = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = call ptr @__ada_task_start(ptr @task_",
-                             handle_tmp);
-                        /* Prefix with instance mangled name for unique function */
-                        String_Slice inst_mangled = Symbol_Mangle_Name(inst_sym);
-                        for (uint32_t j = 0; j < inst_mangled.length; j++) {
-                            fputc(inst_mangled.data[j], cg->output);
-                        }
-                        Emit(cg, "__%.*s, ", (int)task_name.length, task_name.data);
+                        Emit(cg, "  %%t%u = call ptr @__ada_task_start(ptr @", handle_tmp);
+                        Emit_Task_Function_Name(cg, exp->type ? exp->type->defining_symbol : NULL,
+                                                exp->type ? exp->type->name : exp->name);
+                        Emit(cg, ", ");
                         if (cg->current_nesting_level > 0) {
                             Emit(cg, "ptr %%__frame_base)\n");
                         } else {
@@ -26565,18 +26686,9 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     /* Start the task body in a separate thread.
                      * Pass frame_base if nested, or null if at module level. */
                     uint32_t handle_tmp = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = call ptr @__ada_task_start(ptr @task_",
-                         handle_tmp);
-                    if (cg->current_instance and cg->current_instance->generic_template) {
-                        /* Emit instance name prefix for unique task body function */
-                        String_Slice inst_mangled = Symbol_Mangle_Name(cg->current_instance);
-                        for (uint32_t i = 0; i < inst_mangled.length; i++) {
-                            fputc(inst_mangled.data[i], cg->output);
-                        }
-                        Emit(cg, "__");
-                    }
-                    Emit(cg, "%.*s, ", (int)node->task_spec.name.length,
-                         node->task_spec.name.data);
+                    Emit(cg, "  %%t%u = call ptr @__ada_task_start(ptr @", handle_tmp);
+                    Emit_Task_Function_Name(cg, node->symbol, node->task_spec.name);
+                    Emit(cg, ", ");
                     /* Pass parent frame for uplevel access, or null if at module level.
                      * Use frame_base only if the current function has nested subprograms. */
                     if (cg->current_nesting_level > 0) {
@@ -26842,14 +26954,37 @@ static void Generate_Implicit_Operators(Code_Generator *cg) {
 
 /* Generate global constants for exception identities */
 static void Generate_Exception_Globals(Code_Generator *cg) {
-    /* Generate globals for all registered exceptions (from declarations) */
+    /* Generate globals for all registered exceptions (from declarations).
+     * Dedup by mangled name to avoid redefinition when the same exception
+     * is declared in multiple WITH'd packages. */
     if (Exception_Symbol_Count > 0) {
         Emit(cg, "; Exception identity globals\n");
+        char exc_emitted[256][256];
+        uint32_t exc_emitted_count = 0;
         for (uint32_t i = 0; i < Exception_Symbol_Count; i++) {
             Symbol *sym = Exception_Symbols[i];
-            Emit(cg, "@__exc.");
+            /* Get mangled name to check for duplicates */
+            FILE *real_out = cg->output;
+            char buf[256];
+            FILE *mem = fmemopen(buf, sizeof(buf) - 1, "w");
+            cg->output = mem;
             Emit_Symbol_Name(cg, sym);
-            Emit(cg, " = private constant i8 0\n");
+            fflush(mem);
+            long len = ftell(mem);
+            fclose(mem);
+            buf[len] = '\0';
+            cg->output = real_out;
+            bool dup = false;
+            for (uint32_t j = 0; j < exc_emitted_count; j++) {
+                if (strcmp(buf, exc_emitted[j]) == 0) { dup = true; break; }
+            }
+            if (dup) continue;
+            if (exc_emitted_count < 256) {
+                strncpy(exc_emitted[exc_emitted_count], buf, 255);
+                exc_emitted[exc_emitted_count][255] = '\0';
+                exc_emitted_count++;
+            }
+            Emit(cg, "@__exc.%s = private constant i8 0\n", buf);
         }
         Emit(cg, "\n");
     }
@@ -26894,6 +27029,12 @@ static void Generate_Exception_Globals(Code_Generator *cg) {
             if (!already) {
                 for (int j = 0; std_exc[j]; j++) {
                     if (strcmp(name, std_exc[j]) == 0) { already = true; break; }
+                }
+            }
+            /* Also check against previously emitted exc_refs (dedup within the list) */
+            if (!already) {
+                for (uint32_t j = 0; j < i; j++) {
+                    if (strcmp(name, cg->exc_refs[j]) == 0) { already = true; break; }
                 }
             }
             if (!already) {
@@ -27648,9 +27789,9 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "declare i32 @snprintf(ptr, i64, ptr, ...)\n");
     Emit(cg, "declare i64 @strlen(ptr)\n");
     if (strcmp(iat, "i32") == 0)
-        Emit(cg, "@.img_fmt_d = linkonce_odr constant [3 x i8] c\"%%d\\00\"\n");
+        Emit(cg, "@.img_fmt_d = linkonce_odr constant [4 x i8] c\"%% d\\00\"\n");
     else
-        Emit(cg, "@.img_fmt_d = linkonce_odr constant [5 x i8] c\"%%lld\\00\"\n");
+        Emit(cg, "@.img_fmt_d = linkonce_odr constant [6 x i8] c\"%% lld\\00\"\n");
     Emit(cg, "@.img_fmt_c = linkonce_odr constant [3 x i8] c\"%%c\\00\"\n");
     Emit(cg, "@.img_fmt_f = linkonce_odr constant [5 x i8] c\"%%.6g\\00\"\n\n");
 
