@@ -6056,10 +6056,18 @@ static inline bool Type_Has_Dynamic_Bounds(const Type_Info *t) {
         return false;
     if (t->array.index_count == 0)
         return false;
-    /* Check if any bound is a runtime expression */
+    /* Check if any bound is a runtime expression, either on the array
+     * index entry itself or on the index type (e.g., ARRAY(SNI,..)
+     * where SNI has dynamic range -N..N). */
     for (uint32_t i = 0; i < t->array.index_count; i++) {
         if (t->array.indices[i].low_bound.kind == BOUND_EXPR or
             t->array.indices[i].high_bound.kind == BOUND_EXPR) {
+            return true;
+        }
+        /* Also check if the index type itself has dynamic bounds */
+        Type_Info *idx_ty = t->array.indices[i].index_type;
+        if (idx_ty and (idx_ty->low_bound.kind == BOUND_EXPR or
+                        idx_ty->high_bound.kind == BOUND_EXPR)) {
             return true;
         }
     }
@@ -6102,13 +6110,14 @@ static inline bool Expression_Produces_Fat_Pointer(const Syntax_Node *node,
         if (Expression_Is_Slice(node))
             return true;
     }
-    /* Type-based checks: constrained arrays with static bounds are flat.
-     * Constrained with dynamic bounds use fat ptrs at runtime.
-     * Unconstrained arrays always use fat ptrs. */
+    /* Type-based checks: constrained arrays with STATIC bounds are flat allocas.
+     * Constrained arrays with DYNAMIC bounds (e.g., STRING(1..F(X))) are stored
+     * as fat pointers because their bounds are runtime-determined (RM 3.6.1). */
     if (type and Type_Is_Constrained_Array(type) and not Type_Has_Dynamic_Bounds(type))
         return false;
-    if (type and (Type_Is_String(type) or Type_Is_Unconstrained_Array(type) or
-                  Type_Has_Dynamic_Bounds(type)))
+    if (type and Type_Is_Constrained_Array(type) and Type_Has_Dynamic_Bounds(type))
+        return true;
+    if (type and (Type_Is_String(type) or Type_Is_Unconstrained_Array(type)))
         return true;
     return false;
 }
@@ -6372,10 +6381,22 @@ static const char *Array_Bound_Llvm_Type(const Type_Info *t) {
                 t->kind, (int)t->name.length, t->name.data);
         return STRING_BOUND_TYPE;  /* safety net — default STRING bound type */
     }
-    /* Resolve from index_type — GNAT LLVM style: use Bound_Sub_GT */
+    /* Resolve from index_type — GNAT LLVM style: use Bound_Sub_GT.
+     * For multi-dimensional arrays, return the WIDEST type across all
+     * dimensions to avoid truncating bounds of wider index types.
+     * E.g., ARRAY(BOOLEAN, INTEGER RANGE ..) → use i32 not i8. */
     if (t->array.index_count > 0 and t->array.indices and
         t->array.indices[0].index_type) {
-        return Type_To_Llvm(t->array.indices[0].index_type);
+        const char *widest = Type_To_Llvm(t->array.indices[0].index_type);
+        uint32_t widest_sz = t->array.indices[0].index_type->size;
+        for (uint32_t i = 1; i < t->array.index_count; i++) {
+            if (t->array.indices[i].index_type and
+                t->array.indices[i].index_type->size > widest_sz) {
+                widest = Type_To_Llvm(t->array.indices[i].index_type);
+                widest_sz = t->array.indices[i].index_type->size;
+            }
+        }
+        return widest;
     }
     /* No index type info — infer from array context.
      * This can happen for dynamically constrained arrays. */
@@ -6589,6 +6610,10 @@ struct Symbol {
     /* Discriminant constraint (RM 3.7.2) */
     bool            is_disc_constrained;  /* Object has discriminant constraints */
 
+    /* Fat pointer storage: set when variable needs { ptr, ptr } representation.
+     * True for unconstrained arrays and constrained arrays with dynamic bounds. */
+    bool            needs_fat_ptr_storage;
+
     /* Derived type operations (RM 3.4) */
     Symbol         *parent_operation;    /* Parent operation that implements this derived op */
     Type_Info      *derived_from_type;   /* The derived type this op is for */
@@ -6686,6 +6711,13 @@ struct Scope {
     uint32_t symbol_count;
     uint32_t symbol_capacity;
     int64_t  frame_size;        /* Total size of frame for this scope */
+
+    /* Frame variables propagated from child scopes (DECLARE blocks, loops).
+     * Separate from 'symbols' to avoid affecting symbol lookup.
+     * Used only for generating frame aliases in nested functions. */
+    Symbol **frame_vars;
+    uint32_t frame_var_count;
+    uint32_t frame_var_capacity;
 };
 
 typedef struct {
@@ -6737,7 +6769,47 @@ static void Symbol_Manager_Pop_Scope(Symbol_Manager *sm) {
         if (sm->current_scope->frame_size > sm->current_scope->parent->frame_size) {
             sm->current_scope->parent->frame_size = sm->current_scope->frame_size;
         }
-        sm->current_scope = sm->current_scope->parent;
+        /* Propagate frame variables from child scope to parent scope.
+         * Variables in DECLARE blocks share the enclosing function's frame,
+         * so nested functions need frame aliases for ALL variables, not just
+         * those in the immediate parent scope. Only skip if this scope IS the
+         * function's own body scope (i.e., child->owner->scope == child).
+         * We use the separate frame_vars list to avoid polluting symbol lookup. */
+        Scope *child = sm->current_scope;
+        Scope *parent = child->parent;
+        bool is_function_body_scope = (child->owner and
+            (child->owner->kind == SYMBOL_FUNCTION or
+             child->owner->kind == SYMBOL_PROCEDURE) and
+            child->owner->scope == child);
+        if (not is_function_body_scope) {
+            /* This is a block scope (DECLARE/loop/etc), not a subprogram's own body scope.
+             * Propagate its storage-bearing symbols to parent's frame_vars for alias generation. */
+            for (uint32_t i = 0; i < child->symbol_count; i++) {
+                Symbol *var = child->symbols[i];
+                if (var and (var->kind == SYMBOL_VARIABLE or
+                            var->kind == SYMBOL_PARAMETER or
+                            var->kind == SYMBOL_DISCRIMINANT or
+                            (var->kind == SYMBOL_CONSTANT and not var->is_named_number))) {
+                    if (parent->frame_var_count >= parent->frame_var_capacity) {
+                        parent->frame_var_capacity = parent->frame_var_capacity ? parent->frame_var_capacity * 2 : 32;
+                        parent->frame_vars = realloc(parent->frame_vars,
+                            parent->frame_var_capacity * sizeof(Symbol *));
+                    }
+                    parent->frame_vars[parent->frame_var_count++] = var;
+                }
+            }
+            /* Also propagate any frame_vars that were already collected in the child
+             * (from even deeper nested scopes). */
+            for (uint32_t i = 0; i < child->frame_var_count; i++) {
+                if (parent->frame_var_count >= parent->frame_var_capacity) {
+                    parent->frame_var_capacity = parent->frame_var_capacity ? parent->frame_var_capacity * 2 : 32;
+                    parent->frame_vars = realloc(parent->frame_vars,
+                        parent->frame_var_capacity * sizeof(Symbol *));
+                }
+                parent->frame_vars[parent->frame_var_count++] = child->frame_vars[i];
+            }
+        }
+        sm->current_scope = parent;
     }
 }
 
@@ -6843,6 +6915,7 @@ static void Symbol_Add(Symbol_Manager *sm, Symbol *sym) {
         /* Fat pointers for dynamic/unconstrained arrays need { ptr, { bound, bound } } */
         if (sym->type and (Type_Has_Dynamic_Bounds(sym->type) or Type_Is_Unconstrained_Array(sym->type))) {
             var_size = FAT_PTR_ALLOC_SIZE;
+            sym->needs_fat_ptr_storage = true;
         }
         if (var_size == 0) {
             fprintf(stderr, "warning: variable '%.*s' has zero size, defaulting to 8 bytes\n",
@@ -7756,6 +7829,22 @@ static Type_Info *Resolve_Selected(Symbol_Manager *sm, Syntax_Node *node) {
                     node->type = (sel->kind == SYMBOL_FUNCTION and sel->return_type)
                                  ? sel->return_type : sel->type;
                     return node->type;
+                }
+            }
+            /* Also search the package's scope for predefined operators and
+             * other symbols not explicitly in the exported list (RM 4.1.3).
+             * This handles P."/=", P."=", P."<" etc. for predefined operators
+             * of types declared in the package. */
+            if (prefix_sym->scope) {
+                uint32_t hash = Symbol_Hash_Name(node->selected.selector);
+                for (Symbol *s = prefix_sym->scope->buckets[hash]; s; s = s->next_in_bucket) {
+                    if (Slice_Equal_Ignore_Case(s->name, node->selected.selector) and
+                        s->visibility >= VIS_IMMEDIATELY_VISIBLE) {
+                        node->symbol = s;
+                        node->type = (s->kind == SYMBOL_FUNCTION and s->return_type)
+                                     ? s->return_type : s->type;
+                        return node->type;
+                    }
                 }
             }
         }
@@ -9045,13 +9134,44 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                         if (Type_Is_Array_Like(agg_type) and agg_type->array.element_type) {
                             elem_type = agg_type->array.element_type;
                         }
-                        if (elem_type and item->kind == NK_ASSOCIATION and item->association.expression) {
+                        /* For multi-dimensional arrays (index_count > 1), inner aggregates
+                         * represent "rows" (slices along the first dimension).  Create an
+                         * implicit 1-D array type from the remaining dimensions so that
+                         * Generate_Aggregate can handle them as composite elements (RM 4.3.2). */
+                        Type_Info *inner_agg_type = elem_type;
+                        if (Type_Is_Array_Like(agg_type) and agg_type->array.index_count > 1) {
+                            Type_Info *row_type = Type_New(TYPE_ARRAY, S(""));
+                            row_type->array.element_type = agg_type->array.element_type;
+                            row_type->array.is_constrained = true;
+                            row_type->array.index_count = agg_type->array.index_count - 1;
+                            row_type->array.indices = Arena_Allocate(
+                                row_type->array.index_count * sizeof(Index_Info));
+                            /* Copy remaining dimensions (skip first) */
+                            for (uint32_t d = 0; d < row_type->array.index_count; d++) {
+                                row_type->array.indices[d] = agg_type->array.indices[d + 1];
+                            }
+                            /* Calculate row size */
+                            uint32_t row_elems = 1;
+                            for (uint32_t d = 0; d < row_type->array.index_count; d++) {
+                                int128_t lo = Type_Bound_Value(row_type->array.indices[d].low_bound);
+                                int128_t hi = Type_Bound_Value(row_type->array.indices[d].high_bound);
+                                int128_t cnt = hi - lo + 1;
+                                if (cnt > 0) row_elems *= (uint32_t)cnt;
+                            }
+                            uint32_t el_sz = agg_type->array.element_type ?
+                                             agg_type->array.element_type->size : 8;
+                            if (el_sz == 0) el_sz = 8;
+                            row_type->size = row_elems * el_sz;
+                            row_type->alignment = agg_type->alignment;
+                            inner_agg_type = row_type;
+                        }
+                        if (inner_agg_type and item->kind == NK_ASSOCIATION and item->association.expression) {
                             Syntax_Node *expr = item->association.expression;
                             if (expr->kind == NK_AGGREGATE) {
-                                expr->type = elem_type;
+                                expr->type = inner_agg_type;
                             }
-                        } else if (elem_type and item->kind == NK_AGGREGATE) {
-                            item->type = elem_type;
+                        } else if (inner_agg_type and item->kind == NK_AGGREGATE) {
+                            item->type = inner_agg_type;
                         }
                         Resolve_Expression(sm, item);
                     }
@@ -12967,6 +13087,10 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                             if (disc_spec->discriminant.disc_type) {
                                 disc_type = Resolve_Expression(sm, disc_spec->discriminant.disc_type);
                             }
+                            /* Resolve default expression if present (RM 3.7.1) */
+                            if (disc_spec->discriminant.default_expr) {
+                                Resolve_Expression(sm, disc_spec->discriminant.default_expr);
+                            }
                             /* Add each discriminant name as a symbol (RM 3.7.1) */
                             for (uint32_t j = 0; j < disc_spec->discriminant.names.count; j++) {
                                 Syntax_Node *name_node = disc_spec->discriminant.names.items[j];
@@ -14218,6 +14342,9 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                 Symbol *template = NULL;
                 if (gen_name->kind == NK_IDENTIFIER) {
                     template = Symbol_Find(sm, gen_name->string_val.text);
+                } else if (gen_name->symbol) {
+                    /* Handle qualified names like P.PP (NK_SELECTED resolved to a symbol) */
+                    template = gen_name->symbol;
                 }
 
                 if (not template or template->kind != SYMBOL_GENERIC) {
@@ -14243,89 +14370,121 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                 Node_List *formals = &template->declaration->generic_decl.formals;
                 Node_List *actuals = &node->generic_inst.actuals;
 
-                inst_sym->generic_actual_count = formals->count;
-                if (formals->count > 0) {
-                    inst_sym->generic_actuals = Arena_Allocate(
-                        formals->count * sizeof(*inst_sym->generic_actuals));
+                /* Count total actual slots: multi-name object formals
+                 * like "F, L : E" consume one actual per name.
+                 * Type and subprogram formals consume one actual each. */
+                uint32_t total_actual_slots = 0;
+                for (uint32_t i = 0; i < formals->count; i++) {
+                    Syntax_Node *formal = formals->items[i];
+                    if (formal->kind == NK_GENERIC_OBJECT_PARAM)
+                        total_actual_slots += formal->generic_object_param.names.count;
+                    else
+                        total_actual_slots++;
+                }
+                /* Use the larger of computed slots and actual params provided */
+                if (total_actual_slots < actuals->count)
+                    total_actual_slots = actuals->count;
 
-                    /* First pass: resolve type formals */
+                inst_sym->generic_actual_count = total_actual_slots;
+                if (total_actual_slots > 0) {
+                    inst_sym->generic_actuals = Arena_Allocate(
+                        total_actual_slots * sizeof(*inst_sym->generic_actuals));
+
+                    /* First pass: resolve type formals (using actual_idx to track
+                     * position in the actuals list, since object formals with multiple
+                     * names consume multiple actual slots). */
+                    uint32_t actual_idx = 0;
                     for (uint32_t i = 0; i < formals->count; i++) {
                         Syntax_Node *formal = formals->items[i];
-                        Syntax_Node *actual = (i < actuals->count) ? actuals->items[i] : NULL;
 
-                        /* Get formal name */
                         if (formal->kind == NK_GENERIC_TYPE_PARAM) {
-                            inst_sym->generic_actuals[i].formal_name =
-                                formal->generic_type_param.name;
-
-                            /* Resolve actual type */
-                            if (actual) {
-                                Syntax_Node *type_node = actual;
-                                if (actual->kind == NK_ASSOCIATION) {
-                                    type_node = actual->association.expression;
+                            Syntax_Node *actual = (actual_idx < actuals->count) ?
+                                actuals->items[actual_idx] : NULL;
+                            if (actual_idx < total_actual_slots) {
+                                inst_sym->generic_actuals[actual_idx].formal_name =
+                                    formal->generic_type_param.name;
+                                if (actual) {
+                                    Syntax_Node *type_node = actual;
+                                    if (actual->kind == NK_ASSOCIATION)
+                                        type_node = actual->association.expression;
+                                    Resolve_Expression(sm, type_node);
+                                    inst_sym->generic_actuals[actual_idx].actual_type = type_node->type;
                                 }
-                                Resolve_Expression(sm, type_node);
-                                inst_sym->generic_actuals[i].actual_type = type_node->type;
                             }
+                            actual_idx++;
+                        } else if (formal->kind == NK_GENERIC_OBJECT_PARAM) {
+                            actual_idx += formal->generic_object_param.names.count;
+                        } else if (formal->kind == NK_GENERIC_SUBPROGRAM_PARAM) {
+                            actual_idx++;
                         }
                     }
-                    /* Second pass: resolve object formals with substituted types */
+
+                    /* Second pass: resolve object formals with substituted types.
+                     * Each name in a multi-name object formal gets its own actual slot. */
+                    actual_idx = 0;
                     for (uint32_t i = 0; i < formals->count; i++) {
                         Syntax_Node *formal = formals->items[i];
-                        Syntax_Node *actual = (i < actuals->count) ? actuals->items[i] : NULL;
 
                         if (formal->kind == NK_GENERIC_OBJECT_PARAM) {
                             /* Look up the formal's type, substituting any type formals */
                             Syntax_Node *obj_type_node = formal->generic_object_param.object_type;
                             Type_Info *obj_type = NULL;
                             if (obj_type_node and obj_type_node->kind == NK_IDENTIFIER) {
-                                /* Check if it's a type formal by searching earlier formals */
-                                for (uint32_t k = 0; k < i; k++) {
-                                    Syntax_Node *earlier = formals->items[k];
-                                    if (earlier->kind == NK_GENERIC_TYPE_PARAM and
+                                for (uint32_t k = 0; k < total_actual_slots; k++) {
+                                    if (inst_sym->generic_actuals[k].actual_type and
                                         Slice_Equal_Ignore_Case(obj_type_node->string_val.text,
-                                                  earlier->generic_type_param.name)) {
+                                                  inst_sym->generic_actuals[k].formal_name)) {
                                         obj_type = inst_sym->generic_actuals[k].actual_type;
                                         break;
                                     }
                                 }
                             }
-                            /* Propagate type to actual expression and store for substitution */
-                            if (actual) {
-                                Syntax_Node *expr = actual;
-                                if (actual->kind == NK_ASSOCIATION) {
-                                    expr = actual->association.expression;
-                                }
-                                if (obj_type) {
-                                    /* Set type before and after resolve to handle aggregates */
-                                    expr->type = obj_type;
-                                    Resolve_Expression(sm, expr);
-                                    /* Ensure type stays set for aggregates */
-                                    if (not expr->type or expr->kind == NK_AGGREGATE) {
+                            /* Map each name to its own actual */
+                            for (uint32_t j = 0; j < formal->generic_object_param.names.count; j++) {
+                                Syntax_Node *actual = (actual_idx < actuals->count) ?
+                                    actuals->items[actual_idx] : NULL;
+                                if (actual and actual_idx < total_actual_slots) {
+                                    Syntax_Node *expr = actual;
+                                    if (actual->kind == NK_ASSOCIATION)
+                                        expr = actual->association.expression;
+                                    if (obj_type) {
                                         expr->type = obj_type;
+                                        Resolve_Expression(sm, expr);
+                                        if (not expr->type or expr->kind == NK_AGGREGATE)
+                                            expr->type = obj_type;
+                                    } else {
+                                        Resolve_Expression(sm, expr);
                                     }
-                                } else {
-                                    Resolve_Expression(sm, expr);
-                                }
-                                /* Store the actual expression for substitution during clone */
-                                inst_sym->generic_actuals[i].actual_expr = expr;
-                                /* Store formal name (first name in list) */
-                                if (formal->generic_object_param.names.count > 0) {
-                                    Syntax_Node *fname = formal->generic_object_param.names.items[0];
+                                    inst_sym->generic_actuals[actual_idx].actual_expr = expr;
+                                    Syntax_Node *fname = formal->generic_object_param.names.items[j];
                                     if (fname)
-                                        inst_sym->generic_actuals[i].formal_name = fname->string_val.text;
+                                        inst_sym->generic_actuals[actual_idx].formal_name =
+                                            fname->string_val.text;
                                 }
+                                actual_idx++;
                             }
+                        } else if (formal->kind == NK_GENERIC_TYPE_PARAM) {
+                            actual_idx++;
+                        } else if (formal->kind == NK_GENERIC_SUBPROGRAM_PARAM) {
+                            actual_idx++;
                         }
                     }
                     /* Third pass: resolve subprogram formals to actual subprograms */
+                    actual_idx = 0;
                     for (uint32_t i = 0; i < formals->count; i++) {
                         Syntax_Node *formal = formals->items[i];
-                        Syntax_Node *actual = (i < actuals->count) ? actuals->items[i] : NULL;
+
+                        if (formal->kind == NK_GENERIC_OBJECT_PARAM) {
+                            actual_idx += formal->generic_object_param.names.count;
+                            continue;
+                        }
+                        Syntax_Node *actual = (actual_idx < actuals->count) ?
+                            actuals->items[actual_idx] : NULL;
 
                         if (formal->kind == NK_GENERIC_SUBPROGRAM_PARAM) {
-                            inst_sym->generic_actuals[i].formal_name =
-                                formal->generic_subprog_param.name;
+                            if (actual_idx < total_actual_slots)
+                                inst_sym->generic_actuals[actual_idx].formal_name =
+                                    formal->generic_subprog_param.name;
 
                             /* Resolve actual subprogram name */
                             if (actual) {
@@ -14347,13 +14506,10 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                         if (op and (op->kind == SYMBOL_FUNCTION or op->kind == SYMBOL_PROCEDURE)) {
                                             /* Find the actual type for the first type formal */
                                             Type_Info *expected_type = NULL;
-                                            for (uint32_t k = 0; k < i; k++) {
+                                            for (uint32_t k = 0; k < total_actual_slots; k++) {
                                                 if (inst_sym->generic_actuals[k].actual_type) {
-                                                    Syntax_Node *fk = formals->items[k];
-                                                    if (fk->kind == NK_GENERIC_TYPE_PARAM) {
-                                                        expected_type = inst_sym->generic_actuals[k].actual_type;
-                                                        break;
-                                                    }
+                                                    expected_type = inst_sym->generic_actuals[k].actual_type;
+                                                    break;
                                                 }
                                             }
                                             if (expected_type and op->return_type) {
@@ -14366,21 +14522,21 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                         if (op and type_matches and
                                             (op->kind == SYMBOL_FUNCTION or op->kind == SYMBOL_PROCEDURE)) {
                                             name_node->symbol = op;
-                                            inst_sym->generic_actuals[i].actual_subprogram = op;
+                                            inst_sym->generic_actuals[actual_idx].actual_subprogram = op;
                                         } else {
                                             /* Check for built-in operators */
                                             /* String lexer strips quotes: "&" becomes just & */
                                             String_Slice s = name_node->string_val.text;
                                             if (s.length == 1 and s.data[0] == '&')
-                                                inst_sym->generic_actuals[i].builtin_operator = TK_AMPERSAND;
+                                                inst_sym->generic_actuals[actual_idx].builtin_operator = TK_AMPERSAND;
                                             else if (s.length == 1 and s.data[0] == '+')
-                                                inst_sym->generic_actuals[i].builtin_operator = TK_PLUS;
+                                                inst_sym->generic_actuals[actual_idx].builtin_operator = TK_PLUS;
                                             else if (s.length == 1 and s.data[0] == '-')
-                                                inst_sym->generic_actuals[i].builtin_operator = TK_MINUS;
+                                                inst_sym->generic_actuals[actual_idx].builtin_operator = TK_MINUS;
                                             else if (s.length == 1 and s.data[0] == '*')
-                                                inst_sym->generic_actuals[i].builtin_operator = TK_STAR;
+                                                inst_sym->generic_actuals[actual_idx].builtin_operator = TK_STAR;
                                             else if (s.length == 1 and s.data[0] == '/')
-                                                inst_sym->generic_actuals[i].builtin_operator = TK_SLASH;
+                                                inst_sym->generic_actuals[actual_idx].builtin_operator = TK_SLASH;
                                         }
                                     }
                                 }
@@ -14391,7 +14547,7 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                         Symbol *lit = Symbol_Find(sm, name_node->string_val.text);
                                         if (lit and lit->kind == SYMBOL_LITERAL) {
                                             name_node->symbol = lit;
-                                            inst_sym->generic_actuals[i].actual_subprogram = lit;
+                                            inst_sym->generic_actuals[actual_idx].actual_subprogram = lit;
                                         }
                                     }
                                 }
@@ -14399,10 +14555,13 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                     /* Look up the actual subprogram symbol */
                                     Resolve_Expression(sm, name_node);
                                     if (name_node->symbol) {
-                                        inst_sym->generic_actuals[i].actual_subprogram = name_node->symbol;
+                                        inst_sym->generic_actuals[actual_idx].actual_subprogram = name_node->symbol;
                                     }
                                 }
                             }
+                            actual_idx++;
+                        } else if (formal->kind == NK_GENERIC_TYPE_PARAM) {
+                            actual_idx++;
                         }
                     }
                 }
@@ -15255,11 +15414,19 @@ static void Emit_Float_Constant(Code_Generator *cg, uint32_t t,
  * This handles nested packages inside subprogram bodies correctly. */
 static inline bool Symbol_Is_Global(Symbol *sym) {
     if (not sym->parent) return true;  /* Top-level */
-    /* Walk up parent chain - if any ancestor is a subprogram, symbol is local */
+    /* Walk up parent chain - if any ancestor is a subprogram, symbol is local.
+     * Also check for SYMBOL_GENERIC whose generic_unit is a subprogram spec
+     * (not a package spec) — symbols inside generic subprogram bodies must be
+     * treated as local when instantiated.  Generic package variables remain
+     * global because they're allocated as package-level storage. */
     Symbol *p = sym->parent;
     while (p) {
         if (p->kind == SYMBOL_FUNCTION or p->kind == SYMBOL_PROCEDURE) {
             return false;  /* Inside a subprogram - use local (%) prefix */
+        }
+        if (p->kind == SYMBOL_GENERIC and p->generic_unit and
+            p->generic_unit->kind != NK_PACKAGE_SPEC) {
+            return false;  /* Inside a generic subprogram - local */
         }
         p = p->parent;
     }
@@ -15927,6 +16094,14 @@ static inline const char *Expression_Llvm_Type(const Code_Generator *cg, Syntax_
     if (node and node->kind == NK_STRING) return FAT_PTR_TYPE;
     if (node and Type_Is_String(node->type) and not Type_Is_Constrained_Array(node->type))
         return FAT_PTR_TYPE;
+    /* Constrained arrays with dynamic bounds are stored as fat pointers */
+    if (node and node->kind != NK_AGGREGATE and node->type and
+        Type_Is_Constrained_Array(node->type) and Type_Has_Dynamic_Bounds(node->type))
+        return FAT_PTR_TYPE;
+    /* Identifiers stored as fat pointers (dynamic bounds at declaration time) */
+    if (node and node->kind == NK_IDENTIFIER and node->symbol and
+        node->symbol->needs_fat_ptr_storage)
+        return FAT_PTR_TYPE;
     /* Check for unconstrained array types (fat pointers) - for variable references */
     if (node and node->kind != NK_AGGREGATE and
         Type_Is_Unconstrained_Array(node->type)) {
@@ -16533,6 +16708,90 @@ static uint32_t Emit_Fat_Pointer_High(Code_Generator *cg, uint32_t fat_ptr,
     return val;
 }
 
+/* Extract low bound for dimension `dim` from fat pointer.
+ * Bounds are stored as flat pairs: [low0, high0, low1, high1, ...].
+ * Uses flat GEP with index 2*dim for low, 2*dim+1 for high. */
+static uint32_t Emit_Fat_Pointer_Low_Dim(Code_Generator *cg, uint32_t fat_ptr,
+                                          const char *bt, uint32_t dim) {
+    uint32_t bptr = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1\n", bptr, fat_ptr);
+    uint32_t gep = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 %u\n",
+         gep, bt, bptr, dim * 2);
+    uint32_t val = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", val, bt, gep);
+    Temp_Set_Type(cg, val, bt);
+    return val;
+}
+
+static uint32_t Emit_Fat_Pointer_High_Dim(Code_Generator *cg, uint32_t fat_ptr,
+                                            const char *bt, uint32_t dim) {
+    uint32_t bptr = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1\n", bptr, fat_ptr);
+    uint32_t gep = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 %u\n",
+         gep, bt, bptr, dim * 2 + 1);
+    uint32_t val = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", val, bt, gep);
+    Temp_Set_Type(cg, val, bt);
+    return val;
+}
+
+/* Compute length for dimension `dim` from fat pointer: high - low + 1 */
+static uint32_t Emit_Fat_Pointer_Length_Dim(Code_Generator *cg, uint32_t fat_ptr,
+                                             const char *bt, uint32_t dim) {
+    uint32_t low = Emit_Fat_Pointer_Low_Dim(cg, fat_ptr, bt, dim);
+    uint32_t high = Emit_Fat_Pointer_High_Dim(cg, fat_ptr, bt, dim);
+    uint32_t diff = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", diff, bt, high, low);
+    Temp_Set_Type(cg, diff, bt);
+    uint32_t len = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = add %s %%t%u, 1\n", len, bt, diff);
+    Temp_Set_Type(cg, len, bt);
+    return len;
+}
+
+/* Allocate a multi-dimension bounds block on the stack.
+ * Layout: [low0, high0, low1, high1, ...] as flat array of 2*ndims values.
+ * bounds_lo/bounds_hi are arrays of ndims temp IDs.
+ * Returns the alloca temp ID (ptr to the bounds memory). */
+static uint32_t Emit_Alloc_Bounds_MultiDim(Code_Generator *cg,
+    uint32_t *bounds_lo, uint32_t *bounds_hi, uint32_t ndims, const char *bt)
+{
+    uint32_t bounds_alloca = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = alloca [%u x %s]  ; bounds for %u dims\n",
+         bounds_alloca, ndims * 2, bt, ndims);
+    for (uint32_t d = 0; d < ndims; d++) {
+        uint32_t lo_coerced = Emit_Coerce(cg, bounds_lo[d], bt);
+        uint32_t hi_coerced = Emit_Coerce(cg, bounds_hi[d], bt);
+        uint32_t lo_gep = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 %u\n",
+             lo_gep, bt, bounds_alloca, d * 2);
+        Emit(cg, "  store %s %%t%u, ptr %%t%u\n", bt, lo_coerced, lo_gep);
+        uint32_t hi_gep = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 %u\n",
+             hi_gep, bt, bounds_alloca, d * 2 + 1);
+        Emit(cg, "  store %s %%t%u, ptr %%t%u\n", bt, hi_coerced, hi_gep);
+    }
+    return bounds_alloca;
+}
+
+/* Create a fat pointer with multi-dim bounds.
+ * bounds_lo/bounds_hi are arrays of ndims temp IDs. */
+static uint32_t Emit_Fat_Pointer_MultiDim(Code_Generator *cg, uint32_t data_ptr,
+    uint32_t *bounds_lo, uint32_t *bounds_hi, uint32_t ndims, const char *bt)
+{
+    uint32_t bounds_alloca = Emit_Alloc_Bounds_MultiDim(cg, bounds_lo, bounds_hi, ndims, bt);
+    uint32_t t1 = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = insertvalue " FAT_PTR_TYPE " undef, ptr %%t%u, 0\n",
+         t1, data_ptr);
+    uint32_t t2 = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = insertvalue " FAT_PTR_TYPE " %%t%u, ptr %%t%u, 1\n",
+         t2, t1, bounds_alloca);
+    Temp_Set_Type(cg, t2, FAT_PTR_TYPE);
+    return t2;
+}
+
 /* Create a fat pointer from data pointer and dynamic bounds (temp IDs).
  * bt = bound LLVM type of the input temps (already in native type).
  * Allocates bounds struct on stack, stores in native bt, builds { ptr, ptr }. */
@@ -16955,8 +17214,13 @@ static uint32_t Generate_Lvalue(Code_Generator *cg, Syntax_Node *node) {
     /* NK_APPLY: array indexed component — compute element address */
     if (node->kind == NK_APPLY and node->apply.prefix) {
         Type_Info *prefix_type = node->apply.prefix->type;
+        bool implicit_access_deref = false;
         if (Type_Is_Access(prefix_type) and prefix_type->access.designated_type) {
-            prefix_type = prefix_type->access.designated_type;
+            Type_Info *desig = prefix_type->access.designated_type;
+            if (desig->kind == TYPE_ARRAY or desig->kind == TYPE_STRING) {
+                implicit_access_deref = true;
+                prefix_type = desig;
+            }
         }
         if (prefix_type and (prefix_type->kind == TYPE_ARRAY or
                             prefix_type->kind == TYPE_STRING)) {
@@ -16969,7 +17233,10 @@ static uint32_t Generate_Lvalue(Code_Generator *cg, Syntax_Node *node) {
 
             uint32_t dynamic_high = 0;
 
-            if (array_sym and (Type_Is_Unconstrained_Array(prefix_type) or
+            if (implicit_access_deref) {
+                /* Access-to-array: load the access value to get array data pointer */
+                base = Generate_Expression(cg, node->apply.prefix);
+            } else if (array_sym and (Type_Is_Unconstrained_Array(prefix_type) or
                               Type_Has_Dynamic_Bounds(prefix_type))) {
                 /* Unconstrained array: load fat pointer, extract data ptr */
                 const char *bt = Array_Bound_Llvm_Type(prefix_type);
@@ -16988,44 +17255,88 @@ static uint32_t Generate_Lvalue(Code_Generator *cg, Syntax_Node *node) {
                 base = Generate_Expression(cg, node->apply.prefix);
             }
 
-            /* Generate index expression */
+            /* Generate index expression (supports multi-dimensional arrays) */
             if (node->apply.arguments.count > 0) {
-                Syntax_Node *arg = node->apply.arguments.items[0];
-                uint32_t idx = Generate_Expression(cg, arg);
-
-                /* Index check: verify index is within array bounds (RM 4.1.1) */
                 const char *idx_lv_iat = Integer_Arith_Type(cg);
-                if (has_dynamic_low and dynamic_high) {
-                    uint32_t lo_chk = Emit_Convert(cg, dynamic_low, dyn_lv_bt, idx_lv_iat);
-                    uint32_t hi_chk = Emit_Convert(cg, dynamic_high, dyn_lv_bt, idx_lv_iat);
-                    idx = Emit_Index_Check(cg, idx, lo_chk, hi_chk, idx_lv_iat, prefix_type);
-                } else if (prefix_type->array.index_count > 0) {
-                    int128_t lo = Type_Bound_Value(prefix_type->array.indices[0].low_bound);
-                    int128_t hi = Type_Bound_Value(prefix_type->array.indices[0].high_bound);
-                    if (lo != hi || lo != 0) {
-                        uint32_t lo_t = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = add %s 0, %s  ; lv low bound\n", lo_t, idx_lv_iat, I128_Decimal(lo));
-                        uint32_t hi_t = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = add %s 0, %s  ; lv high bound\n", hi_t, idx_lv_iat, I128_Decimal(hi));
-                        idx = Emit_Index_Check(cg, idx, lo_t, hi_t, idx_lv_iat, prefix_type);
-                    }
-                }
+                uint32_t ndims = prefix_type->array.index_count;
+                uint32_t nargs = node->apply.arguments.count;
+                uint32_t flat_idx;
 
-                /* Adjust for low bound */
-                if (has_dynamic_low) {
-                    const char *idx_type = Integer_Arith_Type(cg);
-                    uint32_t dynamic_low_conv = Emit_Convert(cg, dynamic_low, dyn_lv_bt, idx_type);
-                    uint32_t adj = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", adj, idx_type, idx, dynamic_low_conv);
-                    idx = adj;
-                } else {
-                    int128_t low_bound = Array_Low_Bound(prefix_type);
-                    if (low_bound != 0) {
-                        uint32_t adj = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = sub %s %%t%u, %s\n",
-                             adj, Integer_Arith_Type(cg), idx, I128_Decimal(low_bound));
-                        idx = adj;
+                if (ndims > 1 and nargs >= ndims) {
+                    /* Multi-dimensional: linearize indices */
+                    for (uint32_t d = 0; d < ndims; d++) {
+                        Syntax_Node *arg_d = node->apply.arguments.items[d];
+                        uint32_t dim_idx = Generate_Expression(cg, arg_d);
+                        const char *dim_src = Expression_Llvm_Type(cg, arg_d);
+                        if (dim_src and dim_src[0] == 'i' and strcmp(dim_src, idx_lv_iat) != 0)
+                            dim_idx = Emit_Convert(cg, dim_idx, dim_src, idx_lv_iat);
+                        int128_t lo_d = Type_Bound_Value(prefix_type->array.indices[d].low_bound);
+                        if (lo_d != 0) {
+                            uint32_t adj = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = sub %s %%t%u, %s  ; lv dim %u low adj\n",
+                                 adj, idx_lv_iat, dim_idx, I128_Decimal(lo_d), d);
+                            dim_idx = adj;
+                        }
+                        uint32_t stride = 1;
+                        for (uint32_t d2 = d + 1; d2 < ndims; d2++) {
+                            int128_t lo2 = Type_Bound_Value(prefix_type->array.indices[d2].low_bound);
+                            int128_t hi2 = Type_Bound_Value(prefix_type->array.indices[d2].high_bound);
+                            int128_t cnt2 = hi2 - lo2 + 1;
+                            if (cnt2 > 0) stride *= (uint32_t)cnt2;
+                        }
+                        if (stride > 1) {
+                            uint32_t scaled = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = mul %s %%t%u, %u  ; lv dim %u stride\n",
+                                 scaled, idx_lv_iat, dim_idx, stride, d);
+                            dim_idx = scaled;
+                        }
+                        if (d == 0) {
+                            flat_idx = dim_idx;
+                        } else {
+                            uint32_t sum = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add %s %%t%u, %%t%u\n",
+                                 sum, idx_lv_iat, flat_idx, dim_idx);
+                            flat_idx = sum;
+                        }
                     }
+                } else {
+                    /* Single-dimension indexing */
+                    Syntax_Node *arg = node->apply.arguments.items[0];
+                    uint32_t idx = Generate_Expression(cg, arg);
+                    const char *idx_src = Expression_Llvm_Type(cg, arg);
+                    if (idx_src and idx_src[0] == 'i' and strcmp(idx_src, idx_lv_iat) != 0)
+                        idx = Emit_Convert(cg, idx, idx_src, idx_lv_iat);
+
+                    if (has_dynamic_low and dynamic_high) {
+                        uint32_t lo_chk = Emit_Convert(cg, dynamic_low, dyn_lv_bt, idx_lv_iat);
+                        uint32_t hi_chk = Emit_Convert(cg, dynamic_high, dyn_lv_bt, idx_lv_iat);
+                        idx = Emit_Index_Check(cg, idx, lo_chk, hi_chk, idx_lv_iat, prefix_type);
+                    } else if (prefix_type->array.index_count > 0) {
+                        int128_t lo = Type_Bound_Value(prefix_type->array.indices[0].low_bound);
+                        int128_t hi = Type_Bound_Value(prefix_type->array.indices[0].high_bound);
+                        if (lo != hi || lo != 0) {
+                            uint32_t lo_t = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add %s 0, %s  ; lv low bound\n", lo_t, idx_lv_iat, I128_Decimal(lo));
+                            uint32_t hi_t = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add %s 0, %s  ; lv high bound\n", hi_t, idx_lv_iat, I128_Decimal(hi));
+                            idx = Emit_Index_Check(cg, idx, lo_t, hi_t, idx_lv_iat, prefix_type);
+                        }
+                    }
+                    if (has_dynamic_low) {
+                        uint32_t dynamic_low_conv = Emit_Convert(cg, dynamic_low, dyn_lv_bt, idx_lv_iat);
+                        uint32_t adj = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", adj, idx_lv_iat, idx, dynamic_low_conv);
+                        idx = adj;
+                    } else {
+                        int128_t low_bound = Array_Low_Bound(prefix_type);
+                        if (low_bound != 0) {
+                            uint32_t adj = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = sub %s %%t%u, %s\n",
+                                 adj, idx_lv_iat, idx, I128_Decimal(low_bound));
+                            idx = adj;
+                        }
+                    }
+                    flat_idx = idx;
                 }
 
                 /* Compute element address */
@@ -17033,7 +17344,7 @@ static uint32_t Generate_Lvalue(Code_Generator *cg, Syntax_Node *node) {
                 const char *elem_type = Type_To_Llvm(elem_type_info);
                 uint32_t ptr = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, %s %%t%u  ; elem lvalue\n",
-                     ptr, elem_type, base, Integer_Arith_Type(cg), idx);
+                     ptr, elem_type, base, idx_lv_iat, flat_idx);
                 return ptr;
             }
         }
@@ -17153,7 +17464,6 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
         Report_Error(node->location, "unresolved identifier in codegen");
         return 0;
     }
-
     /* Generic formal object substitution: if this is a formal object inside
      * a generic instantiation, generate code for the actual expression. */
     if (cg->current_instance and cg->current_instance->generic_actuals) {
@@ -17184,7 +17494,25 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
         case SYMBOL_VARIABLE:
         case SYMBOL_PARAMETER:
         case SYMBOL_DISCRIMINANT: {
-            /* Constrained arrays (including constrained STRING) are flat allocas.
+            /* Check if symbol is stored as a fat pointer (dynamic/unconstrained arrays).
+             * This flag is set at symbol creation time when bounds were dynamic.
+             * Must take priority over Type_Is_Constrained_Array which may change
+             * after bounds are resolved to static values. */
+            if (sym->needs_fat_ptr_storage) {
+                const char *dbt = Array_Bound_Llvm_Type(ty);
+                uint32_t fat = Emit_Load_Fat_Pointer(cg, sym, dbt);
+                return fat;
+            }
+            /* Also check at codegen time in case symbol was created via a path
+             * that doesn't go through Symbol_Add (e.g., semantic pass creates
+             * constrained subtypes with dynamic bounds). */
+            if (ty and (Type_Has_Dynamic_Bounds(ty) or Type_Is_Unconstrained_Array(ty)) and
+                (sym->kind == SYMBOL_VARIABLE or sym->kind == SYMBOL_PARAMETER)) {
+                const char *dbt = Array_Bound_Llvm_Type(ty);
+                uint32_t fat = Emit_Load_Fat_Pointer(cg, sym, dbt);
+                return fat;
+            }
+            /* Constrained arrays with static bounds are flat allocas.
              * The alloca address IS the value — no load needed. */
             if (Type_Is_Constrained_Array(ty)) {
                 /* Return pointer to the alloca directly (no load) */
@@ -17229,6 +17557,11 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                 { const char *cty = Type_To_Llvm(ty);
                 Emit(cg, "  %%t%u = add %s 0, 0  ; character literal\n", t, cty);
                 Temp_Set_Type(cg, t, cty); }
+            } else if (sym->needs_fat_ptr_storage) {
+                /* Constant stored as fat pointer (dynamic bounds at declaration) */
+                const char *dbt = Array_Bound_Llvm_Type(ty);
+                uint32_t fat = Emit_Load_Fat_Pointer(cg, sym, dbt);
+                return fat;
             } else if (Type_Is_Constrained_Array(ty)) {
                 /* Constrained array constant - return pointer to data.
                  * Fat pointer wrapping is handled at call sites when needed. */
@@ -17674,6 +18007,12 @@ static uint32_t Generate_Composite_Address(Code_Generator *cg, Syntax_Node *node
 
             /* Adjust index: byte_offset = (idx - low) * elem_size */
             const char *comp_idx_t = Integer_Arith_Type(cg);
+            /* Widen index to native integer (enum/bool indices may be i8/i1) */
+            {
+                const char *idx_src = Expression_Llvm_Type(cg, arg0);
+                if (idx_src and idx_src[0] == 'i' and strcmp(idx_src, comp_idx_t) != 0)
+                    idx = Emit_Convert(cg, idx, idx_src, comp_idx_t);
+            }
             uint32_t adj_idx = idx;
             if (low != 0) {
                 adj_idx = Emit_Temp(cg);
@@ -17711,6 +18050,7 @@ static uint32_t Generate_Composite_Address(Code_Generator *cg, Syntax_Node *node
     return Generate_Expression(cg, node);
 }
 
+static uint32_t Get_Dimension_Index(Syntax_Node *arg);  /* forward decl */
 static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
     /* Check if this is equality/inequality on composite types */
     Type_Info *left_type = node->binary.left ? node->binary.left->type : NULL;
@@ -17723,11 +18063,11 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         bool left_is_slice = Expression_Is_Slice(node->binary.left);
         bool right_is_slice = Expression_Is_Slice(node->binary.right);
         Type_Info *right_type = node->binary.right ? node->binary.right->type : NULL;
-        bool is_unconstrained = Type_Is_Unconstrained_Array(left_type) or
-                                Type_Has_Dynamic_Bounds(left_type) or
+        bool is_unconstrained = (Type_Is_Unconstrained_Array(left_type) and
+                                 not Type_Is_Constrained_Array(left_type)) or
                                 (not Type_Is_Constrained_Array(left_type) and Type_Is_String(left_type)) or
-                                Type_Is_Unconstrained_Array(right_type) or
-                                Type_Has_Dynamic_Bounds(right_type) or
+                                (Type_Is_Unconstrained_Array(right_type) and
+                                 not Type_Is_Constrained_Array(right_type)) or
                                 (not Type_Is_Constrained_Array(right_type) and Type_Is_String(right_type));
         /* String literals, concatenation, dynamic bounds always produce fat pointers */
         bool left_is_fat = is_unconstrained or left_is_slice or
@@ -18803,6 +19143,79 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                     Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", in_range, ge, le);
                     if (negate) { Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n", t, in_range); }
                     else        { t = in_range; }
+                } else if (node->binary.right and node->binary.right->kind == NK_ATTRIBUTE and
+                           Slice_Equal_Ignore_Case(node->binary.right->attribute.name, S("RANGE"))) {
+                    /* X IN A'RANGE or X IN A'RANGE(N) — expand to A'FIRST(N) <= X <= A'LAST(N) */
+                    Syntax_Node *attr_node = node->binary.right;
+                    Type_Info *arr_type = attr_node->attribute.prefix->type;
+                    Symbol *arr_sym = attr_node->attribute.prefix->symbol;
+                    Syntax_Node *range_dim_arg = attr_node->attribute.arguments.count > 0
+                                               ? attr_node->attribute.arguments.items[0] : NULL;
+                    uint32_t rdim = Get_Dimension_Index(range_dim_arg);
+
+                    uint32_t lo, hi;
+                    bool arr_needs_rt = false;
+                    if (arr_type and (Type_Is_Unconstrained_Array(arr_type) or Type_Has_Dynamic_Bounds(arr_type)) and
+                        arr_sym and (arr_sym->kind == SYMBOL_PARAMETER or arr_sym->kind == SYMBOL_VARIABLE or
+                                    arr_sym->kind == SYMBOL_CONSTANT or arr_sym->kind == SYMBOL_DISCRIMINANT))
+                        arr_needs_rt = true;
+                    if (arr_needs_rt) {
+                        const char *rbt = Array_Bound_Llvm_Type(arr_type);
+                        uint32_t fat = Emit_Load_Fat_Pointer(cg, arr_sym, rbt);
+                        lo = Emit_Fat_Pointer_Low_Dim(cg, fat, rbt, rdim);
+                        hi = Emit_Fat_Pointer_High_Dim(cg, fat, rbt, rdim);
+                    } else if (arr_type and Type_Is_Array_Like(arr_type) and rdim < arr_type->array.index_count) {
+                        const char *iat = Integer_Arith_Type(cg);
+                        Type_Bound lb = arr_type->array.indices[rdim].low_bound;
+                        Type_Bound hb = arr_type->array.indices[rdim].high_bound;
+                        /* If bounds not set on array, derive from index type */
+                        if (lb.kind != BOUND_INTEGER and lb.kind != BOUND_EXPR and
+                            arr_type->array.indices[rdim].index_type) {
+                            Type_Info *idx_ty = arr_type->array.indices[rdim].index_type;
+                            lb = idx_ty->low_bound;
+                            hb = idx_ty->high_bound;
+                        }
+                        if (lb.kind == BOUND_EXPR and lb.expr) {
+                            uint32_t v = Generate_Expression(cg, lb.expr);
+                            const char *vty = Expression_Llvm_Type(cg, lb.expr);
+                            if (strcmp(vty, iat) != 0 and vty[0] == 'i')
+                                v = Emit_Convert(cg, v, vty, iat);
+                            lo = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add %s %%t%u, 0  ; range lo dynamic\n", lo, iat, v);
+                        } else {
+                            lo = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add %s 0, %s  ; range lo\n", lo, iat, I128_Decimal(Type_Bound_Value(lb)));
+                        }
+                        if (hb.kind == BOUND_EXPR and hb.expr) {
+                            uint32_t v = Generate_Expression(cg, hb.expr);
+                            const char *vty = Expression_Llvm_Type(cg, hb.expr);
+                            if (strcmp(vty, iat) != 0 and vty[0] == 'i')
+                                v = Emit_Convert(cg, v, vty, iat);
+                            hi = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add %s %%t%u, 0  ; range hi dynamic\n", hi, iat, v);
+                        } else {
+                            hi = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add %s 0, %s  ; range hi\n", hi, iat, I128_Decimal(Type_Bound_Value(hb)));
+                        }
+                    } else {
+                        /* Fallback - can't determine bounds */
+                        uint32_t always = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = add i1 0, 1  ; range membership fallback\n", always);
+                        if (negate) { Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n", t, always); }
+                        else        { t = always; }
+                        return t;
+                    }
+                    /* Compare left IN lo..hi */
+                    const char *rng_iat = Integer_Arith_Type(cg);
+                    uint32_t ml = Emit_Convert(cg, left, left_int_type, rng_iat);
+                    lo = Emit_Convert(cg, lo, rng_iat, rng_iat); /* ensure same type */
+                    hi = Emit_Convert(cg, hi, rng_iat, rng_iat);
+                    uint32_t ge = Emit_Temp(cg), le = Emit_Temp(cg), in_range = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = icmp sge %s %%t%u, %%t%u\n", ge, rng_iat, ml, lo);
+                    Emit(cg, "  %%t%u = icmp sle %s %%t%u, %%t%u\n", le, rng_iat, ml, hi);
+                    Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", in_range, ge, le);
+                    if (negate) { Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n", t, in_range); }
+                    else        { t = in_range; }
                 } else {
                     /* Type or subtype name: generate bounds at runtime (RM 4.4) */
                     Type_Info *rt = node->binary.right ? node->binary.right->type : NULL;
@@ -19501,9 +19914,26 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                          * string literals, slices), skip the wrapping. */
                         const char *arg_llvm = Expression_Llvm_Type(cg, arg);
                         if (not Llvm_Type_Is_Fat_Pointer(arg_llvm)) {
-                            int128_t lo = Type_Bound_Value(actual_type->array.indices[0].low_bound);
-                            int128_t hi = Type_Bound_Value(actual_type->array.indices[0].high_bound);
-                            args[i] = Emit_Fat_Pointer(cg, args[i], lo, hi, Array_Bound_Llvm_Type(actual_type));
+                            const char *abt = Array_Bound_Llvm_Type(actual_type);
+                            uint32_t ndims_a = actual_type->array.index_count;
+                            if (ndims_a > 1) {
+                                /* Multi-dim: build fat pointer with all dimension bounds */
+                                uint32_t mlo[8], mhi[8];
+                                if (ndims_a > 8) ndims_a = 8;
+                                for (uint32_t d = 0; d < ndims_a; d++) {
+                                    int128_t lo_d = Type_Bound_Value(actual_type->array.indices[d].low_bound);
+                                    int128_t hi_d = Type_Bound_Value(actual_type->array.indices[d].high_bound);
+                                    mlo[d] = Emit_Temp(cg);
+                                    Emit(cg, "  %%t%u = add %s 0, %s  ; dim%u lo\n", mlo[d], abt, I128_Decimal(lo_d), d);
+                                    mhi[d] = Emit_Temp(cg);
+                                    Emit(cg, "  %%t%u = add %s 0, %s  ; dim%u hi\n", mhi[d], abt, I128_Decimal(hi_d), d);
+                                }
+                                args[i] = Emit_Fat_Pointer_MultiDim(cg, args[i], mlo, mhi, ndims_a, abt);
+                            } else {
+                                int128_t lo = Type_Bound_Value(actual_type->array.indices[0].low_bound);
+                                int128_t hi = Type_Bound_Value(actual_type->array.indices[0].high_bound);
+                                args[i] = Emit_Fat_Pointer(cg, args[i], lo, hi, abt);
+                            }
                         }
                     } else {
                         const char *param_type = Type_To_Llvm(formal_type);
@@ -19669,6 +20099,16 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         return 0;
     }
 
+    /* Type conversion must be checked BEFORE array indexing.
+     * PARENT(X) where PARENT is an array type is a type conversion (RM 4.6),
+     * not an indexed component.  When the prefix symbol is a type or subtype,
+     * this is always a type conversion, never array indexing. */
+    if (sym and (sym->kind == SYMBOL_TYPE or sym->kind == SYMBOL_SUBTYPE) and
+        node->apply.arguments.count == 1) {
+        /* Handled below in the type-conversion section */
+        goto type_conversion;
+    }
+
     /* Array indexing (with implicit access dereference per RM 4.1(3)) */
     Type_Info *prefix_type = node->apply.prefix->type;
     Type_Info *array_type = prefix_type;  /* Type to use for indexing */
@@ -19794,45 +20234,95 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             }
         }
 
-        /* Generate index expression */
-        uint32_t idx = Generate_Expression(cg, arg0);
-
-        /* Index check: verify index is within array bounds (RM 4.1.1).
-         * Must check BEFORE the low-bound adjustment (raw index vs array bounds). */
+        /* Multi-dimensional array indexing: linearize indices into flat offset.
+         * For ARRAY(1..M, 1..N) OF T, D(I,J) → flat = (I-low0)*N + (J-low1)
+         * For single-dimension, this reduces to (I - low0). */
         const char *idx_iat = Integer_Arith_Type(cg);
-        if (has_dynamic_low and high_bound_val) {
-            /* Dynamic bounds from fat pointer — already extracted above */
-            uint32_t low_chk = Emit_Convert(cg, low_bound_val, dyn_bt, idx_iat);
-            uint32_t high_chk = Emit_Convert(cg, high_bound_val, dyn_bt, idx_iat);
-            idx = Emit_Index_Check(cg, idx, low_chk, high_chk, idx_iat, array_type);
-        } else if (array_type->array.index_count > 0) {
-            /* Static bounds from array type */
-            int128_t lo = Type_Bound_Value(array_type->array.indices[0].low_bound);
-            int128_t hi = Type_Bound_Value(array_type->array.indices[0].high_bound);
-            if (lo != hi || lo != 0) {  /* Skip check for degenerate empty arrays */
-                uint32_t lo_t = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, %s  ; low bound\n", lo_t, idx_iat, I128_Decimal(lo));
-                uint32_t hi_t = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, %s  ; high bound\n", hi_t, idx_iat, I128_Decimal(hi));
-                idx = Emit_Index_Check(cg, idx, lo_t, hi_t, idx_iat, array_type);
-            }
-        }
+        uint32_t flat_idx = 0;  /* linearized zero-based index */
+        uint32_t ndims = array_type->array.index_count;
+        uint32_t nargs = node->apply.arguments.count;
 
-        /* Adjust for array low bound (Ada arrays can start at any index) */
-        if (has_dynamic_low) {
-            /* Dynamic low bound from fat pointer — convert to native INTEGER width */
-            uint32_t low_bound_conv = Emit_Convert(cg, low_bound_val, dyn_bt, idx_iat);
-            uint32_t adj = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u  ; adjust for dynamic low bound\n",
-                 adj, idx_iat, idx, low_bound_conv);
-            idx = adj;
-        } else {
-            int128_t low_bound = Array_Low_Bound(array_type);
-            if (low_bound != 0) {
-                uint32_t adj = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = sub %s %%t%u, %s\n", adj, idx_iat, idx, I128_Decimal(low_bound));
-                idx = adj;
+        if (ndims > 1 and nargs >= ndims) {
+            /* Multi-dimensional: compute flat index = sum of (idx[d] - low[d]) * stride[d] */
+            for (uint32_t d = 0; d < ndims; d++) {
+                Syntax_Node *arg_d = node->apply.arguments.items[d];
+                uint32_t dim_idx = Generate_Expression(cg, arg_d);
+                /* Widen to native int */
+                const char *dim_src = Expression_Llvm_Type(cg, arg_d);
+                if (dim_src and dim_src[0] == 'i' and strcmp(dim_src, idx_iat) != 0)
+                    dim_idx = Emit_Convert(cg, dim_idx, dim_src, idx_iat);
+                /* Subtract low bound for this dimension */
+                int128_t lo_d = Type_Bound_Value(array_type->array.indices[d].low_bound);
+                if (lo_d != 0) {
+                    uint32_t adj = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = sub %s %%t%u, %s  ; dim %u low adj\n",
+                         adj, idx_iat, dim_idx, I128_Decimal(lo_d), d);
+                    dim_idx = adj;
+                }
+                /* Multiply by stride (product of all subsequent dimension sizes) */
+                uint32_t stride = 1;
+                for (uint32_t d2 = d + 1; d2 < ndims; d2++) {
+                    int128_t lo2 = Type_Bound_Value(array_type->array.indices[d2].low_bound);
+                    int128_t hi2 = Type_Bound_Value(array_type->array.indices[d2].high_bound);
+                    int128_t cnt2 = hi2 - lo2 + 1;
+                    if (cnt2 > 0) stride *= (uint32_t)cnt2;
+                }
+                if (stride > 1) {
+                    uint32_t scaled = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = mul %s %%t%u, %u  ; dim %u stride\n",
+                         scaled, idx_iat, dim_idx, stride, d);
+                    dim_idx = scaled;
+                }
+                /* Accumulate into flat index */
+                if (d == 0) {
+                    flat_idx = dim_idx;
+                } else {
+                    uint32_t sum = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = add %s %%t%u, %%t%u  ; accum flat idx\n",
+                         sum, idx_iat, flat_idx, dim_idx);
+                    flat_idx = sum;
+                }
             }
+        } else {
+            /* Single-dimension indexing (original path) */
+            uint32_t idx = Generate_Expression(cg, arg0);
+            /* Widen to native integer type for GEP compatibility */
+            {
+                const char *idx_src_type = Expression_Llvm_Type(cg, arg0);
+                if (idx_src_type and idx_src_type[0] == 'i' and strcmp(idx_src_type, idx_iat) != 0)
+                    idx = Emit_Convert(cg, idx, idx_src_type, idx_iat);
+            }
+            if (has_dynamic_low and high_bound_val) {
+                uint32_t low_chk = Emit_Convert(cg, low_bound_val, dyn_bt, idx_iat);
+                uint32_t high_chk = Emit_Convert(cg, high_bound_val, dyn_bt, idx_iat);
+                idx = Emit_Index_Check(cg, idx, low_chk, high_chk, idx_iat, array_type);
+            } else if (array_type->array.index_count > 0) {
+                int128_t lo = Type_Bound_Value(array_type->array.indices[0].low_bound);
+                int128_t hi = Type_Bound_Value(array_type->array.indices[0].high_bound);
+                if (lo != hi || lo != 0) {
+                    uint32_t lo_t = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = add %s 0, %s  ; low bound\n", lo_t, idx_iat, I128_Decimal(lo));
+                    uint32_t hi_t = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = add %s 0, %s  ; high bound\n", hi_t, idx_iat, I128_Decimal(hi));
+                    idx = Emit_Index_Check(cg, idx, lo_t, hi_t, idx_iat, array_type);
+                }
+            }
+            /* Adjust for array low bound */
+            if (has_dynamic_low) {
+                uint32_t low_bound_conv = Emit_Convert(cg, low_bound_val, dyn_bt, idx_iat);
+                uint32_t adj = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u  ; adjust for dynamic low bound\n",
+                     adj, idx_iat, idx, low_bound_conv);
+                idx = adj;
+            } else {
+                int128_t low_bound = Array_Low_Bound(array_type);
+                if (low_bound != 0) {
+                    uint32_t adj = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = sub %s %%t%u, %s\n", adj, idx_iat, idx, I128_Decimal(low_bound));
+                    idx = adj;
+                }
+            }
+            flat_idx = idx;
         }
 
         /* Get pointer to element and load */
@@ -19847,14 +20337,14 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         if (elem_is_composite and elem_size > 0) {
             /* Composite element - use byte array for getelementptr */
             Emit(cg, "  %%t%u = getelementptr [%u x i8], ptr %%t%u, %s %%t%u\n",
-                 ptr, elem_size, base, idx_iat, idx);
+                 ptr, elem_size, base, idx_iat, flat_idx);
             /* Return pointer to composite element (don't load) */
             return ptr;
         } else {
             t = Emit_Temp(cg);
             const char *iat_idx = Integer_Arith_Type(cg);
             Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, %s %%t%u\n",
-                 ptr, elem_type, base, iat_idx, idx);
+                 ptr, elem_type, base, iat_idx, flat_idx);
             Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, elem_type, ptr);
             /* GNAT LLVM: no widening at load — value stays at native type width.
              * Conversions happen at use sites via Emit_Convert. */
@@ -19863,16 +20353,53 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
     }
 
     /* Type conversion: Type_Name(Expression) */
+type_conversion:
     if (sym and (sym->kind == SYMBOL_TYPE or sym->kind == SYMBOL_SUBTYPE)) {
-        /* For scalar types, type conversion evaluates the expression and converts
-         * to the target type. This handles INTEGER→FLOAT, FLOAT→INTEGER, etc. */
+        /* Type conversion: TYPE_NAME(expression) per RM 4.6.
+         * Handles scalar, array, and record conversions. */
         if (node->apply.arguments.count == 1) {
             Syntax_Node *arg = node->apply.arguments.items[0];
-            uint32_t result = Generate_Expression(cg, arg);
 
             /* Get source and destination types */
             Type_Info *src_type = arg->type;
             Type_Info *dst_type = sym->type;
+
+            /* Array type conversions (RM 4.6(24)):
+             * Constrained→Unconstrained: wrap data+bounds into fat pointer.
+             * Unconstrained→Constrained: extract data (bounds checked at runtime).
+             * Same representation: pass through. */
+            if (dst_type and src_type and
+                Type_Is_Array_Like(dst_type) and Type_Is_Array_Like(src_type)) {
+                uint32_t result = Generate_Expression(cg, arg);
+                bool dst_unc = Type_Is_Unconstrained_Array(dst_type);
+
+                /* Check if the source expression actually produces a fat pointer value.
+                 * This covers: unconstrained parameters/variables, function calls returning
+                 * unconstrained arrays, slices, concatenations, string literals, etc. */
+                bool src_is_fat = Expression_Produces_Fat_Pointer(arg, src_type);
+
+                if (dst_unc and not src_is_fat) {
+                    /* Constrained/flat storage → Unconstrained: build fat pointer {data, {low, high}}.
+                     * Source is stored as a flat alloca; bounds come from type info. */
+                    const char *bt = Array_Bound_Llvm_Type(dst_type);
+                    int128_t lo = Array_Low_Bound(src_type);
+                    int128_t hi = (src_type->kind == TYPE_ARRAY and src_type->array.index_count > 0)
+                        ? Type_Bound_Value(src_type->array.indices[0].high_bound) : lo;
+                    uint32_t lo_t = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = add %s 0, %s  ; array conv low bound\n", lo_t, bt, I128_Decimal(lo));
+                    uint32_t hi_t = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = add %s 0, %s  ; array conv high bound\n", hi_t, bt, I128_Decimal(hi));
+                    return Emit_Fat_Pointer_Dynamic(cg, result, lo_t, hi_t, bt);
+                } else if (not dst_unc and src_is_fat) {
+                    /* Unconstrained fat ptr → Constrained: extract data pointer */
+                    const char *bt = Array_Bound_Llvm_Type(src_type);
+                    return Emit_Fat_Pointer_Data(cg, result, bt);
+                }
+                /* Same representation: pass through */
+                return result;
+            }
+
+            uint32_t result = Generate_Expression(cg, arg);
 
             if (src_type and dst_type and src_type != dst_type) {
                 /* Special handling for fixed-point conversions (RM 4.6)
@@ -20140,23 +20667,61 @@ static uint32_t Emit_Bound_Attribute(Code_Generator *cg, uint32_t t,
     const char *tag = is_low ? "FIRST" : "LAST";
 
     if (Type_Is_Array_Like(prefix_type)) {
-        if (needs_runtime_bounds and dim == 0) {
+        if (needs_runtime_bounds) {
             const char *attr_bt = Array_Bound_Llvm_Type(prefix_type);
             uint32_t fat = prefix_sym
                 ? Emit_Load_Fat_Pointer(cg, prefix_sym, attr_bt)
                 : Generate_Expression(cg, prefix_expr);
             {
-                /* GNAT LLVM: return bound at native type width, no widening */
-                uint32_t bound = is_low ? Emit_Fat_Pointer_Low(cg, fat, attr_bt)
-                                        : Emit_Fat_Pointer_High(cg, fat, attr_bt);
+                /* GNAT LLVM: return bound at native type width, no widening.
+                 * Use dim-aware accessor to support multi-dimensional arrays. */
+                uint32_t bound = is_low ? Emit_Fat_Pointer_Low_Dim(cg, fat, attr_bt, dim)
+                                        : Emit_Fat_Pointer_High_Dim(cg, fat, attr_bt, dim);
                 return bound;
             }
         } else if (dim < prefix_type->array.index_count) {
             Type_Bound b = is_low ? prefix_type->array.indices[dim].low_bound
                                   : prefix_type->array.indices[dim].high_bound;
-            Emit(cg, "  %%t%u = add %s 0, %s  ; %.*s'%s(%u)\n", t, Integer_Arith_Type(cg),
-                 I128_Decimal(Type_Bound_Value(b)), (int)attr.length, attr.data, tag, dim+1);
-            Temp_Set_Type(cg, t, Integer_Arith_Type(cg));
+            if (b.kind == BOUND_EXPR and b.expr) {
+                /* Dynamic bound expression (e.g., TYPE AA IS ARRAY(SNI,..) where SNI has dynamic range) */
+                uint32_t v = Generate_Expression(cg, b.expr);
+                const char *iat = Integer_Arith_Type(cg);
+                const char *vty = Expression_Llvm_Type(cg, b.expr);
+                if (strcmp(vty, iat) != 0 and vty[0] == 'i')
+                    v = Emit_Convert(cg, v, vty, iat);
+                Emit(cg, "  %%t%u = add %s %%t%u, 0  ; %.*s'%s(%u) dynamic\n",
+                     t, iat, v, (int)attr.length, attr.data, tag, dim+1);
+                Temp_Set_Type(cg, t, iat);
+            } else if (b.kind == BOUND_INTEGER or Type_Bound_Is_Set(b)) {
+                Emit(cg, "  %%t%u = add %s 0, %s  ; %.*s'%s(%u)\n", t, Integer_Arith_Type(cg),
+                     I128_Decimal(Type_Bound_Value(b)), (int)attr.length, attr.data, tag, dim+1);
+                Temp_Set_Type(cg, t, Integer_Arith_Type(cg));
+            } else if (prefix_type->array.indices[dim].index_type) {
+                /* Bounds not set on array — derive from index type's bounds */
+                Type_Info *idx_ty = prefix_type->array.indices[dim].index_type;
+                Type_Bound ib = is_low ? idx_ty->low_bound : idx_ty->high_bound;
+                if (ib.kind == BOUND_EXPR and ib.expr) {
+                    uint32_t v = Generate_Expression(cg, ib.expr);
+                    const char *iat = Integer_Arith_Type(cg);
+                    const char *vty = Expression_Llvm_Type(cg, ib.expr);
+                    if (strcmp(vty, iat) != 0 and vty[0] == 'i')
+                        v = Emit_Convert(cg, v, vty, iat);
+                    Emit(cg, "  %%t%u = add %s %%t%u, 0  ; %.*s'%s(%u) from idx_type\n",
+                         t, iat, v, (int)attr.length, attr.data, tag, dim+1);
+                    Temp_Set_Type(cg, t, iat);
+                } else {
+                    Emit(cg, "  %%t%u = add %s 0, %s  ; %.*s'%s(%u) from idx_type\n",
+                         t, Integer_Arith_Type(cg),
+                         I128_Decimal(Type_Bound_Value(ib)),
+                         (int)attr.length, attr.data, tag, dim+1);
+                    Temp_Set_Type(cg, t, Integer_Arith_Type(cg));
+                }
+            } else {
+                /* Fallback: emit 0 */
+                Emit(cg, "  %%t%u = add %s 0, 0  ; %.*s'%s(%u) unknown\n", t, Integer_Arith_Type(cg),
+                     (int)attr.length, attr.data, tag, dim+1);
+                Temp_Set_Type(cg, t, Integer_Arith_Type(cg));
+            }
         }
     } else if (prefix_type and not Type_Is_Fixed_Point(prefix_type) and
                (Type_Is_Float(prefix_type) or
@@ -20261,7 +20826,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
 
     if (Slice_Equal_Ignore_Case(attr, S("LENGTH"))) {
         if (Type_Is_Array_Like(prefix_type)) {
-            if (needs_runtime_bounds and dim == 0) {
+            if (needs_runtime_bounds) {
                 const char *len_bt = Array_Bound_Llvm_Type(prefix_type);
                 uint32_t fat;
                 if (prefix_sym) {
@@ -20271,16 +20836,57 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                     fat = Generate_Expression(cg, node->attribute.prefix);
                 }
                 {
-                    /* GNAT LLVM: return length at native type width, no widening */
-                    uint32_t len = Emit_Fat_Pointer_Length(cg, fat, len_bt);
+                    /* GNAT LLVM: return length at native type width, no widening.
+                     * Use dim-aware accessor for multi-dimensional arrays. */
+                    uint32_t len = Emit_Fat_Pointer_Length_Dim(cg, fat, len_bt, dim);
                     return len;
                 }
             } else if (dim < prefix_type->array.index_count) {
-                int128_t low = Type_Bound_Value(prefix_type->array.indices[dim].low_bound);
-                int128_t high = Type_Bound_Value(prefix_type->array.indices[dim].high_bound);
-                Emit(cg, "  %%t%u = add %s 0, %s  ; 'LENGTH(%u)\n", t, Integer_Arith_Type(cg),
-                     I128_Decimal(high - low + 1), dim + 1);
-                Temp_Set_Type(cg, t, Integer_Arith_Type(cg));
+                Type_Bound lb = prefix_type->array.indices[dim].low_bound;
+                Type_Bound hb = prefix_type->array.indices[dim].high_bound;
+                /* If bounds not set, try deriving from index_type */
+                if (lb.kind != BOUND_INTEGER and lb.kind != BOUND_EXPR and
+                    prefix_type->array.indices[dim].index_type) {
+                    Type_Info *idx_ty = prefix_type->array.indices[dim].index_type;
+                    lb = idx_ty->low_bound;
+                    hb = idx_ty->high_bound;
+                }
+                if (lb.kind == BOUND_EXPR or hb.kind == BOUND_EXPR) {
+                    /* Dynamic length: generate high - low + 1 at runtime */
+                    uint32_t lo_t = Emit_Temp(cg);
+                    const char *iat = Integer_Arith_Type(cg);
+                    if (lb.kind == BOUND_EXPR and lb.expr) {
+                        uint32_t v = Generate_Expression(cg, lb.expr);
+                        const char *vty = Expression_Llvm_Type(cg, lb.expr);
+                        if (strcmp(vty, iat) != 0 and vty[0] == 'i')
+                            v = Emit_Convert(cg, v, vty, iat);
+                        Emit(cg, "  %%t%u = add %s %%t%u, 0\n", lo_t, iat, v);
+                    } else {
+                        Emit(cg, "  %%t%u = add %s 0, %s\n", lo_t, iat, I128_Decimal(Type_Bound_Value(lb)));
+                    }
+                    Temp_Set_Type(cg, lo_t, iat);
+                    uint32_t hi_t = Emit_Temp(cg);
+                    if (hb.kind == BOUND_EXPR and hb.expr) {
+                        uint32_t v = Generate_Expression(cg, hb.expr);
+                        const char *vty = Expression_Llvm_Type(cg, hb.expr);
+                        if (strcmp(vty, iat) != 0 and vty[0] == 'i')
+                            v = Emit_Convert(cg, v, vty, iat);
+                        Emit(cg, "  %%t%u = add %s %%t%u, 0\n", hi_t, iat, v);
+                    } else {
+                        Emit(cg, "  %%t%u = add %s 0, %s\n", hi_t, iat, I128_Decimal(Type_Bound_Value(hb)));
+                    }
+                    Temp_Set_Type(cg, hi_t, iat);
+                    uint32_t diff_t = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", diff_t, iat, hi_t, lo_t);
+                    Emit(cg, "  %%t%u = add %s %%t%u, 1  ; 'LENGTH(%u)\n", t, iat, diff_t, dim+1);
+                    Temp_Set_Type(cg, t, iat);
+                } else {
+                    int128_t low = Type_Bound_Value(lb);
+                    int128_t high = Type_Bound_Value(hb);
+                    Emit(cg, "  %%t%u = add %s 0, %s  ; 'LENGTH(%u)\n", t, Integer_Arith_Type(cg),
+                         I128_Decimal(high - low + 1), dim + 1);
+                    Temp_Set_Type(cg, t, Integer_Arith_Type(cg));
+                }
             }
         }
         return t;
@@ -20290,7 +20896,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         /* Range attribute - for general expression contexts, return low bound.
          * For loops handle RANGE specially in Generate_For_Loop. */
         if (Type_Is_Array_Like(prefix_type)) {
-            if (needs_runtime_bounds and dim == 0) {
+            if (needs_runtime_bounds) {
                 const char *rng_bt = Array_Bound_Llvm_Type(prefix_type);
                 uint32_t fat;
                 if (prefix_sym) {
@@ -20299,12 +20905,29 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                     /* Complex prefix expression - generate it to get fat pointer value */
                     fat = Generate_Expression(cg, node->attribute.prefix);
                 }
-                /* GNAT LLVM: return RANGE low at native type width, no widening */
-                return Emit_Fat_Pointer_Low(cg, fat, rng_bt);
+                /* GNAT LLVM: return RANGE low at native type width, no widening.
+                 * Use dim-aware accessor for multi-dimensional arrays. */
+                return Emit_Fat_Pointer_Low_Dim(cg, fat, rng_bt, dim);
             } else if (dim < prefix_type->array.index_count) {
-                Emit(cg, "  %%t%u = add %s 0, %s  ; 'RANGE(%u) low\n", t, Integer_Arith_Type(cg),
-                     I128_Decimal(Type_Bound_Value(prefix_type->array.indices[dim].low_bound)),
-                     dim + 1);
+                Type_Bound lb = prefix_type->array.indices[dim].low_bound;
+                /* If bounds not set, try deriving from index_type */
+                if (lb.kind != BOUND_INTEGER and lb.kind != BOUND_EXPR and
+                    prefix_type->array.indices[dim].index_type) {
+                    lb = prefix_type->array.indices[dim].index_type->low_bound;
+                }
+                if (lb.kind == BOUND_EXPR and lb.expr) {
+                    uint32_t v = Generate_Expression(cg, lb.expr);
+                    const char *iat = Integer_Arith_Type(cg);
+                    const char *vty = Expression_Llvm_Type(cg, lb.expr);
+                    if (strcmp(vty, iat) != 0 and vty[0] == 'i')
+                        v = Emit_Convert(cg, v, vty, iat);
+                    Emit(cg, "  %%t%u = add %s %%t%u, 0  ; 'RANGE(%u) low dynamic\n",
+                         t, iat, v, dim + 1);
+                    Temp_Set_Type(cg, t, iat);
+                } else {
+                    Emit(cg, "  %%t%u = add %s 0, %s  ; 'RANGE(%u) low\n", t, Integer_Arith_Type(cg),
+                         I128_Decimal(Type_Bound_Value(lb)), dim + 1);
+                }
             }
         }
         return t;
@@ -21322,6 +21945,23 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                              agg_type->array.element_type->size : 8;
         if (elem_size == 0) elem_size = 8;
 
+        /* For multi-dimensional arrays, the effective "element" of the outer
+         * aggregate is a row (slice along the first dimension), not the scalar
+         * element_type.  Compute the row size so memcpy uses the right length. */
+        bool multidim = (agg_type->array.index_count > 1);
+        uint32_t row_size = elem_size;
+        if (multidim) {
+            uint32_t row_elems = 1;
+            for (uint32_t d = 1; d < agg_type->array.index_count; d++) {
+                int128_t lo = Type_Bound_Value(agg_type->array.indices[d].low_bound);
+                int128_t hi = Type_Bound_Value(agg_type->array.indices[d].high_bound);
+                int128_t cnt = hi - lo + 1;
+                if (cnt > 0) row_elems *= (uint32_t)cnt;
+            }
+            row_size = row_elems * elem_size;
+            elem_size = row_size;  /* outer dimension "element" is a row */
+        }
+
         /* Check if bounds are dynamic */
         Type_Bound low_bound = agg_type->array.indices[0].low_bound;
         Type_Bound high_bound = agg_type->array.indices[0].high_bound;
@@ -21574,10 +22214,12 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
 
         /* Check if element type is composite (record or constrained array).
          * For composite elements, Generate_Expression returns a ptr to an alloca,
-         * so we must use memcpy to copy element data instead of store. */
+         * so we must use memcpy to copy element data instead of store.
+         * Multi-dimensional arrays are always composite at the outer level
+         * because each "element" is a row (inner array). */
         Type_Info *elem_ti = agg_type->array.element_type;
-        bool elem_is_composite = elem_ti and (Type_Is_Record(elem_ti) or
-            Type_Is_Constrained_Array(elem_ti));
+        bool elem_is_composite = multidim or (elem_ti and (Type_Is_Record(elem_ti) or
+            Type_Is_Constrained_Array(elem_ti)));
 
         if (elem_is_composite) {
             /* Allocate as byte array so the size matches the actual data layout */
@@ -22448,6 +23090,24 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
                  elem_type_str, value, elem_ptr);
             return;
         }
+
+        /* Access-to-array implicit dereference + indexing: ACC_ARR(I) := val
+         * where ACC_ARR is an access type whose designated type is an array.
+         * Generate_Lvalue already handles this case properly. */
+        if (prefix_type and Type_Is_Access(prefix_type) and
+            prefix_type->access.designated_type) {
+            Type_Info *desig = prefix_type->access.designated_type;
+            if (desig->kind == TYPE_ARRAY or desig->kind == TYPE_STRING) {
+                const char *elem_type_str = Type_To_Llvm(desig->array.element_type);
+                uint32_t elem_ptr = Generate_Lvalue(cg, target);
+                uint32_t value = Generate_Expression(cg, node->assignment.value);
+                const char *value_type = Expression_Llvm_Type(cg, node->assignment.value);
+                value = Emit_Convert(cg, value, value_type, elem_type_str);
+                Emit(cg, "  store %s %%t%u, ptr %%t%u  ; access-array element assign\n",
+                     elem_type_str, value, elem_ptr);
+                return;
+            }
+        }
     }
 
     /* Handle .ALL dereference assignment (NK_UNARY_OP with TK_ALL) */
@@ -23041,14 +23701,17 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
         Symbol *prefix_sym = range->attribute.prefix->symbol;
 
         /* Check if this is an unconstrained array needing runtime bounds */
+        Syntax_Node *range_arg_f = range->attribute.arguments.count > 0
+                                 ? range->attribute.arguments.items[0] : NULL;
+        uint32_t for_dim = Get_Dimension_Index(range_arg_f);
         if (prefix_type and Type_Is_Unconstrained_Array(prefix_type) and
             prefix_sym and (prefix_sym->kind == SYMBOL_PARAMETER or
                            prefix_sym->kind == SYMBOL_VARIABLE or
                            prefix_sym->kind == SYMBOL_DISCRIMINANT)) {
             const char *loop_bt = Array_Bound_Llvm_Type(prefix_type);
             uint32_t fat = Emit_Load_Fat_Pointer(cg, prefix_sym, loop_bt);
-            low_val = Emit_Fat_Pointer_Low(cg, fat, loop_bt);
-            high_val = Emit_Fat_Pointer_High(cg, fat, loop_bt);
+            low_val = Emit_Fat_Pointer_Low_Dim(cg, fat, loop_bt, for_dim);
+            high_val = Emit_Fat_Pointer_High_Dim(cg, fat, loop_bt, for_dim);
             /* GNAT LLVM: convert bounds from native bt to loop type (no i64 widen) */
             low_val = Emit_Convert(cg, low_val, loop_bt, loop_type);
             high_val = Emit_Convert(cg, high_val, loop_bt, loop_type);
@@ -24129,6 +24792,15 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             Emit_Symbol_Name(cg, sym);
             Emit(cg, " = getelementptr i8, ptr %%__frame_base, i64 %lld\n",
                  (long long)sym->frame_offset);
+        } else if (sym->needs_fat_ptr_storage or
+                   (is_any_array and Type_Has_Dynamic_Bounds(ty))) {
+            /* Dynamic-bound arrays need fat pointer storage ({ ptr, ptr }).
+             * Must check BEFORE static constrained array path to avoid
+             * allocating undersized storage when bounds resolve late. */
+            Emit(cg, "  %%");
+            Emit_Symbol_Name(cg, sym);
+            Emit(cg, " = alloca " FAT_PTR_TYPE "\n");
+            sym->needs_fat_ptr_storage = true;
         } else if (is_constrained_array and array_count > 0) {
             /* Constrained array with static bounds: allocate [N x element_type] */
             Emit(cg, "  %%");
@@ -24162,29 +24834,55 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 Syntax_Node *constraint = node->object_decl.object_type->subtype_ind.constraint;
                 Node_List *ranges = &constraint->index_constraint.ranges;
                 if (ranges->count > 0) {
-                    Syntax_Node *range = ranges->items[0];
-                    /* Range can be NK_RANGE with low/high, or a single expression */
-                    Syntax_Node *low_expr = NULL, *high_expr = NULL;
-                    if (range and range->kind == NK_RANGE) {
-                        low_expr = range->range.low;
-                        high_expr = range->range.high;
+                    const char *bt = Array_Bound_Llvm_Type(ty);
+                    uint32_t ndims = ranges->count;
+                    uint32_t dim_lo[8], dim_hi[8];  /* support up to 8 dimensions */
+                    if (ndims > 8) ndims = 8;
+                    bool all_ok = true;
+                    for (uint32_t d = 0; d < ndims; d++) {
+                        Syntax_Node *rng = ranges->items[d];
+                        if (rng and rng->kind == NK_RANGE and rng->range.low and rng->range.high) {
+                            dim_lo[d] = Generate_Expression(cg, rng->range.low);
+                            dim_hi[d] = Generate_Expression(cg, rng->range.high);
+                        } else {
+                            all_ok = false;
+                            break;
+                        }
                     }
-                    if (low_expr and high_expr) {
-                        const char *bt = Array_Bound_Llvm_Type(ty);
-                        uint32_t low_t = Generate_Expression(cg, low_expr);
-                        uint32_t high_t = Generate_Expression(cg, high_expr);
-                        /* Compute length = high - low + 1 */
-                        uint32_t diff = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", diff, bt, high_t, low_t);
-                        uint32_t len = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = add %s %%t%u, 1\n", len, bt, diff);
-                        uint32_t len64 = Emit_Extend_To_I64(cg, len, bt);
+                    if (all_ok) {
+                        /* Compute total element count = product of all dimension lengths */
+                        uint32_t total_len = 0;
+                        for (uint32_t d = 0; d < ndims; d++) {
+                            uint32_t diff_d = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", diff_d, bt, dim_hi[d], dim_lo[d]);
+                            uint32_t len_d = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add %s %%t%u, 1\n", len_d, bt, diff_d);
+                            if (d == 0) {
+                                total_len = len_d;
+                            } else {
+                                uint32_t prod = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = mul %s %%t%u, %%t%u\n", prod, bt, total_len, len_d);
+                                total_len = prod;
+                            }
+                        }
+                        /* Multiply by element size */
+                        uint32_t elem_sz = ty->array.element_type ? ty->array.element_type->size : 4;
+                        if (elem_sz == 0) elem_sz = 4;
+                        uint32_t byte_len = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = mul %s %%t%u, %u  ; total bytes\n",
+                             byte_len, bt, total_len, elem_sz);
+                        uint32_t byte_len64 = Emit_Extend_To_I64(cg, byte_len, bt);
                         /* Allocate data storage */
                         uint32_t data_alloc = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = alloca i8, i64 %%t%u  ; constrained uncon array data\n",
-                             data_alloc, len64);
-                        /* Build and store fat pointer */
-                        uint32_t fat = Emit_Fat_Pointer_Dynamic(cg, data_alloc, low_t, high_t, bt);
+                             data_alloc, byte_len64);
+                        /* Build fat pointer with multi-dim bounds */
+                        uint32_t fat;
+                        if (ndims > 1) {
+                            fat = Emit_Fat_Pointer_MultiDim(cg, data_alloc, dim_lo, dim_hi, ndims, bt);
+                        } else {
+                            fat = Emit_Fat_Pointer_Dynamic(cg, data_alloc, dim_lo[0], dim_hi[0], bt);
+                        }
                         Emit_Store_Fat_Pointer_To_Symbol(cg, fat, sym, bt);
                     }
                 }
@@ -24237,15 +24935,16 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 Syntax_Node *init = node->object_decl.init;
                 Type_Info *init_ty = init->type;
                 int init_is_constrained = Type_Is_Constrained_Array(init_ty);
-                bool dest_is_unconstrained = not is_constrained_array;
+                bool dest_needs_fat_storage = not is_constrained_array or
+                    sym->needs_fat_ptr_storage;
 
                 if (init->kind == NK_STRING or not init_is_constrained) {
                     /* Source produces a fat pointer value */
                     uint32_t fat_ptr = Generate_Expression(cg, init);
                     const char *init_bt = Array_Bound_Llvm_Type(ty);
 
-                    if (dest_is_unconstrained) {
-                        /* Destination is unconstrained STRING / array variable.
+                    if (dest_needs_fat_storage) {
+                        /* Destination needs fat pointer storage (unconstrained or dynamic bounds).
                          * Storage is { ptr, { bound, bound } }.  We need separate
                          * data storage on the stack, then store the fat pointer. */
                         uint32_t src_data = Emit_Fat_Pointer_Data(cg, fat_ptr, init_bt);
@@ -24275,10 +24974,18 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                         Emit_Fat_Pointer_Copy_To_Name(cg, fat_ptr, sym, init_bt);
                     }
                 } else {
-                    /* Source is a constrained character array — plain ptr. */
+                    /* Source is a constrained character array — usually plain ptr.
+                     * But may be a fat pointer if source has dynamic bounds. */
                     uint32_t src_ptr = Generate_Expression(cg, init);
+                    const char *src_llvm_init = Expression_Llvm_Type(cg, init);
+                    bool src_is_fat = Llvm_Type_Is_Fat_Pointer(src_llvm_init);
+                    if (src_is_fat) {
+                        /* Source produced a fat pointer — extract data pointer */
+                        const char *init_bt2 = Array_Bound_Llvm_Type(ty);
+                        src_ptr = Emit_Fat_Pointer_Data(cg, src_ptr, init_bt2);
+                    }
 
-                    if (dest_is_unconstrained and init_ty and
+                    if (dest_needs_fat_storage and init_ty and
                         init_ty->array.index_count > 0) {
                         /* Dest is unconstrained but source is constrained.
                          * Build fat pointer from source's static bounds. */
@@ -24390,36 +25097,51 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     Emit_Symbol_Name(cg, sym);
                     Emit(cg, ", ptr %%t%u, i64 24, i1 false)  ; copy fat ptr\n", agg_ptr);
                 } else if (dest_needs_fat and agg_type and agg_type->array.index_count > 0) {
-                    /* Destination needs a fat pointer { ptr, { bound, bound } }.
+                    /* Destination needs a fat pointer { ptr, { bound, bound, ... } }.
                      * agg_ptr is the data pointer (static bounds), construct the fat pointer. */
-                    Type_Bound low_b = agg_type->array.indices[0].low_bound;
-                    Type_Bound high_b = agg_type->array.indices[0].high_bound;
-
-                    uint32_t low_val, high_val;
-
-                    /* Get low bound (must be static since we checked for dynamic above) */
                     const char *iat_agg = Integer_Arith_Type(cg);
-                    if (low_b.kind == BOUND_INTEGER) {
-                        low_val = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = add %s 0, %s\n", low_val, iat_agg, I128_Decimal(low_b.int_value));
+                    const char *agg_abt = Array_Bound_Llvm_Type(ty);
+                    uint32_t agg_ndims = agg_type->array.index_count;
+                    if (agg_ndims > 1) {
+                        /* Multi-dim: store all dimension bounds */
+                        uint32_t agg_mlo[8], agg_mhi[8];
+                        if (agg_ndims > 8) agg_ndims = 8;
+                        for (uint32_t d = 0; d < agg_ndims; d++) {
+                            Type_Bound lo_b = agg_type->array.indices[d].low_bound;
+                            Type_Bound hi_b = agg_type->array.indices[d].high_bound;
+                            agg_mlo[d] = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add %s 0, %s\n", agg_mlo[d], iat_agg,
+                                 lo_b.kind == BOUND_INTEGER ? I128_Decimal(lo_b.int_value) : "1");
+                            Temp_Set_Type(cg, agg_mlo[d], iat_agg);
+                            agg_mhi[d] = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add %s 0, %s\n", agg_mhi[d], iat_agg,
+                                 hi_b.kind == BOUND_INTEGER ? I128_Decimal(hi_b.int_value) : "0");
+                            Temp_Set_Type(cg, agg_mhi[d], iat_agg);
+                        }
+                        uint32_t fat = Emit_Fat_Pointer_MultiDim(cg, agg_ptr, agg_mlo, agg_mhi, agg_ndims, agg_abt);
+                        Emit_Store_Fat_Pointer_To_Symbol(cg, fat, sym, agg_abt);
                     } else {
-                        low_val = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = add %s 0, 1\n", low_val, iat_agg);  /* Default low = 1 */
+                        Type_Bound low_b = agg_type->array.indices[0].low_bound;
+                        Type_Bound high_b = agg_type->array.indices[0].high_bound;
+                        uint32_t low_val, high_val;
+                        if (low_b.kind == BOUND_INTEGER) {
+                            low_val = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add %s 0, %s\n", low_val, iat_agg, I128_Decimal(low_b.int_value));
+                        } else {
+                            low_val = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add %s 0, 1\n", low_val, iat_agg);
+                        }
+                        Temp_Set_Type(cg, low_val, iat_agg);
+                        if (high_b.kind == BOUND_INTEGER) {
+                            high_val = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add %s 0, %s\n", high_val, iat_agg, I128_Decimal(high_b.int_value));
+                        } else {
+                            high_val = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add %s 0, 0\n", high_val, iat_agg);
+                        }
+                        Temp_Set_Type(cg, high_val, iat_agg);
+                        Emit_Store_Fat_Pointer_Fields_To_Symbol(cg, agg_ptr, low_val, high_val, sym, agg_abt);
                     }
-                    Temp_Set_Type(cg, low_val, iat_agg);
-
-                    /* Get high bound (must be static) */
-                    if (high_b.kind == BOUND_INTEGER) {
-                        high_val = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = add %s 0, %s\n", high_val, iat_agg, I128_Decimal(high_b.int_value));
-                    } else {
-                        high_val = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = add %s 0, 0\n", high_val, iat_agg);  /* Default high = 0 */
-                    }
-                    Temp_Set_Type(cg, high_val, iat_agg);
-
-                    /* Construct fat pointer in-place */
-                    Emit_Store_Fat_Pointer_Fields_To_Symbol(cg, agg_ptr, low_val, high_val, sym, Array_Bound_Llvm_Type(ty));
                 } else if (ty->size > 0) {
                     /* Static size known at compile time */
                     Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%");
@@ -24540,71 +25262,115 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             /* Uninitialized array with dynamic bounds - still need to set up fat pointer.
              * The array contents are uninitialized but bounds are known from the type.
              * This handles cases like: A2 : ARR1 (1 .. F * 1000); */
-            Type_Bound low_b = ty->array.indices[0].low_bound;
-            Type_Bound high_b = ty->array.indices[0].high_bound;
-
-            uint32_t low_val, high_val;
-
-            /* Get low bound */
             const char *iat_decl = Integer_Arith_Type(cg);
-            if (low_b.kind == BOUND_INTEGER) {
-                low_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, %s\n", low_val, iat_decl, I128_Decimal(low_b.int_value));
-                Temp_Set_Type(cg, low_val, iat_decl);
-            } else if (low_b.kind == BOUND_EXPR and low_b.expr) {
-                low_val = Generate_Expression(cg, low_b.expr);
-                /* Extend to INTEGER width if narrower type (e.g., ENUM'('B') returns i8) */
-                if (not Type_Is_Float_Representation(low_b.expr->type)) {
-                    const char *low_llvm = Expression_Llvm_Type(cg, low_b.expr);
-                    if (strcmp(low_llvm, iat_decl) != 0 and !Llvm_Type_Is_Pointer(low_llvm)) {
-                        low_val = Emit_Convert(cg, low_val, low_llvm, iat_decl);
+            uint32_t ndims_decl = ty->array.index_count;
+            if (ndims_decl > 8) ndims_decl = 8;
+            uint32_t dim_lo_decl[8], dim_hi_decl[8];
+
+            for (uint32_t d = 0; d < ndims_decl; d++) {
+                Type_Bound low_b = ty->array.indices[d].low_bound;
+                Type_Bound high_b = ty->array.indices[d].high_bound;
+
+                /* Get low bound */
+                if (low_b.kind == BOUND_INTEGER) {
+                    dim_lo_decl[d] = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = add %s 0, %s\n", dim_lo_decl[d], iat_decl, I128_Decimal(low_b.int_value));
+                    Temp_Set_Type(cg, dim_lo_decl[d], iat_decl);
+                } else if (low_b.kind == BOUND_EXPR and low_b.expr) {
+                    dim_lo_decl[d] = Generate_Expression(cg, low_b.expr);
+                    if (not Type_Is_Float_Representation(low_b.expr->type)) {
+                        const char *low_llvm = Expression_Llvm_Type(cg, low_b.expr);
+                        if (strcmp(low_llvm, iat_decl) != 0 and !Llvm_Type_Is_Pointer(low_llvm))
+                            dim_lo_decl[d] = Emit_Convert(cg, dim_lo_decl[d], low_llvm, iat_decl);
                     }
+                    Temp_Set_Type(cg, dim_lo_decl[d], iat_decl);
+                } else if (ty->array.indices[d].index_type) {
+                    /* Derive from index type's low bound (e.g., BOOLEAN'FIRST=0, NI'FIRST=-3) */
+                    Type_Info *idx_ty = ty->array.indices[d].index_type;
+                    if (idx_ty->low_bound.kind == BOUND_EXPR and idx_ty->low_bound.expr) {
+                        dim_lo_decl[d] = Generate_Expression(cg, idx_ty->low_bound.expr);
+                        const char *vty = Expression_Llvm_Type(cg, idx_ty->low_bound.expr);
+                        if (strcmp(vty, iat_decl) != 0 and vty[0] == 'i')
+                            dim_lo_decl[d] = Emit_Convert(cg, dim_lo_decl[d], vty, iat_decl);
+                    } else {
+                        dim_lo_decl[d] = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = add %s 0, %s\n", dim_lo_decl[d], iat_decl,
+                             I128_Decimal(Type_Bound_Value(idx_ty->low_bound)));
+                    }
+                    Temp_Set_Type(cg, dim_lo_decl[d], iat_decl);
+                } else {
+                    dim_lo_decl[d] = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = add %s 0, 1\n", dim_lo_decl[d], iat_decl);
+                    Temp_Set_Type(cg, dim_lo_decl[d], iat_decl);
                 }
-                Temp_Set_Type(cg, low_val, iat_decl);
-            } else {
-                low_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, 1\n", low_val, iat_decl);
-                Temp_Set_Type(cg, low_val, iat_decl);
+
+                /* Get high bound */
+                if (high_b.kind == BOUND_INTEGER) {
+                    dim_hi_decl[d] = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = add %s 0, %s\n", dim_hi_decl[d], iat_decl, I128_Decimal(high_b.int_value));
+                    Temp_Set_Type(cg, dim_hi_decl[d], iat_decl);
+                } else if (high_b.kind == BOUND_EXPR and high_b.expr) {
+                    dim_hi_decl[d] = Generate_Expression(cg, high_b.expr);
+                    if (not Type_Is_Float_Representation(high_b.expr->type)) {
+                        const char *high_llvm = Expression_Llvm_Type(cg, high_b.expr);
+                        if (strcmp(high_llvm, iat_decl) != 0 and !Llvm_Type_Is_Pointer(high_llvm))
+                            dim_hi_decl[d] = Emit_Convert(cg, dim_hi_decl[d], high_llvm, iat_decl);
+                    }
+                    Temp_Set_Type(cg, dim_hi_decl[d], iat_decl);
+                } else if (ty->array.indices[d].index_type) {
+                    /* Derive from index type's high bound */
+                    Type_Info *idx_ty = ty->array.indices[d].index_type;
+                    if (idx_ty->high_bound.kind == BOUND_EXPR and idx_ty->high_bound.expr) {
+                        dim_hi_decl[d] = Generate_Expression(cg, idx_ty->high_bound.expr);
+                        const char *vty = Expression_Llvm_Type(cg, idx_ty->high_bound.expr);
+                        if (strcmp(vty, iat_decl) != 0 and vty[0] == 'i')
+                            dim_hi_decl[d] = Emit_Convert(cg, dim_hi_decl[d], vty, iat_decl);
+                    } else {
+                        dim_hi_decl[d] = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = add %s 0, %s\n", dim_hi_decl[d], iat_decl,
+                             I128_Decimal(Type_Bound_Value(idx_ty->high_bound)));
+                    }
+                    Temp_Set_Type(cg, dim_hi_decl[d], iat_decl);
+                } else {
+                    dim_hi_decl[d] = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = add %s 0, 0\n", dim_hi_decl[d], iat_decl);
+                    Temp_Set_Type(cg, dim_hi_decl[d], iat_decl);
+                }
             }
 
-            /* Get high bound */
-            if (high_b.kind == BOUND_INTEGER) {
-                high_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, %s\n", high_val, iat_decl, I128_Decimal(high_b.int_value));
-                Temp_Set_Type(cg, high_val, iat_decl);
-            } else if (high_b.kind == BOUND_EXPR and high_b.expr) {
-                high_val = Generate_Expression(cg, high_b.expr);
-                /* Extend to INTEGER width if narrower type (e.g., ENUM'('D') returns i8) */
-                if (not Type_Is_Float_Representation(high_b.expr->type)) {
-                    const char *high_llvm = Expression_Llvm_Type(cg, high_b.expr);
-                    if (strcmp(high_llvm, iat_decl) != 0 and !Llvm_Type_Is_Pointer(high_llvm)) {
-                        high_val = Emit_Convert(cg, high_val, high_llvm, iat_decl);
-                    }
-                }
-                Temp_Set_Type(cg, high_val, iat_decl);
-            } else {
-                high_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, 0\n", high_val, iat_decl);
-                Temp_Set_Type(cg, high_val, iat_decl);
-            }
-
-            /* Allocate array data with dynamic size */
+            /* Allocate array data: total_bytes = product(len_d) * elem_size */
             uint32_t elem_sz = elem_size > 0 ? elem_size :
                                (ty->array.element_type ? ty->array.element_type->size : 8);
             if (elem_sz == 0) elem_sz = 8;
 
-            uint32_t count_val = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", count_val, iat_decl, high_val, low_val);
-            uint32_t count_plus1 = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = add %s %%t%u, 1\n", count_plus1, iat_decl, count_val);
+            uint32_t total_count = 0;
+            for (uint32_t d = 0; d < ndims_decl; d++) {
+                uint32_t count_d = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", count_d, iat_decl, dim_hi_decl[d], dim_lo_decl[d]);
+                uint32_t len_d = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add %s %%t%u, 1\n", len_d, iat_decl, count_d);
+                if (d == 0) {
+                    total_count = len_d;
+                } else {
+                    uint32_t prod = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = mul %s %%t%u, %%t%u\n", prod, iat_decl, total_count, len_d);
+                    total_count = prod;
+                }
+            }
             uint32_t byte_size = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", byte_size, iat_decl, count_plus1, elem_sz);
+            Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", byte_size, iat_decl, total_count, elem_sz);
 
             uint32_t data_ptr = Emit_Temp(cg);
             Emit(cg, "  %%t%u = alloca i8, %s %%t%u  ; dynamic uninit array\n", data_ptr, iat_decl, byte_size);
 
-            /* Construct fat pointer in-place */
-            Emit_Store_Fat_Pointer_Fields_To_Symbol(cg, data_ptr, low_val, high_val, sym, Array_Bound_Llvm_Type(ty));
+            /* Construct fat pointer with multi-dim bounds */
+            if (ndims_decl > 1) {
+                uint32_t fat = Emit_Fat_Pointer_MultiDim(cg, data_ptr, dim_lo_decl, dim_hi_decl, ndims_decl,
+                                                          Array_Bound_Llvm_Type(ty));
+                Emit_Store_Fat_Pointer_To_Symbol(cg, fat, sym, Array_Bound_Llvm_Type(ty));
+            } else {
+                Emit_Store_Fat_Pointer_Fields_To_Symbol(cg, data_ptr, dim_lo_decl[0], dim_hi_decl[0], sym, Array_Bound_Llvm_Type(ty));
+            }
         } else if (is_record and ty->record.component_count > 0) {
             /* Record without explicit initializer (RM 3.7):
              * 1. If constrained subtype, initialize discriminants from constraints
@@ -24848,13 +25614,28 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
 
     /* If nested, create aliases for accessing enclosing scope variables via frame */
     if (is_nested and parent_owner and parent_owner->scope) {
-        /* Create pointer aliases to parent scope variables */
+        /* Create pointer aliases to parent scope variables.
+         * Must include all storage-bearing symbol kinds: variables, parameters,
+         * discriminants, and constants (non-named-number constants like
+         * "X : INTEGER := 2" have stack storage and can be modified). */
         Scope *parent_scope = parent_owner->scope;
         for (uint32_t i = 0; i < parent_scope->symbol_count; i++) {
             Symbol *var = parent_scope->symbols[i];
             if (var and (var->kind == SYMBOL_VARIABLE or var->kind == SYMBOL_PARAMETER or
-                        var->kind == SYMBOL_DISCRIMINANT)) {
+                        var->kind == SYMBOL_DISCRIMINANT or
+                        (var->kind == SYMBOL_CONSTANT and not var->is_named_number))) {
                 /* Create a GEP alias:  %__frame.VAR = getelementptr i8, ptr %__parent_frame, i64 offset */
+                Emit(cg, "  %%__frame.");
+                Emit_Symbol_Name(cg, var);
+                Emit(cg, " = getelementptr i8, ptr %%__parent_frame, i64 %lld\n",
+                     (long long)(var->frame_offset));
+            }
+        }
+        /* Also create aliases for variables from child scopes (DECLARE blocks, etc.)
+         * that share the same function frame but were in deeper scopes. */
+        for (uint32_t i = 0; i < parent_scope->frame_var_count; i++) {
+            Symbol *var = parent_scope->frame_vars[i];
+            if (var) {
                 Emit(cg, "  %%__frame.");
                 Emit_Symbol_Name(cg, var);
                 Emit(cg, " = getelementptr i8, ptr %%__parent_frame, i64 %lld\n",
@@ -25286,6 +26067,16 @@ static void Generate_Task_Body(Code_Generator *cg, Syntax_Node *node) {
             if (var and (var->kind == SYMBOL_VARIABLE or var->kind == SYMBOL_PARAMETER or
                         var->kind == SYMBOL_DISCRIMINANT)) {
                 /* Create a GEP alias: %__frame.VAR = getelementptr ptr %__parent_frame, offset */
+                Emit(cg, "  %%__frame.");
+                Emit_Symbol_Name(cg, var);
+                Emit(cg, " = getelementptr i8, ptr %%__parent_frame, i64 %lld\n",
+                     (long long)(var->frame_offset));
+            }
+        }
+        /* Also include variables from child scopes (DECLARE blocks). */
+        for (uint32_t i = 0; i < parent_scope->frame_var_count; i++) {
+            Symbol *var = parent_scope->frame_vars[i];
+            if (var) {
                 Emit(cg, "  %%__frame.");
                 Emit_Symbol_Name(cg, var);
                 Emit(cg, " = getelementptr i8, ptr %%__parent_frame, i64 %lld\n",
