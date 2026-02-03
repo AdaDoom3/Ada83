@@ -9329,9 +9329,19 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                             row_type->array.index_count = agg_type->array.index_count - 1;
                             row_type->array.indices = Arena_Allocate(
                                 row_type->array.index_count * sizeof(Index_Info));
-                            /* Copy remaining dimensions (skip first) */
+                            /* Copy remaining dimensions (skip first) and derive
+                             * bounds from index_type when BOUND_NONE (unconstrained).
+                             * RM 4.3.3(6): lower bound comes from index subtype. */
                             for (uint32_t d = 0; d < row_type->array.index_count; d++) {
                                 row_type->array.indices[d] = agg_type->array.indices[d + 1];
+                                if (row_type->array.indices[d].low_bound.kind == BOUND_NONE and
+                                    row_type->array.indices[d].index_type)
+                                    row_type->array.indices[d].low_bound =
+                                        row_type->array.indices[d].index_type->low_bound;
+                                if (row_type->array.indices[d].high_bound.kind == BOUND_NONE and
+                                    row_type->array.indices[d].index_type)
+                                    row_type->array.indices[d].high_bound =
+                                        row_type->array.indices[d].index_type->high_bound;
                             }
                             /* Calculate row size */
                             uint32_t row_elems = 1;
@@ -18461,6 +18471,15 @@ static uint32_t Wrap_Constrained_As_Fat(Code_Generator *cg,
     bool is_fat = Expression_Produces_Fat_Pointer(expr, type);
     if (is_fat)
         return Generate_Expression(cg, expr);
+    /* Aggregates of unconstrained array types already build their own fat
+     * pointer alloca in Generate_Aggregate.  Load it instead of re-wrapping. */
+    if (expr->kind == NK_AGGREGATE and type and Type_Is_Unconstrained_Array(type)) {
+        uint32_t agg_ptr = Generate_Expression(cg, expr);
+        uint32_t loaded = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u  ; load agg fat ptr\n",
+             loaded, agg_ptr);
+        return loaded;
+    }
     uint32_t ptr = Generate_Composite_Address(cg, expr);
     int128_t lo = 1, hi = 0;
     if (Type_Is_Array_Like(type) and type->array.index_count > 0) {
@@ -18666,8 +18685,17 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         /* Get addresses of both arrays for comparison */
         uint32_t left_ptr, right_ptr;
         Type_Info *rhs_cmp_type = node->binary.right ? node->binary.right->type : NULL;
+        /* An aggregate of an unconstrained type already builds its own fat
+         * pointer alloca inside Generate_Aggregate.  Detect this so we can
+         * just load it instead of double-wrapping with wrong bounds. */
+        bool l_is_uncon_agg = (node->binary.left->kind == NK_AGGREGATE and
+            node->binary.left->type and Type_Is_Unconstrained_Array(node->binary.left->type));
+        bool r_is_uncon_agg = (node->binary.right and
+            node->binary.right->kind == NK_AGGREGATE and
+            node->binary.right->type and Type_Is_Unconstrained_Array(node->binary.right->type));
         bool is_unconstrained = Expression_Produces_Fat_Pointer(node->binary.left, left_type) or
-                                Expression_Produces_Fat_Pointer(node->binary.right, rhs_cmp_type);
+                                Expression_Produces_Fat_Pointer(node->binary.right, rhs_cmp_type) or
+                                l_is_uncon_agg or r_is_uncon_agg;
         const char *rel_bt = Array_Bound_Llvm_Type(left_type);
         if (is_unconstrained) {
             /* Generate each operand as fat pointer, wrapping constrained if needed */
@@ -18676,6 +18704,12 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
 
             if (l_fat) {
                 left_ptr = Generate_Expression(cg, node->binary.left);
+            } else if (l_is_uncon_agg) {
+                /* Aggregate already built fat pointer; load it from alloca */
+                uint32_t agg_ptr = Generate_Expression(cg, node->binary.left);
+                left_ptr = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u  ; load agg fat ptr\n",
+                     left_ptr, agg_ptr);
             } else {
                 uint32_t lp = Generate_Composite_Address(cg, node->binary.left);
                 int128_t lo = 1, hi = 0;
@@ -18687,6 +18721,12 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             }
             if (r_fat) {
                 right_ptr = Generate_Expression(cg, node->binary.right);
+            } else if (r_is_uncon_agg) {
+                /* Aggregate already built fat pointer; load it from alloca */
+                uint32_t agg_ptr = Generate_Expression(cg, node->binary.right);
+                right_ptr = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u  ; load agg fat ptr\n",
+                     right_ptr, agg_ptr);
             } else {
                 uint32_t rp = Generate_Composite_Address(cg, node->binary.right);
                 int128_t lo = 1, hi = 0;
@@ -22727,16 +22767,51 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                              agg_type->array.element_type->size : 8;
         if (elem_size == 0) elem_size = 8;
 
+        /* RM 4.3.3(6): For positional aggregates of unconstrained array types,
+         * the lower bound of each dimension is the index subtype's 'FIRST.
+         * Derive bounds for ALL dimensions from index_type when BOUND_NONE. */
+        uint32_t agg_ndims = agg_type->array.index_count;
+        if (agg_ndims > 8) agg_ndims = 8;
+        Type_Bound dim_lo[8], dim_hi[8];
+        for (uint32_t d = 0; d < agg_ndims; d++) {
+            dim_lo[d] = agg_type->array.indices[d].low_bound;
+            dim_hi[d] = agg_type->array.indices[d].high_bound;
+            if (dim_lo[d].kind == BOUND_NONE and agg_type->array.indices[d].index_type)
+                dim_lo[d] = agg_type->array.indices[d].index_type->low_bound;
+            if (dim_hi[d].kind == BOUND_NONE and agg_type->array.indices[d].index_type)
+                dim_hi[d] = agg_type->array.indices[d].index_type->high_bound;
+        }
+        /* For outermost dimension of positional aggregates, override upper bound
+         * from element count: high = low + N - 1 */
+        {
+            uint32_t n_positional = 0;
+            bool has_named = false;
+            for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
+                Syntax_Node *item = node->aggregate.items.items[i];
+                if (item->kind == NK_ASSOCIATION) has_named = true;
+                else n_positional++;
+            }
+            if (n_positional > 0 and not has_named and
+                dim_lo[0].kind == BOUND_INTEGER) {
+                dim_hi[0] = (Type_Bound){
+                    .kind = BOUND_INTEGER,
+                    .int_value = dim_lo[0].int_value + (int128_t)n_positional - 1
+                };
+            }
+        }
+        Type_Bound low_bound = dim_lo[0], high_bound = dim_hi[0];
+
         /* For multi-dimensional arrays, the effective "element" of the outer
          * aggregate is a row (slice along the first dimension), not the scalar
-         * element_type.  Compute the row size so memcpy uses the right length. */
-        bool multidim = (agg_type->array.index_count > 1);
+         * element_type.  Compute the row size so memcpy uses the right length.
+         * Use derived bounds (not raw BOUND_NONE) for correct sizing. */
+        bool multidim = (agg_ndims > 1);
         uint32_t row_size = elem_size;
         if (multidim) {
             uint32_t row_elems = 1;
-            for (uint32_t d = 1; d < agg_type->array.index_count; d++) {
-                int128_t lo = Type_Bound_Value(agg_type->array.indices[d].low_bound);
-                int128_t hi = Type_Bound_Value(agg_type->array.indices[d].high_bound);
+            for (uint32_t d = 1; d < agg_ndims; d++) {
+                int128_t lo = Type_Bound_Value(dim_lo[d]);
+                int128_t hi = Type_Bound_Value(dim_hi[d]);
                 int128_t cnt = hi - lo + 1;
                 if (cnt > 0) row_elems *= (uint32_t)cnt;
             }
@@ -22744,9 +22819,6 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             elem_size = row_size;  /* outer dimension "element" is a row */
         }
 
-        /* Check if bounds are dynamic */
-        Type_Bound low_bound = agg_type->array.indices[0].low_bound;
-        Type_Bound high_bound = agg_type->array.indices[0].high_bound;
         bool dynamic_bounds = (low_bound.kind == BOUND_EXPR) or (high_bound.kind == BOUND_EXPR);
 
         if (dynamic_bounds) {
@@ -22821,6 +22893,35 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         has_others = true;
                         break;
                     }
+                }
+            }
+
+            /* Positional elements: store each element at its index offset.
+             * Index = positional_idx * elem_size bytes from base. */
+            {
+                uint32_t positional_idx = 0;
+                for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
+                    Syntax_Node *item = node->aggregate.items.items[i];
+                    if (item->kind == NK_ASSOCIATION) continue;  /* skip named/others */
+                    uint32_t val = Generate_Expression(cg, item);
+                    Type_Info *elem_ti = agg_type->array.element_type;
+                    bool elem_is_composite = multidim or (elem_ti and (Type_Is_Record(elem_ti) or
+                        Type_Is_Constrained_Array(elem_ti)));
+                    if (elem_is_composite) {
+                        uint32_t ptr = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
+                             ptr, base, positional_idx * elem_size);
+                        Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
+                             ptr, val, elem_size);
+                    } else {
+                        const char *src_type = Expression_Llvm_Type(cg, item);
+                        val = Emit_Convert(cg, val, src_type, elem_type);
+                        uint32_t ptr = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %u\n",
+                             ptr, elem_type, base, positional_idx);
+                        Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, val, ptr);
+                    }
+                    positional_idx++;
                 }
             }
 
@@ -23190,9 +23291,28 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
 
         /* If the array type is unconstrained, wrap in a fat pointer so that
          * the caller receives { ptr, ptr } (data + bounds).  Constrained
-         * arrays just return the raw data pointer. */
+         * arrays just return the raw data pointer.
+         * Multi-dimensional arrays store bounds for ALL dimensions. */
         if (not agg_type->array.is_constrained) {
             const char *agg_bt = Array_Bound_Llvm_Type(agg_type);
+            if (multidim) {
+                uint32_t mlo[8], mhi[8];
+                for (uint32_t d = 0; d < agg_ndims; d++) {
+                    mlo[d] = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = add %s 0, %s  ; dim%u lo\n",
+                         mlo[d], agg_bt, I128_Decimal(Type_Bound_Value(dim_lo[d])), d);
+                    Temp_Set_Type(cg, mlo[d], agg_bt);
+                    mhi[d] = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = add %s 0, %s  ; dim%u hi\n",
+                         mhi[d], agg_bt, I128_Decimal(Type_Bound_Value(dim_hi[d])), d);
+                    Temp_Set_Type(cg, mhi[d], agg_bt);
+                }
+                uint32_t fat_val = Emit_Fat_Pointer_MultiDim(cg, base, mlo, mhi, agg_ndims, agg_bt);
+                uint32_t fat_ptr = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = alloca " FAT_PTR_TYPE "  ; multidim array fat ptr\n", fat_ptr);
+                Emit(cg, "  store " FAT_PTR_TYPE " %%t%u, ptr %%t%u\n", fat_val, fat_ptr);
+                return fat_ptr;
+            }
             uint32_t low_temp = Emit_Temp(cg);
             Emit(cg, "  %%t%u = add %s 0, %s  ; static agg low\n",
                  low_temp, agg_bt, I128_Decimal(low));
@@ -26144,19 +26264,25 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                  * For arrays with dynamic bounds, the aggregate already returns a fat pointer. */
                 Type_Info *agg_type = node->object_decl.init->type;
                 bool dest_needs_fat = Type_Has_Dynamic_Bounds(ty) or Type_Is_Unconstrained_Array(ty);
-                bool agg_has_dynamic = agg_type and agg_type->array.index_count > 0 and
-                    ((agg_type->array.indices[0].low_bound.kind == BOUND_EXPR) or
-                     (agg_type->array.indices[0].high_bound.kind == BOUND_EXPR));
+                /* Generate_Aggregate returns a fat ptr alloca when the aggregate
+                 * type is unconstrained OR has dynamic (BOUND_EXPR) bounds.
+                 * Detect this so we copy the fat ptr instead of re-wrapping. */
+                bool agg_returns_fat = agg_type and agg_type->array.index_count > 0 and
+                    (not agg_type->array.is_constrained or
+                     agg_type->array.indices[0].low_bound.kind == BOUND_EXPR or
+                     agg_type->array.indices[0].high_bound.kind == BOUND_EXPR);
 
                 uint32_t agg_ptr = Generate_Expression(cg, node->object_decl.init);
 
-                if (dest_needs_fat and agg_has_dynamic) {
-                    /* Aggregate with dynamic bounds already returns a fat pointer.
-                     * Just copy the fat pointer structure (24 bytes: ptr + 2*i64).
-                     * This avoids re-evaluating bound expressions that may have side effects. */
-                    Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%");
+                if (dest_needs_fat and agg_returns_fat) {
+                    /* Aggregate already returns a fat pointer alloca.
+                     * Load it and store to the destination variable. */
+                    uint32_t loaded = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u  ; load agg fat ptr\n",
+                         loaded, agg_ptr);
+                    Emit(cg, "  store " FAT_PTR_TYPE " %%t%u, ptr %%", loaded);
                     Emit_Symbol_Name(cg, sym);
-                    Emit(cg, ", ptr %%t%u, i64 24, i1 false)  ; copy fat ptr\n", agg_ptr);
+                    Emit(cg, "  ; store fat ptr to var\n");
                 } else if (dest_needs_fat and agg_type and agg_type->array.index_count > 0) {
                     /* Destination needs a fat pointer { ptr, { bound, bound, ... } }.
                      * agg_ptr is the data pointer (static bounds), construct the fat pointer. */
