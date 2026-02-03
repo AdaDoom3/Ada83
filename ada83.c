@@ -7540,6 +7540,8 @@ static void Symbol_Manager_Init_Predefined(Symbol_Manager *sm) {
 
     sm->type_character = Type_New(TYPE_CHARACTER, S("CHARACTER"));
     sm->type_character->size = 1;
+    sm->type_character->low_bound  = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = 0   };
+    sm->type_character->high_bound = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = 127 };
 
     sm->type_string = Type_New(TYPE_STRING, S("STRING"));
     sm->type_string->size = 16;  /* Fat pointer: ptr + length */
@@ -19695,6 +19697,25 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             }
             Emit(cg, "  %%t%u = %s %s %%t%u, %%t%u\n", t, op, common_t, left, right);
             Temp_Set_Type(cg, t, common_t);
+            /* Ada MOD correction: MOD result has sign of divisor (RM 4.5.5)
+             * srem result has sign of dividend. When signs differ, add divisor. */
+            if (binop == TK_MOD and not lhs_unsigned) {
+                uint32_t r_ne_zero = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp ne %s %%t%u, 0\n", r_ne_zero, common_t, t);
+                uint32_t r_xor_b = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = xor %s %%t%u, %%t%u\n", r_xor_b, common_t, t, right);
+                uint32_t signs_differ = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp slt %s %%t%u, 0\n", signs_differ, common_t, r_xor_b);
+                uint32_t need_fix = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", need_fix, r_ne_zero, signs_differ);
+                uint32_t r_plus_b = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add %s %%t%u, %%t%u\n", r_plus_b, common_t, t, right);
+                uint32_t mod_result = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n",
+                     mod_result, need_fix, common_t, r_plus_b, common_t, t);
+                t = mod_result;
+                Temp_Set_Type(cg, t, common_t);
+            }
         }
         /* Add/sub/mul: use overflow-checked intrinsics for signed types (RM 4.5).
          * Modular types wrap naturally; Emit_Overflow_Checked_Op handles this. */
@@ -19929,6 +19950,23 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "  %%t%u = %s %s %%t%u, %%t%u  ; predef %.*s\n",
                      r, arith_op, ct, v0, v1,
                      (int)op_name.length, op_name.data);
+                /* Ada MOD correction for named operator */
+                if (Slice_Equal_Ignore_Case(op_name, S("mod")) and not uns) {
+                    uint32_t rn = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = icmp ne %s %%t%u, 0\n", rn, ct, r);
+                    uint32_t rxb = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = xor %s %%t%u, %%t%u\n", rxb, ct, r, v1);
+                    uint32_t sd = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = icmp slt %s %%t%u, 0\n", sd, ct, rxb);
+                    uint32_t nf = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", nf, rn, sd);
+                    uint32_t rpb = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = add %s %%t%u, %%t%u\n", rpb, ct, r, v1);
+                    uint32_t mr = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n",
+                         mr, nf, ct, rpb, ct, r);
+                    r = mr;
+                }
                 return r;
             }
             /* Boolean operators */
@@ -21597,12 +21635,14 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         bool is_succ = (attr.data[0] == 'S' or attr.data[0] == 's');
         if (first_arg) {
             uint32_t val = Generate_Expression(cg, first_arg);
-            /* Operate at Integer_Arith_Type for safety, then convert back */
-            const char *iat = Integer_Arith_Type(cg);
+            /* Operate in i64 to avoid overflow when SUCC(LAST) or PRED(FIRST)
+             * would wrap in the native type width (e.g. i32 INTEGER). */
+            const char *wide_iat = "i64";
             const char *arg_t = Expression_Llvm_Type(cg, first_arg);
-            uint32_t wide_val = Emit_Convert(cg, val, arg_t, iat);
+            uint32_t wide_val = Emit_Convert(cg, val, arg_t, wide_iat);
             Emit(cg, "  %%t%u = %s %s %%t%u, 1  ; '%s\n",
-                 t, is_succ ? "add" : "sub", iat, wide_val, is_succ ? "SUCC" : "PRED");
+                 t, is_succ ? "add" : "sub", wide_iat, wide_val, is_succ ? "SUCC" : "PRED");
+            Temp_Set_Type(cg, t, wide_iat);
             /* Resolve root base type for 'PRED/'SUCC bound check (RM 3.5.5(6)):
              * Result must be in T'BASE range, which for derived types
              * includes ALL values of the parent type's base range. */
@@ -21615,7 +21655,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                 uint32_t ok_label = cg->label_id++, raise_label = cg->label_id++;
                 uint32_t cmp = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = icmp %s %s %%t%u, %s\n", cmp,
-                     is_succ ? "sgt" : "slt", iat, t, I128_Decimal(limit.int_value));
+                     is_succ ? "sgt" : "slt", wide_iat, t, I128_Decimal(limit.int_value));
                 Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
                      cmp, raise_label, ok_label);
                 Emit_Label_Here(cg, raise_label);
@@ -21630,7 +21670,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                 result_type = Resolve_Generic_Actual_Type(cg, result_type);
             const char *result_t = Type_To_Llvm(result_type);
             if (result_t and result_t[0] == 'i')
-                t = Emit_Convert(cg, t, iat, result_t);
+                t = Emit_Convert(cg, t, wide_iat, result_t);
             return t;
         }
     }
@@ -21719,6 +21759,44 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                 uint32_t char_val = Emit_Convert(cg, arg_val, arg_src_type, "i8");
                 Emit(cg, "  %%t%u = call " FAT_PTR_TYPE " @__ada_character_image(i8 %%t%u)\n",
                      t, char_val);
+            } else if (Type_Is_Boolean(prefix_type)) {
+                /* Boolean'IMAGE — switch on 0→"FALSE", 1→"TRUE" (RM 3.5.5) */
+                const char *img_bt = String_Bound_Type(cg);
+                uint32_t result_ptr = Emit_Temp(cg);
+                uint32_t result_len = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = alloca ptr\n", result_ptr);
+                Emit(cg, "  %%t%u = alloca %s\n", result_len, img_bt);
+                uint32_t false_label = cg->label_id++;
+                uint32_t true_label = cg->label_id++;
+                uint32_t end_label = cg->label_id++;
+                const char *arg_t = Expression_Llvm_Type(cg, first_arg);
+                uint32_t cmp_val = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp ne %s %%t%u, 0\n", cmp_val, arg_t, arg_val);
+                Emit(cg, "  br i1 %%t%u, label %%Lbimg_t%u, label %%Lbimg_f%u\n",
+                     cmp_val, true_label, false_label);
+                /* FALSE case */
+                uint32_t false_str_id = cg->string_id++;
+                Emit_String_Const(cg, "@.img_str%u = private unnamed_addr constant [6 x i8] c\"FALSE\\00\"\n", false_str_id);
+                Emit(cg, "Lbimg_f%u:\n", false_label);
+                Emit(cg, "  store ptr @.img_str%u, ptr %%t%u\n", false_str_id, result_ptr);
+                Emit(cg, "  store %s 5, ptr %%t%u\n", img_bt, result_len);
+                Emit(cg, "  br label %%Lbimg_end%u\n", end_label);
+                /* TRUE case */
+                uint32_t true_str_id = cg->string_id++;
+                Emit_String_Const(cg, "@.img_str%u = private unnamed_addr constant [5 x i8] c\"TRUE\\00\"\n", true_str_id);
+                Emit(cg, "Lbimg_t%u:\n", true_label);
+                Emit(cg, "  store ptr @.img_str%u, ptr %%t%u\n", true_str_id, result_ptr);
+                Emit(cg, "  store %s 4, ptr %%t%u\n", img_bt, result_len);
+                Emit(cg, "  br label %%Lbimg_end%u\n", end_label);
+                /* End */
+                Emit(cg, "Lbimg_end%u:\n", end_label);
+                uint32_t ptr_load = Emit_Temp(cg);
+                uint32_t len_load = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load ptr, ptr %%t%u\n", ptr_load, result_ptr);
+                Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", len_load, img_bt, result_len);
+                uint32_t low_one = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add %s 0, 1\n", low_one, img_bt);
+                t = Emit_Fat_Pointer_Dynamic(cg, ptr_load, low_one, len_load, img_bt);
             } else if (Type_Is_Float_Representation(prefix_type)) {
                 /* Float'IMAGE */
                 Emit(cg, "  %%t%u = call " FAT_PTR_TYPE " @__ada_float_image(double %%t%u)\n",
@@ -21819,6 +21897,140 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                 /* Float'VALUE - parse string as float */
                 Emit(cg, "  %%t%u = call double @__ada_float_value(" FAT_PTR_TYPE " %%t%u)\n",
                      t, str_val);
+            } else if (Type_Is_Character(prefix_type)) {
+                /* Character'VALUE — parse "'x'" format, strip leading/trailing spaces (RM 3.5.5) */
+                const char *val_bt = String_Bound_Type(cg);
+                const char *val_iat = Integer_Arith_Type(cg);
+                uint32_t str_ptr_raw = Emit_Fat_Pointer_Data(cg, str_val, val_bt);
+                uint32_t str_len_bt = Emit_Fat_Pointer_Length(cg, str_val, val_bt);
+                uint32_t str_len_raw = Emit_Convert(cg, str_len_bt, val_bt, val_iat);
+                /* Trim leading/trailing spaces */
+                uint32_t lead_off = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = call %s @__ada_count_leading_spaces(ptr %%t%u, %s %%t%u)\n",
+                     lead_off, val_iat, str_ptr_raw, val_iat, str_len_raw);
+                uint32_t trail_off = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = call %s @__ada_count_trailing_spaces(ptr %%t%u, %s %%t%u)\n",
+                     trail_off, val_iat, str_ptr_raw, val_iat, str_len_raw);
+                uint32_t str_ptr = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u\n",
+                     str_ptr, str_ptr_raw, val_iat, lead_off);
+                uint32_t trim_total = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add %s %%t%u, %%t%u\n", trim_total, val_iat, lead_off, trail_off);
+                uint32_t str_len = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", str_len, val_iat, str_len_raw, trim_total);
+                cg->needs_trim_helpers = true;
+                /* Must be exactly 3 chars: 'x' */
+                uint32_t len3 = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp eq %s %%t%u, 3\n", len3, val_iat, str_len);
+                uint32_t ok_label = cg->label_id++;
+                uint32_t fail_label = cg->label_id++;
+                uint32_t end_label = cg->label_id++;
+                Emit(cg, "  br i1 %%t%u, label %%Lcval_ok%u, label %%Lcval_fail%u\n", len3, ok_label, fail_label);
+                Emit(cg, "Lcval_ok%u:\n", ok_label);
+                /* Check first and last chars are single quotes */
+                uint32_t c0_ptr = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, %s 0\n", c0_ptr, str_ptr, val_iat);
+                uint32_t c0 = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load i8, ptr %%t%u\n", c0, c0_ptr);
+                uint32_t c2_ptr = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, %s 2\n", c2_ptr, str_ptr, val_iat);
+                uint32_t c2 = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load i8, ptr %%t%u\n", c2, c2_ptr);
+                uint32_t q0 = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp eq i8 %%t%u, 39  ; check first quote\n", q0, c0);
+                uint32_t q2 = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp eq i8 %%t%u, 39  ; check last quote\n", q2, c2);
+                uint32_t both_q = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", both_q, q0, q2);
+                uint32_t extract_label = cg->label_id++;
+                Emit(cg, "  br i1 %%t%u, label %%Lcval_ext%u, label %%Lcval_fail%u\n", both_q, extract_label, fail_label);
+                Emit(cg, "Lcval_ext%u:\n", extract_label);
+                /* Extract the character at position 1 */
+                uint32_t c1_ptr = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, %s 1\n", c1_ptr, str_ptr, val_iat);
+                uint32_t c1 = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load i8, ptr %%t%u\n", c1, c1_ptr);
+                t = c1;
+                Emit(cg, "  br label %%Lcval_end%u\n", end_label);
+                /* Fail - raise CONSTRAINT_ERROR */
+                Emit(cg, "Lcval_fail%u:\n", fail_label);
+                Emit_Raise_Constraint_Error(cg, "VALUE no match");
+                Emit(cg, "Lcval_end%u:\n", end_label);
+                Temp_Set_Type(cg, t, "i8");
+            } else if (Type_Is_Boolean(prefix_type)) {
+                /* Boolean'VALUE — match "TRUE"/"FALSE" case-insensitively, strip spaces (RM 3.5.5) */
+                const char *val_bt = String_Bound_Type(cg);
+                const char *val_iat = Integer_Arith_Type(cg);
+                uint32_t str_ptr_raw = Emit_Fat_Pointer_Data(cg, str_val, val_bt);
+                uint32_t str_len_bt = Emit_Fat_Pointer_Length(cg, str_val, val_bt);
+                uint32_t str_len_raw = Emit_Convert(cg, str_len_bt, val_bt, val_iat);
+                /* Trim leading/trailing spaces */
+                uint32_t lead_off = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = call %s @__ada_count_leading_spaces(ptr %%t%u, %s %%t%u)\n",
+                     lead_off, val_iat, str_ptr_raw, val_iat, str_len_raw);
+                uint32_t trail_off = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = call %s @__ada_count_trailing_spaces(ptr %%t%u, %s %%t%u)\n",
+                     trail_off, val_iat, str_ptr_raw, val_iat, str_len_raw);
+                uint32_t str_ptr = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u\n",
+                     str_ptr, str_ptr_raw, val_iat, lead_off);
+                uint32_t trim_total = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add %s %%t%u, %%t%u\n", trim_total, val_iat, lead_off, trail_off);
+                uint32_t str_len = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", str_len, val_iat, str_len_raw, trim_total);
+                cg->needs_trim_helpers = true;
+                /* Check for "TRUE" (length 4) and "FALSE" (length 5) */
+                uint32_t true_str_id = cg->string_id++;
+                Emit_String_Const(cg, "@.val_str%u = private unnamed_addr constant [5 x i8] c\"TRUE\\00\"\n", true_str_id);
+                uint32_t false_str_id = cg->string_id++;
+                Emit_String_Const(cg, "@.val_str%u = private unnamed_addr constant [6 x i8] c\"FALSE\\00\"\n", false_str_id);
+                uint32_t result_alloc = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = alloca %s\n", result_alloc, val_iat);
+                Emit(cg, "  store %s 0, ptr %%t%u\n", val_iat, result_alloc);
+                uint32_t check_true = cg->label_id++;
+                uint32_t check_false_len = cg->label_id++;
+                uint32_t check_false = cg->label_id++;
+                uint32_t match_true = cg->label_id++;
+                uint32_t match_false = cg->label_id++;
+                uint32_t no_match = cg->label_id++;
+                uint32_t end_label = cg->label_id++;
+                /* Check length == 4 (TRUE) */
+                uint32_t len4 = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp eq %s %%t%u, 4\n", len4, val_iat, str_len);
+                Emit(cg, "  br i1 %%t%u, label %%Lbval_ct%u, label %%Lbval_cfl%u\n", len4, check_true, check_false_len);
+                Emit(cg, "Lbval_ct%u:\n", check_true);
+                uint32_t cmp_true = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = call i32 @strncasecmp(ptr %%t%u, ptr @.val_str%u, i64 4)\n",
+                     cmp_true, str_ptr, true_str_id);
+                uint32_t is_true = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", is_true, cmp_true);
+                Emit(cg, "  br i1 %%t%u, label %%Lbval_mt%u, label %%Lbval_cfl%u\n", is_true, match_true, check_false_len);
+                Emit(cg, "Lbval_mt%u:\n", match_true);
+                Emit(cg, "  store %s 1, ptr %%t%u\n", val_iat, result_alloc);
+                Emit(cg, "  br label %%Lbval_end%u\n", end_label);
+                /* Check length == 5 (FALSE) */
+                Emit(cg, "Lbval_cfl%u:\n", check_false_len);
+                uint32_t len5 = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp eq %s %%t%u, 5\n", len5, val_iat, str_len);
+                Emit(cg, "  br i1 %%t%u, label %%Lbval_cf%u, label %%Lbval_nm%u\n", len5, check_false, no_match);
+                Emit(cg, "Lbval_cf%u:\n", check_false);
+                uint32_t cmp_false = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = call i32 @strncasecmp(ptr %%t%u, ptr @.val_str%u, i64 5)\n",
+                     cmp_false, str_ptr, false_str_id);
+                uint32_t is_false = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", is_false, cmp_false);
+                Emit(cg, "  br i1 %%t%u, label %%Lbval_mf%u, label %%Lbval_nm%u\n", is_false, match_false, no_match);
+                Emit(cg, "Lbval_mf%u:\n", match_false);
+                Emit(cg, "  store %s 0, ptr %%t%u\n", val_iat, result_alloc);
+                Emit(cg, "  br label %%Lbval_end%u\n", end_label);
+                /* No match - raise CONSTRAINT_ERROR */
+                Emit(cg, "Lbval_nm%u:\n", no_match);
+                Emit_Raise_Constraint_Error(cg, "VALUE no match");
+                Emit(cg, "Lbval_end%u:\n", end_label);
+                Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, val_iat, result_alloc);
+                const char *bool_result_t = Type_To_Llvm(prefix_type);
+                if (bool_result_t and bool_result_t[0] == 'i')
+                    t = Emit_Convert(cg, t, val_iat, bool_result_t);
             } else if (Type_Is_Enumeration(prefix_type)) {
                 /* Enumeration'VALUE - find literal by name and return position */
                 /* Find root enumeration type with literals */
@@ -21896,8 +22108,8 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
 
                         Emit(cg, "Lval_next%u:\n", next_label);
                     }
-                    /* No match - leave as 0 (could raise CONSTRAINT_ERROR) */
-                    Emit(cg, "  br label %%Lval_end%u\n", end_label);
+                    /* No match - raise CONSTRAINT_ERROR (RM 3.5.5) */
+                    Emit_Raise_Constraint_Error(cg, "VALUE no match");
                     Emit(cg, "Lval_end%u:\n", end_label);
                     Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, val_iat, result_alloc);
                     /* Convert from i32 result to prefix type width so codegen
@@ -28124,7 +28336,9 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "  %%is_neg = icmp slt %s %%exp, 0\n", iat);
     Emit(cg, "  br i1 %%is_neg, label %%neg_exp, label %%pos_exp\n");
     Emit(cg, "neg_exp:\n");
-    Emit(cg, "  ret %s 0  ; negative exponent for integer = 0\n", iat);
+    Emit(cg, "  %%exc_ptr_neg = ptrtoint ptr @__exc.constraint_error to i64\n");
+    Emit(cg, "  call void @__ada_raise(i64 %%exc_ptr_neg)\n");
+    Emit(cg, "  unreachable  ; negative exponent for integer (RM 4.5.6)\n");
     Emit(cg, "pos_exp:\n");
     Emit(cg, "  %%is_zero = icmp eq %s %%exp, 0\n", iat);
     Emit(cg, "  br i1 %%is_zero, label %%ret_one, label %%loop\n");
