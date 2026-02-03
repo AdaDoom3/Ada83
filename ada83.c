@@ -2392,7 +2392,7 @@ struct Syntax_Node {
         } block_stmt;
 
         /* NK_EXIT */
-        struct { String_Slice loop_name; Syntax_Node *condition; } exit_stmt;
+        struct { String_Slice loop_name; Syntax_Node *condition; Symbol *target; } exit_stmt;
 
         /* NK_GOTO */
         struct { String_Slice name; Symbol *target; } goto_stmt;
@@ -6638,6 +6638,7 @@ struct Symbol {
 
     /* LLVM label ID for SYMBOL_LABEL */
     uint32_t        llvm_label_id;       /* 0 = not yet assigned */
+    uint32_t        loop_exit_label_id;  /* EXIT label for named loops */
 
     /* Entry index within task (for SYMBOL_ENTRY) */
     uint32_t        entry_index;         /* 0-based index for entry matching */
@@ -10973,6 +10974,11 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
             break;
 
         case NK_EXIT:
+            if (node->exit_stmt.loop_name.data) {
+                Symbol *loop_sym = Symbol_Find(sm, node->exit_stmt.loop_name);
+                if (loop_sym and (loop_sym->kind == SYMBOL_LOOP or loop_sym->kind == SYMBOL_LABEL))
+                    node->exit_stmt.target = loop_sym;
+            }
             if (node->exit_stmt.condition) {
                 Resolve_Expression(sm, node->exit_stmt.condition);
             }
@@ -16464,9 +16470,12 @@ static uint32_t Emit_Convert_Ext(Code_Generator *cg, uint32_t src, const char *s
             Emit(cg, "  %%t%u = fptosi %s %%t%u to i64\n", i, src_type, src);
             Emit(cg, "  %%t%u = inttoptr i64 %%t%u to ptr\n", t, i);
         } else {
-            /* float/double → integer: fptosi for signed, fptoui for unsigned */
+            /* float/double → integer: round then fptosi (Ada RM 4.6) */
+            uint32_t rounded = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = call %s @llvm.round.%s(%s %%t%u)\n",
+                 rounded, src_type, src_type, src_type, src);
             Emit(cg, "  %%t%u = %s %s %%t%u to %s\n", t,
-                 is_unsigned ? "fptoui" : "fptosi", src_type, src, dst_type);
+                 is_unsigned ? "fptoui" : "fptosi", src_type, rounded, dst_type);
         }
     } else if (not src_is_float and dst_is_float) {
         if (Llvm_Type_Is_Pointer(src_type)) {
@@ -16629,6 +16638,7 @@ static uint32_t Emit_Constraint_Check_With_Type(Code_Generator *cg, uint32_t val
     bool is_int_like = (target->kind == TYPE_INTEGER or
                         target->kind == TYPE_MODULAR or
                         target->kind == TYPE_ENUMERATION or
+                        target->kind == TYPE_BOOLEAN or
                         target->kind == TYPE_CHARACTER or
                         target->kind == TYPE_FIXED);  /* scaled integer repr */
     bool is_flt_like = (target->kind == TYPE_FLOAT);
@@ -17014,8 +17024,13 @@ static uint32_t Emit_Fat_Pointer_Length_Dim(Code_Generator *cg, uint32_t fat_ptr
     uint32_t diff = Emit_Temp(cg);
     Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", diff, bt, high, low);
     Temp_Set_Type(cg, diff, bt);
+    uint32_t unclamped = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = add %s %%t%u, 1\n", unclamped, bt, diff);
+    /* Null array (first > last) → length 0 (Ada RM 3.6.2) */
+    uint32_t is_null = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp sgt %s %%t%u, %%t%u\n", is_null, bt, low, high);
     uint32_t len = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = add %s %%t%u, 1\n", len, bt, diff);
+    Emit(cg, "  %%t%u = select i1 %%t%u, %s 0, %s %%t%u\n", len, is_null, bt, bt, unclamped);
     Temp_Set_Type(cg, len, bt);
     return len;
 }
@@ -20903,8 +20918,10 @@ type_conversion:
                 if (strcmp(src_llvm, dst_llvm) != 0) {
                     result = Emit_Convert_Ext(cg, result, src_llvm, dst_llvm, conv_unsigned);
                 }
-                /* GNAT LLVM: no widening — value stays at native type width.
-                 * Callers use Emit_Convert at use sites. (RM 4.6) */
+                /* RM 4.6: Check converted value against target subtype constraint */
+                if (Type_Is_Scalar(dst_type)) {
+                    Emit_Constraint_Check_With_Type(cg, result, dst_type, src_type, dst_llvm);
+                }
             }
             return result;
         }
@@ -21337,13 +21354,20 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                     Temp_Set_Type(cg, hi_t, iat);
                     uint32_t diff_t = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", diff_t, iat, hi_t, lo_t);
-                    Emit(cg, "  %%t%u = add %s %%t%u, 1  ; 'LENGTH(%u)\n", t, iat, diff_t, dim+1);
+                    uint32_t unclamped = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = add %s %%t%u, 1\n", unclamped, iat, diff_t);
+                    /* Null array (first > last) → length 0 (Ada RM 3.6.2) */
+                    uint32_t is_null = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = icmp sgt %s %%t%u, %%t%u\n", is_null, iat, lo_t, hi_t);
+                    Emit(cg, "  %%t%u = select i1 %%t%u, %s 0, %s %%t%u  ; 'LENGTH(%u)\n",
+                         t, is_null, iat, iat, unclamped, dim+1);
                     Temp_Set_Type(cg, t, iat);
                 } else {
                     int128_t low = Type_Bound_Value(lb);
                     int128_t high = Type_Bound_Value(hb);
+                    int128_t length = (high >= low) ? (high - low + 1) : 0;
                     Emit(cg, "  %%t%u = add %s 0, %s  ; 'LENGTH(%u)\n", t, Integer_Arith_Type(cg),
-                         I128_Decimal(high - low + 1), dim + 1);
+                         I128_Decimal(length), dim + 1);
                     Temp_Set_Type(cg, t, Integer_Arith_Type(cg));
                 }
             }
@@ -23100,16 +23124,20 @@ static uint32_t Generate_Qualified(Code_Generator *cg, Syntax_Node *node) {
     Type_Info *src_type = node->qualified.expression ? node->qualified.expression->type : NULL;
     Type_Info *dst_type = node->qualified.subtype_mark ? node->qualified.subtype_mark->type : NULL;
 
-    if (not src_type or not dst_type or src_type == dst_type) {
-        return result;
+    if (not dst_type) return result;
+
+    const char *src_llvm = Expression_Llvm_Type(cg, node->qualified.expression);
+
+    /* RM 4.7: Qualified expression checks value against subtype constraint */
+    if (Type_Is_Scalar(dst_type)) {
+        Emit_Constraint_Check_With_Type(cg, result, dst_type, src_type, src_llvm);
     }
 
-    /* Check if type conversion is needed (e.g., INTEGER to FLOAT) */
-    const char *src_llvm = Expression_Llvm_Type(cg, node->qualified.expression);
-    const char *dst_llvm = Type_To_Llvm(dst_type);
-
-    if (strcmp(src_llvm, dst_llvm) != 0) {
-        result = Emit_Convert(cg, result, src_llvm, dst_llvm);
+    if (src_type and src_type != dst_type) {
+        const char *dst_llvm = Type_To_Llvm(dst_type);
+        if (strcmp(src_llvm, dst_llvm) != 0) {
+            result = Emit_Convert(cg, result, src_llvm, dst_llvm);
+        }
     }
     /* GNAT LLVM: no widening — value stays at native type width.
      * Callers use Emit_Convert at use sites. */
@@ -24042,8 +24070,12 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
             value = div_t;
         }
         const char *src_ftype = Float_Llvm_Type_Of(value_type);
+        /* Ada RM 4.6: round to nearest before truncation */
+        uint32_t rounded = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = call %s @llvm.round.%s(%s %%t%u)\n",
+             rounded, src_ftype, src_ftype, src_ftype, value);
         uint32_t t = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = fptosi %s %%t%u to %s\n", t, src_ftype, value, type_str);
+        Emit(cg, "  %%t%u = fptosi %s %%t%u to %s\n", t, src_ftype, rounded, type_str);
         value = t;
     } else if (not is_src_float and is_dst_float) {
         /* Integer to float: use sitofp — GNAT LLVM: use native src/dst types */
@@ -24151,13 +24183,14 @@ static void Generate_Loop_Statement(Code_Generator *cg, Syntax_Node *node) {
     cg->loop_exit_label = loop_end;
     cg->loop_continue_label = loop_start;
 
+    /* Store exit label on loop symbol for named EXIT statements */
+    if (label_sym) label_sym->loop_exit_label_id = loop_end;
+
     Emit_Branch_If_Needed(cg, loop_start);
     Emit_Label_Here(cg, loop_start);
 
-    /* Condition check for WHILE loops */
-    if (node->loop_stmt.iteration_scheme and
-        node->loop_stmt.iteration_scheme->kind != NK_BINARY_OP) {
-        /* WHILE loop */
+    /* Condition check for WHILE loops (FOR loops dispatched to Generate_For_Loop) */
+    if (node->loop_stmt.iteration_scheme) {
         Syntax_Node *scheme = node->loop_stmt.iteration_scheme;
         uint32_t cond = Generate_Expression(cg, scheme);
         const char *cond_type = Expression_Llvm_Type(cg, scheme);
@@ -24180,7 +24213,6 @@ static void Generate_Loop_Statement(Code_Generator *cg, Syntax_Node *node) {
 
 static void Generate_Return_Statement(Code_Generator *cg, Syntax_Node *node) {
     cg->has_return = true;
-    cg->block_terminated = true;  /* ret is a terminator */
     if (node->return_stmt.expression) {
         Syntax_Node *expr = node->return_stmt.expression;
         uint32_t value = Generate_Expression(cg, expr);
@@ -24210,12 +24242,19 @@ static void Generate_Return_Statement(Code_Generator *cg, Syntax_Node *node) {
             const char *expr_type = Expression_Llvm_Type(cg, expr);
             value = Emit_Convert(cg, value, expr_type, type_str);
         }
+        /* RM 6.5: Check return value against function return subtype constraint */
+        if (ret_type and Type_Is_Scalar(ret_type)) {
+            Emit_Constraint_Check_With_Type(cg, value, ret_type, expr->type, type_str);
+        }
         Emit(cg, "  ret %s %%t%u\n", type_str, value);
+        cg->block_terminated = true;
     } else if (cg->in_task_body) {
         /* Task entry points return ptr for pthread compatibility */
         Emit(cg, "  ret ptr null\n");
+        cg->block_terminated = true;
     } else {
         Emit(cg, "  ret void\n");
+        cg->block_terminated = true;
     }
 }
 
@@ -24371,6 +24410,10 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
     uint32_t loop_start = Emit_Label(cg);
     uint32_t loop_body = Emit_Label(cg);
     uint32_t loop_end = Emit_Label(cg);
+
+    /* Store exit label on loop symbol for named EXIT statements */
+    Symbol *label_sym = node->loop_stmt.label_symbol;
+    if (label_sym) label_sym->loop_exit_label_id = loop_end;
 
     uint32_t saved_exit = cg->loop_exit_label;
     cg->loop_exit_label = loop_end;
@@ -24892,17 +24935,24 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
             break;
 
         case NK_EXIT:
-            if (node->exit_stmt.condition) {
-                Syntax_Node *exit_cond = node->exit_stmt.condition;
-                uint32_t cond = Generate_Expression(cg, exit_cond);
-                const char *cond_type = Expression_Llvm_Type(cg, exit_cond);
-                cond = Emit_Convert(cg, cond, cond_type, "i1");
-                uint32_t cont = Emit_Label(cg);
-                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
-                     cond, cg->loop_exit_label, cont);
-                Emit_Label_Here(cg, cont);
-            } else {
-                Emit(cg, "  br label %%L%u\n", cg->loop_exit_label);
+            {
+                /* Named EXIT targets a specific loop; unnamed exits innermost */
+                uint32_t exit_label = cg->loop_exit_label;
+                if (node->exit_stmt.target and node->exit_stmt.target->loop_exit_label_id)
+                    exit_label = node->exit_stmt.target->loop_exit_label_id;
+                if (node->exit_stmt.condition) {
+                    Syntax_Node *exit_cond = node->exit_stmt.condition;
+                    uint32_t cond = Generate_Expression(cg, exit_cond);
+                    const char *cond_type = Expression_Llvm_Type(cg, exit_cond);
+                    cond = Emit_Convert(cg, cond, cond_type, "i1");
+                    uint32_t cont = Emit_Label(cg);
+                    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                         cond, exit_label, cont);
+                    Emit_Label_Here(cg, cont);
+                } else {
+                    Emit(cg, "  br label %%L%u\n", exit_label);
+                    cg->block_terminated = true;
+                }
             }
             break;
 
@@ -25762,6 +25812,8 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 const char *fix_store_type = Type_To_Llvm(ty);
                 Emit(cg, "  %%t%u = add %s 0, %lld  ; fixed-point scaled (small=%g)\n",
                      init, fix_store_type, (long long)scaled_val, small);
+                /* RM 3.3.2: Scalar constraint check on initialization */
+                Emit_Constraint_Check_With_Type(cg, init, ty, NULL, fix_store_type);
                 Emit(cg, "  store %s %%t%u, ptr %%", fix_store_type, init);
                 Emit_Symbol_Name(cg, sym);
                 Emit(cg, "\n");
