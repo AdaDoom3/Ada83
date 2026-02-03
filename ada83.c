@@ -6925,9 +6925,12 @@ static void Symbol_Add(Symbol_Manager *sm, Symbol *sym) {
     }
     scope->symbols[scope->symbol_count++] = sym;
 
-    /* Track frame offset for variables/parameters/constants/discriminants */
-    if (sym->kind == SYMBOL_VARIABLE or sym->kind == SYMBOL_PARAMETER or
-        sym->kind == SYMBOL_CONSTANT or sym->kind == SYMBOL_DISCRIMINANT) {
+    /* Track frame offset for variables/parameters/constants/discriminants.
+     * Named numbers (is_named_number) have no storage — skip frame allocation
+     * so their pre-set frame_offset (e.g. ASCII.DEL=127) is preserved. */
+    if ((sym->kind == SYMBOL_VARIABLE or sym->kind == SYMBOL_PARAMETER or
+         sym->kind == SYMBOL_CONSTANT or sym->kind == SYMBOL_DISCRIMINANT) and
+        not (sym->kind == SYMBOL_CONSTANT and sym->is_named_number)) {
         sym->frame_offset = scope->frame_size;
         uint32_t var_size = sym->type ? sym->type->size : 8;
         /* Fat pointers for dynamic/unconstrained arrays need { ptr, { bound, bound } } */
@@ -7621,6 +7624,7 @@ static void Symbol_Manager_Init_Predefined(Symbol_Manager *sm) {
 
     Symbol *sym_true = Symbol_New(SYMBOL_LITERAL, S("TRUE"), No_Location);
     sym_true->type = sm->type_boolean;
+    sym_true->frame_offset = 1;  /* TRUE has position 1 in BOOLEAN (RM 3.5.3) */
     Symbol_Add(sm, sym_true);
 
     /* Predefined exceptions (RM 11.1) */
@@ -8732,9 +8736,11 @@ static double Eval_Const_Numeric(Syntax_Node *n) {
                 return (double)sym->frame_offset;
             }
             /* Named number or constant - evaluate via symbol's declaration */
-            if (sym and sym->kind == SYMBOL_CONSTANT and sym->is_named_number and
-                sym->declaration and sym->declaration->kind == NK_OBJECT_DECL) {
-                return Eval_Const_Numeric(sym->declaration->object_decl.init);
+            if (sym and sym->kind == SYMBOL_CONSTANT and sym->is_named_number) {
+                if (sym->declaration and sym->declaration->kind == NK_OBJECT_DECL)
+                    return Eval_Const_Numeric(sym->declaration->object_decl.init);
+                /* Predefined constant (e.g. ASCII.DEL) — value in frame_offset */
+                return (double)sym->frame_offset;
             }
             return 0.0/0.0;
         }
@@ -10861,6 +10867,19 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
                 node->assignment.value->type = node->assignment.target->type;
             }
             Resolve_Expression(sm, node->assignment.value);
+            /* Resolve character literal as enum literal in assignment (RM 3.5.1) */
+            if (node->assignment.value->kind == NK_CHARACTER and
+                node->assignment.target->type) {
+                Type_Info *et = node->assignment.target->type;
+                /* Follow parent_type (private→full), base_type chains to enum */
+                while (et and et->kind != TYPE_ENUMERATION) {
+                    if (et->parent_type) et = et->parent_type;
+                    else if (et->base_type) et = et->base_type;
+                    else break;
+                }
+                if (et and et->kind == TYPE_ENUMERATION)
+                    Resolve_Char_As_Enum(sm, node->assignment.value, et);
+            }
             /* Type check: value must be compatible with target */
             if (node->assignment.target->type and node->assignment.value->type) {
                 if (not Type_Covers(node->assignment.target->type,
@@ -13254,6 +13273,18 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                     node->object_decl.init->type = node->object_decl.object_type->type;
                 }
                 Resolve_Expression(sm, node->object_decl.init);
+                /* Resolve character literal as enumeration literal (RM 3.5.1) */
+                if (node->object_decl.init->kind == NK_CHARACTER and
+                    node->object_decl.object_type and node->object_decl.object_type->type) {
+                    Type_Info *et = node->object_decl.object_type->type;
+                    while (et and et->kind != TYPE_ENUMERATION) {
+                        if (et->parent_type) et = et->parent_type;
+                        else if (et->base_type) et = et->base_type;
+                        else break;
+                    }
+                    if (et and et->kind == TYPE_ENUMERATION)
+                        Resolve_Char_As_Enum(sm, node->object_decl.init, et);
+                }
             }
             /* Add symbols for each name */
             for (uint32_t i = 0; i < node->object_decl.names.count; i++) {
@@ -17781,7 +17812,7 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
         case SYMBOL_CONSTANT:
         case SYMBOL_LITERAL:
             /* Enumeration literal or constant */
-            if (Type_Is_Enumeration(sym->type)) {
+            if (sym->kind == SYMBOL_LITERAL and Type_Is_Enumeration(sym->type)) {
                 /* Find position in enumeration */
                 int64_t pos = 0;
                 for (uint32_t i = 0; i < sym->type->enumeration.literal_count; i++) {
@@ -17793,13 +17824,13 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                 { const char *ety = Type_To_Llvm(sym->type);
                 Emit(cg, "  %%t%u = add %s 0, %lld\n", t, ety, (long long)pos);
                 Temp_Set_Type(cg, t, ety); }
-            } else if (Type_Is_Boolean(ty)) {
+            } else if (sym->kind == SYMBOL_LITERAL and Type_Is_Boolean(ty)) {
                 /* Boolean literal: TRUE=1, FALSE=0 — native type width */
                 int64_t pos = Slice_Equal_Ignore_Case(sym->name, S("TRUE")) ? 1 : 0;
                 { const char *bty = Type_To_Llvm(ty);
                 Emit(cg, "  %%t%u = add %s 0, %lld\n", t, bty, (long long)pos);
                 Temp_Set_Type(cg, t, bty); }
-            } else if (Type_Is_Character(ty)) {
+            } else if (sym->kind == SYMBOL_LITERAL and Type_Is_Character(ty)) {
                 /* Character literal — native type width */
                 { const char *cty = Type_To_Llvm(ty);
                 Emit(cg, "  %%t%u = add %s 0, 0  ; character literal\n", t, cty);
@@ -17845,6 +17876,12 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                         const char *init_t = Expression_Llvm_Type(cg, decl->object_decl.init);
                         return Emit_Convert(cg, result, init_t, named_t);
                     }
+                } else if (sym->frame_offset != 0 or Type_Is_Character(ty)) {
+                    /* Predefined constant (e.g. ASCII.NUL) with value in frame_offset */
+                    const char *named_t = ty ? Type_To_Llvm(ty) : Integer_Arith_Type(cg);
+                    Emit(cg, "  %%t%u = add %s 0, %lld  ; predefined constant\n",
+                         t, named_t, (long long)sym->frame_offset);
+                    Temp_Set_Type(cg, t, named_t);
                 } else {
                     /* ??? Fallback if no initializer found */
                     Emit(cg, "  %%t%u = add %s 0, 0  ; named number without init\n", t, Integer_Arith_Type(cg));
@@ -23409,6 +23446,24 @@ static uint32_t Generate_Expression(Code_Generator *cg, Syntax_Node *node) {
                                  ch = node->symbol->frame_offset;
                              } else if (node->string_val.text.length >= 2) {
                                  ch = (unsigned char)node->string_val.text.data[1];
+                                 /* If the node's type is a user-defined enumeration containing
+                                  * character literals, use the position within the enumeration
+                                  * rather than the ASCII code (RM 3.5.1). */
+                                 Type_Info *etype = node->type;
+                                 while (etype and (etype->parent_type or etype->base_type))
+                                     etype = etype->parent_type ? etype->parent_type : etype->base_type;
+                                 if (etype and etype->kind == TYPE_ENUMERATION and
+                                     etype->enumeration.literals and etype->enumeration.literal_count > 0) {
+                                     char target = node->string_val.text.data[1];
+                                     for (uint32_t j = 0; j < etype->enumeration.literal_count; j++) {
+                                         String_Slice lit = etype->enumeration.literals[j];
+                                         if (lit.length == 3 and lit.data[0] == '\'' and
+                                             lit.data[1] == target and lit.data[2] == '\'') {
+                                             ch = (int64_t)j;
+                                             break;
+                                         }
+                                     }
+                                 }
                              }
                              /* GNAT LLVM: character literals use native type width (i8),
                               * not Integer_Arith_Type. Widening at use sites. */
@@ -24032,22 +24087,41 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
 }
 
 static void Generate_If_Statement(Code_Generator *cg, Syntax_Node *node) {
-    uint32_t cond = Generate_Expression(cg, node->if_stmt.condition);
-    uint32_t then_label = Emit_Label(cg);
-    uint32_t else_label = Emit_Label(cg);
     uint32_t end_label = Emit_Label(cg);
 
-    /* Convert condition to i1 for branch (use actual expression type) */
+    uint32_t cond = Generate_Expression(cg, node->if_stmt.condition);
+    uint32_t then_label = Emit_Label(cg);
+    uint32_t next_label = Emit_Label(cg);
+
     const char *cond_type = Expression_Llvm_Type(cg, node->if_stmt.condition);
     cond = Emit_Convert(cg, cond, cond_type, "i1");
-    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cond, then_label, else_label);
+    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cond, then_label, next_label);
     cg->block_terminated = true;
 
     Emit_Label_Here(cg, then_label);
     Generate_Statement_List(cg, &node->if_stmt.then_stmts);
     Emit_Branch_If_Needed(cg, end_label);
 
-    Emit_Label_Here(cg, else_label);
+    /* ELSIF parts: each is an NK_IF node with condition + then_stmts */
+    for (uint32_t i = 0; i < node->if_stmt.elsif_parts.count; i++) {
+        Syntax_Node *elsif = node->if_stmt.elsif_parts.items[i];
+        Emit_Label_Here(cg, next_label);
+
+        uint32_t ec = Generate_Expression(cg, elsif->if_stmt.condition);
+        uint32_t elsif_then = Emit_Label(cg);
+        next_label = Emit_Label(cg);
+
+        const char *ec_type = Expression_Llvm_Type(cg, elsif->if_stmt.condition);
+        ec = Emit_Convert(cg, ec, ec_type, "i1");
+        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", ec, elsif_then, next_label);
+        cg->block_terminated = true;
+
+        Emit_Label_Here(cg, elsif_then);
+        Generate_Statement_List(cg, &elsif->if_stmt.then_stmts);
+        Emit_Branch_If_Needed(cg, end_label);
+    }
+
+    Emit_Label_Here(cg, next_label);
     if (node->if_stmt.else_stmts.count > 0) {
         Generate_Statement_List(cg, &node->if_stmt.else_stmts);
     }
