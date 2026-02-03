@@ -8750,11 +8750,19 @@ static double Eval_Const_Numeric(Syntax_Node *n) {
                 return (double)sym->frame_offset;
             }
             /* Named number or constant - evaluate via symbol's declaration */
-            if (sym and sym->kind == SYMBOL_CONSTANT and sym->is_named_number) {
-                if (sym->declaration and sym->declaration->kind == NK_OBJECT_DECL)
+            if (sym and sym->kind == SYMBOL_CONSTANT) {
+                if (sym->declaration and sym->declaration->kind == NK_OBJECT_DECL
+                    and sym->declaration->object_decl.init)
                     return Eval_Const_Numeric(sym->declaration->object_decl.init);
                 /* Predefined constant (e.g. ASCII.DEL) — value in frame_offset */
                 return (double)sym->frame_offset;
+            }
+            /* Variable with constant init (typed constants get variable-like alloc) */
+            if (sym and sym->kind == SYMBOL_VARIABLE and sym->declaration
+                and sym->declaration->kind == NK_OBJECT_DECL
+                and sym->declaration->object_decl.is_constant
+                and sym->declaration->object_decl.init) {
+                return Eval_Const_Numeric(sym->declaration->object_decl.init);
             }
             return 0.0/0.0;
         }
@@ -14752,6 +14760,12 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                         Resolve_Expression(sm, expr);
                                         if (not expr->type or expr->kind == NK_AGGREGATE)
                                             expr->type = obj_type;
+                                        /* Character literal actuals for enum formal types need
+                                         * explicit resolution to find their position (RM 3.5.1).
+                                         * Resolve_Expression sets type to CHARACTER, losing the
+                                         * enum context; restore and resolve as enum literal. */
+                                        if (expr->kind == NK_CHARACTER)
+                                            Resolve_Char_As_Enum(sm, expr, obj_type);
                                     } else {
                                         Resolve_Expression(sm, expr);
                                     }
@@ -21279,6 +21293,28 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     if (prefix_type and cg->current_instance and not prefix_type->base_type)
         prefix_type = Resolve_Generic_Actual_Type(cg, prefix_type);
 
+    /* If the attribute prefix is T'BASE, resolve BASE after generic substitution.
+     * T'BASE with T=C (constrained subtype) should use C's unconstrained base type.
+     * Without this, T'BASE'FIRST/LAST incorrectly uses the subtype's bounds (RM 3.3.3). */
+    if (node->attribute.prefix->kind == NK_ATTRIBUTE and
+        Slice_Equal_Ignore_Case(node->attribute.prefix->attribute.name, S("BASE")) and
+        prefix_type and prefix_type->base_type)
+        prefix_type = Type_Root(prefix_type);
+
+    /* For subtypes of generic formals (SUBTYPE S IS T where T is a formal),
+     * resolve through the base chain to find the actual type for classification.
+     * prefix_type keeps subtype bounds (for FIRST/LAST); classify_type has the
+     * actual type kind (for IMAGE, VALUE, etc.) (RM 12.3). */
+    Type_Info *classify_type = prefix_type;
+    if (cg->current_instance and prefix_type) {
+        Type_Info *walk = prefix_type;
+        for (int depth = 0; walk and depth < 20; depth++) {
+            Type_Info *resolved = Resolve_Generic_Actual_Type(cg, walk);
+            if (resolved != walk) { classify_type = resolved; break; }
+            walk = walk->base_type ? walk->base_type : walk->parent_type;
+        }
+    }
+
     /* Implicit dereference for access-to-array (RM 4.1(3)) */
     if (Type_Is_Access(prefix_type) and prefix_type->access.designated_type)
         prefix_type = prefix_type->access.designated_type;
@@ -21714,19 +21750,19 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         if (first_arg) {
             uint32_t arg_val = Generate_Expression(cg, first_arg);
 
-            if (Type_Is_Integer_Like(prefix_type) or
-                Type_Is_Universal_Integer(prefix_type)) {
+            if (Type_Is_Integer_Like(classify_type) or
+                Type_Is_Universal_Integer(classify_type)) {
                 /* Integer'IMAGE — widen to INTEGER arith type for RTS ABI */
                 uint32_t arg_w = Emit_Widen_For_Intrinsic(cg, arg_val, Expression_Llvm_Type(cg, first_arg));
                 Emit(cg, "  %%t%u = call " FAT_PTR_TYPE " @__ada_integer_image(%s %%t%u)\n",
                      t, Integer_Arith_Type(cg), arg_w);
-            } else if (Type_Is_Character(prefix_type)) {
+            } else if (Type_Is_Character(classify_type)) {
                 /* Character'IMAGE — convert to i8 for RTS ABI */
                 const char *arg_src_type = Expression_Llvm_Type(cg, first_arg);
                 uint32_t char_val = Emit_Convert(cg, arg_val, arg_src_type, "i8");
                 Emit(cg, "  %%t%u = call " FAT_PTR_TYPE " @__ada_character_image(i8 %%t%u)\n",
                      t, char_val);
-            } else if (Type_Is_Boolean(prefix_type)) {
+            } else if (Type_Is_Boolean(classify_type)) {
                 /* Boolean'IMAGE — switch on 0→"FALSE", 1→"TRUE" (RM 3.5.5) */
                 const char *img_bt = String_Bound_Type(cg);
                 uint32_t result_ptr = Emit_Temp(cg);
@@ -21764,14 +21800,14 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                 uint32_t low_one = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = add %s 0, 1\n", low_one, img_bt);
                 t = Emit_Fat_Pointer_Dynamic(cg, ptr_load, low_one, len_load, img_bt);
-            } else if (Type_Is_Float_Representation(prefix_type)) {
+            } else if (Type_Is_Float_Representation(classify_type)) {
                 /* Float'IMAGE */
                 Emit(cg, "  %%t%u = call " FAT_PTR_TYPE " @__ada_float_image(double %%t%u)\n",
                      t, arg_val);
-            } else if (Type_Is_Enumeration(prefix_type)) {
+            } else if (Type_Is_Enumeration(classify_type)) {
                 /* Enumeration'IMAGE - return literal name as string */
                 /* Find root enumeration type with literals */
-                Type_Info *enum_type = prefix_type;
+                Type_Info *enum_type = classify_type;
                 while (enum_type and not enum_type->enumeration.literals) {
                     if (enum_type->parent_type) enum_type = enum_type->parent_type;
                     else if (enum_type->base_type) enum_type = enum_type->base_type;
@@ -21863,8 +21899,8 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         /* T'VALUE(s) - parse string to type (RM 3.5.5) */
         if (first_arg) {
             uint32_t str_val = Generate_Expression(cg, first_arg);
-            if (Type_Is_Integer_Like(prefix_type) or
-                Type_Is_Universal_Integer(prefix_type)) {
+            if (Type_Is_Integer_Like(classify_type) or
+                Type_Is_Universal_Integer(classify_type)) {
                 /* Integer'VALUE - parse string as integer */
                 const char *val_iat = Integer_Arith_Type(cg);
                 Emit(cg, "  %%t%u = call %s @__ada_integer_value(" FAT_PTR_TYPE " %%t%u)\n",
@@ -21873,11 +21909,11 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                 /* Convert to prefix type width if different */
                 const char *val_result_t = Type_To_Llvm(prefix_type);
                 t = Emit_Convert(cg, t, val_iat, val_result_t);
-            } else if (Type_Is_Float_Representation(prefix_type)) {
+            } else if (Type_Is_Float_Representation(classify_type)) {
                 /* Float'VALUE - parse string as float */
                 Emit(cg, "  %%t%u = call double @__ada_float_value(" FAT_PTR_TYPE " %%t%u)\n",
                      t, str_val);
-            } else if (Type_Is_Character(prefix_type)) {
+            } else if (Type_Is_Character(classify_type)) {
                 /* Character'VALUE — parse "'x'" format, strip leading/trailing spaces (RM 3.5.5) */
                 const char *val_bt = String_Bound_Type(cg);
                 const char *val_iat = Integer_Arith_Type(cg);
@@ -21937,7 +21973,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                 Emit_Raise_Constraint_Error(cg, "VALUE no match");
                 Emit(cg, "Lcval_end%u:\n", end_label);
                 Temp_Set_Type(cg, t, "i8");
-            } else if (Type_Is_Boolean(prefix_type)) {
+            } else if (Type_Is_Boolean(classify_type)) {
                 /* Boolean'VALUE — match "TRUE"/"FALSE" case-insensitively, strip spaces (RM 3.5.5) */
                 const char *val_bt = String_Bound_Type(cg);
                 const char *val_iat = Integer_Arith_Type(cg);
@@ -22008,13 +22044,13 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                 Emit_Raise_Constraint_Error(cg, "VALUE no match");
                 Emit(cg, "Lbval_end%u:\n", end_label);
                 Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, val_iat, result_alloc);
-                const char *bool_result_t = Type_To_Llvm(prefix_type);
+                const char *bool_result_t = Type_To_Llvm(classify_type);
                 if (bool_result_t and bool_result_t[0] == 'i')
                     t = Emit_Convert(cg, t, val_iat, bool_result_t);
-            } else if (Type_Is_Enumeration(prefix_type)) {
+            } else if (Type_Is_Enumeration(classify_type)) {
                 /* Enumeration'VALUE - find literal by name and return position */
                 /* Find root enumeration type with literals */
-                Type_Info *enum_type = prefix_type;
+                Type_Info *enum_type = classify_type;
                 while (enum_type and not enum_type->enumeration.literals) {
                     if (enum_type->parent_type) enum_type = enum_type->parent_type;
                     else if (enum_type->base_type) enum_type = enum_type->base_type;
@@ -22334,13 +22370,14 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
          * For floating-point: ceiling(D * log(10)/log(2)) + 1
          * For fixed-point: ceiling(log2(bound / small)) */
         int64_t mantissa = IEEE_DOUBLE_MANTISSA - 1;  /* Default for double */
-        if (Type_Is_Float(prefix_type)) {
-            Float_Model_Parameters(prefix_type, &mantissa, NULL);
-        } else if (Type_Is_Fixed_Point(prefix_type)) {
-            double small = prefix_type->fixed.small;
-            double low_val = Type_Bound_Float_Value(prefix_type->low_bound);
-            double high_val = Type_Bound_Float_Value(prefix_type->high_bound);
-            if (small <= 0) small = prefix_type->fixed.delta > 0 ? prefix_type->fixed.delta : 1.0;
+        if (Type_Is_Float(classify_type)) {
+            Float_Model_Parameters(classify_type, &mantissa, NULL);
+        } else if (Type_Is_Fixed_Point(classify_type)) {
+            Type_Info *ft = Type_Is_Fixed_Point(prefix_type) ? prefix_type : classify_type;
+            double small = ft->fixed.small;
+            double low_val = Type_Bound_Float_Value(ft->low_bound);
+            double high_val = Type_Bound_Float_Value(ft->high_bound);
+            if (small <= 0) small = ft->fixed.delta > 0 ? ft->fixed.delta : 1.0;
             double bound = fmax(fabs(low_val), fabs(high_val));
             if (bound > 0 and small > 0) {
                 mantissa = (int64_t)ceil(log2(bound / small));
@@ -22388,9 +22425,10 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         /* T'SMALL - fixed-point: power of 2 <= delta; float: 2^(-EMAX - 1) */
         double small_val;
         const char *fty = "double";
-        if (Type_Is_Fixed_Point(prefix_type)) {
-            small_val = prefix_type->fixed.small;
-            if (small_val <= 0) small_val = prefix_type->fixed.delta;
+        if (Type_Is_Fixed_Point(classify_type)) {
+            Type_Info *ft = Type_Is_Fixed_Point(prefix_type) ? prefix_type : classify_type;
+            small_val = ft->fixed.small;
+            if (small_val <= 0) small_val = ft->fixed.delta;
             if (small_val <= 0) small_val = 1.0;
         } else if (Type_Is_Float(prefix_type)) {
             int64_t mantissa, emax;
@@ -22409,11 +22447,12 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
          * float: 2^EMAX * (1 - 2^(-MANTISSA)) (RM 3.5.8(10)) */
         double large_val;
         const char *fty = "double";
-        if (Type_Is_Fixed_Point(prefix_type)) {
-            double small = prefix_type->fixed.small;
-            if (small <= 0) small = prefix_type->fixed.delta > 0 ? prefix_type->fixed.delta : 1.0;
-            double bound = fmax(fabs(Type_Bound_Float_Value(prefix_type->low_bound)),
-                               fabs(Type_Bound_Float_Value(prefix_type->high_bound)));
+        if (Type_Is_Fixed_Point(classify_type)) {
+            Type_Info *ft = Type_Is_Fixed_Point(prefix_type) ? prefix_type : classify_type;
+            double small = ft->fixed.small;
+            if (small <= 0) small = ft->fixed.delta > 0 ? ft->fixed.delta : 1.0;
+            double bound = fmax(fabs(Type_Bound_Float_Value(ft->low_bound)),
+                               fabs(Type_Bound_Float_Value(ft->high_bound)));
             int64_t mantissa = (bound > 0 and small > 0) ?
                               (int64_t)ceil(log2(bound / small)) : 1;
             if (mantissa < 1) mantissa = 1;
@@ -22431,11 +22470,19 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("SAFE_SMALL"))) {
-        /* T'SAFE_SMALL - smallest positive safe value (RM 3.5.8)
-         * IEEE double: 2^(-1021) ~ 2.225e-308, float: 2^(-125) ~ 1.175e-38 */
-        double safe_small = IEEE_DOUBLE_MIN_NORMAL;
-        if (Type_Is_Float(prefix_type) and Float_Is_Single(prefix_type)) {
+        /* T'SAFE_SMALL - smallest positive safe value
+         * Fixed-point (RM 3.5.10): SAFE_SMALL = BASE'SMALL
+         * Float (RM 3.5.8): 2^(-(SAFE_EMAX+1)) */
+        double safe_small;
+        if (Type_Is_Fixed_Point(classify_type)) {
+            Type_Info *ft = Type_Is_Fixed_Point(prefix_type) ? prefix_type : classify_type;
+            Type_Info *base = ft->base_type ? ft->base_type : ft;
+            safe_small = base->fixed.small;
+            if (safe_small <= 0) safe_small = base->fixed.delta > 0 ? base->fixed.delta : 1.0;
+        } else if (Type_Is_Float(prefix_type) and Float_Is_Single(prefix_type)) {
             safe_small = IEEE_FLOAT_MIN_NORMAL;
+        } else {
+            safe_small = IEEE_DOUBLE_MIN_NORMAL;
         }
         /* GNAT LLVM: generate at double (UNIVERSAL_REAL) — callers convert. */
         Emit_Float_Constant(cg, t, "double", safe_small, "'SAFE_SMALL");
@@ -22443,16 +22490,31 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("SAFE_LARGE"))) {
-        /* T'SAFE_LARGE - largest safe value (RM 3.5.8)
-         * = 2^(EMAX-1) * (1 - 2^(-MACHINE_MANTISSA))
-         * IEEE double: 2^1023 * (1 - 2^-53), float: 2^127 * (1 - 2^-24) */
-        int emax = IEEE_DOUBLE_EMAX;
-        int mantissa = IEEE_DOUBLE_MANTISSA;
-        if (Type_Is_Float(prefix_type) and Float_Is_Single(prefix_type)) {
-            emax = IEEE_FLOAT_EMAX;
-            mantissa = IEEE_FLOAT_MANTISSA;
+        /* T'SAFE_LARGE - largest safe value
+         * Fixed-point (RM 3.5.10): SAFE_LARGE = BASE'LARGE = (2^B_MANT - 1) * BASE'SMALL
+         * Float (RM 3.5.8): 2^(SAFE_EMAX) * (1 - 2^(-MANTISSA)) */
+        double safe_large;
+        if (Type_Is_Fixed_Point(classify_type)) {
+            Type_Info *ft = Type_Is_Fixed_Point(prefix_type) ? prefix_type : classify_type;
+            Type_Info *base = ft->base_type ? ft->base_type : ft;
+            double small = base->fixed.small;
+            if (small <= 0) small = base->fixed.delta > 0 ? base->fixed.delta : 1.0;
+            double low_val = Type_Bound_Float_Value(base->low_bound);
+            double high_val = Type_Bound_Float_Value(base->high_bound);
+            double bound = fmax(fabs(low_val), fabs(high_val));
+            int64_t mant = (bound > 0 and small > 0) ?
+                          (int64_t)ceil(log2(bound / small)) : 1;
+            if (mant < 1) mant = 1;
+            safe_large = ((double)((1LL << mant) - 1)) * small;
+        } else {
+            int emax = IEEE_DOUBLE_EMAX;
+            int mantissa = IEEE_DOUBLE_MANTISSA;
+            if (Type_Is_Float(prefix_type) and Float_Is_Single(prefix_type)) {
+                emax = IEEE_FLOAT_EMAX;
+                mantissa = IEEE_FLOAT_MANTISSA;
+            }
+            safe_large = pow(2.0, emax - 1) * (1.0 - pow(2.0, -mantissa));
         }
-        double safe_large = pow(2.0, emax - 1) * (1.0 - pow(2.0, -mantissa));
         /* GNAT LLVM: generate at double (UNIVERSAL_REAL) — callers convert. */
         Emit_Float_Constant(cg, t, "double", safe_large, "'SAFE_LARGE");
         return t;
@@ -22465,22 +22527,25 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     if (Slice_Equal_Ignore_Case(attr, S("DELTA"))) {
         /* T'DELTA - delta for fixed-point type (universal real) */
         double delta = 1.0;
-        if (Type_Is_Fixed_Point(prefix_type)) {
-            delta = prefix_type->fixed.delta > 0 ? prefix_type->fixed.delta : 1.0;
+        if (Type_Is_Fixed_Point(classify_type)) {
+            Type_Info *ft = Type_Is_Fixed_Point(prefix_type) ? prefix_type : classify_type;
+            delta = ft->fixed.delta > 0 ? ft->fixed.delta : 1.0;
         }
         Emit(cg, "  %%t%u = fadd double 0.0, %e  ; 'DELTA\n", t, delta);
         return t;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("FORE"))) {
-        /* T'FORE - decimal digits before point in default output (RM 3.5.10)
-         * FORE = 1 + floor(log10(max(|T'FIRST|, |T'LAST|))) */
-        int64_t fore = 1;
-        if (Type_Is_Fixed_Point(prefix_type)) {
-            double bound = fmax(fabs(Type_Bound_Float_Value(prefix_type->low_bound)),
-                               fabs(Type_Bound_Float_Value(prefix_type->high_bound)));
+        /* T'FORE - minimum field width for integer part (RM 3.5.10(5))
+         * Includes a one-character prefix (minus sign or space).
+         * FORE = 2 when integer part is 0, otherwise 1 + 1 + floor(log10(int_part)) */
+        int64_t fore = 2;  /* minimum: sign + at least one digit */
+        if (Type_Is_Fixed_Point(classify_type)) {
+            Type_Info *ft = Type_Is_Fixed_Point(prefix_type) ? prefix_type : classify_type;
+            double bound = fmax(fabs(Type_Bound_Float_Value(ft->low_bound)),
+                               fabs(Type_Bound_Float_Value(ft->high_bound)));
             if (bound >= 1.0) {
-                fore = 1 + (int64_t)floor(log10(bound));
+                fore = 2 + (int64_t)floor(log10(bound));
             }
         }
         Emit(cg, "  %%t%u = add %s 0, %lld  ; 'FORE\n", t, Integer_Arith_Type(cg), (long long)fore);
@@ -22491,8 +22556,9 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         /* T'AFT - decimal digits after point in default output (RM 3.5.10)
          * AFT = smallest N such that 10^(-N) <= T'DELTA */
         int64_t aft = 1;
-        if (Type_Is_Fixed_Point(prefix_type)) {
-            double delta = prefix_type->fixed.delta;
+        if (Type_Is_Fixed_Point(classify_type)) {
+            Type_Info *ft = Type_Is_Fixed_Point(prefix_type) ? prefix_type : classify_type;
+            double delta = ft->fixed.delta;
             if (delta > 0 and delta < 1.0) {
                 aft = (int64_t)ceil(-log10(delta));
             }
@@ -28211,124 +28277,349 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
      * Bound type derived from STRING's index type via type system. */
     const char *rts_sbt = String_Bound_Type(cg);
     const char *iat = Integer_Arith_Type(cg);
-    /* Integer'VALUE helper — Ada RM 3.5.5: parses optional leading/trailing
-     * blanks, optional sign, decimal digits (with underscores), optional
-     * exponent E[+]digits.  State machine: spaces → sign → mantissa → exp. */
-    Emit(cg, "; Integer'VALUE helper (with exponent support)\n");
+    /* Integer'VALUE helper — Ada RM 3.5.5: full parsing with based literals.
+     * Handles: [spaces] [sign] decimal_literal | based_literal [spaces]
+     * decimal_literal ::= digit {[_] digit} [exponent]
+     * based_literal   ::= base # hex_digit {[_] hex_digit} # [exponent]
+     * exponent        ::= E [+] digit {[_] digit}
+     * Raises CONSTRAINT_ERROR on any malformed input. */
+    Emit(cg, "; Integer'VALUE helper (based literals + validation)\n");
     Emit(cg, "define linkonce_odr %s @__ada_integer_value(" FAT_PTR_TYPE " %%str) {\n", iat);
     Emit(cg, "entry:\n");
     Emit_Fat_Pointer_Extractvalue_Named(cg, "str", "data", "low_bt", "high_bt", rts_sbt);
-    Emit(cg, "  %%low = add %s %%low_bt, 0\n", rts_sbt);
-    Emit(cg, "  %%high = add %s %%high_bt, 0\n", rts_sbt);
-    Emit(cg, "  br label %%mloop\n");
+    Emit(cg, "  %%len = sub %s %%high_bt, %%low_bt\n", rts_sbt);
+    Emit(cg, "  %%len1 = add %s %%len, 1\n", rts_sbt);
+    /* Copy to NUL-terminated C buffer for sscanf-like processing in C helper */
+    Emit(cg, "  %%len64 = sext %s %%len1 to i64\n", rts_sbt);
+    Emit(cg, "  %%buf = alloca i8, i64 %%len64\n");
+    Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%buf, ptr %%data, i64 %%len64, i1 false)\n");
+    Emit(cg, "  %%result = call %s @__ada_parse_integer(ptr %%buf, %s %%len1)\n", iat, rts_sbt);
+    Emit(cg, "  ret %s %%result\n", iat);
+    Emit(cg, "}\n\n");
+    /* The actual parser is a C-callable function emitted as LLVM IR.
+     * It handles spaces, sign, decimal, based literals, exponent, underscores,
+     * and raises CONSTRAINT_ERROR on any validation failure. */
+    Emit(cg, "define linkonce_odr %s @__ada_parse_integer(ptr %%buf, %s %%len) {\n", iat, rts_sbt);
+    Emit(cg, "entry:\n");
+    /* Phase 1: skip leading spaces (only ASCII 32; HT/other → error) */
+    Emit(cg, "  br label %%skip_lead\n");
+    Emit(cg, "skip_lead:\n");
+    Emit(cg, "  %%sl_i = phi %s [ 0, %%entry ], [ %%sl_ni, %%sl_cont ]\n", rts_sbt);
+    Emit(cg, "  %%sl_done = icmp sge %s %%sl_i, %%len\n", rts_sbt);
+    Emit(cg, "  br i1 %%sl_done, label %%bad, label %%sl_body\n");
+    Emit(cg, "sl_body:\n");
+    Emit(cg, "  %%sl_p = getelementptr i8, ptr %%buf, %s %%sl_i\n", rts_sbt);
+    Emit(cg, "  %%sl_c = load i8, ptr %%sl_p\n");
+    Emit(cg, "  %%sl_sp = icmp eq i8 %%sl_c, 32\n");
+    Emit(cg, "  br i1 %%sl_sp, label %%sl_cont, label %%got_start\n");
+    Emit(cg, "sl_cont:\n");
+    Emit(cg, "  %%sl_ni = add %s %%sl_i, 1\n", rts_sbt);
+    Emit(cg, "  br label %%skip_lead\n");
 
-    /* Main loop: parse sign + mantissa digits (skipping spaces and underscores) */
-    Emit(cg, "mloop:\n");
-    Emit(cg, "  %%m_val = phi %s [ 0, %%entry ], [ %%m_next, %%mcont ]\n", iat);
-    Emit(cg, "  %%m_idx = phi %s [ %%low, %%entry ], [ %%m_nidx, %%mcont ]\n", rts_sbt);
-    Emit(cg, "  %%m_neg = phi i1 [ false, %%entry ], [ %%m_nneg, %%mcont ]\n");
-    Emit(cg, "  %%m_done = icmp sgt %s %%m_idx, %%high\n", rts_sbt);
-    Emit(cg, "  br i1 %%m_done, label %%apply_exp, label %%mbody\n");
-    Emit(cg, "mbody:\n");
-    Emit(cg, "  %%m_off = sub %s %%m_idx, %%low\n", rts_sbt);
-    Emit(cg, "  %%m_off64 = sext %s %%m_off to i64\n", rts_sbt);
-    Emit(cg, "  %%m_ptr = getelementptr i8, ptr %%data, i64 %%m_off64\n");
-    Emit(cg, "  %%m_ch = load i8, ptr %%m_ptr\n");
+    /* Phase 2: find end (skip trailing spaces; HT/other at end → error) */
+    Emit(cg, "got_start:\n");
+    Emit(cg, "  %%end_init = sub %s %%len, 1\n", rts_sbt);
+    Emit(cg, "  br label %%skip_trail\n");
+    Emit(cg, "skip_trail:\n");
+    Emit(cg, "  %%st_i = phi %s [ %%end_init, %%got_start ], [ %%st_ni, %%st_cont ]\n", rts_sbt);
+    Emit(cg, "  %%st_le = icmp sle %s %%st_i, %%sl_i\n", rts_sbt);
+    Emit(cg, "  br i1 %%st_le, label %%bad, label %%st_body\n");
+    Emit(cg, "st_body:\n");
+    Emit(cg, "  %%st_p = getelementptr i8, ptr %%buf, %s %%st_i\n", rts_sbt);
+    Emit(cg, "  %%st_c = load i8, ptr %%st_p\n");
+    Emit(cg, "  %%st_sp = icmp eq i8 %%st_c, 32\n");
+    Emit(cg, "  br i1 %%st_sp, label %%st_cont, label %%trimmed\n");
+    Emit(cg, "st_cont:\n");
+    Emit(cg, "  %%st_ni = sub %s %%st_i, 1\n", rts_sbt);
+    Emit(cg, "  br label %%skip_trail\n");
 
-    /* Check for 'E'/'e' — transition to exponent loop */
-    Emit(cg, "  %%is_E = icmp eq i8 %%m_ch, 69\n");
-    Emit(cg, "  %%is_e = icmp eq i8 %%m_ch, 101\n");
-    Emit(cg, "  %%is_exp = or i1 %%is_E, %%is_e\n");
-    Emit(cg, "  br i1 %%is_exp, label %%exp_start, label %%m_sign\n");
+    /* Now sl_i..st_i is the trimmed content (inclusive) */
+    Emit(cg, "trimmed:\n");
+    Emit(cg, "  %%end = add %s %%st_i, 1\n", rts_sbt); /* exclusive end */
+    /* Phase 3: check for sign */
+    Emit(cg, "  %%s_p = getelementptr i8, ptr %%buf, %s %%sl_i\n", rts_sbt);
+    Emit(cg, "  %%s_c = load i8, ptr %%s_p\n");
+    Emit(cg, "  %%is_neg = icmp eq i8 %%s_c, 45\n");
+    Emit(cg, "  %%is_pos = icmp eq i8 %%s_c, 43\n");
+    Emit(cg, "  %%has_sign = or i1 %%is_neg, %%is_pos\n");
+    Emit(cg, "  %%dig_start_s = add %s %%sl_i, 1\n", rts_sbt);
+    Emit(cg, "  %%dig_start = select i1 %%has_sign, %s %%dig_start_s, %s %%sl_i\n", rts_sbt, rts_sbt);
 
-    /* Check sign */
-    Emit(cg, "m_sign:\n");
-    Emit(cg, "  %%is_minus = icmp eq i8 %%m_ch, 45\n");
-    Emit(cg, "  br i1 %%is_minus, label %%m_setneg, label %%m_plus\n");
-    Emit(cg, "m_setneg:\n");
-    Emit(cg, "  br label %%mcont_neg\n");
-    Emit(cg, "m_plus:\n");
-    Emit(cg, "  %%is_plus = icmp eq i8 %%m_ch, 43\n");
-    Emit(cg, "  br i1 %%is_plus, label %%mcont_skip, label %%m_digit\n");
+    /* Phase 4: Parse digit sequence, looking for '#' or ':' (based literal delimiter) */
+    Emit(cg, "  br label %%d1loop\n");
+    Emit(cg, "d1loop:\n");
+    Emit(cg, "  %%d1_i = phi %s [ %%dig_start, %%trimmed ], [ %%d1_ni, %%d1_cont ]\n", rts_sbt);
+    Emit(cg, "  %%d1_val = phi %s [ 0, %%trimmed ], [ %%d1_nv, %%d1_cont ]\n", iat);
+    Emit(cg, "  %%d1_last_under = phi i1 [ false, %%trimmed ], [ %%d1_is_under, %%d1_cont ]\n");
+    Emit(cg, "  %%d1_done = icmp sge %s %%d1_i, %%end\n", rts_sbt);
+    Emit(cg, "  br i1 %%d1_done, label %%apply_sign, label %%d1_body\n");
+    Emit(cg, "d1_body:\n");
+    Emit(cg, "  %%d1_p = getelementptr i8, ptr %%buf, %s %%d1_i\n", rts_sbt);
+    Emit(cg, "  %%d1_ch = load i8, ptr %%d1_p\n");
+    /* Check for '#' or ':' → based literal */
+    Emit(cg, "  %%d1_sharp = icmp eq i8 %%d1_ch, 35\n");
+    Emit(cg, "  %%d1_colon = icmp eq i8 %%d1_ch, 58\n");
+    Emit(cg, "  %%d1_delim = or i1 %%d1_sharp, %%d1_colon\n");
+    Emit(cg, "  br i1 %%d1_delim, label %%start_based, label %%d1_check_exp\n");
+    /* Check for E/e → exponent */
+    Emit(cg, "d1_check_exp:\n");
+    Emit(cg, "  %%d1_isE = icmp eq i8 %%d1_ch, 69\n");
+    Emit(cg, "  %%d1_ise = icmp eq i8 %%d1_ch, 101\n");
+    Emit(cg, "  %%d1_exp = or i1 %%d1_isE, %%d1_ise\n");
+    Emit(cg, "  br i1 %%d1_exp, label %%exp_start_d, label %%d1_check_under\n");
+    /* Check for underscore */
+    Emit(cg, "d1_check_under:\n");
+    Emit(cg, "  %%d1_is_under = icmp eq i8 %%d1_ch, 95\n");
+    Emit(cg, "  br i1 %%d1_is_under, label %%d1_under, label %%d1_digit\n");
+    Emit(cg, "d1_under:\n");
+    /* Consecutive underscores or leading underscore → error */
+    Emit(cg, "  %%d1_consec = and i1 %%d1_last_under, %%d1_is_under\n");
+    Emit(cg, "  %%d1_leading = icmp eq %s %%d1_i, %%dig_start\n", rts_sbt);
+    Emit(cg, "  %%d1_bad_u = or i1 %%d1_consec, %%d1_leading\n");
+    Emit(cg, "  br i1 %%d1_bad_u, label %%bad, label %%d1_cont\n");
+    /* Parse decimal digit */
+    Emit(cg, "d1_digit:\n");
+    Emit(cg, "  %%d1_ge0 = icmp uge i8 %%d1_ch, 48\n");
+    Emit(cg, "  %%d1_le9 = icmp ule i8 %%d1_ch, 57\n");
+    Emit(cg, "  %%d1_isdig = and i1 %%d1_ge0, %%d1_le9\n");
+    Emit(cg, "  br i1 %%d1_isdig, label %%d1_accum, label %%bad\n");
+    Emit(cg, "d1_accum:\n");
+    Emit(cg, "  %%d1_d = sub i8 %%d1_ch, 48\n");
+    Emit(cg, "  %%d1_dw = zext i8 %%d1_d to %s\n", iat);
+    Emit(cg, "  %%d1_mul = mul %s %%d1_val, 10\n", iat);
+    Emit(cg, "  %%d1_nv_a = add %s %%d1_mul, %%d1_dw\n", iat);
+    Emit(cg, "  br label %%d1_cont\n");
+    Emit(cg, "d1_cont:\n");
+    Emit(cg, "  %%d1_nv = phi %s [ %%d1_nv_a, %%d1_accum ], [ %%d1_val, %%d1_under ]\n", iat);
+    Emit(cg, "  %%d1_ni = add %s %%d1_i, 1\n", rts_sbt);
+    Emit(cg, "  br label %%d1loop\n");
 
-    /* Digit accumulation */
-    Emit(cg, "m_digit:\n");
-    Emit(cg, "  %%m_ge0 = icmp uge i8 %%m_ch, 48\n");
-    Emit(cg, "  %%m_le9 = icmp ule i8 %%m_ch, 57\n");
-    Emit(cg, "  %%m_isdig = and i1 %%m_ge0, %%m_le9\n");
-    Emit(cg, "  br i1 %%m_isdig, label %%m_accum, label %%mcont_skip\n");
-    Emit(cg, "m_accum:\n");
-    Emit(cg, "  %%m_d = sub i8 %%m_ch, 48\n");
-    Emit(cg, "  %%m_dw = zext i8 %%m_d to %s\n", iat);
-    Emit(cg, "  %%m_mul = mul %s %%m_val, 10\n", iat);
-    Emit(cg, "  %%m_add = add %s %%m_mul, %%m_dw\n", iat);
-    Emit(cg, "  br label %%mcont\n");
+    /* Based literal: d1_val is the base, parse digits in that base until '#'/':' */
+    Emit(cg, "start_based:\n");
+    Emit(cg, "  %%base = add %s %%d1_val, 0\n", iat); /* copy */
+    /* Validate base: 2..16 */
+    Emit(cg, "  %%base_lo = icmp slt %s %%base, 2\n", iat);
+    Emit(cg, "  %%base_hi = icmp sgt %s %%base, 16\n", iat);
+    Emit(cg, "  %%base_bad = or i1 %%base_lo, %%base_hi\n");
+    Emit(cg, "  br i1 %%base_bad, label %%bad, label %%based_ok\n");
+    Emit(cg, "based_ok:\n");
+    Emit(cg, "  %%b_delim = add i8 %%d1_ch, 0\n"); /* remember delimiter */
+    Emit(cg, "  %%b_start = add %s %%d1_i, 1\n", rts_sbt);
+    Emit(cg, "  br label %%bloop\n");
+    Emit(cg, "bloop:\n");
+    Emit(cg, "  %%b_i = phi %s [ %%b_start, %%based_ok ], [ %%b_ni, %%b_cont ]\n", rts_sbt);
+    Emit(cg, "  %%b_val = phi %s [ 0, %%based_ok ], [ %%b_nv, %%b_cont ]\n", iat);
+    Emit(cg, "  %%b_last_under = phi i1 [ false, %%based_ok ], [ %%b_is_under, %%b_cont ]\n");
+    Emit(cg, "  %%b_done = icmp sge %s %%b_i, %%end\n", rts_sbt);
+    Emit(cg, "  br i1 %%b_done, label %%bad, label %%b_body\n"); /* missing closing delimiter */
+    Emit(cg, "b_body:\n");
+    Emit(cg, "  %%b_p = getelementptr i8, ptr %%buf, %s %%b_i\n", rts_sbt);
+    Emit(cg, "  %%b_ch = load i8, ptr %%b_p\n");
+    /* Check for closing delimiter */
+    Emit(cg, "  %%b_close = icmp eq i8 %%b_ch, %%b_delim\n");
+    Emit(cg, "  br i1 %%b_close, label %%based_done, label %%b_check_under\n");
+    /* Check underscore */
+    Emit(cg, "b_check_under:\n");
+    Emit(cg, "  %%b_is_under = icmp eq i8 %%b_ch, 95\n");
+    Emit(cg, "  br i1 %%b_is_under, label %%b_under, label %%b_hexdig\n");
+    Emit(cg, "b_under:\n");
+    Emit(cg, "  %%b_consec = and i1 %%b_last_under, %%b_is_under\n");
+    Emit(cg, "  %%b_leading_u = icmp eq %s %%b_i, %%b_start\n", rts_sbt);
+    Emit(cg, "  %%b_bad_u = or i1 %%b_consec, %%b_leading_u\n");
+    Emit(cg, "  br i1 %%b_bad_u, label %%bad, label %%b_cont\n");
+    /* Parse hex digit (0-9, A-F, a-f) */
+    Emit(cg, "b_hexdig:\n");
+    Emit(cg, "  %%b_ge0 = icmp uge i8 %%b_ch, 48\n");
+    Emit(cg, "  %%b_le9 = icmp ule i8 %%b_ch, 57\n");
+    Emit(cg, "  %%b_09 = and i1 %%b_ge0, %%b_le9\n");
+    Emit(cg, "  br i1 %%b_09, label %%b_d09, label %%b_check_af\n");
+    Emit(cg, "b_d09:\n");
+    Emit(cg, "  %%b_d09v = sub i8 %%b_ch, 48\n");
+    Emit(cg, "  br label %%b_accum\n");
+    Emit(cg, "b_check_af:\n");
+    Emit(cg, "  %%b_geA = icmp uge i8 %%b_ch, 65\n");
+    Emit(cg, "  %%b_leF = icmp ule i8 %%b_ch, 70\n");
+    Emit(cg, "  %%b_AF = and i1 %%b_geA, %%b_leF\n");
+    Emit(cg, "  br i1 %%b_AF, label %%b_dAF, label %%b_check_af2\n");
+    Emit(cg, "b_dAF:\n");
+    Emit(cg, "  %%b_dAFv = sub i8 %%b_ch, 55\n"); /* 'A'-10 = 55 */
+    Emit(cg, "  br label %%b_accum\n");
+    Emit(cg, "b_check_af2:\n");
+    Emit(cg, "  %%b_gea = icmp uge i8 %%b_ch, 97\n");
+    Emit(cg, "  %%b_lef = icmp ule i8 %%b_ch, 102\n");
+    Emit(cg, "  %%b_af = and i1 %%b_gea, %%b_lef\n");
+    Emit(cg, "  br i1 %%b_af, label %%b_daf, label %%bad\n");
+    Emit(cg, "b_daf:\n");
+    Emit(cg, "  %%b_dafv = sub i8 %%b_ch, 87\n"); /* 'a'-10 = 87 */
+    Emit(cg, "  br label %%b_accum\n");
+    Emit(cg, "b_accum:\n");
+    Emit(cg, "  %%b_digit = phi i8 [ %%b_d09v, %%b_d09 ], [ %%b_dAFv, %%b_dAF ], [ %%b_dafv, %%b_daf ]\n");
+    Emit(cg, "  %%b_dw = zext i8 %%b_digit to %s\n", iat);
+    /* Check digit < base */
+    Emit(cg, "  %%b_inrange = icmp slt %s %%b_dw, %%base\n", iat);
+    Emit(cg, "  br i1 %%b_inrange, label %%b_ok_dig, label %%bad\n");
+    Emit(cg, "b_ok_dig:\n");
+    Emit(cg, "  %%b_mul = mul %s %%b_val, %%base\n", iat);
+    Emit(cg, "  %%b_nv_a = add %s %%b_mul, %%b_dw\n", iat);
+    Emit(cg, "  br label %%b_cont\n");
+    Emit(cg, "b_cont:\n");
+    Emit(cg, "  %%b_nv = phi %s [ %%b_nv_a, %%b_ok_dig ], [ %%b_val, %%b_under ]\n", iat);
+    Emit(cg, "  %%b_ni = add %s %%b_i, 1\n", rts_sbt);
+    Emit(cg, "  br label %%bloop\n");
 
-    /* Continuation blocks with phi merge */
-    Emit(cg, "mcont_neg:\n");
-    Emit(cg, "  br label %%mcont\n");
-    Emit(cg, "mcont_skip:\n");
-    Emit(cg, "  br label %%mcont\n");
-    Emit(cg, "mcont:\n");
-    Emit(cg, "  %%m_next = phi %s [ %%m_add, %%m_accum ], [ %%m_val, %%mcont_neg ], [ %%m_val, %%mcont_skip ]\n", iat);
-    Emit(cg, "  %%m_nneg = phi i1 [ %%m_neg, %%m_accum ], [ true, %%mcont_neg ], [ %%m_neg, %%mcont_skip ]\n");
-    Emit(cg, "  %%m_nidx = add %s %%m_idx, 1\n", rts_sbt);
-    Emit(cg, "  br label %%mloop\n");
+    /* After closing '#'/':' — check for optional exponent */
+    Emit(cg, "based_done:\n");
+    Emit(cg, "  %%bd_ni = add %s %%b_i, 1\n", rts_sbt);
+    Emit(cg, "  %%bd_more = icmp slt %s %%bd_ni, %%end\n", rts_sbt);
+    Emit(cg, "  br i1 %%bd_more, label %%bd_check_exp, label %%apply_sign_based\n");
+    Emit(cg, "bd_check_exp:\n");
+    Emit(cg, "  %%bd_ep = getelementptr i8, ptr %%buf, %s %%bd_ni\n", rts_sbt);
+    Emit(cg, "  %%bd_ec = load i8, ptr %%bd_ep\n");
+    Emit(cg, "  %%bd_isE = icmp eq i8 %%bd_ec, 69\n");
+    Emit(cg, "  %%bd_ise = icmp eq i8 %%bd_ec, 101\n");
+    Emit(cg, "  %%bd_exp = or i1 %%bd_isE, %%bd_ise\n");
+    Emit(cg, "  br i1 %%bd_exp, label %%exp_start_b, label %%bad\n"); /* trailing junk */
 
-    /* Exponent parsing: after seeing 'E'/'e', parse [+]digits */
-    Emit(cg, "exp_start:\n");
-    Emit(cg, "  %%e_start = add %s %%m_idx, 1\n", rts_sbt);
-    Emit(cg, "  br label %%eloop\n");
-    Emit(cg, "eloop:\n");
-    Emit(cg, "  %%e_val = phi %s [ 0, %%exp_start ], [ %%e_next, %%econt ]\n", iat);
-    Emit(cg, "  %%e_idx = phi %s [ %%e_start, %%exp_start ], [ %%e_nidx, %%econt ]\n", rts_sbt);
-    Emit(cg, "  %%e_done = icmp sgt %s %%e_idx, %%high\n", rts_sbt);
-    Emit(cg, "  br i1 %%e_done, label %%apply_exp, label %%ebody\n");
-    Emit(cg, "ebody:\n");
-    Emit(cg, "  %%e_off = sub %s %%e_idx, %%low\n", rts_sbt);
-    Emit(cg, "  %%e_off64 = sext %s %%e_off to i64\n", rts_sbt);
-    Emit(cg, "  %%e_ptr = getelementptr i8, ptr %%data, i64 %%e_off64\n");
-    Emit(cg, "  %%e_ch = load i8, ptr %%e_ptr\n");
-    Emit(cg, "  %%e_ge0 = icmp uge i8 %%e_ch, 48\n");
-    Emit(cg, "  %%e_le9 = icmp ule i8 %%e_ch, 57\n");
-    Emit(cg, "  %%e_isdig = and i1 %%e_ge0, %%e_le9\n");
-    Emit(cg, "  br i1 %%e_isdig, label %%e_accum, label %%e_skip\n");
-    Emit(cg, "e_accum:\n");
-    Emit(cg, "  %%e_d = sub i8 %%e_ch, 48\n");
-    Emit(cg, "  %%e_dw = zext i8 %%e_d to %s\n", iat);
-    Emit(cg, "  %%e_mul = mul %s %%e_val, 10\n", iat);
-    Emit(cg, "  %%e_add = add %s %%e_mul, %%e_dw\n", iat);
-    Emit(cg, "  br label %%econt\n");
-    Emit(cg, "e_skip:\n");
-    Emit(cg, "  br label %%econt\n");
-    Emit(cg, "econt:\n");
-    Emit(cg, "  %%e_next = phi %s [ %%e_add, %%e_accum ], [ %%e_val, %%e_skip ]\n", iat);
-    Emit(cg, "  %%e_nidx = add %s %%e_idx, 1\n", rts_sbt);
-    Emit(cg, "  br label %%eloop\n");
+    /* Exponent for based literal: exp_start_b, base is still %%base */
+    Emit(cg, "exp_start_b:\n");
+    Emit(cg, "  %%eb_s = add %s %%bd_ni, 1\n", rts_sbt);
+    Emit(cg, "  br label %%ebloop\n");
+    Emit(cg, "ebloop:\n");
+    Emit(cg, "  %%eb_i = phi %s [ %%eb_s, %%exp_start_b ], [ %%eb_ni, %%eb_cont ]\n", rts_sbt);
+    Emit(cg, "  %%eb_v = phi %s [ 0, %%exp_start_b ], [ %%eb_nv, %%eb_cont ]\n", iat);
+    Emit(cg, "  %%eb_done = icmp sge %s %%eb_i, %%end\n", rts_sbt);
+    Emit(cg, "  br i1 %%eb_done, label %%apply_exp_based, label %%eb_body\n");
+    Emit(cg, "eb_body:\n");
+    Emit(cg, "  %%eb_p = getelementptr i8, ptr %%buf, %s %%eb_i\n", rts_sbt);
+    Emit(cg, "  %%eb_c = load i8, ptr %%eb_p\n");
+    Emit(cg, "  %%eb_ge0 = icmp uge i8 %%eb_c, 48\n");
+    Emit(cg, "  %%eb_le9 = icmp ule i8 %%eb_c, 57\n");
+    Emit(cg, "  %%eb_isdig = and i1 %%eb_ge0, %%eb_le9\n");
+    Emit(cg, "  br i1 %%eb_isdig, label %%eb_accum, label %%eb_skip\n");
+    Emit(cg, "eb_accum:\n");
+    Emit(cg, "  %%eb_d = sub i8 %%eb_c, 48\n");
+    Emit(cg, "  %%eb_dw = zext i8 %%eb_d to %s\n", iat);
+    Emit(cg, "  %%eb_mul = mul %s %%eb_v, 10\n", iat);
+    Emit(cg, "  %%eb_nv_a = add %s %%eb_mul, %%eb_dw\n", iat);
+    Emit(cg, "  br label %%eb_cont\n");
+    Emit(cg, "eb_skip:\n"); /* skip + sign */
+    Emit(cg, "  br label %%eb_cont\n");
+    Emit(cg, "eb_cont:\n");
+    Emit(cg, "  %%eb_nv = phi %s [ %%eb_nv_a, %%eb_accum ], [ %%eb_v, %%eb_skip ]\n", iat);
+    Emit(cg, "  %%eb_ni = add %s %%eb_i, 1\n", rts_sbt);
+    Emit(cg, "  br label %%ebloop\n");
 
-    /* Apply exponent: result = mantissa * 10^exp, then apply sign */
-    Emit(cg, "apply_exp:\n");
-    Emit(cg, "  %%final_m = phi %s [ %%m_val, %%mloop ], [ %%m_val, %%eloop ]\n", iat);
-    Emit(cg, "  %%final_e = phi %s [ 0, %%mloop ], [ %%e_val, %%eloop ]\n", iat);
-    Emit(cg, "  %%final_neg = phi i1 [ %%m_neg, %%mloop ], [ %%m_neg, %%eloop ]\n");
-    /* Compute 10^exp via loop */
-    Emit(cg, "  br label %%pow_loop\n");
-    Emit(cg, "pow_loop:\n");
-    Emit(cg, "  %%p_acc = phi %s [ 1, %%apply_exp ], [ %%p_next, %%pow_body ]\n", iat);
-    Emit(cg, "  %%p_rem = phi %s [ %%final_e, %%apply_exp ], [ %%p_dec, %%pow_body ]\n", iat);
-    Emit(cg, "  %%p_done = icmp sle %s %%p_rem, 0\n", iat);
-    Emit(cg, "  br i1 %%p_done, label %%finish, label %%pow_body\n");
-    Emit(cg, "pow_body:\n");
-    Emit(cg, "  %%p_next = mul %s %%p_acc, 10\n", iat);
-    Emit(cg, "  %%p_dec = sub %s %%p_rem, 1\n", iat);
-    Emit(cg, "  br label %%pow_loop\n");
+    /* Apply exponent for based literal: result = b_val * base^exp */
+    Emit(cg, "apply_exp_based:\n");
+    Emit(cg, "  br label %%bpow_loop\n");
+    Emit(cg, "bpow_loop:\n");
+    Emit(cg, "  %%bp_acc = phi %s [ 1, %%apply_exp_based ], [ %%bp_next, %%bpow_body ]\n", iat);
+    Emit(cg, "  %%bp_rem = phi %s [ %%eb_v, %%apply_exp_based ], [ %%bp_dec, %%bpow_body ]\n", iat);
+    Emit(cg, "  %%bp_done = icmp sle %s %%bp_rem, 0\n", iat);
+    Emit(cg, "  br i1 %%bp_done, label %%apply_sign_based_e, label %%bpow_body\n");
+    Emit(cg, "bpow_body:\n");
+    Emit(cg, "  %%bp_next = mul %s %%bp_acc, %%base\n", iat);
+    Emit(cg, "  %%bp_dec = sub %s %%bp_rem, 1\n", iat);
+    Emit(cg, "  br label %%bpow_loop\n");
 
-    /* Final: result = mantissa * 10^exp, apply sign */
-    Emit(cg, "finish:\n");
-    Emit(cg, "  %%scaled = mul %s %%final_m, %%p_acc\n", iat);
-    Emit(cg, "  %%neg_scaled = sub %s 0, %%scaled\n", iat);
-    Emit(cg, "  %%ret = select i1 %%final_neg, %s %%neg_scaled, %s %%scaled\n", iat, iat);
-    Emit(cg, "  ret %s %%ret\n", iat);
+    Emit(cg, "apply_sign_based_e:\n");
+    Emit(cg, "  %%based_scaled = mul %s %%b_val, %%bp_acc\n", iat);
+    Emit(cg, "  %%neg_based_e = sub %s 0, %%based_scaled\n", iat);
+    Emit(cg, "  %%ret_based_e = select i1 %%is_neg, %s %%neg_based_e, %s %%based_scaled\n", iat, iat);
+    Emit(cg, "  ret %s %%ret_based_e\n", iat);
+
+    Emit(cg, "apply_sign_based:\n");
+    Emit(cg, "  %%neg_based = sub %s 0, %%b_val\n", iat);
+    Emit(cg, "  %%ret_based = select i1 %%is_neg, %s %%neg_based, %s %%b_val\n", iat, iat);
+    Emit(cg, "  ret %s %%ret_based\n", iat);
+
+    /* Decimal exponent path */
+    Emit(cg, "exp_start_d:\n");
+    /* Check for trailing underscore before E */
+    Emit(cg, "  br i1 %%d1_last_under, label %%bad, label %%exp_d_ok\n");
+    Emit(cg, "exp_d_ok:\n");
+    Emit(cg, "  %%ed_s = add %s %%d1_i, 1\n", rts_sbt);
+    /* Check first char after E: must be digit or '+'; '-' → error */
+    Emit(cg, "  %%ed_first_p = getelementptr i8, ptr %%buf, %s %%ed_s\n", rts_sbt);
+    Emit(cg, "  %%ed_first_done = icmp sge %s %%ed_s, %%end\n", rts_sbt);
+    Emit(cg, "  br i1 %%ed_first_done, label %%bad, label %%ed_check_first\n");
+    Emit(cg, "ed_check_first:\n");
+    Emit(cg, "  %%ed_fc = load i8, ptr %%ed_first_p\n");
+    Emit(cg, "  %%ed_fc_minus = icmp eq i8 %%ed_fc, 45\n");
+    Emit(cg, "  br i1 %%ed_fc_minus, label %%bad, label %%ed_fc_plus\n");
+    Emit(cg, "ed_fc_plus:\n");
+    Emit(cg, "  %%ed_fc_isplus = icmp eq i8 %%ed_fc, 43\n");
+    Emit(cg, "  %%ed_s2 = add %s %%ed_s, 1\n", rts_sbt);
+    Emit(cg, "  %%ed_real_s = select i1 %%ed_fc_isplus, %s %%ed_s2, %s %%ed_s\n", rts_sbt, rts_sbt);
+    /* First char after E (or E+) must be a digit, not underscore or other */
+    Emit(cg, "  %%ed_fc_ge0 = icmp uge i8 %%ed_fc, 48\n");
+    Emit(cg, "  %%ed_fc_le9 = icmp ule i8 %%ed_fc, 57\n");
+    Emit(cg, "  %%ed_fc_isdig = and i1 %%ed_fc_ge0, %%ed_fc_le9\n");
+    Emit(cg, "  %%ed_fc_ok = or i1 %%ed_fc_isplus, %%ed_fc_isdig\n");
+    Emit(cg, "  br i1 %%ed_fc_ok, label %%edloop, label %%bad\n");
+    Emit(cg, "edloop:\n");
+    Emit(cg, "  %%ed_i = phi %s [ %%ed_real_s, %%ed_fc_plus ], [ %%ed_ni, %%ed_cont ]\n", rts_sbt);
+    Emit(cg, "  %%ed_v = phi %s [ 0, %%ed_fc_plus ], [ %%ed_nv, %%ed_cont ]\n", iat);
+    Emit(cg, "  %%ed_had_dig = phi i1 [ false, %%ed_fc_plus ], [ true, %%ed_cont ]\n");
+    Emit(cg, "  %%ed_done = icmp sge %s %%ed_i, %%end\n", rts_sbt);
+    Emit(cg, "  br i1 %%ed_done, label %%ed_check_end, label %%ed_body\n");
+    Emit(cg, "ed_check_end:\n");
+    /* Must have seen at least one digit */
+    Emit(cg, "  br i1 %%ed_had_dig, label %%apply_exp_d, label %%bad\n");
+    Emit(cg, "ed_body:\n");
+    Emit(cg, "  %%ed_p = getelementptr i8, ptr %%buf, %s %%ed_i\n", rts_sbt);
+    Emit(cg, "  %%ed_c = load i8, ptr %%ed_p\n");
+    Emit(cg, "  %%ed_ge0 = icmp uge i8 %%ed_c, 48\n");
+    Emit(cg, "  %%ed_le9 = icmp ule i8 %%ed_c, 57\n");
+    Emit(cg, "  %%ed_isdig = and i1 %%ed_ge0, %%ed_le9\n");
+    Emit(cg, "  br i1 %%ed_isdig, label %%ed_accum, label %%ed_check_u\n");
+    Emit(cg, "ed_check_u:\n");
+    /* Only underscore allowed in exponent digits (not consecutive/leading/trailing) */
+    Emit(cg, "  %%ed_is_u = icmp eq i8 %%ed_c, 95\n");
+    Emit(cg, "  br i1 %%ed_is_u, label %%ed_cont, label %%bad\n");
+    Emit(cg, "ed_accum:\n");
+    Emit(cg, "  %%ed_d = sub i8 %%ed_c, 48\n");
+    Emit(cg, "  %%ed_dw = zext i8 %%ed_d to %s\n", iat);
+    Emit(cg, "  %%ed_mul = mul %s %%ed_v, 10\n", iat);
+    Emit(cg, "  %%ed_nv_a = add %s %%ed_mul, %%ed_dw\n", iat);
+    Emit(cg, "  br label %%ed_cont\n");
+    Emit(cg, "ed_cont:\n");
+    Emit(cg, "  %%ed_nv = phi %s [ %%ed_nv_a, %%ed_accum ], [ %%ed_v, %%ed_check_u ]\n", iat);
+    Emit(cg, "  %%ed_ni = add %s %%ed_i, 1\n", rts_sbt);
+    Emit(cg, "  br label %%edloop\n");
+
+    /* Apply decimal exponent: result = mantissa * 10^exp */
+    Emit(cg, "apply_exp_d:\n");
+    Emit(cg, "  br label %%dpow_loop\n");
+    Emit(cg, "dpow_loop:\n");
+    Emit(cg, "  %%dp_acc = phi %s [ 1, %%apply_exp_d ], [ %%dp_next, %%dpow_body ]\n", iat);
+    Emit(cg, "  %%dp_rem = phi %s [ %%ed_v, %%apply_exp_d ], [ %%dp_dec, %%dpow_body ]\n", iat);
+    Emit(cg, "  %%dp_done = icmp sle %s %%dp_rem, 0\n", iat);
+    Emit(cg, "  br i1 %%dp_done, label %%apply_sign_de, label %%dpow_body\n");
+    Emit(cg, "dpow_body:\n");
+    Emit(cg, "  %%dp_next = mul %s %%dp_acc, 10\n", iat);
+    Emit(cg, "  %%dp_dec = sub %s %%dp_rem, 1\n", iat);
+    Emit(cg, "  br label %%dpow_loop\n");
+    Emit(cg, "apply_sign_de:\n");
+    Emit(cg, "  %%de_scaled = mul %s %%d1_val, %%dp_acc\n", iat);
+    Emit(cg, "  %%neg_de = sub %s 0, %%de_scaled\n", iat);
+    Emit(cg, "  %%ret_de = select i1 %%is_neg, %s %%neg_de, %s %%de_scaled\n", iat, iat);
+    Emit(cg, "  ret %s %%ret_de\n", iat);
+
+    /* Simple decimal result (no exponent, no base) — apply sign */
+    Emit(cg, "apply_sign:\n");
+    /* Check for trailing underscore */
+    Emit(cg, "  br i1 %%d1_last_under, label %%bad, label %%apply_sign_ok\n");
+    Emit(cg, "apply_sign_ok:\n");
+    Emit(cg, "  %%neg_d = sub %s 0, %%d1_val\n", iat);
+    Emit(cg, "  %%ret_d = select i1 %%is_neg, %s %%neg_d, %s %%d1_val\n", iat, iat);
+    Emit(cg, "  ret %s %%ret_d\n", iat);
+
+    /* Error: raise CONSTRAINT_ERROR */
+    Emit(cg, "bad:\n");
+    Emit(cg, "  %%exc_ptr_bad = ptrtoint ptr @__exc.constraint_error to i64\n");
+    Emit(cg, "  call void @__ada_raise(i64 %%exc_ptr_bad)\n");
+    Emit(cg, "  unreachable\n");
     Emit(cg, "}\n\n");
 
     /* Float'VALUE - declare as external for now (can be implemented similarly) */
