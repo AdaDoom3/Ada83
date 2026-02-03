@@ -6885,6 +6885,15 @@ static void Symbol_Add(Symbol_Manager *sm, Symbol *sym) {
             if (sym->kind == SYMBOL_VARIABLE and existing->kind == SYMBOL_TYPE) {
                 break;  /* Proceed to add the variable - it will shadow the type */
             }
+            /* Deferred constant completion (RM 7.4): update existing symbol's
+             * declaration to the full declaration which has the initializer. */
+            if (existing->kind == SYMBOL_CONSTANT and sym->kind == SYMBOL_CONSTANT
+                and sym->declaration and sym->declaration->kind == NK_OBJECT_DECL
+                and sym->declaration->object_decl.init) {
+                existing->declaration = sym->declaration;
+                if (sym->type) existing->type = sym->type;
+                return;
+            }
             /* Same symbol already exists at this scope - skip */
             return;
         }
@@ -10486,7 +10495,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                         Resolve_Expression(sm, node->integer_type.range);
                         Syntax_Node *range = node->integer_type.range;
                         if (range->kind == NK_RANGE and range->range.low and range->range.high) {
-                            /* Extract low bound - handle integer literals and unary minus */
+                            /* Extract low bound - literals, unary minus, or constants */
                             Syntax_Node *lo = range->range.low;
                             if (lo->kind == NK_INTEGER) {
                                 int_type->low_bound = (Type_Bound){
@@ -10501,8 +10510,16 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                                     .kind = BOUND_INTEGER,
                                     .int_value = val
                                 };
+                            } else {
+                                double val = Eval_Const_Numeric(lo);
+                                if (val == val) {
+                                    int_type->low_bound = (Type_Bound){
+                                        .kind = BOUND_INTEGER,
+                                        .int_value = (int64_t)val
+                                    };
+                                }
                             }
-                            /* Extract high bound - handle integer literals and unary minus */
+                            /* Extract high bound - literals, unary minus, or constants */
                             Syntax_Node *hi = range->range.high;
                             if (hi->kind == NK_INTEGER) {
                                 int_type->high_bound = (Type_Bound){
@@ -10517,6 +10534,14 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                                     .kind = BOUND_INTEGER,
                                     .int_value = val
                                 };
+                            } else {
+                                double val = Eval_Const_Numeric(hi);
+                                if (val == val) {
+                                    int_type->high_bound = (Type_Bound){
+                                        .kind = BOUND_INTEGER,
+                                        .int_value = (int64_t)val
+                                    };
+                                }
                             }
                         }
                     }
@@ -10616,9 +10641,13 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
 
                     /* Size based on digits: <=6 = float, >6 = double */
                     int digits = 15;  /* Default double precision */
-                    if (node->real_type.precision and
-                        node->real_type.precision->kind == NK_INTEGER) {
-                        digits = (int)node->real_type.precision->integer_lit.value;
+                    if (node->real_type.precision) {
+                        if (node->real_type.precision->kind == NK_INTEGER) {
+                            digits = (int)node->real_type.precision->integer_lit.value;
+                        } else {
+                            double val = Eval_Const_Numeric(node->real_type.precision);
+                            if (val == val) digits = (int)val;
+                        }
                     }
                     float_type->flt.digits = digits;  /* Store declared DIGITS */
                     float_type->size = (digits <= 6) ? 4 : 8;
@@ -19879,10 +19908,14 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         }
     }
 
-    /* Predefined operator called as function: P."="(X,Y) or P."/="(X,Y) etc.
-     * These have is_predefined set and no body - generate inline operations. */
-    if (sym and sym->is_predefined and node->apply.arguments.count >= 1) {
-        String_Slice op_name = sym->name;
+    /* Predefined operator called as function: P."="(X,Y) or "NOT"(X) etc.
+     * These have is_predefined set and no body, or the prefix is an operator
+     * symbol identifier with no symbol (resolved in semantic analysis). */
+    bool is_operator_symbol = (sym and sym->is_predefined) or
+        (not sym and node->apply.prefix->kind == NK_IDENTIFIER and
+         node->apply.prefix->string_val.text.length <= 3);
+    if (is_operator_symbol and node->apply.arguments.count >= 1) {
+        String_Slice op_name = sym ? sym->name : node->apply.prefix->string_val.text;
         uint32_t argc = (uint32_t)node->apply.arguments.count;
         /* Get first argument */
         Syntax_Node *arg0 = node->apply.arguments.items[0];
@@ -19914,7 +19947,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                     eq_result = ne_r;
                 }
                 /* Named operator returns BOOLEAN (i8), not bare i1 */
-                const char *bool_t = sym->return_type ? Type_To_Llvm(sym->return_type) : "i8";
+                const char *bool_t = (sym and sym->return_type) ? Type_To_Llvm(sym->return_type) : "i8";
                 if (bool_t[0] == 'i' and bool_t[1] != '1') {
                     uint32_t ext = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = zext i1 %%t%u to %s\n", ext, eq_result, bool_t);
@@ -19943,8 +19976,11 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "  %%t%u = icmp %s %s %%t%u, %%t%u  ; predef %.*s\n",
                      r, Int_Cmp_Predicate(cmp_tk, uns), ct, v0, v1,
                      (int)op_name.length, op_name.data);
-                Temp_Set_Type(cg, r, "i1");
-                return r;
+                /* Widen i1 → i8 for Ada BOOLEAN */
+                uint32_t w = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = zext i1 %%t%u to i8\n", w, r);
+                Temp_Set_Type(cg, w, "i8");
+                return w;
             }
             /* Arithmetic operators */
             const char *arith_op = NULL;
@@ -19978,6 +20014,17 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                 }
                 return r;
             }
+            /* Exponentiation: "**"(base, exp) */
+            if (Slice_Equal_Ignore_Case(op_name, S("**"))) {
+                const char *iat = Integer_Arith_Type(cg);
+                v0 = Emit_Convert(cg, v0, t0, iat);
+                v1 = Emit_Convert(cg, v1, t1, iat);
+                uint32_t r = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = call %s @__ada_integer_pow(%s %%t%u, %s %%t%u)\n",
+                     r, iat, iat, v0, iat, v1);
+                Temp_Set_Type(cg, r, iat);
+                return r;
+            }
             /* Boolean operators */
             if (Slice_Equal_Ignore_Case(op_name, S("and")) or
                 Slice_Equal_Ignore_Case(op_name, S("or")) or
@@ -19988,8 +20035,10 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                 v1 = Emit_Convert(cg, v1, t1, "i1");
                 uint32_t r = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = %s i1 %%t%u, %%t%u\n", r, bool_op, v0, v1);
-                Temp_Set_Type(cg, r, "i1");
-                return r;
+                uint32_t w = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = zext i1 %%t%u to i8\n", w, r);
+                Temp_Set_Type(cg, w, "i8");
+                return w;
             }
         } else if (argc == 1) {
             /* Unary operators: abs, not, unary - */
@@ -20007,8 +20056,10 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                 v0 = Emit_Convert(cg, v0, t0, "i1");
                 uint32_t r = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = xor i1 %%t%u, true\n", r, v0);
-                Temp_Set_Type(cg, r, "i1");
-                return r;
+                uint32_t w = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = zext i1 %%t%u to i8\n", w, r);
+                Temp_Set_Type(cg, w, "i8");
+                return w;
             }
             if (Slice_Equal_Ignore_Case(op_name, S("-"))) {
                 uint32_t r = Emit_Temp(cg);
@@ -20455,7 +20506,16 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                     } else {
                         const char *param_type = Type_To_Llvm_Sig(formal_type);
                         const char *arg_type = Expression_Llvm_Type(cg, arg);
-                        args[i] = Emit_Convert(cg, args[i], arg_type, param_type);
+                        /* Real literal → fixed-point param: scale by 1/SMALL */
+                        if (Type_Is_Fixed_Point(formal_type) and arg_type and
+                            arg_type[0] != 'i' and arg_type[0] != 'p') {
+                            double small = formal_type->fixed.small;
+                            if (small <= 0) small = formal_type->fixed.delta > 0
+                                                  ? formal_type->fixed.delta : 1.0;
+                            args[i] = Convert_Real_To_Fixed(cg, args[i], small, param_type);
+                        } else {
+                            args[i] = Emit_Convert(cg, args[i], arg_type, param_type);
+                        }
                     }
                 }
             }
