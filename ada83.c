@@ -18198,39 +18198,61 @@ static uint32_t Generate_Array_Equality(Code_Generator *cg, uint32_t left_ptr,
      * fat pointer values: { ptr, { bound, bound } }.
      */
 
-    /* Extract bounds from fat pointer structures */
+    /* Extract bounds and compare lengths for all dimensions.
+     * For multi-dimensional unconstrained arrays, bounds are stored
+     * as flat [ndims*2 x bt] array: lo0, hi0, lo1, hi1, ... */
     const char *aeq_bt = Array_Bound_Llvm_Type(array_type);
-    uint32_t left_low = Emit_Fat_Pointer_Low(cg, left_ptr, aeq_bt);
-    uint32_t left_high = Emit_Fat_Pointer_High(cg, left_ptr, aeq_bt);
-    uint32_t right_low = Emit_Fat_Pointer_Low(cg, right_ptr, aeq_bt);
-    uint32_t right_high = Emit_Fat_Pointer_High(cg, right_ptr, aeq_bt);
+    uint32_t ndims = array_type->array.index_count;
+    if (ndims < 1) ndims = 1;
 
-    /* Compute lengths: high - low + 1 */
-    uint32_t left_len = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", left_len, aeq_bt, left_high, left_low);
-    uint32_t left_len1 = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = add %s %%t%u, 1\n", left_len1, aeq_bt, left_len);
+    uint32_t len_eq = 0;                /* accumulated length equality */
+    uint32_t total_elems = 0;           /* product of all dim lengths  */
+    const char *aeq_iat = Integer_Arith_Type(cg);
 
-    uint32_t right_len = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", right_len, aeq_bt, right_high, right_low);
-    uint32_t right_len1 = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = add %s %%t%u, 1\n", right_len1, aeq_bt, right_len);
+    for (uint32_t d = 0; d < ndims; d++) {
+        uint32_t ll = Emit_Fat_Pointer_Low_Dim(cg, left_ptr, aeq_bt, d);
+        uint32_t lh = Emit_Fat_Pointer_High_Dim(cg, left_ptr, aeq_bt, d);
+        uint32_t rl = Emit_Fat_Pointer_Low_Dim(cg, right_ptr, aeq_bt, d);
+        uint32_t rh = Emit_Fat_Pointer_High_Dim(cg, right_ptr, aeq_bt, d);
 
-    /* Compare lengths */
-    uint32_t len_eq = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = icmp eq %s %%t%u, %%t%u\n", len_eq, aeq_bt, left_len1, right_len1);
+        uint32_t llen = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", llen, aeq_bt, lh, ll);
+        uint32_t llen1 = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = add %s %%t%u, 1\n", llen1, aeq_bt, llen);
+
+        uint32_t rlen = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", rlen, aeq_bt, rh, rl);
+        uint32_t rlen1 = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = add %s %%t%u, 1\n", rlen1, aeq_bt, rlen);
+
+        uint32_t deq = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = icmp eq %s %%t%u, %%t%u\n", deq, aeq_bt, llen1, rlen1);
+        len_eq = len_eq ? ({ uint32_t t = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", t, len_eq, deq); t; })
+            : deq;
+
+        /* Accumulate total element count = product of all dim lengths */
+        uint32_t llen1_w = Emit_Convert(cg, llen1, aeq_bt, aeq_iat);
+        total_elems = total_elems ? ({ uint32_t t = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = mul %s %%t%u, %%t%u\n", t, aeq_iat, total_elems, llen1_w); t; })
+            : llen1_w;
+    }
 
     /* Extract data pointers */
     uint32_t left_data = Emit_Fat_Pointer_Data(cg, left_ptr, aeq_bt);
     uint32_t right_data = Emit_Fat_Pointer_Data(cg, right_ptr, aeq_bt);
 
-    /* Compute byte size for memcmp */
-    const char *aeq_iat = Integer_Arith_Type(cg);
-    uint32_t elem_size = array_type->array.element_type ?
-                         array_type->array.element_type->size : 1;
-    uint32_t left_len1_conv = Emit_Convert(cg, left_len1, aeq_bt, aeq_iat);
+    /* Compute byte size = total_elems * scalar_element_size */
+    uint32_t scalar_size = array_type->array.element_type ?
+                           array_type->array.element_type->size : 1;
+    /* For multi-dim, element_type may be an array; find leaf scalar size */
+    { Type_Info *et = array_type->array.element_type;
+      while (et and et->kind == TYPE_ARRAY and et->array.element_type)
+          et = et->array.element_type;
+      if (et) scalar_size = et->size > 0 ? et->size : 1;
+    }
     uint32_t byte_size = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", byte_size, aeq_iat, left_len1_conv, elem_size);
+    Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", byte_size, aeq_iat, total_elems, scalar_size);
     uint32_t byte_size_64 = Emit_Extend_To_I64(cg, byte_size, aeq_iat);
 
     /* Call memcmp */
@@ -18240,7 +18262,7 @@ static uint32_t Generate_Array_Equality(Code_Generator *cg, uint32_t left_ptr,
     uint32_t data_eq = Emit_Temp(cg);
     Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", data_eq, memcmp_result);
 
-    /* Result: lengths match AND data matches */
+    /* Result: all lengths match AND data matches */
     uint32_t result = Emit_Temp(cg);
     Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", result, len_eq, data_eq);
 
@@ -18472,8 +18494,11 @@ static uint32_t Wrap_Constrained_As_Fat(Code_Generator *cg,
     if (is_fat)
         return Generate_Expression(cg, expr);
     /* Aggregates of unconstrained array types already build their own fat
-     * pointer alloca in Generate_Aggregate.  Load it instead of re-wrapping. */
-    if (expr->kind == NK_AGGREGATE and type and Type_Is_Unconstrained_Array(type)) {
+     * pointer alloca in Generate_Aggregate.  Load it instead of re-wrapping.
+     * Same for constrained arrays with dynamic bounds (BOUND_EXPR),
+     * which also go through the dynamic-alloc path in Generate_Aggregate. */
+    if (expr->kind == NK_AGGREGATE and type and
+        (Type_Is_Unconstrained_Array(type) or Type_Has_Dynamic_Bounds(type))) {
         uint32_t agg_ptr = Generate_Expression(cg, expr);
         uint32_t loaded = Emit_Temp(cg);
         Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u  ; load agg fat ptr\n",
@@ -21204,7 +21229,10 @@ static uint32_t Emit_Bound_Attribute(Code_Generator *cg, uint32_t t,
     if (Type_Is_Array_Like(prefix_type)) {
         if (needs_runtime_bounds) {
             const char *attr_bt = Array_Bound_Llvm_Type(prefix_type);
-            uint32_t fat = prefix_sym
+            /* For function calls: generate the call to get the fat pointer.
+             * For variables/params/constants: load from the symbol's alloca. */
+            uint32_t fat = (prefix_sym and prefix_sym->kind != SYMBOL_FUNCTION and
+                            prefix_sym->kind != SYMBOL_PROCEDURE)
                 ? Emit_Load_Fat_Pointer(cg, prefix_sym, attr_bt)
                 : Generate_Expression(cg, prefix_expr);
             {
@@ -21368,7 +21396,8 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         (Type_Is_Unconstrained_Array(prefix_type) or Type_Has_Dynamic_Bounds(prefix_type)))
         if (not prefix_sym or prefix_sym->kind == SYMBOL_PARAMETER or
             prefix_sym->kind == SYMBOL_VARIABLE or prefix_sym->kind == SYMBOL_CONSTANT or
-            prefix_sym->kind == SYMBOL_DISCRIMINANT)
+            prefix_sym->kind == SYMBOL_DISCRIMINANT or
+            prefix_sym->kind == SYMBOL_FUNCTION)
             needs_runtime_bounds = true;
 
     /* ─── Array/Scalar Bound Attributes: unified FIRST/LAST ─── */
@@ -22781,15 +22810,20 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             if (dim_hi[d].kind == BOUND_NONE and agg_type->array.indices[d].index_type)
                 dim_hi[d] = agg_type->array.indices[d].index_type->high_bound;
         }
-        /* For outermost dimension of positional aggregates, override upper bound
-         * from element count: high = low + N - 1 */
+        /* For positional aggregates, override upper bound from element count:
+         * high = low + N - 1.  For multidim, also derive inner dim bounds
+         * from the first inner aggregate's positional count. */
         {
             uint32_t n_positional = 0;
             bool has_named = false;
+            Syntax_Node *first_inner = NULL;
             for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
                 Syntax_Node *item = node->aggregate.items.items[i];
                 if (item->kind == NK_ASSOCIATION) has_named = true;
-                else n_positional++;
+                else {
+                    if (not first_inner) first_inner = item;
+                    n_positional++;
+                }
             }
             if (n_positional > 0 and not has_named and
                 dim_lo[0].kind == BOUND_INTEGER) {
@@ -22797,6 +22831,23 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                     .kind = BOUND_INTEGER,
                     .int_value = dim_lo[0].int_value + (int128_t)n_positional - 1
                 };
+            }
+            /* For inner dimensions, count elements in first inner aggregate */
+            if (first_inner and first_inner->kind == NK_AGGREGATE and agg_ndims > 1) {
+                uint32_t inner_pos = 0;
+                bool inner_named = false;
+                for (uint32_t i = 0; i < first_inner->aggregate.items.count; i++) {
+                    Syntax_Node *sub = first_inner->aggregate.items.items[i];
+                    if (sub->kind == NK_ASSOCIATION) inner_named = true;
+                    else inner_pos++;
+                }
+                if (inner_pos > 0 and not inner_named and
+                    dim_lo[1].kind == BOUND_INTEGER) {
+                    dim_hi[1] = (Type_Bound){
+                        .kind = BOUND_INTEGER,
+                        .int_value = dim_lo[1].int_value + (int128_t)inner_pos - 1
+                    };
+                }
             }
         }
         Type_Bound low_bound = dim_lo[0], high_bound = dim_hi[0];
@@ -24657,6 +24708,72 @@ static void Generate_Return_Statement(Code_Generator *cg, Syntax_Node *node) {
         /* RM 6.5: Check return value against function return subtype constraint */
         if (ret_type and Type_Is_Scalar(ret_type)) {
             Emit_Constraint_Check_With_Type(cg, value, ret_type, expr->type, type_str);
+        }
+        /* For unconstrained array returns, copy data+bounds to secondary stack
+         * so they survive function return (alloca is freed on ret). */
+        if (ret_type and Type_Is_Unconstrained_Array(ret_type)) {
+            const char *rbt = Array_Bound_Llvm_Type(ret_type);
+            const char *riat = Integer_Arith_Type(cg);
+            uint32_t ndims = ret_type->array.index_count;
+            if (ndims < 1) ndims = 1;
+            /* If value is a ptr to fat ptr (from aggregate), load it first */
+            const char *vty = Temp_Get_Type(cg, value);
+            uint32_t fat_val = value;
+            if (not vty or not Llvm_Type_Is_Fat_Pointer(vty)) {
+                fat_val = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u  ; load fat ptr for return\n",
+                     fat_val, value);
+            }
+            /* Extract data and bounds ptrs */
+            uint32_t data_ptr = Emit_Fat_Pointer_Data(cg, fat_val, rbt);
+            /* Compute total data size from bounds: product of all dim lengths * elem_size */
+            uint32_t total_elems = 0;
+            for (uint32_t d = 0; d < ndims; d++) {
+                uint32_t lo = Emit_Fat_Pointer_Low_Dim(cg, fat_val, rbt, d);
+                uint32_t hi = Emit_Fat_Pointer_High_Dim(cg, fat_val, rbt, d);
+                uint32_t len = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", len, rbt, hi, lo);
+                uint32_t len1 = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add %s %%t%u, 1\n", len1, rbt, len);
+                uint32_t len1_w = Emit_Convert(cg, len1, rbt, riat);
+                total_elems = total_elems ? ({ uint32_t t = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = mul %s %%t%u, %%t%u\n", t, riat, total_elems, len1_w); t; })
+                    : len1_w;
+            }
+            /* Find scalar element size (leaf type for multi-dim) */
+            uint32_t scalar_sz = 4;
+            { Type_Info *et = ret_type->array.element_type;
+              while (et and et->kind == TYPE_ARRAY and et->array.element_type)
+                  et = et->array.element_type;
+              if (et and et->size > 0) scalar_sz = et->size;
+            }
+            uint32_t data_bytes = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = mul %s %%t%u, %u  ; total data bytes\n",
+                 data_bytes, riat, total_elems, scalar_sz);
+            uint32_t data_bytes_64 = Emit_Extend_To_I64(cg, data_bytes, riat);
+            /* Allocate data on secondary stack and copy */
+            uint32_t ss_data = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = call ptr @__ada_sec_stack_alloc(i64 %%t%u)\n",
+                 ss_data, data_bytes_64);
+            Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
+                 ss_data, data_ptr, data_bytes_64);
+            /* Allocate bounds on secondary stack and copy */
+            uint32_t bounds_bytes = ndims * 2 * (strcmp(rbt, "i64") == 0 ? 8 : 4);
+            uint32_t ss_bounds = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = call ptr @__ada_sec_stack_alloc(i64 %u)  ; bounds\n",
+                 ss_bounds, bounds_bytes);
+            uint32_t bounds_ptr = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1\n", bounds_ptr, fat_val);
+            Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
+                 ss_bounds, bounds_ptr, bounds_bytes);
+            /* Build new fat pointer with sec stack pointers */
+            uint32_t new_fat1 = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = insertvalue " FAT_PTR_TYPE " undef, ptr %%t%u, 0\n",
+                 new_fat1, ss_data);
+            uint32_t new_fat2 = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = insertvalue " FAT_PTR_TYPE " %%t%u, ptr %%t%u, 1\n",
+                 new_fat2, new_fat1, ss_bounds);
+            value = new_fat2;
         }
         Emit(cg, "  ret %s %%t%u\n", type_str, value);
         cg->block_terminated = true;
