@@ -15749,26 +15749,17 @@ static inline bool Symbol_Is_Global(Symbol *sym) {
  * ───────────────────────────────────────────────────────────────────────── */
 
 /* Internal recursive helper */
-static size_t Mangle_Into_Buffer(char *buf, size_t pos, size_t max, Symbol *sym) {
-    if (not sym) return pos;
-
-    /* Recursively mangle parent first */
-    if (sym->parent and sym->parent->kind == SYMBOL_PACKAGE) {
-        pos = Mangle_Into_Buffer(buf, pos, max, sym->parent);
-        if (pos + 2 < max) { buf[pos++] = '_'; buf[pos++] = '_'; }
-    }
-
-    /* Mangle this symbol's name: lowercase + escape special chars */
-    for (uint32_t i = 0; i < sym->name.length and pos < max - 4; i++) {
-        char c = sym->name.data[i];
-        if (c >= 'A' and c <= 'Z') c = c - 'A' + 'a';  /* Lowercase */
+/* Mangle a name slice into buf at pos: lowercase, escape non-alphanum as _XX.
+ * GNAT convention: operator symbols become _op_, special chars become _HH. */
+static size_t Mangle_Slice_Into(char *buf, size_t pos, size_t max, String_Slice name) {
+    for (uint32_t i = 0; i < name.length and pos < max - 4; i++) {
+        char c = name.data[i];
+        if (c >= 'A' and c <= 'Z') c = c - 'A' + 'a';
         if ((c >= 'a' and c <= 'z') or (c >= '0' and c <= '9') or c == '_') {
             buf[pos++] = c;
         } else if (c == '"') {
-            /* Operator symbols */
             if (pos + 4 < max) { buf[pos++] = '_'; buf[pos++] = 'o'; buf[pos++] = 'p'; buf[pos++] = '_'; }
         } else {
-            /* Escape as _XX */
             if (pos + 3 < max) {
                 buf[pos++] = '_';
                 buf[pos++] = "0123456789abcdef"[(c >> 4) & 0xF];
@@ -15776,8 +15767,16 @@ static size_t Mangle_Into_Buffer(char *buf, size_t pos, size_t max, Symbol *sym)
             }
         }
     }
-
     return pos;
+}
+
+static size_t Mangle_Into_Buffer(char *buf, size_t pos, size_t max, Symbol *sym) {
+    if (not sym) return pos;
+    if (sym->parent and sym->parent->kind == SYMBOL_PACKAGE) {
+        pos = Mangle_Into_Buffer(buf, pos, max, sym->parent);
+        if (pos + 2 < max) { buf[pos++] = '_'; buf[pos++] = '_'; }
+    }
+    return Mangle_Slice_Into(buf, pos, max, sym->name);
 }
 
 /* Get mangled name for a symbol (thread-safe via rotation) */
@@ -15800,34 +15799,15 @@ static String_Slice Symbol_Mangle_Name(Symbol *sym) {
     return (String_Slice){buf, pos};
 }
 
-/* Get mangled name for parent+name pair (for ALI generation before symbols exist) */
+/* Get mangled name for parent+name pair (for ALI generation before symbols exist).
+ * Reuses Mangle_Slice_Into for consistent GNAT-style mangling. */
 static String_Slice Mangle_Qualified_Name(String_Slice parent, String_Slice name) {
     static char bufs[4][512];
     static int buf_idx = 0;
-
     char *buf = bufs[buf_idx++ & 3];
-    size_t pos = 0;
-
-    /* Parent prefix (lowercased) */
-    for (size_t i = 0; i < parent.length and pos < 500; i++) {
-        char c = parent.data[i];
-        if (c >= 'A' and c <= 'Z') c = c - 'A' + 'a';
-        if ((c >= 'a' and c <= 'z') or (c >= '0' and c <= '9') or c == '_')
-            buf[pos++] = c;
-        else { buf[pos++] = '_'; buf[pos++] = "0123456789abcdef"[(c>>4)&0xF]; buf[pos++] = "0123456789abcdef"[c&0xF]; }
-    }
-
+    size_t pos = Mangle_Slice_Into(buf, 0, 510, parent);
     if (parent.length > 0) { buf[pos++] = '_'; buf[pos++] = '_'; }
-
-    /* Name (lowercased) */
-    for (size_t i = 0; i < name.length and pos < 508; i++) {
-        char c = name.data[i];
-        if (c >= 'A' and c <= 'Z') c = c - 'A' + 'a';
-        if ((c >= 'a' and c <= 'z') or (c >= '0' and c <= '9') or c == '_')
-            buf[pos++] = c;
-        else { buf[pos++] = '_'; buf[pos++] = "0123456789abcdef"[(c>>4)&0xF]; buf[pos++] = "0123456789abcdef"[c&0xF]; }
-    }
-
+    pos = Mangle_Slice_Into(buf, pos, 510, name);
     buf[pos] = '\0';
     return Slice_Duplicate((String_Slice){buf, pos});
 }
@@ -17147,6 +17127,20 @@ static uint32_t Emit_Fat_Pointer_Length(Code_Generator *cg, uint32_t fat_ptr,
     return len;
 }
 
+/* Emit length from two temp IDs (raw bounds, not from fat pointer):
+ *   result = high - low + 1
+ * Lighter than Emit_Fat_Pointer_Length when you already have low/high. */
+static uint32_t Emit_Length_From_Bounds(Code_Generator *cg,
+    uint32_t low, uint32_t high, const char *bt)
+{
+    uint32_t diff = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", diff, bt, high, low);
+    uint32_t len = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = add %s %%t%u, 1\n", len, bt, diff);
+    Temp_Set_Type(cg, len, bt);
+    return len;
+}
+
 /* Copy data from fat pointer to a named destination.
  * Emits: memcpy(dst, src_data, length).  bt = bound type. */
 static void Emit_Fat_Pointer_Copy_To_Name(Code_Generator *cg, uint32_t fat_ptr,
@@ -18368,6 +18362,118 @@ static uint32_t Generate_Composite_Address(Code_Generator *cg, Syntax_Node *node
     return Generate_Expression(cg, node);
 }
 
+/* ─── Boolean Array Elementwise Op (RM 4.5.1) ───
+ * Unrolled loop applying `ir_op` (and/or/xor) byte-by-byte.
+ * Returns alloca ptr to result.  Binary variant (two operands). */
+static uint32_t Emit_Bool_Array_Binop(Code_Generator *cg,
+    uint32_t left, uint32_t right, Type_Info *result_type, const char *ir_op)
+{
+    int128_t count = Array_Element_Count(result_type);
+    uint32_t n = (count > 0) ? (uint32_t)count
+               : (result_type->size > 0 ? result_type->size : 1);
+    uint32_t dst = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = alloca [%u x i8]  ; bool array %s result\n", dst, n, ir_op);
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t lp = Emit_Temp(cg), rp = Emit_Temp(cg);
+        uint32_t lv = Emit_Temp(cg), rv = Emit_Temp(cg);
+        uint32_t ov = Emit_Temp(cg), dp = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i32 %u\n", lp, left, i);
+        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i32 %u\n", rp, right, i);
+        Emit(cg, "  %%t%u = load i8, ptr %%t%u\n", lv, lp);
+        Emit(cg, "  %%t%u = load i8, ptr %%t%u\n", rv, rp);
+        Emit(cg, "  %%t%u = %s i8 %%t%u, %%t%u\n", ov, ir_op, lv, rv);
+        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i32 %u\n", dp, dst, i);
+        Emit(cg, "  store i8 %%t%u, ptr %%t%u\n", ov, dp);
+    }
+    Temp_Set_Type(cg, dst, "ptr");
+    return dst;
+}
+
+/* Unary NOT for boolean arrays: xor each byte with 1. */
+static uint32_t Emit_Bool_Array_Not(Code_Generator *cg,
+    uint32_t operand, Type_Info *result_type)
+{
+    int128_t count = Array_Element_Count(result_type);
+    uint32_t n = (count > 0) ? (uint32_t)count
+               : (result_type->size > 0 ? result_type->size : 1);
+    uint32_t dst = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = alloca [%u x i8]  ; bool array NOT result\n", dst, n);
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t sp = Emit_Temp(cg), sv = Emit_Temp(cg);
+        uint32_t nv = Emit_Temp(cg), dp = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i32 %u\n", sp, operand, i);
+        Emit(cg, "  %%t%u = load i8, ptr %%t%u\n", sv, sp);
+        Emit(cg, "  %%t%u = xor i8 %%t%u, 1\n", nv, sv);
+        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i32 %u\n", dp, dst, i);
+        Emit(cg, "  store i8 %%t%u, ptr %%t%u\n", nv, dp);
+    }
+    Temp_Set_Type(cg, dst, "ptr");
+    return dst;
+}
+
+/* Test whether a type is a boolean array (for AND/OR/XOR/NOT dispatch). */
+static inline bool Type_Is_Bool_Array(const Type_Info *t) {
+    return t and Type_Is_Array_Like(t) and t->array.element_type
+           and Type_Is_Boolean(t->array.element_type);
+}
+
+/* ─── Normalize Expression to Fat Pointer ───
+ * Given an expression and its type, produce a fat pointer value.
+ * Handles: already-fat, CHARACTER (alloca+store+wrap), constrained array (wrap). */
+static uint32_t Normalize_To_Fat_Pointer(Code_Generator *cg,
+    Syntax_Node *expr, uint32_t raw, Type_Info *type, const char *bt)
+{
+    if (Expression_Produces_Fat_Pointer(expr, type))
+        return raw;
+    if (Type_Is_Character(type)) {
+        uint32_t ca = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = alloca i8\n", ca);
+        uint32_t ct = Emit_Convert(cg, raw, Integer_Arith_Type(cg), "i8");
+        Emit(cg, "  store i8 %%t%u, ptr %%t%u\n", ct, ca);
+        return Emit_Fat_Pointer(cg, ca, 1, 1, bt);
+    }
+    if (Type_Is_Constrained_Array(type) and type->array.index_count > 0) {
+        int128_t lo = Type_Bound_Value(type->array.indices[0].low_bound);
+        int128_t hi = Type_Bound_Value(type->array.indices[0].high_bound);
+        return Emit_Fat_Pointer(cg, raw, lo, hi, bt);
+    }
+    return raw;  /* fallback: assume already fat */
+}
+
+/* Wrap a constrained array address as a fat pointer using its static bounds. */
+static uint32_t Wrap_Constrained_As_Fat(Code_Generator *cg,
+    Syntax_Node *expr, Type_Info *type, const char *bt)
+{
+    bool is_fat = Expression_Produces_Fat_Pointer(expr, type);
+    if (is_fat)
+        return Generate_Expression(cg, expr);
+    uint32_t ptr = Generate_Composite_Address(cg, expr);
+    int128_t lo = 1, hi = 0;
+    if (Type_Is_Array_Like(type) and type->array.index_count > 0) {
+        lo = Type_Bound_Value(type->array.indices[0].low_bound);
+        hi = Type_Bound_Value(type->array.indices[0].high_bound);
+    }
+    return Emit_Fat_Pointer(cg, ptr, lo, hi, bt);
+}
+
+/* ─── Convert Universal_Real to Fixed-Point Scaled Integer ───
+ * For fixed type with small S, value V converts to: fptosi(V / S). */
+static uint32_t Convert_Real_To_Fixed(Code_Generator *cg,
+    uint32_t val, double small, const char *fix_type)
+{
+    uint64_t small_bits;
+    memcpy(&small_bits, &small, sizeof(small_bits));
+    uint32_t small_val = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; small=%g\n",
+         small_val, (unsigned long long)small_bits, small);
+    uint32_t divided = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = fdiv double %%t%u, %%t%u\n", divided, val, small_val);
+    uint32_t scaled = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = fptosi double %%t%u to %s\n", scaled, divided, fix_type);
+    Temp_Set_Type(cg, scaled, fix_type);
+    return scaled;
+}
+
 static uint32_t Get_Dimension_Index(Syntax_Node *arg);  /* forward decl */
 static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
     /* Check if this is equality/inequality on composite types */
@@ -18467,37 +18573,11 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             uint32_t left_val, right_val;
 
             const char *eq_bt = Array_Bound_Llvm_Type(left_type);
-            /* Generate left operand - check if it ACTUALLY produces a fat pointer,
-             * not just whether the comparison involves unconstrained types.
-             * A constrained array variable compared to a string literal needs wrapping. */
-            bool left_actually_fat = Expression_Produces_Fat_Pointer(node->binary.left, left_type);
-            if (left_actually_fat) {
-                left_val = Generate_Expression(cg, node->binary.left);
-            } else {
-                uint32_t lptr = Generate_Composite_Address(cg, node->binary.left);
-                int128_t lo = 1, hi = 0;
-                if (Type_Is_Array_Like(left_type) and left_type->array.index_count > 0) {
-                    lo = Type_Bound_Value(left_type->array.indices[0].low_bound);
-                    hi = Type_Bound_Value(left_type->array.indices[0].high_bound);
-                }
-                left_val = Emit_Fat_Pointer(cg, lptr, lo, hi, eq_bt);
-            }
-
-            /* Generate right operand */
-            bool right_actually_fat = Expression_Produces_Fat_Pointer(
-                node->binary.right, node->binary.right ? node->binary.right->type : NULL);
-            if (right_actually_fat) {
-                right_val = Generate_Expression(cg, node->binary.right);
-            } else {
-                uint32_t rptr = Generate_Composite_Address(cg, node->binary.right);
-                Type_Info *rtype = node->binary.right->type ? node->binary.right->type : left_type;
-                int128_t lo = 1, hi = 0;
-                if (Type_Is_Array_Like(rtype) and rtype->array.index_count > 0) {
-                    lo = Type_Bound_Value(rtype->array.indices[0].low_bound);
-                    hi = Type_Bound_Value(rtype->array.indices[0].high_bound);
-                }
-                right_val = Emit_Fat_Pointer(cg, rptr, lo, hi, eq_bt);
-            }
+            /* Normalize both operands to fat pointers for uniform comparison.
+             * Constrained arrays get wrapped with static bounds. */
+            left_val  = Wrap_Constrained_As_Fat(cg, node->binary.left,  left_type, eq_bt);
+            right_val = Wrap_Constrained_As_Fat(cg, node->binary.right,
+                node->binary.right->type ? node->binary.right->type : left_type, eq_bt);
 
             /* Use the unconstrained array equality path (compares lengths then data) */
             Type_Info *cmp_type = left_type;
@@ -18786,49 +18866,11 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         uint32_t left_raw = Generate_Expression(cg, node->binary.left);
         uint32_t right_raw = Generate_Expression(cg, node->binary.right);
 
-        /* Normalize left operand to fat pointer */
-        uint32_t left_fat;
-        bool left_already_fat = Expression_Produces_Fat_Pointer(node->binary.left, left_type);
+        /* Normalize both operands to fat pointers (handles character, constrained, already-fat) */
         const char *cat_bt = Array_Bound_Llvm_Type(left_type);
-        if (left_already_fat) {
-            left_fat = left_raw;
-        } else if (Type_Is_Character(left_type)) {
-            /* Single character: alloca, store, wrap as {ptr, {1, 1}} */
-            uint32_t ca = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = alloca i8\n", ca);
-            uint32_t ct = Emit_Convert(cg, left_raw, Integer_Arith_Type(cg), "i8");
-            Emit(cg, "  store i8 %%t%u, ptr %%t%u\n", ct, ca);
-            left_fat = Emit_Fat_Pointer(cg, ca, 1, 1, cat_bt);
-        } else if (Type_Is_Constrained_Array(left_type) and
-                   left_type->array.index_count > 0) {
-            int128_t lo = Type_Bound_Value(left_type->array.indices[0].low_bound);
-            int128_t hi = Type_Bound_Value(left_type->array.indices[0].high_bound);
-            left_fat = Emit_Fat_Pointer(cg, left_raw, lo, hi, cat_bt);
-        } else {
-            left_fat = left_raw;  /* Assume already fat */
-        }
-
-        /* Normalize right operand to fat pointer */
         Type_Info *rhs_type = node->binary.right ? node->binary.right->type : NULL;
-        uint32_t right_fat;
-        bool right_already_fat = Expression_Produces_Fat_Pointer(node->binary.right, rhs_type);
-        if (right_already_fat) {
-            right_fat = right_raw;
-        } else if (Type_Is_Character(rhs_type)) {
-            /* Single character: alloca, store, wrap as {ptr, {1, 1}} */
-            uint32_t ca = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = alloca i8\n", ca);
-            uint32_t ct = Emit_Convert(cg, right_raw, Integer_Arith_Type(cg), "i8");
-            Emit(cg, "  store i8 %%t%u, ptr %%t%u\n", ct, ca);
-            right_fat = Emit_Fat_Pointer(cg, ca, 1, 1, cat_bt);
-        } else if (Type_Is_Constrained_Array(rhs_type) and
-                   rhs_type->array.index_count > 0) {
-            int128_t lo = Type_Bound_Value(rhs_type->array.indices[0].low_bound);
-            int128_t hi = Type_Bound_Value(rhs_type->array.indices[0].high_bound);
-            right_fat = Emit_Fat_Pointer(cg, right_raw, lo, hi, cat_bt);
-        } else {
-            right_fat = right_raw;  /* Assume already fat */
-        }
+        uint32_t left_fat  = Normalize_To_Fat_Pointer(cg, node->binary.left,  left_raw, left_type, cat_bt);
+        uint32_t right_fat = Normalize_To_Fat_Pointer(cg, node->binary.right, right_raw, rhs_type, cat_bt);
 
         /* Extract data pointers and bounds */
         uint32_t left_data = Emit_Fat_Pointer_Data(cg, left_fat, cat_bt);
@@ -18840,15 +18882,8 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         uint32_t right_high = Emit_Fat_Pointer_High(cg, right_fat, cat_bt);
 
         /* Calculate lengths: high - low + 1 */
-        uint32_t left_len = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", left_len, cat_bt, left_high, left_low);
-        uint32_t left_len1 = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = add %s %%t%u, 1\n", left_len1, cat_bt, left_len);
-
-        uint32_t right_len = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", right_len, cat_bt, right_high, right_low);
-        uint32_t right_len1 = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = add %s %%t%u, 1\n", right_len1, cat_bt, right_len);
+        uint32_t left_len1  = Emit_Length_From_Bounds(cg, left_low,  left_high,  cat_bt);
+        uint32_t right_len1 = Emit_Length_From_Bounds(cg, right_low, right_high, cat_bt);
 
         /* Total length */
         uint32_t total_len = Emit_Temp(cg);
@@ -18971,34 +19006,10 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         if (small <= 0) small = result_type->fixed.delta > 0 ? result_type->fixed.delta : 1.0;
 
         const char *fix_arith = Type_To_Llvm(result_type);
-        if (Type_Is_Universal_Real(rhs_type)) {
-            /* Convert double to scaled integer: fptosi(V / small) */
-            uint32_t scaled = Emit_Temp(cg);
-            uint64_t small_bits;
-            memcpy(&small_bits, &small, sizeof(small_bits));
-            uint32_t small_val = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; small=%g\n",
-                 small_val, (unsigned long long)small_bits, small);
-            uint32_t divided = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = fdiv double %%t%u, %%t%u\n", divided, right, small_val);
-            Emit(cg, "  %%t%u = fptosi double %%t%u to %s\n", scaled, divided, fix_arith);
-            Temp_Set_Type(cg, scaled, fix_arith);
-            right = scaled;
-        }
-        if (Type_Is_Universal_Real(lhs_type)) {
-            /* Convert double to scaled integer */
-            uint32_t scaled = Emit_Temp(cg);
-            uint64_t small_bits;
-            memcpy(&small_bits, &small, sizeof(small_bits));
-            uint32_t small_val = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; small=%g\n",
-                 small_val, (unsigned long long)small_bits, small);
-            uint32_t divided = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = fdiv double %%t%u, %%t%u\n", divided, left, small_val);
-            Emit(cg, "  %%t%u = fptosi double %%t%u to %s\n", scaled, divided, fix_arith);
-            Temp_Set_Type(cg, scaled, fix_arith);
-            left = scaled;
-        }
+        if (Type_Is_Universal_Real(rhs_type))
+            right = Convert_Real_To_Fixed(cg, right, small, fix_arith);
+        if (Type_Is_Universal_Real(lhs_type))
+            left = Convert_Real_To_Fixed(cg, left, small, fix_arith);
     }
 
     /* Fixed-point multiplication/division needs scaling (RM 4.5.5) */
@@ -19094,35 +19105,8 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                  * For boolean arrays: element-wise AND (RM 4.5.1).
                  * For boolean types: convert to i1, AND, widen back. */
                 bool mod_and = Type_Is_Unsigned(result_type);
-                bool is_bool_array = result_type and Type_Is_Array_Like(result_type) and
-                    result_type->array.element_type and
-                    Type_Is_Boolean(result_type->array.element_type);
-                if (is_bool_array) {
-                    /* Boolean array AND: element-wise operation.
-                     * Operands are ptr to array data, result is ptr to new array.
-                     * Unrolled for small arrays (element count known at compile time). */
-                    int128_t count = Array_Element_Count(result_type);
-                    uint32_t size_bytes = (count > 0) ? (uint32_t)count : (result_type->size > 0 ? result_type->size : 1);
-                    uint32_t result_alloca = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = alloca [%u x i8]  ; bool array AND result\n", result_alloca, size_bytes);
-                    for (uint32_t i = 0; i < size_bytes; i++) {
-                        uint32_t lp = Emit_Temp(cg);
-                        uint32_t rp = Emit_Temp(cg);
-                        uint32_t lv = Emit_Temp(cg);
-                        uint32_t rv = Emit_Temp(cg);
-                        uint32_t av = Emit_Temp(cg);
-                        uint32_t dp = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i32 %u\n", lp, left, i);
-                        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i32 %u\n", rp, right, i);
-                        Emit(cg, "  %%t%u = load i8, ptr %%t%u\n", lv, lp);
-                        Emit(cg, "  %%t%u = load i8, ptr %%t%u\n", rv, rp);
-                        Emit(cg, "  %%t%u = and i8 %%t%u, %%t%u\n", av, lv, rv);
-                        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i32 %u\n", dp, result_alloca, i);
-                        Emit(cg, "  store i8 %%t%u, ptr %%t%u\n", av, dp);
-                    }
-                    t = result_alloca;
-                    Temp_Set_Type(cg, t, "ptr");
-                    return t;
+                if (Type_Is_Bool_Array(result_type)) {
+                    return Emit_Bool_Array_Binop(cg, left, right, result_type, "and");
                 } else if (mod_and) {
                     const char *common_t = Wider_Int_Type(cg, left_int_type, right_int_type);
                     left = Emit_Convert_Ext(cg, left, left_int_type, common_t, true);
@@ -19143,32 +19127,8 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         case TK_OR_ELSE:
             {
                 bool mod_or = Type_Is_Unsigned(result_type);
-                bool is_bool_array = result_type and Type_Is_Array_Like(result_type) and
-                    result_type->array.element_type and
-                    Type_Is_Boolean(result_type->array.element_type);
-                if (is_bool_array) {
-                    int128_t count = Array_Element_Count(result_type);
-                    uint32_t size_bytes = (count > 0) ? (uint32_t)count : (result_type->size > 0 ? result_type->size : 1);
-                    uint32_t result_alloca = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = alloca [%u x i8]  ; bool array OR result\n", result_alloca, size_bytes);
-                    for (uint32_t i = 0; i < size_bytes; i++) {
-                        uint32_t lp = Emit_Temp(cg);
-                        uint32_t rp = Emit_Temp(cg);
-                        uint32_t lv = Emit_Temp(cg);
-                        uint32_t rv = Emit_Temp(cg);
-                        uint32_t ov = Emit_Temp(cg);
-                        uint32_t dp = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i32 %u\n", lp, left, i);
-                        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i32 %u\n", rp, right, i);
-                        Emit(cg, "  %%t%u = load i8, ptr %%t%u\n", lv, lp);
-                        Emit(cg, "  %%t%u = load i8, ptr %%t%u\n", rv, rp);
-                        Emit(cg, "  %%t%u = or i8 %%t%u, %%t%u\n", ov, lv, rv);
-                        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i32 %u\n", dp, result_alloca, i);
-                        Emit(cg, "  store i8 %%t%u, ptr %%t%u\n", ov, dp);
-                    }
-                    t = result_alloca;
-                    Temp_Set_Type(cg, t, "ptr");
-                    return t;
+                if (Type_Is_Bool_Array(result_type)) {
+                    return Emit_Bool_Array_Binop(cg, left, right, result_type, "or");
                 } else if (mod_or) {
                     const char *common_t = Wider_Int_Type(cg, left_int_type, right_int_type);
                     left = Emit_Convert_Ext(cg, left, left_int_type, common_t, true);
@@ -19188,32 +19148,8 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         case TK_XOR:
             {
                 bool mod_xor = Type_Is_Unsigned(result_type);
-                bool is_bool_array = result_type and Type_Is_Array_Like(result_type) and
-                    result_type->array.element_type and
-                    Type_Is_Boolean(result_type->array.element_type);
-                if (is_bool_array) {
-                    int128_t count = Array_Element_Count(result_type);
-                    uint32_t size_bytes = (count > 0) ? (uint32_t)count : (result_type->size > 0 ? result_type->size : 1);
-                    uint32_t result_alloca = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = alloca [%u x i8]  ; bool array XOR result\n", result_alloca, size_bytes);
-                    for (uint32_t i = 0; i < size_bytes; i++) {
-                        uint32_t lp = Emit_Temp(cg);
-                        uint32_t rp = Emit_Temp(cg);
-                        uint32_t lv = Emit_Temp(cg);
-                        uint32_t rv = Emit_Temp(cg);
-                        uint32_t xv = Emit_Temp(cg);
-                        uint32_t dp = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i32 %u\n", lp, left, i);
-                        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i32 %u\n", rp, right, i);
-                        Emit(cg, "  %%t%u = load i8, ptr %%t%u\n", lv, lp);
-                        Emit(cg, "  %%t%u = load i8, ptr %%t%u\n", rv, rp);
-                        Emit(cg, "  %%t%u = xor i8 %%t%u, %%t%u\n", xv, lv, rv);
-                        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i32 %u\n", dp, result_alloca, i);
-                        Emit(cg, "  store i8 %%t%u, ptr %%t%u\n", xv, dp);
-                    }
-                    t = result_alloca;
-                    Temp_Set_Type(cg, t, "ptr");
-                    return t;
+                if (Type_Is_Bool_Array(result_type)) {
+                    return Emit_Bool_Array_Binop(cg, left, right, result_type, "xor");
                 } else if (mod_xor) {
                     const char *common_t = Wider_Int_Type(cg, left_int_type, right_int_type);
                     left = Emit_Convert_Ext(cg, left, left_int_type, common_t, true);
@@ -19827,27 +19763,8 @@ static uint32_t Generate_Unary_Op(Code_Generator *cg, Syntax_Node *node) {
                     Emit(cg, "  %%t%u = xor %s %%t%u, %s  ; modular NOT\n",
                          t, unary_int_type, operand, U128_Decimal(mask));
                     Temp_Set_Type(cg, t, unary_int_type);
-                } else if (res_type and Type_Is_Array_Like(res_type) and
-                           res_type->array.element_type and
-                           Type_Is_Boolean(res_type->array.element_type)) {
-                    /* Boolean array NOT: element-wise complement */
-                    int128_t count = Array_Element_Count(res_type);
-                    uint32_t size_bytes = (count > 0) ? (uint32_t)count : (res_type->size > 0 ? res_type->size : 1);
-                    uint32_t result_alloca = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = alloca [%u x i8]  ; bool array NOT result\n", result_alloca, size_bytes);
-                    for (uint32_t i = 0; i < size_bytes; i++) {
-                        uint32_t sp = Emit_Temp(cg);
-                        uint32_t sv = Emit_Temp(cg);
-                        uint32_t nv = Emit_Temp(cg);
-                        uint32_t dp = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i32 %u\n", sp, operand, i);
-                        Emit(cg, "  %%t%u = load i8, ptr %%t%u\n", sv, sp);
-                        Emit(cg, "  %%t%u = xor i8 %%t%u, 1\n", nv, sv);
-                        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i32 %u\n", dp, result_alloca, i);
-                        Emit(cg, "  store i8 %%t%u, ptr %%t%u\n", nv, dp);
-                    }
-                    t = result_alloca;
-                    Temp_Set_Type(cg, t, "ptr");
+                } else if (Type_Is_Bool_Array(res_type)) {
+                    t = Emit_Bool_Array_Not(cg, operand, res_type);
                 } else {
                     /* Boolean NOT: convert to i1, flip — result stays i1 (GNAT LLVM) */
                     const char *op_type = Expression_Llvm_Type(cg, node->unary.operand);
