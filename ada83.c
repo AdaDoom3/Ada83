@@ -2,7 +2,6 @@
  * Ada83 - An Ada 1983 (ANSI/MIL-STD-1815A) compiler targeting LLVM IR
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * §0  Setup              - SIMD optimization setup and definitions
  * §1  Type_Metrics       - Representation details
  * §2  Memory_Arena       - Bump allocation for AST nodes
  * §3  String_Slice       - Non-owning string views
@@ -43,17 +42,21 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+/* Fat pointer LLVM IR type — GNAT LLVM style: { data_ptr, bounds_ptr }.
+ * The fat pointer is always { ptr, ptr } (16 bytes on 64-bit).
+ * Bounds live behind the second pointer as a { bt, bt } struct where
+ * bt = the native index type (i32 for STRING, i8 for CHARACTER, etc.).
+ * See gnatllvm-arrays-create.adb:684-707. */
+#define FAT_PTR_TYPE "{ ptr, ptr }"
 
-/* ═══════════════════════════════════════════════════════════════════════════
- * §0. SIMD Optimization and Fat pointer setup
- * ═══════════════════════════════════════════════════════════════════════════
+/* Fat pointer size in bytes: ptr(8) + ptr(8) = 16 always. */
+#define FAT_PTR_ALLOC_SIZE  16
+
+/* ─── Configurable default bound type for STRING ───────────────────────
  *
- * Architectures:
- *  x86-64  - AVX-512BW (64B), AVX2 (32B), SSE4.2 (16B)                  
- *  ARM64   - NEON/ASIMD (16B), SVE (128-2048b, runtime detected)        
- *  Generic - Scalar fallback with loop unrolling      
- *
- * NOTE: Every SIMD path has an equivalent scalar fallback
+ * GNAT LLVM derives the bound type from the index subtype's base type
+ * (see Index_Bounds.Bound_Sub_GT in gnatllvm-arrays.ads).  For STRING,
+ * the index type is POSITIVE whose base is Standard.INTEGER.
  *
  * At runtime the primary path derives the bound type from the type system
  * via Array_Bound_Llvm_Type() → Type_To_Llvm(index_type).  These macros
@@ -67,16 +70,7 @@
  *
  * Array types whose index type is NOT INTEGER derive their bound type
  * dynamically via Array_Bound_Llvm_Type().
- *
- * Fat pointer LLVM IR type: { data_ptr, bounds_ptr }.
- * The fat pointer is always { ptr, ptr } (16 bytes on 64-bit).
- * Bounds live behind the second pointer as a { bt, bt } struct where
- * bt = the native index type (i32 for STRING, i8 for CHARACTER, etc.).
- * See gnatllvm-arrays-create.adb:684-707. 
  */
-
-#define FAT_PTR_TYPE "{ ptr, ptr }"
-
 #define STRING_BOUND_TYPE   "i32"            /* LLVM IR type for STRING bounds  */
 #define STRING_BOUND_WIDTH  32               /* Width in bits                    */
 #define STRING_BOUNDS_STRUCT "{ i32, i32 }"  /* Bounds struct for STRING        */
@@ -92,6 +86,19 @@ static inline bool Llvm_Type_Is_Pointer(const char *ty) {
 static inline bool Llvm_Type_Is_Fat_Pointer(const char *ty) {
     return ty and strcmp(ty, "{ ptr, ptr }") == 0;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * SIMD Optimizations
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * Architectures:
+ *  x86-64  - AVX-512BW (64B), AVX2 (32B), SSE4.2 (16B)                  
+ *  ARM64   - NEON/ASIMD (16B), SVE (128-2048b, runtime detected)        
+ *  Generic - Scalar fallback with loop unrolling      
+ *
+ * NOTE: Every SIMD path has an equivalent scalar fallback
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
 
 /* Detect architecture at compile time */
 #if defined(__x86_64__) || defined(_M_X64)
@@ -224,7 +231,7 @@ enum {
 };
 
 /* ─────────────────────────────────────────────────────────────────────────
- * §1.1 Bit/Byte Conversions
+ * §1.1 Bit/Byte Conversions — The Morphisms of Size
  *
  * To_Bits:  bytes → bits  (multiplicative, total)
  * To_Bytes: bits → bytes  (ceiling division, rounds up)
@@ -1187,9 +1194,9 @@ static Lexer Lexer_New(const char *source, size_t length, const char *filename) 
  * §7.3.1 SIMD-Accelerated Scanning Functions
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * Three paths: x86-64 (AVX2/SSE4.2), ARM64 (NEON), and scalar fallback
- *
- * These functions find interesting bytes without character-by-character loops
+ * Four ??? paths: x86-64 (AVX2/SSE4.2), ARM64 (NEON), RISC ???, and
+ * scalar fallback.
+ * These functions find interesting bytes without character-by-character loops.
  */
 
 #ifdef SIMD_X86_64
@@ -1276,11 +1283,9 @@ static inline const char *Simd_Skip_Whitespace_Avx2(const char *p, const char *e
         uint32_t m0, m1;
         __asm__ volatile (
             "prefetcht0 128(%[src])\n\t"
-            
             /* Load two 32-byte chunks in parallel */
             "vmovdqu (%[src]), %%ymm0\n\t"
             "vmovdqu 32(%[src]), %%ymm8\n\t"
-            
             /* Broadcast constants once, reuse for both chunks */
             "vmovd %[space], %%xmm1\n\t"
             "vpbroadcastb %%xmm1, %%ymm1\n\t"
@@ -1288,23 +1293,19 @@ static inline const char *Simd_Skip_Whitespace_Avx2(const char *p, const char *e
             "vpbroadcastb %%xmm2, %%ymm2\n\t"
             "vmovd %[hi], %%xmm3\n\t"
             "vpbroadcastb %%xmm3, %%ymm3\n\t"
-            
             /* First chunk comparison */
             "vpcmpeqb %%ymm1, %%ymm0, %%ymm5\n\t"   /* space match */
             "vpcmpgtb %%ymm2, %%ymm0, %%ymm6\n\t"   /* > 0x08 */
             "vpcmpgtb %%ymm0, %%ymm3, %%ymm7\n\t"   /* < 0x0E */
-            
             /* Second chunk comparison (parallel with first) */
             "vpcmpeqb %%ymm1, %%ymm8, %%ymm9\n\t"
             "vpcmpgtb %%ymm2, %%ymm8, %%ymm10\n\t"
             "vpcmpgtb %%ymm8, %%ymm3, %%ymm11\n\t"
-            
             /* Combine results */
             "vpand %%ymm6, %%ymm7, %%ymm6\n\t"
             "vpor %%ymm5, %%ymm6, %%ymm0\n\t"
             "vpand %%ymm10, %%ymm11, %%ymm10\n\t"
             "vpor %%ymm9, %%ymm10, %%ymm8\n\t"
-            
             /* Extract masks */
             "vpmovmskb %%ymm0, %[m0]\n\t"
             "vpmovmskb %%ymm8, %[m1]\n\t"
@@ -2627,6 +2628,10 @@ static Syntax_Node *Node_New(Node_Kind kind, Source_Location loc) {
  *    choice associations used in aggregates, calls, and generic actuals.
  *
  * 3. UNIFIED POSTFIX CHAIN: One loop handles .selector, 'attribute, (args).
+ *
+ * 4. NO "PRETEND TOKEN EXISTS": Error recovery synchronizes to known tokens
+ *    rather than silently accepting malformed syntax. Guessing user intent
+ *    produces cascading errors; admitting ignorance produces one.
  */
 
 /* ─────────────────────────────────────────────────────────────────────────
