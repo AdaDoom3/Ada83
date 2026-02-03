@@ -27,3 +27,9 @@ T*.ll
 vgcore.*
 ada83.c.pre-propagation
 test_derived_runtime
+ada83_bin
+
+# Debug/temp files
+debug_*.txt
+tmp_err.txt
+c_series_*.txt
