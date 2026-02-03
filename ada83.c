@@ -414,6 +414,11 @@ static String_Slice Slice_Duplicate(String_Slice s) {
     return (String_Slice){copy, s.length};
 }
 
+static bool Slice_Equal(String_Slice a, String_Slice b) {
+    if (a.length != b.length) return false;
+    return memcmp(a.data, b.data, a.length) == 0;
+}
+
 static bool Slice_Equal_Ignore_Case(String_Slice a, String_Slice b) {
     if (a.length != b.length) return false;
     for (uint32_t i = 0; i < a.length; i++)
@@ -6993,6 +6998,10 @@ static Symbol *Symbol_Find_By_Type(Symbol_Manager *sm, String_Slice name, Type_I
     }
 
     uint32_t hash = Symbol_Hash_Name(name);
+    /* Character literals are case-sensitive in Ada (RM 2.6), unlike identifiers.
+     * Hash is case-insensitive so char lits with different case share a bucket.
+     * Use case-insensitive at bucket level, case-sensitive in overload chain. */
+    bool is_char_lit = (name.length >= 1 and name.data[0] == '\'');
     /* Search all scopes for a matching symbol - don't stop at first name match,
      * keep searching if the type doesn't match (for enumeration literal overloading) */
     for (Scope *scope = sm->current_scope; scope; scope = scope->parent) {
@@ -7001,6 +7010,8 @@ static Symbol *Symbol_Find_By_Type(Symbol_Manager *sm, String_Slice name, Type_I
                 sym->visibility >= VIS_IMMEDIATELY_VISIBLE) {
                 /* Search through overload chain (for enumeration literals) */
                 for (Symbol *ovl = sym; ovl; ovl = ovl->next_overload) {
+                    /* For character literals, require exact case match (RM 2.6) */
+                    if (is_char_lit and not Slice_Equal(ovl->name, name)) continue;
                     /* Check if type matches (either directly or via base type) */
                     Type_Info *sym_base = ovl->type;
                     while (sym_base) {
@@ -19915,7 +19926,34 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             uint32_t v1 = Generate_Expression(cg, arg1);
             const char *t1 = Expression_Llvm_Type(cg, arg1);
 
-            /* Widen to common type */
+            /* Composite equality/inequality: dispatch to record/array equality
+             * before scalar widening (RM 4.5.2) */
+            if (ty0 and (Type_Is_Record(ty0) or Type_Is_Array_Like(ty0)) and
+                (Slice_Equal_Ignore_Case(op_name, S("=")) or
+                 Slice_Equal_Ignore_Case(op_name, S("/=")))) {
+                uint32_t eq_result;
+                if (Type_Is_Record(ty0)) {
+                    eq_result = Generate_Record_Equality(cg, v0, v1, ty0);
+                } else {
+                    eq_result = Generate_Array_Equality(cg, v0, v1, ty0);
+                }
+                if (Slice_Equal_Ignore_Case(op_name, S("/="))) {
+                    uint32_t ne_r = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n", ne_r, eq_result);
+                    eq_result = ne_r;
+                }
+                /* Named operator returns BOOLEAN (i8), not bare i1 */
+                const char *bool_t = sym->return_type ? Type_To_Llvm(sym->return_type) : "i8";
+                if (bool_t[0] == 'i' and bool_t[1] != '1') {
+                    uint32_t ext = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = zext i1 %%t%u to %s\n", ext, eq_result, bool_t);
+                    eq_result = ext;
+                    Temp_Set_Type(cg, eq_result, bool_t);
+                }
+                return eq_result;
+            }
+
+            /* Widen to common type (scalar operands only) */
             const char *ct = Wider_Int_Type(cg, t0, t1);
             bool uns = Type_Is_Unsigned(ty0);
             v0 = Emit_Convert_Ext(cg, v0, t0, ct, uns);
@@ -21836,13 +21874,26 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                         /* Generate string constant name */
                         uint32_t str_id = cg->string_id++;
                         Emit(cg, "Limg%u_%u:\n", switch_label, i);
-                        /* Store to globals section */
-                        Emit_String_Const(cg, "@.img_str%u = private unnamed_addr constant [%u x i8] c\"",
-                                   str_id, (unsigned)lit.length + 1);
-                        for (uint32_t j = 0; j < lit.length; j++) {
-                            Emit_String_Const(cg, "%c", (char)toupper((unsigned char)lit.data[j]));
+                        /* Character literals: IMAGE returns 'x' with quotes preserved.
+                         * Identifier literals: IMAGE returns uppercased name. (RM 3.5.5) */
+                        bool is_char_lit = (lit.length >= 3 and lit.data[0] == '\'');
+                        if (is_char_lit) {
+                            /* Character literal — emit as-is (e.g. 'a') */
+                            Emit_String_Const(cg, "@.img_str%u = private unnamed_addr constant [%u x i8] c\"",
+                                       str_id, (unsigned)lit.length + 1);
+                            for (uint32_t j = 0; j < lit.length; j++) {
+                                Emit_String_Const(cg, "%c", lit.data[j]);
+                            }
+                            Emit_String_Const(cg, "\\00\"\n");
+                        } else {
+                            /* Identifier — uppercase (Ada identifiers are case-insensitive) */
+                            Emit_String_Const(cg, "@.img_str%u = private unnamed_addr constant [%u x i8] c\"",
+                                       str_id, (unsigned)lit.length + 1);
+                            for (uint32_t j = 0; j < lit.length; j++) {
+                                Emit_String_Const(cg, "%c", (char)toupper((unsigned char)lit.data[j]));
+                            }
+                            Emit_String_Const(cg, "\\00\"\n");
                         }
-                        Emit_String_Const(cg, "\\00\"\n");
                         Emit(cg, "  store ptr @.img_str%u, ptr %%t%u\n", str_id, result_ptr);
                         Emit(cg, "  store %s %u, ptr %%t%u\n", img_bt, (unsigned)lit.length, result_len);
                         Emit(cg, "  br label %%Limg_end%u\n", end_label);
@@ -22077,13 +22128,16 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                         String_Slice lit = enum_type->enumeration.literals[i];
                         uint32_t check_label = cg->label_id++;
                         uint32_t next_label = cg->label_id++;
+                        /* Character literals are case-sensitive; identifiers are uppercased
+                         * and compared case-insensitively (RM 3.5.5) */
+                        bool is_char_lit = (lit.length >= 3 and lit.data[0] == '\'');
 
-                        /* Generate uppercase string constant */
                         uint32_t str_id = cg->string_id++;
                         Emit_String_Const(cg, "@.val_str%u = private unnamed_addr constant [%u x i8] c\"",
                                    str_id, (unsigned)lit.length + 1);
                         for (uint32_t j = 0; j < lit.length; j++) {
-                            Emit_String_Const(cg, "%c", (char)toupper((unsigned char)lit.data[j]));
+                            Emit_String_Const(cg, "%c",
+                                is_char_lit ? lit.data[j] : (char)toupper((unsigned char)lit.data[j]));
                         }
                         Emit_String_Const(cg, "\\00\"\n");
 
@@ -22093,10 +22147,16 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                         Emit(cg, "  br i1 %%t%u, label %%Lval%u, label %%Lval_next%u\n", len_cmp, check_label, next_label);
 
                         Emit(cg, "Lval%u:\n", check_label);
-                        /* Compare strings (case insensitive using strncasecmp) — i64 for C ABI */
                         uint32_t cmp_result = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = call i32 @strncasecmp(ptr %%t%u, ptr @.val_str%u, i64 %u)\n",
-                             cmp_result, str_ptr, str_id, (unsigned)lit.length);
+                        if (is_char_lit) {
+                            /* Case-sensitive comparison for character literals (RM 3.5.5) */
+                            Emit(cg, "  %%t%u = call i32 @memcmp(ptr %%t%u, ptr @.val_str%u, i64 %u)\n",
+                                 cmp_result, str_ptr, str_id, (unsigned)lit.length);
+                        } else {
+                            /* Case-insensitive comparison for identifiers */
+                            Emit(cg, "  %%t%u = call i32 @strncasecmp(ptr %%t%u, ptr @.val_str%u, i64 %u)\n",
+                                 cmp_result, str_ptr, str_id, (unsigned)lit.length);
+                        }
                         uint32_t cmp_eq = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", cmp_eq, cmp_result);
                         uint32_t match_label = cg->label_id++;
@@ -22650,8 +22710,9 @@ static int32_t Find_Record_Component(Type_Info *record_type, String_Slice name) 
 
 /* Check if a choice is "others" */
 static bool Is_Others_Choice(Syntax_Node *choice) {
-    return choice and choice->kind == NK_IDENTIFIER and
-           Slice_Equal_Ignore_Case(choice->string_val.text, S("others"));
+    return choice and (choice->kind == NK_OTHERS or
+           (choice->kind == NK_IDENTIFIER and
+            Slice_Equal_Ignore_Case(choice->string_val.text, S("others"))));
 }
 
 static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
@@ -23197,15 +23258,15 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
         for (uint32_t i = 0; i < comp_count; i++) initialized[i] = false;
 
         /* Default value for "others" clause */
-        uint32_t others_val = 0;
+        Syntax_Node *others_expr = NULL;
         bool has_others = false;
 
-        /* First pass: find "others" clause */
+        /* First pass: find "others" clause (defer generation to third pass) */
         for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
             Syntax_Node *item = node->aggregate.items.items[i];
             if (item->kind == NK_ASSOCIATION and item->association.choices.count > 0) {
                 if (Is_Others_Choice(item->association.choices.items[0])) {
-                    others_val = Generate_Expression(cg, item->association.expression);
+                    others_expr = item->association.expression;
                     has_others = true;
                     break;
                 }
@@ -23237,16 +23298,20 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                             Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
                                  ptr, base, comp->byte_offset);
 
-                            if (Type_Is_Record(comp_ti)) {
-                                /* Nested record: use memcpy */
-                                uint32_t comp_size = comp_ti->size > 0 ? comp_ti->size : 8;
-                                Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
-                                     ptr, val, comp_size);
-                            } else {
-                                const char *comp_type = Type_To_Llvm(comp_ti);
+                            {
                                 const char *src_type = Expression_Llvm_Type(cg, item->association.expression);
-                                val = Emit_Convert(cg, val, src_type, comp_type);
-                                Emit(cg, "  store %s %%t%u, ptr %%t%u\n", comp_type, val, ptr);
+                                const char *comp_type = Type_To_Llvm(comp_ti);
+                                bool src_is_ptr = (src_type and strcmp(src_type, "ptr") == 0);
+                                if (comp_ti and src_is_ptr and
+                                    (Type_Is_Record(comp_ti) or Type_Is_Constrained_Array(comp_ti))) {
+                                    /* Composite component: use memcpy */
+                                    uint32_t comp_size = comp_ti->size > 0 ? comp_ti->size : 8;
+                                    Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
+                                         ptr, val, comp_size);
+                                } else {
+                                    val = Emit_Convert(cg, val, src_type, comp_type);
+                                    Emit(cg, "  store %s %%t%u, ptr %%t%u\n", comp_type, val, ptr);
+                                }
                                 /* Also store discriminant value into pre-allocated symbol */
                                 if (comp->is_discriminant) {
                                     for (uint32_t da = 0; da < disc_alloc_count; da++) {
@@ -23274,16 +23339,20 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                     Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
                          ptr, base, comp->byte_offset);
 
-                    if (Type_Is_Record(comp_ti)) {
-                        /* Nested record: use memcpy */
-                        uint32_t comp_size = comp_ti->size > 0 ? comp_ti->size : 8;
-                        Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
-                             ptr, val, comp_size);
-                    } else {
-                        const char *comp_type = Type_To_Llvm(comp_ti);
+                    {
                         const char *src_type = Expression_Llvm_Type(cg, item);
-                        val = Emit_Convert(cg, val, src_type, comp_type);
-                        Emit(cg, "  store %s %%t%u, ptr %%t%u\n", comp_type, val, ptr);
+                        const char *comp_type = Type_To_Llvm(comp_ti);
+                        bool src_is_ptr = (src_type and strcmp(src_type, "ptr") == 0);
+                        if (comp_ti and src_is_ptr and
+                            (Type_Is_Record(comp_ti) or Type_Is_Constrained_Array(comp_ti))) {
+                            /* Composite component: use memcpy */
+                            uint32_t comp_size = comp_ti->size > 0 ? comp_ti->size : 8;
+                            Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
+                                 ptr, val, comp_size);
+                        } else {
+                            val = Emit_Convert(cg, val, src_type, comp_type);
+                            Emit(cg, "  store %s %%t%u, ptr %%t%u\n", comp_type, val, ptr);
+                        }
                         /* Also store discriminant value into pre-allocated symbol */
                         if (comp->is_discriminant) {
                             for (uint32_t da = 0; da < disc_alloc_count; da++) {
@@ -23303,17 +23372,33 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
         }
 
         /* Third pass: fill uninitialized with "others" value (uncommon for records) */
-        if (has_others) {
+        if (has_others and others_expr) {
             for (uint32_t idx = 0; idx < comp_count; idx++) {
                 if (not initialized[idx]) {
                     Component_Info *comp = &agg_type->record.components[idx];
-                    const char *comp_type = Type_To_Llvm(comp->component_type);
-                    uint32_t converted = Emit_Convert(cg, others_val, Integer_Arith_Type(cg), comp_type);
+                    Type_Info *comp_ti = comp->component_type;
 
+                    /* Set type context on the expression so nested aggregates resolve */
+                    Type_Info *saved_type = others_expr->type;
+                    if (not others_expr->type) others_expr->type = comp_ti;
+
+                    uint32_t val = Generate_Expression(cg, others_expr);
                     uint32_t ptr = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
                          ptr, base, comp->byte_offset);
-                    Emit(cg, "  store %s %%t%u, ptr %%t%u\n", comp_type, converted, ptr);
+
+                    if (comp_ti and (Type_Is_Record(comp_ti) or Type_Is_Array_Like(comp_ti))) {
+                        /* Composite component: memcpy */
+                        uint32_t comp_size = comp_ti->size > 0 ? comp_ti->size : 8;
+                        Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
+                             ptr, val, comp_size);
+                    } else {
+                        const char *comp_type = Type_To_Llvm(comp_ti);
+                        const char *src_type = Expression_Llvm_Type(cg, others_expr);
+                        val = Emit_Convert(cg, val, src_type, comp_type);
+                        Emit(cg, "  store %s %%t%u, ptr %%t%u\n", comp_type, val, ptr);
+                    }
+                    others_expr->type = saved_type;
                 }
             }
         }
