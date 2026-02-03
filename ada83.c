@@ -18511,6 +18511,17 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             /* Standard path: both operands are constrained (same representation).
              * However, some expressions (concatenation, function calls) may still
              * produce fat pointers.  Extract data ptr if needed. */
+
+            /* If both are constrained arrays but with different static sizes,
+             * they cannot be equal (RM 4.5.2(9)).  Emit constant false. */
+            if (right_type and Type_Is_Array_Like(left_type) and Type_Is_Array_Like(right_type) and
+                left_type->size > 0 and right_type->size > 0 and
+                left_type->size != right_type->size) {
+                eq_result = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add i1 0, 0  ; arrays of different size\n", eq_result);
+                goto eq_done;
+            }
+
             uint32_t left_ptr, right_ptr;
             bool l_produces_fat = Expression_Produces_Fat_Pointer(node->binary.left, left_type);
             bool r_produces_fat = Expression_Produces_Fat_Pointer(node->binary.right, right_type);
@@ -18543,6 +18554,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             }
         }
 
+        eq_done:
         /* For /= operator, negate the result */
         if (node->binary.op == TK_NE) {
             uint32_t ne_result = Emit_Temp(cg);
