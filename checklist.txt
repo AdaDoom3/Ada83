@@ -47,7 +47,7 @@ c54: 17/23 PASS (73%) - Case statements
 c55: 18/18 PASS (100%) *** FIXED *** - Loop statements
 c56: 1/1 PASS (100%)  - Block statements
 c57: 6/6 PASS (100%)  - Exit statements
-c58: 8/11 PASS (72%)  - Return statements
+c58: 11/11 PASS (100%) *** FIXED *** - Return statements
 c59: 2/4 PASS (50%)   - Goto statements
 c61: 1/4 PASS (25%)   - Subprogram declarations
 c62: 0/6 PASS (0%)    - Subprogram bodies
@@ -89,7 +89,7 @@ cd9: (skipped)
 ce2: 11/118 PASS (9%) - I/O operations
 ce3: 6/181 PASS (3%)  - I/O operations
 
-100% groups: c23 c24 c25 c26 c2a c49 c53 c55 c56 c57 c63
+100% groups: c23 c24 c25 c26 c2a c49 c53 c55 c56 c57 c58 c63
 
 ================================================================================
 APPROACH
@@ -125,3 +125,10 @@ PROGRESS LOG
 [done] c55b15a: FOR loop subtype constraint check per RM 3.2.2(11)
 [done] Verify all c55 tests pass (18/18 = 100%)
 [done] Commit & push
+
+[done] Target group: c58 (return statements) — 8/11 → 11/11
+[done] c58006b: setjmp/longjmp exception handlers in Generate_Generic_Instance_Body
+[done] c58004g: generic recursive call resolution (RM 12.3(17)) + codegen redirect
+[done] c58005h: constrained access subtype resolution for access-to-record/array
+         + discriminant/bounds check in Generate_Return_Statement (RM 3.7.1, 6.5(3))
+[done] Verify all c58 tests pass (11/11 = 100%)

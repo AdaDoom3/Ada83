@@ -8676,6 +8676,25 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
         return node->type;
     }
 
+    /* ─── Case 3b: Generic subprogram recursive call ─── */
+    /* Per Ada RM 12.3(17), within a generic subprogram body the name of
+     * the subprogram denotes the current instance (recursive call).
+     * GNAT: Analyze_Call handles this via the Is_Generic_Subprogram check. */
+    if (prefix_sym and prefix_sym->kind == SYMBOL_GENERIC and prefix_sym->generic_unit) {
+        Syntax_Node *gu = prefix_sym->generic_unit;
+        if (gu->kind == NK_FUNCTION_SPEC) {
+            /* Return type from the generic function spec */
+            if (gu->subprogram_spec.return_type)
+                node->type = gu->subprogram_spec.return_type->type;
+            if (not node->type) node->type = sm->type_integer;
+            return node->type;
+        }
+        if (gu->kind == NK_PROCEDURE_SPEC) {
+            node->type = NULL;  /* Procedure call — no return type */
+            return NULL;
+        }
+    }
+
     /* ─── Case 4: Unresolved - report error and recover ─── */
     if (prefix->kind == NK_IDENTIFIER) {
         Report_Error(node->location, "cannot resolve '%.*s' as callable or indexable",
@@ -10066,6 +10085,51 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
 
                 /* Check for index constraint (STRING(1..5) style) */
                 Syntax_Node *constraint = node->subtype_ind.constraint;
+                /* For access-to-array, the index constraint applies to the
+                 * designated type.  Resolve by creating a constrained access
+                 * type whose designated_type is a constrained array. (RM 3.7.1) */
+                if (constraint and constraint->kind == NK_INDEX_CONSTRAINT and
+                    Type_Is_Access(base_type) and base_type->access.designated_type and
+                    Type_Is_Array_Like(base_type->access.designated_type)) {
+                    Type_Info *des_base = base_type->access.designated_type;
+                    Type_Info *des_con = Type_New(TYPE_ARRAY, des_base->name);
+                    *des_con = *des_base;
+                    des_con->base_type = des_base;
+                    des_con->array.is_constrained = true;
+                    des_con->array.index_count = (uint32_t)constraint->index_constraint.ranges.count;
+                    if (des_con->array.index_count > 0) {
+                        des_con->array.indices = Arena_Allocate(
+                            des_con->array.index_count * sizeof(Index_Info));
+                        for (uint32_t i = 0; i < des_con->array.index_count; i++) {
+                            Syntax_Node *range = constraint->index_constraint.ranges.items[i];
+                            Resolve_Expression(sm, range);
+                            Index_Info *info = &des_con->array.indices[i];
+                            info->index_type = sm->type_integer;
+                            if (range->kind == NK_RANGE) {
+                                if (range->range.low) {
+                                    double v = Eval_Const_Numeric(range->range.low);
+                                    if (v == v) info->low_bound = (Type_Bound){
+                                        .kind = BOUND_INTEGER, .int_value = (int128_t)v};
+                                    else info->low_bound = (Type_Bound){
+                                        .kind = BOUND_EXPR, .expr = range->range.low};
+                                }
+                                if (range->range.high) {
+                                    double v = Eval_Const_Numeric(range->range.high);
+                                    if (v == v) info->high_bound = (Type_Bound){
+                                        .kind = BOUND_INTEGER, .int_value = (int128_t)v};
+                                    else info->high_bound = (Type_Bound){
+                                        .kind = BOUND_EXPR, .expr = range->range.high};
+                                }
+                            }
+                        }
+                    }
+                    Type_Info *acc_con = Type_New(TYPE_ACCESS, base_type->name);
+                    *acc_con = *base_type;
+                    acc_con->base_type = base_type;
+                    acc_con->access.designated_type = des_con;
+                    node->type = acc_con;
+                    return acc_con;
+                }
                 if (constraint and constraint->kind == NK_INDEX_CONSTRAINT and
                     Type_Is_Array_Like(base_type)) {
                     /* Create constrained array type */
@@ -10336,11 +10400,20 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
 
                 /* Reclassify NK_INDEX_CONSTRAINT as discriminant constraint
                  * when the base type is a discriminated record (RM 3.7.2).
+                 * Also handles access-to-record types (RM 3.7.1).
                  * Positional discriminant constraints like R1(IDENT_BOOL(TRUE))
                  * get parsed as NK_INDEX_CONSTRAINT because they lack named assocs.
                  * Convert each range item to a positional association. */
+                Type_Info *disc_target = base_type;
+                bool disc_via_access = false;
+                if (Type_Is_Access(base_type) and base_type->access.designated_type and
+                    Type_Is_Record(base_type->access.designated_type) and
+                    base_type->access.designated_type->record.has_discriminants) {
+                    disc_target = base_type->access.designated_type;
+                    disc_via_access = true;
+                }
                 if (constraint and constraint->kind == NK_INDEX_CONSTRAINT and
-                    Type_Is_Record(base_type) and base_type->record.has_discriminants) {
+                    Type_Is_Record(disc_target) and disc_target->record.has_discriminants) {
                     Syntax_Node *disc_c = Node_New(NK_DISCRIMINANT_CONSTRAINT, constraint->location);
                     disc_c->discriminant_constraint.associations.count = constraint->index_constraint.ranges.count;
                     disc_c->discriminant_constraint.associations.capacity = constraint->index_constraint.ranges.capacity;
@@ -10372,16 +10445,19 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                         }
                     }
 
-                    /* Create a constrained subtype with discriminant values stored */
-                    if (Type_Is_Record(base_type) and base_type->record.has_discriminants) {
-                        Type_Info *constrained = Type_New(TYPE_RECORD, base_type->name);
-                        *constrained = *base_type;  /* Copy all fields */
-                        constrained->base_type = base_type;
+                    /* Create a constrained subtype with discriminant values stored.
+                     * For access-to-record, create a constrained designated type
+                     * and wrap it in a new access type. (RM 3.7.1) */
+                    Type_Info *rec_base = disc_target;
+                    if (Type_Is_Record(rec_base) and rec_base->record.has_discriminants) {
+                        Type_Info *constrained = Type_New(TYPE_RECORD, rec_base->name);
+                        *constrained = *rec_base;  /* Copy all fields */
+                        constrained->base_type = rec_base;
                         constrained->record.is_constrained = true;
                         constrained->record.has_disc_constraints = true;
 
                         /* Allocate and fill constraint value + expression arrays */
-                        uint32_t dc = base_type->record.discriminant_count;
+                        uint32_t dc = rec_base->record.discriminant_count;
                         constrained->record.disc_constraint_values = Arena_Allocate(
                             dc * sizeof(int64_t));
                         constrained->record.disc_constraint_exprs = Arena_Allocate(
@@ -10447,6 +10523,15 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                             }
                         }
 
+                        if (disc_via_access) {
+                            /* Wrap constrained record in a new access type */
+                            Type_Info *acc_con = Type_New(TYPE_ACCESS, base_type->name);
+                            *acc_con = *base_type;
+                            acc_con->base_type = base_type;
+                            acc_con->access.designated_type = constrained;
+                            node->type = acc_con;
+                            return acc_con;
+                        }
                         node->type = constrained;
                         return constrained;
                     }
@@ -20439,6 +20524,10 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         }
     }
 
+    /* RM 12.3(17): redirect generic recursive calls to current instance */
+    if (sym and sym->kind == SYMBOL_GENERIC and cg->current_instance)
+        sym = cg->current_instance;
+
     if (sym and (sym->kind == SYMBOL_FUNCTION or sym->kind == SYMBOL_PROCEDURE)) {
         /* Function call - generate arguments
          * For OUT/IN OUT parameters, we need to pass the ADDRESS, not the value */
@@ -20573,6 +20662,15 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
          * so no wrapper needed - just call the parent's implementation directly.
          * This is the GNAT-style optimization. */
         Symbol *call_target = sym->parent_operation ? sym->parent_operation : sym;
+
+        /* RM 12.3(17): recursive call within a generic body → call current
+         * instance.  Redirect SYMBOL_GENERIC to cg->current_instance so the
+         * emitted name, return type, and parameter list are correct.
+         * GNAT: Expand_N_Subprogram_Call maps generic to current instance. */
+        if (call_target->kind == SYMBOL_GENERIC and cg->current_instance) {
+            sym = cg->current_instance;
+            call_target = sym;
+        }
 
         /* Check if calling a nested function of current scope */
         bool callee_is_nested = call_target->parent and
@@ -24753,6 +24851,92 @@ static void Generate_Return_Statement(Code_Generator *cg, Syntax_Node *node) {
         if (ret_type and Type_Is_Scalar(ret_type)) {
             Emit_Constraint_Check_With_Type(cg, value, ret_type, expr->type, type_str);
         }
+        /* RM 6.5(3): For constrained access subtypes, check that the
+         * designated object's discriminant/bounds match the constraint.
+         * GNAT LLVM: Apply_Type_Conversion with access target calls
+         * Apply_Discriminant_Check on the designated object. */
+        if (ret_type and Type_Is_Access(ret_type) and ret_type->access.designated_type) {
+            Type_Info *des = ret_type->access.designated_type;
+            if (des->kind == TYPE_RECORD and des->record.has_disc_constraints and
+                des->record.discriminant_count > 0 and des->record.disc_constraint_values) {
+                /* Non-null check first, then discriminant check */
+                uint32_t is_null = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp eq ptr %%t%u, null\n", is_null, value);
+                uint32_t skip_lbl = Emit_Label(cg);
+                uint32_t chk_lbl  = Emit_Label(cg);
+                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                     is_null, skip_lbl, chk_lbl);
+                Emit_Label_Here(cg, chk_lbl);
+                /* Load discriminant from designated object (offset 0, first component) */
+                Component_Info *dc = &des->record.components[0];
+                const char *disc_ty = dc->component_type ? Type_To_Llvm(dc->component_type)
+                                                         : Integer_Arith_Type(cg);
+                uint32_t dp = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
+                     dp, value, dc->byte_offset);
+                uint32_t dv = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", dv, disc_ty, dp);
+                const char *iat = Integer_Arith_Type(cg);
+                dv = Emit_Convert(cg, dv, disc_ty, iat);
+                uint32_t ev = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add %s 0, %lld\n", ev, iat,
+                     (long long)des->record.disc_constraint_values[0]);
+                Emit_Discriminant_Check(cg, dv, ev, iat, des);
+                Emit(cg, "  br label %%L%u\n", skip_lbl);
+                Emit_Label_Here(cg, skip_lbl);
+                cg->block_terminated = false;
+            }
+            /* Array-constrained access: check bounds of designated array */
+            if (Type_Is_Array_Like(des) and des->array.is_constrained and
+                des->array.index_count > 0) {
+                uint32_t is_null = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp eq ptr %%t%u, null\n", is_null, value);
+                uint32_t skip_lbl = Emit_Label(cg);
+                uint32_t chk_lbl  = Emit_Label(cg);
+                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                     is_null, skip_lbl, chk_lbl);
+                Emit_Label_Here(cg, chk_lbl);
+                /* Fat pointer access: bounds are in the fat ptr, not the object.
+                 * For heap arrays the bounds are stored before the data. Load them
+                 * and compare against the constrained subtype's bounds. */
+                const char *bt = Array_Bound_Llvm_Type(des);
+                int128_t exp_lo = Array_Low_Bound(des);
+                int128_t exp_hi = (des->array.index_count > 0 and des->array.indices)
+                    ? Type_Bound_Value(des->array.indices[0].high_bound) : 0;
+                /* Load actual bounds: stored at [-16] and [-8] before data */
+                uint32_t blo_p = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 -2\n", blo_p, bt, value);
+                uint32_t blo = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", blo, bt, blo_p);
+                uint32_t bhi_p = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 -1\n", bhi_p, bt, value);
+                uint32_t bhi = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", bhi, bt, bhi_p);
+                /* Compare lo and hi */
+                const char *iat = Integer_Arith_Type(cg);
+                blo = Emit_Convert(cg, blo, bt, iat);
+                bhi = Emit_Convert(cg, bhi, bt, iat);
+                uint32_t elo = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add %s 0, %s\n", elo, iat, I128_Decimal(exp_lo));
+                uint32_t ehi = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add %s 0, %s\n", ehi, iat, I128_Decimal(exp_hi));
+                uint32_t clo = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n", clo, iat, blo, elo);
+                uint32_t chi = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n", chi, iat, bhi, ehi);
+                uint32_t bad = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = or i1 %%t%u, %%t%u\n", bad, clo, chi);
+                uint32_t raise_lbl = Emit_Label(cg);
+                uint32_t ok_lbl = Emit_Label(cg);
+                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", bad, raise_lbl, ok_lbl);
+                Emit_Label_Here(cg, raise_lbl);
+                Emit_Raise_Constraint_Error(cg, "access array bounds check");
+                Emit_Label_Here(cg, ok_lbl);
+                Emit(cg, "  br label %%L%u\n", skip_lbl);
+                Emit_Label_Here(cg, skip_lbl);
+                cg->block_terminated = false;
+            }
+        }
         Emit(cg, "  ret %s %%t%u\n", type_str, value);
         cg->block_terminated = true;
     } else if (cg->in_task_body) {
@@ -27354,17 +27538,107 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
         }
     }
 
-    /* Generate the body statements with type substitution */
+    /* Generate the body statements with type substitution.
+     * Per Ada RM 11.4, exception handlers in the generic template body
+     * apply to each instantiation.  GNAT LLVM: Emit_Subprogram_Body
+     * handles exception parts identically for generic instances. */
     Syntax_Node *body = template_body;
 
     /* Generate local declarations */
     Generate_Declaration_List(cg, &body->subprogram_body.declarations);
 
-    /* Generate statements from template body */
-    for (uint32_t i = 0; i < body->subprogram_body.statements.count; i++) {
-        Syntax_Node *stmt = body->subprogram_body.statements.items[i];
-        if (stmt) {
-            Generate_Statement(cg, stmt);
+    /* Check for exception handlers in the template body */
+    bool has_exc = body->subprogram_body.handlers.count > 0;
+
+    if (has_exc) {
+        uint32_t hf = Emit_Temp(cg);
+        uint32_t handler_lbl = Emit_Label(cg);
+        uint32_t normal_lbl  = Emit_Label(cg);
+        uint32_t end_lbl     = Emit_Label(cg);
+
+        Emit(cg, "  %%t%u = alloca { ptr, [200 x i8] }, align 16  ; handler frame\n", hf);
+        Emit(cg, "  call void @__ada_push_handler(ptr %%t%u)\n", hf);
+
+        uint32_t jb = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = getelementptr { ptr, [200 x i8] }, ptr %%t%u, i32 0, i32 1\n", jb, hf);
+        uint32_t sj = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = call i32 @setjmp(ptr %%t%u)\n", sj, jb);
+
+        uint32_t is_n = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", is_n, sj);
+        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", is_n, normal_lbl, handler_lbl);
+
+        Emit_Label_Here(cg, normal_lbl);
+        Generate_Statement_List(cg, &body->subprogram_body.statements);
+        if (not cg->block_terminated)
+            Emit(cg, "  call void @__ada_pop_handler()\n");
+        Emit_Branch_If_Needed(cg, end_lbl);
+
+        /* Exception handler entry */
+        Emit_Label_Here(cg, handler_lbl);
+        cg->block_terminated = false;
+        Emit(cg, "  call void @__ada_pop_handler()\n");
+
+        uint32_t exc_id = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = call i64 @__ada_current_exception()\n", exc_id);
+
+        uint32_t next_h = 0;
+        for (uint32_t i = 0; i < body->subprogram_body.handlers.count; i++) {
+            Syntax_Node *h = body->subprogram_body.handlers.items[i];
+            if (not h) continue;
+
+            if (next_h) { Emit_Label_Here(cg, next_h); cg->block_terminated = false; }
+            next_h = Emit_Label(cg);
+            uint32_t hbody = Emit_Label(cg);
+
+            bool has_others = false;
+            for (uint32_t j = 0; j < h->handler.exceptions.count; j++) {
+                if (h->handler.exceptions.items[j]->kind == NK_OTHERS)
+                    { has_others = true; break; }
+            }
+
+            if (has_others) {
+                Emit(cg, "  br label %%L%u\n", hbody);
+            } else {
+                for (uint32_t j = 0; j < h->handler.exceptions.count; j++) {
+                    Syntax_Node *en = h->handler.exceptions.items[j];
+                    if (en->symbol) {
+                        uint32_t ep = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = ptrtoint ptr ", ep);
+                        Emit_Exception_Ref(cg, en->symbol);
+                        Emit(cg, " to i64\n");
+                        uint32_t m = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", m, exc_id, ep);
+                        bool last = true;
+                        for (uint32_t k = j+1; k < h->handler.exceptions.count; k++)
+                            if (h->handler.exceptions.items[k]->symbol) { last = false; break; }
+                        uint32_t fl = last ? next_h : Emit_Label(cg);
+                        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", m, hbody, fl);
+                        if (not last) { Emit_Label_Here(cg, fl); cg->block_terminated = false; }
+                    }
+                }
+            }
+            cg->block_terminated = true;
+            Emit_Label_Here(cg, hbody);
+            cg->block_terminated = false;
+            Generate_Statement_List(cg, &h->handler.statements);
+            Emit_Branch_If_Needed(cg, end_lbl);
+        }
+
+        if (next_h) {
+            Emit_Label_Here(cg, next_h);
+            cg->block_terminated = false;
+            Emit(cg, "  call void @__ada_reraise()\n");
+            Emit(cg, "  unreachable\n");
+            cg->block_terminated = true;
+        }
+
+        Emit_Label_Here(cg, end_lbl);
+        cg->block_terminated = false;
+    } else {
+        for (uint32_t i = 0; i < body->subprogram_body.statements.count; i++) {
+            Syntax_Node *stmt = body->subprogram_body.statements.items[i];
+            if (stmt) Generate_Statement(cg, stmt);
         }
     }
 
