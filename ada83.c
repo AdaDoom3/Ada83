@@ -18954,12 +18954,49 @@ static uint32_t Generate_Record_Equality(Code_Generator *cg, uint32_t left_ptr,
             cmp = Generate_Array_Equality(cg, left_fat, right_fat, ct);
         } else if (Type_Is_Constrained_Array(ct) and Type_Has_Dynamic_Bounds(ct)) {
             /* Constrained array with dynamic bounds (discriminant-dependent).
-             * Data stored inline; compare using memcmp with component size. */
-            uint32_t byte_size = ct->size > 0 ? ct->size : 4;
-            uint32_t mc_r = Emit_Temp(cg);
-            uint32_t mc_c = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = call i32 @memcmp(ptr %%t%u, ptr %%t%u, i64 %u)\n",
-                 mc_r, left_gep, right_gep, byte_size);
+             * Data stored inline; compute runtime byte size from discriminant.
+             * For ARRAY(LOW..DISC) OF ELEM: size = max(0, disc - low + 1) * elem_size */
+            uint32_t elem_size = ct->array.element_type ? ct->array.element_type->size : 1;
+            if (elem_size == 0) elem_size = 1;
+            int64_t low_val = 1;
+            if (ct->array.index_count > 0 and ct->array.indices[0].low_bound.kind == BOUND_INTEGER)
+                low_val = (int64_t)ct->array.indices[0].low_bound.int_value;
+            /* Find the discriminant that controls the high bound.
+             * Match the bound expression's symbol against the record's discriminant components. */
+            uint32_t disc_offset = 0;
+            const char *disc_llvm = "i32";
+            if (ct->array.index_count > 0 and ct->array.indices[0].high_bound.kind == BOUND_EXPR
+                and ct->array.indices[0].high_bound.expr) {
+                Symbol *bsym = ct->array.indices[0].high_bound.expr->symbol;
+                for (uint32_t d = 0; d < record_type->record.discriminant_count; d++) {
+                    Component_Info *dc = &record_type->record.components[d];
+                    if (bsym and Slice_Equal_Ignore_Case(dc->name, bsym->name)) {
+                        disc_offset = dc->byte_offset;
+                        disc_llvm = Type_To_Llvm(dc->component_type);
+                        if (not disc_llvm) disc_llvm = "i32";
+                        break;
+                    }
+                }
+            }
+            /* Load discriminant from left record and compute memcmp size */
+            uint32_t dp = Emit_Temp(cg), dv = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n", dp, left_ptr, disc_offset);
+            Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", dv, disc_llvm, dp);
+            uint32_t cnt = Emit_Temp(cg), sz = Emit_Temp(cg), sz64 = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = sub %s %%t%u, %lld\n", cnt, disc_llvm, dv, (long long)(low_val - 1));
+            if (elem_size > 1) {
+                uint32_t mul = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", mul, disc_llvm, cnt, elem_size);
+                cnt = mul;
+            }
+            /* Clamp to 0 for null arrays */
+            uint32_t is_neg = Emit_Temp(cg), clamped = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = icmp slt %s %%t%u, 0\n", is_neg, disc_llvm, cnt);
+            Emit(cg, "  %%t%u = select i1 %%t%u, %s 0, %s %%t%u\n", clamped, is_neg, disc_llvm, disc_llvm, cnt);
+            Emit(cg, "  %%t%u = sext %s %%t%u to i64\n", sz64, disc_llvm, clamped);
+            uint32_t mc_r = Emit_Temp(cg), mc_c = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = call i32 @memcmp(ptr %%t%u, ptr %%t%u, i64 %%t%u)\n",
+                 mc_r, left_gep, right_gep, sz64);
             Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", mc_c, mc_r);
             cmp = mc_c;
         } else if (Type_Is_Constrained_Array(ct)) {
@@ -25586,6 +25623,55 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
             return;
         }
 
+        /* Discriminant-dependent array stored inline (size=0 at compile time).
+         * RHS is a fat pointer {ptr,ptr} — extract data ptr and copy bytes
+         * using the bounds from the fat pointer. (RM 5.2, 3.7.1) */
+        if (assign_type and Type_Is_Array_Like(assign_type) and
+            assign_type->size == 0 and Type_Has_Dynamic_Bounds(assign_type)) {
+            const char *value_type = Expression_Llvm_Type(cg, node->assignment.value);
+            uint32_t data_ptr;
+            if (value_type and Llvm_Type_Is_Fat_Pointer(value_type)) {
+                /* Extract data pointer and bounds from fat pointer */
+                data_ptr = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = extractvalue %s %%t%u, 0\n", data_ptr, value_type, value);
+                /* Get length from bounds */
+                const char *bt = Array_Bound_Llvm_Type(assign_type);
+                uint32_t bnd_ptr = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = extractvalue %s %%t%u, 1\n", bnd_ptr, value_type, value);
+                uint32_t lo = Emit_Temp(cg), hi = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", lo, bt, bnd_ptr);
+                uint32_t hi_gep = Emit_Temp(cg);
+                int bt_sz = (strcmp(bt, "i32") == 0) ? 4 : (strcmp(bt, "i16") == 0) ? 2 : 4;
+                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %d\n", hi_gep, bnd_ptr, bt_sz);
+                Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", hi, bt, hi_gep);
+                uint32_t len = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", len, bt, hi, lo);
+                uint32_t len1 = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add %s %%t%u, 1\n", len1, bt, len);
+                uint32_t elem_sz = assign_type->array.element_type
+                    ? assign_type->array.element_type->size : 1;
+                if (elem_sz == 0) elem_sz = 1;
+                uint32_t byte_cnt = len1;
+                if (elem_sz > 1) {
+                    byte_cnt = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", byte_cnt, bt, len1, elem_sz);
+                }
+                /* Clamp to 0 for null arrays */
+                uint32_t is_neg = Emit_Temp(cg), clamped = Emit_Temp(cg), sz64 = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp slt %s %%t%u, 0\n", is_neg, bt, byte_cnt);
+                Emit(cg, "  %%t%u = select i1 %%t%u, %s 0, %s %%t%u\n", clamped, is_neg, bt, bt, byte_cnt);
+                Emit(cg, "  %%t%u = sext %s %%t%u to i64\n", sz64, bt, clamped);
+                Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)  ; disc-dep array assign\n",
+                     addr, data_ptr, sz64);
+            } else {
+                /* Value is already a pointer to data — use memcpy with a safe size */
+                data_ptr = value;
+                Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 8, i1 false)  ; disc-dep array assign (ptr)\n",
+                     addr, data_ptr);
+            }
+            return;
+        }
+
         /* Scalar / access types: store value directly */
         const char *store_type = Type_To_Llvm(assign_type);
         const char *value_type = Expression_Llvm_Type(cg, node->assignment.value);
@@ -27641,6 +27727,14 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, "  %%");
             Emit_Symbol_Name(cg, sym);
             Emit(cg, " = alloca [%u x i8]  ; record type\n", record_size);
+            /* Zero-init records with discriminants so that equality comparison
+             * (memcmp on discriminant-dependent array slots) sees consistent
+             * padding bytes beyond the active portion (RM 4.5.2). */
+            if (ty and Type_Is_Record(ty) and ty->record.discriminant_count > 0) {
+                Emit(cg, "  call void @llvm.memset.p0.i64(ptr %%");
+                Emit_Symbol_Name(cg, sym);
+                Emit(cg, ", i8 0, i64 %u, i1 false)\n", record_size);
+            }
         } else {
             Emit(cg, "  %%");
             Emit_Symbol_Name(cg, sym);
@@ -30014,14 +30108,45 @@ static void Generate_Type_Equality_Function(Code_Generator *cg, Type_Info *t) {
                     cmp = Generate_Array_Equality(cg, left_fat, right_fat, ct);
                 } else if (Type_Is_Constrained_Array(ct) and Type_Has_Dynamic_Bounds(ct)) {
                     /* Constrained array with dynamic bounds (discriminant-dependent).
-                     * Data is stored inline in the record; not as a fat pointer.
-                     * Since discriminants are already checked equal above, both sides
-                     * have the same array length.  Use memcmp with max component size. */
-                    uint32_t byte_size = ct->size > 0 ? ct->size : 4;
+                     * Compute runtime byte size from discriminant value. */
+                    uint32_t elem_size = ct->array.element_type ? ct->array.element_type->size : 1;
+                    if (elem_size == 0) elem_size = 1;
+                    int64_t low_val = 1;
+                    if (ct->array.index_count > 0 and ct->array.indices[0].low_bound.kind == BOUND_INTEGER)
+                        low_val = (int64_t)ct->array.indices[0].low_bound.int_value;
+                    uint32_t disc_offset = 0;
+                    const char *disc_llvm = "i32";
+                    if (ct->array.index_count > 0 and ct->array.indices[0].high_bound.kind == BOUND_EXPR
+                        and ct->array.indices[0].high_bound.expr) {
+                        Symbol *bsym = ct->array.indices[0].high_bound.expr->symbol;
+                        for (uint32_t d = 0; d < t->record.discriminant_count; d++) {
+                            Component_Info *dc = &t->record.components[d];
+                            if (bsym and Slice_Equal_Ignore_Case(dc->name, bsym->name)) {
+                                disc_offset = dc->byte_offset;
+                                disc_llvm = Type_To_Llvm(dc->component_type);
+                                if (not disc_llvm) disc_llvm = "i32";
+                                break;
+                            }
+                        }
+                    }
+                    uint32_t dp = Emit_Temp(cg), dv = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = getelementptr i8, ptr %%0, i64 %u\n", dp, disc_offset);
+                    Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", dv, disc_llvm, dp);
+                    uint32_t cnt = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = sub %s %%t%u, %lld\n", cnt, disc_llvm, dv, (long long)(low_val - 1));
+                    if (elem_size > 1) {
+                        uint32_t mul = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", mul, disc_llvm, cnt, elem_size);
+                        cnt = mul;
+                    }
+                    uint32_t is_neg = Emit_Temp(cg), clamped = Emit_Temp(cg), sz64 = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = icmp slt %s %%t%u, 0\n", is_neg, disc_llvm, cnt);
+                    Emit(cg, "  %%t%u = select i1 %%t%u, %s 0, %s %%t%u\n", clamped, is_neg, disc_llvm, disc_llvm, cnt);
+                    Emit(cg, "  %%t%u = sext %s %%t%u to i64\n", sz64, disc_llvm, clamped);
                     uint32_t mc_result = Emit_Temp(cg);
                     uint32_t mc_cmp = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = call i32 @memcmp(ptr %%t%u, ptr %%t%u, i64 %u)\n",
-                         mc_result, left_gep, right_gep, byte_size);
+                    Emit(cg, "  %%t%u = call i32 @memcmp(ptr %%t%u, ptr %%t%u, i64 %%t%u)\n",
+                         mc_result, left_gep, right_gep, sz64);
                     Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", mc_cmp, mc_result);
                     cmp = mc_cmp;
                 } else if (Type_Is_Constrained_Array(ct)) {
