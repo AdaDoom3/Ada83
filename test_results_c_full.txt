@@ -1,0 +1,1998 @@
+
+========================================
+Class c Tests
+========================================
+
+  c23001a            PASS   PASSED
+  c23006a            PASS   PASSED
+  c23006b            PASS   PASSED
+  c23006c            PASS   PASSED
+  c23006d            PASS   PASSED
+  c23006e            PASS   PASSED
+  c23006f            PASS   PASSED
+  c23006g            PASS   PASSED
+  c24002a            PASS   PASSED
+  c24002b            PASS   PASSED
+  c24002c            PASS   PASSED
+  c24106a            PASS   PASSED
+  c24202a            PASS   PASSED
+  c24202b            PASS   PASSED
+  c24202c            PASS   PASSED
+  c24203a            PASS   PASSED
+  c24203b            PASS   PASSED
+  c24207a            PASS   PASSED
+  c24211a            PASS   PASSED
+  c25001a            PASS   PASSED
+  c25001b            PASS   PASSED
+  c25003a            PASS   PASSED
+  c25004a            PASS   PASSED
+  c26002b            PASS   PASSED
+  c26006a            PASS   PASSED
+  c26008a            PASS   PASSED
+  c27001a            PASS   PASSED
+  c27002a            PASS   PASSED
+  c2a001a            PASS   PASSED
+  c2a001b            PASS   PASSED
+  c2a001c            PASS   PASSED
+  c2a002a            PASS   PASSED
+  c2a006a            PASS   PASSED
+  c2a008a            PASS   PASSED
+  c2a021b            PASS   PASSED
+  c32001a            FAIL   FAILED:FAILED: D1 NOT INITIALIZED TO CORRECT VALUE
+  c32001b            SKIP   BIND:unresolved symbols
+  c32001c            FAIL   FAILED:FAILED: R1.D2 INITIALIZED INCORRECTLY - 2
+  c32001d            FAIL   FAILED:FAILED: L1.SIZE INITIALIZED INCORRECTLY TO  0
+  c32001e            SKIP   COMPILE:
+  c32107a            SKIP   COMPILE:
+  c32107c            SKIP   COMPILE:acats/c32107c.ada:73:30: error: cannot resolve sel
+  c32108a            PASS   PASSED
+  c32108b            PASS   PASSED
+  c32111a            PASS   PASSED
+  c32111b            PASS   PASSED
+  c32112a            FAIL   FAILED:FAILED: NO EXCEPTION RAISED FOR INITIALIZATION OF
+  c32112b            FAIL   FAILED:FAILED: NO EXCEPTION RAISED FOR INITIALIZATION OF
+  c32113a            FAIL   FAILED:FAILED: NO EXCEPTION RAISED FOR INITIALIZATION OF
+  c32114a            SKIP   BIND:unresolved symbols
+  c32115a            SKIP   COMPILE:
+  c32115b            FAIL   FAILED:FAILED: NO EXCEPTION RAISED FOR INITIALIZATION OF
+  c32117a            FAIL   FAILED:FAILED: NO EXCEPTION RAISED FOR THE DECLARATION OF
+  c32203a            PASS   PASSED
+  c34001a            PASS   PASSED
+  c34001c            PASS   PASSED
+  c34001d            PASS   PASSED
+  c34001f            PASS   PASSED
+  c34002a            FAIL   RUNTIME:exit 1
+  c34002c            PASS   PASSED
+  c34003a            PASS   PASSED
+  c34003c            PASS   PASSED
+  c34004a            FAIL   RUNTIME:exit 1
+  c34004c            FAIL   FAILED:FAILED: INCORRECT 'BASE'FIRST OR 'BASE'LAST
+  c34005a            SKIP   COMPILE:acats/c34005a.ada:242:16: error: concatenation req
+  c34005c            FAIL   FAILED:FAILED: CAN'T CREATE BASE TYPE VALUES OUTSIDE THE
+  c34005d            SKIP   COMPILE:acats/c34005d.ada:257:16: error: concatenation req
+  c34005f            FAIL   FAILED:FAILED: CAN'T CREATE BASE TYPE VALUES OUTSIDE THE
+  c34005g            SKIP   BIND:unresolved symbols
+  c34005i            FAIL   FAILED:FAILED: EXCEPTION RAISED BY OK ASSIGNMENT
+  c34005j            SKIP   COMPILE:acats/c34005j.ada:321:16: error: concatenation req
+  c34005l            FAIL   FAILED:FAILED: CAN'T CREATE BASE TYPE VALUES OUTSIDE THE
+  c34005m            SKIP   BIND:unresolved symbols
+  c34005o            FAIL   FAILED:FAILED: CAN'T CREATE BASE TYPE VALUES OUTSIDE THE
+  c34005p            FAIL   RUNTIME:exit 124
+  c34005r            FAIL   RUNTIME:exit 124
+  c34005s            SKIP   BIND:unresolved symbols
+  c34005u            SKIP   BIND:unresolved symbols
+  c34006a            FAIL   FAILED:FAILED: INCORRECT 'LAST BIT
+  c34006d            FAIL   FAILED:FAILED: INCORRECT :=
+  c34006f            FAIL   FAILED:FAILED: INCORRECT "IN"
+  c34006g            FAIL   FAILED:FAILED: INCORRECT QUALIFICATION
+  c34006j            SKIP   BIND:unresolved symbols
+  c34006l            SKIP   BIND:unresolved symbols
+  c34007a            FAIL   FAILED:FAILED: INCORRECT TYPE'SIZE
+  c34007d            SKIP   COMPILE:acats/c34007d.ada:196:9: error: unsupported expres
+  c34007f            SKIP   COMPILE:
+  c34007g            SKIP   BIND:unresolved symbols
+  c34007i            SKIP   COMPILE:
+  c34007j            FAIL   FAILED:FAILED: INCORRECT INITIALIZATION - 2
+  c34007m            FAIL   RUNTIME:exit 124
+  c34007p            SKIP   BIND:unresolved symbols
+  c34007r            SKIP   BIND:unresolved symbols
+  c34007s            SKIP   BIND:unresolved symbols
+  c34007u            SKIP   BIND:unresolved symbols
+  c34008a            SKIP   COMPILE:acats/c34008a.ada:69:38: error: cannot resolve 'H'
+  c34009a            PASS   PASSED
+  c34009d            FAIL   FAILED:FAILED: INCORRECT /=
+  c34009f            FAIL   FAILED:FAILED: INCORRECT "IN"
+  c34009g            PASS   PASSED
+  c34009j            SKIP   BIND:unresolved symbols
+  c34009l            SKIP   BIND:unresolved symbols
+  c34011b            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED - BOOL
+  c34012a            SKIP   COMPILE:acats/c34012a.ada:84:37: error: undefined identifi
+  c34014a            SKIP   COMPILE:
+  c34014c            SKIP   COMPILE:
+  c34014e            SKIP   COMPILE:
+  c34014g            SKIP   BIND:unresolved symbols
+  c34014h            SKIP   COMPILE:
+  c34014j            SKIP   COMPILE:
+  c34014l            SKIP   BIND:unresolved symbols
+  c34014n            FAIL   FAILED:FAILED: OLD OPERATOR NOT VISIBLE - SUBPROG DECL
+  c34014p            FAIL   FAILED:FAILED: OLD OPERATOR NOT VISIBLE - SUBPROG DECL -
+  c34014r            FAIL   FAILED:FAILED: OLD OPERATOR NOT VISIBLE - SUBPROG DECL -
+  c34014t            FAIL   FAILED:FAILED: OLD OPERATOR NOT VISIBLE - 1
+  c34014u            SKIP   BIND:unresolved symbols
+  c34014w            SKIP   BIND:unresolved symbols
+  c34014y            FAIL   FAILED:FAILED: OLD OPERATOR NOT VISIBLE - SUBPROG DECL -
+  c34015b            FAIL   FAILED:FAILED: WRONG RED VISIBLE FOR T INSIDE PACKAGE
+  c34016b            SKIP   BIND:unresolved symbols
+  c34018a            SKIP   BIND:unresolved symbols
+  c35003a            FAIL   FAILED:FAILED: NO EXCEPTION RAISED (E2)
+  c35003b            PASS   PASSED
+  c35003d            FAIL   FAILED:FAILED: NO EXCEPTION RAISED (F1)
+  c35003f            FAIL   FAILED:FAILED: NO EXCEPTION RAISED (X1)
+  c35102a            FAIL   FAILED:FAILED: 'A' NOT DECLARED CORRECTLY IN ENUM2 IN PKG
+  c35106a            PASS   PASSED
+  c35404a            PASS   PASSED
+  c35502a            PASS   PASSED
+  c35502b            PASS   PASSED
+  c35502c            PASS   PASSED
+  c35502e            SKIP   BIND:unresolved symbols
+  c35502g            PASS   PASSED
+  c35502h            PASS   PASSED
+  c35502i            PASS   PASSED
+  c35502j            PASS   PASSED
+  c35502k            PASS   PASSED
+  c35502l            PASS   PASSED
+  c35502m            PASS   PASSED
+  c35502n            PASS   PASSED
+  c35502o            PASS   PASSED
+  c35502p            PASS   PASSED
+  c35503a            PASS   PASSED
+  c35503b            PASS   PASSED
+  c35503c            PASS   PASSED
+  c35503e            PASS   PASSED
+  c35503g            PASS   PASSED
+  c35503h            PASS   PASSED
+  c35503k            PASS   PASSED
+  c35503l            PASS   PASSED
+  c35503o            PASS   PASSED
+  c35503p            PASS   PASSED
+  c35504a            PASS   PASSED
+  c35504b            PASS   PASSED
+  c35505a            PASS   PASSED
+  c35505b            PASS   PASSED
+  c35505c            PASS   PASSED
+  c35505d            PASS   PASSED
+  c35505e            PASS   PASSED
+  c35505f            PASS   PASSED
+  c35507a            PASS   PASSED
+  c35507b            PASS   PASSED
+  c35507c            PASS   PASSED
+  c35507e            PASS   PASSED
+  c35507g            PASS   PASSED
+  c35507h            PASS   PASSED
+  c35507i            PASS   PASSED
+  c35507j            PASS   PASSED
+  c35507k            PASS   PASSED
+  c35507l            PASS   PASSED
+  c35507m            PASS   PASSED
+  c35507n            PASS   PASSED
+  c35507o            PASS   PASSED
+  c35507p            PASS   PASSED
+  c35508a            PASS   PASSED
+  c35508b            PASS   PASSED
+  c35508c            PASS   PASSED
+  c35508e            PASS   PASSED
+  c35508g            PASS   PASSED
+  c35508h            PASS   PASSED
+  c35508k            PASS   PASSED
+  c35508l            PASS   PASSED
+  c35508o            PASS   PASSED
+  c35508p            PASS   PASSED
+  c35703a            PASS   PASSED
+  c35704a            PASS   PASSED
+  c35704b            PASS   PASSED
+  c35704c            PASS   PASSED
+  c35704d            PASS   PASSED
+  c35711a            FAIL   FAILED:FAILED: NO EXCEPTION RAISED FOR INCOMPATIBLE DIGIT
+  c35711b            FAIL   FAILED:FAILED: NO EXCEPTION RAISED FOR INCOMPATIBLE DIGIT
+  c35712a            PASS   PASSED
+  c35712b            PASS   PASSED
+  c35712c            SKIP   BIND:unresolved symbols
+  c35713a            PASS   PASSED
+  c35801d            SKIP   BIND:unresolved symbols
+  c35902a            PASS   PASSED
+  c35902b            PASS   PASSED
+  c35902d            FAIL   FAILED:FAILED: EXCEPTION RAISED - A
+  c35903a            PASS   PASSED
+  c35904a            FAIL   FAILED:FAILED: NO EXCEPTION RAISED FOR INCOMPATIBLE DELTA
+  c35904b            FAIL   FAILED:FAILED: NO EXCEPTION RAISED FOR INCOMPATIBLE DELTA
+  c35a02a            PASS   PASSED
+  c35a03a            PASS   PASSED
+  c35a03b            PASS   PASSED
+  c35a03c            PASS   PASSED
+  c35a03d            PASS   PASSED
+  c35a03n            PASS   PASSED
+  c35a03o            PASS   PASSED
+  c35a03p            PASS   PASSED
+  c35a03q            PASS   PASSED
+  c35a04a            PASS   PASSED
+  c35a04b            FAIL   FAILED:FAILED: EXCEPTION RAISED FOR LEFT OUT MM
+  c35a04c            FAIL   FAILED:FAILED: EXCEPTION RAISED FOR LEFT WAY OUT MM
+  c35a04d            FAIL   FAILED:FAILED: EXCEPTION RAISED FOR SECONDS MM
+  c35a04n            SKIP   BIND:unresolved symbols
+  c35a04o            FAIL   FAILED:FAILED: EXCEPTION RAISED FOR LEFT OUT MM
+  c35a04p            FAIL   FAILED:FAILED: EXCEPTION RAISED FOR LEFT WAY OUT MM
+  c35a04q            SKIP   BIND:unresolved symbols
+  c35a05a            PASS   PASSED
+  c35a05d            PASS   PASSED
+  c35a05n            SKIP   COMPILE:acats/c35a05n.ada:59:18: error: untyped aggregate
+  c35a05q            SKIP   COMPILE:acats/c35a05q.ada:71:18: error: untyped aggregate
+  c35a06a            PASS   PASSED
+  c35a06b            PASS   PASSED
+  c35a06d            PASS   PASSED
+  c35a06n            FAIL   FAILED:FAILED: GENERIC 'SAFE SMALL VALUE FOR LEFT OUT M1
+  c35a06o            FAIL   FAILED:FAILED: GENERIC 'SAFE SMALL VALUE FOR LEFT OUT MM
+  c35a06p            FAIL   FAILED:FAILED: GENERIC 'SAFE SMALL VALUE FOR LIKE DURATIO
+  c35a06q            FAIL   FAILED:FAILED: GENERIC 'SAFE SMALL VALUE FOR MICRO ANGLE 
+  c35a06r            FAIL   FAILED:FAILED: GENERIC 'SAFE SMALL VALUE FOR MIDDLE M2 /=
+  c35a06s            FAIL   FAILED:FAILED: GENERIC 'SAFE SMALL VALUE FOR DECIMAL M18
+  c35a07a            FAIL   FAILED:FAILED: ST LEFT EDGE M6'FIRST > -ST LEFT EDGE M6'L
+  c35a07b            FAIL   FAILED:FAILED: ST LEFT OUT MM HALF'LAST  <  ST LEFT OUT M
+  c35a07c            PASS   PASSED
+  c35a07d            PASS   PASSED
+  c35a07n            FAIL   RUNTIME:exit 1
+  c35a07o            FAIL   FAILED:FAILED: ST RIGHT OUT MM HALF'FIRST > -ST RIGHT OUT
+  c35a07p            FAIL   FAILED:FAILED: ST RIGHT WAY OUT MM LESS 1'FIRST > -ST RIG
+  c35a07q            SKIP   BIND:unresolved symbols
+  c35a08b            SKIP   COMPILE:acats/c35a08b.ada:43:26: error: cannot resolve sel
+  c36003a            PASS   PASSED
+  c36004a            SKIP   COMPILE:
+  c36104a            SKIP   COMPILE:acats/c36104a.ada:82:26: error: expected ), got RA
+  c36104b            SKIP   COMPILE:acats/c36104b.ada:99:26: error: expected ), got RA
+  c36172a            FAIL   FAILED:FAILED: OUT-OF-BOUNDS INDEX RANGE 1
+  c36172b            FAIL   RUNTIME:exit 124
+  c36172c            PASS   PASSED
+  c36174a            SKIP   COMPILE:
+  c36180a            FAIL   RUNTIME:exit 124
+  c36202a            PASS   PASSED
+  c36202b            PASS   PASSED
+  c36202c            PASS   PASSED
+  c36203a            PASS   PASSED
+  c36204a            FAIL   FAILED:FAILED: VALUE OUT OF RANGE AE 1 1
+  c36204b            SKIP   BIND:unresolved symbols
+  c36204c            FAIL   RUNTIME:exit 124
+  c36205a            PASS   PASSED
+  c36205b            PASS   PASSED
+  c36205c            PASS   PASSED
+  c36205d            PASS   PASSED
+  c36205e            PASS   PASSED
+  c36205f            SKIP   COMPILE:
+  c36205g            SKIP   COMPILE:
+  c36205h            SKIP   COMPILE:
+  c36205i            SKIP   COMPILE:
+  c36205j            SKIP   COMPILE:
+  c36205k            SKIP   BIND:unresolved symbols
+  c36301a            FAIL   FAILED:FAILED: NO EXCEPTION RAISED
+  c36301b            PASS   PASSED
+  c36302a            PASS   PASSED
+  c36303a            PASS   PASSED
+  c36304a            SKIP   COMPILE:
+  c36305a            SKIP   COMPILE:acats/c36305a.ada:78:35: error: incompatible types
+  c37002a            SKIP   BIND:unresolved symbols
+  c37003a            FAIL   FAILED:FAILED: INITIALIZATION EXPRESSION NOT EVALUATED FO
+  c37003b            SKIP   BIND:unresolved symbols
+  c37005a            FAIL   FAILED:FAILED: CONSTRAINT ERROR NOT RAISED
+  c37006a            SKIP   BIND:unresolved symbols
+  c37007a            SKIP   COMPILE:acats/c37007a.ada:38:26: error: expected ), got RA
+  c37008a            FAIL   FAILED:FAILED: NO EXCEPTION RAISED 3
+  c37008b            PASS   PASSED
+  c37008c            FAIL   FAILED:FAILED: CONSTRAINT ERROR NOT RAISED - A
+  c37009a            FAIL   RUNTIME:exit 1
+  c37010a            FAIL   FAILED:FAILED: INCORRECT VALUE FOR R1.B1'LAST
+  c37010b            SKIP   BIND:unresolved symbols
+  c37012a            PASS   PASSED
+  c37102b            FAIL   FAILED:FAILED: INCORRECT VALUE FOR R.K'LAST
+  c37103a            FAIL   FAILED:FAILED: WRONG DISCRIMINANT VALUE
+  c37105a            PASS   PASSED
+  c37107a            PASS   PASSED
+  c37108b            SKIP   BIND:unresolved symbols
+  c37206a            FAIL   FAILED:FAILED: CONSTRAINT ERROR NOT RAISED UPON ATTEMPT T
+  c37207a            FAIL   FAILED:FAILED: CONSTRAINT ERROR NOT RAISED UPON ATTEMPT T
+  c37208a            FAIL   FAILED:FAILED: DEFAULT DISCRIMINANT VALUE WRONG - R
+  c37208b            SKIP   BIND:unresolved symbols
+  c37209a            PASS   PASSED
+  c37209b            FAIL   FAILED:FAILED: NO EXCEPTION RAISED FOR DECLARATION OF R1
+  c37210a            FAIL   FAILED:FAILED: INCORRECT DISCRIMINANT VALUES FOR AC
+  c37211a            FAIL   FAILED:FAILED: NO EXCEPTION RAISED AT THE ELABORATION OF
+  c37211b            FAIL   FAILED:FAILED: NO EXCEPTION RAISED AT THE ELABORATION OF
+  c37211c            FAIL   FAILED:FAILED: NO EXCEPTION RAISED AT THE ELABORATION OF
+  c37211d            FAIL   FAILED:FAILED: NO EXCEPTION RAISED AT THE ELABORATION OF
+  c37211e            FAIL   FAILED:FAILED: NO EXCEPTION RAISED AT THE ELABORATION OF
+  c37213a            SKIP   BIND:unresolved symbols
+  c37213b            SKIP   BIND:unresolved symbols
+  c37213c            SKIP   BIND:unresolved symbols
+  c37213d            SKIP   BIND:unresolved symbols
+  c37213e            SKIP   BIND:unresolved symbols
+  c37213f            SKIP   BIND:unresolved symbols
+  c37213g            SKIP   BIND:unresolved symbols
+  c37213h            SKIP   BIND:unresolved symbols
+  c37213j            SKIP   BIND:unresolved symbols
+  c37213k            SKIP   BIND:unresolved symbols
+  c37213l            SKIP   BIND:unresolved symbols
+  c37214a            SKIP   BIND:unresolved symbols
+  c37215a            SKIP   BIND:unresolved symbols
+  c37215b            SKIP   BIND:unresolved symbols
+  c37215c            SKIP   BIND:unresolved symbols
+  c37215d            SKIP   BIND:unresolved symbols
+  c37215e            SKIP   BIND:unresolved symbols
+  c37215f            SKIP   BIND:unresolved symbols
+  c37215g            SKIP   BIND:unresolved symbols
+  c37215h            SKIP   BIND:unresolved symbols
+  c37216a            SKIP   BIND:unresolved symbols
+  c37217a            FAIL   FAILED:FAILED: CONSTRAINT ERROR NOT RAISED
+  c37217b            FAIL   FAILED:FAILED: CONSTRAINT ERROR NOT RAISED - UPPER
+  c37217c            FAIL   FAILED:FAILED: CONSTRAINT ERROR NOT RAISED
+  c37304a            PASS   PASSED
+  c37305a            PASS   PASSED
+  c37306a            PASS   PASSED
+  c37307a            PASS   PASSED
+  c37309a            PASS   PASSED
+  c37310a            PASS   PASSED
+  c37312a            SKIP   COMPILE:acats/c37312a.ada:52:13: error: cannot resolve sel
+  c37402a            SKIP   BIND:unresolved symbols
+  c37403a            PASS   PASSED
+  c37404a            FAIL   FAILED:FAILED: 'CONSTRAINED NOT TRUE FOR DEFAULT ACCESS 2
+  c37404b            FAIL   FAILED:FAILED: INCORRECT INITIALIZATION VALUES
+  c37405a            FAIL   FAILED:FAILED: 'CONSTRAINED ATTRIBUTE CHANGED BY PASSING
+  c37409a            PASS   PASSED
+  c37411a            PASS   PASSED
+  c38002a            SKIP   COMPILE:
+  c38002b            FAIL   FAILED:FAILED: INCOMPATIBLE CONSTRAINT ON ACCESS VALUE AC
+  c38004a            SKIP   BIND:unresolved symbols
+  c38004b            SKIP   COMPILE:acats/c38004b.ada:35:14: error: undefined identifi
+  c38005a            SKIP   BIND:unresolved symbols
+  c38005b            SKIP   COMPILE:acats/c38005b.ada:55:22: error: cannot resolve 'AR
+  c38005c            SKIP   COMPILE:acats/c38005c.ada:119:15: error: cannot resolve 'C
+  c38006a            PASS   PASSED
+  c38102a            FAIL   RUNTIME:exit 124
+  c38102b            PASS   PASSED
+  c38102c            PASS   PASSED
+  c38102d            SKIP   COMPILE:acats/c38102d.ada:25:17: error: cannot resolve sel
+  c38102e            FAIL   RUNTIME:exit 1
+  c38104a            PASS   PASSED
+  c38107a            FAIL   FAILED:FAILED: CONSTRAINT ERROR WAS NOT RAISED - 1
+  c38107b            SKIP   BIND:unresolved symbols
+  c38108a            PASS   PASSED
+  c38108b            SKIP   BIND:unresolved symbols
+  c38108c1m          SKIP   BIND:unresolved symbols
+  c38108d0m          SKIP   BIND:unresolved symbols
+  c38201a            FAIL   FAILED:FAILED: OBJ3 HAS INCORRECT ATTRIBUTE VALUES
+  c38202a            SKIP   BIND:unresolved symbols
+  c39005a            SKIP   BIND:unresolved symbols
+  c39006a            FAIL   FAILED:FAILED: PROGRAM ERROR NOT RAISED - 1
+  c39006b            FAIL   FAILED:FAILED: PROGRAM ERROR NOT RAISED - 1
+  c39006c0m          PASS   PASSED
+  c39006d            FAIL   FAILED:FAILED: PROGRAM ERROR NOT RAISED - 1
+  c39006e            PASS   PASSED
+  c39006f3m          PASS   PASSED
+  c39006g            FAIL   FAILED:FAILED: NO EXCEPTION RAISED
+  c39007a            FAIL   FAILED:FAILED: PROGRAM ERROR WAS NOT RAISED - 1
+  c39007b            FAIL   FAILED:FAILED: NO EXCEPTION RAISED
+  c39008a            FAIL   FAILED:FAILED: PROGRAM ERROR WAS NOT RAISED
+  c39008b            FAIL   FAILED:FAILED: TT1 ACTIVATED - 2
+  c39008c            FAIL   FAILED:FAILED: TASK A ACTIVATED
+  c41101d            SKIP   COMPILE:acats/c41101d.ada:63:6: error: type mismatch in as
+  c41103a            SKIP   COMPILE:acats/c41103a.ada:137:20: error: incompatible type
+  c41103b            SKIP   COMPILE:acats/c41103b.ada:193:31: error: incompatible type
+  c41104a            FAIL   FAILED:FAILED: CONSTRAINT ERROR WAS NOT RAISED -  8083253
+  c41105a            SKIP   COMPILE:acats/c41105a.ada:67:11: error: type mismatch in a
+  c41106a            SKIP   COMPILE:acats/c41106a.ada:24:36: error: expected ), got -
+  c41107a            SKIP   BIND:unresolved symbols
+  c41108a            FAIL   FAILED:FAILED: EXPRESSIONS IN THE PREFIX ARE NOT ALL EVAL
+  c41201d            SKIP   BIND:unresolved symbols
+  c41203a            SKIP   COMPILE:acats/c41203a.ada:124:14: error: unsupported expre
+  c41203b            SKIP   COMPILE:acats/c41203b.ada:160:14: error: unsupported expre
+  c41204a            FAIL   FAILED:FAILED: CONSTRAINT ERROR NOT RAISED - 1
+  c41205a            SKIP   COMPILE:acats/c41205a.ada:60:11: error: type mismatch in a
+  c41206a            SKIP   BIND:unresolved symbols
+  c41207a            SKIP   BIND:unresolved symbols
+  c41301a            SKIP   BIND:unresolved symbols
+  c41303a            PASS   PASSED
+  c41303b            PASS   PASSED
+  c41303c            PASS   PASSED
+  c41303e            PASS   PASSED
+  c41303f            PASS   PASSED
+  c41303g            PASS   PASSED
+  c41303i            PASS   PASSED
+  c41303j            PASS   PASSED
+  c41303k            PASS   PASSED
+  c41303m            SKIP   BIND:unresolved symbols
+  c41303n            SKIP   BIND:unresolved symbols
+  c41303o            PASS   PASSED
+  c41303q            PASS   PASSED
+  c41303r            PASS   PASSED
+  c41303s            PASS   PASSED
+  c41303u            SKIP   BIND:unresolved symbols
+  c41303v            SKIP   BIND:unresolved symbols
+  c41303w            PASS   PASSED
+  c41304a            PASS   PASSED
+  c41304b            SKIP   BIND:unresolved symbols
+  c41306a            SKIP   BIND:unresolved symbols
+  c41306b            SKIP   BIND:unresolved symbols
+  c41306c            SKIP   BIND:unresolved symbols
+  c41307a            SKIP   COMPILE:acats/c41307a.ada:25:38: error: undefined identifi
+  c41307c            SKIP   COMPILE:acats/c41307c.ada:23:41: error: undefined identifi
+  c41307d            SKIP   COMPILE:acats/c41307d.ada:221:40: error: expected ;, got .
+  c41308a            SKIP   BIND:unresolved symbols
+  c41308c            SKIP   BIND:unresolved symbols
+  c41308d            SKIP   COMPILE:acats/c41308d.ada:54:25: error: cannot resolve sel
+  c41309a            FAIL   FAILED:FAILED: INCORRECT RESULTS FROM EXPANDED NAME
+  c41320a            PASS   PASSED
+  c41321a            PASS   PASSED
+  c41322a            SKIP   BIND:unresolved symbols
+  c41323a            SKIP   BIND:unresolved symbols
+  c41324a            FAIL   FAILED:FAILED: INCORRECT RESULTS FROM EXPANDED NAME - 1
+  c41325a            SKIP   BIND:unresolved symbols
+  c41326a            PASS   PASSED
+  c41327a            PASS   PASSED
+  c41328a            SKIP   COMPILE:acats/c41328a.ada:57:16: error: cannot resolve sel
+  c41401a            FAIL   FAILED:FAILED: CONSTRAINT ERROR NOT RAISED - 1
+  c41402a            PASS   PASSED
+  c41403a            FAIL   FAILED:FAILED: PREFIX FOR 'ADDRESS WAS NOT EVALUATED
+  c41404a            FAIL   FAILED:FAILED: FOUR VAR ATTRIBUTES INCORRECT.  FIRST IS-2
+  c42005a            FAIL   FAILED:FAILED: CONSTRAINT ERROR NOT RAISED
+  c42006a            FAIL   FAILED:FAILED: CONSTRAINT ERROR NOT RAISED - 1
+  c42007a            FAIL   FAILED:FAILED: LOWER BOUND INCORRECTLY GIVEN BY 'FIRST
+  c42007b            SKIP   COMPILE:acats/c42007b.ada:42:33: error: incompatible types
+  c42007c            FAIL   FAILED:FAILED: UPPER BOUND INCORRECTLY GIVEN - 1
+  c42007d            FAIL   FAILED:FAILED: LOWER BOUND NOT GIVEN BY 'FIRST
+  c42007e            SKIP   COMPILE:
+  c42007f            SKIP   BIND:unresolved symbols
+  c42007g            SKIP   BIND:unresolved symbols
+  c42007h            SKIP   BIND:unresolved symbols
+  c42007i            SKIP   BIND:unresolved symbols
+  c42007j            SKIP   BIND:unresolved symbols
+  c42007k            SKIP   BIND:unresolved symbols
+  c43003a            FAIL   FAILED:FAILED: DID NOT EVALUATE ALLOCATOR FOR EACH COMPON
+  c43004a            FAIL   FAILED:FAILED: CONSTRAINT ERROR WAS NOT RAISED - 2
+  c43004b            FAIL   RUNTIME:exit 124
+  c43004c            SKIP   BIND:unresolved symbols
+  c43103a            FAIL   FAILED:FAILED: CASE B : INCORRECT VALUES IN RECORD
+  c43103b            SKIP   BIND:unresolved symbols
+  c43104a            FAIL   FAILED:FAILED: WRONG PROCEDURE ENTERED
+  c43105a            PASS   PASSED
+  c43105b            PASS   PASSED
+  c43106a            SKIP   BIND:unresolved symbols
+  c43107a            PASS   PASSED
+  c43108a            FAIL   RUNTIME:exit 1
+  c43204a            FAIL   RUNTIME:exit 124
+  c43204c            SKIP   BIND:unresolved symbols
+  c43204e            FAIL   RUNTIME:exit 124
+  c43204f            FAIL   FAILED:FAILED: UNEXPECTED CONSTRAINT ERROR OR OTHER EXCEP
+  c43204g            FAIL   RUNTIME:exit 124
+  c43204h            SKIP   BIND:unresolved symbols
+  c43204i            FAIL   RUNTIME:exit 124
+  c43205a            PASS   PASSED
+  c43205b            SKIP   COMPILE:acats/c43205b.ada:48:46: error: untyped aggregate
+  c43205c            FAIL   FAILED:FAILED: CASE C : UPPER BOUND INCORRECTLY GIVEN BY
+  c43205d            PASS   PASSED
+  c43205e            SKIP   COMPILE:acats/c43205e.ada:32:47: error: concatenation requ
+  c43205f            FAIL   FAILED:FAILED: CASE F1 : CONSTRAINT ERROR NOT RAISED
+  c43205g            FAIL   FAILED:FAILED: CASE A1 : ARRAY DOES NOT CONTAIN THE CORRE
+  c43205h            SKIP   COMPILE:acats/c43205h.ada:48:46: error: untyped aggregate
+  c43205i            FAIL   FAILED:FAILED: CASE I : FUNCTION DOES NOT RETURN THE CORR
+  c43205j            SKIP   BIND:unresolved symbols
+  c43205k            SKIP   BIND:unresolved symbols
+  c43206a            SKIP   COMPILE:
+  c43207a            FAIL   FAILED:FAILED: CASE A1 : CONSTRAINT ERROR NOT RAISED
+  c43207b            FAIL   FAILED:FAILED: CASE B1 : ARRAY NOT BOUNDED CORRECTLY
+  c43207c            FAIL   RUNTIME:exit 124
+  c43207d            FAIL   FAILED:FAILED: CASE D1 : INCORRECT NUMBER OF EVALUATIONS.
+  c43208a            FAIL   RUNTIME:exit 124
+  c43208b            FAIL   FAILED:FAILED: CASE A1 : F WAS EVALUATED
+  c43209a            SKIP   BIND:unresolved symbols
+  c43210a            FAIL   FAILED:FAILED: CASE A : INCORRECT NUMBER OF EVALUATIONS.
+  c43211a            FAIL   FAILED:FAILED: CASE A : INCORRECT VALUES
+  c43212a            FAIL   RUNTIME:exit 124
+  c43212c            SKIP   BIND:unresolved symbols
+  c43213a            FAIL   FAILED:FAILED: CASE 1 : CONSTRAINT ERROR NOT RAISED
+  c43214a            SKIP   BIND:unresolved symbols
+  c43214b            SKIP   BIND:unresolved symbols
+  c43214c            SKIP   BIND:unresolved symbols
+  c43214d            SKIP   BIND:unresolved symbols
+  c43214e            SKIP   BIND:unresolved symbols
+  c43214f            SKIP   BIND:unresolved symbols
+  c43215a            PASS   PASSED
+  c43215b            PASS   PASSED
+  c43222a            SKIP   BIND:unresolved symbols
+  c43224a            SKIP   COMPILE:
+  c44003a            SKIP   COMPILE:acats/c44003a.ada:64:28: error: incompatible types
+  c44003d            SKIP   COMPILE:acats/c44003d.ada:64:28: error: incompatible types
+  c44003e            SKIP   COMPILE:acats/c44003e.ada:71:28: error: incompatible types
+  c44003f            SKIP   COMPILE:
+  c44003g            SKIP   COMPILE:
+  c45101a            PASS   PASSED
+  c45101b            PASS   PASSED
+  c45101c            PASS   PASSED
+  c45101e            PASS   PASSED
+  c45101g            PASS   PASSED
+  c45101h            PASS   PASSED
+  c45101i            PASS   PASSED
+  c45101k            PASS   PASSED
+  c45104a            PASS   PASSED
+  c45111a            PASS   PASSED
+  c45111b            PASS   PASSED
+  c45111c            PASS   PASSED
+  c45111d            PASS   PASSED
+  c45111e            PASS   PASSED
+  c45112a            SKIP   BIND:unresolved symbols
+  c45112b            SKIP   BIND:unresolved symbols
+  c45113a            SKIP   BIND:unresolved symbols
+  c45114a            SKIP   COMPILE:
+  c45114b            FAIL   FAILED:FAILED: 'OR' NOT CORRECTLY DEFINED
+  c45122a            PASS   PASSED
+  c45122b            PASS   PASSED
+  c45122c            PASS   PASSED
+  c45122d            PASS   PASSED
+  c45123a            PASS   PASSED
+  c45123b            PASS   PASSED
+  c45123c            PASS   PASSED
+  c45201a            PASS   PASSED
+  c45201b            PASS   PASSED
+  c45202a            PASS   PASSED
+  c45202b            SKIP   BIND:unresolved symbols
+  c45210a            PASS   PASSED
+  c45211a            FAIL   RUNTIME:exit 1
+  c45220a            PASS   PASSED
+  c45220b            PASS   PASSED
+  c45220c            PASS   PASSED
+  c45220d            PASS   PASSED
+  c45220e            PASS   PASSED
+  c45220f            PASS   PASSED
+  c45231a            PASS   PASSED
+  c45232b            PASS   PASSED
+  c45242b            PASS   PASSED
+  c45251a            PASS   PASSED
+  c45252a            SKIP   BIND:unresolved symbols
+  c45252b            PASS   PASSED
+  c45253a            SKIP   BIND:unresolved symbols
+  c45262a            SKIP   BIND:unresolved symbols
+  c45262b            SKIP   BIND:unresolved symbols
+  c45262c            SKIP   BIND:unresolved symbols
+  c45262d            SKIP   COMPILE:acats/c45262d.ada:15:26: error: cannot resolve sel
+  c45264a            SKIP   BIND:unresolved symbols
+  c45264b            FAIL   FAILED:FAILED: DISCRIMINANTS AND COMPONENTS ARE THE SAME,
+  c45264c            FAIL   FAILED:FAILED: INCORRECT RESULTS FROM COMPARING ONE DIMEN
+  c45265a            FAIL   RUNTIME:exit 139
+  c45271a            FAIL   FAILED:FAILED: INCORRECT RESULTS FOR RECORDS - 6
+  c45272a            PASS   PASSED
+  c45273a            FAIL   FAILED:FAILED: INCORRECT RESULTS FOR RECORDS - 1
+  c45274a            PASS   PASSED
+  c45274b            PASS   PASSED
+  c45274c            FAIL   FAILED:FAILED: WRONG VALUE: 'IN', 3
+  c45281a            PASS   PASSED
+  c45282a            FAIL   FAILED:FAILED: INCORRECT RESULTS FOR ACCESS TYPES - 9
+  c45282b            PASS   PASSED
+  c45291a            PASS   PASSED
+  c45303a            PASS   PASSED
+  c45304a            PASS   PASSED
+  c45323a            PASS   PASSED
+  c45331a            SKIP   COMPILE:acats/c45331a.ada:46:48: error: incompatible types
+  c45331d            SKIP   COMPILE:acats/c45331d.ada:48:48: error: incompatible types
+  c45332a            PASS   PASSED
+  c45342a            SKIP   BIND:unresolved symbols
+  c45343a            SKIP   BIND:unresolved symbols
+  c45344a            SKIP   BIND:unresolved symbols
+  c45345a            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED FOR CATENATION OF STR
+  c45345b            PASS   PASSED
+  c45345c            SKIP   BIND:unresolved symbols
+  c45345d            SKIP   BIND:unresolved symbols
+  c45346a            SKIP   COMPILE:
+  c45347a            SKIP   COMPILE:acats/c45347a.ada:64:20: error: concatenation requ
+  c45347b            SKIP   COMPILE:acats/c45347b.ada:49:11: error: type mismatch in a
+  c45347c            SKIP   COMPILE:acats/c45347c.ada:76:20: error: concatenation requ
+  c45347d            SKIP   COMPILE:acats/c45347d.ada:61:21: error: concatenation requ
+  c45411a            SKIP   BIND:unresolved symbols
+  c45411d            SKIP   BIND:unresolved symbols
+  c45412a            PASS   PASSED
+  c45413a            PASS   PASSED
+  c45431a            SKIP   COMPILE:acats/c45431a.ada:40:33: error: incompatible types
+  c45502a            PASS   PASSED
+  c45503a            PASS   PASSED
+  c45504a            PASS   PASSED
+  c45504d            PASS   PASSED
+  c45505a            PASS   PASSED
+  c45523a            PASS   PASSED
+  c45534a            FAIL   RUNTIME:exit 1
+  c45534b            FAIL   RUNTIME:exit 124
+  c45611a            PASS   PASSED
+  c45612a            FAIL   RUNTIME:exit 124
+  c45613a            PASS   PASSED
+  c45614a            PASS   PASSED
+  c45622a            PASS   PASSED
+  c45624a            PASS   PASSED
+  c45624b            PASS   PASSED
+  c45631a            PASS   PASSED
+  c45632a            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED
+  c45651a            SKIP   COMPILE:acats/c45651a.ada:84:33: error: incompatible types
+  c45652a            PASS   PASSED
+  c45662a            PASS   PASSED
+  c45662b            PASS   PASSED
+  c45672a            SKIP   COMPILE:acats/c45672a.ada:70:21: error: undefined identifi
+  c46011a            PASS   PASSED
+  c46013a            FAIL   FAILED:FAILED: INCORRECT VALUE (3)
+  c46014a            PASS   PASSED
+  c46021a            PASS   PASSED
+  c46022a            FAIL   FAILED:FAILED: INCORRECT VALUE (1)
+  c46023a            PASS   PASSED
+  c46024a            PASS   PASSED
+  c46031a            FAIL   FAILED:FAILED: INCORRECT RESULT FROM CONVERSION (1)
+  c46032a            PASS   PASSED
+  c46033a            SKIP   COMPILE:acats/c46033a.ada:53:6: error: type mismatch in as
+  c46034a            FAIL   FAILED:FAILED: NO EXCEPTION RAISED OUTSIDE FIX1 SUBTYPE
+  c46041a            FAIL   FAILED:FAILED: INCORRECT CONVERSION OF UNARR2 (A2)
+  c46042a            FAIL   RUNTIME:exit 124
+  c46043a            FAIL   FAILED:FAILED: NO EXCEPTION RAISED WITH DIFFERING RANGE C
+  c46043b            FAIL   FAILED:FAILED: NO EXCEPTION RAISED WITH ONE DIMENSIONAL A
+  c46044a            FAIL   FAILED:FAILED: NO EXCEPTION RAISED WITH DIFFERING RANGE C
+  c46044b            FAIL   FAILED:FAILED: NO EXCEPTION RAISED - (B)
+  c46051a            SKIP   BIND:unresolved symbols
+  c46052a            PASS   PASSED
+  c46053a            FAIL   FAILED:FAILED: NO EXCEPTION RAISED FOR 'REC3 (R)'
+  c46054a            SKIP   COMPILE:
+  c47002a            PASS   PASSED
+  c47002b            PASS   PASSED
+  c47002c            FAIL   FAILED:FAILED: INCORRECT RESULTS FOR SUBTYPE ARR1
+  c47002d            SKIP   BIND:unresolved symbols
+  c47003a            PASS   PASSED
+  c47004a            PASS   PASSED
+  c47005a            PASS   PASSED
+  c47006a            PASS   PASSED
+  c47007a            SKIP   BIND:unresolved symbols
+  c47008a            SKIP   BIND:unresolved symbols
+  c47009a            SKIP   COMPILE:
+  c47009b            PASS   PASSED
+  c48004a            PASS   PASSED
+  c48004b            FAIL   FAILED:FAILED: WRONG VALUES - B5
+  c48004c            PASS   PASSED
+  c48004d            FAIL   FAILED:FAILED: WRONG VALUES - C4
+  c48004e            FAIL   FAILED:FAILED: WRONG VALUES - CASE 2
+  c48004f            FAIL   FAILED:FAILED: VARIABLE IS NOT NULL - CASE 1
+  c48005a            PASS   PASSED
+  c48005b            FAIL   RUNTIME:exit 124
+  c48005c            FAIL   FAILED:FAILED: VARIABLE NOT SET TO NULL - CASE 1
+  c48006a            PASS   PASSED
+  c48006b            SKIP   COMPILE:
+  c48007a            FAIL   FAILED:FAILED: NO EXCEPTION RAISED - UR
+  c48007b            FAIL   FAILED:FAILED: NO EXCEPTION RAISED - CR
+  c48007c            FAIL   FAILED:FAILED: NO EXCEPTION RAISED - V11
+  c48008a            FAIL   FAILED:FAILED: NO EXCEPTION RAISED - CASE A1A
+  c48008b            FAIL   FAILED:FAILED: NO EXCEPTION RAISED - UR1
+  c48008c            FAIL   FAILED:FAILED: NO EXCEPTION RAISED - CASE 1
+  c48008d            FAIL   FAILED:FAILED: NO EXCEPTION RAISED - UA1
+  c48009a            FAIL   FAILED:FAILED: NO EXCEPTION RAISED - 1
+  c48009b            SKIP   BIND:unresolved symbols
+  c48009c            FAIL   FAILED:FAILED: NO EXCEPTION RAISED - CASE 1
+  c48009d            SKIP   COMPILE:
+  c48009e            FAIL   RUNTIME:exit 124
+  c48009f            SKIP   COMPILE:
+  c48009g            FAIL   FAILED:FAILED: NO EXCEPTION RAISED - UR
+  c48009h            FAIL   FAILED:FAILED: NO EXCEPTION RAISED - CR
+  c48009i            FAIL   FAILED:FAILED: NO EXCEPTION RAISED - UR
+  c48009j            FAIL   FAILED:FAILED: NO EXCEPTION RAISED - UA
+  c48010a            PASS   PASSED
+  c48011a            SKIP   COMPILE:acats/c48011a.ada:73:6: error: type mismatch in as
+  c48012a            PASS   PASSED
+  c49020a            PASS   PASSED
+  c49021a            PASS   PASSED
+  c49022a            PASS   PASSED
+  c49022b            PASS   PASSED
+  c49022c            PASS   PASSED
+  c49023a            PASS   PASSED
+  c49024a            PASS   PASSED
+  c49025a            PASS   PASSED
+  c49026a            PASS   PASSED
+  c4a005a            PASS   PASSED
+  c4a005b            PASS   PASSED
+  c4a006a            PASS   PASSED
+  c4a010a            FAIL   FAILED:FAILED: REAL MULTIPLICATION RESULT INCORRECT
+  c4a010b            FAIL   FAILED:FAILED: INCORRECT RESULTS FOR SERIES OF NAMED NUMB
+  c4a010d            PASS   PASSED
+  c4a011a            PASS   PASSED
+  c4a012a            FAIL   FAILED:FAILED: NUMERIC ERROR/CONSTRAINT ERROR NOT RAISED
+  c4a012b            FAIL   FAILED:FAILED: THE EXPRESSION '0.0 ** (-1)' DID NOT RAISE
+  c4a013a            PASS   PASSED
+  c4a013b            PASS   PASSED
+  c4a014a            PASS   PASSED
+  c51002a            PASS   PASSED
+  c51004a            SKIP   BIND:unresolved symbols
+  c52001a            SKIP   BIND:unresolved symbols
+  c52001b            PASS   PASSED
+  c52001c            PASS   PASSED
+  c52005a            PASS   PASSED
+  c52005b            PASS   PASSED
+  c52005c            PASS   PASSED
+  c52005d            PASS   PASSED
+  c52005e            PASS   PASSED
+  c52005f            PASS   PASSED
+  c52007a            PASS   PASSED
+  c52008a            PASS   PASSED
+  c52008b            SKIP   BIND:unresolved symbols
+  c52009a            FAIL   FAILED:FAILED: RECORD ASSIGNED VALUE WITH DIFFERENT DISCR
+  c52009b            FAIL   FAILED:FAILED: RECORD ASSIGNED VALUE WITH DIFFERENT DISCR
+  c52010a            PASS   PASSED
+  c52011a            SKIP   COMPILE:
+  c52011b            FAIL   FAILED:FAILED: NON-NULL ASSIGNMENT MADE BETWEEN TWO VARIA
+  c52012a            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED FOR OUT-OF-RANGE COMP
+  c52012b            FAIL   RUNTIME:exit 124
+  c52013a            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED FOR ARRAY CONSTRAINT
+  c52101a            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED FOR INDEX SUBTYPE ERR
+  c52102a            SKIP   BIND:unresolved symbols
+  c52102b            SKIP   COMPILE:acats/c52102b.ada:65:27: error: expected name, got
+  c52102c            SKIP   BIND:unresolved symbols
+  c52102d            SKIP   COMPILE:acats/c52102d.ada:70:27: error: expected name, got
+  c52103a            FAIL   RUNTIME:exit 139
+  c52103b            PASS   PASSED
+  c52103c            FAIL   FAILED:FAILED: SLICE ASSIGNMENT NOT CORRECT (8)
+  c52103f            PASS   PASSED
+  c52103g            PASS   PASSED
+  c52103h            PASS   PASSED
+  c52103k            FAIL   RUNTIME:exit 124
+  c52103l            FAIL   RUNTIME:exit 139
+  c52103m            FAIL   RUNTIME:exit 124
+  c52103p            FAIL   FAILED:FAILED: EXCEPTION RAISED  -  SUBTEST 10
+  c52103q            FAIL   FAILED:FAILED: EXCEPTION RAISED  -  SUBTEST 5
+  c52103r            FAIL   RUNTIME:exit 124
+  c52103s            SKIP   BIND:unresolved symbols
+  c52103x            FAIL   RUNTIME:exit 124
+  c52104a            FAIL   RUNTIME:exit 139
+  c52104b            FAIL   FAILED:FAILED: NO EXCEPTION RAISED  (14)
+  c52104c            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED  -  SUBTEST 7
+  c52104f            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED  -  SUBTEST 10
+  c52104g            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED  -  SUBTEST 14
+  c52104h            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED  -  SUBTEST 7
+  c52104k            FAIL   FAILED:FAILED: ORIG. VALUE ALTERED (10)
+  c52104l            FAIL   FAILED:FAILED: LHS ARRAY ALTERED  (13)
+  c52104m            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED  -  SUBTEST 8
+  c52104p            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED  -  SUBTEST 10
+  c52104q            FAIL   FAILED:FAILED: LHS ARRAY ALTERED  (14)
+  c52104r            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED  -  SUBTEST 7
+  c52104x            FAIL   RUNTIME:exit 124
+  c52104y            FAIL   RUNTIME:exit 124
+  c53004b            PASS   PASSED
+  c53005a            PASS   PASSED
+  c53005b            PASS   PASSED
+  c53006a            PASS   PASSED
+  c53006b            PASS   PASSED
+  c53007a            PASS   PASSED
+  c53008a            PASS   PASSED
+  c54a03a            PASS   PASSED
+  c54a04a            PASS   PASSED
+  c54a06a            FAIL   RUNTIME:exit 1
+  c54a07a            SKIP   COMPILE:acats/c54a07a.ada:57:28: error: cannot resolve sel
+  c54a11a            PASS   PASSED
+  c54a13a            PASS   PASSED
+  c54a13b            SKIP   BIND:unresolved symbols
+  c54a13c            PASS   PASSED
+  c54a13d            PASS   PASSED
+  c54a22a            SKIP   BIND:unresolved symbols
+  c54a23a            PASS   PASSED
+  c54a24a            SKIP   BIND:unresolved symbols
+  c54a24b            SKIP   BIND:unresolved symbols
+  c54a26a            PASS   PASSED
+  c54a27a            PASS   PASSED
+  c54a41a            PASS   PASSED
+  c54a42a            PASS   PASSED
+  c54a42b            PASS   PASSED
+  c54a42c            PASS   PASSED
+  c54a42d            PASS   PASSED
+  c54a42e            PASS   PASSED
+  c54a42f            PASS   PASSED
+  c54a42g            PASS   PASSED
+  c55b03a            PASS   PASSED
+  c55b04a            PASS   PASSED
+  c55b05a            PASS   PASSED
+  c55b06a            PASS   PASSED
+  c55b06b            PASS   PASSED
+  c55b08a            PASS   PASSED
+  c55b09a            PASS   PASSED
+  c55b10a            PASS   PASSED
+  c55b11a            PASS   PASSED
+  c55b11b            PASS   PASSED
+  c55b15a            PASS   PASSED
+  c55b16a            PASS   PASSED
+  c55c01a            PASS   PASSED
+  c55c02a            PASS   PASSED
+  c55c02b            PASS   PASSED
+  c55c03a            PASS   PASSED
+  c55c03b            PASS   PASSED
+  c55d01a            PASS   PASSED
+  c56002a            PASS   PASSED
+  c57002a            PASS   PASSED
+  c57003a            PASS   PASSED
+  c57004a            PASS   PASSED
+  c57004b            PASS   PASSED
+  c57004c            PASS   PASSED
+  c57005a            PASS   PASSED
+  c58004a            PASS   PASSED
+  c58004b            PASS   PASSED
+  c58004c            PASS   PASSED
+  c58004d            PASS   PASSED
+  c58004f            PASS   PASSED
+  c58004g            PASS   PASSED
+  c58005a            PASS   PASSED
+  c58005b            PASS   PASSED
+  c58005h            PASS   PASSED
+  c58006a            PASS   PASSED
+  c58006b            PASS   PASSED
+  c59001b            SKIP   COMPILE:acats/c59001b.ada:63:11: error: undefined label 'L
+  c59002a            PASS   PASSED
+  c59002b            PASS   PASSED
+  c59002c            SKIP   BIND:unresolved symbols
+  c61003b            PASS   PASSED
+  c61008a            PASS   PASSED
+  c61009a            PASS   PASSED
+  c61010a            PASS   PASSED
+  c62002a            PASS   PASSED
+  c62003a            PASS   PASSED
+  c62003b            PASS   PASSED
+  c62004a            PASS   PASSED
+  c62006a            PASS   PASSED
+  c62009a            PASS   PASSED
+  c63004a            PASS   PASSED
+  c64002b            PASS   PASSED
+  c64004g            FAIL   RUNTIME:exit 124
+  c64005a            PASS   PASSED
+  c64005b            SKIP   BIND:unresolved symbols
+  c64005c            SKIP   BIND:unresolved symbols
+  c64005d0m          SKIP   BIND:unresolved symbols
+  c64005da           SKIP   COMPILE:acats/c64005da.ada:7:25: error: undefined identifi
+  c64005db           SKIP   COMPILE:acats/c64005db.ada:7:25: error: undefined identifi
+  c64005dc           SKIP   COMPILE:acats/c64005dc.ada:7:25: error: undefined identifi
+  c64103a            SKIP   BIND:unresolved symbols
+  c64103b            SKIP   BIND:unresolved symbols
+  c64103c            SKIP   BIND:unresolved symbols
+  c64103d            SKIP   BIND:unresolved symbols
+  c64103e            SKIP   COMPILE:
+  c64103f            SKIP   COMPILE:
+  c64104a            FAIL   FAILED:FAILED: CONSTRAINT ERROR NOT RAISED ON RETURN FROM
+  c64104b            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED ON CALL TO P1
+  c64104c            FAIL   RUNTIME:exit 124
+  c64104d            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED ON CALL
+  c64104e            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED ON CALL
+  c64104f            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED ON CALL
+  c64104g            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED ON CALL
+  c64104h            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED AFTER RETURN
+  c64104i            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED AFTER RETURN
+  c64104j            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED AFTER RETURN
+  c64104k            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED AFTER RETURN
+  c64104l            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED AFTER RETURN
+  c64104m            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED AFTER RETURN
+  c64104n            FAIL   FAILED:FAILED: NO EXCEPTION RAISED
+  c64104o            FAIL   FAILED:FAILED: NO EXCEPTION RAISED
+  c64105a            SKIP   BIND:unresolved symbols
+  c64105b            FAIL   RUNTIME:exit 124
+  c64105c            SKIP   BIND:unresolved symbols
+  c64105d            PASS   PASSED
+  c64105e            SKIP   BIND:unresolved symbols
+  c64105f            SKIP   BIND:unresolved symbols
+  c64106a            SKIP   COMPILE:acats/c64106a.ada:135:30: error: cannot resolve se
+  c64106b            FAIL   RUNTIME:exit 124
+  c64106c            SKIP   BIND:unresolved symbols
+  c64106d            SKIP   BIND:unresolved symbols
+  c64107a            PASS   PASSED
+  c64108a            SKIP   BIND:unresolved symbols
+  c64109a            SKIP   COMPILE:error: Type To Llvm called with NULL type
+  c64109b            SKIP   COMPILE:
+  c64109c            FAIL   RUNTIME:exit 124
+  c64109d            FAIL   RUNTIME:exit 124
+  c64109e            FAIL   RUNTIME:exit 124
+  c64109f            FAIL   RUNTIME:exit 124
+  c64109g            FAIL   RUNTIME:exit 124
+  c64109h            SKIP   COMPILE:error: Type To Llvm called with NULL type
+  c64109i            FAIL   RUNTIME:exit 124
+  c64109j            FAIL   RUNTIME:exit 124
+  c64109k            FAIL   RUNTIME:exit 124
+  c64109l            SKIP   COMPILE:error: Type To Llvm called with NULL type
+  c64201b            SKIP   COMPILE:acats/c64201b.ada:59:27: error: unresolved identif
+  c64201c            SKIP   COMPILE:acats/c64201c.ada:123:22: error: unresolved identi
+  c64202a            FAIL   FAILED:FAILED: DEFAULT NOT EVALUATED CORRECTLY - 1 X = 3
+  c65003a            PASS   PASSED
+  c65003b            PASS   PASSED
+  c65004a            PASS   PASSED
+  c66002a            SKIP   BIND:unresolved symbols
+  c66002c            PASS   PASSED
+  c66002d            PASS   PASSED
+  c66002e            PASS   PASSED
+  c66002f            SKIP   COMPILE:acats/c66002f.ada:51:18: error: cannot resolve sel
+  c66002g            SKIP   COMPILE:acats/c66002g.ada:47:11: error: type mismatch in a
+  c67002a            SKIP   COMPILE:acats/c67002a.ada:337:31: error: incompatible type
+  c67002b            SKIP   COMPILE:acats/c67002b.ada:125:33: error: incompatible type
+  c67002c            SKIP   COMPILE:acats/c67002c.ada:437:36: error: incompatible type
+  c67002d            SKIP   COMPILE:acats/c67002d.ada:280:31: error: incompatible type
+  c67002e            SKIP   COMPILE:acats/c67002e.ada:274:31: error: incompatible type
+  c67003a            FAIL   FAILED:FAILED: REDEFINITION OF INTEGER "*" IS DEFECTIVE
+  c67003b            FAIL   FAILED:FAILED: REDEFINITION OF FLOAT "+" IS DEFECTIVE
+  c67003c            SKIP   BIND:unresolved symbols
+  c67003d            SKIP   BIND:unresolved symbols
+  c67003e            SKIP   BIND:unresolved symbols
+  c67005a            FAIL   FAILED:FAILED: INCORRECT INEQUALITY OPERATOR
+  c67005b            SKIP   BIND:unresolved symbols
+  c67005c            SKIP   COMPILE:acats/c67005c.ada:63:30: error: cannot resolve 'VA
+  c67005d            SKIP   COMPILE:acats/c67005d.ada:38:28: error: cannot resolve sel
+  c72001b            PASS   PASSED
+  c72002a            FAIL   FAILED:FAILED: ARRAY 1 ELABORATED OUT OF ORDER
+  c73002a            PASS   PASSED
+  c73007a            SKIP   COMPILE:acats/c73007a.ada:94:14: error: cannot resolve sel
+  c74004a            SKIP   COMPILE:acats/c74004a.ada:308:13: error: no entry 'ONE' in
+  c74203a            PASS   PASSED
+  c74206a            PASS   PASSED
+  c74207b            PASS   PASSED
+  c74208a            PASS   PASSED
+  c74208b            FAIL   FAILED:FAILED: IMPROPER VALUE FOR 'CONSTRAINED BEFORE THE
+  c74209a            FAIL   FAILED:FAILED: WRONG INPUT VALUES  -  PROC1
+  c74210a            SKIP   BIND:unresolved symbols
+  c74211a            SKIP   BIND:unresolved symbols
+  c74211b            SKIP   BIND:unresolved symbols
+  c74302a            PASS   PASSED
+  c74302b            SKIP   COMPILE:acats/c74302b.ada:75:19: error: untyped aggregate
+  c74305a            FAIL   FAILED:FAILED: PARAMETER DEFAULT OF P5 NOT PROPERLY INITI
+  c74305b            SKIP   BIND:unresolved symbols
+  c74306a            SKIP   BIND:unresolved symbols
+  c74307a            PASS   PASSED
+  c74308a            PASS   PASSED
+  c74401d            SKIP   COMPILE:acats/c74401d.ada:80:15: error: cannot resolve sel
+  c74401e            FAIL   FAILED:FAILED: DIRECT CALL NOT CORRECT
+  c74401k            SKIP   BIND:unresolved symbols
+  c74401q            FAIL   FAILED:FAILED: DIRECT CALL NOT CORRECT
+  c74402a            FAIL   FAILED:FAILED: WRONG DEFAULT VALUE - LP2
+  c74402b            PASS   PASSED
+  c74406a            SKIP   COMPILE:acats/c74406a.ada:82:13: error: cannot resolve sel
+  c74407b            PASS   PASSED
+  c74409b            PASS   PASSED
+  c83007a            PASS   PASSED
+  c83012d            SKIP   COMPILE:acats/c83012d.ada:58:36: error: undefined identifi
+  c83022a            SKIP   COMPILE:acats/c83022a.ada:44:22: error: cannot resolve sel
+  c83022g0m          SKIP   BIND:unresolved symbols
+  c83023a            SKIP   COMPILE:acats/c83023a.ada:51:27: error: cannot resolve sel
+  c83024a            SKIP   COMPILE:acats/c83024a.ada:52:22: error: cannot resolve sel
+  c83024e1m          SKIP   COMPILE:acats/c83024e1m.ada:27:14: error: undefined identi
+  c83025a            SKIP   COMPILE:acats/c83025a.ada:49:22: error: cannot resolve sel
+  c83025c            SKIP   BIND:unresolved symbols
+  c83026a            SKIP   COMPILE:acats/c83026a.ada:53:27: error: cannot resolve sel
+  c83027a            SKIP   COMPILE:acats/c83027a.ada:37:34: error: cannot resolve sel
+  c83027c            SKIP   COMPILE:acats/c83027c.ada:53:46: error: cannot resolve sel
+  c83028a            SKIP   COMPILE:acats/c83028a.ada:45:22: error: cannot resolve sel
+  c83029a            SKIP   COMPILE:acats/c83029a.ada:45:22: error: cannot resolve sel
+  c83030a            SKIP   BIND:unresolved symbols
+  c83030c            FAIL   RUNTIME:exit 124
+  c83031a            SKIP   BIND:unresolved symbols
+  c83031c            SKIP   BIND:unresolved symbols
+  c83031e            PASS   PASSED
+  c83032a            FAIL   FAILED:FAILED: INCORRECT VALUE FOR 'I1' AFTER CALL TO DER
+  c83033a            SKIP   COMPILE:acats/c83033a.ada:68:49: error: cannot resolve sel
+  c83041a            SKIP   BIND:unresolved symbols
+  c83051a            SKIP   COMPILE:acats/c83051a.ada:255:49: error: cannot resolve se
+  c83b02a            PASS   PASSED
+  c83b02b            PASS   PASSED
+  c83c01b            PASS   PASSED
+  c83e02a            PASS   PASSED
+  c83e02b            PASS   PASSED
+  c83e03a            PASS   PASSED
+  c83e04a            PASS   PASSED
+  c83f01a            PASS   PASSED
+  c83f01b            PASS   PASSED
+  c83f01c2m          SKIP   COMPILE:acats/c83f01c2m.ada:38:15: error: cannot resolve s
+  c83f01d0m          FAIL   FAILED:FAILED: INCORRECT ACCESSING
+  c83f03a            PASS   PASSED
+  c83f03b            PASS   PASSED
+  c83f03c2m          SKIP   BIND:unresolved symbols
+  c83f03d0m          FAIL   FAILED:FAILED: INCORRECT FLOW OF CONTROL
+  c84002a            SKIP   BIND:unresolved symbols
+  c84005a            PASS   PASSED
+  c84008a            SKIP   COMPILE:acats/c84008a.ada:31:35: error: undefined identifi
+  c84009a            FAIL   FAILED:FAILED: INCORRECT RESULT FROM UNARY "+"
+  c85004b            FAIL   FAILED:FAILED: INCORRECT VALUE
+  c85005a            FAIL   RUNTIME:exit 124
+  c85005b            FAIL   RUNTIME:exit 124
+  c85005c            SKIP   BIND:unresolved symbols
+  c85005d            SKIP   BIND:unresolved symbols
+  c85005e            SKIP   BIND:unresolved symbols
+  c85005f            FAIL   FAILED:FAILED: CHANGING ACCESS VALUE CHANGED RENAMED VARI
+  c85005g            SKIP   BIND:unresolved symbols
+  c85006a            SKIP   COMPILE:
+  c85006b            SKIP   COMPILE:
+  c85006c            SKIP   COMPILE:acats/c85006c.ada:653:57: error: undefined identif
+  c85006d            SKIP   COMPILE:
+  c85006e            SKIP   COMPILE:acats/c85006e.ada:591:42: error: undefined identif
+  c85006f            FAIL   FAILED:FAILED: INCORRECT VALUE OF SLICE AFTER ASSIGNMENT
+  c85006g            SKIP   BIND:unresolved symbols
+  c85007a            PASS   PASSED
+  c85007e            FAIL   FAILED:FAILED: CASE 2 : ERROR IN ASSIGNMENT
+  c85009a            SKIP   COMPILE:acats/c85009a.ada:34:16: error: undefined identifi
+  c85011a            SKIP   COMPILE:acats/c85011a.ada:50:9: error: undefined identifie
+  c85013a            SKIP   COMPILE:
+  c85014a            SKIP   BIND:unresolved symbols
+  c85014b            SKIP   BIND:unresolved symbols
+  c85014c            SKIP   BIND:unresolved symbols
+  c85016a            SKIP   BIND:unresolved symbols
+  c85017a            SKIP   BIND:unresolved symbols
+  c85018a            SKIP   COMPILE:warning: Generate Apply: unhandled call expression
+  c85018b            SKIP   BIND:unresolved symbols
+  c85019a            SKIP   COMPILE:acats/c85019a.ada:18:49: error: expected name, got
+  c86001e            FAIL   FAILED:FAILED: CAN'T ACCESS LIBRARY PACKAGE NAMED PRIORIT
+  c86002a2m          SKIP   COMPILE:acats/c86002a2m.ada:31:33: error: cannot resolve s
+  c86002b2m          SKIP   COMPILE:acats/c86002b2m.ada:82:26: error: cannot resolve '
+  c86003a            FAIL   FAILED:FAILED: RES. (VAR.)
+  c86004a            SKIP   COMPILE:acats/c86004a.ada:31:39: error: cannot resolve sel
+  c86004b2m          SKIP   COMPILE:acats/c86004b2m.ada:19:6: error: undefined identif
+  c86004c2m          SKIP   COMPILE:acats/c86004c2m.ada:18:6: error: undefined identif
+  c86005a            SKIP   COMPILE:acats/c86005a.ada:16:15: error: cannot resolve sel
+  c86005b            SKIP   COMPILE:acats/c86005b.ada:61:11: error: expected a generic
+  c86005e            FAIL   FAILED:FAILED: FUNCTION GS RETURNING WRONG VALUE
+  c86006a            SKIP   COMPILE:acats/c86006a.ada:14:20: error: cannot resolve sel
+  c86006b            SKIP   COMPILE:acats/c86006b.ada:14:21: error: cannot resolve sel
+  c86007a            SKIP   COMPILE:acats/c86007a.ada:13:18: error: cannot resolve sel
+  c87a05a            FAIL   FAILED:FAILED: RESOLUTION INCORRECT
+  c87a05b            FAIL   RUNTIME:exit 1
+  c87b02a            SKIP   BIND:unresolved symbols
+  c87b02b            SKIP   BIND:unresolved symbols
+  c87b03a            SKIP   COMPILE:acats/c87b03a.ada:19:32: error: cannot resolve sel
+  c87b04a            FAIL   FAILED:FAILED: RESOLUTION INCORRECT - SUBTYPE INDICATION
+  c87b04b            PASS   PASSED
+  c87b04c            FAIL   RUNTIME:exit 1
+  c87b05a            PASS   PASSED
+  c87b06a            FAIL   RUNTIME:exit 1
+  c87b07a            SKIP   BIND:unresolved symbols
+  c87b07b            SKIP   BIND:unresolved symbols
+  c87b07c            SKIP   BIND:unresolved symbols
+  c87b07d            SKIP   BIND:unresolved symbols
+  c87b07e            FAIL   FAILED:FAILED: RESOLUTION INCORRECT FOR THE 'IMAGE' ATTRI
+  c87b08a            PASS   PASSED
+  c87b09a            PASS   PASSED
+  c87b09b            PASS   PASSED
+  c87b09c            PASS   PASSED
+  c87b10a            SKIP   BIND:unresolved symbols
+  c87b11a            PASS   PASSED
+  c87b11b            PASS   PASSED
+  c87b13a            PASS   PASSED
+  c87b14a            PASS   PASSED
+  c87b14b            PASS   PASSED
+  c87b14c            PASS   PASSED
+  c87b14d            FAIL   FAILED:FAILED: RESOLUTION INCORRECT - IMPLICIT CONVERSION
+  c87b15a            SKIP   COMPILE:acats/c87b15a.ada:16:27: error: cannot resolve sel
+  c87b16a            SKIP   BIND:unresolved symbols
+  c87b17a            SKIP   BIND:unresolved symbols
+  c87b18a            PASS   PASSED
+  c87b18b            PASS   PASSED
+  c87b19a            FAIL   FAILED:FAILED: VARIANT CHOICES MUST MATCH TYPE OF DISCRIM
+  c87b23a            SKIP   COMPILE:acats/c87b23a.ada:71:27: error: cannot resolve 'A'
+  c87b24a            SKIP   BIND:unresolved symbols
+  c87b24b            PASS   PASSED
+  c87b26b            PASS   PASSED
+  c87b27a            PASS   PASSED
+  c87b28a            PASS   PASSED
+  c87b29a            PASS   PASSED
+  c87b30a            FAIL   FAILED:FAILED: COMPONENT ASSOCIATION EXPRESSION MUST MATC
+  c87b31a            FAIL   RUNTIME:exit 1
+  c87b32a            SKIP   BIND:unresolved symbols
+  c87b33a            SKIP   COMPILE:acats/c87b33a.ada:76:12: error: Boolean operands r
+  c87b34a            PASS   PASSED
+  c87b34b            PASS   PASSED
+  c87b34c            PASS   PASSED
+  c87b35a            PASS   PASSED
+  c87b35b            SKIP   COMPILE:acats/c87b35b.ada:48:32: error: cannot resolve sel
+  c87b35c            SKIP   COMPILE:acats/c87b35c.ada:40:32: error: cannot resolve sel
+  c87b37a            SKIP   BIND:unresolved symbols
+  c87b37b            SKIP   BIND:unresolved symbols
+  c87b37c            SKIP   BIND:unresolved symbols
+  c87b37d            SKIP   COMPILE:acats/c87b37d.ada:67:33: error: no component 'IB'
+  c87b37e            SKIP   BIND:unresolved symbols
+  c87b37f            SKIP   COMPILE:acats/c87b37f.ada:57:11: error: type mismatch in a
+  c87b38a            SKIP   COMPILE:acats/c87b38a.ada:50:42: error: Boolean operands r
+  c87b39a            PASS   PASSED
+  c87b40a            SKIP   COMPILE:acats/c87b40a.ada:33:27: error: cannot resolve sel
+  c87b41a            SKIP   BIND:unresolved symbols
+  c87b42a            SKIP   COMPILE:acats/c87b42a.ada:43:15: error: Boolean operands r
+  c87b43a            SKIP   BIND:unresolved symbols
+  c87b44a            SKIP   BIND:unresolved symbols
+  c87b45a            SKIP   BIND:unresolved symbols
+  c87b45c            FAIL   FAILED:FAILED: (A): RESOLUTION INCORRECT - FUNCTION
+  c87b47a            PASS   PASSED
+  c87b48a            SKIP   COMPILE:acats/c87b48a.ada:64:19: error: cannot resolve 'TO
+  c87b48b            PASS   PASSED
+  c87b50a            SKIP   COMPILE:RED:3:0: error: unsupported expression kind 15 in
+  c87b54a            PASS   PASSED
+  c87b57a            PASS   PASSED
+  c87b62a            PASS   PASSED
+  c87b62b            PASS   PASSED
+  c87b62c            PASS   PASSED
+  c91004b            SKIP   COMPILE:acats/c91004b.ada:54:27: error: unresolved identif
+  c91004c            SKIP   BIND:unresolved symbols
+  c91006a            FAIL   FAILED:FAILED: TASK SPEC T1 NOT ELABORATED IN TEXTUAL ORD
+  c91007a            FAIL   FAILED:FAILED: TSK1 WAS ACTIVATED
+  c92002a            PASS   PASSED
+  c92003a            PASS   PASSED
+  c92005a            PASS   PASSED
+  c92005b            PASS   PASSED
+  c92006a            PASS   PASSED
+  c93001a            SKIP   BIND:unresolved symbols
+  c93002a            SKIP   BIND:unresolved symbols
+  c93003a            SKIP   BIND:unresolved symbols
+  c93004a            FAIL   RUNTIME:exit 124
+  c93004b            FAIL   FAILED:FAILED: TASKING ERROR NOT RAISED IN MAIN
+  c93004c            FAIL   FAILED:FAILED: TASKING ERROR NOT RAISED IN MAIN
+  c93004d            FAIL   FAILED:FAILED: TASKING ERROR NOT RAISED IN MAIN
+  c93004f            FAIL   RUNTIME:exit 124
+  c93005a            SKIP   BIND:unresolved symbols
+  c93005b            SKIP   BIND:unresolved symbols
+  c93005c            FAIL   RUNTIME:exit 124
+  c93005d            SKIP   BIND:unresolved symbols
+  c93005e            FAIL   RUNTIME:exit 124
+  c93005f            FAIL   RUNTIME:exit 124
+  c93005g            FAIL   RUNTIME:exit 124
+  c93005h            FAIL   RUNTIME:exit 124
+  c93006a            SKIP   BIND:unresolved symbols
+  c93007a            FAIL   RUNTIME:exit 124
+  c93008a            SKIP   BIND:unresolved symbols
+  c93008b            FAIL   FAILED:FAILED: RESULT OF ALLOCATOR ACCESSED BEFORE TASK A
+  c94001a            FAIL   RUNTIME:exit 124
+  c94001b            SKIP   COMPILE:acats/c94001b.ada:35:17: error: cannot resolve sel
+  c94001c            FAIL   RUNTIME:exit 124
+  c94001e            PASS   PASSED
+  c94001f            PASS   PASSED
+  c94001g            SKIP   BIND:unresolved symbols
+  c94002a            SKIP   COMPILE:acats/c94002a.ada:66:17: error: cannot resolve sel
+  c94002b            FAIL   RUNTIME:exit 124
+  c94002d            PASS   PASSED
+  c94002e            FAIL   RUNTIME:exit 124
+  c94002f            FAIL   RUNTIME:exit 124
+  c94002g            SKIP   COMPILE:acats/c94002g.ada:248:27: error: no entry 'E' in t
+  c94003a            FAIL   RUNTIME:exit 124
+  c94004a            SKIP   BIND:unresolved symbols
+  c94004b            SKIP   BIND:unresolved symbols
+  c94004c            SKIP   BIND:unresolved symbols
+  c94005a            SKIP   BIND:unresolved symbols
+  c94005b            SKIP   BIND:unresolved symbols
+  c94006a            PASS   PASSED
+  c94007a            SKIP   BIND:unresolved symbols
+  c94007b            SKIP   BIND:unresolved symbols
+  c94008a            PASS   PASSED
+  c94008b            PASS   PASSED
+  c94008c            SKIP   COMPILE:acats/c94008c.ada:47:37: error: cannot resolve sel
+  c94008d            SKIP   COMPILE:acats/c94008d.ada:105:35: error: cannot resolve se
+  c94010a            SKIP   BIND:unresolved symbols
+  c94011a            SKIP   COMPILE:acats/c94011a.ada:53:17: error: cannot resolve sel
+  c94020a            SKIP   COMPILE:acats/c94020a.ada:73:37: error: unresolved identif
+  c94021a            FAIL   FAILED:FAILED: LOCAL TASK NOT TERMINATED OR RELEASED
+  c95008a            SKIP   BIND:unresolved symbols
+  c95009a            SKIP   BIND:unresolved symbols
+  c95009b            SKIP   BIND:unresolved symbols
+  c95009c            SKIP   COMPILE:acats/c95009c.ada:28:14: error: cannot resolve 'E1
+  c95010a            SKIP   BIND:unresolved symbols
+  c95011a            SKIP   BIND:unresolved symbols
+  c95012a            FAIL   RUNTIME:exit 124
+  c95013a            SKIP   BIND:unresolved symbols
+  c95021a            PASS   PASSED
+  c95022a            FAIL   RUNTIME:exit 124
+  c95022b            SKIP   COMPILE:acats/c95022b.ada:55:22: error: unresolved identif
+  c95033a            PASS   PASSED
+  c95033b            FAIL   FAILED:FAILED: ENTRY INDEX NOT EVALUATED FIRST
+  c95034a            PASS   PASSED
+  c95034b            FAIL   FAILED:FAILED: ERROR DURING TASK EXECUTION
+  c95035a            PASS   PASSED
+  c95040a            FAIL   RUNTIME:exit 124
+  c95040b            SKIP   COMPILE:acats/c95040b.ada:21:22: error: unresolved identif
+  c95040c            SKIP   BIND:unresolved symbols
+  c95040d            FAIL   RUNTIME:exit 124
+  c95041a            FAIL   FAILED:FAILED: ENTRY CHECK LINK(RED) HAS INCORRECT VALUE
+  c95065a            FAIL   FAILED:FAILED: ACCEPT E1 EXECUTED
+  c95065b            FAIL   FAILED:FAILED: ACCEPT E1 EXECUTED
+  c95065c            FAIL   FAILED:FAILED: ACCEPT E1 EXECUTED
+  c95065d            FAIL   FAILED:FAILED: ACCEPT E1 EXECUTED
+  c95065e            FAIL   FAILED:FAILED: ACCEPT E1 EXECUTED
+  c95065f            FAIL   FAILED:FAILED: ACCEPT E1 EXECUTED
+  c95066a            SKIP   BIND:unresolved symbols
+  c95067a            SKIP   BIND:unresolved symbols
+  c95071a            FAIL   FAILED:FAILED: ASSIGNMENT TO COMPONENT OF INTEGER ACCESS
+  c95072a            FAIL   RUNTIME:exit 124
+  c95072b            SKIP   BIND:unresolved symbols
+  c95073a            FAIL   FAILED:FAILED: THE RESULT OF THE MATRIX ADDITION IS INCOR
+  c95074c            PASS   PASSED
+  c95075a            PASS   PASSED
+  c95076a            FAIL   FAILED:FAILED: INCORRECT RENDEVOUS WITHOUT A RETURN
+  c95078a            FAIL   RUNTIME:exit 124
+  c95080b            PASS   PASSED
+  c95082g            SKIP   COMPILE:acats/c95082g.ada:42:11: error: unsupported expres
+  c95084a            FAIL   RUNTIME:exit 124
+  c95085a            SKIP   BIND:unresolved symbols
+  c95085b            SKIP   COMPILE:acats/c95085b.ada:60:24: error: untyped aggregate
+  c95085c            SKIP   COMPILE:warning: variable 'V' has zero size, defaulting to
+  c95085d            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED ON CALL
+  c95085e            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED ON CALL
+  c95085f            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED ON CALL
+  c95085g            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED ON CALL
+  c95085h            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED AFTER RETURN
+  c95085i            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED AFTER RETURN
+  c95085j            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED AFTER RETURN
+  c95085k            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED AFTER RETURN
+  c95085l            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED AFTER RETURN
+  c95085m            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED AFTER RETURN
+  c95085n            PASS   PASSED
+  c95085o            PASS   PASSED
+  c95086a            FAIL   FAILED:FAILED: EXCEPTION RAISED ON CALL TO E1 - 1
+  c95086b            PASS   PASSED
+  c95086c            PASS   PASSED
+  c95086d            PASS   PASSED
+  c95086e            FAIL   RUNTIME:exit 124
+  c95086f            FAIL   RUNTIME:exit 124
+  c95087a            SKIP   COMPILE:acats/c95087a.ada:156:35: error: cannot resolve se
+  c95087b            SKIP   BIND:unresolved symbols
+  c95087c            SKIP   BIND:unresolved symbols
+  c95087d            SKIP   BIND:unresolved symbols
+  c95088a            FAIL   FAILED:FAILED: A(I) EVALUATED UPON RETURN
+  c95089a            SKIP   BIND:unresolved symbols
+  c95090a            SKIP   COMPILE:error: Type To Llvm called with NULL type
+  c95092a            SKIP   BIND:unresolved symbols
+  c95093a            FAIL   FAILED:FAILED: DEFAULT NOT EVALUATED CORRECTLY - 1, X = 1
+  c95095a            PASS   PASSED
+  c95095b            FAIL   FAILED:FAILED: ENTRIES DIFFERING ONLY IN NUMBER OF PARAME
+  c95095c            FAIL   FAILED:FAILED: ENTRIES DIFFERING ONLY BY THE BASE TYPE OF
+  c95095d            SKIP   COMPILE:acats/c95095d.ada:54:18: error: cannot resolve 'E'
+  c95095e            FAIL   RUNTIME:exit 1
+  c96001a            SKIP   BIND:unresolved symbols
+  c96004a            SKIP   BIND:unresolved symbols
+  c96005a            SKIP   BIND:unresolved symbols
+  c96005d            SKIP   BIND:unresolved symbols
+  c96005e            SKIP   BIND:unresolved symbols
+  c96005f            SKIP   BIND:unresolved symbols
+  c96006a            SKIP   BIND:unresolved symbols
+  c96007a            SKIP   BIND:unresolved symbols
+  c96008a            SKIP   BIND:unresolved symbols
+  c96008b            SKIP   BIND:unresolved symbols
+  c97112a            SKIP   COMPILE:warning: unhandled attribute 'COUNT'
+  c97113a            FAIL   RUNTIME:exit 124
+  c97114a            SKIP   BIND:unresolved symbols
+  c97115a            FAIL   RUNTIME:exit 124
+  c97116a            SKIP   BIND:unresolved symbols
+  c97117a            PASS   PASSED
+  c97117b            FAIL   RUNTIME:exit 124
+  c97117c            FAIL   RUNTIME:exit 124
+  c97118a            FAIL   RUNTIME:exit 124
+  c97120a            SKIP   BIND:unresolved symbols
+  c97120b            SKIP   BIND:unresolved symbols
+  c97201a            SKIP   COMPILE:acats/c97201a.ada:46:43: error: cannot resolve 'DO
+  c97201b            FAIL   RUNTIME:exit 124
+  c97201c            PASS   PASSED
+  c97201d            FAIL   FAILED:FAILED: RENDEZVOUS ATTEMPTED?
+  c97201e            FAIL   FAILED:FAILED: RENDEZVOUS ATTEMPTED?
+  c97201g            SKIP   BIND:unresolved symbols
+  c97201h            SKIP   BIND:unresolved symbols
+  c97201x            SKIP   BIND:unresolved symbols
+  c97202a            FAIL   FAILED:FAILED: ENTRY INDEX WAS NOT COMPUTED
+  c97203a            SKIP   COMPILE:acats/c97203a.ada:48:28: error: cannot resolve 'A'
+  c97203b            SKIP   COMPILE:acats/c97203b.ada:46:28: error: cannot resolve 'A'
+  c97203c            FAIL   RUNTIME:exit 124
+  c97204a            FAIL   RUNTIME:exit 124
+  c97204b            SKIP   COMPILE:warning: Generate Apply: unhandled call expression
+  c97205a            SKIP   COMPILE:acats/c97205a.ada:50:24: error: unresolved identif
+  c97205b            SKIP   COMPILE:acats/c97205b.ada:54:24: error: unresolved identif
+  c97301a            SKIP   COMPILE:acats/c97301a.ada:40:44: error: cannot resolve 'DO
+  c97301b            SKIP   BIND:unresolved symbols
+  c97301c            SKIP   BIND:unresolved symbols
+  c97301d            SKIP   BIND:unresolved symbols
+  c97301e            SKIP   BIND:unresolved symbols
+  c97302a            SKIP   BIND:unresolved symbols
+  c97303a            SKIP   COMPILE:acats/c97303a.ada:47:28: error: cannot resolve 'A'
+  c97303b            SKIP   COMPILE:acats/c97303b.ada:46:28: error: cannot resolve 'A'
+  c97303c            FAIL   RUNTIME:exit 124
+  c97304a            FAIL   RUNTIME:exit 124
+  c97304b            SKIP   COMPILE:acats/c97304b.ada:34:22: error: unresolved identif
+  c97305a            FAIL   RUNTIME:exit 124
+  c97305b            FAIL   RUNTIME:exit 124
+  c97305c            FAIL   RUNTIME:exit 124
+  c97305d            FAIL   RUNTIME:exit 124
+  c97307a            PASS   PASSED
+  c98001b            PASS   PASSED
+  c98001c            PASS   PASSED
+  c98003b            SKIP   BIND:unresolved symbols
+  c99004a            SKIP   COMPILE:acats/c99004a.ada:132:22: error: unresolved identi
+  c99005a            PASS   PASSED
+  c9a003a            SKIP   COMPILE:acats/c9a003a.ada:65:22: error: unresolved identif
+  c9a004a            SKIP   COMPILE:acats/c9a004a.ada:65:23: error: unresolved identif
+  c9a005a            SKIP   BIND:unresolved symbols
+  c9a006a            SKIP   COMPILE:acats/c9a006a.ada:86:33: error: unresolved identif
+  c9a007a            SKIP   COMPILE:warning: unhandled attribute 'COUNT'
+  c9a008a            SKIP   COMPILE:warning: unhandled attribute 'COUNT'
+  c9a009a            SKIP   COMPILE:acats/c9a009a.ada:73:32: error: unresolved identif
+  c9a009b            SKIP   COMPILE:acats/c9a009b.ada:44:27: error: unresolved identif
+  c9a009c            SKIP   COMPILE:acats/c9a009c.ada:52:27: error: unresolved identif
+  c9a009f            SKIP   COMPILE:acats/c9a009f.ada:53:17: error: unresolved identif
+  c9a009g            SKIP   COMPILE:acats/c9a009g.ada:59:17: error: unresolved identif
+  c9a009h            SKIP   COMPILE:acats/c9a009h.ada:38:27: error: unresolved identif
+  c9a010a            SKIP   COMPILE:acats/c9a010a.ada:55:17: error: unresolved identif
+  c9a011a            SKIP   COMPILE:acats/c9a011a.ada:26:27: error: unresolved identif
+  c9a011b            SKIP   COMPILE:warning: unhandled attribute 'COUNT'
+  ca1002a3m          SKIP   COMPILE:acats/ca1002a3m.ada:24:24: error: undefined identi
+  ca1003a            PASS   PASSED
+  ca1004a            PASS   PASSED
+  ca1005a            PASS   PASSED
+  ca1006a            SKIP   BIND:unresolved symbols
+  ca1007a1m          SKIP   BIND:unresolved symbols
+  ca1008a1m          SKIP   BIND:unresolved symbols
+  ca1009a4m          SKIP   COMPILE:acats/ca1009a4m.ada:15:14: error: undefined identi
+  ca1011a6m          SKIP   COMPILE:acats/ca1011a6m.ada:19:6: error: undefined identif
+  ca1012b4m          SKIP   BIND:unresolved symbols
+  ca1013a6m          SKIP   COMPILE:acats/ca1013a6m.ada:19:6: error: undefined identif
+  ca1014a0m          SKIP   BIND:unresolved symbols
+  ca1020d3m          SKIP   COMPILE:acats/ca1020d3m.ada:17:6: error: undefined identif
+  ca1020e3m          SKIP   COMPILE:acats/ca1020e3m.ada:22:6: error: undefined identif
+  ca1022a6m          SKIP   COMPILE:acats/ca1022a6m.ada:22:6: error: undefined identif
+  ca1102a2m          SKIP   BIND:unresolved symbols
+  ca1105a1m          SKIP   BIND:unresolved symbols
+  ca1105b3m          SKIP   BIND:unresolved symbols
+  ca1106a            PASS   PASSED
+  ca1107a1m          SKIP   BIND:unresolved symbols
+  ca1108a            SKIP   BIND:unresolved symbols
+  ca1108b            SKIP   BIND:unresolved symbols
+  ca2001h3m          SKIP   COMPILE:acats/ca2001h3m.ada:18:14: error: undefined identi
+  ca2002a0m          SKIP   COMPILE:acats/ca2002a0m.ada:77:17: error: cannot resolve s
+  ca2003a0m          SKIP   BIND:unresolved symbols
+  ca2004a0m          SKIP   BIND:unresolved symbols
+  ca2007a0m          FAIL   FAILED:FAILED: INCORRECT ELABORATION ORDER
+  ca2008a0m          SKIP   BIND:unresolved symbols
+  ca2009a            FAIL   FAILED:FAILED: INCORRECT INSTANTIATION - INTEGER
+  ca2009d            SKIP   BIND:unresolved symbols
+  ca2011b            SKIP   COMPILE:acats/ca2011b.ada:27:24: error: undefined identifi
+  ca3002a2m          SKIP   COMPILE:acats/ca3002a2m.ada:31:17: error: cannot resolve s
+  ca3004e4m          SKIP   COMPILE:CA3004E2.ads:15:31: error: cannot resolve 'IDENT I
+  ca3004f4m          SKIP   COMPILE:CA3004F2.ads:15:31: error: cannot resolve 'IDENT I
+  ca3006c5m          SKIP   COMPILE:acats/ca3006c5m.ada:20:14: error: undefined identi
+  ca3006d3m          SKIP   BIND:unresolved symbols
+  ca3006e6m          SKIP   COMPILE:CA3006E1.ads:11:10: error: undefined identifier 'T
+  ca3009a6m          SKIP   COMPILE:acats/ca3009a6m.ada:21:6: error: undefined identif
+  ca5002a            FAIL   FAILED:FAILED: INCORRECT ELABORATION ORDER
+  ca5002b7m          SKIP   BIND:unresolved symbols
+  ca5003a6m          SKIP   COMPILE:CA5003A1.ads:10:32: error: cannot resolve 'SHOW EL
+  ca5003b5m          SKIP   BIND:unresolved symbols
+  ca5004a            SKIP   BIND:unresolved symbols
+  ca5004b            SKIP   BIND:unresolved symbols
+  ca5005a            PASS   PASSED
+  ca5006a            FAIL   FAILED:FAILED: G CALLED
+  cb1001a            PASS   PASSED
+  cb1002a            PASS   PASSED
+  cb1003a            PASS   PASSED
+  cb1004a            SKIP   BIND:unresolved symbols
+  cb1005a            FAIL   FAILED:FAILED: EXCEPTION NOT DISTINCT - 10
+  cb1010a            SKIP   COMPILE:acats/cb1010a.ada:100:22: error: unresolved identi
+  cb1010b            FAIL   RUNTIME:exit 124
+  cb1010c            FAIL   RUNTIME:exit 124
+  cb1010d            FAIL   RUNTIME:exit 124
+  cb2004a            PASS   PASSED
+  cb2005a            PASS   PASSED
+  cb2006a            PASS   PASSED
+  cb2007a            PASS   PASSED
+  cb3003a            PASS   PASSED
+  cb3003b            PASS   PASSED
+  cb3004a            SKIP   COMPILE:acats/cb3004a.ada:61:29: error: cannot resolve sel
+  cb4001a            PASS   PASSED
+  cb4002a            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED 2
+  cb4003a            PASS   PASSED
+  cb4004a            PASS   PASSED
+  cb4005a            PASS   PASSED
+  cb4006a            PASS   PASSED
+  cb4007a            PASS   PASSED
+  cb4008a            FAIL   RUNTIME:exit 124
+  cb4009a            PASS   PASSED
+  cb4013a            FAIL   RUNTIME:exit 124
+  cb5001a            FAIL   RUNTIME:exit 124
+  cb5001b            FAIL   RUNTIME:exit 124
+  cb5002a            FAIL   RUNTIME:exit 124
+  cb7001a            SKIP   BIND:unresolved symbols
+  cb7001b            FAIL   RUNTIME:exit 124
+  cb7003a            SKIP   BIND:unresolved symbols
+  cb7004a            FAIL   RUNTIME:exit 124
+  cb7005a            FAIL   FAILED:FAILED: EXCEPTION NOT RAISED ON ELABORATION CHECK
+  cc1004a            SKIP   BIND:unresolved symbols
+  cc1005b            SKIP   BIND:unresolved symbols
+  cc1005c            SKIP   BIND:unresolved symbols
+  cc1010a            SKIP   BIND:unresolved symbols
+  cc1010b            PASS   PASSED
+  cc1018a            SKIP   BIND:unresolved symbols
+  cc1104c            SKIP   BIND:unresolved symbols
+  cc1107b            SKIP   BIND:unresolved symbols
+  cc1111a            SKIP   BIND:unresolved symbols
+  cc1204a            SKIP   COMPILE:acats/cc1204a.ada:48:21: error: cannot resolve sel
+  cc1207b            SKIP   COMPILE:acats/cc1207b.ada:70:35: error: cannot resolve sel
+  cc1220a            SKIP   BIND:unresolved symbols
+  cc1221a            PASS   PASSED
+  cc1221b            FAIL   FAILED:FAILED: INCORRECT RESULTS WITH SINT1'BASE'FIRST
+  cc1221c            FAIL   FAILED:FAILED: WRONG VALUE FOR SUBINT'VAL OF -100
+  cc1221d            FAIL   FAILED:FAILED: INCORRECT CONVERSION FROM FIXED VALUE 2.0
+  cc1222a            SKIP   BIND:unresolved symbols
+  cc1223a            SKIP   BIND:unresolved symbols
+  cc1224a            SKIP   BIND:unresolved symbols
+  cc1225a            SKIP   COMPILE:acats/cc1225a.ada:165:25: error: cannot resolve se
+  cc1226b            SKIP   COMPILE:acats/cc1226b.ada:105:19: error: cannot resolve se
+  cc1227a            FAIL   NO REPORT:no PASSED/FAILED in output
+  cc1301a            SKIP   COMPILE:acats/cc1301a.ada:38:34: error: cannot resolve sel
+  cc1302a            PASS   PASSED
+  cc1304a            FAIL   RUNTIME:exit 1
+  cc1304b            SKIP   BIND:unresolved symbols
+  cc1305b            SKIP   BIND:unresolved symbols
+  cc1307a            SKIP   BIND:unresolved symbols
+  cc1307b            SKIP   COMPILE:acats/cc1307b.ada:26:47: error: expected name, got
+  cc1308a            SKIP   COMPILE:acats/cc1308a.ada:229:16: error: type mismatch in
+  cc1310a            FAIL   FAILED:FAILED: ENTRIES AS DEFAULT GENERIC PARAMETERS
+  cc1311a            FAIL   RUNTIME:exit 1
+  cc1311b            SKIP   COMPILE:
+  cc2002a            PASS   PASSED
+  cc3004a            PASS   PASSED
+  cc3007a            SKIP   BIND:unresolved symbols
+  cc3011a            SKIP   BIND:unresolved symbols
+  cc3011d            SKIP   BIND:unresolved symbols
+  cc3012a            SKIP   COMPILE:acats/cc3012a.ada:135:23: error: incompatible type
+  cc3015a            FAIL   FAILED:FAILED: STATEMENT NOT EXECUTED AT INSTANTIATION
+  cc3019a            SKIP   COMPILE:acats/cc3019a.ada:112:47: error: cannot resolve se
+  cc3106b            SKIP   BIND:unresolved symbols
+  cc3120a            SKIP   COMPILE:
+  cc3120b            SKIP   COMPILE:acats/cc3120b.ada:78:43: error: no entry 'I' in ta
+  cc3121a            SKIP   BIND:unresolved symbols
+  cc3123a            SKIP   BIND:unresolved symbols
+  cc3123b            SKIP   BIND:unresolved symbols
+  cc3125a            SKIP   BIND:unresolved symbols
+  cc3125b            SKIP   BIND:unresolved symbols
+  cc3125c            SKIP   BIND:unresolved symbols
+  cc3125d            SKIP   BIND:unresolved symbols
+  cc3126a            SKIP   BIND:unresolved symbols
+  cc3127a            SKIP   BIND:unresolved symbols
+  cc3128a            SKIP   COMPILE:acats/cc3128a.ada:51:35: error: cannot resolve sel
+  cc3203a            PASS   PASSED
+  cc3207b            SKIP   BIND:unresolved symbols
+  cc3208a            FAIL   FAILED:FAILED: CONSTRAINT ERROR NOT RAISED FOR PRIVATE TY
+  cc3208b            FAIL   FAILED:FAILED: CONSTRAINT ERROR NOT RAISED FOR PRIVATE TY
+  cc3208c            PASS   PASSED
+  cc3220a            SKIP   BIND:unresolved symbols
+  cc3221a            SKIP   COMPILE:acats/cc3221a.ada:57:30: error: numeric operands r
+  cc3222a            SKIP   COMPILE:acats/cc3222a.ada:75:11: error: type mismatch in a
+  cc3223a            SKIP   BIND:unresolved symbols
+  cc3224a            SKIP   COMPILE:acats/cc3224a.ada:94:21: error: concatenation requ
+  cc3225a            SKIP   COMPILE:acats/cc3225a.ada:69:37: error: cannot resolve 'PA
+  cc3230a            SKIP   BIND:unresolved symbols
+  cc3231a            SKIP   COMPILE:acats/cc3231a.ada:68:30: error: numeric operands r
+  cc3232a            SKIP   COMPILE:acats/cc3232a.ada:84:11: error: type mismatch in a
+  cc3233a            SKIP   BIND:unresolved symbols
+  cc3234a            SKIP   COMPILE:acats/cc3234a.ada:51:32: error: cannot resolve 'PA
+  cc3235a            SKIP   BIND:unresolved symbols
+  cc3236a            SKIP   COMPILE:acats/cc3236a.ada:60:21: error: cannot resolve sel
+  cc3240a            SKIP   COMPILE:acats/cc3240a.ada:41:18: error: undefined identifi
+  cc3305a            PASS   PASSED
+  cc3305b            PASS   PASSED
+  cc3305c            PASS   PASSED
+  cc3305d            PASS   PASSED
+  cc3406a            FAIL   FAILED:FAILED: CONSTRAINT ERROR NOT RAISED
+  cc3406b            FAIL   FAILED:FAILED: CONSTRAINT ERROR NOT RAISED
+  cc3406c            PASS   PASSED
+  cc3406d            FAIL   FAILED:FAILED: CONSTRAINT ERROR NOT RAISED
+  cc3407a            FAIL   FAILED:FAILED: CONSTRAINT ERROR NOT RAISED ON INTEGER
+  cc3407b            FAIL   FAILED:FAILED: CONSTRAINT ERROR NOT RAISED FIXED
+  cc3407c            FAIL   FAILED:FAILED: CONSTRAINT ERROR NOT RAISED ON ARRAY OF IN
+  cc3407d            FAIL   FAILED:FAILED: CONSTRAINT ERROR NOT RAISED ON RECORD
+  cc3407e            PASS   PASSED
+  cc3407f            FAIL   FAILED:FAILED: CONSTRAINT ERROR NOT RAISED
+  cc3408a            FAIL   FAILED:FAILED: CONSTRAINT ERROR NOT RAISED
+  cc3408b            FAIL   FAILED:FAILED: CONSTRAINT ERROR NOT RAISED
+  cc3408c            PASS   PASSED
+  cc3408d            FAIL   FAILED:FAILED: CONSTRAINT ERROR NOT RAISED
+  cc3504a            FAIL   FAILED:FAILED: INTEGER CONSTRAINT CHECK
+  cc3504b            FAIL   FAILED:FAILED: INDEX CONSTRAINT ERROR NOT RAISED
+  cc3504c            FAIL   FAILED:FAILED: ACCESS TO ACCESS RECORD EXCEPTION NOT RAIS
+  cc3504d            FAIL   FAILED:FAILED: FIXED CONSTRAINT ERROR
+  cc3504e            FAIL   FAILED:FAILED: INTEGER CONSTRAINT CHECK
+  cc3504f            FAIL   FAILED:FAILED: INDEX CONSTRAINT ERROR NOT RAISED
+  cc3504g            FAIL   FAILED:FAILED: ACCESS TO ACCESS RECORD EXCEPTION NOT RAIS
+  cc3504h            FAIL   FAILED:FAILED: FIXED CONSTRAINT ERROR
+  cc3504i            PASS   PASSED
+  cc3504j            PASS   PASSED
+  cc3504k            PASS   PASSED
+  cc3601a            SKIP   BIND:unresolved symbols
+  cc3601c            SKIP   BIND:unresolved symbols
+  cc3602a            SKIP   BIND:unresolved symbols
+  cc3603a            SKIP   BIND:unresolved symbols
+  cc3605a            SKIP   BIND:unresolved symbols
+  cc3606a            SKIP   BIND:unresolved symbols
+  cc3606b            PASS   PASSED
+  cc3607b            SKIP   BIND:unresolved symbols
+  cd1009a            SKIP   COMPILE:acats/cd1009a.ada:15:6: error: undefined identifie
+  cd1009b            PASS   PASSED
+  cd1009d            PASS   PASSED
+  cd1009e            PASS   PASSED
+  cd1009f            PASS   PASSED
+  cd1009g            PASS   PASSED
+  cd1009h            PASS   PASSED
+  cd1009i            SKIP   COMPILE:acats/cd1009i.ada:15:6: error: undefined identifie
+  cd1009j            FAIL   FAILED:FAILED: CHECK TYPE 1'STORAGE SIZE IS TOO SMALL
+  cd1009l            FAIL   FAILED:FAILED: INCORRECT RESULTS FOR CHECK TYPE 1'SMALL
+  cd1009m            SKIP   COMPILE:acats/cd1009m.ada:14:6: error: undefined identifie
+  cd1009n            FAIL   FAILED:FAILED: INCORRECT REPRESENTATION FOR R1.I1
+  cd1009o            PASS   PASSED
+  cd1009p            PASS   PASSED
+  cd1009q            PASS   PASSED
+  cd1009r            FAIL   FAILED:FAILED: CHECK TYPE 1'STORAGE SIZE IS TOO SMALL
+  cd1009s            FAIL   FAILED:FAILED: CHECK TYPE 1'STORAGE SIZE IS TOO SMALL
+  cd1009v            SKIP   COMPILE:acats/cd1009v.ada:15:6: error: undefined identifie
+  cd1009w            SKIP   COMPILE:acats/cd1009w.ada:15:6: error: undefined identifie
+  cd1009x            FAIL   FAILED:FAILED: INCORRECT REPRESENTATION FOR R1.I1
+  cd1009y            FAIL   FAILED:FAILED: INCORRECT REPRESENTATION FOR R1.I1
+  cd1009z            FAIL   FAILED:FAILED: INCORRECT REPRESENTATION FOR R1.I1
+  cd1c03a            SKIP   COMPILE:acats/cd1c03a.ada:15:6: error: undefined identifie
+  cd1c03b            PASS   PASSED
+  cd1c03c            FAIL   FAILED:FAILED: PARENT TYPE'STORAGE SIZE SHOULD NOT BE LES
+  cd1c03f            FAIL   FAILED:FAILED: PARENT TYPE'SMALL SHOULD BE EQUAL TO THE S
+  cd1c03g            PASS   PASSED
+  cd1c03h            PASS   PASSED
+  cd1c03i            PASS   PASSED
+  cd1c04a            PASS   PASSED
+  cd1c04b            PASS   PASSED
+  cd1c04d            SKIP   COMPILE:acats/cd1c04d.ada:15:6: error: undefined identifie
+  cd1c04e            FAIL   FAILED:FAILED: DERIVED TYPE'SIZE WAS INHERITED FROM PAREN
+  cd1d01a            PASS   PASSED
+  cd1d01b            PASS   PASSED
+  cd1d01c            PASS   PASSED
+  cd1d01d            PASS   PASSED
+  cd1d02a            PASS   PASSED
+  cd1d03a            PASS   PASSED
+  cd2a21a            SKIP   COMPILE:acats/cd2a21a.ada:15:6: error: undefined identifie
+  cd2a21b            SKIP   COMPILE:acats/cd2a21b.ada:16:6: error: undefined identifie
+  cd2a21c            SKIP   COMPILE:acats/cd2a21c.ada:19:6: error: undefined identifie
+  cd2a21e            SKIP   COMPILE:acats/cd2a21e.ada:15:6: error: undefined identifie
+  cd2a22a            PASS   PASSED
+  cd2a22b            PASS   PASSED
+  cd2a22e            PASS   PASSED
+  cd2a22f            PASS   PASSED
+  cd2a22i            SKIP   BIND:unresolved symbols
+  cd2a22j            SKIP   COMPILE:acats/cd2a22j.ada:16:6: error: undefined identifie
+  cd2a23a            SKIP   COMPILE:acats/cd2a23a.ada:16:6: error: undefined identifie
+  cd2a23b            SKIP   COMPILE:acats/cd2a23b.ada:16:6: error: undefined identifie
+  cd2a23e            SKIP   COMPILE:acats/cd2a23e.ada:16:6: error: undefined identifie
+  cd2a24a            SKIP   COMPILE:acats/cd2a24a.ada:17:6: error: undefined identifie
+  cd2a24b            PASS   PASSED
+  cd2a24e            PASS   PASSED
+  cd2a24f            PASS   PASSED
+  cd2a24i            SKIP   BIND:unresolved symbols
+  cd2a24j            SKIP   BIND:unresolved symbols
+  cd2a31a            SKIP   COMPILE:acats/cd2a31a.ada:15:6: error: undefined identifie
+  cd2a31b            SKIP   COMPILE:acats/cd2a31b.ada:16:6: error: undefined identifie
+  cd2a31c            SKIP   COMPILE:acats/cd2a31c.ada:20:6: error: undefined identifie
+  cd2a31e            FAIL   RUNTIME:exit 1
+  cd2a32a            SKIP   COMPILE:acats/cd2a32a.ada:16:6: error: undefined identifie
+  cd2a32b            FAIL   RUNTIME:exit 1
+  cd2a32c            FAIL   FAILED:FAILED: GEN CHECK INT'SIZE SHOULD NOT BE GREATER T
+  cd2a32e            FAIL   RUNTIME:exit 1
+  cd2a32f            PASS   PASSED
+  cd2a32g            SKIP   BIND:unresolved symbols
+  cd2a32i            FAIL   RUNTIME:exit 1
+  cd2a32j            FAIL   RUNTIME:exit 1
+  cd2a51a            PASS   PASSED
+  cd2a51b            FAIL   FAILED:FAILED: INCORRECT RESULTS FOR MULTIPLYING OPERATOR
+  cd2a51e            SKIP   BIND:unresolved symbols
+  cd2a52a            FAIL   FAILED:FAILED: INCORRECT RESULTS FOR MULTIPLYING OPERATOR
+  cd2a52e            FAIL   FAILED:FAILED: INCORRECT RESULTS FOR MULTIPLYING OPERATOR
+  cd2a52f            FAIL   FAILED:FAILED: INCORRECT RESULTS FOR MULTIPLYING OPERATOR
+  cd2a52i            SKIP   BIND:unresolved symbols
+  cd2a52j            SKIP   BIND:unresolved symbols
+  cd2a53a            FAIL   FAILED:FAILED: INCORRECT RESULTS FOR BINARY ADDING OPERAT
+  cd2a53b            FAIL   FAILED:FAILED: INCORRECT RESULTS FOR BINARY ADDING OPERAT
+  cd2a53e            SKIP   BIND:unresolved symbols
+  cd2a54a            FAIL   FAILED:FAILED: INCORRECT RESULTS FOR BINARY ADDING OPERAT
+  cd2a54e            FAIL   FAILED:FAILED: INCORRECT RESULTS FOR BINARY ADDING OPERAT
+  cd2a54i            SKIP   BIND:unresolved symbols
+  cd2a54j            SKIP   BIND:unresolved symbols
+  cd2b11a            SKIP   COMPILE:
+  cd2b11b            SKIP   COMPILE:
+  cd2b11d            FAIL   FAILED:FAILED: INCORRECT VALUE FOR STORAGE SIZE
+  cd2b11e            FAIL   FAILED:FAILED: INCORRECT VALUE FOR STORAGE SIZE
+  cd2b11f            FAIL   FAILED:FAILED: INCORRECT VALUE FOR RECORD TYPE ACCESS STO
+  cd2b15b            PASS   PASSED
+  cd2b16a            PASS   PASSED
+  cd2d11a            FAIL   FAILED:FAILED: INCORRECT RESULTS FOR BINARY ADDING OPERAT
+  cd2d13a            FAIL   FAILED:FAILED: INCORRECT VALUE FOR FIXED IN P'SMALL
+  cd3014a            FAIL   RUNTIME:exit 124
+  cd3014b            FAIL   RUNTIME:exit 124
+  cd3014c            SKIP   COMPILE:acats/cd3014c.ada:15:6: error: undefined identifie
+  cd3014d            SKIP   BIND:unresolved symbols
+  cd3014e            SKIP   BIND:unresolved symbols
+  cd3014f            SKIP   COMPILE:acats/cd3014f.ada:14:6: error: undefined identifie
+  cd3015a            FAIL   RUNTIME:exit 124
+  cd3015b            FAIL   RUNTIME:exit 124
+  cd3015c            SKIP   COMPILE:acats/cd3015c.ada:15:6: error: undefined identifie
+  cd3015d            SKIP   BIND:unresolved symbols
+  cd3015e            SKIP   COMPILE:acats/cd3015e.ada:15:6: error: undefined identifie
+  cd3015f            SKIP   COMPILE:acats/cd3015f.ada:16:6: error: undefined identifie
+  cd3015g            FAIL   RUNTIME:exit 124
+  cd3015h            SKIP   COMPILE:acats/cd3015h.ada:15:6: error: undefined identifie
+  cd3015i            SKIP   BIND:unresolved symbols
+  cd3015j            SKIP   BIND:unresolved symbols
+  cd3015k            SKIP   COMPILE:acats/cd3015k.ada:16:6: error: undefined identifie
+  cd3015l            FAIL   RUNTIME:exit 124
+  cd3021a            FAIL   FAILED:FAILED: INCORRECT VALUES FOR ARRAYS
+  cd3022a            SKIP   COMPILE:acats/cd3022a.ada:16:6: error: undefined identifie
+  cd4022a            SKIP   COMPILE:acats/cd4022a.ada:15:6: error: undefined identifie
+  cd4024b            SKIP   COMPILE:acats/cd4024b.ada:17:6: error: undefined identifie
+  cd4024c            SKIP   COMPILE:acats/cd4024c.ada:15:6: error: undefined identifie
+  cd4031a            SKIP   COMPILE:acats/cd4031a.ada:15:6: error: undefined identifie
+  cd4051a            FAIL   FAILED:FAILED: INCORRECT VALUE FOR LAST BIT OF INT COMP
+  cd4051b            FAIL   FAILED:FAILED: INCORRECT VALUE FOR LAST BIT OF INT COMP
+  cd4051c            FAIL   FAILED:FAILED: INCORRECT VALUE FOR LAST BIT OF DISC
+  cd4051d            SKIP   COMPILE:acats/cd4051d.ada:15:6: error: undefined identifie
+  cd4061a            SKIP   COMPILE:acats/cd4061a.ada:14:6: error: undefined identifie
+  cd5003a            SKIP   COMPILE:acats/cd5003a.ada:16:6: error: undefined identifie
+  cd5003b            SKIP   COMPILE:acats/cd5003b.ada:17:6: error: undefined identifie
+  cd5003c            SKIP   COMPILE:acats/cd5003c.ada:27:6: error: undefined identifie
+  cd5003d            SKIP   COMPILE:acats/cd5003d.ada:22:6: error: undefined identifie
+  cd5003e            SKIP   COMPILE:acats/cd5003e.ada:24:6: error: undefined identifie
+  cd5003f            SKIP   COMPILE:acats/cd5003f.ada:17:6: error: undefined identifie
+  cd5003g            SKIP   COMPILE:acats/cd5003g.ada:19:6: error: undefined identifie
+  cd5003h            SKIP   COMPILE:acats/cd5003h.ada:23:6: error: undefined identifie
+  cd5003i            SKIP   COMPILE:acats/cd5003i.ada:23:6: error: undefined identifie
+  cd5011a            SKIP   COMPILE:acats/cd5011a.ada:13:6: error: undefined identifie
+  cd5011c            SKIP   COMPILE:acats/cd5011c.ada:13:6: error: undefined identifie
+  cd5011e            SKIP   COMPILE:acats/cd5011e.ada:14:6: error: undefined identifie
+  cd5011g            SKIP   COMPILE:acats/cd5011g.ada:13:6: error: undefined identifie
+  cd5011i            SKIP   COMPILE:acats/cd5011i.ada:13:6: error: undefined identifie
+  cd5011k            SKIP   COMPILE:acats/cd5011k.ada:13:6: error: undefined identifie
+  cd5011m            SKIP   COMPILE:acats/cd5011m.ada:13:6: error: undefined identifie
+  cd5011q            SKIP   COMPILE:acats/cd5011q.ada:13:6: error: undefined identifie
+  cd5011s            SKIP   COMPILE:acats/cd5011s.ada:13:6: error: undefined identifie
+  cd5012a            SKIP   COMPILE:acats/cd5012a.ada:13:6: error: undefined identifie
+  cd5012b            SKIP   COMPILE:acats/cd5012b.ada:13:6: error: undefined identifie
+  cd5012e            SKIP   COMPILE:acats/cd5012e.ada:13:6: error: undefined identifie
+  cd5012f            SKIP   COMPILE:acats/cd5012f.ada:14:6: error: undefined identifie
+  cd5012i            SKIP   COMPILE:acats/cd5012i.ada:13:6: error: undefined identifie
+  cd5012m            SKIP   COMPILE:acats/cd5012m.ada:14:6: error: undefined identifie
+  cd5013a            SKIP   COMPILE:acats/cd5013a.ada:14:6: error: undefined identifie
+  cd5013c            SKIP   COMPILE:acats/cd5013c.ada:14:6: error: undefined identifie
+  cd5013e            SKIP   COMPILE:acats/cd5013e.ada:14:6: error: undefined identifie
+  cd5013g            SKIP   COMPILE:acats/cd5013g.ada:14:6: error: undefined identifie
+  cd5013i            SKIP   COMPILE:acats/cd5013i.ada:14:6: error: undefined identifie
+  cd5013k            SKIP   COMPILE:acats/cd5013k.ada:14:6: error: undefined identifie
+  cd5013m            SKIP   COMPILE:acats/cd5013m.ada:14:6: error: undefined identifie
+  cd5013o            SKIP   COMPILE:acats/cd5013o.ada:14:6: error: undefined identifie
+  cd5014a            SKIP   COMPILE:acats/cd5014a.ada:16:6: error: undefined identifie
+  cd5014c            SKIP   COMPILE:acats/cd5014c.ada:16:6: error: undefined identifie
+  cd5014e            SKIP   COMPILE:acats/cd5014e.ada:16:6: error: undefined identifie
+  cd5014g            SKIP   COMPILE:acats/cd5014g.ada:16:6: error: undefined identifie
+  cd5014i            SKIP   COMPILE:acats/cd5014i.ada:16:6: error: undefined identifie
+  cd5014k            SKIP   COMPILE:acats/cd5014k.ada:16:6: error: undefined identifie
+  cd5014m            SKIP   COMPILE:acats/cd5014m.ada:16:6: error: undefined identifie
+  cd5014o            SKIP   COMPILE:acats/cd5014o.ada:16:6: error: undefined identifie
+  cd5014t            SKIP   COMPILE:acats/cd5014t.ada:15:6: error: undefined identifie
+  cd5014v            SKIP   COMPILE:acats/cd5014v.ada:15:6: error: undefined identifie
+  cd5014x            SKIP   COMPILE:acats/cd5014x.ada:14:6: error: undefined identifie
+  cd5014y            SKIP   COMPILE:acats/cd5014y.ada:14:6: error: undefined identifie
+  cd5014z            SKIP   COMPILE:acats/cd5014z.ada:14:6: error: undefined identifie
+  cd7002a            FAIL   RUNTIME:exit 1
+  cd7007b            PASS   PASSED
+  cd7101d            PASS   PASSED
+  cd7202a            SKIP   BIND:unresolved symbols
+  cd7204b            FAIL   FAILED:FAILED: INCORRECT VALUES FOR FIRST BIT OR LAST BIT
+  cd7204c            FAIL   FAILED:FAILED: INCORRECT VALUE FOR LAST BIT OF CHECK INT
+  cd7205c            FAIL   FAILED:FAILED: VALUE TOO SMALL FOR CHECK TYPE'STORAGE SIZ
+  cd7305a            PASS   PASSED
+  cda101b            SKIP   BIND:unresolved symbols
+  cda201a            SKIP   BIND:unresolved symbols
+  cda201b            SKIP   BIND:unresolved symbols
+  cda201c            SKIP   COMPILE:
+  cda201e            SKIP   BIND:unresolved symbols
+  ce2102a            FAIL   FAILED:FAILED: STATUS ERROR NOT RAISED WHEN FILE IS ALREA
+  ce2102b            FAIL   FAILED:FAILED: STATUS ERROR NOT RAISED WHEN FILE IS ALREA
+  ce2102d            PASS   PASSED
+  ce2102e            PASS   PASSED
+  ce2102f            PASS   PASSED
+  ce2102g            FAIL   RUNTIME:exit 1
+  ce2102i            PASS   PASSED
+  ce2102j            PASS   PASSED
+  ce2102k            FAIL   RUNTIME:exit 1
+  ce2102l            FAIL   FAILED:FAILED: STATUS ERROR NOT RAISED WHEN AN UNOPENED F
+  ce2102m            FAIL   FAILED:FAILED: STATUS ERROR NOT RAISED WHEN AN UNOPENED F
+  ce2102n            FAIL   RUNTIME:exit 1
+  ce2102o            FAIL   RUNTIME:exit 1
+  ce2102p            FAIL   RUNTIME:exit 1
+  ce2102q            FAIL   RUNTIME:exit 1
+  ce2102r            FAIL   RUNTIME:exit 1
+  ce2102s            FAIL   RUNTIME:exit 1
+  ce2102t            FAIL   RUNTIME:exit 1
+  ce2102u            FAIL   RUNTIME:exit 1
+  ce2102v            FAIL   RUNTIME:exit 1
+  ce2102w            FAIL   RUNTIME:exit 1
+  ce2102x            FAIL   RUNTIME:exit 1
+  ce2102y            FAIL   RUNTIME:exit 1
+  ce2103c            FAIL   RUNTIME:exit 1
+  ce2103d            FAIL   RUNTIME:exit 1
+  ce2104a            FAIL   RUNTIME:exit 1
+  ce2104b            FAIL   RUNTIME:exit 1
+  ce2104c            FAIL   RUNTIME:exit 1
+  ce2104d            FAIL   RUNTIME:exit 1
+  ce2105a            PASS   PASSED
+  ce2105b            PASS   PASSED
+  ce2106a            PASS   PASSED
+  ce2106b            PASS   PASSED
+  ce2107a            FAIL   RUNTIME:exit 1
+  ce2107b            SKIP   BIND:unresolved symbols
+  ce2107c            FAIL   RUNTIME:exit 1
+  ce2107d            SKIP   BIND:unresolved symbols
+  ce2107e            FAIL   RUNTIME:exit 1
+  ce2107f            FAIL   RUNTIME:exit 1
+  ce2107g            SKIP   BIND:unresolved symbols
+  ce2107h            FAIL   FAILED:FAILED: UNEXPECTED EXCEPTION RAISED; DIRECT CREATE
+  ce2107i            SKIP   BIND:unresolved symbols
+  ce2107l            FAIL   RUNTIME:exit 1
+  ce2108a            FAIL   RUNTIME:exit 1
+  ce2108b            FAIL   RUNTIME:exit 124
+  ce2108c            FAIL   RUNTIME:exit 1
+  ce2108d            FAIL   RUNTIME:exit 124
+  ce2108e            FAIL   RUNTIME:exit 1
+  ce2108f            FAIL   RUNTIME:exit 1
+  ce2108g            FAIL   RUNTIME:exit 1
+  ce2108h            FAIL   RUNTIME:exit 1
+  ce2109a            FAIL   RUNTIME:exit 1
+  ce2109b            FAIL   RUNTIME:exit 1
+  ce2109c            FAIL   RUNTIME:exit 124
+  ce2110a            FAIL   FAILED:FAILED: EXTERNAL FILE STILL EXISTS AFTER A SUCCESS
+  ce2110b            PASS   PASSED
+  ce2110c            FAIL   FAILED:FAILED: EXTERNAL FILE STILL EXISTS AFTER A SUCCESS
+  ce2110d            PASS   PASSED
+  ce2111a            FAIL   RUNTIME:exit 1
+  ce2111b            FAIL   RUNTIME:exit 1
+  ce2111c            FAIL   RUNTIME:exit 1
+  ce2111d            SKIP   BIND:unresolved symbols
+  ce2111e            FAIL   RUNTIME:exit 1
+  ce2111f            FAIL   RUNTIME:exit 1
+  ce2111g            FAIL   RUNTIME:exit 1
+  ce2111h            SKIP   BIND:unresolved symbols
+  ce2111i            FAIL   RUNTIME:exit 1
+  ce2115a            FAIL   RUNTIME:exit 1
+  ce2115b            FAIL   RUNTIME:exit 1
+  ce2117a            FAIL   FAILED:FAILED: UNEXPECTED EXCEPTION RAISED ON CREATE
+  ce2117b            FAIL   FAILED:FAILED: UNEXPECTED EXCEPTION RAISED ON CREATE
+  ce2119b            FAIL   RUNTIME:exit 1
+  ce2201a            SKIP   BIND:unresolved symbols
+  ce2201b            FAIL   RUNTIME:exit 1
+  ce2201c            FAIL   RUNTIME:exit 1
+  ce2201f            FAIL   RUNTIME:exit 1
+  ce2201g            SKIP   BIND:unresolved symbols
+  ce2201h            FAIL   RUNTIME:exit 1
+  ce2201i            FAIL   RUNTIME:exit 1
+  ce2201j            FAIL   RUNTIME:exit 1
+  ce2201k            FAIL   RUNTIME:exit 1
+  ce2201l            FAIL   RUNTIME:exit 1
+  ce2201m            FAIL   RUNTIME:exit 1
+  ce2201n            FAIL   RUNTIME:exit 1
+  ce2202a            FAIL   FAILED:FAILED: WRONG EXCEPTION RAISED WHEN WRITE APPLIED
+  ce2204a            FAIL   FAILED:FAILED: UNEXPECTED EXCEPTION RAISED; SEQUENTIAL CR
+  ce2204b            FAIL   RUNTIME:exit 1
+  ce2204c            FAIL   RUNTIME:exit 1
+  ce2204d            FAIL   RUNTIME:exit 1
+  ce2205a            FAIL   RUNTIME:exit 1
+  ce2205b            SKIP   BIND:unresolved symbols
+  ce2206a            FAIL   RUNTIME:exit 1
+  ce2208b            FAIL   FAILED:FAILED: UNEXPECTED EXCEPTION RAISED DURING WRITE
+  ce2401a            SKIP   BIND:unresolved symbols
+  ce2401b            SKIP   BIND:unresolved symbols
+  ce2401c            SKIP   BIND:unresolved symbols
+  ce2401e            FAIL   RUNTIME:exit 1
+  ce2401f            FAIL   RUNTIME:exit 1
+  ce2401h            SKIP   BIND:unresolved symbols
+  ce2401i            FAIL   RUNTIME:exit 1
+  ce2401j            FAIL   FAILED:FAILED: EXCEPTION RAISED ON WRITE
+  ce2401k            FAIL   FAILED:FAILED: EXCEPTION RAISED ON WRITE IN INOUT FILE MO
+  ce2401l            FAIL   FAILED:FAILED: EXCEPTION RAISED ON WRITE IN INOUT FILE MO
+  ce2402a            FAIL   FAILED:FAILED: UNEXPECTED EXCEPTION RAISED ON WRITE - 3
+  ce2404a            FAIL   FAILED:FAILED: WRONG EXCEPTION RAISED ON READ - 5
+  ce2404b            FAIL   FAILED:FAILED: WRONG EXCEPTION RAISED ON READ - 4
+  ce2405a            SKIP   BIND:unresolved symbols
+  ce2405b            FAIL   RUNTIME:exit 1
+  ce2406a            FAIL   RUNTIME:exit 1
+  ce2407a            FAIL   RUNTIME:exit 1
+  ce2407b            FAIL   RUNTIME:exit 1
+  ce2408a            FAIL   RUNTIME:exit 1
+  ce2408b            FAIL   RUNTIME:exit 1
+  ce2409a            FAIL   RUNTIME:exit 1
+  ce2409b            FAIL   RUNTIME:exit 1
+  ce2410a            FAIL   FAILED:FAILED: WRONG EXCEPTION RAISED ON END OF FILE - 3
+  ce2410b            FAIL   FAILED:FAILED: WRONG EXCEPTION RAISED ON END OF FILE - 3
+  ce2411a            FAIL   RUNTIME:exit 1
+  ce3002d            PASS   PASSED
+  ce3002f            PASS   PASSED
+  ce3102a            SKIP   COMPILE:acats/ce3102a.ada:50:16: error: undefined identifi
+  ce3102c            SKIP   BIND:unresolved symbols
+  ce3102d            SKIP   COMPILE:acats/ce3102d.ada:40:16: error: undefined identifi
+  ce3102e            FAIL   RUNTIME:exit 124
+  ce3102f            FAIL   RUNTIME:exit 124
+  ce3102g            FAIL   RUNTIME:exit 124
+  ce3102h            FAIL   RUNTIME:exit 124
+  ce3102i            FAIL   RUNTIME:exit 124
+  ce3102j            FAIL   RUNTIME:exit 124
+  ce3102k            FAIL   RUNTIME:exit 124
+  ce3103a            FAIL   RUNTIME:exit 124
+  ce3104a            FAIL   RUNTIME:exit 124
+  ce3104b            FAIL   RUNTIME:exit 124
+  ce3104c            FAIL   RUNTIME:exit 124
+  ce3106a            FAIL   RUNTIME:exit 124
+  ce3106b            FAIL   RUNTIME:exit 124
+  ce3107b            FAIL   RUNTIME:exit 124
+  ce3108a            FAIL   RUNTIME:exit 124
+  ce3108b            FAIL   RUNTIME:exit 124
+  ce3109a            FAIL   RUNTIME:exit 124
+  ce3110a            FAIL   RUNTIME:exit 124
+  ce3111a            FAIL   RUNTIME:exit 124
+  ce3111b            FAIL   RUNTIME:exit 124
+  ce3111c            FAIL   RUNTIME:exit 124
+  ce3111d            FAIL   RUNTIME:exit 124
+  ce3111e            FAIL   RUNTIME:exit 124
+  ce3112a            FAIL   RUNTIME:exit 124
+  ce3112b            FAIL   RUNTIME:exit 124
+  ce3112c            FAIL   RUNTIME:exit 124
+  ce3112d            FAIL   RUNTIME:exit 124
+  ce3114a            FAIL   RUNTIME:exit 124
+  ce3114b            FAIL   RUNTIME:exit 124
+  ce3115a            SKIP   BIND:unresolved symbols
+  ce3116a            FAIL   FAILED:FAILED: UNEXPECTED EXCEPTION RAISED ON CREATE
+  ce3118a            FAIL   RUNTIME:exit 124
+  ce3201a            FAIL   RUNTIME:exit 1
+  ce3202a            FAIL   RUNTIME:exit 124
+  ce3206a            SKIP   COMPILE:acats/ce3206a.ada:33:16: error: undefined identifi
+  ce3207a            FAIL   RUNTIME:exit 124
+  ce3208a            SKIP   COMPILE:acats/ce3208a.ada:71:21: error: undefined identifi
+  ce3301a            FAIL   RUNTIME:exit 124
+  ce3302a            FAIL   RUNTIME:exit 124
+  ce3303a            SKIP   COMPILE:acats/ce3303a.ada:39:16: error: undefined identifi
+  ce3305a            SKIP   COMPILE:acats/ce3305a.ada:19:6: error: undefined identifie
+  ce3306a            PASS   PASSED
+  ce3401a            FAIL   RUNTIME:exit 124
+  ce3402a            FAIL   RUNTIME:exit 124
+  ce3402c            SKIP   COMPILE:acats/ce3402c.ada:26:6: error: undefined identifie
+  ce3402d            FAIL   RUNTIME:exit 124
+  ce3402e            FAIL   RUNTIME:exit 124
+  ce3403a            FAIL   RUNTIME:exit 124
+  ce3403b            FAIL   RUNTIME:exit 124
+  ce3403c            FAIL   RUNTIME:exit 124
+  ce3403d            PASS   PASSED
+  ce3403e            FAIL   RUNTIME:exit 124
+  ce3403f            FAIL   RUNTIME:exit 124
+  ce3404a            FAIL   RUNTIME:exit 124
+  ce3404b            FAIL   RUNTIME:exit 124
+  ce3404c            FAIL   RUNTIME:exit 124
+  ce3404d            FAIL   RUNTIME:exit 124
+  ce3405a            SKIP   COMPILE:acats/ce3405a.ada:27:6: error: undefined identifie
+  ce3405c            FAIL   RUNTIME:exit 124
+  ce3405d            SKIP   COMPILE:acats/ce3405d.ada:22:6: error: undefined identifie
+  ce3406a            FAIL   RUNTIME:exit 124
+  ce3406b            FAIL   RUNTIME:exit 124
+  ce3406c            FAIL   RUNTIME:exit 124
+  ce3406d            FAIL   RUNTIME:exit 124
+  ce3407a            FAIL   RUNTIME:exit 124
+  ce3407b            FAIL   RUNTIME:exit 124
+  ce3407c            FAIL   RUNTIME:exit 124
+  ce3408a            FAIL   RUNTIME:exit 124
+  ce3408b            FAIL   RUNTIME:exit 124
+  ce3408c            FAIL   RUNTIME:exit 124
+  ce3409a            FAIL   RUNTIME:exit 124
+  ce3409b            SKIP   COMPILE:acats/ce3409b.ada:35:16: error: undefined identifi
+  ce3409c            SKIP   COMPILE:acats/ce3409c.ada:26:6: error: undefined identifie
+  ce3409d            FAIL   RUNTIME:exit 124
+  ce3409e            FAIL   RUNTIME:exit 124
+  ce3410a            FAIL   RUNTIME:exit 124
+  ce3410b            SKIP   COMPILE:acats/ce3410b.ada:36:16: error: undefined identifi
+  ce3410c            SKIP   COMPILE:acats/ce3410c.ada:25:6: error: undefined identifie
+  ce3410d            FAIL   RUNTIME:exit 124
+  ce3410e            FAIL   RUNTIME:exit 124
+  ce3411a            FAIL   RUNTIME:exit 124
+  ce3411b            FAIL   RUNTIME:exit 124
+  ce3411c            FAIL   RUNTIME:exit 124
+  ce3412a            FAIL   RUNTIME:exit 124
+  ce3412b            PASS   PASSED
+  ce3413a            FAIL   RUNTIME:exit 124
+  ce3413b            PASS   PASSED
+  ce3413c            FAIL   RUNTIME:exit 124
+  ce3414a            SKIP   COMPILE:acats/ce3414a.ada:55:21: error: undefined identifi
+  ce3601a            SKIP   COMPILE:acats/ce3601a.ada:37:21: error: undefined identifi
+  ce3602a            FAIL   RUNTIME:exit 124
+  ce3602b            SKIP   COMPILE:acats/ce3602b.ada:26:6: error: undefined identifie
+  ce3602c            FAIL   RUNTIME:exit 124
+  ce3602d            FAIL   RUNTIME:exit 124
+  ce3603a            FAIL   RUNTIME:exit 124
+  ce3604a            FAIL   RUNTIME:exit 124
+  ce3604b            FAIL   RUNTIME:exit 124
+  ce3605a            FAIL   RUNTIME:exit 124
+  ce3605b            FAIL   RUNTIME:exit 124
+  ce3605c            FAIL   RUNTIME:exit 124
+  ce3605d            SKIP   COMPILE:acats/ce3605d.ada:24:6: error: undefined identifie
+  ce3605e            SKIP   COMPILE:acats/ce3605e.ada:26:6: error: undefined identifie
+  ce3606a            SKIP   COMPILE:acats/ce3606a.ada:21:6: error: undefined identifie
+  ce3606b            SKIP   COMPILE:acats/ce3606b.ada:22:6: error: undefined identifie
+  ce3701a            SKIP   COMPILE:acats/ce3701a.ada:34:16: error: undefined identifi
+  ce3704a            FAIL   RUNTIME:exit 124
+  ce3704b            SKIP   BIND:unresolved symbols
+  ce3704c            SKIP   COMPILE:acats/ce3704c.ada:48:21: error: undefined identifi
+  ce3704d            FAIL   RUNTIME:exit 124
+  ce3704e            FAIL   RUNTIME:exit 124
+  ce3704f            FAIL   RUNTIME:exit 124
+  ce3704m            FAIL   RUNTIME:exit 124
+  ce3704n            FAIL   RUNTIME:exit 124
+  ce3704o            FAIL   RUNTIME:exit 124
+  ce3705a            FAIL   RUNTIME:exit 124
+  ce3705b            FAIL   RUNTIME:exit 124
+  ce3705c            FAIL   RUNTIME:exit 124
+  ce3705d            FAIL   RUNTIME:exit 124
+  ce3705e            FAIL   RUNTIME:exit 124
+  ce3706c            FAIL   FAILED:FAILED: CONSTRAINT ERROR NOT RAISED FOR ITEM OUTSI
+  ce3706d            FAIL   RUNTIME:exit 124
+  ce3706f            SKIP   COMPILE:acats/ce3706f.ada:27:6: error: undefined identifie
+  ce3706g            FAIL   RUNTIME:exit 124
+  ce3707a            FAIL   FAILED:FAILED: VALUE FROM STRING INCORRECT - 1
+  ce3708a            FAIL   RUNTIME:exit 1
+  ce3801a            SKIP   COMPILE:acats/ce3801a.ada:39:21: error: undefined identifi
+  ce3801b            SKIP   COMPILE:acats/ce3801b.ada:35:21: error: undefined identifi
+  ce3804a            FAIL   RUNTIME:exit 124
+  ce3804b            FAIL   RUNTIME:exit 124
+  ce3804c            FAIL   RUNTIME:exit 124
+  ce3804d            FAIL   RUNTIME:exit 124
+  ce3804e            FAIL   RUNTIME:exit 124
+  ce3804f            SKIP   COMPILE:acats/ce3804f.ada:54:21: error: undefined identifi
+  ce3804g            FAIL   RUNTIME:exit 124
+  ce3804h            FAIL   RUNTIME:exit 124
+  ce3804i            FAIL   RUNTIME:exit 124
+  ce3804j            FAIL   RUNTIME:exit 124
+  ce3804k            FAIL   RUNTIME:exit 124
+  ce3804l            FAIL   RUNTIME:exit 124
+  ce3804m            FAIL   RUNTIME:exit 124
+  ce3804n            FAIL   RUNTIME:exit 124
+  ce3804o            FAIL   RUNTIME:exit 124
+  ce3804p            SKIP   COMPILE:acats/ce3804p.ada:51:21: error: undefined identifi
+  ce3805a            FAIL   RUNTIME:exit 124
+  ce3805b            FAIL   RUNTIME:exit 124
+  ce3806a            FAIL   RUNTIME:exit 124
+  ce3806b            FAIL   RUNTIME:exit 124
+  ce3806c            SKIP   COMPILE:acats/ce3806c.ada:45:21: error: undefined identifi
+  ce3806d            FAIL   RUNTIME:exit 124
+  ce3806e            SKIP   COMPILE:acats/ce3806e.ada:29:6: error: undefined identifie
+  ce3806f            SKIP   COMPILE:acats/ce3806f.ada:42:21: error: undefined identifi
+  ce3806g            FAIL   RUNTIME:exit 124
+  ce3806h            SKIP   COMPILE:acats/ce3806h.ada:19:6: error: undefined identifie
+  ce3809a            FAIL   FAILED:FAILED: FLOAT VALUE FROM STRING INCORRECT
+  ce3809b            FAIL   FAILED:FAILED: FIXED VALUE FROM STRING INCORRECT
+  ce3810a            FAIL   RUNTIME:exit 124
+  ce3810b            FAIL   RUNTIME:exit 124
+  ce3812a            FAIL   RUNTIME:exit 124
+  ce3814a            FAIL   RUNTIME:exit 124
+  ce3815a            FAIL   RUNTIME:exit 124
+  ce3901a            SKIP   COMPILE:acats/ce3901a.ada:35:21: error: undefined identifi
+  ce3902b            FAIL   RUNTIME:exit 139
+  ce3904a            FAIL   RUNTIME:exit 124
+  ce3904b            FAIL   RUNTIME:exit 124
+  ce3905a            FAIL   RUNTIME:exit 124
+  ce3905b            FAIL   RUNTIME:exit 124
+  ce3905c            FAIL   RUNTIME:exit 124
+  ce3905l            FAIL   RUNTIME:exit 124
+  ce3906a            SKIP   COMPILE:acats/ce3906a.ada:26:6: error: undefined identifie
+  ce3906b            FAIL   RUNTIME:exit 124
+  ce3906c            FAIL   RUNTIME:exit 124
+  ce3906d            SKIP   COMPILE:acats/ce3906d.ada:45:21: error: undefined identifi
+  ce3906e            SKIP   COMPILE:acats/ce3906e.ada:26:6: error: undefined identifie
+  ce3906f            SKIP   COMPILE:acats/ce3906f.ada:21:6: error: undefined identifie
+  ce3907a            FAIL   FAILED:FAILED: PUT TO STRING, LENGTH LESS THAN STRING INC
+  ce3908a            FAIL   FAILED:FAILED: LAST CONTAINS INCORRECT VALUE AFTER GET -
+
+========================================
+RESULTS
+========================================
+
+ CLASS                    pass   fail   skip  total    rate
+ ---------------------- ------ ------ ------ ------ -------
+ C  Executable             578    678    723   1979     29%
+ ---------------------- ------ ------ ------ ------ -------
+ TOTAL                     578    678    723   1979     29%
+
+========================================
+ elapsed 107.273s  |  processed 1979 tests  |  16 workers  |  2026-02-04 12:00:41
+========================================

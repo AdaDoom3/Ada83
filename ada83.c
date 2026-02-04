@@ -27377,6 +27377,29 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                         Emit_Store_Fat_Pointer_To_Symbol(cg, fat_ptr, sym, uai_bt);
                     }
                 }
+            } else if (is_record) {
+                /* Record initialized with non-aggregate expression (function call,
+                 * qualified expression, type conversion, etc.).  Generate_Expression
+                 * returns a ptr to the result; memcpy into the variable.  RM 3.3.1 */
+                uint32_t init_ptr = Generate_Expression(cg, node->object_decl.init);
+                if (record_size > 0) {
+                    Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%");
+                    Emit_Symbol_Name(cg, sym);
+                    Emit(cg, ", ptr %%t%u, i64 %u, i1 false)  ; record init from expr\n",
+                         init_ptr, record_size);
+                }
+            } else if (is_any_array and is_constrained_array) {
+                /* Constrained array initialized with non-aggregate expression
+                 * (function call, slice, type conversion, etc.).  Similar to
+                 * record case — result is a ptr, memcpy into the variable. */
+                uint32_t init_ptr = Generate_Expression(cg, node->object_decl.init);
+                uint32_t copy_sz = ty->size > 0 ? ty->size : elem_size;
+                if (copy_sz > 0) {
+                    Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%");
+                    Emit_Symbol_Name(cg, sym);
+                    Emit(cg, ", ptr %%t%u, i64 %u, i1 false)  ; constrained array init from expr\n",
+                         init_ptr, copy_sz);
+                }
             } else if (not is_any_array and not is_record) {
                 uint32_t init = Generate_Expression(cg, node->object_decl.init);
                 /* Use Expression_Llvm_Type to get correct type for all expressions
