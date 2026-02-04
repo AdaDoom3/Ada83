@@ -8318,7 +8318,19 @@ static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
 
         case TK_IN:
         case TK_NOT:  /* NOT IN is encoded as TK_NOT in binary op */
-            /* Membership test */
+            /* Membership test: X IN range.  Per Ada RM 4.5.2, the range
+             * is resolved in the context of the tested expression's type.
+             * GNAT: Resolve_Membership_Op propagates left type to range. */
+            if (left_type and (Type_Is_Enumeration(left_type) or
+                (left_type->parent_type and Type_Is_Enumeration(left_type->parent_type)))) {
+                Syntax_Node *rhs = node->binary.right;
+                if (rhs and rhs->kind == NK_RANGE) {
+                    if (rhs->range.low and rhs->range.low->kind == NK_CHARACTER)
+                        Resolve_Char_As_Enum(sm, rhs->range.low, left_type);
+                    if (rhs->range.high and rhs->range.high->kind == NK_CHARACTER)
+                        Resolve_Char_As_Enum(sm, rhs->range.high, left_type);
+                }
+            }
             node->type = sm->type_boolean;
             break;
 
@@ -9391,7 +9403,28 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
         case NK_RANGE:
             if (node->range.low) Resolve_Expression(sm, node->range.low);
             if (node->range.high) Resolve_Expression(sm, node->range.high);
+            /* Ada RM 4.1.1: in a range L..H, character literals must be
+             * resolved against the other operand's enum type (like binary ops).
+             * GNAT: overload resolution propagates expected type to both bounds. */
+            {
+                Type_Info *lt = node->range.low  ? node->range.low->type  : NULL;
+                Type_Info *ht = node->range.high ? node->range.high->type : NULL;
+                if (ht and Type_Is_Enumeration(ht) and
+                    node->range.low and node->range.low->kind == NK_CHARACTER)
+                    Resolve_Char_As_Enum(sm, node->range.low, ht);
+                else if (lt and Type_Is_Enumeration(lt) and
+                         node->range.high and node->range.high->kind == NK_CHARACTER)
+                    Resolve_Char_As_Enum(sm, node->range.high, lt);
+                /* Also handle derived enum types via parent chain */
+                if (ht and ht->parent_type and Type_Is_Enumeration(ht->parent_type) and
+                    node->range.low and node->range.low->kind == NK_CHARACTER)
+                    Resolve_Char_As_Enum(sm, node->range.low, ht);
+                else if (lt and lt->parent_type and Type_Is_Enumeration(lt->parent_type) and
+                         node->range.high and node->range.high->kind == NK_CHARACTER)
+                    Resolve_Char_As_Enum(sm, node->range.high, lt);
+            }
             node->type = node->range.low ? node->range.low->type : NULL;
+            if (not node->type) node->type = node->range.high ? node->range.high->type : NULL;
             return node->type;
 
         case NK_ASSOCIATION:
@@ -9956,6 +9989,15 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                     if (expr->symbol and expr->symbol->kind == SYMBOL_LITERAL) {
                         *out_val = expr->symbol->frame_offset;
                         return true;
+                    }
+                    /* Character literal 'X' — extract ASCII value from text.
+                     * Per Ada RM 3.5.2, character position = Character'Pos(C).
+                     * GNAT LLVM: Eval_Scalar_Literal handles char literals via
+                     * Enumeration_Rep of the entity. */
+                    if (expr->kind == NK_CHARACTER) {
+                        String_Slice t = expr->string_val.text;
+                        if (t.length >= 2) { *out_val = (unsigned char)t.data[1]; return true; }
+                        if (t.length == 1) { *out_val = (unsigned char)t.data[0]; return true; }
                     }
                     /* Handle TYPE'POS(X) or TYPE'VAL(N) as NK_APPLY */
                     if (expr->kind == NK_APPLY and expr->apply.prefix and
@@ -10986,9 +11028,14 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
                                                       loop_id->string_val.text,
                                                       loop_id->location);
                         /* Loop variable type comes from the range expression.
-                         * For X IN A..B, the range's type is the type of the bounds */
+                         * Per Ada RM 5.5(6): if the range is universal_integer,
+                         * the loop parameter is of type INTEGER. GNAT LLVM:
+                         * see Emit_Loop_Statement — uses Standard_Integer for
+                         * universal ranges. */
                         Type_Info *range_type = iter->binary.right->type;
-                        loop_var->type = range_type ? range_type : sm->type_integer;
+                        if (not range_type or range_type->kind == TYPE_UNIVERSAL_INTEGER)
+                            range_type = sm->type_integer;
+                        loop_var->type = range_type;
                         Symbol_Add(sm, loop_var);
                         loop_id->symbol = loop_var;
                     }
@@ -24938,7 +24985,10 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
             high_val = low_val;
         }
     } else if (range and range->kind == NK_SUBTYPE_INDICATION) {
-        /* Subtype indication with constraint: SUBTYPE_NAME RANGE low..high */
+        /* Subtype indication with constraint: SUBTYPE_NAME RANGE low..high
+         * Per Ada RM 3.6.1(4)/5.5(9): the bounds of the discrete_range
+         * must belong to the subtype — CONSTRAINT_ERROR is raised otherwise.
+         * GNAT LLVM: Apply_Range_Check on both low and high bounds. */
         Syntax_Node *constraint = range->subtype_ind.constraint;
         if (constraint and constraint->kind == NK_RANGE_CONSTRAINT and
             constraint->range_constraint.range) {
@@ -24948,6 +24998,26 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
                 high_val = Generate_Expression(cg, actual_range->range.high);
                 low_val = Emit_Coerce(cg, low_val, loop_type);
                 high_val = Emit_Coerce(cg, high_val, loop_type);
+
+                /* RM 3.2.2(11): check range bounds against subtype ST.
+                 * Null ranges (low > high) are always compatible.
+                 * GNAT LLVM: Apply_Range_Check on both bounds. */
+                Type_Info *st = range->subtype_ind.subtype_mark
+                              ? range->subtype_ind.subtype_mark->type : NULL;
+                if (st) {
+                    uint32_t is_null = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = icmp sgt %s %%t%u, %%t%u\n",
+                         is_null, loop_type, low_val, high_val);
+                    uint32_t chk_lbl = Emit_Label(cg);
+                    uint32_t skip_lbl = Emit_Label(cg);
+                    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                         is_null, skip_lbl, chk_lbl);
+                    Emit_Label_Here(cg, chk_lbl);
+                    Emit_Constraint_Check(cg, low_val, st, NULL);
+                    Emit_Constraint_Check(cg, high_val, st, NULL);
+                    Emit(cg, "  br label %%L%u\n", skip_lbl);
+                    Emit_Label_Here(cg, skip_lbl);
+                }
             } else {
                 /* Range might be a name like T'RANGE */
                 low_val = Generate_Expression(cg, actual_range);
