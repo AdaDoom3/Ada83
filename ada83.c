@@ -1923,36 +1923,35 @@ static Token Scan_Number(Lexer *lex) {
             /* Also compute double for compatibility */
             tok.float_value = Big_Real_To_Double(tok.big_real);
         } else {
-            /* Based real: parse mantissa in base, apply exponent as power of base */
-            /* Format: base#integer.fraction#exponent */
-            double value = 0.0;
-            double frac_mult = 1.0 / base;
-            int exp = 0;
-            int state = 0; /* 0=skip base, 1=integer, 2=fraction, 3=exponent */
+            /* Based real — parse mantissa as integer, divide once for precision.
+             * Accumulating frac digits individually causes ULP rounding drift. */
+            long double whole = 0.0L, frac_int = 0.0L;
+            int frac_digits = 0, exp = 0, state = 0;
             bool exp_neg = false;
             for (const char *p = start; p < lex->current; p++) {
                 char c = *p;
                 if (c == '_') continue;
                 if (c == '#' or c == ':') { state++; continue; }
                 if (c == '.') { state = 2; continue; }
-                if (To_Lower(c) == 'e') { state = 3; continue; }
-                if (state == 1) {
-                    int d = Digit_Value(c);
-                    if (d >= 0 and d < base) value = value * base + d;
-                } else if (state == 2) {
-                    int d = Digit_Value(c);
-                    if (d >= 0 and d < base) { value += d * frac_mult; frac_mult /= base; }
-                } else if (state == 3) {
-                    if (c == '-') exp_neg = true;
-                    else if (c == '+') continue;
-                    else if (Is_Digit(c)) exp = exp * 10 + (c - '0');
-                }
+                if (To_Lower(c) == 'e' and state > 2) { state = 3; continue; }
+                int d = Digit_Value(c);
+                if (state == 1 and d >= 0 and d < base)
+                    whole = whole * base + d;
+                else if (state == 2 and d >= 0 and d < base)
+                    { frac_int = frac_int * base + d; frac_digits++; }
+                else if (state == 3)
+                    { if (c == '-') exp_neg = true;
+                      else if (c != '+' and Is_Digit(c)) exp = exp * 10 + (c - '0'); }
             }
+            /* value = whole + frac_int / base^frac_digits */
+            long double divisor = 1.0L;
+            for (int i = 0; i < frac_digits; i++) divisor *= base;
+            long double value = whole + frac_int / divisor;
             if (exp_neg) exp = -exp;
             for (int i = 0; i < (exp > 0 ? exp : -exp); i++)
                 value = exp > 0 ? value * base : value / base;
-            tok.float_value = value;
-            tok.big_real = NULL;  /* Based reals use double precision only */
+            tok.float_value = (double)value;
+            tok.big_real = NULL;
         }
     } else {
         if (not is_based and not has_exponent) {
@@ -2037,26 +2036,26 @@ static Token Scan_Character_Literal(Lexer *lex) {
 
 static Token Scan_String_Literal(Lexer *lex) {
     Source_Location loc = {lex->filename, lex->line, lex->column};
-    Lexer_Advance(lex); /* consume opening " */
+    char delim = Lexer_Advance(lex); /* consume opening " or % */
 
     size_t capacity = 64, length = 0;
     char *buffer = Arena_Allocate(capacity);
 
     while (lex->current < lex->source_end) {
-        if (*lex->current == '"') {
-            if (Lexer_Peek(lex, 1) == '"') {
-                /* Escaped quote: "" becomes " */
+        if (*lex->current == delim) {
+            if (Lexer_Peek(lex, 1) == delim) {
+                /* Doubled delimiter → literal delimiter char */
                 if (length >= capacity - 1) {
                     char *newbuf = Arena_Allocate(capacity * 2);
                     memcpy(newbuf, buffer, length);
                     buffer = newbuf;
                     capacity *= 2;
                 }
-                buffer[length++] = '"';
+                buffer[length++] = delim;
                 Lexer_Advance(lex);
                 Lexer_Advance(lex);
             } else {
-                Lexer_Advance(lex); /* consume closing " */
+                Lexer_Advance(lex); /* consume closing delimiter */
                 break;
             }
         } else {
@@ -2117,8 +2116,8 @@ static Token Lexer_Next_Token(Lexer *lex) {
         }
     }
 
-    /* String literal */
-    if (c == '"') return Scan_String_Literal(lex);
+    /* String literal — both " and % delimiters (RM 2.6, Ada 83) */
+    if (c == '"' or c == '%') return Scan_String_Literal(lex);
 
     /* Operators and delimiters */
     Lexer_Advance(lex);
@@ -6886,6 +6885,15 @@ static void Symbol_Add(Symbol_Manager *sm, Symbol *sym) {
             if (sym->kind == SYMBOL_VARIABLE and existing->kind == SYMBOL_TYPE) {
                 break;  /* Proceed to add the variable - it will shadow the type */
             }
+            /* Deferred constant completion (RM 7.4): update existing symbol's
+             * declaration to the full declaration which has the initializer. */
+            if (existing->kind == SYMBOL_CONSTANT and sym->kind == SYMBOL_CONSTANT
+                and sym->declaration and sym->declaration->kind == NK_OBJECT_DECL
+                and sym->declaration->object_decl.init) {
+                existing->declaration = sym->declaration;
+                if (sym->type) existing->type = sym->type;
+                return;
+            }
             /* Same symbol already exists at this scope - skip */
             return;
         }
@@ -10107,9 +10115,11 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                         constrained->size = base_type->size;
                         constrained->alignment = base_type->alignment;
 
-                        /* Copy enumeration info if applicable */
+                        /* Copy type-specific info from base type */
                         if (Type_Is_Enumeration(base_type)) {
                             constrained->enumeration = base_type->enumeration;
+                        } else if (Type_Is_Fixed_Point(base_type)) {
+                            constrained->fixed = base_type->fixed;
                         }
 
                         /* Set bounds from range.
@@ -10485,7 +10495,7 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                         Resolve_Expression(sm, node->integer_type.range);
                         Syntax_Node *range = node->integer_type.range;
                         if (range->kind == NK_RANGE and range->range.low and range->range.high) {
-                            /* Extract low bound - handle integer literals and unary minus */
+                            /* Extract low bound - literals, unary minus, or constants */
                             Syntax_Node *lo = range->range.low;
                             if (lo->kind == NK_INTEGER) {
                                 int_type->low_bound = (Type_Bound){
@@ -10500,8 +10510,16 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                                     .kind = BOUND_INTEGER,
                                     .int_value = val
                                 };
+                            } else {
+                                double val = Eval_Const_Numeric(lo);
+                                if (val == val) {
+                                    int_type->low_bound = (Type_Bound){
+                                        .kind = BOUND_INTEGER,
+                                        .int_value = (int64_t)val
+                                    };
+                                }
                             }
-                            /* Extract high bound - handle integer literals and unary minus */
+                            /* Extract high bound - literals, unary minus, or constants */
                             Syntax_Node *hi = range->range.high;
                             if (hi->kind == NK_INTEGER) {
                                 int_type->high_bound = (Type_Bound){
@@ -10516,6 +10534,14 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                                     .kind = BOUND_INTEGER,
                                     .int_value = val
                                 };
+                            } else {
+                                double val = Eval_Const_Numeric(hi);
+                                if (val == val) {
+                                    int_type->high_bound = (Type_Bound){
+                                        .kind = BOUND_INTEGER,
+                                        .int_value = (int64_t)val
+                                    };
+                                }
                             }
                         }
                     }
@@ -10615,9 +10641,13 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
 
                     /* Size based on digits: <=6 = float, >6 = double */
                     int digits = 15;  /* Default double precision */
-                    if (node->real_type.precision and
-                        node->real_type.precision->kind == NK_INTEGER) {
-                        digits = (int)node->real_type.precision->integer_lit.value;
+                    if (node->real_type.precision) {
+                        if (node->real_type.precision->kind == NK_INTEGER) {
+                            digits = (int)node->real_type.precision->integer_lit.value;
+                        } else {
+                            double val = Eval_Const_Numeric(node->real_type.precision);
+                            if (val == val) digits = (int)val;
+                        }
                     }
                     float_type->flt.digits = digits;  /* Store declared DIGITS */
                     float_type->size = (digits <= 6) ? 4 : 8;
@@ -19049,8 +19079,12 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             left = Convert_Real_To_Fixed(cg, left, small, fix_arith);
     }
 
-    /* Fixed-point multiplication/division needs scaling (RM 4.5.5) */
-    if (is_fixed and (node->binary.op == TK_STAR or node->binary.op == TK_SLASH)) {
+    /* Fixed-point multiplication/division needs scaling (RM 4.5.5)
+     * Only when BOTH operands are fixed-point. Integer × Fixed (or v.v.)
+     * already yields a correctly scaled result — no shift needed. */
+    bool both_fixed = is_fixed
+        and Type_Is_Fixed_Point(lhs_type) and Type_Is_Fixed_Point(rhs_type);
+    if (both_fixed and (node->binary.op == TK_STAR or node->binary.op == TK_SLASH)) {
         const char *fix_type = Type_To_Llvm(result_type);
         int scale = result_type->fixed.scale;
         if (node->binary.op == TK_STAR) {
@@ -19874,10 +19908,14 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         }
     }
 
-    /* Predefined operator called as function: P."="(X,Y) or P."/="(X,Y) etc.
-     * These have is_predefined set and no body - generate inline operations. */
-    if (sym and sym->is_predefined and node->apply.arguments.count >= 1) {
-        String_Slice op_name = sym->name;
+    /* Predefined operator called as function: P."="(X,Y) or "NOT"(X) etc.
+     * These have is_predefined set and no body, or the prefix is an operator
+     * symbol identifier with no symbol (resolved in semantic analysis). */
+    bool is_operator_symbol = (sym and sym->is_predefined) or
+        (not sym and node->apply.prefix->kind == NK_IDENTIFIER and
+         node->apply.prefix->string_val.text.length <= 3);
+    if (is_operator_symbol and node->apply.arguments.count >= 1) {
+        String_Slice op_name = sym ? sym->name : node->apply.prefix->string_val.text;
         uint32_t argc = (uint32_t)node->apply.arguments.count;
         /* Get first argument */
         Syntax_Node *arg0 = node->apply.arguments.items[0];
@@ -19909,7 +19947,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                     eq_result = ne_r;
                 }
                 /* Named operator returns BOOLEAN (i8), not bare i1 */
-                const char *bool_t = sym->return_type ? Type_To_Llvm(sym->return_type) : "i8";
+                const char *bool_t = (sym and sym->return_type) ? Type_To_Llvm(sym->return_type) : "i8";
                 if (bool_t[0] == 'i' and bool_t[1] != '1') {
                     uint32_t ext = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = zext i1 %%t%u to %s\n", ext, eq_result, bool_t);
@@ -19938,8 +19976,11 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "  %%t%u = icmp %s %s %%t%u, %%t%u  ; predef %.*s\n",
                      r, Int_Cmp_Predicate(cmp_tk, uns), ct, v0, v1,
                      (int)op_name.length, op_name.data);
-                Temp_Set_Type(cg, r, "i1");
-                return r;
+                /* Widen i1 → i8 for Ada BOOLEAN */
+                uint32_t w = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = zext i1 %%t%u to i8\n", w, r);
+                Temp_Set_Type(cg, w, "i8");
+                return w;
             }
             /* Arithmetic operators */
             const char *arith_op = NULL;
@@ -19973,6 +20014,17 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                 }
                 return r;
             }
+            /* Exponentiation: "**"(base, exp) */
+            if (Slice_Equal_Ignore_Case(op_name, S("**"))) {
+                const char *iat = Integer_Arith_Type(cg);
+                v0 = Emit_Convert(cg, v0, t0, iat);
+                v1 = Emit_Convert(cg, v1, t1, iat);
+                uint32_t r = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = call %s @__ada_integer_pow(%s %%t%u, %s %%t%u)\n",
+                     r, iat, iat, v0, iat, v1);
+                Temp_Set_Type(cg, r, iat);
+                return r;
+            }
             /* Boolean operators */
             if (Slice_Equal_Ignore_Case(op_name, S("and")) or
                 Slice_Equal_Ignore_Case(op_name, S("or")) or
@@ -19983,8 +20035,10 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                 v1 = Emit_Convert(cg, v1, t1, "i1");
                 uint32_t r = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = %s i1 %%t%u, %%t%u\n", r, bool_op, v0, v1);
-                Temp_Set_Type(cg, r, "i1");
-                return r;
+                uint32_t w = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = zext i1 %%t%u to i8\n", w, r);
+                Temp_Set_Type(cg, w, "i8");
+                return w;
             }
         } else if (argc == 1) {
             /* Unary operators: abs, not, unary - */
@@ -20002,8 +20056,10 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                 v0 = Emit_Convert(cg, v0, t0, "i1");
                 uint32_t r = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = xor i1 %%t%u, true\n", r, v0);
-                Temp_Set_Type(cg, r, "i1");
-                return r;
+                uint32_t w = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = zext i1 %%t%u to i8\n", w, r);
+                Temp_Set_Type(cg, w, "i8");
+                return w;
             }
             if (Slice_Equal_Ignore_Case(op_name, S("-"))) {
                 uint32_t r = Emit_Temp(cg);
@@ -20450,7 +20506,16 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                     } else {
                         const char *param_type = Type_To_Llvm_Sig(formal_type);
                         const char *arg_type = Expression_Llvm_Type(cg, arg);
-                        args[i] = Emit_Convert(cg, args[i], arg_type, param_type);
+                        /* Real literal → fixed-point param: scale by 1/SMALL */
+                        if (Type_Is_Fixed_Point(formal_type) and arg_type and
+                            arg_type[0] != 'i' and arg_type[0] != 'p') {
+                            double small = formal_type->fixed.small;
+                            if (small <= 0) small = formal_type->fixed.delta > 0
+                                                  ? formal_type->fixed.delta : 1.0;
+                            args[i] = Convert_Real_To_Fixed(cg, args[i], small, param_type);
+                        } else {
+                            args[i] = Emit_Convert(cg, args[i], arg_type, param_type);
+                        }
                     }
                 }
             }
@@ -25918,7 +25983,26 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             }
             /* Mark as emitted so extern declarations are suppressed */
             sym->extern_emitted = true;
-            /* Variable - emit as global with default init */
+            /* Variable - emit as global, using static initializer when available.
+             * Per Ada RM 3.2.1: object declarations with static init expressions
+             * can be folded into the global initializer directly. */
+            int64_t  init_ival = 0;
+            double   init_fval = 0.0;
+            bool     has_static_init = false;
+            if (node->object_decl.init) {
+                Syntax_Node *init = node->object_decl.init;
+                if (init->kind == NK_INTEGER) {
+                    init_ival = init->integer_lit.value;
+                    has_static_init = true;
+                } else if (init->kind == NK_REAL) {
+                    init_fval = init->real_lit.value;
+                    has_static_init = true;
+                } else if (init->kind == NK_IDENTIFIER and init->symbol
+                           and init->symbol->is_named_number) {
+                    init_ival = (int64_t)Eval_Const_Numeric(init);
+                    has_static_init = true;
+                }
+            }
             if (is_constrained_array and array_count > 0) {
                 if (elem_is_composite and elem_size > 0) {
                     Emit(cg, " = linkonce_odr global [%s x [%u x i8]] zeroinitializer\n",
@@ -25930,14 +26014,14 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             } else if (is_record and record_size > 0) {
                 Emit(cg, " = linkonce_odr global [%u x i8] zeroinitializer\n", record_size);
             } else {
-                /* For fat pointer types (unconstrained arrays/STRING),
-                 * use zeroinitializer since '0' is invalid for struct types */
                 if (Llvm_Type_Is_Fat_Pointer(type_str)) {
                     Emit(cg, " = linkonce_odr global %s zeroinitializer\n", type_str);
                 } else if (Type_Is_Float_Representation(ty)) {
-                    Emit(cg, " = linkonce_odr global %s 0.0\n", type_str);
+                    Emit(cg, " = linkonce_odr global %s %a\n", type_str,
+                         has_static_init ? init_fval : 0.0);
                 } else {
-                    Emit(cg, " = linkonce_odr global %s 0\n", type_str);
+                    Emit(cg, " = linkonce_odr global %s %lld\n", type_str,
+                         (long long)(has_static_init ? init_ival : 0));
                 }
             }
             continue;
@@ -27581,12 +27665,16 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 cg->current_instance = inst_sym;
                 Set_Generic_Type_Map(inst_sym);
 
+                /* Spec reference and elab flag, used both in global emission
+                 * and in the spec-only elaboration path below. */
+                Syntax_Node *gen_spec = inst_sym->expanded_spec;
+                if (not gen_spec) gen_spec = template->generic_unit;
+                bool needs_elab = false;
+
                 /* For library-level package instances, emit global variables for
                  * exported objects REGARDLESS of whether there's a body. Generic
                  * packages may have just a spec with object declarations. */
                 if (not cg->current_function and inst_sym->kind == SYMBOL_PACKAGE) {
-                    /* Find the generic spec to get initializers */
-                    Syntax_Node *gen_spec = template->generic_unit;
 
                     for (uint32_t i = 0; i < inst_sym->exported_count; i++) {
                         Symbol *exp = inst_sym->exported[i];
@@ -27598,9 +27686,12 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                         bool is_array = Type_Is_Constrained_Array(ty);
                         bool is_record = Type_Is_Record(ty);
 
-                        /* Look for initializer in the generic spec's visible declarations */
+                        /* Look for initializer in the expanded spec's visible decls.
+                         * With expanded_spec, formal params are already substituted
+                         * with actual expressions, so we can evaluate directly. */
                         int64_t init_val = 0;
                         bool has_init = false;
+                        bool this_needs_elab = false;
                         if (gen_spec and gen_spec->kind == NK_PACKAGE_SPEC) {
                             for (uint32_t j = 0; j < gen_spec->package_spec.visible_decls.count; j++) {
                                 Syntax_Node *decl = gen_spec->package_spec.visible_decls.items[j];
@@ -27608,15 +27699,18 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                                 for (uint32_t k = 0; k < decl->object_decl.names.count; k++) {
                                     Syntax_Node *nm = decl->object_decl.names.items[k];
                                     if (nm and Slice_Equal_Ignore_Case(nm->string_val.text, exp->name)) {
-                                        if (decl->object_decl.init and
-                                            decl->object_decl.init->kind == NK_INTEGER) {
-                                            init_val = decl->object_decl.init->integer_lit.value;
+                                        Syntax_Node *init = decl->object_decl.init;
+                                        if (init and init->kind == NK_INTEGER) {
+                                            init_val = init->integer_lit.value;
                                             has_init = true;
+                                        } else if (init) {
+                                            this_needs_elab = true;
+                                            needs_elab = true;
                                         }
                                         break;
                                     }
                                 }
-                                if (has_init) break;
+                                if (has_init or this_needs_elab) break;
                             }
                         }
 
@@ -27644,9 +27738,79 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 Syntax_Node *generic_body = inst_sym->expanded_body;
                 if (not generic_body) generic_body = template->generic_body;
                 if (not generic_body) {
+                    /* Spec-only generic: if any init needs runtime evaluation,
+                     * emit an elab function. Use generic_actuals (resolved in the
+                     * instantiation context) rather than cloned template AST. */
+                    if (needs_elab) {
+                        /* Build map: for each variable whose init references a
+                         * generic formal, pair it with the formal's actual_expr. */
+                        Emit(cg, "\n; Generic instance spec elaboration\n");
+                        Emit(cg, "define void @");
+                        Emit_Symbol_Name(cg, inst_sym);
+                        Emit(cg, "___elab() {\nentry:\n");
+                        Symbol *saved_func = cg->current_function;
+                        uint32_t saved_temp = cg->temp_id;
+                        cg->current_function = inst_sym;
+                        cg->block_terminated = false;
+                        cg->temp_id = 1;
+                        memset(cg->temp_types, 0, sizeof(cg->temp_types));
+                        memset(cg->temp_type_keys, 0, sizeof(cg->temp_type_keys));
+                        /* For each non-static exported var, find the generic actual
+                         * that corresponds to its init expression and evaluate it. */
+                        Syntax_Node *tmpl_spec = template->generic_unit;
+                        if (tmpl_spec and tmpl_spec->kind == NK_PACKAGE_SPEC) {
+                            for (uint32_t j = 0; j < tmpl_spec->package_spec.visible_decls.count; j++) {
+                                Syntax_Node *decl = tmpl_spec->package_spec.visible_decls.items[j];
+                                if (not decl or decl->kind != NK_OBJECT_DECL or not decl->object_decl.init)
+                                    continue;
+                                Syntax_Node *init = decl->object_decl.init;
+                                if (init->kind == NK_INTEGER) continue;
+                                /* init is likely NK_IDENTIFIER referencing formal C.
+                                 * Find the actual expression from generic_actuals. */
+                                Syntax_Node *actual_expr = NULL;
+                                if (init->kind == NK_IDENTIFIER) {
+                                    for (uint32_t ai = 0; ai < inst_sym->generic_actual_count; ai++) {
+                                        if (Slice_Equal_Ignore_Case(
+                                                inst_sym->generic_actuals[ai].formal_name,
+                                                init->string_val.text)) {
+                                            actual_expr = inst_sym->generic_actuals[ai].actual_expr;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if (not actual_expr) continue;
+                                /* Find exported symbol for this variable */
+                                for (uint32_t k = 0; k < decl->object_decl.names.count; k++) {
+                                    Syntax_Node *nm = decl->object_decl.names.items[k];
+                                    if (not nm) continue;
+                                    Symbol *target = NULL;
+                                    for (uint32_t ei = 0; ei < inst_sym->exported_count; ei++) {
+                                        if (inst_sym->exported[ei] and
+                                            Slice_Equal_Ignore_Case(inst_sym->exported[ei]->name,
+                                                                    nm->string_val.text)) {
+                                            target = inst_sym->exported[ei];
+                                            break;
+                                        }
+                                    }
+                                    if (not target) continue;
+                                    uint32_t val = Generate_Expression(cg, actual_expr);
+                                    const char *ts = Type_To_Llvm(target->type);
+                                    Emit(cg, "  store %s %%t%u, ptr @", ts, val);
+                                    Emit_Symbol_Name(cg, target);
+                                    Emit(cg, "\n");
+                                }
+                            }
+                        }
+                        if (not cg->block_terminated) Emit(cg, "  ret void\n");
+                        Emit(cg, "}\n\n");
+                        cg->temp_id = saved_temp;
+                        cg->current_function = saved_func;
+                        if (cg->elab_func_count < 64)
+                            cg->elab_funcs[cg->elab_func_count++] = inst_sym;
+                    }
                     cg->current_instance = saved_instance;
                     Set_Generic_Type_Map(saved_instance);
-                    break;  /* No body: globals already emitted above */
+                    break;
                 }
 
                 /* Generate instantiated body using the instance's symbol */
