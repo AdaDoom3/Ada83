@@ -1,0 +1,55 @@
+CHECKLIST — ada83.c ACATS cb4 Group Fix
+========================================
+
+ORIGINAL PROMPT:
+  "In the pursuit of high-quality code (low line count (e.g. low undue complexity)
+   and high feature/correctness) - refactor and fix ada83.c to pass a C-test group
+   completely (e.g. cXX) with much better Haskell-like C99 and tight smart
+   code-golfing with, ironically, textbook 'Literate Programming' style. Use the
+   GNAT LLVM source to see what is done there before making changes. Create a file
+   to track everything called 'checklist.txt' and include this prompt in it. Start
+   with cb4 where several tests timeout. Use the C-series tests (done in batches) to
+   guide you. MAKE SURE TO STORE RESULTS IN THE REPO TO AVOID WASTING TIME - EACH
+   RUN TAKES OVER A MIN! We should be focused on making changes instead of obsessing
+   over analysis"
+
+TARGET GROUP: cb4 (Exception Handling — 10 tests)
+STATUS: 10/10 PASSED (100%)
+
+BASELINE (before fixes):
+  cb4001a .. cb4009a, cb4013a — all TIMEOUT (exit 124)
+  Root cause: acats/report.ll was 0 bytes (empty)
+
+After regenerating report.ll:
+  7/10 PASS, cb4002a FAILED, cb4008a TIMEOUT, cb4013a TIMEOUT
+
+FIXES APPLIED:
+  [x] 1. Regenerate acats/report.ll from report.adb
+      — 0 bytes -> 2409 lines; fixes 7/10 tests immediately
+
+  [x] 2. cb4002a: Emit_Subtype_Constraint_Compat_Check (RM 3.5(3))
+      — Dynamic constraint bounds must lie within base type range.
+        e.g. "Q : I5 RANGE 0..P" with P=6 and I5=INTEGER RANGE -5..5
+        must raise CONSTRAINT_ERROR because 6 > I5'LAST.
+      — Added ~30-line function near line 17634 + 1-line call site.
+
+  [x] 3. cb4008a: Static chain for deeply nested procedure calls (RM 8.3)
+      — Nested procedures at depth >= 3 were missing __parent_frame argument.
+        e.g. X1A (child of X, grandchild of CB4008A) calling I (child of CB4008A)
+        produced "call void @i()" instead of "call void @i(ptr %ancestor_frame)".
+      — Added Emit_Nested_Frame_Arg / Precompute_Nested_Frame_Arg helpers.
+      — Modified Generate_Subprogram_Body to store __parent_frame at end of
+        __frame_base when function is both nested AND has nested children.
+      — Updated 4 call sites to use two-phase (precompute + emit) pattern.
+
+  [x] 4. cb4013a: T'CALLABLE / T'TERMINATED task attribute support (RM 9.9)
+      — T'CALLABLE was hardcoded to TRUE, T'TERMINATED to FALSE.
+      — Replaced __ada_task_start with TCB-based design:
+        TCB = { ptr func, ptr frame, ptr thread, i8 completed }.
+        Wrapper function (__ada_task_wrapper) calls body and sets completed=1.
+      — Added __ada_task_callable runtime: returns !completed.
+      — CALLABLE/TERMINATED attribute codegen now loads TCB and queries flag.
+
+TEST RESULTS (stored in test_results/):
+  cb4_run4.log — final 10/10 pass
+  cb4008a.ll, cb4013a.ll — generated IR for debugging reference
