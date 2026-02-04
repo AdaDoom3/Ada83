@@ -22394,7 +22394,8 @@ static uint32_t Emit_Bound_Attribute(Code_Generator *cg, uint32_t t,
     if (Type_Is_Array_Like(prefix_type)) {
         if (needs_runtime_bounds) {
             const char *attr_bt = Array_Bound_Llvm_Type(prefix_type);
-            uint32_t fat = prefix_sym
+            uint32_t fat = (prefix_sym and prefix_sym->kind != SYMBOL_FUNCTION
+                           and prefix_sym->kind != SYMBOL_PROCEDURE)
                 ? Emit_Load_Fat_Pointer(cg, prefix_sym, attr_bt)
                 : Generate_Expression(cg, prefix_expr);
             {
@@ -22558,7 +22559,8 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         (Type_Is_Unconstrained_Array(prefix_type) or Type_Has_Dynamic_Bounds(prefix_type)))
         if (not prefix_sym or prefix_sym->kind == SYMBOL_PARAMETER or
             prefix_sym->kind == SYMBOL_VARIABLE or prefix_sym->kind == SYMBOL_CONSTANT or
-            prefix_sym->kind == SYMBOL_DISCRIMINANT)
+            prefix_sym->kind == SYMBOL_DISCRIMINANT or
+            prefix_sym->kind == SYMBOL_FUNCTION or prefix_sym->kind == SYMBOL_PROCEDURE)
             needs_runtime_bounds = true;
 
     /* ─── Array/Scalar Bound Attributes: unified FIRST/LAST ─── */
