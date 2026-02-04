@@ -53,7 +53,7 @@ c61: 4/4 PASS (100%) *** FIXED *** - Subprogram declarations
 c62: 6/6 PASS (100%) *** FIXED *** - Subprogram bodies
 c63: 1/1 PASS (100%)  - Subprogram parameters
 c64: 4/57 PASS (7%)   - Subprograms
-c65: 1/3 PASS (33%)   - Overloading
+c65: 3/3 PASS (100%)  - Overloading
 c66: 3/6 PASS (50%)   - Inline
 c67: 0/14 PASS (0%)   - Operator overloading (subprograms)
 c72: 1/2 PASS (50%)   - Packages

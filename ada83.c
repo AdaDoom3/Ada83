@@ -28083,7 +28083,11 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
     /* Default return if block is not terminated */
     if (not cg->block_terminated) {
         if (is_function) {
-            /* Emit unreachable - control shouldn't reach here in well-formed function */
+            /* Ada83 RM 6.5: If a function body is left without a RETURN statement,
+               PROGRAM_ERROR is raised at the point of call */
+            uint32_t pe = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = ptrtoint ptr @__exc.program_error to i64\n", pe);
+            Emit(cg, "  call void @__ada_raise(i64 %%t%u)  ; missing return\n", pe);
             Emit(cg, "  unreachable\n");
         } else {
             Emit(cg, "  ret void\n");
@@ -28330,6 +28334,11 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
     /* Default return if block is not terminated */
     if (not cg->block_terminated) {
         if (is_function) {
+            /* Ada83 RM 6.5: If a function body is left without a RETURN statement,
+               PROGRAM_ERROR is raised at the point of call */
+            uint32_t pe = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = ptrtoint ptr @__exc.program_error to i64\n", pe);
+            Emit(cg, "  call void @__ada_raise(i64 %%t%u)  ; missing return\n", pe);
             Emit(cg, "  unreachable\n");
         } else {
             Emit(cg, "  ret void\n");
