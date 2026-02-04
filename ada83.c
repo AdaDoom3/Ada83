@@ -595,6 +595,83 @@ static bool Big_Integer_To_Int128(const Big_Integer *bi, int128_t *out) {
     return true;
 }
 
+/* Compare two Big_Integer magnitudes (unsigned): returns -1, 0, or 1.
+ * Sign-aware: negative < positive, then magnitude comparison. */
+static int Big_Integer_Compare(const Big_Integer *a, const Big_Integer *b) {
+    bool a_neg = a->is_negative and a->count > 0;
+    bool b_neg = b->is_negative and b->count > 0;
+    bool a_zero = a->count == 0, b_zero = b->count == 0;
+    if (a_zero and b_zero) return 0;
+    if (a_zero) return b_neg ? 1 : -1;
+    if (b_zero) return a_neg ? -1 : 1;
+    if (a_neg != b_neg) return a_neg ? -1 : 1;
+    /* Same sign: compare magnitudes */
+    int mag;
+    if (a->count != b->count)
+        mag = a->count > b->count ? 1 : -1;
+    else {
+        mag = 0;
+        for (int i = (int)a->count - 1; i >= 0; i--) {
+            if (a->limbs[i] != b->limbs[i]) {
+                mag = a->limbs[i] > b->limbs[i] ? 1 : -1;
+                break;
+            }
+        }
+    }
+    return a_neg ? -mag : mag;
+}
+
+/* Add two Big_Integer values with sign handling.
+ * Returns a + b (sign-aware arbitrary precision). */
+static Big_Integer *Big_Integer_Add(const Big_Integer *a, const Big_Integer *b) {
+    /* Determine operation based on signs */
+    uint32_t max_count = (a->count > b->count ? a->count : b->count) + 1;
+    Big_Integer *result = Big_Integer_New(max_count);
+
+    if (a->is_negative == b->is_negative) {
+        /* Same sign: add magnitudes, keep sign */
+        result->is_negative = a->is_negative;
+        __uint128_t carry = 0;
+        for (uint32_t i = 0; i < max_count; i++) {
+            __uint128_t sum = carry;
+            if (i < a->count) sum += a->limbs[i];
+            if (i < b->count) sum += b->limbs[i];
+            result->limbs[i] = (uint64_t)sum;
+            carry = sum >> 64;
+        }
+        result->count = max_count;
+        Big_Integer_Normalize(result);
+    } else {
+        /* Different signs: subtract smaller magnitude from larger */
+        const Big_Integer *larger = a, *smaller = b;
+        /* Compare magnitudes only */
+        int cmp = 0;
+        if (a->count != b->count)
+            cmp = a->count > b->count ? 1 : -1;
+        else {
+            for (int i = (int)a->count - 1; i >= 0; i--) {
+                if (a->limbs[i] != b->limbs[i]) {
+                    cmp = a->limbs[i] > b->limbs[i] ? 1 : -1;
+                    break;
+                }
+            }
+        }
+        if (cmp < 0) { larger = b; smaller = a; }
+        result->is_negative = larger->is_negative;
+        int64_t borrow = 0;
+        for (uint32_t i = 0; i < larger->count; i++) {
+            int64_t diff = (int64_t)larger->limbs[i] - borrow;
+            if (i < smaller->count) diff -= (int64_t)smaller->limbs[i];
+            if (diff < 0) { diff += (int64_t)((uint64_t)1 << 63) * 2; borrow = 1; }
+            else borrow = 0;
+            result->limbs[i] = (uint64_t)diff;
+        }
+        result->count = larger->count;
+        Big_Integer_Normalize(result);
+    }
+    return result;
+}
+
 /* ─────────────────────────────────────────────────────────────────────────────
  * §6.1 SIMD Big Integer Acceleration
  *
@@ -941,17 +1018,80 @@ static void Big_Real_To_Hex(const Big_Real *br, char *buf, size_t bufsize) {
     snprintf(buf, bufsize, "0x%016llX", (unsigned long long)bits);
 }
 
-/* Compare two Big_Real values: returns -1, 0, or 1 */
+/* Clone a Big_Integer */
+static Big_Integer *Big_Integer_Clone(const Big_Integer *src) {
+    Big_Integer *dst = Big_Integer_New(src->count > 0 ? src->count : 1);
+    dst->count = src->count;
+    dst->is_negative = src->is_negative;
+    if (src->count > 0)
+        memcpy(dst->limbs, src->limbs, src->count * sizeof(uint64_t));
+    return dst;
+}
+
+/* Compare two Big_Real values exactly: returns -1, 0, or 1.
+ * Normalizes to same exponent by multiplying the one with larger exponent
+ * by 10^(diff), then compares significands. */
 static int Big_Real_Compare(const Big_Real *a, const Big_Real *b) {
     if (not a or not b) return 0;
 
-    /* Normalize to same exponent and compare significands */
-    /* For now, use double comparison - sufficient for most cases */
-    double da = Big_Real_To_Double(a);
-    double db = Big_Real_To_Double(b);
-    if (da < db) return -1;
-    if (da > db) return 1;
-    return 0;
+    /* Handle signs first */
+    bool a_neg = a->significand->is_negative and a->significand->count > 0;
+    bool b_neg = b->significand->is_negative and b->significand->count > 0;
+    bool a_zero = a->significand->count == 0;
+    bool b_zero = b->significand->count == 0;
+    if (a_zero and b_zero) return 0;
+    if (a_zero) return b_neg ? 1 : -1;
+    if (b_zero) return a_neg ? -1 : 1;
+    if (a_neg and not b_neg) return -1;
+    if (not a_neg and b_neg) return 1;
+
+    /* Same sign — normalize to common exponent (min), multiply the other */
+    int32_t exp_diff = a->exponent - b->exponent;
+    Big_Integer *sa, *sb;
+    if (exp_diff == 0) {
+        sa = Big_Integer_Clone(a->significand);
+        sb = Big_Integer_Clone(b->significand);
+    } else if (exp_diff > 0) {
+        sa = Big_Integer_Clone(a->significand);
+        for (int32_t i = 0; i < exp_diff; i++)
+            Big_Integer_Mul_Add_Small(sa, 10, 0);
+        sb = Big_Integer_Clone(b->significand);
+    } else {
+        sa = Big_Integer_Clone(a->significand);
+        sb = Big_Integer_Clone(b->significand);
+        for (int32_t i = 0; i < -exp_diff; i++)
+            Big_Integer_Mul_Add_Small(sb, 10, 0);
+    }
+    /* Compare magnitudes, then adjust for sign */
+    int cmp = Big_Integer_Compare(sa, sb);
+    return a_neg ? -cmp : cmp;
+}
+
+/* Add/subtract Big_Real values (exact). op_sub: 0=add, 1=subtract.
+ * Result = a ± b via normalizing to common exponent. */
+static Big_Real *Big_Real_Add_Sub(const Big_Real *a, const Big_Real *b, bool op_sub) {
+    if (not a) return (Big_Real *)(uintptr_t)b;
+    if (not b) return (Big_Real *)(uintptr_t)a;
+    Big_Real *result = Big_Real_New();
+
+    int32_t min_exp = a->exponent < b->exponent ? a->exponent : b->exponent;
+
+    /* Normalize both to min_exp by multiplying significands by 10^(exp - min_exp) */
+    Big_Integer *sa = Big_Integer_Clone(a->significand);
+    for (int32_t i = 0; i < a->exponent - min_exp; i++)
+        Big_Integer_Mul_Add_Small(sa, 10, 0);
+
+    Big_Integer *sb = Big_Integer_Clone(b->significand);
+    for (int32_t i = 0; i < b->exponent - min_exp; i++)
+        Big_Integer_Mul_Add_Small(sb, 10, 0);
+
+    /* Flip sign for subtraction */
+    if (op_sub) sb->is_negative = not sb->is_negative;
+
+    /* Add: if same sign, add magnitudes. If different sign, subtract. */
+    result->significand = Big_Integer_Add(sa, sb);
+    result->exponent = min_exp;
+    return result;
 }
 
 /* Multiply Big_Real by power of 10 (for exponent adjustment) */
@@ -1036,6 +1176,293 @@ static Big_Real *Big_Real_Multiply(const Big_Real *a, const Big_Real *b) {
 
     result->exponent = a->exponent + b->exponent;
     return result;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * §6.3 Exact Rational Arithmetic for Universal Reals (RM 4.10)
+ *
+ * Ada requires that static universal_real expressions be evaluated exactly
+ * during compilation.  IEEE double cannot represent fractions like 1/3, so
+ * we carry numerator/denominator as Big_Integer pairs, reduced by GCD.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/* Full-precision Big_Integer multiply: returns a * b. */
+static Big_Integer *Big_Integer_Multiply(const Big_Integer *a, const Big_Integer *b) {
+    if (a->count == 0 or b->count == 0) {
+        Big_Integer *z = Big_Integer_New(1); z->count = 0; return z;
+    }
+    uint32_t nc = a->count + b->count;
+    Big_Integer *r = Big_Integer_New(nc + 1);
+    r->count = nc;
+    r->is_negative = a->is_negative ^ b->is_negative;
+    memset(r->limbs, 0, nc * sizeof(uint64_t));
+    for (uint32_t i = 0; i < a->count; i++) {
+        __uint128_t carry = 0;
+        for (uint32_t j = 0; j < b->count; j++) {
+            __uint128_t prod = (__uint128_t)a->limbs[i] * b->limbs[j]
+                             + r->limbs[i + j] + carry;
+            r->limbs[i + j] = (uint64_t)prod;
+            carry = prod >> 64;
+        }
+        if (carry) r->limbs[i + b->count] += (uint64_t)carry;
+    }
+    Big_Integer_Normalize(r);
+    return r;
+}
+
+/* Big_Integer_Div_Rem: q = |a| / |b|, rem = |a| % |b| (unsigned).
+ * Uses schoolbook long division on 64-bit limbs.  Signs ignored. */
+static void Big_Integer_Div_Rem(const Big_Integer *a, const Big_Integer *b,
+                                Big_Integer **q_out, Big_Integer **r_out) {
+    if (b->count == 0) { *q_out = *r_out = Big_Integer_New(1); return; }
+    if (a->count == 0 or Big_Integer_Compare(a, b) == 0
+        ? false : (a->count < b->count)) {
+        /* |a| < |b| → q=0, r=a */
+        *q_out = Big_Integer_New(1); (*q_out)->count = 0;
+        *r_out = Big_Integer_Clone(a); (*r_out)->is_negative = false;
+        return;
+    }
+    /* Single-limb divisor fast path */
+    if (b->count == 1) {
+        uint64_t d = b->limbs[0];
+        Big_Integer *q = Big_Integer_New(a->count);
+        q->count = a->count;
+        __uint128_t rem = 0;
+        for (int i = (int)a->count - 1; i >= 0; i--) {
+            __uint128_t val = (rem << 64) | a->limbs[i];
+            q->limbs[i] = (uint64_t)(val / d);
+            rem = val % d;
+        }
+        Big_Integer_Normalize(q);
+        Big_Integer *r = Big_Integer_New(1);
+        if (rem) { r->limbs[0] = (uint64_t)rem; r->count = 1; }
+        else r->count = 0;
+        *q_out = q; *r_out = r;
+        return;
+    }
+    /* Multi-limb: Knuth Algorithm D (simplified) */
+    uint32_t m = a->count, n = b->count;
+    /* Normalize: shift so top bit of divisor's MSL is set */
+    int shift = __builtin_clzll(b->limbs[n - 1]);
+    Big_Integer *u = Big_Integer_New(m + 1);
+    u->count = m + 1;
+    if (shift > 0) {
+        u->limbs[m] = 0;
+        for (uint32_t i = m; i > 0; i--)
+            u->limbs[i] = (a->limbs[i-1] >> (64 - shift))
+                         | (i < m ? (a->limbs[i] << shift) : 0);
+        u->limbs[0] = a->limbs[0] << shift;
+        /* Re-check top */
+        if (m > 0) u->limbs[m] |= (a->limbs[m-1] >> (64 - shift));
+    } else {
+        memcpy(u->limbs, a->limbs, m * sizeof(uint64_t));
+        u->limbs[m] = 0;
+    }
+    /* Actually, let's do it cleanly */
+    /* Re-do: create shifted copies */
+    Big_Integer *v = Big_Integer_New(n);
+    v->count = n;
+    if (shift > 0) {
+        uint64_t carry = 0;
+        for (uint32_t i = 0; i < n; i++) {
+            v->limbs[i] = (b->limbs[i] << shift) | carry;
+            carry = b->limbs[i] >> (64 - shift);
+        }
+        carry = 0;
+        u->count = m + 1;
+        for (uint32_t i = 0; i < m; i++) {
+            u->limbs[i] = (a->limbs[i] << shift) | carry;
+            carry = a->limbs[i] >> (64 - shift);
+        }
+        u->limbs[m] = carry;
+    } else {
+        memcpy(u->limbs, a->limbs, m * sizeof(uint64_t));
+        u->limbs[m] = 0;
+        memcpy(v->limbs, b->limbs, n * sizeof(uint64_t));
+    }
+    Big_Integer *q = Big_Integer_New(m - n + 1);
+    q->count = m - n + 1;
+    memset(q->limbs, 0, q->count * sizeof(uint64_t));
+    for (int j = (int)(m - n); j >= 0; j--) {
+        /* Estimate q_hat = (u[j+n]*2^64 + u[j+n-1]) / v[n-1] */
+        __uint128_t num = ((__uint128_t)u->limbs[j + n] << 64) | u->limbs[j + n - 1];
+        __uint128_t q_hat = num / v->limbs[n - 1];
+        __uint128_t r_hat = num % v->limbs[n - 1];
+        /* Refine */
+        while (q_hat >= ((__uint128_t)1 << 64) or
+               (n >= 2 and q_hat * v->limbs[n - 2] >
+                (r_hat << 64) + u->limbs[j + n - 2])) {
+            q_hat--;
+            r_hat += v->limbs[n - 1];
+            if (r_hat >= ((__uint128_t)1 << 64)) break;
+        }
+        /* Multiply and subtract: u[j..j+n] -= q_hat * v[0..n-1] */
+        __int128_t borrow = 0;
+        for (uint32_t i = 0; i < n; i++) {
+            __uint128_t prod = q_hat * v->limbs[i];
+            __int128_t diff = (__int128_t)u->limbs[j + i] - (uint64_t)prod - borrow;
+            u->limbs[j + i] = (uint64_t)diff;
+            borrow = (int64_t)(prod >> 64) - (int64_t)(diff >> 64);
+        }
+        __int128_t diff = (__int128_t)u->limbs[j + n] - borrow;
+        u->limbs[j + n] = (uint64_t)diff;
+        q->limbs[j] = (uint64_t)q_hat;
+        if (diff < 0) {
+            /* Add back */
+            q->limbs[j]--;
+            __uint128_t carry = 0;
+            for (uint32_t i = 0; i < n; i++) {
+                carry += (__uint128_t)u->limbs[j + i] + v->limbs[i];
+                u->limbs[j + i] = (uint64_t)carry;
+                carry >>= 64;
+            }
+            u->limbs[j + n] += (uint64_t)carry;
+        }
+    }
+    Big_Integer_Normalize(q);
+    /* Remainder = u >> shift */
+    Big_Integer *rem = Big_Integer_New(n);
+    rem->count = n;
+    if (shift > 0) {
+        for (uint32_t i = 0; i < n; i++) {
+            rem->limbs[i] = (u->limbs[i] >> shift)
+                          | (i + 1 < u->count ? u->limbs[i + 1] << (64 - shift) : 0);
+        }
+    } else {
+        memcpy(rem->limbs, u->limbs, n * sizeof(uint64_t));
+    }
+    Big_Integer_Normalize(rem);
+    *q_out = q; *r_out = rem;
+}
+
+/* GCD via Euclidean algorithm on Big_Integer (magnitude only). */
+static Big_Integer *Big_Integer_GCD(const Big_Integer *a, const Big_Integer *b) {
+    Big_Integer *x = Big_Integer_Clone(a); x->is_negative = false;
+    Big_Integer *y = Big_Integer_Clone(b); y->is_negative = false;
+    while (y->count > 0) {
+        Big_Integer *q, *r;
+        Big_Integer_Div_Rem(x, y, &q, &r);
+        x = y; y = r;
+    }
+    return x;
+}
+
+/* Rational number: exact num/den with den > 0, reduced by GCD. */
+typedef struct { Big_Integer *num, *den; } Rational;
+
+static Big_Integer *Big_Integer_One(void) {
+    Big_Integer *r = Big_Integer_New(1);
+    r->limbs[0] = 1; r->count = 1; r->is_negative = false;
+    return r;
+}
+
+static Rational Rational_Reduce(Big_Integer *n, Big_Integer *d) {
+    /* Ensure denominator is positive */
+    if (d->is_negative) { n->is_negative = !n->is_negative; d->is_negative = false; }
+    if (n->count == 0) return (Rational){n, Big_Integer_One()};
+    Big_Integer *g = Big_Integer_GCD(n, d);
+    if (g->count == 1 and g->limbs[0] == 1)
+        return (Rational){n, d};
+    Big_Integer *qn, *rn, *qd, *rd;
+    Big_Integer_Div_Rem(n, g, &qn, &rn);
+    Big_Integer_Div_Rem(d, g, &qd, &rd);
+    qn->is_negative = n->is_negative;
+    return (Rational){qn, qd};
+}
+
+static Rational Rational_From_Big_Real(const Big_Real *br) {
+    if (!br || br->significand->count == 0)
+        return (Rational){Big_Integer_New(1), Big_Integer_One()};
+    Big_Integer *num = Big_Integer_Clone(br->significand);
+    Big_Integer *den = Big_Integer_One();
+    if (br->exponent > 0) {
+        for (int32_t i = 0; i < br->exponent; i++)
+            Big_Integer_Mul_Add_Small(num, 10, 0);
+    } else if (br->exponent < 0) {
+        for (int32_t i = 0; i < -br->exponent; i++)
+            Big_Integer_Mul_Add_Small(den, 10, 0);
+    }
+    return Rational_Reduce(num, den);
+}
+
+static Rational Rational_From_Int(int64_t v) {
+    Big_Integer *n = Big_Integer_New(1);
+    n->limbs[0] = v < 0 ? (uint64_t)(-v) : (uint64_t)v;
+    n->count = v != 0 ? 1 : 0;
+    n->is_negative = v < 0;
+    return (Rational){n, Big_Integer_One()};
+}
+
+static Rational Rational_Add(Rational a, Rational b) {
+    /* a.num/a.den + b.num/b.den = (a.num*b.den + b.num*a.den) / (a.den*b.den) */
+    Big_Integer *n1 = Big_Integer_Multiply(a.num, b.den);
+    Big_Integer *n2 = Big_Integer_Multiply(b.num, a.den);
+    Big_Integer *num = Big_Integer_Add(n1, n2);
+    Big_Integer *den = Big_Integer_Multiply(a.den, b.den);
+    return Rational_Reduce(num, den);
+}
+
+static Rational Rational_Sub(Rational a, Rational b) {
+    Big_Integer *neg_b_num = Big_Integer_Clone(b.num);
+    neg_b_num->is_negative = !neg_b_num->is_negative;
+    Rational neg_b = {neg_b_num, b.den};
+    return Rational_Add(a, neg_b);
+}
+
+static Rational Rational_Mul(Rational a, Rational b) {
+    Big_Integer *num = Big_Integer_Multiply(a.num, b.num);
+    Big_Integer *den = Big_Integer_Multiply(a.den, b.den);
+    return Rational_Reduce(num, den);
+}
+
+static Rational Rational_Div(Rational a, Rational b) {
+    /* a / b = a.num*b.den / (a.den*b.num) */
+    Big_Integer *num = Big_Integer_Multiply(a.num, b.den);
+    Big_Integer *den = Big_Integer_Multiply(a.den, b.num);
+    return Rational_Reduce(num, den);
+}
+
+static Rational Rational_Pow(Rational base, int exp) {
+    if (exp == 0) return Rational_From_Int(1);
+    bool neg_exp = exp < 0;
+    if (neg_exp) exp = -exp;
+    Rational result = Rational_From_Int(1);
+    Rational b = base;
+    while (exp > 0) {
+        if (exp & 1) result = Rational_Mul(result, b);
+        b = Rational_Mul(b, b);
+        exp >>= 1;
+    }
+    if (neg_exp) {
+        /* Invert: swap num and den */
+        Big_Integer *tmp = result.num;
+        result.num = result.den;
+        result.den = tmp;
+        if (result.den->is_negative) {
+            result.num->is_negative = !result.num->is_negative;
+            result.den->is_negative = false;
+        }
+    }
+    return result;
+}
+
+static int Rational_Compare(Rational a, Rational b) {
+    /* a/b vs c/d: compare a*d vs c*b (respecting signs) */
+    Big_Integer *lhs = Big_Integer_Multiply(a.num, b.den);
+    Big_Integer *rhs = Big_Integer_Multiply(b.num, a.den);
+    return Big_Integer_Compare(lhs, rhs);
+}
+
+static double Rational_To_Double(Rational r) {
+    /* Convert to double by computing num/den as double.
+     * For best precision, convert both to double and divide. */
+    double n = 0.0, d = 0.0;
+    for (int i = (int)r.num->count - 1; i >= 0; i--)
+        n = n * 18446744073709551616.0 + (double)r.num->limbs[i];
+    if (r.num->is_negative) n = -n;
+    for (int i = (int)r.den->count - 1; i >= 0; i--)
+        d = d * 18446744073709551616.0 + (double)r.den->limbs[i];
+    return n / d;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -8893,6 +9320,83 @@ static double Eval_Const_Numeric(Syntax_Node *n) {
             }
         }
         default: return 0.0/0.0;
+    }
+}
+
+/* RM 4.10: Exact rational evaluator for static universal_real expressions.
+ * Returns true and fills *out if the expression is a compile-time constant
+ * representable as an exact rational number.  Used so that comparisons like
+ * 0.1*0.1 = 0.01 or (2/3)**10 chain correctly without IEEE rounding errors. */
+static bool Eval_Const_Rational(Syntax_Node *n, Rational *out) {
+    if (!n) return false;
+    switch (n->kind) {
+        case NK_REAL:
+            if (n->real_lit.big_value) {
+                *out = Rational_From_Big_Real(n->real_lit.big_value);
+                return true;
+            }
+            /* Fallback: wrap double as rational — loses exactness */
+            return false;
+        case NK_INTEGER:
+            *out = Rational_From_Int((int64_t)n->integer_lit.value);
+            return true;
+        case NK_IDENTIFIER:
+        case NK_SELECTED: {
+            Symbol *sym = n->symbol;
+            if (sym and sym->kind == SYMBOL_CONSTANT and sym->declaration
+                and sym->declaration->kind == NK_OBJECT_DECL
+                and sym->declaration->object_decl.init)
+                return Eval_Const_Rational(sym->declaration->object_decl.init, out);
+            if (sym and sym->kind == SYMBOL_VARIABLE and sym->declaration
+                and sym->declaration->kind == NK_OBJECT_DECL
+                and sym->declaration->object_decl.is_constant
+                and sym->declaration->object_decl.init)
+                return Eval_Const_Rational(sym->declaration->object_decl.init, out);
+            return false;
+        }
+        case NK_QUALIFIED:
+            if (n->qualified.expression)
+                return Eval_Const_Rational(n->qualified.expression, out);
+            return false;
+        case NK_APPLY:
+            if (n->apply.prefix and n->apply.arguments.count == 1 and
+                n->apply.prefix->symbol and
+                n->apply.prefix->symbol->kind == SYMBOL_TYPE)
+                return Eval_Const_Rational(n->apply.arguments.items[0], out);
+            return false;
+        case NK_UNARY_OP: {
+            Rational operand;
+            if (!Eval_Const_Rational(n->unary.operand, &operand)) return false;
+            if (n->unary.op == TK_MINUS) {
+                operand.num = Big_Integer_Clone(operand.num);
+                operand.num->is_negative = !operand.num->is_negative;
+            }
+            *out = operand;
+            return true;
+        }
+        case NK_BINARY_OP: {
+            Rational l, r;
+            /* For exponentiation, exponent must be integer */
+            if (n->binary.op == TK_EXPON) {
+                if (!Eval_Const_Rational(n->binary.left, &l)) return false;
+                double re = Eval_Const_Numeric(n->binary.right);
+                if (re != re or re != floor(re) or fabs(re) > 1000) return false;
+                *out = Rational_Pow(l, (int)re);
+                return true;
+            }
+            if (!Eval_Const_Rational(n->binary.left, &l)) return false;
+            if (!Eval_Const_Rational(n->binary.right, &r)) return false;
+            switch (n->binary.op) {
+                case TK_PLUS:  *out = Rational_Add(l, r); return true;
+                case TK_MINUS: *out = Rational_Sub(l, r); return true;
+                case TK_STAR:  *out = Rational_Mul(l, r); return true;
+                case TK_SLASH:
+                    if (r.num->count == 0) return false;
+                    *out = Rational_Div(l, r); return true;
+                default: return false;
+            }
+        }
+        default: return false;
     }
 }
 
@@ -19694,6 +20198,32 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                         right = Emit_Convert(cg, right, right_float_type, float_type);
                     }
                 }
+
+                /* RM 4.10: If both sides are static universal_real, fold
+                 * the comparison at compile time using exact rationals. */
+                if (left_is_float and right_is_float) {
+                    Rational lq, rq;
+                    bool l_ok = Eval_Const_Rational(node->binary.left, &lq);
+                    bool r_ok = Eval_Const_Rational(node->binary.right, &rq);
+                    if (l_ok and r_ok) {
+                        int cmp = Rational_Compare(lq, rq);
+                        bool result;
+                        switch (node->binary.op) {
+                            case TK_EQ: result = (cmp == 0); break;
+                            case TK_NE: result = (cmp != 0); break;
+                            case TK_LT: result = (cmp < 0);  break;
+                            case TK_LE: result = (cmp <= 0); break;
+                            case TK_GT: result = (cmp > 0);  break;
+                            case TK_GE: result = (cmp >= 0); break;
+                            default:    goto no_fold;
+                        }
+                        Emit(cg, "  %%t%u = add i1 0, %d  ; folded universal_real cmp\n",
+                             t, result ? 1 : 0);
+                        Temp_Set_Type(cg, t, "i1");
+                        return t;
+                    }
+                }
+                no_fold: ;
 
                 const char *cmp_op;
                 char cmp_buf[64];

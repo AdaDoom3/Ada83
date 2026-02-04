@@ -26,6 +26,38 @@ COMPLETED TEST GROUPS
   FILES: ada83.c lines ~16238-16246 (helper), ~28085-28088, ~28331-28335
   TESTS FIXED: c65003a, c65003b (were timing out; c65004a already passed)
 
+[c72] 2/2 PASS (100%) — 2026-02-04
+  FIX: Added codegen paths in Generate_Object_Declaration for records and
+       constrained arrays initialized with non-aggregate expressions (e.g.
+       function calls). Added two else-if clauses to memcpy from expression
+       result.
+  FILES: ada83.c lines ~27380-27402
+  TESTS FIXED: c72002a (was "ARRAY 1 ELABORATED OUT OF ORDER"); c72002b passed
+
+[c4a] 12/12 PASS (100%) — 2026-02-04
+  FIX 1: Float division-by-zero check (RM 4.5.5): added fcmp+branch before
+         fdiv in float binary op codegen.
+  FIX 2: 0.0**negative check (RM 4.5.6(12)): added check in float
+         exponentiation before pow intrinsic call.
+  FIX 3: Exact rational arithmetic for universal_real (RM 4.10):
+         - Added Big_Integer_Multiply, Big_Integer_Div_Rem, Big_Integer_GCD
+         - Added Rational type (num/den as Big_Integer), full rational
+           arithmetic: add, sub, mul, div, pow, compare, to_double
+         - Added Eval_Const_Rational evaluator for compile-time constant
+           folding of universal_real expression trees
+         - In comparison codegen: when both sides are static universal_real,
+           fold the comparison at compile time using exact rationals instead
+           of IEEE double fcmp
+  FILES: ada83.c §6.3 (rational infrastructure), Eval_Const_Rational (~line 9330),
+         comparison codegen (~line 20202)
+  TESTS FIXED: c4a012a (float div-by-zero), c4a012b (0.0**neg),
+               c4a010a, c4a010b (exact universal_real precision)
+
+=====================================================
+BASELINE (full C-class run, pre-fixes)
+=====================================================
+578 pass / 678 fail / 723 skip out of 1979 tests (29%)
+
 =====================================================
 TEST RESULTS LOG
 =====================================================
@@ -40,8 +72,17 @@ TEST RESULTS LOG
   c65003b  PASS
   c65004a  PASS
 
+--- c72 after fix ---
+  c72002a  PASS
+  c72002b  PASS
+
+--- c4a after all fixes ---
+  c4a003a  PASS    c4a005a  PASS    c4a007a  PASS    c4a010a  PASS
+  c4a010b  PASS    c4a010d  PASS    c4a011a  PASS    c4a011b  PASS
+  c4a012a  PASS    c4a012b  PASS    c4a013a  PASS    c4a014a  PASS
+
 =====================================================
 PENDING WORK
 =====================================================
-- Run full C-class test suite to identify other failing groups
-- Fix failing groups, prioritizing groups close to 100%
+- Run full C-class regression to verify no regressions
+- Investigate and fix other failing groups (c47, c84, c54, cb4, etc.)
