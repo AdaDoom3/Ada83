@@ -16235,14 +16235,15 @@ static Type_Info *Resolve_Generic_Actual_Type(const Code_Generator *cg, Type_Inf
     return type;
 }
 
-/* Emit CONSTRAINT_ERROR raise sequence — the 5-line block that was duplicated
- * everywhere: emit ptrtoint, call __ada_raise, unreachable, continue label. */
-static void Emit_Raise_Constraint_Error(Code_Generator *cg, const char *comment) {
+/* Emit raise sequence for a named exception: ptrtoint + call __ada_raise + unreachable. */
+static void Emit_Raise_Exception(Code_Generator *cg, const char *exc_name, const char *comment) {
     uint32_t exc = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = ptrtoint ptr @__exc.constraint_error to i64\n", exc);
+    Emit(cg, "  %%t%u = ptrtoint ptr @__exc.%s to i64\n", exc, exc_name);
     Emit(cg, "  call void @__ada_raise(i64 %%t%u)  ; %s\n", exc, comment);
     Emit(cg, "  unreachable\n");
 }
+#define Emit_Raise_Constraint_Error(cg, comment) Emit_Raise_Exception(cg, "constraint_error", comment)
+#define Emit_Raise_Program_Error(cg, comment)    Emit_Raise_Exception(cg, "program_error", comment)
 
 /* ─────────────────────────────────────────────────────────────────────────
  * §13.1.1a GNAT-Style Granular Runtime Check Emission
@@ -28083,8 +28084,8 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
     /* Default return if block is not terminated */
     if (not cg->block_terminated) {
         if (is_function) {
-            /* Emit unreachable - control shouldn't reach here in well-formed function */
-            Emit(cg, "  unreachable\n");
+            /* RM 6.4(11): raise PROGRAM_ERROR if function completes without RETURN */
+            Emit_Raise_Program_Error(cg, "missing return");
         } else {
             Emit(cg, "  ret void\n");
         }
@@ -28330,7 +28331,8 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
     /* Default return if block is not terminated */
     if (not cg->block_terminated) {
         if (is_function) {
-            Emit(cg, "  unreachable\n");
+            /* RM 6.4(11): raise PROGRAM_ERROR if function completes without RETURN */
+            Emit_Raise_Program_Error(cg, "missing return");
         } else {
             Emit(cg, "  ret void\n");
         }

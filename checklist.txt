@@ -1,0 +1,47 @@
+CHECKLIST — Ada83 Compiler Refactoring & Test Fixes
+=====================================================
+
+PROMPT:
+In the pursuit of high-quality code (low line count (e.g. low undue complexity) and high feature/correctness) -
+refactor and fix ada83.c to pass a C-test group completely (e.g. cXX) with much better Haskell-like C99 and
+tight smart code-golfing with, ironically, textbook "Literate Programming" style. Use the GNAT LLVM source
+to see what is done there before making changes.
+
+Create a file to track everything called "checklist.txt" and include this prompt in it. Start with c65 were
+several tests timeout.
+
+Use the C-series tests (done in batches) to guide you. MAKE SURE TO STORE RESULTS IN THE REPO TO AVOID
+WASTING TIME - EACH RUN TAKES OVER A MIN! We should be focused on making changes instead of obsessing
+over analysis.
+
+=====================================================
+COMPLETED TEST GROUPS
+=====================================================
+
+[c65] 3/3 PASS (100%) — 2026-02-04
+  FIX: Replaced `unreachable` at end of function bodies with
+       `raise PROGRAM_ERROR` per RM 6.4(11). Generalized
+       Emit_Raise_Constraint_Error → Emit_Raise_Exception(cg, name, comment)
+       with macro wrappers for constraint_error and program_error.
+  FILES: ada83.c lines ~16238-16246 (helper), ~28085-28088, ~28331-28335
+  TESTS FIXED: c65003a, c65003b (were timing out; c65004a already passed)
+
+=====================================================
+TEST RESULTS LOG
+=====================================================
+
+--- c65 baseline (before fix) ---
+  c65003a  FAIL  RUNTIME:exit 124 (timeout)
+  c65003b  FAIL  RUNTIME:exit 124 (timeout)
+  c65004a  PASS
+
+--- c65 after fix ---
+  c65003a  PASS
+  c65003b  PASS
+  c65004a  PASS
+
+=====================================================
+PENDING WORK
+=====================================================
+- Run full C-class test suite to identify other failing groups
+- Fix failing groups, prioritizing groups close to 100%
