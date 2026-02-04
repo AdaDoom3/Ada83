@@ -63,7 +63,7 @@ c85: 0/28 PASS (0%)   - Representation clauses
 c86: 0/13 PASS (0%)   - Machine code / addresses
 c87: 32/74 PASS (43%) - Generic units
 c91: 0/4 PASS (0%)    - Task types
-c92: 3/5 PASS (60%)   - Elaboration
+c92: 5/5 PASS (100%) *** FIXED *** - Elaboration
 c93: 0/20 PASS (0%)   - Tasks
 c94: 4/29 PASS (13%)  - Tasks/abort/select
 c95: 9/75 PASS (12%)  - Entry calls
@@ -89,7 +89,7 @@ cd9: (skipped)
 ce2: 11/118 PASS (9%) - I/O operations
 ce3: 6/181 PASS (3%)  - I/O operations
 
-100% groups: c23 c24 c25 c26 c2a c49 c53 c55 c56 c57 c58 c63 cb2
+100% groups: c23 c24 c25 c26 c2a c49 c53 c55 c56 c57 c58 c63 c92 cb2
 
 ================================================================================
 APPROACH
@@ -139,3 +139,15 @@ PROGRESS LOG
          - Resolve handler statements before popping scope (RM 11.4)
          - Add setjmp/longjmp exception handler setup for nested package bodies
 [done] Verify all cb2 tests pass (4/4 = 100%)
+[done] Commit & push
+
+[done] Target group: c92 (elaboration) — 3/5 → 5/5
+[done] c92005a: frame alias dedup — switch from stale String_Slice to unique_id comparison
+         in both Generate_Subprogram_Body and task body codegen (Symbol_Mangle_Name
+         rotating buffer invalidates stored slices)
+[done] c92006a: access-to-task entry calls — three fixes:
+         1. Semantic: implicit dereference for P.E1 where P is ACCESS T (RM 4.1)
+         2. Codegen: load ptr for access-to-task in entry call (Generate_Apply + NK_CALL_STMT)
+         3. Codegen: handle .ALL prefix (NK_UNARY_OP TK_ALL) in entry call task ptr resolution
+         4. Allocator: NEW T for task type calls __ada_task_start and stores handle (RM 9.2)
+[done] Verify all c92 tests pass (5/5 = 100%)

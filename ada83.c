@@ -7837,10 +7837,14 @@ static Type_Info *Resolve_Selected(Symbol_Manager *sm, Syntax_Node *node) {
         }
         Report_Error(node->location, "no component '%.*s' in record type",
                     node->selected.selector.length, node->selected.selector.data);
-    } else if (Type_Is_Task(prefix_type)) {
-        /* Task entry selection: T.E1 where T is a task object (RM 9.5)
-         * Look up entry in the task type's defining_symbol exported list */
-        Symbol *type_sym = prefix_type->defining_symbol;
+    } else if (Type_Is_Task(prefix_type) or
+               (Type_Is_Access(prefix_type) and prefix_type->access.designated_type and
+                Type_Is_Task(prefix_type->access.designated_type))) {
+        /* Task entry selection: T.E1 where T is a task object (RM 9.5).
+         * Also handles P.E1 where P is access-to-task (implicit dereference). */
+        Type_Info *task_type = Type_Is_Task(prefix_type) ? prefix_type
+                             : prefix_type->access.designated_type;
+        Symbol *type_sym = task_type->defining_symbol;
         if (type_sym) {
             for (uint32_t i = 0; i < type_sym->exported_count; i++) {
                 if (Slice_Equal_Ignore_Case(type_sym->exported[i]->name,
@@ -20797,16 +20801,33 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", arg_val, arg_ptr);
         }
 
-        /* Get task object (from prefix if it's a selected component like Task_Obj.Entry) */
+        /* Get task object (from prefix if it's a selected component like Task_Obj.Entry).
+         * For access-to-task (P.E1), load the pointer to get the designated task.
+         * For .ALL dereference (P.ALL.E1), unwrap NK_UNARY_OP(TK_ALL) to get access var. */
         uint32_t task_ptr = 0;
         Syntax_Node *prefix = node->apply.prefix;
-        if (prefix->kind == NK_SELECTED and prefix->selected.prefix->symbol) {
+        if (prefix->kind == NK_SELECTED) {
             Symbol *task_sym = prefix->selected.prefix->symbol;
+            /* Handle explicit .ALL: prefix->selected.prefix is NK_UNARY_OP(TK_ALL) */
+            if (not task_sym and prefix->selected.prefix->kind == NK_UNARY_OP and
+                prefix->selected.prefix->unary.op == TK_ALL and
+                prefix->selected.prefix->unary.operand) {
+                task_sym = prefix->selected.prefix->unary.operand->symbol;
+            }
+            if (not task_sym) goto entry_no_task;
             task_ptr = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = getelementptr i8, ptr ", task_ptr);
-            Emit_Symbol_Storage(cg, task_sym);
-            Emit(cg, ", i64 0  ; task object\n");
+            if (task_sym->type and Type_Is_Access(task_sym->type)) {
+                /* Access-to-task: load the pointer value (implicit dereference) */
+                Emit(cg, "  %%t%u = load ptr, ptr ", task_ptr);
+                Emit_Symbol_Storage(cg, task_sym);
+                Emit(cg, "  ; access-to-task deref\n");
+            } else {
+                Emit(cg, "  %%t%u = getelementptr i8, ptr ", task_ptr);
+                Emit_Symbol_Storage(cg, task_sym);
+                Emit(cg, ", i64 0  ; task object\n");
+            }
         } else {
+            entry_no_task:
             task_ptr = Emit_Temp(cg);
             Emit(cg, "  %%t%u = inttoptr i64 0 to ptr  ; current task\n", task_ptr);
         }
@@ -23759,6 +23780,8 @@ static uint32_t Generate_Qualified(Code_Generator *cg, Syntax_Node *node) {
     return result;
 }
 
+static void Emit_Task_Function_Name(Code_Generator *cg, Symbol *task_sym, String_Slice fallback_name);
+
 static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
     /* new T or new T'(value) */
     Type_Info *access_type = node->type;  /* The access type being created */
@@ -24069,6 +24092,21 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "  store %s %%t%u, ptr %%t%u\n", store_type, val, comp_ptr);
             }
         }
+    }
+
+    /* RM 9.2: Allocating a task type via NEW activates the task immediately.
+     * The allocated memory stores the thread handle (ptr-sized). */
+    if (designated and Type_Is_Task(designated)) {
+        uint32_t handle_tmp = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = call ptr @__ada_task_start(ptr @", handle_tmp);
+        Emit_Task_Function_Name(cg, designated->defining_symbol, designated->name);
+        Emit(cg, ", ");
+        if (cg->current_nesting_level > 0) {
+            Emit(cg, "ptr %%__frame_base)\n");
+        } else {
+            Emit(cg, "ptr null)\n");
+        }
+        Emit(cg, "  store ptr %%t%u, ptr %%t%u  ; store task handle\n", handle_tmp, t);
     }
 
     return t;
@@ -25544,10 +25582,22 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                     uint32_t param_block = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = inttoptr i64 0 to ptr  ; no parameters\n", param_block);
 
-                    /* Get task object from prefix */
+                    /* Get task object from prefix.
+                     * For access-to-task, load the pointer (implicit dereference).
+                     * For .ALL dereference (P.ALL.E1), unwrap to get the access var. */
                     uint32_t task_ptr = Emit_Temp(cg);
-                    Symbol *task_sym = target->selected.prefix->symbol;
-                    if (task_sym) {
+                    Syntax_Node *pfx = target->selected.prefix;
+                    Symbol *task_sym = pfx->symbol;
+                    /* Handle explicit .ALL: prefix is NK_UNARY_OP(TK_ALL) */
+                    if (not task_sym and pfx->kind == NK_UNARY_OP and
+                        pfx->unary.op == TK_ALL and pfx->unary.operand) {
+                        task_sym = pfx->unary.operand->symbol;
+                    }
+                    if (task_sym and task_sym->type and Type_Is_Access(task_sym->type)) {
+                        Emit(cg, "  %%t%u = load ptr, ptr ", task_ptr);
+                        Emit_Symbol_Storage(cg, task_sym);
+                        Emit(cg, "  ; access-to-task deref\n");
+                    } else if (task_sym) {
                         Emit(cg, "  %%t%u = getelementptr i8, ptr ", task_ptr);
                         Emit_Symbol_Storage(cg, task_sym);
                         Emit(cg, ", i64 0  ; task object\n");
@@ -26142,8 +26192,6 @@ static void Generate_Declaration_List(Code_Generator *cg, Node_List *list) {
         Generate_Declaration(cg, list->items[i]);
     }
 }
-
-static void Emit_Task_Function_Name(Code_Generator *cg, Symbol *task_sym, String_Slice fallback_name);
 
 static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
     /* cg->current_nesting_level is repurposed: 1 = has nested functions, use frame */
@@ -27175,9 +27223,11 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
          * mangled name appears from both symbols[] and frame_vars[]. */
         Scope *parent_scope = parent_owner->scope;
 
-        /* Track emitted frame alias names to prevent duplicates */
+        /* Track emitted frame alias unique_ids to prevent duplicates.
+         * Note: cannot store String_Slice from Symbol_Mangle_Name because
+         * it returns pointers into a rotating static buffer (4 slots). */
         #define MAX_FRAME_ALIASES 512
-        String_Slice emitted_names[MAX_FRAME_ALIASES];
+        uint32_t emitted_ids[MAX_FRAME_ALIASES];
         uint32_t emitted_count = 0;
 
         for (uint32_t i = 0; i < parent_scope->symbol_count; i++) {
@@ -27185,19 +27235,17 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
             if (var and (var->kind == SYMBOL_VARIABLE or var->kind == SYMBOL_PARAMETER or
                         var->kind == SYMBOL_DISCRIMINANT or
                         (var->kind == SYMBOL_CONSTANT and not var->is_named_number))) {
-                String_Slice mname = Symbol_Mangle_Name(var);
-                /* Check for duplicate mangled name even within symbols[] */
+                /* Check for duplicate unique_id */
                 bool already_emitted = false;
                 for (uint32_t j = 0; j < emitted_count; j++) {
-                    if (mname.length == emitted_names[j].length and
-                        memcmp(mname.data, emitted_names[j].data, mname.length) == 0) {
+                    if (var->unique_id == emitted_ids[j]) {
                         already_emitted = true;
                         break;
                     }
                 }
                 if (already_emitted) continue;
                 if (emitted_count < MAX_FRAME_ALIASES) {
-                    emitted_names[emitted_count++] = mname;
+                    emitted_ids[emitted_count++] = var->unique_id;
                 }
                 Emit(cg, "  %%__frame.");
                 Emit_Symbol_Name(cg, var);
@@ -27211,18 +27259,16 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
         for (uint32_t i = 0; i < parent_scope->frame_var_count; i++) {
             Symbol *var = parent_scope->frame_vars[i];
             if (not var) continue;
-            String_Slice mname = Symbol_Mangle_Name(var);
             bool already_emitted = false;
             for (uint32_t j = 0; j < emitted_count; j++) {
-                if (mname.length == emitted_names[j].length and
-                    memcmp(mname.data, emitted_names[j].data, mname.length) == 0) {
+                if (var->unique_id == emitted_ids[j]) {
                     already_emitted = true;
                     break;
                 }
             }
             if (not already_emitted) {
                 if (emitted_count < MAX_FRAME_ALIASES) {
-                    emitted_names[emitted_count++] = mname;
+                    emitted_ids[emitted_count++] = var->unique_id;
                 }
                 Emit(cg, "  %%__frame.");
                 Emit_Symbol_Name(cg, var);
@@ -27760,11 +27806,21 @@ static void Generate_Task_Body(Code_Generator *cg, Syntax_Node *node) {
      * (important for tasks in DECLARE blocks which have their own scope). */
     Scope *parent_scope = node->symbol ? node->symbol->defining_scope : NULL;
     if (parent_scope) {
+        /* Dedup by unique_id (same approach as Generate_Subprogram_Body) */
+        #define MAX_TASK_FRAME_ALIASES 512
+        uint32_t task_emitted_ids[MAX_TASK_FRAME_ALIASES];
+        uint32_t task_emitted_count = 0;
+
         for (uint32_t i = 0; i < parent_scope->symbol_count; i++) {
             Symbol *var = parent_scope->symbols[i];
             if (var and (var->kind == SYMBOL_VARIABLE or var->kind == SYMBOL_PARAMETER or
                         var->kind == SYMBOL_DISCRIMINANT)) {
-                /* Create a GEP alias: %__frame.VAR = getelementptr ptr %__parent_frame, offset */
+                bool dup = false;
+                for (uint32_t j = 0; j < task_emitted_count; j++)
+                    if (var->unique_id == task_emitted_ids[j]) { dup = true; break; }
+                if (dup) continue;
+                if (task_emitted_count < MAX_TASK_FRAME_ALIASES)
+                    task_emitted_ids[task_emitted_count++] = var->unique_id;
                 Emit(cg, "  %%__frame.");
                 Emit_Symbol_Name(cg, var);
                 Emit(cg, " = getelementptr i8, ptr %%__parent_frame, i64 %lld\n",
@@ -27774,13 +27830,19 @@ static void Generate_Task_Body(Code_Generator *cg, Syntax_Node *node) {
         /* Also include variables from child scopes (DECLARE blocks). */
         for (uint32_t i = 0; i < parent_scope->frame_var_count; i++) {
             Symbol *var = parent_scope->frame_vars[i];
-            if (var) {
-                Emit(cg, "  %%__frame.");
-                Emit_Symbol_Name(cg, var);
-                Emit(cg, " = getelementptr i8, ptr %%__parent_frame, i64 %lld\n",
-                     (long long)(var->frame_offset));
-            }
+            if (not var) continue;
+            bool dup = false;
+            for (uint32_t j = 0; j < task_emitted_count; j++)
+                if (var->unique_id == task_emitted_ids[j]) { dup = true; break; }
+            if (dup) continue;
+            if (task_emitted_count < MAX_TASK_FRAME_ALIASES)
+                task_emitted_ids[task_emitted_count++] = var->unique_id;
+            Emit(cg, "  %%__frame.");
+            Emit_Symbol_Name(cg, var);
+            Emit(cg, " = getelementptr i8, ptr %%__parent_frame, i64 %lld\n",
+                 (long long)(var->frame_offset));
         }
+        #undef MAX_TASK_FRAME_ALIASES
     }
 
     /* Push exception handler for task: { ptr prev, [200 x i8] jmp_buf } */
