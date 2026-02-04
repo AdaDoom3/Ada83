@@ -74,7 +74,7 @@ c9a: 0/15 PASS (0%)   - Compilation units
 ca1: 4/22 PASS (18%)  - Elaboration order
 ca3: 0/7 PASS (0%)    - Compilation order
 cb1: 3/9 PASS (33%)   - With clauses
-cb2: 3/4 PASS (75%)   - USE clauses
+cb2: 4/4 PASS (100%) *** FIXED *** - USE clauses
 cb4: 6/10 PASS (60%)  - Subunit compilation
 cb7: 0/5 PASS (0%)    - Body stubs
 cc1: 3/33 PASS (9%)   - Generic instantiation
@@ -89,7 +89,7 @@ cd9: (skipped)
 ce2: 11/118 PASS (9%) - I/O operations
 ce3: 6/181 PASS (3%)  - I/O operations
 
-100% groups: c23 c24 c25 c26 c2a c49 c53 c55 c56 c57 c58 c63
+100% groups: c23 c24 c25 c26 c2a c49 c53 c55 c56 c57 c58 c63 cb2
 
 ================================================================================
 APPROACH
@@ -132,3 +132,10 @@ PROGRESS LOG
 [done] c58005h: constrained access subtype resolution for access-to-record/array
          + discriminant/bounds check in Generate_Return_Statement (RM 3.7.1, 6.5(3))
 [done] Verify all c58 tests pass (11/11 = 100%)
+[done] Commit & push
+
+[done] Target group: cb2 (USE clauses) — 3/4 → 4/4
+[done] cb2006a: package body exception handler resolution + codegen
+         - Resolve handler statements before popping scope (RM 11.4)
+         - Add setjmp/longjmp exception handler setup for nested package bodies
+[done] Verify all cb2 tests pass (4/4 = 100%)

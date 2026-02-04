@@ -14441,6 +14441,16 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                 /* Freeze all types at end of declarative part (RM 13.14) */
                 Freeze_Declaration_List(&node->package_body.declarations);
                 Resolve_Statement_List(sm, &node->package_body.statements);
+                /* Resolve exception handlers (RM 11.4) — local variables and
+                 * parameters remain visible in the handler body. */
+                for (uint32_t hi = 0; hi < node->package_body.handlers.count; hi++) {
+                    Syntax_Node *handler = node->package_body.handlers.items[hi];
+                    if (handler) {
+                        for (uint32_t ei = 0; ei < handler->handler.exceptions.count; ei++)
+                            Resolve_Expression(sm, handler->handler.exceptions.items[ei]);
+                        Resolve_Statement_List(sm, &handler->handler.statements);
+                    }
+                }
                 Symbol_Manager_Pop_Scope(sm);
             }
             break;
@@ -27917,9 +27927,94 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
              * For library-level packages, create a separate __elab function. */
             bool has_init_stmts = node->package_body.statements.count > 0;
             if (has_init_stmts and cg->current_function) {
-                /* Nested package: emit initialization inline */
+                /* Nested package: emit initialization inline.
+                 * If the package body has exception handlers (RM 11.4),
+                 * wrap the statements in setjmp/longjmp like subprograms. */
+                bool has_pkg_exc = node->package_body.handlers.count > 0;
                 Emit(cg, "  ; Package body initialization (inline)\n");
-                Generate_Statement_List(cg, &node->package_body.statements);
+                if (has_pkg_exc) {
+                    uint32_t hf = Emit_Temp(cg);
+                    uint32_t handler_lbl = Emit_Label(cg);
+                    uint32_t normal_lbl  = Emit_Label(cg);
+                    uint32_t end_lbl     = Emit_Label(cg);
+
+                    Emit(cg, "  %%t%u = alloca { ptr, [200 x i8] }, align 16\n", hf);
+                    Emit(cg, "  call void @__ada_push_handler(ptr %%t%u)\n", hf);
+                    uint32_t jb = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = getelementptr { ptr, [200 x i8] }, ptr %%t%u, i32 0, i32 1\n", jb, hf);
+                    uint32_t sj = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = call i32 @setjmp(ptr %%t%u)\n", sj, jb);
+                    uint32_t is_normal = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", is_normal, sj);
+                    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                         is_normal, normal_lbl, handler_lbl);
+
+                    Emit_Label_Here(cg, normal_lbl);
+                    Generate_Statement_List(cg, &node->package_body.statements);
+                    Emit(cg, "  call void @__ada_pop_handler()\n");
+                    Emit(cg, "  br label %%L%u\n", end_lbl);
+
+                    Emit_Label_Here(cg, handler_lbl);
+                    cg->block_terminated = false;
+                    Emit(cg, "  call void @__ada_pop_handler()\n");
+                    uint32_t exc_id = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = call i64 @__ada_current_exception()\n", exc_id);
+
+                    uint32_t next_handler = 0;
+                    for (uint32_t i = 0; i < node->package_body.handlers.count; i++) {
+                        Syntax_Node *handler = node->package_body.handlers.items[i];
+                        if (not handler) continue;
+                        if (next_handler != 0) {
+                            Emit_Label_Here(cg, next_handler);
+                            cg->block_terminated = false;
+                        }
+                        next_handler = Emit_Label(cg);
+                        uint32_t handler_body = Emit_Label(cg);
+
+                        bool has_others = false;
+                        for (uint32_t j = 0; j < handler->handler.exceptions.count; j++) {
+                            Syntax_Node *exc_name = handler->handler.exceptions.items[j];
+                            if (exc_name->kind == NK_OTHERS) { has_others = true; break; }
+                        }
+                        if (has_others) {
+                            Emit(cg, "  br label %%L%u\n", handler_body);
+                        } else {
+                            for (uint32_t j = 0; j < handler->handler.exceptions.count; j++) {
+                                Syntax_Node *exc_name = handler->handler.exceptions.items[j];
+                                if (exc_name->symbol) {
+                                    uint32_t ep = Emit_Temp(cg);
+                                    Emit(cg, "  %%t%u = ptrtoint ptr ", ep);
+                                    Emit_Exception_Ref(cg, exc_name->symbol);
+                                    Emit(cg, " to i64\n");
+                                    uint32_t m = Emit_Temp(cg);
+                                    Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", m, exc_id, ep);
+                                    bool is_last = true;
+                                    for (uint32_t k = j+1; k < handler->handler.exceptions.count; k++)
+                                        if (handler->handler.exceptions.items[k]->symbol) { is_last = false; break; }
+                                    uint32_t fl = is_last ? next_handler : Emit_Label(cg);
+                                    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", m, handler_body, fl);
+                                    if (not is_last) { Emit_Label_Here(cg, fl); cg->block_terminated = false; }
+                                }
+                            }
+                        }
+                        cg->block_terminated = true;
+                        Emit_Label_Here(cg, handler_body);
+                        cg->block_terminated = false;
+                        Generate_Statement_List(cg, &handler->handler.statements);
+                        Emit_Branch_If_Needed(cg, end_lbl);
+                    }
+                    if (next_handler != 0) {
+                        Emit_Label_Here(cg, next_handler);
+                        cg->block_terminated = false;
+                        Emit(cg, "  call void @__ada_reraise()\n");
+                        Emit(cg, "  unreachable\n");
+                        cg->block_terminated = true;
+                    }
+                    Emit_Label_Here(cg, end_lbl);
+                    cg->block_terminated = false;
+                } else {
+                    Generate_Statement_List(cg, &node->package_body.statements);
+                }
             } else if (not cg->current_function and (has_init_stmts or has_pkg_tasks)) {
                 /* Library-level package: emit elaboration function that starts
                  * package-level tasks and runs any initialization statements. */
