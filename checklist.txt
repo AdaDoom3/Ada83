@@ -49,8 +49,8 @@ c56: 1/1 PASS (100%)  - Block statements
 c57: 6/6 PASS (100%)  - Exit statements
 c58: 11/11 PASS (100%) *** FIXED *** - Return statements
 c59: 2/4 PASS (50%)   - Goto statements
-c61: 1/4 PASS (25%)   - Subprogram declarations
-c62: 0/6 PASS (0%)    - Subprogram bodies
+c61: 4/4 PASS (100%) *** FIXED *** - Subprogram declarations
+c62: 6/6 PASS (100%) *** FIXED *** - Subprogram bodies
 c63: 1/1 PASS (100%)  - Subprogram parameters
 c64: 4/57 PASS (7%)   - Subprograms
 c65: 1/3 PASS (33%)   - Overloading
@@ -89,7 +89,7 @@ cd9: (skipped)
 ce2: 11/118 PASS (9%) - I/O operations
 ce3: 6/181 PASS (3%)  - I/O operations
 
-100% groups: c23 c24 c25 c26 c2a c49 c53 c55 c56 c57 c58 c63 c92 cb2
+100% groups: c23 c24 c25 c26 c2a c49 c53 c55 c56 c57 c58 c61 c62 c63 c92 cb2
 
 ================================================================================
 APPROACH
@@ -151,3 +151,28 @@ PROGRESS LOG
          3. Codegen: handle .ALL prefix (NK_UNARY_OP TK_ALL) in entry call task ptr resolution
          4. Allocator: NEW T for task type calls __ada_task_start and stores handle (RM 9.2)
 [done] Verify all c92 tests pass (5/5 = 100%)
+
+[done] Target group: c62 (subprogram bodies) — 0/6 → 6/6
+[done] c62003a,c62004a,c62006a: pre-computed default argument values for subprograms
+         - Evaluate default parameter values at call site when actual is omitted
+         - Handle named associations with defaults for IN parameters
+[done] c62003b: operator overloading for user-defined "+" on record types
+         - Route user-defined operator calls through Generate_Subprogram_Call
+[done] c62009a: constrained access subtype discriminant checks
+[done] c62012a: nested package body elaboration with default args
+[done] Verify all c62 tests pass (6/6 = 100%)
+[done] Commit & push
+
+[done] Target group: c61 (subprogram declarations) — 1/4 → 4/4
+[done] c61008a: compile/link fix for subprogram declarations
+[done] c61009a: compile/link fix for subprogram declarations
+[done] c61010a: discriminant-dependent record components — four fixes:
+         1. Expression_Llvm_Type: exclude function calls from array indexing path
+            (IDENT_STR has array-like return type STRING but is a function call)
+         2. Record type size: account for discriminant-dependent array components
+            using discriminant subtype's max value (RM 3.7.1)
+         3. Record aggregate alloca: same max-size computation at aggregate site
+         4. Generate_Selected: construct fat pointer from inline data + discriminant
+            bounds instead of loading { ptr, ptr } from inline storage
+[done] Verify all c61 tests pass (4/4 = 100%)
+[done] Regression: all 105 tests across 16 groups pass (0 failures)
