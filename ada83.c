@@ -16721,6 +16721,60 @@ static void Emit_Symbol_Storage(Code_Generator *cg, Symbol *sym) {
     }
 }
 
+/* RM 8.3 Static Chain for Deeply Nested Calls — two-phase design.
+ *
+ * Phase 1 (Precompute_Nested_Frame_Arg): call BEFORE building the call
+ *   instruction.  For depth ≥ 2 it emits GEP/load instructions to chase the
+ *   static chain and returns the temp holding the ancestor frame pointer.
+ *   For depth 0-1 it returns 0 (no precomputation needed).
+ *
+ * Phase 2 (Emit_Nested_Frame_Arg): call INSIDE the call instruction's
+ *   argument list.  Emits "ptr %__frame_base", "ptr %__parent_frame", or
+ *   "ptr %tN" depending on depth.
+ *
+ * Each intermediate frame stores its received __parent_frame at byte
+ * offset scope->frame_size (see Generate_Subprogram_Body prologue). */
+
+static int Nested_Frame_Depth(Code_Generator *cg, Symbol *proc) {
+    Symbol *target = proc->parent;
+    int depth = 0;
+    for (Symbol *w = cg->current_function; w; w = w->parent) {
+        if (w == target) return depth;
+        depth++;
+    }
+    return depth;  /* shouldn't happen in valid code */
+}
+
+static uint32_t Precompute_Nested_Frame_Arg(Code_Generator *cg, Symbol *proc) {
+    int depth = Nested_Frame_Depth(cg, proc);
+    if (depth < 2) return 0;  /* no precomputation needed */
+    Symbol *level = cg->current_function->parent;
+    uint32_t prev = 0;
+    for (int i = 1; i < depth; i++) {
+        int64_t off = (level && level->scope) ? level->scope->frame_size : 0;
+        uint32_t gep = Emit_Temp(cg);
+        if (prev)
+            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %lld\n",
+                 gep, prev, (long long)off);
+        else
+            Emit(cg, "  %%t%u = getelementptr i8, ptr %%__parent_frame, i64 %lld\n",
+                 gep, (long long)off);
+        prev = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = load ptr, ptr %%t%u\n", prev, gep);
+        level = level->parent;
+    }
+    return prev;
+}
+
+static bool Emit_Nested_Frame_Arg(Code_Generator *cg, Symbol *proc, uint32_t precomp) {
+    if (!cg->current_function || !proc->parent) return false;
+    int depth = Nested_Frame_Depth(cg, proc);
+    if (depth == 0)      Emit(cg, "ptr %%__frame_base");
+    else if (depth == 1) Emit(cg, "ptr %%__parent_frame");
+    else                 Emit(cg, "ptr %%t%u", precomp);
+    return true;
+}
+
 /* Resolve generic formal type → actual type within an instance.
  * Called from attribute codegen, SUCC/PRED, and elsewhere.
  * Returns the substituted type, or the original if no match. */
@@ -17629,6 +17683,48 @@ static uint32_t Emit_Constraint_Check_With_Type(Code_Generator *cg, uint32_t val
 static uint32_t Emit_Constraint_Check(Code_Generator *cg, uint32_t val,
                                        Type_Info *target, Type_Info *source) {
     return Emit_Constraint_Check_With_Type(cg, val, target, source, NULL);
+}
+
+/* RM 3.5(3): When a subtype_indication includes a range constraint
+ * (e.g. I5 RANGE 0..P), the constraint bounds must lie within the
+ * base type's range.  Emit runtime checks for any BOUND_EXPR bound. */
+static void Emit_Subtype_Constraint_Compat_Check(Code_Generator *cg, Type_Info *ty) {
+    if (!ty || !ty->base_type || !Type_Is_Scalar(ty)) return;
+    Type_Info *base = ty->base_type;
+    if (Check_Is_Suppressed(ty, NULL, CHK_RANGE)) return;
+    bool lo_dyn = (ty->low_bound.kind == BOUND_EXPR);
+    bool hi_dyn = (ty->high_bound.kind == BOUND_EXPR);
+    if (!lo_dyn && !hi_dyn) return;  /* purely static — checked at compile time */
+    bool base_lo_ok = (base->low_bound.kind == BOUND_INTEGER ||
+                       base->low_bound.kind == BOUND_EXPR);
+    bool base_hi_ok = (base->high_bound.kind == BOUND_INTEGER ||
+                       base->high_bound.kind == BOUND_EXPR);
+    if (!base_lo_ok || !base_hi_ok) return;
+    const char *iat = Integer_Arith_Type(cg);
+    /* Emit base type bounds */
+    uint32_t blo = Emit_Bound_Value(cg, &base->low_bound);
+    uint32_t bhi = Emit_Bound_Value(cg, &base->high_bound);
+    /* Check each dynamic constraint bound against base range */
+    if (lo_dyn) {
+        uint32_t clo = Emit_Bound_Value(cg, &ty->low_bound);
+        uint32_t raise_l = cg->label_id++, ok_l = cg->label_id++;
+        uint32_t c = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = icmp slt %s %%t%u, %%t%u\n", c, iat, clo, blo);
+        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", c, raise_l, ok_l);
+        Emit_Label_Here(cg, raise_l);
+        Emit_Raise_Constraint_Error(cg, "subtype low bound");
+        Emit_Label_Here(cg, ok_l);
+    }
+    if (hi_dyn) {
+        uint32_t chi = Emit_Bound_Value(cg, &ty->high_bound);
+        uint32_t raise_l = cg->label_id++, ok_l = cg->label_id++;
+        uint32_t c = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = icmp sgt %s %%t%u, %%t%u\n", c, iat, chi, bhi);
+        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", c, raise_l, ok_l);
+        Emit_Label_Here(cg, raise_l);
+        Emit_Raise_Constraint_Error(cg, "subtype high bound");
+        Emit_Label_Here(cg, ok_l);
+    }
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -18772,21 +18868,17 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                 /* Generate actual function call */
                 const char *ret_type = actual->return_type ?
                     Type_To_Llvm_Sig(actual->return_type) : Integer_Arith_Type(cg);
-                Emit(cg, "  %%t%u = call %s @", t, ret_type);
-                Emit_Symbol_Name(cg, actual);
-                /* Handle nested function: pass parent frame if needed */
                 bool callee_is_nested = actual->parent and
                     (actual->parent->kind == SYMBOL_FUNCTION or
                      actual->parent->kind == SYMBOL_PROCEDURE);
+                uint32_t frame_pre = callee_is_nested ?
+                    Precompute_Nested_Frame_Arg(cg, actual) : 0;
+                Emit(cg, "  %%t%u = call %s @", t, ret_type);
+                Emit_Symbol_Name(cg, actual);
                 if (callee_is_nested) {
-                    if (cg->current_function == actual->parent) {
-                        Emit(cg, "(ptr %%__frame_base)\n");
-                    } else if (cg->is_nested and cg->current_function and
-                               cg->current_function->parent == actual->parent) {
-                        Emit(cg, "(ptr %%__parent_frame)\n");
-                    } else {
-                        Emit(cg, "(ptr null)\n");
-                    }
+                    Emit(cg, "(");
+                    Emit_Nested_Frame_Arg(cg, actual, frame_pre);
+                    Emit(cg, ")\n");
                 } else {
                     Emit(cg, "()\n");
                 }
@@ -19332,15 +19424,15 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             Type_To_Llvm(node->symbol->return_type) : "i32";
         bool callee_is_nested = (node->symbol->parent &&
             node->symbol->parent->kind == SYMBOL_FUNCTION);
+        uint32_t frame_pre = callee_is_nested ?
+            Precompute_Nested_Frame_Arg(cg, node->symbol) : 0;
         uint32_t result = Emit_Temp(cg);
         Emit(cg, "  %%t%u = call %s @", result, ret_type);
         Emit_Symbol_Name(cg, node->symbol);
         Emit(cg, "(");
         if (callee_is_nested) {
-            if (cg->current_function == node->symbol->parent)
-                Emit(cg, "ptr %%__frame_base, ");
-            else
-                Emit(cg, "ptr %%__parent_frame, ");
+            Emit_Nested_Frame_Arg(cg, node->symbol, frame_pre);
+            Emit(cg, ", ");
         }
         Emit(cg, "%s %%t%u, %s %%t%u)\n", p0_llvm, left, p1_llvm, right);
         return result;
@@ -21451,6 +21543,10 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             (call_target->parent->kind == SYMBOL_FUNCTION or
              call_target->parent->kind == SYMBOL_PROCEDURE);
 
+        /* Precompute static chain pointer before building call (RM 8.3) */
+        uint32_t frame_pre = callee_is_nested ?
+            Precompute_Nested_Frame_Arg(cg, call_target) : 0;
+
         uint32_t t = Emit_Temp(cg);
 
         if (sym->return_type) {
@@ -21462,21 +21558,10 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         Emit_Symbol_Name(cg, call_target);
         Emit(cg, "(");
 
-        /* Pass frame pointer to nested functions:
-         * - If current function IS the callee's parent: pass our %__frame_base
-         * - If current function is a sibling (same parent): pass %__parent_frame
-         * - Otherwise no frame pointer needed */
+        /* Pass frame pointer to nested functions (RM 8.3 static chain) */
         if (callee_is_nested) {
-            if (cg->current_function == call_target->parent) {
-                /* Calling child: pass our frame */
-                Emit(cg, "ptr %%__frame_base");
+            if (Emit_Nested_Frame_Arg(cg, call_target, frame_pre))
                 if (node->apply.arguments.count > 0) Emit(cg, ", ");
-            } else if (cg->is_nested and cg->current_function and
-                       cg->current_function->parent == call_target->parent) {
-                /* Calling sibling (same parent): pass parent's frame */
-                Emit(cg, "ptr %%__parent_frame");
-                if (node->apply.arguments.count > 0) Emit(cg, ", ");
-            }
         }
 
         for (uint32_t i = 0; i < node->apply.arguments.count; i++) {
@@ -23801,14 +23886,29 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("CALLABLE"))) {
-        /* T'CALLABLE - is the task callable? (RM 9.9) */
-        Emit(cg, "  %%t%u = add i8 0, 1  ; 'CALLABLE (assume true)\n", t);
+        /* T'CALLABLE (RM 9.9): load TCB handle, check completed flag */
+        uint32_t handle = Generate_Expression(cg, node->attribute.prefix);
+        Emit(cg, "  %%t%u = call i8 @__ada_task_callable(ptr %%t%u)\n", t, handle);
         return t;
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("TERMINATED"))) {
-        /* T'TERMINATED - has the task terminated? (RM 9.9) */
-        Emit(cg, "  %%t%u = add i8 0, 0  ; 'TERMINATED (assume false)\n", t);
+        /* T'TERMINATED (RM 9.9): load TCB handle, check completed flag */
+        uint32_t handle = Generate_Expression(cg, node->attribute.prefix);
+        uint32_t tcb_ptr = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = icmp eq ptr %%t%u, null\n", tcb_ptr, handle);
+        uint32_t ok_l = cg->label_id++, nil_l = cg->label_id++, done_l = cg->label_id++;
+        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", tcb_ptr, nil_l, ok_l);
+        Emit_Label_Here(cg, nil_l);
+        Emit(cg, "  br label %%L%u\n", done_l);
+        Emit_Label_Here(cg, ok_l);
+        uint32_t gep = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 24\n", gep, handle);
+        uint32_t val = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = load i8, ptr %%t%u\n", val, gep);
+        Emit(cg, "  br label %%L%u\n", done_l);
+        Emit_Label_Here(cg, done_l);
+        Emit(cg, "  %%t%u = phi i8 [ 0, %%L%u ], [ %%t%u, %%L%u ]\n", t, nil_l, val, ok_l);
         return t;
     }
 
@@ -26756,6 +26856,10 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                             ? original_sym->parameter_count : MAX_DEFAULT_ARGS;
                     }
 
+                    /* Precompute static chain pointer before call (RM 8.3) */
+                    uint32_t frame_pre = callee_is_nested ?
+                        Precompute_Nested_Frame_Arg(cg, proc) : 0;
+
                     if (proc->return_type) {
                         Emit(cg, "  call %s @", Type_To_Llvm_Sig(proc->return_type));
                     } else {
@@ -26764,17 +26868,10 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                     Emit_Symbol_Name(cg, proc);
                     Emit(cg, "(");
 
-                    /* Pass frame pointer to nested functions */
+                    /* Pass frame pointer to nested functions (RM 8.3 static chain) */
                     bool frame_emitted = false;
                     if (callee_is_nested) {
-                        if (cg->current_function == proc->parent) {
-                            Emit(cg, "ptr %%__frame_base");
-                            frame_emitted = true;
-                        } else if (cg->is_nested and cg->current_function and
-                                   cg->current_function->parent == proc->parent) {
-                            Emit(cg, "ptr %%__parent_frame");
-                            frame_emitted = true;
-                        }
+                        frame_emitted = Emit_Nested_Frame_Arg(cg, proc, frame_pre);
                     }
 
                     /* Emit pre-computed default arguments */
@@ -27966,6 +28063,9 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                  * including pointers, floats, and integers */
                 const char *src_type_str = Expression_Llvm_Type(cg, node->object_decl.init);
 
+                /* RM 3.5(3): Check dynamic subtype constraint bounds against base type */
+                Emit_Subtype_Constraint_Compat_Check(cg, ty);
+
                 /* RM 3.3.2: Scalar constraint check on initialization.
                  * GNAT LLVM: check BEFORE conversion so value is at source type. */
                 if (ty and Type_Is_Scalar(ty)) {
@@ -28401,13 +28501,22 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
     bool has_nested = Has_Nested_Subprograms(&node->subprogram_body.declarations,
                                               &node->subprogram_body.statements);
 
-    /* If this function has nested subprograms, allocate a frame base
-     * This is the address that will be passed to nested functions */
+    /* If this function has nested subprograms, allocate a frame base.
+     * When also nested itself, reserve 8 extra bytes at the end to store
+     * the received __parent_frame (static chain pointer for RM 8.3). */
     if (has_nested) {
         int64_t frame_size = (sym->scope and sym->scope->frame_size > 0)
-            ? sym->scope->frame_size : 8;  /* At least 8 bytes for frame pointer */
+            ? sym->scope->frame_size : 8;
+        int64_t alloca_size = is_nested ? frame_size + 8 : frame_size;
         Emit(cg, "  ; Frame for nested function access\n");
-        Emit(cg, "  %%__frame_base = alloca i8, i64 %lld\n", (long long)frame_size);
+        Emit(cg, "  %%__frame_base = alloca i8, i64 %lld\n", (long long)alloca_size);
+        if (is_nested) {
+            /* Store static chain: parent's frame at offset frame_size */
+            uint32_t slot = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = getelementptr i8, ptr %%__frame_base, i64 %lld\n",
+                 slot, (long long)frame_size);
+            Emit(cg, "  store ptr %%__parent_frame, ptr %%t%u\n", slot);
+        }
     }
 
     /* If nested, create aliases for accessing enclosing scope variables via frame */
@@ -30912,16 +31021,50 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "  unreachable\n");
     Emit(cg, "}\n\n");
 
-    /* Task start: spawn a thread to run the task body.
-     * Returns thread handle that can be used for join/abort.
-     * The task_func is a pointer to ptr(ptr) matching pthread's
-     * void*(void*) start_routine signature. */
+    /* Task Control Block (TCB) layout:
+     *   offset  0: ptr  func          (task body function)
+     *   offset  8: ptr  parent_frame  (enclosing scope frame)
+     *   offset 16: ptr  thread_handle (pthread_t)
+     *   offset 24: i8   completed     (0=running, 1=done)
+     * Total 25 bytes, rounded to 32 by malloc. */
+
+    /* Task wrapper: calls actual task body then sets completed flag. */
+    Emit(cg, "define linkonce_odr ptr @__ada_task_wrapper(ptr %%tcb) {\n");
+    Emit(cg, "entry:\n");
+    Emit(cg, "  %%func = load ptr, ptr %%tcb\n");
+    Emit(cg, "  %%1 = getelementptr ptr, ptr %%tcb, i64 1\n");
+    Emit(cg, "  %%frame = load ptr, ptr %%1\n");
+    Emit(cg, "  %%_r = call ptr %%func(ptr %%frame)\n");
+    Emit(cg, "  %%2 = getelementptr i8, ptr %%tcb, i64 24\n");
+    Emit(cg, "  store i8 1, ptr %%2  ; mark completed\n");
+    Emit(cg, "  ret ptr null\n");
+    Emit(cg, "}\n\n");
+
+    /* Task start: allocate TCB, spawn wrapper thread. Returns TCB ptr. */
     Emit(cg, "define linkonce_odr ptr @__ada_task_start(ptr %%task_func, ptr %%parent_frame) {\n");
     Emit(cg, "entry:\n");
-    Emit(cg, "  %%tid = alloca ptr\n");
-    Emit(cg, "  %%_rc = call i32 @pthread_create(ptr %%tid, ptr null, ptr %%task_func, ptr %%parent_frame)\n");
-    Emit(cg, "  %%handle = load ptr, ptr %%tid\n");
-    Emit(cg, "  ret ptr %%handle\n");
+    Emit(cg, "  %%tcb = call ptr @malloc(i64 32)\n");
+    Emit(cg, "  store ptr %%task_func, ptr %%tcb\n");
+    Emit(cg, "  %%1 = getelementptr ptr, ptr %%tcb, i64 1\n");
+    Emit(cg, "  store ptr %%parent_frame, ptr %%1\n");
+    Emit(cg, "  %%2 = getelementptr i8, ptr %%tcb, i64 24\n");
+    Emit(cg, "  store i8 0, ptr %%2  ; not completed\n");
+    Emit(cg, "  %%tid_slot = getelementptr ptr, ptr %%tcb, i64 2\n");
+    Emit(cg, "  %%_rc = call i32 @pthread_create(ptr %%tid_slot, ptr null, ptr @__ada_task_wrapper, ptr %%tcb)\n");
+    Emit(cg, "  ret ptr %%tcb\n");
+    Emit(cg, "}\n\n");
+
+    /* T'CALLABLE (RM 9.9): task is callable iff not completed */
+    Emit(cg, "define linkonce_odr i8 @__ada_task_callable(ptr %%tcb) {\n");
+    Emit(cg, "entry:\n");
+    Emit(cg, "  %%1 = icmp eq ptr %%tcb, null\n");
+    Emit(cg, "  br i1 %%1, label %%nil, label %%check\n");
+    Emit(cg, "nil:\n  ret i8 0\n");
+    Emit(cg, "check:\n");
+    Emit(cg, "  %%2 = getelementptr i8, ptr %%tcb, i64 24\n");
+    Emit(cg, "  %%3 = load i8, ptr %%2\n");
+    Emit(cg, "  %%4 = xor i8 %%3, 1\n");
+    Emit(cg, "  ret i8 %%4\n");
     Emit(cg, "}\n\n");
 
     /* Entry call: caller side of rendezvous (blocks until accept completes) */
