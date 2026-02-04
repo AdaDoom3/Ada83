@@ -1,0 +1,29 @@
+
+========================================
+Group cb4 Tests
+========================================
+
+  cb4001a            PASS   PASSED
+  cb4002a            PASS   PASSED
+  cb4003a            PASS   PASSED
+  cb4004a            PASS   PASSED
+  cb4005a            PASS   PASSED
+  cb4006a            PASS   PASSED
+  cb4007a            PASS   PASSED
+  cb4008a            FAIL   RUNTIME:exit 124
+  cb4009a            PASS   PASSED
+  cb4013a            FAIL   RUNTIME:exit 124
+
+========================================
+RESULTS
+========================================
+
+ CLASS                    pass   fail   skip  total    rate
+ ---------------------- ------ ------ ------ ------ -------
+ C  Executable               8      2      0     10     80%
+ ---------------------- ------ ------ ------ ------ -------
+ TOTAL                       8      2      0     10     80%
+
+========================================
+ elapsed 5.295s  |  processed 10 tests  |  16 workers  |  2026-02-04 13:03:56
+========================================
