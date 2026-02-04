@@ -1,0 +1,77 @@
+CHECKLIST - Ada83 Compiler Refactoring & Test Fixing
+=====================================================
+
+PROMPT (verbatim):
+  In the pursuit of high-quality code (low line count (e.g. low undue complexity)
+  and high feature/correctness) - refactor and fix ada83.c to pass a C-test group
+  completely (e.g. cXX) with much better Haskell-like C99 and tight smart
+  code-golfing with, ironically, textbook "Literate Programming" style. Use the
+  GNAT LLVM source to see what is done there before making changes.
+  Create a file to track everything called "checklist.txt" and include this
+  prompt in it. Start with c65 were several tests timeout.
+  Use the C-series tests (done in batches) to guide you. MAKE SURE TO STORE
+  RESULTS IN THE REPO TO AVOID WASTING TIME - EACH RUN TAKES OVER A MIN!
+  We should be focused on making changes instead of obsessing over analysis
+
+=== BASELINE TEST RESULTS (2026-02-04) ===
+
+Groups at 100% (pre-existing):
+  c23  8/8    c24 11/11   c25 4/4    c26 3/3    c27 2/2
+  c2a  7/7    c4a 12/12   c53 7/7    c55 18/18  c56 1/1
+  c57  6/6    c58 11/11   c61 4/4    c62 6/6    c63 1/1
+  c65  3/3    c72 2/2     c92 5/5    cb2 4/4    cb4 10/10
+
+Groups with failures (sorted by closeness to 100%):
+  c49   8/9   (88%)  -> FIXED: now 100% (ABS constant folding)
+  c54  17/23  (73%)  -> FIXED: now 20/23 (case type coercion)
+  c47   7/12  (58%)
+  c66   3/6   (50%)
+  c51   1/2   (50%)
+  c59   2/4   (50%)
+  c73   1/2   (50%)
+  c99   1/2   (50%)
+  c45  64/108 (59%)
+  c87  31/74  (41%)
+  c74  10/26  (38%)
+  c83  13/38  (34%)
+  c46   7/21  (33%)
+  c52  15/53  (28%)
+  c84   1/4   (25%)
+  c64   4/57  (7%)
+  c67   0/14  (0%)
+  c85   1/28  (3%)
+  c86   0/13  (0%)
+
+=== FIXES APPLIED ===
+
+FIX 1: Case statement selector coercion (ada83.c:26059)
+  - Coerce CASE selector to its declared LLVM type after generation
+  - Arithmetic may widen result to i32, but type T RANGE 1..10 is i8
+  - Tests fixed: c54a22a
+
+FIX 2: Bare subtype names as case choices (ada83.c:26156-26181)
+  - When SYMBOL_TYPE/SYMBOL_SUBTYPE is used as case choice, generate range check
+  - Previously fell through to single-value path, producing wrong types
+  - Tests fixed: c54a24b (and helps c54a22a with SN/S10 subtype choices)
+
+FIX 3: Subtype indication bounds coercion (ada83.c:26136-26139)
+  - Convert bounds from range constraint expression to case_type
+  - Previously bounds were generated in expression type (e.g. i32) but compared as case_type (e.g. i16)
+  - Tests fixed: c54a24a
+
+FIX 4: ABS in constant folding (ada83.c:9271, 9374-9376)
+  - Added TK_ABS handling to Eval_Const_Numeric (fabs)
+  - Added TK_ABS handling to Eval_Const_Rational (clear is_negative)
+  - Tests fixed: c49022c
+
+=== REMAINING C54 FAILURES ===
+  c54a06a  FAIL   RUNTIME - lli segfault on complex static expression IR
+  c54a07a  SKIP   COMPILE - block name qualification (B1.V) not supported
+  c54a13b  SKIP   BIND - generic IN OUT parameter frame variable undefined
+
+=== PROGRESS ===
+[x] Baseline all c-series test groups
+[x] Fix c49 to 100% (ABS constant folding)
+[x] Fix c54 from 73% to 86% (case statement type coercion)
+[ ] Continue fixing more groups
+[ ] Commit and push

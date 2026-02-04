@@ -9268,6 +9268,7 @@ static double Eval_Const_Numeric(Syntax_Node *n) {
         case NK_UNARY_OP:
             if (n->unary.op == TK_MINUS) return -Eval_Const_Numeric(n->unary.operand);
             if (n->unary.op == TK_PLUS)  return Eval_Const_Numeric(n->unary.operand);
+            if (n->unary.op == TK_ABS)   return fabs(Eval_Const_Numeric(n->unary.operand));
             return 0.0/0.0;
         case NK_ATTRIBUTE: {
             /* T'SIZE, T'FIRST, T'LAST, T'POS, T'LENGTH etc. */
@@ -9370,6 +9371,9 @@ static bool Eval_Const_Rational(Syntax_Node *n, Rational *out) {
             if (n->unary.op == TK_MINUS) {
                 operand.num = Big_Integer_Clone(operand.num);
                 operand.num->is_negative = !operand.num->is_negative;
+            } else if (n->unary.op == TK_ABS) {
+                operand.num = Big_Integer_Clone(operand.num);
+                operand.num->is_negative = false;
             }
             *out = operand;
             return true;
@@ -26056,6 +26060,8 @@ static void Generate_Case_Statement(Code_Generator *cg, Syntax_Node *node) {
     /* CASE expr IS WHEN choice => stmts; ... END CASE; */
     uint32_t selector = Generate_Expression(cg, node->case_stmt.expression);
     const char *case_type = Expression_Llvm_Type(cg, node->case_stmt.expression);
+    /* Coerce selector to its declared type (arithmetic may widen to i32) */
+    selector = Emit_Coerce(cg, selector, case_type);
     uint32_t end_label = Emit_Label(cg);
 
     /* Generate switch-like structure using branches */
@@ -26109,26 +26115,34 @@ static void Generate_Case_Statement(Code_Generator *cg, Syntax_Node *node) {
             } else if (choice->kind == NK_SUBTYPE_INDICATION) {
                 /* Subtype range: WHEN T RANGE low..high => (RM 5.4) */
                 uint32_t low, high;
+                const char *bound_type = case_type;
                 Syntax_Node *constraint = choice->subtype_ind.constraint;
                 if (constraint and constraint->kind == NK_RANGE_CONSTRAINT and
                     constraint->range_constraint.range and
                     constraint->range_constraint.range->kind == NK_RANGE) {
                     low = Generate_Expression(cg, constraint->range_constraint.range->range.low);
                     high = Generate_Expression(cg, constraint->range_constraint.range->range.high);
+                    bound_type = Expression_Llvm_Type(cg, constraint->range_constraint.range->range.low);
                 } else {
                     /* Bare subtype name: WHEN SUBTYPE => use declared bounds */
                     Type_Info *st = choice->type;
                     low = Emit_Temp(cg);
                     high = Emit_Temp(cg);
+                    bound_type = case_type;
                     if (st and st->low_bound.kind == BOUND_INTEGER) {
-                        Emit(cg, "  %%t%u = add %s 0, %s\n", low, Integer_Arith_Type(cg),
+                        Emit(cg, "  %%t%u = add %s 0, %s\n", low, case_type,
                              I128_Decimal(Type_Bound_Value(st->low_bound)));
-                        Emit(cg, "  %%t%u = add %s 0, %s\n", high, Integer_Arith_Type(cg),
+                        Emit(cg, "  %%t%u = add %s 0, %s\n", high, case_type,
                              I128_Decimal(Type_Bound_Value(st->high_bound)));
                     } else {
-                        Emit(cg, "  %%t%u = add %s 0, 0\n", low, Integer_Arith_Type(cg));
-                        Emit(cg, "  %%t%u = add %s 0, 0\n", high, Integer_Arith_Type(cg));
+                        Emit(cg, "  %%t%u = add %s 0, 0\n", low, case_type);
+                        Emit(cg, "  %%t%u = add %s 0, 0\n", high, case_type);
                     }
+                }
+                /* Coerce bounds to selector type for icmp */
+                if (strcmp(bound_type, case_type) != 0) {
+                    low = Emit_Convert(cg, low, bound_type, case_type);
+                    high = Emit_Convert(cg, high, bound_type, case_type);
                 }
                 uint32_t cmp1 = Emit_Temp(cg);
                 uint32_t cmp2 = Emit_Temp(cg);
@@ -26145,6 +26159,32 @@ static void Generate_Case_Statement(Code_Generator *cg, Syntax_Node *node) {
                 if (j + 1 < alt->association.choices.count) {
                     Emit_Label_Here(cg, next_choice);
                 }
+            } else if (choice->symbol and
+                       (choice->symbol->kind == SYMBOL_TYPE or
+                        choice->symbol->kind == SYMBOL_SUBTYPE) and
+                       choice->symbol->type) {
+                /* Bare subtype name as case choice (RM 5.4): range check */
+                Type_Info *st = choice->symbol->type;
+                uint32_t low = Emit_Temp(cg), high = Emit_Temp(cg);
+                if (st->low_bound.kind == BOUND_INTEGER) {
+                    Emit(cg, "  %%t%u = add %s 0, %s\n", low, case_type,
+                         I128_Decimal(Type_Bound_Value(st->low_bound)));
+                    Emit(cg, "  %%t%u = add %s 0, %s\n", high, case_type,
+                         I128_Decimal(Type_Bound_Value(st->high_bound)));
+                } else {
+                    Emit(cg, "  %%t%u = add %s 0, 0\n", low, case_type);
+                    Emit(cg, "  %%t%u = add %s 0, 0\n", high, case_type);
+                }
+                uint32_t cmp1 = Emit_Temp(cg), cmp2 = Emit_Temp(cg), both = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp sle %s %%t%u, %%t%u\n", cmp1, case_type, low, selector);
+                Emit(cg, "  %%t%u = icmp sle %s %%t%u, %%t%u\n", cmp2, case_type, selector, high);
+                Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", both, cmp1, cmp2);
+                uint32_t next_choice = (j + 1 < alt->association.choices.count) ?
+                                       Emit_Label(cg) : next_check;
+                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                     both, alt_labels[i], next_choice);
+                if (j + 1 < alt->association.choices.count)
+                    Emit_Label_Here(cg, next_choice);
             } else {
                 /* Single value check */
                 uint32_t val = Generate_Expression(cg, choice);
