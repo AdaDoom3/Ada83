@@ -7837,10 +7837,14 @@ static Type_Info *Resolve_Selected(Symbol_Manager *sm, Syntax_Node *node) {
         }
         Report_Error(node->location, "no component '%.*s' in record type",
                     node->selected.selector.length, node->selected.selector.data);
-    } else if (Type_Is_Task(prefix_type)) {
-        /* Task entry selection: T.E1 where T is a task object (RM 9.5)
-         * Look up entry in the task type's defining_symbol exported list */
-        Symbol *type_sym = prefix_type->defining_symbol;
+    } else if (Type_Is_Task(prefix_type) or
+               (Type_Is_Access(prefix_type) and prefix_type->access.designated_type and
+                Type_Is_Task(prefix_type->access.designated_type))) {
+        /* Task entry selection: T.E1 where T is a task object (RM 9.5).
+         * Also handles P.E1 where P is access-to-task (implicit dereference). */
+        Type_Info *task_type = Type_Is_Task(prefix_type) ? prefix_type
+                             : prefix_type->access.designated_type;
+        Symbol *type_sym = task_type->defining_symbol;
         if (type_sym) {
             for (uint32_t i = 0; i < type_sym->exported_count; i++) {
                 if (Slice_Equal_Ignore_Case(type_sym->exported[i]->name,
@@ -8318,7 +8322,19 @@ static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
 
         case TK_IN:
         case TK_NOT:  /* NOT IN is encoded as TK_NOT in binary op */
-            /* Membership test */
+            /* Membership test: X IN range.  Per Ada RM 4.5.2, the range
+             * is resolved in the context of the tested expression's type.
+             * GNAT: Resolve_Membership_Op propagates left type to range. */
+            if (left_type and (Type_Is_Enumeration(left_type) or
+                (left_type->parent_type and Type_Is_Enumeration(left_type->parent_type)))) {
+                Syntax_Node *rhs = node->binary.right;
+                if (rhs and rhs->kind == NK_RANGE) {
+                    if (rhs->range.low and rhs->range.low->kind == NK_CHARACTER)
+                        Resolve_Char_As_Enum(sm, rhs->range.low, left_type);
+                    if (rhs->range.high and rhs->range.high->kind == NK_CHARACTER)
+                        Resolve_Char_As_Enum(sm, rhs->range.high, left_type);
+                }
+            }
             node->type = sm->type_boolean;
             break;
 
@@ -8662,6 +8678,25 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
             }
         }
         return node->type;
+    }
+
+    /* ─── Case 3b: Generic subprogram recursive call ─── */
+    /* Per Ada RM 12.3(17), within a generic subprogram body the name of
+     * the subprogram denotes the current instance (recursive call).
+     * GNAT: Analyze_Call handles this via the Is_Generic_Subprogram check. */
+    if (prefix_sym and prefix_sym->kind == SYMBOL_GENERIC and prefix_sym->generic_unit) {
+        Syntax_Node *gu = prefix_sym->generic_unit;
+        if (gu->kind == NK_FUNCTION_SPEC) {
+            /* Return type from the generic function spec */
+            if (gu->subprogram_spec.return_type)
+                node->type = gu->subprogram_spec.return_type->type;
+            if (not node->type) node->type = sm->type_integer;
+            return node->type;
+        }
+        if (gu->kind == NK_PROCEDURE_SPEC) {
+            node->type = NULL;  /* Procedure call — no return type */
+            return NULL;
+        }
     }
 
     /* ─── Case 4: Unresolved - report error and recover ─── */
@@ -9391,7 +9426,28 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
         case NK_RANGE:
             if (node->range.low) Resolve_Expression(sm, node->range.low);
             if (node->range.high) Resolve_Expression(sm, node->range.high);
+            /* Ada RM 4.1.1: in a range L..H, character literals must be
+             * resolved against the other operand's enum type (like binary ops).
+             * GNAT: overload resolution propagates expected type to both bounds. */
+            {
+                Type_Info *lt = node->range.low  ? node->range.low->type  : NULL;
+                Type_Info *ht = node->range.high ? node->range.high->type : NULL;
+                if (ht and Type_Is_Enumeration(ht) and
+                    node->range.low and node->range.low->kind == NK_CHARACTER)
+                    Resolve_Char_As_Enum(sm, node->range.low, ht);
+                else if (lt and Type_Is_Enumeration(lt) and
+                         node->range.high and node->range.high->kind == NK_CHARACTER)
+                    Resolve_Char_As_Enum(sm, node->range.high, lt);
+                /* Also handle derived enum types via parent chain */
+                if (ht and ht->parent_type and Type_Is_Enumeration(ht->parent_type) and
+                    node->range.low and node->range.low->kind == NK_CHARACTER)
+                    Resolve_Char_As_Enum(sm, node->range.low, ht);
+                else if (lt and lt->parent_type and Type_Is_Enumeration(lt->parent_type) and
+                         node->range.high and node->range.high->kind == NK_CHARACTER)
+                    Resolve_Char_As_Enum(sm, node->range.high, lt);
+            }
             node->type = node->range.low ? node->range.low->type : NULL;
+            if (not node->type) node->type = node->range.high ? node->range.high->type : NULL;
             return node->type;
 
         case NK_ASSOCIATION:
@@ -9930,6 +9986,37 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                         record_type->size = offset;
                     }
                     record_type->alignment = 8;
+
+                    /* Adjust size for discriminant-dependent array/string components
+                     * whose sizes are not included in the static offset sum. The max
+                     * size is derived from the discriminant subtype's range (RM 3.7.1). */
+                    for (uint32_t aci = 0; aci < record_type->record.component_count; aci++) {
+                        Component_Info *acomp = &record_type->record.components[aci];
+                        Type_Info *acti = acomp->component_type;
+                        if (not acti or not Type_Is_Array_Like(acti)) continue;
+                        for (uint32_t axi = 0; axi < acti->array.index_count; axi++) {
+                            Type_Bound *alo = &acti->array.indices[axi].low_bound;
+                            Type_Bound *ahi = &acti->array.indices[axi].high_bound;
+                            if (ahi->kind == BOUND_EXPR and ahi->expr and ahi->expr->symbol) {
+                                Symbol *disc_s = ahi->expr->symbol;
+                                Type_Info *disc_ty = disc_s->type;
+                                if (disc_ty and disc_ty->high_bound.kind == BOUND_INTEGER) {
+                                    int64_t max_hi = disc_ty->high_bound.int_value;
+                                    int64_t lo_val = (alo->kind == BOUND_INTEGER) ?
+                                                      alo->int_value : 0;
+                                    int64_t max_ext = max_hi - lo_val + 1;
+                                    if (max_ext < 0) max_ext = 0;
+                                    uint32_t elem_sz = (acti->array.element_type and
+                                        acti->array.element_type->size > 0) ?
+                                        acti->array.element_type->size : 1;
+                                    uint32_t needed = acomp->byte_offset +
+                                        (uint32_t)(max_ext * elem_sz);
+                                    if (needed > record_type->size)
+                                        record_type->size = needed;
+                                }
+                            }
+                        }
+                    }
                 }
 
                 node->type = record_type;
@@ -9956,6 +10043,15 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                     if (expr->symbol and expr->symbol->kind == SYMBOL_LITERAL) {
                         *out_val = expr->symbol->frame_offset;
                         return true;
+                    }
+                    /* Character literal 'X' — extract ASCII value from text.
+                     * Per Ada RM 3.5.2, character position = Character'Pos(C).
+                     * GNAT LLVM: Eval_Scalar_Literal handles char literals via
+                     * Enumeration_Rep of the entity. */
+                    if (expr->kind == NK_CHARACTER) {
+                        String_Slice t = expr->string_val.text;
+                        if (t.length >= 2) { *out_val = (unsigned char)t.data[1]; return true; }
+                        if (t.length == 1) { *out_val = (unsigned char)t.data[0]; return true; }
                     }
                     /* Handle TYPE'POS(X) or TYPE'VAL(N) as NK_APPLY */
                     if (expr->kind == NK_APPLY and expr->apply.prefix and
@@ -10024,6 +10120,51 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
 
                 /* Check for index constraint (STRING(1..5) style) */
                 Syntax_Node *constraint = node->subtype_ind.constraint;
+                /* For access-to-array, the index constraint applies to the
+                 * designated type.  Resolve by creating a constrained access
+                 * type whose designated_type is a constrained array. (RM 3.7.1) */
+                if (constraint and constraint->kind == NK_INDEX_CONSTRAINT and
+                    Type_Is_Access(base_type) and base_type->access.designated_type and
+                    Type_Is_Array_Like(base_type->access.designated_type)) {
+                    Type_Info *des_base = base_type->access.designated_type;
+                    Type_Info *des_con = Type_New(TYPE_ARRAY, des_base->name);
+                    *des_con = *des_base;
+                    des_con->base_type = des_base;
+                    des_con->array.is_constrained = true;
+                    des_con->array.index_count = (uint32_t)constraint->index_constraint.ranges.count;
+                    if (des_con->array.index_count > 0) {
+                        des_con->array.indices = Arena_Allocate(
+                            des_con->array.index_count * sizeof(Index_Info));
+                        for (uint32_t i = 0; i < des_con->array.index_count; i++) {
+                            Syntax_Node *range = constraint->index_constraint.ranges.items[i];
+                            Resolve_Expression(sm, range);
+                            Index_Info *info = &des_con->array.indices[i];
+                            info->index_type = sm->type_integer;
+                            if (range->kind == NK_RANGE) {
+                                if (range->range.low) {
+                                    double v = Eval_Const_Numeric(range->range.low);
+                                    if (v == v) info->low_bound = (Type_Bound){
+                                        .kind = BOUND_INTEGER, .int_value = (int128_t)v};
+                                    else info->low_bound = (Type_Bound){
+                                        .kind = BOUND_EXPR, .expr = range->range.low};
+                                }
+                                if (range->range.high) {
+                                    double v = Eval_Const_Numeric(range->range.high);
+                                    if (v == v) info->high_bound = (Type_Bound){
+                                        .kind = BOUND_INTEGER, .int_value = (int128_t)v};
+                                    else info->high_bound = (Type_Bound){
+                                        .kind = BOUND_EXPR, .expr = range->range.high};
+                                }
+                            }
+                        }
+                    }
+                    Type_Info *acc_con = Type_New(TYPE_ACCESS, base_type->name);
+                    *acc_con = *base_type;
+                    acc_con->base_type = base_type;
+                    acc_con->access.designated_type = des_con;
+                    node->type = acc_con;
+                    return acc_con;
+                }
                 if (constraint and constraint->kind == NK_INDEX_CONSTRAINT and
                     Type_Is_Array_Like(base_type)) {
                     /* Create constrained array type */
@@ -10294,11 +10435,20 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
 
                 /* Reclassify NK_INDEX_CONSTRAINT as discriminant constraint
                  * when the base type is a discriminated record (RM 3.7.2).
+                 * Also handles access-to-record types (RM 3.7.1).
                  * Positional discriminant constraints like R1(IDENT_BOOL(TRUE))
                  * get parsed as NK_INDEX_CONSTRAINT because they lack named assocs.
                  * Convert each range item to a positional association. */
+                Type_Info *disc_target = base_type;
+                bool disc_via_access = false;
+                if (Type_Is_Access(base_type) and base_type->access.designated_type and
+                    Type_Is_Record(base_type->access.designated_type) and
+                    base_type->access.designated_type->record.has_discriminants) {
+                    disc_target = base_type->access.designated_type;
+                    disc_via_access = true;
+                }
                 if (constraint and constraint->kind == NK_INDEX_CONSTRAINT and
-                    Type_Is_Record(base_type) and base_type->record.has_discriminants) {
+                    Type_Is_Record(disc_target) and disc_target->record.has_discriminants) {
                     Syntax_Node *disc_c = Node_New(NK_DISCRIMINANT_CONSTRAINT, constraint->location);
                     disc_c->discriminant_constraint.associations.count = constraint->index_constraint.ranges.count;
                     disc_c->discriminant_constraint.associations.capacity = constraint->index_constraint.ranges.capacity;
@@ -10330,16 +10480,19 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                         }
                     }
 
-                    /* Create a constrained subtype with discriminant values stored */
-                    if (Type_Is_Record(base_type) and base_type->record.has_discriminants) {
-                        Type_Info *constrained = Type_New(TYPE_RECORD, base_type->name);
-                        *constrained = *base_type;  /* Copy all fields */
-                        constrained->base_type = base_type;
+                    /* Create a constrained subtype with discriminant values stored.
+                     * For access-to-record, create a constrained designated type
+                     * and wrap it in a new access type. (RM 3.7.1) */
+                    Type_Info *rec_base = disc_target;
+                    if (Type_Is_Record(rec_base) and rec_base->record.has_discriminants) {
+                        Type_Info *constrained = Type_New(TYPE_RECORD, rec_base->name);
+                        *constrained = *rec_base;  /* Copy all fields */
+                        constrained->base_type = rec_base;
                         constrained->record.is_constrained = true;
                         constrained->record.has_disc_constraints = true;
 
                         /* Allocate and fill constraint value + expression arrays */
-                        uint32_t dc = base_type->record.discriminant_count;
+                        uint32_t dc = rec_base->record.discriminant_count;
                         constrained->record.disc_constraint_values = Arena_Allocate(
                             dc * sizeof(int64_t));
                         constrained->record.disc_constraint_exprs = Arena_Allocate(
@@ -10405,6 +10558,15 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                             }
                         }
 
+                        if (disc_via_access) {
+                            /* Wrap constrained record in a new access type */
+                            Type_Info *acc_con = Type_New(TYPE_ACCESS, base_type->name);
+                            *acc_con = *base_type;
+                            acc_con->base_type = base_type;
+                            acc_con->access.designated_type = constrained;
+                            node->type = acc_con;
+                            return acc_con;
+                        }
                         node->type = constrained;
                         return constrained;
                     }
@@ -10986,9 +11148,14 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
                                                       loop_id->string_val.text,
                                                       loop_id->location);
                         /* Loop variable type comes from the range expression.
-                         * For X IN A..B, the range's type is the type of the bounds */
+                         * Per Ada RM 5.5(6): if the range is universal_integer,
+                         * the loop parameter is of type INTEGER. GNAT LLVM:
+                         * see Emit_Loop_Statement — uses Standard_Integer for
+                         * universal ranges. */
                         Type_Info *range_type = iter->binary.right->type;
-                        loop_var->type = range_type ? range_type : sm->type_integer;
+                        if (not range_type or range_type->kind == TYPE_UNIVERSAL_INTEGER)
+                            range_type = sm->type_integer;
+                        loop_var->type = range_type;
                         Symbol_Add(sm, loop_var);
                         loop_id->symbol = loop_var;
                     }
@@ -14309,6 +14476,16 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                 /* Freeze all types at end of declarative part (RM 13.14) */
                 Freeze_Declaration_List(&node->package_body.declarations);
                 Resolve_Statement_List(sm, &node->package_body.statements);
+                /* Resolve exception handlers (RM 11.4) — local variables and
+                 * parameters remain visible in the handler body. */
+                for (uint32_t hi = 0; hi < node->package_body.handlers.count; hi++) {
+                    Syntax_Node *handler = node->package_body.handlers.items[hi];
+                    if (handler) {
+                        for (uint32_t ei = 0; ei < handler->handler.exceptions.count; ei++)
+                            Resolve_Expression(sm, handler->handler.exceptions.items[ei]);
+                        Resolve_Statement_List(sm, &handler->handler.statements);
+                    }
+                }
                 Symbol_Manager_Pop_Scope(sm);
             }
             break;
@@ -15849,6 +16026,55 @@ static String_Slice Mangle_Qualified_Name(String_Slice parent, String_Slice name
     return Slice_Duplicate((String_Slice){buf, pos});
 }
 
+/* Find the instance counterpart for a template symbol in the current function's
+ * scope.  When generating a generic instance body, the AST references template
+ * symbols (simple names, frame_offset 0) but the function scope contains the
+ * properly-scoped instance symbols (qualified names, correct frame_offset).
+ * Returns NULL if no match is found. */
+static Symbol *Find_Instance_Local(const Code_Generator *cg, const Symbol *template_sym) {
+    if (not cg->current_instance or not cg->current_function or
+        not cg->current_function->scope)
+        return NULL;
+    /* Determine which instance (package) to match against */
+    Symbol *inst = cg->current_instance;
+    if ((inst->kind == SYMBOL_FUNCTION or inst->kind == SYMBOL_PROCEDURE) and
+        inst->parent and inst->parent->kind == SYMBOL_PACKAGE and
+        inst->parent->generic_template) {
+        inst = inst->parent;
+    }
+    Scope *scope = cg->current_function->scope;
+    for (uint32_t i = 0; i < scope->symbol_count; i++) {
+        Symbol *s = scope->symbols[i];
+        if (not s or s->kind != template_sym->kind) continue;
+        if (s->name.length != template_sym->name.length) continue;
+        if (s->parent != inst) continue;
+        bool match = true;
+        for (uint32_t j = 0; j < s->name.length; j++) {
+            char a = s->name.data[j], b = template_sym->name.data[j];
+            if (a >= 'A' and a <= 'Z') a = a - 'A' + 'a';
+            if (b >= 'A' and b <= 'Z') b = b - 'A' + 'a';
+            if (a != b) { match = false; break; }
+        }
+        if (match) return s;
+    }
+    /* Also check frame_vars (for symbols from child scopes) */
+    for (uint32_t i = 0; i < scope->frame_var_count; i++) {
+        Symbol *s = scope->frame_vars[i];
+        if (not s or s->kind != template_sym->kind) continue;
+        if (s->name.length != template_sym->name.length) continue;
+        if (s->parent != inst) continue;
+        bool match = true;
+        for (uint32_t j = 0; j < s->name.length; j++) {
+            char a = s->name.data[j], b = template_sym->name.data[j];
+            if (a >= 'A' and a <= 'Z') a = a - 'A' + 'a';
+            if (b >= 'A' and b <= 'Z') b = b - 'A' + 'a';
+            if (a != b) { match = false; break; }
+        }
+        if (match) return s;
+    }
+    return NULL;
+}
+
 /* Emit symbol name for LLVM identifier (uses unified Symbol_Mangle_Name) */
 static void Emit_Symbol_Name(Code_Generator *cg, Symbol *sym) {
     if (not sym) {
@@ -15897,6 +16123,23 @@ static void Emit_Symbol_Name(Code_Generator *cg, Symbol *sym) {
                 char c = sym->name.data[i];
                 if (c >= 'A' and c <= 'Z') c = c - 'A' + 'a';
                 fputc(c, cg->output);
+            }
+            return;
+        }
+    }
+
+    /* For generic instance bodies: local variables/constants from the template
+     * need instance-qualified names to avoid collisions between instances.
+     * Find the instance counterpart in the function scope and use its name. */
+    if (cg->current_instance and
+        (sym->kind == SYMBOL_VARIABLE or sym->kind == SYMBOL_CONSTANT or
+         sym->kind == SYMBOL_PARAMETER) and
+        not sym->is_named_number) {
+        Symbol *inst_sym = Find_Instance_Local(cg, sym);
+        if (inst_sym) {
+            String_Slice mangled = Symbol_Mangle_Name(inst_sym);
+            for (uint32_t i = 0; i < mangled.length; i++) {
+                fputc(mangled.data[i], cg->output);
             }
             return;
         }
@@ -16394,10 +16637,14 @@ static inline const char *Expression_Llvm_Type(const Code_Generator *cg, Syntax_
         return FAT_PTR_TYPE;  /* Slices always produce fat pointers */
     }
     /* Array indexing (NK_APPLY) that returns non-i64 element types.
-     * Now preserves native types for ALL element types, not just composites. */
+     * Now preserves native types for ALL element types, not just composites.
+     * Must exclude function calls where prefix happens to have array-like return type. */
     if (node and node->kind == NK_APPLY and node->apply.prefix and
         node->apply.prefix->type and
-        Type_Is_Array_Like(node->apply.prefix->type)) {
+        Type_Is_Array_Like(node->apply.prefix->type) and
+        !(node->apply.prefix->symbol and
+          (node->apply.prefix->symbol->kind == SYMBOL_FUNCTION or
+           node->apply.prefix->symbol->kind == SYMBOL_PROCEDURE))) {
         Type_Info *elem_type = node->type;
         if (Type_Is_Record(elem_type) or Type_Is_String(elem_type) or
             Type_Is_Constrained_Array(elem_type)) {
@@ -17903,7 +18150,7 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                 /* Constrained array constant - return pointer to data.
                  * Fat pointer wrapping is handled at call sites when needed. */
                 Emit(cg, "  %%t%u = getelementptr i8, ptr ", t);
-                Emit_Symbol_Ref(cg, sym);
+                Emit_Symbol_Storage(cg, sym);
                 Emit(cg, ", i64 0\n");
                 return t;
             } else if (sym->kind == SYMBOL_CONSTANT and sym->is_named_number) {
@@ -17950,7 +18197,7 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                        Type_Is_Record(ty)) {
                 /* Record constant: return pointer to storage (no load) */
                 Emit(cg, "  %%t%u = getelementptr i8, ptr ", t);
-                Emit_Symbol_Ref(cg, sym);
+                Emit_Symbol_Storage(cg, sym);
                 Emit(cg, ", i64 0  ; record constant ref\n");
             } else if (sym->kind == SYMBOL_CONSTANT and not sym->is_named_number) {
                 /* Typed constant: try compile-time evaluation first.
@@ -17975,7 +18222,7 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                 } else {
                     /* Cannot evaluate at compile time - load from storage */
                     Emit(cg, "  %%t%u = load %s, ptr ", t, type_str);
-                    Emit_Symbol_Ref(cg, sym);
+                    Emit_Symbol_Storage(cg, sym);
                     Emit(cg, "\n");
                     Temp_Set_Type(cg, t, type_str);
                 }
@@ -18321,19 +18568,49 @@ static uint32_t Generate_Composite_Address(Code_Generator *cg, Syntax_Node *node
         }
     }
 
+    /* .ALL dereference: address of P.ALL = value of P (the pointer itself) */
+    if (node->kind == NK_UNARY_OP and node->unary.op == TK_ALL and node->unary.operand) {
+        Symbol *access_sym = node->unary.operand->symbol;
+        if (access_sym) {
+            uint32_t t = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = load ptr, ptr ", t);
+            Emit_Symbol_Storage(cg, access_sym);
+            Emit(cg, "  ; .ALL address (deref access)\n");
+            return t;
+        }
+        /* For non-symbol expressions, evaluate to get the pointer */
+        return Generate_Expression(cg, node->unary.operand);
+    }
+
     if (node->kind == NK_APPLY and node->apply.arguments.count == 1) {
         /* Array indexing or slice: Arr(I) or Arr(low..high) */
         Type_Info *prefix_type = node->apply.prefix ? node->apply.prefix->type : NULL;
-        if (prefix_type and prefix_type->kind == TYPE_ARRAY) {
-            uint32_t elem_size = prefix_type->array.element_type
-                                 ? prefix_type->array.element_type->size : 1;
+        /* Handle implicit dereference: PT(I) where PT is access-to-array (RM 4.1) */
+        Type_Info *array_type = prefix_type;
+        bool access_to_array = false;
+        if (Type_Is_Access(prefix_type) and prefix_type->access.designated_type and
+            prefix_type->access.designated_type->kind == TYPE_ARRAY) {
+            array_type = prefix_type->access.designated_type;
+            access_to_array = true;
+        }
+        if (array_type and array_type->kind == TYPE_ARRAY) {
+            uint32_t elem_size = array_type->array.element_type
+                                 ? array_type->array.element_type->size : 1;
             if (elem_size == 0) elem_size = 1;
-            int128_t low = Array_Low_Bound(prefix_type);
+            int128_t low = Array_Low_Bound(array_type);
 
             /* Slice: ARR(low..high) — return address at slice start (RM 4.1.2) */
             Syntax_Node *arg0 = node->apply.arguments.items[0];
             if (arg0->kind == NK_RANGE) {
-                uint32_t base = Generate_Composite_Address(cg, node->apply.prefix);
+                uint32_t base;
+                if (access_to_array) {
+                    base = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = load ptr, ptr ", base);
+                    Emit_Symbol_Storage(cg, node->apply.prefix->symbol);
+                    Emit(cg, "  ; deref access-to-array for slice\n");
+                } else {
+                    base = Generate_Composite_Address(cg, node->apply.prefix);
+                }
                 uint32_t slice_low = Generate_Expression(cg, arg0->range.low);
                 uint32_t adj = slice_low;
                 const char *slice_idx_t = Integer_Arith_Type(cg);
@@ -18351,7 +18628,16 @@ static uint32_t Generate_Composite_Address(Code_Generator *cg, Syntax_Node *node
                 return addr;
             }
 
-            uint32_t base = Generate_Composite_Address(cg, node->apply.prefix);
+            uint32_t base;
+            if (access_to_array) {
+                /* Dereference access-to-array: load pointer then index */
+                base = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load ptr, ptr ", base);
+                Emit_Symbol_Storage(cg, node->apply.prefix->symbol);
+                Emit(cg, "  ; deref access-to-array\n");
+            } else {
+                base = Generate_Composite_Address(cg, node->apply.prefix);
+            }
             uint32_t idx = Generate_Expression(cg, arg0);
 
             /* Adjust index: byte_offset = (idx - low) * elem_size */
@@ -18522,6 +18808,39 @@ static uint32_t Convert_Real_To_Fixed(Code_Generator *cg,
 
 static uint32_t Get_Dimension_Index(Syntax_Node *arg);  /* forward decl */
 static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
+    /* User-defined operator: generate function call (RM 6.7) */
+    if (node->symbol && node->symbol->kind == SYMBOL_FUNCTION &&
+        !node->symbol->is_predefined) {
+        uint32_t left = Generate_Expression(cg, node->binary.left);
+        uint32_t right = Generate_Expression(cg, node->binary.right);
+        const char *left_llvm = Expression_Llvm_Type(cg, node->binary.left);
+        const char *right_llvm = Expression_Llvm_Type(cg, node->binary.right);
+        Type_Info *p0_type = (node->symbol->parameter_count > 0) ?
+            node->symbol->parameters[0].param_type : NULL;
+        Type_Info *p1_type = (node->symbol->parameter_count > 1) ?
+            node->symbol->parameters[1].param_type : NULL;
+        const char *p0_llvm = p0_type ? Type_To_Llvm(p0_type) : left_llvm;
+        const char *p1_llvm = p1_type ? Type_To_Llvm(p1_type) : right_llvm;
+        left = Emit_Convert(cg, left, left_llvm, p0_llvm);
+        right = Emit_Convert(cg, right, right_llvm, p1_llvm);
+        const char *ret_type = node->symbol->return_type ?
+            Type_To_Llvm(node->symbol->return_type) : "i32";
+        bool callee_is_nested = (node->symbol->parent &&
+            node->symbol->parent->kind == SYMBOL_FUNCTION);
+        uint32_t result = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = call %s @", result, ret_type);
+        Emit_Symbol_Name(cg, node->symbol);
+        Emit(cg, "(");
+        if (callee_is_nested) {
+            if (cg->current_function == node->symbol->parent)
+                Emit(cg, "ptr %%__frame_base, ");
+            else
+                Emit(cg, "ptr %%__parent_frame, ");
+        }
+        Emit(cg, "%s %%t%u, %s %%t%u)\n", p0_llvm, left, p1_llvm, right);
+        return result;
+    }
+
     /* Check if this is equality/inequality on composite types */
     Type_Info *left_type = node->binary.left ? node->binary.left->type : NULL;
 
@@ -20392,11 +20711,22 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         }
     }
 
+    /* RM 12.3(17): redirect generic recursive calls to current instance */
+    if (sym and sym->kind == SYMBOL_GENERIC and cg->current_instance)
+        sym = cg->current_instance;
+
     if (sym and (sym->kind == SYMBOL_FUNCTION or sym->kind == SYMBOL_PROCEDURE)) {
         /* Function call - generate arguments
-         * For OUT/IN OUT parameters, we need to pass the ADDRESS, not the value */
+         * For OUT/IN OUT parameters, we need to pass the ADDRESS, not the value.
+         * RM 6.2: Scalar and access types are passed by copy (copy-in/copy-out).
+         * This prevents aliasing — P(I, I, I) uses independent copies. */
         uint32_t *args = Arena_Allocate(node->apply.arguments.count * sizeof(uint32_t));
         bool *is_byref = Arena_Allocate(node->apply.arguments.count * sizeof(bool));
+        /* Track copy-back info for scalar/access OUT/IN OUT params */
+        uint32_t *copyback_addr = Arena_Allocate(node->apply.arguments.count * sizeof(uint32_t));
+        const char **copyback_llvm = Arena_Allocate(node->apply.arguments.count * sizeof(const char*));
+        memset(copyback_addr, 0, node->apply.arguments.count * sizeof(uint32_t));
+        memset(copyback_llvm, 0, node->apply.arguments.count * sizeof(const char*));
 
         for (uint32_t i = 0; i < node->apply.arguments.count; i++) {
             Syntax_Node *arg_node = node->apply.arguments.items[i];
@@ -20430,22 +20760,41 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                 /* OUT/IN OUT: pass address of variable */
                 Parameter_Mode pmode = sym->parameters[param_idx].mode;
                 Type_Info *formal_type = sym->parameters[param_idx].param_type;
+
+                /* Get the actual's address */
+                uint32_t actual_addr;
                 if (arg->kind == NK_IDENTIFIER and arg->symbol) {
-                    args[i] = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = getelementptr i8, ptr %%", args[i]);
+                    actual_addr = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = getelementptr i8, ptr %%", actual_addr);
                     Emit_Symbol_Name(cg, arg->symbol);
                     Emit(cg, ", i64 0  ; address for OUT/IN OUT\n");
-
-                    /* IN OUT: check actual value fits formal constraint before call */
-                    if (pmode == PARAM_IN_OUT and formal_type and
-                        Type_Is_Scalar(formal_type)) {
-                        const char *ld_ty = Type_To_Llvm(formal_type);
-                        uint32_t cur_val = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", cur_val, ld_ty, args[i]);
-                        Emit_Constraint_Check(cg, cur_val, formal_type, arg->type);
-                    }
                 } else {
-                    args[i] = Generate_Composite_Address(cg, arg);
+                    actual_addr = Generate_Composite_Address(cg, arg);
+                }
+
+                /* RM 6.2: scalar and access types use copy-in/copy-out */
+                bool copy_semantics = formal_type and
+                    (Type_Is_Scalar(formal_type) or Type_Is_Access(formal_type));
+
+                if (copy_semantics) {
+                    const char *ld_ty = Type_To_Llvm(formal_type);
+                    /* Alloca temp for isolated copy */
+                    uint32_t temp = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = alloca %s  ; copy-in/copy-out temp\n", temp, ld_ty);
+                    if (pmode == PARAM_IN_OUT) {
+                        /* Copy-in: load from actual, check constraint, store to temp */
+                        uint32_t val = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", val, ld_ty, actual_addr);
+                        Emit_Constraint_Check(cg, val, formal_type, arg->type);
+                        Emit(cg, "  store %s %%t%u, ptr %%t%u  ; copy-in\n", ld_ty, val, temp);
+                    }
+                    args[i] = temp;
+                    copyback_addr[i] = actual_addr;
+                    copyback_llvm[i] = ld_ty;
+                } else {
+                    /* Composite: pass actual address directly (by reference) */
+                    args[i] = actual_addr;
+                    /* IN OUT constraint check for composites */
                     if (pmode == PARAM_IN_OUT and formal_type and
                         Type_Is_Scalar(formal_type)) {
                         const char *ld_ty = Type_To_Llvm(formal_type);
@@ -20527,6 +20876,15 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
          * This is the GNAT-style optimization. */
         Symbol *call_target = sym->parent_operation ? sym->parent_operation : sym;
 
+        /* RM 12.3(17): recursive call within a generic body → call current
+         * instance.  Redirect SYMBOL_GENERIC to cg->current_instance so the
+         * emitted name, return type, and parameter list are correct.
+         * GNAT: Expand_N_Subprogram_Call maps generic to current instance. */
+        if (call_target->kind == SYMBOL_GENERIC and cg->current_instance) {
+            sym = cg->current_instance;
+            call_target = sym;
+        }
+
         /* Check if calling a nested function of current scope */
         bool callee_is_nested = call_target->parent and
             (call_target->parent->kind == SYMBOL_FUNCTION or
@@ -20575,18 +20933,28 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
 
         Emit(cg, ")\n");
 
-        /* OUT/IN OUT: check returned value fits actual's constraint (RM 6.2) */
+        /* Copy-out: for scalar/access OUT/IN OUT, copy from temp back to actual.
+         * This only runs on normal return — exceptions skip via longjmp (RM 6.2). */
         for (uint32_t i = 0; i < node->apply.arguments.count; i++) {
-            if (not is_byref[i]) continue;
-            Syntax_Node *arg_node = node->apply.arguments.items[i];
-            Syntax_Node *arg = (arg_node->kind == NK_ASSOCIATION) ?
-                arg_node->association.expression : arg_node;
-            Type_Info *actual_type = arg->type;  /* Actual variable's subtype */
-            if (not actual_type or not Type_Is_Scalar(actual_type)) continue;
-            const char *ld_ty = Type_To_Llvm(actual_type);
-            uint32_t ret_val = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; OUT/INOUT result\n", ret_val, ld_ty, args[i]);
-            Emit_Constraint_Check(cg, ret_val, actual_type, NULL);
+            if (copyback_addr[i]) {
+                /* Scalar/access copy-back */
+                uint32_t ret_val = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; copy-out\n",
+                     ret_val, copyback_llvm[i], args[i]);
+                Emit(cg, "  store %s %%t%u, ptr %%t%u  ; copy-back to actual\n",
+                     copyback_llvm[i], ret_val, copyback_addr[i]);
+            } else if (is_byref[i]) {
+                /* Composite by-ref: check constraint on returned value */
+                Syntax_Node *arg_node = node->apply.arguments.items[i];
+                Syntax_Node *arg = (arg_node->kind == NK_ASSOCIATION) ?
+                    arg_node->association.expression : arg_node;
+                Type_Info *actual_type = arg->type;
+                if (not actual_type or not Type_Is_Scalar(actual_type)) continue;
+                const char *ld_ty = Type_To_Llvm(actual_type);
+                uint32_t ret_val = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; OUT/INOUT result\n", ret_val, ld_ty, args[i]);
+                Emit_Constraint_Check(cg, ret_val, actual_type, NULL);
+            }
         }
 
         /* GNAT LLVM: return value stays at native type width.
@@ -20642,16 +21010,33 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", arg_val, arg_ptr);
         }
 
-        /* Get task object (from prefix if it's a selected component like Task_Obj.Entry) */
+        /* Get task object (from prefix if it's a selected component like Task_Obj.Entry).
+         * For access-to-task (P.E1), load the pointer to get the designated task.
+         * For .ALL dereference (P.ALL.E1), unwrap NK_UNARY_OP(TK_ALL) to get access var. */
         uint32_t task_ptr = 0;
         Syntax_Node *prefix = node->apply.prefix;
-        if (prefix->kind == NK_SELECTED and prefix->selected.prefix->symbol) {
+        if (prefix->kind == NK_SELECTED) {
             Symbol *task_sym = prefix->selected.prefix->symbol;
+            /* Handle explicit .ALL: prefix->selected.prefix is NK_UNARY_OP(TK_ALL) */
+            if (not task_sym and prefix->selected.prefix->kind == NK_UNARY_OP and
+                prefix->selected.prefix->unary.op == TK_ALL and
+                prefix->selected.prefix->unary.operand) {
+                task_sym = prefix->selected.prefix->unary.operand->symbol;
+            }
+            if (not task_sym) goto entry_no_task;
             task_ptr = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = getelementptr i8, ptr ", task_ptr);
-            Emit_Symbol_Storage(cg, task_sym);
-            Emit(cg, ", i64 0  ; task object\n");
+            if (task_sym->type and Type_Is_Access(task_sym->type)) {
+                /* Access-to-task: load the pointer value (implicit dereference) */
+                Emit(cg, "  %%t%u = load ptr, ptr ", task_ptr);
+                Emit_Symbol_Storage(cg, task_sym);
+                Emit(cg, "  ; access-to-task deref\n");
+            } else {
+                Emit(cg, "  %%t%u = getelementptr i8, ptr ", task_ptr);
+                Emit_Symbol_Storage(cg, task_sym);
+                Emit(cg, ", i64 0  ; task object\n");
+            }
         } else {
+            entry_no_task:
             task_ptr = Emit_Temp(cg);
             Emit(cg, "  %%t%u = inttoptr i64 0 to ptr  ; current task\n", task_ptr);
         }
@@ -21155,9 +21540,116 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
      * This eliminates duplicated address computation (GNAT LLVM GL_Relationship). */
     uint32_t ptr = Generate_Lvalue(cg, node);
 
-    /* Type-specific load from field address */
-    if (Type_Needs_Fat_Pointer_Load(field_type))
+    /* Discriminant-dependent array/string component: data is stored inline
+     * in the record, so we must construct a fat pointer from the field
+     * address and bounds derived from the discriminant (RM 3.7.1). */
+    if (field_type and Type_Is_Array_Like(field_type) and Type_Needs_Fat_Pointer_Load(field_type)) {
+        bool is_disc_dep = false;
+        for (uint32_t xi = 0; xi < field_type->array.index_count; xi++) {
+            if (field_type->array.indices[xi].high_bound.kind == BOUND_EXPR or
+                field_type->array.indices[xi].low_bound.kind == BOUND_EXPR) {
+                is_disc_dep = true;
+                break;
+            }
+        }
+        if (is_disc_dep) {
+            /* Build fat pointer: { ptr data, ptr bounds } */
+            const char *bnd_type = Array_Bound_Llvm_Type(field_type);
+            uint32_t bounds_alloca = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = alloca { %s, %s }\n", bounds_alloca, bnd_type, bnd_type);
+
+            /* Get record base by backing up from field pointer by byte_offset */
+            uint32_t rec_base = ptr;
+            if (byte_offset > 0) {
+                rec_base = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 -%u  ; record base\n",
+                     rec_base, ptr, byte_offset);
+            }
+
+            for (uint32_t xi = 0; xi < field_type->array.index_count; xi++) {
+                Type_Bound *lo_bnd = &field_type->array.indices[xi].low_bound;
+                Type_Bound *hi_bnd = &field_type->array.indices[xi].high_bound;
+
+                /* Emit low bound */
+                uint32_t lo_val;
+                if (lo_bnd->kind == BOUND_INTEGER) {
+                    lo_val = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = add %s 0, %lld\n",
+                         lo_val, bnd_type, (long long)lo_bnd->int_value);
+                } else if (lo_bnd->kind == BOUND_EXPR and lo_bnd->expr and
+                           lo_bnd->expr->symbol) {
+                    /* Load discriminant value for low bound */
+                    Symbol *disc = lo_bnd->expr->symbol;
+                    uint32_t d_off = 0;
+                    for (uint32_t di = 0; di < record_type->record.component_count; di++) {
+                        if (Slice_Equal_Ignore_Case(
+                                record_type->record.components[di].name, disc->name)) {
+                            d_off = record_type->record.components[di].byte_offset;
+                            break;
+                        }
+                    }
+                    uint32_t dp = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
+                         dp, rec_base, d_off);
+                    lo_val = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", lo_val, bnd_type, dp);
+                } else {
+                    lo_val = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = add %s 0, 1\n", lo_val, bnd_type);
+                }
+
+                /* Emit high bound */
+                uint32_t hi_val;
+                if (hi_bnd->kind == BOUND_INTEGER) {
+                    hi_val = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = add %s 0, %lld\n",
+                         hi_val, bnd_type, (long long)hi_bnd->int_value);
+                } else if (hi_bnd->kind == BOUND_EXPR and hi_bnd->expr and
+                           hi_bnd->expr->symbol) {
+                    Symbol *disc = hi_bnd->expr->symbol;
+                    uint32_t d_off = 0;
+                    for (uint32_t di = 0; di < record_type->record.component_count; di++) {
+                        if (Slice_Equal_Ignore_Case(
+                                record_type->record.components[di].name, disc->name)) {
+                            d_off = record_type->record.components[di].byte_offset;
+                            break;
+                        }
+                    }
+                    uint32_t dp = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
+                         dp, rec_base, d_off);
+                    hi_val = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", hi_val, bnd_type, dp);
+                } else {
+                    hi_val = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = add %s 0, 0\n", hi_val, bnd_type);
+                }
+
+                /* Store low bound */
+                uint32_t lo_ptr = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = getelementptr { %s, %s }, ptr %%t%u, i32 0, i32 0\n",
+                     lo_ptr, bnd_type, bnd_type, bounds_alloca);
+                Emit(cg, "  store %s %%t%u, ptr %%t%u\n", bnd_type, lo_val, lo_ptr);
+
+                /* Store high bound */
+                uint32_t hi_ptr = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = getelementptr { %s, %s }, ptr %%t%u, i32 0, i32 1\n",
+                     hi_ptr, bnd_type, bnd_type, bounds_alloca);
+                Emit(cg, "  store %s %%t%u, ptr %%t%u\n", bnd_type, hi_val, hi_ptr);
+            }
+
+            /* Construct fat pointer { data_ptr, bounds_ptr } */
+            uint32_t fat1 = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = insertvalue { ptr, ptr } undef, ptr %%t%u, 0\n",
+                 fat1, ptr);
+            uint32_t fat2 = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = insertvalue { ptr, ptr } %%t%u, ptr %%t%u, 1\n",
+                 fat2, fat1, bounds_alloca);
+            return fat2;
+        }
+        /* Non-disc-dependent: load fat pointer from memory */
         return Emit_Load_Fat_Pointer_From_Temp(cg, ptr, Array_Bound_Llvm_Type(field_type));
+    }
     /* Other composite types (records, constrained arrays) return ptr */
     if (Type_Is_Record(field_type) or (field_type and field_type->kind == TYPE_ARRAY))
         return ptr;
@@ -22964,6 +23456,10 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                     } else {
                         const char *src_type = Expression_Llvm_Type(cg, item);
                         val = Emit_Convert(cg, val, src_type, elem_type);
+                        /* RM 4.3.2: check element against component subtype constraint */
+                        if (elem_ti && Type_Is_Scalar(elem_ti))
+                            val = Emit_Constraint_Check_With_Type(cg, val, elem_ti,
+                                item->type, elem_type);
                         uint32_t ptr = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %u\n",
                              ptr, elem_type, base, positional_idx);
@@ -23308,6 +23804,10 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                             val = dv;
                         }
                         val = Emit_Convert(cg, val, src_type, elem_type);
+                        /* RM 4.3.2: check element against component subtype constraint */
+                        if (elem_ti && Type_Is_Scalar(elem_ti))
+                            val = Emit_Constraint_Check_With_Type(cg, val, elem_ti,
+                                item->type, elem_type);
                         Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %u\n",
                              ptr, elem_type, base, positional_idx);
                         Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, val, ptr);
@@ -23382,6 +23882,34 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
         /* Record aggregate - allocate [N x i8] and fill fields by offset */
         uint32_t base = Emit_Temp(cg);
         uint32_t record_size = agg_type->size > 0 ? agg_type->size : 8;
+
+        /* Adjust record_size for discriminant-dependent array/string components
+         * whose sizes are not included in the type's static size (RM 3.7.1). */
+        for (uint32_t ci = 0; ci < agg_type->record.component_count; ci++) {
+            Component_Info *comp_ci = &agg_type->record.components[ci];
+            Type_Info *cti = comp_ci->component_type;
+            if (not cti or not Type_Is_Array_Like(cti)) continue;
+            for (uint32_t xi = 0; xi < cti->array.index_count; xi++) {
+                Type_Bound *lo = &cti->array.indices[xi].low_bound;
+                Type_Bound *hi = &cti->array.indices[xi].high_bound;
+                if (hi->kind == BOUND_EXPR and hi->expr and hi->expr->symbol) {
+                    Symbol *disc = hi->expr->symbol;
+                    Type_Info *disc_ty = disc->type;
+                    if (disc_ty and disc_ty->high_bound.kind == BOUND_INTEGER) {
+                        int64_t max_hi = disc_ty->high_bound.int_value;
+                        int64_t lo_val = (lo->kind == BOUND_INTEGER) ? lo->int_value : 0;
+                        int64_t max_extent = max_hi - lo_val + 1;
+                        if (max_extent < 0) max_extent = 0;
+                        uint32_t elem_sz = (cti->array.element_type and
+                            cti->array.element_type->size > 0) ?
+                            cti->array.element_type->size : 1;
+                        uint32_t needed = comp_ci->byte_offset +
+                            (uint32_t)(max_extent * elem_sz);
+                        if (needed > record_size) record_size = needed;
+                    }
+                }
+            }
+        }
 
         Emit(cg, "  %%t%u = alloca [%u x i8]  ; record aggregate\n", base, record_size);
 
@@ -23465,7 +23993,27 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                                 const char *src_type = Expression_Llvm_Type(cg, item->association.expression);
                                 const char *comp_type = Type_To_Llvm(comp_ti);
                                 bool src_is_ptr = (src_type and strcmp(src_type, "ptr") == 0);
-                                if (comp_ti and src_is_ptr and
+                                bool src_is_fat = (src_type and strstr(src_type, "{ ptr, ptr }") != NULL);
+                                if (comp_ti and src_is_fat and
+                                    (Type_Is_String(comp_ti) or Type_Is_Array_Like(comp_ti))) {
+                                    const char *bnd_type = Array_Bound_Llvm_Type(comp_ti);
+                                    uint32_t data_ptr = Emit_Fat_Pointer_Data(cg, val, bnd_type);
+                                    uint32_t fat_lo = Emit_Fat_Pointer_Low(cg, val, bnd_type);
+                                    uint32_t fat_hi = Emit_Fat_Pointer_High(cg, val, bnd_type);
+                                    uint32_t len = Emit_Length_From_Bounds(cg, fat_lo, fat_hi, bnd_type);
+                                    uint32_t elem_sz = (comp_ti->array.element_type &&
+                                        comp_ti->array.element_type->size > 0) ?
+                                        comp_ti->array.element_type->size : 1;
+                                    uint32_t byte_len = len;
+                                    if (elem_sz > 1) {
+                                        byte_len = Emit_Temp(cg);
+                                        Emit(cg, "  %%t%u = mul %s %%t%u, %u\n",
+                                             byte_len, bnd_type, len, elem_sz);
+                                    }
+                                    uint32_t byte_len_64 = Emit_Extend_To_I64(cg, byte_len, bnd_type);
+                                    Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
+                                         ptr, data_ptr, byte_len_64);
+                                } else if (comp_ti and src_is_ptr and
                                     (Type_Is_Record(comp_ti) or Type_Is_Constrained_Array(comp_ti))) {
                                     /* Composite component: use memcpy */
                                     uint32_t comp_size = comp_ti->size > 0 ? comp_ti->size : 8;
@@ -23506,7 +24054,29 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         const char *src_type = Expression_Llvm_Type(cg, item);
                         const char *comp_type = Type_To_Llvm(comp_ti);
                         bool src_is_ptr = (src_type and strcmp(src_type, "ptr") == 0);
-                        if (comp_ti and src_is_ptr and
+                        bool src_is_fat = (src_type and strstr(src_type, "{ ptr, ptr }") != NULL);
+                        if (comp_ti and src_is_fat and
+                            (Type_Is_String(comp_ti) or Type_Is_Array_Like(comp_ti))) {
+                            /* Fat pointer source → constrained string/array component:
+                             * extract data pointer and memcpy the data */
+                            const char *bnd_type = Array_Bound_Llvm_Type(comp_ti);
+                            uint32_t data_ptr = Emit_Fat_Pointer_Data(cg, val, bnd_type);
+                            uint32_t fat_lo = Emit_Fat_Pointer_Low(cg, val, bnd_type);
+                            uint32_t fat_hi = Emit_Fat_Pointer_High(cg, val, bnd_type);
+                            uint32_t len = Emit_Length_From_Bounds(cg, fat_lo, fat_hi, bnd_type);
+                            uint32_t elem_sz = (comp_ti->array.element_type &&
+                                comp_ti->array.element_type->size > 0) ?
+                                comp_ti->array.element_type->size : 1;
+                            uint32_t byte_len = len;
+                            if (elem_sz > 1) {
+                                byte_len = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = mul %s %%t%u, %u\n",
+                                     byte_len, bnd_type, len, elem_sz);
+                            }
+                            uint32_t byte_len_64 = Emit_Extend_To_I64(cg, byte_len, bnd_type);
+                            Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
+                                 ptr, data_ptr, byte_len_64);
+                        } else if (comp_ti and src_is_ptr and
                             (Type_Is_Record(comp_ti) or Type_Is_Constrained_Array(comp_ti))) {
                             /* Composite component: use memcpy */
                             uint32_t comp_size = comp_ti->size > 0 ? comp_ti->size : 8;
@@ -23603,6 +24173,8 @@ static uint32_t Generate_Qualified(Code_Generator *cg, Syntax_Node *node) {
      * Callers use Emit_Convert at use sites. */
     return result;
 }
+
+static void Emit_Task_Function_Name(Code_Generator *cg, Symbol *task_sym, String_Slice fallback_name);
 
 static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
     /* new T or new T'(value) */
@@ -23914,6 +24486,21 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "  store %s %%t%u, ptr %%t%u\n", store_type, val, comp_ptr);
             }
         }
+    }
+
+    /* RM 9.2: Allocating a task type via NEW activates the task immediately.
+     * The allocated memory stores the thread handle (ptr-sized). */
+    if (designated and Type_Is_Task(designated)) {
+        uint32_t handle_tmp = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = call ptr @__ada_task_start(ptr @", handle_tmp);
+        Emit_Task_Function_Name(cg, designated->defining_symbol, designated->name);
+        Emit(cg, ", ");
+        if (cg->current_nesting_level > 0) {
+            Emit(cg, "ptr %%__frame_base)\n");
+        } else {
+            Emit(cg, "ptr null)\n");
+        }
+        Emit(cg, "  store ptr %%t%u, ptr %%t%u  ; store task handle\n", handle_tmp, t);
     }
 
     return t;
@@ -24706,6 +25293,92 @@ static void Generate_Return_Statement(Code_Generator *cg, Syntax_Node *node) {
         if (ret_type and Type_Is_Scalar(ret_type)) {
             Emit_Constraint_Check_With_Type(cg, value, ret_type, expr->type, type_str);
         }
+        /* RM 6.5(3): For constrained access subtypes, check that the
+         * designated object's discriminant/bounds match the constraint.
+         * GNAT LLVM: Apply_Type_Conversion with access target calls
+         * Apply_Discriminant_Check on the designated object. */
+        if (ret_type and Type_Is_Access(ret_type) and ret_type->access.designated_type) {
+            Type_Info *des = ret_type->access.designated_type;
+            if (des->kind == TYPE_RECORD and des->record.has_disc_constraints and
+                des->record.discriminant_count > 0 and des->record.disc_constraint_values) {
+                /* Non-null check first, then discriminant check */
+                uint32_t is_null = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp eq ptr %%t%u, null\n", is_null, value);
+                uint32_t skip_lbl = Emit_Label(cg);
+                uint32_t chk_lbl  = Emit_Label(cg);
+                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                     is_null, skip_lbl, chk_lbl);
+                Emit_Label_Here(cg, chk_lbl);
+                /* Load discriminant from designated object (offset 0, first component) */
+                Component_Info *dc = &des->record.components[0];
+                const char *disc_ty = dc->component_type ? Type_To_Llvm(dc->component_type)
+                                                         : Integer_Arith_Type(cg);
+                uint32_t dp = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
+                     dp, value, dc->byte_offset);
+                uint32_t dv = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", dv, disc_ty, dp);
+                const char *iat = Integer_Arith_Type(cg);
+                dv = Emit_Convert(cg, dv, disc_ty, iat);
+                uint32_t ev = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add %s 0, %lld\n", ev, iat,
+                     (long long)des->record.disc_constraint_values[0]);
+                Emit_Discriminant_Check(cg, dv, ev, iat, des);
+                Emit(cg, "  br label %%L%u\n", skip_lbl);
+                Emit_Label_Here(cg, skip_lbl);
+                cg->block_terminated = false;
+            }
+            /* Array-constrained access: check bounds of designated array */
+            if (Type_Is_Array_Like(des) and des->array.is_constrained and
+                des->array.index_count > 0) {
+                uint32_t is_null = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp eq ptr %%t%u, null\n", is_null, value);
+                uint32_t skip_lbl = Emit_Label(cg);
+                uint32_t chk_lbl  = Emit_Label(cg);
+                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                     is_null, skip_lbl, chk_lbl);
+                Emit_Label_Here(cg, chk_lbl);
+                /* Fat pointer access: bounds are in the fat ptr, not the object.
+                 * For heap arrays the bounds are stored before the data. Load them
+                 * and compare against the constrained subtype's bounds. */
+                const char *bt = Array_Bound_Llvm_Type(des);
+                int128_t exp_lo = Array_Low_Bound(des);
+                int128_t exp_hi = (des->array.index_count > 0 and des->array.indices)
+                    ? Type_Bound_Value(des->array.indices[0].high_bound) : 0;
+                /* Load actual bounds: stored at [-16] and [-8] before data */
+                uint32_t blo_p = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 -2\n", blo_p, bt, value);
+                uint32_t blo = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", blo, bt, blo_p);
+                uint32_t bhi_p = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 -1\n", bhi_p, bt, value);
+                uint32_t bhi = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", bhi, bt, bhi_p);
+                /* Compare lo and hi */
+                const char *iat = Integer_Arith_Type(cg);
+                blo = Emit_Convert(cg, blo, bt, iat);
+                bhi = Emit_Convert(cg, bhi, bt, iat);
+                uint32_t elo = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add %s 0, %s\n", elo, iat, I128_Decimal(exp_lo));
+                uint32_t ehi = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add %s 0, %s\n", ehi, iat, I128_Decimal(exp_hi));
+                uint32_t clo = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n", clo, iat, blo, elo);
+                uint32_t chi = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n", chi, iat, bhi, ehi);
+                uint32_t bad = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = or i1 %%t%u, %%t%u\n", bad, clo, chi);
+                uint32_t raise_lbl = Emit_Label(cg);
+                uint32_t ok_lbl = Emit_Label(cg);
+                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", bad, raise_lbl, ok_lbl);
+                Emit_Label_Here(cg, raise_lbl);
+                Emit_Raise_Constraint_Error(cg, "access array bounds check");
+                Emit_Label_Here(cg, ok_lbl);
+                Emit(cg, "  br label %%L%u\n", skip_lbl);
+                Emit_Label_Here(cg, skip_lbl);
+                cg->block_terminated = false;
+            }
+        }
         Emit(cg, "  ret %s %%t%u\n", type_str, value);
         cg->block_terminated = true;
     } else if (cg->in_task_body) {
@@ -24938,7 +25611,10 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
             high_val = low_val;
         }
     } else if (range and range->kind == NK_SUBTYPE_INDICATION) {
-        /* Subtype indication with constraint: SUBTYPE_NAME RANGE low..high */
+        /* Subtype indication with constraint: SUBTYPE_NAME RANGE low..high
+         * Per Ada RM 3.6.1(4)/5.5(9): the bounds of the discrete_range
+         * must belong to the subtype — CONSTRAINT_ERROR is raised otherwise.
+         * GNAT LLVM: Apply_Range_Check on both low and high bounds. */
         Syntax_Node *constraint = range->subtype_ind.constraint;
         if (constraint and constraint->kind == NK_RANGE_CONSTRAINT and
             constraint->range_constraint.range) {
@@ -24948,6 +25624,26 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
                 high_val = Generate_Expression(cg, actual_range->range.high);
                 low_val = Emit_Coerce(cg, low_val, loop_type);
                 high_val = Emit_Coerce(cg, high_val, loop_type);
+
+                /* RM 3.2.2(11): check range bounds against subtype ST.
+                 * Null ranges (low > high) are always compatible.
+                 * GNAT LLVM: Apply_Range_Check on both bounds. */
+                Type_Info *st = range->subtype_ind.subtype_mark
+                              ? range->subtype_ind.subtype_mark->type : NULL;
+                if (st) {
+                    uint32_t is_null = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = icmp sgt %s %%t%u, %%t%u\n",
+                         is_null, loop_type, low_val, high_val);
+                    uint32_t chk_lbl = Emit_Label(cg);
+                    uint32_t skip_lbl = Emit_Label(cg);
+                    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                         is_null, skip_lbl, chk_lbl);
+                    Emit_Label_Here(cg, chk_lbl);
+                    Emit_Constraint_Check(cg, low_val, st, NULL);
+                    Emit_Constraint_Check(cg, high_val, st, NULL);
+                    Emit(cg, "  br label %%L%u\n", skip_lbl);
+                    Emit_Label_Here(cg, skip_lbl);
+                }
             } else {
                 /* Range might be a name like T'RANGE */
                 low_val = Generate_Expression(cg, actual_range);
@@ -25280,10 +25976,22 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                     uint32_t param_block = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = inttoptr i64 0 to ptr  ; no parameters\n", param_block);
 
-                    /* Get task object from prefix */
+                    /* Get task object from prefix.
+                     * For access-to-task, load the pointer (implicit dereference).
+                     * For .ALL dereference (P.ALL.E1), unwrap to get the access var. */
                     uint32_t task_ptr = Emit_Temp(cg);
-                    Symbol *task_sym = target->selected.prefix->symbol;
-                    if (task_sym) {
+                    Syntax_Node *pfx = target->selected.prefix;
+                    Symbol *task_sym = pfx->symbol;
+                    /* Handle explicit .ALL: prefix is NK_UNARY_OP(TK_ALL) */
+                    if (not task_sym and pfx->kind == NK_UNARY_OP and
+                        pfx->unary.op == TK_ALL and pfx->unary.operand) {
+                        task_sym = pfx->unary.operand->symbol;
+                    }
+                    if (task_sym and task_sym->type and Type_Is_Access(task_sym->type)) {
+                        Emit(cg, "  %%t%u = load ptr, ptr ", task_ptr);
+                        Emit_Symbol_Storage(cg, task_sym);
+                        Emit(cg, "  ; access-to-task deref\n");
+                    } else if (task_sym) {
                         Emit(cg, "  %%t%u = getelementptr i8, ptr ", task_ptr);
                         Emit_Symbol_Storage(cg, task_sym);
                         Emit(cg, ", i64 0  ; task object\n");
@@ -25329,6 +26037,164 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                         (proc->parent->kind == SYMBOL_FUNCTION or
                          proc->parent->kind == SYMBOL_PROCEDURE);
 
+                    /* Pre-compute default arguments BEFORE building the call
+                     * instruction, so complex expressions (record/array aggregates)
+                     * don't interleave their IR with the call text. */
+                    #define MAX_DEFAULT_ARGS 32
+                    uint32_t default_vals[MAX_DEFAULT_ARGS];
+                    const char *default_types[MAX_DEFAULT_ARGS];
+                    uint32_t n_defaults = 0;
+                    if (original_sym->parameter_count > 0) {
+                        for (uint32_t i = 0; i < original_sym->parameter_count and
+                             i < MAX_DEFAULT_ARGS; i++) {
+                            if (original_sym->parameters[i].default_value) {
+                                uint32_t val = Generate_Expression(cg,
+                                    original_sym->parameters[i].default_value);
+                                Type_Info *pt = original_sym->parameters[i].param_type;
+                                bool is_composite = pt && (pt->kind == TYPE_RECORD ||
+                                    pt->kind == TYPE_ARRAY || pt->kind == TYPE_STRING ||
+                                    pt->kind == TYPE_TASK);
+                                bool is_access = pt && (pt->kind == TYPE_ACCESS);
+                                if (is_composite) {
+                                    /* Composite default is already a ptr (alloca) */
+                                    default_vals[i] = val;
+                                    default_types[i] = "ptr";
+                                    /* Array constraint check: compare aggregate element
+                                     * count per dimension against the formal parameter
+                                     * type's runtime bounds (RM 6.4.1). */
+                                    Syntax_Node *def_expr = original_sym->parameters[i].default_value;
+                                    if (pt &&
+                                        (pt->kind == TYPE_ARRAY || pt->kind == TYPE_STRING) &&
+                                        pt->array.index_count > 0 && pt->array.indices &&
+                                        def_expr->kind == NK_AGGREGATE) {
+                                        const char *iat = Integer_Arith_Type(cg);
+                                        /* Count elements per dimension from aggregate literal */
+                                        uint32_t agg_dim_lengths[8] = {0};
+                                        uint32_t agg_ndims = 0;
+                                        Syntax_Node *cur_agg = def_expr;
+                                        for (uint32_t d = 0; d < pt->array.index_count && d < 8; d++) {
+                                            if (!cur_agg || cur_agg->kind != NK_AGGREGATE) break;
+                                            agg_dim_lengths[d] = cur_agg->aggregate.items.count;
+                                            agg_ndims = d + 1;
+                                            if (cur_agg->aggregate.items.count > 0) {
+                                                Syntax_Node *first = cur_agg->aggregate.items.items[0];
+                                                if (first && first->kind == NK_ASSOCIATION)
+                                                    first = first->association.expression;
+                                                cur_agg = first;
+                                            } else {
+                                                cur_agg = NULL;
+                                            }
+                                        }
+                                        for (uint32_t d = 0; d < agg_ndims && d < pt->array.index_count; d++) {
+                                            Index_Info *fi = &pt->array.indices[d];
+                                            uint32_t f_lo = Emit_Bound_Value(cg, &fi->low_bound);
+                                            uint32_t f_hi = Emit_Bound_Value(cg, &fi->high_bound);
+                                            if (f_lo && f_hi) {
+                                                uint32_t fl = Emit_Temp(cg);
+                                                Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", fl, iat,
+                                                     Emit_Convert(cg, f_hi, iat, iat),
+                                                     Emit_Convert(cg, f_lo, iat, iat));
+                                                uint32_t fl1 = Emit_Temp(cg);
+                                                Emit(cg, "  %%t%u = add %s %%t%u, 1\n", fl1, iat, fl);
+                                                uint32_t al = Emit_Temp(cg);
+                                                Emit(cg, "  %%t%u = add %s 0, %u  ; agg dim %u count\n",
+                                                     al, iat, agg_dim_lengths[d], d);
+                                                Emit_Length_Check(cg, al, fl1, iat, pt);
+                                            }
+                                        }
+                                    }
+                                    Type_Info *def_type = original_sym->parameters[i].default_value->type;
+                                    /* Record discriminant constraint check (RM 3.7.2) */
+                                    if (pt && pt->kind == TYPE_RECORD &&
+                                        pt->record.has_disc_constraints &&
+                                        pt->record.disc_constraint_values &&
+                                        def_type && def_type->kind == TYPE_RECORD) {
+                                        for (uint32_t d = 0; d < pt->record.discriminant_count; d++) {
+                                            Component_Info *dc = &pt->record.components[d];
+                                            if (!dc->component_type) continue;
+                                            const char *dt = Type_To_Llvm(dc->component_type);
+                                            /* Load discriminant from aggregate */
+                                            uint32_t dp = Emit_Temp(cg);
+                                            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
+                                                 dp, val, dc->byte_offset);
+                                            uint32_t dv = Emit_Temp(cg);
+                                            Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", dv, dt, dp);
+                                            /* Get constraint value */
+                                            uint32_t cv;
+                                            if (pt->record.disc_constraint_exprs &&
+                                                pt->record.disc_constraint_exprs[d]) {
+                                                cv = Generate_Expression(cg,
+                                                    pt->record.disc_constraint_exprs[d]);
+                                                cv = Emit_Convert(cg, cv,
+                                                    Integer_Arith_Type(cg), dt);
+                                            } else {
+                                                cv = Emit_Temp(cg);
+                                                Emit(cg, "  %%t%u = add %s 0, %lld\n", cv, dt,
+                                                     (long long)pt->record.disc_constraint_values[d]);
+                                            }
+                                            /* Compare */
+                                            uint32_t cmp = Emit_Temp(cg);
+                                            Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n",
+                                                 cmp, dt, dv, cv);
+                                            uint32_t rl = cg->label_id++;
+                                            uint32_t cl = cg->label_id++;
+                                            Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                                                 cmp, rl, cl);
+                                            Emit_Label_Here(cg, rl);
+                                            Emit_Raise_Constraint_Error(cg, "discriminant check");
+                                            Emit_Label_Here(cg, cl);
+                                            cg->block_terminated = false;
+                                        }
+                                    }
+                                    /* Record component constraint check (RM 3.3.2) */
+                                    if (pt && pt->kind == TYPE_RECORD && def_type &&
+                                        def_type->kind == TYPE_RECORD) {
+                                        for (uint32_t ci = 0; ci < pt->record.component_count; ci++) {
+                                            Component_Info *comp = &pt->record.components[ci];
+                                            if (comp->is_discriminant || !comp->component_type) continue;
+                                            Type_Info *ct = comp->component_type;
+                                            if (!Type_Is_Scalar(ct)) continue;
+                                            bool has_bounds = (ct->low_bound.kind == BOUND_INTEGER ||
+                                                ct->low_bound.kind == BOUND_FLOAT ||
+                                                ct->low_bound.kind == BOUND_EXPR) &&
+                                                (ct->high_bound.kind == BOUND_INTEGER ||
+                                                ct->high_bound.kind == BOUND_FLOAT ||
+                                                ct->high_bound.kind == BOUND_EXPR);
+                                            if (!has_bounds) continue;
+                                            const char *ct_llvm = Type_To_Llvm(ct);
+                                            /* Load component value from aggregate */
+                                            uint32_t cp = Emit_Temp(cg);
+                                            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
+                                                 cp, val, comp->byte_offset);
+                                            uint32_t cv2 = Emit_Temp(cg);
+                                            Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", cv2, ct_llvm, cp);
+                                            Emit_Constraint_Check_With_Type(cg, cv2, ct, NULL, ct_llvm);
+                                        }
+                                    }
+                                } else if (is_access) {
+                                    /* Access type default is already a ptr */
+                                    default_vals[i] = val;
+                                    default_types[i] = "ptr";
+                                } else {
+                                    const char *param_type = pt ?
+                                        Type_To_Llvm(pt) : Integer_Arith_Type(cg);
+                                    val = Emit_Convert(cg, val, Integer_Arith_Type(cg), param_type);
+                                    /* Scalar constraint check (RM 6.4.1) */
+                                    val = Emit_Constraint_Check_With_Type(cg, val, pt,
+                                        original_sym->parameters[i].default_value->type,
+                                        param_type);
+                                    default_vals[i] = val;
+                                    default_types[i] = param_type;
+                                }
+                            } else {
+                                default_vals[i] = 0;
+                                default_types[i] = Integer_Arith_Type(cg);
+                            }
+                        }
+                        n_defaults = original_sym->parameter_count < MAX_DEFAULT_ARGS
+                            ? original_sym->parameter_count : MAX_DEFAULT_ARGS;
+                    }
+
                     if (proc->return_type) {
                         Emit(cg, "  call %s @", Type_To_Llvm_Sig(proc->return_type));
                     } else {
@@ -25350,21 +26216,13 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                         }
                     }
 
-                    /* Generate default arguments from original symbol (for renames) */
-                    if (original_sym->parameter_count > 0) {
-                        for (uint32_t i = 0; i < original_sym->parameter_count; i++) {
-                            if (frame_emitted or i > 0) Emit(cg, ", ");
-                            if (original_sym->parameters[i].default_value) {
-                                uint32_t val = Generate_Expression(cg,
-                                    original_sym->parameters[i].default_value);
-                                const char *param_type = original_sym->parameters[i].param_type ?
-                                    Type_To_Llvm(original_sym->parameters[i].param_type) : Integer_Arith_Type(cg);
-                                val = Emit_Convert(cg, val, Integer_Arith_Type(cg), param_type);
-                                Emit(cg, "%s %%t%u", param_type, val);
-                            } else {
-                                /* No default - emit zero (shouldn't happen) */
-                                Emit(cg, "%s 0", Integer_Arith_Type(cg));
-                            }
+                    /* Emit pre-computed default arguments */
+                    for (uint32_t i = 0; i < n_defaults; i++) {
+                        if (frame_emitted or i > 0) Emit(cg, ", ");
+                        if (default_vals[i]) {
+                            Emit(cg, "%s %%t%u", default_types[i], default_vals[i]);
+                        } else {
+                            Emit(cg, "%s 0", default_types[i]);
                         }
                     }
                     Emit(cg, ")\n");
@@ -25879,8 +26737,6 @@ static void Generate_Declaration_List(Code_Generator *cg, Node_List *list) {
     }
 }
 
-static void Emit_Task_Function_Name(Code_Generator *cg, Symbol *task_sym, String_Slice fallback_name);
-
 static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
     /* cg->current_nesting_level is repurposed: 1 = has nested functions, use frame */
     bool use_frame = cg->current_nesting_level > 0;
@@ -26029,10 +26885,38 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
 
         /* Local variable allocation */
         if (use_frame) {
+            /* Skip symbols that aren't actually in the current function's scope.
+             * This happens with package spec private part declarations: the AST
+             * nodes have orphaned symbol references (parent==NULL, frame_offset==0)
+             * while the proper symbols are already allocated in the frame under
+             * their package-qualified names. Emitting these would create duplicate
+             * or conflicting IR definitions. */
+            if (cg->current_function and cg->current_function->scope and
+                not sym->parent and sym->frame_offset == 0) {
+                bool found_in_scope = false;
+                Scope *scope = cg->current_function->scope;
+                for (uint32_t j = 0; j < scope->symbol_count; j++) {
+                    if (scope->symbols[j] == sym) { found_in_scope = true; break; }
+                }
+                if (not found_in_scope) {
+                    for (uint32_t j = 0; j < scope->frame_var_count; j++) {
+                        if (scope->frame_vars[j] == sym) { found_in_scope = true; break; }
+                    }
+                }
+                if (not found_in_scope) continue;
+            }
+
+            /* In generic instance bodies, find the instance symbol which has
+             * the correct frame_offset (template symbols have offset 0). */
+            int64_t offset = sym->frame_offset;
+            if (cg->current_instance) {
+                Symbol *inst_sym = Find_Instance_Local(cg, sym);
+                if (inst_sym) offset = inst_sym->frame_offset;
+            }
             Emit(cg, "  %%");
             Emit_Symbol_Name(cg, sym);
             Emit(cg, " = getelementptr i8, ptr %%__frame_base, i64 %lld\n",
-                 (long long)sym->frame_offset);
+                 (long long)offset);
         } else if (sym->needs_fat_ptr_storage or
                    (is_any_array and Type_Has_Dynamic_Bounds(ty))) {
             /* Dynamic-bound arrays need fat pointer storage ({ ptr, ptr }).
@@ -26669,6 +27553,41 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 sym->is_disc_constrained = true;
             }
 
+            /* Initialize discriminant constraints of record subcomponents (RM 3.7.2).
+             * E.g., for TYPE R2(D2: POSITIVE) IS RECORD C : R1(2); END RECORD;
+             * we must also initialize C.D1 = 2 at the appropriate offset. */
+            for (uint32_t ci = ty->record.discriminant_count;
+                 ci < ty->record.component_count; ci++) {
+                Component_Info *comp = &ty->record.components[ci];
+                Type_Info *ct = comp->component_type;
+                if (not ct or ct->kind != TYPE_RECORD) continue;
+                if (not ct->record.has_disc_constraints or
+                    not ct->record.disc_constraint_values) continue;
+                for (uint32_t di = 0; di < ct->record.discriminant_count; di++) {
+                    Component_Info *dc = &ct->record.components[di];
+                    uint32_t dp = Emit_Temp(cg);
+                    uint32_t abs_offset = comp->byte_offset + dc->byte_offset;
+                    Emit(cg, "  %%t%u = getelementptr i8, ptr %%", dp);
+                    Emit_Symbol_Name(cg, sym);
+                    Emit(cg, ", i64 %u  ; subcomponent disc %.*s.%.*s init\n",
+                         abs_offset,
+                         (int)comp->name.length, comp->name.data,
+                         (int)dc->name.length, dc->name.data);
+                    const char *dt = Type_To_Llvm(dc->component_type);
+                    if (ct->record.disc_constraint_exprs and
+                        ct->record.disc_constraint_exprs[di]) {
+                        uint32_t val = Generate_Expression(
+                            cg, ct->record.disc_constraint_exprs[di]);
+                        val = Emit_Coerce_Default_Int(cg, val, dt);
+                        Emit(cg, "  store %s %%t%u, ptr %%t%u  ; subcomp disc runtime init\n",
+                             dt, val, dp);
+                    } else {
+                        Emit(cg, "  store %s %lld, ptr %%t%u\n", dt,
+                             (long long)ct->record.disc_constraint_values[di], dp);
+                    }
+                }
+            }
+
             /* Apply component defaults (RM 3.7) - includes discriminant defaults
              * for mutable records (all discriminants have defaults, no explicit constraint) */
             bool has_any_default = false;
@@ -26689,6 +27608,12 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     /* Generate value for default expression */
                     uint32_t val = Generate_Expression(cg, comp->default_expr);
                     if (val == 0) continue;  /* Expression generation failed */
+
+                    /* Check default value against component subtype constraint (RM 3.3.2).
+                     * E.g., A : INTEGER RANGE 1..10 := IDENT_INT(0) must raise
+                     * CONSTRAINT_ERROR because 0 is not in 1..10. */
+                    Emit_Constraint_Check(cg, val, comp->component_type,
+                                          comp->default_expr->type);
 
                     /* Get pointer to component within record */
                     uint32_t comp_ptr = Emit_Temp(cg);
@@ -26911,9 +27836,11 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
          * mangled name appears from both symbols[] and frame_vars[]. */
         Scope *parent_scope = parent_owner->scope;
 
-        /* Track emitted frame alias names to prevent duplicates */
+        /* Track emitted frame alias unique_ids to prevent duplicates.
+         * Note: cannot store String_Slice from Symbol_Mangle_Name because
+         * it returns pointers into a rotating static buffer (4 slots). */
         #define MAX_FRAME_ALIASES 512
-        String_Slice emitted_names[MAX_FRAME_ALIASES];
+        uint32_t emitted_ids[MAX_FRAME_ALIASES];
         uint32_t emitted_count = 0;
 
         for (uint32_t i = 0; i < parent_scope->symbol_count; i++) {
@@ -26921,19 +27848,17 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
             if (var and (var->kind == SYMBOL_VARIABLE or var->kind == SYMBOL_PARAMETER or
                         var->kind == SYMBOL_DISCRIMINANT or
                         (var->kind == SYMBOL_CONSTANT and not var->is_named_number))) {
-                String_Slice mname = Symbol_Mangle_Name(var);
-                /* Check for duplicate mangled name even within symbols[] */
+                /* Check for duplicate unique_id */
                 bool already_emitted = false;
                 for (uint32_t j = 0; j < emitted_count; j++) {
-                    if (mname.length == emitted_names[j].length and
-                        memcmp(mname.data, emitted_names[j].data, mname.length) == 0) {
+                    if (var->unique_id == emitted_ids[j]) {
                         already_emitted = true;
                         break;
                     }
                 }
                 if (already_emitted) continue;
                 if (emitted_count < MAX_FRAME_ALIASES) {
-                    emitted_names[emitted_count++] = mname;
+                    emitted_ids[emitted_count++] = var->unique_id;
                 }
                 Emit(cg, "  %%__frame.");
                 Emit_Symbol_Name(cg, var);
@@ -26947,18 +27872,16 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
         for (uint32_t i = 0; i < parent_scope->frame_var_count; i++) {
             Symbol *var = parent_scope->frame_vars[i];
             if (not var) continue;
-            String_Slice mname = Symbol_Mangle_Name(var);
             bool already_emitted = false;
             for (uint32_t j = 0; j < emitted_count; j++) {
-                if (mname.length == emitted_names[j].length and
-                    memcmp(mname.data, emitted_names[j].data, mname.length) == 0) {
+                if (var->unique_id == emitted_ids[j]) {
                     already_emitted = true;
                     break;
                 }
             }
             if (not already_emitted) {
                 if (emitted_count < MAX_FRAME_ALIASES) {
-                    emitted_names[emitted_count++] = mname;
+                    emitted_ids[emitted_count++] = var->unique_id;
                 }
                 Emit(cg, "  %%__frame.");
                 Emit_Symbol_Name(cg, var);
@@ -26978,8 +27901,24 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
             const char *type_str = Type_To_Llvm_Sig(sym->parameters[i].param_type);
             Parameter_Mode mode = sym->parameters[i].mode;
 
-            if (Param_Is_By_Reference(mode)) {
-                /* OUT/IN OUT: %p is already a pointer to caller's variable
+            /* Check if this IN parameter is a constrained composite type
+             * (array/record/string) passed as a raw pointer. These need by-ref
+             * treatment since the caller passes a pointer to the data, not the
+             * data itself. Unconstrained arrays/strings use fat pointers
+             * {ptr, ptr} and should be stored in alloca like scalars. */
+            Type_Info *pt = sym->parameters[i].param_type;
+            bool is_composite_in = false;
+            if (mode == PARAM_IN and pt) {
+                if (pt->kind == TYPE_RECORD or pt->kind == TYPE_TASK) {
+                    is_composite_in = true;
+                } else if ((pt->kind == TYPE_ARRAY or pt->kind == TYPE_STRING) and
+                           pt->array.is_constrained and not Type_Has_Dynamic_Bounds(pt)) {
+                    is_composite_in = true;
+                }
+            }
+
+            if (Param_Is_By_Reference(mode) or is_composite_in) {
+                /* OUT/IN OUT or IN composite: %p is already a pointer to data.
                  * Create an alias so the parameter name points to caller's storage */
                 Emit(cg, "  %%");
                 Emit_Symbol_Name(cg, param_sym);
@@ -27284,17 +28223,107 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
         }
     }
 
-    /* Generate the body statements with type substitution */
+    /* Generate the body statements with type substitution.
+     * Per Ada RM 11.4, exception handlers in the generic template body
+     * apply to each instantiation.  GNAT LLVM: Emit_Subprogram_Body
+     * handles exception parts identically for generic instances. */
     Syntax_Node *body = template_body;
 
     /* Generate local declarations */
     Generate_Declaration_List(cg, &body->subprogram_body.declarations);
 
-    /* Generate statements from template body */
-    for (uint32_t i = 0; i < body->subprogram_body.statements.count; i++) {
-        Syntax_Node *stmt = body->subprogram_body.statements.items[i];
-        if (stmt) {
-            Generate_Statement(cg, stmt);
+    /* Check for exception handlers in the template body */
+    bool has_exc = body->subprogram_body.handlers.count > 0;
+
+    if (has_exc) {
+        uint32_t hf = Emit_Temp(cg);
+        uint32_t handler_lbl = Emit_Label(cg);
+        uint32_t normal_lbl  = Emit_Label(cg);
+        uint32_t end_lbl     = Emit_Label(cg);
+
+        Emit(cg, "  %%t%u = alloca { ptr, [200 x i8] }, align 16  ; handler frame\n", hf);
+        Emit(cg, "  call void @__ada_push_handler(ptr %%t%u)\n", hf);
+
+        uint32_t jb = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = getelementptr { ptr, [200 x i8] }, ptr %%t%u, i32 0, i32 1\n", jb, hf);
+        uint32_t sj = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = call i32 @setjmp(ptr %%t%u)\n", sj, jb);
+
+        uint32_t is_n = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", is_n, sj);
+        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", is_n, normal_lbl, handler_lbl);
+
+        Emit_Label_Here(cg, normal_lbl);
+        Generate_Statement_List(cg, &body->subprogram_body.statements);
+        if (not cg->block_terminated)
+            Emit(cg, "  call void @__ada_pop_handler()\n");
+        Emit_Branch_If_Needed(cg, end_lbl);
+
+        /* Exception handler entry */
+        Emit_Label_Here(cg, handler_lbl);
+        cg->block_terminated = false;
+        Emit(cg, "  call void @__ada_pop_handler()\n");
+
+        uint32_t exc_id = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = call i64 @__ada_current_exception()\n", exc_id);
+
+        uint32_t next_h = 0;
+        for (uint32_t i = 0; i < body->subprogram_body.handlers.count; i++) {
+            Syntax_Node *h = body->subprogram_body.handlers.items[i];
+            if (not h) continue;
+
+            if (next_h) { Emit_Label_Here(cg, next_h); cg->block_terminated = false; }
+            next_h = Emit_Label(cg);
+            uint32_t hbody = Emit_Label(cg);
+
+            bool has_others = false;
+            for (uint32_t j = 0; j < h->handler.exceptions.count; j++) {
+                if (h->handler.exceptions.items[j]->kind == NK_OTHERS)
+                    { has_others = true; break; }
+            }
+
+            if (has_others) {
+                Emit(cg, "  br label %%L%u\n", hbody);
+            } else {
+                for (uint32_t j = 0; j < h->handler.exceptions.count; j++) {
+                    Syntax_Node *en = h->handler.exceptions.items[j];
+                    if (en->symbol) {
+                        uint32_t ep = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = ptrtoint ptr ", ep);
+                        Emit_Exception_Ref(cg, en->symbol);
+                        Emit(cg, " to i64\n");
+                        uint32_t m = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", m, exc_id, ep);
+                        bool last = true;
+                        for (uint32_t k = j+1; k < h->handler.exceptions.count; k++)
+                            if (h->handler.exceptions.items[k]->symbol) { last = false; break; }
+                        uint32_t fl = last ? next_h : Emit_Label(cg);
+                        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", m, hbody, fl);
+                        if (not last) { Emit_Label_Here(cg, fl); cg->block_terminated = false; }
+                    }
+                }
+            }
+            cg->block_terminated = true;
+            Emit_Label_Here(cg, hbody);
+            cg->block_terminated = false;
+            Generate_Statement_List(cg, &h->handler.statements);
+            Emit_Branch_If_Needed(cg, end_lbl);
+        }
+
+        if (next_h) {
+            Emit_Label_Here(cg, next_h);
+            cg->block_terminated = false;
+            Emit(cg, "  call void @__ada_reraise()\n");
+            Emit(cg, "  unreachable\n");
+            cg->block_terminated = true;
+        }
+
+        Emit_Label_Here(cg, end_lbl);
+        cg->block_terminated = false;
+    } else {
+        for (uint32_t i = 0; i < body->subprogram_body.statements.count; i++) {
+            Syntax_Node *stmt = body->subprogram_body.statements.items[i];
+            if (stmt) Generate_Statement(cg, stmt);
         }
     }
 
@@ -27406,11 +28435,21 @@ static void Generate_Task_Body(Code_Generator *cg, Syntax_Node *node) {
      * (important for tasks in DECLARE blocks which have their own scope). */
     Scope *parent_scope = node->symbol ? node->symbol->defining_scope : NULL;
     if (parent_scope) {
+        /* Dedup by unique_id (same approach as Generate_Subprogram_Body) */
+        #define MAX_TASK_FRAME_ALIASES 512
+        uint32_t task_emitted_ids[MAX_TASK_FRAME_ALIASES];
+        uint32_t task_emitted_count = 0;
+
         for (uint32_t i = 0; i < parent_scope->symbol_count; i++) {
             Symbol *var = parent_scope->symbols[i];
             if (var and (var->kind == SYMBOL_VARIABLE or var->kind == SYMBOL_PARAMETER or
                         var->kind == SYMBOL_DISCRIMINANT)) {
-                /* Create a GEP alias: %__frame.VAR = getelementptr ptr %__parent_frame, offset */
+                bool dup = false;
+                for (uint32_t j = 0; j < task_emitted_count; j++)
+                    if (var->unique_id == task_emitted_ids[j]) { dup = true; break; }
+                if (dup) continue;
+                if (task_emitted_count < MAX_TASK_FRAME_ALIASES)
+                    task_emitted_ids[task_emitted_count++] = var->unique_id;
                 Emit(cg, "  %%__frame.");
                 Emit_Symbol_Name(cg, var);
                 Emit(cg, " = getelementptr i8, ptr %%__parent_frame, i64 %lld\n",
@@ -27420,13 +28459,19 @@ static void Generate_Task_Body(Code_Generator *cg, Syntax_Node *node) {
         /* Also include variables from child scopes (DECLARE blocks). */
         for (uint32_t i = 0; i < parent_scope->frame_var_count; i++) {
             Symbol *var = parent_scope->frame_vars[i];
-            if (var) {
-                Emit(cg, "  %%__frame.");
-                Emit_Symbol_Name(cg, var);
-                Emit(cg, " = getelementptr i8, ptr %%__parent_frame, i64 %lld\n",
-                     (long long)(var->frame_offset));
-            }
+            if (not var) continue;
+            bool dup = false;
+            for (uint32_t j = 0; j < task_emitted_count; j++)
+                if (var->unique_id == task_emitted_ids[j]) { dup = true; break; }
+            if (dup) continue;
+            if (task_emitted_count < MAX_TASK_FRAME_ALIASES)
+                task_emitted_ids[task_emitted_count++] = var->unique_id;
+            Emit(cg, "  %%__frame.");
+            Emit_Symbol_Name(cg, var);
+            Emit(cg, " = getelementptr i8, ptr %%__parent_frame, i64 %lld\n",
+                 (long long)(var->frame_offset));
         }
+        #undef MAX_TASK_FRAME_ALIASES
     }
 
     /* Push exception handler for task: { ptr prev, [200 x i8] jmp_buf } */
@@ -27573,9 +28618,94 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
              * For library-level packages, create a separate __elab function. */
             bool has_init_stmts = node->package_body.statements.count > 0;
             if (has_init_stmts and cg->current_function) {
-                /* Nested package: emit initialization inline */
+                /* Nested package: emit initialization inline.
+                 * If the package body has exception handlers (RM 11.4),
+                 * wrap the statements in setjmp/longjmp like subprograms. */
+                bool has_pkg_exc = node->package_body.handlers.count > 0;
                 Emit(cg, "  ; Package body initialization (inline)\n");
-                Generate_Statement_List(cg, &node->package_body.statements);
+                if (has_pkg_exc) {
+                    uint32_t hf = Emit_Temp(cg);
+                    uint32_t handler_lbl = Emit_Label(cg);
+                    uint32_t normal_lbl  = Emit_Label(cg);
+                    uint32_t end_lbl     = Emit_Label(cg);
+
+                    Emit(cg, "  %%t%u = alloca { ptr, [200 x i8] }, align 16\n", hf);
+                    Emit(cg, "  call void @__ada_push_handler(ptr %%t%u)\n", hf);
+                    uint32_t jb = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = getelementptr { ptr, [200 x i8] }, ptr %%t%u, i32 0, i32 1\n", jb, hf);
+                    uint32_t sj = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = call i32 @setjmp(ptr %%t%u)\n", sj, jb);
+                    uint32_t is_normal = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", is_normal, sj);
+                    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                         is_normal, normal_lbl, handler_lbl);
+
+                    Emit_Label_Here(cg, normal_lbl);
+                    Generate_Statement_List(cg, &node->package_body.statements);
+                    Emit(cg, "  call void @__ada_pop_handler()\n");
+                    Emit(cg, "  br label %%L%u\n", end_lbl);
+
+                    Emit_Label_Here(cg, handler_lbl);
+                    cg->block_terminated = false;
+                    Emit(cg, "  call void @__ada_pop_handler()\n");
+                    uint32_t exc_id = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = call i64 @__ada_current_exception()\n", exc_id);
+
+                    uint32_t next_handler = 0;
+                    for (uint32_t i = 0; i < node->package_body.handlers.count; i++) {
+                        Syntax_Node *handler = node->package_body.handlers.items[i];
+                        if (not handler) continue;
+                        if (next_handler != 0) {
+                            Emit_Label_Here(cg, next_handler);
+                            cg->block_terminated = false;
+                        }
+                        next_handler = Emit_Label(cg);
+                        uint32_t handler_body = Emit_Label(cg);
+
+                        bool has_others = false;
+                        for (uint32_t j = 0; j < handler->handler.exceptions.count; j++) {
+                            Syntax_Node *exc_name = handler->handler.exceptions.items[j];
+                            if (exc_name->kind == NK_OTHERS) { has_others = true; break; }
+                        }
+                        if (has_others) {
+                            Emit(cg, "  br label %%L%u\n", handler_body);
+                        } else {
+                            for (uint32_t j = 0; j < handler->handler.exceptions.count; j++) {
+                                Syntax_Node *exc_name = handler->handler.exceptions.items[j];
+                                if (exc_name->symbol) {
+                                    uint32_t ep = Emit_Temp(cg);
+                                    Emit(cg, "  %%t%u = ptrtoint ptr ", ep);
+                                    Emit_Exception_Ref(cg, exc_name->symbol);
+                                    Emit(cg, " to i64\n");
+                                    uint32_t m = Emit_Temp(cg);
+                                    Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", m, exc_id, ep);
+                                    bool is_last = true;
+                                    for (uint32_t k = j+1; k < handler->handler.exceptions.count; k++)
+                                        if (handler->handler.exceptions.items[k]->symbol) { is_last = false; break; }
+                                    uint32_t fl = is_last ? next_handler : Emit_Label(cg);
+                                    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", m, handler_body, fl);
+                                    if (not is_last) { Emit_Label_Here(cg, fl); cg->block_terminated = false; }
+                                }
+                            }
+                        }
+                        cg->block_terminated = true;
+                        Emit_Label_Here(cg, handler_body);
+                        cg->block_terminated = false;
+                        Generate_Statement_List(cg, &handler->handler.statements);
+                        Emit_Branch_If_Needed(cg, end_lbl);
+                    }
+                    if (next_handler != 0) {
+                        Emit_Label_Here(cg, next_handler);
+                        cg->block_terminated = false;
+                        Emit(cg, "  call void @__ada_reraise()\n");
+                        Emit(cg, "  unreachable\n");
+                        cg->block_terminated = true;
+                    }
+                    Emit_Label_Here(cg, end_lbl);
+                    cg->block_terminated = false;
+                } else {
+                    Generate_Statement_List(cg, &node->package_body.statements);
+                }
             } else if (not cg->current_function and (has_init_stmts or has_pkg_tasks)) {
                 /* Library-level package: emit elaboration function that starts
                  * package-level tasks and runs any initialization statements. */
