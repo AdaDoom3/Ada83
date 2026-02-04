@@ -19461,10 +19461,27 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                 bool left_is_float = Type_Is_Float_Representation(left_type);
                 if (left_is_float) {
                     /* Float ** Integer: use native-precision pow intrinsic.
-                     * LLVM provides llvm.pow.f32 and llvm.pow.f64. */
+                     * LLVM provides llvm.pow.f32 and llvm.pow.f64.
+                     * RM 4.5.6(12): 0.0 ** negative must raise CONSTRAINT_ERROR. */
                     const char *lhs_ftype = Float_Llvm_Type_Of(left_type);
                     const char *pow_intrinsic = (lhs_ftype[0] == 'f')
                         ? "llvm.pow.f32" : "llvm.pow.f64";
+                    /* Check: if base == 0.0 and exponent < 0, raise CONSTRAINT_ERROR */
+                    uint32_t is_zero = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = fcmp oeq %s %%t%u, 0.0\n",
+                         is_zero, lhs_ftype, left);
+                    uint32_t is_neg = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = icmp slt %s %%t%u, 0\n", is_neg, right_int_type, right);
+                    uint32_t bad = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", bad, is_zero, is_neg);
+                    uint32_t ok_label = Emit_Label(cg);
+                    uint32_t bad_label = Emit_Label(cg);
+                    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", bad, bad_label, ok_label);
+                    Emit_Label_Here(cg, bad_label);
+                    cg->block_terminated = false;
+                    Emit_Raise_Constraint_Error(cg, "0.0 ** negative (RM 4.5.6)");
+                    Emit_Label_Here(cg, ok_label);
+                    cg->block_terminated = false;
                     /* Convert integer exponent to matching float type */
                     uint32_t exp_float = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = sitofp %s %%t%u to %s\n",
@@ -20095,6 +20112,19 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             }
         }
     } else {
+        /* RM 4.5.5: float division by zero raises CONSTRAINT_ERROR */
+        if (node->binary.op == TK_SLASH and
+            not Check_Is_Suppressed(result_type, NULL, CHK_DIVISION)) {
+            uint32_t fz = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = fcmp oeq %s %%t%u, 0.0\n", fz, float_type_str, right);
+            uint32_t ok = Emit_Label(cg), bad = Emit_Label(cg);
+            Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", fz, bad, ok);
+            Emit_Label_Here(cg, bad);
+            cg->block_terminated = false;
+            Emit_Raise_Constraint_Error(cg, "float division by zero");
+            Emit_Label_Here(cg, ok);
+            cg->block_terminated = false;
+        }
         Emit(cg, "  %%t%u = %s %s %%t%u, %%t%u\n", t, op, float_type_str, left, right);
     }
     return t;
