@@ -27661,6 +27661,8 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 } else if (Type_Is_Float_Representation(ty)) {
                     Emit(cg, " = linkonce_odr global %s %a\n", type_str,
                          has_static_init ? init_fval : 0.0);
+                } else if (strcmp(type_str, "ptr") == 0) {
+                    Emit(cg, " = linkonce_odr global ptr null\n");
                 } else {
                     Emit(cg, " = linkonce_odr global %s %lld\n", type_str,
                          (long long)(has_static_init ? init_ival : 0));
@@ -29686,6 +29688,8 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                             Emit(cg, " = linkonce_odr global [%u x i8] zeroinitializer\n", ty->size);
                         } else if (Type_Is_Float_Representation(ty)) {
                             Emit(cg, " = linkonce_odr global %s 0.0\n", type_str);
+                        } else if (strcmp(type_str, "ptr") == 0) {
+                            Emit(cg, " = linkonce_odr global ptr null\n");
                         } else {
                             Emit(cg, " = linkonce_odr global %s %lld\n", type_str,
                                  (long long)init_val);
