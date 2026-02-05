@@ -8595,8 +8595,15 @@ static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
                     node->binary.left->type = right_type;
                     Resolve_Expression(sm, node->binary.left);
                 }
-                /* Result type: prefer string/array type over character */
-                if (Type_Is_String(left_type)) {
+                /* Result type: prefer user-defined array type over predefined STRING.
+                 * Per RM 4.5.3, concatenation returns the array type. String literals
+                 * are ambiguous and should adopt the context type. */
+                if (Type_Is_Array_Like(left_type) and left_type->kind == TYPE_ARRAY) {
+                    /* User-defined array type takes precedence */
+                    node->type = left_type;
+                } else if (Type_Is_Array_Like(right_type) and right_type->kind == TYPE_ARRAY) {
+                    node->type = right_type;
+                } else if (Type_Is_String(left_type)) {
                     node->type = left_type;
                 } else if (Type_Is_String(right_type)) {
                     node->type = right_type;
@@ -8876,7 +8883,13 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
                         for (uint32_t i = 0; i < arg_count; i++) {
                             Syntax_Node *arg = node->apply.arguments.items[i];
                             Index_Info *info = &constrained->array.indices[i];
-                            info->index_type = sm->type_integer;
+                            /* Inherit index_type from base type (e.g., POSITIVE for STRING).
+                             * This is critical for RM 4.5.3 concatenation length checks. */
+                            if (base_type->array.index_count > i and base_type->array.indices[i].index_type) {
+                                info->index_type = base_type->array.indices[i].index_type;
+                            } else {
+                                info->index_type = sm->type_integer;  /* Default fallback */
+                            }
 
                             if (arg->kind == NK_RANGE) {
                                 if (arg->range.low and arg->range.low->kind == NK_INTEGER) {
@@ -10593,7 +10606,12 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                             Syntax_Node *range = constraint->index_constraint.ranges.items[i];
                             Resolve_Expression(sm, range);
                             Index_Info *info = &des_con->array.indices[i];
-                            info->index_type = sm->type_integer;
+                            /* Inherit index_type from base (e.g., POSITIVE for STRING) */
+                            if (des_base->array.index_count > i and des_base->array.indices[i].index_type) {
+                                info->index_type = des_base->array.indices[i].index_type;
+                            } else {
+                                info->index_type = sm->type_integer;
+                            }
                             if (range->kind == NK_RANGE) {
                                 if (range->range.low) {
                                     double v = Eval_Const_Numeric(range->range.low);
@@ -10645,7 +10663,12 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                             Resolve_Expression(sm, range);
 
                             Index_Info *info = &constrained->array.indices[i];
-                            info->index_type = sm->type_integer;
+                            /* Inherit index_type from base (e.g., POSITIVE for STRING) */
+                            if (base_type->array.index_count > i and base_type->array.indices[i].index_type) {
+                                info->index_type = base_type->array.indices[i].index_type;
+                            } else {
+                                info->index_type = sm->type_integer;
+                            }
 
                             if (range->kind == NK_RANGE) {
                                 /* Try to evaluate bounds as static constants */
@@ -17846,6 +17869,7 @@ static void Emit_Raise_Exception(Code_Generator *cg, const char *exc_name, const
     Emit(cg, "  %%t%u = ptrtoint ptr @__exc.%s to i64\n", exc, exc_name);
     Emit(cg, "  call void @__ada_raise(i64 %%t%u)  ; %s\n", exc, comment);
     Emit(cg, "  unreachable\n");
+    cg->block_terminated = true;  /* unreachable terminates block */
 }
 #define Emit_Raise_Constraint_Error(cg, comment) Emit_Raise_Exception(cg, "constraint_error", comment)
 #define Emit_Raise_Program_Error(cg, comment)    Emit_Raise_Exception(cg, "program_error", comment)
@@ -19200,6 +19224,7 @@ static void Emit_Check_With_Raise(Code_Generator *cg, uint32_t cond,
         Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
              cond, cont_label, raise_label);
     }
+    cg->block_terminated = true;  /* conditional branch terminates block */
     Emit_Label_Here(cg, raise_label);
     Emit_Raise_Constraint_Error(cg, comment);
     Emit_Label_Here(cg, cont_label);
@@ -19403,6 +19428,7 @@ static Exception_Setup Emit_Exception_Handler_Setup(Code_Generator *cg) {
     setup.handler_label = Emit_Label(cg);
     Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
          is_normal, setup.normal_label, setup.handler_label);
+    cg->block_terminated = true;  /* conditional branch terminates block */
     return setup;
 }
 
@@ -21159,6 +21185,34 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         uint32_t total_len = Emit_Temp(cg);
         Emit(cg, "  %%t%u = add %s %%t%u, %%t%u\n", total_len, cat_bt, left_len1, right_len1);
 
+        /* Check result length against index SUBTYPE bounds (RM 4.5.3(7)).
+         * The check is against the index subtype (e.g., POSITIVE for STRING),
+         * NOT the specific constraint on a variable. For STRING, the index
+         * subtype is POSITIVE (1..INTEGER'LAST), so almost any length is valid. */
+        Type_Info *result_type = node->type;
+        if (result_type and (result_type->kind == TYPE_ARRAY or result_type->kind == TYPE_STRING) and
+            result_type->array.index_count > 0) {
+            /* Always use index_type bounds (the index subtype), not Index_Info
+             * bounds which represent a specific constraint on a variable. */
+            Index_Info *idx_info = &result_type->array.indices[0];
+            Type_Bound low_b = {0}, high_b = {0};
+            if (idx_info->index_type) {
+                low_b = idx_info->index_type->low_bound;
+                high_b = idx_info->index_type->high_bound;
+            }
+            if (low_b.kind == BOUND_INTEGER and high_b.kind == BOUND_INTEGER) {
+                /* Max length = index_high - index_low + 1 */
+                int128_t max_len = high_b.int_value - low_b.int_value + 1;
+                if (max_len > 0) {
+                    uint32_t max_const = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = add %s 0, %lld  ; max index length\n", max_const, cat_bt, (long long)max_len);
+                    uint32_t overflow = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = icmp sgt %s %%t%u, %%t%u\n", overflow, cat_bt, total_len, max_const);
+                    Emit_Check_With_Raise(cg, overflow, true, "concatenation length exceeds index subtype");
+                }
+            }
+        }
+
         /* Extend to i64 for C-level calls (memcpy, sec_stack_alloc) */
         uint32_t total_len_64 = Emit_Extend_To_I64(cg, total_len, cat_bt);
         uint32_t left_len1_64 = Emit_Extend_To_I64(cg, left_len1, cat_bt);
@@ -22052,17 +22106,22 @@ static uint32_t Generate_Unary_Op(Code_Generator *cg, Syntax_Node *node) {
             break;
         case TK_ABS:
             {
-                uint32_t neg = Emit_Temp(cg);
-                uint32_t cmp = Emit_Temp(cg);
                 if (is_float) {
+                    uint32_t neg = Emit_Temp(cg);
+                    uint32_t cmp = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = fsub %s 0.0, %%t%u\n", neg, float_type, operand);
                     Emit(cg, "  %%t%u = fcmp olt %s %%t%u, 0.0\n", cmp, float_type, operand);
                     Emit(cg, "  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n",
                          t, cmp, float_type, neg, float_type, operand);
                     Temp_Set_Type(cg, t, float_type);
                 } else {
-                    /* GNAT LLVM: use native integer type for abs. */
-                    Emit(cg, "  %%t%u = sub %s 0, %%t%u\n", neg, unary_int_type, operand);
+                    /* Integer ABS with overflow check: ABS(MIN_INT) overflows.
+                     * Use Emit_Overflow_Checked_Op for negation, then select. */
+                    Type_Info *res_type = node->type ? node->type : op_type_info;
+                    uint32_t zero = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = add %s 0, 0\n", zero, unary_int_type);
+                    uint32_t neg = Emit_Overflow_Checked_Op(cg, zero, operand, "sub", unary_int_type, res_type);
+                    uint32_t cmp = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = icmp slt %s %%t%u, 0\n", cmp, unary_int_type, operand);
                     Emit(cg, "  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n",
                          t, cmp, unary_int_type, neg, unary_int_type, operand);
@@ -22261,8 +22320,10 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         } else if (argc == 1) {
             /* Unary operators: abs, not, unary - */
             if (Slice_Equal_Ignore_Case(op_name, S("abs"))) {
-                uint32_t neg = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = sub %s 0, %%t%u\n", neg, t0, v0);
+                /* ABS with overflow check: ABS(MIN_INT) overflows */
+                uint32_t zero = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add %s 0, 0\n", zero, t0);
+                uint32_t neg = Emit_Overflow_Checked_Op(cg, zero, v0, "sub", t0, ty0);
                 uint32_t cmp = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = icmp slt %s %%t%u, 0\n", cmp, t0, v0);
                 uint32_t r = Emit_Temp(cg);
@@ -24202,19 +24263,18 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     }
 
     if (Slice_Equal_Ignore_Case(attr, S("ABS"))) {
-        /* T'ABS(x) or just abs function */
+        /* T'ABS(x) with overflow check: ABS(MIN_INT) overflows */
         if (first_arg) {
             uint32_t val = Generate_Expression(cg, first_arg);
-            /* Compute abs: (x ^ (x >> 63)) - (x >> 63) for signed */
-            uint32_t shift = Emit_Temp(cg);
-            uint32_t xored = Emit_Temp(cg);
-            /* GNAT LLVM: use native Integer type for ABS computation.
-             * Sign-bit shift amount = type width - 1 (works for i8..i128). */
             const char *abs_type = Integer_Arith_Type(cg);
-            int sign_shift = Type_Bits(abs_type) - 1;
-            Emit(cg, "  %%t%u = ashr %s %%t%u, %d  ; sign bit\n", shift, abs_type, val, sign_shift);
-            Emit(cg, "  %%t%u = xor %s %%t%u, %%t%u\n", xored, abs_type, val, shift);
-            Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u  ; 'ABS\n", t, abs_type, xored, shift);
+            Type_Info *res_type = first_arg->type;
+            uint32_t zero = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = add %s 0, 0\n", zero, abs_type);
+            uint32_t neg = Emit_Overflow_Checked_Op(cg, zero, val, "sub", abs_type, res_type);
+            uint32_t cmp = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = icmp slt %s %%t%u, 0\n", cmp, abs_type, val);
+            Emit(cg, "  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u  ; 'ABS\n",
+                 t, cmp, abs_type, neg, abs_type, val);
             return t;
         }
     }
@@ -27823,6 +27883,7 @@ static void Generate_Block_Statement(Code_Generator *cg, Syntax_Node *node) {
         Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", is_normal, setjmp_result);
         Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
              is_normal, normal_label, handler_label);
+        cg->block_terminated = true;  /* conditional branch terminates block */
 
         /* Normal execution path */
         Emit(cg, "  ; -- normal execution (L%u)\n", normal_label);
@@ -27845,6 +27906,7 @@ static void Generate_Block_Statement(Code_Generator *cg, Syntax_Node *node) {
         Emit(cg, "  ; -- normal exit: pop handler\n");
         Emit(cg, "  call void @__ada_pop_handler()\n");
         Emit(cg, "  br label %%L%u\n", end_label);
+        cg->block_terminated = true;  /* unconditional branch terminates block */
 
         /* Exception handler entry */
         Emit(cg, "  ; -- EXCEPTION handler entry (L%u)\n", handler_label);
@@ -31968,59 +32030,96 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "}\n\n");
 
     /* Integer power function — signed, overflow-checked (RM 4.5.6).
-     * Uses llvm.smul.with.overflow.iN to detect intermediate overflow.
-     * Raises Constraint_Error via __ada_raise on overflow. */
-    Emit(cg, "; Integer exponentiation helper (signed, overflow-checked)\n");
+     * Uses binary exponentiation (O(log n)) with overflow checking.
+     * Raises Constraint_Error on negative exponent or overflow. */
+    Emit(cg, "; Integer exponentiation helper (signed, overflow-checked, binary exp)\n");
     Emit(cg, "define linkonce_odr %s @__ada_integer_pow(%s %%base, %s %%exp) {\n", iat, iat, iat);
     Emit(cg, "entry:\n");
+    /* Check for negative exponent */
     Emit(cg, "  %%is_neg = icmp slt %s %%exp, 0\n", iat);
-    Emit(cg, "  br i1 %%is_neg, label %%neg_exp, label %%pos_exp\n");
+    Emit(cg, "  br i1 %%is_neg, label %%neg_exp, label %%check_zero\n");
     Emit(cg, "neg_exp:\n");
     Emit(cg, "  %%exc_ptr_neg = ptrtoint ptr @__exc.constraint_error to i64\n");
     Emit(cg, "  call void @__ada_raise(i64 %%exc_ptr_neg)\n");
     Emit(cg, "  unreachable  ; negative exponent for integer (RM 4.5.6)\n");
-    Emit(cg, "pos_exp:\n");
+    Emit(cg, "check_zero:\n");
+    /* exp == 0 -> return 1 */
     Emit(cg, "  %%is_zero = icmp eq %s %%exp, 0\n", iat);
     Emit(cg, "  br i1 %%is_zero, label %%ret_one, label %%loop\n");
     Emit(cg, "ret_one:\n");
     Emit(cg, "  ret %s 1\n", iat);
+    /* Binary exponentiation loop: result *= b when e is odd, b *= b, e /= 2 */
     Emit(cg, "loop:\n");
-    Emit(cg, "  %%result = phi %s [ 1, %%pos_exp ], [ %%new_result, %%cont ]\n", iat);
-    Emit(cg, "  %%i = phi %s [ 0, %%pos_exp ], [ %%next_i, %%cont ]\n", iat);
-    Emit(cg, "  %%pair = call {%s, i1} @llvm.smul.with.overflow.%s(%s %%result, %s %%base)\n", iat, iat, iat, iat);
-    Emit(cg, "  %%new_result = extractvalue {%s, i1} %%pair, 0\n", iat);
-    Emit(cg, "  %%ovf = extractvalue {%s, i1} %%pair, 1\n", iat);
-    Emit(cg, "  br i1 %%ovf, label %%overflow, label %%cont\n");
+    Emit(cg, "  %%result = phi %s [ 1, %%check_zero ], [ %%new_result, %%cont ]\n", iat);
+    Emit(cg, "  %%b = phi %s [ %%base, %%check_zero ], [ %%new_b, %%cont ]\n", iat);
+    Emit(cg, "  %%e = phi %s [ %%exp, %%check_zero ], [ %%new_e, %%cont ]\n", iat);
+    /* Check if e is odd: e & 1 */
+    Emit(cg, "  %%is_odd = and %s %%e, 1\n", iat);
+    Emit(cg, "  %%odd_bit = icmp ne %s %%is_odd, 0\n", iat);
+    Emit(cg, "  br i1 %%odd_bit, label %%mult_result, label %%square_base\n");
+    /* Multiply result by base (overflow checked) */
+    Emit(cg, "mult_result:\n");
+    Emit(cg, "  %%pair_r = call {%s, i1} @llvm.smul.with.overflow.%s(%s %%result, %s %%b)\n", iat, iat, iat, iat);
+    Emit(cg, "  %%mult_r = extractvalue {%s, i1} %%pair_r, 0\n", iat);
+    Emit(cg, "  %%ovf_r = extractvalue {%s, i1} %%pair_r, 1\n", iat);
+    Emit(cg, "  br i1 %%ovf_r, label %%overflow, label %%square_base\n");
+    /* Square the base for next iteration */
+    Emit(cg, "square_base:\n");
+    Emit(cg, "  %%result_sq = phi %s [ %%result, %%loop ], [ %%mult_r, %%mult_result ]\n", iat);
+    /* Halve exponent */
+    Emit(cg, "  %%new_e = lshr %s %%e, 1\n", iat);
+    /* Check if done (e == 0 after shift) */
+    Emit(cg, "  %%done = icmp eq %s %%new_e, 0\n", iat);
+    Emit(cg, "  br i1 %%done, label %%exit, label %%do_square\n");
+    /* Actually compute b*b (only if we need it for next iteration) */
+    Emit(cg, "do_square:\n");
+    Emit(cg, "  %%pair_b = call {%s, i1} @llvm.smul.with.overflow.%s(%s %%b, %s %%b)\n", iat, iat, iat, iat);
+    Emit(cg, "  %%sq_b = extractvalue {%s, i1} %%pair_b, 0\n", iat);
+    Emit(cg, "  %%ovf_b = extractvalue {%s, i1} %%pair_b, 1\n", iat);
+    Emit(cg, "  br i1 %%ovf_b, label %%overflow, label %%cont\n");
+    Emit(cg, "cont:\n");
+    Emit(cg, "  %%new_result = phi %s [ %%result_sq, %%do_square ]\n", iat);
+    Emit(cg, "  %%new_b = phi %s [ %%sq_b, %%do_square ]\n", iat);
+    Emit(cg, "  br label %%loop\n");
     Emit(cg, "overflow:\n");
     Emit(cg, "  %%exc_ptr = ptrtoint ptr @__exc.constraint_error to i64\n");
     Emit(cg, "  call void @__ada_raise(i64 %%exc_ptr)\n");
     Emit(cg, "  unreachable\n");
-    Emit(cg, "cont:\n");
-    Emit(cg, "  %%next_i = add %s %%i, 1\n", iat);
-    Emit(cg, "  %%done = icmp eq %s %%next_i, %%exp\n", iat);
-    Emit(cg, "  br i1 %%done, label %%exit, label %%loop\n");
     Emit(cg, "exit:\n");
-    Emit(cg, "  ret %s %%new_result\n", iat);
+    Emit(cg, "  ret %s %%result_sq\n", iat);
     Emit(cg, "}\n\n");
 
     /* Modular power function — unsigned, wrapping (RM 3.5.4).
-     * No overflow check: modular types wrap by definition. */
-    Emit(cg, "; Modular exponentiation helper (unsigned, wrapping)\n");
+     * Uses binary exponentiation (O(log n)), no overflow check as modular wraps. */
+    Emit(cg, "; Modular exponentiation helper (unsigned, wrapping, binary exp)\n");
     Emit(cg, "define linkonce_odr %s @__ada_modular_pow(%s %%base, %s %%exp) {\n", iat, iat, iat);
     Emit(cg, "entry:\n");
     Emit(cg, "  %%is_zero = icmp eq %s %%exp, 0\n", iat);
     Emit(cg, "  br i1 %%is_zero, label %%ret_one, label %%loop\n");
     Emit(cg, "ret_one:\n");
     Emit(cg, "  ret %s 1\n", iat);
+    /* Binary exponentiation loop */
     Emit(cg, "loop:\n");
-    Emit(cg, "  %%result = phi %s [ 1, %%entry ], [ %%new_result, %%loop ]\n", iat);
-    Emit(cg, "  %%i = phi %s [ 0, %%entry ], [ %%next_i, %%loop ]\n", iat);
-    Emit(cg, "  %%new_result = mul %s %%result, %%base\n", iat);
-    Emit(cg, "  %%next_i = add %s %%i, 1\n", iat);
-    Emit(cg, "  %%done = icmp eq %s %%next_i, %%exp\n", iat);
-    Emit(cg, "  br i1 %%done, label %%exit, label %%loop\n");
+    Emit(cg, "  %%result = phi %s [ 1, %%entry ], [ %%new_result, %%cont ]\n", iat);
+    Emit(cg, "  %%b = phi %s [ %%base, %%entry ], [ %%new_b, %%cont ]\n", iat);
+    Emit(cg, "  %%e = phi %s [ %%exp, %%entry ], [ %%new_e, %%cont ]\n", iat);
+    Emit(cg, "  %%is_odd = and %s %%e, 1\n", iat);
+    Emit(cg, "  %%odd_bit = icmp ne %s %%is_odd, 0\n", iat);
+    Emit(cg, "  br i1 %%odd_bit, label %%mult, label %%square\n");
+    Emit(cg, "mult:\n");
+    Emit(cg, "  %%mult_r = mul %s %%result, %%b\n", iat);
+    Emit(cg, "  br label %%square\n");
+    Emit(cg, "square:\n");
+    Emit(cg, "  %%result_s = phi %s [ %%result, %%loop ], [ %%mult_r, %%mult ]\n", iat);
+    Emit(cg, "  %%new_e = lshr %s %%e, 1\n", iat);
+    Emit(cg, "  %%done = icmp eq %s %%new_e, 0\n", iat);
+    Emit(cg, "  br i1 %%done, label %%exit, label %%cont\n");
+    Emit(cg, "cont:\n");
+    Emit(cg, "  %%new_b = mul %s %%b, %%b\n", iat);
+    Emit(cg, "  %%new_result = phi %s [ %%result_s, %%square ]\n", iat);
+    Emit(cg, "  br label %%loop\n");
     Emit(cg, "exit:\n");
-    Emit(cg, "  ret %s %%new_result\n", iat);
+    Emit(cg, "  ret %s %%result_s\n", iat);
     Emit(cg, "}\n\n");
 
     /* String trim helpers for Enum'VALUE (Ada RM 3.5): count leading/trailing
