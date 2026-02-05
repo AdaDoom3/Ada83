@@ -8907,16 +8907,29 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
                             }
                         }
 
-                        /* Compute size */
-                        int128_t count = 1;
-                        for (uint32_t i = 0; i < arg_count; i++) {
-                            int128_t lo = Type_Bound_Value(constrained->array.indices[i].low_bound);
-                            int128_t hi = Type_Bound_Value(constrained->array.indices[i].high_bound);
-                            count *= (hi - lo + 1);
+                        /* Compute size - only for fully static bounds */
+                        {
+                            bool all_static = true;
+                            int128_t count = 1;
+                            for (uint32_t i = 0; i < arg_count; i++) {
+                                Type_Bound *lo_b = &constrained->array.indices[i].low_bound;
+                                Type_Bound *hi_b = &constrained->array.indices[i].high_bound;
+                                if ((lo_b->kind == BOUND_EXPR and lo_b->expr and lo_b->expr->symbol) or
+                                    (hi_b->kind == BOUND_EXPR and hi_b->expr and hi_b->expr->symbol)) {
+                                    all_static = false; break;
+                                }
+                                int128_t lo = Type_Bound_Value(*lo_b);
+                                int128_t hi = Type_Bound_Value(*hi_b);
+                                int128_t dim = hi - lo + 1;
+                                if (dim < 0) dim = 0;
+                                count *= dim;
+                            }
+                            if (all_static and count >= 0) {
+                                uint32_t elem_size = constrained->array.element_type ?
+                                                     constrained->array.element_type->size : 1;
+                                constrained->size = (uint32_t)(count * elem_size);
+                            }
                         }
-                        uint32_t elem_size = constrained->array.element_type ?
-                                             constrained->array.element_type->size : 1;
-                        constrained->size = (uint32_t)(count * elem_size);
                     }
 
                     node->type = constrained;
@@ -10086,17 +10099,41 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                     array_type->array.element_type = sm->type_integer;
                 }
 
-                /* Compute size */
+                /* Compute size - only when ALL bounds are statically known.
+                 * Skip if any bound is BOUND_EXPR that evaluates to a value
+                 * suggesting the bound can't be determined at compile time
+                 * (e.g. discriminant references). RM 3.6.1 */
                 if (array_type->array.is_constrained and array_type->array.index_count > 0) {
+                    bool all_static = true;
                     int128_t count = 1;
                     for (uint32_t i = 0; i < array_type->array.index_count; i++) {
-                        int128_t lo = Type_Bound_Value(array_type->array.indices[i].low_bound);
-                        int128_t hi = Type_Bound_Value(array_type->array.indices[i].high_bound);
-                        count *= (hi - lo + 1);
+                        Type_Bound *lo_b = &array_type->array.indices[i].low_bound;
+                        Type_Bound *hi_b = &array_type->array.indices[i].high_bound;
+                        if ((lo_b->kind == BOUND_EXPR or lo_b->kind == BOUND_NONE) and
+                            lo_b->kind != BOUND_INTEGER) {
+                            /* Try static eval; if it returns 0 for a bound that
+                             * references a symbol, treat as non-static */
+                            if (lo_b->kind == BOUND_EXPR and lo_b->expr and lo_b->expr->symbol) {
+                                all_static = false; break;
+                            }
+                        }
+                        if ((hi_b->kind == BOUND_EXPR or hi_b->kind == BOUND_NONE) and
+                            hi_b->kind != BOUND_INTEGER) {
+                            if (hi_b->kind == BOUND_EXPR and hi_b->expr and hi_b->expr->symbol) {
+                                all_static = false; break;
+                            }
+                        }
+                        int128_t lo = Type_Bound_Value(*lo_b);
+                        int128_t hi = Type_Bound_Value(*hi_b);
+                        int128_t dim = hi - lo + 1;
+                        if (dim < 0) dim = 0;
+                        count *= dim;
                     }
-                    uint32_t elem_size = array_type->array.element_type ?
-                                         array_type->array.element_type->size : 8;
-                    array_type->size = (uint32_t)(count * elem_size);
+                    if (all_static and count >= 0) {
+                        uint32_t elem_size = array_type->array.element_type ?
+                                             array_type->array.element_type->size : 8;
+                        array_type->size = (uint32_t)(count * elem_size);
+                    }
                 }
 
                 node->type = array_type;
@@ -10705,16 +10742,29 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                             }
                         }
 
-                        /* Compute size */
-                        int128_t count = 1;
-                        for (uint32_t i = 0; i < constrained->array.index_count; i++) {
-                            int128_t lo = Type_Bound_Value(constrained->array.indices[i].low_bound);
-                            int128_t hi = Type_Bound_Value(constrained->array.indices[i].high_bound);
-                            count *= (hi - lo + 1);
+                        /* Compute size - only for fully static bounds */
+                        {
+                            bool all_static = true;
+                            int128_t count = 1;
+                            for (uint32_t i = 0; i < constrained->array.index_count; i++) {
+                                Type_Bound *lo_b = &constrained->array.indices[i].low_bound;
+                                Type_Bound *hi_b = &constrained->array.indices[i].high_bound;
+                                if ((lo_b->kind == BOUND_EXPR and lo_b->expr and lo_b->expr->symbol) or
+                                    (hi_b->kind == BOUND_EXPR and hi_b->expr and hi_b->expr->symbol)) {
+                                    all_static = false; break;
+                                }
+                                int128_t lo = Type_Bound_Value(*lo_b);
+                                int128_t hi = Type_Bound_Value(*hi_b);
+                                int128_t dim = hi - lo + 1;
+                                if (dim < 0) dim = 0;
+                                count *= dim;
+                            }
+                            if (all_static and count >= 0) {
+                                uint32_t elem_size = constrained->array.element_type ?
+                                                     constrained->array.element_type->size : 1;
+                                constrained->size = (uint32_t)(count * elem_size);
+                            }
                         }
-                        uint32_t elem_size = constrained->array.element_type ?
-                                             constrained->array.element_type->size : 1;
-                        constrained->size = (uint32_t)(count * elem_size);
                     }
 
                     node->type = constrained;
@@ -25240,6 +25290,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         uint32_t val = Emit_Temp(cg);
         Emit(cg, "  %%t%u = load i8, ptr %%t%u\n", val, gep);
         Emit(cg, "  br label %%L%u\n", done_l);
+        cg->block_terminated = true;
         Emit_Label_Here(cg, done_l);
         Emit(cg, "  %%t%u = phi i8 [ 0, %%L%u ], [ %%t%u, %%L%u ]\n", t, nil_l, val, ok_l);
         return t;
@@ -25490,6 +25541,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         uint32_t loop_end = cg->label_id++;
 
                         Emit(cg, "  br label %%L%u\n", loop_start);
+                        cg->block_terminated = true;
                         Emit_Label_Here(cg, loop_start);
 
                         uint32_t cur_idx = Emit_Temp(cg);
@@ -25526,6 +25578,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         Emit(cg, "  %%t%u = add %s %%t%u, 1\n", next_idx, agg_idx_type, cur_idx);
                         Emit(cg, "  store %s %%t%u, ptr %%t%u\n", agg_idx_type, next_idx, loop_var);
                         Emit(cg, "  br label %%L%u\n", loop_start);
+                        cg->block_terminated = true;
 
                         Emit_Label_Here(cg, loop_end);
                         cg->block_terminated = false;
@@ -25552,6 +25605,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                 uint32_t loop_end = cg->label_id++;
 
                 Emit(cg, "  br label %%L%u\n", loop_start);
+                cg->block_terminated = true;
                 Emit_Label_Here(cg, loop_start);
 
                 uint32_t cur_idx = Emit_Temp(cg);
@@ -25586,6 +25640,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "  %%t%u = add %s %%t%u, 1\n", next_idx, oth_idx_type, cur_idx);
                 Emit(cg, "  store %s %%t%u, ptr %%t%u\n", oth_idx_type, next_idx, loop_var);
                 Emit(cg, "  br label %%L%u\n", loop_start);
+                cg->block_terminated = true;
 
                 Emit_Label_Here(cg, loop_end);
                 cg->block_terminated = false;
@@ -27220,8 +27275,10 @@ static void Generate_Loop_Statement(Code_Generator *cg, Syntax_Node *node) {
              (int)label_sym->name.length, label_sym->name.data);
         if (label_sym->llvm_label_id == 0)
             label_sym->llvm_label_id = cg->label_id++;
-        if (not cg->block_terminated)
+        if (not cg->block_terminated) {
             Emit(cg, "  br label %%L%u\n", label_sym->llvm_label_id);
+            cg->block_terminated = true;
+        }
         Emit_Label_Here(cg, label_sym->llvm_label_id); /* loop label */
         cg->block_terminated = false;  /* New block started */
     } else {
@@ -27378,6 +27435,7 @@ static void Generate_Return_Statement(Code_Generator *cg, Syntax_Node *node) {
                      (long long)des->record.disc_constraint_values[0]);
                 Emit_Discriminant_Check(cg, dv, ev, iat, des);
                 Emit(cg, "  br label %%L%u\n", skip_lbl);
+                cg->block_terminated = true;
                 Emit_Label_Here(cg, skip_lbl);
                 cg->block_terminated = false;
             }
@@ -27430,6 +27488,7 @@ static void Generate_Return_Statement(Code_Generator *cg, Syntax_Node *node) {
                 Emit_Raise_Constraint_Error(cg, "access array bounds check");
                 Emit_Label_Here(cg, ok_lbl);
                 Emit(cg, "  br label %%L%u\n", skip_lbl);
+                cg->block_terminated = true;
                 Emit_Label_Here(cg, skip_lbl);
                 cg->block_terminated = false;
             }
@@ -27742,6 +27801,7 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
                     Emit_Constraint_Check(cg, low_val, st, NULL);
                     Emit_Constraint_Check(cg, high_val, st, NULL);
                     Emit(cg, "  br label %%L%u\n", skip_lbl);
+                    cg->block_terminated = true;
                     Emit_Label_Here(cg, skip_lbl);
                 }
             } else {
@@ -27779,6 +27839,7 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
     /* Loop start - check condition */
     Emit(cg, "  ; -- loop header (L%u)\n", loop_start);
     Emit(cg, "  br label %%L%u\n", loop_start);
+    cg->block_terminated = true;
     Emit_Label_Here(cg, loop_start);
 
     uint32_t cur = Emit_Temp(cg);
@@ -27847,6 +27908,7 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
 
     Emit(cg, "  ; -- back to loop header\n");
     Emit(cg, "  br label %%L%u\n", loop_start);
+    cg->block_terminated = true;
     Emit(cg, "  ; -- END FOR LOOP (L%u)\n", loop_end);
     Emit_Label_Here(cg, loop_end);
 
@@ -27904,8 +27966,10 @@ static void Generate_Block_Statement(Code_Generator *cg, Syntax_Node *node) {
     if (label_sym) {
         if (label_sym->llvm_label_id == 0)
             label_sym->llvm_label_id = cg->label_id++;
-        if (not cg->block_terminated)
+        if (not cg->block_terminated) {
             Emit(cg, "  br label %%L%u\n", label_sym->llvm_label_id);
+            cg->block_terminated = true;
+        }
         Emit(cg, "  ; -- block entry (L%u)\n", label_sym->llvm_label_id);
         Emit_Label_Here(cg, label_sym->llvm_label_id); /* block label */
         cg->block_terminated = false;  /* New block started */
@@ -28518,6 +28582,7 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                 if (has_terminate) {
                     retry_label = cg->label_id++;
                     Emit(cg, "  br label %%L%u\n", retry_label);
+                    cg->block_terminated = true;
                     Emit_Label_Here(cg, retry_label); /* selective wait retry */
                 }
                 bool delay_label_emitted = false;
@@ -28701,6 +28766,7 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                     /* Already branched to delay_label above */
                 }
                 Emit(cg, "  br label %%L%u\n", done_label);
+                cg->block_terminated = true;
                 Emit_Label_Here(cg, done_label);
             }
             break;
@@ -28722,8 +28788,10 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                     if (label_sym->llvm_label_id == 0)
                         label_sym->llvm_label_id = cg->label_id++;
                     /* Need a branch to the label to terminate previous block (if not already) */
-                    if (not cg->block_terminated)
+                    if (not cg->block_terminated) {
                         Emit(cg, "  br label %%L%u\n", label_sym->llvm_label_id);
+                        cg->block_terminated = true;
+                    }
                     Emit_Label_Here(cg, label_sym->llvm_label_id); /* user label */
                     cg->block_terminated = false;  /* New block started */
                 }
@@ -32214,8 +32282,8 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "  %%done = icmp eq %s %%new_e, 0\n", iat);
     Emit(cg, "  br i1 %%done, label %%exit, label %%cont\n");
     Emit(cg, "cont:\n");
-    Emit(cg, "  %%new_b = mul %s %%b, %%b\n", iat);
     Emit(cg, "  %%new_result = phi %s [ %%result_s, %%square ]\n", iat);
+    Emit(cg, "  %%new_b = mul %s %%b, %%b\n", iat);
     Emit(cg, "  br label %%loop\n");
     Emit(cg, "exit:\n");
     Emit(cg, "  ret %s %%result_s\n", iat);
