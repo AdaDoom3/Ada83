@@ -17576,6 +17576,19 @@ static void Emit(Code_Generator *cg, const char *format, ...) {
     va_end(args);
 }
 
+/* Emit a source location comment for debugging: ; [filename:line:col] */
+static void Emit_Location(Code_Generator *cg, Source_Location loc) {
+    if (loc.line > 0) {
+        const char *fname = loc.filename ? loc.filename : "?";
+        /* Extract just the basename for brevity */
+        const char *base = fname;
+        for (const char *p = fname; *p; p++) {
+            if (*p == '/' or *p == '\\') base = p + 1;
+        }
+        Emit(cg, "  ; [%s:%u:%u]\n", base, loc.line, loc.column);
+    }
+}
+
 /* Emit a label, inserting a fallthrough branch if the prior block is open */
 static void Emit_Label_Here(Code_Generator *cg, uint32_t label) {
     if (not cg->block_terminated) {
@@ -22364,6 +22377,20 @@ static uint32_t Generate_Unary_Op(Code_Generator *cg, Syntax_Node *node) {
 static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
     Symbol *sym = node->apply.prefix->symbol;
 
+    /* Emit call/apply comment if symbol is known */
+    if (sym) {
+        Emit(cg, "  ; apply %.*s (", (int)sym->name.length, sym->name.data);
+        if (sym->kind == SYMBOL_FUNCTION)
+            Emit(cg, "function");
+        else if (sym->kind == SYMBOL_PROCEDURE)
+            Emit(cg, "procedure");
+        else if (sym->kind == SYMBOL_TYPE or sym->kind == SYMBOL_SUBTYPE)
+            Emit(cg, "type conversion");
+        else
+            Emit(cg, "symbol");
+        Emit(cg, ")\n");
+    }
+
     /* Follow rename chain to get actual target symbol for code generation.
      * Renames don't generate their own function body - they call the target. */
     while (sym and sym->renamed_object and
@@ -26658,6 +26685,18 @@ static void Generate_Statement_List(Code_Generator *cg, Node_List *list) {
 static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
     Syntax_Node *target = node->assignment.target;
 
+    /* Emit source location and assignment target info */
+    Emit_Location(cg, node->location);
+    if (target->symbol) {
+        Emit(cg, "  ; ASSIGN %.*s :=\n",
+             (int)target->symbol->name.length, target->symbol->name.data);
+    } else if (target->kind == NK_SELECTED and target->selected.selector.length > 0) {
+        Emit(cg, "  ; ASSIGN .%.*s :=\n",
+             (int)target->selected.selector.length, target->selected.selector.data);
+    } else if (target->kind == NK_APPLY) {
+        Emit(cg, "  ; ASSIGN indexed/slice :=\n");
+    }
+
     /* For RENAMES: redirect to the renamed object */
     if (target->kind == NK_IDENTIFIER and target->symbol and target->symbol->renamed_object) {
         target = target->symbol->renamed_object;
@@ -27266,17 +27305,23 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
 }
 
 static void Generate_If_Statement(Code_Generator *cg, Syntax_Node *node) {
+    Emit_Location(cg, node->location);
+    Emit(cg, "  ; IF statement\n");
+
     uint32_t end_label = Emit_Label(cg);
 
+    Emit(cg, "  ; -- evaluate condition\n");
     uint32_t cond = Generate_Expression(cg, node->if_stmt.condition);
     uint32_t then_label = Emit_Label(cg);
     uint32_t next_label = Emit_Label(cg);
 
     const char *cond_type = Expression_Llvm_Type(cg, node->if_stmt.condition);
     cond = Emit_Convert(cg, cond, cond_type, "i1");
-    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cond, then_label, next_label);
+    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u  ; IF cond -> THEN / ELSE\n",
+         cond, then_label, next_label);
     cg->block_terminated = true;
 
+    Emit(cg, "\n  ; -- THEN branch\n");
     Emit_Label_Here(cg, then_label);
     Generate_Statement_List(cg, &node->if_stmt.then_stmts);
     Emit_Branch_If_Needed(cg, end_label);
@@ -27284,6 +27329,8 @@ static void Generate_If_Statement(Code_Generator *cg, Syntax_Node *node) {
     /* ELSIF parts: each is an NK_IF node with condition + then_stmts */
     for (uint32_t i = 0; i < node->if_stmt.elsif_parts.count; i++) {
         Syntax_Node *elsif = node->if_stmt.elsif_parts.items[i];
+        Emit(cg, "\n  ; -- ELSIF #%u\n", i + 1);
+        Emit_Location(cg, elsif->location);
         Emit_Label_Here(cg, next_label);
 
         uint32_t ec = Generate_Expression(cg, elsif->if_stmt.condition);
@@ -27292,7 +27339,8 @@ static void Generate_If_Statement(Code_Generator *cg, Syntax_Node *node) {
 
         const char *ec_type = Expression_Llvm_Type(cg, elsif->if_stmt.condition);
         ec = Emit_Convert(cg, ec, ec_type, "i1");
-        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", ec, elsif_then, next_label);
+        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u  ; ELSIF cond\n",
+             ec, elsif_then, next_label);
         cg->block_terminated = true;
 
         Emit_Label_Here(cg, elsif_then);
@@ -27302,23 +27350,31 @@ static void Generate_If_Statement(Code_Generator *cg, Syntax_Node *node) {
 
     Emit_Label_Here(cg, next_label);
     if (node->if_stmt.else_stmts.count > 0) {
+        Emit(cg, "  ; -- ELSE branch\n");
         Generate_Statement_List(cg, &node->if_stmt.else_stmts);
     }
     Emit_Branch_If_Needed(cg, end_label);
 
+    Emit(cg, "  ; -- END IF\n");
     Emit_Label_Here(cg, end_label);
 }
 
 static void Generate_Loop_Statement(Code_Generator *cg, Syntax_Node *node) {
+    Emit_Location(cg, node->location);
+
     /* Emit LLVM label for Ada label (enables GOTO targeting this loop) */
     Symbol *label_sym = node->loop_stmt.label_symbol;
     if (label_sym) {
+        Emit(cg, "  ; LOOP %.*s:\n",
+             (int)label_sym->name.length, label_sym->name.data);
         if (label_sym->llvm_label_id == 0)
             label_sym->llvm_label_id = cg->label_id++;
         if (not cg->block_terminated)
             Emit(cg, "  br label %%L%u\n", label_sym->llvm_label_id);
         Emit_Label_Here(cg, label_sym->llvm_label_id); /* loop label */
         cg->block_terminated = false;  /* New block started */
+    } else {
+        Emit(cg, "  ; LOOP (anonymous)\n");
     }
 
     uint32_t loop_start = Emit_Label(cg);
@@ -27334,24 +27390,30 @@ static void Generate_Loop_Statement(Code_Generator *cg, Syntax_Node *node) {
     if (label_sym) label_sym->loop_exit_label_id = loop_end;
 
     Emit_Branch_If_Needed(cg, loop_start);
+    Emit(cg, "  ; -- loop header (L%u)\n", loop_start);
     Emit_Label_Here(cg, loop_start);
 
     /* Condition check for WHILE loops (FOR loops dispatched to Generate_For_Loop) */
     if (node->loop_stmt.iteration_scheme) {
+        Emit(cg, "  ; -- WHILE condition\n");
         Syntax_Node *scheme = node->loop_stmt.iteration_scheme;
         uint32_t cond = Generate_Expression(cg, scheme);
         const char *cond_type = Expression_Llvm_Type(cg, scheme);
         cond = Emit_Convert(cg, cond, cond_type, "i1");
-        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cond, loop_body, loop_end);
+        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u  ; WHILE cond -> body/exit\n",
+             cond, loop_body, loop_end);
         cg->block_terminated = true;
     } else {
         Emit_Branch_If_Needed(cg, loop_body);
     }
 
+    Emit(cg, "  ; -- loop body (L%u)\n", loop_body);
     Emit_Label_Here(cg, loop_body);
     Generate_Statement_List(cg, &node->loop_stmt.statements);
+    Emit(cg, "  ; -- back to loop header\n");
     Emit_Branch_If_Needed(cg, loop_start);
 
+    Emit(cg, "  ; -- END LOOP (L%u)\n", loop_end);
     Emit_Label_Here(cg, loop_end);
 
     cg->loop_exit_label = saved_exit;
@@ -27359,10 +27421,18 @@ static void Generate_Loop_Statement(Code_Generator *cg, Syntax_Node *node) {
 }
 
 static void Generate_Return_Statement(Code_Generator *cg, Syntax_Node *node) {
+    Emit_Location(cg, node->location);
     cg->has_return = true;
 
     /* Check if we're in a BIP function - result built into __BIPaccess */
     bool is_bip = BIP_In_BIP_Function();
+    if (cg->current_function) {
+        Emit(cg, "  ; RETURN from %.*s%s\n",
+             (int)cg->current_function->name.length, cg->current_function->name.data,
+             is_bip ? " (BIP)" : "");
+    } else {
+        Emit(cg, "  ; RETURN\n");
+    }
 
     if (node->return_stmt.expression) {
         Syntax_Node *expr = node->return_stmt.expression;
@@ -27524,6 +27594,9 @@ static void Generate_Return_Statement(Code_Generator *cg, Syntax_Node *node) {
 
 static void Generate_Case_Statement(Code_Generator *cg, Syntax_Node *node) {
     /* CASE expr IS WHEN choice => stmts; ... END CASE; */
+    Emit_Location(cg, node->location);
+    Emit(cg, "  ; CASE statement\n");
+    Emit(cg, "  ; -- evaluate selector expression\n");
     uint32_t selector = Generate_Expression(cg, node->case_stmt.expression);
     const char *case_type = Expression_Llvm_Type(cg, node->case_stmt.expression);
     /* Coerce selector to its declared type (arithmetic may widen to i32) */
@@ -27540,10 +27613,13 @@ static void Generate_Case_Statement(Code_Generator *cg, Syntax_Node *node) {
     }
 
     /* Generate branching logic */
+    Emit(cg, "  ; -- test %u alternative(s)\n", num_alts);
     for (uint32_t i = 0; i < num_alts; i++) {
         Syntax_Node *alt = node->case_stmt.alternatives.items[i];
         uint32_t next_check = (i + 1 < num_alts) ? Emit_Label(cg) : end_label;
 
+        Emit(cg, "  ; -- WHEN alternative #%u (%u choice(s))\n",
+             i + 1, alt->association.choices.count);
         /* Check each choice in this alternative */
         for (uint32_t j = 0; j < alt->association.choices.count; j++) {
             Syntax_Node *choice = alt->association.choices.items[j];
@@ -27668,8 +27744,10 @@ static void Generate_Case_Statement(Code_Generator *cg, Syntax_Node *node) {
     }
 
     /* Generate alternative bodies - expression is a block with statements */
+    Emit(cg, "  ; -- CASE alternative bodies\n");
     for (uint32_t i = 0; i < num_alts; i++) {
         Syntax_Node *alt = node->case_stmt.alternatives.items[i];
+        Emit(cg, "  ; -- alternative #%u body (L%u)\n", i + 1, alt_labels[i]);
         Emit_Label_Here(cg, alt_labels[i]);
         if (alt->association.expression and
             alt->association.expression->kind == NK_BLOCK) {
@@ -27678,6 +27756,7 @@ static void Generate_Case_Statement(Code_Generator *cg, Syntax_Node *node) {
         Emit_Branch_If_Needed(cg, end_label);
     }
 
+    Emit(cg, "  ; -- END CASE (L%u)\n", end_label);
     Emit_Label_Here(cg, end_label);
 }
 
@@ -27694,12 +27773,25 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
     Symbol *loop_var = loop_id->symbol;
     bool is_reverse = node->loop_stmt.is_reverse;
 
+    /* Emit source location and FOR loop header comment */
+    Emit_Location(cg, node->location);
+    Symbol *label_sym = node->loop_stmt.label_symbol;
+    if (label_sym) {
+        Emit(cg, "  ; FOR %.*s IN %s", (int)label_sym->name.length, label_sym->name.data,
+             is_reverse ? "REVERSE" : "");
+    } else if (loop_var) {
+        Emit(cg, "  ; FOR %.*s IN %s", (int)loop_var->name.length, loop_var->name.data,
+             is_reverse ? "REVERSE" : "");
+    } else {
+        Emit(cg, "  ; FOR <anon> IN %s", is_reverse ? "REVERSE" : "");
+    }
+    Emit(cg, " ... LOOP\n");
+
     uint32_t loop_start = Emit_Label(cg);
     uint32_t loop_body = Emit_Label(cg);
     uint32_t loop_end = Emit_Label(cg);
 
     /* Store exit label on loop symbol for named EXIT statements */
-    Symbol *label_sym = node->loop_stmt.label_symbol;
     if (label_sym) label_sym->loop_exit_label_id = loop_end;
 
     uint32_t saved_exit = cg->loop_exit_label;
@@ -27708,12 +27800,15 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
     /* Allocate loop variable — GNAT LLVM: use native Integer type, not i64 */
     const char *loop_type = Integer_Arith_Type(cg);
     if (loop_var) {
+        Emit(cg, "  ; -- alloca loop variable %.*s\n",
+             (int)loop_var->name.length, loop_var->name.data);
         Emit(cg, "  %%");
         Emit_Symbol_Name(cg, loop_var);
         Emit(cg, " = alloca %s\n", loop_type);
     }
 
     /* Get range bounds */
+    Emit(cg, "  ; -- compute range bounds\n");
     uint32_t low_val, high_val;
     if (range and range->kind == NK_RANGE) {
         low_val = Generate_Expression(cg, range->range.low);
@@ -27818,17 +27913,23 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
 
     /* Initialize loop variable */
     if (loop_var) {
+        Emit(cg, "  ; -- init %.*s := %s bound\n",
+             (int)loop_var->name.length, loop_var->name.data,
+             is_reverse ? "high" : "low");
         Emit(cg, "  store %s %%t%u, ptr %%", loop_type, is_reverse ? high_val : low_val);
         Emit_Symbol_Name(cg, loop_var);
         Emit(cg, "\n");
     }
 
     /* Loop start - check condition */
+    Emit(cg, "  ; -- loop header (L%u)\n", loop_start);
     Emit(cg, "  br label %%L%u\n", loop_start);
     Emit_Label_Here(cg, loop_start);
 
     uint32_t cur = Emit_Temp(cg);
     if (loop_var) {
+        Emit(cg, "  ; -- load current %.*s\n",
+             (int)loop_var->name.length, loop_var->name.data);
         Emit(cg, "  %%t%u = load %s, ptr %%", cur, loop_type);
         Emit_Symbol_Name(cg, loop_var);
         Emit(cg, "\n");
@@ -27836,45 +27937,60 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
 
     uint32_t cond = Emit_Temp(cg);
     if (is_reverse) {
-        Emit(cg, "  %%t%u = icmp sge %s %%t%u, %%t%u\n", cond, loop_type, cur, low_val);
+        Emit(cg, "  %%t%u = icmp sge %s %%t%u, %%t%u  ; %.*s >= low?\n",
+             cond, loop_type, cur, low_val,
+             loop_var ? (int)loop_var->name.length : 1,
+             loop_var ? loop_var->name.data : "?");
     } else {
-        Emit(cg, "  %%t%u = icmp sle %s %%t%u, %%t%u\n", cond, loop_type, cur, high_val);
+        Emit(cg, "  %%t%u = icmp sle %s %%t%u, %%t%u  ; %.*s <= high?\n",
+             cond, loop_type, cur, high_val,
+             loop_var ? (int)loop_var->name.length : 1,
+             loop_var ? loop_var->name.data : "?");
     }
-    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cond, loop_body, loop_end);
+    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u  ; -> body / end\n", cond, loop_body, loop_end);
 
     /* Loop body */
+    Emit(cg, "  ; -- loop body (L%u)\n", loop_body);
     Emit_Label_Here(cg, loop_body);
     Generate_Statement_List(cg, &node->loop_stmt.statements);
 
     /* Ada RM 5.5: loop parameter takes each value exactly once.
      * Must check if cur == final_value BEFORE incrementing to avoid
      * overflow when iterating up to TYPE'LAST or down to TYPE'FIRST. */
+    Emit(cg, "  ; -- check if at final value before %s\n", is_reverse ? "decrement" : "increment");
     if (loop_var) {
         uint32_t at_end = Emit_Temp(cg);
         if (is_reverse) {
-            Emit(cg, "  %%t%u = icmp eq %s %%t%u, %%t%u  ; at low bound?\n",
-                 at_end, loop_type, cur, low_val);
+            Emit(cg, "  %%t%u = icmp eq %s %%t%u, %%t%u  ; %.*s = low? (exit before underflow)\n",
+                 at_end, loop_type, cur, low_val,
+                 (int)loop_var->name.length, loop_var->name.data);
         } else {
-            Emit(cg, "  %%t%u = icmp eq %s %%t%u, %%t%u  ; at high bound?\n",
-                 at_end, loop_type, cur, high_val);
+            Emit(cg, "  %%t%u = icmp eq %s %%t%u, %%t%u  ; %.*s = high? (exit before overflow)\n",
+                 at_end, loop_type, cur, high_val,
+                 (int)loop_var->name.length, loop_var->name.data);
         }
         uint32_t loop_inc = Emit_Label(cg);
-        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u  ; -> end / inc\n",
              at_end, loop_end, loop_inc);
+        Emit(cg, "  ; -- loop increment (L%u)\n", loop_inc);
         Emit_Label_Here(cg, loop_inc);
 
         uint32_t next = Emit_Temp(cg);
         if (is_reverse) {
-            Emit(cg, "  %%t%u = sub %s %%t%u, 1\n", next, loop_type, cur);
+            Emit(cg, "  %%t%u = sub %s %%t%u, 1  ; %.*s - 1\n",
+                 next, loop_type, cur, (int)loop_var->name.length, loop_var->name.data);
         } else {
-            Emit(cg, "  %%t%u = add %s %%t%u, 1\n", next, loop_type, cur);
+            Emit(cg, "  %%t%u = add %s %%t%u, 1  ; %.*s + 1\n",
+                 next, loop_type, cur, (int)loop_var->name.length, loop_var->name.data);
         }
         Emit(cg, "  store %s %%t%u, ptr %%", loop_type, next);
         Emit_Symbol_Name(cg, loop_var);
         Emit(cg, "\n");
     }
 
+    Emit(cg, "  ; -- back to loop header\n");
     Emit(cg, "  br label %%L%u\n", loop_start);
+    Emit(cg, "  ; -- END FOR LOOP (L%u)\n", loop_end);
     Emit_Label_Here(cg, loop_end);
 
     cg->loop_exit_label = saved_exit;
@@ -27894,6 +28010,7 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node);
 
 static void Generate_Raise_Statement(Code_Generator *cg, Syntax_Node *node) {
     /* RAISE E; or RAISE; (reraise) */
+    Emit_Location(cg, node->location);
     if (node->raise_stmt.exception_name) {
         Symbol *exc = node->raise_stmt.exception_name->symbol;
         if (exc) {
@@ -27917,13 +28034,22 @@ static void Generate_Raise_Statement(Code_Generator *cg, Syntax_Node *node) {
 }
 
 static void Generate_Block_Statement(Code_Generator *cg, Syntax_Node *node) {
-    /* Emit LLVM label for Ada label (enables GOTO targeting this block) */
+    /* Emit location and block info comment */
+    Emit_Location(cg, node->location);
     Symbol *label_sym = node->block_stmt.label_symbol;
+    if (label_sym) {
+        Emit(cg, "  ; BLOCK %.*s:\n", (int)label_sym->name.length, label_sym->name.data);
+    } else {
+        Emit(cg, "  ; BLOCK (anonymous)\n");
+    }
+
+    /* Emit LLVM label for Ada label (enables GOTO targeting this block) */
     if (label_sym) {
         if (label_sym->llvm_label_id == 0)
             label_sym->llvm_label_id = cg->label_id++;
         if (not cg->block_terminated)
             Emit(cg, "  br label %%L%u\n", label_sym->llvm_label_id);
+        Emit(cg, "  ; -- block entry (L%u)\n", label_sym->llvm_label_id);
         Emit_Label_Here(cg, label_sym->llvm_label_id); /* block label */
         cg->block_terminated = false;  /* New block started */
     }
@@ -27935,21 +28061,26 @@ static void Generate_Block_Statement(Code_Generator *cg, Syntax_Node *node) {
         /* Per Ada RM: Exception handlers only cover the statement part,
          * NOT the declarative part. Exceptions in declarations propagate
          * to the enclosing block's handler. */
+        Emit(cg, "  ; -- has %u exception handler(s)\n", node->block_stmt.handlers.count);
 
         /* Allocate handler frame first (needed for stack allocation order) */
+        Emit(cg, "  ; -- alloca exception handler frame\n");
         uint32_t handler_frame = Emit_Temp(cg);
         Emit(cg, "  %%t%u = alloca { ptr, [200 x i8] }, align 16  ; handler frame\n", handler_frame);
 
         /* Generate declarations BEFORE setting up the exception handler.
          * This ensures exceptions in declarative part propagate outward. */
+        Emit(cg, "  ; -- block declarations (not covered by handler)\n");
         Generate_Declaration_List(cg, &node->block_stmt.declarations);
 
         /* Now setup exception handling for the statement part only */
+        Emit(cg, "  ; -- setup exception handler for statement part\n");
         uint32_t handler_label = Emit_Label(cg);
         uint32_t normal_label = Emit_Label(cg);
         uint32_t end_label = Emit_Label(cg);
 
         /* Push exception handler */
+        Emit(cg, "  ; -- push handler and call setjmp\n");
         Emit(cg, "  call void @__ada_push_handler(ptr %%t%u)\n", handler_frame);
 
         /* Call setjmp on the jmp_buf field (field 1) */
@@ -27966,6 +28097,7 @@ static void Generate_Block_Statement(Code_Generator *cg, Syntax_Node *node) {
              is_normal, normal_label, handler_label);
 
         /* Normal execution path */
+        Emit(cg, "  ; -- normal execution (L%u)\n", normal_label);
         Emit_Label_Here(cg, normal_label);
 
         /* Save and set exception context */
@@ -27978,13 +28110,16 @@ static void Generate_Block_Statement(Code_Generator *cg, Syntax_Node *node) {
         cg->in_exception_region = true;
 
         /* Generate block statements (handler covers only this part) */
+        Emit(cg, "  ; -- BEGIN block statements (covered by handler)\n");
         Generate_Statement_List(cg, &node->block_stmt.statements);
 
         /* Pop handler on normal exit */
+        Emit(cg, "  ; -- normal exit: pop handler\n");
         Emit(cg, "  call void @__ada_pop_handler()\n");
         Emit(cg, "  br label %%L%u\n", end_label);
 
         /* Exception handler entry */
+        Emit(cg, "  ; -- EXCEPTION handler entry (L%u)\n", handler_label);
         Emit_Label_Here(cg, handler_label);
         cg->block_terminated = false;
         Emit(cg, "  call void @__ada_pop_handler()\n");
@@ -27994,6 +28129,7 @@ static void Generate_Block_Statement(Code_Generator *cg, Syntax_Node *node) {
         Generate_Exception_Dispatch(cg, &node->block_stmt.handlers, exc_id, end_label);
 
         /* End of block */
+        Emit(cg, "  ; -- END BLOCK (L%u)\n", end_label);
         Emit_Label_Here(cg, end_label);
 
         /* Restore exception context */
@@ -28002,8 +28138,12 @@ static void Generate_Block_Statement(Code_Generator *cg, Syntax_Node *node) {
         cg->in_exception_region = saved_in_region;
     } else {
         /* Simple block without exception handlers */
+        if (node->block_stmt.declarations.count > 0)
+            Emit(cg, "  ; -- block declarations\n");
         Generate_Declaration_List(cg, &node->block_stmt.declarations);
+        Emit(cg, "  ; -- block statements\n");
         Generate_Statement_List(cg, &node->block_stmt.statements);
+        Emit(cg, "  ; -- END BLOCK\n");
     }
 }
 
@@ -28018,7 +28158,22 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
         case NK_CALL_STMT: {
             /* Procedure call - might be NK_APPLY, NK_IDENTIFIER (no args), or
              * NK_SELECTED (for entry calls like Task.Entry without args) */
+            Emit_Location(cg, node->location);
             Syntax_Node *target = node->assignment.target;
+            /* Emit procedure name comment if available */
+            if (target->symbol) {
+                Emit(cg, "  ; CALL %.*s\n",
+                     (int)target->symbol->name.length, target->symbol->name.data);
+            } else if (target->kind == NK_APPLY and target->apply.prefix and
+                       target->apply.prefix->symbol) {
+                Emit(cg, "  ; CALL %.*s(...)\n",
+                     (int)target->apply.prefix->symbol->name.length,
+                     target->apply.prefix->symbol->name.data);
+            } else if (target->kind == NK_SELECTED) {
+                Emit(cg, "  ; CALL (selected component)\n");
+            } else {
+                Emit(cg, "  ; CALL (expression)\n");
+            }
             if (target->kind == NK_APPLY) {
                 Generate_Expression(cg, target);
             } else if (target->kind == NK_SELECTED) {
@@ -28309,20 +28464,33 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
         case NK_EXIT:
             {
                 /* Named EXIT targets a specific loop; unnamed exits innermost */
+                Emit_Location(cg, node->location);
+                Symbol *tgt = node->exit_stmt.target;
+                if (tgt) {
+                    Emit(cg, "  ; EXIT %.*s", (int)tgt->name.length, tgt->name.data);
+                } else {
+                    Emit(cg, "  ; EXIT (innermost loop)");
+                }
+                if (node->exit_stmt.condition)
+                    Emit(cg, " WHEN ...\n");
+                else
+                    Emit(cg, "\n");
+
                 uint32_t exit_label = cg->loop_exit_label;
-                if (node->exit_stmt.target and node->exit_stmt.target->loop_exit_label_id)
-                    exit_label = node->exit_stmt.target->loop_exit_label_id;
+                if (tgt and tgt->loop_exit_label_id)
+                    exit_label = tgt->loop_exit_label_id;
                 if (node->exit_stmt.condition) {
                     Syntax_Node *exit_cond = node->exit_stmt.condition;
+                    Emit(cg, "  ; -- evaluate exit condition\n");
                     uint32_t cond = Generate_Expression(cg, exit_cond);
                     const char *cond_type = Expression_Llvm_Type(cg, exit_cond);
                     cond = Emit_Convert(cg, cond, cond_type, "i1");
                     uint32_t cont = Emit_Label(cg);
-                    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u  ; WHEN true -> exit / continue\n",
                          cond, exit_label, cont);
                     Emit_Label_Here(cg, cont);
                 } else {
-                    Emit(cg, "  br label %%L%u\n", exit_label);
+                    Emit(cg, "  br label %%L%u  ; unconditional exit\n", exit_label);
                     cg->block_terminated = true;
                 }
             }
@@ -28796,10 +28964,19 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
     bool use_frame = cg->current_nesting_level > 0;
     bool is_package_level = (cg->current_function == NULL);
 
+    /* Emit source location for the object declaration */
+    Emit_Location(cg, node->location);
+
     for (uint32_t i = 0; i < node->object_decl.names.count; i++) {
         Syntax_Node *name = node->object_decl.names.items[i];
         Symbol *sym = name->symbol;
         if (not sym) continue;
+
+        /* Emit declaration info comment */
+        Emit(cg, "  ; %s %.*s : %s\n",
+             node->object_decl.is_constant ? "CONST" : "VAR",
+             (int)sym->name.length, sym->name.data,
+             sym->type ? Type_To_Llvm(sym->type) : "?");
 
         Type_Info *ty = sym->type;
 
@@ -29948,6 +30125,16 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
                       parent_owner->kind == SYMBOL_PROCEDURE);
     cg->is_nested = is_nested;
     cg->enclosing_function = is_nested ? parent_owner : NULL;
+
+    /* Emit comment showing function/procedure being generated */
+    Emit(cg, "\n; ============================================================\n");
+    Emit(cg, "; %s %.*s", is_function ? "FUNCTION" : "PROCEDURE",
+         (int)sym->name.length, sym->name.data);
+    if (is_nested)
+        Emit(cg, " (nested)");
+    Emit(cg, "\n");
+    Emit_Location(cg, node->location);
+    Emit(cg, "; ============================================================\n");
 
     Emit_Function_Header(cg, sym, is_nested);
 
