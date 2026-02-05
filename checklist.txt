@@ -291,3 +291,414 @@ VERIFIED WORKING:
   - Pure/preelaborate optimization skips unnecessary calls
 
 ================================================================================
+
+
+
+================================================================================
+                    LIMITED TYPES — BUILD-IN-PLACE MODEL
+                         Comprehensive Master Plan
+================================================================================
+
+ORIGINAL PROMPT:
+--------------------------------------------------------------------------------
+Make a master plan for the implementation of "Limited Types" using the
+"Build in place" model. Also don't reference GNAT LLVM in the source
+comments - sounds lame.
+--------------------------------------------------------------------------------
+
+================================================================================
+                              OVERVIEW
+================================================================================
+
+Build-in-Place (BIP) is the canonical implementation strategy for Ada limited
+types. Limited types cannot be copied, so functions returning them must
+construct the result directly in the caller's destination—no intermediate
+temporaries, no assignment. This is fundamentally different from non-limited
+returns where the function builds a local object and copies it out.
+
+Key insight: BIP transforms function returns into an OUT-parameter protocol,
+passing allocation information and a destination pointer INTO the function.
+
+Ada 83 Limited Types (RM 7.4.4):
+  - Records with limited components
+  - Task types (always limited)
+  - Private types declared "limited private"
+  - Types derived from limited types
+
+================================================================================
+                              MASTER PLAN
+================================================================================
+
+PHASE 1: ANALYSIS & DESIGN
+--------------------------
+[ ] 1.1 Study reference implementation architecture:
+    - exp_ch6.adb: Function return expansion (10,694 lines)
+    - sem_ch6.adb: Subprogram semantic analysis (14,385 lines)
+    - exp_util.adb: BIP utility functions
+    - einfo.ads: Entity information for BIP flags
+
+[ ] 1.2 Document current ada83.c limited type handling:
+    - Identify existing limited type detection
+    - Map current function return codegen
+    - Document aggregate handling for limited types
+    - Identify gaps vs. full BIP model
+
+[ ] 1.3 Design BIP data structures (Haskell-like C99):
+    - BIP_Alloc_Form: Sum type for allocation strategy
+    - BIP_Formal_Kind: Sum type for extra parameter kinds
+    - BIP_Context: Record for call-site transformation state
+    - BIP_Return_Info: Record for return statement expansion
+
+PHASE 2: CORE ALGEBRAIC TYPES
+-----------------------------
+[ ] 2.1 Define BIP_Alloc_Form enum:
+    typedef enum {
+        BIP_ALLOC_UNSPECIFIED,      /* Let callee decide (default)        */
+        BIP_ALLOC_CALLER,           /* Caller provides space (stack/obj)  */
+        BIP_ALLOC_SECONDARY_STACK,  /* Use secondary stack                */
+        BIP_ALLOC_GLOBAL_HEAP,      /* Use heap (new/allocator)           */
+        BIP_ALLOC_USER_POOL         /* User-defined storage pool          */
+    } BIP_Alloc_Form;
+
+[ ] 2.2 Define BIP_Formal_Kind enum:
+    typedef enum {
+        BIP_FORMAL_ALLOC_FORM,      /* Allocation strategy selector       */
+        BIP_FORMAL_STORAGE_POOL,    /* Pool for user-pool allocation      */
+        BIP_FORMAL_FINALIZATION,    /* Finalization collection access     */
+        BIP_FORMAL_TASK_MASTER,     /* Task master for task components    */
+        BIP_FORMAL_ACTIVATION,      /* Activation chain for tasks         */
+        BIP_FORMAL_OBJECT_ACCESS    /* Pointer to destination space       */
+    } BIP_Formal_Kind;
+
+[ ] 2.3 Define BIP_Context structure:
+    typedef struct {
+        Symbol *func;               /* Function being called              */
+        Node   *call_node;          /* Call expression AST                */
+        Node   *target;             /* Destination (NULL = temp needed)   */
+        BIP_Alloc_Form alloc_form;  /* Determined allocation strategy     */
+        Symbol *storage_pool;       /* Pool symbol (if user pool)         */
+        Symbol *finalization_coll;  /* Finalization collection            */
+        Symbol *task_master;        /* Task master (if tasks present)     */
+        Symbol *activation_chain;   /* Activation chain (if tasks)        */
+        bool   needs_finalization;  /* Type has controlled components     */
+        bool   has_task_components; /* Type has task components           */
+    } BIP_Context;
+
+PHASE 3: TYPE PREDICATES (Pure Functions)
+-----------------------------------------
+[ ] 3.1 Is_Limited_Type(type) — Core predicate:
+    - Returns true for: explicit "limited", task types, protected types,
+      types with limited components, limited private views
+    - Must handle derived types (inherit limitedness)
+    - Must handle private type completion
+
+[ ] 3.2 Is_Build_In_Place_Result_Type(type) — BIP eligibility:
+    - Returns true if function returning this type needs BIP
+    - Criteria: Is_Limited_Type AND (Is_Tagged OR Has_Task_Components
+      OR Has_Controlled_Components OR Is_Explicitly_Limited)
+    - Ada 83 note: No tagged types, focus on tasks and explicit limited
+
+[ ] 3.3 Needs_BIP_Alloc_Form(func) — Does callee need alloc form?
+    - True if result type size not statically known
+    - True if unconstrained or class-wide (Ada 95+)
+    - Ada 83: Mainly for unconstrained array returns
+
+[ ] 3.4 Needs_BIP_Finalization(type) — Finalization chain needed?
+    - True if type has controlled components
+    - Ada 83: No controlled types, but useful for extension
+
+[ ] 3.5 Needs_BIP_Task_Info(type) — Task master/chain needed?
+    - True if type has task components (direct or nested)
+    - Must recursively check component types
+    - Task types themselves need this for activation
+
+[ ] 3.6 Has_BIP_Extra_Formals(func) — Does function have BIP params?
+    - True if Is_Build_In_Place_Result_Type(Return_Type(func))
+    - Cached on function symbol for efficiency
+
+PHASE 4: EXTRA FORMAL PARAMETERS
+--------------------------------
+[ ] 4.1 BIP_Add_Extra_Formals(func):
+    - Called during subprogram elaboration
+    - Adds hidden parameters BEFORE the explicit formals
+    - Order: Alloc_Form, Storage_Pool, Finalization, Task_Master,
+             Activation_Chain, Object_Access
+    - Naming: __BIPalloc, __BIPpool, __BIPfinal, __BIPmaster,
+              __BIPchain, __BIPaccess
+
+[ ] 4.2 Extra formal symbol creation:
+    - Create Symbol with HIDDEN flag set
+    - Link into function's formal chain
+    - Set appropriate types:
+      * __BIPalloc:  Integer (enum value)
+      * __BIPpool:  Pointer to storage pool (System.Address)
+      * __BIPfinal: Pointer to finalization collection
+      * __BIPmaster: Task master ID (Integer)
+      * __BIPchain: Pointer to activation chain
+      * __BIPaccess: Pointer to result type
+
+[ ] 4.3 BIP_Get_Extra_Formal(func, kind):
+    - Retrieve specific BIP formal by kind
+    - Used in call-site expansion and return expansion
+
+PHASE 5: CALL-SITE TRANSFORMATION
+---------------------------------
+[ ] 5.1 BIP_Determine_Alloc_Form(context):
+    - Simple declaration: CALLER (stack space)
+    - Allocator (new): GLOBAL_HEAP or USER_POOL
+    - Return statement: Propagate caller's form
+    - Aggregate in place: CALLER
+    - Nested call: Propagate outer context
+
+[ ] 5.2 BIP_Expand_Call(context):
+    Main call-site transformation:
+
+    BEFORE:  X : T := F(args);
+    AFTER:   F(__BIPalloc => CALLER,
+               __BIPaccess => X'Address,
+               args);
+
+    - Rewrite call to include extra actuals
+    - For CALLER alloc: pass address of destination
+    - For HEAP alloc: pass null (callee allocates)
+    - Handle nested function calls (propagate BIP)
+
+[ ] 5.3 BIP_Expand_Allocator(alloc_node):
+    Transform: P := new T'(F(args))
+
+    - Determine pool (default or user-specified)
+    - Set alloc_form = GLOBAL_HEAP or USER_POOL
+    - Allocate space first (or let callee do it)
+    - Pass allocated address as __BIPaccess
+
+[ ] 5.4 BIP_Expand_Return_Call(return_node, inner_call):
+    Transform: return F(args);  -- in BIP function
+
+    - Propagate outer BIP formals to inner call
+    - __BIPalloc => Outer.__BIPalloc
+    - __BIPaccess => Outer.__BIPaccess
+    - Chain finalization/task info
+
+[ ] 5.5 BIP_Expand_Aggregate(agg_node, dest):
+    Transform: X : T := (field1 => val1, ...);
+
+    - Build aggregate directly into destination
+    - No temporary needed for limited aggregates
+    - Becomes series of component assignments
+
+PHASE 6: RETURN STATEMENT EXPANSION
+-----------------------------------
+[ ] 6.1 BIP_Expand_Return_Stmt(return_node):
+    Main return transformation for BIP functions:
+
+    Original: return (field1 => expr1, field2 => expr2);
+
+    Expanded (conceptually):
+      case __BIPalloc is
+        when CALLER =>
+          -- Build into caller's space
+          __BIPaccess.field1 := expr1;
+          __BIPaccess.field2 := expr2;
+        when SECONDARY_STACK =>
+          -- Allocate on secondary stack
+          tmp := SS_Allocate(T'Size);
+          tmp.field1 := expr1;
+          tmp.field2 := expr2;
+          __BIPaccess.all := tmp;  -- Actually just set the out-pointer
+        when GLOBAL_HEAP =>
+          -- Allocate on heap
+          tmp := new T;
+          tmp.field1 := expr1;
+          tmp.field2 := expr2;
+        when USER_POOL =>
+          -- Use provided pool
+          tmp := Allocate(pool, T'Size);
+          ...
+      end case;
+      -- Attach to finalization chain if needed
+      -- Activate tasks if present
+
+[ ] 6.2 BIP_Return_Simple_Expression(return_node):
+    Handle: return X; -- where X is a limited object
+
+    - Copy X's value into __BIPaccess target
+    - For task types: Transfer task identity
+    - For controlled: Adjust finalization chain
+
+[ ] 6.3 BIP_Return_Function_Call(return_node):
+    Handle: return F(args); -- nested BIP call
+
+    - Expand as BIP call with propagated BIP params
+    - No local temporary needed
+    - Direct build-through to outer destination
+
+PHASE 7: TASK COMPONENT HANDLING
+--------------------------------
+[ ] 7.1 Task activation chain threading:
+    - Task components must be activated after construction
+    - Activation chain links tasks for batch activation
+    - Chain passed via __BIPchain parameter
+
+[ ] 7.2 Task master management:
+    - Tasks need a master for termination/exception handling
+    - Master ID passed via __BIPmaster parameter
+    - Enclosing construct is typically the master
+
+[ ] 7.3 BIP_Initialize_Task_Components(type, dest):
+    - Iterate task components
+    - Link each into activation chain
+    - Set task master
+    - Defer activation until all components built
+
+[ ] 7.4 BIP_Activate_Tasks(chain):
+    - Called after aggregate/return completion
+    - Activates all tasks on the chain
+    - Runtime call: __gnat_activate_tasks(chain)
+
+PHASE 8: FINALIZATION INTEGRATION (Future)
+------------------------------------------
+Note: Ada 83 doesn't have controlled types, but design for extension.
+
+[ ] 8.1 Finalization collection management:
+    - Track objects for finalization
+    - Collection passed via __BIPfinal parameter
+
+[ ] 8.2 BIP_Attach_To_Collection(obj, coll):
+    - Link object into finalization collection
+    - Happens after construction complete
+
+[ ] 8.3 BIP_Detach_From_Collection(obj):
+    - Remove from collection (on move/transfer)
+
+PHASE 9: CODE GENERATION
+------------------------
+[ ] 9.1 BIP function prologue:
+    - Access BIP extra formals
+    - Set up local state based on __BIPalloc
+
+[ ] 9.2 BIP return codegen:
+    - Generate allocation code (if needed)
+    - Generate component-by-component build
+    - Generate task activation (if needed)
+    - Generate finalization attachment (if needed)
+
+[ ] 9.3 BIP call site codegen:
+    - Compute extra actual values
+    - Generate call with extra arguments
+    - Handle result (may be in-place or allocated)
+
+[ ] 9.4 IR representation:
+    - BIP functions marked in symbol table
+    - Extra formals visible in parameter list
+    - Call nodes include extra actuals
+
+PHASE 10: OPTIMIZATION
+----------------------
+[ ] 10.1 BIP elision for simple cases:
+    - Known CALLER allocation → direct build
+    - Eliminate runtime allocation form check when static
+
+[ ] 10.2 Inline small BIP returns:
+    - For small fixed-size types, inline the build
+
+[ ] 10.3 Secondary stack optimization:
+    - Batch allocations
+    - Mark-release around calls
+
+PHASE 11: INTEGRATION & TESTING
+-------------------------------
+[ ] 11.1 Integration with existing limited type handling:
+    - Ensure backward compatibility
+    - Fallback for unsupported cases
+
+[ ] 11.2 Test cases:
+    - Simple limited record return
+    - Limited record with task component
+    - Nested BIP calls (return F(G(x)))
+    - Allocator with BIP (new T'(F(x)))
+    - Aggregates of limited types
+    - Limited private types
+
+[ ] 11.3 Error handling:
+    - Detect illegal copies of limited types
+    - Proper error messages for BIP failures
+
+================================================================================
+                            IMPLEMENTATION ORDER
+================================================================================
+
+Recommended implementation sequence:
+
+FOUNDATION (Must do first):
+  2.1 → 2.2 → 2.3  (Core types)
+  3.1 → 3.2        (Essential predicates)
+  4.1 → 4.2 → 4.3  (Extra formals infrastructure)
+
+CORE FUNCTIONALITY:
+  5.1 → 5.2        (Basic call transformation)
+  6.1              (Basic return expansion)
+  9.1 → 9.2 → 9.3  (Code generation)
+
+TASK SUPPORT (If tasks implemented):
+  3.5              (Task predicate)
+  7.1 → 7.2 → 7.3 → 7.4  (Full task chain handling)
+
+ADVANCED:
+  5.3              (Allocator support)
+  5.4              (Nested return calls)
+  5.5              (Aggregate expansion)
+  10.1 → 10.2      (Optimizations)
+
+================================================================================
+                          STYLE NOTES
+================================================================================
+
+NO "GNAT LLVM" REFERENCES IN SOURCE:
+------------------------------------
+Use these alternatives in comments:
+  - "Standard Ada elaboration model" instead of "GNAT LLVM elaboration"
+  - "Build-in-Place protocol" instead of "GNAT BIP"
+  - "RM 7.6" or "RM 9.2" instead of citing GNAT implementation
+  - "Industry-standard approach" for general techniques
+
+LITERATE PROGRAMMING FORMAT:
+----------------------------
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §15.8 BUILD-IN-PLACE — Limited Type Function Returns
+ *
+ * Implements the standard Build-in-Place protocol for Ada limited types.
+ * Limited types cannot be copied, so functions returning them construct
+ * the result directly in caller-provided space.
+ *
+ * Reference: Ada RM 7.5 (Limited Types), 7.6 (Controlled Types)
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+HASKELL-LIKE C99 PATTERNS:
+--------------------------
+1. Sum types via enums (BIP_Alloc_Form, BIP_Formal_Kind)
+2. Product types via structs (BIP_Context)
+3. Pure predicates (Is_Limited_Type, Needs_BIP_*)
+4. Higher-order functions where applicable
+5. Compound literals for initialization
+6. Option type via NULL/0 sentinel
+
+CODE-GOLFING:
+-------------
+1. Ternary operators for simple branches
+2. Inline functions for predicates
+3. Bitflags for type properties where sensible
+4. Direct struct returns (no out-params for small types)
+
+================================================================================
+                              STATISTICS
+================================================================================
+
+Estimated new code: ~600-800 lines
+Estimated sections: §15.8.1 through §15.8.10
+
+Key files to modify:
+  - ada83.c: Add BIP section after elaboration model
+  - Integrate with existing type analysis
+  - Integrate with existing code generator
+
+================================================================================
