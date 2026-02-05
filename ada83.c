@@ -25901,6 +25901,79 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
         int128_t count = high - low + 1;
         if (count < 1) count = 1;  /* Ensure at least 1 element for safety */
 
+        /* RM 4.3.2(3): index subtype bounds for aggregate constraint checking.
+         * Each choice bound of a non-null range must belong to the index
+         * subtype.  This check applies when:
+         *   (a) the type is unconstrained (choices define aggregate bounds), or
+         *   (b) it's a constrained subtype of an unconstrained base
+         *       (T IS BASE(5..7) where BASE IS ARRAY(ST RANGE <>));
+         *       the index subtype is the base's index type (ST = 4..8).
+         * For directly constrained types (ARRAY(1..10)), the assignment
+         * itself enforces compatibility; sliding handles bound mismatches. */
+        bool has_unconstrained_base = agg_type->base_type &&
+            Type_Is_Array_Like(agg_type->base_type) &&
+            !agg_type->base_type->array.is_constrained;
+        bool need_idx_subtype_check = !agg_type->array.is_constrained ||
+                                      has_unconstrained_base;
+        int128_t idx_sub_lo = low, idx_sub_hi = high;
+        if (has_unconstrained_base &&
+            agg_type->base_type->array.index_count > 0 &&
+            agg_type->base_type->array.indices &&
+            agg_type->base_type->array.indices[0].index_type) {
+            idx_sub_lo = Type_Bound_Value(
+                agg_type->base_type->array.indices[0].index_type->low_bound);
+            idx_sub_hi = Type_Bound_Value(
+                agg_type->base_type->array.indices[0].index_type->high_bound);
+        }
+
+        /* RM 4.3.2(3): for named aggregates of unconstrained types, the
+         * bounds are determined by the choices.  The lower bound is the
+         * minimum of all range-low values; the upper bound is the maximum
+         * of all range-high values.  For a null range (L..H where L>H),
+         * the bounds stay L..H because we track lows and highs separately. */
+        bool has_choice_lo = false, has_choice_hi = false;
+        int128_t choice_lo = 0, choice_hi = 0;
+        for (uint32_t ci = 0; ci < node->aggregate.items.count; ci++) {
+            Syntax_Node *cit = node->aggregate.items.items[ci];
+            if (cit->kind != NK_ASSOCIATION) continue;
+            for (uint32_t cc = 0; cc < cit->association.choices.count; cc++) {
+                Syntax_Node *ch = cit->association.choices.items[cc];
+                if (Is_Others_Choice(ch)) continue;
+                if (ch->kind == NK_RANGE) {
+                    if (ch->range.low->kind == NK_INTEGER) {
+                        int128_t v = (int128_t)ch->range.low->integer_lit.value;
+                        if (not has_choice_lo or v < choice_lo) choice_lo = v;
+                        has_choice_lo = true;
+                    }
+                    if (ch->range.high->kind == NK_INTEGER) {
+                        int128_t v = (int128_t)ch->range.high->integer_lit.value;
+                        if (not has_choice_hi or v > choice_hi) choice_hi = v;
+                        has_choice_hi = true;
+                    }
+                } else if (ch->kind == NK_INTEGER) {
+                    int128_t v = (int128_t)ch->integer_lit.value;
+                    if (not has_choice_lo or v < choice_lo) choice_lo = v;
+                    has_choice_lo = true;
+                    if (not has_choice_hi or v > choice_hi) choice_hi = v;
+                    has_choice_hi = true;
+                }
+            }
+        }
+        if (has_choice_lo and has_choice_hi and not agg_type->array.is_constrained) {
+            /* Only override bounds for unconstrained types — the aggregate
+             * defines its own bounds from the choices.  For constrained types,
+             * the type bounds are authoritative (choices must cover them). */
+            low = choice_lo;
+            high = choice_hi;
+            count = high - low + 1;
+            if (count < 1) count = 1;
+        }
+        /* For unconstrained types, track LLVM SSA values for the aggregate's
+         * actual bounds (from choice expressions) to populate the fat pointer.
+         * These are set during range-choice processing below. */
+        uint32_t agg_lo_ssa = 0, agg_hi_ssa = 0;
+        uint32_t agg_d1_lo_ssa = 0, agg_d1_hi_ssa = 0;  /* dim 1 inner choice SSA */
+
         /* Check if element type is composite (record or constrained array).
          * For composite elements, Generate_Expression returns a ptr to an alloca,
          * so we must use memcpy to copy element data instead of store.
@@ -25961,20 +26034,75 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                          * COMPONENT, so Generate_Expression must be called
                          * inside the per-element loop. */
                         int128_t rng_low, rng_high;
+                        uint32_t rng_lo_ssa = 0, rng_hi_ssa = 0;
                         bool must_eval_low  = (choice->range.low->kind != NK_INTEGER);
                         bool must_eval_high = (choice->range.high->kind != NK_INTEGER);
-                        if (not must_eval_low)
+                        if (not must_eval_low) {
                             rng_low = (int128_t)choice->range.low->integer_lit.value;
-                        else {
-                            /* Evaluate expression for side effects; use type bound for index */
-                            Generate_Expression(cg, choice->range.low);
+                        } else {
+                            uint32_t ev = Generate_Expression(cg, choice->range.low);
                             rng_low = low;
+                            const char *bt = Array_Bound_Llvm_Type(agg_type);
+                            const char *st = Expression_Llvm_Type(cg, choice->range.low);
+                            rng_lo_ssa = (strcmp(st, bt) != 0)
+                                ? Emit_Convert(cg, ev, st, bt) : ev;
+                            if (not agg_type->array.is_constrained and agg_lo_ssa == 0)
+                                agg_lo_ssa = rng_lo_ssa;
                         }
-                        if (not must_eval_high)
+                        if (not must_eval_high) {
                             rng_high = (int128_t)choice->range.high->integer_lit.value;
-                        else {
-                            Generate_Expression(cg, choice->range.high);
+                        } else {
+                            uint32_t ev = Generate_Expression(cg, choice->range.high);
                             rng_high = high;
+                            const char *bt = Array_Bound_Llvm_Type(agg_type);
+                            const char *st = Expression_Llvm_Type(cg, choice->range.high);
+                            rng_hi_ssa = (strcmp(st, bt) != 0)
+                                ? Emit_Convert(cg, ev, st, bt) : ev;
+                            if (not agg_type->array.is_constrained and agg_hi_ssa == 0)
+                                agg_hi_ssa = rng_hi_ssa;
+                        }
+
+                        /* RM 4.3.2(3): for a non-null range, the bounds must
+                         * belong to the index subtype.  Raise CONSTRAINT_ERROR
+                         * if not.  Null ranges (lo > hi) are exempt. */
+                        if (need_idx_subtype_check) {
+                            const char *bt = Array_Bound_Llvm_Type(agg_type);
+                            if (not must_eval_low and not must_eval_high) {
+                                /* Both bounds static: compile-time check */
+                                if (rng_low <= rng_high and
+                                    (rng_low < idx_sub_lo or rng_low > idx_sub_hi or
+                                     rng_high < idx_sub_lo or rng_high > idx_sub_hi)) {
+                                    Emit_Raise_Constraint_Error(cg, "aggregate index check");
+                                    uint32_t cont = cg->label_id++;
+                                    Emit_Label_Here(cg, cont);
+                                }
+                            } else {
+                                /* At least one expression bound: runtime check */
+                                uint32_t lo_s = rng_lo_ssa ? rng_lo_ssa
+                                              : Emit_Static_Int(cg, rng_low, bt);
+                                uint32_t hi_s = rng_hi_ssa ? rng_hi_ssa
+                                              : Emit_Static_Int(cg, rng_high, bt);
+                                /* Is range non-null? (lo <= hi) */
+                                uint32_t null_cmp = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = icmp sgt %s %%t%u, %%t%u"
+                                         "  ; null range?\n",
+                                     null_cmp, bt, lo_s, hi_s);
+                                uint32_t skip_lbl = cg->label_id++;
+                                uint32_t chk_lbl  = cg->label_id++;
+                                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                                     null_cmp, skip_lbl, chk_lbl);
+                                cg->block_terminated = true;
+                                Emit_Label_Here(cg, chk_lbl);
+                                Emit_Range_Check_With_Raise(cg, lo_s,
+                                    (int64_t)idx_sub_lo, (int64_t)idx_sub_hi,
+                                    bt, "aggregate index subtype check");
+                                Emit_Range_Check_With_Raise(cg, hi_s,
+                                    (int64_t)idx_sub_lo, (int64_t)idx_sub_hi,
+                                    bt, "aggregate index subtype check");
+                                Emit(cg, "  br label %%L%u\n", skip_lbl);
+                                cg->block_terminated = true;
+                                Emit_Label_Here(cg, skip_lbl);
+                            }
                         }
 
                         /* Detect multidim inner aggregates with expression
@@ -26009,8 +26137,23 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                                                  ? (inner_high - inner_low + 1) : 0;
 
                             /* Evaluate inner choice bounds once for side effects,
-                             * even when the outer range is null (RM 4.3.2(6)). */
+                             * even when the outer range is null (RM 4.3.2(6)).
+                             * Also check inner bounds against dim 1 index subtype
+                             * and capture SSA values for fat pointer. */
+                            int128_t inner_idx_sub_lo = inner_low, inner_idx_sub_hi = inner_high;
+                            if (agg_type->base_type &&
+                                Type_Is_Array_Like(agg_type->base_type) &&
+                                !agg_type->base_type->array.is_constrained &&
+                                agg_type->base_type->array.index_count > 1 &&
+                                agg_type->base_type->array.indices &&
+                                agg_type->base_type->array.indices[1].index_type) {
+                                inner_idx_sub_lo = Type_Bound_Value(
+                                    agg_type->base_type->array.indices[1].index_type->low_bound);
+                                inner_idx_sub_hi = Type_Bound_Value(
+                                    agg_type->base_type->array.indices[1].index_type->high_bound);
+                            }
                             Syntax_Node *inner_val_expr = NULL;
+                            uint32_t inner_lo_ssa = 0, inner_hi_ssa = 0;
                             for (uint32_t qi = 0; qi < inner_agg->aggregate.items.count; qi++) {
                                 Syntax_Node *qi_item = inner_agg->aggregate.items.items[qi];
                                 if (qi_item->kind != NK_ASSOCIATION) continue;
@@ -26019,10 +26162,66 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                                 for (uint32_t qc = 0; qc < qi_item->association.choices.count; qc++) {
                                     Syntax_Node *qch = qi_item->association.choices.items[qc];
                                     if (qch->kind == NK_RANGE) {
-                                        if (qch->range.low->kind != NK_INTEGER)
-                                            Generate_Expression(cg, qch->range.low);
-                                        if (qch->range.high->kind != NK_INTEGER)
-                                            Generate_Expression(cg, qch->range.high);
+                                        uint32_t ilo_s = 0, ihi_s = 0;
+                                        bool ilo_expr = (qch->range.low->kind != NK_INTEGER);
+                                        bool ihi_expr = (qch->range.high->kind != NK_INTEGER);
+                                        if (ilo_expr) {
+                                            uint32_t ev = Generate_Expression(cg, qch->range.low);
+                                            const char *bt = Array_Bound_Llvm_Type(agg_type);
+                                            const char *st = Expression_Llvm_Type(cg, qch->range.low);
+                                            ilo_s = (strcmp(st, bt) != 0)
+                                                ? Emit_Convert(cg, ev, st, bt) : ev;
+                                            if (!inner_lo_ssa) inner_lo_ssa = ilo_s;
+                                            if (!agg_d1_lo_ssa) agg_d1_lo_ssa = ilo_s;
+                                        }
+                                        if (ihi_expr) {
+                                            uint32_t ev = Generate_Expression(cg, qch->range.high);
+                                            const char *bt = Array_Bound_Llvm_Type(agg_type);
+                                            const char *st = Expression_Llvm_Type(cg, qch->range.high);
+                                            ihi_s = (strcmp(st, bt) != 0)
+                                                ? Emit_Convert(cg, ev, st, bt) : ev;
+                                            if (!inner_hi_ssa) inner_hi_ssa = ihi_s;
+                                            if (!agg_d1_hi_ssa) agg_d1_hi_ssa = ihi_s;
+                                        }
+                                        /* RM 4.3.2(3): inner dim non-null range bounds
+                                         * must belong to dim 1 index subtype. */
+                                        {
+                                            const char *bt = Array_Bound_Llvm_Type(agg_type);
+                                            if (!ilo_expr && !ihi_expr) {
+                                                int128_t rlo = (int128_t)qch->range.low->integer_lit.value;
+                                                int128_t rhi = (int128_t)qch->range.high->integer_lit.value;
+                                                if (rlo <= rhi &&
+                                                    (rlo < inner_idx_sub_lo || rlo > inner_idx_sub_hi ||
+                                                     rhi < inner_idx_sub_lo || rhi > inner_idx_sub_hi)) {
+                                                    Emit_Raise_Constraint_Error(cg, "aggregate inner index check");
+                                                    uint32_t cont = cg->label_id++;
+                                                    Emit_Label_Here(cg, cont);
+                                                }
+                                            } else {
+                                                uint32_t lo_v = ilo_s ? ilo_s
+                                                    : Emit_Static_Int(cg, (int128_t)qch->range.low->integer_lit.value, bt);
+                                                uint32_t hi_v = ihi_s ? ihi_s
+                                                    : Emit_Static_Int(cg, (int128_t)qch->range.high->integer_lit.value, bt);
+                                                uint32_t nc = Emit_Temp(cg);
+                                                Emit(cg, "  %%t%u = icmp sgt %s %%t%u, %%t%u"
+                                                         "  ; inner null?\n", nc, bt, lo_v, hi_v);
+                                                uint32_t sk = cg->label_id++;
+                                                uint32_t ck = cg->label_id++;
+                                                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                                                     nc, sk, ck);
+                                                cg->block_terminated = true;
+                                                Emit_Label_Here(cg, ck);
+                                                Emit_Range_Check_With_Raise(cg, lo_v,
+                                                    (int64_t)inner_idx_sub_lo, (int64_t)inner_idx_sub_hi,
+                                                    bt, "aggregate inner index subtype check");
+                                                Emit_Range_Check_With_Raise(cg, hi_v,
+                                                    (int64_t)inner_idx_sub_lo, (int64_t)inner_idx_sub_hi,
+                                                    bt, "aggregate inner index subtype check");
+                                                Emit(cg, "  br label %%L%u\n", sk);
+                                                cg->block_terminated = true;
+                                                Emit_Label_Here(cg, sk);
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -26050,6 +26249,49 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                                 }
                             }
                         } else {
+                            /* For multidim with static inner bounds, check inner
+                             * aggregate choices against dim 1 index subtype. */
+                            if (multidim and item->association.expression->kind == NK_AGGREGATE) {
+                                int128_t isl = Type_Bound_Value(dim_lo[1]);
+                                int128_t ish = Type_Bound_Value(dim_hi[1]);
+                                if (agg_type->base_type &&
+                                    Type_Is_Array_Like(agg_type->base_type) &&
+                                    !agg_type->base_type->array.is_constrained &&
+                                    agg_type->base_type->array.index_count > 1 &&
+                                    agg_type->base_type->array.indices &&
+                                    agg_type->base_type->array.indices[1].index_type) {
+                                    isl = Type_Bound_Value(agg_type->base_type->array.indices[1].index_type->low_bound);
+                                    ish = Type_Bound_Value(agg_type->base_type->array.indices[1].index_type->high_bound);
+                                }
+                                Syntax_Node *ia = item->association.expression;
+                                for (uint32_t qi = 0; qi < ia->aggregate.items.count; qi++) {
+                                    Syntax_Node *qit = ia->aggregate.items.items[qi];
+                                    if (qit->kind != NK_ASSOCIATION) continue;
+                                    for (uint32_t qc = 0; qc < qit->association.choices.count; qc++) {
+                                        Syntax_Node *qch = qit->association.choices.items[qc];
+                                        if (Is_Others_Choice(qch)) continue;
+                                        if (qch->kind == NK_RANGE &&
+                                            qch->range.low->kind == NK_INTEGER &&
+                                            qch->range.high->kind == NK_INTEGER) {
+                                            int128_t rlo = (int128_t)qch->range.low->integer_lit.value;
+                                            int128_t rhi = (int128_t)qch->range.high->integer_lit.value;
+                                            if (rlo <= rhi &&
+                                                (rlo < isl || rlo > ish || rhi < isl || rhi > ish)) {
+                                                Emit_Raise_Constraint_Error(cg, "aggregate inner index check");
+                                                uint32_t cont = cg->label_id++;
+                                                Emit_Label_Here(cg, cont);
+                                            }
+                                        } else if (qch->kind == NK_INTEGER) {
+                                            int128_t v = (int128_t)qch->integer_lit.value;
+                                            if (v < isl || v > ish) {
+                                                Emit_Raise_Constraint_Error(cg, "aggregate inner index check");
+                                                uint32_t cont = cg->label_id++;
+                                                Emit_Label_Here(cg, cont);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             /* Non-multidim (or non-aggregate inner expression):
                              * evaluate expression per component (RM 4.3.2(6)). */
                             for (int128_t idx = rng_low; idx <= rng_high; idx++) {
@@ -26127,6 +26369,16 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         }
                     } else if (choice->kind == NK_INTEGER) {
                         /* Single index: 3 => value */
+                        /* RM 4.3.2(3): single index always non-null; must be
+                         * in the index subtype. */
+                        if (need_idx_subtype_check) {
+                            int128_t cv = (int128_t)choice->integer_lit.value;
+                            if (cv < idx_sub_lo or cv > idx_sub_hi) {
+                                Emit_Raise_Constraint_Error(cg, "aggregate index check");
+                                uint32_t cont = cg->label_id++;
+                                Emit_Label_Here(cg, cont);
+                            }
+                        }
                         int128_t idx = (int128_t)choice->integer_lit.value - low;
                         if (idx >= 0 and idx < count) {
                             uint32_t val = Generate_Expression(cg, item->association.expression);
@@ -26256,13 +26508,29 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             if (multidim) {
                 uint32_t mlo[8], mhi[8];
                 for (uint32_t d = 0; d < agg_ndims; d++) {
-                    mlo[d] = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = add %s 0, %s  ; dim%u lo\n",
-                         mlo[d], agg_bt, I128_Decimal(Type_Bound_Value(dim_lo[d])), d);
+                    /* Dimension 0 uses the (possibly overridden) choice-based
+                     * low/high; other dimensions use type bounds. */
+                    int128_t dlo = (d == 0) ? low  : Type_Bound_Value(dim_lo[d]);
+                    int128_t dhi = (d == 0) ? high : Type_Bound_Value(dim_hi[d]);
+                    if (d == 0 and agg_lo_ssa != 0) {
+                        mlo[d] = agg_lo_ssa;
+                    } else if (d == 1 and agg_d1_lo_ssa != 0) {
+                        mlo[d] = agg_d1_lo_ssa;
+                    } else {
+                        mlo[d] = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = add %s 0, %s  ; dim%u lo\n",
+                             mlo[d], agg_bt, I128_Decimal(dlo), d);
+                    }
                     Temp_Set_Type(cg, mlo[d], agg_bt);
-                    mhi[d] = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = add %s 0, %s  ; dim%u hi\n",
-                         mhi[d], agg_bt, I128_Decimal(Type_Bound_Value(dim_hi[d])), d);
+                    if (d == 0 and agg_hi_ssa != 0) {
+                        mhi[d] = agg_hi_ssa;
+                    } else if (d == 1 and agg_d1_hi_ssa != 0) {
+                        mhi[d] = agg_d1_hi_ssa;
+                    } else {
+                        mhi[d] = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = add %s 0, %s  ; dim%u hi\n",
+                             mhi[d], agg_bt, I128_Decimal(dhi), d);
+                    }
                     Temp_Set_Type(cg, mhi[d], agg_bt);
                 }
                 uint32_t fat_val = Emit_Fat_Pointer_MultiDim(cg, base, mlo, mhi, agg_ndims, agg_bt);
@@ -26271,13 +26539,26 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "  store " FAT_PTR_TYPE " %%t%u, ptr %%t%u\n", fat_val, fat_ptr);
                 return fat_ptr;
             }
-            uint32_t low_temp = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = add %s 0, %s  ; static agg low\n",
-                 low_temp, agg_bt, I128_Decimal(low));
+            /* Use SSA-evaluated choice bounds if available (expression
+             * bounds like IDENT_INT(6)), otherwise use the compile-time
+             * low/high already overridden from static choice values. */
+            uint32_t low_temp;
+            if (agg_lo_ssa != 0) {
+                low_temp = agg_lo_ssa;
+            } else {
+                low_temp = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add %s 0, %s  ; static agg low\n",
+                     low_temp, agg_bt, I128_Decimal(low));
+            }
             Temp_Set_Type(cg, low_temp, agg_bt);
-            uint32_t high_temp = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = add %s 0, %s  ; static agg high\n",
-                 high_temp, agg_bt, I128_Decimal(high));
+            uint32_t high_temp;
+            if (agg_hi_ssa != 0) {
+                high_temp = agg_hi_ssa;
+            } else {
+                high_temp = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add %s 0, %s  ; static agg high\n",
+                     high_temp, agg_bt, I128_Decimal(high));
+            }
             Temp_Set_Type(cg, high_temp, agg_bt);
             uint32_t fat_ptr = Emit_Temp(cg);
             Emit(cg, "  %%t%u = alloca " FAT_PTR_TYPE "  ; static array fat ptr\n", fat_ptr);
