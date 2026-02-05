@@ -21243,44 +21243,8 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         const char *rel_bt = Array_Bound_Llvm_Type(left_type);
         if (is_unconstrained) {
             /* Generate each operand as fat pointer, wrapping constrained if needed */
-            bool l_fat = Expression_Produces_Fat_Pointer(node->binary.left, left_type);
-            bool r_fat = Expression_Produces_Fat_Pointer(node->binary.right, rhs_cmp_type);
-
-            if (l_fat) {
-                left_ptr = Generate_Expression(cg, node->binary.left);
-            } else if (l_is_uncon_agg) {
-                /* Aggregate already built fat pointer; load it from alloca */
-                uint32_t agg_ptr = Generate_Expression(cg, node->binary.left);
-                left_ptr = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u  ; load agg fat ptr\n",
-                     left_ptr, agg_ptr);
-            } else {
-                uint32_t lp = Generate_Composite_Address(cg, node->binary.left);
-                int128_t lo = 1, hi = 0;
-                if (left_type->array.index_count > 0) {
-                    lo = Type_Bound_Value(left_type->array.indices[0].low_bound);
-                    hi = Type_Bound_Value(left_type->array.indices[0].high_bound);
-                }
-                left_ptr = Emit_Fat_Pointer(cg, lp, lo, hi, rel_bt);
-            }
-            if (r_fat) {
-                right_ptr = Generate_Expression(cg, node->binary.right);
-            } else if (r_is_uncon_agg) {
-                /* Aggregate already built fat pointer; load it from alloca */
-                uint32_t agg_ptr = Generate_Expression(cg, node->binary.right);
-                right_ptr = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u  ; load agg fat ptr\n",
-                     right_ptr, agg_ptr);
-            } else {
-                uint32_t rp = Generate_Composite_Address(cg, node->binary.right);
-                int128_t lo = 1, hi = 0;
-                if (rhs_cmp_type and Type_Is_Array_Like(rhs_cmp_type) and
-                    rhs_cmp_type->array.index_count > 0) {
-                    lo = Type_Bound_Value(rhs_cmp_type->array.indices[0].low_bound);
-                    hi = Type_Bound_Value(rhs_cmp_type->array.indices[0].high_bound);
-                }
-                right_ptr = Emit_Fat_Pointer(cg, rp, lo, hi, rel_bt);
-            }
+            left_ptr = Wrap_Constrained_As_Fat(cg, node->binary.left, left_type, rel_bt);
+            right_ptr = Wrap_Constrained_As_Fat(cg, node->binary.right, rhs_cmp_type, rel_bt);
         } else {
             left_ptr = Generate_Composite_Address(cg, node->binary.left);
             right_ptr = Generate_Composite_Address(cg, node->binary.right);
