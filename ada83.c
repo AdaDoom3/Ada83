@@ -6471,8 +6471,11 @@ static inline bool Expression_Produces_Fat_Pointer(const Syntax_Node *node,
      * pointers at runtime regardless of the expression's declared type.
      * E.g., concatenation of two constrained STRINGs still builds { ptr, ptr }. */
     if (node) {
-        /* Aggregates ALWAYS produce ptr (alloca), never fat pointers,
-         * even when declared type is unconstrained. */
+        /* Aggregates return a fat pointer ALLOCA (ptr to { ptr, ptr }),
+         * not a loaded { ptr, ptr } value.  Callers that need the value
+         * must load from it.  Treat as "not fat" for the extractvalue
+         * callers — specific call sites (assignment, etc.) handle the
+         * alloca-based fat pointer specially. */
         if (node->kind == NK_AGGREGATE)
             return false;
         /* String literals always produce fat pointers */
@@ -11101,6 +11104,12 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                             bool is_static = false;
                             if (expr and expr->kind == NK_INTEGER) {
                                 val = expr->integer_lit.value;
+                                is_static = true;
+                            } else if (expr and expr->kind == NK_IDENTIFIER and expr->symbol and
+                                       expr->symbol->type and Type_Is_Boolean(expr->symbol->type)) {
+                                /* BOOLEAN literal: FALSE=0, TRUE=1 */
+                                val = Slice_Equal_Ignore_Case(expr->string_val.text, S("TRUE"))
+                                    ? 1 : 0;
                                 is_static = true;
                             } else if (expr and expr->kind == NK_IDENTIFIER and expr->symbol and
                                        expr->symbol->type and Type_Is_Enumeration(expr->symbol->type)) {
@@ -22921,6 +22930,40 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                     Type_Info *actual_type = arg->type;
                     const char *arg_llvm = Expression_Llvm_Type(cg, arg);
                     args[i] = Emit_Constraint_Check_With_Type(cg, args[i], formal_type, actual_type, arg_llvm);
+
+                    /* Discriminant constraint check for constrained record
+                     * subtypes (RM 3.7.2(3)).  When a formal has a constrained
+                     * discriminated record subtype like S_TRUE IS VAR_REC(TRUE),
+                     * verify that the actual's discriminant matches. */
+                    if (Type_Is_Record(formal_type) and
+                        formal_type->record.has_disc_constraints and
+                        formal_type->record.discriminant_count > 0 and
+                        formal_type->record.disc_constraint_values) {
+                        const char *iat = Integer_Arith_Type(cg);
+                        for (uint32_t di = 0; di < formal_type->record.discriminant_count; di++) {
+                            Component_Info *dc = &formal_type->record.components[di];
+                            if (not dc->component_type) continue;
+                            const char *disc_llvm = Type_To_Llvm(dc->component_type);
+                            uint32_t disc_ptr = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u"
+                                     "  ; disc constraint addr\n",
+                                 disc_ptr, args[i], dc->byte_offset);
+                            uint32_t disc_val = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = load %s, ptr %%t%u"
+                                     "  ; load actual discriminant\n",
+                                 disc_val, disc_llvm, disc_ptr);
+                            if (strcmp(disc_llvm, iat) != 0)
+                                disc_val = Emit_Convert(cg, disc_val, disc_llvm, iat);
+                            uint32_t expected = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add %s 0, %lld"
+                                     "  ; expected disc value\n",
+                                 expected, iat,
+                                 (long long)formal_type->record.disc_constraint_values[di]);
+                            Emit_Discriminant_Check(cg, disc_val, expected,
+                                                    iat, formal_type);
+                        }
+                    }
+
                     /* Constrained array > unconstrained formal: build fat pointer (RM 6.4.1)
                      * When passing a constrained array to an unconstrained formal, we must
                      * create a fat pointer with the constrained type's bounds. */
@@ -25702,30 +25745,18 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                             rng_high_val = Generate_Expression(cg, choice->range.high);
                         }
 
-                        /* Coerce range bounds to loop index type */
+                        /* Coerce range bounds to loop index type.
+                         * RM 4.3.2: expression is evaluated ONCE PER
+                         * COMPONENT — Generate_Expression goes inside
+                         * the loop body. */
                         const char *agg_idx_type = Integer_Arith_Type(cg);
                         rng_low_val = Emit_Coerce(cg, rng_low_val, agg_idx_type);
                         rng_high_val = Emit_Coerce(cg, rng_high_val, agg_idx_type);
 
-                        /* Generate the value expression */
-                        uint32_t val = Generate_Expression(cg, item->association.expression);
-
-                        /* Check if element is composite (record or constrained array) */
                         Type_Info *elem_ti = agg_type->array.element_type;
                         bool elem_is_composite = Type_Is_Record(elem_ti) or
                             Type_Is_Constrained_Array(elem_ti);
 
-                        /* RM 4.3.2: fat pointer (e.g. string literal) → extract data ptr */
-                        if (elem_is_composite and
-                            Expression_Produces_Fat_Pointer(item->association.expression,
-                                item->association.expression->type))
-                            val = Emit_Fat_Pointer_Data(cg, val,
-                                      Array_Bound_Llvm_Type(agg_type));
-
-                        if (not elem_is_composite) {
-                            const char *src_type = Expression_Llvm_Type(cg, item->association.expression);
-                            val = Emit_Convert(cg, val, src_type, elem_type);
-                        }
                         uint32_t loop_var = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = alloca %s\n", loop_var, agg_idx_type);
                         Emit(cg, "  store %s %%t%u, ptr %%t%u\n", agg_idx_type, rng_low_val, loop_var);
@@ -25746,12 +25777,24 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         cg->block_terminated = true;
 
                         Emit_Label_Here(cg, loop_body);
+
+                        /* Evaluate expression anew for this component */
+                        uint32_t val = Generate_Expression(cg, item->association.expression);
+                        if (elem_is_composite and
+                            Expression_Produces_Fat_Pointer(item->association.expression,
+                                item->association.expression->type))
+                            val = Emit_Fat_Pointer_Data(cg, val,
+                                      Array_Bound_Llvm_Type(agg_type));
+                        if (not elem_is_composite) {
+                            const char *src_type = Expression_Llvm_Type(cg, item->association.expression);
+                            val = Emit_Convert(cg, val, src_type, elem_type);
+                        }
+
                         /* Calculate array index: (cur_idx - low_val) */
                         uint32_t arr_idx = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", arr_idx, agg_idx_type, cur_idx, low_val);
 
                         if (elem_is_composite) {
-                            /* Composite element: use byte-based indexing and memcpy */
                             uint32_t byte_off = Emit_Temp(cg);
                             Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", byte_off, agg_idx_type, arr_idx, elem_size);
                             uint32_t ptr = Emit_Temp(cg);
@@ -25760,7 +25803,6 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                             Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
                                  ptr, val, elem_size);
                         } else {
-                            /* Scalar element: use typed indexing and store */
                             uint32_t ptr = Emit_Temp(cg);
                             Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, %s %%t%u\n",
                                  ptr, elem_type, base, agg_idx_type, arr_idx);
@@ -25914,36 +25956,85 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                     }
 
                     if (choice->kind == NK_RANGE) {
-                        /* Range choice: 1..5 => value */
-                        int128_t rng_low = choice->range.low->kind == NK_INTEGER ?
-                                          (int128_t)choice->range.low->integer_lit.value : low;
-                        int128_t rng_high = choice->range.high->kind == NK_INTEGER ?
-                                           (int128_t)choice->range.high->integer_lit.value : high;
-                        uint32_t val = Generate_Expression(cg, item->association.expression);
-                        if (elem_is_composite and
-                            Expression_Produces_Fat_Pointer(item->association.expression,
-                                item->association.expression->type))
-                            val = Emit_Fat_Pointer_Data(cg, val,
-                                      Array_Bound_Llvm_Type(agg_type));
-                        if (not elem_is_composite) {
-                            const char *src_type = Expression_Llvm_Type(cg, item->association.expression);
-                            /* Float>fixed-point aggregate element: divide by SMALL (RM 4.6) */
-                            if (elem_ti and elem_ti->kind == TYPE_FIXED and Is_Float_Type(src_type)) {
-                                double small = elem_ti->fixed.small;
-                                if (small <= 0) small = elem_ti->fixed.delta > 0 ? elem_ti->fixed.delta : 1.0;
-                                uint64_t sb; memcpy(&sb, &small, sizeof(sb));
-                                uint32_t st = Emit_Temp(cg);
-                                Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; small\n", st, (unsigned long long)sb);
-                                uint32_t dv = Emit_Temp(cg);
-                                Emit(cg, "  %%t%u = fdiv %s %%t%u, %%t%u  ; agg range/small\n", dv, src_type, val, st);
-                                val = dv;
-                            }
-                            val = Emit_Convert(cg, val, src_type, elem_type);
+                        /* Range choice: 1..5 => value
+                         * RM 4.3.2: the expression is evaluated ONCE PER
+                         * COMPONENT, so Generate_Expression must be called
+                         * inside the per-element loop. */
+                        int128_t rng_low, rng_high;
+                        bool must_eval_low  = (choice->range.low->kind != NK_INTEGER);
+                        bool must_eval_high = (choice->range.high->kind != NK_INTEGER);
+                        if (not must_eval_low)
+                            rng_low = (int128_t)choice->range.low->integer_lit.value;
+                        else {
+                            /* Evaluate expression for side effects; use type bound for index */
+                            Generate_Expression(cg, choice->range.low);
+                            rng_low = low;
+                        }
+                        if (not must_eval_high)
+                            rng_high = (int128_t)choice->range.high->integer_lit.value;
+                        else {
+                            Generate_Expression(cg, choice->range.high);
+                            rng_high = high;
                         }
 
                         for (int128_t idx = rng_low; idx <= rng_high; idx++) {
                             int128_t arr_idx = idx - low;
                             if (arr_idx >= 0 and arr_idx < count) {
+                                uint32_t val = Generate_Expression(cg, item->association.expression);
+                                if (elem_is_composite and
+                                    Expression_Produces_Fat_Pointer(item->association.expression,
+                                        item->association.expression->type))
+                                    val = Emit_Fat_Pointer_Data(cg, val,
+                                              Array_Bound_Llvm_Type(agg_type));
+                                if (not elem_is_composite) {
+                                    const char *src_type = Expression_Llvm_Type(cg, item->association.expression);
+                                    if (elem_ti and elem_ti->kind == TYPE_FIXED and Is_Float_Type(src_type)) {
+                                        double small = elem_ti->fixed.small;
+                                        if (small <= 0) small = elem_ti->fixed.delta > 0 ? elem_ti->fixed.delta : 1.0;
+                                        uint64_t sb; memcpy(&sb, &small, sizeof(sb));
+                                        uint32_t st = Emit_Temp(cg);
+                                        Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; small\n", st, (unsigned long long)sb);
+                                        uint32_t dv = Emit_Temp(cg);
+                                        Emit(cg, "  %%t%u = fdiv %s %%t%u, %%t%u  ; agg range/small\n", dv, src_type, val, st);
+                                        val = dv;
+                                    }
+                                    val = Emit_Convert(cg, val, src_type, elem_type);
+                                }
+                                uint32_t ptr = Emit_Temp(cg);
+                                if (elem_is_composite) {
+                                    Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %s\n",
+                                         ptr, base, I128_Decimal(arr_idx * (int128_t)elem_size));
+                                    Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
+                                         ptr, val, elem_size);
+                                } else {
+                                    Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %s\n",
+                                         ptr, elem_type, base, I128_Decimal(arr_idx));
+                                    Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, val, ptr);
+                                }
+                                initialized[arr_idx] = true;
+                            }
+                        }
+                    } else if (choice->kind == NK_IDENTIFIER and choice->symbol and
+                               choice->symbol->kind == SYMBOL_TYPE and choice->symbol->type) {
+                        /* Type name as choice: T => val means T'FIRST..T'LAST => val
+                         * (RM 4.3.2(4)). Re-evaluate expression per component. */
+                        Type_Info *ct = choice->symbol->type;
+                        int128_t rng_low = Type_Bound_Value(ct->low_bound);
+                        int128_t rng_high = Type_Bound_Value(ct->high_bound);
+
+                        for (int128_t idx = rng_low; idx <= rng_high; idx++) {
+                            int128_t arr_idx = idx - low;
+                            if (arr_idx >= 0 and arr_idx < count) {
+                                uint32_t val = Generate_Expression(cg, item->association.expression);
+                                if (elem_is_composite and
+                                    Expression_Produces_Fat_Pointer(item->association.expression,
+                                        item->association.expression->type))
+                                    val = Emit_Fat_Pointer_Data(cg, val,
+                                              Array_Bound_Llvm_Type(agg_type));
+                                if (not elem_is_composite) {
+                                    const char *src_type = Expression_Llvm_Type(cg, item->association.expression);
+                                    val = Emit_Convert(cg, val, src_type, elem_type);
+                                }
                                 uint32_t ptr = Emit_Temp(cg);
                                 if (elem_is_composite) {
                                     Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %s\n",
@@ -27386,8 +27477,35 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
         uint32_t dest_len  = Emit_Fat_Pointer_Length(cg, existing_fat, ua_bt);
         uint32_t dest_len_64 = Emit_Extend_To_I64(cg, dest_len, ua_bt);
 
+        /* Convert element count to byte count.  For STRING/CHARACTER
+         * arrays the element size is 1, so this is a no-op.  For arrays
+         * of larger types (INTEGER, records, etc.) we must scale. */
+        uint32_t elem_sz = (ty->array.element_type and
+                            ty->array.element_type->size > 0)
+                         ? ty->array.element_type->size : 1;
+        uint32_t dest_bytes_64 = dest_len_64;
+        if (elem_sz > 1) {
+            dest_bytes_64 = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = mul i64 %%t%u, %u"
+                     "  ; elem_count * elem_size\n",
+                 dest_bytes_64, dest_len_64, elem_sz);
+        }
+
         /* Generate source and copy data to existing storage */
         uint32_t src_val = Generate_Expression(cg, src);
+
+        /* Aggregates with unconstrained type return a fat pointer ALLOCA
+         * (ptr to { ptr, ptr }), not a loaded value.  Promote to fat. */
+        if (not src_is_fat and src->kind == NK_AGGREGATE and src_type and
+            Type_Is_Array_Like(src_type) and not src_type->array.is_constrained) {
+            uint32_t loaded_fat = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u"
+                     "  ; load agg fat ptr alloca\n",
+                 loaded_fat, src_val);
+            src_val = loaded_fat;
+            src_is_fat = true;
+        }
+
         if (src_is_fat) {
             /* Source is fat pointer — extract data pointer, check length, copy */
             uint32_t src_len = Emit_Fat_Pointer_Length(cg, src_val, ua_bt);
@@ -27396,13 +27514,13 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, "  call void @llvm.memcpy.p0.p0.i64("
                  "ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)"
                  "  ; uncon array assign\n",
-                 dest_data, src_data, dest_len_64);
+                 dest_data, src_data, dest_bytes_64);
         } else {
             /* Source is constrained (ptr) — memcpy directly */
             Emit(cg, "  call void @llvm.memcpy.p0.p0.i64("
                  "ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)"
                  "  ; uncon array assign from constrained\n",
-                 dest_data, src_val, dest_len_64);
+                 dest_data, src_val, dest_bytes_64);
         }
         return;
     }
