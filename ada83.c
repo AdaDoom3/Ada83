@@ -22036,28 +22036,8 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                             lb = idx_ty->low_bound;
                             hb = idx_ty->high_bound;
                         }
-                        if (lb.kind == BOUND_EXPR and lb.expr) {
-                            uint32_t v = Generate_Expression(cg, lb.expr);
-                            const char *vty = Expression_Llvm_Type(cg, lb.expr);
-                            if (strcmp(vty, iat) != 0 and vty[0] == 'i')
-                                v = Emit_Convert(cg, v, vty, iat);
-                            lo = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = add %s %%t%u, 0  ; range lo dynamic\n", lo, iat, v);
-                        } else {
-                            lo = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = add %s 0, %s  ; range lo\n", lo, iat, I128_Decimal(Type_Bound_Value(lb)));
-                        }
-                        if (hb.kind == BOUND_EXPR and hb.expr) {
-                            uint32_t v = Generate_Expression(cg, hb.expr);
-                            const char *vty = Expression_Llvm_Type(cg, hb.expr);
-                            if (strcmp(vty, iat) != 0 and vty[0] == 'i')
-                                v = Emit_Convert(cg, v, vty, iat);
-                            hi = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = add %s %%t%u, 0  ; range hi dynamic\n", hi, iat, v);
-                        } else {
-                            hi = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = add %s 0, %s  ; range hi\n", hi, iat, I128_Decimal(Type_Bound_Value(hb)));
-                        }
+                        lo = Emit_Single_Bound(cg, &lb, iat);
+                        hi = Emit_Single_Bound(cg, &hb, iat);
                     } else {
                         /* Fallback - can't determine bounds */
                         uint32_t always = Emit_Temp(cg);
@@ -25576,50 +25556,9 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
 
         if (dynamic_bounds) {
             /* Dynamic bounds: generate runtime allocation and loop-based init */
-            uint32_t low_val, high_val;
-
-            /* Generate low bound */
             const char *iat_bnd = Integer_Arith_Type(cg);
-            if (low_bound.kind == BOUND_INTEGER) {
-                low_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, %s\n", low_val, iat_bnd, I128_Decimal(low_bound.int_value));
-                Temp_Set_Type(cg, low_val, iat_bnd);
-            } else if (low_bound.kind == BOUND_EXPR and low_bound.expr) {
-                low_val = Generate_Expression(cg, low_bound.expr);
-                /* Extend to INTEGER width if narrower type (e.g., ENUM bounds return i8) */
-                if (not Type_Is_Float_Representation(low_bound.expr->type)) {
-                    const char *low_llvm = Expression_Llvm_Type(cg, low_bound.expr);
-                    if (strcmp(low_llvm, iat_bnd) != 0 and !Llvm_Type_Is_Pointer(low_llvm)) {
-                        low_val = Emit_Convert(cg, low_val, low_llvm, iat_bnd);
-                    }
-                }
-                Temp_Set_Type(cg, low_val, iat_bnd);
-            } else {
-                low_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, 1\n", low_val, iat_bnd);
-                Temp_Set_Type(cg, low_val, iat_bnd);
-            }
-
-            /* Generate high bound */
-            if (high_bound.kind == BOUND_INTEGER) {
-                high_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, %s\n", high_val, iat_bnd, I128_Decimal(high_bound.int_value));
-                Temp_Set_Type(cg, high_val, iat_bnd);
-            } else if (high_bound.kind == BOUND_EXPR and high_bound.expr) {
-                high_val = Generate_Expression(cg, high_bound.expr);
-                /* Extend to INTEGER width if narrower type (e.g., ENUM bounds return i8) */
-                if (not Type_Is_Float_Representation(high_bound.expr->type)) {
-                    const char *high_llvm = Expression_Llvm_Type(cg, high_bound.expr);
-                    if (strcmp(high_llvm, iat_bnd) != 0 and !Llvm_Type_Is_Pointer(high_llvm)) {
-                        high_val = Emit_Convert(cg, high_val, high_llvm, iat_bnd);
-                    }
-                }
-                Temp_Set_Type(cg, high_val, iat_bnd);
-            } else {
-                high_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, 1\n", high_val, iat_bnd);
-                Temp_Set_Type(cg, high_val, iat_bnd);
-            }
+            uint32_t low_val = Emit_Single_Bound(cg, &low_bound, iat_bnd);
+            uint32_t high_val = Emit_Single_Bound(cg, &high_bound, iat_bnd);
 
             /* Calculate count and byte size */
             uint32_t count_plus1 = Emit_Length_From_Bounds(cg, low_val, high_val, iat_bnd);
@@ -26511,47 +26450,8 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
         if (subtype and subtype->kind == TYPE_ARRAY and subtype->array.index_count > 0) {
             /* Generate bound values in the designated type's bt */
             const char *new_bt = Array_Bound_Llvm_Type(designated);
-            uint32_t low_t, high_t;
-
-            if (subtype->array.indices[0].low_bound.kind == BOUND_INTEGER) {
-                low_t = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, %s\n", low_t, new_bt,
-                     I128_Decimal(subtype->array.indices[0].low_bound.int_value));
-            } else if (subtype->array.indices[0].low_bound.kind == BOUND_EXPR and
-                       subtype->array.indices[0].low_bound.expr) {
-                Syntax_Node *low_expr = subtype->array.indices[0].low_bound.expr;
-                low_t = Generate_Expression(cg, low_expr);
-                /* Convert to bt if needed */
-                if (not Type_Is_Float_Representation(low_expr->type)) {
-                    const char *low_llvm = Expression_Llvm_Type(cg, low_expr);
-                    if (strcmp(low_llvm, new_bt) != 0 and !Llvm_Type_Is_Pointer(low_llvm)) {
-                        low_t = Emit_Convert(cg, low_t, low_llvm, new_bt);
-                    }
-                }
-            } else {
-                low_t = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, 1\n", low_t, new_bt);
-            }
-
-            if (subtype->array.indices[0].high_bound.kind == BOUND_INTEGER) {
-                high_t = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, %s\n", high_t, new_bt,
-                     I128_Decimal(subtype->array.indices[0].high_bound.int_value));
-            } else if (subtype->array.indices[0].high_bound.kind == BOUND_EXPR and
-                       subtype->array.indices[0].high_bound.expr) {
-                Syntax_Node *high_expr = subtype->array.indices[0].high_bound.expr;
-                high_t = Generate_Expression(cg, high_expr);
-                /* Convert to bt if needed */
-                if (not Type_Is_Float_Representation(high_expr->type)) {
-                    const char *high_llvm = Expression_Llvm_Type(cg, high_expr);
-                    if (strcmp(high_llvm, new_bt) != 0 and !Llvm_Type_Is_Pointer(high_llvm)) {
-                        high_t = Emit_Convert(cg, high_t, high_llvm, new_bt);
-                    }
-                }
-            } else {
-                high_t = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, 1\n", high_t, new_bt);
-            }
+            uint32_t low_t = Emit_Single_Bound(cg, &subtype->array.indices[0].low_bound, new_bt);
+            uint32_t high_t = Emit_Single_Bound(cg, &subtype->array.indices[0].high_bound, new_bt);
 
             /* Calculate size: (high - low + 1) * elem_size */
             const char *alloc_iat = Integer_Arith_Type(cg);
@@ -27960,37 +27860,15 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
             }
         } else {
             /* No range constraint - use the subtype's type bounds */
-            Type_Info *subtype = range->type;
-            if (subtype and subtype->low_bound.kind == BOUND_INTEGER) {
-                low_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, %s  ; subtype low\n", low_val, Integer_Arith_Type(cg),
-                     I128_Decimal(Type_Bound_Value(subtype->low_bound)));
-                high_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, %s  ; subtype high\n", high_val, Integer_Arith_Type(cg),
-                     I128_Decimal(Type_Bound_Value(subtype->high_bound)));
-            } else {
-                fprintf(stderr, "warning: FOR loop subtype has no bounds, defaulting to 0\n");
-                low_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, 0  ; no type info\n", low_val, Integer_Arith_Type(cg));
-                high_val = low_val;
-            }
+            Bound_Temps b = Emit_Bounds(cg, range->type, 0);
+            low_val = b.low_temp;
+            high_val = b.high_temp;
         }
     } else if (range and range->kind == NK_IDENTIFIER) {
         /* Just a type name: FOR I IN TYPE_NAME LOOP - iterate over type's range */
-        Type_Info *type = range->type;
-        if (type and type->low_bound.kind == BOUND_INTEGER) {
-            low_val = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = add %s 0, %s  ; type low\n", low_val, Integer_Arith_Type(cg),
-                 I128_Decimal(Type_Bound_Value(type->low_bound)));
-            high_val = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = add %s 0, %s  ; type high\n", high_val, Integer_Arith_Type(cg),
-                 I128_Decimal(Type_Bound_Value(type->high_bound)));
-        } else {
-            fprintf(stderr, "warning: FOR loop type has no bounds, defaulting to 0\n");
-            low_val = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = add %s 0, 0  ; no type bounds\n", low_val, Integer_Arith_Type(cg));
-            high_val = low_val;
-        }
+        Bound_Temps b = Emit_Bounds(cg, range->type, 0);
+        low_val = b.low_temp;
+        high_val = b.high_temp;
     } else {
         /* Other expression - evaluate as low bound, assume scalar with same high */
         low_val = Generate_Expression(cg, range);
