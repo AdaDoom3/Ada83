@@ -30284,87 +30284,23 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
     bool has_exc = body->subprogram_body.handlers.count > 0;
 
     if (has_exc) {
-        uint32_t hf = Emit_Temp(cg);
-        uint32_t handler_lbl = Emit_Label(cg);
-        uint32_t normal_lbl  = Emit_Label(cg);
-        uint32_t end_lbl     = Emit_Label(cg);
+        Exception_Setup setup = Emit_Exception_Handler_Setup(cg);
+        uint32_t end_lbl = Emit_Label(cg);
 
-        Emit(cg, "  %%t%u = alloca { ptr, [200 x i8] }, align 16  ; handler frame\n", hf);
-        Emit(cg, "  call void @__ada_push_handler(ptr %%t%u)\n", hf);
-
-        uint32_t jb = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = getelementptr { ptr, [200 x i8] }, ptr %%t%u, i32 0, i32 1\n", jb, hf);
-        uint32_t sj = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = call i32 @setjmp(ptr %%t%u)\n", sj, jb);
-
-        uint32_t is_n = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", is_n, sj);
-        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", is_n, normal_lbl, handler_lbl);
-
-        Emit_Label_Here(cg, normal_lbl);
+        /* Normal execution path */
+        Emit_Label_Here(cg, setup.normal_label);
         Generate_Statement_List(cg, &body->subprogram_body.statements);
         if (not cg->block_terminated)
             Emit(cg, "  call void @__ada_pop_handler()\n");
         Emit_Branch_If_Needed(cg, end_lbl);
 
         /* Exception handler entry */
-        Emit_Label_Here(cg, handler_lbl);
+        Emit_Label_Here(cg, setup.handler_label);
         cg->block_terminated = false;
         Emit(cg, "  call void @__ada_pop_handler()\n");
 
-        uint32_t exc_id = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = call i64 @__ada_current_exception()\n", exc_id);
-
-        uint32_t next_h = 0;
-        for (uint32_t i = 0; i < body->subprogram_body.handlers.count; i++) {
-            Syntax_Node *h = body->subprogram_body.handlers.items[i];
-            if (not h) continue;
-
-            if (next_h) { Emit_Label_Here(cg, next_h); cg->block_terminated = false; }
-            next_h = Emit_Label(cg);
-            uint32_t hbody = Emit_Label(cg);
-
-            bool has_others = false;
-            for (uint32_t j = 0; j < h->handler.exceptions.count; j++) {
-                if (h->handler.exceptions.items[j]->kind == NK_OTHERS)
-                    { has_others = true; break; }
-            }
-
-            if (has_others) {
-                Emit(cg, "  br label %%L%u\n", hbody);
-            } else {
-                for (uint32_t j = 0; j < h->handler.exceptions.count; j++) {
-                    Syntax_Node *en = h->handler.exceptions.items[j];
-                    if (en->symbol) {
-                        uint32_t ep = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = ptrtoint ptr ", ep);
-                        Emit_Exception_Ref(cg, en->symbol);
-                        Emit(cg, " to i64\n");
-                        uint32_t m = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", m, exc_id, ep);
-                        bool last = true;
-                        for (uint32_t k = j+1; k < h->handler.exceptions.count; k++)
-                            if (h->handler.exceptions.items[k]->symbol) { last = false; break; }
-                        uint32_t fl = last ? next_h : Emit_Label(cg);
-                        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", m, hbody, fl);
-                        if (not last) { Emit_Label_Here(cg, fl); cg->block_terminated = false; }
-                    }
-                }
-            }
-            cg->block_terminated = true;
-            Emit_Label_Here(cg, hbody);
-            cg->block_terminated = false;
-            Generate_Statement_List(cg, &h->handler.statements);
-            Emit_Branch_If_Needed(cg, end_lbl);
-        }
-
-        if (next_h) {
-            Emit_Label_Here(cg, next_h);
-            cg->block_terminated = false;
-            Emit(cg, "  call void @__ada_reraise()\n");
-            Emit(cg, "  unreachable\n");
-            cg->block_terminated = true;
-        }
+        uint32_t exc_id = Emit_Current_Exception_Id(cg);
+        Generate_Exception_Dispatch(cg, &body->subprogram_body.handlers, exc_id, end_lbl);
 
         Emit_Label_Here(cg, end_lbl);
         cg->block_terminated = false;
@@ -30652,83 +30588,24 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 bool has_pkg_exc = node->package_body.handlers.count > 0;
                 Emit(cg, "  ; Package body initialization (inline)\n");
                 if (has_pkg_exc) {
-                    uint32_t hf = Emit_Temp(cg);
-                    uint32_t handler_lbl = Emit_Label(cg);
-                    uint32_t normal_lbl  = Emit_Label(cg);
-                    uint32_t end_lbl     = Emit_Label(cg);
+                    Exception_Setup setup = Emit_Exception_Handler_Setup(cg);
+                    uint32_t end_lbl = Emit_Label(cg);
 
-                    Emit(cg, "  %%t%u = alloca { ptr, [200 x i8] }, align 16\n", hf);
-                    Emit(cg, "  call void @__ada_push_handler(ptr %%t%u)\n", hf);
-                    uint32_t jb = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = getelementptr { ptr, [200 x i8] }, ptr %%t%u, i32 0, i32 1\n", jb, hf);
-                    uint32_t sj = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = call i32 @setjmp(ptr %%t%u)\n", sj, jb);
-                    uint32_t is_normal = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", is_normal, sj);
-                    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
-                         is_normal, normal_lbl, handler_lbl);
-
-                    Emit_Label_Here(cg, normal_lbl);
+                    /* Normal execution path */
+                    Emit_Label_Here(cg, setup.normal_label);
                     Generate_Statement_List(cg, &node->package_body.statements);
-                    Emit(cg, "  call void @__ada_pop_handler()\n");
-                    Emit(cg, "  br label %%L%u\n", end_lbl);
+                    if (not cg->block_terminated)
+                        Emit(cg, "  call void @__ada_pop_handler()\n");
+                    Emit_Branch_If_Needed(cg, end_lbl);
 
-                    Emit_Label_Here(cg, handler_lbl);
+                    /* Exception handler entry */
+                    Emit_Label_Here(cg, setup.handler_label);
                     cg->block_terminated = false;
                     Emit(cg, "  call void @__ada_pop_handler()\n");
-                    uint32_t exc_id = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = call i64 @__ada_current_exception()\n", exc_id);
 
-                    uint32_t next_handler = 0;
-                    for (uint32_t i = 0; i < node->package_body.handlers.count; i++) {
-                        Syntax_Node *handler = node->package_body.handlers.items[i];
-                        if (not handler) continue;
-                        if (next_handler != 0) {
-                            Emit_Label_Here(cg, next_handler);
-                            cg->block_terminated = false;
-                        }
-                        next_handler = Emit_Label(cg);
-                        uint32_t handler_body = Emit_Label(cg);
+                    uint32_t exc_id = Emit_Current_Exception_Id(cg);
+                    Generate_Exception_Dispatch(cg, &node->package_body.handlers, exc_id, end_lbl);
 
-                        bool has_others = false;
-                        for (uint32_t j = 0; j < handler->handler.exceptions.count; j++) {
-                            Syntax_Node *exc_name = handler->handler.exceptions.items[j];
-                            if (exc_name->kind == NK_OTHERS) { has_others = true; break; }
-                        }
-                        if (has_others) {
-                            Emit(cg, "  br label %%L%u\n", handler_body);
-                        } else {
-                            for (uint32_t j = 0; j < handler->handler.exceptions.count; j++) {
-                                Syntax_Node *exc_name = handler->handler.exceptions.items[j];
-                                if (exc_name->symbol) {
-                                    uint32_t ep = Emit_Temp(cg);
-                                    Emit(cg, "  %%t%u = ptrtoint ptr ", ep);
-                                    Emit_Exception_Ref(cg, exc_name->symbol);
-                                    Emit(cg, " to i64\n");
-                                    uint32_t m = Emit_Temp(cg);
-                                    Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", m, exc_id, ep);
-                                    bool is_last = true;
-                                    for (uint32_t k = j+1; k < handler->handler.exceptions.count; k++)
-                                        if (handler->handler.exceptions.items[k]->symbol) { is_last = false; break; }
-                                    uint32_t fl = is_last ? next_handler : Emit_Label(cg);
-                                    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", m, handler_body, fl);
-                                    if (not is_last) { Emit_Label_Here(cg, fl); cg->block_terminated = false; }
-                                }
-                            }
-                        }
-                        cg->block_terminated = true;
-                        Emit_Label_Here(cg, handler_body);
-                        cg->block_terminated = false;
-                        Generate_Statement_List(cg, &handler->handler.statements);
-                        Emit_Branch_If_Needed(cg, end_lbl);
-                    }
-                    if (next_handler != 0) {
-                        Emit_Label_Here(cg, next_handler);
-                        cg->block_terminated = false;
-                        Emit(cg, "  call void @__ada_reraise()\n");
-                        Emit(cg, "  unreachable\n");
-                        cg->block_terminated = true;
-                    }
                     Emit_Label_Here(cg, end_lbl);
                     cg->block_terminated = false;
                 } else {
