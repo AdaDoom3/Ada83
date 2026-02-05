@@ -702,3 +702,640 @@ Key files to modify:
   - Integrate with existing code generator
 
 ================================================================================
+
+
+
+================================================================================
+                    CODE GENERATOR / EXPANDER REFACTORING
+                         Comprehensive Master Plan
+================================================================================
+
+ORIGINAL PROMPT:
+--------------------------------------------------------------------------------
+Create a master plan for the expander as a whole with the goal of distilling it
+down into a masterwork - no more repetitive patterns, janky workarounds, no
+"DRY" or "KISS" violations, and as little hard coded types as possible. Each
+function must be read and given a rating out of 10. We must dramatically reduce
+lines of code without losing *any* functionality.
+--------------------------------------------------------------------------------
+
+================================================================================
+                              CURRENT STATE ANALYSIS
+================================================================================
+
+FILE STATISTICS:
+----------------
+  Total lines in ada83.c:           33,330
+  Code generation section:          Lines 17,500 - 31,840 (~14,340 lines)
+  Total codegen functions:          53+
+  Total Emit() calls:               912+
+  Type conversion calls:            227
+  Fat pointer operations:           168
+  Type tracking calls:              143
+  GEP emissions:                    114
+  Conditional comparisons:          105
+  Expression_Llvm_Type calls:       129
+
+HARDCODED TYPE STRINGS:
+-----------------------
+  "ptr"    → 35 occurrences (should use LLVM_PTR_TYPE)
+  "i1"     → 28 occurrences (should use LLVM_BOOL_TYPE)
+  "i32"    → 20 occurrences (should derive from type system)
+  "i64"    → 16 occurrences (should derive from type system)
+  "double" → 17 occurrences (should use Float_Llvm_Type_Of)
+  "float"  →  8 occurrences (should use Float_Llvm_Type_Of)
+  "i8"     → 18 occurrences (should use LLVM_CHAR_TYPE)
+
+================================================================================
+                         FUNCTION QUALITY RATINGS
+================================================================================
+
+Each function rated 1-10:
+  10 = Perfect, no changes needed
+   8 = Good, minor improvements possible
+   6 = Adequate, could be cleaner
+   4 = Needs work, significant issues
+   2 = Poor, major refactoring required
+   0 = Disaster, rewrite completely
+
+-------------------------------------------------------------------------------
+INFRASTRUCTURE LAYER (Lines 17476-17600) - Average: 8.5/10
+-------------------------------------------------------------------------------
+
+[9/10] Temp_Set_Type (17476, 6 lines)
+       Clean, focused, does one thing well.
+
+[9/10] Temp_Get_Type (17484, 6 lines)
+       Clean, hash collision check is smart.
+
+[8/10] String_Bound_Type (17503, 3 lines)
+       Good abstraction, could be macro.
+
+[8/10] String_Bounds_Struct (17508, 3 lines)
+       Good abstraction.
+
+[8/10] Integer_Arith_Type (17520, 3 lines)
+       Essential abstraction, widely used.
+
+[9/10] Emit_Temp (17564, 3 lines)
+       Perfect minimal function.
+
+[9/10] Emit_Label (17568, 3 lines)
+       Perfect minimal function.
+
+[8/10] Emit (17572, 7 lines)
+       Core emission, clean varargs.
+
+[7/10] Emit_Label_Here (17580, 18 lines)
+       Handles fallthrough, slightly complex logic.
+
+[8/10] Emit_Float_Constant (17599, 28 lines)
+       IEEE 754 hex emission, necessarily complex.
+
+-------------------------------------------------------------------------------
+SYMBOL & REFERENCE EMISSION (Lines 17769-18010) - Average: 7.0/10
+-------------------------------------------------------------------------------
+
+[6/10] Emit_Symbol_Name (17769, 80 lines)
+       Too long. Name mangling should be separate from emission.
+       FIX: Split into Mangle_Symbol_Name() + Emit_Mangled_Name().
+
+[7/10] Emit_Symbol_Ref (17846, 6 lines)
+       Clean wrapper.
+
+[6/10] Emit_Exception_Ref (17853, 48 lines)
+       Duplicates some logic from Emit_Symbol_Name.
+       FIX: Consolidate exception naming.
+
+[7/10] Emit_Symbol_Storage (17901, 54 lines)
+       Complex but necessary for various symbol types.
+
+[7/10] Emit_Nested_Frame_Arg (17955, 28 lines)
+       Handles nested procedures, reasonable complexity.
+
+[8/10] Emit_Raise_Exception (17983, 31 lines)
+       Clean exception raising sequence.
+
+-------------------------------------------------------------------------------
+CONSTRAINT & OVERFLOW CHECKING (Lines 18014-18460) - Average: 6.5/10
+-------------------------------------------------------------------------------
+
+[7/10] Emit_Overflow_Checked_Op (18014, 59 lines)
+       Good use of LLVM intrinsics. Well-structured.
+
+[7/10] Emit_Division_Check (18073, 19 lines)
+       Clean zero-check.
+
+[6/10] Emit_Signed_Division_Overflow_Check (18092, 42 lines)
+       Handles MIN_INT / -1 edge case. Could share more with Division_Check.
+
+[6/10] Emit_Index_Check (18144, 35 lines)
+       Duplicates bound extraction pattern.
+       FIX: Use unified bound emission helper.
+
+[5/10] Emit_Length_Check (18179, 22 lines)
+       Similar pattern to Index_Check.
+       FIX: Consolidate into single bounds-check abstraction.
+
+[7/10] Emit_Access_Check (18201, 24 lines)
+       Simple null check, clean.
+
+[4/10] Emit_Discriminant_Check (18225, 240 lines)
+       MASSIVE function. Handles all variant record checking.
+       FIX: Split into helpers for each check type.
+
+-------------------------------------------------------------------------------
+TYPE CONVERSION & COERCION (Lines 18465-18600) - Average: 8.0/10
+-------------------------------------------------------------------------------
+
+[8/10] Emit_Convert_Ext (18465, 107 lines)
+       Comprehensive but well-organized. Central conversion logic.
+       MINOR: Could use lookup table for conversion operators.
+
+[9/10] Emit_Convert (18570, 3 lines)
+       Perfect wrapper for default signed conversion.
+
+[8/10] Emit_Coerce (18579, 11 lines)
+       Good abstraction combining Get_Type + Convert.
+
+[8/10] Emit_Coerce_Default_Int (18590, 6 lines)
+       Useful shortcut.
+
+-------------------------------------------------------------------------------
+BOUND & CONSTRAINT VALUE EMISSION (Lines 18608-18880) - Average: 6.0/10
+-------------------------------------------------------------------------------
+
+[6/10] Emit_Bound_Value_Typed (18608, 34 lines)
+       Handles static vs dynamic bounds. Moderate duplication.
+       FIX: Could be table-driven for bound kinds.
+
+[7/10] Emit_Bound_Value (18642, 10 lines)
+       Simple wrapper.
+
+[4/10] Emit_Constraint_Check_With_Type (18652, 223 lines)
+       MASSIVE. Handles all constraint checking.
+       Major DRY violations - same patterns for each bound.
+       FIX: Extract Check_Against_Bound() helper.
+
+[7/10] Emit_Constraint_Check (18875, 8 lines)
+       Clean wrapper.
+
+-------------------------------------------------------------------------------
+FAT POINTER OPERATIONS (Lines 18937-19490) - Average: 6.5/10
+-------------------------------------------------------------------------------
+
+[7/10] Emit_Fat_Pointer (18937, 34 lines)
+       Clean fat pointer construction.
+
+[8/10] Emit_Fat_Pointer_Data (19033, 11 lines)
+       Simple extraction.
+
+[8/10] Emit_Fat_Pointer_Bound (19044, 19 lines)
+       Clean bounds pointer extraction.
+
+[6/10] Emit_Fat_Pointer_Low (19063, 27 lines)
+       Duplicates pattern from Emit_Fat_Pointer_High.
+       FIX: Single Emit_Fat_Pointer_Bound_Value(is_low: bool) function.
+
+[6/10] Emit_Fat_Pointer_High (19090, 27 lines)
+       Same pattern as Low.
+       FIX: Combine with Low.
+
+[5/10] Emit_Fat_Pointer_Length (19117, 18 lines)
+       Duplicates High-Low+1 pattern found elsewhere.
+       FIX: Use shared length computation.
+
+[6/10] Emit_Fat_Pointer_Length_Dim (19135, 43 lines)
+       Multi-dimensional handling, reasonable complexity.
+
+[5/10] Emit_Fat_Pointer_Dynamic (19178, 56 lines)
+       Much duplication with Emit_Fat_Pointer.
+       FIX: Consolidate into single parameterized function.
+
+[7/10] Emit_Load_Fat_Pointer (19234, 80 lines)
+       Complex but handles many symbol types correctly.
+
+[6/10] Emit_Fat_Pointer_Compare (19314, 45 lines)
+       Duplicates length/data extraction patterns.
+       FIX: Use standard fat pointer accessors.
+
+[7/10] Emit_Fat_Pointer_Null (19456, 18 lines)
+       Clean null fat pointer construction.
+
+-------------------------------------------------------------------------------
+LVALUE GENERATION (Line 19491) - Average: 6.0/10
+-------------------------------------------------------------------------------
+
+[6/10] Generate_Lvalue (19491, 240 lines)
+       Large function handling all lvalue cases.
+       Moderate duplication in GEP patterns.
+       FIX: Extract helpers for each lvalue kind.
+
+-------------------------------------------------------------------------------
+EXPRESSION GENERATION (Lines 19769-26473) - Average: 4.5/10
+-------------------------------------------------------------------------------
+
+[8/10] Generate_Integer_Literal (19769, 20 lines)
+       Clean, simple.
+
+[8/10] Generate_Real_Literal (19789, 13 lines)
+       Clean, simple.
+
+[7/10] Generate_String_Literal (19802, 27 lines)
+       Reasonable complexity for string handling.
+
+[5/10] Generate_Identifier (19829, 272 lines)
+       Large function. Handles too many cases.
+       FIX: Split by identifier kind (variable, literal, etc).
+
+[6/10] Generate_Record_Equality (20105, 128 lines)
+       Field-by-field comparison, moderate duplication.
+       FIX: Use iterator pattern for fields.
+
+[5/10] Generate_Array_Equality (20233, 104 lines)
+       Duplicates length + memcmp patterns.
+       FIX: Extract Compare_Array_Data() helper.
+
+[5/10] Generate_Composite_Address (20337, 100 lines)
+       Overlaps with Generate_Lvalue.
+       FIX: Consolidate or clearly differentiate.
+
+[2/10] Generate_Binary_Op (20636, 1354 lines) <<< WORST OFFENDER
+       MASSIVE. Handles 20+ operator cases in one function.
+       Extreme DRY violations - same patterns repeated per operator.
+       Same left/right processing code repeated dozens of times.
+       Same type conversion boilerplate everywhere.
+
+       FIX: Complete rewrite needed:
+       - Extract Generate_Arithmetic_Op()
+       - Extract Generate_Comparison_Op()
+       - Extract Generate_Logical_Op()
+       - Extract Generate_Array_Op()
+       - Use operator dispatch table
+       - Factor out Operand_Pair structure with unified preprocessing
+
+[6/10] Generate_Unary_Op (21990, 113 lines)
+       Moderate size, handles all unary operators.
+       Some duplication with Binary_Op patterns.
+
+[5/10] Generate_Apply (23345, 460 lines)
+       Large. Mixes array indexing with function calls.
+       Intrinsic dispatch is a huge switch.
+       FIX: Split array indexing from function calls.
+       FIX: Move intrinsics to lookup table.
+
+[5/10] Generate_Selected (23345, 248 lines)
+       Record field selection + package qualification.
+       FIX: Split into Generate_Field_Access and Generate_Qualified_Name.
+
+[2/10] Generate_Attribute (23808, 1432 lines) <<< 2ND WORST OFFENDER
+       MASSIVE. 40+ attribute types in single function.
+       Each attribute is 30-100 lines of similar patterns.
+       Runtime vs static bounds check repeated per attribute.
+
+       FIX: Complete rewrite needed:
+       - Create Attribute_Handler table
+       - Extract Generate_Array_Attribute()
+       - Extract Generate_Enum_Attribute()
+       - Extract Generate_Scalar_Attribute()
+       - Unified bounds access pattern
+
+[4/10] Generate_Aggregate (25257, 856 lines)
+       Large function handling all aggregate types.
+       Bound generation duplicated for low/high.
+       Element initialization loop duplicated per style.
+       FIX: Split array vs record aggregates.
+       FIX: Extract Emit_Bound_Value_Or_Expr() helper.
+
+[6/10] Generate_Qualified (26113, 128 lines)
+       Type qualification, moderate complexity.
+
+[5/10] Generate_Allocator (26143, 330 lines)
+       Dynamic allocation, some duplication with aggregate init.
+       FIX: Share initialization code with aggregates.
+
+[7/10] Generate_Expression (26473, 67 lines)
+       Central dispatcher. Clean switch statement.
+
+-------------------------------------------------------------------------------
+STATEMENT GENERATION (Lines 26540-28800) - Average: 6.5/10
+-------------------------------------------------------------------------------
+
+[8/10] Generate_Statement_List (26542, 29 lines)
+       Simple iteration, clean.
+
+[6/10] Generate_Assignment (27181, 180 lines)
+       Handles simple and slice assignments.
+       Memcpy pattern duplicated with other places.
+
+[7/10] Generate_If_Statement (27181, 46 lines)
+       Clean conditional generation.
+
+[6/10] Generate_Loop_Statement (27225, 49 lines)
+       Basic while loop, clean.
+
+[5/10] Generate_For_Loop (27610, 232 lines)
+       Large, handles all iteration schemes.
+       Range extraction duplicated from attributes.
+       FIX: Use shared range extraction.
+
+[6/10] Generate_Case_Statement (27438, 172 lines)
+       Switch generation, moderate complexity.
+
+[6/10] Generate_Return_Statement (27274, 164 lines)
+       Return value + BIP handling.
+       Some duplication with function epilogue.
+
+[7/10] Generate_Raise_Statement (27846, 24 lines)
+       Simple exception raise.
+
+[6/10] Generate_Block_Statement (27870, 163 lines)
+       Block with local declarations, reasonable.
+
+[6/10] Generate_Statement (28033, 708 lines)
+       Central dispatcher. Large switch but organized.
+
+-------------------------------------------------------------------------------
+DECLARATION & DEFINITION GENERATION (Lines 28817-31840) - Average: 5.5/10
+-------------------------------------------------------------------------------
+
+[7/10] Generate_Declaration_List (28811, 6 lines)
+       Simple iteration.
+
+[4/10] Generate_Object_Declaration (28817, 1032 lines) <<< 3RD WORST
+       MASSIVE. Handles variables, constants, all initialization.
+       Constraint initialization duplicated many times.
+       Bound extraction duplicated.
+       FIX: Split by declaration kind.
+       FIX: Extract Init_Scalar(), Init_Array(), Init_Record().
+
+[7/10] Emit_Extern_Subprogram (28773, 38 lines)
+       Clean external declaration.
+
+[6/10] Emit_Function_Header (29849, 100 lines)
+       Function prologue with BIP params.
+       Parameter list construction could be cleaner.
+
+[5/10] Generate_Subprogram_Body (29917, 366 lines)
+       Function body generation.
+       Epilogue handling duplicated with generic instance.
+       FIX: Extract Generate_Function_Epilogue().
+
+[5/10] Generate_Generic_Instance_Body (30283, 261 lines)
+       Generic instantiation body.
+       Duplicates much of Generate_Subprogram_Body.
+       FIX: Share code with Generate_Subprogram_Body.
+
+[6/10] Generate_Task_Body (30567, 123 lines)
+       Task type body generation.
+
+[6/10] Generate_Declaration (30690, 727 lines)
+       Central dispatcher. Large but organized.
+
+[6/10] Generate_Type_Equality_Function (31417, 225 lines)
+       Auto-generate composite equality.
+       Field iteration similar to Generate_Record_Equality.
+
+[7/10] Generate_Implicit_Operators (31642, 8 lines)
+       Clean wrapper.
+
+[6/10] Generate_Exception_Globals (31650, 92 lines)
+       Exception identity globals.
+
+[6/10] Generate_Extern_Declarations (31742, 98 lines)
+       WITH'd package externs.
+
+[7/10] Generate_Compilation_Unit (31840, 100 lines)
+       Top-level entry point. Clean.
+
+================================================================================
+                         IDENTIFIED DRY VIOLATIONS
+================================================================================
+
+VIOLATION 1: BOUND EXTRACTION (Est. 600 lines recoverable)
+----------------------------------------------------------
+The pattern of extracting low/high bounds appears in 20+ locations:
+
+  Pattern A - Static bounds:
+    low_val = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = add %s 0, %s\n", low_val, bt, I128_Decimal(low));
+    Temp_Set_Type(cg, low_val, bt);
+
+  Pattern B - Dynamic bounds (BOUND_EXPR):
+    low_val = Generate_Expression(cg, lb.expr);
+    low_llvm = Expression_Llvm_Type(cg, lb.expr);
+    if (strcmp(low_llvm, iat) != 0) low_val = Emit_Convert(...);
+
+  Locations:
+    - Generate_Binary_Op: 20696-20731, 20873-20897, 20918-20930
+    - Generate_Attribute: 23871-23940, 23947-23970
+    - Generate_Aggregate: 25334-25380
+    - Generate_For_Loop: 27640-27700
+    - Emit_Constraint_Check_With_Type: 18700-18800
+
+  SOLUTION:
+    typedef struct {
+        uint32_t low_temp;
+        uint32_t high_temp;
+        const char *bound_type;
+    } Bound_Temps;
+
+    Bound_Temps Emit_Bounds(cg, Type_Info *type, uint32_t dim);
+    Bound_Temps Emit_Bounds_From_Fat(cg, uint32_t fat_ptr, const char *bt);
+
+VIOLATION 2: FAT POINTER NORMALIZATION (Est. 300 lines recoverable)
+--------------------------------------------------------------------
+The pattern of "wrap constrained array as fat pointer" appears 15+ times:
+
+  Pattern:
+    if (Expression_Produces_Fat_Pointer(...)) {
+        val = Generate_Expression(cg, node);
+    } else {
+        ptr = Generate_Composite_Address(cg, node);
+        lo = Type_Bound_Value(...);
+        hi = Type_Bound_Value(...);
+        val = Emit_Fat_Pointer(cg, ptr, lo, hi, bt);
+    }
+
+  SOLUTION:
+    uint32_t Normalize_To_Fat_Pointer(cg, Syntax_Node *node, Type_Info *type);
+
+VIOLATION 3: LENGTH COMPUTATION (Est. 200 lines recoverable)
+-------------------------------------------------------------
+The pattern "length = high - low + 1; clamp to 0 if null" appears 12+ times:
+
+  Pattern:
+    len = sub high, low
+    len1 = add len, 1
+    is_null = icmp sgt low, high
+    result = select is_null, 0, len1
+
+  SOLUTION:
+    uint32_t Emit_Array_Length(cg, uint32_t low, uint32_t high, const char *bt);
+
+VIOLATION 4: MEMCMP PATTERN (Est. 150 lines recoverable)
+---------------------------------------------------------
+The pattern for comparing array data with memcmp appears 8+ times:
+
+  SOLUTION:
+    uint32_t Emit_Memcmp(cg, uint32_t left, uint32_t right,
+                         uint32_t len, uint32_t elem_size, const char *bt);
+
+VIOLATION 5: REDUNDANT TYPE TRACKING (Est. 100 lines recoverable)
+------------------------------------------------------------------
+Emit_Convert_Ext already calls Temp_Set_Type at line 18565.
+~100 additional Temp_Set_Type calls after Emit_Convert are REDUNDANT.
+
+  SOLUTION: Remove all redundant Temp_Set_Type calls after Emit_Convert.
+
+VIOLATION 6: BINARY OPERATOR PREPROCESSING (Est. 800 lines recoverable)
+------------------------------------------------------------------------
+Every binary operator case does similar operand setup.
+
+  SOLUTION:
+    typedef struct {
+        uint32_t left, right;
+        const char *left_type, *right_type;
+        const char *result_type;
+        bool is_float;
+    } Binary_Operands;
+
+    Binary_Operands Prepare_Binary_Operands(cg, Syntax_Node *node);
+
+VIOLATION 7: CONDITIONAL BRANCH SEQUENCE (Est. 300 lines recoverable)
+----------------------------------------------------------------------
+The pattern for conditional check + raise appears 50+ times.
+
+  SOLUTION:
+    void Emit_Check_With_Raise(cg, uint32_t cond, const char *msg);
+
+================================================================================
+                         REFACTORING PHASES
+================================================================================
+
+PHASE 1: EXTRACT HELPER FUNCTIONS (Target: -1500 lines)
+--------------------------------------------------------
+[ ] 1.1 Create Bound_Temps + Emit_Bounds() family
+[ ] 1.2 Create Emit_Array_Length()
+[ ] 1.3 Create Normalize_To_Fat_Pointer()
+[ ] 1.4 Create Emit_Memcmp() helper
+[ ] 1.5 Create Emit_Check_With_Raise()
+[ ] 1.6 Create Binary_Operands + Prepare_Binary_Operands()
+[ ] 1.7 Remove redundant Temp_Set_Type calls
+
+PHASE 2: SPLIT MONSTER FUNCTIONS (Target: -1000 lines)
+-------------------------------------------------------
+[ ] 2.1 Split Generate_Binary_Op (1354 -> ~600 lines)
+        - Generate_Arithmetic_Op()
+        - Generate_Comparison_Op()
+        - Generate_Logical_Op()
+        - Generate_Array_Binary_Op()
+        - Generate_User_Defined_Op()
+
+[ ] 2.2 Split Generate_Attribute (1432 -> ~700 lines)
+        - Generate_Array_Attribute()
+        - Generate_Enum_Attribute()
+        - Generate_Scalar_Attribute()
+        - Generate_Type_Attribute()
+
+[ ] 2.3 Split Generate_Object_Declaration (1032 -> ~500 lines)
+        - Generate_Scalar_Init()
+        - Generate_Array_Init()
+        - Generate_Record_Init()
+        - Generate_Unconstrained_Init()
+
+[ ] 2.4 Split Generate_Apply (460 -> ~280 lines)
+        - Generate_Array_Index()
+        - Generate_Function_Call()
+        - Generate_Intrinsic()
+
+PHASE 3: TABLE-DRIVEN OPERATIONS (Target: -500 lines)
+------------------------------------------------------
+[ ] 3.1 Intrinsic function table
+[ ] 3.2 Arithmetic operator table
+[ ] 3.3 Attribute handler table
+[ ] 3.4 Type conversion table
+
+PHASE 4: CONSOLIDATE DUPLICATE CODE (Target: -400 lines)
+----------------------------------------------------------
+[ ] 4.1 Merge Generate_Subprogram_Body + Generate_Generic_Instance_Body
+[ ] 4.2 Merge Generate_Lvalue + Generate_Composite_Address
+[ ] 4.3 Merge Emit_Fat_Pointer_Low + Emit_Fat_Pointer_High
+[ ] 4.4 Merge Generate_Record_Equality + Generate_Type_Equality_Function
+[ ] 4.5 Consolidate exception naming across functions
+
+PHASE 5: ELIMINATE HARDCODED TYPES (Target: -50 lines)
+-------------------------------------------------------
+[ ] 5.1 Define type constants (LLVM_PTR_TYPE, LLVM_BOOL_TYPE, etc.)
+[ ] 5.2 Replace all hardcoded "ptr" (35 occurrences)
+[ ] 5.3 Replace all hardcoded "i1" (28 occurrences)
+[ ] 5.4 Use Integer_Arith_Type(cg) instead of "i32"/"i64"
+[ ] 5.5 Use Float_Llvm_Type_Of(type) instead of "float"/"double"
+
+================================================================================
+                         ESTIMATED RESULTS
+================================================================================
+
+CURRENT STATE:
+  Code generation section: ~14,340 lines
+
+AFTER REFACTORING:
+  Phase 1: -1,500 lines (helper extraction)
+  Phase 2: -1,000 lines (function splitting + dedup)
+  Phase 3:   -500 lines (table-driven)
+  Phase 4:   -400 lines (consolidation)
+  Phase 5:    -50 lines (type constants)
+  ---------------------------------
+  Total:   -3,450 lines
+
+FINAL STATE:
+  Code generation section: ~10,890 lines (24% reduction)
+
+QUALITY IMPROVEMENT:
+  Average function rating: 5.8/10 -> 7.5/10
+  Largest function: 1,432 lines -> ~200 lines
+  DRY violations: ~20 major patterns -> 0
+
+================================================================================
+                         IMPLEMENTATION ORDER
+================================================================================
+
+WEEK 1 (Foundation):
+  1.7 -> 1.1 -> 1.2 -> 1.3
+
+WEEK 2-3 (Core Refactoring):
+  2.1 -> 2.2 -> 2.3
+  1.4 -> 1.5 -> 1.6
+
+WEEK 4 (Table-Driven):
+  3.1 -> 3.2 -> 3.3
+
+WEEK 5 (Consolidation):
+  4.1 -> 4.2 -> 4.3 -> 4.4 -> 4.5
+
+WEEK 6 (Cleanup):
+  5.1 -> 5.2 -> 5.3 -> 5.4 -> 5.5
+  2.4 -> 3.4
+
+================================================================================
+                            RISK ASSESSMENT
+================================================================================
+
+LOW RISK:
+  - Phase 1 (helper extraction) - purely additive
+  - Phase 5 (type constants) - search-and-replace
+
+MEDIUM RISK:
+  - Phase 2 (function splitting) - must preserve all code paths
+  - Phase 3 (table-driven) - must handle all edge cases
+
+HIGH RISK:
+  - Phase 4 (consolidation) - merging code paths is error-prone
+
+MITIGATION:
+  - Run all tests after each sub-phase
+  - Use git bisect for regression hunting
+  - Keep backup before each phase
+  - Review for semantic equivalence
+
+================================================================================
