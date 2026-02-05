@@ -19173,6 +19173,29 @@ static uint32_t Emit_Length_From_Bounds(Code_Generator *cg,
     return len;
 }
 
+/* Emit_Fat_To_Array_Memcpy: Copy data from a fat pointer source to a destination.
+ * Extracts data pointer, computes byte length from bounds * element size, emits memcpy.
+ * Used when assigning fat pointer (unconstrained string/array) to constrained component. */
+static void Emit_Fat_To_Array_Memcpy(Code_Generator *cg, uint32_t fat_val,
+                                      uint32_t dest_ptr, Type_Info *array_type) {
+    const char *bnd_type = Array_Bound_Llvm_Type(array_type);
+    uint32_t data_ptr = Emit_Fat_Pointer_Data(cg, fat_val, bnd_type);
+    uint32_t fat_lo = Emit_Fat_Pointer_Low(cg, fat_val, bnd_type);
+    uint32_t fat_hi = Emit_Fat_Pointer_High(cg, fat_val, bnd_type);
+    uint32_t len = Emit_Length_From_Bounds(cg, fat_lo, fat_hi, bnd_type);
+    uint32_t elem_sz = (array_type->array.element_type &&
+                        array_type->array.element_type->size > 0) ?
+                        array_type->array.element_type->size : 1;
+    uint32_t byte_len = len;
+    if (elem_sz > 1) {
+        byte_len = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", byte_len, bnd_type, len, elem_sz);
+    }
+    uint32_t byte_len_64 = Emit_Extend_To_I64(cg, byte_len, bnd_type);
+    Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
+         dest_ptr, data_ptr, byte_len_64);
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
  * §13.2.1 DRY-Consolidated Helpers (Phase 1 Refactoring)
  *
@@ -26099,23 +26122,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                                 bool src_is_fat = (src_type and strstr(src_type, "{ ptr, ptr }") != NULL);
                                 if (comp_ti and src_is_fat and
                                     (Type_Is_String(comp_ti) or Type_Is_Array_Like(comp_ti))) {
-                                    const char *bnd_type = Array_Bound_Llvm_Type(comp_ti);
-                                    uint32_t data_ptr = Emit_Fat_Pointer_Data(cg, val, bnd_type);
-                                    uint32_t fat_lo = Emit_Fat_Pointer_Low(cg, val, bnd_type);
-                                    uint32_t fat_hi = Emit_Fat_Pointer_High(cg, val, bnd_type);
-                                    uint32_t len = Emit_Length_From_Bounds(cg, fat_lo, fat_hi, bnd_type);
-                                    uint32_t elem_sz = (comp_ti->array.element_type &&
-                                        comp_ti->array.element_type->size > 0) ?
-                                        comp_ti->array.element_type->size : 1;
-                                    uint32_t byte_len = len;
-                                    if (elem_sz > 1) {
-                                        byte_len = Emit_Temp(cg);
-                                        Emit(cg, "  %%t%u = mul %s %%t%u, %u\n",
-                                             byte_len, bnd_type, len, elem_sz);
-                                    }
-                                    uint32_t byte_len_64 = Emit_Extend_To_I64(cg, byte_len, bnd_type);
-                                    Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
-                                         ptr, data_ptr, byte_len_64);
+                                    Emit_Fat_To_Array_Memcpy(cg, val, ptr, comp_ti);
                                 } else if (comp_ti and src_is_ptr and
                                     (Type_Is_Record(comp_ti) or Type_Is_Constrained_Array(comp_ti))) {
                                     /* Composite component: use memcpy */
@@ -26160,25 +26167,8 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         bool src_is_fat = (src_type and strstr(src_type, "{ ptr, ptr }") != NULL);
                         if (comp_ti and src_is_fat and
                             (Type_Is_String(comp_ti) or Type_Is_Array_Like(comp_ti))) {
-                            /* Fat pointer source → constrained string/array component:
-                             * extract data pointer and memcpy the data */
-                            const char *bnd_type = Array_Bound_Llvm_Type(comp_ti);
-                            uint32_t data_ptr = Emit_Fat_Pointer_Data(cg, val, bnd_type);
-                            uint32_t fat_lo = Emit_Fat_Pointer_Low(cg, val, bnd_type);
-                            uint32_t fat_hi = Emit_Fat_Pointer_High(cg, val, bnd_type);
-                            uint32_t len = Emit_Length_From_Bounds(cg, fat_lo, fat_hi, bnd_type);
-                            uint32_t elem_sz = (comp_ti->array.element_type &&
-                                comp_ti->array.element_type->size > 0) ?
-                                comp_ti->array.element_type->size : 1;
-                            uint32_t byte_len = len;
-                            if (elem_sz > 1) {
-                                byte_len = Emit_Temp(cg);
-                                Emit(cg, "  %%t%u = mul %s %%t%u, %u\n",
-                                     byte_len, bnd_type, len, elem_sz);
-                            }
-                            uint32_t byte_len_64 = Emit_Extend_To_I64(cg, byte_len, bnd_type);
-                            Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
-                                 ptr, data_ptr, byte_len_64);
+                            /* Fat pointer source → constrained string/array component */
+                            Emit_Fat_To_Array_Memcpy(cg, val, ptr, comp_ti);
                         } else if (comp_ti and src_is_ptr and
                             (Type_Is_Record(comp_ti) or Type_Is_Constrained_Array(comp_ti))) {
                             /* Composite component: use memcpy */
