@@ -32030,59 +32030,96 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "}\n\n");
 
     /* Integer power function — signed, overflow-checked (RM 4.5.6).
-     * Uses llvm.smul.with.overflow.iN to detect intermediate overflow.
-     * Raises Constraint_Error via __ada_raise on overflow. */
-    Emit(cg, "; Integer exponentiation helper (signed, overflow-checked)\n");
+     * Uses binary exponentiation (O(log n)) with overflow checking.
+     * Raises Constraint_Error on negative exponent or overflow. */
+    Emit(cg, "; Integer exponentiation helper (signed, overflow-checked, binary exp)\n");
     Emit(cg, "define linkonce_odr %s @__ada_integer_pow(%s %%base, %s %%exp) {\n", iat, iat, iat);
     Emit(cg, "entry:\n");
+    /* Check for negative exponent */
     Emit(cg, "  %%is_neg = icmp slt %s %%exp, 0\n", iat);
-    Emit(cg, "  br i1 %%is_neg, label %%neg_exp, label %%pos_exp\n");
+    Emit(cg, "  br i1 %%is_neg, label %%neg_exp, label %%check_zero\n");
     Emit(cg, "neg_exp:\n");
     Emit(cg, "  %%exc_ptr_neg = ptrtoint ptr @__exc.constraint_error to i64\n");
     Emit(cg, "  call void @__ada_raise(i64 %%exc_ptr_neg)\n");
     Emit(cg, "  unreachable  ; negative exponent for integer (RM 4.5.6)\n");
-    Emit(cg, "pos_exp:\n");
+    Emit(cg, "check_zero:\n");
+    /* exp == 0 -> return 1 */
     Emit(cg, "  %%is_zero = icmp eq %s %%exp, 0\n", iat);
     Emit(cg, "  br i1 %%is_zero, label %%ret_one, label %%loop\n");
     Emit(cg, "ret_one:\n");
     Emit(cg, "  ret %s 1\n", iat);
+    /* Binary exponentiation loop: result *= b when e is odd, b *= b, e /= 2 */
     Emit(cg, "loop:\n");
-    Emit(cg, "  %%result = phi %s [ 1, %%pos_exp ], [ %%new_result, %%cont ]\n", iat);
-    Emit(cg, "  %%i = phi %s [ 0, %%pos_exp ], [ %%next_i, %%cont ]\n", iat);
-    Emit(cg, "  %%pair = call {%s, i1} @llvm.smul.with.overflow.%s(%s %%result, %s %%base)\n", iat, iat, iat, iat);
-    Emit(cg, "  %%new_result = extractvalue {%s, i1} %%pair, 0\n", iat);
-    Emit(cg, "  %%ovf = extractvalue {%s, i1} %%pair, 1\n", iat);
-    Emit(cg, "  br i1 %%ovf, label %%overflow, label %%cont\n");
+    Emit(cg, "  %%result = phi %s [ 1, %%check_zero ], [ %%new_result, %%cont ]\n", iat);
+    Emit(cg, "  %%b = phi %s [ %%base, %%check_zero ], [ %%new_b, %%cont ]\n", iat);
+    Emit(cg, "  %%e = phi %s [ %%exp, %%check_zero ], [ %%new_e, %%cont ]\n", iat);
+    /* Check if e is odd: e & 1 */
+    Emit(cg, "  %%is_odd = and %s %%e, 1\n", iat);
+    Emit(cg, "  %%odd_bit = icmp ne %s %%is_odd, 0\n", iat);
+    Emit(cg, "  br i1 %%odd_bit, label %%mult_result, label %%square_base\n");
+    /* Multiply result by base (overflow checked) */
+    Emit(cg, "mult_result:\n");
+    Emit(cg, "  %%pair_r = call {%s, i1} @llvm.smul.with.overflow.%s(%s %%result, %s %%b)\n", iat, iat, iat, iat);
+    Emit(cg, "  %%mult_r = extractvalue {%s, i1} %%pair_r, 0\n", iat);
+    Emit(cg, "  %%ovf_r = extractvalue {%s, i1} %%pair_r, 1\n", iat);
+    Emit(cg, "  br i1 %%ovf_r, label %%overflow, label %%square_base\n");
+    /* Square the base for next iteration */
+    Emit(cg, "square_base:\n");
+    Emit(cg, "  %%result_sq = phi %s [ %%result, %%loop ], [ %%mult_r, %%mult_result ]\n", iat);
+    /* Halve exponent */
+    Emit(cg, "  %%new_e = lshr %s %%e, 1\n", iat);
+    /* Check if done (e == 0 after shift) */
+    Emit(cg, "  %%done = icmp eq %s %%new_e, 0\n", iat);
+    Emit(cg, "  br i1 %%done, label %%exit, label %%do_square\n");
+    /* Actually compute b*b (only if we need it for next iteration) */
+    Emit(cg, "do_square:\n");
+    Emit(cg, "  %%pair_b = call {%s, i1} @llvm.smul.with.overflow.%s(%s %%b, %s %%b)\n", iat, iat, iat, iat);
+    Emit(cg, "  %%sq_b = extractvalue {%s, i1} %%pair_b, 0\n", iat);
+    Emit(cg, "  %%ovf_b = extractvalue {%s, i1} %%pair_b, 1\n", iat);
+    Emit(cg, "  br i1 %%ovf_b, label %%overflow, label %%cont\n");
+    Emit(cg, "cont:\n");
+    Emit(cg, "  %%new_result = phi %s [ %%result_sq, %%do_square ]\n", iat);
+    Emit(cg, "  %%new_b = phi %s [ %%sq_b, %%do_square ]\n", iat);
+    Emit(cg, "  br label %%loop\n");
     Emit(cg, "overflow:\n");
     Emit(cg, "  %%exc_ptr = ptrtoint ptr @__exc.constraint_error to i64\n");
     Emit(cg, "  call void @__ada_raise(i64 %%exc_ptr)\n");
     Emit(cg, "  unreachable\n");
-    Emit(cg, "cont:\n");
-    Emit(cg, "  %%next_i = add %s %%i, 1\n", iat);
-    Emit(cg, "  %%done = icmp eq %s %%next_i, %%exp\n", iat);
-    Emit(cg, "  br i1 %%done, label %%exit, label %%loop\n");
     Emit(cg, "exit:\n");
-    Emit(cg, "  ret %s %%new_result\n", iat);
+    Emit(cg, "  ret %s %%result_sq\n", iat);
     Emit(cg, "}\n\n");
 
     /* Modular power function — unsigned, wrapping (RM 3.5.4).
-     * No overflow check: modular types wrap by definition. */
-    Emit(cg, "; Modular exponentiation helper (unsigned, wrapping)\n");
+     * Uses binary exponentiation (O(log n)), no overflow check as modular wraps. */
+    Emit(cg, "; Modular exponentiation helper (unsigned, wrapping, binary exp)\n");
     Emit(cg, "define linkonce_odr %s @__ada_modular_pow(%s %%base, %s %%exp) {\n", iat, iat, iat);
     Emit(cg, "entry:\n");
     Emit(cg, "  %%is_zero = icmp eq %s %%exp, 0\n", iat);
     Emit(cg, "  br i1 %%is_zero, label %%ret_one, label %%loop\n");
     Emit(cg, "ret_one:\n");
     Emit(cg, "  ret %s 1\n", iat);
+    /* Binary exponentiation loop */
     Emit(cg, "loop:\n");
-    Emit(cg, "  %%result = phi %s [ 1, %%entry ], [ %%new_result, %%loop ]\n", iat);
-    Emit(cg, "  %%i = phi %s [ 0, %%entry ], [ %%next_i, %%loop ]\n", iat);
-    Emit(cg, "  %%new_result = mul %s %%result, %%base\n", iat);
-    Emit(cg, "  %%next_i = add %s %%i, 1\n", iat);
-    Emit(cg, "  %%done = icmp eq %s %%next_i, %%exp\n", iat);
-    Emit(cg, "  br i1 %%done, label %%exit, label %%loop\n");
+    Emit(cg, "  %%result = phi %s [ 1, %%entry ], [ %%new_result, %%cont ]\n", iat);
+    Emit(cg, "  %%b = phi %s [ %%base, %%entry ], [ %%new_b, %%cont ]\n", iat);
+    Emit(cg, "  %%e = phi %s [ %%exp, %%entry ], [ %%new_e, %%cont ]\n", iat);
+    Emit(cg, "  %%is_odd = and %s %%e, 1\n", iat);
+    Emit(cg, "  %%odd_bit = icmp ne %s %%is_odd, 0\n", iat);
+    Emit(cg, "  br i1 %%odd_bit, label %%mult, label %%square\n");
+    Emit(cg, "mult:\n");
+    Emit(cg, "  %%mult_r = mul %s %%result, %%b\n", iat);
+    Emit(cg, "  br label %%square\n");
+    Emit(cg, "square:\n");
+    Emit(cg, "  %%result_s = phi %s [ %%result, %%loop ], [ %%mult_r, %%mult ]\n", iat);
+    Emit(cg, "  %%new_e = lshr %s %%e, 1\n", iat);
+    Emit(cg, "  %%done = icmp eq %s %%new_e, 0\n", iat);
+    Emit(cg, "  br i1 %%done, label %%exit, label %%cont\n");
+    Emit(cg, "cont:\n");
+    Emit(cg, "  %%new_b = mul %s %%b, %%b\n", iat);
+    Emit(cg, "  %%new_result = phi %s [ %%result_s, %%square ]\n", iat);
+    Emit(cg, "  br label %%loop\n");
     Emit(cg, "exit:\n");
-    Emit(cg, "  ret %s %%new_result\n", iat);
+    Emit(cg, "  ret %s %%result_s\n", iat);
     Emit(cg, "}\n\n");
 
     /* String trim helpers for Enum'VALUE (Ada RM 3.5): count leading/trailing
