@@ -25977,41 +25977,117 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                             rng_high = high;
                         }
 
-                        for (int128_t idx = rng_low; idx <= rng_high; idx++) {
-                            int128_t arr_idx = idx - low;
-                            if (arr_idx >= 0 and arr_idx < count) {
-                                uint32_t val = Generate_Expression(cg, item->association.expression);
-                                if (elem_is_composite and
-                                    Expression_Produces_Fat_Pointer(item->association.expression,
-                                        item->association.expression->type))
-                                    val = Emit_Fat_Pointer_Data(cg, val,
-                                              Array_Bound_Llvm_Type(agg_type));
-                                if (not elem_is_composite) {
-                                    const char *src_type = Expression_Llvm_Type(cg, item->association.expression);
-                                    if (elem_ti and elem_ti->kind == TYPE_FIXED and Is_Float_Type(src_type)) {
-                                        double small = elem_ti->fixed.small;
-                                        if (small <= 0) small = elem_ti->fixed.delta > 0 ? elem_ti->fixed.delta : 1.0;
-                                        uint64_t sb; memcpy(&sb, &small, sizeof(sb));
-                                        uint32_t st = Emit_Temp(cg);
-                                        Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; small\n", st, (unsigned long long)sb);
-                                        uint32_t dv = Emit_Temp(cg);
-                                        Emit(cg, "  %%t%u = fdiv %s %%t%u, %%t%u  ; agg range/small\n", dv, src_type, val, st);
-                                        val = dv;
+                        /* Detect multidim inner aggregates with expression
+                         * bounds that must be evaluated exactly once. */
+                        bool inline_multidim = false;
+                        if (multidim and item->association.expression->kind == NK_AGGREGATE) {
+                            Syntax_Node *ia = item->association.expression;
+                            for (uint32_t qi = 0; qi < ia->aggregate.items.count; qi++) {
+                                Syntax_Node *qit = ia->aggregate.items.items[qi];
+                                if (qit->kind != NK_ASSOCIATION) continue;
+                                for (uint32_t qc = 0; qc < qit->association.choices.count; qc++) {
+                                    Syntax_Node *qch = qit->association.choices.items[qc];
+                                    if (qch->kind == NK_RANGE) {
+                                        if (qch->range.low->kind != NK_INTEGER)
+                                            inline_multidim = true;
+                                        if (qch->range.high->kind != NK_INTEGER)
+                                            inline_multidim = true;
                                     }
-                                    val = Emit_Convert(cg, val, src_type, elem_type);
                                 }
-                                uint32_t ptr = Emit_Temp(cg);
-                                if (elem_is_composite) {
-                                    Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %s\n",
-                                         ptr, base, I128_Decimal(arr_idx * (int128_t)elem_size));
-                                    Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
-                                         ptr, val, elem_size);
-                                } else {
-                                    Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %s\n",
-                                         ptr, elem_type, base, I128_Decimal(arr_idx));
-                                    Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, val, ptr);
+                            }
+                        }
+                        if (inline_multidim) {
+                            /* Multidimensional aggregate with expression bounds:
+                             * inline the inner aggregate.  RM 4.3.2(6): for
+                             * (F..G => (H..I => J)), the inner bounds H,I are
+                             * evaluated once; the value J is evaluated once per
+                             * component (outer × inner, zero if null). */
+                            Syntax_Node *inner_agg = item->association.expression;
+                            int128_t inner_low  = Type_Bound_Value(dim_lo[1]);
+                            int128_t inner_high = Type_Bound_Value(dim_hi[1]);
+                            int128_t inner_count = (inner_high >= inner_low)
+                                                 ? (inner_high - inner_low + 1) : 0;
+
+                            /* Evaluate inner choice bounds once for side effects,
+                             * even when the outer range is null (RM 4.3.2(6)). */
+                            Syntax_Node *inner_val_expr = NULL;
+                            for (uint32_t qi = 0; qi < inner_agg->aggregate.items.count; qi++) {
+                                Syntax_Node *qi_item = inner_agg->aggregate.items.items[qi];
+                                if (qi_item->kind != NK_ASSOCIATION) continue;
+                                if (not inner_val_expr)
+                                    inner_val_expr = qi_item->association.expression;
+                                for (uint32_t qc = 0; qc < qi_item->association.choices.count; qc++) {
+                                    Syntax_Node *qch = qi_item->association.choices.items[qc];
+                                    if (qch->kind == NK_RANGE) {
+                                        if (qch->range.low->kind != NK_INTEGER)
+                                            Generate_Expression(cg, qch->range.low);
+                                        if (qch->range.high->kind != NK_INTEGER)
+                                            Generate_Expression(cg, qch->range.high);
+                                    }
                                 }
-                                initialized[arr_idx] = true;
+                            }
+
+                            /* Nested loop: for each (row, col) cell, evaluate J
+                             * and store at the flat offset in row-major order. */
+                            if (inner_val_expr) {
+                                for (int128_t oi = rng_low; oi <= rng_high; oi++) {
+                                    int128_t oai = oi - low;
+                                    if (oai < 0 or oai >= count) continue;
+                                    for (int128_t ci = inner_low; ci <= inner_high; ci++) {
+                                        int128_t flat = oai * inner_count + (ci - inner_low);
+                                        uint32_t val = Generate_Expression(cg, inner_val_expr);
+                                        const char *st = Expression_Llvm_Type(cg, inner_val_expr);
+                                        val = Emit_Convert(cg, val, st, elem_type);
+                                        uint32_t ptr = Emit_Temp(cg);
+                                        Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, "
+                                                 "i64 %s  ; multidim [%s,%s]\n",
+                                             ptr, elem_type, base, I128_Decimal(flat),
+                                             I128_Decimal(oi), I128_Decimal(ci));
+                                        Emit(cg, "  store %s %%t%u, ptr %%t%u\n",
+                                             elem_type, val, ptr);
+                                    }
+                                    initialized[oai] = true;
+                                }
+                            }
+                        } else {
+                            /* Non-multidim (or non-aggregate inner expression):
+                             * evaluate expression per component (RM 4.3.2(6)). */
+                            for (int128_t idx = rng_low; idx <= rng_high; idx++) {
+                                int128_t arr_idx = idx - low;
+                                if (arr_idx >= 0 and arr_idx < count) {
+                                    uint32_t val = Generate_Expression(cg, item->association.expression);
+                                    if (elem_is_composite and
+                                        Expression_Produces_Fat_Pointer(item->association.expression,
+                                            item->association.expression->type))
+                                        val = Emit_Fat_Pointer_Data(cg, val,
+                                                  Array_Bound_Llvm_Type(agg_type));
+                                    if (not elem_is_composite) {
+                                        const char *src_type = Expression_Llvm_Type(cg, item->association.expression);
+                                        if (elem_ti and elem_ti->kind == TYPE_FIXED and Is_Float_Type(src_type)) {
+                                            double small = elem_ti->fixed.small;
+                                            if (small <= 0) small = elem_ti->fixed.delta > 0 ? elem_ti->fixed.delta : 1.0;
+                                            uint64_t sb; memcpy(&sb, &small, sizeof(sb));
+                                            uint32_t st = Emit_Temp(cg);
+                                            Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; small\n", st, (unsigned long long)sb);
+                                            uint32_t dv = Emit_Temp(cg);
+                                            Emit(cg, "  %%t%u = fdiv %s %%t%u, %%t%u  ; agg range/small\n", dv, src_type, val, st);
+                                            val = dv;
+                                        }
+                                        val = Emit_Convert(cg, val, src_type, elem_type);
+                                    }
+                                    uint32_t ptr = Emit_Temp(cg);
+                                    if (elem_is_composite) {
+                                        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %s\n",
+                                             ptr, base, I128_Decimal(arr_idx * (int128_t)elem_size));
+                                        Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
+                                             ptr, val, elem_size);
+                                    } else {
+                                        Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %s\n",
+                                             ptr, elem_type, base, I128_Decimal(arr_idx));
+                                        Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, val, ptr);
+                                    }
+                                    initialized[arr_idx] = true;
+                                }
                             }
                         }
                     } else if (choice->kind == NK_IDENTIFIER and choice->symbol and
