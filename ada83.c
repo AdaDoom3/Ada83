@@ -663,7 +663,7 @@ static Big_Integer *Big_Integer_Add(const Big_Integer *a, const Big_Integer *b) 
         for (uint32_t i = 0; i < larger->count; i++) {
             int64_t diff = (int64_t)larger->limbs[i] - borrow;
             if (i < smaller->count) diff -= (int64_t)smaller->limbs[i];
-            if (diff < 0) { diff += (int64_t)((uint64_t)1 << 63) * 2; borrow = 1; }
+            if (diff < 0) { borrow = 1; }  /* cast to uint64_t handles wrap */
             else borrow = 0;
             result->limbs[i] = (uint64_t)diff;
         }
@@ -996,6 +996,7 @@ static double Big_Real_To_Double(const Big_Real *br) {
 /* Check if Big_Real fits in a double without precision loss
  * Returns true if the significand has <= 15 significant digits
  */
+__attribute__((unused))
 static bool Big_Real_Fits_Double(const Big_Real *br) {
     if (br->significand->count == 0) return true;
     if (br->significand->count > 1) return false;
@@ -1007,6 +1008,7 @@ static bool Big_Real_Fits_Double(const Big_Real *br) {
  * LLVM accepts: 0xHHHHHHHHHHHHHHHH (IEEE 754 double hex encoding)
  * This preserves full precision unlike %f format
  */
+__attribute__((unused))
 static void Big_Real_To_Hex(const Big_Real *br, char *buf, size_t bufsize) {
     if (not br or br->significand->count == 0) {
         snprintf(buf, bufsize, "0.0");
@@ -1032,6 +1034,7 @@ static Big_Integer *Big_Integer_Clone(const Big_Integer *src) {
 /* Compare two Big_Real values exactly: returns -1, 0, or 1.
  * Normalizes to same exponent by multiplying the one with larger exponent
  * by 10^(diff), then compares significands. */
+__attribute__((unused))
 static int Big_Real_Compare(const Big_Real *a, const Big_Real *b) {
     if (not a or not b) return 0;
 
@@ -1070,6 +1073,7 @@ static int Big_Real_Compare(const Big_Real *a, const Big_Real *b) {
 
 /* Add/subtract Big_Real values (exact). op_sub: 0=add, 1=subtract.
  * Result = a ± b via normalizing to common exponent. */
+__attribute__((unused))
 static Big_Real *Big_Real_Add_Sub(const Big_Real *a, const Big_Real *b, bool op_sub) {
     if (not a) return (Big_Real *)(uintptr_t)b;
     if (not b) return (Big_Real *)(uintptr_t)a;
@@ -1096,6 +1100,7 @@ static Big_Real *Big_Real_Add_Sub(const Big_Real *a, const Big_Real *b, bool op_
 }
 
 /* Multiply Big_Real by power of 10 (for exponent adjustment) */
+__attribute__((unused))
 static Big_Real *Big_Real_Scale(const Big_Real *br, int32_t scale) {
     if (not br) return NULL;
     Big_Real *result = Big_Real_New();
@@ -1112,6 +1117,7 @@ static Big_Real *Big_Real_Scale(const Big_Real *br, int32_t scale) {
  * Returns result = a / divisor
  * Uses arbitrary precision for intermediate calculation
  */
+__attribute__((unused))
 static Big_Real *Big_Real_Divide_Int(const Big_Real *a, int64_t divisor) {
     if (not a or divisor == 0) return NULL;
     /* For exact division: multiply significand precision and divide */
@@ -1148,6 +1154,7 @@ static Big_Real *Big_Real_Divide_Int(const Big_Real *a, int64_t divisor) {
 /* Multiply two Big_Real values
  * Result = a × b with full precision
  */
+__attribute__((unused))
 static Big_Real *Big_Real_Multiply(const Big_Real *a, const Big_Real *b) {
     if (not a or not b) return NULL;
 
@@ -1454,6 +1461,7 @@ static int Rational_Compare(Rational a, Rational b) {
     return Big_Integer_Compare(lhs, rhs);
 }
 
+__attribute__((unused))
 static double Rational_To_Double(Rational r) {
     /* Convert to double by computing num/den as double.
      * For best precision, convert both to double and divide. */
@@ -1608,7 +1616,7 @@ typedef struct {
 } Lexer;
 
 static Lexer Lexer_New(const char *source, size_t length, const char *filename) {
-    return (Lexer){source, source, source + length, filename, 1, 1};
+    return (Lexer){source, source, source + length, filename, 1, 1, TK_EOF};
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -2239,7 +2247,7 @@ static void Lexer_Skip_Whitespace_And_Comments(Lexer *lex) {
 }
 
 static inline Token Make_Token(Token_Kind kind, Source_Location loc, String_Slice text) {
-    return (Token){kind, loc, text, {0}};
+    return (Token){kind, loc, text, {0}, {NULL}};
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -8167,12 +8175,12 @@ static void Symbol_Manager_Init_Predefined(Symbol_Manager *sm) {
             if (predef_ops[i].is_binary) {
                 op_sym->parameter_count = 2;
                 op_sym->parameters = Arena_Allocate(2 * sizeof(Parameter_Info));
-                op_sym->parameters[0] = (Parameter_Info){S("LEFT"), ty, PARAM_IN, NULL};
-                op_sym->parameters[1] = (Parameter_Info){S("RIGHT"), ty, PARAM_IN, NULL};
+                op_sym->parameters[0] = (Parameter_Info){S("LEFT"), ty, PARAM_IN, NULL, NULL};
+                op_sym->parameters[1] = (Parameter_Info){S("RIGHT"), ty, PARAM_IN, NULL, NULL};
             } else {
                 op_sym->parameter_count = 1;
                 op_sym->parameters = Arena_Allocate(1 * sizeof(Parameter_Info));
-                op_sym->parameters[0] = (Parameter_Info){S("RIGHT"), ty, PARAM_IN, NULL};
+                op_sym->parameters[0] = (Parameter_Info){S("RIGHT"), ty, PARAM_IN, NULL, NULL};
             }
             Symbol_Add(sm, op_sym);
         }
@@ -8426,12 +8434,12 @@ static Type_Info *Resolve_Selected(Symbol_Manager *sm, Syntax_Node *node) {
                         if (is_unary) {
                             op_sym->parameter_count = 1;
                             op_sym->parameters = Arena_Allocate(1 * sizeof(Parameter_Info));
-                            op_sym->parameters[0] = (Parameter_Info){S("RIGHT"), op_type, PARAM_IN, NULL};
+                            op_sym->parameters[0] = (Parameter_Info){S("RIGHT"), op_type, PARAM_IN, NULL, NULL};
                         } else {
                             op_sym->parameter_count = 2;
                             op_sym->parameters = Arena_Allocate(2 * sizeof(Parameter_Info));
-                            op_sym->parameters[0] = (Parameter_Info){S("LEFT"), op_type, PARAM_IN, NULL};
-                            op_sym->parameters[1] = (Parameter_Info){S("RIGHT"), op_type, PARAM_IN, NULL};
+                            op_sym->parameters[0] = (Parameter_Info){S("LEFT"), op_type, PARAM_IN, NULL, NULL};
+                            op_sym->parameters[1] = (Parameter_Info){S("RIGHT"), op_type, PARAM_IN, NULL, NULL};
                         }
                         /* Install in package scope for future lookups */
                         if (prefix_sym->scope) {
@@ -13085,6 +13093,7 @@ static inline bool Elab_Is_Weakly_Elaborable(const Elab_Vertex *v) {
 /* Does this spec vertex have an elaborable body? */
 static inline bool Elab_Has_Elaborable_Body(const Elab_Graph *g,
                                             const Elab_Vertex *v) {
+    (void)g;  /* reserved for future use */
     if (not v or v->kind != UNIT_SPEC) return false;
     if (not v->body_vertex) return false;
     if (v->has_elab_body) return true;  /* pragma Elaborate_Body forces it */
@@ -13097,6 +13106,7 @@ static inline bool Elab_Has_Elaborable_Body(const Elab_Graph *g,
 static Elab_Precedence Elab_Compare_Vertices(const Elab_Graph *g,
                                               const Elab_Vertex *a,
                                               const Elab_Vertex *b) {
+    (void)g;  /* reserved for future use */
     if (not a or not b) return PREC_EQUAL;
 
     /* 1. Prefer spec with Elaborate_Body before its paired body */
@@ -13348,57 +13358,6 @@ static Elab_Order_Status Elab_Elaborate_Graph(Elab_Graph *g) {
     return ELAB_ORDER_OK;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────
- * §15.7.11 Build Graph from ALI Info — Integration with §15.1-15.6
- *
- * Converts ALI_Info structures into the elaboration graph.
- * Handles spec/body pairing and pragma flags.
- * ───────────────────────────────────────────────────────────────────────── */
-
-static void Elab_Build_From_ALI(Elab_Graph *g, const ALI_Info *ali,
-                                 Symbol *unit_sym) {
-    /* Add vertices for each unit */
-    for (uint32_t i = 0; i < ali->unit_count; i++) {
-        const Unit_Info *u = &ali->units[i];
-        Elab_Unit_Kind kind = u->is_body ? UNIT_BODY : UNIT_SPEC;
-
-        uint32_t id = Elab_Add_Vertex(g, u->unit_name, kind, unit_sym);
-        Elab_Vertex *v = Elab_Get_Vertex(g, id);
-        if (v) {
-            v->is_preelaborate = u->is_preelaborate;
-            v->is_pure = u->is_pure;
-            v->needs_elab_code = u->has_elaboration;
-        }
-    }
-
-    /* Add edges for WITH dependencies */
-    for (uint32_t i = 0; i < ali->with_count; i++) {
-        const With_Info *w = &ali->withs[i];
-        if (not w->name.data) continue;
-
-        /* Find or create the withed unit vertex */
-        uint32_t withed_id = Elab_Find_Vertex(g, w->name, UNIT_SPEC);
-        if (withed_id == 0) {
-            withed_id = Elab_Add_Vertex(g, w->name, UNIT_SPEC_ONLY, NULL);
-        }
-
-        /* Add edges from withed spec to each unit in this ALI */
-        for (uint32_t j = 0; j < ali->unit_count; j++) {
-            const Unit_Info *u = &ali->units[j];
-            Elab_Unit_Kind kind = u->is_body ? UNIT_BODY : UNIT_SPEC;
-            uint32_t unit_id = Elab_Find_Vertex(g, u->unit_name, kind);
-
-            if (withed_id and unit_id) {
-                Elab_Edge_Kind ek = EDGE_WITH;
-                if (w->elaborate_all) ek = EDGE_ELABORATE_ALL;
-                else if (w->elaborate) ek = EDGE_ELABORATE;
-
-                Elab_Add_Edge(g, withed_id, unit_id, ek);
-            }
-        }
-    }
-}
-
 /* Pair spec and body vertices after all vertices are added */
 static void Elab_Pair_Specs_Bodies(Elab_Graph *g) {
     for (uint32_t i = 0; i < g->vertex_count; i++) {
@@ -13467,31 +13426,6 @@ static uint32_t Elab_Register_Unit(String_Slice name, bool is_body,
     return id;
 }
 
-/* Add a dependency edge */
-static void Elab_Add_Dependency(String_Slice from_name, bool from_is_body,
-                                 String_Slice to_name, bool to_is_body,
-                                 bool is_elaborate, bool is_elaborate_all) {
-    Elab_Init();
-
-    Elab_Unit_Kind from_kind = from_is_body ? UNIT_BODY : UNIT_SPEC;
-    Elab_Unit_Kind to_kind = to_is_body ? UNIT_BODY : UNIT_SPEC;
-
-    uint32_t from_id = Elab_Find_Vertex(&g_elab_graph, from_name, from_kind);
-    uint32_t to_id = Elab_Find_Vertex(&g_elab_graph, to_name, to_kind);
-
-    /* Create vertices if needed */
-    if (from_id == 0)
-        from_id = Elab_Add_Vertex(&g_elab_graph, from_name, from_kind, NULL);
-    if (to_id == 0)
-        to_id = Elab_Add_Vertex(&g_elab_graph, to_name, to_kind, NULL);
-
-    Elab_Edge_Kind kind = EDGE_WITH;
-    if (is_elaborate_all) kind = EDGE_ELABORATE_ALL;
-    else if (is_elaborate) kind = EDGE_ELABORATE;
-
-    Elab_Add_Edge(&g_elab_graph, from_id, to_id, kind);
-}
-
 /* Compute the elaboration order (call after all units registered) */
 static Elab_Order_Status Elab_Compute_Order(void) {
     Elab_Init();
@@ -13530,12 +13464,6 @@ static bool Elab_Needs_Elab_Call(uint32_t index) {
 
     /* Only bodies generate __elab functions */
     return v->kind == UNIT_BODY or v->kind == UNIT_BODY_ONLY;
-}
-
-/* Reset the elaboration graph (for multi-file compilation) */
-static void Elab_Reset(void) {
-    g_elab_graph = Elab_Graph_New();
-    g_elab_graph_initialized = true;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -13728,6 +13656,7 @@ static inline bool BIP_Needs_Alloc_Form(const Symbol *func) {
 #define BIP_FINAL_NAME   "__BIPfinal"
 
 /* Count of BIP extra formals for a given function */
+__attribute__((unused))
 static uint32_t BIP_Extra_Formal_Count(const Symbol *func) {
     if (not BIP_Is_BIP_Function(func)) return 0;
 
@@ -13755,6 +13684,7 @@ static uint32_t BIP_Extra_Formal_Count(const Symbol *func) {
  * ───────────────────────────────────────────────────────────────────────── */
 
 /* Determine allocation form from call context */
+__attribute__((unused))
 static BIP_Alloc_Form BIP_Determine_Alloc_Form(bool is_allocator,
                                                 bool in_return_stmt,
                                                 bool has_target) {
@@ -13809,6 +13739,7 @@ static void BIP_Begin_Function(const Symbol *func) {
 }
 
 /* Set the BIP parameter temps (called after params are loaded) */
+__attribute__((unused))
 static void BIP_Set_Params(uint32_t alloc, uint32_t access,
                            uint32_t master, uint32_t chain) {
     g_bip_state.bip_alloc_param  = alloc;
@@ -13861,7 +13792,7 @@ static void BIP_End_Function(void) {
  * ───────────────────────────────────────────────────────────────────────── */
 
 static const char *Include_Paths[32];
-static int Include_Path_Count = 0;
+static uint32_t Include_Path_Count = 0;
 
 /* Track loaded package bodies for code generation */
 static Syntax_Node *Loaded_Package_Bodies[128];
@@ -14511,14 +14442,6 @@ static Type_Info *Env_Lookup_Type(Instantiation_Env *env, String_Slice name) {
     return NULL;
 }
 
-static Symbol *Env_Lookup_Symbol(Instantiation_Env *env, String_Slice name) {
-    for (uint32_t i = 0; i < env->count; i++) {
-        if (Slice_Equal_Ignore_Case(env->mappings[i].formal_name, name))
-            return env->mappings[i].actual_symbol;
-    }
-    return NULL;
-}
-
 static Syntax_Node *Env_Lookup_Expr(Instantiation_Env *env, String_Slice name) {
     for (uint32_t i = 0; i < env->count; i++) {
         if (Slice_Equal_Ignore_Case(env->mappings[i].formal_name, name))
@@ -14771,6 +14694,7 @@ static void Build_Instantiation_Env(Instantiation_Env *env,
                                     Symbol *template_sym,
                                     Symbol *instance_sym,
                                     Symbol_Manager *sm) {
+    (void)sm;  /* reserved for future use */
     env->count = 0;
     env->template_sym = template_sym;
     env->instance_sym = instance_sym;
@@ -14947,7 +14871,7 @@ static char *Read_File_Simple(const char *path) {
 static char *Lookup_Path(String_Slice name) {
     char path[512], full_path[520];  /* full_path larger for .ads extension */
 
-    for (int i = 0; i < Include_Path_Count; i++) {
+    for (uint32_t i = 0; i < Include_Path_Count; i++) {
         /* Build lowercase filename */
         size_t base_len = strlen(Include_Paths[i]);
         snprintf(path, sizeof(path), "%s%s%.*s",
@@ -14976,7 +14900,7 @@ static char *Lookup_Path(String_Slice name) {
 /* Check if a precompiled .ll file exists for a package in include paths */
 static bool Has_Precompiled_LL(String_Slice name) {
     char path[512], full_path[520];
-    for (int i = 0; i < Include_Path_Count; i++) {
+    for (uint32_t i = 0; i < Include_Path_Count; i++) {
         size_t base_len = strlen(Include_Paths[i]);
         snprintf(path, sizeof(path), "%s%s%.*s",
                  Include_Paths[i],
@@ -14996,7 +14920,7 @@ static bool Has_Precompiled_LL(String_Slice name) {
 static char *Lookup_Path_Body(String_Slice name) {
     char path[512], full_path[520];
 
-    for (int i = 0; i < Include_Path_Count; i++) {
+    for (uint32_t i = 0; i < Include_Path_Count; i++) {
         size_t base_len = strlen(Include_Paths[i]);
         snprintf(path, sizeof(path), "%s%s%.*s",
                  Include_Paths[i],
@@ -15077,6 +15001,7 @@ static bool Subprogram_Is_Primitive_Of(Symbol *sub, Type_Info *type) {
 static void Create_Derived_Operation(Symbol_Manager *sm, Symbol *sub,
                                      Type_Info *derived_type, Type_Info *parent_type,
                                      Symbol *type_sym) {
+    (void)type_sym;  /* reserved for future use */
     Symbol *derived_sub = Symbol_New(sub->kind, sub->name, sub->location);
     derived_sub->parameter_count = sub->parameter_count;
     derived_sub->parent_operation = sub;  /* Link to parent's implementation */
@@ -18959,42 +18884,6 @@ static uint32_t Emit_Extend_To_I64(Code_Generator *cg, uint32_t val, const char 
     return w;
 }
 
-/* Unsigned variant of Emit_Extend_To_I64 */
-static uint32_t Emit_Zext_To_I64(Code_Generator *cg, uint32_t val, const char *from_type) {
-    const char *actual = Temp_Get_Type(cg, val);
-    if (actual and actual[0] != '\0') from_type = actual;
-    if (strcmp(from_type, "i64") == 0) return val;
-    uint32_t w = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = zext %s %%t%u to i64\n", w, from_type, val);
-    Temp_Set_Type(cg, w, "i64");
-    return w;
-}
-
-/* Unsigned variant: widen via zext for modular/unsigned types */
-static uint32_t Emit_Widen_For_Intrinsic_Unsigned(Code_Generator *cg, uint32_t val,
-                                                   const char *from_type) {
-    const char *actual = Temp_Get_Type(cg, val);
-    if (actual and actual[0] != '\0') from_type = actual;
-    const char *iat = Integer_Arith_Type(cg);
-    if (strcmp(from_type, iat) == 0) return val;
-    uint32_t w = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = zext %s %%t%u to %s\n", w, from_type, val, iat);
-    Temp_Set_Type(cg, w, iat);
-    return w;
-}
-
-/* Narrow a value from INTEGER width (Integer_Arith_Type) to a smaller type via
- * trunc, after receiving a result from an intrinsic/RTS call.  No-op if target
- * is already at INTEGER width. */
-static uint32_t Emit_Narrow_From_Intrinsic(Code_Generator *cg, uint32_t val,
-                                      const char *to_type) {
-    const char *iat = Integer_Arith_Type(cg);
-    if (strcmp(to_type, iat) == 0) return val;
-    uint32_t t = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = trunc %s %%t%u to %s\n", t, iat, val, to_type);
-    return t;
-}
-
 /* Extract data pointer from fat pointer.
  * bt parameter retained for API compatibility but unused. */
 static uint32_t Emit_Fat_Pointer_Data(Code_Generator *cg, uint32_t fat_ptr,
@@ -19267,28 +19156,6 @@ static uint32_t Emit_Memcmp_Eq(Code_Generator *cg,
     return eq;
 }
 
-/* Emit memcmp and return relational comparison result (slt/sle/sgt/sge).
- * op must be one of: TK_LT, TK_LE, TK_GT, TK_GE */
-static uint32_t Emit_Memcmp_Rel(Code_Generator *cg,
-    uint32_t left_ptr, uint32_t right_ptr, uint32_t byte_size_temp,
-    int64_t byte_size_static, bool is_dynamic, Token_Kind op)
-{
-    uint32_t memcmp_res = Emit_Temp(cg);
-    if (is_dynamic) {
-        Emit(cg, "  %%t%u = call i32 @memcmp(ptr %%t%u, ptr %%t%u, i64 %%t%u)\n",
-             memcmp_res, left_ptr, right_ptr, byte_size_temp);
-    } else {
-        Emit(cg, "  %%t%u = call i32 @memcmp(ptr %%t%u, ptr %%t%u, i64 %lld)\n",
-             memcmp_res, left_ptr, right_ptr, (long long)byte_size_static);
-    }
-    uint32_t result = Emit_Temp(cg);
-    const char *cmp_op = (op == TK_LT) ? "slt" : (op == TK_LE) ? "sle" :
-                         (op == TK_GT) ? "sgt" : "sge";
-    Emit(cg, "  %%t%u = icmp %s i32 %%t%u, 0\n", result, cmp_op, memcmp_res);
-    Temp_Set_Type(cg, result, "i1");
-    return result;
-}
-
 /* ─────────────────────────────────────────────────────────────────────────
  * §13.2.2 Bound Extraction Helpers (DRY Pattern: 20+ locations)
  *
@@ -19384,12 +19251,6 @@ static Bound_Temps Emit_Bounds_From_Fat_Dim(Code_Generator *cg, uint32_t fat_ptr
     return result;
 }
 
-/* Emit_Length_From_Bound_Temps: Compute array length from Bound_Temps.
- * Uses the clamped formula: (low > high) ? 0 : (high - low + 1) */
-static uint32_t Emit_Length_From_Bound_Temps(Code_Generator *cg, Bound_Temps b) {
-    return Emit_Length_Clamped(cg, b.low_temp, b.high_temp, b.bound_type);
-}
-
 /* ─────────────────────────────────────────────────────────────────────────
  * §13.2.4 Conditional Check + Raise (DRY Pattern: 50+ locations)
  *
@@ -19418,24 +19279,6 @@ static void Emit_Check_With_Raise(Code_Generator *cg, uint32_t cond,
     }
     Emit_Label_Here(cg, raise_label);
     Emit_Raise_Constraint_Error(cg, comment);
-    Emit_Label_Here(cg, cont_label);
-    cg->block_terminated = false;
-}
-
-/* Emit_Check_With_Raise_PE: Same as above but raises PROGRAM_ERROR. */
-static void Emit_Check_With_Raise_PE(Code_Generator *cg, uint32_t cond,
-                                      bool raise_on_true, const char *comment) {
-    uint32_t raise_label = cg->label_id++;
-    uint32_t cont_label = cg->label_id++;
-    if (raise_on_true) {
-        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
-             cond, raise_label, cont_label);
-    } else {
-        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
-             cond, cont_label, raise_label);
-    }
-    Emit_Label_Here(cg, raise_label);
-    Emit_Raise_Program_Error(cg, comment);
     Emit_Label_Here(cg, cont_label);
     cg->block_terminated = false;
 }
@@ -19610,16 +19453,6 @@ static uint32_t Emit_Min_Value(Code_Generator *cg, uint32_t a, uint32_t b, const
     return result;
 }
 
-/* Emit maximum of two values:  result = (a > b) ? a : b */
-static uint32_t Emit_Max_Value(Code_Generator *cg, uint32_t a, uint32_t b, const char *ty) {
-    uint32_t cmp = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = icmp sgt %s %%t%u, %%t%u\n", cmp, ty, a, b);
-    uint32_t result = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n", result, cmp, ty, a, ty, b);
-    Temp_Set_Type(cg, result, ty);
-    return result;
-}
-
 /* Structure returned by Emit_Exception_Handler_Setup */
 typedef struct {
     uint32_t handler_frame;   /* Alloca for { ptr, [200 x i8] } */
@@ -19656,24 +19489,6 @@ static uint32_t Emit_Current_Exception_Id(Code_Generator *cg) {
     uint32_t exc_id = Emit_Temp(cg);
     Emit(cg, "  %%t%u = call i64 @__ada_current_exception()\n", exc_id);
     return exc_id;
-}
-
-/* Emit bounds check: raise CONSTRAINT_ERROR if idx < low or idx > high.
- * Uses labels for control flow. bt = bound type. */
-static void Emit_Bounds_Check(Code_Generator *cg, uint32_t idx, uint32_t low, uint32_t high, const char *bt) {
-    uint32_t ok_label = cg->label_id++;
-    uint32_t fail_label = cg->label_id++;
-    uint32_t check2_label = cg->label_id++;
-    uint32_t cmp_low = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = icmp slt %s %%t%u, %%t%u\n", cmp_low, bt, idx, low);
-    Emit(cg, "  br i1 %%t%u, label %%Lbc_fail%u, label %%Lbc_check2_%u\n", cmp_low, fail_label, check2_label);
-    Emit(cg, "Lbc_check2_%u:\n", check2_label);
-    uint32_t cmp_high = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = icmp sgt %s %%t%u, %%t%u\n", cmp_high, bt, idx, high);
-    Emit(cg, "  br i1 %%t%u, label %%Lbc_fail%u, label %%Lbc_ok%u\n", cmp_high, fail_label, ok_label);
-    Emit(cg, "Lbc_fail%u:\n", fail_label);
-    Emit_Raise_Constraint_Error(cg, "index check");
-    Emit(cg, "Lbc_ok%u:\n", ok_label);
 }
 
 /* Forward declarations for exception handler dispatch */
@@ -19882,18 +19697,6 @@ static void Emit_Widen_Named_For_Intrinsic(Code_Generator *cg,
         Emit(cg, "  %%%s = add %s %%%s, 0\n", dst_name, iat, src_name);
     } else {
         Emit(cg, "  %%%s = sext %s %%%s to %s\n", dst_name, bt, src_name, iat);
-    }
-}
-
-/* Unsigned variant: named-SSA widen via zext for modular/unsigned bound types. */
-static void Emit_Widen_Named_For_Intrinsic_Unsigned(Code_Generator *cg,
-    const char *src_name, const char *dst_name, const char *bt)
-{
-    const char *iat = Integer_Arith_Type(cg);
-    if (strcmp(bt, iat) == 0) {
-        Emit(cg, "  %%%s = add %s %%%s, 0\n", dst_name, iat, src_name);
-    } else {
-        Emit(cg, "  %%%s = zext %s %%%s to %s\n", dst_name, bt, src_name, iat);
     }
 }
 
@@ -20632,7 +20435,7 @@ static uint32_t Generate_Record_Equality(Code_Generator *cg, uint32_t left_ptr,
             uint32_t dp = Emit_Temp(cg), dv = Emit_Temp(cg);
             Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n", dp, left_ptr, disc_offset);
             Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", dv, disc_llvm, dp);
-            uint32_t cnt = Emit_Temp(cg), sz = Emit_Temp(cg), sz64 = Emit_Temp(cg);
+            uint32_t cnt = Emit_Temp(cg), sz64 = Emit_Temp(cg);
             Emit(cg, "  %%t%u = sub %s %%t%u, %lld\n", cnt, disc_llvm, dv, (long long)(low_val - 1));
             if (elem_size > 1) {
                 uint32_t mul = Emit_Temp(cg);
@@ -22636,7 +22439,6 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                             Emit(cg, "  store i8 %%t%u, ptr %%t%u\n", char_trunc, char_alloc);
                             uint32_t one = Emit_Temp(cg);
                             Emit(cg, "  %%t%u = add %s 0, 1\n", one, concat_bt);
-                            uint32_t left_fat = Emit_Fat_Pointer_Dynamic(cg, char_alloc, one, one, concat_bt);
 
                             /* Extract right string bounds and data */
                             uint32_t right_data = Emit_Fat_Pointer_Data(cg, right_val, concat_bt);
@@ -25052,7 +24854,6 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                     int width_bits = Type_Bits(width_type);
                     int max_digits = (width_bits <= 8) ? 2 : (width_bits <= 16) ? 4 :
                                      (width_bits <= 32) ? 9 : (width_bits <= 64) ? 18 : 38;
-                    uint32_t prev = max_abs;
                     uint32_t digits_val = cg->temp_id++;
                     Emit(cg, "  %%t%u = add %s 0, 1  ; initial digits\n", digits_val, width_type);
 
@@ -25182,7 +24983,6 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
     if (Slice_Equal_Ignore_Case(attr, S("SMALL"))) {
         /* T'SMALL - fixed-point: power of 2 <= delta; float: 2^(-EMAX - 1) */
         double small_val;
-        const char *fty = "double";
         if (Type_Is_Fixed_Point(classify_type)) {
             /* Use classify_type which is resolved to actual type in generics */
             Type_Info *ft = classify_type;
@@ -25205,7 +25005,6 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         /* T'LARGE - fixed-point: (2^MANTISSA - 1) * SMALL (RM 3.5.10)
          * float: 2^EMAX * (1 - 2^(-MANTISSA)) (RM 3.5.8(10)) */
         double large_val;
-        const char *fty = "double";
         if (Type_Is_Fixed_Point(classify_type)) {
             /* Use classify_type which is resolved to actual type in generics */
             Type_Info *ft = classify_type;
@@ -30391,6 +30190,9 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
             if (subp_body)
                 Generate_Generic_Instance_Body(cg, exp, subp_body);
         }
+        /* Restore previous instance context */
+        cg->current_instance = saved_instance;
+        Set_Generic_Type_Map(saved_instance);
         return;
     }
 
@@ -31109,8 +30911,7 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                         Symbol *exp = inst_sym->exported[i];
                         if (not exp or exp->kind != SYMBOL_VARIABLE) continue;
                         if (not Type_Is_Task(exp->type)) continue;
-                        /* Find the task spec declaration to get the task name */
-                        String_Slice task_name = exp->name;
+                        /* Start the task */
                         uint32_t handle_tmp = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = call ptr @__ada_task_start(ptr @", handle_tmp);
                         Emit_Task_Function_Name(cg, exp->type ? exp->type->defining_symbol : NULL,
