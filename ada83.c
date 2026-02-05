@@ -6112,6 +6112,10 @@ typedef enum {
     TYPE_FLOAT,
     TYPE_FIXED,
 
+    /* Big number types (arbitrary precision) */
+    TYPE_BIG_INTEGER,
+    TYPE_BIG_REAL,
+
     /* Composite types */
     TYPE_ARRAY,
     TYPE_RECORD,
@@ -6275,6 +6279,15 @@ struct Type_Info {
         struct {  /* TYPE_FLOAT */
             int digits;     /* Declared DIGITS value (RM 3.5.7) */
         } flt;
+
+        struct {  /* TYPE_BIG_INTEGER */
+            uint32_t min_digits;    /* Minimum decimal digits (0 = unbounded) */
+        } big_int;
+
+        struct {  /* TYPE_BIG_REAL */
+            uint32_t min_digits;    /* Minimum significant digits (0 = unbounded) */
+            int32_t  scale;         /* Fixed scale for decimals (0 = floating) */
+        } big_real;
     };
 
     /* Runtime check suppression */
@@ -6328,24 +6341,38 @@ static Type_Info *Type_New(Type_Kind kind, String_Slice name) {
  * ───────────────────────────────────────────────────────────────────────── */
 
 static inline bool Type_Is_Scalar(const Type_Info *t) {
-    return t and t->kind >= TYPE_BOOLEAN and t->kind <= TYPE_FIXED;
+    return t and t->kind >= TYPE_BOOLEAN and t->kind <= TYPE_BIG_REAL;
 }
 
 static inline bool Type_Is_Discrete(const Type_Info *t) {
     return t and (t->kind == TYPE_BOOLEAN or t->kind == TYPE_CHARACTER or
                  t->kind == TYPE_INTEGER or t->kind == TYPE_MODULAR or
-                 t->kind == TYPE_ENUMERATION);
+                 t->kind == TYPE_ENUMERATION or t->kind == TYPE_BIG_INTEGER);
 }
 
 static inline bool Type_Is_Numeric(const Type_Info *t) {
     return t and (t->kind == TYPE_INTEGER or t->kind == TYPE_MODULAR or
                  t->kind == TYPE_FLOAT or t->kind == TYPE_FIXED or
+                 t->kind == TYPE_BIG_INTEGER or t->kind == TYPE_BIG_REAL or
                  t->kind == TYPE_UNIVERSAL_INTEGER or t->kind == TYPE_UNIVERSAL_REAL);
 }
 
 static inline bool Type_Is_Real(const Type_Info *t) {
     return t and (t->kind == TYPE_FLOAT or t->kind == TYPE_FIXED or
-                 t->kind == TYPE_UNIVERSAL_REAL);
+                 t->kind == TYPE_BIG_REAL or t->kind == TYPE_UNIVERSAL_REAL);
+}
+
+/* Big number predicates */
+static inline bool Type_Is_Big_Integer(const Type_Info *t) {
+    return t and t->kind == TYPE_BIG_INTEGER;
+}
+
+static inline bool Type_Is_Big_Real(const Type_Info *t) {
+    return t and t->kind == TYPE_BIG_REAL;
+}
+
+static inline bool Type_Is_Big_Number(const Type_Info *t) {
+    return t and (t->kind == TYPE_BIG_INTEGER or t->kind == TYPE_BIG_REAL);
 }
 
 /* Type uses floating-point LLVM representation (for codegen, not semantic analysis).
@@ -6372,6 +6399,7 @@ static inline bool Type_Is_Record(const Type_Info *t)    { return t and t->kind 
 static inline bool Type_Is_Task(const Type_Info *t)      { return t and t->kind == TYPE_TASK; }
 static inline bool Type_Is_Float(const Type_Info *t)     { return t and t->kind == TYPE_FLOAT; }
 static inline bool Type_Is_Fixed_Point(const Type_Info *t) { return t and t->kind == TYPE_FIXED; }
+static inline bool Type_Is_Integer(const Type_Info *t)   { return t and (t->kind == TYPE_INTEGER or t->kind == TYPE_UNIVERSAL_INTEGER); }
 
 /* Derive LLVM float type string from a Type_Info.
  * Falls back to "double" for UNIVERSAL_REAL or when type info is unavailable. */
@@ -6754,6 +6782,9 @@ static const char *Type_To_Llvm(Type_Info *t) {
         case TYPE_FLOAT:
         case TYPE_UNIVERSAL_REAL:
             return Llvm_Float_Type((uint32_t)To_Bits(t->size));
+        case TYPE_BIG_INTEGER:
+        case TYPE_BIG_REAL:
+            return "ptr";  /* Opaque pointer to heap-allocated big number structure */
         case TYPE_ACCESS:
             /* Access to unconstrained array/STRING needs fat pointer representation.
              * GNAT LLVM style: fat pointer is always { ptr, ptr }. */
@@ -7179,6 +7210,10 @@ typedef struct {
     Type_Info *type_universal_integer;
     Type_Info *type_universal_real;
     Type_Info *type_address;  /* SYSTEM.ADDRESS */
+
+    /* Big number types (arbitrary precision) */
+    Type_Info *type_big_integer;
+    Type_Info *type_big_real;
 
     /* Unique ID counter for symbol mangling */
     uint32_t   next_unique_id;
@@ -8003,6 +8038,20 @@ static void Symbol_Manager_Init_Predefined(Symbol_Manager *sm) {
     sm->type_universal_real = Type_New(TYPE_UNIVERSAL_REAL, S("universal_real"));
     sm->type_universal_real->size = 8;  /* 64 bits / double precision */
 
+    /* Big number types - arbitrary precision integers and reals
+     * These are implemented as opaque pointer types to heap-allocated structures.
+     * Runtime library functions handle allocation and operations. */
+    sm->type_big_integer = Type_New(TYPE_BIG_INTEGER, S("BIG_INTEGER"));
+    sm->type_big_integer->size = 8;  /* Pointer to Big_Integer struct */
+    sm->type_big_integer->alignment = 8;
+    sm->type_big_integer->big_int.min_digits = 0;  /* Unbounded precision */
+
+    sm->type_big_real = Type_New(TYPE_BIG_REAL, S("BIG_REAL"));
+    sm->type_big_real->size = 8;  /* Pointer to Big_Real struct */
+    sm->type_big_real->alignment = 8;
+    sm->type_big_real->big_real.min_digits = 0;  /* Unbounded precision */
+    sm->type_big_real->big_real.scale = 0;       /* Floating point (not fixed scale) */
+
     /* Add predefined type symbols to global scope */
     Symbol *sym_boolean = Symbol_New(SYMBOL_TYPE, S("BOOLEAN"), No_Location);
     sym_boolean->type = sm->type_boolean;
@@ -8060,6 +8109,15 @@ static void Symbol_Manager_Init_Predefined(Symbol_Manager *sm) {
     Symbol *sym_string = Symbol_New(SYMBOL_TYPE, S("STRING"), No_Location);
     sym_string->type = sm->type_string;
     Symbol_Add(sm, sym_string);
+
+    /* Big number types - these are always visible in the global scope */
+    Symbol *sym_big_integer = Symbol_New(SYMBOL_TYPE, S("BIG_INTEGER"), No_Location);
+    sym_big_integer->type = sm->type_big_integer;
+    Symbol_Add(sm, sym_big_integer);
+
+    Symbol *sym_big_real = Symbol_New(SYMBOL_TYPE, S("BIG_REAL"), No_Location);
+    sym_big_real->type = sm->type_big_real;
+    Symbol_Add(sm, sym_big_real);
 
     /* Boolean literals */
     Symbol *sym_false = Symbol_New(SYMBOL_LITERAL, S("FALSE"), No_Location);
@@ -8164,8 +8222,8 @@ static void Symbol_Manager_Init_Predefined(Symbol_Manager *sm) {
         {"<", true, true}, {"<=", true, true},
         {">", true, true}, {">=", true, true},
     };
-    Type_Info *num_types[] = { sm->type_integer, sm->type_float };
-    for (uint32_t ti = 0; ti < 2; ti++) {
+    Type_Info *num_types[] = { sm->type_integer, sm->type_float, sm->type_big_integer, sm->type_big_real };
+    for (uint32_t ti = 0; ti < 4; ti++) {
         Type_Info *ty = num_types[ti];
         for (uint32_t i = 0; i < sizeof(predef_ops)/sizeof(predef_ops[0]); i++) {
             String_Slice op_name = { predef_ops[i].name, strlen(predef_ops[i].name) };
@@ -20947,6 +21005,87 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
     /* Check if this is equality/inequality on composite types */
     Type_Info *left_type = node->binary.left ? node->binary.left->type : NULL;
 
+    /* Big number operations - emit runtime library calls */
+    if (left_type and Type_Is_Big_Number(left_type)) {
+        Type_Info *right_type = node->binary.right ? node->binary.right->type : NULL;
+        uint32_t left = Generate_Expression(cg, node->binary.left);
+        uint32_t right = Generate_Expression(cg, node->binary.right);
+        uint32_t result = Emit_Temp(cg);
+        bool is_big_integer = Type_Is_Big_Integer(left_type);
+        const char *type_prefix = is_big_integer ? "big_integer" : "big_real";
+
+        switch (node->binary.op) {
+            case TK_PLUS:
+                Emit(cg, "  %%t%u = call ptr @__ada_%s_add(ptr %%t%u, ptr %%t%u)\n",
+                     result, type_prefix, left, right);
+                return result;
+            case TK_MINUS:
+                Emit(cg, "  %%t%u = call ptr @__ada_%s_sub(ptr %%t%u, ptr %%t%u)\n",
+                     result, type_prefix, left, right);
+                return result;
+            case TK_STAR:
+                Emit(cg, "  %%t%u = call ptr @__ada_%s_mul(ptr %%t%u, ptr %%t%u)\n",
+                     result, type_prefix, left, right);
+                return result;
+            case TK_SLASH:
+                Emit(cg, "  %%t%u = call ptr @__ada_%s_div(ptr %%t%u, ptr %%t%u)\n",
+                     result, type_prefix, left, right);
+                return result;
+            case TK_MOD:
+                if (is_big_integer) {
+                    Emit(cg, "  %%t%u = call ptr @__ada_big_integer_mod(ptr %%t%u, ptr %%t%u)\n",
+                         result, left, right);
+                    return result;
+                }
+                break;  /* MOD not defined for Big_Real */
+            case TK_REM:
+                if (is_big_integer) {
+                    Emit(cg, "  %%t%u = call ptr @__ada_big_integer_rem(ptr %%t%u, ptr %%t%u)\n",
+                         result, left, right);
+                    return result;
+                }
+                break;  /* REM not defined for Big_Real */
+            case TK_EXPON: {
+                /* Exponentiation: big_num ** integer */
+                uint32_t exp_i32 = Emit_Temp(cg);
+                const char *right_llvm = right_type ? Type_To_Llvm(right_type) : "i32";
+                if (strcmp(right_llvm, "i32") != 0) {
+                    Emit(cg, "  %%t%u = trunc %s %%t%u to i32\n", exp_i32, right_llvm, right);
+                } else {
+                    exp_i32 = right;
+                }
+                Emit(cg, "  %%t%u = call ptr @__ada_%s_pow(ptr %%t%u, i32 %%t%u)\n",
+                     result, type_prefix, left, exp_i32);
+                return result;
+            }
+            case TK_EQ:
+            case TK_NE:
+            case TK_LT:
+            case TK_LE:
+            case TK_GT:
+            case TK_GE: {
+                /* Comparison: returns i32 (-1, 0, 1), convert to i1 */
+                uint32_t cmp_result = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = call i32 @__ada_%s_cmp(ptr %%t%u, ptr %%t%u)\n",
+                     cmp_result, type_prefix, left, right);
+                const char *icmp_op;
+                switch (node->binary.op) {
+                    case TK_EQ: icmp_op = "eq"; break;
+                    case TK_NE: icmp_op = "ne"; break;
+                    case TK_LT: icmp_op = "slt"; break;
+                    case TK_LE: icmp_op = "sle"; break;
+                    case TK_GT: icmp_op = "sgt"; break;
+                    case TK_GE: icmp_op = "sge"; break;
+                    default: icmp_op = "eq"; break;
+                }
+                Emit(cg, "  %%t%u = icmp %s i32 %%t%u, 0\n", result, icmp_op, cmp_result);
+                return result;
+            }
+            default:
+                break;  /* Fall through to error handling */
+        }
+    }
+
     if ((node->binary.op == TK_EQ or node->binary.op == TK_NE) and
         left_type and Type_Is_Composite(left_type)) {
         /* Composite type comparison */
@@ -22097,6 +22236,28 @@ static uint32_t Generate_Unary_Op(Code_Generator *cg, Syntax_Node *node) {
     uint32_t operand = Generate_Expression(cg, node->unary.operand);
     uint32_t t = Emit_Temp(cg);
     Type_Info *op_type_info = node->unary.operand->type;
+
+    /* Big number unary operations - emit runtime library calls */
+    if (op_type_info and Type_Is_Big_Number(op_type_info)) {
+        bool is_big_integer = Type_Is_Big_Integer(op_type_info);
+        const char *type_prefix = is_big_integer ? "big_integer" : "big_real";
+
+        switch (node->unary.op) {
+            case TK_MINUS:
+                Emit(cg, "  %%t%u = call ptr @__ada_%s_neg(ptr %%t%u)\n",
+                     t, type_prefix, operand);
+                return t;
+            case TK_PLUS:
+                return operand;  /* Unary plus is identity */
+            case TK_ABS:
+                Emit(cg, "  %%t%u = call ptr @__ada_%s_abs(ptr %%t%u)\n",
+                     t, type_prefix, operand);
+                return t;
+            default:
+                break;  /* Fall through to error handling */
+        }
+    }
+
     bool is_float = Type_Is_Float_Representation(op_type_info);
 
     /* Determine LLVM float type from operand type */
@@ -23401,6 +23562,97 @@ type_conversion:
             uint32_t result = Generate_Expression(cg, arg);
 
             if (src_type and dst_type and src_type != dst_type) {
+                /* Big number conversions - call runtime library functions */
+                if (Type_Is_Big_Integer(dst_type)) {
+                    /* Convert to Big_Integer */
+                    if (Type_Is_Big_Real(src_type)) {
+                        /* Big_Real → Big_Integer: truncate */
+                        uint32_t t = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = call ptr @__ada_big_integer_from_big_real(ptr %%t%u)\n",
+                             t, result);
+                        return t;
+                    } else if (Type_Is_Integer(src_type) or Type_Is_Discrete(src_type)) {
+                        /* Integer → Big_Integer */
+                        const char *src_llvm = Expression_Llvm_Type(cg, arg);
+                        uint32_t src_i64 = Emit_Convert(cg, result, src_llvm, "i64");
+                        uint32_t t = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = call ptr @__ada_big_integer_from_i64(i64 %%t%u)\n",
+                             t, src_i64);
+                        return t;
+                    }
+                } else if (Type_Is_Big_Real(dst_type)) {
+                    /* Convert to Big_Real */
+                    if (Type_Is_Big_Integer(src_type)) {
+                        /* Big_Integer → Big_Real */
+                        uint32_t t = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = call ptr @__ada_big_real_from_big_integer(ptr %%t%u)\n",
+                             t, result);
+                        return t;
+                    } else if (Type_Is_Float_Representation(src_type)) {
+                        /* Float → Big_Real */
+                        const char *src_llvm = Expression_Llvm_Type(cg, arg);
+                        uint32_t src_f64 = Emit_Convert(cg, result, src_llvm, "double");
+                        uint32_t t = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = call ptr @__ada_big_real_from_f64(double %%t%u)\n",
+                             t, src_f64);
+                        return t;
+                    } else if (Type_Is_Integer(src_type) or Type_Is_Discrete(src_type)) {
+                        /* Integer → Big_Real (via Big_Integer) */
+                        const char *src_llvm = Expression_Llvm_Type(cg, arg);
+                        uint32_t src_i64 = Emit_Convert(cg, result, src_llvm, "i64");
+                        uint32_t big_int = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = call ptr @__ada_big_integer_from_i64(i64 %%t%u)\n",
+                             big_int, src_i64);
+                        uint32_t t = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = call ptr @__ada_big_real_from_big_integer(ptr %%t%u)\n",
+                             t, big_int);
+                        return t;
+                    }
+                } else if (Type_Is_Big_Integer(src_type)) {
+                    /* Convert from Big_Integer */
+                    if (Type_Is_Integer(dst_type) or Type_Is_Discrete(dst_type)) {
+                        /* Big_Integer → Integer */
+                        const char *dst_llvm = Type_To_Llvm(dst_type);
+                        uint32_t t1 = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = call i64 @__ada_big_integer_to_i64(ptr %%t%u)\n",
+                             t1, result);
+                        uint32_t t2 = Emit_Convert(cg, t1, "i64", dst_llvm);
+                        return t2;
+                    } else if (Type_Is_Float_Representation(dst_type)) {
+                        /* Big_Integer → Float (via i64) */
+                        const char *dst_llvm = Type_To_Llvm(dst_type);
+                        uint32_t t1 = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = call i64 @__ada_big_integer_to_i64(ptr %%t%u)\n",
+                             t1, result);
+                        uint32_t t2 = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = sitofp i64 %%t%u to %s\n", t2, t1, dst_llvm);
+                        Temp_Set_Type(cg, t2, dst_llvm);
+                        return t2;
+                    }
+                } else if (Type_Is_Big_Real(src_type)) {
+                    /* Convert from Big_Real */
+                    if (Type_Is_Float_Representation(dst_type)) {
+                        /* Big_Real → Float */
+                        const char *dst_llvm = Type_To_Llvm(dst_type);
+                        uint32_t t1 = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = call double @__ada_big_real_to_f64(ptr %%t%u)\n",
+                             t1, result);
+                        uint32_t t2 = Emit_Convert(cg, t1, "double", dst_llvm);
+                        return t2;
+                    } else if (Type_Is_Integer(dst_type) or Type_Is_Discrete(dst_type)) {
+                        /* Big_Real → Integer (truncate, then convert) */
+                        const char *dst_llvm = Type_To_Llvm(dst_type);
+                        uint32_t big_int = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = call ptr @__ada_big_integer_from_big_real(ptr %%t%u)\n",
+                             big_int, result);
+                        uint32_t t1 = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = call i64 @__ada_big_integer_to_i64(ptr %%t%u)\n",
+                             t1, big_int);
+                        uint32_t t2 = Emit_Convert(cg, t1, "i64", dst_llvm);
+                        return t2;
+                    }
+                }
+
                 /* Special handling for fixed-point conversions (RM 4.6)
                  * Fixed-point uses scaled integer representation: value = integer * SMALL */
                 if (Type_Is_Fixed_Point(src_type) and Type_Is_Float_Representation(dst_type)) {
@@ -24402,6 +24654,33 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                 /* Float'IMAGE */
                 Emit(cg, "  %%t%u = call " FAT_PTR_TYPE " @__ada_float_image(double %%t%u)\n",
                      t, arg_val);
+            } else if (Type_Is_Big_Integer(classify_type)) {
+                /* Big_Integer'IMAGE - convert to string via runtime library */
+                uint32_t str_ptr = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = call ptr @__ada_big_integer_to_string(ptr %%t%u)\n",
+                     str_ptr, arg_val);
+                /* Compute string length */
+                uint32_t str_len = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = call i64 @strlen(ptr %%t%u)\n", str_len, str_ptr);
+                const char *img_bt = String_Bound_Type(cg);
+                uint32_t len_bt = Emit_Convert(cg, str_len, "i64", img_bt);
+                uint32_t low_one = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add %s 0, 1\n", low_one, img_bt);
+                t = Emit_Fat_Pointer_Dynamic(cg, str_ptr, low_one, len_bt, img_bt);
+            } else if (Type_Is_Big_Real(classify_type)) {
+                /* Big_Real'IMAGE - convert to string via runtime library
+                 * Second param is precision (15 decimal digits default) */
+                uint32_t str_ptr = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = call ptr @__ada_big_real_to_string(ptr %%t%u, i32 15)\n",
+                     str_ptr, arg_val);
+                /* Compute string length */
+                uint32_t str_len = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = call i64 @strlen(ptr %%t%u)\n", str_len, str_ptr);
+                const char *img_bt = String_Bound_Type(cg);
+                uint32_t len_bt = Emit_Convert(cg, str_len, "i64", img_bt);
+                uint32_t low_one = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add %s 0, 1\n", low_one, img_bt);
+                t = Emit_Fat_Pointer_Dynamic(cg, str_ptr, low_one, len_bt, img_bt);
             } else if (Type_Is_Enumeration(classify_type)) {
                 /* Enumeration'IMAGE - return literal name as string */
                 /* Find root enumeration type with literals */
@@ -24511,6 +24790,22 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                 /* Float'VALUE - parse string as float */
                 Emit(cg, "  %%t%u = call double @__ada_float_value(" FAT_PTR_TYPE " %%t%u)\n",
                      t, str_val);
+            } else if (Type_Is_Big_Integer(classify_type)) {
+                /* Big_Integer'VALUE - parse string to big integer */
+                const char *val_bt = String_Bound_Type(cg);
+                uint32_t str_ptr = Emit_Fat_Pointer_Data(cg, str_val, val_bt);
+                uint32_t str_len_bt = Emit_Fat_Pointer_Length(cg, str_val, val_bt);
+                uint32_t str_len = Emit_Convert(cg, str_len_bt, val_bt, "i64");
+                Emit(cg, "  %%t%u = call ptr @__ada_big_integer_from_string(ptr %%t%u, i64 %%t%u)\n",
+                     t, str_ptr, str_len);
+            } else if (Type_Is_Big_Real(classify_type)) {
+                /* Big_Real'VALUE - parse string to big real */
+                const char *val_bt = String_Bound_Type(cg);
+                uint32_t str_ptr = Emit_Fat_Pointer_Data(cg, str_val, val_bt);
+                uint32_t str_len_bt = Emit_Fat_Pointer_Length(cg, str_val, val_bt);
+                uint32_t str_len = Emit_Convert(cg, str_len_bt, val_bt, "i64");
+                Emit(cg, "  %%t%u = call ptr @__ada_big_real_from_string(ptr %%t%u, i64 %%t%u)\n",
+                     t, str_ptr, str_len);
             } else if (Type_Is_Character(classify_type)) {
                 /* Character'VALUE — parse "'x'" format, strip leading/trailing spaces (RM 3.5.5) */
                 const char *val_bt = String_Bound_Type(cg);
@@ -31697,6 +31992,49 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)\n");
     Emit(cg, "declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)\n");
     Emit(cg, "declare double @llvm.pow.f64(double, double)\n\n");
+
+    /* Big_Integer and Big_Real runtime library functions.
+     * These provide arbitrary precision arithmetic operations.
+     * All big number types are represented as opaque pointers to heap-allocated structures. */
+    Emit(cg, "; Big number runtime library\n");
+    /* Big_Integer creation and conversion */
+    Emit(cg, "declare ptr @__ada_big_integer_from_i64(i64)\n");
+    Emit(cg, "declare ptr @__ada_big_integer_from_string(ptr, i64)\n");
+    Emit(cg, "declare i64 @__ada_big_integer_to_i64(ptr)\n");
+    Emit(cg, "declare ptr @__ada_big_integer_to_string(ptr)\n");
+    Emit(cg, "declare ptr @__ada_big_integer_copy(ptr)\n");
+    /* Big_Integer arithmetic */
+    Emit(cg, "declare ptr @__ada_big_integer_add(ptr, ptr)\n");
+    Emit(cg, "declare ptr @__ada_big_integer_sub(ptr, ptr)\n");
+    Emit(cg, "declare ptr @__ada_big_integer_mul(ptr, ptr)\n");
+    Emit(cg, "declare ptr @__ada_big_integer_div(ptr, ptr)\n");
+    Emit(cg, "declare ptr @__ada_big_integer_mod(ptr, ptr)\n");
+    Emit(cg, "declare ptr @__ada_big_integer_rem(ptr, ptr)\n");
+    Emit(cg, "declare ptr @__ada_big_integer_neg(ptr)\n");
+    Emit(cg, "declare ptr @__ada_big_integer_abs(ptr)\n");
+    Emit(cg, "declare ptr @__ada_big_integer_pow(ptr, i32)\n");
+    /* Big_Integer comparison */
+    Emit(cg, "declare i32 @__ada_big_integer_cmp(ptr, ptr)\n");
+    /* Big_Real creation and conversion */
+    Emit(cg, "declare ptr @__ada_big_real_from_f64(double)\n");
+    Emit(cg, "declare ptr @__ada_big_real_from_string(ptr, i64)\n");
+    Emit(cg, "declare ptr @__ada_big_real_from_quotient(ptr, ptr)\n");
+    Emit(cg, "declare double @__ada_big_real_to_f64(ptr)\n");
+    Emit(cg, "declare ptr @__ada_big_real_to_string(ptr, i32)\n");
+    Emit(cg, "declare ptr @__ada_big_real_copy(ptr)\n");
+    /* Big_Real arithmetic */
+    Emit(cg, "declare ptr @__ada_big_real_add(ptr, ptr)\n");
+    Emit(cg, "declare ptr @__ada_big_real_sub(ptr, ptr)\n");
+    Emit(cg, "declare ptr @__ada_big_real_mul(ptr, ptr)\n");
+    Emit(cg, "declare ptr @__ada_big_real_div(ptr, ptr)\n");
+    Emit(cg, "declare ptr @__ada_big_real_neg(ptr)\n");
+    Emit(cg, "declare ptr @__ada_big_real_abs(ptr)\n");
+    Emit(cg, "declare ptr @__ada_big_real_pow(ptr, i32)\n");
+    /* Big_Real comparison */
+    Emit(cg, "declare i32 @__ada_big_real_cmp(ptr, ptr)\n");
+    /* Conversion between big types */
+    Emit(cg, "declare ptr @__ada_big_real_from_big_integer(ptr)\n");
+    Emit(cg, "declare ptr @__ada_big_integer_from_big_real(ptr)\n\n");
 
     /* LLVM overflow intrinsics for GNAT-style arithmetic overflow checks (RM 4.5).
      * Signed add/sub/mul with overflow detection at each standard width. */
