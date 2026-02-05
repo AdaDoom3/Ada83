@@ -18007,6 +18007,10 @@ static void Emit_Raise_Exception(Code_Generator *cg, const char *exc_name, const
  *     ; continue execution
  * ───────────────────────────────────────────────────────────────────────── */
 
+/* Forward declaration for Emit_Check_With_Raise (defined in §13.2.4) */
+static void Emit_Check_With_Raise(Code_Generator *cg, uint32_t cond,
+                                   bool raise_on_true, const char *comment);
+
 /* Emit_Overflow_Checked_Op — signed integer overflow check via LLVM intrinsics.
  * Uses llvm.sadd/ssub/smul.with.overflow.iN for signed types.
  * Modular (unsigned) types are exempt — they wrap (RM 3.5.4).
@@ -18056,13 +18060,7 @@ static uint32_t Emit_Overflow_Checked_Op(
     Emit(cg, "  %%t%u = extractvalue {%s, i1} %%t%u, 1\n", ovf, llvm_type, pair);
 
     /* Branch on overflow */
-    uint32_t raise_label = cg->label_id++;
-    uint32_t cont_label = cg->label_id++;
-    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", ovf, raise_label, cont_label);
-    Emit_Label_Here(cg, raise_label); /* overflow */
-    Emit_Raise_Constraint_Error(cg, "arithmetic overflow");
-    Emit_Label_Here(cg, cont_label);
-    cg->block_terminated = false;
+    Emit_Check_With_Raise(cg, ovf, true, "arithmetic overflow");
 
     return result;
 }
@@ -18077,13 +18075,7 @@ static void Emit_Division_Check(Code_Generator *cg, uint32_t divisor,
     /* Check divisor == 0 */
     uint32_t cmp = Emit_Temp(cg);
     Emit(cg, "  %%t%u = icmp eq %s %%t%u, 0\n", cmp, llvm_type, divisor);
-    uint32_t raise_label = cg->label_id++;
-    uint32_t cont_label = cg->label_id++;
-    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp, raise_label, cont_label);
-    Emit_Label_Here(cg, raise_label);
-    Emit_Raise_Constraint_Error(cg, "division by zero");
-    Emit_Label_Here(cg, cont_label);
-    cg->block_terminated = false;
+    Emit_Check_With_Raise(cg, cmp, true, "division by zero");
 }
 
 /* Emit_Signed_Division_Overflow_Check — check for MIN_INT / -1.
@@ -18122,13 +18114,7 @@ static void Emit_Signed_Division_Overflow_Check(Code_Generator *cg,
     uint32_t both = Emit_Temp(cg);
     Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", both, cmp_neg1, cmp_min);
 
-    uint32_t raise_label = cg->label_id++;
-    uint32_t cont_label = cg->label_id++;
-    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", both, raise_label, cont_label);
-    Emit_Label_Here(cg, raise_label);
-    Emit_Raise_Constraint_Error(cg, "division overflow (MIN_INT / -1)");
-    Emit_Label_Here(cg, cont_label);
-    cg->block_terminated = false;
+    Emit_Check_With_Raise(cg, both, true, "division overflow (MIN_INT / -1)");
 }
 
 static inline uint32_t Emit_Convert(Code_Generator *cg, uint32_t src,
@@ -18164,13 +18150,7 @@ static uint32_t Emit_Index_Check(Code_Generator *cg, uint32_t index,
     uint32_t out_of_range = Emit_Temp(cg);
     Emit(cg, "  %%t%u = or i1 %%t%u, %%t%u\n", out_of_range, cmp_lo, cmp_hi);
 
-    uint32_t raise_label = cg->label_id++;
-    uint32_t cont_label = cg->label_id++;
-    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", out_of_range, raise_label, cont_label);
-    Emit_Label_Here(cg, raise_label);
-    Emit_Raise_Constraint_Error(cg, "index check failed");
-    Emit_Label_Here(cg, cont_label);
-    cg->block_terminated = false;
+    Emit_Check_With_Raise(cg, out_of_range, true, "index check failed");
     return index;
 }
 
@@ -18187,13 +18167,7 @@ static void Emit_Length_Check(Code_Generator *cg,
 
     uint32_t cmp = Emit_Temp(cg);
     Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n", cmp, len_type, src_length, dst_length);
-    uint32_t raise_label = cg->label_id++;
-    uint32_t cont_label = cg->label_id++;
-    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp, raise_label, cont_label);
-    Emit_Label_Here(cg, raise_label);
-    Emit_Raise_Constraint_Error(cg, "length check failed");
-    Emit_Label_Here(cg, cont_label);
-    cg->block_terminated = false;
+    Emit_Check_With_Raise(cg, cmp, true, "length check failed");
 }
 
 /* Emit_Access_Check — null pointer dereference check (RM 4.1).
@@ -18211,13 +18185,7 @@ static void Emit_Access_Check(Code_Generator *cg, uint32_t ptr_val, Type_Info *a
 
     uint32_t cmp = Emit_Temp(cg);
     Emit(cg, "  %%t%u = icmp eq ptr %%t%u, null\n", cmp, ptr_val);
-    uint32_t raise_label = cg->label_id++;
-    uint32_t cont_label = cg->label_id++;
-    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp, raise_label, cont_label);
-    Emit_Label_Here(cg, raise_label);
-    Emit_Raise_Constraint_Error(cg, "access check (null dereference)");
-    Emit_Label_Here(cg, cont_label);
-    cg->block_terminated = false;
+    Emit_Check_With_Raise(cg, cmp, true, "access check (null dereference)");
 }
 
 /* Emit_Discriminant_Check — variant record discriminant check (RM 3.7.1).
@@ -18229,13 +18197,7 @@ static void Emit_Discriminant_Check(Code_Generator *cg,
 
     uint32_t cmp = Emit_Temp(cg);
     Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n", cmp, disc_type, actual, expected);
-    uint32_t raise_label = cg->label_id++;
-    uint32_t cont_label = cg->label_id++;
-    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp, raise_label, cont_label);
-    Emit_Label_Here(cg, raise_label);
-    Emit_Raise_Constraint_Error(cg, "discriminant check failed");
-    Emit_Label_Here(cg, cont_label);
-    cg->block_terminated = false;
+    Emit_Check_With_Raise(cg, cmp, true, "discriminant check failed");
 }
 
 /* Parse LLVM type width: "i64"→64, "float"→32, "double"→64 */
@@ -19086,23 +19048,24 @@ static uint32_t Emit_Fat_Pointer_High_Dim(Code_Generator *cg, uint32_t fat_ptr,
     return val;
 }
 
-/* Compute length for dimension `dim` from fat pointer: high - low + 1 */
+/* Forward declarations for DRY-consolidated helpers (defined in §13.2.1, §13.2.3) */
+static uint32_t Emit_Length_Clamped(Code_Generator *cg, uint32_t low, uint32_t high, const char *bt);
+static uint32_t Emit_Length_From_Bounds(Code_Generator *cg, uint32_t low, uint32_t high, const char *bt);
+static uint32_t Emit_Static_Int(Code_Generator *cg, int128_t value, const char *ty);
+static uint32_t Emit_Memcmp_Eq(Code_Generator *cg, uint32_t left_ptr, uint32_t right_ptr,
+    uint32_t byte_size_temp, int64_t byte_size_static, bool is_dynamic);
+static uint32_t Emit_Type_Bound(Code_Generator *cg, Type_Bound *bound, const char *ty);
+static uint32_t Emit_Min_Value(Code_Generator *cg, uint32_t a, uint32_t b, const char *ty);
+static uint32_t Emit_Array_Lex_Compare(Code_Generator *cg, uint32_t left_ptr, uint32_t right_ptr,
+    uint32_t elem_size, const char *bt);
+
+/* Compute length for dimension `dim` from fat pointer: high - low + 1
+ * with null-array clamping (RM 3.6.2). */
 static uint32_t Emit_Fat_Pointer_Length_Dim(Code_Generator *cg, uint32_t fat_ptr,
                                              const char *bt, uint32_t dim) {
     uint32_t low = Emit_Fat_Pointer_Low_Dim(cg, fat_ptr, bt, dim);
     uint32_t high = Emit_Fat_Pointer_High_Dim(cg, fat_ptr, bt, dim);
-    uint32_t diff = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", diff, bt, high, low);
-    Temp_Set_Type(cg, diff, bt);
-    uint32_t unclamped = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = add %s %%t%u, 1\n", unclamped, bt, diff);
-    /* Null array (first > last) → length 0 (Ada RM 3.6.2) */
-    uint32_t is_null = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = icmp sgt %s %%t%u, %%t%u\n", is_null, bt, low, high);
-    uint32_t len = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = select i1 %%t%u, %s 0, %s %%t%u\n", len, is_null, bt, bt, unclamped);
-    Temp_Set_Type(cg, len, bt);
-    return len;
+    return Emit_Length_Clamped(cg, low, high, bt);
 }
 
 /* Allocate a multi-dimension bounds block on the stack.
@@ -19216,6 +19179,255 @@ static uint32_t Emit_Length_From_Bounds(Code_Generator *cg,
     Emit(cg, "  %%t%u = add %s %%t%u, 1\n", len, bt, diff);
     Temp_Set_Type(cg, len, bt);
     return len;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §13.2.1 DRY-Consolidated Helpers (Phase 1 Refactoring)
+ *
+ * These helpers eliminate repetitive patterns identified across the codegen:
+ *   - Length computation with null-array clamping (RM 3.6.2)
+ *   - Static integer constant emission
+ *   - Memcmp-based array comparison
+ *   - Conditional check + raise sequences
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Emit length from bounds with null-array clamping (RM 3.6.2):
+ *   result = (low > high) ? 0 : (high - low + 1)
+ * Handles the Ada rule that arrays with first > last have length 0. */
+static uint32_t Emit_Length_Clamped(Code_Generator *cg,
+    uint32_t low, uint32_t high, const char *bt)
+{
+    uint32_t diff = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", diff, bt, high, low);
+    uint32_t unclamped = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = add %s %%t%u, 1\n", unclamped, bt, diff);
+    uint32_t is_null = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp sgt %s %%t%u, %%t%u\n", is_null, bt, low, high);
+    uint32_t len = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = select i1 %%t%u, %s 0, %s %%t%u\n", len, is_null, bt, bt, unclamped);
+    Temp_Set_Type(cg, len, bt);
+    return len;
+}
+
+/* Emit a static integer constant using the add idiom:
+ *   %tN = add <type> 0, <value>
+ * This is the standard LLVM IR pattern for loading constants. */
+static uint32_t Emit_Static_Int(Code_Generator *cg, int128_t value, const char *ty) {
+    uint32_t t = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = add %s 0, %s\n", t, ty, I128_Decimal(value));
+    Temp_Set_Type(cg, t, ty);
+    return t;
+}
+
+/* Emit memcmp and return i1 equality result (true if arrays equal).
+ * Handles both static (literal size) and dynamic (temp size) cases. */
+static uint32_t Emit_Memcmp_Eq(Code_Generator *cg,
+    uint32_t left_ptr, uint32_t right_ptr, uint32_t byte_size_temp,
+    int64_t byte_size_static, bool is_dynamic)
+{
+    uint32_t memcmp_res = Emit_Temp(cg);
+    if (is_dynamic) {
+        Emit(cg, "  %%t%u = call i32 @memcmp(ptr %%t%u, ptr %%t%u, i64 %%t%u)\n",
+             memcmp_res, left_ptr, right_ptr, byte_size_temp);
+    } else {
+        Emit(cg, "  %%t%u = call i32 @memcmp(ptr %%t%u, ptr %%t%u, i64 %lld)\n",
+             memcmp_res, left_ptr, right_ptr, (long long)byte_size_static);
+    }
+    uint32_t eq = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", eq, memcmp_res);
+    Temp_Set_Type(cg, eq, "i1");
+    return eq;
+}
+
+/* Emit memcmp and return relational comparison result (slt/sle/sgt/sge).
+ * op must be one of: TK_LT, TK_LE, TK_GT, TK_GE */
+static uint32_t Emit_Memcmp_Rel(Code_Generator *cg,
+    uint32_t left_ptr, uint32_t right_ptr, uint32_t byte_size_temp,
+    int64_t byte_size_static, bool is_dynamic, Token_Kind op)
+{
+    uint32_t memcmp_res = Emit_Temp(cg);
+    if (is_dynamic) {
+        Emit(cg, "  %%t%u = call i32 @memcmp(ptr %%t%u, ptr %%t%u, i64 %%t%u)\n",
+             memcmp_res, left_ptr, right_ptr, byte_size_temp);
+    } else {
+        Emit(cg, "  %%t%u = call i32 @memcmp(ptr %%t%u, ptr %%t%u, i64 %lld)\n",
+             memcmp_res, left_ptr, right_ptr, (long long)byte_size_static);
+    }
+    uint32_t result = Emit_Temp(cg);
+    const char *cmp_op = (op == TK_LT) ? "slt" : (op == TK_LE) ? "sle" :
+                         (op == TK_GT) ? "sgt" : "sge";
+    Emit(cg, "  %%t%u = icmp %s i32 %%t%u, 0\n", result, cmp_op, memcmp_res);
+    Temp_Set_Type(cg, result, "i1");
+    return result;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §13.2.2 Bound Extraction Helpers (DRY Pattern: 20+ locations)
+ *
+ * Ada types carry bounds as either:
+ *   - BOUND_INTEGER: compile-time constant
+ *   - BOUND_EXPR: runtime expression (dynamic subtypes)
+ *   - BOUND_FLOAT: floating-point constant (for float types)
+ *
+ * These helpers consolidate the ~600 lines of repeated bound extraction.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/* Bound_Temps: Holds emitted temps for a dimension's low and high bounds.
+ * The bound_type field records the LLVM type used (e.g., "i32", "i64"). */
+typedef struct {
+    uint32_t low_temp;      /* Temp ID holding low bound value  */
+    uint32_t high_temp;     /* Temp ID holding high bound value */
+    const char *bound_type; /* LLVM type of bounds (e.g., "i32") */
+} Bound_Temps;
+
+/* Emit a single bound (low or high) from a Type_Bound structure.
+ * Handles all three bound kinds: INTEGER, EXPR, FLOAT. */
+static uint32_t Emit_Single_Bound(Code_Generator *cg, Type_Bound *bound,
+                                   const char *target_type) {
+    if (bound->kind == BOUND_INTEGER) {
+        return Emit_Static_Int(cg, bound->int_value, target_type);
+    } else if (bound->kind == BOUND_FLOAT) {
+        return Emit_Static_Int(cg, (int128_t)bound->float_value, target_type);
+    } else if (bound->kind == BOUND_EXPR and bound->expr) {
+        uint32_t val = Generate_Expression(cg, bound->expr);
+        const char *expr_ty = Expression_Llvm_Type(cg, bound->expr);
+        if (expr_ty and strcmp(expr_ty, target_type) != 0 and
+            expr_ty[0] == 'i' and target_type[0] == 'i') {
+            val = Emit_Convert(cg, val, expr_ty, target_type);
+        }
+        return val;
+    }
+    return Emit_Static_Int(cg, 0, target_type);  /* Fallback for unset bounds */
+}
+
+/* Emit_Bounds: Extract both bounds from a Type_Info for a specific dimension.
+ * For arrays: uses indices[dim].low_bound/high_bound
+ * For scalars: uses type->low_bound/high_bound (dim ignored)
+ * Returns Bound_Temps with both temps and the bound type string. */
+static Bound_Temps Emit_Bounds(Code_Generator *cg, Type_Info *type, uint32_t dim) {
+    Bound_Temps result = {0, 0, Integer_Arith_Type(cg)};
+    if (not type) return result;
+
+    Type_Bound *lb = &type->low_bound;
+    Type_Bound *hb = &type->high_bound;
+
+    /* For array types, use the appropriate dimension's bounds */
+    if (Type_Is_Array_Like(type) and dim < type->array.index_count) {
+        lb = &type->array.indices[dim].low_bound;
+        hb = &type->array.indices[dim].high_bound;
+        /* Determine bound type from index type if available */
+        if (type->array.indices[dim].index_type) {
+            const char *idx_llvm = Type_To_Llvm(type->array.indices[dim].index_type);
+            if (idx_llvm and idx_llvm[0] == 'i') result.bound_type = idx_llvm;
+        }
+    }
+
+    /* Use array bound LLVM type if this is an array */
+    if (Type_Is_Array_Like(type)) {
+        const char *abt = Array_Bound_Llvm_Type(type);
+        if (abt and abt[0] == 'i') result.bound_type = abt;
+    }
+
+    result.low_temp = Emit_Single_Bound(cg, lb, result.bound_type);
+    result.high_temp = Emit_Single_Bound(cg, hb, result.bound_type);
+    return result;
+}
+
+/* Emit_Bounds_From_Fat: Extract bounds from a fat pointer value.
+ * Fat pointers have structure { ptr data, ptr bounds } where bounds
+ * points to a { low, high } pair. Uses existing Emit_Fat_Pointer_Low/High. */
+static Bound_Temps Emit_Bounds_From_Fat(Code_Generator *cg, uint32_t fat_ptr,
+                                         const char *bt) {
+    Bound_Temps result;
+    result.bound_type = bt;
+    result.low_temp = Emit_Fat_Pointer_Low(cg, fat_ptr, bt);
+    result.high_temp = Emit_Fat_Pointer_High(cg, fat_ptr, bt);
+    return result;
+}
+
+/* Emit_Bounds_From_Fat_Dim: Extract bounds from fat pointer for specific dimension.
+ * Supports multi-dimensional unconstrained arrays (RM 3.6.1). */
+static Bound_Temps Emit_Bounds_From_Fat_Dim(Code_Generator *cg, uint32_t fat_ptr,
+                                             const char *bt, uint32_t dim) {
+    Bound_Temps result;
+    result.bound_type = bt;
+    result.low_temp = Emit_Fat_Pointer_Low_Dim(cg, fat_ptr, bt, dim);
+    result.high_temp = Emit_Fat_Pointer_High_Dim(cg, fat_ptr, bt, dim);
+    return result;
+}
+
+/* Emit_Length_From_Bound_Temps: Compute array length from Bound_Temps.
+ * Uses the clamped formula: (low > high) ? 0 : (high - low + 1) */
+static uint32_t Emit_Length_From_Bound_Temps(Code_Generator *cg, Bound_Temps b) {
+    return Emit_Length_Clamped(cg, b.low_temp, b.high_temp, b.bound_type);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §13.2.4 Conditional Check + Raise (DRY Pattern: 50+ locations)
+ *
+ * Ada runtime checks follow a common pattern:
+ *   1. Emit comparison (icmp/fcmp)
+ *   2. Branch to raise block if check fails
+ *   3. Raise CONSTRAINT_ERROR (or other exception)
+ *   4. Continue to next instruction
+ *
+ * This helper consolidates the branch + raise + continue sequence.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/* Emit_Check_With_Raise: Conditional branch + raise + continue.
+ * If raise_on_true is true: raises when cond is true, continues when false.
+ * If raise_on_true is false: raises when cond is false, continues when true. */
+static void Emit_Check_With_Raise(Code_Generator *cg, uint32_t cond,
+                                   bool raise_on_true, const char *comment) {
+    uint32_t raise_label = cg->label_id++;
+    uint32_t cont_label = cg->label_id++;
+    if (raise_on_true) {
+        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+             cond, raise_label, cont_label);
+    } else {
+        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+             cond, cont_label, raise_label);
+    }
+    Emit_Label_Here(cg, raise_label);
+    Emit_Raise_Constraint_Error(cg, comment);
+    Emit_Label_Here(cg, cont_label);
+    cg->block_terminated = false;
+}
+
+/* Emit_Check_With_Raise_PE: Same as above but raises PROGRAM_ERROR. */
+static void Emit_Check_With_Raise_PE(Code_Generator *cg, uint32_t cond,
+                                      bool raise_on_true, const char *comment) {
+    uint32_t raise_label = cg->label_id++;
+    uint32_t cont_label = cg->label_id++;
+    if (raise_on_true) {
+        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+             cond, raise_label, cont_label);
+    } else {
+        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+             cond, cont_label, raise_label);
+    }
+    Emit_Label_Here(cg, raise_label);
+    Emit_Raise_Program_Error(cg, comment);
+    Emit_Label_Here(cg, cont_label);
+    cg->block_terminated = false;
+}
+
+/* Emit a type bound as a temp: handles BOUND_INTEGER, BOUND_EXPR, BOUND_FLOAT.
+ * Returns temp ID with value at specified type width. */
+static uint32_t Emit_Type_Bound(Code_Generator *cg, Type_Bound *bound, const char *ty) {
+    if (bound->kind == BOUND_INTEGER) {
+        return Emit_Static_Int(cg, bound->int_value, ty);
+    } else if (bound->kind == BOUND_FLOAT) {
+        return Emit_Static_Int(cg, (int128_t)bound->float_value, ty);
+    } else if (bound->kind == BOUND_EXPR && bound->expr) {
+        uint32_t val = Generate_Expression(cg, bound->expr);
+        const char *expr_ty = Expression_Llvm_Type(cg, bound->expr);
+        if (strcmp(expr_ty, ty) != 0 && expr_ty[0] == 'i' && ty[0] == 'i') {
+            val = Emit_Convert(cg, val, expr_ty, ty);
+        }
+        return val;
+    }
+    return Emit_Static_Int(cg, 0, ty);  /* Fallback */
 }
 
 /* Copy data from fat pointer to a named destination.
@@ -19332,6 +19544,207 @@ static uint32_t Emit_Fat_Pointer_Compare(Code_Generator *cg,
     Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", and1, cmp_p, cmp_l);
     uint32_t result = Emit_Temp(cg);
     Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", result, and1, cmp_h);
+    return result;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §13.2.3 DRY-Consolidated Helpers - Phase 1 (Additional)
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Emit minimum of two values:  result = (a < b) ? a : b */
+static uint32_t Emit_Min_Value(Code_Generator *cg, uint32_t a, uint32_t b, const char *ty) {
+    uint32_t cmp = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp slt %s %%t%u, %%t%u\n", cmp, ty, a, b);
+    uint32_t result = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n", result, cmp, ty, a, ty, b);
+    Temp_Set_Type(cg, result, ty);
+    return result;
+}
+
+/* Emit maximum of two values:  result = (a > b) ? a : b */
+static uint32_t Emit_Max_Value(Code_Generator *cg, uint32_t a, uint32_t b, const char *ty) {
+    uint32_t cmp = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp sgt %s %%t%u, %%t%u\n", cmp, ty, a, b);
+    uint32_t result = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n", result, cmp, ty, a, ty, b);
+    Temp_Set_Type(cg, result, ty);
+    return result;
+}
+
+/* Structure returned by Emit_Exception_Handler_Setup */
+typedef struct {
+    uint32_t handler_frame;   /* Alloca for { ptr, [200 x i8] } */
+    uint32_t jmp_buf;         /* GEP to jmp_buf field */
+    uint32_t normal_label;    /* Label for normal execution path */
+    uint32_t handler_label;   /* Label for exception handler path */
+} Exception_Setup;
+
+/* Setup exception handler with setjmp. Emits alloca, push_handler, setjmp, branch.
+ * Caller must emit labels and code for normal/handler paths.
+ * Returns structure with handler_frame, jmp_buf temps, and label IDs. */
+static Exception_Setup Emit_Exception_Handler_Setup(Code_Generator *cg) {
+    Exception_Setup setup;
+    setup.handler_frame = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = alloca { ptr, [200 x i8] }, align 16  ; handler frame\n", setup.handler_frame);
+    Emit(cg, "  call void @__ada_push_handler(ptr %%t%u)\n", setup.handler_frame);
+    setup.jmp_buf = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = getelementptr { ptr, [200 x i8] }, ptr %%t%u, i32 0, i32 1\n",
+         setup.jmp_buf, setup.handler_frame);
+    uint32_t setjmp_result = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = call i32 @setjmp(ptr %%t%u)\n", setjmp_result, setup.jmp_buf);
+    uint32_t is_normal = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", is_normal, setjmp_result);
+    setup.normal_label = Emit_Label(cg);
+    setup.handler_label = Emit_Label(cg);
+    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+         is_normal, setup.normal_label, setup.handler_label);
+    return setup;
+}
+
+/* Emit code to get current exception identity (after exception raised).
+ * Returns temp holding i64 exception ID. */
+static uint32_t Emit_Current_Exception_Id(Code_Generator *cg) {
+    uint32_t exc_id = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = call i64 @__ada_current_exception()\n", exc_id);
+    return exc_id;
+}
+
+/* Emit bounds check: raise CONSTRAINT_ERROR if idx < low or idx > high.
+ * Uses labels for control flow. bt = bound type. */
+static void Emit_Bounds_Check(Code_Generator *cg, uint32_t idx, uint32_t low, uint32_t high, const char *bt) {
+    uint32_t ok_label = cg->label_id++;
+    uint32_t fail_label = cg->label_id++;
+    uint32_t check2_label = cg->label_id++;
+    uint32_t cmp_low = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp slt %s %%t%u, %%t%u\n", cmp_low, bt, idx, low);
+    Emit(cg, "  br i1 %%t%u, label %%Lbc_fail%u, label %%Lbc_check2_%u\n", cmp_low, fail_label, check2_label);
+    Emit(cg, "Lbc_check2_%u:\n", check2_label);
+    uint32_t cmp_high = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp sgt %s %%t%u, %%t%u\n", cmp_high, bt, idx, high);
+    Emit(cg, "  br i1 %%t%u, label %%Lbc_fail%u, label %%Lbc_ok%u\n", cmp_high, fail_label, ok_label);
+    Emit(cg, "Lbc_fail%u:\n", fail_label);
+    Emit_Raise_Constraint_Error(cg, "index check");
+    Emit(cg, "Lbc_ok%u:\n", ok_label);
+}
+
+/* Forward declarations for exception handler dispatch */
+static void Generate_Statement_List(Code_Generator *cg, Node_List *list);
+static void Emit_Branch_If_Needed(Code_Generator *cg, uint32_t label);
+static void Emit_Exception_Ref(Code_Generator *cg, Symbol *sym);
+
+/* Generate exception handler dispatch code for a list of handlers.
+ * exc_id = temp holding current exception identity (i64)
+ * end_label = label to branch to after handler completes
+ * handlers = list of NK_EXCEPTION_HANDLER nodes */
+static void Generate_Exception_Dispatch(Code_Generator *cg, Node_List *handlers,
+                                         uint32_t exc_id, uint32_t end_label)
+{
+    uint32_t next_handler = 0;
+    for (uint32_t i = 0; i < handlers->count; i++) {
+        Syntax_Node *handler = handlers->items[i];
+        if (not handler) continue;
+
+        if (next_handler != 0) {
+            Emit_Label_Here(cg, next_handler);
+            cg->block_terminated = false;
+        }
+        next_handler = Emit_Label(cg);
+        uint32_t handler_body = Emit_Label(cg);
+
+        /* Check each exception name in the handler */
+        bool has_others = false;
+        for (uint32_t j = 0; j < handler->handler.exceptions.count; j++) {
+            Syntax_Node *exc_name = handler->handler.exceptions.items[j];
+            if (exc_name->kind == NK_OTHERS) {
+                has_others = true;
+                break;
+            }
+        }
+
+        if (has_others) {
+            Emit(cg, "  br label %%L%u\n", handler_body);
+        } else {
+            for (uint32_t j = 0; j < handler->handler.exceptions.count; j++) {
+                Syntax_Node *exc_name = handler->handler.exceptions.items[j];
+                if (exc_name->symbol) {
+                    uint32_t exc_ptr = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = ptrtoint ptr ", exc_ptr);
+                    Emit_Exception_Ref(cg, exc_name->symbol);
+                    Emit(cg, " to i64\n");
+                    uint32_t match = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n", match, exc_id, exc_ptr);
+                    bool is_last = true;
+                    for (uint32_t k = j + 1; k < handler->handler.exceptions.count; k++) {
+                        if (handler->handler.exceptions.items[k]->symbol) { is_last = false; break; }
+                    }
+                    uint32_t fail_label = is_last ? next_handler : Emit_Label(cg);
+                    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", match, handler_body, fail_label);
+                    if (not is_last) {
+                        Emit_Label_Here(cg, fail_label);
+                        cg->block_terminated = false;
+                    }
+                }
+            }
+        }
+        cg->block_terminated = true;
+
+        /* Handler body */
+        Emit_Label_Here(cg, handler_body);
+        cg->block_terminated = false;
+        Generate_Statement_List(cg, &handler->handler.statements);
+        Emit_Branch_If_Needed(cg, end_label);
+    }
+
+    /* If no handler matched, reraise */
+    if (next_handler != 0) {
+        Emit_Label_Here(cg, next_handler);
+        cg->block_terminated = false;
+        Emit(cg, "  call void @__ada_reraise()\n");
+        Emit(cg, "  unreachable\n");
+        cg->block_terminated = true;
+    }
+}
+
+/* Emit lexicographic array comparison for unconstrained arrays.
+ * Compares common prefix via memcmp, then compares lengths.
+ * Returns i32 result: <0 if left<right, 0 if equal, >0 if left>right.
+ * left_ptr/right_ptr are fat pointers, bt = bound type. */
+static uint32_t Emit_Array_Lex_Compare(Code_Generator *cg,
+    uint32_t left_ptr, uint32_t right_ptr, uint32_t elem_size, const char *bt)
+{
+    /* Extract bounds and data pointers */
+    uint32_t left_low = Emit_Fat_Pointer_Low(cg, left_ptr, bt);
+    uint32_t left_high = Emit_Fat_Pointer_High(cg, left_ptr, bt);
+    uint32_t right_low = Emit_Fat_Pointer_Low(cg, right_ptr, bt);
+    uint32_t right_high = Emit_Fat_Pointer_High(cg, right_ptr, bt);
+    uint32_t left_len = Emit_Length_From_Bounds(cg, left_low, left_high, bt);
+    uint32_t right_len = Emit_Length_From_Bounds(cg, right_low, right_high, bt);
+    uint32_t left_data = Emit_Fat_Pointer_Data(cg, left_ptr, bt);
+    uint32_t right_data = Emit_Fat_Pointer_Data(cg, right_ptr, bt);
+
+    /* min_len = min(left_len, right_len) */
+    uint32_t min_len = Emit_Min_Value(cg, left_len, right_len, bt);
+
+    /* byte_size = min_len * elem_size */
+    uint32_t byte_size_nat = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", byte_size_nat, bt, min_len, elem_size);
+    uint32_t byte_size = Emit_Extend_To_I64(cg, byte_size_nat, bt);
+
+    /* prefix_cmp = memcmp(left_data, right_data, byte_size) */
+    uint32_t prefix_cmp = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = call i32 @memcmp(ptr %%t%u, ptr %%t%u, i64 %%t%u)\n",
+         prefix_cmp, left_data, right_data, byte_size);
+
+    /* If prefix differs, return prefix_cmp; otherwise return len_diff */
+    uint32_t len_diff = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", len_diff, bt, left_len, right_len);
+    uint32_t len_diff32 = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = trunc %s %%t%u to i32\n", len_diff32, bt, len_diff);
+    uint32_t prefix_zero = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", prefix_zero, prefix_cmp);
+    uint32_t result = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = select i1 %%t%u, i32 %%t%u, i32 %%t%u\n",
+         result, prefix_zero, len_diff32, prefix_cmp);
     return result;
 }
 
@@ -20260,13 +20673,8 @@ static uint32_t Generate_Array_Equality(Code_Generator *cg, uint32_t left_ptr,
             right_ptr = Emit_Fat_Pointer_Data(cg, right_ptr, bt);
         }
 
-        /* Use LLVM's memcmp intrinsic equivalent */
-        uint32_t result = Emit_Temp(cg);
-        uint32_t cmp_result = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = call i32 @memcmp(ptr %%t%u, ptr %%t%u, i64 %lld)\n",
-             result, left_ptr, right_ptr, (long long)total_size);
-        Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", cmp_result, result);
-        return cmp_result;
+        /* Use memcmp for byte-by-byte comparison */
+        return Emit_Memcmp_Eq(cg, left_ptr, right_ptr, 0, total_size, false);
     }
 
     /*
@@ -20284,23 +20692,14 @@ static uint32_t Generate_Array_Equality(Code_Generator *cg, uint32_t left_ptr,
      * fat pointer values: { ptr, { bound, bound } }.
      */
 
-    /* Extract bounds from fat pointer structures */
+    /* Extract bounds and compute lengths */
     const char *aeq_bt = Array_Bound_Llvm_Type(array_type);
     uint32_t left_low = Emit_Fat_Pointer_Low(cg, left_ptr, aeq_bt);
     uint32_t left_high = Emit_Fat_Pointer_High(cg, left_ptr, aeq_bt);
     uint32_t right_low = Emit_Fat_Pointer_Low(cg, right_ptr, aeq_bt);
     uint32_t right_high = Emit_Fat_Pointer_High(cg, right_ptr, aeq_bt);
-
-    /* Compute lengths: high - low + 1 */
-    uint32_t left_len = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", left_len, aeq_bt, left_high, left_low);
-    uint32_t left_len1 = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = add %s %%t%u, 1\n", left_len1, aeq_bt, left_len);
-
-    uint32_t right_len = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", right_len, aeq_bt, right_high, right_low);
-    uint32_t right_len1 = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = add %s %%t%u, 1\n", right_len1, aeq_bt, right_len);
+    uint32_t left_len1 = Emit_Length_From_Bounds(cg, left_low, left_high, aeq_bt);
+    uint32_t right_len1 = Emit_Length_From_Bounds(cg, right_low, right_high, aeq_bt);
 
     /* Compare lengths */
     uint32_t len_eq = Emit_Temp(cg);
@@ -20320,11 +20719,7 @@ static uint32_t Generate_Array_Equality(Code_Generator *cg, uint32_t left_ptr,
     uint32_t byte_size_64 = Emit_Extend_To_I64(cg, byte_size, aeq_iat);
 
     /* Call memcmp */
-    uint32_t memcmp_result = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = call i32 @memcmp(ptr %%t%u, ptr %%t%u, i64 %%t%u)\n",
-         memcmp_result, left_data, right_data, byte_size_64);
-    uint32_t data_eq = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", data_eq, memcmp_result);
+    uint32_t data_eq = Emit_Memcmp_Eq(cg, left_data, right_data, byte_size_64, 0, true);
 
     /* Result: lengths match AND data matches */
     uint32_t result = Emit_Temp(cg);
@@ -20589,12 +20984,13 @@ static uint32_t Normalize_To_Fat_Pointer(Code_Generator *cg,
     return raw;  /* fallback: assume already fat */
 }
 
-/* Wrap a constrained array address as a fat pointer using its static bounds. */
+/* Generate expression and wrap as fat pointer if needed.
+ * Like Normalize_To_Fat_Pointer but generates the expression internally.
+ * Handles aggregates of unconstrained types specially (load pre-built fat ptr). */
 static uint32_t Wrap_Constrained_As_Fat(Code_Generator *cg,
     Syntax_Node *expr, Type_Info *type, const char *bt)
 {
-    bool is_fat = Expression_Produces_Fat_Pointer(expr, type);
-    if (is_fat)
+    if (Expression_Produces_Fat_Pointer(expr, type))
         return Generate_Expression(cg, expr);
     /* Aggregates of unconstrained array types already build their own fat
      * pointer alloca in Generate_Aggregate.  Load it instead of re-wrapping. */
@@ -20695,65 +21091,42 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             if (left_is_slice) {
                 uint32_t left_fat = Generate_Expression(cg, node->binary.left);
                 left_data = Emit_Fat_Pointer_Data(cg, left_fat, slice_bt);
-                left_low = Emit_Fat_Pointer_Low(cg, left_fat, slice_bt);
-                left_high = Emit_Fat_Pointer_High(cg, left_fat, slice_bt);
+                Bound_Temps lb = Emit_Bounds_From_Fat(cg, left_fat, slice_bt);
+                left_low = lb.low_temp;
+                left_high = lb.high_temp;
             } else {
                 left_data = Generate_Composite_Address(cg, node->binary.left);
-                /* Get static bounds from type */
-                int128_t low_val = Type_Bound_Value(left_type->array.indices[0].low_bound);
-                int128_t high_val = Type_Bound_Value(left_type->array.indices[0].high_bound);
-                left_low = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, %s\n", left_low, slice_bt, I128_Decimal(low_val));
-                left_high = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, %s\n", left_high, slice_bt, I128_Decimal(high_val));
+                Bound_Temps lb = Emit_Bounds(cg, left_type, 0);
+                left_low = lb.low_temp;
+                left_high = lb.high_temp;
             }
 
             /* Generate right operand */
             if (right_is_slice) {
                 uint32_t right_fat = Generate_Expression(cg, node->binary.right);
                 right_data = Emit_Fat_Pointer_Data(cg, right_fat, slice_bt);
-                right_low = Emit_Fat_Pointer_Low(cg, right_fat, slice_bt);
-                right_high = Emit_Fat_Pointer_High(cg, right_fat, slice_bt);
+                Bound_Temps rb = Emit_Bounds_From_Fat(cg, right_fat, slice_bt);
+                right_low = rb.low_temp;
+                right_high = rb.high_temp;
             } else {
                 right_data = Generate_Composite_Address(cg, node->binary.right);
-                /* Get static bounds from type - use right type if available */
                 Type_Info *rtype = node->binary.right->type ? node->binary.right->type : left_type;
-                int128_t low_val = 1, high_val = 1;
-                if (Type_Is_Array_Like(rtype) and
-                    rtype->array.index_count > 0) {
-                    low_val = Type_Bound_Value(rtype->array.indices[0].low_bound);
-                    high_val = Type_Bound_Value(rtype->array.indices[0].high_bound);
-                }
-                right_low = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, %s\n", right_low, slice_bt, I128_Decimal(low_val));
-                right_high = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, %s\n", right_high, slice_bt, I128_Decimal(high_val));
+                Bound_Temps rb = Emit_Bounds(cg, rtype, 0);
+                right_low = rb.low_temp;
+                right_high = rb.high_temp;
             }
 
-            /* Compute lengths */
-            uint32_t left_len = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", left_len, slice_bt, left_high, left_low);
-            uint32_t left_len1 = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = add %s %%t%u, 1\n", left_len1, slice_bt, left_len);
-
-            uint32_t right_len = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", right_len, slice_bt, right_high, right_low);
-            uint32_t right_len1 = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = add %s %%t%u, 1\n", right_len1, slice_bt, right_len);
-
-            /* Compare lengths */
+            /* Compute lengths and compare */
+            uint32_t left_len = Emit_Length_From_Bounds(cg, left_low, left_high, slice_bt);
+            uint32_t right_len = Emit_Length_From_Bounds(cg, right_low, right_high, slice_bt);
             uint32_t len_eq = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = icmp eq %s %%t%u, %%t%u\n", len_eq, slice_bt, left_len1, right_len1);
+            Emit(cg, "  %%t%u = icmp eq %s %%t%u, %%t%u\n", len_eq, slice_bt, left_len, right_len);
 
-            /* Compare data with memcmp — compute in slice_bt, widen for intrinsic */
+            /* Compare data with memcmp */
             uint32_t byte_size_nat = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", byte_size_nat, slice_bt, left_len1, elem_size);
+            Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", byte_size_nat, slice_bt, left_len, elem_size);
             uint32_t byte_size = Emit_Extend_To_I64(cg, byte_size_nat, slice_bt);
-            uint32_t memcmp_result = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = call i32 @memcmp(ptr %%t%u, ptr %%t%u, i64 %%t%u)\n",
-                 memcmp_result, left_data, right_data, byte_size);
-            uint32_t data_eq = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", data_eq, memcmp_result);
+            uint32_t data_eq = Emit_Memcmp_Eq(cg, left_data, right_data, byte_size, 0, true);
 
             /* Result: lengths match AND data matches */
             eq_result = Emit_Temp(cg);
@@ -20913,61 +21286,10 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, "  %%t%u = call i32 @memcmp(ptr %%t%u, ptr %%t%u, i64 %lld)\n",
                  memcmp_result, left_ptr, right_ptr, (long long)total_size);
         } else {
-            /* Unconstrained array: compare min length, handle different lengths.
-             * For lexicographic: compare common prefix, shorter array is "less" if prefix equal. */
-            uint32_t left_low = Emit_Fat_Pointer_Low(cg, left_ptr, rel_bt);
-            uint32_t left_high = Emit_Fat_Pointer_High(cg, left_ptr, rel_bt);
-            uint32_t right_low = Emit_Fat_Pointer_Low(cg, right_ptr, rel_bt);
-            uint32_t right_high = Emit_Fat_Pointer_High(cg, right_ptr, rel_bt);
-
-            /* Compute lengths */
-            uint32_t left_len = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", left_len, rel_bt, left_high, left_low);
-            uint32_t left_len1 = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = add %s %%t%u, 1\n", left_len1, rel_bt, left_len);
-
-            uint32_t right_len = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", right_len, rel_bt, right_high, right_low);
-            uint32_t right_len1 = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = add %s %%t%u, 1\n", right_len1, rel_bt, right_len);
-
-            /* Get min length for comparison */
-            uint32_t len_cmp = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = icmp slt %s %%t%u, %%t%u\n", len_cmp, rel_bt, left_len1, right_len1);
-            uint32_t min_len = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n",
-                 min_len, len_cmp, rel_bt, left_len1, rel_bt, right_len1);
-
-            /* Get data pointers */
-            uint32_t left_data = Emit_Fat_Pointer_Data(cg, left_ptr, rel_bt);
-            uint32_t right_data = Emit_Fat_Pointer_Data(cg, right_ptr, rel_bt);
-
-            /* Compute byte size for memcmp — compute in rel_bt, widen for intrinsic */
+            /* Unconstrained array: lexicographic comparison via helper */
             uint32_t elem_size = left_type->array.element_type ?
                                  left_type->array.element_type->size : 1;
-            uint32_t byte_size_nat = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", byte_size_nat, rel_bt, min_len, elem_size);
-            uint32_t byte_size = Emit_Extend_To_I64(cg, byte_size_nat, rel_bt);
-
-            /* Compare common prefix */
-            uint32_t prefix_cmp = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = call i32 @memcmp(ptr %%t%u, ptr %%t%u, i64 %%t%u)\n",
-                 prefix_cmp, left_data, right_data, byte_size);
-
-            /* If prefix equal, compare lengths:
-             * left < right if prefix equal and left shorter
-             * Encode as: prefix_cmp != 0 ? prefix_cmp : (left_len - right_len) clamped to -1/0/1 */
-            uint32_t len_diff = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", len_diff, rel_bt, left_len1, right_len1);
-            uint32_t len_diff32 = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = trunc %s %%t%u to i32\n", len_diff32, rel_bt, len_diff);
-
-            uint32_t prefix_zero = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", prefix_zero, prefix_cmp);
-
-            memcmp_result = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = select i1 %%t%u, i32 %%t%u, i32 %%t%u\n",
-                 memcmp_result, prefix_zero, len_diff32, prefix_cmp);
+            memcmp_result = Emit_Array_Lex_Compare(cg, left_ptr, right_ptr, elem_size, rel_bt);
         }
 
         /* Compare memcmp result with 0 based on operator */
@@ -21333,69 +21655,28 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
 
         case TK_AND:
         case TK_AND_THEN:
-            {
-                /* For modular types: bitwise AND at native width (RM 4.5.1).
-                 * For boolean arrays: element-wise AND (RM 4.5.1).
-                 * For boolean types: convert to i1, AND, widen back. */
-                bool mod_and = Type_Is_Unsigned(result_type);
-                if (Type_Is_Bool_Array(result_type)) {
-                    return Emit_Bool_Array_Binop(cg, left, right, result_type, "and");
-                } else if (mod_and) {
-                    const char *common_t = Wider_Int_Type(cg, left_int_type, right_int_type);
-                    left = Emit_Convert_Ext(cg, left, left_int_type, common_t, true);
-                    right = Emit_Convert_Ext(cg, right, right_int_type, common_t, true);
-                    Emit(cg, "  %%t%u = and %s %%t%u, %%t%u\n", t, common_t, left, right);
-                } else {
-                    const char *left_llvm = Expression_Llvm_Type(cg, node->binary.left);
-                    const char *right_llvm = Expression_Llvm_Type(cg, node->binary.right);
-                    left = Emit_Convert(cg, left, left_llvm, "i1");
-                    right = Emit_Convert(cg, right, right_llvm, "i1");
-                    Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", t, left, right);
-                    Temp_Set_Type(cg, t, "i1");
-                    return t;
-                }
-                return t;
-            }
         case TK_OR:
         case TK_OR_ELSE:
-            {
-                bool mod_or = Type_Is_Unsigned(result_type);
-                if (Type_Is_Bool_Array(result_type)) {
-                    return Emit_Bool_Array_Binop(cg, left, right, result_type, "or");
-                } else if (mod_or) {
-                    const char *common_t = Wider_Int_Type(cg, left_int_type, right_int_type);
-                    left = Emit_Convert_Ext(cg, left, left_int_type, common_t, true);
-                    right = Emit_Convert_Ext(cg, right, right_int_type, common_t, true);
-                    Emit(cg, "  %%t%u = or %s %%t%u, %%t%u\n", t, common_t, left, right);
-                } else {
-                    const char *left_llvm = Expression_Llvm_Type(cg, node->binary.left);
-                    const char *right_llvm = Expression_Llvm_Type(cg, node->binary.right);
-                    left = Emit_Convert(cg, left, left_llvm, "i1");
-                    right = Emit_Convert(cg, right, right_llvm, "i1");
-                    Emit(cg, "  %%t%u = or i1 %%t%u, %%t%u\n", t, left, right);
-                    Temp_Set_Type(cg, t, "i1");
-                    return t;
-                }
-                return t;
-            }
         case TK_XOR:
             {
-                bool mod_xor = Type_Is_Unsigned(result_type);
+                /* Bitwise/logical operations (RM 4.5.1):
+                 * - Modular types: bitwise at native width
+                 * - Boolean arrays: element-wise
+                 * - Boolean scalars: convert to i1, operate, widen back */
+                const char *llvm_op = (node->binary.op == TK_AND || node->binary.op == TK_AND_THEN) ? "and" :
+                                      (node->binary.op == TK_OR  || node->binary.op == TK_OR_ELSE)  ? "or" : "xor";
                 if (Type_Is_Bool_Array(result_type)) {
-                    return Emit_Bool_Array_Binop(cg, left, right, result_type, "xor");
-                } else if (mod_xor) {
+                    return Emit_Bool_Array_Binop(cg, left, right, result_type, llvm_op);
+                } else if (Type_Is_Unsigned(result_type)) {
                     const char *common_t = Wider_Int_Type(cg, left_int_type, right_int_type);
                     left = Emit_Convert_Ext(cg, left, left_int_type, common_t, true);
                     right = Emit_Convert_Ext(cg, right, right_int_type, common_t, true);
-                    Emit(cg, "  %%t%u = xor %s %%t%u, %%t%u\n", t, common_t, left, right);
+                    Emit(cg, "  %%t%u = %s %s %%t%u, %%t%u\n", t, llvm_op, common_t, left, right);
                 } else {
-                    const char *left_llvm = Expression_Llvm_Type(cg, node->binary.left);
-                    const char *right_llvm = Expression_Llvm_Type(cg, node->binary.right);
-                    left = Emit_Convert(cg, left, left_llvm, "i1");
-                    right = Emit_Convert(cg, right, right_llvm, "i1");
-                    Emit(cg, "  %%t%u = xor i1 %%t%u, %%t%u\n", t, left, right);
+                    left = Emit_Convert(cg, left, Expression_Llvm_Type(cg, node->binary.left), "i1");
+                    right = Emit_Convert(cg, right, Expression_Llvm_Type(cg, node->binary.right), "i1");
+                    Emit(cg, "  %%t%u = %s i1 %%t%u, %%t%u\n", t, llvm_op, left, right);
                     Temp_Set_Type(cg, t, "i1");
-                    return t;
                 }
                 return t;
             }
@@ -23895,38 +24176,12 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                 }
                 if (lb.kind == BOUND_EXPR or hb.kind == BOUND_EXPR) {
                     /* Dynamic length: generate high - low + 1 at runtime */
-                    uint32_t lo_t = Emit_Temp(cg);
                     const char *iat = Integer_Arith_Type(cg);
-                    if (lb.kind == BOUND_EXPR and lb.expr) {
-                        uint32_t v = Generate_Expression(cg, lb.expr);
-                        const char *vty = Expression_Llvm_Type(cg, lb.expr);
-                        if (strcmp(vty, iat) != 0 and vty[0] == 'i')
-                            v = Emit_Convert(cg, v, vty, iat);
-                        Emit(cg, "  %%t%u = add %s %%t%u, 0\n", lo_t, iat, v);
-                    } else {
-                        Emit(cg, "  %%t%u = add %s 0, %s\n", lo_t, iat, I128_Decimal(Type_Bound_Value(lb)));
-                    }
-                    Temp_Set_Type(cg, lo_t, iat);
-                    uint32_t hi_t = Emit_Temp(cg);
-                    if (hb.kind == BOUND_EXPR and hb.expr) {
-                        uint32_t v = Generate_Expression(cg, hb.expr);
-                        const char *vty = Expression_Llvm_Type(cg, hb.expr);
-                        if (strcmp(vty, iat) != 0 and vty[0] == 'i')
-                            v = Emit_Convert(cg, v, vty, iat);
-                        Emit(cg, "  %%t%u = add %s %%t%u, 0\n", hi_t, iat, v);
-                    } else {
-                        Emit(cg, "  %%t%u = add %s 0, %s\n", hi_t, iat, I128_Decimal(Type_Bound_Value(hb)));
-                    }
-                    Temp_Set_Type(cg, hi_t, iat);
-                    uint32_t diff_t = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", diff_t, iat, hi_t, lo_t);
-                    uint32_t unclamped = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = add %s %%t%u, 1\n", unclamped, iat, diff_t);
-                    /* Null array (first > last) → length 0 (Ada RM 3.6.2) */
-                    uint32_t is_null = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = icmp sgt %s %%t%u, %%t%u\n", is_null, iat, lo_t, hi_t);
-                    Emit(cg, "  %%t%u = select i1 %%t%u, %s 0, %s %%t%u  ; 'LENGTH(%u)\n",
-                         t, is_null, iat, iat, unclamped, dim+1);
+                    uint32_t lo_t = Emit_Type_Bound(cg, &lb, iat);
+                    uint32_t hi_t = Emit_Type_Bound(cg, &hb, iat);
+                    uint32_t len = Emit_Length_Clamped(cg, lo_t, hi_t, iat);
+                    /* Copy to result temp t */
+                    Emit(cg, "  %%t%u = add %s %%t%u, 0  ; 'LENGTH(%u)\n", t, iat, len, dim+1);
                     Temp_Set_Type(cg, t, iat);
                 } else {
                     int128_t low = Type_Bound_Value(lb);
@@ -24180,16 +24435,10 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
             /* Bound check: SUCC vs high, PRED vs low */
             Type_Bound limit = is_succ ? base->high_bound : base->low_bound;
             if (base and limit.kind == BOUND_INTEGER) {
-                uint32_t ok_label = cg->label_id++, raise_label = cg->label_id++;
                 uint32_t cmp = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = icmp %s %s %%t%u, %s\n", cmp,
                      is_succ ? "sgt" : "slt", wide_iat, t, I128_Decimal(limit.int_value));
-                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
-                     cmp, raise_label, ok_label);
-                Emit_Label_Here(cg, raise_label);
-                Emit_Raise_Constraint_Error(cg, is_succ ? "'SUCC" : "'PRED");
-                Emit_Label_Here(cg, ok_label);
-                cg->block_terminated = false;
+                Emit_Check_With_Raise(cg, cmp, true, is_succ ? "'SUCC" : "'PRED");
             }
             /* Convert result back to prefix type width.
              * Resolve generic formal types to their actuals. */
@@ -25373,10 +25622,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             }
 
             /* Calculate count and byte size */
-            uint32_t count_val = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", count_val, iat_bnd, high_val, low_val);
-            uint32_t count_plus1 = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = add %s %%t%u, 1\n", count_plus1, iat_bnd, count_val);
+            uint32_t count_plus1 = Emit_Length_From_Bounds(cg, low_val, high_val, iat_bnd);
             uint32_t byte_size = Emit_Temp(cg);
             Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", byte_size, iat_bnd, count_plus1, elem_size);
 
@@ -27504,19 +27750,10 @@ static void Generate_Case_Statement(Code_Generator *cg, Syntax_Node *node) {
                     bound_type = Expression_Llvm_Type(cg, constraint->range_constraint.range->range.low);
                 } else {
                     /* Bare subtype name: WHEN SUBTYPE => use declared bounds */
-                    Type_Info *st = choice->type;
-                    low = Emit_Temp(cg);
-                    high = Emit_Temp(cg);
-                    bound_type = case_type;
-                    if (st and st->low_bound.kind == BOUND_INTEGER) {
-                        Emit(cg, "  %%t%u = add %s 0, %s\n", low, case_type,
-                             I128_Decimal(Type_Bound_Value(st->low_bound)));
-                        Emit(cg, "  %%t%u = add %s 0, %s\n", high, case_type,
-                             I128_Decimal(Type_Bound_Value(st->high_bound)));
-                    } else {
-                        Emit(cg, "  %%t%u = add %s 0, 0\n", low, case_type);
-                        Emit(cg, "  %%t%u = add %s 0, 0\n", high, case_type);
-                    }
+                    Bound_Temps bounds = Emit_Bounds(cg, choice->type, 0);
+                    low = bounds.low_temp;
+                    high = bounds.high_temp;
+                    bound_type = bounds.bound_type;
                 }
                 /* Coerce bounds to selector type for icmp */
                 if (strcmp(bound_type, case_type) != 0) {
@@ -27543,16 +27780,12 @@ static void Generate_Case_Statement(Code_Generator *cg, Syntax_Node *node) {
                         choice->symbol->kind == SYMBOL_SUBTYPE) and
                        choice->symbol->type) {
                 /* Bare subtype name as case choice (RM 5.4): range check */
-                Type_Info *st = choice->symbol->type;
-                uint32_t low = Emit_Temp(cg), high = Emit_Temp(cg);
-                if (st->low_bound.kind == BOUND_INTEGER) {
-                    Emit(cg, "  %%t%u = add %s 0, %s\n", low, case_type,
-                         I128_Decimal(Type_Bound_Value(st->low_bound)));
-                    Emit(cg, "  %%t%u = add %s 0, %s\n", high, case_type,
-                         I128_Decimal(Type_Bound_Value(st->high_bound)));
-                } else {
-                    Emit(cg, "  %%t%u = add %s 0, 0\n", low, case_type);
-                    Emit(cg, "  %%t%u = add %s 0, 0\n", high, case_type);
+                Bound_Temps bounds = Emit_Bounds(cg, choice->symbol->type, 0);
+                uint32_t low = bounds.low_temp, high = bounds.high_temp;
+                /* Coerce to selector type if needed */
+                if (strcmp(bounds.bound_type, case_type) != 0) {
+                    low = Emit_Convert(cg, low, bounds.bound_type, case_type);
+                    high = Emit_Convert(cg, high, bounds.bound_type, case_type);
                 }
                 uint32_t cmp1 = Emit_Temp(cg), cmp2 = Emit_Temp(cg), both = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = icmp sle %s %%t%u, %%t%u\n", cmp1, case_type, low, selector);
@@ -27664,23 +27897,19 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
                            prefix_sym->kind == SYMBOL_DISCRIMINANT)) {
             const char *loop_bt = Array_Bound_Llvm_Type(prefix_type);
             uint32_t fat = Emit_Load_Fat_Pointer(cg, prefix_sym, loop_bt);
-            low_val = Emit_Fat_Pointer_Low_Dim(cg, fat, loop_bt, for_dim);
-            high_val = Emit_Fat_Pointer_High_Dim(cg, fat, loop_bt, for_dim);
-            /* GNAT LLVM: convert bounds from native bt to loop type (no i64 widen) */
-            low_val = Emit_Convert(cg, low_val, loop_bt, loop_type);
-            high_val = Emit_Convert(cg, high_val, loop_bt, loop_type);
+            Bound_Temps bounds = Emit_Bounds_From_Fat_Dim(cg, fat, loop_bt, for_dim);
+            /* Convert bounds from native bt to loop type */
+            low_val = Emit_Convert(cg, bounds.low_temp, loop_bt, loop_type);
+            high_val = Emit_Convert(cg, bounds.high_temp, loop_bt, loop_type);
         } else if (Type_Is_Array_Like(prefix_type)) {
             /* Constrained array - use compile-time bounds */
             Syntax_Node *range_arg = range->attribute.arguments.count > 0
                                    ? range->attribute.arguments.items[0] : NULL;
             uint32_t dim = Get_Dimension_Index(range_arg);
             if (dim < prefix_type->array.index_count) {
-                low_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, %s  ; 'RANGE low\n", low_val, Integer_Arith_Type(cg),
-                     I128_Decimal(Type_Bound_Value(prefix_type->array.indices[dim].low_bound)));
-                high_val = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = add %s 0, %s  ; 'RANGE high\n", high_val, Integer_Arith_Type(cg),
-                     I128_Decimal(Type_Bound_Value(prefix_type->array.indices[dim].high_bound)));
+                Bound_Temps bounds = Emit_Bounds(cg, prefix_type, dim);
+                low_val = bounds.low_temp;
+                high_val = bounds.high_temp;
             } else {
                 fprintf(stderr, "warning: FOR loop RANGE attribute dimension out of bounds, defaulting to 0\n");
                 low_val = high_val = 0;
@@ -27940,81 +28169,9 @@ static void Generate_Block_Statement(Code_Generator *cg, Syntax_Node *node) {
         cg->block_terminated = false;
         Emit(cg, "  call void @__ada_pop_handler()\n");
 
-        /* Get current exception identity */
-        uint32_t exc_id = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = call i64 @__ada_current_exception()\n", exc_id);
-
-        /* Generate exception handlers */
-        uint32_t next_handler = 0;
-        for (uint32_t i = 0; i < node->block_stmt.handlers.count; i++) {
-            Syntax_Node *handler = node->block_stmt.handlers.items[i];
-            if (not handler) continue;
-
-            if (next_handler != 0) {
-                Emit_Label_Here(cg, next_handler);
-                cg->block_terminated = false;
-            }
-            next_handler = Emit_Label(cg);
-            uint32_t handler_body = Emit_Label(cg);
-
-            /* Check each exception name in the handler */
-            bool has_others = false;
-            for (uint32_t j = 0; j < handler->handler.exceptions.count; j++) {
-                Syntax_Node *exc_name = handler->handler.exceptions.items[j];
-                if (exc_name->kind == NK_OTHERS) {
-                    has_others = true;
-                    break;
-                }
-            }
-
-            if (has_others) {
-                /* WHEN OTHERS => catches all */
-                Emit(cg, "  br label %%L%u\n", handler_body);
-            } else {
-                /* Check against specific exceptions.
-                 * For multiple choices (WHEN E1 | E2 =>), chain comparisons:
-                 * if not E1, branch to next check; if not E2, branch to next_handler. */
-                for (uint32_t j = 0; j < handler->handler.exceptions.count; j++) {
-                    Syntax_Node *exc_name = handler->handler.exceptions.items[j];
-                    if (exc_name->symbol) {
-                        uint32_t exc_ptr = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = ptrtoint ptr ", exc_ptr);
-                        Emit_Exception_Ref(cg, exc_name->symbol);
-                        Emit(cg, " to i64\n");
-                        uint32_t match = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n",
-                             match, exc_id, exc_ptr);
-                        bool is_last = true;
-                        for (uint32_t k = j + 1; k < handler->handler.exceptions.count; k++) {
-                            if (handler->handler.exceptions.items[k]->symbol) { is_last = false; break; }
-                        }
-                        uint32_t fail_label = is_last ? next_handler : Emit_Label(cg);
-                        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
-                             match, handler_body, fail_label);
-                        if (not is_last) {
-                            Emit_Label_Here(cg, fail_label);
-                            cg->block_terminated = false;
-                        }
-                    }
-                }
-            }
-            cg->block_terminated = true;
-
-            /* Handler body */
-            Emit_Label_Here(cg, handler_body);
-            cg->block_terminated = false;
-            Generate_Statement_List(cg, &handler->handler.statements);
-            Emit_Branch_If_Needed(cg, end_label);
-        }
-
-        /* If no handler matched, reraise */
-        if (next_handler != 0) {
-            Emit_Label_Here(cg, next_handler);
-            cg->block_terminated = false;
-            Emit(cg, "  call void @__ada_reraise()\n");
-            Emit(cg, "  unreachable\n");
-            cg->block_terminated = true;
-        }
+        /* Get exception identity and dispatch to handlers */
+        uint32_t exc_id = Emit_Current_Exception_Id(cg);
+        Generate_Exception_Dispatch(cg, &node->block_stmt.handlers, exc_id, end_label);
 
         /* End of block */
         Emit_Label_Here(cg, end_label);
@@ -30106,120 +30263,24 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
     bool has_exc_handlers = node->subprogram_body.handlers.count > 0;
 
     if (has_exc_handlers) {
-        /* Setup exception handling using setjmp/longjmp */
-        uint32_t handler_frame = Emit_Temp(cg);
-        uint32_t handler_label = Emit_Label(cg);
-        uint32_t normal_label = Emit_Label(cg);
+        /* Setup exception handling using consolidated helper */
         uint32_t end_label = Emit_Label(cg);
-
-        /* Allocate handler frame: { ptr prev, [200 x i8] jmp_buf } */
-        Emit(cg, "  %%t%u = alloca { ptr, [200 x i8] }, align 16  ; handler frame\n", handler_frame);
-
-        /* Push exception handler */
-        Emit(cg, "  call void @__ada_push_handler(ptr %%t%u)\n", handler_frame);
-
-        /* Call setjmp on the jmp_buf field (field 1) */
-        uint32_t jmp_buf = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = getelementptr { ptr, [200 x i8] }, ptr %%t%u, i32 0, i32 1\n",
-             jmp_buf, handler_frame);
-        uint32_t setjmp_result = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = call i32 @setjmp(ptr %%t%u)\n", setjmp_result, jmp_buf);
-
-        /* Branch based on setjmp return */
-        uint32_t is_normal = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", is_normal, setjmp_result);
-        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
-             is_normal, normal_label, handler_label);
+        Exception_Setup exc = Emit_Exception_Handler_Setup(cg);
 
         /* Normal execution path */
-        Emit_Label_Here(cg, normal_label);
-
-        /* Generate statements */
+        Emit_Label_Here(cg, exc.normal_label);
         Generate_Statement_List(cg, &node->subprogram_body.statements);
-
-        /* Pop handler on normal exit */
         Emit(cg, "  call void @__ada_pop_handler()\n");
         Emit(cg, "  br label %%L%u\n", end_label);
 
         /* Exception handler entry */
-        Emit_Label_Here(cg, handler_label);
+        Emit_Label_Here(cg, exc.handler_label);
         cg->block_terminated = false;
         Emit(cg, "  call void @__ada_pop_handler()\n");
 
-        /* Get current exception identity */
-        uint32_t exc_id = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = call i64 @__ada_current_exception()\n", exc_id);
-
-        /* Generate exception handlers */
-        uint32_t next_handler = 0;
-        for (uint32_t i = 0; i < node->subprogram_body.handlers.count; i++) {
-            Syntax_Node *handler = node->subprogram_body.handlers.items[i];
-            if (not handler) continue;
-
-            if (next_handler != 0) {
-                Emit_Label_Here(cg, next_handler);
-                cg->block_terminated = false;
-            }
-            next_handler = Emit_Label(cg);
-            uint32_t handler_body = Emit_Label(cg);
-
-            /* Check each exception name in the handler */
-            bool has_others = false;
-            for (uint32_t j = 0; j < handler->handler.exceptions.count; j++) {
-                Syntax_Node *exc_name = handler->handler.exceptions.items[j];
-                if (exc_name->kind == NK_OTHERS) {
-                    has_others = true;
-                    break;
-                }
-            }
-
-            if (has_others) {
-                /* WHEN OTHERS => catches all */
-                Emit(cg, "  br label %%L%u\n", handler_body);
-            } else {
-                /* Check against specific exceptions.
-                 * For multiple choices (WHEN E1 | E2 =>), chain comparisons. */
-                for (uint32_t j = 0; j < handler->handler.exceptions.count; j++) {
-                    Syntax_Node *exc_name = handler->handler.exceptions.items[j];
-                    if (exc_name->symbol) {
-                        uint32_t exc_ptr = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = ptrtoint ptr ", exc_ptr);
-                        Emit_Exception_Ref(cg, exc_name->symbol);
-                        Emit(cg, " to i64\n");
-                        uint32_t match = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = icmp eq i64 %%t%u, %%t%u\n",
-                             match, exc_id, exc_ptr);
-                        bool is_last = true;
-                        for (uint32_t k = j + 1; k < handler->handler.exceptions.count; k++) {
-                            if (handler->handler.exceptions.items[k]->symbol) { is_last = false; break; }
-                        }
-                        uint32_t fail_label = is_last ? next_handler : Emit_Label(cg);
-                        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
-                             match, handler_body, fail_label);
-                        if (not is_last) {
-                            Emit_Label_Here(cg, fail_label);
-                            cg->block_terminated = false;
-                        }
-                    }
-                }
-            }
-            cg->block_terminated = true;
-
-            /* Handler body */
-            Emit_Label_Here(cg, handler_body);
-            cg->block_terminated = false;
-            Generate_Statement_List(cg, &handler->handler.statements);
-            Emit_Branch_If_Needed(cg, end_label);
-        }
-
-        /* If no handler matched, reraise */
-        if (next_handler != 0) {
-            Emit_Label_Here(cg, next_handler);
-            cg->block_terminated = false;
-            Emit(cg, "  call void @__ada_reraise()\n");
-            Emit(cg, "  unreachable\n");
-            cg->block_terminated = true;
-        }
+        /* Dispatch to exception handlers */
+        uint32_t exc_id = Emit_Current_Exception_Id(cg);
+        Generate_Exception_Dispatch(cg, &node->subprogram_body.handlers, exc_id, end_label);
 
         /* End label - normal return point */
         Emit_Label_Here(cg, end_label);
@@ -30647,24 +30708,11 @@ static void Generate_Task_Body(Code_Generator *cg, Syntax_Node *node) {
         #undef MAX_TASK_FRAME_ALIASES
     }
 
-    /* Push exception handler for task: { ptr prev, [200 x i8] jmp_buf } */
-    uint32_t handler_frame = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = alloca { ptr, [200 x i8] }, align 16  ; handler frame\n", handler_frame);
-    Emit(cg, "  call void @__ada_push_handler(ptr %%t%u)\n", handler_frame);
-    uint32_t jmp_buf = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = getelementptr { ptr, [200 x i8] }, ptr %%t%u, i32 0, i32 1\n",
-         jmp_buf, handler_frame);
-    uint32_t setjmp_result = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = call i32 @setjmp(ptr %%t%u)\n", setjmp_result, jmp_buf);
-    uint32_t is_zero = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", is_zero, setjmp_result);
-    uint32_t body_label = Emit_Label(cg);
-    uint32_t exit_label = Emit_Label(cg);
-    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
-         is_zero, body_label, exit_label);
+    /* Push exception handler for task using consolidated helper */
+    Exception_Setup exc = Emit_Exception_Handler_Setup(cg);
 
     /* Normal execution path */
-    Emit_Label_Here(cg, body_label);
+    Emit_Label_Here(cg, exc.normal_label);
     cg->block_terminated = false;  /* Reset after br target label */
     Generate_Declaration_List(cg, &node->task_body.declarations);
     Generate_Statement_List(cg, &node->task_body.statements);
@@ -30672,7 +30720,7 @@ static void Generate_Task_Body(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "  ret ptr null\n");
 
     /* Exception handler path */
-    Emit_Label_Here(cg, exit_label);
+    Emit_Label_Here(cg, exc.handler_label);
     Emit(cg, "  call void @__ada_pop_handler()\n");
     /* Task terminates silently on unhandled exception */
     Emit(cg, "  ret ptr null\n");
