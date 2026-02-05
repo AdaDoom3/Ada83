@@ -17577,13 +17577,17 @@ static uint32_t Emit_Constraint_Check_With_Type(Code_Generator *cg, uint32_t val
         if (target->kind == TYPE_FIXED) {
             double small = target->fixed.small;
             if (small <= 0) small = target->fixed.delta > 0 ? target->fixed.delta : 1.0;
-            /* Emit each bound as i64 regardless of source kind */
+            /* Fixed-point bounds must use the fixed type's native width (i64)
+             * to avoid overflow when mantissa approaches MAX_MANTISSA.
+             * Integer_Arith_Type is only i32 which overflows at 2^31. */
+            const char *fix_bnd_ty = Type_To_Llvm(target);
+            if (not fix_bnd_ty or fix_bnd_ty[0] != 'i') fix_bnd_ty = "i64";
             #define FIXED_BOUND_TO_I64(bnd, out) do {                     \
                 if ((bnd)->kind == BOUND_FLOAT) {                         \
                     int128_t iv = (int128_t)((bnd)->float_value / small); \
                     (out) = Emit_Temp(cg);                                \
                     Emit(cg, "  %%t%u = add %s 0, %s  ; fixed bound"     \
-                         " (%g/small)\n", (out), Integer_Arith_Type(cg),  \
+                         " (%g/small)\n", (out), fix_bnd_ty,              \
                          I128_Decimal(iv), (bnd)->float_value);           \
                 } else if ((bnd)->kind == BOUND_EXPR) {                   \
                     uint32_t fv = Generate_Expression(cg, (bnd)->expr);   \
@@ -17603,15 +17607,15 @@ static uint32_t Emit_Constraint_Check_With_Type(Code_Generator *cg, uint32_t val
                              dv, fv, st);                                 \
                         (out) = Emit_Temp(cg);                            \
                         Emit(cg, "  %%t%u = fptosi double %%t%u to %s\n",\
-                             (out), dv, Integer_Arith_Type(cg));          \
+                             (out), dv, fix_bnd_ty);                      \
                     } else {                                              \
                         /* Already scaled integer (fixed-point value) */  \
                         const char *fv_src = fv_ty ? fv_ty :              \
                             Type_To_Llvm((bnd)->expr->type);              \
                         (out) = Emit_Convert(cg, fv,                      \
-                            fv_src, Integer_Arith_Type(cg));              \
+                            fv_src, fix_bnd_ty);                          \
                     }                                                     \
-                    Temp_Set_Type(cg, (out), Integer_Arith_Type(cg));     \
+                    Temp_Set_Type(cg, (out), fix_bnd_ty);                 \
                 } else {                                                  \
                     (out) = Emit_Bound_Value(cg, (bnd));                  \
                 }                                                         \
@@ -17619,6 +17623,8 @@ static uint32_t Emit_Constraint_Check_With_Type(Code_Generator *cg, uint32_t val
             FIXED_BOUND_TO_I64(&target->low_bound, lo);
             FIXED_BOUND_TO_I64(&target->high_bound, hi);
             #undef FIXED_BOUND_TO_I64
+            lo_type = fix_bnd_ty;
+            hi_type = fix_bnd_ty;
         } else {
             lo = Emit_Bound_Value_Typed(cg, &target->low_bound, &lo_type);
             hi = Emit_Bound_Value_Typed(cg, &target->high_bound, &hi_type);
@@ -20294,9 +20300,12 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                     Emit(cg, "  %%t%u = %s %s %%t%u to %s\n", conv, itof_cmp, right_llvm_type, right, float_type);
                     right = conv;
                     if (Type_Is_Fixed_Point(right_type)) {
-                        /* Fixed-point: scale by SMALL to get actual value */
-                        double small = right_type->fixed.small;
-                        if (small <= 0) small = right_type->fixed.delta > 0 ? right_type->fixed.delta : 1.0;
+                        /* Fixed-point: scale by SMALL to get actual value.
+                         * Resolve generic formal type to get actual SMALL. */
+                        Type_Info *resolved_right = cg->current_instance ?
+                            Resolve_Generic_Actual_Type(cg, right_type) : right_type;
+                        double small = resolved_right->fixed.small;
+                        if (small <= 0) small = resolved_right->fixed.delta > 0 ? resolved_right->fixed.delta : 1.0;
                         uint64_t bits; memcpy(&bits, &small, sizeof(bits));
                         uint32_t small_t = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = fadd %s 0.0, 0x%016llX\n", small_t, float_type, (unsigned long long)bits);
@@ -20309,8 +20318,11 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                     /* Convert right float to integer for fixed-point comparison.
                      * If left is fixed-point, divide by SMALL first */
                     if (Type_Is_Fixed_Point(left_type)) {
-                        double small = left_type->fixed.small;
-                        if (small <= 0) small = left_type->fixed.delta > 0 ? left_type->fixed.delta : 1.0;
+                        /* Resolve generic formal type to get actual SMALL value */
+                        Type_Info *resolved_left = cg->current_instance ?
+                            Resolve_Generic_Actual_Type(cg, left_type) : left_type;
+                        double small = resolved_left->fixed.small;
+                        if (small <= 0) small = resolved_left->fixed.delta > 0 ? resolved_left->fixed.delta : 1.0;
                         uint64_t bits; memcpy(&bits, &small, sizeof(bits));
                         uint32_t small_t = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = fadd %s 0.0, 0x%016llX\n", small_t, right_float_type, (unsigned long long)bits);
@@ -22528,11 +22540,37 @@ static uint32_t Emit_Bound_Attribute(Code_Generator *cg, uint32_t t,
              * Internal repr = abstract_value / SMALL. */
             double small = prefix_type->fixed.small;
             if (small <= 0) small = prefix_type->fixed.delta > 0 ? prefix_type->fixed.delta : 1.0;
-            double fval = Type_Bound_Float_Value(b);
-            int64_t scaled = (int64_t)(fval / small);
-            Emit(cg, "  %%t%u = add %s 0, %lld  ; %.*s'%s (fixed scaled %g/small)\n", t,
-                 bound_llvm, (long long)scaled, (int)attr.length, attr.data, tag, fval);
-            Temp_Set_Type(cg, t, bound_llvm);
+            if (b.kind == BOUND_EXPR and b.expr) {
+                /* Runtime-computed bound (e.g. IDENT_INT(1) * (-1.0)) */
+                uint32_t fv = Generate_Expression(cg, b.expr);
+                const char *fv_ty = Temp_Get_Type(cg, fv);
+                bool fv_float = (fv_ty and Is_Float_Type(fv_ty))
+                    or Type_Is_Float_Representation(b.expr->type)
+                    or (b.expr->type and b.expr->type->kind == TYPE_UNIVERSAL_REAL);
+                if (fv_float) {
+                    uint64_t sb; memcpy(&sb, &small, sizeof(sb));
+                    uint32_t st = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX\n", st, (unsigned long long)sb);
+                    uint32_t dv = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = fdiv double %%t%u, %%t%u\n", dv, fv, st);
+                    Emit(cg, "  %%t%u = fptosi double %%t%u to %s\n", t, dv, bound_llvm);
+                } else {
+                    const char *fv_src = fv_ty ? fv_ty : Type_To_Llvm(b.expr->type);
+                    if (not fv_src or fv_src[0] != 'i') fv_src = bound_llvm;
+                    if (strcmp(fv_src, bound_llvm) == 0) {
+                        Emit(cg, "  %%t%u = add %s 0, %%t%u\n", t, bound_llvm, fv);
+                    } else {
+                        Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", t, fv_src, fv, bound_llvm);
+                    }
+                }
+                Temp_Set_Type(cg, t, bound_llvm);
+            } else {
+                double fval = Type_Bound_Float_Value(b);
+                int64_t scaled = (int64_t)(fval / small);
+                Emit(cg, "  %%t%u = add %s 0, %lld  ; %.*s'%s (fixed scaled %g/small)\n", t,
+                     bound_llvm, (long long)scaled, (int)attr.length, attr.data, tag, fval);
+                Temp_Set_Type(cg, t, bound_llvm);
+            }
         } else if (Type_Bound_Is_Compile_Time_Known(b)) {
             Emit(cg, "  %%t%u = add %s 0, %s  ; %.*s'%s\n", t,
                  bound_llvm, I128_Decimal(Type_Bound_Value(b)), (int)attr.length, attr.data, tag);
