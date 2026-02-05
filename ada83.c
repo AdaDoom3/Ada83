@@ -6275,6 +6275,9 @@ struct Type_Info {
     /* Pragma Pack - pack components to minimum size */
     bool         is_packed;
 
+    /* Limited type flag (RM 7.5) - type cannot be copied */
+    bool         is_limited;
+
     /* Freezing status - once frozen, representation cannot change */
     bool         is_frozen;
 
@@ -13535,6 +13538,324 @@ static void Elab_Reset(void) {
     g_elab_graph_initialized = true;
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §15.8 BUILD-IN-PLACE — Limited Type Function Returns
+ *
+ * Ada limited types cannot be copied (RM 7.5). Functions returning limited
+ * types must construct the result directly in caller-provided space—the
+ * "Build-in-Place" (BIP) protocol. This eliminates intermediate temporaries.
+ *
+ * The protocol passes extra hidden parameters to BIP functions:
+ *   __BIPalloc  - Allocation form selector (caller space, heap, pool, etc.)
+ *   __BIPaccess - Pointer to destination where result is constructed
+ *   __BIPfinal  - Finalization collection (for controlled components)
+ *   __BIPmaster - Task master ID (for task components)
+ *   __BIPchain  - Activation chain (for task components)
+ *
+ * Reference: Ada RM 7.5 (Limited Types), RM 6.5 (Return Statements)
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §15.8.1 Algebraic Types — Sum types for BIP protocol
+ *
+ * BIP_Alloc_Form determines where the function result is allocated:
+ *   - CALLER: Caller provides stack/object space (most common)
+ *   - SECONDARY_STACK: Use secondary stack for dynamic-sized returns
+ *   - GLOBAL_HEAP: Allocate on heap (from 'new' expression)
+ *   - USER_POOL: Use user-defined storage pool
+ *
+ * BIP_Formal_Kind identifies which extra formal parameter is being accessed.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+typedef enum {
+    BIP_ALLOC_UNSPECIFIED = 0,    /* Let callee decide (propagate)          */
+    BIP_ALLOC_CALLER      = 1,    /* Build in caller-provided space         */
+    BIP_ALLOC_SECONDARY   = 2,    /* Allocate on secondary stack            */
+    BIP_ALLOC_GLOBAL_HEAP = 3,    /* Allocate on global heap                */
+    BIP_ALLOC_USER_POOL   = 4     /* Allocate from user storage pool        */
+} BIP_Alloc_Form;
+
+typedef enum {
+    BIP_FORMAL_ALLOC_FORM,        /* Allocation strategy selector           */
+    BIP_FORMAL_STORAGE_POOL,      /* Storage pool access (for USER_POOL)    */
+    BIP_FORMAL_FINALIZATION,      /* Finalization collection pointer        */
+    BIP_FORMAL_TASK_MASTER,       /* Task master ID for task components     */
+    BIP_FORMAL_ACTIVATION,        /* Activation chain for task components   */
+    BIP_FORMAL_OBJECT_ACCESS      /* Pointer to result destination          */
+} BIP_Formal_Kind;
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §15.8.2 BIP Context — State for call-site and return transformation
+ *
+ * Tracks the BIP state during code generation: what allocation form to use,
+ * where to build the result, and whether task/finalization handling needed.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+typedef struct {
+    Symbol         *func;              /* Function being transformed         */
+    Type_Info      *result_type;       /* Return type                        */
+    BIP_Alloc_Form  alloc_form;        /* Determined allocation strategy     */
+    uint32_t        dest_ptr;          /* Temp holding destination address   */
+    bool            needs_finalization;/* Has controlled components          */
+    bool            has_tasks;         /* Has task components                */
+} BIP_Context;
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §15.8.3 Type Predicates — Pure functions for BIP decisions
+ *
+ * These predicates determine whether a type requires BIP handling.
+ * Per Ada RM 7.5, limited types include:
+ *   - Task types (always limited)
+ *   - Types with "limited" in their declaration
+ *   - Private types declared "limited private"
+ *   - Composite types with limited components
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/* Forward declaration - full Type_Info checking */
+static bool BIP_Type_Has_Task_Component(const Type_Info *t);
+
+/* Check if type is explicitly marked limited (not just by composition) */
+static inline bool BIP_Is_Explicitly_Limited(const Type_Info *t) {
+    if (not t) return false;
+    return t->kind == TYPE_LIMITED_PRIVATE or t->kind == TYPE_TASK;
+}
+
+/* Check if type is a task type */
+static inline bool BIP_Is_Task_Type(const Type_Info *t) {
+    return t and t->kind == TYPE_TASK;
+}
+
+/* Check if record type has any limited components (recursive) */
+static bool BIP_Record_Has_Limited_Component(const Type_Info *t) {
+    if (not t or t->kind != TYPE_RECORD) return false;
+
+    for (uint32_t i = 0; i < t->record.component_count; i++) {
+        const Type_Info *ft = t->record.components[i].component_type;
+        if (not ft) continue;
+
+        /* Task component makes the record limited */
+        if (ft->kind == TYPE_TASK) return true;
+
+        /* Limited private component makes the record limited */
+        if (ft->kind == TYPE_LIMITED_PRIVATE) return true;
+
+        /* Recursively check nested records */
+        if (ft->kind == TYPE_RECORD and BIP_Record_Has_Limited_Component(ft))
+            return true;
+    }
+    return false;
+}
+
+/* Master predicate: Is this type limited? (RM 7.5) */
+static bool BIP_Is_Limited_Type(const Type_Info *t) {
+    if (not t) return false;
+
+    /* Explicitly marked as limited (from type declaration) */
+    if (t->is_limited) return true;
+
+    /* Task types are always limited */
+    if (t->kind == TYPE_TASK) return true;
+
+    /* Limited private types */
+    if (t->kind == TYPE_LIMITED_PRIVATE) return true;
+
+    /* Records with limited components */
+    if (t->kind == TYPE_RECORD and BIP_Record_Has_Limited_Component(t))
+        return true;
+
+    /* Arrays of limited element type */
+    if (t->kind == TYPE_ARRAY and t->array.element_type and
+        BIP_Is_Limited_Type(t->array.element_type))
+        return true;
+
+    return false;
+}
+
+/* Does this function return a type requiring BIP? */
+static inline bool BIP_Is_BIP_Function(const Symbol *func) {
+    if (not func or func->kind != SYMBOL_FUNCTION) return false;
+    return func->return_type and BIP_Is_Limited_Type(func->return_type);
+}
+
+/* Does type have task components (needs activation chain)? */
+static bool BIP_Type_Has_Task_Component(const Type_Info *t) {
+    if (not t) return false;
+    if (t->kind == TYPE_TASK) return true;
+
+    if (t->kind == TYPE_RECORD) {
+        for (uint32_t i = 0; i < t->record.component_count; i++) {
+            if (BIP_Type_Has_Task_Component(t->record.components[i].component_type))
+                return true;
+        }
+    }
+
+    if (t->kind == TYPE_ARRAY and t->array.element_type)
+        return BIP_Type_Has_Task_Component(t->array.element_type);
+
+    return false;
+}
+
+/* Does function need allocation form parameter? (unconstrained result) */
+static inline bool BIP_Needs_Alloc_Form(const Symbol *func) {
+    if (not func or not func->return_type) return false;
+    const Type_Info *rt = func->return_type;
+
+    /* Unconstrained arrays need runtime size determination */
+    if (rt->kind == TYPE_ARRAY and not rt->array.is_constrained)
+        return true;
+
+    return false;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §15.8.4 Extra Formal Parameters — Hidden BIP parameters
+ *
+ * BIP functions receive extra hidden parameters prepended to their formals:
+ *   __BIPalloc  : i32     (BIP_Alloc_Form enum value)
+ *   __BIPaccess : ptr     (pointer to result destination)
+ *   __BIPmaster : i32     (task master ID, if tasks)
+ *   __BIPchain  : ptr     (activation chain, if tasks)
+ *
+ * These are added during code generation, not during semantic analysis,
+ * so the Symbol structure remains unchanged.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/* BIP extra formal names (matched by code generator) */
+#define BIP_ALLOC_NAME   "__BIPalloc"
+#define BIP_ACCESS_NAME  "__BIPaccess"
+#define BIP_MASTER_NAME  "__BIPmaster"
+#define BIP_CHAIN_NAME   "__BIPchain"
+#define BIP_FINAL_NAME   "__BIPfinal"
+
+/* Count of BIP extra formals for a given function */
+static uint32_t BIP_Extra_Formal_Count(const Symbol *func) {
+    if (not BIP_Is_BIP_Function(func)) return 0;
+
+    uint32_t count = 2;  /* alloc_form + object_access always present */
+
+    if (BIP_Type_Has_Task_Component(func->return_type))
+        count += 2;  /* task_master + activation_chain */
+
+    /* Future: finalization collection for controlled types */
+    return count;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §15.8.5 Call-Site Transformation — Expanding BIP function calls
+ *
+ * When calling a BIP function, the caller must:
+ *   1. Determine allocation form (usually CALLER for declarations)
+ *   2. Allocate destination space if CALLER
+ *   3. Pass extra BIP actuals before regular arguments
+ *
+ * Transform: X : Limited_Type := F(args);
+ * Into:      space = alloca(sizeof(Limited_Type))
+ *            F(__BIPalloc => CALLER, __BIPaccess => space, args)
+ *            X = *space  (or X IS space if we alias)
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/* Determine allocation form from call context */
+static BIP_Alloc_Form BIP_Determine_Alloc_Form(bool is_allocator,
+                                                bool in_return_stmt,
+                                                bool has_target) {
+    if (is_allocator)   return BIP_ALLOC_GLOBAL_HEAP;
+    if (in_return_stmt) return BIP_ALLOC_UNSPECIFIED;  /* Propagate caller's */
+    if (has_target)     return BIP_ALLOC_CALLER;
+    return BIP_ALLOC_SECONDARY;  /* Temp needed */
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §15.8.6 Return Statement Expansion — Building result in place
+ *
+ * In a BIP function, return statements build directly into __BIPaccess:
+ *
+ *   return (Field1 => V1, Field2 => V2);
+ *
+ * Becomes (for CALLER allocation):
+ *   __BIPaccess->Field1 = V1;
+ *   __BIPaccess->Field2 = V2;
+ *   return;
+ *
+ * For HEAP allocation, we allocate first then build:
+ *   tmp = malloc(sizeof(T));
+ *   tmp->Field1 = V1;
+ *   tmp->Field2 = V2;
+ *   *__BIPaccess = tmp;  // Return allocated pointer
+ *   return;
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/* BIP return state - tracks current function's BIP context */
+typedef struct {
+    bool     is_bip_function;     /* Current function uses BIP              */
+    uint32_t bip_alloc_param;     /* Temp holding __BIPalloc value          */
+    uint32_t bip_access_param;    /* Temp holding __BIPaccess pointer       */
+    uint32_t bip_master_param;    /* Temp holding __BIPmaster (if tasks)    */
+    uint32_t bip_chain_param;     /* Temp holding __BIPchain (if tasks)     */
+    bool     has_task_components; /* Return type has tasks                  */
+} BIP_Function_State;
+
+/* Global BIP state for current function being generated */
+static BIP_Function_State g_bip_state = {0};
+
+/* Initialize BIP state for a new function */
+static void BIP_Begin_Function(const Symbol *func) {
+    g_bip_state = (BIP_Function_State){0};
+
+    if (BIP_Is_BIP_Function(func)) {
+        g_bip_state.is_bip_function = true;
+        g_bip_state.has_task_components =
+            BIP_Type_Has_Task_Component(func->return_type);
+    }
+}
+
+/* Set the BIP parameter temps (called after params are loaded) */
+static void BIP_Set_Params(uint32_t alloc, uint32_t access,
+                           uint32_t master, uint32_t chain) {
+    g_bip_state.bip_alloc_param  = alloc;
+    g_bip_state.bip_access_param = access;
+    g_bip_state.bip_master_param = master;
+    g_bip_state.bip_chain_param  = chain;
+}
+
+/* Check if we're in a BIP function */
+static inline bool BIP_In_BIP_Function(void) {
+    return g_bip_state.is_bip_function;
+}
+
+/* Get the destination pointer temp */
+static inline uint32_t BIP_Get_Access_Param(void) {
+    return g_bip_state.bip_access_param;
+}
+
+/* End BIP state for function */
+static void BIP_End_Function(void) {
+    g_bip_state = (BIP_Function_State){0};
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * §15.8.7 BIP Integration API — Called from code generator
+ *
+ * Public interface for the BIP subsystem:
+ *   BIP_Begin_Function()   - Start generating a function
+ *   BIP_In_BIP_Function()  - Check if current function is BIP
+ *   BIP_Get_Access_Param() - Get destination pointer
+ *   BIP_End_Function()     - End function generation
+ *   BIP_Is_BIP_Function()  - Check if symbol is BIP function
+ *   BIP_Is_Limited_Type()  - Check if type is limited
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/* Mark checklist items as implemented:
+ * [x] 2.1 BIP_Alloc_Form enum
+ * [x] 2.2 BIP_Formal_Kind enum
+ * [x] 2.3 BIP_Context structure
+ * [x] 3.1 BIP_Is_Limited_Type() predicate
+ * [x] 3.2 BIP_Is_BIP_Function() predicate
+ * [x] 3.5 BIP_Type_Has_Task_Component() predicate
+ * [x] 3.6 BIP_Extra_Formal_Count() function
+ * [x] 5.1 BIP_Determine_Alloc_Form() function
+ * [x] 6.1 BIP_Function_State and begin/end functions
+ */
+
 /* ─────────────────────────────────────────────────────────────────────────
  * Forward declarations and static variables for package loading
  * ───────────────────────────────────────────────────────────────────────── */
@@ -15092,6 +15413,11 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                     Symbol_Add(sm, lit_sym);
                                 }
                             }
+                        }
+
+                        /* Propagate limited flag from AST node (RM 7.5) */
+                        if (node->type_decl.is_limited) {
+                            type->is_limited = true;
                         }
                     }
                 }
@@ -22456,9 +22782,25 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         uint32_t frame_pre = callee_is_nested ?
             Precompute_Nested_Frame_Arg(cg, call_target) : 0;
 
+        /* Check if callee is a BIP function (returns limited type) */
+        bool callee_is_bip = BIP_Is_BIP_Function(call_target);
+        uint32_t bip_dest = 0;  /* Destination for BIP result */
+
+        /* For BIP functions, allocate space for the result */
+        if (callee_is_bip and sym->return_type) {
+            uint32_t type_size = sym->return_type->size;
+            if (type_size == 0) type_size = 8;  /* Default for opaque types */
+            bip_dest = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = alloca [%u x i8]  ; BIP result space\n",
+                 bip_dest, type_size);
+        }
+
         uint32_t t = Emit_Temp(cg);
 
-        if (sym->return_type) {
+        /* BIP functions return void - result is built into destination */
+        if (callee_is_bip) {
+            Emit(cg, "  call void @");
+        } else if (sym->return_type) {
             Emit(cg, "  %%t%u = call %s @", t, Type_To_Llvm_Sig(sym->return_type));
         } else {
             Emit(cg, "  call void @");
@@ -22467,14 +22809,27 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         Emit_Symbol_Name(cg, call_target);
         Emit(cg, "(");
 
+        bool need_comma = false;
+
         /* Pass frame pointer to nested functions (RM 8.3 static chain) */
         if (callee_is_nested) {
-            if (Emit_Nested_Frame_Arg(cg, call_target, frame_pre))
-                if (node->apply.arguments.count > 0) Emit(cg, ", ");
+            if (Emit_Nested_Frame_Arg(cg, call_target, frame_pre)) {
+                need_comma = true;
+            }
         }
 
+        /* BIP extra arguments: allocation form and destination pointer */
+        if (callee_is_bip) {
+            if (need_comma) Emit(cg, ", ");
+            /* Use CALLER allocation - we provided stack space above */
+            Emit(cg, "i32 %d, ptr %%t%u", BIP_ALLOC_CALLER, bip_dest);
+            need_comma = true;
+        }
+
+        /* Regular arguments */
         for (uint32_t i = 0; i < node->apply.arguments.count; i++) {
-            if (i > 0) Emit(cg, ", ");
+            if (need_comma) Emit(cg, ", ");
+            need_comma = true;
             if (is_byref[i]) {
                 /* OUT/IN OUT: pass as pointer */
                 Emit(cg, "ptr %%t%u", args[i]);
@@ -22487,6 +22842,13 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         }
 
         Emit(cg, ")\n");
+
+        /* For BIP functions, the result is now at bip_dest - keep as ptr */
+        if (callee_is_bip and sym->return_type) {
+            /* Result is directly at bip_dest, just use it as ptr */
+            Temp_Set_Type(cg, bip_dest, "ptr");
+            t = bip_dest;
+        }
 
         /* Copy-out: for scalar/access OUT/IN OUT, copy from temp back to actual.
          * This only runs on normal return — exceptions skip via longjmp (RM 6.2). */
@@ -26911,8 +27273,39 @@ static void Generate_Loop_Statement(Code_Generator *cg, Syntax_Node *node) {
 
 static void Generate_Return_Statement(Code_Generator *cg, Syntax_Node *node) {
     cg->has_return = true;
+
+    /* Check if we're in a BIP function - result built into __BIPaccess */
+    bool is_bip = BIP_In_BIP_Function();
+
     if (node->return_stmt.expression) {
         Syntax_Node *expr = node->return_stmt.expression;
+
+        /* For BIP functions, build result directly into destination */
+        if (is_bip and cg->current_function and cg->current_function->return_type) {
+            Type_Info *ret_type = cg->current_function->return_type;
+
+            /* Generate expression and copy to __BIPaccess destination */
+            if (Type_Is_Record(ret_type) or Type_Is_Array_Like(ret_type)) {
+                /* Composite: generate expression (gives ptr), memcpy to dest */
+                uint32_t value = Generate_Expression(cg, expr);
+                uint32_t size = ret_type->size > 0 ? ret_type->size : 8;
+                Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%__BIPaccess, ptr %%t%u, i64 %u, i1 false)  ; BIP return\n",
+                     value, size);
+            } else {
+                /* Scalar: generate, convert, store to destination */
+                uint32_t value = Generate_Expression(cg, expr);
+                const char *type_str = Type_To_Llvm_Sig(ret_type);
+                const char *expr_type = Expression_Llvm_Type(cg, expr);
+                value = Emit_Convert(cg, value, expr_type, type_str);
+                Emit(cg, "  store %s %%t%u, ptr %%__BIPaccess  ; BIP scalar return\n",
+                     type_str, value);
+            }
+            Emit(cg, "  ret void\n");
+            cg->block_terminated = true;
+            BIP_End_Function();
+            return;
+        }
+
         uint32_t value = Generate_Expression(cg, expr);
         const char *type_str = cg->current_function and cg->current_function->return_type
             ? Type_To_Llvm_Sig(cg->current_function->return_type) : Integer_Arith_Type(cg);
@@ -29447,24 +29840,53 @@ static bool Has_Nested_Subprograms(Node_List *declarations, Node_List *statement
 /* ─────────────────────────────────────────────────────────────────────────
  * Emit LLVM function header: define <ret> @<name>([ptr %__parent_frame,] params...) {
  * Extracted from three near-identical blocks in Generate_Subprogram_Body,
- * Generate_Generic_Instance_Body, and Generate_Task_Body. */
+ * Generate_Generic_Instance_Body, and Generate_Task_Body.
+ *
+ * For BIP functions (returning limited types), we prepend extra parameters:
+ *   i32 %__BIPalloc   - Allocation form selector
+ *   ptr %__BIPaccess  - Pointer to result destination
+ * The function returns void since result is built into __BIPaccess. */
 static void Emit_Function_Header(Code_Generator *cg, Symbol *sym, bool is_nested) {
     bool is_function = (sym->kind == SYMBOL_FUNCTION);
-    Emit(cg, "define %s @", is_function ? Type_To_Llvm_Sig(sym->return_type) : "void");
+    bool is_bip = BIP_Is_BIP_Function(sym);
+
+    /* BIP functions return void - result is built into __BIPaccess */
+    if (is_bip) {
+        Emit(cg, "define void @");
+    } else {
+        Emit(cg, "define %s @", is_function ? Type_To_Llvm_Sig(sym->return_type) : "void");
+    }
     Emit_Symbol_Name(cg, sym);
     Emit(cg, "(");
+
+    bool need_comma = false;
+
+    /* Static chain for nested functions */
     if (is_nested) {
         Emit(cg, "ptr %%__parent_frame");
-        if (sym->parameter_count > 0) Emit(cg, ", ");
+        need_comma = true;
     }
+
+    /* BIP extra formals: __BIPalloc (allocation form) and __BIPaccess (dest ptr) */
+    if (is_bip) {
+        if (need_comma) Emit(cg, ", ");
+        Emit(cg, "i32 %%__BIPalloc, ptr %%__BIPaccess");
+        need_comma = true;
+    }
+
+    /* Regular parameters */
     for (uint32_t i = 0; i < sym->parameter_count; i++) {
-        if (i > 0) Emit(cg, ", ");
+        if (need_comma) Emit(cg, ", ");
+        need_comma = true;
         if (Param_Is_By_Reference(sym->parameters[i].mode))
             Emit(cg, "ptr %%p%u", i);
         else
             Emit(cg, "%s %%p%u", Type_To_Llvm_Sig(sym->parameters[i].param_type), i);
     }
     Emit(cg, ") {\nentry:\n");
+
+    /* Initialize BIP state for code generator */
+    BIP_Begin_Function(sym);
 }
 
 /* Find the Nth homograph body matching export name in a package body.
@@ -29812,12 +30234,23 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
     /* Default return if block is not terminated */
     if (not cg->block_terminated) {
         if (is_function) {
-            /* RM 6.4(11): raise PROGRAM_ERROR if function completes without RETURN */
-            Emit_Raise_Program_Error(cg, "missing return");
+            /* BIP functions return void, but missing return is still PROGRAM_ERROR */
+            bool func_is_bip = BIP_Is_BIP_Function(sym);
+            if (func_is_bip) {
+                /* For BIP: raise error first, then ret void (unreachable) */
+                Emit_Raise_Program_Error(cg, "missing return");
+                Emit(cg, "  ret void  ; unreachable after raise\n");
+            } else {
+                /* RM 6.4(11): raise PROGRAM_ERROR if function completes without RETURN */
+                Emit_Raise_Program_Error(cg, "missing return");
+            }
         } else {
             Emit(cg, "  ret void\n");
         }
     }
+
+    /* Clean up BIP state */
+    BIP_End_Function();
 
     Emit(cg, "}\n\n");
     cg->current_function = saved_current_function;
@@ -30059,12 +30492,22 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
     /* Default return if block is not terminated */
     if (not cg->block_terminated) {
         if (is_function) {
-            /* RM 6.4(11): raise PROGRAM_ERROR if function completes without RETURN */
-            Emit_Raise_Program_Error(cg, "missing return");
+            /* BIP functions return void, but missing return is still PROGRAM_ERROR */
+            bool inst_is_bip = BIP_Is_BIP_Function(inst_sym);
+            if (inst_is_bip) {
+                Emit_Raise_Program_Error(cg, "missing return");
+                Emit(cg, "  ret void  ; unreachable after raise\n");
+            } else {
+                /* RM 6.4(11): raise PROGRAM_ERROR if function completes without RETURN */
+                Emit_Raise_Program_Error(cg, "missing return");
+            }
         } else {
             Emit(cg, "  ret void\n");
         }
     }
+
+    /* Clean up BIP state */
+    BIP_End_Function();
 
     Emit(cg, "}\n\n");
     cg->current_function = saved_current_function;
