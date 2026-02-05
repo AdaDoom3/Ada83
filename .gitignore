@@ -28,3 +28,8 @@ vgcore.*
 ada83.c.pre-propagation
 test_derived_runtime
 test_bip*
+
+# Hash-named compiled test outputs
+c24203a
+c45231a
+c45614a
