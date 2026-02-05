@@ -18861,23 +18861,15 @@ static void Emit_Subtype_Constraint_Compat_Check(Code_Generator *cg, Type_Info *
     /* Check each dynamic constraint bound against base range */
     if (lo_dyn) {
         uint32_t clo = Emit_Bound_Value(cg, &ty->low_bound);
-        uint32_t raise_l = cg->label_id++, ok_l = cg->label_id++;
         uint32_t c = Emit_Temp(cg);
         Emit(cg, "  %%t%u = icmp slt %s %%t%u, %%t%u\n", c, iat, clo, blo);
-        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", c, raise_l, ok_l);
-        Emit_Label_Here(cg, raise_l);
-        Emit_Raise_Constraint_Error(cg, "subtype low bound");
-        Emit_Label_Here(cg, ok_l);
+        Emit_Check_With_Raise(cg, c, true, "subtype low bound");
     }
     if (hi_dyn) {
         uint32_t chi = Emit_Bound_Value(cg, &ty->high_bound);
-        uint32_t raise_l = cg->label_id++, ok_l = cg->label_id++;
         uint32_t c = Emit_Temp(cg);
         Emit(cg, "  %%t%u = icmp sgt %s %%t%u, %%t%u\n", c, iat, chi, bhi);
-        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", c, raise_l, ok_l);
-        Emit_Label_Here(cg, raise_l);
-        Emit_Raise_Constraint_Error(cg, "subtype high bound");
-        Emit_Label_Here(cg, ok_l);
+        Emit_Check_With_Raise(cg, c, true, "subtype high bound");
     }
 }
 
@@ -19409,6 +19401,27 @@ static void Emit_Check_With_Raise_PE(Code_Generator *cg, uint32_t cond,
     Emit_Label_Here(cg, raise_label);
     Emit_Raise_Program_Error(cg, comment);
     Emit_Label_Here(cg, cont_label);
+    cg->block_terminated = false;
+}
+
+/* Emit_Range_Check_With_Raise: Checks val in [lo_val, hi_val], raises if not.
+ * Emits two icmp + br with shared raise label for efficiency.  */
+static void Emit_Range_Check_With_Raise(Code_Generator *cg, uint32_t val,
+                                         int64_t lo_val, int64_t hi_val,
+                                         const char *type, const char *comment) {
+    uint32_t lo_ok = cg->label_id++;
+    uint32_t hi_ok = cg->label_id++;
+    uint32_t raise_label = cg->label_id++;
+    uint32_t cmp_lo = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp slt %s %%t%u, %lld\n", cmp_lo, type, val, (long long)lo_val);
+    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp_lo, raise_label, lo_ok);
+    Emit_Label_Here(cg, lo_ok);
+    uint32_t cmp_hi = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp sgt %s %%t%u, %lld\n", cmp_hi, type, val, (long long)hi_val);
+    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp_hi, raise_label, hi_ok);
+    Emit_Label_Here(cg, raise_label);
+    Emit_Raise_Constraint_Error(cg, comment);
+    Emit_Label_Here(cg, hi_ok);
     cg->block_terminated = false;
 }
 
@@ -22616,10 +22629,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                             uint32_t right_low = Emit_Fat_Pointer_Low(cg, right_val, concat_bt);
                             uint32_t right_high = Emit_Fat_Pointer_High(cg, right_val, concat_bt);
 
-                            uint32_t right_len = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", right_len, concat_bt, right_high, right_low);
-                            uint32_t right_len1 = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = add %s %%t%u, 1\n", right_len1, concat_bt, right_len);
+                            uint32_t right_len1 = Emit_Length_From_Bounds(cg, right_low, right_high, concat_bt);
 
                             /* Total length = 1 + right_len */
                             uint32_t total_len = Emit_Temp(cg);
@@ -22658,15 +22668,8 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                             uint32_t right_low = Emit_Fat_Pointer_Low(cg, right_fat, concat_bt);
                             uint32_t right_high = Emit_Fat_Pointer_High(cg, right_fat, concat_bt);
 
-                            uint32_t left_len = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", left_len, concat_bt, left_high, left_low);
-                            uint32_t left_len1 = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = add %s %%t%u, 1\n", left_len1, concat_bt, left_len);
-
-                            uint32_t right_len = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", right_len, concat_bt, right_high, right_low);
-                            uint32_t right_len1 = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = add %s %%t%u, 1\n", right_len1, concat_bt, right_len);
+                            uint32_t left_len1 = Emit_Length_From_Bounds(cg, left_low, left_high, concat_bt);
+                            uint32_t right_len1 = Emit_Length_From_Bounds(cg, right_low, right_high, concat_bt);
 
                             uint32_t total_len = Emit_Temp(cg);
                             Emit(cg, "  %%t%u = add %s %%t%u, %%t%u\n", total_len, concat_bt, left_len1, right_len1);
@@ -24361,20 +24364,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
                 const char *iat = Integer_Arith_Type(cg);
                 const char *arg_t = Expression_Llvm_Type(cg, first_arg);
                 uint32_t check_val = Emit_Convert(cg, val, arg_t, iat);
-                uint32_t lo_ok = cg->label_id++;
-                uint32_t hi_ok = cg->label_id++;
-                uint32_t raise_label = cg->label_id++;
-                uint32_t cmp_lo = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = icmp slt %s %%t%u, %lld\n", cmp_lo, iat, check_val, (long long)lo);
-                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp_lo, raise_label, lo_ok);
-                Emit_Label_Here(cg, lo_ok);
-                uint32_t cmp_hi = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = icmp sgt %s %%t%u, %lld\n", cmp_hi, iat, check_val, (long long)hi);
-                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp_hi, raise_label, hi_ok);
-                Emit_Label_Here(cg, raise_label);
-                Emit_Raise_Constraint_Error(cg, "'VAL");
-                Emit_Label_Here(cg, hi_ok);
-                cg->block_terminated = false;
+                Emit_Range_Check_With_Raise(cg, check_val, lo, hi, iat, "'VAL");
             }
             /* T'VAL returns at type T's width — convert from argument type.
              * Resolve generic formal types to their actuals. */
@@ -26461,10 +26451,7 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
 
             uint32_t high_conv = Emit_Convert(cg, high_t, new_bt, alloc_iat);
             uint32_t low_conv = Emit_Convert(cg, low_t, new_bt, alloc_iat);
-            uint32_t len_t = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", len_t, alloc_iat, high_conv, low_conv);
-            uint32_t len_plus1 = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = add %s %%t%u, 1\n", len_plus1, alloc_iat, len_t);
+            uint32_t len_plus1 = Emit_Length_From_Bounds(cg, low_conv, high_conv, alloc_iat);
             uint32_t byte_size = Emit_Temp(cg);
             Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", byte_size, alloc_iat, len_plus1, elem_size);
 
