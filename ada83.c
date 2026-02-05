@@ -9268,6 +9268,7 @@ static double Eval_Const_Numeric(Syntax_Node *n) {
         case NK_UNARY_OP:
             if (n->unary.op == TK_MINUS) return -Eval_Const_Numeric(n->unary.operand);
             if (n->unary.op == TK_PLUS)  return Eval_Const_Numeric(n->unary.operand);
+            if (n->unary.op == TK_ABS)   return fabs(Eval_Const_Numeric(n->unary.operand));
             return 0.0/0.0;
         case NK_ATTRIBUTE: {
             /* T'SIZE, T'FIRST, T'LAST, T'POS, T'LENGTH etc. */
@@ -9370,6 +9371,9 @@ static bool Eval_Const_Rational(Syntax_Node *n, Rational *out) {
             if (n->unary.op == TK_MINUS) {
                 operand.num = Big_Integer_Clone(operand.num);
                 operand.num->is_negative = !operand.num->is_negative;
+            } else if (n->unary.op == TK_ABS) {
+                operand.num = Big_Integer_Clone(operand.num);
+                operand.num->is_negative = false;
             }
             *out = operand;
             return true;
@@ -17573,13 +17577,17 @@ static uint32_t Emit_Constraint_Check_With_Type(Code_Generator *cg, uint32_t val
         if (target->kind == TYPE_FIXED) {
             double small = target->fixed.small;
             if (small <= 0) small = target->fixed.delta > 0 ? target->fixed.delta : 1.0;
-            /* Emit each bound as i64 regardless of source kind */
+            /* Fixed-point bounds must use the fixed type's native width (i64)
+             * to avoid overflow when mantissa approaches MAX_MANTISSA.
+             * Integer_Arith_Type is only i32 which overflows at 2^31. */
+            const char *fix_bnd_ty = Type_To_Llvm(target);
+            if (not fix_bnd_ty or fix_bnd_ty[0] != 'i') fix_bnd_ty = "i64";
             #define FIXED_BOUND_TO_I64(bnd, out) do {                     \
                 if ((bnd)->kind == BOUND_FLOAT) {                         \
                     int128_t iv = (int128_t)((bnd)->float_value / small); \
                     (out) = Emit_Temp(cg);                                \
                     Emit(cg, "  %%t%u = add %s 0, %s  ; fixed bound"     \
-                         " (%g/small)\n", (out), Integer_Arith_Type(cg),  \
+                         " (%g/small)\n", (out), fix_bnd_ty,              \
                          I128_Decimal(iv), (bnd)->float_value);           \
                 } else if ((bnd)->kind == BOUND_EXPR) {                   \
                     uint32_t fv = Generate_Expression(cg, (bnd)->expr);   \
@@ -17599,15 +17607,15 @@ static uint32_t Emit_Constraint_Check_With_Type(Code_Generator *cg, uint32_t val
                              dv, fv, st);                                 \
                         (out) = Emit_Temp(cg);                            \
                         Emit(cg, "  %%t%u = fptosi double %%t%u to %s\n",\
-                             (out), dv, Integer_Arith_Type(cg));          \
+                             (out), dv, fix_bnd_ty);                      \
                     } else {                                              \
                         /* Already scaled integer (fixed-point value) */  \
                         const char *fv_src = fv_ty ? fv_ty :              \
                             Type_To_Llvm((bnd)->expr->type);              \
                         (out) = Emit_Convert(cg, fv,                      \
-                            fv_src, Integer_Arith_Type(cg));              \
+                            fv_src, fix_bnd_ty);                          \
                     }                                                     \
-                    Temp_Set_Type(cg, (out), Integer_Arith_Type(cg));     \
+                    Temp_Set_Type(cg, (out), fix_bnd_ty);                 \
                 } else {                                                  \
                     (out) = Emit_Bound_Value(cg, (bnd));                  \
                 }                                                         \
@@ -17615,6 +17623,8 @@ static uint32_t Emit_Constraint_Check_With_Type(Code_Generator *cg, uint32_t val
             FIXED_BOUND_TO_I64(&target->low_bound, lo);
             FIXED_BOUND_TO_I64(&target->high_bound, hi);
             #undef FIXED_BOUND_TO_I64
+            lo_type = fix_bnd_ty;
+            hi_type = fix_bnd_ty;
         } else {
             lo = Emit_Bound_Value_Typed(cg, &target->low_bound, &lo_type);
             hi = Emit_Bound_Value_Typed(cg, &target->high_bound, &hi_type);
@@ -18950,12 +18960,49 @@ static uint32_t Generate_Record_Equality(Code_Generator *cg, uint32_t left_ptr,
             cmp = Generate_Array_Equality(cg, left_fat, right_fat, ct);
         } else if (Type_Is_Constrained_Array(ct) and Type_Has_Dynamic_Bounds(ct)) {
             /* Constrained array with dynamic bounds (discriminant-dependent).
-             * Data stored inline; compare using memcmp with component size. */
-            uint32_t byte_size = ct->size > 0 ? ct->size : 4;
-            uint32_t mc_r = Emit_Temp(cg);
-            uint32_t mc_c = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = call i32 @memcmp(ptr %%t%u, ptr %%t%u, i64 %u)\n",
-                 mc_r, left_gep, right_gep, byte_size);
+             * Data stored inline; compute runtime byte size from discriminant.
+             * For ARRAY(LOW..DISC) OF ELEM: size = max(0, disc - low + 1) * elem_size */
+            uint32_t elem_size = ct->array.element_type ? ct->array.element_type->size : 1;
+            if (elem_size == 0) elem_size = 1;
+            int64_t low_val = 1;
+            if (ct->array.index_count > 0 and ct->array.indices[0].low_bound.kind == BOUND_INTEGER)
+                low_val = (int64_t)ct->array.indices[0].low_bound.int_value;
+            /* Find the discriminant that controls the high bound.
+             * Match the bound expression's symbol against the record's discriminant components. */
+            uint32_t disc_offset = 0;
+            const char *disc_llvm = "i32";
+            if (ct->array.index_count > 0 and ct->array.indices[0].high_bound.kind == BOUND_EXPR
+                and ct->array.indices[0].high_bound.expr) {
+                Symbol *bsym = ct->array.indices[0].high_bound.expr->symbol;
+                for (uint32_t d = 0; d < record_type->record.discriminant_count; d++) {
+                    Component_Info *dc = &record_type->record.components[d];
+                    if (bsym and Slice_Equal_Ignore_Case(dc->name, bsym->name)) {
+                        disc_offset = dc->byte_offset;
+                        disc_llvm = Type_To_Llvm(dc->component_type);
+                        if (not disc_llvm) disc_llvm = "i32";
+                        break;
+                    }
+                }
+            }
+            /* Load discriminant from left record and compute memcmp size */
+            uint32_t dp = Emit_Temp(cg), dv = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n", dp, left_ptr, disc_offset);
+            Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", dv, disc_llvm, dp);
+            uint32_t cnt = Emit_Temp(cg), sz = Emit_Temp(cg), sz64 = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = sub %s %%t%u, %lld\n", cnt, disc_llvm, dv, (long long)(low_val - 1));
+            if (elem_size > 1) {
+                uint32_t mul = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", mul, disc_llvm, cnt, elem_size);
+                cnt = mul;
+            }
+            /* Clamp to 0 for null arrays */
+            uint32_t is_neg = Emit_Temp(cg), clamped = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = icmp slt %s %%t%u, 0\n", is_neg, disc_llvm, cnt);
+            Emit(cg, "  %%t%u = select i1 %%t%u, %s 0, %s %%t%u\n", clamped, is_neg, disc_llvm, disc_llvm, cnt);
+            Emit(cg, "  %%t%u = sext %s %%t%u to i64\n", sz64, disc_llvm, clamped);
+            uint32_t mc_r = Emit_Temp(cg), mc_c = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = call i32 @memcmp(ptr %%t%u, ptr %%t%u, i64 %%t%u)\n",
+                 mc_r, left_gep, right_gep, sz64);
             Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", mc_c, mc_r);
             cmp = mc_c;
         } else if (Type_Is_Constrained_Array(ct)) {
@@ -20253,9 +20300,12 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                     Emit(cg, "  %%t%u = %s %s %%t%u to %s\n", conv, itof_cmp, right_llvm_type, right, float_type);
                     right = conv;
                     if (Type_Is_Fixed_Point(right_type)) {
-                        /* Fixed-point: scale by SMALL to get actual value */
-                        double small = right_type->fixed.small;
-                        if (small <= 0) small = right_type->fixed.delta > 0 ? right_type->fixed.delta : 1.0;
+                        /* Fixed-point: scale by SMALL to get actual value.
+                         * Resolve generic formal type to get actual SMALL. */
+                        Type_Info *resolved_right = cg->current_instance ?
+                            Resolve_Generic_Actual_Type(cg, right_type) : right_type;
+                        double small = resolved_right->fixed.small;
+                        if (small <= 0) small = resolved_right->fixed.delta > 0 ? resolved_right->fixed.delta : 1.0;
                         uint64_t bits; memcpy(&bits, &small, sizeof(bits));
                         uint32_t small_t = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = fadd %s 0.0, 0x%016llX\n", small_t, float_type, (unsigned long long)bits);
@@ -20268,8 +20318,11 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                     /* Convert right float to integer for fixed-point comparison.
                      * If left is fixed-point, divide by SMALL first */
                     if (Type_Is_Fixed_Point(left_type)) {
-                        double small = left_type->fixed.small;
-                        if (small <= 0) small = left_type->fixed.delta > 0 ? left_type->fixed.delta : 1.0;
+                        /* Resolve generic formal type to get actual SMALL value */
+                        Type_Info *resolved_left = cg->current_instance ?
+                            Resolve_Generic_Actual_Type(cg, left_type) : left_type;
+                        double small = resolved_left->fixed.small;
+                        if (small <= 0) small = resolved_left->fixed.delta > 0 ? resolved_left->fixed.delta : 1.0;
                         uint64_t bits; memcpy(&bits, &small, sizeof(bits));
                         uint32_t small_t = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = fadd %s 0.0, 0x%016llX\n", small_t, right_float_type, (unsigned long long)bits);
@@ -22390,7 +22443,8 @@ static uint32_t Emit_Bound_Attribute(Code_Generator *cg, uint32_t t,
     if (Type_Is_Array_Like(prefix_type)) {
         if (needs_runtime_bounds) {
             const char *attr_bt = Array_Bound_Llvm_Type(prefix_type);
-            uint32_t fat = prefix_sym
+            uint32_t fat = (prefix_sym and prefix_sym->kind != SYMBOL_FUNCTION
+                           and prefix_sym->kind != SYMBOL_PROCEDURE)
                 ? Emit_Load_Fat_Pointer(cg, prefix_sym, attr_bt)
                 : Generate_Expression(cg, prefix_expr);
             {
@@ -22486,11 +22540,37 @@ static uint32_t Emit_Bound_Attribute(Code_Generator *cg, uint32_t t,
              * Internal repr = abstract_value / SMALL. */
             double small = prefix_type->fixed.small;
             if (small <= 0) small = prefix_type->fixed.delta > 0 ? prefix_type->fixed.delta : 1.0;
-            double fval = Type_Bound_Float_Value(b);
-            int64_t scaled = (int64_t)(fval / small);
-            Emit(cg, "  %%t%u = add %s 0, %lld  ; %.*s'%s (fixed scaled %g/small)\n", t,
-                 bound_llvm, (long long)scaled, (int)attr.length, attr.data, tag, fval);
-            Temp_Set_Type(cg, t, bound_llvm);
+            if (b.kind == BOUND_EXPR and b.expr) {
+                /* Runtime-computed bound (e.g. IDENT_INT(1) * (-1.0)) */
+                uint32_t fv = Generate_Expression(cg, b.expr);
+                const char *fv_ty = Temp_Get_Type(cg, fv);
+                bool fv_float = (fv_ty and Is_Float_Type(fv_ty))
+                    or Type_Is_Float_Representation(b.expr->type)
+                    or (b.expr->type and b.expr->type->kind == TYPE_UNIVERSAL_REAL);
+                if (fv_float) {
+                    uint64_t sb; memcpy(&sb, &small, sizeof(sb));
+                    uint32_t st = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX\n", st, (unsigned long long)sb);
+                    uint32_t dv = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = fdiv double %%t%u, %%t%u\n", dv, fv, st);
+                    Emit(cg, "  %%t%u = fptosi double %%t%u to %s\n", t, dv, bound_llvm);
+                } else {
+                    const char *fv_src = fv_ty ? fv_ty : Type_To_Llvm(b.expr->type);
+                    if (not fv_src or fv_src[0] != 'i') fv_src = bound_llvm;
+                    if (strcmp(fv_src, bound_llvm) == 0) {
+                        Emit(cg, "  %%t%u = add %s 0, %%t%u\n", t, bound_llvm, fv);
+                    } else {
+                        Emit(cg, "  %%t%u = sext %s %%t%u to %s\n", t, fv_src, fv, bound_llvm);
+                    }
+                }
+                Temp_Set_Type(cg, t, bound_llvm);
+            } else {
+                double fval = Type_Bound_Float_Value(b);
+                int64_t scaled = (int64_t)(fval / small);
+                Emit(cg, "  %%t%u = add %s 0, %lld  ; %.*s'%s (fixed scaled %g/small)\n", t,
+                     bound_llvm, (long long)scaled, (int)attr.length, attr.data, tag, fval);
+                Temp_Set_Type(cg, t, bound_llvm);
+            }
         } else if (Type_Bound_Is_Compile_Time_Known(b)) {
             Emit(cg, "  %%t%u = add %s 0, %s  ; %.*s'%s\n", t,
                  bound_llvm, I128_Decimal(Type_Bound_Value(b)), (int)attr.length, attr.data, tag);
@@ -22554,7 +22634,8 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         (Type_Is_Unconstrained_Array(prefix_type) or Type_Has_Dynamic_Bounds(prefix_type)))
         if (not prefix_sym or prefix_sym->kind == SYMBOL_PARAMETER or
             prefix_sym->kind == SYMBOL_VARIABLE or prefix_sym->kind == SYMBOL_CONSTANT or
-            prefix_sym->kind == SYMBOL_DISCRIMINANT)
+            prefix_sym->kind == SYMBOL_DISCRIMINANT or
+            prefix_sym->kind == SYMBOL_FUNCTION or prefix_sym->kind == SYMBOL_PROCEDURE)
             needs_runtime_bounds = true;
 
     /* ─── Array/Scalar Bound Attributes: unified FIRST/LAST ─── */
@@ -23652,7 +23733,8 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         double small_val;
         const char *fty = "double";
         if (Type_Is_Fixed_Point(classify_type)) {
-            Type_Info *ft = Type_Is_Fixed_Point(prefix_type) ? prefix_type : classify_type;
+            /* Use classify_type which is resolved to actual type in generics */
+            Type_Info *ft = classify_type;
             small_val = ft->fixed.small;
             if (small_val <= 0) small_val = ft->fixed.delta;
             if (small_val <= 0) small_val = 1.0;
@@ -23674,7 +23756,8 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         double large_val;
         const char *fty = "double";
         if (Type_Is_Fixed_Point(classify_type)) {
-            Type_Info *ft = Type_Is_Fixed_Point(prefix_type) ? prefix_type : classify_type;
+            /* Use classify_type which is resolved to actual type in generics */
+            Type_Info *ft = classify_type;
             double small = ft->fixed.small;
             if (small <= 0) small = ft->fixed.delta > 0 ? ft->fixed.delta : 1.0;
             double bound = fmax(fabs(Type_Bound_Float_Value(ft->low_bound)),
@@ -23701,7 +23784,8 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
          * Float (RM 3.5.8): 2^(-(SAFE_EMAX+1)) */
         double safe_small;
         if (Type_Is_Fixed_Point(classify_type)) {
-            Type_Info *ft = Type_Is_Fixed_Point(prefix_type) ? prefix_type : classify_type;
+            /* Use classify_type which is resolved to actual type in generics */
+            Type_Info *ft = classify_type;
             Type_Info *base = ft->base_type ? ft->base_type : ft;
             safe_small = base->fixed.small;
             if (safe_small <= 0) safe_small = base->fixed.delta > 0 ? base->fixed.delta : 1.0;
@@ -23721,7 +23805,8 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
          * Float (RM 3.5.8): 2^(SAFE_EMAX) * (1 - 2^(-MANTISSA)) */
         double safe_large;
         if (Type_Is_Fixed_Point(classify_type)) {
-            Type_Info *ft = Type_Is_Fixed_Point(prefix_type) ? prefix_type : classify_type;
+            /* Use classify_type which is resolved to actual type in generics */
+            Type_Info *ft = classify_type;
             Type_Info *base = ft->base_type ? ft->base_type : ft;
             double small = base->fixed.small;
             if (small <= 0) small = base->fixed.delta > 0 ? base->fixed.delta : 1.0;
@@ -25580,6 +25665,55 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
             return;
         }
 
+        /* Discriminant-dependent array stored inline (size=0 at compile time).
+         * RHS is a fat pointer {ptr,ptr} — extract data ptr and copy bytes
+         * using the bounds from the fat pointer. (RM 5.2, 3.7.1) */
+        if (assign_type and Type_Is_Array_Like(assign_type) and
+            assign_type->size == 0 and Type_Has_Dynamic_Bounds(assign_type)) {
+            const char *value_type = Expression_Llvm_Type(cg, node->assignment.value);
+            uint32_t data_ptr;
+            if (value_type and Llvm_Type_Is_Fat_Pointer(value_type)) {
+                /* Extract data pointer and bounds from fat pointer */
+                data_ptr = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = extractvalue %s %%t%u, 0\n", data_ptr, value_type, value);
+                /* Get length from bounds */
+                const char *bt = Array_Bound_Llvm_Type(assign_type);
+                uint32_t bnd_ptr = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = extractvalue %s %%t%u, 1\n", bnd_ptr, value_type, value);
+                uint32_t lo = Emit_Temp(cg), hi = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", lo, bt, bnd_ptr);
+                uint32_t hi_gep = Emit_Temp(cg);
+                int bt_sz = (strcmp(bt, "i32") == 0) ? 4 : (strcmp(bt, "i16") == 0) ? 2 : 4;
+                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %d\n", hi_gep, bnd_ptr, bt_sz);
+                Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", hi, bt, hi_gep);
+                uint32_t len = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", len, bt, hi, lo);
+                uint32_t len1 = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add %s %%t%u, 1\n", len1, bt, len);
+                uint32_t elem_sz = assign_type->array.element_type
+                    ? assign_type->array.element_type->size : 1;
+                if (elem_sz == 0) elem_sz = 1;
+                uint32_t byte_cnt = len1;
+                if (elem_sz > 1) {
+                    byte_cnt = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", byte_cnt, bt, len1, elem_sz);
+                }
+                /* Clamp to 0 for null arrays */
+                uint32_t is_neg = Emit_Temp(cg), clamped = Emit_Temp(cg), sz64 = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp slt %s %%t%u, 0\n", is_neg, bt, byte_cnt);
+                Emit(cg, "  %%t%u = select i1 %%t%u, %s 0, %s %%t%u\n", clamped, is_neg, bt, bt, byte_cnt);
+                Emit(cg, "  %%t%u = sext %s %%t%u to i64\n", sz64, bt, clamped);
+                Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)  ; disc-dep array assign\n",
+                     addr, data_ptr, sz64);
+            } else {
+                /* Value is already a pointer to data — use memcpy with a safe size */
+                data_ptr = value;
+                Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 8, i1 false)  ; disc-dep array assign (ptr)\n",
+                     addr, data_ptr);
+            }
+            return;
+        }
+
         /* Scalar / access types: store value directly */
         const char *store_type = Type_To_Llvm(assign_type);
         const char *value_type = Expression_Llvm_Type(cg, node->assignment.value);
@@ -26056,6 +26190,8 @@ static void Generate_Case_Statement(Code_Generator *cg, Syntax_Node *node) {
     /* CASE expr IS WHEN choice => stmts; ... END CASE; */
     uint32_t selector = Generate_Expression(cg, node->case_stmt.expression);
     const char *case_type = Expression_Llvm_Type(cg, node->case_stmt.expression);
+    /* Coerce selector to its declared type (arithmetic may widen to i32) */
+    selector = Emit_Coerce(cg, selector, case_type);
     uint32_t end_label = Emit_Label(cg);
 
     /* Generate switch-like structure using branches */
@@ -26109,26 +26245,34 @@ static void Generate_Case_Statement(Code_Generator *cg, Syntax_Node *node) {
             } else if (choice->kind == NK_SUBTYPE_INDICATION) {
                 /* Subtype range: WHEN T RANGE low..high => (RM 5.4) */
                 uint32_t low, high;
+                const char *bound_type = case_type;
                 Syntax_Node *constraint = choice->subtype_ind.constraint;
                 if (constraint and constraint->kind == NK_RANGE_CONSTRAINT and
                     constraint->range_constraint.range and
                     constraint->range_constraint.range->kind == NK_RANGE) {
                     low = Generate_Expression(cg, constraint->range_constraint.range->range.low);
                     high = Generate_Expression(cg, constraint->range_constraint.range->range.high);
+                    bound_type = Expression_Llvm_Type(cg, constraint->range_constraint.range->range.low);
                 } else {
                     /* Bare subtype name: WHEN SUBTYPE => use declared bounds */
                     Type_Info *st = choice->type;
                     low = Emit_Temp(cg);
                     high = Emit_Temp(cg);
+                    bound_type = case_type;
                     if (st and st->low_bound.kind == BOUND_INTEGER) {
-                        Emit(cg, "  %%t%u = add %s 0, %s\n", low, Integer_Arith_Type(cg),
+                        Emit(cg, "  %%t%u = add %s 0, %s\n", low, case_type,
                              I128_Decimal(Type_Bound_Value(st->low_bound)));
-                        Emit(cg, "  %%t%u = add %s 0, %s\n", high, Integer_Arith_Type(cg),
+                        Emit(cg, "  %%t%u = add %s 0, %s\n", high, case_type,
                              I128_Decimal(Type_Bound_Value(st->high_bound)));
                     } else {
-                        Emit(cg, "  %%t%u = add %s 0, 0\n", low, Integer_Arith_Type(cg));
-                        Emit(cg, "  %%t%u = add %s 0, 0\n", high, Integer_Arith_Type(cg));
+                        Emit(cg, "  %%t%u = add %s 0, 0\n", low, case_type);
+                        Emit(cg, "  %%t%u = add %s 0, 0\n", high, case_type);
                     }
+                }
+                /* Coerce bounds to selector type for icmp */
+                if (strcmp(bound_type, case_type) != 0) {
+                    low = Emit_Convert(cg, low, bound_type, case_type);
+                    high = Emit_Convert(cg, high, bound_type, case_type);
                 }
                 uint32_t cmp1 = Emit_Temp(cg);
                 uint32_t cmp2 = Emit_Temp(cg);
@@ -26145,6 +26289,32 @@ static void Generate_Case_Statement(Code_Generator *cg, Syntax_Node *node) {
                 if (j + 1 < alt->association.choices.count) {
                     Emit_Label_Here(cg, next_choice);
                 }
+            } else if (choice->symbol and
+                       (choice->symbol->kind == SYMBOL_TYPE or
+                        choice->symbol->kind == SYMBOL_SUBTYPE) and
+                       choice->symbol->type) {
+                /* Bare subtype name as case choice (RM 5.4): range check */
+                Type_Info *st = choice->symbol->type;
+                uint32_t low = Emit_Temp(cg), high = Emit_Temp(cg);
+                if (st->low_bound.kind == BOUND_INTEGER) {
+                    Emit(cg, "  %%t%u = add %s 0, %s\n", low, case_type,
+                         I128_Decimal(Type_Bound_Value(st->low_bound)));
+                    Emit(cg, "  %%t%u = add %s 0, %s\n", high, case_type,
+                         I128_Decimal(Type_Bound_Value(st->high_bound)));
+                } else {
+                    Emit(cg, "  %%t%u = add %s 0, 0\n", low, case_type);
+                    Emit(cg, "  %%t%u = add %s 0, 0\n", high, case_type);
+                }
+                uint32_t cmp1 = Emit_Temp(cg), cmp2 = Emit_Temp(cg), both = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp sle %s %%t%u, %%t%u\n", cmp1, case_type, low, selector);
+                Emit(cg, "  %%t%u = icmp sle %s %%t%u, %%t%u\n", cmp2, case_type, selector, high);
+                Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n", both, cmp1, cmp2);
+                uint32_t next_choice = (j + 1 < alt->association.choices.count) ?
+                                       Emit_Label(cg) : next_check;
+                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                     both, alt_labels[i], next_choice);
+                if (j + 1 < alt->association.choices.count)
+                    Emit_Label_Here(cg, next_choice);
             } else {
                 /* Single value check */
                 uint32_t val = Generate_Expression(cg, choice);
@@ -27533,6 +27703,8 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 } else if (Type_Is_Float_Representation(ty)) {
                     Emit(cg, " = linkonce_odr global %s %a\n", type_str,
                          has_static_init ? init_fval : 0.0);
+                } else if (strcmp(type_str, "ptr") == 0) {
+                    Emit(cg, " = linkonce_odr global ptr null\n");
                 } else {
                     Emit(cg, " = linkonce_odr global %s %lld\n", type_str,
                          (long long)(has_static_init ? init_ival : 0));
@@ -27599,6 +27771,14 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, "  %%");
             Emit_Symbol_Name(cg, sym);
             Emit(cg, " = alloca [%u x i8]  ; record type\n", record_size);
+            /* Zero-init records with discriminants so that equality comparison
+             * (memcmp on discriminant-dependent array slots) sees consistent
+             * padding bytes beyond the active portion (RM 4.5.2). */
+            if (ty and Type_Is_Record(ty) and ty->record.discriminant_count > 0) {
+                Emit(cg, "  call void @llvm.memset.p0.i64(ptr %%");
+                Emit_Symbol_Name(cg, sym);
+                Emit(cg, ", i8 0, i64 %u, i1 false)\n", record_size);
+            }
         } else {
             Emit(cg, "  %%");
             Emit_Symbol_Name(cg, sym);
@@ -29550,6 +29730,8 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                             Emit(cg, " = linkonce_odr global [%u x i8] zeroinitializer\n", ty->size);
                         } else if (Type_Is_Float_Representation(ty)) {
                             Emit(cg, " = linkonce_odr global %s 0.0\n", type_str);
+                        } else if (strcmp(type_str, "ptr") == 0) {
+                            Emit(cg, " = linkonce_odr global ptr null\n");
                         } else {
                             Emit(cg, " = linkonce_odr global %s %lld\n", type_str,
                                  (long long)init_val);
@@ -29972,14 +30154,45 @@ static void Generate_Type_Equality_Function(Code_Generator *cg, Type_Info *t) {
                     cmp = Generate_Array_Equality(cg, left_fat, right_fat, ct);
                 } else if (Type_Is_Constrained_Array(ct) and Type_Has_Dynamic_Bounds(ct)) {
                     /* Constrained array with dynamic bounds (discriminant-dependent).
-                     * Data is stored inline in the record; not as a fat pointer.
-                     * Since discriminants are already checked equal above, both sides
-                     * have the same array length.  Use memcmp with max component size. */
-                    uint32_t byte_size = ct->size > 0 ? ct->size : 4;
+                     * Compute runtime byte size from discriminant value. */
+                    uint32_t elem_size = ct->array.element_type ? ct->array.element_type->size : 1;
+                    if (elem_size == 0) elem_size = 1;
+                    int64_t low_val = 1;
+                    if (ct->array.index_count > 0 and ct->array.indices[0].low_bound.kind == BOUND_INTEGER)
+                        low_val = (int64_t)ct->array.indices[0].low_bound.int_value;
+                    uint32_t disc_offset = 0;
+                    const char *disc_llvm = "i32";
+                    if (ct->array.index_count > 0 and ct->array.indices[0].high_bound.kind == BOUND_EXPR
+                        and ct->array.indices[0].high_bound.expr) {
+                        Symbol *bsym = ct->array.indices[0].high_bound.expr->symbol;
+                        for (uint32_t d = 0; d < t->record.discriminant_count; d++) {
+                            Component_Info *dc = &t->record.components[d];
+                            if (bsym and Slice_Equal_Ignore_Case(dc->name, bsym->name)) {
+                                disc_offset = dc->byte_offset;
+                                disc_llvm = Type_To_Llvm(dc->component_type);
+                                if (not disc_llvm) disc_llvm = "i32";
+                                break;
+                            }
+                        }
+                    }
+                    uint32_t dp = Emit_Temp(cg), dv = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = getelementptr i8, ptr %%0, i64 %u\n", dp, disc_offset);
+                    Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", dv, disc_llvm, dp);
+                    uint32_t cnt = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = sub %s %%t%u, %lld\n", cnt, disc_llvm, dv, (long long)(low_val - 1));
+                    if (elem_size > 1) {
+                        uint32_t mul = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", mul, disc_llvm, cnt, elem_size);
+                        cnt = mul;
+                    }
+                    uint32_t is_neg = Emit_Temp(cg), clamped = Emit_Temp(cg), sz64 = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = icmp slt %s %%t%u, 0\n", is_neg, disc_llvm, cnt);
+                    Emit(cg, "  %%t%u = select i1 %%t%u, %s 0, %s %%t%u\n", clamped, is_neg, disc_llvm, disc_llvm, cnt);
+                    Emit(cg, "  %%t%u = sext %s %%t%u to i64\n", sz64, disc_llvm, clamped);
                     uint32_t mc_result = Emit_Temp(cg);
                     uint32_t mc_cmp = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = call i32 @memcmp(ptr %%t%u, ptr %%t%u, i64 %u)\n",
-                         mc_result, left_gep, right_gep, byte_size);
+                    Emit(cg, "  %%t%u = call i32 @memcmp(ptr %%t%u, ptr %%t%u, i64 %%t%u)\n",
+                         mc_result, left_gep, right_gep, sz64);
                     Emit(cg, "  %%t%u = icmp eq i32 %%t%u, 0\n", mc_cmp, mc_result);
                     cmp = mc_cmp;
                 } else if (Type_Is_Constrained_Array(ct)) {
