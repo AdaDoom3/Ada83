@@ -18590,11 +18590,13 @@ static uint32_t Emit_Constraint_Check_With_Type(Code_Generator *cg, uint32_t val
         uint32_t cmp_lo = Emit_Temp(cg);
         Emit(cg, "  %%t%u = fcmp olt %s %%t%u, %%t%u\n", cmp_lo, flt_type, val, lo);
         Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp_lo, raise_label, ok_label);
+        cg->block_terminated = true;
         Emit_Label_Here(cg, ok_label);
         /* val > high? */
         uint32_t cmp_hi = Emit_Temp(cg);
         Emit(cg, "  %%t%u = fcmp ogt %s %%t%u, %%t%u\n", cmp_hi, flt_type, val, hi);
         Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp_hi, raise_label, cont_label);
+        cg->block_terminated = true;
     } else {
         /* Integer/enum/char/fixed path — all compare as i64.
          * For TYPE_FIXED, bounds may be BOUND_FLOAT or BOUND_EXPR
@@ -18703,11 +18705,13 @@ static uint32_t Emit_Constraint_Check_With_Type(Code_Generator *cg, uint32_t val
         uint32_t cmp_lo = Emit_Temp(cg);
         Emit(cg, "  %%t%u = icmp %s %s %%t%u, %%t%u\n", cmp_lo, lt_pred, chk_type, wval, wlo);
         Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp_lo, raise_label, ok_label);
+        cg->block_terminated = true;
         Emit_Label_Here(cg, ok_label);
         /* val > high? */
         uint32_t cmp_hi = Emit_Temp(cg);
         Emit(cg, "  %%t%u = icmp %s %s %%t%u, %%t%u\n", cmp_hi, gt_pred, chk_type, wval, whi);
         Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp_hi, raise_label, cont_label);
+        cg->block_terminated = true;
     }
 
     Emit_Label_Here(cg, raise_label); /* raise CONSTRAINT_ERROR */
@@ -19242,10 +19246,12 @@ static void Emit_Range_Check_With_Raise(Code_Generator *cg, uint32_t val,
     uint32_t cmp_lo = Emit_Temp(cg);
     Emit(cg, "  %%t%u = icmp slt %s %%t%u, %lld\n", cmp_lo, type, val, (long long)lo_val);
     Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp_lo, raise_label, lo_ok);
+    cg->block_terminated = true;
     Emit_Label_Here(cg, lo_ok);
     uint32_t cmp_hi = Emit_Temp(cg);
     Emit(cg, "  %%t%u = icmp sgt %s %%t%u, %lld\n", cmp_hi, type, val, (long long)hi_val);
     Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp_hi, raise_label, hi_ok);
+    cg->block_terminated = true;
     Emit_Label_Here(cg, raise_label);
     Emit_Raise_Constraint_Error(cg, comment);
     Emit_Label_Here(cg, hi_ok);
@@ -21414,6 +21420,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
                     uint32_t ok_label = Emit_Label(cg);
                     uint32_t bad_label = Emit_Label(cg);
                     Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", bad, bad_label, ok_label);
+                    cg->block_terminated = true;
                     Emit_Label_Here(cg, bad_label);
                     cg->block_terminated = false;
                     Emit_Raise_Constraint_Error(cg, "0.0 ** negative (RM 4.5.6)");
@@ -22027,6 +22034,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, "  %%t%u = fcmp oeq %s %%t%u, 0.0\n", fz, float_type_str, right);
             uint32_t ok = Emit_Label(cg), bad = Emit_Label(cg);
             Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", fz, bad, ok);
+            cg->block_terminated = true;
             Emit_Label_Here(cg, bad);
             cg->block_terminated = false;
             Emit_Raise_Constraint_Error(cg, "float division by zero");
@@ -25223,6 +25231,7 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         Emit(cg, "  %%t%u = icmp eq ptr %%t%u, null\n", tcb_ptr, handle);
         uint32_t ok_l = cg->label_id++, nil_l = cg->label_id++, done_l = cg->label_id++;
         Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", tcb_ptr, nil_l, ok_l);
+        cg->block_terminated = true;
         Emit_Label_Here(cg, nil_l);
         Emit(cg, "  br label %%L%u\n", done_l);
         Emit_Label_Here(cg, ok_l);
@@ -25368,9 +25377,17 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                 Syntax_Node *item = node->aggregate.items.items[i];
                 if (item->kind == NK_ASSOCIATION and item->association.choices.count > 0) {
                     if (Is_Others_Choice(item->association.choices.items[0])) {
-                        others_val = Generate_Expression(cg, item->association.expression);
-                        const char *src_type = Expression_Llvm_Type(cg, item->association.expression);
-                        others_val = Emit_Convert(cg, others_val, src_type, elem_type);
+                        Syntax_Node *oe = item->association.expression;
+                        others_val = Generate_Expression(cg, oe);
+                        /* RM 4.3.2: fat pointer others (e.g. string) → extract data */
+                        if (Expression_Produces_Fat_Pointer(oe, oe->type))
+                            others_val = Emit_Fat_Pointer_Data(cg, others_val,
+                                             Array_Bound_Llvm_Type(agg_type));
+                        else {
+                            const char *src_type = Expression_Llvm_Type(cg, oe);
+                            others_val = Emit_Convert(cg, others_val, src_type,
+                                                      elem_type);
+                        }
                         has_others = true;
                         break;
                     }
@@ -25389,6 +25406,10 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                     bool elem_is_composite = multidim or (elem_ti and (Type_Is_Record(elem_ti) or
                         Type_Is_Constrained_Array(elem_ti)));
                     if (elem_is_composite) {
+                        /* RM 4.3.2: fat pointer (e.g. string literal) → extract data ptr */
+                        if (Expression_Produces_Fat_Pointer(item, item->type))
+                            val = Emit_Fat_Pointer_Data(cg, val,
+                                      Array_Bound_Llvm_Type(agg_type));
                         uint32_t ptr = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
                              ptr, base, positional_idx * elem_size);
@@ -25449,6 +25470,13 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         bool elem_is_composite = Type_Is_Record(elem_ti) or
                             Type_Is_Constrained_Array(elem_ti);
 
+                        /* RM 4.3.2: fat pointer (e.g. string literal) → extract data ptr */
+                        if (elem_is_composite and
+                            Expression_Produces_Fat_Pointer(item->association.expression,
+                                item->association.expression->type))
+                            val = Emit_Fat_Pointer_Data(cg, val,
+                                      Array_Bound_Llvm_Type(agg_type));
+
                         if (not elem_is_composite) {
                             const char *src_type = Expression_Llvm_Type(cg, item->association.expression);
                             val = Emit_Convert(cg, val, src_type, elem_type);
@@ -25469,6 +25497,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         uint32_t cmp = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = icmp sle %s %%t%u, %%t%u\n", cmp, agg_idx_type, cur_idx, rng_high_val);
                         Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp, loop_body, loop_end);
+                        cg->block_terminated = true;
 
                         Emit_Label_Here(cg, loop_body);
                         /* Calculate array index: (cur_idx - low_val) */
@@ -25530,6 +25559,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                 uint32_t cmp = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = icmp sle %s %%t%u, %%t%u\n", cmp, oth_idx_type, cur_idx, high_val);
                 Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp, loop_body, loop_end);
+                cg->block_terminated = true;
 
                 Emit_Label_Here(cg, loop_body);
                 uint32_t arr_idx = Emit_Temp(cg);
@@ -25613,6 +25643,12 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             if (item->kind == NK_ASSOCIATION and item->association.choices.count > 0) {
                 if (Is_Others_Choice(item->association.choices.items[0])) {
                     others_val = Generate_Expression(cg, item->association.expression);
+                    /* RM 4.3.2: fat pointer others (e.g. string) → extract data */
+                    if (elem_is_composite and
+                        Expression_Produces_Fat_Pointer(item->association.expression,
+                            item->association.expression->type))
+                        others_val = Emit_Fat_Pointer_Data(cg, others_val,
+                                         Array_Bound_Llvm_Type(agg_type));
                     if (not elem_is_composite) {
                         const char *src_type = Expression_Llvm_Type(cg, item->association.expression);
                         /* Float>fixed-point aggregate element: divide by SMALL (RM 4.6) */
@@ -25655,6 +25691,11 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         int128_t rng_high = choice->range.high->kind == NK_INTEGER ?
                                            (int128_t)choice->range.high->integer_lit.value : high;
                         uint32_t val = Generate_Expression(cg, item->association.expression);
+                        if (elem_is_composite and
+                            Expression_Produces_Fat_Pointer(item->association.expression,
+                                item->association.expression->type))
+                            val = Emit_Fat_Pointer_Data(cg, val,
+                                      Array_Bound_Llvm_Type(agg_type));
                         if (not elem_is_composite) {
                             const char *src_type = Expression_Llvm_Type(cg, item->association.expression);
                             /* Float>fixed-point aggregate element: divide by SMALL (RM 4.6) */
@@ -25693,6 +25734,11 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         int128_t idx = (int128_t)choice->integer_lit.value - low;
                         if (idx >= 0 and idx < count) {
                             uint32_t val = Generate_Expression(cg, item->association.expression);
+                            if (elem_is_composite and
+                                Expression_Produces_Fat_Pointer(item->association.expression,
+                                    item->association.expression->type))
+                                val = Emit_Fat_Pointer_Data(cg, val,
+                                          Array_Bound_Llvm_Type(agg_type));
                             uint32_t ptr = Emit_Temp(cg);
                             if (elem_is_composite) {
                                 Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %s\n",
@@ -25725,6 +25771,10 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                 /* Positional association */
                 if (positional_idx < (uint32_t)count) {
                     uint32_t val = Generate_Expression(cg, item);
+                    if (elem_is_composite and
+                        Expression_Produces_Fat_Pointer(item, item->type))
+                        val = Emit_Fat_Pointer_Data(cg, val,
+                                  Array_Bound_Llvm_Type(agg_type));
                     uint32_t ptr = Emit_Temp(cg);
                     if (elem_is_composite) {
                         Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %s\n",
@@ -25946,6 +25996,10 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                                          ptr, val, comp_size);
                                 } else {
                                     val = Emit_Convert(cg, val, src_type, comp_type);
+                                    /* RM 4.3.1: check component value against subtype constraint */
+                                    if (comp_ti and Type_Is_Scalar(comp_ti) and not comp->is_discriminant)
+                                        val = Emit_Constraint_Check_With_Type(cg, val, comp_ti,
+                                            item->association.expression->type, comp_type);
                                     Emit(cg, "  store %s %%t%u, ptr %%t%u\n", comp_type, val, ptr);
                                 }
                                 /* Also store discriminant value into pre-allocated symbol */
@@ -25992,6 +26046,10 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                                  ptr, val, comp_size);
                         } else {
                             val = Emit_Convert(cg, val, src_type, comp_type);
+                            /* RM 4.3.1: check component value against subtype constraint */
+                            if (comp_ti and Type_Is_Scalar(comp_ti) and not comp->is_discriminant)
+                                val = Emit_Constraint_Check_With_Type(cg, val, comp_ti,
+                                    item->type, comp_type);
                             Emit(cg, "  store %s %%t%u, ptr %%t%u\n", comp_type, val, ptr);
                         }
                         /* Also store discriminant value into pre-allocated symbol */
@@ -26037,6 +26095,10 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         const char *comp_type = Type_To_Llvm(comp_ti);
                         const char *src_type = Expression_Llvm_Type(cg, others_expr);
                         val = Emit_Convert(cg, val, src_type, comp_type);
+                        /* RM 4.3.1: check component value against subtype constraint */
+                        if (comp_ti and Type_Is_Scalar(comp_ti) and not comp->is_discriminant)
+                            val = Emit_Constraint_Check_With_Type(cg, val, comp_ti,
+                                others_expr->type, comp_type);
                         Emit(cg, "  store %s %%t%u, ptr %%t%u\n", comp_type, val, ptr);
                     }
                     others_expr->type = saved_type;
@@ -26914,6 +26976,7 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
                 uint32_t lbl_ok = cg->label_id++;
                 uint32_t lbl_fail = cg->label_id++;
                 Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp, lbl_ok, lbl_fail);
+                cg->block_terminated = true;
                 Emit_Label_Here(cg, lbl_fail);
                 Emit_Raise_Constraint_Error(cg, "discriminant mismatch in assignment");
                 Emit_Label_Here(cg, lbl_ok);
@@ -27297,6 +27360,7 @@ static void Generate_Return_Statement(Code_Generator *cg, Syntax_Node *node) {
                 uint32_t chk_lbl  = Emit_Label(cg);
                 Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
                      is_null, skip_lbl, chk_lbl);
+                cg->block_terminated = true;
                 Emit_Label_Here(cg, chk_lbl);
                 /* Load discriminant from designated object (offset 0, first component) */
                 Component_Info *dc = &des->record.components[0];
@@ -27326,6 +27390,7 @@ static void Generate_Return_Statement(Code_Generator *cg, Syntax_Node *node) {
                 uint32_t chk_lbl  = Emit_Label(cg);
                 Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
                      is_null, skip_lbl, chk_lbl);
+                cg->block_terminated = true;
                 Emit_Label_Here(cg, chk_lbl);
                 /* Fat pointer access: bounds are in the fat ptr, not the object.
                  * For heap arrays the bounds are stored before the data. Load them
@@ -27360,6 +27425,7 @@ static void Generate_Return_Statement(Code_Generator *cg, Syntax_Node *node) {
                 uint32_t raise_lbl = Emit_Label(cg);
                 uint32_t ok_lbl = Emit_Label(cg);
                 Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", bad, raise_lbl, ok_lbl);
+                cg->block_terminated = true;
                 Emit_Label_Here(cg, raise_lbl);
                 Emit_Raise_Constraint_Error(cg, "access array bounds check");
                 Emit_Label_Here(cg, ok_lbl);
@@ -27671,6 +27737,7 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
                     uint32_t skip_lbl = Emit_Label(cg);
                     Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
                          is_null, skip_lbl, chk_lbl);
+                    cg->block_terminated = true;
                     Emit_Label_Here(cg, chk_lbl);
                     Emit_Constraint_Check(cg, low_val, st, NULL);
                     Emit_Constraint_Check(cg, high_val, st, NULL);
@@ -27736,6 +27803,7 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
              loop_var ? loop_var->name.data : "?");
     }
     Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u  ; -> body / end\n", cond, loop_body, loop_end);
+    cg->block_terminated = true;
 
     /* Loop body */
     Emit(cg, "  ; -- loop body (L%u)\n", loop_body);
@@ -27760,6 +27828,7 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
         uint32_t loop_inc = Emit_Label(cg);
         Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u  ; -> end / inc\n",
              at_end, loop_end, loop_inc);
+        cg->block_terminated = true;
         Emit(cg, "  ; -- loop increment (L%u)\n", loop_inc);
         Emit_Label_Here(cg, loop_inc);
 
@@ -28166,6 +28235,7 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                                             uint32_t cl = cg->label_id++;
                                             Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
                                                  cmp, rl, cl);
+                                            cg->block_terminated = true;
                                             Emit_Label_Here(cg, rl);
                                             Emit_Raise_Constraint_Error(cg, "discriminant check");
                                             Emit_Label_Here(cg, cl);
@@ -28302,6 +28372,7 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                     uint32_t cont = Emit_Label(cg);
                     Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u  ; WHEN true -> exit / continue\n",
                          cond, exit_label, cont);
+                    cg->block_terminated = true;
                     Emit_Label_Here(cg, cont);
                 } else {
                     Emit(cg, "  br label %%L%u  ; unconditional exit\n", exit_label);
@@ -28468,6 +28539,7 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                                 guard = Emit_Convert(cg, guard, guard_type, "i1");
                                 Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
                                      guard, cg->label_id, next_label);
+                                cg->block_terminated = true;
                                 Emit_Label_Here(cg, cg->label_id++);
                                 if (alt->association.expression)
                                     Generate_Statement(cg, alt->association.expression);
@@ -28509,6 +28581,7 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                                      has_caller, caller_ptr);
                                 Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
                                      has_caller, cg->label_id, next_label);
+                                cg->block_terminated = true;
                                 Emit_Label_Here(cg, cg->label_id++);
 
                                 /* Load parameters from caller */
@@ -29165,12 +29238,23 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     if (dest_needs_fat_storage and init_ty and
                         init_ty->array.index_count > 0) {
                         /* Dest is unconstrained but source is constrained.
-                         * Build fat pointer from source's static bounds. */
+                         * Build fat pointer from source's static bounds.
+                         * For multidimensional arrays, use product of all extents. */
+                        int128_t byte_len = 1;
+                        for (uint32_t d = 0; d < init_ty->array.index_count; d++) {
+                            int128_t dlo = Type_Bound_Value(init_ty->array.indices[d].low_bound);
+                            int128_t dhi = Type_Bound_Value(init_ty->array.indices[d].high_bound);
+                            int128_t dim_cnt = (dhi >= dlo) ? (dhi - dlo + 1) : 0;
+                            byte_len *= dim_cnt;
+                        }
+                        uint32_t el_sz_c2u = (init_ty->array.element_type and
+                            init_ty->array.element_type->size > 0) ?
+                            init_ty->array.element_type->size : 1;
+                        byte_len *= el_sz_c2u;
                         int128_t lo = Type_Bound_Value(
                             init_ty->array.indices[0].low_bound);
                         int128_t hi = Type_Bound_Value(
                             init_ty->array.indices[0].high_bound);
-                        int128_t byte_len = (hi >= lo) ? (hi - lo + 1) : 0;
 
                         /* Allocate local data storage */
                         uint32_t local_data = Emit_Temp(cg);
@@ -29191,12 +29275,20 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                         /* Store fat pointer into variable */
                         Emit_Store_Fat_Pointer_To_Symbol(cg, new_fat, sym, ci_bt);
                     } else {
-                        /* Both constrained — simple memcpy using target bounds */
-                        int128_t lo = Type_Bound_Value(
-                            ty->array.indices[0].low_bound);
-                        int128_t hi = Type_Bound_Value(
-                            ty->array.indices[0].high_bound);
-                        int128_t byte_len = (hi >= lo) ? (hi - lo + 1) : 0;
+                        /* Both constrained — simple memcpy using target bounds.
+                         * For multidimensional arrays, compute total byte count
+                         * as product of all dimension extents * element size. */
+                        int128_t total_elems = 1;
+                        for (uint32_t d = 0; d < ty->array.index_count; d++) {
+                            int128_t lo = Type_Bound_Value(ty->array.indices[d].low_bound);
+                            int128_t hi = Type_Bound_Value(ty->array.indices[d].high_bound);
+                            int128_t dim_cnt = (hi >= lo) ? (hi - lo + 1) : 0;
+                            total_elems *= dim_cnt;
+                        }
+                        uint32_t el_sz = (ty->array.element_type and
+                            ty->array.element_type->size > 0) ?
+                            ty->array.element_type->size : 1;
+                        int128_t byte_len = total_elems * el_sz;
                         Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%");
                         Emit_Symbol_Name(cg, sym);
                         Emit(cg, ", ptr %%t%u, i64 %s, i1 false)\n",
@@ -29350,10 +29442,17 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     if (agg_type and agg_type->array.index_count > 0 and
                         agg_type->array.indices[0].low_bound.kind == BOUND_INTEGER and
                         agg_type->array.indices[0].high_bound.kind == BOUND_INTEGER) {
-                        /* Bounds are static integers in the aggregate */
-                        int64_t lo = agg_type->array.indices[0].low_bound.int_value;
-                        int64_t hi = agg_type->array.indices[0].high_bound.int_value;
-                        int64_t count = hi - lo + 1;
+                        /* Bounds are static integers in the aggregate - use ALL dimensions */
+                        int64_t count = 1;
+                        for (uint32_t d = 0; d < agg_type->array.index_count; d++) {
+                            if (agg_type->array.indices[d].low_bound.kind == BOUND_INTEGER and
+                                agg_type->array.indices[d].high_bound.kind == BOUND_INTEGER) {
+                                int64_t lo = agg_type->array.indices[d].low_bound.int_value;
+                                int64_t hi = agg_type->array.indices[d].high_bound.int_value;
+                                int64_t dim_count = hi - lo + 1;
+                                if (dim_count > 0) count *= dim_count;
+                            }
+                        }
                         if (count > 0) {
                             Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%");
                             Emit_Symbol_Name(cg, sym);
