@@ -23733,7 +23733,8 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         double small_val;
         const char *fty = "double";
         if (Type_Is_Fixed_Point(classify_type)) {
-            Type_Info *ft = Type_Is_Fixed_Point(prefix_type) ? prefix_type : classify_type;
+            /* Use classify_type which is resolved to actual type in generics */
+            Type_Info *ft = classify_type;
             small_val = ft->fixed.small;
             if (small_val <= 0) small_val = ft->fixed.delta;
             if (small_val <= 0) small_val = 1.0;
@@ -23755,7 +23756,8 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         double large_val;
         const char *fty = "double";
         if (Type_Is_Fixed_Point(classify_type)) {
-            Type_Info *ft = Type_Is_Fixed_Point(prefix_type) ? prefix_type : classify_type;
+            /* Use classify_type which is resolved to actual type in generics */
+            Type_Info *ft = classify_type;
             double small = ft->fixed.small;
             if (small <= 0) small = ft->fixed.delta > 0 ? ft->fixed.delta : 1.0;
             double bound = fmax(fabs(Type_Bound_Float_Value(ft->low_bound)),
@@ -23782,7 +23784,8 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
          * Float (RM 3.5.8): 2^(-(SAFE_EMAX+1)) */
         double safe_small;
         if (Type_Is_Fixed_Point(classify_type)) {
-            Type_Info *ft = Type_Is_Fixed_Point(prefix_type) ? prefix_type : classify_type;
+            /* Use classify_type which is resolved to actual type in generics */
+            Type_Info *ft = classify_type;
             Type_Info *base = ft->base_type ? ft->base_type : ft;
             safe_small = base->fixed.small;
             if (safe_small <= 0) safe_small = base->fixed.delta > 0 ? base->fixed.delta : 1.0;
@@ -23802,7 +23805,8 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
          * Float (RM 3.5.8): 2^(SAFE_EMAX) * (1 - 2^(-MANTISSA)) */
         double safe_large;
         if (Type_Is_Fixed_Point(classify_type)) {
-            Type_Info *ft = Type_Is_Fixed_Point(prefix_type) ? prefix_type : classify_type;
+            /* Use classify_type which is resolved to actual type in generics */
+            Type_Info *ft = classify_type;
             Type_Info *base = ft->base_type ? ft->base_type : ft;
             double small = base->fixed.small;
             if (small <= 0) small = base->fixed.delta > 0 ? base->fixed.delta : 1.0;
