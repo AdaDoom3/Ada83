@@ -13656,7 +13656,6 @@ static inline bool BIP_Needs_Alloc_Form(const Symbol *func) {
 #define BIP_FINAL_NAME   "__BIPfinal"
 
 /* Count of BIP extra formals for a given function */
-__attribute__((unused))
 static uint32_t BIP_Extra_Formal_Count(const Symbol *func) {
     if (not BIP_Is_BIP_Function(func)) return 0;
 
@@ -13684,7 +13683,6 @@ static uint32_t BIP_Extra_Formal_Count(const Symbol *func) {
  * ───────────────────────────────────────────────────────────────────────── */
 
 /* Determine allocation form from call context */
-__attribute__((unused))
 static BIP_Alloc_Form BIP_Determine_Alloc_Form(bool is_allocator,
                                                 bool in_return_stmt,
                                                 bool has_target) {
@@ -13738,7 +13736,10 @@ static void BIP_Begin_Function(const Symbol *func) {
     }
 }
 
-/* Set the BIP parameter temps (called after params are loaded) */
+/* Set the BIP parameter temps (called after params are loaded).
+ * NOTE: Currently unused - LLVM IR allows direct reference to named parameters
+ * (%__BIPalloc, %__BIPaccess) without loading to temps. This function exists
+ * for potential future code gen approaches that need temp number tracking. */
 __attribute__((unused))
 static void BIP_Set_Params(uint32_t alloc, uint32_t access,
                            uint32_t master, uint32_t chain) {
@@ -13753,7 +13754,10 @@ static inline bool BIP_In_BIP_Function(void) {
     return g_bip_state.is_bip_function;
 }
 
-/* Get the destination pointer temp */
+/* Get the destination pointer temp.
+ * NOTE: Currently unused - we use %__BIPaccess directly by name in LLVM IR.
+ * This function exists for code gen approaches that track param temp numbers. */
+__attribute__((unused))
 static inline uint32_t BIP_Get_Access_Param(void) {
     return g_bip_state.bip_access_param;
 }
@@ -17821,6 +17825,32 @@ static void Emit_Exception_Ref(Code_Generator *cg, Symbol *exc) {
  * each call site is a single predicate call rather than a multi-line check.
  * ───────────────────────────────────────────────────────────────────────── */
 
+/* Find the nearest enclosing function/procedure by walking up the parent chain.
+ * This handles nested packages: a procedure inside a package inside a procedure
+ * needs access to the outermost procedure's frame.
+ * Returns NULL if no enclosing function/procedure found. */
+static Symbol *Find_Enclosing_Subprogram(Symbol *sym) {
+    Symbol *p = sym ? sym->parent : NULL;
+    while (p) {
+        if (p->kind == SYMBOL_FUNCTION || p->kind == SYMBOL_PROCEDURE)
+            return p;
+        p = p->parent;
+    }
+    return NULL;
+}
+
+/* Check if a subprogram needs static chain (is nested transitively inside
+ * another function/procedure). This handles package subprograms:
+ *   procedure Outer is
+ *     package P is
+ *       procedure Inner;  -- Inner needs access to Outer's frame
+ *     end P;
+ *   ...
+ */
+static bool Subprogram_Needs_Static_Chain(Symbol *sym) {
+    return Find_Enclosing_Subprogram(sym) != NULL;
+}
+
 /* Is sym an uplevel reference requiring access through __parent_frame?
  * This 4-line pattern previously appeared 10+ times throughout codegen. */
 static inline bool Is_Uplevel_Access(const Code_Generator *cg, const Symbol *sym) {
@@ -17860,9 +17890,11 @@ static void Emit_Symbol_Storage(Code_Generator *cg, Symbol *sym) {
  * offset scope->frame_size (see Generate_Subprogram_Body prologue). */
 
 static int Nested_Frame_Depth(Code_Generator *cg, Symbol *proc) {
-    Symbol *target = proc->parent;
+    /* Find the actual enclosing subprogram (skips packages) */
+    Symbol *target = Find_Enclosing_Subprogram(proc);
+    if (!target) return 0;
     int depth = 0;
-    for (Symbol *w = cg->current_function; w; w = w->parent) {
+    for (Symbol *w = cg->current_function; w; w = Find_Enclosing_Subprogram(w)) {
         if (w == target) return depth;
         depth++;
     }
@@ -20325,9 +20357,7 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
                 /* Generate actual function call */
                 const char *ret_type = actual->return_type ?
                     Type_To_Llvm_Sig(actual->return_type) : Integer_Arith_Type(cg);
-                bool callee_is_nested = actual->parent and
-                    (actual->parent->kind == SYMBOL_FUNCTION or
-                     actual->parent->kind == SYMBOL_PROCEDURE);
+                bool callee_is_nested = Subprogram_Needs_Static_Chain(actual);
                 uint32_t frame_pre = callee_is_nested ?
                     Precompute_Nested_Frame_Arg(cg, actual) : 0;
                 Emit(cg, "  %%t%u = call %s @", t, ret_type);
@@ -20899,8 +20929,7 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         right = Emit_Convert(cg, right, right_llvm, p1_llvm);
         const char *ret_type = node->symbol->return_type ?
             Type_To_Llvm(node->symbol->return_type) : "i32";
-        bool callee_is_nested = (node->symbol->parent &&
-            node->symbol->parent->kind == SYMBOL_FUNCTION);
+        bool callee_is_nested = Subprogram_Needs_Static_Chain(node->symbol);
         uint32_t frame_pre = callee_is_nested ?
             Precompute_Nested_Frame_Arg(cg, node->symbol) : 0;
         uint32_t result = Emit_Temp(cg);
@@ -22853,10 +22882,8 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
             call_target = sym;
         }
 
-        /* Check if calling a nested function of current scope */
-        bool callee_is_nested = call_target->parent and
-            (call_target->parent->kind == SYMBOL_FUNCTION or
-             call_target->parent->kind == SYMBOL_PROCEDURE);
+        /* Check if calling a nested function (transitively inside another subprogram) */
+        bool callee_is_nested = Subprogram_Needs_Static_Chain(call_target);
 
         /* Precompute static chain pointer before building call (RM 8.3) */
         uint32_t frame_pre = callee_is_nested ?
@@ -22901,9 +22928,20 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         /* BIP extra arguments: allocation form and destination pointer */
         if (callee_is_bip) {
             if (need_comma) Emit(cg, ", ");
-            /* Use CALLER allocation - we provided stack space above */
-            Emit(cg, "i32 %d, ptr %%t%u", BIP_ALLOC_CALLER, bip_dest);
+            /* Determine allocation form from context:
+             * - has_target = true (we allocate stack space above)
+             * - is_allocator = false (not a new expression)
+             * - in_return_stmt = false (not in return context) */
+            BIP_Alloc_Form alloc_form = BIP_Determine_Alloc_Form(
+                /*is_allocator=*/false, /*in_return_stmt=*/false, /*has_target=*/true);
+            Emit(cg, "i32 %d, ptr %%t%u", alloc_form, bip_dest);
             need_comma = true;
+            /* Pass task formals if callee's return type has task components */
+            uint32_t bip_count = BIP_Extra_Formal_Count(call_target);
+            if (bip_count > 2) {
+                /* Pass master and chain (0 for now - full tasking support later) */
+                Emit(cg, ", i32 0, ptr null");
+            }
         }
 
         /* Regular arguments */
@@ -28022,8 +28060,34 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                          task_ptr, entry_idx_64, param_block);
                 } else if (entry_sym and (entry_sym->kind == SYMBOL_PROCEDURE or
                                          entry_sym->kind == SYMBOL_FUNCTION)) {
-                    /* Qualified procedure call like Pkg.Proc */
-                    Generate_Expression(cg, target);
+                    /* Qualified procedure call like Pkg.Proc - generate actual call */
+                    Symbol *proc = entry_sym;
+                    bool callee_is_nested = Subprogram_Needs_Static_Chain(proc);
+                    uint32_t frame_pre = callee_is_nested ?
+                        Precompute_Nested_Frame_Arg(cg, proc) : 0;
+
+                    if (proc->kind == SYMBOL_FUNCTION) {
+                        /* Function call - capture result */
+                        const char *ret_type = proc->return_type ?
+                            Type_To_Llvm_Sig(proc->return_type) : "i32";
+                        uint32_t t = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = call %s @", t, ret_type);
+                        Emit_Symbol_Name(cg, proc);
+                        Emit(cg, "(");
+                        if (callee_is_nested) {
+                            Emit_Nested_Frame_Arg(cg, proc, frame_pre);
+                        }
+                        Emit(cg, ")\n");
+                    } else {
+                        /* Procedure call - void return */
+                        Emit(cg, "  call void @");
+                        Emit_Symbol_Name(cg, proc);
+                        Emit(cg, "(");
+                        if (callee_is_nested) {
+                            Emit_Nested_Frame_Arg(cg, proc, frame_pre);
+                        }
+                        Emit(cg, ")\n");
+                    }
                 }
             } else if (target->kind == NK_IDENTIFIER) {
                 /* Parameterless procedure/function call */
@@ -28043,10 +28107,8 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                 }
 
                 if (proc and (proc->kind == SYMBOL_PROCEDURE or proc->kind == SYMBOL_FUNCTION)) {
-                    /* Check if calling a nested function of current scope */
-                    bool callee_is_nested = proc->parent and
-                        (proc->parent->kind == SYMBOL_FUNCTION or
-                         proc->parent->kind == SYMBOL_PROCEDURE);
+                    /* Check if calling a nested function (transitively inside another subprogram) */
+                    bool callee_is_nested = Subprogram_Needs_Static_Chain(proc);
 
                     /* Pre-compute default arguments BEFORE building the call
                      * instruction, so complex expressions (record/array aggregates)
@@ -29774,15 +29836,48 @@ static bool Has_Nested_In_Statements(Node_List *statements) {
 static bool Has_Nested_Subprograms(Node_List *declarations, Node_List *statements) {
     /* Check declarations for procedure/function/task bodies.
      * Task bodies access enclosing scope variables just like nested
-     * subprograms (RM 9.1), so the enclosing scope needs frame allocation. */
+     * subprograms (RM 9.1), so the enclosing scope needs frame allocation.
+     * Also check inside nested packages - their subprograms need frame access too. */
     if (declarations) {
         for (uint32_t i = 0; i < declarations->count; i++) {
             Syntax_Node *decl = declarations->items[i];
-            if (decl and (decl->kind == NK_PROCEDURE_BODY or
-                         decl->kind == NK_FUNCTION_BODY or
-                         decl->kind == NK_TASK_BODY or
-                         decl->kind == NK_GENERIC_INST)) {
+            if (!decl) continue;
+            if (decl->kind == NK_PROCEDURE_BODY ||
+                decl->kind == NK_FUNCTION_BODY ||
+                decl->kind == NK_TASK_BODY ||
+                decl->kind == NK_GENERIC_INST) {
                 return true;
+            }
+            /* Check inside nested package specs for procedure/function declarations */
+            if (decl->kind == NK_PACKAGE_SPEC) {
+                Node_List *pkg_visible = &decl->package_spec.visible_decls;
+                Node_List *pkg_private = &decl->package_spec.private_decls;
+                for (uint32_t j = 0; j < pkg_visible->count; j++) {
+                    Syntax_Node *pd = pkg_visible->items[j];
+                    if (pd && (pd->kind == NK_PROCEDURE_SPEC ||
+                              pd->kind == NK_FUNCTION_SPEC ||
+                              pd->kind == NK_PROCEDURE_BODY ||
+                              pd->kind == NK_FUNCTION_BODY))
+                        return true;
+                }
+                for (uint32_t j = 0; j < pkg_private->count; j++) {
+                    Syntax_Node *pd = pkg_private->items[j];
+                    if (pd && (pd->kind == NK_PROCEDURE_SPEC ||
+                              pd->kind == NK_FUNCTION_SPEC ||
+                              pd->kind == NK_PROCEDURE_BODY ||
+                              pd->kind == NK_FUNCTION_BODY))
+                        return true;
+                }
+            }
+            /* Check inside nested package bodies for procedure/function bodies */
+            if (decl->kind == NK_PACKAGE_BODY) {
+                Node_List *pkg_decls = &decl->package_body.declarations;
+                for (uint32_t j = 0; j < pkg_decls->count; j++) {
+                    Syntax_Node *pd = pkg_decls->items[j];
+                    if (pd && (pd->kind == NK_PROCEDURE_BODY ||
+                              pd->kind == NK_FUNCTION_BODY))
+                        return true;
+                }
             }
         }
     }
@@ -29820,11 +29915,17 @@ static void Emit_Function_Header(Code_Generator *cg, Symbol *sym, bool is_nested
         need_comma = true;
     }
 
-    /* BIP extra formals: __BIPalloc (allocation form) and __BIPaccess (dest ptr) */
+    /* BIP extra formals: __BIPalloc (allocation form) and __BIPaccess (dest ptr)
+     * Additional formals for task components: __BIPmaster, __BIPchain */
     if (is_bip) {
+        uint32_t bip_count = BIP_Extra_Formal_Count(sym);
         if (need_comma) Emit(cg, ", ");
         Emit(cg, "i32 %%__BIPalloc, ptr %%__BIPaccess");
         need_comma = true;
+        /* Emit task formals if return type has task components */
+        if (bip_count > 2) {
+            Emit(cg, ", i32 %%__BIPmaster, ptr %%__BIPchain");
+        }
     }
 
     /* Regular parameters */
@@ -29913,17 +30014,17 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
     bool is_function = sym->kind == SYMBOL_FUNCTION;
     uint32_t saved_deferred_count = cg->deferred_count;
 
-    /* Check if this is a nested function (has enclosing function) */
+    /* Check if this is a nested function (has enclosing function).
+     * This handles nested packages: a subprogram inside a package inside
+     * a procedure needs static chain access to the outermost procedure's frame. */
     Symbol *saved_enclosing = cg->enclosing_function;
     bool saved_is_nested = cg->is_nested;
-    Symbol *parent_owner = sym->parent;
 
-    /* Determine if nested: parent is a function/procedure */
-    bool is_nested = parent_owner and
-                     (parent_owner->kind == SYMBOL_FUNCTION or
-                      parent_owner->kind == SYMBOL_PROCEDURE);
+    /* Find nearest enclosing function/procedure (walks through packages) */
+    Symbol *enclosing_subprog = Find_Enclosing_Subprogram(sym);
+    bool is_nested = (enclosing_subprog != NULL);
     cg->is_nested = is_nested;
-    cg->enclosing_function = is_nested ? parent_owner : NULL;
+    cg->enclosing_function = enclosing_subprog;
 
     /* Emit comment showing function/procedure being generated */
     Emit(cg, "\n; ============================================================\n");
@@ -29965,14 +30066,14 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
     }
 
     /* If nested, create aliases for accessing enclosing scope variables via frame */
-    if (is_nested and parent_owner and parent_owner->scope) {
+    if (is_nested and enclosing_subprog and enclosing_subprog->scope) {
         /* Create pointer aliases to parent scope variables.
          * Must include all storage-bearing symbol kinds: variables, parameters,
          * discriminants, and constants (non-named-number constants like
          * "X : INTEGER := 2" have stack storage and can be modified).
          * Track emitted names to avoid duplicate definitions when the same
          * mangled name appears from both symbols[] and frame_vars[]. */
-        Scope *parent_scope = parent_owner->scope;
+        Scope *parent_scope = enclosing_subprog->scope;
 
         /* Track emitted frame alias unique_ids to prevent duplicates.
          * Note: cannot store String_Slice from Symbol_Mangle_Name because
@@ -30207,13 +30308,12 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
     /* For generic instances, determine nesting from instance parent */
     Symbol *saved_enclosing = cg->enclosing_function;
     bool saved_is_nested = cg->is_nested;
-    Symbol *parent_owner = inst_sym->parent;
 
-    bool is_nested = parent_owner and
-                     (parent_owner->kind == SYMBOL_FUNCTION or
-                      parent_owner->kind == SYMBOL_PROCEDURE);
+    /* Find nearest enclosing function/procedure (walks through packages) */
+    Symbol *enclosing_subprog = Find_Enclosing_Subprogram(inst_sym);
+    bool is_nested = (enclosing_subprog != NULL);
     cg->is_nested = is_nested;
-    cg->enclosing_function = is_nested ? parent_owner : NULL;
+    cg->enclosing_function = enclosing_subprog;
 
     Emit_Function_Header(cg, inst_sym, is_nested);
 
