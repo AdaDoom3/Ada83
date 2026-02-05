@@ -27890,6 +27890,7 @@ static void Generate_For_Loop(Code_Generator *cg, Syntax_Node *node) {
 static void Generate_Declaration_List(Code_Generator *cg, Node_List *list);
 static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym, Syntax_Node *template_body);
 static void Generate_Task_Body(Code_Generator *cg, Syntax_Node *node);
+static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node);
 
 static void Generate_Raise_Statement(Code_Generator *cg, Syntax_Node *node) {
     /* RAISE E; or RAISE; (reraise) */
@@ -29890,6 +29891,30 @@ static Syntax_Node *Find_Homograph_Body(Symbol **exports, uint32_t idx,
     return NULL;
 }
 
+/* Process_Deferred_Bodies: Emit deferred nested subprogram/task/generic bodies.
+ * Called at end of enclosing function/task/generic instance after restoring context.
+ * Processes all bodies deferred since saved_deferred_count. */
+static void Process_Deferred_Bodies(Code_Generator *cg, uint32_t saved_deferred_count) {
+    while (cg->deferred_count > saved_deferred_count) {
+        Syntax_Node *deferred = cg->deferred_bodies[--cg->deferred_count];
+        if (deferred->kind == NK_GENERIC_INST) {
+            Symbol *inst = deferred->symbol;
+            if (inst and inst->generic_template and inst->generic_template->generic_body) {
+                Symbol *saved = cg->current_instance;
+                cg->current_instance = inst;
+                Set_Generic_Type_Map(inst);
+                Generate_Generic_Instance_Body(cg, inst, inst->generic_template->generic_body);
+                cg->current_instance = saved;
+                Set_Generic_Type_Map(saved);
+            }
+        } else if (deferred->kind == NK_TASK_BODY) {
+            Generate_Task_Body(cg, deferred);
+        } else {
+            Generate_Subprogram_Body(cg, deferred);
+        }
+    }
+}
+
 static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
     /* Skip stub bodies (PROCEDURE X IS SEPARATE;) - the actual body
      * will be provided by a separate subunit compilation */
@@ -30137,26 +30162,7 @@ static void Generate_Subprogram_Body(Code_Generator *cg, Syntax_Node *node) {
     cg->is_nested = saved_is_nested;
     cg->enclosing_function = saved_enclosing;
 
-    /* Emit deferred nested subprogram/task bodies */
-    while (cg->deferred_count > saved_deferred_count) {
-        Syntax_Node *deferred = cg->deferred_bodies[--cg->deferred_count];
-        if (deferred->kind == NK_GENERIC_INST) {
-            /* Handle deferred generic instance */
-            Symbol *inst = deferred->symbol;
-            if (inst and inst->generic_template and inst->generic_template->generic_body) {
-                Symbol *saved = cg->current_instance;
-                cg->current_instance = inst;
-                Set_Generic_Type_Map(inst);
-                Generate_Generic_Instance_Body(cg, inst, inst->generic_template->generic_body);
-                cg->current_instance = saved;
-                Set_Generic_Type_Map(saved);
-            }
-        } else if (deferred->kind == NK_TASK_BODY) {
-            Generate_Task_Body(cg, deferred);
-        } else {
-            Generate_Subprogram_Body(cg, deferred);
-        }
-    }
+    Process_Deferred_Bodies(cg, saved_deferred_count);
 }
 
 /* Generate code for a generic instance body */
@@ -30396,25 +30402,7 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
     cg->current_instance = saved_current_instance;
     Set_Generic_Type_Map(saved_current_instance);
 
-    /* Process deferred bodies */
-    while (cg->deferred_count > saved_deferred_count) {
-        Syntax_Node *deferred = cg->deferred_bodies[--cg->deferred_count];
-        if (deferred->kind == NK_GENERIC_INST) {
-            Symbol *inst = deferred->symbol;
-            if (inst and inst->generic_template and inst->generic_template->generic_body) {
-                Symbol *saved = cg->current_instance;
-                cg->current_instance = inst;
-                Set_Generic_Type_Map(inst);
-                Generate_Generic_Instance_Body(cg, inst, inst->generic_template->generic_body);
-                cg->current_instance = saved;
-                Set_Generic_Type_Map(saved);
-            }
-        } else if (deferred->kind == NK_TASK_BODY) {
-            Generate_Task_Body(cg, deferred);
-        } else {
-            Generate_Subprogram_Body(cg, deferred);
-        }
-    }
+    Process_Deferred_Bodies(cg, saved_deferred_count);
 }
 
 /* Emit the task body function name for a task type symbol.
