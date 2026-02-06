@@ -1,0 +1,72 @@
+CHECKLIST: Ada83 Compiler Refactoring via ACATS C-Series Tests
+=============================================================
+
+ORIGINAL PROMPT:
+  In the pursuit of high-quality code (low line count (e.g. low undue
+  complexity) and high feature/correctness) - refactor and fix ada83.c to
+  pass a C-test group completely (e.g. cXX) with much better Haskell-like
+  C99 and tight smart code-golfing with, ironically, textbook "Literate
+  Programming" style. Use the GNAT LLVM source to see what is done there
+  before making changes.
+
+  Create a file to track everything called "checklist.txt" and include this
+  prompt in it. Start with c43. Test exclusively with run_acats.sh
+
+  Use the C-series tests (done in batches) to guide you. MAKE SURE TO STORE
+  RESULTS IN THE REPO TO AVOID WASTING TIME - EACH RUN TAKES OVER A MIN!
+  JUST SLOG THROUGH THEM, PICK AN ISSUE, FIX IT IN FULL THEN MOVE ON - NO
+  DANCING AROUND FINDING "SIMPLE" OR "EASY" WINS. NO USING THE WORD
+  "COMPLEX" - EVER.
+
+APPROACH:
+  1. Run c43 tests, store results
+  2. Study GNAT LLVM source for relevant constructs
+  3. Pick first failure, understand it fully, fix it
+  4. Re-run tests, store results, repeat
+  5. Refactor toward Haskell-like C99 style as we go
+
+===========================================================================
+TEST GROUP: c43
+===========================================================================
+
+--- RUN 1 (baseline) ---
+Date: 2026-02-05 23:06
+Results: 20 pass / 17 fail / 16 skip = 37% (53 total)
+
+FAILURES:
+  c43004b  - CONSTRAINT_ERROR not raised (aggregate with wrong discriminant?)
+  c43204a  - RUNTIME timeout (exit 124)
+  c43204e  - RUNTIME timeout (exit 124)
+  c43204f  - UNEXPECTED CONSTRAINT_ERROR
+  c43204g  - RUNTIME timeout (exit 124)
+  c43204i  - RUNTIME timeout (exit 124)
+  c43205f  - CONSTRAINT_ERROR not raised (case F1)
+  c43205g  - Array wrong values (case A1)
+  c43205i  - Lower bound incorrect for FIRST
+  c43207a  - CONSTRAINT_ERROR not raised (case A1)
+  c43207b  - Array not bounded correctly (case B1)
+  c43211a  - Incorrect values (case A)
+  c43212a  - CONSTRAINT_ERROR not raised (case 1)
+  c43213a  - CONSTRAINT_ERROR not raised (case 1)
+  c43214a  - CONSTRAINT_ERROR not raised (case A)
+  c43214b  - Lower bound incorrect (case 1)
+  c43214d  - RUNTIME timeout (exit 124)
+
+SKIPS:
+  c43004c  - BIND: unresolved symbols
+  c43103b  - BIND: unresolved symbols
+  c43106a  - BIND: unresolved symbols
+  c43204c  - BIND: unresolved symbols
+  c43204h  - BIND: unresolved symbols
+  c43205b  - COMPILE: untyped aggregate
+  c43205e  - COMPILE: concatenation required
+  c43205h  - COMPILE: untyped aggregate
+  c43205j  - BIND: unresolved symbols
+  c43205k  - BIND: unresolved symbols
+  c43212c  - BIND: unresolved symbols
+  c43214c  - BIND: unresolved symbols
+  c43214e  - BIND: unresolved symbols
+  c43214f  - BIND: unresolved symbols
+  c43222a  - BIND: unresolved symbols
+  c43224a  - COMPILE: (empty error)
+

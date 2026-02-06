@@ -25970,12 +25970,19 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         rt_row_elems = prod;
                     }
                 }
-                rt_row_size = Emit_Temp(cg);
+                uint32_t raw_row_size = Emit_Temp(cg);
                 uint32_t scalar_sz = agg_type->array.element_type ?
                                      agg_type->array.element_type->size : 8;
                 if (scalar_sz == 0) scalar_sz = 8;
                 Emit(cg, "  %%t%u = mul %s %%t%u, %u  ; row byte size\n",
-                     rt_row_size, iat_bnd, rt_row_elems, scalar_sz);
+                     raw_row_size, iat_bnd, rt_row_elems, scalar_sz);
+                /* Clamp to >= 0: null inner ranges produce negative sizes */
+                uint32_t neg = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp slt %s %%t%u, 0\n",
+                     neg, iat_bnd, raw_row_size);
+                rt_row_size = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = select i1 %%t%u, %s 0, %s %%t%u\n",
+                     rt_row_size, neg, iat_bnd, iat_bnd, raw_row_size);
             }
 
             /* Calculate count and byte size */
@@ -26134,6 +26141,43 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         const char *agg_idx_type = Integer_Arith_Type(cg);
                         rng_low_val = Emit_Coerce(cg, rng_low_val, agg_idx_type);
                         rng_high_val = Emit_Coerce(cg, rng_high_val, agg_idx_type);
+
+                        /* RM 4.3.2(3): non-null range choice bounds must
+                         * belong to the index subtype.  Check at runtime.
+                         * Only check when index_type has meaningful bounds
+                         * (named subtype like STA, not anonymous ranges). */
+                        if (agg_type->array.indices &&
+                            agg_type->array.indices[0].index_type &&
+                            agg_type->array.indices[0].index_type->low_bound.kind == BOUND_INTEGER &&
+                            agg_type->array.indices[0].index_type->high_bound.kind == BOUND_INTEGER) {
+                            Type_Info *idx_t = agg_type->array.indices[0].index_type;
+                            int64_t is_lo = (int64_t)Type_Bound_Value(idx_t->low_bound);
+                            int64_t is_hi = (int64_t)Type_Bound_Value(idx_t->high_bound);
+                            /* Skip check if bounds are full INTEGER range (no real subtype) */
+                            if (is_lo != (int64_t)(-2147483648LL) ||
+                                is_hi != (int64_t)2147483647LL) {
+                                /* Only check for non-null ranges (lo <= hi) */
+                                uint32_t null_cmp = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = icmp sgt %s %%t%u, %%t%u"
+                                         "  ; null range?\n",
+                                     null_cmp, agg_idx_type, rng_low_val, rng_high_val);
+                                uint32_t skip_lbl = cg->label_id++;
+                                uint32_t chk_lbl  = cg->label_id++;
+                                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                                     null_cmp, skip_lbl, chk_lbl);
+                                cg->block_terminated = true;
+                                Emit_Label_Here(cg, chk_lbl);
+                                Emit_Range_Check_With_Raise(cg, rng_low_val,
+                                    is_lo, is_hi, agg_idx_type,
+                                    "dynamic aggregate index subtype check");
+                                Emit_Range_Check_With_Raise(cg, rng_high_val,
+                                    is_lo, is_hi, agg_idx_type,
+                                    "dynamic aggregate index subtype check");
+                                Emit(cg, "  br label %%L%u\n", skip_lbl);
+                                cg->block_terminated = true;
+                                Emit_Label_Here(cg, skip_lbl);
+                            }
+                        }
 
                         Type_Info *elem_ti = agg_type->array.element_type;
                         bool elem_is_composite = multidim or Type_Is_Record(elem_ti) or
@@ -26399,12 +26443,12 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
         /* RM 4.3.2(3): index subtype bounds for aggregate constraint checking.
          * Each choice bound of a non-null range must belong to the index
          * subtype.  This check applies when:
-         *   (a) the type is unconstrained (choices define aggregate bounds), or
+         *   (a) the type is unconstrained (choices define aggregate bounds),
          *   (b) it's a constrained subtype of an unconstrained base
-         *       (T IS BASE(5..7) where BASE IS ARRAY(ST RANGE <>));
-         *       the index subtype is the base's index type (ST = 4..8).
-         * For directly constrained types (ARRAY(1..10)), the assignment
-         * itself enforces compatibility; sliding handles bound mismatches. */
+         *       (T IS BASE(5..7) where BASE IS ARRAY(ST RANGE <>)),
+         *   (c) directly constrained with named index type
+         *       (ARRAY(STA RANGE 5..6, ...) where STA IS INTEGER RANGE 4..7);
+         *       choice bounds must belong to the index type (STA = 4..7). */
         bool has_unconstrained_base = agg_type->base_type &&
             Type_Is_Array_Like(agg_type->base_type) &&
             !agg_type->base_type->array.is_constrained;
@@ -33413,8 +33457,8 @@ static void Generate_Compilation_Unit(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "; External declarations\n");
     Emit(cg, "declare i32 @memcmp(ptr, ptr, i64)\n");
     Emit(cg, "declare i32 @strncasecmp(ptr, ptr, i64)\n");
-    Emit(cg, "declare i32 @setjmp(ptr)\n");
-    Emit(cg, "declare void @longjmp(ptr, i32)\n");
+    Emit(cg, "declare i32 @setjmp(ptr) returns_twice\n");
+    Emit(cg, "declare void @longjmp(ptr, i32) noreturn\n");
     Emit(cg, "declare void @exit(i32)\n");
     Emit(cg, "declare ptr @malloc(i64)\n");
     Emit(cg, "declare ptr @realloc(ptr, i64)\n");
