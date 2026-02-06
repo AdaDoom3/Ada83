@@ -26332,6 +26332,15 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                 agg_type->base_type->array.indices[0].index_type->low_bound);
             idx_sub_hi = Type_Bound_Value(
                 agg_type->base_type->array.indices[0].index_type->high_bound);
+        } else if (!agg_type->array.is_constrained &&
+                   agg_type->array.index_count > 0 &&
+                   agg_type->array.indices &&
+                   agg_type->array.indices[0].index_type) {
+            /* Directly unconstrained type: get index subtype from index_type */
+            idx_sub_lo = Type_Bound_Value(
+                agg_type->array.indices[0].index_type->low_bound);
+            idx_sub_hi = Type_Bound_Value(
+                agg_type->array.indices[0].index_type->high_bound);
         }
 
         /* RM 4.3.2(3): for named aggregates of unconstrained types, the
@@ -26562,6 +26571,14 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                                     agg_type->base_type->array.indices[1].index_type->low_bound);
                                 inner_idx_sub_hi = Type_Bound_Value(
                                     agg_type->base_type->array.indices[1].index_type->high_bound);
+                            } else if (!agg_type->array.is_constrained &&
+                                       agg_type->array.index_count > 1 &&
+                                       agg_type->array.indices &&
+                                       agg_type->array.indices[1].index_type) {
+                                inner_idx_sub_lo = Type_Bound_Value(
+                                    agg_type->array.indices[1].index_type->low_bound);
+                                inner_idx_sub_hi = Type_Bound_Value(
+                                    agg_type->array.indices[1].index_type->high_bound);
                             }
                             Syntax_Node *inner_val_expr = NULL;
                             uint32_t inner_lo_ssa = 0, inner_hi_ssa = 0;
@@ -26681,6 +26698,12 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                                     agg_type->base_type->array.indices[1].index_type) {
                                     isl = Type_Bound_Value(agg_type->base_type->array.indices[1].index_type->low_bound);
                                     ish = Type_Bound_Value(agg_type->base_type->array.indices[1].index_type->high_bound);
+                                } else if (!agg_type->array.is_constrained &&
+                                           agg_type->array.index_count > 1 &&
+                                           agg_type->array.indices &&
+                                           agg_type->array.indices[1].index_type) {
+                                    isl = Type_Bound_Value(agg_type->array.indices[1].index_type->low_bound);
+                                    ish = Type_Bound_Value(agg_type->array.indices[1].index_type->high_bound);
                                 }
                                 Syntax_Node *ia = item->association.expression;
                                 for (uint32_t qi = 0; qi < ia->aggregate.items.count; qi++) {
@@ -29508,13 +29531,24 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                                         pt->array.index_count > 0 && pt->array.indices &&
                                         def_expr->kind == NK_AGGREGATE) {
                                         const char *iat = Integer_Arith_Type(cg);
-                                        /* Count elements per dimension from aggregate literal */
+                                        /* Count elements per dimension from aggregate literal.
+                                         * For OTHERS-only aggregates, skip the length check
+                                         * since OTHERS inherently matches the type's range. */
                                         uint32_t agg_dim_lengths[8] = {0};
+                                        bool agg_is_others_only[8] = {false};
                                         uint32_t agg_ndims = 0;
                                         Syntax_Node *cur_agg = def_expr;
                                         for (uint32_t d = 0; d < pt->array.index_count && d < 8; d++) {
                                             if (!cur_agg || cur_agg->kind != NK_AGGREGATE) break;
                                             agg_dim_lengths[d] = cur_agg->aggregate.items.count;
+                                            /* Detect OTHERS-only aggregates */
+                                            if (cur_agg->aggregate.items.count == 1) {
+                                                Syntax_Node *only = cur_agg->aggregate.items.items[0];
+                                                if (only->kind == NK_ASSOCIATION &&
+                                                    only->association.choices.count > 0 &&
+                                                    Is_Others_Choice(only->association.choices.items[0]))
+                                                    agg_is_others_only[d] = true;
+                                            }
                                             agg_ndims = d + 1;
                                             if (cur_agg->aggregate.items.count > 0) {
                                                 Syntax_Node *first = cur_agg->aggregate.items.items[0];
@@ -29526,6 +29560,7 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                                             }
                                         }
                                         for (uint32_t d = 0; d < agg_ndims && d < pt->array.index_count; d++) {
+                                            if (agg_is_others_only[d]) continue;  /* OTHERS matches any range */
                                             Index_Info *fi = &pt->array.indices[d];
                                             uint32_t f_lo = Emit_Bound_Value(cg, &fi->low_bound);
                                             uint32_t f_hi = Emit_Bound_Value(cg, &fi->high_bound);
@@ -29536,10 +29571,16 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                                                      Emit_Convert(cg, f_lo, iat, iat));
                                                 uint32_t fl1 = Emit_Temp(cg);
                                                 Emit(cg, "  %%t%u = add %s %%t%u, 1\n", fl1, iat, fl);
+                                                /* Clamp to 0 for null ranges (RM 3.6.1) */
+                                                uint32_t neg = Emit_Temp(cg);
+                                                Emit(cg, "  %%t%u = icmp slt %s %%t%u, 0\n", neg, iat, fl1);
+                                                uint32_t clamped = Emit_Temp(cg);
+                                                Emit(cg, "  %%t%u = select i1 %%t%u, %s 0, %s %%t%u\n",
+                                                     clamped, neg, iat, iat, fl1);
                                                 uint32_t al = Emit_Temp(cg);
                                                 Emit(cg, "  %%t%u = add %s 0, %u  ; agg dim %u count\n",
                                                      al, iat, agg_dim_lengths[d], d);
-                                                Emit_Length_Check(cg, al, fl1, iat, pt);
+                                                Emit_Length_Check(cg, al, clamped, iat, pt);
                                             }
                                         }
                                     }
