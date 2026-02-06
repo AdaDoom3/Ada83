@@ -1,0 +1,72 @@
+
+========================================
+Group c43 Tests
+========================================
+
+  c43003a            PASS   PASSED
+  c43004a            PASS   PASSED
+  c43004b            FAIL   FAILED:FAILED: CONSTRAINT ERROR WAS NOT RAISED - 1
+  c43004c            SKIP   BIND:unresolved symbols
+  c43103a            PASS   PASSED
+  c43103b            SKIP   BIND:unresolved symbols
+  c43104a            PASS   PASSED
+  c43105a            PASS   PASSED
+  c43105b            PASS   PASSED
+  c43106a            SKIP   BIND:unresolved symbols
+  c43107a            PASS   PASSED
+  c43108a            PASS   PASSED
+  c43204a            PASS   PASSED
+  c43204c            SKIP   BIND:unresolved symbols
+  c43204e            FAIL   RUNTIME:exit 124
+  c43204f            FAIL   FAILED:FAILED: UNEXPECTED CONSTRAINT ERROR OR OTHER EXCEP
+  c43204g            FAIL   RUNTIME:exit 124
+  c43204h            SKIP   BIND:unresolved symbols
+  c43204i            FAIL   RUNTIME:exit 124
+  c43205a            PASS   PASSED
+  c43205b            SKIP   COMPILE:acats/c43205b.ada:48:46: error: untyped aggregate
+  c43205c            PASS   PASSED
+  c43205d            PASS   PASSED
+  c43205e            SKIP   COMPILE:acats/c43205e.ada:32:47: error: concatenation requ
+  c43205f            FAIL   FAILED:FAILED: CASE F1 : CONSTRAINT ERROR NOT RAISED
+  c43205g            FAIL   FAILED:FAILED: CASE A1 : ARRAY DOES NOT CONTAIN THE CORRE
+  c43205h            SKIP   COMPILE:acats/c43205h.ada:48:46: error: untyped aggregate
+  c43205i            FAIL   FAILED:FAILED: CASE I : FUNCTION DOES NOT RETURN THE CORR
+  c43205j            SKIP   BIND:unresolved symbols
+  c43205k            SKIP   BIND:unresolved symbols
+  c43206a            PASS   PASSED
+  c43207a            FAIL   FAILED:FAILED: CASE A1 : CONSTRAINT ERROR NOT RAISED
+  c43207b            FAIL   FAILED:FAILED: CASE B1 : ARRAY NOT BOUNDED CORRECTLY
+  c43207c            PASS   PASSED
+  c43207d            PASS   PASSED
+  c43208a            PASS   PASSED
+  c43208b            PASS   PASSED
+  c43209a            PASS   PASSED
+  c43210a            PASS   PASSED
+  c43211a            FAIL   FAILED:FAILED: CASE A : INCORRECT VALUES
+  c43212a            FAIL   FAILED:FAILED: CASE 1 : CONSTRAINT ERROR NOT RAISED
+  c43212c            SKIP   BIND:unresolved symbols
+  c43213a            FAIL   FAILED:FAILED: CASE 1 : CONSTRAINT ERROR NOT RAISED
+  c43214a            FAIL   RUNTIME:exit 124
+  c43214b            FAIL   FAILED:FAILED: CASE 1 : LOWER BOUND INCORRECT
+  c43214c            SKIP   BIND:unresolved symbols
+  c43214d            FAIL   FAILED:FAILED: FUNCTION DOES NOT RETURN THE CORRECT VALUE
+  c43214e            SKIP   BIND:unresolved symbols
+  c43214f            SKIP   BIND:unresolved symbols
+  c43215a            PASS   PASSED
+  c43215b            PASS   PASSED
+  c43222a            SKIP   BIND:unresolved symbols
+  c43224a            SKIP   COMPILE:
+
+========================================
+RESULTS
+========================================
+
+ CLASS                    pass   fail   skip  total    rate
+ ---------------------- ------ ------ ------ ------ -------
+ C  Executable              21     16     16     53     39%
+ ---------------------- ------ ------ ------ ------ -------
+ TOTAL                      21     16     16     53     39%
+
+========================================
+ elapsed 6.049s  |  processed 53 tests  |  16 workers  |  2026-02-06 00:05:16
+========================================
