@@ -52,21 +52,50 @@ FAILURES:
   c43214b  - Lower bound incorrect (case 1)
   c43214d  - RUNTIME timeout (exit 124)
 
-SKIPS:
-  c43004c  - BIND: unresolved symbols
-  c43103b  - BIND: unresolved symbols
-  c43106a  - BIND: unresolved symbols
-  c43204c  - BIND: unresolved symbols
-  c43204h  - BIND: unresolved symbols
-  c43205b  - COMPILE: untyped aggregate
+SKIPS: (16 total - all pre-existing)
+  c43004c, c43103b, c43106a, c43204c, c43204h  - BIND: unresolved symbols
+  c43205b, c43205h  - COMPILE: untyped aggregate
   c43205e  - COMPILE: concatenation required
-  c43205h  - COMPILE: untyped aggregate
-  c43205j  - BIND: unresolved symbols
-  c43205k  - BIND: unresolved symbols
-  c43212c  - BIND: unresolved symbols
-  c43214c  - BIND: unresolved symbols
-  c43214e  - BIND: unresolved symbols
-  c43214f  - BIND: unresolved symbols
-  c43222a  - BIND: unresolved symbols
+  c43205j, c43205k, c43212c, c43214c, c43214e, c43214f, c43222a  - BIND
   c43224a  - COMPILE: (empty error)
+
+--- RUN 10 (latest) ---
+Date: 2026-02-06 12:34
+Results: 32 pass / 5 fail / 16 skip = 60% (53 total)
+
+FIXES APPLIED (in order):
+  1. Fat pointer bounds for constrained formals (RM 4.3.2)
+     - Rebuild fat pointer when passing string literals/slices to
+       constrained formal parameters (e.g. STRING(11..15))
+  2. Fat pointer return lifetime
+     - Copy returned dynamic array data to caller-local alloca to
+       prevent dangling pointers after callee stack is freed
+  3. Aggregate constraint checks (RM 4.3.2(6))
+     - Positional aggregate bounds vs constraint check
+     - Named aggregate bounds vs constraint check
+     - Moved n_positional/has_named to outer scope for reuse
+  4. setjmp returns_twice / longjmp noreturn (CRITICAL)
+     - Without returns_twice, LLVM optimizer eliminated the second
+       return path from setjmp, breaking ALL exception handling
+     - This single fix turned ~10 tests from FAIL to PASS
+  5. Dynamic aggregate index subtype check (RM 4.3.2(3))
+     - Runtime check that range choice bounds belong to the named
+       index type (e.g. STA RANGE 4..7)
+  6. Row size clamping
+     - Clamp dynamic rt_row_size to non-negative for null inner dims
+
+NEWLY PASSING (12 tests flipped from FAIL to PASS):
+  c43204a, c43204e, c43205f, c43205g, c43205i, c43207a,
+  c43207b, c43211a, c43213a, c43214a, c43214b, c43214d
+
+REMAINING FAILURES (5):
+  c43004b  - Component aggregate bounds not checked against record
+             discriminant-dependent or dynamic subtype constraints
+  c43204f  - Spurious CONSTRAINT_ERROR in default parameter aggregate
+             with dynamic bounds and OTHERS clause
+  c43204g  - RUNTIME timeout: uses Ada tasks (concurrency) not fully
+             supported by the runtime
+  c43204i  - RUNTIME timeout: uses Ada tasks (same as c43204g)
+  c43212a  - Subaggregate bounds consistency not checked (row 2 has
+             different inner bounds than rows 1 and 3)
 
