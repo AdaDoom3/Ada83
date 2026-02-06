@@ -23147,6 +23147,20 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                                 args[i] = Emit_Fat_Pointer(cg, args[i], lo, hi, abt);
                             }
                         }
+                    } else if (Expression_Produces_Fat_Pointer(arg, actual_type) and
+                               formal_type->array.is_constrained and
+                               formal_type->array.index_count > 0) {
+                        /* Fat pointer actual (string literal, slice) to constrained
+                         * formal: rebuild fat pointer with the formal type's bounds.
+                         * E.g. "ABCDE" passed to STRING(11..15) — bounds must be
+                         * 11..15, not the literal's default 1..5.  (RM 4.3.2) */
+                        const char *abt = Array_Bound_Llvm_Type(formal_type);
+                        uint32_t data_ptr = Emit_Fat_Pointer_Data(cg, args[i], abt);
+                        uint32_t lo = Emit_Single_Bound(cg,
+                            &formal_type->array.indices[0].low_bound, abt);
+                        uint32_t hi = Emit_Single_Bound(cg,
+                            &formal_type->array.indices[0].high_bound, abt);
+                        args[i] = Emit_Fat_Pointer_Dynamic(cg, data_ptr, lo, hi, abt);
                     } else {
                         const char *param_type = Type_To_Llvm_Sig(formal_type);
                         const char *arg_type = Expression_Llvm_Type(cg, arg);
@@ -23296,6 +23310,79 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
          * at use sites (e.g. return statements) knows the true generated type. */
         if (sym->return_type) {
             Temp_Set_Type(cg, t, Type_To_Llvm_Sig(sym->return_type));
+            /* For fat pointer returns (dynamic array), copy the data from the
+             * callee's stack to a local alloca so it survives.  The callee's
+             * alloca is freed on return, making the data pointer dangling. */
+            Type_Info *rt = sym->return_type;
+            if (not callee_is_bip and Type_Is_Array_Like(rt) and
+                Type_Has_Dynamic_Bounds(rt)) {
+                const char *rt_bt = Array_Bound_Llvm_Type(rt);
+                /* Extract data and bounds pointers */
+                uint32_t old_data = Emit_Fat_Pointer_Data(cg, t, rt_bt);
+                /* Compute data size from bounds */
+                uint32_t ndims = rt->array.index_count;
+                uint32_t elem_sz = rt->array.element_type
+                    ? rt->array.element_type->size : 1;
+                if (elem_sz == 0) elem_sz = 1;
+                uint32_t total_sz = 0;
+                if (ndims == 1) {
+                    uint32_t len = Emit_Fat_Pointer_Length(cg, t, rt_bt);
+                    total_sz = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = mul i32 %%t%u, %u\n", total_sz, len, elem_sz);
+                } else {
+                    /* Multi-dim: multiply lengths of all dimensions */
+                    uint32_t prod = 0;
+                    for (uint32_t d = 0; d < ndims and d < 8; d++) {
+                        uint32_t lo_d = Emit_Fat_Pointer_Low_Dim(cg, t, rt_bt, d);
+                        uint32_t hi_d = Emit_Fat_Pointer_High_Dim(cg, t, rt_bt, d);
+                        uint32_t diff = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = sub i32 %%t%u, %%t%u\n", diff, hi_d, lo_d);
+                        uint32_t len_d = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = add i32 %%t%u, 1\n", len_d, diff);
+                        if (d == 0) prod = len_d;
+                        else {
+                            uint32_t np = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = mul i32 %%t%u, %%t%u\n", np, prod, len_d);
+                            prod = np;
+                        }
+                    }
+                    total_sz = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = mul i32 %%t%u, %u\n", total_sz, prod, elem_sz);
+                }
+                /* Clamp size to >= 0 */
+                uint32_t neg_chk = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp slt i32 %%t%u, 0\n", neg_chk, total_sz);
+                uint32_t clamped = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = select i1 %%t%u, i32 0, i32 %%t%u\n",
+                     clamped, neg_chk, total_sz);
+                /* Allocate local buffer and copy data */
+                uint32_t local_buf = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = alloca i8, i32 %%t%u  ; copy func return data\n",
+                     local_buf, clamped);
+                uint32_t sz64 = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = sext i32 %%t%u to i64\n", sz64, clamped);
+                Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)  ; copy return data to caller\n",
+                     local_buf, old_data, sz64);
+                /* Also copy bounds to a local alloca */
+                uint32_t old_bounds = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1\n",
+                     old_bounds, t);
+                uint32_t bounds_sz = ndims * 2 * 4;  /* 2 bounds per dim, i32 each */
+                uint32_t local_bounds = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = alloca [%u x i8]  ; local bounds copy\n",
+                     local_bounds, bounds_sz);
+                Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)  ; copy return bounds\n",
+                     local_bounds, old_bounds, bounds_sz);
+                /* Rebuild fat pointer with local copies */
+                uint32_t new_fat1 = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = insertvalue " FAT_PTR_TYPE " undef, ptr %%t%u, 0\n",
+                     new_fat1, local_buf);
+                uint32_t new_fat2 = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = insertvalue " FAT_PTR_TYPE " %%t%u, ptr %%t%u, 1\n",
+                     new_fat2, new_fat1, local_bounds);
+                Temp_Set_Type(cg, new_fat2, FAT_PTR_TYPE);
+                t = new_fat2;
+            }
             return t;
         }
         return 0;
@@ -25708,9 +25795,9 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
         /* For positional aggregates, override upper bound from element count:
          * high = low + N - 1.  For multidimensional aggregates, also adjust
          * inner dimension bounds from the first inner aggregate (RM 4.3.2). */
+        uint32_t n_positional = 0;
+        bool has_named = false;
         {
-            uint32_t n_positional = 0;
-            bool has_named = false;
             for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
                 Syntax_Node *item = node->aggregate.items.items[i];
                 if (item->kind == NK_ASSOCIATION) has_named = true;
@@ -26388,6 +26475,43 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             count = high - low + 1;
             if (count < 1) count = 1;
         }
+        /* RM 4.3.2(6): For constrained array subtypes, the aggregate bounds
+         * must match the constraint bounds.  For positional aggregates, the
+         * lower bound is INDEX_SUBTYPE'FIRST (from the base unconstrained
+         * type), which may differ from the constraint.  For named aggregates
+         * without OTHERS, the bounds come from the choices. */
+        if (agg_type->array.is_constrained and
+            agg_type->array.indices[0].low_bound.kind == BOUND_INTEGER and
+            agg_type->array.indices[0].high_bound.kind == BOUND_INTEGER) {
+            int128_t con_lo = Type_Bound_Value(agg_type->array.indices[0].low_bound);
+            int128_t con_hi = Type_Bound_Value(agg_type->array.indices[0].high_bound);
+
+            if (n_positional > 0 and not has_named and has_unconstrained_base) {
+                /* Positional aggregate: true lower bound is index subtype FIRST,
+                 * not the constrained bound.  RM 4.3.2(5). */
+                int128_t true_lo = idx_sub_lo;
+                int128_t true_hi = true_lo + (int128_t)n_positional - 1;
+                if (true_lo != con_lo or true_hi != con_hi) {
+                    Emit_Raise_Constraint_Error(cg, "positional aggregate bounds vs constraint");
+                    uint32_t cont = cg->label_id++;
+                    Emit_Label_Here(cg, cont);
+                }
+            }
+
+            if (has_choice_lo and has_choice_hi and not early_has_others
+                and has_unconstrained_base and agg_ndims == 1) {
+                /* Named aggregate of constrained 1-D subtype of unconstrained
+                 * base: choice bounds must match the constraint (array-of-array
+                 * component).  For multidim arrays (agg_ndims > 1), sliding
+                 * applies at assignment per RM 5.2.1. */
+                if (low != con_lo or high != con_hi) {
+                    Emit_Raise_Constraint_Error(cg, "named aggregate bounds vs constraint");
+                    uint32_t cont = cg->label_id++;
+                    Emit_Label_Here(cg, cont);
+                }
+            }
+        }
+
         /* For unconstrained types, track LLVM SSA values for the aggregate's
          * actual bounds (from choice expressions) to populate the fat pointer.
          * These are set during range-choice processing below. */
