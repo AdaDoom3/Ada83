@@ -22,16 +22,154 @@ DANCING AROUND FINDING "SIMPLE" OR "EASY" WINS. NO USING THE WORD "COMPLEX".
 
 TARGET: c43 group — 53 tests (aggregates and constraints)
 
-BASELINE (run 1): 0/53 pass, 0/53 fail, 53/53 skip
-  - 49 tests: BIND:unresolved_symbols
-  - 3 tests: COMPILE errors (c43205b, c43205e, c43205h)
-  - 1 test: COMPILE empty error (c43224a)
-
-ISSUES TO FIX:
-[ ] 1. Unresolved symbols at link time (49 tests)
-[ ] 2. Compile error: "untyped aggregate" (c43205b, c43205h)
-[ ] 3. Compile error: "concatenation required" (c43205e)
-[ ] 4. Compile error: unknown (c43224a)
-
 RUNS:
   Run 1: 0 pass / 0 fail / 53 skip (baseline)
+  Run 2: 32 pass (fixed: dangling filename, non-ASCII IR)
+  Run 3: 33 pass (fixed: duplicate function emission c43106a)
+  Run 4: 33 pass / 7 fail / 13 skip (fixed: generic formals, disc init)
+
+============================================================
+MASTER PLAN — Systematic Attack on Remaining 20 Failures
+============================================================
+
+CURRENT STATUS: 33 pass, 7 fail, 13 skip (62%)
+
+The remaining 20 failures split into 5 ROOT CAUSES, ordered by impact:
+
+------------------------------------------------------------------------
+ROOT CAUSE A: Fat Pointer Representation Inconsistency (7 tests)
+  Affected: c43205k, c43212c, c43214e, c43214f, c43222a, c43212a, c43205a
+
+  PROBLEM:
+  Fat pointers {ptr, ptr} exist in TWO incompatible forms in the codegen:
+    1. SSA value form: `%t = insertvalue {ptr,ptr} undef, ptr X, 0` (from Emit_Fat_Pointer)
+    2. Alloca ptr form: `%t = alloca {ptr,ptr}` then store fields (from aggregate codegen)
+
+  Emit_Fat_Pointer_Bound uses `extractvalue {ptr,ptr} %t, 1` which only works
+  with form 1 (SSA values). Callers passing form 2 (alloca ptrs) crash.
+
+  GNAT LLVM APPROACH (from reference/gnat/gnatllvm-glvalue.adb):
+  - Unconstrained arrays: fat pointer (Reference relationship)
+  - Constrained arrays: plain Reference (no fat pointer)
+  - Constrained arrays with bounds: Reference_To_Bounds_And_Data
+
+  FIX STRATEGY:
+  [A1] Add Emit_Load_Fat_Pointer helper: if %t is alloca ptr, load {ptr,ptr}
+       first, then extractvalue. Track whether a temp is alloca-style via
+       Temp_Set_Type to FAT_PTR_TYPE vs "ptr".
+  [A2] Make Emit_Fat_Pointer_Bound/Low/High auto-detect: if the temp type
+       is "ptr" (alloca), emit load first. If "{ptr,ptr}" (SSA), use directly.
+  [A3] Audit all code paths that produce fat pointers to ensure consistent
+       Temp_Set_Type annotation.
+  [A4] For aggregate codegen returning fat pointers (line ~27200), add a
+       load after the alloca+store so it returns an SSA {ptr,ptr} value.
+
+------------------------------------------------------------------------
+ROOT CAUSE B: Untyped Aggregate in Codegen (5 tests)
+  Affected: c43205b, c43205h, c43204c, c43224a, c43205e
+
+  PROBLEM:
+  The compiler reports "untyped aggregate in codegen" for:
+  - c43205b/h: qualified expressions with aggregates A'((1,2), (3,4))
+  - c43204c: generic formals with OTHERS aggregates
+  - c43205e: "concatenation required" (string concat in aggregate context)
+  - c43224a: unknown compile error
+
+  FIX STRATEGY:
+  [B1] Fix qualified expression type propagation: when A'(aggregate) appears,
+       the aggregate must inherit type A. Search for NK_QUALIFIED_EXPR
+       handling in semantic pass and ensure type flows to the aggregate node.
+  [B2] Fix OTHERS aggregates in generic formal contexts: actual_expr for
+       generic objects may be aggregates needing type from the formal's type.
+  [B3] For c43205e: implement or fix string concatenation (&) in aggregate
+       component expressions.
+
+------------------------------------------------------------------------
+ROOT CAUSE C: Missing CONSTRAINT_ERROR Raises (3 tests)
+  Affected: c43004b, c43004c, c43212a
+
+  PROBLEM:
+  These tests verify CONSTRAINT_ERROR is raised when:
+  - c43004b: array component bounds don't match subtype index range
+  - c43004c: discriminant value doesn't match constrained component subtype
+  - c43212a: subaggregates for a dimension have different bounds
+
+  FIX STRATEGY:
+  [C1] Array aggregate bounds check (RM 4.3.2): after computing aggregate
+       bounds, verify they match the target type's constraint. Raise
+       CONSTRAINT_ERROR if mismatch.
+  [C2] Discriminant aggregate check (RM 4.3.1): when aggregate contains
+       discriminated component, verify discriminant value matches constraint.
+  [C3] Subaggregate consistency check (RM 4.3.2(6)): all subaggregates at
+       same level must have identical bounds. Emit runtime check.
+
+------------------------------------------------------------------------
+ROOT CAUSE D: Generic Formal Object Handling (3 tests)
+  Affected: c43204h, c43205j, c43214c
+
+  PROBLEM:
+  - c43204h: undefined %ga11_s163 — multi-dimensional array generic formal
+  - c43205j: undefined %d4_s169 — DECLARE block inside generic instance body
+  - c43214c: generic formal string incorrect values
+
+  FIX STRATEGY:
+  [D1] For c43204h/c43205j: the undefined variables are declared in nested
+       scopes (DECLARE blocks) inside the generic body. The Generate_Declaration
+       in instance bodies doesn't emit allocas for DECLARE block variables.
+       Fix: ensure Generate_Declaration_List in instance bodies processes
+       nested DECLARE blocks.
+  [D2] For c43214c: the string formal object is loaded but contains wrong
+       values. The alloca/store types don't match the string representation.
+       Fix with [A2] above (fat pointer consistency).
+
+------------------------------------------------------------------------
+ROOT CAUSE E: Runtime Crashes and Dominance Violations (3 tests)
+  Affected: c43103b, c43204g, c43204i
+
+  PROBLEM:
+  - c43103b: "Instruction does not dominate all uses" for %d_s159 — variable
+    alloca is inside a branch but used outside it
+  - c43204g/c43204i: LLVM JIT crash (null pointer or bad codegen)
+
+  FIX STRATEGY:
+  [E1] Dominance fix (c43103b): DECLARE block variables must be allocated
+       at function entry, not inside the block. Move all allocas to the
+       entry block (standard LLVM practice, per LLVM LangRef).
+  [E2] For c43204g/i: investigate the generated IR for null pointer deref
+       or infinite loop in aggregate handling.
+
+------------------------------------------------------------------------
+EXECUTION ORDER (by dependency and impact):
+  1. [A1-A4] Fat pointer consistency   — unblocks 7 tests
+  2. [B1-B3] Untyped aggregate         — unblocks 5 tests
+  3. [C1-C3] CONSTRAINT_ERROR checks   — fixes 3 FAIL tests
+  4. [D1-D2] Generic formal scoping    — fixes 3 tests
+  5. [E1-E2] Dominance + crashes       — fixes 3 tests
+
+  Total potential: 53/53 if all fixed
+
+------------------------------------------------------------------------
+RUNTIME FAILURE DETAIL (7 FAIL tests):
+  c43004b   FAIL  CONSTRAINT_ERROR not raised (array bounds)     -> [C1]
+  c43004c   FAIL  CONSTRAINT_ERROR not raised (disc value)       -> [C2]
+  c43204f   FAIL  unexpected CONSTRAINT_ERROR raised             -> [E2]
+  c43204g   FAIL  LLVM crash (exit 124 = timeout/crash)          -> [E2]
+  c43204i   FAIL  LLVM crash (exit 124 = timeout/crash)          -> [E2]
+  c43212a   FAIL  CONSTRAINT_ERROR not raised (subaggregate)     -> [C3]
+  c43214c   FAIL  wrong values in string formal                  -> [D2/A2]
+
+SKIP DETAIL (13 SKIP tests):
+  c43103b   SKIP  BIND: dominance violation                      -> [E1]
+  c43204c   SKIP  COMPILE: untyped aggregate                     -> [B2]
+  c43204h   SKIP  BIND: undefined %ga11_s163                     -> [D1]
+  c43205a   SKIP  BIND: ??? (check)                              -> [A]
+  c43205b   SKIP  COMPILE: untyped aggregate                     -> [B1]
+  c43205e   SKIP  COMPILE: concatenation required                -> [B3]
+  c43205h   SKIP  COMPILE: untyped aggregate                     -> [B1]
+  c43205j   SKIP  BIND: undefined %d4_s169                       -> [D1]
+  c43205k   SKIP  BIND: extractvalue ptr vs {ptr,ptr}            -> [A]
+  c43212c   SKIP  BIND: extractvalue ptr vs {ptr,ptr}            -> [A]
+  c43214e   SKIP  BIND: {ptr,ptr} passed as ptr                  -> [A]
+  c43214f   SKIP  BIND: extractvalue ptr vs {ptr,ptr}            -> [A]
+  c43222a   SKIP  BIND: extractvalue ptr vs {ptr,ptr}            -> [A]
+  c43224a   SKIP  COMPILE: empty error                           -> [B]
