@@ -1,0 +1,52 @@
+CHECKLIST: ada83.c Refactoring for c43 Test Group
+=================================================
+
+ORIGINAL PROMPT:
+In the pursuit of high-quality code (low line count (e.g. low undue complexity)
+and high feature/correctness) - refactor and fix ada83.c to pass a single
+C-test group completely (e.g. cXX) with much better Haskell-like C99 and tight
+smart code-golfing with, ironically, textbook "Literate Programming" style.
+
+Do NOT skip around - when you encounter a complex problem look at it as an
+opportunity to finally attack a big problem.
+
+Create a file to track everything called "checklist.txt" and include this
+prompt in it. Start with c43. Test exclusively with run_acats.sh
+
+TARGET: c43 (Aggregate Expressions, RM §4.3) - 53 tests
+
+BASELINE (2026-02-07):
+  PASS: 38  FAIL: 12  SKIP: 3  TOTAL: 53  RATE: 71%
+
+FAILURE CATEGORIES:
+==================
+
+CONSTRAINT_ERROR not raised (aggregate bounds/index checks):
+  [ ] c43004b  FAILED: CONSTRAINT_ERROR WAS NOT RAISED - 3
+  [ ] c43004c  FAILED: CONSTRAINT_ERROR NOT RAISED - 1
+  [ ] c43212a  FAILED: CASE 1 : CONSTRAINT ERROR NOT RAISED
+  [ ] c43212c  FAILED: A3 - EXCEPTION NOT RAISED, ARRAYS EQUAL
+
+Incorrect bounds / values:
+  [ ] c43103b  FAILED: 1.1 - INCORRECT BOUNDS
+  [ ] c43204h  FAILED: INCORRECT VALUE OF GA11
+
+Unexpected exception / wrong codegen:
+  [ ] c43204f  FAILED: UNEXPECTED CONSTRAINT ERROR OR OTHER EXCEP
+
+Runtime timeout (infinite loop or crash in codegen):
+  [ ] c43204g  RUNTIME: exit 124
+  [ ] c43204i  RUNTIME: exit 124
+  [ ] c43205e  RUNTIME: exit 124
+  [ ] c43205j  RUNTIME: exit 124
+  [ ] c43214e  RUNTIME: exit 124
+
+Unresolved symbols (missing codegen for features):
+  [ ] c43205k  SKIP: BIND: unresolved symbols
+  [ ] c43214f  SKIP: BIND: unresolved symbols
+
+Compile failure:
+  [ ] c43224a  SKIP: COMPILE
+
+PROGRESS LOG:
+=============
