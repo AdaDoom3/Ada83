@@ -16,7 +16,7 @@
  * §11   Symbol_Table       - Scoped name resolution
  * §12   Semantic_Pass      - Type checking and resolution
  * §15   ALI_Writer         - GNAT-compatible library info
- * §15.7 Elaboration_Model  - Dependency ordering
+ * §15.7 Elaboration_Model  - GNAT LLVM-style dependency ordering (NEW)
  * §14   Include_Path       - Package loading & search paths
  * §16   Generic_Expansion  - Macro-style instantiation
  * §13   Code_Generator     - LLVM IR emission
@@ -7006,7 +7006,7 @@ struct Symbol {
     bool            is_predefined;       /* Predefined operator from STANDARD */
     bool            needs_address_marker; /* Needs @__addr.X global for 'ADDRESS */
     bool            is_identity_function; /* Function body is just RETURN param (can inline) */
-    bool            alloca_emitted;      /* Alloca already emitted for this symbol in current fn */
+    uint32_t        disc_agg_temp;       /* Temp ID for aggregate discriminant storage (0 = none) */
 
     /* Discriminant constraint (RM 3.7.2) */
     bool            is_disc_constrained;  /* Object has discriminant constraints */
@@ -8510,6 +8510,14 @@ static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
     /* Resolve left first; then propagate its type to an untyped aggregate
      * on the right BEFORE resolving, so record component choices can be
      * looked up in the correct type (RM 4.3, 4.5.2). */
+    /* For concatenation with context type (e.g., from RETURN), propagate
+     * to untyped aggregate operands before resolving (RM 4.5.3). */
+    if (op == TK_AMPERSAND and node->type) {
+        if (node->binary.left->kind == NK_AGGREGATE and not node->binary.left->type)
+            node->binary.left->type = node->type;
+        if (node->binary.right->kind == NK_AGGREGATE and not node->binary.right->type)
+            node->binary.right->type = node->type;
+    }
     Type_Info *left_type = Resolve_Expression(sm, node->binary.left);
     if (node->binary.right->kind == NK_AGGREGATE and not node->binary.right->type and left_type)
         node->binary.right->type = left_type;
@@ -8588,22 +8596,25 @@ static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
              *   ARRAY & ELEMENT -> ARRAY
              *   ELEMENT & ARRAY -> ARRAY */
             {
+                /* Propagate type to aggregate operands before validation (RM 4.3):
+                 * In A & (1, 2), the aggregate gets its type from A.
+                 * Must happen before the left_ok/right_ok check. */
+                if (node->binary.right->kind == NK_AGGREGATE and not node->binary.right->type and left_type) {
+                    node->binary.right->type = left_type;
+                    Resolve_Expression(sm, node->binary.right);
+                    right_type = node->binary.right->type;
+                }
+                if (node->binary.left->kind == NK_AGGREGATE and not node->binary.left->type and right_type) {
+                    node->binary.left->type = right_type;
+                    Resolve_Expression(sm, node->binary.left);
+                    left_type = node->binary.left->type;
+                }
                 bool left_ok = Type_Is_Array_Like(left_type) or
                                Type_Is_Character(left_type);
                 bool right_ok = Type_Is_Array_Like(right_type) or
                                 Type_Is_Character(right_type);
                 if (not left_ok and not right_ok) {
                     Report_Error(node->location, "concatenation requires string, array, or character");
-                }
-                /* Propagate type to aggregate operands (RM 4.3):
-                 * In A & (1, 2), the aggregate gets its type from A */
-                if (node->binary.right->kind == NK_AGGREGATE and not node->binary.right->type and left_type) {
-                    node->binary.right->type = left_type;
-                    Resolve_Expression(sm, node->binary.right);
-                }
-                if (node->binary.left->kind == NK_AGGREGATE and not node->binary.left->type and right_type) {
-                    node->binary.left->type = right_type;
-                    Resolve_Expression(sm, node->binary.left);
                 }
                 /* Result type: prefer user-defined array type over predefined STRING.
                  * Per RM 4.5.3, concatenation returns the array type. String literals
@@ -11714,13 +11725,18 @@ static void Resolve_Statement(Symbol_Manager *sm, Syntax_Node *node) {
         case NK_RETURN:
             if (node->return_stmt.expression) {
                 /* Propagate enclosing function's return type to untyped
-                 * aggregates so they can resolve component types (RM 5.8) */
+                 * aggregates and concatenations (RM 5.8, 4.5.3) */
                 Syntax_Node *rexpr = node->return_stmt.expression;
-                if (rexpr->kind == NK_AGGREGATE and not rexpr->type) {
-                    Symbol *owner = sm->current_scope->owner;
-                    if (owner and owner->kind == SYMBOL_FUNCTION and owner->return_type)
-                        rexpr->type = owner->return_type;
-                }
+                Symbol *owner = sm->current_scope->owner;
+                Type_Info *ret_type = (owner and owner->kind == SYMBOL_FUNCTION)
+                    ? owner->return_type : NULL;
+                if (rexpr->kind == NK_AGGREGATE and not rexpr->type and ret_type)
+                    rexpr->type = ret_type;
+                /* For RETURN A & B where both sides may be aggregates,
+                 * set the expression type so operand aggregates inherit it */
+                if (ret_type and rexpr->kind == NK_BINARY_OP and
+                    rexpr->binary.op == TK_AMPERSAND and not rexpr->type)
+                    rexpr->type = ret_type;
                 Resolve_Expression(sm, rexpr);
             }
             break;
@@ -14169,8 +14185,9 @@ static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src) 
     Loading_Set_Add(name);
 
     /* Parse the package (ALI not available or stale) */
-    char filename[256];
-    snprintf(filename, sizeof(filename), "%.*s.ads", (int)name.length, name.data);
+    size_t fn_len = name.length + 4; /* ".ads" */
+    char *filename = Arena_Allocate(fn_len + 1);
+    snprintf(filename, fn_len + 1, "%.*s.ads", (int)name.length, name.data);
     Parser p = Parser_New(src, strlen(src), filename);
     Syntax_Node *cu = Parse_Compilation_Unit(&p);
 
@@ -14330,9 +14347,10 @@ static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src) 
     char *body_src = Lookup_Path_Body(name);
     if (body_src and Loaded_Body_Count < 128) {
         Mark_Body_Loaded(name);
-        /* Parse the body */
-        char body_filename[256];
-        snprintf(body_filename, sizeof(body_filename), "%.*s.adb", (int)name.length, name.data);
+        /* Parse the body — arena-allocate filename so AST Source_Locations stay valid */
+        size_t bfn_len = name.length + 4;
+        char *body_filename = Arena_Allocate(bfn_len + 1);
+        snprintf(body_filename, bfn_len + 1, "%.*s.adb", (int)name.length, name.data);
         Parser body_parser = Parser_New(body_src, strlen(body_src), body_filename);
         Syntax_Node *body_cu = Parse_Compilation_Unit(&body_parser);
 
@@ -14824,9 +14842,10 @@ static void Expand_Generic_Package(Symbol_Manager *sm, Symbol *instance_sym) {
 
     char *body_src = Lookup_Path_Body(pkg_name);
     if (body_src) {
-        /* Parse the body */
-        char body_filename[256];
-        snprintf(body_filename, sizeof(body_filename), "%.*s.adb",
+        /* Parse the body — arena-allocate filename for Source_Location stability */
+        size_t bfn_len = pkg_name.length + 4;
+        char *body_filename = Arena_Allocate(bfn_len + 1);
+        snprintf(body_filename, bfn_len + 1, "%.*s.adb",
                  (int)pkg_name.length, pkg_name.data);
         Parser body_parser = Parser_New(body_src, strlen(body_src), body_filename);
         Syntax_Node *body_cu = Parse_Compilation_Unit(&body_parser);
@@ -15445,12 +15464,17 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
 
                 /* Check if there's already a matching symbol from package spec.
                  * This happens when resolving a subprogram body that completes a spec.
-                 * For overloaded subprograms, must match parameter count AND types. */
+                 * For overloaded subprograms, must match parameter count AND types.
+                 * Per RM 6.3, only match specs declared in the same scope — not
+                 * USE-visible homographs from other packages (those are hidden). */
                 Symbol_Kind expected_kind = node->kind == NK_PROCEDURE_SPEC ?
                                            SYMBOL_PROCEDURE : SYMBOL_FUNCTION;
+                Symbol *scope_owner = sm->current_scope ? sm->current_scope->owner : NULL;
                 Symbol *sym = Symbol_Find(sm, node->subprogram_spec.name);
                 while (sym) {
-                    if (sym->kind == expected_kind and sym->parameter_count == total_params) {
+                    /* Only match specs from the current declarative region */
+                    if (sym->kind == expected_kind and sym->parameter_count == total_params
+                        and sym->parent == scope_owner) {
                         /* Check parameter types match */
                         bool types_match = true;
                         uint32_t param_idx = 0;
@@ -15466,7 +15490,6 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                 for (uint32_t j = 0; j < ps->param_spec.names.count; j++) {
                                     if (param_idx < sym->parameter_count) {
                                         Type_Info *spec_type = sym->parameters[param_idx].param_type;
-                                        /* Use Types_Same_Named for private type partial/full views */
                                         if (not Types_Same_Named(body_type, spec_type)) {
                                             types_match = false;
                                             break;
@@ -15476,13 +15499,10 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                 }
                             }
                         }
-                        /* For functions, also check return type matches (allows
-                         * overloading on return type per Ada RM 6.6) */
                         if (types_match and expected_kind == SYMBOL_FUNCTION) {
                             if (node->subprogram_spec.return_type) {
                                 Resolve_Expression(sm, node->subprogram_spec.return_type);
                                 Type_Info *body_return = node->subprogram_spec.return_type->type;
-                                /* Use Types_Same_Named for private type partial/full views */
                                 if (not Types_Same_Named(body_return, sym->return_type)) {
                                     types_match = false;
                                 }
@@ -15709,6 +15729,14 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                 if (formal->generic_object_param.object_type) {
                                     Resolve_Expression(sm, formal->generic_object_param.object_type);
                                     obj_type = formal->generic_object_param.object_type->type;
+                                }
+                                /* Resolve default expression with formal's type (RM 12.4) */
+                                if (obj_type and formal->generic_object_param.default_expr) {
+                                    Syntax_Node *def = formal->generic_object_param.default_expr;
+                                    def->type = obj_type;
+                                    Resolve_Expression(sm, def);
+                                    if (not def->type or def->kind == NK_AGGREGATE)
+                                        def->type = obj_type;
                                 }
                                 for (uint32_t j = 0; j < formal->generic_object_param.names.count; j++) {
                                     Syntax_Node *name_node = formal->generic_object_param.names.items[j];
@@ -16056,6 +16084,14 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                 if (formal->generic_object_param.object_type) {
                                     Resolve_Expression(sm, formal->generic_object_param.object_type);
                                     obj_type = formal->generic_object_param.object_type->type;
+                                }
+                                /* Resolve default expression with formal's type (RM 12.4) */
+                                if (obj_type and formal->generic_object_param.default_expr) {
+                                    Syntax_Node *def = formal->generic_object_param.default_expr;
+                                    def->type = obj_type;
+                                    Resolve_Expression(sm, def);
+                                    if (not def->type or def->kind == NK_AGGREGATE)
+                                        def->type = obj_type;
                                 }
                                 /* Create symbols for each name */
                                 for (uint32_t j = 0; j < formal->generic_object_param.names.count; j++) {
@@ -16610,12 +16646,26 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                             Syntax_Node *obj_type_node = formal->generic_object_param.object_type;
                             Type_Info *obj_type = NULL;
                             if (obj_type_node and obj_type_node->kind == NK_IDENTIFIER) {
+                                /* Check generic type actuals (substituted type formals) */
                                 for (uint32_t k = 0; k < total_actual_slots; k++) {
                                     if (inst_sym->generic_actuals[k].actual_type and
                                         Slice_Equal_Ignore_Case(obj_type_node->string_val.text,
                                                   inst_sym->generic_actuals[k].formal_name)) {
                                         obj_type = inst_sym->generic_actuals[k].actual_type;
                                         break;
+                                    }
+                                }
+                                /* Concrete types: resolve from scope (RM 12.3) */
+                                if (not obj_type) {
+                                    Symbol *ts = Symbol_Find(sm, obj_type_node->string_val.text);
+                                    if (not ts or (ts->kind != SYMBOL_TYPE and ts->kind != SYMBOL_SUBTYPE)
+                                        or not ts->type) {
+                                        Report_Error(obj_type_node->location,
+                                            "cannot resolve generic formal object type '%.*s'",
+                                            obj_type_node->string_val.text.length,
+                                            obj_type_node->string_val.text.data);
+                                    } else {
+                                        obj_type = ts->type;
                                     }
                                 }
                             }
@@ -17428,6 +17478,8 @@ typedef struct {
     #define TEMP_TYPE_CAPACITY 4096
     uint32_t      temp_type_keys[TEMP_TYPE_CAPACITY];
     const char   *temp_types[TEMP_TYPE_CAPACITY];
+    /* Bitmap: is this temp a fat-pointer alloca (needs load before extractvalue)? */
+    uint8_t       temp_is_fat_alloca[TEMP_TYPE_CAPACITY];
 
     /* Track all exception global names referenced during codegen.
      * Stored as heap-allocated strings like "seq_io__status_error_s0".
@@ -17471,6 +17523,15 @@ static inline const char *Temp_Get_Type(Code_Generator *cg, uint32_t temp_id) {
     if (cg->temp_type_keys[idx] == temp_id)
         return cg->temp_types[idx];
     return NULL;
+}
+
+/* Mark/query a temp as a fat-pointer alloca (separate from its LLVM type) */
+static inline void Temp_Mark_Fat_Alloca(Code_Generator *cg, uint32_t temp_id) {
+    cg->temp_is_fat_alloca[temp_id % TEMP_TYPE_CAPACITY] = 1;
+}
+static inline bool Temp_Is_Fat_Alloca(Code_Generator *cg, uint32_t temp_id) {
+    uint32_t idx = temp_id % TEMP_TYPE_CAPACITY;
+    return cg->temp_is_fat_alloca[idx] and cg->temp_type_keys[idx] == temp_id;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -18969,11 +19030,23 @@ static uint32_t Emit_Extend_To_I64(Code_Generator *cg, uint32_t val, const char 
     return w;
 }
 
+/* Ensure fat_ptr is an SSA {ptr,ptr} value.  If it's an alloca-backed
+ * fat pointer (marked via Temp_Mark_Fat_Alloca), emit a load first.
+ * Conservative: only loads when the temp is KNOWN to be an alloca. */
+static uint32_t Fat_Ptr_As_Value(Code_Generator *cg, uint32_t fat_ptr) {
+    if (not Temp_Is_Fat_Alloca(cg, fat_ptr)) return fat_ptr;
+    uint32_t loaded = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", loaded, fat_ptr);
+    Temp_Set_Type(cg, loaded, FAT_PTR_TYPE);
+    return loaded;
+}
+
 /* Extract data pointer from fat pointer.
  * bt parameter retained for API compatibility but unused. */
 static uint32_t Emit_Fat_Pointer_Data(Code_Generator *cg, uint32_t fat_ptr,
                                        const char *bt) {
     (void)bt;
+    fat_ptr = Fat_Ptr_As_Value(cg, fat_ptr);
     uint32_t t = Emit_Temp(cg);
     Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n", t, fat_ptr);
     Temp_Set_Type(cg, t, "ptr");
@@ -18981,10 +19054,12 @@ static uint32_t Emit_Fat_Pointer_Data(Code_Generator *cg, uint32_t fat_ptr,
 }
 
 /* Extract bound at field_index from fat pointer's bounds struct.
- * Parametric over index: 0 = low, 1 = high */
+ * Parametric over index: 0 = low, 1 = high.  Handles both SSA and
+ * alloca-style fat pointers transparently via Fat_Ptr_As_Value. */
 static uint32_t Emit_Fat_Pointer_Bound(Code_Generator *cg, uint32_t fat_ptr,
                                         const char *bt, uint32_t field_index) {
     const char *bst = Bounds_Type_For(bt);
+    fat_ptr = Fat_Ptr_As_Value(cg, fat_ptr);
     uint32_t bptr = Emit_Temp(cg);
     Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1\n", bptr, fat_ptr);
     uint32_t gep = Emit_Temp(cg);
@@ -19003,6 +19078,7 @@ static uint32_t Emit_Fat_Pointer_Bound(Code_Generator *cg, uint32_t fat_ptr,
  * Uses flat GEP with index 2*dim for low, 2*dim+1 for high. */
 static uint32_t Emit_Fat_Pointer_Low_Dim(Code_Generator *cg, uint32_t fat_ptr,
                                           const char *bt, uint32_t dim) {
+    fat_ptr = Fat_Ptr_As_Value(cg, fat_ptr);
     uint32_t bptr = Emit_Temp(cg);
     Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1\n", bptr, fat_ptr);
     uint32_t gep = Emit_Temp(cg);
@@ -19016,6 +19092,7 @@ static uint32_t Emit_Fat_Pointer_Low_Dim(Code_Generator *cg, uint32_t fat_ptr,
 
 static uint32_t Emit_Fat_Pointer_High_Dim(Code_Generator *cg, uint32_t fat_ptr,
                                             const char *bt, uint32_t dim) {
+    fat_ptr = Fat_Ptr_As_Value(cg, fat_ptr);
     uint32_t bptr = Emit_Temp(cg);
     Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1\n", bptr, fat_ptr);
     uint32_t gep = Emit_Temp(cg);
@@ -20264,6 +20341,13 @@ static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
         case SYMBOL_VARIABLE:
         case SYMBOL_PARAMETER:
         case SYMBOL_DISCRIMINANT: {
+            /* Discriminant with aggregate-local temp: load from temp alloca */
+            if (sym->kind == SYMBOL_DISCRIMINANT and sym->disc_agg_temp > 0) {
+                const char *type_str = Type_To_Llvm(ty);
+                Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", t, type_str, sym->disc_agg_temp);
+                Temp_Set_Type(cg, t, type_str);
+                break;
+            }
             /* Check if symbol is stored as a fat pointer (dynamic/unconstrained arrays).
              * This flag is set at symbol creation time when bounds were dynamic.
              * Must take priority over Type_Is_Constrained_Array which may change
@@ -26409,6 +26493,8 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             {
                 const char *agg_bt = Array_Bound_Llvm_Type(agg_type);
                 Emit(cg, "  %%t%u = alloca " FAT_PTR_TYPE "  ; dynamic array fat ptr\n", fat_ptr);
+                Temp_Set_Type(cg, fat_ptr, "ptr");
+                Temp_Mark_Fat_Alloca(cg, fat_ptr);
                 if (multidim and agg_ndims > 1) {
                     uint32_t md_lo[8], md_hi[8];
                     md_lo[0] = low_val;
@@ -27168,6 +27254,8 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                 uint32_t fat_val = Emit_Fat_Pointer_MultiDim(cg, base, mlo, mhi, agg_ndims, agg_bt);
                 uint32_t fat_ptr = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = alloca " FAT_PTR_TYPE "  ; multidim array fat ptr\n", fat_ptr);
+                Temp_Set_Type(cg, fat_ptr, "ptr");
+                Temp_Mark_Fat_Alloca(cg, fat_ptr);
                 Emit(cg, "  store " FAT_PTR_TYPE " %%t%u, ptr %%t%u\n", fat_val, fat_ptr);
                 return fat_ptr;
             }
@@ -27194,6 +27282,8 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             Temp_Set_Type(cg, high_temp, agg_bt);
             uint32_t fat_ptr = Emit_Temp(cg);
             Emit(cg, "  %%t%u = alloca " FAT_PTR_TYPE "  ; static array fat ptr\n", fat_ptr);
+            Temp_Set_Type(cg, fat_ptr, "ptr"); /* alloca yields ptr */
+            Temp_Mark_Fat_Alloca(cg, fat_ptr);
             Emit_Store_Fat_Pointer_Fields_To_Temp(cg, base, low_temp, high_temp, fat_ptr, agg_bt);
             return fat_ptr;
         }
@@ -27236,11 +27326,11 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
 
         Emit(cg, "  %%t%u = alloca [%u x i8]  ; record aggregate\n", base, record_size);
 
-        /* Pre-allocate discriminant symbols that may be referenced by
-         * dependent array bounds (RM 3.7.1).  Scan array component bounds
-         * for BOUND_EXPR references to discriminant symbols and emit allocas
-         * for them.  Values will be stored during the component passes below. */
-        Symbol *disc_alloc[16];
+        /* Pre-allocate temp-based discriminant storage for dependent array
+         * bounds (RM 3.7.1).  Uses temp IDs instead of symbol names so each
+         * aggregate gets its own allocas (avoiding dominance violations when
+         * the same record type appears in multiple blocks). */
+        struct { Symbol *sym; uint32_t temp; } disc_alloc[16];
         uint32_t disc_alloc_count = 0;
         for (uint32_t ci = 0; ci < agg_type->record.component_count; ci++) {
             Component_Info *comp_ci = &agg_type->record.components[ci];
@@ -27253,14 +27343,19 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                     if (bounds[bi]->kind == BOUND_EXPR and bounds[bi]->expr and
                         bounds[bi]->expr->symbol) {
                         Symbol *disc_sym = bounds[bi]->expr->symbol;
-                        if (disc_sym->alloca_emitted) continue;
+                        /* Check if we already allocated for this disc in this aggregate */
+                        bool already = false;
+                        for (uint32_t da = 0; da < disc_alloc_count; da++) {
+                            if (disc_alloc[da].sym == disc_sym) { already = true; break; }
+                        }
+                        if (already) continue;
                         const char *disc_type = Type_To_Llvm(disc_sym->type);
                         if (not disc_type or disc_type[0] == '\0') disc_type = Integer_Arith_Type(cg);
-                        Emit(cg, "  %%");
-                        Emit_Symbol_Name(cg, disc_sym);
-                        Emit(cg, " = alloca %s  ; disc for aggregate bounds\n", disc_type);
-                        disc_sym->alloca_emitted = true;
-                        if (disc_alloc_count < 16) disc_alloc[disc_alloc_count++] = disc_sym;
+                        uint32_t dt = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = alloca %s  ; disc for aggregate bounds\n", dt, disc_type);
+                        disc_sym->disc_agg_temp = dt;
+                        if (disc_alloc_count < 16)
+                            disc_alloc[disc_alloc_count++] = (typeof(disc_alloc[0])){disc_sym, dt};
                     }
                 }
             }
@@ -27347,13 +27442,12 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                                             item->association.expression->type, comp_type);
                                     Emit(cg, "  store %s %%t%u, ptr %%t%u\n", comp_type, val, ptr);
                                 }
-                                /* Also store discriminant value into pre-allocated symbol */
+                                /* Also store discriminant value into temp alloca */
                                 if (comp->is_discriminant) {
                                     for (uint32_t da = 0; da < disc_alloc_count; da++) {
-                                        if (Slice_Equal_Ignore_Case(disc_alloc[da]->name, comp->name)) {
-                                            Emit(cg, "  store %s %%t%u, ptr %%", comp_type, val);
-                                            Emit_Symbol_Name(cg, disc_alloc[da]);
-                                            Emit(cg, "\n");
+                                        if (Slice_Equal_Ignore_Case(disc_alloc[da].sym->name, comp->name)) {
+                                            Emit(cg, "  store %s %%t%u, ptr %%t%u\n",
+                                                 comp_type, val, disc_alloc[da].temp);
                                             break;
                                         }
                                     }
@@ -27410,13 +27504,12 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                                     item->type, comp_type);
                             Emit(cg, "  store %s %%t%u, ptr %%t%u\n", comp_type, val, ptr);
                         }
-                        /* Also store discriminant value into pre-allocated symbol */
+                        /* Also store discriminant value into temp alloca */
                         if (comp->is_discriminant) {
                             for (uint32_t da = 0; da < disc_alloc_count; da++) {
-                                if (Slice_Equal_Ignore_Case(disc_alloc[da]->name, comp->name)) {
-                                    Emit(cg, "  store %s %%t%u, ptr %%", comp_type, val);
-                                    Emit_Symbol_Name(cg, disc_alloc[da]);
-                                    Emit(cg, "\n");
+                                if (Slice_Equal_Ignore_Case(disc_alloc[da].sym->name, comp->name)) {
+                                    Emit(cg, "  store %s %%t%u, ptr %%t%u\n",
+                                         comp_type, val, disc_alloc[da].temp);
                                     break;
                                 }
                             }
@@ -27514,6 +27607,10 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                 }
             }
         }
+
+        /* Clear disc_agg_temp so it doesn't leak into other contexts */
+        for (uint32_t da = 0; da < disc_alloc_count; da++)
+            disc_alloc[da].sym->disc_agg_temp = 0;
 
         return base;
     }
@@ -29687,7 +29784,18 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                                     pt->kind == TYPE_TASK);
                                 bool is_access = pt && (pt->kind == TYPE_ACCESS);
                                 if (is_composite) {
-                                    /* Composite default is already a ptr (alloca) */
+                                    /* Composite default: extract data ptr from fat ptr
+                                     * for constrained array formals (RM 4.3.2) */
+                                    const char *vty = Temp_Get_Type(cg, val);
+                                    if ((Temp_Is_Fat_Alloca(cg, val) or
+                                         (vty and Llvm_Type_Is_Fat_Pointer(vty))) and
+                                        pt and Type_Is_Constrained_Array(pt)) {
+                                        val = Fat_Ptr_As_Value(cg, val);
+                                        uint32_t dp = Emit_Temp(cg);
+                                        Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE
+                                             " %%t%u, 0\n", dp, val);
+                                        val = dp;
+                                    }
                                     default_vals[i] = val;
                                     default_types[i] = "ptr";
                                     /* Array constraint check: compare aggregate element
@@ -30447,12 +30555,20 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
         const char *elem_type = NULL;
         uint32_t elem_size = 0;
         bool elem_is_composite = false;
+        bool elem_has_dynamic_size = false;
         if (is_any_array and ty->array.element_type) {
             Type_Info *et = ty->array.element_type;
             /* Check if element is record or another constrained array */
             if (Type_Is_Record(et) or Type_Is_Constrained_Array(et)) {
                 elem_is_composite = true;
                 elem_size = et->size;
+                /* Element with zero size means dynamic bounds — the outer
+                 * array must use fat-pointer storage so runtime code can
+                 * compute element size and lay out storage properly. */
+                if (elem_size == 0) {
+                    elem_has_dynamic_size = true;
+                    elem_type = Type_To_Llvm(et);
+                }
             } else {
                 elem_type = Type_To_Llvm(et);
             }
@@ -30596,10 +30712,11 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, " = getelementptr i8, ptr %%__frame_base, i64 %lld\n",
                  (long long)offset);
         } else if (sym->needs_fat_ptr_storage or
-                   (is_any_array and Type_Has_Dynamic_Bounds(ty))) {
-            /* Dynamic-bound arrays need fat pointer storage ({ ptr, ptr }).
-             * Must check BEFORE static constrained array path to avoid
-             * allocating undersized storage when bounds resolve late. */
+                   (is_any_array and Type_Has_Dynamic_Bounds(ty)) or
+                   elem_has_dynamic_size) {
+            /* Dynamic-bound arrays — or arrays whose element type has
+             * dynamic size — need fat pointer storage ({ ptr, ptr }).
+             * Runtime code computes actual sizes and allocates data. */
             Emit(cg, "  %%");
             Emit_Symbol_Name(cg, sym);
             Emit(cg, " = alloca " FAT_PTR_TYPE "\n");
@@ -31280,6 +31397,7 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
              * 2. Apply component defaults for discriminants and regular components */
 
             /* Initialize discriminant constraints if type is constrained (RM 3.7.2) */
+            Symbol *disc_temps[16]; uint32_t disc_temp_count = 0;
             if (ty->record.has_disc_constraints and ty->record.disc_constraint_values) {
                 for (uint32_t di = 0; di < ty->record.discriminant_count; di++) {
                     Component_Info *dc = &ty->record.components[di];
@@ -31289,14 +31407,43 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     Emit(cg, ", i64 %u  ; disc %.*s init\n", dc->byte_offset,
                          (int)dc->name.length, dc->name.data);
                     const char *dt = Type_To_Llvm(dc->component_type);
+                    uint32_t val;
                     /* Use runtime expression if available, else static value */
                     if (ty->record.disc_constraint_exprs and ty->record.disc_constraint_exprs[di]) {
-                        uint32_t val = Generate_Expression(cg, ty->record.disc_constraint_exprs[di]);
+                        val = Generate_Expression(cg, ty->record.disc_constraint_exprs[di]);
                         val = Emit_Coerce_Default_Int(cg, val, dt);
                         Emit(cg, "  store %s %%t%u, ptr %%t%u  ; disc runtime init\n", dt, val, dp);
                     } else {
-                        Emit(cg, "  store %s %lld, ptr %%t%u\n", dt,
-                             (long long)ty->record.disc_constraint_values[di], dp);
+                        val = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = add %s 0, %lld\n", val, dt,
+                             (long long)ty->record.disc_constraint_values[di]);
+                        Emit(cg, "  store %s %%t%u, ptr %%t%u\n", dt, val, dp);
+                    }
+                    /* Find discriminant symbols referenced by dependent array
+                     * bounds and store the constraint value into a temp alloca.
+                     * Needed so Generate_Expression can load disc values for
+                     * dependent component size computation. */
+                    for (uint32_t ci2 = 0; ci2 < ty->record.component_count; ci2++) {
+                        Type_Info *ct2 = ty->record.components[ci2].component_type;
+                        if (not ct2 or not Type_Is_Array_Like(ct2)) continue;
+                        for (uint32_t xi = 0; xi < ct2->array.index_count; xi++) {
+                            Type_Bound *bds[2] = { &ct2->array.indices[xi].low_bound,
+                                                   &ct2->array.indices[xi].high_bound };
+                            for (int bi2 = 0; bi2 < 2; bi2++) {
+                                if (bds[bi2]->kind == BOUND_EXPR and bds[bi2]->expr and
+                                    bds[bi2]->expr->symbol and
+                                    Slice_Equal_Ignore_Case(bds[bi2]->expr->symbol->name, dc->name)) {
+                                    Symbol *dsym = bds[bi2]->expr->symbol;
+                                    if (dsym->disc_agg_temp == 0) {
+                                        uint32_t dt2 = Emit_Temp(cg);
+                                        Emit(cg, "  %%t%u = alloca %s  ; decl disc temp\n", dt2, dt);
+                                        Emit(cg, "  store %s %%t%u, ptr %%t%u\n", dt, val, dt2);
+                                        dsym->disc_agg_temp = dt2;
+                                        if (disc_temp_count < 16) disc_temps[disc_temp_count++] = dsym;
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 sym->is_disc_constrained = true;
@@ -31325,8 +31472,31 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     const char *dt = Type_To_Llvm(dc->component_type);
                     if (ct->record.disc_constraint_exprs and
                         ct->record.disc_constraint_exprs[di]) {
-                        uint32_t val = Generate_Expression(
-                            cg, ct->record.disc_constraint_exprs[di]);
+                        /* Check if the constraint expression references a discriminant
+                         * of the parent record — if so, load from the record variable
+                         * at the discriminant's offset rather than via Generate_Expression
+                         * (the discriminant has no standalone alloca, RM 3.7.2). */
+                        Syntax_Node *cexpr = ct->record.disc_constraint_exprs[di];
+                        uint32_t val = 0;
+                        bool found_parent_disc = false;
+                        if (cexpr->kind == NK_IDENTIFIER and cexpr->symbol) {
+                            for (uint32_t pdi = 0; pdi < ty->record.discriminant_count; pdi++) {
+                                Component_Info *pdc = &ty->record.components[pdi];
+                                if (Slice_Equal_Ignore_Case(pdc->name, cexpr->symbol->name)) {
+                                    val = Emit_Temp(cg);
+                                    Emit(cg, "  %%t%u = getelementptr i8, ptr %%", val);
+                                    Emit_Symbol_Name(cg, sym);
+                                    Emit(cg, ", i64 %u\n", pdc->byte_offset);
+                                    uint32_t ld = Emit_Temp(cg);
+                                    Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", ld, dt, val);
+                                    val = ld;
+                                    found_parent_disc = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (not found_parent_disc)
+                            val = Generate_Expression(cg, cexpr);
                         val = Emit_Coerce_Default_Int(cg, val, dt);
                         Emit(cg, "  store %s %%t%u, ptr %%t%u  ; subcomp disc runtime init\n",
                              dt, val, dp);
@@ -31455,6 +31625,9 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     }
                 }
             }
+            /* Clear disc_agg_temp so it doesn't leak to other contexts */
+            for (uint32_t di = 0; di < disc_temp_count; di++)
+                disc_temps[di]->disc_agg_temp = 0;
         }
     }
 }
@@ -32026,6 +32199,116 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
         }
     }
 
+    /* Allocate and initialize generic formal object parameters (RM 12.4).
+     * These are variables visible inside the generic body but not subprogram
+     * parameters — they carry the actual values provided at instantiation.
+     *
+     * Storage type must match the expression's value representation:
+     *   - String literals and unconstrained arrays produce {ptr,ptr} fat ptrs
+     *   - Scalar values and constrained arrays produce their base type
+     * We use Expression_Llvm_Type to determine the correct storage width. */
+    {
+        Symbol *tmpl = inst_sym->generic_template;
+        Syntax_Node *gen_decl = tmpl ? tmpl->declaration : NULL;
+        if (gen_decl and gen_decl->kind == NK_GENERIC_DECL) {
+            Node_List *formals = &gen_decl->generic_decl.formals;
+            uint32_t ai = 0;
+            for (uint32_t fi = 0; fi < formals->count; fi++) {
+                Syntax_Node *formal = formals->items[fi];
+                if (formal->kind == NK_GENERIC_OBJECT_PARAM) {
+                    for (uint32_t j = 0; j < formal->generic_object_param.names.count; j++) {
+                        Syntax_Node *fname = formal->generic_object_param.names.items[j];
+                        Symbol *obj_sym = fname ? fname->symbol : NULL;
+                        Syntax_Node *actual_expr = (ai < inst_sym->generic_actual_count)
+                            ? inst_sym->generic_actuals[ai].actual_expr : NULL;
+                        /* Use default expression if no actual provided (RM 12.4) */
+                        if (not actual_expr)
+                            actual_expr = formal->generic_object_param.default_expr;
+                        if (obj_sym and actual_expr) {
+                            /* Resolve type from formal's type mark (RM 12.4) */
+                            Type_Info *obj_type = obj_sym->type;
+                            if (not obj_type) {
+                                Syntax_Node *ot = formal->generic_object_param.object_type;
+                                if (ot) {
+                                    if (ot->type) obj_type = ot->type;
+                                    else if (ot->symbol and ot->symbol->type)
+                                        obj_type = ot->symbol->type;
+                                    else {
+                                        Symbol *ts = Symbol_Find(cg->sm,
+                                            ot->string_val.text);
+                                        if (ts and ts->type) obj_type = ts->type;
+                                    }
+                                }
+                            }
+                            /* Set type on expression for codegen (aggregates need it) */
+                            if (obj_type and not actual_expr->type)
+                                actual_expr->type = obj_type;
+                            /* Determine storage type for formal object (RM 12.4):
+                             * - Unconstrained/dynamic arrays: fat pointer {ptr,ptr}
+                             * - Constrained arrays: [N x elem] alloca, store data
+                             * - Scalars/records: native type */
+                            bool needs_fat = false;
+                            if (obj_type and Type_Is_Array_Like(obj_type) and
+                                (Type_Has_Dynamic_Bounds(obj_type) or
+                                 Type_Is_Unconstrained_Array(obj_type)))
+                                needs_fat = true;
+                            const char *ts;
+                            if (needs_fat) {
+                                ts = FAT_PTR_TYPE;
+                            } else if (obj_type and Type_Is_Constrained_Array(obj_type) and
+                                       obj_type->size > 0) {
+                                ts = Type_To_Llvm(obj_type);
+                            } else {
+                                ts = obj_type ? Type_To_Llvm(obj_type)
+                                             : Expression_Llvm_Type(cg, actual_expr);
+                            }
+                            obj_sym->needs_fat_ptr_storage = needs_fat;
+                            Emit(cg, "  %%");
+                            Emit_Symbol_Name(cg, obj_sym);
+                            Emit(cg, " = alloca %s  ; generic formal object\n", ts);
+                            uint32_t val = Generate_Expression(cg, actual_expr);
+                            if (val > 0) {
+                                if (needs_fat) {
+                                    val = Fat_Ptr_As_Value(cg, val);
+                                    Emit(cg, "  store " FAT_PTR_TYPE " %%t%u, ptr %%", val);
+                                } else if (obj_type and Type_Is_Constrained_Array(obj_type)) {
+                                    /* Constrained array: extract data ptr from fat ptr if needed */
+                                    const char *vty = Temp_Get_Type(cg, val);
+                                    bool is_fat_val = (vty and strcmp(vty, FAT_PTR_TYPE) == 0) or
+                                                      Temp_Is_Fat_Alloca(cg, val);
+                                    if (is_fat_val) {
+                                        if (Temp_Is_Fat_Alloca(cg, val)) {
+                                            uint32_t lv = Emit_Temp(cg);
+                                            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", lv, val);
+                                            val = lv;
+                                        }
+                                        uint32_t dp = Emit_Temp(cg);
+                                        Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n", dp, val);
+                                        val = dp;
+                                    }
+                                    uint32_t sz = obj_type->size > 0 ? obj_type->size : 1;
+                                    Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%");
+                                    Emit_Symbol_Name(cg, obj_sym);
+                                    Emit(cg, ", ptr %%t%u, i64 %u, i1 false)\n", val, sz);
+                                    val = 0; /* Skip the store below */
+                                } else {
+                                    Emit(cg, "  store %s %%t%u, ptr %%", ts, val);
+                                }
+                                if (val > 0) {
+                                    Emit_Symbol_Name(cg, obj_sym);
+                                    Emit(cg, "\n");
+                                }
+                            }
+                        }
+                        ai++;
+                    }
+                } else {
+                    ai++;
+                }
+            }
+        }
+    }
+
     /* Generate the body statements with type substitution.
      * Per Ada RM 11.4, exception handlers in the generic template body
      * apply to each instantiation.  Emit_Subprogram_Body
@@ -32159,6 +32442,7 @@ static void Generate_Task_Body(Code_Generator *cg, Syntax_Node *node) {
     cg->temp_id = 1;
     memset(cg->temp_types, 0, sizeof(cg->temp_types));
     memset(cg->temp_type_keys, 0, sizeof(cg->temp_type_keys));
+    memset(cg->temp_is_fat_alloca, 0, sizeof(cg->temp_is_fat_alloca));
 
     /* Create frame aliases for accessing enclosing scope variables.
      * Task bodies can reference variables from the enclosing scope
@@ -32389,6 +32673,7 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 cg->temp_id = 1;
                 memset(cg->temp_types, 0, sizeof(cg->temp_types));
     memset(cg->temp_type_keys, 0, sizeof(cg->temp_type_keys));
+    memset(cg->temp_is_fat_alloca, 0, sizeof(cg->temp_is_fat_alloca));
 
                 /* Start package-level tasks */
                 if (has_pkg_tasks and pkg_spec_node) {
@@ -32555,6 +32840,7 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                         cg->temp_id = 1;
                         memset(cg->temp_types, 0, sizeof(cg->temp_types));
                         memset(cg->temp_type_keys, 0, sizeof(cg->temp_type_keys));
+                        memset(cg->temp_is_fat_alloca, 0, sizeof(cg->temp_is_fat_alloca));
                         /* For each non-static exported var, find the generic actual
                          * that corresponds to its init expression and evaluate it. */
                         Syntax_Node *tmpl_spec = template->generic_unit;
@@ -33042,6 +33328,7 @@ static void Generate_Type_Equality_Function(Code_Generator *cg, Type_Info *t) {
     cg->temp_id = 2;  /* Start after %0 and %1 */
     memset(cg->temp_types, 0, sizeof(cg->temp_types));
     memset(cg->temp_type_keys, 0, sizeof(cg->temp_type_keys));
+    memset(cg->temp_is_fat_alloca, 0, sizeof(cg->temp_is_fat_alloca));
 
     if (Type_Is_Record(t)) {
         if (t->record.component_count == 0) {
@@ -34711,7 +34998,7 @@ static void Compile_File(const char *input_path, const char *output_path) {
         }
 
         Emit(cg, "\n; C main entry point\n");
-        Emit(cg, "; Elaboration order computed by GNAT LLVM-style algorithm (§15.7)\n");
+        Emit(cg, "; Elaboration order computed by GNAT LLVM-style algorithm (S15.7)\n");
         Emit(cg, "define i32 @main() {\n");
 
         /* Call elaboration functions in computed dependency order.
