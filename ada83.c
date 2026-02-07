@@ -14169,8 +14169,9 @@ static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src) 
     Loading_Set_Add(name);
 
     /* Parse the package (ALI not available or stale) */
-    char filename[256];
-    snprintf(filename, sizeof(filename), "%.*s.ads", (int)name.length, name.data);
+    size_t fn_len = name.length + 4; /* ".ads" */
+    char *filename = Arena_Allocate(fn_len + 1);
+    snprintf(filename, fn_len + 1, "%.*s.ads", (int)name.length, name.data);
     Parser p = Parser_New(src, strlen(src), filename);
     Syntax_Node *cu = Parse_Compilation_Unit(&p);
 
@@ -14330,9 +14331,10 @@ static void Load_Package_Spec(Symbol_Manager *sm, String_Slice name, char *src) 
     char *body_src = Lookup_Path_Body(name);
     if (body_src and Loaded_Body_Count < 128) {
         Mark_Body_Loaded(name);
-        /* Parse the body */
-        char body_filename[256];
-        snprintf(body_filename, sizeof(body_filename), "%.*s.adb", (int)name.length, name.data);
+        /* Parse the body — arena-allocate filename so AST Source_Locations stay valid */
+        size_t bfn_len = name.length + 4;
+        char *body_filename = Arena_Allocate(bfn_len + 1);
+        snprintf(body_filename, bfn_len + 1, "%.*s.adb", (int)name.length, name.data);
         Parser body_parser = Parser_New(body_src, strlen(body_src), body_filename);
         Syntax_Node *body_cu = Parse_Compilation_Unit(&body_parser);
 
@@ -14824,9 +14826,10 @@ static void Expand_Generic_Package(Symbol_Manager *sm, Symbol *instance_sym) {
 
     char *body_src = Lookup_Path_Body(pkg_name);
     if (body_src) {
-        /* Parse the body */
-        char body_filename[256];
-        snprintf(body_filename, sizeof(body_filename), "%.*s.adb",
+        /* Parse the body — arena-allocate filename for Source_Location stability */
+        size_t bfn_len = pkg_name.length + 4;
+        char *body_filename = Arena_Allocate(bfn_len + 1);
+        snprintf(body_filename, bfn_len + 1, "%.*s.adb",
                  (int)pkg_name.length, pkg_name.data);
         Parser body_parser = Parser_New(body_src, strlen(body_src), body_filename);
         Syntax_Node *body_cu = Parse_Compilation_Unit(&body_parser);
@@ -15445,12 +15448,17 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
 
                 /* Check if there's already a matching symbol from package spec.
                  * This happens when resolving a subprogram body that completes a spec.
-                 * For overloaded subprograms, must match parameter count AND types. */
+                 * For overloaded subprograms, must match parameter count AND types.
+                 * Per RM 6.3, only match specs declared in the same scope — not
+                 * USE-visible homographs from other packages (those are hidden). */
                 Symbol_Kind expected_kind = node->kind == NK_PROCEDURE_SPEC ?
                                            SYMBOL_PROCEDURE : SYMBOL_FUNCTION;
+                Symbol *scope_owner = sm->current_scope ? sm->current_scope->owner : NULL;
                 Symbol *sym = Symbol_Find(sm, node->subprogram_spec.name);
                 while (sym) {
-                    if (sym->kind == expected_kind and sym->parameter_count == total_params) {
+                    /* Only match specs from the current declarative region */
+                    if (sym->kind == expected_kind and sym->parameter_count == total_params
+                        and sym->parent == scope_owner) {
                         /* Check parameter types match */
                         bool types_match = true;
                         uint32_t param_idx = 0;
@@ -15466,7 +15474,6 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                 for (uint32_t j = 0; j < ps->param_spec.names.count; j++) {
                                     if (param_idx < sym->parameter_count) {
                                         Type_Info *spec_type = sym->parameters[param_idx].param_type;
-                                        /* Use Types_Same_Named for private type partial/full views */
                                         if (not Types_Same_Named(body_type, spec_type)) {
                                             types_match = false;
                                             break;
@@ -15476,13 +15483,10 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                 }
                             }
                         }
-                        /* For functions, also check return type matches (allows
-                         * overloading on return type per Ada RM 6.6) */
                         if (types_match and expected_kind == SYMBOL_FUNCTION) {
                             if (node->subprogram_spec.return_type) {
                                 Resolve_Expression(sm, node->subprogram_spec.return_type);
                                 Type_Info *body_return = node->subprogram_spec.return_type->type;
-                                /* Use Types_Same_Named for private type partial/full views */
                                 if (not Types_Same_Named(body_return, sym->return_type)) {
                                     types_match = false;
                                 }
@@ -30453,6 +30457,10 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             if (Type_Is_Record(et) or Type_Is_Constrained_Array(et)) {
                 elem_is_composite = true;
                 elem_size = et->size;
+                /* Fallback: if composite elem has unknown size (dynamic bounds),
+                 * still set elem_type so alloca doesn't emit (null). */
+                if (elem_size == 0)
+                    elem_type = Type_To_Llvm(et);
             } else {
                 elem_type = Type_To_Llvm(et);
             }
@@ -31325,8 +31333,31 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     const char *dt = Type_To_Llvm(dc->component_type);
                     if (ct->record.disc_constraint_exprs and
                         ct->record.disc_constraint_exprs[di]) {
-                        uint32_t val = Generate_Expression(
-                            cg, ct->record.disc_constraint_exprs[di]);
+                        /* Check if the constraint expression references a discriminant
+                         * of the parent record — if so, load from the record variable
+                         * at the discriminant's offset rather than via Generate_Expression
+                         * (the discriminant has no standalone alloca, RM 3.7.2). */
+                        Syntax_Node *cexpr = ct->record.disc_constraint_exprs[di];
+                        uint32_t val = 0;
+                        bool found_parent_disc = false;
+                        if (cexpr->kind == NK_IDENTIFIER and cexpr->symbol) {
+                            for (uint32_t pdi = 0; pdi < ty->record.discriminant_count; pdi++) {
+                                Component_Info *pdc = &ty->record.components[pdi];
+                                if (Slice_Equal_Ignore_Case(pdc->name, cexpr->symbol->name)) {
+                                    val = Emit_Temp(cg);
+                                    Emit(cg, "  %%t%u = getelementptr i8, ptr %%", val);
+                                    Emit_Symbol_Name(cg, sym);
+                                    Emit(cg, ", i64 %u\n", pdc->byte_offset);
+                                    uint32_t ld = Emit_Temp(cg);
+                                    Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", ld, dt, val);
+                                    val = ld;
+                                    found_parent_disc = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (not found_parent_disc)
+                            val = Generate_Expression(cg, cexpr);
                         val = Emit_Coerce_Default_Int(cg, val, dt);
                         Emit(cg, "  store %s %%t%u, ptr %%t%u  ; subcomp disc runtime init\n",
                              dt, val, dp);
@@ -32021,6 +32052,50 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
                         }
                     }
                     param_idx++;
+                }
+            }
+        }
+    }
+
+    /* Allocate and initialize generic formal object parameters (RM 12.4).
+     * These are variables visible inside the generic body but not subprogram
+     * parameters — they carry the actual values provided at instantiation. */
+    {
+        Symbol *tmpl = inst_sym->generic_template;
+        Syntax_Node *gen_decl = tmpl ? tmpl->declaration : NULL;
+        if (gen_decl and gen_decl->kind == NK_GENERIC_DECL) {
+            Node_List *formals = &gen_decl->generic_decl.formals;
+            uint32_t ai = 0;
+            for (uint32_t fi = 0; fi < formals->count; fi++) {
+                Syntax_Node *formal = formals->items[fi];
+                if (formal->kind == NK_GENERIC_OBJECT_PARAM) {
+                    for (uint32_t j = 0; j < formal->generic_object_param.names.count; j++) {
+                        Syntax_Node *fname = formal->generic_object_param.names.items[j];
+                        Symbol *obj_sym = fname ? fname->symbol : NULL;
+                        Syntax_Node *actual_expr = (ai < inst_sym->generic_actual_count)
+                            ? inst_sym->generic_actuals[ai].actual_expr : NULL;
+                        if (obj_sym and actual_expr) {
+                            Type_Info *obj_type = obj_sym->type;
+                            const char *ts = Type_To_Llvm(obj_type);
+                            bool is_fat = Llvm_Type_Is_Fat_Pointer(ts);
+                            Emit(cg, "  %%");
+                            Emit_Symbol_Name(cg, obj_sym);
+                            Emit(cg, " = alloca %s  ; generic formal object\n", ts);
+                            uint32_t val = Generate_Expression(cg, actual_expr);
+                            if (val > 0) {
+                                if (is_fat) {
+                                    Emit(cg, "  store { ptr, ptr } %%t%u, ptr %%", val);
+                                } else {
+                                    Emit(cg, "  store %s %%t%u, ptr %%", ts, val);
+                                }
+                                Emit_Symbol_Name(cg, obj_sym);
+                                Emit(cg, "\n");
+                            }
+                        }
+                        ai++;
+                    }
+                } else {
+                    ai++;
                 }
             }
         }
@@ -34711,7 +34786,7 @@ static void Compile_File(const char *input_path, const char *output_path) {
         }
 
         Emit(cg, "\n; C main entry point\n");
-        Emit(cg, "; Elaboration order computed by GNAT LLVM-style algorithm (§15.7)\n");
+        Emit(cg, "; Elaboration order computed by GNAT LLVM-style algorithm (S15.7)\n");
         Emit(cg, "define i32 @main() {\n");
 
         /* Call elaboration functions in computed dependency order.

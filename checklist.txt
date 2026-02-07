@@ -1,0 +1,37 @@
+CHECKLIST — Ada83 c43 Test Group Refactoring
+=============================================
+
+ORIGINAL PROMPT:
+In the pursuit of high-quality code (low line count (e.g. low undue
+complexity) and high feature/correctness) - refactor and fix ada83.c to pass
+a single C-test group completely (e.g. cXX) with much better Haskell-like C99
+and tight smart code-golfing with, ironically, textbook "Literate Programming"
+style.
+
+Do NOT skip around - when you encounter a problem look at it as an opportunity
+to finally attack a big problem.
+
+Use the GNAT LLVM source to see what is done there before making changes.
+
+Start with c43. Test exclusively with run_acats.sh
+
+Use the C-series tests (done in batches) to guide you. MAKE SURE TO STORE
+RESULTS IN THE REPO TO AVOID WASTING TIME - EACH RUN TAKES OVER A MIN!
+JUST SLOG THROUGH THEM, PICK AN ISSUE, FIX IT IN FULL THEN MOVE ON - NO
+DANCING AROUND FINDING "SIMPLE" OR "EASY" WINS. NO USING THE WORD "COMPLEX".
+
+TARGET: c43 group — 53 tests (aggregates and constraints)
+
+BASELINE (run 1): 0/53 pass, 0/53 fail, 53/53 skip
+  - 49 tests: BIND:unresolved_symbols
+  - 3 tests: COMPILE errors (c43205b, c43205e, c43205h)
+  - 1 test: COMPILE empty error (c43224a)
+
+ISSUES TO FIX:
+[ ] 1. Unresolved symbols at link time (49 tests)
+[ ] 2. Compile error: "untyped aggregate" (c43205b, c43205h)
+[ ] 3. Compile error: "concatenation required" (c43205e)
+[ ] 4. Compile error: unknown (c43224a)
+
+RUNS:
+  Run 1: 0 pass / 0 fail / 53 skip (baseline)
