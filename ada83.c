@@ -16,7 +16,7 @@
  * §11   Symbol_Table       - Scoped name resolution
  * §12   Semantic_Pass      - Type checking and resolution
  * §15   ALI_Writer         - GNAT-compatible library info
- * §15.7 Elaboration_Model  - GNAT LLVM-style dependency ordering (NEW)
+ * §15.7 Elaboration_Model  - Dependency ordering
  * §14   Include_Path       - Package loading & search paths
  * §16   Generic_Expansion  - Macro-style instantiation
  * §13   Code_Generator     - LLVM IR emission
