@@ -26245,6 +26245,11 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             }
         }
 
+        /* Cache of pre-evaluated choice-bound SSAs from the dynamic alloc
+         * phase, to avoid double evaluation of side-effecting expressions. */
+        Syntax_Node *pre_eval_lo_expr = NULL, *pre_eval_hi_expr = NULL;
+        uint32_t pre_eval_lo_ssa = 0, pre_eval_hi_ssa = 0;
+
         /* Early scan: detect if any named choice has non-integer bounds
          * (e.g. T'RANGE desugared to T'FIRST..T'LAST).  These force the
          * dynamic aggregate path since bounds aren't compile-time constants. */
@@ -26350,6 +26355,13 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             /* Dynamic stack allocation */
             uint32_t base = Emit_Temp(cg);
             Emit(cg, "  %%t%u = alloca i8, %s %%t%u  ; dynamic array aggregate\n", base, iat_bnd, clamped);
+
+            /* Cache pre-evaluated choice bound SSAs to avoid double evaluation
+             * of side-effecting expressions like CALC(F,1)..CALC(G,9). */
+            pre_eval_lo_expr = (low_bound.kind == BOUND_EXPR) ? low_bound.expr : NULL;
+            pre_eval_hi_expr = (high_bound.kind == BOUND_EXPR) ? high_bound.expr : NULL;
+            pre_eval_lo_ssa = low_val;
+            pre_eval_hi_ssa = high_val;
 
             /* Classify items: find OTHERS clause (value generated in loop below) */
             Agg_Class ac = Agg_Classify(node);
@@ -26537,6 +26549,8 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                             rng_low_val = Emit_Temp(cg);
                             Emit(cg, "  %%t%u = add %s 0, %lld\n", rng_low_val, Integer_Arith_Type(cg),
                                  (long long)choice->range.low->integer_lit.value);
+                        } else if (pre_eval_lo_expr and pre_eval_lo_expr == choice->range.low) {
+                            rng_low_val = pre_eval_lo_ssa;
                         } else {
                             rng_low_val = Generate_Expression(cg, choice->range.low);
                         }
@@ -26544,6 +26558,8 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                             rng_high_val = Emit_Temp(cg);
                             Emit(cg, "  %%t%u = add %s 0, %lld\n", rng_high_val, Integer_Arith_Type(cg),
                                  (long long)choice->range.high->integer_lit.value);
+                        } else if (pre_eval_hi_expr and pre_eval_hi_expr == choice->range.high) {
+                            rng_high_val = pre_eval_hi_ssa;
                         } else {
                             rng_high_val = Generate_Expression(cg, choice->range.high);
                         }
@@ -26596,6 +26612,81 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         Type_Info *elem_ti = agg_type->array.element_type;
                         bool ecomp = Agg_Elem_Is_Composite(elem_ti, multidim);
 
+                        /* RM 4.3.2(6): for (F..G => (H..I => J)), inner
+                         * choice bounds H,I are evaluated exactly once,
+                         * outside the outer loop.  Detect and inline. */
+                        bool dyn_inline_md = false;
+                        uint32_t md_inn_lo = 0, md_inn_hi = 0;
+                        Syntax_Node *md_inn_val = NULL;
+                        if (multidim and
+                            item->association.expression->kind == NK_AGGREGATE) {
+                            Syntax_Node *ia = item->association.expression;
+                            for (uint32_t qi = 0;
+                                 qi < ia->aggregate.items.count and !dyn_inline_md;
+                                 qi++) {
+                                Syntax_Node *qi2 = ia->aggregate.items.items[qi];
+                                if (qi2->kind != NK_ASSOCIATION) continue;
+                                if (not md_inn_val)
+                                    md_inn_val = qi2->association.expression;
+                                for (uint32_t qc = 0;
+                                     qc < qi2->association.choices.count; qc++) {
+                                    Syntax_Node *qch =
+                                        qi2->association.choices.items[qc];
+                                    if (qch->kind == NK_RANGE and
+                                        (qch->range.low->kind != NK_INTEGER or
+                                         qch->range.high->kind != NK_INTEGER))
+                                        dyn_inline_md = true;
+                                }
+                            }
+                            if (dyn_inline_md) {
+                                const char *bt = Array_Bound_Llvm_Type(agg_type);
+                                for (uint32_t qi = 0;
+                                     qi < ia->aggregate.items.count; qi++) {
+                                    Syntax_Node *qi2 =
+                                        ia->aggregate.items.items[qi];
+                                    if (qi2->kind != NK_ASSOCIATION) continue;
+                                    for (uint32_t qc = 0;
+                                         qc < qi2->association.choices.count;
+                                         qc++) {
+                                        Syntax_Node *qch =
+                                            qi2->association.choices.items[qc];
+                                        if (qch->kind != NK_RANGE) continue;
+                                        if (qch->range.low->kind != NK_INTEGER){
+                                            uint32_t ev = Generate_Expression(
+                                                cg, qch->range.low);
+                                            const char *st =
+                                                Expression_Llvm_Type(
+                                                    cg, qch->range.low);
+                                            md_inn_lo = (strcmp(st, bt) != 0)
+                                                ? Emit_Convert(cg, ev, st, bt)
+                                                : ev;
+                                        } else {
+                                            md_inn_lo = Emit_Static_Int(cg,
+                                                (int128_t)qch->range.low
+                                                    ->integer_lit.value, bt);
+                                        }
+                                        if (qch->range.high->kind !=
+                                            NK_INTEGER) {
+                                            uint32_t ev = Generate_Expression(
+                                                cg, qch->range.high);
+                                            const char *st =
+                                                Expression_Llvm_Type(
+                                                    cg, qch->range.high);
+                                            md_inn_hi = (strcmp(st, bt) != 0)
+                                                ? Emit_Convert(cg, ev, st, bt)
+                                                : ev;
+                                        } else {
+                                            md_inn_hi = Emit_Static_Int(cg,
+                                                (int128_t)qch->range.high
+                                                    ->integer_lit.value, bt);
+                                        }
+                                        break;
+                                    }
+                                    if (md_inn_lo) break;
+                                }
+                            }
+                        }
+
                         uint32_t loop_var = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = alloca %s\n", loop_var, agg_idx_type);
                         Emit(cg, "  store %s %%t%u, ptr %%t%u\n", agg_idx_type, rng_low_val, loop_var);
@@ -26617,6 +26708,78 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
 
                         Emit_Label_Here(cg, loop_body);
 
+                        if (dyn_inline_md and md_inn_val) {
+                        /* RM 4.3.2(6): inline inner aggregate.
+                         * Inner bounds already evaluated before outer loop.
+                         * Value expression evaluated once per flat component. */
+                        uint32_t scalar_sz = elem_ti ? elem_ti->size : 4;
+                        if (scalar_sz == 0) scalar_sz = 4;
+                        const char *et = elem_ti ? Type_To_Llvm(elem_ti) : "i32";
+                        if (not et) et = "i32";
+                        /* Outer row byte offset */
+                        uint32_t outer_off = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n",
+                             outer_off, agg_idx_type, cur_idx, low_val);
+                        uint32_t outer_bytes = Emit_Temp(cg);
+                        if (rt_row_size) {
+                            Emit(cg, "  %%t%u = mul %s %%t%u, %%t%u\n",
+                                 outer_bytes, agg_idx_type, outer_off,
+                                 rt_row_size);
+                        } else {
+                            Emit(cg, "  %%t%u = mul %s %%t%u, %u\n",
+                                 outer_bytes, agg_idx_type, outer_off,
+                                 elem_size);
+                        }
+                        /* Nested inner loop */
+                        uint32_t inn_var = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = alloca %s\n",
+                             inn_var, agg_idx_type);
+                        Emit(cg, "  store %s %%t%u, ptr %%t%u\n",
+                             agg_idx_type, md_inn_lo, inn_var);
+                        uint32_t inn_hdr = cg->label_id++;
+                        uint32_t inn_body = cg->label_id++;
+                        uint32_t inn_end = cg->label_id++;
+                        Emit(cg, "  br label %%L%u\n", inn_hdr);
+                        cg->block_terminated = true;
+                        Emit_Label_Here(cg, inn_hdr);
+                        uint32_t inn_cur = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
+                             inn_cur, agg_idx_type, inn_var);
+                        uint32_t inn_cmp = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = icmp sle %s %%t%u, %%t%u\n",
+                             inn_cmp, agg_idx_type, inn_cur, md_inn_hi);
+                        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                             inn_cmp, inn_body, inn_end);
+                        cg->block_terminated = true;
+                        Emit_Label_Here(cg, inn_body);
+                        /* Value expression — once per (outer,inner) */
+                        uint32_t val = Generate_Expression(cg, md_inn_val);
+                        /* Flat byte offset */
+                        uint32_t inn_off = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n",
+                             inn_off, agg_idx_type, inn_cur, md_inn_lo);
+                        uint32_t inn_bytes = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = mul %s %%t%u, %u\n",
+                             inn_bytes, agg_idx_type, inn_off, scalar_sz);
+                        uint32_t flat_off = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = add %s %%t%u, %%t%u\n",
+                             flat_off, agg_idx_type, outer_bytes, inn_bytes);
+                        uint32_t ep = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u,"
+                             " %s %%t%u\n", ep, base, agg_idx_type, flat_off);
+                        Emit(cg, "  store %s %%t%u, ptr %%t%u\n",
+                             et, val, ep);
+                        /* Increment inner */
+                        uint32_t inn_next = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = add %s %%t%u, 1\n",
+                             inn_next, agg_idx_type, inn_cur);
+                        Emit(cg, "  store %s %%t%u, ptr %%t%u\n",
+                             agg_idx_type, inn_next, inn_var);
+                        Emit(cg, "  br label %%L%u\n", inn_hdr);
+                        cg->block_terminated = true;
+                        Emit_Label_Here(cg, inn_end);
+                        cg->block_terminated = false;
+                        } else {
                         /* RM 4.3.2(6): expression evaluated once per component */
                         uint32_t val = Agg_Resolve_Elem(cg,
                             item->association.expression, multidim,
@@ -26627,6 +26790,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                              arr_idx, agg_idx_type, cur_idx, low_val);
                         Agg_Store_At_Dynamic(cg, base, val, arr_idx,
                             agg_idx_type, elem_type, elem_size, rt_row_size, ecomp);
+                        }
 
                         /* Increment and loop */
                         uint32_t next_idx = Emit_Temp(cg);
@@ -27094,6 +27258,12 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         bool must_eval_high = (choice->range.high->kind != NK_INTEGER);
                         if (not must_eval_low) {
                             rng_low = (int128_t)choice->range.low->integer_lit.value;
+                        } else if (pre_eval_lo_expr and pre_eval_lo_expr == choice->range.low) {
+                            /* Reuse bound already evaluated during dynamic alloc */
+                            rng_lo_ssa = pre_eval_lo_ssa;
+                            rng_low = low;
+                            if (not agg_type->array.is_constrained and agg_lo_ssa == 0)
+                                agg_lo_ssa = rng_lo_ssa;
                         } else {
                             uint32_t ev = Generate_Expression(cg, choice->range.low);
                             rng_low = low;
@@ -27106,6 +27276,12 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         }
                         if (not must_eval_high) {
                             rng_high = (int128_t)choice->range.high->integer_lit.value;
+                        } else if (pre_eval_hi_expr and pre_eval_hi_expr == choice->range.high) {
+                            /* Reuse bound already evaluated during dynamic alloc */
+                            rng_hi_ssa = pre_eval_hi_ssa;
+                            rng_high = high;
+                            if (not agg_type->array.is_constrained and agg_hi_ssa == 0)
+                                agg_hi_ssa = rng_hi_ssa;
                         } else {
                             uint32_t ev = Generate_Expression(cg, choice->range.high);
                             rng_high = high;
