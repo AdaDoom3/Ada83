@@ -25845,9 +25845,180 @@ static bool Is_Others_Choice(Syntax_Node *choice) {
             Slice_Equal_Ignore_Case(choice->string_val.text, S("others"))));
 }
 
+/* ── § 13a: Array Aggregate Helpers (RM 4.3.2) ──────────────────────
+ *
+ * These helpers factor out the repeated patterns in Generate_Aggregate:
+ *   Agg_Classify       — count positional/named/others items
+ *   Agg_Resolve_Elem   — generate element value, extract from fat ptr
+ *   Agg_Store_At       — store element at array index (scalar or composite)
+ *   Agg_Emit_Fill_Loop — emit a loop that fills a range with a value
+ *   Agg_Wrap_Fat_Ptr   — wrap data+bounds into { ptr, ptr }
+ *
+ * Design: each helper is a pure function of its arguments — no hidden
+ * state, no implicit coupling.  Haskell-flavoured C99 with `and`/`or`. */
+
+/* ── Agg_Classify: classify aggregate items into positional / named / others */
+typedef struct {
+    uint32_t     n_positional;  /* count of bare (non-association) items    */
+    bool         has_named;     /* any NK_ASSOCIATION items?                */
+    bool         has_others;    /* is there an OTHERS choice?              */
+    Syntax_Node *others_expr;   /* expression of OTHERS association (or NULL) */
+} Agg_Class;
+
+static Agg_Class Agg_Classify(Syntax_Node *node) {
+    Agg_Class r = {0, false, false, NULL};
+    for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
+        Syntax_Node *item = node->aggregate.items.items[i];
+        if (item->kind == NK_ASSOCIATION) {
+            r.has_named = true;
+            if (item->association.choices.count > 0 and
+                Is_Others_Choice(item->association.choices.items[0])) {
+                r.has_others   = true;
+                r.others_expr  = item->association.expression;
+            }
+        } else {
+            r.n_positional++;
+        }
+    }
+    return r;
+}
+
+/* ── Agg_Resolve_Elem: generate element value and unwrap fat ptrs.
+ *
+ * Given an expression node, generates the value and, depending on the
+ * target context, extracts the data pointer from fat pointers or
+ * converts the scalar type.  Returns the SSA temp ready for storage.
+ *
+ *   multidim          — are we generating a multi-dimensional array?
+ *   elem_is_composite — is the element type composite (record/array/row)?
+ *   agg_type          — the enclosing array's Type_Info
+ *   elem_type         — LLVM type string for scalar elements (e.g. "i32")
+ *   elem_ti           — Type_Info* for the element subtype (for checks)  */
+static uint32_t Agg_Resolve_Elem(Code_Generator *cg, Syntax_Node *expr,
+    bool multidim, bool elem_is_composite, Type_Info *agg_type,
+    const char *elem_type, Type_Info *elem_ti)
+{
+    uint32_t val = Generate_Expression(cg, expr);
+
+    /* Fat pointer sources: extract data pointer for composite elements.
+     * Three cases: (a) normal fat ptr, (b) dynamic inner aggregate fat ptr,
+     * (c) non-fat-ptr inner aggregate. */
+    if (elem_is_composite) {
+        if (Expression_Produces_Fat_Pointer(expr, expr->type)) {
+            val = Emit_Fat_Pointer_Data(cg, val,
+                      Array_Bound_Llvm_Type(agg_type));
+        } else if (multidim and expr->kind == NK_AGGREGATE and
+                   expr->type and Type_Has_Dynamic_Bounds(expr->type)) {
+            uint32_t loaded = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n",
+                 loaded, val);
+            val = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE
+                 " %%t%u, 0\n", val, loaded);
+        }
+    } else {
+        /* Scalar: type-convert and apply fixed-point SMALL if needed. */
+        const char *src_type = Expression_Llvm_Type(cg, expr);
+        if (elem_ti and elem_ti->kind == TYPE_FIXED and Is_Float_Type(src_type)) {
+            double small = elem_ti->fixed.small;
+            if (small <= 0) small = elem_ti->fixed.delta > 0
+                                  ? elem_ti->fixed.delta : 1.0;
+            uint64_t sb; memcpy(&sb, &small, sizeof(sb));
+            uint32_t st = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; small\n",
+                 st, (unsigned long long)sb);
+            uint32_t dv = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = fdiv %s %%t%u, %%t%u  ; /small\n",
+                 dv, src_type, val, st);
+            val = dv;
+        }
+        val = Emit_Convert(cg, val, src_type, elem_type);
+    }
+    return val;
+}
+
+/* ── Agg_Store_At: store element at a given array index.
+ *
+ *   base      — SSA temp for the array's alloca
+ *   val       — SSA temp for the element value (scalar) or data ptr (composite)
+ *   idx       — flat zero-based index (compile-time constant)
+ *   elem_type — LLVM type for scalar elements
+ *   elem_size — byte size of one element (for composite memcpy)
+ *   is_composite — memcpy vs store? */
+static void Agg_Store_At_Static(Code_Generator *cg, uint32_t base, uint32_t val,
+    int128_t idx, const char *elem_type, uint32_t elem_size, bool is_composite)
+{
+    uint32_t ptr = Emit_Temp(cg);
+    if (is_composite) {
+        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %s\n",
+             ptr, base, I128_Decimal(idx * (int128_t)elem_size));
+        Emit(cg, "  call void @llvm.memcpy.p0.p0.i64("
+             "ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
+             ptr, val, elem_size);
+    } else {
+        Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %s\n",
+             ptr, elem_type, base, I128_Decimal(idx));
+        Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, val, ptr);
+    }
+}
+
+/* ── Agg_Store_At_Dynamic: store element at a runtime index.
+ *
+ *   arr_idx     — SSA temp: zero-based index (cur_idx - low)
+ *   rt_row_size — SSA temp for runtime row size (0 → use elem_size)
+ *   idx_type    — LLVM type for index arithmetic (e.g. "i32") */
+static void Agg_Store_At_Dynamic(Code_Generator *cg, uint32_t base,
+    uint32_t val, uint32_t arr_idx, const char *idx_type,
+    const char *elem_type, uint32_t elem_size, uint32_t rt_row_size,
+    bool is_composite)
+{
+    if (is_composite) {
+        uint32_t byte_off = Emit_Temp(cg);
+        if (rt_row_size)
+            Emit(cg, "  %%t%u = mul %s %%t%u, %%t%u\n",
+                 byte_off, idx_type, arr_idx, rt_row_size);
+        else
+            Emit(cg, "  %%t%u = mul %s %%t%u, %u\n",
+                 byte_off, idx_type, arr_idx, elem_size);
+        uint32_t ptr = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u\n",
+             ptr, base, idx_type, byte_off);
+        if (rt_row_size) {
+            uint32_t sz64 = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = sext i32 %%t%u to i64\n", sz64, rt_row_size);
+            Emit(cg, "  call void @llvm.memcpy.p0.p0.i64("
+                 "ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
+                 ptr, val, sz64);
+        } else {
+            Emit(cg, "  call void @llvm.memcpy.p0.p0.i64("
+                 "ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
+                 ptr, val, elem_size);
+        }
+    } else {
+        uint32_t ptr = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, %s %%t%u\n",
+             ptr, elem_type, base, idx_type, arr_idx);
+        Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, val, ptr);
+    }
+}
+
+/* ── Agg_Elem_Is_Composite: check if array element needs memcpy vs store.
+ * Multi-dimensional arrays are always composite at the outer level. */
+static inline bool Agg_Elem_Is_Composite(Type_Info *elem_ti, bool multidim) {
+    return multidim or (elem_ti and (Type_Is_Record(elem_ti) or
+                                     Type_Is_Constrained_Array(elem_ti)));
+}
+
 static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
-    /* Generate code for record/array aggregates
-     * Supports: positional, named associations, others clause, ranges */
+    /* ── § 13b: Generate_Aggregate — array & record aggregate codegen.
+     *
+     * Structure:
+     *   1. Array aggregate (RM 4.3.2):
+     *      a. Classify items, compute dimension bounds
+     *      b. Dynamic-bounds path (any BOUND_EXPR): alloca, loop, fat ptr
+     *      c. Static-bounds path: alloca[N], unrolled init, optional fat ptr
+     *   2. Record aggregate (RM 4.3.1):
+     *      a. Alloca, positional/named stores, others fill */
     Type_Info *agg_type = node->type;
 
     if (not agg_type) {
@@ -25876,17 +26047,14 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             if (dim_hi[d].kind == BOUND_NONE and agg_type->array.indices[d].index_type)
                 dim_hi[d] = agg_type->array.indices[d].index_type->high_bound;
         }
-        /* For positional aggregates, override upper bound from element count:
-         * high = low + N - 1.  For multidimensional aggregates, also adjust
-         * inner dimension bounds from the first inner aggregate (RM 4.3.2). */
-        uint32_t n_positional = 0;
-        bool has_named = false;
+        /* Classify items: positional count, named, others (RM 4.3.2) */
+        Agg_Class agg_cls = Agg_Classify(node);
+        uint32_t n_positional = agg_cls.n_positional;
+        bool has_named = agg_cls.has_named;
         {
-            for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
-                Syntax_Node *item = node->aggregate.items.items[i];
-                if (item->kind == NK_ASSOCIATION) has_named = true;
-                else n_positional++;
-            }
+            /* For positional aggregates, override upper bound from element count:
+             * high = low + N - 1.  For multidimensional aggregates, also adjust
+             * inner dimension bounds from the first inner aggregate (RM 4.3.2). */
             if (n_positional > 0 and not has_named and
                 dim_lo[0].kind == BOUND_INTEGER) {
                 dim_hi[0] = (Type_Bound){
@@ -26016,11 +26184,39 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             }
         }
 
+        /* Early scan: detect if any named choice has non-integer bounds
+         * (e.g. T'RANGE desugared to T'FIRST..T'LAST).  These force the
+         * dynamic aggregate path since bounds aren't compile-time constants. */
+        bool has_dynamic_choice_early = false;
+        for (uint32_t ci = 0; ci < node->aggregate.items.count; ci++) {
+            Syntax_Node *cit = node->aggregate.items.items[ci];
+            if (cit->kind != NK_ASSOCIATION) continue;
+            for (uint32_t cc = 0; cc < cit->association.choices.count; cc++) {
+                Syntax_Node *ch = cit->association.choices.items[cc];
+                if (ch->kind == NK_RANGE and
+                    (ch->range.low->kind != NK_INTEGER or
+                     ch->range.high->kind != NK_INTEGER)) {
+                    has_dynamic_choice_early = true;
+                    /* Use these expression bounds for the aggregate bounds
+                     * so the dynamic path allocates the right amount. */
+                    if (ch->range.low->kind != NK_INTEGER) {
+                        dim_lo[0] = (Type_Bound){.kind = BOUND_EXPR, .expr = ch->range.low};
+                        low_bound = dim_lo[0];
+                    }
+                    if (ch->range.high->kind != NK_INTEGER) {
+                        dim_hi[0] = (Type_Bound){.kind = BOUND_EXPR, .expr = ch->range.high};
+                        high_bound = dim_hi[0];
+                    }
+                    break;
+                }
+            }
+            if (has_dynamic_choice_early) break;
+        }
         /* Any dimension with dynamic bounds requires runtime path (RM 3.6.1).
          * Type_Bound_Value returns 0 for BOUND_EXPR so compile-time size
          * calculation would be wrong; the dynamic path evaluates bounds at
          * runtime via Emit_Single_Bound. */
-        bool dynamic_bounds = false;
+        bool dynamic_bounds = has_dynamic_choice_early;
         for (uint32_t d = 0; d < agg_ndims; d++) {
             if (dim_lo[d].kind == BOUND_EXPR or dim_hi[d].kind == BOUND_EXPR) {
                 dynamic_bounds = true; break;
@@ -26094,100 +26290,30 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             uint32_t base = Emit_Temp(cg);
             Emit(cg, "  %%t%u = alloca i8, %s %%t%u  ; dynamic array aggregate\n", base, iat_bnd, clamped);
 
-            /* Find "others" clause and generate value */
-            uint32_t others_val = 0;
-            bool has_others = false;
-            for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
-                Syntax_Node *item = node->aggregate.items.items[i];
-                if (item->kind == NK_ASSOCIATION and item->association.choices.count > 0) {
-                    if (Is_Others_Choice(item->association.choices.items[0])) {
-                        Syntax_Node *oe = item->association.expression;
-                        others_val = Generate_Expression(cg, oe);
-                        /* RM 4.3.2: fat pointer others (e.g. string) → extract data */
-                        if (multidim and oe->kind == NK_AGGREGATE) {
-                            /* Inner aggregate for multidim: returns fat ptr alloca
-                             * (dynamic) or data alloca (static).  For dynamic inner
-                             * bounds, load fat ptr then extract data pointer. */
-                            if (oe->type and Type_Has_Dynamic_Bounds(oe->type)) {
-                                uint32_t loaded = Emit_Temp(cg);
-                                Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n",
-                                     loaded, others_val);
-                                others_val = Emit_Temp(cg);
-                                Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE
-                                     " %%t%u, 0\n", others_val, loaded);
-                            }
-                            /* else: static inner aggregate alloca IS the data */
-                        } else if (Expression_Produces_Fat_Pointer(oe, oe->type))
-                            others_val = Emit_Fat_Pointer_Data(cg, others_val,
-                                             Array_Bound_Llvm_Type(agg_type));
-                        else {
-                            const char *src_type = Expression_Llvm_Type(cg, oe);
-                            others_val = Emit_Convert(cg, others_val, src_type,
-                                                      elem_type);
-                        }
-                        has_others = true;
-                        break;
-                    }
-                }
-            }
+            /* Classify items: find OTHERS clause (value generated in loop below) */
+            Agg_Class ac = Agg_Classify(node);
+            bool has_others = ac.has_others;
+            uint32_t others_val = 0;  /* unused; OTHERS re-evaluated per component */
 
-            /* Positional elements: store each element at its index offset.
-             * Index = positional_idx * elem_size bytes from base. */
+            /* Positional elements: store each at its index offset. */
             {
+                Type_Info *elem_ti = agg_type->array.element_type;
+                bool ecomp = Agg_Elem_Is_Composite(elem_ti, multidim);
+                const char *ait = Integer_Arith_Type(cg);
                 uint32_t positional_idx = 0;
                 for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
                     Syntax_Node *item = node->aggregate.items.items[i];
-                    if (item->kind == NK_ASSOCIATION) continue;  /* skip named/others */
-                    uint32_t val = Generate_Expression(cg, item);
-                    Type_Info *elem_ti = agg_type->array.element_type;
-                    bool elem_is_composite = multidim or (elem_ti and (Type_Is_Record(elem_ti) or
-                        Type_Is_Constrained_Array(elem_ti)));
-                    if (elem_is_composite) {
-                        /* RM 4.3.2: fat pointer (e.g. string literal) → extract data ptr */
-                        if (Expression_Produces_Fat_Pointer(item, item->type))
-                            val = Emit_Fat_Pointer_Data(cg, val,
-                                      Array_Bound_Llvm_Type(agg_type));
-                        else if (multidim and item->kind == NK_AGGREGATE and
-                                 item->type and Type_Has_Dynamic_Bounds(item->type)) {
-                            /* Dynamic inner aggregate: fat ptr alloca → data ptr */
-                            uint32_t loaded = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n",
-                                 loaded, val);
-                            val = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE
-                                 " %%t%u, 0\n", val, loaded);
-                        }
-                        uint32_t ptr = Emit_Temp(cg);
-                        if (rt_row_size) {
-                            /* Runtime row offset: positional_idx * rt_row_size */
-                            uint32_t idx_t = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = add i32 0, %u\n", idx_t, positional_idx);
-                            uint32_t off = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = mul i32 %%t%u, %%t%u\n", off, idx_t, rt_row_size);
-                            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i32 %%t%u\n",
-                                 ptr, base, off);
-                            uint32_t sz64 = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = sext i32 %%t%u to i64\n", sz64, rt_row_size);
-                            Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
-                                 ptr, val, sz64);
-                        } else {
-                            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
-                                 ptr, base, positional_idx * elem_size);
-                            Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
-                                 ptr, val, elem_size);
-                        }
-                    } else {
-                        const char *src_type = Expression_Llvm_Type(cg, item);
-                        val = Emit_Convert(cg, val, src_type, elem_type);
-                        /* RM 4.3.2: check element against component subtype constraint */
-                        if (elem_ti && Type_Is_Scalar(elem_ti))
-                            val = Emit_Constraint_Check_With_Type(cg, val, elem_ti,
-                                item->type, elem_type);
-                        uint32_t ptr = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %u\n",
-                             ptr, elem_type, base, positional_idx);
-                        Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, val, ptr);
-                    }
+                    if (item->kind == NK_ASSOCIATION) continue;
+                    uint32_t val = Agg_Resolve_Elem(cg, item, multidim,
+                        ecomp, agg_type, elem_type, elem_ti);
+                    /* RM 4.3.2: check scalar element against subtype */
+                    if (!ecomp && elem_ti && Type_Is_Scalar(elem_ti))
+                        val = Emit_Constraint_Check_With_Type(cg, val, elem_ti,
+                            item->type, elem_type);
+                    uint32_t pidx = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = add %s 0, %u\n", pidx, ait, positional_idx);
+                    Agg_Store_At_Dynamic(cg, base, val, pidx, ait,
+                        elem_type, elem_size, rt_row_size, ecomp);
                     positional_idx++;
                 }
             }
@@ -26264,8 +26390,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         }
 
                         Type_Info *elem_ti = agg_type->array.element_type;
-                        bool elem_is_composite = multidim or Type_Is_Record(elem_ti) or
-                            Type_Is_Constrained_Array(elem_ti);
+                        bool ecomp = Agg_Elem_Is_Composite(elem_ti, multidim);
 
                         uint32_t loop_var = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = alloca %s\n", loop_var, agg_idx_type);
@@ -26288,58 +26413,16 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
 
                         Emit_Label_Here(cg, loop_body);
 
-                        /* Evaluate expression anew for this component */
-                        uint32_t val = Generate_Expression(cg, item->association.expression);
-                        if (elem_is_composite and
-                            Expression_Produces_Fat_Pointer(item->association.expression,
-                                item->association.expression->type))
-                            val = Emit_Fat_Pointer_Data(cg, val,
-                                      Array_Bound_Llvm_Type(agg_type));
-                        else if (elem_is_composite and multidim and
-                                 item->association.expression->kind == NK_AGGREGATE and
-                                 item->association.expression->type and
-                                 Type_Has_Dynamic_Bounds(item->association.expression->type)) {
-                            uint32_t loaded = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n",
-                                 loaded, val);
-                            val = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE
-                                 " %%t%u, 0\n", val, loaded);
-                        }
-                        if (not elem_is_composite) {
-                            const char *src_type = Expression_Llvm_Type(cg, item->association.expression);
-                            val = Emit_Convert(cg, val, src_type, elem_type);
-                        }
+                        /* RM 4.3.2(6): expression evaluated once per component */
+                        uint32_t val = Agg_Resolve_Elem(cg,
+                            item->association.expression, multidim,
+                            ecomp, agg_type, elem_type, elem_ti);
 
-                        /* Calculate array index: (cur_idx - low_val) */
                         uint32_t arr_idx = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", arr_idx, agg_idx_type, cur_idx, low_val);
-
-                        if (elem_is_composite) {
-                            uint32_t byte_off = Emit_Temp(cg);
-                            if (rt_row_size)
-                                Emit(cg, "  %%t%u = mul %s %%t%u, %%t%u\n",
-                                     byte_off, agg_idx_type, arr_idx, rt_row_size);
-                            else
-                                Emit(cg, "  %%t%u = mul %s %%t%u, %u\n",
-                                     byte_off, agg_idx_type, arr_idx, elem_size);
-                            uint32_t ptr = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u\n",
-                                 ptr, base, agg_idx_type, byte_off);
-                            if (rt_row_size) {
-                                uint32_t sz64 = Emit_Temp(cg);
-                                Emit(cg, "  %%t%u = sext i32 %%t%u to i64\n", sz64, rt_row_size);
-                                Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
-                                     ptr, val, sz64);
-                            } else
-                                Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
-                                     ptr, val, elem_size);
-                        } else {
-                            uint32_t ptr = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, %s %%t%u\n",
-                                 ptr, elem_type, base, agg_idx_type, arr_idx);
-                            Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, val, ptr);
-                        }
+                        Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n",
+                             arr_idx, agg_idx_type, cur_idx, low_val);
+                        Agg_Store_At_Dynamic(cg, base, val, arr_idx,
+                            agg_idx_type, elem_type, elem_size, rt_row_size, ecomp);
 
                         /* Increment and loop */
                         uint32_t next_idx = Emit_Temp(cg);
@@ -26358,76 +26441,52 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         idx_val = Emit_Coerce(cg, idx_val, agg_idx_type);
 
                         Type_Info *elem_ti = agg_type->array.element_type;
-                        bool elem_is_composite = multidim or Type_Is_Record(elem_ti) or
-                            Type_Is_Constrained_Array(elem_ti);
+                        bool ecomp = Agg_Elem_Is_Composite(elem_ti, multidim);
 
-                        uint32_t val = Generate_Expression(cg, item->association.expression);
-                        if (elem_is_composite and
-                            Expression_Produces_Fat_Pointer(item->association.expression,
-                                item->association.expression->type))
-                            val = Emit_Fat_Pointer_Data(cg, val,
-                                      Array_Bound_Llvm_Type(agg_type));
-                        else if (elem_is_composite and multidim and
-                                 item->association.expression->kind == NK_AGGREGATE and
-                                 item->association.expression->type and
-                                 Aggregate_Produces_Fat_Pointer(item->association.expression->type)) {
-                            uint32_t loaded = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n",
-                                 loaded, val);
-                            val = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE
-                                 " %%t%u, 0\n", val, loaded);
-                        }
-                        if (not elem_is_composite) {
-                            const char *src_type = Expression_Llvm_Type(cg, item->association.expression);
-                            val = Emit_Convert(cg, val, src_type, elem_type);
-                        }
+                        uint32_t val = Agg_Resolve_Elem(cg,
+                            item->association.expression, multidim,
+                            ecomp, agg_type, elem_type, elem_ti);
 
                         uint32_t arr_idx = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", arr_idx, agg_idx_type, idx_val, low_val);
-
-                        if (elem_is_composite) {
-                            uint32_t byte_off = Emit_Temp(cg);
-                            if (rt_row_size)
-                                Emit(cg, "  %%t%u = mul %s %%t%u, %%t%u\n",
-                                     byte_off, agg_idx_type, arr_idx, rt_row_size);
-                            else
-                                Emit(cg, "  %%t%u = mul %s %%t%u, %u\n",
-                                     byte_off, agg_idx_type, arr_idx, elem_size);
-                            uint32_t ptr = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u\n",
-                                 ptr, base, agg_idx_type, byte_off);
-                            if (rt_row_size) {
-                                uint32_t sz64 = Emit_Temp(cg);
-                                Emit(cg, "  %%t%u = sext i32 %%t%u to i64\n", sz64, rt_row_size);
-                                Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
-                                     ptr, val, sz64);
-                            } else
-                                Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
-                                     ptr, val, elem_size);
-                        } else {
-                            uint32_t ptr = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, %s %%t%u\n",
-                                 ptr, elem_type, base, agg_idx_type, arr_idx);
-                            Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, val, ptr);
-                        }
+                        Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n",
+                             arr_idx, agg_idx_type, idx_val, low_val);
+                        Agg_Store_At_Dynamic(cg, base, val, arr_idx,
+                            agg_idx_type, elem_type, elem_size, rt_row_size, ecomp);
                     }
                 }
             }
 
-            /* If "others" clause, fill remaining with loop (already handled by range above
-             * for typical cases like (1..H1 => val), but add fallback if needed) */
+            /* RM 4.3.3(5): OTHERS fills positions not covered by positional
+             * or named associations.  Skip the first n_positional slots. */
             if (has_others) {
-                /* Check if element is composite */
                 Type_Info *elem_ti = agg_type->array.element_type;
-                bool elem_is_composite = multidim or Type_Is_Record(elem_ti) or
-                    Type_Is_Constrained_Array(elem_ti);
+                bool ecomp = Agg_Elem_Is_Composite(elem_ti, multidim);
 
-                /* Generate loop from low to high */
+                /* Start index = low + n_positional (skip already-filled slots) */
                 const char *oth_idx_type = Integer_Arith_Type(cg);
+                uint32_t start_val;
+                if (n_positional > 0) {
+                    start_val = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = add %s %%t%u, %u  ; skip %u positional\n",
+                         start_val, oth_idx_type, low_val, n_positional, n_positional);
+                } else {
+                    start_val = low_val;
+                }
+
+                /* Find the OTHERS expression for re-evaluation (RM 4.3.3(5)) */
+                Syntax_Node *oth_expr = NULL;
+                for (uint32_t oi = 0; oi < node->aggregate.items.count; oi++) {
+                    Syntax_Node *oitem = node->aggregate.items.items[oi];
+                    if (oitem->kind == NK_ASSOCIATION && oitem->association.choices.count > 0 &&
+                        Is_Others_Choice(oitem->association.choices.items[0])) {
+                        oth_expr = oitem->association.expression;
+                        break;
+                    }
+                }
+
                 uint32_t loop_var = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = alloca %s\n", loop_var, oth_idx_type);
-                Emit(cg, "  store %s %%t%u, ptr %%t%u\n", oth_idx_type, low_val, loop_var);
+                Emit(cg, "  store %s %%t%u, ptr %%t%u\n", oth_idx_type, start_val, loop_var);
 
                 uint32_t loop_start = cg->label_id++;
                 uint32_t loop_body = cg->label_id++;
@@ -26445,36 +26504,18 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                 cg->block_terminated = true;
 
                 Emit_Label_Here(cg, loop_body);
-                uint32_t arr_idx = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", arr_idx, oth_idx_type, cur_idx, low_val);
 
-                if (elem_is_composite) {
-                    /* Composite element: use byte-based indexing and memcpy */
-                    uint32_t byte_off = Emit_Temp(cg);
-                    if (rt_row_size)
-                        Emit(cg, "  %%t%u = mul %s %%t%u, %%t%u\n",
-                             byte_off, oth_idx_type, arr_idx, rt_row_size);
-                    else
-                        Emit(cg, "  %%t%u = mul %s %%t%u, %u\n",
-                             byte_off, oth_idx_type, arr_idx, elem_size);
-                    uint32_t ptr = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u\n",
-                         ptr, base, oth_idx_type, byte_off);
-                    if (rt_row_size) {
-                        uint32_t sz64 = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = sext i32 %%t%u to i64\n", sz64, rt_row_size);
-                        Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
-                             ptr, others_val, sz64);
-                    } else
-                        Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
-                             ptr, others_val, elem_size);
-                } else {
-                    /* Scalar element: use typed indexing and store */
-                    uint32_t ptr = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, %s %%t%u\n",
-                         ptr, elem_type, base, oth_idx_type, arr_idx);
-                    Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, others_val, ptr);
-                }
+                /* RM 4.3.3(5): re-evaluate per component */
+                uint32_t loop_others_val = oth_expr
+                    ? Agg_Resolve_Elem(cg, oth_expr, multidim,
+                          ecomp, agg_type, elem_type, elem_ti)
+                    : others_val;
+
+                uint32_t arr_idx = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n",
+                     arr_idx, oth_idx_type, cur_idx, low_val);
+                Agg_Store_At_Dynamic(cg, base, loop_others_val, arr_idx,
+                    oth_idx_type, elem_type, elem_size, rt_row_size, ecomp);
 
                 uint32_t next_idx = Emit_Temp(cg);
                 Emit(cg, "  %%t%u = add %s %%t%u, 1\n", next_idx, oth_idx_type, cur_idx);
@@ -26567,6 +26608,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
          * the bounds stay L..H because we track lows and highs separately. */
         bool has_choice_lo = false, has_choice_hi = false;
         bool early_has_others = false;
+        bool has_dynamic_choice = false;  /* non-integer range bounds */
         int128_t choice_lo = 0, choice_hi = 0;
         for (uint32_t ci = 0; ci < node->aggregate.items.count; ci++) {
             Syntax_Node *cit = node->aggregate.items.items[ci];
@@ -26579,11 +26621,15 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         int128_t v = (int128_t)ch->range.low->integer_lit.value;
                         if (not has_choice_lo or v < choice_lo) choice_lo = v;
                         has_choice_lo = true;
+                    } else {
+                        has_dynamic_choice = true;
                     }
                     if (ch->range.high->kind == NK_INTEGER) {
                         int128_t v = (int128_t)ch->range.high->integer_lit.value;
                         if (not has_choice_hi or v > choice_hi) choice_hi = v;
                         has_choice_hi = true;
+                    } else {
+                        has_dynamic_choice = true;
                     }
                 } else if (ch->kind == NK_INTEGER) {
                     int128_t v = (int128_t)ch->integer_lit.value;
@@ -26594,7 +26640,30 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                 }
             }
         }
-        if (has_choice_lo and has_choice_hi and not early_has_others) {
+        if (has_dynamic_choice and not early_has_others) {
+            /* Dynamic choice bounds (e.g. T'RANGE): find the first NK_RANGE
+             * choice with non-integer bounds and use its expressions as
+             * the aggregate bounds for the dynamic path. */
+            for (uint32_t ci = 0; ci < node->aggregate.items.count and dynamic_bounds; ci++) {
+                Syntax_Node *cit = node->aggregate.items.items[ci];
+                if (cit->kind != NK_ASSOCIATION) continue;
+                for (uint32_t cc = 0; cc < cit->association.choices.count; cc++) {
+                    Syntax_Node *ch = cit->association.choices.items[cc];
+                    if (ch->kind == NK_RANGE) {
+                        if (ch->range.low->kind != NK_INTEGER) {
+                            dim_lo[0] = (Type_Bound){.kind = BOUND_EXPR, .expr = ch->range.low};
+                            low_bound = dim_lo[0];
+                        }
+                        if (ch->range.high->kind != NK_INTEGER) {
+                            dim_hi[0] = (Type_Bound){.kind = BOUND_EXPR, .expr = ch->range.high};
+                            high_bound = dim_hi[0];
+                        }
+                        break;
+                    }
+                }
+                break;
+            }
+        } else if (has_choice_lo and has_choice_hi and not early_has_others) {
             /* RM 4.3.2(5): Named aggregate bounds are determined by the
              * lowest and highest choices.  For aggregates without OTHERS,
              * the aggregate storage uses choice bounds (sliding occurs at
@@ -26927,13 +26996,8 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                                         uint32_t val = Generate_Expression(cg, inner_val_expr);
                                         const char *st = Expression_Llvm_Type(cg, inner_val_expr);
                                         val = Emit_Convert(cg, val, st, elem_type);
-                                        uint32_t ptr = Emit_Temp(cg);
-                                        Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, "
-                                                 "i64 %s  ; multidim [%s,%s]\n",
-                                             ptr, elem_type, base, I128_Decimal(flat),
-                                             I128_Decimal(oi), I128_Decimal(ci));
-                                        Emit(cg, "  store %s %%t%u, ptr %%t%u\n",
-                                             elem_type, val, ptr);
+                                        Agg_Store_At_Static(cg, base, val, flat,
+                                            elem_type, elem_size, false);
                                     }
                                     initialized[oai] = true;
                                 }
@@ -26993,37 +27057,11 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                             for (int128_t idx = rng_low; idx <= rng_high; idx++) {
                                 int128_t arr_idx = idx - low;
                                 if (arr_idx >= 0 and arr_idx < count) {
-                                    uint32_t val = Generate_Expression(cg, item->association.expression);
-                                    if (elem_is_composite and
-                                        Expression_Produces_Fat_Pointer(item->association.expression,
-                                            item->association.expression->type))
-                                        val = Emit_Fat_Pointer_Data(cg, val,
-                                                  Array_Bound_Llvm_Type(agg_type));
-                                    if (not elem_is_composite) {
-                                        const char *src_type = Expression_Llvm_Type(cg, item->association.expression);
-                                        if (elem_ti and elem_ti->kind == TYPE_FIXED and Is_Float_Type(src_type)) {
-                                            double small = elem_ti->fixed.small;
-                                            if (small <= 0) small = elem_ti->fixed.delta > 0 ? elem_ti->fixed.delta : 1.0;
-                                            uint64_t sb; memcpy(&sb, &small, sizeof(sb));
-                                            uint32_t st = Emit_Temp(cg);
-                                            Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; small\n", st, (unsigned long long)sb);
-                                            uint32_t dv = Emit_Temp(cg);
-                                            Emit(cg, "  %%t%u = fdiv %s %%t%u, %%t%u  ; agg range/small\n", dv, src_type, val, st);
-                                            val = dv;
-                                        }
-                                        val = Emit_Convert(cg, val, src_type, elem_type);
-                                    }
-                                    uint32_t ptr = Emit_Temp(cg);
-                                    if (elem_is_composite) {
-                                        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %s\n",
-                                             ptr, base, I128_Decimal(arr_idx * (int128_t)elem_size));
-                                        Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
-                                             ptr, val, elem_size);
-                                    } else {
-                                        Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %s\n",
-                                             ptr, elem_type, base, I128_Decimal(arr_idx));
-                                        Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, val, ptr);
-                                    }
+                                    uint32_t val = Agg_Resolve_Elem(cg,
+                                        item->association.expression, multidim,
+                                        elem_is_composite, agg_type, elem_type, elem_ti);
+                                    Agg_Store_At_Static(cg, base, val, arr_idx,
+                                        elem_type, elem_size, elem_is_composite);
                                     initialized[arr_idx] = true;
                                 }
                             }
@@ -27039,27 +27077,11 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         for (int128_t idx = rng_low; idx <= rng_high; idx++) {
                             int128_t arr_idx = idx - low;
                             if (arr_idx >= 0 and arr_idx < count) {
-                                uint32_t val = Generate_Expression(cg, item->association.expression);
-                                if (elem_is_composite and
-                                    Expression_Produces_Fat_Pointer(item->association.expression,
-                                        item->association.expression->type))
-                                    val = Emit_Fat_Pointer_Data(cg, val,
-                                              Array_Bound_Llvm_Type(agg_type));
-                                if (not elem_is_composite) {
-                                    const char *src_type = Expression_Llvm_Type(cg, item->association.expression);
-                                    val = Emit_Convert(cg, val, src_type, elem_type);
-                                }
-                                uint32_t ptr = Emit_Temp(cg);
-                                if (elem_is_composite) {
-                                    Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %s\n",
-                                         ptr, base, I128_Decimal(arr_idx * (int128_t)elem_size));
-                                    Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
-                                         ptr, val, elem_size);
-                                } else {
-                                    Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %s\n",
-                                         ptr, elem_type, base, I128_Decimal(arr_idx));
-                                    Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, val, ptr);
-                                }
+                                uint32_t val = Agg_Resolve_Elem(cg,
+                                    item->association.expression, multidim,
+                                    elem_is_composite, agg_type, elem_type, elem_ti);
+                                Agg_Store_At_Static(cg, base, val, arr_idx,
+                                    elem_type, elem_size, elem_is_composite);
                                 initialized[arr_idx] = true;
                             }
                         }
@@ -27077,36 +27099,11 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         }
                         int128_t idx = (int128_t)choice->integer_lit.value - low;
                         if (idx >= 0 and idx < count) {
-                            uint32_t val = Generate_Expression(cg, item->association.expression);
-                            if (elem_is_composite and
-                                Expression_Produces_Fat_Pointer(item->association.expression,
-                                    item->association.expression->type))
-                                val = Emit_Fat_Pointer_Data(cg, val,
-                                          Array_Bound_Llvm_Type(agg_type));
-                            uint32_t ptr = Emit_Temp(cg);
-                            if (elem_is_composite) {
-                                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %s\n",
-                                     ptr, base, I128_Decimal(idx * (int128_t)elem_size));
-                                Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
-                                     ptr, val, elem_size);
-                            } else {
-                                const char *src_type = Expression_Llvm_Type(cg, item->association.expression);
-                                /* Float>fixed-point aggregate element: divide by SMALL (RM 4.6) */
-                                if (elem_ti and elem_ti->kind == TYPE_FIXED and Is_Float_Type(src_type)) {
-                                    double small = elem_ti->fixed.small;
-                                    if (small <= 0) small = elem_ti->fixed.delta > 0 ? elem_ti->fixed.delta : 1.0;
-                                    uint64_t sb; memcpy(&sb, &small, sizeof(sb));
-                                    uint32_t st = Emit_Temp(cg);
-                                    Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; small\n", st, (unsigned long long)sb);
-                                    uint32_t dv = Emit_Temp(cg);
-                                    Emit(cg, "  %%t%u = fdiv %s %%t%u, %%t%u  ; agg idx/small\n", dv, src_type, val, st);
-                                    val = dv;
-                                }
-                                val = Emit_Convert(cg, val, src_type, elem_type);
-                                Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %s\n",
-                                     ptr, elem_type, base, I128_Decimal(idx));
-                                Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, val, ptr);
-                            }
+                            uint32_t val = Agg_Resolve_Elem(cg,
+                                item->association.expression, multidim,
+                                elem_is_composite, agg_type, elem_type, elem_ti);
+                            Agg_Store_At_Static(cg, base, val, idx,
+                                elem_type, elem_size, elem_is_composite);
                             initialized[idx] = true;
                         }
                     }
@@ -27114,49 +27111,14 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             } else {
                 /* Positional association */
                 if (positional_idx < (uint32_t)count) {
-                    uint32_t val = Generate_Expression(cg, item);
-                    if (elem_is_composite and
-                        Expression_Produces_Fat_Pointer(item, item->type))
-                        val = Emit_Fat_Pointer_Data(cg, val,
-                                  Array_Bound_Llvm_Type(agg_type));
-                    else if (elem_is_composite and multidim and
-                             item->kind == NK_AGGREGATE and item->type and
-                             Type_Has_Dynamic_Bounds(item->type)) {
-                        uint32_t loaded = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n",
-                             loaded, val);
-                        val = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE
-                             " %%t%u, 0\n", val, loaded);
-                    }
-                    uint32_t ptr = Emit_Temp(cg);
-                    if (elem_is_composite) {
-                        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %s\n",
-                             ptr, base, I128_Decimal((int128_t)positional_idx * (int128_t)elem_size));
-                        Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
-                             ptr, val, elem_size);
-                    } else {
-                        const char *src_type = Expression_Llvm_Type(cg, item);
-                        /* Float>fixed-point aggregate element: divide by SMALL (RM 4.6) */
-                        if (elem_ti and elem_ti->kind == TYPE_FIXED and Is_Float_Type(src_type)) {
-                            double small = elem_ti->fixed.small;
-                            if (small <= 0) small = elem_ti->fixed.delta > 0 ? elem_ti->fixed.delta : 1.0;
-                            uint64_t sb; memcpy(&sb, &small, sizeof(sb));
-                            uint32_t st = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; small\n", st, (unsigned long long)sb);
-                            uint32_t dv = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = fdiv %s %%t%u, %%t%u  ; agg elem/small\n", dv, src_type, val, st);
-                            val = dv;
-                        }
-                        val = Emit_Convert(cg, val, src_type, elem_type);
-                        /* RM 4.3.2: check element against component subtype constraint */
-                        if (elem_ti && Type_Is_Scalar(elem_ti))
-                            val = Emit_Constraint_Check_With_Type(cg, val, elem_ti,
-                                item->type, elem_type);
-                        Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %u\n",
-                             ptr, elem_type, base, positional_idx);
-                        Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, val, ptr);
-                    }
+                    uint32_t val = Agg_Resolve_Elem(cg, item, multidim,
+                        elem_is_composite, agg_type, elem_type, elem_ti);
+                    /* RM 4.3.2: check scalar element against subtype constraint */
+                    if (!elem_is_composite && elem_ti && Type_Is_Scalar(elem_ti))
+                        val = Emit_Constraint_Check_With_Type(cg, val, elem_ti,
+                            item->type, elem_type);
+                    Agg_Store_At_Static(cg, base, val, (int128_t)positional_idx,
+                        elem_type, elem_size, elem_is_composite);
                     initialized[positional_idx] = true;
                     positional_idx++;
                 }
@@ -27169,50 +27131,15 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
         if (has_others and others_item_expr) {
             for (int128_t idx = 0; idx < count; idx++) {
                 if (not initialized[idx]) {
-                    /* Re-evaluate for each component (allocators, functions) */
-                    others_val = Generate_Expression(cg, others_item_expr);
-                    if (elem_is_composite and
-                        Expression_Produces_Fat_Pointer(others_item_expr,
-                            others_item_expr->type))
-                        others_val = Emit_Fat_Pointer_Data(cg, others_val,
-                                         Array_Bound_Llvm_Type(agg_type));
-                    else if (elem_is_composite and multidim and
-                             others_item_expr->kind == NK_AGGREGATE and
-                             others_item_expr->type and
-                             Type_Has_Dynamic_Bounds(others_item_expr->type)) {
-                        /* Dynamic inner aggregate: fat ptr alloca → data ptr */
-                        uint32_t loaded = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n",
-                             loaded, others_val);
-                        others_val = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE
-                             " %%t%u, 0\n", others_val, loaded);
-                    }
-                    if (not elem_is_composite) {
-                        const char *src_type = Expression_Llvm_Type(cg, others_item_expr);
-                        if (elem_ti and elem_ti->kind == TYPE_FIXED and Is_Float_Type(src_type)) {
-                            double small = elem_ti->fixed.small;
-                            if (small <= 0) small = elem_ti->fixed.delta > 0 ? elem_ti->fixed.delta : 1.0;
-                            uint64_t sb; memcpy(&sb, &small, sizeof(sb));
-                            uint32_t st = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = fadd double 0.0, 0x%016llX  ; small\n", st, (unsigned long long)sb);
-                            uint32_t dv = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = fdiv %s %%t%u, %%t%u  ; agg others/small\n", dv, src_type, others_val, st);
-                            others_val = dv;
-                        }
-                        others_val = Emit_Convert(cg, others_val, src_type, elem_type);
-                    }
-                    uint32_t ptr = Emit_Temp(cg);
-                    if (elem_is_composite) {
-                        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %s\n",
-                             ptr, base, I128_Decimal(idx * (int128_t)elem_size));
-                        Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
-                             ptr, others_val, elem_size);
-                    } else {
-                        Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i64 %s\n",
-                             ptr, elem_type, base, I128_Decimal(idx));
-                        Emit(cg, "  store %s %%t%u, ptr %%t%u\n", elem_type, others_val, ptr);
-                    }
+                    others_val = Agg_Resolve_Elem(cg, others_item_expr,
+                        multidim, elem_is_composite, agg_type,
+                        elem_type, elem_ti);
+                    /* RM 4.3.2: check scalar element against subtype */
+                    if (!elem_is_composite && elem_ti && Type_Is_Scalar(elem_ti))
+                        others_val = Emit_Constraint_Check_With_Type(cg, others_val,
+                            elem_ti, others_item_expr->type, elem_type);
+                    Agg_Store_At_Static(cg, base, others_val, idx,
+                        elem_type, elem_size, elem_is_composite);
                 }
             }
         }
