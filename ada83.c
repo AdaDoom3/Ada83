@@ -25926,6 +25926,16 @@ static uint32_t Agg_Resolve_Elem(Code_Generator *cg, Syntax_Node *expr,
             val = Emit_Temp(cg);
             Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE
                  " %%t%u, 0\n", val, loaded);
+        } else if (Temp_Is_Fat_Alloca(cg, val)) {
+            /* Inner aggregate produced a fat-pointer alloca (e.g. named-
+             * range sub-aggregate of a constrained multidim array).
+             * Extract the data pointer so memcpy copies data, not ptrs. */
+            uint32_t loaded = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n",
+                 loaded, val);
+            val = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE
+                 " %%t%u, 0\n", val, loaded);
         }
     } else {
         /* Scalar: type-convert and apply fixed-point SMALL if needed. */
