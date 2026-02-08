@@ -21018,8 +21018,15 @@ static uint32_t Generate_Composite_Address(Code_Generator *cg, Syntax_Node *node
         }
     }
 
-    /* Fallback: for expressions that return a pointer (like composite values) */
-    return Generate_Expression(cg, node);
+    /* Fallback: for expressions that return a pointer (like composite values).
+     * Dynamic-path aggregates return fat pointer allocas; extract the data
+     * address so callers get a plain data pointer for memcmp etc. */
+    uint32_t t = Generate_Expression(cg, node);
+    if (Temp_Is_Fat_Alloca(cg, t)) {
+        const char *bt = node->type ? Array_Bound_Llvm_Type(node->type) : "i32";
+        t = Emit_Fat_Pointer_Data(cg, t, bt);
+    }
+    return t;
 }
 
 /* ─── Boolean Array Elementwise Op (RM 4.5.1) ───
@@ -26267,12 +26274,20 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                      * so the dynamic path allocates the right amount. */
                     if (ch->range.low->kind != NK_INTEGER) {
                         dim_lo[0] = (Type_Bound){.kind = BOUND_EXPR, .expr = ch->range.low};
-                        low_bound = dim_lo[0];
+                    } else {
+                        /* RM 4.3.2: use aggregate's actual choice bound, not
+                         * the type's bound — they may differ (sliding). */
+                        dim_lo[0] = (Type_Bound){.kind = BOUND_INTEGER,
+                            .int_value = (int128_t)ch->range.low->integer_lit.value};
                     }
+                    low_bound = dim_lo[0];
                     if (ch->range.high->kind != NK_INTEGER) {
                         dim_hi[0] = (Type_Bound){.kind = BOUND_EXPR, .expr = ch->range.high};
-                        high_bound = dim_hi[0];
+                    } else {
+                        dim_hi[0] = (Type_Bound){.kind = BOUND_INTEGER,
+                            .int_value = (int128_t)ch->range.high->integer_lit.value};
                     }
+                    high_bound = dim_hi[0];
                     break;
                 }
             }
@@ -26684,6 +26699,9 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                                     }
                                     if (md_inn_lo) break;
                                 }
+                                /* Propagate inner bounds for fat pointer creation */
+                                rt_inner_lo[1] = md_inn_lo;
+                                rt_inner_hi[1] = md_inn_hi;
                             }
                         }
 
@@ -29140,7 +29158,13 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
             }
             Emit_Fat_Pointer_Copy_To_Name(cg, src_ptr, target_sym, ca_bt);
         } else {
-            /* Source is constrained - memcpy directly */
+            /* Source is constrained - memcpy directly.
+             * Dynamic-path aggregates return fat pointer allocas even for
+             * constrained targets; extract the data pointer first. */
+            if (Temp_Is_Fat_Alloca(cg, src_ptr)) {
+                src_ptr = Emit_Fat_Pointer_Data(cg, src_ptr,
+                              Array_Bound_Llvm_Type(ty));
+            }
             uint32_t array_size = ty->size > 0 ? ty->size : 8;
             Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr ");
             Emit_Symbol_Ref(cg, target_sym);
@@ -30366,8 +30390,50 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                                     if (is_fat and pt and Type_Is_Constrained_Array(pt)) {
                                         uint32_t fat_val = Fat_Ptr_As_Value(cg, val);
                                         if (Type_Has_Dynamic_Bounds(pt)) {
-                                            /* Dynamic bounds: pass fat ptr to match callee sig */
-                                            default_vals[i] = fat_val;
+                                            /* Dynamic bounds: rebuild fat ptr with the
+                                             * parameter type's constraint bounds (RM 6.4.1).
+                                             * String literals default to 1..N but must
+                                             * slide to the subtype's range. */
+                                            uint32_t dp0 = Emit_Temp(cg);
+                                            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE
+                                                 " %%t%u, 0\n", dp0, fat_val);
+                                            const char *bt = Array_Bound_Llvm_Type(pt);
+                                            uint32_t ndims = pt->array.index_count;
+                                            uint32_t nb = Emit_Temp(cg);
+                                            Emit(cg, "  %%t%u = alloca [%u x %s]\n",
+                                                 nb, ndims * 2, bt);
+                                            for (uint32_t d = 0; d < ndims; d++) {
+                                                uint32_t lo = Emit_Single_Bound(cg,
+                                                    &pt->array.indices[d].low_bound, bt);
+                                                uint32_t hi = Emit_Single_Bound(cg,
+                                                    &pt->array.indices[d].high_bound, bt);
+                                                uint32_t lp = Emit_Temp(cg);
+                                                Emit(cg, "  %%t%u = getelementptr %s, ptr"
+                                                     " %%t%u, i32 %u\n", lp, bt, nb, d*2);
+                                                Emit(cg, "  store %s %%t%u, ptr %%t%u\n",
+                                                     bt, lo, lp);
+                                                uint32_t hp = Emit_Temp(cg);
+                                                Emit(cg, "  %%t%u = getelementptr %s, ptr"
+                                                     " %%t%u, i32 %u\n", hp, bt, nb, d*2+1);
+                                                Emit(cg, "  store %s %%t%u, ptr %%t%u\n",
+                                                     bt, hi, hp);
+                                            }
+                                            uint32_t nfa = Emit_Temp(cg);
+                                            Emit(cg, "  %%t%u = alloca { ptr, ptr }\n", nfa);
+                                            uint32_t s0 = Emit_Temp(cg);
+                                            Emit(cg, "  %%t%u = getelementptr { ptr, ptr },"
+                                                 " ptr %%t%u, i32 0, i32 0\n", s0, nfa);
+                                            Emit(cg, "  store ptr %%t%u, ptr %%t%u\n",
+                                                 dp0, s0);
+                                            uint32_t s1 = Emit_Temp(cg);
+                                            Emit(cg, "  %%t%u = getelementptr { ptr, ptr },"
+                                                 " ptr %%t%u, i32 0, i32 1\n", s1, nfa);
+                                            Emit(cg, "  store ptr %%t%u, ptr %%t%u\n",
+                                                 nb, s1);
+                                            uint32_t nfv = Emit_Temp(cg);
+                                            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE
+                                                 ", ptr %%t%u\n", nfv, nfa);
+                                            default_vals[i] = nfv;
                                             default_types[i] = FAT_PTR_TYPE;
                                         } else {
                                             uint32_t dp = Emit_Temp(cg);
