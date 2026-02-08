@@ -26017,6 +26017,46 @@ static inline bool Agg_Elem_Is_Composite(Type_Info *elem_ti, bool multidim) {
                                      Type_Is_Constrained_Array(elem_ti)));
 }
 
+/* RM 3.7.1: After memcpy-ing a composite value into a record component,
+ * verify that the stored discriminant(s) match the component type's
+ * discriminant constraint(s).  E.g.  (H => INIT(1)) where H : PRIV(0). */
+static void Emit_Comp_Disc_Check(Code_Generator *cg, uint32_t ptr,
+                                  Type_Info *comp_ti) {
+    if (not comp_ti or not Type_Is_Record(comp_ti) or
+        not comp_ti->record.has_disc_constraints or
+        not comp_ti->record.disc_constraint_values) return;
+    for (uint32_t di = 0; di < comp_ti->record.discriminant_count; di++) {
+        Component_Info *dc = &comp_ti->record.components[di];
+        const char *dt = Type_To_Llvm(dc->component_type);
+        uint32_t dp = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
+             dp, ptr, dc->byte_offset);
+        uint32_t dv = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", dv, dt, dp);
+        uint32_t exp_v;
+        if (comp_ti->record.disc_constraint_exprs and
+            comp_ti->record.disc_constraint_exprs[di]) {
+            exp_v = Generate_Expression(cg,
+                comp_ti->record.disc_constraint_exprs[di]);
+            exp_v = Emit_Convert(cg, exp_v,
+                Expression_Llvm_Type(cg,
+                    comp_ti->record.disc_constraint_exprs[di]), dt);
+        } else {
+            exp_v = Emit_Static_Int(cg,
+                (int128_t)comp_ti->record.disc_constraint_values[di], dt);
+        }
+        uint32_t ne = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n", ne, dt, dv, exp_v);
+        uint32_t ok_l = cg->label_id++;
+        uint32_t fl_l = cg->label_id++;
+        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", ne, fl_l, ok_l);
+        cg->block_terminated = true;
+        Emit_Label_Here(cg, fl_l);
+        Emit_Raise_Constraint_Error(cg, "component disc value vs constraint");
+        Emit_Label_Here(cg, ok_l);
+    }
+}
+
 static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
     /* ── § 13b: Generate_Aggregate — array & record aggregate codegen.
      *
@@ -27523,15 +27563,38 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
         for (uint32_t ci = 0; ci < agg_type->record.component_count; ci++) {
             Component_Info *comp_ci = &agg_type->record.components[ci];
             Type_Info *cti = comp_ci->component_type;
-            if (not cti or not Type_Is_Array_Like(cti)) continue;
-            for (uint32_t xi = 0; xi < cti->array.index_count; xi++) {
-                Type_Bound *bounds[2] = { &cti->array.indices[xi].low_bound,
-                                          &cti->array.indices[xi].high_bound };
-                for (int bi = 0; bi < 2; bi++) {
-                    if (bounds[bi]->kind == BOUND_EXPR and bounds[bi]->expr and
-                        bounds[bi]->expr->symbol) {
-                        Symbol *disc_sym = bounds[bi]->expr->symbol;
-                        /* Check if we already allocated for this disc in this aggregate */
+            /* Array component: alloca for disc symbols in index bounds */
+            if (cti and Type_Is_Array_Like(cti)) {
+                for (uint32_t xi = 0; xi < cti->array.index_count; xi++) {
+                    Type_Bound *bounds[2] = { &cti->array.indices[xi].low_bound,
+                                              &cti->array.indices[xi].high_bound };
+                    for (int bi = 0; bi < 2; bi++) {
+                        if (bounds[bi]->kind == BOUND_EXPR and bounds[bi]->expr and
+                            bounds[bi]->expr->symbol) {
+                            Symbol *disc_sym = bounds[bi]->expr->symbol;
+                            bool already = false;
+                            for (uint32_t da = 0; da < disc_alloc_count; da++) {
+                                if (disc_alloc[da].sym == disc_sym) { already = true; break; }
+                            }
+                            if (already) continue;
+                            const char *disc_type = Type_To_Llvm(disc_sym->type);
+                            if (not disc_type or disc_type[0] == '\0') disc_type = Integer_Arith_Type(cg);
+                            uint32_t dt = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = alloca %s  ; disc for aggregate bounds\n", dt, disc_type);
+                            disc_sym->disc_agg_temp = dt;
+                            if (disc_alloc_count < 16)
+                                disc_alloc[disc_alloc_count++] = (typeof(disc_alloc[0])){disc_sym, dt};
+                        }
+                    }
+                }
+            }
+            /* Record component: alloca for disc symbols in disc constraints */
+            if (cti and Type_Is_Record(cti) and cti->record.has_disc_constraints and
+                cti->record.disc_constraint_exprs) {
+                for (uint32_t di = 0; di < cti->record.discriminant_count; di++) {
+                    Syntax_Node *ce = cti->record.disc_constraint_exprs[di];
+                    if (ce and ce->symbol) {
+                        Symbol *disc_sym = ce->symbol;
                         bool already = false;
                         for (uint32_t da = 0; da < disc_alloc_count; da++) {
                             if (disc_alloc[da].sym == disc_sym) { already = true; break; }
@@ -27540,7 +27603,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         const char *disc_type = Type_To_Llvm(disc_sym->type);
                         if (not disc_type or disc_type[0] == '\0') disc_type = Integer_Arith_Type(cg);
                         uint32_t dt = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = alloca %s  ; disc for aggregate bounds\n", dt, disc_type);
+                        Emit(cg, "  %%t%u = alloca %s  ; disc for rec constraint\n", dt, disc_type);
                         disc_sym->disc_agg_temp = dt;
                         if (disc_alloc_count < 16)
                             disc_alloc[disc_alloc_count++] = (typeof(disc_alloc[0])){disc_sym, dt};
@@ -27624,6 +27687,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                                     if (comp_size == 0) comp_size = 8;
                                     Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
                                          ptr, val, comp_size);
+                                    Emit_Comp_Disc_Check(cg, ptr, comp_ti);
                                 } else {
                                     val = Emit_Convert(cg, val, src_type, comp_type);
                                     /* RM 4.3.1: check component value against subtype constraint */
@@ -27639,6 +27703,40 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                                             Emit(cg, "  store %s %%t%u, ptr %%t%u\n",
                                                  comp_type, val, disc_alloc[da].temp);
                                             break;
+                                        }
+                                    }
+                                    /* RM 3.7.1: disc value must match constraint */
+                                    if (agg_type->record.has_disc_constraints) {
+                                        uint32_t di = 0;
+                                        for (uint32_t k = 0; k < (uint32_t)comp_idx; k++)
+                                            if (agg_type->record.components[k].is_discriminant) di++;
+                                        if (di < agg_type->record.discriminant_count) {
+                                            uint32_t exp_v;
+                                            if (agg_type->record.disc_constraint_exprs &&
+                                                agg_type->record.disc_constraint_exprs[di]) {
+                                                exp_v = Generate_Expression(cg,
+                                                    agg_type->record.disc_constraint_exprs[di]);
+                                                exp_v = Emit_Convert(cg, exp_v,
+                                                    Expression_Llvm_Type(cg,
+                                                        agg_type->record.disc_constraint_exprs[di]),
+                                                    comp_type);
+                                            } else {
+                                                exp_v = Emit_Static_Int(cg,
+                                                    (int128_t)agg_type->record.disc_constraint_values[di],
+                                                    comp_type);
+                                            }
+                                            uint32_t ne = Emit_Temp(cg);
+                                            Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n",
+                                                 ne, comp_type, val, exp_v);
+                                            uint32_t ok_l = cg->label_id++;
+                                            uint32_t fl_l = cg->label_id++;
+                                            Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                                                 ne, fl_l, ok_l);
+                                            cg->block_terminated = true;
+                                            Emit_Label_Here(cg, fl_l);
+                                            Emit_Raise_Constraint_Error(cg,
+                                                "discriminant value vs constraint");
+                                            Emit_Label_Here(cg, ok_l);
                                         }
                                     }
                                 }
@@ -27688,6 +27786,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                             if (comp_size == 0) comp_size = 8;
                             Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
                                  ptr, val, comp_size);
+                            Emit_Comp_Disc_Check(cg, ptr, comp_ti);
                         } else {
                             val = Emit_Convert(cg, val, src_type, comp_type);
                             /* RM 4.3.1: check component value against subtype constraint */
@@ -27703,6 +27802,40 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                                     Emit(cg, "  store %s %%t%u, ptr %%t%u\n",
                                          comp_type, val, disc_alloc[da].temp);
                                     break;
+                                }
+                            }
+                            /* RM 3.7.1: disc value must match constraint */
+                            if (agg_type->record.has_disc_constraints) {
+                                uint32_t di = 0;
+                                for (uint32_t k = 0; k < positional_idx; k++)
+                                    if (agg_type->record.components[k].is_discriminant) di++;
+                                if (di < agg_type->record.discriminant_count) {
+                                    uint32_t exp_v;
+                                    if (agg_type->record.disc_constraint_exprs &&
+                                        agg_type->record.disc_constraint_exprs[di]) {
+                                        exp_v = Generate_Expression(cg,
+                                            agg_type->record.disc_constraint_exprs[di]);
+                                        exp_v = Emit_Convert(cg, exp_v,
+                                            Expression_Llvm_Type(cg,
+                                                agg_type->record.disc_constraint_exprs[di]),
+                                            comp_type);
+                                    } else {
+                                        exp_v = Emit_Static_Int(cg,
+                                            (int128_t)agg_type->record.disc_constraint_values[di],
+                                            comp_type);
+                                    }
+                                    uint32_t ne = Emit_Temp(cg);
+                                    Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n",
+                                         ne, comp_type, val, exp_v);
+                                    uint32_t ok_l = cg->label_id++;
+                                    uint32_t fl_l = cg->label_id++;
+                                    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                                         ne, fl_l, ok_l);
+                                    cg->block_terminated = true;
+                                    Emit_Label_Here(cg, fl_l);
+                                    Emit_Raise_Constraint_Error(cg,
+                                        "discriminant value vs constraint");
+                                    Emit_Label_Here(cg, ok_l);
                                 }
                             }
                         }
@@ -27787,6 +27920,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         uint32_t comp_size = comp_ti->size > 0 ? comp_ti->size : 8;
                         Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
                              ptr, val, comp_size);
+                        Emit_Comp_Disc_Check(cg, ptr, comp_ti);
                     } else {
                         const char *comp_type = Type_To_Llvm(comp_ti);
                         const char *src_type = Expression_Llvm_Type(cg, others_expr);
