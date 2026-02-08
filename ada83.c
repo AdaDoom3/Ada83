@@ -30357,19 +30357,34 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                                 bool is_access = pt && (pt->kind == TYPE_ACCESS);
                                 if (is_composite) {
                                     /* Composite default: extract data ptr from fat ptr
-                                     * for constrained array formals (RM 4.3.2) */
+                                     * for constrained array formals (RM 4.3.2).
+                                     * Dynamic-bounds arrays keep the fat ptr (RM 6.4.1)
+                                     * since the callee signature uses { ptr, ptr }. */
                                     const char *vty = Temp_Get_Type(cg, val);
-                                    if ((Temp_Is_Fat_Alloca(cg, val) or
-                                         (vty and Llvm_Type_Is_Fat_Pointer(vty))) and
-                                        pt and Type_Is_Constrained_Array(pt)) {
-                                        val = Fat_Ptr_As_Value(cg, val);
-                                        uint32_t dp = Emit_Temp(cg);
+                                    bool is_fat = Temp_Is_Fat_Alloca(cg, val) or
+                                         (vty and Llvm_Type_Is_Fat_Pointer(vty));
+                                    if (is_fat and pt and Type_Is_Constrained_Array(pt)) {
+                                        uint32_t fat_val = Fat_Ptr_As_Value(cg, val);
+                                        if (Type_Has_Dynamic_Bounds(pt)) {
+                                            /* Dynamic bounds: pass fat ptr to match callee sig */
+                                            default_vals[i] = fat_val;
+                                            default_types[i] = FAT_PTR_TYPE;
+                                        } else {
+                                            uint32_t dp = Emit_Temp(cg);
+                                            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE
+                                                 " %%t%u, 0\n", dp, fat_val);
+                                            default_vals[i] = dp;
+                                            default_types[i] = "ptr";
+                                        }
+                                        /* val = data ptr for constraint checks below */
+                                        uint32_t dp2 = Emit_Temp(cg);
                                         Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE
-                                             " %%t%u, 0\n", dp, val);
-                                        val = dp;
+                                             " %%t%u, 0\n", dp2, fat_val);
+                                        val = dp2;
+                                    } else {
+                                        default_vals[i] = val;
+                                        default_types[i] = "ptr";
                                     }
-                                    default_vals[i] = val;
-                                    default_types[i] = "ptr";
                                     /* Array constraint check: compare aggregate element
                                      * count per dimension against the formal parameter
                                      * type's runtime bounds (RM 6.4.1). */
@@ -30383,19 +30398,24 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                                          * For OTHERS-only aggregates, skip the length check
                                          * since OTHERS inherently matches the type's range. */
                                         uint32_t agg_dim_lengths[8] = {0};
-                                        bool agg_is_others_only[8] = {false};
+                                        bool agg_has_others[8] = {false};
                                         uint32_t agg_ndims = 0;
                                         Syntax_Node *cur_agg = def_expr;
                                         for (uint32_t d = 0; d < pt->array.index_count && d < 8; d++) {
                                             if (!cur_agg || cur_agg->kind != NK_AGGREGATE) break;
                                             agg_dim_lengths[d] = cur_agg->aggregate.items.count;
-                                            /* Detect OTHERS-only aggregates */
-                                            if (cur_agg->aggregate.items.count == 1) {
-                                                Syntax_Node *only = cur_agg->aggregate.items.items[0];
-                                                if (only->kind == NK_ASSOCIATION &&
-                                                    only->association.choices.count > 0 &&
-                                                    Is_Others_Choice(only->association.choices.items[0]))
-                                                    agg_is_others_only[d] = true;
+                                            /* Detect aggregates with any OTHERS clause.
+                                             * OTHERS adapts to fill remaining positions,
+                                             * so item count ≠ element count; skip check. */
+                                            for (uint32_t qi = 0;
+                                                 qi < cur_agg->aggregate.items.count; qi++) {
+                                                Syntax_Node *qi2 =
+                                                    cur_agg->aggregate.items.items[qi];
+                                                if (qi2->kind == NK_ASSOCIATION &&
+                                                    qi2->association.choices.count > 0 &&
+                                                    Is_Others_Choice(
+                                                        qi2->association.choices.items[0]))
+                                                    agg_has_others[d] = true;
                                             }
                                             agg_ndims = d + 1;
                                             if (cur_agg->aggregate.items.count > 0) {
@@ -30408,7 +30428,7 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                                             }
                                         }
                                         for (uint32_t d = 0; d < agg_ndims && d < pt->array.index_count; d++) {
-                                            if (agg_is_others_only[d]) continue;  /* OTHERS matches any range */
+                                            if (agg_has_others[d]) continue;  /* OTHERS adapts to fill */
                                             Index_Info *fi = &pt->array.indices[d];
                                             uint32_t f_lo = Emit_Bound_Value(cg, &fi->low_bound);
                                             uint32_t f_hi = Emit_Bound_Value(cg, &fi->high_bound);
@@ -32885,7 +32905,13 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
                                 ts = FAT_PTR_TYPE;
                             } else if (obj_type and Type_Is_Constrained_Array(obj_type) and
                                        obj_type->size > 0) {
-                                ts = Type_To_Llvm(obj_type);
+                                /* Constrained array: alloca sized byte array.
+                                 * Type_To_Llvm returns "ptr" which is only 8 bytes;
+                                 * we need the full array storage for memcpy. */
+                                static char arr_buf[64];
+                                snprintf(arr_buf, sizeof arr_buf,
+                                         "[%u x i8]", obj_type->size);
+                                ts = arr_buf;
                             } else {
                                 ts = obj_type ? Type_To_Llvm(obj_type)
                                              : Expression_Llvm_Type(cg, actual_expr);
