@@ -24114,10 +24114,13 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
             return Emit_Fat_Pointer_MultiDim(cg, ptr, blo, bhi, ndims, bnd_type);
         }
         if (is_disc_dep) {
-            /* Build fat pointer: { ptr data, ptr bounds } */
+            /* Build fat pointer: { ptr data, ptr bounds }
+             * Bounds layout: [lo0, hi0, lo1, hi1, ...] as flat array. */
             const char *bnd_type = Array_Bound_Llvm_Type(field_type);
+            uint32_t ndims = field_type->array.index_count;
             uint32_t bounds_alloca = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = alloca { %s, %s }\n", bounds_alloca, bnd_type, bnd_type);
+            Emit(cg, "  %%t%u = alloca [%u x %s]\n",
+                 bounds_alloca, ndims * 2, bnd_type);
 
             /* Get record base by backing up from field pointer by byte_offset */
             uint32_t rec_base = ptr;
@@ -24127,7 +24130,7 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
                      rec_base, ptr, byte_offset);
             }
 
-            for (uint32_t xi = 0; xi < field_type->array.index_count; xi++) {
+            for (uint32_t xi = 0; xi < ndims; xi++) {
                 Type_Bound *lo_bnd = &field_type->array.indices[xi].low_bound;
                 Type_Bound *hi_bnd = &field_type->array.indices[xi].high_bound;
 
@@ -24186,16 +24189,16 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
                     Emit(cg, "  %%t%u = add %s 0, 0\n", hi_val, bnd_type);
                 }
 
-                /* Store low bound */
+                /* Store low bound at index xi*2 */
                 uint32_t lo_ptr = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = getelementptr { %s, %s }, ptr %%t%u, i32 0, i32 0\n",
-                     lo_ptr, bnd_type, bnd_type, bounds_alloca);
+                Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 %u\n",
+                     lo_ptr, bnd_type, bounds_alloca, xi * 2);
                 Emit(cg, "  store %s %%t%u, ptr %%t%u\n", bnd_type, lo_val, lo_ptr);
 
-                /* Store high bound */
+                /* Store high bound at index xi*2+1 */
                 uint32_t hi_ptr = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = getelementptr { %s, %s }, ptr %%t%u, i32 0, i32 1\n",
-                     hi_ptr, bnd_type, bnd_type, bounds_alloca);
+                Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 %u\n",
+                     hi_ptr, bnd_type, bounds_alloca, xi * 2 + 1);
                 Emit(cg, "  store %s %%t%u, ptr %%t%u\n", bnd_type, hi_val, hi_ptr);
             }
 
@@ -28258,7 +28261,62 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
                          (int)comp->name.length, comp->name.data);
                 }
             } else if (comp_is_composite) {
-                /* Skip 0-size composites */
+                /* Dynamic-size composite (disc-dependent array in NEW):
+                 * extract data from fat-pointer aggregate and memcpy. */
+                bool is_fat_agg = comp->default_expr->kind == NK_AGGREGATE and
+                    comp_type and Type_Is_Array_Like(comp_type) and
+                    (Type_Is_Unconstrained_Array(comp_type) or
+                     Aggregate_Produces_Fat_Pointer(comp_type));
+                if (is_fat_agg) {
+                    uint32_t loaded = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", loaded, val);
+                    uint32_t data_ptr = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n",
+                         data_ptr, loaded);
+                    uint32_t bnds = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1\n",
+                         bnds, loaded);
+                    uint32_t ndim = comp_type->array.index_count;
+                    uint32_t esz = (comp_type->array.element_type and
+                        comp_type->array.element_type->size > 0)
+                        ? comp_type->array.element_type->size : 4;
+                    const char *bt = Array_Bound_Llvm_Type(comp_type);
+                    uint32_t tsz = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = add %s 0, %u\n", tsz, bt, esz);
+                    for (uint32_t d = 0; d < ndim; d++) {
+                        uint32_t lp = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 %u\n",
+                             lp, bt, bnds, d * 2);
+                        uint32_t lo = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", lo, bt, lp);
+                        uint32_t hp = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 %u\n",
+                             hp, bt, bnds, d * 2 + 1);
+                        uint32_t hi = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", hi, bt, hp);
+                        uint32_t cnt = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", cnt, bt, hi, lo);
+                        uint32_t c1 = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = add %s %%t%u, 1\n", c1, bt, cnt);
+                        uint32_t neg = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = icmp slt %s %%t%u, 0\n", neg, bt, c1);
+                        uint32_t cl = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = select i1 %%t%u, %s 0, %s %%t%u\n",
+                             cl, neg, bt, bt, c1);
+                        uint32_t nt = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = mul %s %%t%u, %%t%u\n", nt, bt, tsz, cl);
+                        tsz = nt;
+                    }
+                    uint32_t sz64 = tsz;
+                    if (strcmp(bt, "i64") != 0) {
+                        sz64 = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = sext %s %%t%u to i64\n", sz64, bt, tsz);
+                    }
+                    Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)"
+                         "  ; %.*s dynamic default memcpy\n",
+                         comp_ptr, data_ptr, sz64,
+                         (int)comp->name.length, comp->name.data);
+                }
             } else {
                 const char *store_type = Type_To_Llvm(comp_type);
                 const char *val_type = Temp_Get_Type(cg, val);
@@ -31918,7 +31976,63 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                                  (int)comp->name.length, comp->name.data);
                         }
                     } else if (comp_is_composite) {
-                        /* 0-size composite without rt_global: skip */
+                        /* Dynamic-size composite (disc-dependent array):
+                         * extract data from fat-pointer aggregate, compute
+                         * byte size from bounds, and memcpy. */
+                        bool is_fat_agg = comp->default_expr->kind == NK_AGGREGATE and
+                            comp_type and Type_Is_Array_Like(comp_type) and
+                            (Type_Is_Unconstrained_Array(comp_type) or
+                             Aggregate_Produces_Fat_Pointer(comp_type));
+                        if (is_fat_agg) {
+                            uint32_t loaded = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", loaded, val);
+                            uint32_t data_ptr = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n",
+                                 data_ptr, loaded);
+                            uint32_t bnds = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1\n",
+                                 bnds, loaded);
+                            uint32_t ndim = comp_type->array.index_count;
+                            uint32_t esz = (comp_type->array.element_type and
+                                comp_type->array.element_type->size > 0)
+                                ? comp_type->array.element_type->size : 4;
+                            const char *bt = Array_Bound_Llvm_Type(comp_type);
+                            uint32_t tsz = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add %s 0, %u\n", tsz, bt, esz);
+                            for (uint32_t d = 0; d < ndim; d++) {
+                                uint32_t lp = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 %u\n",
+                                     lp, bt, bnds, d * 2);
+                                uint32_t lo = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", lo, bt, lp);
+                                uint32_t hp = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 %u\n",
+                                     hp, bt, bnds, d * 2 + 1);
+                                uint32_t hi = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", hi, bt, hp);
+                                uint32_t cnt = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", cnt, bt, hi, lo);
+                                uint32_t c1 = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = add %s %%t%u, 1\n", c1, bt, cnt);
+                                uint32_t neg = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = icmp slt %s %%t%u, 0\n", neg, bt, c1);
+                                uint32_t cl = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = select i1 %%t%u, %s 0, %s %%t%u\n",
+                                     cl, neg, bt, bt, c1);
+                                uint32_t nt = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = mul %s %%t%u, %%t%u\n", nt, bt, tsz, cl);
+                                tsz = nt;
+                            }
+                            uint32_t sz64 = tsz;
+                            if (strcmp(bt, "i64") != 0) {
+                                sz64 = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = sext %s %%t%u to i64\n", sz64, bt, tsz);
+                            }
+                            Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)"
+                                 "  ; %.*s dynamic default memcpy\n",
+                                 comp_ptr, data_ptr, sz64,
+                                 (int)comp->name.length, comp->name.data);
+                        }
                     } else {
                         const char *store_type = Type_To_Llvm(comp_type);
                         const char *val_type = Temp_Get_Type(cg, val);
