@@ -17497,6 +17497,12 @@ typedef struct {
      * to determine if positional aggregate bounds should start from the base
      * type's index subtype FIRST (RM 4.3.2(6) sub-aggregate rule). */
     uint32_t      in_agg_component;
+
+    /* Multi-dim aggregate inner bounds tracking (RM 4.3.2(6)).
+     * Set by inner Generate_Aggregate to report computed bounds
+     * back to the outer multidim aggregate for consistency checking. */
+    uint32_t      inner_agg_lo;       /* SSA temp for inner agg low bound */
+    uint32_t      inner_agg_hi;       /* SSA temp for inner agg high bound */
 } Code_Generator;
 
 static Code_Generator *Code_Generator_New(FILE *output, Symbol_Manager *sm) {
@@ -26353,6 +26359,11 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             const char *iat_bnd = Integer_Arith_Type(cg);
             uint32_t low_val = Emit_Single_Bound(cg, &low_bound, iat_bnd);
             uint32_t high_val = Emit_Single_Bound(cg, &high_bound, iat_bnd);
+            /* Report bounds to outer multidim aggregate for consistency check */
+            if (cg->in_agg_component > 0) {
+                cg->inner_agg_lo = low_val;
+                cg->inner_agg_hi = high_val;
+            }
             /* Track which expression nodes produced low_val / high_val so
              * the range-choice loop below can reuse them (avoid double eval). */
             Syntax_Node *bound_low_expr  = (low_bound.kind == BOUND_EXPR)
@@ -26592,6 +26603,47 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                 }
             }
 
+            /* RM 4.3.2: for constrained arrays WITHOUT OTHERS, the aggregate
+             * bounds (min-low, max-high across all named choices) must match
+             * the constraint bounds — even for null ranges.  Track at runtime
+             * so we handle dynamic (function-call) choice bounds. */
+            uint32_t agg_bnd_lo_var = 0, agg_bnd_hi_var = 0;
+            bool track_named_bounds = agg_type->array.is_constrained and
+                ac.has_named and not ac.has_others;
+            if (track_named_bounds) {
+                const char *ait = Integer_Arith_Type(cg);
+                agg_bnd_lo_var = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = alloca %s  ; track agg min-low\n",
+                     agg_bnd_lo_var, ait);
+                uint32_t il = Emit_Static_Int(cg, 2147483647LL, ait);
+                Emit(cg, "  store %s %%t%u, ptr %%t%u\n", ait, il, agg_bnd_lo_var);
+                agg_bnd_hi_var = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = alloca %s  ; track agg max-high\n",
+                     agg_bnd_hi_var, ait);
+                uint32_t ih = Emit_Static_Int(cg, (int128_t)-2147483648LL, ait);
+                Emit(cg, "  store %s %%t%u, ptr %%t%u\n", ait, ih, agg_bnd_hi_var);
+            }
+
+            /* RM 4.3.2(6): for multidim aggregates, all inner sub-aggregates
+             * must have the same bounds.  Track expected inner bounds and
+             * compare each subsequent sub-aggregate's bounds. */
+            uint32_t inner_exp_lo_var = 0, inner_exp_hi_var = 0;
+            uint32_t inner_first_var = 0;
+            bool check_inner_consistency = multidim and agg_ndims > 1;
+            if (check_inner_consistency) {
+                const char *ait = Integer_Arith_Type(cg);
+                inner_exp_lo_var = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = alloca %s  ; expected inner lo\n",
+                     inner_exp_lo_var, ait);
+                inner_exp_hi_var = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = alloca %s  ; expected inner hi\n",
+                     inner_exp_hi_var, ait);
+                inner_first_var = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = alloca i1  ; first inner seen\n",
+                     inner_first_var);
+                Emit(cg, "  store i1 0, ptr %%t%u\n", inner_first_var);
+            }
+
             /* For dynamic aggregates with named range association (1..H1 => val),
              * generate a loop to initialize all elements */
             for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
@@ -26632,6 +26684,32 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         const char *agg_idx_type = Integer_Arith_Type(cg);
                         rng_low_val = Emit_Coerce(cg, rng_low_val, agg_idx_type);
                         rng_high_val = Emit_Coerce(cg, rng_high_val, agg_idx_type);
+
+                        /* Update overall aggregate bounds tracking */
+                        if (track_named_bounds) {
+                            uint32_t cl = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
+                                 cl, agg_idx_type, agg_bnd_lo_var);
+                            uint32_t lt = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = icmp slt %s %%t%u, %%t%u\n",
+                                 lt, agg_idx_type, rng_low_val, cl);
+                            uint32_t nl = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n",
+                                 nl, lt, agg_idx_type, rng_low_val, agg_idx_type, cl);
+                            Emit(cg, "  store %s %%t%u, ptr %%t%u\n",
+                                 agg_idx_type, nl, agg_bnd_lo_var);
+                            uint32_t ch = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
+                                 ch, agg_idx_type, agg_bnd_hi_var);
+                            uint32_t gt = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = icmp sgt %s %%t%u, %%t%u\n",
+                                 gt, agg_idx_type, rng_high_val, ch);
+                            uint32_t nh = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n",
+                                 nh, gt, agg_idx_type, rng_high_val, agg_idx_type, ch);
+                            Emit(cg, "  store %s %%t%u, ptr %%t%u\n",
+                                 agg_idx_type, nh, agg_bnd_hi_var);
+                        }
 
                         /* RM 4.3.2(3): non-null range choice bounds must
                          * belong to the index subtype.  Check at runtime.
@@ -26721,12 +26799,90 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         const char *agg_idx_type = Integer_Arith_Type(cg);
                         idx_val = Emit_Coerce(cg, idx_val, agg_idx_type);
 
+                        /* Update overall aggregate bounds for single-index */
+                        if (track_named_bounds) {
+                            uint32_t cl = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
+                                 cl, agg_idx_type, agg_bnd_lo_var);
+                            uint32_t lt = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = icmp slt %s %%t%u, %%t%u\n",
+                                 lt, agg_idx_type, idx_val, cl);
+                            uint32_t nl = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n",
+                                 nl, lt, agg_idx_type, idx_val, agg_idx_type, cl);
+                            Emit(cg, "  store %s %%t%u, ptr %%t%u\n",
+                                 agg_idx_type, nl, agg_bnd_lo_var);
+                            uint32_t ch = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
+                                 ch, agg_idx_type, agg_bnd_hi_var);
+                            uint32_t gt = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = icmp sgt %s %%t%u, %%t%u\n",
+                                 gt, agg_idx_type, idx_val, ch);
+                            uint32_t nh = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n",
+                                 nh, gt, agg_idx_type, idx_val, agg_idx_type, ch);
+                            Emit(cg, "  store %s %%t%u, ptr %%t%u\n",
+                                 agg_idx_type, nh, agg_bnd_hi_var);
+                        }
+
                         Type_Info *elem_ti = agg_type->array.element_type;
                         bool ecomp = Agg_Elem_Is_Composite(elem_ti, multidim);
 
                         uint32_t val = Agg_Resolve_Elem(cg,
                             item->association.expression, multidim,
                             ecomp, agg_type, elem_type, elem_ti);
+
+                        /* RM 4.3.2(6): inner sub-aggregate bounds consistency */
+                        if (check_inner_consistency and cg->inner_agg_lo != 0) {
+                            const char *ait2 = Integer_Arith_Type(cg);
+                            uint32_t ff = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = load i1, ptr %%t%u\n",
+                                 ff, inner_first_var);
+                            uint32_t s_lbl = cg->label_id++;
+                            uint32_t c_lbl = cg->label_id++;
+                            uint32_t d_lbl = cg->label_id++;
+                            Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                                 ff, c_lbl, s_lbl);
+                            cg->block_terminated = true;
+                            Emit_Label_Here(cg, s_lbl);
+                            Emit(cg, "  store %s %%t%u, ptr %%t%u\n",
+                                 ait2, cg->inner_agg_lo, inner_exp_lo_var);
+                            Emit(cg, "  store %s %%t%u, ptr %%t%u\n",
+                                 ait2, cg->inner_agg_hi, inner_exp_hi_var);
+                            Emit(cg, "  store i1 1, ptr %%t%u\n", inner_first_var);
+                            Emit(cg, "  br label %%L%u\n", d_lbl);
+                            cg->block_terminated = true;
+                            Emit_Label_Here(cg, c_lbl);
+                            uint32_t elo2 = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
+                                 elo2, ait2, inner_exp_lo_var);
+                            uint32_t ehi2 = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
+                                 ehi2, ait2, inner_exp_hi_var);
+                            uint32_t ne2l = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n",
+                                 ne2l, ait2, cg->inner_agg_lo, elo2);
+                            uint32_t ne2h = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n",
+                                 ne2h, ait2, cg->inner_agg_hi, ehi2);
+                            uint32_t mm2 = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = or i1 %%t%u, %%t%u\n",
+                                 mm2, ne2l, ne2h);
+                            uint32_t ok2 = cg->label_id++;
+                            uint32_t fl2 = cg->label_id++;
+                            Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                                 mm2, fl2, ok2);
+                            cg->block_terminated = true;
+                            Emit_Label_Here(cg, fl2);
+                            Emit_Raise_Constraint_Error(cg,
+                                "inner sub-aggregate bounds mismatch");
+                            Emit_Label_Here(cg, ok2);
+                            Emit(cg, "  br label %%L%u\n", d_lbl);
+                            cg->block_terminated = true;
+                            Emit_Label_Here(cg, d_lbl);
+                            cg->inner_agg_lo = 0;
+                            cg->inner_agg_hi = 0;
+                        }
 
                         uint32_t arr_idx = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n",
@@ -26735,6 +26891,91 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                             agg_idx_type, elem_type, elem_size, rt_row_size, ecomp);
                     }
                 }
+            }
+
+            /* RM 4.3.2: post-loop check — overall aggregate choice bounds
+             * must match the constraint bounds for constrained arrays
+             * without OTHERS.  Applies even for null arrays. */
+            if (track_named_bounds) {
+                const char *ait = Integer_Arith_Type(cg);
+                uint32_t fl = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
+                     fl, ait, agg_bnd_lo_var);
+                uint32_t fh = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
+                     fh, ait, agg_bnd_hi_var);
+                uint32_t ne_lo = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n",
+                     ne_lo, ait, fl, low_val);
+                uint32_t ne_hi = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n",
+                     ne_hi, ait, fh, high_val);
+                uint32_t mismatch = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = or i1 %%t%u, %%t%u\n",
+                     mismatch, ne_lo, ne_hi);
+                uint32_t ok_lbl = cg->label_id++;
+                uint32_t fail_lbl = cg->label_id++;
+                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                     mismatch, fail_lbl, ok_lbl);
+                cg->block_terminated = true;
+                Emit_Label_Here(cg, fail_lbl);
+                Emit_Raise_Constraint_Error(cg,
+                    "aggregate named range vs constraint");
+                Emit_Label_Here(cg, ok_lbl);
+            }
+
+            /* For multidim constrained arrays, also check inner dimension
+             * bounds from the first inner sub-aggregate's named range
+             * against the type's inner constraint.  Runs OUTSIDE the outer
+             * loop so null outer ranges still get checked (RM 4.3.2). */
+            if (agg_type->array.is_constrained and multidim and
+                agg_ndims > 1 and ac.has_named and not ac.has_others) {
+                for (uint32_t ai = 0; ai < node->aggregate.items.count; ai++) {
+                    Syntax_Node *aitem = node->aggregate.items.items[ai];
+                    if (aitem->kind != NK_ASSOCIATION) continue;
+                    if (aitem->association.choices.count > 0 and
+                        Is_Others_Choice(aitem->association.choices.items[0]))
+                        continue;
+                    Syntax_Node *inner = aitem->association.expression;
+                    if (not inner or inner->kind != NK_AGGREGATE) continue;
+                    /* Find first named range in inner aggregate */
+                    for (uint32_t ii = 0; ii < inner->aggregate.items.count; ii++) {
+                        Syntax_Node *iit = inner->aggregate.items.items[ii];
+                        if (iit->kind != NK_ASSOCIATION or
+                            iit->association.choices.count == 0) continue;
+                        Syntax_Node *ich = iit->association.choices.items[0];
+                        if (Is_Others_Choice(ich)) continue;
+                        if (ich->kind != NK_RANGE) continue;
+                        const char *ait = Integer_Arith_Type(cg);
+                        uint32_t ir_lo = Generate_Expression(cg, ich->range.low);
+                        ir_lo = Emit_Coerce(cg, ir_lo, ait);
+                        uint32_t ir_hi = Generate_Expression(cg, ich->range.high);
+                        ir_hi = Emit_Coerce(cg, ir_hi, ait);
+                        uint32_t exp_lo = Emit_Single_Bound(cg, &dim_lo[1], ait);
+                        uint32_t exp_hi = Emit_Single_Bound(cg, &dim_hi[1], ait);
+                        uint32_t ilo_ne = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n",
+                             ilo_ne, ait, ir_lo, exp_lo);
+                        uint32_t ihi_ne = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n",
+                             ihi_ne, ait, ir_hi, exp_hi);
+                        uint32_t imm = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = or i1 %%t%u, %%t%u\n",
+                             imm, ilo_ne, ihi_ne);
+                        uint32_t iok = cg->label_id++;
+                        uint32_t ifail = cg->label_id++;
+                        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                             imm, ifail, iok);
+                        cg->block_terminated = true;
+                        Emit_Label_Here(cg, ifail);
+                        Emit_Raise_Constraint_Error(cg,
+                            "inner aggregate named range vs constraint");
+                        Emit_Label_Here(cg, iok);
+                        goto inner_dim_check_done;
+                    }
+                    break; /* only check first non-others association */
+                }
+                inner_dim_check_done: ;
             }
 
             /* RM 4.3.3(5): OTHERS fills positions not covered by positional
@@ -26847,6 +27088,13 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
         int128_t high = Type_Bound_Value(high_bound);
         int128_t count = high - low + 1;
         if (count < 1) count = 1;  /* Ensure at least 1 element for safety */
+
+        /* Report bounds to outer multidim aggregate for consistency check */
+        if (cg->in_agg_component > 0) {
+            const char *ait = Integer_Arith_Type(cg);
+            cg->inner_agg_lo = Emit_Static_Int(cg, low, ait);
+            cg->inner_agg_hi = Emit_Static_Int(cg, high, ait);
+        }
 
         /* RM 4.3.2(3): index subtype bounds for aggregate constraint checking.
          * Each choice bound of a non-null range must belong to the index
@@ -27146,6 +27394,52 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             }
         }
 
+        /* RM 4.3.2(6): For constrained arrays with dynamic named choices
+         * and no OTHERS, track actual evaluated bounds at runtime to compare
+         * against the constraint.  Static choices are handled above. */
+        uint32_t s_bnd_lo_var = 0, s_bnd_hi_var = 0;
+        bool s_track_dyn = agg_type->array.is_constrained and
+            has_dynamic_choice and not has_others and has_named;
+        if (s_track_dyn) {
+            const char *bt = Array_Bound_Llvm_Type(agg_type);
+            s_bnd_lo_var = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = alloca %s  ; track named min-low\n",
+                 s_bnd_lo_var, bt);
+            uint32_t il = Emit_Static_Int(cg, 2147483647LL, bt);
+            Emit(cg, "  store %s %%t%u, ptr %%t%u\n", bt, il, s_bnd_lo_var);
+            s_bnd_hi_var = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = alloca %s  ; track named max-high\n",
+                 s_bnd_hi_var, bt);
+            uint32_t ih = Emit_Static_Int(cg, (int128_t)-2147483648LL, bt);
+            Emit(cg, "  store %s %%t%u, ptr %%t%u\n", bt, ih, s_bnd_hi_var);
+        }
+
+        /* RM 4.3.2(6): For multidim aggregates, track inner sub-aggregate
+         * bounds for consistency checking across rows.  The check is
+         * deferred so all sub-aggregates are evaluated (for side effects)
+         * before raising CONSTRAINT_ERROR. */
+        uint32_t inner_trk_lo = 0, inner_trk_hi = 0;
+        uint32_t inner_trk_first = 0, inner_trk_mm = 0;
+        bool check_inner_consistency = multidim and agg_ndims > 1
+            and not has_others;
+        if (check_inner_consistency) {
+            const char *bt = Array_Bound_Llvm_Type(agg_type);
+            inner_trk_lo = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = alloca %s  ; expected inner lo\n",
+                 inner_trk_lo, bt);
+            inner_trk_hi = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = alloca %s  ; expected inner hi\n",
+                 inner_trk_hi, bt);
+            inner_trk_first = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = alloca i1  ; first inner seen?\n",
+                 inner_trk_first);
+            Emit(cg, "  store i1 0, ptr %%t%u\n", inner_trk_first);
+            inner_trk_mm = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = alloca i1  ; inner mismatch flag\n",
+                 inner_trk_mm);
+            Emit(cg, "  store i1 0, ptr %%t%u\n", inner_trk_mm);
+        }
+
         /* Second pass: initialize elements */
         uint32_t positional_idx = 0;
         for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
@@ -27192,6 +27486,39 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                                 ? Emit_Convert(cg, ev, st, bt) : ev;
                             if (not agg_type->array.is_constrained and agg_hi_ssa == 0)
                                 agg_hi_ssa = rng_hi_ssa;
+                        }
+
+                        /* Track dynamic named range bounds for constraint check */
+                        if (s_track_dyn) {
+                            const char *bt = Array_Bound_Llvm_Type(agg_type);
+                            uint32_t lo_v = rng_lo_ssa ? rng_lo_ssa
+                                : Emit_Static_Int(cg, rng_low, bt);
+                            uint32_t hi_v = rng_hi_ssa ? rng_hi_ssa
+                                : Emit_Static_Int(cg, rng_high, bt);
+                            /* min(cur_lo, lo_v) */
+                            uint32_t clo = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
+                                 clo, bt, s_bnd_lo_var);
+                            uint32_t lt = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = icmp slt %s %%t%u, %%t%u\n",
+                                 lt, bt, lo_v, clo);
+                            uint32_t nlo = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n",
+                                 nlo, lt, bt, lo_v, bt, clo);
+                            Emit(cg, "  store %s %%t%u, ptr %%t%u\n",
+                                 bt, nlo, s_bnd_lo_var);
+                            /* max(cur_hi, hi_v) */
+                            uint32_t chi = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
+                                 chi, bt, s_bnd_hi_var);
+                            uint32_t gt = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = icmp sgt %s %%t%u, %%t%u\n",
+                                 gt, bt, hi_v, chi);
+                            uint32_t nhi = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n",
+                                 nhi, gt, bt, hi_v, bt, chi);
+                            Emit(cg, "  store %s %%t%u, ptr %%t%u\n",
+                                 bt, nhi, s_bnd_hi_var);
                         }
 
                         /* RM 4.3.2(3): for a non-null range, the bounds must
@@ -27456,6 +27783,61 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                                     initialized[arr_idx] = true;
                                 }
                             }
+                            /* Track inner sub-aggregate bounds for consistency
+                             * (same logic as single-index branch above) */
+                            if (check_inner_consistency and
+                                cg->inner_agg_lo and cg->inner_agg_hi) {
+                                const char *bt2 = Array_Bound_Llvm_Type(agg_type);
+                                uint32_t ilo = cg->inner_agg_lo;
+                                uint32_t ihi = cg->inner_agg_hi;
+                                cg->inner_agg_lo = 0;
+                                cg->inner_agg_hi = 0;
+                                uint32_t fs = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = load i1, ptr %%t%u\n",
+                                     fs, inner_trk_first);
+                                uint32_t st_lbl = cg->label_id++;
+                                uint32_t ck_lbl = cg->label_id++;
+                                uint32_t dn_lbl = cg->label_id++;
+                                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                                     fs, ck_lbl, st_lbl);
+                                cg->block_terminated = true;
+                                Emit_Label_Here(cg, st_lbl);
+                                Emit(cg, "  store %s %%t%u, ptr %%t%u\n",
+                                     bt2, ilo, inner_trk_lo);
+                                Emit(cg, "  store %s %%t%u, ptr %%t%u\n",
+                                     bt2, ihi, inner_trk_hi);
+                                Emit(cg, "  store i1 1, ptr %%t%u\n",
+                                     inner_trk_first);
+                                Emit(cg, "  br label %%L%u\n", dn_lbl);
+                                cg->block_terminated = true;
+                                Emit_Label_Here(cg, ck_lbl);
+                                uint32_t elo = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
+                                     elo, bt2, inner_trk_lo);
+                                uint32_t ehi = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
+                                     ehi, bt2, inner_trk_hi);
+                                uint32_t nl = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n",
+                                     nl, bt2, ilo, elo);
+                                uint32_t nh = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n",
+                                     nh, bt2, ihi, ehi);
+                                uint32_t rmm = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = or i1 %%t%u, %%t%u\n",
+                                     rmm, nl, nh);
+                                uint32_t of = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = load i1, ptr %%t%u\n",
+                                     of, inner_trk_mm);
+                                uint32_t nf = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = or i1 %%t%u, %%t%u\n",
+                                     nf, of, rmm);
+                                Emit(cg, "  store i1 %%t%u, ptr %%t%u\n",
+                                     nf, inner_trk_mm);
+                                Emit(cg, "  br label %%L%u\n", dn_lbl);
+                                cg->block_terminated = true;
+                                Emit_Label_Here(cg, dn_lbl);
+                            }
                         }
                     } else if (choice->kind == NK_IDENTIFIER and choice->symbol and
                                choice->symbol->kind == SYMBOL_TYPE and choice->symbol->type) {
@@ -27488,6 +27870,33 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                                 Emit_Label_Here(cg, cont);
                             }
                         }
+                        /* Track single index for dynamic bounds constraint check */
+                        if (s_track_dyn) {
+                            const char *bt = Array_Bound_Llvm_Type(agg_type);
+                            uint32_t iv = Emit_Static_Int(cg, cv, bt);
+                            uint32_t clo = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
+                                 clo, bt, s_bnd_lo_var);
+                            uint32_t lt = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = icmp slt %s %%t%u, %%t%u\n",
+                                 lt, bt, iv, clo);
+                            uint32_t nlo = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n",
+                                 nlo, lt, bt, iv, bt, clo);
+                            Emit(cg, "  store %s %%t%u, ptr %%t%u\n",
+                                 bt, nlo, s_bnd_lo_var);
+                            uint32_t chi = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
+                                 chi, bt, s_bnd_hi_var);
+                            uint32_t gt = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = icmp sgt %s %%t%u, %%t%u\n",
+                                 gt, bt, iv, chi);
+                            uint32_t nhi = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n",
+                                 nhi, gt, bt, iv, bt, chi);
+                            Emit(cg, "  store %s %%t%u, ptr %%t%u\n",
+                                 bt, nhi, s_bnd_hi_var);
+                        }
                         int128_t idx = cv - low;
                         if (idx >= 0 and idx < count) {
                             uint32_t val = Agg_Resolve_Elem(cg,
@@ -27496,6 +27905,62 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                             Agg_Store_At_Static(cg, base, val, idx,
                                 elem_type, elem_size, elem_is_composite);
                             initialized[idx] = true;
+                        }
+                        /* Track inner sub-aggregate bounds for consistency */
+                        if (check_inner_consistency and
+                            cg->inner_agg_lo and cg->inner_agg_hi) {
+                            const char *bt = Array_Bound_Llvm_Type(agg_type);
+                            uint32_t ilo = cg->inner_agg_lo;
+                            uint32_t ihi = cg->inner_agg_hi;
+                            cg->inner_agg_lo = 0;
+                            cg->inner_agg_hi = 0;
+                            uint32_t fs = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = load i1, ptr %%t%u\n",
+                                 fs, inner_trk_first);
+                            uint32_t st_lbl = cg->label_id++;
+                            uint32_t ck_lbl = cg->label_id++;
+                            uint32_t dn_lbl = cg->label_id++;
+                            Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                                 fs, ck_lbl, st_lbl);
+                            cg->block_terminated = true;
+                            /* First time: store expected bounds */
+                            Emit_Label_Here(cg, st_lbl);
+                            Emit(cg, "  store %s %%t%u, ptr %%t%u\n",
+                                 bt, ilo, inner_trk_lo);
+                            Emit(cg, "  store %s %%t%u, ptr %%t%u\n",
+                                 bt, ihi, inner_trk_hi);
+                            Emit(cg, "  store i1 1, ptr %%t%u\n",
+                                 inner_trk_first);
+                            Emit(cg, "  br label %%L%u\n", dn_lbl);
+                            cg->block_terminated = true;
+                            /* Subsequent: compare against expected */
+                            Emit_Label_Here(cg, ck_lbl);
+                            uint32_t elo = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
+                                 elo, bt, inner_trk_lo);
+                            uint32_t ehi = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
+                                 ehi, bt, inner_trk_hi);
+                            uint32_t nl = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n",
+                                 nl, bt, ilo, elo);
+                            uint32_t nh = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n",
+                                 nh, bt, ihi, ehi);
+                            uint32_t rmm = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = or i1 %%t%u, %%t%u\n",
+                                 rmm, nl, nh);
+                            uint32_t of = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = load i1, ptr %%t%u\n",
+                                 of, inner_trk_mm);
+                            uint32_t nf = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = or i1 %%t%u, %%t%u\n",
+                                 nf, of, rmm);
+                            Emit(cg, "  store i1 %%t%u, ptr %%t%u\n",
+                                 nf, inner_trk_mm);
+                            Emit(cg, "  br label %%L%u\n", dn_lbl);
+                            cg->block_terminated = true;
+                            Emit_Label_Here(cg, dn_lbl);
                         }
                     }
                 }
@@ -27514,6 +27979,66 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                     positional_idx++;
                 }
             }
+        }
+
+        /* Report actual aggregate bounds to outer multidim aggregate.
+         * For dynamic choices: load from trackers.  For static: use low/high.
+         * This overrides the early reporting (pre-choice processing). */
+        if (cg->in_agg_component > 0) {
+            const char *bt = Array_Bound_Llvm_Type(agg_type);
+            if (s_track_dyn) {
+                cg->inner_agg_lo = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; inner actual lo\n",
+                     cg->inner_agg_lo, bt, s_bnd_lo_var);
+                cg->inner_agg_hi = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; inner actual hi\n",
+                     cg->inner_agg_hi, bt, s_bnd_hi_var);
+            } else {
+                cg->inner_agg_lo = Emit_Static_Int(cg, low, bt);
+                cg->inner_agg_hi = Emit_Static_Int(cg, high, bt);
+            }
+        }
+
+        /* Note: For the static path, dynamic named bounds vs constraint
+         * is NOT checked here because sliding occurs at assignment
+         * (RM 5.2.1(3)).  Array-of-array components are checked at
+         * line ~27238 (has_unconstrained_base condition).
+         * The s_track_dyn mechanism is still used for reporting actual
+         * bounds to the outer aggregate via cg->inner_agg_lo/hi. */
+
+        /* RM 4.3.2(6): Check inner sub-aggregate bounds consistency.
+         * After all rows are processed, check if any had mismatched bounds.
+         * Also check first-seen bounds against the second dimension constraint.
+         * Only check if at least one inner sub-aggregate was tracked. */
+        if (check_inner_consistency) {
+            const char *bt = Array_Bound_Llvm_Type(agg_type);
+            uint32_t was_seen = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = load i1, ptr %%t%u  ; any inner seen?\n",
+                 was_seen, inner_trk_first);
+            uint32_t skip_lbl = cg->label_id++;
+            uint32_t do_check_lbl = cg->label_id++;
+            Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                 was_seen, do_check_lbl, skip_lbl);
+            cg->block_terminated = true;
+            Emit_Label_Here(cg, do_check_lbl);
+            /* RM 4.3.2(6): Only check consistency across rows.
+             * For multidim, sliding handles bounds adjustment to constraint.
+             * So do NOT compare inner bounds against constraint here. */
+            uint32_t mm = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = load i1, ptr %%t%u  ; inner mismatch?\n",
+                 mm, inner_trk_mm);
+            uint32_t ok_lbl = cg->label_id++;
+            uint32_t fail_lbl = cg->label_id++;
+            Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                 mm, fail_lbl, ok_lbl);
+            cg->block_terminated = true;
+            Emit_Label_Here(cg, fail_lbl);
+            Emit_Raise_Constraint_Error(cg,
+                "sub-aggregate bounds mismatch (RM 4.3.2(6))");
+            Emit_Label_Here(cg, ok_lbl);
+            Emit(cg, "  br label %%L%u\n", skip_lbl);
+            cg->block_terminated = true;
+            Emit_Label_Here(cg, skip_lbl);
         }
 
         /* Third pass: fill uninitialized with "others" value.
