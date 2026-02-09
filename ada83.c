@@ -17491,6 +17491,12 @@ typedef struct {
 
     /* Counter for assigning unique runtime type elaboration IDs */
     uint32_t      rt_type_counter;
+
+    /* Nonzero when generating a component expression inside an outer
+     * aggregate (array element or record field).  Used by Generate_Aggregate
+     * to determine if positional aggregate bounds should start from the base
+     * type's index subtype FIRST (RM 4.3.2(6) sub-aggregate rule). */
+    uint32_t      in_agg_component;
 } Code_Generator;
 
 static Code_Generator *Code_Generator_New(FILE *output, Symbol_Manager *sm) {
@@ -24108,10 +24114,13 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
             return Emit_Fat_Pointer_MultiDim(cg, ptr, blo, bhi, ndims, bnd_type);
         }
         if (is_disc_dep) {
-            /* Build fat pointer: { ptr data, ptr bounds } */
+            /* Build fat pointer: { ptr data, ptr bounds }
+             * Bounds layout: [lo0, hi0, lo1, hi1, ...] as flat array. */
             const char *bnd_type = Array_Bound_Llvm_Type(field_type);
+            uint32_t ndims = field_type->array.index_count;
             uint32_t bounds_alloca = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = alloca { %s, %s }\n", bounds_alloca, bnd_type, bnd_type);
+            Emit(cg, "  %%t%u = alloca [%u x %s]\n",
+                 bounds_alloca, ndims * 2, bnd_type);
 
             /* Get record base by backing up from field pointer by byte_offset */
             uint32_t rec_base = ptr;
@@ -24121,7 +24130,7 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
                      rec_base, ptr, byte_offset);
             }
 
-            for (uint32_t xi = 0; xi < field_type->array.index_count; xi++) {
+            for (uint32_t xi = 0; xi < ndims; xi++) {
                 Type_Bound *lo_bnd = &field_type->array.indices[xi].low_bound;
                 Type_Bound *hi_bnd = &field_type->array.indices[xi].high_bound;
 
@@ -24180,16 +24189,16 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
                     Emit(cg, "  %%t%u = add %s 0, 0\n", hi_val, bnd_type);
                 }
 
-                /* Store low bound */
+                /* Store low bound at index xi*2 */
                 uint32_t lo_ptr = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = getelementptr { %s, %s }, ptr %%t%u, i32 0, i32 0\n",
-                     lo_ptr, bnd_type, bnd_type, bounds_alloca);
+                Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 %u\n",
+                     lo_ptr, bnd_type, bounds_alloca, xi * 2);
                 Emit(cg, "  store %s %%t%u, ptr %%t%u\n", bnd_type, lo_val, lo_ptr);
 
-                /* Store high bound */
+                /* Store high bound at index xi*2+1 */
                 uint32_t hi_ptr = Emit_Temp(cg);
-                Emit(cg, "  %%t%u = getelementptr { %s, %s }, ptr %%t%u, i32 0, i32 1\n",
-                     hi_ptr, bnd_type, bnd_type, bounds_alloca);
+                Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 %u\n",
+                     hi_ptr, bnd_type, bounds_alloca, xi * 2 + 1);
                 Emit(cg, "  store %s %%t%u, ptr %%t%u\n", bnd_type, hi_val, hi_ptr);
             }
 
@@ -25898,7 +25907,9 @@ static uint32_t Agg_Resolve_Elem(Code_Generator *cg, Syntax_Node *expr,
     bool multidim, bool elem_is_composite, Type_Info *agg_type,
     const char *elem_type, Type_Info *elem_ti)
 {
+    cg->in_agg_component++;
     uint32_t val = Generate_Expression(cg, expr);
+    cg->in_agg_component--;
 
     /* Fat pointer sources: extract data pointer for composite elements.
      * Three cases: (a) normal fat ptr, (b) dynamic inner aggregate fat ptr,
@@ -26007,6 +26018,46 @@ static void Agg_Store_At_Dynamic(Code_Generator *cg, uint32_t base,
 static inline bool Agg_Elem_Is_Composite(Type_Info *elem_ti, bool multidim) {
     return multidim or (elem_ti and (Type_Is_Record(elem_ti) or
                                      Type_Is_Constrained_Array(elem_ti)));
+}
+
+/* RM 3.7.1: After memcpy-ing a composite value into a record component,
+ * verify that the stored discriminant(s) match the component type's
+ * discriminant constraint(s).  E.g.  (H => INIT(1)) where H : PRIV(0). */
+static void Emit_Comp_Disc_Check(Code_Generator *cg, uint32_t ptr,
+                                  Type_Info *comp_ti) {
+    if (not comp_ti or not Type_Is_Record(comp_ti) or
+        not comp_ti->record.has_disc_constraints or
+        not comp_ti->record.disc_constraint_values) return;
+    for (uint32_t di = 0; di < comp_ti->record.discriminant_count; di++) {
+        Component_Info *dc = &comp_ti->record.components[di];
+        const char *dt = Type_To_Llvm(dc->component_type);
+        uint32_t dp = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
+             dp, ptr, dc->byte_offset);
+        uint32_t dv = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", dv, dt, dp);
+        uint32_t exp_v;
+        if (comp_ti->record.disc_constraint_exprs and
+            comp_ti->record.disc_constraint_exprs[di]) {
+            exp_v = Generate_Expression(cg,
+                comp_ti->record.disc_constraint_exprs[di]);
+            exp_v = Emit_Convert(cg, exp_v,
+                Expression_Llvm_Type(cg,
+                    comp_ti->record.disc_constraint_exprs[di]), dt);
+        } else {
+            exp_v = Emit_Static_Int(cg,
+                (int128_t)comp_ti->record.disc_constraint_values[di], dt);
+        }
+        uint32_t ne = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n", ne, dt, dv, exp_v);
+        uint32_t ok_l = cg->label_id++;
+        uint32_t fl_l = cg->label_id++;
+        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", ne, fl_l, ok_l);
+        cg->block_terminated = true;
+        Emit_Label_Here(cg, fl_l);
+        Emit_Raise_Constraint_Error(cg, "component disc value vs constraint");
+        Emit_Label_Here(cg, ok_l);
+    }
 }
 
 static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
@@ -26294,6 +26345,149 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             Agg_Class ac = Agg_Classify(node);
             bool has_others = ac.has_others;
             uint32_t others_val = 0;  /* unused; OTHERS re-evaluated per component */
+
+            /* RM 4.3.2(6): Dynamic aggregate bounds vs constraint check.
+             * When the aggregate type is a constrained subtype of an unconstrained
+             * base and the constraint bounds are runtime-determined, verify at
+             * runtime that the aggregate's "natural" bounds match the constraint.
+             * Positional: per RM 4.3.2(4), lower bound = applicable index
+             *   constraint's first, so bounds automatically match if count = constraint
+             *   size.  Check n_positional vs constraint element count.
+             * Named (static choices): choice bounds must equal constraint bounds.
+             * Skip when bounds reference discriminants whose disc_agg_temp
+             * hasn't been set up yet (not safely evaluable; RM 3.7.1). */
+            {
+                bool bounds_ref_unset_disc = false;
+                for (uint32_t d = 0; d < agg_ndims && !bounds_ref_unset_disc; d++) {
+                    Type_Bound *b[2] = {&agg_type->array.indices[d].low_bound,
+                                        &agg_type->array.indices[d].high_bound};
+                    for (int bi = 0; bi < 2; bi++)
+                        if (b[bi]->kind == BOUND_EXPR && b[bi]->expr &&
+                            b[bi]->expr->symbol &&
+                            b[bi]->expr->symbol->kind == SYMBOL_DISCRIMINANT &&
+                            b[bi]->expr->symbol->disc_agg_temp == 0)
+                            bounds_ref_unset_disc = true;
+                }
+            if (agg_type->array.is_constrained && !bounds_ref_unset_disc) {
+                bool has_unc_base = agg_type->base_type &&
+                    Type_Is_Array_Like(agg_type->base_type) &&
+                    !agg_type->base_type->array.is_constrained;
+                if (has_unc_base) {
+                    const char *ait = Integer_Arith_Type(cg);
+                    if (ac.n_positional > 0 && !ac.has_named) {
+                        uint32_t clo = Emit_Coerce(cg, low_val, ait);
+                        uint32_t chi = Emit_Coerce(cg, high_val, ait);
+                        if (cg->in_agg_component > 0) {
+                            /* Sub-aggregate: positional lower = index subtype FIRST.
+                             * Compare true bounds vs runtime constraint. */
+                            Type_Bound *is_lo = (agg_type->base_type->array.index_count > 0
+                                && agg_type->base_type->array.indices
+                                && agg_type->base_type->array.indices[0].index_type)
+                                ? &agg_type->base_type->array.indices[0].index_type->low_bound
+                                : NULL;
+                            if (is_lo) {
+                                uint32_t tlo = Emit_Single_Bound(cg, is_lo, ait);
+                                uint32_t nm1 = Emit_Static_Int(cg,
+                                    (int128_t)ac.n_positional - 1, ait);
+                                uint32_t thi = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = add %s %%t%u, %%t%u\n",
+                                     thi, ait, tlo, nm1);
+                                uint32_t ne_lo = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n",
+                                     ne_lo, ait, tlo, clo);
+                                uint32_t ne_hi = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n",
+                                     ne_hi, ait, thi, chi);
+                                uint32_t mismatch = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = or i1 %%t%u, %%t%u\n",
+                                     mismatch, ne_lo, ne_hi);
+                                uint32_t ok_lbl = cg->label_id++;
+                                uint32_t fail_lbl = cg->label_id++;
+                                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                                     mismatch, fail_lbl, ok_lbl);
+                                cg->block_terminated = true;
+                                Emit_Label_Here(cg, fail_lbl);
+                                Emit_Raise_Constraint_Error(cg,
+                                    "positional sub-aggregate bounds vs dynamic constraint");
+                                Emit_Label_Here(cg, ok_lbl);
+                            }
+                        } else {
+                            /* Direct aggregate: count check only. */
+                            uint32_t n_pos = Emit_Static_Int(cg,
+                                (int128_t)ac.n_positional, ait);
+                            uint32_t con_len = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n",
+                                 con_len, ait, chi, clo);
+                            uint32_t con_cnt = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add %s %%t%u, 1\n",
+                                 con_cnt, ait, con_len);
+                            uint32_t mismatch = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n",
+                                 mismatch, ait, n_pos, con_cnt);
+                            uint32_t ok_lbl = cg->label_id++;
+                            uint32_t fail_lbl = cg->label_id++;
+                            Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                                 mismatch, fail_lbl, ok_lbl);
+                            cg->block_terminated = true;
+                            Emit_Label_Here(cg, fail_lbl);
+                            Emit_Raise_Constraint_Error(cg,
+                                "positional aggregate count vs dynamic constraint");
+                            Emit_Label_Here(cg, ok_lbl);
+                        }
+                    }
+                    if (ac.has_named && !ac.has_others && agg_ndims == 1) {
+                        int128_t ch_lo = INT64_MAX, ch_hi = INT64_MIN;
+                        bool found_ch = false;
+                        for (uint32_t ci = 0; ci < node->aggregate.items.count; ci++) {
+                            Syntax_Node *cit = node->aggregate.items.items[ci];
+                            if (cit->kind != NK_ASSOCIATION) continue;
+                            for (uint32_t cc = 0; cc < cit->association.choices.count; cc++) {
+                                Syntax_Node *ch = cit->association.choices.items[cc];
+                                if (Is_Others_Choice(ch)) continue;
+                                if (ch->kind == NK_INTEGER) {
+                                    int128_t v = ch->integer_lit.value;
+                                    if (!found_ch || v < ch_lo) ch_lo = v;
+                                    if (!found_ch || v > ch_hi) ch_hi = v;
+                                    found_ch = true;
+                                } else if (ch->kind == NK_RANGE) {
+                                    if (ch->range.low && ch->range.low->kind == NK_INTEGER) {
+                                        int128_t v = ch->range.low->integer_lit.value;
+                                        if (!found_ch || v < ch_lo) ch_lo = v;
+                                        found_ch = true;
+                                    }
+                                    if (ch->range.high && ch->range.high->kind == NK_INTEGER) {
+                                        int128_t v = ch->range.high->integer_lit.value;
+                                        if (!found_ch || v > ch_hi) ch_hi = v;
+                                        found_ch = true;
+                                    }
+                                }
+                            }
+                        }
+                        if (found_ch) {
+                            uint32_t nclo = Emit_Static_Int(cg, ch_lo, ait);
+                            uint32_t nchi = Emit_Static_Int(cg, ch_hi, ait);
+                            uint32_t clo = Emit_Coerce(cg, low_val, ait);
+                            uint32_t chi = Emit_Coerce(cg, high_val, ait);
+                            uint32_t ne_lo = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n", ne_lo, ait, nclo, clo);
+                            uint32_t ne_hi = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n", ne_hi, ait, nchi, chi);
+                            uint32_t mismatch = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = or i1 %%t%u, %%t%u\n", mismatch, ne_lo, ne_hi);
+                            uint32_t ok_lbl = cg->label_id++;
+                            uint32_t fail_lbl = cg->label_id++;
+                            Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                                 mismatch, fail_lbl, ok_lbl);
+                            cg->block_terminated = true;
+                            Emit_Label_Here(cg, fail_lbl);
+                            Emit_Raise_Constraint_Error(cg,
+                                "named aggregate bounds vs dynamic constraint");
+                            Emit_Label_Here(cg, ok_lbl);
+                        }
+                    }
+                }
+            }
+            } /* end bounds_ref_disc scope */
 
             /* Positional elements: store each at its index offset. */
             {
@@ -26686,14 +26880,23 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             int128_t con_hi = Type_Bound_Value(agg_type->array.indices[0].high_bound);
 
             if (n_positional > 0 and not has_named and has_unconstrained_base) {
-                /* Positional aggregate: true lower bound is index subtype FIRST,
-                 * not the constrained bound.  RM 4.3.2(5). */
-                int128_t true_lo = idx_sub_lo;
-                int128_t true_hi = true_lo + (int128_t)n_positional - 1;
-                if (true_lo != con_lo or true_hi != con_hi) {
-                    Emit_Raise_Constraint_Error(cg, "positional aggregate bounds vs constraint");
-                    uint32_t cont = cg->label_id++;
-                    Emit_Label_Here(cg, cont);
+                if (cg->in_agg_component > 0) {
+                    /* Sub-aggregate: true lower = index subtype FIRST (RM 4.3.2). */
+                    int128_t true_lo = idx_sub_lo;
+                    int128_t true_hi = true_lo + (int128_t)n_positional - 1;
+                    if (true_lo != con_lo or true_hi != con_hi) {
+                        Emit_Raise_Constraint_Error(cg, "positional aggregate bounds vs constraint");
+                        uint32_t cont = cg->label_id++;
+                        Emit_Label_Here(cg, cont);
+                    }
+                } else {
+                    /* Direct aggregate: bounds = constraint FIRST, check count. */
+                    int128_t expected = con_hi - con_lo + 1;
+                    if ((int128_t)n_positional != expected) {
+                        Emit_Raise_Constraint_Error(cg, "positional aggregate count vs constraint");
+                        uint32_t cont = cg->label_id++;
+                        Emit_Label_Here(cg, cont);
+                    }
                 }
             }
 
@@ -26710,6 +26913,105 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                 }
             }
         }
+        /* RM 4.3.2(6): Dynamic constraint check in the static path.
+         * Positional overrides may convert BOUND_EXPR → BOUND_INTEGER, routing
+         * through the static path even though the TYPE's constraint is dynamic.
+         * Detect this and emit a runtime check against the original bounds.
+         * Skip when bounds reference discriminants whose disc_agg_temp
+         * hasn't been set up yet (not safely evaluable; RM 3.7.1). */
+        {
+            bool bounds_ref_disc_s = false;
+            for (uint32_t d = 0; d < agg_ndims && !bounds_ref_disc_s; d++) {
+                Type_Bound *b[2] = {&agg_type->array.indices[d].low_bound,
+                                    &agg_type->array.indices[d].high_bound};
+                for (int bi = 0; bi < 2; bi++)
+                    if (b[bi]->kind == BOUND_EXPR && b[bi]->expr &&
+                        b[bi]->expr->symbol &&
+                        b[bi]->expr->symbol->kind == SYMBOL_DISCRIMINANT &&
+                        b[bi]->expr->symbol->disc_agg_temp == 0)
+                        bounds_ref_disc_s = true;
+            }
+        if (agg_type->array.is_constrained && !bounds_ref_disc_s &&
+            (agg_type->array.indices[0].low_bound.kind == BOUND_EXPR or
+             agg_type->array.indices[0].high_bound.kind == BOUND_EXPR)) {
+            bool has_unc_base_d = agg_type->base_type &&
+                Type_Is_Array_Like(agg_type->base_type) &&
+                !agg_type->base_type->array.is_constrained;
+            if (has_unc_base_d) {
+                const char *ait = Integer_Arith_Type(cg);
+                if (n_positional > 0 and not has_named) {
+                    uint32_t clo = Emit_Bound_Value(cg, &agg_type->array.indices[0].low_bound);
+                    clo = Emit_Coerce(cg, clo, ait);
+                    uint32_t chi = Emit_Bound_Value(cg, &agg_type->array.indices[0].high_bound);
+                    chi = Emit_Coerce(cg, chi, ait);
+                    if (cg->in_agg_component > 0) {
+                        /* Sub-aggregate: true bounds start at index subtype FIRST. */
+                        int128_t true_lo = idx_sub_lo;
+                        int128_t true_hi = true_lo + (int128_t)n_positional - 1;
+                        uint32_t tlo = Emit_Static_Int(cg, true_lo, ait);
+                        uint32_t thi = Emit_Static_Int(cg, true_hi, ait);
+                        uint32_t ne_lo = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n", ne_lo, ait, tlo, clo);
+                        uint32_t ne_hi = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n", ne_hi, ait, thi, chi);
+                        uint32_t mismatch = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = or i1 %%t%u, %%t%u\n", mismatch, ne_lo, ne_hi);
+                        uint32_t ok_lbl = cg->label_id++;
+                        uint32_t fail_lbl = cg->label_id++;
+                        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                             mismatch, fail_lbl, ok_lbl);
+                        cg->block_terminated = true;
+                        Emit_Label_Here(cg, fail_lbl);
+                        Emit_Raise_Constraint_Error(cg,
+                            "positional sub-aggregate bounds vs dynamic constraint");
+                        Emit_Label_Here(cg, ok_lbl);
+                    } else {
+                        /* Direct aggregate: count check only. */
+                        uint32_t n_pos = Emit_Static_Int(cg, (int128_t)n_positional, ait);
+                        uint32_t cdiff = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", cdiff, ait, chi, clo);
+                        uint32_t ccnt = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = add %s %%t%u, 1\n", ccnt, ait, cdiff);
+                        uint32_t mismatch = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n", mismatch, ait, n_pos, ccnt);
+                        uint32_t ok_lbl = cg->label_id++;
+                        uint32_t fail_lbl = cg->label_id++;
+                        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                             mismatch, fail_lbl, ok_lbl);
+                        cg->block_terminated = true;
+                        Emit_Label_Here(cg, fail_lbl);
+                        Emit_Raise_Constraint_Error(cg,
+                            "positional aggregate count vs dynamic constraint");
+                        Emit_Label_Here(cg, ok_lbl);
+                    }
+                }
+                if (has_choice_lo and has_choice_hi and not early_has_others
+                    and agg_ndims == 1) {
+                    uint32_t nclo = Emit_Static_Int(cg, choice_lo, ait);
+                    uint32_t nchi = Emit_Static_Int(cg, choice_hi, ait);
+                    uint32_t clo = Emit_Bound_Value(cg, &agg_type->array.indices[0].low_bound);
+                    clo = Emit_Coerce(cg, clo, ait);
+                    uint32_t chi = Emit_Bound_Value(cg, &agg_type->array.indices[0].high_bound);
+                    chi = Emit_Coerce(cg, chi, ait);
+                    uint32_t ne_lo = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n", ne_lo, ait, nclo, clo);
+                    uint32_t ne_hi = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n", ne_hi, ait, nchi, chi);
+                    uint32_t mismatch = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = or i1 %%t%u, %%t%u\n", mismatch, ne_lo, ne_hi);
+                    uint32_t ok_lbl = cg->label_id++;
+                    uint32_t fail_lbl = cg->label_id++;
+                    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                         mismatch, fail_lbl, ok_lbl);
+                    cg->block_terminated = true;
+                    Emit_Label_Here(cg, fail_lbl);
+                    Emit_Raise_Constraint_Error(cg,
+                        "named aggregate bounds vs dynamic constraint");
+                    Emit_Label_Here(cg, ok_lbl);
+                }
+            }
+        }
+        } /* end bounds_ref_disc_s scope */
 
         /* For unconstrained types, track LLVM SSA values for the aggregate's
          * actual bounds (from choice expressions) to populate the fat pointer.
@@ -26993,7 +27295,9 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                                     if (oai < 0 or oai >= count) continue;
                                     for (int128_t ci = inner_low; ci <= inner_high; ci++) {
                                         int128_t flat = oai * inner_count + (ci - inner_low);
+                                        cg->in_agg_component++;
                                         uint32_t val = Generate_Expression(cg, inner_val_expr);
+                                        cg->in_agg_component--;
                                         const char *st = Expression_Llvm_Type(cg, inner_val_expr);
                                         val = Emit_Convert(cg, val, st, elem_type);
                                         Agg_Store_At_Static(cg, base, val, flat,
@@ -27262,15 +27566,38 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
         for (uint32_t ci = 0; ci < agg_type->record.component_count; ci++) {
             Component_Info *comp_ci = &agg_type->record.components[ci];
             Type_Info *cti = comp_ci->component_type;
-            if (not cti or not Type_Is_Array_Like(cti)) continue;
-            for (uint32_t xi = 0; xi < cti->array.index_count; xi++) {
-                Type_Bound *bounds[2] = { &cti->array.indices[xi].low_bound,
-                                          &cti->array.indices[xi].high_bound };
-                for (int bi = 0; bi < 2; bi++) {
-                    if (bounds[bi]->kind == BOUND_EXPR and bounds[bi]->expr and
-                        bounds[bi]->expr->symbol) {
-                        Symbol *disc_sym = bounds[bi]->expr->symbol;
-                        /* Check if we already allocated for this disc in this aggregate */
+            /* Array component: alloca for disc symbols in index bounds */
+            if (cti and Type_Is_Array_Like(cti)) {
+                for (uint32_t xi = 0; xi < cti->array.index_count; xi++) {
+                    Type_Bound *bounds[2] = { &cti->array.indices[xi].low_bound,
+                                              &cti->array.indices[xi].high_bound };
+                    for (int bi = 0; bi < 2; bi++) {
+                        if (bounds[bi]->kind == BOUND_EXPR and bounds[bi]->expr and
+                            bounds[bi]->expr->symbol) {
+                            Symbol *disc_sym = bounds[bi]->expr->symbol;
+                            bool already = false;
+                            for (uint32_t da = 0; da < disc_alloc_count; da++) {
+                                if (disc_alloc[da].sym == disc_sym) { already = true; break; }
+                            }
+                            if (already) continue;
+                            const char *disc_type = Type_To_Llvm(disc_sym->type);
+                            if (not disc_type or disc_type[0] == '\0') disc_type = Integer_Arith_Type(cg);
+                            uint32_t dt = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = alloca %s  ; disc for aggregate bounds\n", dt, disc_type);
+                            disc_sym->disc_agg_temp = dt;
+                            if (disc_alloc_count < 16)
+                                disc_alloc[disc_alloc_count++] = (typeof(disc_alloc[0])){disc_sym, dt};
+                        }
+                    }
+                }
+            }
+            /* Record component: alloca for disc symbols in disc constraints */
+            if (cti and Type_Is_Record(cti) and cti->record.has_disc_constraints and
+                cti->record.disc_constraint_exprs) {
+                for (uint32_t di = 0; di < cti->record.discriminant_count; di++) {
+                    Syntax_Node *ce = cti->record.disc_constraint_exprs[di];
+                    if (ce and ce->symbol) {
+                        Symbol *disc_sym = ce->symbol;
                         bool already = false;
                         for (uint32_t da = 0; da < disc_alloc_count; da++) {
                             if (disc_alloc[da].sym == disc_sym) { already = true; break; }
@@ -27279,7 +27606,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         const char *disc_type = Type_To_Llvm(disc_sym->type);
                         if (not disc_type or disc_type[0] == '\0') disc_type = Integer_Arith_Type(cg);
                         uint32_t dt = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = alloca %s  ; disc for aggregate bounds\n", dt, disc_type);
+                        Emit(cg, "  %%t%u = alloca %s  ; disc for rec constraint\n", dt, disc_type);
                         disc_sym->disc_agg_temp = dt;
                         if (disc_alloc_count < 16)
                             disc_alloc[disc_alloc_count++] = (typeof(disc_alloc[0])){disc_sym, dt};
@@ -27328,7 +27655,9 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         if (comp_idx >= 0) {
                             Component_Info *comp = &agg_type->record.components[comp_idx];
                             Type_Info *comp_ti = comp->component_type;
+                            cg->in_agg_component++;
                             uint32_t val = Generate_Expression(cg, item->association.expression);
+                            cg->in_agg_component--;
 
                             uint32_t ptr = Emit_Temp(cg);
                             Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
@@ -27361,6 +27690,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                                     if (comp_size == 0) comp_size = 8;
                                     Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
                                          ptr, val, comp_size);
+                                    Emit_Comp_Disc_Check(cg, ptr, comp_ti);
                                 } else {
                                     val = Emit_Convert(cg, val, src_type, comp_type);
                                     /* RM 4.3.1: check component value against subtype constraint */
@@ -27378,6 +27708,40 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                                             break;
                                         }
                                     }
+                                    /* RM 3.7.1: disc value must match constraint */
+                                    if (agg_type->record.has_disc_constraints) {
+                                        uint32_t di = 0;
+                                        for (uint32_t k = 0; k < (uint32_t)comp_idx; k++)
+                                            if (agg_type->record.components[k].is_discriminant) di++;
+                                        if (di < agg_type->record.discriminant_count) {
+                                            uint32_t exp_v;
+                                            if (agg_type->record.disc_constraint_exprs &&
+                                                agg_type->record.disc_constraint_exprs[di]) {
+                                                exp_v = Generate_Expression(cg,
+                                                    agg_type->record.disc_constraint_exprs[di]);
+                                                exp_v = Emit_Convert(cg, exp_v,
+                                                    Expression_Llvm_Type(cg,
+                                                        agg_type->record.disc_constraint_exprs[di]),
+                                                    comp_type);
+                                            } else {
+                                                exp_v = Emit_Static_Int(cg,
+                                                    (int128_t)agg_type->record.disc_constraint_values[di],
+                                                    comp_type);
+                                            }
+                                            uint32_t ne = Emit_Temp(cg);
+                                            Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n",
+                                                 ne, comp_type, val, exp_v);
+                                            uint32_t ok_l = cg->label_id++;
+                                            uint32_t fl_l = cg->label_id++;
+                                            Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                                                 ne, fl_l, ok_l);
+                                            cg->block_terminated = true;
+                                            Emit_Label_Here(cg, fl_l);
+                                            Emit_Raise_Constraint_Error(cg,
+                                                "discriminant value vs constraint");
+                                            Emit_Label_Here(cg, ok_l);
+                                        }
+                                    }
                                 }
                             }
                             initialized[comp_idx] = true;
@@ -27389,7 +27753,9 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                 if (positional_idx < comp_count) {
                     Component_Info *comp = &agg_type->record.components[positional_idx];
                     Type_Info *comp_ti = comp->component_type;
+                    cg->in_agg_component++;
                     uint32_t val = Generate_Expression(cg, item);
+                    cg->in_agg_component--;
 
                     uint32_t ptr = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
@@ -27423,6 +27789,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                             if (comp_size == 0) comp_size = 8;
                             Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
                                  ptr, val, comp_size);
+                            Emit_Comp_Disc_Check(cg, ptr, comp_ti);
                         } else {
                             val = Emit_Convert(cg, val, src_type, comp_type);
                             /* RM 4.3.1: check component value against subtype constraint */
@@ -27438,6 +27805,40 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                                     Emit(cg, "  store %s %%t%u, ptr %%t%u\n",
                                          comp_type, val, disc_alloc[da].temp);
                                     break;
+                                }
+                            }
+                            /* RM 3.7.1: disc value must match constraint */
+                            if (agg_type->record.has_disc_constraints) {
+                                uint32_t di = 0;
+                                for (uint32_t k = 0; k < positional_idx; k++)
+                                    if (agg_type->record.components[k].is_discriminant) di++;
+                                if (di < agg_type->record.discriminant_count) {
+                                    uint32_t exp_v;
+                                    if (agg_type->record.disc_constraint_exprs &&
+                                        agg_type->record.disc_constraint_exprs[di]) {
+                                        exp_v = Generate_Expression(cg,
+                                            agg_type->record.disc_constraint_exprs[di]);
+                                        exp_v = Emit_Convert(cg, exp_v,
+                                            Expression_Llvm_Type(cg,
+                                                agg_type->record.disc_constraint_exprs[di]),
+                                            comp_type);
+                                    } else {
+                                        exp_v = Emit_Static_Int(cg,
+                                            (int128_t)agg_type->record.disc_constraint_values[di],
+                                            comp_type);
+                                    }
+                                    uint32_t ne = Emit_Temp(cg);
+                                    Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n",
+                                         ne, comp_type, val, exp_v);
+                                    uint32_t ok_l = cg->label_id++;
+                                    uint32_t fl_l = cg->label_id++;
+                                    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                                         ne, fl_l, ok_l);
+                                    cg->block_terminated = true;
+                                    Emit_Label_Here(cg, fl_l);
+                                    Emit_Raise_Constraint_Error(cg,
+                                        "discriminant value vs constraint");
+                                    Emit_Label_Here(cg, ok_l);
                                 }
                             }
                         }
@@ -27510,7 +27911,9 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                     Type_Info *saved_type = others_expr->type;
                     if (not others_expr->type) others_expr->type = comp_ti;
 
+                    cg->in_agg_component++;
                     uint32_t val = Generate_Expression(cg, others_expr);
+                    cg->in_agg_component--;
                     uint32_t ptr = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
                          ptr, base, comp->byte_offset);
@@ -27520,6 +27923,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         uint32_t comp_size = comp_ti->size > 0 ? comp_ti->size : 8;
                         Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
                              ptr, val, comp_size);
+                        Emit_Comp_Disc_Check(cg, ptr, comp_ti);
                     } else {
                         const char *comp_type = Type_To_Llvm(comp_ti);
                         const char *src_type = Expression_Llvm_Type(cg, others_expr);
@@ -27857,7 +28261,62 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
                          (int)comp->name.length, comp->name.data);
                 }
             } else if (comp_is_composite) {
-                /* Skip 0-size composites */
+                /* Dynamic-size composite (disc-dependent array in NEW):
+                 * extract data from fat-pointer aggregate and memcpy. */
+                bool is_fat_agg = comp->default_expr->kind == NK_AGGREGATE and
+                    comp_type and Type_Is_Array_Like(comp_type) and
+                    (Type_Is_Unconstrained_Array(comp_type) or
+                     Aggregate_Produces_Fat_Pointer(comp_type));
+                if (is_fat_agg) {
+                    uint32_t loaded = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", loaded, val);
+                    uint32_t data_ptr = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n",
+                         data_ptr, loaded);
+                    uint32_t bnds = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1\n",
+                         bnds, loaded);
+                    uint32_t ndim = comp_type->array.index_count;
+                    uint32_t esz = (comp_type->array.element_type and
+                        comp_type->array.element_type->size > 0)
+                        ? comp_type->array.element_type->size : 4;
+                    const char *bt = Array_Bound_Llvm_Type(comp_type);
+                    uint32_t tsz = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = add %s 0, %u\n", tsz, bt, esz);
+                    for (uint32_t d = 0; d < ndim; d++) {
+                        uint32_t lp = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 %u\n",
+                             lp, bt, bnds, d * 2);
+                        uint32_t lo = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", lo, bt, lp);
+                        uint32_t hp = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 %u\n",
+                             hp, bt, bnds, d * 2 + 1);
+                        uint32_t hi = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", hi, bt, hp);
+                        uint32_t cnt = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", cnt, bt, hi, lo);
+                        uint32_t c1 = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = add %s %%t%u, 1\n", c1, bt, cnt);
+                        uint32_t neg = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = icmp slt %s %%t%u, 0\n", neg, bt, c1);
+                        uint32_t cl = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = select i1 %%t%u, %s 0, %s %%t%u\n",
+                             cl, neg, bt, bt, c1);
+                        uint32_t nt = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = mul %s %%t%u, %%t%u\n", nt, bt, tsz, cl);
+                        tsz = nt;
+                    }
+                    uint32_t sz64 = tsz;
+                    if (strcmp(bt, "i64") != 0) {
+                        sz64 = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = sext %s %%t%u to i64\n", sz64, bt, tsz);
+                    }
+                    Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)"
+                         "  ; %.*s dynamic default memcpy\n",
+                         comp_ptr, data_ptr, sz64,
+                         (int)comp->name.length, comp->name.data);
+                }
             } else {
                 const char *store_type = Type_To_Llvm(comp_type);
                 const char *val_type = Temp_Get_Type(cg, val);
@@ -31517,7 +31976,63 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                                  (int)comp->name.length, comp->name.data);
                         }
                     } else if (comp_is_composite) {
-                        /* 0-size composite without rt_global: skip */
+                        /* Dynamic-size composite (disc-dependent array):
+                         * extract data from fat-pointer aggregate, compute
+                         * byte size from bounds, and memcpy. */
+                        bool is_fat_agg = comp->default_expr->kind == NK_AGGREGATE and
+                            comp_type and Type_Is_Array_Like(comp_type) and
+                            (Type_Is_Unconstrained_Array(comp_type) or
+                             Aggregate_Produces_Fat_Pointer(comp_type));
+                        if (is_fat_agg) {
+                            uint32_t loaded = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", loaded, val);
+                            uint32_t data_ptr = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n",
+                                 data_ptr, loaded);
+                            uint32_t bnds = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1\n",
+                                 bnds, loaded);
+                            uint32_t ndim = comp_type->array.index_count;
+                            uint32_t esz = (comp_type->array.element_type and
+                                comp_type->array.element_type->size > 0)
+                                ? comp_type->array.element_type->size : 4;
+                            const char *bt = Array_Bound_Llvm_Type(comp_type);
+                            uint32_t tsz = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add %s 0, %u\n", tsz, bt, esz);
+                            for (uint32_t d = 0; d < ndim; d++) {
+                                uint32_t lp = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 %u\n",
+                                     lp, bt, bnds, d * 2);
+                                uint32_t lo = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", lo, bt, lp);
+                                uint32_t hp = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, i32 %u\n",
+                                     hp, bt, bnds, d * 2 + 1);
+                                uint32_t hi = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = load %s, ptr %%t%u\n", hi, bt, hp);
+                                uint32_t cnt = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", cnt, bt, hi, lo);
+                                uint32_t c1 = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = add %s %%t%u, 1\n", c1, bt, cnt);
+                                uint32_t neg = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = icmp slt %s %%t%u, 0\n", neg, bt, c1);
+                                uint32_t cl = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = select i1 %%t%u, %s 0, %s %%t%u\n",
+                                     cl, neg, bt, bt, c1);
+                                uint32_t nt = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = mul %s %%t%u, %%t%u\n", nt, bt, tsz, cl);
+                                tsz = nt;
+                            }
+                            uint32_t sz64 = tsz;
+                            if (strcmp(bt, "i64") != 0) {
+                                sz64 = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = sext %s %%t%u to i64\n", sz64, bt, tsz);
+                            }
+                            Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)"
+                                 "  ; %.*s dynamic default memcpy\n",
+                                 comp_ptr, data_ptr, sz64,
+                                 (int)comp->name.length, comp->name.data);
+                        }
                     } else {
                         const char *store_type = Type_To_Llvm(comp_type);
                         const char *val_type = Temp_Get_Type(cg, val);
