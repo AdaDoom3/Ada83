@@ -21584,9 +21584,9 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         uint32_t right_low = Emit_Fat_Pointer_Low(cg, right_fat, cat_bt);
         uint32_t right_high = Emit_Fat_Pointer_High(cg, right_fat, cat_bt);
 
-        /* Calculate lengths: high - low + 1 */
-        uint32_t left_len1  = Emit_Length_From_Bounds(cg, left_low,  left_high,  cat_bt);
-        uint32_t right_len1 = Emit_Length_From_Bounds(cg, right_low, right_high, cat_bt);
+        /* Calculate lengths, clamped to 0 for null ranges (RM 3.6.2) */
+        uint32_t left_len1  = Emit_Length_Clamped(cg, left_low,  left_high,  cat_bt);
+        uint32_t right_len1 = Emit_Length_Clamped(cg, right_low, right_high, cat_bt);
 
         /* Total length */
         uint32_t total_len = Emit_Temp(cg);
@@ -22835,7 +22835,7 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                             uint32_t right_low = Emit_Fat_Pointer_Low(cg, right_val, concat_bt);
                             uint32_t right_high = Emit_Fat_Pointer_High(cg, right_val, concat_bt);
 
-                            uint32_t right_len1 = Emit_Length_From_Bounds(cg, right_low, right_high, concat_bt);
+                            uint32_t right_len1 = Emit_Length_Clamped(cg, right_low, right_high, concat_bt);
 
                             /* Total length = 1 + right_len */
                             uint32_t total_len = Emit_Temp(cg);
@@ -22874,8 +22874,8 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
                             uint32_t right_low = Emit_Fat_Pointer_Low(cg, right_fat, concat_bt);
                             uint32_t right_high = Emit_Fat_Pointer_High(cg, right_fat, concat_bt);
 
-                            uint32_t left_len1 = Emit_Length_From_Bounds(cg, left_low, left_high, concat_bt);
-                            uint32_t right_len1 = Emit_Length_From_Bounds(cg, right_low, right_high, concat_bt);
+                            uint32_t left_len1 = Emit_Length_Clamped(cg, left_low, left_high, concat_bt);
+                            uint32_t right_len1 = Emit_Length_Clamped(cg, right_low, right_high, concat_bt);
 
                             uint32_t total_len = Emit_Temp(cg);
                             Emit(cg, "  %%t%u = add %s %%t%u, %%t%u\n", total_len, concat_bt, left_len1, right_len1);
@@ -25899,6 +25899,40 @@ static Agg_Class Agg_Classify(Syntax_Node *node) {
     return r;
 }
 
+/* ── Agg_Check_Subagg_Bounds: RM 4.3.2 sub-aggregate bounds consistency.
+ *
+ * For multidimensional aggregates, checks that the inner sub-aggregate
+ * at `raw_val` has bounds matching the reference `*ref_lo`/`*ref_hi`.
+ * First call saves reference; subsequent calls raise CE on mismatch. */
+static void Agg_Check_Subagg_Bounds(Code_Generator *cg, uint32_t raw_val,
+    Type_Info *agg_type, uint32_t *ref_lo, uint32_t *ref_hi)
+{
+    if (not Temp_Is_Fat_Alloca(cg, raw_val)) return;
+    const char *bt = Array_Bound_Llvm_Type(agg_type);
+    uint32_t loaded = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", loaded, raw_val);
+    Temp_Set_Type(cg, loaded, FAT_PTR_TYPE);
+    uint32_t lo = Emit_Fat_Pointer_Low(cg, loaded, bt);
+    uint32_t hi = Emit_Fat_Pointer_High(cg, loaded, bt);
+    if (*ref_lo == 0) {
+        *ref_lo = lo; *ref_hi = hi;
+    } else {
+        uint32_t ne_lo = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n", ne_lo, bt, lo, *ref_lo);
+        uint32_t ne_hi = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n", ne_hi, bt, hi, *ref_hi);
+        uint32_t mm = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = or i1 %%t%u, %%t%u\n", mm, ne_lo, ne_hi);
+        uint32_t ok = cg->label_id++, fail = cg->label_id++;
+        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", mm, fail, ok);
+        cg->block_terminated = true;
+        Emit_Label_Here(cg, fail);
+        Emit_Raise_Constraint_Error(cg,
+            "sub-aggregate bounds mismatch (RM 4.3.2)");
+        Emit_Label_Here(cg, ok);
+    }
+}
+
 /* ── Agg_Resolve_Elem: generate element value and unwrap fat ptrs.
  *
  * Given an expression node, generates the value and, depending on the
@@ -25910,13 +25944,33 @@ static Agg_Class Agg_Classify(Syntax_Node *node) {
  *   agg_type          — the enclosing array's Type_Info
  *   elem_type         — LLVM type string for scalar elements (e.g. "i32")
  *   elem_ti           — Type_Info* for the element subtype (for checks)  */
+static uint32_t Agg_Resolve_Elem_Checked(Code_Generator *cg, Syntax_Node *expr,
+    bool multidim, bool elem_is_composite, Type_Info *agg_type,
+    const char *elem_type, Type_Info *elem_ti,
+    uint32_t *ref_lo, uint32_t *ref_hi);
+
 static uint32_t Agg_Resolve_Elem(Code_Generator *cg, Syntax_Node *expr,
     bool multidim, bool elem_is_composite, Type_Info *agg_type,
     const char *elem_type, Type_Info *elem_ti)
 {
+    return Agg_Resolve_Elem_Checked(cg, expr, multidim, elem_is_composite,
+        agg_type, elem_type, elem_ti, NULL, NULL);
+}
+
+static uint32_t Agg_Resolve_Elem_Checked(Code_Generator *cg, Syntax_Node *expr,
+    bool multidim, bool elem_is_composite, Type_Info *agg_type,
+    const char *elem_type, Type_Info *elem_ti,
+    uint32_t *ref_lo, uint32_t *ref_hi)
+{
     cg->in_agg_component++;
     uint32_t val = Generate_Expression(cg, expr);
     cg->in_agg_component--;
+
+    /* RM 4.3.2: sub-aggregate bounds consistency check.
+     * For multidim aggregates, verify that all inner sub-aggregates
+     * have the same bounds before extracting the data pointer. */
+    if (ref_lo and multidim and elem_is_composite)
+        Agg_Check_Subagg_Bounds(cg, val, agg_type, ref_lo, ref_hi);
 
     /* Fat pointer sources: extract data pointer for composite elements.
      * Three cases: (a) normal fat ptr, (b) dynamic inner aggregate fat ptr,
@@ -27251,6 +27305,11 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             }
         }
 
+        /* RM 4.3.2: sub-aggregate bounds consistency — reference bounds.
+         * For multidim aggregates, the first inner sub-aggregate's bounds
+         * are saved; subsequent ones are compared and CE raised on mismatch. */
+        uint32_t subagg_ref_lo = 0, subagg_ref_hi = 0;
+
         /* Second pass: initialize elements */
         uint32_t positional_idx = 0;
         for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
@@ -27565,9 +27624,11 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                             for (int128_t idx = rng_low; idx <= rng_high; idx++) {
                                 int128_t arr_idx = idx - low;
                                 if (arr_idx >= 0 and arr_idx < count) {
-                                    uint32_t val = Agg_Resolve_Elem(cg,
+                                    uint32_t val = Agg_Resolve_Elem_Checked(cg,
                                         item->association.expression, multidim,
-                                        elem_is_composite, agg_type, elem_type, elem_ti);
+                                        elem_is_composite, agg_type, elem_type, elem_ti,
+                                        multidim ? &subagg_ref_lo : NULL,
+                                        multidim ? &subagg_ref_hi : NULL);
                                     Agg_Store_At_Static(cg, base, val, arr_idx,
                                         elem_type, elem_size, elem_is_composite);
                                     initialized[arr_idx] = true;
@@ -27585,9 +27646,11 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         for (int128_t idx = rng_low; idx <= rng_high; idx++) {
                             int128_t arr_idx = idx - low;
                             if (arr_idx >= 0 and arr_idx < count) {
-                                uint32_t val = Agg_Resolve_Elem(cg,
+                                uint32_t val = Agg_Resolve_Elem_Checked(cg,
                                     item->association.expression, multidim,
-                                    elem_is_composite, agg_type, elem_type, elem_ti);
+                                    elem_is_composite, agg_type, elem_type, elem_ti,
+                                    multidim ? &subagg_ref_lo : NULL,
+                                    multidim ? &subagg_ref_hi : NULL);
                                 Agg_Store_At_Static(cg, base, val, arr_idx,
                                     elem_type, elem_size, elem_is_composite);
                                 initialized[arr_idx] = true;
@@ -27607,9 +27670,11 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         }
                         int128_t idx = (int128_t)choice->integer_lit.value - low;
                         if (idx >= 0 and idx < count) {
-                            uint32_t val = Agg_Resolve_Elem(cg,
+                            uint32_t val = Agg_Resolve_Elem_Checked(cg,
                                 item->association.expression, multidim,
-                                elem_is_composite, agg_type, elem_type, elem_ti);
+                                elem_is_composite, agg_type, elem_type, elem_ti,
+                                multidim ? &subagg_ref_lo : NULL,
+                                multidim ? &subagg_ref_hi : NULL);
                             Agg_Store_At_Static(cg, base, val, idx,
                                 elem_type, elem_size, elem_is_composite);
                             initialized[idx] = true;
@@ -27619,8 +27684,10 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             } else {
                 /* Positional association */
                 if (positional_idx < (uint32_t)count) {
-                    uint32_t val = Agg_Resolve_Elem(cg, item, multidim,
-                        elem_is_composite, agg_type, elem_type, elem_ti);
+                    uint32_t val = Agg_Resolve_Elem_Checked(cg, item, multidim,
+                        elem_is_composite, agg_type, elem_type, elem_ti,
+                        multidim ? &subagg_ref_lo : NULL,
+                        multidim ? &subagg_ref_hi : NULL);
                     /* RM 4.3.2: check scalar element against subtype constraint */
                     if (!elem_is_composite && elem_ti && Type_Is_Scalar(elem_ti))
                         val = Emit_Constraint_Check_With_Type(cg, val, elem_ti,
@@ -31469,7 +31536,13 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                         uint32_t byte_len = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = mul %s %%t%u, %u  ; total bytes\n",
                              byte_len, bt, total_len, elem_sz);
-                        uint32_t byte_len64 = Emit_Extend_To_I64(cg, byte_len, bt);
+                        /* Clamp to 0 for null ranges (RM 3.6.1) */
+                        uint32_t neg_bl = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = icmp slt %s %%t%u, 0\n", neg_bl, bt, byte_len);
+                        uint32_t clamped_bl = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = select i1 %%t%u, %s 0, %s %%t%u\n",
+                             clamped_bl, neg_bl, bt, bt, byte_len);
+                        uint32_t byte_len64 = Emit_Extend_To_I64(cg, clamped_bl, bt);
                         /* Allocate data storage */
                         uint32_t data_alloc = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = alloca i8, i64 %%t%u  ; constrained uncon array data\n",
@@ -32035,8 +32108,14 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     total_count = prod;
                 }
             }
+            uint32_t byte_size_raw = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", byte_size_raw, iat_decl, total_count, elem_sz);
+            /* Clamp to 0 for null ranges (RM 3.6.1) */
+            uint32_t neg_bs = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = icmp slt %s %%t%u, 0\n", neg_bs, iat_decl, byte_size_raw);
             uint32_t byte_size = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", byte_size, iat_decl, total_count, elem_sz);
+            Emit(cg, "  %%t%u = select i1 %%t%u, %s 0, %s %%t%u\n",
+                 byte_size, neg_bs, iat_decl, iat_decl, byte_size_raw);
 
             uint32_t data_ptr = Emit_Temp(cg);
             Emit(cg, "  %%t%u = alloca i8, %s %%t%u  ; dynamic uninit array\n", data_ptr, iat_decl, byte_size);
