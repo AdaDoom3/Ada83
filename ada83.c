@@ -18717,6 +18717,33 @@ static uint32_t Emit_Constraint_Check_With_Type(Code_Generator *cg, uint32_t val
 
     if (not is_int_like and not is_flt_like) return val;
 
+    /* Elide check when static bounds cover the full representation range.
+     * Common case: INTEGER element in array aggregates has bounds
+     * -2147483648..2147483647 which any i32 value trivially satisfies.
+     * This avoids 3 basic blocks per element — critical for JIT perf. */
+    if (is_int_like and
+        target->low_bound.kind == BOUND_INTEGER and
+        target->high_bound.kind == BOUND_INTEGER) {
+        uint32_t bits = (uint32_t)To_Bits(target->size);
+        if (bits == 0) bits = 32;
+        bool full_range;
+        if (Type_Is_Unsigned(target)) {
+            full_range = (target->low_bound.int_value == 0 and
+                          target->high_bound.int_value == ((int128_t)1 << bits) - 1);
+        } else {
+            full_range = (target->low_bound.int_value == -((int128_t)1 << (bits - 1)) and
+                          target->high_bound.int_value == ((int128_t)1 << (bits - 1)) - 1);
+        }
+        /* Also elide if source fits entirely within target bounds */
+        if (not full_range and source and
+            source->low_bound.kind == BOUND_INTEGER and
+            source->high_bound.kind == BOUND_INTEGER) {
+            full_range = (source->low_bound.int_value >= target->low_bound.int_value and
+                          source->high_bound.int_value <= target->high_bound.int_value);
+        }
+        if (full_range) return val;
+    }
+
     /* Need either static or dynamic bounds */
     bool lo_ok = (target->low_bound.kind == BOUND_INTEGER or
                   target->low_bound.kind == BOUND_FLOAT or
@@ -25854,6 +25881,29 @@ static bool Is_Others_Choice(Syntax_Node *choice) {
             Slice_Equal_Ignore_Case(choice->string_val.text, S("others"))));
 }
 
+/* ── Is_Static_Int_Node / Static_Int_Value ──────────────────────────
+ * Recognise compile-time integer nodes so the aggregate codegen can
+ * take the fast static path.  Covers:
+ *   NK_INTEGER              — positive literal  (e.g.  3)
+ *   NK_UNARY_OP(-, int)     — negated literal   (e.g. -1)
+ *   NK_UNARY_OP(+, int)     — explicit positive (e.g. +1)   */
+static bool Is_Static_Int_Node(Syntax_Node *n) {
+    if (!n) return false;
+    if (n->kind == NK_INTEGER) return true;
+    if (n->kind == NK_UNARY_OP &&
+        (n->unary.op == TK_MINUS || n->unary.op == TK_PLUS) &&
+        n->unary.operand && n->unary.operand->kind == NK_INTEGER)
+        return true;
+    return false;
+}
+static int128_t Static_Int_Value(Syntax_Node *n) {
+    if (n->kind == NK_INTEGER)
+        return (int128_t)n->integer_lit.value;
+    /* NK_UNARY_OP */
+    int128_t v = (int128_t)n->unary.operand->integer_lit.value;
+    return (n->unary.op == TK_MINUS) ? -v : v;
+}
+
 /* ── § 13a: Array Aggregate Helpers (RM 4.3.2) ──────────────────────
  *
  * These helpers factor out the repeated patterns in Generate_Aggregate:
@@ -26155,18 +26205,31 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                     for (uint32_t c = 0; c < item->association.choices.count; c++) {
                         Syntax_Node *ch = item->association.choices.items[c];
                         if (Is_Others_Choice(ch)) continue;
-                        if (ch->kind == NK_INTEGER) {
+                        if (Is_Static_Int_Node(ch)) {
+                            int128_t v = Static_Int_Value(ch);
+                            if (v < named_lo) named_lo = v;
+                            if (v > named_hi) named_hi = v;
+                            found_named = true;
+                        } else if (ch->kind == NK_INTEGER) {
                             int128_t v = (int128_t)ch->integer_lit.value;
                             if (v < named_lo) named_lo = v;
                             if (v > named_hi) named_hi = v;
                             found_named = true;
                         } else if (ch->kind == NK_RANGE) {
-                            if (ch->range.low and ch->range.low->kind == NK_INTEGER) {
+                            if (Is_Static_Int_Node(ch->range.low)) {
+                                int128_t v = Static_Int_Value(ch->range.low);
+                                if (v < named_lo) named_lo = v;
+                                found_named = true;
+                            } else if (ch->range.low and ch->range.low->kind == NK_INTEGER) {
                                 int128_t v = (int128_t)ch->range.low->integer_lit.value;
                                 if (v < named_lo) named_lo = v;
                                 found_named = true;
                             }
-                            if (ch->range.high and ch->range.high->kind == NK_INTEGER) {
+                            if (Is_Static_Int_Node(ch->range.high)) {
+                                int128_t v = Static_Int_Value(ch->range.high);
+                                if (v > named_hi) named_hi = v;
+                                found_named = true;
+                            } else if (ch->range.high and ch->range.high->kind == NK_INTEGER) {
                                 int128_t v = (int128_t)ch->range.high->integer_lit.value;
                                 if (v > named_hi) named_hi = v;
                                 found_named = true;
@@ -26235,9 +26298,13 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             }
         }
 
-        /* Early scan: detect if any named choice has non-integer bounds
-         * (e.g. T'RANGE desugared to T'FIRST..T'LAST).  These force the
-         * dynamic aggregate path since bounds aren't compile-time constants. */
+        /* Early scan: detect if any named choice has non-static bounds
+         * (e.g. T'RANGE desugared to T'FIRST..T'LAST, or function calls).
+         * Negated integer literals like -1 are static and must NOT force
+         * the dynamic path — only genuine runtime expressions do.
+         * For CONSTRAINED types the type already supplies static bounds;
+         * we only override dim_lo/dim_hi for UNCONSTRAINED types where
+         * the choices determine the aggregate's bounds (RM 4.3.2(4)). */
         bool has_dynamic_choice_early = false;
         for (uint32_t ci = 0; ci < node->aggregate.items.count; ci++) {
             Syntax_Node *cit = node->aggregate.items.items[ci];
@@ -26245,18 +26312,20 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             for (uint32_t cc = 0; cc < cit->association.choices.count; cc++) {
                 Syntax_Node *ch = cit->association.choices.items[cc];
                 if (ch->kind == NK_RANGE and
-                    (ch->range.low->kind != NK_INTEGER or
-                     ch->range.high->kind != NK_INTEGER)) {
+                    (!Is_Static_Int_Node(ch->range.low) or
+                     !Is_Static_Int_Node(ch->range.high))) {
                     has_dynamic_choice_early = true;
-                    /* Use these expression bounds for the aggregate bounds
-                     * so the dynamic path allocates the right amount. */
-                    if (ch->range.low->kind != NK_INTEGER) {
-                        dim_lo[0] = (Type_Bound){.kind = BOUND_EXPR, .expr = ch->range.low};
-                        low_bound = dim_lo[0];
-                    }
-                    if (ch->range.high->kind != NK_INTEGER) {
-                        dim_hi[0] = (Type_Bound){.kind = BOUND_EXPR, .expr = ch->range.high};
-                        high_bound = dim_hi[0];
+                    /* Only override aggregate bounds for unconstrained types;
+                     * for constrained types, the type's bounds are canonical. */
+                    if (!agg_type->array.is_constrained) {
+                        if (!Is_Static_Int_Node(ch->range.low)) {
+                            dim_lo[0] = (Type_Bound){.kind = BOUND_EXPR, .expr = ch->range.low};
+                            low_bound = dim_lo[0];
+                        }
+                        if (!Is_Static_Int_Node(ch->range.high)) {
+                            dim_hi[0] = (Type_Bound){.kind = BOUND_EXPR, .expr = ch->range.high};
+                            high_bound = dim_hi[0];
+                        }
                     }
                     break;
                 }
@@ -26266,8 +26335,13 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
         /* Any dimension with dynamic bounds requires runtime path (RM 3.6.1).
          * Type_Bound_Value returns 0 for BOUND_EXPR so compile-time size
          * calculation would be wrong; the dynamic path evaluates bounds at
-         * runtime via Emit_Single_Bound. */
-        bool dynamic_bounds = has_dynamic_choice_early;
+         * runtime via Emit_Single_Bound.
+         * Note: has_dynamic_choice_early only forces dynamic_bounds when it
+         * actually changed dim_lo/dim_hi to BOUND_EXPR (unconstrained types).
+         * Constrained types keep their static dim bounds and use the static
+         * path — dynamic choice expressions are evaluated for side effects
+         * via the must_eval_low/must_eval_high logic in the static path. */
+        bool dynamic_bounds = false;
         for (uint32_t d = 0; d < agg_ndims; d++) {
             if (dim_lo[d].kind == BOUND_EXPR or dim_hi[d].kind == BOUND_EXPR) {
                 dynamic_bounds = true; break;
@@ -26279,6 +26353,12 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             const char *iat_bnd = Integer_Arith_Type(cg);
             uint32_t low_val = Emit_Single_Bound(cg, &low_bound, iat_bnd);
             uint32_t high_val = Emit_Single_Bound(cg, &high_bound, iat_bnd);
+            /* Track which expression nodes produced low_val / high_val so
+             * the range-choice loop below can reuse them (avoid double eval). */
+            Syntax_Node *bound_low_expr  = (low_bound.kind == BOUND_EXPR)
+                                         ? low_bound.expr : NULL;
+            Syntax_Node *bound_high_expr = (high_bound.kind == BOUND_EXPR)
+                                         ? high_bound.expr : NULL;
 
             /* For multidim with dynamic inner bounds, compute row_size and
              * total_flat_count at runtime so allocation is correct. */
@@ -26444,19 +26524,19 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                             for (uint32_t cc = 0; cc < cit->association.choices.count; cc++) {
                                 Syntax_Node *ch = cit->association.choices.items[cc];
                                 if (Is_Others_Choice(ch)) continue;
-                                if (ch->kind == NK_INTEGER) {
-                                    int128_t v = ch->integer_lit.value;
+                                if (Is_Static_Int_Node(ch)) {
+                                    int128_t v = Static_Int_Value(ch);
                                     if (!found_ch || v < ch_lo) ch_lo = v;
                                     if (!found_ch || v > ch_hi) ch_hi = v;
                                     found_ch = true;
                                 } else if (ch->kind == NK_RANGE) {
-                                    if (ch->range.low && ch->range.low->kind == NK_INTEGER) {
-                                        int128_t v = ch->range.low->integer_lit.value;
+                                    if (ch->range.low && Is_Static_Int_Node(ch->range.low)) {
+                                        int128_t v = Static_Int_Value(ch->range.low);
                                         if (!found_ch || v < ch_lo) ch_lo = v;
                                         found_ch = true;
                                     }
-                                    if (ch->range.high && ch->range.high->kind == NK_INTEGER) {
-                                        int128_t v = ch->range.high->integer_lit.value;
+                                    if (ch->range.high && Is_Static_Int_Node(ch->range.high)) {
+                                        int128_t v = Static_Int_Value(ch->range.high);
                                         if (!found_ch || v > ch_hi) ch_hi = v;
                                         found_ch = true;
                                     }
@@ -26521,19 +26601,26 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                     if (Is_Others_Choice(choice)) continue;
 
                     if (choice->kind == NK_RANGE) {
-                        /* Generate loop bounds */
+                        /* Generate loop bounds, reusing already-evaluated
+                         * SSA values when the expression node was used for
+                         * the aggregate's overall bounds (avoids double
+                         * evaluation of side-effecting expressions). */
                         uint32_t rng_low_val, rng_high_val;
-                        if (choice->range.low->kind == NK_INTEGER) {
+                        if (Is_Static_Int_Node(choice->range.low)) {
                             rng_low_val = Emit_Temp(cg);
                             Emit(cg, "  %%t%u = add %s 0, %lld\n", rng_low_val, Integer_Arith_Type(cg),
-                                 (long long)choice->range.low->integer_lit.value);
+                                 (long long)Static_Int_Value(choice->range.low));
+                        } else if (bound_low_expr && choice->range.low == bound_low_expr) {
+                            rng_low_val = low_val;  /* reuse */
                         } else {
                             rng_low_val = Generate_Expression(cg, choice->range.low);
                         }
-                        if (choice->range.high->kind == NK_INTEGER) {
+                        if (Is_Static_Int_Node(choice->range.high)) {
                             rng_high_val = Emit_Temp(cg);
                             Emit(cg, "  %%t%u = add %s 0, %lld\n", rng_high_val, Integer_Arith_Type(cg),
-                                 (long long)choice->range.high->integer_lit.value);
+                                 (long long)Static_Int_Value(choice->range.high));
+                        } else if (bound_high_expr && choice->range.high == bound_high_expr) {
+                            rng_high_val = high_val;  /* reuse */
                         } else {
                             rng_high_val = Generate_Expression(cg, choice->range.high);
                         }
@@ -26811,22 +26898,22 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                 Syntax_Node *ch = cit->association.choices.items[cc];
                 if (Is_Others_Choice(ch)) { early_has_others = true; continue; }
                 if (ch->kind == NK_RANGE) {
-                    if (ch->range.low->kind == NK_INTEGER) {
-                        int128_t v = (int128_t)ch->range.low->integer_lit.value;
+                    if (Is_Static_Int_Node(ch->range.low)) {
+                        int128_t v = Static_Int_Value(ch->range.low);
                         if (not has_choice_lo or v < choice_lo) choice_lo = v;
                         has_choice_lo = true;
                     } else {
                         has_dynamic_choice = true;
                     }
-                    if (ch->range.high->kind == NK_INTEGER) {
-                        int128_t v = (int128_t)ch->range.high->integer_lit.value;
+                    if (Is_Static_Int_Node(ch->range.high)) {
+                        int128_t v = Static_Int_Value(ch->range.high);
                         if (not has_choice_hi or v > choice_hi) choice_hi = v;
                         has_choice_hi = true;
                     } else {
                         has_dynamic_choice = true;
                     }
-                } else if (ch->kind == NK_INTEGER) {
-                    int128_t v = (int128_t)ch->integer_lit.value;
+                } else if (Is_Static_Int_Node(ch)) {
+                    int128_t v = Static_Int_Value(ch);
                     if (not has_choice_lo or v < choice_lo) choice_lo = v;
                     has_choice_lo = true;
                     if (not has_choice_hi or v > choice_hi) choice_hi = v;
@@ -27080,10 +27167,10 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                          * inside the per-element loop. */
                         int128_t rng_low, rng_high;
                         uint32_t rng_lo_ssa = 0, rng_hi_ssa = 0;
-                        bool must_eval_low  = (choice->range.low->kind != NK_INTEGER);
-                        bool must_eval_high = (choice->range.high->kind != NK_INTEGER);
+                        bool must_eval_low  = !Is_Static_Int_Node(choice->range.low);
+                        bool must_eval_high = !Is_Static_Int_Node(choice->range.high);
                         if (not must_eval_low) {
-                            rng_low = (int128_t)choice->range.low->integer_lit.value;
+                            rng_low = Static_Int_Value(choice->range.low);
                         } else {
                             uint32_t ev = Generate_Expression(cg, choice->range.low);
                             rng_low = low;
@@ -27095,7 +27182,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                                 agg_lo_ssa = rng_lo_ssa;
                         }
                         if (not must_eval_high) {
-                            rng_high = (int128_t)choice->range.high->integer_lit.value;
+                            rng_high = Static_Int_Value(choice->range.high);
                         } else {
                             uint32_t ev = Generate_Expression(cg, choice->range.high);
                             rng_high = high;
@@ -27161,9 +27248,9 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                                 for (uint32_t qc = 0; qc < qit->association.choices.count; qc++) {
                                     Syntax_Node *qch = qit->association.choices.items[qc];
                                     if (qch->kind == NK_RANGE) {
-                                        if (qch->range.low->kind != NK_INTEGER)
+                                        if (!Is_Static_Int_Node(qch->range.low))
                                             inline_multidim = true;
-                                        if (qch->range.high->kind != NK_INTEGER)
+                                        if (!Is_Static_Int_Node(qch->range.high))
                                             inline_multidim = true;
                                     }
                                 }
@@ -27216,8 +27303,8 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                                     Syntax_Node *qch = qi_item->association.choices.items[qc];
                                     if (qch->kind == NK_RANGE) {
                                         uint32_t ilo_s = 0, ihi_s = 0;
-                                        bool ilo_expr = (qch->range.low->kind != NK_INTEGER);
-                                        bool ihi_expr = (qch->range.high->kind != NK_INTEGER);
+                                        bool ilo_expr = !Is_Static_Int_Node(qch->range.low);
+                                        bool ihi_expr = !Is_Static_Int_Node(qch->range.high);
                                         if (ilo_expr) {
                                             uint32_t ev = Generate_Expression(cg, qch->range.low);
                                             const char *bt = Array_Bound_Llvm_Type(agg_type);
@@ -27241,8 +27328,8 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                                         {
                                             const char *bt = Array_Bound_Llvm_Type(agg_type);
                                             if (!ilo_expr && !ihi_expr) {
-                                                int128_t rlo = (int128_t)qch->range.low->integer_lit.value;
-                                                int128_t rhi = (int128_t)qch->range.high->integer_lit.value;
+                                                int128_t rlo = Static_Int_Value(qch->range.low);
+                                                int128_t rhi = Static_Int_Value(qch->range.high);
                                                 if (rlo <= rhi &&
                                                     (rlo < inner_idx_sub_lo || rlo > inner_idx_sub_hi ||
                                                      rhi < inner_idx_sub_lo || rhi > inner_idx_sub_hi)) {
@@ -27252,9 +27339,9 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                                                 }
                                             } else {
                                                 uint32_t lo_v = ilo_s ? ilo_s
-                                                    : Emit_Static_Int(cg, (int128_t)qch->range.low->integer_lit.value, bt);
+                                                    : Emit_Static_Int(cg, Static_Int_Value(qch->range.low), bt);
                                                 uint32_t hi_v = ihi_s ? ihi_s
-                                                    : Emit_Static_Int(cg, (int128_t)qch->range.high->integer_lit.value, bt);
+                                                    : Emit_Static_Int(cg, Static_Int_Value(qch->range.high), bt);
                                                 uint32_t nc = Emit_Temp(cg);
                                                 Emit(cg, "  %%t%u = icmp sgt %s %%t%u, %%t%u"
                                                          "  ; inner null?\n", nc, bt, lo_v, hi_v);
@@ -27335,18 +27422,18 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                                         Syntax_Node *qch = qit->association.choices.items[qc];
                                         if (Is_Others_Choice(qch)) continue;
                                         if (qch->kind == NK_RANGE &&
-                                            qch->range.low->kind == NK_INTEGER &&
-                                            qch->range.high->kind == NK_INTEGER) {
-                                            int128_t rlo = (int128_t)qch->range.low->integer_lit.value;
-                                            int128_t rhi = (int128_t)qch->range.high->integer_lit.value;
+                                            Is_Static_Int_Node(qch->range.low) &&
+                                            Is_Static_Int_Node(qch->range.high)) {
+                                            int128_t rlo = Static_Int_Value(qch->range.low);
+                                            int128_t rhi = Static_Int_Value(qch->range.high);
                                             if (rlo <= rhi &&
                                                 (rlo < isl || rlo > ish || rhi < isl || rhi > ish)) {
                                                 Emit_Raise_Constraint_Error(cg, "aggregate inner index check");
                                                 uint32_t cont = cg->label_id++;
                                                 Emit_Label_Here(cg, cont);
                                             }
-                                        } else if (qch->kind == NK_INTEGER) {
-                                            int128_t v = (int128_t)qch->integer_lit.value;
+                                        } else if (Is_Static_Int_Node(qch)) {
+                                            int128_t v = Static_Int_Value(qch);
                                             if (v < isl || v > ish) {
                                                 Emit_Raise_Constraint_Error(cg, "aggregate inner index check");
                                                 uint32_t cont = cg->label_id++;
@@ -27389,19 +27476,19 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                                 initialized[arr_idx] = true;
                             }
                         }
-                    } else if (choice->kind == NK_INTEGER) {
-                        /* Single index: 3 => value */
+                    } else if (Is_Static_Int_Node(choice)) {
+                        /* Single index: 3 => value (or -1 => value) */
                         /* RM 4.3.2(3): single index always non-null; must be
                          * in the index subtype. */
+                        int128_t cv = Static_Int_Value(choice);
                         if (need_idx_subtype_check) {
-                            int128_t cv = (int128_t)choice->integer_lit.value;
                             if (cv < idx_sub_lo or cv > idx_sub_hi) {
                                 Emit_Raise_Constraint_Error(cg, "aggregate index check");
                                 uint32_t cont = cg->label_id++;
                                 Emit_Label_Here(cg, cont);
                             }
                         }
-                        int128_t idx = (int128_t)choice->integer_lit.value - low;
+                        int128_t idx = cv - low;
                         if (idx >= 0 and idx < count) {
                             uint32_t val = Agg_Resolve_Elem(cg,
                                 item->association.expression, multidim,
@@ -28936,8 +29023,22 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
             src_type = Resolve_Generic_Actual_Type(cg, src_type);
         bool src_is_fat_ptr = Expression_Produces_Fat_Pointer(
             node->assignment.value, src_type);
+        /* Constrained arrays with dynamic bounds are stored as fat pointers.
+         * Aggregates produce fat pointer allocas but Expression_Produces_Fat_Pointer
+         * returns false for NK_AGGREGATE.  Detect this case. */
+        bool target_is_fat = Type_Has_Dynamic_Bounds(ty);
+        bool src_is_agg_fat = (not src_is_fat_ptr and target_is_fat and
+            node->assignment.value->kind == NK_AGGREGATE);
         uint32_t src_ptr = Generate_Expression(cg, node->assignment.value);
-        if (src_is_fat_ptr) {
+        if (src_is_agg_fat) {
+            /* Aggregate produced a fat pointer alloca — load and store */
+            uint32_t fp = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u  ; load agg fat ptr\n",
+                 fp, src_ptr);
+            Emit(cg, "  store " FAT_PTR_TYPE " %%t%u, ptr ", fp);
+            Emit_Symbol_Ref(cg, target_sym);
+            Emit(cg, "  ; array assignment (dynamic constrained)\n");
+        } else if (src_is_fat_ptr) {
             /* Source is unconstrained/string - extract data pointer from fat pointer */
             /* Length check: verify source length matches constrained target length */
             const char *ca_bt = Array_Bound_Llvm_Type(ty);
@@ -28953,6 +29054,12 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
                 Emit_Length_Check(cg, src_len, dst_len, ca_bt, ty);
             }
             Emit_Fat_Pointer_Copy_To_Name(cg, src_ptr, target_sym, ca_bt);
+        } else if (target_is_fat) {
+            /* Target is fat pointer but source isn't aggregate/fat — store as fat ptr */
+            uint32_t fp = Fat_Ptr_As_Value(cg, src_ptr);
+            Emit(cg, "  store " FAT_PTR_TYPE " %%t%u, ptr ", fp);
+            Emit_Symbol_Ref(cg, target_sym);
+            Emit(cg, "  ; array assignment (dynamic constrained)\n");
         } else {
             /* Source is constrained - memcpy directly */
             uint32_t array_size = ty->size > 0 ? ty->size : 8;
@@ -30171,9 +30278,15 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                                 bool is_access = pt && (pt->kind == TYPE_ACCESS);
                                 if (is_composite) {
                                     /* Composite default: extract data ptr from fat ptr
-                                     * for constrained array formals (RM 4.3.2) */
+                                     * for statically-constrained array formals.
+                                     * Dynamic-bounded constrained arrays use fat ptrs
+                                     * in the ABI (Type_To_Llvm_Sig), so pass as-is. */
+                                    bool sig_is_fat = pt and
+                                        (pt->kind == TYPE_ARRAY or pt->kind == TYPE_STRING) and
+                                        pt->array.is_constrained and Type_Has_Dynamic_Bounds(pt);
                                     const char *vty = Temp_Get_Type(cg, val);
-                                    if ((Temp_Is_Fat_Alloca(cg, val) or
+                                    if (not sig_is_fat and
+                                        (Temp_Is_Fat_Alloca(cg, val) or
                                          (vty and Llvm_Type_Is_Fat_Pointer(vty))) and
                                         pt and Type_Is_Constrained_Array(pt)) {
                                         val = Fat_Ptr_As_Value(cg, val);
@@ -30182,8 +30295,30 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                                              " %%t%u, 0\n", dp, val);
                                         val = dp;
                                     }
-                                    default_vals[i] = val;
-                                    default_types[i] = "ptr";
+                                    if (sig_is_fat) {
+                                        val = Fat_Ptr_As_Value(cg, val);
+                                        /* String literals carry default bounds 1..N but
+                                         * must match the formal's index constraint (RM 4.3.2).
+                                         * Rebuild fat pointer with parameter type's bounds. */
+                                        Syntax_Node *def = original_sym->parameters[i].default_value;
+                                        if (def and def->kind == NK_STRING and
+                                            pt->array.index_count > 0) {
+                                            const char *bt = Array_Bound_Llvm_Type(pt);
+                                            uint32_t dp = Emit_Temp(cg);
+                                            Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE
+                                                 " %%t%u, 0\n", dp, val);
+                                            uint32_t lo = Emit_Single_Bound(cg,
+                                                &pt->array.indices[0].low_bound, bt);
+                                            uint32_t hi = Emit_Single_Bound(cg,
+                                                &pt->array.indices[0].high_bound, bt);
+                                            val = Emit_Fat_Pointer_Dynamic(cg, dp, lo, hi, bt);
+                                        }
+                                        default_vals[i] = val;
+                                        default_types[i] = FAT_PTR_TYPE;
+                                    } else {
+                                        default_vals[i] = val;
+                                        default_types[i] = "ptr";
+                                    }
                                     /* Array constraint check: compare aggregate element
                                      * count per dimension against the formal parameter
                                      * type's runtime bounds (RM 6.4.1). */
@@ -30202,15 +30337,42 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                                         Syntax_Node *cur_agg = def_expr;
                                         for (uint32_t d = 0; d < pt->array.index_count && d < 8; d++) {
                                             if (!cur_agg || cur_agg->kind != NK_AGGREGATE) break;
-                                            agg_dim_lengths[d] = cur_agg->aggregate.items.count;
-                                            /* Detect OTHERS-only aggregates */
-                                            if (cur_agg->aggregate.items.count == 1) {
-                                                Syntax_Node *only = cur_agg->aggregate.items.items[0];
-                                                if (only->kind == NK_ASSOCIATION &&
-                                                    only->association.choices.count > 0 &&
-                                                    Is_Others_Choice(only->association.choices.items[0]))
+                                            /* Count actual elements, not just items.
+                                             * Named range choices like 0..5 contribute
+                                             * (hi-lo+1) elements, not just 1. */
+                                            {
+                                                uint32_t elem_cnt = 0;
+                                                bool has_others_here = false;
+                                                for (uint32_t qi = 0; qi < cur_agg->aggregate.items.count; qi++) {
+                                                    Syntax_Node *qi_n = cur_agg->aggregate.items.items[qi];
+                                                    if (qi_n->kind == NK_ASSOCIATION) {
+                                                        for (uint32_t qc = 0; qc < qi_n->association.choices.count; qc++) {
+                                                            Syntax_Node *ch = qi_n->association.choices.items[qc];
+                                                            if (Is_Others_Choice(ch)) {
+                                                                has_others_here = true;
+                                                            } else if (ch->kind == NK_RANGE &&
+                                                                       Is_Static_Int_Node(ch->range.low) &&
+                                                                       Is_Static_Int_Node(ch->range.high)) {
+                                                                int128_t rlo = Static_Int_Value(ch->range.low);
+                                                                int128_t rhi = Static_Int_Value(ch->range.high);
+                                                                int128_t cnt = rhi - rlo + 1;
+                                                                if (cnt > 0) elem_cnt += (uint32_t)cnt;
+                                                            } else if (Is_Static_Int_Node(ch)) {
+                                                                elem_cnt++;
+                                                            } else {
+                                                                elem_cnt++;  /* dynamic: count as 1 */
+                                                            }
+                                                        }
+                                                    } else {
+                                                        elem_cnt++;  /* positional */
+                                                    }
+                                                }
+                                                if (has_others_here) {
                                                     agg_is_others_only[d] = true;
+                                                }
+                                                agg_dim_lengths[d] = elem_cnt;
                                             }
+                                            /* (OTHERS detection handled above) */
                                             agg_ndims = d + 1;
                                             if (cur_agg->aggregate.items.count > 0) {
                                                 Syntax_Node *first = cur_agg->aggregate.items.items[0];
@@ -32687,27 +32849,47 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
                                 actual_expr->type = obj_type;
                             /* Determine storage type for formal object (RM 12.4):
                              * - Unconstrained/dynamic arrays: fat pointer {ptr,ptr}
-                             * - Constrained arrays: [N x elem] alloca, store data
+                             * - Constrained arrays: [N x i8] flat alloca, memcpy data
                              * - Scalars/records: native type */
                             bool needs_fat = false;
                             if (obj_type and Type_Is_Array_Like(obj_type) and
                                 (Type_Has_Dynamic_Bounds(obj_type) or
                                  Type_Is_Unconstrained_Array(obj_type)))
                                 needs_fat = true;
-                            const char *ts;
-                            if (needs_fat) {
-                                ts = FAT_PTR_TYPE;
-                            } else if (obj_type and Type_Is_Constrained_Array(obj_type) and
-                                       obj_type->size > 0) {
-                                ts = Type_To_Llvm(obj_type);
-                            } else {
-                                ts = obj_type ? Type_To_Llvm(obj_type)
-                                             : Expression_Llvm_Type(cg, actual_expr);
+                            /* For constrained arrays, compute storage size from bounds
+                             * (obj_type->size may be 0 if bounds use expressions) */
+                            bool is_constrained_arr = obj_type and
+                                Type_Is_Constrained_Array(obj_type) and not needs_fat;
+                            uint32_t arr_storage_sz = 0;
+                            if (is_constrained_arr) {
+                                arr_storage_sz = obj_type->size;
+                                if (arr_storage_sz == 0) {
+                                    /* Recompute from type bounds (RM 3.6.1) */
+                                    int128_t total = 1;
+                                    for (uint32_t d = 0; d < obj_type->array.index_count; d++) {
+                                        int128_t lo = Type_Bound_Value(obj_type->array.indices[d].low_bound);
+                                        int128_t hi = Type_Bound_Value(obj_type->array.indices[d].high_bound);
+                                        int128_t dim = hi - lo + 1;
+                                        if (dim < 0) dim = 0;
+                                        total *= dim;
+                                    }
+                                    uint32_t esz = obj_type->array.element_type
+                                        ? obj_type->array.element_type->size : 1;
+                                    arr_storage_sz = (uint32_t)(total * esz);
+                                }
                             }
                             obj_sym->needs_fat_ptr_storage = needs_fat;
                             Emit(cg, "  %%");
                             Emit_Symbol_Name(cg, obj_sym);
-                            Emit(cg, " = alloca %s  ; generic formal object\n", ts);
+                            const char *ts = needs_fat ? FAT_PTR_TYPE
+                                : (obj_type ? Type_To_Llvm(obj_type)
+                                            : Expression_Llvm_Type(cg, actual_expr));
+                            if (is_constrained_arr and arr_storage_sz > 0) {
+                                Emit(cg, " = alloca [%u x i8]  ; generic formal object\n",
+                                     arr_storage_sz);
+                            } else {
+                                Emit(cg, " = alloca %s  ; generic formal object\n", ts);
+                            }
                             uint32_t val = Generate_Expression(cg, actual_expr);
                             if (val > 0) {
                                 if (needs_fat) {
@@ -32728,7 +32910,8 @@ static void Generate_Generic_Instance_Body(Code_Generator *cg, Symbol *inst_sym,
                                         Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n", dp, val);
                                         val = dp;
                                     }
-                                    uint32_t sz = obj_type->size > 0 ? obj_type->size : 1;
+                                    uint32_t sz = arr_storage_sz > 0 ? arr_storage_sz
+                                        : (obj_type->size > 0 ? obj_type->size : 1);
                                     Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%");
                                     Emit_Symbol_Name(cg, obj_sym);
                                     Emit(cg, ", ptr %%t%u, i64 %u, i1 false)\n", val, sz);
