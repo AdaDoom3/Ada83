@@ -1,0 +1,50 @@
+PROMPT:
+In the pursuit of high-quality code (low line count (e.g. low undue complexity) and high
+feature/correctness) - refactor and fix ada83.c to pass a single C-test group completely
+(e.g. cXX) with much better Haskell-like C99 and tight smart code-golfing with, ironically,
+textbook "Literate Programming" style.
+
+Do NOT skip around - when you encounter a complex problem look at it as an opportunity
+to finally attack a big problem.
+
+Create a file to track everything called "checklist.txt" and include this prompt in it.
+Start with c43. Test exclusively with run_acats.sh
+
+========================================
+C43 TEST GROUP STATUS (Aggregates)
+========================================
+Target: 53/53 pass (currently 34/53 = 64%)
+
+PASSING (34):
+  [x] c43003a  c43004a  c43004b  c43004c
+  [x] c43103a  c43104a  c43105a  c43105b  c43106a  c43107a  c43108a
+  [x] c43204a  c43204c
+  [x] c43205a  c43205b  c43205c  c43205d  c43205f  c43205g  c43205h  c43205i
+  [x] c43206a  c43207a  c43207d  c43209a  c43210a  c43213a
+  [x] c43214a  c43214b  c43214c  c43214d  c43215a  c43215b  c43222a
+
+FAILING (16) - in order of attack:
+  [ ] c43103b   FAILED: 3.1 NO EXCEPTION RAISED
+  [ ] c43204e   FAILED: INCORRECT VALUE OF CA21
+  [ ] c43204f   FAILED: UNEXPECTED CONSTRAINT ERROR OR OTHER EXCEP
+  [ ] c43204g   RUNTIME: exit 124 (timeout/crash)
+  [ ] c43204h   FAILED: INCORRECT VALUE OF GA11
+  [ ] c43204i   RUNTIME: exit 124 (timeout/crash)
+  [ ] c43205e   RUNTIME: exit 124 (timeout/crash)
+  [ ] c43205j   RUNTIME: exit 124 (timeout/crash)
+  [ ] c43207b   FAILED: F WAS NOT EVALUATED ONCE
+  [ ] c43207c   FAILED: F WAS NOT EVALUATED ONCE
+  [ ] c43208a   FAILED: H NOT EVALUATED G-F+1 TIMES
+  [ ] c43208b   FAILED: F NOT EVALUATED (C-B+1)*(E-D+1) TIMES
+  [ ] c43211a   FAILED: CASE B : INCORRECT VALUES
+  [ ] c43212a   FAILED: CASE 1 : CONSTRAINT ERROR NOT RAISED
+  [ ] c43212c   FAILED: A3 - EXCEPTION NOT RAISED, ARRAYS NOT EQUAL
+  [ ] c43214e   RUNTIME: exit 124 (timeout/crash)
+
+SKIPPING (3):
+  [ ] c43205k   BIND: unresolved symbols
+  [ ] c43214f   BIND: unresolved symbols
+  [ ] c43224a   COMPILE: (compilation failure)
+
+WORK LOG:
+---------
