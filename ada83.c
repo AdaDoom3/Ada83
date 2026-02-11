@@ -26009,6 +26009,38 @@ static Agg_Class Agg_Classify(Syntax_Node *node) {
     return r;
 }
 
+/* Check if a pair of static integer bounds spans an unreasonably large range
+ * (e.g. full index subtype: INTEGER -2^31..2^31-1) meaning the type checker
+ * couldn't determine narrower constraints.  Such "placeholder" bounds overflow
+ * uint32 size calculations and must be replaced with actual choice bounds. */
+static bool Bound_Pair_Overflows(Type_Bound lo, Type_Bound hi) {
+    if (lo.kind == BOUND_INTEGER && hi.kind == BOUND_INTEGER) {
+        int128_t span = (int128_t)hi.int_value - (int128_t)lo.int_value;
+        return span >= (int128_t)UINT32_MAX;
+    }
+    return false;
+}
+
+/* Check whether an aggregate will produce a fat pointer (dynamic alloca path).
+ * True when the type has dynamic bounds OR the aggregate's own named choices
+ * contain non-static range expressions (e.g. desugared T'RANGE). */
+static bool Agg_Has_Dynamic_Bounds(const Syntax_Node *agg) {
+    if (agg->type and Type_Has_Dynamic_Bounds(agg->type))
+        return true;
+    for (uint32_t ci = 0; ci < agg->aggregate.items.count; ci++) {
+        Syntax_Node *item = agg->aggregate.items.items[ci];
+        if (item->kind != NK_ASSOCIATION) continue;
+        for (uint32_t cc = 0; cc < item->association.choices.count; cc++) {
+            Syntax_Node *ch = item->association.choices.items[cc];
+            if (ch->kind == NK_RANGE and
+                (not Is_Static_Int_Node(ch->range.low) or
+                 not Is_Static_Int_Node(ch->range.high)))
+                return true;
+        }
+    }
+    return false;
+}
+
 /* ── Agg_Resolve_Elem: generate element value and unwrap fat ptrs.
  *
  * Given an expression node, generates the value and, depending on the
@@ -26036,7 +26068,16 @@ static uint32_t Agg_Resolve_Elem(Code_Generator *cg, Syntax_Node *expr,
             val = Emit_Fat_Pointer_Data(cg, val,
                       Array_Bound_Llvm_Type(agg_type));
         } else if (multidim and expr->kind == NK_AGGREGATE and
-                   expr->type and Type_Has_Dynamic_Bounds(expr->type)) {
+                   expr->type and
+                   (Type_Has_Dynamic_Bounds(expr->type) or
+                    /* Inner sub-aggregate with full-range placeholder bounds:
+                     * its Generate_Aggregate will detect the overflow, override
+                     * bounds via early scan, and produce a fat pointer. */
+                    (expr->type->kind == TYPE_ARRAY and
+                     expr->type->array.index_count > 0 and
+                     Bound_Pair_Overflows(
+                         expr->type->array.indices[0].low_bound,
+                         expr->type->array.indices[0].high_bound)))) {
             uint32_t loaded = Emit_Temp(cg);
             Emit(cg, "  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n",
                  loaded, val);
@@ -26277,6 +26318,48 @@ static void Emit_Inner_Consistency_Track(
     Emit_Label_Here(cg, dn_lbl);
 }
 
+/* RM 4.3.2: T'RANGE in a choice position denotes the discrete range
+ * T'FIRST..T'LAST.  Normalize these into NK_RANGE nodes so downstream
+ * choice-scanning code has a single representation to handle.
+ * Applied recursively to inner sub-aggregates for multidim arrays. */
+static void Desugar_Aggregate_Range_Choices(Syntax_Node *agg) {
+    for (uint32_t ci = 0; ci < agg->aggregate.items.count; ci++) {
+        Syntax_Node *cit = agg->aggregate.items.items[ci];
+        if (cit->kind == NK_ASSOCIATION) {
+            for (uint32_t cc = 0; cc < cit->association.choices.count; cc++) {
+                Syntax_Node *ch = cit->association.choices.items[cc];
+                if (ch->kind == NK_ATTRIBUTE and
+                    Slice_Equal_Ignore_Case(ch->attribute.name, S("RANGE"))) {
+                    Syntax_Node *lo = Node_New(NK_ATTRIBUTE, ch->location);
+                    lo->attribute.prefix = ch->attribute.prefix;
+                    lo->attribute.name   = S("FIRST");
+                    lo->type = ch->type;
+                    Syntax_Node *hi = Node_New(NK_ATTRIBUTE, ch->location);
+                    hi->attribute.prefix = ch->attribute.prefix;
+                    hi->attribute.name   = S("LAST");
+                    hi->type = ch->type;
+                    for (uint32_t ai = 0; ai < ch->attribute.arguments.count; ai++) {
+                        Node_List_Push(&lo->attribute.arguments,
+                                       ch->attribute.arguments.items[ai]);
+                        Node_List_Push(&hi->attribute.arguments,
+                                       ch->attribute.arguments.items[ai]);
+                    }
+                    Syntax_Node *range = Node_New(NK_RANGE, ch->location);
+                    range->range.low  = lo;
+                    range->range.high = hi;
+                    cit->association.choices.items[cc] = range;
+                }
+            }
+            /* Recurse into inner sub-aggregate (multidim) */
+            if (cit->association.expression and
+                cit->association.expression->kind == NK_AGGREGATE)
+                Desugar_Aggregate_Range_Choices(cit->association.expression);
+        } else if (cit->kind == NK_AGGREGATE) {
+            Desugar_Aggregate_Range_Choices(cit);
+        }
+    }
+}
+
 static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
     /* ── § 13b: Generate_Aggregate — array & record aggregate codegen.
      *
@@ -26288,6 +26371,9 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
      *   2. Record aggregate (RM 4.3.1):
      *      a. Alloca, positional/named stores, others fill */
     Type_Info *agg_type = node->type;
+    /* Normalize T'RANGE choices → T'FIRST..T'LAST (recursively) */
+    if (node->kind == NK_AGGREGATE)
+        Desugar_Aggregate_Range_Choices(node);
 
     if (not agg_type) {
         Report_Error(node->location, "untyped aggregate in codegen");
@@ -26440,22 +26526,83 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
         }
         Type_Bound low_bound = dim_lo[0], high_bound = dim_hi[0];
 
+        /* For multidim aggregates with unconstrained types (or constrained
+         * types whose inner bounds span the full index subtype range), walk
+         * into inner sub-aggregates and propagate their choice bounds to
+         * dim_lo[1..N]/dim_hi[1..N].  Without this, inner dims default to
+         * the full index subtype range (e.g. INTEGER: -2^31..2^31-1),
+         * causing 4 GB allocations.
+         * RANGE choices have already been desugared to NK_RANGE by
+         * Desugar_Aggregate_Range_Choices, so only NK_RANGE is checked. */
+        if (agg_ndims > 1) {
+            /* Only propagate when inner bounds are effectively unconstrained:
+             * unconstrained type, or constrained type where inner dim bounds
+             * are full-range placeholders that would overflow size calcs. */
+            {
+            bool need_propagation = !agg_type->array.is_constrained;
+            if (!need_propagation) {
+                for (uint32_t d = 1; d < agg_ndims && !need_propagation; d++)
+                    need_propagation = Bound_Pair_Overflows(dim_lo[d], dim_hi[d]);
+            }
+            if (need_propagation) {
+                Syntax_Node *inner_agg = NULL;
+                for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
+                    Syntax_Node *item = node->aggregate.items.items[i];
+                    if (item->kind == NK_ASSOCIATION) {
+                        inner_agg = item->association.expression; break;
+                    } else if (item->kind == NK_AGGREGATE) {
+                        inner_agg = item; break;
+                    }
+                }
+                for (uint32_t d = 1; d < agg_ndims and inner_agg; d++) {
+                    if (inner_agg->kind != NK_AGGREGATE) break;
+                    /* Extract choice bounds from inner sub-aggregate */
+                    bool found = false;
+                    for (uint32_t ci = 0; ci < inner_agg->aggregate.items.count and not found; ci++) {
+                        Syntax_Node *cit = inner_agg->aggregate.items.items[ci];
+                        if (cit->kind != NK_ASSOCIATION) continue;
+                        for (uint32_t cc = 0; cc < cit->association.choices.count and not found; cc++) {
+                            Syntax_Node *ch = cit->association.choices.items[cc];
+                            if (ch->kind == NK_RANGE) {
+                                dim_lo[d] = Is_Static_Int_Node(ch->range.low)
+                                    ? (Type_Bound){.kind=BOUND_INTEGER,
+                                       .int_value=Static_Int_Value(ch->range.low)}
+                                    : (Type_Bound){.kind=BOUND_EXPR, .expr=ch->range.low};
+                                dim_hi[d] = Is_Static_Int_Node(ch->range.high)
+                                    ? (Type_Bound){.kind=BOUND_INTEGER,
+                                       .int_value=Static_Int_Value(ch->range.high)}
+                                    : (Type_Bound){.kind=BOUND_EXPR, .expr=ch->range.high};
+                                found = true;
+                            }
+                        }
+                    }
+                    /* Descend into first inner association's value for next dim */
+                    Syntax_Node *next = NULL;
+                    for (uint32_t i = 0; i < inner_agg->aggregate.items.count; i++) {
+                        if (inner_agg->aggregate.items.items[i]->kind == NK_ASSOCIATION) {
+                            next = inner_agg->aggregate.items.items[i]->association.expression;
+                            break;
+                        }
+                    }
+                    inner_agg = next;
+                }
+            }
+            } /* end need_propagation scope */
+        }
+
         /* For multi-dimensional arrays, the effective "element" of the outer
          * aggregate is a row (slice along the first dimension), not the scalar
-         * element_type.  Compute the row size so memcpy uses the right length.
-         * Use derived bounds (not raw BOUND_NONE) for correct sizing. */
+         * element_type.  Compute the row size so memcpy uses the right length. */
         bool multidim = (agg_ndims > 1);
         uint32_t row_size = elem_size;
         bool inner_dynamic = false;
         if (multidim) {
-            /* Check if any inner dimension has dynamic bounds */
             for (uint32_t d = 1; d < agg_ndims; d++) {
                 if (dim_lo[d].kind == BOUND_EXPR or dim_hi[d].kind == BOUND_EXPR) {
                     inner_dynamic = true; break;
                 }
             }
             if (not inner_dynamic) {
-                /* All inner dims static: compute row_size at compile time */
                 uint32_t row_elems = 1;
                 for (uint32_t d = 1; d < agg_ndims; d++) {
                     int128_t lo = Type_Bound_Value(dim_lo[d]);
@@ -26464,7 +26611,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                     if (cnt > 0) row_elems *= (uint32_t)cnt;
                 }
                 row_size = row_elems * elem_size;
-                elem_size = row_size;  /* outer dimension "element" is a row */
+                elem_size = row_size;  /* outer dim "element" is a row */
             }
         }
 
@@ -26485,9 +26632,12 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                     (!Is_Static_Int_Node(ch->range.low) or
                      !Is_Static_Int_Node(ch->range.high))) {
                     has_dynamic_choice_early = true;
-                    /* Only override aggregate bounds for unconstrained types;
-                     * for constrained types, the type's bounds are canonical. */
-                    if (!agg_type->array.is_constrained) {
+                    /* RM 4.3.2(4): For unconstrained types, named aggregate
+                     * bounds come from the choices.  Also override for
+                     * constrained types whose dim-0 bounds are full-range
+                     * placeholders (would overflow size calculations). */
+                    if (!agg_type->array.is_constrained or
+                        Bound_Pair_Overflows(dim_lo[0], dim_hi[0])) {
                         if (!Is_Static_Int_Node(ch->range.low)) {
                             dim_lo[0] = (Type_Bound){.kind = BOUND_EXPR, .expr = ch->range.low};
                             low_bound = dim_lo[0];
@@ -26517,7 +26667,6 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                 dynamic_bounds = true; break;
             }
         }
-
         if (dynamic_bounds) {
             /* Dynamic bounds: generate runtime allocation and loop-based init */
             const char *iat_bnd = Integer_Arith_Type(cg);
@@ -26557,6 +26706,48 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         rt_row_elems = prod;
                     }
                 }
+                /* RM 4.3.2(3): inner dimension choice bounds must belong to
+                 * the corresponding index subtype, even for null outer ranges.
+                 * Check at runtime before computing row_size. */
+                for (uint32_t d = 1; d < agg_ndims; d++) {
+                    Type_Info *idx_t = NULL;
+                    if (agg_type->array.indices && d < agg_type->array.index_count)
+                        idx_t = agg_type->array.indices[d].index_type;
+                    if (!idx_t && agg_type->base_type &&
+                        Type_Is_Array_Like(agg_type->base_type) &&
+                        d < agg_type->base_type->array.index_count &&
+                        agg_type->base_type->array.indices)
+                        idx_t = agg_type->base_type->array.indices[d].index_type;
+                    if (idx_t && idx_t->low_bound.kind == BOUND_INTEGER &&
+                        idx_t->high_bound.kind == BOUND_INTEGER) {
+                        int64_t is_lo = (int64_t)Type_Bound_Value(idx_t->low_bound);
+                        int64_t is_hi = (int64_t)Type_Bound_Value(idx_t->high_bound);
+                        /* Skip if full INTEGER range (no real subtype constraint) */
+                        if (is_lo != (int64_t)(-2147483648LL) ||
+                            is_hi != (int64_t)2147483647LL) {
+                            uint32_t nc = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = icmp sgt %s %%t%u, %%t%u"
+                                 "  ; inner dim %u null?\n",
+                                 nc, iat_bnd, rt_inner_lo[d], rt_inner_hi[d], d);
+                            uint32_t sk = cg->label_id++;
+                            uint32_t ck = cg->label_id++;
+                            Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                                 nc, sk, ck);
+                            cg->block_terminated = true;
+                            Emit_Label_Here(cg, ck);
+                            Emit_Range_Check_With_Raise(cg, rt_inner_lo[d],
+                                is_lo, is_hi, iat_bnd,
+                                "dynamic aggregate inner index subtype check");
+                            Emit_Range_Check_With_Raise(cg, rt_inner_hi[d],
+                                is_lo, is_hi, iat_bnd,
+                                "dynamic aggregate inner index subtype check");
+                            Emit(cg, "  br label %%L%u\n", sk);
+                            cg->block_terminated = true;
+                            Emit_Label_Here(cg, sk);
+                        }
+                    }
+                }
+
                 uint32_t raw_row_size = Emit_Temp(cg);
                 uint32_t scalar_sz = agg_type->array.element_type ?
                                      agg_type->array.element_type->size : 8;
@@ -29758,8 +29949,25 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
         const char *ua_bt = Array_Bound_Llvm_Type(ty);
         uint32_t existing_fat = Emit_Load_Fat_Pointer(cg, target_sym, ua_bt);
         uint32_t dest_data = Emit_Fat_Pointer_Data(cg, existing_fat, ua_bt);
-        uint32_t dest_len  = Emit_Fat_Pointer_Length(cg, existing_fat, ua_bt);
-        uint32_t dest_len_64 = Emit_Extend_To_I64(cg, dest_len, ua_bt);
+        /* Compute total flat element count: product of all dimension lengths.
+         * For 1D arrays this is just (high - low + 1).  For multidim arrays
+         * (e.g. 3D: dim1_count * dim2_count * dim3_count) we must multiply
+         * all dimension lengths to get the correct byte size. */
+        uint32_t ndims = ty->array.index_count;
+        uint32_t dest_total_elems;
+        if (ndims <= 1) {
+            dest_total_elems = Emit_Fat_Pointer_Length(cg, existing_fat, ua_bt);
+        } else {
+            dest_total_elems = Emit_Fat_Pointer_Length_Dim(cg, existing_fat, ua_bt, 0);
+            for (uint32_t d = 1; d < ndims; d++) {
+                uint32_t dim_len = Emit_Fat_Pointer_Length_Dim(cg, existing_fat, ua_bt, d);
+                uint32_t prod = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = mul %s %%t%u, %%t%u\n",
+                     prod, ua_bt, dest_total_elems, dim_len);
+                dest_total_elems = prod;
+            }
+        }
+        uint32_t dest_len_64 = Emit_Extend_To_I64(cg, dest_total_elems, ua_bt);
 
         /* Convert element count to byte count.  For STRING/CHARACTER
          * arrays the element size is 1, so this is a no-op.  For arrays
@@ -29791,9 +29999,12 @@ static void Generate_Assignment(Code_Generator *cg, Syntax_Node *node) {
         }
 
         if (src_is_fat) {
-            /* Source is fat pointer — extract data pointer, check length, copy */
+            /* Source is fat pointer — extract data pointer, check length, copy.
+             * For multidim arrays, only check dim-1 length here; the aggregate's
+             * own constraint checking handles inner dimension consistency. */
+            uint32_t dest_dim1_len = Emit_Fat_Pointer_Length(cg, existing_fat, ua_bt);
             uint32_t src_len = Emit_Fat_Pointer_Length(cg, src_val, ua_bt);
-            Emit_Length_Check(cg, src_len, dest_len, ua_bt, ty);
+            Emit_Length_Check(cg, src_len, dest_dim1_len, ua_bt, ty);
             uint32_t src_data = Emit_Fat_Pointer_Data(cg, src_val, ua_bt);
             Emit(cg, "  call void @llvm.memcpy.p0.p0.i64("
                  "ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)"
@@ -32594,8 +32805,14 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     total_count = prod;
                 }
             }
+            uint32_t byte_size_raw = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", byte_size_raw, iat_decl, total_count, elem_sz);
+            /* Clamp to 0 for null ranges: hi < lo → negative count → huge unsigned alloca */
+            uint32_t neg_chk = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = icmp slt %s %%t%u, 0\n", neg_chk, iat_decl, byte_size_raw);
             uint32_t byte_size = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = mul %s %%t%u, %u\n", byte_size, iat_decl, total_count, elem_sz);
+            Emit(cg, "  %%t%u = select i1 %%t%u, %s 0, %s %%t%u\n",
+                 byte_size, neg_chk, iat_decl, iat_decl, byte_size_raw);
 
             uint32_t data_ptr = Emit_Temp(cg);
             Emit(cg, "  %%t%u = alloca i8, %s %%t%u  ; dynamic uninit array\n", data_ptr, iat_decl, byte_size);
