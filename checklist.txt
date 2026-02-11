@@ -1,0 +1,32 @@
+CHECKLIST — Ada83.c Refactor for c43 ACATS Test Group
+=====================================================
+
+ORIGINAL PROMPT:
+In the pursuit of high-quality code (low line count (e.g. low undue complexity) and high
+feature/correctness) - refactor and fix ada83.c to pass a single C-test group completely
+(e.g. cXX) with much better Haskell-like C99 and tight smart code-golfing with, ironically,
+textbook "Literate Programming" style.
+
+Do NOT skip around - when you encounter a complex problem look at it as an opportunity to
+finally attack a big problem.
+
+Create a file to track everything called "checklist.txt" and include this prompt in it.
+Start with c43. Test exclusively with run_acats.sh
+
+TARGET: c43 (53 tests — aggregates, allocators, constraint checks)
+TEST COMMAND: bash run_acats.sh q c43
+
+=====================================================
+BASELINE (before any changes):
+  pass:  TBD
+  fail:  TBD
+  skip:  TBD
+  total: TBD
+
+=====================================================
+TEST-BY-TEST TRACKER:
+(will be filled after baseline run)
+
+=====================================================
+CHANGE LOG:
+(will be filled as changes are made)

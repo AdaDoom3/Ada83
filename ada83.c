@@ -2723,7 +2723,7 @@ struct Syntax_Node {
         struct { Token_Kind op; Syntax_Node *operand; } unary;
 
         /* NK_AGGREGATE */
-        struct { Node_List items; bool is_named; } aggregate;
+        struct { Node_List items; bool is_named; bool is_parenthesized; } aggregate;
 
         /* NK_ALLOCATOR: new subtype_mark'(expression) or new subtype_mark */
         struct { Syntax_Node *subtype_mark; Syntax_Node *expression; } allocator;
@@ -3461,6 +3461,11 @@ static Syntax_Node *Parse_Primary(Parser *p) {
         }
 
         Parser_Expect(p, TK_RPAREN);
+        /* RM 4.3.2: A parenthesized aggregate ((a,b,c)) uses INDEX_SUBTYPE'FIRST
+         * for its lower bound, unlike a direct sub-aggregate (a,b,c) which uses
+         * the applicable index constraint.  Preserve this distinction. */
+        if (expr->kind == NK_AGGREGATE)
+            expr->aggregate.is_parenthesized = true;
         return expr;
     }
 
@@ -6520,10 +6525,13 @@ static inline bool Expression_Produces_Fat_Pointer(const Syntax_Node *node,
  * Constrained STRING subtypes (e.g., STRING(1..6)) are flat arrays. */
 static inline bool Type_Needs_Fat_Pointer_Load(const Type_Info *t) {
     if (not t) return false;
-    /* Constrained arrays with dynamic bounds still need fat pointer load
-     * because their bounds are runtime-determined (e.g., STRING(1..F) in records).
-     * Only truly static constrained arrays are flat. */
+    /* Constrained arrays with static bounds are flat — no fat pointer. */
     if (Type_Is_Constrained_Array(t) and not Type_Has_Dynamic_Bounds(t))
+        return false;
+    /* A constrained array with non-zero size has compile-time-known layout
+     * even when bounds are stored as BOUND_EXPR (constant expressions like
+     * OA = OTHER_ARRAY(2..4)).  Treat as static. */
+    if (Type_Is_Constrained_Array(t) and t->size > 0)
         return false;
     if (Type_Is_String(t)) return true;
     if (t->kind == TYPE_ARRAY and
@@ -8950,6 +8958,8 @@ static Type_Info *Resolve_Apply(Symbol_Manager *sm, Syntax_Node *node) {
                             } else if (all_static and count >= 0) {
                                 uint32_t elem_size = constrained->array.element_type ?
                                                      constrained->array.element_type->size : 1;
+                                if (elem_size == 0 and Type_Needs_Fat_Pointer_Load(constrained->array.element_type))
+                                    elem_size = FAT_PTR_ALLOC_SIZE;
                                 constrained->size = (uint32_t)(count * elem_size);
                             }
                         }
@@ -10164,6 +10174,8 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                     } else if (all_static and count >= 0) {
                         uint32_t elem_size = array_type->array.element_type ?
                                              array_type->array.element_type->size : 8;
+                        if (elem_size == 0 and Type_Needs_Fat_Pointer_Load(array_type->array.element_type))
+                            elem_size = FAT_PTR_ALLOC_SIZE;
                         array_type->size = (uint32_t)(count * elem_size);
                     }
                 }
@@ -10851,6 +10863,8 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                             } else if (all_static and count >= 0) {
                                 uint32_t elem_size = constrained->array.element_type ?
                                                      constrained->array.element_type->size : 1;
+                                if (elem_size == 0 and Type_Needs_Fat_Pointer_Load(constrained->array.element_type))
+                                    elem_size = FAT_PTR_ALLOC_SIZE;
                                 constrained->size = (uint32_t)(count * elem_size);
                             }
                         }
@@ -19269,15 +19283,20 @@ static uint32_t Emit_Fat_Pointer_Length(Code_Generator *cg, uint32_t fat_ptr,
 }
 
 /* Emit length from two temp IDs (raw bounds, not from fat pointer):
- *   result = high - low + 1
+ *   result = max(high - low + 1, 0)
+ * Null ranges (high < low) yield 0, not a negative / wrapped value.
  * Lighter than Emit_Fat_Pointer_Length when you already have low/high. */
 static uint32_t Emit_Length_From_Bounds(Code_Generator *cg,
     uint32_t low, uint32_t high, const char *bt)
 {
     uint32_t diff = Emit_Temp(cg);
     Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", diff, bt, high, low);
+    uint32_t raw = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = add %s %%t%u, 1\n", raw, bt, diff);
+    uint32_t neg = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp slt %s %%t%u, 0\n", neg, bt, raw);
     uint32_t len = Emit_Temp(cg);
-    Emit(cg, "  %%t%u = add %s %%t%u, 1\n", len, bt, diff);
+    Emit(cg, "  %%t%u = select i1 %%t%u, %s 0, %s %%t%u\n", len, neg, bt, bt, raw);
     Temp_Set_Type(cg, len, bt);
     return len;
 }
@@ -20346,8 +20365,21 @@ static uint32_t Generate_String_Literal(Code_Generator *cg, Syntax_Node *node) {
     Emit(cg, "  %%t%u = getelementptr [%u x i8], ptr @.str%u, i64 0, i64 0\n",
          data_ptr, len, str_id);
 
-    /* Return fat pointer with Ada STRING bounds (1..length) */
-    return Emit_Fat_Pointer(cg, data_ptr, 1, (int128_t)len, Array_Bound_Llvm_Type(node->type));
+    /* Return fat pointer with Ada STRING bounds.
+     * Default is 1..length (RM 4.2(9) — POSITIVE'FIRST).
+     * When the applicable index constraint specifies different bounds
+     * (e.g. STRING(3..5)), use those bounds instead. */
+    int128_t lo = 1, hi = (int128_t)len;
+    Type_Info *sty = node->type;
+    if (sty and sty->array.is_constrained and sty->array.index_count > 0) {
+        Type_Bound lb = sty->array.indices[0].low_bound;
+        Type_Bound hb = sty->array.indices[0].high_bound;
+        if (lb.kind == BOUND_INTEGER and hb.kind == BOUND_INTEGER) {
+            lo = lb.int_value;
+            hi = hb.int_value;
+        }
+    }
+    return Emit_Fat_Pointer(cg, data_ptr, lo, hi, Array_Bound_Llvm_Type(node->type));
 }
 
 static uint32_t Generate_Identifier(Code_Generator *cg, Syntax_Node *node) {
@@ -21675,12 +21707,24 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
         Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
              right_dest, right_data, right_len1_64);
 
-        /* Result bounds: 1..total_len (Ada STRING convention) */
-        uint32_t one = Emit_Temp(cg);
-        Emit(cg, "  %%t%u = add %s 0, 1\n", one, cat_bt);
+        /* Result bounds: INDEX_SUBTYPE'FIRST .. FIRST+total_len-1 (RM 4.5.3(8)).
+         * For STRING the index subtype is POSITIVE with FIRST=1; for custom
+         * array types the FIRST may differ (e.g. STE'FIRST=2). */
+        int128_t idx_first = 1;  /* default for STRING (POSITIVE'FIRST) */
+        if (result_type and (result_type->kind == TYPE_ARRAY or result_type->kind == TYPE_STRING) and
+            result_type->array.index_count > 0 and result_type->array.indices) {
+            Type_Info *idx_ty = result_type->array.indices[0].index_type;
+            if (idx_ty and idx_ty->low_bound.kind == BOUND_INTEGER)
+                idx_first = idx_ty->low_bound.int_value;
+        }
+        uint32_t res_lo = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = add %s 0, %s\n", res_lo, cat_bt, I128_Decimal(idx_first));
+        uint32_t res_hi = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = add %s %%t%u, %s  ; first + total_len - 1\n",
+             res_hi, cat_bt, total_len, I128_Decimal(idx_first - 1));
 
         /* Return fat pointer to result */
-        return Emit_Fat_Pointer_Dynamic(cg, result_data, one, total_len, cat_bt);
+        return Emit_Fat_Pointer_Dynamic(cg, result_data, res_lo, res_hi, cat_bt);
     }
 
     uint32_t left = Generate_Expression(cg, node->binary.left);
@@ -23872,12 +23916,23 @@ static uint32_t Generate_Apply(Code_Generator *cg, Syntax_Node *node) {
         Type_Info *elem_type_info = array_type->array.element_type;
         bool elem_is_composite = Type_Is_Record(elem_type_info) or
             Type_Is_Constrained_Array(elem_type_info);
+        bool elem_is_fat = Type_Needs_Fat_Pointer_Load(elem_type_info);
         uint32_t elem_size = elem_type_info ? elem_type_info->size : 8;
-        const char *elem_type = Type_To_Llvm(elem_type_info);
+        const char *elem_type = elem_is_fat ? FAT_PTR_TYPE : Type_To_Llvm(elem_type_info);
         uint32_t ptr = Emit_Temp(cg);
         uint32_t t;
 
-        if (elem_is_composite and elem_size > 0) {
+        if (elem_is_fat) {
+            /* Element stored as fat pointer { ptr, ptr } (dynamic-bound or
+             * unconstrained array/string component) — load the pair. */
+            const char *iat_idx = Integer_Arith_Type(cg);
+            Emit(cg, "  %%t%u = getelementptr %s, ptr %%t%u, %s %%t%u"
+                 "  ; &array[idx] (fat elem)\n",
+                 ptr, FAT_PTR_TYPE, base, iat_idx, flat_idx);
+            t = Emit_Temp(cg);
+            Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; array[idx] fat\n", t, FAT_PTR_TYPE, ptr);
+            return t;
+        } else if (elem_is_composite and elem_size > 0) {
             /* Composite element - use byte array for getelementptr */
             Emit(cg, "  %%t%u = getelementptr [%u x i8], ptr %%t%u, %s %%t%u"
                  "  ; array[idx] (composite elem, size=%u)\n",
@@ -25989,6 +26044,16 @@ static uint32_t Agg_Resolve_Elem(Code_Generator *cg, Syntax_Node *expr,
             Emit(cg, "  %%t%u = extractvalue " FAT_PTR_TYPE
                  " %%t%u, 0\n", val, loaded);
         }
+    } else if (Type_Needs_Fat_Pointer_Load(elem_ti)) {
+        /* Fat-pointer element (dynamic-bound array/string): rebuild the
+         * fat pointer with the correct bounds from the element type's
+         * constraint, since the source (e.g. string literal) may have
+         * default bounds (1..N) instead of the target bounds (3..5). */
+        const char *bt = Array_Bound_Llvm_Type(elem_ti);
+        uint32_t data = Emit_Fat_Pointer_Data(cg, val, bt);
+        uint32_t lo = Emit_Bound_Value(cg, &elem_ti->array.indices[0].low_bound);
+        uint32_t hi = Emit_Bound_Value(cg, &elem_ti->array.indices[0].high_bound);
+        val = Emit_Fat_Pointer_Dynamic(cg, data, lo, hi, bt);
     } else {
         /* Scalar: type-convert and apply fixed-point SMALL if needed. */
         const char *src_type = Expression_Llvm_Type(cg, expr);
@@ -26231,10 +26296,13 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
 
     if (Type_Is_Array_Like(agg_type) and agg_type->array.index_count > 0) {
         /* Array aggregate - allocate on stack and initialize */
-        const char *elem_type = Type_To_Llvm(agg_type->array.element_type);
+        bool elem_is_fat = Type_Needs_Fat_Pointer_Load(agg_type->array.element_type);
+        const char *elem_type = elem_is_fat ? FAT_PTR_TYPE
+                              : Type_To_Llvm(agg_type->array.element_type);
         uint32_t elem_size = agg_type->array.element_type ?
                              agg_type->array.element_type->size : 8;
-        if (elem_size == 0) elem_size = 8;
+        if (elem_size == 0 and elem_is_fat) elem_size = FAT_PTR_ALLOC_SIZE;
+        else if (elem_size == 0) elem_size = 8;
 
         /* RM 4.3.3(6): For positional aggregates of unconstrained array types,
          * the lower bound of each dimension is the index subtype's 'FIRST.
@@ -26565,42 +26633,10 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                     if (ac.n_positional > 0 && !ac.has_named) {
                         uint32_t clo = Emit_Coerce(cg, low_val, ait);
                         uint32_t chi = Emit_Coerce(cg, high_val, ait);
-                        if (cg->in_agg_component > 0) {
-                            /* Sub-aggregate: positional lower = index subtype FIRST.
-                             * Compare true bounds vs runtime constraint. */
-                            Type_Bound *is_lo = (agg_type->base_type->array.index_count > 0
-                                && agg_type->base_type->array.indices
-                                && agg_type->base_type->array.indices[0].index_type)
-                                ? &agg_type->base_type->array.indices[0].index_type->low_bound
-                                : NULL;
-                            if (is_lo) {
-                                uint32_t tlo = Emit_Single_Bound(cg, is_lo, ait);
-                                uint32_t nm1 = Emit_Static_Int(cg,
-                                    (int128_t)ac.n_positional - 1, ait);
-                                uint32_t thi = Emit_Temp(cg);
-                                Emit(cg, "  %%t%u = add %s %%t%u, %%t%u\n",
-                                     thi, ait, tlo, nm1);
-                                uint32_t ne_lo = Emit_Temp(cg);
-                                Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n",
-                                     ne_lo, ait, tlo, clo);
-                                uint32_t ne_hi = Emit_Temp(cg);
-                                Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n",
-                                     ne_hi, ait, thi, chi);
-                                uint32_t mismatch = Emit_Temp(cg);
-                                Emit(cg, "  %%t%u = or i1 %%t%u, %%t%u\n",
-                                     mismatch, ne_lo, ne_hi);
-                                uint32_t ok_lbl = cg->label_id++;
-                                uint32_t fail_lbl = cg->label_id++;
-                                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
-                                     mismatch, fail_lbl, ok_lbl);
-                                cg->block_terminated = true;
-                                Emit_Label_Here(cg, fail_lbl);
-                                Emit_Raise_Constraint_Error(cg,
-                                    "positional sub-aggregate bounds vs dynamic constraint");
-                                Emit_Label_Here(cg, ok_lbl);
-                            }
-                        } else {
-                            /* Direct aggregate: count check only. */
+                        {
+                            /* RM 4.3.2(5): For a positional aggregate of a constrained
+                             * subtype, only the count must match — the lower bound is
+                             * determined by the constraint. */
                             uint32_t n_pos = Emit_Static_Int(cg,
                                 (int128_t)ac.n_positional, ait);
                             uint32_t con_len = Emit_Temp(cg);
@@ -26621,6 +26657,28 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                             Emit_Raise_Constraint_Error(cg,
                                 "positional aggregate count vs dynamic constraint");
                             Emit_Label_Here(cg, ok_lbl);
+                        }
+                        /* RM 4.3.2: Parenthesized aggregate — INDEX_SUBTYPE'FIRST
+                         * may differ from the runtime constraint lower bound. */
+                        if (node->aggregate.is_parenthesized && agg_type->base_type &&
+                            agg_type->base_type->array.index_count > 0 &&
+                            agg_type->base_type->array.indices[0].index_type) {
+                            Type_Info *idx_ty = agg_type->base_type->array.indices[0].index_type;
+                            uint32_t isf = (idx_ty->low_bound.kind == BOUND_INTEGER)
+                                ? Emit_Static_Int(cg, idx_ty->low_bound.int_value, ait)
+                                : Emit_Coerce(cg, Emit_Bound_Value(cg, &idx_ty->low_bound), ait);
+                            uint32_t ne = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n",
+                                 ne, ait, isf, clo);
+                            uint32_t ok2 = cg->label_id++;
+                            uint32_t fail2 = cg->label_id++;
+                            Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                                 ne, fail2, ok2);
+                            cg->block_terminated = true;
+                            Emit_Label_Here(cg, fail2);
+                            Emit_Raise_Constraint_Error(cg,
+                                "parenthesized aggregate bounds vs dynamic constraint");
+                            Emit_Label_Here(cg, ok2);
                         }
                     }
                     if (ac.has_named && !ac.has_others && agg_ndims == 1) {
@@ -27329,22 +27387,47 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             int128_t con_hi = Type_Bound_Value(agg_type->array.indices[0].high_bound);
 
             if (n_positional > 0 and not has_named and has_unconstrained_base) {
-                if (cg->in_agg_component > 0) {
-                    /* Sub-aggregate: true lower = index subtype FIRST (RM 4.3.2). */
-                    int128_t true_lo = idx_sub_lo;
-                    int128_t true_hi = true_lo + (int128_t)n_positional - 1;
-                    if (true_lo != con_lo or true_hi != con_hi) {
-                        Emit_Raise_Constraint_Error(cg, "positional aggregate bounds vs constraint");
-                        uint32_t cont = cg->label_id++;
-                        Emit_Label_Here(cg, cont);
-                    }
-                } else {
-                    /* Direct aggregate: bounds = constraint FIRST, check count. */
-                    int128_t expected = con_hi - con_lo + 1;
-                    if ((int128_t)n_positional != expected) {
-                        Emit_Raise_Constraint_Error(cg, "positional aggregate count vs constraint");
-                        uint32_t cont = cg->label_id++;
-                        Emit_Label_Here(cg, cont);
+                /* RM 4.3.2(5): Count must match constraint size. */
+                int128_t expected = con_hi - con_lo + 1;
+                if ((int128_t)n_positional != expected) {
+                    Emit_Raise_Constraint_Error(cg, "positional aggregate count vs constraint");
+                    uint32_t cont = cg->label_id++;
+                    Emit_Label_Here(cg, cont);
+                }
+                /* RM 4.3.2: A parenthesized aggregate ((a,b,c)) uses
+                 * INDEX_SUBTYPE'FIRST as lower bound, which may differ from
+                 * the constraint.  Detect and raise CONSTRAINT_ERROR. */
+                if (node->aggregate.is_parenthesized and agg_type->base_type) {
+                    Type_Info *base = agg_type->base_type;
+                    if (base->array.index_count > 0 and
+                        base->array.indices[0].index_type) {
+                        Type_Info *idx_ty = base->array.indices[0].index_type;
+                        if (idx_ty->low_bound.kind == BOUND_INTEGER) {
+                            if (idx_ty->low_bound.int_value != con_lo) {
+                                Emit_Raise_Constraint_Error(cg,
+                                    "parenthesized aggregate bounds vs constraint");
+                                uint32_t cont = cg->label_id++;
+                                Emit_Label_Here(cg, cont);
+                            }
+                        } else {
+                            /* Dynamic INDEX_SUBTYPE'FIRST: runtime comparison */
+                            const char *ait = Integer_Arith_Type(cg);
+                            uint32_t isf = Emit_Bound_Value(cg, &idx_ty->low_bound);
+                            isf = Emit_Coerce(cg, isf, ait);
+                            uint32_t clo_v = Emit_Static_Int(cg, con_lo, ait);
+                            uint32_t ne = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n",
+                                 ne, ait, isf, clo_v);
+                            uint32_t ok = cg->label_id++;
+                            uint32_t fail = cg->label_id++;
+                            Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                                 ne, fail, ok);
+                            cg->block_terminated = true;
+                            Emit_Label_Here(cg, fail);
+                            Emit_Raise_Constraint_Error(cg,
+                                "parenthesized aggregate bounds vs constraint (dyn idx)");
+                            Emit_Label_Here(cg, ok);
+                        }
                     }
                 }
             }
@@ -27393,29 +27476,11 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                     clo = Emit_Coerce(cg, clo, ait);
                     uint32_t chi = Emit_Bound_Value(cg, &agg_type->array.indices[0].high_bound);
                     chi = Emit_Coerce(cg, chi, ait);
-                    if (cg->in_agg_component > 0) {
-                        /* Sub-aggregate: true bounds start at index subtype FIRST. */
-                        int128_t true_lo = idx_sub_lo;
-                        int128_t true_hi = true_lo + (int128_t)n_positional - 1;
-                        uint32_t tlo = Emit_Static_Int(cg, true_lo, ait);
-                        uint32_t thi = Emit_Static_Int(cg, true_hi, ait);
-                        uint32_t ne_lo = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n", ne_lo, ait, tlo, clo);
-                        uint32_t ne_hi = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n", ne_hi, ait, thi, chi);
-                        uint32_t mismatch = Emit_Temp(cg);
-                        Emit(cg, "  %%t%u = or i1 %%t%u, %%t%u\n", mismatch, ne_lo, ne_hi);
-                        uint32_t ok_lbl = cg->label_id++;
-                        uint32_t fail_lbl = cg->label_id++;
-                        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
-                             mismatch, fail_lbl, ok_lbl);
-                        cg->block_terminated = true;
-                        Emit_Label_Here(cg, fail_lbl);
-                        Emit_Raise_Constraint_Error(cg,
-                            "positional sub-aggregate bounds vs dynamic constraint");
-                        Emit_Label_Here(cg, ok_lbl);
-                    } else {
-                        /* Direct aggregate: count check only. */
+                    {
+                        /* RM 4.3.2(5): For a positional aggregate of a constrained
+                         * subtype (whether sub-aggregate or direct), only the count
+                         * must match the constraint — the lower bound is determined
+                         * by the constraint, not by INDEX_SUBTYPE'FIRST. */
                         uint32_t n_pos = Emit_Static_Int(cg, (int128_t)n_positional, ait);
                         uint32_t cdiff = Emit_Temp(cg);
                         Emit(cg, "  %%t%u = sub %s %%t%u, %%t%u\n", cdiff, ait, chi, clo);
@@ -27432,6 +27497,27 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                         Emit_Raise_Constraint_Error(cg,
                             "positional aggregate count vs dynamic constraint");
                         Emit_Label_Here(cg, ok_lbl);
+                    }
+                    /* Parenthesized: INDEX_SUBTYPE'FIRST vs runtime constraint */
+                    if (node->aggregate.is_parenthesized && agg_type->base_type &&
+                        agg_type->base_type->array.index_count > 0 &&
+                        agg_type->base_type->array.indices[0].index_type) {
+                        Type_Info *idx_ty = agg_type->base_type->array.indices[0].index_type;
+                        uint32_t isf = (idx_ty->low_bound.kind == BOUND_INTEGER)
+                            ? Emit_Static_Int(cg, idx_ty->low_bound.int_value, ait)
+                            : Emit_Coerce(cg, Emit_Bound_Value(cg, &idx_ty->low_bound), ait);
+                        uint32_t ne = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n",
+                             ne, ait, isf, clo);
+                        uint32_t ok2 = cg->label_id++;
+                        uint32_t fail2 = cg->label_id++;
+                        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                             ne, fail2, ok2);
+                        cg->block_terminated = true;
+                        Emit_Label_Here(cg, fail2);
+                        Emit_Raise_Constraint_Error(cg,
+                            "parenthesized aggregate bounds vs dynamic constraint (static path)");
+                        Emit_Label_Here(cg, ok2);
                     }
                 }
                 if (has_choice_lo and has_choice_hi and not early_has_others
@@ -27472,10 +27558,14 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
          * For composite elements, Generate_Expression returns a ptr to an alloca,
          * so we must use memcpy to copy element data instead of store.
          * Multi-dimensional arrays are always composite at the outer level
-         * because each "element" is a row (inner array). */
+         * because each "element" is a row (inner array).
+         * Exception: fat-pointer elements ({ ptr, ptr }) are stored via
+         * `store` like scalars, not via memcpy. */
         Type_Info *elem_ti = agg_type->array.element_type;
         bool elem_is_composite = multidim or (elem_ti and (Type_Is_Record(elem_ti) or
             Type_Is_Constrained_Array(elem_ti)));
+        /* Fat-pointer elements are value-typed { ptr, ptr }; store, don't memcpy. */
+        if (elem_is_fat) elem_is_composite = false;
 
         if (elem_is_composite) {
             /* Allocate as byte array so the size matches the actual data layout */
@@ -31831,6 +31921,13 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             Emit_Symbol_Name(cg, sym);
             Emit(cg, " = getelementptr i8, ptr %%__frame_base, i64 %lld\n",
                  (long long)offset);
+        } else if (elem_has_dynamic_size and is_constrained_array and array_count > 0) {
+            /* Constrained outer array whose element type is a dynamic-bound
+             * array/string: each element is stored as a fat pointer pair.
+             * Allocate [N x { ptr, ptr }] so each slot holds one fat ptr. */
+            Emit(cg, "  %%");
+            Emit_Symbol_Name(cg, sym);
+            Emit(cg, " = alloca [%s x " FAT_PTR_TYPE "]\n", I128_Decimal(array_count));
         } else if (sym->needs_fat_ptr_storage or
                    (is_any_array and Type_Has_Dynamic_Bounds(ty)) or
                    elem_has_dynamic_size) {
