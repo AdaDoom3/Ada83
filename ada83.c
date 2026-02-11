@@ -15919,11 +15919,20 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                                     if (ps->param_spec.param_type) {
                                         Resolve_Expression(sm, ps->param_spec.param_type);
                                     }
+                                    /* Resolve default expression if present */
+                                    if (ps->param_spec.default_expr) {
+                                        if (ps->param_spec.default_expr->kind == NK_AGGREGATE &&
+                                            !ps->param_spec.default_expr->type &&
+                                            ps->param_spec.param_type)
+                                            ps->param_spec.default_expr->type = ps->param_spec.param_type->type;
+                                        Resolve_Expression(sm, ps->param_spec.default_expr);
+                                    }
                                     for (uint32_t k = 0; k < ps->param_spec.names.count; k++) {
                                         entry_sym->parameters[pi].name = ps->param_spec.names.items[k]->string_val.text;
                                         entry_sym->parameters[pi].param_type = ps->param_spec.param_type ?
                                             ps->param_spec.param_type->type : NULL;
                                         entry_sym->parameters[pi].mode = (Parameter_Mode)ps->param_spec.mode;
+                                        entry_sym->parameters[pi].default_value = ps->param_spec.default_expr;
                                         pi++;
                                     }
                                 }
@@ -31038,13 +31047,32 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                 /* Selected component - might be a parameterless entry call like T.E1 */
                 Symbol *entry_sym = target->symbol;
                 if (entry_sym and entry_sym->kind == SYMBOL_ENTRY) {
-                    /* Entry call without parameters - generate rendezvous */
-                    Emit(cg, "  ; Entry call (no params): %.*s\n",
+                    /* Entry call without explicit arguments — if the entry has
+                     * parameters with defaults, evaluate them and pass a proper
+                     * params block (RM 9.5: defaults evaluated at call site). */
+                    Emit(cg, "  ; Entry call: %.*s\n",
                          (int)entry_sym->name.length, entry_sym->name.data);
 
-                    /* Allocate empty parameter block */
+                    uint32_t n_params = entry_sym->parameter_count;
                     uint32_t param_block = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = inttoptr i64 0 to ptr  ; no parameters\n", param_block);
+                    if (n_params > 0) {
+                        Emit(cg, "  %%t%u = alloca [%u x i64]  ; entry default params\n",
+                             param_block, n_params);
+                        for (uint32_t p = 0; p < n_params; p++) {
+                            Syntax_Node *def = entry_sym->parameters[p].default_value;
+                            if (def) {
+                                uint32_t val = Generate_Expression(cg, def);
+                                const char *vt = Expression_Llvm_Type(cg, def);
+                                val = Emit_Convert(cg, val, vt, "i64");
+                                uint32_t pp = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = getelementptr [%u x i64], ptr %%t%u, i64 0, i64 %u\n",
+                                     pp, n_params, param_block, p);
+                                Emit(cg, "  store i64 %%t%u, ptr %%t%u\n", val, pp);
+                            }
+                        }
+                    } else {
+                        Emit(cg, "  %%t%u = inttoptr i64 0 to ptr  ; no parameters\n", param_block);
+                    }
 
                     /* Get task object from prefix.
                      * For access-to-task, load the pointer (implicit dereference).
@@ -31537,7 +31565,20 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                 Emit(cg, "  %%t%u = call ptr @__ada_accept_wait(i64 %%t%u)\n",
                      caller_ptr, entry_idx_64);
 
-                /* Generate parameters - allocate space and copy from caller's parameter block */
+                /* Extract params pointer from rendezvous record.
+                 * RV layout: { ptr task, i64 entry_idx, ptr params, i8 complete, ptr next }
+                 * Params is at offset 2 (the third pointer-sized slot). */
+                uint32_t params_slot = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = getelementptr ptr, ptr %%t%u, i64 2\n",
+                     params_slot, caller_ptr);
+                uint32_t params_ptr = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load ptr, ptr %%t%u  ; params from rv record\n",
+                     params_ptr, params_slot);
+
+                /* Generate parameters - allocate space and copy from caller's parameter block.
+                 * For composite types (arrays/records), allocate the full type size
+                 * and memcpy from the pointer in the params block.
+                 * For scalars, load the i64 value directly. */
                 uint32_t param_idx = 0;
                 for (uint32_t i = 0; i < node->accept_stmt.parameters.count; i++) {
                     Syntax_Node *param = node->accept_stmt.parameters.items[i];
@@ -31545,22 +31586,130 @@ static void Generate_Statement(Code_Generator *cg, Syntax_Node *node) {
                         for (uint32_t j = 0; j < param->param_spec.names.count; j++) {
                             Syntax_Node *name = param->param_spec.names.items[j];
                             if (name and name->symbol) {
-                                /* Allocate space for the parameter */
-                                Emit(cg, "  %%");
-                                Emit_Symbol_Name(cg, name->symbol);
-                                Emit(cg, " = alloca i64, align 8\n");
+                                Type_Info *pt = name->symbol->type;
+                                bool is_array = pt && pt->kind == TYPE_ARRAY;
+                                uint32_t type_size = pt ? pt->size : 0;
 
-                                /* Load value from caller's parameter block */
-                                uint32_t param_ptr = Emit_Temp(cg);
+                                /* Load source pointer from params block */
+                                uint32_t pp = Emit_Temp(cg);
                                 Emit(cg, "  %%t%u = getelementptr i64, ptr %%t%u, i64 %u\n",
-                                     param_ptr, caller_ptr, param_idx);
-                                uint32_t param_val = Emit_Temp(cg);
-                                Emit(cg, "  %%t%u = load i64, ptr %%t%u\n", param_val, param_ptr);
+                                     pp, params_ptr, param_idx);
+                                uint32_t pv = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = load i64, ptr %%t%u\n", pv, pp);
 
-                                /* Store to allocated space */
-                                Emit(cg, "  store i64 %%t%u, ptr %%", param_val);
-                                Emit_Symbol_Name(cg, name->symbol);
-                                Emit(cg, "\n");
+                                if (is_array) {
+                                    /* Array parameter: alloca correct size, memcpy from source.
+                                     * For static sizes, use compile-time constant.
+                                     * For dynamic sizes (bounds are BOUND_EXPR), compute at runtime. */
+                                    uint32_t src = Emit_Temp(cg);
+                                    Emit(cg, "  %%t%u = inttoptr i64 %%t%u to ptr\n", src, pv);
+
+                                    if (type_size > 0) {
+                                        /* Static size known at compile time */
+                                        Emit(cg, "  %%");
+                                        Emit_Symbol_Name(cg, name->symbol);
+                                        Emit(cg, " = alloca [%u x i8], align 8\n", type_size);
+                                        Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%");
+                                        Emit_Symbol_Name(cg, name->symbol);
+                                        Emit(cg, ", ptr %%t%u, i64 %u, i1 false)\n",
+                                             src, type_size);
+                                    } else {
+                                        /* Dynamic bounds: src is caller's fat ptr { data_ptr, bounds_ptr }.
+                                         * Create a proper local fat pointer so 'LENGTH etc. work. */
+                                        const char *iat = Integer_Arith_Type(cg);
+                                        uint32_t ndims = pt->array.index_count;
+                                        uint32_t elem_sz = pt->array.element_type ?
+                                                           pt->array.element_type->size : 4;
+                                        if (elem_sz == 0) elem_sz = 4;
+
+                                        /* 1. Dereference caller's fat ptr to get data_ptr */
+                                        uint32_t dp_gep = Emit_Temp(cg);
+                                        Emit(cg, "  %%t%u = getelementptr { ptr, ptr }, ptr %%t%u, i32 0, i32 0\n",
+                                             dp_gep, src);
+                                        uint32_t data_ptr = Emit_Temp(cg);
+                                        Emit(cg, "  %%t%u = load ptr, ptr %%t%u\n", data_ptr, dp_gep);
+
+                                        /* 2. Evaluate type bounds, compute data byte size */
+                                        uint32_t lo_regs[16], hi_regs[16];
+                                        uint32_t total = 0;
+                                        for (uint32_t d = 0; d < ndims && d < 16; d++) {
+                                            lo_regs[d] = Emit_Bound_Value(cg,
+                                                &pt->array.indices[d].low_bound);
+                                            hi_regs[d] = Emit_Bound_Value(cg,
+                                                &pt->array.indices[d].high_bound);
+                                            uint32_t dlen = Emit_Length_From_Bounds(cg,
+                                                lo_regs[d], hi_regs[d], iat);
+                                            if (d == 0) { total = dlen; }
+                                            else {
+                                                uint32_t p2 = Emit_Temp(cg);
+                                                Emit(cg, "  %%t%u = mul %s %%t%u, %%t%u\n",
+                                                     p2, iat, total, dlen);
+                                                total = p2;
+                                            }
+                                        }
+                                        uint32_t bsz = Emit_Temp(cg);
+                                        Emit(cg, "  %%t%u = mul %s %%t%u, %u\n",
+                                             bsz, iat, total, elem_sz);
+                                        uint32_t neg_chk = Emit_Temp(cg);
+                                        Emit(cg, "  %%t%u = icmp slt %s %%t%u, 0\n",
+                                             neg_chk, iat, bsz);
+                                        uint32_t csz = Emit_Temp(cg);
+                                        Emit(cg, "  %%t%u = select i1 %%t%u, %s 0, %s %%t%u\n",
+                                             csz, neg_chk, iat, iat, bsz);
+
+                                        /* 3. Alloca for local data copy, memcpy from data_ptr */
+                                        uint32_t data_alloca = Emit_Temp(cg);
+                                        Emit(cg, "  %%t%u = alloca i8, %s %%t%u, align 8\n",
+                                             data_alloca, iat, csz);
+                                        uint32_t csz64 = Emit_Extend_To_I64(cg, csz, iat);
+                                        Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
+                                             data_alloca, data_ptr, csz64);
+
+                                        /* 4. Alloca for local bounds struct [2*ndims x i32] */
+                                        uint32_t bounds_alloca = Emit_Temp(cg);
+                                        Emit(cg, "  %%t%u = alloca [%u x i32]\n",
+                                             bounds_alloca, 2 * ndims);
+                                        for (uint32_t d = 0; d < ndims && d < 16; d++) {
+                                            uint32_t lo_slot = Emit_Temp(cg);
+                                            Emit(cg, "  %%t%u = getelementptr i32, ptr %%t%u, i32 %u\n",
+                                                 lo_slot, bounds_alloca, d * 2);
+                                            Emit(cg, "  store %s %%t%u, ptr %%t%u\n",
+                                                 iat, lo_regs[d], lo_slot);
+                                            uint32_t hi_slot = Emit_Temp(cg);
+                                            Emit(cg, "  %%t%u = getelementptr i32, ptr %%t%u, i32 %u\n",
+                                                 hi_slot, bounds_alloca, d * 2 + 1);
+                                            Emit(cg, "  store %s %%t%u, ptr %%t%u\n",
+                                                 iat, hi_regs[d], hi_slot);
+                                        }
+
+                                        /* 5. Create fat pointer variable { data_ptr, bounds_ptr } */
+                                        Emit(cg, "  %%");
+                                        Emit_Symbol_Name(cg, name->symbol);
+                                        Emit(cg, " = alloca { ptr, ptr }, align 8\n");
+                                        uint32_t fp_d = Emit_Temp(cg);
+                                        Emit(cg, "  %%t%u = getelementptr { ptr, ptr }, ptr %%",
+                                             fp_d);
+                                        Emit_Symbol_Name(cg, name->symbol);
+                                        Emit(cg, ", i32 0, i32 0\n");
+                                        Emit(cg, "  store ptr %%t%u, ptr %%t%u\n",
+                                             data_alloca, fp_d);
+                                        uint32_t fp_b = Emit_Temp(cg);
+                                        Emit(cg, "  %%t%u = getelementptr { ptr, ptr }, ptr %%",
+                                             fp_b);
+                                        Emit_Symbol_Name(cg, name->symbol);
+                                        Emit(cg, ", i32 0, i32 1\n");
+                                        Emit(cg, "  store ptr %%t%u, ptr %%t%u\n",
+                                             bounds_alloca, fp_b);
+                                    }
+                                } else {
+                                    /* Scalar: alloca i64, store value directly */
+                                    Emit(cg, "  %%");
+                                    Emit_Symbol_Name(cg, name->symbol);
+                                    Emit(cg, " = alloca i64, align 8\n");
+                                    Emit(cg, "  store i64 %%t%u, ptr %%", pv);
+                                    Emit_Symbol_Name(cg, name->symbol);
+                                    Emit(cg, "\n");
+                                }
 
                                 param_idx++;
                             }
