@@ -8651,10 +8651,9 @@ static Type_Info *Resolve_Binary_Op(Symbol_Manager *sm, Syntax_Node *node) {
                     Report_Error(node->location, "concatenation requires string, array, or character");
                 }
                 /* Result type: prefer user-defined array type over predefined STRING.
-                 * Per RM 4.5.3, concatenation returns the array type. String literals
-                 * are ambiguous and should adopt the context type. */
+                 * Per RM 4.5.3, concatenation returns the array type.
+                 * For element & element, the result type comes from context. */
                 if (Type_Is_Array_Like(left_type) and left_type->kind == TYPE_ARRAY) {
-                    /* User-defined array type takes precedence */
                     node->type = left_type;
                 } else if (Type_Is_Array_Like(right_type) and right_type->kind == TYPE_ARRAY) {
                     node->type = right_type;
@@ -9614,6 +9613,27 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
 
         case NK_UNARY_OP:
             node->type = Resolve_Expression(sm, node->unary.operand);
+            /* Check for user-defined unary operators (RM 4.5.6, 6.7) */
+            if (node->unary.op == TK_PLUS or node->unary.op == TK_MINUS or
+                node->unary.op == TK_ABS or node->unary.op == TK_NOT) {
+                String_Slice op_name = {0};
+                if (node->unary.op == TK_PLUS) op_name = S("+");
+                else if (node->unary.op == TK_MINUS) op_name = S("-");
+                else if (node->unary.op == TK_ABS) op_name = S("abs");
+                else if (node->unary.op == TK_NOT) op_name = S("not");
+                Type_Info *operand_type = node->unary.operand ? node->unary.operand->type : NULL;
+                if (op_name.length > 0 and operand_type) {
+                    Type_Info *arg_types[1] = { operand_type };
+                    Argument_Info args = { .types = arg_types, .count = 1, .names = NULL };
+                    Symbol *user_op = Resolve_Overloaded_Call(sm, op_name, &args, NULL);
+                    if (user_op and user_op->kind == SYMBOL_FUNCTION and
+                        not user_op->is_predefined) {
+                        node->symbol = user_op;
+                        node->type = user_op->return_type;
+                        return node->type;
+                    }
+                }
+            }
             if (node->unary.op == TK_NOT) {
                 /* NOT preserves array-of-BOOLEAN type (RM 4.5.6);
                  * for scalar operands it returns BOOLEAN. */
@@ -9698,9 +9718,14 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                 String_Slice attr = node->attribute.name;
 
                 /* Implicit dereference for access types (RM 4.1(3))
-                 * A1'FIRST where A1 is access-to-array is equivalent to A1.ALL'FIRST */
+                 * A1'FIRST where A1 is access-to-array is equivalent to A1.ALL'FIRST
+                 * But NOT for type-level attributes like SIZE, STORAGE_SIZE, BASE (RM 13.7.2) */
                 if (Type_Is_Access(prefix_type) and
-                    prefix_type->access.designated_type) {
+                    prefix_type->access.designated_type and
+                    not Slice_Equal_Ignore_Case(attr, S("SIZE")) and
+                    not Slice_Equal_Ignore_Case(attr, S("STORAGE_SIZE")) and
+                    not Slice_Equal_Ignore_Case(attr, S("BASE")) and
+                    not Slice_Equal_Ignore_Case(attr, S("ADDRESS"))) {
                     prefix_type = prefix_type->access.designated_type;
                 }
 
@@ -10261,6 +10286,8 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                 derived->parent_type = parent;
                 derived->size = parent->size;
                 derived->alignment = parent->alignment;
+                derived->specified_bit_size = parent->specified_bit_size;
+                derived->storage_size = parent->storage_size;
                 derived->low_bound = parent->low_bound;
                 derived->high_bound = parent->high_bound;
 
@@ -18616,6 +18643,11 @@ static inline const char *Expression_Llvm_Type(const Code_Generator *cg, Syntax_
                 return Wider_Int_Type(cg, lt, rt);
         }
     }
+    /* User-defined operator (unary or binary): return type matches function signature */
+    if (node and node->symbol and node->symbol->kind == SYMBOL_FUNCTION and
+        not node->symbol->is_predefined and node->symbol->return_type) {
+        return Type_To_Llvm(node->symbol->return_type);
+    }
     /* Unary integer arithmetic codegen uses operand's native type. */
     if (node and node->kind == NK_UNARY_OP and
         node->type and not Type_Is_Float_Representation(node->type) and
@@ -22746,6 +22778,36 @@ static uint32_t Generate_Binary_Op(Code_Generator *cg, Syntax_Node *node) {
 }
 
 static uint32_t Generate_Unary_Op(Code_Generator *cg, Syntax_Node *node) {
+    /* User-defined unary operator: generate function call (RM 6.7) */
+    if (node->symbol and node->symbol->kind == SYMBOL_FUNCTION and
+        not node->symbol->is_predefined) {
+        /* Resolve through parent_operation for derived operators (RM 3.4) */
+        Symbol *call_target = node->symbol->parent_operation ?
+            node->symbol->parent_operation : node->symbol;
+        uint32_t operand = Generate_Expression(cg, node->unary.operand);
+        const char *op_llvm = Expression_Llvm_Type(cg, node->unary.operand);
+        Type_Info *p0_type = (call_target->parameter_count > 0) ?
+            call_target->parameters[0].param_type : NULL;
+        const char *p0_llvm = p0_type ? Type_To_Llvm(p0_type) : op_llvm;
+        operand = Emit_Convert(cg, operand, op_llvm, p0_llvm);
+        const char *ret_type = call_target->return_type ?
+            Type_To_Llvm(call_target->return_type) : "i32";
+        bool callee_is_nested = Subprogram_Needs_Static_Chain(call_target);
+        uint32_t frame_pre = callee_is_nested ?
+            Precompute_Nested_Frame_Arg(cg, call_target) : 0;
+        uint32_t result = Emit_Temp(cg);
+        Emit(cg, "  %%t%u = call %s @", result, ret_type);
+        Emit_Symbol_Name(cg, call_target);
+        Emit(cg, "(");
+        if (callee_is_nested) {
+            Emit_Nested_Frame_Arg(cg, call_target, frame_pre);
+            Emit(cg, ", ");
+        }
+        Emit(cg, "%s %%t%u)\n", p0_llvm, operand);
+        Temp_Set_Type(cg, result, ret_type);
+        return result;
+    }
+
     uint32_t operand = Generate_Expression(cg, node->unary.operand);
     uint32_t t = Emit_Temp(cg);
     Type_Info *op_type_info = node->unary.operand->type;
@@ -24896,8 +24958,13 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
         }
     }
 
-    /* Implicit dereference for access-to-array (RM 4.1(3)) */
-    if (Type_Is_Access(prefix_type) and prefix_type->access.designated_type)
+    /* Implicit dereference for access-to-array (RM 4.1(3))
+     * But NOT for type-level attributes like SIZE, STORAGE_SIZE, BASE (RM 13.7.2) */
+    if (Type_Is_Access(prefix_type) and prefix_type->access.designated_type and
+        not Slice_Equal_Ignore_Case(attr, S("SIZE")) and
+        not Slice_Equal_Ignore_Case(attr, S("STORAGE_SIZE")) and
+        not Slice_Equal_Ignore_Case(attr, S("BASE")) and
+        not Slice_Equal_Ignore_Case(attr, S("ADDRESS")))
         prefix_type = prefix_type->access.designated_type;
 
     /* Determine if prefix needs runtime bounds (fat pointer) */
@@ -26227,15 +26294,55 @@ static uint32_t Generate_Attribute(Code_Generator *cg, Syntax_Node *node) {
 
     if (Slice_Equal_Ignore_Case(attr, S("STORAGE_SIZE"))) {
         /* T'STORAGE_SIZE (RM 13.7.1) — return user-specified value if set,
-         * otherwise return a reasonable implementation-defined default. */
+         * otherwise return a reasonable implementation-defined default.
+         * For derived access types, walk parent chain to find the clause. */
         int64_t ss = 0;
-        if (prefix_type and prefix_type->storage_size != 0)
-            ss = prefix_type->storage_size;
+        Type_Info *st = prefix_type;
+        while (st and st->storage_size == 0 and st->parent_type)
+            st = st->parent_type;
+        if (st and st->storage_size != 0)
+            ss = st->storage_size;
         else if (prefix_type)
             ss = (int64_t)prefix_type->size * 8;
         Emit(cg, "  %%t%u = add %s 0, %lld  ; 'STORAGE_SIZE\n", t, Integer_Arith_Type(cg),
              (long long)ss);
         return t;
+    }
+
+    /* Record component representation attributes (RM 13.7.2):
+     * X.C'FIRST_BIT, X.C'LAST_BIT, X.C'POSITION
+     * Prefix must be a selected component of a record. */
+    if (Slice_Equal_Ignore_Case(attr, S("FIRST_BIT")) or
+        Slice_Equal_Ignore_Case(attr, S("LAST_BIT")) or
+        Slice_Equal_Ignore_Case(attr, S("POSITION"))) {
+        Syntax_Node *prefix = node->attribute.prefix;
+        if (prefix and prefix->kind == NK_SELECTED) {
+            /* Determine the record type from the prefix of the selected component */
+            Type_Info *rec_type = prefix->selected.prefix ? prefix->selected.prefix->type : NULL;
+            if (Type_Is_Access(rec_type) and rec_type->access.designated_type)
+                rec_type = rec_type->access.designated_type;
+            while (rec_type and not Type_Is_Record(rec_type) and rec_type->parent_type)
+                rec_type = rec_type->parent_type;
+            String_Slice comp_name = prefix->selected.selector;
+            int64_t result = 0;
+            if (rec_type and Type_Is_Record(rec_type)) {
+                for (uint32_t i = 0; i < rec_type->record.component_count; i++) {
+                    if (Slice_Equal_Ignore_Case(rec_type->record.components[i].name, comp_name)) {
+                        Component_Info *ci = &rec_type->record.components[i];
+                        if (Slice_Equal_Ignore_Case(attr, S("FIRST_BIT")))
+                            result = ci->bit_offset;
+                        else if (Slice_Equal_Ignore_Case(attr, S("LAST_BIT")))
+                            result = ci->bit_offset + (ci->bit_size > 0 ? ci->bit_size : ci->component_type ? ci->component_type->size * 8 : 0) - 1;
+                        else /* POSITION */
+                            result = ci->byte_offset;
+                        break;
+                    }
+                }
+            }
+            Emit(cg, "  %%t%u = add %s 0, %lld  ; '%.*s\n", t, Integer_Arith_Type(cg),
+                 (long long)result, (int)attr.length, attr.data);
+            return t;
+        }
     }
 
     /* Unhandled attribute */
