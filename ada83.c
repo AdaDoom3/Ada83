@@ -7290,14 +7290,21 @@ static void Symbol_Add(Symbol_Manager *sm, Symbol *sym) {
                 break;  /* Proceed to add the variable - it will shadow the type */
             }
             /* Deferred constant completion (RM 7.4): update existing symbol's
-             * declaration to the full declaration which has the initializer. */
+             * declaration to the full declaration which has the initializer.
+             * Also update the AST name nodes to point to the existing symbol
+             * so code generation uses the same alloca for both. */
             if (existing->kind == SYMBOL_CONSTANT and sym->kind == SYMBOL_CONSTANT
                 and sym->declaration and sym->declaration->kind == NK_OBJECT_DECL
                 and sym->declaration->object_decl.init) {
                 existing->declaration = sym->declaration;
                 if (sym->type) existing->type = sym->type;
+                for (uint32_t ni = 0; ni < sym->declaration->object_decl.names.count; ni++) {
+                    Syntax_Node *nn = sym->declaration->object_decl.names.items[ni];
+                    if (nn) nn->symbol = existing;
+                }
                 return;
             }
+            /* Same symbol already exists at this scope - skip */
             /* Same symbol already exists at this scope - skip */
             return;
         }
@@ -19007,18 +19014,29 @@ static void Emit_Subtype_Constraint_Compat_Check(Code_Generator *cg, Type_Info *
                        base->high_bound.kind == BOUND_EXPR);
     if (!base_lo_ok || !base_hi_ok) return;
     const char *iat = Integer_Arith_Type(cg);
-    /* Emit base type bounds */
-    uint32_t blo = Emit_Bound_Value(cg, &base->low_bound);
-    uint32_t bhi = Emit_Bound_Value(cg, &base->high_bound);
+    /* Emit base type bounds — widen to iat for comparison */
+    const char *blo_t = NULL, *bhi_t = NULL;
+    uint32_t blo = Emit_Bound_Value_Typed(cg, &base->low_bound, &blo_t);
+    uint32_t bhi = Emit_Bound_Value_Typed(cg, &base->high_bound, &bhi_t);
+    if (!blo_t) blo_t = iat;
+    if (!bhi_t) bhi_t = iat;
+    blo = Emit_Convert(cg, blo, blo_t, iat);
+    bhi = Emit_Convert(cg, bhi, bhi_t, iat);
     /* Check each dynamic constraint bound against base range */
     if (lo_dyn) {
-        uint32_t clo = Emit_Bound_Value(cg, &ty->low_bound);
+        const char *clo_t = NULL;
+        uint32_t clo = Emit_Bound_Value_Typed(cg, &ty->low_bound, &clo_t);
+        if (!clo_t) clo_t = iat;
+        clo = Emit_Convert(cg, clo, clo_t, iat);
         uint32_t c = Emit_Temp(cg);
         Emit(cg, "  %%t%u = icmp slt %s %%t%u, %%t%u\n", c, iat, clo, blo);
         Emit_Check_With_Raise(cg, c, true, "subtype low bound");
     }
     if (hi_dyn) {
-        uint32_t chi = Emit_Bound_Value(cg, &ty->high_bound);
+        const char *chi_t = NULL;
+        uint32_t chi = Emit_Bound_Value_Typed(cg, &ty->high_bound, &chi_t);
+        if (!chi_t) chi_t = iat;
+        chi = Emit_Convert(cg, chi, chi_t, iat);
         uint32_t c = Emit_Temp(cg);
         Emit(cg, "  %%t%u = icmp sgt %s %%t%u, %%t%u\n", c, iat, chi, bhi);
         Emit_Check_With_Raise(cg, c, true, "subtype high bound");
@@ -32798,6 +32816,32 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                  * qualified expression, type conversion, etc.).  Generate_Expression
                  * returns a ptr to the result; memcpy into the variable.  RM 3.3.1 */
                 uint32_t init_ptr = Generate_Expression(cg, node->object_decl.init);
+                /* RM 3.3.2: If target has discriminant constraints, verify that the
+                 * initial value's discriminants match.  Raise CONSTRAINT_ERROR on
+                 * mismatch before the memcpy. */
+                if (ty->record.has_disc_constraints and ty->record.disc_constraint_values) {
+                    for (uint32_t di = 0; di < ty->record.discriminant_count; di++) {
+                        Component_Info *dc = &ty->record.components[di];
+                        const char *dt = Type_To_Llvm(dc->component_type);
+                        uint32_t sdp = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
+                             sdp, init_ptr, dc->byte_offset);
+                        uint32_t sv = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; init disc %.*s\n",
+                             sv, dt, sdp, (int)dc->name.length, dc->name.data);
+                        uint32_t cv;
+                        if (ty->record.disc_constraint_exprs and
+                            ty->record.disc_constraint_exprs[di]) {
+                            cv = Generate_Expression(cg, ty->record.disc_constraint_exprs[di]);
+                            cv = Emit_Coerce_Default_Int(cg, cv, dt);
+                        } else {
+                            cv = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add %s 0, %lld\n", cv, dt,
+                                 (long long)ty->record.disc_constraint_values[di]);
+                        }
+                        Emit_Discriminant_Check(cg, sv, cv, dt, ty);
+                    }
+                }
                 if (record_size > 0) {
                     Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%");
                     Emit_Symbol_Name(cg, sym);
@@ -32846,6 +32890,80 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     Emit(cg, "  %%t%u = fdiv %s %%t%u, %%t%u  ; float/SMALL for fixed-point\n",
                          div_t, src_type_str, init, small_t);
                     init = div_t;
+                }
+
+                /* RM 4.8(6): Access type constraint check.  When assigning
+                 * an allocator result to a constrained access type variable,
+                 * verify that the designated object's discriminants or bounds
+                 * match the access subtype's constraints. */
+                if (ty and Type_Is_Access(ty) and ty->access.designated_type) {
+                    Type_Info *des = ty->access.designated_type;
+                    /* Check discriminant constraints on designated record type */
+                    if (des->kind == TYPE_RECORD and des->record.has_disc_constraints
+                        and des->record.disc_constraint_values
+                        and des->record.discriminant_count > 0) {
+                        /* init is the access value (ptr); null check first */
+                        uint32_t is_nul = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = icmp eq ptr %%t%u, null\n", is_nul, init);
+                        uint32_t lbl_chk = cg->label_id++;
+                        uint32_t lbl_end = cg->label_id++;
+                        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                             is_nul, lbl_end, lbl_chk);
+                        Emit(cg, "L%u:\n", lbl_chk);
+                        for (uint32_t di = 0; di < des->record.discriminant_count; di++) {
+                            Component_Info *dc = &des->record.components[di];
+                            const char *dt = Type_To_Llvm(dc->component_type);
+                            uint32_t dp = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
+                                 dp, init, dc->byte_offset);
+                            uint32_t dv = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; access disc %.*s\n",
+                                 dv, dt, dp, (int)dc->name.length, dc->name.data);
+                            uint32_t cv;
+                            if (des->record.disc_constraint_exprs and
+                                des->record.disc_constraint_exprs[di]) {
+                                cv = Generate_Expression(cg, des->record.disc_constraint_exprs[di]);
+                                cv = Emit_Coerce_Default_Int(cg, cv, dt);
+                            } else {
+                                cv = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = add %s 0, %lld\n", cv, dt,
+                                     (long long)des->record.disc_constraint_values[di]);
+                            }
+                            Emit_Discriminant_Check(cg, dv, cv, dt, des);
+                        }
+                        Emit(cg, "  br label %%L%u\n", lbl_end);
+                        Emit(cg, "L%u:\n", lbl_end);
+                    }
+                    /* Check index constraints on designated array type */
+                    if (Type_Is_Array_Like(des) and des->array.is_constrained
+                        and des->array.index_count > 0) {
+                        const char *acc_llvm = src_type_str;
+                        bool is_fat = Llvm_Type_Is_Fat_Pointer(acc_llvm);
+                        if (is_fat) {
+                            /* Fat pointer — extract bounds and compare */
+                            const char *abt = Array_Bound_Llvm_Type(des);
+                            for (uint32_t xi = 0; xi < des->array.index_count; xi++) {
+                                Type_Bound *lo_b = &des->array.indices[xi].low_bound;
+                                Type_Bound *hi_b = &des->array.indices[xi].high_bound;
+                                /* Get expected bounds */
+                                uint32_t exp_lo = Emit_Bound_Value(cg, lo_b);
+                                uint32_t exp_hi = Emit_Bound_Value(cg, hi_b);
+                                /* Get actual bounds from fat pointer */
+                                uint32_t act_lo = Emit_Fat_Pointer_Low(cg, init, abt);
+                                uint32_t act_hi = Emit_Fat_Pointer_High(cg, init, abt);
+                                /* Check lo match */
+                                uint32_t clo = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n",
+                                     clo, abt, act_lo, exp_lo);
+                                Emit_Check_With_Raise(cg, clo, true, "access array lo bound");
+                                /* Check hi match */
+                                uint32_t chi = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n",
+                                     chi, abt, act_hi, exp_hi);
+                                Emit_Check_With_Raise(cg, chi, true, "access array hi bound");
+                            }
+                        }
+                    }
                 }
 
                 /* Convert if types differ, then store */
@@ -33264,6 +33382,250 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     }
                 }
             }
+            /* RM 3.3.2: After applying discriminant defaults, verify that
+             * discriminant-dependent component constraints are satisfiable.
+             * Load disc values directly from the record storage (disc symbols
+             * don't have standalone allocas). */
+            for (uint32_t ci = ty->record.discriminant_count;
+                 ci < ty->record.component_count; ci++) {
+                Component_Info *comp = &ty->record.components[ci];
+                Type_Info *ct = comp->component_type;
+                if (not ct) continue;
+                /* Check array component with disc-dependent bounds.
+                 * RM 3.6.1: Null ranges (low > high) need not satisfy
+                 * index subtype constraints, so guard with a null check. */
+                if (Type_Is_Array_Like(ct) and ct->array.index_count > 0) {
+                    for (uint32_t xi = 0; xi < ct->array.index_count; xi++) {
+                        Type_Bound *lo_bd = &ct->array.indices[xi].low_bound;
+                        Type_Bound *hi_bd = &ct->array.indices[xi].high_bound;
+                        Type_Info *idx_ty = ct->array.indices[xi].index_type;
+                        if (not idx_ty or not Type_Is_Scalar(idx_ty)) continue;
+                        bool lo_is_disc = (lo_bd->kind == BOUND_EXPR and lo_bd->expr
+                                           and lo_bd->expr->symbol);
+                        bool hi_is_disc = (hi_bd->kind == BOUND_EXPR and hi_bd->expr
+                                           and hi_bd->expr->symbol);
+                        if (not lo_is_disc and not hi_is_disc) continue;
+                        const char *iat = Type_To_Llvm(idx_ty);
+                        if (not iat or strlen(iat) == 0) iat = "i32";
+                        /* Resolve low bound value */
+                        uint32_t lo_val = 0;
+                        const char *lo_dt = iat;
+                        if (lo_is_disc) {
+                            for (uint32_t di = 0; di < ty->record.discriminant_count; di++) {
+                                if (not Slice_Equal_Ignore_Case(lo_bd->expr->symbol->name,
+                                        ty->record.components[di].name)) continue;
+                                Component_Info *dc = &ty->record.components[di];
+                                lo_dt = Type_To_Llvm(dc->component_type);
+                                uint32_t dp = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = getelementptr i8, ptr %%", dp);
+                                Emit_Symbol_Name(cg, sym);
+                                Emit(cg, ", i64 %u\n", dc->byte_offset);
+                                lo_val = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; disc %.*s lo\n",
+                                     lo_val, lo_dt, dp, (int)dc->name.length, dc->name.data);
+                                break;
+                            }
+                        } else if (lo_bd->kind == BOUND_INTEGER) {
+                            lo_val = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add %s 0, %lld\n", lo_val, iat,
+                                 (long long)lo_bd->int_value);
+                        }
+                        /* Resolve high bound value */
+                        uint32_t hi_val = 0;
+                        const char *hi_dt = iat;
+                        if (hi_is_disc) {
+                            for (uint32_t di = 0; di < ty->record.discriminant_count; di++) {
+                                if (not Slice_Equal_Ignore_Case(hi_bd->expr->symbol->name,
+                                        ty->record.components[di].name)) continue;
+                                Component_Info *dc = &ty->record.components[di];
+                                hi_dt = Type_To_Llvm(dc->component_type);
+                                uint32_t dp = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = getelementptr i8, ptr %%", dp);
+                                Emit_Symbol_Name(cg, sym);
+                                Emit(cg, ", i64 %u\n", dc->byte_offset);
+                                hi_val = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; disc %.*s hi\n",
+                                     hi_val, hi_dt, dp, (int)dc->name.length, dc->name.data);
+                                break;
+                            }
+                        } else if (hi_bd->kind == BOUND_INTEGER) {
+                            hi_val = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = add %s 0, %lld\n", hi_val, iat,
+                                 (long long)hi_bd->int_value);
+                        }
+                        if (lo_val == 0 or hi_val == 0) continue;
+                        /* Widen both to same comparison type */
+                        lo_val = Emit_Convert(cg, lo_val, lo_dt, iat);
+                        hi_val = Emit_Convert(cg, hi_val, hi_dt, iat);
+                        /* Skip check if null range (low > high) */
+                        uint32_t is_null = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = icmp sgt %s %%t%u, %%t%u\n",
+                             is_null, iat, lo_val, hi_val);
+                        uint32_t lbl_chk = cg->label_id++;
+                        uint32_t lbl_end = cg->label_id++;
+                        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                             is_null, lbl_end, lbl_chk);
+                        Emit(cg, "L%u:\n", lbl_chk);
+                        if (lo_is_disc)
+                            Emit_Constraint_Check(cg, lo_val, idx_ty, NULL);
+                        if (hi_is_disc)
+                            Emit_Constraint_Check(cg, hi_val, idx_ty, NULL);
+                        Emit(cg, "  br label %%L%u\n", lbl_end);
+                        Emit(cg, "L%u:\n", lbl_end);
+                    }
+                }
+                /* Check nested unconstrained discriminated record components.
+                 * If a component is an unconstrained disc record type with
+                 * default disc values, those defaults may create invalid
+                 * constraints on the nested record's own subcomponents.
+                 * E.g., REC4(D:=-1) has C:REC where REC(D:=-1) creates
+                 * invalid STRING(-1..3). */
+                if (ct->kind == TYPE_RECORD and ct->record.discriminant_count > 0
+                    and not ct->record.has_disc_constraints) {
+                    uint32_t nest_off = comp->byte_offset;
+                    for (uint32_t nci = ct->record.discriminant_count;
+                         nci < ct->record.component_count; nci++) {
+                        Component_Info *ncomp = &ct->record.components[nci];
+                        Type_Info *nct = ncomp->component_type;
+                        if (not nct) continue;
+                        /* Nested array with disc-dependent bounds.
+                         * Same null-range guard as the outer check. */
+                        if (Type_Is_Array_Like(nct) and nct->array.index_count > 0) {
+                            for (uint32_t xi = 0; xi < nct->array.index_count; xi++) {
+                                Type_Bound *nlo = &nct->array.indices[xi].low_bound;
+                                Type_Bound *nhi = &nct->array.indices[xi].high_bound;
+                                Type_Info *idx_ty2 = nct->array.indices[xi].index_type;
+                                if (not idx_ty2 or not Type_Is_Scalar(idx_ty2)) continue;
+                                bool nlo_d = (nlo->kind == BOUND_EXPR and nlo->expr
+                                              and nlo->expr->symbol);
+                                bool nhi_d = (nhi->kind == BOUND_EXPR and nhi->expr
+                                              and nhi->expr->symbol);
+                                if (not nlo_d and not nhi_d) continue;
+                                const char *niat = Type_To_Llvm(idx_ty2);
+                                if (not niat or strlen(niat) == 0) niat = "i32";
+                                /* Resolve low bound */
+                                uint32_t nlo_v = 0; const char *nlo_t = niat;
+                                if (nlo_d) {
+                                    for (uint32_t ndi = 0; ndi < ct->record.discriminant_count; ndi++) {
+                                        if (not Slice_Equal_Ignore_Case(nlo->expr->symbol->name,
+                                                ct->record.components[ndi].name)) continue;
+                                        Component_Info *ndc = &ct->record.components[ndi];
+                                        nlo_t = Type_To_Llvm(ndc->component_type);
+                                        uint32_t ndp = Emit_Temp(cg);
+                                        Emit(cg, "  %%t%u = getelementptr i8, ptr %%", ndp);
+                                        Emit_Symbol_Name(cg, sym);
+                                        Emit(cg, ", i64 %u\n", nest_off + ndc->byte_offset);
+                                        nlo_v = Emit_Temp(cg);
+                                        Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; nest disc %.*s lo\n",
+                                             nlo_v, nlo_t, ndp, (int)ndc->name.length, ndc->name.data);
+                                        break;
+                                    }
+                                } else if (nlo->kind == BOUND_INTEGER) {
+                                    nlo_v = Emit_Temp(cg);
+                                    Emit(cg, "  %%t%u = add %s 0, %lld\n", nlo_v, niat,
+                                         (long long)nlo->int_value);
+                                }
+                                /* Resolve high bound */
+                                uint32_t nhi_v = 0; const char *nhi_t = niat;
+                                if (nhi_d) {
+                                    for (uint32_t ndi = 0; ndi < ct->record.discriminant_count; ndi++) {
+                                        if (not Slice_Equal_Ignore_Case(nhi->expr->symbol->name,
+                                                ct->record.components[ndi].name)) continue;
+                                        Component_Info *ndc = &ct->record.components[ndi];
+                                        nhi_t = Type_To_Llvm(ndc->component_type);
+                                        uint32_t ndp = Emit_Temp(cg);
+                                        Emit(cg, "  %%t%u = getelementptr i8, ptr %%", ndp);
+                                        Emit_Symbol_Name(cg, sym);
+                                        Emit(cg, ", i64 %u\n", nest_off + ndc->byte_offset);
+                                        nhi_v = Emit_Temp(cg);
+                                        Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; nest disc %.*s hi\n",
+                                             nhi_v, nhi_t, ndp, (int)ndc->name.length, ndc->name.data);
+                                        break;
+                                    }
+                                } else if (nhi->kind == BOUND_INTEGER) {
+                                    nhi_v = Emit_Temp(cg);
+                                    Emit(cg, "  %%t%u = add %s 0, %lld\n", nhi_v, niat,
+                                         (long long)nhi->int_value);
+                                }
+                                if (nlo_v == 0 or nhi_v == 0) continue;
+                                nlo_v = Emit_Convert(cg, nlo_v, nlo_t, niat);
+                                nhi_v = Emit_Convert(cg, nhi_v, nhi_t, niat);
+                                /* Skip if null range */
+                                uint32_t nn = Emit_Temp(cg);
+                                Emit(cg, "  %%t%u = icmp sgt %s %%t%u, %%t%u\n",
+                                     nn, niat, nlo_v, nhi_v);
+                                uint32_t nc = cg->label_id++;
+                                uint32_t ne = cg->label_id++;
+                                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                                     nn, ne, nc);
+                                Emit(cg, "L%u:\n", nc);
+                                if (nlo_d)
+                                    Emit_Constraint_Check(cg, nlo_v, idx_ty2, NULL);
+                                if (nhi_d)
+                                    Emit_Constraint_Check(cg, nhi_v, idx_ty2, NULL);
+                                Emit(cg, "  br label %%L%u\n", ne);
+                                Emit(cg, "L%u:\n", ne);
+                            }
+                        }
+                        /* Nested record subcomponent with disc constraints */
+                        if (nct->kind == TYPE_RECORD and nct->record.has_disc_constraints and
+                            nct->record.disc_constraint_exprs) {
+                            for (uint32_t nsdi = 0; nsdi < nct->record.discriminant_count; nsdi++) {
+                                if (not nct->record.disc_constraint_exprs[nsdi]) continue;
+                                Syntax_Node *ncexpr = nct->record.disc_constraint_exprs[nsdi];
+                                for (uint32_t npdi = 0; npdi < ct->record.discriminant_count; npdi++) {
+                                    if (not ncexpr->symbol) continue;
+                                    if (not Slice_Equal_Ignore_Case(ncexpr->symbol->name,
+                                            ct->record.components[npdi].name)) continue;
+                                    Component_Info *npdc = &ct->record.components[npdi];
+                                    const char *ndt2 = Type_To_Llvm(npdc->component_type);
+                                    uint32_t ndp2 = Emit_Temp(cg);
+                                    Emit(cg, "  %%t%u = getelementptr i8, ptr %%", ndp2);
+                                    Emit_Symbol_Name(cg, sym);
+                                    Emit(cg, ", i64 %u\n", nest_off + npdc->byte_offset);
+                                    uint32_t ndv2 = Emit_Temp(cg);
+                                    Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; nested disc %.*s sub\n",
+                                         ndv2, ndt2, ndp2, (int)npdc->name.length, npdc->name.data);
+                                    Component_Info *nsub = &nct->record.components[nsdi];
+                                    if (nsub->component_type and Type_Is_Scalar(nsub->component_type))
+                                        Emit_Constraint_Check(cg, ndv2, nsub->component_type,
+                                            npdc->component_type);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                /* Check record subcomponent with disc constraints */
+                if (ct->kind == TYPE_RECORD and ct->record.has_disc_constraints and
+                    ct->record.disc_constraint_exprs) {
+                    for (uint32_t sdi = 0; sdi < ct->record.discriminant_count; sdi++) {
+                        if (not ct->record.disc_constraint_exprs[sdi]) continue;
+                        Syntax_Node *cexpr = ct->record.disc_constraint_exprs[sdi];
+                        for (uint32_t pdi = 0; pdi < ty->record.discriminant_count; pdi++) {
+                            if (not cexpr->symbol) continue;
+                            if (not Slice_Equal_Ignore_Case(cexpr->symbol->name,
+                                    ty->record.components[pdi].name)) continue;
+                            /* Load parent disc from record */
+                            Component_Info *pdc = &ty->record.components[pdi];
+                            const char *dt = Type_To_Llvm(pdc->component_type);
+                            uint32_t dp = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = getelementptr i8, ptr %%", dp);
+                            Emit_Symbol_Name(cg, sym);
+                            Emit(cg, ", i64 %u\n", pdc->byte_offset);
+                            uint32_t dv = Emit_Temp(cg);
+                            Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; disc %.*s for subcomp check\n",
+                                 dv, dt, dp, (int)pdc->name.length, pdc->name.data);
+                            Component_Info *sub_dc = &ct->record.components[sdi];
+                            if (sub_dc->component_type and Type_Is_Scalar(sub_dc->component_type))
+                                Emit_Constraint_Check(cg, dv, sub_dc->component_type,
+                                    pdc->component_type);
+                            break;
+                        }
+                    }
+                }
+            }
+
             /* Clear disc_agg_temp so it doesn't leak to other contexts */
             for (uint32_t di = 0; di < disc_temp_count; di++)
                 disc_temps[di]->disc_agg_temp = 0;
@@ -34206,6 +34568,44 @@ static void Generate_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 for (uint32_t j = 0; j < node->package_spec.private_decls.count; j++) {
                     Syntax_Node *decl = node->package_spec.private_decls.items[j];
                     if (decl) Generate_Declaration(cg, decl);
+                }
+                /* RM 7.4: Deferred constant completion — copy the private part
+                 * completion's value to the visible part deferred constant's
+                 * storage so that references from outside the package see the
+                 * correct initialized value.  Match by base name (case-insensitive). */
+                for (uint32_t pj = 0; pj < node->package_spec.private_decls.count; pj++) {
+                    Syntax_Node *priv = node->package_spec.private_decls.items[pj];
+                    if (not priv or priv->kind != NK_OBJECT_DECL) continue;
+                    if (not priv->object_decl.is_constant or not priv->object_decl.init) continue;
+                    for (uint32_t pi = 0; pi < priv->object_decl.names.count; pi++) {
+                        Syntax_Node *pn = priv->object_decl.names.items[pi];
+                        if (not pn or not pn->symbol) continue;
+                        Symbol *priv_sym = pn->symbol;
+                        /* Search visible_decls for a matching deferred constant */
+                        for (uint32_t vj = 0; vj < node->package_spec.visible_decls.count; vj++) {
+                            Syntax_Node *vis = node->package_spec.visible_decls.items[vj];
+                            if (not vis or vis->kind != NK_OBJECT_DECL) continue;
+                            if (not vis->object_decl.is_constant) continue;
+                            if (vis->object_decl.init) continue;  /* not deferred */
+                            for (uint32_t vi = 0; vi < vis->object_decl.names.count; vi++) {
+                                Syntax_Node *vn = vis->object_decl.names.items[vi];
+                                if (not vn or not vn->symbol) continue;
+                                Symbol *vis_sym = vn->symbol;
+                                if (vis_sym == priv_sym) continue;  /* same symbol */
+                                if (not Slice_Equal_Ignore_Case(vis_sym->name, priv_sym->name)) continue;
+                                /* Found matching deferred constant — emit memcpy */
+                                uint32_t sz = priv_sym->type ? priv_sym->type->size : 0;
+                                if (sz == 0 and vis_sym->type) sz = vis_sym->type->size;
+                                if (sz > 0) {
+                                    Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%");
+                                    Emit_Symbol_Name(cg, vis_sym);
+                                    Emit(cg, ", ptr %%");
+                                    Emit_Symbol_Name(cg, priv_sym);
+                                    Emit(cg, ", i64 %u, i1 false)  ; deferred const completion\n", sz);
+                                }
+                            }
+                        }
+                    }
                 }
             }
             break;
