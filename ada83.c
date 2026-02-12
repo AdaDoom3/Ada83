@@ -26564,23 +26564,6 @@ static bool Bound_Pair_Overflows(Type_Bound lo, Type_Bound hi) {
 /* Check whether an aggregate will produce a fat pointer (dynamic alloca path).
  * True when the type has dynamic bounds OR the aggregate's own named choices
  * contain non-static range expressions (e.g. desugared T'RANGE). */
-static bool Agg_Has_Dynamic_Bounds(const Syntax_Node *agg) {
-    if (agg->type and Type_Has_Dynamic_Bounds(agg->type))
-        return true;
-    for (uint32_t ci = 0; ci < agg->aggregate.items.count; ci++) {
-        Syntax_Node *item = agg->aggregate.items.items[ci];
-        if (item->kind != NK_ASSOCIATION) continue;
-        for (uint32_t cc = 0; cc < item->association.choices.count; cc++) {
-            Syntax_Node *ch = item->association.choices.items[cc];
-            if (ch->kind == NK_RANGE and
-                (not Is_Static_Int_Node(ch->range.low) or
-                 not Is_Static_Int_Node(ch->range.high)))
-                return true;
-        }
-    }
-    return false;
-}
-
 /* ── Agg_Resolve_Elem: generate element value and unwrap fat ptrs.
  *
  * Given an expression node, generates the value and, depending on the
@@ -26894,6 +26877,126 @@ static void Desugar_Aggregate_Range_Choices(Syntax_Node *agg) {
             Desugar_Aggregate_Range_Choices(cit);
         }
     }
+}
+
+/* ── § 13b.0: Record Aggregate Component Store ─────────────────────────
+ *
+ * Literate summary:  a record aggregate (A => 1, B => "hello", C => rec)
+ * must store each component value to the correct byte offset.  Three
+ * representations arise — fat pointers, composite pointers, and scalars
+ * — each requiring distinct LLVM IR.  This helper unifies the logic that
+ * was previously duplicated across named, positional, and OTHERS paths.
+ *
+ *   data Src = Fat { ptr, ptr }   -- unconstrained array / dynamic bounds
+ *            | Ptr ptr             -- composite record / constrained array
+ *            | Val T               -- scalar / enumeration
+ *
+ *   store :: Src → CompPtr → IO ()
+ *   store (Fat fp) dst = Emit_Fat_To_Array_Memcpy fp dst
+ *   store (Ptr p)  dst = memcpy dst p (sizeof comp)
+ *   store (Val v)  dst = store v dst
+ *
+ * After storage, discriminant values are mirrored to disc_agg_temps and
+ * constraint-checked against the enclosing type (RM 3.7.1, 4.3.1). */
+
+typedef struct { Symbol *sym; uint32_t temp; } Disc_Alloc_Entry;
+typedef struct { Disc_Alloc_Entry *entries; uint32_t count; } Disc_Alloc_Info;
+
+/* Compute the byte size for a composite component memcpy.  For disc-
+ * dependent arrays (size==0), derive from the source expression. */
+static uint32_t Agg_Comp_Byte_Size(Type_Info *ti, Syntax_Node *src_expr) {
+    uint32_t sz = ti->size;
+    if (sz == 0 and Type_Is_Array_Like(ti) and ti->array.element_type) {
+        uint32_t esz = ti->array.element_type->size;
+        if (esz == 0) esz = 1;
+        if (src_expr and src_expr->kind == NK_AGGREGATE)
+            sz = src_expr->aggregate.items.count * esz;
+        else if (src_expr and src_expr->type and src_expr->type->size > 0)
+            sz = src_expr->type->size;
+    }
+    return sz > 0 ? sz : 8;
+}
+
+/* Store a generated value into a record component slot.
+ * Handles all three cases: fat pointer, composite ptr, scalar. */
+static void Agg_Rec_Store(Code_Generator *cg,
+    uint32_t val, uint32_t dest_ptr,
+    Component_Info *comp, Syntax_Node *src_expr)
+{
+    Type_Info *ti = comp->component_type;
+    const char *src_type = Expression_Llvm_Type(cg, src_expr);
+    const char *comp_type = Type_To_Llvm(ti);
+    bool is_fat = src_type and strstr(src_type, "{ ptr, ptr }") != NULL;
+    bool is_ptr = src_type and strcmp(src_type, "ptr") == 0;
+
+    if (ti and is_fat and (Type_Is_String(ti) or Type_Is_Array_Like(ti))) {
+        /* Fat → constrained: extract data+bounds, compute length, memcpy */
+        Emit_Fat_To_Array_Memcpy(cg, val, dest_ptr, ti);
+    } else if (ti and is_ptr and (Type_Is_Record(ti) or Type_Is_Constrained_Array(ti))) {
+        /* Composite → memcpy with size from type or source expression */
+        Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
+             dest_ptr, val, Agg_Comp_Byte_Size(ti, src_expr));
+        Emit_Comp_Disc_Check(cg, dest_ptr, ti);
+    } else {
+        /* Scalar: convert and store, with constraint check (RM 4.3.1) */
+        val = Emit_Convert(cg, val, src_type, comp_type);
+        if (ti and Type_Is_Scalar(ti) and not comp->is_discriminant)
+            val = Emit_Constraint_Check_With_Type(cg, val, ti,
+                src_expr ? src_expr->type : NULL, comp_type);
+        Emit(cg, "  store %s %%t%u, ptr %%t%u\n", comp_type, val, dest_ptr);
+    }
+}
+
+/* After storing a discriminant, mirror it to disc_agg_temps and verify
+ * against the enclosing type's discriminant constraint (RM 3.7.1). */
+static void Agg_Rec_Disc_Post(Code_Generator *cg,
+    uint32_t val, Component_Info *comp, uint32_t disc_ordinal,
+    Type_Info *agg_type, Disc_Alloc_Info *da_info)
+{
+    const char *dt = Type_To_Llvm(comp->component_type);
+    /* Coerce val to the component's storage type (e.g. i32→i8 for narrow
+     * discrete types) before mirroring and constraint-checking. */
+    val = Emit_Coerce_Default_Int(cg, val, dt);
+
+    /* Mirror to disc_agg_temp alloca */
+    for (uint32_t i = 0; i < da_info->count; i++) {
+        if (Slice_Equal_Ignore_Case(da_info->entries[i].sym->name, comp->name)) {
+            Emit(cg, "  store %s %%t%u, ptr %%t%u\n",
+                 dt, val, da_info->entries[i].temp);
+            break;
+        }
+    }
+
+    /* RM 3.7.1: if the aggregate type is constrained, check that the
+     * supplied discriminant value matches the expected constraint. */
+    if (not agg_type->record.has_disc_constraints) return;
+    if (disc_ordinal >= agg_type->record.discriminant_count) return;
+
+    uint32_t exp_v;
+    if (cg->disc_cache_count > 0 and cg->disc_cache_type == agg_type and
+        disc_ordinal < cg->disc_cache_count and cg->disc_cache[disc_ordinal]) {
+        exp_v = Emit_Convert(cg, cg->disc_cache[disc_ordinal],
+            Integer_Arith_Type(cg), dt);
+    } else {
+        exp_v = Emit_Disc_Constraint_Value(cg, agg_type, disc_ordinal, dt);
+        if (exp_v == 0) exp_v = Emit_Static_Int(cg, 0, dt);
+    }
+    uint32_t ne = Emit_Temp(cg);
+    Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n", ne, dt, val, exp_v);
+    uint32_t ok_l = cg->label_id++, fl_l = cg->label_id++;
+    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n", ne, fl_l, ok_l);
+    cg->block_terminated = true;
+    Emit_Label_Here(cg, fl_l);
+    Emit_Raise_Constraint_Error(cg, "discriminant value vs constraint");
+    Emit_Label_Here(cg, ok_l);
+}
+
+/* Count how many discriminants precede component index `ci`. */
+static inline uint32_t Disc_Ordinal_Before(Type_Info *ty, uint32_t ci) {
+    uint32_t n = 0;
+    for (uint32_t k = 0; k < ci; k++)
+        if (ty->record.components[k].is_discriminant) n++;
+    return n;
 }
 
 static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
@@ -28875,7 +28978,6 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
          * Also check first-seen bounds against the second dimension constraint.
          * Only check if at least one inner sub-aggregate was tracked. */
         if (check_inner_consistency) {
-            const char *bt = Array_Bound_Llvm_Type(agg_type);
             uint32_t was_seen = Emit_Temp(cg);
             Emit(cg, "  %%t%u = load i1, ptr %%t%u  ; any inner seen?\n",
                  was_seen, inner_trk_first);
@@ -28924,11 +29026,15 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             }
         }
 
-        /* If the array type is unconstrained, wrap in a fat pointer so that
-         * the caller receives { ptr, ptr } (data + bounds).  Constrained
-         * arrays just return the raw data pointer.
+        /* Wrap in a fat pointer when the caller expects { ptr, ptr }.
+         * This is required for unconstrained types AND constrained types
+         * with dynamic bounds (BOUND_EXPR), since Expression_Llvm_Type
+         * reports FAT_PTR_TYPE for both — and positional aggregates may
+         * override BOUND_EXPR → BOUND_INTEGER in dim_hi, routing through
+         * the static path even though the TYPE still has dynamic bounds.
          * Multi-dimensional arrays store bounds for ALL dimensions. */
-        if (not agg_type->array.is_constrained) {
+        if (not agg_type->array.is_constrained or
+            Type_Has_Dynamic_Bounds(agg_type)) {
             const char *agg_bt = Array_Bound_Llvm_Type(agg_type);
             if (multidim) {
                 uint32_t mlo[8], mhi[8];
@@ -29037,7 +29143,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
          * bounds (RM 3.7.1).  Uses temp IDs instead of symbol names so each
          * aggregate gets its own allocas (avoiding dominance violations when
          * the same record type appears in multiple blocks). */
-        struct { Symbol *sym; uint32_t temp; } disc_alloc[16];
+        Disc_Alloc_Entry disc_alloc[16];
         uint32_t disc_alloc_count = 0;
         for (uint32_t ci = 0; ci < agg_type->record.component_count; ci++) {
             Component_Info *comp_ci = &agg_type->record.components[ci];
@@ -29112,210 +29218,55 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             }
         }
 
-        /* Second pass: initialize fields */
+        /* Wrap disc_alloc array for the helper API */
+        Disc_Alloc_Info da_info = { .entries = disc_alloc, .count = disc_alloc_count };
+
+        /* ── Second pass: initialize fields ───────────────────────────
+         * Both named (field_name => expr) and positional (expr, expr, ...)
+         * forms use the unified Agg_Rec_Store / Agg_Rec_Disc_Post helpers. */
         uint32_t positional_idx = 0;
         for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
             Syntax_Node *item = node->aggregate.items.items[i];
 
             if (item->kind == NK_ASSOCIATION) {
-                /* Named association: field_name => value */
+                /* Named: field_name => value */
                 for (uint32_t c = 0; c < item->association.choices.count; c++) {
                     Syntax_Node *choice = item->association.choices.items[c];
-
-                    if (Is_Others_Choice(choice)) {
-                        continue;  /* Handle in third pass */
-                    }
+                    if (Is_Others_Choice(choice)) continue;
 
                     if (choice->kind == NK_IDENTIFIER) {
-                        int32_t comp_idx = Find_Record_Component(agg_type, choice->string_val.text);
-                        if (comp_idx >= 0) {
-                            Component_Info *comp = &agg_type->record.components[comp_idx];
-                            Type_Info *comp_ti = comp->component_type;
-                            cg->in_agg_component++;
-                            uint32_t val = Generate_Expression(cg, item->association.expression);
-                            cg->in_agg_component--;
-
-                            uint32_t ptr = Emit_Temp(cg);
-                            Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
-                                 ptr, base, comp->byte_offset);
-
-                            {
-                                const char *src_type = Expression_Llvm_Type(cg, item->association.expression);
-                                const char *comp_type = Type_To_Llvm(comp_ti);
-                                bool src_is_ptr = (src_type and strcmp(src_type, "ptr") == 0);
-                                bool src_is_fat = (src_type and strstr(src_type, "{ ptr, ptr }") != NULL);
-                                if (comp_ti and src_is_fat and
-                                    (Type_Is_String(comp_ti) or Type_Is_Array_Like(comp_ti))) {
-                                    Emit_Fat_To_Array_Memcpy(cg, val, ptr, comp_ti);
-                                } else if (comp_ti and src_is_ptr and
-                                    (Type_Is_Record(comp_ti) or Type_Is_Constrained_Array(comp_ti))) {
-                                    /* Composite component: use memcpy */
-                                    Syntax_Node *src_expr = item->association.expression;
-                                    uint32_t comp_size = comp_ti->size;
-                                    if (comp_size == 0 and Type_Is_Array_Like(comp_ti)
-                                        and comp_ti->array.element_type) {
-                                        uint32_t esz = comp_ti->array.element_type->size;
-                                        if (esz == 0) esz = 1;
-                                        if (src_expr and src_expr->kind == NK_AGGREGATE) {
-                                            comp_size = src_expr->aggregate.items.count * esz;
-                                        } else if (src_expr and src_expr->type
-                                                   and src_expr->type->size > 0) {
-                                            comp_size = src_expr->type->size;
-                                        }
-                                    }
-                                    if (comp_size == 0) comp_size = 8;
-                                    Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
-                                         ptr, val, comp_size);
-                                    Emit_Comp_Disc_Check(cg, ptr, comp_ti);
-                                } else {
-                                    val = Emit_Convert(cg, val, src_type, comp_type);
-                                    /* RM 4.3.1: check component value against subtype constraint */
-                                    if (comp_ti and Type_Is_Scalar(comp_ti) and not comp->is_discriminant)
-                                        val = Emit_Constraint_Check_With_Type(cg, val, comp_ti,
-                                            item->association.expression->type, comp_type);
-                                    Emit(cg, "  store %s %%t%u, ptr %%t%u\n", comp_type, val, ptr);
-                                }
-                                /* Also store discriminant value into temp alloca */
-                                if (comp->is_discriminant) {
-                                    for (uint32_t da = 0; da < disc_alloc_count; da++) {
-                                        if (Slice_Equal_Ignore_Case(disc_alloc[da].sym->name, comp->name)) {
-                                            Emit(cg, "  store %s %%t%u, ptr %%t%u\n",
-                                                 comp_type, val, disc_alloc[da].temp);
-                                            break;
-                                        }
-                                    }
-                                    /* RM 3.7.1: disc value must match constraint */
-                                    if (agg_type->record.has_disc_constraints) {
-                                        uint32_t di = 0;
-                                        for (uint32_t k = 0; k < (uint32_t)comp_idx; k++)
-                                            if (agg_type->record.components[k].is_discriminant) di++;
-                                        if (di < agg_type->record.discriminant_count) {
-                                            uint32_t exp_v;
-                                            /* Use cached disc temps if available */
-                                            if (cg->disc_cache_count > 0 and
-                                                cg->disc_cache_type == agg_type and
-                                                di < cg->disc_cache_count and cg->disc_cache[di]) {
-                                                exp_v = Emit_Convert(cg, cg->disc_cache[di],
-                                                    Integer_Arith_Type(cg), comp_type);
-                                            } else {
-                                                exp_v = Emit_Disc_Constraint_Value(cg, agg_type, di, comp_type);
-                                                if (exp_v == 0)
-                                                    exp_v = Emit_Static_Int(cg, 0, comp_type);
-                                            }
-                                            uint32_t ne = Emit_Temp(cg);
-                                            Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n",
-                                                 ne, comp_type, val, exp_v);
-                                            uint32_t ok_l = cg->label_id++;
-                                            uint32_t fl_l = cg->label_id++;
-                                            Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
-                                                 ne, fl_l, ok_l);
-                                            cg->block_terminated = true;
-                                            Emit_Label_Here(cg, fl_l);
-                                            Emit_Raise_Constraint_Error(cg,
-                                                "discriminant value vs constraint");
-                                            Emit_Label_Here(cg, ok_l);
-                                        }
-                                    }
-                                }
-                            }
-                            initialized[comp_idx] = true;
-                        }
+                        int32_t ci = Find_Record_Component(agg_type, choice->string_val.text);
+                        if (ci < 0) continue;
+                        Component_Info *comp = &agg_type->record.components[ci];
+                        cg->in_agg_component++;
+                        uint32_t val = Generate_Expression(cg, item->association.expression);
+                        cg->in_agg_component--;
+                        uint32_t ptr = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
+                             ptr, base, comp->byte_offset);
+                        Agg_Rec_Store(cg, val, ptr, comp, item->association.expression);
+                        if (comp->is_discriminant)
+                            Agg_Rec_Disc_Post(cg, val, comp,
+                                Disc_Ordinal_Before(agg_type, (uint32_t)ci),
+                                agg_type, &da_info);
+                        initialized[ci] = true;
                     }
                 }
             } else {
                 /* Positional: initialize component by position */
                 if (positional_idx < comp_count) {
                     Component_Info *comp = &agg_type->record.components[positional_idx];
-                    Type_Info *comp_ti = comp->component_type;
                     cg->in_agg_component++;
                     uint32_t val = Generate_Expression(cg, item);
                     cg->in_agg_component--;
-
                     uint32_t ptr = Emit_Temp(cg);
                     Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
                          ptr, base, comp->byte_offset);
-
-                    {
-                        const char *src_type = Expression_Llvm_Type(cg, item);
-                        const char *comp_type = Type_To_Llvm(comp_ti);
-                        bool src_is_ptr = (src_type and strcmp(src_type, "ptr") == 0);
-                        bool src_is_fat = (src_type and strstr(src_type, "{ ptr, ptr }") != NULL);
-                        if (comp_ti and src_is_fat and
-                            (Type_Is_String(comp_ti) or Type_Is_Array_Like(comp_ti))) {
-                            /* Fat pointer source > constrained string/array component */
-                            Emit_Fat_To_Array_Memcpy(cg, val, ptr, comp_ti);
-                        } else if (comp_ti and src_is_ptr and
-                            (Type_Is_Record(comp_ti) or Type_Is_Constrained_Array(comp_ti))) {
-                            /* Composite component: use memcpy.  For discriminant-
-                             * dependent array components (size==0), derive the actual
-                             * byte count from the source expression or discriminant. */
-                            uint32_t comp_size = comp_ti->size;
-                            if (comp_size == 0 and Type_Is_Array_Like(comp_ti)
-                                and comp_ti->array.element_type) {
-                                uint32_t esz = comp_ti->array.element_type->size;
-                                if (esz == 0) esz = 1;
-                                if (item->kind == NK_AGGREGATE) {
-                                    comp_size = item->aggregate.items.count * esz;
-                                } else if (item->type and item->type->size > 0) {
-                                    comp_size = item->type->size;
-                                }
-                            }
-                            if (comp_size == 0) comp_size = 8;
-                            Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
-                                 ptr, val, comp_size);
-                            Emit_Comp_Disc_Check(cg, ptr, comp_ti);
-                        } else {
-                            val = Emit_Convert(cg, val, src_type, comp_type);
-                            /* RM 4.3.1: check component value against subtype constraint */
-                            if (comp_ti and Type_Is_Scalar(comp_ti) and not comp->is_discriminant)
-                                val = Emit_Constraint_Check_With_Type(cg, val, comp_ti,
-                                    item->type, comp_type);
-                            Emit(cg, "  store %s %%t%u, ptr %%t%u\n", comp_type, val, ptr);
-                        }
-                        /* Also store discriminant value into temp alloca */
-                        if (comp->is_discriminant) {
-                            for (uint32_t da = 0; da < disc_alloc_count; da++) {
-                                if (Slice_Equal_Ignore_Case(disc_alloc[da].sym->name, comp->name)) {
-                                    Emit(cg, "  store %s %%t%u, ptr %%t%u\n",
-                                         comp_type, val, disc_alloc[da].temp);
-                                    break;
-                                }
-                            }
-                            /* RM 3.7.1: disc value must match constraint */
-                            if (agg_type->record.has_disc_constraints) {
-                                uint32_t di = 0;
-                                for (uint32_t k = 0; k < positional_idx; k++)
-                                    if (agg_type->record.components[k].is_discriminant) di++;
-                                if (di < agg_type->record.discriminant_count) {
-                                    uint32_t exp_v;
-                                    /* Use cached disc temps if available (from pre-evaluation
-                                     * in Generate_Object_Declaration for multi-object decls) */
-                                    if (cg->disc_cache_count > 0 and
-                                        cg->disc_cache_type == agg_type and
-                                        di < cg->disc_cache_count and cg->disc_cache[di]) {
-                                        exp_v = Emit_Convert(cg, cg->disc_cache[di],
-                                            Integer_Arith_Type(cg), comp_type);
-                                    } else {
-                                        exp_v = Emit_Disc_Constraint_Value(cg, agg_type, di, comp_type);
-                                        if (exp_v == 0)
-                                            exp_v = Emit_Static_Int(cg, 0, comp_type);
-                                    }
-                                    uint32_t ne = Emit_Temp(cg);
-                                    Emit(cg, "  %%t%u = icmp ne %s %%t%u, %%t%u\n",
-                                         ne, comp_type, val, exp_v);
-                                    uint32_t ok_l = cg->label_id++;
-                                    uint32_t fl_l = cg->label_id++;
-                                    Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
-                                         ne, fl_l, ok_l);
-                                    cg->block_terminated = true;
-                                    Emit_Label_Here(cg, fl_l);
-                                    Emit_Raise_Constraint_Error(cg,
-                                        "discriminant value vs constraint");
-                                    Emit_Label_Here(cg, ok_l);
-                                }
-                            }
-                        }
-                    }
+                    Agg_Rec_Store(cg, val, ptr, comp, item);
+                    if (comp->is_discriminant)
+                        Agg_Rec_Disc_Post(cg, val, comp,
+                            Disc_Ordinal_Before(agg_type, positional_idx),
+                            agg_type, &da_info);
                     initialized[positional_idx] = true;
                     positional_idx++;
                 }
@@ -29326,22 +29277,23 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
          * In a variant record aggregate, OTHERS only applies to components
          * in the fixed part and the selected variant — not all variants. */
         int32_t selected_variant = -1;
-        if (has_others and agg_type->record.has_discriminants and
+        if (agg_type->record.has_discriminants and
             agg_type->record.variant_count > 0) {
             /* Method 1: infer from explicitly named variant components.
              * If C => 3 was named and C is in the WHEN TRUE variant, the
              * selected variant must be WHEN TRUE. */
-            for (uint32_t ci = 0; ci < comp_count; ci++) {
-                if (initialized[ci] and
-                    agg_type->record.components[ci].variant_index >= 0) {
-                    selected_variant =
-                        agg_type->record.components[ci].variant_index;
-                    break;
+            if (has_others) {
+                for (uint32_t ci = 0; ci < comp_count; ci++) {
+                    if (initialized[ci] and
+                        agg_type->record.components[ci].variant_index >= 0) {
+                        selected_variant =
+                            agg_type->record.components[ci].variant_index;
+                        break;
+                    }
                 }
             }
-            /* Method 2: determine from discriminant value if no variant
-             * component was explicitly named. */
-            if (selected_variant < 0) {
+            /* Method 2: determine from discriminant value in OTHERS expr. */
+            if (selected_variant < 0 and has_others) {
                 int64_t disc_val = 0;
                 bool disc_known = false;
                 /* Try the OTHERS expression as a discriminant value */
@@ -29365,59 +29317,55 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                     }
                 }
             }
-        }
-
-        /* Third pass: fill uninitialized with "others" value (uncommon for records) */
-        if (has_others and others_expr) {
-            for (uint32_t idx = 0; idx < comp_count; idx++) {
-                if (not initialized[idx]) {
-                    Component_Info *comp = &agg_type->record.components[idx];
-
-                    /* Skip components from non-selected variants (RM 4.3.1(5)).
-                     * D from WHEN FALSE must not be initialized when the
-                     * discriminant selects WHEN TRUE. */
-                    if (comp->variant_index >= 0 and selected_variant >= 0 and
-                        comp->variant_index != selected_variant)
-                        continue;
-                    Type_Info *comp_ti = comp->component_type;
-
-                    /* Set type context on the expression so nested aggregates resolve */
-                    Type_Info *saved_type = others_expr->type;
-                    if (not others_expr->type) others_expr->type = comp_ti;
-
-                    cg->in_agg_component++;
-                    uint32_t val = Generate_Expression(cg, others_expr);
-                    cg->in_agg_component--;
-                    uint32_t ptr = Emit_Temp(cg);
-                    Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
-                         ptr, base, comp->byte_offset);
-
-                    if (comp_ti and (Type_Is_Record(comp_ti) or Type_Is_Array_Like(comp_ti))) {
-                        /* Composite component: memcpy */
-                        uint32_t comp_size = comp_ti->size > 0 ? comp_ti->size : 8;
-                        Emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
-                             ptr, val, comp_size);
-                        Emit_Comp_Disc_Check(cg, ptr, comp_ti);
-                    } else {
-                        const char *comp_type = Type_To_Llvm(comp_ti);
-                        const char *src_type = Expression_Llvm_Type(cg, others_expr);
-                        val = Emit_Convert(cg, val, src_type, comp_type);
-                        /* RM 4.3.1: check component value against subtype constraint */
-                        if (comp_ti and Type_Is_Scalar(comp_ti) and not comp->is_discriminant)
-                            val = Emit_Constraint_Check_With_Type(cg, val, comp_ti,
-                                others_expr->type, comp_type);
-                        Emit(cg, "  store %s %%t%u, ptr %%t%u\n", comp_type, val, ptr);
+            /* Method 3: determine from disc_constraint_values on the type */
+            if (selected_variant < 0 and agg_type->record.disc_constraint_values and
+                (not agg_type->record.disc_constraint_exprs or
+                 not agg_type->record.disc_constraint_exprs[0])) {
+                int64_t dv = agg_type->record.disc_constraint_values[0];
+                for (uint32_t vi = 0; vi < agg_type->record.variant_count; vi++) {
+                    if (dv >= agg_type->record.variants[vi].disc_value_low and
+                        dv <= agg_type->record.variants[vi].disc_value_high) {
+                        selected_variant = (int32_t)vi;
+                        break;
                     }
-                    others_expr->type = saved_type;
+                    if (agg_type->record.variants[vi].is_others)
+                        selected_variant = (int32_t)vi;
                 }
             }
         }
 
+        /* ── Third pass: fill uninitialized with OTHERS value (RM 4.3.1) ─ */
+        if (has_others and others_expr) {
+            for (uint32_t idx = 0; idx < comp_count; idx++) {
+                if (initialized[idx]) continue;
+                Component_Info *comp = &agg_type->record.components[idx];
+                if (comp->variant_index >= 0 and selected_variant >= 0 and
+                    comp->variant_index != selected_variant) continue;
+                /* Set type context so nested aggregates resolve correctly */
+                Type_Info *saved = others_expr->type;
+                if (not others_expr->type) others_expr->type = comp->component_type;
+                cg->in_agg_component++;
+                uint32_t val = Generate_Expression(cg, others_expr);
+                cg->in_agg_component--;
+                uint32_t ptr = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
+                     ptr, base, comp->byte_offset);
+                Agg_Rec_Store(cg, val, ptr, comp, others_expr);
+                others_expr->type = saved;
+            }
+        }
+
         /* RM 3.6.1(7): Check disc-dependent array bounds against index subtype.
-         * This catches cases like SM_ARR(1..D1) when D1 exceeds the SM range. */
+         * This catches cases like SM_ARR(1..D1) when D1 exceeds the SM range.
+         * RM 3.7.3: Skip checks for components in unselected variants. */
         if (disc_alloc_count > 0) {
             for (uint32_t ci = agg_type->record.discriminant_count;
                  ci < agg_type->record.component_count; ci++) {
+                /* Skip variant components not in the selected variant */
+                if (selected_variant >= 0 and
+                    agg_type->record.components[ci].variant_index >= 0 and
+                    agg_type->record.components[ci].variant_index != selected_variant)
+                    continue;
                 Type_Info *ct = agg_type->record.components[ci].component_type;
                 if (not ct or not Type_Is_Array_Like(ct)) continue;
                 for (uint32_t xi = 0; xi < ct->array.index_count; xi++) {
@@ -34803,8 +34751,35 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     uint32_t val = 0;
 
                     if (ct->record.has_disc_constraints) {
-                        /* Constrained nested record: value from constraint */
-                        val = Emit_Disc_Constraint_Value(cg, ct, di, dt);
+                        /* Constrained nested record: value from constraint.
+                         * RM 3.7.2: If the constraint expression references a
+                         * discriminant of the parent record (ty), load from
+                         * the parent variable at its offset — the discriminant
+                         * has no standalone alloca. */
+                        bool resolved = false;
+                        if (ct->record.disc_constraint_exprs and
+                            ct->record.disc_constraint_exprs[di]) {
+                            Syntax_Node *cexpr = ct->record.disc_constraint_exprs[di];
+                            if (cexpr->kind == NK_IDENTIFIER and cexpr->symbol) {
+                                for (uint32_t pdi = 0; pdi < ty->record.discriminant_count; pdi++) {
+                                    Component_Info *pdc = &ty->record.components[pdi];
+                                    if (Slice_Equal_Ignore_Case(pdc->name, cexpr->symbol->name)) {
+                                        uint32_t gp = Emit_Temp(cg);
+                                        Emit(cg, "  %%t%u = getelementptr i8, ptr %%", gp);
+                                        Emit_Symbol_Name(cg, sym);
+                                        Emit(cg, ", i64 %u\n", pdc->byte_offset);
+                                        val = Emit_Temp(cg);
+                                        Emit(cg, "  %%t%u = load %s, ptr %%t%u  ; disc %.*s from parent\n",
+                                             val, dt, gp,
+                                             (int)pdc->name.length, pdc->name.data);
+                                        resolved = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if (not resolved)
+                            val = Emit_Disc_Constraint_Value(cg, ct, di, dt);
                     } else if (dc->default_expr) {
                         /* Unconstrained nested record: value from default */
                         val = Generate_Expression(cg, dc->default_expr);
