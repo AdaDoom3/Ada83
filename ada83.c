@@ -6129,7 +6129,8 @@ typedef struct {
 
 /* Variant information for discriminated records (RM 3.7.3) */
 typedef struct {
-    int64_t  disc_value;         /* Discriminant value selecting this variant */
+    int64_t  disc_value_low;     /* Low bound of range selecting this variant */
+    int64_t  disc_value_high;    /* High bound (same as low for single values) */
     bool     is_others;          /* WHEN OTHERS variant */
     uint32_t first_component;    /* Index of first component in this variant */
     uint32_t component_count;    /* Number of components in this variant */
@@ -10525,13 +10526,32 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                             Syntax_Node *v = vp->variant_part.variants.items[vi];
                             Variant_Info *vinfo = &record_type->record.variants[vi];
 
-                            /* Extract discriminant value from first choice */
-                            vinfo->disc_value = 0;
+                            /* Extract discriminant value/range from first choice.
+                             * Supports single values, negated literals, and ranges
+                             * (RM 3.7.3: WHEN -5..10 => ...). */
+                            vinfo->disc_value_low = 0;
+                            vinfo->disc_value_high = 0;
                             vinfo->is_others = false;
                             if (v->variant.choices.count > 0) {
                                 Syntax_Node *choice = v->variant.choices.items[0];
                                 if (choice->kind == NK_INTEGER) {
-                                    vinfo->disc_value = choice->integer_lit.value;
+                                    vinfo->disc_value_low = choice->integer_lit.value;
+                                    vinfo->disc_value_high = choice->integer_lit.value;
+                                } else if (choice->kind == NK_UNARY_OP and
+                                           (choice->unary.op == TK_MINUS or
+                                            choice->unary.op == TK_PLUS) and
+                                           choice->unary.operand and
+                                           choice->unary.operand->kind == NK_INTEGER) {
+                                    int64_t v2 = choice->unary.operand->integer_lit.value;
+                                    if (choice->unary.op == TK_MINUS) v2 = -v2;
+                                    vinfo->disc_value_low = v2;
+                                    vinfo->disc_value_high = v2;
+                                } else if (choice->kind == NK_RANGE) {
+                                    /* Range choice: WHEN -5..10 => ... */
+                                    double lo = Eval_Const_Numeric(choice->range.low);
+                                    double hi = Eval_Const_Numeric(choice->range.high);
+                                    if (lo == lo) vinfo->disc_value_low = (int64_t)lo;
+                                    if (hi == hi) vinfo->disc_value_high = (int64_t)hi;
                                 } else if (choice->kind == NK_IDENTIFIER) {
                                     /* Enumeration literal — covers BOOLEAN, CHARACTER,
                                      * and user-defined enum types (RM 3.7.3).
@@ -10540,8 +10560,9 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                                     Resolve_Expression(sm, choice);
                                     if (choice->symbol and
                                         choice->symbol->kind == SYMBOL_LITERAL) {
-                                        vinfo->disc_value =
+                                        vinfo->disc_value_low =
                                             (int64_t)choice->symbol->frame_offset;
+                                        vinfo->disc_value_high = vinfo->disc_value_low;
                                     } else if (choice->symbol and choice->symbol->type and
                                         Type_Is_Enumeration(choice->symbol->type)) {
                                         /* Fallback: search enumeration literals by name */
@@ -10549,7 +10570,8 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                                         for (uint32_t li = 0; li < et->enumeration.literal_count; li++) {
                                             if (Slice_Equal_Ignore_Case(et->enumeration.literals[li],
                                                                         choice->string_val.text)) {
-                                                vinfo->disc_value = (int64_t)li;
+                                                vinfo->disc_value_low = (int64_t)li;
+                                                vinfo->disc_value_high = (int64_t)li;
                                                 break;
                                             }
                                         }
@@ -11221,6 +11243,12 @@ static Type_Info *Resolve_Expression(Symbol_Manager *sm, Syntax_Node *node) {
                             } else if (expr and expr->kind == NK_IDENTIFIER and expr->symbol and
                                        expr->symbol->kind == SYMBOL_CONSTANT) {
                                 /* Named number or constant */
+                                double cv = Eval_Const_Numeric(expr);
+                                if (cv == cv) { val = (int64_t)cv; is_static = true; }
+                            } else if (expr and not is_static) {
+                                /* Fallback: try Eval_Const_Numeric for negative
+                                 * literals like -6 (NK_UNARY_OP), type conversions,
+                                 * and other statically computable expressions. */
                                 double cv = Eval_Const_Numeric(expr);
                                 if (cv == cv) { val = (int64_t)cv; is_static = true; }
                             }
@@ -24566,10 +24594,35 @@ static uint32_t Generate_Selected(Code_Generator *cg, Syntax_Node *node) {
         }
 
         if (not vinfo->is_others) {
-            uint32_t expected = Emit_Temp(cg);
-            Emit(cg, "  %%t%u = add %s 0, %lld  ; expected discriminant\n",
-                 expected, iat_disc, (long long)vinfo->disc_value);
-            Emit_Discriminant_Check(cg, disc_val, expected, iat_disc, record_type);
+            if (vinfo->disc_value_low == vinfo->disc_value_high) {
+                /* Single value: equality check */
+                uint32_t expected = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add %s 0, %lld  ; expected discriminant\n",
+                     expected, iat_disc, (long long)vinfo->disc_value_low);
+                Emit_Discriminant_Check(cg, disc_val, expected, iat_disc, record_type);
+            } else {
+                /* Range: check disc_val in [low..high] */
+                uint32_t lo = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add %s 0, %lld\n", lo, iat_disc,
+                     (long long)vinfo->disc_value_low);
+                uint32_t hi = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add %s 0, %lld\n", hi, iat_disc,
+                     (long long)vinfo->disc_value_high);
+                uint32_t cmp_lo = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp sge %s %%t%u, %%t%u\n",
+                     cmp_lo, iat_disc, disc_val, lo);
+                uint32_t cmp_hi = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp sle %s %%t%u, %%t%u\n",
+                     cmp_hi, iat_disc, disc_val, hi);
+                uint32_t in_range = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n",
+                     in_range, cmp_lo, cmp_hi);
+                uint32_t not_in_range = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = xor i1 %%t%u, 1\n",
+                     not_in_range, in_range);
+                Emit_Check_With_Raise(cg, not_in_range, true,
+                                       "discriminant check failed");
+            }
         }
         /* For WHEN OTHERS variant, any discriminant value is valid - no check needed */
     }
@@ -29302,7 +29355,8 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                 }
                 if (disc_known) {
                     for (uint32_t vi = 0; vi < agg_type->record.variant_count; vi++) {
-                        if (agg_type->record.variants[vi].disc_value == disc_val) {
+                        if (disc_val >= agg_type->record.variants[vi].disc_value_low and
+                            disc_val <= agg_type->record.variants[vi].disc_value_high) {
                             selected_variant = (int32_t)vi;
                             break;
                         }
@@ -32741,11 +32795,99 @@ static uint32_t Emit_Disc_Constraint_Value(Code_Generator *cg,
 static void Emit_Nested_Disc_Checks(Code_Generator *cg, Type_Info *parent_ty)
 {
     if (not parent_ty or parent_ty->kind != TYPE_RECORD) return;
+
+    /* RM 3.7.3: Determine selected variant to skip absent components.
+     * Only check components in the fixed part or the selected variant.
+     * For dynamic disc values, emit runtime range checks. */
+    int32_t selected_variant = -2;  /* -2 = unknown, -1+ = variant index */
+    uint32_t runtime_disc_val = 0;  /* LLVM temp for runtime disc value */
+    const char *runtime_disc_type = NULL;
+    if (parent_ty->record.variant_count > 0) {
+        /* Check if disc expression is dynamic (disc_constraint_exprs[0] set) */
+        bool is_dynamic = (parent_ty->record.disc_constraint_exprs and
+                           parent_ty->record.disc_constraint_exprs[0]);
+        if (not is_dynamic and parent_ty->record.disc_constraint_values) {
+            /* Static: use compile-time range matching */
+            int64_t dv = parent_ty->record.disc_constraint_values[0];
+            selected_variant = -1;  /* default: no matching variant */
+            for (uint32_t vi = 0; vi < parent_ty->record.variant_count; vi++) {
+                if (dv >= parent_ty->record.variants[vi].disc_value_low and
+                    dv <= parent_ty->record.variants[vi].disc_value_high) {
+                    selected_variant = (int32_t)vi;
+                    break;
+                }
+                if (parent_ty->record.variants[vi].is_others)
+                    selected_variant = (int32_t)vi;
+            }
+        } else if (is_dynamic) {
+            /* Dynamic: evaluate disc expression for runtime variant check.
+             * selected_variant stays -2 to trigger runtime branching below. */
+            Syntax_Node *dexpr = parent_ty->record.disc_constraint_exprs[0];
+            /* Try resolving via disc_agg_temp first (allocator/aggregate path) */
+            if (dexpr->symbol and dexpr->symbol->disc_agg_temp) {
+                runtime_disc_type = Type_To_Llvm(
+                    parent_ty->record.components[0].component_type);
+                if (not runtime_disc_type) runtime_disc_type = "i32";
+                runtime_disc_val = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
+                     runtime_disc_val, runtime_disc_type,
+                     dexpr->symbol->disc_agg_temp);
+            } else {
+                runtime_disc_val = Generate_Expression(cg, dexpr);
+                runtime_disc_type = Integer_Arith_Type(cg);
+                runtime_disc_val = Emit_Coerce_Default_Int(cg,
+                    runtime_disc_val, runtime_disc_type);
+            }
+        }
+    }
+
     for (uint32_t ci = parent_ty->record.discriminant_count;
          ci < parent_ty->record.component_count; ci++) {
+        /* Skip variant components not in the selected variant */
+        int32_t comp_vi = parent_ty->record.components[ci].variant_index;
+        if (selected_variant != -2 and comp_vi >= 0 and
+            comp_vi != selected_variant)
+            continue;
+        /* Runtime variant guard: if disc value is dynamic and this component
+         * is in a variant, emit a conditional branch to skip it at runtime. */
+        uint32_t rt_skip_lbl = 0;
+        if (selected_variant == -2 and runtime_disc_val > 0 and comp_vi >= 0 and
+            (uint32_t)comp_vi < parent_ty->record.variant_count) {
+            Variant_Info *vinfo = &parent_ty->record.variants[comp_vi];
+            if (not vinfo->is_others) {
+                uint32_t lo = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add %s 0, %lld\n", lo, runtime_disc_type,
+                     (long long)vinfo->disc_value_low);
+                uint32_t hi = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add %s 0, %lld\n", hi, runtime_disc_type,
+                     (long long)vinfo->disc_value_high);
+                uint32_t cmp_lo = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp sge %s %%t%u, %%t%u\n",
+                     cmp_lo, runtime_disc_type, runtime_disc_val, lo);
+                uint32_t cmp_hi = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp sle %s %%t%u, %%t%u\n",
+                     cmp_hi, runtime_disc_type, runtime_disc_val, hi);
+                uint32_t in_range = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n",
+                     in_range, cmp_lo, cmp_hi);
+                uint32_t check_lbl = cg->label_id++;
+                rt_skip_lbl = cg->label_id++;
+                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                     in_range, check_lbl, rt_skip_lbl);
+                cg->block_terminated = true;
+                Emit_Label_Here(cg, check_lbl);
+            }
+        }
         Type_Info *ct = parent_ty->record.components[ci].component_type;
         if (not ct or ct->kind != TYPE_RECORD or
-            not ct->record.has_disc_constraints) continue;
+            not ct->record.has_disc_constraints) {
+            if (rt_skip_lbl) {
+                Emit(cg, "  br label %%L%u\n", rt_skip_lbl);
+                cg->block_terminated = true;
+                Emit_Label_Here(cg, rt_skip_lbl);
+            }
+            continue;
+        }
         for (uint32_t di = 0; di < ct->record.discriminant_count; di++) {
             Component_Info *dc = &ct->record.components[di];
             if (not dc->component_type or not Type_Is_Scalar(dc->component_type))
@@ -32788,6 +32930,12 @@ static void Emit_Nested_Disc_Checks(Code_Generator *cg, Type_Info *parent_ty)
         }
         /* Recurse into component's own components */
         Emit_Nested_Disc_Checks(cg, ct);
+        /* Close runtime variant guard if opened */
+        if (rt_skip_lbl) {
+            Emit(cg, "  br label %%L%u\n", rt_skip_lbl);
+            cg->block_terminated = true;
+            Emit_Label_Here(cg, rt_skip_lbl);
+        }
     }
     /* Also check array components with disc-dependent index bounds.
      * RM 3.6.1(7): when a constrained array's index bounds depend on
@@ -32795,9 +32943,50 @@ static void Emit_Nested_Disc_Checks(Code_Generator *cg, Type_Info *parent_ty)
      * bounds lie within the index subtype. */
     for (uint32_t ci = parent_ty->record.discriminant_count;
          ci < parent_ty->record.component_count; ci++) {
+        /* Skip variant components not in the selected variant */
+        int32_t comp_vi2 = parent_ty->record.components[ci].variant_index;
+        if (selected_variant != -2 and comp_vi2 >= 0 and
+            comp_vi2 != selected_variant)
+            continue;
+        /* Runtime variant guard for array components */
+        uint32_t rt_skip_lbl2 = 0;
+        if (selected_variant == -2 and runtime_disc_val > 0 and comp_vi2 >= 0 and
+            (uint32_t)comp_vi2 < parent_ty->record.variant_count) {
+            Variant_Info *vinfo = &parent_ty->record.variants[comp_vi2];
+            if (not vinfo->is_others) {
+                uint32_t lo = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add %s 0, %lld\n", lo, runtime_disc_type,
+                     (long long)vinfo->disc_value_low);
+                uint32_t hi = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = add %s 0, %lld\n", hi, runtime_disc_type,
+                     (long long)vinfo->disc_value_high);
+                uint32_t cmp_lo = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp sge %s %%t%u, %%t%u\n",
+                     cmp_lo, runtime_disc_type, runtime_disc_val, lo);
+                uint32_t cmp_hi = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = icmp sle %s %%t%u, %%t%u\n",
+                     cmp_hi, runtime_disc_type, runtime_disc_val, hi);
+                uint32_t in_range = Emit_Temp(cg);
+                Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n",
+                     in_range, cmp_lo, cmp_hi);
+                uint32_t check_lbl = cg->label_id++;
+                rt_skip_lbl2 = cg->label_id++;
+                Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                     in_range, check_lbl, rt_skip_lbl2);
+                cg->block_terminated = true;
+                Emit_Label_Here(cg, check_lbl);
+            }
+        }
         Type_Info *ct = parent_ty->record.components[ci].component_type;
         if (not ct or not Type_Is_Array_Like(ct) or
-            not ct->array.is_constrained) continue;
+            not ct->array.is_constrained) {
+            if (rt_skip_lbl2) {
+                Emit(cg, "  br label %%L%u\n", rt_skip_lbl2);
+                cg->block_terminated = true;
+                Emit_Label_Here(cg, rt_skip_lbl2);
+            }
+            continue;
+        }
         for (uint32_t xi = 0; xi < ct->array.index_count; xi++) {
             Type_Info *idx_ty = ct->array.indices[xi].index_type;
             if (not idx_ty or not Type_Is_Scalar(idx_ty)) continue;
@@ -32857,6 +33046,12 @@ static void Emit_Nested_Disc_Checks(Code_Generator *cg, Type_Info *parent_ty)
             } else if (hi_val > 0) {
                 Emit_Constraint_Check(cg, hi_val, idx_ty, NULL);
             }
+        }
+        /* Close runtime variant guard for array component */
+        if (rt_skip_lbl2) {
+            Emit(cg, "  br label %%L%u\n", rt_skip_lbl2);
+            cg->block_terminated = true;
+            Emit_Label_Here(cg, rt_skip_lbl2);
         }
     }
 }
@@ -34195,16 +34390,112 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                 sym->is_disc_constrained = true;
             }
 
+            /* RM 3.7.3: Determine selected variant so we skip absent components
+             * during subcomponent init and default init. */
+            int32_t decl_sel_variant = -2;  /* -2 = unknown */
+            uint32_t decl_rt_disc_val = 0;
+            const char *decl_rt_disc_type = NULL;
+            if (ty->record.variant_count > 0 and ty->record.has_discriminants) {
+                /* Try static disc value first */
+                bool dv_known = false;
+                int64_t dv = 0;
+                if (ty->record.disc_constraint_values and
+                    (not ty->record.disc_constraint_exprs or
+                     not ty->record.disc_constraint_exprs[0])) {
+                    dv = ty->record.disc_constraint_values[0];
+                    dv_known = true;
+                } else if (ty->record.disc_constraint_values and
+                           not ty->record.disc_constraint_exprs) {
+                    dv = ty->record.disc_constraint_values[0];
+                    dv_known = true;
+                }
+                if (dv_known) {
+                    decl_sel_variant = -1;
+                    for (uint32_t vi = 0; vi < ty->record.variant_count; vi++) {
+                        if (dv >= ty->record.variants[vi].disc_value_low and
+                            dv <= ty->record.variants[vi].disc_value_high) {
+                            decl_sel_variant = (int32_t)vi;
+                            break;
+                        }
+                        if (ty->record.variants[vi].is_others)
+                            decl_sel_variant = (int32_t)vi;
+                    }
+                } else if (ty->record.disc_constraint_exprs and
+                           ty->record.disc_constraint_exprs[0]) {
+                    /* Dynamic: load the disc value that was just stored */
+                    decl_rt_disc_type = Type_To_Llvm(
+                        ty->record.components[0].component_type);
+                    if (not decl_rt_disc_type) decl_rt_disc_type = "i32";
+                    decl_rt_disc_val = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = getelementptr i8, ptr %%", decl_rt_disc_val);
+                    Emit_Symbol_Name(cg, sym);
+                    Emit(cg, ", i64 %u\n",
+                         ty->record.components[0].byte_offset);
+                    uint32_t ld = Emit_Temp(cg);
+                    Emit(cg, "  %%t%u = load %s, ptr %%t%u\n",
+                         ld, decl_rt_disc_type, decl_rt_disc_val);
+                    decl_rt_disc_val = ld;
+                }
+            }
+
             /* Initialize discriminant constraints of record subcomponents (RM 3.7.2).
              * E.g., for TYPE R2(D2: POSITIVE) IS RECORD C : R1(2); END RECORD;
              * we must also initialize C.D1 = 2 at the appropriate offset. */
             for (uint32_t ci = ty->record.discriminant_count;
                  ci < ty->record.component_count; ci++) {
                 Component_Info *comp = &ty->record.components[ci];
+                /* RM 3.7.3: Skip components in unselected variants */
+                if (decl_sel_variant != -2 and comp->variant_index >= 0 and
+                    comp->variant_index != decl_sel_variant)
+                    continue;
+                /* Runtime variant guard for dynamic disc values */
+                uint32_t decl_rt_skip = 0;
+                if (decl_sel_variant == -2 and decl_rt_disc_val > 0 and
+                    comp->variant_index >= 0 and
+                    (uint32_t)comp->variant_index < ty->record.variant_count) {
+                    Variant_Info *vinfo = &ty->record.variants[comp->variant_index];
+                    if (not vinfo->is_others) {
+                        uint32_t lo = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = add %s 0, %lld\n", lo, decl_rt_disc_type,
+                             (long long)vinfo->disc_value_low);
+                        uint32_t hi = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = add %s 0, %lld\n", hi, decl_rt_disc_type,
+                             (long long)vinfo->disc_value_high);
+                        uint32_t cmp_lo = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = icmp sge %s %%t%u, %%t%u\n",
+                             cmp_lo, decl_rt_disc_type, decl_rt_disc_val, lo);
+                        uint32_t cmp_hi = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = icmp sle %s %%t%u, %%t%u\n",
+                             cmp_hi, decl_rt_disc_type, decl_rt_disc_val, hi);
+                        uint32_t in_range = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n",
+                             in_range, cmp_lo, cmp_hi);
+                        uint32_t check_lbl = cg->label_id++;
+                        decl_rt_skip = cg->label_id++;
+                        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                             in_range, check_lbl, decl_rt_skip);
+                        cg->block_terminated = true;
+                        Emit_Label_Here(cg, check_lbl);
+                    }
+                }
                 Type_Info *ct = comp->component_type;
-                if (not ct or ct->kind != TYPE_RECORD) continue;
+                if (not ct or ct->kind != TYPE_RECORD) {
+                    if (decl_rt_skip) {
+                        Emit(cg, "  br label %%L%u\n", decl_rt_skip);
+                        cg->block_terminated = true;
+                        Emit_Label_Here(cg, decl_rt_skip);
+                    }
+                    continue;
+                }
                 if (not ct->record.has_disc_constraints or
-                    not ct->record.disc_constraint_values) continue;
+                    not ct->record.disc_constraint_values) {
+                    if (decl_rt_skip) {
+                        Emit(cg, "  br label %%L%u\n", decl_rt_skip);
+                        cg->block_terminated = true;
+                        Emit_Label_Here(cg, decl_rt_skip);
+                    }
+                    continue;
+                }
                 for (uint32_t di = 0; di < ct->record.discriminant_count; di++) {
                     Component_Info *dc = &ct->record.components[di];
                     uint32_t dp = Emit_Temp(cg);
@@ -34268,6 +34559,12 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                             Emit_Constraint_Check(cg, disc_val, dc->component_type, NULL);
                     }
                 }
+                /* Close runtime variant guard */
+                if (decl_rt_skip) {
+                    Emit(cg, "  br label %%L%u\n", decl_rt_skip);
+                    cg->block_terminated = true;
+                    Emit_Label_Here(cg, decl_rt_skip);
+                }
             }
 
             /* Apply component defaults (RM 3.7) - includes discriminant defaults
@@ -34286,6 +34583,11 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
 
                     /* Skip discriminant defaults if constraint values already set */
                     if (comp->is_discriminant and (ty->record.has_disc_constraints or has_decl_disc)) continue;
+
+                    /* RM 3.7.3: Skip default init for components in unselected variants */
+                    if (decl_sel_variant != -2 and comp->variant_index >= 0 and
+                        comp->variant_index != decl_sel_variant)
+                        continue;
 
                     /* Generate value for default expression */
                     uint32_t val = Generate_Expression(cg, comp->default_expr);
@@ -34679,8 +34981,49 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             for (uint32_t ci = ty->record.discriminant_count;
                  ci < ty->record.component_count; ci++) {
                 Component_Info *comp = &ty->record.components[ci];
+                /* RM 3.7.3: Skip components in unselected variants */
+                if (decl_sel_variant != -2 and comp->variant_index >= 0 and
+                    comp->variant_index != decl_sel_variant)
+                    continue;
+                /* Runtime variant guard for dynamic disc values */
+                uint32_t post_rt_skip = 0;
+                if (decl_sel_variant == -2 and decl_rt_disc_val > 0 and
+                    comp->variant_index >= 0 and
+                    (uint32_t)comp->variant_index < ty->record.variant_count) {
+                    Variant_Info *vinfo = &ty->record.variants[comp->variant_index];
+                    if (not vinfo->is_others) {
+                        uint32_t lo = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = add %s 0, %lld\n", lo, decl_rt_disc_type,
+                             (long long)vinfo->disc_value_low);
+                        uint32_t hi = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = add %s 0, %lld\n", hi, decl_rt_disc_type,
+                             (long long)vinfo->disc_value_high);
+                        uint32_t cmp_lo = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = icmp sge %s %%t%u, %%t%u\n",
+                             cmp_lo, decl_rt_disc_type, decl_rt_disc_val, lo);
+                        uint32_t cmp_hi = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = icmp sle %s %%t%u, %%t%u\n",
+                             cmp_hi, decl_rt_disc_type, decl_rt_disc_val, hi);
+                        uint32_t in_range = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = and i1 %%t%u, %%t%u\n",
+                             in_range, cmp_lo, cmp_hi);
+                        uint32_t check_lbl = cg->label_id++;
+                        post_rt_skip = cg->label_id++;
+                        Emit(cg, "  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                             in_range, check_lbl, post_rt_skip);
+                        cg->block_terminated = true;
+                        Emit_Label_Here(cg, check_lbl);
+                    }
+                }
                 Type_Info *ct = comp->component_type;
-                if (not ct) continue;
+                if (not ct) {
+                    if (post_rt_skip) {
+                        Emit(cg, "  br label %%L%u\n", post_rt_skip);
+                        cg->block_terminated = true;
+                        Emit_Label_Here(cg, post_rt_skip);
+                    }
+                    continue;
+                }
                 /* Check array component with disc-dependent bounds.
                  * RM 3.6.1: Null ranges (low > high) need not satisfy
                  * index subtype constraints, so guard with a null check. */
@@ -34913,6 +35256,12 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                             break;
                         }
                     }
+                }
+                /* Close runtime variant guard */
+                if (post_rt_skip) {
+                    Emit(cg, "  br label %%L%u\n", post_rt_skip);
+                    cg->block_terminated = true;
+                    Emit_Label_Here(cg, post_rt_skip);
                 }
             }
 
