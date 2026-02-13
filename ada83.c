@@ -12482,37 +12482,37 @@ static ALI_Cache_Entry ALI_Cache[256];
 static uint32_t        ALI_Cache_Count = 0;
 
 /* Skip whitespace */
-static const char *ALI_Skip_Ws(const char *p) {
-  while (*p == ' ' or *p == '\t') p++;
-  return p;
+static const char *ALI_Skip_Ws (const char *cursor) {
+  while (*cursor == ' ' or *cursor == '\t') cursor++;
+  return cursor;
 }
 
 /* Read until whitespace or newline, return end pointer */
-static const char *ALI_Read_Token(const char *p, char *buf, size_t bufsize) {
-  p = ALI_Skip_Ws (p);
-  size_t i = 0;
-  while (*p and *p != ' ' and *p != '\t' and *p != '\n' and i < bufsize - 1) {
-    buf[i++] = *p++;
+static const char *ALI_Read_Token (const char *cursor, char *buf, size_t bufsize) {
+  cursor = ALI_Skip_Ws (cursor);
+  size_t pos = 0;
+  while (*cursor and *cursor != ' ' and *cursor != '\t' and *cursor != '\n' and pos < bufsize - 1) {
+    buf[pos++] = *cursor++;
   }
-  buf[i] = '\0';
-  return p;
+  buf[pos] = '\0';
+  return cursor;
 }
 
 /* Parse a hex value */
-static uint32_t ALI_Parse_Hex (const char *s) {
+static uint32_t ALI_Parse_Hex (const char *str) {
   uint32_t val = 0;
-  while (*s) {
-    char c = *s++;
-    if (c >= '0' and c <= '9') val = (val << 4) | (c - '0');
-    else if (c >= 'A' and c <= 'F') val = (val << 4) | (c - 'A' + 10);
-    else if (c >= 'a' and c <= 'f') val = (val << 4) | (c - 'a' + 10);
+  while (*str) {
+    char ch = *str++;
+    if (ch >= '0' and ch <= '9')      val = (val << 4) | (ch - '0');
+    else if (ch >= 'A' and ch <= 'F') val = (val << 4) | (ch - 'A' + 10);
+    else if (ch >= 'a' and ch <= 'f') val = (val << 4) | (ch - 'a' + 10);
     else break;
   }
   return val;
 }
 
 /* Read and parse an ALI file, returning cache entry or NULL */
-static ALI_Cache_Entry *ALI_Read(const char *ali_path) {
+static ALI_Cache_Entry *ALI_Read (const char *ali_path) {
 
   /* Check if already cached */
   for (uint32_t i = 0; i < ALI_Cache_Count; i++) {
@@ -12536,20 +12536,20 @@ static ALI_Cache_Entry *ALI_Read(const char *ali_path) {
   char line[1024];
   char token[256];
   while (fgets (line, sizeof (line), f)) {
-    const char *p = line;
+    const char *cursor = line;
 
     /* Version line: V "version" — reject if compiler build differs.
     * This ensures stale ALI files from an older compiler rebuild
     * are not reused; the unit will be reparsed from source. */
     if (line[0] == 'V') {
       char ver[256] = {0};
-      const char *q = strchr (line, '"');
-      if (q) {
-        q++;
-        const char *end = strchr (q, '"');
-        if (end and (size_t)(end - q) < sizeof (ver)) {
-          memcpy (ver, q, (size_t)(end - q));
-          ver[end - q] = '\0';
+      const char *quote = strchr (line, '"');
+      if (quote) {
+        quote++;
+        const char *end = strchr (quote, '"');
+        if (end and (size_t)(end - quote) < sizeof (ver)) {
+          memcpy (ver, quote, (size_t)(end - quote));
+          ver[end - quote] = '\0';
         }
       }
 
@@ -12569,7 +12569,7 @@ static ALI_Cache_Entry *ALI_Read(const char *ali_path) {
     else if (line[0] == 'U') {
 
       /* Unit line: U name source checksum [flags] */
-      p = ALI_Read_Token (p + 1, token, sizeof (token));  /* Skip 'U' */
+      cursor = ALI_Read_Token (cursor + 1, token, sizeof (token));  /* Skip 'U' */
 
       /* Unit name (with %s/%b suffix) */
       char *pct = strchr (token, '%');
@@ -12580,16 +12580,16 @@ static ALI_Cache_Entry *ALI_Read(const char *ali_path) {
       entry->unit_name = strdup (token);
 
       /* Source file */
-      p = ALI_Read_Token (p, token, sizeof (token));
+      cursor = ALI_Read_Token (cursor, token, sizeof (token));
       entry->source_file = strdup (token);
 
       /* Checksum */
-      p = ALI_Read_Token (p, token, sizeof (token));
+      cursor = ALI_Read_Token (cursor, token, sizeof (token));
       entry->checksum = ALI_Parse_Hex (token);
 
       /* Parse flags */
-      while (*p and *p != '\n') {
-        p = ALI_Read_Token (p, token, sizeof (token));
+      while (*cursor and *cursor != '\n') {
+        cursor = ALI_Read_Token (cursor, token, sizeof (token));
         if (strcmp (token, "GE") == 0) entry->is_generic = true;
         else if (strcmp (token, "PR") == 0) entry->is_preelaborate = true;
         else if (strcmp (token, "PU") == 0) entry->is_pure = true;
@@ -12598,7 +12598,7 @@ static ALI_Cache_Entry *ALI_Read(const char *ali_path) {
     else if (line[0] == 'W' or line[0] == 'Y' or line[0] == 'Z') {
 
       /* With line: W/Y/Z name [source ali] [flags] */
-      p = ALI_Read_Token (p + 1, token, sizeof (token));
+      cursor = ALI_Read_Token (cursor + 1, token, sizeof (token));
 
       /* Strip %s/%b suffix */
       char *pct = strchr (token, '%');
@@ -12621,14 +12621,14 @@ static ALI_Cache_Entry *ALI_Read(const char *ali_path) {
       if (entry->export_count >= 256) continue;
       ALI_Export *exp = &entry->exports[entry->export_count];
       memset (exp, 0, sizeof (*exp));
-      p = ALI_Skip_Ws (p + 1);  /* Skip 'X' */
+      cursor = ALI_Skip_Ws (cursor + 1);  /* Skip 'X' */
 
       /* Kind (single char: T/S/V/C/P/F/E) */
-      exp->kind = *p++;
-      p = ALI_Skip_Ws (p);
+      exp->kind = *cursor++;
+      cursor = ALI_Skip_Ws (cursor);
 
       /* Name:line */
-      p = ALI_Read_Token (p, token, sizeof (token));
+      cursor = ALI_Read_Token (cursor, token, sizeof (token));
       char *colon = strchr (token, ':');
       if (colon) {
         *colon = '\0';
@@ -12640,32 +12640,32 @@ static ALI_Cache_Entry *ALI_Read(const char *ali_path) {
       }
 
       /* llvm_type */
-      p = ALI_Skip_Ws (p);
-      if (*p and *p != '\n') {
-        p = ALI_Read_Token (p, token, sizeof (token));
+      cursor = ALI_Skip_Ws (cursor);
+      if (*cursor and *cursor != '\n') {
+        cursor = ALI_Read_Token (cursor, token, sizeof (token));
         if (token[0]) exp->llvm_type = strdup (token);
       }
 
       /* @mangled */
-      p = ALI_Skip_Ws (p);
-      if (*p == '@') {
-        p++;  /* Skip '@' */
-        p = ALI_Read_Token (p, token, sizeof (token));
+      cursor = ALI_Skip_Ws (cursor);
+      if (*cursor == '@') {
+        cursor++;  /* Skip '@' */
+        cursor = ALI_Read_Token (cursor, token, sizeof (token));
         if (token[0]) exp->mangled_name = strdup (token);
       }
 
       /* Remaining tokens: ada_type and/or (params) */
-      while (*p and *p != '\n') {
-        p = ALI_Skip_Ws (p);
-        if (*p == '(') {
+      while (*cursor and *cursor != '\n') {
+        cursor = ALI_Skip_Ws (cursor);
+        if (*cursor == '(') {
 
           /* (params) */
-          p = ALI_Read_Token (p, token, sizeof (token));
+          cursor = ALI_Read_Token (cursor, token, sizeof (token));
           exp->param_count = (uint32_t)atoi (token + 1);
-        } else if (*p and *p != '\n') {
+        } else if (*cursor and *cursor != '\n') {
 
           /* ada_type */
-          p = ALI_Read_Token (p, token, sizeof (token));
+          cursor = ALI_Read_Token (cursor, token, sizeof (token));
           if (token[0] and token[0] != '(') {
             if (exp->type_name) free (exp->type_name);
             exp->type_name = strdup (token);
@@ -18953,7 +18953,7 @@ static uint32_t Emit_Constraint_Check_With_Type (uint32_t val,
   * bounds to match the mantissa repr: scaled = bound / small.
   * BOUND_EXPR bounds are generated as double then fptosi'd. */
   } else {
-    uint32_t lo, hi;
+    uint32_t low_bound, high_bound;
     const char *lo_type = NULL, *hi_type = NULL;
     if (target->kind == TYPE_FIXED) {
       double small = target->fixed.small;
@@ -19020,16 +19020,16 @@ static uint32_t Emit_Constraint_Check_With_Type (uint32_t val,
           (out) = Emit_Bound_Value ((bnd));                  \
         }                                                         \
       } while (0)
-      FIXED_BOUND_TO_I64 (&target->low_bound, lo);
-      FIXED_BOUND_TO_I64 (&target->high_bound, hi);
+      FIXED_BOUND_TO_I64 (&target->low_bound, low_bound);
+      FIXED_BOUND_TO_I64 (&target->high_bound, high_bound);
       #undef FIXED_BOUND_TO_I64
       lo_type = fix_bnd_ty;
       hi_type = fix_bnd_ty;
     } else {
-      lo = Emit_Bound_Value_Typed (&target->low_bound, &lo_type);
-      hi = Emit_Bound_Value_Typed (&target->high_bound, &hi_type);
+      low_bound  = Emit_Bound_Value_Typed (&target->low_bound, &lo_type);
+      high_bound = Emit_Bound_Value_Typed (&target->high_bound, &hi_type);
     }
-    if (not lo or not hi) return val;
+    if (not low_bound or not high_bound) return val;
 
     /* val < low? - Compare at wider of source/target type width.
      * Modular (unsigned) types use unsigned predicates (RM 3.5.4). */
@@ -19068,12 +19068,12 @@ static uint32_t Emit_Constraint_Check_With_Type (uint32_t val,
     uint32_t wval, wlo, whi;
     if (chk_unsigned) {
       wval = Emit_Convert_Ext (val, val_type, chk_type, true);
-      wlo  = Emit_Convert_Ext (lo, lo_type, chk_type, true);
-      whi  = Emit_Convert_Ext (hi, hi_type, chk_type, true);
+      wlo  = Emit_Convert_Ext (low_bound, lo_type, chk_type, true);
+      whi  = Emit_Convert_Ext (high_bound, hi_type, chk_type, true);
     } else {
       wval = Emit_Convert (val, val_type, chk_type);
-      wlo  = Emit_Convert (lo, lo_type, chk_type);
-      whi  = Emit_Convert (hi, hi_type, chk_type);
+      wlo  = Emit_Convert (low_bound, lo_type, chk_type);
+      whi  = Emit_Convert (high_bound, hi_type, chk_type);
     }
     uint32_t cmp_lo = Emit_Temp ();
     Emit ("  %%t%u = icmp %s %s %%t%u, %%t%u\n", cmp_lo, lt_pred, chk_type, wval, wlo);
@@ -22558,7 +22558,7 @@ static uint32_t Generate_Binary_Op (Syntax_Node *node) {
           Syntax_Node *range_dim_arg = attr_node->attribute.arguments.count > 0
                          ? attr_node->attribute.arguments.items[0] : NULL;
           uint32_t rdim = Get_Dimension_Index (range_dim_arg);
-          uint32_t lo, hi;
+          uint32_t range_low, range_high;
           bool arr_needs_rt = false;
           if (arr_type and (Type_Is_Unconstrained_Array (arr_type) or Type_Has_Dynamic_Bounds (arr_type)) and
             arr_sym and (arr_sym->kind == SYMBOL_PARAMETER or arr_sym->kind == SYMBOL_VARIABLE or
@@ -22567,8 +22567,8 @@ static uint32_t Generate_Binary_Op (Syntax_Node *node) {
           if (arr_needs_rt) {
             const char *rbt = Array_Bound_Llvm_Type (arr_type);
             uint32_t fat = Emit_Load_Fat_Pointer (arr_sym, rbt);
-            lo = Emit_Fat_Pointer_Low_Dim (fat, rbt, rdim);
-            hi = Emit_Fat_Pointer_High_Dim (fat, rbt, rdim);
+            range_low  = Emit_Fat_Pointer_Low_Dim (fat, rbt, rdim);
+            range_high = Emit_Fat_Pointer_High_Dim (fat, rbt, rdim);
           } else if (arr_type and Type_Is_Array_Like (arr_type) and rdim < arr_type->array.index_count) {
             const char *iat = Integer_Arith_Type ();
             Type_Bound lb = arr_type->array.indices[rdim].low_bound;
@@ -22581,8 +22581,8 @@ static uint32_t Generate_Binary_Op (Syntax_Node *node) {
               lb = idx_ty->low_bound;
               hb = idx_ty->high_bound;
             }
-            lo = Emit_Single_Bound (&lb, iat);
-            hi = Emit_Single_Bound (&hb, iat);
+            range_low  = Emit_Single_Bound (&lb, iat);
+            range_high = Emit_Single_Bound (&hb, iat);
 
           /* Fallback - can't determine bounds */
           } else {
@@ -22596,38 +22596,38 @@ static uint32_t Generate_Binary_Op (Syntax_Node *node) {
           /* Compare left IN lo..hi */
           const char *rng_iat = Integer_Arith_Type ();
           uint32_t ml = Emit_Convert (left, left_int_type, rng_iat);
-          lo = Emit_Convert (lo, rng_iat, rng_iat); /* ensure same type */
-          hi = Emit_Convert (hi, rng_iat, rng_iat);
+          range_low  = Emit_Convert (range_low, rng_iat, rng_iat);
+          range_high = Emit_Convert (range_high, rng_iat, rng_iat);
           uint32_t ge = Emit_Temp (), le = Emit_Temp (), in_range = Emit_Temp ();
-          Emit ("  %%t%u = icmp sge %s %%t%u, %%t%u\n", ge, rng_iat, ml, lo);
-          Emit ("  %%t%u = icmp sle %s %%t%u, %%t%u\n", le, rng_iat, ml, hi);
+          Emit ("  %%t%u = icmp sge %s %%t%u, %%t%u\n", ge, rng_iat, ml, range_low);
+          Emit ("  %%t%u = icmp sle %s %%t%u, %%t%u\n", le, rng_iat, ml, range_high);
           Emit ("  %%t%u = and i1 %%t%u, %%t%u\n", in_range, ge, le);
           if (negate) { Emit ("  %%t%u = xor i1 %%t%u, 1\n", t, in_range); }
           else        { t = in_range; }
 
         /* Type or subtype name: generate bounds at runtime (RM 4.4) */
         } else {
-          Type_Info *rt = node->binary.right ? node->binary.right->type : NULL;
+          Type_Info *range_type = node->binary.right ? node->binary.right->type : NULL;
 
           /* Composite types (records, arrays) and access/task types:
            * membership is always TRUE since the value is already of
            * that type (RM 4.5.2). Access types have no range. */
-          if (rt and (Type_Is_Composite (rt) or Type_Is_Access (rt) or
-                rt->kind == TYPE_TASK)) {
+          if (range_type and (Type_Is_Composite (range_type) or Type_Is_Access (range_type) or
+                range_type->kind == TYPE_TASK)) {
             uint32_t always = Emit_Temp ();
             Emit ("  %%t%u = add i1 0, 1  ; composite IN is always true\n", always);
             if (negate) { Emit ("  %%t%u = xor i1 %%t%u, 1\n", t, always); }
             else        { t = always; }
             return t;
           }
-          if (rt and (rt->low_bound.kind == BOUND_INTEGER or rt->low_bound.kind == BOUND_EXPR) and
-                (rt->high_bound.kind == BOUND_INTEGER or rt->high_bound.kind == BOUND_EXPR)) {
+          if (range_type and (range_type->low_bound.kind == BOUND_INTEGER or range_type->low_bound.kind == BOUND_EXPR) and
+                (range_type->high_bound.kind == BOUND_INTEGER or range_type->high_bound.kind == BOUND_EXPR)) {
             const char *lo_bt = NULL, *hi_bt = NULL;
-            uint32_t lo = Emit_Bound_Value_Typed (&rt->low_bound, &lo_bt);
-            uint32_t hi = Emit_Bound_Value_Typed (&rt->high_bound, &hi_bt);
+            uint32_t bound_low  = Emit_Bound_Value_Typed (&range_type->low_bound, &lo_bt);
+            uint32_t bound_high = Emit_Bound_Value_Typed (&range_type->high_bound, &hi_bt);
 
             /* Bounds could not be determined — assume always in range */
-            if (lo == 0 or hi == 0) {
+            if (bound_low == 0 or bound_high == 0) {
               uint32_t always = Emit_Temp ();
               Emit ("  %%t%u = add i1 0, 1  ; membership fallback (no bounds)\n", always);
               if (negate) { Emit ("  %%t%u = xor i1 %%t%u, 1\n", t, always); }
@@ -22645,12 +22645,12 @@ static uint32_t Generate_Binary_Op (Syntax_Node *node) {
               const char *hi_src_type = hi_bt;
 
               /* Convert bounds to match left operand's float type */
-              uint32_t lo_f = lo, hi_f = hi;
+              uint32_t lo_f = bound_low, hi_f = bound_high;
               if (strcmp (lo_src_type, mem_float_type) != 0) {
-                lo_f = Emit_Convert (lo, lo_src_type, mem_float_type);
+                lo_f = Emit_Convert (bound_low, lo_src_type, mem_float_type);
               }
               if (strcmp (hi_src_type, mem_float_type) != 0) {
-                hi_f = Emit_Convert (hi, hi_src_type, mem_float_type);
+                hi_f = Emit_Convert (bound_high, hi_src_type, mem_float_type);
               }
               Emit ("  %%t%u = fcmp oge %s %%t%u, %%t%u\n", ge, mem_float_type, left, lo_f);
               Emit ("  %%t%u = fcmp ole %s %%t%u, %%t%u\n", le, mem_float_type, left, hi_f);
@@ -22664,8 +22664,8 @@ static uint32_t Generate_Binary_Op (Syntax_Node *node) {
               if (lo_bt[0] == 'i') cmp_t = Wider_Int_Type (cmp_t, lo_bt);
               if (hi_bt[0] == 'i') cmp_t = Wider_Int_Type (cmp_t, hi_bt);
               uint32_t ml = Emit_Convert_Ext (left, left_int_type, cmp_t, mem_u);
-              uint32_t wlo = Emit_Convert_Ext (lo, lo_bt, cmp_t, mem_u);
-              uint32_t whi = Emit_Convert_Ext (hi, hi_bt, cmp_t, mem_u);
+              uint32_t wlo = Emit_Convert_Ext (bound_low, lo_bt, cmp_t, mem_u);
+              uint32_t whi = Emit_Convert_Ext (bound_high, hi_bt, cmp_t, mem_u);
               const char *ge_p = mem_u ? "uge" : "sge";
               const char *le_p = mem_u ? "ule" : "sle";
               Emit ("  %%t%u = icmp %s %s %%t%u, %%t%u\n", ge, ge_p, cmp_t, ml, wlo);
