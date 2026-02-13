@@ -229,5 +229,39 @@ Status key:  [ ] = not started,  [~] = in progress,  [x] = done
              designated inits, aligned switch cases, expanded header comment
 
 ────────────────────────────────────────────────────────────────────────────────
-§8–§17: TO BE ENUMERATED AS WE REACH EACH SECTION
+§8. ABSTRACT SYNTAX TREE  — DONE
 ────────────────────────────────────────────────────────────────────────────────
+
+[x] Section header — filled to 100-char ruler, expanded description
+[x] Node_List_Push — space before parens, aligned declarations
+[x] Node_New — "loc"→"location", aligned declarations, space before parens
+
+────────────────────────────────────────────────────────────────────────────────
+§9. PARSER  — DONE (via limited script + hand edits)
+────────────────────────────────────────────────────────────────────────────────
+
+[x] Section headers — filled to 100-char ruler
+[x] Parser_New — "p"→"parser", designated-style aligned declarations
+[x] Parser_At / Parser_At_Any — "p"→"parser", space before parens
+[x] Parser_Peek_At — "p"→"parser", renamed saved variables
+[x] Parser_Advance — "p"→"parser", aligned compound keyword handling
+[x] Parser_Match / Parser_Location — "p"→"parser"
+[x] Parser_Error / Parser_Error_At_Current — "p"→"parser", aligned
+[x] Parser_Synchronize / Parser_Check_Progress / Parser_Expect
+             — "p"→"parser", aligned condition chains
+[x] Parser_Identifier / Parser_Check_End_Name — "p"→"parser"
+[x] All Parse_* functions — space before parens (script pass)
+[x] Parse_Parameter_List — "loc"→"location", aligned mode handling
+[x] Parse_Primary — "loc"→"location", aligned declarations, expanded comments
+[x] Lexer_Next_Token switch — aligned Make_Token cases
+
+────────────────────────────────────────────────────────────────────────────────
+§10–§17: GLOBAL CHANGES APPLIED
+────────────────────────────────────────────────────────────────────────────────
+
+[x] R4 space-before-parens — applied to ALL 39K+ lines via targeted script
+[x] R2 100-char ruler — all section/sub-section headers extended
+[x] R8 sm global — Symbol_Manager *sm made global, removed from all parameter
+             lists and call sites.  Symbol_Manager_New renamed to
+             Symbol_Manager_Init (void).  cg->sm references replaced with sm.
+[x] Type_New — "t"→"type_info", aligned declarations
