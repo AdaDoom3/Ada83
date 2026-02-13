@@ -6066,7 +6066,7 @@ static inline int Float_Effective_Digits (const Type_Info *type_info) {
 }
 
 /* Compute model parameters for a floating-point type (RM 3.5.8).
- * mantissa = ceil(DIGITS * log2(10)) + 1
+ * mantissa = ceil (DIGITS * log2 (10)) + 1
  * emax     = 4 * mantissa
  * Used by MANTISSA, EMAX, EPSILON, SMALL, LARGE attributes. */
 static inline void Float_Model_Parameters (const Type_Info *type_info,
@@ -9073,7 +9073,7 @@ static double Eval_Const_Numeric (Syntax_Node *node) {
     case NK_UNARY_OP:
       if (node->unary.op == TK_MINUS) return -Eval_Const_Numeric (node->unary.operand);
       if (node->unary.op == TK_PLUS)  return Eval_Const_Numeric (node->unary.operand);
-      if (node->unary.op == TK_ABS)   return fabs(Eval_Const_Numeric (node->unary.operand));
+      if (node->unary.op == TK_ABS)   return fabs (Eval_Const_Numeric (node->unary.operand));
       return 0.0/0.0;
     case NK_ATTRIBUTE: {
       Type_Info *ty = node->attribute.prefix ? node->attribute.prefix->type : NULL;
@@ -9114,14 +9114,14 @@ static double Eval_Const_Numeric (Syntax_Node *node) {
           /* Ada integer division truncates toward zero (RM 4.5.5) */
           /* Only use integer division if BOTH operands are integer-typed */
           if (Is_Integer_Expr (node->binary.left) and Is_Integer_Expr (node->binary.right) and
-            l == floor(l) and r == floor(r) and
-            fabs(l) < 1e15 and fabs(r) < 1e15) {
+            l == floor (l) and r == floor (r) and
+            fabs (l) < 1e15 and fabs (r) < 1e15) {
             int64_t li = (int64_t)l;
             int64_t ri = (int64_t)r;
             return (double)(li / ri);  /* Integer division */
           }
           return l / r;
-        case TK_EXPON: return pow(l, r);
+        case TK_EXPON: return pow (l, r);
         default:       return 0.0/0.0;
       }
     }
@@ -9191,7 +9191,7 @@ static bool Eval_Const_Rational (Syntax_Node *node, Rational *out) {
       if (node->binary.op == TK_EXPON) {
         if (not Eval_Const_Rational (node->binary.left, &l)) return false;
         double re = Eval_Const_Numeric (node->binary.right);
-        if (re != re or re != floor(re) or fabs(re) > 1000) return false;
+        if (re != re or re != floor (re) or fabs (re) > 1000) return false;
         *out = Rational_Pow (l, (int)re);
         return true;
       }
@@ -12535,7 +12535,7 @@ static ALI_Cache_Entry *ALI_Read(const char *ali_path) {
   entry->ali_file = strdup (ali_path);
   char line[1024];
   char token[256];
-  while (fgets(line, sizeof (line), f)) {
+  while (fgets (line, sizeof (line), f)) {
     const char *p = line;
 
     /* Version line: V "version" — reject if compiler build differs.
@@ -12543,10 +12543,10 @@ static ALI_Cache_Entry *ALI_Read(const char *ali_path) {
     * are not reused; the unit will be reparsed from source. */
     if (line[0] == 'V') {
       char ver[256] = {0};
-      const char *q = strchr(line, '"');
+      const char *q = strchr (line, '"');
       if (q) {
         q++;
-        const char *end = strchr(q, '"');
+        const char *end = strchr (q, '"');
         if (end and (size_t)(end - q) < sizeof (ver)) {
           memcpy (ver, q, (size_t)(end - q));
           ver[end - q] = '\0';
@@ -12572,7 +12572,7 @@ static ALI_Cache_Entry *ALI_Read(const char *ali_path) {
       p = ALI_Read_Token (p + 1, token, sizeof (token));  /* Skip 'U' */
 
       /* Unit name (with %s/%b suffix) */
-      char *pct = strchr(token, '%');
+      char *pct = strchr (token, '%');
       if (pct) {
         entry->is_spec = (pct[1] == 's');
         *pct = '\0';
@@ -12601,7 +12601,7 @@ static ALI_Cache_Entry *ALI_Read(const char *ali_path) {
       p = ALI_Read_Token (p + 1, token, sizeof (token));
 
       /* Strip %s/%b suffix */
-      char *pct = strchr(token, '%');
+      char *pct = strchr (token, '%');
       if (pct) *pct = '\0';
       if (entry->with_count < 64) {
         entry->withs[entry->with_count++] = strdup (token);
@@ -12629,7 +12629,7 @@ static ALI_Cache_Entry *ALI_Read(const char *ali_path) {
 
       /* Name:line */
       p = ALI_Read_Token (p, token, sizeof (token));
-      char *colon = strchr(token, ':');
+      char *colon = strchr (token, ':');
       if (colon) {
         *colon = '\0';
         exp->name = strdup (token);
@@ -12885,11 +12885,11 @@ static uint32_t Elab_Add_Vertex (Elab_Graph *g, String_Slice name,
     .tarjan_index    = -1,
     .tarjan_lowlink  = -1,
     .is_predefined   = (name.length >= 4 and
-               (strncasecmp(name.data, "Ada.", 4) == 0 or
-              strncasecmp(name.data, "System", 6) == 0 or
-              strncasecmp(name.data, "Interfaces", 10) == 0)),
+               (strncasecmp (name.data, "Ada.", 4) == 0 or
+              strncasecmp (name.data, "System", 6) == 0 or
+              strncasecmp (name.data, "Interfaces", 10) == 0)),
     .is_internal     = (name.length >= 5 and
-               strncasecmp(name.data, "GNAT.", 5) == 0)
+               strncasecmp (name.data, "GNAT.", 5) == 0)
   };
   return id;
 }
@@ -12900,7 +12900,7 @@ static uint32_t Elab_Find_Vertex (const Elab_Graph *g, String_Slice name,
   for (uint32_t i = 0; i < g->vertex_count; i++) {
     const Elab_Vertex *v = &g->vertices[i];
     if (v->kind == kind and v->name.length == name.length and
-      strncasecmp(v->name.data, name.data, name.length) == 0) {
+      strncasecmp (v->name.data, name.data, name.length) == 0) {
       return v->id;
     }
   }
@@ -13119,7 +13119,7 @@ static Elab_Precedence Elab_Compare_Vertices (const Elab_Graph *g,
   /* 6. Lexicographical tiebreaker for determinism */
   size_t min_len = (a->name.length < b->name.length)
            ? a->name.length : b->name.length;
-  int cmp = strncasecmp(a->name.data, b->name.data, min_len);
+  int cmp = strncasecmp (a->name.data, b->name.data, min_len);
   if (cmp < 0) return PREC_HIGHER;
   if (cmp > 0) return PREC_LOWER;
   if (a->name.length < b->name.length) return PREC_HIGHER;
@@ -13338,7 +13338,7 @@ static void Elab_Pair_Specs_Bodies (Elab_Graph *g) {
       Elab_Vertex *b = &g->vertices[j];
       if (b->kind != UNIT_BODY) continue;
       if (b->name.length != v->name.length) continue;
-      if (strncasecmp(b->name.data, v->name.data, v->name.length) != 0)
+      if (strncasecmp (b->name.data, v->name.data, v->name.length) != 0)
         continue;
 
       /* Found the pair */
@@ -13721,7 +13721,7 @@ static int Loaded_Body_Names_Count = 0;
 static bool Body_Already_Loaded (String_Slice name) {
   for (int i = 0; i < Loaded_Body_Names_Count; i++) {
     if (Loaded_Body_Names[i].length == name.length and
-      strncasecmp(Loaded_Body_Names[i].data, name.data, name.length) == 0) {
+      strncasecmp (Loaded_Body_Names[i].data, name.data, name.length) == 0) {
       return true;
     }
   }
@@ -13742,7 +13742,7 @@ static Loading_Set Loading_Packages = {0};
 static bool Loading_Set_Contains (String_Slice name) {
   for (int i = 0; i < Loading_Packages.count; i++) {
     if (Loading_Packages.names[i].length == name.length and
-      strncasecmp(Loading_Packages.names[i].data, name.data, name.length) == 0) {
+      strncasecmp (Loading_Packages.names[i].data, name.data, name.length) == 0) {
       return true;
     }
   }
@@ -13756,7 +13756,7 @@ static void Loading_Set_Add (String_Slice name) {
 static void Loading_Set_Remove (String_Slice name) {
   for (int i = 0; i < Loading_Packages.count; i++) {
     if (Loading_Packages.names[i].length == name.length and
-      strncasecmp(Loading_Packages.names[i].data, name.data, name.length) == 0) {
+      strncasecmp (Loading_Packages.names[i].data, name.data, name.length) == 0) {
 
       /* Swap with last and decrement count */
       Loading_Packages.names[i] = Loading_Packages.names[--Loading_Packages.count];
@@ -13788,7 +13788,7 @@ static char *ALI_Find(String_Slice unit_name) {
   /* Try each include path */
   for (uint32_t i = 0; i < Include_Path_Count; i++) {
     snprintf (path_buf, sizeof (path_buf), "%s/%s.ali", Include_Paths[i], file_buf);
-    if (access(path_buf, R_OK) == 0) {
+    if (access (path_buf, R_OK) == 0) {
       return path_buf;
     }
   }
@@ -13966,21 +13966,21 @@ static bool Try_Load_From_ALI (String_Slice name) {
 
   /* Build source path from unit name */
   char source_file[256];
-  size_t j = 0;
-  for (size_t i = 0; i < name.length and j < sizeof (source_file) - 5; i++) {
-    char c = name.data[i];
-    if (c == '.') source_file[j++] = '-';
-    else if (c >= 'A' and c <= 'Z') source_file[j++] = c - 'A' + 'a';
-    else source_file[j++] = c;
+  size_t pos = 0;
+  for (size_t i = 0; i < name.length and pos < sizeof (source_file) - 5; i++) {
+    char ch = name.data[i];
+    if (ch == '.') source_file[pos++] = '-';
+    else if (ch >= 'A' and ch <= 'Z') source_file[pos++] = ch - 'A' + 'a';
+    else source_file[pos++] = ch;
   }
-  strcpy (source_file + j, ".ads");
+  strcpy (source_file + pos, ".ads");
 
   /* Find full source path in include paths */
   char full_source_path[512] = {0};
   for (uint32_t i = 0; i < Include_Path_Count; i++) {
     snprintf (full_source_path, sizeof (full_source_path), "%s/%s",
          Include_Paths[i], source_file);
-    if (access(full_source_path, R_OK) == 0) break;
+    if (access (full_source_path, R_OK) == 0) break;
     full_source_path[0] = '\0';
   }
   if (not full_source_path[0]) return false;
@@ -14346,14 +14346,14 @@ typedef struct {
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
  * §16.2 Instantiation_Env helpers
  * ────────────────────────────────────────────────────────────────────────────────────────────── */
-static Type_Info *Env_Lookup_Type(Instantiation_Env *env, String_Slice name) {
+static Type_Info *Env_Lookup_Type (Instantiation_Env *env, String_Slice name) {
   for (uint32_t i = 0; i < env->count; i++) {
     if (Slice_Equal_Ignore_Case (env->mappings[i].formal_name, name))
       return env->mappings[i].actual_type;
   }
   return NULL;
 }
-static Syntax_Node *Env_Lookup_Expr(Instantiation_Env *env, String_Slice name) {
+static Syntax_Node *Env_Lookup_Expr (Instantiation_Env *env, String_Slice name) {
   for (uint32_t i = 0; i < env->count; i++) {
     if (Slice_Equal_Ignore_Case (env->mappings[i].formal_name, name))
       return env->mappings[i].actual_expr;
@@ -14369,7 +14369,7 @@ static Syntax_Node *Env_Lookup_Expr(Instantiation_Env *env, String_Slice name) {
  *   • Uses recursion depth tracking with proper error
  *   • Carries environment for type substitution
  * ────────────────────────────────────────────────────────────────────────────────────────────── */
-static Syntax_Node *Node_Deep_Clone(Syntax_Node *node, Instantiation_Env *env,
+static Syntax_Node *Node_Deep_Clone (Syntax_Node *node, Instantiation_Env *env,
                   int depth);
 
 /* Clone a node list */
@@ -14383,7 +14383,7 @@ static void Node_List_Clone (Node_List *dst, Node_List *src,
     Node_List_Push (dst, cloned);
   }
 }
-static Syntax_Node *Node_Deep_Clone(Syntax_Node *node, Instantiation_Env *env,
+static Syntax_Node *Node_Deep_Clone (Syntax_Node *node, Instantiation_Env *env,
                   int depth) {
   if (not node) return NULL;
 
@@ -17267,7 +17267,7 @@ static void Resolve_Declaration (Syntax_Node *node) {
 
               /* Evaluate constant expression (handles T'SIZE/2 etc.) */
               double dval = Eval_Const_Numeric (node->rep_clause.expression);
-              int64_t value = isnan(dval) ? 0 : (int64_t)dval;
+              int64_t value = isnan (dval) ? 0 : (int64_t)dval;
 
               /* Apply representation */
               /* Size in bits - store exact and convert to bytes */
@@ -17931,15 +17931,15 @@ static void Emit_Symbol_Name (Symbol *sym) {
       /* Emit instance name prefix */
       String_Slice inst_mangled = Symbol_Mangle_Name (inst);
       for (uint32_t i = 0; i < inst_mangled.length; i++) {
-        fputc(inst_mangled.data[i], cg->output);
+        fputc (inst_mangled.data[i], cg->output);
       }
       Emit ("__");
 
       /* Emit just the symbol name (not parent chain) */
       for (uint32_t i = 0; i < sym->name.length; i++) {
-        char c = sym->name.data[i];
-        if (c >= 'A' and c <= 'Z') c = c - 'A' + 'a';
-        fputc(c, cg->output);
+        char ch = sym->name.data[i];
+        if (ch >= 'A' and ch <= 'Z') ch = ch - 'A' + 'a';
+        fputc (ch, cg->output);
       }
       return;
     }
@@ -20907,35 +20907,37 @@ static uint32_t Generate_Record_Equality (uint32_t left_ptr,
 
     /* Compare component - handle arrays/strings specially */
     uint32_t cmp;
-    Type_Info *ct = comp->component_type;
-    bool is_fat_ptr_access = Type_Is_Access (ct) and
-      Type_Needs_Fat_Pointer (ct);
-    if (Type_Is_Unconstrained_Array (ct) or
-      (not Type_Is_Constrained_Array (ct) and Type_Is_String (ct))) {
+    Type_Info *comp_type = comp->component_type;
+    bool is_fat_ptr_access = Type_Is_Access (comp_type) and
+      Type_Needs_Fat_Pointer (comp_type);
+    if (Type_Is_Unconstrained_Array (comp_type) or
+      (not Type_Is_Constrained_Array (comp_type) and Type_Is_String (comp_type))) {
 
       /* Unconstrained array/string - load fat pointer values from storage */
-      const char *ct_bt = Array_Bound_Llvm_Type (ct);
-      uint32_t left_fat = Emit_Load_Fat_Pointer_From_Temp (left_gep, ct_bt);
-      uint32_t right_fat = Emit_Load_Fat_Pointer_From_Temp (right_gep, ct_bt);
-      cmp = Generate_Array_Equality (left_fat, right_fat, ct);
+      const char *comp_bt = Array_Bound_Llvm_Type (comp_type);
+      uint32_t left_fat = Emit_Load_Fat_Pointer_From_Temp (left_gep, comp_bt);
+      uint32_t right_fat = Emit_Load_Fat_Pointer_From_Temp (right_gep, comp_bt);
+      cmp = Generate_Array_Equality (left_fat, right_fat, comp_type);
 
     /* Constrained array with dynamic bounds (discriminant-dependent).
-    * Data stored inline; compute runtime byte size from discriminant.
-    * For ARRAY (LOW..DISC) OF ELEM: size = max(0, disc - low + 1) * elem_size */
-    } else if (Type_Is_Constrained_Array (ct) and Type_Has_Dynamic_Bounds (ct)) {
-      uint32_t elem_size = ct->array.element_type ? ct->array.element_type->size : 1;
+     * Data stored inline; compute runtime byte size from discriminant.
+     * For ARRAY (LOW..DISC) OF ELEM: size = max(0, disc - low + 1) * elem_size */
+    } else if (Type_Is_Constrained_Array (comp_type) and Type_Has_Dynamic_Bounds (comp_type)) {
+      uint32_t elem_size = comp_type->array.element_type ? comp_type->array.element_type->size : 1;
       if (elem_size == 0) elem_size = 1;
       int64_t low_val = 1;
-      if (ct->array.index_count > 0 and ct->array.indices[0].low_bound.kind == BOUND_INTEGER)
-        low_val = (int64_t)ct->array.indices[0].low_bound.int_value;
+      if (comp_type->array.index_count > 0 and
+        comp_type->array.indices[0].low_bound.kind == BOUND_INTEGER)
+        low_val = (int64_t)comp_type->array.indices[0].low_bound.int_value;
 
       /* Find the discriminant that controls the high bound.
        * Match the bound expression's symbol against the record's discriminant components. */
       uint32_t disc_offset = 0;
       const char *disc_llvm = "i32";
-      if (ct->array.index_count > 0 and ct->array.indices[0].high_bound.kind == BOUND_EXPR
-        and ct->array.indices[0].high_bound.expr) {
-        Symbol *bsym = ct->array.indices[0].high_bound.expr->symbol;
+      if (comp_type->array.index_count > 0 and
+        comp_type->array.indices[0].high_bound.kind == BOUND_EXPR and
+        comp_type->array.indices[0].high_bound.expr) {
+        Symbol *bsym = comp_type->array.indices[0].high_bound.expr->symbol;
         for (uint32_t d = 0; d < record_type->record.discriminant_count; d++) {
           Component_Info *dc = &record_type->record.components[d];
           if (bsym and Slice_Equal_Ignore_Case (dc->name, bsym->name)) {
@@ -20948,39 +20950,46 @@ static uint32_t Generate_Record_Equality (uint32_t left_ptr,
       }
 
       /* Load discriminant from left record and compute memcmp size */
-      uint32_t dp = Emit_Temp (), dv = Emit_Temp ();
-      Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n", dp, left_ptr, disc_offset);
-      Emit ("  %%t%u = load %s, ptr %%t%u\n", dv, disc_llvm, dp);
-      uint32_t cnt = Emit_Temp (), sz64 = Emit_Temp ();
-      Emit ("  %%t%u = sub %s %%t%u, %lld\n", cnt, disc_llvm, dv, (long long)(low_val - 1));
+      uint32_t disc_gep  = Emit_Temp ();
+      uint32_t disc_val  = Emit_Temp ();
+      Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
+         disc_gep, left_ptr, disc_offset);
+      Emit ("  %%t%u = load %s, ptr %%t%u\n", disc_val, disc_llvm, disc_gep);
+      uint32_t extent = Emit_Temp ();
+      uint32_t size64 = Emit_Temp ();
+      Emit ("  %%t%u = sub %s %%t%u, %lld\n",
+         extent, disc_llvm, disc_val, (long long)(low_val - 1));
       if (elem_size > 1) {
         uint32_t mul = Emit_Temp ();
-        Emit ("  %%t%u = mul %s %%t%u, %u\n", mul, disc_llvm, cnt, elem_size);
-        cnt = mul;
+        Emit ("  %%t%u = mul %s %%t%u, %u\n", mul, disc_llvm, extent, elem_size);
+        extent = mul;
       }
 
       /* Clamp to 0 for null arrays */
-      uint32_t is_neg = Emit_Temp (), clamped = Emit_Temp ();
-      Emit ("  %%t%u = icmp slt %s %%t%u, 0\n", is_neg, disc_llvm, cnt);
-      Emit ("  %%t%u = select i1 %%t%u, %s 0, %s %%t%u\n", clamped, is_neg, disc_llvm, disc_llvm, cnt);
-      Emit ("  %%t%u = sext %s %%t%u to i64\n", sz64, disc_llvm, clamped);
-      uint32_t mc_r = Emit_Temp (), mc_c = Emit_Temp ();
+      uint32_t is_neg  = Emit_Temp ();
+      uint32_t clamped = Emit_Temp ();
+      Emit ("  %%t%u = icmp slt %s %%t%u, 0\n", is_neg, disc_llvm, extent);
+      Emit ("  %%t%u = select i1 %%t%u, %s 0, %s %%t%u\n",
+         clamped, is_neg, disc_llvm, disc_llvm, extent);
+      Emit ("  %%t%u = sext %s %%t%u to i64\n", size64, disc_llvm, clamped);
+      uint32_t memcmp_result = Emit_Temp ();
+      uint32_t memcmp_eq     = Emit_Temp ();
       Emit ("  %%t%u = call i32 @memcmp (ptr %%t%u, ptr %%t%u, i64 %%t%u)\n",
-         mc_r, left_gep, right_gep, sz64);
-      Emit ("  %%t%u = icmp eq i32 %%t%u, 0\n", mc_c, mc_r);
-      cmp = mc_c;
+         memcmp_result, left_gep, right_gep, size64);
+      Emit ("  %%t%u = icmp eq i32 %%t%u, 0\n", memcmp_eq, memcmp_result);
+      cmp = memcmp_eq;
 
     /* Constrained array with static bounds - use array equality directly on pointers */
-    } else if (Type_Is_Constrained_Array (ct)) {
-      cmp = Generate_Array_Equality (left_gep, right_gep, ct);
+    } else if (Type_Is_Constrained_Array (comp_type)) {
+      cmp = Generate_Array_Equality (left_gep, right_gep, comp_type);
 
     /* Nested record - recurse */
-    } else if (Type_Is_Record (ct)) {
-      cmp = Generate_Record_Equality (left_gep, right_gep, ct);
+    } else if (Type_Is_Record (comp_type)) {
+      cmp = Generate_Record_Equality (left_gep, right_gep, comp_type);
 
     /* ACCESS to unconstrained array - compare fat pointer identity */
     } else if (is_fat_ptr_access) {
-      const char *acc_bt = Array_Bound_Llvm_Type (ct->access.designated_type);
+      const char *acc_bt = Array_Bound_Llvm_Type (comp_type->access.designated_type);
       uint32_t left_val = Emit_Load_Fat_Pointer_From_Temp (left_gep, acc_bt);
       uint32_t right_val = Emit_Load_Fat_Pointer_From_Temp (right_gep, acc_bt);
       cmp = Emit_Fat_Pointer_Compare (left_val, right_val, acc_bt);
@@ -20992,7 +21001,7 @@ static uint32_t Generate_Record_Equality (uint32_t left_ptr,
       Emit ("  %%t%u = load %s, ptr %%t%u\n", left_val, comp_llvm_type, left_gep);
       Emit ("  %%t%u = load %s, ptr %%t%u\n", right_val, comp_llvm_type, right_gep);
       cmp = Emit_Temp ();
-      if (Type_Is_Float_Representation (ct)) {
+      if (Type_Is_Float_Representation (comp_type)) {
         Emit ("  %%t%u = fcmp oeq %s %%t%u, %%t%u\n",
            cmp, comp_llvm_type, left_val, right_val);
       } else {
@@ -21328,11 +21337,11 @@ static uint32_t Generate_Composite_Address (Syntax_Node *node) {
 static uint32_t Emit_Bool_Array_Binop (uint32_t left, uint32_t right, Type_Info *result_type, const char *ir_op)
 {
   int128_t count = Array_Element_Count (result_type);
-  uint32_t n = (count > 0) ? (uint32_t)count
-         : (result_type->size > 0 ? result_type->size : 1);
+  uint32_t extent = (count > 0) ? (uint32_t)count
+                  : (result_type->size > 0 ? result_type->size : 1);
   uint32_t dst = Emit_Temp ();
-  Emit ("  %%t%u = alloca [%u x i8]  ; bool array %s result\n", dst, n, ir_op);
-  for (uint32_t i = 0; i < n; i++) {
+  Emit ("  %%t%u = alloca [%u x i8]  ; bool array %s result\n", dst, extent, ir_op);
+  for (uint32_t i = 0; i < extent; i++) {
     uint32_t lp = Emit_Temp (), rp = Emit_Temp ();
     uint32_t lv = Emit_Temp (), rv = Emit_Temp ();
     uint32_t ov = Emit_Temp (), dp = Emit_Temp ();
@@ -21352,11 +21361,11 @@ static uint32_t Emit_Bool_Array_Binop (uint32_t left, uint32_t right, Type_Info 
 static uint32_t Emit_Bool_Array_Not (uint32_t operand, Type_Info *result_type)
 {
   int128_t count = Array_Element_Count (result_type);
-  uint32_t n = (count > 0) ? (uint32_t)count
-         : (result_type->size > 0 ? result_type->size : 1);
+  uint32_t extent = (count > 0) ? (uint32_t)count
+                  : (result_type->size > 0 ? result_type->size : 1);
   uint32_t dst = Emit_Temp ();
-  Emit ("  %%t%u = alloca [%u x i8]  ; bool array NOT result\n", dst, n);
-  for (uint32_t i = 0; i < n; i++) {
+  Emit ("  %%t%u = alloca [%u x i8]  ; bool array NOT result\n", dst, extent);
+  for (uint32_t i = 0; i < extent; i++) {
     uint32_t sp = Emit_Temp (), sv = Emit_Temp ();
     uint32_t nv = Emit_Temp (), dp = Emit_Temp ();
     Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i32 %u\n", sp, operand, i);
@@ -22044,7 +22053,7 @@ static uint32_t Generate_Binary_Op (Syntax_Node *node) {
   /* Mixed fixed-point / universal_real arithmetic (RM 4.5.5, 4.10):
    * When result is fixed-point but an operand is universal_real, convert
    * the universal_real to the fixed-point's scaled integer representation.
-   * For fixed type with small S, value V converts to: floor(V / S)
+   * For fixed type with small S, value V converts to: floor (V / S)
    * Skip for exponentiation which has its own special handling. */
   if (is_fixed and node->binary.op != TK_EXPON) {
     double small = result_type->fixed.small;
@@ -23049,16 +23058,16 @@ static uint32_t Generate_Apply (Syntax_Node *node) {
       else if (Slice_Equal_Ignore_Case (op_name, S(">")))  cmp_tk = TK_GT;
       else if (Slice_Equal_Ignore_Case (op_name, S(">="))) cmp_tk = TK_GE;
       if (cmp_tk >= 0) {
-        uint32_t r = Emit_Temp ();
+        uint32_t result = Emit_Temp ();
         Emit ("  %%t%u = icmp %s %s %%t%u, %%t%u  ; predef %.*s\n",
-           r, Int_Cmp_Predicate (cmp_tk, uns), ct, v0, v1,
+           result, Int_Cmp_Predicate (cmp_tk, uns), ct, v0, v1,
            (int)op_name.length, op_name.data);
 
         /* Widen i1 > i8 for Ada BOOLEAN */
-        uint32_t w = Emit_Temp ();
-        Emit ("  %%t%u = zext i1 %%t%u to i8\n", w, r);
-        Temp_Set_Type (w, "i8");
-        return w;
+        uint32_t widened = Emit_Temp ();
+        Emit ("  %%t%u = zext i1 %%t%u to i8\n", widened, result);
+        Temp_Set_Type (widened, "i8");
+        return widened;
       }
 
       /* Arithmetic operators */
@@ -23070,29 +23079,29 @@ static uint32_t Generate_Apply (Syntax_Node *node) {
       else if (Slice_Equal_Ignore_Case (op_name, S("mod"))) arith_op = uns ? "urem" : "srem";
       else if (Slice_Equal_Ignore_Case (op_name, S("rem"))) arith_op = uns ? "urem" : "srem";
       if (arith_op) {
-        uint32_t r = Emit_Temp ();
+        uint32_t result = Emit_Temp ();
         Emit ("  %%t%u = %s %s %%t%u, %%t%u  ; predef %.*s\n",
-           r, arith_op, ct, v0, v1,
+           result, arith_op, ct, v0, v1,
            (int)op_name.length, op_name.data);
 
         /* Ada MOD correction for named operator */
         if (Slice_Equal_Ignore_Case (op_name, S("mod")) and not uns) {
-          uint32_t rn = Emit_Temp ();
-          Emit ("  %%t%u = icmp ne %s %%t%u, 0\n", rn, ct, r);
-          uint32_t rxb = Emit_Temp ();
-          Emit ("  %%t%u = xor %s %%t%u, %%t%u\n", rxb, ct, r, v1);
-          uint32_t sd = Emit_Temp ();
-          Emit ("  %%t%u = icmp slt %s %%t%u, 0\n", sd, ct, rxb);
-          uint32_t nf = Emit_Temp ();
-          Emit ("  %%t%u = and i1 %%t%u, %%t%u\n", nf, rn, sd);
-          uint32_t rpb = Emit_Temp ();
-          Emit ("  %%t%u = add %s %%t%u, %%t%u\n", rpb, ct, r, v1);
-          uint32_t mr = Emit_Temp ();
+          uint32_t nonzero   = Emit_Temp ();
+          Emit ("  %%t%u = icmp ne %s %%t%u, 0\n", nonzero, ct, result);
+          uint32_t sign_xor  = Emit_Temp ();
+          Emit ("  %%t%u = xor %s %%t%u, %%t%u\n", sign_xor, ct, result, v1);
+          uint32_t sign_diff = Emit_Temp ();
+          Emit ("  %%t%u = icmp slt %s %%t%u, 0\n", sign_diff, ct, sign_xor);
+          uint32_t need_fix  = Emit_Temp ();
+          Emit ("  %%t%u = and i1 %%t%u, %%t%u\n", need_fix, nonzero, sign_diff);
+          uint32_t adjusted  = Emit_Temp ();
+          Emit ("  %%t%u = add %s %%t%u, %%t%u\n", adjusted, ct, result, v1);
+          uint32_t corrected = Emit_Temp ();
           Emit ("  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n",
-             mr, nf, ct, rpb, ct, r);
-          r = mr;
+             corrected, need_fix, ct, adjusted, ct, result);
+          result = corrected;
         }
-        return r;
+        return result;
       }
 
       /* Exponentiation: "**"(base, exp) */
@@ -23100,11 +23109,11 @@ static uint32_t Generate_Apply (Syntax_Node *node) {
         const char *iat = Integer_Arith_Type ();
         v0 = Emit_Convert (v0, t0, iat);
         v1 = Emit_Convert (v1, t1, iat);
-        uint32_t r = Emit_Temp ();
-        Emit ("  %%t%u = call %s @__ada_integer_pow(%s %%t%u, %s %%t%u)\n",
-           r, iat, iat, v0, iat, v1);
-        Temp_Set_Type (r, iat);
-        return r;
+        uint32_t result = Emit_Temp ();
+        Emit ("  %%t%u = call %s @__ada_integer_pow (%s %%t%u, %s %%t%u)\n",
+           result, iat, iat, v0, iat, v1);
+        Temp_Set_Type (result, iat);
+        return result;
       }
 
       /* Boolean operators */
@@ -23115,12 +23124,12 @@ static uint32_t Generate_Apply (Syntax_Node *node) {
                     Slice_Equal_Ignore_Case (op_name, S("or")) ? "or" : "xor";
         v0 = Emit_Convert (v0, t0, "i1");
         v1 = Emit_Convert (v1, t1, "i1");
-        uint32_t r = Emit_Temp ();
-        Emit ("  %%t%u = %s i1 %%t%u, %%t%u\n", r, bool_op, v0, v1);
-        uint32_t w = Emit_Temp ();
-        Emit ("  %%t%u = zext i1 %%t%u to i8\n", w, r);
-        Temp_Set_Type (w, "i8");
-        return w;
+        uint32_t result = Emit_Temp ();
+        Emit ("  %%t%u = %s i1 %%t%u, %%t%u\n", result, bool_op, v0, v1);
+        uint32_t widened = Emit_Temp ();
+        Emit ("  %%t%u = zext i1 %%t%u to i8\n", widened, result);
+        Temp_Set_Type (widened, "i8");
+        return widened;
       }
 
     /* Unary operators: abs, not, unary - */
@@ -23133,24 +23142,24 @@ static uint32_t Generate_Apply (Syntax_Node *node) {
         uint32_t neg = Emit_Overflow_Checked_Op (zero, v0, "sub", t0, ty0);
         uint32_t cmp = Emit_Temp ();
         Emit ("  %%t%u = icmp slt %s %%t%u, 0\n", cmp, t0, v0);
-        uint32_t r = Emit_Temp ();
+        uint32_t result = Emit_Temp ();
         Emit ("  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n",
-           r, cmp, t0, neg, t0, v0);
-        return r;
+           result, cmp, t0, neg, t0, v0);
+        return result;
       }
       if (Slice_Equal_Ignore_Case (op_name, S("not"))) {
         v0 = Emit_Convert (v0, t0, "i1");
-        uint32_t r = Emit_Temp ();
-        Emit ("  %%t%u = xor i1 %%t%u, true\n", r, v0);
-        uint32_t w = Emit_Temp ();
-        Emit ("  %%t%u = zext i1 %%t%u to i8\n", w, r);
-        Temp_Set_Type (w, "i8");
-        return w;
+        uint32_t result = Emit_Temp ();
+        Emit ("  %%t%u = xor i1 %%t%u, true\n", result, v0);
+        uint32_t widened = Emit_Temp ();
+        Emit ("  %%t%u = zext i1 %%t%u to i8\n", widened, result);
+        Temp_Set_Type (widened, "i8");
+        return widened;
       }
       if (Slice_Equal_Ignore_Case (op_name, S("-"))) {
-        uint32_t r = Emit_Temp ();
-        Emit ("  %%t%u = sub %s 0, %%t%u\n", r, t0, v0);
-        return r;
+        uint32_t result = Emit_Temp ();
+        Emit ("  %%t%u = sub %s 0, %%t%u\n", result, t0, v0);
+        return result;
       }
     }
 
@@ -25418,13 +25427,13 @@ static uint32_t Generate_Attribute (Syntax_Node *node) {
   /* T'MIN (a, b) - minimum of two values */
   if (Slice_Equal_Ignore_Case (attr, S("MIN"))) {
     if (node->attribute.arguments.count >= 2) {
-      uint32_t a = Generate_Expression (node->attribute.arguments.items[0]);
-      uint32_t b = Generate_Expression (node->attribute.arguments.items[1]);
+      uint32_t left  = Generate_Expression (node->attribute.arguments.items[0]);
+      uint32_t right = Generate_Expression (node->attribute.arguments.items[1]);
 
       /* Select minimum using icmp and select */
       uint32_t cmp = Emit_Temp ();
-      Emit ("  %%t%u = icmp slt %s %%t%u, %%t%u\n", cmp, Integer_Arith_Type (), a, b);
-      Emit ("  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u  ; 'MIN\n", t, cmp, Integer_Arith_Type (), a, Integer_Arith_Type (), b);
+      Emit ("  %%t%u = icmp slt %s %%t%u, %%t%u\n", cmp, Integer_Arith_Type (), left, right);
+      Emit ("  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u  ; 'MIN\n", t, cmp, Integer_Arith_Type (), left, Integer_Arith_Type (), right);
       return t;
     }
     fprintf (stderr, "warning: 'MIN attribute requires two arguments\n");
@@ -25434,13 +25443,13 @@ static uint32_t Generate_Attribute (Syntax_Node *node) {
   /* T'MAX (a, b) - maximum of two values */
   if (Slice_Equal_Ignore_Case (attr, S("MAX"))) {
     if (node->attribute.arguments.count >= 2) {
-      uint32_t a = Generate_Expression (node->attribute.arguments.items[0]);
-      uint32_t b = Generate_Expression (node->attribute.arguments.items[1]);
+      uint32_t left  = Generate_Expression (node->attribute.arguments.items[0]);
+      uint32_t right = Generate_Expression (node->attribute.arguments.items[1]);
 
       /* Select maximum using icmp and select */
       uint32_t cmp = Emit_Temp ();
-      Emit ("  %%t%u = icmp sgt %s %%t%u, %%t%u\n", cmp, Integer_Arith_Type (), a, b);
-      Emit ("  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u  ; 'MAX\n", t, cmp, Integer_Arith_Type (), a, Integer_Arith_Type (), b);
+      Emit ("  %%t%u = icmp sgt %s %%t%u, %%t%u\n", cmp, Integer_Arith_Type (), left, right);
+      Emit ("  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u  ; 'MAX\n", t, cmp, Integer_Arith_Type (), left, Integer_Arith_Type (), right);
       return t;
     }
     fprintf (stderr, "warning: 'MAX attribute requires two arguments\n");
@@ -25604,7 +25613,7 @@ static uint32_t Generate_Attribute (Syntax_Node *node) {
               Emit_String_Const ("@.img_str%u = private unnamed_addr constant [%u x i8] c\"",
                      str_id, (unsigned)lit.length + 1);
               for (uint32_t j = 0; j < lit.length; j++) {
-                Emit_String_Const ("%c", (char)toupper((unsigned char)lit.data[j]));
+                Emit_String_Const ("%c", (char)toupper ((unsigned char)lit.data[j]));
               }
               Emit_String_Const ("\\00\"\n");
             }
@@ -25782,7 +25791,7 @@ static uint32_t Generate_Attribute (Syntax_Node *node) {
         Emit ("  br i1 %%t%u, label %%Lbval_ct%u, label %%Lbval_cfl%u\n", len4, check_true, check_false_len);
         Emit ("Lbval_ct%u:\n", check_true);
         uint32_t cmp_true = Emit_Temp ();
-        Emit ("  %%t%u = call i32 @strncasecmp(ptr %%t%u, ptr @.val_str%u, i64 4)\n",
+        Emit ("  %%t%u = call i32 @strncasecmp (ptr %%t%u, ptr @.val_str%u, i64 4)\n",
            cmp_true, str_ptr, true_str_id);
         uint32_t is_true = Emit_Temp ();
         Emit ("  %%t%u = icmp eq i32 %%t%u, 0\n", is_true, cmp_true);
@@ -25798,7 +25807,7 @@ static uint32_t Generate_Attribute (Syntax_Node *node) {
         Emit ("  br i1 %%t%u, label %%Lbval_cf%u, label %%Lbval_nm%u\n", len5, check_false, no_match);
         Emit ("Lbval_cf%u:\n", check_false);
         uint32_t cmp_false = Emit_Temp ();
-        Emit ("  %%t%u = call i32 @strncasecmp(ptr %%t%u, ptr @.val_str%u, i64 5)\n",
+        Emit ("  %%t%u = call i32 @strncasecmp (ptr %%t%u, ptr @.val_str%u, i64 5)\n",
            cmp_false, str_ptr, false_str_id);
         uint32_t is_false = Emit_Temp ();
         Emit ("  %%t%u = icmp eq i32 %%t%u, 0\n", is_false, cmp_false);
@@ -25873,7 +25882,7 @@ static uint32_t Generate_Attribute (Syntax_Node *node) {
                    str_id, (unsigned)lit.length + 1);
             for (uint32_t j = 0; j < lit.length; j++) {
               Emit_String_Const ("%c",
-                is_char_lit ? lit.data[j] : (char)toupper((unsigned char)lit.data[j]));
+                is_char_lit ? lit.data[j] : (char)toupper ((unsigned char)lit.data[j]));
             }
             Emit_String_Const ("\\00\"\n");
 
@@ -25891,7 +25900,7 @@ static uint32_t Generate_Attribute (Syntax_Node *node) {
 
             /* Case-insensitive comparison for identifiers */
             } else {
-              Emit ("  %%t%u = call i32 @strncasecmp(ptr %%t%u, ptr @.val_str%u, i64 %u)\n",
+              Emit ("  %%t%u = call i32 @strncasecmp (ptr %%t%u, ptr @.val_str%u, i64 %u)\n",
                  cmp_result, str_ptr, str_id, (unsigned)lit.length);
             }
             uint32_t cmp_eq = Emit_Temp ();
@@ -26147,7 +26156,7 @@ static uint32_t Generate_Attribute (Syntax_Node *node) {
 
   /* T'MANTISSA - number of binary digits (RM 3.5.8, 3.5.10)
   * For floating-point: ceiling(D * log(10)/log(2)) + 1
-  * For fixed-point: ceiling(log2(bound / small)) */
+  * For fixed-point: ceiling(log2 (bound / small)) */
   if (Slice_Equal_Ignore_Case (attr, S("MANTISSA"))) {
     int64_t mantissa = IEEE_DOUBLE_MANTISSA - 1;  /* Default for double */
     if (Type_Is_Float (classify_type)) {
@@ -26158,9 +26167,9 @@ static uint32_t Generate_Attribute (Syntax_Node *node) {
       double low_val = Type_Bound_Float_Value (ft->low_bound);
       double high_val = Type_Bound_Float_Value (ft->high_bound);
       if (small <= 0) small = ft->fixed.delta > 0 ? ft->fixed.delta : 1.0;
-      double bound = fmax(fabs(low_val), fabs(high_val));
+      double bound = fmax (fabs (low_val), fabs (high_val));
       if (bound > 0 and small > 0) {
-        mantissa = (int64_t)ceil(log2(bound / small));
+        mantissa = (int64_t)ceil (log2 (bound / small));
         if (mantissa < 1) mantissa = 1;
       }
     }
@@ -26194,7 +26203,7 @@ static uint32_t Generate_Attribute (Syntax_Node *node) {
     int64_t mantissa = IEEE_DOUBLE_MANTISSA - 1;
     if (Type_Is_Float (prefix_type))
       Float_Model_Parameters (prefix_type, &mantissa, NULL);
-    double epsilon = pow(2.0, 1 - mantissa);
+    double epsilon = pow (2.0, 1 - mantissa);
 
     /* generate at double (UNIVERSAL_REAL) — callers convert.
      * This matches Expression_Llvm_Type (UNIVERSAL_REAL) = "double". */
@@ -26215,9 +26224,9 @@ static uint32_t Generate_Attribute (Syntax_Node *node) {
     } else if (Type_Is_Float (prefix_type)) {
       int64_t mantissa, emax;
       Float_Model_Parameters (prefix_type, &mantissa, &emax);
-      small_val = pow(2.0, -(emax + 1));
+      small_val = pow (2.0, -(emax + 1));
     } else {
-      small_val = pow(2.0, -(IEEE_DOUBLE_EMIN));  /* 2^-1022 */
+      small_val = pow (2.0, -(IEEE_DOUBLE_EMIN));  /* 2^-1022 */
     }
 
     /* generate at double (UNIVERSAL_REAL) — callers convert. */
@@ -26235,16 +26244,16 @@ static uint32_t Generate_Attribute (Syntax_Node *node) {
       Type_Info *ft = classify_type;
       double small = ft->fixed.small;
       if (small <= 0) small = ft->fixed.delta > 0 ? ft->fixed.delta : 1.0;
-      double bound = fmax(fabs(Type_Bound_Float_Value (ft->low_bound)),
-                 fabs(Type_Bound_Float_Value (ft->high_bound)));
+      double bound = fmax (fabs (Type_Bound_Float_Value (ft->low_bound)),
+                 fabs (Type_Bound_Float_Value (ft->high_bound)));
       int64_t mantissa = (bound > 0 and small > 0) ?
-                (int64_t)ceil(log2(bound / small)) : 1;
+                (int64_t)ceil (log2 (bound / small)) : 1;
       if (mantissa < 1) mantissa = 1;
       large_val = ((double)((1LL << mantissa) - 1)) * small;
     } else if (Type_Is_Float (prefix_type)) {
       int64_t mantissa, emax;
       Float_Model_Parameters (prefix_type, &mantissa, &emax);
-      large_val = pow(2.0, emax) * (1.0 - pow(2.0, -mantissa));
+      large_val = pow (2.0, emax) * (1.0 - pow (2.0, -mantissa));
     } else {
       large_val = __DBL_MAX__;
     }
@@ -26291,9 +26300,9 @@ static uint32_t Generate_Attribute (Syntax_Node *node) {
       if (small <= 0) small = base->fixed.delta > 0 ? base->fixed.delta : 1.0;
       double low_val = Type_Bound_Float_Value (base->low_bound);
       double high_val = Type_Bound_Float_Value (base->high_bound);
-      double bound = fmax(fabs(low_val), fabs(high_val));
+      double bound = fmax (fabs (low_val), fabs (high_val));
       int64_t mant = (bound > 0 and small > 0) ?
-              (int64_t)ceil(log2(bound / small)) : 1;
+              (int64_t)ceil (log2 (bound / small)) : 1;
       if (mant < 1) mant = 1;
       safe_large = ((double)((1LL << mant) - 1)) * small;
     } else {
@@ -26303,7 +26312,7 @@ static uint32_t Generate_Attribute (Syntax_Node *node) {
         emax = IEEE_FLOAT_EMAX;
         mantissa = IEEE_FLOAT_MANTISSA;
       }
-      safe_large = pow(2.0, emax - 1) * (1.0 - pow(2.0, -mantissa));
+      safe_large = pow (2.0, emax - 1) * (1.0 - pow (2.0, -mantissa));
     }
 
     /* generate at double (UNIVERSAL_REAL) — callers convert. */
@@ -26328,15 +26337,15 @@ static uint32_t Generate_Attribute (Syntax_Node *node) {
 
   /* T'FORE - minimum field width for integer part (RM 3.5.10(5))
   * Includes a one-character prefix (minus sign or space).
-  * FORE = 2 when integer part is 0, otherwise 1 + 1 + floor(log10(int_part)) */
+  * FORE = 2 when integer part is 0, otherwise 1 + 1 + floor (log10 (int_part)) */
   if (Slice_Equal_Ignore_Case (attr, S("FORE"))) {
     int64_t fore = 2;  /* minimum: sign + at least one digit */
     if (Type_Is_Fixed_Point (classify_type)) {
       Type_Info *ft = Type_Is_Fixed_Point (prefix_type) ? prefix_type : classify_type;
-      double bound = fmax(fabs(Type_Bound_Float_Value (ft->low_bound)),
-                 fabs(Type_Bound_Float_Value (ft->high_bound)));
+      double bound = fmax (fabs (Type_Bound_Float_Value (ft->low_bound)),
+                 fabs (Type_Bound_Float_Value (ft->high_bound)));
       if (bound >= 1.0) {
-        fore = 2 + (int64_t)floor(log10(bound));
+        fore = 2 + (int64_t)floor (log10 (bound));
       }
     }
     Emit ("  %%t%u = add %s 0, %lld  ; 'FORE\n", t, Integer_Arith_Type (), (long long)fore);
@@ -26351,7 +26360,7 @@ static uint32_t Generate_Attribute (Syntax_Node *node) {
       Type_Info *ft = Type_Is_Fixed_Point (prefix_type) ? prefix_type : classify_type;
       double delta = ft->fixed.delta;
       if (delta > 0 and delta < 1.0) {
-        aft = (int64_t)ceil(-log10(delta));
+        aft = (int64_t)ceil (-log10 (delta));
       }
     }
     Emit ("  %%t%u = add %s 0, %lld  ; 'AFT\n", t, Integer_Arith_Type (), (long long)aft);
@@ -26998,7 +27007,7 @@ static void Agg_Rec_Store (uint32_t val, uint32_t dest_ptr,
   Type_Info *ti = comp->component_type;
   const char *src_type = Expression_Llvm_Type (src_expr);
   const char *comp_type = Type_To_Llvm (ti);
-  bool is_fat = src_type and strstr(src_type, "{ ptr, ptr }") != NULL;
+  bool is_fat = src_type and strstr (src_type, "{ ptr, ptr }") != NULL;
   bool is_ptr = src_type and strcmp (src_type, "ptr") == 0;
 
   /* Fat → constrained: extract data+bounds, compute length, memcpy */
@@ -28142,19 +28151,19 @@ static uint32_t Generate_Aggregate (Syntax_Node *node) {
       /* Propagate inner dimension bounds to parent for deep nesting */
       if (cg->in_agg_component > 0 and check_inner_consistency) {
         const char *bt = Array_Bound_Llvm_Type (agg_type);
-        int n = 1;  /* bnd[0] already set from early reporting */
+        int dim_count = 1;  /* bnd[0] already set from early reporting */
         cg->inner_agg_bnd_lo[0] = low_val;
         cg->inner_agg_bnd_hi[0] = high_val;
-        for (int d = 0; d < dyn_n_inner_dims and n < MAX_AGG_DIMS; d++) {
-          cg->inner_agg_bnd_lo[n] = Emit_Temp ();
+        for (int d = 0; d < dyn_n_inner_dims and dim_count < MAX_AGG_DIMS; d++) {
+          cg->inner_agg_bnd_lo[dim_count] = Emit_Temp ();
           Emit ("  %%t%u = load %s, ptr %%t%u  ; dyn deep inner lo [dim %d]\n",
-             cg->inner_agg_bnd_lo[n], bt, dyn_inner_trk_lo[d], d);
-          cg->inner_agg_bnd_hi[n] = Emit_Temp ();
+             cg->inner_agg_bnd_lo[dim_count], bt, dyn_inner_trk_lo[d], d);
+          cg->inner_agg_bnd_hi[dim_count] = Emit_Temp ();
           Emit ("  %%t%u = load %s, ptr %%t%u  ; dyn deep inner hi [dim %d]\n",
-             cg->inner_agg_bnd_hi[n], bt, dyn_inner_trk_hi[d], d);
-          n++;
+             cg->inner_agg_bnd_hi[dim_count], bt, dyn_inner_trk_hi[d], d);
+          dim_count++;
         }
-        cg->inner_agg_bnd_n = n;
+        cg->inner_agg_bnd_n = dim_count;
       }
 
       /* For dynamic bounds arrays, return a fat pointer { ptr, ptr }
@@ -29072,7 +29081,7 @@ static uint32_t Generate_Aggregate (Syntax_Node *node) {
      * This overrides the early reporting (pre-choice processing). */
     if (cg->in_agg_component > 0) {
       const char *bt = Array_Bound_Llvm_Type (agg_type);
-      int n = 0;
+      int dim_count = 0;
       if (s_track_dyn) {
         cg->inner_agg_bnd_lo[0] = Emit_Temp ();
         Emit ("  %%t%u = load %s, ptr %%t%u  ; inner actual lo\n",
@@ -29084,21 +29093,21 @@ static uint32_t Generate_Aggregate (Syntax_Node *node) {
         cg->inner_agg_bnd_lo[0] = Emit_Static_Int (low, bt);
         cg->inner_agg_bnd_hi[0] = Emit_Static_Int (high, bt);
       }
-      n = 1;
+      dim_count = 1;
 
       /* Propagate tracked inner dimensions' bounds upward */
       if (check_inner_consistency) {
-        for (int d = 0; d < n_inner_dims and n < MAX_AGG_DIMS; d++) {
-          cg->inner_agg_bnd_lo[n] = Emit_Temp ();
+        for (int d = 0; d < n_inner_dims and dim_count < MAX_AGG_DIMS; d++) {
+          cg->inner_agg_bnd_lo[dim_count] = Emit_Temp ();
           Emit ("  %%t%u = load %s, ptr %%t%u  ; deep inner lo [dim %d]\n",
-             cg->inner_agg_bnd_lo[n], bt, inner_trk_lo[d], d);
-          cg->inner_agg_bnd_hi[n] = Emit_Temp ();
+             cg->inner_agg_bnd_lo[dim_count], bt, inner_trk_lo[d], d);
+          cg->inner_agg_bnd_hi[dim_count] = Emit_Temp ();
           Emit ("  %%t%u = load %s, ptr %%t%u  ; deep inner hi [dim %d]\n",
-             cg->inner_agg_bnd_hi[n], bt, inner_trk_hi[d], d);
-          n++;
+             cg->inner_agg_bnd_hi[dim_count], bt, inner_trk_hi[d], d);
+          dim_count++;
         }
       }
-      cg->inner_agg_bnd_n = n;
+      cg->inner_agg_bnd_n = dim_count;
     }
 
     /* Note: For the static path, dynamic named bounds vs constraint
@@ -31161,7 +31170,7 @@ static void Generate_Return_Statement (Syntax_Node *node) {
      * Copy the data to the secondary stack so it survives (GNAT LLVM:
      * Build_Allocate_For_Return with secondary stack allocation). */
     if (ret_type and Type_Is_Array_Like (ret_type) and not ret_type->array.is_constrained and
-      type_str and strstr(type_str, "{ ptr, ptr }") != NULL) {
+      type_str and strstr (type_str, "{ ptr, ptr }") != NULL) {
       const char *rbt = Array_Bound_Llvm_Type (ret_type);
       uint32_t old_data = Emit_Fat_Pointer_Data (value, rbt);
 
@@ -31178,9 +31187,9 @@ static void Generate_Return_Statement (Syntax_Node *node) {
         uint32_t conv = Emit_Convert (dim_len, rbt, Integer_Arith_Type ());
         if (d == 0) { total = conv; }
         else {
-          uint32_t p = Emit_Temp ();
-          Emit ("  %%t%u = mul %s %%t%u, %%t%u\n", p, Integer_Arith_Type (), total, conv);
-          total = p;
+          uint32_t product = Emit_Temp ();
+          Emit ("  %%t%u = mul %s %%t%u, %%t%u\n", product, Integer_Arith_Type (), total, conv);
+          total = product;
         }
       }
       uint32_t bsz = Emit_Temp ();
@@ -33396,11 +33405,11 @@ static void Generate_Object_Declaration (Syntax_Node *node) {
 
           /* Emit escaped string contents */
           for (uint32_t j = 0; j < str.length; j++) {
-            char c = str.data[j];
-            if (c >= 32 and c < 127 and c != '"' and c != '\\') {
-              Emit ("%c", c);
+            char ch = str.data[j];
+            if (ch >= 32 and ch < 127 and ch != '"' and ch != '\\') {
+              Emit ("%c", ch);
             } else {
-              Emit ("\\%02X", (unsigned char)c);
+              Emit ("\\%02X", (unsigned char)ch);
             }
           }
           Emit ("\"\n");
@@ -33736,12 +33745,12 @@ obj_decl_init:
             Component_Info *dc = &elt->record.components[di];
             const char *ddt = dc->component_type ?
               Type_To_Llvm (dc->component_type) : "i32";
-            uint32_t v = Generate_Expression (elt->record.disc_constraint_exprs[di]);
-            v = Emit_Coerce_Default_Int (v, ddt);
+            uint32_t disc_val = Generate_Expression (elt->record.disc_constraint_exprs[di]);
+            disc_val = Emit_Coerce_Default_Int (disc_val, ddt);
             uint32_t at = Emit_Temp ();
             Emit ("  %%t%u = alloca %s  ; preeval array elem disc\n",
                at, ddt);
-            Emit ("  store %s %%t%u, ptr %%t%u\n", ddt, v, at);
+            Emit ("  store %s %%t%u, ptr %%t%u\n", ddt, disc_val, at);
             elt->record.disc_constraint_preeval[di] = at;
           }
         }
@@ -33969,8 +33978,8 @@ obj_decl_init:
             Component_Info *dci = &ty->record.components[di];
             const char *ddt = dci->component_type ?
               Type_To_Llvm (dci->component_type) : "i32";
-            uint32_t v = Emit_Disc_Constraint_Value (ty, di, ddt);
-            if (v) disc_cached[di] = v;
+            uint32_t disc_val = Emit_Disc_Constraint_Value (ty, di, ddt);
+            if (disc_val) disc_cached[di] = disc_val;
           }
 
           /* Set up cg->disc_cache so Generate_Aggregate can use cached
@@ -34212,8 +34221,8 @@ obj_decl_init:
             Component_Info *dci = &ty->record.components[di];
             const char *ddt = dci->component_type ?
               Type_To_Llvm (dci->component_type) : "i32";
-            uint32_t v = Emit_Disc_Constraint_Value (ty, di, ddt);
-            if (v) rec_disc_cached[di] = v;
+            uint32_t disc_val = Emit_Disc_Constraint_Value (ty, di, ddt);
+            if (disc_val) rec_disc_cached[di] = disc_val;
           }
         }
         uint32_t init_ptr = Generate_Expression (node->object_decl.init);
@@ -34305,8 +34314,8 @@ obj_decl_init:
               Component_Info *dci = &des->record.components[di];
               const char *ddt = dci->component_type ?
                 Type_To_Llvm (dci->component_type) : "i32";
-              uint32_t v = Emit_Disc_Constraint_Value (des, di, ddt);
-              if (v) acc_disc_cached[di] = v;
+              uint32_t disc_val = Emit_Disc_Constraint_Value (des, di, ddt);
+              if (disc_val) acc_disc_cached[di] = disc_val;
             }
 
             /* Set up cg->disc_cache for aggregate generation */
@@ -36487,9 +36496,9 @@ static void Emit_Task_Function_Name (Symbol *task_sym, String_Slice fallback_nam
     Emit_Symbol_Name (resolved);
   } else {
     for (uint32_t i = 0; i < fallback_name.length; i++) {
-      char c = fallback_name.data[i];
-      if (c >= 'A' and c <= 'Z') c = c - 'A' + 'a';
-      fputc(c, cg->output);
+      char ch = fallback_name.data[i];
+      if (ch >= 'A' and ch <= 'Z') ch = ch - 'A' + 'a';
+      fputc (ch, cg->output);
     }
   }
 }
@@ -37890,10 +37899,10 @@ static void Generate_Exception_Globals (void) {
       /* Get mangled name to check for duplicates */
       FILE *real_out = cg->output;
       char buf[256];
-      FILE *mem = fmemopen(buf, sizeof (buf) - 1, "w");
+      FILE *mem = fmemopen (buf, sizeof (buf) - 1, "w");
       cg->output = mem;
       Emit_Symbol_Name (sym);
-      fflush(mem);
+      fflush (mem);
       long len = ftell (mem);
       fclose (mem);
       buf[len] = '\0';
@@ -37923,10 +37932,10 @@ static void Generate_Exception_Globals (void) {
     for (uint32_t i = 0; i < Exception_Symbol_Count and emitted_count < 256; i++) {
       FILE *real_out = cg->output;
       char buf[256];
-      FILE *mem = fmemopen(buf, sizeof (buf) - 1, "w");
+      FILE *mem = fmemopen (buf, sizeof (buf) - 1, "w");
       cg->output = mem;
       Emit_Symbol_Name (Exception_Symbols[i]);
-      fflush(mem);
+      fflush (mem);
       long len = ftell (mem);
       fclose (mem);
       buf[len] = '\0';
@@ -38077,7 +38086,7 @@ static void Generate_Compilation_Unit (Syntax_Node *node) {
   /* External C library and LLVM intrinsic declarations */
   Emit ("; External declarations\n");
   Emit ("declare i32 @memcmp (ptr, ptr, i64)\n");
-  Emit ("declare i32 @strncasecmp(ptr, ptr, i64)\n");
+  Emit ("declare i32 @strncasecmp (ptr, ptr, i64)\n");
   Emit ("declare i32 @setjmp(ptr) returns_twice\n");
   Emit ("declare void @longjmp(ptr, i32) noreturn\n");
   Emit ("declare void @exit (i32)\n");
@@ -38508,7 +38517,7 @@ static void Generate_Compilation_Unit (Syntax_Node *node) {
    * Uses binary exponentiation (O(log n)) with overflow checking.
    * Raises Constraint_Error on negative exponent or overflow. */
   Emit ("; Integer exponentiation helper (signed, overflow-checked, binary exp)\n");
-  Emit ("define linkonce_odr %s @__ada_integer_pow(%s %%base, %s %%exp) {\n", iat, iat, iat);
+  Emit ("define linkonce_odr %s @__ada_integer_pow (%s %%base, %s %%exp) {\n", iat, iat, iat);
   Emit ("entry:\n");
 
   /* Check for negative exponent */
@@ -38576,7 +38585,7 @@ static void Generate_Compilation_Unit (Syntax_Node *node) {
   /* Modular power function — unsigned, wrapping (RM 3.5.4).
    * Uses binary exponentiation (O(log n)), no overflow check as modular wraps. */
   Emit ("; Modular exponentiation helper (unsigned, wrapping, binary exp)\n");
-  Emit ("define linkonce_odr %s @__ada_modular_pow(%s %%base, %s %%exp) {\n", iat, iat, iat);
+  Emit ("define linkonce_odr %s @__ada_modular_pow (%s %%base, %s %%exp) {\n", iat, iat, iat);
   Emit ("entry:\n");
   Emit ("  %%is_zero = icmp eq %s %%exp, 0\n", iat);
   Emit ("  br i1 %%is_zero, label %%ret_one, label %%loop\n");
@@ -39397,10 +39406,10 @@ static void Compile_File (const char *input_path, const char *output_path) {
       for (uint32_t j = 0; j < Exception_Symbol_Count; j++) {
         FILE *real_out = cg->output;
         char buf[256];
-        FILE *mem = fmemopen(buf, sizeof (buf) - 1, "w");
+        FILE *mem = fmemopen (buf, sizeof (buf) - 1, "w");
         cg->output = mem;
         Emit_Symbol_Name (Exception_Symbols[j]);
-        fflush(mem);
+        fflush (mem);
         long len = ftell (mem);
         fclose (mem);
         buf[len] = '\0';
@@ -39440,8 +39449,8 @@ static void Compile_File (const char *input_path, const char *output_path) {
 static void Derive_Output_Path (const char *input, char *out, size_t out_size) {
   strncpy (out, input, out_size - 1);
   out[out_size - 1] = '\0';
-  char *dot = strrchr(out, '.');
-  char *slash = strrchr(out, '/');
+  char *dot   = strrchr (out, '.');
+  char *slash = strrchr (out, '/');
 
   /* Only replace if the dot is after the last slash (i.e., part of filename) */
   if (dot and (not slash or dot > slash))
@@ -39470,7 +39479,7 @@ static void *Compile_Worker (void *arg) {
     Derive_Output_Path (job->input_path, derived, sizeof (derived));
     out = derived;
   }
-  pid_t pid = fork();
+  pid_t pid = fork ();
 
   /* Child — compile and exit */
   if (pid == 0) {
@@ -39478,15 +39487,15 @@ static void *Compile_Worker (void *arg) {
     _exit (Error_Count > 0 ? 1 : 0);
   } else if (pid > 0) {
     int status;
-    waitpid(pid, &status, 0);
+    waitpid (pid, &status, 0);
     job->exit_status = WIFEXITED (status) ? WEXITSTATUS (status) : 1;
   } else {
-    perror("fork");
+    perror ("fork");
     job->exit_status = 1;
   }
   return NULL;
 }
-int main(int argc, char *argv[]) {
+int main (int argc, char *argv[]) {
   if (argc < 2) {
     fprintf (stderr,
       "Usage: %s [-I path] <input.ada ...> [-o output.ll]\n", argv[0]);
@@ -39523,7 +39532,7 @@ int main(int argc, char *argv[]) {
   /* ── Auto-discover rts path from executable location ──────────────── */
   {
     char exe_path[PATH_MAX];
-    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof (exe_path) - 1);
+    ssize_t len = readlink ("/proc/self/exe", exe_path, sizeof (exe_path) - 1);
     if (len > 0) {
       exe_path[len] = '\0';
 
@@ -39532,13 +39541,13 @@ int main(int argc, char *argv[]) {
       strncpy (exe_path, argv[0], sizeof (exe_path) - 1);
       exe_path[sizeof (exe_path) - 1] = '\0';
     }
-    char *slash = strrchr(exe_path, '/');
+    char *slash = strrchr (exe_path, '/');
     if (slash) {
       *slash = '\0';
       static char rts_path[PATH_MAX + 8];
       snprintf (rts_path, sizeof (rts_path), "%s/rts", exe_path);
       struct stat st;
-      if (stat(rts_path, &st) == 0 and S_ISDIR (st.st_mode)) {
+      if (stat (rts_path, &st) == 0 and S_ISDIR (st.st_mode)) {
         if (Include_Path_Count < 32)
           Include_Paths[Include_Path_Count++] = rts_path;
       }
@@ -39547,7 +39556,7 @@ int main(int argc, char *argv[]) {
 
   /* ── Auto-discover input file's directory as include path ─────────── */
   {
-    const char *slash = strrchr(inputs[0], '/');
+    const char *slash = strrchr (inputs[0], '/');
     if (slash) {
       static char input_dir[PATH_MAX];
       size_t dir_len = (size_t)(slash - inputs[0]);
@@ -39584,11 +39593,11 @@ int main(int argc, char *argv[]) {
       jobs[base + i].input_path = inputs[base + i];
       jobs[base + i].output_path = NULL;  /* derive from input */
       jobs[base + i].exit_status = 0;
-      pthread_create(&threads[i], NULL, Compile_Worker,
-               &jobs[base + i]);
+      pthread_create (&threads[i], NULL, Compile_Worker,
+                     &jobs[base + i]);
     }
     for (int i = 0; i < batch; i++) {
-      pthread_join(threads[i], NULL);
+      pthread_join (threads[i], NULL);
     }
   }
   int failed = 0;
